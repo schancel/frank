@@ -1,7 +1,20 @@
-name: CI
+name: backend - build and test
 
-on: [push]
+on:
+  push:
+    branches: [main]
+    paths: ["backend/**"]
+  pull_request:
+    branches: [main]
+    paths: ["backend/**"]
 
+# NOTE: adapted from the pre-fork `cashweb` repo's own ci.yml, which checked out `cashweb` and
+# `bitcoinsuite` as separate sibling repos. In this monorepo both are already vendored as
+# `backend/cashweb` and `backend/bitcoinsuite` under one checkout, so those two checkout steps
+# were removed and every working-directory / cache-key path below was updated to match. This has
+# NOT yet been verified against a real CI run (no CI has actually executed on this repo before —
+# see the sibling app-lint-and-test.yml's own history for why) - if the `cargo make`/flatbuffers
+# steps fail, that verification is the next step, not a sign this file is fundamentally wrong.
 jobs:
   ci-check:
     runs-on: ubuntu-latest
@@ -13,17 +26,7 @@ jobs:
         echo "$(pwd)/bin" >> $GITHUB_PATH
       shell: bash
 
-    - name: Checkout cashweb repository
-      uses: actions/checkout@v2
-      with:
-        path: cashweb
-
-    - name: Checkout bitcoinsuite repository
-      uses: actions/checkout@v2
-      with:
-        path: bitcoinsuite
-        repository: LogosFoundation/bitcoinsuite
-        ref: master
+    - uses: actions/checkout@v2
 
     - name: Checkout cargo-make repository
       uses: actions/checkout@v2
@@ -87,9 +90,9 @@ jobs:
           ~/.cargo/registry
           ~/.cargo/git
           ./target
-        key: ${{ runner.os }}-cargodeps-${{steps.rust-version.outputs.rust_version}}-${{ hashFiles('bitcoinsuite/Cargo.lock') }}-${{ hashFiles('cashweb/Cargo.lock') }}
+        key: ${{ runner.os }}-cargodeps-${{steps.rust-version.outputs.rust_version}}-${{ hashFiles('backend/bitcoinsuite/Cargo.lock') }}-${{ hashFiles('backend/cashweb/Cargo.lock') }}
         restore-keys: |
-          ${{ runner.os }}-cargodeps-${{steps.rust-version.outputs.rust_version}}-${{ hashFiles('bitcoinsuite/Cargo.lock') }}-
+          ${{ runner.os }}-cargodeps-${{steps.rust-version.outputs.rust_version}}-${{ hashFiles('backend/bitcoinsuite/Cargo.lock') }}-
           ${{ runner.os }}-cargodeps-${{steps.rust-version.outputs.rust_version}}-
           ${{ runner.os }}-cargodeps-
 
@@ -100,36 +103,36 @@ jobs:
       shell: bash
 
     - name: Make bitcoinsuite nng
-      working-directory: ./bitcoinsuite
+      working-directory: ./backend/bitcoinsuite
       run: |
         cargo make --cwd bitcoinsuite-bitcoind-nng generate-fb
 
     - name: Make bitcoinsuite libraries & download nodes
-      working-directory: ./bitcoinsuite
+      working-directory: ./backend/bitcoinsuite
       run: |
-        CARGO_TARGET_DIR=$(pwd)/../target cargo make
+        CARGO_TARGET_DIR=$(pwd)/../../target cargo make
 
     - name: Check format cashweb libraries with rustfmt
-      working-directory: ./cashweb
+      working-directory: ./backend/cashweb
       run: |
         cargo fmt --check
 
     - name: Lint cashweb libraries with clippy
-      working-directory: ./cashweb
+      working-directory: ./backend/cashweb
       run: |
         cargo clippy
 
     - name: Make cashweb libraries
-      working-directory: ./cashweb
+      working-directory: ./backend/cashweb
       run: |
-        CARGO_TARGET_DIR=$(pwd)/../target \
+        CARGO_TARGET_DIR=$(pwd)/../../target \
           BITCOINSUITE_BIN_DIR=$(pwd)/../bitcoinsuite/downloads \
           cargo make
 
     - name: Build cashwebd
-      working-directory: ./cashweb
+      working-directory: ./backend/cashweb
       run: |
-        CARGO_TARGET_DIR=$(pwd)/../target \
+        CARGO_TARGET_DIR=$(pwd)/../../target \
           RUSTFLAGS="-D warnings" \
           cargo build -p cashwebd-exe --release
-        cp ../target/release/cashwebd-exe ../bin/
+        cp ../../target/release/cashwebd-exe ../../bin/

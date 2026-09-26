@@ -219,18 +219,27 @@ describe('acquireLeaseWhenAvailable', () => {
     const busyHandle = manager.acquireForIndex(0) // no account available yet
     const clock = makeFakeClock(10)
 
-    const waiter = acquireLeaseWhenAvailable(manager, {
+    // `acquireLeaseWhenAvailable`'s retry loop resolves its own injected `sleep()` every
+    // ~1 microtask tick, so a single `await Promise.resolve()` in this test does NOT reliably
+    // interleave with it — the loop can (and, empirically, reliably does) run to its full
+    // `timeoutMs` budget entirely within microtask time before this test's own continuation ever
+    // gets a turn. The deterministic fix: release the account from *inside* the injected `sleep`
+    // itself (on its first call), since that's the one hook guaranteed to run between retries.
+    let released = false
+    const releasingSleep = async (ms: number) => {
+      if (!released) {
+        released = true
+        manager.releaseLease(busyHandle, 'confirmed')
+      }
+      await clock.sleep(ms)
+    }
+
+    const handle = await acquireLeaseWhenAvailable(manager, {
       pollIntervalMs: 10,
       timeoutMs: 1000,
-      sleep: clock.sleep,
+      sleep: releasingSleep,
       now: clock.now,
     })
-
-    // Free the account up "later" — simulate by releasing on the next microtask tick.
-    await Promise.resolve()
-    manager.releaseLease(busyHandle, 'confirmed')
-
-    const handle = await waiter
     expect(handle.index).toBe(0)
   })
 

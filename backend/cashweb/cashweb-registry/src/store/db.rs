@@ -7,6 +7,7 @@ use rocksdb::ColumnFamilyDescriptor;
 use thiserror::Error;
 
 use crate::store::metadata::DbMetadata;
+use crate::store::monad_messages::DbMonadMessages;
 use crate::store::topics::DbTopics;
 
 // We collect the column family constants here so we have a nice overview.
@@ -16,6 +17,11 @@ pub(crate) const CF_PKH_BY_TIME: &str = "pkh_by_time";
 pub(crate) const CF_MESSAGES: &str = "topic_messages";
 pub(crate) const CF_PAYLOADS: &str = "message_payloads";
 pub(crate) const CF_TOPIC_BURNS: &str = "topic_burn_txs";
+/// Ticket #27: stores [`crate::proto::StoredMonadMessage`], keyed by `payload_hash`. Kept
+/// separate from `CF_PAYLOADS`/`CF_MESSAGES`/`CF_TOPIC_BURNS` since those are indexed around a
+/// Lotus `Tx` shape a Monad message doesn't have -- see `crate::store::monad_messages`'s module
+/// docs for why that storage path isn't reusable as-is.
+pub(crate) const CF_MONAD_MESSAGES: &str = "monad_messages";
 
 pub(crate) type CF = rocksdb::ColumnFamily;
 
@@ -48,6 +54,7 @@ impl Db {
         let mut cfs = Vec::new();
         DbMetadata::add_cfs(&mut cfs);
         DbTopics::add_cfs(&mut cfs);
+        DbMonadMessages::add_cfs(&mut cfs);
         Self::open_with_cfs(path, cfs)
     }
 
@@ -59,6 +66,11 @@ impl Db {
     /// Returns `DbTopics`, allowing access to registry metadata.
     pub fn topics(&self) -> DbTopics<'_> {
         DbTopics::new(self)
+    }
+
+    /// Returns `DbMonadMessages`, allowing access to stored Monad-stamped messages (ticket #27).
+    pub fn monad_messages(&self) -> DbMonadMessages<'_> {
+        DbMonadMessages::new(self)
     }
 
     pub(crate) fn open_with_cfs(

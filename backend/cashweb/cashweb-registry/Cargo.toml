@@ -76,6 +76,22 @@ url = { version = "2.2", features = ["serde"] }
 hex = "0.4"
 tracing = "0.1.37"
 
+# RLP decoding of a raw Monad (EVM-style) transaction (ticket #27): needed to reconstruct the
+# transaction's signing preimage so its sender can be recovered via `ecrecover`. Nothing in this
+# codebase implements RLP today (bitcoinsuite is Bitcoin/Lotus-shaped, not RLP/EVM); `rlp`
+# (parity-common) is the de facto minimal, dependency-light RLP implementation in the Rust
+# ecosystem, used here purely as a decoder/encoder for `monad_evm_tx.rs`'s own signing-preimage
+# reconstruction -- it doesn't know anything about EVM transaction semantics itself.
+rlp = "0.5"
+
+# Keccak256 (ticket #27): Monad/EVM transactions are hashed (for both signing and address
+# derivation) with Keccak256, not SHA256/SHA256d like the rest of this Bitcoin/Lotus-derived
+# codebase. This is the *only* new primitive `monad_evm_tx.rs` needs -- the actual secp256k1 ECDSA
+# recovery math reuses the already-present `bitcoinsuite_ecc_secp256k1::EccSecp256k1::recover_sig`
+# (Ethereum's `ecrecover` is the same curve/signature scheme, just over a Keccak256 digest instead
+# of a SHA256 one), so no new elliptic-curve crate (e.g. `k256`) is needed.
+sha3 = "0.10"
+
 [build-dependencies]
 # Build Protobuf structs
 prost-build = "0.11"

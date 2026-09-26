@@ -272,8 +272,8 @@ describe('fanOutFundSubAccounts', () => {
   it('funds each target with burnValue + gasReserve, kept separate as explicit parameters', async () => {
     const { signer } = await makeMainAccountSigner()
     const targets = [
-      { index: 0, address: '0x000000000000000000000000000000000000dEa0' },
-      { index: 1, address: '0x000000000000000000000000000000000000dEa1' },
+      { index: 0, address: '0x000000000000000000000000000000000000dea0' },
+      { index: 1, address: '0x000000000000000000000000000000000000dea1' },
     ]
     const burnValue = 1_000_000_000_000_000n
     const gasReserve = 250_000_000_000_000n
@@ -303,9 +303,9 @@ describe('fanOutFundSubAccounts', () => {
   it('uses distinct, sequential nonces across the fan-out (no racing the same main account)', async () => {
     const { signer } = await makeMainAccountSigner(5)
     const targets = [
-      { index: 0, address: '0x000000000000000000000000000000000000dEa0' },
-      { index: 1, address: '0x000000000000000000000000000000000000dEa1' },
-      { index: 2, address: '0x000000000000000000000000000000000000dEa2' },
+      { index: 0, address: '0x000000000000000000000000000000000000dea0' },
+      { index: 1, address: '0x000000000000000000000000000000000000dea1' },
+      { index: 2, address: '0x000000000000000000000000000000000000dea2' },
     ]
 
     const results = await fanOutFundSubAccounts({
@@ -325,7 +325,7 @@ describe('fanOutFundSubAccounts', () => {
   it('submits every built transaction through the main account signer', async () => {
     const { signer, httpClient } = await makeMainAccountSigner()
     const targets = [
-      { index: 0, address: '0x000000000000000000000000000000000000dEa0' },
+      { index: 0, address: '0x000000000000000000000000000000000000dea0' },
     ]
 
     await fanOutFundSubAccounts({
@@ -348,7 +348,7 @@ describe('fanOutFundSubAccounts', () => {
       fanOutFundSubAccounts({
         mainAccountSigner: signer,
         targets: [
-          { index: 0, address: '0x000000000000000000000000000000000000dEa0' },
+          { index: 0, address: '0x000000000000000000000000000000000000dea0' },
         ],
         ...amounts,
       }),

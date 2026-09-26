@@ -18,12 +18,26 @@ indexing and transaction submission, with no self-hosted chain infrastructure.
    from a main account) is itself a correlation point — call it out, don't
    solve it perfectly in v1.
 4. **POP and Stamp are separate mechanisms — do not conflate them.**
-   - **POP** (`cashweb-token`'s bearer-token exchange): pay once via the
-     payment protocol, get a token, reuse it for protected per-address API
-     calls (read/manage your own inbox, profile, keyserver metadata).
+   - **POP** (bearer-token exchange): pay once via the payment protocol, get
+     a token, reuse it for protected per-address API calls (read/manage
+     your own inbox, profile, keyserver metadata).
    - **Stamp** (burn-to-speak, `cashweb-relay`/`cashweb-payload`): attached
      per-message by the sender, verified and *broadcast by the relay server
      on the sender's behalf* when the message is delivered.
+   - **Correction (found during ticket #4 grooming): POP does not exist yet
+     in this codebase.** `cashweb-token`/`ChainCommitmentScheme` only exist
+     in the *deprecated* `cashweb-backends` repo. `grep -rn
+     "ChainCommitmentScheme\|cashweb-token" backend` in this repo returns
+     zero matches, and `cashweb-registry/src/http/server.rs`'s
+     `handle_put_registry` (the endpoint POP is meant to gate) has no
+     token/payment gating at all today — no `extract_pop`, no middleware,
+     nothing. M3 is therefore not "swap the verification backend under an
+     existing flow" — it's build the bearer-token layer (ported from the
+     deprecated repo's `cashweb-token` crate, behind a pluggable
+     verification trait), add Monad-backed verification, then wire both
+     into the registry's HTTP endpoints. Same mistaken-premise shape as
+     M1's `Registry.bitcoind` finding — verify infra exists before assuming
+     a swap.
 5. **The current backend already implements the paper's Stamp construction —
    this is a primitive swap, not new design work.** Verified:
    `cashweb-payload/src/verify.rs:12-132` already implements a LOKAD-ID +
@@ -96,16 +110,19 @@ Implement `MonadAdapter` on both sides: HTTPS JSON-RPC (`eth_sendRawTransaction`
 this milestone is adapter-only, proven with a standalone smoke test against
 the live testnet endpoint.
 
-### M3 — POP over Monad (depends on: M5, for client-side payment construction)
-Port the bearer-token payment-protocol flow to verify payment via
-`MonadAdapter` (tx receipt: to/value/status) instead of raw BCH tx
-parsing/`ChainCommitmentScheme`. Token issuance/caching logic (`cashweb-token`)
-is chain-agnostic and shouldn't need to change — only the payment
-verification step underneath it. Server-side verification can start as
-soon as M2 lands; the client side (constructing and signing the payment tx)
-needs M5's account/tx-building infrastructure, so split this milestone's
-tickets into "M3-server" (blocked-by M2 only) and "M3-client" (blocked-by
-M5) rather than treating M3 as one atomic unit.
+### M3 — POP over Monad (depends on: M2; client side also depends on M5)
+Corrected scope (see constraint 4): POP's bearer-token layer does not exist
+in this codebase yet and must be built, not redirected. Three parts, in
+order: (a) the bearer-token issuance/caching layer itself — chain-agnostic,
+ported from the deprecated repo's `cashweb-token` crate, behind a pluggable
+verification trait, no Monad dependency, can start as soon as M2's trait
+shape is known; (b) a Monad-backed implementation of that verification
+trait via `MonadAdapter` (tx receipt: to/value/status); (c) wiring POP
+protection into `cashweb-registry`'s actual HTTP endpoints (e.g.
+`handle_put_registry`), gated on (a)+(b), plus the end-to-end Monad-testnet
+proof. Client-side payment construction (signing/submitting the payment
+tx) needs M5's account/tx-building infrastructure — track that as
+"M3-client" separately from this server-side sequence ("M3-server").
 
 ### M4 — Stamp (burn-to-speak) over Monad (depends on: M2, M5)
 This is a primitive swap of already-working logic (see constraint 5), not

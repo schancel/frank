@@ -1,0 +1,12 @@
+[package]
+name = "bitcoinsuite-ecc-secp256k1"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+bitcoinsuite-core = { path = "../bitcoinsuite-core" }
+
+secp256k1-abc = { git = "https://github.com/raipay/secp256k1-abc", features = ["rand-std", "recovery"] }
+
+[dev-dependencies]
+hex-literal = "0.3"

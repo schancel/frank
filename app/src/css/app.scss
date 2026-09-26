@@ -1,0 +1,20 @@
+// app global css in Sass form
+@use 'light-mode.scss';
+@use 'dark-mode.scss';
+
+:root {
+  --q-on-primary-color-text: white;
+}
+
+.q-header {
+  color: var(--q-on-primary-color-text);
+}
+
+.q-footer {
+  color: var(--q-color-text);
+  background: var(--q-color-background);
+}
+
+.bg-on-secondary {
+  background: var(--q-color-background);
+}

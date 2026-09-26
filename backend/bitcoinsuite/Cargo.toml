@@ -1,0 +1,19 @@
+[workspace]
+
+members = [
+    # Downloads latest BCH and XEC versions
+    "bitcoinsuite-bitcoind",
+    # Builds flatbuffers
+    "bitcoinsuite-bitcoind-nng",
+
+    "bitcoinsuite-chronik-client",
+    "bitcoinsuite-core",
+    "bitcoinsuite-ecc-secp256k1",
+    "bitcoinsuite-error",
+    "bitcoinsuite-error-derive",
+    "bitcoinsuite-error-warp",
+    "bitcoinsuite-slp",
+    "bitcoinsuite-slpv2",
+    "bitcoinsuite-test-utils",
+    "bitcoinsuite-test-utils-blockchain",
+]

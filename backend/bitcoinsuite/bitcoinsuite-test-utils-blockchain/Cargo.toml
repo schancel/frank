@@ -1,0 +1,22 @@
+[package]
+name = "bitcoinsuite-test-utils-blockchain"
+version = "0.1.0"
+authors = ["Tobias Ruck <ruck.tobias@gmail.com>"]
+edition = "2021"
+
+[dependencies]
+# Error handling
+bitcoinsuite-error = { path = "../bitcoinsuite-error" }
+
+# Async
+tokio = { version = "1.14", features = ["full"] }
+
+# Bitcoin stuff
+bitcoinsuite-core = { path = "../bitcoinsuite-core" }
+bitcoinsuite-slp = { path = "../bitcoinsuite-slp" }
+
+# Nodes
+bitcoinsuite-bitcoind = { path = "../bitcoinsuite-bitcoind" }
+
+# Test utils
+bitcoinsuite-test-utils = { path = "../bitcoinsuite-test-utils" }

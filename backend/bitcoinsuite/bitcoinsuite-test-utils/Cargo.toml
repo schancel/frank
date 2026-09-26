@@ -1,0 +1,19 @@
+[package]
+name = "bitcoinsuite-test-utils"
+version = "0.1.0"
+authors = ["Tobias Ruck <ruck.tobias@gmail.com>"]
+edition = "2021"
+
+[dependencies]
+# Error handling
+thiserror = "1.0"
+bitcoinsuite-error = { path = "../bitcoinsuite-error" }
+
+# Random port sampling
+rand = "0.8"
+
+# Async
+tokio = { version = "1.14", features = ["full"] }
+
+# HTTP server
+warp = "0.3"

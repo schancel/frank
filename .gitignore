@@ -1,0 +1,11 @@
+.env
+.env.*
+!.env.example
+
+# build artifacts / deps
+node_modules/
+target/
+dist/
+__pycache__/
+*.pyc
+.worktrees/

@@ -3,5 +3,6 @@
 
 pub mod db;
 pub mod metadata;
+pub mod monad_messages;
 pub mod pubkeyhash;
 pub mod topics;

@@ -2,6 +2,7 @@
 
 use crate::{
     http::error::HttpRegistryError,
+    http::monad_message::{handle_get_monad_message, handle_put_monad_message},
     http::pop_protection::{self, MonadReceiptVerifier, PopChallenge, PopGate, PopGateConfigError},
     monad_http::HttpTransport,
     p2p::{peers::Peers, relay_info::RelayInfo},
@@ -134,6 +135,15 @@ impl RegistryServer {
             .route("/messages", routing::get(handle_get_all_messages))
             .route("/message", routing::put(handle_put_message))
             .route("/message/:payload_hash", routing::get(handle_get_message))
+            // Monad-native stamped message path (ticket #27), additive alongside the Lotus
+            // `/message` route above -- see `crate::http::monad_message`'s module docs for why
+            // this is a separate route/message shape rather than an extension of
+            // `handle_put_message`/`SignedPayload`.
+            .route("/message/monad", routing::put(handle_put_monad_message))
+            .route(
+                "/message/monad/:payload_hash",
+                routing::get(handle_get_monad_message),
+            )
             .layer(Extension(self))
             .layer(
                 CorsLayer::new()

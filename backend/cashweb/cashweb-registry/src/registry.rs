@@ -432,6 +432,29 @@ impl Registry {
     pub(crate) fn net(&self) -> Net {
         self.net
     }
+
+    /// Store a [`proto::StoredMonadMessage`] (ticket #27), once its Monad stamp has already
+    /// verified (see `crate::http::monad_message`). Unlike [`Registry::put_message`]'s Lotus path,
+    /// this doesn't call into `validate_burn_txs`/`chain_adapter` at all -- broadcasting and
+    /// verifying a Monad stamp is `monad_stamp_relay::broadcast_and_verify_stamp`'s job, which
+    /// operates over a [`crate::monad_http::JsonRpcTransport`] rather than the (Lotus-shaped)
+    /// [`ChainAdapter`] this `Registry` is generic over, so it's called by the HTTP layer directly
+    /// rather than from here (see that module's docs for why).
+    pub(crate) fn put_monad_message(
+        &self,
+        payload_hash: &[u8],
+        message: &proto::StoredMonadMessage,
+    ) -> Result<()> {
+        self.db.monad_messages().put(payload_hash, message)
+    }
+
+    /// Retrieve a previously-stored [`proto::StoredMonadMessage`] by its `payload_hash`.
+    pub(crate) fn get_monad_message(
+        &self,
+        payload_hash: &[u8],
+    ) -> Result<Option<proto::StoredMonadMessage>> {
+        self.db.monad_messages().get(payload_hash)
+    }
 }
 
 #[cfg(test)]

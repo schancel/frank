@@ -1,0 +1,688 @@
+//! `PUT /message/monad` and `GET /message/monad/:payload_hash`: the live HTTP path for a
+//! Monad-stamped broadcast message (ticket #27), completing the wiring
+//! `crate::monad_stamp_relay`'s module docs (ticket #19) left for "whoever picks up the wire
+//! format decision".
+//!
+//! ## Why a separate route, and a separate message type, instead of extending `PUT /message`
+//!
+//! `handle_put_message` (in `crate::http::server`) decodes a `cashweb_payload::proto::
+//! SignedPayload`, whose `burn_txs: repeated BurnTx { bytes tx, uint32 burn_idx }` is structurally
+//! UTXO-shaped: `burn_idx` indexes into a Lotus transaction's *output list*, which an EVM
+//! transaction doesn't have. `SignedPayload::parse_proto`/`verify` (`cashweb-payload/src/
+//! payload.rs`/`verify.rs`) unconditionally deserialize every `burn_tx.tx` as a Lotus
+//! `UnhashedTx` -- there's no branch point to feed a raw EVM tx through instead, and editing those
+//! files is explicitly out of scope for this ticket (Lotus must keep working exactly as-is). A
+//! Monad stamp therefore needs its own message shape ([`proto::MonadStampedMessage`], a new
+//! proto file owned by this crate rather than `cashweb-payload`, avoiding the circular-dependency
+//! problem `monad_stamp_relay`'s docs describe -- `cashweb-payload` is lower-level than
+//! `cashweb-registry`, where `monad_stamp_relay`/`monad_stamp_verify` live) and its own route.
+//!
+//! Unlike a Lotus `SignedPayload`, [`proto::MonadStampedMessage`] carries no separate pubkey or
+//! signature: per PLAN.md constraint 5, sender authentication comes for free from the raw burn
+//! tx's own ECDSA signature, recoverable via [`crate::monad_evm_tx::recover_sender`] (Ethereum's
+//! `ecrecover`) -- so requiring a client to *additionally* sign the message with a declared pubkey
+//! would be redundant. In its place, [`proto::MonadStampedMessage::payload_hash`] is the binding
+//! between this specific message and the on-chain burn: `raw_burn_tx`'s calldata must commit to
+//! exactly this hash (checked by [`verify_stamp_burn`](crate::monad_stamp_verify::verify_stamp_burn)
+//! via [`process_monad_message`] below), so a burn tx can't be replayed with a substituted payload.
+//!
+//! ## Storage: why this doesn't go through `Registry::put_message`/`DbTopics`
+//!
+//! `Registry::put_message` (and the `DbTopics` store it writes through) operates on
+//! `cashweb_payload::payload::SignedPayload<proto::BroadcastMessage>`, whose `burn_txs: Vec<
+//! BurnTx>` wraps a Lotus `Tx` and whose indexing (`lotus_txid`, per-topic burn dedup) is built
+//! entirely around that shape -- checked while implementing this ticket, not assumed. It is
+//! **not** chain-agnostic despite living in the same crate. [`process_monad_message`] therefore
+//! stores through a new, parallel path instead: [`Registry::put_monad_message`] /
+//! [`crate::store::monad_messages::DbMonadMessages`] (see that module's docs for the full
+//! reasoning).
+//!
+//! ## Configuration
+//!
+//! Following `crate::http::pop_protection`'s established convention (a process-wide [`OnceLock`],
+//! read from the environment on first use, rather than plumbing config through
+//! [`crate::http::server::RegistryServer`]'s fields and touching its other construction sites):
+//!
+//! - `MONAD_TESTNET_HTTP_RPC_URL`: Monad JSON-RPC endpoint (same var `pop_protection` and the live
+//!   smoke tests use).
+//! - `CASHWEB_STAMP_BURN_ADDRESS`: `0x`-prefixed 20-byte Monad address stamp burns must be sent
+//!   to.
+//! - `CASHWEB_STAMP_MIN_BURN_VALUE_WEI`: minimum burn amount, in wei, as a decimal string.
+//!
+//! An unconfigured or invalid gate fails every request closed (`500`), rather than silently
+//! skipping stamp verification, mirroring `pop_protection`'s same fail-closed choice.
+
+use std::{fmt, sync::OnceLock};
+
+use axum::{
+    extract::Path,
+    http::StatusCode,
+    response::{IntoResponse, Response},
+    Extension, Json,
+};
+use bitcoinsuite_core::{Hashed, Sha256};
+use bitcoinsuite_error::Report;
+use cashweb_http_utils::protobuf::Protobuf;
+use cashweb_payload::verify::BROADCAST_MESSAGE_LOKAD_ID;
+use serde::Serialize;
+use tracing::Level;
+
+use crate::{
+    http::server::RegistryServer,
+    monad_evm_tx::{recover_sender, EvmTxError},
+    monad_http::{Address, HttpTransport, JsonRpcTransport},
+    monad_stamp_relay::{broadcast_and_verify_stamp, PollConfig, StampRelayOutcome},
+    monad_stamp_verify::ExpectedBurn,
+    proto,
+    registry::Registry,
+};
+
+/// Errors processing a [`proto::MonadStampedMessage`], independent of HTTP/axum (see
+/// [`process_monad_message`]) so this logic can be unit-tested directly against a mock
+/// [`JsonRpcTransport`], the same way `monad_stamp_relay`/`monad_stamp_verify` test themselves.
+#[derive(Debug)]
+pub enum ProcessMonadMessageError {
+    /// `payload_hash` wasn't exactly 32 bytes.
+    InvalidPayloadHashLength(usize),
+    /// `payload_hash` didn't match `SHA256(encrypted_payload)`.
+    PayloadHashMismatch {
+        /// The client-declared `payload_hash`.
+        declared: Sha256,
+        /// The actual hash of `encrypted_payload`.
+        actual: Sha256,
+    },
+    /// [`recover_sender`] couldn't recover a sender address from `raw_burn_tx`.
+    SenderRecoveryFailed(EvmTxError),
+    /// The stamp didn't verify -- see the wrapped [`StampRelayOutcome`] for exactly why (a
+    /// broadcast-time RPC failure, a confirmation timeout, or a specific verification failure).
+    /// Every non-[`StampRelayOutcome::Verified`] outcome is a rejection, never a silent store, per
+    /// ticket #19's acceptance criteria.
+    Rejected(StampRelayOutcome),
+    /// An infrastructure-level failure (RPC/transport error, or a storage error) rather than a
+    /// rejection of the message itself.
+    Infrastructure(Report),
+}
+
+impl fmt::Display for ProcessMonadMessageError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ProcessMonadMessageError::InvalidPayloadHashLength(len) => {
+                write!(f, "payload_hash must be 32 bytes, got {len}")
+            }
+            ProcessMonadMessageError::PayloadHashMismatch { declared, actual } => write!(
+                f,
+                "payload_hash {declared} doesn't match SHA256(encrypted_payload) {actual}"
+            ),
+            ProcessMonadMessageError::SenderRecoveryFailed(err) => {
+                write!(f, "couldn't recover sender from raw_burn_tx: {err}")
+            }
+            ProcessMonadMessageError::Rejected(outcome) => {
+                write!(f, "Monad stamp rejected: {outcome:?}")
+            }
+            ProcessMonadMessageError::Infrastructure(err) => {
+                write!(f, "infrastructure failure: {err}")
+            }
+        }
+    }
+}
+
+/// Decode, verify, broadcast-and-confirm, and (on success) store a [`proto::MonadStampedMessage`].
+///
+/// Mirrors `Registry::put_message`'s Lotus flow (decode -> verify burn -> store) at a high level,
+/// but every step is Monad-specific:
+/// 1. `payload_hash` must be exactly 32 bytes and match `SHA256(encrypted_payload)` (the
+///    client-side integrity check `SignedPayload::parse_proto` does for Lotus).
+/// 2. The sender is recovered from `raw_burn_tx` via [`recover_sender`] (`ecrecover`) rather than
+///    read off an explicit pubkey field.
+/// 3. [`broadcast_and_verify_stamp`] (ticket #19) broadcasts `raw_burn_tx` and confirms its
+///    calldata commits to `payload_hash`, burning at least `min_value_wei` to `burn_address`.
+/// 4. Only [`StampRelayOutcome::Verified`] leads to a store, via [`Registry::put_monad_message`]
+///    -- every other outcome is [`ProcessMonadMessageError::Rejected`].
+pub async fn process_monad_message<T: JsonRpcTransport + Clone>(
+    transport: &T,
+    registry: &Registry,
+    burn_address: Address,
+    min_value_wei: u128,
+    poll: PollConfig,
+    request: proto::MonadStampedMessage,
+) -> Result<proto::StoredMonadMessage, ProcessMonadMessageError> {
+    let declared_hash = Sha256::from_slice(&request.payload_hash)
+        .map_err(|_| ProcessMonadMessageError::InvalidPayloadHashLength(request.payload_hash.len()))?;
+    let actual_hash = Sha256::digest(request.encrypted_payload.clone().into());
+    if declared_hash != actual_hash {
+        return Err(ProcessMonadMessageError::PayloadHashMismatch {
+            declared: declared_hash,
+            actual: actual_hash,
+        });
+    }
+
+    let sender =
+        recover_sender(&request.raw_burn_tx).map_err(ProcessMonadMessageError::SenderRecoveryFailed)?;
+
+    let expected = ExpectedBurn {
+        commitment_id: BROADCAST_MESSAGE_LOKAD_ID,
+        commitment: declared_hash.clone(),
+        burn_address,
+        min_value_wei,
+    };
+
+    let outcome = broadcast_and_verify_stamp(transport, &request.raw_burn_tx, &expected, poll)
+        .await
+        .map_err(ProcessMonadMessageError::Infrastructure)?;
+
+    let tx_hash = match outcome {
+        StampRelayOutcome::Verified { tx_hash } => tx_hash,
+        other => return Err(ProcessMonadMessageError::Rejected(other)),
+    };
+
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
+    let stored = proto::StoredMonadMessage {
+        message: Some(request),
+        sender_address: sender.0.to_vec(),
+        tx_hash: tx_hash.0.to_vec(),
+        timestamp,
+    };
+
+    registry
+        .put_monad_message(declared_hash.as_slice(), &stored)
+        .map_err(ProcessMonadMessageError::Infrastructure)?;
+
+    Ok(stored)
+}
+
+/// Errors reading required Monad-stamp gate configuration from the environment via
+/// [`monad_message_gate`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MonadMessageGateConfigError {
+    /// A required env var wasn't set.
+    MissingEnv(&'static str),
+    /// `MONAD_TESTNET_HTTP_RPC_URL` wasn't a valid URL.
+    InvalidRpcUrl(String),
+    /// `CASHWEB_STAMP_BURN_ADDRESS` wasn't a valid `0x`-prefixed 20-byte address.
+    InvalidBurnAddress(String),
+    /// `CASHWEB_STAMP_MIN_BURN_VALUE_WEI` wasn't a valid non-negative decimal integer.
+    InvalidMinValueWei(String),
+}
+
+impl fmt::Display for MonadMessageGateConfigError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            MonadMessageGateConfigError::MissingEnv(name) => {
+                write!(f, "missing required env var {name} (Monad stamp gate is unconfigured)")
+            }
+            MonadMessageGateConfigError::InvalidRpcUrl(msg) => {
+                write!(f, "invalid MONAD_TESTNET_HTTP_RPC_URL: {msg}")
+            }
+            MonadMessageGateConfigError::InvalidBurnAddress(msg) => {
+                write!(f, "invalid CASHWEB_STAMP_BURN_ADDRESS: {msg}")
+            }
+            MonadMessageGateConfigError::InvalidMinValueWei(msg) => {
+                write!(f, "invalid CASHWEB_STAMP_MIN_BURN_VALUE_WEI: {msg}")
+            }
+        }
+    }
+}
+
+/// Configuration for the `PUT /message/monad` route, read once from the environment (see module
+/// docs).
+#[derive(Debug, Clone)]
+pub struct MonadMessageGateConfig {
+    rpc_url: url::Url,
+    burn_address: Address,
+    min_value_wei: u128,
+}
+
+fn required_env(name: &'static str) -> Result<String, MonadMessageGateConfigError> {
+    std::env::var(name).map_err(|_| MonadMessageGateConfigError::MissingEnv(name))
+}
+
+impl MonadMessageGateConfig {
+    fn from_env() -> Result<Self, MonadMessageGateConfigError> {
+        let rpc_url = required_env("MONAD_TESTNET_HTTP_RPC_URL")?;
+        let rpc_url: url::Url = rpc_url
+            .parse()
+            .map_err(|err| MonadMessageGateConfigError::InvalidRpcUrl(format!("{err}")))?;
+        let burn_address_hex = required_env("CASHWEB_STAMP_BURN_ADDRESS")?;
+        let burn_address = Address::from_hex(&burn_address_hex)
+            .map_err(|err| MonadMessageGateConfigError::InvalidBurnAddress(format!("{err}")))?;
+        let min_value_wei_str = required_env("CASHWEB_STAMP_MIN_BURN_VALUE_WEI")?;
+        let min_value_wei = min_value_wei_str
+            .parse::<u128>()
+            .map_err(|_| MonadMessageGateConfigError::InvalidMinValueWei(min_value_wei_str))?;
+        Ok(MonadMessageGateConfig {
+            rpc_url,
+            burn_address,
+            min_value_wei,
+        })
+    }
+}
+
+/// Process-wide, lazily-initialized gate config for `PUT /message/monad`, built from the
+/// environment on first use (see module docs and `pop_protection::pop_gate`, which this mirrors).
+fn monad_message_gate() -> &'static Result<MonadMessageGateConfig, MonadMessageGateConfigError> {
+    static GATE: OnceLock<Result<MonadMessageGateConfig, MonadMessageGateConfigError>> = OnceLock::new();
+    GATE.get_or_init(MonadMessageGateConfig::from_env)
+}
+
+/// JSON error body for a rejected `PUT`/`GET /message/monad` request.
+#[derive(Debug, Serialize)]
+struct MonadMessageErrorBody {
+    error: &'static str,
+    detail: String,
+}
+
+/// Error type for [`handle_put_monad_message`].
+#[derive(Debug)]
+pub enum PutMonadMessageError {
+    /// The gate is misconfigured; fails closed (`500`) rather than silently skipping stamp
+    /// verification.
+    GateUnavailable(MonadMessageGateConfigError),
+    /// [`process_monad_message`] rejected (or failed to process) the message.
+    Process(ProcessMonadMessageError),
+}
+
+impl IntoResponse for PutMonadMessageError {
+    fn into_response(self) -> Response {
+        match self {
+            PutMonadMessageError::GateUnavailable(err) => {
+                tracing::event!(
+                    Level::ERROR,
+                    error = %err,
+                    "Monad stamp gate is misconfigured; rejecting message-put"
+                );
+                StatusCode::INTERNAL_SERVER_ERROR.into_response()
+            }
+            PutMonadMessageError::Process(ProcessMonadMessageError::Infrastructure(err)) => {
+                tracing::event!(
+                    Level::ERROR,
+                    error = %err,
+                    "infrastructure failure processing Monad-stamped message"
+                );
+                StatusCode::INTERNAL_SERVER_ERROR.into_response()
+            }
+            PutMonadMessageError::Process(err) => (
+                StatusCode::BAD_REQUEST,
+                Json(MonadMessageErrorBody {
+                    error: "invalid_monad_message",
+                    detail: err.to_string(),
+                }),
+            )
+                .into_response(),
+        }
+    }
+}
+
+/// `PUT /message/monad`: decode a [`proto::MonadStampedMessage`], recover its sender, verify its
+/// Monad stamp (broadcasting it, per ticket #19), and store it on success.
+pub async fn handle_put_monad_message(
+    Protobuf(message): Protobuf<proto::MonadStampedMessage>,
+    Extension(server): Extension<RegistryServer>,
+) -> Result<Protobuf<proto::StoredMonadMessage>, PutMonadMessageError> {
+    let config = monad_message_gate()
+        .as_ref()
+        .map_err(|err| PutMonadMessageError::GateUnavailable(err.clone()))?;
+    let transport = HttpTransport::new(config.rpc_url.clone());
+    let stored = process_monad_message(
+        &transport,
+        &server.registry,
+        config.burn_address,
+        config.min_value_wei,
+        PollConfig::default(),
+        message,
+    )
+    .await
+    .map_err(PutMonadMessageError::Process)?;
+    Ok(Protobuf(stored))
+}
+
+/// Error type for [`handle_get_monad_message`].
+#[derive(Debug)]
+pub enum GetMonadMessageError {
+    /// The `:payload_hash` path segment wasn't valid hex.
+    InvalidHex(hex::FromHexError),
+    /// No message stored for the given `payload_hash`.
+    NotFound,
+    /// A storage-level error.
+    Infrastructure(Report),
+}
+
+impl IntoResponse for GetMonadMessageError {
+    fn into_response(self) -> Response {
+        match self {
+            GetMonadMessageError::InvalidHex(err) => (
+                StatusCode::BAD_REQUEST,
+                Json(MonadMessageErrorBody {
+                    error: "invalid_payload_hash",
+                    detail: err.to_string(),
+                }),
+            )
+                .into_response(),
+            GetMonadMessageError::NotFound => StatusCode::NOT_FOUND.into_response(),
+            GetMonadMessageError::Infrastructure(err) => {
+                tracing::event!(Level::ERROR, error = %err, "infrastructure failure fetching Monad message");
+                StatusCode::INTERNAL_SERVER_ERROR.into_response()
+            }
+        }
+    }
+}
+
+/// `GET /message/monad/:payload_hash`: fetch a previously-stored [`proto::StoredMonadMessage`] by
+/// its hex-encoded `payload_hash`. Exists mainly so the accept path (this ticket's acceptance
+/// criteria) can be proven end-to-end: PUT, then GET the same `payload_hash` back.
+pub async fn handle_get_monad_message(
+    Path(hex_hash): Path<String>,
+    Extension(server): Extension<RegistryServer>,
+) -> Result<Protobuf<proto::StoredMonadMessage>, GetMonadMessageError> {
+    let payload_hash = hex::decode(&hex_hash).map_err(GetMonadMessageError::InvalidHex)?;
+    let stored = server
+        .registry
+        .get_monad_message(&payload_hash)
+        .map_err(GetMonadMessageError::Infrastructure)?
+        .ok_or(GetMonadMessageError::NotFound)?;
+    Ok(Protobuf(stored))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        collections::HashMap,
+        fmt,
+        sync::{Arc, Mutex},
+    };
+
+    use async_trait::async_trait;
+    use bitcoinsuite_core::{ecc::Ecc, Net};
+    use bitcoinsuite_ecc_secp256k1::EccSecp256k1;
+    use serde_json::Value;
+    use tempdir::TempDir;
+
+    use super::*;
+    use crate::{
+        monad_evm_tx::test_support::signed_eip1559_tx,
+        monad_http::MonadRpcError,
+        monad_stamp_relay::PollConfig,
+        store::db::Db,
+    };
+    use cashweb_payload::chain_adapter::{ChainAdapter, MempoolAcceptResult, SubmitTxOutcome};
+
+    /// [`ChainAdapter`] stub: `process_monad_message`/`Registry::put_monad_message` never touch
+    /// `Registry::chain_adapter` (see this module's docs on why the Monad path bypasses it
+    /// entirely), so this only exists to satisfy `Registry::new`'s constructor and is never
+    /// actually called.
+    #[derive(Debug)]
+    struct UnusedChainAdapter;
+
+    #[async_trait]
+    impl ChainAdapter for UnusedChainAdapter {
+        async fn submit_tx(&self, _raw_tx: &[u8]) -> bitcoinsuite_error::Result<SubmitTxOutcome> {
+            unimplemented!("not used by the Monad message path")
+        }
+        async fn get_tx(&self, _txid: &bitcoinsuite_core::Sha256d) -> bitcoinsuite_error::Result<Option<Vec<u8>>> {
+            unimplemented!("not used by the Monad message path")
+        }
+        async fn test_accept(&self, _raw_tx: &[u8]) -> bitcoinsuite_error::Result<MempoolAcceptResult> {
+            unimplemented!("not used by the Monad message path")
+        }
+        async fn subscribe_new_blocks(
+            &self,
+        ) -> bitcoinsuite_error::Result<tokio::sync::mpsc::Receiver<bitcoinsuite_core::Sha256d>> {
+            unimplemented!("not used by the Monad message path")
+        }
+        fn decode_burn(
+            &self,
+            _commitment_id: [u8; 4],
+            _burn_output_script: &bitcoinsuite_core::Script,
+        ) -> bitcoinsuite_error::Result<Sha256> {
+            unimplemented!("not used by the Monad message path")
+        }
+    }
+
+    fn test_registry() -> (TempDir, Registry) {
+        let tempdir = TempDir::new("cashweb-registry--monad-message-route").unwrap();
+        let db = Db::open(tempdir.path().join("db.rocksdb")).unwrap();
+        let registry = Registry::new(db, Arc::new(UnusedChainAdapter), Net::Regtest);
+        (tempdir, registry)
+    }
+
+    fn burn_address() -> Address {
+        Address([0x44; 20])
+    }
+
+    fn hex_addr(addr: Address) -> String {
+        addr.to_hex()
+    }
+
+    fn hex_hash(byte: u8) -> String {
+        format!("0x{}", hex::encode([byte; 32]))
+    }
+
+    fn fast_poll() -> PollConfig {
+        PollConfig {
+            interval: std::time::Duration::from_millis(1),
+            max_attempts: 3,
+        }
+    }
+
+    const STMP_BROADCAST: [u8; 4] = *b"POND";
+
+    fn commitment_calldata(commitment: &Sha256) -> String {
+        let mut calldata = Vec::new();
+        calldata.extend_from_slice(&STMP_BROADCAST);
+        calldata.push(crate::monad_stamp_verify::COMMITMENT_VERSION_TAG);
+        calldata.extend_from_slice(commitment.as_slice());
+        format!("0x{}", hex::encode(calldata))
+    }
+
+    fn receipt_json(to: &str, status: &str) -> Value {
+        serde_json::json!({
+            "transactionHash": hex_hash(0x11),
+            "blockHash": hex_hash(0x22),
+            "blockNumber": "0x2a",
+            "from": "0x3333333333333333333333333333333333333333",
+            "to": to,
+            "contractAddress": null,
+            "gasUsed": "0x5208",
+            "status": status,
+            "logs": [],
+        })
+    }
+
+    fn tx_json(to: &str, value_wei: u128, input_hex: &str) -> Value {
+        serde_json::json!({
+            "hash": hex_hash(0x11),
+            "to": to,
+            "value": format!("0x{:x}", value_wei),
+            "input": input_hex,
+            "from": "0x3333333333333333333333333333333333333333",
+        })
+    }
+
+    #[derive(Clone, Default)]
+    struct MockTransport {
+        responses: Arc<Mutex<HashMap<String, Value>>>,
+    }
+
+    impl MockTransport {
+        fn set(&self, method: &str, response: Value) -> &Self {
+            self.responses.lock().unwrap().insert(method.to_string(), response);
+            self
+        }
+    }
+
+    impl fmt::Debug for MockTransport {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.debug_struct("MockTransport").finish()
+        }
+    }
+
+    #[async_trait]
+    impl JsonRpcTransport for MockTransport {
+        async fn call(&self, method: &str, _params: Value) -> Result<Value, MonadRpcError> {
+            if method == "eth_sendRawTransaction" {
+                return Ok(Value::String(hex_hash(0x11)));
+            }
+            self.responses
+                .lock()
+                .unwrap()
+                .get(method)
+                .cloned()
+                .ok_or_else(|| MonadRpcError::InvalidResponse {
+                    method: method.to_string(),
+                    reason: "no mock response configured".to_string(),
+                })
+        }
+    }
+
+    fn make_message(raw_burn_tx: Vec<u8>, encrypted_payload: Vec<u8>) -> proto::MonadStampedMessage {
+        let payload_hash = Sha256::digest(encrypted_payload.clone().into())
+            .as_slice()
+            .to_vec();
+        proto::MonadStampedMessage {
+            raw_burn_tx,
+            encrypted_payload,
+            payload_hash,
+        }
+    }
+
+    #[tokio::test]
+    async fn valid_stamp_is_accepted_and_stored() {
+        let (_tempdir, registry) = test_registry();
+        let encrypted_payload = b"hello, monad".to_vec();
+        let commitment = Sha256::digest(encrypted_payload.clone().into());
+
+        let seckey = EccSecp256k1::default().seckey_from_array([0x77; 32]).unwrap();
+        let mut calldata = Vec::new();
+        calldata.extend_from_slice(&STMP_BROADCAST);
+        calldata.push(crate::monad_stamp_verify::COMMITMENT_VERSION_TAG);
+        calldata.extend_from_slice(commitment.as_slice());
+        let (raw_burn_tx, sender) =
+            signed_eip1559_tx(&seckey, 41454, 0, burn_address(), 10_000, &calldata);
+
+        let message = make_message(raw_burn_tx.clone(), encrypted_payload);
+
+        let to = hex_addr(burn_address());
+        let transport = MockTransport::default();
+        transport.set("eth_getTransactionReceipt", receipt_json(&to, "0x1"));
+        transport.set(
+            "eth_getTransactionByHash",
+            tx_json(&to, 10_000, &commitment_calldata(&commitment)),
+        );
+
+        let stored = process_monad_message(
+            &transport,
+            &registry,
+            burn_address(),
+            10_000,
+            fast_poll(),
+            message.clone(),
+        )
+        .await
+        .expect("valid stamp should be accepted");
+
+        assert_eq!(stored.sender_address, sender.0.to_vec());
+        assert_eq!(stored.message, Some(message.clone()));
+
+        // And it's retrievable afterwards.
+        let fetched = registry
+            .get_monad_message(&message.payload_hash)
+            .unwrap()
+            .expect("message should be stored");
+        assert_eq!(fetched, stored);
+    }
+
+    #[tokio::test]
+    async fn insufficient_burn_value_is_rejected_and_not_stored() {
+        let (_tempdir, registry) = test_registry();
+        let encrypted_payload = b"hello, monad".to_vec();
+        let commitment = Sha256::digest(encrypted_payload.clone().into());
+
+        let seckey = EccSecp256k1::default().seckey_from_array([0x77; 32]).unwrap();
+        let mut calldata = Vec::new();
+        calldata.extend_from_slice(&STMP_BROADCAST);
+        calldata.push(crate::monad_stamp_verify::COMMITMENT_VERSION_TAG);
+        calldata.extend_from_slice(commitment.as_slice());
+        // Burns only 500 wei, below the 10_000 wei minimum configured below.
+        let (raw_burn_tx, _sender) =
+            signed_eip1559_tx(&seckey, 41454, 0, burn_address(), 500, &calldata);
+
+        let message = make_message(raw_burn_tx, encrypted_payload);
+
+        let to = hex_addr(burn_address());
+        let transport = MockTransport::default();
+        transport.set("eth_getTransactionReceipt", receipt_json(&to, "0x1"));
+        transport.set(
+            "eth_getTransactionByHash",
+            tx_json(&to, 500, &commitment_calldata(&commitment)),
+        );
+
+        let err = process_monad_message(
+            &transport,
+            &registry,
+            burn_address(),
+            10_000,
+            fast_poll(),
+            message.clone(),
+        )
+        .await
+        .expect_err("insufficient burn value should be rejected");
+
+        assert!(matches!(
+            err,
+            ProcessMonadMessageError::Rejected(StampRelayOutcome::VerificationFailed { .. })
+        ));
+        assert_eq!(registry.get_monad_message(&message.payload_hash).unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn mismatched_payload_hash_is_rejected_before_touching_the_network() {
+        let (_tempdir, registry) = test_registry();
+        let mut message = make_message(vec![0xc0], b"hello".to_vec());
+        // Corrupt the declared payload_hash so it no longer matches SHA256(encrypted_payload).
+        message.payload_hash[0] ^= 0xff;
+
+        // No transport responses configured at all: if this reached the network, it would panic.
+        let transport = MockTransport::default();
+
+        let err = process_monad_message(
+            &transport,
+            &registry,
+            burn_address(),
+            10_000,
+            fast_poll(),
+            message,
+        )
+        .await
+        .expect_err("mismatched payload_hash should be rejected");
+
+        assert!(matches!(err, ProcessMonadMessageError::PayloadHashMismatch { .. }));
+    }
+
+    #[tokio::test]
+    async fn malformed_raw_burn_tx_is_rejected() {
+        let (_tempdir, registry) = test_registry();
+        let message = make_message(vec![0x01, 0xc0], b"hello".to_vec());
+        let transport = MockTransport::default();
+
+        let err = process_monad_message(
+            &transport,
+            &registry,
+            burn_address(),
+            10_000,
+            fast_poll(),
+            message,
+        )
+        .await
+        .expect_err("malformed raw_burn_tx should be rejected");
+
+        assert!(matches!(err, ProcessMonadMessageError::SenderRecoveryFailed(_)));
+    }
+
+    #[test]
+    fn gate_config_error_display_mentions_missing_var() {
+        let err = MonadMessageGateConfigError::MissingEnv("CASHWEB_STAMP_BURN_ADDRESS");
+        assert!(err.to_string().contains("CASHWEB_STAMP_BURN_ADDRESS"));
+    }
+}

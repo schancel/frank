@@ -34,8 +34,8 @@ import { MonadTxReceipt } from './monad-http'
 // A real (arbitrary, unfunded) secp256k1 private key — needed because signing is real ECDSA
 // signing via ethers, not stubbed. Never used anywhere else; carries no funds on any network.
 const TEST_PRIVATE_KEY =
-  '0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690'
-const TEST_ADDRESS = '0x70997970C51812dc3A010C7d01b50e0d17dc79C8'
+  '0x58ec24b2be5572d57b288296a94ec841eee237f229a989197a5cb7b42cad3e69'
+const TEST_ADDRESS = '0xCB3C6c204605C362A4650b4825E120dbD24A9358'
 
 const RECIPIENT = '0x000000000000000000000000000000000000dEaD'
 const CHAIN_ID = 10143 // Monad testnet's chain ID; only a realistic stand-in here.

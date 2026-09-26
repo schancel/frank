@@ -57,20 +57,43 @@ module.exports = {
     '^pages/(.*)$': '<rootDir>/src/pages/$1',
     '^assets/(.*)$': '<rootDir>/src/assets/$1',
     '^boot/(.*)$': '<rootDir>/src/boot/$1',
-    '.*css$': '@quasar/quasar-app-extension-testing-unit-jest/stub.css',
+    // Locally-committed stub (see test/jest/utils/stub.css) rather than pulling in
+    // @quasar/quasar-app-extension-testing-unit-jest just for a css stub; jest-transform-stub
+    // below turns any matched css/asset file into a stub module anyway.
+    '.*css$': '<rootDir>/test/jest/utils/stub.css',
   },
   transform: {
     // See https://jestjs.io/docs/en/configuration.html#transformignorepatterns-array-string
     [`^(${esModules}).+\\.js$`]: 'babel-jest',
-    '^.+\\.(ts|js|html)$': 'ts-jest',
-    // vue-jest uses find-babel-file, which searches by this order:
-    //  (async) .babelrc, .babelrc.js, package.json, babel.config.js
-    //  (sync) .babelrc, .babelrc.js, babel.config.js, package.json
-    // https://github.com/tleunen/find-babel-config/issues/33
-    '.*\\.vue$': 'vue-jest',
+    '^.+\\.(ts|js|html)$': [
+      'ts-jest',
+      {
+        // isolatedModules (transpile-only, no cross-file type-checking) is set in
+        // tsconfig.jest.json - matches the official Quasar testing extension's own default,
+        // keeps jest fast, and avoids ts-jest's Program-wide type inference disagreeing with
+        // mocked types (e.g. jest.fn()'s inferred return type vs. the mocked interface) in ways
+        // plain `tsc`/eslint's type-aware rules don't flag.
+        tsconfig: '<rootDir>/tsconfig.jest.json',
+      },
+    ],
+    // @vue/vue3-jest (Vue 3 + jest 29 compatible) replaces the old Vue2-era 'vue-jest'
+    // package, which this app (Vue 3 / Quasar 2) was never actually compatible with.
+    '.*\\.vue$': '@vue/vue3-jest',
     '.+\\.(css|styl|less|sass|scss|svg|png|jpg|ttf|woff|woff2)$':
       'jest-transform-stub',
   },
   transformIgnorePatterns: [`node_modules/(?!(${esModules}))`],
-  snapshotSerializers: ['<rootDir>/node_modules/jest-serializer-vue'],
+  // NOTE: 'jest-serializer-vue' (Vue2-VNode-shaped snapshot serializer) was dropped: it has no
+  // Vue3-compatible release and isn't required for tests to run; drop-in replacement can be
+  // added later if Vue3 snapshot tests need prettier output.
+  testPathIgnorePatterns: [
+    '/node_modules/',
+    // Legacy Quasar-CLI (Vue2 / Quasar1) demo scaffolding, never updated for this app's actual
+    // Vue3/Quasar2 stack (uses @vue/test-utils v1 APIs like `createLocalVue` and the old v2.x
+    // `mountFactory` export, neither of which exist/work with the installed Vue3 toolchain).
+    // Tracked separately from ticket #28 (installing jest infra); rewriting them is new test
+    // authorship, out of scope here.
+    '<rootDir>/test/jest/__tests__/App.spec.ts',
+    '<rootDir>/test/jest/__tests__/QBtn-demo.spec.ts',
+  ],
 }

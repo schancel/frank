@@ -1,0 +1,15 @@
+{
+  // ts-jest's own tsconfig: extends the app's real tsconfig.json (whose target/lib come from
+  // @quasar/app-webpack's browser-facing preset) but targets a modern-enough ES version for
+  // Jest's Node runtime, since Jest runs compiled test code directly in Node, never through
+  // webpack/babel's separate down-leveling pipeline the app build uses.
+  //
+  // Without this, ts-jest inherits the app tsconfig's ES2017 target and rejects BigInt literals
+  // (`1n`) with TS2737 - which several already-written wallet tests use freely, since ethers v6
+  // is BigInt-based.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "target": "es2020",
+    "isolatedModules": true
+  }
+}

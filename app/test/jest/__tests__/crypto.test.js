@@ -1,5 +1,9 @@
 import { PayloadConstructor } from '../../../src/cashweb/relay/crypto'
-import { PrivateKey } from 'bitcore-lib-cash'
+// NOTE: was 'bitcore-lib-cash' (stale leftover package name; the whole codebase moved to the
+// 'bitcore-lib-xpi' fork - see e.g. src/cashweb/relay/crypto.ts's own import). 'bitcore-lib-cash'
+// isn't even a declared dependency, so this import previously failed to resolve at all - fixed
+// here since it's unrelated to the missing jest infra itself (ticket #28).
+import { PrivateKey } from 'bitcore-lib-xpi'
 
 const payloadConstructor = new PayloadConstructor({ networkName: 'test-net' })
 

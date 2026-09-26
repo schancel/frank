@@ -81,26 +81,39 @@ indexing and transaction submission, with no self-hosted chain infrastructure.
 
 ## Milestones
 
-### M1 — ChainAdapter boundary (Rust + TS), Lotus-only, no behavior change
-**First task, before extracting anything:** confirm whether
-`Registry.bitcoind` (`cashweb-registry/src/registry.rs:21,27`, constructed
-once at `registry.rs:145`) is actually called anywhere in the live request
-path. A full-crate grep for live call sites (excluding test setup and the
-struct-clone sites at lines 515/908/1061 and `test_instance.rs`) returned
-**zero matches** — meaning burn verification may currently be purely
-structural (`verify.rs`) with no on-chain confirmation step at all. This
-changes the shape of M1: if the bitcoind field is dead in the request path,
-document that explicitly (it's a real finding, not this milestone's job to
-fix) and scope the `ChainAdapter` trait around wherever chain calls
-*actually* happen, rather than assuming `registry.rs`'s stored client is it.
+### M1 — ChainAdapter boundary (Rust + TS), Lotus-only, no behavior change — DONE
+**Correction (found during implementation, supersedes the earlier grooming
+finding below):** the "zero live call sites" claim was wrong. A closer
+check found `Registry.bitcoind` **is** called live, via
+`validate_burn_tx(s)` in `cashweb-registry/src/registry.rs`, from both
+`PUT /registry` (`handle_put_registry`) and `PUT /message`
+(`handle_put_message`) in `http/server.rs`, plus peer metadata sync
+(`p2p/peers.rs::relay_metadata`). On-chain confirmation/broadcast is real,
+not structural-only. (Earlier text, kept for the record: "a full-crate grep
+... returned zero matches" — that grep missed these call sites.)
 
-Once that's resolved: extract a `ChainAdapter` trait covering submit raw
-tx, get tx/receipt by id, subscribe to new blocks, decode a payment/burn
-from a tx. Re-wire whatever the real Lotus call sites are through a
-`LotusAdapter` impl. Proof: existing Lotus-path tests still pass; no
-behavior change. Same boundary on the TS wallet side (`src/cashweb/wallet`),
-extracting a `ChainAdapter` interface backed by a `LotusAdapter` wrapping
-the current `bitcore-lib-xpi`/`chronik-client` code.
+Landed: `ChainAdapter` trait in `cashweb-payload/src/chain_adapter.rs`
+(submit_tx, get_tx, test_accept, subscribe_new_blocks, decode_burn) with a
+`LotusAdapter` in `cashweb-registry/src/lotus_adapter.rs` wrapping
+`BitcoindRpcClient`; `Registry` now holds `Arc<dyn ChainAdapter>` instead of
+a concrete `bitcoind` field, exact RPC sequence/error semantics preserved.
+Same shape on TS: `ChainAdapter` interface in
+`app/src/cashweb/wallet/chain-adapter.ts`, `LotusAdapter` in
+`lotus-adapter.ts` wrapping `ChronikClient`/`bitcore-lib-xpi`; `Wallet`'s
+internal chain call sites now go through `this.chainAdapter`. Two external
+TS call sites (`relay/index.ts`, `boot/setup-apis.ts`) still touch chronik
+directly — left alone as out of this milestone's ownership scope, cheap
+follow-up later if the boundary needs to be exhaustive.
+
+Gate results: `cargo check`/`cargo test -p cashweb-payload` pass; 4
+pre-existing Rust regtest test failures reproduced identically on
+unmodified base commit (missing `BITCOINSUITE_BIN_DIR`/lotusd binary in
+this environment, not a regression); `yarn lint` passes; `yarn test:unit`
+blocked by a pre-existing gap (jest isn't actually a declared dependency in
+`app/package.json`, and CI doesn't run it either) — not something this
+milestone introduced. Follow-up flagged: get a working lotusd regtest
+binary path, and decide whether to reinstate jest before M5 needs a real
+wallet test harness.
 
 ### M2 — Monad adapter (Alchemy)
 Implement `MonadAdapter` on both sides: HTTPS JSON-RPC (`eth_sendRawTransaction`,

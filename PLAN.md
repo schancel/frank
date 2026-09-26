@@ -225,3 +225,33 @@ M2 unblocks everything else and should be prioritized immediately after.
   (the boundary is built so it *can* be, not so it *is*, this hackathon).
 - ERC-20/token-denominated payments or burns (native MON only, see
   constraint 8).
+
+## Hackathon bounty/track strategy
+
+Submit under the **Trust, Identity & AI Infrastructure** track — burn-to-speak
++ POP + keyserver identity is a direct match for "protocol-level primitives
+for trust, provenance, and user-owned data."
+
+- **Already targeting**: "Best Builds with Qwen 3.8 Max" (ticket #9, the
+  headless LLM bot demo, blocked on #8).
+- **Free**: "Best Projects using Alchemy" ($1,000 credits) — already
+  qualifies via tickets #12/#15/#17/#20, no new work, just submit.
+- **Worth pursuing if time allows, non-blocking**: Mera ("Best Mera-Powered
+  UX on Monad" + "One Passkey, Many Keys", $2,500 each). Mera's WebAuthn
+  PRF-derived keys use the identical `m/44'/60'/0'/0/i` path already
+  specified for ticket #14's HD sub-account pool — genuine architectural
+  fit (no seed phrase, no extension, no custody backend), not just a
+  bounty checkbox. See the option documented on issue #14; fall back to a
+  plain stored mnemonic if there isn't time.
+- **Secondary, skippable**: Envio (HyperSync/HyperRPC could replace direct
+  Alchemy log/receipt polling and sidestep the 10-block `eth_getLogs`
+  limit ticket #17 found) — real but not on the critical path, since
+  Stamp verification uses `eth_getTransactionReceipt` on a known hash, not
+  broad log scans.
+- **Skip**: Cleanverse (bank-verified KYC identity is in tension with
+  Frank's unlinkable-multi-account privacy goal), Dynamic/Privy (don't
+  stack three competing wallet-auth SDKs against Mera), Aurora Intents,
+  Kuru, Agora, Perpl (all trading/payments-specific, Frank is a messaging
+  protocol), Chainlink CRE (no orchestration need), Nansen (analytics
+  product, wrong fit), Tencent Hunyuan (targets the Social/Culture track),
+  Kimi (redundant with the already-committed Qwen bounty).

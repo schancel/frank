@@ -401,6 +401,7 @@ dependencies = [
  "reqwest",
  "rocksdb",
  "serde",
+ "serde_json",
  "tempdir",
  "thiserror",
  "tokio",

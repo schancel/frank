@@ -4,6 +4,14 @@ Hackathon POC goal: get Frank (forked from Stamp + cashweb) sending and receivin
 end-to-end-encrypted, spam-priced messages on Monad testnet, using Alchemy for
 indexing and transaction submission, with no self-hosted chain infrastructure.
 
+**Timeline update:** submissions aren't due for a week or two, not hours as
+originally assumed. This relaxes the earlier "cut every corner" bias — the
+"if time allows, non-blocking" hedges on things like Mera (see the bounty
+section below) and fixing the jest/test-infra gaps several tickets have
+flagged should be treated as real, do-it-properly work now, not stretch
+goals. The demo spike (`spike/demo` branch) remains throwaway and should be
+fully superseded by the tracked ticket pipeline rather than kept as a crutch.
+
 ## Non-negotiable design constraints
 
 1. **No self-hosted chain infra.** No `lotusd`, no chronik, no bitcoind. All

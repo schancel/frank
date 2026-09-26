@@ -2,21 +2,23 @@
 
 use crate::{
     http::error::HttpRegistryError,
+    http::pop_protection::{self, PopChallenge, PopGateConfigError},
     p2p::{peers::Peers, relay_info::RelayInfo},
     proto::{self},
     registry::Registry,
 };
 use axum::{
     extract::{Path, Query},
-    http::{header, HeaderMap, Method},
+    http::{header, HeaderMap, HeaderValue, Method, StatusCode},
     middleware::from_fn,
-    routing, Extension, Router,
+    response::{IntoResponse, Response},
+    routing, Extension, Json, Router,
 };
 use bitcoinsuite_core::{Hashed, LotusAddress, LotusAddressError};
-use bitcoinsuite_error::{ErrorMeta, Result};
+use bitcoinsuite_error::{ErrorMeta, Report, Result};
 use cashweb_http_utils::protobuf::Protobuf;
 use cashweb_payload::proto::SignedPayloadSet;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, str::FromStr, sync::Arc};
 use thiserror::Error;
 use tower_http::cors::{Any, CorsLayer};
@@ -141,13 +143,136 @@ impl RegistryServer {
     }
 }
 
+/// Response body for a `402`-style POP challenge (see `http::pop_protection`'s module docs for
+/// the full request-shape contract this pairs with).
+#[derive(Debug, Serialize)]
+struct PopChallengeBody {
+    error: &'static str,
+    reason: &'static str,
+    detail: Option<String>,
+    /// `0x`-prefixed Monad address the payment must be sent to.
+    recipient: String,
+    /// Minimum payment amount, in wei, as a decimal string.
+    min_value_wei: String,
+    how_to_pay: &'static str,
+}
+
+impl From<PopChallenge> for PopChallengeBody {
+    fn from(challenge: PopChallenge) -> Self {
+        let reason = match challenge.reason {
+            pop_protection::ChallengeReason::NoTokenOrProof => "no_token_or_proof",
+            pop_protection::ChallengeReason::InvalidToken => "invalid_token",
+            pop_protection::ChallengeReason::InvalidProof => "invalid_proof",
+        };
+        PopChallengeBody {
+            error: "payment_required",
+            reason,
+            detail: challenge.detail,
+            recipient: challenge.expected.recipient.to_hex(),
+            min_value_wei: challenge.expected.min_value_wei.to_string(),
+            how_to_pay: "Retry this PUT with query params pop_tx_hash=0x<32-byte Monad tx hash> \
+                         and pop_value_wei=<decimal wei value> once the payment to `recipient` \
+                         for at least `min_value_wei` confirms. On success, the response carries \
+                         an X-Pop-Token header; present it on later requests to the same address \
+                         via `Authorization: POP <token>` (or `?access_token=POP <token>`) \
+                         instead of paying again.",
+        }
+    }
+}
+
+/// Error type for [`handle_put_registry`]: wraps pre-existing registry/validation errors
+/// unchanged, plus this ticket's (#24) new POP-gating outcomes.
+#[derive(Debug)]
+enum PutRegistryError {
+    /// Pre-existing error path (invalid address, relay-info, registry/store errors, ...),
+    /// unchanged from before this ticket.
+    Registry(HttpRegistryError),
+    /// POP protection is misconfigured (see [`pop_protection::pop_gate`]). Fails closed rather
+    /// than silently allowing the request through unauthenticated, since ticket #1 flagged
+    /// exactly that (zero gating) as the bug this ticket fixes.
+    PopUnavailable(PopGateConfigError),
+    /// No valid bearer token or verifying payment proof was presented; challenge the client for
+    /// payment.
+    PaymentRequired(PopChallenge),
+}
+
+impl From<Report> for PutRegistryError {
+    fn from(err: Report) -> Self {
+        PutRegistryError::Registry(err.into())
+    }
+}
+
+impl From<RegistryServerError> for PutRegistryError {
+    fn from(err: RegistryServerError) -> Self {
+        PutRegistryError::Registry(err.into())
+    }
+}
+
+impl IntoResponse for PutRegistryError {
+    fn into_response(self) -> Response {
+        match self {
+            PutRegistryError::Registry(err) => err.into_response(),
+            PutRegistryError::PopUnavailable(err) => {
+                tracing::event!(
+                    Level::ERROR,
+                    error = %err,
+                    "POP protection is misconfigured; rejecting metadata-put"
+                );
+                StatusCode::INTERNAL_SERVER_ERROR.into_response()
+            }
+            PutRegistryError::PaymentRequired(challenge) => (
+                StatusCode::PAYMENT_REQUIRED,
+                Json(PopChallengeBody::from(challenge)),
+            )
+                .into_response(),
+        }
+    }
+}
+
+/// Successful [`handle_put_registry`] response. If this request minted a fresh POP bearer token
+/// from an inline payment proof (see `http::pop_protection`'s module docs), it's surfaced via an
+/// `X-Pop-Token` response header so the client can reuse it on later requests instead of paying
+/// again.
+struct PutRegistrySuccess {
+    body: proto::PutSignedPayloadResponse,
+    issued_token: Option<String>,
+}
+
+impl IntoResponse for PutRegistrySuccess {
+    fn into_response(self) -> Response {
+        let mut response = Protobuf(self.body).into_response();
+        if let Some(token) = self.issued_token {
+            if let Ok(value) = HeaderValue::from_str(&format!("POP {token}")) {
+                response.headers_mut().insert("x-pop-token", value);
+            }
+        }
+        response
+    }
+}
+
 async fn handle_put_registry(
     Path(address): Path<String>,
+    Query(query): Query<HashMap<String, String>>,
     Protobuf(signed_metadata): Protobuf<cashweb_payload::proto::SignedPayload>,
     Extension(server): Extension<RegistryServer>,
     header_map: HeaderMap,
-) -> Result<Protobuf<proto::PutSignedPayloadResponse>, HttpRegistryError> {
+) -> Result<PutRegistrySuccess, PutRegistryError> {
     let address = address.parse::<LotusAddress>().map_err(InvalidAddress)?;
+
+    // --- POP protection (ticket #24) ---
+    // Gate this endpoint behind a valid bearer token, minted from a verified Monad payment.
+    // Previously this endpoint had no payment gating at all (ticket #1's finding); see
+    // `http::pop_protection`'s module docs for the exact request shape a client uses to present a
+    // token or submit a payment proof.
+    let gate = pop_protection::pop_gate()
+        .as_ref()
+        .map_err(|err| PutRegistryError::PopUnavailable(err.clone()))?;
+    let scope = address.as_str().as_bytes();
+    let issued_token = pop_protection::authorize_put(gate, scope, &header_map, &query)
+        .await
+        .map_err(PutRegistryError::PaymentRequired)?;
+    // --- end POP protection ---
+
     let request = PutMetadataRequest {
         address,
         header_map,
@@ -170,13 +295,16 @@ async fn handle_put_registry(
         }
     });
 
-    Ok(Protobuf(proto::PutSignedPayloadResponse {
-        txid: result
-            .txids
-            .into_iter()
-            .map(|txid| txid.as_slice().to_vec())
-            .collect(),
-    }))
+    Ok(PutRegistrySuccess {
+        body: proto::PutSignedPayloadResponse {
+            txid: result
+                .txids
+                .into_iter()
+                .map(|txid| txid.as_slice().to_vec())
+                .collect(),
+        },
+        issued_token,
+    })
 }
 
 async fn handle_get_registry(

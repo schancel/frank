@@ -405,6 +405,7 @@ dependencies = [
  "bloom",
  "cashweb-http-utils",
  "cashweb-payload",
+ "cashweb-pop-token",
  "futures",
  "hex",
  "json",

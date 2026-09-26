@@ -50,6 +50,11 @@ thiserror = "1.0"
 # Async runtime
 tokio = { version = "1.17", features = ["full"] }
 
+# WS client, used by `monad_ws` to subscribe to Monad's `eth_subscribe("newHeads")` feed over
+# Alchemy. Already present in the workspace lockfile (pulled in transitively by axum's "ws"
+# feature); adding it directly here just adds the "native-tls" feature so we can dial `wss://`.
+tokio-tungstenite = { version = "0.17", features = ["native-tls"] }
+
 # HTTP Middleware
 tower = { version = "0.4", features = ["full"] }
 tower-http = { version = "0.3.0", features = ["trace", "cors"] }

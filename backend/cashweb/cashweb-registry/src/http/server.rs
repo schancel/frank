@@ -2,7 +2,8 @@
 
 use crate::{
     http::error::HttpRegistryError,
-    http::pop_protection::{self, PopChallenge, PopGateConfigError},
+    http::pop_protection::{self, MonadReceiptVerifier, PopChallenge, PopGate, PopGateConfigError},
+    monad_http::HttpTransport,
     p2p::{peers::Peers, relay_info::RelayInfo},
     proto::{self},
     registry::Registry,
@@ -37,6 +38,14 @@ pub struct RegistryServer {
     pub registry: Arc<Registry>,
     /// [`Peers`] connected to the server.
     pub peers: Arc<Peers>,
+    /// POP (proof-of-payment) protection gate for [`handle_put_registry`] (ticket #4/#24), built
+    /// once at construction time from real config (see `http::pop_protection`'s module docs'
+    /// "Configuration" section) rather than lazily from raw env vars.
+    ///
+    /// `Err` means the configuration this server was constructed with was invalid; every
+    /// metadata-PUT request then fails closed with a `500` (see [`PutRegistryError::PopUnavailable`])
+    /// rather than silently skipping POP protection.
+    pub pop_gate: Arc<Result<PopGate<MonadReceiptVerifier<HttpTransport>>, PopGateConfigError>>,
 }
 
 /// Relevant parts of an HTTP request to put new address metadata.
@@ -170,12 +179,11 @@ impl From<PopChallenge> for PopChallengeBody {
             detail: challenge.detail,
             recipient: challenge.expected.recipient.to_hex(),
             min_value_wei: challenge.expected.min_value_wei.to_string(),
-            how_to_pay: "Retry this PUT with query params pop_tx_hash=0x<32-byte Monad tx hash> \
-                         and pop_value_wei=<decimal wei value> once the payment to `recipient` \
-                         for at least `min_value_wei` confirms. On success, the response carries \
-                         an X-Pop-Token header; present it on later requests to the same address \
-                         via `Authorization: POP <token>` (or `?access_token=POP <token>`) \
-                         instead of paying again.",
+            how_to_pay: "Retry this PUT with query param pop_tx_hash=0x<32-byte Monad tx hash> \
+                         once a payment to `recipient` for at least `min_value_wei` confirms. On \
+                         success, the response carries an X-Pop-Token header; present it on later \
+                         requests to the same address via `Authorization: POP <token>` (or \
+                         `?access_token=POP <token>`) instead of paying again.",
         }
     }
 }
@@ -187,7 +195,7 @@ enum PutRegistryError {
     /// Pre-existing error path (invalid address, relay-info, registry/store errors, ...),
     /// unchanged from before this ticket.
     Registry(HttpRegistryError),
-    /// POP protection is misconfigured (see [`pop_protection::pop_gate`]). Fails closed rather
+    /// POP protection is misconfigured (see [`RegistryServer::pop_gate`]). Fails closed rather
     /// than silently allowing the request through unauthenticated, since ticket #1 flagged
     /// exactly that (zero gating) as the bug this ticket fixes.
     PopUnavailable(PopGateConfigError),
@@ -259,12 +267,14 @@ async fn handle_put_registry(
 ) -> Result<PutRegistrySuccess, PutRegistryError> {
     let address = address.parse::<LotusAddress>().map_err(InvalidAddress)?;
 
-    // --- POP protection (ticket #24) ---
+    // --- POP protection (ticket #24, config-wired for real in ticket #4) ---
     // Gate this endpoint behind a valid bearer token, minted from a verified Monad payment.
     // Previously this endpoint had no payment gating at all (ticket #1's finding); see
     // `http::pop_protection`'s module docs for the exact request shape a client uses to present a
     // token or submit a payment proof.
-    let gate = pop_protection::pop_gate()
+    let gate = server
+        .pop_gate
+        .as_ref()
         .as_ref()
         .map_err(|err| PutRegistryError::PopUnavailable(err.clone()))?;
     let scope = address.as_str().as_bytes();

@@ -40,6 +40,35 @@ pub struct RegistryConf {
     /// How to initally download metadata from peers
     #[serde(default)]
     pub imd: InitialMetadataDownloadConf,
+    /// POP (proof-of-payment) protection config for the metadata-put endpoint (ticket #4).
+    pub pop: PopConf,
+}
+
+/// Configuration for POP (proof-of-payment) protection on the registry metadata-put endpoint
+/// (`cashweb_registry::http::pop_protection`).
+///
+/// This is a required field of [`RegistryConf`] rather than an `Option`, deliberately: ticket #1
+/// flagged the metadata-put endpoint having *no* payment gating at all as a bug, and #24/#4 fixed
+/// that on the principle that missing configuration should fail closed. Requiring this at
+/// config-parse time fails even earlier (at startup, with a clear "missing field" error) than the
+/// previous per-request runtime check.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+pub struct PopConf {
+    /// Monad JSON-RPC endpoint used to verify payment transaction receipts (same convention as
+    /// the `MONAD_TESTNET_HTTP_RPC_URL` env var used elsewhere in this crate/`cashweb-registry`).
+    pub monad_rpc_url: url::Url,
+    /// Server-side secret used to sign/verify bearer tokens (HMAC). Must be a long random string
+    /// kept only in server config; there is deliberately no built-in default.
+    pub hmac_secret: String,
+    /// `0x`-prefixed, 20-byte Monad address payments must be sent to. Kept as a plain `String`
+    /// here (rather than a `cashweb-registry`-defined address type) so this crate doesn't need to
+    /// depend on `cashweb-registry`; it's parsed downstream by
+    /// `cashweb_registry::http::pop_protection::PopGate::from_conf`.
+    pub payment_recipient: String,
+    /// Minimum payment amount, in wei, as a decimal string. Kept as a `String` (rather than
+    /// `u128`) since TOML has no native 128-bit integer type; parsed downstream the same way as
+    /// `payment_recipient`.
+    pub min_value_wei: String,
 }
 
 /// How to initally download metadata from peers
@@ -98,7 +127,7 @@ mod tests {
     use bitcoinsuite_core::Net;
     use bitcoinsuite_error::Result;
 
-    use crate::{parse_conf, CashwebdConf, InitialMetadataDownloadConf, RegistryConf};
+    use crate::{parse_conf, CashwebdConf, InitialMetadataDownloadConf, PopConf, RegistryConf};
 
     #[test]
     fn test_config_err() -> Result<()> {
@@ -118,6 +147,12 @@ mod tests {
                 db_path = "/test/path"
                 net = "mainnet"
                 peers = ["https://example.com", "http://123.45.67.89"]
+
+                [registry.pop]
+                monad_rpc_url = "https://monad.rpc"
+                hmac_secret = "super-secret"
+                payment_recipient = "0x0000000000000000000000000000000000000abc"
+                min_value_wei = "1000000000000000000"
 
                 [bitcoin_rpc]
                 url = "https://bitcoin.rpc"
@@ -142,6 +177,12 @@ mod tests {
                         timeout_peer_ms: 1500,
                         num_failed_for_wait: 3,
                         fail_wait_duration_s: 30,
+                    },
+                    pop: PopConf {
+                        monad_rpc_url: "https://monad.rpc".parse()?,
+                        hmac_secret: "super-secret".to_string(),
+                        payment_recipient: "0x0000000000000000000000000000000000000abc".to_string(),
+                        min_value_wei: "1000000000000000000".to_string(),
                     },
                 },
                 bitcoin_rpc: BitcoindRpcClientConf {
@@ -168,6 +209,12 @@ mod tests {
                 [registry.imd]
                 num_sampled_peers = 2
 
+                [registry.pop]
+                monad_rpc_url = "https://monad.rpc"
+                hmac_secret = "super-secret"
+                payment_recipient = "0x0000000000000000000000000000000000000abc"
+                min_value_wei = "1000000000000000000"
+
                 [bitcoin_rpc]
                 url = "https://bitcoin.rpc"
                 rpc_user = "user"
@@ -191,6 +238,12 @@ mod tests {
                         timeout_peer_ms: 1500,
                         num_failed_for_wait: 3,
                         fail_wait_duration_s: 30,
+                    },
+                    pop: PopConf {
+                        monad_rpc_url: "https://monad.rpc".parse()?,
+                        hmac_secret: "super-secret".to_string(),
+                        payment_recipient: "0x0000000000000000000000000000000000000abc".to_string(),
+                        min_value_wei: "1000000000000000000".to_string(),
                     },
                 },
                 bitcoin_rpc: BitcoindRpcClientConf {

@@ -16,8 +16,10 @@ use cashweb_payload::{
 };
 use prost::Message;
 
+use cashweb_config::PopConf;
+
 use crate::{
-    http::server::RegistryServer,
+    http::{pop_protection::PopGate, server::RegistryServer},
     lotus_adapter::LotusAdapter,
     p2p::{peer::Peer, peers::Peers},
     proto,
@@ -42,7 +44,27 @@ pub struct RegistryTestInstance {
 
 impl RegistryTestInstance {
     /// Setup a new bitcoind and registry instance on regtest.
+    ///
+    /// POP protection (ticket #4) is configured with [`placeholder_pop_conf`], a harmless
+    /// placeholder that parses fine (so the metadata-put endpoint fails closed with a real `402`
+    /// challenge rather than an always-`500` "misconfigured" response) but doesn't point at any
+    /// real Monad endpoint/recipient. None of the existing callers of this function
+    /// (`tests/test_http_endpoint.rs`, `tests/test_p2p.rs`, `tests/test_imd.rs`) exercise
+    /// POP-gated request flows; a test that needs to (e.g. `tests/pop_live_smoke.rs`) should use
+    /// [`Self::setup_with_pop_conf`] instead.
     pub async fn setup(dir: &Path, conf: BitcoindConf, peers: Vec<Peer>) -> Result<Self> {
+        Self::setup_with_pop_conf(dir, conf, peers, placeholder_pop_conf()).await
+    }
+
+    /// Same as [`Self::setup`], but with an explicit [`PopConf`] instead of the harmless
+    /// [`placeholder_pop_conf`] default -- needed by tests that actually exercise POP-gated
+    /// behavior (e.g. against a real Monad testnet payment recipient/minimum).
+    pub async fn setup_with_pop_conf(
+        dir: &Path,
+        conf: BitcoindConf,
+        peers: Vec<Peer>,
+        pop_conf: PopConf,
+    ) -> Result<Self> {
         let db = Db::open(dir.join("db.rocksdb"))?;
 
         let bitcoind = BitcoindInstance::setup(conf)?;
@@ -57,9 +79,11 @@ impl RegistryTestInstance {
             Net::Regtest,
         ));
         let peers = Arc::new(Peers::new(url.clone(), peers));
+        let pop_gate = Arc::new(PopGate::from_conf(&pop_conf));
         let server = RegistryServer {
             registry: Arc::clone(&registry),
             peers: Arc::clone(&peers),
+            pop_gate,
         };
 
         let router = server.into_router();
@@ -100,6 +124,28 @@ impl Drop for RegistryTestInstance {
         self.bitcoind.cleanup().ok();
     }
 }
+
+/// A [`PopConf`] that parses into a valid [`PopGate`] but doesn't point at any real Monad
+/// endpoint/recipient -- used by [`RegistryTestInstance::setup`] as a harmless default for tests
+/// that don't exercise POP-gated request flows at all (so a request that *does* hit the
+/// metadata-put endpoint's POP gate gets a real `402` challenge, same as an unpaid production
+/// request, rather than an always-`500` "misconfigured" response).
+///
+/// Never use this for a test that needs POP verification to actually pass -- it's not connected
+/// to any real chain data. Use [`RegistryTestInstance::setup_with_pop_conf`] with a conf pointed
+/// at a real Monad RPC endpoint instead (see `tests/pop_live_smoke.rs`).
+pub fn placeholder_pop_conf() -> PopConf {
+    PopConf {
+        // Deliberately not a real/reachable endpoint: nothing in this default config path should
+        // ever need to make a live Monad RPC call.
+        monad_rpc_url: "http://127.0.0.1:1".parse().expect("valid URL"),
+        hmac_secret: "registry-test-instance-placeholder-hmac-secret-not-for-production"
+            .to_string(),
+        payment_recipient: format!("0x{}", "00".repeat(20)),
+        min_value_wei: "0".to_string(),
+    }
+}
+
 /// Build a [`cashweb_payload::proto::SignedPayload`] for testing.
 pub fn build_signed_metadata(
     seckey: &SecKey,

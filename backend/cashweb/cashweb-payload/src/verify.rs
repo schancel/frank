@@ -148,7 +148,16 @@ pub fn build_commitment_script(
     .unwrap()
 }
 
-fn parse_commitment(commitment_id: [u8; 4], script: &Script) -> Result<Sha256> {
+/// Parse and validate a burn commitment out of a burn output's script.
+///
+/// Burn output script must look like this:
+/// `OP_RETURN <lokad_id: commitment_id> <version: 1> <commitment: 32 bytes>`
+///
+/// This is the chain-agnostic "decode a payment/burn from a tx" step: it operates purely on
+/// the already-parsed output script and doesn't require any chain RPC calls. It's exposed as
+/// `pub` so [`ChainAdapter`](crate::chain_adapter::ChainAdapter) implementations (e.g. Lotus)
+/// can delegate their `decode_burn` to it.
+pub fn parse_commitment(commitment_id: [u8; 4], script: &Script) -> Result<Sha256> {
     // Must be OP_RETURN
     if !script.is_opreturn() {
         return Err(BurnOutputNotOpReturn(script.hex()).into());

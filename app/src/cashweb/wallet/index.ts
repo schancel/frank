@@ -14,7 +14,9 @@ import {
 import { UtxoStore } from './storage/storage'
 
 import { Utxo } from '../types/utxo'
-import { ChronikClient, SubscribeMsg, WsEndpoint } from 'chronik-client'
+import { ChronikClient, WsEndpoint } from 'chronik-client'
+import { AddressEvent, ChainAdapter } from './chain-adapter'
+import { LotusAdapter } from './lotus-adapter'
 
 const standardUtxoSize = 34
 const standardInputSize = 175 // A few extra bytes
@@ -53,6 +55,11 @@ export class Wallet {
   numChangeAddresses: number
   chronikClient: ChronikClient | undefined
   chronikWs: WsEndpoint | undefined
+  // Boundary wrapping chronikClient/chronikWs (Lotus-only today, see ./chain-adapter.ts).
+  // Wallet's own logic below goes through this instead of touching chronik/bitcore directly.
+  // chronikClient/chronikWs above are kept as public fields for existing external callers
+  // (e.g. src/cashweb/relay/index.ts) that still reach into them directly.
+  chainAdapter: ChainAdapter | undefined
   _xPrivKey: HDPrivateKey | undefined
   _identityPrivKey: PrivateKey | undefined
   walletKeys: PrivateKeyData[] = []
@@ -83,6 +90,7 @@ export class Wallet {
   }) {
     this.chronikClient = chronikClient
     this.chronikWs = chronikWs
+    this.chainAdapter = new LotusAdapter({ chronikClient, chronikWs })
   }
 
   setXPrivKey(xPrivKey: HDPrivateKey) {
@@ -215,25 +223,23 @@ export class Wallet {
     }
     this.txIdHandled.add(txid)
     try {
-      const chronikClient = this.chronikClient
-      assert(chronikClient, 'missing client in updateUTXOsFromTxid')
-      const tx = await chronikClient.tx(txid)
+      const chainAdapter = this.chainAdapter
+      assert(chainAdapter, 'missing chain adapter in updateUTXOsFromTxid')
+      const tx = await chainAdapter.getTx(txid)
       // Add new outputs that we subscribed tol
-      for (const [outIdx, txOutput] of tx.outputs.entries()) {
-        const script = new Script(txOutput.outputScript)
-        if (!script.isPublicKeyHashOut()) {
+      for (const [outIdx, output] of tx.outputs.entries()) {
+        if (
+          output.pkh === undefined ||
+          !this.addressDataByPkh.has(output.pkh)
+        ) {
           continue
         }
-        const pkh = script.getPublicKeyHash().toString('hex')
-        if (!this.addressDataByPkh.has(pkh)) {
-          continue
-        }
-        const addressData = this.addressDataByPkh.get(pkh)
-        assert(addressData, `missing addressData for pkh ${pkh}`)
+        const addressData = this.addressDataByPkh.get(output.pkh)
+        assert(addressData, `missing addressData for pkh ${output.pkh}`)
         const utxo: Utxo = {
           txId: txid,
           outputIndex: outIdx,
-          satoshis: Number(txOutput.value),
+          satoshis: output.satoshis,
           type: 'p2pkh',
           address: addressData.address,
           privKey: addressData.privKey,
@@ -242,21 +248,16 @@ export class Wallet {
       }
 
       // Delete spent inputs
-      for (const txInput of tx.inputs) {
-        const script = new Script(txInput.outputScript)
-        if (!script.isPublicKeyHashOut()) {
+      for (const input of tx.inputs) {
+        if (input.pkh === undefined || !this.addressDataByPkh.has(input.pkh)) {
           continue
         }
-        const pkh = script.getPublicKeyHash().toString('hex')
-        if (!this.addressDataByPkh.has(pkh)) {
-          continue
-        }
-        const addressData = this.addressDataByPkh.get(pkh)
-        assert(addressData, `missing addressData for pkh ${pkh}`)
+        const addressData = this.addressDataByPkh.get(input.pkh)
+        assert(addressData, `missing addressData for pkh ${input.pkh}`)
         const utxo: Utxo = {
-          txId: txInput.prevOut.txid,
-          outputIndex: txInput.prevOut.outIdx,
-          satoshis: Number(txInput.value),
+          txId: input.prevTxId,
+          outputIndex: input.prevOutputIndex,
+          satoshis: input.satoshis,
           type: 'p2pkh',
           address: addressData.address,
           privKey: addressData.privKey,
@@ -272,22 +273,20 @@ export class Wallet {
   }
 
   async updateUTXOsFromPkh(pkh: string) {
-    const chronikClient = this.chronikClient
-    assert(chronikClient, 'missing client in updateUTXOsFromScriptHash')
+    const chainAdapter = this.chainAdapter
+    assert(chainAdapter, 'missing chain adapter in updateUTXOsFromScriptHash')
     try {
       const addressData = this.addressDataByPkh.get(pkh)
       assert(addressData, `missing addressData for pkh ${pkh}`)
-      const chronikUtxos = await chronikClient.script('p2pkh', pkh).utxos()
-      const utxos: Utxo[] = chronikUtxos.flatMap(scriptUtxos => {
-        return scriptUtxos.utxos.map(utxo => ({
-          txId: utxo.outpoint.txid,
-          outputIndex: utxo.outpoint.outIdx,
-          satoshis: Number(utxo.value),
-          type: 'p2pkh',
-          address: addressData.address,
-          privKey: addressData.privKey,
-        }))
-      })
+      const chainUtxos = await chainAdapter.getUtxosForAddress(pkh)
+      const utxos: Utxo[] = chainUtxos.map(utxo => ({
+        txId: utxo.txId,
+        outputIndex: utxo.outputIndex,
+        satoshis: utxo.satoshis,
+        type: 'p2pkh',
+        address: addressData.address,
+        privKey: addressData.privKey,
+      }))
       await this.refreshUTXOsByAddr({ address: addressData.address, utxos })
     } catch (err) {
       console.error('error in updateUTXOsFromPkh', err, pkh)
@@ -304,16 +303,15 @@ export class Wallet {
   }
 
   async startListeners() {
-    const chronikWs = this.chronikWs
-    assert(chronikWs, 'missing WebSocket client in startListeners')
+    const chainAdapter = this.chainAdapter
+    assert(chainAdapter, 'missing chain adapter in startListeners')
 
-    chronikWs.onMessage = msg => this.addressUpdated(msg)
+    chainAdapter.onAddressEvent(event => this.addressUpdated(event))
 
     await P.map(
       [...this.walletKeys, ...this.changeKeys],
       key =>
-        chronikWs.subscribe(
-          'p2pkh',
+        chainAdapter.subscribeAddress(
           key.privKey.toAddress().hashBuffer.toString('hex'),
         ),
       { concurrency: 5 },
@@ -329,33 +327,33 @@ export class Wallet {
   async checkAndFixUtxos(utxos: Utxo[], unfreeze = false): Promise<boolean[]> {
     const utxoIds = utxos.map(calcUtxoId)
     console.log(`Checking UTXOs ${utxoIds}`)
-    const chronikClient = this.chronikClient
-    assert(chronikClient, 'missing client in checkAndFixUtxos')
-    const utxoStates = await chronikClient.validateUtxos(
+    const chainAdapter = this.chainAdapter
+    assert(chainAdapter, 'missing chain adapter in checkAndFixUtxos')
+    const utxoStates = await chainAdapter.validateUtxos(
       utxos.map(utxo => ({
-        txid: utxo.txId,
-        outIdx: utxo.outputIndex,
+        txId: utxo.txId,
+        outputIndex: utxo.outputIndex,
       })),
     )
     return utxoStates.map((utxoState, idx) => {
       const utxoId = utxoIds[idx]
-      switch (utxoState.state) {
-        case 'UNSPENT':
+      switch (utxoState) {
+        case 'unspent':
           console.log('UTXO is valid', utxoId)
           if (unfreeze) {
             this.unfreezeUtxo(utxoId)
           }
           return true
-        case 'SPENT':
+        case 'spent':
           console.log('UTXO spent on-chain, deleting spent UTXO', utxoId)
           break
-        case 'NO_SUCH_TX':
+        case 'no-such-tx':
           console.log(
             'Invalid UTXO: tx does not exist on-chain, deleting invalid UTXO',
             utxoId,
           )
           break
-        case 'NO_SUCH_OUTPUT':
+        case 'no-such-output':
           console.log(
             "Invalid UTXO: tx exists, but output doesn't, deleting invalid UTXO",
             utxoIds[idx],
@@ -394,17 +392,9 @@ export class Wallet {
     }
   }
 
-  async addressUpdated(msg: SubscribeMsg) {
-    switch (msg.type) {
-      case 'AddedToMempool':
-      case 'Confirmed':
-        console.log('Subscription hit', msg)
-        await this.updateUTXOsFromTxid(msg.txid)
-        return
-      case 'Error':
-        console.error('Error from ws:', msg.errorCode, msg.msg)
-        return
-    }
+  async addressUpdated(event: AddressEvent) {
+    console.log('Subscription hit', event)
+    await this.updateUTXOsFromTxid(event.txId)
   }
 
   async forwardUTXOsToPubkey({
@@ -456,10 +446,10 @@ export class Wallet {
     console.log('Broadcasting forwarding txn', transaction)
     const txHex = transaction.toString()
     try {
-      const chronikClient = this.chronikClient
-      assert(chronikClient, 'missing client in forwardUTXOsToPubkey')
-      const broadcastResult = await chronikClient.broadcastTx(txHex)
-      console.log('Successfully broadcast tx', broadcastResult.txid)
+      const chainAdapter = this.chainAdapter
+      assert(chainAdapter, 'missing chain adapter in forwardUTXOsToPubkey')
+      const txid = await chainAdapter.submitTx(txHex)
+      console.log('Successfully broadcast tx', txid)
       // TODO: we shouldn't be dealing with this here. Leaky abstraction
       stagedUtxos.map(utxo => this.storage.deleteById(calcUtxoId(utxo)))
     } catch (err) {

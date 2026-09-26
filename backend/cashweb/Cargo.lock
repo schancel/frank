@@ -364,6 +364,7 @@ dependencies = [
 name = "cashweb-payload"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "bitcoinsuite-core",
  "bitcoinsuite-ecc-secp256k1",
  "bitcoinsuite-error",
@@ -372,12 +373,14 @@ dependencies = [
  "prost",
  "prost-build",
  "thiserror",
+ "tokio",
 ]
 
 [[package]]
 name = "cashweb-registry"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "axum",
  "bitcoinsuite-bitcoind",
  "bitcoinsuite-core",

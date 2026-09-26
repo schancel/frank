@@ -18,6 +18,7 @@ use prost::Message;
 
 use crate::{
     http::server::RegistryServer,
+    lotus_adapter::LotusAdapter,
     p2p::{peer::Peer, peers::Peers},
     proto,
     registry::Registry,
@@ -52,7 +53,7 @@ impl RegistryTestInstance {
 
         let registry = Arc::new(Registry::new(
             db,
-            bitcoind.rpc_client().clone(),
+            Arc::new(LotusAdapter::new(bitcoind.rpc_client().clone())),
             Net::Regtest,
         ));
         let peers = Arc::new(Peers::new(url.clone(), peers));

@@ -5,6 +5,7 @@ use bitcoinsuite_error::{Result, WrapErr};
 use cashweb_config::parse_conf;
 use cashweb_registry::{
     http::server::RegistryServer,
+    lotus_adapter::LotusAdapter,
     p2p::{
         peer::Peer,
         peers::{InitialMetadataDownloadParams, Peers},
@@ -53,8 +54,9 @@ async fn main() -> Result<()> {
 
     let db = Db::open(&conf.registry.db_path)?;
     let bitcoind = BitcoindRpcClient::new(conf.bitcoin_rpc);
+    let chain_adapter = Arc::new(LotusAdapter::new(bitcoind));
 
-    let registry = Arc::new(Registry::new(db, bitcoind, conf.registry.net));
+    let registry = Arc::new(Registry::new(db, chain_adapter, conf.registry.net));
     let our_peers = conf
         .registry
         .peers

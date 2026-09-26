@@ -7,6 +7,9 @@ edition = "2021"
 bitcoinsuite-core = { path = "../../bitcoinsuite/bitcoinsuite-core" }
 bitcoinsuite-error = { path = "../../bitcoinsuite/bitcoinsuite-error" }
 
+# #[async_trait] macro, needed for the ChainAdapter trait
+async-trait = "0.1.50"
+
 # Hex en-/decoding
 hex = "0.4"
 
@@ -15,6 +18,9 @@ prost = "0.11"
 
 # Derive error enums
 thiserror = "1.0"
+
+# Only for the mpsc::Receiver type used by ChainAdapter::subscribe_new_blocks
+tokio = { version = "1.17", features = ["sync"] }
 
 [build-dependencies]
 # Build Protobuf structs

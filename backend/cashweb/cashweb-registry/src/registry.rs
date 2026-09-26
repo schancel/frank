@@ -1,10 +1,12 @@
 //! Module containing [`Registry`].
 
-use bitcoinsuite_bitcoind::{rpc_client::BitcoindRpcClient, BitcoindError};
+use std::sync::Arc;
+
 use bitcoinsuite_core::{lotus_txid, Hashed, LotusAddress, Net, Sha256d};
 use bitcoinsuite_ecc_secp256k1::EccSecp256k1;
 use bitcoinsuite_error::{ErrorMeta, Result};
 use cashweb_payload::{
+    chain_adapter::{ChainAdapter, SubmitTxOutcome},
     payload::{BurnTx, SignedPayload},
     verify::{ADDRESS_METADATA_LOKAD_ID, BROADCAST_MESSAGE_LOKAD_ID},
 };
@@ -23,8 +25,10 @@ pub struct Registry {
     db: Db,
     /// Ecc for verifying secp256k1 signatures.
     ecc: EccSecp256k1,
-    /// RPC to a bitcoind instance for testing and broadcasting txs.
-    bitcoind: BitcoindRpcClient,
+    /// Chain boundary used for testing and broadcasting burn txs. Lotus-backed today (see
+    /// [`crate::lotus_adapter::LotusAdapter`]), but abstracted behind [`ChainAdapter`] so a
+    /// different chain can be substituted without touching this struct.
+    chain_adapter: Arc<dyn ChainAdapter>,
     /// Whether server is running on a mainnet or regtest network.
     net: Net,
 }
@@ -142,11 +146,11 @@ use self::RegistryError::*;
 
 impl Registry {
     /// Construct new [`Registry`]
-    pub fn new(db: Db, bitcoind: BitcoindRpcClient, net: Net) -> Self {
+    pub fn new(db: Db, chain_adapter: Arc<dyn ChainAdapter>, net: Net) -> Self {
         Registry {
             db,
             ecc: EccSecp256k1::default(),
-            bitcoind,
+            chain_adapter,
             net,
         }
     }
@@ -260,25 +264,15 @@ impl Registry {
                 }
                 continue;
             }
-            let broadcast_result = self
-                .bitcoind
-                .cmd_text("sendrawtransaction", &[burn_tx.tx().raw().hex().into()])
-                .await;
-            match broadcast_result {
-                Ok(txid_hex) => {
-                    txids.push(Sha256d::from_hex_be(&txid_hex)?);
+            // sendrawtransaction can fail if a block was found since the testmempoolaccept
+            // check. We handle this gracefully via `SubmitTxOutcome::AlreadyConfirmed`.
+            match self.chain_adapter.submit_tx(burn_tx.tx().raw()).await? {
+                SubmitTxOutcome::Broadcast(txid) => {
+                    txids.push(txid);
                 }
-                Err(err) => {
-                    // sendrawtransaction failed as there was a block found since the
-                    // testmempoolaccept. We handle this gracefully.
-                    let err = err.downcast::<BitcoindError>()?;
-                    match err {
-                        BitcoindError::JsonRpcCode { code: -27, .. } => {
-                            txids.push(lotus_txid(burn_tx.tx().unhashed_tx()));
-                            blockchain_action = PutBlockchainAction::BroadcastRaceCondition;
-                        }
-                        err => return Err(err.into()),
-                    }
+                SubmitTxOutcome::AlreadyConfirmed => {
+                    txids.push(lotus_txid(burn_tx.tx().unhashed_tx()));
+                    blockchain_action = PutBlockchainAction::BroadcastRaceCondition;
                 }
             }
         }
@@ -288,17 +282,12 @@ impl Registry {
 
     async fn validate_burn_tx(&self, burn_tx: &BurnTx) -> Result<BurnTxValidation> {
         let txid = lotus_txid(burn_tx.tx().unhashed_tx());
-        match self
-            .bitcoind
-            .cmd_text("getrawtransaction", &[txid.to_string().into()])
-            .await
-        {
+        match self.chain_adapter.get_tx(&txid).await? {
             // Found txid
-            Ok(tx_hex) => {
-                let tx_raw = hex::decode(&tx_hex)?;
+            Some(tx_raw) => {
                 if tx_raw != burn_tx.tx().raw().as_ref() {
                     return Err(TxMalleated {
-                        expected: tx_hex,
+                        expected: hex::encode(&tx_raw),
                         actual: burn_tx.tx().raw().hex(),
                     }
                     .into());
@@ -306,24 +295,12 @@ impl Registry {
                 Ok(BurnTxValidation::Known)
             }
             // Txid not found
-            Err(err) => {
-                let err = err.downcast::<BitcoindError>()?;
-                match err {
-                    BitcoindError::JsonRpcCode { code: -5, message }
-                        if message.starts_with("No such mempool or blockchain transaction.") =>
-                    {
-                        // Test tx mempool acceptance
-                        if let Err(msg) = self
-                            .bitcoind
-                            .test_mempool_accept(burn_tx.tx().raw())
-                            .await?
-                        {
-                            return Err(RegistryError::BitcoindRejectedTx(msg).into());
-                        }
-                        Ok(BurnTxValidation::NotYetBroadcast)
-                    }
-                    err => Err(err.into()),
+            None => {
+                // Test tx mempool acceptance
+                if let Err(msg) = self.chain_adapter.test_accept(burn_tx.tx().raw()).await? {
+                    return Err(RegistryError::BitcoindRejectedTx(msg).into());
                 }
+                Ok(BurnTxValidation::NotYetBroadcast)
             }
         }
     }
@@ -482,7 +459,10 @@ mod tests {
     use pretty_assertions::assert_eq;
     use prost::Message;
 
+    use std::sync::Arc;
+
     use crate::{
+        lotus_adapter::LotusAdapter,
         proto,
         registry::{
             GetMetadataRangeResult, PutBlockchainAction, PutMessageResult, PutMetadataResult,
@@ -512,7 +492,7 @@ mod tests {
         let registry = Registry {
             db,
             ecc: EccSecp256k1::default(),
-            bitcoind: bitcoind.clone(),
+            chain_adapter: Arc::new(LotusAdapter::new(bitcoind.clone())),
             net: Net::Regtest,
         };
 
@@ -905,7 +885,7 @@ mod tests {
         let registry = Registry {
             db,
             ecc: EccSecp256k1::default(),
-            bitcoind: bitcoind.clone(),
+            chain_adapter: Arc::new(LotusAdapter::new(bitcoind.clone())),
             net: Net::Regtest,
         };
 
@@ -1058,7 +1038,7 @@ mod tests {
         let registry = Registry {
             db,
             ecc: EccSecp256k1::default(),
-            bitcoind: bitcoind.clone(),
+            chain_adapter: Arc::new(LotusAdapter::new(bitcoind.clone())),
             net: Net::Regtest,
         };
 

@@ -4,6 +4,7 @@ members = [
     "cashweb-config",
     "cashweb-http-utils",
     "cashweb-payload",
+    "cashweb-pop-token",
     "cashweb-registry",
     "cashwebd-exe",
 ]

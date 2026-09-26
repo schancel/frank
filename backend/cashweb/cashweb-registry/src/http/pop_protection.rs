@@ -11,18 +11,19 @@
 //! ## Request shape for submitting a payment proof (this ticket's own decision)
 //!
 //! No such shape existed anywhere in this codebase before this ticket, so it had to be decided
-//! here. A client that wants a bearer token minted from a Monad payment adds two query
-//! parameters to the same metadata-PUT request:
+//! here. A client that wants a bearer token minted from a Monad payment adds one query parameter
+//! to the same metadata-PUT request:
 //!
 //! - `pop_tx_hash`: the `0x`-prefixed, 32-byte hash of the Monad transaction that paid for
 //!   access.
-//! - `pop_value_wei`: that transaction's `value`, in wei, as a decimal string.
 //!
-//! `pop_value_wei` has to be supplied by the client (rather than looked up server-side) because
-//! `MonadHttpClient` can only fetch a tx's *receipt* (`status`, `to`), not its `value` --
-//! see `monad_pop_verify.rs`'s module docs for the `eth_getTransactionByHash` gap. Once that gap
-//! is closed, `pop_value_wei` could be dropped and looked up from `pop_tx_hash` alone; until
-//! then, a client must supply both.
+//! (An earlier revision of this module also required a client-supplied `pop_value_wei`, because
+//! `MonadHttpClient` could only fetch a tx's *receipt* -- not its `value` -- at the time this was
+//! written; see `monad_pop_verify.rs`'s module docs. Ticket #25 closed that gap by adding
+//! `get_transaction_by_hash`, so `verify_payment_via_receipt` now looks `value` up on-chain itself
+//! instead of trusting a client-asserted figure -- strictly stronger, since the old shape only
+//! ever checked the number the client *claimed*, not the number the chain actually recorded. The
+//! query parameter was dropped accordingly.)
 //!
 //! If the payment verifies, a bearer token is minted (scoped to the target address) and returned
 //! in an `X-Pop-Token: POP <token>` response header, and the PUT proceeds immediately (no need to
@@ -30,10 +31,10 @@
 //! of paying again, either as `Authorization: POP <token>` or as an `access_token=POP <token>`
 //! query parameter (`cashweb_pop_token::extract_pop_or_query`'s two supported forms).
 //!
-//! If neither a valid token nor a `(pop_tx_hash, pop_value_wei)` pair is present -- or the
-//! supplied proof doesn't verify -- the request is rejected with a `402 Payment Required`
-//! response carrying the recipient address and minimum amount, so the client knows what to pay
-//! (see [`PopChallenge`] and `crate::http::server`'s `IntoResponse` impl for it).
+//! If neither a valid token nor a `pop_tx_hash` is present -- or the referenced payment doesn't
+//! verify -- the request is rejected with a `402 Payment Required` response carrying the
+//! recipient address and minimum amount, so the client knows what to pay (see [`PopChallenge`]
+//! and `crate::http::server`'s `IntoResponse` impl for it).
 //!
 //! ## Scope binding
 //!
@@ -61,24 +62,14 @@ const ACCESS_TOKEN_PARAM: &str = "access_token";
 /// Query parameter carrying the Monad tx hash of an inline payment proof (this ticket's own
 /// convention -- see module docs).
 const TX_HASH_PARAM: &str = "pop_tx_hash";
-/// Query parameter carrying the Monad tx's value in wei, for an inline payment proof.
-const VALUE_WEI_PARAM: &str = "pop_value_wei";
 
-/// Error decoding a `(pop_tx_hash, pop_value_wei)` pair, or verifying it on-chain, when
-/// implementing [`PaymentVerifier`] via [`MonadReceiptVerifier`].
+/// Error decoding a `pop_tx_hash`, or verifying it on-chain, when implementing [`PaymentVerifier`]
+/// via [`MonadReceiptVerifier`].
 #[derive(Debug, thiserror::Error)]
 pub enum MonadProofError {
-    /// `proof` wasn't the `"<tx_hash_hex>:<value_wei_decimal>"` shape [`MonadReceiptVerifier`]
-    /// expects (this crate's own internal encoding of the two query params into the opaque
-    /// `proof` bytes `PaymentVerifier` takes; not part of the client-facing wire contract).
-    #[error("malformed payment proof")]
-    Malformed,
     /// `pop_tx_hash` wasn't a valid `0x`-prefixed 32-byte hash.
     #[error("invalid pop_tx_hash: {0}")]
     BadTxHash(HexTypeError),
-    /// `pop_value_wei` wasn't a valid non-negative decimal integer.
-    #[error("invalid pop_value_wei")]
-    BadValueWei,
     /// The referenced tx exists and was decodable, but didn't satisfy the expected payment
     /// (wrong/no recipient, insufficient amount, not confirmed, or reverted).
     #[error("payment not verified: {0:?}")]
@@ -121,23 +112,19 @@ impl<T: JsonRpcTransport> MonadReceiptVerifier<T> {
     }
 }
 
-/// Encode a `(tx_hash, value_wei)` pair into the opaque `proof` bytes [`MonadReceiptVerifier`]
-/// expects. Internal to this module; not part of the client-facing wire contract (see module
-/// docs for that).
-fn encode_proof(tx_hash_hex: &str, value_wei_decimal: &str) -> Vec<u8> {
-    format!("{}:{}", tx_hash_hex, value_wei_decimal).into_bytes()
+/// Encode a tx hash into the opaque `proof` bytes [`MonadReceiptVerifier`] expects. Internal to
+/// this module; not part of the client-facing wire contract (see module docs for that).
+fn encode_proof(tx_hash_hex: &str) -> Vec<u8> {
+    tx_hash_hex.as_bytes().to_vec()
 }
 
-fn decode_proof(proof: &[u8]) -> Result<(Hash32, u128), MonadProofError> {
-    let proof_str = std::str::from_utf8(proof).map_err(|_| MonadProofError::Malformed)?;
-    let (tx_hash_hex, value_wei_str) = proof_str
-        .split_once(':')
-        .ok_or(MonadProofError::Malformed)?;
-    let tx_hash = Hash32::from_hex(tx_hash_hex).map_err(MonadProofError::BadTxHash)?;
-    let value_wei = value_wei_str
-        .parse::<u128>()
-        .map_err(|_| MonadProofError::BadValueWei)?;
-    Ok((tx_hash, value_wei))
+fn decode_proof(proof: &[u8]) -> Result<Hash32, MonadProofError> {
+    let tx_hash_hex = std::str::from_utf8(proof).map_err(|_| {
+        MonadProofError::BadTxHash(HexTypeError::InvalidHex(
+            "pop_tx_hash was not valid UTF-8".to_string(),
+        ))
+    })?;
+    Hash32::from_hex(tx_hash_hex).map_err(MonadProofError::BadTxHash)
 }
 
 #[async_trait::async_trait]
@@ -145,8 +132,8 @@ impl<T: JsonRpcTransport> PaymentVerifier for MonadReceiptVerifier<T> {
     type Error = MonadProofError;
 
     async fn verify_payment(&self, _scope: &[u8], proof: &[u8]) -> Result<(), Self::Error> {
-        let (tx_hash, value_wei) = decode_proof(proof)?;
-        match verify_payment_via_receipt(&self.client, tx_hash, value_wei, &self.expected).await? {
+        let tx_hash = decode_proof(proof)?;
+        match verify_payment_via_receipt(&self.client, tx_hash, &self.expected).await? {
             PopVerification::Verified => Ok(()),
             other => Err(MonadProofError::NotVerified(other)),
         }
@@ -311,8 +298,8 @@ pub fn pop_gate(
 ///
 /// - `Ok(None)`: an already-valid bearer token was presented; proceed.
 /// - `Ok(Some(token))`: no valid token was presented, but `query` carried a payment proof
-///   ([`TX_HASH_PARAM`]/[`VALUE_WEI_PARAM`]) that verified; a fresh token was minted and should be
-///   surfaced to the client (e.g. via a response header) so it can be reused; proceed.
+///   ([`TX_HASH_PARAM`]) that verified; a fresh token was minted and should be surfaced to the
+///   client (e.g. via a response header) so it can be reused; proceed.
 /// - `Err(challenge)`: neither a valid token nor a verifying payment proof was presented; reject
 ///   the request with a `402`-style response built from `challenge`.
 pub async fn authorize_put<V: PaymentVerifier>(
@@ -329,9 +316,9 @@ pub async fn authorize_put<V: PaymentVerifier>(
         return Err(gate.challenge(ChallengeReason::InvalidToken, None));
     }
 
-    match (query.get(TX_HASH_PARAM), query.get(VALUE_WEI_PARAM)) {
-        (Some(tx_hash_hex), Some(value_wei_decimal)) => {
-            let proof = encode_proof(tx_hash_hex, value_wei_decimal);
+    match query.get(TX_HASH_PARAM) {
+        Some(tx_hash_hex) => {
+            let proof = encode_proof(tx_hash_hex);
             match gate.issuer.issue_token(scope, &proof).await {
                 Ok(token) => Ok(Some(token)),
                 Err(err) => {
@@ -339,7 +326,7 @@ pub async fn authorize_put<V: PaymentVerifier>(
                 }
             }
         }
-        _ => Err(gate.challenge(ChallengeReason::NoTokenOrProof, None)),
+        None => Err(gate.challenge(ChallengeReason::NoTokenOrProof, None)),
     }
 }
 
@@ -353,24 +340,41 @@ mod tests {
         Address([byte; 20])
     }
 
-    /// Minimal [`JsonRpcTransport`] mock returning a single canned
-    /// `eth_getTransactionReceipt`-shaped response, mirroring `monad_pop_verify.rs`'s own test
-    /// mock (private to that module, so re-declared here).
-    #[derive(Debug)]
+    /// [`JsonRpcTransport`] mock returning a canned response per JSON-RPC method, mirroring
+    /// `monad_pop_verify.rs`'s own test mock (private to that module, so re-declared here) --
+    /// needed because `verify_payment_via_receipt` now makes two calls (receipt, then full tx).
+    #[derive(Debug, Default)]
     struct MockTransport {
-        response: Value,
+        responses: HashMap<String, Value>,
+    }
+
+    impl MockTransport {
+        fn new(responses: impl IntoIterator<Item = (&'static str, Value)>) -> Self {
+            MockTransport {
+                responses: responses
+                    .into_iter()
+                    .map(|(method, response)| (method.to_string(), response))
+                    .collect(),
+            }
+        }
     }
 
     #[async_trait]
     impl JsonRpcTransport for MockTransport {
-        async fn call(&self, _method: &str, _params: Value) -> Result<Value, MonadRpcError> {
-            Ok(self.response.clone())
+        async fn call(&self, method: &str, _params: Value) -> Result<Value, MonadRpcError> {
+            self.responses
+                .get(method)
+                .cloned()
+                .ok_or_else(|| MonadRpcError::InvalidResponse {
+                    method: method.to_string(),
+                    reason: "no mock response configured for this method".to_string(),
+                })
         }
     }
 
     fn verified_receipt(recipient: Address) -> Value {
         json!({
-            "transactionHash": format!("0x{}", "cc".repeat(32)),
+            "transactionHash": tx_hash_hex(),
             "blockHash": format!("0x{}", "dd".repeat(32)),
             "blockNumber": "0x2a",
             "from": format!("0x{}", "bb".repeat(20)),
@@ -382,16 +386,33 @@ mod tests {
         })
     }
 
-    fn gate_with_response(
+    fn verified_transaction(recipient: Address, value_hex: &str) -> Value {
+        json!({
+            "hash": tx_hash_hex(),
+            "from": format!("0x{}", "bb".repeat(20)),
+            "to": format!("0x{}", hex::encode(recipient.0)),
+            "value": value_hex,
+            "input": "0x",
+        })
+    }
+
+    /// A gate whose mock transport answers both `eth_getTransactionReceipt` (`receipt`) and
+    /// `eth_getTransactionByHash` (`tx`) for the one `tx_hash_hex()` this whole test module uses.
+    fn gate_with_responses(
         recipient: Address,
         min_value_wei: u128,
-        response: Value,
+        receipt: Value,
+        tx: Value,
     ) -> PopGate<MonadReceiptVerifier<MockTransport>> {
         let expected = ExpectedPayment {
             recipient,
             min_value_wei,
         };
-        let client = Arc::new(MonadHttpClient::with_transport(MockTransport { response }));
+        let transport = MockTransport::new([
+            ("eth_getTransactionReceipt", receipt),
+            ("eth_getTransactionByHash", tx),
+        ]);
+        let client = Arc::new(MonadHttpClient::with_transport(transport));
         let verifier = MonadReceiptVerifier::new(client, expected);
         let scheme = HmacBearerScheme::new(b"test-secret".to_vec());
         PopGate::new(TokenIssuer::new(verifier, scheme), expected)
@@ -403,35 +424,30 @@ mod tests {
 
     #[test]
     fn decode_proof_ok() {
-        let proof = encode_proof(&tx_hash_hex(), "1000");
-        let (tx_hash, value_wei) = decode_proof(&proof).unwrap();
+        let proof = encode_proof(&tx_hash_hex());
+        let tx_hash = decode_proof(&proof).unwrap();
         assert_eq!(tx_hash, Hash32::from_hex(&tx_hash_hex()).unwrap());
-        assert_eq!(value_wei, 1000);
     }
 
     #[test]
     fn decode_proof_rejects_malformed() {
         assert!(matches!(
-            decode_proof(b"no-colon-here"),
-            Err(MonadProofError::Malformed)
-        ));
-        assert!(matches!(
-            decode_proof(b"not-hex:1000"),
+            decode_proof(b"not-hex"),
             Err(MonadProofError::BadTxHash(_))
-        ));
-        let bad_amount = format!("{}:not-a-number", tx_hash_hex());
-        assert!(matches!(
-            decode_proof(bad_amount.as_bytes()),
-            Err(MonadProofError::BadValueWei)
         ));
     }
 
     #[tokio::test]
     async fn monad_receipt_verifier_accepts_valid_payment() {
         let recipient = address(0xaa);
-        let verifier_client = Arc::new(MonadHttpClient::with_transport(MockTransport {
-            response: verified_receipt(recipient),
-        }));
+        let transport = MockTransport::new([
+            ("eth_getTransactionReceipt", verified_receipt(recipient)),
+            (
+                "eth_getTransactionByHash",
+                verified_transaction(recipient, "0x3e8"),
+            ),
+        ]);
+        let verifier_client = Arc::new(MonadHttpClient::with_transport(transport));
         let verifier = MonadReceiptVerifier::new(
             verifier_client,
             ExpectedPayment {
@@ -439,16 +455,21 @@ mod tests {
                 min_value_wei: 1_000,
             },
         );
-        let proof = encode_proof(&tx_hash_hex(), "1000");
+        let proof = encode_proof(&tx_hash_hex());
         assert!(verifier.verify_payment(b"any-scope", &proof).await.is_ok());
     }
 
     #[tokio::test]
     async fn monad_receipt_verifier_rejects_insufficient_payment() {
         let recipient = address(0xaa);
-        let verifier_client = Arc::new(MonadHttpClient::with_transport(MockTransport {
-            response: verified_receipt(recipient),
-        }));
+        let transport = MockTransport::new([
+            ("eth_getTransactionReceipt", verified_receipt(recipient)),
+            (
+                "eth_getTransactionByHash",
+                verified_transaction(recipient, "0x3e8"),
+            ),
+        ]);
+        let verifier_client = Arc::new(MonadHttpClient::with_transport(transport));
         let verifier = MonadReceiptVerifier::new(
             verifier_client,
             ExpectedPayment {
@@ -456,7 +477,7 @@ mod tests {
                 min_value_wei: 1_000_000,
             },
         );
-        let proof = encode_proof(&tx_hash_hex(), "1000");
+        let proof = encode_proof(&tx_hash_hex());
         let err = verifier
             .verify_payment(b"any-scope", &proof)
             .await
@@ -469,7 +490,13 @@ mod tests {
 
     #[tokio::test]
     async fn authorize_put_rejects_when_no_token_or_proof() {
-        let gate = gate_with_response(address(0xaa), 1_000, verified_receipt(address(0xaa)));
+        let recipient = address(0xaa);
+        let gate = gate_with_responses(
+            recipient,
+            1_000,
+            verified_receipt(recipient),
+            verified_transaction(recipient, "0x3e8"),
+        );
         let headers = HeaderMap::new();
         let query = HashMap::new();
         let err = authorize_put(&gate, b"scope", &headers, &query)
@@ -480,7 +507,13 @@ mod tests {
 
     #[tokio::test]
     async fn authorize_put_rejects_invalid_token() {
-        let gate = gate_with_response(address(0xaa), 1_000, verified_receipt(address(0xaa)));
+        let recipient = address(0xaa);
+        let gate = gate_with_responses(
+            recipient,
+            1_000,
+            verified_receipt(recipient),
+            verified_transaction(recipient, "0x3e8"),
+        );
         let mut headers = HeaderMap::new();
         headers.insert(
             axum::http::header::AUTHORIZATION,
@@ -496,13 +529,17 @@ mod tests {
     #[tokio::test]
     async fn authorize_put_mints_and_then_accepts_token_from_valid_proof() {
         let recipient = address(0xaa);
-        let gate = gate_with_response(recipient, 1_000, verified_receipt(recipient));
+        let gate = gate_with_responses(
+            recipient,
+            1_000,
+            verified_receipt(recipient),
+            verified_transaction(recipient, "0x3e8"),
+        );
         let scope = b"lotus_some_address";
 
         // First request: no token yet, but a valid payment proof is supplied via query params.
         let mut query = HashMap::new();
         query.insert(TX_HASH_PARAM.to_string(), tx_hash_hex());
-        query.insert(VALUE_WEI_PARAM.to_string(), "1000".to_string());
         let headers = HeaderMap::new();
         let token = authorize_put(&gate, scope, &headers, &query)
             .await
@@ -529,11 +566,15 @@ mod tests {
     async fn authorize_put_rejects_invalid_proof() {
         let recipient = address(0xaa);
         let wrong_recipient = address(0xbb);
-        let gate = gate_with_response(recipient, 1_000, verified_receipt(wrong_recipient));
+        let gate = gate_with_responses(
+            recipient,
+            1_000,
+            verified_receipt(wrong_recipient),
+            verified_transaction(wrong_recipient, "0x3e8"),
+        );
 
         let mut query = HashMap::new();
         query.insert(TX_HASH_PARAM.to_string(), tx_hash_hex());
-        query.insert(VALUE_WEI_PARAM.to_string(), "1000".to_string());
         let headers = HeaderMap::new();
         let err = authorize_put(&gate, b"scope", &headers, &query)
             .await

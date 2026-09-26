@@ -10,6 +10,7 @@
 
 pub mod http;
 pub mod lotus_adapter;
+pub mod monad_adapter;
 pub mod monad_http;
 pub mod monad_pop_verify;
 pub mod monad_stamp_relay;

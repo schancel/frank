@@ -23,26 +23,21 @@
 //! it's trivial to wire into whatever trait #22 introduces once both branches merge. No trait is
 //! guessed at or invented here.
 //!
-//! ## `MonadHttpClient` gap: no way to fetch a tx's `value`
+//! ## `MonadHttpClient` gap: no way to fetch a tx's `value` (resolved by ticket #25)
 //!
 //! `eth_getTransactionReceipt` (what [`crate::monad_http::MonadHttpClient::get_transaction_receipt`]
 //! wraps) reports a transaction's `status` and `to`, but **not** its `value` — `value` lives on
 //! the transaction itself (`eth_getTransactionByHash`), not on its receipt. `MonadHttpClient`
-//! (ticket #12) doesn't currently expose a `get_transaction` (or similar) method to fetch it.
+//! (ticket #12) didn't originally expose a method to fetch it, so [`verify_payment`] was written
+//! to take an already-assembled [`TxPaymentFacts`] (status + `to` + `value_wei`) and
+//! [`verify_payment_via_receipt`] required the caller to supply `value_wei` out of band.
 //!
-//! This module does not add that method itself (out of scope / not this ticket's file to touch).
-//! Instead:
-//! - The core logic, [`verify_payment`], takes an already-assembled [`TxPaymentFacts`] (status +
-//!   `to` + `value_wei`), so it's fully unit-testable today regardless of where `value_wei` came
-//!   from.
-//! - [`verify_payment_via_receipt`] is a thin async convenience that calls
-//!   `MonadHttpClient::get_transaction_receipt` for `status`/`to`, but still requires the caller
-//!   to supply `value_wei` out of band (e.g. once a `get_transaction` method lands on
-//!   `MonadHttpClient`, or from another source) since the receipt alone can't provide it.
-//!
-//! Per the ticket, this gap is reported plainly in the handoff; ticket #16 (Stamp verification)
-//! may independently hit the same gap and want the same `MonadHttpClient::get_transaction`
-//! addition — that's expected and fine.
+//! Ticket #25 (assembling `MonadAdapter`) added
+//! [`crate::monad_http::MonadHttpClient::get_transaction_by_hash`] (the same gap ticket #16's
+//! `monad_stamp_verify` independently hit and worked around). [`verify_payment_via_receipt`] now
+//! calls it directly to fetch `value_wei` itself, so callers no longer need to source it
+//! separately. [`verify_payment`]/[`TxPaymentFacts`] are unchanged: they stay fully
+//! unit-testable without a network call, regardless of where the facts come from.
 
 use crate::monad_http::{Address, Hash32, JsonRpcTransport, MonadHttpClient, MonadRpcError};
 
@@ -59,9 +54,11 @@ pub struct ExpectedPayment {
 /// The subset of on-chain facts about a Monad transaction needed to verify a POP payment:
 /// receipt status, the tx's `to` address, and the tx's `value` (in wei).
 ///
-/// Callers assemble this from [`MonadHttpClient::get_transaction_receipt`] (`status`, `to`) plus
-/// a `value_wei` sourced separately — see the module docs for why the receipt alone can't
-/// provide `value`.
+/// [`verify_payment_via_receipt`] assembles this from
+/// [`MonadHttpClient::get_transaction_receipt`] (`status`, `to`) plus
+/// [`MonadHttpClient::get_transaction_by_hash`] (`value`) — see the module docs for why the
+/// receipt alone can't provide `value`. [`verify_payment`] itself is pure and doesn't care how its
+/// caller assembled these facts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TxPaymentFacts {
     /// The receipt's post-Byzantium status code (`Some(1)` = success, `Some(0)` = reverted), or
@@ -116,36 +113,50 @@ pub fn verify_payment(facts: &TxPaymentFacts, expected: &ExpectedPayment) -> Pop
 }
 
 /// Async convenience wrapper around [`verify_payment`]: fetches the tx's receipt (for
-/// `status`/`to`) via `MonadHttpClient::get_transaction_receipt`, combines it with a
-/// caller-supplied `value_wei` (see module docs for why this can't be fetched here), and
-/// verifies.
+/// `status`/`to`) via `MonadHttpClient::get_transaction_receipt` and, once that shows a confirmed,
+/// successful payment to the expected recipient, the full transaction (for `value`) via
+/// `MonadHttpClient::get_transaction_by_hash`, then verifies.
+///
+/// Fetching the full transaction is deferred until after the recipient check to avoid an
+/// unnecessary RPC round-trip when the tx is unconfirmed, failed, or already known to be
+/// misdirected from the receipt alone.
 ///
 /// Returns `Err` only for transport/RPC-level failures talking to the node; a missing receipt or
 /// a failed/mismatched payment is a normal `Ok(PopVerification::...)`, not an error.
 pub async fn verify_payment_via_receipt<T: JsonRpcTransport>(
     client: &MonadHttpClient<T>,
     tx_hash: Hash32,
-    value_wei: u128,
     expected: &ExpectedPayment,
 ) -> Result<PopVerification, MonadRpcError> {
     let receipt = client.get_transaction_receipt(tx_hash).await?;
-    let facts = match receipt {
-        None => TxPaymentFacts {
-            status: None,
-            to: None,
-            value_wei,
-        },
-        Some(receipt) => TxPaymentFacts {
-            status: receipt.status,
-            to: receipt.to,
-            value_wei,
-        },
+    let receipt = match receipt {
+        None => return Ok(PopVerification::NotConfirmed),
+        Some(receipt) => receipt,
+    };
+    if receipt.status != Some(1) {
+        return Ok(PopVerification::TxFailed);
+    }
+    if receipt.to != Some(expected.recipient) {
+        return Ok(PopVerification::WrongRecipient);
+    }
+
+    let value_wei = client
+        .get_transaction_by_hash(tx_hash)
+        .await?
+        .map(|tx| tx.value)
+        .unwrap_or(0);
+    let facts = TxPaymentFacts {
+        status: receipt.status,
+        to: receipt.to,
+        value_wei,
     };
     Ok(verify_payment(&facts, expected))
 }
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use async_trait::async_trait;
     use serde_json::{json, Value};
 
@@ -261,18 +272,36 @@ mod tests {
         );
     }
 
-    /// Minimal [`JsonRpcTransport`] mock, local to this module's tests (the one in
-    /// `monad_http.rs` is private to that module), returning a single canned
-    /// `eth_getTransactionReceipt`-shaped response.
-    #[derive(Debug)]
+    /// Mock [`JsonRpcTransport`], local to this module's tests (the one in `monad_http.rs` is
+    /// private to that module), returning a canned response per JSON-RPC method so
+    /// [`verify_payment_via_receipt`]'s multi-call flow (receipt, then full tx) can be exercised
+    /// without a network call.
+    #[derive(Debug, Default)]
     struct MockTransport {
-        response: Value,
+        responses: HashMap<String, Value>,
+    }
+
+    impl MockTransport {
+        fn new(responses: impl IntoIterator<Item = (&'static str, Value)>) -> Self {
+            MockTransport {
+                responses: responses
+                    .into_iter()
+                    .map(|(method, response)| (method.to_string(), response))
+                    .collect(),
+            }
+        }
     }
 
     #[async_trait]
     impl JsonRpcTransport for MockTransport {
-        async fn call(&self, _method: &str, _params: Value) -> Result<Value, MonadRpcError> {
-            Ok(self.response.clone())
+        async fn call(&self, method: &str, _params: Value) -> Result<Value, MonadRpcError> {
+            self.responses
+                .get(method)
+                .cloned()
+                .ok_or_else(|| MonadRpcError::InvalidResponse {
+                    method: method.to_string(),
+                    reason: "no mock response configured for this method".to_string(),
+                })
         }
     }
 
@@ -283,24 +312,37 @@ mod tests {
         let tx_hash_hex = format!("0x{}", "cc".repeat(32));
         let block_hash_hex = format!("0x{}", "dd".repeat(32));
 
-        let transport = MockTransport {
-            response: json!({
-                "transactionHash": tx_hash_hex,
-                "blockHash": block_hash_hex,
-                "blockNumber": "0x2a",
-                "from": from_hex,
-                "to": recipient_hex,
-                "contractAddress": null,
-                "gasUsed": "0x5208",
-                "status": "0x1",
-                "logs": [],
-            }),
-        };
+        let transport = MockTransport::new([
+            (
+                "eth_getTransactionReceipt",
+                json!({
+                    "transactionHash": tx_hash_hex,
+                    "blockHash": block_hash_hex,
+                    "blockNumber": "0x2a",
+                    "from": from_hex,
+                    "to": recipient_hex,
+                    "contractAddress": null,
+                    "gasUsed": "0x5208",
+                    "status": "0x1",
+                    "logs": [],
+                }),
+            ),
+            (
+                "eth_getTransactionByHash",
+                json!({
+                    "hash": tx_hash_hex,
+                    "from": from_hex,
+                    "to": recipient_hex,
+                    "value": "0x3e8",
+                    "input": "0x",
+                }),
+            ),
+        ]);
         let client = MonadHttpClient::with_transport(transport);
         let recipient = Address::from_hex(&recipient_hex).unwrap();
         let tx_hash = Hash32::from_hex(&tx_hash_hex).unwrap();
 
-        let result = verify_payment_via_receipt(&client, tx_hash, 1_000, &expected(recipient, 1_000))
+        let result = verify_payment_via_receipt(&client, tx_hash, &expected(recipient, 1_000))
             .await
             .unwrap();
         assert_eq!(result, PopVerification::Verified);
@@ -308,16 +350,47 @@ mod tests {
 
     #[tokio::test]
     async fn verify_payment_via_receipt_handles_missing_receipt() {
-        let transport = MockTransport {
-            response: Value::Null,
-        };
+        let transport = MockTransport::new([("eth_getTransactionReceipt", Value::Null)]);
         let client = MonadHttpClient::with_transport(transport);
         let recipient = address(0xaa);
         let tx_hash = Hash32::from_hex(&format!("0x{}", "ee".repeat(32))).unwrap();
 
-        let result = verify_payment_via_receipt(&client, tx_hash, 1_000, &expected(recipient, 1_000))
+        let result = verify_payment_via_receipt(&client, tx_hash, &expected(recipient, 1_000))
             .await
             .unwrap();
         assert_eq!(result, PopVerification::NotConfirmed);
+    }
+
+    #[tokio::test]
+    async fn verify_payment_via_receipt_stops_at_wrong_recipient_without_fetching_tx() {
+        let actual_to = format!("0x{}", "99".repeat(20));
+        let from_hex = format!("0x{}", "bb".repeat(20));
+        let tx_hash_hex = format!("0x{}", "cc".repeat(32));
+        let block_hash_hex = format!("0x{}", "dd".repeat(32));
+
+        // No `eth_getTransactionByHash` response configured: verification must short-circuit on
+        // the recipient mismatch (from the receipt alone) before ever calling it.
+        let transport = MockTransport::new([(
+            "eth_getTransactionReceipt",
+            json!({
+                "transactionHash": tx_hash_hex,
+                "blockHash": block_hash_hex,
+                "blockNumber": "0x2a",
+                "from": from_hex,
+                "to": actual_to,
+                "contractAddress": null,
+                "gasUsed": "0x5208",
+                "status": "0x1",
+                "logs": [],
+            }),
+        )]);
+        let client = MonadHttpClient::with_transport(transport);
+        let recipient = address(0xaa);
+        let tx_hash = Hash32::from_hex(&tx_hash_hex).unwrap();
+
+        let result = verify_payment_via_receipt(&client, tx_hash, &expected(recipient, 1_000))
+            .await
+            .unwrap();
+        assert_eq!(result, PopVerification::WrongRecipient);
     }
 }

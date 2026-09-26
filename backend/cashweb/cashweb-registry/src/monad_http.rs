@@ -8,9 +8,21 @@
 //! - `eth_sendRawTransaction` ([`MonadHttpClient::send_raw_transaction`])
 //! - `eth_getTransactionReceipt` ([`MonadHttpClient::get_transaction_receipt`])
 //! - `eth_getLogs` ([`MonadHttpClient::get_logs`])
+//! - `eth_getTransactionByHash` ([`MonadHttpClient::get_transaction_by_hash`])
+//! - `eth_getRawTransactionByHash` ([`MonadHttpClient::get_raw_transaction_by_hash`])
 //!
 //! plus a small `eth_blockNumber` helper ([`MonadHttpClient::block_number`]) used to bound
 //! `eth_getLogs` block ranges (both in the live smoke test and for general callers).
+//!
+//! ## `eth_getTransactionByHash` (ticket #25)
+//!
+//! Originally out of scope here (see the note below), this was added once ticket #25 (assembling
+//! `MonadAdapter`) hit the same gap two other in-flight tickets (#16's `monad_stamp_verify.rs` and
+//! #23's `monad_pop_verify.rs`) had already independently worked around with their own private
+//! `JsonRpcTransport`-based calls: `TransactionReceipt` doesn't carry `to`/`value`/`input` (those
+//! live on the transaction itself), so verifying a burn/payment's value and calldata needs the
+//! full transaction. Both call sites now consume [`MonadHttpClient::get_transaction_by_hash`]
+//! instead of duplicating the call.
 //!
 //! **This is deliberately *not* a [`cashweb_payload::chain_adapter::ChainAdapter`]
 //! implementation.** Ticket #15 (the `eth_subscribe("newHeads")` WS path) is being implemented
@@ -299,6 +311,62 @@ impl TransactionReceipt {
     pub fn succeeded(&self) -> Option<bool> {
         self.status.map(|status| status == 1)
     }
+}
+
+/// Helpers for (de)serializing a `0x`-prefixed hex quantity too large for `u64` (e.g. a
+/// transaction's `value`, denominated in wei, which can exceed `u64::MAX`), parsed as `u128`.
+mod hex_quantity_u128 {
+    use serde::{Deserialize, Deserializer};
+
+    pub(crate) fn deserialize<'de, D>(deserializer: D) -> Result<u128, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        let stripped = s.strip_prefix("0x").ok_or_else(|| {
+            serde::de::Error::custom(format!("expected a 0x-prefixed hex quantity, got {:?}", s))
+        })?;
+        let digits = if stripped.is_empty() { "0" } else { stripped };
+        u128::from_str_radix(digits, 16).map_err(serde::de::Error::custom)
+    }
+}
+
+/// Helper for deserializing a `0x`-prefixed hex byte blob (e.g. a transaction's `input` calldata)
+/// into raw bytes.
+mod hex_bytes {
+    use serde::{Deserialize, Deserializer};
+
+    pub(crate) fn deserialize<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        let stripped = s.strip_prefix("0x").ok_or_else(|| {
+            serde::de::Error::custom(format!("expected 0x-prefixed hex data, got {:?}", s))
+        })?;
+        hex::decode(stripped).map_err(serde::de::Error::custom)
+    }
+}
+
+/// A transaction, as returned by `eth_getTransactionByHash`. Unlike [`TransactionReceipt`], this
+/// carries the transaction's `value` and `input` (calldata) fields, which live on the transaction
+/// itself rather than its receipt.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Transaction {
+    /// Hash of this transaction.
+    pub hash: Hash32,
+    /// Address that sent this transaction.
+    pub from: Address,
+    /// Recipient address (`None` for a contract-creation transaction).
+    #[serde(default)]
+    pub to: Option<Address>,
+    /// Value transferred, in wei (parsed as `u128`: can exceed `u64::MAX`).
+    #[serde(deserialize_with = "hex_quantity_u128::deserialize")]
+    pub value: u128,
+    /// Raw calldata (the `input` field).
+    #[serde(deserialize_with = "hex_bytes::deserialize")]
+    pub input: Vec<u8>,
 }
 
 /// Errors from a Monad JSON-RPC call, distinguishing transport-level failures from RPC-level
@@ -638,6 +706,73 @@ impl<T: JsonRpcTransport> MonadHttpClient<T> {
         Ok(Some(receipt))
     }
 
+    /// Fetch a transaction by hash via `eth_getTransactionByHash`. Returns `None` if the node
+    /// doesn't know about this tx hash.
+    ///
+    /// Unlike [`get_transaction_receipt`](Self::get_transaction_receipt), this returns the
+    /// transaction's `value` and `input` (calldata) -- needed by callers that must inspect a
+    /// burn/payment tx's value or calldata (e.g. `monad_stamp_verify`, `monad_pop_verify`), which
+    /// a receipt alone doesn't carry.
+    pub async fn get_transaction_by_hash(
+        &self,
+        tx_hash: Hash32,
+    ) -> Result<Option<Transaction>, MonadRpcError> {
+        let params = json!([tx_hash.to_hex()]);
+        let result = self
+            .transport
+            .call("eth_getTransactionByHash", params)
+            .await?;
+        if result.is_null() {
+            return Ok(None);
+        }
+        let tx: Transaction =
+            serde_json::from_value(result).map_err(|source| MonadRpcError::InvalidResponse {
+                method: "eth_getTransactionByHash".to_string(),
+                reason: source.to_string(),
+            })?;
+        Ok(Some(tx))
+    }
+
+    /// Fetch a transaction's raw RLP-encoded bytes by hash via `eth_getRawTransactionByHash`.
+    /// Returns `None` if the node doesn't know about this tx hash.
+    ///
+    /// This is the only way to recover a Monad transaction's *raw* signed bytes: the decoded
+    /// fields from [`get_transaction_by_hash`](Self::get_transaction_by_hash) aren't sufficient to
+    /// reconstruct them (that would require re-deriving the exact RLP encoding for the tx's type
+    /// -- legacy/EIP-2930/EIP-1559 -- including its signature). `eth_getRawTransactionByHash`
+    /// originates in geth's `eth` namespace and is proxied by every major EVM RPC provider this
+    /// codebase targets, including Alchemy.
+    pub async fn get_raw_transaction_by_hash(
+        &self,
+        tx_hash: Hash32,
+    ) -> Result<Option<Vec<u8>>, MonadRpcError> {
+        let params = json!([tx_hash.to_hex()]);
+        let result = self
+            .transport
+            .call("eth_getRawTransactionByHash", params)
+            .await?;
+        if result.is_null() {
+            return Ok(None);
+        }
+        let hex_str = result
+            .as_str()
+            .ok_or_else(|| MonadRpcError::InvalidResponse {
+                method: "eth_getRawTransactionByHash".to_string(),
+                reason: format!("expected a hex string, got {}", result),
+            })?;
+        let stripped = hex_str
+            .strip_prefix("0x")
+            .ok_or_else(|| MonadRpcError::InvalidResponse {
+                method: "eth_getRawTransactionByHash".to_string(),
+                reason: format!("expected 0x-prefixed hex, got {:?}", hex_str),
+            })?;
+        let bytes = hex::decode(stripped).map_err(|source| MonadRpcError::InvalidResponse {
+            method: "eth_getRawTransactionByHash".to_string(),
+            reason: source.to_string(),
+        })?;
+        Ok(Some(bytes))
+    }
+
     /// Fetch logs matching the given filter via `eth_getLogs`.
     pub async fn get_logs(&self, filter: &GetLogsFilter) -> Result<Vec<Log>, MonadRpcError> {
         let params = filter.to_params();
@@ -817,6 +952,78 @@ mod tests {
         assert_eq!(receipt.gas_used, 0x5208);
         assert_eq!(receipt.succeeded(), Some(true));
         assert_eq!(receipt.to.unwrap().to_hex(), to);
+    }
+
+    #[tokio::test]
+    async fn get_transaction_by_hash_shapes_request_and_handles_missing() {
+        let transport = MockTransport::with_response(Value::Null);
+        let client = MonadHttpClient::with_transport(transport);
+
+        let tx_hash = Hash32::from_hex(&format!("0x{}", "22".repeat(32))).unwrap();
+        let tx = client.get_transaction_by_hash(tx_hash).await.unwrap();
+        assert!(tx.is_none());
+
+        let calls = client.transport.calls();
+        assert_eq!(calls.len(), 1);
+        let (method, params) = &calls[0];
+        assert_eq!(method, "eth_getTransactionByHash");
+        assert_eq!(params, &json!([tx_hash.to_hex()]));
+    }
+
+    #[tokio::test]
+    async fn get_transaction_by_hash_parses_value_and_input() {
+        let tx_hash = format!("0x{}", "33".repeat(32));
+        let from = format!("0x{}", "55".repeat(20));
+        let to = format!("0x{}", "66".repeat(20));
+        // A `value` larger than `u64::MAX`, to exercise the `u128` parsing path.
+        let response = json!({
+            "hash": tx_hash,
+            "from": from,
+            "to": to,
+            "value": "0x10000000000000000",
+            "input": "0xdeadbeef",
+        });
+        let transport = MockTransport::with_response(response);
+        let client = MonadHttpClient::with_transport(transport);
+
+        let tx = client
+            .get_transaction_by_hash(Hash32::from_hex(&tx_hash).unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(tx.value, 1u128 << 64);
+        assert_eq!(tx.input, vec![0xde, 0xad, 0xbe, 0xef]);
+        assert_eq!(tx.to.unwrap().to_hex(), to);
+    }
+
+    #[tokio::test]
+    async fn get_raw_transaction_by_hash_shapes_request_and_handles_missing() {
+        let transport = MockTransport::with_response(Value::Null);
+        let client = MonadHttpClient::with_transport(transport);
+
+        let tx_hash = Hash32::from_hex(&format!("0x{}", "44".repeat(32))).unwrap();
+        let raw = client.get_raw_transaction_by_hash(tx_hash).await.unwrap();
+        assert!(raw.is_none());
+
+        let calls = client.transport.calls();
+        assert_eq!(calls.len(), 1);
+        let (method, params) = &calls[0];
+        assert_eq!(method, "eth_getRawTransactionByHash");
+        assert_eq!(params, &json!([tx_hash.to_hex()]));
+    }
+
+    #[tokio::test]
+    async fn get_raw_transaction_by_hash_decodes_hex() {
+        let transport = MockTransport::with_response(json!("0xdeadbeef"));
+        let client = MonadHttpClient::with_transport(transport);
+
+        let tx_hash = Hash32::from_hex(&format!("0x{}", "55".repeat(32))).unwrap();
+        let raw = client
+            .get_raw_transaction_by_hash(tx_hash)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(raw, vec![0xde, 0xad, 0xbe, 0xef]);
     }
 
     #[tokio::test]

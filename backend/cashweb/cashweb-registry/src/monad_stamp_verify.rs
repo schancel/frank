@@ -32,28 +32,25 @@
 //! Bitcoin Script), so it isn't a duplicate of anything, just a mirror of `parse_commitment`'s
 //! checks adapted to a flat byte layout.
 //!
-//! ## A note on `MonadHttpClient` and `eth_getTransactionByHash`
+//! ## A note on `MonadHttpClient` and `eth_getTransactionByHash` (resolved by ticket #25)
 //!
-//! [`crate::monad_http::MonadHttpClient`] (ticket #12) only implements
+//! [`crate::monad_http::MonadHttpClient`] (ticket #12) originally only implemented
 //! `eth_getTransactionReceipt`, `eth_getLogs`, `eth_blockNumber`, and `eth_sendRawTransaction`.
 //! Its [`crate::monad_http::TransactionReceipt`] has no `to`/`value`/`input` fields (a real Monad
 //! receipt doesn't carry them -- those live on the transaction itself), so verifying the burn's
-//! value and decoding its commitment out of the calldata needs the full transaction, fetched via
-//! `eth_getTransactionByHash`, which `MonadHttpClient` doesn't expose. Rather than edit
-//! `monad_http.rs` (out of scope for this ticket, see its ownership rules), this module makes its
-//! own minimal `eth_getTransactionByHash` call using the same public
-//! [`crate::monad_http::JsonRpcTransport`] trait `MonadHttpClient` is built on (see
-//! [`get_transaction_by_hash`]). **Finding for a follow-up ticket:** `MonadHttpClient` should
-//! probably grow a real `get_transaction_by_hash` method so callers don't need to reach around it
-//! like this.
+//! value and decoding its commitment out of the calldata needs the full transaction. This module
+//! used to make its own minimal `eth_getTransactionByHash` call (via the same public
+//! [`crate::monad_http::JsonRpcTransport`] trait `MonadHttpClient` is built on) to work around the
+//! gap, since editing `monad_http.rs` was out of scope for ticket #16. Ticket #25 (assembling
+//! `MonadAdapter`) added a real
+//! [`crate::monad_http::MonadHttpClient::get_transaction_by_hash`] method; this module now calls
+//! that instead of duplicating the RPC call.
 
 use bitcoinsuite_core::{ecc::PUBKEY_LENGTH, BytesMut, Hashed, Sha256};
 use bitcoinsuite_error::{bail, Result, WrapErr};
-use serde::Deserialize;
-use serde_json::json;
 use thiserror::Error;
 
-use crate::monad_http::{Address, Hash32, JsonRpcTransport, MonadHttpClient, MonadRpcError};
+use crate::monad_http::{Address, Hash32, JsonRpcTransport, MonadHttpClient};
 
 /// Fixed length, in bytes, of the `<lokad_id><version>` prefix before the commitment in a burn
 /// tx's calldata.
@@ -174,89 +171,6 @@ pub fn parse_commitment_calldata(
     Ok(Sha256::new(commitment_bytes.try_into().unwrap()))
 }
 
-/// (De)serialization helpers for the `0x`-prefixed hex fields of `eth_getTransactionByHash`'s
-/// response that [`crate::monad_http`]'s own `hex_quantity` helper doesn't cover: an
-/// arbitrary-precision `value` (too large for `u64` in general, so parsed as `u128`) and the
-/// variable-length `input` calldata blob.
-mod hex_codec {
-    use serde::{Deserialize, Deserializer};
-
-    pub(crate) fn deserialize_u128<'de, D>(deserializer: D) -> Result<u128, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let s = String::deserialize(deserializer)?;
-        let stripped = s
-            .strip_prefix("0x")
-            .ok_or_else(|| serde::de::Error::custom(format!("expected 0x-prefixed hex quantity, got {:?}", s)))?;
-        let digits = if stripped.is_empty() { "0" } else { stripped };
-        u128::from_str_radix(digits, 16).map_err(serde::de::Error::custom)
-    }
-
-    pub(crate) fn deserialize_bytes<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let s = String::deserialize(deserializer)?;
-        let stripped = s
-            .strip_prefix("0x")
-            .ok_or_else(|| serde::de::Error::custom(format!("expected 0x-prefixed hex data, got {:?}", s)))?;
-        hex::decode(stripped).map_err(serde::de::Error::custom)
-    }
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct RawTransactionJson {
-    hash: Hash32,
-    #[serde(default)]
-    to: Option<Address>,
-    #[serde(deserialize_with = "hex_codec::deserialize_u128")]
-    value: u128,
-    #[serde(deserialize_with = "hex_codec::deserialize_bytes")]
-    input: Vec<u8>,
-}
-
-/// A Monad transaction, as returned by `eth_getTransactionByHash`, trimmed to the fields
-/// [`verify_stamp_burn`] needs: recipient, value, and calldata. See the module docs for why this
-/// lives here instead of on [`crate::monad_http::MonadHttpClient`].
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MonadTransaction {
-    /// Hash of this transaction.
-    pub hash: Hash32,
-    /// Recipient address (`None` for a contract-creation transaction).
-    pub to: Option<Address>,
-    /// Value transferred, in wei.
-    pub value: u128,
-    /// Raw calldata (the `input` field).
-    pub input: Vec<u8>,
-}
-
-/// Fetch a transaction by hash via `eth_getTransactionByHash`, using the same
-/// [`JsonRpcTransport`] plumbing [`MonadHttpClient`] is built on. Returns `None` if the node
-/// doesn't know about this tx hash.
-pub async fn get_transaction_by_hash<T: JsonRpcTransport>(
-    transport: &T,
-    tx_hash: Hash32,
-) -> std::result::Result<Option<MonadTransaction>, MonadRpcError> {
-    let params = json!([tx_hash.to_hex()]);
-    let result = transport.call("eth_getTransactionByHash", params).await?;
-    if result.is_null() {
-        return Ok(None);
-    }
-    let tx: RawTransactionJson =
-        serde_json::from_value(result).map_err(|source| MonadRpcError::InvalidResponse {
-            method: "eth_getTransactionByHash".to_string(),
-            reason: source.to_string(),
-        })?;
-    Ok(Some(MonadTransaction {
-        hash: tx.hash,
-        to: tx.to,
-        value: tx.value,
-        input: tx.input,
-    }))
-}
-
 /// What's required of a burn tx for it to count as a valid Stamp.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExpectedBurn {
@@ -316,8 +230,8 @@ pub enum StampBurnVerification {
 /// Verify that `tx_hash` is a valid Stamp burn against `expected`.
 ///
 /// Fetches the tx's receipt via [`MonadHttpClient::get_transaction_receipt`] and, if confirmed
-/// and successful, the full transaction via [`get_transaction_by_hash`] to check its recipient,
-/// value, and calldata commitment.
+/// and successful, the full transaction via [`MonadHttpClient::get_transaction_by_hash`] to check
+/// its recipient, value, and calldata commitment.
 ///
 /// Returns `Err` only for infrastructure failures (RPC/transport errors, or a node returning an
 /// internally-inconsistent response); every *verification* failure (wrong commitment, wrong
@@ -353,7 +267,8 @@ where
         });
     }
 
-    let tx = get_transaction_by_hash(transport, tx_hash)
+    let tx = client
+        .get_transaction_by_hash(tx_hash)
         .await
         .wrap_err_with(|| format!("fetching Monad tx {tx_hash}"))?;
     let tx = match tx {
@@ -397,6 +312,8 @@ mod tests {
     use bitcoinsuite_ecc_secp256k1::EccSecp256k1;
     use bitcoinsuite_core::ecc::Ecc;
     use serde_json::Value;
+
+    use crate::monad_http::MonadRpcError;
 
     use super::*;
 

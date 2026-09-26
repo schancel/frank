@@ -1,7 +1,7 @@
 //! Standalone, **not wired into app logic**, live smoke test for
 //! [`cashweb_registry::monad_stamp_verify`] (ticket #16), proving the mechanics of
-//! `verify_stamp_burn` (and the `eth_getTransactionByHash` call it needs, which
-//! `MonadHttpClient` doesn't expose -- see that module's docs) actually work against real Monad
+//! `verify_stamp_burn` (and the `eth_getTransactionByHash` call it needs, now
+//! `MonadHttpClient::get_transaction_by_hash` -- see ticket #25) actually work against real Monad
 //! testnet chain data, not simulated data.
 //!
 //! Mirrors `monad_http_live_smoke.rs`'s pattern: `#[ignore]`d so the normal gate
@@ -18,10 +18,10 @@
 //!   keeps working as the testnet chain moves forward), then feeds its hash into
 //!   `verify_stamp_burn`.
 //! - It proves the full pipeline runs against live data end-to-end: fetching the real receipt via
-//!   `MonadHttpClient::get_transaction_receipt`, fetching the real transaction via this module's
-//!   own `eth_getTransactionByHash` call, and running the real transaction's `value` and `input`
-//!   bytes through the same recipient/value/calldata checks `verify_stamp_burn` would apply to an
-//!   actual Stamp burn.
+//!   `MonadHttpClient::get_transaction_receipt`, fetching the real transaction via
+//!   `MonadHttpClient::get_transaction_by_hash`, and running the real transaction's `value` and
+//!   `input` bytes through the same recipient/value/calldata checks `verify_stamp_burn` would
+//!   apply to an actual Stamp burn.
 //! - It deliberately does **not** prove verification of a *genuine* Stamp burn (no real STMP/POND
 //!   burn transaction is known to exist on testnet yet -- that requires ticket #13's client-side
 //!   construction and a funded account, both out of scope here). Instead, since real testnet
@@ -33,9 +33,7 @@
 //!   chain bytes, not a mock.
 
 use cashweb_registry::monad_http::{BlockTag, GetLogsFilter, Hash32, MonadHttpClient};
-use cashweb_registry::monad_stamp_verify::{
-    get_transaction_by_hash, verify_stamp_burn, ExpectedBurn, StampBurnVerification,
-};
+use cashweb_registry::monad_stamp_verify::{verify_stamp_burn, ExpectedBurn, StampBurnVerification};
 
 /// Alchemy's free tier caps a single `eth_getLogs` call to a 10-block range.
 const MAX_LOG_RANGE_BLOCKS: u64 = 10;
@@ -55,9 +53,9 @@ async fn live_verify_stamp_burn_against_real_tx() {
         .parse()
         .expect("MONAD_TESTNET_HTTP_RPC_URL is not a valid URL");
 
-    // `MonadHttpClient` and `verify_stamp_burn` both need a `JsonRpcTransport` (the latter to
-    // make its own `eth_getTransactionByHash` call -- see `monad_stamp_verify`'s module docs for
-    // why). `HttpTransport` is `Clone`, so one instance covers both.
+    // `MonadHttpClient` and `verify_stamp_burn` both need a `JsonRpcTransport` (the latter builds
+    // its own internal `MonadHttpClient` from it). `HttpTransport` is `Clone`, so one instance
+    // covers both.
     let transport = cashweb_registry::monad_http::HttpTransport::new(rpc_url);
     let client = MonadHttpClient::with_transport(transport.clone());
 
@@ -100,10 +98,11 @@ async fn live_verify_stamp_burn_against_real_tx() {
          chain has gone unusually quiet, or eth_getLogs is broken",
     );
 
-    // 2. Fetch the real transaction directly (via this module's own `eth_getTransactionByHash`,
-    // the gap this ticket found in `MonadHttpClient`) so we know its genuine `to`/`value`, to use
-    // as a guaranteed-passing "expected" recipient/value below.
-    let real_tx = get_transaction_by_hash(&transport, tx_hash)
+    // 2. Fetch the real transaction directly (via `MonadHttpClient::get_transaction_by_hash`) so
+    // we know its genuine `to`/`value`, to use as a guaranteed-passing "expected" recipient/value
+    // below.
+    let real_tx = client
+        .get_transaction_by_hash(tx_hash)
         .await
         .expect("live eth_getTransactionByHash call failed")
         .expect("expected a transaction for a hash we just observed via eth_getLogs");

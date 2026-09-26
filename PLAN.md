@@ -218,8 +218,6 @@ M2 unblocks everything else and should be prioritized immediately after.
 ## Explicit non-goals for the hackathon
 
 - Mobile (Capacitor)/Electron packaging validation.
-- Forum/registry burn-voting (OP_RETURN vote weight) port to Monad — Lotus
-  chain feature, not required for core messaging demo.
 - Production-grade key custody, HSMs, or multi-sig for the sub-account pool.
 - Lotus chain support actually re-enabled behind the new adapter boundary
   (the boundary is built so it *can* be, not so it *is*, this hackathon).
@@ -228,14 +226,17 @@ M2 unblocks everything else and should be prioritized immediately after.
 
 ## Hackathon bounty/track strategy
 
-Submit under the **Trust, Identity & AI Infrastructure** track — burn-to-speak
-+ POP + keyserver identity is a direct match for "protocol-level primitives
-for trust, provenance, and user-owned data."
+**Track (corrected — one track only, already selected by the user):
+Social, Attention & Culture**, not Trust/Identity/AI as earlier PLAN.md
+text wrongly guessed. Confirmed rule: a submission enters exactly one main
+track, but sponsor bounties are independent of track tags — a Social/
+Culture submission can still win a bounty tagged to a different track.
 
 - **Already targeting**: "Best Builds with Qwen 3.8 Max" (ticket #9, the
-  headless LLM bot demo, blocked on #8).
-- **Free**: "Best Projects using Alchemy" ($1,000 credits) — already
-  qualifies via tickets #12/#15/#17/#20, no new work, just submit.
+  headless LLM bot demo, blocked on #8) — still viable despite its card
+  being tagged to a different track, per the rule above.
+- **Also pursuing**: "Best Projects using Alchemy" ($1,000 credits) —
+  already qualifies via tickets #12/#15/#17/#20, no new work, just submit.
 - **Worth pursuing if time allows, non-blocking**: Mera ("Best Mera-Powered
   UX on Monad" + "One Passkey, Many Keys", $2,500 each). Mera's WebAuthn
   PRF-derived keys use the identical `m/44'/60'/0'/0/i` path already
@@ -253,5 +254,23 @@ for trust, provenance, and user-owned data."
   stack three competing wallet-auth SDKs against Mera), Aurora Intents,
   Kuru, Agora, Perpl (all trading/payments-specific, Frank is a messaging
   protocol), Chainlink CRE (no orchestration need), Nansen (analytics
-  product, wrong fit), Tencent Hunyuan (targets the Social/Culture track),
-  Kimi (redundant with the already-committed Qwen bounty).
+  product, wrong fit), Kimi (redundant with the already-committed Qwen
+  bounty). Tencent Hunyuan (targets Social/Culture, our actual track) is
+  no longer an automatic skip on track grounds, but is not currently
+  pursued — would mean a second, competing LLM integration alongside Qwen.
+- **Track fit note**: Social, Attention & Culture ("open social graphs,
+  competitive feed algorithms, community governance... cultural
+  participation translate into real ownership") is a better narrative fit
+  for cashweb's forum/topic broadcast + burn-weighted voting feature than
+  for plain 1:1 messaging. That feature is back in scope as a follow-on —
+  see the new milestone below.
+
+### M8 (follow-on, blocked on M6) — forum/topic broadcast + burn-weighted voting over Monad
+Re-admits the feature originally scoped out as a hackathon non-goal, now
+relevant to the Social/Attention/Culture track narrative: topics, posts,
+and burn-weighted up/down voting (`registry/index.ts`'s OP_RETURN
+"POND"-tagged burn transactions on the Lotus side). Same primitive-swap
+shape as Stamp (M4): keep the commitment/vote-weight concept, swap the
+OP_RETURN vote-tagged output for EVM calldata, verify via `MonadAdapter`.
+Explicitly lower priority than M7 (bot demo) — both are follow-ons gated
+on M6, pursue whichever has clearer remaining time.

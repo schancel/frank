@@ -10,6 +10,7 @@
 
 pub mod http;
 pub mod lotus_adapter;
+pub mod monad_ws;
 pub mod p2p;
 pub mod registry;
 pub mod store;

@@ -9,3 +9,7 @@ dist/
 __pycache__/
 *.pyc
 .worktrees/
+
+# spike/demo throwaway artifacts (generated keys, ciphertext, etc.)
+spike/data/
+

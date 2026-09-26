@@ -1,0 +1,14 @@
+{
+  "name": "frank-spike-demo",
+  "private": true,
+  "description": "THROWAWAY spike scratch package.json - only exists so `spike/` scripts can import the real app/src/cashweb/relay/crypto.ts via Node module resolution without installing the entire app/ dependency tree. Not part of the tracked app build.",
+  "dependencies": {
+    "ethers": "^6.13.5",
+    "node-forge": "^1.3.1",
+    "bitcore-lib-xpi": "file:./app/local_modules/bitcore-lib-xpi"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3"
+  }
+}

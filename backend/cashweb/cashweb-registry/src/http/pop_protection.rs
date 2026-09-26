@@ -44,8 +44,25 @@
 //! hash derived from the requester's pubkey; we use the target address instead since, unlike that
 //! deprecated flow, nothing here inspects the payload's `AuthWrapper`/pubkey (that's out of scope
 //! for this ticket -- see the non-goals in ticket #24).
+//!
+//! ## Configuration (ticket #4)
+//!
+//! [`PopGate::from_conf`] builds a [`PopGate`] from a [`cashweb_config::PopConf`] -- real
+//! config-file wiring via this crate's normal `cashweb-config` mechanism. This replaces ticket
+//! #24's `PopGate::from_env`/process-wide `OnceLock` (`pop_gate()`), which read raw env vars
+//! lazily on first request specifically to avoid touching
+//! [`crate::http::server::RegistryServer`]'s fields/construction sites -- explicitly flagged
+//! there as a follow-up. [`crate::http::server::RegistryServer`] now holds a
+//! `pop_gate: Arc<Result<PopGate<...>, PopGateConfigError>>` field built once at construction time
+//! (`cashwebd-exe/src/main.rs` for production, `cashweb_registry::test_instance` for tests) from
+//! its `cashweb_config::CashwebdConf`/`RegistryConf::pop`, rather than being read lazily per
+//! request. A `Result` (rather than requiring construction to fail outright) is kept so an
+//! invalid/inconsistent `PopConf` still fails closed per-request (`500`, see
+//! `crate::http::server::PutRegistryError::PopUnavailable`) instead of panicking at startup or
+//! silently disabling POP protection -- the same fail-closed principle ticket #24 established,
+//! just checked once at construction instead of on every request.
 
-use std::{collections::HashMap, fmt, sync::Arc, sync::OnceLock};
+use std::{collections::HashMap, fmt, sync::Arc};
 
 use axum::http::HeaderMap;
 
@@ -192,36 +209,31 @@ impl<V: PaymentVerifier> PopGate<V> {
     }
 }
 
-/// Errors reading required POP-gate configuration from the environment via [`pop_gate`].
+/// Errors building a [`PopGate`] from a [`cashweb_config::PopConf`] via [`PopGate::from_conf`].
+///
+/// Ticket #4: this used to be [`PopGateConfigError`]'s `MissingEnv`/`InvalidRpcUrl`-flavored
+/// sibling for reading raw env vars (see ticket #24's `PopGate::from_env`, now removed). Real
+/// config-file wiring via `cashweb-config` moves "is a field present and URL-shaped" enforcement
+/// to config-parse time (a [`cashweb_config::PopConf`] simply fails to deserialize, with a clear
+/// "missing/invalid field" error, before a [`PopGate`] is ever built) -- so only the two checks
+/// that need domain-specific parsing beyond what `serde`/`toml` can express on their own
+/// (`payment_recipient`, `min_value_wei`) remain here.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PopGateConfigError {
-    /// A required env var wasn't set.
-    MissingEnv(&'static str),
-    /// `MONAD_TESTNET_HTTP_RPC_URL` wasn't a valid URL.
-    InvalidRpcUrl(String),
-    /// `CASHWEB_POP_PAYMENT_RECIPIENT` wasn't a valid `0x`-prefixed 20-byte address.
+    /// `PopConf::payment_recipient` wasn't a valid `0x`-prefixed 20-byte address.
     InvalidRecipient(String),
-    /// `CASHWEB_POP_MIN_VALUE_WEI` wasn't a valid non-negative decimal integer.
+    /// `PopConf::min_value_wei` wasn't a valid non-negative decimal integer.
     InvalidMinValueWei(String),
 }
 
 impl fmt::Display for PopGateConfigError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            PopGateConfigError::MissingEnv(name) => {
-                write!(
-                    f,
-                    "missing required env var {name} (POP protection is unconfigured)"
-                )
-            }
-            PopGateConfigError::InvalidRpcUrl(msg) => {
-                write!(f, "invalid MONAD_TESTNET_HTTP_RPC_URL: {msg}")
-            }
             PopGateConfigError::InvalidRecipient(msg) => {
-                write!(f, "invalid CASHWEB_POP_PAYMENT_RECIPIENT: {msg}")
+                write!(f, "invalid PopConf::payment_recipient: {msg}")
             }
             PopGateConfigError::InvalidMinValueWei(msg) => {
-                write!(f, "invalid CASHWEB_POP_MIN_VALUE_WEI: {msg}")
+                write!(f, "invalid PopConf::min_value_wei: {msg}")
             }
         }
     }
@@ -229,69 +241,34 @@ impl fmt::Display for PopGateConfigError {
 
 impl std::error::Error for PopGateConfigError {}
 
-fn required_env(name: &'static str) -> Result<String, PopGateConfigError> {
-    std::env::var(name).map_err(|_| PopGateConfigError::MissingEnv(name))
-}
-
 impl PopGate<MonadReceiptVerifier<HttpTransport>> {
     /// Build a [`PopGate`] backed by a real Monad HTTPS RPC client, sourcing all configuration
-    /// from the environment (following this crate's existing convention of reading
-    /// `MONAD_TESTNET_HTTP_RPC_URL` at the call site rather than inside `monad_http`/
-    /// `monad_pop_verify` -- see those modules' docs):
+    /// from a [`cashweb_config::PopConf`] (ticket #4's real config-file wiring, replacing ticket
+    /// #24's raw-env-var `PopGate::from_env`/process-wide `OnceLock`).
     ///
-    /// - `MONAD_TESTNET_HTTP_RPC_URL`: Monad JSON-RPC endpoint (same var the live smoke tests
-    ///   use).
-    /// - `CASHWEB_POP_HMAC_SECRET`: server-side secret for bearer-token HMAC signing. Must be a
-    ///   long random string kept only in server config; there is deliberately no insecure
-    ///   built-in default -- an unset value fails closed (see [`PopGateConfigError::MissingEnv`])
-    ///   rather than silently gating with a guessable key.
-    /// - `CASHWEB_POP_PAYMENT_RECIPIENT`: `0x`-prefixed 20-byte Monad address payments must be
-    ///   sent to.
-    /// - `CASHWEB_POP_MIN_VALUE_WEI`: minimum payment amount, in wei, as a decimal string.
-    pub fn from_env() -> Result<Self, PopGateConfigError> {
-        let rpc_url = required_env("MONAD_TESTNET_HTTP_RPC_URL")?;
-        let rpc_url: url::Url = rpc_url
-            .parse()
-            .map_err(|err| PopGateConfigError::InvalidRpcUrl(format!("{err}")))?;
-        let secret = required_env("CASHWEB_POP_HMAC_SECRET")?;
-        let recipient_hex = required_env("CASHWEB_POP_PAYMENT_RECIPIENT")?;
-        let recipient = Address::from_hex(&recipient_hex)
+    /// Callers own threading `conf` through from wherever they parsed it (a `cashweb-config` TOML
+    /// file for `cashwebd-exe`, or a value built directly for tests, e.g.
+    /// `cashweb_registry::test_instance::RegistryTestInstance`) into
+    /// [`crate::http::server::RegistryServer`]'s construction; this function itself doesn't read
+    /// any environment variables or files.
+    pub fn from_conf(conf: &cashweb_config::PopConf) -> Result<Self, PopGateConfigError> {
+        let recipient = Address::from_hex(&conf.payment_recipient)
             .map_err(|err| PopGateConfigError::InvalidRecipient(format!("{err}")))?;
-        let min_value_wei_str = required_env("CASHWEB_POP_MIN_VALUE_WEI")?;
-        let min_value_wei = min_value_wei_str
+        let min_value_wei = conf
+            .min_value_wei
             .parse::<u128>()
-            .map_err(|_| PopGateConfigError::InvalidMinValueWei(min_value_wei_str))?;
+            .map_err(|_| PopGateConfigError::InvalidMinValueWei(conf.min_value_wei.clone()))?;
 
         let expected = ExpectedPayment {
             recipient,
             min_value_wei,
         };
-        let client = Arc::new(MonadHttpClient::new(rpc_url));
+        let client = Arc::new(MonadHttpClient::new(conf.monad_rpc_url.clone()));
         let verifier = MonadReceiptVerifier::new(client, expected);
-        let scheme = HmacBearerScheme::new(secret.into_bytes());
+        let scheme = HmacBearerScheme::new(conf.hmac_secret.clone().into_bytes());
         let issuer = TokenIssuer::new(verifier, scheme);
         Ok(PopGate::new(issuer, expected))
     }
-}
-
-/// Process-wide, lazily-initialized [`PopGate`] for [`crate::http::server::handle_put_registry`],
-/// built from the environment on first use (see [`PopGate::from_env`]).
-///
-/// A [`OnceLock`] (rather than plumbing config through [`crate::http::server::RegistryServer`])
-/// is used deliberately, to avoid changing that struct's fields -- and so avoid having to touch
-/// its other construction sites (`cashwebd-exe/src/main.rs`,
-/// `cashweb-registry/src/test_instance.rs`), which sit outside this ticket's edit scope.
-///
-/// If configuration is missing/invalid, every metadata-PUT request fails closed (see
-/// `crate::http::server`'s handling of this `Err`) rather than silently skipping POP protection --
-/// ticket #1 flagged the previous *zero* gating as the actual bug, so an unconfigured gate must
-/// not quietly behave the same way.
-pub fn pop_gate(
-) -> &'static Result<PopGate<MonadReceiptVerifier<HttpTransport>>, PopGateConfigError> {
-    static GATE: OnceLock<
-        Result<PopGate<MonadReceiptVerifier<HttpTransport>>, PopGateConfigError>,
-    > = OnceLock::new();
-    GATE.get_or_init(PopGate::from_env)
 }
 
 /// Decide whether a metadata-PUT request for `scope` (the target address's bytes) may proceed.
@@ -583,10 +560,44 @@ mod tests {
     }
 
     #[test]
-    fn pop_gate_config_error_missing_env_is_reported() {
-        // Sanity check the Display impl actually mentions the missing var name -- useful for
-        // whoever deploys this to know what to set.
-        let err = PopGateConfigError::MissingEnv("CASHWEB_POP_HMAC_SECRET");
-        assert!(err.to_string().contains("CASHWEB_POP_HMAC_SECRET"));
+    fn pop_gate_config_error_invalid_recipient_is_reported() {
+        // Sanity check the Display impl actually mentions the invalid value -- useful for
+        // whoever deploys this to know what's wrong.
+        let err = PopGateConfigError::InvalidRecipient("not-an-address".to_string());
+        assert!(err.to_string().contains("not-an-address"));
+    }
+
+    fn valid_pop_conf() -> cashweb_config::PopConf {
+        cashweb_config::PopConf {
+            monad_rpc_url: "https://example.invalid".parse().unwrap(),
+            hmac_secret: "test-secret".to_string(),
+            payment_recipient: format!("0x{}", "aa".repeat(20)),
+            min_value_wei: "1000".to_string(),
+        }
+    }
+
+    #[test]
+    fn pop_gate_from_conf_accepts_valid_conf() {
+        assert!(PopGate::from_conf(&valid_pop_conf()).is_ok());
+    }
+
+    #[test]
+    fn pop_gate_from_conf_rejects_invalid_recipient() {
+        let mut conf = valid_pop_conf();
+        conf.payment_recipient = "not-an-address".to_string();
+        assert!(matches!(
+            PopGate::from_conf(&conf),
+            Err(PopGateConfigError::InvalidRecipient(_))
+        ));
+    }
+
+    #[test]
+    fn pop_gate_from_conf_rejects_invalid_min_value_wei() {
+        let mut conf = valid_pop_conf();
+        conf.min_value_wei = "not-a-number".to_string();
+        assert!(matches!(
+            PopGate::from_conf(&conf),
+            Err(PopGateConfigError::InvalidMinValueWei(_))
+        ));
     }
 }

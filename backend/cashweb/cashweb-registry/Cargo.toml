@@ -16,6 +16,10 @@ cashweb-payload = { path = "../cashweb-payload" }
 # POP bearer-token extraction/issuance layer (ticket #22), wired into the registry-metadata-put
 # path by ticket #24 (see `http/pop_protection.rs`).
 cashweb-pop-token = { path = "../cashweb-pop-token" }
+# `PopConf` (ticket #4): real config-file wiring for `http::pop_protection::PopGate`, replacing
+# ticket #24's raw-env-var `OnceLock`. `cashweb-config` doesn't depend back on this crate, so this
+# is a one-way edge, not a cycle.
+cashweb-config = { path = "../cashweb-config" }
 
 # #[async_trait] macro, needed to implement the ChainAdapter trait
 async-trait = "0.1.50"

@@ -4,7 +4,7 @@ use bitcoinsuite_bitcoind::rpc_client::BitcoindRpcClient;
 use bitcoinsuite_error::{Result, WrapErr};
 use cashweb_config::parse_conf;
 use cashweb_registry::{
-    http::server::RegistryServer,
+    http::{pop_protection::PopGate, server::RegistryServer},
     lotus_adapter::LotusAdapter,
     p2p::{
         peer::Peer,
@@ -77,9 +77,26 @@ async fn main() -> Result<()> {
         .initial_metadata_download(&mut rng, &imd_params)
         .await?;
 
+    // POP (proof-of-payment) protection for the metadata-put endpoint (ticket #4): built once
+    // here from real config (`conf.registry.pop`, via `cashweb-config`) rather than lazily from
+    // raw env vars (ticket #24's now-removed `PopGate::from_env`/`OnceLock`). An `Err` here still
+    // doesn't crash the server at startup -- `RegistryServer::pop_gate` fails every metadata-PUT
+    // request closed with a `500` instead (see `http::server::PutRegistryError::PopUnavailable`),
+    // same fail-closed principle as before, just built once instead of lazily per request.
+    let pop_gate = Arc::new(PopGate::from_conf(&conf.registry.pop));
+    if let Err(err) = pop_gate.as_ref() {
+        tracing::event!(
+            tracing::Level::ERROR,
+            error = %err,
+            "POP protection is misconfigured; every metadata-put request will fail closed with a 500 \
+             until this is fixed"
+        );
+    }
+
     let server = RegistryServer {
         registry: Arc::clone(&registry),
         peers: Arc::clone(&peers),
+        pop_gate,
     };
 
     let router = server.into_router();

@@ -403,6 +403,7 @@ dependencies = [
  "bitcoinsuite-test-utils",
  "bitcoinsuite-test-utils-blockchain",
  "bloom",
+ "cashweb-config",
  "cashweb-http-utils",
  "cashweb-payload",
  "cashweb-pop-token",

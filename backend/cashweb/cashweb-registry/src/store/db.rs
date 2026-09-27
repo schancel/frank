@@ -22,6 +22,12 @@ pub(crate) const CF_TOPIC_BURNS: &str = "topic_burn_txs";
 /// Lotus `Tx` shape a Monad message doesn't have -- see `crate::store::monad_messages`'s module
 /// docs for why that storage path isn't reusable as-is.
 pub(crate) const CF_MONAD_MESSAGES: &str = "monad_messages";
+/// Ticket #37: secondary index over `CF_MONAD_MESSAGES`, keyed by `timestamp.to_be_bytes() ++
+/// payload_hash` (value: the `payload_hash`, so a range scan doesn't need a second lookup to know
+/// which `CF_MONAD_MESSAGES` entry to fetch). Lets `DbMonadMessages::list_since` iterate messages
+/// in timestamp order without scanning the whole (payload_hash-keyed) primary CF -- mirrors
+/// `DbTopics`'s `CF_MESSAGES` "topic_digest ++ timestamp" key layout, minus the topic prefix.
+pub(crate) const CF_MONAD_MESSAGES_BY_TIME: &str = "monad_messages_by_time";
 
 pub(crate) type CF = rocksdb::ColumnFamily;
 

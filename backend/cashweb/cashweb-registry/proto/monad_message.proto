@@ -43,3 +43,26 @@ message StoredMonadMessage {
   // Milliseconds since the Unix epoch when the relay stored this message.
   int64 timestamp = 4;
 }
+
+// Response for `GET /message/monad?since=<timestamp>` (ticket #37): a page of
+// [`StoredMonadMessage`]s the relay has stored, ordered by `timestamp` ascending, letting a
+// client discover newly-stored messages without already knowing their `payload_hash` out of
+// band.
+//
+// NOTE on recipient addressing (see ticket #37's handoff for the full writeup): neither
+// `MonadStampedMessage` nor `StoredMonadMessage` carries an intended-recipient field -- a Monad
+// message is addressed purely by content hash, with `encrypted_payload` opaque to the relay.
+// This endpoint therefore cannot filter server-side by recipient (unlike the polling endpoint
+// shape ticket #37 sketches, `GET /message/monad?since=<timestamp>&recipient=<address>`) --
+// there is nothing in the wire format for the relay to filter *on*. A client must currently
+// fetch this "since" page and determine which (if any) messages are addressed to it itself
+// (e.g. by trial decryption), mirroring how `DbTopics`'s existing topic-broadcast model already
+// works for the Lotus path (subscribers to a topic fetch everything and decrypt client-side).
+// Adding real recipient filtering would need a new field on `MonadStampedMessage` (additive --
+// e.g. `bytes recipient_address_hint = 4`, proto3 field addition is backward-compatible) but
+// that's a wire-format decision left for deliberate review since #16/#19/#27/#30 all build on
+// this proto -- not made unilaterally here.
+message StoredMonadMessages {
+  // Matching messages, ordered by `timestamp` ascending.
+  repeated StoredMonadMessage messages = 1;
+}

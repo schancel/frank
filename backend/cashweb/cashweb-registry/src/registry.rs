@@ -455,6 +455,16 @@ impl Registry {
     ) -> Result<Option<proto::StoredMonadMessage>> {
         self.db.monad_messages().get(payload_hash)
     }
+
+    /// List every [`proto::StoredMonadMessage`] stored with `timestamp >= since` (ticket #37),
+    /// ordered by `timestamp` ascending -- see `crate::http::monad_message`'s module docs for how
+    /// this is used, and for why it can't filter by intended recipient.
+    pub(crate) fn list_monad_messages_since(
+        &self,
+        since: i64,
+    ) -> Result<Vec<proto::StoredMonadMessage>> {
+        self.db.monad_messages().list_since(since)
+    }
 }
 
 #[cfg(test)]

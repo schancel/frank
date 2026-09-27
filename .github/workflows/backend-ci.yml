@@ -20,13 +20,17 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+    - uses: actions/checkout@v4
+
+    # Must come AFTER the main checkout: actions/checkout defaults to `clean: true`, which runs
+    # `git clean -ffdx` in the workspace root and would delete this directory (as an untracked
+    # file) if it were created first, causing every later `cp ... ../bin/` to fail with
+    # "Not a directory".
     - name: Make bin directory
       run: |
         mkdir bin
         echo "$(pwd)/bin" >> $GITHUB_PATH
       shell: bash
-
-    - uses: actions/checkout@v4
 
     - name: Checkout cargo-make repository
       uses: actions/checkout@v4

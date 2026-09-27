@@ -68,6 +68,14 @@ message StoredMonadForumPost {
   bytes tx_hash = 3;
   // Milliseconds since the Unix epoch when the relay stored this post.
   int64 timestamp = 4;
+  // Frank-specific network tag (ticket #39, see PLAN.md constraint 9), mirroring
+  // `StoredMonadMessage.network_tag` (`monad_message.proto`) exactly -- see that field's doc for
+  // the full rationale (short Frank-specific code, not a raw EVM `chainId`, stamped by the relay
+  // from its own `FRANK_NETWORK_TAG` configuration). NOTE: field number is `5`, not `6` -- this
+  // message only has fields 1-4 defined above (`post`, `sender_address`, `tx_hash`, `timestamp`),
+  // so `5` is the actual next-free number here, verified by reading this file rather than assumed
+  // from the ticket's issue text (which suggested `6`, off by one for this particular message).
+  bytes network_tag = 5;
 }
 
 // A single tallied vote (a post's initial vote, or a later [`MonadForumVote`]) as stored by the

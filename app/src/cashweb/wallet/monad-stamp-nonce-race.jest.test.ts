@@ -134,6 +134,7 @@ function storedMessageBytes(message: MonadStampedMessageProto): Uint8Array {
     senderAddress: getBytes('0x' + '11'.repeat(20)),
     txHash: getBytes('0x' + '22'.repeat(32)),
     timestamp: 1_700_000_000_000,
+    networkTag: new Uint8Array(),
   }
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const jspb = require('google-protobuf')

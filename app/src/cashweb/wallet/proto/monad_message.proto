@@ -46,6 +46,16 @@ message StoredMonadMessage {
   bytes tx_hash = 3;
   // Milliseconds since the Unix epoch when the relay stored this message.
   int64 timestamp = 4;
+  // Frank-specific network tag (ticket #39, see PLAN.md constraint 9, and
+  // `cashweb_registry::network_tag` for the backend's tag constants, e.g. `"MONT"`/`"MON1"`),
+  // stamped by the relay from its own `FRANK_NETWORK_TAG` configuration -- never asserted by the
+  // client, and never a raw EVM `chainId` (Lotus and any future non-EVM `ChainAdapter` have no such
+  // concept). Lets a client detect "the relay I'm talking to is on a different network than I
+  // expect" once one relay deployment could plausibly serve multiple chains -- out of scope for
+  // this ticket is any actual mismatch-checking logic client-side, this field just needs to exist,
+  // be populated, and be decodable. Empty (proto3 default) on records stored before this ticket
+  // shipped -- not backfilled, and expected to decode fine as empty bytes.
+  bytes network_tag = 5;
 }
 
 // Response for `GET /message/monad?since=<timestamp>` (ticket #37): a page of

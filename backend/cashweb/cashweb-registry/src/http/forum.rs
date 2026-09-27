@@ -116,11 +116,18 @@ impl fmt::Display for ProcessForumPostError {
 
 /// Decode, verify, broadcast-and-confirm, and (on success) store a [`proto::MonadForumPost`]
 /// together with its initial vote entry.
+///
+/// `network_tag` (ticket #39, see `crate::network_tag`'s module docs) is stamped onto the stored
+/// post by [`Registry::put_forum_post`] itself, mirroring `crate::http::monad_message::
+/// process_monad_message`'s own `network_tag` parameter exactly -- resolved by the caller (from
+/// [`crate::network_tag::frank_network_tag`]) and threaded through as an explicit argument rather
+/// than read from the environment in here, keeping this function directly unit-testable.
 pub async fn process_forum_post<T: JsonRpcTransport + Clone>(
     transport: &T,
     registry: &Registry,
     burn_address: Address,
     poll: PollConfig,
+    network_tag: &[u8],
     request: proto::MonadForumPost,
 ) -> Result<proto::StoredMonadForumPost, ProcessForumPostError> {
     let declared_hash = Sha256::from_slice(&request.payload_hash)
@@ -164,10 +171,11 @@ pub async fn process_forum_post<T: JsonRpcTransport + Clone>(
         sender_address: sender.0.to_vec(),
         tx_hash: tx_hash.0.to_vec(),
         timestamp,
+        network_tag: Vec::new(),
     };
 
-    registry
-        .put_forum_post(declared_hash.as_slice(), &stored)
+    let stored = registry
+        .put_forum_post(declared_hash.as_slice(), stored, network_tag)
         .map_err(ProcessForumPostError::Infrastructure)?;
 
     let vote_entry = proto::StoredMonadForumVoteEntry {
@@ -404,6 +412,7 @@ pub async fn handle_put_forum_post(
         &server.registry,
         config.burn_address,
         PollConfig::default(),
+        crate::network_tag::frank_network_tag(),
         post,
     )
     .await
@@ -724,6 +733,7 @@ mod tests {
             &registry,
             burn_address(),
             fast_poll(),
+            b"MONT",
             post.clone(),
         )
         .await
@@ -731,6 +741,8 @@ mod tests {
 
         assert_eq!(stored.sender_address, sender.0.to_vec());
         assert_eq!(stored.post, Some(post.clone()));
+        // Ticket #39: the relay's configured network tag is stamped onto the stored post.
+        assert_eq!(stored.network_tag, b"MONT");
 
         let view = registry
             .get_forum_post_view(&post.payload_hash)
@@ -768,6 +780,7 @@ mod tests {
             &registry,
             burn_address(),
             fast_poll(),
+            &[],
             post.clone(),
         )
         .await
@@ -813,6 +826,7 @@ mod tests {
             &registry,
             burn_address(),
             fast_poll(),
+            &[],
             post.clone(),
         )
         .await
@@ -915,9 +929,16 @@ mod tests {
         post.payload_hash[0] ^= 0xff;
 
         let transport = MockTransport::default();
-        let err = process_forum_post(&transport, &registry, burn_address(), fast_poll(), post)
-            .await
-            .expect_err("mismatched payload_hash should be rejected");
+        let err = process_forum_post(
+            &transport,
+            &registry,
+            burn_address(),
+            fast_poll(),
+            &[],
+            post,
+        )
+        .await
+        .expect_err("mismatched payload_hash should be rejected");
 
         assert!(matches!(
             err,
@@ -931,9 +952,16 @@ mod tests {
         let post = make_post(vec![0x01, 0xc0], b"hello".to_vec());
         let transport = MockTransport::default();
 
-        let err = process_forum_post(&transport, &registry, burn_address(), fast_poll(), post)
-            .await
-            .expect_err("malformed raw_burn_tx should be rejected");
+        let err = process_forum_post(
+            &transport,
+            &registry,
+            burn_address(),
+            fast_poll(),
+            &[],
+            post,
+        )
+        .await
+        .expect_err("malformed raw_burn_tx should be rejected");
 
         assert!(matches!(
             err,
@@ -965,6 +993,7 @@ mod tests {
             &registry,
             burn_address(),
             fast_poll(),
+            &[],
             post.clone(),
         )
         .await

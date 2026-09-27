@@ -192,6 +192,7 @@ mod tests {
             sender_address: vec![9u8; 20],
             tx_hash: vec![8u8; 32],
             timestamp: 1234,
+            network_tag: Vec::new(),
         };
         db.monad_messages().put(&payload_hash, &stored)?;
         assert_eq!(
@@ -225,6 +226,7 @@ mod tests {
             sender_address: vec![9u8; 20],
             tx_hash: vec![8u8; 32],
             timestamp,
+            network_tag: Vec::new(),
         }
     }
 

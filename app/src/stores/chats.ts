@@ -5,8 +5,10 @@ import { defaultStampAmount, displayNetwork } from '../utils/constants'
 import { stampPrice } from '../cashweb/wallet/helpers'
 import { desktopNotify } from '../utils/notifications'
 import { store } from '../adapters/level-message-store'
-import { toDisplayAddress } from '../utils/address'
+import { toChainDisplayAddress } from '../utils/chain-address'
 import { formatBalance } from '../utils/formatting'
+import { activeChain } from '../cashweb/chain'
+import type { DirectMessageSendResult, WalletHandle } from '../cashweb/chain'
 import { Utxo } from 'src/cashweb/types/utxo'
 import type {
   Message,
@@ -28,8 +30,45 @@ export type ChatMessage = {
   serverTime: number
   items: MessageItem[]
   outpoints: Utxo[]
+  /** See this file's header decision note: additive Monad-side value field, alongside
+   * `outpoints` rather than replacing it (ticket #42). */
+  burnValueWei?: bigint
   senderAddress: string
   payloadDigest: string
+}
+
+/**
+ * ## Decision (#42): `burnValueWei` added alongside `outpoints`, not in place of it
+ *
+ * `ChatMessage`/`Message`/`ReceivedMessage`'s `outpoints: Utxo[]` (used by `stampPrice` below, for
+ * unread-badge sort value) has no Monad equivalent -- Monad's stamp burns are a single scalar
+ * (`DirectMessageSendResult.burnValueWei`/`DirectMessageReceived.burnValueWei`,
+ * `../cashweb/chain/active-chain.ts`), never UTXOs. Chosen: add `burnValueWei?: bigint` as a new,
+ * optional field alongside `outpoints` (which stays required, defaulted to `[]` for Monad-sourced
+ * messages) rather than replacing `outpoints` outright. Why: `outpoints` is still read outside this
+ * file's scope (`components/chat/messages/ChatMessage.vue`'s own `stampPrice(this.message.outpoints)`
+ * call, for its stamp-price display) -- replacing the field would force touching that component
+ * (and the Lotus-still-wired `pinia-relay-adapter.ts`/leveldb `MessageWrapper` persistence path)
+ * as part of this ticket, well outside its stated file scope (`stores/chats.ts`/`contacts.ts`).
+ * Leaving `outpoints` alone and adding `burnValueWei` additively is strictly less invasive and
+ * keeps both chains' messages structurally valid at every existing call site; `ChatMessage.vue`'s
+ * stamp-price display simply continues to show 0 for Monad-received messages until ticket #44
+ * (PLAN.md's own scope for "remaining hardcoded XPI/Lotus-address UI spots") updates it.
+ *
+ * `burnPrice` below is the one narrow addition needed on this file's own two `stampPrice(...)`
+ * call sites so Monad messages sort/badge correctly using their real burn value instead of always
+ * reading as 0 (`stampPrice([])` for a message with no `outpoints`).
+ */
+function burnPrice(message: { outpoints: Utxo[]; burnValueWei?: bigint }) {
+  if (message.burnValueWei !== undefined) {
+    // Wei -> plain number for sort/badge purposes only, matching Lotus's own pre-existing
+    // sort-value use of `stampPrice` (satoshis as a plain number). Default burn values
+    // (CASHWEB_STAMP_MIN_BURN_VALUE_WEI, e.g. 1e12) are far below Number.MAX_SAFE_INTEGER
+    // (~9e15), so this is lossless in practice; a pathologically large burn would only ever
+    // affect display sort order, never a financial computation.
+    return Number(message.burnValueWei)
+  }
+  return stampPrice(message.outpoints)
 }
 
 type ChatState = {
@@ -59,11 +98,26 @@ export interface State {
   lastReceived: number | null
 }
 
-export const defaultChatsState: State = {
-  chats: {},
-  messages: {},
-  lastReceived: null,
-  activeChatAddr: null,
+/**
+ * Bugfix found while writing this ticket's (#42) first-ever `stores/*.ts` jest tests: this used to
+ * be a single module-level `const defaultChatsState: State = { chats: {}, ... }` object, spread
+ * (`{ ...defaultChatsState }`) at each of its 3 use sites below. A shallow spread only copies the
+ * *top-level* keys -- `chats`/`messages` themselves stayed the exact same shared object reference
+ * across every call, so every `useChatStore()` instance in the same JS process (e.g. two Pinia
+ * instances in the same test run, or any `$reset()` call) silently aliased the same mutable
+ * `chats`/`messages` objects instead of getting an independent empty state. Harmless in production
+ * today (exactly one `Pinia` instance is ever created per app lifetime, and nothing calls
+ * `$reset()`), but a real correctness bug the moment either assumption changes -- and it made this
+ * ticket's own tests (fresh `createPinia()` per test) silently leak state between tests. Fixed by
+ * making a fresh, independent state object each call instead of spreading a shared constant.
+ */
+function freshChatsState(): State {
+  return {
+    chats: {},
+    messages: {},
+    lastReceived: null,
+    activeChatAddr: null,
+  }
 }
 
 export type RestorableState = {
@@ -75,7 +129,7 @@ export type RestorableState = {
 
 export async function rehydateChat(chatState: RestorableState): Promise<State> {
   if (!chatState) {
-    return defaultChatsState
+    return freshChatsState()
   }
 
   const chats: Record<string, ChatState> = {}
@@ -131,7 +185,7 @@ export async function rehydateChat(chatState: RestorableState): Promise<State> {
     chat.messages.push(message)
     chat.lastReceived = message.serverTime
     const messageValue =
-      stampPrice(message.outpoints) +
+      burnPrice(message) +
       message.items.reduce((totalValue, entry) => {
         switch (entry.type) {
           case 'stealth':
@@ -167,7 +221,7 @@ export async function rehydateChat(chatState: RestorableState): Promise<State> {
 }
 
 export const useChatStore = defineStore('chats', {
-  state: (): State => ({ ...defaultChatsState }),
+  state: (): State => freshChatsState(),
   getters: {
     getMessageByPayload: state => (payloadDigest: string) => {
       if (!state.messages) {
@@ -176,7 +230,7 @@ export const useChatStore = defineStore('chats', {
       return state.messages[payloadDigest]
     },
     getNumUnread: state => (address: string) => {
-      const displayAddress = toDisplayAddress(address)
+      const displayAddress = toChainDisplayAddress(address)
 
       return state.chats[displayAddress]
         ? state.chats[displayAddress]?.totalUnreadMessages
@@ -217,12 +271,12 @@ export const useChatStore = defineStore('chats', {
       return sortedOrder
     },
     lastRead: state => (address: string) => {
-      const displayAddress = toDisplayAddress(address)
+      const displayAddress = toChainDisplayAddress(address)
 
       return state.chats[displayAddress]?.lastRead ?? 0
     },
     getStampAmount: state => (address: string) => {
-      const displayAddress = toDisplayAddress(address)
+      const displayAddress = toChainDisplayAddress(address)
       const chat = state.chats[displayAddress]
       if (!chat) {
         return defaultStampAmount
@@ -231,7 +285,7 @@ export const useChatStore = defineStore('chats', {
       return chat.stampAmount ?? defaultStampAmount
     },
     getLatestMessage: state => (address: string) => {
-      const displayAddress = toDisplayAddress(address)
+      const displayAddress = toChainDisplayAddress(address)
       const nopInfo = {
         outbound: false,
         text: '',
@@ -292,7 +346,7 @@ export const useChatStore = defineStore('chats', {
       address: string
       payloadDigest: string
     }) {
-      const displayAddress = toDisplayAddress(address)
+      const displayAddress = toChainDisplayAddress(address)
 
       delete this.messages[payloadDigest]
       const chat = this.chats[displayAddress]
@@ -305,7 +359,7 @@ export const useChatStore = defineStore('chats', {
       chat.messages.splice(msgIndex, 1)
     },
     readAll(address: string) {
-      const displayAddress = toDisplayAddress(address)
+      const displayAddress = toChainDisplayAddress(address)
       const chat = this.chats[displayAddress]
       if (!chat) {
         console.error('Trying to readAll messages from non-existant contact')
@@ -345,6 +399,7 @@ export const useChatStore = defineStore('chats', {
       index: payloadDigest,
       items,
       outpoints = [],
+      burnValueWei,
       status = 'pending',
       previousHash = null,
     }: {
@@ -353,10 +408,13 @@ export const useChatStore = defineStore('chats', {
       index: string
       items: MessageItem[]
       outpoints: Utxo[]
+      /** See this file's header decision note (ticket #42) -- additive Monad-side value,
+       * alongside `outpoints`. `undefined` for Lotus-origin sends. */
+      burnValueWei?: bigint
       status: string
       previousHash: string | null
     }) {
-      const displayAddress = toDisplayAddress(address)
+      const displayAddress = toChainDisplayAddress(address)
       const timestamp = Date.now()
       const newMsg = {
         outbound: true,
@@ -365,6 +423,7 @@ export const useChatStore = defineStore('chats', {
         serverTime: timestamp,
         receivedTime: timestamp,
         outpoints,
+        burnValueWei,
         senderAddress,
         messageHash: payloadDigest,
       }
@@ -414,8 +473,69 @@ export const useChatStore = defineStore('chats', {
         address: displayAddress,
       }
     },
+    /**
+     * Sends a direct message through `activeChain.directMessages.send` (ticket #42 acceptance
+     * criterion) and locally echoes it via the existing `sendMessageLocal` action, unchanged.
+     *
+     * Deliberate simplification vs. the old WS-based Lotus flow (`adapters/pinia-relay-adapter.ts`):
+     * no optimistic "sending..." bubble. The old flow could show one because `RelayClient`
+     * precomputes a message's payload digest client-side *before* submitting it, so the same
+     * `index` is reused across its `messageSending` -> `messageSent`/`messageSendError` events,
+     * letting `sendMessageLocal` update one message's `status` in place. `MonadStampClient` (#41)
+     * only returns a real `payloadDigest` *after* the burn tx is built and submitted -- there's no
+     * equivalent client-side pre-image to optimistically key an in-flight message by. Reusing
+     * `sendMessageLocal`'s `previousHash` reconciliation path with a synthetic temp id was
+     * considered and rejected: that branch (see `sendMessageLocal` above) only ever deletes the
+     * pending message and returns, it never re-inserts the confirmed one -- a pre-existing quirk
+     * out of this ticket's non-goals to fix. So this action simply awaits the send and records the
+     * message once, already 'confirmed'. A failed send throws to the caller (e.g. for a UI-level
+     * error toast) without touching store state.
+     */
+    async sendMessage({
+      wallet,
+      address,
+      items,
+    }: {
+      wallet: WalletHandle
+      address: string
+      items: MessageItem[]
+    }): Promise<DirectMessageSendResult> {
+      const recipient = activeChain.parseAddress(address)
+      assert(recipient, `Invalid recipient address: ${address}`)
+      const displayAddress = toChainDisplayAddress(address)
+
+      // Ensure the chat exists before sending -- sendMessageLocal (see above) silently no-ops a
+      // 'self send' if `this.chats[displayAddress]` isn't already present, mirroring the same
+      // chat-creation shape `setActiveChat` uses.
+      if (!(displayAddress in this.chats)) {
+        this.chats[displayAddress] = {
+          ...defaultContactObject,
+          messages: [],
+          address: displayAddress,
+        }
+      }
+
+      const result = await activeChain.directMessages.send({
+        wallet,
+        recipient,
+        items,
+      })
+
+      this.sendMessageLocal({
+        address: displayAddress,
+        senderAddress: wallet.identity.displayAddress,
+        index: result.payloadDigest,
+        items,
+        outpoints: [],
+        burnValueWei: result.burnValueWei,
+        status: 'confirmed',
+        previousHash: null,
+      })
+
+      return result
+    },
     clearChat(address: string) {
-      const displayAddress = toDisplayAddress(address)
+      const displayAddress = toChainDisplayAddress(address)
 
       const chat = this.chats[displayAddress]
       if (!chat) {
@@ -424,7 +544,7 @@ export const useChatStore = defineStore('chats', {
       chat.messages = []
     },
     deleteChat(address: string) {
-      const displayAddress = toDisplayAddress(address)
+      const displayAddress = toChainDisplayAddress(address)
       if (this.activeChatAddr === displayAddress) {
         this.activeChatAddr = null
       }
@@ -458,7 +578,7 @@ export const useChatStore = defineStore('chats', {
         this.readAll(address)
       }
 
-      const displayAddress = toDisplayAddress(address)
+      const displayAddress = toChainDisplayAddress(address)
       if (!(displayAddress in this.chats)) {
         this.chats[displayAddress] = {
           ...defaultContactObject,
@@ -563,7 +683,7 @@ export const useChatStore = defineStore('chats', {
         )
         assert(copartyAddress !== undefined, 'address is not defined')
         assert(index !== undefined, 'index is not defined')
-        const displayAddress = toDisplayAddress(copartyAddress)
+        const displayAddress = toChainDisplayAddress(copartyAddress)
 
         const message = { payloadDigest: index, ...newMsg }
         if (index in this.messages) {
@@ -591,7 +711,7 @@ export const useChatStore = defineStore('chats', {
         chat.messages.push(message)
         chat.lastReceived = message.serverTime
         const messageValue =
-          stampPrice(message.outpoints) +
+          burnPrice(message) +
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           message.items.reduce((totalValue: number, entry: any) => {
             switch (entry.type) {
@@ -644,7 +764,7 @@ export const useChatStore = defineStore('chats', {
         metadata.networkName !== displayNetwork ||
         metadata.version !== STORE_SCHEMA_VERSION
       if (invalidStore) {
-        return { ...defaultChatsState }
+        return freshChatsState()
       }
 
       const rehydratedChat = await rehydateChat(deserializedChats)

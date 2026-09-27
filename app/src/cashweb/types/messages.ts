@@ -43,6 +43,11 @@ export interface Message {
   items: Array<MessageItem>
   outpoints: Array<Utxo>
   senderAddress: string
+  /** Wei burned in this message's stamp transaction, for chains (Monad, ticket #42) that have no
+   * UTXO/`outpoints` equivalent -- see `stores/chats.ts`'s header for the decision to add this
+   * additively alongside `outpoints` rather than replace it. Always `undefined` for Lotus-origin
+   * messages (`outpoints` is authoritative for those). */
+  burnValueWei?: bigint
 }
 
 export interface MessageWrapper {

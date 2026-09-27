@@ -6,6 +6,7 @@ use bitcoinsuite_error::{ErrorMeta, Result, WrapErr};
 use rocksdb::ColumnFamilyDescriptor;
 use thiserror::Error;
 
+use crate::store::forum::{DbForumPosts, DbForumVotes};
 use crate::store::metadata::DbMetadata;
 use crate::store::monad_messages::DbMonadMessages;
 use crate::store::topics::DbTopics;
@@ -28,6 +29,13 @@ pub(crate) const CF_MONAD_MESSAGES: &str = "monad_messages";
 /// in timestamp order without scanning the whole (payload_hash-keyed) primary CF -- mirrors
 /// `DbTopics`'s `CF_MESSAGES` "topic_digest ++ timestamp" key layout, minus the topic prefix.
 pub(crate) const CF_MONAD_MESSAGES_BY_TIME: &str = "monad_messages_by_time";
+/// Ticket #30: stores [`crate::proto::StoredMonadForumPost`], keyed by `payload_hash`. Parallel
+/// to `CF_MONAD_MESSAGES` -- see `crate::store::forum`'s module docs.
+pub(crate) const CF_FORUM_POSTS: &str = "forum_posts";
+/// Ticket #30: stores [`crate::proto::StoredMonadForumVoteEntry`], keyed by
+/// `target_payload_hash ++ tx_hash` so multiple votes can tally against the same post -- see
+/// `crate::store::forum`'s module docs.
+pub(crate) const CF_FORUM_VOTES: &str = "forum_votes";
 
 pub(crate) type CF = rocksdb::ColumnFamily;
 
@@ -61,6 +69,8 @@ impl Db {
         DbMetadata::add_cfs(&mut cfs);
         DbTopics::add_cfs(&mut cfs);
         DbMonadMessages::add_cfs(&mut cfs);
+        DbForumPosts::add_cfs(&mut cfs);
+        DbForumVotes::add_cfs(&mut cfs);
         Self::open_with_cfs(path, cfs)
     }
 
@@ -77,6 +87,17 @@ impl Db {
     /// Returns `DbMonadMessages`, allowing access to stored Monad-stamped messages (ticket #27).
     pub fn monad_messages(&self) -> DbMonadMessages<'_> {
         DbMonadMessages::new(self)
+    }
+
+    /// Returns `DbForumPosts`, allowing access to stored Monad forum posts (ticket #30).
+    pub fn forum_posts(&self) -> DbForumPosts<'_> {
+        DbForumPosts::new(self)
+    }
+
+    /// Returns `DbForumVotes`, allowing access to stored Monad forum votes and their per-post
+    /// tally (ticket #30).
+    pub fn forum_votes(&self) -> DbForumVotes<'_> {
+        DbForumVotes::new(self)
     }
 
     pub(crate) fn open_with_cfs(

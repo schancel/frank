@@ -12,6 +12,8 @@ pub mod http;
 pub mod lotus_adapter;
 pub mod monad_adapter;
 pub mod monad_evm_tx;
+pub mod monad_forum_relay;
+pub mod monad_forum_verify;
 pub mod monad_http;
 pub mod monad_pop_verify;
 pub mod monad_stamp_relay;

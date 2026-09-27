@@ -2,6 +2,7 @@
 
 use crate::{
     http::error::HttpRegistryError,
+    http::forum::{handle_get_forum_post, handle_put_forum_post, handle_put_forum_vote},
     http::monad_message::{
         handle_get_monad_message, handle_list_monad_messages, handle_put_monad_message,
     },
@@ -163,6 +164,17 @@ impl RegistryServer {
             .route(
                 "/message/monad/:payload_hash",
                 routing::get(handle_get_monad_message),
+            )
+            // Monad forum topic post + burn-weighted vote path (ticket #30), additive alongside
+            // the plain Monad-message route above -- see `crate::http::forum`'s module docs.
+            // Static segments ("forum", "forum/vote") take priority over the `:payload_hash`
+            // wildcard segment at the same position, so these don't conflict with the route
+            // above.
+            .route("/message/monad/forum", routing::put(handle_put_forum_post))
+            .route("/message/monad/forum/vote", routing::put(handle_put_forum_vote))
+            .route(
+                "/message/monad/forum/:payload_hash",
+                routing::get(handle_get_forum_post),
             )
             .layer(Extension(self))
             .layer(

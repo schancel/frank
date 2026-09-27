@@ -47,7 +47,7 @@
                   outlined
                   style="width: 150px"
                   :label="$t('chatInput.stampPrice')"
-                  suffix="XPI"
+                  :suffix="chainUnit"
                   v-model="innerStampAmount"
                   input-class="text-right"
                 />
@@ -90,13 +90,16 @@ import { defineComponent } from 'vue'
 import emoji from 'node-emoji'
 import { defaultStampAmount } from '../../utils/constants'
 import { processInput } from '../../utils/chat'
+import { activeChain } from '../../cashweb/chain'
 
 export default defineComponent({
   components: {
     // Picker
   },
   data() {
-    return {}
+    return {
+      chainUnit: activeChain.unit,
+    }
   },
   props: {
     message: {

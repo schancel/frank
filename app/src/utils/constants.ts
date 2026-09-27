@@ -29,6 +29,14 @@ export const defaultAvatars = [
 ]
 
 // Chat constants
+// Both of these remain Lotus-denominated (ticket #44): `defaultStampAmount` is raw satoshis,
+// `stampLowerLimit` is whole XPI, and `pages/Chat.vue`'s `stampAmount` computed getter/setter
+// hardcodes the `* 1_000_000`/`/ 1_000_000` satoshi<->XPI conversion between them -- none of which
+// maps onto MonadChain's actual denomination (18-decimal wei, via `activeChain.toDisplayAmount`/
+// `fromDisplayAmount`, `active-chain.ts`). `ChatInput.vue`'s suffix label was switched to
+// `activeChain.unit` for display, but the underlying numeric scaling in `Chat.vue` is untouched --
+// that's a real unit-conversion migration (raw amount, not just a display label), out of this
+// ticket's scope.
 export const defaultStampAmount = 1_000_000 // Sats
 export const stampLowerLimit = 1 // XPI
 

@@ -79,10 +79,12 @@
 import { defineComponent, markRaw, ref } from 'vue'
 import { QInput } from 'quasar'
 
-import { ContactState, useContactStore } from 'src/stores/contacts'
-import { RegistryHandler } from '../cashweb/registry'
-import { toAPIAddress } from '../utils/address'
-import { registrys, networkName } from '../utils/constants'
+import {
+  ContactState,
+  defaultRelayData,
+  useContactStore,
+} from 'src/stores/contacts'
+import { activeChain } from '../cashweb/chain'
 import { PublicKey } from 'bitcore-lib-xpi'
 import { openChat } from 'src/utils/routes'
 
@@ -108,27 +110,32 @@ export default defineComponent({
   },
   watch: {
     address: async function (newAddress) {
-      if (newAddress === '') {
+      const trimmedAddress = newAddress.trim()
+      if (trimmedAddress === '') {
         this.contact = null
         return
       }
       try {
-        // Validate address
-        const address = toAPIAddress(newAddress.trim()) // TODO: Make generic
-
-        // Pull information from registry then relay server
-        const ksHandler = new RegistryHandler({ registrys, networkName })
-        const relayURL = await ksHandler.getRelayUrl(address)
-        const relayData = await this.$relayClient.getRelayData(address)
-        relayData.notify = true
+        // Resolve via the active chain instead of the old Lotus-only
+        // `toAPIAddress`/`RegistryHandler`/`ReadOnlyRelayClient` trio (ticket #44) -- mirrors
+        // `stores/contacts.ts`'s own `fetchAndAddContact` network-resolution branch, but kept
+        // local here (not committed to the store) until the user actually clicks "Add".
+        const chainAddress = activeChain.parseAddress(trimmedAddress)
+        if (!chainAddress) {
+          this.contact = null
+          return
+        }
+        const profileInfo = await activeChain.fetchProfile(chainAddress)
+        if (!profileInfo) {
+          this.contact = null
+          return
+        }
         this.contact = {
-          ...relayData,
           profile: {
-            ...relayData.profile,
-            pubKey: markRaw(PublicKey.fromBuffer(relayData.profile.pubKey)),
+            ...defaultRelayData.profile,
+            pubKey: markRaw(PublicKey.fromBuffer(profileInfo.pubKey)),
           },
         }
-        this.contact.relayURL = relayURL ?? null
       } catch {
         this.contact = null
       }
@@ -139,12 +146,12 @@ export default defineComponent({
       if (!this.contact) {
         return
       }
-      const cashAddress = toAPIAddress(this.address) // TODO: Make generic
+      const trimmedAddress = this.address.trim()
       this.addContactToStore({
-        address: cashAddress,
+        address: trimmedAddress,
         contact: this.contact,
       })
-      openChat(this.$router, this.address)
+      openChat(this.$router, trimmedAddress)
     },
     cancel() {
       window.history.length > 1 ? this.$router.go(-1) : this.$router.push('/')

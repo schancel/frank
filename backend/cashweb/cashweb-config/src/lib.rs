@@ -52,8 +52,24 @@ pub struct RegistryConf {
 /// that on the principle that missing configuration should fail closed. Requiring this at
 /// config-parse time fails even earlier (at startup, with a clear "missing field" error) than the
 /// previous per-request runtime check.
+///
+/// Ticket #35: `enabled` is a distinct, explicit third state from "misconfigured". When
+/// `enabled = false`, POP gating is skipped entirely (fail-*open*, by deliberate operator intent
+/// -- e.g. the hackathon demo, where signing up should require no payment). When `enabled = true`
+/// but the rest of this struct doesn't parse into a valid gate (bad `payment_recipient`/
+/// `min_value_wei`), behavior is unchanged from before this ticket: fail *closed* with a `500`
+/// (see `cashweb_registry::http::pop_protection::PopGateConfigError` and
+/// `cashweb_registry::http::server::RegistryServer::pop_gate`'s doc comment for how these two
+/// states are kept from collapsing into each other). There's deliberately no `#[serde(default)]`
+/// on this field: an operator must say explicitly whether POP is on, the same "no silent
+/// defaults" principle the rest of this struct already follows.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 pub struct PopConf {
+    /// Whether POP gating is active at all. `false` (the hackathon demo default) skips POP
+    /// gating entirely for every request -- no token check, no 402 challenge. `true` requires
+    /// the rest of this struct to parse into a valid gate at server-construction time, or every
+    /// gated request fails closed with a `500` (see this struct's docs).
+    pub enabled: bool,
     /// Monad JSON-RPC endpoint used to verify payment transaction receipts (same convention as
     /// the `MONAD_TESTNET_HTTP_RPC_URL` env var used elsewhere in this crate/`cashweb-registry`).
     pub monad_rpc_url: url::Url,
@@ -149,6 +165,7 @@ mod tests {
                 peers = ["https://example.com", "http://123.45.67.89"]
 
                 [registry.pop]
+                enabled = true
                 monad_rpc_url = "https://monad.rpc"
                 hmac_secret = "super-secret"
                 payment_recipient = "0x0000000000000000000000000000000000000abc"
@@ -179,6 +196,7 @@ mod tests {
                         fail_wait_duration_s: 30,
                     },
                     pop: PopConf {
+                        enabled: true,
                         monad_rpc_url: "https://monad.rpc".parse()?,
                         hmac_secret: "super-secret".to_string(),
                         payment_recipient: "0x0000000000000000000000000000000000000abc".to_string(),
@@ -210,6 +228,7 @@ mod tests {
                 num_sampled_peers = 2
 
                 [registry.pop]
+                enabled = true
                 monad_rpc_url = "https://monad.rpc"
                 hmac_secret = "super-secret"
                 payment_recipient = "0x0000000000000000000000000000000000000abc"
@@ -240,6 +259,7 @@ mod tests {
                         fail_wait_duration_s: 30,
                     },
                     pop: PopConf {
+                        enabled: true,
                         monad_rpc_url: "https://monad.rpc".parse()?,
                         hmac_secret: "super-secret".to_string(),
                         payment_recipient: "0x0000000000000000000000000000000000000abc".to_string(),

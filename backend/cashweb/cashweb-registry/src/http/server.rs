@@ -43,10 +43,21 @@ pub struct RegistryServer {
     /// once at construction time from real config (see `http::pop_protection`'s module docs'
     /// "Configuration" section) rather than lazily from raw env vars.
     ///
-    /// `Err` means the configuration this server was constructed with was invalid; every
-    /// metadata-PUT request then fails closed with a `500` (see [`PutRegistryError::PopUnavailable`])
-    /// rather than silently skipping POP protection.
-    pub pop_gate: Arc<Result<PopGate<MonadReceiptVerifier<HttpTransport>>, PopGateConfigError>>,
+    /// Ticket #35 adds a third, explicit state on top of #4's fail-closed `Result`, via the outer
+    /// `Option` (see [`pop_protection::PopGate::from_conf_if_enabled`], which builds this field):
+    ///
+    /// - `None`: POP is intentionally disabled (`PopConf::enabled = false`, the hackathon demo
+    ///   default) -- [`handle_put_registry`] skips the gate entirely: no token check, no 402
+    ///   challenge, the request proceeds as if no gate existed at all.
+    /// - `Some(Err(_))`: POP is enabled but this server was constructed with an invalid
+    ///   [`cashweb_config::PopConf`]; every metadata-PUT request then fails closed with a `500`
+    ///   (see [`PutRegistryError::PopUnavailable`]) rather than silently skipping POP protection.
+    /// - `Some(Ok(gate))`: POP is enabled and configured correctly; requests are gated normally.
+    ///
+    /// These two failure/off states are deliberately kept distinct (`None` vs. `Some(Err(_))`)
+    /// rather than collapsed into one -- "disabled" must never be reachable by a config that's
+    /// simply broken, and "misconfigured" must never silently degrade into "disabled".
+    pub pop_gate: Arc<Option<Result<PopGate<MonadReceiptVerifier<HttpTransport>>, PopGateConfigError>>>,
 }
 
 /// Relevant parts of an HTTP request to put new address metadata.
@@ -277,20 +288,27 @@ async fn handle_put_registry(
 ) -> Result<PutRegistrySuccess, PutRegistryError> {
     let address = address.parse::<LotusAddress>().map_err(InvalidAddress)?;
 
-    // --- POP protection (ticket #24, config-wired for real in ticket #4) ---
-    // Gate this endpoint behind a valid bearer token, minted from a verified Monad payment.
+    // --- POP protection (ticket #24, config-wired for real in ticket #4, made toggleable in #35)
+    // ---
+    // Gate this endpoint behind a valid bearer token, minted from a verified Monad payment --
+    // unless POP is explicitly disabled (`PopConf::enabled = false`), in which case the request
+    // proceeds immediately, exactly as if this gate didn't exist. This is a genuinely different
+    // path from "the gate exists but is misconfigured" (`Some(Err(_))` below), which must keep
+    // failing closed with a `500` -- see [`RegistryServer::pop_gate`]'s doc comment.
+    //
     // Previously this endpoint had no payment gating at all (ticket #1's finding); see
     // `http::pop_protection`'s module docs for the exact request shape a client uses to present a
     // token or submit a payment proof.
-    let gate = server
-        .pop_gate
-        .as_ref()
-        .as_ref()
-        .map_err(|err| PutRegistryError::PopUnavailable(err.clone()))?;
-    let scope = address.as_str().as_bytes();
-    let issued_token = pop_protection::authorize_put(gate, scope, &header_map, &query)
-        .await
-        .map_err(PutRegistryError::PaymentRequired)?;
+    let issued_token = match server.pop_gate.as_ref() {
+        None => None,
+        Some(Err(err)) => return Err(PutRegistryError::PopUnavailable(err.clone())),
+        Some(Ok(gate)) => {
+            let scope = address.as_str().as_bytes();
+            pop_protection::authorize_put(gate, scope, &header_map, &query)
+                .await
+                .map_err(PutRegistryError::PaymentRequired)?
+        }
+    };
     // --- end POP protection ---
 
     let request = PutMetadataRequest {

@@ -83,14 +83,28 @@ async fn main() -> Result<()> {
     // doesn't crash the server at startup -- `RegistryServer::pop_gate` fails every metadata-PUT
     // request closed with a `500` instead (see `http::server::PutRegistryError::PopUnavailable`),
     // same fail-closed principle as before, just built once instead of lazily per request.
-    let pop_gate = Arc::new(PopGate::from_conf(&conf.registry.pop));
-    if let Err(err) = pop_gate.as_ref() {
-        tracing::event!(
-            tracing::Level::ERROR,
-            error = %err,
-            "POP protection is misconfigured; every metadata-put request will fail closed with a 500 \
-             until this is fixed"
-        );
+    //
+    // Ticket #35: if `conf.registry.pop.enabled` is `false` (the hackathon demo default), no gate
+    // is built at all (`None`) and every metadata-put request proceeds ungated -- a distinct,
+    // intentional state from "built but invalid" (`Some(Err(_))`), which must keep failing closed.
+    let pop_gate = Arc::new(PopGate::from_conf_if_enabled(&conf.registry.pop));
+    match pop_gate.as_ref() {
+        None => {
+            tracing::event!(
+                tracing::Level::WARN,
+                "POP protection is disabled (PopConf::enabled = false); metadata-put requests \
+                 require no payment"
+            );
+        }
+        Some(Err(err)) => {
+            tracing::event!(
+                tracing::Level::ERROR,
+                error = %err,
+                "POP protection is misconfigured; every metadata-put request will fail closed with a 500 \
+                 until this is fixed"
+            );
+        }
+        Some(Ok(_)) => {}
     }
 
     let server = RegistryServer {

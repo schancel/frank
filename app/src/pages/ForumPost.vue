@@ -37,7 +37,6 @@ export default defineComponent({
   async mounted() {
     this.payloadDigest = this.$route.params.payloadDigest as string
     const message = await this.fetchMessage({
-      wallet: this.$wallet,
       payloadDigest: this.payloadDigest,
     })
     if (message) {
@@ -47,7 +46,6 @@ export default defineComponent({
   async beforeRouteUpdate(to, from, next) {
     this.payloadDigest = to.params.payloadDigest as string
     const message = await this.fetchMessage({
-      wallet: this.$wallet,
       payloadDigest: this.payloadDigest,
     })
     if (message) {

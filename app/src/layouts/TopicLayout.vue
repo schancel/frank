@@ -50,6 +50,7 @@ import TopicInput from 'src/components/topic/TopicInput.vue'
 import TopicDrawer from 'src/components/topic/TopicDrawer.vue'
 
 import { useTopicStore } from 'src/stores/topics'
+import { useActiveWallet } from 'src/composables/useActiveWallet'
 import { errorNotify } from 'src/utils/notifications'
 import assert from 'assert'
 
@@ -110,8 +111,9 @@ export default defineComponent({
       }
 
       try {
+        const wallet = await useActiveWallet()
         await this.putMessage({
-          wallet: this.$wallet,
+          wallet,
           entry,
           topic: this.topic,
         })

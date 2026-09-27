@@ -90,6 +90,7 @@ import { storeToRefs } from 'pinia'
 
 import { renderMarkdown } from '../utils/markdown'
 import { useForumStore } from 'src/stores/forum'
+import { useActiveWallet } from 'src/composables/useActiveWallet'
 
 import AMessage from '../components/forum/ForumMessage.vue'
 import { errorNotify, infoNotify } from 'src/utils/notifications'
@@ -173,8 +174,9 @@ export default defineComponent({
       }
 
       try {
+        const wallet = await useActiveWallet()
         await this.postMessage({
-          wallet: this.$wallet,
+          wallet,
           entry,
           satoshis: this.offering * 1_000_000,
           topic: this.topic,

@@ -65,6 +65,7 @@ import { storeToRefs } from 'pinia'
 import { defineComponent } from 'vue'
 
 import { sortModes, SortMode } from '../../utils/sorting'
+import { useActiveWallet } from 'src/composables/useActiveWallet'
 
 const DURATIONS = [
   { label: '1 Day', value: 1000 * 60 * 60 * 24 * 1 },
@@ -98,8 +99,9 @@ export default defineComponent({
     }
   },
   methods: {
-    refreshContent() {
-      this.refreshMessages({ wallet: this.$wallet, topic: this.selectedTopic })
+    async refreshContent() {
+      const wallet = await useActiveWallet()
+      this.refreshMessages({ wallet, topic: this.selectedTopic })
     },
     setTopic(text: string) {
       this.selectedTopic = text

@@ -59,6 +59,7 @@ import { useContactStore } from 'src/stores/contacts'
 
 import { ForumMessage } from '../../cashweb/types/forum'
 import { useTopicStore } from 'src/stores/topics'
+import { useActiveWallet } from 'src/composables/useActiveWallet'
 
 export default defineComponent({
   setup(props) {
@@ -99,8 +100,6 @@ export default defineComponent({
     formatAddress(address: string) {
       return '...' + address.substring(address.length - 10, address.length)
     },
-    // FIXME: We shouldn't need to have this as a method, but we need the wallet.
-    // Still need to implement a `useWallet` method.
     addVotes(votes: number) {
       const topicStore = useTopicStore()
       const topic = this.topic
@@ -110,21 +109,25 @@ export default defineComponent({
         clearTimeout(this.timeoutId)
       }
       this.timeoutId = setTimeout(() => {
-        if (this.voteAmount === 0) {
-          return
-        }
-        console.log('Adding votes', {
-          payloadDigest: this.message?.payloadDigest,
-          satoshis: this.voteAmount,
-        })
-        topicStore.addOffering({
-          wallet: this.$wallet,
-          payloadDigest: this.message?.payloadDigest,
-          satoshis:
-            this.voteAmount * (topicStore.topics[topic]?.offering ?? 1_000_000),
-          topic,
-        })
-        this.voteAmount = 0
+        void (async () => {
+          if (this.voteAmount === 0) {
+            return
+          }
+          console.log('Adding votes', {
+            payloadDigest: this.message?.payloadDigest,
+            satoshis: this.voteAmount,
+          })
+          const wallet = await useActiveWallet()
+          topicStore.addOffering({
+            wallet,
+            payloadDigest: this.message?.payloadDigest,
+            satoshis:
+              this.voteAmount *
+              (topicStore.topics[topic]?.offering ?? 1_000_000),
+            topic,
+          })
+          this.voteAmount = 0
+        })()
       }, 1_000)
     },
   },

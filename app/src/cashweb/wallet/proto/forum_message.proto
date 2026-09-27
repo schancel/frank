@@ -1,0 +1,109 @@
+// Copy of backend/cashweb/cashweb-registry/proto/forum_message.proto (ticket #30) — kept in sync
+// by hand, matching this app's existing convention of a local proto/ source per feature area
+// rather than a cross-repo build-time reference (see monad_message.proto's own header comment).
+// If this drifts from the backend's copy, the backend's is authoritative (it's what the live
+// relay actually decodes against).
+syntax = "proto3";
+package cashweb.registry;
+
+// Monad-native forum topic post + burn-weighted vote (ticket #30).
+//
+// Mirrors `monad_message.proto`'s `MonadStampedMessage`/`StoredMonadMessage` pattern (ticket
+// #27): no separate pubkey/signature field anywhere here either -- sender identity always comes
+// from `ecrecover` over a message's `raw_burn_tx` (see `cashweb_registry::monad_evm_tx::
+// recover_sender`), never an app-level signature.
+//
+// This extends that pattern with a Lotus-style *burn-weighted vote* (see `app/src/cashweb/
+// registry/index.ts`'s `createBroadcast`/`addOfferings`/`calculateBurnAmount`): a topic post
+// carries an initial up/down vote, and separate `MonadForumVote` messages cast additional votes
+// against an already-posted `payload_hash`. Unlike a plain Stamp burn (which only needs to prove
+// "at least min_value_wei was burned"), a vote's exact burned value *is* its weight, and its
+// calldata additionally carries an up/down direction -- see
+// `cashweb_registry::monad_forum_verify`'s module docs for the exact calldata layout this
+// implies and why it can't reuse `monad_stamp_verify::parse_commitment_calldata` as-is.
+
+// A new forum topic post. `raw_burn_tx` doubles as this post's initial vote: its calldata must
+// commit to `payload_hash` (this post's own content hash) via the `<lokad_id><version><direction>
+// <commitment>` layout `monad_forum_verify` documents, exactly the way a plain
+// `MonadStampedMessage`'s `raw_burn_tx` commits to its `payload_hash` -- just with an extra
+// direction bit, since even a post's initial vote can be up or down.
+message MonadForumPost {
+  // Topic this post belongs to (matches `BroadcastMessage.topic`'s intended use).
+  string topic = 1;
+  // SHA256 digest of the parent post this is replying to, if any. Empty (0 bytes) for a top-level
+  // post -- proto3 has no separate "optional" needed here since 0-length is otherwise meaningless
+  // for a hash.
+  bytes parent_post_hash = 2;
+  // Raw, signed, RLP-encoded Monad transaction burning value to the relay's configured forum-vote
+  // burn address; its calldata commits to `payload_hash` and carries this post's initial vote
+  // direction. The relay broadcasts this tx itself (mirroring `MonadStampedMessage.raw_burn_tx`)
+  // -- the client is never required to have already landed it on-chain.
+  bytes raw_burn_tx = 3;
+  // The post's content, encrypted for its recipient(s) exactly like
+  // `MonadStampedMessage.encrypted_payload`. Opaque to the relay.
+  bytes encrypted_payload = 4;
+  // SHA256(encrypted_payload). Must match both the actual hash of `encrypted_payload` and the
+  // commitment carried in `raw_burn_tx`'s calldata.
+  bytes payload_hash = 5;
+}
+
+// An additional vote cast against an already-posted `MonadForumPost`, identified by its
+// `target_payload_hash`. Carries no payload of its own (per the acceptance criteria: "target
+// payload hash + raw burn tx, no new payload") -- it only exists to add more burn-weight to a
+// post that's already stored.
+message MonadForumVote {
+  // `payload_hash` of the `MonadForumPost` this vote applies to. The post need not exist yet at
+  // decode time (checked at verification time), but voting on an unknown post is rejected before
+  // any burn is broadcast.
+  bytes target_payload_hash = 1;
+  // Raw, signed, RLP-encoded Monad transaction burning value to the same forum-vote burn address
+  // as a post's initial vote; its calldata commits to `target_payload_hash` and carries this
+  // vote's direction.
+  bytes raw_burn_tx = 2;
+}
+
+// A [`MonadForumPost`] as stored by the relay once its initial vote's burn verified, augmented
+// with facts the relay itself derived -- mirrors `StoredMonadMessage`.
+message StoredMonadForumPost {
+  // The original post as submitted.
+  MonadForumPost post = 1;
+  // Sender's 20-byte Monad address, recovered via `ecrecover` from `post.raw_burn_tx`.
+  bytes sender_address = 2;
+  // 32-byte hash of the broadcast (and confirmed) initial-vote burn transaction.
+  bytes tx_hash = 3;
+  // Milliseconds since the Unix epoch when the relay stored this post.
+  int64 timestamp = 4;
+  // Frank-specific network tag (ticket #39, see PLAN.md constraint 9), mirroring
+  // `StoredMonadMessage.network_tag` (`monad_message.proto`) exactly.
+  bytes network_tag = 5;
+}
+
+// A single tallied vote (a post's initial vote, or a later [`MonadForumVote`]) as stored by the
+// relay once its burn verified. Multiple of these can exist per `target_payload_hash`; summing
+// their `weight` fields is the post's current vote tally.
+message StoredMonadForumVoteEntry {
+  // `payload_hash` of the post this vote counts towards.
+  bytes target_payload_hash = 1;
+  // Sender's 20-byte Monad address, recovered via `ecrecover` from `raw_burn_tx`.
+  bytes sender_address = 2;
+  // 32-byte hash of the broadcast (and confirmed) vote burn transaction. Also this entry's
+  // dedup key within a target's vote set (see `store::forum::DbForumVotes`), so retrying an
+  // already-verified vote request can't double-count.
+  bytes tx_hash = 3;
+  // Milliseconds since the Unix epoch when the relay stored this vote.
+  int64 timestamp = 4;
+  // This vote's signed weight: +value_wei for an up-vote, -value_wei for a down-vote, exactly as
+  // burned on-chain (never thresholded against a minimum).
+  sint64 weight = 5;
+}
+
+// Response shape for `GET /message/monad/forum/:payload_hash`: a stored post plus its current
+// tallied vote weight (sum of every [`StoredMonadForumVoteEntry.weight`] recorded against its
+// `payload_hash`, including its own initial vote).
+message MonadForumPostView {
+  // The stored post itself.
+  StoredMonadForumPost post = 1;
+  // Sum of every vote's signed weight recorded against `post.post.payload_hash` (its initial vote
+  // plus every later `MonadForumVote`).
+  sint64 vote_weight = 2;
+}

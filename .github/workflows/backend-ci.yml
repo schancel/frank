@@ -3,10 +3,10 @@ name: backend - build and test
 on:
   push:
     branches: [main]
-    paths: ["backend/**"]
+    paths: ["backend/**", ".github/workflows/backend-ci.yml"]
   pull_request:
     branches: [main]
-    paths: ["backend/**"]
+    paths: ["backend/**", ".github/workflows/backend-ci.yml"]
 
 # NOTE: adapted from the pre-fork `cashweb` repo's own ci.yml, which checked out `cashweb` and
 # `bitcoinsuite` as separate sibling repos. In this monorepo both are already vendored as

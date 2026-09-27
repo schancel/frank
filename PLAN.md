@@ -43,6 +43,20 @@ fully superseded by the tracked ticket pipeline rather than kept as a crutch.
    so reusing an address there isn't a new privacy leak the way reusing a
    Stamp sub-account is — though POP is disabled entirely for the hackathon
    demo anyway (see constraint 4), so this doesn't matter in practice yet.
+   **Change handling (see ticket following #34):** a spent burn account's
+   leftover balance (funded with `burn_value + gas_reserve`, but actual gas
+   used is usually less) needs somewhere to go rather than being abandoned
+   in a dead account. Use a separate BIP-44 change branch
+   (`m/44'/60'/0'/1/i`, mirroring Bitcoin's internal/external chain split)
+   allocated strictly in order, one change index per swept-out account.
+   Day-to-day, track "next unused change index" locally/persisted the same
+   way the burn pool already does — a chain-scanning binary search (exploit
+   strict sequential allocation: `nonce > 0 OR balance > 0` is monotonic
+   across indices, so bisect for the used/unused boundary) is a *recovery*
+   tool for reconstructing that pointer from chain data alone (e.g.
+   restoring a wallet from seed with no local state), not the live
+   bookkeeping mechanism — bisecting live risks a false "unused" read on an
+   index whose funding tx is still unconfirmed.
 4. **POP and Stamp are separate mechanisms — do not conflate them.**
    - **POP** (bearer-token exchange): pay once via the payment protocol, get
      a token, reuse it for protected per-address API calls (read/manage

@@ -1,7 +1,44 @@
-//! `PUT /message/monad` and `GET /message/monad/:payload_hash`: the live HTTP path for a
-//! Monad-stamped broadcast message (ticket #27), completing the wiring
-//! `crate::monad_stamp_relay`'s module docs (ticket #19) left for "whoever picks up the wire
-//! format decision".
+//! `PUT /message/monad`, `GET /message/monad/:payload_hash`, and `GET /message/monad?since=
+//! <timestamp>`: the live HTTP path for a Monad-stamped broadcast message (ticket #27),
+//! completing the wiring `crate::monad_stamp_relay`'s module docs (ticket #19) left for
+//! "whoever picks up the wire format decision".
+//!
+//! ## Message discovery (`GET /message/monad?since=<timestamp>`, ticket #37)
+//!
+//! Ticket #8's live e2e demo found that `GET /message/monad/:payload_hash` (exact-hash lookup)
+//! is the *only* read path -- there's no way for a recipient to learn a new message exists
+//! without already being told its `payload_hash` out of band. [`handle_list_monad_messages`]
+//! adds the simpler of ticket #37's two documented options (a polling "list since" endpoint,
+//! rather than a WS push route) -- chosen because:
+//! - It reuses this route's existing gating/response conventions directly, with no new
+//!   long-lived-connection lifecycle (auth-on-connect, backpressure, reconnect/resume-from-cursor
+//!   on drop) to design and test under this ticket's scope.
+//! - `crate::monad_ws.rs`'s WS code is a *client* of Monad's own `eth_subscribe` RPC (internal
+//!   `ChainAdapter` plumbing) -- it's a reasonable reference for `tokio-tungstenite` mechanics but
+//!   isn't a server-side push framework this route could extend, so following it would mean
+//!   building a WS *server* route from scratch.
+//! - The old Lotus-era `RelayClient`/`isomorphic-ws` code in `app/src/cashweb/relay/` is a
+//!   different, pre-Monad relay-server protocol (explicitly out of scope per this ticket's
+//!   instructions) and doesn't inform this decision either way.
+//! - A polling `since` cursor is sufficient to satisfy the acceptance criterion (discover a new
+//!   message without knowing its `payload_hash` out of band); WS push is strictly an optimization
+//!   (lower latency, no polling interval to tune) that can be layered on top later without
+//!   changing this endpoint's semantics.
+//!
+//! **Important gap, surfaced rather than silently patched over (see ticket #37's handoff for the
+//! full writeup):** neither [`proto::MonadStampedMessage`] nor [`proto::StoredMonadMessage`]
+//! carries an intended-*recipient* field at all -- a Monad message is addressed purely by content
+//! hash, with `encrypted_payload` opaque to the relay (Stamp's design centers on the *sender*
+//! proving payment via the burn tx, not on recipient addressing). So unlike the `&recipient=
+//! <address>` parameter ticket #37's issue text sketches, [`handle_list_monad_messages`] takes
+//! only `since` and returns *every* message stored at or after that timestamp -- there is nothing
+//! in the wire format for the relay to filter on server-side. This mirrors how `DbTopics`'s
+//! existing topic-broadcast model already works for the Lotus path (subscribers to a topic fetch
+//! everything under it and decrypt client-side to find what's theirs). A real fix would add a
+//! recipient-identifying field to [`proto::MonadStampedMessage`] (additive -- proto3 field
+//! addition is backward-compatible, e.g. `bytes recipient_address_hint = 4`) but that's a
+//! deliberate wire-format decision left for review, not made unilaterally here, since #16/#19/#27/
+//! #30 all build on this proto.
 //!
 //! ## Why a separate route, and a separate message type, instead of extending `PUT /message`
 //!
@@ -64,7 +101,7 @@
 use std::{fmt, sync::OnceLock};
 
 use axum::{
-    extract::Path,
+    extract::{Path, Query},
     http::StatusCode,
     response::{IntoResponse, Response},
     Extension, Json,
@@ -73,7 +110,7 @@ use bitcoinsuite_core::{Hashed, Sha256};
 use bitcoinsuite_error::Report;
 use cashweb_http_utils::protobuf::Protobuf;
 use cashweb_payload::verify::BROADCAST_MESSAGE_LOKAD_ID;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tracing::Level;
 
 use crate::{
@@ -394,6 +431,50 @@ pub async fn handle_get_monad_message(
     Ok(Protobuf(stored))
 }
 
+/// Query parameters for [`handle_list_monad_messages`].
+#[derive(Debug, Deserialize)]
+pub struct ListMonadMessagesQuery {
+    /// Only return messages stored at or after this many milliseconds since the Unix epoch.
+    /// Defaults to `0` (i.e. every stored message) when omitted.
+    since: Option<i64>,
+}
+
+/// Error type for [`handle_list_monad_messages`].
+#[derive(Debug)]
+pub enum ListMonadMessagesError {
+    /// A storage-level error.
+    Infrastructure(Report),
+}
+
+impl IntoResponse for ListMonadMessagesError {
+    fn into_response(self) -> Response {
+        match self {
+            ListMonadMessagesError::Infrastructure(err) => {
+                tracing::event!(Level::ERROR, error = %err, "infrastructure failure listing Monad messages");
+                StatusCode::INTERNAL_SERVER_ERROR.into_response()
+            }
+        }
+    }
+}
+
+/// `GET /message/monad?since=<timestamp>`: list every [`proto::StoredMonadMessage`] stored at or
+/// after `since` (milliseconds since the Unix epoch), ordered by `timestamp` ascending (ticket
+/// #37). This is the message-discovery route: a recipient can poll it with an advancing cursor
+/// (the highest `timestamp` it's already seen, plus one) to find new messages without already
+/// knowing their `payload_hash` out of band. See this module's docs for why it can't additionally
+/// filter by intended recipient (no such field exists on the wire format yet).
+pub async fn handle_list_monad_messages(
+    Query(params): Query<ListMonadMessagesQuery>,
+    Extension(server): Extension<RegistryServer>,
+) -> Result<Protobuf<proto::StoredMonadMessages>, ListMonadMessagesError> {
+    let since = params.since.unwrap_or(0);
+    let messages = server
+        .registry
+        .list_monad_messages_since(since)
+        .map_err(ListMonadMessagesError::Infrastructure)?;
+    Ok(Protobuf(proto::StoredMonadMessages { messages }))
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -693,5 +774,107 @@ mod tests {
     fn gate_config_error_display_mentions_missing_var() {
         let err = MonadMessageGateConfigError::MissingEnv("MONAD_STAMP_BURN_ADDRESS");
         assert!(err.to_string().contains("MONAD_STAMP_BURN_ADDRESS"));
+    }
+
+    /// Build a [`RegistryServer`] around `registry`, wired the same harmless way
+    /// `crate::test_instance::RegistryTestInstance` wires one (POP disabled, no real peers) but
+    /// without needing a bitcoind instance -- this ticket's endpoint doesn't touch either.
+    fn test_server(registry: Registry) -> RegistryServer {
+        use crate::{p2p::peers::Peers, test_instance::placeholder_pop_conf};
+
+        let pop_gate = crate::http::pop_protection::PopGate::from_conf_if_enabled(
+            &placeholder_pop_conf(),
+        );
+        RegistryServer {
+            registry: Arc::new(registry),
+            peers: Arc::new(Peers::new("http://127.0.0.1:1".to_string(), vec![])),
+            pop_gate: Arc::new(pop_gate),
+        }
+    }
+
+    /// Store a valid, verified [`proto::MonadStampedMessage`] straight into `registry` (bypassing
+    /// the HTTP `PUT` + stamp-verification machinery, which [`valid_stamp_is_accepted_and_stored`]
+    /// already covers) with an explicit `timestamp`, for [`list_since`]-focused tests below where
+    /// the interesting behavior is the read side, not verification.
+    fn store_at(registry: &Registry, payload_hash: Vec<u8>, timestamp: i64) {
+        let stored = proto::StoredMonadMessage {
+            message: Some(proto::MonadStampedMessage {
+                raw_burn_tx: vec![1, 2, 3],
+                encrypted_payload: vec![4, 5, 6],
+                payload_hash: payload_hash.clone(),
+            }),
+            sender_address: vec![9u8; 20],
+            tx_hash: vec![8u8; 32],
+            timestamp,
+        };
+        registry.put_monad_message(&payload_hash, &stored).unwrap();
+    }
+
+    /// Ticket #37's core acceptance criterion: a recipient can discover a newly-stored message
+    /// via `GET /message/monad?since=<timestamp>` without ever having been told its
+    /// `payload_hash` out of band -- the handler is called with only a `since` cursor, and the
+    /// returned `payload_hash`es are read back *from the response*, never supplied to the call.
+    #[tokio::test]
+    async fn discovers_new_messages_via_list_since_without_knowing_payload_hash_up_front() {
+        let (_tempdir, registry) = test_registry();
+        let hash_a = vec![0xaa; 32];
+        let hash_b = vec![0xbb; 32];
+        store_at(&registry, hash_a.clone(), 100);
+        store_at(&registry, hash_b.clone(), 200);
+
+        let server = test_server(registry);
+
+        let Protobuf(page) = handle_list_monad_messages(
+            Query(ListMonadMessagesQuery { since: None }),
+            Extension(server),
+        )
+        .await
+        .expect("listing should succeed");
+
+        let discovered_hashes: Vec<Vec<u8>> = page
+            .messages
+            .iter()
+            .map(|m| m.message.as_ref().unwrap().payload_hash.clone())
+            .collect();
+        assert_eq!(discovered_hashes, vec![hash_a, hash_b]);
+    }
+
+    #[tokio::test]
+    async fn list_since_excludes_messages_stored_before_the_cursor() {
+        let (_tempdir, registry) = test_registry();
+        let hash_old = vec![0x11; 32];
+        let hash_new = vec![0x22; 32];
+        store_at(&registry, hash_old, 100);
+        store_at(&registry, hash_new.clone(), 200);
+
+        let server = test_server(registry);
+
+        let Protobuf(page) = handle_list_monad_messages(
+            Query(ListMonadMessagesQuery { since: Some(150) }),
+            Extension(server),
+        )
+        .await
+        .expect("listing should succeed");
+
+        assert_eq!(page.messages.len(), 1);
+        assert_eq!(
+            page.messages[0].message.as_ref().unwrap().payload_hash,
+            hash_new
+        );
+    }
+
+    #[tokio::test]
+    async fn list_since_with_no_matching_messages_returns_an_empty_page() {
+        let (_tempdir, registry) = test_registry();
+        let server = test_server(registry);
+
+        let Protobuf(page) = handle_list_monad_messages(
+            Query(ListMonadMessagesQuery { since: Some(0) }),
+            Extension(server),
+        )
+        .await
+        .expect("listing should succeed even with nothing stored");
+
+        assert!(page.messages.is_empty());
     }
 }

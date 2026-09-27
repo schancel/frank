@@ -16,23 +16,43 @@
 //! -- `cashweb-payload` is explicitly off limits for this ticket). Hence: a separate, much simpler
 //! store, keyed directly by `payload_hash` (mirroring `DbTopics`'s `cf_payloads` column family,
 //! minus the topic-indexing machinery this simpler message shape doesn't need).
+//!
+//! ## `list_since` (ticket #37)
+//!
+//! `CF_MONAD_MESSAGES_BY_TIME` is a secondary index, keyed by `timestamp.to_be_bytes() ++
+//! payload_hash` (value: the `payload_hash`), maintained alongside the primary
+//! `CF_MONAD_MESSAGES` on every [`DbMonadMessages::put`]. It exists so [`DbMonadMessages::
+//! list_since`] can range-scan messages in timestamp order -- mirroring `DbTopics`'s `CF_MESSAGES`
+//! "topic_digest ++ timestamp" key layout (see `crate::store::topics::DbTopics::get_messages_to`),
+//! minus the topic prefix this simpler message shape has no equivalent of. See `crate::http::
+//! monad_message`'s module docs (and ticket #37's handoff) for why this can list messages by time
+//! but **not** filter by intended recipient: nothing in [`proto::MonadStampedMessage`]/
+//! [`proto::StoredMonadMessage`] identifies one.
 
 use std::fmt::Debug;
 
 use bitcoinsuite_error::{ErrorMeta, Result, WrapErr};
 use prost::Message;
-use rocksdb::ColumnFamilyDescriptor;
+use rocksdb::{ColumnFamilyDescriptor, Direction, IteratorMode};
 use thiserror::Error;
 
 use crate::{
     proto,
-    store::db::{Db, CF, CF_MONAD_MESSAGES},
+    store::db::{Db, CF, CF_MONAD_MESSAGES, CF_MONAD_MESSAGES_BY_TIME},
 };
+
+/// Build the `CF_MONAD_MESSAGES_BY_TIME` key for a given `(timestamp, payload_hash)` pair. Kept
+/// as a free function so [`DbMonadMessages::put`] and [`DbMonadMessages::list_since`] can't
+/// disagree on the encoding.
+fn by_time_key(timestamp: i64, payload_hash: &[u8]) -> Vec<u8> {
+    [timestamp.to_be_bytes().as_ref(), payload_hash].concat()
+}
 
 /// Allows access to stored Monad-stamped messages.
 pub struct DbMonadMessages<'a> {
     db: &'a Db,
     cf_monad_messages: &'a CF,
+    cf_monad_messages_by_time: &'a CF,
 }
 
 /// Errors indicating some Monad-message store error.
@@ -55,22 +75,38 @@ impl<'a> DbMonadMessages<'a> {
     /// Create a new [`DbMonadMessages`] instance.
     pub fn new(db: &'a Db) -> Self {
         let cf_monad_messages = db.cf(CF_MONAD_MESSAGES).unwrap();
+        let cf_monad_messages_by_time = db.cf(CF_MONAD_MESSAGES_BY_TIME).unwrap();
         DbMonadMessages {
             db,
             cf_monad_messages,
+            cf_monad_messages_by_time,
         }
     }
 
-    /// Store a [`proto::StoredMonadMessage`], keyed by its inner message's `payload_hash`.
+    /// Store a [`proto::StoredMonadMessage`], keyed by its inner message's `payload_hash`, and
+    /// index it by `message.timestamp` (ticket #37's `list_since`).
     ///
     /// Idempotent: storing the same `payload_hash` again (e.g. a client retrying a request whose
     /// response it never saw) simply overwrites the entry with the same content, mirroring
-    /// `DbTopics::put_message`'s "already known payload hash" handling for the Lotus path.
+    /// `DbTopics::put_message`'s "already known payload hash" handling for the Lotus path. If a
+    /// message already existed under this `payload_hash`, its old by-time index entry is removed
+    /// first (in the same batch) so a retry with a different `timestamp` doesn't leave a stale,
+    /// orphaned index row behind.
     pub fn put(&self, payload_hash: &[u8], message: &proto::StoredMonadMessage) -> Result<()> {
-        self.db
-            .rocksdb()
-            .put_cf(self.cf_monad_messages, payload_hash, message.encode_to_vec())
-            .wrap_err(super::db::DbError::RocksDb)?;
+        let mut batch = rocksdb::WriteBatch::default();
+        if let Some(existing) = self.get(payload_hash)? {
+            batch.delete_cf(
+                self.cf_monad_messages_by_time,
+                by_time_key(existing.timestamp, payload_hash),
+            );
+        }
+        batch.put_cf(self.cf_monad_messages, payload_hash, message.encode_to_vec());
+        batch.put_cf(
+            self.cf_monad_messages_by_time,
+            by_time_key(message.timestamp, payload_hash),
+            payload_hash,
+        );
+        self.db.write_batch(batch)?;
         Ok(())
     }
 
@@ -92,9 +128,31 @@ impl<'a> DbMonadMessages<'a> {
             .ok_or_else(|| NotFound(hex::encode(payload_hash)).into())
     }
 
+    /// List every [`proto::StoredMonadMessage`] stored with `timestamp >= since` (milliseconds
+    /// since the Unix epoch), ordered by `timestamp` ascending (ticket #37). Lets a client
+    /// discover newly-stored messages by polling with an advancing cursor, without already
+    /// knowing their `payload_hash` out of band -- see this module's docs for why this can't
+    /// additionally filter by intended recipient.
+    pub fn list_since(&self, since: i64) -> Result<Vec<proto::StoredMonadMessage>> {
+        let start_key = by_time_key(since, &[]);
+        let iter = self.db.rocksdb().iterator_cf(
+            self.cf_monad_messages_by_time,
+            IteratorMode::From(&start_key, Direction::Forward),
+        );
+        iter.map(|item| {
+            let (_, payload_hash) = item?;
+            self.get_existing(&payload_hash)
+        })
+        .collect()
+    }
+
     pub(crate) fn add_cfs(columns: &mut Vec<ColumnFamilyDescriptor>) {
         let options = rocksdb::Options::default();
         columns.push(ColumnFamilyDescriptor::new(CF_MONAD_MESSAGES, options));
+        columns.push(ColumnFamilyDescriptor::new(
+            CF_MONAD_MESSAGES_BY_TIME,
+            rocksdb::Options::default(),
+        ));
     }
 }
 
@@ -144,6 +202,63 @@ mod tests {
         let tempdir = tempdir::TempDir::new("cashweb-registry-store--monad-messages-debug")?;
         let db = Db::open(tempdir.path().join("db.rocksdb"))?;
         assert_eq!(format!("{:?}", db.monad_messages()), "DbMonadMessages { .. }");
+        Ok(())
+    }
+
+    fn make_stored(payload_hash: Vec<u8>, timestamp: i64) -> proto::StoredMonadMessage {
+        proto::StoredMonadMessage {
+            message: Some(proto::MonadStampedMessage {
+                raw_burn_tx: vec![1, 2, 3],
+                encrypted_payload: vec![4, 5, 6],
+                payload_hash: payload_hash.clone(),
+            }),
+            sender_address: vec![9u8; 20],
+            tx_hash: vec![8u8; 32],
+            timestamp,
+        }
+    }
+
+    #[test]
+    fn test_list_since_orders_by_timestamp_and_respects_cursor() -> Result<()> {
+        let _ = bitcoinsuite_error::install();
+        let tempdir = tempdir::TempDir::new("cashweb-registry-store--monad-messages-list-since")?;
+        let db = Db::open(tempdir.path().join("db.rocksdb"))?;
+        let store = db.monad_messages();
+
+        let early = make_stored(vec![1u8; 32], 100);
+        let middle = make_stored(vec![2u8; 32], 200);
+        let late = make_stored(vec![3u8; 32], 300);
+
+        // Insert out of order to prove `list_since` sorts by timestamp, not insertion order.
+        store.put(&late.message.as_ref().unwrap().payload_hash, &late)?;
+        store.put(&early.message.as_ref().unwrap().payload_hash, &early)?;
+        store.put(&middle.message.as_ref().unwrap().payload_hash, &middle)?;
+
+        assert_eq!(store.list_since(0)?, vec![early.clone(), middle.clone(), late.clone()]);
+        assert_eq!(store.list_since(200)?, vec![middle.clone(), late.clone()]);
+        assert_eq!(store.list_since(301)?, vec![]);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_list_since_after_retry_with_new_timestamp_has_no_stale_entry() -> Result<()> {
+        let _ = bitcoinsuite_error::install();
+        let tempdir = tempdir::TempDir::new("cashweb-registry-store--monad-messages-retry")?;
+        let db = Db::open(tempdir.path().join("db.rocksdb"))?;
+        let store = db.monad_messages();
+
+        let payload_hash = vec![7u8; 32];
+        let first = make_stored(payload_hash.clone(), 100);
+        let retried = make_stored(payload_hash.clone(), 200);
+
+        store.put(&payload_hash, &first)?;
+        store.put(&payload_hash, &retried)?;
+
+        // Only the latest write should show up -- the stale by-time index entry from the first
+        // `put` (timestamp 100) must have been cleaned up, not left as an orphaned duplicate.
+        assert_eq!(store.list_since(0)?, vec![retried]);
+
         Ok(())
     }
 }

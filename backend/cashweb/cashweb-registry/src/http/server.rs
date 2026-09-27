@@ -2,7 +2,9 @@
 
 use crate::{
     http::error::HttpRegistryError,
-    http::monad_message::{handle_get_monad_message, handle_put_monad_message},
+    http::monad_message::{
+        handle_get_monad_message, handle_list_monad_messages, handle_put_monad_message,
+    },
     http::pop_protection::{self, MonadReceiptVerifier, PopChallenge, PopGate, PopGateConfigError},
     monad_http::HttpTransport,
     p2p::{peers::Peers, relay_info::RelayInfo},
@@ -150,7 +152,14 @@ impl RegistryServer {
             // `/message` route above -- see `crate::http::monad_message`'s module docs for why
             // this is a separate route/message shape rather than an extension of
             // `handle_put_message`/`SignedPayload`.
-            .route("/message/monad", routing::put(handle_put_monad_message))
+            // `GET /message/monad?since=<timestamp>` (ticket #37): message discovery, listing
+            // messages by store time rather than requiring an exact `payload_hash` -- see
+            // `crate::http::monad_message`'s module docs for the full rationale (including the
+            // recipient-addressing gap this endpoint doesn't attempt to paper over).
+            .route(
+                "/message/monad",
+                routing::put(handle_put_monad_message).get(handle_list_monad_messages),
+            )
             .route(
                 "/message/monad/:payload_hash",
                 routing::get(handle_get_monad_message),

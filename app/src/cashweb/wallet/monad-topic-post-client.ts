@@ -121,6 +121,7 @@ import {
   MonadTxSubmitter,
   SignedMonadTx,
 } from './monad-account-tx'
+import { MonadWalletHandle } from './monad-wallet-handle'
 
 /** `cashweb_registry::monad_topic_verify::TOPIC_VOTE_LOKAD_ID` (that file, line 94: `*b"TPIC"`) —
  * distinct from both `monad-stamp-client.ts`'s `"POND"` and Lotus's private-message LOKAD ID. */
@@ -433,13 +434,7 @@ export class MonadTopicPostClient {
    * appended to it. */
   private readonly relayBaseUrl: string
 
-  constructor(params: {
-    pool: MonadSubAccountPool
-    leaseManager: SubAccountLeaseManager
-    provider: Provider
-    httpClient: MonadTxSubmitter
-    relayBaseUrl: string
-  }) {
+  constructor(params: MonadWalletHandle) {
     this.pool = params.pool
     this.leaseManager = params.leaseManager
     this.provider = params.provider

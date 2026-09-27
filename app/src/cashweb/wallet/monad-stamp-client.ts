@@ -116,6 +116,7 @@ import {
   MonadTxSubmitter,
   SignedMonadTx,
 } from './monad-account-tx'
+import { MonadWalletHandle } from './monad-wallet-handle'
 
 /** `cashweb_payload::verify::BROADCAST_MESSAGE_LOKAD_ID` (`backend/cashweb/cashweb-payload/src/
  * verify.rs:15`, `*b"POND"`) — the LOKAD ID the live `PUT /message/monad` handler requires
@@ -334,13 +335,7 @@ export class MonadStampClient {
    * slash. `/message/monad` (`PUT`) and `/message/monad/:payload_hash` (`GET`) are appended to it. */
   private readonly relayBaseUrl: string
 
-  constructor(params: {
-    pool: MonadSubAccountPool
-    leaseManager: SubAccountLeaseManager
-    provider: Provider
-    httpClient: MonadTxSubmitter
-    relayBaseUrl: string
-  }) {
+  constructor(params: MonadWalletHandle) {
     this.pool = params.pool
     this.leaseManager = params.leaseManager
     this.provider = params.provider

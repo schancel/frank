@@ -127,6 +127,7 @@ import {
   MonadTxSubmitter,
   SignedMonadTx,
 } from './monad-account-tx'
+import { MonadWalletHandle } from './monad-wallet-handle'
 
 /** `cashweb_registry::monad_topic_verify::TOPIC_VOTE_LOKAD_ID` (`monad_topic_verify.rs` line 94,
  * `*b"TPIC"`) — distinct from Stamp's `"POND"`/`"STMP"` LOKAD IDs. */
@@ -327,13 +328,7 @@ export class MonadTopicVoteClient {
    * slash. `/message/monad/topics/vote` (`PUT`) is appended to it. */
   private readonly relayBaseUrl: string
 
-  constructor(params: {
-    pool: MonadSubAccountPool
-    leaseManager: SubAccountLeaseManager
-    provider: Provider
-    httpClient: MonadTxSubmitter
-    relayBaseUrl: string
-  }) {
+  constructor(params: MonadWalletHandle) {
     this.pool = params.pool
     this.leaseManager = params.leaseManager
     this.provider = params.provider

@@ -1,0 +1,237 @@
+/**
+ * A Monad-native "Frank identity" (ticket #41 -- see `PLAN.md`'s M9 section): a secp256k1 keypair,
+ * its Monad (EVM, EIP-55 checksummed) address, and the two HTTP calls needed to register/look up
+ * that identity against a live `cashweb-registry` server: `PUT`/`GET /metadata/:addr` -- the exact
+ * same route `./lotus-identity.ts`'s `registerIdentity`/`fetchIdentityPubKey` (ticket #9) already
+ * use, mirrored here address-format-agnostically.
+ *
+ * ## Why this file exists alongside `lotus-identity.ts`, and why it has no Lotus encoding
+ *
+ * `lotus-identity.ts` is *not* chain-agnostic despite its name: `FrankIdentity.address` is a
+ * `computeLotusAddress`-encoded base58 string (`LOTUS_PREFIX = 'lotus'`), and that whole module's
+ * point is byte-for-byte parity with `bitcoinsuite_core::LotusAddress`. There was no Monad-native
+ * equivalent before this ticket. `MonadIdentity.address` here is a plain EIP-55 checksummed
+ * `0x...` string (`ethers.Wallet.address`) -- no base58, no `LOTUS_PREFIX`, no
+ * `bitcoinsuite_core` byte-for-byte parity requirement anywhere in this file.
+ *
+ * ## Known gap: `/metadata/:addr` is Lotus-address-only server-side, today
+ *
+ * Read directly from the live route, not assumed: `handle_put_registry`/`handle_get_registry`
+ * (`backend/cashweb/cashweb-registry/src/http/server.rs`, lines 324 and 387) both do
+ * `address.parse::<LotusAddress>().map_err(InvalidAddress)?` on the `:addr` path segment -- there
+ * is no Monad-native metadata route, or address-format branch, on the server today. That means
+ * `registerMonadIdentity`/`fetchMonadIdentityPubKey` below, called against a *live* relay with a
+ * real `0x...` address, will 400 with `InvalidAddress` until the backend grows a
+ * Monad-address-accepting path. This file still implements the client side for real (mirroring
+ * `lotus-identity.ts`'s own `registerIdentity`/`fetchIdentityPubKey` pattern exactly, just
+ * Monad-addressed) because: (1) ticket #41's acceptance criteria explicitly call for real
+ * `PUT`/`GET /metadata/:addr` wiring, mirroring that pattern; (2) fixing the backend's address
+ * parsing is a `cashweb-registry` (Rust) change with its own review surface, well outside this
+ * ticket's `app/src/cashweb` file scope and non-goals (no backend changes are listed in #41's
+ * acceptance criteria); (3) every test this ticket adds mocks this module's own exports (or, for
+ * this file's own tests, mocks `axios`), never a live relay, so this gap doesn't block verifying
+ * the client code itself. Flagged prominently here, and in this ticket's handoff, so #42/#43 (or a
+ * dedicated backend ticket) don't rediscover it the hard way against a live testnet relay.
+ *
+ * ## Reusing `bitcore-lib-xpi`'s ECDH/AES/ECDSA code without any Lotus addressing
+ *
+ * `./monad-message-envelope.ts` (ticket #9) already implements this codebase's ECDH+AES-256-CBC
+ * scheme on top of `bitcore-lib-xpi`'s `PrivateKey`/`PublicKey` -- but purely as a secp256k1
+ * elliptic-curve-math + symmetric-crypto vehicle already in this codebase's dependency tree, not
+ * because Lotus addressing is fundamentally involved (that module never calls
+ * `computeLotusAddress`, and its envelope's `from`/`to` fields are plain, format-agnostic
+ * strings). secp256k1 is the same curve Monad/Ethereum accounts use, so the *same raw 32-byte
+ * private key* this module derives via `ethers` HD derivation can be wrapped in a
+ * `bitcore-lib-xpi` `PrivateKey` purely to reuse that existing ECDH code (`toBitcorePrivateKey`
+ * below) and `bitcore-lib-xpi`'s DER ECDSA signer (`signHash`, for `AddressMetadata` registration
+ * signatures -- same `SignedPayload.SignatureScheme.ECDSA`/DER-not-compact reasoning
+ * `lotus-identity.ts`'s own header documents) -- with the *address* itself always computed the
+ * plain EVM way, never through any Lotus/base58/cashaddr path.
+ *
+ * ## Identity key derivation path, and why it's reserved separately from the burner pool
+ *
+ * `./monad-hd-keyring.ts`'s `MonadHdKeyring` derives disposable, spend-once burn sub-accounts at
+ * `m/44'/60'/0'/0/{index}` (`change = 0`), managed by `MonadSubAccountPool`
+ * (`ensureSize`/`selectForStamp`), which retires each one after a single burn and never reuses it
+ * (ticket #34). A stable identity address -- the one others register a Stamp message against or
+ * resolve a profile lookup for -- must never be at risk of being spent/retired that way. Rather
+ * than reusing pool index 0 for double duty (which `MonadSubAccountPool.ensureSize()` would then
+ * also register as an ordinary, poolable burner account, risking `selectForStamp()` eventually
+ * handing it out for an unrelated burn), this module derives the identity key at its own reserved
+ * path, `m/44'/60'/0'/1/0` (`change = 1`) -- deterministic from the same `HDSeed`
+ * `../chain/active-chain.ts` defines, but structurally outside the pool's `change = 0` derivation
+ * range, so it can never collide with a pool-managed index.
+ *
+ * This is a judgment call: issue #41's own interface sketch didn't specify a derivation path for
+ * `createWallet`'s identity field, and the pre-existing Lotus precedent
+ * (`qwen-bot-common.ts`'s `loadOrCreateIdentity`) sidesteps the question entirely by using a wholly
+ * separate, independently-random `FrankIdentity` with no HD relationship to the burn pool at all.
+ * This module instead keeps the identity HD-deterministic from the same seed `createWallet`
+ * receives, for a "one seed backs up everything" property the independently-random Lotus precedent
+ * doesn't have.
+ */
+import { HDNodeWallet, Mnemonic, Wallet, getBytes } from 'ethers'
+import { PrivateKey, crypto as bitcoreCrypto } from 'bitcore-lib-xpi'
+import axios from 'axios'
+
+import { AddressMetadata } from '../registry/metadata_pb'
+import { SignedPayload } from '../signed_payload/payload_pb'
+import { ChainAddress, HDSeed, ProfileInfo } from '../chain/active-chain'
+import type { FrankIdentityHandle } from '../chain/active-chain'
+
+/** Reserved BIP-44 branch (`change = 1`) for the stable Frank identity key -- see this file's
+ * header for why it's kept structurally separate from `monad-hd-keyring.ts`'s burner sub-account
+ * branch (`change = 0`). */
+export const MONAD_IDENTITY_DERIVATION_PATH = "m/44'/60'/0'/1/0"
+
+/** A Monad-native Frank identity: a secp256k1 keypair plus its EIP-55 checksummed address (see
+ * this file's header). Implements `FrankIdentityHandle` (`../chain/active-chain.ts`) so it can be
+ * used directly as `WalletHandle.identity`, while exposing the extra private-key-backed methods
+ * (`signHash`/`toBitcorePrivateKey`) `../chain/monad-chain.ts` needs internally. */
+export class MonadIdentity implements FrankIdentityHandle {
+  readonly address: ChainAddress
+  readonly displayAddress: string
+  private readonly wallet: Wallet
+
+  private constructor(wallet: Wallet) {
+    this.wallet = wallet
+    this.address = { raw: wallet.address }
+    this.displayAddress = wallet.address
+  }
+
+  /** Derives the identity key deterministically from `seed`, at
+   * `MONAD_IDENTITY_DERIVATION_PATH` -- see this file's header. */
+  static fromSeed(seed: HDSeed): MonadIdentity {
+    const computedSeed = Mnemonic.fromPhrase(
+      seed.mnemonic,
+      seed.passphrase ?? '',
+    ).computeSeed()
+    const node = HDNodeWallet.fromSeed(computedSeed).derivePath(
+      MONAD_IDENTITY_DERIVATION_PATH,
+    )
+    return new MonadIdentity(new Wallet(node.privateKey))
+  }
+
+  /** Rebuilds a previously-generated identity from its raw `0x`-prefixed private key hex. */
+  static fromPrivateKeyHex(privateKeyHex: string): MonadIdentity {
+    return new MonadIdentity(new Wallet(privateKeyHex))
+  }
+
+  /** Raw `0x`-prefixed private key -- for persisting between runs. Never logged/serialized by this
+   * class itself. */
+  toPrivateKeyHex(): string {
+    return this.wallet.privateKey
+  }
+
+  /** Compressed (33-byte) secp256k1 public key -- the form the registry's `PubKeyHash`/`Registry`
+   * store expects (mirrors `lotus-identity.ts`'s own `FrankIdentity.pubKey`). */
+  get compressedPubKey(): Buffer {
+    return Buffer.from(getBytes(this.wallet.signingKey.compressedPublicKey))
+  }
+
+  /** DER-encoded ECDSA signature over `hash`, via this identity's key -- the signature scheme
+   * `cashweb_payload::verify::SignedPayload::verify` expects for `SignatureScheme::Ecdsa` (see
+   * `lotus-identity.ts`'s header for why DER, not a 65-byte recoverable form). Delegates to
+   * `bitcore-lib-xpi`'s ECDSA signer purely for its DER encoder -- no Lotus addressing involved
+   * (see this file's header). */
+  signHash(hash: Buffer): Buffer {
+    const signature = bitcoreCrypto.ECDSA.sign(hash, this.toBitcorePrivateKey())
+    return (signature as unknown as { toDER(): Buffer }).toDER()
+  }
+
+  /** Wraps this identity's raw private key in a `bitcore-lib-xpi` `PrivateKey`, purely to reuse
+   * `./monad-message-envelope.ts`'s existing ECDH implementation (see this file's header) -- never
+   * used for Lotus address derivation. */
+  toBitcorePrivateKey(): PrivateKey {
+    return new PrivateKey(this.wallet.privateKey.slice(2))
+  }
+}
+
+/** Builds and signs the `cashweb_payload::proto::SignedPayload` wrapper around a fresh, empty
+ * `AddressMetadata` -- the same "no vCard content, just proving registration itself" shape
+ * `lotus-identity.ts`'s `buildSignedAddressMetadata` uses (see that function's doc comment for why
+ * an empty `burn_txs`/`transactions` list is sufficient with POP disabled). */
+function buildSignedAddressMetadata(identity: MonadIdentity): Buffer {
+  const metadata = new AddressMetadata()
+  metadata.setTimestamp(Date.now())
+  metadata.setTtl(1000 * 60 * 60 * 24 * 365) // 1 year, in milliseconds
+  metadata.setEntriesList([])
+  const serializedPayload = Buffer.from(metadata.serializeBinary())
+  const payloadHash = bitcoreCrypto.Hash.sha256(serializedPayload)
+
+  const signedPayload = new SignedPayload()
+  signedPayload.setPublicKey(identity.compressedPubKey)
+  signedPayload.setPayload(serializedPayload)
+  signedPayload.setPayloadDigest(payloadHash)
+  signedPayload.setScheme(SignedPayload.SignatureScheme.ECDSA)
+  signedPayload.setBurnAmount(0)
+  signedPayload.setTransactionsList([])
+  signedPayload.setSignature(identity.signHash(payloadHash))
+  return Buffer.from(signedPayload.serializeBinary())
+}
+
+/** `PUT /metadata/:addr` (no POP payment proof) -- mirrors `lotus-identity.ts`'s
+ * `registerIdentity` exactly, just Monad-addressed. See this file's header for the live backend
+ * gap (`LotusAddress`-only address parsing) this inherits until the server grows a Monad-native
+ * path. Requires an `Origin` header -- `RelayInfo::parse_from_headers` fails the whole request
+ * with `MissingOrigin` otherwise. */
+export async function registerMonadIdentity(params: {
+  relayBaseUrl: string
+  identity: MonadIdentity
+}): Promise<void> {
+  const body = buildSignedAddressMetadata(params.identity)
+  await axios({
+    method: 'put',
+    url: `${params.relayBaseUrl.replace(/\/+$/, '')}/metadata/${
+      params.identity.address.raw
+    }`,
+    data: body,
+    headers: {
+      'Content-Type': 'application/x-protobuf',
+      'Origin': 'http://frank.local',
+    },
+  })
+}
+
+/** `GET /metadata/:addr`: fetches a previously-registered identity's `SignedPayload` (mainly for
+ * its `pubkey`, needed to derive an ECDH shared key with that identity -- see
+ * `./monad-message-envelope.ts`). Returns `undefined` on a `404`. Mirrors `lotus-identity.ts`'s
+ * `fetchIdentityPubKey` exactly, just taking/returning a Monad `ChainAddress`. */
+export async function fetchMonadIdentityPubKey(params: {
+  relayBaseUrl: string
+  address: string
+}): Promise<Buffer | undefined> {
+  try {
+    const response = await axios({
+      method: 'get',
+      url: `${params.relayBaseUrl.replace(/\/+$/, '')}/metadata/${
+        params.address
+      }`,
+      responseType: 'arraybuffer',
+    })
+    const signedPayload = SignedPayload.deserializeBinary(
+      new Uint8Array(response.data),
+    )
+    return Buffer.from(signedPayload.getPublicKey_asU8())
+  } catch (err) {
+    if (axios.isAxiosError(err) && err.response?.status === 404) {
+      return undefined
+    }
+    throw err
+  }
+}
+
+/** `MonadChain.fetchProfile`'s real implementation: resolves `address`'s registered pubkey via
+ * `fetchMonadIdentityPubKey` and wraps it as a `ProfileInfo` (`../chain/active-chain.ts`). Returns
+ * `undefined` if nothing is registered under `address` yet. */
+export async function fetchMonadProfile(params: {
+  relayBaseUrl: string
+  address: ChainAddress
+}): Promise<ProfileInfo | undefined> {
+  const pubKey = await fetchMonadIdentityPubKey({
+    relayBaseUrl: params.relayBaseUrl,
+    address: params.address.raw,
+  })
+  if (pubKey === undefined) return undefined
+  return { address: params.address, pubKey: new Uint8Array(pubKey) }
+}

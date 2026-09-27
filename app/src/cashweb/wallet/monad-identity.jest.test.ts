@@ -7,7 +7,8 @@
  */
 import axios from 'axios'
 
-import { SignedPayload } from '../signed_payload/payload_pb'
+import __pb_signed_payload_payload_pb from '../signed_payload/payload_pb'
+const { SignedPayload } = __pb_signed_payload_payload_pb
 import {
   MONAD_IDENTITY_DERIVATION_PATH,
   MonadIdentity,

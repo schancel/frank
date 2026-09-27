@@ -1,6 +1,6 @@
 import assert from 'assert'
 import type { ReplyItem, StealthItem, ImageItem } from '../types/messages'
-import { PayloadEntry } from './relay_pb'
+import type { PayloadEntry } from './relay_pb'
 import { entryToImage } from './images'
 import stealth from './stealth_pb'
 import { TextItem, MessageItem } from '../types/messages'

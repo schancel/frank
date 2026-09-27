@@ -1,4 +1,4 @@
-import { Message, Stamp } from './relay_pb'
+import type { Message, Stamp } from './relay_pb'
 import { PayloadConstructor } from './crypto'
 import { crypto, PrivateKey, PublicKey } from 'bitcore-lib-xpi'
 import assert from 'assert'

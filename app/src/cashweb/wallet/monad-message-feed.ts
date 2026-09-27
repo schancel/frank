@@ -14,7 +14,8 @@
  */
 import axios from 'axios'
 
-import { StoredMonadMessages } from './monad_message_pb'
+import __pb_monad_message_pb from './monad_message_pb'
+const { StoredMonadMessages } = __pb_monad_message_pb
 import { StoredMonadMessageProto } from './monad-stamp-client'
 
 /** `GET /message/monad?since=<sinceMs>`: every `StoredMonadMessage` the relay has stored at or

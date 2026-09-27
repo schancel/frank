@@ -1,15 +1,11 @@
 import axios from 'axios'
-import {
-  Payload,
-  Message,
-  MessagePage,
-  MessageSet,
-  Profile,
-  PayloadEntry,
-} from './relay_pb'
+import __pb_relay_pb from './relay_pb'
+const { Payload, Message, MessagePage, MessageSet, Profile } = __pb_relay_pb
+import type { PayloadEntry } from './relay_pb'
 import p2pkh from './p2pkh_pb'
 
-import { SignedPayload } from '../signed_payload/payload_pb'
+import __pb_signed_payload_payload_pb from '../signed_payload/payload_pb'
+const { SignedPayload } = __pb_signed_payload_payload_pb
 import pop from '../pop'
 // TODO: Relay code should not depend on Stamp base code. Fix this import
 import VCard from 'vcf'
@@ -21,7 +17,11 @@ import { PayloadConstructor } from './crypto'
 import { messageMixin } from './extension'
 import { calcUtxoId } from '../wallet/helpers'
 import assert from 'assert'
-import paymentrequest, { Payment } from '../bip70/paymentrequest_pb'
+// See cashweb/pop.ts's identical import for why this is a default-import + destructure rather
+// than a combined default+named import (ticket #51, Vite migration -- CJS interop only
+// synthesizes a `default` export for generated `*_pb.js` files).
+import paymentrequest from '../bip70/paymentrequest_pb'
+import type { Payment } from '../bip70/paymentrequest_pb'
 
 import WebSocket from 'isomorphic-ws'
 import {

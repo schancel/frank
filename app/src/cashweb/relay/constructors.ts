@@ -9,7 +9,8 @@ import {
 import assert from 'assert'
 import atob from 'atob'
 
-import {
+import __pb_relay_pb from './relay_pb'
+const {
   Header,
   Message,
   PayloadEntry,
@@ -17,13 +18,18 @@ import {
   ProfileEntry,
   Stamp,
   StampOutpoints,
-} from './relay_pb'
+} = __pb_relay_pb
 import stealth from './stealth_pb'
 import p2pkh from './p2pkh_pb'
-import filters, { PriceFilter } from './filters_pb'
+// See cashweb/pop.ts's identical comment for why this is a default import (ticket #51, Vite
+// migration) -- `PriceFilter` is only ever used as a type below (`new filters.PriceFilter()`
+// covers the runtime usage), so `import type` is simplest.
+import filters from './filters_pb'
+import type { PriceFilter } from './filters_pb'
 import { PayloadConstructor } from './crypto'
 import VCard from 'vcf'
-import { SignedPayload } from '../signed_payload/payload_pb'
+import __pb_signed_payload_payload_pb from '../signed_payload/payload_pb'
+const { SignedPayload } = __pb_signed_payload_payload_pb
 import { Wallet } from '../wallet'
 
 export class MessageConstructor {

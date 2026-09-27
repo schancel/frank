@@ -93,10 +93,10 @@ import {
 } from './active-chain'
 import { MessageItem } from '../types/messages'
 import { ForumMessage, ForumMessageEntry } from '../types/forum'
-import {
-  BroadcastMessage,
-  ForumPost as BroadcastForumPostPayload,
-} from '../registry/broadcast_pb'
+// See cashweb/wallet/monad-topic-post-client.ts's identical comment (ticket #51, Vite migration).
+import __pb_broadcast_pb from '../registry/broadcast_pb'
+const { BroadcastMessage, ForumPost: BroadcastForumPostPayload } =
+  __pb_broadcast_pb
 
 import { MonadHdKeyring } from '../wallet/monad-hd-keyring'
 import { MonadSubAccountPool } from '../wallet/monad-account-pool'

@@ -1,12 +1,11 @@
 import axios from 'axios'
 import assert from 'assert'
 
-import { Entry, AddressMetadata } from './metadata_pb'
-import {
-  SignedPayload,
-  SignedPayloadSet,
-  BurnOutputs,
-} from '../signed_payload/payload_pb'
+import __pb_metadata_pb from './metadata_pb'
+const { Entry, AddressMetadata } = __pb_metadata_pb
+import __pb_signed_payload_payload_pb from '../signed_payload/payload_pb'
+const { SignedPayload, SignedPayloadSet, BurnOutputs } =
+  __pb_signed_payload_payload_pb
 import pop from '../pop'
 import {
   crypto,
@@ -16,12 +15,13 @@ import {
   Transaction,
   Script,
   PublicKey,
+  Opcode,
 } from 'bitcore-lib-xpi'
 import { Wallet } from '../wallet'
 import { Utxo } from '../types/utxo'
 import { calcUtxoId } from '../wallet/helpers'
-import { Opcode } from 'app/local_modules/bitcore-lib-xpi'
-import { BroadcastEntry, BroadcastMessage, ForumPost } from './broadcast_pb'
+import __pb_broadcast_pb from './broadcast_pb'
+const { BroadcastEntry, BroadcastMessage, ForumPost } = __pb_broadcast_pb
 import { ForumMessage, ForumMessageEntry } from '../types/forum'
 
 function calculateBurnAmount(burnOutputs: BurnOutputs[]) {

@@ -1,5 +1,5 @@
 import assert from 'assert'
-import { PayloadEntry } from './relay_pb'
+import type { PayloadEntry } from './relay_pb'
 import { MessageItem } from '../types/messages'
 import { PublicKey } from 'bitcore-lib-xpi'
 import { Wallet } from '../wallet'

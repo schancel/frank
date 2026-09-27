@@ -199,7 +199,21 @@ proto.cashweb.registry.MonadForumPost.deserializeBinaryFromReader = function(msg
     var field = reader.getFieldNumber();
     switch (field) {
     case 1:
-      var value = /** @type {string} */ (reader.readStringRequireUtf8());
+      // Patched from the generator's default `readStringRequireUtf8()` (ticket #31): this repo's
+      // pinned `google-protobuf` npm runtime is 3.19.1 (see app/package.json), which doesn't
+      // define that method at all (`TypeError: reader.readStringRequireUtf8 is not a function`) --
+      // only 4.x adds it. The installed `protoc-gen-js` (brew, 4.0.3) emits
+      // `readStringRequireUtf8()` unconditionally for every `string` field regardless of the
+      // target JS runtime's protobuf version, so *every* generated file with a string field would
+      // hit this the moment it's regenerated on this toolchain; `broadcast_pb.js`/
+      // `monad_message_pb.js` only avoid it because they were generated earlier (against an older
+      // protoc-gen-js) or have no string fields at all -- confirmed by re-running
+      // `generate_protobufs.sh` in a scratch dir, which reproduced this exact byte-for-byte output.
+      // `readString()` (used by every other _pb.js file in this repo) is semantically equivalent
+      // for well-formed UTF-8 input -- the two only differ in how they handle *invalid* UTF-8 byte
+      // sequences (require-strict vs. lenient) -- so this is a pure runtime-compatibility fix, not
+      // a wire-format or schema change.
+      var value = /** @type {string} */ (reader.readString());
       msg.setTopic(value);
       break;
     case 2:

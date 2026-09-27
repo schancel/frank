@@ -61,6 +61,11 @@ jobs:
 
     - name: Install Protoc
       uses: arduino/setup-protoc@v1
+      with:
+        # Without a token this calls the GitHub releases API unauthenticated (60 req/hr, shared
+        # across the whole GitHub Actions runner IP pool) and was hitting "API rate limit
+        # exceeded" during iteration on this workflow.
+        repo-token: ${{ secrets.GITHUB_TOKEN }}
 
     - name: Install ninja
       uses: seanmiddleditch/gha-setup-ninja@master

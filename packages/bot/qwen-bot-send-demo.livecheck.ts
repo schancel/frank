@@ -18,19 +18,22 @@
  * sees the full back-and-forth, not just the latest message in isolation). Falls back to a single
  * `QWEN_BOT_MESSAGE` turn if `QWEN_BOT_MESSAGES` isn't set.
  *
- * ## Usage (from `app/`, same compile step as `qwen-bot.livecheck.ts` plus this file)
+ * ## Usage
  *
- *   ...same tsc invocation as qwen-bot.livecheck.ts's header, substituting this file...
- *   set -a; source ../.env; set +a
+ * Ticket #53 (package split): runs via `tsx` from `@frank/bot`, no manual compile step -- see
+ * `README.md` for the full runbook.
+ *
+ *   cd packages/bot
+ *   set -a; source ../../.env; set +a
  *   export E2E_DEMO_RELAY_URL=http://127.0.0.1:8098
  *   export E2E_DEMO_MAIN_WALLET_JSON=/absolute/path/to/chain-wallet.json
  *   export QWEN_BOT_MESSAGES='["What model are you?","Why does Frank make you an agentic identity?"]'
- *   node /tmp/qwen-bot-demo/qwen-bot-send-demo.livecheck.js
+ *   yarn send-demo
  */
 import { readFileSync } from 'fs'
 import { resolve } from 'path'
 
-import { fetchMonadIdentityPubKey } from './monad-identity'
+import { fetchMonadIdentityPubKey } from '@frank/wallet/monad-identity'
 import {
   buildEnvelope,
   decryptEnvelope,
@@ -40,7 +43,7 @@ import { fetchMonadMessagesSince } from '@frank/cashweb/relay/monad-message-feed
 import {
   deserializeMessageItems,
   serializeMessageItems,
-} from './chain/monad-chain'
+} from '@frank/wallet/chain/monad-chain'
 import {
   loadOrCreateIdentity,
   registerAndLog,

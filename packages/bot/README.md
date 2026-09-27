@@ -199,47 +199,44 @@ Note on turn 2's answer: this is Qwen correctly declining to fabricate a paramet
 correctly reasoning about what "proof of payment" actually means here (the on-chain burn, not the
 text) — exactly the kind of grounded, identity-aware response this bounty's track is about.
 
-## Usage (from `app/`)
+## Usage (from `packages/bot/`)
 
-Same `.livecheck.ts` compile convention as ticket #8's `monad-e2e-demo.livecheck.ts` (no `ts-node`
-in this repo):
+**Update (ticket #53, package split):** this used to require hand-listing every transitively
+needed file to a raw `tsc` invocation (no `ts-node` in the repo) because the bot lived inside
+`app/src/cashweb/wallet/` with no package boundary of its own. It's now `@frank/bot`, a real yarn
+workspace package depending on `@frank/wallet`/`@frank/cashweb` -- runs directly via `tsx`, no
+manual compile step:
 
 ```sh
-cd app
-node_modules/.bin/tsc --module commonjs --target es2019 --esModuleInterop --resolveJsonModule \
-  --allowJs --skipLibCheck --outDir /tmp/qwen-bot-demo \
-  src/cashweb/wallet/monad-http.ts src/cashweb/wallet/monad-account-tx.ts \
-  src/cashweb/wallet/monad-hd-keyring.ts src/cashweb/wallet/monad-account-pool.ts \
-  src/cashweb/wallet/monad-account-lease.ts src/cashweb/wallet/monad-stamp-client.ts \
-  src/cashweb/wallet/monad_message_pb.js src/cashweb/wallet/monad-message-feed.ts \
-  src/cashweb/wallet/monad-message-envelope.ts src/cashweb/wallet/lotus-identity.ts \
-  src/cashweb/wallet/qwen-client.ts src/cashweb/wallet/qwen-bot-common.ts \
-  src/cashweb/wallet/storage/sub-account-pool-storage.ts \
-  src/cashweb/registry/metadata_pb.js src/cashweb/signed_payload/payload_pb.js \
-  src/cashweb/wallet/qwen-bot.livecheck.ts src/cashweb/wallet/qwen-bot-send-demo.livecheck.ts
+cd packages/bot
+yarn install   # from the repo root, or once via the root workspace
 ```
 
 Start a local relay exactly as in ticket #8's runbook
 (`backend/cashweb/cashweb-registry/examples/README.md`, step 1), then:
 
 ```sh
-set -a; source ../.env; set +a   # needs QWEN_API_KEY, QWEN_OPENAI_COMPATIBLE_ENDPOINT too
+set -a; source ../../.env; set +a   # needs QWEN_API_KEY, QWEN_OPENAI_COMPATIBLE_ENDPOINT too
 export E2E_DEMO_RELAY_URL=http://127.0.0.1:8098
 export E2E_DEMO_MAIN_WALLET_JSON=/absolute/path/to/chain-wallet.json
 export QWEN_BOT_MAX_REPLIES=2   # must be >= however many turns the sender script will send
-node /tmp/qwen-bot-demo/qwen-bot.livecheck.js
+yarn bot
 ```
 
 In a separate shell, once the bot prints its address (or is already running from a prior run —
 its identity persists at `QWEN_BOT_IDENTITY_JSON`, default `/tmp/qwen-bot-identity.json`):
 
 ```sh
-set -a; source ../.env; set +a
+set -a; source ../../.env; set +a
 export E2E_DEMO_RELAY_URL=http://127.0.0.1:8098
 export E2E_DEMO_MAIN_WALLET_JSON=/absolute/path/to/chain-wallet.json
 export QWEN_BOT_MESSAGES='["Hi, who are you?","Follow-up: prove you paid to reply."]'
-node /tmp/qwen-bot-demo/qwen-bot-send-demo.livecheck.js
+yarn send-demo
 ```
+
+`yarn ui-verify` (`monad-ui-verify.livecheck.ts`) exercises the same flow through the real app's
+own `ActiveChain` seam (`@frank/wallet/chain`) instead of the bot's own hand-rolled calls -- see
+that file's own header comment for its specific env vars.
 
 ## Non-goals (per the ticket)
 

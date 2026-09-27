@@ -12,32 +12,18 @@
  * to confirm a fresh wallet actually becomes discoverable (this was previously never wired up
  * anywhere in the app at all).
  *
- * ## Usage (from `app/`, same compile convention as the other `.livecheck.ts` files)
+ * ## Usage
  *
- *   node_modules/.bin/tsc --module commonjs --target es2019 --esModuleInterop \
- *     --resolveJsonModule --allowJs --skipLibCheck --outDir /tmp/qwen-bot-demo \
- *     src/cashweb/wallet/monad-http.ts src/cashweb/wallet/monad-account-tx.ts \
- *     src/cashweb/wallet/monad-hd-keyring.ts src/cashweb/wallet/monad-account-pool.ts \
- *     src/cashweb/wallet/monad-account-lease.ts src/cashweb/wallet/monad-stamp-client.ts \
- *     src/cashweb/wallet/monad_message_pb.js src/cashweb/wallet/monad-message-feed.ts \
- *     src/cashweb/wallet/monad-message-envelope.ts src/cashweb/wallet/monad-identity.ts \
- *     src/cashweb/wallet/monad-topic-post-client.ts src/cashweb/wallet/monad-topic-vote-client.ts \
- *     src/cashweb/wallet/topic_message_pb.js \
- *     src/cashweb/registry/metadata_pb.js src/cashweb/signed_payload/payload_pb.js \
- *     src/cashweb/wallet/storage/sub-account-pool-storage.ts src/cashweb/wallet/monad-change-keyring.ts \
- *     src/cashweb/wallet/monad-change-pool.ts src/cashweb/wallet/monad-change-recovery.ts \
- *     src/cashweb/chain/active-chain.ts src/cashweb/chain/monad-chain.ts \
- *     src/cashweb/types/messages.ts src/cashweb/types/forum.ts \
- *     src/cashweb/wallet/monad-ui-verify.livecheck.ts
+ * Ticket #53 (package split): this now lives in `@frank/bot` (needs both `@frank/wallet`'s
+ * `chain/monad-chain` -- the real app-facing seam this verifies -- and this package's own
+ * `qwen-bot-common.ts` funding helper). Runs via `tsx`, no manual compile step:
  *
- *   (output lands at /tmp/qwen-bot-demo/wallet/monad-ui-verify.livecheck.js -- this file lives in
- *   cashweb/wallet/, not cashweb/chain/, since it needs qwen-bot-common.ts's funding helper)
- *
- *   set -a; source ../.env; set +a
+ *   cd packages/bot
+ *   set -a; source ../../.env; set +a
  *   export MONAD_RELAY_BASE_URL=http://127.0.0.1:8098
  *   export QWEN_BOT_ADDRESS=0x...   # from /tmp/qwen-bot-handoff.json
  *   export E2E_DEMO_MAIN_WALLET_JSON=/absolute/path/to/chain-wallet.json
- *   node /tmp/qwen-bot-demo/chain/monad-ui-verify.livecheck.js
+ *   yarn ui-verify
  */
 import { readFileSync } from 'fs'
 
@@ -46,8 +32,8 @@ import { generateMnemonic } from 'bip39'
 import {
   createMonadChain,
   loadMonadChainConfigFromEnv,
-} from './chain/monad-chain'
-import { registerMonadIdentity, MonadIdentity } from './monad-identity'
+} from '@frank/wallet/chain/monad-chain'
+import { registerMonadIdentity, MonadIdentity } from '@frank/wallet/monad-identity'
 import { requiredEnv } from './qwen-bot-common'
 import { setUpFundedStampClient } from './qwen-bot-common'
 

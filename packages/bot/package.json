@@ -1,0 +1,24 @@
+{
+  "name": "@frank/bot",
+  "version": "0.0.1",
+  "description": "Headless Qwen-backed Frank bot (ticket #9): a cryptographic on-chain identity that burns real MON to speak, over @frank/wallet + @frank/cashweb -- no Vue/Pinia, no app/ dependency. See README.md for the full runbook.",
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "bot": "tsx qwen-bot.livecheck.ts",
+    "send-demo": "tsx qwen-bot-send-demo.livecheck.ts",
+    "ui-verify": "tsx monad-ui-verify.livecheck.ts"
+  },
+  "dependencies": {
+    "@frank/cashweb": "*",
+    "@frank/wallet": "*",
+    "axios": "^0.24.0",
+    "bip39": "^3.0.2",
+    "ethers": "^6.17.0"
+  },
+  "devDependencies": {
+    "@types/node": "^16.11.11",
+    "tsx": "^4.19.0",
+    "typescript": "^5.9.3"
+  }
+}

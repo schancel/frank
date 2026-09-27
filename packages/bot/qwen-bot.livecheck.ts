@@ -30,23 +30,17 @@
  *    broadcasts, confirms, and verifies that exact tx against real Monad testnet before storing
  *    it, exactly as `monad-e2e-demo.livecheck.ts` (#8) already proved for a single message.
  *
- * ## Usage (from `app/`, compiled the same way as #8's demo)
+ * ## Usage
  *
- *   node_modules/.bin/tsc --module commonjs --target es2019 --esModuleInterop \
- *     --resolveJsonModule --allowJs --skipLibCheck --outDir /tmp/qwen-bot-demo \
- *     src/cashweb/wallet/monad-http.ts src/cashweb/wallet/monad-account-tx.ts \
- *     src/cashweb/wallet/monad-hd-keyring.ts src/cashweb/wallet/monad-account-pool.ts \
- *     src/cashweb/wallet/monad-account-lease.ts src/cashweb/wallet/monad-stamp-client.ts \
- *     src/cashweb/wallet/monad_message_pb.js src/cashweb/wallet/monad-message-feed.ts \
- *     src/cashweb/wallet/monad-message-envelope.ts src/cashweb/wallet/monad-identity.ts \
- *     src/cashweb/registry/metadata_pb.js src/cashweb/signed_payload/payload_pb.js \
- *     src/cashweb/wallet/qwen-client.ts src/cashweb/wallet/qwen-bot-common.ts \
- *     src/cashweb/wallet/storage/sub-account-pool-storage.ts \
- *     src/cashweb/wallet/qwen-bot.livecheck.ts
- *   set -a; source ../.env; set +a
+ * Ticket #53 (package split): this is now `@frank/bot`, a real workspace package depending on
+ * `@frank/wallet`/`@frank/cashweb` -- runs directly via `tsx`, no manual `tsc` compile step. See
+ * `README.md` for the full runbook (env vars, starting a local relay, etc); short version:
+ *
+ *   cd packages/bot
+ *   set -a; source ../../.env; set +a
  *   export E2E_DEMO_RELAY_URL=http://127.0.0.1:8098
  *   export E2E_DEMO_MAIN_WALLET_JSON=/absolute/path/to/chain-wallet.json
- *   node /tmp/qwen-bot-demo/qwen-bot.livecheck.js
+ *   yarn bot
  *
  * Prints its own Frank identity address on startup (and writes it to `QWEN_BOT_HANDOFF_JSON`) --
  * that's what `qwen-bot-send-demo.livecheck.ts` addresses its first message to.
@@ -54,7 +48,7 @@
 import { writeFileSync } from 'fs'
 import { resolve } from 'path'
 
-import { fetchMonadIdentityPubKey } from './monad-identity'
+import { fetchMonadIdentityPubKey } from '@frank/wallet/monad-identity'
 import {
   buildEnvelope,
   decryptEnvelope,
@@ -64,7 +58,7 @@ import { fetchMonadMessagesSince } from '@frank/cashweb/relay/monad-message-feed
 import {
   deserializeMessageItems,
   serializeMessageItems,
-} from './chain/monad-chain'
+} from '@frank/wallet/chain/monad-chain'
 import { QwenChatMessage, QwenClient } from './qwen-client'
 import {
   loadOrCreateIdentity,

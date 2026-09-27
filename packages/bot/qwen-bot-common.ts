@@ -56,17 +56,17 @@ import { readFileSync, existsSync, writeFileSync } from 'fs'
 
 import { JsonRpcProvider } from 'ethers'
 
-import { MonadHttpClient } from './monad-http'
-import { MonadAccountTxSigner } from './monad-account-tx'
-import { MonadHdKeyring } from './monad-hd-keyring'
+import { MonadHttpClient } from '@frank/wallet/monad-http'
+import { MonadAccountTxSigner } from '@frank/wallet/monad-account-tx'
+import { MonadHdKeyring } from '@frank/wallet/monad-hd-keyring'
 import {
   MonadSubAccountPool,
   fanOutFundSubAccounts,
   FanOutFundingResult,
-} from './monad-account-pool'
-import { SubAccountLeaseManager } from './monad-account-lease'
-import { MonadStampClient } from './monad-stamp-client'
-import { MonadIdentity, registerMonadIdentity } from './monad-identity'
+} from '@frank/wallet/monad-account-pool'
+import { SubAccountLeaseManager } from '@frank/wallet/monad-account-lease'
+import { MonadStampClient } from '@frank/wallet/monad-stamp-client'
+import { MonadIdentity, registerMonadIdentity } from '@frank/wallet/monad-identity'
 
 export function requiredEnv(name: string): string {
   const value = process.env[name]

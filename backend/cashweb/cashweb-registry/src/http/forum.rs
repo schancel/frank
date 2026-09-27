@@ -36,7 +36,7 @@
 use std::{fmt, sync::OnceLock};
 
 use axum::{
-    extract::Path,
+    extract::{Path, Query},
     http::StatusCode,
     response::{IntoResponse, Response},
     Extension, Json,
@@ -44,7 +44,7 @@ use axum::{
 use bitcoinsuite_core::{Hashed, Sha256};
 use bitcoinsuite_error::Report;
 use cashweb_http_utils::protobuf::Protobuf;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tracing::Level;
 
 use crate::{
@@ -522,6 +522,56 @@ pub async fn handle_get_forum_post(
         .map_err(GetForumPostError::Infrastructure)?
         .ok_or(GetForumPostError::NotFound)?;
     Ok(Protobuf(view))
+}
+
+/// Query parameters for [`handle_list_forum_posts`].
+#[derive(Debug, Deserialize)]
+pub struct ListForumPostsQuery {
+    /// Topic to list posts for. Required, unlike `ListMonadMessagesQuery::since` -- there's no
+    /// meaningful "every topic" default the way `GET /message/monad?since=` has one global feed;
+    /// forum posts are always browsed per-topic (ticket #40).
+    topic: String,
+    /// Only return posts stored at or after this many milliseconds since the Unix epoch. Defaults
+    /// to `0` (every stored post under `topic`) when omitted, mirroring `ListMonadMessagesQuery::
+    /// since` (ticket #37).
+    since: Option<i64>,
+}
+
+/// Error type for [`handle_list_forum_posts`].
+#[derive(Debug)]
+pub enum ListForumPostsError {
+    /// A storage-level error.
+    Infrastructure(Report),
+}
+
+impl IntoResponse for ListForumPostsError {
+    fn into_response(self) -> Response {
+        match self {
+            ListForumPostsError::Infrastructure(err) => {
+                tracing::event!(Level::ERROR, error = %err, "infrastructure failure listing forum posts");
+                StatusCode::INTERNAL_SERVER_ERROR.into_response()
+            }
+        }
+    }
+}
+
+/// `GET /message/monad/forum?topic=<topic>&since=<timestamp>` (ticket #40): list every
+/// [`proto::StoredMonadForumPost`] under `topic` stored at or after `since` (milliseconds since
+/// the Unix epoch), ordered by `timestamp` ascending, each paired with its current tallied vote
+/// weight -- mirrors `crate::http::monad_message::handle_list_monad_messages`'s `since`-cursor
+/// discovery model (ticket #37), with `topic` required in addition (see
+/// [`ListForumPostsQuery::topic`]'s doc). No gate/burn check here, same as
+/// [`handle_get_forum_post`] -- reads aren't payment/burn-gated anywhere in this crate.
+pub async fn handle_list_forum_posts(
+    Query(params): Query<ListForumPostsQuery>,
+    Extension(server): Extension<RegistryServer>,
+) -> Result<Protobuf<proto::MonadForumPostViews>, ListForumPostsError> {
+    let since = params.since.unwrap_or(0);
+    let views = server
+        .registry
+        .list_forum_posts_by_topic(&params.topic, since)
+        .map_err(ListForumPostsError::Infrastructure)?;
+    Ok(Protobuf(proto::MonadForumPostViews { views }))
 }
 
 #[cfg(test)]
@@ -1019,5 +1069,124 @@ mod tests {
         assert_eq!(saturate_weight(-1_000), -1_000);
         assert_eq!(saturate_weight(i128::from(i64::MAX) + 10), i64::MAX);
         assert_eq!(saturate_weight(i128::from(i64::MIN) - 10), i64::MIN);
+    }
+
+    /// Store a valid, verified [`proto::StoredMonadForumPost`] straight into `registry` (bypassing
+    /// the HTTP `PUT` + burn-verification machinery, mirroring `http::monad_message`'s own
+    /// `store_at` helper) with an explicit `topic`/`timestamp`, for ticket #40's
+    /// `list_forum_posts_by_topic`-focused tests below where the interesting behavior is the read
+    /// side, not verification.
+    fn store_forum_post_at(
+        registry: &Registry,
+        payload_hash: Vec<u8>,
+        topic: &str,
+        timestamp: i64,
+    ) {
+        let stored = proto::StoredMonadForumPost {
+            post: Some(proto::MonadForumPost {
+                topic: topic.to_string(),
+                parent_post_hash: vec![],
+                raw_burn_tx: vec![1, 2, 3],
+                encrypted_payload: vec![4, 5, 6],
+                payload_hash: payload_hash.clone(),
+            }),
+            sender_address: vec![9u8; 20],
+            tx_hash: vec![8u8; 32],
+            timestamp,
+            network_tag: Vec::new(),
+        };
+        registry.put_forum_post(&payload_hash, stored, &[]).unwrap();
+    }
+
+    fn payload_hash_of(view: &proto::MonadForumPostView) -> Vec<u8> {
+        view.post
+            .as_ref()
+            .unwrap()
+            .post
+            .as_ref()
+            .unwrap()
+            .payload_hash
+            .clone()
+    }
+
+    /// Ticket #40's core acceptance criteria: a topic-filtered listing excludes other topics'
+    /// posts and orders by timestamp ascending -- mirroring `http::monad_message`'s own
+    /// `discovers_new_messages_via_list_since_without_knowing_payload_hash_up_front`-style test.
+    #[test]
+    fn list_forum_posts_by_topic_excludes_other_topics_and_orders_by_timestamp() {
+        let (_tempdir, registry) = test_registry();
+        let hash_a = vec![0xaa; 32];
+        let hash_b = vec![0xbb; 32];
+        let hash_other = vec![0xcc; 32];
+
+        // Insert out of order, and interleaved with a different topic, to prove both the ordering
+        // and the topic filter.
+        store_forum_post_at(&registry, hash_b.clone(), "topic.one", 200);
+        store_forum_post_at(&registry, hash_other.clone(), "topic.two", 150);
+        store_forum_post_at(&registry, hash_a.clone(), "topic.one", 100);
+
+        let views = registry.list_forum_posts_by_topic("topic.one", 0).unwrap();
+        let hashes: Vec<Vec<u8>> = views.iter().map(payload_hash_of).collect();
+        assert_eq!(hashes, vec![hash_a, hash_b]);
+
+        let other_views = registry.list_forum_posts_by_topic("topic.two", 0).unwrap();
+        assert_eq!(
+            other_views.iter().map(payload_hash_of).collect::<Vec<_>>(),
+            vec![hash_other]
+        );
+    }
+
+    #[test]
+    fn list_forum_posts_by_topic_respects_since_cursor() {
+        let (_tempdir, registry) = test_registry();
+        let hash_old = vec![0x11; 32];
+        let hash_new = vec![0x22; 32];
+        store_forum_post_at(&registry, hash_old, "topic.cursor", 100);
+        store_forum_post_at(&registry, hash_new.clone(), "topic.cursor", 200);
+
+        let views = registry
+            .list_forum_posts_by_topic("topic.cursor", 150)
+            .unwrap();
+        assert_eq!(views.len(), 1);
+        assert_eq!(payload_hash_of(&views[0]), hash_new);
+    }
+
+    /// Ticket #40's tally acceptance criterion: the `vote_weight` a listing attaches to a post
+    /// must match what `get_forum_post_view` independently computes for that same post -- both go
+    /// through `Registry::forum_post_view` (see that method's docs), so this is really a
+    /// regression guard against that shared path ever being bypassed for one caller but not the
+    /// other.
+    #[test]
+    fn list_forum_posts_by_topic_tally_matches_get_forum_post_view() {
+        let (_tempdir, registry) = test_registry();
+        let hash = vec![0x33; 32];
+        store_forum_post_at(&registry, hash.clone(), "topic.tally", 100);
+
+        registry
+            .add_forum_vote(&proto::StoredMonadForumVoteEntry {
+                target_payload_hash: hash.clone(),
+                sender_address: vec![1u8; 20],
+                tx_hash: vec![0xaa; 32],
+                timestamp: 100,
+                weight: 1_000,
+            })
+            .unwrap();
+        registry
+            .add_forum_vote(&proto::StoredMonadForumVoteEntry {
+                target_payload_hash: hash.clone(),
+                sender_address: vec![2u8; 20],
+                tx_hash: vec![0xbb; 32],
+                timestamp: 101,
+                weight: -300,
+            })
+            .unwrap();
+
+        let views = registry
+            .list_forum_posts_by_topic("topic.tally", 0)
+            .unwrap();
+        assert_eq!(views.len(), 1);
+        let expected = registry.get_forum_post_view(&hash).unwrap().unwrap();
+        assert_eq!(views[0].vote_weight, expected.vote_weight);
+        assert_eq!(views[0].vote_weight, 700);
     }
 }

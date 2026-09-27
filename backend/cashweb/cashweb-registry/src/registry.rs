@@ -515,6 +515,23 @@ impl Registry {
         self.db.forum_votes().add_vote(entry)
     }
 
+    /// Attach `post`'s current tallied vote weight (sum of every vote recorded against
+    /// `payload_hash`, including its own initial vote), producing a [`proto::MonadForumPostView`].
+    /// Shared by [`Registry::get_forum_post_view`] and [`Registry::list_forum_posts_by_topic`]
+    /// (ticket #40) so both compute a post's tally the exact same way -- a client can't observe
+    /// drift between "look up one post by hash" and "list a topic's posts".
+    fn forum_post_view(
+        &self,
+        payload_hash: &[u8],
+        post: proto::StoredMonadForumPost,
+    ) -> Result<proto::MonadForumPostView> {
+        let vote_weight = self.db.forum_votes().tally(payload_hash)?;
+        Ok(proto::MonadForumPostView {
+            post: Some(post),
+            vote_weight,
+        })
+    }
+
     /// Fetch a stored forum post together with its current tallied vote weight (sum of every
     /// vote recorded against its `payload_hash`, including its own initial vote). `None` if no
     /// post is stored for `payload_hash`.
@@ -526,11 +543,32 @@ impl Registry {
             Some(post) => post,
             None => return Ok(None),
         };
-        let vote_weight = self.db.forum_votes().tally(payload_hash)?;
-        Ok(Some(proto::MonadForumPostView {
-            post: Some(post),
-            vote_weight,
-        }))
+        Ok(Some(self.forum_post_view(payload_hash, post)?))
+    }
+
+    /// List every stored [`proto::StoredMonadForumPost`] under `topic` with `timestamp >= since`
+    /// (milliseconds since the Unix epoch), each with its current tallied vote weight attached, in
+    /// `timestamp` ascending order (ticket #40). See `crate::store::forum`'s module docs for the
+    /// `CF_FORUM_POSTS_BY_TOPIC` key layout this range-scans, and [`Registry::forum_post_view`] for
+    /// why the attached tally can't drift from [`Registry::get_forum_post_view`]'s.
+    pub(crate) fn list_forum_posts_by_topic(
+        &self,
+        topic: &str,
+        since: i64,
+    ) -> Result<Vec<proto::MonadForumPostView>> {
+        self.db
+            .forum_posts()
+            .list_by_topic(topic, since)?
+            .into_iter()
+            .map(|post| {
+                let payload_hash = post
+                    .post
+                    .as_ref()
+                    .map(|p| p.payload_hash.clone())
+                    .unwrap_or_default();
+                self.forum_post_view(&payload_hash, post)
+            })
+            .collect()
     }
 }
 

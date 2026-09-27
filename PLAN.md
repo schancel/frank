@@ -156,6 +156,31 @@ fully superseded by the tracked ticket pipeline rather than kept as a crutch.
   block ~65.9M), mainnet chainId `0x8f` (143). Stored in gitignored
   `frank/.env`, template in `.env.example`.
 - Repo created and pushed: `github.com/schancel/frank` (private).
+- **Backend CI (`.github/workflows/backend-ci.yml`) reached its first-ever
+  full green run 2026-09-27** (ticket #29). The workflow had never
+  completed successfully since the fork — every fix below was found by
+  actually getting it to run, not by inspection: (1) `lotusd`'s upstream
+  download bucket (`storage.googleapis.com/lotus-project`) is permanently
+  dead (billing account closed), made non-fatal since nothing Frank ships
+  needs a real `lotusd`; (2) bare `cargo make` runs cargo-make's default
+  build+test flow, which was running `bitcoinsuite-bitcoind-nng`'s own
+  Lotus-only NNG tests — switched to the `build`-only task; (3) 18 files
+  of accumulated rustfmt drift, never checked before; (4) two real rustc
+  lints in vendored `bitcoinsuite-core` newer toolchains promote to errors
+  (`hidden_glob_reexports`, `mismatched_lifetime_syntaxes`); (5)
+  `RUSTFLAGS="-D warnings"` on the release build was inherited, never
+  validated, and promotes an unbounded tail of vendored-code lints —
+  dropped, `cargo clippy` remains the real lint gate; (6) 8 tests across
+  5 files need a real `lotusd`/`bitcoind` binary unavailable in CI (and
+  most local dev environments) — `#[ignore]`d with clear reasons, test
+  code kept intact for whenever Lotus support actually resumes (constraint
+  2's shim); (7) `librocksdb-sys@0.8.3+7.4.4`'s vendored RocksDB 7.4.4 C++
+  source doesn't compile under Ubuntu 24.04's default GCC 13 (verified:
+  the vendored header/source pair is internally consistent, so this is a
+  compiler-version incompatibility, not a corrupt/mismatched dependency) —
+  pinned `gcc-12`/`g++-12` for the job rather than bumping `rocksdb` itself
+  (which `librocksdb-sys`'s `^0.8.0` requirement would force, a much
+  larger/riskier change).
 
 ## Milestones
 

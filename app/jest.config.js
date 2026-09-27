@@ -48,7 +48,13 @@ module.exports = {
   // See https://github.com/vuejs/vue-jest/issues/188#issuecomment-620750728
   moduleFileExtensions: ['vue', 'js', 'jsx', 'json', 'ts', 'tsx'],
   moduleNameMapper: {
-    '^quasar$': 'quasar/dist/quasar.common.js',
+    // Fixed as part of ticket #42: 'quasar/dist/quasar.common.js' doesn't exist in the installed
+    // Quasar 2.15.1 (that filename is a stale Quasar-1-era convention) -- this mapping was never
+    // actually exercised by any pre-#42 test, since none of them transitively imported anything
+    // that pulls in 'quasar' (e.g. `utils/notifications.ts`) until this ticket's first-ever
+    // `stores/*.ts` jest tests did. `dist/quasar.cjs.prod.js` is Quasar's own `package.json` `main`
+    // (the real CJS entry point jest/node `require` should resolve to).
+    '^quasar$': 'quasar/dist/quasar.cjs.prod.js',
     '^~/(.*)$': '<rootDir>/$1',
     '^src/(.*)$': '<rootDir>/src/$1',
     '^app/(.*)$': '<rootDir>/$1',

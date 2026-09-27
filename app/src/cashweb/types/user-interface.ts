@@ -27,6 +27,10 @@ export type ReceivedMessage = {
   outpoints: Utxo[]
   senderAddress: string
   destinationAddress: string
+  /** See `../types/messages.ts`'s `Message.burnValueWei` -- same additive field, mirrored here
+   * since `stores/chats.ts`'s `receiveMessages` re-types `ReceivedMessageWrapper.message` as
+   * `Message` (ticket #42). */
+  burnValueWei?: bigint
 }
 
 export type ReceivedMessageWrapper = {

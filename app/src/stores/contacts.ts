@@ -3,18 +3,15 @@ import { defineStore } from 'pinia'
 
 import { useChatStore } from './chats'
 
-import { ReadOnlyRelayClient } from '../cashweb/relay'
 import {
   defaultUpdateInterval,
   defaultRelayUrl,
-  registrys,
-  networkName,
   displayNetwork,
   defaultAcceptancePrice,
 } from '../utils/constants'
-import { RegistryHandler } from '../cashweb/registry'
+import { activeChain } from '../cashweb/chain'
 import moment from 'moment'
-import { toAPIAddress, toDisplayAddress } from '../utils/address'
+import { toChainDisplayAddress } from '../utils/chain-address'
 import { mapObjIndexed } from 'ramda'
 import assert from 'assert'
 import { STORE_SCHEMA_VERSION } from 'src/boot/pinia'
@@ -78,9 +75,19 @@ export interface State {
   updateInterval: number
 }
 
-export const defaultContactsState = {
-  contacts: {},
-  updateInterval: defaultUpdateInterval,
+/**
+ * Bugfix found while writing this ticket's (#42) first-ever `stores/*.ts` jest tests -- same shape
+ * as `stores/chats.ts`'s `freshChatsState` (see that function's doc comment for the full
+ * explanation): the old module-level `defaultContactsState` constant's `.contacts` object was
+ * shared, un-copied, across every `useContactStore()` instance in the same process (one call site,
+ * `rehydrateContacts`, didn't even spread it -- it aliased `defaultContactsState.contacts` directly
+ * and mutated it in place). Fixed by constructing a fresh state object each call.
+ */
+function freshContactsState(): State {
+  return {
+    contacts: {},
+    updateInterval: defaultUpdateInterval,
+  }
 }
 
 type RestorableContactState = {
@@ -107,12 +114,11 @@ export async function rehydrateContacts(
   contactState?: RestorableState,
 ): Promise<State> {
   if (!contactState) {
-    return defaultContactsState
+    return freshContactsState()
   }
 
   // This is currently a shim, we don't need any special rehydrate contact at this time.
-  const contacts: Record<string, ContactState | undefined> =
-    defaultContactsState.contacts
+  const contacts: Record<string, ContactState | undefined> = {}
   for (const [address, contact] of Object.entries(
     contactState.contacts ?? {},
   )) {
@@ -140,24 +146,24 @@ export async function rehydrateContacts(
 }
 
 export const useContactStore = defineStore('contacts', {
-  state: (): State => ({ ...defaultContactsState }),
+  state: (): State => freshContactsState(),
   getters: {
     getNotify: state => (address: string) => {
-      const apiAddress = toDisplayAddress(address)
+      const apiAddress = toChainDisplayAddress(address)
 
       return state.contacts[apiAddress]
         ? state.contacts[apiAddress]?.notify
         : false
     },
     getRelayURL: state => (address: string) => {
-      const apiAddress = toDisplayAddress(address)
+      const apiAddress = toChainDisplayAddress(address)
 
       return state.contacts[apiAddress]
         ? state.contacts[apiAddress]?.relayURL
         : defaultRelayUrl
     },
     isContact: state => (address: string) => {
-      const apiAddress = toDisplayAddress(address)
+      const apiAddress = toChainDisplayAddress(address)
 
       return apiAddress in state.contacts
     },
@@ -171,7 +177,7 @@ export const useContactStore = defineStore('contacts', {
             profile: { ...pendingRelayData.profile, pubKey: null },
           }
         }
-        const apiAddress = toDisplayAddress(address)
+        const apiAddress = toChainDisplayAddress(address)
 
         return (
           state.contacts[apiAddress] ?? {
@@ -185,26 +191,26 @@ export const useContactStore = defineStore('contacts', {
       return state.contacts
     },
     haveContact: state => (address: string) => {
-      const apiAddress = toDisplayAddress(address)
+      const apiAddress = toChainDisplayAddress(address)
       return !!state.contacts[apiAddress]
     },
     getContactProfile: state => (address: string) => {
       if (!address) {
         return { ...pendingRelayData.profile }
       }
-      const apiAddress = toDisplayAddress(address)
+      const apiAddress = toChainDisplayAddress(address)
 
       return state.contacts[apiAddress]
         ? state.contacts[apiAddress]?.profile
         : { ...pendingRelayData.profile }
     },
     getAcceptancePrice: state => (address: string) => {
-      const apiAddress = toDisplayAddress(address)
+      const apiAddress = toChainDisplayAddress(address)
 
       return state.contacts[apiAddress]?.inbox.acceptancePrice
     },
     getPubKey: state => (address: string) => {
-      const apiAddress = toDisplayAddress(address)
+      const apiAddress = toChainDisplayAddress(address)
       const contact = state.contacts[apiAddress]
       if (!contact || !contact?.profile) {
         return undefined
@@ -248,7 +254,7 @@ export const useContactStore = defineStore('contacts', {
         relayURL: null,
         inbox: contact.inbox ?? { acceptancePrice: defaultAcceptancePrice },
       }
-      const apiAddress = toDisplayAddress(address)
+      const apiAddress = toChainDisplayAddress(address)
 
       this.contacts[apiAddress] = fixedContact
     },
@@ -260,7 +266,7 @@ export const useContactStore = defineStore('contacts', {
       profile,
       inbox,
     }: Partial<ContactState> & { address: string }) {
-      const apiAddress = toDisplayAddress(address)
+      const apiAddress = toChainDisplayAddress(address)
       const contact = this.contacts[apiAddress]
       if (!contact) {
         return
@@ -270,7 +276,7 @@ export const useContactStore = defineStore('contacts', {
       contact.inbox = inbox || contact.inbox
     },
     setNotify({ address, value }: { address: string; value: boolean }) {
-      const apiAddress = toDisplayAddress(address)
+      const apiAddress = toChainDisplayAddress(address)
       const contact = this.contacts[apiAddress]
       if (!contact) {
         return
@@ -292,12 +298,31 @@ export const useContactStore = defineStore('contacts', {
     },
     deleteContact(address: string) {
       const chats = useChatStore()
-      const apiAddress = toDisplayAddress(address)
+      const apiAddress = toChainDisplayAddress(address)
 
       chats.clearChat(address)
       chats.deleteChat(address)
       delete this.contacts[apiAddress]
     },
+    /**
+     * `contacts.ts`'s network-calling entry points (ticket #42 acceptance criteria): resolves a
+     * profile via `activeChain.formatAddress`/`parseAddress`/`fetchProfile` instead of the old
+     * `toAPIAddress`/`RegistryHandler`/`ReadOnlyRelayClient` trio.
+     *
+     * ## Known gap: no name/bio/avatar/relayURL/acceptancePrice from `activeChain.fetchProfile`
+     *
+     * Unlike the old Lotus `RegistryHandler` (relay-URL lookup) + `ReadOnlyRelayClient.getRelayData`
+     * (name/bio/avatar/inbox) pair, `ActiveChain.fetchProfile` (`../cashweb/chain/active-chain.ts`)
+     * only ever returns `{ address, pubKey }` -- by design, not an oversight: the Monad-side
+     * `AddressMetadata` registered via `../cashweb/wallet/monad-identity.ts` is deliberately empty
+     * of vCard content ("no vCard content, just proving registration itself", that file's own doc
+     * comment), and `ActiveChain` has no per-contact relay-URL concept at all (Monad uses one
+     * global `relayBaseUrl`, internal to `MonadChain`, never exposed through the interface). So a
+     * contact resolved this way only ever gets a real `pubKey` -- `profile.name`/`bio`/`avatar`
+     * stay at their existing/default values (never fabricated), `relayURL` is `null` (no longer a
+     * meaningful per-contact concept), and `inbox.acceptancePrice` falls back to
+     * `defaultAcceptancePrice`. Flagged here so this isn't mistaken for a bug later.
+     */
     async fetchAndAddContact({
       address,
       contact,
@@ -308,37 +333,29 @@ export const useContactStore = defineStore('contacts', {
       if (this.isContact(address)) {
         return
       }
-      // Validate address
-      const displayAddress = toDisplayAddress(address) // TODO: Make generic
+      const displayAddress = toChainDisplayAddress(address)
 
       if (!contact) {
-        // Validate address
-        const apiAddress = toAPIAddress(address) // TODO: Make generic
-
-        // Pull information from registry then relay server
-        const ksHandler = new RegistryHandler({ registrys, networkName })
-        const relayURL = await ksHandler.getRelayUrl(apiAddress)
-        if (!relayURL) {
+        const chainAddress = activeChain.parseAddress(address)
+        if (!chainAddress) {
+          console.error(`Invalid ${activeChain.name} address: ${address}`)
           return
         }
-        const relayClient = new ReadOnlyRelayClient(
-          relayURL,
-          networkName,
-          displayNetwork,
-        )
-        const relayData = await relayClient.getRelayData(apiAddress)
-        if (!relayData) {
+        const profileInfo = await activeChain.fetchProfile(chainAddress)
+        if (!profileInfo) {
           return
         }
         this.addContact({
           address: displayAddress,
           contact: {
-            ...relayData,
-            relayURL,
+            relayURL: null,
             profile: {
-              ...relayData.profile,
-              pubKey: markRaw(PublicKey.fromBuffer(relayData.profile.pubKey)),
+              ...defaultRelayData.profile,
+              pubKey: markRaw(
+                PublicKey.fromBuffer(Buffer.from(profileInfo.pubKey)),
+              ),
             },
+            inbox: defaultRelayData.inbox,
           },
         })
       } else {
@@ -373,7 +390,6 @@ export const useContactStore = defineStore('contacts', {
       }
     },
     async refresh(address: string) {
-      // Make this generic over networks
       const oldContactInfo = this.getContact(address)
       const updateInterval = this.updateInterval
       const now = moment()
@@ -381,6 +397,11 @@ export const useContactStore = defineStore('contacts', {
       const expired =
         lastUpdateTime &&
         moment(lastUpdateTime).add(updateInterval, 'milliseconds').isBefore(now)
+      // NOTE: `activeChain.fetchProfile` never returns an avatar (see `fetchAndAddContact`'s doc
+      // comment for why) -- `noPicture` is therefore always true for a Monad contact, so `refresh`
+      // never short-circuits on this branch alone (it still short-circuits via `!expired` once
+      // `updateInterval` hasn't elapsed). Slightly more frequent refetching than the old Lotus
+      // behavior, not a correctness issue -- left as-is rather than silently dropping the check.
       const noPicture = oldContactInfo.profile && !oldContactInfo.profile.avatar
       if (!expired && !noPicture) {
         // Short circuit if we already updated this contact recently.
@@ -389,27 +410,24 @@ export const useContactStore = defineStore('contacts', {
       }
       console.log('Updating contact', address)
 
-      // Get metadata
       try {
-        const handler = new RegistryHandler({ networkName, registrys })
-        const relayURL = await handler.getRelayUrl(address)
-        if (!relayURL) {
-          throw new Error(`Unable to find relay url for ${address}`)
+        const chainAddress = activeChain.parseAddress(address)
+        if (!chainAddress) {
+          throw new Error(`Invalid ${activeChain.name} address: ${address}`)
         }
-
-        const relayClient = new ReadOnlyRelayClient(
-          relayURL,
-          networkName,
-          displayNetwork,
-        )
-        const relayData = await relayClient.getRelayData(address)
+        const profileInfo = await activeChain.fetchProfile(chainAddress)
+        if (!profileInfo) {
+          throw new Error(`No registered profile found for ${address}`)
+        }
         this.updateContact({
           address,
           profile: {
-            ...relayData.profile,
-            pubKey: markRaw(PublicKey.fromBuffer(relayData.profile?.pubKey)),
+            ...oldContactInfo.profile,
+            pubKey: markRaw(
+              PublicKey.fromBuffer(Buffer.from(profileInfo.pubKey)),
+            ),
           },
-          inbox: relayData.inbox,
+          inbox: oldContactInfo.inbox,
         })
       } catch (err) {
         console.error(err)
@@ -464,7 +482,7 @@ export const useContactStore = defineStore('contacts', {
         metadata.networkName !== displayNetwork ||
         metadata.version !== STORE_SCHEMA_VERSION
       if (invalidStore) {
-        return { ...defaultContactsState }
+        return freshContactsState()
       }
 
       const deserializedProfile = JSON.parse(contacts, (k, v) => {

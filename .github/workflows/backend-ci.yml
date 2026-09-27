@@ -40,14 +40,18 @@ jobs:
       with:
         path: flatbuffers
         repository: google/flatbuffers
-        ref: v2.0.0
+        # v2.0.0 fails to build on modern GCC (Ubuntu 24.04 runners ship GCC 13) due to a
+        # -Werror=stringop-overflow false positive in reflection.cpp. v2.0.8 is the last patch
+        # release on the 2.0.x branch (matches bitcoinsuite-bitcoind-nng's `flatbuffers = "2.0"`
+        # Cargo requirement) and upstream already added `-Wno-error=stringop-overflow` there.
+        ref: v2.0.8
 
     - name: Cache flatc
       uses: actions/cache@v4
       with:
         path: |
           flatbuffers/build
-        key: ${{ runner.os }}-flatbuffers-ninja-v2.0.0
+        key: ${{ runner.os }}-flatbuffers-ninja-v2.0.8
         restore-keys: |
           ${{ runner.os }}-flatbuffers-ninja-
 
@@ -73,9 +77,12 @@ jobs:
       shell: bash
 
     - name: Set-up Rust toolchain
-      uses: actions-rs/toolchain@v1
+      # actions-rs/toolchain is unmaintained (org archived, runs on the deprecated node12
+      # runtime); dtolnay/rust-toolchain is the actively-maintained drop-in replacement.
+      uses: dtolnay/rust-toolchain@stable
       with:
         toolchain: stable
+        components: rustfmt, clippy
 
     - name: Get Rust version for cache
       id: rust-version

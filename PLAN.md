@@ -515,3 +515,98 @@ and having to redo it anyway once a second chain is real. Revisit when
 Lotus (or another chain) actually gets wired back in behind the
 `ChainAdapter` boundary — that's the right moment, informed by two real
 examples instead of one guess.
+
+### M9 — Rewire the UI onto the Monad wallet clients (raised 2026-09-26)
+Everything shipped through M8 (Stamp, POP, topic broadcast, the Qwen bot)
+is verified at the backend/wallet-client layer — real testnet transactions,
+real tests. None of it is wired into the actual Quasar UI: `stores/
+chats.ts`, `stores/contacts.ts`, `stores/topics.ts`, `stores/forum.ts`
+still exclusively call the old Lotus `RegistryHandler`/`RelayClient`/
+`Wallet` (`cashweb/registry`, `cashweb/relay`, `cashweb/wallet/index.ts`).
+There is currently no clickable path in the actual app that exercises
+Monad at all.
+
+**Design: a compile-time `ActiveChain` seam**, not a runtime multi-chain
+dispatch (matches M8's own deferred-cross-chain-schema reasoning) — one
+compile-time constant (`app/src/cashweb/chain/index.ts`'s `activeChain`)
+supplies address formatting, the unit/denomination, a wallet factory, and
+the direct-message/topic-broadcast client methods every store imports
+through instead of reaching into Lotus-specific code directly.
+
+Decomposed into four tickets, dependency-ordered:
+- **#41** — Build `ActiveChain`/`MonadChain` itself (interface + a real
+  implementation over the already-merged Monad wallet clients). No UI
+  wiring. Also builds `monad-identity.ts`, a Monad-native identity module
+  that doesn't exist yet — `lotus-identity.ts` (ticket #9) is NOT
+  chain-agnostic despite its name (hardcodes Lotus address encoding); this
+  is the same Lotus-identity-on-Monad inconsistency flagged when reviewing
+  the Qwen bot.
+- **#42** — Rewire `stores/chats.ts`/`contacts.ts` (direct messaging) onto
+  it. Blocked by #41.
+- **#43** — Rewire `stores/topics.ts`/`forum.ts` (topic broadcast) onto it.
+  Blocked by #41. Independent of #42, can run in parallel.
+- **#44** — Clean up remaining hardcoded `XPI`/Lotus-address UI spots
+  (`ChatInput.vue`/`CreatePost.vue`'s unit suffix, `utils/address.ts`'s
+  remaining callers). Blocked by #42 and #43, since it needs both done
+  first to know what's actually left over.
+
+**Real structural findings from design review, not guesses** (see #41's
+issue body for the full detail):
+- The old `Wallet` class's ~400 lines of UTXO coin-selection and
+  privacy-motivated change-output splitting have **no Monad equivalent to
+  port** — not a gap, a simplification. Monad's account-based burns are a
+  single scalar + calldata; change handling already lives separately in
+  ticket #36's `monad-change-pool.ts`/`monad-change-recovery.ts`, operating
+  on whole retired sub-accounts, not transaction outputs.
+- The old messaging path is WS-push-driven; every Monad client built
+  tonight is poll-based (`fetchSince(sinceMs)`). #42 needs to actually
+  introduce a polling loop, not just swap one client call for another.
+- `ChatMessage.outpoints: Utxo[]`/`ForumMessage.satoshis` are UTXO-shaped
+  fields baked into stored message types — #42/#43 need an explicit
+  decision on the Monad-side replacement (`burnValueWei: bigint` alongside
+  or instead of `outpoints`), not a silent type change.
+- `toDisplayAddress`/`toAPIAddress`'s output is used as the actual **store
+  key** for `state.chats`/`state.contacts`, not just a display string —
+  switching address representation without a migration path would silently
+  orphan any existing persisted chat/contact data on first load.
+
+**Also on the radar, not yet scoped as tickets** (raised in conversation
+2026-09-26, capturing so they aren't lost):
+- **Peer/gossip replication for the topic-broadcast system.** The Lotus
+  registry has a real two-part replication design (`src/p2p/peer.rs`,
+  `src/p2p/peers.rs`): push-on-write fan-out to a static, config-file peer
+  list, deduped per-peer via a *rolling window* of Bloom filters
+  (`PeerState.filters: Vec<BloomFilter>`, oldest evicted once bounded
+  `max_filters` is exceeded — genuinely "resizable" in the sense of aging
+  out old entries with bounded memory, not a single ever-growing filter);
+  plus a separate pull-based catch-up sync (`initial_metadata_download`,
+  randomly sampling peers each round) for **profile/metadata only** — there
+  is no equivalent pull-catchup for broadcast messages/topics, even on
+  Lotus, so a missed push is simply lost there too. None of this — peer
+  list, push fan-out, Bloom-filter dedup, or catch-up sync — exists on the
+  Monad topic-broadcast path at all; it's a single centralized relay today.
+  Real multi-relay decentralization for Monad topics would need this
+  ported (and arguably the profile-only pull-catchup asymmetry fixed while
+  porting, not replicated as-is) — not started, not scoped.
+- **Email-like human-readable addressing for profiles** (`bob@frank.net`,
+  `foo@bar.com` resolving to a profile/address, à la ENS/WebFinger/Matrix's
+  `user@domain` convention) — maps naturally onto the mbox/profile system
+  already being federated (domain = federation node, local-part = identity
+  within it). Explicitly less secure/direct than a raw address, but noted
+  as "required UX." Not scoped.
+- **Chain-first route restructuring**: `/message/monad/*` →
+  `/monad/messages/*`, `/message/monad/topics/*` → `/monad/topics/*` —
+  mirrors the already-separate `http::monad_message`/`http::monad_topics`
+  Rust modules, supports clean `axum::Router::nest("/monad", ...)`
+  composition, and is symmetric for whenever a second chain is added.
+  Requires a coordinated backend route-registration change + every TS
+  client's URL strings (mirrors the forum→topic rename's shape). Not
+  started — agreed to let then-in-flight ticket #33 land on the current
+  paths first rather than redirect it mid-flight.
+- **Mbox/topic subsystem toggle for deployment flexibility**: mbox/profile
+  is inherently a federated (home-server-per-identity) model; topic
+  broadcast is more of a small-world gossip network — different scaling
+  shapes. Keep one binary (already the case, see constraint 6) but add
+  config to selectively disable either route-group subset at deploy time,
+  so an operator can run a pure profile-federation node or a pure
+  topic-relay node without needing separate binaries. Not scoped.

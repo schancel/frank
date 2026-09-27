@@ -8,6 +8,12 @@ mod bytes_mut;
 pub mod compression;
 pub mod ecc;
 pub mod encoding;
+// Harmless pre-existing naming collision: `sign::error` is also a public module (glob-reexported
+// below via `pub use crate::sign::*`), so this crate-root `error` module shadows it in the type
+// namespace. Newer rustc promotes that to a hard error under `-D warnings`; this crate has always
+// resolved `crate::error` to this module, not `sign::error`, so the shadowing is the existing,
+// working behavior -- not something to silently change by renaming either module.
+#[allow(hidden_glob_reexports)]
 mod error;
 mod hash;
 mod merkle;

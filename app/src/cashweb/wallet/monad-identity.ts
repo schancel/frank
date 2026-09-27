@@ -58,9 +58,19 @@
  * than reusing pool index 0 for double duty (which `MonadSubAccountPool.ensureSize()` would then
  * also register as an ordinary, poolable burner account, risking `selectForStamp()` eventually
  * handing it out for an unrelated burn), this module derives the identity key at its own reserved
- * path, `m/44'/60'/0'/1/0` (`change = 1`) -- deterministic from the same `HDSeed`
- * `../chain/active-chain.ts` defines, but structurally outside the pool's `change = 0` derivation
- * range, so it can never collide with a pool-managed index.
+ * path, `m/44'/60'/1'/0/0` -- deterministic from the same `HDSeed` `../chain/active-chain.ts`
+ * defines, but under a distinct hardened account index (`1'`) so it's structurally outside BOTH
+ * `monad-hd-keyring.ts`'s burner-pool range (`m/44'/60'/0'/0/i`) and `monad-change-keyring.ts`'s
+ * change-account range (`m/44'/60'/0'/1/i`, ticket #36).
+ *
+ * **Correction (caught in review, before this collided with anything live):** an earlier revision
+ * of this file used `m/44'/60'/0'/1/0` (`change = 1`, index 0), reasoning it was safely outside
+ * the burner pool's `change = 0` range -- true, but it missed that ticket #36's change-account
+ * branch already claims the entire `change = 1` range, and `changeAccountPath(0)` derives that
+ * exact same path. Two structurally unrelated keys (the stable identity, and the first swept
+ * burn-account's change destination) would have been the literal same private key. Bumping the
+ * account-index level instead of reusing the change field avoids this without touching
+ * `monad-hd-keyring.ts` or `monad-change-keyring.ts` at all.
  *
  * This is a judgment call: issue #41's own interface sketch didn't specify a derivation path for
  * `createWallet`'s identity field, and the pre-existing Lotus precedent
@@ -79,10 +89,11 @@ import { SignedPayload } from '../signed_payload/payload_pb'
 import { ChainAddress, HDSeed, ProfileInfo } from '../chain/active-chain'
 import type { FrankIdentityHandle } from '../chain/active-chain'
 
-/** Reserved BIP-44 branch (`change = 1`) for the stable Frank identity key -- see this file's
- * header for why it's kept structurally separate from `monad-hd-keyring.ts`'s burner sub-account
- * branch (`change = 0`). */
-export const MONAD_IDENTITY_DERIVATION_PATH = "m/44'/60'/0'/1/0"
+/** Reserved BIP-44 path (account index `1'`) for the stable Frank identity key -- see this file's
+ * header for why it's kept structurally separate from both `monad-hd-keyring.ts`'s burner
+ * sub-account branch (`m/44'/60'/0'/0/i`) and `monad-change-keyring.ts`'s change-account branch
+ * (`m/44'/60'/0'/1/i`, ticket #36). */
+export const MONAD_IDENTITY_DERIVATION_PATH = "m/44'/60'/1'/0/0"
 
 /** A Monad-native Frank identity: a secp256k1 keypair plus its EIP-55 checksummed address (see
  * this file's header). Implements `FrankIdentityHandle` (`../chain/active-chain.ts`) so it can be

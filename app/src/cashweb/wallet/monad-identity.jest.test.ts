@@ -34,7 +34,7 @@ describe('MonadIdentity', () => {
   })
 
   it("uses the reserved change=1 identity branch, not the burner pool's change=0 branch", () => {
-    expect(MONAD_IDENTITY_DERIVATION_PATH).toBe("m/44'/60'/0'/1/0")
+    expect(MONAD_IDENTITY_DERIVATION_PATH).toBe("m/44'/60'/1'/0/0")
   })
 
   it('never produces a Lotus-style address (no "lotus" prefix, no base58)', () => {

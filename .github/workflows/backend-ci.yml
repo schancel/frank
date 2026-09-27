@@ -69,8 +69,12 @@ jobs:
         if [ ! -d "build" ]; then
           mkdir build
           cd build
+          # Only build the flatc binary itself, not flatbuffers' own test suite (the default
+          # "all" target) -- v2.0.8's flattests target fails to compile on GCC 13 due to a
+          # missing #include <cstdint> in tests/reflection_test.h, an unrelated upstream test-only
+          # bug we don't need to fix since we only consume the flatc binary here.
           cmake -G "Ninja" -DCMAKE_BUILD_TYPE=Release ..
-          ninja
+          ninja flatc
           cd ..
         fi
         cp ./build/flatc ../bin/

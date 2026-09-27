@@ -36,6 +36,15 @@ pub(crate) const CF_FORUM_POSTS: &str = "forum_posts";
 /// `target_payload_hash ++ tx_hash` so multiple votes can tally against the same post -- see
 /// `crate::store::forum`'s module docs.
 pub(crate) const CF_FORUM_VOTES: &str = "forum_votes";
+/// Ticket #40: secondary index over `CF_FORUM_POSTS`, keyed by `SHA256(topic) ++
+/// timestamp.to_be_bytes() ++ payload_hash` (value: the `payload_hash`) -- mirrors
+/// `CF_MONAD_MESSAGES_BY_TIME`'s "value is just the payload_hash" layout, but hashes the topic
+/// first (exactly like `DbTopics::get_messages_to`'s own `topic_digest`) rather than using the raw
+/// topic bytes as a variable-length key prefix, which would let one topic's key range bleed into
+/// another's (e.g. topic `"a"` is a byte-prefix of topic `"ab"`, so a raw-bytes prefix scan for
+/// `"a"` would incorrectly also return `"ab"`'s posts). Lets `DbForumPosts::list_by_topic`
+/// range-scan a single topic's posts in timestamp order -- see `crate::store::forum`'s module docs.
+pub(crate) const CF_FORUM_POSTS_BY_TOPIC: &str = "forum_posts_by_topic";
 
 pub(crate) type CF = rocksdb::ColumnFamily;
 

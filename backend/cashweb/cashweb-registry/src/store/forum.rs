@@ -11,6 +11,34 @@
 //!
 //! [`DbForumPosts`] is keyed directly by `payload_hash`, exactly like `DbMonadMessages`.
 //!
+//! ## `list_by_topic` (ticket #40)
+//!
+//! `CF_FORUM_POSTS_BY_TOPIC` is a secondary index, keyed by `SHA256(topic) ++
+//! timestamp.to_be_bytes() ++ payload_hash` (value: the `payload_hash`), maintained alongside the
+//! primary `CF_FORUM_POSTS` on every [`DbForumPosts::put`] -- directly mirroring
+//! `crate::store::monad_messages::CF_MONAD_MESSAGES_BY_TIME`'s layout and its "delete the stale
+//! index entry first, in the same batch, if a retry changes the indexed fields" idempotency
+//! handling.
+//!
+//! Two judgment calls worth documenting explicitly:
+//! - **Hash the topic, don't use it raw.** The ticket's own suggested layout was
+//!   `topic ++ timestamp.to_be_bytes() ++ payload_hash`, but a raw, variable-length `topic` prefix
+//!   is ambiguous for a prefix scan: topic `"a"` is a byte-prefix of topic `"ab"`, so scanning for
+//!   everything starting with `"a"`'s bytes would incorrectly also return `"ab"`'s posts. This
+//!   crate already solved exactly this problem for the Lotus path
+//!   (`crate::store::topics::DbTopics::get_messages_to`'s `topic_digest`, a `SHA256(topic)`
+//!   prefix) -- reusing that fix here instead of reintroducing the bug it fixed.
+//! - **Value is the `payload_hash`, not the full `StoredMonadForumPost`.** [`Registry::
+//!   get_forum_post_view`](crate::registry::Registry::get_forum_post_view) needs the post's
+//!   current vote tally regardless, which always requires a `DbForumVotes::tally` lookup keyed by
+//!   `payload_hash` -- so listing can never avoid a second lookup the way `CF_MONAD_MESSAGES_BY_TIME`
+//!   avoided one for `list_since` (which has no tally to attach). Given that second lookup is
+//!   unavoidable either way, storing the full post redundantly in the secondary index would only
+//!   add a second place [`DbForumPosts::put`] must keep in sync (and a second place a decode error
+//!   could occur), for no lookup savings. Keeping the index value as just the `payload_hash` (like
+//!   `CF_MONAD_MESSAGES_BY_TIME`) keeps `CF_FORUM_POSTS` the single source of truth for post
+//!   content.
+//!
 //! [`DbForumVotes`] needs to support *multiple* votes accumulating against the same
 //! `payload_hash` (a post's initial vote, plus zero or more later [`crate::proto::
 //! MonadForumVote`]s) and to tally them cheaply. It's keyed by `target_payload_hash (32 bytes) ++
@@ -24,20 +52,35 @@
 
 use std::fmt::Debug;
 
+use bitcoinsuite_core::{Hashed, Sha256};
 use bitcoinsuite_error::{ErrorMeta, Result, WrapErr};
 use prost::Message;
-use rocksdb::{ColumnFamilyDescriptor, IteratorMode};
+use rocksdb::{ColumnFamilyDescriptor, Direction, IteratorMode};
 use thiserror::Error;
 
 use crate::{
     proto,
-    store::db::{Db, CF, CF_FORUM_POSTS, CF_FORUM_VOTES},
+    store::db::{Db, CF, CF_FORUM_POSTS, CF_FORUM_POSTS_BY_TOPIC, CF_FORUM_VOTES},
 };
+
+/// SHA256 digest of a forum topic string, used as `CF_FORUM_POSTS_BY_TOPIC`'s key prefix instead
+/// of the raw topic bytes (see module docs for why).
+fn topic_digest(topic: &str) -> Vec<u8> {
+    Sha256::digest(topic.as_bytes().into()).to_vec_be()
+}
+
+/// Build the `CF_FORUM_POSTS_BY_TOPIC` key for a given `(topic_digest, timestamp, payload_hash)`
+/// triple. Kept as a free function so [`DbForumPosts::put`] and [`DbForumPosts::list_by_topic`]
+/// can't disagree on the encoding (mirrors `store::monad_messages::by_time_key`).
+fn by_topic_key(topic_digest: &[u8], timestamp: i64, payload_hash: &[u8]) -> Vec<u8> {
+    [topic_digest, timestamp.to_be_bytes().as_ref(), payload_hash].concat()
+}
 
 /// Allows access to stored [`proto::StoredMonadForumPost`]s.
 pub struct DbForumPosts<'a> {
     db: &'a Db,
     cf_forum_posts: &'a CF,
+    cf_forum_posts_by_topic: &'a CF,
 }
 
 /// Errors indicating some forum-post store error.
@@ -60,16 +103,44 @@ impl<'a> DbForumPosts<'a> {
     /// Create a new [`DbForumPosts`] instance.
     pub fn new(db: &'a Db) -> Self {
         let cf_forum_posts = db.cf(CF_FORUM_POSTS).unwrap();
-        DbForumPosts { db, cf_forum_posts }
+        let cf_forum_posts_by_topic = db.cf(CF_FORUM_POSTS_BY_TOPIC).unwrap();
+        DbForumPosts {
+            db,
+            cf_forum_posts,
+            cf_forum_posts_by_topic,
+        }
     }
 
-    /// Store a [`proto::StoredMonadForumPost`], keyed by its inner post's `payload_hash`.
-    /// Idempotent, mirroring `DbMonadMessages::put`.
+    /// Store a [`proto::StoredMonadForumPost`], keyed by its inner post's `payload_hash`, and
+    /// index it by `(post.post.topic, post.timestamp)` (ticket #40's `list_by_topic`).
+    ///
+    /// Idempotent, mirroring `DbMonadMessages::put`: storing the same `payload_hash` again (e.g. a
+    /// client retrying a request whose response it never saw) simply overwrites the entry. If a
+    /// post already existed under this `payload_hash`, its old by-topic index entry is removed
+    /// first (in the same batch) so a retry that lands with a different `timestamp` (or, in
+    /// principle, a different `topic` -- `payload_hash` only binds `encrypted_payload`, not
+    /// `topic`) doesn't leave a stale, orphaned index row behind.
     pub fn put(&self, payload_hash: &[u8], post: &proto::StoredMonadForumPost) -> Result<()> {
-        self.db
-            .rocksdb()
-            .put_cf(self.cf_forum_posts, payload_hash, post.encode_to_vec())
-            .wrap_err(super::db::DbError::RocksDb)?;
+        let mut batch = rocksdb::WriteBatch::default();
+        if let Some(existing) = self.get(payload_hash)? {
+            if let Some(existing_post) = existing.post.as_ref() {
+                let existing_digest = topic_digest(&existing_post.topic);
+                batch.delete_cf(
+                    self.cf_forum_posts_by_topic,
+                    by_topic_key(&existing_digest, existing.timestamp, payload_hash),
+                );
+            }
+        }
+        batch.put_cf(self.cf_forum_posts, payload_hash, post.encode_to_vec());
+        if let Some(new_post) = post.post.as_ref() {
+            let digest = topic_digest(&new_post.topic);
+            batch.put_cf(
+                self.cf_forum_posts_by_topic,
+                by_topic_key(&digest, post.timestamp, payload_hash),
+                payload_hash,
+            );
+        }
+        self.db.write_batch(batch)?;
         Ok(())
     }
 
@@ -91,9 +162,48 @@ impl<'a> DbForumPosts<'a> {
             .ok_or_else(|| NotFound(hex::encode(payload_hash)).into())
     }
 
+    /// List every [`proto::StoredMonadForumPost`] stored under `topic` with `timestamp >= since`
+    /// (milliseconds since the Unix epoch), ordered by `timestamp` ascending (ticket #40).
+    ///
+    /// Signature note: takes a single `since` cursor rather than a Lotus-style `from`/`to` range
+    /// (ticket #33's issue body mentions `getBroadcastMessages`'s `from`/`to` as one possible
+    /// model) -- matching `DbMonadMessages::list_since`'s simpler shape instead, since ticket #40's
+    /// own non-goals explicitly exclude pagination beyond a simple since/time-range cursor, and a
+    /// `to` bound isn't needed to satisfy "fetch all messages for a topic" (ticket #33's actual
+    /// requirement this unblocks). A `to` bound can be layered on later without changing this
+    /// method's meaning for existing callers.
+    pub fn list_by_topic(
+        &self,
+        topic: &str,
+        since: i64,
+    ) -> Result<Vec<proto::StoredMonadForumPost>> {
+        let digest = topic_digest(topic);
+        let start_key = by_topic_key(&digest, since, &[]);
+        let mut posts = Vec::new();
+        let iter = self.db.rocksdb().iterator_cf(
+            self.cf_forum_posts_by_topic,
+            IteratorMode::From(&start_key, Direction::Forward),
+        );
+        for item in iter {
+            let (key, payload_hash) = item.wrap_err(super::db::DbError::RocksDb)?;
+            if !key.starts_with(&digest) {
+                // Past the end of this topic's key range (rocksdb keys are lexicographically
+                // ordered, so once the topic-digest prefix no longer matches, nothing further in
+                // this forward scan can either).
+                break;
+            }
+            posts.push(self.get_existing(&payload_hash)?);
+        }
+        Ok(posts)
+    }
+
     pub(crate) fn add_cfs(columns: &mut Vec<ColumnFamilyDescriptor>) {
         let options = rocksdb::Options::default();
         columns.push(ColumnFamilyDescriptor::new(CF_FORUM_POSTS, options));
+        columns.push(ColumnFamilyDescriptor::new(
+            CF_FORUM_POSTS_BY_TOPIC,
+            rocksdb::Options::default(),
+        ));
     }
 }
 
@@ -223,6 +333,26 @@ mod tests {
         }
     }
 
+    fn post_with(
+        payload_hash: Vec<u8>,
+        topic: &str,
+        timestamp: i64,
+    ) -> proto::StoredMonadForumPost {
+        proto::StoredMonadForumPost {
+            post: Some(proto::MonadForumPost {
+                topic: topic.to_string(),
+                parent_post_hash: vec![],
+                raw_burn_tx: vec![1, 2, 3],
+                encrypted_payload: vec![4, 5, 6],
+                payload_hash: payload_hash.clone(),
+            }),
+            sender_address: vec![9u8; 20],
+            tx_hash: vec![8u8; 32],
+            timestamp,
+            network_tag: Vec::new(),
+        }
+    }
+
     fn vote(
         target_payload_hash: &[u8],
         tx_hash: u8,
@@ -294,6 +424,81 @@ mod tests {
 
         assert_eq!(db.forum_votes().tally(&target)?, 1000);
         assert_eq!(db.forum_votes().votes_for(&target)?.len(), 1);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_list_by_topic_orders_by_timestamp_and_respects_cursor() -> Result<()> {
+        let _ = bitcoinsuite_error::install();
+        let tempdir = tempdir::TempDir::new("cashweb-registry-store--forum-list-by-topic")?;
+        let db = Db::open(tempdir.path().join("db.rocksdb"))?;
+        let store = db.forum_posts();
+
+        let early = post_with(vec![1u8; 32], "some.topic", 100);
+        let middle = post_with(vec![2u8; 32], "some.topic", 200);
+        let late = post_with(vec![3u8; 32], "some.topic", 300);
+
+        // Insert out of order to prove `list_by_topic` sorts by timestamp, not insertion order.
+        store.put(&late.post.as_ref().unwrap().payload_hash, &late)?;
+        store.put(&early.post.as_ref().unwrap().payload_hash, &early)?;
+        store.put(&middle.post.as_ref().unwrap().payload_hash, &middle)?;
+
+        assert_eq!(
+            store.list_by_topic("some.topic", 0)?,
+            vec![early.clone(), middle.clone(), late.clone()]
+        );
+        assert_eq!(
+            store.list_by_topic("some.topic", 200)?,
+            vec![middle.clone(), late.clone()]
+        );
+        assert_eq!(store.list_by_topic("some.topic", 301)?, vec![]);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_list_by_topic_excludes_posts_for_a_different_topic() -> Result<()> {
+        let _ = bitcoinsuite_error::install();
+        let tempdir = tempdir::TempDir::new("cashweb-registry-store--forum-list-by-topic-excl")?;
+        let db = Db::open(tempdir.path().join("db.rocksdb"))?;
+        let store = db.forum_posts();
+
+        let wanted = post_with(vec![1u8; 32], "topic.one", 100);
+        // Deliberately chosen so "topic.one" is a byte-prefix of this other topic, proving the
+        // topic-digest hashing (not a raw-bytes prefix scan) is what keeps these separate.
+        let other = post_with(vec![2u8; 32], "topic.one.sub", 150);
+        let unrelated = post_with(vec![3u8; 32], "topic.two", 175);
+
+        store.put(&wanted.post.as_ref().unwrap().payload_hash, &wanted)?;
+        store.put(&other.post.as_ref().unwrap().payload_hash, &other)?;
+        store.put(&unrelated.post.as_ref().unwrap().payload_hash, &unrelated)?;
+
+        assert_eq!(store.list_by_topic("topic.one", 0)?, vec![wanted]);
+        assert_eq!(store.list_by_topic("topic.one.sub", 0)?, vec![other]);
+        assert_eq!(store.list_by_topic("topic.two", 0)?, vec![unrelated]);
+        assert_eq!(store.list_by_topic("topic.three", 0)?, vec![]);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_list_by_topic_after_retry_with_new_timestamp_has_no_stale_entry() -> Result<()> {
+        let _ = bitcoinsuite_error::install();
+        let tempdir = tempdir::TempDir::new("cashweb-registry-store--forum-list-by-topic-retry")?;
+        let db = Db::open(tempdir.path().join("db.rocksdb"))?;
+        let store = db.forum_posts();
+
+        let payload_hash = vec![7u8; 32];
+        let first = post_with(payload_hash.clone(), "retry.topic", 100);
+        let retried = post_with(payload_hash.clone(), "retry.topic", 200);
+
+        store.put(&payload_hash, &first)?;
+        store.put(&payload_hash, &retried)?;
+
+        // Only the latest write should show up -- the stale by-topic index entry from the first
+        // `put` (timestamp 100) must have been cleaned up, not left as an orphaned duplicate.
+        assert_eq!(store.list_by_topic("retry.topic", 0)?, vec![retried]);
 
         Ok(())
     }

@@ -112,3 +112,11 @@ message MonadForumPostView {
   // plus every later `MonadForumVote`).
   sint64 vote_weight = 2;
 }
+
+// Response shape for `GET /message/monad/forum?topic=<topic>&since=<timestamp>` (ticket #40): a
+// topic-filtered page of [`MonadForumPostView`]s, ordered by `timestamp` ascending. Additive
+// proto3 message -- doesn't change any existing message's wire shape.
+message MonadForumPostViews {
+  // The matching posts, ordered by `post.post.timestamp` ascending.
+  repeated MonadForumPostView views = 1;
+}

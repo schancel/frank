@@ -2,7 +2,10 @@
 
 use crate::{
     http::error::HttpRegistryError,
-    http::forum::{handle_get_forum_post, handle_put_forum_post, handle_put_forum_vote},
+    http::forum::{
+        handle_get_forum_post, handle_list_forum_posts, handle_put_forum_post,
+        handle_put_forum_vote,
+    },
     http::monad_message::{
         handle_get_monad_message, handle_list_monad_messages, handle_put_monad_message,
     },
@@ -171,7 +174,14 @@ impl RegistryServer {
             // Static segments ("forum", "forum/vote") take priority over the `:payload_hash`
             // wildcard segment at the same position, so these don't conflict with the route
             // above.
-            .route("/message/monad/forum", routing::put(handle_put_forum_post))
+            // `GET /message/monad/forum?topic=<topic>&since=<timestamp>` (ticket #40):
+            // topic-filtered post listing, added at the same path as the `PUT` above -- the same
+            // same-path-different-method precedent as `/message/monad`'s `PUT`/`GET(since=)` pair
+            // just above.
+            .route(
+                "/message/monad/forum",
+                routing::put(handle_put_forum_post).get(handle_list_forum_posts),
+            )
             .route(
                 "/message/monad/forum/vote",
                 routing::put(handle_put_forum_vote),

@@ -2,6 +2,7 @@
 //! Database is RocksDB, keys for metadata are (compact) scripts, values are protobuf encoded.
 
 pub mod db;
+pub mod forum;
 pub mod metadata;
 pub mod monad_messages;
 pub mod pubkeyhash;

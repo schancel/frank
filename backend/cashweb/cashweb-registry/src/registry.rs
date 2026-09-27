@@ -465,6 +465,51 @@ impl Registry {
     ) -> Result<Vec<proto::StoredMonadMessage>> {
         self.db.monad_messages().list_since(since)
     }
+
+    /// Store a [`proto::StoredMonadForumPost`] (ticket #30), once its initial vote's burn has
+    /// already verified (see `crate::http::forum`). Mirrors [`Registry::put_monad_message`]: no
+    /// `validate_burn_txs`/`chain_adapter` call here either, since broadcasting+verifying the
+    /// initial-vote burn is `monad_forum_relay::broadcast_and_verify_forum_vote`'s job, called by
+    /// the HTTP layer directly.
+    pub(crate) fn put_forum_post(
+        &self,
+        payload_hash: &[u8],
+        post: &proto::StoredMonadForumPost,
+    ) -> Result<()> {
+        self.db.forum_posts().put(payload_hash, post)
+    }
+
+    /// Retrieve a previously-stored [`proto::StoredMonadForumPost`] by its `payload_hash`.
+    pub(crate) fn get_forum_post(
+        &self,
+        payload_hash: &[u8],
+    ) -> Result<Option<proto::StoredMonadForumPost>> {
+        self.db.forum_posts().get(payload_hash)
+    }
+
+    /// Record a single verified vote (a post's own initial vote, or a later
+    /// [`proto::MonadForumVote`]) against `entry.target_payload_hash` (ticket #30).
+    pub(crate) fn add_forum_vote(&self, entry: &proto::StoredMonadForumVoteEntry) -> Result<()> {
+        self.db.forum_votes().add_vote(entry)
+    }
+
+    /// Fetch a stored forum post together with its current tallied vote weight (sum of every
+    /// vote recorded against its `payload_hash`, including its own initial vote). `None` if no
+    /// post is stored for `payload_hash`.
+    pub(crate) fn get_forum_post_view(
+        &self,
+        payload_hash: &[u8],
+    ) -> Result<Option<proto::MonadForumPostView>> {
+        let post = match self.get_forum_post(payload_hash)? {
+            Some(post) => post,
+            None => return Ok(None),
+        };
+        let vote_weight = self.db.forum_votes().tally(payload_hash)?;
+        Ok(Some(proto::MonadForumPostView {
+            post: Some(post),
+            vote_weight,
+        }))
+    }
 }
 
 #[cfg(test)]

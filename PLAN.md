@@ -493,3 +493,25 @@ primitive, exactly mirroring the old architecture.
 
 **Before dispatching #33:** it depends on #40 (topic-filtered listing,
 merged and renamed alongside the above).
+
+**Considered and deliberately deferred (2026-09-26): making the proto
+messages themselves cross-chain-generic** (a shared `TopicPost{chain, ...}`
+schema instead of `MonadTopicPost`), rather than just correctly-named but
+still Monad-specific types. Rejected for now, for concrete reasons, not
+just caution: (1) the HTTP routes are already chain-namespaced
+(`/message/monad/topics`, mirroring `/message/monad`'s own precedent) —
+the relay already knows which `ChainAdapter`/decoder to use from the URL
+before it decodes the body, so a `chain` field on the message itself would
+be redundant with that unless the routes were *also* flattened to
+chain-generic (`/message/topics?chain=monad`), a materially bigger change
+than a proto rename; (2) the actually chain-specific part — `raw_burn_tx`'s
+raw bytes (RLP-encoded EVM tx for Monad; something structurally different
+for any future Lotus path) — can't be unified by a schema field regardless;
+a `chain` tag would only say which decoder to reach for, not make the
+payload itself interoperable; (3) only one chain (Monad) is actually
+implemented right now — designing a shared cross-chain schema from a
+single example risks guessing its shape wrong (field lengths, semantics)
+and having to redo it anyway once a second chain is real. Revisit when
+Lotus (or another chain) actually gets wired back in behind the
+`ChainAdapter` boundary — that's the right moment, informed by two real
+examples instead of one guess.

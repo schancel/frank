@@ -92,6 +92,30 @@ module.exports = configure(function (ctx) {
 
       vueRouterMode: 'hash', // available values: 'hash', 'history'
 
+      // Bakes the listed real-`process.env` values (read here, in this file's own Node context, at
+      // `quasar build`/`quasar dev` invocation time) into the bundle via webpack's `DefinePlugin`
+      // (`@quasar/app-webpack`'s own `create-chain.js` only wires up whatever's listed in
+      // `build.env` -- it never forwards the raw OS/`.env` environment automatically). Without this,
+      // every `process.env.MONAD_*`/`CASHWEB_*` read in `cashweb/chain/monad-chain.ts` and
+      // `boot/monad-direct-messages.ts` silently evaluated to `undefined` in the actual bundled
+      // output, in every build (dev or prod) to date, regardless of what `.env` held -- the app has
+      // always fallen through to hardcoded defaults (`http://127.0.0.1:8545`, etc.), never a real
+      // Alchemy endpoint. Only vars that are actually set get included, so an unset var still falls
+      // through to its hardcoded `??` default exactly as before, rather than baking in an empty
+      // string that `??` wouldn't treat as missing.
+      env: Object.fromEntries(
+        [
+          'MONAD_TESTNET_HTTP_RPC_URL',
+          'MONAD_RELAY_BASE_URL',
+          'MONAD_STAMP_BURN_ADDRESS',
+          'CASHWEB_STAMP_MIN_BURN_VALUE_WEI',
+          'MONAD_SUB_ACCOUNT_POOL_SIZE',
+          'MONAD_DM_POLL_INTERVAL_MS',
+        ]
+          .filter(key => process.env[key])
+          .map(key => [key, process.env[key]]),
+      ),
+
       // rtl: false, // https://quasar.dev/options/rtl-support
       // preloadChunks: true,
       // showProgress: false,

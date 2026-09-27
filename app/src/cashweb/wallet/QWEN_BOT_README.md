@@ -1,3 +1,15 @@
+> **Update (2026-09-27, autonomous overnight session):** the bot and its scripts were ported off
+> `lotus-identity.ts`/`FrankIdentity` onto `monad-identity.ts`/`MonadIdentity` -- the real Frank UI's
+> `ActiveChain`/`MonadChain` stack (tickets #41-#45) only ever resolves a contact via
+> `fetchMonadProfile`, which never finds a Lotus-registered identity, so the bot was previously
+> invisible to (and couldn't message) any real wallet created through the app. The "Live proof"
+> section below is left exactly as it was written -- an accurate historical record of that original,
+> Lotus-identity run -- but is no longer how the bot actually authenticates itself; see each script's
+> own updated header comment (compile command, imports) for the current shape, and the "fix(app):
+> wire up identity registration; port Qwen bot to Monad-native identity" commit for the full
+> before/after, including a real wire-format interop bug (bare-string vs. `MessageItem[]` JSON) only
+> found by actually running the bot against a real `ActiveChain` wallet.
+
 # Ticket #9: a Qwen 3.8 Max agent with its own on-chain Frank identity
 
 This is the runbook and bounty write-up for issue #9 (stretch): a headless client that bridges

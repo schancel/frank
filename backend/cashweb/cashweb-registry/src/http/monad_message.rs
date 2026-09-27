@@ -45,9 +45,18 @@
 //!
 //! - `MONAD_TESTNET_HTTP_RPC_URL`: Monad JSON-RPC endpoint (same var `pop_protection` and the live
 //!   smoke tests use).
-//! - `CASHWEB_STAMP_BURN_ADDRESS`: `0x`-prefixed 20-byte Monad address stamp burns must be sent
-//!   to.
-//! - `CASHWEB_STAMP_MIN_BURN_VALUE_WEI`: minimum burn amount, in wei, as a decimal string.
+//! - `MONAD_STAMP_BURN_ADDRESS`: `0x`-prefixed 20-byte Monad address stamp burns must be sent
+//!   to. Same var name as `frank/.env`/`.env.example` (ticket #7's decision) and the TS client
+//!   (`app/src/cashweb/wallet/monad-stamp-client.ts`'s doc comment references it by this name too)
+//!   -- **bug fix (ticket #8's e2e demo)**: this used to read a second, never-documented
+//!   `CASHWEB_STAMP_BURN_ADDRESS` var instead, which doesn't exist in `.env`/`.env.example` at all,
+//!   so `PUT /message/monad` failed closed with a `500` (`GateUnavailable`) against any real
+//!   deployment following the documented `.env` setup. Fixed here to read the one canonical var
+//!   name instead of introducing a second one that has to be kept in sync.
+//! - `CASHWEB_STAMP_MIN_BURN_VALUE_WEI`: minimum burn amount, in wei, as a decimal string. Unlike
+//!   the burn address, this one never had a canonical `.env` var at all (checked: absent from both
+//!   `.env` and `.env.example` before ticket #8's e2e demo added it) -- an omission, not a naming
+//!   mismatch, so this name is kept as-is and simply documented/added to `.env.example`.
 //!
 //! An unconfigured or invalid gate fails every request closed (`500`), rather than silently
 //! skipping stamp verification, mirroring `pop_protection`'s same fail-closed choice.
@@ -201,7 +210,7 @@ pub enum MonadMessageGateConfigError {
     MissingEnv(&'static str),
     /// `MONAD_TESTNET_HTTP_RPC_URL` wasn't a valid URL.
     InvalidRpcUrl(String),
-    /// `CASHWEB_STAMP_BURN_ADDRESS` wasn't a valid `0x`-prefixed 20-byte address.
+    /// `MONAD_STAMP_BURN_ADDRESS` wasn't a valid `0x`-prefixed 20-byte address.
     InvalidBurnAddress(String),
     /// `CASHWEB_STAMP_MIN_BURN_VALUE_WEI` wasn't a valid non-negative decimal integer.
     InvalidMinValueWei(String),
@@ -217,7 +226,7 @@ impl fmt::Display for MonadMessageGateConfigError {
                 write!(f, "invalid MONAD_TESTNET_HTTP_RPC_URL: {msg}")
             }
             MonadMessageGateConfigError::InvalidBurnAddress(msg) => {
-                write!(f, "invalid CASHWEB_STAMP_BURN_ADDRESS: {msg}")
+                write!(f, "invalid MONAD_STAMP_BURN_ADDRESS: {msg}")
             }
             MonadMessageGateConfigError::InvalidMinValueWei(msg) => {
                 write!(f, "invalid CASHWEB_STAMP_MIN_BURN_VALUE_WEI: {msg}")
@@ -245,7 +254,7 @@ impl MonadMessageGateConfig {
         let rpc_url: url::Url = rpc_url
             .parse()
             .map_err(|err| MonadMessageGateConfigError::InvalidRpcUrl(format!("{err}")))?;
-        let burn_address_hex = required_env("CASHWEB_STAMP_BURN_ADDRESS")?;
+        let burn_address_hex = required_env("MONAD_STAMP_BURN_ADDRESS")?;
         let burn_address = Address::from_hex(&burn_address_hex)
             .map_err(|err| MonadMessageGateConfigError::InvalidBurnAddress(format!("{err}")))?;
         let min_value_wei_str = required_env("CASHWEB_STAMP_MIN_BURN_VALUE_WEI")?;
@@ -682,7 +691,7 @@ mod tests {
 
     #[test]
     fn gate_config_error_display_mentions_missing_var() {
-        let err = MonadMessageGateConfigError::MissingEnv("CASHWEB_STAMP_BURN_ADDRESS");
-        assert!(err.to_string().contains("CASHWEB_STAMP_BURN_ADDRESS"));
+        let err = MonadMessageGateConfigError::MissingEnv("MONAD_STAMP_BURN_ADDRESS");
+        assert!(err.to_string().contains("MONAD_STAMP_BURN_ADDRESS"));
     }
 }

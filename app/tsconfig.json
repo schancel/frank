@@ -15,6 +15,14 @@
     "sourceMap": true,
     "strict": true,
     "jsx": "preserve",
+    // Ticket #53 (package split): without this, TS auto-includes every `@types/*` package found
+    // anywhere in the (now much larger, workspace-hoisted) node_modules tree as an ambient
+    // global -- including broken stub packages pulled in transitively by unrelated
+    // devDependencies (e.g. `@types/minimatch`, a stub with no real .d.ts entry, via
+    // electron-builder's own chain). Scoping to what this app actually needs as ambient globals
+    // avoids that; anything imported explicitly (dompurify, ramda, etc.) is unaffected by this
+    // list -- it only governs automatic/implicit inclusion.
+    "types": ["node", "jest"],
     // Quasar-defined path aliases (mirrored as Vite `resolve.alias` entries in
     // `quasar.config.js`'s `extendViteConf`, since Vite -- unlike `@quasar/app-webpack`'s own
     // internal chain -- does not automatically derive its module resolution from tsconfig
@@ -42,9 +50,11 @@
   },
   "include": [
     "src/**/*",
-    "local_modules/bn.js/lib/bn.js",
-    "local_modules/bitcore-lib-xpi/index.js",
-    "src-pwa/register-service-worker.js"
+    "src-pwa/register-service-worker.js",
+    // Ticket #53 (package split): moved out of `src/types/bitcore-lib-xpi/` to live alongside
+    // the now-standalone `bitcore-lib-xpi` workspace package itself, so `packages/cashweb` and
+    // `packages/wallet` (which also use it directly) can share the same declaration file.
+    "../packages/bitcore-lib-xpi/types.d.ts"
   ],
   // Also found broken alongside the target bump above: with no `exclude`, the production
   // webpack build's type-checker swept in `*.jest.test.ts` files (matched by `src/**/*`) and

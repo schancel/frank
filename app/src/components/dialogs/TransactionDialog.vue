@@ -50,7 +50,7 @@
 <script lang="ts">
 import { defineComponent, PropType } from 'vue'
 import { toDisplayAddress } from 'src/utils/address'
-import { Utxo } from 'src/cashweb/types/utxo'
+import { Utxo } from '@frank/cashweb/types/utxo'
 
 // `toDisplayAddress` (Lotus-only) is left as-is here rather than swapped for `activeChain`
 // (ticket #44): this dialog's `outpoints` prop is always `[]` for Monad-sourced messages

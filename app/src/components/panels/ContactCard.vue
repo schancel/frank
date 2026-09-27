@@ -43,7 +43,7 @@ import { defineComponent } from 'vue'
 import { copyToClipboard } from 'quasar'
 
 import { addressCopiedNotify } from '../../utils/notifications'
-import { activeChain } from '../../cashweb/chain'
+import { activeChain } from '@frank/wallet/chain'
 
 export default defineComponent({
   props: {

@@ -1,7 +1,7 @@
 import assert from 'assert'
-import RelayClient from 'src/cashweb/relay'
-import { Wallet } from 'src/cashweb/wallet'
-import type { WalletHandle } from 'src/cashweb/chain'
+import RelayClient from '@frank/cashweb/relay'
+import { Wallet } from '@frank/cashweb/legacy-wallet'
+import type { WalletHandle } from '@frank/wallet/chain'
 
 let wallet: Wallet | null = null
 export function useWallet(newWallet?: Wallet) {

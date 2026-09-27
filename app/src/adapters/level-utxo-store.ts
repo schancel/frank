@@ -1,4 +1,4 @@
-import { LevelUtxoStore } from '../cashweb/wallet/storage/level-storage'
+import { LevelUtxoStore } from '@frank/cashweb/legacy-wallet/storage/level-storage'
 
 export async function createStore(): Promise<LevelUtxoStore> {
   const store = new LevelUtxoStore('outpointStorage')

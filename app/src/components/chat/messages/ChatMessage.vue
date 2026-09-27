@@ -81,8 +81,8 @@ import ChatMessageStealth from './ChatMessageStealth.vue'
 import ChatMessageSuffix from './ChatMessageSuffix.vue'
 import DeleteMessageDialog from '../../dialogs/DeleteMessageDialog.vue'
 import TransactionDialog from '../../dialogs/TransactionDialog.vue'
-import { stampPrice } from '../../../cashweb/wallet/helpers'
-import { Message, MessageItem } from 'src/cashweb/types/messages'
+import { stampPrice } from '@frank/cashweb/legacy-wallet/helpers'
+import { Message, MessageItem } from '@frank/cashweb/types/messages'
 
 export default defineComponent({
   name: 'ChatMessage',

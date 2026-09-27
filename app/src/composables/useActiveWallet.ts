@@ -1,11 +1,11 @@
 /**
  * Small bridge between the pre-existing (Lotus-oriented) wallet store (`stores/wallet.ts`, which
  * still stores the user's BIP-39 seed phrase under `seedPhrase`) and ticket #41's chain-agnostic
- * `ActiveChain` wallet factory (`cashweb/chain/index.ts`'s `activeChain.createWallet`).
+ * `ActiveChain` wallet factory (`@frank/wallet/chain/index.ts`'s `activeChain.createWallet`).
  *
  * `.vue` call sites that used to pass the raw Lotus `Wallet` object (`this.$wallet`) into
  * `stores/topics.ts`/`stores/forum.ts`'s actions (ticket #43) use this instead, now that those
- * actions expect an `ActiveChain` `WalletHandle`. Not exported from `cashweb/chain/` itself --
+ * actions expect an `ActiveChain` `WalletHandle`. Not exported from `@frank/wallet/chain/` itself --
  * that directory is ticket #41's compile-time chain seam and deliberately has no notion of the
  * old Lotus wallet store; this composable is the UI-layer glue on top of it.
  *
@@ -14,7 +14,7 @@
  * and leases against, `subAccountPoolSize` HD sub-accounts -- not free, and every vote/post call
  * site needs a wallet handle).
  */
-import { activeChain, WalletHandle } from 'src/cashweb/chain'
+import { activeChain, WalletHandle } from '@frank/wallet/chain'
 import { useWalletStore } from 'src/stores/wallet'
 
 let cached:

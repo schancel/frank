@@ -84,7 +84,7 @@ import {
   defaultRelayData,
   useContactStore,
 } from 'src/stores/contacts'
-import { activeChain } from '../cashweb/chain'
+import { activeChain } from '@frank/wallet/chain'
 import { PublicKey } from 'bitcore-lib-xpi'
 import { openChat } from 'src/utils/routes'
 

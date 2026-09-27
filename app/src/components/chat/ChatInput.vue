@@ -90,7 +90,7 @@ import { defineComponent } from 'vue'
 import emoji from 'node-emoji'
 import { defaultStampAmount } from '../../utils/constants'
 import { processInput } from '../../utils/chat'
-import { activeChain } from '../../cashweb/chain'
+import { activeChain } from '@frank/wallet/chain'
 
 export default defineComponent({
   components: {

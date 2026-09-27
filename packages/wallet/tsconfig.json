@@ -1,0 +1,32 @@
+{
+  "compilerOptions": {
+    "allowJs": true,
+    "esModuleInterop": true,
+    "module": "esnext",
+    "moduleResolution": "node",
+    "noEmit": true,
+    "resolveJsonModule": true,
+    "forceConsistentCasingInFileNames": true,
+    "sourceMap": true,
+    "strict": true,
+    "skipLibCheck": true,
+    "target": "es2020",
+    "lib": ["es2020"],
+    // See @frank/cashweb's tsconfig.json for why this is needed (avoids auto-including broken
+    // hoisted @types stubs from unrelated devDependencies elsewhere in the workspace).
+    "types": ["node", "jest"]
+  },
+  "include": [
+    "**/*",
+    // See @frank/cashweb's tsconfig.json for why this is needed.
+    "../bitcore-lib-xpi/types.d.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "**/*.jest.spec.ts",
+    "**/*.jest.test.ts",
+    "**/*.livecheck.ts",
+    "**/*.smoketest.ts",
+    "**/*.smoke.ts"
+  ]
+}

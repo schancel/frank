@@ -1,5 +1,5 @@
-import RelayClient from 'src/cashweb/relay'
-import { Wallet } from 'src/cashweb/wallet'
+import RelayClient from '@frank/cashweb/relay'
+import { Wallet } from '@frank/cashweb/legacy-wallet'
 
 declare module '@vue/runtime-core' {
   interface ComponentCustomProperties {

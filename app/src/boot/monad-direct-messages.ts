@@ -8,7 +8,7 @@
  *
  * ## Where the Monad seed comes from
  *
- * `ActiveChain.createWallet` (`../cashweb/chain/active-chain.ts`) needs an `HDSeed` (BIP-39
+ * `ActiveChain.createWallet` (`@frank/wallet/chain/active-chain.ts`) needs an `HDSeed` (BIP-39
  * mnemonic). This app already has exactly one: `stores/wallet.ts`'s `seedPhrase` (a real BIP-39
  * mnemonic, `generateMnemonic()` from the `bip39` package -- see `pages/Setup.vue`), currently used
  * only to derive the Lotus `HDPrivateKey`. Reusing it here (rather than inventing a second,
@@ -22,18 +22,18 @@
  */
 import { boot } from 'quasar/wrappers'
 
-import { activeChain } from '../cashweb/chain'
+import { activeChain } from '@frank/wallet/chain'
 import { useWalletStore } from '../stores/wallet'
 import { useMonadWallet } from '../utils/clients'
 import { startDirectMessagePolling } from '../adapters/pinia-chain-adapter'
 import {
   MonadIdentity,
   registerMonadIdentity,
-} from '../cashweb/wallet/monad-identity'
+} from '@frank/wallet/monad-identity'
 import {
   MonadChainConfig,
   loadMonadChainConfigFromEnv,
-} from '../cashweb/chain/monad-chain'
+} from '@frank/wallet/chain/monad-chain'
 
 const DIRECT_MESSAGE_POLL_INTERVAL_MS = Number(
   process.env.MONAD_DM_POLL_INTERVAL_MS ?? 7000,

@@ -3,10 +3,10 @@ name: backend - build and test
 on:
   push:
     branches: [main]
-    paths: ["backend/**"]
+    paths: ["backend/**", ".github/workflows/backend-ci.yml"]
   pull_request:
     branches: [main]
-    paths: ["backend/**"]
+    paths: ["backend/**", ".github/workflows/backend-ci.yml"]
 
 # NOTE: adapted from the pre-fork `cashweb` repo's own ci.yml, which checked out `cashweb` and
 # `bitcoinsuite` as separate sibling repos. In this monorepo both are already vendored as
@@ -20,13 +20,17 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+    - uses: actions/checkout@v4
+
+    # Must come AFTER the main checkout: actions/checkout defaults to `clean: true`, which runs
+    # `git clean -ffdx` in the workspace root and would delete this directory (as an untracked
+    # file) if it were created first, causing every later `cp ... ../bin/` to fail with
+    # "Not a directory".
     - name: Make bin directory
       run: |
         mkdir bin
         echo "$(pwd)/bin" >> $GITHUB_PATH
       shell: bash
-
-    - uses: actions/checkout@v4
 
     - name: Checkout cargo-make repository
       uses: actions/checkout@v4
@@ -40,19 +44,28 @@ jobs:
       with:
         path: flatbuffers
         repository: google/flatbuffers
-        ref: v2.0.0
+        # v2.0.0 fails to build on modern GCC (Ubuntu 24.04 runners ship GCC 13) due to a
+        # -Werror=stringop-overflow false positive in reflection.cpp. v2.0.8 is the last patch
+        # release on the 2.0.x branch (matches bitcoinsuite-bitcoind-nng's `flatbuffers = "2.0"`
+        # Cargo requirement) and upstream already added `-Wno-error=stringop-overflow` there.
+        ref: v2.0.8
 
     - name: Cache flatc
       uses: actions/cache@v4
       with:
         path: |
           flatbuffers/build
-        key: ${{ runner.os }}-flatbuffers-ninja-v2.0.0
+        key: ${{ runner.os }}-flatbuffers-ninja-v2.0.8
         restore-keys: |
           ${{ runner.os }}-flatbuffers-ninja-
 
     - name: Install Protoc
       uses: arduino/setup-protoc@v1
+      with:
+        # Without a token this calls the GitHub releases API unauthenticated (60 req/hr, shared
+        # across the whole GitHub Actions runner IP pool) and was hitting "API rate limit
+        # exceeded" during iteration on this workflow.
+        repo-token: ${{ secrets.GITHUB_TOKEN }}
 
     - name: Install ninja
       uses: seanmiddleditch/gha-setup-ninja@master
@@ -65,17 +78,24 @@ jobs:
         if [ ! -d "build" ]; then
           mkdir build
           cd build
+          # Only build the flatc binary itself, not flatbuffers' own test suite (the default
+          # "all" target) -- v2.0.8's flattests target fails to compile on GCC 13 due to a
+          # missing #include <cstdint> in tests/reflection_test.h, an unrelated upstream test-only
+          # bug we don't need to fix since we only consume the flatc binary here.
           cmake -G "Ninja" -DCMAKE_BUILD_TYPE=Release ..
-          ninja
+          ninja flatc
           cd ..
         fi
         cp ./build/flatc ../bin/
       shell: bash
 
     - name: Set-up Rust toolchain
-      uses: actions-rs/toolchain@v1
+      # actions-rs/toolchain is unmaintained (org archived, runs on the deprecated node12
+      # runtime); dtolnay/rust-toolchain is the actively-maintained drop-in replacement.
+      uses: dtolnay/rust-toolchain@stable
       with:
         toolchain: stable
+        components: rustfmt, clippy
 
     - name: Get Rust version for cache
       id: rust-version

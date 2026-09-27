@@ -112,6 +112,35 @@ fully superseded by the tracked ticket pipeline rather than kept as a crutch.
    burns/payments) is a deliberately deferred stretch: it adds approval
    flows, decimals handling, and per-token registries that materially hurt
    UX for a messaging app, and isn't needed to prove the core mechanism.
+9. **Wire formats should carry a Frank-specific network tag, not a raw EVM
+   `chainId`.** Raised 2026-09-26: once one backend deployment could serve
+   multiple chains (constraint 2's whole point), a client needs a way to
+   tell which network a given `raw_burn_tx`/vote was actually verified
+   against, and to detect "I'm pointed at the wrong network." An EVM
+   `chainId` doesn't generalize — Lotus (and any future non-EVM adapter)
+   has no such concept, so tagging at that level would tie the wire format
+   back to EVM specifically, which constraint 2 explicitly avoids. Instead,
+   add a short Frank/Stamp-specific tag (e.g. a 4-byte LOKAD-style code,
+   `"MON1"`/`"MONT"`/`"LTUS"`) as an explicit field on the *protobuf
+   envelope* (`MonadStampedMessage`/`StoredMonadForumPost`/etc.), populated
+   by the relay from its own configured `ChainAdapter` — not embedded in
+   the on-chain calldata itself, since the calldata's commitment layout is
+   already committed-to by every existing client and relay, and the
+   envelope is the layer that actually varies per-deployment. Proto3 field
+   addition is additive/backward-compatible. Best time to add it is before
+   ticket #31/#32/#33 (forum client-side) solidify against the current
+   shape, since they're the next thing to touch these protos. **For the
+   hackathon itself, the UI only ever shows Monad — this is a wire-level
+   forward-compat field, not a multi-chain switcher UI.**
+10. **No fiat (USD) values in the UI.** Raised 2026-09-26, deliberately
+    unresolved: displaying stamp/vote "weight" or account balances in USD
+    was explicitly rejected. Floated alternative — a synthetic benchmark
+    unit derived from a basket of cryptocurrencies rather than any single
+    price feed — but the basket composition, weighting, and price-feed
+    source are all undefined. **Not actionable yet; needs a real design
+    pass before any ticket is cut.** Do not build this for the hackathon;
+    if a numeric value must be shown in the meantime, show raw MON/wei, not
+    a fabricated fiat conversion.
 
 ## Current state (done)
 
@@ -245,6 +274,29 @@ Replace rocksdb with a distributed KV store for HA/horizontal scale-out of
 `cashwebd-exe`. Needs its own design pass (which store, consistency model,
 migration path) — do not fold into the Monad port.
 
+### Follow-on: monorepo subproject split (raised 2026-09-26)
+Proposed shape once the current wave (forum client, bot demo) lands:
+- `app/` — the Frank frontend (Quasar/Vue3), unchanged in role.
+- `bot/` — ticket #9's headless Qwen-backed bot demo, as its own subproject
+  rather than living inside `app/`.
+- `backend/cashweb` (+ `backend/bitcoinsuite`) — already effectively one
+  binary (`cashwebd-exe`) with route groups rather than separate services
+  (mailbox/metadata routes vs. topic/pubsub routes), matching what was
+  asked for. No restructuring needed here beyond what constraint 6 already
+  describes.
+- A new TS package (or packages) for the wallet/client code currently under
+  `app/src/cashweb/wallet/` — HD keyrings, account pool/lease manager,
+  stamp/POP/forum clients, generated protobuf bindings — extracted so both
+  `app/` and `bot/` import it rather than the bot reaching into `app/src`
+  directly or duplicating logic.
+
+**Don't do this yet.** Ticket #9 is actively landing code against the
+current `app/src/cashweb/wallet` layout; extracting mid-flight would
+conflict with in-progress work. Revisit once #9 and #31/#32/#33 are merged.
+Needs a package-manager/workspace-tooling decision (npm/yarn/pnpm
+workspaces, or a lighter TS project-references setup) before it's
+actionable — not yet made.
+
 ## Dependency graph (for ticket blocked-by edges)
 
 ```
@@ -323,3 +375,13 @@ shape as Stamp (M4): keep the commitment/vote-weight concept, swap the
 OP_RETURN vote-tagged output for EVM calldata, verify via `MonadAdapter`.
 Explicitly lower priority than M7 (bot demo) — both are follow-ons gated
 on M6, pursue whichever has clearer remaining time.
+
+**Validated, not speculative:** the original Stamp UI used a group-chat-like
+model; user feedback on that version consistently preferred a Reddit-style
+forum instead. M8 is that preference realized on Monad, not just a
+bounty-fit add-on. Server side shipped in #30 (merged); client side
+(#31/#32/#33: post, vote, tally/read) is next, blocked on #30.
+
+**Before dispatching #31/#32/#33:** fold in constraint 9's network-tag
+proto field now, while the forum client is still unbuilt — see constraint
+9 for why this is the cheapest moment to add it.

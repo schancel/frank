@@ -33,7 +33,9 @@
 //!   chain bytes, not a mock.
 
 use cashweb_registry::monad_http::{BlockTag, GetLogsFilter, Hash32, MonadHttpClient};
-use cashweb_registry::monad_stamp_verify::{verify_stamp_burn, ExpectedBurn, StampBurnVerification};
+use cashweb_registry::monad_stamp_verify::{
+    verify_stamp_burn, ExpectedBurn, StampBurnVerification,
+};
 
 /// Alchemy's free tier caps a single `eth_getLogs` call to a 10-block range.
 const MAX_LOG_RANGE_BLOCKS: u64 = 10;

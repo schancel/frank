@@ -20,9 +20,9 @@ use bitcoinsuite_core::{
 use bitcoinsuite_ecc_secp256k1::EccSecp256k1;
 use bitcoinsuite_error::Result;
 use cashweb_http_utils::protobuf::CONTENT_TYPE_PROTOBUF;
+use cashweb_payload::proto::SignedPayload as SignedPayloadProto;
 use cashweb_registry::{proto, test_instance::build_signed_metadata};
 use prost::Message;
-use cashweb_payload::proto::SignedPayload as SignedPayloadProto;
 use reqwest::header::{CONTENT_TYPE, ORIGIN};
 
 #[tokio::main]
@@ -103,11 +103,20 @@ async fn main() -> Result<()> {
     );
 
     // --- Read it back to prove it's actually stored. ---
-    let get_response = client.get(format!("{url}/metadata/{address}")).send().await?;
+    let get_response = client
+        .get(format!("{url}/metadata/{address}"))
+        .send()
+        .await?;
     println!("GET /metadata/{address} -> HTTP {}", get_response.status());
-    assert!(get_response.status().is_success(), "metadata should now be readable");
+    assert!(
+        get_response.status().is_success(),
+        "metadata should now be readable"
+    );
     let fetched = SignedPayloadProto::decode(get_response.bytes().await?.as_ref())?;
-    assert_eq!(fetched.payload, signed_metadata.payload, "round-tripped metadata should match");
+    assert_eq!(
+        fetched.payload, signed_metadata.payload,
+        "round-tripped metadata should match"
+    );
     println!("Identity registration verified end-to-end: no payment was made, POP disabled.");
 
     Ok(())

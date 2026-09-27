@@ -638,10 +638,7 @@ mod tests {
     #[test]
     fn from_conf_if_enabled_returns_some_ok_when_enabled_and_valid() {
         let conf = valid_pop_conf();
-        assert!(matches!(
-            PopGate::from_conf_if_enabled(&conf),
-            Some(Ok(_))
-        ));
+        assert!(matches!(PopGate::from_conf_if_enabled(&conf), Some(Ok(_))));
     }
 
     #[test]

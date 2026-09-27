@@ -224,16 +224,13 @@ async fn run_subscription(ws_url: &str, sender: &mpsc::Sender<MonadNewHead>) -> 
             }
             Message::Ping(payload) => {
                 if write.send(Message::Pong(payload)).await.is_err() {
-                    return Err(
-                        MonadWsError::ConnectionClosed("failed to send pong".into()).into(),
-                    );
+                    return Err(MonadWsError::ConnectionClosed("failed to send pong".into()).into());
                 }
             }
             Message::Close(frame) => {
-                return Err(MonadWsError::ConnectionClosed(format!(
-                    "closed by peer: {frame:?}"
-                ))
-                .into());
+                return Err(
+                    MonadWsError::ConnectionClosed(format!("closed by peer: {frame:?}")).into(),
+                );
             }
             Message::Binary(_) | Message::Pong(_) | Message::Frame(_) => {
                 // Not expected from an `eth_subscribe` feed; ignore.

@@ -135,6 +135,9 @@ mod tests {
     fn extract_pop_or_query_none() {
         let headers = HeaderMap::new();
         assert_eq!(extract_pop_or_query(&headers, None), None);
-        assert_eq!(extract_pop_or_query(&headers, Some("not-a-pop-token")), None);
+        assert_eq!(
+            extract_pop_or_query(&headers, Some("not-a-pop-token")),
+            None
+        );
     }
 }

@@ -87,7 +87,8 @@ impl<'a> DbForumPosts<'a> {
     /// Retrieve a [`proto::StoredMonadForumPost`] by its `payload_hash`, erroring with
     /// [`DbForumPostsError::NotFound`] if it doesn't exist.
     pub fn get_existing(&self, payload_hash: &[u8]) -> Result<proto::StoredMonadForumPost> {
-        self.get(payload_hash)?.ok_or_else(|| NotFound(hex::encode(payload_hash)).into())
+        self.get(payload_hash)?
+            .ok_or_else(|| NotFound(hex::encode(payload_hash)).into())
     }
 
     pub(crate) fn add_cfs(columns: &mut Vec<ColumnFamilyDescriptor>) {
@@ -152,15 +153,19 @@ impl<'a> DbForumVotes<'a> {
     /// Every vote recorded against `target_payload_hash`, in an unspecified order (sufficient for
     /// tallying; ticket #30's non-goals explicitly exclude pagination/ordering parity with the
     /// Lotus registry).
-    pub fn votes_for(&self, target_payload_hash: &[u8]) -> Result<Vec<proto::StoredMonadForumVoteEntry>> {
+    pub fn votes_for(
+        &self,
+        target_payload_hash: &[u8],
+    ) -> Result<Vec<proto::StoredMonadForumVoteEntry>> {
         let mut votes = Vec::new();
-        let iter = self
-            .db
-            .rocksdb()
-            .iterator_cf(self.cf_forum_votes, IteratorMode::From(target_payload_hash, rocksdb::Direction::Forward));
+        let iter = self.db.rocksdb().iterator_cf(
+            self.cf_forum_votes,
+            IteratorMode::From(target_payload_hash, rocksdb::Direction::Forward),
+        );
         for item in iter {
             let (key, value) = item.wrap_err(super::db::DbError::RocksDb)?;
-            if key.len() < VOTE_KEY_TARGET_LEN || &key[..VOTE_KEY_TARGET_LEN] != target_payload_hash {
+            if key.len() < VOTE_KEY_TARGET_LEN || &key[..VOTE_KEY_TARGET_LEN] != target_payload_hash
+            {
                 // Past the end of this target's key range (rocksdb keys are lexicographically
                 // ordered, so once the prefix no longer matches, nothing further in this forward
                 // scan can either).
@@ -217,7 +222,11 @@ mod tests {
         }
     }
 
-    fn vote(target_payload_hash: &[u8], tx_hash: u8, weight: i64) -> proto::StoredMonadForumVoteEntry {
+    fn vote(
+        target_payload_hash: &[u8],
+        tx_hash: u8,
+        weight: i64,
+    ) -> proto::StoredMonadForumVoteEntry {
         proto::StoredMonadForumVoteEntry {
             target_payload_hash: target_payload_hash.to_vec(),
             sender_address: vec![tx_hash; 20],

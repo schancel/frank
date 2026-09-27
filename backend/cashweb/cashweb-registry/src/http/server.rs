@@ -60,7 +60,8 @@ pub struct RegistryServer {
     /// These two failure/off states are deliberately kept distinct (`None` vs. `Some(Err(_))`)
     /// rather than collapsed into one -- "disabled" must never be reachable by a config that's
     /// simply broken, and "misconfigured" must never silently degrade into "disabled".
-    pub pop_gate: Arc<Option<Result<PopGate<MonadReceiptVerifier<HttpTransport>>, PopGateConfigError>>>,
+    pub pop_gate:
+        Arc<Option<Result<PopGate<MonadReceiptVerifier<HttpTransport>>, PopGateConfigError>>>,
 }
 
 /// Relevant parts of an HTTP request to put new address metadata.
@@ -171,7 +172,10 @@ impl RegistryServer {
             // wildcard segment at the same position, so these don't conflict with the route
             // above.
             .route("/message/monad/forum", routing::put(handle_put_forum_post))
-            .route("/message/monad/forum/vote", routing::put(handle_put_forum_vote))
+            .route(
+                "/message/monad/forum/vote",
+                routing::put(handle_put_forum_vote),
+            )
             .route(
                 "/message/monad/forum/:payload_hash",
                 routing::get(handle_get_forum_post),

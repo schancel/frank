@@ -141,7 +141,11 @@ struct SigningMaterial {
     s: [u8; 32],
 }
 
-fn decode_r_s(rlp: &Rlp<'_>, r_index: usize, s_index: usize) -> Result<([u8; 32], [u8; 32]), EvmTxError> {
+fn decode_r_s(
+    rlp: &Rlp<'_>,
+    r_index: usize,
+    s_index: usize,
+) -> Result<([u8; 32], [u8; 32]), EvmTxError> {
     let r_bytes: Vec<u8> = rlp.at(r_index)?.as_val()?;
     let s_bytes: Vec<u8> = rlp.at(s_index)?.as_val()?;
     if r_bytes.len() > 32 || s_bytes.len() > 32 {
@@ -347,7 +351,9 @@ mod tests {
     use super::*;
 
     fn seckey(byte: u8) -> SecKey {
-        EccSecp256k1::default().seckey_from_array([byte; 32]).unwrap()
+        EccSecp256k1::default()
+            .seckey_from_array([byte; 32])
+            .unwrap()
     }
 
     #[test]

@@ -192,8 +192,9 @@ pub async fn process_monad_message<T: JsonRpcTransport + Clone>(
     poll: PollConfig,
     request: proto::MonadStampedMessage,
 ) -> Result<proto::StoredMonadMessage, ProcessMonadMessageError> {
-    let declared_hash = Sha256::from_slice(&request.payload_hash)
-        .map_err(|_| ProcessMonadMessageError::InvalidPayloadHashLength(request.payload_hash.len()))?;
+    let declared_hash = Sha256::from_slice(&request.payload_hash).map_err(|_| {
+        ProcessMonadMessageError::InvalidPayloadHashLength(request.payload_hash.len())
+    })?;
     let actual_hash = Sha256::digest(request.encrypted_payload.clone().into());
     if declared_hash != actual_hash {
         return Err(ProcessMonadMessageError::PayloadHashMismatch {
@@ -202,8 +203,8 @@ pub async fn process_monad_message<T: JsonRpcTransport + Clone>(
         });
     }
 
-    let sender =
-        recover_sender(&request.raw_burn_tx).map_err(ProcessMonadMessageError::SenderRecoveryFailed)?;
+    let sender = recover_sender(&request.raw_burn_tx)
+        .map_err(ProcessMonadMessageError::SenderRecoveryFailed)?;
 
     let expected = ExpectedBurn {
         commitment_id: BROADCAST_MESSAGE_LOKAD_ID,
@@ -257,7 +258,10 @@ impl fmt::Display for MonadMessageGateConfigError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             MonadMessageGateConfigError::MissingEnv(name) => {
-                write!(f, "missing required env var {name} (Monad stamp gate is unconfigured)")
+                write!(
+                    f,
+                    "missing required env var {name} (Monad stamp gate is unconfigured)"
+                )
             }
             MonadMessageGateConfigError::InvalidRpcUrl(msg) => {
                 write!(f, "invalid MONAD_TESTNET_HTTP_RPC_URL: {msg}")
@@ -309,7 +313,8 @@ impl MonadMessageGateConfig {
 /// Process-wide, lazily-initialized gate config for `PUT /message/monad`, built from the
 /// environment on first use (see module docs and `pop_protection::pop_gate`, which this mirrors).
 fn monad_message_gate() -> &'static Result<MonadMessageGateConfig, MonadMessageGateConfigError> {
-    static GATE: OnceLock<Result<MonadMessageGateConfig, MonadMessageGateConfigError>> = OnceLock::new();
+    static GATE: OnceLock<Result<MonadMessageGateConfig, MonadMessageGateConfigError>> =
+        OnceLock::new();
     GATE.get_or_init(MonadMessageGateConfig::from_env)
 }
 
@@ -491,10 +496,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        monad_evm_tx::test_support::signed_eip1559_tx,
-        monad_http::MonadRpcError,
-        monad_stamp_relay::PollConfig,
-        store::db::Db,
+        monad_evm_tx::test_support::signed_eip1559_tx, monad_http::MonadRpcError,
+        monad_stamp_relay::PollConfig, store::db::Db,
     };
     use cashweb_payload::chain_adapter::{ChainAdapter, MempoolAcceptResult, SubmitTxOutcome};
 
@@ -510,15 +513,22 @@ mod tests {
         async fn submit_tx(&self, _raw_tx: &[u8]) -> bitcoinsuite_error::Result<SubmitTxOutcome> {
             unimplemented!("not used by the Monad message path")
         }
-        async fn get_tx(&self, _txid: &bitcoinsuite_core::Sha256d) -> bitcoinsuite_error::Result<Option<Vec<u8>>> {
+        async fn get_tx(
+            &self,
+            _txid: &bitcoinsuite_core::Sha256d,
+        ) -> bitcoinsuite_error::Result<Option<Vec<u8>>> {
             unimplemented!("not used by the Monad message path")
         }
-        async fn test_accept(&self, _raw_tx: &[u8]) -> bitcoinsuite_error::Result<MempoolAcceptResult> {
+        async fn test_accept(
+            &self,
+            _raw_tx: &[u8],
+        ) -> bitcoinsuite_error::Result<MempoolAcceptResult> {
             unimplemented!("not used by the Monad message path")
         }
         async fn subscribe_new_blocks(
             &self,
-        ) -> bitcoinsuite_error::Result<tokio::sync::mpsc::Receiver<bitcoinsuite_core::Sha256d>> {
+        ) -> bitcoinsuite_error::Result<tokio::sync::mpsc::Receiver<bitcoinsuite_core::Sha256d>>
+        {
             unimplemented!("not used by the Monad message path")
         }
         fn decode_burn(
@@ -597,7 +607,10 @@ mod tests {
 
     impl MockTransport {
         fn set(&self, method: &str, response: Value) -> &Self {
-            self.responses.lock().unwrap().insert(method.to_string(), response);
+            self.responses
+                .lock()
+                .unwrap()
+                .insert(method.to_string(), response);
             self
         }
     }
@@ -626,7 +639,10 @@ mod tests {
         }
     }
 
-    fn make_message(raw_burn_tx: Vec<u8>, encrypted_payload: Vec<u8>) -> proto::MonadStampedMessage {
+    fn make_message(
+        raw_burn_tx: Vec<u8>,
+        encrypted_payload: Vec<u8>,
+    ) -> proto::MonadStampedMessage {
         let payload_hash = Sha256::digest(encrypted_payload.clone().into())
             .as_slice()
             .to_vec();
@@ -643,7 +659,9 @@ mod tests {
         let encrypted_payload = b"hello, monad".to_vec();
         let commitment = Sha256::digest(encrypted_payload.clone().into());
 
-        let seckey = EccSecp256k1::default().seckey_from_array([0x77; 32]).unwrap();
+        let seckey = EccSecp256k1::default()
+            .seckey_from_array([0x77; 32])
+            .unwrap();
         let mut calldata = Vec::new();
         calldata.extend_from_slice(&STMP_BROADCAST);
         calldata.push(crate::monad_stamp_verify::COMMITMENT_VERSION_TAG);
@@ -689,7 +707,9 @@ mod tests {
         let encrypted_payload = b"hello, monad".to_vec();
         let commitment = Sha256::digest(encrypted_payload.clone().into());
 
-        let seckey = EccSecp256k1::default().seckey_from_array([0x77; 32]).unwrap();
+        let seckey = EccSecp256k1::default()
+            .seckey_from_array([0x77; 32])
+            .unwrap();
         let mut calldata = Vec::new();
         calldata.extend_from_slice(&STMP_BROADCAST);
         calldata.push(crate::monad_stamp_verify::COMMITMENT_VERSION_TAG);
@@ -723,7 +743,10 @@ mod tests {
             err,
             ProcessMonadMessageError::Rejected(StampRelayOutcome::VerificationFailed { .. })
         ));
-        assert_eq!(registry.get_monad_message(&message.payload_hash).unwrap(), None);
+        assert_eq!(
+            registry.get_monad_message(&message.payload_hash).unwrap(),
+            None
+        );
     }
 
     #[tokio::test]
@@ -747,7 +770,10 @@ mod tests {
         .await
         .expect_err("mismatched payload_hash should be rejected");
 
-        assert!(matches!(err, ProcessMonadMessageError::PayloadHashMismatch { .. }));
+        assert!(matches!(
+            err,
+            ProcessMonadMessageError::PayloadHashMismatch { .. }
+        ));
     }
 
     #[tokio::test]
@@ -767,7 +793,10 @@ mod tests {
         .await
         .expect_err("malformed raw_burn_tx should be rejected");
 
-        assert!(matches!(err, ProcessMonadMessageError::SenderRecoveryFailed(_)));
+        assert!(matches!(
+            err,
+            ProcessMonadMessageError::SenderRecoveryFailed(_)
+        ));
     }
 
     #[test]
@@ -782,9 +811,8 @@ mod tests {
     fn test_server(registry: Registry) -> RegistryServer {
         use crate::{p2p::peers::Peers, test_instance::placeholder_pop_conf};
 
-        let pop_gate = crate::http::pop_protection::PopGate::from_conf_if_enabled(
-            &placeholder_pop_conf(),
-        );
+        let pop_gate =
+            crate::http::pop_protection::PopGate::from_conf_if_enabled(&placeholder_pop_conf());
         RegistryServer {
             registry: Arc::new(registry),
             peers: Arc::new(Peers::new("http://127.0.0.1:1".to_string(), vec![])),

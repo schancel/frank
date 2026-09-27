@@ -19,7 +19,9 @@
 use bitcoinsuite_error::{Result, WrapErr};
 
 use crate::{
-    monad_forum_verify::{verify_forum_vote_burn, ExpectedForumBurn, ForumVoteBurnVerification, VoteDirection},
+    monad_forum_verify::{
+        verify_forum_vote_burn, ExpectedForumBurn, ForumVoteBurnVerification, VoteDirection,
+    },
     monad_http::{Hash32, JsonRpcTransport, MonadHttpClient, MonadRpcError},
     monad_stamp_relay::PollConfig,
 };
@@ -95,7 +97,9 @@ where
     for attempt in 0..max_attempts {
         let outcome = verify_forum_vote_burn(transport, tx_hash, expected)
             .await
-            .wrap_err_with(|| format!("verifying Monad forum-vote burn {tx_hash} after broadcast"))?;
+            .wrap_err_with(|| {
+                format!("verifying Monad forum-vote burn {tx_hash} after broadcast")
+            })?;
 
         match outcome {
             ForumVoteBurnVerification::TxNotConfirmed => {
@@ -105,14 +109,22 @@ where
                 }
                 return Ok(ForumVoteRelayOutcome::ConfirmationTimedOut { tx_hash });
             }
-            ForumVoteBurnVerification::Verified { value_wei, direction } => {
+            ForumVoteBurnVerification::Verified {
+                value_wei,
+                direction,
+            } => {
                 return Ok(ForumVoteRelayOutcome::Verified {
                     tx_hash,
                     value_wei,
                     direction,
                 });
             }
-            other => return Ok(ForumVoteRelayOutcome::VerificationFailed { tx_hash, outcome: other }),
+            other => {
+                return Ok(ForumVoteRelayOutcome::VerificationFailed {
+                    tx_hash,
+                    outcome: other,
+                })
+            }
         }
     }
     // Unreachable given `max_attempts >= 1` (the loop above always returns on its last
@@ -204,7 +216,10 @@ mod tests {
 
     impl MockTransport {
         fn set_sequence(&self, method: &str, responses: Vec<Value>) -> &Self {
-            self.responses.lock().unwrap().insert(method.to_string(), responses);
+            self.responses
+                .lock()
+                .unwrap()
+                .insert(method.to_string(), responses);
             self
         }
 
@@ -231,7 +246,12 @@ mod tests {
     #[async_trait]
     impl JsonRpcTransport for MockTransport {
         async fn call(&self, method: &str, _params: Value) -> Result<Value, MonadRpcError> {
-            *self.call_counts.lock().unwrap().entry(method.to_string()).or_insert(0) += 1;
+            *self
+                .call_counts
+                .lock()
+                .unwrap()
+                .entry(method.to_string())
+                .or_insert(0) += 1;
 
             if method == "eth_sendRawTransaction" {
                 if let Some(message) = self.send_raw_transaction_error.lock().unwrap().clone() {
@@ -253,7 +273,10 @@ mod tests {
                         reason: "no mock response configured".to_string(),
                     });
                 }
-                let response = seq.get(idx).cloned().unwrap_or_else(|| seq.last().unwrap().clone());
+                let response = seq
+                    .get(idx)
+                    .cloned()
+                    .unwrap_or_else(|| seq.last().unwrap().clone());
                 return Ok(response);
             }
 
@@ -281,7 +304,11 @@ mod tests {
         transport.set("eth_getTransactionReceipt", receipt_json(&to, "0x1"));
         transport.set(
             "eth_getTransactionByHash",
-            tx_json(&to, 42_000, &commitment_calldata(VoteDirection::UP_BYTE, &commitment)),
+            tx_json(
+                &to,
+                42_000,
+                &commitment_calldata(VoteDirection::UP_BYTE, &commitment),
+            ),
         );
 
         let outcome = broadcast_and_verify_forum_vote(
@@ -295,7 +322,11 @@ mod tests {
 
         assert!(outcome.is_verified());
         match outcome {
-            ForumVoteRelayOutcome::Verified { tx_hash, value_wei, direction } => {
+            ForumVoteRelayOutcome::Verified {
+                tx_hash,
+                value_wei,
+                direction,
+            } => {
                 assert_eq!(tx_hash, Hash32::from_hex(&hex_hash(0x11)).unwrap());
                 assert_eq!(value_wei, 42_000);
                 assert_eq!(direction, VoteDirection::Up);
@@ -317,7 +348,11 @@ mod tests {
         );
         transport.set(
             "eth_getTransactionByHash",
-            tx_json(&to, 1_000, &commitment_calldata(VoteDirection::DOWN_BYTE, &commitment)),
+            tx_json(
+                &to,
+                1_000,
+                &commitment_calldata(VoteDirection::DOWN_BYTE, &commitment),
+            ),
         );
 
         let outcome = broadcast_and_verify_forum_vote(
@@ -330,7 +365,11 @@ mod tests {
         .unwrap();
 
         match outcome {
-            ForumVoteRelayOutcome::Verified { value_wei, direction, .. } => {
+            ForumVoteRelayOutcome::Verified {
+                value_wei,
+                direction,
+                ..
+            } => {
                 assert_eq!(value_wei, 1_000);
                 assert_eq!(direction, VoteDirection::Down);
             }

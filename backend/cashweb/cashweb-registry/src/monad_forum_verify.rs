@@ -167,7 +167,10 @@ pub enum ForumCalldataError {
     },
 
     /// Byte 4 doesn't match [`FORUM_COMMITMENT_VERSION_TAG`].
-    #[error("Forum vote calldata expected version tag {:#04x} but got {actual:#04x}", FORUM_COMMITMENT_VERSION_TAG)]
+    #[error(
+        "Forum vote calldata expected version tag {:#04x} but got {actual:#04x}",
+        FORUM_COMMITMENT_VERSION_TAG
+    )]
     InvalidVersion {
         /// Actual version byte found.
         actual: u8,
@@ -225,8 +228,10 @@ pub fn parse_forum_vote_calldata(
     }
 
     let direction_byte = calldata[5];
-    let direction = VoteDirection::from_byte(direction_byte)
-        .ok_or(ForumCalldataError::InvalidDirection { actual: direction_byte })?;
+    let direction =
+        VoteDirection::from_byte(direction_byte).ok_or(ForumCalldataError::InvalidDirection {
+            actual: direction_byte,
+        })?;
 
     let commitment_bytes = &calldata[CALLDATA_PREFIX_LEN..];
     if commitment_bytes.len() != CALLDATA_COMMITMENT_LEN {
@@ -482,7 +487,10 @@ mod tests {
 
     impl MockTransport {
         fn set(&self, method: &str, response: Value) -> &Self {
-            self.responses.lock().unwrap().insert(method.to_string(), response);
+            self.responses
+                .lock()
+                .unwrap()
+                .insert(method.to_string(), response);
             self
         }
 
@@ -549,7 +557,10 @@ mod tests {
     }
 
     fn valid_calldata(direction: u8, commitment: &Sha256) -> String {
-        format!("0x{}", hex::encode(commitment_calldata(direction, commitment.as_slice())))
+        format!(
+            "0x{}",
+            hex::encode(commitment_calldata(direction, commitment.as_slice()))
+        )
     }
 
     #[tokio::test]
@@ -560,7 +571,11 @@ mod tests {
         transport.set("eth_getTransactionReceipt", receipt_json(&to, "0x1"));
         transport.set(
             "eth_getTransactionByHash",
-            tx_json(&to, 12_345, &valid_calldata(VoteDirection::UP_BYTE, &commitment)),
+            tx_json(
+                &to,
+                12_345,
+                &valid_calldata(VoteDirection::UP_BYTE, &commitment),
+            ),
         );
 
         let outcome = verify_forum_vote_burn(
@@ -592,7 +607,11 @@ mod tests {
         transport.set("eth_getTransactionReceipt", receipt_json(&to, "0x1"));
         transport.set(
             "eth_getTransactionByHash",
-            tx_json(&to, 500, &valid_calldata(VoteDirection::DOWN_BYTE, &commitment)),
+            tx_json(
+                &to,
+                500,
+                &valid_calldata(VoteDirection::DOWN_BYTE, &commitment),
+            ),
         );
 
         let outcome = verify_forum_vote_burn(
@@ -622,7 +641,11 @@ mod tests {
         transport.set("eth_getTransactionReceipt", receipt_json(&to, "0x1"));
         transport.set(
             "eth_getTransactionByHash",
-            tx_json(&to, 10_000, &valid_calldata(VoteDirection::UP_BYTE, &actual_commitment)),
+            tx_json(
+                &to,
+                10_000,
+                &valid_calldata(VoteDirection::UP_BYTE, &actual_commitment),
+            ),
         );
 
         let outcome = verify_forum_vote_burn(

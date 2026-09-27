@@ -395,6 +395,9 @@ mod tests {
         let adapter = adapter(&MockTransport::default());
         let mut receiver = adapter.subscribe_new_blocks().await.unwrap();
         let result = timeout(Duration::from_millis(50), receiver.recv()).await;
-        assert!(result.is_err(), "expected no block within the short timeout");
+        assert!(
+            result.is_err(),
+            "expected no block within the short timeout"
+        );
     }
 }

@@ -107,7 +107,9 @@ impl fmt::Display for ProcessForumPostError {
             ProcessForumPostError::Rejected(outcome) => {
                 write!(f, "forum post's initial vote burn rejected: {outcome:?}")
             }
-            ProcessForumPostError::Infrastructure(err) => write!(f, "infrastructure failure: {err}"),
+            ProcessForumPostError::Infrastructure(err) => {
+                write!(f, "infrastructure failure: {err}")
+            }
         }
     }
 }
@@ -131,8 +133,8 @@ pub async fn process_forum_post<T: JsonRpcTransport + Clone>(
         });
     }
 
-    let sender =
-        recover_sender(&request.raw_burn_tx).map_err(ProcessForumPostError::SenderRecoveryFailed)?;
+    let sender = recover_sender(&request.raw_burn_tx)
+        .map_err(ProcessForumPostError::SenderRecoveryFailed)?;
 
     let expected = ExpectedForumBurn {
         commitment: declared_hash.clone(),
@@ -211,8 +213,12 @@ impl fmt::Display for ProcessForumVoteError {
             ProcessForumVoteError::SenderRecoveryFailed(err) => {
                 write!(f, "couldn't recover sender from raw_burn_tx: {err}")
             }
-            ProcessForumVoteError::Rejected(outcome) => write!(f, "forum vote burn rejected: {outcome:?}"),
-            ProcessForumVoteError::Infrastructure(err) => write!(f, "infrastructure failure: {err}"),
+            ProcessForumVoteError::Rejected(outcome) => {
+                write!(f, "forum vote burn rejected: {outcome:?}")
+            }
+            ProcessForumVoteError::Infrastructure(err) => {
+                write!(f, "infrastructure failure: {err}")
+            }
         }
     }
 }
@@ -235,8 +241,8 @@ pub async fn process_forum_vote<T: JsonRpcTransport + Clone>(
         .map_err(ProcessForumVoteError::Infrastructure)?
         .ok_or(ProcessForumVoteError::UnknownTargetPost)?;
 
-    let sender =
-        recover_sender(&request.raw_burn_tx).map_err(ProcessForumVoteError::SenderRecoveryFailed)?;
+    let sender = recover_sender(&request.raw_burn_tx)
+        .map_err(ProcessForumVoteError::SenderRecoveryFailed)?;
 
     let expected = ExpectedForumBurn {
         commitment: target_hash.clone(),
@@ -291,9 +297,14 @@ impl fmt::Display for ForumGateConfigError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ForumGateConfigError::MissingEnv(name) => {
-                write!(f, "missing required env var {name} (forum-vote gate is unconfigured)")
+                write!(
+                    f,
+                    "missing required env var {name} (forum-vote gate is unconfigured)"
+                )
             }
-            ForumGateConfigError::InvalidRpcUrl(msg) => write!(f, "invalid MONAD_TESTNET_HTTP_RPC_URL: {msg}"),
+            ForumGateConfigError::InvalidRpcUrl(msg) => {
+                write!(f, "invalid MONAD_TESTNET_HTTP_RPC_URL: {msg}")
+            }
             ForumGateConfigError::InvalidBurnAddress(msg) => {
                 write!(f, "invalid MONAD_STAMP_BURN_ADDRESS: {msg}")
             }
@@ -322,7 +333,10 @@ impl ForumGateConfig {
         let burn_address_hex = required_env("MONAD_STAMP_BURN_ADDRESS")?;
         let burn_address = Address::from_hex(&burn_address_hex)
             .map_err(|err| ForumGateConfigError::InvalidBurnAddress(format!("{err}")))?;
-        Ok(ForumGateConfig { rpc_url, burn_address })
+        Ok(ForumGateConfig {
+            rpc_url,
+            burn_address,
+        })
     }
 }
 
@@ -381,7 +395,9 @@ pub async fn handle_put_forum_post(
     Protobuf(post): Protobuf<proto::MonadForumPost>,
     Extension(server): Extension<RegistryServer>,
 ) -> Result<Protobuf<proto::StoredMonadForumPost>, PutForumPostError> {
-    let config = forum_gate().as_ref().map_err(|err| PutForumPostError::GateUnavailable(err.clone()))?;
+    let config = forum_gate()
+        .as_ref()
+        .map_err(|err| PutForumPostError::GateUnavailable(err.clone()))?;
     let transport = HttpTransport::new(config.rpc_url.clone());
     let stored = process_forum_post(
         &transport,
@@ -437,7 +453,9 @@ pub async fn handle_put_forum_vote(
     Protobuf(vote): Protobuf<proto::MonadForumVote>,
     Extension(server): Extension<RegistryServer>,
 ) -> Result<Protobuf<proto::StoredMonadForumVoteEntry>, PutForumVoteError> {
-    let config = forum_gate().as_ref().map_err(|err| PutForumVoteError::GateUnavailable(err.clone()))?;
+    let config = forum_gate()
+        .as_ref()
+        .map_err(|err| PutForumVoteError::GateUnavailable(err.clone()))?;
     let transport = HttpTransport::new(config.rpc_url.clone());
     let stored = process_forum_vote(
         &transport,
@@ -530,15 +548,22 @@ mod tests {
         async fn submit_tx(&self, _raw_tx: &[u8]) -> bitcoinsuite_error::Result<SubmitTxOutcome> {
             unimplemented!("not used by the forum path")
         }
-        async fn get_tx(&self, _txid: &bitcoinsuite_core::Sha256d) -> bitcoinsuite_error::Result<Option<Vec<u8>>> {
+        async fn get_tx(
+            &self,
+            _txid: &bitcoinsuite_core::Sha256d,
+        ) -> bitcoinsuite_error::Result<Option<Vec<u8>>> {
             unimplemented!("not used by the forum path")
         }
-        async fn test_accept(&self, _raw_tx: &[u8]) -> bitcoinsuite_error::Result<MempoolAcceptResult> {
+        async fn test_accept(
+            &self,
+            _raw_tx: &[u8],
+        ) -> bitcoinsuite_error::Result<MempoolAcceptResult> {
             unimplemented!("not used by the forum path")
         }
         async fn subscribe_new_blocks(
             &self,
-        ) -> bitcoinsuite_error::Result<tokio::sync::mpsc::Receiver<bitcoinsuite_core::Sha256d>> {
+        ) -> bitcoinsuite_error::Result<tokio::sync::mpsc::Receiver<bitcoinsuite_core::Sha256d>>
+        {
             unimplemented!("not used by the forum path")
         }
         fn decode_burn(
@@ -616,7 +641,10 @@ mod tests {
 
     impl MockTransport {
         fn set(&self, method: &str, response: Value) -> &Self {
-            self.responses.lock().unwrap().insert(method.to_string(), response);
+            self.responses
+                .lock()
+                .unwrap()
+                .insert(method.to_string(), response);
             self
         }
     }
@@ -656,7 +684,9 @@ mod tests {
     }
 
     fn make_post(raw_burn_tx: Vec<u8>, encrypted_payload: Vec<u8>) -> proto::MonadForumPost {
-        let payload_hash = Sha256::digest(encrypted_payload.clone().into()).as_slice().to_vec();
+        let payload_hash = Sha256::digest(encrypted_payload.clone().into())
+            .as_slice()
+            .to_vec();
         proto::MonadForumPost {
             topic: "test.topic".to_string(),
             parent_post_hash: vec![],
@@ -672,7 +702,9 @@ mod tests {
         let encrypted_payload = b"hello, forum".to_vec();
         let commitment = Sha256::digest(encrypted_payload.clone().into());
 
-        let seckey = EccSecp256k1::default().seckey_from_array([0x77; 32]).unwrap();
+        let seckey = EccSecp256k1::default()
+            .seckey_from_array([0x77; 32])
+            .unwrap();
         let calldata = forum_calldata(0x01, &commitment);
         let (raw_burn_tx, sender) =
             signed_eip1559_tx(&seckey, 41454, 0, burn_address(), 10_000, &calldata);
@@ -682,11 +714,20 @@ mod tests {
         let to = hex_addr(burn_address());
         let transport = MockTransport::default();
         transport.set("eth_getTransactionReceipt", receipt_json(&to, "0x1"));
-        transport.set("eth_getTransactionByHash", tx_json(&to, 10_000, &forum_calldata(0x01, &commitment)));
+        transport.set(
+            "eth_getTransactionByHash",
+            tx_json(&to, 10_000, &forum_calldata(0x01, &commitment)),
+        );
 
-        let stored = process_forum_post(&transport, &registry, burn_address(), fast_poll(), post.clone())
-            .await
-            .expect("valid up-vote post should be accepted");
+        let stored = process_forum_post(
+            &transport,
+            &registry,
+            burn_address(),
+            fast_poll(),
+            post.clone(),
+        )
+        .await
+        .expect("valid up-vote post should be accepted");
 
         assert_eq!(stored.sender_address, sender.0.to_vec());
         assert_eq!(stored.post, Some(post.clone()));
@@ -705,7 +746,9 @@ mod tests {
         let encrypted_payload = b"down vote post".to_vec();
         let commitment = Sha256::digest(encrypted_payload.clone().into());
 
-        let seckey = EccSecp256k1::default().seckey_from_array([0x88; 32]).unwrap();
+        let seckey = EccSecp256k1::default()
+            .seckey_from_array([0x88; 32])
+            .unwrap();
         let calldata = forum_calldata(0x00, &commitment);
         let (raw_burn_tx, _sender) =
             signed_eip1559_tx(&seckey, 41454, 0, burn_address(), 5_000, &calldata);
@@ -715,13 +758,25 @@ mod tests {
         let to = hex_addr(burn_address());
         let transport = MockTransport::default();
         transport.set("eth_getTransactionReceipt", receipt_json(&to, "0x1"));
-        transport.set("eth_getTransactionByHash", tx_json(&to, 5_000, &forum_calldata(0x00, &commitment)));
+        transport.set(
+            "eth_getTransactionByHash",
+            tx_json(&to, 5_000, &forum_calldata(0x00, &commitment)),
+        );
 
-        process_forum_post(&transport, &registry, burn_address(), fast_poll(), post.clone())
-            .await
-            .expect("valid down-vote post should be accepted");
+        process_forum_post(
+            &transport,
+            &registry,
+            burn_address(),
+            fast_poll(),
+            post.clone(),
+        )
+        .await
+        .expect("valid down-vote post should be accepted");
 
-        let view = registry.get_forum_post_view(&post.payload_hash).unwrap().unwrap();
+        let view = registry
+            .get_forum_post_view(&post.payload_hash)
+            .unwrap()
+            .unwrap();
         assert_eq!(view.vote_weight, -5_000);
     }
 
@@ -731,29 +786,61 @@ mod tests {
         let encrypted_payload = b"post with multiple votes".to_vec();
         let commitment = Sha256::digest(encrypted_payload.clone().into());
 
-        let post_seckey = EccSecp256k1::default().seckey_from_array([0x11; 32]).unwrap();
+        let post_seckey = EccSecp256k1::default()
+            .seckey_from_array([0x11; 32])
+            .unwrap();
         let post_calldata = forum_calldata(0x01, &commitment);
-        let (post_raw_tx, _post_sender) =
-            signed_eip1559_tx(&post_seckey, 41454, 0, burn_address(), 1_000, &post_calldata);
+        let (post_raw_tx, _post_sender) = signed_eip1559_tx(
+            &post_seckey,
+            41454,
+            0,
+            burn_address(),
+            1_000,
+            &post_calldata,
+        );
         let post = make_post(post_raw_tx, encrypted_payload);
 
         let to = hex_addr(burn_address());
         let transport = MockTransport::default();
         transport.set("eth_getTransactionReceipt", receipt_json(&to, "0x1"));
-        transport.set("eth_getTransactionByHash", tx_json(&to, 1_000, &forum_calldata(0x01, &commitment)));
+        transport.set(
+            "eth_getTransactionByHash",
+            tx_json(&to, 1_000, &forum_calldata(0x01, &commitment)),
+        );
 
-        process_forum_post(&transport, &registry, burn_address(), fast_poll(), post.clone())
-            .await
-            .expect("initial post should be accepted");
-        assert_eq!(registry.get_forum_post_view(&post.payload_hash).unwrap().unwrap().vote_weight, 1_000);
+        process_forum_post(
+            &transport,
+            &registry,
+            burn_address(),
+            fast_poll(),
+            post.clone(),
+        )
+        .await
+        .expect("initial post should be accepted");
+        assert_eq!(
+            registry
+                .get_forum_post_view(&post.payload_hash)
+                .unwrap()
+                .unwrap()
+                .vote_weight,
+            1_000
+        );
 
         // Second vote: up-vote for +2_000 (new tx hash 0x22, since MockTransport always returns
         // the tx it's configured with -- reconfigure the mock's receipt/tx to a distinct hash for
         // clarity, keyed by the calldata/value below).
-        let vote_seckey = EccSecp256k1::default().seckey_from_array([0x22; 32]).unwrap();
+        let vote_seckey = EccSecp256k1::default()
+            .seckey_from_array([0x22; 32])
+            .unwrap();
         let vote_calldata = forum_calldata(0x01, &commitment);
-        let (vote_raw_tx, vote_sender) =
-            signed_eip1559_tx(&vote_seckey, 41454, 1, burn_address(), 2_000, &vote_calldata);
+        let (vote_raw_tx, vote_sender) = signed_eip1559_tx(
+            &vote_seckey,
+            41454,
+            1,
+            burn_address(),
+            2_000,
+            &vote_calldata,
+        );
         let vote = proto::MonadForumVote {
             target_payload_hash: post.payload_hash.clone(),
             raw_burn_tx: vote_raw_tx,
@@ -789,13 +876,17 @@ mod tests {
             }),
         );
 
-        let vote_entry = process_forum_vote(&transport2, &registry, burn_address(), fast_poll(), vote)
-            .await
-            .expect("additional vote should be accepted");
+        let vote_entry =
+            process_forum_vote(&transport2, &registry, burn_address(), fast_poll(), vote)
+                .await
+                .expect("additional vote should be accepted");
         assert_eq!(vote_entry.sender_address, vote_sender.0.to_vec());
         assert_eq!(vote_entry.weight, 2_000);
 
-        let view = registry.get_forum_post_view(&post.payload_hash).unwrap().unwrap();
+        let view = registry
+            .get_forum_post_view(&post.payload_hash)
+            .unwrap()
+            .unwrap();
         assert_eq!(view.vote_weight, 3_000);
     }
 
@@ -828,7 +919,10 @@ mod tests {
             .await
             .expect_err("mismatched payload_hash should be rejected");
 
-        assert!(matches!(err, ProcessForumPostError::PayloadHashMismatch { .. }));
+        assert!(matches!(
+            err,
+            ProcessForumPostError::PayloadHashMismatch { .. }
+        ));
     }
 
     #[tokio::test]
@@ -841,7 +935,10 @@ mod tests {
             .await
             .expect_err("malformed raw_burn_tx should be rejected");
 
-        assert!(matches!(err, ProcessForumPostError::SenderRecoveryFailed(_)));
+        assert!(matches!(
+            err,
+            ProcessForumPostError::SenderRecoveryFailed(_)
+        ));
     }
 
     #[tokio::test]
@@ -850,7 +947,9 @@ mod tests {
         let encrypted_payload = b"wrong recipient".to_vec();
         let commitment = Sha256::digest(encrypted_payload.clone().into());
 
-        let seckey = EccSecp256k1::default().seckey_from_array([0x33; 32]).unwrap();
+        let seckey = EccSecp256k1::default()
+            .seckey_from_array([0x33; 32])
+            .unwrap();
         let calldata = forum_calldata(0x01, &commitment);
         // Sent to a different address than `burn_address()`.
         let (raw_burn_tx, _sender) =
@@ -861,9 +960,15 @@ mod tests {
         let transport = MockTransport::default();
         transport.set("eth_getTransactionReceipt", receipt_json(&wrong_to, "0x1"));
 
-        let err = process_forum_post(&transport, &registry, burn_address(), fast_poll(), post.clone())
-            .await
-            .expect_err("wrong recipient should be rejected");
+        let err = process_forum_post(
+            &transport,
+            &registry,
+            burn_address(),
+            fast_poll(),
+            post.clone(),
+        )
+        .await
+        .expect_err("wrong recipient should be rejected");
 
         assert!(matches!(
             err,

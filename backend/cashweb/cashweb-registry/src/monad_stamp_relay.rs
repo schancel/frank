@@ -173,7 +173,12 @@ where
             StampBurnVerification::Verified => {
                 return Ok(StampRelayOutcome::Verified { tx_hash });
             }
-            other => return Ok(StampRelayOutcome::VerificationFailed { tx_hash, outcome: other }),
+            other => {
+                return Ok(StampRelayOutcome::VerificationFailed {
+                    tx_hash,
+                    outcome: other,
+                })
+            }
         }
     }
     // Unreachable given `max_attempts >= 1` (the loop above always returns on its last
@@ -330,7 +335,10 @@ mod tests {
                         reason: "no mock response configured".to_string(),
                     });
                 }
-                let response = seq.get(idx).cloned().unwrap_or_else(|| seq.last().unwrap().clone());
+                let response = seq
+                    .get(idx)
+                    .cloned()
+                    .unwrap_or_else(|| seq.last().unwrap().clone());
                 return Ok(response);
             }
 

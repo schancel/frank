@@ -110,7 +110,10 @@ pub enum CalldataCommitmentError {
     /// Byte 4 doesn't match [`COMMITMENT_VERSION_TAG`].
     ///
     /// Mirrors `ValidateSignedPayloadError::BurnOutputInvalidVersion`.
-    #[error("Burn tx calldata expected version tag {:#04x} but got {actual:#04x}", COMMITMENT_VERSION_TAG)]
+    #[error(
+        "Burn tx calldata expected version tag {:#04x} but got {actual:#04x}",
+        COMMITMENT_VERSION_TAG
+    )]
     InvalidVersion {
         /// Actual version byte found.
         actual: u8,
@@ -309,8 +312,8 @@ mod tests {
     use std::{collections::HashMap, fmt, sync::Mutex};
 
     use async_trait::async_trait;
-    use bitcoinsuite_ecc_secp256k1::EccSecp256k1;
     use bitcoinsuite_core::ecc::Ecc;
+    use bitcoinsuite_ecc_secp256k1::EccSecp256k1;
     use serde_json::Value;
 
     use crate::monad_http::MonadRpcError;
@@ -688,9 +691,9 @@ mod tests {
 
         assert!(matches!(
             outcome,
-            StampBurnVerification::MalformedCalldata(CalldataCommitmentError::InvalidLokadId {
-                ..
-            })
+            StampBurnVerification::MalformedCalldata(
+                CalldataCommitmentError::InvalidLokadId { .. }
+            )
         ));
     }
 }

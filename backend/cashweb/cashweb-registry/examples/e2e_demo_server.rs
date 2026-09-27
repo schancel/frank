@@ -85,7 +85,10 @@ impl ChainAdapter for DemoChainAdapter {
         // good enough to be a stable, unique identifier for the demo's own `PutMetadataResult`
         // response; nothing downstream treats it as a real Lotus txid that could be looked up on
         // any actual chain.
-        info!("[demo chain adapter] accepting metadata burn tx ({} bytes)", raw_tx.len());
+        info!(
+            "[demo chain adapter] accepting metadata burn tx ({} bytes)",
+            raw_tx.len()
+        );
         Ok(SubmitTxOutcome::Broadcast(Sha256d::digest(
             raw_tx.to_vec().into(),
         )))

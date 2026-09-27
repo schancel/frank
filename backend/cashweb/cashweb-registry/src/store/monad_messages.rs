@@ -100,7 +100,11 @@ impl<'a> DbMonadMessages<'a> {
                 by_time_key(existing.timestamp, payload_hash),
             );
         }
-        batch.put_cf(self.cf_monad_messages, payload_hash, message.encode_to_vec());
+        batch.put_cf(
+            self.cf_monad_messages,
+            payload_hash,
+            message.encode_to_vec(),
+        );
         batch.put_cf(
             self.cf_monad_messages_by_time,
             by_time_key(message.timestamp, payload_hash),
@@ -190,7 +194,10 @@ mod tests {
             timestamp: 1234,
         };
         db.monad_messages().put(&payload_hash, &stored)?;
-        assert_eq!(db.monad_messages().get(&payload_hash)?, Some(stored.clone()));
+        assert_eq!(
+            db.monad_messages().get(&payload_hash)?,
+            Some(stored.clone())
+        );
         assert_eq!(db.monad_messages().get_existing(&payload_hash)?, stored);
 
         Ok(())
@@ -201,7 +208,10 @@ mod tests {
         let _ = bitcoinsuite_error::install();
         let tempdir = tempdir::TempDir::new("cashweb-registry-store--monad-messages-debug")?;
         let db = Db::open(tempdir.path().join("db.rocksdb"))?;
-        assert_eq!(format!("{:?}", db.monad_messages()), "DbMonadMessages { .. }");
+        assert_eq!(
+            format!("{:?}", db.monad_messages()),
+            "DbMonadMessages { .. }"
+        );
         Ok(())
     }
 
@@ -234,7 +244,10 @@ mod tests {
         store.put(&early.message.as_ref().unwrap().payload_hash, &early)?;
         store.put(&middle.message.as_ref().unwrap().payload_hash, &middle)?;
 
-        assert_eq!(store.list_since(0)?, vec![early.clone(), middle.clone(), late.clone()]);
+        assert_eq!(
+            store.list_since(0)?,
+            vec![early.clone(), middle.clone(), late.clone()]
+        );
         assert_eq!(store.list_since(200)?, vec![middle.clone(), late.clone()]);
         assert_eq!(store.list_since(301)?, vec![]);
 

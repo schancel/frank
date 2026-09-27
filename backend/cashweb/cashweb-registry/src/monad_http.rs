@@ -760,12 +760,13 @@ impl<T: JsonRpcTransport> MonadHttpClient<T> {
                 method: "eth_getRawTransactionByHash".to_string(),
                 reason: format!("expected a hex string, got {}", result),
             })?;
-        let stripped = hex_str
-            .strip_prefix("0x")
-            .ok_or_else(|| MonadRpcError::InvalidResponse {
-                method: "eth_getRawTransactionByHash".to_string(),
-                reason: format!("expected 0x-prefixed hex, got {:?}", hex_str),
-            })?;
+        let stripped =
+            hex_str
+                .strip_prefix("0x")
+                .ok_or_else(|| MonadRpcError::InvalidResponse {
+                    method: "eth_getRawTransactionByHash".to_string(),
+                    reason: format!("expected 0x-prefixed hex, got {:?}", hex_str),
+                })?;
         let bytes = hex::decode(stripped).map_err(|source| MonadRpcError::InvalidResponse {
             method: "eth_getRawTransactionByHash".to_string(),
             reason: source.to_string(),

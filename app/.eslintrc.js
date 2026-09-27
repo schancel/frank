@@ -14,7 +14,16 @@ module.exports = {
     // Needed to make the parser take into account 'vue' files
     extraFileExtensions: ['.vue'],
     parser: '@typescript-eslint/parser',
-    project: resolve(__dirname, './tsconfig.json'),
+    // Array, not a single path, as of 2026-09-26 (ticket #42's review): `tsconfig.json` gained an
+    // `exclude` for `*.jest.test.ts` files (they were being swept into the production webpack
+    // build's own type-checking and failing on test-only typing gaps) -- but @typescript-eslint's
+    // parser still needs *some* project that covers those files when linting them via `yarn lint`
+    // /the build's lint step. `tsconfig.jest.json` (already used by ts-jest) covers them; listing
+    // both lets typescript-eslint pick whichever project actually contains a given file.
+    project: [
+      resolve(__dirname, './tsconfig.json'),
+      resolve(__dirname, './tsconfig.jest.json'),
+    ],
     tsconfigRootDir: __dirname,
     ecmaVersion: 2018, // Allows for the parsing of modern ECMAScript features
     sourceType: 'module', // Allows for the use of imports

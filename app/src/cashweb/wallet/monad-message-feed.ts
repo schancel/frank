@@ -46,6 +46,7 @@ export async function fetchMonadMessagesSince(params: {
       senderAddress: stored.getSenderAddress_asU8(),
       txHash: stored.getTxHash_asU8(),
       timestamp: stored.getTimestamp(),
+      networkTag: stored.getNetworkTag_asU8(),
     }
   })
 }

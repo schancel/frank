@@ -76,7 +76,7 @@ import {
   SubAccountStatus,
 } from './storage/sub-account-pool-storage'
 
-export {
+export type {
   SubAccountPoolStore,
   SubAccountRecord,
   SubAccountStatus,

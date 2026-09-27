@@ -11,5 +11,13 @@
   "compilerOptions": {
     "target": "es2020",
     "isolatedModules": true
-  }
+  },
+  // `exclude` is inherited independently of `include`/`compilerOptions` in TS config extension --
+  // without overriding it here, this file would inherit tsconfig.json's `*.jest.test.ts` exclude
+  // (added 2026-09-26 to keep test files out of the production webpack build), which is exactly
+  // backwards for *this* config: ts-jest itself tolerates the inherited exclude fine (it transpiles
+  // whatever file Jest asks for regardless), but typescript-eslint's parser consults `include`/
+  // `exclude` to decide whether a file belongs to a project at all -- and this project's whole
+  // purpose is covering the test files the other one deliberately excludes.
+  "exclude": ["node_modules"]
 }

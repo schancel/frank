@@ -120,6 +120,7 @@ import {
   fetchMonadTopicPostView,
   fetchMonadTopicPostsSince,
 } from '../monad-topic-tally-client'
+import { readViteEnv } from './vite-env'
 
 export interface MonadChainConfig {
   /** Monad JSON-RPC HTTP endpoint, e.g. `MONAD_TESTNET_HTTP_RPC_URL`. */
@@ -135,23 +136,37 @@ export interface MonadChainConfig {
   subAccountPoolSize: number
 }
 
-/** Reads `MonadChainConfig` from `process.env`, with permissive fallbacks -- see this file's
- * header, "Configuration", for why this (unlike the wallet client modules it configures) reads env
+// Ticket #54 (found live doing real end-to-end GUI testing against a real relay + real Alchemy
+// RPC -- the app silently fell back to `http://127.0.0.1:8545`, breaking every real chain call):
+// `process.env.KEY` is silently always `undefined` in the browser bundle in this
+// `@quasar/app-vite`/Vite 8/Rolldown toolchain -- confirmed a genuine, generic gap (even Vite's
+// own built-in `process.env.NODE_ENV` has it), not something fixable with a `define` tweak (see
+// `app/quasar.config.js`'s own investigation). `import.meta.env.QCLI_KEY` is the mechanism that
+// actually works under this toolchain (Quasar's own `QCLI_` env-var-prefix convention, confirmed
+// live) -- see `./vite-env.ts` for why that logic isn't written directly in this file, and
+// `jest.config.js`'s `moduleNameMapper` for how this package's own tests avoid it entirely.
+function readEnv(key: string): string | undefined {
+  return readViteEnv(`QCLI_${key}`) ?? process.env[key]
+}
+
+/** Reads `MonadChainConfig` from the environment (see `readEnv` just above for exactly where
+ * from, and why two places), with permissive fallbacks -- see this file's header,
+ * "Configuration", for why this (unlike the wallet client modules it configures) reads env
  * directly, and why it never throws on a missing var. */
 export function loadMonadChainConfigFromEnv(): MonadChainConfig {
   return {
-    rpcUrl: process.env.MONAD_TESTNET_HTTP_RPC_URL ?? 'http://127.0.0.1:8545',
+    rpcUrl: readEnv('MONAD_TESTNET_HTTP_RPC_URL') ?? 'http://127.0.0.1:8545',
     relayBaseUrl:
-      process.env.MONAD_RELAY_BASE_URL ??
-      process.env.E2E_DEMO_RELAY_URL ??
+      readEnv('MONAD_RELAY_BASE_URL') ??
+      readEnv('E2E_DEMO_RELAY_URL') ??
       'http://127.0.0.1:8098',
     stampBurnAddress:
-      process.env.MONAD_STAMP_BURN_ADDRESS ??
+      readEnv('MONAD_STAMP_BURN_ADDRESS') ??
       '0x000000000000000000000000000000000000dEaD',
     defaultStampBurnValueWei: BigInt(
-      process.env.CASHWEB_STAMP_MIN_BURN_VALUE_WEI ?? '1000000000000',
+      readEnv('CASHWEB_STAMP_MIN_BURN_VALUE_WEI') ?? '1000000000000',
     ),
-    subAccountPoolSize: Number(process.env.MONAD_SUB_ACCOUNT_POOL_SIZE ?? '8'),
+    subAccountPoolSize: Number(readEnv('MONAD_SUB_ACCOUNT_POOL_SIZE') ?? '8'),
   }
 }
 

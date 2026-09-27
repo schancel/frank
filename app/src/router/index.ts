@@ -29,20 +29,15 @@ import { useWalletStore } from 'src/stores/wallet'
 // is enough), set it to the literal string "false" to restore the original Lotus-wizard-completion
 // requirement once #47 (porting Setup.vue to Monad) actually lands.
 //
-// KNOWN BROKEN (ticket #53 GUI verification, found live, driving a real browser): setting this
-// env var currently has zero effect -- `process.env.MONAD_SKIP_LEGACY_SETUP_GATE` is always
-// `undefined` in the served bundle regardless of what's configured. Tried and ruled out: (1) a
-// `@rollup/plugin-inject`/Vite `define` collision over the `process` identifier (real, confirmed
-// -- even Vite's own built-in `process.env.NODE_ENV` has it), and (2) a bare non-`process`-
-// prefixed `define` global instead (`__MONAD_SKIP_LEGACY_SETUP_GATE__`) -- also silently never
-// applied, confirmed via the production build: the whole guarded expression got dead-code-
-// eliminated rather than resolving to a real value, meaning `viteConf.define` isn't reaching
-// first-party source at all in this `@quasar/app-vite`/Vite 8/Rolldown combination, only
-// pre-bundled `node_modules` dependency chunks (where `__VUE_OPTIONS_API__` above lives and does
-// work). Needs real investigation into this toolchain's actual `define`/`import.meta.env`
-// wiring, not a config tweak -- see the tracked follow-up issue. Until then, this flag can only
-// be exercised by editing this default directly, not via the documented env var.
-const skipLegacySetupGate = process.env.MONAD_SKIP_LEGACY_SETUP_GATE !== 'false'
+// Ticket #54 fix (found live doing real end-to-end GUI testing): this was
+// `process.env.MONAD_SKIP_LEGACY_SETUP_GATE`, silently always `undefined` in the browser bundle
+// under this toolchain regardless of what's configured (see `app/quasar.config.js`'s own
+// investigation for the full story -- `viteConf.define` doesn't reach first-party source at all
+// here). `import.meta.env.QCLI_KEY` (Quasar's own env-var-prefix convention) is the mechanism
+// that actually works, confirmed live: set `QCLI_MONAD_SKIP_LEGACY_SETUP_GATE=false` (not
+// `MONAD_SKIP_LEGACY_SETUP_GATE=false`) to restore the strict gate.
+const skipLegacySetupGate =
+  import.meta.env.QCLI_MONAD_SKIP_LEGACY_SETUP_GATE !== 'false'
 
 const unprotectedRoutes = ['/', '/setup', '/forum', '/changelog']
 // Was '/forum/new-post' -- routes.ts declares this child route's path with a leading slash

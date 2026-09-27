@@ -35,12 +35,10 @@ import {
   loadMonadChainConfigFromEnv,
 } from '@frank/wallet/chain/monad-chain'
 
-// KNOWN BROKEN (ticket #53 GUI verification): setting MONAD_DM_POLL_INTERVAL_MS currently has no
-// effect -- see router/index.ts's MONAD_SKIP_LEGACY_SETUP_GATE comment for the full
-// investigation (a `viteConf.define` gap that doesn't reach first-party source at all in this
-// toolchain) and the tracked follow-up issue.
+// Ticket #54 fix: see router/index.ts's QCLI_ comment for the full story -- set
+// `QCLI_MONAD_DM_POLL_INTERVAL_MS`, not `MONAD_DM_POLL_INTERVAL_MS`.
 const DIRECT_MESSAGE_POLL_INTERVAL_MS = Number(
-  process.env.MONAD_DM_POLL_INTERVAL_MS ?? 7000,
+  import.meta.env.QCLI_MONAD_DM_POLL_INTERVAL_MS ?? 7000,
 )
 
 /** Registers `wallet.identity` with the relay (`PUT /metadata/:addr`, no payment -- POP disabled

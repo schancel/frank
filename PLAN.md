@@ -297,6 +297,59 @@ Needs a package-manager/workspace-tooling decision (npm/yarn/pnpm
 workspaces, or a lighter TS project-references setup) before it's
 actionable — not yet made.
 
+### Follow-on: UI still shows Lotus addresses/XPI units, not wired to Monad at all (raised 2026-09-26)
+The old Stamp UI displayed `lotus:`-style cashaddr addresses and denominated
+everything in "XPI". Investigated 2026-09-26: this has NOT been touched or
+ported. `app/src/utils/address.ts`'s `toAPIAddress`/`toDisplayAddress` still
+convert through `bitcore-lib-xpi`'s `Address`/`Networks` (Lotus cashaddr/
+xaddress encoding) — would throw or produce garbage on a Monad `0x` address.
+"XPI" is still a hardcoded literal unit suffix in `ChatInput.vue` and
+`CreatePost.vue`, plus a comment in `utils/constants.ts`.
+
+**Decision (user, 2026-09-26): for now, just use native Monad `0x` addresses
+and "MON" as the unit — no cashaddr-style encoding layer needed for a
+single-chain display.** Full multichain UX (a user holding balances/
+addresses across many chains without needing to think about which chain
+they're on) is explicitly deferred — genuinely clutters the UX and needs
+real design work, not a hackathon-time decision. Leave a TODO at the
+address/unit display layer marking this as the deferred harder problem
+once/if a second chain is ever actually wired in.
+
+**Not fixed yet, and deliberately not done as a quick pass tonight**:
+`toAPIAddress`/`toDisplayAddress` are still load-bearing for the *old*,
+still-active Lotus code paths (`app/src/cashweb/registry/index.ts`,
+`app/src/cashweb/relay/index.ts`, `stores/chats.ts`, `stores/contacts.ts`,
+`components/setup/DepositStep.vue`, `components/dialogs/
+TransactionDialog.vue`, `pages/AddContact.vue`) — none of that has been
+rewired to the new Monad wallet clients (`app/src/cashweb/wallet/*`) yet.
+Rewriting the address/unit display layer in isolation, before that store
+rewiring exists, would be disconnected surgery on code that isn't
+receiving Monad addresses yet, not a real fix.
+
+**Design for the eventual fix (user, 2026-09-26): a compile-time chain
+selection, not a runtime one.** A single compile-time constant picks the
+active chain; that choice is what supplies the address converters, the
+unit/denomination, and the wallet factory — not three independently-wired
+concerns. This is a cleaner, higher-level seam than the existing TS
+`ChainAdapter` (`app/src/cashweb/wallet/chain-adapter.ts`, from M1):
+that interface is UTXO-shaped (`ChainUtxo`, `satoshis`, P2PKH-only
+`DecodedOutput`) and only `lotus-adapter.ts` ever implements it — the
+entire Monad wallet stack built this session (`monad-account-tx.ts`,
+`monad-account-pool.ts`, `monad-stamp-client.ts`, `monad-forum-*-
+client.ts`) bypasses it completely as its own parallel, ethers-based
+stack, precisely because an account-based chain doesn't fit a UTXO-shaped
+interface (same reason the *backend* needed a separate Monad-native wire
+format instead of reusing `SignedPayload`/`BurnTx` — see constraint 5).
+Proposed shape: a small `ActiveChain` module, selected by a compile-time
+constant/build flag, exporting `{ formatAddress, parseAddress, unit,
+createWallet(...) }` (exact shape TBD when this is actually scoped) —
+the chat/contacts store and UI components import from that module instead
+of reaching into `utils/address.ts`/a hardcoded chain-specific wallet
+directly. Needs its own scoped ticket (rewire the chat/contacts store +
+relevant components onto this new seam, *then* the Lotus and Monad
+implementations both hang off it) rather than a standalone find-and-
+replace on the current Lotus-only code.
+
 ## Dependency graph (for ticket blocked-by edges)
 
 ```

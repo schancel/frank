@@ -2,12 +2,12 @@
 
 use crate::{
     http::error::HttpRegistryError,
-    http::forum::{
-        handle_get_forum_post, handle_list_forum_posts, handle_put_forum_post,
-        handle_put_forum_vote,
-    },
     http::monad_message::{
         handle_get_monad_message, handle_list_monad_messages, handle_put_monad_message,
+    },
+    http::monad_topics::{
+        handle_get_monad_topic_post, handle_list_monad_topic_posts, handle_put_monad_topic_post,
+        handle_put_monad_topic_vote,
     },
     http::pop_protection::{self, MonadReceiptVerifier, PopChallenge, PopGate, PopGateConfigError},
     monad_http::HttpTransport,
@@ -169,26 +169,26 @@ impl RegistryServer {
                 "/message/monad/:payload_hash",
                 routing::get(handle_get_monad_message),
             )
-            // Monad forum topic post + burn-weighted vote path (ticket #30), additive alongside
-            // the plain Monad-message route above -- see `crate::http::forum`'s module docs.
-            // Static segments ("forum", "forum/vote") take priority over the `:payload_hash`
+            // Monad topic post + burn-weighted vote path (ticket #30), additive alongside
+            // the plain Monad-message route above -- see `crate::http::monad_topics`'s module docs.
+            // Static segments ("topics", "topics/vote") take priority over the `:payload_hash`
             // wildcard segment at the same position, so these don't conflict with the route
             // above.
-            // `GET /message/monad/forum?topic=<topic>&since=<timestamp>` (ticket #40):
+            // `GET /message/monad/topics?topic=<topic>&since=<timestamp>` (ticket #40):
             // topic-filtered post listing, added at the same path as the `PUT` above -- the same
             // same-path-different-method precedent as `/message/monad`'s `PUT`/`GET(since=)` pair
             // just above.
             .route(
-                "/message/monad/forum",
-                routing::put(handle_put_forum_post).get(handle_list_forum_posts),
+                "/message/monad/topics",
+                routing::put(handle_put_monad_topic_post).get(handle_list_monad_topic_posts),
             )
             .route(
-                "/message/monad/forum/vote",
-                routing::put(handle_put_forum_vote),
+                "/message/monad/topics/vote",
+                routing::put(handle_put_monad_topic_vote),
             )
             .route(
-                "/message/monad/forum/:payload_hash",
-                routing::get(handle_get_forum_post),
+                "/message/monad/topics/:payload_hash",
+                routing::get(handle_get_monad_topic_post),
             )
             .layer(Extension(self))
             .layer(

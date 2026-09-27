@@ -14,8 +14,8 @@
 //! without also updating this).
 //!
 //! This lands on the *stored/served* envelopes only (`proto::StoredMonadMessage`,
-//! `proto::StoredMonadForumPost`) -- never the client-submitted `proto::MonadStampedMessage`/
-//! `proto::MonadForumPost` -- since the relay is the one asserting which network it actually
+//! `proto::StoredMonadTopicPost`) -- never the client-submitted `proto::MonadStampedMessage`/
+//! `proto::MonadTopicPost` -- since the relay is the one asserting which network it actually
 //! verified against; the client can't meaningfully assert this itself.
 //!
 //! Client-side mismatch detection (warning/rejecting when a fetched tag doesn't match what a
@@ -37,7 +37,7 @@
 //!
 //! `FRANK_NETWORK_TAG` (see `.env.example`), read once from the environment via
 //! [`frank_network_tag`], a process-wide [`OnceLock`] mirroring `crate::http::monad_message`'s/
-//! `crate::http::forum`'s own gate-config convention. Lives in its own module (rather than
+//! `crate::http::monad_topics`'s own gate-config convention. Lives in its own module (rather than
 //! duplicated in each of those, the way `MONAD_TESTNET_HTTP_RPC_URL`/`MONAD_STAMP_BURN_ADDRESS`
 //! are) because both need it and this ticket already touches both modules, so there's no reason to
 //! repeat the env-read.
@@ -71,7 +71,7 @@ fn parse_network_tag(raw: Option<String>) -> Vec<u8> {
 
 /// Read `FRANK_NETWORK_TAG` from the environment once per process (see module docs), returning
 /// the bytes [`crate::registry::Registry::put_monad_message`]/[`crate::registry::Registry::
-/// put_forum_post`] stamp onto every newly-stored record.
+/// put_monad_topic_post`] stamp onto every newly-stored record.
 pub fn frank_network_tag() -> &'static [u8] {
     static TAG: OnceLock<Vec<u8>> = OnceLock::new();
     TAG.get_or_init(|| parse_network_tag(std::env::var("FRANK_NETWORK_TAG").ok()))

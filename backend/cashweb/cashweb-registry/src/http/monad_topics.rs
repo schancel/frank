@@ -1,30 +1,30 @@
-//! `PUT /message/monad/forum`, `PUT /message/monad/forum/vote`, and
-//! `GET /message/monad/forum/:payload_hash`: the HTTP path for Monad forum topic posts and their
+//! `PUT /message/monad/topics`, `PUT /message/monad/topics/vote`, and
+//! `GET /message/monad/topics/:payload_hash`: the HTTP path for Monad topic posts and their
 //! burn-weighted votes (ticket #30).
 //!
 //! Mirrors `crate::http::monad_message`'s decode -> verify -> store shape (ticket #27) closely,
-//! with two Monad-forum-specific differences:
-//! - Verification goes through [`crate::monad_forum_verify::verify_forum_vote_burn`] (via
-//!   [`crate::monad_forum_relay::broadcast_and_verify_forum_vote`]) rather than
+//! with two Monad-topic-specific differences:
+//! - Verification goes through [`crate::monad_topic_verify::verify_topic_vote_burn`] (via
+//!   [`crate::monad_topic_relay::broadcast_and_verify_topic_vote`]) rather than
 //!   `monad_stamp_verify::verify_stamp_burn`/`monad_stamp_relay::broadcast_and_verify_stamp` --
 //!   see those modules' docs for the calldata-layout and outcome-type reasons they can't be
 //!   reused as-is here.
 //! - A verified burn doesn't just gate a store, it also *is* a vote: both `PUT` routes below
-//!   record a [`proto::StoredMonadForumVoteEntry`] alongside whatever else they store (a new post
-//!   also creates its own initial vote entry), so [`Registry::get_forum_post_view`]'s tally is
+//!   record a [`proto::StoredMonadTopicVoteEntry`] alongside whatever else they store (a new post
+//!   also creates its own initial vote entry), so [`Registry::get_monad_topic_post_view`]'s tally is
 //!   simply the sum of every recorded entry for a `payload_hash`.
 //!
 //! ## Configuration
 //!
 //! Reuses the *same* two canonical env vars `crate::http::monad_message`'s
 //! `MonadMessageGateConfig` reads (`MONAD_TESTNET_HTTP_RPC_URL`, `MONAD_STAMP_BURN_ADDRESS` --
-//! see `.env.example`), rather than inventing forum-specific ones: a forum vote burns to the same
-//! configured Stamp burn address, just tagged with [`crate::monad_forum_verify::
-//! FORUM_VOTE_LOKAD_ID`] in its calldata instead of `POND`/`STMP`, so there's no reason for a
+//! see `.env.example`), rather than inventing topic-specific ones: a topic vote burns to the same
+//! configured Stamp burn address, just tagged with [`crate::monad_topic_verify::
+//! TOPIC_VOTE_LOKAD_ID`] in its calldata instead of `POND`/`STMP`, so there's no reason for a
 //! second, easy-to-typo burn-address var (exactly the class of bug ticket #8's e2e demo found and
 //! fixed for `monad_message.rs`). Unlike that module's gate, there's no
-//! `CASHWEB_STAMP_MIN_BURN_VALUE_WEI` equivalent here: a forum vote's exact value *is* its
-//! weight, never thresholded against a minimum (see `monad_forum_verify`'s module docs), so
+//! `CASHWEB_STAMP_MIN_BURN_VALUE_WEI` equivalent here: a topic vote's exact value *is* its
+//! weight, never thresholded against a minimum (see `monad_topic_verify`'s module docs), so
 //! nothing here needs a minimum-value config at all.
 //!
 //! `monad_message_gate`'s own gate config (in `crate::http::monad_message`) is private to that
@@ -50,17 +50,17 @@ use tracing::Level;
 use crate::{
     http::server::RegistryServer,
     monad_evm_tx::{recover_sender, EvmTxError},
-    monad_forum_relay::{broadcast_and_verify_forum_vote, ForumVoteRelayOutcome},
-    monad_forum_verify::ExpectedForumBurn,
     monad_http::{Address, HttpTransport, JsonRpcTransport},
     monad_stamp_relay::PollConfig,
+    monad_topic_relay::{broadcast_and_verify_topic_vote, TopicVoteRelayOutcome},
+    monad_topic_verify::ExpectedTopicBurn,
     proto,
     registry::Registry,
 };
 
-/// Narrow an [`i128`] signed weight (see [`crate::monad_forum_verify::VoteDirection::
+/// Narrow an [`i128`] signed weight (see [`crate::monad_topic_verify::VoteDirection::
 /// signed_weight`]) down to the `sint64` the wire format/store use, saturating rather than
-/// wrapping for a burn value large enough to overflow `i64` (see `proto/forum_message.proto`'s
+/// wrapping for a burn value large enough to overflow `i64` (see `proto/topic_message.proto`'s
 /// docs on why `i64` is an acceptable simplification for this ticket's scope). Saturating (rather
 /// than truncating with `as i64`, which would silently wrap into an unrelated, possibly
 /// wrong-signed value) keeps an out-of-range weight merely *capped*, not corrupted.
@@ -68,10 +68,10 @@ fn saturate_weight(weight: i128) -> i64 {
     weight.clamp(i64::MIN as i128, i64::MAX as i128) as i64
 }
 
-/// Errors processing a [`proto::MonadForumPost`], independent of HTTP/axum, mirroring
+/// Errors processing a [`proto::MonadTopicPost`], independent of HTTP/axum, mirroring
 /// `crate::http::monad_message::ProcessMonadMessageError`.
 #[derive(Debug)]
-pub enum ProcessForumPostError {
+pub enum ProcessMonadTopicPostError {
     /// `payload_hash` wasn't exactly 32 bytes.
     InvalidPayloadHashLength(usize),
     /// `payload_hash` didn't match `SHA256(encrypted_payload)`.
@@ -83,82 +83,83 @@ pub enum ProcessForumPostError {
     },
     /// [`recover_sender`] couldn't recover a sender address from `raw_burn_tx`.
     SenderRecoveryFailed(EvmTxError),
-    /// The initial vote's burn didn't verify -- see the wrapped [`ForumVoteRelayOutcome`] for
-    /// exactly why. Every non-[`ForumVoteRelayOutcome::Verified`] outcome is a rejection, never a
+    /// The initial vote's burn didn't verify -- see the wrapped [`TopicVoteRelayOutcome`] for
+    /// exactly why. Every non-[`TopicVoteRelayOutcome::Verified`] outcome is a rejection, never a
     /// silent store.
-    Rejected(ForumVoteRelayOutcome),
+    Rejected(TopicVoteRelayOutcome),
     /// An infrastructure-level failure (RPC/transport error, or a storage error).
     Infrastructure(Report),
 }
 
-impl fmt::Display for ProcessForumPostError {
+impl fmt::Display for ProcessMonadTopicPostError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ProcessForumPostError::InvalidPayloadHashLength(len) => {
+            ProcessMonadTopicPostError::InvalidPayloadHashLength(len) => {
                 write!(f, "payload_hash must be 32 bytes, got {len}")
             }
-            ProcessForumPostError::PayloadHashMismatch { declared, actual } => write!(
+            ProcessMonadTopicPostError::PayloadHashMismatch { declared, actual } => write!(
                 f,
                 "payload_hash {declared} doesn't match SHA256(encrypted_payload) {actual}"
             ),
-            ProcessForumPostError::SenderRecoveryFailed(err) => {
+            ProcessMonadTopicPostError::SenderRecoveryFailed(err) => {
                 write!(f, "couldn't recover sender from raw_burn_tx: {err}")
             }
-            ProcessForumPostError::Rejected(outcome) => {
-                write!(f, "forum post's initial vote burn rejected: {outcome:?}")
+            ProcessMonadTopicPostError::Rejected(outcome) => {
+                write!(f, "topic post's initial vote burn rejected: {outcome:?}")
             }
-            ProcessForumPostError::Infrastructure(err) => {
+            ProcessMonadTopicPostError::Infrastructure(err) => {
                 write!(f, "infrastructure failure: {err}")
             }
         }
     }
 }
 
-/// Decode, verify, broadcast-and-confirm, and (on success) store a [`proto::MonadForumPost`]
+/// Decode, verify, broadcast-and-confirm, and (on success) store a [`proto::MonadTopicPost`]
 /// together with its initial vote entry.
 ///
 /// `network_tag` (ticket #39, see `crate::network_tag`'s module docs) is stamped onto the stored
-/// post by [`Registry::put_forum_post`] itself, mirroring `crate::http::monad_message::
+/// post by [`Registry::put_monad_topic_post`] itself, mirroring `crate::http::monad_message::
 /// process_monad_message`'s own `network_tag` parameter exactly -- resolved by the caller (from
 /// [`crate::network_tag::frank_network_tag`]) and threaded through as an explicit argument rather
 /// than read from the environment in here, keeping this function directly unit-testable.
-pub async fn process_forum_post<T: JsonRpcTransport + Clone>(
+pub async fn process_monad_topic_post<T: JsonRpcTransport + Clone>(
     transport: &T,
     registry: &Registry,
     burn_address: Address,
     poll: PollConfig,
     network_tag: &[u8],
-    request: proto::MonadForumPost,
-) -> Result<proto::StoredMonadForumPost, ProcessForumPostError> {
-    let declared_hash = Sha256::from_slice(&request.payload_hash)
-        .map_err(|_| ProcessForumPostError::InvalidPayloadHashLength(request.payload_hash.len()))?;
+    request: proto::MonadTopicPost,
+) -> Result<proto::StoredMonadTopicPost, ProcessMonadTopicPostError> {
+    let declared_hash = Sha256::from_slice(&request.payload_hash).map_err(|_| {
+        ProcessMonadTopicPostError::InvalidPayloadHashLength(request.payload_hash.len())
+    })?;
     let actual_hash = Sha256::digest(request.encrypted_payload.clone().into());
     if declared_hash != actual_hash {
-        return Err(ProcessForumPostError::PayloadHashMismatch {
+        return Err(ProcessMonadTopicPostError::PayloadHashMismatch {
             declared: declared_hash,
             actual: actual_hash,
         });
     }
 
     let sender = recover_sender(&request.raw_burn_tx)
-        .map_err(ProcessForumPostError::SenderRecoveryFailed)?;
+        .map_err(ProcessMonadTopicPostError::SenderRecoveryFailed)?;
 
-    let expected = ExpectedForumBurn {
+    let expected = ExpectedTopicBurn {
         commitment: declared_hash.clone(),
         burn_address,
     };
 
-    let outcome = broadcast_and_verify_forum_vote(transport, &request.raw_burn_tx, &expected, poll)
+    let outcome = broadcast_and_verify_topic_vote(transport, &request.raw_burn_tx, &expected, poll)
         .await
-        .map_err(ProcessForumPostError::Infrastructure)?;
+        .map_err(ProcessMonadTopicPostError::Infrastructure)?;
 
     let (tx_hash, value_wei, direction) = match outcome {
-        ForumVoteRelayOutcome::Verified {
+        TopicVoteRelayOutcome::Verified {
             tx_hash,
             value_wei,
             direction,
         } => (tx_hash, value_wei, direction),
-        other => return Err(ProcessForumPostError::Rejected(other)),
+        other => return Err(ProcessMonadTopicPostError::Rejected(other)),
     };
 
     let timestamp = std::time::SystemTime::now()
@@ -166,7 +167,7 @@ pub async fn process_forum_post<T: JsonRpcTransport + Clone>(
         .unwrap()
         .as_millis() as i64;
 
-    let stored = proto::StoredMonadForumPost {
+    let stored = proto::StoredMonadTopicPost {
         post: Some(request),
         sender_address: sender.0.to_vec(),
         tx_hash: tx_hash.0.to_vec(),
@@ -175,10 +176,10 @@ pub async fn process_forum_post<T: JsonRpcTransport + Clone>(
     };
 
     let stored = registry
-        .put_forum_post(declared_hash.as_slice(), stored, network_tag)
-        .map_err(ProcessForumPostError::Infrastructure)?;
+        .put_monad_topic_post(declared_hash.as_slice(), stored, network_tag)
+        .map_err(ProcessMonadTopicPostError::Infrastructure)?;
 
-    let vote_entry = proto::StoredMonadForumVoteEntry {
+    let vote_entry = proto::StoredMonadTopicVoteEntry {
         target_payload_hash: declared_hash.as_slice().to_vec(),
         sender_address: sender.0.to_vec(),
         tx_hash: tx_hash.0.to_vec(),
@@ -186,88 +187,90 @@ pub async fn process_forum_post<T: JsonRpcTransport + Clone>(
         weight: saturate_weight(direction.signed_weight(value_wei)),
     };
     registry
-        .add_forum_vote(&vote_entry)
-        .map_err(ProcessForumPostError::Infrastructure)?;
+        .add_monad_topic_vote(&vote_entry)
+        .map_err(ProcessMonadTopicPostError::Infrastructure)?;
 
     Ok(stored)
 }
 
-/// Errors processing a [`proto::MonadForumVote`], independent of HTTP/axum.
+/// Errors processing a [`proto::MonadTopicVote`], independent of HTTP/axum.
 #[derive(Debug)]
-pub enum ProcessForumVoteError {
+pub enum ProcessMonadTopicVoteError {
     /// `target_payload_hash` wasn't exactly 32 bytes.
     InvalidTargetPayloadHashLength(usize),
     /// No post is stored for `target_payload_hash` -- rejected before any burn is broadcast (see
-    /// `proto/forum_message.proto`'s `MonadForumVote` docs).
+    /// `proto/topic_message.proto`'s `MonadTopicVote` docs).
     UnknownTargetPost,
     /// [`recover_sender`] couldn't recover a sender address from `raw_burn_tx`.
     SenderRecoveryFailed(EvmTxError),
-    /// The vote's burn didn't verify -- see the wrapped [`ForumVoteRelayOutcome`] for exactly
+    /// The vote's burn didn't verify -- see the wrapped [`TopicVoteRelayOutcome`] for exactly
     /// why.
-    Rejected(ForumVoteRelayOutcome),
+    Rejected(TopicVoteRelayOutcome),
     /// An infrastructure-level failure (RPC/transport error, or a storage error).
     Infrastructure(Report),
 }
 
-impl fmt::Display for ProcessForumVoteError {
+impl fmt::Display for ProcessMonadTopicVoteError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ProcessForumVoteError::InvalidTargetPayloadHashLength(len) => {
+            ProcessMonadTopicVoteError::InvalidTargetPayloadHashLength(len) => {
                 write!(f, "target_payload_hash must be 32 bytes, got {len}")
             }
-            ProcessForumVoteError::UnknownTargetPost => {
-                write!(f, "no forum post found for the given target_payload_hash")
+            ProcessMonadTopicVoteError::UnknownTargetPost => {
+                write!(f, "no topic post found for the given target_payload_hash")
             }
-            ProcessForumVoteError::SenderRecoveryFailed(err) => {
+            ProcessMonadTopicVoteError::SenderRecoveryFailed(err) => {
                 write!(f, "couldn't recover sender from raw_burn_tx: {err}")
             }
-            ProcessForumVoteError::Rejected(outcome) => {
-                write!(f, "forum vote burn rejected: {outcome:?}")
+            ProcessMonadTopicVoteError::Rejected(outcome) => {
+                write!(f, "topic vote burn rejected: {outcome:?}")
             }
-            ProcessForumVoteError::Infrastructure(err) => {
+            ProcessMonadTopicVoteError::Infrastructure(err) => {
                 write!(f, "infrastructure failure: {err}")
             }
         }
     }
 }
 
-/// Decode, verify, broadcast-and-confirm, and (on success) record a [`proto::MonadForumVote`]
+/// Decode, verify, broadcast-and-confirm, and (on success) record a [`proto::MonadTopicVote`]
 /// against its `target_payload_hash`.
-pub async fn process_forum_vote<T: JsonRpcTransport + Clone>(
+pub async fn process_monad_topic_vote<T: JsonRpcTransport + Clone>(
     transport: &T,
     registry: &Registry,
     burn_address: Address,
     poll: PollConfig,
-    request: proto::MonadForumVote,
-) -> Result<proto::StoredMonadForumVoteEntry, ProcessForumVoteError> {
+    request: proto::MonadTopicVote,
+) -> Result<proto::StoredMonadTopicVoteEntry, ProcessMonadTopicVoteError> {
     let target_hash = Sha256::from_slice(&request.target_payload_hash).map_err(|_| {
-        ProcessForumVoteError::InvalidTargetPayloadHashLength(request.target_payload_hash.len())
+        ProcessMonadTopicVoteError::InvalidTargetPayloadHashLength(
+            request.target_payload_hash.len(),
+        )
     })?;
 
     registry
-        .get_forum_post(target_hash.as_slice())
-        .map_err(ProcessForumVoteError::Infrastructure)?
-        .ok_or(ProcessForumVoteError::UnknownTargetPost)?;
+        .get_monad_topic_post(target_hash.as_slice())
+        .map_err(ProcessMonadTopicVoteError::Infrastructure)?
+        .ok_or(ProcessMonadTopicVoteError::UnknownTargetPost)?;
 
     let sender = recover_sender(&request.raw_burn_tx)
-        .map_err(ProcessForumVoteError::SenderRecoveryFailed)?;
+        .map_err(ProcessMonadTopicVoteError::SenderRecoveryFailed)?;
 
-    let expected = ExpectedForumBurn {
+    let expected = ExpectedTopicBurn {
         commitment: target_hash.clone(),
         burn_address,
     };
 
-    let outcome = broadcast_and_verify_forum_vote(transport, &request.raw_burn_tx, &expected, poll)
+    let outcome = broadcast_and_verify_topic_vote(transport, &request.raw_burn_tx, &expected, poll)
         .await
-        .map_err(ProcessForumVoteError::Infrastructure)?;
+        .map_err(ProcessMonadTopicVoteError::Infrastructure)?;
 
     let (tx_hash, value_wei, direction) = match outcome {
-        ForumVoteRelayOutcome::Verified {
+        TopicVoteRelayOutcome::Verified {
             tx_hash,
             value_wei,
             direction,
         } => (tx_hash, value_wei, direction),
-        other => return Err(ProcessForumVoteError::Rejected(other)),
+        other => return Err(ProcessMonadTopicVoteError::Rejected(other)),
     };
 
     let timestamp = std::time::SystemTime::now()
@@ -275,7 +278,7 @@ pub async fn process_forum_vote<T: JsonRpcTransport + Clone>(
         .unwrap()
         .as_millis() as i64;
 
-    let vote_entry = proto::StoredMonadForumVoteEntry {
+    let vote_entry = proto::StoredMonadTopicVoteEntry {
         target_payload_hash: target_hash.as_slice().to_vec(),
         sender_address: sender.0.to_vec(),
         tx_hash: tx_hash.0.to_vec(),
@@ -284,15 +287,15 @@ pub async fn process_forum_vote<T: JsonRpcTransport + Clone>(
     };
 
     registry
-        .add_forum_vote(&vote_entry)
-        .map_err(ProcessForumVoteError::Infrastructure)?;
+        .add_monad_topic_vote(&vote_entry)
+        .map_err(ProcessMonadTopicVoteError::Infrastructure)?;
 
     Ok(vote_entry)
 }
 
-/// Errors reading required forum-vote gate configuration from the environment.
+/// Errors reading required topic-vote gate configuration from the environment.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ForumGateConfigError {
+pub enum MonadTopicGateConfigError {
     /// A required env var wasn't set.
     MissingEnv(&'static str),
     /// `MONAD_TESTNET_HTTP_RPC_URL` wasn't a valid URL.
@@ -301,47 +304,47 @@ pub enum ForumGateConfigError {
     InvalidBurnAddress(String),
 }
 
-impl fmt::Display for ForumGateConfigError {
+impl fmt::Display for MonadTopicGateConfigError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ForumGateConfigError::MissingEnv(name) => {
+            MonadTopicGateConfigError::MissingEnv(name) => {
                 write!(
                     f,
-                    "missing required env var {name} (forum-vote gate is unconfigured)"
+                    "missing required env var {name} (topic-vote gate is unconfigured)"
                 )
             }
-            ForumGateConfigError::InvalidRpcUrl(msg) => {
+            MonadTopicGateConfigError::InvalidRpcUrl(msg) => {
                 write!(f, "invalid MONAD_TESTNET_HTTP_RPC_URL: {msg}")
             }
-            ForumGateConfigError::InvalidBurnAddress(msg) => {
+            MonadTopicGateConfigError::InvalidBurnAddress(msg) => {
                 write!(f, "invalid MONAD_STAMP_BURN_ADDRESS: {msg}")
             }
         }
     }
 }
 
-/// Configuration for the `PUT /message/monad/forum` and `PUT /message/monad/forum/vote` routes,
+/// Configuration for the `PUT /message/monad/topics` and `PUT /message/monad/topics/vote` routes,
 /// read once from the environment (see module docs).
 #[derive(Debug, Clone)]
-pub struct ForumGateConfig {
+pub struct MonadTopicGateConfig {
     rpc_url: url::Url,
     burn_address: Address,
 }
 
-fn required_env(name: &'static str) -> Result<String, ForumGateConfigError> {
-    std::env::var(name).map_err(|_| ForumGateConfigError::MissingEnv(name))
+fn required_env(name: &'static str) -> Result<String, MonadTopicGateConfigError> {
+    std::env::var(name).map_err(|_| MonadTopicGateConfigError::MissingEnv(name))
 }
 
-impl ForumGateConfig {
-    fn from_env() -> Result<Self, ForumGateConfigError> {
+impl MonadTopicGateConfig {
+    fn from_env() -> Result<Self, MonadTopicGateConfigError> {
         let rpc_url = required_env("MONAD_TESTNET_HTTP_RPC_URL")?;
         let rpc_url: url::Url = rpc_url
             .parse()
-            .map_err(|err| ForumGateConfigError::InvalidRpcUrl(format!("{err}")))?;
+            .map_err(|err| MonadTopicGateConfigError::InvalidRpcUrl(format!("{err}")))?;
         let burn_address_hex = required_env("MONAD_STAMP_BURN_ADDRESS")?;
         let burn_address = Address::from_hex(&burn_address_hex)
-            .map_err(|err| ForumGateConfigError::InvalidBurnAddress(format!("{err}")))?;
-        Ok(ForumGateConfig {
+            .map_err(|err| MonadTopicGateConfigError::InvalidBurnAddress(format!("{err}")))?;
+        Ok(MonadTopicGateConfig {
             rpc_url,
             burn_address,
         })
@@ -349,46 +352,47 @@ impl ForumGateConfig {
 }
 
 /// Process-wide, lazily-initialized gate config, built from the environment on first use.
-fn forum_gate() -> &'static Result<ForumGateConfig, ForumGateConfigError> {
-    static GATE: OnceLock<Result<ForumGateConfig, ForumGateConfigError>> = OnceLock::new();
-    GATE.get_or_init(ForumGateConfig::from_env)
+fn monad_topic_gate() -> &'static Result<MonadTopicGateConfig, MonadTopicGateConfigError> {
+    static GATE: OnceLock<Result<MonadTopicGateConfig, MonadTopicGateConfigError>> =
+        OnceLock::new();
+    GATE.get_or_init(MonadTopicGateConfig::from_env)
 }
 
-/// JSON error body for a rejected forum request.
+/// JSON error body for a rejected topic request.
 #[derive(Debug, Serialize)]
-struct ForumErrorBody {
+struct MonadTopicErrorBody {
     error: &'static str,
     detail: String,
 }
 
-/// Error type for [`handle_put_forum_post`].
+/// Error type for [`handle_put_monad_topic_post`].
 #[derive(Debug)]
-pub enum PutForumPostError {
+pub enum PutMonadTopicPostError {
     /// The gate is misconfigured; fails closed (`500`).
-    GateUnavailable(ForumGateConfigError),
-    /// [`process_forum_post`] rejected (or failed to process) the post.
-    Process(ProcessForumPostError),
+    GateUnavailable(MonadTopicGateConfigError),
+    /// [`process_monad_topic_post`] rejected (or failed to process) the post.
+    Process(ProcessMonadTopicPostError),
 }
 
-impl IntoResponse for PutForumPostError {
+impl IntoResponse for PutMonadTopicPostError {
     fn into_response(self) -> Response {
         match self {
-            PutForumPostError::GateUnavailable(err) => {
+            PutMonadTopicPostError::GateUnavailable(err) => {
                 tracing::event!(
                     Level::ERROR,
                     error = %err,
-                    "forum-vote gate is misconfigured; rejecting forum post"
+                    "topic-vote gate is misconfigured; rejecting topic post"
                 );
                 StatusCode::INTERNAL_SERVER_ERROR.into_response()
             }
-            PutForumPostError::Process(ProcessForumPostError::Infrastructure(err)) => {
-                tracing::event!(Level::ERROR, error = %err, "infrastructure failure processing forum post");
+            PutMonadTopicPostError::Process(ProcessMonadTopicPostError::Infrastructure(err)) => {
+                tracing::event!(Level::ERROR, error = %err, "infrastructure failure processing topic post");
                 StatusCode::INTERNAL_SERVER_ERROR.into_response()
             }
-            PutForumPostError::Process(err) => (
+            PutMonadTopicPostError::Process(err) => (
                 StatusCode::BAD_REQUEST,
-                Json(ForumErrorBody {
-                    error: "invalid_forum_post",
+                Json(MonadTopicErrorBody {
+                    error: "invalid_topic_post",
                     detail: err.to_string(),
                 }),
             )
@@ -397,17 +401,17 @@ impl IntoResponse for PutForumPostError {
     }
 }
 
-/// `PUT /message/monad/forum`: decode a [`proto::MonadForumPost`], recover its sender, verify its
+/// `PUT /message/monad/topics`: decode a [`proto::MonadTopicPost`], recover its sender, verify its
 /// initial vote's burn (broadcasting it), and store the post plus its initial vote on success.
-pub async fn handle_put_forum_post(
-    Protobuf(post): Protobuf<proto::MonadForumPost>,
+pub async fn handle_put_monad_topic_post(
+    Protobuf(post): Protobuf<proto::MonadTopicPost>,
     Extension(server): Extension<RegistryServer>,
-) -> Result<Protobuf<proto::StoredMonadForumPost>, PutForumPostError> {
-    let config = forum_gate()
+) -> Result<Protobuf<proto::StoredMonadTopicPost>, PutMonadTopicPostError> {
+    let config = monad_topic_gate()
         .as_ref()
-        .map_err(|err| PutForumPostError::GateUnavailable(err.clone()))?;
+        .map_err(|err| PutMonadTopicPostError::GateUnavailable(err.clone()))?;
     let transport = HttpTransport::new(config.rpc_url.clone());
-    let stored = process_forum_post(
+    let stored = process_monad_topic_post(
         &transport,
         &server.registry,
         config.burn_address,
@@ -416,38 +420,38 @@ pub async fn handle_put_forum_post(
         post,
     )
     .await
-    .map_err(PutForumPostError::Process)?;
+    .map_err(PutMonadTopicPostError::Process)?;
     Ok(Protobuf(stored))
 }
 
-/// Error type for [`handle_put_forum_vote`].
+/// Error type for [`handle_put_monad_topic_vote`].
 #[derive(Debug)]
-pub enum PutForumVoteError {
+pub enum PutMonadTopicVoteError {
     /// The gate is misconfigured; fails closed (`500`).
-    GateUnavailable(ForumGateConfigError),
-    /// [`process_forum_vote`] rejected (or failed to process) the vote.
-    Process(ProcessForumVoteError),
+    GateUnavailable(MonadTopicGateConfigError),
+    /// [`process_monad_topic_vote`] rejected (or failed to process) the vote.
+    Process(ProcessMonadTopicVoteError),
 }
 
-impl IntoResponse for PutForumVoteError {
+impl IntoResponse for PutMonadTopicVoteError {
     fn into_response(self) -> Response {
         match self {
-            PutForumVoteError::GateUnavailable(err) => {
+            PutMonadTopicVoteError::GateUnavailable(err) => {
                 tracing::event!(
                     Level::ERROR,
                     error = %err,
-                    "forum-vote gate is misconfigured; rejecting forum vote"
+                    "topic-vote gate is misconfigured; rejecting topic vote"
                 );
                 StatusCode::INTERNAL_SERVER_ERROR.into_response()
             }
-            PutForumVoteError::Process(ProcessForumVoteError::Infrastructure(err)) => {
-                tracing::event!(Level::ERROR, error = %err, "infrastructure failure processing forum vote");
+            PutMonadTopicVoteError::Process(ProcessMonadTopicVoteError::Infrastructure(err)) => {
+                tracing::event!(Level::ERROR, error = %err, "infrastructure failure processing topic vote");
                 StatusCode::INTERNAL_SERVER_ERROR.into_response()
             }
-            PutForumVoteError::Process(err) => (
+            PutMonadTopicVoteError::Process(err) => (
                 StatusCode::BAD_REQUEST,
-                Json(ForumErrorBody {
-                    error: "invalid_forum_vote",
+                Json(MonadTopicErrorBody {
+                    error: "invalid_topic_vote",
                     detail: err.to_string(),
                 }),
             )
@@ -456,17 +460,17 @@ impl IntoResponse for PutForumVoteError {
     }
 }
 
-/// `PUT /message/monad/forum/vote`: decode a [`proto::MonadForumVote`], recover its sender,
+/// `PUT /message/monad/topics/vote`: decode a [`proto::MonadTopicVote`], recover its sender,
 /// verify its burn (broadcasting it), and record it against its `target_payload_hash` on success.
-pub async fn handle_put_forum_vote(
-    Protobuf(vote): Protobuf<proto::MonadForumVote>,
+pub async fn handle_put_monad_topic_vote(
+    Protobuf(vote): Protobuf<proto::MonadTopicVote>,
     Extension(server): Extension<RegistryServer>,
-) -> Result<Protobuf<proto::StoredMonadForumVoteEntry>, PutForumVoteError> {
-    let config = forum_gate()
+) -> Result<Protobuf<proto::StoredMonadTopicVoteEntry>, PutMonadTopicVoteError> {
+    let config = monad_topic_gate()
         .as_ref()
-        .map_err(|err| PutForumVoteError::GateUnavailable(err.clone()))?;
+        .map_err(|err| PutMonadTopicVoteError::GateUnavailable(err.clone()))?;
     let transport = HttpTransport::new(config.rpc_url.clone());
-    let stored = process_forum_vote(
+    let stored = process_monad_topic_vote(
         &transport,
         &server.registry,
         config.burn_address,
@@ -474,13 +478,13 @@ pub async fn handle_put_forum_vote(
         vote,
     )
     .await
-    .map_err(PutForumVoteError::Process)?;
+    .map_err(PutMonadTopicVoteError::Process)?;
     Ok(Protobuf(stored))
 }
 
-/// Error type for [`handle_get_forum_post`].
+/// Error type for [`handle_get_monad_topic_post`].
 #[derive(Debug)]
-pub enum GetForumPostError {
+pub enum GetMonadTopicPostError {
     /// The `:payload_hash` path segment wasn't valid hex.
     InvalidHex(hex::FromHexError),
     /// No post stored for the given `payload_hash`.
@@ -489,47 +493,47 @@ pub enum GetForumPostError {
     Infrastructure(Report),
 }
 
-impl IntoResponse for GetForumPostError {
+impl IntoResponse for GetMonadTopicPostError {
     fn into_response(self) -> Response {
         match self {
-            GetForumPostError::InvalidHex(err) => (
+            GetMonadTopicPostError::InvalidHex(err) => (
                 StatusCode::BAD_REQUEST,
-                Json(ForumErrorBody {
+                Json(MonadTopicErrorBody {
                     error: "invalid_payload_hash",
                     detail: err.to_string(),
                 }),
             )
                 .into_response(),
-            GetForumPostError::NotFound => StatusCode::NOT_FOUND.into_response(),
-            GetForumPostError::Infrastructure(err) => {
-                tracing::event!(Level::ERROR, error = %err, "infrastructure failure fetching forum post");
+            GetMonadTopicPostError::NotFound => StatusCode::NOT_FOUND.into_response(),
+            GetMonadTopicPostError::Infrastructure(err) => {
+                tracing::event!(Level::ERROR, error = %err, "infrastructure failure fetching topic post");
                 StatusCode::INTERNAL_SERVER_ERROR.into_response()
             }
         }
     }
 }
 
-/// `GET /message/monad/forum/:payload_hash`: fetch a stored [`proto::StoredMonadForumPost`]
-/// together with its current tallied vote weight, as a [`proto::MonadForumPostView`].
-pub async fn handle_get_forum_post(
+/// `GET /message/monad/topics/:payload_hash`: fetch a stored [`proto::StoredMonadTopicPost`]
+/// together with its current tallied vote weight, as a [`proto::MonadTopicPostView`].
+pub async fn handle_get_monad_topic_post(
     Path(hex_hash): Path<String>,
     Extension(server): Extension<RegistryServer>,
-) -> Result<Protobuf<proto::MonadForumPostView>, GetForumPostError> {
-    let payload_hash = hex::decode(&hex_hash).map_err(GetForumPostError::InvalidHex)?;
+) -> Result<Protobuf<proto::MonadTopicPostView>, GetMonadTopicPostError> {
+    let payload_hash = hex::decode(&hex_hash).map_err(GetMonadTopicPostError::InvalidHex)?;
     let view = server
         .registry
-        .get_forum_post_view(&payload_hash)
-        .map_err(GetForumPostError::Infrastructure)?
-        .ok_or(GetForumPostError::NotFound)?;
+        .get_monad_topic_post_view(&payload_hash)
+        .map_err(GetMonadTopicPostError::Infrastructure)?
+        .ok_or(GetMonadTopicPostError::NotFound)?;
     Ok(Protobuf(view))
 }
 
-/// Query parameters for [`handle_list_forum_posts`].
+/// Query parameters for [`handle_list_monad_topic_posts`].
 #[derive(Debug, Deserialize)]
-pub struct ListForumPostsQuery {
+pub struct ListMonadTopicPostsQuery {
     /// Topic to list posts for. Required, unlike `ListMonadMessagesQuery::since` -- there's no
     /// meaningful "every topic" default the way `GET /message/monad?since=` has one global feed;
-    /// forum posts are always browsed per-topic (ticket #40).
+    /// topic posts are always browsed per-topic (ticket #40).
     topic: String,
     /// Only return posts stored at or after this many milliseconds since the Unix epoch. Defaults
     /// to `0` (every stored post under `topic`) when omitted, mirroring `ListMonadMessagesQuery::
@@ -537,41 +541,41 @@ pub struct ListForumPostsQuery {
     since: Option<i64>,
 }
 
-/// Error type for [`handle_list_forum_posts`].
+/// Error type for [`handle_list_monad_topic_posts`].
 #[derive(Debug)]
-pub enum ListForumPostsError {
+pub enum ListMonadTopicPostsError {
     /// A storage-level error.
     Infrastructure(Report),
 }
 
-impl IntoResponse for ListForumPostsError {
+impl IntoResponse for ListMonadTopicPostsError {
     fn into_response(self) -> Response {
         match self {
-            ListForumPostsError::Infrastructure(err) => {
-                tracing::event!(Level::ERROR, error = %err, "infrastructure failure listing forum posts");
+            ListMonadTopicPostsError::Infrastructure(err) => {
+                tracing::event!(Level::ERROR, error = %err, "infrastructure failure listing topic posts");
                 StatusCode::INTERNAL_SERVER_ERROR.into_response()
             }
         }
     }
 }
 
-/// `GET /message/monad/forum?topic=<topic>&since=<timestamp>` (ticket #40): list every
-/// [`proto::StoredMonadForumPost`] under `topic` stored at or after `since` (milliseconds since
+/// `GET /message/monad/topics?topic=<topic>&since=<timestamp>` (ticket #40): list every
+/// [`proto::StoredMonadTopicPost`] under `topic` stored at or after `since` (milliseconds since
 /// the Unix epoch), ordered by `timestamp` ascending, each paired with its current tallied vote
 /// weight -- mirrors `crate::http::monad_message::handle_list_monad_messages`'s `since`-cursor
 /// discovery model (ticket #37), with `topic` required in addition (see
-/// [`ListForumPostsQuery::topic`]'s doc). No gate/burn check here, same as
-/// [`handle_get_forum_post`] -- reads aren't payment/burn-gated anywhere in this crate.
-pub async fn handle_list_forum_posts(
-    Query(params): Query<ListForumPostsQuery>,
+/// [`ListMonadTopicPostsQuery::topic`]'s doc). No gate/burn check here, same as
+/// [`handle_get_monad_topic_post`] -- reads aren't payment/burn-gated anywhere in this crate.
+pub async fn handle_list_monad_topic_posts(
+    Query(params): Query<ListMonadTopicPostsQuery>,
     Extension(server): Extension<RegistryServer>,
-) -> Result<Protobuf<proto::MonadForumPostViews>, ListForumPostsError> {
+) -> Result<Protobuf<proto::MonadTopicPostViews>, ListMonadTopicPostsError> {
     let since = params.since.unwrap_or(0);
     let views = server
         .registry
-        .list_forum_posts_by_topic(&params.topic, since)
-        .map_err(ListForumPostsError::Infrastructure)?;
-    Ok(Protobuf(proto::MonadForumPostViews { views }))
+        .list_monad_topic_posts_by_topic(&params.topic, since)
+        .map_err(ListMonadTopicPostsError::Infrastructure)?;
+    Ok(Protobuf(proto::MonadTopicPostViews { views }))
 }
 
 #[cfg(test)]
@@ -591,51 +595,51 @@ mod tests {
     use super::*;
     use crate::{
         monad_evm_tx::test_support::signed_eip1559_tx,
-        monad_forum_verify::{FORUM_COMMITMENT_VERSION_TAG, FORUM_VOTE_LOKAD_ID},
         monad_http::MonadRpcError,
+        monad_topic_verify::{TOPIC_COMMITMENT_VERSION_TAG, TOPIC_VOTE_LOKAD_ID},
         store::db::Db,
     };
     use cashweb_payload::chain_adapter::{ChainAdapter, MempoolAcceptResult, SubmitTxOutcome};
 
     /// [`ChainAdapter`] stub, mirroring `http::monad_message`'s test support: never touched by
-    /// the forum path.
+    /// the topic path.
     #[derive(Debug)]
     struct UnusedChainAdapter;
 
     #[async_trait]
     impl ChainAdapter for UnusedChainAdapter {
         async fn submit_tx(&self, _raw_tx: &[u8]) -> bitcoinsuite_error::Result<SubmitTxOutcome> {
-            unimplemented!("not used by the forum path")
+            unimplemented!("not used by the topic path")
         }
         async fn get_tx(
             &self,
             _txid: &bitcoinsuite_core::Sha256d,
         ) -> bitcoinsuite_error::Result<Option<Vec<u8>>> {
-            unimplemented!("not used by the forum path")
+            unimplemented!("not used by the topic path")
         }
         async fn test_accept(
             &self,
             _raw_tx: &[u8],
         ) -> bitcoinsuite_error::Result<MempoolAcceptResult> {
-            unimplemented!("not used by the forum path")
+            unimplemented!("not used by the topic path")
         }
         async fn subscribe_new_blocks(
             &self,
         ) -> bitcoinsuite_error::Result<tokio::sync::mpsc::Receiver<bitcoinsuite_core::Sha256d>>
         {
-            unimplemented!("not used by the forum path")
+            unimplemented!("not used by the topic path")
         }
         fn decode_burn(
             &self,
             _commitment_id: [u8; 4],
             _burn_output_script: &bitcoinsuite_core::Script,
         ) -> bitcoinsuite_error::Result<Sha256> {
-            unimplemented!("not used by the forum path")
+            unimplemented!("not used by the topic path")
         }
     }
 
     fn test_registry() -> (TempDir, Registry) {
-        let tempdir = TempDir::new("cashweb-registry--forum-http-route").unwrap();
+        let tempdir = TempDir::new("cashweb-registry--topic-http-route").unwrap();
         let db = Db::open(tempdir.path().join("db.rocksdb")).unwrap();
         let registry = Registry::new(db, Arc::new(UnusedChainAdapter), Net::Regtest);
         (tempdir, registry)
@@ -660,10 +664,10 @@ mod tests {
         }
     }
 
-    fn forum_calldata(direction: u8, commitment: &Sha256) -> Vec<u8> {
+    fn topic_calldata(direction: u8, commitment: &Sha256) -> Vec<u8> {
         let mut calldata = Vec::new();
-        calldata.extend_from_slice(&FORUM_VOTE_LOKAD_ID);
-        calldata.push(FORUM_COMMITMENT_VERSION_TAG);
+        calldata.extend_from_slice(&TOPIC_VOTE_LOKAD_ID);
+        calldata.push(TOPIC_COMMITMENT_VERSION_TAG);
         calldata.push(direction);
         calldata.extend_from_slice(commitment.as_slice());
         calldata
@@ -720,7 +724,7 @@ mod tests {
             if method == "eth_sendRawTransaction" {
                 // Defaults to hash 0x11 (matching the receipt/tx fixtures below), but tests that
                 // need a *distinct* broadcast tx hash (e.g. to prove multiple votes tally
-                // separately rather than colliding on `DbForumVotes`' tx_hash-keyed dedup) can
+                // separately rather than colliding on `DbMonadTopicVotes`' tx_hash-keyed dedup) can
                 // `set("eth_sendRawTransaction", ...)` to override it.
                 return Ok(self
                     .responses
@@ -742,11 +746,11 @@ mod tests {
         }
     }
 
-    fn make_post(raw_burn_tx: Vec<u8>, encrypted_payload: Vec<u8>) -> proto::MonadForumPost {
+    fn make_post(raw_burn_tx: Vec<u8>, encrypted_payload: Vec<u8>) -> proto::MonadTopicPost {
         let payload_hash = Sha256::digest(encrypted_payload.clone().into())
             .as_slice()
             .to_vec();
-        proto::MonadForumPost {
+        proto::MonadTopicPost {
             topic: "test.topic".to_string(),
             parent_post_hash: vec![],
             raw_burn_tx,
@@ -758,13 +762,13 @@ mod tests {
     #[tokio::test]
     async fn valid_up_vote_post_is_accepted_and_stored_with_positive_tally() {
         let (_tempdir, registry) = test_registry();
-        let encrypted_payload = b"hello, forum".to_vec();
+        let encrypted_payload = b"hello, topic".to_vec();
         let commitment = Sha256::digest(encrypted_payload.clone().into());
 
         let seckey = EccSecp256k1::default()
             .seckey_from_array([0x77; 32])
             .unwrap();
-        let calldata = forum_calldata(0x01, &commitment);
+        let calldata = topic_calldata(0x01, &commitment);
         let (raw_burn_tx, sender) =
             signed_eip1559_tx(&seckey, 41454, 0, burn_address(), 10_000, &calldata);
 
@@ -775,10 +779,10 @@ mod tests {
         transport.set("eth_getTransactionReceipt", receipt_json(&to, "0x1"));
         transport.set(
             "eth_getTransactionByHash",
-            tx_json(&to, 10_000, &forum_calldata(0x01, &commitment)),
+            tx_json(&to, 10_000, &topic_calldata(0x01, &commitment)),
         );
 
-        let stored = process_forum_post(
+        let stored = process_monad_topic_post(
             &transport,
             &registry,
             burn_address(),
@@ -795,7 +799,7 @@ mod tests {
         assert_eq!(stored.network_tag, b"MONT");
 
         let view = registry
-            .get_forum_post_view(&post.payload_hash)
+            .get_monad_topic_post_view(&post.payload_hash)
             .unwrap()
             .expect("post should be stored");
         assert_eq!(view.post, Some(stored));
@@ -811,7 +815,7 @@ mod tests {
         let seckey = EccSecp256k1::default()
             .seckey_from_array([0x88; 32])
             .unwrap();
-        let calldata = forum_calldata(0x00, &commitment);
+        let calldata = topic_calldata(0x00, &commitment);
         let (raw_burn_tx, _sender) =
             signed_eip1559_tx(&seckey, 41454, 0, burn_address(), 5_000, &calldata);
 
@@ -822,10 +826,10 @@ mod tests {
         transport.set("eth_getTransactionReceipt", receipt_json(&to, "0x1"));
         transport.set(
             "eth_getTransactionByHash",
-            tx_json(&to, 5_000, &forum_calldata(0x00, &commitment)),
+            tx_json(&to, 5_000, &topic_calldata(0x00, &commitment)),
         );
 
-        process_forum_post(
+        process_monad_topic_post(
             &transport,
             &registry,
             burn_address(),
@@ -837,7 +841,7 @@ mod tests {
         .expect("valid down-vote post should be accepted");
 
         let view = registry
-            .get_forum_post_view(&post.payload_hash)
+            .get_monad_topic_post_view(&post.payload_hash)
             .unwrap()
             .unwrap();
         assert_eq!(view.vote_weight, -5_000);
@@ -852,7 +856,7 @@ mod tests {
         let post_seckey = EccSecp256k1::default()
             .seckey_from_array([0x11; 32])
             .unwrap();
-        let post_calldata = forum_calldata(0x01, &commitment);
+        let post_calldata = topic_calldata(0x01, &commitment);
         let (post_raw_tx, _post_sender) = signed_eip1559_tx(
             &post_seckey,
             41454,
@@ -868,10 +872,10 @@ mod tests {
         transport.set("eth_getTransactionReceipt", receipt_json(&to, "0x1"));
         transport.set(
             "eth_getTransactionByHash",
-            tx_json(&to, 1_000, &forum_calldata(0x01, &commitment)),
+            tx_json(&to, 1_000, &topic_calldata(0x01, &commitment)),
         );
 
-        process_forum_post(
+        process_monad_topic_post(
             &transport,
             &registry,
             burn_address(),
@@ -883,7 +887,7 @@ mod tests {
         .expect("initial post should be accepted");
         assert_eq!(
             registry
-                .get_forum_post_view(&post.payload_hash)
+                .get_monad_topic_post_view(&post.payload_hash)
                 .unwrap()
                 .unwrap()
                 .vote_weight,
@@ -896,7 +900,7 @@ mod tests {
         let vote_seckey = EccSecp256k1::default()
             .seckey_from_array([0x22; 32])
             .unwrap();
-        let vote_calldata = forum_calldata(0x01, &commitment);
+        let vote_calldata = topic_calldata(0x01, &commitment);
         let (vote_raw_tx, vote_sender) = signed_eip1559_tx(
             &vote_seckey,
             41454,
@@ -905,13 +909,13 @@ mod tests {
             2_000,
             &vote_calldata,
         );
-        let vote = proto::MonadForumVote {
+        let vote = proto::MonadTopicVote {
             target_payload_hash: post.payload_hash.clone(),
             raw_burn_tx: vote_raw_tx,
         };
 
         let transport2 = MockTransport::default();
-        // Distinct broadcast tx hash from the first vote's (0x11): `DbForumVotes` keys each vote
+        // Distinct broadcast tx hash from the first vote's (0x11): `DbMonadTopicVotes` keys each vote
         // entry by `target_payload_hash ++ tx_hash`, so two votes sharing a tx hash would
         // (correctly) collapse into one idempotent entry instead of tallying separately.
         transport2.set("eth_sendRawTransaction", Value::String(hex_hash(0x22)));
@@ -935,20 +939,20 @@ mod tests {
                 "hash": hex_hash(0x22),
                 "to": to,
                 "value": format!("0x{:x}", 2_000u128),
-                "input": format!("0x{}", hex::encode(forum_calldata(0x01, &commitment))),
+                "input": format!("0x{}", hex::encode(topic_calldata(0x01, &commitment))),
                 "from": "0x3333333333333333333333333333333333333333",
             }),
         );
 
         let vote_entry =
-            process_forum_vote(&transport2, &registry, burn_address(), fast_poll(), vote)
+            process_monad_topic_vote(&transport2, &registry, burn_address(), fast_poll(), vote)
                 .await
                 .expect("additional vote should be accepted");
         assert_eq!(vote_entry.sender_address, vote_sender.0.to_vec());
         assert_eq!(vote_entry.weight, 2_000);
 
         let view = registry
-            .get_forum_post_view(&post.payload_hash)
+            .get_monad_topic_post_view(&post.payload_hash)
             .unwrap()
             .unwrap();
         assert_eq!(view.vote_weight, 3_000);
@@ -957,7 +961,7 @@ mod tests {
     #[tokio::test]
     async fn vote_on_unknown_post_is_rejected_before_touching_the_network() {
         let (_tempdir, registry) = test_registry();
-        let vote = proto::MonadForumVote {
+        let vote = proto::MonadTopicVote {
             target_payload_hash: vec![0xaa; 32],
             raw_burn_tx: vec![0x01, 0xc0],
         };
@@ -965,11 +969,12 @@ mod tests {
         // "no mock response configured" rather than a clean rejection.
         let transport = MockTransport::default();
 
-        let err = process_forum_vote(&transport, &registry, burn_address(), fast_poll(), vote)
-            .await
-            .expect_err("voting on an unknown post should be rejected");
+        let err =
+            process_monad_topic_vote(&transport, &registry, burn_address(), fast_poll(), vote)
+                .await
+                .expect_err("voting on an unknown post should be rejected");
 
-        assert!(matches!(err, ProcessForumVoteError::UnknownTargetPost));
+        assert!(matches!(err, ProcessMonadTopicVoteError::UnknownTargetPost));
     }
 
     #[tokio::test]
@@ -979,7 +984,7 @@ mod tests {
         post.payload_hash[0] ^= 0xff;
 
         let transport = MockTransport::default();
-        let err = process_forum_post(
+        let err = process_monad_topic_post(
             &transport,
             &registry,
             burn_address(),
@@ -992,7 +997,7 @@ mod tests {
 
         assert!(matches!(
             err,
-            ProcessForumPostError::PayloadHashMismatch { .. }
+            ProcessMonadTopicPostError::PayloadHashMismatch { .. }
         ));
     }
 
@@ -1002,7 +1007,7 @@ mod tests {
         let post = make_post(vec![0x01, 0xc0], b"hello".to_vec());
         let transport = MockTransport::default();
 
-        let err = process_forum_post(
+        let err = process_monad_topic_post(
             &transport,
             &registry,
             burn_address(),
@@ -1015,7 +1020,7 @@ mod tests {
 
         assert!(matches!(
             err,
-            ProcessForumPostError::SenderRecoveryFailed(_)
+            ProcessMonadTopicPostError::SenderRecoveryFailed(_)
         ));
     }
 
@@ -1028,7 +1033,7 @@ mod tests {
         let seckey = EccSecp256k1::default()
             .seckey_from_array([0x33; 32])
             .unwrap();
-        let calldata = forum_calldata(0x01, &commitment);
+        let calldata = topic_calldata(0x01, &commitment);
         // Sent to a different address than `burn_address()`.
         let (raw_burn_tx, _sender) =
             signed_eip1559_tx(&seckey, 41454, 0, Address([0x99; 20]), 1_000, &calldata);
@@ -1038,7 +1043,7 @@ mod tests {
         let transport = MockTransport::default();
         transport.set("eth_getTransactionReceipt", receipt_json(&wrong_to, "0x1"));
 
-        let err = process_forum_post(
+        let err = process_monad_topic_post(
             &transport,
             &registry,
             burn_address(),
@@ -1051,14 +1056,17 @@ mod tests {
 
         assert!(matches!(
             err,
-            ProcessForumPostError::Rejected(ForumVoteRelayOutcome::VerificationFailed { .. })
+            ProcessMonadTopicPostError::Rejected(TopicVoteRelayOutcome::VerificationFailed { .. })
         ));
-        assert_eq!(registry.get_forum_post(&post.payload_hash).unwrap(), None);
+        assert_eq!(
+            registry.get_monad_topic_post(&post.payload_hash).unwrap(),
+            None
+        );
     }
 
     #[test]
     fn gate_config_error_display_mentions_missing_var() {
-        let err = ForumGateConfigError::MissingEnv("MONAD_STAMP_BURN_ADDRESS");
+        let err = MonadTopicGateConfigError::MissingEnv("MONAD_STAMP_BURN_ADDRESS");
         assert!(err.to_string().contains("MONAD_STAMP_BURN_ADDRESS"));
     }
 
@@ -1071,19 +1079,19 @@ mod tests {
         assert_eq!(saturate_weight(i128::from(i64::MIN) - 10), i64::MIN);
     }
 
-    /// Store a valid, verified [`proto::StoredMonadForumPost`] straight into `registry` (bypassing
+    /// Store a valid, verified [`proto::StoredMonadTopicPost`] straight into `registry` (bypassing
     /// the HTTP `PUT` + burn-verification machinery, mirroring `http::monad_message`'s own
     /// `store_at` helper) with an explicit `topic`/`timestamp`, for ticket #40's
-    /// `list_forum_posts_by_topic`-focused tests below where the interesting behavior is the read
+    /// `list_monad_topic_posts_by_topic`-focused tests below where the interesting behavior is the read
     /// side, not verification.
-    fn store_forum_post_at(
+    fn store_monad_topic_post_at(
         registry: &Registry,
         payload_hash: Vec<u8>,
         topic: &str,
         timestamp: i64,
     ) {
-        let stored = proto::StoredMonadForumPost {
-            post: Some(proto::MonadForumPost {
+        let stored = proto::StoredMonadTopicPost {
+            post: Some(proto::MonadTopicPost {
                 topic: topic.to_string(),
                 parent_post_hash: vec![],
                 raw_burn_tx: vec![1, 2, 3],
@@ -1095,10 +1103,12 @@ mod tests {
             timestamp,
             network_tag: Vec::new(),
         };
-        registry.put_forum_post(&payload_hash, stored, &[]).unwrap();
+        registry
+            .put_monad_topic_post(&payload_hash, stored, &[])
+            .unwrap();
     }
 
-    fn payload_hash_of(view: &proto::MonadForumPostView) -> Vec<u8> {
+    fn payload_hash_of(view: &proto::MonadTopicPostView) -> Vec<u8> {
         view.post
             .as_ref()
             .unwrap()
@@ -1113,7 +1123,7 @@ mod tests {
     /// posts and orders by timestamp ascending -- mirroring `http::monad_message`'s own
     /// `discovers_new_messages_via_list_since_without_knowing_payload_hash_up_front`-style test.
     #[test]
-    fn list_forum_posts_by_topic_excludes_other_topics_and_orders_by_timestamp() {
+    fn list_monad_topic_posts_by_topic_excludes_other_topics_and_orders_by_timestamp() {
         let (_tempdir, registry) = test_registry();
         let hash_a = vec![0xaa; 32];
         let hash_b = vec![0xbb; 32];
@@ -1121,15 +1131,19 @@ mod tests {
 
         // Insert out of order, and interleaved with a different topic, to prove both the ordering
         // and the topic filter.
-        store_forum_post_at(&registry, hash_b.clone(), "topic.one", 200);
-        store_forum_post_at(&registry, hash_other.clone(), "topic.two", 150);
-        store_forum_post_at(&registry, hash_a.clone(), "topic.one", 100);
+        store_monad_topic_post_at(&registry, hash_b.clone(), "topic.one", 200);
+        store_monad_topic_post_at(&registry, hash_other.clone(), "topic.two", 150);
+        store_monad_topic_post_at(&registry, hash_a.clone(), "topic.one", 100);
 
-        let views = registry.list_forum_posts_by_topic("topic.one", 0).unwrap();
+        let views = registry
+            .list_monad_topic_posts_by_topic("topic.one", 0)
+            .unwrap();
         let hashes: Vec<Vec<u8>> = views.iter().map(payload_hash_of).collect();
         assert_eq!(hashes, vec![hash_a, hash_b]);
 
-        let other_views = registry.list_forum_posts_by_topic("topic.two", 0).unwrap();
+        let other_views = registry
+            .list_monad_topic_posts_by_topic("topic.two", 0)
+            .unwrap();
         assert_eq!(
             other_views.iter().map(payload_hash_of).collect::<Vec<_>>(),
             vec![hash_other]
@@ -1137,33 +1151,33 @@ mod tests {
     }
 
     #[test]
-    fn list_forum_posts_by_topic_respects_since_cursor() {
+    fn list_monad_topic_posts_by_topic_respects_since_cursor() {
         let (_tempdir, registry) = test_registry();
         let hash_old = vec![0x11; 32];
         let hash_new = vec![0x22; 32];
-        store_forum_post_at(&registry, hash_old, "topic.cursor", 100);
-        store_forum_post_at(&registry, hash_new.clone(), "topic.cursor", 200);
+        store_monad_topic_post_at(&registry, hash_old, "topic.cursor", 100);
+        store_monad_topic_post_at(&registry, hash_new.clone(), "topic.cursor", 200);
 
         let views = registry
-            .list_forum_posts_by_topic("topic.cursor", 150)
+            .list_monad_topic_posts_by_topic("topic.cursor", 150)
             .unwrap();
         assert_eq!(views.len(), 1);
         assert_eq!(payload_hash_of(&views[0]), hash_new);
     }
 
     /// Ticket #40's tally acceptance criterion: the `vote_weight` a listing attaches to a post
-    /// must match what `get_forum_post_view` independently computes for that same post -- both go
-    /// through `Registry::forum_post_view` (see that method's docs), so this is really a
+    /// must match what `get_monad_topic_post_view` independently computes for that same post -- both go
+    /// through `Registry::monad_topic_post_view` (see that method's docs), so this is really a
     /// regression guard against that shared path ever being bypassed for one caller but not the
     /// other.
     #[test]
-    fn list_forum_posts_by_topic_tally_matches_get_forum_post_view() {
+    fn list_monad_topic_posts_by_topic_tally_matches_get_monad_topic_post_view() {
         let (_tempdir, registry) = test_registry();
         let hash = vec![0x33; 32];
-        store_forum_post_at(&registry, hash.clone(), "topic.tally", 100);
+        store_monad_topic_post_at(&registry, hash.clone(), "topic.tally", 100);
 
         registry
-            .add_forum_vote(&proto::StoredMonadForumVoteEntry {
+            .add_monad_topic_vote(&proto::StoredMonadTopicVoteEntry {
                 target_payload_hash: hash.clone(),
                 sender_address: vec![1u8; 20],
                 tx_hash: vec![0xaa; 32],
@@ -1172,7 +1186,7 @@ mod tests {
             })
             .unwrap();
         registry
-            .add_forum_vote(&proto::StoredMonadForumVoteEntry {
+            .add_monad_topic_vote(&proto::StoredMonadTopicVoteEntry {
                 target_payload_hash: hash.clone(),
                 sender_address: vec![2u8; 20],
                 tx_hash: vec![0xbb; 32],
@@ -1182,10 +1196,10 @@ mod tests {
             .unwrap();
 
         let views = registry
-            .list_forum_posts_by_topic("topic.tally", 0)
+            .list_monad_topic_posts_by_topic("topic.tally", 0)
             .unwrap();
         assert_eq!(views.len(), 1);
-        let expected = registry.get_forum_post_view(&hash).unwrap().unwrap();
+        let expected = registry.get_monad_topic_post_view(&hash).unwrap().unwrap();
         assert_eq!(views[0].vote_weight, expected.vote_weight);
         assert_eq!(views[0].vote_weight, 700);
     }

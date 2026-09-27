@@ -1,12 +1,12 @@
-//! Relay-side broadcast-and-verify wiring for a Monad forum-vote burn (ticket #30).
+//! Relay-side broadcast-and-verify wiring for a Monad topic-vote burn (ticket #30).
 //!
 //! Direction-aware, exact-value counterpart of
 //! [`crate::monad_stamp_relay::broadcast_and_verify_stamp`]: broadcasts a vote's raw burn tx
 //! itself (the relay never requires the client to have already landed it on-chain, same
 //! convention as Stamp), polls for its confirmation, and verifies it via
-//! [`crate::monad_forum_verify::verify_forum_vote_burn`] instead of `verify_stamp_burn`.
+//! [`crate::monad_topic_verify::verify_topic_vote_burn`] instead of `verify_stamp_burn`.
 //!
-//! See [`crate::monad_forum_verify`]'s module docs ("Why this can't just call
+//! See [`crate::monad_topic_verify`]'s module docs ("Why this can't just call
 //! `broadcast_and_verify_stamp`") for why this is a new, sibling function rather than a call into
 //! the existing one: `broadcast_and_verify_stamp` is concretely typed to
 //! [`crate::monad_stamp_verify::ExpectedBurn`]/[`crate::monad_stamp_verify::StampBurnVerification`]
@@ -19,23 +19,23 @@
 use bitcoinsuite_error::{Result, WrapErr};
 
 use crate::{
-    monad_forum_verify::{
-        verify_forum_vote_burn, ExpectedForumBurn, ForumVoteBurnVerification, VoteDirection,
-    },
     monad_http::{Hash32, JsonRpcTransport, MonadHttpClient, MonadRpcError},
     monad_stamp_relay::PollConfig,
+    monad_topic_verify::{
+        verify_topic_vote_burn, ExpectedTopicBurn, TopicVoteBurnVerification, VoteDirection,
+    },
 };
 
-/// Outcome of [`broadcast_and_verify_forum_vote`]. Structurally mirrors
-/// [`crate::monad_stamp_relay::StampRelayOutcome`], with [`ForumVoteRelayOutcome::Verified`]
+/// Outcome of [`broadcast_and_verify_topic_vote`]. Structurally mirrors
+/// [`crate::monad_stamp_relay::StampRelayOutcome`], with [`TopicVoteRelayOutcome::Verified`]
 /// additionally carrying the vote's exact weight (value + direction) rather than just a tx hash.
 ///
 /// Doesn't derive `Clone`/`PartialEq`/`Eq`, for the same reason `StampRelayOutcome` doesn't:
-/// [`ForumVoteRelayOutcome::BroadcastFailed`] wraps [`MonadRpcError`], which wraps a
+/// [`TopicVoteRelayOutcome::BroadcastFailed`] wraps [`MonadRpcError`], which wraps a
 /// non-`Clone`/`PartialEq` `reqwest::Error`.
 #[derive(Debug)]
-pub enum ForumVoteRelayOutcome {
-    /// Broadcast succeeded, the tx confirmed, and it verified as a valid forum-vote burn. The
+pub enum TopicVoteRelayOutcome {
+    /// Broadcast succeeded, the tx confirmed, and it verified as a valid topic-vote burn. The
     /// caller may record this vote with the given weight.
     Verified {
         /// Hash of the broadcast (and now-confirmed) transaction.
@@ -52,21 +52,21 @@ pub enum ForumVoteRelayOutcome {
         /// Hash of the broadcast (still-unconfirmed) transaction.
         tx_hash: Hash32,
     },
-    /// The tx confirmed, but [`verify_forum_vote_burn`] didn't return `Verified` (wrong
+    /// The tx confirmed, but [`verify_topic_vote_burn`] didn't return `Verified` (wrong
     /// recipient, wrong/malformed commitment, or the tx itself reverted).
     VerificationFailed {
         /// Hash of the confirmed transaction that failed verification.
         tx_hash: Hash32,
         /// Why verification failed.
-        outcome: ForumVoteBurnVerification,
+        outcome: TopicVoteBurnVerification,
     },
 }
 
-impl ForumVoteRelayOutcome {
+impl TopicVoteRelayOutcome {
     /// Whether this outcome means the vote may be recorded. Only
-    /// [`ForumVoteRelayOutcome::Verified`] counts -- every other variant is a rejection.
+    /// [`TopicVoteRelayOutcome::Verified`] counts -- every other variant is a rejection.
     pub fn is_verified(&self) -> bool {
-        matches!(self, ForumVoteRelayOutcome::Verified { .. })
+        matches!(self, TopicVoteRelayOutcome::Verified { .. })
     }
 }
 
@@ -75,14 +75,14 @@ impl ForumVoteRelayOutcome {
 /// [`crate::monad_stamp_relay::broadcast_and_verify_stamp`]'s loop exactly (see this module's
 /// docs for why that function itself can't be called here).
 ///
-/// Returns `Err` only for infrastructure failures from [`verify_forum_vote_burn`] itself; every
-/// expected rejection reason is a distinct `Ok(ForumVoteRelayOutcome)` variant.
-pub async fn broadcast_and_verify_forum_vote<T>(
+/// Returns `Err` only for infrastructure failures from [`verify_topic_vote_burn`] itself; every
+/// expected rejection reason is a distinct `Ok(TopicVoteRelayOutcome)` variant.
+pub async fn broadcast_and_verify_topic_vote<T>(
     transport: &T,
     raw_tx: &[u8],
-    expected: &ExpectedForumBurn,
+    expected: &ExpectedTopicBurn,
     poll: PollConfig,
-) -> Result<ForumVoteRelayOutcome>
+) -> Result<TopicVoteRelayOutcome>
 where
     T: JsonRpcTransport + Clone,
 {
@@ -90,37 +90,37 @@ where
 
     let tx_hash = match client.send_raw_transaction(raw_tx).await {
         Ok(submitted) => submitted.tx_hash,
-        Err(err) => return Ok(ForumVoteRelayOutcome::BroadcastFailed(err)),
+        Err(err) => return Ok(TopicVoteRelayOutcome::BroadcastFailed(err)),
     };
 
     let max_attempts = poll.max_attempts.max(1);
     for attempt in 0..max_attempts {
-        let outcome = verify_forum_vote_burn(transport, tx_hash, expected)
+        let outcome = verify_topic_vote_burn(transport, tx_hash, expected)
             .await
             .wrap_err_with(|| {
-                format!("verifying Monad forum-vote burn {tx_hash} after broadcast")
+                format!("verifying Monad topic-vote burn {tx_hash} after broadcast")
             })?;
 
         match outcome {
-            ForumVoteBurnVerification::TxNotConfirmed => {
+            TopicVoteBurnVerification::TxNotConfirmed => {
                 if attempt + 1 < max_attempts {
                     tokio::time::sleep(poll.interval).await;
                     continue;
                 }
-                return Ok(ForumVoteRelayOutcome::ConfirmationTimedOut { tx_hash });
+                return Ok(TopicVoteRelayOutcome::ConfirmationTimedOut { tx_hash });
             }
-            ForumVoteBurnVerification::Verified {
+            TopicVoteBurnVerification::Verified {
                 value_wei,
                 direction,
             } => {
-                return Ok(ForumVoteRelayOutcome::Verified {
+                return Ok(TopicVoteRelayOutcome::Verified {
                     tx_hash,
                     value_wei,
                     direction,
                 });
             }
             other => {
-                return Ok(ForumVoteRelayOutcome::VerificationFailed {
+                return Ok(TopicVoteRelayOutcome::VerificationFailed {
                     tx_hash,
                     outcome: other,
                 })
@@ -129,7 +129,7 @@ where
     }
     // Unreachable given `max_attempts >= 1` (the loop above always returns on its last
     // iteration), but keeps the function total instead of relying on that invariant silently.
-    Ok(ForumVoteRelayOutcome::ConfirmationTimedOut { tx_hash })
+    Ok(TopicVoteRelayOutcome::ConfirmationTimedOut { tx_hash })
 }
 
 #[cfg(test)]
@@ -149,7 +149,7 @@ mod tests {
     use serde_json::Value;
 
     use super::*;
-    use crate::{monad_forum_verify::FORUM_VOTE_LOKAD_ID, monad_http::Address};
+    use crate::{monad_http::Address, monad_topic_verify::TOPIC_VOTE_LOKAD_ID};
 
     fn hex_addr(byte: u8) -> String {
         format!("0x{}", hex::encode([byte; 20]))
@@ -161,8 +161,8 @@ mod tests {
 
     fn commitment_calldata(direction: u8, commitment: &Sha256) -> String {
         let mut calldata = Vec::new();
-        calldata.extend_from_slice(&FORUM_VOTE_LOKAD_ID);
-        calldata.push(crate::monad_forum_verify::FORUM_COMMITMENT_VERSION_TAG);
+        calldata.extend_from_slice(&TOPIC_VOTE_LOKAD_ID);
+        calldata.push(crate::monad_topic_verify::TOPIC_COMMITMENT_VERSION_TAG);
         calldata.push(direction);
         calldata.extend_from_slice(commitment.as_slice());
         format!("0x{}", hex::encode(calldata))
@@ -192,8 +192,8 @@ mod tests {
         })
     }
 
-    fn expected_burn(commitment: Sha256) -> ExpectedForumBurn {
-        ExpectedForumBurn {
+    fn expected_burn(commitment: Sha256) -> ExpectedTopicBurn {
+        ExpectedTopicBurn {
             commitment,
             burn_address: Address::from_hex(&hex_addr(0x44)).unwrap(),
         }
@@ -311,7 +311,7 @@ mod tests {
             ),
         );
 
-        let outcome = broadcast_and_verify_forum_vote(
+        let outcome = broadcast_and_verify_topic_vote(
             &transport,
             &[0xde, 0xad, 0xbe, 0xef],
             &expected_burn(commitment),
@@ -322,7 +322,7 @@ mod tests {
 
         assert!(outcome.is_verified());
         match outcome {
-            ForumVoteRelayOutcome::Verified {
+            TopicVoteRelayOutcome::Verified {
                 tx_hash,
                 value_wei,
                 direction,
@@ -355,7 +355,7 @@ mod tests {
             ),
         );
 
-        let outcome = broadcast_and_verify_forum_vote(
+        let outcome = broadcast_and_verify_topic_vote(
             &transport,
             &[1, 2, 3],
             &expected_burn(commitment),
@@ -365,7 +365,7 @@ mod tests {
         .unwrap();
 
         match outcome {
-            ForumVoteRelayOutcome::Verified {
+            TopicVoteRelayOutcome::Verified {
                 value_wei,
                 direction,
                 ..
@@ -383,7 +383,7 @@ mod tests {
         let transport = MockTransport::default();
         transport.fail_send_raw_transaction("nonce too low: next nonce 5, tx nonce 3");
 
-        let outcome = broadcast_and_verify_forum_vote(
+        let outcome = broadcast_and_verify_topic_vote(
             &transport,
             &[1, 2, 3],
             &expected_burn(make_commitment()),
@@ -394,7 +394,7 @@ mod tests {
 
         assert!(matches!(
             outcome,
-            ForumVoteRelayOutcome::BroadcastFailed(MonadRpcError::NonceTooLow { .. })
+            TopicVoteRelayOutcome::BroadcastFailed(MonadRpcError::NonceTooLow { .. })
         ));
         assert!(!outcome.is_verified());
         assert_eq!(transport.call_count("eth_getTransactionReceipt"), 0);
@@ -409,7 +409,7 @@ mod tests {
             interval: Duration::from_millis(1),
             max_attempts: 3,
         };
-        let outcome = broadcast_and_verify_forum_vote(
+        let outcome = broadcast_and_verify_topic_vote(
             &transport,
             &[1, 2, 3],
             &expected_burn(make_commitment()),
@@ -420,7 +420,7 @@ mod tests {
 
         assert!(!outcome.is_verified());
         match outcome {
-            ForumVoteRelayOutcome::ConfirmationTimedOut { tx_hash } => {
+            TopicVoteRelayOutcome::ConfirmationTimedOut { tx_hash } => {
                 assert_eq!(tx_hash, Hash32::from_hex(&hex_hash(0x11)).unwrap());
             }
             other => panic!("expected ConfirmationTimedOut, got {other:?}"),

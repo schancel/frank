@@ -122,13 +122,13 @@ fully superseded by the tracked ticket pipeline rather than kept as a crutch.
    back to EVM specifically, which constraint 2 explicitly avoids. Instead,
    add a short Frank/Stamp-specific tag (e.g. a 4-byte LOKAD-style code,
    `"MON1"`/`"MONT"`/`"LTUS"`) as an explicit field on the *protobuf
-   envelope* (`MonadStampedMessage`/`StoredMonadForumPost`/etc.), populated
+   envelope* (`MonadStampedMessage`/`StoredMonadTopicPost`/etc.), populated
    by the relay from its own configured `ChainAdapter` — not embedded in
    the on-chain calldata itself, since the calldata's commitment layout is
    already committed-to by every existing client and relay, and the
    envelope is the layer that actually varies per-deployment. Proto3 field
    addition is additive/backward-compatible. Best time to add it is before
-   ticket #31/#32/#33 (forum client-side) solidify against the current
+   tickets #31/#32/#40 (topic client-side and listing route) solidify against the current
    shape, since they're the next thing to touch these protos. **For the
    hackathon itself, the UI only ever shows Monad — this is a wire-level
    forward-compat field, not a multi-chain switcher UI.**
@@ -300,7 +300,7 @@ Replace rocksdb with a distributed KV store for HA/horizontal scale-out of
 migration path) — do not fold into the Monad port.
 
 ### Follow-on: monorepo subproject split (raised 2026-09-26)
-Proposed shape once the current wave (forum client, bot demo) lands:
+Proposed shape once the current wave (topic client, bot demo) lands:
 - `app/` — the Frank frontend (Quasar/Vue3), unchanged in role.
 - `bot/` — ticket #9's headless Qwen-backed bot demo, as its own subproject
   rather than living inside `app/`.
@@ -311,7 +311,7 @@ Proposed shape once the current wave (forum client, bot demo) lands:
   describes.
 - A new TS package (or packages) for the wallet/client code currently under
   `app/src/cashweb/wallet/` — HD keyrings, account pool/lease manager,
-  stamp/POP/forum clients, generated protobuf bindings — extracted so both
+  stamp/POP/topic clients, generated protobuf bindings — extracted so both
   `app/` and `bot/` import it rather than the bot reaching into `app/src`
   directly or duplicating logic.
 
@@ -360,7 +360,7 @@ concerns. This is a cleaner, higher-level seam than the existing TS
 that interface is UTXO-shaped (`ChainUtxo`, `satoshis`, P2PKH-only
 `DecodedOutput`) and only `lotus-adapter.ts` ever implements it — the
 entire Monad wallet stack built this session (`monad-account-tx.ts`,
-`monad-account-pool.ts`, `monad-stamp-client.ts`, `monad-forum-*-
+`monad-account-pool.ts`, `monad-stamp-client.ts`, `monad-topic-*-
 client.ts`) bypasses it completely as its own parallel, ethers-based
 stack, precisely because an account-based chain doesn't fit a UTXO-shaped
 interface (same reason the *backend* needed a separate Monad-native wire
@@ -440,11 +440,11 @@ Culture submission can still win a bounty tagged to a different track.
 - **Track fit note**: Social, Attention & Culture ("open social graphs,
   competitive feed algorithms, community governance... cultural
   participation translate into real ownership") is a better narrative fit
-  for cashweb's forum/topic broadcast + burn-weighted voting feature than
+  for cashweb's topic broadcast + burn-weighted voting feature than
   for plain 1:1 messaging. That feature is back in scope as a follow-on —
   see the new milestone below.
 
-### M8 (follow-on, blocked on M6) — forum/topic broadcast + burn-weighted voting over Monad
+### M8 (follow-on, blocked on M6) — Monad topic broadcast + burn-weighted voting
 Re-admits the feature originally scoped out as a hackathon non-goal, now
 relevant to the Social/Attention/Culture track narrative: topics, posts,
 and burn-weighted up/down voting (`registry/index.ts`'s OP_RETURN
@@ -456,10 +456,40 @@ on M6, pursue whichever has clearer remaining time.
 
 **Validated, not speculative:** the original Stamp UI used a group-chat-like
 model; user feedback on that version consistently preferred a Reddit-style
-forum instead. M8 is that preference realized on Monad, not just a
-bounty-fit add-on. Server side shipped in #30 (merged); client side
-(#31/#32/#33: post, vote, tally/read) is next, blocked on #30.
+forum instead. M8 is that UI preference realized on Monad, not just a
+bounty-fit add-on. Server side shipped in #30 (merged, then renamed —
+see below); client side (#31/#32: post, vote — merged and also renamed;
+#33: tally/read — next).
 
-**Before dispatching #31/#32/#33:** fold in constraint 9's network-tag
-proto field now, while the forum client is still unbuilt — see constraint
-9 for why this is the cheapest moment to add it.
+**Correction (2026-09-26, mid-review of ticket #40): "forum" had wrongly
+leaked into the *backend's* vocabulary.** On Lotus, the backend primitive
+is generic — `BroadcastMessage` + `DbTopics` + `/messages/:topic` — and
+every message posted through it already requires a burn that inherently
+carries an up/down vote tag (`createBroadcast`'s `vote` parameter has no
+default; there is no code path for posting without one). "Forum" never
+existed as a backend concept there — only as a *client-side* rendering
+choice (`stores/forum.ts`'s threaded/sorted view vs. `stores/topics.ts`'s
+flat feed, both consuming the same always-voted messages). Tickets #30/
+#31/#32/#40 baked "forum" into backend types, modules, and routes anyway
+(`MonadForumPost`, `http/forum.rs`, `ForumGateConfig`, `/message/monad/
+forum`, ...), copying the product framing ("let's build a forum for the
+bounty") into code that should have stayed a general topic-broadcast
+primitive. Renamed the whole surface once caught, while it was still
+small: `MonadForumPost`/`MonadForumVote` → `MonadTopicPost`/
+`MonadTopicVote` (and every derived type), `http/forum.rs` →
+`http/monad_topics.rs`, `store/forum.rs` → `store/monad_topics.rs`,
+`monad_forum_verify.rs`/`monad_forum_relay.rs` → `monad_topic_verify.rs`/
+`monad_topic_relay.rs`, `forum_message.proto` → `topic_message.proto`,
+routes `/message/monad/forum*` → `/message/monad/topics*`, the app-side
+`monad-forum-{post,vote}-client.ts` → `monad-topic-{post,vote}-client.ts`,
+and the wire-format LOKAD ID `"FRUM"` → `"TPIC"` (safe to change bytes
+too — nothing is live on mainnet yet). "Forum" stays exactly where it
+always belonged: the pre-existing Lotus-side UI/store layer
+(`ForumMessageEntry`, `stores/forum.ts`, `broadcast_pb`'s `ForumPost`
+payload-content type) is untouched, since that naming was never the
+problem — the eventual Monad-side UI is free to build its own
+forum-style view on top of the (correctly-named) topic-broadcast
+primitive, exactly mirroring the old architecture.
+
+**Before dispatching #33:** it depends on #40 (topic-filtered listing,
+merged and renamed alongside the above).

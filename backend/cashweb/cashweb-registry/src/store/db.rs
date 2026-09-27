@@ -6,9 +6,9 @@ use bitcoinsuite_error::{ErrorMeta, Result, WrapErr};
 use rocksdb::ColumnFamilyDescriptor;
 use thiserror::Error;
 
-use crate::store::forum::{DbForumPosts, DbForumVotes};
 use crate::store::metadata::DbMetadata;
 use crate::store::monad_messages::DbMonadMessages;
+use crate::store::monad_topics::{DbMonadTopicPosts, DbMonadTopicVotes};
 use crate::store::topics::DbTopics;
 
 // We collect the column family constants here so we have a nice overview.
@@ -29,22 +29,22 @@ pub(crate) const CF_MONAD_MESSAGES: &str = "monad_messages";
 /// in timestamp order without scanning the whole (payload_hash-keyed) primary CF -- mirrors
 /// `DbTopics`'s `CF_MESSAGES` "topic_digest ++ timestamp" key layout, minus the topic prefix.
 pub(crate) const CF_MONAD_MESSAGES_BY_TIME: &str = "monad_messages_by_time";
-/// Ticket #30: stores [`crate::proto::StoredMonadForumPost`], keyed by `payload_hash`. Parallel
-/// to `CF_MONAD_MESSAGES` -- see `crate::store::forum`'s module docs.
-pub(crate) const CF_FORUM_POSTS: &str = "forum_posts";
-/// Ticket #30: stores [`crate::proto::StoredMonadForumVoteEntry`], keyed by
+/// Ticket #30: stores [`crate::proto::StoredMonadTopicPost`], keyed by `payload_hash`. Parallel
+/// to `CF_MONAD_MESSAGES` -- see `crate::store::monad_topics`'s module docs.
+pub(crate) const CF_MONAD_TOPIC_POSTS: &str = "monad_topic_posts";
+/// Ticket #30: stores [`crate::proto::StoredMonadTopicVoteEntry`], keyed by
 /// `target_payload_hash ++ tx_hash` so multiple votes can tally against the same post -- see
-/// `crate::store::forum`'s module docs.
-pub(crate) const CF_FORUM_VOTES: &str = "forum_votes";
-/// Ticket #40: secondary index over `CF_FORUM_POSTS`, keyed by `SHA256(topic) ++
+/// `crate::store::monad_topics`'s module docs.
+pub(crate) const CF_MONAD_TOPIC_VOTES: &str = "monad_topic_votes";
+/// Ticket #40: secondary index over `CF_MONAD_TOPIC_POSTS`, keyed by `SHA256(topic) ++
 /// timestamp.to_be_bytes() ++ payload_hash` (value: the `payload_hash`) -- mirrors
 /// `CF_MONAD_MESSAGES_BY_TIME`'s "value is just the payload_hash" layout, but hashes the topic
 /// first (exactly like `DbTopics::get_messages_to`'s own `topic_digest`) rather than using the raw
 /// topic bytes as a variable-length key prefix, which would let one topic's key range bleed into
 /// another's (e.g. topic `"a"` is a byte-prefix of topic `"ab"`, so a raw-bytes prefix scan for
-/// `"a"` would incorrectly also return `"ab"`'s posts). Lets `DbForumPosts::list_by_topic`
-/// range-scan a single topic's posts in timestamp order -- see `crate::store::forum`'s module docs.
-pub(crate) const CF_FORUM_POSTS_BY_TOPIC: &str = "forum_posts_by_topic";
+/// `"a"` would incorrectly also return `"ab"`'s posts). Lets `DbMonadTopicPosts::list_by_topic`
+/// range-scan a single topic's posts in timestamp order -- see `crate::store::monad_topics`'s module docs.
+pub(crate) const CF_MONAD_TOPIC_POSTS_BY_TOPIC: &str = "monad_topic_posts_by_topic";
 
 pub(crate) type CF = rocksdb::ColumnFamily;
 
@@ -78,8 +78,8 @@ impl Db {
         DbMetadata::add_cfs(&mut cfs);
         DbTopics::add_cfs(&mut cfs);
         DbMonadMessages::add_cfs(&mut cfs);
-        DbForumPosts::add_cfs(&mut cfs);
-        DbForumVotes::add_cfs(&mut cfs);
+        DbMonadTopicPosts::add_cfs(&mut cfs);
+        DbMonadTopicVotes::add_cfs(&mut cfs);
         Self::open_with_cfs(path, cfs)
     }
 
@@ -98,15 +98,15 @@ impl Db {
         DbMonadMessages::new(self)
     }
 
-    /// Returns `DbForumPosts`, allowing access to stored Monad forum posts (ticket #30).
-    pub fn forum_posts(&self) -> DbForumPosts<'_> {
-        DbForumPosts::new(self)
+    /// Returns `DbMonadTopicPosts`, allowing access to stored Monad topic posts (ticket #30).
+    pub fn monad_topic_posts(&self) -> DbMonadTopicPosts<'_> {
+        DbMonadTopicPosts::new(self)
     }
 
-    /// Returns `DbForumVotes`, allowing access to stored Monad forum votes and their per-post
+    /// Returns `DbMonadTopicVotes`, allowing access to stored Monad topic vote and their per-post
     /// tally (ticket #30).
-    pub fn forum_votes(&self) -> DbForumVotes<'_> {
-        DbForumVotes::new(self)
+    pub fn monad_topic_votes(&self) -> DbMonadTopicVotes<'_> {
+        DbMonadTopicVotes::new(self)
     }
 
     pub(crate) fn open_with_cfs(

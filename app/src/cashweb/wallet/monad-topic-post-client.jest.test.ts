@@ -1,9 +1,9 @@
 /**
- * Unit tests for `monad-forum-post-client.ts` (ticket #31).
+ * Unit tests for `monad-topic-post-client.ts` (ticket #31).
  *
- * `axios` is mocked (`jest.mock('axios')`) so `PUT /message/monad/forum` / `GET
- * /message/monad/forum/:payload_hash` never touch a real network -- each test drives the mock to
- * exercise one of `submitForumPost`'s documented outcomes (2xx success, HTTP-level rejection,
+ * `axios` is mocked (`jest.mock('axios')`) so `PUT /message/monad/topics` / `GET
+ * /message/monad/topics/:payload_hash` never touch a real network -- each test drives the mock to
+ * exercise one of `submitTopicPost`'s documented outcomes (2xx success, HTTP-level rejection,
  * network-failure-then-found-via-poll, network-failure-then-abandoned). Burn-tx construction goes
  * through a real `MonadSubAccountPool`/`MonadAccountTxSigner` against a stubbed ethers
  * `JsonRpcProvider._perform`, so the signed raw tx and its calldata are real, decodable bytes --
@@ -17,23 +17,23 @@ import { MonadSubAccountPool } from './monad-account-pool'
 import { SubAccountLeaseManager } from './monad-account-lease'
 import { MonadTxSubmitter } from './monad-account-tx'
 import {
-  MonadForumPost,
-  MonadForumPostView,
-  StoredMonadForumPost,
-} from './forum_message_pb'
+  MonadTopicPost,
+  MonadTopicPostView,
+  StoredMonadTopicPost,
+} from './topic_message_pb'
 import { ForumMessageEntry } from '../types/forum'
 import {
-  MONAD_FORUM_VOTE_CALLDATA_LENGTH,
-  MonadForumPostAbandonedError,
-  MonadForumPostClient,
-  MonadForumPostProto,
-  MonadForumPostRejectedError,
-  buildForumPostPayload,
-  buildForumVoteCalldata,
-  computeForumPostCommitment,
-  decodeMonadForumPost,
-  decodeStoredMonadForumPost,
-} from './monad-forum-post-client'
+  MONAD_TOPIC_VOTE_CALLDATA_LENGTH,
+  MonadTopicPostAbandonedError,
+  MonadTopicPostClient,
+  MonadTopicPostProto,
+  MonadTopicPostRejectedError,
+  buildTopicPostPayload,
+  buildTopicVoteCalldata,
+  computeTopicPostCommitment,
+  decodeMonadTopicPost,
+  decodeStoredMonadTopicPost,
+} from './monad-topic-post-client'
 
 jest.mock('axios')
 const mockedAxios = axios as jest.Mocked<typeof axios>
@@ -53,7 +53,7 @@ const FEE_OVERRIDES = {
 }
 
 const ENTRIES: ForumMessageEntry[] = [
-  { kind: 'post', title: 'Hello', message: 'First forum post' },
+  { kind: 'post', title: 'Hello', message: 'First topic post' },
 ]
 
 function makePool(size = 2): MonadSubAccountPool {
@@ -97,7 +97,7 @@ function makeClient(overrides?: { pool?: MonadSubAccountPool }) {
   const leaseManager = new SubAccountLeaseManager(pool)
   const provider = makeChainProvider()
   const httpClient = makeMockHttpClient()
-  const client = new MonadForumPostClient({
+  const client = new MonadTopicPostClient({
     pool,
     leaseManager,
     provider,
@@ -107,11 +107,11 @@ function makeClient(overrides?: { pool?: MonadSubAccountPool }) {
   return { client, pool, leaseManager, provider, httpClient }
 }
 
-/** Encode a `MonadForumPostProto` via the real generated `MonadForumPost` binding -- used both to
- * build fixture bytes and (indirectly, via `decodeMonadForumPost`) to prove the module's own
+/** Encode a `MonadTopicPostProto` via the real generated `MonadTopicPost` binding -- used both to
+ * build fixture bytes and (indirectly, via `decodeMonadTopicPost`) to prove the module's own
  * decode path round-trips against it. */
-function encodeForumPostPb(post: MonadForumPostProto): MonadForumPost {
-  const pb = new MonadForumPost()
+function encodeTopicPostPb(post: MonadTopicPostProto): MonadTopicPost {
+  const pb = new MonadTopicPost()
   pb.setTopic(post.topic)
   pb.setParentPostHash(post.parentPostHash)
   pb.setRawBurnTx(post.rawBurnTx)
@@ -120,11 +120,11 @@ function encodeForumPostPb(post: MonadForumPostProto): MonadForumPost {
   return pb
 }
 
-/** Builds the wire bytes a `PUT /message/monad/forum` (or `GET .../forum/:hash`'s nested `post`)
- * response would carry, via the real generated `StoredMonadForumPost` binding. */
-function storedForumPostBytes(post: MonadForumPostProto): Uint8Array {
-  const pb = new StoredMonadForumPost()
-  pb.setPost(encodeForumPostPb(post))
+/** Builds the wire bytes a `PUT /message/monad/topics` (or `GET .../topics/:hash`'s nested `post`)
+ * response would carry, via the real generated `StoredMonadTopicPost` binding. */
+function storedTopicPostBytes(post: MonadTopicPostProto): Uint8Array {
+  const pb = new StoredMonadTopicPost()
+  pb.setPost(encodeTopicPostPb(post))
   pb.setSenderAddress(getBytes('0x' + '11'.repeat(20)))
   pb.setTxHash(getBytes('0x' + '22'.repeat(32)))
   pb.setTimestamp(1_700_000_000_000)
@@ -132,11 +132,11 @@ function storedForumPostBytes(post: MonadForumPostProto): Uint8Array {
   return pb.serializeBinary()
 }
 
-/** Builds `GET /message/monad/forum/:payload_hash`'s `MonadForumPostView` response bytes. */
-function forumPostViewBytes(post: MonadForumPostProto, voteWeight: number) {
-  const view = new MonadForumPostView()
+/** Builds `GET /message/monad/topics/:payload_hash`'s `MonadTopicPostView` response bytes. */
+function topicPostViewBytes(post: MonadTopicPostProto, voteWeight: number) {
+  const view = new MonadTopicPostView()
   view.setPost(
-    StoredMonadForumPost.deserializeBinary(storedForumPostBytes(post)),
+    StoredMonadTopicPost.deserializeBinary(storedTopicPostBytes(post)),
   )
   view.setVoteWeight(voteWeight)
   return view.serializeBinary()
@@ -148,23 +148,23 @@ function hexOf(bytes: Uint8Array): string {
 
 describe('calldata / commitment construction', () => {
   it('computes payload_hash as plain SHA256(serialized payload)', () => {
-    const payload = buildForumPostPayload({
+    const payload = buildTopicPostPayload({
       topic: 'general',
       entries: ENTRIES,
       timestampMs: 1_700_000_000_000,
     })
-    const commitment = computeForumPostCommitment(payload)
+    const commitment = computeTopicPostCommitment(payload)
     expect(getBytes(sha256(payload))).toEqual(commitment)
     expect(commitment).toHaveLength(32)
   })
 
   it('builds deterministic payload bytes for the same inputs (topic/entries/timestamp)', () => {
-    const a = buildForumPostPayload({
+    const a = buildTopicPostPayload({
       topic: 'general',
       entries: ENTRIES,
       timestampMs: 42,
     })
-    const b = buildForumPostPayload({
+    const b = buildTopicPostPayload({
       topic: 'general',
       entries: ENTRIES,
       timestampMs: 42,
@@ -172,37 +172,37 @@ describe('calldata / commitment construction', () => {
     expect(a).toEqual(b)
   })
 
-  it('builds up-vote calldata as <FRUM><0x01><0x01><32-byte commitment>, 38 bytes total', () => {
+  it('builds up-vote calldata as <TPIC><0x01><0x01><32-byte commitment>, 38 bytes total', () => {
     const commitment = new Uint8Array(32).fill(0xab)
-    const calldata = buildForumVoteCalldata('up', commitment)
+    const calldata = buildTopicVoteCalldata('up', commitment)
     const bytes = getBytes(calldata)
 
     expect(bytes).toHaveLength(38)
-    expect(MONAD_FORUM_VOTE_CALLDATA_LENGTH).toBe(38)
-    // "FRUM" == 0x4652554d -- FORUM_VOTE_LOKAD_ID (monad_forum_verify.rs:94).
-    expect(Array.from(bytes.slice(0, 4))).toEqual([0x46, 0x52, 0x55, 0x4d])
-    // FORUM_COMMITMENT_VERSION_TAG (monad_forum_verify.rs:99).
+    expect(MONAD_TOPIC_VOTE_CALLDATA_LENGTH).toBe(38)
+    // "TPIC" == 0x54504943 -- TOPIC_VOTE_LOKAD_ID (monad_topic_verify.rs:94).
+    expect(Array.from(bytes.slice(0, 4))).toEqual([0x54, 0x50, 0x49, 0x43])
+    // TOPIC_COMMITMENT_VERSION_TAG (monad_topic_verify.rs:99).
     expect(bytes[4]).toBe(0x01)
-    // VoteDirection::UP_BYTE (monad_forum_verify.rs:118).
+    // VoteDirection::UP_BYTE (monad_topic_verify.rs:118).
     expect(bytes[5]).toBe(0x01)
     expect(Array.from(bytes.slice(6))).toEqual(Array.from(commitment))
   })
 
   it('builds down-vote calldata with direction byte 0x00', () => {
     const commitment = new Uint8Array(32).fill(0xcd)
-    const calldata = buildForumVoteCalldata('down', commitment)
+    const calldata = buildTopicVoteCalldata('down', commitment)
     const bytes = getBytes(calldata)
 
     expect(bytes).toHaveLength(38)
-    expect(Array.from(bytes.slice(0, 4))).toEqual([0x46, 0x52, 0x55, 0x4d])
+    expect(Array.from(bytes.slice(0, 4))).toEqual([0x54, 0x50, 0x49, 0x43])
     expect(bytes[4]).toBe(0x01)
-    // VoteDirection::DOWN_BYTE (monad_forum_verify.rs:119).
+    // VoteDirection::DOWN_BYTE (monad_topic_verify.rs:119).
     expect(bytes[5]).toBe(0x00)
     expect(Array.from(bytes.slice(6))).toEqual(Array.from(commitment))
   })
 
   it('rejects a commitment that is not exactly 32 bytes', () => {
-    expect(() => buildForumVoteCalldata('up', new Uint8Array(31))).toThrow(
+    expect(() => buildTopicVoteCalldata('up', new Uint8Array(31))).toThrow(
       /32 bytes/,
     )
   })
@@ -210,12 +210,12 @@ describe('calldata / commitment construction', () => {
   it('matches a known-good fixture byte-for-byte', () => {
     const commitment = new Uint8Array(32)
     for (let i = 0; i < 32; i++) commitment[i] = i
-    const calldata = getBytes(buildForumVoteCalldata('up', commitment))
+    const calldata = getBytes(buildTopicVoteCalldata('up', commitment))
     const expected = new Uint8Array([
-      0x46,
-      0x52,
-      0x55,
-      0x4d, // "FRUM"
+      0x54,
+      0x50,
+      0x49,
+      0x43, // "TPIC"
       0x01, // version
       0x01, // up
       ...commitment,
@@ -225,29 +225,29 @@ describe('calldata / commitment construction', () => {
 })
 
 describe('protobuf encode/decode round trip', () => {
-  it('round-trips MonadForumPost through encode -> decode', () => {
-    const post: MonadForumPostProto = {
+  it('round-trips MonadTopicPost through encode -> decode', () => {
+    const post: MonadTopicPostProto = {
       topic: 'general',
       parentPostHash: new Uint8Array(32).fill(0x77),
       rawBurnTx: new Uint8Array([1, 2, 3, 4]),
       encryptedPayload: new TextEncoder().encode('serialized payload'),
       payloadHash: new Uint8Array(32).fill(0x42),
     }
-    const decoded = decodeMonadForumPost(
-      encodeForumPostPb(post).serializeBinary(),
+    const decoded = decodeMonadTopicPost(
+      encodeTopicPostPb(post).serializeBinary(),
     )
     expect(decoded).toEqual(post)
   })
 
-  it('round-trips a StoredMonadForumPost, including the nested MonadForumPost', () => {
-    const post: MonadForumPostProto = {
+  it('round-trips a StoredMonadTopicPost, including the nested MonadTopicPost', () => {
+    const post: MonadTopicPostProto = {
       topic: 'general',
       parentPostHash: new Uint8Array(0),
       rawBurnTx: new Uint8Array([9, 9, 9]),
       encryptedPayload: new Uint8Array([7, 7]),
       payloadHash: new Uint8Array(32).fill(0x11),
     }
-    const decoded = decodeStoredMonadForumPost(storedForumPostBytes(post))
+    const decoded = decodeStoredMonadTopicPost(storedTopicPostBytes(post))
     expect(decoded.post).toEqual(post)
     expect(decoded.senderAddress).toEqual(getBytes('0x' + '11'.repeat(20)))
     expect(decoded.txHash).toEqual(getBytes('0x' + '22'.repeat(32)))
@@ -256,34 +256,34 @@ describe('protobuf encode/decode round trip', () => {
   })
 })
 
-describe('MonadForumPostClient.submitForumPost', () => {
+describe('MonadTopicPostClient.submitTopicPost', () => {
   beforeEach(() => {
     jest.clearAllMocks()
     // `jest.mock('axios')` automocks every export, including `isAxiosError`, to a bare `jest.fn()`
-    // returning `undefined` -- give it a real implementation so `submitForumPost`'s
+    // returning `undefined` -- give it a real implementation so `submitTopicPost`'s
     // `axios.isAxiosError(err)` branches work the same way they would against the real library.
     mockedAxios.isAxiosError.mockImplementation(
       (e: unknown) => (e as { isAxiosError?: boolean })?.isAxiosError === true,
     )
   })
 
-  it('PUTs the assembled MonadForumPost and releases the lease as confirmed on 2xx', async () => {
+  it('PUTs the assembled MonadTopicPost and releases the lease as confirmed on 2xx', async () => {
     const { client, pool } = makeClient()
 
-    const expectedPayload = buildForumPostPayload({
+    const expectedPayload = buildTopicPostPayload({
       topic: 'general',
       entries: ENTRIES,
       timestampMs: 1_700_000_000_000,
     })
-    const expectedCommitment = computeForumPostCommitment(expectedPayload)
+    const expectedCommitment = computeTopicPostCommitment(expectedPayload)
 
     mockedAxios.mockImplementationOnce(async config => {
       expect(config.method).toBe('put')
-      expect(config.url).toBe('https://relay.example.com/message/monad/forum')
+      expect(config.url).toBe('https://relay.example.com/message/monad/topics')
       expect(config.headers).toEqual({
         'Content-Type': 'application/x-protobuf',
       })
-      const sentPost = decodeMonadForumPost(
+      const sentPost = decodeMonadTopicPost(
         new Uint8Array(config.data as Buffer),
       )
       expect(sentPost.topic).toBe('general')
@@ -295,7 +295,7 @@ describe('MonadForumPostClient.submitForumPost', () => {
       const parsed = Transaction.from(hexOf(sentPost.rawBurnTx))
       const calldataBytes = getBytes(parsed.data)
       expect(calldataBytes.slice(0, 4)).toEqual(
-        new Uint8Array([0x46, 0x52, 0x55, 0x4d]),
+        new Uint8Array([0x54, 0x50, 0x49, 0x43]),
       )
       expect(calldataBytes[4]).toBe(0x01)
       expect(calldataBytes[5]).toBe(0x01) // up
@@ -303,7 +303,7 @@ describe('MonadForumPostClient.submitForumPost', () => {
       expect(parsed.value).toBe(5_000n)
 
       return {
-        data: storedForumPostBytes(sentPost),
+        data: storedTopicPostBytes(sentPost),
         status: 200,
         statusText: 'OK',
         headers: {},
@@ -311,7 +311,7 @@ describe('MonadForumPostClient.submitForumPost', () => {
       }
     })
 
-    const result = await client.submitForumPost({
+    const result = await client.submitTopicPost({
       topic: 'general',
       entries: ENTRIES,
       direction: 'up',
@@ -332,14 +332,14 @@ describe('MonadForumPostClient.submitForumPost', () => {
   it('builds down-vote calldata for an initial down-vote post', async () => {
     const { client } = makeClient()
     mockedAxios.mockImplementationOnce(async config => {
-      const sentPost = decodeMonadForumPost(
+      const sentPost = decodeMonadTopicPost(
         new Uint8Array(config.data as Buffer),
       )
       const parsed = Transaction.from(hexOf(sentPost.rawBurnTx))
       const calldataBytes = getBytes(parsed.data)
       expect(calldataBytes[5]).toBe(0x00) // down
       return {
-        data: storedForumPostBytes(sentPost),
+        data: storedTopicPostBytes(sentPost),
         status: 200,
         statusText: 'OK',
         headers: {},
@@ -347,7 +347,7 @@ describe('MonadForumPostClient.submitForumPost', () => {
       }
     })
 
-    await client.submitForumPost({
+    await client.submitTopicPost({
       topic: 'general',
       entries: ENTRIES,
       direction: 'down',
@@ -357,18 +357,18 @@ describe('MonadForumPostClient.submitForumPost', () => {
     })
   })
 
-  it('retires the sub-account and throws MonadForumPostRejectedError on an HTTP error response', async () => {
+  it('retires the sub-account and throws MonadTopicPostRejectedError on an HTTP error response', async () => {
     const { client, pool } = makeClient()
     mockedAxios.mockImplementationOnce(async () => {
       const err = Object.assign(new Error('Bad Request'), {
         isAxiosError: true,
-        response: { status: 400, data: { error: 'invalid_forum_post' } },
+        response: { status: 400, data: { error: 'invalid_topic_post' } },
       })
       throw err
     })
 
     await expect(
-      client.submitForumPost({
+      client.submitTopicPost({
         topic: 'general',
         entries: ENTRIES,
         direction: 'up',
@@ -376,7 +376,7 @@ describe('MonadForumPostClient.submitForumPost', () => {
         voteWeightWei: 5_000n,
         overrides: FEE_OVERRIDES,
       }),
-    ).rejects.toThrow(MonadForumPostRejectedError)
+    ).rejects.toThrow(MonadTopicPostRejectedError)
 
     const retired = pool.records().filter(r => r.status === 'retired')
     expect(retired).toHaveLength(1)
@@ -396,10 +396,10 @@ describe('MonadForumPostClient.submitForumPost', () => {
         })
         throw networkErr
       }
-      // GET /message/monad/forum/:payload_hash
+      // GET /message/monad/topics/:payload_hash
       getCalls++
-      expect(config.url).toContain('/message/monad/forum/')
-      const sentPost: MonadForumPostProto = {
+      expect(config.url).toContain('/message/monad/topics/')
+      const sentPost: MonadTopicPostProto = {
         topic: 'general',
         parentPostHash: new Uint8Array(0),
         rawBurnTx: new Uint8Array([1]),
@@ -407,7 +407,7 @@ describe('MonadForumPostClient.submitForumPost', () => {
         payloadHash: new Uint8Array(32).fill(0x9),
       }
       return {
-        data: forumPostViewBytes(sentPost, 5_000),
+        data: topicPostViewBytes(sentPost, 5_000),
         status: 200,
         statusText: 'OK',
         headers: {},
@@ -415,7 +415,7 @@ describe('MonadForumPostClient.submitForumPost', () => {
       }
     })
 
-    const result = await client.submitForumPost({
+    const result = await client.submitTopicPost({
       topic: 'general',
       entries: ENTRIES,
       direction: 'up',
@@ -435,7 +435,7 @@ describe('MonadForumPostClient.submitForumPost', () => {
     expect(pool.getRecord(result.leaseIndex)?.status).toBe('spent')
   })
 
-  it('retires as stuck and throws MonadForumPostAbandonedError when the fallback poll never finds it', async () => {
+  it('retires as stuck and throws MonadTopicPostAbandonedError when the fallback poll never finds it', async () => {
     const { client, pool } = makeClient()
     mockedAxios.mockImplementation(async () => {
       const networkErr = Object.assign(new Error('timeout'), {
@@ -446,7 +446,7 @@ describe('MonadForumPostClient.submitForumPost', () => {
     })
 
     await expect(
-      client.submitForumPost({
+      client.submitTopicPost({
         topic: 'general',
         entries: ENTRIES,
         direction: 'up',
@@ -459,7 +459,7 @@ describe('MonadForumPostClient.submitForumPost', () => {
           sleep: async () => undefined,
         },
       }),
-    ).rejects.toThrow(MonadForumPostAbandonedError)
+    ).rejects.toThrow(MonadTopicPostAbandonedError)
 
     const retired = pool.records().filter(r => r.status === 'retired')
     expect(retired).toHaveLength(1)
@@ -468,7 +468,7 @@ describe('MonadForumPostClient.submitForumPost', () => {
   it('rejects an empty entries array before leasing anything', async () => {
     const { client, pool } = makeClient()
     await expect(
-      client.submitForumPost({
+      client.submitTopicPost({
         topic: 'general',
         entries: [],
         direction: 'up',

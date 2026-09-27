@@ -1,56 +1,56 @@
 /**
- * Client-side forum topic post + initial burn-weighted vote, over Monad (ticket #31).
+ * Client-side topic post + initial burn-weighted vote, over Monad (ticket #31).
  *
  * Mirrors `createBroadcast` from Lotus's `app/src/cashweb/registry/index.ts`: serialize the post
  * payload, hash it, build a burn transaction whose value is the initial vote's weight, and submit
  * payload + burn tx together to the registry. Structurally this file is `monad-stamp-client.ts`
- * (#13) with a forum-specific payload shape and calldata layout swapped in — same sub-account
+ * (#13) with a topic-specific payload shape and calldata layout swapped in — same sub-account
  * leasing, same value+calldata signing primitive, same lease-release contract. Read that file's
  * header first; only the differences are called out below.
  *
  * ## What this does
  *
  * 1. Builds the post's payload by reusing this app's existing Lotus-broadcast wire shape
- *    (`../registry/broadcast_pb`'s `BroadcastMessage`/`BroadcastEntry`/`ForumPost`, and
+ *    (`../registry/broadcast_pb`'s `BroadcastMessage`/`BroadcastEntry`/`TopicPost`, and
  *    `../types/forum`'s `ForumMessageEntry`) rather than inventing a new payload encoding — see
  *    "Payload encoding, and why there's no encryption here" below.
  * 2. Computes `payload_hash = SHA256(serialized payload)`.
- * 3. Builds the calldata commitment as `<lokad_id: FORUM_VOTE_LOKAD_ID><version:
- *    FORUM_COMMITMENT_VERSION_TAG><direction: 0x01 up / 0x00 down><commitment: 32 bytes>` (38
- *    bytes total) — the exact layout `cashweb_registry::monad_forum_verify::
- *    parse_forum_calldata` decodes (see `backend/cashweb/cashweb-registry/src/
- *    monad_forum_verify.rs` lines 26-38 for the field-by-field doc, and its `FORUM_VOTE_LOKAD_ID`/
- *    `FORUM_COMMITMENT_VERSION_TAG`/`VoteDirection::{UP_BYTE,DOWN_BYTE}` constants for the exact
+ * 3. Builds the calldata commitment as `<lokad_id: TOPIC_VOTE_LOKAD_ID><version:
+ *    TOPIC_COMMITMENT_VERSION_TAG><direction: 0x01 up / 0x00 down><commitment: 32 bytes>` (38
+ *    bytes total) — the exact layout `cashweb_registry::monad_topic_verify::
+ *    parse_topic_calldata` decodes (see `backend/cashweb/cashweb-registry/src/
+ *    monad_topic_verify.rs` lines 26-38 for the field-by-field doc, and its `TOPIC_VOTE_LOKAD_ID`/
+ *    `TOPIC_COMMITMENT_VERSION_TAG`/`VoteDirection::{UP_BYTE,DOWN_BYTE}` constants for the exact
  *    byte values this module hardcodes below). Distinct from `monad-stamp-client.ts`'s 37-byte
  *    `<POND><0x01><commitment>` layout by exactly the one extra direction byte.
  * 4. Leases a sub-account (`SubAccountLeaseManager`, #18) and builds+signs the burn tx via
  *    `MonadAccountTxSigner.buildAndSignCall` (#11): value → the initial vote's weight (wei), to →
- *    the same `MONAD_STAMP_BURN_ADDRESS` the backend's `ForumGateConfig` reads (see
- *    `backend/cashweb/cashweb-registry/src/http/forum.rs`'s module doc: a forum vote burns to the
+ *    the same `MONAD_STAMP_BURN_ADDRESS` the backend's `MonadTopicGateConfig` reads (see
+ *    `backend/cashweb/cashweb-registry/src/http/monad_topics.rs`'s module doc: a topic vote burns to the
  *    *same* configured Stamp burn address, just tagged with a different LOKAD ID in its calldata —
- *    there is deliberately no separate forum burn-address env var).
- * 5. Assembles a `MonadForumPost { topic, parent_post_hash, raw_burn_tx, encrypted_payload,
- *    payload_hash }` and `PUT`s it to `/message/monad/forum`, expecting a `StoredMonadForumPost`
+ *    there is deliberately no separate topic burn-address env var).
+ * 5. Assembles a `MonadTopicPost { topic, parent_post_hash, raw_burn_tx, encrypted_payload,
+ *    payload_hash }` and `PUT`s it to `/message/monad/topics`, expecting a `StoredMonadTopicPost`
  *    back.
  * 6. Releases the lease per the exact same three-way outcome mapping `monad-stamp-client.ts`
  *    documents in its own "Lease release policy" section (2xx → `'confirmed'`; HTTP error response
  *    → `'failed'`; network/transport failure → fall back to polling `GET
- *    /message/monad/forum/:payload_hash` before deciding `'confirmed'`/`'stuck'`) — see that
+ *    /message/monad/topics/:payload_hash` before deciding `'confirmed'`/`'stuck'`) — see that
  *    section below for why this file repeats rather than imports that logic.
  *
  * ## Payload encoding, and why there's no encryption here
  *
- * `MonadForumPost.encrypted_payload`'s doc comment (`forum_message.proto`) says it's "opaque to
- * the relay exactly like `MonadStampedMessage.encrypted_payload`" — but a forum *topic post* is
+ * `MonadTopicPost.encrypted_payload`'s doc comment (`topic_message.proto`) says it's "opaque to
+ * the relay exactly like `MonadStampedMessage.encrypted_payload`" — but a topic *post* is
  * public by nature (unlike a Stamp/direct message, which has one or more specific recipients), so
  * there is no counterparty key to encrypt it for. Lotus's own `createBroadcast` (the function this
  * ticket explicitly mirrors) confirms this: it serializes its `BroadcastMessage` protobuf and
  * hashes/signs/burns against it directly, with no encryption step at all — the "opaque to the
  * relay" framing there is about the relay not needing to parse the payload to do its job, not
- * about confidentiality. This module follows that precedent: `buildForumPostPayload` produces
- * plain (unencrypted) serialized `BroadcastMessage` bytes, reusing the app's *existing* forum
+ * about confidentiality. This module follows that precedent: `buildTopicPostPayload` produces
+ * plain (unencrypted) serialized `BroadcastMessage` bytes, reusing the app's *existing* topic
  * payload shape (`../registry/broadcast_pb`'s generated `BroadcastMessage`/`BroadcastEntry`/
- * `ForumPost` classes, and `../types/forum`'s `ForumMessageEntry`/`TextPost` types) rather than
+ * `TopicPost` classes, and `../types/forum`'s `ForumMessageEntry`/`TextPost` types) rather than
  * `monad-message-envelope.ts`'s (#9) ECDH-encrypted envelope, which is specifically a
  * recipient-addressed direct-message convention with no meaning for a public topic post. Per this
  * ticket's own instructions: reuse an existing payload type if one exists (it does — this one),
@@ -59,11 +59,11 @@
  * ## Protobuf encoding
  *
  * Uses the real generated bindings already committed to `main` ahead of both #31 and #32:
- * `./proto/forum_message.proto` → `./forum_message_pb.js`/`.d.ts` (ticket #30/#39's toolchain —
+ * `./proto/topic_message.proto` → `./topic_message_pb.js`/`.d.ts` (ticket #30/#39's toolchain —
  * see `monad-stamp-client.ts`'s header for why hand-rolled `jspb.BinaryWriter`/`BinaryReader` was
  * rejected and replaced with a real `protoc`/`protoc-gen-js`/`protoc-gen-ts` toolchain). This file
  * does not regenerate or edit those bindings — confirmed they already carry every field this
- * ticket needs (`MonadForumPost.parent_post_hash`, `StoredMonadForumPost.network_tag`, etc.).
+ * ticket needs (`MonadTopicPost.parent_post_hash`, `StoredMonadTopicPost.network_tag`, etc.).
  *
  * ## Lease release policy
  *
@@ -75,34 +75,34 @@
  *     `'failed'`. No transaction was ever broadcast, so the account's nonce isn't actually at
  *     risk, but `releaseLease` has no "never attempted" outcome to say so — same documented
  *     trade-off `monad-stamp-client.ts` makes.
- *   - **`PUT /message/monad/forum` returns 2xx**: `process_forum_post` (`http/forum.rs`) only
- *     reaches its success response after `ForumVoteRelayOutcome::Verified` — every other outcome
+ *   - **`PUT /message/monad/topics` returns 2xx**: `process_monad_topic_post` (`http/monad_topics.rs`) only
+ *     reaches its success response after `TopicVoteRelayOutcome::Verified` — every other outcome
  *     is a rejection before any store happens. → `'confirmed'`.
- *   - **`PUT /message/monad/forum` returns an HTTP error response** (relay reached and
+ *   - **`PUT /message/monad/topics` returns an HTTP error response** (relay reached and
  *     definitively responded): per the same handler, a stored post only ever exists after
  *     `Verified`, so an HTTP-level error means the post was never accepted/stored. → `'failed'`
  *     (retiring rather than risking the rare "verified but the final store call itself 500'd"
  *     case — same conservative choice `monad-stamp-client.ts` documents for its own `PUT`, for the
- *     same reason: distinguishing that case would mean parsing `ProcessForumPostError`'s variant
+ *     same reason: distinguishing that case would mean parsing `ProcessTopicPostError`'s variant
  *     out of the JSON error body, which is needlessly fragile).
  *   - **No HTTP response at all** (network/transport failure, genuinely unknown whether the relay
  *     ever received/broadcast/stored the post before the connection dropped): falls back to
- *     polling `GET /message/monad/forum/:payload_hash` (`pollForStoredPost`) — that route already
- *     exists server-side (`handle_get_forum_post`, `http/forum.rs`) purely as an internal
+ *     polling `GET /message/monad/topics/:payload_hash` (`pollForStoredPost`) — that route already
+ *     exists server-side (`handle_get_monad_topic_post`, `http/monad_topics.rs`) purely as an internal
  *     disambiguation mechanism here, the same way `monad-stamp-client.ts` uses its own `GET
  *     /message/monad/:payload_hash` fallback poll; this is *not* the "read back posts" feature
  *     (ticket #33's scope) — it never surfaces a general read API, only resolves this one
  *     ambiguous case. Found → `'confirmed'`. Still not found after the poll budget is exhausted →
- *     `'stuck'`, and `MonadForumPostAbandonedError` is thrown.
+ *     `'stuck'`, and `MonadTopicPostAbandonedError` is thrown.
  */
 import { Provider, concat, getBytes, hexlify, sha256 } from 'ethers'
 import axios from 'axios'
 
 import {
-  MonadForumPost,
-  MonadForumPostView,
-  StoredMonadForumPost,
-} from './forum_message_pb'
+  MonadTopicPost,
+  MonadTopicPostView,
+  StoredMonadTopicPost,
+} from './topic_message_pb'
 import {
   BroadcastEntry,
   BroadcastMessage,
@@ -122,42 +122,42 @@ import {
   SignedMonadTx,
 } from './monad-account-tx'
 
-/** `cashweb_registry::monad_forum_verify::FORUM_VOTE_LOKAD_ID` (that file, line 94: `*b"FRUM"`) —
+/** `cashweb_registry::monad_topic_verify::TOPIC_VOTE_LOKAD_ID` (that file, line 94: `*b"TPIC"`) —
  * distinct from both `monad-stamp-client.ts`'s `"POND"` and Lotus's private-message LOKAD ID. */
-const FORUM_VOTE_LOKAD_ID = new Uint8Array([0x46, 0x52, 0x55, 0x4d]) // "FRUM"
+const TOPIC_VOTE_LOKAD_ID = new Uint8Array([0x54, 0x50, 0x49, 0x43]) // "TPIC"
 
-/** `cashweb_registry::monad_forum_verify::FORUM_COMMITMENT_VERSION_TAG` (that file, line 99:
+/** `cashweb_registry::monad_topic_verify::TOPIC_COMMITMENT_VERSION_TAG` (that file, line 99:
  * `0x01`). Independent of `monad-stamp-client.ts`'s own `COMMITMENT_VERSION_TAG` (both currently
  * `0x01`, but they version their own calldata layouts separately). */
-const FORUM_COMMITMENT_VERSION_TAG = new Uint8Array([0x01])
+const TOPIC_COMMITMENT_VERSION_TAG = new Uint8Array([0x01])
 
-/** `cashweb_registry::monad_forum_verify::VoteDirection::{UP_BYTE, DOWN_BYTE}` (that file, lines
+/** `cashweb_registry::monad_topic_verify::VoteDirection::{UP_BYTE, DOWN_BYTE}` (that file, lines
  * 118-119). An up-vote burns with direction byte `0x01`; a down-vote with `0x00` — mirroring
  * Lotus's `OP_1`/`OP_0` vote-direction convention (see that file's own module doc). */
-export type ForumVoteDirection = 'up' | 'down'
+export type TopicVoteDirection = 'up' | 'down'
 
-const FORUM_VOTE_DIRECTION_BYTE: Record<ForumVoteDirection, number> = {
+const TOPIC_VOTE_DIRECTION_BYTE: Record<TopicVoteDirection, number> = {
   up: 0x01,
   down: 0x00,
 }
 
 /** Total calldata length: `<lokad_id: 4><version: 1><direction: 1><commitment: 32>` = 38 bytes.
  * One byte longer than `monad-stamp-client.ts`'s `MONAD_STAMP_CALLDATA_LENGTH` (37) — the extra
- * direction byte a forum vote's calldata carries that a plain Stamp burn's doesn't. Exported for
+ * direction byte a topic vote's calldata carries that a plain Stamp burn's doesn't. Exported for
  * tests that want to assert on the exact calldata length independent of this module's other
  * constants. */
-export const MONAD_FORUM_VOTE_CALLDATA_LENGTH =
-  FORUM_VOTE_LOKAD_ID.length +
-  FORUM_COMMITMENT_VERSION_TAG.length +
+export const MONAD_TOPIC_VOTE_CALLDATA_LENGTH =
+  TOPIC_VOTE_LOKAD_ID.length +
+  TOPIC_COMMITMENT_VERSION_TAG.length +
   1 /* direction */ +
   32 /* commitment */
 
 /**
- * `MonadForumPost` from `forum_message.proto`, decoded/encoded here in plain-object form (field
+ * `MonadTopicPost` from `topic_message.proto`, decoded/encoded here in plain-object form (field
  * names match the `.proto` exactly: `topic = 1`, `parent_post_hash = 2`, `raw_burn_tx = 3`,
  * `encrypted_payload = 4`, `payload_hash = 5`).
  */
-export interface MonadForumPostProto {
+export interface MonadTopicPostProto {
   topic: string
   parentPostHash: Uint8Array
   rawBurnTx: Uint8Array
@@ -166,11 +166,11 @@ export interface MonadForumPostProto {
 }
 
 /**
- * `StoredMonadForumPost` from `forum_message.proto` — what `PUT /message/monad/forum` returns on
- * success, and what `GET /message/monad/forum/:payload_hash` wraps in a `MonadForumPostView`.
+ * `StoredMonadTopicPost` from `topic_message.proto` — what `PUT /message/monad/topics` returns on
+ * success, and what `GET /message/monad/topics/:payload_hash` wraps in a `MonadTopicPostView`.
  */
-export interface StoredMonadForumPostProto {
-  post: MonadForumPostProto | undefined
+export interface StoredMonadTopicPostProto {
+  post: MonadTopicPostProto | undefined
   senderAddress: Uint8Array
   txHash: Uint8Array
   /** Milliseconds since the Unix epoch. See `monad-stamp-client.ts`'s
@@ -182,17 +182,17 @@ export interface StoredMonadForumPostProto {
   networkTag: Uint8Array
 }
 
-/** `MonadForumPostView` from `forum_message.proto` — `GET /message/monad/forum/:payload_hash`'s
+/** `MonadTopicPostView` from `topic_message.proto` — `GET /message/monad/topics/:payload_hash`'s
  * response shape, used here only as this module's internal network-failure disambiguation poll
  * (see this file's header, "Lease release policy"); reading a post's tally for its own sake is
  * ticket #33's scope, not this one's. */
-export interface MonadForumPostViewProto {
-  post: StoredMonadForumPostProto | undefined
+export interface MonadTopicPostViewProto {
+  post: StoredMonadTopicPostProto | undefined
   voteWeight: number
 }
 
-function encodeMonadForumPost(msg: MonadForumPostProto): Uint8Array {
-  const pb = new MonadForumPost()
+function encodeMonadTopicPost(msg: MonadTopicPostProto): Uint8Array {
+  const pb = new MonadTopicPost()
   pb.setTopic(msg.topic)
   pb.setParentPostHash(msg.parentPostHash)
   pb.setRawBurnTx(msg.rawBurnTx)
@@ -201,10 +201,10 @@ function encodeMonadForumPost(msg: MonadForumPostProto): Uint8Array {
   return pb.serializeBinary()
 }
 
-/** Decode protobuf wire-format bytes into a {@link MonadForumPostProto}. Round-trips with
- * {@link encodeMonadForumPost}. Exported for tests. */
-export function decodeMonadForumPost(bytes: Uint8Array): MonadForumPostProto {
-  const pb = MonadForumPost.deserializeBinary(bytes)
+/** Decode protobuf wire-format bytes into a {@link MonadTopicPostProto}. Round-trips with
+ * {@link encodeMonadTopicPost}. Exported for tests. */
+export function decodeMonadTopicPost(bytes: Uint8Array): MonadTopicPostProto {
+  const pb = MonadTopicPost.deserializeBinary(bytes)
   return {
     topic: pb.getTopic(),
     parentPostHash: pb.getParentPostHash_asU8(),
@@ -214,9 +214,9 @@ export function decodeMonadForumPost(bytes: Uint8Array): MonadForumPostProto {
   }
 }
 
-function decodeStoredMonadForumPostPb(
-  pb: StoredMonadForumPost,
-): StoredMonadForumPostProto {
+function decodeStoredMonadTopicPostPb(
+  pb: StoredMonadTopicPost,
+): StoredMonadTopicPostProto {
   const nested = pb.getPost()
   return {
     post: nested
@@ -235,31 +235,31 @@ function decodeStoredMonadForumPostPb(
   }
 }
 
-/** Decode protobuf wire-format bytes into a {@link StoredMonadForumPostProto} — what
- * `PUT /message/monad/forum` returns on success. */
-export function decodeStoredMonadForumPost(
+/** Decode protobuf wire-format bytes into a {@link StoredMonadTopicPostProto} — what
+ * `PUT /message/monad/topics` returns on success. */
+export function decodeStoredMonadTopicPost(
   bytes: Uint8Array,
-): StoredMonadForumPostProto {
-  return decodeStoredMonadForumPostPb(
-    StoredMonadForumPost.deserializeBinary(bytes),
+): StoredMonadTopicPostProto {
+  return decodeStoredMonadTopicPostPb(
+    StoredMonadTopicPost.deserializeBinary(bytes),
   )
 }
 
-/** Decode protobuf wire-format bytes into a {@link MonadForumPostViewProto} — what
- * `GET /message/monad/forum/:payload_hash` returns (used here only for the fallback poll). */
-export function decodeMonadForumPostView(
+/** Decode protobuf wire-format bytes into a {@link MonadTopicPostViewProto} — what
+ * `GET /message/monad/topics/:payload_hash` returns (used here only for the fallback poll). */
+export function decodeMonadTopicPostView(
   bytes: Uint8Array,
-): MonadForumPostViewProto {
-  const pb = MonadForumPostView.deserializeBinary(bytes)
+): MonadTopicPostViewProto {
+  const pb = MonadTopicPostView.deserializeBinary(bytes)
   const nested = pb.getPost()
   return {
-    post: nested ? decodeStoredMonadForumPostPb(nested) : undefined,
+    post: nested ? decodeStoredMonadTopicPostPb(nested) : undefined,
     voteWeight: pb.getVoteWeight(),
   }
 }
 
 /**
- * Serializes a forum post's payload using this app's existing Lotus-broadcast wire shape (see
+ * Serializes a topic post's payload using this app's existing Lotus-broadcast wire shape (see
  * this file's header, "Payload encoding, and why there's no encryption here"): a `BroadcastMessage`
  * carrying `topic`, `timestamp`, `entries` (one `BroadcastEntry` per {@link ForumMessageEntry}),
  * and `parentDigest`. Mirrors `createBroadcast`'s own payload-construction loop
@@ -269,7 +269,7 @@ export function decodeMonadForumPostView(
  *
  * @param timestampMs Defaults to `Date.now()`; overridable for deterministic tests.
  */
-export function buildForumPostPayload(params: {
+export function buildTopicPostPayload(params: {
   topic: string
   entries: ForumMessageEntry[]
   parentPostHash?: Uint8Array
@@ -285,7 +285,7 @@ export function buildForumPostPayload(params: {
   const protoEntries: BroadcastEntry[] = []
   for (const entry of params.entries) {
     if (entry.kind !== 'post') {
-      throw new Error(`unsupported forum entry kind: ${entry.kind}`)
+      throw new Error(`unsupported topic entry kind: ${entry.kind}`)
     }
     const textEntry = new BroadcastEntry()
     textEntry.setKind(entry.kind)
@@ -301,46 +301,46 @@ export function buildForumPostPayload(params: {
   return broadcastMessage.serializeBinary()
 }
 
-/** `payload_hash = SHA256(serialized payload)` — both `MonadForumPost.payload_hash` and the
+/** `payload_hash = SHA256(serialized payload)` — both `MonadTopicPost.payload_hash` and the
  * on-chain commitment the initial-vote burn tx's calldata must carry. Returns the raw 32-byte
  * hash, not hex. */
-export function computeForumPostCommitment(payload: Uint8Array): Uint8Array {
+export function computeTopicPostCommitment(payload: Uint8Array): Uint8Array {
   return getBytes(sha256(payload))
 }
 
-/** Build the exact `<lokad_id: FORUM_VOTE_LOKAD_ID><version:
- * FORUM_COMMITMENT_VERSION_TAG><direction: 1 byte><commitment: 32 bytes>` calldata layout
- * `monad_forum_verify::parse_forum_calldata` decodes (see this file's header), as a `0x`-prefixed
+/** Build the exact `<lokad_id: TOPIC_VOTE_LOKAD_ID><version:
+ * TOPIC_COMMITMENT_VERSION_TAG><direction: 1 byte><commitment: 32 bytes>` calldata layout
+ * `monad_topic_verify::parse_topic_calldata` decodes (see this file's header), as a `0x`-prefixed
  * hex string ready to pass straight into `MonadAccountTxSigner.buildAndSignCall`. */
-export function buildForumVoteCalldata(
-  direction: ForumVoteDirection,
+export function buildTopicVoteCalldata(
+  direction: TopicVoteDirection,
   commitment: Uint8Array,
 ): string {
   if (commitment.length !== 32) {
     throw new Error(
-      `Forum vote commitment must be exactly 32 bytes, got ${commitment.length}`,
+      `Topic vote commitment must be exactly 32 bytes, got ${commitment.length}`,
     )
   }
   return concat([
-    FORUM_VOTE_LOKAD_ID,
-    FORUM_COMMITMENT_VERSION_TAG,
-    new Uint8Array([FORUM_VOTE_DIRECTION_BYTE[direction]]),
+    TOPIC_VOTE_LOKAD_ID,
+    TOPIC_COMMITMENT_VERSION_TAG,
+    new Uint8Array([TOPIC_VOTE_DIRECTION_BYTE[direction]]),
     commitment,
   ])
 }
 
 /** Hex-encode `bytes` with no `0x` prefix — the shape Rust's `hex::decode` (used by
- * `handle_get_forum_post`'s `:payload_hash` path segment) expects. */
+ * `handle_get_monad_topic_post`'s `:payload_hash` path segment) expects. */
 function toBareHex(bytes: Uint8Array): string {
   return hexlify(bytes).slice(2)
 }
 
 /** Base class for every error this module throws. */
-export class MonadForumPostError extends Error {}
+export class MonadTopicPostError extends Error {}
 
-/** Thrown when `PUT /message/monad/forum` returns an HTTP-level error response (the relay was
+/** Thrown when `PUT /message/monad/topics` returns an HTTP-level error response (the relay was
  * reached and definitively rejected the post — see this file's header, "Lease release policy"). */
-export class MonadForumPostRejectedError extends MonadForumPostError {
+export class MonadTopicPostRejectedError extends MonadTopicPostError {
   readonly status: number | undefined
   readonly detail: unknown
 
@@ -352,10 +352,10 @@ export class MonadForumPostRejectedError extends MonadForumPostError {
 }
 
 /** Thrown when a network-level failure left the outcome genuinely unknown, and polling
- * `GET /message/monad/forum/:payload_hash` never turned up a stored post within the configured
+ * `GET /message/monad/topics/:payload_hash` never turned up a stored post within the configured
  * budget (see this file's header, "Lease release policy"). The lease has already been released as
  * `'stuck'` (retired) by the time this is thrown. */
-export class MonadForumPostAbandonedError extends MonadForumPostError {
+export class MonadTopicPostAbandonedError extends MonadTopicPostError {
   readonly payloadHashHex: string
 
   constructor(message: string, payloadHashHex: string) {
@@ -368,7 +368,7 @@ function defaultSleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
 
-/** Options for the `GET /message/monad/forum/:payload_hash` fallback poll used when a `PUT`
+/** Options for the `GET /message/monad/topics/:payload_hash` fallback poll used when a `PUT`
  * attempt fails with no HTTP response at all (see this file's header, "Lease release policy"). */
 export interface AbandonPollOptions {
   /** Delay between poll attempts, in ms. Default 2000. */
@@ -379,17 +379,17 @@ export interface AbandonPollOptions {
   sleep?: (ms: number) => Promise<void>
 }
 
-/** Params for `MonadForumPostClient.submitForumPost`. */
-export interface SubmitForumPostParams {
+/** Params for `MonadTopicPostClient.submitTopicPost`. */
+export interface SubmitTopicPostParams {
   topic: string
   entries: ForumMessageEntry[]
   /** SHA256 digest of the parent post this is replying to, if any. Omit (or pass an empty array)
    * for a top-level post. */
   parentPostHash?: Uint8Array
   /** This post's initial vote direction — even a post's own first vote can be up or down. */
-  direction: ForumVoteDirection
+  direction: TopicVoteDirection
   /** `0x`-prefixed Monad burn address (see `frank/.env.example`'s `MONAD_STAMP_BURN_ADDRESS`,
-   * reused as-is for forum votes per `http/forum.rs`'s module doc — there is no separate forum
+   * reused as-is for topic votes per `http/monad_topics.rs`'s module doc — there is no separate topic
    * burn-address var). Passed explicitly rather than read from `process.env` here, matching
    * `monad-http.ts`'s established convention. */
   burnAddress: string
@@ -407,10 +407,10 @@ export interface SubmitForumPostParams {
   timestampMs?: number
 }
 
-/** Outcome of a successful `submitForumPost` call. */
-export interface SubmitForumPostResult {
-  stored: StoredMonadForumPostProto
-  /** Bare (no `0x`) hex of `payload_hash` — also `GET /message/monad/forum/:payload_hash`'s path
+/** Outcome of a successful `submitTopicPost` call. */
+export interface SubmitTopicPostResult {
+  stored: StoredMonadTopicPostProto
+  /** Bare (no `0x`) hex of `payload_hash` — also `GET /message/monad/topics/:payload_hash`'s path
    * segment. */
   payloadHashHex: string
   txHash: string
@@ -419,17 +419,17 @@ export interface SubmitForumPostResult {
 
 /**
  * Ties together sub-account leasing (#14/#18), burn-tx construction (#11), and the live
- * `PUT /message/monad/forum` / `GET /message/monad/forum/:payload_hash` HTTP surface (#30) into
+ * `PUT /message/monad/topics` / `GET /message/monad/topics/:payload_hash` HTTP surface (#30) into
  * one call: "post this topic message, with its initial burn-weighted vote, to Monad and hand it to
  * the relay." See this file's header for the full payload/calldata/lease-release design.
  */
-export class MonadForumPostClient {
+export class MonadTopicPostClient {
   private readonly pool: MonadSubAccountPool
   private readonly leaseManager: SubAccountLeaseManager
   private readonly provider: Provider
   private readonly httpClient: MonadTxSubmitter
   /** Base URL of the `cashweb-registry` relay, e.g. `https://relay.example.com` — no trailing
-   * slash. `/message/monad/forum` (`PUT`) and `/message/monad/forum/:payload_hash` (`GET`) are
+   * slash. `/message/monad/topics` (`PUT`) and `/message/monad/topics/:payload_hash` (`GET`) are
    * appended to it. */
   private readonly relayBaseUrl: string
 
@@ -448,20 +448,20 @@ export class MonadForumPostClient {
   }
 
   /** Fetch a previously-stored post view by its bare-hex `payload_hash` via
-   * `GET /message/monad/forum/:payload_hash`. Returns `undefined` on a `404` (not yet
+   * `GET /message/monad/topics/:payload_hash`. Returns `undefined` on a `404` (not yet
    * stored/found) — any other non-2xx response, or a network-level failure, propagates as a
    * thrown error. Used internally as this module's network-failure disambiguation poll — see this
    * file's header, "Lease release policy". */
-  async fetchStoredForumPostView(
+  async fetchStoredTopicPostView(
     payloadHashHex: string,
-  ): Promise<MonadForumPostViewProto | undefined> {
+  ): Promise<MonadTopicPostViewProto | undefined> {
     try {
       const response = await axios({
         method: 'get',
-        url: `${this.relayBaseUrl}/message/monad/forum/${payloadHashHex}`,
+        url: `${this.relayBaseUrl}/message/monad/topics/${payloadHashHex}`,
         responseType: 'arraybuffer',
       })
-      return decodeMonadForumPostView(new Uint8Array(response.data))
+      return decodeMonadTopicPostView(new Uint8Array(response.data))
     } catch (err) {
       if (axios.isAxiosError(err) && err.response?.status === 404) {
         return undefined
@@ -473,7 +473,7 @@ export class MonadForumPostClient {
   private async pollForStoredPost(
     payloadHashHex: string,
     options?: AbandonPollOptions,
-  ): Promise<StoredMonadForumPostProto | undefined> {
+  ): Promise<StoredMonadTopicPostProto | undefined> {
     const intervalMs = options?.intervalMs ?? 2000
     const maxAttempts = options?.maxAttempts ?? 5
     const sleep = options?.sleep ?? defaultSleep
@@ -482,7 +482,7 @@ export class MonadForumPostClient {
       // A single poll attempt failing is not itself proof of abandonment -- only exhausting the
       // whole poll budget without ever finding the post is. See `monad-stamp-client.ts`'s
       // identically-shaped `pollForStoredMessage` for the same reasoning.
-      const view = await this.fetchStoredForumPostView(payloadHashHex).catch(
+      const view = await this.fetchStoredTopicPostView(payloadHashHex).catch(
         () => undefined,
       )
       if (view?.post !== undefined) return view.post
@@ -490,48 +490,48 @@ export class MonadForumPostClient {
     return undefined
   }
 
-  private async putForumPost(
-    post: MonadForumPostProto,
-  ): Promise<StoredMonadForumPostProto> {
+  private async putTopicPost(
+    post: MonadTopicPostProto,
+  ): Promise<StoredMonadTopicPostProto> {
     const response = await axios({
       method: 'put',
-      url: `${this.relayBaseUrl}/message/monad/forum`,
-      data: encodeMonadForumPost(post),
+      url: `${this.relayBaseUrl}/message/monad/topics`,
+      data: encodeMonadTopicPost(post),
       // Content-Type must be exactly `application/x-protobuf` -- `cashweb_http_utils::protobuf::
-      // Protobuf` (the extractor `handle_put_forum_post` uses) rejects anything else with a 400,
+      // Protobuf` (the extractor `handle_put_monad_topic_post` uses) rejects anything else with a 400,
       // the same bug ticket #8's e2e demo found and fixed for `monad_message.rs`; see
       // `monad-stamp-client.ts`'s header for the full story.
       headers: { 'Content-Type': 'application/x-protobuf' },
       responseType: 'arraybuffer',
     })
-    return decodeStoredMonadForumPost(new Uint8Array(response.data))
+    return decodeStoredMonadTopicPost(new Uint8Array(response.data))
   }
 
   /**
    * Posts `params.topic`/`params.entries` (with `params.direction`/`params.voteWeightWei` as its
-   * initial vote) to Monad end-to-end: builds the payload, computes its hash, builds the forum
+   * initial vote) to Monad end-to-end: builds the payload, computes its hash, builds the topic
    * calldata, leases a sub-account, builds+signs the burn tx, `PUT`s the assembled
-   * `MonadForumPost` to the relay, and releases the lease per this file's header's documented
-   * policy. Throws {@link MonadForumPostRejectedError} if the relay definitively rejected the
-   * post, or {@link MonadForumPostAbandonedError} if a network failure left the outcome unresolved
+   * `MonadTopicPost` to the relay, and releases the lease per this file's header's documented
+   * policy. Throws {@link MonadTopicPostRejectedError} if the relay definitively rejected the
+   * post, or {@link MonadTopicPostAbandonedError} if a network failure left the outcome unresolved
    * even after the fallback `GET` poll.
    */
-  async submitForumPost(
-    params: SubmitForumPostParams,
-  ): Promise<SubmitForumPostResult> {
+  async submitTopicPost(
+    params: SubmitTopicPostParams,
+  ): Promise<SubmitTopicPostResult> {
     if (params.entries.length === 0) {
       throw new Error('entries must not be empty')
     }
 
     const parentPostHash = params.parentPostHash ?? new Uint8Array(0)
-    const payload = buildForumPostPayload({
+    const payload = buildTopicPostPayload({
       topic: params.topic,
       entries: params.entries,
       parentPostHash,
       timestampMs: params.timestampMs,
     })
-    const payloadHash = computeForumPostCommitment(payload)
-    const calldata = buildForumVoteCalldata(params.direction, payloadHash)
+    const payloadHash = computeTopicPostCommitment(payload)
+    const calldata = buildTopicVoteCalldata(params.direction, payloadHash)
     const payloadHashHex = toBareHex(payloadHash)
 
     const handle: AccountLeaseHandle = params.waitForLease
@@ -558,7 +558,7 @@ export class MonadForumPostClient {
       throw err
     }
 
-    const post: MonadForumPostProto = {
+    const post: MonadTopicPostProto = {
       topic: params.topic,
       parentPostHash,
       rawBurnTx: getBytes(signedTx.rawTx),
@@ -567,7 +567,7 @@ export class MonadForumPostClient {
     }
 
     try {
-      const stored = await this.putForumPost(post)
+      const stored = await this.putTopicPost(post)
       this.leaseManager.releaseLease(handle, 'confirmed')
       return {
         stored,
@@ -578,8 +578,8 @@ export class MonadForumPostClient {
     } catch (err) {
       if (axios.isAxiosError(err) && err.response) {
         this.leaseManager.releaseLease(handle, 'failed')
-        throw new MonadForumPostRejectedError(
-          `Relay rejected the Monad forum post (HTTP ${err.response.status})`,
+        throw new MonadTopicPostRejectedError(
+          `Relay rejected the Monad topic post (HTTP ${err.response.status})`,
           err.response.status,
           err.response.data,
         )
@@ -602,9 +602,9 @@ export class MonadForumPostClient {
       }
 
       this.leaseManager.releaseLease(handle, 'stuck')
-      throw new MonadForumPostAbandonedError(
-        'Monad forum post submission abandoned: no response from the relay, and ' +
-          `GET /message/monad/forum/${payloadHashHex} never found a stored post`,
+      throw new MonadTopicPostAbandonedError(
+        'Monad topic post submission abandoned: no response from the relay, and ' +
+          `GET /message/monad/topics/${payloadHashHex} never found a stored post`,
         payloadHashHex,
       )
     }

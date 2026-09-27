@@ -478,86 +478,89 @@ impl Registry {
         self.db.monad_messages().list_since(since)
     }
 
-    /// Store a [`proto::StoredMonadForumPost`] (ticket #30), once its initial vote's burn has
-    /// already verified (see `crate::http::forum`). Mirrors [`Registry::put_monad_message`]: no
+    /// Store a [`proto::StoredMonadTopicPost`] (ticket #30), once its initial vote's burn has
+    /// already verified (see `crate::http::monad_topics`). Mirrors [`Registry::put_monad_message`]: no
     /// `validate_burn_txs`/`chain_adapter` call here either, since broadcasting+verifying the
-    /// initial-vote burn is `monad_forum_relay::broadcast_and_verify_forum_vote`'s job, called by
+    /// initial-vote burn is `monad_topic_relay::broadcast_and_verify_topic_vote`'s job, called by
     /// the HTTP layer directly.
     ///
     /// Stamps `network_tag` (ticket #39, mirroring [`Registry::put_monad_message`] exactly -- see
     /// `crate::network_tag`'s module docs) onto `post` here and returns the tagged record actually
     /// persisted.
-    pub(crate) fn put_forum_post(
+    pub(crate) fn put_monad_topic_post(
         &self,
         payload_hash: &[u8],
-        post: proto::StoredMonadForumPost,
+        post: proto::StoredMonadTopicPost,
         network_tag: &[u8],
-    ) -> Result<proto::StoredMonadForumPost> {
-        let post = proto::StoredMonadForumPost {
+    ) -> Result<proto::StoredMonadTopicPost> {
+        let post = proto::StoredMonadTopicPost {
             network_tag: network_tag.to_vec(),
             ..post
         };
-        self.db.forum_posts().put(payload_hash, &post)?;
+        self.db.monad_topic_posts().put(payload_hash, &post)?;
         Ok(post)
     }
 
-    /// Retrieve a previously-stored [`proto::StoredMonadForumPost`] by its `payload_hash`.
-    pub(crate) fn get_forum_post(
+    /// Retrieve a previously-stored [`proto::StoredMonadTopicPost`] by its `payload_hash`.
+    pub(crate) fn get_monad_topic_post(
         &self,
         payload_hash: &[u8],
-    ) -> Result<Option<proto::StoredMonadForumPost>> {
-        self.db.forum_posts().get(payload_hash)
+    ) -> Result<Option<proto::StoredMonadTopicPost>> {
+        self.db.monad_topic_posts().get(payload_hash)
     }
 
     /// Record a single verified vote (a post's own initial vote, or a later
-    /// [`proto::MonadForumVote`]) against `entry.target_payload_hash` (ticket #30).
-    pub(crate) fn add_forum_vote(&self, entry: &proto::StoredMonadForumVoteEntry) -> Result<()> {
-        self.db.forum_votes().add_vote(entry)
+    /// [`proto::MonadTopicVote`]) against `entry.target_payload_hash` (ticket #30).
+    pub(crate) fn add_monad_topic_vote(
+        &self,
+        entry: &proto::StoredMonadTopicVoteEntry,
+    ) -> Result<()> {
+        self.db.monad_topic_votes().add_vote(entry)
     }
 
     /// Attach `post`'s current tallied vote weight (sum of every vote recorded against
-    /// `payload_hash`, including its own initial vote), producing a [`proto::MonadForumPostView`].
-    /// Shared by [`Registry::get_forum_post_view`] and [`Registry::list_forum_posts_by_topic`]
+    /// `payload_hash`, including its own initial vote), producing a [`proto::MonadTopicPostView`].
+    /// Shared by [`Registry::get_monad_topic_post_view`] and [`Registry::list_monad_topic_posts_by_topic`]
     /// (ticket #40) so both compute a post's tally the exact same way -- a client can't observe
     /// drift between "look up one post by hash" and "list a topic's posts".
-    fn forum_post_view(
+    fn monad_topic_post_view(
         &self,
         payload_hash: &[u8],
-        post: proto::StoredMonadForumPost,
-    ) -> Result<proto::MonadForumPostView> {
-        let vote_weight = self.db.forum_votes().tally(payload_hash)?;
-        Ok(proto::MonadForumPostView {
+        post: proto::StoredMonadTopicPost,
+    ) -> Result<proto::MonadTopicPostView> {
+        let vote_weight = self.db.monad_topic_votes().tally(payload_hash)?;
+        Ok(proto::MonadTopicPostView {
             post: Some(post),
             vote_weight,
         })
     }
 
-    /// Fetch a stored forum post together with its current tallied vote weight (sum of every
+    /// Fetch a stored topic post together with its current tallied vote weight (sum of every
     /// vote recorded against its `payload_hash`, including its own initial vote). `None` if no
     /// post is stored for `payload_hash`.
-    pub(crate) fn get_forum_post_view(
+    pub(crate) fn get_monad_topic_post_view(
         &self,
         payload_hash: &[u8],
-    ) -> Result<Option<proto::MonadForumPostView>> {
-        let post = match self.get_forum_post(payload_hash)? {
+    ) -> Result<Option<proto::MonadTopicPostView>> {
+        let post = match self.get_monad_topic_post(payload_hash)? {
             Some(post) => post,
             None => return Ok(None),
         };
-        Ok(Some(self.forum_post_view(payload_hash, post)?))
+        Ok(Some(self.monad_topic_post_view(payload_hash, post)?))
     }
 
-    /// List every stored [`proto::StoredMonadForumPost`] under `topic` with `timestamp >= since`
+    /// List every stored [`proto::StoredMonadTopicPost`] under `topic` with `timestamp >= since`
     /// (milliseconds since the Unix epoch), each with its current tallied vote weight attached, in
-    /// `timestamp` ascending order (ticket #40). See `crate::store::forum`'s module docs for the
-    /// `CF_FORUM_POSTS_BY_TOPIC` key layout this range-scans, and [`Registry::forum_post_view`] for
-    /// why the attached tally can't drift from [`Registry::get_forum_post_view`]'s.
-    pub(crate) fn list_forum_posts_by_topic(
+    /// `timestamp` ascending order (ticket #40). See `crate::store::monad_topics`'s module docs for the
+    /// `CF_MONAD_TOPIC_POSTS_BY_TOPIC` key layout this range-scans, and [`Registry::monad_topic_post_view`] for
+    /// why the attached tally can't drift from [`Registry::get_monad_topic_post_view`]'s.
+    pub(crate) fn list_monad_topic_posts_by_topic(
         &self,
         topic: &str,
         since: i64,
-    ) -> Result<Vec<proto::MonadForumPostView>> {
+    ) -> Result<Vec<proto::MonadTopicPostView>> {
         self.db
-            .forum_posts()
+            .monad_topic_posts()
             .list_by_topic(topic, since)?
             .into_iter()
             .map(|post| {
@@ -566,7 +569,7 @@ impl Registry {
                     .as_ref()
                     .map(|p| p.payload_hash.clone())
                     .unwrap_or_default();
-                self.forum_post_view(&payload_hash, post)
+                self.monad_topic_post_view(&payload_hash, post)
             })
             .collect()
     }

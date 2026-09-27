@@ -1,7 +1,7 @@
 /**
- * Unit tests for `monad-forum-vote-client.ts` (ticket #32).
+ * Unit tests for `monad-topic-vote-client.ts` (ticket #32).
  *
- * `axios` is mocked (`jest.mock('axios')`) so `PUT /message/monad/forum/vote` never touches a
+ * `axios` is mocked (`jest.mock('axios')`) so `PUT /message/monad/topics/vote` never touches a
  * real network — each test drives the mock to exercise one of `castVote`'s documented outcomes
  * (2xx success, HTTP-level rejection, network-failure abandonment). Burn-tx construction goes
  * through a real `MonadSubAccountPool`/`MonadAccountTxSigner` against a stubbed ethers
@@ -17,17 +17,17 @@ import { MonadSubAccountPool } from './monad-account-pool'
 import { SubAccountLeaseManager } from './monad-account-lease'
 import { MonadTxSubmitter } from './monad-account-tx'
 import {
-  MONAD_FORUM_VOTE_CALLDATA_LENGTH,
-  MonadForumVoteAbandonedError,
-  MonadForumVoteClient,
-  MonadForumVoteProto,
-  MonadForumVoteRejectedError,
-  StoredMonadForumVoteEntryProto,
-  buildMonadForumVoteCalldata,
-  decodeMonadForumVote,
-  decodeStoredMonadForumVoteEntry,
-  encodeMonadForumVote,
-} from './monad-forum-vote-client'
+  MONAD_TOPIC_VOTE_CALLDATA_LENGTH,
+  MonadTopicVoteAbandonedError,
+  MonadTopicVoteClient,
+  MonadTopicVoteProto,
+  MonadTopicVoteRejectedError,
+  StoredMonadTopicVoteEntryProto,
+  buildMonadTopicVoteCalldata,
+  decodeMonadTopicVote,
+  decodeStoredMonadTopicVoteEntry,
+  encodeMonadTopicVote,
+} from './monad-topic-vote-client'
 
 jest.mock('axios')
 const mockedAxios = axios as jest.Mocked<typeof axios>
@@ -85,7 +85,7 @@ function makeChainProvider() {
 }
 
 function storedVoteEntryBytes(
-  entry: StoredMonadForumVoteEntryProto,
+  entry: StoredMonadTopicVoteEntryProto,
 ): Uint8Array {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const jspb = require('google-protobuf')
@@ -103,7 +103,7 @@ function makeClient(overrides?: { pool?: MonadSubAccountPool }) {
   const leaseManager = new SubAccountLeaseManager(pool)
   const provider = makeChainProvider()
   const httpClient = makeMockHttpClient()
-  const client = new MonadForumVoteClient({
+  const client = new MonadTopicVoteClient({
     pool,
     leaseManager,
     provider,
@@ -114,45 +114,45 @@ function makeClient(overrides?: { pool?: MonadSubAccountPool }) {
 }
 
 describe('calldata construction', () => {
-  it('builds calldata as <FRUM><0x01><direction><32-byte commitment>, 38 bytes total (up)', () => {
+  it('builds calldata as <TPIC><0x01><direction><32-byte commitment>, 38 bytes total (up)', () => {
     const commitment = new Uint8Array(32).fill(0xab)
-    const calldata = buildMonadForumVoteCalldata('up', commitment)
+    const calldata = buildMonadTopicVoteCalldata('up', commitment)
     const bytes = getBytes(calldata)
 
     expect(bytes).toHaveLength(38)
-    expect(MONAD_FORUM_VOTE_CALLDATA_LENGTH).toBe(38)
-    // "FRUM" == 0x4652554d -- FORUM_VOTE_LOKAD_ID (monad_forum_verify.rs line 94).
-    expect(Array.from(bytes.slice(0, 4))).toEqual([0x46, 0x52, 0x55, 0x4d])
-    // FORUM_COMMITMENT_VERSION_TAG (monad_forum_verify.rs line 99).
+    expect(MONAD_TOPIC_VOTE_CALLDATA_LENGTH).toBe(38)
+    // "TPIC" == 0x54504943 -- TOPIC_VOTE_LOKAD_ID (monad_topic_verify.rs line 94).
+    expect(Array.from(bytes.slice(0, 4))).toEqual([0x54, 0x50, 0x49, 0x43])
+    // TOPIC_COMMITMENT_VERSION_TAG (monad_topic_verify.rs line 99).
     expect(bytes[4]).toBe(0x01)
-    // VoteDirection::UP_BYTE (monad_forum_verify.rs line 118).
+    // VoteDirection::UP_BYTE (monad_topic_verify.rs line 118).
     expect(bytes[5]).toBe(0x01)
     expect(Array.from(bytes.slice(6))).toEqual(Array.from(commitment))
   })
 
   it('encodes the down-vote direction byte as 0x00', () => {
     const commitment = new Uint8Array(32).fill(0xcd)
-    const calldata = buildMonadForumVoteCalldata('down', commitment)
+    const calldata = buildMonadTopicVoteCalldata('down', commitment)
     const bytes = getBytes(calldata)
 
     expect(bytes).toHaveLength(38)
-    // VoteDirection::DOWN_BYTE (monad_forum_verify.rs line 120).
+    // VoteDirection::DOWN_BYTE (monad_topic_verify.rs line 120).
     expect(bytes[5]).toBe(0x00)
     expect(Array.from(bytes.slice(6))).toEqual(Array.from(commitment))
   })
 
   it('rejects a commitment that is not exactly 32 bytes', () => {
-    expect(() => buildMonadForumVoteCalldata('up', new Uint8Array(31))).toThrow(
+    expect(() => buildMonadTopicVoteCalldata('up', new Uint8Array(31))).toThrow(
       /32 bytes/,
     )
   })
 
   it('never hashes the commitment -- it is the target payload_hash verbatim', () => {
     // Distinct from `monad-stamp-client.ts`'s `buildMonadStampCalldata`, which is always paired
-    // with a fresh `computeMonadStampCommitment` call: a forum vote has no payload of its own to
+    // with a fresh `computeMonadStampCommitment` call: a topic vote has no payload of its own to
     // hash, so the commitment bytes passed in must appear byte-for-byte in the calldata's tail.
     const targetPayloadHash = new Uint8Array(32).fill(0x42)
-    const calldata = buildMonadForumVoteCalldata('up', targetPayloadHash)
+    const calldata = buildMonadTopicVoteCalldata('up', targetPayloadHash)
     expect(Array.from(getBytes(calldata).slice(6))).toEqual(
       Array.from(targetPayloadHash),
     )
@@ -160,41 +160,41 @@ describe('calldata construction', () => {
 })
 
 describe('protobuf encode/decode round trip', () => {
-  it('round-trips MonadForumVote through encode -> decode', () => {
-    const vote: MonadForumVoteProto = {
+  it('round-trips MonadTopicVote through encode -> decode', () => {
+    const vote: MonadTopicVoteProto = {
       targetPayloadHash: new Uint8Array(32).fill(0x42),
       rawBurnTx: new Uint8Array([1, 2, 3, 4]),
     }
-    const decoded = decodeMonadForumVote(encodeMonadForumVote(vote))
+    const decoded = decodeMonadTopicVote(encodeMonadTopicVote(vote))
     expect(decoded).toEqual(vote)
   })
 
-  it('decodes a StoredMonadForumVoteEntry, including a negative (down-vote) weight', () => {
-    const entry: StoredMonadForumVoteEntryProto = {
+  it('decodes a StoredMonadTopicVoteEntry, including a negative (down-vote) weight', () => {
+    const entry: StoredMonadTopicVoteEntryProto = {
       targetPayloadHash: new Uint8Array(32).fill(0x11),
       senderAddress: getBytes('0x' + '22'.repeat(20)),
       txHash: getBytes('0x' + '33'.repeat(32)),
       timestamp: 1_700_000_000_000,
       weight: -5_000,
     }
-    const decoded = decodeStoredMonadForumVoteEntry(storedVoteEntryBytes(entry))
+    const decoded = decodeStoredMonadTopicVoteEntry(storedVoteEntryBytes(entry))
     expect(decoded).toEqual(entry)
   })
 
   it('decodes a positive (up-vote) weight', () => {
-    const entry: StoredMonadForumVoteEntryProto = {
+    const entry: StoredMonadTopicVoteEntryProto = {
       targetPayloadHash: new Uint8Array(32).fill(0x99),
       senderAddress: getBytes('0x' + '44'.repeat(20)),
       txHash: getBytes('0x' + '55'.repeat(32)),
       timestamp: 1_700_000_000_001,
       weight: 12_345,
     }
-    const decoded = decodeStoredMonadForumVoteEntry(storedVoteEntryBytes(entry))
+    const decoded = decodeStoredMonadTopicVoteEntry(storedVoteEntryBytes(entry))
     expect(decoded.weight).toBe(12_345)
   })
 })
 
-describe('MonadForumVoteClient.castVote', () => {
+describe('MonadTopicVoteClient.castVote', () => {
   beforeEach(() => {
     jest.clearAllMocks()
     // `jest.mock('axios')` automocks every export, including `isAxiosError`, to a bare `jest.fn()`
@@ -213,14 +213,14 @@ describe('MonadForumVoteClient.castVote', () => {
     const oddWeightWei = 123_456_789_012_345n
 
     mockedAxios.mockImplementationOnce(async config => {
-      const sentVote = decodeMonadForumVote(
+      const sentVote = decodeMonadTopicVote(
         new Uint8Array(config.data as Buffer),
       )
       const parsed = Transaction.from(hexOf(sentVote.rawBurnTx))
       // The exact wei value signed into the tx must equal the requested vote weight exactly.
       expect(parsed.value).toBe(oddWeightWei)
 
-      const stored: StoredMonadForumVoteEntryProto = {
+      const stored: StoredMonadTopicVoteEntryProto = {
         targetPayloadHash: sentVote.targetPayloadHash,
         senderAddress: getBytes('0x' + '11'.repeat(20)),
         txHash: getBytes('0x' + '22'.repeat(32)),
@@ -247,18 +247,18 @@ describe('MonadForumVoteClient.castVote', () => {
     expect(result.stored.weight).toBe(Number(oddWeightWei))
   })
 
-  it('PUTs the assembled MonadForumVote referencing the target payload_hash and releases the lease as confirmed on 2xx', async () => {
+  it('PUTs the assembled MonadTopicVote referencing the target payload_hash and releases the lease as confirmed on 2xx', async () => {
     const { client, pool } = makeClient()
 
     mockedAxios.mockImplementationOnce(async config => {
       expect(config.method).toBe('put')
       expect(config.url).toBe(
-        'https://relay.example.com/message/monad/forum/vote',
+        'https://relay.example.com/message/monad/topics/vote',
       )
       expect(config.headers).toEqual({
         'Content-Type': 'application/x-protobuf',
       })
-      const sentVote = decodeMonadForumVote(
+      const sentVote = decodeMonadTopicVote(
         new Uint8Array(config.data as Buffer),
       )
       expect(sentVote.targetPayloadHash).toEqual(TARGET_PAYLOAD_HASH)
@@ -268,13 +268,13 @@ describe('MonadForumVoteClient.castVote', () => {
       const parsed = Transaction.from(hexOf(sentVote.rawBurnTx))
       expect(getBytes(parsed.data).slice(6)).toEqual(TARGET_PAYLOAD_HASH)
       expect(getBytes(parsed.data).slice(0, 4)).toEqual(
-        new Uint8Array([0x46, 0x52, 0x55, 0x4d]),
+        new Uint8Array([0x54, 0x50, 0x49, 0x43]),
       )
       expect(getBytes(parsed.data)[5]).toBe(0x01) // up-vote
       expect(parsed.value).toBe(10_000n)
       expect(parsed.to?.toLowerCase()).toBe(BURN_ADDRESS.toLowerCase())
 
-      const stored: StoredMonadForumVoteEntryProto = {
+      const stored: StoredMonadTopicVoteEntryProto = {
         targetPayloadHash: sentVote.targetPayloadHash,
         senderAddress: getBytes('0x' + '11'.repeat(20)),
         txHash: getBytes('0x' + '22'.repeat(32)),
@@ -309,13 +309,13 @@ describe('MonadForumVoteClient.castVote', () => {
     const { client } = makeClient()
 
     mockedAxios.mockImplementationOnce(async config => {
-      const sentVote = decodeMonadForumVote(
+      const sentVote = decodeMonadTopicVote(
         new Uint8Array(config.data as Buffer),
       )
       const parsed = Transaction.from(hexOf(sentVote.rawBurnTx))
       expect(getBytes(parsed.data)[5]).toBe(0x00) // down-vote
 
-      const stored: StoredMonadForumVoteEntryProto = {
+      const stored: StoredMonadTopicVoteEntryProto = {
         targetPayloadHash: sentVote.targetPayloadHash,
         senderAddress: getBytes('0x' + '11'.repeat(20)),
         txHash: getBytes('0x' + '22'.repeat(32)),
@@ -342,12 +342,12 @@ describe('MonadForumVoteClient.castVote', () => {
     expect(result.stored.weight).toBe(-5_000)
   })
 
-  it('retires the sub-account and throws MonadForumVoteRejectedError on an HTTP error response', async () => {
+  it('retires the sub-account and throws MonadTopicVoteRejectedError on an HTTP error response', async () => {
     const { client, pool } = makeClient()
     mockedAxios.mockImplementationOnce(async () => {
       const err = Object.assign(new Error('Bad Request'), {
         isAxiosError: true,
-        response: { status: 400, data: { error: 'invalid_forum_vote' } },
+        response: { status: 400, data: { error: 'invalid_topic_vote' } },
       })
       throw err
     })
@@ -360,14 +360,14 @@ describe('MonadForumVoteClient.castVote', () => {
         voteWeightWei: 10_000n,
         overrides: FEE_OVERRIDES,
       }),
-    ).rejects.toThrow(MonadForumVoteRejectedError)
+    ).rejects.toThrow(MonadTopicVoteRejectedError)
 
     // Every sub-account in the pool must now be 'retired' (only one was leased; find it).
     const retired = pool.records().filter(r => r.status === 'retired')
     expect(retired).toHaveLength(1)
   })
 
-  it('retires as stuck and throws MonadForumVoteAbandonedError on a network-level failure -- no read-back fallback in this ticket scope', async () => {
+  it('retires as stuck and throws MonadTopicVoteAbandonedError on a network-level failure -- no read-back fallback in this ticket scope', async () => {
     const { client, pool } = makeClient()
     mockedAxios.mockImplementationOnce(async () => {
       const networkErr = Object.assign(new Error('socket hang up'), {
@@ -385,7 +385,7 @@ describe('MonadForumVoteClient.castVote', () => {
         voteWeightWei: 10_000n,
         overrides: FEE_OVERRIDES,
       }),
-    ).rejects.toThrow(MonadForumVoteAbandonedError)
+    ).rejects.toThrow(MonadTopicVoteAbandonedError)
 
     // Unlike `monad-stamp-client.ts`, there is no fallback GET poll available in this ticket's
     // scope -- a network failure always retires immediately, never confirms.

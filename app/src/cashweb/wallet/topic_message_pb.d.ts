@@ -1,9 +1,9 @@
 // package: cashweb.registry
-// file: forum_message.proto
+// file: topic_message.proto
 
 import * as jspb from "google-protobuf";
 
-export class MonadForumPost extends jspb.Message {
+export class MonadTopicPost extends jspb.Message {
   getTopic(): string;
   setTopic(value: string): void;
 
@@ -28,16 +28,16 @@ export class MonadForumPost extends jspb.Message {
   setPayloadHash(value: Uint8Array | string): void;
 
   serializeBinary(): Uint8Array;
-  toObject(includeInstance?: boolean): MonadForumPost.AsObject;
-  static toObject(includeInstance: boolean, msg: MonadForumPost): MonadForumPost.AsObject;
+  toObject(includeInstance?: boolean): MonadTopicPost.AsObject;
+  static toObject(includeInstance: boolean, msg: MonadTopicPost): MonadTopicPost.AsObject;
   static extensions: {[key: number]: jspb.ExtensionFieldInfo<jspb.Message>};
   static extensionsBinary: {[key: number]: jspb.ExtensionFieldBinaryInfo<jspb.Message>};
-  static serializeBinaryToWriter(message: MonadForumPost, writer: jspb.BinaryWriter): void;
-  static deserializeBinary(bytes: Uint8Array): MonadForumPost;
-  static deserializeBinaryFromReader(message: MonadForumPost, reader: jspb.BinaryReader): MonadForumPost;
+  static serializeBinaryToWriter(message: MonadTopicPost, writer: jspb.BinaryWriter): void;
+  static deserializeBinary(bytes: Uint8Array): MonadTopicPost;
+  static deserializeBinaryFromReader(message: MonadTopicPost, reader: jspb.BinaryReader): MonadTopicPost;
 }
 
-export namespace MonadForumPost {
+export namespace MonadTopicPost {
   export type AsObject = {
     topic: string,
     parentPostHash: Uint8Array | string,
@@ -47,7 +47,7 @@ export namespace MonadForumPost {
   }
 }
 
-export class MonadForumVote extends jspb.Message {
+export class MonadTopicVote extends jspb.Message {
   getTargetPayloadHash(): Uint8Array | string;
   getTargetPayloadHash_asU8(): Uint8Array;
   getTargetPayloadHash_asB64(): string;
@@ -59,27 +59,27 @@ export class MonadForumVote extends jspb.Message {
   setRawBurnTx(value: Uint8Array | string): void;
 
   serializeBinary(): Uint8Array;
-  toObject(includeInstance?: boolean): MonadForumVote.AsObject;
-  static toObject(includeInstance: boolean, msg: MonadForumVote): MonadForumVote.AsObject;
+  toObject(includeInstance?: boolean): MonadTopicVote.AsObject;
+  static toObject(includeInstance: boolean, msg: MonadTopicVote): MonadTopicVote.AsObject;
   static extensions: {[key: number]: jspb.ExtensionFieldInfo<jspb.Message>};
   static extensionsBinary: {[key: number]: jspb.ExtensionFieldBinaryInfo<jspb.Message>};
-  static serializeBinaryToWriter(message: MonadForumVote, writer: jspb.BinaryWriter): void;
-  static deserializeBinary(bytes: Uint8Array): MonadForumVote;
-  static deserializeBinaryFromReader(message: MonadForumVote, reader: jspb.BinaryReader): MonadForumVote;
+  static serializeBinaryToWriter(message: MonadTopicVote, writer: jspb.BinaryWriter): void;
+  static deserializeBinary(bytes: Uint8Array): MonadTopicVote;
+  static deserializeBinaryFromReader(message: MonadTopicVote, reader: jspb.BinaryReader): MonadTopicVote;
 }
 
-export namespace MonadForumVote {
+export namespace MonadTopicVote {
   export type AsObject = {
     targetPayloadHash: Uint8Array | string,
     rawBurnTx: Uint8Array | string,
   }
 }
 
-export class StoredMonadForumPost extends jspb.Message {
+export class StoredMonadTopicPost extends jspb.Message {
   hasPost(): boolean;
   clearPost(): void;
-  getPost(): MonadForumPost | undefined;
-  setPost(value?: MonadForumPost): void;
+  getPost(): MonadTopicPost | undefined;
+  setPost(value?: MonadTopicPost): void;
 
   getSenderAddress(): Uint8Array | string;
   getSenderAddress_asU8(): Uint8Array;
@@ -100,18 +100,18 @@ export class StoredMonadForumPost extends jspb.Message {
   setNetworkTag(value: Uint8Array | string): void;
 
   serializeBinary(): Uint8Array;
-  toObject(includeInstance?: boolean): StoredMonadForumPost.AsObject;
-  static toObject(includeInstance: boolean, msg: StoredMonadForumPost): StoredMonadForumPost.AsObject;
+  toObject(includeInstance?: boolean): StoredMonadTopicPost.AsObject;
+  static toObject(includeInstance: boolean, msg: StoredMonadTopicPost): StoredMonadTopicPost.AsObject;
   static extensions: {[key: number]: jspb.ExtensionFieldInfo<jspb.Message>};
   static extensionsBinary: {[key: number]: jspb.ExtensionFieldBinaryInfo<jspb.Message>};
-  static serializeBinaryToWriter(message: StoredMonadForumPost, writer: jspb.BinaryWriter): void;
-  static deserializeBinary(bytes: Uint8Array): StoredMonadForumPost;
-  static deserializeBinaryFromReader(message: StoredMonadForumPost, reader: jspb.BinaryReader): StoredMonadForumPost;
+  static serializeBinaryToWriter(message: StoredMonadTopicPost, writer: jspb.BinaryWriter): void;
+  static deserializeBinary(bytes: Uint8Array): StoredMonadTopicPost;
+  static deserializeBinaryFromReader(message: StoredMonadTopicPost, reader: jspb.BinaryReader): StoredMonadTopicPost;
 }
 
-export namespace StoredMonadForumPost {
+export namespace StoredMonadTopicPost {
   export type AsObject = {
-    post?: MonadForumPost.AsObject,
+    post?: MonadTopicPost.AsObject,
     senderAddress: Uint8Array | string,
     txHash: Uint8Array | string,
     timestamp: number,
@@ -119,7 +119,7 @@ export namespace StoredMonadForumPost {
   }
 }
 
-export class StoredMonadForumVoteEntry extends jspb.Message {
+export class StoredMonadTopicVoteEntry extends jspb.Message {
   getTargetPayloadHash(): Uint8Array | string;
   getTargetPayloadHash_asU8(): Uint8Array;
   getTargetPayloadHash_asB64(): string;
@@ -142,16 +142,16 @@ export class StoredMonadForumVoteEntry extends jspb.Message {
   setWeight(value: number): void;
 
   serializeBinary(): Uint8Array;
-  toObject(includeInstance?: boolean): StoredMonadForumVoteEntry.AsObject;
-  static toObject(includeInstance: boolean, msg: StoredMonadForumVoteEntry): StoredMonadForumVoteEntry.AsObject;
+  toObject(includeInstance?: boolean): StoredMonadTopicVoteEntry.AsObject;
+  static toObject(includeInstance: boolean, msg: StoredMonadTopicVoteEntry): StoredMonadTopicVoteEntry.AsObject;
   static extensions: {[key: number]: jspb.ExtensionFieldInfo<jspb.Message>};
   static extensionsBinary: {[key: number]: jspb.ExtensionFieldBinaryInfo<jspb.Message>};
-  static serializeBinaryToWriter(message: StoredMonadForumVoteEntry, writer: jspb.BinaryWriter): void;
-  static deserializeBinary(bytes: Uint8Array): StoredMonadForumVoteEntry;
-  static deserializeBinaryFromReader(message: StoredMonadForumVoteEntry, reader: jspb.BinaryReader): StoredMonadForumVoteEntry;
+  static serializeBinaryToWriter(message: StoredMonadTopicVoteEntry, writer: jspb.BinaryWriter): void;
+  static deserializeBinary(bytes: Uint8Array): StoredMonadTopicVoteEntry;
+  static deserializeBinaryFromReader(message: StoredMonadTopicVoteEntry, reader: jspb.BinaryReader): StoredMonadTopicVoteEntry;
 }
 
-export namespace StoredMonadForumVoteEntry {
+export namespace StoredMonadTopicVoteEntry {
   export type AsObject = {
     targetPayloadHash: Uint8Array | string,
     senderAddress: Uint8Array | string,
@@ -161,28 +161,28 @@ export namespace StoredMonadForumVoteEntry {
   }
 }
 
-export class MonadForumPostView extends jspb.Message {
+export class MonadTopicPostView extends jspb.Message {
   hasPost(): boolean;
   clearPost(): void;
-  getPost(): StoredMonadForumPost | undefined;
-  setPost(value?: StoredMonadForumPost): void;
+  getPost(): StoredMonadTopicPost | undefined;
+  setPost(value?: StoredMonadTopicPost): void;
 
   getVoteWeight(): number;
   setVoteWeight(value: number): void;
 
   serializeBinary(): Uint8Array;
-  toObject(includeInstance?: boolean): MonadForumPostView.AsObject;
-  static toObject(includeInstance: boolean, msg: MonadForumPostView): MonadForumPostView.AsObject;
+  toObject(includeInstance?: boolean): MonadTopicPostView.AsObject;
+  static toObject(includeInstance: boolean, msg: MonadTopicPostView): MonadTopicPostView.AsObject;
   static extensions: {[key: number]: jspb.ExtensionFieldInfo<jspb.Message>};
   static extensionsBinary: {[key: number]: jspb.ExtensionFieldBinaryInfo<jspb.Message>};
-  static serializeBinaryToWriter(message: MonadForumPostView, writer: jspb.BinaryWriter): void;
-  static deserializeBinary(bytes: Uint8Array): MonadForumPostView;
-  static deserializeBinaryFromReader(message: MonadForumPostView, reader: jspb.BinaryReader): MonadForumPostView;
+  static serializeBinaryToWriter(message: MonadTopicPostView, writer: jspb.BinaryWriter): void;
+  static deserializeBinary(bytes: Uint8Array): MonadTopicPostView;
+  static deserializeBinaryFromReader(message: MonadTopicPostView, reader: jspb.BinaryReader): MonadTopicPostView;
 }
 
-export namespace MonadForumPostView {
+export namespace MonadTopicPostView {
   export type AsObject = {
-    post?: StoredMonadForumPost.AsObject,
+    post?: StoredMonadTopicPost.AsObject,
     voteWeight: number,
   }
 }

@@ -10,9 +10,12 @@ use cashweb_payload::{
     payload::{BurnTx, SignedPayload},
     verify::{ADDRESS_METADATA_LOKAD_ID, BROADCAST_MESSAGE_LOKAD_ID},
 };
+use prost::Message;
 use thiserror::Error;
 
 use crate::{
+    monad_http::Address,
+    monad_profile_verify::verify_monad_profile,
     proto::{self, BroadcastMessage},
     store::{db::Db, pubkeyhash::PubKeyHash},
 };
@@ -108,6 +111,18 @@ pub enum RegistryError {
         /// Current payload timestamp as recorded in the database.
         previous: i64,
         /// Timestamp of the new payload.
+        next: i64,
+    },
+
+    /// Ticket #45: same invariant as [`RegistryError::TimestampNotMonotonicallyIncreasing`], for
+    /// Monad-native profile registrations (`Registry::put_monad_profile`) rather than Lotus
+    /// [`SignedPayload`] metadata.
+    #[invalid_user_input()]
+    #[error("Monad profile timestamp is not monotonically increasing: {previous} >= {next}")]
+    MonadProfileTimestampNotMonotonicallyIncreasing {
+        /// Current profile timestamp as recorded in the database.
+        previous: i64,
+        /// Timestamp of the new profile.
         next: i64,
     },
 
@@ -466,6 +481,55 @@ impl Registry {
         payload_hash: &[u8],
     ) -> Result<Option<proto::StoredMonadMessage>> {
         self.db.monad_messages().get(payload_hash)
+    }
+
+    /// Fully verify and write a Monad-native profile registration (ticket #45) -- the Monad
+    /// equivalent of [`Registry::put_metadata`]. See `crate::monad_profile_verify`'s module docs
+    /// for why this uses an explicit pubkey+signature check (mirroring Lotus's own solution to
+    /// the identical problem) rather than `ecrecover`, which has nothing to recover a signature
+    /// from here (there's no burn transaction backing a profile registration).
+    ///
+    /// Reachable both from the dedicated `PUT /metadata/monad/:addr` route
+    /// (`crate::http::monad_profile::handle_put_monad_profile`) and from the plain
+    /// `PUT /metadata/:addr` route's Monad-address dispatch branch
+    /// (`crate::http::server::handle_put_registry`) -- see that module's docs for why both exist.
+    pub fn put_monad_profile(
+        &self,
+        address: Address,
+        signed_profile: cashweb_payload::proto::SignedPayload,
+    ) -> Result<()> {
+        let verified = verify_monad_profile(&self.ecc, address, &signed_profile)?;
+
+        if let Some(existing) = self.db.monad_profiles().get(&address)? {
+            // Best-effort decode: `verify_monad_profile` already required the *new* payload to
+            // decode as `proto::MonadProfile`; a previously-stored one that somehow doesn't
+            // shouldn't block the new, valid write over it.
+            if let Ok(existing_profile) = proto::MonadProfile::decode(existing.payload.as_slice()) {
+                if existing_profile.timestamp >= verified.profile.timestamp {
+                    return Err(MonadProfileTimestampNotMonotonicallyIncreasing {
+                        previous: existing_profile.timestamp,
+                        next: verified.profile.timestamp,
+                    }
+                    .into());
+                }
+            }
+        }
+
+        self.db.monad_profiles().put(&address, &signed_profile)?;
+        Ok(())
+    }
+
+    /// Read a previously-registered Monad profile's `cashweb_payload::proto::SignedPayload`
+    /// envelope. [`None`] if nothing is registered under `address`.
+    ///
+    /// Returns the raw envelope as stored (not re-verified) -- mirrors
+    /// [`Registry::get_metadata`]'s Lotus-side "trust what already verified on the way in"
+    /// behavior.
+    pub fn get_monad_profile(
+        &self,
+        address: Address,
+    ) -> Result<Option<cashweb_payload::proto::SignedPayload>> {
+        self.db.monad_profiles().get(&address)
     }
 
     /// List every [`proto::StoredMonadMessage`] stored with `timestamp >= since` (ticket #37),
@@ -1446,6 +1510,222 @@ mod tests {
 
         instance.cleanup()?;
 
+        Ok(())
+    }
+
+    /// A [`cashweb_payload::chain_adapter::ChainAdapter`] that's never actually called for
+    /// anything meaningful. `Registry::put_monad_profile`/`get_monad_profile` never touch
+    /// `chain_adapter` at all -- there's no burn transaction backing a profile registration (see
+    /// `crate::monad_profile_verify`'s module docs) -- so, unlike `test_registry_metadata`/
+    /// `test_registry_message` above, these tests don't need a real bitcoind/Lotus adapter.
+    /// Mirrors `examples/e2e_demo_server.rs`'s `DemoChainAdapter`: the async methods return
+    /// harmless dummy values (rather than `unimplemented!()`, which triggers clippy's
+    /// `diverging_sub_expression` lint when used as an async fn's tail expression -- confirmed by
+    /// checking `DemoChainAdapter`, which avoids exactly this for the same reason) since they're
+    /// never actually invoked by the code under test; only the one sync method
+    /// (`decode_burn`, also never invoked) uses `unimplemented!()`, matching `DemoChainAdapter`
+    /// exactly.
+    #[derive(Debug)]
+    struct NeverCalledChainAdapter;
+
+    #[async_trait::async_trait]
+    impl cashweb_payload::chain_adapter::ChainAdapter for NeverCalledChainAdapter {
+        async fn submit_tx(
+            &self,
+            _raw_tx: &[u8],
+        ) -> Result<cashweb_payload::chain_adapter::SubmitTxOutcome> {
+            Ok(cashweb_payload::chain_adapter::SubmitTxOutcome::AlreadyConfirmed)
+        }
+
+        async fn get_tx(&self, _txid: &bitcoinsuite_core::Sha256d) -> Result<Option<Vec<u8>>> {
+            Ok(None)
+        }
+
+        async fn test_accept(
+            &self,
+            _raw_tx: &[u8],
+        ) -> Result<cashweb_payload::chain_adapter::MempoolAcceptResult> {
+            Ok(Ok(()))
+        }
+
+        async fn subscribe_new_blocks(
+            &self,
+        ) -> Result<tokio::sync::mpsc::Receiver<bitcoinsuite_core::Sha256d>> {
+            let (_sender, receiver) = tokio::sync::mpsc::channel(1);
+            Ok(receiver)
+        }
+
+        fn decode_burn(
+            &self,
+            _commitment_id: [u8; 4],
+            _burn_output_script: &Script,
+        ) -> Result<Sha256> {
+            unimplemented!("Monad profile registration never touches ChainAdapter")
+        }
+    }
+
+    /// Builds a fresh, on-disk-backed [`Registry`] for the Monad-profile tests below, holding no
+    /// real chain connection (see [`NeverCalledChainAdapter`]). Returns the [`tempdir::TempDir`]
+    /// guard alongside it -- the caller must keep it alive for the registry's lifetime, mirroring
+    /// every other `Db::open(tempdir...)` test in this crate (e.g. `store::monad_messages`'s
+    /// tests).
+    fn test_monad_profile_registry(name: &str) -> (tempdir::TempDir, Registry) {
+        let tempdir = tempdir::TempDir::new(name).unwrap();
+        let db = Db::open(tempdir.path().join("db.rocksdb")).unwrap();
+        let registry = Registry {
+            db,
+            ecc: EccSecp256k1::default(),
+            chain_adapter: Arc::new(NeverCalledChainAdapter),
+            net: Net::Regtest,
+        };
+        (tempdir, registry)
+    }
+
+    /// Builds a validly-signed [`cashweb_payload::proto::SignedPayload`] for `profile`, signed by
+    /// `seckey` -- mirrors `monad-identity.ts`'s `buildSignedAddressMetadata`/`signHash` exactly
+    /// (SHA256 digest, DER ECDSA signature, explicit pubkey field; see
+    /// `crate::monad_profile_verify`'s module docs) -- and the [`crate::monad_http::Address`] it
+    /// should be registered under.
+    fn sign_monad_profile(
+        seckey: &bitcoinsuite_core::ecc::SecKey,
+        profile: &proto::MonadProfile,
+    ) -> (
+        cashweb_payload::proto::SignedPayload,
+        crate::monad_http::Address,
+    ) {
+        let ecc = EccSecp256k1::default();
+        let pubkey = ecc.derive_pubkey(seckey);
+        let uncompressed = ecc.serialize_pubkey_uncompressed(&pubkey);
+        let address = crate::monad_evm_tx::address_from_uncompressed_pubkey(&uncompressed);
+
+        let payload = profile.encode_to_vec();
+        let payload_hash = Sha256::digest(payload.clone().into());
+        let sig = ecc.sign(seckey, payload_hash.byte_array().clone());
+
+        let signed = cashweb_payload::proto::SignedPayload {
+            pubkey: pubkey.as_slice().to_vec(),
+            sig: sig.to_vec(),
+            sig_scheme: SignatureScheme::Ecdsa.into(),
+            payload,
+            payload_hash: payload_hash.as_slice().to_vec(),
+            burn_amount: 0,
+            burn_txs: vec![],
+        };
+        (signed, address)
+    }
+
+    fn sample_monad_profile(timestamp: i64) -> proto::MonadProfile {
+        proto::MonadProfile {
+            timestamp,
+            ttl: 1000 * 60 * 60 * 24 * 365,
+            entries: vec![],
+        }
+    }
+
+    #[test]
+    fn test_put_and_get_monad_profile_round_trip() -> Result<()> {
+        let _ = bitcoinsuite_error::install();
+        let (_tempdir, registry) =
+            test_monad_profile_registry("cashweb-registry--registry-monad-profile-round-trip");
+        let seckey = registry.ecc.seckey_from_array([9; 32])?;
+        let (signed, address) = sign_monad_profile(&seckey, &sample_monad_profile(1000));
+
+        // Nothing registered yet.
+        assert_eq!(registry.get_monad_profile(address)?, None);
+
+        registry.put_monad_profile(address, signed.clone())?;
+        assert_eq!(registry.get_monad_profile(address)?, Some(signed));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_put_monad_profile_rejects_stale_timestamp() -> Result<()> {
+        let _ = bitcoinsuite_error::install();
+        let (_tempdir, registry) =
+            test_monad_profile_registry("cashweb-registry--registry-monad-profile-stale");
+        let seckey = registry.ecc.seckey_from_array([9; 32])?;
+
+        let (first, address) = sign_monad_profile(&seckey, &sample_monad_profile(1000));
+        registry.put_monad_profile(address, first)?;
+
+        // A re-registration with a timestamp that doesn't strictly increase is rejected --
+        // mirrors `Registry::put_metadata`'s identical Lotus-side invariant, preventing a stale
+        // registration from being replayed.
+        let (stale, _) = sign_monad_profile(&seckey, &sample_monad_profile(999));
+        let err = registry
+            .put_monad_profile(address, stale)
+            .unwrap_err()
+            .downcast::<RegistryError>()?;
+        assert_eq!(
+            err,
+            RegistryError::MonadProfileTimestampNotMonotonicallyIncreasing {
+                previous: 1000,
+                next: 999,
+            },
+        );
+
+        // The original registration is untouched.
+        let (original, _) = sign_monad_profile(&seckey, &sample_monad_profile(1000));
+        assert_eq!(registry.get_monad_profile(address)?, Some(original));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_put_monad_profile_rejects_a_submission_signed_by_the_wrong_key() -> Result<()> {
+        let _ = bitcoinsuite_error::install();
+        let (_tempdir, registry) =
+            test_monad_profile_registry("cashweb-registry--registry-monad-profile-bad-sig");
+        let seckey = registry.ecc.seckey_from_array([9; 32])?;
+        let (signed, claimed_address) = sign_monad_profile(&seckey, &sample_monad_profile(1000));
+
+        // Sign with a *different* key, but submit under the first key's address: the derived
+        // address won't match what's claimed.
+        let other_seckey = registry.ecc.seckey_from_array([10; 32])?;
+        let (mismatched, _) = sign_monad_profile(&other_seckey, &sample_monad_profile(1000));
+
+        let err = registry
+            .put_monad_profile(claimed_address, mismatched)
+            .unwrap_err();
+        assert!(err
+            .downcast::<crate::monad_profile_verify::MonadProfileVerifyError>()
+            .is_ok());
+
+        // Nothing was stored.
+        assert_eq!(registry.get_monad_profile(claimed_address)?, None);
+        // Sanity: the original, correctly-addressed submission still works.
+        registry.put_monad_profile(claimed_address, signed)?;
+        assert!(registry.get_monad_profile(claimed_address)?.is_some());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_put_monad_profile_rejects_an_unsigned_submission() -> Result<()> {
+        let _ = bitcoinsuite_error::install();
+        let (_tempdir, registry) =
+            test_monad_profile_registry("cashweb-registry--registry-monad-profile-unsigned");
+        let seckey = registry.ecc.seckey_from_array([9; 32])?;
+        let (mut signed, address) = sign_monad_profile(&seckey, &sample_monad_profile(1000));
+        signed.sig = vec![]; // no signature at all
+
+        let err = registry.put_monad_profile(address, signed).unwrap_err();
+        assert!(err
+            .downcast::<crate::monad_profile_verify::MonadProfileVerifyError>()
+            .is_ok());
+        assert_eq!(registry.get_monad_profile(address)?, None);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_monad_profile_not_found() -> Result<()> {
+        let _ = bitcoinsuite_error::install();
+        let (_tempdir, registry) =
+            test_monad_profile_registry("cashweb-registry--registry-monad-profile-not-found");
+        let address = crate::monad_http::Address([3u8; 20]);
+        assert_eq!(registry.get_monad_profile(address)?, None);
         Ok(())
     }
 }

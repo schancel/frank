@@ -8,6 +8,7 @@ use thiserror::Error;
 
 use crate::store::metadata::DbMetadata;
 use crate::store::monad_messages::DbMonadMessages;
+use crate::store::monad_profiles::DbMonadProfiles;
 use crate::store::monad_topics::{DbMonadTopicPosts, DbMonadTopicVotes};
 use crate::store::topics::DbTopics;
 
@@ -45,6 +46,11 @@ pub(crate) const CF_MONAD_TOPIC_VOTES: &str = "monad_topic_votes";
 /// `"a"` would incorrectly also return `"ab"`'s posts). Lets `DbMonadTopicPosts::list_by_topic`
 /// range-scan a single topic's posts in timestamp order -- see `crate::store::monad_topics`'s module docs.
 pub(crate) const CF_MONAD_TOPIC_POSTS_BY_TOPIC: &str = "monad_topic_posts_by_topic";
+/// Ticket #45: stores the `cashweb_payload::proto::SignedPayload` envelope of a Monad-native
+/// profile registration (`PUT`/`GET /metadata/monad/:addr`), keyed directly by the registrant's
+/// raw 20-byte Monad address -- see `crate::store::monad_profiles`'s module docs for why this is
+/// separate from `CF_METADATA` (which is keyed by a Lotus-only `PubKeyHash`).
+pub(crate) const CF_MONAD_PROFILES: &str = "monad_profiles";
 
 pub(crate) type CF = rocksdb::ColumnFamily;
 
@@ -80,6 +86,7 @@ impl Db {
         DbMonadMessages::add_cfs(&mut cfs);
         DbMonadTopicPosts::add_cfs(&mut cfs);
         DbMonadTopicVotes::add_cfs(&mut cfs);
+        DbMonadProfiles::add_cfs(&mut cfs);
         Self::open_with_cfs(path, cfs)
     }
 
@@ -96,6 +103,12 @@ impl Db {
     /// Returns `DbMonadMessages`, allowing access to stored Monad-stamped messages (ticket #27).
     pub fn monad_messages(&self) -> DbMonadMessages<'_> {
         DbMonadMessages::new(self)
+    }
+
+    /// Returns `DbMonadProfiles`, allowing access to stored Monad-native profile registrations
+    /// (ticket #45).
+    pub fn monad_profiles(&self) -> DbMonadProfiles<'_> {
+        DbMonadProfiles::new(self)
     }
 
     /// Returns `DbMonadTopicPosts`, allowing access to stored Monad topic posts (ticket #30).

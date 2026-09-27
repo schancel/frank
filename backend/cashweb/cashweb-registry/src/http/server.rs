@@ -5,12 +5,15 @@ use crate::{
     http::monad_message::{
         handle_get_monad_message, handle_list_monad_messages, handle_put_monad_message,
     },
+    http::monad_profile::{
+        fetch_profile_or_not_found, handle_get_monad_profile, handle_put_monad_profile,
+    },
     http::monad_topics::{
         handle_get_monad_topic_post, handle_list_monad_topic_posts, handle_put_monad_topic_post,
         handle_put_monad_topic_vote,
     },
     http::pop_protection::{self, MonadReceiptVerifier, PopChallenge, PopGate, PopGateConfigError},
-    monad_http::HttpTransport,
+    monad_http::{Address as MonadAddress, HttpTransport},
     p2p::{peers::Peers, relay_info::RelayInfo},
     proto::{self},
     registry::Registry,
@@ -148,6 +151,15 @@ impl RegistryServer {
             .route(
                 "/metadata/:addr",
                 routing::put(handle_put_registry).get(handle_get_registry),
+            )
+            // Monad-native profile registration (ticket #45), additive alongside the Lotus-only
+            // route above (a different path depth, so no route-matching conflict) -- see
+            // `crate::http::monad_profile`'s module docs for why a Monad address is *also*
+            // handled by `handle_put_registry`/`handle_get_registry` themselves (the plain route
+            // above), not only here.
+            .route(
+                "/metadata/monad/:addr",
+                routing::put(handle_put_monad_profile).get(handle_get_monad_profile),
             )
             .route("/messages/:topic", routing::get(handle_get_messages))
             .route("/messages", routing::get(handle_get_all_messages))
@@ -321,6 +333,23 @@ async fn handle_put_registry(
     Extension(server): Extension<RegistryServer>,
     header_map: HeaderMap,
 ) -> Result<PutRegistrySuccess, PutRegistryError> {
+    // Monad-native dispatch (ticket #45): see `crate::http::monad_profile`'s module docs for why
+    // a Monad address reaching this historically Lotus-only route must be handled here too, not
+    // only at the dedicated `/metadata/monad/:addr` route below -- the real, already-merged TS
+    // client this route needs to unblock (`app/src/cashweb/wallet/monad-identity.ts`) calls this
+    // plain route with a Monad address, never `/metadata/monad/:addr`. No POP gating on this
+    // branch: profile registration was never POP-gated to begin with, and this ticket's non-goals
+    // explicitly exclude adding it.
+    if let Ok(monad_address) = MonadAddress::from_str(&address) {
+        server
+            .registry
+            .put_monad_profile(monad_address, signed_metadata)?;
+        return Ok(PutRegistrySuccess {
+            body: proto::PutSignedPayloadResponse { txid: vec![] },
+            issued_token: None,
+        });
+    }
+
     let address = address.parse::<LotusAddress>().map_err(InvalidAddress)?;
 
     // --- POP protection (ticket #24, config-wired for real in ticket #4, made toggleable in #35)
@@ -384,6 +413,13 @@ async fn handle_get_registry(
     Path(address): Path<String>,
     Extension(server): Extension<RegistryServer>,
 ) -> Result<Protobuf<cashweb_payload::proto::SignedPayload>, HttpRegistryError> {
+    // Monad-native dispatch (ticket #45) -- see `handle_put_registry`'s identical branch, and
+    // `crate::http::monad_profile`'s module docs, for why.
+    if let Ok(monad_address) = MonadAddress::from_str(&address) {
+        let signed_payload = fetch_profile_or_not_found(&server.registry, monad_address)?;
+        return Ok(Protobuf(signed_payload));
+    }
+
     let address = address.parse::<LotusAddress>().map_err(InvalidAddress)?;
     let signed_payload = server
         .registry

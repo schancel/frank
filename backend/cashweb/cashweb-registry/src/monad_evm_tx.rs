@@ -110,7 +110,12 @@ fn keccak256(data: &[u8]) -> [u8; 32] {
 /// [`bitcoinsuite_ecc_secp256k1::EccSecp256k1::serialize_pubkey_uncompressed`] produces) -- quite
 /// unlike Lotus, which hashes the *compressed* pubkey with `SHA256`+`RIPEMD160`
 /// ([`bitcoinsuite_core::pubkeyhash`]-style).
-fn address_from_uncompressed_pubkey(uncompressed: &[u8; 65]) -> Address {
+///
+/// `pub(crate)` (rather than private) since [`crate::monad_profile_verify`] (ticket #45) reuses
+/// this exact derivation to check a profile registration's signing pubkey matches its claimed
+/// `:addr` -- the same Ethereum address convention, just starting from an explicitly-provided
+/// pubkey instead of one recovered via [`recover_sender`]'s `ecrecover`.
+pub(crate) fn address_from_uncompressed_pubkey(uncompressed: &[u8; 65]) -> Address {
     let hash = keccak256(&uncompressed[1..]);
     let mut addr = [0u8; 20];
     addr.copy_from_slice(&hash[12..32]);

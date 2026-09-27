@@ -1,0 +1,21 @@
+syntax = "proto3";
+package cashweb.registry;
+
+import "registry.proto";
+
+// MonadProfile is the Monad-native equivalent of AddressMetadata (ticket #45): user-specified
+// profile content covered by the registrant's signature. Field-number-compatible with
+// AddressMetadata (same shape, reusing AddressEntry directly, per this ticket's issue text) --
+// kept as its own named message rather than literally reusing AddressMetadata, matching this
+// crate's established "separate, Monad-specific proto for a Monad-specific route" precedent (see
+// monad_message.proto's MonadStampedMessage, topic_message.proto's MonadTopicPost).
+message MonadProfile {
+    // Milliseconds since the Unix epoch. Must increase on every update to an already-registered
+    // address (see `Registry::put_monad_profile`) -- mirrors AddressMetadata's identical
+    // Lotus-side invariant, preventing a stale registration from being replayed.
+    int64 timestamp = 1;
+    // How long (in milliseconds) this profile should be considered valid for.
+    int64 ttl = 2;
+    // User-specified profile data (wallet-defined kind/headers/body entries).
+    repeated AddressEntry entries = 3;
+}

@@ -7,6 +7,7 @@ fn main() -> Result<()> {
             "proto/broadcast.proto",
             "proto/monad_message.proto",
             "proto/topic_message.proto",
+            "proto/monad_profile.proto",
         ],
         &["proto/", "../cashweb-payload/proto/"],
     )?;

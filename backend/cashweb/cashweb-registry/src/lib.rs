@@ -14,6 +14,7 @@ pub mod monad_adapter;
 pub mod monad_evm_tx;
 pub mod monad_http;
 pub mod monad_pop_verify;
+pub mod monad_profile_verify;
 pub mod monad_stamp_relay;
 pub mod monad_stamp_verify;
 pub mod monad_topic_relay;

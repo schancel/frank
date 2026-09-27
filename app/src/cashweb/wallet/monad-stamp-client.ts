@@ -389,7 +389,16 @@ export class MonadStampClient {
       method: 'put',
       url: `${this.relayBaseUrl}/message/monad`,
       data: encodeMonadStampedMessage(message),
-      headers: { 'Content-Type': 'application/octet-stream' },
+      // Bug fix (ticket #8's e2e demo): this used to send `application/octet-stream`, which the
+      // live `PUT /message/monad` route always rejected with a `400 wrong-content-type` --
+      // `handle_put_monad_message` decodes its body via the same generic
+      // `cashweb_http_utils::protobuf::Protobuf` extractor every other protobuf route in this
+      // crate uses, and that extractor unconditionally requires exactly
+      // `CONTENT_TYPE_PROTOBUF = "application/x-protobuf"` (see `cashweb-http-utils/src/
+      // protobuf.rs`). Confirmed live: every `submitStampedMessage` call failed with this error
+      // until this header was fixed to match. `application/octet-stream` never worked against
+      // the real server.
+      headers: { 'Content-Type': 'application/x-protobuf' },
       responseType: 'arraybuffer',
     })
     return decodeStoredMonadMessage(new Uint8Array(response.data))

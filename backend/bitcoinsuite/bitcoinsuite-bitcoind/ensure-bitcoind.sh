@@ -133,12 +133,23 @@ linuxlotusd() {
     echo "$lotusd_version" > "$dloc/lotusversion"
 }
 
+# lotusd's upstream download bucket (storage.googleapis.com/lotus-project) is
+# permanently gone as of 2026-09 -- its owning GCP project's billing account
+# is closed (`UserProjectAccountProblem`), not a transient outage. This repo
+# never needs a real `lotusd` (constraint 1 in PLAN.md: no self-hosted chain
+# infra for anything Frank actually ships) -- the only consumers are the
+# pre-existing Lotus-path integration tests (`lotus_adapter::tests::*`,
+# `registry::tests::test_registry_metadata*`, `test_registy_topics`), which
+# already fail in every environment without a populated lotusd binary and are
+# treated as known-unrelated failures throughout this port. Don't let that
+# dead dependency abort the whole build for the ABC/BCH binaries actual tests
+# still need.
 if [ "$(uname -s)" = "Darwin" ];then
     osxabc
     osxbch
-    osxlotusd
+    osxlotusd || echo "WARN: lotusd download failed (upstream bucket is gone) -- Lotus-path integration tests will fail, everything else is unaffected"
 else
     linuxabc
     linuxbch
-    linuxlotusd
+    linuxlotusd || echo "WARN: lotusd download failed (upstream bucket is gone) -- Lotus-path integration tests will fail, everything else is unaffected"
 fi

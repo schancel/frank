@@ -1,3 +1,10 @@
-**/*
-!deploy
-!dist/pwa
+# Replaced the original Stamp import's `**/*` allowlist (`!deploy`/`!dist/pwa`) -- dead weight,
+# unused by anything in this repo, and incompatible with `Dockerfile`'s real `COPY package.json
+# yarn.lock ./` / `COPY . .` steps (a `**/*` ignore would have excluded them entirely from the
+# build context).
+node_modules
+.quasar
+dist
+.git
+.devcontainer
+*.log

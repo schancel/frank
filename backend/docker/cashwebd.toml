@@ -1,0 +1,37 @@
+# Static docker-compose config for `cashwebd-exe` (see ../Dockerfile). This file deliberately
+# holds no real secrets and needs no templating at container-start time: the genuinely-variable,
+# secret-bearing config for the hackathon demo (the real Alchemy RPC URL, burn address, network
+# tag) is read lazily, per-request, from plain env vars by `cashweb-registry`'s own
+# `OnceLock`-based gate configs (`http/monad_message.rs::MonadMessageGateConfig::from_env`,
+# `http/monad_topics.rs::MonadTopicGateConfig::from_env`, `network_tag.rs::network_tag`) --
+# entirely separate from this file's `cashweb_config::parse_conf` mechanism. See docker-compose.yml
+# for where those env vars actually get set.
+#
+# `[bitcoin_rpc]` below is a placeholder: `RegistryConf`/`CashwebdConf` (cashweb-config/src/lib.rs)
+# require it unconditionally (not an `Option`), but nothing in this demo ever dials it --
+# `LotusAdapter`'s `BitcoindRpcClient` is only actually called from Lotus-only routes
+# (`PUT /registry`, `PUT /message`, peer metadata sync), none of which this Monad-only demo
+# exercises. Likewise `[registry.pop]`'s sub-fields (`monad_rpc_url`/`hmac_secret`/
+# `payment_recipient`/`min_value_wei`) are required by `PopConf`'s schema even though `enabled =
+# false` skips the gate entirely (ticket #35's fail-open demo default) -- see that struct's own doc
+# comment for why `enabled` has no `#[serde(default)]`.
+
+host = "0.0.0.0:8080"
+url = "http://localhost:8080"
+
+[registry]
+db_path = "/data/registry.rocksdb"
+net = "mainnet"
+peers = []
+
+[registry.pop]
+enabled = false
+monad_rpc_url = "http://unused.invalid"
+hmac_secret = "unused-because-pop-is-disabled"
+payment_recipient = "0x0000000000000000000000000000000000000000"
+min_value_wei = "0"
+
+[bitcoin_rpc]
+url = "http://unused.invalid:0"
+rpc_user = "unused"
+rpc_pass = "unused"

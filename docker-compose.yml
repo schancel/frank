@@ -1,0 +1,42 @@
+# Local demo/dev stack: the cashwebd registry/relay talking to real Alchemy-hosted Monad RPC, and
+# the Quasar frontend built to talk to both. Compose auto-loads a `.env` file from this same
+# directory for `${VAR}` substitution below -- the repo's existing gitignored `frank/.env`
+# (see `.env.example`) already has everything this needs.
+#
+# `MONAD_RELAY_BASE_URL` deliberately defaults to `http://localhost:${BACKEND_PORT}`, not the
+# internal compose service name (`http://backend:8080`): the frontend is a static SPA that runs
+# client-side in the user's browser, not inside the compose network, so it needs a
+# host-machine-reachable URL for the relay it talks to over HTTP.
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - '${BACKEND_PORT:-8080}:8080'
+    environment:
+      MONAD_TESTNET_HTTP_RPC_URL: ${MONAD_TESTNET_HTTP_RPC_URL}
+      MONAD_STAMP_BURN_ADDRESS: ${MONAD_STAMP_BURN_ADDRESS:-0x000000000000000000000000000000000000dEaD}
+      CASHWEB_STAMP_MIN_BURN_VALUE_WEI: ${CASHWEB_STAMP_MIN_BURN_VALUE_WEI:-1000000000000}
+      FRANK_NETWORK_TAG: ${FRANK_NETWORK_TAG:-MONT}
+    volumes:
+      - registry-data:/data
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./app
+      dockerfile: Dockerfile
+      args:
+        MONAD_TESTNET_HTTP_RPC_URL: ${MONAD_TESTNET_HTTP_RPC_URL}
+        MONAD_RELAY_BASE_URL: ${MONAD_RELAY_BASE_URL:-http://localhost:${BACKEND_PORT:-8080}}
+        MONAD_STAMP_BURN_ADDRESS: ${MONAD_STAMP_BURN_ADDRESS:-0x000000000000000000000000000000000000dEaD}
+        CASHWEB_STAMP_MIN_BURN_VALUE_WEI: ${CASHWEB_STAMP_MIN_BURN_VALUE_WEI:-1000000000000}
+    ports:
+      - '${FRONTEND_PORT:-8081}:80'
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  registry-data:

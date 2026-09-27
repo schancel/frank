@@ -2,13 +2,13 @@
  * Unit tests for `stores/topics.ts` (ticket #43): verifies the store's actions call through
  * `activeChain.topics` (ticket #41's seam) with the right arguments, rather than constructing a
  * `RegistryHandler` directly. Per the ticket's own instructions, this mocks `activeChain` itself
- * (`src/cashweb/chain`) -- not the underlying Monad wallet clients, which are #41's own,
- * already-tested layer (see `src/cashweb/chain/monad-chain.jest.test.ts`).
+ * (`@frank/wallet/chain`) -- not the underlying Monad wallet clients, which are #41's own,
+ * already-tested layer (see `@frank/wallet/chain/monad-chain.jest.test.ts`).
  *
  * Special attention to the signed-vote-number -> `{ direction, voteWeightWei }` mapping: Lotus's
  * `RegistryHandler.addOfferings(payloadDigest, vote: number)` folded up/down direction into the
  * sign of a single number (positive => up, negative => down -- see
- * `src/cashweb/registry/index.ts`'s `constructBurnTransaction`). This store's own callers
+ * `@frank/cashweb/registry/index.ts`'s `constructBurnTransaction`). This store's own callers
  * (`TopicMessage.vue`'s up/down vote buttons) still produce that signed number, so the store
  * itself is where the conversion into `ActiveChain.topics.vote`'s separate `direction`/
  * `voteWeightWei` happens.
@@ -16,10 +16,10 @@
 import { setActivePinia, createPinia } from 'pinia'
 
 import { useTopicStore } from './topics'
-import { ForumMessage } from '../cashweb/types/forum'
-import { WalletHandle } from '../cashweb/chain'
+import { ForumMessage } from '@frank/cashweb/types/forum'
+import { WalletHandle } from '@frank/wallet/chain'
 
-jest.mock('../cashweb/chain', () => ({
+jest.mock('@frank/wallet/chain', () => ({
   activeChain: {
     topics: {
       post: jest.fn(),
@@ -31,7 +31,7 @@ jest.mock('../cashweb/chain', () => ({
 }))
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const { activeChain } = jest.requireMock('../cashweb/chain')
+const { activeChain } = jest.requireMock('@frank/wallet/chain')
 
 const mockedPost = activeChain.topics.post as jest.Mock
 const mockedVote = activeChain.topics.vote as jest.Mock

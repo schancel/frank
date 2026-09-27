@@ -1,0 +1,30 @@
+{
+  "name": "@frank/wallet",
+  "version": "0.0.1",
+  "description": "Monad wallet client: HD keyring, account pool/lease, stamp/topic clients, the ActiveChain compile-time chain-selection seam, and the qwen-bot headless demo. No Vue/Pinia dependency -- see the qwen-bot demo for proof.",
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "test": "jest"
+  },
+  "dependencies": {
+    "@frank/cashweb": "*",
+    "axios": "^0.24.0",
+    "bip39": "^3.0.2",
+    "bitcore-lib-xpi": "*",
+    "ethers": "^6.17.0",
+    "google-protobuf": "^3.19.1",
+    "level": "^7.0.0",
+    "ws": "^8.3.0"
+  },
+  "devDependencies": {
+    "@types/google-protobuf": "^3.15.5",
+    "@types/jest": "^29",
+    "@types/node": "^16.11.11",
+    "@types/ws": "^8.5.3",
+    "jest": "^29",
+    "promise": "^8",
+    "ts-jest": "^29",
+    "typescript": "^5.9.3"
+  }
+}

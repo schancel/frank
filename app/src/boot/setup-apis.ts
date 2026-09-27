@@ -1,13 +1,13 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 import { defaultRelayUrl, chronikServers } from '../utils/constants'
-import { Wallet } from '../cashweb/wallet'
+import { Wallet } from '@frank/cashweb/legacy-wallet'
 import { getRelayClient } from '../adapters/pinia-relay-adapter'
 import { store as levelDbUtxoStore } from '../adapters/level-utxo-store'
 import { boot } from 'quasar/wrappers'
-import { Utxo, UtxoId } from 'src/cashweb/types/utxo'
+import { Utxo, UtxoId } from '@frank/cashweb/types/utxo'
 import { reactive } from 'vue'
-import { UtxoStore } from 'src/cashweb/wallet/storage/storage'
+import { UtxoStore } from '@frank/cashweb/legacy-wallet/storage/storage'
 import { ChronikClient, WsEndpoint } from 'chronik-client'
 import { useWalletStore } from 'src/stores/wallet'
 import { useProfileStore } from 'src/stores/my-profile'

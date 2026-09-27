@@ -2,9 +2,9 @@ import assert from 'assert'
 import { defineStore } from 'pinia'
 import { indexBy, uniq } from 'ramda'
 
-import { activeChain, WalletHandle } from 'src/cashweb/chain'
+import { activeChain, WalletHandle } from '@frank/wallet/chain'
 
-import { ForumMessage, ForumMessageEntry } from 'src/cashweb/types/forum'
+import { ForumMessage, ForumMessageEntry } from '@frank/cashweb/types/forum'
 import { SortMode } from 'src/utils/sorting'
 
 export type MessageWithReplies = ForumMessage & {

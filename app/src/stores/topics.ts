@@ -1,9 +1,9 @@
 import assert from 'assert'
 import { defineStore } from 'pinia'
 
-import { activeChain, WalletHandle } from 'src/cashweb/chain'
+import { activeChain, WalletHandle } from '@frank/wallet/chain'
 
-import { ForumMessage, ForumMessageEntry } from 'src/cashweb/types/forum'
+import { ForumMessage, ForumMessageEntry } from '@frank/cashweb/types/forum'
 
 export type MessageWithReplies = ForumMessage & {
   replies: MessageWithReplies[]

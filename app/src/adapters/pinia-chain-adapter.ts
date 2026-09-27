@@ -15,9 +15,9 @@
  * ## Adapting `DirectMessageReceived` -> `ReceivedMessageWrapper`
  *
  * `activeChain.directMessages.fetchSince` returns `DirectMessageReceived[]`
- * (`../cashweb/chain/active-chain.ts`) -- a deliberately Monad-shaped type (see that file's header,
+ * (`@frank/wallet/chain/active-chain.ts`) -- a deliberately Monad-shaped type (see that file's header,
  * deviation 2). `chats.ts`'s `receiveMessages` action takes `ReceivedMessageWrapper[]`
- * (`../cashweb/types/user-interface.ts`), a Lotus-shaped type (`copartyPubKey: PublicKey` from
+ * (`@frank/cashweb/types/user-interface.ts`), a Lotus-shaped type (`copartyPubKey: PublicKey` from
  * `bitcore-lib-xpi`, `outpoints: Utxo[]`). `toReceivedMessageWrapper` below adapts one into the
  * other:
  * - `outpoints: []` / `burnValueWei: record.burnValueWei` -- see `stores/chats.ts`'s header for the
@@ -33,9 +33,9 @@
  */
 import { PublicKey } from 'bitcore-lib-xpi'
 
-import { activeChain } from '../cashweb/chain'
-import type { DirectMessageReceived, WalletHandle } from '../cashweb/chain'
-import type { ReceivedMessageWrapper } from '../cashweb/types/user-interface'
+import { activeChain } from '@frank/wallet/chain'
+import type { DirectMessageReceived, WalletHandle } from '@frank/wallet/chain'
+import type { ReceivedMessageWrapper } from '@frank/cashweb/types/user-interface'
 import { useChatStore } from '../stores/chats'
 
 /** Default direct-message poll interval, in milliseconds -- within issue #42's suggested 5-10s

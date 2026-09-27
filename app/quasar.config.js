@@ -250,11 +250,22 @@ export default configure(ctx => {
         viteConf.resolve.alias = {
           ...viteConf.resolve.alias,
           ...stdLibBrowserAliases,
-          'bn.js': path.resolve(__dirname, 'local_modules/bn.js/lib/bn.js'),
-          'bitcore-lib-xpi': path.resolve(
-            __dirname,
-            'local_modules/bitcore-lib-xpi/index.js',
-          ),
+          // Ticket #53 (package split): `bitcore-lib-xpi` used to live outside `node_modules`
+          // (`local_modules/`), aliased in by hand here -- now a real yarn workspace package
+          // (`packages/bitcore-lib-xpi`), symlinked into `node_modules` like any other
+          // dependency, so no alias is needed for it anymore.
+          //
+          // `bn.js` still needs one, for a sharper reason than "it used to live outside
+          // node_modules": `bitcore-lib-xpi`'s own package.json pins `bn.js` at an *exact*
+          // `4.11.8`, while our workspace `bn.js` package (`packages/bn.js`) is `4.11.9` --
+          // genuinely incompatible semver ranges, so yarn's own resolution installs a *second*,
+          // real, nested `bn.js` copy under `bitcore-lib-xpi/node_modules/` to satisfy that
+          // exact pin rather than reusing the hoisted workspace one. That's precisely the
+          // multi-copy `BN.isBN()`/`instanceof` breakage this alias originally existed to
+          // prevent (see this file's git history) -- it still needs to force every `bn.js`
+          // resolution to the one workspace copy at the Vite/bundle level, regardless of what
+          // yarn's own node_modules layout does underneath.
+          'bn.js': path.resolve(__dirname, '../packages/bn.js/lib/bn.js'),
           // Mirrors tsconfig.json's `paths` (see that file's own comment): Vite doesn't read
           // tsconfig `paths` for its own module resolution the way @quasar/app-webpack's internal
           // chain did, so these need restating here or every `import ... from 'src/...'` (130

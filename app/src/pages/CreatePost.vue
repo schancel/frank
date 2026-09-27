@@ -91,7 +91,7 @@ import { storeToRefs } from 'pinia'
 import { renderMarkdown } from '../utils/markdown'
 import { useForumStore } from 'src/stores/forum'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
-import { activeChain } from 'src/cashweb/chain'
+import { activeChain } from '@frank/wallet/chain'
 
 import AMessage from '../components/forum/ForumMessage.vue'
 import { errorNotify, infoNotify } from 'src/utils/notifications'

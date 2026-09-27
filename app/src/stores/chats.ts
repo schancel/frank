@@ -2,22 +2,22 @@ import assert from 'assert'
 import { defineStore } from 'pinia'
 
 import { defaultStampAmount, displayNetwork } from '../utils/constants'
-import { stampPrice } from '../cashweb/wallet/helpers'
+import { stampPrice } from '@frank/cashweb/legacy-wallet/helpers'
 import { desktopNotify } from '../utils/notifications'
 import { store } from '../adapters/level-message-store'
 import { toChainDisplayAddress } from '../utils/chain-address'
 import { formatBalance } from '../utils/formatting'
-import { activeChain } from '../cashweb/chain'
-import type { DirectMessageSendResult, WalletHandle } from '../cashweb/chain'
-import { Utxo } from 'src/cashweb/types/utxo'
+import { activeChain } from '@frank/wallet/chain'
+import type { DirectMessageSendResult, WalletHandle } from '@frank/wallet/chain'
+import { Utxo } from '@frank/cashweb/types/utxo'
 import type {
   Message,
   MessageItem,
   TextItem,
   ImageItem,
   StealthItem,
-} from 'src/cashweb/types/messages'
-import type { ReceivedMessageWrapper } from 'src/cashweb/types/user-interface'
+} from '@frank/cashweb/types/messages'
+import type { ReceivedMessageWrapper } from '@frank/cashweb/types/user-interface'
 import { useProfileStore } from './my-profile'
 import { useContactStore } from './contacts'
 import { mapObjIndexed, pathOr } from 'ramda'
@@ -43,7 +43,7 @@ export type ChatMessage = {
  * `ChatMessage`/`Message`/`ReceivedMessage`'s `outpoints: Utxo[]` (used by `stampPrice` below, for
  * unread-badge sort value) has no Monad equivalent -- Monad's stamp burns are a single scalar
  * (`DirectMessageSendResult.burnValueWei`/`DirectMessageReceived.burnValueWei`,
- * `../cashweb/chain/active-chain.ts`), never UTXOs. Chosen: add `burnValueWei?: bigint` as a new,
+ * `@frank/wallet/chain/active-chain.ts`), never UTXOs. Chosen: add `burnValueWei?: bigint` as a new,
  * optional field alongside `outpoints` (which stays required, defaulted to `[]` for Monad-sourced
  * messages) rather than replacing `outpoints` outright. Why: `outpoints` is still read outside this
  * file's scope (`components/chat/messages/ChatMessage.vue`'s own `stampPrice(this.message.outpoints)`

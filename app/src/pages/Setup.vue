@@ -83,8 +83,8 @@ import { QStepper } from 'quasar'
 import { HDPrivateKey } from 'bitcore-lib-xpi'
 import { generateMnemonic } from 'bip39'
 
-import { RegistryHandler } from '../cashweb/registry'
-import pop from '../cashweb/pop'
+import { RegistryHandler } from '@frank/cashweb/registry'
+import pop from '@frank/cashweb/pop'
 import { getRelayClient } from '../adapters/pinia-relay-adapter'
 import {
   defaultRelayUrl,

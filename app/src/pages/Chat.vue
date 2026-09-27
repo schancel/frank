@@ -238,7 +238,7 @@ export default defineComponent({
           return
         }
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const message = (this.$refs[digest] as typeof ChatMessageComponent[])
+        const message = (this.$refs[digest] as (typeof ChatMessageComponent)[])
           .slice()
           .shift()
 

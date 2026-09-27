@@ -1,7 +1,7 @@
 import { MessageWithReplies } from 'src/stores/forum'
 
 export const sortModes = <const>['hot', 'top', 'new']
-export type SortMode = typeof sortModes[number]
+export type SortMode = (typeof sortModes)[number]
 
 export function halfLife(satoshis: number, timestamp: Date, now: Date) {
   const halvedAmount =

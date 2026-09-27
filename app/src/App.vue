@@ -20,7 +20,7 @@ import { storeToRefs } from 'pinia'
 import { useRouter } from 'vue-router'
 
 import { defaultContacts, registrys, networkName } from 'src/utils/constants'
-import { RegistryHandler } from 'src/cashweb/registry'
+import { RegistryHandler } from '@frank/cashweb/registry'
 import { errorNotify } from 'src/utils/notifications'
 import { useRelayClientStore } from 'src/stores/relay-client'
 import { useAppearanceStore } from 'src/stores/appearance'

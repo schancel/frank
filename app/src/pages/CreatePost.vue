@@ -7,7 +7,7 @@
             <q-input
               label="Offering"
               v-model="offering"
-              suffix="XPI"
+              :suffix="chainUnit"
               :rules="[val => Number.parseFloat(val) || 'Invalid number']"
               lazy-rules
             />
@@ -91,6 +91,7 @@ import { storeToRefs } from 'pinia'
 import { renderMarkdown } from '../utils/markdown'
 import { useForumStore } from 'src/stores/forum'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
+import { activeChain } from 'src/cashweb/chain'
 
 import AMessage from '../components/forum/ForumMessage.vue'
 import { errorNotify, infoNotify } from 'src/utils/notifications'
@@ -122,6 +123,7 @@ export default defineComponent({
       url: null,
       message: '',
       parentDigest,
+      chainUnit: activeChain.unit,
     }
   },
   beforeRouteUpdate(to, from, next) {

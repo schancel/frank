@@ -51,6 +51,17 @@ import { copyToClipboard } from 'quasar'
 import { recomendedBalance } from '../../utils/constants'
 import { addressCopiedNotify } from '../../utils/notifications'
 import { formatBalance } from '../../utils/formatting'
+// Deliberately left on the old Lotus `toAPIAddress`/`toDisplayAddress` pair (ticket #44): this
+// whole component -- and the `Setup.vue` onboarding wizard it's part of -- generates a Lotus
+// `HDPrivateKey`/mnemonic and registers via the old `RegistryHandler`, never touching
+// `activeChain`/`useActiveWallet`/`monad-identity.ts` at all. `this.$wallet.myAddress` here is a
+// real bitcore-lib-xpi `Address`, not a Monad `0x...` string, so these calls are correct for what
+// this component actually does today -- swapping them for `activeChain.formatAddress` would be
+// papering over the real gap, not fixing it. The "legacy address" toggle button below
+// (`toggleLegacy`) also has no Monad equivalent: there's exactly one canonical address encoding on
+// an EVM chain (see `active-chain.ts`'s `ChainAddress` doc comment). Whether/how a Monad-native
+// onboarding wizard needs a "deposit" concept at all is a real product question, not a find-and-
+// replace -- filed as issue #47 per this ticket's own instructions rather than guessed at here.
 import { toAPIAddress, toDisplayAddress } from '../../utils/address'
 import { useWalletStore } from 'src/stores/wallet'
 

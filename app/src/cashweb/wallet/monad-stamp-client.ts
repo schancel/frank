@@ -66,7 +66,8 @@
  * ## Lease release policy
  *
  * `SubAccountLeaseManager.releaseLease` (#18) only accepts three outcomes: `'confirmed'`
- * (`'in-use' -> 'available'`), or `'failed'`/`'stuck'` (`'in-use' -> 'retired'`, never reused with a
+ * (`'in-use' -> 'spent'`, corrected by ticket #34 — see that file's own header for why this never
+ * goes back to `'available'`), or `'failed'`/`'stuck'` (`'in-use' -> 'retired'`, never reused with a
  * guessed nonce). This module maps the three ways a `submitStampedMessage` call can end onto those:
  *
  *   - **`PUT /message/monad` returns 2xx**: the relay only reaches its success response after

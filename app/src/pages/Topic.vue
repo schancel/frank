@@ -32,6 +32,7 @@ import assert from 'assert'
 import { QScrollArea } from 'quasar'
 
 import { useTopicStore } from 'src/stores/topics'
+import { useActiveWallet } from 'src/composables/useActiveWallet'
 
 import TopicMessage from 'src/components/topic/TopicMessage.vue'
 
@@ -165,9 +166,9 @@ export default defineComponent({
     clearTimeout(this.timeoutId as ReturnType<typeof setTimeout>)
   },
   methods: {
-    // FIXME: We need a `useWallet` function so we don't need to use the old object API
-    refreshContent() {
-      this.refreshMessages({ wallet: this.$wallet, topic: this.topic })
+    async refreshContent() {
+      const wallet = await useActiveWallet()
+      this.refreshMessages({ wallet, topic: this.topic })
     },
   },
 })

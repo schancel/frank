@@ -118,6 +118,7 @@ import AMessageReplies from './ForumMessageReplies.vue'
 
 import { MessageWithReplies, useForumStore } from 'src/stores/forum'
 import { useContactStore } from 'src/stores/contacts'
+import { useActiveWallet } from 'src/composables/useActiveWallet'
 
 export default defineComponent({
   setup() {
@@ -194,19 +195,22 @@ export default defineComponent({
         clearTimeout(this.timeoutId)
       }
       this.timeoutId = setTimeout(() => {
-        if (this.voteAmount === 0) {
-          return
-        }
-        console.log('Adding votes', {
-          payloadDigest: this.message?.payloadDigest,
-          satoshis: this.voteAmount,
-        })
-        this.addOffering({
-          wallet: this.$wallet,
-          payloadDigest: this.message?.payloadDigest,
-          satoshis: this.voteAmount,
-        })
-        this.voteAmount = 0
+        void (async () => {
+          if (this.voteAmount === 0) {
+            return
+          }
+          console.log('Adding votes', {
+            payloadDigest: this.message?.payloadDigest,
+            satoshis: this.voteAmount,
+          })
+          const wallet = await useActiveWallet()
+          this.addOffering({
+            wallet,
+            payloadDigest: this.message?.payloadDigest,
+            satoshis: this.voteAmount,
+          })
+          this.voteAmount = 0
+        })()
       }, 1_000)
     },
   },

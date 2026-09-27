@@ -2,9 +2,7 @@ import assert from 'assert'
 import { defineStore } from 'pinia'
 import { indexBy, uniq } from 'ramda'
 
-import { RegistryHandler } from 'src/cashweb/registry'
-import { Wallet } from 'src/cashweb/wallet'
-import { displayNetwork, registrys } from '../utils/constants'
+import { activeChain, WalletHandle } from 'src/cashweb/chain'
 
 import { ForumMessage, ForumMessageEntry } from 'src/cashweb/types/forum'
 import { SortMode } from 'src/utils/sorting'
@@ -123,16 +121,16 @@ export const useForumStore = defineStore('forum', {
     pushNewTopic(topic: string) {
       this.topics.push(topic)
     },
-    async refreshMessages({ wallet }: { topic: string; wallet: Wallet }) {
-      const registry = new RegistryHandler({
-        wallet,
-        networkName: displayNetwork,
-        registrys,
-      })
+    async refreshMessages({ wallet }: { topic: string; wallet: WalletHandle }) {
       console.log('fetching messages')
       const from = Date.now() - this.duration
       console.log(from)
-      const entries = await registry.getBroadcastMessages('', from)
+      // Empty topic == "all topics", matching the old `getBroadcastMessages('', from)` behavior.
+      const entries = await activeChain.topics.fetchByTopic({
+        wallet,
+        topic: '',
+        sinceMs: from,
+      })
       if (!entries) {
         return
       }
@@ -145,40 +143,31 @@ export const useForumStore = defineStore('forum', {
       topic,
       parentDigest,
     }: {
-      wallet: Wallet
+      wallet: WalletHandle
       entry: ForumMessageEntry
       satoshis: number
       topic: string
       parentDigest?: string
     }) {
-      const registry = new RegistryHandler({
+      // See `stores/topics.ts`'s `putMessage` for the signed-number -> direction/magnitude
+      // mapping rationale (same Lotus `RegistryHandler.createBroadcast`/`addOfferings`
+      // sign-folding convention this store's callers also produce).
+      console.log('posting message')
+      const { payloadDigest } = await activeChain.topics.post({
         wallet,
-        networkName: displayNetwork,
-        registrys,
-      })
-      console.log('fetching messages')
-      const payloadDigest = await registry.createBroadcast(
         topic,
-        [entry],
-        satoshis,
+        entries: [entry],
+        direction: satoshis >= 0 ? 'up' : 'down',
+        voteWeightWei: BigInt(Math.abs(satoshis)),
         parentDigest,
-      )
-      this.fetchMessage({ payloadDigest, wallet })
-    },
-    async fetchMessage({
-      wallet,
-      payloadDigest,
-    }: {
-      wallet: Wallet
-      payloadDigest: string
-    }) {
-      const registry = new RegistryHandler({
-        wallet,
-        networkName: displayNetwork,
-        registrys,
       })
+      this.fetchMessage({ payloadDigest })
+    },
+    async fetchMessage({ payloadDigest }: { payloadDigest: string }) {
+      // Note: `ActiveChain.topics.fetchOne` takes no `wallet` -- reading a public topic post
+      // never needed a sender identity to begin with.
       console.log('fetching message', payloadDigest)
-      const message = await registry.getBroadcastMessage(payloadDigest)
+      const message = await activeChain.topics.fetchOne(payloadDigest)
       if (!message) {
         console.log('could not fetch message', payloadDigest)
         return
@@ -192,18 +181,18 @@ export const useForumStore = defineStore('forum', {
       payloadDigest,
       satoshis,
     }: {
-      wallet: Wallet
+      wallet: WalletHandle
       payloadDigest: string
       satoshis: number
     }) {
-      const registry = new RegistryHandler({
-        wallet,
-        networkName: displayNetwork,
-        registrys,
-      })
       console.log('voting towards message', payloadDigest, satoshis)
-      await registry.addOfferings(payloadDigest, satoshis)
-      await this.fetchMessage({ payloadDigest, wallet })
+      await activeChain.topics.vote({
+        wallet,
+        payloadDigest,
+        direction: satoshis >= 0 ? 'up' : 'down',
+        voteWeightWei: BigInt(Math.abs(satoshis)),
+      })
+      await this.fetchMessage({ payloadDigest })
     },
   },
   storage: {

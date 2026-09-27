@@ -49,6 +49,7 @@ import { defineComponent } from 'vue'
 import { storeToRefs } from 'pinia'
 
 import { useForumStore } from 'src/stores/forum'
+import { useActiveWallet } from 'src/composables/useActiveWallet'
 
 import ForumDrawer from '../components/panels/ForumDrawer.vue'
 
@@ -78,8 +79,9 @@ export default defineComponent({
     toggleSettingsDrawerOpen() {
       this.$emit('toggleMyDrawerOpen')
     },
-    refreshContent() {
-      this.refreshMessages({ wallet: this.$wallet, topic: this.selectedTopic })
+    async refreshContent() {
+      const wallet = await useActiveWallet()
+      this.refreshMessages({ wallet, topic: this.selectedTopic })
     },
     setTopic(text: string) {
       this.selectedTopic = text

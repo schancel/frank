@@ -1,9 +1,7 @@
 import assert from 'assert'
 import { defineStore } from 'pinia'
 
-import { RegistryHandler } from 'src/cashweb/registry'
-import { Wallet } from 'src/cashweb/wallet'
-import { displayNetwork, registrys } from '../utils/constants'
+import { activeChain, WalletHandle } from 'src/cashweb/chain'
 
 import { ForumMessage, ForumMessageEntry } from 'src/cashweb/types/forum'
 
@@ -229,20 +227,19 @@ export const useTopicStore = defineStore('topics', {
       wallet,
     }: {
       topic: string
-      wallet: Wallet
+      wallet: WalletHandle
     }) {
       const topicData = this.ensureTopic(topic)
-      const registry = new RegistryHandler({
-        wallet,
-        networkName: displayNetwork,
-        registrys,
-      })
       // FIXME: We will not be aware of new votes. This will need to be handled
       // through websocket subscriptions on the backend in the future.
       const from = topicData.lastUpdate ?? defaultFetchDuration
       const to = Date.now()
       console.log('fetching messages', topic, from, to)
-      const entries = await registry.getBroadcastMessages(topic, from, to)
+      const entries = await activeChain.topics.fetchByTopic({
+        wallet,
+        topic,
+        sinceMs: from,
+      })
       if (!entries) {
         return
       }
@@ -255,42 +252,39 @@ export const useTopicStore = defineStore('topics', {
       entry,
       parentDigest,
     }: {
-      wallet: Wallet
+      wallet: WalletHandle
       entry: ForumMessageEntry
       topic: string
       parentDigest?: string
     }) {
       const topicData = this.ensureTopic(topic)
+      // Lotus's `RegistryHandler.addOfferings`/`createBroadcast` fold up/down direction into the
+      // sign of a single `vote: number` (positive => up, negative => down; see that module's
+      // `constructBurnTransaction`). `ActiveChain.topics.post` keeps `direction` and
+      // `voteWeightWei` (always-positive magnitude) separate to match Monad's real wire format --
+      // convert here, at the boundary, rather than folding a sign back in below it.
       const satoshis = topicData.offering
-      const registry = new RegistryHandler({
+      const { payloadDigest } = await activeChain.topics.post({
         wallet,
-        networkName: displayNetwork,
-        registrys,
-      })
-      const payloadDigest = await registry.createBroadcast(
         topic,
-        [entry],
-        satoshis,
+        entries: [entry],
+        direction: satoshis >= 0 ? 'up' : 'down',
+        voteWeightWei: BigInt(Math.abs(satoshis)),
         parentDigest,
-      )
-      this.fetchMessage({ topic, payloadDigest, wallet })
+      })
+      this.fetchMessage({ topic, payloadDigest })
     },
     async fetchMessage({
-      wallet,
       payloadDigest,
       topic,
     }: {
-      wallet: Wallet
       payloadDigest: string
       topic: string
     }) {
-      const registry = new RegistryHandler({
-        wallet,
-        networkName: displayNetwork,
-        registrys,
-      })
+      // Note: `ActiveChain.topics.fetchOne` takes no `wallet` -- reading a public topic post
+      // never needed a sender identity to begin with.
       console.log('fetching message', payloadDigest)
-      const message = await registry.getBroadcastMessage(payloadDigest)
+      const message = await activeChain.topics.fetchOne(payloadDigest)
       if (!message) {
         console.log('could not fetch message', payloadDigest)
         return
@@ -305,19 +299,21 @@ export const useTopicStore = defineStore('topics', {
       satoshis,
       topic,
     }: {
-      wallet: Wallet
+      wallet: WalletHandle
       payloadDigest: string
       satoshis: number
       topic: string
     }) {
-      const registry = new RegistryHandler({
-        wallet,
-        networkName: displayNetwork,
-        registrys,
-      })
+      // Same signed-number -> direction/magnitude mapping as `putMessage` above -- callers here
+      // (e.g. `TopicMessage.vue`'s up/down vote buttons) already produce a signed `satoshis`.
       console.log('voting towards message', payloadDigest, satoshis)
-      await registry.addOfferings(payloadDigest, satoshis)
-      await this.fetchMessage({ topic, payloadDigest, wallet })
+      await activeChain.topics.vote({
+        wallet,
+        payloadDigest,
+        direction: satoshis >= 0 ? 'up' : 'down',
+        voteWeightWei: BigInt(Math.abs(satoshis)),
+      })
+      await this.fetchMessage({ topic, payloadDigest })
     },
   },
   storage: {

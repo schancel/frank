@@ -1,9 +1,21 @@
 /**
  * Shared setup helpers for ticket #9's two live scripts (`qwen-bot.livecheck.ts` and
- * `qwen-bot-send-demo.livecheck.ts`): load-or-create a persisted `FrankIdentity`, and stand up a
+ * `qwen-bot-send-demo.livecheck.ts`): load-or-create a persisted `MonadIdentity`, and stand up a
  * funded, single-use Monad sub-account pool (#14/#18/#34) + `MonadStampClient` (#13) ready to send
  * stamped messages -- the same steps `monad-e2e-demo.livecheck.ts` (ticket #8) already proved live,
  * factored out here so neither script duplicates them.
+ *
+ * ## Ported from `FrankIdentity`/Lotus identity to `MonadIdentity` (post-#45)
+ *
+ * Originally used `lotus-identity.ts`'s `FrankIdentity` (a Lotus-address-encoded identity,
+ * registered via the Lotus-only branch of `PUT /metadata/:addr`) -- proven live and documented in
+ * `QWEN_BOT_README.md`'s "Live proof from this ticket's own run" section, which stays accurate as
+ * a historical record of that run. Ported to `MonadIdentity`/`monad-identity.ts` once the real
+ * Frank UI's `ActiveChain`/`MonadChain` stack (#41-#43) and its Monad-native profile registration
+ * route (#45) existed: the UI only ever resolves a contact's pubkey via `fetchMonadProfile`, which
+ * never finds a Lotus-registered identity, so a Lotus-identity bot was invisible to (and couldn't
+ * message) any real wallet created through the app. `monad-message-envelope.ts`'s envelope
+ * format/ECDH itself needed no changes -- `from`/`to` were always plain, format-agnostic strings.
  *
  * ## Gas budget (why `gasReserve` is computed, not a fixed constant like #8's demo used)
  *
@@ -54,7 +66,7 @@ import {
 } from './monad-account-pool'
 import { SubAccountLeaseManager } from './monad-account-lease'
 import { MonadStampClient } from './monad-stamp-client'
-import { FrankIdentity, LotusNet, registerIdentity } from './lotus-identity'
+import { MonadIdentity, registerMonadIdentity } from './monad-identity'
 
 export function requiredEnv(name: string): string {
   const value = process.env[name]
@@ -68,49 +80,59 @@ function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
 
-/** Loads a `FrankIdentity` persisted (as `{ privateKeyHex }`) at `identityJsonPath`, or generates
+/** Loads a `MonadIdentity` persisted (as `{ privateKeyHex }`) at `identityJsonPath`, or generates
  * and persists a fresh one if the file doesn't exist yet -- so re-running either script keeps
  * addressing the same identity (needed for the bot: the sender script has to know a stable
- * address to send its first message to) instead of registering a brand-new one every run. */
+ * address to send its first message to) instead of registering a brand-new one every run.
+ *
+ * Ported from the original `FrankIdentity`/`lotus-identity.ts` version (ticket #9's original,
+ * still-documented run in `QWEN_BOT_README.md` used that) to `MonadIdentity`/`monad-identity.ts`
+ * once the real Frank UI's own identity/messaging stack (`ActiveChain`, tickets #41-#45) landed:
+ * the UI's `MonadChain.directMessages` resolves a sender/recipient's pubkey via
+ * `fetchMonadProfile`/`GET /metadata/monad/:addr`-or-dispatch, which only ever finds a
+ * `MonadIdentity`-registered profile -- a Lotus-registered bot identity was invisible to, and
+ * couldn't message, any real Monad wallet created through the app. See this file's own module docs
+ * update and `QWEN_BOT_README.md` for the full before/after. */
 export function loadOrCreateIdentity(
   identityJsonPath: string,
-  net: LotusNet,
   label: string,
-): FrankIdentity {
+): MonadIdentity {
   if (existsSync(identityJsonPath)) {
     const saved = JSON.parse(readFileSync(identityJsonPath, 'utf8')) as {
       privateKeyHex: string
     }
-    const identity = FrankIdentity.fromPrivateKeyHex(saved.privateKeyHex, net)
-    console.log(`[${label}] loaded existing identity ${identity.address}`)
+    const identity = MonadIdentity.fromPrivateKeyHex(saved.privateKeyHex)
+    console.log(
+      `[${label}] loaded existing identity ${identity.displayAddress}`,
+    )
     return identity
   }
-  const identity = FrankIdentity.generate(net)
+  const identity = MonadIdentity.generate()
   writeFileSync(
     identityJsonPath,
     JSON.stringify({ privateKeyHex: identity.toPrivateKeyHex() }, null, 2),
   )
   console.log(
-    `[${label}] generated fresh identity ${identity.address} (saved to ${identityJsonPath})`,
+    `[${label}] generated fresh identity ${identity.displayAddress} (saved to ${identityJsonPath})`,
   )
   return identity
 }
 
 /** `PUT /metadata/:addr` for `identity`, logging the result -- registration is idempotent enough
- * to call on every run (`Registry::put_metadata` accepts a re-PUT as long as the new payload's
- * timestamp is strictly greater than any existing one, which `Date.now()` always is on a later
- * run). */
+ * to call on every run (`Registry::put_monad_profile`'s monotonic-timestamp check, ticket #45,
+ * accepts a re-PUT as long as the new payload's timestamp is strictly greater than any existing
+ * one, which `Date.now()` always is on a later run). */
 export async function registerAndLog(params: {
   relayBaseUrl: string
-  identity: FrankIdentity
+  identity: MonadIdentity
   label: string
 }): Promise<void> {
-  await registerIdentity({
+  await registerMonadIdentity({
     relayBaseUrl: params.relayBaseUrl,
     identity: params.identity,
   })
   console.log(
-    `[${params.label}] registered identity ${params.identity.address} (PUT /metadata, no payment -- POP disabled)`,
+    `[${params.label}] registered identity ${params.identity.displayAddress} (PUT /metadata, no payment -- POP disabled)`,
   )
 }
 
@@ -141,7 +163,14 @@ export async function waitForConfirmation(
  * in `pool`, retrying only the not-yet-funded remainder when a funding tx is rejected for a
  * nonce reason (another concurrent user of the same shared wallet having raced it), up to
  * `maxAttempts`. Any other kind of failure (insufficient balance, RPC down, ...) propagates
- * immediately without retrying. */
+ * immediately without retrying.
+ *
+ * **Widened tonight (autonomous overnight session, 2026-09-27):** Monad testnet's node doesn't
+ * always phrase this as "nonce" -- confirmed live, a real rejection came back as `"An existing
+ * transaction had higher priority"` (`eth_sendRawTransaction`'s `-32000` response), which the
+ * original `/nonce/i` regex didn't match, so a genuine nonce race propagated as a hard failure
+ * instead of retrying. Broadened to also match "higher priority" and "already known" (another
+ * common phrasing for the same underlying race across different EVM clients). */
 async function fundPoolWithRetry(params: {
   pool: MonadSubAccountPool
   mainAccountSigner: MonadAccountTxSigner
@@ -150,7 +179,12 @@ async function fundPoolWithRetry(params: {
   label: string
   maxAttempts?: number
 }): Promise<FanOutFundingResult[]> {
-  const maxAttempts = params.maxAttempts ?? 6
+  // Bumped from 6 tonight (autonomous overnight session, 2026-09-27): confirmed live, repeatedly,
+  // that this environment's shared testnet wallet has persistent, severe nonce contention -- a
+  // 10-account pool exhausted 6 attempts (needing a 5th retry for just the 4th-from-last account)
+  // before finishing even one of two consecutive runs. Raised the ceiling rather than reducing pool
+  // size further, since the linear backoff below already spaces attempts out increasingly.
+  const maxAttempts = params.maxAttempts ?? 15
   const funded: FanOutFundingResult[] = []
   let remaining = params.pool
     .records()
@@ -174,7 +208,7 @@ async function fundPoolWithRetry(params: {
       })
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
-      const isNonceRace = /nonce/i.test(message)
+      const isNonceRace = /nonce|higher priority|already known/i.test(message)
       if (!isNonceRace || attempt === maxAttempts) throw err
       const backoffMs = 1500 * attempt
       console.log(

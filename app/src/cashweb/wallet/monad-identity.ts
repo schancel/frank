@@ -14,24 +14,18 @@
  * `0x...` string (`ethers.Wallet.address`) -- no base58, no `LOTUS_PREFIX`, no
  * `bitcoinsuite_core` byte-for-byte parity requirement anywhere in this file.
  *
- * ## Known gap: `/metadata/:addr` is Lotus-address-only server-side, today
+ * ## Formerly a known gap, fixed by ticket #45
  *
- * Read directly from the live route, not assumed: `handle_put_registry`/`handle_get_registry`
- * (`backend/cashweb/cashweb-registry/src/http/server.rs`, lines 324 and 387) both do
- * `address.parse::<LotusAddress>().map_err(InvalidAddress)?` on the `:addr` path segment -- there
- * is no Monad-native metadata route, or address-format branch, on the server today. That means
- * `registerMonadIdentity`/`fetchMonadIdentityPubKey` below, called against a *live* relay with a
- * real `0x...` address, will 400 with `InvalidAddress` until the backend grows a
- * Monad-address-accepting path. This file still implements the client side for real (mirroring
- * `lotus-identity.ts`'s own `registerIdentity`/`fetchIdentityPubKey` pattern exactly, just
- * Monad-addressed) because: (1) ticket #41's acceptance criteria explicitly call for real
- * `PUT`/`GET /metadata/:addr` wiring, mirroring that pattern; (2) fixing the backend's address
- * parsing is a `cashweb-registry` (Rust) change with its own review surface, well outside this
- * ticket's `app/src/cashweb` file scope and non-goals (no backend changes are listed in #41's
- * acceptance criteria); (3) every test this ticket adds mocks this module's own exports (or, for
- * this file's own tests, mocks `axios`), never a live relay, so this gap doesn't block verifying
- * the client code itself. Flagged prominently here, and in this ticket's handoff, so #42/#43 (or a
- * dedicated backend ticket) don't rediscover it the hard way against a live testnet relay.
+ * `handle_put_registry`/`handle_get_registry` (`backend/cashweb/cashweb-registry/src/http/
+ * server.rs`) originally only accepted `LotusAddress`-parseable `:addr` values, so
+ * `registerMonadIdentity`/`fetchMonadIdentityPubKey` below 400'd with `InvalidAddress` against a
+ * real `0x...` address on a live relay -- this file's client code was written ahead of that backend
+ * gap being closed (ticket #41's own explicit, documented tradeoff at the time). Ticket #45 (Monad
+ * profile registration) fixed this for real: both handlers now try `MonadAddress::from_str` first
+ * and dispatch to `Registry::put_monad_profile`/`get_monad_profile` when it parses, falling back to
+ * `LotusAddress` only otherwise -- verified end-to-end against a live relay as part of that ticket.
+ * `registerMonadIdentity`/`fetchMonadIdentityPubKey` need no changes here; they were always correct
+ * client-side, just blocked on the server catching up.
  *
  * ## Reusing `bitcore-lib-xpi`'s ECDH/AES/ECDSA code without any Lotus addressing
  *
@@ -80,7 +74,14 @@
  * receives, for a "one seed backs up everything" property the independently-random Lotus precedent
  * doesn't have.
  */
-import { HDNodeWallet, Mnemonic, Wallet, getBytes } from 'ethers'
+import {
+  HDNodeWallet,
+  Mnemonic,
+  Wallet,
+  getBytes,
+  hexlify,
+  randomBytes,
+} from 'ethers'
 import { PrivateKey, crypto as bitcoreCrypto } from 'bitcore-lib-xpi'
 import axios from 'axios'
 
@@ -126,6 +127,16 @@ export class MonadIdentity implements FrankIdentityHandle {
   /** Rebuilds a previously-generated identity from its raw `0x`-prefixed private key hex. */
   static fromPrivateKeyHex(privateKeyHex: string): MonadIdentity {
     return new MonadIdentity(new Wallet(privateKeyHex))
+  }
+
+  /** A fresh, independently-random identity with no HD relationship to any seed/burn pool --
+   * mirrors `lotus-identity.ts`'s `FrankIdentity.generate`, for callers (e.g. the Qwen bot,
+   * `qwen-bot-common.ts`) that need a standalone identity, not one derived from a wallet's own
+   * seed via `fromSeed`. Goes through `fromPrivateKeyHex` rather than wrapping
+   * `Wallet.createRandom()`'s result directly: that returns an `HDNodeWallet`, a sibling type of
+   * `Wallet` in ethers v6 (not a subtype), which this class's private field isn't typed for. */
+  static generate(): MonadIdentity {
+    return MonadIdentity.fromPrivateKeyHex(hexlify(randomBytes(32)))
   }
 
   /** Raw `0x`-prefixed private key -- for persisting between runs. Never logged/serialized by this

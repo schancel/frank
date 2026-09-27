@@ -6,9 +6,14 @@
  * `monad-e2e-demo.livecheck.ts` established (hits the real network, so excluded from `jest`'s
  * `testMatch` and never runs under `yarn test:unit:ci` -- meant to be run manually).
  *
+ * Ported (see `qwen-bot-common.ts`'s own header) from the original `lotus-identity.ts`/
+ * `FrankIdentity`-based version to `monad-identity.ts`'s `MonadIdentity` once the real Frank UI's
+ * `ActiveChain`/`MonadChain` stack (#41-#45) landed -- a Lotus-identity bot was invisible to, and
+ * couldn't message, any Monad wallet created through the actual app.
+ *
  * ## What this proves, end to end
  *
- * 1. Registers its own Frank identity (`./lotus-identity.ts`) via a real `PUT /metadata/:addr`,
+ * 1. Registers its own Frank identity (`./monad-identity.ts`) via a real `PUT /metadata/:addr`,
  *    no payment (POP disabled, ticket #35) -- the same acceptance criterion ticket #8 proved,
  *    here done from a from-scratch TS client since no TS client for that route existed yet.
  * 2. Polls the *real*, live `GET /message/monad?since=<t>` route (ticket #37) for new stamped
@@ -33,7 +38,8 @@
  *     src/cashweb/wallet/monad-hd-keyring.ts src/cashweb/wallet/monad-account-pool.ts \
  *     src/cashweb/wallet/monad-account-lease.ts src/cashweb/wallet/monad-stamp-client.ts \
  *     src/cashweb/wallet/monad_message_pb.js src/cashweb/wallet/monad-message-feed.ts \
- *     src/cashweb/wallet/monad-message-envelope.ts src/cashweb/wallet/lotus-identity.ts \
+ *     src/cashweb/wallet/monad-message-envelope.ts src/cashweb/wallet/monad-identity.ts \
+ *     src/cashweb/registry/metadata_pb.js src/cashweb/signed_payload/payload_pb.js \
  *     src/cashweb/wallet/qwen-client.ts src/cashweb/wallet/qwen-bot-common.ts \
  *     src/cashweb/wallet/storage/sub-account-pool-storage.ts \
  *     src/cashweb/wallet/qwen-bot.livecheck.ts
@@ -48,13 +54,17 @@
 import { writeFileSync } from 'fs'
 import { resolve } from 'path'
 
-import { fetchIdentityPubKey, LotusNet } from './lotus-identity'
+import { fetchMonadIdentityPubKey } from './monad-identity'
 import {
   buildEnvelope,
   decryptEnvelope,
   parseEnvelope,
 } from './monad-message-envelope'
 import { fetchMonadMessagesSince } from './monad-message-feed'
+import {
+  deserializeMessageItems,
+  serializeMessageItems,
+} from '../chain/monad-chain'
 import { QwenChatMessage, QwenClient } from './qwen-client'
 import {
   loadOrCreateIdentity,
@@ -63,10 +73,33 @@ import {
   setUpFundedStampClient,
 } from './qwen-bot-common'
 
-const NET: LotusNet = 'regtest' // matches `e2e_demo_server`'s `Net::Regtest` (see #8's runbook)
-
 function sleep(ms: number): Promise<void> {
   return new Promise(r => setTimeout(r, ms))
+}
+
+/** Extracts plain text from a decrypted envelope's plaintext, whichever wire shape it's in.
+ * Found tonight (autonomous overnight session, 2026-09-27), the hard way: the *real* Frank UI's
+ * `MonadChain.directMessages` (`../chain/monad-chain.ts`, ticket #42) always wraps a message's
+ * plaintext as `serializeMessageItems`'s JSON-array-of-`MessageItem` shape -- this bot originally
+ * sent/expected a bare plaintext string instead (fine when bot and sender were both this same
+ * ticket's own scripts, broken once a real `ActiveChain` wallet is on the other end:
+ * `deserializeMessageItems` on a bare string throws `SyntaxError`, confirmed live). Tries the real
+ * UI's shape first, falls back to treating `plaintext` as a bare string only if that parse fails,
+ * so this bot still works talking to itself (or to the old bare-string convention) either way. */
+function extractText(plaintext: string): string {
+  try {
+    const items = deserializeMessageItems(plaintext)
+    const text = items
+      .filter(
+        (item): item is { type: 'text'; text: string } => item.type === 'text',
+      )
+      .map(item => item.text)
+      .join('\n')
+    if (text) return text
+  } catch {
+    // Not a MessageItem[] JSON array -- fall through to the bare-string convention below.
+  }
+  return plaintext
 }
 
 const SYSTEM_PROMPT =
@@ -110,13 +143,13 @@ async function main() {
   console.log(`Qwen model:   ${qwenModel} @ ${qwenEndpoint}`)
   console.log(`Max replies:  ${maxReplies}`)
 
-  const identity = loadOrCreateIdentity(identityJsonPath, NET, 'bot')
+  const identity = loadOrCreateIdentity(identityJsonPath, 'bot')
   await registerAndLog({ relayBaseUrl, identity, label: 'bot' })
   writeFileSync(
     handoffJsonPath,
-    JSON.stringify({ address: identity.address }, null, 2),
+    JSON.stringify({ address: identity.displayAddress }, null, 2),
   )
-  console.log(`Bot Frank identity address: ${identity.address}`)
+  console.log(`Bot Frank identity address: ${identity.displayAddress}`)
   console.log(`(handoff written to ${handoffJsonPath})`)
 
   const { stampClient } = await setUpFundedStampClient({
@@ -143,7 +176,7 @@ async function main() {
   let lastActivityAt = Date.now()
 
   console.log(
-    `\nPolling ${relayBaseUrl}/message/monad?since=<t> every ${pollIntervalMs}ms for messages addressed to ${identity.address} ...`,
+    `\nPolling ${relayBaseUrl}/message/monad?since=<t> every ${pollIntervalMs}ms for messages addressed to ${identity.displayAddress} ...`,
   )
 
   while (repliesSent < maxReplies) {
@@ -172,8 +205,8 @@ async function main() {
 
       const envelope = parseEnvelope(message.message.encryptedPayload)
       if (!envelope) continue // not our envelope convention -- e.g. #8's plain-JSON demo blob
-      if (envelope.to !== identity.address) continue // not addressed to us
-      if (envelope.from === identity.address) continue // our own outgoing message
+      if (envelope.to !== identity.displayAddress) continue // not addressed to us
+      if (envelope.from === identity.displayAddress) continue // our own outgoing message
 
       lastActivityAt = Date.now()
       console.log(
@@ -184,7 +217,7 @@ async function main() {
 
       let senderPubKey = senderPubKeyCache.get(envelope.from)
       if (!senderPubKey) {
-        senderPubKey = await fetchIdentityPubKey({
+        senderPubKey = await fetchMonadIdentityPubKey({
           relayBaseUrl,
           address: envelope.from,
         })
@@ -197,11 +230,12 @@ async function main() {
         senderPubKeyCache.set(envelope.from, senderPubKey)
       }
 
-      const plaintext = decryptEnvelope({
+      const rawPlaintext = decryptEnvelope({
         envelope,
-        myPrivateKey: identity.privateKey,
+        myPrivateKey: identity.toBitcorePrivateKey(),
         senderPubKey,
       })
+      const plaintext = extractText(rawPlaintext)
       console.log(`[bot] decrypted: "${plaintext}"`)
 
       const history = conversations.get(envelope.from) ?? [
@@ -218,11 +252,15 @@ async function main() {
       conversations.set(envelope.from, history)
 
       const replyEnvelope = buildEnvelope({
-        fromAddress: identity.address,
-        fromPrivateKey: identity.privateKey,
+        fromAddress: identity.displayAddress,
+        fromPrivateKey: identity.toBitcorePrivateKey(),
         toAddress: envelope.from,
         toPubKey: senderPubKey,
-        plaintext: completion.content,
+        // Wrapped as the real UI's MessageItem[] wire shape (see `extractText`'s doc comment) so a
+        // real Frank UI wallet can decode this reply, not just this ticket's own scripts.
+        plaintext: serializeMessageItems([
+          { type: 'text', text: completion.content },
+        ]),
       })
 
       console.log('[bot] stamping + sending reply over Monad testnet ...')

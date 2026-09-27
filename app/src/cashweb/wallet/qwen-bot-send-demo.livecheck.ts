@@ -30,7 +30,7 @@
 import { readFileSync } from 'fs'
 import { resolve } from 'path'
 
-import { fetchIdentityPubKey, LotusNet } from './lotus-identity'
+import { fetchMonadIdentityPubKey } from './monad-identity'
 import {
   buildEnvelope,
   decryptEnvelope,
@@ -38,16 +38,38 @@ import {
 } from './monad-message-envelope'
 import { fetchMonadMessagesSince } from './monad-message-feed'
 import {
+  deserializeMessageItems,
+  serializeMessageItems,
+} from '../chain/monad-chain'
+import {
   loadOrCreateIdentity,
   registerAndLog,
   requiredEnv,
   setUpFundedStampClient,
 } from './qwen-bot-common'
 
-const NET: LotusNet = 'regtest'
-
 function sleep(ms: number): Promise<void> {
   return new Promise(r => setTimeout(r, ms))
+}
+
+/** See `qwen-bot.livecheck.ts`'s identical helper for why this exists: the real Frank UI always
+ * wraps a message's plaintext as `serializeMessageItems`'s JSON shape; this falls back to a bare
+ * string only if that parse fails, so this script still works against the bot's own bare-string
+ * historical convention too. */
+function extractText(plaintext: string): string {
+  try {
+    const items = deserializeMessageItems(plaintext)
+    const text = items
+      .filter(
+        (item): item is { type: 'text'; text: string } => item.type === 'text',
+      )
+      .map(item => item.text)
+      .join('\n')
+    if (text) return text
+  } catch {
+    // Not a MessageItem[] JSON array -- fall through to the bare-string convention below.
+  }
+  return plaintext
 }
 
 async function main() {
@@ -92,11 +114,11 @@ async function main() {
   console.log(`Bot address: ${botAddress}`)
   console.log(`Turns:      ${messages.length}`)
 
-  const identity = loadOrCreateIdentity(identityJsonPath, NET, 'sender')
+  const identity = loadOrCreateIdentity(identityJsonPath, 'sender')
   await registerAndLog({ relayBaseUrl, identity, label: 'sender' })
-  console.log(`Sender Frank identity address: ${identity.address}`)
+  console.log(`Sender Frank identity address: ${identity.displayAddress}`)
 
-  const botPubKey = await fetchIdentityPubKey({
+  const botPubKey = await fetchMonadIdentityPubKey({
     relayBaseUrl,
     address: botAddress,
   })
@@ -124,11 +146,13 @@ async function main() {
     )
     const sendTimestamp = Date.now()
     const envelope = buildEnvelope({
-      fromAddress: identity.address,
-      fromPrivateKey: identity.privateKey,
+      fromAddress: identity.displayAddress,
+      fromPrivateKey: identity.toBitcorePrivateKey(),
       toAddress: botAddress,
       toPubKey: botPubKey,
-      plaintext: message,
+      // Wrapped as the real UI's MessageItem[] wire shape (see `extractText`'s doc comment) so the
+      // bot (which now also expects this shape first) parses it the same way a real UI would send.
+      plaintext: serializeMessageItems([{ type: 'text', text: message }]),
     })
 
     console.log('Stamping + sending the message over Monad testnet ...')
@@ -158,14 +182,16 @@ async function main() {
         if (!stored_.message) continue
         const envelopeIn = parseEnvelope(stored_.message.encryptedPayload)
         if (!envelopeIn) continue
-        if (envelopeIn.to !== identity.address) continue
+        if (envelopeIn.to !== identity.displayAddress) continue
         if (envelopeIn.from !== botAddress) continue
 
-        const plaintext = decryptEnvelope({
-          envelope: envelopeIn,
-          myPrivateKey: identity.privateKey,
-          senderPubKey: botPubKey,
-        })
+        const plaintext = extractText(
+          decryptEnvelope({
+            envelope: envelopeIn,
+            myPrivateKey: identity.toBitcorePrivateKey(),
+            senderPubKey: botPubKey,
+          }),
+        )
         const replyTxHash = `0x${Buffer.from(stored_.txHash).toString('hex')}`
         console.log(`Reply text: "${plaintext}"`)
         console.log(`Reply burn tx: ${replyTxHash}`)

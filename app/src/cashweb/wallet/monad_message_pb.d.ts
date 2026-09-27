@@ -75,3 +75,25 @@ export namespace StoredMonadMessage {
   }
 }
 
+export class StoredMonadMessages extends jspb.Message {
+  clearMessagesList(): void;
+  getMessagesList(): Array<StoredMonadMessage>;
+  setMessagesList(value: Array<StoredMonadMessage>): void;
+  addMessages(value?: StoredMonadMessage, index?: number): StoredMonadMessage;
+
+  serializeBinary(): Uint8Array;
+  toObject(includeInstance?: boolean): StoredMonadMessages.AsObject;
+  static toObject(includeInstance: boolean, msg: StoredMonadMessages): StoredMonadMessages.AsObject;
+  static extensions: {[key: number]: jspb.ExtensionFieldInfo<jspb.Message>};
+  static extensionsBinary: {[key: number]: jspb.ExtensionFieldBinaryInfo<jspb.Message>};
+  static serializeBinaryToWriter(message: StoredMonadMessages, writer: jspb.BinaryWriter): void;
+  static deserializeBinary(bytes: Uint8Array): StoredMonadMessages;
+  static deserializeBinaryFromReader(message: StoredMonadMessages, reader: jspb.BinaryReader): StoredMonadMessages;
+}
+
+export namespace StoredMonadMessages {
+  export type AsObject = {
+    messagesList: Array<StoredMonadMessage.AsObject>,
+  }
+}
+

@@ -114,7 +114,8 @@
 import { Provider, concat, getBytes, hexlify } from 'ethers'
 import axios from 'axios'
 
-import { MonadTopicVote, StoredMonadTopicVoteEntry } from './topic_message_pb'
+import __pb_topic_message_pb from './topic_message_pb'
+const { MonadTopicVote, StoredMonadTopicVoteEntry } = __pb_topic_message_pb
 import { MonadSubAccountPool } from './monad-account-pool'
 import {
   AccountLeaseHandle,

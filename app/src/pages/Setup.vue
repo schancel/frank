@@ -99,7 +99,6 @@ import AccountStep from '../components/setup/AccountStep.vue'
 import DepositStep from '../components/setup/DepositStep.vue'
 import EulaStep from '../components/setup/EULAStep.vue'
 
-import WalletGenWorker from 'worker-loader!../workers/xpriv_generate'
 import { useRelayClientStore } from 'src/stores/relay-client'
 import { useWalletStore } from 'src/stores/wallet'
 import { useChatStore } from 'src/stores/chats'
@@ -197,7 +196,13 @@ export default defineComponent({
       return new Promise<void>((resolve, reject) => {
         // Setup worker
         // TODO: What was the point of doing this in a worker?
-        const worker = new WalletGenWorker()
+        // Vite's native worker import (replaced webpack's `worker-loader!` prefix, ticket #51 --
+        // the Vite migration) -- `new URL(..., import.meta.url)` + `{ type: 'module' }` is Vite's
+        // documented way to construct a Web Worker from a TS/JS file without a special loader.
+        const worker = new Worker(
+          new URL('../workers/xpriv_generate.ts', import.meta.url),
+          { type: 'module' },
+        )
         worker.onmessage = async event => {
           try {
             // Prepare wallet

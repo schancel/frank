@@ -103,7 +103,8 @@
 import { Provider, concat, getBytes, hexlify, sha256 } from 'ethers'
 import axios from 'axios'
 
-import { MonadStampedMessage, StoredMonadMessage } from './monad_message_pb'
+import __pb_monad_message_pb from './monad_message_pb'
+const { MonadStampedMessage, StoredMonadMessage } = __pb_monad_message_pb
 import { MonadSubAccountPool } from './monad-account-pool'
 import {
   AccountLeaseHandle,

@@ -2,10 +2,16 @@ import assert from 'assert'
 import axios, { Method } from 'axios'
 import { Transaction } from 'bitcore-lib-xpi'
 
-import paymentrequest, {
-  Payment,
-  PaymentDetails,
-} from './bip70/paymentrequest_pb'
+// Ticket #51 (Vite migration): generated `*_pb.js` files (google-protobuf codegen, e.g.
+// `goog.object.extend(exports, proto.bip70)`) are genuinely CommonJS despite living in
+// first-party `src/`. Vite's CJS interop only synthesizes a `default` export for these, not
+// per-property named exports -- confirmed live, the original combined `import paymentrequest, {
+// Payment, PaymentDetails } from ...` failed at runtime. `Payment`/`PaymentDetails` are only ever
+// used as types below (real *values* go through `paymentrequest.Payment`/`.PaymentDetails`
+// directly), so a plain `import type` -- always erased before this file reaches the CJS-interop
+// plugin at all -- is both correct and the simplest fix.
+import paymentrequest from './bip70/paymentrequest_pb'
+import type { Payment, PaymentDetails } from './bip70/paymentrequest_pb'
 import { Wallet } from './wallet'
 
 export default {

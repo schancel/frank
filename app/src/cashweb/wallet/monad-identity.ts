@@ -85,8 +85,10 @@ import {
 import { PrivateKey, crypto as bitcoreCrypto } from 'bitcore-lib-xpi'
 import axios from 'axios'
 
-import { AddressMetadata } from '../registry/metadata_pb'
-import { SignedPayload } from '../signed_payload/payload_pb'
+import __pb_registry_metadata_pb from '../registry/metadata_pb'
+const { AddressMetadata } = __pb_registry_metadata_pb
+import __pb_signed_payload_payload_pb from '../signed_payload/payload_pb'
+const { SignedPayload } = __pb_signed_payload_payload_pb
 import { ChainAddress, HDSeed, ProfileInfo } from '../chain/active-chain'
 import type { FrankIdentityHandle } from '../chain/active-chain'
 

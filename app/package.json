@@ -5,6 +5,10 @@
   "productName": "Frank",
   "author": "shammah@cryptonumismatics.org",
   "private": true,
+  "resolutions": {
+    "@vue/compiler-sfc": "3.5.43",
+    "@vue/compiler-core": "3.5.43"
+  },
   "scripts": {
     "lint": "eslint 'src/**/*.{ts,js,vue}' && prettier --check .",
     "lint:fix": "prettier --write . && eslint 'src/**/*.{ts,js,vue}' --fix",
@@ -34,7 +38,6 @@
     "@capacitor/core": "2.5.0",
     "@electron/remote": "^2.0.8",
     "@quasar/extras": "^1.15.11",
-    "@vue/compiler-sfc": "^3.2.23",
     "atob": "^2.1.2",
     "axios": "^0.24.0",
     "bip39": "^3.0.2",
@@ -56,24 +59,28 @@
     "node-forge": "^1.3.0",
     "pinia": "^2.0.12",
     "qrcode.vue": "^3.3.3",
-    "quasar": "^2.15.1",
+    "quasar": "^2.24.0",
     "ramda": "^0.27.0",
     "vcf": "^2.1.0",
-    "vue": "^3.0.0",
+    "vue": "^3.5.43",
     "vue-i18n": "^9.1.9",
-    "vue-router": "^4.0.0",
+    "vue-router": "^5.3.1",
     "webpack": ">=5.76.0",
     "workbox-webpack-plugin": "^6.5.4",
     "worker-loader": "^3.0.8",
     "ws": "^8.3.0"
   },
   "devDependencies": {
+    "sass": "^1.105.0",
+    "rollup-plugin-polyfill-node": "^0.13.0",
+    "@rollup/plugin-inject": "^5.0.5",
+    "node-stdlib-browser": "^1.3.1",
     "@babel/core": "^7.16.0",
     "@babel/eslint-parser": "^7.16.3",
     "@babel/preset-env": "^7.16.4",
     "@babel/preset-typescript": "^7.16.0",
     "@capacitor/android": "^2.5.0",
-    "@quasar/app-webpack": "^3.12.4",
+    "@quasar/app-vite": "^3.10.0",
     "@types/atob": "^2.1.2",
     "@types/bluebird": "^3.5.36",
     "@types/btoa": "^1.2.3",
@@ -118,7 +125,7 @@
     "protoc": "^1.0.4",
     "ts-jest": "^29",
     "ts-protoc-gen": "^0.15.0",
-    "typescript": "^4.7.4"
+    "typescript": "^5.9.3"
   },
   "engines": {
     "node": ">=24.0.0",

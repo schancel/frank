@@ -82,7 +82,8 @@
  */
 import axios from 'axios'
 
-import { MonadTopicPostView, MonadTopicPostViews } from './topic_message_pb'
+import __pb_topic_message_pb from './topic_message_pb'
+const { MonadTopicPostView, MonadTopicPostViews } = __pb_topic_message_pb
 import {
   MonadTopicPostProto,
   MonadTopicPostViewProto,

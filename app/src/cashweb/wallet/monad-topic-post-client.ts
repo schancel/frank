@@ -98,16 +98,19 @@
 import { Provider, concat, getBytes, hexlify, sha256 } from 'ethers'
 import axios from 'axios'
 
-import {
-  MonadTopicPost,
-  MonadTopicPostView,
-  StoredMonadTopicPost,
-} from './topic_message_pb'
-import {
+// Ticket #51 (Vite migration): see cashweb/pop.ts's comment for why generated `*_pb.js` files
+// need a default import + destructure rather than direct named imports -- all six of these are
+// used as real runtime values (`new MonadTopicPost()`, `.deserializeBinary(...)`, etc.), not just
+// types, so (unlike that file) this can't simplify down to `import type`.
+import __pb_topic_message_pb from './topic_message_pb'
+const { MonadTopicPost, MonadTopicPostView, StoredMonadTopicPost } =
+  __pb_topic_message_pb
+import __pb_broadcast_pb from '../registry/broadcast_pb'
+const {
   BroadcastEntry,
   BroadcastMessage,
-  ForumPost as BroadcastForumPostPayload,
-} from '../registry/broadcast_pb'
+  ForumPost: BroadcastForumPostPayload,
+} = __pb_broadcast_pb
 import { ForumMessageEntry } from '../types/forum'
 import { MonadSubAccountPool } from './monad-account-pool'
 import {

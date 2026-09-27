@@ -83,7 +83,7 @@ export default {
   },
   newContactDialog: {
     newContact: 'New Contact',
-    enterBitcoinCashAddress: 'Enter Lotus address...',
+    enterBitcoinCashAddress: 'Enter address (0x...)',
     notFound: 'Not Found',
   },
   newTopicDialog: {
@@ -116,8 +116,8 @@ export default {
   },
   sendAddressDialog: {
     sendToAddress: 'Send to Address',
-    enterBitcoinCashAddress: 'Enter Lotus address...',
-    enterAmount: 'Enter Amount (Lotus)',
+    enterBitcoinCashAddress: 'Enter address (0x...)',
+    enterAmount: 'Enter Amount (MON)',
     cancel: 'Cancel',
     send: 'Send',
   },

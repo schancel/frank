@@ -10,12 +10,23 @@ function negativeNotify(text: string) {
   })
 }
 
-export function errorNotify(err: { response?: unknown; message: string }) {
+export function errorNotify(
+  err: { response?: unknown; message: string } & { shortMessage?: unknown },
+) {
   console.error(err)
   if (err.response) {
     console.error(err.response)
   }
-  negativeNotify(err.message)
+  // Found live testing a real failed send (ticket #53 GUI verification): a real ethers v6
+  // CALL_EXCEPTION's `.message` is a full technical dump (the exact failing tx's calldata, `to`,
+  // `code`, library version, ...) -- correctly surfaced (the notification mechanism itself
+  // works), just unreadable for an end user trying to figure out why their message didn't send.
+  // ethers v6 errors carry a separate `.shortMessage` specifically for this (a terse,
+  // human-readable summary) -- e.g. "missing revert data" here, not the whole dump. Falls back to
+  // the full `.message` for plain `Error`s (no `.shortMessage`), unchanged from before.
+  const message =
+    typeof err.shortMessage === 'string' ? err.shortMessage : err.message
+  negativeNotify(message)
 }
 
 // Info notifications

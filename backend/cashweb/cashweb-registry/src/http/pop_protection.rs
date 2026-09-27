@@ -269,6 +269,24 @@ impl PopGate<MonadReceiptVerifier<HttpTransport>> {
         let issuer = TokenIssuer::new(verifier, scheme);
         Ok(PopGate::new(issuer, expected))
     }
+
+    /// Ticket #35: [`Self::from_conf`], but honoring [`cashweb_config::PopConf::enabled`] first.
+    ///
+    /// Returns `None` when `conf.enabled` is `false` -- POP is intentionally, explicitly turned
+    /// off (e.g. the hackathon demo default), and callers (`cashwebd-exe/src/main.rs`,
+    /// `crate::test_instance`) should skip building a gate at all rather than building one that's
+    /// merely ignored. This is a genuinely different outcome from `Some(Err(_))`, which means POP
+    /// *is* meant to be enforced but this config doesn't parse into a valid gate -- that case must
+    /// keep failing every gated request closed with a `500`
+    /// (`crate::http::server::PutRegistryError::PopUnavailable`), never silently pass through.
+    /// Collapsing "disabled" and "misconfigured" into the same value is exactly what this ticket
+    /// exists to avoid, hence the `Option<Result<..>>` shape rather than, say, treating a
+    /// config error as equivalent to disabled.
+    pub fn from_conf_if_enabled(
+        conf: &cashweb_config::PopConf,
+    ) -> Option<Result<Self, PopGateConfigError>> {
+        conf.enabled.then(|| Self::from_conf(conf))
+    }
 }
 
 /// Decide whether a metadata-PUT request for `scope` (the target address's bytes) may proceed.
@@ -569,6 +587,7 @@ mod tests {
 
     fn valid_pop_conf() -> cashweb_config::PopConf {
         cashweb_config::PopConf {
+            enabled: true,
             monad_rpc_url: "https://example.invalid".parse().unwrap(),
             hmac_secret: "test-secret".to_string(),
             payment_recipient: format!("0x{}", "aa".repeat(20)),
@@ -598,6 +617,42 @@ mod tests {
         assert!(matches!(
             PopGate::from_conf(&conf),
             Err(PopGateConfigError::InvalidMinValueWei(_))
+        ));
+    }
+
+    // --- Ticket #35: `enabled` toggle ---
+
+    #[test]
+    fn from_conf_if_enabled_returns_none_when_disabled_even_if_otherwise_invalid() {
+        // The key property this ticket asks for: "disabled" must not collapse into
+        // "misconfigured", or vice versa. A conf that's *both* disabled *and* would fail to parse
+        // into a gate (bad recipient) must still come back `None` (fail-open, by intent) rather
+        // than `Some(Err(_))` (fail-closed) -- disabled short-circuits before the parsing that
+        // would otherwise produce the error.
+        let mut conf = valid_pop_conf();
+        conf.enabled = false;
+        conf.payment_recipient = "not-an-address".to_string();
+        assert!(PopGate::from_conf_if_enabled(&conf).is_none());
+    }
+
+    #[test]
+    fn from_conf_if_enabled_returns_some_ok_when_enabled_and_valid() {
+        let conf = valid_pop_conf();
+        assert!(matches!(
+            PopGate::from_conf_if_enabled(&conf),
+            Some(Ok(_))
+        ));
+    }
+
+    #[test]
+    fn from_conf_if_enabled_returns_some_err_when_enabled_and_invalid() {
+        // The other half of the same property: enabling POP with an invalid conf must still fail
+        // closed (`Some(Err(_))`), never be silently treated as disabled (`None`).
+        let mut conf = valid_pop_conf();
+        conf.min_value_wei = "not-a-number".to_string();
+        assert!(matches!(
+            PopGate::from_conf_if_enabled(&conf),
+            Some(Err(PopGateConfigError::InvalidMinValueWei(_)))
         ));
     }
 }

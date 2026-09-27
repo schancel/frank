@@ -168,6 +168,7 @@ async fn live_pop_gated_metadata_put_round_trip() -> Result<()> {
 
     // --- 2. Spin up a real RegistryTestInstance with POP gated to that real recipient/value. ---
     let pop_conf = PopConf {
+        enabled: true,
         monad_rpc_url: rpc_url,
         hmac_secret: "pop-live-smoke-test-hmac-secret".to_string(),
         payment_recipient: real_to.to_hex(),

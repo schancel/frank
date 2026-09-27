@@ -30,6 +30,7 @@ import { JsonRpcProvider, Wallet } from 'ethers'
 
 import { MonadHdKeyring, subAccountPath } from './monad-hd-keyring'
 import {
+  DEFAULT_TOPUP_BUFFER_SIZE,
   fanOutFundSubAccounts,
   MonadSubAccountPool,
 } from './monad-account-pool'
@@ -294,6 +295,73 @@ async function checkFanOutFunding() {
   assertTrue(threw, 'fanOutFundSubAccounts rejects a negative burnValue')
 }
 
+async function checkTopUpPool() {
+  console.log(
+    '\n== topUpPool: indefinite growth + look-ahead funding buffer (ticket #34) ==',
+  )
+  const mnemonic = 'test test test test test test test test test test test junk'
+  const keyring = MonadHdKeyring.fromMnemonic(mnemonic)
+  const pool = new MonadSubAccountPool({ keyring })
+  pool.ensureSize(2) // simulate a fixed initial size a caller might have started with
+
+  let nonce = 0
+  const provider = makeStubProvider(async req => {
+    if (req.method === 'getTransactionCount')
+      return `0x${(nonce++).toString(16)}`
+    if (req.method === 'estimateGas') return '0x5208'
+    throw new Error(`unexpected _perform: ${req.method}`)
+  })
+  const mainAccountSigner = new MonadAccountTxSigner({
+    privateKey: Wallet.createRandom().privateKey,
+    provider,
+    httpClient: makeNoopHttpClient(),
+  })
+
+  const results = await pool.topUpPool({
+    mainAccountSigner,
+    burnValue: 1n,
+    gasReserve: 1n,
+    bufferSize: 3,
+    overrides: { maxFeePerGas: 1n, maxPriorityFeePerGas: 1n },
+  })
+
+  assertEqual(
+    JSON.stringify(results.map(r => r.index)),
+    JSON.stringify([2]),
+    "topUpPool derives/funds only the shortfall, starting past ensureSize's original bound",
+  )
+  assertEqual(
+    pool.getRecord(2)?.status,
+    'available',
+    'the freshly-funded index is persisted as available',
+  )
+
+  const full = await pool.topUpPool({
+    mainAccountSigner,
+    burnValue: 1n,
+    gasReserve: 1n,
+    bufferSize: 3,
+  })
+  assertEqual(
+    JSON.stringify(full),
+    JSON.stringify([]),
+    'a full buffer needs no further top-up',
+  )
+
+  const emptyPool = new MonadSubAccountPool({ keyring })
+  const defaulted = await emptyPool.topUpPool({
+    mainAccountSigner,
+    burnValue: 1n,
+    gasReserve: 1n,
+    overrides: { maxFeePerGas: 1n, maxPriorityFeePerGas: 1n },
+  })
+  assertEqual(
+    defaulted.length,
+    DEFAULT_TOPUP_BUFFER_SIZE,
+    'omitting bufferSize falls back to DEFAULT_TOPUP_BUFFER_SIZE',
+  )
+}
+
 async function checkLevelStorePersistsAcrossRestart() {
   console.log(
     '\n== LevelSubAccountPoolStore persists across a simulated restart ==',
@@ -341,6 +409,7 @@ async function main() {
   await checkDerivationDeterminism()
   await checkPoolSizingAndSelection()
   await checkFanOutFunding()
+  await checkTopUpPool()
   await checkLevelStorePersistsAcrossRestart()
   console.log('\nAll monad-account-pool livecheck assertions passed.')
 }

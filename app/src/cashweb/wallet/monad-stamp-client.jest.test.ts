@@ -227,8 +227,9 @@ describe('MonadStampClient.submitStampedMessage', () => {
 
     expect(result.payloadHashHex).toBe(hexNoPrefix(expectedCommitment))
     expect(result.stored.message?.payloadHash).toEqual(expectedCommitment)
-    // Leasing round-tripped the account back to 'available'.
-    expect(pool.getRecord(result.leaseIndex)?.status).toBe('available')
+    // Ticket #34: a confirmed release retires the account as 'spent' -- permanently excluded from
+    // future selection, never back to 'available' for reuse.
+    expect(pool.getRecord(result.leaseIndex)?.status).toBe('spent')
   })
 
   it('retires the sub-account and throws MonadStampRejectedError on an HTTP error response', async () => {
@@ -301,7 +302,8 @@ describe('MonadStampClient.submitStampedMessage', () => {
     expect(putCalls).toBe(1)
     expect(getCalls).toBe(1)
     expect(result.stored.message?.encryptedPayload).toEqual(encryptedPayload)
-    expect(pool.getRecord(result.leaseIndex)?.status).toBe('available')
+    // Ticket #34: same as above -- confirmed means 'spent', never 'available' again.
+    expect(pool.getRecord(result.leaseIndex)?.status).toBe('spent')
   })
 
   it('retires as stuck and throws MonadStampAbandonedError when the fallback poll never finds it', async () => {

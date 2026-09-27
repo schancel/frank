@@ -27,10 +27,23 @@
  *      rejected immediately with `NoAvailableSubAccountError` -- it never reaches
  *      `MonadAccountTxSigner`, so no second nonce is ever fetched for that sub-account while the
  *      first is in flight.
- *   2. Opt-in `waitForLease` (`acquireLeaseWhenAvailable`): the second attempt instead queues/polls
- *      until the first releases the lease (on the first's relay response), then reuses the *same*
- *      sub-account with a strictly later nonce than the first -- proving the two in-flight
- *      transactions were never concurrently holding the lease/nonce for that account.
+ *   2. Opt-in `waitForLease` (`acquireLeaseWhenAvailable`): the second attempt queues/polls while
+ *      the pool's only sub-account is in flight, and picks up a *fresh* sub-account -- never the
+ *      first's -- as soon as one becomes available, proving both that waiting/serialization still
+ *      works correctly and that the two stamps never share a nonce/account, even once the first's
+ *      lease is released as `'confirmed'`.
+ *
+ *      **Correction (ticket #34, after #14/#18/#21 shipped):** this scenario originally asserted
+ *      the *opposite* -- that once the first's lease released as `'confirmed'`, the second attempt
+ *      would reuse that same sub-account. That was `SubAccountLeaseManager.releaseLease`'s bug:
+ *      mapping `'confirmed'` back to `'available'` let a small, fixed pool cycle through reuse
+ *      across many messages, defeating Stamp's UTXO-style unlinkability goal (`PLAN.md` constraint
+ *      3). Now `'confirmed'` retires the account as `'spent'` (terminal, like `'retired'`) --
+ *      released back to nothing to reuse -- so this scenario instead exercises
+ *      `MonadSubAccountPool`'s "growing/pre-funded" side (ticket #34's other acceptance criteria):
+ *      a fresh account becoming available (e.g. via `topUpPool()`, simulated here as `ensureSize`
+ *      since this file doesn't touch chain-funding infra) is what actually unblocks the waiter, not
+ *      the first's release.
  *   3. Documented "first tx never confirms" case: a network failure on the PUT followed by an
  *      exhausted `GET` poll budget releases the lease as `'stuck'`, which `SubAccountLeaseManager`
  *      maps to `'retired'` (per #18 -- never reused with a guessed nonce). This does not deadlock a
@@ -256,12 +269,13 @@ describe('nonce-race sequencing proof (#21)', () => {
 
     const firstResult = await firstResultPromise
     expect(firstResult.stored.message?.encryptedPayload).toEqual(payloadA)
-    // Lease released back to 'available' -- exactly one PUT ever happened end to end.
-    expect(pool.getRecord(0)?.status).toBe('available')
+    // Ticket #34: a confirmed release retires the account as 'spent', not 'available' -- never
+    // reused. Exactly one PUT ever happened end to end.
+    expect(pool.getRecord(0)?.status).toBe('spent')
     expect(putCalls).toBe(1)
   })
 
-  it('scenario 2: acquireLeaseWhenAvailable (waitForLease) queues the second same-account stamp until the first releases, then reuses it with a strictly later nonce', async () => {
+  it("scenario 2 (ticket #34 correction): acquireLeaseWhenAvailable (waitForLease) queues the second stamp while the pool is exhausted, then picks up a FRESH sub-account once one becomes available -- never the first's, even after its lease releases as 'confirmed'", async () => {
     const pool = makePool(1)
     const { client } = makeClient(pool)
 
@@ -322,23 +336,40 @@ describe('nonce-race sequencing proof (#21)', () => {
     firstPut.resolve(successResponse(firstSentMessage))
     const firstResult = await firstResultPromise
     expect(firstResult.stored.message?.encryptedPayload).toEqual(payloadA)
+    // Ticket #34: a confirmed release retires the account as 'spent' -- terminal, never reused.
+    expect(pool.getRecord(0)?.status).toBe('spent')
 
-    // The second attempt's poll loop should now pick up the freed sub-account and complete.
+    // With the pool's only account now permanently spent (not 'available'), the second attempt
+    // must still be genuinely blocked -- there is nothing to reuse. Give its poll loop a few more
+    // real ticks to prove it does NOT (incorrectly) pick index 0 back up.
+    await new Promise(resolve => setTimeout(resolve, 30))
+    expect(secondSettled).toBe(false)
+    expect(putCalls).toBe(1)
+
+    // A fresh, already-funded sub-account becomes available -- standing in for
+    // `MonadSubAccountPool.topUpPool()` completing in the background (this file doesn't exercise
+    // real chain-funding infra; `ensureSize` is the same "derive + mark available" primitive
+    // `topUpPool` builds on, see `monad-account-pool.ts`). The second attempt's poll loop should
+    // now pick up this fresh account and complete.
+    pool.ensureSize(2)
     const secondResult = await secondResultPromise
     expect(secondResult.stored.message?.encryptedPayload).toEqual(payloadB)
 
-    // Both stamps used the SAME sub-account (pool size 1)...
+    // The two stamps NEVER used the same sub-account -- the whole point of this correction.
     expect(firstResult.leaseIndex).toBe(0)
-    expect(secondResult.leaseIndex).toBe(0)
-    // ...but were strictly sequenced: the second's signed nonce is strictly greater than the
-    // first's -- never the same nonce, never built while the first's lease was still held.
+    expect(secondResult.leaseIndex).toBe(1)
+    expect(secondResult.leaseIndex).not.toBe(firstResult.leaseIndex)
+
+    // Still strictly sequenced (never built/sent concurrently), independent of sharing an account.
     expect(putBodies).toHaveLength(2)
     const firstNonce = nonceOfPutBody(putBodies[0])
     const secondNonce = nonceOfPutBody(putBodies[1])
     expect(secondNonce).toBeGreaterThan(firstNonce)
 
-    // Final state: lease released back to 'available' after the second's own 'confirmed' release.
-    expect(pool.getRecord(0)?.status).toBe('available')
+    // Final state: BOTH accounts end up permanently 'spent' after their own confirmed release --
+    // neither is ever selectable again.
+    expect(pool.getRecord(0)?.status).toBe('spent')
+    expect(pool.getRecord(1)?.status).toBe('spent')
     expect(putCalls).toBe(2)
   })
 
@@ -399,7 +430,9 @@ describe('nonce-race sequencing proof (#21)', () => {
       })
 
     expect(nextResult.leaseIndex).not.toBe(retiredIndex)
-    expect(pool.getRecord(nextResult.leaseIndex)?.status).toBe('available')
+    // Ticket #34: this stamp's own confirmed release retires it as 'spent' -- terminal, never
+    // 'available' again (it completed successfully and consumed the account, unlike the first).
+    expect(pool.getRecord(nextResult.leaseIndex)?.status).toBe('spent')
     // The retired account is still retired -- this ticket does not implement recovery for it.
     expect(pool.getRecord(retiredIndex)?.status).toBe('retired')
   })

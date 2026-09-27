@@ -17,15 +17,28 @@
 
 /**
  * A sub-account's lifecycle state within the pool.
- *   - `'available'`: idle, eligible to be selected for a new stamp/burn.
+ *   - `'available'`: idle, funded, never-before-used, and eligible to be selected for a new
+ *     stamp/burn.
  *   - `'in-use'`: currently leased for an in-flight (unconfirmed) transaction. This ticket never
  *     transitions an account *into* this state — that's ticket #18's lease acquire/release logic.
  *     The field exists now purely as the hook #18 needs.
- *   - `'retired'`: permanently skipped for future selection (e.g. after a stuck-nonce recovery).
- *     Also not populated by this ticket — see ticket #18 — but modeled here per the acceptance
- *     criteria so the data model is ready for it.
+ *   - `'spent'`: the account's one-and-only transaction confirmed successfully. Terminal, like
+ *     `'retired'` below — excluded from `selectForStamp()`/future selection forever — but recorded
+ *     under a distinct name for bookkeeping/observability: unlike `'retired'`, a `'spent'` account's
+ *     funds (minus the burn/gas actually used) were deliberately consumed as intended, not
+ *     abandoned mid-flight. **Correction (ticket #34, after #14/#18/#21 shipped):** the original
+ *     model routed a successful (`'confirmed'`) outcome back to `'available'` for reuse — that
+ *     defeated Stamp's UTXO-style unlinkability goal (`PLAN.md` constraint 3) by letting a small
+ *     fixed pool of addresses accumulate a linkable history across many messages. `'spent'` is the
+ *     status that closes that hole: every used sub-account, success or failure, is now permanently
+ *     excluded from reuse — see `monad-account-lease.ts`'s `releaseLease`.
+ *   - `'retired'`: the account's transaction failed or got stuck (never confirmed within a
+ *     timeout) — permanently skipped for future selection, same as `'spent'`, but distinguished
+ *     because a `'retired'` account may still hold its funded balance un-spent (sweeping/reclaiming
+ *     that leftover balance is a separate, currently-unimplemented sub-problem — see
+ *     `monad-account-pool.ts`'s header for why it's out of scope here).
  */
-export type SubAccountStatus = 'available' | 'in-use' | 'retired'
+export type SubAccountStatus = 'available' | 'in-use' | 'spent' | 'retired'
 
 /** Persisted state for one HD-derived sub-account. Never carries a private key — see file header.
  */

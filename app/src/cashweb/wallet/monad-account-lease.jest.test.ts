@@ -123,15 +123,15 @@ describe('SubAccountLeaseManager', () => {
   })
 
   describe('releaseLease', () => {
-    it('confirmed happy-path: returns the account to available for reuse', () => {
+    it('confirmed happy-path: retires the account as spent, never available again (ticket #34)', () => {
       const pool = makePool(1)
       const manager = new SubAccountLeaseManager(pool)
       const handle = manager.acquireForIndex(0)
 
       const record = manager.releaseLease(handle, 'confirmed')
 
-      expect(record.status).toBe('available')
-      expect(pool.getRecord(0)?.status).toBe('available')
+      expect(record.status).toBe('spent')
+      expect(pool.getRecord(0)?.status).toBe('spent')
       expect(manager.isLeased(0)).toBe(false)
     })
 
@@ -166,6 +166,16 @@ describe('SubAccountLeaseManager', () => {
       expect(next.index).toBe(1) // index 0 is retired, skipped
     })
 
+    it('a spent account (successfully-confirmed release) is equally excluded from future selection (ticket #34)', () => {
+      const pool = makePool(2)
+      const manager = new SubAccountLeaseManager(pool)
+      const handle = manager.acquireForIndex(0)
+      manager.releaseLease(handle, 'confirmed')
+
+      const next = manager.acquireLease()
+      expect(next.index).toBe(1) // index 0 is spent, skipped -- never reused
+    })
+
     it('double-release of the same handle throws InvalidLeaseHandleError', () => {
       const pool = makePool(1)
       const manager = new SubAccountLeaseManager(pool)
@@ -187,15 +197,23 @@ describe('SubAccountLeaseManager', () => {
       )
     })
 
-    it('after release, the account can be leased again (lease is fully cyclable)', () => {
-      const pool = makePool(1)
+    it('after a confirmed release, the SAME account can never be leased again (ticket #34: single-use, not cyclable)', () => {
+      const pool = makePool(2)
       const manager = new SubAccountLeaseManager(pool)
       const first = manager.acquireForIndex(0)
       manager.releaseLease(first, 'confirmed')
 
-      const second = manager.acquireForIndex(0)
-      expect(second.index).toBe(0)
-      expect(pool.getRecord(0)?.status).toBe('in-use')
+      // Re-acquiring the now-'spent' index is rejected, just like an already-'in-use' or
+      // '-retired' one — 'spent' is equally terminal.
+      expect(() => manager.acquireForIndex(0)).toThrow(
+        SubAccountAlreadyLeasedError,
+      )
+
+      // A distinct, never-before-used account is selected/acquired instead.
+      const second = manager.acquireLease()
+      expect(second.index).toBe(1)
+      expect(pool.getRecord(0)?.status).toBe('spent')
+      expect(pool.getRecord(1)?.status).toBe('in-use')
     })
   })
 })
@@ -213,23 +231,30 @@ describe('acquireLeaseWhenAvailable', () => {
     expect(handle.index).toBe(0)
   })
 
-  it('waits (polls) until an account frees up, then acquires it', async () => {
+  it('waits (polls) until a fresh account becomes available (e.g. a completed pool top-up), then acquires it -- never the busy/now-spent original (ticket #34)', async () => {
     const pool = makePool(1)
     const manager = new SubAccountLeaseManager(pool)
-    const busyHandle = manager.acquireForIndex(0) // no account available yet
+    const busyHandle = manager.acquireForIndex(0) // the pool's only account is busy
     const clock = makeFakeClock(10)
 
     // `acquireLeaseWhenAvailable`'s retry loop resolves its own injected `sleep()` every
     // ~1 microtask tick, so a single `await Promise.resolve()` in this test does NOT reliably
     // interleave with it — the loop can (and, empirically, reliably does) run to its full
     // `timeoutMs` budget entirely within microtask time before this test's own continuation ever
-    // gets a turn. The deterministic fix: release the account from *inside* the injected `sleep`
-    // itself (on its first call), since that's the one hook guaranteed to run between retries.
-    let released = false
-    const releasingSleep = async (ms: number) => {
-      if (!released) {
-        released = true
+    // gets a turn. The deterministic fix: mutate the pool from *inside* the injected `sleep` itself
+    // (on its first call), since that's the one hook guaranteed to run between retries.
+    //
+    // Releasing `busyHandle` as `'confirmed'` here retires index 0 to `'spent'` -- since ticket
+    // #34, that never makes it selectable again, so on its own this wouldn't unblock the waiter.
+    // What actually frees the waiter up is a fresh, already-funded account becoming available --
+    // stood in for here by `pool.ensureSize(2)` (in production, `MonadSubAccountPool.topUpPool()`,
+    // running concurrently in the background, is what would add it).
+    let toppedUp = false
+    const toppingUpSleep = async (ms: number) => {
+      if (!toppedUp) {
+        toppedUp = true
         manager.releaseLease(busyHandle, 'confirmed')
+        pool.ensureSize(2)
       }
       await clock.sleep(ms)
     }
@@ -237,10 +262,11 @@ describe('acquireLeaseWhenAvailable', () => {
     const handle = await acquireLeaseWhenAvailable(manager, {
       pollIntervalMs: 10,
       timeoutMs: 1000,
-      sleep: releasingSleep,
+      sleep: toppingUpSleep,
       now: clock.now,
     })
-    expect(handle.index).toBe(0)
+    expect(handle.index).toBe(1)
+    expect(pool.getRecord(0)?.status).toBe('spent') // the original: never reused
   })
 
   it('gives up and throws NoAvailableSubAccountError once timeoutMs elapses', async () => {
@@ -261,7 +287,7 @@ describe('acquireLeaseWhenAvailable', () => {
 })
 
 describe('awaitLeaseSettlement', () => {
-  it('confirmed happy-path: releases to available once getStatus reports confirmed', async () => {
+  it('confirmed happy-path: releases to spent (terminal, never reused) once getStatus reports confirmed', async () => {
     const pool = makePool(1)
     const manager = new SubAccountLeaseManager(pool)
     const handle = manager.acquireForIndex(0)
@@ -280,8 +306,8 @@ describe('awaitLeaseSettlement', () => {
     })
 
     expect(result.outcome).toBe('confirmed')
-    expect(result.record.status).toBe('available')
-    expect(pool.getRecord(0)?.status).toBe('available')
+    expect(result.record.status).toBe('spent')
+    expect(pool.getRecord(0)?.status).toBe('spent')
     expect(statusSource.getStatus).toHaveBeenCalledWith('0xdeadbeef')
   })
 

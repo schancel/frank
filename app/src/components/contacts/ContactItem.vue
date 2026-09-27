@@ -24,7 +24,7 @@
     </q-item>
     <q-item v-ripple v-else-if="contact" v-close-popup>
       <q-item-section avatar @click="contactClick(address, contact)">
-        <q-avatar rounded size="55px">
+        <q-avatar rounded size="55px" :style="contactColorStyle">
           <img :src="contact.profile.avatar" />
         </q-avatar>
       </q-item-section>
@@ -51,6 +51,8 @@
 <script lang="ts">
 import { useContactStore } from 'src/stores/contacts'
 import { defineComponent } from 'vue'
+import { PublicKey } from 'bitcore-lib-xpi'
+import { pubKeyToColor } from 'src/utils/formatting'
 
 export default defineComponent({
   props: {
@@ -73,6 +75,19 @@ export default defineComponent({
     return {
       deleteContact: contactStore.deleteContact,
     }
+  },
+  computed: {
+    // Ticket #50: same spoofing/impersonation cue as ChatLayout.vue's chat header -- see that
+    // file's own comment for the full rationale.
+    contactColorStyle() {
+      const pubKey = (
+        this.contact as { profile?: { pubKey?: PublicKey | null } }
+      )?.profile?.pubKey
+      if (!pubKey) {
+        return {}
+      }
+      return { boxShadow: `0 0 0 3px ${pubKeyToColor(pubKey.toBuffer())}` }
+    },
   },
 })
 </script>

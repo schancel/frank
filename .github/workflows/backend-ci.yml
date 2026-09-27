@@ -123,10 +123,19 @@ jobs:
       run: |
         cargo make --cwd bitcoinsuite-bitcoind-nng generate-fb
 
+    # `cargo make` with no task name runs cargo-make's default `dev-test-flow`, which builds
+    # AND tests every bitcoinsuite member -- including bitcoinsuite-bitcoind-nng's own Lotus-
+    # specific NNG pub/sub interface tests (`pub_interface`/`rpc_interface`), which spin up a
+    # real bitcoind/lotusd instance. Now that lotusd's upstream download is permanently gone
+    # (see ensure-bitcoind.sh's comment) those tests can never pass here, and they were never
+    # something Frank needs anyway (PLAN.md constraint 1: no lotusd for anything actually
+    # shipped) -- bitcoinsuite only needs to be BUILT here as a library for cashweb-registry to
+    # link against. `build` (build only, still depends on `ensure-bitcoind` for the ABC/BCH
+    # downloads cashweb-registry's own tests want) is the right task, not the default flow.
     - name: Make bitcoinsuite libraries & download nodes
       working-directory: ./backend/bitcoinsuite
       run: |
-        CARGO_TARGET_DIR=$(pwd)/../../target cargo make
+        CARGO_TARGET_DIR=$(pwd)/../../target cargo make build
 
     - name: Check format cashweb libraries with rustfmt
       working-directory: ./backend/cashweb

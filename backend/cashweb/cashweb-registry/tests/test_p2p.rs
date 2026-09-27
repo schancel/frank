@@ -21,6 +21,10 @@ use reqwest::{
 };
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+// Requires a real lotusd/bitcoind binary via BITCOINSUITE_BIN_DIR (see issue #1) -- unavailable
+// in CI (lotusd's upstream download bucket is permanently gone, see ensure-bitcoind.sh) and most
+// local dev environments. Run manually with `cargo test -- --ignored` against a real binary.
+#[ignore = "requires a real lotusd/bitcoind binary"]
 async fn test_p2p() -> Result<()> {
     let _ = bitcoinsuite_error::install();
 

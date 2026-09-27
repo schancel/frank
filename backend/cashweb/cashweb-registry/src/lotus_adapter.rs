@@ -138,6 +138,13 @@ mod tests {
     use super::LotusAdapter;
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    // Needs a real `lotusd` binary under `BITCOINSUITE_BIN_DIR` -- unavailable in CI and most
+    // dev environments: the upstream download bucket (storage.googleapis.com/lotus-project) is
+    // permanently gone (see `ensure-bitcoind.sh`'s comment), and Lotus support is intentionally
+    // dormant for this hackathon port (PLAN.md constraint 2 -- the `ChainAdapter` boundary is
+    // kept so Lotus support can come back later, not exercised now). Run manually with
+    // `cargo test -- --ignored` against a real lotusd if/when that work resumes.
+    #[ignore = "requires a real lotusd binary; see comment above"]
     async fn test_lotus_adapter() -> Result<()> {
         let _ = bitcoinsuite_error::install();
         let conf = BitcoindConf::from_chain_regtest(
@@ -235,8 +242,10 @@ mod tests {
         assert_eq!(outcome, SubmitTxOutcome::AlreadyConfirmed);
 
         // decode_burn: recovers the exact commitment we embedded.
-        let expected_commitment =
-            cashweb_payload::verify::parse_commitment(ADDRESS_METADATA_LOKAD_ID, &commitment_script)?;
+        let expected_commitment = cashweb_payload::verify::parse_commitment(
+            ADDRESS_METADATA_LOKAD_ID,
+            &commitment_script,
+        )?;
         let decoded = adapter.decode_burn(ADDRESS_METADATA_LOKAD_ID, &commitment_script)?;
         assert_eq!(decoded, expected_commitment);
 

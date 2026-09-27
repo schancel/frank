@@ -13,7 +13,15 @@
 //! spins up a regtest node to serve the rest of `handle_put_registry` (burn-tx validation), which
 //! has nothing to do with POP. Unlike `tests/pop_live_smoke.rs`, neither test here needs any Monad
 //! network access: the disabled path never builds a gate at all, and the misconfigured path fails
-//! to parse before any RPC call would be made -- so these aren't `#[ignore]`d.
+//! to parse before any RPC call would be made.
+//!
+//! **Correction (found while getting CI to actually run end to end for the first time):** the
+//! comment above used to argue these two shouldn't be `#[ignore]`d since they don't need Monad
+//! network access -- true, but beside the point: `RegistryTestInstance` still needs a real
+//! lotusd/bitcoind binary just to stand up the regtest node in the first place, and that binary
+//! is unavailable both in CI (lotusd's upstream download bucket is permanently gone -- see
+//! `ensure-bitcoind.sh`) and in most local dev environments. `#[ignore]`d for the same reason as
+//! `lotus_adapter::tests::test_lotus_adapter` et al.
 
 use std::ffi::OsString;
 
@@ -91,6 +99,7 @@ async fn setup_and_build_request(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires a real lotusd/bitcoind binary; see module docs above"]
 async fn pop_disabled_allows_put_with_no_token_or_proof() -> Result<()> {
     let _ = bitcoinsuite_error::install();
 
@@ -123,6 +132,7 @@ async fn pop_disabled_allows_put_with_no_token_or_proof() -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires a real lotusd/bitcoind binary; see module docs above"]
 async fn pop_misconfigured_still_fails_closed_when_enabled() -> Result<()> {
     let _ = bitcoinsuite_error::install();
 

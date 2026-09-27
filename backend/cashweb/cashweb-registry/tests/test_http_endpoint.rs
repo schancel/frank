@@ -26,6 +26,10 @@ use reqwest::{
 };
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+// Requires a real lotusd/bitcoind binary via BITCOINSUITE_BIN_DIR (see issue #1) -- unavailable
+// in CI (lotusd's upstream download bucket is permanently gone, see ensure-bitcoind.sh) and most
+// local dev environments. Run manually with `cargo test -- --ignored` against a real binary.
+#[ignore = "requires a real lotusd/bitcoind binary"]
 async fn test_registry_http() -> Result<()> {
     let _ = bitcoinsuite_error::install();
     let tempdir = tempdir::TempDir::new("cashweb-registry--registry")?;
@@ -451,6 +455,9 @@ async fn test_registry_http() -> Result<()> {
 }
 
 #[tokio::test]
+// Requires a real lotusd/bitcoind binary via BITCOINSUITE_BIN_DIR -- see
+// `test_registry_http`'s comment above.
+#[ignore = "requires a real lotusd/bitcoind binary"]
 async fn test_topics_http() -> Result<()> {
     let _ = bitcoinsuite_error::install();
     let tempdir = tempdir::TempDir::new("cashweb-registry--registry")?;

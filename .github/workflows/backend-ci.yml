@@ -18,9 +18,29 @@ on:
 jobs:
   ci-check:
     runs-on: ubuntu-latest
+    # librocksdb-sys@0.8.3+7.4.4 (pinned by the `rocksdb` wrapper crate's own `^0.8.0`
+    # requirement -- bumping past 0.8.x would mean also bumping `rocksdb` itself, a much bigger,
+    # riskier change than this hackathon's remaining time warrants) vendors RocksDB 7.4.4's C++
+    # source, which fails to compile under Ubuntu 24.04's default GCC 13 with errors inside
+    # data_block_hash_index.cc/.h that don't reproduce locally on macOS/Clang (verified: this
+    # repo's own vendored header/source pair is internally consistent -- `kCollision` and
+    # `hash_and_restart_pairs_` are declared exactly where and as the compiler says they aren't).
+    # This is old vendored C++ vs. a newer compiler's stricter defaults, the same class of problem
+    # already fixed for flatbuffers above by pinning a compatible version -- here the fix is
+    # pinning an older, still-Ubuntu-24.04-supported compiler instead, since the Cargo dependency
+    # itself can't move.
+    env:
+      CC: gcc-12
+      CXX: g++-12
 
     steps:
     - uses: actions/checkout@v4
+
+    - name: Install gcc-12 (see the job-level CC/CXX comment above)
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y gcc-12 g++-12
+      shell: bash
 
     # Must come AFTER the main checkout: actions/checkout defaults to `clean: true`, which runs
     # `git clean -ffdx` in the workspace root and would delete this directory (as an untracked

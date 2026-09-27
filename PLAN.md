@@ -19,12 +19,30 @@ fully superseded by the tracked ticket pipeline rather than kept as a crutch.
 2. **Multichain-ready, not multichain-complete.** Draw a `ChainAdapter`
    boundary now so Lotus can be re-added later without a second rewrite.
    Ship only the Monad adapter for the hackathon.
-3. **Preserve Stamp's unlinkability property.** Stamp splays payments across
-   many UTXOs/addresses so no single address accumulates a linkable history.
-   On Monad this becomes an HD-derived pool of sub-account EOAs, one used per
-   stamp/burn, not a single hot wallet address. Funding that pool (fan-out
-   from a main account) is itself a correlation point — call it out, don't
-   solve it perfectly in v1.
+3. **Preserve Stamp's unlinkability property — sub-accounts are single-use,
+   like UTXOs, not a reusable pool.** Stamp splays payments across many
+   UTXOs/addresses so no single address accumulates a linkable history. On
+   Monad this becomes an HD-derived pool of sub-account EOAs — but the
+   analogy only holds if each account is spent exactly once and never
+   reused. **Correction (found after #14/#18/#21 shipped): the current
+   implementation gets this backwards.** `SubAccountLeaseManager.releaseLease
+   (handle, 'confirmed')` returns the account to `'available'`, so the same
+   small fixed-size pool cycles through reuse across many messages — which
+   accumulates linkable history over time, the opposite of the goal. #21's
+   test (merged) explicitly asserts this reuse as correct behavior; it isn't
+   anymore. Correct model: a successful stamp also retires/discards the
+   account (never `'available'` again, regardless of outcome — success and
+   failure converge to the same "never reuse" result, they just differ in
+   whether the underlying funds were spent or not), and the pool must
+   continuously derive fresh indices (`m/44'/60'/0'/0/i` for ever-increasing
+   `i`) and fund them ahead of demand, rather than fan-out-funding a fixed N
+   once. Funding those fresh accounts (fan-out from a main account) is
+   itself a correlation point — call it out, don't solve it perfectly in v1.
+   **The one legitimate exception**: POP's account-opening payment (see
+   constraint 4) is inherently identity-bound to a specific server already,
+   so reusing an address there isn't a new privacy leak the way reusing a
+   Stamp sub-account is — though POP is disabled entirely for the hackathon
+   demo anyway (see constraint 4), so this doesn't matter in practice yet.
 4. **POP and Stamp are separate mechanisms — do not conflate them.**
    - **POP** (bearer-token exchange): pay once via the payment protocol, get
      a token, reuse it for protected per-address API calls (read/manage
@@ -46,6 +64,15 @@ fully superseded by the tracked ticket pipeline rather than kept as a crutch.
      into the registry's HTTP endpoints. Same mistaken-premise shape as
      M1's `Registry.bitcoind` finding — verify infra exists before assuming
      a swap.
+   - **Disabled for the hackathon demo.** POP is fully built and merged
+     (#22/#23/#24/#4), but the actual payment requirement is turned off for
+     the demo so signing up / opening a mailbox account needs no payment —
+     the thing being demonstrated is Stamp's per-message anti-spam burn, not
+     POP's access-control gate, and requiring payment just to sign up adds
+     friction with no demo value. See the follow-up ticket for the actual
+     config toggle (fail-open "disabled" mode, distinct from fail-closed
+     "misconfigured" — don't conflate the two, a missing/invalid config
+     should still fail closed if POP is ever re-enabled later).
 5. **The current backend already implements the paper's Stamp construction —
    this is a primitive swap, not new design work.** Verified:
    `cashweb-payload/src/verify.rs:12-132` already implements a LOKAD-ID +

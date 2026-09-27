@@ -91,6 +91,9 @@ function storedMessageBytes(message: MonadStampedMessageProto): Uint8Array {
     senderAddress: getBytes('0x' + '11'.repeat(20)),
     txHash: getBytes('0x' + '22'.repeat(32)),
     timestamp: 1_700_000_000_000,
+    // Ticket #39: exercise a nonzero network_tag through the round trip below too, so
+    // `decodeStoredMonadMessage` is proven to decode field 5 correctly, not just fields 1-4.
+    networkTag: new TextEncoder().encode('MONT'),
   }
   // Hand-encode a StoredMonadMessage the same way the relay's protobuf response would be encoded on
   // the wire, using the same primitives `encodeMonadStampedMessage` uses (see that function and its
@@ -105,6 +108,7 @@ function storedMessageBytes(message: MonadStampedMessageProto): Uint8Array {
   writer.writeBytes(2, stored.senderAddress)
   writer.writeBytes(3, stored.txHash)
   writer.writeInt64(4, stored.timestamp)
+  writer.writeBytes(5, stored.networkTag)
   return writer.getResultBuffer()
 }
 
@@ -177,6 +181,8 @@ describe('protobuf encode/decode round trip', () => {
     expect(decoded.senderAddress).toEqual(getBytes('0x' + '11'.repeat(20)))
     expect(decoded.txHash).toEqual(getBytes('0x' + '22'.repeat(32)))
     expect(decoded.timestamp).toBe(1_700_000_000_000)
+    // Ticket #39: network_tag (field 5) round-trips through the real generated bindings.
+    expect(decoded.networkTag).toEqual(new TextEncoder().encode('MONT'))
   })
 })
 

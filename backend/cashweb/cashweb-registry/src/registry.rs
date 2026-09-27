@@ -440,12 +440,24 @@ impl Registry {
     /// operates over a [`crate::monad_http::JsonRpcTransport`] rather than the (Lotus-shaped)
     /// [`ChainAdapter`] this `Registry` is generic over, so it's called by the HTTP layer directly
     /// rather than from here (see that module's docs for why).
+    ///
+    /// Stamps `network_tag` (ticket #39, see `crate::network_tag`'s module docs for the full
+    /// rationale) onto `message` here, at the single point every stored Monad message passes
+    /// through, rather than trusting each caller to have already set the field correctly --
+    /// returns the tagged record actually persisted, so the caller's own response (or further use
+    /// of the value) reflects exactly what's now in the database.
     pub(crate) fn put_monad_message(
         &self,
         payload_hash: &[u8],
-        message: &proto::StoredMonadMessage,
-    ) -> Result<()> {
-        self.db.monad_messages().put(payload_hash, message)
+        message: proto::StoredMonadMessage,
+        network_tag: &[u8],
+    ) -> Result<proto::StoredMonadMessage> {
+        let message = proto::StoredMonadMessage {
+            network_tag: network_tag.to_vec(),
+            ..message
+        };
+        self.db.monad_messages().put(payload_hash, &message)?;
+        Ok(message)
     }
 
     /// Retrieve a previously-stored [`proto::StoredMonadMessage`] by its `payload_hash`.
@@ -471,12 +483,22 @@ impl Registry {
     /// `validate_burn_txs`/`chain_adapter` call here either, since broadcasting+verifying the
     /// initial-vote burn is `monad_forum_relay::broadcast_and_verify_forum_vote`'s job, called by
     /// the HTTP layer directly.
+    ///
+    /// Stamps `network_tag` (ticket #39, mirroring [`Registry::put_monad_message`] exactly -- see
+    /// `crate::network_tag`'s module docs) onto `post` here and returns the tagged record actually
+    /// persisted.
     pub(crate) fn put_forum_post(
         &self,
         payload_hash: &[u8],
-        post: &proto::StoredMonadForumPost,
-    ) -> Result<()> {
-        self.db.forum_posts().put(payload_hash, post)
+        post: proto::StoredMonadForumPost,
+        network_tag: &[u8],
+    ) -> Result<proto::StoredMonadForumPost> {
+        let post = proto::StoredMonadForumPost {
+            network_tag: network_tag.to_vec(),
+            ..post
+        };
+        self.db.forum_posts().put(payload_hash, &post)?;
+        Ok(post)
     }
 
     /// Retrieve a previously-stored [`proto::StoredMonadForumPost`] by its `payload_hash`.

@@ -19,6 +19,7 @@ pub mod monad_pop_verify;
 pub mod monad_stamp_relay;
 pub mod monad_stamp_verify;
 pub mod monad_ws;
+pub mod network_tag;
 pub mod p2p;
 pub mod registry;
 pub mod store;

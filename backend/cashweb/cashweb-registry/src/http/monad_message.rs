@@ -184,12 +184,20 @@ impl fmt::Display for ProcessMonadMessageError {
 ///    calldata commits to `payload_hash`, burning at least `min_value_wei` to `burn_address`.
 /// 4. Only [`StampRelayOutcome::Verified`] leads to a store, via [`Registry::put_monad_message`]
 ///    -- every other outcome is [`ProcessMonadMessageError::Rejected`].
+///
+/// `network_tag` (ticket #39, see `crate::network_tag`'s module docs) is stamped onto the stored
+/// record by [`Registry::put_monad_message`] itself -- passed through here as an explicit
+/// parameter (resolved by the caller from [`crate::network_tag::frank_network_tag`]) rather than
+/// read from the environment inside this function, mirroring how `burn_address`/`min_value_wei`/
+/// `poll` are already resolved by the HTTP handler and threaded in, keeping this function directly
+/// unit-testable against a mock transport without touching real process environment state.
 pub async fn process_monad_message<T: JsonRpcTransport + Clone>(
     transport: &T,
     registry: &Registry,
     burn_address: Address,
     min_value_wei: u128,
     poll: PollConfig,
+    network_tag: &[u8],
     request: proto::MonadStampedMessage,
 ) -> Result<proto::StoredMonadMessage, ProcessMonadMessageError> {
     let declared_hash = Sha256::from_slice(&request.payload_hash).map_err(|_| {
@@ -231,10 +239,11 @@ pub async fn process_monad_message<T: JsonRpcTransport + Clone>(
         sender_address: sender.0.to_vec(),
         tx_hash: tx_hash.0.to_vec(),
         timestamp,
+        network_tag: Vec::new(),
     };
 
-    registry
-        .put_monad_message(declared_hash.as_slice(), &stored)
+    let stored = registry
+        .put_monad_message(declared_hash.as_slice(), stored, network_tag)
         .map_err(ProcessMonadMessageError::Infrastructure)?;
 
     Ok(stored)
@@ -382,6 +391,7 @@ pub async fn handle_put_monad_message(
         config.burn_address,
         config.min_value_wei,
         PollConfig::default(),
+        crate::network_tag::frank_network_tag(),
         message,
     )
     .await
@@ -685,6 +695,7 @@ mod tests {
             burn_address(),
             10_000,
             fast_poll(),
+            b"MONT",
             message.clone(),
         )
         .await
@@ -692,6 +703,8 @@ mod tests {
 
         assert_eq!(stored.sender_address, sender.0.to_vec());
         assert_eq!(stored.message, Some(message.clone()));
+        // Ticket #39: the relay's configured network tag is stamped onto the stored record.
+        assert_eq!(stored.network_tag, b"MONT");
 
         // And it's retrievable afterwards.
         let fetched = registry
@@ -734,6 +747,7 @@ mod tests {
             burn_address(),
             10_000,
             fast_poll(),
+            &[],
             message.clone(),
         )
         .await
@@ -765,6 +779,7 @@ mod tests {
             burn_address(),
             10_000,
             fast_poll(),
+            &[],
             message,
         )
         .await
@@ -788,6 +803,7 @@ mod tests {
             burn_address(),
             10_000,
             fast_poll(),
+            &[],
             message,
         )
         .await
@@ -834,8 +850,11 @@ mod tests {
             sender_address: vec![9u8; 20],
             tx_hash: vec![8u8; 32],
             timestamp,
+            network_tag: Vec::new(),
         };
-        registry.put_monad_message(&payload_hash, &stored).unwrap();
+        registry
+            .put_monad_message(&payload_hash, stored, &[])
+            .unwrap();
     }
 
     /// Ticket #37's core acceptance criterion: a recipient can discover a newly-stored message

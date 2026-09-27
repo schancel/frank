@@ -378,7 +378,8 @@ proto.cashweb.registry.StoredMonadMessage.toObject = function(includeInstance, m
 message: (f = msg.getMessage()) && proto.cashweb.registry.MonadStampedMessage.toObject(includeInstance, f),
 senderAddress: msg.getSenderAddress_asB64(),
 txHash: msg.getTxHash_asB64(),
-timestamp: jspb.Message.getFieldWithDefault(msg, 4, 0)
+timestamp: jspb.Message.getFieldWithDefault(msg, 4, 0),
+networkTag: msg.getNetworkTag_asB64()
   };
 
   if (includeInstance) {
@@ -431,6 +432,10 @@ proto.cashweb.registry.StoredMonadMessage.deserializeBinaryFromReader = function
     case 4:
       var value = /** @type {number} */ (reader.readInt64());
       msg.setTimestamp(value);
+      break;
+    case 5:
+      var value = /** @type {!Uint8Array} */ (reader.readBytes());
+      msg.setNetworkTag(value);
       break;
     default:
       reader.skipField();
@@ -487,6 +492,13 @@ proto.cashweb.registry.StoredMonadMessage.serializeBinaryToWriter = function(mes
   if (f !== 0) {
     writer.writeInt64(
       4,
+      f
+    );
+  }
+  f = message.getNetworkTag_asU8();
+  if (f.length > 0) {
+    writer.writeBytes(
+      5,
       f
     );
   }
@@ -629,6 +641,48 @@ proto.cashweb.registry.StoredMonadMessage.prototype.getTimestamp = function() {
  */
 proto.cashweb.registry.StoredMonadMessage.prototype.setTimestamp = function(value) {
   return jspb.Message.setProto3IntField(this, 4, value);
+};
+
+
+/**
+ * optional bytes network_tag = 5;
+ * @return {!(string|Uint8Array)}
+ */
+proto.cashweb.registry.StoredMonadMessage.prototype.getNetworkTag = function() {
+  return /** @type {!(string|Uint8Array)} */ (jspb.Message.getFieldWithDefault(this, 5, ""));
+};
+
+
+/**
+ * optional bytes network_tag = 5;
+ * This is a type-conversion wrapper around `getNetworkTag()`
+ * @return {string}
+ */
+proto.cashweb.registry.StoredMonadMessage.prototype.getNetworkTag_asB64 = function() {
+  return /** @type {string} */ (jspb.Message.bytesAsB64(
+      this.getNetworkTag()));
+};
+
+
+/**
+ * optional bytes network_tag = 5;
+ * Note that Uint8Array is not supported on all browsers.
+ * @see http://caniuse.com/Uint8Array
+ * This is a type-conversion wrapper around `getNetworkTag()`
+ * @return {!Uint8Array}
+ */
+proto.cashweb.registry.StoredMonadMessage.prototype.getNetworkTag_asU8 = function() {
+  return /** @type {!Uint8Array} */ (jspb.Message.bytesAsU8(
+      this.getNetworkTag()));
+};
+
+
+/**
+ * @param {!(string|Uint8Array)} value
+ * @return {!proto.cashweb.registry.StoredMonadMessage} returns this
+ */
+proto.cashweb.registry.StoredMonadMessage.prototype.setNetworkTag = function(value) {
+  return jspb.Message.setProto3BytesField(this, 5, value);
 };
 
 

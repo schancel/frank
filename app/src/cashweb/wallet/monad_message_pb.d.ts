@@ -56,6 +56,11 @@ export class StoredMonadMessage extends jspb.Message {
   getTimestamp(): number;
   setTimestamp(value: number): void;
 
+  getNetworkTag(): Uint8Array | string;
+  getNetworkTag_asU8(): Uint8Array;
+  getNetworkTag_asB64(): string;
+  setNetworkTag(value: Uint8Array | string): void;
+
   serializeBinary(): Uint8Array;
   toObject(includeInstance?: boolean): StoredMonadMessage.AsObject;
   static toObject(includeInstance: boolean, msg: StoredMonadMessage): StoredMonadMessage.AsObject;
@@ -72,6 +77,7 @@ export namespace StoredMonadMessage {
     senderAddress: Uint8Array | string,
     txHash: Uint8Array | string,
     timestamp: number,
+    networkTag: Uint8Array | string,
   }
 }
 

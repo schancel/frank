@@ -145,7 +145,7 @@ export interface MonadStampedMessageProto {
 /**
  * `StoredMonadMessage` from `monad_message.proto` — what both `PUT /message/monad`'s success
  * response and `GET /message/monad/:payload_hash` return. Field numbers: `message = 1`,
- * `sender_address = 2`, `tx_hash = 3`, `timestamp = 4`.
+ * `sender_address = 2`, `tx_hash = 3`, `timestamp = 4`, `network_tag = 5`.
  */
 export interface StoredMonadMessageProto {
   message: MonadStampedMessageProto | undefined
@@ -155,6 +155,13 @@ export interface StoredMonadMessageProto {
    * plain JS `number` (not `bigint`) — safe here since a millisecond timestamp is far below
    * `Number.MAX_SAFE_INTEGER` for a very long time yet. */
   timestamp: number
+  /** Frank-specific network tag (ticket #39, see `backend/cashweb/cashweb-registry/src/
+   * network_tag.rs` and PLAN.md constraint 9), e.g. `"MONT"`/`"MON1"` as raw bytes, stamped by the
+   * relay from its own `FRANK_NETWORK_TAG` configuration — never asserted by the client. Empty on
+   * records stored before this ticket shipped (proto3 default, not backfilled). Out of scope for
+   * this ticket: any client-side warning/rejection when this doesn't match what a client expects —
+   * this field only needs to exist, be populated by the relay, and decode correctly here. */
+  networkTag: Uint8Array
 }
 
 /** Encode a {@link MonadStampedMessageProto} to protobuf wire-format bytes, via the generated
@@ -200,6 +207,7 @@ export function decodeStoredMonadMessage(
     senderAddress: pb.getSenderAddress_asU8(),
     txHash: pb.getTxHash_asU8(),
     timestamp: pb.getTimestamp(),
+    networkTag: pb.getNetworkTag_asU8(),
   }
 }
 

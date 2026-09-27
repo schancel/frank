@@ -107,3 +107,12 @@ message MonadTopicPostView {
   // plus every later `MonadTopicVote`).
   sint64 vote_weight = 2;
 }
+
+// Response shape for `GET /message/monad/topics?topic=<topic>&since=<timestamp>` (ticket #40): a
+// topic-filtered page of [`MonadTopicPostView`]s, ordered by `timestamp` ascending. Added for
+// ticket #33 -- this message existed in the backend's copy of this file (added alongside #40's
+// list route) but was missing here until now; the app's hand-kept copy of this proto had drifted.
+message MonadTopicPostViews {
+  // The matching posts, ordered by `post.post.timestamp` ascending.
+  repeated MonadTopicPostView views = 1;
+}

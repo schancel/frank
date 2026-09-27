@@ -187,3 +187,25 @@ export namespace MonadTopicPostView {
   }
 }
 
+export class MonadTopicPostViews extends jspb.Message {
+  clearViewsList(): void;
+  getViewsList(): Array<MonadTopicPostView>;
+  setViewsList(value: Array<MonadTopicPostView>): void;
+  addViews(value?: MonadTopicPostView, index?: number): MonadTopicPostView;
+
+  serializeBinary(): Uint8Array;
+  toObject(includeInstance?: boolean): MonadTopicPostViews.AsObject;
+  static toObject(includeInstance: boolean, msg: MonadTopicPostViews): MonadTopicPostViews.AsObject;
+  static extensions: {[key: number]: jspb.ExtensionFieldInfo<jspb.Message>};
+  static extensionsBinary: {[key: number]: jspb.ExtensionFieldBinaryInfo<jspb.Message>};
+  static serializeBinaryToWriter(message: MonadTopicPostViews, writer: jspb.BinaryWriter): void;
+  static deserializeBinary(bytes: Uint8Array): MonadTopicPostViews;
+  static deserializeBinaryFromReader(message: MonadTopicPostViews, reader: jspb.BinaryReader): MonadTopicPostViews;
+}
+
+export namespace MonadTopicPostViews {
+  export type AsObject = {
+    viewsList: Array<MonadTopicPostView.AsObject>,
+  }
+}
+

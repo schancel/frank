@@ -97,6 +97,21 @@ export default module.exports
   }
 }
 
+// KNOWN BROKEN, tracked as a follow-up (ticket #53 GUI verification): this list's actual effect
+// is a no-op for every key on it under this `@quasar/app-vite` version -- confirmed live, driving
+// a real browser with `MONAD_SKIP_LEGACY_SETUP_GATE` set and observing zero effect. See
+// `extendViteConf`'s own comment below for the full investigation. Left in place since it's
+// harmless and documents original intent, but don't rely on it actually forwarding anything.
+const buildEnvKeys = [
+  'MONAD_TESTNET_HTTP_RPC_URL',
+  'MONAD_RELAY_BASE_URL',
+  'MONAD_STAMP_BURN_ADDRESS',
+  'CASHWEB_STAMP_MIN_BURN_VALUE_WEI',
+  'MONAD_SUB_ACCOUNT_POOL_SIZE',
+  'MONAD_DM_POLL_INTERVAL_MS',
+  'MONAD_SKIP_LEGACY_SETUP_GATE',
+]
+
 export default configure(ctx => {
   return {
     // app boot file (/src/boot)
@@ -180,27 +195,26 @@ export default configure(ctx => {
       vueRouterMode: 'hash', // available values: 'hash', 'history'
 
       // Bakes the listed real-`process.env` values (read here, in this file's own Node context, at
-      // `quasar build`/`quasar dev` invocation time) into the bundle -- `@quasar/app-vite` forwards
-      // `build.env` into Vite's own `define` the same way `@quasar/app-webpack` forwarded it into
-      // webpack's `DefinePlugin` (see git history on this file for the original webpack-side
-      // finding: without this, every `process.env.MONAD_*`/`CASHWEB_*` read in `cashweb/chain/
-      // monad-chain.ts` and `boot/monad-direct-messages.ts` silently evaluated to `undefined`).
-      // Only vars that are actually set get included, so an unset var still falls through to its
-      // hardcoded `??` default exactly as before, rather than baking in an empty string that `??`
-      // wouldn't treat as missing.
+      // `quasar build`/`quasar dev` invocation time) into the bundle. Only vars that are actually
+      // set get included, so an unset var still falls through to its hardcoded `??` default
+      // exactly as before, rather than baking in an empty string that `??` wouldn't treat as
+      // missing.
+      //
+      // Ticket #53 GUI verification (found live, driving a real browser): this file's own
+      // long-standing comment claimed "`@quasar/app-vite` forwards `build.env` into Vite's own
+      // `define` the same way `@quasar/app-webpack` forwarded it into webpack's `DefinePlugin`" --
+      // false under this Quasar/Vite version, confirmed by dumping `viteConf.define` right before
+      // `extendViteConf` below runs: it contains Quasar's own `import.meta.env.QUASAR_*` entries
+      // and nothing else -- no `process.env.MONAD_*`/`CASHWEB_*` key at all. `build.env`'s actual
+      // effect under `@quasar/app-vite` is populating `import.meta.env.*`, not `process.env.*` the
+      // webpack-DefinePlugin way -- meaning every `process.env.MONAD_*`/`CASHWEB_*` read anywhere
+      // in this app (`cashweb/chain/monad-chain.ts`, `boot/monad-direct-messages.ts`,
+      // `router/index.ts`) has silently evaluated to `undefined` since the Vite migration,
+      // regardless of what's actually set -- always falling through to its hardcoded default.
+      // `extendViteConf` below has the full investigation into why (spoiler: not fixed yet,
+      // tracked as a follow-up issue instead).
       env: Object.fromEntries(
-        [
-          'MONAD_TESTNET_HTTP_RPC_URL',
-          'MONAD_RELAY_BASE_URL',
-          'MONAD_STAMP_BURN_ADDRESS',
-          'CASHWEB_STAMP_MIN_BURN_VALUE_WEI',
-          'MONAD_SUB_ACCOUNT_POOL_SIZE',
-          'MONAD_DM_POLL_INTERVAL_MS',
-          // router/index.ts's toggle for the still-Lotus-only Setup.vue wizard's completion gate
-          // (see that file's own comment) -- defaults to "skip" when unset, so this only needs
-          // forwarding when someone explicitly sets it to 'false' to restore the strict gate.
-          'MONAD_SKIP_LEGACY_SETUP_GATE',
-        ]
+        buildEnvKeys
           .filter(key => process.env[key])
           .map(key => [key, process.env[key]]),
       ),
@@ -246,6 +260,23 @@ export default configure(ctx => {
           __VUE_PROD_DEVTOOLS__: JSON.stringify(false),
           __VUE_PROD_HYDRATION_MISMATCH_DETAILS__: JSON.stringify(false),
         }
+        // KNOWN BROKEN, tracked as a follow-up (ticket #53 GUI verification, found live driving
+        // a real browser): `process.env.MONAD_*`/`CASHWEB_*` reads throughout this app
+        // (router/index.ts, boot/monad-direct-messages.ts, @frank/wallet/chain/monad-chain.ts)
+        // are always `undefined` regardless of what's actually configured -- confirmed setting
+        // `MONAD_SKIP_LEGACY_SETUP_GATE` has zero effect. Two fixes tried and ruled out: (1) a
+        // `@rollup/plugin-inject`/Vite `define` collision over the `process` identifier (real,
+        // confirmed -- even Vite's own built-in `process.env.NODE_ENV` has it), worked around
+        // with a bare non-`process`-prefixed `define` global instead; (2) that bare global was
+        // ALSO silently never applied -- confirmed via the production build, the whole guarded
+        // expression got dead-code-eliminated rather than resolving to a real value. This means
+        // `viteConf.define` isn't reaching first-party source at all in this
+        // `@quasar/app-vite`/Vite 8/Rolldown combination -- only pre-bundled `node_modules`
+        // dependency chunks (where `__VUE_OPTIONS_API__` above lives and does work). Needs real
+        // investigation into this toolchain's actual `define`/`import.meta.env` wiring (possibly
+        // Quasar's `QCLI_`-prefixed env var convention, seen in this CLI's own startup log, is
+        // the actually-supported mechanism and `build.env`'s `process.env.KEY`-replacement claim
+        // was simply never true under app-vite) -- not something to guess a config tweak for.
         viteConf.resolve = viteConf.resolve || {}
         viteConf.resolve.alias = {
           ...viteConf.resolve.alias,

@@ -35,6 +35,10 @@ import {
   loadMonadChainConfigFromEnv,
 } from '@frank/wallet/chain/monad-chain'
 
+// KNOWN BROKEN (ticket #53 GUI verification): setting MONAD_DM_POLL_INTERVAL_MS currently has no
+// effect -- see router/index.ts's MONAD_SKIP_LEGACY_SETUP_GATE comment for the full
+// investigation (a `viteConf.define` gap that doesn't reach first-party source at all in this
+// toolchain) and the tracked follow-up issue.
 const DIRECT_MESSAGE_POLL_INTERVAL_MS = Number(
   process.env.MONAD_DM_POLL_INTERVAL_MS ?? 7000,
 )

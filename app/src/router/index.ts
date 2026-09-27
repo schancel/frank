@@ -28,10 +28,31 @@ import { useWalletStore } from 'src/stores/wallet'
 // decision" framing: `MONAD_SKIP_LEGACY_SETUP_GATE` defaults to on (skip -- a seed phrase existing
 // is enough), set it to the literal string "false" to restore the original Lotus-wizard-completion
 // requirement once #47 (porting Setup.vue to Monad) actually lands.
+//
+// KNOWN BROKEN (ticket #53 GUI verification, found live, driving a real browser): setting this
+// env var currently has zero effect -- `process.env.MONAD_SKIP_LEGACY_SETUP_GATE` is always
+// `undefined` in the served bundle regardless of what's configured. Tried and ruled out: (1) a
+// `@rollup/plugin-inject`/Vite `define` collision over the `process` identifier (real, confirmed
+// -- even Vite's own built-in `process.env.NODE_ENV` has it), and (2) a bare non-`process`-
+// prefixed `define` global instead (`__MONAD_SKIP_LEGACY_SETUP_GATE__`) -- also silently never
+// applied, confirmed via the production build: the whole guarded expression got dead-code-
+// eliminated rather than resolving to a real value, meaning `viteConf.define` isn't reaching
+// first-party source at all in this `@quasar/app-vite`/Vite 8/Rolldown combination, only
+// pre-bundled `node_modules` dependency chunks (where `__VUE_OPTIONS_API__` above lives and does
+// work). Needs real investigation into this toolchain's actual `define`/`import.meta.env`
+// wiring, not a config tweak -- see the tracked follow-up issue. Until then, this flag can only
+// be exercised by editing this default directly, not via the documented env var.
 const skipLegacySetupGate = process.env.MONAD_SKIP_LEGACY_SETUP_GATE !== 'false'
 
 const unprotectedRoutes = ['/', '/setup', '/forum', '/changelog']
-const protectedRoutes = ['/forum/new-post']
+// Was '/forum/new-post' -- routes.ts declares this child route's path with a leading slash
+// (`/new-post`), which Vue Router treats as absolute (top-level), not relative to its `forum`
+// parent. The real route (confirmed against every actual `:to` link in the app -- ForumDrawer.vue,
+// ForumLayout.vue, ForumMessage.vue, ForumPost.vue) is `/new-post`; `/forum/new-post` never
+// matches any navigation at all, so this gate silently never fired, in either
+// `skipLegacySetupGate` mode (masked by the bypass anyway) or the strict mode
+// `MONAD_SKIP_LEGACY_SETUP_GATE=false` is meant to restore.
+const protectedRoutes = ['/new-post']
 
 async function ensureChatState(address?: string) {
   const chatStore = useChatStore()

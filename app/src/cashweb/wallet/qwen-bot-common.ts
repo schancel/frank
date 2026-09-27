@@ -171,7 +171,7 @@ export async function waitForConfirmation(
  * original `/nonce/i` regex didn't match, so a genuine nonce race propagated as a hard failure
  * instead of retrying. Broadened to also match "higher priority" and "already known" (another
  * common phrasing for the same underlying race across different EVM clients). */
-async function fundPoolWithRetry(params: {
+export async function fundPoolWithRetry(params: {
   pool: MonadSubAccountPool
   mainAccountSigner: MonadAccountTxSigner
   burnValueWei: bigint

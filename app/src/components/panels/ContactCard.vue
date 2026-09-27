@@ -43,8 +43,7 @@ import { defineComponent } from 'vue'
 import { copyToClipboard } from 'quasar'
 
 import { addressCopiedNotify } from '../../utils/notifications'
-import { Address, Networks } from 'bitcore-lib-xpi'
-import { displayNetwork } from 'src/utils/constants'
+import { activeChain } from '../../cashweb/chain'
 
 export default defineComponent({
   props: {
@@ -77,13 +76,15 @@ export default defineComponent({
     },
   },
   computed: {
-    displayAddress() {
-      const address = new Address(this.address)
-      const displayAddress = new Address(
-        address.hashBuffer,
-        Networks.get(displayNetwork),
-      ).toXAddress()
-      return displayAddress
+    displayAddress(): string {
+      // Was hardcoded to Lotus's bitcore `Address`/`Networks` (crashed on any Monad `0x...`
+      // address with "Invalid Argument: Mixed case" -- EIP-55 checksums are deliberately mixed
+      // case, which bitcore's base58 address parser rejects outright). Found live tonight
+      // (autonomous overnight session, 2026-09-27) by actually driving a browser to a real chat
+      // route -- missed by ticket #44's earlier audit since this file imported `Address`/
+      // `Networks` directly rather than through `utils/address.ts`'s named helpers.
+      const parsed = activeChain.parseAddress(this.address)
+      return parsed ? activeChain.formatAddress(parsed) : this.address
     },
   },
 })

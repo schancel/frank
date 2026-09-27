@@ -88,8 +88,9 @@ import ChatInput from '../components/chat/ChatInput.vue'
 import ChatMessageReply from '../components/chat/messages/ChatMessageReply.vue'
 
 import { addressColorFromStr } from '../utils/formatting'
-import { insufficientStampNotify } from '../utils/notifications'
+import { errorNotify, insufficientStampNotify } from '../utils/notifications'
 import { defaultAcceptancePrice, stampLowerLimit } from '../utils/constants'
+import { useMonadWallet } from '../utils/clients'
 
 import { debounce, QScrollArea } from 'quasar'
 
@@ -141,6 +142,7 @@ export default defineComponent({
       getContactVuex: contacts.getContact,
       getProfile: myProfile,
       getMessageByPayload: chats.getMessageByPayload,
+      sendDirectMessage: chats.sendMessage,
       chats: chats.chats,
       chatScroll: ref<QScrollArea | null>(null),
     }
@@ -263,7 +265,7 @@ export default defineComponent({
     nameColor() {
       return addressColorFromStr(this.address)
     },
-    sendMessage(message: string) {
+    async sendMessage(message: string) {
       const stampAmount = this.getStampAmount(this.address)
       const acceptancePrice =
         this.getAcceptancePrice(this.address) ?? defaultAcceptancePrice
@@ -273,12 +275,23 @@ export default defineComponent({
       if (!message) {
         return
       }
-      this.$relayClient.sendMessage({
-        address: this.address,
-        text: message,
-        replyDigest: this.replyDigest ?? undefined,
-        stampAmount,
-      })
+      // Was calling the old Lotus `$relayClient.sendMessage` directly, completely bypassing
+      // `stores/chats.ts`'s `sendMessage` (ticket #42's real, tested `activeChain.directMessages.send`
+      // wiring) -- that store action always existed and worked, but nothing in the actual UI ever
+      // called it. Explicitly flagged as ticket #44's job in `utils/clients.ts`'s own doc comment
+      // ("any UI wiring to it") and missed there too. Found live tonight (autonomous overnight
+      // session, 2026-09-27) by actually clicking Send in a real browser and finding the message
+      // never left the input box.
+      try {
+        await this.sendDirectMessage({
+          wallet: useMonadWallet(),
+          address: this.address,
+          items: [{ type: 'text', text: message }],
+        })
+      } catch (err) {
+        errorNotify(err instanceof Error ? err : new Error(String(err)))
+        return
+      }
       this.message = ''
       this.replyDigest = null
       // After message send, scroll to bottom if not already there

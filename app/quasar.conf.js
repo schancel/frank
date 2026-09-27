@@ -111,6 +111,10 @@ module.exports = configure(function (ctx) {
           'CASHWEB_STAMP_MIN_BURN_VALUE_WEI',
           'MONAD_SUB_ACCOUNT_POOL_SIZE',
           'MONAD_DM_POLL_INTERVAL_MS',
+          // router/index.ts's toggle for the still-Lotus-only Setup.vue wizard's completion gate
+          // (see that file's own comment) -- defaults to "skip" when unset, so this only needs
+          // forwarding when someone explicitly sets it to 'false' to restore the strict gate.
+          'MONAD_SKIP_LEGACY_SETUP_GATE',
         ]
           .filter(key => process.env[key])
           .map(key => [key, process.env[key]]),

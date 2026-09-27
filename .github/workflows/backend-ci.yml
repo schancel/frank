@@ -32,13 +32,6 @@ jobs:
         echo "$(pwd)/bin" >> $GITHUB_PATH
       shell: bash
 
-    - name: Checkout cargo-make repository
-      uses: actions/checkout@v4
-      with:
-        path: cargo-make
-        repository: sagiegurari/cargo-make
-        ref: 0.35.10
-
     - name: Checkout flatbuffers repository
       uses: actions/checkout@v4
       with:
@@ -116,10 +109,13 @@ jobs:
           ${{ runner.os }}-cargodeps-${{steps.rust-version.outputs.rust_version}}-
           ${{ runner.os }}-cargodeps-
 
-    - name: Build and install cargo make
-      working-directory: ./cargo-make
-      run: |
-        CARGO_TARGET_DIR=$(pwd)/../target cargo install --path . --target-dir $(pwd)/../target
+    - name: Install cargo-make
+      # Was previously built from a pinned git checkout (sagiegurari/cargo-make @ 0.35.10), which
+      # no longer compiles: its own source hits a hard-denied lint (`unused_mut`) that used to be
+      # a warning under an older rustc. Installing from crates.io instead resolves a modern,
+      # toolchain-compatible version automatically rather than needing this pin bumped by hand
+      # every time the runner's Rust toolchain moves forward.
+      run: cargo install cargo-make
       shell: bash
 
     - name: Make bitcoinsuite nng

@@ -141,12 +141,12 @@ async function checkAcquireAndContention() {
 async function checkReleaseOutcomes() {
   console.log('\n== releaseLease outcomes ==')
 
-  // Confirmed happy path.
+  // Confirmed happy path -- ticket #34: terminal 'spent', never 'available' again.
   const poolA = makePool(1)
   const managerA = new SubAccountLeaseManager(poolA)
   const handleA = managerA.acquireForIndex(0)
   const recordA = managerA.releaseLease(handleA, 'confirmed')
-  assertEqual(recordA.status, 'available', 'confirmed -> available')
+  assertEqual(recordA.status, 'spent', 'confirmed -> spent')
   assertTrue(!managerA.isLeased(0), 'no longer tracked as live after release')
 
   // Failed outcome retires.
@@ -192,21 +192,27 @@ async function checkReleaseOutcomes() {
     'a handle never issued by this manager is rejected',
   )
 
-  // Full cycle: release then re-acquire the same index.
-  const poolG = makePool(1)
+  // Ticket #34: a confirmed release is terminal -- the SAME index can never be re-acquired. A
+  // distinct, never-before-used index must be picked instead.
+  const poolG = makePool(2)
   const managerG = new SubAccountLeaseManager(poolG)
   const firstHandle = managerG.acquireForIndex(0)
   managerG.releaseLease(firstHandle, 'confirmed')
-  const secondHandle = managerG.acquireForIndex(0)
+  await assertThrows(
+    () => managerG.acquireForIndex(0),
+    SubAccountAlreadyLeasedError,
+    'a spent account can never be re-acquired (single-use, not cyclable)',
+  )
+  const secondHandle = managerG.acquireLease()
   assertEqual(
     secondHandle.index,
-    0,
-    'account is cyclable after confirmed release',
+    1,
+    'a fresh account is selected instead of the spent one',
   )
   assertEqual(
     poolG.getRecord(0)?.status,
-    'in-use',
-    'back to in-use on the second acquire',
+    'spent',
+    'the original account remains permanently spent',
   )
 }
 
@@ -222,6 +228,10 @@ async function checkAcquireLeaseWhenAvailable() {
   })
   assertEqual(immediate.index, 0, 'resolves immediately when already available')
 
+  // Ticket #34: releasing the busy account as 'confirmed' makes it permanently 'spent', not
+  // 'available' -- on its own that would never unblock the waiter. What actually frees it up is a
+  // fresh account becoming available (standing in here for `MonadSubAccountPool.topUpPool()`
+  // completing in the background).
   const poolB = makePool(1)
   const managerB = new SubAccountLeaseManager(poolB)
   const busyHandle = managerB.acquireForIndex(0)
@@ -234,8 +244,18 @@ async function checkAcquireLeaseWhenAvailable() {
   })
   await Promise.resolve()
   managerB.releaseLease(busyHandle, 'confirmed')
+  poolB.ensureSize(2)
   const waited = await waiter
-  assertEqual(waited.index, 0, 'waits, then acquires once freed')
+  assertEqual(
+    waited.index,
+    1,
+    'waits, then acquires the fresh account once one exists',
+  )
+  assertEqual(
+    poolB.getRecord(0)?.status,
+    'spent',
+    'the original busy account is never reused',
+  )
 
   const poolC = makePool(1)
   const managerC = new SubAccountLeaseManager(poolC)
@@ -275,8 +295,8 @@ async function checkAwaitLeaseSettlement() {
   assertEqual(resultA.outcome, 'confirmed', 'settles confirmed')
   assertEqual(
     resultA.record.status,
-    'available',
-    'confirmed releases to available',
+    'spent',
+    'confirmed releases to spent (terminal, never reused)',
   )
 
   // Failed receipt.

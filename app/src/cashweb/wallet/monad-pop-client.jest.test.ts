@@ -203,11 +203,17 @@ describe('MonadPopClient.payAndPutMetadata', () => {
     // The payment tx was actually built for the challenge's recipient/amount.
     expect(monadHttpClient.submitRawTransaction).toHaveBeenCalledTimes(1)
 
-    // Lease lifecycle: acquired then released back to 'available' on confirmation.
+    // Lease lifecycle: acquired then released as 'spent' on confirmation (ticket #34: every
+    // `SubAccountLeaseManager` caller, POP included, now gets the corrected "never reuse a used
+    // sub-account" behavior -- see `monad-account-lease.ts`. `PLAN.md` constraint 3 notes POP's
+    // account-opening payment would be a legitimate exception to the *privacy* rationale for
+    // single-use accounts, since it's already identity-bound to a specific server -- but POP has no
+    // separate reuse mechanism of its own; it shares the same lease manager/pool as Stamp, and POP
+    // is disabled entirely for the hackathon demo anyway, so this doesn't matter in practice yet).
     expect(client.getCachedToken(ADDRESS)).toBe('freshly-minted-token')
     expect(result.payment).toBeDefined()
     const record = pool.getRecord(result.payment?.leaseIndex as number)
-    expect(record?.status).toBe('available')
+    expect(record?.status).toBe('spent')
   })
 
   it('reuses a cached token on a later call instead of paying again', async () => {

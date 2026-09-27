@@ -24,6 +24,7 @@ import { JsonRpcProvider, Transaction, Wallet } from 'ethers'
 
 import { MonadHdKeyring, subAccountPath } from './monad-hd-keyring'
 import {
+  DEFAULT_TOPUP_BUFFER_SIZE,
   fanOutFundSubAccounts,
   MonadSubAccountPool,
 } from './monad-account-pool'
@@ -247,6 +248,168 @@ describe('MonadSubAccountPool', () => {
       expect(() => pool.setStatus(9, 'retired')).toThrow(
         /No sub-account at index 9/,
       )
+    })
+  })
+
+  describe('topUpPool (ticket #34: indefinite growth + look-ahead funding buffer)', () => {
+    async function makeSigner(nonceStart = 0) {
+      const httpClient = makeMockHttpClient()
+      let nonce = nonceStart
+      const provider = makeStubProvider(async req => {
+        if (req.method === 'getTransactionCount')
+          return `0x${(nonce++).toString(16)}`
+        if (req.method === 'estimateGas') return '0x5208'
+        throw new Error(`unexpected _perform: ${req.method}`)
+      })
+      return new MonadAccountTxSigner({
+        privateKey: Wallet.createRandom().privateKey,
+        provider,
+        httpClient,
+      })
+    }
+
+    it('derives and funds fresh indices beyond whatever ensureSize was first called with', async () => {
+      const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC)
+      const pool = new MonadSubAccountPool({ keyring })
+      pool.ensureSize(2) // indices 0, 1 -- the "fixed initial size" a caller might start with
+
+      const mainAccountSigner = await makeSigner()
+      const results = await pool.topUpPool({
+        mainAccountSigner,
+        burnValue: 100n,
+        gasReserve: 20n,
+        bufferSize: 3,
+        overrides: { maxFeePerGas: 1n, maxPriorityFeePerGas: 1n },
+      })
+
+      // ensureSize(2) already left 0 and 1 'available', so topping up to a buffer of 3 only needs
+      // one fresh index -- 2, never re-deriving 0 or 1.
+      expect(results.map(r => r.index)).toEqual([2])
+      expect(pool.getRecord(2)?.status).toBe('available')
+      expect(pool.getRecord(2)?.address).toBe(
+        keyring.deriveSubAccount(2).address,
+      )
+      expect(pool.records().map(r => r.index)).toEqual([0, 1, 2])
+    })
+
+    it('does nothing (funds nothing) when the buffer is already full', async () => {
+      const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC)
+      const pool = new MonadSubAccountPool({ keyring })
+      pool.ensureSize(5)
+
+      const mainAccountSigner = await makeSigner()
+      const results = await pool.topUpPool({
+        mainAccountSigner,
+        burnValue: 1n,
+        gasReserve: 1n,
+        bufferSize: 3,
+      })
+
+      expect(results).toEqual([])
+      expect(pool.records()).toHaveLength(5) // unchanged, nothing new derived
+    })
+
+    it('only counts currently-"available" records toward the buffer -- in-use/spent/retired ones do not count, and growth continues past them (never reuses their indices)', async () => {
+      const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC)
+      const pool = new MonadSubAccountPool({ keyring })
+      pool.ensureSize(2)
+      pool.setStatus(0, 'in-use')
+      pool.setStatus(1, 'spent')
+      // 0 available records currently -- both existing indices are used up.
+
+      const mainAccountSigner = await makeSigner()
+      const results = await pool.topUpPool({
+        mainAccountSigner,
+        burnValue: 1n,
+        gasReserve: 1n,
+        bufferSize: 2,
+        overrides: { maxFeePerGas: 1n, maxPriorityFeePerGas: 1n },
+      })
+
+      // Growth resumes at index 2 (one past the highest known index), never re-touching 0 or 1.
+      expect(results.map(r => r.index)).toEqual([2, 3])
+      expect(pool.getRecord(2)?.status).toBe('available')
+      expect(pool.getRecord(3)?.status).toBe('available')
+      expect(pool.getRecord(0)?.status).toBe('in-use') // untouched
+      expect(pool.getRecord(1)?.status).toBe('spent') // untouched
+    })
+
+    it('uses DEFAULT_TOPUP_BUFFER_SIZE when bufferSize is omitted', async () => {
+      const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC)
+      const pool = new MonadSubAccountPool({ keyring })
+      // Empty pool -- deficit is the whole default buffer.
+      const mainAccountSigner = await makeSigner()
+      const results = await pool.topUpPool({
+        mainAccountSigner,
+        burnValue: 1n,
+        gasReserve: 1n,
+        overrides: { maxFeePerGas: 1n, maxPriorityFeePerGas: 1n },
+      })
+
+      expect(results).toHaveLength(DEFAULT_TOPUP_BUFFER_SIZE)
+      expect(results.map(r => r.index)).toEqual(
+        Array.from({ length: DEFAULT_TOPUP_BUFFER_SIZE }, (_, i) => i),
+      )
+    })
+
+    it('freshly-funded accounts feed straight into selectForStamp once persisted', async () => {
+      const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC)
+      const pool = new MonadSubAccountPool({ keyring })
+      expect(pool.selectForStamp()).toBeUndefined() // nothing derived yet
+
+      const mainAccountSigner = await makeSigner()
+      await pool.topUpPool({
+        mainAccountSigner,
+        burnValue: 1n,
+        gasReserve: 1n,
+        bufferSize: 2,
+        overrides: { maxFeePerGas: 1n, maxPriorityFeePerGas: 1n },
+      })
+
+      expect(pool.selectForStamp()?.index).toBe(0)
+    })
+
+    it('persists each successfully-funded index incrementally via onFunded, surviving a partial fan-out failure', async () => {
+      const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC)
+      const pool = new MonadSubAccountPool({ keyring })
+
+      const httpClient = makeMockHttpClient()
+      let nonce = 0
+      let call = 0
+      const provider = makeStubProvider(async req => {
+        if (req.method === 'getTransactionCount')
+          return `0x${(nonce++).toString(16)}`
+        if (req.method === 'estimateGas') return '0x5208'
+        throw new Error(`unexpected _perform: ${req.method}`)
+      })
+      const flakySigner = new MonadAccountTxSigner({
+        privateKey: Wallet.createRandom().privateKey,
+        provider,
+        httpClient,
+      })
+      // Fail the second submitted transaction only -- the first must still be durably recorded.
+      httpClient.submitRawTransaction.mockImplementation(
+        async (rawTxHex: string) => {
+          call++
+          if (call === 2) throw new Error('simulated relay failure')
+          return Transaction.from(rawTxHex).hash
+        },
+      )
+
+      await expect(
+        pool.topUpPool({
+          mainAccountSigner: flakySigner,
+          burnValue: 1n,
+          gasReserve: 1n,
+          bufferSize: 2,
+          overrides: { maxFeePerGas: 1n, maxPriorityFeePerGas: 1n },
+        }),
+      ).rejects.toThrow('simulated relay failure')
+
+      // Index 0's funding succeeded before the throw -- it must be recorded as available.
+      expect(pool.getRecord(0)?.status).toBe('available')
+      // Index 1's funding failed -- nothing persisted for it; a retry resumes at index 1, not 2.
+      expect(pool.getRecord(1)).toBeUndefined()
     })
   })
 })

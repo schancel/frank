@@ -6,18 +6,31 @@
  * signed for the *same* sub-account will race for the same "next" nonce: one queues behind the
  * other, or double-spends it outright if both get built from the same pending-nonce snapshot.
  * `MonadSubAccountPool` (#14) derives/persists a pool of sub-accounts and exposes
- * `{ index, address, status: 'available' | 'in-use' | 'retired' }` records plus a `setStatus`
- * write hook and a read-only `selectForStamp` picker — but, per #14's own header, deliberately
- * never mutates status itself. This module is that missing mutation layer:
+ * `{ index, address, status: 'available' | 'in-use' | 'spent' | 'retired' }` records plus a
+ * `setStatus` write hook and a read-only `selectForStamp` picker — but, per #14's own header,
+ * deliberately never mutates status itself. This module is that missing mutation layer:
  *
  *   - `acquireLease` / `acquireForIndex`: `'available' -> 'in-use'`, handed out as an opaque
  *     `AccountLeaseHandle` representing exclusive ownership of that sub-account for exactly one
- *     in-flight (unconfirmed) transaction. Attempting to acquire an already-`'in-use'` (or
- *     `'retired'`) account throws `SubAccountAlreadyLeasedError` rather than silently proceeding.
- *   - `releaseLease`: on the tx's `'confirmed'` outcome, `'in-use' -> 'available'` (ready for
- *     reuse). On `'failed'` or `'stuck'` (never confirmed within a timeout), `'in-use' ->
- *     'retired'` — a stuck/failed account is never silently reused with a guessed next nonce, per
- *     `PLAN.md` M5's explicit non-goal of fee-bumping/nonce-guessing recovery.
+ *     in-flight (unconfirmed) transaction. Attempting to acquire an already-`'in-use'`,
+ *     `'spent'`, or `'retired'` account throws `SubAccountAlreadyLeasedError` rather than silently
+ *     proceeding.
+ *   - `releaseLease`: on the tx's `'confirmed'` outcome, `'in-use' -> 'spent'`. On `'failed'` or
+ *     `'stuck'` (never confirmed within a timeout), `'in-use' -> 'retired'`. **Neither outcome ever
+ *     returns the account to `'available'`** — both are terminal, and both are equally excluded
+ *     from `MonadSubAccountPool.selectForStamp()` forever (see that module's own header). A
+ *     stuck/failed account is additionally never silently reused with a guessed next nonce, per
+ *     `PLAN.md` M5's explicit non-goal of fee-bumping/nonce-guessing recovery. `'spent'` vs.
+ *     `'retired'` is purely a bookkeeping distinction (did the tx actually confirm and consume the
+ *     account's funds, or did it fail/get abandoned, possibly leaving a balance to reclaim later) —
+ *     functionally, for selection purposes, they're identical.
+ *
+ *     **Correction (ticket #34, after #14/#18/#21 shipped):** this module originally mapped
+ *     `'confirmed'` back to `'available'`, treating the pool as a small, cyclically-reused set of
+ *     addresses. That defeated Stamp's UTXO-style unlinkability goal (`PLAN.md` constraint 3): reuse
+ *     accumulates a linkable on-chain history per address, the opposite of the "spend it once, like
+ *     a UTXO" property Stamp relies on. `MonadSubAccountPool` (see that file) now continuously
+ *     derives and pre-funds fresh indices so a used-up pool never needs to fall back to reuse.
  *   - `awaitLeaseSettlement`: polls a tx-status source (anything shaped like
  *     `MonadAccountTxSigner.getStatus`, #11) until it reports `'confirmed'`/`'failed'`, or until a
  *     configurable timeout elapses (treated as `'stuck'`), then calls `releaseLease` with the
@@ -25,11 +38,13 @@
  *
  * Ownership/scope note: this file only ever calls `pool.selectForStamp()`, `pool.getRecord()`, and
  * `pool.setStatus()` — all public API `monad-account-pool.ts` already exposes for this purpose. It
- * does not modify that file, `monad-account-tx.ts`, or `monad-http.ts`.
+ * does not modify that file's public shape, `monad-account-tx.ts`, or `monad-http.ts`.
  *
  * Non-goals (per the ticket): no automatic unsticking / fee-bump / replace-by-fee resubmission —
  * retirement is the only recovery path here. No Stamp or POP logic — this is pure wallet-pool
- * plumbing for #13 (Stamp client-side) and #5 (POP client-side) to build on.
+ * plumbing for #13 (Stamp client-side) and #5 (POP client-side) to build on. Sweeping/reclaiming any
+ * leftover balance on a `'retired'` account is also not implemented here (ticket #34 non-goal) —
+ * flagged, not solved.
  */
 import { MonadSubAccountPool } from './monad-account-pool'
 import {
@@ -67,10 +82,12 @@ export interface AccountLeaseHandle {
   readonly address: string
 }
 
-/** How a leased, in-flight transaction was ultimately settled — the input to `releaseLease`.
- * `'confirmed'` is the only outcome that returns the account to `'available'`; `'failed'` (a
- * reverted/failed receipt) and `'stuck'` (never confirmed within the configured timeout) both
- * retire it, per the ticket's "never guess the next nonce" requirement. */
+/** How a leased, in-flight transaction was ultimately settled — the input to `releaseLease`. Every
+ * outcome is terminal: `'confirmed'` marks the account `'spent'`; `'failed'` (a reverted/failed
+ * receipt) and `'stuck'` (never confirmed within the configured timeout) both mark it `'retired'`.
+ * None of the three ever returns the account to `'available'` (see this file's header, "Correction
+ * (ticket #34)") — `'failed'`/`'stuck'` additionally satisfy the ticket's "never guess the next
+ * nonce" requirement by not silently reusing a possibly-desynced nonce. */
 export type LeaseOutcome = 'confirmed' | 'failed' | 'stuck'
 
 /** Structural subset of `MonadAccountTxSigner` (#11) that `awaitLeaseSettlement` needs — expressed
@@ -154,8 +171,10 @@ export class SubAccountLeaseManager {
 
   /**
    * Releases a lease previously granted by this manager, transitioning the sub-account per
-   * `outcome`: `'confirmed'` -> `'available'` (ready for reuse); `'failed'`/`'stuck'` ->
-   * `'retired'` (excluded from future selection — never reused with a guessed next nonce).
+   * `outcome`: `'confirmed'` -> `'spent'`; `'failed'`/`'stuck'` -> `'retired'`. Both destinations
+   * are terminal — excluded from `pool.selectForStamp()` forever, never `'available'` again (see
+   * this file's header, "Correction (ticket #34)": a used sub-account, whether its transaction
+   * succeeded or not, is never reused — that's the whole point of modeling it like a UTXO).
    *
    * Throws `InvalidLeaseHandleError` if `handle` was not issued by this manager instance or has
    * already been released — this method is not idempotent by design, to catch double-release
@@ -173,7 +192,7 @@ export class SubAccountLeaseManager {
     }
     this.liveLeases.delete(handle.index)
     const nextStatus: SubAccountStatus =
-      outcome === 'confirmed' ? 'available' : 'retired'
+      outcome === 'confirmed' ? 'spent' : 'retired'
     return this.pool.setStatus(handle.index, nextStatus)
   }
 }
@@ -255,7 +274,8 @@ export interface LeaseSettlementResult {
  * this is the ticket's stuck-nonce *detection* mechanism, built on top of #11's `getStatus`
  * (`'pending' | 'confirmed' | 'failed'`, itself backed by `MonadHttpClient.getTransactionReceipt`):
  *
- *   - `'confirmed'` -> `releaseLease(handle, 'confirmed')` (account becomes `'available'` again).
+ *   - `'confirmed'` -> `releaseLease(handle, 'confirmed')` (account becomes `'spent'` — terminal,
+ *     never reused).
  *   - `'failed'` (reverted receipt) -> `releaseLease(handle, 'failed')` (account `'retired'`).
  *   - still `'pending'` once `timeoutMs` has elapsed since this call started -> treated as
  *     `'stuck'` -> `releaseLease(handle, 'stuck')` (account `'retired'`).

@@ -48,28 +48,20 @@
  *
  * ## Protobuf encoding
  *
- * This app already has an established pattern for wire-format protobuf: a `.proto` file compiled
- * via `protoc --js_out=...,binary:. --ts_out=.` into a generated `*_pb.js`/`*_pb.d.ts` pair built on
- * `google-protobuf`'s `jspb.Message`/`BinaryWriter`/`BinaryReader` (see e.g.
- * `../registry/broadcast_pb.js`, `../registry/generate_protobufs.sh`). This module deliberately does
- * NOT add a new `proto/monad_message.proto` + generated pair here, because that toolchain could not
- * actually be exercised in this environment: the `protoc` npm package (`app/node_modules/protoc`,
- * v1.0.4) bundles a 32-bit (`i386`) `protoc` binary that cannot execute at all on a modern macOS
- * host (arm64 or x86_64 — 32-bit binaries have been unsupported since Catalina), and the system
- * `protoc` available via Homebrew (v33.4) no longer bundles the `--js_out` codegen at all (the
- * `protoc-gen-js` plugin was split out of upstream `protobuf` years ago and isn't installed here
- * either). Rather than commit an unverified, never-actually-run "generated" file, this module hand-
- * encodes the two messages it needs directly against `google-protobuf`'s `jspb.BinaryWriter`/
- * `BinaryReader` primitives — the same runtime the generated files themselves are built on, and
- * already a project dependency (`google-protobuf` in `app/package.json`). Wire-format correctness
- * only depends on using the right field numbers/wire types (both `bytes` and embedded-message
- * fields use protobuf wire type 2 — length-delimited — so a nested message can be read generically
- * via `readBytes()` and decoded recursively), which are transcribed 1:1 from
- * `backend/cashweb/cashweb-registry/proto/monad_message.proto` below. If/when this environment's
- * protoc toolchain is fixed, these functions can be swapped for a real generated
- * `wallet/proto/monad_message.proto` + `monad_message_pb.js` without changing this file's public
- * API (`encodeMonadStampedMessage`/`decodeStoredMonadMessage` intentionally mirror the
- * `serializeBinary`/`deserializeBinary` shape generated code would expose).
+ * Uses real generated protobuf bindings (`./proto/monad_message.proto` -> `./monad_message_pb.js`/
+ * `.d.ts`, via `./generate_protobufs.sh`), matching this app's established pattern elsewhere (see
+ * e.g. `../registry/broadcast_pb.js`, `../registry/generate_protobufs.sh`). An earlier revision of
+ * this file hand-encoded the wire format directly against `google-protobuf`'s low-level
+ * `BinaryWriter`/`BinaryReader` primitives, because this environment's bundled `protoc` (the
+ * `protoc` npm package, v1.0.4) ships a 32-bit binary that can't execute on a modern host. Fixed by
+ * installing a working toolchain instead of working around it: `brew install protobuf
+ * protoc-gen-js` (the system `protoc` no longer bundles `--js_out` codegen; `protoc-gen-js` is now
+ * a separate plugin) plus this package's own `node_modules/.bin/protoc-gen-ts` (already a
+ * dependency, `ts-protoc-gen`) for `--ts_out`. `generate_protobufs.sh` documents the exact command.
+ * `encodeMonadStampedMessage`/`decodeMonadStampedMessage`/`decodeStoredMonadMessage` below are thin
+ * wrappers converting between the generated `jspb.Message` classes and this file's plain-object
+ * `MonadStampedMessageProto`/`StoredMonadMessageProto` shapes, so the rest of this file (and its
+ * tests) didn't need to change when the encoding underneath them did.
  *
  * ## Lease release policy
  *
@@ -109,8 +101,8 @@
  */
 import { Provider, concat, getBytes, hexlify, sha256 } from 'ethers'
 import axios from 'axios'
-import * as jspb from 'google-protobuf'
 
+import { MonadStampedMessage, StoredMonadMessage } from './monad_message_pb'
 import { MonadSubAccountPool } from './monad-account-pool'
 import {
   AccountLeaseHandle,
@@ -165,17 +157,16 @@ export interface StoredMonadMessageProto {
   timestamp: number
 }
 
-/** Encode a {@link MonadStampedMessageProto} to protobuf wire-format bytes, matching
- * `monad_message.proto`'s `MonadStampedMessage` field-for-field. */
+/** Encode a {@link MonadStampedMessageProto} to protobuf wire-format bytes, via the generated
+ * `MonadStampedMessage` class. */
 export function encodeMonadStampedMessage(
   msg: MonadStampedMessageProto,
 ): Uint8Array {
-  const writer = new jspb.BinaryWriter()
-  if (msg.rawBurnTx.length > 0) writer.writeBytes(1, msg.rawBurnTx)
-  if (msg.encryptedPayload.length > 0)
-    writer.writeBytes(2, msg.encryptedPayload)
-  if (msg.payloadHash.length > 0) writer.writeBytes(3, msg.payloadHash)
-  return writer.getResultBuffer()
+  const pb = new MonadStampedMessage()
+  pb.setRawBurnTx(msg.rawBurnTx)
+  pb.setEncryptedPayload(msg.encryptedPayload)
+  pb.setPayloadHash(msg.payloadHash)
+  return pb.serializeBinary()
 }
 
 /** Decode protobuf wire-format bytes into a {@link MonadStampedMessageProto}. Round-trips with
@@ -183,63 +174,33 @@ export function encodeMonadStampedMessage(
 export function decodeMonadStampedMessage(
   bytes: Uint8Array,
 ): MonadStampedMessageProto {
-  const reader = new jspb.BinaryReader(bytes)
-  let rawBurnTx = new Uint8Array()
-  let encryptedPayload = new Uint8Array()
-  let payloadHash = new Uint8Array()
-  while (reader.nextField()) {
-    if (reader.isEndGroup()) break
-    switch (reader.getFieldNumber()) {
-      case 1:
-        rawBurnTx = reader.readBytes()
-        break
-      case 2:
-        encryptedPayload = reader.readBytes()
-        break
-      case 3:
-        payloadHash = reader.readBytes()
-        break
-      default:
-        reader.skipField()
-    }
+  const pb = MonadStampedMessage.deserializeBinary(bytes)
+  return {
+    rawBurnTx: pb.getRawBurnTx_asU8(),
+    encryptedPayload: pb.getEncryptedPayload_asU8(),
+    payloadHash: pb.getPayloadHash_asU8(),
   }
-  return { rawBurnTx, encryptedPayload, payloadHash }
 }
 
 /** Decode protobuf wire-format bytes into a {@link StoredMonadMessageProto} — what the relay
- * returns from both `PUT /message/monad` and `GET /message/monad/:payload_hash`. The nested
- * `message` field (field 1) is read generically via `readBytes()` and decoded recursively with
- * {@link decodeMonadStampedMessage}: an embedded-message field and a `bytes` field share the same
- * length-delimited wire type (2), so this is a correct, general way to read a submessage without
- * needing `jspb`'s `readMessage(..)` callback machinery. */
+ * returns from both `PUT /message/monad` and `GET /message/monad/:payload_hash`. */
 export function decodeStoredMonadMessage(
   bytes: Uint8Array,
 ): StoredMonadMessageProto {
-  const reader = new jspb.BinaryReader(bytes)
-  let message: MonadStampedMessageProto | undefined
-  let senderAddress = new Uint8Array()
-  let txHash = new Uint8Array()
-  let timestamp = 0
-  while (reader.nextField()) {
-    if (reader.isEndGroup()) break
-    switch (reader.getFieldNumber()) {
-      case 1:
-        message = decodeMonadStampedMessage(reader.readBytes())
-        break
-      case 2:
-        senderAddress = reader.readBytes()
-        break
-      case 3:
-        txHash = reader.readBytes()
-        break
-      case 4:
-        timestamp = reader.readInt64()
-        break
-      default:
-        reader.skipField()
-    }
+  const pb = StoredMonadMessage.deserializeBinary(bytes)
+  const nested = pb.getMessage()
+  return {
+    message: nested
+      ? {
+          rawBurnTx: nested.getRawBurnTx_asU8(),
+          encryptedPayload: nested.getEncryptedPayload_asU8(),
+          payloadHash: nested.getPayloadHash_asU8(),
+        }
+      : undefined,
+    senderAddress: pb.getSenderAddress_asU8(),
+    txHash: pb.getTxHash_asU8(),
+    timestamp: pb.getTimestamp(),
   }
-  return { message, senderAddress, txHash, timestamp }
 }
 
 /** `h_m = SHA256(encrypted_payload)` — both `MonadStampedMessage.payload_hash` and the on-chain

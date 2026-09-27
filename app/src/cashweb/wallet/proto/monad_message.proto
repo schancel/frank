@@ -1,0 +1,49 @@
+// Copy of backend/cashweb/cashweb-registry/proto/monad_message.proto (ticket #27) — kept in sync
+// by hand, matching this app's existing convention of a local proto/ source per feature area
+// rather than a cross-repo build-time reference. If this drifts from the backend's copy, the
+// backend's is authoritative (it's what the live relay actually decodes against).
+syntax = "proto3";
+package cashweb.registry;
+
+// A Monad-native stamped broadcast message (ticket #27).
+//
+// The Lotus `SignedPayload`/`BurnTx` scheme (`cashweb-payload/proto/payload.proto`) is
+// structurally UTXO-shaped -- `BurnTx.burn_idx` indexes into a Bitcoin-style transaction's output
+// list, which has no EVM equivalent -- so a Monad stamp can't be carried through it. This message
+// is a separate, simpler envelope for the Monad path instead (see this ticket's module docs for
+// the full rationale, and PLAN.md constraint 5).
+//
+// Unlike `SignedPayload`, there is deliberately no separate pubkey/signature field: the sender's
+// identity is recovered via `ecrecover` from `raw_burn_tx`'s own ECDSA signature (see
+// `cashweb_registry::monad_evm_tx::recover_sender`), and the binding between this specific
+// `encrypted_payload` and the on-chain burn is `payload_hash`, which `raw_burn_tx`'s calldata must
+// commit to (checked via `cashweb_registry::monad_stamp_verify::parse_commitment_calldata`) --
+// there is no Lotus-style `SHA256(SHA256(pubkey) || payload_hash)` preimage, since there's no
+// separate pubkey to bind against.
+message MonadStampedMessage {
+  // Raw, signed, RLP-encoded Monad (EVM-style) transaction burning value to the relay's configured
+  // stamp address, whose calldata commits to `payload_hash`. The relay itself broadcasts this tx
+  // (see `monad_stamp_relay::broadcast_and_verify_stamp`) -- the client is never required to have
+  // already landed it on-chain.
+  bytes raw_burn_tx = 1;
+  // The message payload, encrypted for its recipient(s). Opaque to the relay.
+  bytes encrypted_payload = 2;
+  // SHA256(encrypted_payload). Must match both the actual hash of `encrypted_payload` and the
+  // commitment carried in `raw_burn_tx`'s calldata.
+  bytes payload_hash = 3;
+}
+
+// A [`MonadStampedMessage`] as stored by the relay once its stamp verified, augmented with facts
+// the relay itself derived (and that the client doesn't, and for the sender address cannot
+// meaningfully, assert).
+message StoredMonadMessage {
+  // The original message as submitted.
+  MonadStampedMessage message = 1;
+  // Sender's 20-byte Monad address, recovered via `ecrecover` from `message.raw_burn_tx`'s own
+  // signature -- never asserted by the client.
+  bytes sender_address = 2;
+  // 32-byte hash of the broadcast (and confirmed) burn transaction.
+  bytes tx_hash = 3;
+  // Milliseconds since the Unix epoch when the relay stored this message.
+  int64 timestamp = 4;
+}

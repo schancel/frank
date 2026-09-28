@@ -418,8 +418,12 @@ export class MonadSubAccountPool {
         .submitRaw(attempt.rawTx, attempt.txHash)
         .catch(() => undefined)
     }
-    const maxAttempts = options?.maxAttempts ?? 30
-    const intervalMs = options?.intervalMs ?? 2_000
+    // Monad confirms substantially faster than the two-second cadence inherited from the
+    // original EVM bring-up. A Send commonly prepares two accounts, so that cadence added several
+    // seconds of avoidable UI latency. Poll four times per second while retaining the same
+    // one-minute default timeout budget for congested or unhealthy RPCs.
+    const maxAttempts = options?.maxAttempts ?? 240
+    const intervalMs = options?.intervalMs ?? 250
     const sleep =
       options?.sleep ??
       ((ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms)))

@@ -37,16 +37,37 @@
       <chat-list-link title="Login/Sign Up" route="/setup" icon="login" />
     </div>
 
-    <!-- Ticket #61 (found in review): the "forum" tab navigates away entirely (it's a full
-    page/route, not a sidebar-list mode) rather than switching to some 'tab == "forum"' content
-    here -- so without this, clicking it left this whole drawer body blank (matched neither
-    'settings' nor 'contacts'). Falling back to showing contacts is an arbitrary but reasonable
-    default; there's no forum-specific content this drawer could show instead. -->
-    <chat-list
-      v-show="tab == 'contacts' || tab == 'forum'"
-      v-bind="$attrs"
-      :compact="false"
-    />
+    <chat-list v-show="tab == 'contacts'" v-bind="$attrs" :compact="false" />
+
+    <!-- Real user-reported gap (ticket #61's own follow-up comment admitted this was a stopgap:
+    "there's no forum-specific content this drawer could show instead"): clicking "forum" used to
+    just fall back to showing the same chat-list as "contacts" -- so the two tabs looked and
+    behaved identically in the sidebar, with nothing anywhere to actually browse different
+    topics/forums. This list surfaces the same relay-discovered topic data already wired up in
+    ForumDrawer.vue's own "Browse Topics" section, but here in the left rail, where a user
+    actually expects a per-tab list -- clicking a topic switches the Forum's selected topic and
+    navigates there if not already on /forum. -->
+    <q-list v-show="tab == 'forum'" v-bind="$attrs">
+      <q-separator />
+      <q-item>
+        <q-item-label header>Forums</q-item-label>
+      </q-item>
+      <q-item
+        v-for="name in discoveredTopicNames"
+        :key="name"
+        clickable
+        :active="name === selectedForumTopic"
+        active-class="text-primary"
+        @click="browseForumTopic(name)"
+      >
+        <q-item-section>{{ name }}</q-item-section>
+      </q-item>
+      <q-item v-if="discoveredTopicNames.length === 0">
+        <q-item-section class="text-grey"
+          >No forums discovered yet.</q-item-section
+        >
+      </q-item>
+    </q-list>
 
     <q-list v-if="$status.setup">
       <q-separator />
@@ -80,6 +101,8 @@ import RelayConnectDialog from '../dialogs/RelayConnectDialog.vue'
 
 import { openChat, openPage } from '../../utils/routes'
 import { useChatStore } from 'src/stores/chats'
+import { useTopicStore } from 'src/stores/topics'
+import { useForumStore } from 'src/stores/forum'
 import { activeChain } from '@frank/wallet/chain'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
 
@@ -107,6 +130,26 @@ export default defineComponent({
       }
     }
 
+    // "forum" tab's own list -- real user-reported gap, see this file's template comment on the
+    // `q-list v-show="tab == 'forum'"` block for the full story. `useTopicStore` already fetches
+    // and holds the relay-discovered topic list (ticket #72); `useForumStore` is the separate
+    // store the actual /forum page reads its selected topic from (see `ForumDrawer.vue`'s own
+    // near-identical `setTopic` for the precedent this mirrors).
+    const topicStore = useTopicStore()
+    const forum = useForumStore()
+    const discoveredTopicNames = computed(() =>
+      Object.keys(topicStore.topics).sort(),
+    )
+    const selectedForumTopic = computed(() => forum.selectedTopic)
+    async function browseForumTopic(name: string) {
+      forum.setSelectedTopic(name)
+      if (!route.path.startsWith('/forum')) {
+        await router.push('/forum')
+      }
+      const wallet = await useActiveWallet()
+      await forum.refreshMessages({ wallet, topic: name })
+    }
+
     onMounted(async () => {
       try {
         const wallet = await useActiveWallet()
@@ -114,6 +157,12 @@ export default defineComponent({
       } catch {
         // The setup route may render the drawer before a seed exists.
       }
+      // Fire-and-forget, same convention as `ForumLayout.vue`'s own identical call --
+      // `refreshDiscoveredTopics` already fails soft and never throws (`stores/topics.ts`).
+      // Called here too (not just there) so this list is populated even if the user never opens
+      // the Forum page itself first -- the whole point is to make forums discoverable *before*
+      // you already know one exists.
+      topicStore.refreshDiscoveredTopics()
     })
 
     // Drives the left rail's active-tab highlight (`q-tabs v-model="tab"`). A plain, freely
@@ -145,6 +194,9 @@ export default defineComponent({
     return {
       tab,
       openActiveOrRecentChat,
+      discoveredTopicNames,
+      selectedForumTopic,
+      browseForumTopic,
       totalUnread: totalUnread,
       formattedBalance: computed(
         () =>

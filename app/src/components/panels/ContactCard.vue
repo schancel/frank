@@ -9,7 +9,7 @@
       <q-item>
         <q-item-section>
           <q-avatar rounded>
-            <img :src="avatar" />
+            <img :src="profileAvatar(avatar, address)" />
           </q-avatar>
         </q-item-section>
       </q-item>
@@ -44,8 +44,12 @@ import { copyToClipboard } from 'quasar'
 
 import { addressCopiedNotify } from '../../utils/notifications'
 import { activeChain } from '@frank/wallet/chain'
+import { profileAvatar } from 'src/utils/avatar'
 
 export default defineComponent({
+  setup() {
+    return { profileAvatar }
+  },
   props: {
     name: {
       type: String,

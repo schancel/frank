@@ -6,6 +6,38 @@
       </div>
     </q-card-section>
     <q-card-section>
+      <div v-if="stampPayments.length" class="q-px-md q-pb-md">
+        <div class="text-caption text-grey-7">Total stamp payment</div>
+        <div class="text-h6">{{ formattedTotal }}</div>
+      </div>
+      <q-list v-if="stampPayments.length" separator>
+        <q-item v-for="(payment, idx) in stampPayments" :key="payment.txHash">
+          <q-item-section>
+            <q-item-label overline>Stamp payment {{ idx + 1 }}</q-item-label>
+            <q-item-label>{{ formatValue(payment.valueWei) }}</q-item-label>
+            <q-item-label caption lines="1">
+              To {{ payment.destinationAddress }}
+            </q-item-label>
+            <q-item-label lines="1">
+              <a
+                :href="transactionExplorerUrl(payment.txHash)"
+                target="_blank"
+                rel="noopener noreferrer"
+                >{{ payment.txHash }}</a
+              >
+            </q-item-label>
+          </q-item-section>
+          <q-item-section side>
+            <q-btn
+              flat
+              round
+              icon="open_in_new"
+              :href="transactionExplorerUrl(payment.txHash)"
+              target="_blank"
+            />
+          </q-item-section>
+        </q-item>
+      </q-list>
       <q-tabs v-model="tab" class="text-primary">
         <q-tab v-for="n in outpoints.length" :key="n" :name="n" :label="n" />
       </q-tabs>
@@ -55,6 +87,7 @@ import { defineComponent, PropType } from 'vue'
 import { toDisplayAddress } from 'src/utils/address'
 import { Utxo } from '@frank/cashweb/types/utxo'
 import { transactionExplorerUrl } from 'src/utils/explorer'
+import { activeChain } from '@frank/wallet/chain'
 
 // `toDisplayAddress` (Lotus-only) is left as-is here rather than swapped for `activeChain`
 // (ticket #44): this dialog's `outpoints` prop is always `[]` for Monad-sourced messages
@@ -75,6 +108,16 @@ export default defineComponent({
       type: Object as PropType<Array<Utxo>>,
       default: () => [] as Utxo[],
     },
+    stampPayments: {
+      type: Array as PropType<
+        Array<{
+          txHash: string
+          destinationAddress: string
+          valueWei: bigint
+        }>
+      >,
+      default: () => [],
+    },
   },
   data() {
     return {
@@ -84,10 +127,22 @@ export default defineComponent({
   setup() {
     return {
       transactionExplorerUrl,
+      formatValue(valueWei: bigint) {
+        return `${activeChain.toDisplayAmount(valueWei)} ${activeChain.unit}`
+      },
       extractAddress(outpointAddress: string) {
         return toDisplayAddress(outpointAddress)
       },
     }
+  },
+  computed: {
+    formattedTotal(): string {
+      const total = this.stampPayments.reduce(
+        (sum, payment) => sum + payment.valueWei,
+        0n,
+      )
+      return `${activeChain.toDisplayAmount(total)} ${activeChain.unit}`
+    },
   },
 })
 </script>

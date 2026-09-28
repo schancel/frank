@@ -504,6 +504,15 @@ export class MonadStampRejectedError extends MonadStampError {
   }
 }
 
+function relayRejectionDetail(detail: unknown): string | undefined {
+  if (typeof detail === 'string') return detail
+  if (detail && typeof detail === 'object' && 'error' in detail) {
+    const error = (detail as { error?: unknown }).error
+    if (typeof error === 'string') return error
+  }
+  return undefined
+}
+
 /** Thrown when a network-level failure left the outcome genuinely unknown, and polling
  * `GET /message/monad/:payload_hash` never turned up a stored message within the configured
  * budget (see this file's header, "Lease release policy"). The lease has already been released as
@@ -991,8 +1000,11 @@ export class MonadStampClient {
         if (exactSetRetained(err.response.data) === false) {
           await releaseAll('failed')
           await this.attemptJournal?.delete(payloadHashHex)
+          const detail = relayRejectionDetail(err.response.data)
           throw new MonadStampRejectedError(
-            `Relay rejected the Monad-stamped message before retaining its payment set (HTTP ${err.response.status})`,
+            `Relay rejected the Monad-stamped message before retaining its payment set (HTTP ${err.response.status})${
+              detail ? `: ${detail}` : ''
+            }`,
             err.response.status,
             err.response.data,
           )
@@ -1005,8 +1017,11 @@ export class MonadStampClient {
           throw new MonadStampPendingAttemptError([payloadHashHex])
         }
         await releaseAll('failed')
+        const detail = relayRejectionDetail(err.response.data)
         throw new MonadStampRejectedError(
-          `Relay rejected the Monad-stamped message (HTTP ${err.response.status})`,
+          `Relay rejected the Monad-stamped message (HTTP ${err.response.status})${
+            detail ? `: ${detail}` : ''
+          }`,
           err.response.status,
           err.response.data,
         )

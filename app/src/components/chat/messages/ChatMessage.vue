@@ -6,6 +6,7 @@
       <transaction-dialog
         :title="$t('transactionDialog.backingTransactions')"
         :outpoints="message.outpoints"
+        :stamp-payments="message.stampPayments"
       />
     </q-dialog>
 
@@ -82,6 +83,7 @@ import ChatMessageSuffix from './ChatMessageSuffix.vue'
 import DeleteMessageDialog from '../../dialogs/DeleteMessageDialog.vue'
 import TransactionDialog from '../../dialogs/TransactionDialog.vue'
 import { stampPrice } from '@frank/cashweb/legacy-wallet/helpers'
+import { activeChain } from '@frank/wallet/chain'
 import { Message, MessageItem } from '@frank/cashweb/types/messages'
 
 export default defineComponent({
@@ -228,8 +230,13 @@ export default defineComponent({
       return 'N/A'
     },
     stampAmount() {
+      if (this.message.stampValueWei !== undefined) {
+        return `${activeChain.toDisplayAmount(this.message.stampValueWei)} ${
+          activeChain.unit
+        }`
+      }
       if (!this.message || !this.message.outpoints) {
-        return '0 XPI'
+        return `0 ${activeChain.unit}`
       }
       const amount = stampPrice(this.message.outpoints)
       return Number(amount / 1000000).toFixed(2) + ' XPI'

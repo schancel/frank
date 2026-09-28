@@ -48,7 +48,7 @@ import { useChatStore } from '../../stores/chats'
 
 import { openChat, openPage } from '../../utils/routes'
 import { useRouter } from 'vue-router'
-import { formatBalance } from 'src/utils/formatting'
+import { activeChain } from '@frank/wallet/chain'
 
 export default defineComponent({
   setup() {
@@ -66,7 +66,9 @@ export default defineComponent({
         if (!amount) {
           return
         }
-        return formatBalance(amount)
+        return `${activeChain.toDisplayAmount(BigInt(Math.trunc(amount)))} ${
+          activeChain.unit
+        }`
       },
     }
   },

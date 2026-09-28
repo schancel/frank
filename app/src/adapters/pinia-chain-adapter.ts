@@ -75,6 +75,7 @@ export async function toReceivedMessageWrapper(
       receivedTime: record.receivedTime,
       outpoints: [],
       stampValueWei: record.stampValueWei,
+      stampPayments: record.stampPayments,
       senderAddress: copartyAddress,
       destinationAddress,
     },

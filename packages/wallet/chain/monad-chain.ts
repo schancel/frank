@@ -191,7 +191,7 @@ export function loadMonadChainConfigFromEnv(): MonadChainConfig {
       readEnv('MONAD_STAMP_BURN_ADDRESS') ??
       '0x000000000000000000000000000000000000dEaD',
     defaultStampValueWei: BigInt(
-      readEnv('CASHWEB_STAMP_MIN_BURN_VALUE_WEI') ?? '1000000000000',
+      readEnv('FRANK_DM_DEFAULT_STAMP_VALUE_WEI') ?? '10000000000000000',
     ),
     subAccountPoolSize: Number(readEnv('MONAD_SUB_ACCOUNT_POOL_SIZE') ?? '8'),
     walletStorageLocation:
@@ -359,7 +359,7 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
     const preparation = await wallet.pool.prepareStampInventory({
       mainAccountSigner,
       provider: wallet.provider,
-      stampValueWei: config.defaultStampValueWei,
+      stampValueWei: params.stampValue ?? config.defaultStampValueWei,
       gasReserveWei,
       onProgress: params.onPreparationProgress,
     })
@@ -372,12 +372,27 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
       // recipient's own pubkey), not a burn to the fixed dead address -- that's `topics`'
       // `post`/`vote` below, where there's no single recipient to pay.
       recipientPublicKey: recipientProfile.pubKey,
-      stampValueWei: config.defaultStampValueWei,
+      stampValueWei: params.stampValue ?? config.defaultStampValueWei,
     })
 
+    const stampPayments = result.stored?.message?.stampPayments.flatMap(
+      payment => {
+        const tx = Transaction.from(hexlify(payment.rawTx))
+        return tx.hash === null || tx.to === null
+          ? []
+          : [
+              {
+                txHash: tx.hash,
+                destinationAddress: tx.to,
+                valueWei: tx.value,
+              },
+            ]
+      },
+    ) ?? []
     return {
       payloadDigest: result.payloadHashHex,
-      stampValueWei: config.defaultStampValueWei,
+      stampValueWei: params.stampValue ?? config.defaultStampValueWei,
+      stampPayments,
       preparationTxHashes: preparation.fundingTxHashes,
     }
   }
@@ -461,6 +476,18 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
             sum + Transaction.from(hexlify(payment.rawTx)).value,
           BigInt(0),
         )
+        const stampPayments = record.message.stampPayments.flatMap(payment => {
+          const tx = Transaction.from(hexlify(payment.rawTx))
+          return tx.hash === null || tx.to === null
+            ? []
+            : [
+                {
+                  txHash: tx.hash,
+                  destinationAddress: tx.to,
+                  valueWei: tx.value,
+                },
+              ]
+        })
 
         received.push({
           senderAddress: toChainAddress(envelope.from),
@@ -468,6 +495,7 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
           items: deserializeMessageItems(plaintext),
           payloadDigest: payloadHashHex,
           stampValueWei,
+          stampPayments,
           receivedTime: record.timestamp,
         })
       }
@@ -689,6 +717,7 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
   return {
     name: 'monad',
     unit: 'MON',
+    defaultStampValue: config.defaultStampValueWei,
 
     toDisplayAmount(raw: bigint): string {
       return formatEther(raw)

@@ -95,7 +95,7 @@ import ChatInput from '../components/chat/ChatInput.vue'
 import ChatMessageReply from '../components/chat/messages/ChatMessageReply.vue'
 
 import { errorNotify, insufficientStampNotify } from '../utils/notifications'
-import { defaultAcceptancePrice, stampLowerLimit } from '../utils/constants'
+import { defaultAcceptancePrice, defaultStampAmount } from '../utils/constants'
 import { useMonadWallet } from '../utils/clients'
 import { MonadStampRecoveredAttemptError } from '@frank/wallet/monad-stamp-client'
 import {
@@ -295,10 +295,10 @@ export default defineComponent({
         this.confirmRecoveredDraft(message)
         return
       }
-      const stampAmount = this.getStampAmount(this.address)
+      const stampValue = activeChain.fromDisplayAmount(this.stampAmount)
       const acceptancePrice =
         this.getAcceptancePrice(this.address) ?? defaultAcceptancePrice
-      if (stampAmount < acceptancePrice) {
+      if (stampValue < BigInt(acceptancePrice)) {
         insufficientStampNotify()
       }
       if (!message) {
@@ -317,6 +317,7 @@ export default defineComponent({
           wallet: useMonadWallet(),
           address: this.address,
           items: [{ type: 'text', text: message }],
+          stampValue,
           onPreparationProgress: (
             progress: DirectMessagePreparationProgress,
           ) => {
@@ -388,14 +389,32 @@ export default defineComponent({
     },
     stampAmount: {
       set(stampAmount: string | undefined) {
-        const stampAmountNumber = Math.max(stampLowerLimit, Number(stampAmount))
+        let rawAmount: bigint
+        try {
+          rawAmount = activeChain.fromDisplayAmount(stampAmount ?? '')
+        } catch {
+          return
+        }
+        rawAmount =
+          rawAmount < activeChain.defaultStampValue
+            ? activeChain.defaultStampValue
+            : rawAmount
         this.setStampAmount({
           address: this.address,
-          stampAmount: stampAmountNumber * 1_000_000,
+          stampAmount: Number(rawAmount),
         })
       },
       get() {
-        return Number(this.getStampAmount(this.address) / 1_000_000)
+        const stored = this.getStampAmount(this.address)
+        const storedRaw = BigInt(stored)
+        // Values persisted by the old Lotus-denominated control (and the earlier Monad preview)
+        // are not meaningful wei defaults. Upgrade them in-place at display/send time.
+        const raw =
+          stored === defaultStampAmount ||
+          storedRaw < activeChain.defaultStampValue
+            ? activeChain.defaultStampValue
+            : storedRaw
+        return activeChain.toDisplayAmount(raw)
       },
     },
   },

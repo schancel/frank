@@ -61,7 +61,8 @@
  * Ticket #77's auto-greet/auto-fund behavior (see point 5 above) is configured via:
  *   QWEN_BOT_MAX_GREETINGS      -- max new profile registrations to greet+fund per run (default 5)
  *   QWEN_BOT_GREETING_MESSAGE   -- the greeting DM's text (default: a short welcome message)
- *   QWEN_BOT_FUND_VALUE_WEI     -- wei sent to each newly-greeted address (default 0.001 MON)
+ *   QWEN_BOT_STAMP_VALUE_WEI    -- wei paid as Qwen's DM stamp (default 0.01 MON)
+ *   QWEN_BOT_FUND_VALUE_WEI     -- wei sent to each newly-greeted address (default 0.05 MON)
  */
 import { writeFileSync } from 'fs'
 import { resolve } from 'path'
@@ -131,7 +132,19 @@ async function main() {
   const networkTag = requiredEnv('FRANK_NETWORK_TAG')
   // Ticket #57: no MONAD_STAMP_BURN_ADDRESS here -- a reply's stamp pays whoever it's replying
   // to (see the submitStampedMessage call below), not a fixed address.
-  const stampValueWei = BigInt(requiredEnv('CASHWEB_STAMP_MIN_BURN_VALUE_WEI'))
+  const minimumStampValueWei = BigInt(
+    requiredEnv('CASHWEB_STAMP_MIN_BURN_VALUE_WEI'),
+  )
+  const stampValueWei = BigInt(
+    process.env.QWEN_BOT_STAMP_VALUE_WEI ??
+      process.env.FRANK_DM_DEFAULT_STAMP_VALUE_WEI ??
+      '10000000000000000',
+  )
+  if (stampValueWei < minimumStampValueWei) {
+    throw new Error(
+      `Qwen stamp default ${stampValueWei} is below the relay minimum ${minimumStampValueWei}`,
+    )
+  }
   const qwenApiKey = requiredEnv('QWEN_API_KEY')
   const qwenEndpoint = requiredEnv('QWEN_OPENAI_COMPATIBLE_ENDPOINT')
   const qwenModel = process.env.QWEN_MODEL ?? 'qwen3.8-max'
@@ -166,12 +179,12 @@ async function main() {
     process.env.QWEN_BOT_GREETING_MESSAGE ??
     "Welcome to Frank! I'm a bot -- here's a little MON to help you get started sending your " +
       'first stamped message.'
-  // Default: 0.001 MON -- a small, symbolic "welcome" amount, not full burn-cost coverage (compare
-  // `CASHWEB_STAMP_MIN_BURN_VALUE_WEI`, this bot's own per-message stamp value). Deliberately
-  // modest given this codebase's documented history of the shared testnet funding wallet running
-  // low (see `qwen-bot-common.ts`'s header, "Gas budget").
+  // Default: 0.05 MON. The UI's preferred two-payment send needs enough visible-wallet balance
+  // for both right-sized payment accounts and their funding/payment gas. The old 0.001 MON was
+  // below even one live testnet gas quote and surfaced as ethers' misleading "missing revert
+  // data" during estimation.
   const fundValueWei = BigInt(
-    process.env.QWEN_BOT_FUND_VALUE_WEI ?? '1000000000000000',
+    process.env.QWEN_BOT_FUND_VALUE_WEI ?? '50000000000000000',
   )
 
   console.log('== Ticket #9: Qwen 3.8 Max bot over Frank (Monad testnet) ==')

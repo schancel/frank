@@ -24,7 +24,7 @@
           icon="menu"
         />
         <q-avatar rounded :style="contactColorStyle">
-          <img :src="contactProfile.avatar" />
+          <img :src="profileAvatar(contactProfile?.avatar, address)" />
         </q-avatar>
         <q-toolbar-title class="h6">{{ contactProfile.name }}</q-toolbar-title>
         <q-space />
@@ -50,6 +50,7 @@ import RightDrawer from '../components/panels/ChatRightDrawer.vue'
 import SendFileDialog from '../components/dialogs/SendFileDialog.vue'
 import { useContactStore } from 'src/stores/contacts'
 import { pubKeyToColor } from 'src/utils/formatting'
+import { profileAvatar } from 'src/utils/avatar'
 
 export default defineComponent({
   emits: ['toggleMyDrawerOpen'],
@@ -62,6 +63,7 @@ export default defineComponent({
 
     return {
       getContact: contactStore.getContact,
+      profileAvatar,
     }
   },
   data() {

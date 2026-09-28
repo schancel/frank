@@ -25,7 +25,7 @@
     <q-item v-ripple v-else-if="contact" v-close-popup>
       <q-item-section avatar @click="contactClick(address, contact)">
         <q-avatar rounded size="55px" :style="contactColorStyle">
-          <img :src="contact.profile.avatar" />
+          <img :src="profileAvatar(contact.profile.avatar, address)" />
         </q-avatar>
       </q-item-section>
       <q-item-section @click="contactClick(address, contact)">
@@ -53,6 +53,7 @@ import { useContactStore } from 'src/stores/contacts'
 import { defineComponent } from 'vue'
 import { PublicKey } from 'bitcore-lib-xpi'
 import { pubKeyToColor } from 'src/utils/formatting'
+import { profileAvatar } from 'src/utils/avatar'
 
 export default defineComponent({
   props: {
@@ -74,6 +75,7 @@ export default defineComponent({
     const contactStore = useContactStore()
     return {
       deleteContact: contactStore.deleteContact,
+      profileAvatar,
     }
   },
   computed: {

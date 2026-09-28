@@ -55,6 +55,41 @@
       <q-btn
         dense
         flat
+        round
+        icon="local_post_office"
+        aria-label="Stamp payment"
+      >
+        <q-tooltip>{{ stampLabel }}</q-tooltip>
+        <q-menu anchor="top middle" self="bottom middle">
+          <div class="q-pa-md" style="min-width: 280px">
+            <q-input
+              v-model="innerStampAmount"
+              dense
+              autofocus
+              type="number"
+              :min="minimumStampAmount"
+              :suffix="chainUnit"
+              label="Stamp payment"
+            />
+            <q-slider
+              v-model="stampMultiplier"
+              class="q-mt-md"
+              :min="1"
+              :max="100"
+              :step="1"
+              label
+              label-always
+              :label-value="`${stampMultiplier}× default`"
+            />
+            <div class="text-caption text-grey-7">
+              Quick selection from 1× to 100× the default stamp
+            </div>
+          </div>
+        </q-menu>
+      </q-btn>
+      <q-btn
+        dense
+        flat
         icon="send"
         class="q-btn"
         @mousedown.prevent="sendMessage"
@@ -66,8 +101,8 @@
 <script lang="ts">
 import { defineComponent } from 'vue'
 import emoji from 'node-emoji'
-import { defaultStampAmount } from '../../utils/constants'
 import { processInput } from '../../utils/chat'
+import { activeChain } from '@frank/wallet/chain'
 
 export default defineComponent({
   components: {
@@ -79,8 +114,8 @@ export default defineComponent({
       default: () => '',
     },
     stampAmount: {
-      type: Number,
-      default: () => defaultStampAmount,
+      type: String,
+      default: () => activeChain.toDisplayAmount(activeChain.defaultStampValue),
     },
   },
   emits: [
@@ -125,6 +160,26 @@ export default defineComponent({
     },
   },
   computed: {
+    chainUnit() {
+      return activeChain.unit
+    },
+    stampLabel() {
+      return `${this.stampAmount} ${activeChain.unit}`
+    },
+    minimumStampAmount() {
+      return activeChain.toDisplayAmount(activeChain.defaultStampValue)
+    },
+    stampMultiplier: {
+      get() {
+        const selected = activeChain.fromDisplayAmount(this.stampAmount)
+        const multiple = selected / activeChain.defaultStampValue
+        return Math.max(1, Math.min(100, Number(multiple)))
+      },
+      set(value: number) {
+        const raw = activeChain.defaultStampValue * BigInt(value)
+        this.$emit('update:stampAmount', activeChain.toDisplayAmount(raw))
+      },
+    },
     innerMessage: {
       get() {
         return this.message
@@ -141,7 +196,7 @@ export default defineComponent({
         return this.stampAmount
       },
       set(val: string) {
-        this.$emit('update:stampAmount', Number(val))
+        this.$emit('update:stampAmount', val)
       },
     },
   },

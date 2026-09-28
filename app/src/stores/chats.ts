@@ -37,6 +37,11 @@ export type ChatMessage = {
   /** See this file's header decision note: additive Monad-side value field, alongside
    * `outpoints` rather than replacing it (ticket #42). */
   stampValueWei?: bigint
+  stampPayments?: Array<{
+    txHash: string
+    destinationAddress: string
+    valueWei: bigint
+  }>
   senderAddress: string
   payloadDigest: string
 }
@@ -407,6 +412,7 @@ export const useChatStore = defineStore('chats', {
       items,
       outpoints = [],
       stampValueWei,
+      stampPayments,
       status = 'pending',
       previousHash = null,
     }: {
@@ -418,6 +424,11 @@ export const useChatStore = defineStore('chats', {
       /** See this file's header decision note (ticket #42) -- additive Monad-side value,
        * alongside `outpoints`. `undefined` for Lotus-origin sends. */
       stampValueWei?: bigint
+      stampPayments?: Array<{
+        txHash: string
+        destinationAddress: string
+        valueWei: bigint
+      }>
       status: string
       previousHash: string | null
     }) {
@@ -431,6 +442,7 @@ export const useChatStore = defineStore('chats', {
         receivedTime: timestamp,
         outpoints,
         stampValueWei,
+        stampPayments,
         senderAddress,
         messageHash: payloadDigest,
       }
@@ -502,11 +514,13 @@ export const useChatStore = defineStore('chats', {
       wallet,
       address,
       items,
+      stampValue,
       onPreparationProgress,
     }: {
       wallet: WalletHandle
       address: string
       items: MessageItem[]
+      stampValue?: bigint
       onPreparationProgress?: (
         progress: DirectMessagePreparationProgress,
       ) => void
@@ -530,6 +544,7 @@ export const useChatStore = defineStore('chats', {
         wallet,
         recipient,
         items,
+        ...(stampValue === undefined ? {} : { stampValue }),
         ...(onPreparationProgress === undefined
           ? {}
           : { onPreparationProgress }),
@@ -542,6 +557,7 @@ export const useChatStore = defineStore('chats', {
         items,
         outpoints: [],
         stampValueWei: result.stampValueWei,
+        stampPayments: result.stampPayments,
         status: 'confirmed',
         previousHash: null,
       })

@@ -2,7 +2,7 @@
   <q-item :active="isActive" active-class="active-chat-list-item" clickable>
     <q-item-section avatar v-if="$status.setup" side>
       <q-avatar rounded>
-        <img :src="contact.avatar" />
+        <img :src="profileAvatar(contact.avatar, chatAddress)" />
         <q-badge
           v-show="compact"
           v-if="!!numUnread"
@@ -38,6 +38,7 @@
 import { useChatStore } from 'src/stores/chats'
 import { useContactStore } from 'src/stores/contacts'
 import { defineComponent } from 'vue'
+import { profileAvatar } from 'src/utils/avatar'
 
 export default defineComponent({
   setup() {
@@ -47,6 +48,7 @@ export default defineComponent({
     return {
       getContactProfile: contacts.getContactProfile,
       getLatestMessage: chats.getLatestMessage,
+      profileAvatar,
     }
   },
   computed: {

@@ -20,7 +20,8 @@
       icon="more_vert"
       class="q-btn"
       padding="xs"
-      @click="menuClicked"
+      aria-label="Show message actions"
+      @click.stop="menuClicked"
       v-show="!showMenu && !mouseOver"
     />
     <template v-for="button in buttonNames" :key="button">
@@ -30,7 +31,9 @@
         flat
         padding="xs"
         class="q-btn"
-        @click="buttonClicked"
+        :color="button === 'delete' ? 'negative' : undefined"
+        :aria-label="`${button} message`"
+        @click.stop="buttonClicked(button)"
         v-show="mouseOver || showMenu"
       />
     </template>
@@ -41,7 +44,9 @@
 import { defineComponent, ref } from 'vue'
 import { useQuasar } from 'quasar'
 
-const ButtonNames = ['reply', 'forward', 'info', 'delete'] as const
+// The overflow trigger occupies the right edge of the row. Keep Delete at the opposite edge so
+// expanding the row can never replace the dots with a destructive target under the pointer.
+const ButtonNames = ['delete', 'reply', 'forward', 'info'] as const
 const ButtonEvents = ButtonNames.map(
   buttonName => `${buttonName}Click` as const,
 )
@@ -71,13 +76,9 @@ export default defineComponent({
       menuClicked() {
         showMenu.value = !showMenu.value
       },
-      buttonClicked(e: Event) {
-        const button = e.target as HTMLElement
-        if (button?.innerText !== 'close') {
-          const buttonType = button?.innerText as ButtonType
-          const clickEvent = `${buttonType}Click` as const
-          emit(clickEvent)
-        }
+      buttonClicked(button: ButtonType) {
+        const clickEvent = `${button}Click` as const
+        emit(clickEvent)
         // Only flip boolean state if using 3-dot menu button on mobile
         if ($q.platform.is.mobile) {
           showMenu.value = !showMenu.value

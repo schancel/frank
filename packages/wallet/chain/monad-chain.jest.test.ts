@@ -365,16 +365,19 @@ describe('createMonadChain: directMessages.send', () => {
 
     const items: MessageItem[] = [{ type: 'text', text: 'hi bob' } as TextItem]
     const onPreparationProgress = jest.fn()
+    const requestedStampValue = TEST_CONFIG.defaultStampValueWei * 2n
     const result = await chain.directMessages.send({
       wallet,
       recipient: bob.address,
       items,
+      stampValue: requestedStampValue,
       onPreparationProgress,
     })
 
     expect(result).toEqual({
       payloadDigest: 'deadbeef',
-      stampValueWei: TEST_CONFIG.defaultStampValueWei,
+      stampValueWei: requestedStampValue,
+      stampPayments: [],
       preparationTxHashes: [],
     })
     expect(mockedFetchMonadProfile).toHaveBeenCalledWith({
@@ -384,7 +387,7 @@ describe('createMonadChain: directMessages.send', () => {
     expect(MonadStampClient).toHaveBeenCalledWith(wallet)
     expect(wallet.pool.prepareStampInventory).toHaveBeenCalledWith(
       expect.objectContaining({
-        stampValueWei: TEST_CONFIG.defaultStampValueWei,
+        stampValueWei: requestedStampValue,
         onProgress: onPreparationProgress,
       }),
     )
@@ -395,7 +398,7 @@ describe('createMonadChain: directMessages.send', () => {
     expect(call.recipientPublicKey).toEqual(
       new Uint8Array(bob.compressedPubKey),
     )
-    expect(call.stampValueWei).toBe(TEST_CONFIG.defaultStampValueWei)
+    expect(call.stampValueWei).toBe(requestedStampValue)
     // The envelope is real, encrypted JSON -- not the plaintext items themselves.
     const envelopeJson = JSON.parse(
       new TextDecoder().decode(call.encryptedPayload),

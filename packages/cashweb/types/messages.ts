@@ -48,6 +48,12 @@ export interface Message {
    * additively alongside `outpoints` rather than replace it. Always `undefined` for Lotus-origin
    * messages (`outpoints` is authoritative for those). */
   stampValueWei?: bigint
+  /** Transaction details backing a non-UTXO chain's stamp payment. */
+  stampPayments?: Array<{
+    txHash: string
+    destinationAddress: string
+    valueWei: bigint
+  }>
 }
 
 export interface MessageWrapper {

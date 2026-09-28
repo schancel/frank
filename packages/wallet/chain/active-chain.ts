@@ -104,6 +104,7 @@ export interface ProfileInfo {
 export interface DirectMessageSendResult {
   payloadDigest: string
   stampValueWei: bigint
+  stampPayments: StampPaymentInfo[]
   /** Main-account transactions used to prepare sender inventory for this Send, if any. */
   preparationTxHashes: string[]
 }
@@ -130,8 +131,15 @@ export interface DirectMessageReceived {
   /** Wei actually paid across the message's stamp transactions (read back from the signed raw
    * transactions, not merely echoing a configured constant -- see `./monad-chain.ts`). */
   stampValueWei: bigint
+  stampPayments: StampPaymentInfo[]
   /** Milliseconds since the Unix epoch, as recorded by the relay. */
   receivedTime: number
+}
+
+export interface StampPaymentInfo {
+  txHash: string
+  destinationAddress: string
+  valueWei: bigint
 }
 
 export interface RecoveredStampPaymentInfo {
@@ -159,6 +167,8 @@ export interface DirectMessageClient {
     wallet: WalletHandle
     recipient: ChainAddress
     items: MessageItem[]
+    /** Raw native-chain value attached as the mandatory stamp payment. */
+    stampValue?: bigint
     onPreparationProgress?: (progress: DirectMessagePreparationProgress) => void
   }): Promise<DirectMessageSendResult>
   fetchSince(params: {
@@ -224,6 +234,8 @@ export interface ActiveChain {
   readonly name: string
   /** Display denomination, e.g. `'MON'`. */
   readonly unit: string
+  /** Default raw native-chain value for a direct-message stamp payment. */
+  readonly defaultStampValue: bigint
   toDisplayAmount(raw: bigint): string
   fromDisplayAmount(display: string): bigint
   formatAddress(addr: ChainAddress): string

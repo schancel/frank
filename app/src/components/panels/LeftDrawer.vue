@@ -66,7 +66,7 @@
             :key="name"
             clickable
             :active="name === selectedForumTopic"
-            active-class="text-primary"
+            active-class="active-chat-list-item"
             @click="browseForumTopic(name)"
           >
             <q-item-section>{{ name }}</q-item-section>
@@ -264,3 +264,16 @@ export default defineComponent({
   },
 })
 </script>
+
+<style lang="scss" scoped>
+// Matches ChatList.vue/ChatListLink.vue/TopicListLink.vue/TopicList.vue's own identical rule --
+// Vue's scoped CSS doesn't cross component boundaries, so each file rendering a
+// `q-item active-class="active-chat-list-item"` needs its own copy for the class to actually
+// take effect within it. Without this, the previous version fell back to a plain `text-primary`
+// (text color only), which was too subtle to register as "this is selected" against the
+// established, much more visible background+color pattern used everywhere else in the app.
+.active-chat-list-item {
+  background: var(--q-color-bg-active);
+  color: #f0409b;
+}
+</style>

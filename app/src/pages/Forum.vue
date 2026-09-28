@@ -50,14 +50,32 @@ export default defineComponent({
       duration,
       hasFetchedOnce,
     } = storeToRefs(forumStore)
+    const showMessage = (topic: string) => {
+      return topic.startsWith(selectedTopic.value)
+    }
     const sortedPosts = computed(() => {
       if (!messages) {
         return
       }
       const from = Date.now() - duration.value
       const filteredMessages = messages.value.filter(message => {
+        // Real bug found live: this never filtered by `selectedTopic` at all -- only the
+        // template's `v-show="showMessage(...)"` did, per-rendered-item. That meant
+        // `sortedPosts.length > 0` (this computed's return) stayed true as long as *any* topic
+        // had posts, even when every single one was hidden for the currently selected topic --
+        // so the template's `v-if="sortedPosts?.length > 0"` branch won, and the `v-else`/
+        // `v-else-if` branches that show "No posts yet." or the loading spinner never got a
+        // chance to run. Net effect: switching to a topic with zero posts (but the relay having
+        // *any* posts at all, in any topic) rendered a fully blank page -- not even an empty
+        // state, since every v-for'd item existed in the DOM with `v-show="false"`. Filtering
+        // here too, matching `showMessage`, makes `.length` (and therefore the empty-state
+        // branching) reflect what's actually visible.
+        //
         // FIXME: Something is converting the timestamp to a string.
-        return new Date(message.timestamp).valueOf() >= from
+        return (
+          new Date(message.timestamp).valueOf() >= from &&
+          showMessage(message.topic)
+        )
       })
       console.log(filteredMessages)
       // Ticket #61: this used `* 1_000_000` (Lotus sats-per-XPI) against `msg.satoshis`, which for
@@ -75,9 +93,6 @@ export default defineComponent({
         msg => msg.satoshis >= voteThresholdRaw,
       )
     })
-    const showMessage = (topic: string) => {
-      return topic.startsWith(selectedTopic.value)
-    }
 
     return {
       duration,

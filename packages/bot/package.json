@@ -1,7 +1,7 @@
 {
   "name": "@frank/bot",
   "version": "0.0.1",
-  "description": "Headless Qwen-backed Frank bot (ticket #9): a cryptographic on-chain identity that burns real MON to speak, over @frank/wallet + @frank/cashweb -- no Vue/Pinia, no app/ dependency. See README.md for the full runbook.",
+  "description": "Headless Qwen-backed Frank bot (ticket #9): a cryptographic on-chain identity that pays real MON stamp payments to speak, over @frank/wallet + @frank/cashweb -- no Vue/Pinia, no app/ dependency. See README.md for the full runbook.",
   "license": "MIT",
   "private": true,
   "scripts": {

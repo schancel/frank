@@ -134,6 +134,10 @@ import {
   InMemoryStampPaymentJournal,
   LevelStampPaymentJournal,
 } from '../storage/stamp-payment-journal'
+import {
+  InMemoryStampAttemptJournal,
+  LevelStampAttemptJournal,
+} from '../storage/stamp-attempt-journal'
 
 export interface MonadChainConfig {
   /** Monad JSON-RPC HTTP endpoint, e.g. `MONAD_TESTNET_HTTP_RPC_URL`. */
@@ -560,11 +564,18 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
           storageLocation === undefined
             ? new InMemoryStampPaymentJournal()
             : new LevelStampPaymentJournal(storageLocation)
+        const stampAttemptJournal =
+          storageLocation === undefined
+            ? new InMemoryStampAttemptJournal()
+            : new LevelStampAttemptJournal(storageLocation)
         await Promise.all([
           subAccountStore?.Open(),
           changeStore?.Open(),
           stampPaymentJournal instanceof LevelStampPaymentJournal
             ? stampPaymentJournal.Open()
+            : undefined,
+          stampAttemptJournal instanceof LevelStampAttemptJournal
+            ? stampAttemptJournal.Open()
             : undefined,
         ])
 
@@ -583,7 +594,7 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
         const leaseManager = new SubAccountLeaseManager(pool)
         const provider = new JsonRpcProvider(config.rpcUrl)
         const httpClient = new MonadHttpClient({ rpcUrl: config.rpcUrl })
-        return {
+        const wallet: MonadChainWalletHandle = {
           identity,
           pool,
           leaseManager,
@@ -591,8 +602,11 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
           httpClient,
           changePool,
           stampPaymentJournal,
+          stampAttemptJournal,
           relayBaseUrl: config.relayBaseUrl,
         }
+        await new MonadStampClient(wallet).resumePendingAttempts()
+        return wallet
       })()
       walletsByIdentity.set(identityKey, pending)
       try {

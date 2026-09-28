@@ -16,6 +16,7 @@ import { SubAccountLeaseManager } from './monad-account-lease'
 import { MonadTxSubmitter } from './monad-account-tx'
 import { MonadChangePool } from './monad-change-pool'
 import { StampPaymentJournal } from './storage/stamp-payment-journal'
+import { StampAttemptJournal } from './storage/stamp-attempt-journal'
 
 export interface MonadWalletHandle {
   pool: MonadSubAccountPool
@@ -28,6 +29,8 @@ export interface MonadWalletHandle {
   changePool?: MonadChangePool
   /** Durable public journal of recipient-owned one-time stamp outputs and their sweep state. */
   stampPaymentJournal?: StampPaymentJournal
+  /** Durable exact raw payment sets awaiting a definitive relay success. */
+  stampAttemptJournal?: StampAttemptJournal
   /** Base URL of the `cashweb-registry` relay, e.g. `https://relay.example.com` -- each client
    * trims its own trailing slash, so this may or may not have one. */
   relayBaseUrl: string

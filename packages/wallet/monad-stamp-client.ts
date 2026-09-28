@@ -523,6 +523,7 @@ export class MonadStampClient {
   private readonly provider: Provider
   private readonly httpClient: MonadTxSubmitter
   private readonly changePool: MonadChangePool | undefined
+  private readonly attemptJournal: MonadWalletHandle['stampAttemptJournal']
   /** Base URL of the `cashweb-registry` relay, e.g. `https://relay.example.com` — no trailing
    * slash. `/message/monad` (`PUT`) and `/message/monad/:payload_hash` (`GET`) are appended to it. */
   private readonly relayBaseUrl: string
@@ -533,6 +534,7 @@ export class MonadStampClient {
     this.provider = params.provider
     this.httpClient = params.httpClient
     this.changePool = params.changePool
+    this.attemptJournal = params.stampAttemptJournal
     this.relayBaseUrl = params.relayBaseUrl.replace(/\/+$/, '')
   }
 
@@ -754,6 +756,11 @@ export class MonadStampClient {
       encryptedPayload: params.encryptedPayload,
       payloadHash,
     }
+    await this.attemptJournal?.put({
+      payloadHashHex,
+      messageBytes: Array.from(encodeMonadStampedMessage(message)),
+      leaseIndices: handles.map(handle => handle.index),
+    })
     const releaseAll = async (
       outcome: 'confirmed' | 'failed' | 'stuck',
     ): Promise<Array<ChangeSweepOutcome | undefined>> => {
@@ -784,6 +791,7 @@ export class MonadStampClient {
     try {
       const stored = await this.putStampedMessage(message)
       const changeSweeps = await releaseAll('confirmed')
+      await this.attemptJournal?.delete(payloadHashHex)
       return {
         stored,
         payloadHashHex,
@@ -810,6 +818,7 @@ export class MonadStampClient {
       )
       if (stored !== undefined) {
         const changeSweeps = await releaseAll('confirmed')
+        await this.attemptJournal?.delete(payloadHashHex)
         return {
           stored,
           payloadHashHex,
@@ -826,5 +835,31 @@ export class MonadStampClient {
         payloadHashHex,
       )
     }
+  }
+
+  /** Replay crash-surviving attempts byte-for-byte. Exact-set relay binding makes this safe when
+   * only a prefix of the transactions landed before the previous process stopped. */
+  async resumePendingAttempts(): Promise<string[]> {
+    if (this.attemptJournal === undefined) return []
+    const completed: string[] = []
+    for (const attempt of this.attemptJournal.getAll()) {
+      try {
+        const message = decodeMonadStampedMessage(
+          Uint8Array.from(attempt.messageBytes),
+        )
+        await this.putStampedMessage(message)
+        for (const index of attempt.leaseIndices) {
+          const record = this.pool.getRecord(index)
+          if (record !== undefined && record.status !== 'spent') {
+            this.pool.setStatus(index, 'spent')
+          }
+        }
+        await this.attemptJournal.delete(attempt.payloadHashHex)
+        completed.push(attempt.payloadHashHex)
+      } catch {
+        // Retain the raw set and keep its accounts unavailable for a later retry.
+      }
+    }
+    return completed
   }
 }

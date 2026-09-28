@@ -320,7 +320,7 @@ export class RelayClient extends ReadOnlyRelayClient {
         digest,
       },
     })
-    this.messageStore.deleteMessage(digest)
+    await this.messageStore.deleteMessage(digest)
   }
 
   async putProfile(address: string, metadata: SignedPayload) {
@@ -1014,7 +1014,7 @@ export class RelayClient extends ReadOnlyRelayClient {
           if (!message) {
             return
           }
-          this.messageStore.saveMessage(message)
+          await this.messageStore.saveMessage(message)
           return message
         },
         20,

@@ -7,7 +7,7 @@ async function createStore(): Promise<LevelMessageStore> {
   //   return (window as any).messageStore
   // }
   const store = new LevelMessageStore('MessageStore')
-  store.Open()
+  await store.Open()
 
   // Path doesn't matter. We're using indexdb
   return store

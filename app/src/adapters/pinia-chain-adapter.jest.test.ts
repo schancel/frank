@@ -19,6 +19,8 @@ import {
   toReceivedMessageWrapper,
 } from './pinia-chain-adapter'
 import { useChatStore } from '../stores/chats'
+import { useContactStore } from '../stores/contacts'
+import { store as messageStorePromise } from './level-message-store'
 import { activeChain } from '@frank/wallet/chain'
 import type { DirectMessageReceived, WalletHandle } from '@frank/wallet/chain'
 
@@ -28,6 +30,9 @@ jest.mock('../utils/notifications', () => ({
 // See `../stores/chats.jest.test.ts`'s header for why this needs mocking too.
 jest.mock('./level-message-store', () => ({
   store: Promise.resolve({
+    saveMessage: jest.fn(async () => undefined),
+    deleteMessage: jest.fn(async () => undefined),
+    mostRecentMessageTime: jest.fn(async () => 0),
     getIterator: async function* () {
       /* no persisted Lotus-era messages in tests */
     },
@@ -40,6 +45,9 @@ const RECIPIENT_ADDRESS = '0x5d5d5d5D5D5D5d5d5d5d5D5d5D5D5d5D5D5d5d5D'
 const PUB_KEY_HEX =
   '0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798'
 const PUB_KEY_BYTES = Uint8Array.from(Buffer.from(PUB_KEY_HEX, 'hex'))
+
+type MockMessageStore = { saveMessage: jest.Mock }
+let mockMessageStore: MockMessageStore
 
 function makeRecord(
   overrides: Partial<DirectMessageReceived> = {},
@@ -56,9 +64,18 @@ function makeRecord(
 }
 
 describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     setActivePinia(createPinia())
     jest.restoreAllMocks()
+    mockMessageStore =
+      (await messageStorePromise) as unknown as MockMessageStore
+    mockMessageStore.saveMessage.mockClear()
+    useContactStore().addContact({
+      address: SENDER_ADDRESS,
+      contact: {
+        profile: { name: 'Sender', bio: '', avatar: '', pubKey: null },
+      },
+    })
   })
 
   describe('toReceivedMessageWrapper', () => {
@@ -167,6 +184,75 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
       expect(fetchSinceSpy.mock.calls.length).toBeGreaterThanOrEqual(2)
 
       polling.stop()
+    })
+
+    it('does not advance the cursor when durable receipt fails', async () => {
+      const chats = useChatStore()
+      const receiveMessagesSpy = jest
+        .spyOn(chats, 'receiveMessages')
+        .mockRejectedValueOnce(new Error('indexeddb write failed'))
+        .mockResolvedValue(undefined)
+      const consoleErrorSpy = jest
+        .spyOn(console, 'error')
+        .mockImplementation(() => undefined)
+      jest.spyOn(activeChain, 'fetchProfile').mockResolvedValue({
+        address: { raw: SENDER_ADDRESS },
+        pubKey: PUB_KEY_BYTES,
+      })
+      const fetchSinceSpy = jest
+        .spyOn(activeChain.directMessages, 'fetchSince')
+        .mockResolvedValueOnce([makeRecord()])
+        .mockResolvedValue([])
+
+      const polling = startDirectMessagePolling({ wallet, intervalMs: 20 })
+      try {
+        await wait(35)
+        expect(consoleErrorSpy).toHaveBeenCalled()
+        expect(receiveMessagesSpy).toHaveBeenCalledTimes(1)
+        expect(fetchSinceSpy).toHaveBeenNthCalledWith(2, {
+          wallet,
+          sinceMs: 0,
+        })
+      } finally {
+        polling.stop()
+      }
+    })
+
+    it('persists later messages without advancing past an unresolved sender profile', async () => {
+      const chats = useChatStore()
+      const receiveMessagesSpy = jest.spyOn(chats, 'receiveMessages')
+      const consoleErrorSpy = jest
+        .spyOn(console, 'error')
+        .mockImplementation(() => undefined)
+      jest
+        .spyOn(activeChain, 'fetchProfile')
+        .mockResolvedValueOnce(undefined)
+        .mockResolvedValue({
+          address: { raw: SENDER_ADDRESS },
+          pubKey: PUB_KEY_BYTES,
+        })
+      const fetchSinceSpy = jest
+        .spyOn(activeChain.directMessages, 'fetchSince')
+        .mockResolvedValueOnce([
+          makeRecord({ payloadDigest: 'unresolved', receivedTime: 100 }),
+          makeRecord({ payloadDigest: 'later', receivedTime: 200 }),
+        ])
+        .mockResolvedValue([])
+
+      const polling = startDirectMessagePolling({ wallet, intervalMs: 20 })
+      try {
+        await wait(35)
+        expect(consoleErrorSpy).toHaveBeenCalled()
+        expect(receiveMessagesSpy).toHaveBeenCalledWith([
+          expect.objectContaining({ index: 'later' }),
+        ])
+        expect(fetchSinceSpy).toHaveBeenNthCalledWith(2, {
+          wallet,
+          sinceMs: 0,
+        })
+      } finally {
+        polling.stop()
+      }
     })
 
     it('defaults to a 5-10s-range poll interval', () => {

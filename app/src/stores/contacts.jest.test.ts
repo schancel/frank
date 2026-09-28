@@ -12,6 +12,9 @@ import { createPinia, setActivePinia } from 'pinia'
 
 jest.mock('../adapters/level-message-store', () => ({
   store: Promise.resolve({
+    saveMessage: jest.fn(async () => undefined),
+    deleteMessage: jest.fn(async () => undefined),
+    mostRecentMessageTime: jest.fn(async () => 0),
     getIterator: async function* () {
       /* no persisted Lotus-era messages in tests */
     },

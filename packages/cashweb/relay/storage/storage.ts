@@ -23,8 +23,11 @@ export class MessageReturnResult
 
 export interface MessageStore {
   getMessage(payloadDigest: string): Promise<MessageWrapper | undefined>
-  saveMessage(message: MessageWrapper): void
-  deleteMessage(payloadDigest: string): void
+  saveMessage(
+    message: MessageWrapper,
+    options?: { advanceCursor?: boolean },
+  ): Promise<void>
+  deleteMessage(payloadDigest: string): Promise<void>
   mostRecentMessageTime(newLastServerTime?: number): Promise<number>
   getIterator(): Promise<AsyncIterableIterator<MessageWrapper>>
   clear(): Promise<void>

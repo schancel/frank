@@ -108,10 +108,18 @@ async function getWalletClient() {
 export default boot(async ({ app }) => {
   const wallet = await getWalletClient()
   const indexerObservables = reactive({ connected: false })
-  createAndBindNewIndexerClient({
-    observables: indexerObservables,
-    wallet,
-  })
+  // The hackathon build is Monad-only. Keep constructing the legacy wallet because existing Vue
+  // components still expect `$wallet`, but do not open a dead Lotus Chronik websocket unless the
+  // operator explicitly restores the legacy setup gate. This also prevents a fresh Monad signup
+  // screen from continuously logging Chronik connection errors.
+  const skipLegacySetupGate =
+    import.meta.env.QCLI_MONAD_SKIP_LEGACY_SETUP_GATE !== 'false'
+  if (!skipLegacySetupGate) {
+    createAndBindNewIndexerClient({
+      observables: indexerObservables,
+      wallet,
+    })
+  }
   const walletStore = useWalletStore()
   await walletStore.restored
   const profileStore = useProfileStore()
@@ -134,8 +142,6 @@ export default boot(async ({ app }) => {
   // existing is exactly the same "is this wallet set up" signal router/index.ts's
   // `skipLegacySetupGate` already uses to let a Monad-only user reach `/chat` at all; mirrored here
   // (same env var, same default-on) so the drawer's own gate agrees with the router's.
-  const skipLegacySetupGate =
-    import.meta.env.QCLI_MONAD_SKIP_LEGACY_SETUP_GATE !== 'false'
   status.setup =
     (!!xPrivKey && !!profile.name) ||
     (skipLegacySetupGate && !!walletStore.seedPhrase)

@@ -39,7 +39,7 @@ import { useWalletStore } from 'src/stores/wallet'
 const skipLegacySetupGate =
   import.meta.env.QCLI_MONAD_SKIP_LEGACY_SETUP_GATE !== 'false'
 
-const unprotectedRoutes = ['/', '/setup', '/forum', '/changelog']
+const unprotectedRoutes = ['/setup', '/forum', '/changelog']
 // Was '/forum/new-post' -- routes.ts declares this child route's path with a leading slash
 // (`/new-post`), which Vue Router treats as absolute (top-level), not relative to its `forum`
 // parent. The real route (confirmed against every actual `:to` link in the app -- ForumDrawer.vue,

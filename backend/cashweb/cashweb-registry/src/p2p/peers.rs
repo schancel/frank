@@ -10,9 +10,9 @@ use rand::Rng;
 
 use crate::{
     http::server::{PutMessageRequest, PutMetadataRequest},
-    p2p::{peer::Peer, relay_info::RelayInfo},
+    p2p::{peer::Peer, public_store::PublicFederationStore, relay_info::RelayInfo},
     proto,
-    registry::{Registry, RegistryError},
+    registry::RegistryError,
     store::pubkeyhash::PubKeyHash,
 };
 
@@ -68,8 +68,8 @@ impl Peers {
 /// Params for how and where to download metadata from peers
 #[derive(Debug)]
 pub struct InitialMetadataDownloadParams<'a> {
-    /// Registry to download the params into
-    pub registry: &'a Registry,
+    /// Public-only capability to download records into.
+    pub public_store: PublicFederationStore<'a>,
     /// How many peers will be sampled each round when syncing
     pub num_sampled_peers: usize,
     /// When we stop waiting for a peer to respond
@@ -89,11 +89,16 @@ impl Peers {
         params: &InitialMetadataDownloadParams<'_>,
     ) -> Result<()> {
         // Get the last timestamp and address from the registry
-        let (mut timestamp, mut address) =
-            params.registry.get_latest_metadata()?.unwrap_or_else(|| {
+        let (mut timestamp, mut address) = params
+            .public_store
+            .latest_legacy_directory_entry()?
+            .unwrap_or_else(|| {
                 let zero_pkh_script = Script::p2pkh(&ShaRmd160::new([0; 20]));
-                let zero_pkh =
-                    LotusAddress::new(LOTUS_PREFIX, params.registry.net(), zero_pkh_script);
+                let zero_pkh = LotusAddress::new(
+                    LOTUS_PREFIX,
+                    params.public_store.legacy_network(),
+                    zero_pkh_script,
+                );
                 (0, zero_pkh)
             });
         // Exit already if there's no peers
@@ -232,8 +237,8 @@ impl Peers {
                 is_all_empty = false;
                 let mut peer_state = peer.state.lock().await;
                 match params
-                    .registry
-                    .put_metadata(&address, &signed_metadata.to_proto())
+                    .public_store
+                    .apply_legacy_directory_entry(&address, &signed_metadata)
                     .await
                 {
                     Ok(_result) => peer_state.last_error = None,

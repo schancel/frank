@@ -7,7 +7,7 @@ use bitcoinsuite_error::Result;
 use bitcoinsuite_test_utils::bin_folder;
 use bitcoinsuite_test_utils_blockchain::setup_bitcoind_coins;
 use cashweb_registry::{
-    p2p::{peer::Peer, peers::InitialMetadataDownloadParams},
+    p2p::{peer::Peer, peers::InitialMetadataDownloadParams, public_store::PublicFederationStore},
     proto,
     test_instance::{build_signed_metadata, RegistryTestInstance},
 };
@@ -138,7 +138,7 @@ async fn test_imd() -> Result<()> {
     // TODO: Currently untested are the different failure modes
     let mut rng = rand::rngs::StdRng::from_seed([11; 32]);
     let imd_params = InitialMetadataDownloadParams {
-        registry: &instances[num_instances - 1].registry,
+        public_store: PublicFederationStore::new(&instances[num_instances - 1].registry),
         num_sampled_peers: 2,
         timeout_peer: Duration::from_secs(1),
         num_failed_for_wait: 1,

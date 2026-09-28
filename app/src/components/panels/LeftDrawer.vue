@@ -68,7 +68,7 @@
 </template>
 
 <script lang="ts">
-import { computed, defineComponent, onMounted, ref } from 'vue'
+import { computed, defineComponent, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { storeToRefs } from 'pinia'
 
@@ -100,34 +100,31 @@ export default defineComponent({
       }
     })
 
-    // Drives the left rail's active-tab highlight (`q-tabs v-model="tab"`). A writable computed,
-    // not a plain `data()` ref watched from the Options API side (the previous attempt at this
-    // fix) -- `useRoute()`'s reactive `route` is the Composition API's own, more direct seam onto
-    // routing state, and a computed getter/setter is the standard Vue 3 pattern for a v-model
-    // that needs to be driven by one source (the route, for "forum") but stay freely settable by
-    // the other (a direct "contacts"/"settings" tab click, neither of which owns a route of its
-    // own -- see this file's template for why "contacts" no longer navigates at all).
-    const localTab = ref<'contacts' | 'settings'>('contacts')
-    const tab = computed<string>({
-      get() {
+    // Drives the left rail's active-tab highlight (`q-tabs v-model="tab"`). A plain, freely
+    // settable ref -- NOT a computed getter/setter (an earlier version of this fix tried that,
+    // and broke tab-clicking entirely: a getter re-derives on every *read*, so as long as
+    // route.path still started with /forum -- true for basically the whole time you're using the
+    // app, since / redirects there -- it unconditionally overrode any click to 'settings' or
+    // 'contacts' right back to 'forum' before Quasar could even render the change). What's
+    // actually wanted is a one-time *side effect* on route *change*, not a permanent override on
+    // every read -- that's a `watch`, not a `computed`. `useRoute()`'s reactive `route` is the
+    // Composition API's own, more direct seam onto routing state (vs. the Options API
+    // string-path watcher an earlier attempt used, which didn't reliably fire in at least one
+    // real session).
+    const tab = ref<'contacts' | 'settings' | 'forum'>('contacts')
+    watch(
+      () => route.path,
+      path => {
         // `/new-post` (not `/forum/new-post`) is intentionally a top-level path -- see
         // `router/index.ts`'s own comment on `protectedRoutes` -- but is still a Forum page.
-        if (
-          route.path.startsWith('/forum') ||
-          route.path.startsWith('/new-post')
-        ) {
-          return 'forum'
+        // Only force the highlight *into* 'forum' on navigation -- never overrides a subsequent
+        // direct 'settings'/'contacts' click, since this only runs when `path` itself changes.
+        if (path.startsWith('/forum') || path.startsWith('/new-post')) {
+          tab.value = 'forum'
         }
-        return localTab.value
       },
-      set(value: string) {
-        if (value === 'contacts' || value === 'settings') {
-          localTab.value = value
-        }
-        // Clicking "forum" itself navigates via the template's own `@click`, which updates
-        // `route.path`, which this computed's getter already reacts to -- nothing to store here.
-      },
-    })
+      { immediate: true },
+    )
 
     return {
       tab,

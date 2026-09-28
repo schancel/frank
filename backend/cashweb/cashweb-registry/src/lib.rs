@@ -16,6 +16,7 @@ pub mod monad_http;
 pub mod monad_pop_verify;
 pub mod monad_profile_verify;
 pub mod monad_stamp_relay;
+pub mod monad_stamp_stealth;
 pub mod monad_stamp_verify;
 pub mod monad_topic_relay;
 pub mod monad_topic_verify;

@@ -32,7 +32,8 @@
  *    the relay's expected stamp transaction (not the Lotus private-message
  *    LOKAD ID, and not `ADDRESS_METADATA_LOKAD_ID` — reused for symmetry with the broadcast path per
  *    #27's own reasoning, not because this is conceptually a broadcast message). The version byte is
- *    `monad_stamp_verify::COMMITMENT_VERSION_TAG = 0x01`.
+ *    `monad_stamp_verify::COMMITMENT_VERSION_TAG = 0x02`; version 2 identifies the split,
+ *    child-bound direct-message payment format.
  * 3. Greedily selects one or more distinct, single-use funding accounts, aiming for at least two
  *    transactions when the account distribution permits it. Each transaction pays a distinct
  *    one-time child of the recipient's registered public key; values are not artificially equal.
@@ -146,8 +147,8 @@ import {
  * (the tag name is historical; using it does not make a direct-message payment a burn). */
 const BROADCAST_MESSAGE_LOKAD_ID = new Uint8Array([0x50, 0x4f, 0x4e, 0x44]) // "POND"
 
-/** `cashweb_registry::monad_stamp_verify::COMMITMENT_VERSION_TAG` (that file, line 66: `0x01`). */
-const COMMITMENT_VERSION_TAG = new Uint8Array([0x01])
+/** `cashweb_registry::monad_stamp_verify::COMMITMENT_VERSION_TAG`: split-payment protocol v2. */
+const COMMITMENT_VERSION_TAG = new Uint8Array([0x02])
 const PAYMENT_COMMITMENT_DOMAIN = toUtf8Bytes('frank:dm-stamp-payment:v1')
 const STAMP_COMMITMENT_LENGTH = 32
 

@@ -182,7 +182,7 @@ describe('calldata / commitment construction', () => {
     expect(commitment).toHaveLength(32)
   })
 
-  it('builds calldata as <POND><0x01><32-byte commitment>, 37 bytes total', () => {
+  it('builds calldata as <POND><0x02><32-byte commitment>, 37 bytes total', () => {
     const commitment = new Uint8Array(32).fill(0xab)
     const calldata = buildMonadStampCalldata(commitment)
     const bytes = getBytes(calldata)
@@ -193,7 +193,7 @@ describe('calldata / commitment construction', () => {
     // (backend/cashweb/cashweb-payload/src/verify.rs:15).
     expect(Array.from(bytes.slice(0, 4))).toEqual([0x50, 0x4f, 0x4e, 0x44])
     // COMMITMENT_VERSION_TAG (monad_stamp_verify.rs:66).
-    expect(bytes[4]).toBe(0x01)
+    expect(bytes[4]).toBe(0x02)
     expect(Array.from(bytes.slice(5))).toEqual(Array.from(commitment))
   })
 

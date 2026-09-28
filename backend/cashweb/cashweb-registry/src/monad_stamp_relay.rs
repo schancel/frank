@@ -225,7 +225,7 @@ mod tests {
     use crate::monad_http::Address;
 
     const STMP: [u8; 4] = *b"STMP";
-    const COMMITMENT_VERSION_TAG: u8 = 0x01;
+    const COMMITMENT_VERSION_TAG: u8 = crate::monad_stamp_verify::COMMITMENT_VERSION_TAG;
 
     fn hex_addr(byte: u8) -> String {
         format!("0x{}", hex::encode([byte; 20]))

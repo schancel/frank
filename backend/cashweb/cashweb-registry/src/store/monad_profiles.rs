@@ -389,7 +389,8 @@ mod tests {
     fn test_db_monad_profiles() -> Result<()> {
         let _ = bitcoinsuite_error::install();
         let tempdir = tempdir::TempDir::new("cashweb-registry-store--monad-profiles")?;
-        let db = Db::open(tempdir.path().join("db.rocksdb"))?;
+        let db_path = tempdir.path().join("db.rocksdb");
+        let db = Db::open(&db_path)?;
         let address = Address([7u8; 20]);
 
         assert_eq!(db.monad_profiles().get(&address)?, None);
@@ -405,7 +406,15 @@ mod tests {
         // Overwriting replaces the stored value.
         let updated = sample_signed_payload(200);
         db.monad_profiles().put(&address, &updated)?;
-        assert_eq!(db.monad_profiles().get(&address)?, Some(updated));
+        assert_eq!(db.monad_profiles().get(&address)?, Some(updated.clone()));
+
+        drop(db);
+        let reopened = Db::open(&db_path)?;
+        assert_eq!(
+            reopened.monad_profiles().get(&address)?,
+            Some(updated),
+            "Monad profiles must survive a server/database restart"
+        );
 
         Ok(())
     }

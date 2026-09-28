@@ -23,8 +23,10 @@ pub struct CashwebdConf {
     pub url: url::Url,
     /// Registry configuration
     pub registry: RegistryConf,
-    /// Bitcoin JSONRPC configuration
-    pub bitcoin_rpc: BitcoindRpcClientConf,
+    /// Bitcoin/Lotus JSON-RPC configuration. Omit for a Monad-only server; legacy Lotus routes
+    /// then fail closed while Monad routes remain available.
+    #[serde(default)]
+    pub bitcoin_rpc: Option<BitcoindRpcClientConf>,
 }
 
 /// Configuration for a registry server
@@ -153,6 +155,8 @@ fn default_fail_wait_duration_s() -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use bitcoinsuite_bitcoind::rpc_client::BitcoindRpcClientConf;
     use bitcoinsuite_core::Net;
     use bitcoinsuite_error::Result;
@@ -221,11 +225,11 @@ mod tests {
                     },
                     curated_defaults: vec![],
                 },
-                bitcoin_rpc: BitcoindRpcClientConf {
+                bitcoin_rpc: Some(BitcoindRpcClientConf {
                     url: "https://bitcoin.rpc".to_string(),
                     rpc_user: "user".to_string(),
                     rpc_pass: "passwd".to_string(),
-                },
+                }),
             }
         );
         Ok(())
@@ -285,12 +289,41 @@ mod tests {
                     },
                     curated_defaults: vec![],
                 },
-                bitcoin_rpc: BitcoindRpcClientConf {
+                bitcoin_rpc: Some(BitcoindRpcClientConf {
                     url: "https://bitcoin.rpc".to_string(),
                     rpc_user: "user".to_string(),
                     rpc_pass: "passwd".to_string(),
-                },
+                }),
             }
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_config_monad_only_without_bitcoin_rpc() -> Result<()> {
+        let conf = parse_conf(
+            r#"
+                host = "127.0.0.1:8098"
+                url = "http://127.0.0.1:8098"
+
+                [registry]
+                db_path = "data/registry.rocksdb"
+                net = "mainnet"
+                peers = []
+
+                [registry.pop]
+                enabled = false
+                monad_rpc_url = "http://unused.invalid"
+                hmac_secret = "unused"
+                payment_recipient = "0x0000000000000000000000000000000000000000"
+                min_value_wei = "0"
+            "#,
+        )?;
+
+        assert_eq!(conf.bitcoin_rpc, None);
+        assert_eq!(
+            conf.registry.db_path,
+            PathBuf::from("data/registry.rocksdb")
         );
         Ok(())
     }

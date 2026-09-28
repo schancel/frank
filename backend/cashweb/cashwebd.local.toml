@@ -1,0 +1,16 @@
+# Persistent Monad-first development server. Paths are relative to backend/cashweb, where the
+# documented command is run. Omit [bitcoin_rpc] to keep legacy Lotus routes disabled.
+host = "127.0.0.1:8098"
+url = "http://127.0.0.1:8098"
+
+[registry]
+db_path = "data/registry.rocksdb"
+net = "mainnet"
+peers = []
+
+[registry.pop]
+enabled = false
+monad_rpc_url = "http://unused.invalid"
+hmac_secret = "unused-because-pop-is-disabled"
+payment_recipient = "0x0000000000000000000000000000000000000000"
+min_value_wei = "0"

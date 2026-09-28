@@ -348,7 +348,8 @@ mod tests {
     fn test_db_monad_messages() -> Result<()> {
         let _ = bitcoinsuite_error::install();
         let tempdir = tempdir::TempDir::new("cashweb-registry-store--monad-messages")?;
-        let db = Db::open(tempdir.path().join("db.rocksdb"))?;
+        let db_path = tempdir.path().join("db.rocksdb");
+        let db = Db::open(&db_path)?;
 
         let payload_hash = vec![7u8; 32];
         assert_eq!(db.monad_messages().get(&payload_hash)?, None);
@@ -389,6 +390,14 @@ mod tests {
                 .get_attempt(&payload_hash, stored.message.as_ref().unwrap())?,
             MonadMessageAttemptClaim::Missing,
             "completed attempts must be deleted in the same batch as the stored message"
+        );
+
+        drop(db);
+        let reopened = Db::open(&db_path)?;
+        assert_eq!(
+            reopened.monad_messages().get(&payload_hash)?,
+            Some(stored),
+            "local Monad mailbox records must survive a server/database restart"
         );
 
         Ok(())

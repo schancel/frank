@@ -38,6 +38,7 @@ jest.mock('../monad-stamp-client', () => {
     ...actual,
     MonadStampClient: jest.fn().mockImplementation(() => ({
       submitStampedMessage: jest.fn(),
+      resumePendingAttempts: jest.fn().mockResolvedValue([]),
     })),
   }
 })

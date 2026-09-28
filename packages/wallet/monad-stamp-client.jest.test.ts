@@ -25,6 +25,7 @@ import { MonadSubAccountPool } from './monad-account-pool'
 import { SubAccountLeaseManager } from './monad-account-lease'
 import { MonadTxSubmitter } from './monad-account-tx'
 import { MonadChangePool } from './monad-change-pool'
+import { InMemoryStampAttemptJournal } from './storage/stamp-attempt-journal'
 import {
   MonadStampAbandonedError,
   MonadStampClient,
@@ -144,6 +145,7 @@ function makeClient(overrides?: {
   pool?: MonadSubAccountPool
   changePool?: MonadChangePool
   provider?: ReturnType<typeof makeChainProvider>
+  stampAttemptJournal?: InMemoryStampAttemptJournal
 }) {
   const pool = overrides?.pool ?? makePool()
   const leaseManager = new SubAccountLeaseManager(pool)
@@ -155,6 +157,7 @@ function makeClient(overrides?: {
     provider,
     httpClient,
     changePool: overrides?.changePool,
+    stampAttemptJournal: overrides?.stampAttemptJournal,
     relayBaseUrl: 'https://relay.example.com/',
   })
   return { client, pool, leaseManager, provider, httpClient }
@@ -503,7 +506,8 @@ describe('MonadStampClient.submitStampedMessage', () => {
   })
 
   it('retires as stuck and throws MonadStampAbandonedError when the fallback poll never finds it', async () => {
-    const { client, pool } = makeClient()
+    const stampAttemptJournal = new InMemoryStampAttemptJournal()
+    const { client, pool } = makeClient({ stampAttemptJournal })
     mockedAxios.mockImplementation(async () => {
       const networkErr = Object.assign(new Error('timeout'), {
         isAxiosError: true,
@@ -528,6 +532,24 @@ describe('MonadStampClient.submitStampedMessage', () => {
 
     const retired = pool.records().filter(r => r.status === 'retired')
     expect(retired).toHaveLength(2)
+    expect(stampAttemptJournal.getAll()).toHaveLength(1)
+
+    mockedAxios.mockReset()
+    mockedAxios.mockImplementationOnce(async config => {
+      const message = decodeMonadStampedMessage(
+        new Uint8Array(config.data as Buffer),
+      )
+      return {
+        data: storedMessageBytes(message),
+        status: 200,
+        statusText: 'OK',
+        headers: {},
+        config,
+      }
+    })
+    await expect(client.resumePendingAttempts()).resolves.toHaveLength(1)
+    expect(stampAttemptJournal.getAll()).toHaveLength(0)
+    expect(pool.records().filter(r => r.status === 'spent')).toHaveLength(2)
   })
 
   it('does not confirm a different stored payment set after an ambiguous PUT', async () => {

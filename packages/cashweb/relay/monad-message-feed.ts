@@ -44,13 +44,14 @@ export async function fetchMonadMessagesSince(params: {
     return {
       message: nested
         ? {
-            rawBurnTx: nested.getRawBurnTx_asU8(),
+            stampPayments: nested.getStampPaymentsList().map(payment => ({
+              childIndex: payment.getChildIndex(),
+              rawTx: payment.getRawTx_asU8(),
+            })),
             encryptedPayload: nested.getEncryptedPayload_asU8(),
             payloadHash: nested.getPayloadHash_asU8(),
           }
         : undefined,
-      senderAddress: stored.getSenderAddress_asU8(),
-      txHash: stored.getTxHash_asU8(),
       timestamp: stored.getTimestamp(),
       networkTag: stored.getNetworkTag_asU8(),
     }

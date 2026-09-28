@@ -28,12 +28,12 @@
  * balance, a flat `0.02 MON` reserve per sub-account is not affordable at all (let alone the two
  * sub-accounts -- one per identity -- a single round-trip conversation needs), so `gasReserve`
  * here is instead computed from the chain's *actual* current `maxFeePerGas`
- * (`provider.getFeeData()`) times a conservative gas-limit estimate for a Stamp burn tx (~23000
+ * (`provider.getFeeData()`) times a conservative gas-limit estimate for a Stamp payment (~23000
  * gas -- `backend/cashweb/cashweb-registry/examples/README.md`'s own live run recorded `gasUsed:
  * 22596` for an equivalently-sized calldata commitment), with a 10% margin for fee drift between
- * this estimate and the sub-account's own later burn-tx submission. This is the minimum a sub-
+ * this estimate and the sub-account's own later payment submission. This is the minimum a sub-
  * account needs funded to pass a node's mempool admission check (`balance >= value +
- * maxFeePerGas * gasLimit`) for its own burn tx -- not a padded, "plenty of headroom" number like
+ * maxFeePerGas * gasLimit`) for its own payment -- not a padded, "plenty of headroom" number like
  * #8's, because this ticket's balance doesn't have room for padding.
  *
  * ## Nonce-race retries (`fundPoolWithRetry`)
@@ -59,6 +59,8 @@ import { JsonRpcProvider } from 'ethers'
 import { MonadHttpClient } from '@frank/wallet/monad-http'
 import { MonadAccountTxSigner } from '@frank/wallet/monad-account-tx'
 import { MonadHdKeyring } from '@frank/wallet/monad-hd-keyring'
+import { MonadChangeKeyring } from '@frank/wallet/monad-change-keyring'
+import { MonadChangePool } from '@frank/wallet/monad-change-pool'
 import {
   MonadSubAccountPool,
   fanOutFundSubAccounts,
@@ -66,7 +68,10 @@ import {
 } from '@frank/wallet/monad-account-pool'
 import { SubAccountLeaseManager } from '@frank/wallet/monad-account-lease'
 import { MonadStampClient } from '@frank/wallet/monad-stamp-client'
-import { MonadIdentity, registerMonadIdentity } from '@frank/wallet/monad-identity'
+import {
+  MonadIdentity,
+  registerMonadIdentity,
+} from '@frank/wallet/monad-identity'
 
 export function requiredEnv(name: string): string {
   const value = process.env[name]
@@ -174,7 +179,7 @@ export async function waitForConfirmation(
 export async function fundPoolWithRetry(params: {
   pool: MonadSubAccountPool
   mainAccountSigner: MonadAccountTxSigner
-  burnValueWei: bigint
+  stampValueWei: bigint
   gasReserve: bigint
   label: string
   maxAttempts?: number
@@ -199,7 +204,7 @@ export async function fundPoolWithRetry(params: {
       await fanOutFundSubAccounts({
         mainAccountSigner: params.mainAccountSigner,
         targets: remaining,
-        burnValue: params.burnValueWei,
+        burnValue: params.stampValueWei,
         gasReserve: params.gasReserve,
         onFunded: result => {
           funded.push(result)
@@ -233,7 +238,7 @@ export async function setUpFundedStampClient(params: {
   relayBaseUrl: string
   mainWalletJsonPath: string
   poolSize: number
-  burnValueWei: bigint
+  stampValueWei: bigint
   label: string
 }): Promise<FundedStampSetup> {
   const provider = new JsonRpcProvider(params.rpcUrl)
@@ -249,8 +254,11 @@ export async function setUpFundedStampClient(params: {
   })
   console.log(`[${params.label}] main funding account: ${mainWallet.address}`)
 
-  const { keyring } = MonadHdKeyring.generate()
+  const { keyring, mnemonic } = MonadHdKeyring.generate()
   const pool = new MonadSubAccountPool({ keyring })
+  const changePool = new MonadChangePool({
+    keyring: MonadChangeKeyring.fromMnemonic(mnemonic),
+  })
   pool.ensureSize(params.poolSize)
 
   const feeData = await provider.getFeeData()
@@ -260,13 +268,13 @@ export async function setUpFundedStampClient(params: {
   const gasReserve =
     (maxFeePerGas * estimatedBurnGasLimit * BigInt(11)) / BigInt(10)
   console.log(
-    `[${params.label}] maxFeePerGas=${maxFeePerGas} wei; funding each sub-account with burnValue=${params.burnValueWei} + gasReserve=${gasReserve} wei`,
+    `[${params.label}] maxFeePerGas=${maxFeePerGas} wei; funding each sub-account with stampValue=${params.stampValueWei} + gasReserve=${gasReserve} wei`,
   )
 
   const funded = await fundPoolWithRetry({
     pool,
     mainAccountSigner,
-    burnValueWei: params.burnValueWei,
+    stampValueWei: params.stampValueWei,
     gasReserve,
     label: params.label,
   })
@@ -290,6 +298,7 @@ export async function setUpFundedStampClient(params: {
     leaseManager,
     provider,
     httpClient,
+    changePool,
     relayBaseUrl: params.relayBaseUrl,
   })
 

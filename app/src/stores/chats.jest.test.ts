@@ -74,7 +74,7 @@ describe('stores/chats.ts (ticket #42)', () => {
         .spyOn(activeChain.directMessages, 'send')
         .mockResolvedValue({
           payloadDigest: 'deadbeef',
-          burnValueWei: 1_000_000_000_000n,
+          stampValueWei: 1_000_000_000_000n,
         })
 
       const result = await chats.sendMessage({
@@ -96,7 +96,7 @@ describe('stores/chats.ts (ticket #42)', () => {
       const message = chat?.messages[0]
       expect(message?.status).toBe('confirmed')
       expect(message?.outpoints).toEqual([])
-      expect(message?.burnValueWei).toBe(1_000_000_000_000n)
+      expect(message?.stampValueWei).toBe(1_000_000_000_000n)
       expect(message?.payloadDigest).toBe('deadbeef')
     })
 
@@ -105,7 +105,7 @@ describe('stores/chats.ts (ticket #42)', () => {
       const wallet = makeWallet(SENDER_ADDRESS)
       jest.spyOn(activeChain.directMessages, 'send').mockResolvedValue({
         payloadDigest: 'abc123',
-        burnValueWei: 42n,
+        stampValueWei: 42n,
       })
 
       await chats.sendMessage({
@@ -154,7 +154,7 @@ describe('stores/chats.ts (ticket #42)', () => {
     })
   })
 
-  describe('receiveMessages with burnValueWei (decision 1)', () => {
+  describe('receiveMessages with stampValueWei (decision 1)', () => {
     function makeWrapper(
       overrides: Partial<ReceivedMessageWrapper> = {},
     ): ReceivedMessageWrapper {
@@ -173,7 +173,7 @@ describe('stores/chats.ts (ticket #42)', () => {
           serverTime: Date.now(),
           receivedTime: Date.now(),
           outpoints: [],
-          burnValueWei: 5000n,
+          stampValueWei: 5000n,
           senderAddress: RECIPIENT_ADDRESS,
           destinationAddress: SENDER_ADDRESS,
         },
@@ -181,7 +181,7 @@ describe('stores/chats.ts (ticket #42)', () => {
       }
     }
 
-    it('uses burnValueWei (not stampPrice(outpoints)) for a Monad-sourced message', async () => {
+    it('uses stampValueWei (not stampPrice(outpoints)) for a Monad-sourced message', async () => {
       const chats = useChatStore()
       const contacts = useContactStore()
       // Pre-register the contact so receiveMessages doesn't attempt a network refresh.
@@ -199,11 +199,11 @@ describe('stores/chats.ts (ticket #42)', () => {
       expect(chat?.totalValue).toBe(5000)
       expect(chat?.totalUnreadValue).toBe(5000)
       expect(chat?.totalUnreadMessages).toBe(1)
-      expect(chat?.messages[0].burnValueWei).toBe(5000n)
+      expect(chat?.messages[0].stampValueWei).toBe(5000n)
       expect(chat?.messages[0].outpoints).toEqual([])
     })
 
-    it('still falls back to stampPrice(outpoints) when burnValueWei is absent (Lotus-origin)', async () => {
+    it('still falls back to stampPrice(outpoints) when stampValueWei is absent (Lotus-origin)', async () => {
       const chats = useChatStore()
       const contacts = useContactStore()
       contacts.addContact({
@@ -215,12 +215,12 @@ describe('stores/chats.ts (ticket #42)', () => {
 
       const wrapper = makeWrapper()
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      delete (wrapper.message as any).burnValueWei
+      delete (wrapper.message as any).stampValueWei
 
       await chats.receiveMessages([wrapper])
 
       const chat = chats.chats[RECIPIENT_ADDRESS]
-      // No outpoints, no burnValueWei -> stampPrice([]) === 0.
+      // No outpoints, no stampValueWei -> stampPrice([]) === 0.
       expect(chat?.totalValue).toBe(0)
     })
   })

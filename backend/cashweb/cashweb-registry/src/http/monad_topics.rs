@@ -6,7 +6,7 @@
 //! with two Monad-topic-specific differences:
 //! - Verification goes through [`crate::monad_topic_verify::verify_topic_vote_burn`] (via
 //!   [`crate::monad_topic_relay::broadcast_and_verify_topic_vote`]) rather than
-//!   `monad_stamp_verify::verify_stamp_burn`/`monad_stamp_relay::broadcast_and_verify_stamp` --
+//!   `monad_stamp_verify::verify_stamp_transaction`/`monad_stamp_relay::broadcast_and_verify_stamp` --
 //!   see those modules' docs for the calldata-layout and outcome-type reasons they can't be
 //!   reused as-is here.
 //! - A verified burn doesn't just gate a store, it also *is* a vote: both `PUT` routes below

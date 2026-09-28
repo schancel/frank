@@ -4,12 +4,12 @@
 //! [`crate::monad_stamp_relay::broadcast_and_verify_stamp`]: broadcasts a vote's raw burn tx
 //! itself (the relay never requires the client to have already landed it on-chain, same
 //! convention as Stamp), polls for its confirmation, and verifies it via
-//! [`crate::monad_topic_verify::verify_topic_vote_burn`] instead of `verify_stamp_burn`.
+//! [`crate::monad_topic_verify::verify_topic_vote_burn`] instead of `verify_stamp_transaction`.
 //!
 //! See [`crate::monad_topic_verify`]'s module docs ("Why this can't just call
 //! `broadcast_and_verify_stamp`") for why this is a new, sibling function rather than a call into
 //! the existing one: `broadcast_and_verify_stamp` is concretely typed to
-//! [`crate::monad_stamp_verify::ExpectedBurn`]/[`crate::monad_stamp_verify::StampBurnVerification`]
+//! [`crate::monad_stamp_verify::ExpectedStampTransaction`]/[`crate::monad_stamp_verify::StampTransactionVerification`]
 //! with no seam to substitute this ticket's different calldata layout or its richer
 //! value+direction outcome, and generalizing it would mean editing `monad_stamp_relay.rs`, out of
 //! this ticket's edit ownership. This module reuses [`PollConfig`] directly (re-exported from
@@ -192,7 +192,7 @@ mod tests {
         })
     }
 
-    fn expected_burn(commitment: Sha256) -> ExpectedTopicBurn {
+    fn expected_stamp_transaction(commitment: Sha256) -> ExpectedTopicBurn {
         ExpectedTopicBurn {
             commitment,
             burn_address: Address::from_hex(&hex_addr(0x44)).unwrap(),
@@ -314,7 +314,7 @@ mod tests {
         let outcome = broadcast_and_verify_topic_vote(
             &transport,
             &[0xde, 0xad, 0xbe, 0xef],
-            &expected_burn(commitment),
+            &expected_stamp_transaction(commitment),
             fast_poll(),
         )
         .await
@@ -358,7 +358,7 @@ mod tests {
         let outcome = broadcast_and_verify_topic_vote(
             &transport,
             &[1, 2, 3],
-            &expected_burn(commitment),
+            &expected_stamp_transaction(commitment),
             fast_poll(),
         )
         .await
@@ -386,7 +386,7 @@ mod tests {
         let outcome = broadcast_and_verify_topic_vote(
             &transport,
             &[1, 2, 3],
-            &expected_burn(make_commitment()),
+            &expected_stamp_transaction(make_commitment()),
             fast_poll(),
         )
         .await
@@ -412,7 +412,7 @@ mod tests {
         let outcome = broadcast_and_verify_topic_vote(
             &transport,
             &[1, 2, 3],
-            &expected_burn(make_commitment()),
+            &expected_stamp_transaction(make_commitment()),
             poll,
         )
         .await

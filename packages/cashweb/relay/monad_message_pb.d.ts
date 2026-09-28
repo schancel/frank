@@ -3,12 +3,33 @@
 
 import * as jspb from "google-protobuf";
 
-export class MonadStampedMessage extends jspb.Message {
-  getRawBurnTx(): Uint8Array | string;
-  getRawBurnTx_asU8(): Uint8Array;
-  getRawBurnTx_asB64(): string;
-  setRawBurnTx(value: Uint8Array | string): void;
+export class MonadStampPayment extends jspb.Message {
+  getChildIndex(): number;
+  setChildIndex(value: number): void;
 
+  getRawTx(): Uint8Array | string;
+  getRawTx_asU8(): Uint8Array;
+  getRawTx_asB64(): string;
+  setRawTx(value: Uint8Array | string): void;
+
+  serializeBinary(): Uint8Array;
+  toObject(includeInstance?: boolean): MonadStampPayment.AsObject;
+  static toObject(includeInstance: boolean, msg: MonadStampPayment): MonadStampPayment.AsObject;
+  static extensions: {[key: number]: jspb.ExtensionFieldInfo<jspb.Message>};
+  static extensionsBinary: {[key: number]: jspb.ExtensionFieldBinaryInfo<jspb.Message>};
+  static serializeBinaryToWriter(message: MonadStampPayment, writer: jspb.BinaryWriter): void;
+  static deserializeBinary(bytes: Uint8Array): MonadStampPayment;
+  static deserializeBinaryFromReader(message: MonadStampPayment, reader: jspb.BinaryReader): MonadStampPayment;
+}
+
+export namespace MonadStampPayment {
+  export type AsObject = {
+    childIndex: number,
+    rawTx: Uint8Array | string,
+  }
+}
+
+export class MonadStampedMessage extends jspb.Message {
   getEncryptedPayload(): Uint8Array | string;
   getEncryptedPayload_asU8(): Uint8Array;
   getEncryptedPayload_asB64(): string;
@@ -18,6 +39,11 @@ export class MonadStampedMessage extends jspb.Message {
   getPayloadHash_asU8(): Uint8Array;
   getPayloadHash_asB64(): string;
   setPayloadHash(value: Uint8Array | string): void;
+
+  clearStampPaymentsList(): void;
+  getStampPaymentsList(): Array<MonadStampPayment>;
+  setStampPaymentsList(value: Array<MonadStampPayment>): void;
+  addStampPayments(value?: MonadStampPayment, index?: number): MonadStampPayment;
 
   serializeBinary(): Uint8Array;
   toObject(includeInstance?: boolean): MonadStampedMessage.AsObject;
@@ -31,9 +57,9 @@ export class MonadStampedMessage extends jspb.Message {
 
 export namespace MonadStampedMessage {
   export type AsObject = {
-    rawBurnTx: Uint8Array | string,
     encryptedPayload: Uint8Array | string,
     payloadHash: Uint8Array | string,
+    stampPaymentsList: Array<MonadStampPayment.AsObject>,
   }
 }
 
@@ -42,16 +68,6 @@ export class StoredMonadMessage extends jspb.Message {
   clearMessage(): void;
   getMessage(): MonadStampedMessage | undefined;
   setMessage(value?: MonadStampedMessage): void;
-
-  getSenderAddress(): Uint8Array | string;
-  getSenderAddress_asU8(): Uint8Array;
-  getSenderAddress_asB64(): string;
-  setSenderAddress(value: Uint8Array | string): void;
-
-  getTxHash(): Uint8Array | string;
-  getTxHash_asU8(): Uint8Array;
-  getTxHash_asB64(): string;
-  setTxHash(value: Uint8Array | string): void;
 
   getTimestamp(): number;
   setTimestamp(value: number): void;
@@ -74,8 +90,6 @@ export class StoredMonadMessage extends jspb.Message {
 export namespace StoredMonadMessage {
   export type AsObject = {
     message?: MonadStampedMessage.AsObject,
-    senderAddress: Uint8Array | string,
-    txHash: Uint8Array | string,
     timestamp: number,
     networkTag: Uint8Array | string,
   }

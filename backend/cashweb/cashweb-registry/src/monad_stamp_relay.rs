@@ -1,12 +1,12 @@
-//! Relay-side broadcast-and-verify wiring for a Monad Stamp burn (ticket #19).
+//! Relay-side broadcast-and-verify wiring for a Monad Stamp transaction (ticket #19).
 //!
 //! Per the parent design (`PLAN.md` M4 / ticket #6's acceptance criterion), Stamp differs from
-//! POP in that the **relay itself broadcasts** the sender's pre-signed raw burn tx (rather than
+//! POP in that the **relay itself broadcasts** the sender's pre-signed raw stamp tx (rather than
 //! requiring the client to have already landed it on-chain), matching the existing Lotus-path
 //! pattern (`Registry::validate_burn_tx` calling `ChainAdapter::submit_tx`/`test_accept`). This
 //! module is the Monad counterpart of that broadcast step, built on top of:
 //! - [`crate::monad_http::MonadHttpClient::send_raw_transaction`] (ticket #12) to broadcast, and
-//! - [`crate::monad_stamp_verify::verify_stamp_burn`] (ticket #16) to confirm + verify the burn
+//! - [`crate::monad_stamp_verify::verify_stamp_transaction`] (ticket #16) to confirm + verify it
 //!   once mined.
 //!
 //! [`broadcast_and_verify_stamp`] wires those two together with a poll loop (Monad confirmation
@@ -45,7 +45,7 @@
 //!   at new wire-format decisions"), this module stops here: it hands the next
 //!   ticket/decision-maker a fully-implemented, fully-tested broadcast+verify primitive ready to
 //!   be called the moment a request shape exists to feed it (`raw_tx: &[u8]` +
-//!   `monad_stamp_verify::ExpectedBurn`), rather than inventing that request shape itself.
+//!   `monad_stamp_verify::ExpectedStampTransaction`), rather than inventing that request shape itself.
 //!
 //! Whoever picks up that wire-format decision should gate `Registry`-equivalent message storage
 //! on `StampRelayOutcome::Verified` exactly the way `Registry::put_message`'s Lotus path gates on
@@ -55,10 +55,13 @@
 use std::time::Duration;
 
 use bitcoinsuite_error::{Result, WrapErr};
+use sha3::{Digest, Keccak256};
 
 use crate::{
     monad_http::{Hash32, JsonRpcTransport, MonadHttpClient, MonadRpcError},
-    monad_stamp_verify::{verify_stamp_burn, ExpectedBurn, StampBurnVerification},
+    monad_stamp_verify::{
+        verify_stamp_transaction, ExpectedStampTransaction, StampTransactionVerification,
+    },
 };
 
 /// How [`broadcast_and_verify_stamp`] polls for the broadcast tx's confirmation.
@@ -92,11 +95,13 @@ impl Default for PollConfig {
 /// compare via `matches!`/field access instead).
 #[derive(Debug)]
 pub enum StampRelayOutcome {
-    /// Broadcast succeeded, the tx confirmed, and it verified as a valid stamp burn. The caller
+    /// Broadcast succeeded, the tx confirmed, and it verified as a valid stamp transaction. The caller
     /// may store the associated message.
     Verified {
         /// Hash of the broadcast (and now-confirmed) transaction.
         tx_hash: Hash32,
+        /// Exact value carried by the verified transaction.
+        value_wei: u128,
     },
     /// `eth_sendRawTransaction` itself failed (e.g. `MonadRpcError::NonceTooLow`,
     /// `InsufficientFunds`, `ReplacementUnderpriced`). Distinguishable from
@@ -109,13 +114,13 @@ pub enum StampRelayOutcome {
         /// Hash of the broadcast (still-unconfirmed) transaction.
         tx_hash: Hash32,
     },
-    /// The tx confirmed, but [`verify_stamp_burn`] didn't return `Verified` (wrong destination,
+    /// The tx confirmed, but [`verify_stamp_transaction`] didn't return `Verified` (wrong destination,
     /// insufficient value, wrong/malformed commitment, or the tx itself reverted).
     VerificationFailed {
         /// Hash of the confirmed transaction that failed verification.
         tx_hash: Hash32,
         /// Why verification failed.
-        outcome: StampBurnVerification,
+        outcome: StampTransactionVerification,
     },
 }
 
@@ -132,18 +137,18 @@ impl StampRelayOutcome {
 ///
 /// 1. The relay broadcasts the sender's raw tx itself (never requires the client to have already
 ///    landed it on-chain).
-/// 2. After broadcast, it polls for the receipt and runs [`verify_stamp_burn`] against it.
+/// 2. After broadcast, it polls for the receipt and runs [`verify_stamp_transaction`] against it.
 /// 3. Only [`StampRelayOutcome::Verified`] should lead to storing the associated message; every
 ///    other outcome (including a timeout) is a rejection.
 /// 4. A broadcast-time RPC failure is reported as [`StampRelayOutcome::BroadcastFailed`], never
 ///    collapsed into a verification failure.
 ///
-/// Returns `Err` only for infrastructure failures from `verify_stamp_burn` itself (see its docs);
+/// Returns `Err` only for infrastructure failures from `verify_stamp_transaction` itself (see its docs);
 /// every expected rejection reason is a distinct `Ok(StampRelayOutcome)` variant.
 pub async fn broadcast_and_verify_stamp<T>(
     transport: &T,
     raw_tx: &[u8],
-    expected: &ExpectedBurn,
+    expected: &ExpectedStampTransaction,
     poll: PollConfig,
 ) -> Result<StampRelayOutcome>
 where
@@ -153,27 +158,31 @@ where
 
     let tx_hash = match client.send_raw_transaction(raw_tx).await {
         Ok(submitted) => submitted.tx_hash,
+        // Retrying the exact canonical set after a partial response loss must resume verification,
+        // not fail merely because the node has already seen the same bytes. Continue using the
+        // deterministic hash of the submitted raw transaction.
+        Err(MonadRpcError::AlreadyKnown { .. }) => Hash32(Keccak256::digest(raw_tx).into()),
         Err(err) => return Ok(StampRelayOutcome::BroadcastFailed(err)),
     };
 
     let max_attempts = poll.max_attempts.max(1);
     for attempt in 0..max_attempts {
-        let outcome = verify_stamp_burn(transport, tx_hash, expected)
+        let outcome = verify_stamp_transaction(transport, tx_hash, expected)
             .await
             .wrap_err_with(|| {
                 format!("verifying Monad stamp transaction {tx_hash} after broadcast")
             })?;
 
         match outcome {
-            StampBurnVerification::TxNotConfirmed => {
+            StampTransactionVerification::TxNotConfirmed => {
                 if attempt + 1 < max_attempts {
                     tokio::time::sleep(poll.interval).await;
                     continue;
                 }
                 return Ok(StampRelayOutcome::ConfirmationTimedOut { tx_hash });
             }
-            StampBurnVerification::Verified => {
-                return Ok(StampRelayOutcome::Verified { tx_hash });
+            StampTransactionVerification::Verified { value_wei } => {
+                return Ok(StampRelayOutcome::Verified { tx_hash, value_wei });
             }
             other => {
                 return Ok(StampRelayOutcome::VerificationFailed {
@@ -249,8 +258,8 @@ mod tests {
         })
     }
 
-    fn expected_burn(commitment: Sha256) -> ExpectedBurn {
-        ExpectedBurn {
+    fn expected_stamp_transaction(commitment: Sha256) -> ExpectedStampTransaction {
+        ExpectedStampTransaction {
             commitment_id: STMP,
             commitment,
             destination_address: Address::from_hex(&hex_addr(0x44)).unwrap(),
@@ -274,6 +283,7 @@ mod tests {
         /// once exhausted) so a method's response can change across successive polls.
         responses: Arc<Mutex<HashMap<String, Vec<Value>>>>,
         send_raw_transaction_error: Arc<Mutex<Option<String>>>,
+        send_raw_transaction_already_known: Arc<Mutex<bool>>,
         call_counts: Arc<Mutex<HashMap<String, usize>>>,
         receipt_poll_count: Arc<AtomicUsize>,
     }
@@ -293,6 +303,11 @@ mod tests {
 
         fn fail_send_raw_transaction(&self, message: &str) -> &Self {
             *self.send_raw_transaction_error.lock().unwrap() = Some(message.to_string());
+            self
+        }
+
+        fn already_known_on_send(&self) -> &Self {
+            *self.send_raw_transaction_already_known.lock().unwrap() = true;
             self
         }
 
@@ -318,6 +333,12 @@ mod tests {
                 .or_insert(0) += 1;
 
             if method == "eth_sendRawTransaction" {
+                if *self.send_raw_transaction_already_known.lock().unwrap() {
+                    return Err(MonadRpcError::AlreadyKnown {
+                        method: method.to_string(),
+                        message: "already known".to_string(),
+                    });
+                }
                 if let Some(message) = self.send_raw_transaction_error.lock().unwrap().clone() {
                     return Err(MonadRpcError::NonceTooLow {
                         method: method.to_string(),
@@ -374,7 +395,7 @@ mod tests {
         let outcome = broadcast_and_verify_stamp(
             &transport,
             &[0xde, 0xad, 0xbe, 0xef],
-            &expected_burn(commitment),
+            &expected_stamp_transaction(commitment),
             fast_poll(),
         )
         .await
@@ -382,7 +403,7 @@ mod tests {
 
         assert!(outcome.is_verified());
         match outcome {
-            StampRelayOutcome::Verified { tx_hash } => {
+            StampRelayOutcome::Verified { tx_hash, .. } => {
                 assert_eq!(tx_hash, Hash32::from_hex(&hex_hash(0x11)).unwrap());
             }
             other => panic!("expected Verified, got {other:?}"),
@@ -409,7 +430,7 @@ mod tests {
         let outcome = broadcast_and_verify_stamp(
             &transport,
             &[1, 2, 3],
-            &expected_burn(commitment),
+            &expected_stamp_transaction(commitment),
             fast_poll(),
         )
         .await
@@ -417,12 +438,46 @@ mod tests {
 
         assert!(outcome.is_verified());
         match outcome {
-            StampRelayOutcome::Verified { tx_hash } => {
+            StampRelayOutcome::Verified { tx_hash, .. } => {
                 assert_eq!(tx_hash, Hash32::from_hex(&hex_hash(0x11)).unwrap());
             }
             other => panic!("expected Verified, got {other:?}"),
         }
         assert_eq!(transport.call_count("eth_getTransactionReceipt"), 3);
+    }
+
+    #[tokio::test]
+    async fn already_known_resumes_verification_using_raw_transaction_hash() {
+        let commitment = make_commitment();
+        let to = hex_addr(0x44);
+        let raw_tx = [0xde, 0xad, 0xbe, 0xef];
+        let expected_hash = Hash32(Keccak256::digest(raw_tx).into());
+        let transport = MockTransport::default();
+        transport.already_known_on_send();
+        transport.set("eth_getTransactionReceipt", receipt_json(&to, "0x1"));
+        transport.set(
+            "eth_getTransactionByHash",
+            tx_json(&to, 10_000, &commitment_calldata(&commitment)),
+        );
+
+        let outcome = broadcast_and_verify_stamp(
+            &transport,
+            &raw_tx,
+            &expected_stamp_transaction(commitment),
+            fast_poll(),
+        )
+        .await
+        .unwrap();
+
+        match outcome {
+            StampRelayOutcome::Verified { tx_hash, value_wei } => {
+                assert_eq!(tx_hash, expected_hash);
+                assert_eq!(value_wei, 10_000);
+            }
+            other => panic!("expected Verified, got {other:?}"),
+        }
+        assert_eq!(transport.call_count("eth_sendRawTransaction"), 1);
+        assert_eq!(transport.call_count("eth_getTransactionReceipt"), 1);
     }
 
     #[tokio::test]
@@ -433,7 +488,7 @@ mod tests {
         let outcome = broadcast_and_verify_stamp(
             &transport,
             &[1, 2, 3],
-            &expected_burn(make_commitment()),
+            &expected_stamp_transaction(make_commitment()),
             fast_poll(),
         )
         .await
@@ -463,7 +518,7 @@ mod tests {
         let outcome = broadcast_and_verify_stamp(
             &transport,
             &[1, 2, 3],
-            &expected_burn(expected_commitment.clone()),
+            &expected_stamp_transaction(expected_commitment.clone()),
             fast_poll(),
         )
         .await
@@ -475,7 +530,7 @@ mod tests {
                 assert_eq!(tx_hash, Hash32::from_hex(&hex_hash(0x11)).unwrap());
                 assert_eq!(
                     outcome,
-                    StampBurnVerification::WrongCommitment {
+                    StampTransactionVerification::WrongCommitment {
                         expected: expected_commitment,
                         actual: actual_commitment,
                     }
@@ -498,7 +553,7 @@ mod tests {
         let outcome = broadcast_and_verify_stamp(
             &transport,
             &[1, 2, 3],
-            &expected_burn(make_commitment()),
+            &expected_stamp_transaction(make_commitment()),
             poll,
         )
         .await
@@ -517,7 +572,7 @@ mod tests {
     /// Sanity check that [`PUBKEY_LENGTH`] is still imported/used (keeps the import from going
     /// stale if the other tests above are trimmed later); also documents that
     /// [`crate::monad_stamp_verify::calc_expected_commitment`] is the intended way callers should
-    /// compute a real `ExpectedBurn.commitment` (this module doesn't recompute it itself).
+    /// compute a real `ExpectedStampTransaction.commitment` (this module doesn't recompute it itself).
     #[test]
     fn pubkey_length_sanity() {
         assert_eq!(PUBKEY_LENGTH, 33);

@@ -25,7 +25,7 @@
  *    sends it to Qwen 3.8 Max over a real HTTPS streaming call (`./qwen-client.ts`), and gets back
  *    a real completion.
  * 4. Builds a real reply: encrypts Qwen's response for the sender, computes `h_m`, leases a fresh
- *    single-use Monad sub-account (#14/#18/#34), builds+signs a real EIP-1559 burn tx, and `PUT`s
+ *    single-use Monad sub-account (#14/#18/#34), builds+signs a real EIP-1559 stamp payment, and `PUT`s
  *    it to the relay's live `PUT /message/monad` route (#13/#19/#27) -- the relay itself
  *    broadcasts, confirms, and verifies that exact tx against real Monad testnet before storing
  *    it, exactly as `monad-e2e-demo.livecheck.ts` (#8) already proved for a single message.
@@ -47,6 +47,7 @@
  */
 import { writeFileSync } from 'fs'
 import { resolve } from 'path'
+import { Transaction, hexlify } from 'ethers'
 
 import { fetchMonadIdentityPubKey } from '@frank/wallet/monad-identity'
 import {
@@ -98,18 +99,19 @@ function extractText(plaintext: string): string {
 
 const SYSTEM_PROMPT =
   process.env.QWEN_BOT_SYSTEM_PROMPT ??
-  'You are a helpful assistant reachable only over Frank, a burn-to-speak messaging protocol ' +
+  'You are a helpful assistant reachable only over Frank, a pay-to-speak messaging protocol ' +
     'on the Monad blockchain (ticket #9, "Best Builds with Qwen" bounty demo). Every message ' +
-    "you receive was paid for with a real, tiny MON burn by the sender's own on-chain identity, " +
+    'you receive was paid for with a real, tiny MON payment from disposable funding accounts, ' +
     'and your replies are delivered back the same way. Keep replies short (2-4 sentences) since ' +
     'each one costs a real transaction.'
 
 async function main() {
   const relayBaseUrl = process.env.E2E_DEMO_RELAY_URL ?? 'http://127.0.0.1:8098'
   const rpcUrl = requiredEnv('MONAD_TESTNET_HTTP_RPC_URL')
+  const networkTag = requiredEnv('FRANK_NETWORK_TAG')
   // Ticket #57: no MONAD_STAMP_BURN_ADDRESS here -- a reply's stamp pays whoever it's replying
   // to (see the submitStampedMessage call below), not a fixed address.
-  const burnValueWei = BigInt(requiredEnv('CASHWEB_STAMP_MIN_BURN_VALUE_WEI'))
+  const stampValueWei = BigInt(requiredEnv('CASHWEB_STAMP_MIN_BURN_VALUE_WEI'))
   const qwenApiKey = requiredEnv('QWEN_API_KEY')
   const qwenEndpoint = requiredEnv('QWEN_OPENAI_COMPATIBLE_ENDPOINT')
   const qwenModel = process.env.QWEN_MODEL ?? 'qwen3.8-max'
@@ -152,7 +154,7 @@ async function main() {
     relayBaseUrl,
     mainWalletJsonPath,
     poolSize: maxReplies,
-    burnValueWei,
+    stampValueWei,
     label: 'bot',
   })
 
@@ -204,10 +206,13 @@ async function main() {
       if (envelope.from === identity.displayAddress) continue // our own outgoing message
 
       lastActivityAt = Date.now()
+      const paymentHashes = message.message.stampPayments.map(
+        payment => Transaction.from(hexlify(payment.rawTx)).hash,
+      )
       console.log(
         `\n[bot] new stamped message ${payloadHashHex} from ${
           envelope.from
-        } (tx ${'0x' + Buffer.from(message.txHash).toString('hex')})`,
+        } (stamp txs ${paymentHashes.join(',')})`,
       )
 
       let senderPubKey = senderPubKeyCache.get(envelope.from)
@@ -256,6 +261,7 @@ async function main() {
         plaintext: serializeMessageItems([
           { type: 'text', text: completion.content },
         ]),
+        networkTag,
       })
 
       console.log('[bot] stamping + sending reply over Monad testnet ...')
@@ -265,11 +271,13 @@ async function main() {
         // (`envelope.from`, the human it's replying to) -- not burn to the fixed
         // MONAD_STAMP_BURN_ADDRESS, which is only correct for a broadcast with no single
         // recipient. See `chain/monad-chain.ts`'s `directMessages.send` for the same fix.
-        destinationAddress: envelope.from,
-        stampValueWei: burnValueWei,
+        recipientPublicKey: senderPubKey,
+        stampValueWei: stampValueWei,
       })
       console.log(
-        `[bot] reply sent -- payload_hash=${result.payloadHashHex} stamp tx=${result.txHash}`,
+        `[bot] reply sent -- payload_hash=${
+          result.payloadHashHex
+        } stamp txs=${result.txHashes.join(',')}`,
       )
       repliesSent++
       if (repliesSent >= maxReplies) break

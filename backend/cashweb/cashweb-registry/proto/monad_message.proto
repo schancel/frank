@@ -1,7 +1,18 @@
 syntax = "proto3";
 package cashweb.registry;
 
-// A Monad-native stamped broadcast message (ticket #27).
+// One component of a direct-message stamp payment (ticket #60).
+message MonadStampPayment {
+  // Non-hardened child in the canonical m/44/145/<child_index>/0 derivation. The recipient and
+  // relay independently derive the expected one-time EVM destination from this index, the
+  // message payload hash, and the recipient's registered secp256k1 public key.
+  uint32 child_index = 1;
+  // Raw, signed, RLP-encoded Monad transaction paying this child's one-time destination. Its
+  // calldata carries the domain-separated commitment derived from payload_hash and child_index.
+  bytes raw_tx = 2;
+}
+
+// A Monad-native stamped direct message (tickets #27 and #60).
 //
 // The Lotus `SignedPayload`/`BurnTx` scheme (`cashweb-payload/proto/payload.proto`) is
 // structurally UTXO-shaped -- `BurnTx.burn_idx` indexes into a Bitcoin-style transaction's output
@@ -9,24 +20,23 @@ package cashweb.registry;
 // is a separate, simpler envelope for the Monad path instead (see this ticket's module docs for
 // the full rationale, and PLAN.md constraint 5).
 //
-// Unlike `SignedPayload`, there is deliberately no separate pubkey/signature field: the sender's
-// identity is recovered via `ecrecover` from `raw_burn_tx`'s own ECDSA signature (see
-// `cashweb_registry::monad_evm_tx::recover_sender`), and the binding between this specific
-// `encrypted_payload` and the on-chain burn is `payload_hash`, which `raw_burn_tx`'s calldata must
-// commit to (checked via `cashweb_registry::monad_stamp_verify::parse_commitment_calldata`) --
-// there is no Lotus-style `SHA256(SHA256(pubkey) || payload_hash)` preimage, since there's no
-// separate pubkey to bind against.
+// The public envelope deliberately carries no sender-identity signature: direct-message sender
+// authentication is recipient-verifiable inside the encrypted content, preserving deniability.
+// Each payment transaction proves only that its distinct funding account authorized that payment.
 message MonadStampedMessage {
-  // Raw, signed, RLP-encoded Monad (EVM-style) transaction burning value to the relay's configured
-  // stamp address, whose calldata commits to `payload_hash`. The relay itself broadcasts this tx
-  // (see `monad_stamp_relay::broadcast_and_verify_stamp`) -- the client is never required to have
-  // already landed it on-chain.
-  bytes raw_burn_tx = 1;
+  // Removed singular transaction field. This is an intentional, approved wire-format break; old
+  // clients must not be silently interpreted as the new set form.
+  reserved 1;
+  reserved "raw_burn_tx";
   // The message payload, encrypted for its recipient(s). Opaque to the relay.
   bytes encrypted_payload = 2;
-  // SHA256(encrypted_payload). Must match both the actual hash of `encrypted_payload` and the
-  // commitment carried in `raw_burn_tx`'s calldata.
+  // SHA256(encrypted_payload). Must match the actual hash of `encrypted_payload`; each payment's
+  // calldata commits separately to this hash plus its child index.
   bytes payload_hash = 3;
+  // One or more independently funded payments. Two is a sender-side privacy goal when available,
+  // not a relay validity minimum; one correctly-derived payment is a valid fallback. Values need
+  // not be equal, but their verified sum must meet the configured minimum.
+  repeated MonadStampPayment stamp_payments = 4;
 }
 
 // A [`MonadStampedMessage`] as stored by the relay once its stamp verified, augmented with facts
@@ -35,11 +45,10 @@ message MonadStampedMessage {
 message StoredMonadMessage {
   // The original message as submitted.
   MonadStampedMessage message = 1;
-  // Sender's 20-byte Monad address, recovered via `ecrecover` from `message.raw_burn_tx`'s own
-  // signature -- never asserted by the client.
-  bytes sender_address = 2;
-  // 32-byte hash of the broadcast (and confirmed) burn transaction.
-  bytes tx_hash = 3;
+  // Removed relay assertions from the old singular-payment design. Payment transaction hashes
+  // are derived from each raw transaction when needed; no redundant hash list is serialized.
+  reserved 2, 3;
+  reserved "sender_address", "tx_hash";
   // Milliseconds since the Unix epoch when the relay stored this message.
   int64 timestamp = 4;
   // Frank-specific network tag (ticket #39, see PLAN.md constraint 9), e.g. `"MONT"`/`"MON1"` (see

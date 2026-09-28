@@ -62,7 +62,7 @@ import { transactionExplorerUrl } from 'src/utils/explorer'
 // Monad-sourced messages"), so its per-outpoint tabs, and this address formatting, never actually
 // render under the current Monad-only build. It's genuinely Lotus-only dead code today, not a live
 // caller to rewire -- converting it now would be an untestable, false-confidence change. Revisit
-// once/if `ChatMessage.vue`'s outpoints-vs-burnValueWei display is redesigned (out of this
+// once/if `ChatMessage.vue`'s outpoints-vs-stampValueWei display is redesigned (out of this
 // ticket's scope; see `stores/chats.ts`'s "Decision (#42)" note).
 
 export default defineComponent({

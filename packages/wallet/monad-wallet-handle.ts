@@ -14,12 +14,17 @@ import { Provider } from 'ethers'
 import { MonadSubAccountPool } from './monad-account-pool'
 import { SubAccountLeaseManager } from './monad-account-lease'
 import { MonadTxSubmitter } from './monad-account-tx'
+import { MonadChangePool } from './monad-change-pool'
 
 export interface MonadWalletHandle {
   pool: MonadSubAccountPool
   leaseManager: SubAccountLeaseManager
   provider: Provider
   httpClient: MonadTxSubmitter
+  /** HD change branch used to recover the unused balance from confirmed, single-use payment
+   * accounts. Optional for narrow tests and external callers that have not wired persistence yet;
+   * `MonadChain.createWallet` always supplies it from the same seed as `pool`. */
+  changePool?: MonadChangePool
   /** Base URL of the `cashweb-registry` relay, e.g. `https://relay.example.com` -- each client
    * trims its own trailing slash, so this may or may not have one. */
   relayBaseUrl: string

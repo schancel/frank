@@ -7,7 +7,7 @@
 //! This module only decodes as much of a raw transaction as is needed to reconstruct its signing
 //! preimage and pull out its `(v, r, s)` (or `(yParity, r, s)`) signature components -- it doesn't
 //! decode `to`/`value`/`input` (those are read back from the chain, post-confirmation, by
-//! [`crate::monad_stamp_verify::verify_stamp_burn`] instead, via
+//! [`crate::monad_stamp_verify::verify_stamp_transaction`] instead, via
 //! [`crate::monad_http::MonadHttpClient::get_transaction_by_hash`]).
 //!
 //! Two transaction shapes are supported, covering the overwhelming majority of what any modern
@@ -86,6 +86,12 @@ pub enum EvmTxError {
         /// Length of the decoded `s` component, in bytes.
         s_len: usize,
     },
+    /// Transaction `to` was neither empty (contract creation) nor a 20-byte EVM address.
+    #[error("transaction recipient has {0} bytes, expected 20")]
+    InvalidRecipientLength(usize),
+    /// Transaction value exceeded the relay's `u128` accounting range.
+    #[error("transaction value has {0} bytes, exceeds u128")]
+    ValueTooLarge(usize),
     /// `EccSecp256k1::recover_sig` couldn't recover a public key from the given signature/digest
     /// (e.g. a structurally-invalid signature, or a recovery id inconsistent with the actual
     /// signature).
@@ -144,6 +150,56 @@ struct SigningMaterial {
     recovery_id: i32,
     r: [u8; 32],
     s: [u8; 32],
+}
+
+/// Relay-relevant facts decoded directly from a signed raw transaction before broadcast.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DecodedSignedTransaction {
+    /// Keccak256 hash of the signed raw bytes.
+    pub tx_hash: crate::monad_http::Hash32,
+    /// ECDSA-recovered disposable funding account.
+    pub sender: Address,
+    /// Signed `to` field (`None` for contract creation).
+    pub destination: Option<Address>,
+    /// Signed native value.
+    pub value_wei: u128,
+    /// Signed calldata bytes.
+    pub input: Vec<u8>,
+}
+
+fn decode_transaction_fields(
+    raw_tx: &[u8],
+) -> Result<(Option<Address>, u128, Vec<u8>), EvmTxError> {
+    let first_byte = *raw_tx.first().ok_or(EvmTxError::Empty)?;
+    let (rlp, to_index, value_index, input_index) = if first_byte == EIP1559_TYPE {
+        (Rlp::new(&raw_tx[1..]), 5, 6, 7)
+    } else if first_byte >= 0xc0 {
+        (Rlp::new(raw_tx), 3, 4, 5)
+    } else {
+        return Err(EvmTxError::UnsupportedTxType(first_byte));
+    };
+    let to_bytes = rlp.at(to_index)?.data()?.to_vec();
+    let destination = if to_bytes.is_empty() {
+        None
+    } else {
+        let actual = to_bytes.len();
+        let bytes: [u8; 20] = to_bytes
+            .try_into()
+            .map_err(|_| EvmTxError::InvalidRecipientLength(actual))?;
+        Some(Address(bytes))
+    };
+    let value_bytes = rlp.at(value_index)?.data()?;
+    if value_bytes.len() > 16 {
+        return Err(EvmTxError::ValueTooLarge(value_bytes.len()));
+    }
+    let value_wei = value_bytes
+        .iter()
+        .fold(0u128, |value, byte| (value << 8) | u128::from(*byte));
+    Ok((
+        destination,
+        value_wei,
+        rlp.at(input_index)?.data()?.to_vec(),
+    ))
 }
 
 fn decode_r_s(
@@ -279,6 +335,19 @@ pub fn recover_sender(raw_tx: &[u8]) -> Result<Address, EvmTxError> {
     Ok(address_from_uncompressed_pubkey(&uncompressed))
 }
 
+/// Decode and authenticate all fields the relay can validate before it broadcasts anything.
+pub fn decode_signed_transaction(raw_tx: &[u8]) -> Result<DecodedSignedTransaction, EvmTxError> {
+    let sender = recover_sender(raw_tx)?;
+    let (destination, value_wei, input) = decode_transaction_fields(raw_tx)?;
+    Ok(DecodedSignedTransaction {
+        tx_hash: crate::monad_http::Hash32(keccak256(raw_tx)),
+        sender,
+        destination,
+        value_wei,
+        input,
+    })
+}
+
 /// Test-only helpers to construct a validly-signed raw EVM transaction, so tests elsewhere in this
 /// crate (this module's own, and `http::monad_message`'s end-to-end tests) can exercise
 /// [`recover_sender`] -- and the HTTP route built on top of it -- without a real wallet or a
@@ -370,6 +439,12 @@ mod tests {
 
         let recovered = recover_sender(&raw_tx).unwrap();
         assert_eq!(recovered, expected_sender);
+        let decoded = decode_signed_transaction(&raw_tx).unwrap();
+        assert_eq!(decoded.sender, expected_sender);
+        assert_eq!(decoded.destination, Some(to));
+        assert_eq!(decoded.value_wei, 10_000);
+        assert_eq!(decoded.input, b"hello");
+        assert_eq!(decoded.tx_hash.0, keccak256(&raw_tx));
     }
 
     #[test]

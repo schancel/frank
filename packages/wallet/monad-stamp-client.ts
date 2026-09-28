@@ -10,17 +10,18 @@
  *
  * ## What this does
  *
- * 1. Computes `h_m = SHA256(encrypted_payload)` — this is both `MonadStampedMessage.payload_hash`
- *    *and* the on-chain commitment the burn tx's calldata must carry. Unlike Lotus's
+ * 1. Computes `h_m = SHA256(encrypted_payload)` as `MonadStampedMessage.payload_hash`. Each
+ *    payment carries `SHA256("frank:dm-stamp-payment:v1" || h_m || uint32_be(child_index))`, so
+ *    split payments do not repeat a trivially linkable calldata value. Unlike Lotus's
  *    `SHA256(SHA256(pubkey) || payload_hash)` preimage, there is deliberately no pubkey folded in
  *    here — see `monad_message.proto`'s module doc and `monad_stamp_verify.rs`'s
  *    `calc_expected_commitment` doc comment (that function documents the *Lotus-mirroring* preimage
  *    math used for the Lotus-style `ADDRESS_METADATA_LOKAD_ID` path elsewhere in that module; the
  *    live `PUT /message/monad` handler, `process_monad_message` in `http/monad_message.rs`, never
- *    calls it — it builds `ExpectedBurn { commitment: declared_hash, .. }` directly from
+ *    calls it — it builds the expected payment directly from
  *    `SHA256(encrypted_payload)`, confirmed by reading that function's body).
- * 2. Builds the burn tx's calldata as `<BROADCAST_MESSAGE_LOKAD_ID: 4 bytes><version: 1
- *    byte><h_m: 32 bytes>` (37 bytes total) — the exact layout
+ * 2. Builds each payment transaction's calldata as `<BROADCAST_MESSAGE_LOKAD_ID: 4 bytes><version: 1
+ *    byte><per-child commitment: 32 bytes>` (37 bytes total) — the exact layout
  *    `cashweb_registry::monad_stamp_verify::parse_commitment_calldata` decodes (see
  *    `backend/cashweb/cashweb-registry/src/monad_stamp_verify.rs` lines 139-172:
  *    `CALLDATA_PREFIX_LEN = 5` for `<lokad_id><version>`, then `CALLDATA_COMMITMENT_LEN = 32` for
@@ -28,18 +29,14 @@
  *    used is `BROADCAST_MESSAGE_LOKAD_ID = *b"POND"`, defined in
  *    `backend/cashweb/cashweb-payload/src/verify.rs:15` and threaded into the live handler via
  *    `http/monad_message.rs`'s `use cashweb_payload::verify::BROADCAST_MESSAGE_LOKAD_ID;` /
- *    `ExpectedBurn { commitment_id: BROADCAST_MESSAGE_LOKAD_ID, .. }` (not the Lotus private-message
+ *    the relay's expected stamp transaction (not the Lotus private-message
  *    LOKAD ID, and not `ADDRESS_METADATA_LOKAD_ID` — reused for symmetry with the broadcast path per
  *    #27's own reasoning, not because this is conceptually a broadcast message). The version byte is
  *    `monad_stamp_verify::COMMITMENT_VERSION_TAG = 0x01`.
- * 3. Leases a sub-account (`SubAccountLeaseManager`, #18) and builds+signs the raw burn tx via
- *    `MonadAccountTxSigner.buildAndSignCall` (#11): value → `params.destinationAddress` (the caller
- *    decides this, not a constant baked in here — ticket #57: a direct message's stamp is a real
- *    payment to the recipient, mirroring Lotus's `constructStampTransactions`, so
- *    `chain/monad-chain.ts`'s `directMessages.send` passes the recipient's own address; only
- *    `topics.post`/`topics.vote` there pass the fixed `MONAD_STAMP_BURN_ADDRESS` from
- *    `frank/.env.example` — no single recipient to pay for a broadcast), the calldata from step 2.
- * 4. Assembles a `MonadStampedMessage { raw_burn_tx, encrypted_payload, payload_hash }` and encodes
+ * 3. Greedily selects one or more distinct, single-use funding accounts, aiming for at least two
+ *    transactions when the account distribution permits it. Each transaction pays a distinct
+ *    one-time child of the recipient's registered public key; values are not artificially equal.
+ * 4. Assembles a `MonadStampedMessage { stamp_payments, encrypted_payload, payload_hash }` and encodes
  *    it as protobuf wire bytes (see "Protobuf encoding" below), then does the actual
  *    `PUT /message/monad` HTTP call — ticket #27's own scope was server-side only and explicitly
  *    left this client-side gap open (see `http/monad_message.rs`'s module doc, "completing the
@@ -76,12 +73,12 @@
  *
  *   - **`PUT /message/monad` returns 2xx**: the relay only reaches its success response after
  *     `StampRelayOutcome::Verified` (see `process_monad_message` in `http/monad_message.rs` — every
- *     other outcome is a rejection *before* any store happens), i.e. the burn tx is already
+ *     other outcome is a rejection *before* any store happens), i.e. every payment is already
  *     confirmed on-chain by the time this resolves. → `'confirmed'`.
  *   - **`PUT /message/monad` returns an HTTP error response** (4xx/5xx — the relay was reached and
  *     definitively responded): per the same handler, a stored message only ever exists after
  *     `Verified`, so any HTTP-level error here means the message was never accepted/stored. →
- *     `'failed'` (retire rather than risk the rare case where the underlying burn nonetheless landed
+ *     `'failed'` (retire rather than risk the rare case where an underlying payment nonetheless landed
  *     on-chain but the relay's own bookkeeping failed after verifying it — a real possibility for a
  *     `500` from a storage-layer error in `process_monad_message`'s final `put_monad_message` call —
  *     but this module has no way to distinguish that case from "never touched the network" without
@@ -94,7 +91,7 @@
  *     Found → `'confirmed'`. Still not found after the poll budget is exhausted → `'stuck'` (the
  *     documented abandonment path this ticket calls for), and `MonadStampAbandonedError` is thrown
  *     so the caller knows the outcome is unresolved (not confirmed-failed, just abandoned).
- *   - **Building/signing the burn tx itself throws** (before any network call to the relay at all —
+ *   - **Building/signing a payment itself throws** (before any network call to the relay at all —
  *     e.g. a bad address, or a transient RPC failure while `MonadAccountTxSigner` reads
  *     gas/fee/nonce from the chain): also released as `'failed'`. No transaction was ever broadcast
  *     in this case, so the sub-account's nonce is not actually at risk — but `releaseLease` has no
@@ -104,32 +101,54 @@
  *     one-off transient error) for staying strictly within the existing three-outcome contract
  *     rather than guessing; documented here as a known, deliberate trade-off.
  */
-import { Provider, concat, getBytes, hexlify, sha256 } from 'ethers'
+import {
+  Provider,
+  Transaction,
+  concat,
+  getBytes,
+  hexlify,
+  sha256,
+  toUtf8Bytes,
+} from 'ethers'
 import axios from 'axios'
 
 import __pb_monad_message_pb from '@frank/cashweb/relay/monad_message_pb'
 const { MonadStampedMessage, StoredMonadMessage } = __pb_monad_message_pb
+const { MonadStampPayment } = __pb_monad_message_pb
 import { MonadSubAccountPool } from './monad-account-pool'
 import {
   AccountLeaseHandle,
   AcquireLeaseWhenAvailableOptions,
+  NoAvailableSubAccountError,
   SubAccountLeaseManager,
-  acquireLeaseWhenAvailable,
 } from './monad-account-lease'
 import {
+  MonadAccountTxSigner,
   MonadTxOverrides,
   MonadTxSubmitter,
   SignedMonadTx,
 } from './monad-account-tx'
 import { MonadWalletHandle } from './monad-wallet-handle'
+import { selectStampAccounts } from './monad-stamp-account-selection'
+import {
+  deriveMonadStampChildPrivate,
+  deriveMonadStampChildPublic,
+} from './monad-stamp-stealth'
+import {
+  ChangeSweepOutcome,
+  MonadChangePool,
+  estimateDustThresholdWei,
+  releaseLeaseAndSweepChange,
+} from './monad-change-pool'
 
 /** `cashweb_payload::verify::BROADCAST_MESSAGE_LOKAD_ID` (`backend/cashweb/cashweb-payload/src/
  * verify.rs:15`, `*b"POND"`) — the LOKAD ID the live `PUT /message/monad` handler requires
- * (`http/monad_message.rs`'s `ExpectedBurn { commitment_id: BROADCAST_MESSAGE_LOKAD_ID, .. }`). */
+ * (the tag name is historical; using it does not make a direct-message payment a burn). */
 const BROADCAST_MESSAGE_LOKAD_ID = new Uint8Array([0x50, 0x4f, 0x4e, 0x44]) // "POND"
 
 /** `cashweb_registry::monad_stamp_verify::COMMITMENT_VERSION_TAG` (that file, line 66: `0x01`). */
 const COMMITMENT_VERSION_TAG = new Uint8Array([0x01])
+const PAYMENT_COMMITMENT_DOMAIN = toUtf8Bytes('frank:dm-stamp-payment:v1')
 
 /** `cashweb_registry::monad_stamp_verify::{CALLDATA_PREFIX_LEN, CALLDATA_COMMITMENT_LEN}` (5 + 32 =
  * 37 total): `<lokad_id: 4><version: 1><commitment: 32>`. Exported for tests that want to assert on
@@ -139,25 +158,23 @@ export const MONAD_STAMP_CALLDATA_LENGTH =
 
 /**
  * `MonadStampedMessage` from `monad_message.proto`, decoded/encoded here in plain-object form
- * (rather than a `jspb.Message` subclass — see this file's header on why there's no generated
- * class). Field numbers match the `.proto` exactly: `raw_burn_tx = 1`, `encrypted_payload = 2`,
- * `payload_hash = 3`.
+ * (rather than a `jspb.Message` subclass). Field numbers match the `.proto`: the removed singular
+ * transaction is reserved at 1, `encrypted_payload = 2`, `payload_hash = 3`, and
+ * `stamp_payments = 4`.
  */
 export interface MonadStampedMessageProto {
-  rawBurnTx: Uint8Array
+  stampPayments: Array<{ childIndex: number; rawTx: Uint8Array }>
   encryptedPayload: Uint8Array
   payloadHash: Uint8Array
 }
 
 /**
  * `StoredMonadMessage` from `monad_message.proto` — what both `PUT /message/monad`'s success
- * response and `GET /message/monad/:payload_hash` return. Field numbers: `message = 1`,
- * `sender_address = 2`, `tx_hash = 3`, `timestamp = 4`, `network_tag = 5`.
+ * response and `GET /message/monad/:payload_hash` return. The old sender/hash assertions are
+ * reserved at fields 2 and 3; `timestamp = 4`, `network_tag = 5`.
  */
 export interface StoredMonadMessageProto {
   message: MonadStampedMessageProto | undefined
-  senderAddress: Uint8Array
-  txHash: Uint8Array
   /** Milliseconds since the Unix epoch. Decoded via `jspb.BinaryReader.readInt64`, which returns a
    * plain JS `number` (not `bigint`) — safe here since a millisecond timestamp is far below
    * `Number.MAX_SAFE_INTEGER` for a very long time yet. */
@@ -177,9 +194,16 @@ export function encodeMonadStampedMessage(
   msg: MonadStampedMessageProto,
 ): Uint8Array {
   const pb = new MonadStampedMessage()
-  pb.setRawBurnTx(msg.rawBurnTx)
   pb.setEncryptedPayload(msg.encryptedPayload)
   pb.setPayloadHash(msg.payloadHash)
+  pb.setStampPaymentsList(
+    msg.stampPayments.map(payment => {
+      const paymentPb = new MonadStampPayment()
+      paymentPb.setChildIndex(payment.childIndex)
+      paymentPb.setRawTx(payment.rawTx)
+      return paymentPb
+    }),
+  )
   return pb.serializeBinary()
 }
 
@@ -190,7 +214,10 @@ export function decodeMonadStampedMessage(
 ): MonadStampedMessageProto {
   const pb = MonadStampedMessage.deserializeBinary(bytes)
   return {
-    rawBurnTx: pb.getRawBurnTx_asU8(),
+    stampPayments: pb.getStampPaymentsList().map(payment => ({
+      childIndex: payment.getChildIndex(),
+      rawTx: payment.getRawTx_asU8(),
+    })),
     encryptedPayload: pb.getEncryptedPayload_asU8(),
     payloadHash: pb.getPayloadHash_asU8(),
   }
@@ -206,21 +233,139 @@ export function decodeStoredMonadMessage(
   return {
     message: nested
       ? {
-          rawBurnTx: nested.getRawBurnTx_asU8(),
+          stampPayments: nested.getStampPaymentsList().map(payment => ({
+            childIndex: payment.getChildIndex(),
+            rawTx: payment.getRawTx_asU8(),
+          })),
           encryptedPayload: nested.getEncryptedPayload_asU8(),
           payloadHash: nested.getPayloadHash_asU8(),
         }
       : undefined,
-    senderAddress: pb.getSenderAddress_asU8(),
-    txHash: pb.getTxHash_asU8(),
     timestamp: pb.getTimestamp(),
     networkTag: pb.getNetworkTag_asU8(),
   }
 }
 
-/** `h_m = SHA256(encrypted_payload)` — both `MonadStampedMessage.payload_hash` and the on-chain
- * commitment the burn tx's calldata must carry (see this file's header). Returns the raw 32-byte
- * hash, not hex. */
+/** Spendable recipient-side view of one verified stamp-payment child. This is intentionally
+ * produced only by an explicit recovery call; private keys are never added to ordinary stored
+ * message/feed objects. */
+export interface RecoveredMonadStampPayment {
+  childIndex: number
+  address: string
+  privateKey: Uint8Array
+  txHash: string
+  valueWei: bigint
+}
+
+export type MonadStampPaymentSweepOutcome =
+  | {
+      swept: true
+      txHash: string
+      valueWei: bigint
+      destinationAddress: string
+    }
+  | {
+      swept: false
+      reason: 'below-dust-threshold'
+      balanceWei: bigint
+      dustThresholdWei: bigint
+    }
+
+/** Reconstruct every one-time payment key from a stored message and the recipient identity key.
+ * The raw transaction destination is checked against the derived address before any key is
+ * returned, so a malformed/local message cannot silently associate funds with the wrong child. */
+export function recoverMonadStampPayments(params: {
+  message: MonadStampedMessageProto
+  recipientPrivateKey: Uint8Array
+}): RecoveredMonadStampPayment[] {
+  const seenChildren = new Set<number>()
+  return params.message.stampPayments.map(payment => {
+    if (seenChildren.has(payment.childIndex)) {
+      throw new Error(
+        `Duplicate stamp-payment child index ${payment.childIndex}`,
+      )
+    }
+    seenChildren.add(payment.childIndex)
+    const child = deriveMonadStampChildPrivate({
+      payloadHash: params.message.payloadHash,
+      recipientPrivateKey: params.recipientPrivateKey,
+      paymentIndex: payment.childIndex,
+    })
+    const tx = Transaction.from(hexlify(payment.rawTx))
+    if (tx.to?.toLowerCase() !== child.address.toLowerCase()) {
+      throw new Error(
+        `Stamp payment child ${payment.childIndex} pays ${
+          tx.to ?? 'no address'
+        }, expected ${child.address}`,
+      )
+    }
+    if (tx.hash === null) {
+      throw new Error(
+        `Stamp payment child ${payment.childIndex} is not a signed transaction`,
+      )
+    }
+    return {
+      childIndex: payment.childIndex,
+      address: child.address,
+      privateKey: child.privateKey,
+      txHash: tx.hash,
+      valueWei: tx.value,
+    }
+  })
+}
+
+/** Sweep one recovered recipient payment into an ordinary recipient-controlled change address.
+ * The child pays its own gas, so only `balance - dustThreshold` is transferred. The private key
+ * remains caller-owned and is never serialized into the message or returned in the outcome. */
+export async function sweepRecoveredMonadStampPayment(params: {
+  payment: RecoveredMonadStampPayment
+  destinationAddress: string
+  provider: Provider
+  httpClient: MonadTxSubmitter
+  dustThresholdWei?: bigint
+  overrides?: MonadTxOverrides
+}): Promise<MonadStampPaymentSweepOutcome> {
+  const signer = new MonadAccountTxSigner({
+    privateKey: hexlify(params.payment.privateKey),
+    provider: params.provider,
+    httpClient: params.httpClient,
+  })
+  if (signer.address.toLowerCase() !== params.payment.address.toLowerCase()) {
+    throw new Error(
+      `Recovered stamp-payment key resolves to ${signer.address}, expected ${params.payment.address}`,
+    )
+  }
+
+  const balanceWei = await params.provider.getBalance(params.payment.address)
+  const dustThresholdWei =
+    params.dustThresholdWei ?? (await estimateDustThresholdWei(params.provider))
+  if (balanceWei <= dustThresholdWei) {
+    return {
+      swept: false,
+      reason: 'below-dust-threshold',
+      balanceWei,
+      dustThresholdWei,
+    }
+  }
+
+  const valueWei = balanceWei - dustThresholdWei
+  const signed = await signer.buildAndSignTransfer(
+    params.destinationAddress,
+    valueWei,
+    params.overrides,
+  )
+  const txHash = await signer.submit(signed)
+  return {
+    swept: true,
+    txHash,
+    valueWei,
+    destinationAddress: signed.to,
+  }
+}
+
+/** `h_m = SHA256(encrypted_payload)`, stored as `MonadStampedMessage.payload_hash`. Per-payment
+ * on-chain commitments are derived from this hash by {@link computeMonadStampPaymentCommitment}.
+ * Returns the raw 32-byte hash, not hex. */
 export function computeMonadStampCommitment(
   encryptedPayload: Uint8Array,
 ): Uint8Array {
@@ -241,6 +386,37 @@ export function buildMonadStampCalldata(commitment: Uint8Array): string {
     COMMITMENT_VERSION_TAG,
     commitment,
   ])
+}
+
+/** Domain-separated commitment for one member of a payment set. Distinct child calldata prevents
+ * a passive chain observer from grouping every split solely because it repeats the payload hash. */
+export function computeMonadStampPaymentCommitment(
+  payloadHash: Uint8Array,
+  childIndex: number,
+): Uint8Array {
+  if (payloadHash.length !== 32) {
+    throw new Error(
+      `Monad stamp payload hash must be exactly 32 bytes, got ${payloadHash.length}`,
+    )
+  }
+  if (
+    !Number.isInteger(childIndex) ||
+    childIndex < 0 ||
+    childIndex > 0xffffffff
+  ) {
+    throw new Error(
+      `Stamp payment child index must be a uint32, got ${childIndex}`,
+    )
+  }
+  const indexBytes = Uint8Array.from([
+    (childIndex >>> 24) & 0xff,
+    (childIndex >>> 16) & 0xff,
+    (childIndex >>> 8) & 0xff,
+    childIndex & 0xff,
+  ])
+  return getBytes(
+    sha256(concat([PAYMENT_COMMITMENT_DOMAIN, payloadHash, indexBytes])),
+  )
 }
 
 /** Hex-encode `bytes` with no `0x` prefix — the shape Rust's `hex::decode` (used by
@@ -298,14 +474,10 @@ export interface StampMonadMessageParams {
   /** The message payload, already encrypted for its recipient(s) — this module is opaque to its
    * contents, per `monad_message.proto`'s own doc comment on `encrypted_payload`. */
   encryptedPayload: Uint8Array
-  /** `0x`-prefixed address the stamp value is sent to. Ticket #57: for a direct message this is
-   * the recipient's own address (a real payment, mirroring Lotus's `constructStampTransactions`);
-   * only a broadcast (no single recipient) uses the fixed `MONAD_STAMP_BURN_ADDRESS` (see
-   * `frank/.env.example`, decided in ticket #7). This module itself doesn't care which — it's the
-   * caller's decision, passed explicitly rather than read from `process.env` here, matching
-   * `monad-http.ts`'s established convention of never reading env itself (see that file's header). */
-  destinationAddress: string
-  /** Value, in wei, sent to `destinationAddress`. */
+  /** Recipient's registered compressed secp256k1 public key. It derives the one-time payment
+   * destinations; the recipient address itself is never a payment destination. */
+  recipientPublicKey: Uint8Array
+  /** Aggregate stamp-payment value, in wei, across the selected sender accounts. */
   stampValueWei: bigint
   overrides?: MonadTxOverrides
   /** If provided, waits (`acquireLeaseWhenAvailable`) for a sub-account to free up instead of
@@ -317,19 +489,23 @@ export interface StampMonadMessageParams {
   abandonPoll?: AbandonPollOptions
 }
 
-/** Outcome of a successful `submitStampedMessage` call — the burn tx confirmed on-chain and the
+/** Outcome of a successful `submitStampedMessage` call — all payment transactions confirmed and the
  * relay stored the message (see this file's header: a 2xx `PUT /message/monad` response, or a
  * found `GET` after the network-failure fallback poll, are the only two ways to reach this). */
 export interface StampMonadMessageResult {
   stored: StoredMonadMessageProto
   /** Bare (no `0x`) hex of `h_m` — also `GET /message/monad/:payload_hash`'s path segment. */
   payloadHashHex: string
-  txHash: string
-  leaseIndex: number
+  txHashes: string[]
+  leaseIndices: number[]
+  /** One result per confirmed payment account when an HD change pool is configured. Sweeps are
+   * deliberately serial so every account receives a distinct monotonically-derived change
+   * destination. A failed sweep is reported here and does not undo an accepted message. */
+  changeSweeps: Array<ChangeSweepOutcome | undefined>
 }
 
 /**
- * Ties together sub-account leasing (#14/#18), burn-tx construction (#11), and the live
+ * Ties together sub-account leasing (#14/#18), payment construction (#11), and the live
  * `PUT /message/monad` / `GET /message/monad/:payload_hash` HTTP surface (#27) into one call:
  * "stamp this encrypted payload onto Monad and hand it to the relay." See this file's header for
  * the full commitment/calldata/protobuf/lease-release design.
@@ -339,6 +515,7 @@ export class MonadStampClient {
   private readonly leaseManager: SubAccountLeaseManager
   private readonly provider: Provider
   private readonly httpClient: MonadTxSubmitter
+  private readonly changePool: MonadChangePool | undefined
   /** Base URL of the `cashweb-registry` relay, e.g. `https://relay.example.com` — no trailing
    * slash. `/message/monad` (`PUT`) and `/message/monad/:payload_hash` (`GET`) are appended to it. */
   private readonly relayBaseUrl: string
@@ -348,6 +525,7 @@ export class MonadStampClient {
     this.leaseManager = params.leaseManager
     this.provider = params.provider
     this.httpClient = params.httpClient
+    this.changePool = params.changePool
     this.relayBaseUrl = params.relayBaseUrl.replace(/\/+$/, '')
   }
 
@@ -418,7 +596,7 @@ export class MonadStampClient {
 
   /**
    * Stamps `params.encryptedPayload` onto Monad end-to-end: computes `h_m`, builds the calldata,
-   * leases a sub-account, builds+signs the burn tx, `PUT`s the assembled `MonadStampedMessage` to
+   * leases distinct funding accounts, builds+signs the payments, `PUT`s the assembled message to
    * the relay, and releases the lease per this file's header's documented policy. Throws
    * {@link MonadStampRejectedError} if the relay definitively rejected the message, or
    * {@link MonadStampAbandonedError} if a network failure left the outcome unresolved even after the
@@ -432,51 +610,174 @@ export class MonadStampClient {
     }
 
     const payloadHash = computeMonadStampCommitment(params.encryptedPayload)
-    const calldata = buildMonadStampCalldata(payloadHash)
+    const quoteCalldata = buildMonadStampCalldata(
+      computeMonadStampPaymentCommitment(payloadHash, 0),
+    )
     const payloadHashHex = toBareHex(payloadHash)
+    const quoteDestination = deriveMonadStampChildPublic({
+      payloadHash,
+      recipientPublicKey: params.recipientPublicKey,
+      paymentIndex: 0,
+    }).address
 
-    const handle: AccountLeaseHandle = params.waitForLease
-      ? await acquireLeaseWhenAvailable(this.leaseManager, params.waitForLease)
-      : this.leaseManager.acquireLease()
+    let availableRecords = this.pool
+      .records()
+      .filter(candidate => candidate.status === 'available')
+    if (availableRecords.length === 0 && params.waitForLease !== undefined) {
+      const sleep = params.waitForLease.sleep ?? defaultSleep
+      const now = params.waitForLease.now ?? Date.now
+      const pollIntervalMs = params.waitForLease.pollIntervalMs ?? 250
+      const deadline = now() + (params.waitForLease.timeoutMs ?? 30_000)
+      while (availableRecords.length === 0 && now() < deadline) {
+        await sleep(pollIntervalMs)
+        availableRecords = this.pool
+          .records()
+          .filter(candidate => candidate.status === 'available')
+      }
+    }
+    if (availableRecords.length === 0) {
+      throw new NoAvailableSubAccountError(
+        'No available sub-account to quote for a stamp payment',
+      )
+    }
 
-    let signedTx: SignedMonadTx
-    try {
-      const signer = this.pool.getSigner(handle.index, {
+    const quotes: Array<{
+      index: number
+      address: string
+      capacityWei: bigint
+      resolvedOverrides: MonadTxOverrides
+    }> = []
+    for (const record of availableRecords) {
+      const balance = await this.provider.getBalance(record.address)
+      if (balance <= BigInt(0)) continue
+      const signer = this.pool.getSigner(record.index, {
         provider: this.provider,
         httpClient: this.httpClient,
       })
-      signedTx = await signer.buildAndSignCall(
-        params.destinationAddress,
-        params.stampValueWei,
-        calldata,
+      // Resolve the exact nonce/gas/fee fields with a one-wei probe. No transaction is submitted.
+      // Every derived destination is an EOA, so changing only its address and value does not alter
+      // the calldata execution cost.
+      const probe = await signer.buildAndSignCall(
+        quoteDestination,
+        BigInt(1),
+        quoteCalldata,
         params.overrides,
       )
+      const feePerGas = probe.maxFeePerGas ?? probe.gasPrice
+      if (feePerGas === undefined) {
+        throw new Error('Unable to determine a maximum fee for stamp payment')
+      }
+      const feeReserveWei = probe.gasLimit * feePerGas
+      const capacityWei =
+        balance > feeReserveWei ? balance - feeReserveWei : BigInt(0)
+      quotes.push({
+        index: record.index,
+        address: record.address,
+        capacityWei,
+        resolvedOverrides: {
+          nonce: probe.nonce,
+          gasLimit: probe.gasLimit,
+          maxFeePerGas: probe.maxFeePerGas,
+          maxPriorityFeePerGas: probe.maxPriorityFeePerGas,
+          gasPrice: probe.gasPrice,
+          chainId: probe.chainId,
+        },
+      })
+    }
+
+    const selected = selectStampAccounts({
+      amountWei: params.stampValueWei,
+      accounts: quotes,
+    })
+    const quoteByIndex = new Map(quotes.map(quote => [quote.index, quote]))
+    const handles: AccountLeaseHandle[] = []
+    const signedTxs: SignedMonadTx[] = []
+    try {
+      // Claim the complete selected set synchronously before the first signing `await`, so no
+      // concurrent sender in this process can take a later member between transactions.
+      for (const selection of selected) {
+        handles.push(this.leaseManager.acquireForIndex(selection.index))
+      }
+      for (const [paymentIndex, selection] of selected.entries()) {
+        const handle = handles[paymentIndex]
+        const signer = this.pool.getSigner(handle.index, {
+          provider: this.provider,
+          httpClient: this.httpClient,
+        })
+        const destination = deriveMonadStampChildPublic({
+          payloadHash,
+          recipientPublicKey: params.recipientPublicKey,
+          paymentIndex,
+        })
+        const quote = quoteByIndex.get(selection.index)
+        if (quote === undefined)
+          throw new Error('Selected account lost its quote')
+        signedTxs.push(
+          await signer.buildAndSignCall(
+            destination.address,
+            selection.paymentValueWei,
+            buildMonadStampCalldata(
+              computeMonadStampPaymentCommitment(payloadHash, paymentIndex),
+            ),
+            quote.resolvedOverrides,
+          ),
+        )
+      }
     } catch (err) {
-      // No transaction was ever broadcast, so the sub-account's nonce isn't actually at risk — but
-      // `releaseLease` has no "never attempted" outcome to say so precisely. See this file's header,
-      // "Lease release policy", for why this deliberately still retires rather than guessing.
-      this.leaseManager.releaseLease(handle, 'failed')
+      for (const handle of handles) {
+        this.leaseManager.releaseLease(handle, 'failed')
+      }
       throw err
     }
 
     const message: MonadStampedMessageProto = {
-      rawBurnTx: getBytes(signedTx.rawTx),
+      stampPayments: signedTxs.map((signedTx, childIndex) => ({
+        childIndex,
+        rawTx: getBytes(signedTx.rawTx),
+      })),
       encryptedPayload: params.encryptedPayload,
       payloadHash,
+    }
+    const releaseAll = async (
+      outcome: 'confirmed' | 'failed' | 'stuck',
+    ): Promise<Array<ChangeSweepOutcome | undefined>> => {
+      const sweeps: Array<ChangeSweepOutcome | undefined> = []
+      for (const handle of handles) {
+        const signer = this.pool.getSigner(handle.index, {
+          provider: this.provider,
+          httpClient: this.httpClient,
+        })
+        const released = await releaseLeaseAndSweepChange({
+          manager: this.leaseManager,
+          handle,
+          outcome,
+          sweep:
+            this.changePool === undefined
+              ? undefined
+              : {
+                  changePool: this.changePool,
+                  burnAccountSigner: signer,
+                  provider: this.provider,
+                },
+        })
+        sweeps.push(released.sweep)
+      }
+      return sweeps
     }
 
     try {
       const stored = await this.putStampedMessage(message)
-      this.leaseManager.releaseLease(handle, 'confirmed')
+      const changeSweeps = await releaseAll('confirmed')
       return {
         stored,
         payloadHashHex,
-        txHash: signedTx.txHash,
-        leaseIndex: handle.index,
+        txHashes: signedTxs.map(signedTx => signedTx.txHash),
+        leaseIndices: handles.map(handle => handle.index),
+        changeSweeps,
       }
     } catch (err) {
       if (axios.isAxiosError(err) && err.response) {
-        this.leaseManager.releaseLease(handle, 'failed')
+        await releaseAll('failed')
         throw new MonadStampRejectedError(
           `Relay rejected the Monad-stamped message (HTTP ${err.response.status})`,
           err.response.status,
@@ -491,16 +792,17 @@ export class MonadStampClient {
         params.abandonPoll,
       )
       if (stored !== undefined) {
-        this.leaseManager.releaseLease(handle, 'confirmed')
+        const changeSweeps = await releaseAll('confirmed')
         return {
           stored,
           payloadHashHex,
-          txHash: signedTx.txHash,
-          leaseIndex: handle.index,
+          txHashes: signedTxs.map(signedTx => signedTx.txHash),
+          leaseIndices: handles.map(handle => handle.index),
+          changeSweeps,
         }
       }
 
-      this.leaseManager.releaseLease(handle, 'stuck')
+      await releaseAll('stuck')
       throw new MonadStampAbandonedError(
         'Monad stamp submission abandoned: no response from the relay, and ' +
           `GET /message/monad/${payloadHashHex} never found a stored message`,

@@ -33,7 +33,10 @@ import {
   createMonadChain,
   loadMonadChainConfigFromEnv,
 } from '@frank/wallet/chain/monad-chain'
-import { registerMonadIdentity, MonadIdentity } from '@frank/wallet/monad-identity'
+import {
+  registerMonadIdentity,
+  MonadIdentity,
+} from '@frank/wallet/monad-identity'
 import { requiredEnv } from './qwen-bot-common'
 import { setUpFundedStampClient } from './qwen-bot-common'
 
@@ -85,7 +88,7 @@ async function main() {
     relayBaseUrl: config.relayBaseUrl,
     mainWalletJsonPath: requiredEnv('E2E_DEMO_MAIN_WALLET_JSON'),
     poolSize: 1,
-    burnValueWei: config.defaultStampBurnValueWei,
+    stampValueWei: config.defaultStampValueWei,
     label: 'ui-verify',
   })
   // Graft the funded pool/lease-manager/httpClient onto the ActiveChain wallet handle so
@@ -117,7 +120,7 @@ async function main() {
     items: [{ type: 'text', text: message }],
   })
   console.log(
-    `Sent -- payload_hash=${sendResult.payloadDigest} burnValueWei=${sendResult.burnValueWei}`,
+    `Sent -- payload_hash=${sendResult.payloadDigest} stampValueWei=${sendResult.stampValueWei}`,
   )
 
   console.log(
@@ -139,7 +142,7 @@ async function main() {
       )
       console.log(JSON.stringify(reply.items, null, 2))
       console.log(
-        `burn tx payload_hash=${reply.payloadDigest} burnValueWei=${reply.burnValueWei}`,
+        `stamp payment payload_hash=${reply.payloadDigest} stampValueWei=${reply.stampValueWei}`,
       )
       console.log(
         '\n== VERIFIED: a real ActiveChain wallet can talk to the bot end-to-end ==',

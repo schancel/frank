@@ -1,5 +1,5 @@
 //! `PUT /message/monad`, `GET /message/monad/:payload_hash`, and `GET /message/monad?since=
-//! <timestamp>`: the live HTTP path for a Monad-stamped broadcast message (ticket #27),
+//! <timestamp>`: the live HTTP path for a Monad-stamped direct message (ticket #27),
 //! completing the wiring `crate::monad_stamp_relay`'s module docs (ticket #19) left for
 //! "whoever picks up the wire format decision".
 //!
@@ -28,8 +28,7 @@
 //! **Important gap, surfaced rather than silently patched over (see ticket #37's handoff for the
 //! full writeup):** neither [`proto::MonadStampedMessage`] nor [`proto::StoredMonadMessage`]
 //! carries an intended-*recipient* field at all -- a Monad message is addressed purely by content
-//! hash, with `encrypted_payload` opaque to the relay (Stamp's design centers on the *sender*
-//! proving payment via the burn tx, not on recipient addressing). So unlike the `&recipient=
+//! hash, with the recipient routing address inside the client envelope. So unlike the `&recipient=
 //! <address>` parameter ticket #37's issue text sketches, [`handle_list_monad_messages`] takes
 //! only `since` and returns *every* message stored at or after that timestamp -- there is nothing
 //! in the wire format for the relay to filter on server-side. This mirrors how `DbTopics`'s
@@ -55,13 +54,11 @@
 //! `cashweb-registry`, where `monad_stamp_relay`/`monad_stamp_verify` live) and its own route.
 //!
 //! Unlike a Lotus `SignedPayload`, [`proto::MonadStampedMessage`] carries no separate pubkey or
-//! signature: per PLAN.md constraint 5, sender authentication comes for free from the raw burn
-//! tx's own ECDSA signature, recoverable via [`crate::monad_evm_tx::recover_sender`] (Ethereum's
-//! `ecrecover`) -- so requiring a client to *additionally* sign the message with a declared pubkey
-//! would be redundant. In its place, [`proto::MonadStampedMessage::payload_hash`] is the binding
-//! between this specific message and the on-chain burn: `raw_burn_tx`'s calldata must commit to
-//! exactly this hash (checked by [`verify_stamp_burn`](crate::monad_stamp_verify::verify_stamp_burn)
-//! via [`process_monad_message`] below), so a burn tx can't be replayed with a substituted payload.
+//! signature. The raw transaction signatures authenticate only disposable funding accounts, not
+//! the claimed message author; that is intentional and preserves Stamp's deniability. Recipient-
+//! verifiable authentication belongs inside the encrypted content. The payload hash instead binds
+//! each payment transaction to this exact encrypted payload, preventing reuse with substituted
+//! content.
 //!
 //! ## Storage: why this doesn't go through `Registry::put_message`/`DbTopics`
 //!
@@ -97,7 +94,7 @@
 //! An unconfigured or invalid gate fails every request closed (`500`), rather than silently
 //! skipping stamp verification, mirroring `pop_protection`'s same fail-closed choice.
 
-use std::{fmt, sync::OnceLock};
+use std::{collections::HashSet, fmt, sync::OnceLock};
 
 use axum::{
     extract::{Path, Query},
@@ -114,10 +111,11 @@ use tracing::Level;
 
 use crate::{
     http::server::RegistryServer,
-    monad_evm_tx::{recover_sender, EvmTxError},
-    monad_http::{Address, HttpTransport, JsonRpcTransport},
+    monad_evm_tx::{decode_signed_transaction, EvmTxError},
+    monad_http::{Address, Hash32, HttpTransport, JsonRpcTransport},
     monad_stamp_relay::{broadcast_and_verify_stamp, PollConfig, StampRelayOutcome},
-    monad_stamp_verify::ExpectedBurn,
+    monad_stamp_stealth::{derive_monad_stamp_child_public, StampStealthError},
+    monad_stamp_verify::{parse_commitment_calldata, ExpectedStampTransaction},
     proto,
     registry::Registry,
 };
@@ -128,10 +126,45 @@ use crate::{
 #[derive(Debug)]
 pub enum ProcessMonadMessageError {
     /// `encrypted_payload` doesn't parse as the client's own `MonadMessageEnvelope` JSON shape
-    /// (`{v, from, to, salt, ciphertext}`, `app/src/cashweb/wallet/monad-message-envelope.ts` --
+    /// (`{v, networkTag, from, to, salt, ciphertext}`, `packages/cashweb/relay/monad-message-envelope.ts` --
     /// `to` is deliberately left unencrypted there for routing) -- see [`extract_recipient`]'s own
     /// doc comment for why this is required, not best-effort.
     MissingOrInvalidRecipient(String),
+    /// The envelope was hashed for a different Frank network than this relay serves.
+    NetworkTagMismatch {
+        /// Relay-configured tag.
+        expected: Vec<u8>,
+        /// Envelope tag, or none when omitted.
+        actual: Option<String>,
+    },
+    /// No registered recipient public key exists, so stealth destinations cannot be verified.
+    RecipientProfileNotFound(Address),
+    /// A direct message must carry at least one payment transaction.
+    MissingStampPayments,
+    /// Reusing a child index would send multiple payments to the same one-time destination.
+    DuplicateChildIndex(u32),
+    /// Child indices must be exactly `0..n-1` in wire order.
+    NonCanonicalChildIndex {
+        /// Position within `stamp_payments`.
+        position: usize,
+        /// Index found at that position.
+        actual: u32,
+    },
+    /// Multiple payments must not expose the same sender funding account.
+    DuplicateFundingAccount(Address),
+    /// Identical signed transactions must not appear twice in a canonical set.
+    DuplicateTransaction(Hash32),
+    /// A disposable funding account must not also be one of this set's recipient destinations.
+    FundingAccountIsDestination(Address),
+    /// A signed payment's own fields fail a check that can be completed before broadcasting.
+    InvalidPaymentPreflight {
+        /// Canonical child whose transaction failed.
+        child_index: u32,
+        /// Concrete failed invariant.
+        detail: String,
+    },
+    /// The expected one-time payment destination could not be derived canonically.
+    InvalidStealthDestination(StampStealthError),
     /// `payload_hash` wasn't exactly 32 bytes.
     InvalidPayloadHashLength(usize),
     /// `payload_hash` didn't match `SHA256(encrypted_payload)`.
@@ -141,8 +174,17 @@ pub enum ProcessMonadMessageError {
         /// The actual hash of `encrypted_payload`.
         actual: Sha256,
     },
-    /// [`recover_sender`] couldn't recover a sender address from `raw_burn_tx`.
-    SenderRecoveryFailed(EvmTxError),
+    /// [`recover_sender`] couldn't recover a funding account from a raw payment transaction.
+    FundingAccountRecoveryFailed(EvmTxError),
+    /// The individually verified payments did not meet the message-wide minimum.
+    InsufficientTotalValue {
+        /// Required aggregate value in wei.
+        required: u128,
+        /// Actual aggregate value in wei.
+        actual: u128,
+    },
+    /// Summing payment values overflowed the relay's `u128` value representation.
+    TotalValueOverflow,
     /// The stamp didn't verify -- see the wrapped [`StampRelayOutcome`] for exactly why (a
     /// broadcast-time RPC failure, a confirmation timeout, or a specific verification failure).
     /// Every non-[`StampRelayOutcome::Verified`] outcome is a rejection, never a silent store, per
@@ -162,6 +204,45 @@ impl fmt::Display for ProcessMonadMessageError {
                     "couldn't determine recipient address from encrypted_payload: {detail}"
                 )
             }
+            ProcessMonadMessageError::NetworkTagMismatch { expected, actual } => write!(
+                f,
+                "message network tag {:?} does not match relay tag {}",
+                actual,
+                String::from_utf8_lossy(expected)
+            ),
+            ProcessMonadMessageError::RecipientProfileNotFound(address) => {
+                write!(f, "recipient {address} has no registered Monad profile")
+            }
+            ProcessMonadMessageError::MissingStampPayments => {
+                write!(f, "a direct message requires at least one stamp payment")
+            }
+            ProcessMonadMessageError::DuplicateChildIndex(index) => {
+                write!(f, "stamp payment child index {index} is duplicated")
+            }
+            ProcessMonadMessageError::NonCanonicalChildIndex { position, actual } => write!(
+                f,
+                "stamp payment at position {position} has child index {actual}; expected {position}"
+            ),
+            ProcessMonadMessageError::DuplicateFundingAccount(address) => {
+                write!(f, "stamp funding account {address} is reused")
+            }
+            ProcessMonadMessageError::DuplicateTransaction(hash) => {
+                write!(f, "stamp transaction {hash} is duplicated")
+            }
+            ProcessMonadMessageError::FundingAccountIsDestination(address) => write!(
+                f,
+                "stamp funding account {address} is also a recipient child destination"
+            ),
+            ProcessMonadMessageError::InvalidPaymentPreflight {
+                child_index,
+                detail,
+            } => write!(
+                f,
+                "stamp payment child {child_index} failed preflight validation: {detail}"
+            ),
+            ProcessMonadMessageError::InvalidStealthDestination(err) => {
+                write!(f, "invalid stamp stealth destination: {err}")
+            }
             ProcessMonadMessageError::InvalidPayloadHashLength(len) => {
                 write!(f, "payload_hash must be 32 bytes, got {len}")
             }
@@ -169,8 +250,20 @@ impl fmt::Display for ProcessMonadMessageError {
                 f,
                 "payload_hash {declared} doesn't match SHA256(encrypted_payload) {actual}"
             ),
-            ProcessMonadMessageError::SenderRecoveryFailed(err) => {
-                write!(f, "couldn't recover sender from raw_burn_tx: {err}")
+            ProcessMonadMessageError::FundingAccountRecoveryFailed(err) => {
+                write!(
+                    f,
+                    "couldn't recover funding account from stamp payment: {err}"
+                )
+            }
+            ProcessMonadMessageError::InsufficientTotalValue { required, actual } => {
+                write!(
+                    f,
+                    "stamp payment set carries {actual} wei, below required {required} wei"
+                )
+            }
+            ProcessMonadMessageError::TotalValueOverflow => {
+                write!(f, "stamp payment value sum overflowed u128")
             }
             ProcessMonadMessageError::Rejected(outcome) => {
                 write!(f, "Monad stamp rejected: {outcome:?}")
@@ -183,12 +276,24 @@ impl fmt::Display for ProcessMonadMessageError {
 }
 
 /// The client's own `MonadMessageEnvelope` JSON shape (`app/src/cashweb/wallet/
-/// monad-message-envelope.ts`): `{v, from, to, salt, ciphertext}`. Only `to` matters here --
-/// `#[derive(Deserialize)]` ignores the other fields by default, so this stays valid even if the
-/// client adds fields to the envelope later (additive, non-breaking from this side).
+/// monad-message-envelope.ts`): `{v, networkTag, from, to, salt, ciphertext}`. Routing and network
+/// binding matter here; encrypted content remains opaque. `#[derive(Deserialize)]` ignores other
+/// fields by default, so this stays valid if the client adds additive fields later.
 #[derive(Deserialize)]
 struct MonadMessageEnvelope {
     to: String,
+    #[serde(rename = "networkTag")]
+    network_tag: Option<String>,
+}
+
+const PAYMENT_COMMITMENT_DOMAIN: &[u8] = b"frank:dm-stamp-payment:v1";
+
+fn payment_commitment(payload_hash: &[u8; 32], child_index: u32) -> Sha256 {
+    let mut preimage = Vec::with_capacity(PAYMENT_COMMITMENT_DOMAIN.len() + 36);
+    preimage.extend_from_slice(PAYMENT_COMMITMENT_DOMAIN);
+    preimage.extend_from_slice(payload_hash);
+    preimage.extend_from_slice(&child_index.to_be_bytes());
+    Sha256::digest(preimage.into())
 }
 
 /// Ticket #57 (found live: real Monad DMs were burning stamp value to the fixed relay-configured
@@ -212,30 +317,40 @@ struct MonadMessageEnvelope {
 /// `encrypted_payload` as opaque *content* while still being able to check *structure* around it
 /// (same principle as the `payload_hash` check just above, which hashes the whole blob without
 /// needing to understand it).
-fn extract_recipient(encrypted_payload: &[u8]) -> Result<Address, ProcessMonadMessageError> {
+fn extract_recipient(
+    encrypted_payload: &[u8],
+    expected_network_tag: &[u8],
+) -> Result<Address, ProcessMonadMessageError> {
     let envelope: MonadMessageEnvelope = serde_json::from_slice(encrypted_payload)
         .map_err(|err| ProcessMonadMessageError::MissingOrInvalidRecipient(err.to_string()))?;
+    if !expected_network_tag.is_empty()
+        && envelope.network_tag.as_deref().map(str::as_bytes) != Some(expected_network_tag)
+    {
+        return Err(ProcessMonadMessageError::NetworkTagMismatch {
+            expected: expected_network_tag.to_vec(),
+            actual: envelope.network_tag,
+        });
+    }
     Address::from_hex(&envelope.to)
         .map_err(|err| ProcessMonadMessageError::MissingOrInvalidRecipient(err.to_string()))
 }
 
 /// Decode, verify, broadcast-and-confirm, and (on success) store a [`proto::MonadStampedMessage`].
 ///
-/// Mirrors `Registry::put_message`'s Lotus flow (decode -> verify burn -> store) at a high level,
+/// Mirrors `Registry::put_message`'s Lotus flow (decode -> verify stamp -> store) at a high level,
 /// but every step is Monad-specific:
 /// 1. `payload_hash` must be exactly 32 bytes and match `SHA256(encrypted_payload)` (the
 ///    client-side integrity check `SignedPayload::parse_proto` does for Lotus).
-/// 2. The sender is recovered from `raw_burn_tx` via [`recover_sender`] (`ecrecover`) rather than
-///    read off an explicit pubkey field.
-/// 3. The expected payment destination is the message's *own claimed recipient*
-///    ([`extract_recipient`], ticket #57), not a fixed address -- this is the direct-message path,
-///    and Stamp's actual design pays the recipient (mirroring the Lotus relay's
-///    `constructStampTransactions`, which derives the stamp output address from the recipient's
-///    own pubkey) rather than burning to a dead/unspendable address, which only broadcasts
-///    (`monad_topics.rs`, no single recipient) correctly do.
-/// 4. [`broadcast_and_verify_stamp`] (ticket #19) broadcasts `raw_burn_tx` and confirms its
-///    calldata commits to `payload_hash`, sending at least `min_value_wei` to that recipient.
-/// 5. Only [`StampRelayOutcome::Verified`] leads to a store, via [`Registry::put_monad_message`]
+/// 2. The recipient routing address is parsed from the envelope and resolved to its registered
+///    secp256k1 public key.
+/// 3. Each raw payment signature recovers a distinct disposable funding account. This does not
+///    authenticate the claimed message author and deliberately preserves deniability.
+/// 4. For every declared child index, the relay independently derives the expected one-time
+///    destination from the recipient public key and payload hash, broadcasts the transaction, and
+///    verifies its destination, commitment, success, and positive value.
+/// 5. The independently verified values must sum to at least `min_value_wei`. A single payment is
+///    valid fallback; using two or more is a sender-side privacy goal, not a relay validity rule.
+/// 6. Only [`StampRelayOutcome::Verified`] leads to a store, via [`Registry::put_monad_message`]
 ///    -- every other outcome is [`ProcessMonadMessageError::Rejected`].
 ///
 /// `network_tag` (ticket #39, see `crate::network_tag`'s module docs) is stamped onto the stored
@@ -263,26 +378,135 @@ pub async fn process_monad_message<T: JsonRpcTransport + Clone>(
         });
     }
 
-    let sender = recover_sender(&request.raw_burn_tx)
-        .map_err(ProcessMonadMessageError::SenderRecoveryFailed)?;
+    let recipient = extract_recipient(&request.encrypted_payload, network_tag)?;
+    let recipient_profile = registry
+        .get_monad_profile(recipient)
+        .map_err(ProcessMonadMessageError::Infrastructure)?
+        .ok_or(ProcessMonadMessageError::RecipientProfileNotFound(
+            recipient,
+        ))?;
+    if request.stamp_payments.is_empty() {
+        return Err(ProcessMonadMessageError::MissingStampPayments);
+    }
 
-    let recipient = extract_recipient(&request.encrypted_payload)?;
+    let payload_hash: [u8; 32] = request
+        .payload_hash
+        .as_slice()
+        .try_into()
+        .expect("payload hash length was checked above");
+    let mut child_indices = HashSet::new();
+    let mut funding_accounts = HashSet::new();
+    let mut transaction_hashes = HashSet::new();
+    let mut expected_payments = Vec::with_capacity(request.stamp_payments.len());
+    let mut destination_addresses = HashSet::new();
+    let mut preflight_total_value_wei = 0u128;
+    for (position, payment) in request.stamp_payments.iter().enumerate() {
+        if payment.child_index as usize != position {
+            return Err(ProcessMonadMessageError::NonCanonicalChildIndex {
+                position,
+                actual: payment.child_index,
+            });
+        }
+        if !child_indices.insert(payment.child_index) {
+            return Err(ProcessMonadMessageError::DuplicateChildIndex(
+                payment.child_index,
+            ));
+        }
+        let decoded = decode_signed_transaction(&payment.raw_tx)
+            .map_err(ProcessMonadMessageError::FundingAccountRecoveryFailed)?;
+        if !transaction_hashes.insert(decoded.tx_hash) {
+            return Err(ProcessMonadMessageError::DuplicateTransaction(
+                decoded.tx_hash,
+            ));
+        }
+        if !funding_accounts.insert(decoded.sender) {
+            return Err(ProcessMonadMessageError::DuplicateFundingAccount(
+                decoded.sender,
+            ));
+        }
+        let destination = derive_monad_stamp_child_public(
+            payload_hash,
+            &recipient_profile.pubkey,
+            payment.child_index,
+        )
+        .map_err(ProcessMonadMessageError::InvalidStealthDestination)?;
+        let destination_address = Address(destination.address);
+        destination_addresses.insert(destination_address);
+        let expected_commitment = payment_commitment(&payload_hash, payment.child_index);
+        if decoded.destination != Some(destination_address) {
+            return Err(ProcessMonadMessageError::InvalidPaymentPreflight {
+                child_index: payment.child_index,
+                detail: format!(
+                    "destination {:?} does not match expected {destination_address}",
+                    decoded.destination
+                ),
+            });
+        }
+        if decoded.value_wei == 0 {
+            return Err(ProcessMonadMessageError::InvalidPaymentPreflight {
+                child_index: payment.child_index,
+                detail: "value must be positive".to_string(),
+            });
+        }
+        let actual_commitment =
+            parse_commitment_calldata(BROADCAST_MESSAGE_LOKAD_ID, &decoded.input).map_err(
+                |err| ProcessMonadMessageError::InvalidPaymentPreflight {
+                    child_index: payment.child_index,
+                    detail: err.to_string(),
+                },
+            )?;
+        if actual_commitment != expected_commitment {
+            return Err(ProcessMonadMessageError::InvalidPaymentPreflight {
+                child_index: payment.child_index,
+                detail: format!(
+                    "commitment {actual_commitment} does not match expected {expected_commitment}"
+                ),
+            });
+        }
+        preflight_total_value_wei = preflight_total_value_wei
+            .checked_add(decoded.value_wei)
+            .ok_or(ProcessMonadMessageError::TotalValueOverflow)?;
+        expected_payments.push(ExpectedStampTransaction {
+            commitment_id: BROADCAST_MESSAGE_LOKAD_ID,
+            commitment: expected_commitment,
+            destination_address,
+            // The configured minimum applies to the set. Requiring one wei here rejects zero-value
+            // padding entries without forcing any particular split across the real payments.
+            min_value_wei: 1,
+        });
+    }
+    if let Some(address) = funding_accounts.intersection(&destination_addresses).next() {
+        return Err(ProcessMonadMessageError::FundingAccountIsDestination(
+            *address,
+        ));
+    }
+    if preflight_total_value_wei < min_value_wei {
+        return Err(ProcessMonadMessageError::InsufficientTotalValue {
+            required: min_value_wei,
+            actual: preflight_total_value_wei,
+        });
+    }
 
-    let expected = ExpectedBurn {
-        commitment_id: BROADCAST_MESSAGE_LOKAD_ID,
-        commitment: declared_hash.clone(),
-        destination_address: recipient,
-        min_value_wei,
-    };
-
-    let outcome = broadcast_and_verify_stamp(transport, &request.raw_burn_tx, &expected, poll)
-        .await
-        .map_err(ProcessMonadMessageError::Infrastructure)?;
-
-    let tx_hash = match outcome {
-        StampRelayOutcome::Verified { tx_hash } => tx_hash,
-        other => return Err(ProcessMonadMessageError::Rejected(other)),
-    };
+    let mut total_value_wei = 0u128;
+    for (payment, expected) in request.stamp_payments.iter().zip(&expected_payments) {
+        let outcome = broadcast_and_verify_stamp(transport, &payment.raw_tx, expected, poll)
+            .await
+            .map_err(ProcessMonadMessageError::Infrastructure)?;
+        match outcome {
+            StampRelayOutcome::Verified { value_wei, .. } => {
+                total_value_wei = total_value_wei
+                    .checked_add(value_wei)
+                    .ok_or(ProcessMonadMessageError::TotalValueOverflow)?;
+            }
+            other => return Err(ProcessMonadMessageError::Rejected(other)),
+        }
+    }
+    if total_value_wei < min_value_wei {
+        return Err(ProcessMonadMessageError::InsufficientTotalValue {
+            required: min_value_wei,
+            actual: total_value_wei,
+        });
+    }
 
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -290,8 +514,6 @@ pub async fn process_monad_message<T: JsonRpcTransport + Clone>(
         .as_millis() as i64;
     let stored = proto::StoredMonadMessage {
         message: Some(request),
-        sender_address: sender.0.to_vec(),
-        tx_hash: tx_hash.0.to_vec(),
         timestamp,
         network_tag: Vec::new(),
     };
@@ -536,7 +758,7 @@ pub async fn handle_list_monad_messages(
 #[cfg(test)]
 mod tests {
     use std::{
-        collections::HashMap,
+        collections::{HashMap, VecDeque},
         fmt,
         sync::{Arc, Mutex},
     };
@@ -544,6 +766,7 @@ mod tests {
     use async_trait::async_trait;
     use bitcoinsuite_core::{ecc::Ecc, Net};
     use bitcoinsuite_ecc_secp256k1::EccSecp256k1;
+    use prost::Message;
     use serde_json::Value;
     use tempdir::TempDir;
 
@@ -597,11 +820,63 @@ mod tests {
         let tempdir = TempDir::new("cashweb-registry--monad-message-route").unwrap();
         let db = Db::open(tempdir.path().join("db.rocksdb")).unwrap();
         let registry = Registry::new(db, Arc::new(UnusedChainAdapter), Net::Regtest);
+        let ecc = EccSecp256k1::default();
+        let seckey = recipient_seckey();
+        let pubkey = ecc.derive_pubkey(&seckey);
+        let profile_payload = proto::MonadProfile {
+            timestamp: 1,
+            ttl: 1_000_000,
+            entries: vec![],
+        }
+        .encode_to_vec();
+        let profile_hash = Sha256::digest(profile_payload.clone().into());
+        registry
+            .put_monad_profile(
+                recipient_address(),
+                cashweb_payload::proto::SignedPayload {
+                    pubkey: pubkey.as_slice().to_vec(),
+                    sig: ecc
+                        .sign(&seckey, profile_hash.byte_array().clone())
+                        .to_vec(),
+                    sig_scheme: cashweb_payload::proto::signed_payload::SignatureScheme::Ecdsa
+                        .into(),
+                    payload: profile_payload,
+                    payload_hash: profile_hash.as_slice().to_vec(),
+                    burn_amount: 0,
+                    burn_txs: vec![],
+                },
+            )
+            .unwrap();
         (tempdir, registry)
     }
 
+    fn recipient_seckey() -> bitcoinsuite_core::ecc::SecKey {
+        EccSecp256k1::default()
+            .seckey_from_array([0x55; 32])
+            .unwrap()
+    }
+
     fn recipient_address() -> Address {
-        Address([0x44; 20])
+        let ecc = EccSecp256k1::default();
+        let pubkey = ecc.derive_pubkey(&recipient_seckey());
+        crate::monad_evm_tx::address_from_uncompressed_pubkey(
+            &ecc.serialize_pubkey_uncompressed(&pubkey),
+        )
+    }
+
+    fn stamp_destination_at(payload_hash: &Sha256, child_index: u32) -> Address {
+        let pubkey = EccSecp256k1::default().derive_pubkey(&recipient_seckey());
+        let child = crate::monad_stamp_stealth::derive_monad_stamp_child_public(
+            payload_hash.as_slice().try_into().unwrap(),
+            pubkey.as_slice(),
+            child_index,
+        )
+        .unwrap();
+        Address(child.address)
+    }
+
+    fn stamp_destination(payload_hash: &Sha256) -> Address {
+        stamp_destination_at(payload_hash, 0)
     }
 
     fn broadcast_burn_address() -> Address {
@@ -625,12 +900,18 @@ mod tests {
 
     const STMP_BROADCAST: [u8; 4] = *b"POND";
 
-    fn commitment_calldata(commitment: &Sha256) -> String {
+    fn commitment_calldata(payload_hash: &Sha256, child_index: u32) -> String {
         let mut calldata = Vec::new();
         calldata.extend_from_slice(&STMP_BROADCAST);
         calldata.push(crate::monad_stamp_verify::COMMITMENT_VERSION_TAG);
-        calldata.extend_from_slice(commitment.as_slice());
+        let payload_hash: [u8; 32] = payload_hash.as_slice().try_into().unwrap();
+        calldata.extend_from_slice(payment_commitment(&payload_hash, child_index).as_slice());
         format!("0x{}", hex::encode(calldata))
+    }
+
+    fn commitment_calldata_bytes(payload_hash: &Sha256, child_index: u32) -> Vec<u8> {
+        hex::decode(commitment_calldata(payload_hash, child_index).trim_start_matches("0x"))
+            .unwrap()
     }
 
     fn receipt_json(to: &str, status: &str) -> Value {
@@ -660,6 +941,7 @@ mod tests {
     #[derive(Clone, Default)]
     struct MockTransport {
         responses: Arc<Mutex<HashMap<String, Value>>>,
+        response_sequences: Arc<Mutex<HashMap<String, VecDeque<Value>>>>,
         calls: Arc<Mutex<Vec<String>>>,
     }
 
@@ -675,6 +957,14 @@ mod tests {
         fn calls(&self) -> Vec<String> {
             self.calls.lock().unwrap().clone()
         }
+
+        fn set_sequence(&self, method: &str, responses: Vec<Value>) -> &Self {
+            self.response_sequences
+                .lock()
+                .unwrap()
+                .insert(method.to_string(), responses.into());
+            self
+        }
     }
 
     impl fmt::Debug for MockTransport {
@@ -687,6 +977,15 @@ mod tests {
     impl JsonRpcTransport for MockTransport {
         async fn call(&self, method: &str, _params: Value) -> Result<Value, MonadRpcError> {
             self.calls.lock().unwrap().push(method.to_string());
+            if let Some(response) = self
+                .response_sequences
+                .lock()
+                .unwrap()
+                .get_mut(method)
+                .and_then(VecDeque::pop_front)
+            {
+                return Ok(response);
+            }
             if method == "eth_sendRawTransaction" {
                 return Ok(Value::String(hex_hash(0x11)));
             }
@@ -702,17 +1001,17 @@ mod tests {
         }
     }
 
-    fn make_message(
-        raw_burn_tx: Vec<u8>,
-        encrypted_payload: Vec<u8>,
-    ) -> proto::MonadStampedMessage {
+    fn make_message(raw_tx: Vec<u8>, encrypted_payload: Vec<u8>) -> proto::MonadStampedMessage {
         let payload_hash = Sha256::digest(encrypted_payload.clone().into())
             .as_slice()
             .to_vec();
         proto::MonadStampedMessage {
-            raw_burn_tx,
             encrypted_payload,
             payload_hash,
+            stamp_payments: vec![proto::MonadStampPayment {
+                child_index: 0,
+                raw_tx,
+            }],
         }
     }
 
@@ -721,28 +1020,29 @@ mod tests {
         let (_tempdir, registry) = test_registry();
         // Ticket #57: encrypted_payload must parse as a MonadMessageEnvelope now, since the
         // expected payment destination comes from its own `to` field rather than a fixed address.
-        let encrypted_payload =
-            format!(r#"{{"to":"{}"}}"#, hex_addr(recipient_address())).into_bytes();
+        let encrypted_payload = format!(
+            r#"{{"to":"{}","networkTag":"MONT"}}"#,
+            hex_addr(recipient_address())
+        )
+        .into_bytes();
         let commitment = Sha256::digest(encrypted_payload.clone().into());
 
         let seckey = EccSecp256k1::default()
             .seckey_from_array([0x77; 32])
             .unwrap();
-        let mut calldata = Vec::new();
-        calldata.extend_from_slice(&STMP_BROADCAST);
-        calldata.push(crate::monad_stamp_verify::COMMITMENT_VERSION_TAG);
-        calldata.extend_from_slice(commitment.as_slice());
-        let (raw_burn_tx, sender) =
-            signed_eip1559_tx(&seckey, 41454, 0, recipient_address(), 10_000, &calldata);
+        let calldata = commitment_calldata_bytes(&commitment, 0);
+        let payment_destination = stamp_destination(&commitment);
+        let (raw_payment_tx, _sender) =
+            signed_eip1559_tx(&seckey, 41454, 0, payment_destination, 10_000, &calldata);
 
-        let message = make_message(raw_burn_tx.clone(), encrypted_payload);
+        let message = make_message(raw_payment_tx.clone(), encrypted_payload);
 
-        let to = hex_addr(recipient_address());
+        let to = hex_addr(payment_destination);
         let transport = MockTransport::default();
         transport.set("eth_getTransactionReceipt", receipt_json(&to, "0x1"));
         transport.set(
             "eth_getTransactionByHash",
-            tx_json(&to, 10_000, &commitment_calldata(&commitment)),
+            tx_json(&to, 10_000, &commitment_calldata(&commitment, 0)),
         );
 
         let stored = process_monad_message(
@@ -756,7 +1056,6 @@ mod tests {
         .await
         .expect("valid stamp should be accepted");
 
-        assert_eq!(stored.sender_address, sender.0.to_vec());
         assert_eq!(stored.message, Some(message.clone()));
         // Ticket #39: the relay's configured network tag is stamped onto the stored record.
         assert_eq!(stored.network_tag, b"MONT");
@@ -769,6 +1068,128 @@ mod tests {
         assert_eq!(fetched, stored);
     }
 
+    #[tokio::test]
+    async fn distinct_payment_set_is_verified_and_summed() {
+        let (_tempdir, registry) = test_registry();
+        let encrypted_payload = format!(
+            r#"{{"to":"{}","networkTag":"MONT"}}"#,
+            hex_addr(recipient_address())
+        )
+        .into_bytes();
+        let commitment = Sha256::digest(encrypted_payload.clone().into());
+        let calldata_0 = commitment_calldata(&commitment, 0);
+        let calldata_1 = commitment_calldata(&commitment, 1);
+        let calldata_bytes_0 = commitment_calldata_bytes(&commitment, 0);
+        let calldata_bytes_1 = commitment_calldata_bytes(&commitment, 1);
+        let destination_0 = stamp_destination_at(&commitment, 0);
+        let destination_1 = stamp_destination_at(&commitment, 1);
+        let sender_0 = EccSecp256k1::default()
+            .seckey_from_array([0x71; 32])
+            .unwrap();
+        let sender_1 = EccSecp256k1::default()
+            .seckey_from_array([0x72; 32])
+            .unwrap();
+        let (raw_tx_0, _) =
+            signed_eip1559_tx(&sender_0, 41454, 0, destination_0, 4_000, &calldata_bytes_0);
+        let (raw_tx_1, _) =
+            signed_eip1559_tx(&sender_1, 41454, 0, destination_1, 6_000, &calldata_bytes_1);
+        let message = proto::MonadStampedMessage {
+            encrypted_payload,
+            payload_hash: commitment.as_slice().to_vec(),
+            stamp_payments: vec![
+                proto::MonadStampPayment {
+                    child_index: 0,
+                    raw_tx: raw_tx_0,
+                },
+                proto::MonadStampPayment {
+                    child_index: 1,
+                    raw_tx: raw_tx_1,
+                },
+            ],
+        };
+
+        let transport = MockTransport::default();
+        transport
+            .set_sequence(
+                "eth_sendRawTransaction",
+                vec![Value::String(hex_hash(0x11)), Value::String(hex_hash(0x12))],
+            )
+            .set_sequence(
+                "eth_getTransactionReceipt",
+                vec![
+                    receipt_json(&hex_addr(destination_0), "0x1"),
+                    receipt_json(&hex_addr(destination_1), "0x1"),
+                ],
+            )
+            .set_sequence(
+                "eth_getTransactionByHash",
+                vec![
+                    tx_json(&hex_addr(destination_0), 4_000, &calldata_0),
+                    tx_json(&hex_addr(destination_1), 6_000, &calldata_1),
+                ],
+            );
+
+        let stored = process_monad_message(
+            &transport,
+            &registry,
+            10_000,
+            fast_poll(),
+            b"MONT",
+            message.clone(),
+        )
+        .await
+        .expect("the two distinct payments should satisfy the aggregate minimum");
+
+        assert_eq!(stored.message, Some(message));
+        assert_eq!(
+            transport
+                .calls()
+                .iter()
+                .filter(|method| method.as_str() == "eth_sendRawTransaction")
+                .count(),
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn noncanonical_child_index_is_rejected_before_broadcast() {
+        let (_tempdir, registry) = test_registry();
+        let encrypted_payload = format!(
+            r#"{{"to":"{}","networkTag":"MONT"}}"#,
+            hex_addr(recipient_address())
+        )
+        .into_bytes();
+        let commitment = Sha256::digest(encrypted_payload.clone().into());
+        let sender = EccSecp256k1::default()
+            .seckey_from_array([0x73; 32])
+            .unwrap();
+        let (raw_tx, _) = signed_eip1559_tx(
+            &sender,
+            41454,
+            0,
+            stamp_destination_at(&commitment, 1),
+            10_000,
+            &commitment_calldata_bytes(&commitment, 1),
+        );
+        let mut message = make_message(raw_tx, encrypted_payload);
+        message.stamp_payments[0].child_index = 1;
+        let transport = MockTransport::default();
+
+        let err =
+            process_monad_message(&transport, &registry, 10_000, fast_poll(), b"MONT", message)
+                .await
+                .expect_err("a one-payment set must start at child zero");
+
+        assert!(matches!(
+            err,
+            ProcessMonadMessageError::NonCanonicalChildIndex {
+                position: 0,
+                actual: 1
+            }
+        ));
+        assert!(transport.calls().is_empty());
+    }
+
     /// Regression for #57's economic boundary. Before the fix, supplying
     /// `broadcast_burn_address()` as the server-wide configured destination made this transaction
     /// acceptable even though the envelope names a different recipient. The DM path must now
@@ -776,18 +1197,18 @@ mod tests {
     #[tokio::test]
     async fn fixed_broadcast_burn_address_is_rejected_for_direct_message() {
         let (_tempdir, registry) = test_registry();
-        let encrypted_payload =
-            format!(r#"{{"to":"{}"}}"#, hex_addr(recipient_address())).into_bytes();
+        let encrypted_payload = format!(
+            r#"{{"to":"{}","networkTag":"MONT"}}"#,
+            hex_addr(recipient_address())
+        )
+        .into_bytes();
         let commitment = Sha256::digest(encrypted_payload.clone().into());
 
         let seckey = EccSecp256k1::default()
             .seckey_from_array([0x77; 32])
             .unwrap();
-        let mut calldata = Vec::new();
-        calldata.extend_from_slice(&STMP_BROADCAST);
-        calldata.push(crate::monad_stamp_verify::COMMITMENT_VERSION_TAG);
-        calldata.extend_from_slice(commitment.as_slice());
-        let (raw_burn_tx, _sender) = signed_eip1559_tx(
+        let calldata = commitment_calldata_bytes(&commitment, 0);
+        let (raw_payment_tx, _sender) = signed_eip1559_tx(
             &seckey,
             41454,
             0,
@@ -795,14 +1216,14 @@ mod tests {
             10_000,
             &calldata,
         );
-        let message = make_message(raw_burn_tx, encrypted_payload);
+        let message = make_message(raw_payment_tx, encrypted_payload);
 
         let actual_to = hex_addr(broadcast_burn_address());
         let transport = MockTransport::default();
         transport.set("eth_getTransactionReceipt", receipt_json(&actual_to, "0x1"));
         transport.set(
             "eth_getTransactionByHash",
-            tx_json(&actual_to, 10_000, &commitment_calldata(&commitment)),
+            tx_json(&actual_to, 10_000, &commitment_calldata(&commitment, 0)),
         );
 
         let err = process_monad_message(
@@ -818,16 +1239,12 @@ mod tests {
 
         assert!(matches!(
             err,
-            ProcessMonadMessageError::Rejected(
-                StampRelayOutcome::VerificationFailed {
-                    outcome: crate::monad_stamp_verify::StampBurnVerification::WrongRecipient {
-                        expected,
-                        actual: Some(actual),
-                    },
-                    ..
-                }
-            ) if expected == recipient_address() && actual == broadcast_burn_address()
+            ProcessMonadMessageError::InvalidPaymentPreflight {
+                child_index: 0,
+                detail
+            } if detail.contains("destination")
         ));
+        assert!(transport.calls().is_empty());
         assert_eq!(
             registry.get_monad_message(&message.payload_hash).unwrap(),
             None
@@ -846,13 +1263,16 @@ mod tests {
             let seckey = EccSecp256k1::default()
                 .seckey_from_array([0x77; 32])
                 .unwrap();
-            let mut calldata = Vec::new();
-            calldata.extend_from_slice(&STMP_BROADCAST);
-            calldata.push(crate::monad_stamp_verify::COMMITMENT_VERSION_TAG);
-            calldata.extend_from_slice(commitment.as_slice());
-            let (raw_burn_tx, _sender) =
-                signed_eip1559_tx(&seckey, 41454, 0, recipient_address(), 10_000, &calldata);
-            let message = make_message(raw_burn_tx, encrypted_payload);
+            let calldata = commitment_calldata_bytes(&commitment, 0);
+            let (raw_payment_tx, _sender) = signed_eip1559_tx(
+                &seckey,
+                41454,
+                0,
+                stamp_destination(&commitment),
+                10_000,
+                &calldata,
+            );
+            let message = make_message(raw_payment_tx, encrypted_payload);
 
             // No RPC responses are configured. Reaching broadcast would therefore produce an
             // infrastructure error instead of the required structural rejection.
@@ -885,33 +1305,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn wrong_network_tag_is_rejected_before_broadcast() {
+        let (_tempdir, registry) = test_registry();
+        let encrypted_payload = format!(
+            r#"{{"to":"{}","networkTag":"MON1"}}"#,
+            hex_addr(recipient_address())
+        )
+        .into_bytes();
+        let message = make_message(vec![0xc0], encrypted_payload);
+        let transport = MockTransport::default();
+
+        let err =
+            process_monad_message(&transport, &registry, 10_000, fast_poll(), b"MONT", message)
+                .await
+                .expect_err("a payload hashed for another network must be rejected");
+
+        assert!(matches!(
+            err,
+            ProcessMonadMessageError::NetworkTagMismatch { expected, actual }
+                if expected == b"MONT" && actual.as_deref() == Some("MON1")
+        ));
+        assert!(transport.calls().is_empty());
+    }
+
+    #[tokio::test]
     async fn insufficient_stamp_value_is_rejected_and_not_stored() {
         let (_tempdir, registry) = test_registry();
         // Ticket #57: see recipient_payment_is_accepted_and_stored's comment -- must parse as an
         // envelope.
-        let encrypted_payload =
-            format!(r#"{{"to":"{}"}}"#, hex_addr(recipient_address())).into_bytes();
+        let encrypted_payload = format!(
+            r#"{{"to":"{}","networkTag":"MONT"}}"#,
+            hex_addr(recipient_address())
+        )
+        .into_bytes();
         let commitment = Sha256::digest(encrypted_payload.clone().into());
 
         let seckey = EccSecp256k1::default()
             .seckey_from_array([0x77; 32])
             .unwrap();
-        let mut calldata = Vec::new();
-        calldata.extend_from_slice(&STMP_BROADCAST);
-        calldata.push(crate::monad_stamp_verify::COMMITMENT_VERSION_TAG);
-        calldata.extend_from_slice(commitment.as_slice());
+        let calldata = commitment_calldata_bytes(&commitment, 0);
         // Pays only 500 wei, below the 10_000 wei minimum configured below.
-        let (raw_burn_tx, _sender) =
-            signed_eip1559_tx(&seckey, 41454, 0, recipient_address(), 500, &calldata);
+        let payment_destination = stamp_destination(&commitment);
+        let (raw_payment_tx, _sender) =
+            signed_eip1559_tx(&seckey, 41454, 0, payment_destination, 500, &calldata);
 
-        let message = make_message(raw_burn_tx, encrypted_payload);
+        let message = make_message(raw_payment_tx, encrypted_payload);
 
-        let to = hex_addr(recipient_address());
+        let to = hex_addr(payment_destination);
         let transport = MockTransport::default();
         transport.set("eth_getTransactionReceipt", receipt_json(&to, "0x1"));
         transport.set(
             "eth_getTransactionByHash",
-            tx_json(&to, 500, &commitment_calldata(&commitment)),
+            tx_json(&to, 500, &commitment_calldata(&commitment, 0)),
         );
 
         let err = process_monad_message(
@@ -927,7 +1372,10 @@ mod tests {
 
         assert!(matches!(
             err,
-            ProcessMonadMessageError::Rejected(StampRelayOutcome::VerificationFailed { .. })
+            ProcessMonadMessageError::InsufficientTotalValue {
+                required: 10_000,
+                actual: 500,
+            }
         ));
         assert_eq!(
             registry.get_monad_message(&message.payload_hash).unwrap(),
@@ -956,18 +1404,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn malformed_raw_burn_tx_is_rejected() {
+    async fn malformed_raw_payment_tx_is_rejected() {
         let (_tempdir, registry) = test_registry();
-        let message = make_message(vec![0x01, 0xc0], b"hello".to_vec());
+        let encrypted_payload = format!(
+            r#"{{"to":"{}","networkTag":"MONT"}}"#,
+            hex_addr(recipient_address())
+        )
+        .into_bytes();
+        let message = make_message(vec![0x01, 0xc0], encrypted_payload);
         let transport = MockTransport::default();
 
         let err = process_monad_message(&transport, &registry, 10_000, fast_poll(), &[], message)
             .await
-            .expect_err("malformed raw_burn_tx should be rejected");
+            .expect_err("malformed stamp payment should be rejected");
 
         assert!(matches!(
             err,
-            ProcessMonadMessageError::SenderRecoveryFailed(_)
+            ProcessMonadMessageError::FundingAccountRecoveryFailed(_)
         ));
     }
 
@@ -1002,12 +1455,13 @@ mod tests {
     fn store_at(registry: &Registry, payload_hash: Vec<u8>, timestamp: i64) {
         let stored = proto::StoredMonadMessage {
             message: Some(proto::MonadStampedMessage {
-                raw_burn_tx: vec![1, 2, 3],
                 encrypted_payload: vec![4, 5, 6],
                 payload_hash: payload_hash.clone(),
+                stamp_payments: vec![proto::MonadStampPayment {
+                    child_index: 0,
+                    raw_tx: vec![1, 2, 3],
+                }],
             }),
-            sender_address: vec![9u8; 20],
-            tx_hash: vec![8u8; 32],
             timestamp,
             network_tag: Vec::new(),
         };

@@ -104,8 +104,9 @@ const mockedFetchMonadProfile = fetchMonadProfile as jest.MockedFunction<
 const TEST_CONFIG: MonadChainConfig = {
   rpcUrl: 'http://127.0.0.1:1',
   relayBaseUrl: 'http://relay.test',
+  networkTag: 'MONT',
   stampBurnAddress: '0x000000000000000000000000000000000000dEaD',
-  defaultStampBurnValueWei: 1_000_000_000_000n,
+  defaultStampValueWei: 1_000_000_000_000n,
   subAccountPoolSize: 3,
 }
 
@@ -322,8 +323,8 @@ describe('createMonadChain: directMessages.send', () => {
     const submitStampedMessage = jest.fn().mockResolvedValue({
       stored: {} as StoredMonadMessageProto,
       payloadHashHex: 'deadbeef',
-      txHash: '0xtx',
-      leaseIndex: 0,
+      txHashes: ['0xtx'],
+      leaseIndices: [0],
     })
     ;(MonadStampClient as jest.Mock).mockImplementation(() => ({
       submitStampedMessage,
@@ -338,7 +339,7 @@ describe('createMonadChain: directMessages.send', () => {
 
     expect(result).toEqual({
       payloadDigest: 'deadbeef',
-      burnValueWei: TEST_CONFIG.defaultStampBurnValueWei,
+      stampValueWei: TEST_CONFIG.defaultStampValueWei,
     })
     expect(mockedFetchMonadProfile).toHaveBeenCalledWith({
       relayBaseUrl: wallet.relayBaseUrl,
@@ -349,8 +350,10 @@ describe('createMonadChain: directMessages.send', () => {
     const call = submitStampedMessage.mock.calls[0][0]
     // Ticket #57: a DM's stamp pays the recipient -- it must NOT be the fixed
     // `stampBurnAddress` (that's `topics.post`/`vote`'s job, no single recipient there).
-    expect(call.destinationAddress).toBe(bob.address.raw)
-    expect(call.stampValueWei).toBe(TEST_CONFIG.defaultStampBurnValueWei)
+    expect(call.recipientPublicKey).toEqual(
+      new Uint8Array(bob.compressedPubKey),
+    )
+    expect(call.stampValueWei).toBe(TEST_CONFIG.defaultStampValueWei)
     // The envelope is real, encrypted JSON -- not the plaintext items themselves.
     const envelopeJson = JSON.parse(
       new TextDecoder().decode(call.encryptedPayload),
@@ -410,34 +413,31 @@ describe('createMonadChain: directMessages.fetchSince', () => {
       toAddress: bob.address.raw,
       toPubKey: bob.compressedPubKey,
       plaintext: serializeMessageItems(items),
+      networkTag: TEST_CONFIG.networkTag,
     })
 
-    // A signed raw burn tx isn't needed for `parseEnvelope`/filtering, but `fetchSince` reads
-    // `burnValueWei` back from it -- use an empty rawBurnTx here (the documented `0n` fallback) to
-    // keep this test focused on the envelope/decrypt wiring; the burn-value read-back is exercised
+    // A signed raw payment isn't needed for `parseEnvelope`/filtering, but `fetchSince` reads
+    // `stampValueWei` back from it -- use an empty payment set here (the documented `0n` fallback) to
+    // keep this test focused on the envelope/decrypt wiring; the payment-value read-back is exercised
     // in registered wallet client tests (`monad-stamp-client.jest.test.ts`) and the field's own
     // `Transaction.from` behavior is standard ethers.
     const addressedToBob: StoredMonadMessageProto = {
       message: {
-        rawBurnTx: new Uint8Array(0),
+        stampPayments: [],
         encryptedPayload: envelopeBytes,
         payloadHash: getBytes('0x' + 'ab'.repeat(32)),
       },
-      senderAddress: getBytes('0x' + '11'.repeat(20)),
-      txHash: getBytes('0x' + '22'.repeat(32)),
       timestamp: 1_700_000_000_000,
       networkTag: new Uint8Array(0),
     }
     const notAnEnvelope: StoredMonadMessageProto = {
       message: {
-        rawBurnTx: new Uint8Array(0),
+        stampPayments: [],
         encryptedPayload: new TextEncoder().encode(
           JSON.stringify({ hello: 'world' }),
         ),
         payloadHash: getBytes('0x' + 'cd'.repeat(32)),
       },
-      senderAddress: getBytes('0x' + '33'.repeat(20)),
-      txHash: getBytes('0x' + '44'.repeat(32)),
       timestamp: 1_700_000_001_000,
       networkTag: new Uint8Array(0),
     }
@@ -465,7 +465,7 @@ describe('createMonadChain: directMessages.fetchSince', () => {
     expect(received[0].recipientAddress.raw).toBe(bob.address.raw)
     expect(received[0].items).toEqual(items)
     expect(received[0].payloadDigest).toBe('ab'.repeat(32))
-    expect(received[0].burnValueWei).toBe(0n)
+    expect(received[0].stampValueWei).toBe(0n)
     expect(received[0].receivedTime).toBe(1_700_000_000_000)
   })
 
@@ -484,17 +484,16 @@ describe('createMonadChain: directMessages.fetchSince', () => {
       toAddress: eve.address.raw,
       toPubKey: eve.compressedPubKey,
       plaintext: serializeMessageItems([{ type: 'text', text: 'not for bob' }]),
+      networkTag: TEST_CONFIG.networkTag,
     })
 
     mockedFetchMonadMessagesSince.mockResolvedValueOnce([
       {
         message: {
-          rawBurnTx: new Uint8Array(0),
+          stampPayments: [],
           encryptedPayload: envelopeBytes,
           payloadHash: getBytes('0x' + 'ef'.repeat(32)),
         },
-        senderAddress: getBytes('0x' + '11'.repeat(20)),
-        txHash: getBytes('0x' + '22'.repeat(32)),
         timestamp: 1_700_000_000_000,
         networkTag: new Uint8Array(0),
       },

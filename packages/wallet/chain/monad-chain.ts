@@ -46,10 +46,10 @@
  * the behavior that function's own doc comment describes), keeps only envelopes addressed to the
  * wallet's own identity address (`envelope.to`, compared case-insensitively -- EIP-55 checksums
  * differ only in letter case), resolves each sender's pubkey the same way `send()` resolves the
- * recipient's, and decrypts. The legacy-named `burnValueWei` field on the returned
- * `DirectMessageReceived` is read back from the message's own signed stamp transaction
+ * recipient's, and decrypts. The `stampValueWei` field on the returned
+ * `DirectMessageReceived` is summed from the message's own signed stamp transactions
  * (`ethers.Transaction.from(...).value`), not merely echoed from config -- it is the actual
- * recipient-payment value, even if it ever diverges from `defaultStampBurnValueWei`.
+ * recipient-payment value, even if it ever diverges from `defaultStampValueWei`.
  *
  * ## `topics`: wiring the topic-post/vote/tally clients
  *
@@ -99,6 +99,8 @@ const { BroadcastMessage, ForumPost: BroadcastForumPostPayload } =
   __pb_broadcast_pb
 
 import { MonadHdKeyring } from '../monad-hd-keyring'
+import { MonadChangeKeyring } from '../monad-change-keyring'
+import { MonadChangePool } from '../monad-change-pool'
 import { MonadSubAccountPool } from '../monad-account-pool'
 import { SubAccountLeaseManager } from '../monad-account-lease'
 import { MonadHttpClient } from '../monad-http'
@@ -128,13 +130,14 @@ export interface MonadChainConfig {
   rpcUrl: string
   /** Base URL of the `cashweb-registry` relay. */
   relayBaseUrl: string
+  /** Frank network tag included in every DM envelope before hashing. */
+  networkTag: string
   /** `0x`-prefixed Monad burn address Stamp/topic-vote burns are sent to (see
    * `frank/.env.example`'s `MONAD_STAMP_BURN_ADDRESS`). */
   stampBurnAddress: string
-  /** Default value, in wei, `directMessages.send` pays per Stamp message. The property keeps its
-   * legacy name to avoid widening #57 into an unrelated app configuration migration. */
-  defaultStampBurnValueWei: bigint
-  /** How many burner sub-accounts `createWallet` pre-derives into the pool. */
+  /** Default aggregate value, in wei, `directMessages.send` pays per Stamp message. */
+  defaultStampValueWei: bigint
+  /** How many single-use funding sub-accounts `createWallet` pre-derives into the pool. */
   subAccountPoolSize: number
 }
 
@@ -162,10 +165,11 @@ export function loadMonadChainConfigFromEnv(): MonadChainConfig {
       readEnv('MONAD_RELAY_BASE_URL') ??
       readEnv('E2E_DEMO_RELAY_URL') ??
       'http://127.0.0.1:8098',
+    networkTag: readEnv('FRANK_NETWORK_TAG') ?? 'MONT',
     stampBurnAddress:
       readEnv('MONAD_STAMP_BURN_ADDRESS') ??
       '0x000000000000000000000000000000000000dEaD',
-    defaultStampBurnValueWei: BigInt(
+    defaultStampValueWei: BigInt(
       readEnv('CASHWEB_STAMP_MIN_BURN_VALUE_WEI') ?? '1000000000000',
     ),
     subAccountPoolSize: Number(readEnv('MONAD_SUB_ACCOUNT_POOL_SIZE') ?? '8'),
@@ -311,6 +315,7 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
         toAddress: params.recipient.raw,
         toPubKey: Buffer.from(recipientProfile.pubKey),
         plaintext,
+        networkTag: config.networkTag,
       })
 
       const stampClient = new MonadStampClient(wallet)
@@ -320,13 +325,13 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
         // `constructStampTransactions`, which derives the stamp output address from the
         // recipient's own pubkey), not a burn to the fixed dead address -- that's `topics`'
         // `post`/`vote` below, where there's no single recipient to pay.
-        destinationAddress: params.recipient.raw,
-        stampValueWei: config.defaultStampBurnValueWei,
+        recipientPublicKey: recipientProfile.pubKey,
+        stampValueWei: config.defaultStampValueWei,
       })
 
       return {
         payloadDigest: result.payloadHashHex,
-        burnValueWei: config.defaultStampBurnValueWei,
+        stampValueWei: config.defaultStampValueWei,
       }
     },
 
@@ -365,17 +370,18 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
           continue
         }
 
-        const burnValueWei =
-          record.message.rawBurnTx.length > 0
-            ? Transaction.from(hexlify(record.message.rawBurnTx)).value
-            : 0n
+        const stampValueWei = record.message.stampPayments.reduce(
+          (sum, payment) =>
+            sum + Transaction.from(hexlify(payment.rawTx)).value,
+          BigInt(0),
+        )
 
         received.push({
           senderAddress: toChainAddress(envelope.from),
           recipientAddress: toChainAddress(envelope.to),
           items: deserializeMessageItems(plaintext),
           payloadDigest: bareHex(record.message.payloadHash),
-          burnValueWei,
+          stampValueWei,
           receivedTime: record.timestamp,
         })
       }
@@ -487,6 +493,12 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
       )
       const pool = new MonadSubAccountPool({ keyring })
       pool.ensureSize(config.subAccountPoolSize)
+      const changePool = new MonadChangePool({
+        keyring: MonadChangeKeyring.fromMnemonic(
+          seed.mnemonic,
+          seed.passphrase,
+        ),
+      })
       const leaseManager = new SubAccountLeaseManager(pool)
       const provider = new JsonRpcProvider(config.rpcUrl)
       const httpClient = new MonadHttpClient({ rpcUrl: config.rpcUrl })
@@ -498,6 +510,7 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
         leaseManager,
         provider,
         httpClient,
+        changePool,
         relayBaseUrl: config.relayBaseUrl,
       }
       return wallet

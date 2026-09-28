@@ -230,7 +230,12 @@ async function main() {
   const processedPayloadHashes = new Set<string>()
   const greetedAddresses = new Set<string>()
 
-  let since = 0
+  // A process restart must not replay every retained message and pay for duplicate replies.
+  // Start at this run's pre-funding boundary so messages arriving during the potentially slow
+  // account setup are still handled. The override exists for deliberate historical backfills.
+  let since = Number(
+    process.env.QWEN_BOT_MESSAGE_SINCE_MS ?? profileWatchStartedAt,
+  )
   let repliesSent = 0
   let greetingsSent = 0
   let lastActivityAt = Date.now()

@@ -223,6 +223,11 @@ export QWEN_BOT_MAX_REPLIES=2   # must be >= however many turns the sender scrip
 yarn bot
 ```
 
+By default the bot only replies to messages received after that process began starting. This
+prevents a restart from paying for duplicate replies to retained mailbox history while still
+including messages that arrive during sender-account funding. Set
+`QWEN_BOT_MESSAGE_SINCE_MS=<unix milliseconds>` only when intentionally backfilling older mail.
+
 In a separate shell, once the bot prints its address (or is already running from a prior run —
 its identity persists at `QWEN_BOT_IDENTITY_JSON`, default `/tmp/qwen-bot-identity.json`):
 

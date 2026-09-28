@@ -488,10 +488,23 @@ impl Registry {
         &self,
         payload_hash: &[u8],
         message: &proto::MonadStampedMessage,
+        policy: &crate::store::monad_messages::MonadMessageAttemptPolicy,
     ) -> Result<crate::store::monad_messages::MonadMessageAttemptClaim> {
         self.db
             .monad_messages()
-            .claim_attempt(payload_hash, message)
+            .claim_attempt(payload_hash, message, policy)
+    }
+
+    pub(crate) fn get_monad_message_attempt(
+        &self,
+        payload_hash: &[u8],
+        message: &proto::MonadStampedMessage,
+    ) -> Result<crate::store::monad_messages::MonadMessageAttemptClaim> {
+        self.db.monad_messages().get_attempt(payload_hash, message)
+    }
+
+    pub(crate) fn delete_monad_message_attempt(&self, payload_hash: &[u8]) -> Result<()> {
+        self.db.monad_messages().delete_attempt(payload_hash)
     }
 
     /// Fully verify and write a Monad-native profile registration (ticket #45) -- the Monad

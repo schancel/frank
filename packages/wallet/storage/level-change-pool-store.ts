@@ -25,6 +25,7 @@ export class LevelChangePoolStore implements ChangePoolStore {
   private openedDb?: LevelDB
   private cache: Map<number, ChangeAccountRecord>
   private nextIndex = 0
+  private pendingWrites: Promise<unknown>[] = []
 
   constructor(location: string) {
     this.dbLocation = join(location, 'change-pool')
@@ -47,6 +48,7 @@ export class LevelChangePoolStore implements ChangePoolStore {
   }
 
   async Close(): Promise<void> {
+    await this.flush()
     await this.db.close()
   }
 
@@ -75,23 +77,14 @@ export class LevelChangePoolStore implements ChangePoolStore {
     }
     this.nextIndex = index
     // TODO: Handle errors here (same caveat as `LevelSubAccountPoolStore.put`).
-    this.db
-      .put(NEXT_INDEX_KEY, JSON.stringify(index))
-      .catch((err: any) =>
-        console.error('Failed to persist next change index pointer', err),
-      )
+    this.pendingWrites.push(this.db.put(NEXT_INDEX_KEY, JSON.stringify(index)))
   }
 
   putRecord(record: ChangeAccountRecord): void {
     this.cache.set(record.index, { ...record })
-    this.db
-      .put(String(record.index), JSON.stringify(record))
-      .catch((err: any) =>
-        console.error(
-          `Failed to persist change pool record ${record.index}`,
-          err,
-        ),
-      )
+    this.pendingWrites.push(
+      this.db.put(String(record.index), JSON.stringify(record)),
+    )
   }
 
   getRecord(index: number): ChangeAccountRecord | undefined {
@@ -102,10 +95,17 @@ export class LevelChangePoolStore implements ChangePoolStore {
     return Array.from(this.cache.values()).sort((a, b) => a.index - b.index)
   }
 
+  async flush(): Promise<void> {
+    const writes = this.pendingWrites
+    this.pendingWrites = []
+    await Promise.all(writes)
+  }
+
   /**
    * This will delete everything in the store! Don't call it by accident!
    */
   async clear(): Promise<void> {
+    await this.flush()
     this.cache = new Map<number, ChangeAccountRecord>()
     this.nextIndex = 0
     await this.db.clear()

@@ -50,12 +50,12 @@ export class LevelStampAttemptJournal implements StampAttemptJournal {
     await this.db.close()
   }
   async put(attempt: OutgoingStampAttempt): Promise<void> {
-    this.attempts.set(attempt.payloadHashHex, { ...attempt })
     await this.db.put(attempt.payloadHashHex, JSON.stringify(attempt))
+    this.attempts.set(attempt.payloadHashHex, { ...attempt })
   }
   async delete(payloadHashHex: string): Promise<void> {
-    this.attempts.delete(payloadHashHex)
     await this.db.del(payloadHashHex)
+    this.attempts.delete(payloadHashHex)
   }
   getAll(): OutgoingStampAttempt[] {
     return Array.from(this.attempts.values())

@@ -14,10 +14,10 @@ const DISCOVERED: StampPaymentRecoveryRecord = {
 }
 
 describe('stamp payment recovery journal', () => {
-  it('updates one public record without ever requiring a private key', () => {
+  it('updates one public record without ever requiring a private key', async () => {
     const journal = new InMemoryStampPaymentJournal()
-    journal.put(DISCOVERED)
-    journal.put({
+    await journal.put(DISCOVERED)
+    await journal.put({
       ...DISCOVERED,
       status: 'swept',
       sweepTxHash: `0x${'33'.repeat(32)}`,
@@ -39,7 +39,7 @@ describe('stamp payment recovery journal', () => {
     try {
       const first = new LevelStampPaymentJournal(dir)
       await first.Open()
-      first.put(DISCOVERED)
+      await first.put(DISCOVERED)
       await first.Close()
 
       const reopened = new LevelStampPaymentJournal(dir)

@@ -59,6 +59,8 @@ export interface SubAccountPoolStore {
   getByIndex(index: number): SubAccountRecord | undefined
   put(record: SubAccountRecord): void
   getAll(): SubAccountRecord[]
+  /** Waits until every preceding mutation is durable. In-memory stores resolve immediately. */
+  flush(): Promise<void>
   clear(): Promise<void>
 }
 
@@ -80,6 +82,8 @@ export class InMemorySubAccountPoolStore implements SubAccountPoolStore {
       (a, b) => a.index - b.index,
     )
   }
+
+  async flush(): Promise<void> {}
 
   async clear(): Promise<void> {
     this.recordsByIndex.clear()

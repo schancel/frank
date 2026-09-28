@@ -422,7 +422,7 @@ describe('MonadChangePool', () => {
       expect(provider.getFeeData).not.toHaveBeenCalled()
     })
 
-    it('propagates a submit failure without persisting a record or advancing the pointer', async () => {
+    it('propagates a submit failure without a record but permanently consumes the reserved destination', async () => {
       const pool = makePool()
       const { signer, httpClient } = makeBurnAccountSigner()
       httpClient.submitRawTransaction.mockRejectedValueOnce(
@@ -444,7 +444,7 @@ describe('MonadChangePool', () => {
         }),
       ).rejects.toThrow('relay down')
 
-      expect(pool.nextUnusedIndex()).toBe(0)
+      expect(pool.nextUnusedIndex()).toBe(1)
       expect(pool.records()).toEqual([])
     })
   })

@@ -61,4 +61,23 @@ describe('selectStampAccounts', () => {
       }),
     ).toThrow('need 100 wei, have 90 wei')
   })
+
+  it('keeps a feasible right-sized account when applying a transaction cap', () => {
+    const accounts = Array.from({ length: 64 }, (_, index) =>
+      account(index, 1n),
+    )
+    accounts.push(account(64, 100n))
+
+    const selected = selectStampAccounts({
+      amountWei: 100n,
+      accounts,
+      maxTransactions: 64,
+    })
+
+    expect(selected.length).toBeLessThanOrEqual(64)
+    expect(selected.reduce((sum, item) => sum + item.paymentValueWei, 0n)).toBe(
+      100n,
+    )
+    expect(selected.some(item => item.index === 64)).toBe(true)
+  })
 })

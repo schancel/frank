@@ -22,7 +22,7 @@ export interface StampPaymentJournal {
     payloadHashHex: string,
     childIndex: number,
   ): StampPaymentRecoveryRecord | undefined
-  put(record: StampPaymentRecoveryRecord): void
+  put(record: StampPaymentRecoveryRecord): Promise<void>
   getAll(): StampPaymentRecoveryRecord[]
 }
 
@@ -40,7 +40,7 @@ export class InMemoryStampPaymentJournal implements StampPaymentJournal {
     return this.records.get(key(payloadHashHex, childIndex))
   }
 
-  put(record: StampPaymentRecoveryRecord): void {
+  async put(record: StampPaymentRecoveryRecord): Promise<void> {
     this.records.set(key(record.payloadHashHex, record.childIndex), {
       ...record,
     })
@@ -84,17 +84,10 @@ export class LevelStampPaymentJournal implements StampPaymentJournal {
     return this.records.get(key(payloadHashHex, childIndex))
   }
 
-  put(record: StampPaymentRecoveryRecord): void {
+  async put(record: StampPaymentRecoveryRecord): Promise<void> {
     const recordKey = key(record.payloadHashHex, record.childIndex)
+    await this.db.put(recordKey, JSON.stringify(record))
     this.records.set(recordKey, { ...record })
-    this.db
-      .put(recordKey, JSON.stringify(record))
-      .catch((err: any) =>
-        console.error(
-          `Failed to persist recovered stamp payment ${recordKey}`,
-          err,
-        ),
-      )
   }
 
   getAll(): StampPaymentRecoveryRecord[] {

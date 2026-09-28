@@ -133,6 +133,11 @@ export class SubAccountLeaseManager {
     return Array.from(this.liveLeases.keys()).sort((a, b) => a - b)
   }
 
+  /** Waits until lease-driven pool status transitions are durable. */
+  async flush(): Promise<void> {
+    await this.pool.flush()
+  }
+
   /**
    * Picks the next `'available'` sub-account via `pool.selectForStamp()` and leases it (see
    * `acquireForIndex`). Throws `NoAvailableSubAccountError` immediately if none is available —

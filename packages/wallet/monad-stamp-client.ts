@@ -461,6 +461,21 @@ export class MonadStampAbandonedError extends MonadStampError {
   }
 }
 
+/** A previous exact payment set still needs reconciliation. Building a fresh salted envelope
+ * while it is pending could pay twice under a different payload hash. */
+export class MonadStampPendingAttemptError extends MonadStampError {
+  readonly payloadHashes: string[]
+
+  constructor(payloadHashes: string[]) {
+    super(
+      `Cannot create another stamp payment while ${payloadHashes.length} prior attempt(s) remain pending`,
+    )
+    this.payloadHashes = payloadHashes
+  }
+}
+
+const MAX_STAMP_PAYMENTS = 64
+
 function defaultSleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
@@ -626,6 +641,18 @@ export class MonadStampClient {
     if (params.encryptedPayload.length === 0) {
       throw new Error('encryptedPayload must not be empty')
     }
+    if (
+      this.attemptJournal !== undefined &&
+      this.attemptJournal.getAll().length > 0
+    ) {
+      await this.resumePendingAttempts()
+      const stillPending = this.attemptJournal
+        .getAll()
+        .map(attempt => attempt.payloadHashHex)
+      if (stillPending.length > 0) {
+        throw new MonadStampPendingAttemptError(stillPending)
+      }
+    }
 
     const payloadHash = computeMonadStampCommitment(params.encryptedPayload)
     const quoteCalldata = buildMonadStampCalldata(
@@ -706,7 +733,13 @@ export class MonadStampClient {
     const selected = selectStampAccounts({
       amountWei: params.stampValueWei,
       accounts: quotes,
+      maxTransactions: MAX_STAMP_PAYMENTS,
     })
+    if (selected.length > MAX_STAMP_PAYMENTS) {
+      throw new Error(
+        `Stamp payment requires ${selected.length} accounts; relay maximum is ${MAX_STAMP_PAYMENTS}`,
+      )
+    }
     const quoteByIndex = new Map(quotes.map(quote => [quote.index, quote]))
     const handles: AccountLeaseHandle[] = []
     const signedTxs: SignedMonadTx[] = []
@@ -716,6 +749,10 @@ export class MonadStampClient {
       for (const selection of selected) {
         handles.push(this.leaseManager.acquireForIndex(selection.index))
       }
+      // Make account reservations durable before producing any signed transaction. If the process
+      // dies while signing, startup recovery retires these unjournaled reservations rather than
+      // making an uncertain nonce available again.
+      await this.pool.flush()
       for (const [paymentIndex, selection] of selected.entries()) {
         const handle = handles[paymentIndex]
         const signer = this.pool.getSigner(handle.index, {
@@ -745,6 +782,7 @@ export class MonadStampClient {
       for (const handle of handles) {
         this.leaseManager.releaseLease(handle, 'failed')
       }
+      await this.pool.flush()
       throw err
     }
 
@@ -756,11 +794,19 @@ export class MonadStampClient {
       encryptedPayload: params.encryptedPayload,
       payloadHash,
     }
-    await this.attemptJournal?.put({
-      payloadHashHex,
-      messageBytes: Array.from(encodeMonadStampedMessage(message)),
-      leaseIndices: handles.map(handle => handle.index),
-    })
+    try {
+      await this.attemptJournal?.put({
+        payloadHashHex,
+        messageBytes: Array.from(encodeMonadStampedMessage(message)),
+        leaseIndices: handles.map(handle => handle.index),
+      })
+    } catch (err) {
+      for (const handle of handles) {
+        this.leaseManager.releaseLease(handle, 'failed')
+      }
+      await this.pool.flush()
+      throw err
+    }
     const releaseAll = async (
       outcome: 'confirmed' | 'failed' | 'stuck',
     ): Promise<Array<ChangeSweepOutcome | undefined>> => {
@@ -801,6 +847,13 @@ export class MonadStampClient {
       }
     } catch (err) {
       if (axios.isAxiosError(err) && err.response) {
+        if (this.attemptJournal !== undefined) {
+          // The relay may have accepted a prefix of this exact payment set before returning an
+          // error. Keep the journal and reservations intact so reconciliation can replay only the
+          // already-authorized bytes; presenting this as a terminal rejection could prompt a
+          // caller to create a second salted payment and pay twice.
+          throw new MonadStampPendingAttemptError([payloadHashHex])
+        }
         await releaseAll('failed')
         throw new MonadStampRejectedError(
           `Relay rejected the Monad-stamped message (HTTP ${err.response.status})`,
@@ -843,6 +896,15 @@ export class MonadStampClient {
     if (this.attemptJournal === undefined) return []
     const completed: string[] = []
     for (const attempt of this.attemptJournal.getAll()) {
+      // The journal write and pool-status writes live in separate LevelDBs. A hard crash can make
+      // the durable raw set visible before one of the earlier `in-use` status writes. Reassert the
+      // reservation before any network await so the wallet can never return an apparently
+      // available account that belongs to this pending set.
+      for (const index of attempt.leaseIndices) {
+        const record = this.pool.getRecord(index)
+        if (record?.status === 'available') this.pool.setStatus(index, 'in-use')
+      }
+      await this.pool.flush()
       try {
         const message = decodeMonadStampedMessage(
           Uint8Array.from(attempt.messageBytes),
@@ -852,6 +914,21 @@ export class MonadStampClient {
           const record = this.pool.getRecord(index)
           if (record !== undefined && record.status !== 'spent') {
             this.pool.setStatus(index, 'spent')
+            await this.pool.flush()
+          }
+          if (record !== undefined && this.changePool !== undefined) {
+            const signer = this.pool.getSigner(index, {
+              provider: this.provider,
+              httpClient: this.httpClient,
+            })
+            await this.changePool
+              .sweepToChange({
+                burnIndex: index,
+                burnAddress: record.address,
+                burnAccountSigner: signer,
+                provider: this.provider,
+              })
+              .catch(() => undefined)
           }
         }
         await this.attemptJournal.delete(attempt.payloadHashHex)

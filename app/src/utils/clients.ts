@@ -1,6 +1,6 @@
 import assert from 'assert'
-import RelayClient from '@frank/cashweb/relay'
-import { Wallet } from '@frank/cashweb/legacy-wallet'
+import type RelayClient from '@frank/cashweb/relay'
+import type { Wallet } from '@frank/cashweb/legacy-wallet'
 import type { WalletHandle } from '@frank/wallet/chain'
 
 let wallet: Wallet | null = null

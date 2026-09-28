@@ -19,6 +19,7 @@ export type {
   DirectMessageSendResult,
   FrankIdentityHandle,
   HDSeed,
+  NativeTransferClient,
   ProfileInfo,
   TopicBroadcastClient,
   WalletHandle,

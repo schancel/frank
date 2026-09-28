@@ -66,17 +66,22 @@ jest.mock('../monad-identity', () => {
     fetchMonadProfile: jest.fn(),
   }
 })
+jest.mock('../monad-account-tx', () => {
+  const actual = jest.requireActual('../monad-account-tx')
+  return {
+    ...actual,
+    MonadAccountTxSigner: jest.fn(),
+  }
+})
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { MonadStampClient } = jest.requireMock('../monad-stamp-client')
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const { MonadTopicPostClient } = jest.requireMock(
-  '../monad-topic-post-client',
-)
+const { MonadTopicPostClient } = jest.requireMock('../monad-topic-post-client')
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const { MonadTopicVoteClient } = jest.requireMock(
-  '../monad-topic-vote-client',
-)
+const { MonadTopicVoteClient } = jest.requireMock('../monad-topic-vote-client')
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { MonadAccountTxSigner } = jest.requireMock('../monad-account-tx')
 import { fetchMonadMessagesSince } from '@frank/cashweb/relay/monad-message-feed'
 import {
   fetchMonadTopicPostView,
@@ -208,6 +213,72 @@ describe('createMonadChain: fetchProfile', () => {
     expect(
       await chain.fetchProfile({ raw: '0x' + '00'.repeat(20) }),
     ).toBeUndefined()
+  })
+})
+
+describe('createMonadChain: nativeTransfers', () => {
+  it('reads the stable identity EOA balance from the Monad provider', async () => {
+    const chain = createMonadChain(TEST_CONFIG)
+    const identity = MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX)
+    const wallet = makeWallet(identity)
+    const getBalance = jest.fn().mockResolvedValue(123n)
+    wallet.provider = { getBalance } as MonadChainWalletHandle['provider']
+
+    await expect(chain.nativeTransfers.getBalance({ wallet })).resolves.toBe(
+      123n,
+    )
+    expect(getBalance).toHaveBeenCalledWith(identity.address.raw)
+  })
+
+  it('builds and submits a plain transfer from the stable identity EOA', async () => {
+    const chain = createMonadChain(TEST_CONFIG)
+    const identity = MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX)
+    const wallet = makeWallet(identity)
+    const recipient = chain.parseAddress(
+      '0x000000000000000000000000000000000000dead',
+    )
+    expect(recipient).toBeDefined()
+
+    const signed = { txHash: '0xsigned' }
+    const buildAndSignTransfer = jest.fn().mockResolvedValue(signed)
+    const submit = jest.fn().mockResolvedValue('0xbroadcast')
+    ;(MonadAccountTxSigner as jest.Mock).mockImplementation(() => ({
+      buildAndSignTransfer,
+      submit,
+    }))
+
+    await expect(
+      chain.nativeTransfers.send({
+        wallet,
+        recipient: recipient!,
+        value: 1_500_000_000_000_000_000n,
+      }),
+    ).resolves.toEqual({ txHash: '0xbroadcast' })
+
+    expect(MonadAccountTxSigner).toHaveBeenCalledWith({
+      privateKey: identity.toPrivateKeyHex(),
+      provider: wallet.provider,
+      httpClient: wallet.httpClient,
+    })
+    expect(buildAndSignTransfer).toHaveBeenCalledWith(
+      recipient!.raw,
+      1_500_000_000_000_000_000n,
+    )
+    expect(submit).toHaveBeenCalledWith(signed)
+  })
+
+  it('rejects zero-value transfers before constructing a signer', async () => {
+    const chain = createMonadChain(TEST_CONFIG)
+    const identity = MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX)
+
+    await expect(
+      chain.nativeTransfers.send({
+        wallet: makeWallet(identity),
+        recipient: identity.address,
+        value: 0n,
+      }),
+    ).rejects.toThrow('Transfer value must be greater than zero')
+    expect(MonadAccountTxSigner).not.toHaveBeenCalled()
   })
 })
 

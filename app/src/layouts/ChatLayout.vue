@@ -14,11 +14,6 @@
       <send-file-dialog :address="address" :file="image" />
     </q-dialog>
 
-    <!-- Send money dialog -->
-    <q-dialog v-model="sendMoneyOpen">
-      <send-lotus-dialog :address="address" :contact="contactProfile" />
-    </q-dialog>
-
     <q-header>
       <q-toolbar class="q-pl-sm">
         <q-btn
@@ -43,10 +38,7 @@
       </q-toolbar>
     </q-header>
 
-    <router-view
-      @sendFileClicked="toSendFileDialog"
-      @giveLotusClicked="sendMoneyOpen = true"
-    />
+    <router-view @sendFileClicked="toSendFileDialog" />
   </div>
 </template>
 
@@ -56,7 +48,6 @@ import { RouteLocationNormalized } from 'vue-router'
 
 import RightDrawer from '../components/panels/ChatRightDrawer.vue'
 import SendFileDialog from '../components/dialogs/SendFileDialog.vue'
-import SendLotusDialog from '../components/dialogs/SendLotusDialog.vue'
 import { useContactStore } from 'src/stores/contacts'
 import { pubKeyToColor } from 'src/utils/formatting'
 
@@ -65,7 +56,6 @@ export default defineComponent({
   components: {
     RightDrawer,
     SendFileDialog,
-    SendLotusDialog,
   },
   setup() {
     const contactStore = useContactStore()
@@ -77,7 +67,6 @@ export default defineComponent({
   data() {
     return {
       sendFileOpen: false as boolean,
-      sendMoneyOpen: false as boolean,
       address: this.$route.params.address as string,
       contactDrawerOpen: false,
       image: null as unknown | null,

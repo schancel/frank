@@ -1,7 +1,7 @@
 <template>
   <div class="full-width column col">
     <contact-card
-      :address="getMyAddressStr"
+      :address="myAddress"
       :name="profile.name"
       :bio="profile.bio"
       :avatar="profile.avatar"
@@ -52,7 +52,7 @@
           </q-item-section>
 
           <q-item-section>
-            {{ $t('SettingPanel.sendBitcoinCash') }}
+            {{ $t('SettingPanel.sendMonad') }}
           </q-item-section>
         </q-item>
 
@@ -62,7 +62,7 @@
           </q-item-section>
 
           <q-item-section>
-            {{ $t('SettingPanel.recieveBitcoinCash') }}
+            {{ $t('SettingPanel.receiveMonad') }}
           </q-item-section>
         </q-item>
 
@@ -120,7 +120,7 @@
 </template>
 
 <script lang="ts">
-import { defineComponent, ref } from 'vue'
+import { defineComponent, onMounted, ref } from 'vue'
 
 import SeedPhraseDialog from '../dialogs/SeedPhraseDialog.vue'
 import ContactCard from './ContactCard.vue'
@@ -129,6 +129,7 @@ import { openChat, openPage } from '../../utils/routes'
 import { useChatStore } from 'src/stores/chats'
 import { useProfileStore } from 'src/stores/my-profile'
 import { storeToRefs } from 'pinia'
+import { useActiveWallet } from 'src/composables/useActiveWallet'
 
 export default defineComponent({
   setup() {
@@ -136,11 +137,20 @@ export default defineComponent({
     const myProfile = useProfileStore()
     const { profile, inbox } = storeToRefs(myProfile)
     const seedPhraseOpen = ref(false)
+    const myAddress = ref('')
+    onMounted(async () => {
+      try {
+        myAddress.value = (await useActiveWallet()).identity.displayAddress
+      } catch {
+        // The setup route may render this panel before a seed exists.
+      }
+    })
     return {
       deleteMessage: chats.deleteMessage,
       profile,
       inbox,
       seedPhraseOpen,
+      myAddress,
     }
   },
   components: {
@@ -165,9 +175,6 @@ export default defineComponent({
     event: 'update:drawerOpen',
   },
   methods: {
-    getIdentityPrivKey() {
-      return this.$wallet.identityPrivKey
-    },
     closeContactSearchDialog() {
       this.contactBookOpen = false
     },
@@ -194,9 +201,6 @@ export default defineComponent({
     },
   },
   computed: {
-    getMyAddressStr() {
-      return this.$wallet.myAddress?.toXAddress()
-    },
     drawerOpenModel: {
       get() {
         return this.drawerOpen

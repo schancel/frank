@@ -32,12 +32,9 @@
     <q-list v-if="$status.setup">
       <q-separator />
       <q-item clickable>
-        <q-item-section @click="receiveLotus">
+        <q-item-section @click="openReceive">
           <q-item-label>{{ $t('chatList.balance') }}</q-item-label>
           <q-item-label caption>{{ formattedBalance }}</q-item-label>
-        </q-item-section>
-        <q-item-section v-if="!walletConnected" side>
-          <q-btn icon="account_balance_wallet" flat round color="red" />
         </q-item-section>
         <q-item-section
           v-if="!relayConnected"
@@ -53,7 +50,7 @@
 </template>
 
 <script lang="ts">
-import { defineComponent, computed } from 'vue'
+import { computed, defineComponent, onMounted, ref } from 'vue'
 import { storeToRefs } from 'pinia'
 
 import ChatList from '../chat/ChatList.vue'
@@ -62,22 +59,34 @@ import TopicList from '../topic/TopicList.vue'
 import SettingsPanel from '../panels/SettingsPanel.vue'
 import RelayConnectDialog from '../dialogs/RelayConnectDialog.vue'
 
-import { formatBalance } from '../../utils/formatting'
 import { openChat, openPage } from '../../utils/routes'
-import { useWalletStore } from 'src/stores/wallet'
 import { useChatStore } from 'src/stores/chats'
+import { activeChain } from '@frank/wallet/chain'
+import { useActiveWallet } from 'src/composables/useActiveWallet'
 
 const compactCutoff = 325
 
 export default defineComponent({
   setup() {
     const chats = useChatStore()
-    const wallet = useWalletStore()
     const { totalUnread } = storeToRefs(chats)
+    const balance = ref(0n)
+
+    onMounted(async () => {
+      try {
+        const wallet = await useActiveWallet()
+        balance.value = await activeChain.nativeTransfers.getBalance({ wallet })
+      } catch {
+        // The setup route may render the drawer before a seed exists.
+      }
+    })
 
     return {
       totalUnread: totalUnread,
-      formattedBalance: computed(() => formatBalance(wallet.balance)),
+      formattedBalance: computed(
+        () =>
+          `${activeChain.toDisplayAmount(balance.value)} ${activeChain.unit}`,
+      ),
     }
   },
   components: {
@@ -115,16 +124,13 @@ export default defineComponent({
     contactClicked(address: string) {
       openChat(this.$router, address)
     },
-    receiveLotus() {
+    openReceive() {
       openPage(this.$router, '/receive')
     },
   },
   computed: {
     relayConnected(): boolean {
       return this.$relay.connected
-    },
-    walletConnected(): boolean {
-      return this.$indexer.connected
     },
   },
 })

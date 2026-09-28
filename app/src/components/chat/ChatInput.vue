@@ -4,15 +4,6 @@
       <q-btn dense flat icon="unfold_more">
         <q-menu>
           <q-list style="min-width: 100px">
-            <q-item clickable v-close-popup @click="giveLotusClicked">
-              <q-item-section avatar side>
-                <q-icon name="local_florist" />
-              </q-item-section>
-              <q-item-section>
-                {{ $t('chatInput.giveLotusSecretly') }}
-              </q-item-section>
-            </q-item>
-
             <q-item clickable v-close-popup @click="sendFileClicked">
               <q-item-section avatar side>
                 <q-icon name="attach_file" />
@@ -40,19 +31,6 @@
                 />
               </q-menu>
             </q-item>-->
-            <q-item>
-              <q-item-section>
-                <q-input
-                  dense
-                  outlined
-                  style="width: 150px"
-                  :label="$t('chatInput.stampPrice')"
-                  :suffix="chainUnit"
-                  v-model="innerStampAmount"
-                  input-class="text-right"
-                />
-              </q-item-section>
-            </q-item>
           </q-list>
         </q-menu>
       </q-btn>
@@ -90,16 +68,10 @@ import { defineComponent } from 'vue'
 import emoji from 'node-emoji'
 import { defaultStampAmount } from '../../utils/constants'
 import { processInput } from '../../utils/chat'
-import { activeChain } from '@frank/wallet/chain'
 
 export default defineComponent({
   components: {
     // Picker
-  },
-  data() {
-    return {
-      chainUnit: activeChain.unit,
-    }
   },
   props: {
     message: {
@@ -115,7 +87,6 @@ export default defineComponent({
     'update:message',
     'update:stampAmount',
     'sendMessage',
-    'giveLotusClicked',
     'sendFileClicked',
   ],
   methods: {
@@ -144,9 +115,6 @@ export default defineComponent({
     },
     sendMessage() {
       this.$emit('sendMessage', this.innerMessage)
-    },
-    giveLotusClicked() {
-      this.$emit('giveLotusClicked')
     },
     sendFileClicked() {
       this.$emit('sendFileClicked')

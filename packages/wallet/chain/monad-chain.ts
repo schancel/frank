@@ -102,6 +102,7 @@ import { MonadHdKeyring } from '../monad-hd-keyring'
 import { MonadSubAccountPool } from '../monad-account-pool'
 import { SubAccountLeaseManager } from '../monad-account-lease'
 import { MonadHttpClient } from '../monad-http'
+import { MonadAccountTxSigner } from '../monad-account-tx'
 import { MonadWalletHandle } from '../monad-wallet-handle'
 import { MonadIdentity, fetchMonadProfile } from '../monad-identity'
 import { MonadStampClient } from '../monad-stamp-client'
@@ -377,6 +378,27 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
     },
   }
 
+  const nativeTransfers: ActiveChain['nativeTransfers'] = {
+    async getBalance({ wallet }): Promise<bigint> {
+      const monadWallet = asMonadWallet(wallet)
+      return monadWallet.provider.getBalance(monadWallet.identity.address.raw)
+    },
+
+    async send({ wallet, recipient, value }): Promise<{ txHash: string }> {
+      if (value <= 0n) {
+        throw new Error('Transfer value must be greater than zero')
+      }
+      const monadWallet = asMonadWallet(wallet)
+      const signer = new MonadAccountTxSigner({
+        privateKey: monadWallet.identity.toPrivateKeyHex(),
+        provider: monadWallet.provider,
+        httpClient: monadWallet.httpClient,
+      })
+      const signed = await signer.buildAndSignTransfer(recipient.raw, value)
+      return { txHash: await signer.submit(signed) }
+    },
+  }
+
   const topics: TopicBroadcastClient = {
     async post(params): Promise<{ payloadDigest: string }> {
       const wallet = asMonadWallet(params.wallet)
@@ -475,6 +497,8 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
       }
       return wallet
     },
+
+    nativeTransfers,
 
     async fetchProfile(addr: ChainAddress): Promise<ProfileInfo | undefined> {
       return fetchMonadProfile({

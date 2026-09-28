@@ -101,8 +101,8 @@ export default {
   SettingPanel: {
     newContact: 'New Contact',
     contacts: 'Contacts',
-    sendBitcoinCash: 'Send Lotus',
-    recieveBitcoinCash: 'Receive Lotus',
+    sendMonad: 'Send MON',
+    receiveMonad: 'Receive MON',
     profile: 'Profile',
     settings: 'Settings',
     wipeAndSave: 'Remote Wipe Wallet',

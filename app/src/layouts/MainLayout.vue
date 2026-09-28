@@ -13,7 +13,6 @@
       @toggleMyDrawerOpen="toggleMyDrawerOpen"
       @setupCompleted="$emit('setupCompleted')"
     />
-    <subscribe-dialog />
   </q-layout>
 </template>
 
@@ -21,7 +20,6 @@
 import { defineComponent } from 'vue'
 
 import LeftDrawer from '../components/panels/LeftDrawer.vue'
-import SubscribeDialog from '../components/SubscribeDialog.vue'
 
 const compactWidth = 70
 const compactCutoff = 325
@@ -30,7 +28,6 @@ const compactMidpoint = (compactCutoff + compactWidth) / 2
 export default defineComponent({
   components: {
     LeftDrawer,
-    SubscribeDialog,
   },
   setup() {
     return {}

@@ -1,4 +1,5 @@
-import { Notify } from 'quasar'
+import { Notify, openURL } from 'quasar'
+import { transactionExplorerUrl } from './explorer'
 
 // Error notifications
 
@@ -57,7 +58,7 @@ export function sentTransactionNotify(txId?: string) {
     color: 'secondary',
     handler: () => {
       if (txId) {
-        window.url.open(`https://explorer.givelotus.org/tx/${txId}`)
+        openURL(transactionExplorerUrl(txId))
       }
     },
   }

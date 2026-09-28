@@ -129,6 +129,16 @@ export interface DirectMessageClient {
   }): Promise<DirectMessageReceived[]>
 }
 
+/** Standard native-asset wallet operations, independent of Frank's mandatory message stamps. */
+export interface NativeTransferClient {
+  getBalance(params: { wallet: WalletHandle }): Promise<bigint>
+  send(params: {
+    wallet: WalletHandle
+    recipient: ChainAddress
+    value: bigint
+  }): Promise<{ txHash: string }>
+}
+
 export interface TopicBroadcastClient {
   post(params: {
     wallet: WalletHandle
@@ -163,6 +173,7 @@ export interface ActiveChain {
   formatAddress(addr: ChainAddress): string
   parseAddress(input: string): ChainAddress | undefined
   createWallet(seed: HDSeed): Promise<WalletHandle>
+  nativeTransfers: NativeTransferClient
   /** Look up an identity's registered profile/pubkey. Returns `undefined` if nothing is
    * registered under `addr` yet. */
   fetchProfile(addr: ChainAddress): Promise<ProfileInfo | undefined>

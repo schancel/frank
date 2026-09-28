@@ -159,6 +159,11 @@ export class MonadSubAccountPool {
     return updated
   }
 
+  /** Waits until all pool mutations made so far have reached persistent storage. */
+  async flush(): Promise<void> {
+    await this.store.flush()
+  }
+
   /** Re-derives the private key for sub-account `index` (deterministically, from the keyring —
    * never read from or written to the store) and wraps it in a `MonadAccountTxSigner` (#11) ready
    * to build/sign/submit/track transactions for it. Throws if `index` isn't a known sub-account,

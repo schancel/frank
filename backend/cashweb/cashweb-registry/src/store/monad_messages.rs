@@ -31,6 +31,7 @@
 
 use std::fmt::Debug;
 
+use bitcoinsuite_core::{Hashed, Sha256};
 use bitcoinsuite_error::{ErrorMeta, Result, WrapErr};
 use prost::Message;
 use rocksdb::{ColumnFamilyDescriptor, Direction, IteratorMode};
@@ -56,13 +57,27 @@ pub struct DbMonadMessages<'a> {
     cf_monad_message_attempts: &'a CF,
 }
 
-/// Result of claiming a payload hash for one exact canonical payment set.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Relay policy frozen when the first member of an exact payment set may be broadcast. Exact
+/// retries use this snapshot even if the recipient later rotates their profile key or the relay
+/// raises its configured minimum.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MonadMessageAttemptPolicy {
+    /// Recipient public key used to derive every child destination in this payment set.
+    pub recipient_pubkey: Vec<u8>,
+    /// Aggregate minimum accepted when this set was first validated.
+    pub min_value_wei: u128,
+}
+
+/// Result of looking up or claiming a payload hash for one exact canonical payment set.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MonadMessageAttemptClaim {
+    /// No attempt exists for this payload hash.
+    Missing,
     /// No attempt existed; this exact set was persisted.
     New,
-    /// The same exact protobuf message was already persisted and may resume.
-    ExistingExact,
+    /// The same exact protobuf message was already persisted and may resume under its frozen
+    /// policy snapshot.
+    ExistingExact(MonadMessageAttemptPolicy),
     /// A different payment set already owns this payload hash.
     Conflict,
 }
@@ -97,26 +112,84 @@ impl<'a> DbMonadMessages<'a> {
         }
     }
 
-    /// Persist the exact raw payment set before its first broadcast. The caller serializes claims
-    /// for a given payload hash, making this read/insert decision atomic within one relay process.
-    pub fn claim_attempt(
+    fn encoded_attempt(
+        message: &proto::MonadStampedMessage,
+        policy: &MonadMessageAttemptPolicy,
+    ) -> Vec<u8> {
+        let digest = Sha256::digest(message.encode_to_vec().into());
+        let mut encoded = Vec::with_capacity(50 + policy.recipient_pubkey.len());
+        encoded.push(1); // record format version
+        encoded.extend_from_slice(digest.as_slice());
+        encoded.extend_from_slice(&policy.min_value_wei.to_be_bytes());
+        encoded.push(policy.recipient_pubkey.len() as u8);
+        encoded.extend_from_slice(&policy.recipient_pubkey);
+        encoded
+    }
+
+    /// Inspect a durable exact-set claim without creating one.
+    pub fn get_attempt(
         &self,
         payload_hash: &[u8],
         message: &proto::MonadStampedMessage,
     ) -> Result<MonadMessageAttemptClaim> {
-        let encoded = message.encode_to_vec();
+        let digest = Sha256::digest(message.encode_to_vec().into());
         match self.db.get(self.cf_monad_message_attempts, payload_hash)? {
-            Some(existing) if existing.as_ref() == encoded.as_slice() => {
-                Ok(MonadMessageAttemptClaim::ExistingExact)
+            None => Ok(MonadMessageAttemptClaim::Missing),
+            Some(existing)
+                if existing.len() >= 50
+                    && existing[0] == 1
+                    && &existing[1..33] == digest.as_slice() =>
+            {
+                let min_value_wei = u128::from_be_bytes(
+                    existing[33..49]
+                        .try_into()
+                        .expect("attempt minimum has a fixed width"),
+                );
+                let pubkey_len = existing[49] as usize;
+                if existing.len() != 50 + pubkey_len {
+                    return Ok(MonadMessageAttemptClaim::Conflict);
+                }
+                Ok(MonadMessageAttemptClaim::ExistingExact(
+                    MonadMessageAttemptPolicy {
+                        recipient_pubkey: existing[50..].to_vec(),
+                        min_value_wei,
+                    },
+                ))
             }
             Some(_) => Ok(MonadMessageAttemptClaim::Conflict),
-            None => {
+        }
+    }
+
+    /// Persist the exact raw payment set and its bounded policy snapshot before its first
+    /// broadcast. The encrypted payload itself is represented only by the message digest, avoiding
+    /// attacker-controlled disk amplification.
+    pub fn claim_attempt(
+        &self,
+        payload_hash: &[u8],
+        message: &proto::MonadStampedMessage,
+        policy: &MonadMessageAttemptPolicy,
+    ) -> Result<MonadMessageAttemptClaim> {
+        match self.get_attempt(payload_hash, message)? {
+            MonadMessageAttemptClaim::Missing => {
+                if policy.recipient_pubkey.len() > u8::MAX as usize {
+                    return Ok(MonadMessageAttemptClaim::Conflict);
+                }
+                let encoded = Self::encoded_attempt(message, policy);
                 let mut batch = rocksdb::WriteBatch::default();
                 batch.put_cf(self.cf_monad_message_attempts, payload_hash, encoded);
                 self.db.write_batch(batch)?;
                 Ok(MonadMessageAttemptClaim::New)
             }
+            existing => Ok(existing),
         }
+    }
+
+    /// Release a claim after the first transaction was definitively rejected by the RPC before
+    /// any member of the set verified. Timeout/accepted ambiguity deliberately does not call this.
+    pub fn delete_attempt(&self, payload_hash: &[u8]) -> Result<()> {
+        let mut batch = rocksdb::WriteBatch::default();
+        batch.delete_cf(self.cf_monad_message_attempts, payload_hash);
+        self.db.write_batch(batch)
     }
 
     /// Store a [`proto::StoredMonadMessage`], keyed by its inner message's `payload_hash`, and
@@ -213,7 +286,10 @@ mod tests {
 
     use crate::{
         proto,
-        store::{db::Db, monad_messages::MonadMessageAttemptClaim},
+        store::{
+            db::Db,
+            monad_messages::{MonadMessageAttemptClaim, MonadMessageAttemptPolicy},
+        },
     };
 
     #[test]
@@ -230,11 +306,16 @@ mod tests {
                 raw_tx: vec![1, 2, 3],
             }],
         };
+        let policy = MonadMessageAttemptPolicy {
+            recipient_pubkey: vec![2; 33],
+            min_value_wei: 42,
+        };
 
         {
             let db = Db::open(&db_path)?;
             assert_eq!(
-                db.monad_messages().claim_attempt(&payload_hash, &message)?,
+                db.monad_messages()
+                    .claim_attempt(&payload_hash, &message, &policy)?,
                 MonadMessageAttemptClaim::New
             );
         }
@@ -242,15 +323,21 @@ mod tests {
         // Reopening the database proves the claim survives a relay restart.
         let db = Db::open(&db_path)?;
         assert_eq!(
-            db.monad_messages().claim_attempt(&payload_hash, &message)?,
-            MonadMessageAttemptClaim::ExistingExact
+            db.monad_messages().get_attempt(&payload_hash, &message)?,
+            MonadMessageAttemptClaim::ExistingExact(policy.clone())
         );
         let mut conflicting = message;
         conflicting.stamp_payments[0].raw_tx.push(4);
         assert_eq!(
             db.monad_messages()
-                .claim_attempt(&payload_hash, &conflicting)?,
+                .get_attempt(&payload_hash, &conflicting)?,
             MonadMessageAttemptClaim::Conflict
+        );
+        db.monad_messages().delete_attempt(&payload_hash)?;
+        assert_eq!(
+            db.monad_messages()
+                .claim_attempt(&payload_hash, &conflicting, &policy)?,
+            MonadMessageAttemptClaim::New
         );
 
         Ok(())

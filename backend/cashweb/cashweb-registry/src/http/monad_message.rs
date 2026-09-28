@@ -122,7 +122,7 @@ use crate::{
     monad_stamp_verify::{parse_commitment_calldata, ExpectedStampTransaction},
     proto,
     registry::Registry,
-    store::monad_messages::MonadMessageAttemptClaim,
+    store::monad_messages::{MonadMessageAttemptClaim, MonadMessageAttemptPolicy},
 };
 
 const MAX_STAMP_PAYMENTS: usize = 64;
@@ -416,14 +416,19 @@ pub async fn process_monad_message<T: JsonRpcTransport + Clone>(
             actual: actual_hash,
         });
     }
+    // Completed exact retries are immutable historical facts. Return them before consulting
+    // mutable current relay policy (minimum value, profile rotation, network configuration).
+    if let Some(existing) = registry
+        .get_monad_message(declared_hash.as_slice())
+        .map_err(ProcessMonadMessageError::Infrastructure)?
+    {
+        if existing.message.as_ref() == Some(&request) {
+            return Ok(existing);
+        }
+        return Err(ProcessMonadMessageError::ConflictingPaymentSet);
+    }
 
     let recipient = extract_recipient(&request.encrypted_payload, network_tag)?;
-    let recipient_profile = registry
-        .get_monad_profile(recipient)
-        .map_err(ProcessMonadMessageError::Infrastructure)?
-        .ok_or(ProcessMonadMessageError::RecipientProfileNotFound(
-            recipient,
-        ))?;
     if request.stamp_payments.is_empty() {
         return Err(ProcessMonadMessageError::MissingStampPayments);
     }
@@ -438,6 +443,42 @@ pub async fn process_monad_message<T: JsonRpcTransport + Clone>(
         .as_slice()
         .try_into()
         .expect("payload hash length was checked above");
+
+    // Serialize one payload hash from durable claim through final storage. This prevents two
+    // concurrent requests from broadcasting different sets before either one becomes visible.
+    let _payment_set_guard = lock_payment_set(payload_hash).await;
+    if let Some(existing) = registry
+        .get_monad_message(declared_hash.as_slice())
+        .map_err(ProcessMonadMessageError::Infrastructure)?
+    {
+        if existing.message.as_ref() == Some(&request) {
+            return Ok(existing);
+        }
+        return Err(ProcessMonadMessageError::ConflictingPaymentSet);
+    }
+    let existing_attempt = registry
+        .get_monad_message_attempt(declared_hash.as_slice(), &request)
+        .map_err(ProcessMonadMessageError::Infrastructure)?;
+    let policy = match &existing_attempt {
+        MonadMessageAttemptClaim::ExistingExact(policy) => policy.clone(),
+        MonadMessageAttemptClaim::Conflict => {
+            return Err(ProcessMonadMessageError::ConflictingPaymentSet)
+        }
+        MonadMessageAttemptClaim::Missing => {
+            let recipient_profile = registry
+                .get_monad_profile(recipient)
+                .map_err(ProcessMonadMessageError::Infrastructure)?
+                .ok_or(ProcessMonadMessageError::RecipientProfileNotFound(
+                    recipient,
+                ))?;
+            MonadMessageAttemptPolicy {
+                recipient_pubkey: recipient_profile.pubkey,
+                min_value_wei,
+            }
+        }
+        MonadMessageAttemptClaim::New => unreachable!("lookup cannot create an attempt"),
+    };
+
     let mut child_indices = HashSet::new();
     let mut funding_accounts = HashSet::new();
     let mut transaction_hashes = HashSet::new();
@@ -470,7 +511,7 @@ pub async fn process_monad_message<T: JsonRpcTransport + Clone>(
         }
         let destination = derive_monad_stamp_child_public(
             payload_hash,
-            &recipient_profile.pubkey,
+            &policy.recipient_pubkey,
             payment.child_index,
         )
         .map_err(ProcessMonadMessageError::InvalidStealthDestination)?;
@@ -524,40 +565,42 @@ pub async fn process_monad_message<T: JsonRpcTransport + Clone>(
             *address,
         ));
     }
-    if preflight_total_value_wei < min_value_wei {
+    if preflight_total_value_wei < policy.min_value_wei {
         return Err(ProcessMonadMessageError::InsufficientTotalValue {
-            required: min_value_wei,
+            required: policy.min_value_wei,
             actual: preflight_total_value_wei,
         });
     }
 
-    // Serialize one payload hash from durable claim through final storage. This prevents two
-    // concurrent requests from broadcasting different sets before either one becomes visible.
-    let _payment_set_guard = lock_payment_set(payload_hash).await;
-    if let Some(existing) = registry
-        .get_monad_message(declared_hash.as_slice())
-        .map_err(ProcessMonadMessageError::Infrastructure)?
-    {
-        if existing.message.as_ref() == Some(&request) {
-            return Ok(existing);
-        }
-        return Err(ProcessMonadMessageError::ConflictingPaymentSet);
-    }
-    match registry
-        .claim_monad_message_attempt(declared_hash.as_slice(), &request)
-        .map_err(ProcessMonadMessageError::Infrastructure)?
-    {
-        MonadMessageAttemptClaim::New | MonadMessageAttemptClaim::ExistingExact => {}
-        MonadMessageAttemptClaim::Conflict => {
-            return Err(ProcessMonadMessageError::ConflictingPaymentSet)
+    if matches!(existing_attempt, MonadMessageAttemptClaim::Missing) {
+        match registry
+            .claim_monad_message_attempt(declared_hash.as_slice(), &request, &policy)
+            .map_err(ProcessMonadMessageError::Infrastructure)?
+        {
+            MonadMessageAttemptClaim::New => {}
+            MonadMessageAttemptClaim::ExistingExact(_)
+            | MonadMessageAttemptClaim::Conflict
+            | MonadMessageAttemptClaim::Missing => {
+                return Err(ProcessMonadMessageError::ConflictingPaymentSet)
+            }
         }
     }
 
     let mut total_value_wei = 0u128;
-    for (payment, expected) in request.stamp_payments.iter().zip(&expected_payments) {
+    for (position, (payment, expected)) in request
+        .stamp_payments
+        .iter()
+        .zip(&expected_payments)
+        .enumerate()
+    {
         let outcome = broadcast_and_verify_stamp(transport, &payment.raw_tx, expected, poll)
             .await
             .map_err(ProcessMonadMessageError::Infrastructure)?;
+        if position == 0 && matches!(outcome, StampRelayOutcome::BroadcastFailed(_)) {
+            registry
+                .delete_monad_message_attempt(declared_hash.as_slice())
+                .map_err(ProcessMonadMessageError::Infrastructure)?;
+        }
         match outcome {
             StampRelayOutcome::Verified { value_wei, .. } => {
                 total_value_wei = total_value_wei
@@ -567,9 +610,9 @@ pub async fn process_monad_message<T: JsonRpcTransport + Clone>(
             other => return Err(ProcessMonadMessageError::Rejected(other)),
         }
     }
-    if total_value_wei < min_value_wei {
+    if total_value_wei < policy.min_value_wei {
         return Err(ProcessMonadMessageError::InsufficientTotalValue {
-            required: min_value_wei,
+            required: policy.min_value_wei,
             actual: total_value_wei,
         });
     }
@@ -1261,6 +1304,61 @@ mod tests {
                 .count(),
             2
         );
+    }
+
+    #[tokio::test]
+    async fn unfinished_exact_retry_uses_its_original_minimum() {
+        let (_tempdir, registry) = test_registry();
+        let encrypted_payload = format!(
+            r#"{{"to":"{}","networkTag":"MONT"}}"#,
+            hex_addr(recipient_address())
+        )
+        .into_bytes();
+        let commitment = Sha256::digest(encrypted_payload.clone().into());
+        let destination = stamp_destination(&commitment);
+        let sender = EccSecp256k1::default()
+            .seckey_from_array([0x79; 32])
+            .unwrap();
+        let (raw_tx, _) = signed_eip1559_tx(
+            &sender,
+            41454,
+            0,
+            destination,
+            10_000,
+            &commitment_calldata_bytes(&commitment, 0),
+        );
+        let message = make_message(raw_tx, encrypted_payload);
+        let recipient_pubkey = EccSecp256k1::default().derive_pubkey(&recipient_seckey());
+        let policy = MonadMessageAttemptPolicy {
+            recipient_pubkey: recipient_pubkey.as_slice().to_vec(),
+            min_value_wei: 10_000,
+        };
+        assert_eq!(
+            registry
+                .claim_monad_message_attempt(&message.payload_hash, &message, &policy)
+                .unwrap(),
+            MonadMessageAttemptClaim::New
+        );
+
+        let to = hex_addr(destination);
+        let transport = MockTransport::default();
+        transport.set("eth_getTransactionReceipt", receipt_json(&to, "0x1"));
+        transport.set(
+            "eth_getTransactionByHash",
+            tx_json(&to, 10_000, &commitment_calldata(&commitment, 0)),
+        );
+
+        let stored = process_monad_message(
+            &transport,
+            &registry,
+            20_000,
+            fast_poll(),
+            b"MONT",
+            message.clone(),
+        )
+        .await
+        .expect("an unfinished exact retry keeps the minimum accepted before its first broadcast");
+        assert_eq!(stored.message, Some(message));
     }
 
     #[tokio::test]

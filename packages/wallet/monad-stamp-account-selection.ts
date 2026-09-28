@@ -21,11 +21,13 @@ export function selectStampAccounts(params: {
   amountWei: bigint
   accounts: StampAccountCapacity[]
   desiredMinimumTransactions?: number
+  maxTransactions?: number
 }): SelectedStampAccount[] {
   if (params.amountWei <= BigInt(0)) {
     throw new Error(`Stamp amount must be positive, got ${params.amountWei}`)
   }
   const desiredMinimumTransactions = params.desiredMinimumTransactions ?? 2
+  const maxTransactions = params.maxTransactions ?? Number.MAX_SAFE_INTEGER
   if (
     !Number.isInteger(desiredMinimumTransactions) ||
     desiredMinimumTransactions < 1
@@ -34,8 +36,13 @@ export function selectStampAccounts(params: {
       `desiredMinimumTransactions must be a positive integer, got ${desiredMinimumTransactions}`,
     )
   }
+  if (!Number.isInteger(maxTransactions) || maxTransactions < 1) {
+    throw new Error(
+      `maxTransactions must be a positive integer, got ${maxTransactions}`,
+    )
+  }
 
-  const accounts = params.accounts
+  let accounts = params.accounts
     .filter(account => account.capacityWei > BigInt(0))
     .sort((a, b) =>
       a.capacityWei === b.capacityWei
@@ -44,13 +51,26 @@ export function selectStampAccounts(params: {
         ? -1
         : 1,
     )
+  if (accounts.length > maxTransactions) {
+    // The largest N accounts maximize the capacity available under a hard transaction-count cap.
+    // Re-sort that feasible subset ascending so the ordinary right-sized greedy behavior remains.
+    accounts = accounts
+      .slice(-maxTransactions)
+      .sort((a, b) =>
+        a.capacityWei === b.capacityWei
+          ? a.index - b.index
+          : a.capacityWei < b.capacityWei
+          ? -1
+          : 1,
+      )
+  }
   const totalCapacity = accounts.reduce(
     (sum, account) => sum + account.capacityWei,
     BigInt(0),
   )
   if (totalCapacity < params.amountWei) {
     throw new Error(
-      `Insufficient stamp-account capacity: need ${params.amountWei} wei, have ${totalCapacity} wei`,
+      `Insufficient stamp-account capacity within ${maxTransactions} payments: need ${params.amountWei} wei, have ${totalCapacity} wei`,
     )
   }
 

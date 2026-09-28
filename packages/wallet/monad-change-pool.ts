@@ -212,11 +212,10 @@ export class MonadChangePool {
    * on-chain leftover balance via `provider.getBalance` (real balance, not the amount originally
    * funded minus a guessed gas cost), and if it clears the dust threshold (see this file's
    * header), builds/signs/submits a transfer of `balance - dustThreshold` to the next unused
-   * change address, then persists the record and advances the pointer -- in that order, and only
-   * after the transfer actually submits successfully, mirroring `MonadSubAccountPool.topUpPool`'s
-   * "persist only after the on-chain send succeeds" ordering for the same partial-failure-safety
-   * reason: if this throws partway through (e.g. the submit fails), nothing is persisted, so a
-   * retry safely re-attempts against the same still-next index rather than skipping one.
+   * change address. The next-index reservation is durably advanced before signing or broadcast;
+   * a failed attempt can therefore leave a harmless gap, but a crash can never cause reuse of a
+   * destination that may already have received funds. A successful submission then persists its
+   * audit record.
    *
    * Returns `{ swept: false, reason: 'below-dust-threshold' }` (never throws) when the leftover
    * balance doesn't clear the threshold. Any build/submit failure propagates as a thrown error to
@@ -259,6 +258,11 @@ export class MonadChangePool {
     const sweptValueWei = balanceWei - dustThresholdWei
     const { index, address } = this.peekNextChangeAddress()
 
+    // Reserve and durably advance the index before broadcasting. A crash may leave a harmless
+    // gap, but can never rewind and reuse a change destination that might already be funded.
+    this.store.setNextIndex(index + 1)
+    await this.store.flush()
+
     const signedTx = await params.burnAccountSigner.buildAndSignTransfer(
       address,
       sweptValueWei,
@@ -276,7 +280,7 @@ export class MonadChangePool {
       createdAt: Date.now(),
     }
     this.store.putRecord(record)
-    this.store.setNextIndex(index + 1)
+    await this.store.flush()
 
     return { swept: true, record, sweptValueWei }
   }
@@ -346,6 +350,7 @@ export async function releaseLeaseAndSweepChange(params: {
   sweep?: SweepAfterReleaseParams
 }): Promise<ReleaseLeaseAndSweepResult> {
   const record = params.manager.releaseLease(params.handle, params.outcome)
+  await params.manager.flush()
   if (params.sweep === undefined) {
     return { record, sweep: undefined }
   }

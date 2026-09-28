@@ -25,11 +25,15 @@ import { MonadSubAccountPool } from './monad-account-pool'
 import { SubAccountLeaseManager } from './monad-account-lease'
 import { MonadTxSubmitter } from './monad-account-tx'
 import { MonadChangePool } from './monad-change-pool'
-import { InMemoryStampAttemptJournal } from './storage/stamp-attempt-journal'
+import {
+  InMemoryStampAttemptJournal,
+  StampAttemptJournal,
+} from './storage/stamp-attempt-journal'
 import {
   MonadStampAbandonedError,
   MonadStampClient,
   MonadStampRejectedError,
+  MonadStampPendingAttemptError,
   MONAD_STAMP_CALLDATA_LENGTH,
   buildMonadStampCalldata,
   computeMonadStampCommitment,
@@ -145,7 +149,7 @@ function makeClient(overrides?: {
   pool?: MonadSubAccountPool
   changePool?: MonadChangePool
   provider?: ReturnType<typeof makeChainProvider>
-  stampAttemptJournal?: InMemoryStampAttemptJournal
+  stampAttemptJournal?: StampAttemptJournal
 }) {
   const pool = overrides?.pool ?? makePool()
   const leaseManager = new SubAccountLeaseManager(pool)
@@ -411,6 +415,56 @@ describe('MonadStampClient.submitStampedMessage', () => {
     expect(retired).toHaveLength(2)
   })
 
+  it('keeps an exact journaled set pending after an HTTP response that may follow a partial broadcast', async () => {
+    const stampAttemptJournal = new InMemoryStampAttemptJournal()
+    const { client, pool } = makeClient({ stampAttemptJournal })
+    mockedAxios.mockImplementationOnce(async () => {
+      throw Object.assign(new Error('Bad Request'), {
+        isAxiosError: true,
+        response: { status: 400, data: { error: 'payment_rejected' } },
+      })
+    })
+
+    await expect(
+      client.submitStampedMessage({
+        encryptedPayload: new TextEncoder().encode('partial response'),
+        recipientPublicKey: RECIPIENT_PUBLIC_KEY,
+        stampValueWei: 10_000n,
+        overrides: FEE_OVERRIDES,
+      }),
+    ).rejects.toThrow(MonadStampPendingAttemptError)
+
+    expect(stampAttemptJournal.getAll()).toHaveLength(1)
+    expect(
+      pool.records().filter(record => record.status === 'in-use'),
+    ).toHaveLength(2)
+  })
+
+  it('retires every reservation if the exact-set journal cannot become durable', async () => {
+    const stampAttemptJournal: StampAttemptJournal = {
+      put: async () => {
+        throw new Error('disk full')
+      },
+      delete: async () => undefined,
+      getAll: () => [],
+    }
+    const { client, pool } = makeClient({ stampAttemptJournal })
+
+    await expect(
+      client.submitStampedMessage({
+        encryptedPayload: new TextEncoder().encode('journal failure'),
+        recipientPublicKey: RECIPIENT_PUBLIC_KEY,
+        stampValueWei: 10_000n,
+        overrides: FEE_OVERRIDES,
+      }),
+    ).rejects.toThrow('disk full')
+
+    expect(
+      pool.records().filter(record => record.status === 'retired'),
+    ).toHaveLength(2)
+    expect(mockedAxios).not.toHaveBeenCalled()
+  })
+
   it('greedily constructs a canonical, domain-separated multi-payment set', async () => {
     const pool = makePool(3)
     const provider = makeCapacityProvider([4_500n, 2_000n, 3_500n])
@@ -533,6 +587,21 @@ describe('MonadStampClient.submitStampedMessage', () => {
     const retired = pool.records().filter(r => r.status === 'retired')
     expect(retired).toHaveLength(2)
     expect(stampAttemptJournal.getAll()).toHaveLength(1)
+    await expect(
+      client.submitStampedMessage({
+        encryptedPayload: new TextEncoder().encode('replacement with new salt'),
+        recipientPublicKey: RECIPIENT_PUBLIC_KEY,
+        stampValueWei: 10_000n,
+        overrides: FEE_OVERRIDES,
+      }),
+    ).rejects.toThrow(MonadStampPendingAttemptError)
+
+    // Simulate a cross-store crash where the awaited attempt journal persisted but the pool's
+    // earlier status writes did not. A failed startup replay must reserve those
+    // accounts again before returning control to the wallet.
+    for (const record of retired) pool.setStatus(record.index, 'available')
+    await expect(client.resumePendingAttempts()).resolves.toEqual([])
+    expect(pool.records().filter(r => r.status === 'in-use')).toHaveLength(2)
 
     mockedAxios.mockReset()
     mockedAxios.mockImplementationOnce(async config => {
@@ -550,6 +619,25 @@ describe('MonadStampClient.submitStampedMessage', () => {
     await expect(client.resumePendingAttempts()).resolves.toHaveLength(1)
     expect(stampAttemptJournal.getAll()).toHaveLength(0)
     expect(pool.records().filter(r => r.status === 'spent')).toHaveLength(2)
+  })
+
+  it('rejects a split larger than the relay maximum before leasing or PUT', async () => {
+    const pool = makePool(65)
+    const provider = makeCapacityProvider(Array(65).fill(1n))
+    const { client } = makeClient({ pool, provider })
+
+    await expect(
+      client.submitStampedMessage({
+        encryptedPayload: new TextEncoder().encode('too fragmented'),
+        recipientPublicKey: RECIPIENT_PUBLIC_KEY,
+        stampValueWei: 65n,
+        overrides: FEE_OVERRIDES,
+      }),
+    ).rejects.toThrow(/within 64 payments/)
+    expect(pool.records().every(record => record.status === 'available')).toBe(
+      true,
+    )
+    expect(mockedAxios).not.toHaveBeenCalled()
   })
 
   it('does not confirm a different stored payment set after an ambiguous PUT', async () => {

@@ -58,6 +58,8 @@ export interface ChangePoolStore {
   getRecord(index: number): ChangeAccountRecord | undefined
   /** Every persisted change record, sorted by index. */
   getAll(): ChangeAccountRecord[]
+  /** Wait until every preceding mutation is durable. */
+  flush(): Promise<void>
   clear(): Promise<void>
 }
 
@@ -95,6 +97,8 @@ export class InMemoryChangePoolStore implements ChangePoolStore {
       (a, b) => a.index - b.index,
     )
   }
+
+  async flush(): Promise<void> {}
 
   async clear(): Promise<void> {
     this.nextIndex = 0

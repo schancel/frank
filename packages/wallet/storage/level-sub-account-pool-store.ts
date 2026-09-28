@@ -21,6 +21,7 @@ export class LevelSubAccountPoolStore implements SubAccountPoolStore {
   private readonly dbLocation: string
   private openedDb?: LevelDB
   private cache: Map<number, SubAccountRecord>
+  private pendingWrites: Promise<unknown>[] = []
 
   constructor(location: string) {
     this.dbLocation = join(location, 'sub-account-pool')
@@ -42,6 +43,7 @@ export class LevelSubAccountPoolStore implements SubAccountPoolStore {
   }
 
   async Close(): Promise<void> {
+    await this.flush()
     await this.db.close()
   }
 
@@ -67,25 +69,26 @@ export class LevelSubAccountPoolStore implements SubAccountPoolStore {
 
   put(record: SubAccountRecord): void {
     this.cache.set(record.index, { ...record })
-    // TODO: Handle errors here (same caveat as `LevelUtxoStore.put`).
-    this.db
-      .put(String(record.index), JSON.stringify(record))
-      .catch((err: any) =>
-        console.error(
-          `Failed to persist sub-account pool record ${record.index}`,
-          err,
-        ),
-      )
+    this.pendingWrites.push(
+      this.db.put(String(record.index), JSON.stringify(record)),
+    )
   }
 
   getAll(): SubAccountRecord[] {
     return Array.from(this.cache.values()).sort((a, b) => a.index - b.index)
   }
 
+  async flush(): Promise<void> {
+    const writes = this.pendingWrites
+    this.pendingWrites = []
+    await Promise.all(writes)
+  }
+
   /**
    * This will delete everything in the store! Don't call it by accident!
    */
   async clear(): Promise<void> {
+    await this.flush()
     this.cache = new Map<number, SubAccountRecord>()
     await this.db.clear()
   }

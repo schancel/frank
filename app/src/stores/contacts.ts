@@ -296,12 +296,11 @@ export const useContactStore = defineStore('contacts', {
       }
       this.addContact({ address, contact })
     },
-    deleteContact(address: string) {
+    async deleteContact(address: string) {
       const chats = useChatStore()
       const apiAddress = toChainDisplayAddress(address)
 
-      chats.clearChat(address)
-      chats.deleteChat(address)
+      await chats.deleteChat(address)
       delete this.contacts[apiAddress]
     },
     /** Resolve a signed Monad profile through the active-chain seam. */

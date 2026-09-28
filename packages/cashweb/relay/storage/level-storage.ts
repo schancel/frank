@@ -9,6 +9,87 @@ const metadataKeys = {
   lastServerTime: 'lastServerTime',
 }
 
+type JsonMessageWrapper = Omit<MessageWrapper, 'message'> & {
+  message: Omit<
+    MessageWrapper['message'],
+    'stampValueWei' | 'stampPayments'
+  > & {
+    stampValueWei?: string | number
+    stampPayments?: Array<{
+      txHash: string
+      destinationAddress: string
+      valueWei: string | number
+    }>
+  }
+}
+
+function parseStoredWei(
+  value: string | number | undefined,
+): bigint | undefined {
+  if (value === undefined) return undefined
+  if (typeof value === 'number') {
+    if (!Number.isSafeInteger(value) || value < 0) {
+      throw new Error(
+        `Stored wei value is not a safe non-negative integer: ${value}`,
+      )
+    }
+    return BigInt(value)
+  }
+  if (!/^(0|[1-9][0-9]*)$/.test(value)) {
+    throw new Error(
+      `Stored wei value is not an unsigned decimal integer: ${value}`,
+    )
+  }
+  return BigInt(value)
+}
+
+/** Local schema v2: financial integers are decimal strings in JSON and bigint in memory. */
+export function serializeMessageWrapper(
+  messageWrapper: MessageWrapper,
+): string {
+  const { stampValueWei, stampPayments, ...message } = messageWrapper.message
+  const stored: JsonMessageWrapper = {
+    ...messageWrapper,
+    message: {
+      ...message,
+      ...(stampValueWei === undefined
+        ? {}
+        : { stampValueWei: stampValueWei.toString() }),
+      ...(stampPayments === undefined
+        ? {}
+        : {
+            stampPayments: stampPayments.map(payment => ({
+              ...payment,
+              valueWei: payment.valueWei.toString(),
+            })),
+          }),
+    },
+  }
+  return JSON.stringify(stored)
+}
+
+export function deserializeMessageWrapper(value: string): MessageWrapper {
+  const stored = JSON.parse(value) as JsonMessageWrapper
+  const { stampValueWei, stampPayments, ...message } = stored.message
+  return {
+    ...stored,
+    message: {
+      ...message,
+      ...(stampValueWei === undefined
+        ? {}
+        : { stampValueWei: parseStoredWei(stampValueWei) }),
+      ...(stampPayments === undefined
+        ? {}
+        : {
+            stampPayments: stampPayments.map(payment => ({
+              ...payment,
+              valueWei: parseStoredWei(payment.valueWei) as bigint,
+            })),
+          }),
+    },
+  }
+}
+
 class MessageIterator implements AsyncIterableIterator<MessageWrapper> {
   iterator: any
   db: LevelDB
@@ -18,39 +99,43 @@ class MessageIterator implements AsyncIterableIterator<MessageWrapper> {
   }
 
   async next(): Promise<IteratorResult<MessageWrapper>> {
-    const value = await new Promise<void | MessageWrapper>(
-      (resolve, reject) => {
+    while (true) {
+      const entry = await new Promise<
+        { key: string; value: string } | undefined
+      >((resolve, reject) => {
         this.iterator.next((error: Error, key: string, value: string) => {
           if (error) {
             reject(error)
+            return
           }
           if (!key) {
             this.iterator.end((error: Error) => {
               if (error) {
                 reject(error)
+                return
               }
-              resolve()
+              resolve(undefined)
             })
-            resolve()
             return
           }
-          const parsedValue: MessageWrapper = JSON.parse(value)
-          resolve(parsedValue)
+          resolve({ key, value })
         })
-      },
-    )
-    if (!value) {
-      return new MessageReturnResult()
+      })
+      if (!entry) {
+        return new MessageReturnResult()
+      }
+      if (entry.key !== metadataKeys.lastServerTime) {
+        return new MessageResult(deserializeMessageWrapper(entry.value))
+      }
     }
-    return new MessageResult(value)
   }
 
   async return(): Promise<IteratorResult<MessageWrapper>> {
     return new Promise((resolve, reject) => {
       this.iterator.end((error: Error) => {
-        this.db.close()
         if (error) {
           reject(error)
+          return
         }
         resolve({ done: true, value: undefined })
       })
@@ -63,7 +148,7 @@ class MessageIterator implements AsyncIterableIterator<MessageWrapper> {
   }
 }
 
-const currentSchemaVersion = 1
+const currentSchemaVersion = 2
 
 export class LevelMessageStore implements MessageStore {
   private messageDbLocation: string
@@ -71,6 +156,7 @@ export class LevelMessageStore implements MessageStore {
   private schemaVersion?: number
   private openedDb?: LevelDB
   private openedMetadataDb?: LevelDB
+  private mutationQueue: Promise<void> = Promise.resolve()
 
   constructor(location: string) {
     this.messageDbLocation = join(location, 'messages')
@@ -85,14 +171,17 @@ export class LevelMessageStore implements MessageStore {
     if (!dbSchemaVersion) {
       await this.setSchemaVersion(currentSchemaVersion)
     } else if (dbSchemaVersion < currentSchemaVersion) {
-      console.warn('Outdated DB, may need migration')
+      // v2 remains able to read v1 records, whose Monad wei fields were absent (JSON.stringify
+      // could not encode bigint). New and rewritten records use exact decimal strings.
+      await this.setSchemaVersion(currentSchemaVersion)
     } else if (dbSchemaVersion > currentSchemaVersion) {
       console.warn('Newer DB found. Client downgraded?')
     }
   }
 
   async Close() {
-    this.db.close()
+    await this.mutationQueue
+    await Promise.all([this.db.close(), this.metadataDb.close()])
   }
 
   get db() {
@@ -116,7 +205,7 @@ export class LevelMessageStore implements MessageStore {
   async getMessage(payloadDigest: string): Promise<MessageWrapper | undefined> {
     try {
       const value = await this.db.get(payloadDigest)
-      return JSON.parse(value)
+      return deserializeMessageWrapper(value)
     } catch (err: any) {
       if (err.type === 'NotFoundError') {
         return
@@ -126,13 +215,51 @@ export class LevelMessageStore implements MessageStore {
   }
 
   async deleteMessage(payloadDigest: string): Promise<void> {
-    await this.db.del(payloadDigest)
+    const deletion = this.mutationQueue.then(() => this.db.del(payloadDigest))
+    this.mutationQueue = deletion.then(
+      () => undefined,
+      () => undefined,
+    )
+    await deletion
   }
 
-  async saveMessage(messageWrapper: MessageWrapper): Promise<void> {
-    const index = messageWrapper.index
-    await this.mostRecentMessageTime(messageWrapper.message.serverTime)
-    await this.db.put(index, JSON.stringify(messageWrapper))
+  async saveMessage(
+    messageWrapper: MessageWrapper,
+    { advanceCursor = true }: { advanceCursor?: boolean } = {},
+  ): Promise<void> {
+    const save = this.mutationQueue.then(async () => {
+      if (!advanceCursor) {
+        await this.db.put(
+          messageWrapper.index,
+          serializeMessageWrapper(messageWrapper),
+        )
+        return
+      }
+      const lastServerTime = await this.mostRecentMessageTime()
+      const nextServerTime = Math.max(
+        lastServerTime,
+        messageWrapper.message.serverTime,
+      )
+      // level@7 exposes atomic batch writes at runtime, but this repository's legacy `LevelDB`
+      // type alias omits the method.
+      await (this.db as any).batch([
+        {
+          type: 'put',
+          key: messageWrapper.index,
+          value: serializeMessageWrapper(messageWrapper),
+        },
+        {
+          type: 'put',
+          key: metadataKeys.lastServerTime,
+          value: JSON.stringify(nextServerTime),
+        },
+      ])
+    })
+    this.mutationQueue = save.then(
+      () => undefined,
+      () => undefined,
+    )
+    await save
   }
 
   async mostRecentMessageTime(newLastServerTime?: number): Promise<number> {
@@ -199,7 +326,14 @@ export class LevelMessageStore implements MessageStore {
    * This will delete everything in the store! Don't call it by accident!
    */
   async clear() {
-    await this.db.clear()
-    await this.metadataDb.clear()
+    const clearing = this.mutationQueue.then(async () => {
+      await this.db.clear()
+      await this.metadataDb.clear()
+    })
+    this.mutationQueue = clearing.then(
+      () => undefined,
+      () => undefined,
+    )
+    await clearing
   }
 }

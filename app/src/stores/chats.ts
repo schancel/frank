@@ -16,6 +16,7 @@ import type {
 import { Utxo } from '@frank/cashweb/types/utxo'
 import type {
   Message,
+  MessageWrapper,
   MessageItem,
   TextItem,
   ImageItem,
@@ -168,6 +169,10 @@ export async function rehydateChat(chatState: RestorableState): Promise<State> {
   const localStore = await store
 
   const messageIterator = await localStore.getIterator()
+  let lastReceived = Math.max(
+    chatState.lastReceived ?? 0,
+    await localStore.mostRecentMessageTime(),
+  )
 
   // Todo, this rehydrate stuff is common to receiveMessage
   for await (const messageWrapper of messageIterator) {
@@ -214,13 +219,13 @@ export async function rehydateChat(chatState: RestorableState): Promise<State> {
       chat.totalUnreadValue += messageValue
       chat.totalUnreadMessages += 1
     }
-    chatState.lastReceived = message.serverTime
+    lastReceived = Math.max(lastReceived, message.serverTime)
     chat.totalValue += messageValue
   }
 
   // Resort chats
-  for (const contactAddress in chatState.chats) {
-    chats[contactAddress]?.messages.sort(
+  for (const chat of Object.values(chats)) {
+    chat.messages.sort(
       (messageA, messageB) => messageA.serverTime - messageB.serverTime,
     )
   }
@@ -228,7 +233,7 @@ export async function rehydateChat(chatState: RestorableState): Promise<State> {
     chats,
     messages,
     activeChatAddr: chatState.activeChatAddr,
-    lastReceived: chatState.lastReceived,
+    lastReceived,
   }
 }
 
@@ -358,13 +363,14 @@ export const useChatStore = defineStore('chats', {
     },
   },
   actions: {
-    deleteMessage({
+    async deleteMessage({
       address,
       payloadDigest,
     }: {
       address: string
       payloadDigest: string
     }) {
+      await (await store).deleteMessage(payloadDigest)
       const displayAddress = toChainDisplayAddress(address)
 
       delete this.messages[payloadDigest]
@@ -375,7 +381,9 @@ export const useChatStore = defineStore('chats', {
       const msgIndex = chat.messages.findIndex(
         msg => msg.payloadDigest === payloadDigest,
       )
-      chat.messages.splice(msgIndex, 1)
+      if (msgIndex >= 0) {
+        chat.messages.splice(msgIndex, 1)
+      }
     },
     readAll(address: string) {
       const displayAddress = toChainDisplayAddress(address)
@@ -422,6 +430,7 @@ export const useChatStore = defineStore('chats', {
       stampPayments,
       status = 'pending',
       previousHash = null,
+      timestamp = Date.now(),
     }: {
       address: string
       senderAddress: string
@@ -438,9 +447,9 @@ export const useChatStore = defineStore('chats', {
       }>
       status: string
       previousHash: string | null
+      timestamp?: number
     }) {
       const displayAddress = toChainDisplayAddress(address)
-      const timestamp = Date.now()
       const newMsg = {
         outbound: true,
         status,
@@ -557,6 +566,30 @@ export const useChatStore = defineStore('chats', {
           : { onPreparationProgress }),
       })
 
+      const timestamp = Date.now()
+      const persistedMessage: Message = {
+        outbound: true,
+        status: 'confirmed',
+        items,
+        serverTime: timestamp,
+        receivedTime: timestamp,
+        outpoints: [],
+        stampValueWei: result.stampValueWei,
+        stampPayments: result.stampPayments,
+        senderAddress: wallet.identity.displayAddress,
+      }
+      const messageStore = await store
+      await messageStore.saveMessage(
+        {
+          message: persistedMessage,
+          index: result.payloadDigest,
+          outbound: true,
+          senderAddress: wallet.identity.displayAddress,
+          copartyAddress: displayAddress,
+        },
+        { advanceCursor: false },
+      )
+
       this.sendMessageLocal({
         address: displayAddress,
         senderAddress: wallet.identity.displayAddress,
@@ -567,21 +600,28 @@ export const useChatStore = defineStore('chats', {
         stampPayments: result.stampPayments,
         status: 'confirmed',
         previousHash: null,
+        timestamp,
       })
 
       return result
     },
-    clearChat(address: string) {
+    async clearChat(address: string) {
       const displayAddress = toChainDisplayAddress(address)
 
       const chat = this.chats[displayAddress]
       if (!chat) {
         return
       }
+      const messageStore = await store
+      for (const message of chat.messages) {
+        await messageStore.deleteMessage(message.payloadDigest)
+        delete this.messages[message.payloadDigest]
+      }
       chat.messages = []
     },
-    deleteChat(address: string) {
+    async deleteChat(address: string) {
       const displayAddress = toChainDisplayAddress(address)
+      await this.clearChat(displayAddress)
       if (this.activeChatAddr === displayAddress) {
         this.activeChatAddr = null
       }
@@ -627,15 +667,30 @@ export const useChatStore = defineStore('chats', {
     },
     async receiveMessages(messageWrappers: ReceivedMessageWrapper[]) {
       console.log('receiving messages')
+      const messageStore = await store
+      for (const wrapper of messageWrappers) {
+        const persisted: MessageWrapper = {
+          message: { ...wrapper.message },
+          index: wrapper.index,
+          outbound: wrapper.outbound,
+          senderAddress: wrapper.senderAddress,
+          copartyAddress: wrapper.copartyAddress,
+        }
+        await messageStore.saveMessage(persisted)
+      }
       // Ensure contacts are all setup
       for (const messageWrapper of messageWrappers) {
         const {
           outbound,
           copartyAddress,
           copartyPubKey,
+          index,
           message: newMsg,
           stampValue,
         } = messageWrapper
+        if (index in this.messages) {
+          continue
+        }
         // Check whether contact exists
         const contacts = useContactStore()
         if (!contacts.isContact(copartyAddress)) {
@@ -728,8 +783,9 @@ export const useChatStore = defineStore('chats', {
           assert(existingMessage, 'For great typescript')
           // Mutate the object so that it striggers reactivity
           this.messages[index] = Object.assign(existingMessage, message)
-          // We should already have created the chat if we have the message
-          return
+          // We should already have created the chat if we have the message. Continue so one
+          // replayed item cannot hide later, genuinely new messages from this same poll batch.
+          continue
         }
         // We don't need reactivity here
         this.messages[index] = message

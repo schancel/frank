@@ -28,17 +28,23 @@ import { createPinia, setActivePinia } from 'pinia'
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 ;(global as any).document = { hasFocus: () => true }
 
-import { useChatStore } from './chats'
+import { rehydateChat, useChatStore } from './chats'
 import { useContactStore } from './contacts'
+import { store as messageStorePromise } from '../adapters/level-message-store'
 import { activeChain } from '@frank/wallet/chain'
 import type { WalletHandle } from '@frank/wallet/chain'
 import type { ReceivedMessageWrapper } from '@frank/cashweb/types/user-interface'
+import type { MessageWrapper } from '@frank/cashweb/types/messages'
+import { desktopNotify } from '../utils/notifications'
 
 jest.mock('../adapters/level-message-store', () => ({
   store: Promise.resolve({
-    getIterator: async function* () {
-      /* no persisted Lotus-era messages in tests */
-    },
+    saveMessage: jest.fn(async () => undefined),
+    deleteMessage: jest.fn(async () => undefined),
+    mostRecentMessageTime: jest.fn(async () => 0),
+    getIterator: jest.fn(async function* () {
+      /* no persisted messages by default */
+    }),
   }),
 }))
 
@@ -51,6 +57,14 @@ const RECIPIENT_ADDRESS = '0x2b2B2B2b2B2b2B2b2B2b2b2b2B2B2b2b2B2b2B2B'
 // Same address as RECIPIENT_ADDRESS, different case -- exercises store-key consistency (decision 2).
 const RECIPIENT_ADDRESS_LOWERCASE = RECIPIENT_ADDRESS.toLowerCase()
 
+type MockMessageStore = {
+  saveMessage: jest.Mock
+  deleteMessage: jest.Mock
+  mostRecentMessageTime: jest.Mock
+  getIterator: jest.Mock
+}
+let mockMessageStore: MockMessageStore
+
 function makeWallet(address: string): WalletHandle {
   return {
     identity: {
@@ -61,9 +75,16 @@ function makeWallet(address: string): WalletHandle {
 }
 
 describe('stores/chats.ts (ticket #42)', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     setActivePinia(createPinia())
     jest.restoreAllMocks()
+    mockMessageStore =
+      (await messageStorePromise) as unknown as MockMessageStore
+    mockMessageStore.saveMessage.mockClear()
+    mockMessageStore.deleteMessage.mockClear()
+    mockMessageStore.mostRecentMessageTime.mockClear()
+    mockMessageStore.getIterator.mockClear()
+    jest.mocked(desktopNotify).mockClear()
   })
 
   describe('sendMessage', () => {
@@ -102,6 +123,17 @@ describe('stores/chats.ts (ticket #42)', () => {
       expect(message?.outpoints).toEqual([])
       expect(message?.stampValueWei).toBe(1_000_000_000_000n)
       expect(message?.payloadDigest).toBe('deadbeef')
+      expect(mockMessageStore.saveMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          index: 'deadbeef',
+          outbound: true,
+          copartyAddress: RECIPIENT_ADDRESS,
+          message: expect.objectContaining({
+            stampValueWei: 1_000_000_000_000n,
+          }),
+        }),
+        { advanceCursor: false },
+      )
     })
 
     it('keys the chat by activeChain.formatAddress regardless of input case (decision 2)', async () => {
@@ -159,6 +191,66 @@ describe('stores/chats.ts (ticket #42)', () => {
     })
   })
 
+  it('restores the durable resume cursor even when no messages remain locally', async () => {
+    mockMessageStore.mostRecentMessageTime.mockResolvedValueOnce(789)
+
+    const restored = await rehydateChat({
+      activeChatAddr: null,
+      chats: {},
+      messages: {},
+      lastReceived: 123,
+    })
+
+    expect(restored.lastReceived).toBe(789)
+  })
+
+  it('rehydrates exact inbox and outbox values from the durable message store', async () => {
+    const persisted = (async function* (): AsyncGenerator<MessageWrapper> {
+      for (const [index, outbound, copartyAddress, valueWei] of [
+        ['inbox', false, RECIPIENT_ADDRESS, 10_000_000_000_000_001n],
+        ['outbox', true, RECIPIENT_ADDRESS, 20_000_000_000_000_002n],
+      ] as const) {
+        yield {
+          index,
+          outbound,
+          senderAddress: outbound ? SENDER_ADDRESS : RECIPIENT_ADDRESS,
+          copartyAddress,
+          message: {
+            outbound,
+            status: 'confirmed',
+            receivedTime: Number(valueWei % 1000n),
+            serverTime: Number(valueWei % 1000n),
+            items: [{ type: 'text', text: index }],
+            outpoints: [],
+            senderAddress: outbound ? SENDER_ADDRESS : RECIPIENT_ADDRESS,
+            stampValueWei: valueWei,
+            stampPayments: [
+              {
+                txHash: `tx-${index}`,
+                destinationAddress: RECIPIENT_ADDRESS,
+                valueWei,
+              },
+            ],
+          },
+        }
+      }
+    })()
+    mockMessageStore.getIterator.mockResolvedValueOnce(persisted)
+
+    const restored = await rehydateChat({
+      activeChatAddr: null,
+      chats: {},
+      messages: {},
+      lastReceived: 0,
+    })
+
+    expect(restored.chats[RECIPIENT_ADDRESS]?.messages).toHaveLength(2)
+    expect(restored.messages.inbox?.stampValueWei).toBe(10_000_000_000_000_001n)
+    expect(restored.messages.outbox?.stampPayments?.[0]?.valueWei).toBe(
+      20_000_000_000_000_002n,
+    )
+  })
+
   describe('receiveMessages with stampValueWei (decision 1)', () => {
     function makeWrapper(
       overrides: Partial<ReceivedMessageWrapper> = {},
@@ -206,6 +298,13 @@ describe('stores/chats.ts (ticket #42)', () => {
       expect(chat?.totalUnreadMessages).toBe(1)
       expect(chat?.messages[0].stampValueWei).toBe(5000n)
       expect(chat?.messages[0].outpoints).toEqual([])
+      expect(mockMessageStore.saveMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          index: 'digest-1',
+          copartyAddress: RECIPIENT_ADDRESS,
+          message: expect.objectContaining({ stampValueWei: 5000n }),
+        }),
+      )
     })
 
     it('still falls back to stampPrice(outpoints) when stampValueWei is absent (Lotus-origin)', async () => {
@@ -228,5 +327,85 @@ describe('stores/chats.ts (ticket #42)', () => {
       // No outpoints, no stampValueWei -> stampPrice([]) === 0.
       expect(chat?.totalValue).toBe(0)
     })
+
+    it('continues applying a batch after an already-present message', async () => {
+      const chats = useChatStore()
+      const contacts = useContactStore()
+      contacts.addContact({
+        address: RECIPIENT_ADDRESS,
+        contact: {
+          profile: { name: 'Bob', bio: '', avatar: '', pubKey: null },
+        },
+      })
+      const first = makeWrapper()
+      await chats.receiveMessages([first])
+
+      const later = makeWrapper({
+        index: 'digest-2',
+        message: {
+          ...first.message,
+          items: [{ type: 'text', text: 'second' }],
+          serverTime: first.message.serverTime + 1,
+          receivedTime: first.message.receivedTime + 1,
+        },
+      })
+      await chats.receiveMessages([first, later])
+
+      expect(chats.chats[RECIPIENT_ADDRESS]?.messages).toHaveLength(2)
+      expect(chats.messages['digest-2']?.items).toEqual([
+        { type: 'text', text: 'second' },
+      ])
+    })
+
+    it('does not notify again when a polling retry replays a durable message', async () => {
+      const chats = useChatStore()
+      const contacts = useContactStore()
+      contacts.addContact({
+        address: RECIPIENT_ADDRESS,
+        contact: {
+          notify: true,
+          profile: { name: 'Bob', bio: '', avatar: '', pubKey: null },
+        },
+      })
+      jest.spyOn(document, 'hasFocus').mockReturnValue(false)
+      const wrapper = makeWrapper()
+
+      await chats.receiveMessages([wrapper])
+      await chats.receiveMessages([wrapper])
+
+      expect(desktopNotify).toHaveBeenCalledTimes(1)
+    })
+  })
+
+  it('deletes a message durably before removing it from the chat', async () => {
+    const chats = useChatStore()
+    chats.chats[RECIPIENT_ADDRESS] = {
+      address: RECIPIENT_ADDRESS,
+      messages: [],
+      totalUnreadMessages: 0,
+      totalUnreadValue: 0,
+      totalValue: 0,
+      lastReceived: 0,
+      lastRead: 0,
+      stampAmount: 0,
+    }
+    chats.sendMessageLocal({
+      address: RECIPIENT_ADDRESS,
+      senderAddress: SENDER_ADDRESS,
+      index: 'delete-me',
+      items: [{ type: 'text', text: 'temporary' }],
+      outpoints: [],
+      status: 'confirmed',
+      previousHash: null,
+    })
+
+    await chats.deleteMessage({
+      address: RECIPIENT_ADDRESS,
+      payloadDigest: 'delete-me',
+    })
+
+    expect(mockMessageStore.deleteMessage).toHaveBeenCalledWith('delete-me')
+    expect(chats.messages['delete-me']).toBeUndefined()
+    expect(chats.chats[RECIPIENT_ADDRESS]?.messages).toHaveLength(0)
   })
 })

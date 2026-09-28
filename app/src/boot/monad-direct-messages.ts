@@ -25,6 +25,7 @@ import { boot } from 'quasar/wrappers'
 import { activeChain } from '@frank/wallet/chain'
 import { useWalletStore } from '../stores/wallet'
 import { useProfileStore } from '../stores/my-profile'
+import { useChatStore } from '../stores/chats'
 import { useMonadWallet } from '../utils/clients'
 import { startDirectMessagePolling } from '../adapters/pinia-chain-adapter'
 import {
@@ -96,6 +97,8 @@ export default boot(async () => {
   await walletStore.restored
   const profileStore = useProfileStore()
   await profileStore.restored
+  const chatStore = useChatStore()
+  await chatStore.restored
 
   if (!walletStore.seedPhrase) {
     console.log(

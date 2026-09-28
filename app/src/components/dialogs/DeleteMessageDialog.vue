@@ -56,7 +56,7 @@ export default defineComponent({
       try {
         await this.$relayClient.deleteMessage(this.payloadDigest)
         // Delete message from relay server
-        this.deleteMessage({
+        await this.deleteMessage({
           address: this.address,
           payloadDigest: this.payloadDigest,
         })

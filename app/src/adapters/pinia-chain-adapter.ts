@@ -121,18 +121,25 @@ export function startDirectMessagePolling({
       }
 
       const wrappers: ReceivedMessageWrapper[] = []
+      let nextSinceMs = sinceMs
+      let cursorBlocked = false
       for (const record of received) {
         const wrapper = await toReceivedMessageWrapper(record)
         if (wrapper !== undefined) {
           wrappers.push(wrapper)
+          // The relay's `since` bound is inclusive. Only advance through the contiguous prefix
+          // that can become durable; an unresolved earlier sender profile must remain retryable.
+          if (!cursorBlocked) {
+            nextSinceMs = Math.max(nextSinceMs, record.receivedTime + 1)
+          }
+        } else {
+          cursorBlocked = true
         }
-        // The relay's `since` bound is inclusive. Advance one millisecond past every processed
-        // record so an unswept stamp-payment journal entry is not decoded and rewritten forever.
-        sinceMs = Math.max(sinceMs, record.receivedTime + 1)
       }
 
       if (wrappers.length > 0) {
         await chats.receiveMessages(wrappers)
+        sinceMs = nextSinceMs
       }
     } catch (err) {
       console.error('direct-message polling failed', err)

@@ -31,6 +31,11 @@ export type ReceivedMessage = {
    * since `stores/chats.ts`'s `receiveMessages` re-types `ReceivedMessageWrapper.message` as
    * `Message` (ticket #42). */
   stampValueWei?: bigint
+  stampPayments?: Array<{
+    txHash: string
+    destinationAddress: string
+    valueWei: bigint
+  }>
 }
 
 export type ReceivedMessageWrapper = {

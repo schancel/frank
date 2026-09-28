@@ -46,10 +46,10 @@
  * the behavior that function's own doc comment describes), keeps only envelopes addressed to the
  * wallet's own identity address (`envelope.to`, compared case-insensitively -- EIP-55 checksums
  * differ only in letter case), resolves each sender's pubkey the same way `send()` resolves the
- * recipient's, and decrypts. `burnValueWei` on the returned `DirectMessageReceived` is read back
- * from the message's own signed raw burn tx (`ethers.Transaction.from(...).value`), not merely
- * echoed from config -- the actual value burned, even if it ever diverges from
- * `defaultStampBurnValueWei`.
+ * recipient's, and decrypts. The legacy-named `burnValueWei` field on the returned
+ * `DirectMessageReceived` is read back from the message's own signed stamp transaction
+ * (`ethers.Transaction.from(...).value`), not merely echoed from config -- it is the actual
+ * recipient-payment value, even if it ever diverges from `defaultStampBurnValueWei`.
  *
  * ## `topics`: wiring the topic-post/vote/tally clients
  *
@@ -131,7 +131,8 @@ export interface MonadChainConfig {
   /** `0x`-prefixed Monad burn address Stamp/topic-vote burns are sent to (see
    * `frank/.env.example`'s `MONAD_STAMP_BURN_ADDRESS`). */
   stampBurnAddress: string
-  /** Default value, in wei, `directMessages.send` burns per Stamp message. */
+  /** Default value, in wei, `directMessages.send` pays per Stamp message. The property keeps its
+   * legacy name to avoid widening #57 into an unrelated app configuration migration. */
   defaultStampBurnValueWei: bigint
   /** How many burner sub-accounts `createWallet` pre-derives into the pool. */
   subAccountPoolSize: number
@@ -315,8 +316,12 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
       const stampClient = new MonadStampClient(wallet)
       const result = await stampClient.submitStampedMessage({
         encryptedPayload: envelopeBytes,
-        burnAddress: config.stampBurnAddress,
-        burnValueWei: config.defaultStampBurnValueWei,
+        // Ticket #57: a DM's stamp is a real payment to the recipient (mirroring Lotus's
+        // `constructStampTransactions`, which derives the stamp output address from the
+        // recipient's own pubkey), not a burn to the fixed dead address -- that's `topics`'
+        // `post`/`vote` below, where there's no single recipient to pay.
+        destinationAddress: params.recipient.raw,
+        stampValueWei: config.defaultStampBurnValueWei,
       })
 
       return {

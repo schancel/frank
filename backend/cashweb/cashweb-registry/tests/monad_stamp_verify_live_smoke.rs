@@ -125,7 +125,7 @@ async fn live_verify_stamp_burn_against_real_tx() {
     let expected = ExpectedBurn {
         commitment_id: *b"STMP",
         commitment: bitcoinsuite_core::Sha256::new([0u8; 32]),
-        burn_address: real_to,
+        destination_address: real_to,
         min_value_wei: 0,
     };
     let outcome = verify_stamp_burn(&transport, tx_hash, &expected)

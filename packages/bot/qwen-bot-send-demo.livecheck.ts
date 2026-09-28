@@ -78,7 +78,8 @@ function extractText(plaintext: string): string {
 async function main() {
   const relayBaseUrl = process.env.E2E_DEMO_RELAY_URL ?? 'http://127.0.0.1:8098'
   const rpcUrl = requiredEnv('MONAD_TESTNET_HTTP_RPC_URL')
-  const burnAddress = requiredEnv('MONAD_STAMP_BURN_ADDRESS')
+  // Ticket #57: no MONAD_STAMP_BURN_ADDRESS here -- this message's stamp pays its real
+  // recipient (botAddress, below), not a fixed address.
   const burnValueWei = BigInt(requiredEnv('CASHWEB_STAMP_MIN_BURN_VALUE_WEI'))
 
   const identityJsonPath = resolve(
@@ -161,8 +162,9 @@ async function main() {
     console.log('Stamping + sending the message over Monad testnet ...')
     const sent = await stampClient.submitStampedMessage({
       encryptedPayload: envelope,
-      burnAddress,
-      burnValueWei,
+      // Ticket #57: a DM's stamp pays its recipient (the bot), not a fixed burn address.
+      destinationAddress: botAddress,
+      stampValueWei: burnValueWei,
     })
     console.log(
       `Sent -- payload_hash=${sent.payloadHashHex} burn tx=${sent.txHash}`,

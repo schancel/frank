@@ -33,8 +33,12 @@
  *    #27's own reasoning, not because this is conceptually a broadcast message). The version byte is
  *    `monad_stamp_verify::COMMITMENT_VERSION_TAG = 0x01`.
  * 3. Leases a sub-account (`SubAccountLeaseManager`, #18) and builds+signs the raw burn tx via
- *    `MonadAccountTxSigner.buildAndSignCall` (#11): value → the configured burn address (see
- *    `frank/.env.example`'s `MONAD_STAMP_BURN_ADDRESS`, decided in #7), the calldata from step 2.
+ *    `MonadAccountTxSigner.buildAndSignCall` (#11): value → `params.destinationAddress` (the caller
+ *    decides this, not a constant baked in here — ticket #57: a direct message's stamp is a real
+ *    payment to the recipient, mirroring Lotus's `constructStampTransactions`, so
+ *    `chain/monad-chain.ts`'s `directMessages.send` passes the recipient's own address; only
+ *    `topics.post`/`topics.vote` there pass the fixed `MONAD_STAMP_BURN_ADDRESS` from
+ *    `frank/.env.example` — no single recipient to pay for a broadcast), the calldata from step 2.
  * 4. Assembles a `MonadStampedMessage { raw_burn_tx, encrypted_payload, payload_hash }` and encodes
  *    it as protobuf wire bytes (see "Protobuf encoding" below), then does the actual
  *    `PUT /message/monad` HTTP call — ticket #27's own scope was server-side only and explicitly
@@ -294,12 +298,15 @@ export interface StampMonadMessageParams {
   /** The message payload, already encrypted for its recipient(s) — this module is opaque to its
    * contents, per `monad_message.proto`'s own doc comment on `encrypted_payload`. */
   encryptedPayload: Uint8Array
-  /** `0x`-prefixed Monad burn address (see `frank/.env.example`'s `MONAD_STAMP_BURN_ADDRESS`,
-   * decided in ticket #7). Passed explicitly rather than read from `process.env` here, matching
+  /** `0x`-prefixed address the stamp value is sent to. Ticket #57: for a direct message this is
+   * the recipient's own address (a real payment, mirroring Lotus's `constructStampTransactions`);
+   * only a broadcast (no single recipient) uses the fixed `MONAD_STAMP_BURN_ADDRESS` (see
+   * `frank/.env.example`, decided in ticket #7). This module itself doesn't care which — it's the
+   * caller's decision, passed explicitly rather than read from `process.env` here, matching
    * `monad-http.ts`'s established convention of never reading env itself (see that file's header). */
-  burnAddress: string
-  /** Value, in wei, to burn to `burnAddress`. */
-  burnValueWei: bigint
+  destinationAddress: string
+  /** Value, in wei, sent to `destinationAddress`. */
+  stampValueWei: bigint
   overrides?: MonadTxOverrides
   /** If provided, waits (`acquireLeaseWhenAvailable`) for a sub-account to free up instead of
    * failing immediately when the pool is fully leased. Omit for the default immediate-reject
@@ -439,8 +446,8 @@ export class MonadStampClient {
         httpClient: this.httpClient,
       })
       signedTx = await signer.buildAndSignCall(
-        params.burnAddress,
-        params.burnValueWei,
+        params.destinationAddress,
+        params.stampValueWei,
         calldata,
         params.overrides,
       )

@@ -105,7 +105,11 @@ async function waitForConfirmation(
 
 async function main() {
   const rpcUrl = requiredEnv('MONAD_TESTNET_HTTP_RPC_URL')
-  const burnAddress = requiredEnv('MONAD_STAMP_BURN_ADDRESS')
+  // Ticket #57: still called "burn address" here (this demo predates that ticket and, unlike a
+  // real DM, has no real recipient identity of its own -- it's standing in for one), but as of
+  // #57 the relay requires *some* `to` in the payload to treat this as a valid direct message; see
+  // the `message.to` field added below.
+  const destinationAddress = requiredEnv('MONAD_STAMP_BURN_ADDRESS')
   const minBurnValueWei = BigInt(
     requiredEnv('CASHWEB_STAMP_MIN_BURN_VALUE_WEI'),
   )
@@ -120,7 +124,7 @@ async function main() {
     '== Ticket #8 e2e demo: stamped message relay-to-relay on Monad testnet ==',
   )
   console.log(`RPC:          ${rpcUrl}`)
-  console.log(`Burn address: ${burnAddress}`)
+  console.log(`Destination address: ${destinationAddress}`)
   console.log(`Min burn:     ${minBurnValueWei} wei`)
   console.log(`Relay:        ${relayBaseUrl}`)
   console.log(`Main wallet:  ${walletJsonPath}`)
@@ -164,8 +168,12 @@ async function main() {
   console.log('Funding tx confirmed on-chain.')
 
   // --- 2. Build the (opaque, unencrypted-for-this-demo -- see file header) message payload. ---
+  // Ticket #57: `to` is required now -- the relay parses it out of encrypted_payload to know who
+  // the stamp tx's value is expected to reach. This demo has no real recipient identity, so it
+  // reuses `destinationAddress` (the same address the stamp transaction is sent to).
   const message = {
     from: mainWallet.address,
+    to: destinationAddress,
     demo: 'ticket-8-e2e-demo',
     text: 'Hello over Monad testnet via a real Stamp burn + cashweb-registry relay.',
     sentAt: new Date().toISOString(),
@@ -185,8 +193,8 @@ async function main() {
   console.log('\n== Submitting the stamped message to the relay ==')
   const result = await stampClient.submitStampedMessage({
     encryptedPayload,
-    burnAddress,
-    burnValueWei: minBurnValueWei,
+    destinationAddress,
+    stampValueWei: minBurnValueWei,
   })
 
   console.log('Relay accepted the message.')
@@ -229,7 +237,7 @@ async function main() {
       {
         txHash: result.txHash,
         payloadHashHex: result.payloadHashHex,
-        burnAddress,
+        destinationAddress,
       },
       null,
       2,

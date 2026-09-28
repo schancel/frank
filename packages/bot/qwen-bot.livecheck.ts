@@ -107,7 +107,8 @@ const SYSTEM_PROMPT =
 async function main() {
   const relayBaseUrl = process.env.E2E_DEMO_RELAY_URL ?? 'http://127.0.0.1:8098'
   const rpcUrl = requiredEnv('MONAD_TESTNET_HTTP_RPC_URL')
-  const burnAddress = requiredEnv('MONAD_STAMP_BURN_ADDRESS')
+  // Ticket #57: no MONAD_STAMP_BURN_ADDRESS here -- a reply's stamp pays whoever it's replying
+  // to (see the submitStampedMessage call below), not a fixed address.
   const burnValueWei = BigInt(requiredEnv('CASHWEB_STAMP_MIN_BURN_VALUE_WEI'))
   const qwenApiKey = requiredEnv('QWEN_API_KEY')
   const qwenEndpoint = requiredEnv('QWEN_OPENAI_COMPATIBLE_ENDPOINT')
@@ -260,11 +261,15 @@ async function main() {
       console.log('[bot] stamping + sending reply over Monad testnet ...')
       const result = await stampClient.submitStampedMessage({
         encryptedPayload: replyEnvelope,
-        burnAddress,
-        burnValueWei,
+        // Ticket #57: a reply is a direct message, so its stamp must pay the recipient
+        // (`envelope.from`, the human it's replying to) -- not burn to the fixed
+        // MONAD_STAMP_BURN_ADDRESS, which is only correct for a broadcast with no single
+        // recipient. See `chain/monad-chain.ts`'s `directMessages.send` for the same fix.
+        destinationAddress: envelope.from,
+        stampValueWei: burnValueWei,
       })
       console.log(
-        `[bot] reply sent -- payload_hash=${result.payloadHashHex} burn tx=${result.txHash}`,
+        `[bot] reply sent -- payload_hash=${result.payloadHashHex} stamp tx=${result.txHash}`,
       )
       repliesSent++
       if (repliesSent >= maxReplies) break

@@ -226,8 +226,8 @@ describe('MonadStampClient.submitStampedMessage', () => {
 
     const result = await client.submitStampedMessage({
       encryptedPayload,
-      burnAddress: BURN_ADDRESS,
-      burnValueWei: 10_000n,
+      destinationAddress: BURN_ADDRESS,
+      stampValueWei: 10_000n,
       overrides: FEE_OVERRIDES,
     })
 
@@ -251,8 +251,8 @@ describe('MonadStampClient.submitStampedMessage', () => {
     await expect(
       client.submitStampedMessage({
         encryptedPayload: new TextEncoder().encode('rejected'),
-        burnAddress: BURN_ADDRESS,
-        burnValueWei: 10_000n,
+        destinationAddress: BURN_ADDRESS,
+        stampValueWei: 10_000n,
         overrides: FEE_OVERRIDES,
       }),
     ).rejects.toThrow(MonadStampRejectedError)
@@ -295,8 +295,8 @@ describe('MonadStampClient.submitStampedMessage', () => {
 
     const result = await client.submitStampedMessage({
       encryptedPayload,
-      burnAddress: BURN_ADDRESS,
-      burnValueWei: 10_000n,
+      destinationAddress: BURN_ADDRESS,
+      stampValueWei: 10_000n,
       overrides: FEE_OVERRIDES,
       abandonPoll: {
         maxAttempts: 2,
@@ -325,8 +325,8 @@ describe('MonadStampClient.submitStampedMessage', () => {
     await expect(
       client.submitStampedMessage({
         encryptedPayload: new TextEncoder().encode('lost forever'),
-        burnAddress: BURN_ADDRESS,
-        burnValueWei: 10_000n,
+        destinationAddress: BURN_ADDRESS,
+        stampValueWei: 10_000n,
         overrides: FEE_OVERRIDES,
         abandonPoll: {
           maxAttempts: 2,

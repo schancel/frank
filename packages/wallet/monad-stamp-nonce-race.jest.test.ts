@@ -231,8 +231,8 @@ describe('nonce-race sequencing proof (#21)', () => {
     // is now parked on `firstPut.promise` (the relay "hasn't confirmed yet").
     const firstResultPromise = client.submitStampedMessage({
       encryptedPayload: payloadA,
-      burnAddress: BURN_ADDRESS,
-      burnValueWei: 10_000n,
+      destinationAddress: BURN_ADDRESS,
+      stampValueWei: 10_000n,
       overrides: FEE_OVERRIDES,
     })
 
@@ -248,8 +248,8 @@ describe('nonce-race sequencing proof (#21)', () => {
     // never waits.
     const secondResultPromise = client.submitStampedMessage({
       encryptedPayload: payloadB,
-      burnAddress: BURN_ADDRESS,
-      burnValueWei: 10_000n,
+      destinationAddress: BURN_ADDRESS,
+      stampValueWei: 10_000n,
       overrides: FEE_OVERRIDES,
     })
 
@@ -298,8 +298,8 @@ describe('nonce-race sequencing proof (#21)', () => {
 
     const firstResultPromise = client.submitStampedMessage({
       encryptedPayload: payloadA,
-      burnAddress: BURN_ADDRESS,
-      burnValueWei: 10_000n,
+      destinationAddress: BURN_ADDRESS,
+      stampValueWei: 10_000n,
       overrides: FEE_OVERRIDES,
     })
 
@@ -313,8 +313,8 @@ describe('nonce-race sequencing proof (#21)', () => {
     const secondResultPromise = client
       .submitStampedMessage({
         encryptedPayload: payloadB,
-        burnAddress: BURN_ADDRESS,
-        burnValueWei: 10_000n,
+        destinationAddress: BURN_ADDRESS,
+        stampValueWei: 10_000n,
         overrides: FEE_OVERRIDES,
         waitForLease: { pollIntervalMs: 5, timeoutMs: 5_000 },
       })
@@ -394,8 +394,8 @@ describe('nonce-race sequencing proof (#21)', () => {
     await expect(
       client.submitStampedMessage({
         encryptedPayload: new TextEncoder().encode('never confirms'),
-        burnAddress: BURN_ADDRESS,
-        burnValueWei: 10_000n,
+        destinationAddress: BURN_ADDRESS,
+        stampValueWei: 10_000n,
         overrides: FEE_OVERRIDES,
         abandonPoll: {
           maxAttempts: 2,
@@ -425,8 +425,8 @@ describe('nonce-race sequencing proof (#21)', () => {
     const nextResult: StampMonadMessageResult =
       await client.submitStampedMessage({
         encryptedPayload: new TextEncoder().encode('unrelated later stamp'),
-        burnAddress: BURN_ADDRESS,
-        burnValueWei: 10_000n,
+        destinationAddress: BURN_ADDRESS,
+        stampValueWei: 10_000n,
         overrides: FEE_OVERRIDES,
       })
 

@@ -146,10 +146,13 @@ async fn main() -> Result<()> {
     // Sanity-check the Monad-stamp env vars this process needs are actually set, and fail fast
     // with a clear message rather than a 500 on the first `PUT /message/monad` (see
     // `http/monad_message.rs`'s `MonadMessageGateConfig::from_env`, which this indirectly proves
-    // out at startup).
+    // out at startup). Ticket #57: MONAD_STAMP_BURN_ADDRESS dropped off this list -- the DM path's
+    // `MonadMessageGateConfig` no longer reads it at all (the expected payment destination is now the
+    // message's own claimed recipient, not a server-configured constant); that var still matters
+    // for `monad_topics.rs`'s separate broadcast path, just not this demo, which only exercises
+    // `/message/monad`.
     for var in [
         "MONAD_TESTNET_HTTP_RPC_URL",
-        "MONAD_STAMP_BURN_ADDRESS",
         "CASHWEB_STAMP_MIN_BURN_VALUE_WEI",
     ] {
         if std::env::var(var).is_err() {

@@ -347,8 +347,10 @@ describe('createMonadChain: directMessages.send', () => {
     expect(MonadStampClient).toHaveBeenCalledWith(wallet)
     expect(submitStampedMessage).toHaveBeenCalledTimes(1)
     const call = submitStampedMessage.mock.calls[0][0]
-    expect(call.burnAddress).toBe(TEST_CONFIG.stampBurnAddress)
-    expect(call.burnValueWei).toBe(TEST_CONFIG.defaultStampBurnValueWei)
+    // Ticket #57: a DM's stamp pays the recipient -- it must NOT be the fixed
+    // `stampBurnAddress` (that's `topics.post`/`vote`'s job, no single recipient there).
+    expect(call.destinationAddress).toBe(bob.address.raw)
+    expect(call.stampValueWei).toBe(TEST_CONFIG.defaultStampBurnValueWei)
     // The envelope is real, encrypted JSON -- not the plaintext items themselves.
     const envelopeJson = JSON.parse(
       new TextDecoder().decode(call.encryptedPayload),

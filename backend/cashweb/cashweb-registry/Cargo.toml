@@ -105,9 +105,11 @@ pretty_assertions = "1.2"
 # Temporary directories, automatically removed
 tempdir = "0.3"
 
-# Ticket #72: needed by a route-level test that drives the real `Router` end-to-end (via
-# `tower::ServiceExt::oneshot`) and reads back its response body -- only usable as a *direct*
+# Needed by router-level tests that drive the real `Router` end-to-end (via
+# `tower::ServiceExt::oneshot`) and read back the response body -- only usable as a *direct*
 # dependency (Cargo doesn't expose transitive deps for `use`), even though it's already pulled in
 # transitively via `axum`. Same version `cashweb-http-utils` already depends on directly for the
-# same reason (building/decoding protobuf HTTP bodies).
+# same reason (building/decoding protobuf HTTP bodies). Added independently by both ticket #49
+# (`http::curated_defaults`'s router test) and ticket #72 (`http::monad_topics`'s discovery-route
+# router test) -- one declaration serves both.
 hyper = "0.14"

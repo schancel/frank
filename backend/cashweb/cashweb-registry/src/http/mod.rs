@@ -1,5 +1,6 @@
 //! Modules for an HTTP endpoint for the Cashweb Registry.
 
+pub mod curated_defaults;
 pub mod error;
 pub mod monad_message;
 pub mod monad_profile;

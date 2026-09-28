@@ -1,6 +1,7 @@
 //! Module containing [`RegistryServer`] to run the registry HTTP server.
 
 use crate::{
+    http::curated_defaults::{handle_get_curated_default_contacts, CuratedDefaultContact},
     http::error::HttpRegistryError,
     http::monad_message::{
         handle_get_monad_message, handle_list_monad_messages, handle_put_monad_message,
@@ -69,6 +70,14 @@ pub struct RegistryServer {
     /// simply broken, and "misconfigured" must never silently degrade into "disabled".
     pub pop_gate:
         Arc<Option<Result<PopGate<MonadReceiptVerifier<HttpTransport>>, PopGateConfigError>>>,
+    /// Operator-curated default contacts (ticket #49), parsed once at construction time from
+    /// `cashweb_config::RegistryConf::curated_defaults`. Each entry's address is validated as a
+    /// real Monad `monad_http::Address` at construction time (fail the whole server startup on a
+    /// malformed operator config, rather than silently dropping or 500-ing per-request) -- same
+    /// "no silently bad config" principle as the rest of this crate, just without `pop_gate`'s
+    /// `None`/disabled state since there's no disabled state here (an empty `Vec` already means
+    /// "no curated defaults", no separate on/off flag needed).
+    pub curated_defaults: Arc<Vec<CuratedDefaultContact>>,
 }
 
 /// Relevant parts of an HTTP request to put new address metadata.
@@ -167,6 +176,17 @@ impl RegistryServer {
             // `crate::http::monad_profile`'s module docs. No `:addr` segment, so this can't
             // collide with the route directly above.
             .route("/metadata/monad", routing::get(handle_list_monad_profiles))
+            // `GET /metadata/monad/curated-defaults` (ticket #49): the relay's operator-curated
+            // default-contacts list -- see `crate::http::curated_defaults`'s module docs for the
+            // security-model rationale. A static segment, so axum/matchit matches it in
+            // preference to the dynamic `/metadata/monad/:addr` route above -- the exact same
+            // static-vs-dynamic precedence already relied on for `/message/monad/topics` vs.
+            // `/message/monad/topics/:payload_hash` further below, so there's no routing
+            // collision here either.
+            .route(
+                "/metadata/monad/curated-defaults",
+                routing::get(handle_get_curated_default_contacts),
+            )
             .route("/messages/:topic", routing::get(handle_get_messages))
             .route("/messages", routing::get(handle_get_all_messages))
             .route("/message", routing::put(handle_put_message))

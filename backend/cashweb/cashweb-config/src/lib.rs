@@ -42,6 +42,20 @@ pub struct RegistryConf {
     pub imd: InitialMetadataDownloadConf,
     /// POP (proof-of-payment) protection config for the metadata-put endpoint (ticket #4).
     pub pop: PopConf,
+    /// Operator-curated default contacts advertised to fresh clients (ticket #49). Empty by
+    /// default -- unlike `PopConf` this is display-only config with no security implications, so
+    /// (unlike `pop`) it's safe to default to "none" rather than requiring an explicit value.
+    #[serde(default)]
+    pub curated_defaults: Vec<CuratedContactConf>,
+}
+
+/// One operator-curated default contact (ticket #49) -- see `RegistryConf::curated_defaults`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+pub struct CuratedContactConf {
+    /// `0x`-prefixed, 20-byte Monad address.
+    pub address: String,
+    /// Display name shown to the user before they've ever messaged this contact.
+    pub name: String,
 }
 
 /// Configuration for POP (proof-of-payment) protection on the registry metadata-put endpoint
@@ -143,7 +157,10 @@ mod tests {
     use bitcoinsuite_core::Net;
     use bitcoinsuite_error::Result;
 
-    use crate::{parse_conf, CashwebdConf, InitialMetadataDownloadConf, PopConf, RegistryConf};
+    use crate::{
+        parse_conf, CashwebdConf, CuratedContactConf, InitialMetadataDownloadConf, PopConf,
+        RegistryConf,
+    };
 
     #[test]
     fn test_config_err() -> Result<()> {
@@ -202,6 +219,7 @@ mod tests {
                         payment_recipient: "0x0000000000000000000000000000000000000abc".to_string(),
                         min_value_wei: "1000000000000000000".to_string(),
                     },
+                    curated_defaults: vec![],
                 },
                 bitcoin_rpc: BitcoindRpcClientConf {
                     url: "https://bitcoin.rpc".to_string(),
@@ -265,6 +283,7 @@ mod tests {
                         payment_recipient: "0x0000000000000000000000000000000000000abc".to_string(),
                         min_value_wei: "1000000000000000000".to_string(),
                     },
+                    curated_defaults: vec![],
                 },
                 bitcoin_rpc: BitcoindRpcClientConf {
                     url: "https://bitcoin.rpc".to_string(),
@@ -272,6 +291,55 @@ mod tests {
                     rpc_pass: "passwd".to_string(),
                 },
             }
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_config_curated_defaults_success() -> Result<()> {
+        let conf = parse_conf(
+            r#"
+                host = "127.0.0.1:6543"
+                url = "https://cashweb.registry"
+
+                [registry]
+                db_path = "/test/path"
+                net = "mainnet"
+                peers = ["https://example.com", "http://123.45.67.89"]
+
+                [registry.pop]
+                enabled = true
+                monad_rpc_url = "https://monad.rpc"
+                hmac_secret = "super-secret"
+                payment_recipient = "0x0000000000000000000000000000000000000abc"
+                min_value_wei = "1000000000000000000"
+
+                [[registry.curated_defaults]]
+                address = "0x1111111111111111111111111111111111111111"
+                name = "Welcome Bot"
+
+                [[registry.curated_defaults]]
+                address = "0x2222222222222222222222222222222222222222"
+                name = "Support"
+
+                [bitcoin_rpc]
+                url = "https://bitcoin.rpc"
+                rpc_user = "user"
+                rpc_pass = "passwd"
+            "#,
+        )?;
+        assert_eq!(
+            conf.registry.curated_defaults,
+            vec![
+                CuratedContactConf {
+                    address: "0x1111111111111111111111111111111111111111".to_string(),
+                    name: "Welcome Bot".to_string(),
+                },
+                CuratedContactConf {
+                    address: "0x2222222222222222222222222222222222222222".to_string(),
+                    name: "Support".to_string(),
+                },
+            ]
         );
         Ok(())
     }

@@ -259,3 +259,33 @@ export async function fetchMonadProfile(params: {
   if (pubKey === undefined) return undefined
   return { address: params.address, pubKey: new Uint8Array(pubKey) }
 }
+
+/** One entry in the relay's operator-curated default-contacts list -- see
+ * `fetchCuratedDefaultContacts`. Shape matches `stores/contacts.ts`'s `addDefaultContact` param
+ * exactly (`{address, name}`), so callers can pass an entry straight through. */
+export interface CuratedDefaultContact {
+  address: string
+  name: string
+}
+
+/** `GET /metadata/monad/curated-defaults` (ticket #49): fetches the relay's operator-curated
+ * list of default contacts, shown to a fresh user before they've added anyone themselves.
+ * Fails soft (empty array) on any error -- this is a nice-to-have UX seed, not something that
+ * should ever block app startup if a relay is slow/down/misconfigured. */
+export async function fetchCuratedDefaultContacts(params: {
+  relayBaseUrl: string
+}): Promise<CuratedDefaultContact[]> {
+  try {
+    const response = await axios({
+      method: 'get',
+      url: `${params.relayBaseUrl.replace(
+        /\/+$/,
+        '',
+      )}/metadata/monad/curated-defaults`,
+    })
+    return response.data?.entries ?? []
+  } catch (err) {
+    console.error('failed to fetch curated default contacts', err)
+    return []
+  }
+}

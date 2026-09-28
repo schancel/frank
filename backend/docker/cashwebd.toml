@@ -31,6 +31,14 @@ hmac_secret = "unused-because-pop-is-disabled"
 payment_recipient = "0x0000000000000000000000000000000000000000"
 min_value_wei = "0"
 
+# Operator-curated default contacts (ticket #49), advertised to fresh clients via
+# `GET /metadata/monad/curated-defaults`. Optional -- omit entirely for "no curated defaults"
+# (`RegistryConf::curated_defaults` defaults to an empty list). Uncomment/edit to seed real
+# welcome-bot/support entries for this deployment; each block is one contact.
+# [[registry.curated_defaults]]
+# address = "0x0000000000000000000000000000000000000000"
+# name = "Welcome Bot"
+
 [bitcoin_rpc]
 url = "http://unused.invalid:0"
 rpc_user = "unused"

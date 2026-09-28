@@ -20,6 +20,9 @@ export interface State {
   sortMode: SortMode
   duration: number
   voteThreshold: number
+  /** Ticket #61: distinguishes "still fetching" from "fetched, genuinely no posts" -- Forum.vue's
+   * own perpetual loading spinner (found live) couldn't tell the two apart before this existed. */
+  hasFetchedOnce: boolean
 }
 
 export const useForumStore = defineStore('forum', {
@@ -32,6 +35,7 @@ export const useForumStore = defineStore('forum', {
     // 1 week
     duration: 1000 * 60 * 60 * 24 * 7,
     voteThreshold: 0,
+    hasFetchedOnce: false,
   }),
   getters: {
     getMessage(state) {
@@ -131,6 +135,7 @@ export const useForumStore = defineStore('forum', {
         topic: '',
         sinceMs: from,
       })
+      this.hasFetchedOnce = true
       if (!entries) {
         return
       }

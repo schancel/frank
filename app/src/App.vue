@@ -19,8 +19,10 @@ import { QBtn } from 'quasar'
 import { storeToRefs } from 'pinia'
 import { useRouter } from 'vue-router'
 
-import { defaultContacts, registrys, networkName } from 'src/utils/constants'
+import { registrys, networkName } from 'src/utils/constants'
 import { RegistryHandler } from '@frank/cashweb/registry'
+import { fetchCuratedDefaultContacts } from '@frank/wallet/monad-identity'
+import { loadMonadChainConfigFromEnv } from '@frank/wallet/chain/monad-chain'
 import { errorNotify } from 'src/utils/notifications'
 import { useRelayClientStore } from 'src/stores/relay-client'
 import { useAppearanceStore } from 'src/stores/appearance'
@@ -136,10 +138,16 @@ export default defineComponent({
         console.error(err)
       }
 
-      // Add default contacts
-      for (const defaultContact of defaultContacts) {
-        this.addDefaultContact(defaultContact)
-      }
+      // Add relay-served default contacts (ticket #49)
+      fetchCuratedDefaultContacts({
+        relayBaseUrl: loadMonadChainConfigFromEnv().relayBaseUrl,
+      })
+        .then(contacts => {
+          for (const contact of contacts) {
+            this.addDefaultContact(contact)
+          }
+        })
+        .catch(err => console.error(err))
       this.$nextTick(() =>
         this.refreshContacts().catch(err => console.error(err)),
       )

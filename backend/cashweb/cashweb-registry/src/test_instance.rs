@@ -86,6 +86,8 @@ impl RegistryTestInstance {
             registry: Arc::clone(&registry),
             peers: Arc::clone(&peers),
             pop_gate,
+            // No curated defaults needed by any current caller of this test instance (ticket #49).
+            curated_defaults: Arc::new(vec![]),
         };
 
         let router = server.into_router();

@@ -7,12 +7,13 @@
 
     <q-tabs v-model="tab" v-if="$status.setup">
       <q-tab v-if="$status.setup" name="settings" icon="settings" />
-      <!-- No @click navigation here, matching "settings" -- this tab only switches the drawer's
-      local display mode (the chat-list, already always in the DOM), it doesn't own a route of
-      its own. It used to do `$router.push('/')`, which (via `/`'s own redirect) always navigated
-      to whatever the "primary" route was -- `/topic/news` before #61, `/forum` after this fix --
-      fighting with the "forum" tab below for control of `tab`'s value on every click. -->
-      <q-tab name="contacts" icon="contacts">
+      <!-- Navigates to the active (or most recently used) chat, so this tab actually shows
+      something different from "forum" in the main pane -- an earlier version of this fix
+      removed navigation entirely to stop it fighting with "forum" over `/`, but that also made
+      clicking it a visible no-op whenever you were already on /forum (same main content, same
+      chat-list underneath, nothing about the click was ever observable). openActiveOrRecentChat
+      navigates to a genuinely different, contacts-focused route instead of re-using `/`. -->
+      <q-tab name="contacts" icon="contacts" @click="openActiveOrRecentChat">
         <q-badge
           floating
           color="secondary"
@@ -69,7 +70,7 @@
 
 <script lang="ts">
 import { computed, defineComponent, onMounted, ref, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
 
 import ChatList from '../chat/ChatList.vue'
@@ -90,6 +91,21 @@ export default defineComponent({
     const { totalUnread } = storeToRefs(chats)
     const balance = ref(0n)
     const route = useRoute()
+    const router = useRouter()
+
+    // "Contacts" tab's click target -- opens the currently active chat if there is one, else the
+    // most recently active one from the sorted chat list, so this tab actually navigates
+    // somewhere genuinely different from "forum" (see the template's comment on this tab for why
+    // it needs to navigate at all, rather than being a pure local-display-mode switch like
+    // "settings"). A brand new user with zero conversations yet has nothing to navigate to --
+    // the chat-list's own "Add contacts from the drawer above..." empty state already
+    // communicates that, so doing nothing here is the correct, safe fallback.
+    function openActiveOrRecentChat() {
+      const address = chats.activeChatAddr ?? chats.getSortedChatOrder[0]?.address
+      if (address) {
+        router.push(`/chat/${address}`)
+      }
+    }
 
     onMounted(async () => {
       try {
@@ -128,6 +144,7 @@ export default defineComponent({
 
     return {
       tab,
+      openActiveOrRecentChat,
       totalUnread: totalUnread,
       formattedBalance: computed(
         () =>

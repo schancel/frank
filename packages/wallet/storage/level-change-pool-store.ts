@@ -2,12 +2,17 @@
 import level, { LevelDB } from 'level'
 import { join } from 'path'
 
-import { ChangePoolStore, ChangeAccountRecord } from './change-pool-storage'
+import {
+  ChangePoolStore,
+  ChangeAccountRecord,
+  ChangeSweepIntent,
+} from './change-pool-storage'
 
 /** Reserved `level` key for the persisted "next unused change index" pointer. Never collides with
  * a record key (`String(record.index)`, i.e. plain decimal digits only) since this key contains a
  * non-digit character. */
 const NEXT_INDEX_KEY = '__next_index__'
+const PENDING_INTENT_KEY = '__pending_sweep_intent__'
 
 /**
  * `level`-backed `ChangePoolStore`, mirroring `LevelSubAccountPoolStore`
@@ -25,6 +30,7 @@ export class LevelChangePoolStore implements ChangePoolStore {
   private openedDb?: LevelDB
   private cache: Map<number, ChangeAccountRecord>
   private nextIndex = 0
+  private pendingIntent?: ChangeSweepIntent
   private pendingWrites: Promise<unknown>[] = []
 
   constructor(location: string) {
@@ -58,6 +64,10 @@ export class LevelChangePoolStore implements ChangePoolStore {
     for await (const [key, value] of this.db.iterator({}) as any) {
       if (key === NEXT_INDEX_KEY) {
         this.nextIndex = JSON.parse(value)
+        continue
+      }
+      if (key === PENDING_INTENT_KEY) {
+        this.pendingIntent = JSON.parse(value)
         continue
       }
       const record: ChangeAccountRecord = JSON.parse(value)
@@ -95,6 +105,24 @@ export class LevelChangePoolStore implements ChangePoolStore {
     return Array.from(this.cache.values()).sort((a, b) => a.index - b.index)
   }
 
+  getPendingIntent(): ChangeSweepIntent | undefined {
+    return this.pendingIntent === undefined
+      ? undefined
+      : { ...this.pendingIntent }
+  }
+
+  setPendingIntent(intent: ChangeSweepIntent): void {
+    this.pendingIntent = { ...intent }
+    this.pendingWrites.push(
+      this.db.put(PENDING_INTENT_KEY, JSON.stringify(intent)),
+    )
+  }
+
+  clearPendingIntent(): void {
+    this.pendingIntent = undefined
+    this.pendingWrites.push(this.db.del(PENDING_INTENT_KEY))
+  }
+
   async flush(): Promise<void> {
     const writes = this.pendingWrites
     this.pendingWrites = []
@@ -108,6 +136,7 @@ export class LevelChangePoolStore implements ChangePoolStore {
     await this.flush()
     this.cache = new Map<number, ChangeAccountRecord>()
     this.nextIndex = 0
+    this.pendingIntent = undefined
     await this.db.clear()
   }
 }

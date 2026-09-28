@@ -125,7 +125,9 @@ export function startDirectMessagePolling({
         if (wrapper !== undefined) {
           wrappers.push(wrapper)
         }
-        sinceMs = Math.max(sinceMs, record.receivedTime)
+        // The relay's `since` bound is inclusive. Advance one millisecond past every processed
+        // record so an unswept stamp-payment journal entry is not decoded and rewritten forever.
+        sinceMs = Math.max(sinceMs, record.receivedTime + 1)
       }
 
       if (wrappers.length > 0) {

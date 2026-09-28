@@ -201,12 +201,15 @@ export class MonadAccountTxSigner {
    * reports, after checking it matches the hash computed locally at sign time — a mismatch would
    * indicate a serialization bug and should never happen in practice. */
   async submit(signedTx: SignedMonadTx): Promise<string> {
-    const broadcastHash = await this.httpClient.submitRawTransaction(
-      signedTx.rawTx,
-    )
-    if (broadcastHash.toLowerCase() !== signedTx.txHash.toLowerCase()) {
+    return this.submitRaw(signedTx.rawTx, signedTx.txHash)
+  }
+
+  /** Replays a previously journaled signed transaction without reconstructing or re-signing it. */
+  async submitRaw(rawTx: string, expectedTxHash: string): Promise<string> {
+    const broadcastHash = await this.httpClient.submitRawTransaction(rawTx)
+    if (broadcastHash.toLowerCase() !== expectedTxHash.toLowerCase()) {
       throw new Error(
-        `Broadcast tx hash (${broadcastHash}) does not match the hash computed at sign time (${signedTx.txHash})`,
+        `Broadcast tx hash (${broadcastHash}) does not match the hash computed at sign time (${expectedTxHash})`,
       )
     }
     return broadcastHash

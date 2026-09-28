@@ -108,8 +108,9 @@ use axum::{
 };
 use bitcoinsuite_core::{Hashed, Sha256};
 use bitcoinsuite_error::Report;
-use cashweb_http_utils::protobuf::Protobuf;
+use cashweb_http_utils::protobuf::{BoundedProtobufBody, Protobuf};
 use cashweb_payload::verify::BROADCAST_MESSAGE_LOKAD_ID;
+use prost::Message;
 use serde::{Deserialize, Serialize};
 use tracing::Level;
 
@@ -126,25 +127,34 @@ use crate::{
 };
 
 const MAX_STAMP_PAYMENTS: usize = 64;
+const MAX_MONAD_MESSAGE_BODY_BYTES: usize = 2 * 1024 * 1024;
 static PAYMENT_SET_LOCKS: OnceLock<
-    tokio::sync::Mutex<HashMap<[u8; 32], Weak<tokio::sync::Mutex<()>>>>,
+    tokio::sync::Mutex<HashMap<(usize, [u8; 32]), Weak<tokio::sync::Mutex<()>>>>,
 > = OnceLock::new();
+static PAYMENT_RELAY_SLOTS: OnceLock<Arc<tokio::sync::Semaphore>> = OnceLock::new();
+const MAX_CONCURRENT_PAYMENT_RELAYS: usize = 32;
+const PAYMENT_RELAY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
-async fn lock_payment_set(payload_hash: [u8; 32]) -> tokio::sync::OwnedMutexGuard<()> {
+async fn try_lock_payment_set(
+    registry_id: usize,
+    payload_hash: [u8; 32],
+) -> Result<tokio::sync::OwnedMutexGuard<()>, ProcessMonadMessageError> {
     let locks = PAYMENT_SET_LOCKS.get_or_init(|| tokio::sync::Mutex::new(HashMap::new()));
     let lock = {
         let mut locks = locks.lock().await;
         locks.retain(|_, lock| lock.strong_count() > 0);
-        match locks.get(&payload_hash).and_then(Weak::upgrade) {
+        let key = (registry_id, payload_hash);
+        match locks.get(&key).and_then(Weak::upgrade) {
             Some(lock) => lock,
             None => {
                 let lock = Arc::new(tokio::sync::Mutex::new(()));
-                locks.insert(payload_hash, Arc::downgrade(&lock));
+                locks.insert(key, Arc::downgrade(&lock));
                 lock
             }
         }
     };
-    lock.lock_owned().await
+    lock.try_lock_owned()
+        .map_err(|_| ProcessMonadMessageError::PaymentSetBusy)
 }
 
 /// Errors processing a [`proto::MonadStampedMessage`], independent of HTTP/axum (see
@@ -172,6 +182,12 @@ pub enum ProcessMonadMessageError {
     TooManyStampPayments(usize),
     /// This payload hash is already bound to a different canonical raw payment set.
     ConflictingPaymentSet,
+    /// Another request for this payload hash is already being reconciled.
+    PaymentSetBusy,
+    /// The relay is at its bounded number of concurrent external RPC operations.
+    RelayBusy,
+    /// A node RPC remained unresolved past the route's admission timeout.
+    RelayTimedOut,
     /// Reusing a child index would send multiple payments to the same one-time destination.
     DuplicateChildIndex(u32),
     /// Child indices must be exactly `0..n-1` in wire order.
@@ -255,6 +271,15 @@ impl fmt::Display for ProcessMonadMessageError {
                 f,
                 "payload hash is already bound to a different stamp-payment set"
             ),
+            ProcessMonadMessageError::PaymentSetBusy => {
+                write!(f, "this stamp-payment set is already being reconciled")
+            }
+            ProcessMonadMessageError::RelayBusy => {
+                write!(f, "the stamp relay is temporarily at capacity")
+            }
+            ProcessMonadMessageError::RelayTimedOut => {
+                write!(f, "the stamp relay timed out waiting for the Monad node")
+            }
             ProcessMonadMessageError::DuplicateChildIndex(index) => {
                 write!(f, "stamp payment child index {index} is duplicated")
             }
@@ -446,7 +471,13 @@ pub async fn process_monad_message<T: JsonRpcTransport + Clone>(
 
     // Serialize one payload hash from durable claim through final storage. This prevents two
     // concurrent requests from broadcasting different sets before either one becomes visible.
-    let _payment_set_guard = lock_payment_set(payload_hash).await;
+    let registry_id = registry as *const Registry as usize;
+    let _payment_set_guard = try_lock_payment_set(registry_id, payload_hash).await?;
+    let _relay_slot = PAYMENT_RELAY_SLOTS
+        .get_or_init(|| Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_PAYMENT_RELAYS)))
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| ProcessMonadMessageError::RelayBusy)?;
     if let Some(existing) = registry
         .get_monad_message(declared_hash.as_slice())
         .map_err(ProcessMonadMessageError::Infrastructure)?
@@ -587,20 +618,14 @@ pub async fn process_monad_message<T: JsonRpcTransport + Clone>(
     }
 
     let mut total_value_wei = 0u128;
-    for (position, (payment, expected)) in request
-        .stamp_payments
-        .iter()
-        .zip(&expected_payments)
-        .enumerate()
-    {
-        let outcome = broadcast_and_verify_stamp(transport, &payment.raw_tx, expected, poll)
-            .await
-            .map_err(ProcessMonadMessageError::Infrastructure)?;
-        if position == 0 && matches!(outcome, StampRelayOutcome::BroadcastFailed(_)) {
-            registry
-                .delete_monad_message_attempt(declared_hash.as_slice())
-                .map_err(ProcessMonadMessageError::Infrastructure)?;
-        }
+    for (payment, expected) in request.stamp_payments.iter().zip(&expected_payments) {
+        let outcome = tokio::time::timeout(
+            PAYMENT_RELAY_TIMEOUT,
+            broadcast_and_verify_stamp(transport, &payment.raw_tx, expected, poll),
+        )
+        .await
+        .map_err(|_| ProcessMonadMessageError::RelayTimedOut)?
+        .map_err(ProcessMonadMessageError::Infrastructure)?;
         match outcome {
             StampRelayOutcome::Verified { value_wei, .. } => {
                 total_value_wei = total_value_wei
@@ -707,6 +732,8 @@ fn monad_message_gate() -> &'static Result<MonadMessageGateConfig, MonadMessageG
 struct MonadMessageErrorBody {
     error: &'static str,
     detail: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    exact_set_retained: Option<bool>,
 }
 
 /// Error type for [`handle_put_monad_message`].
@@ -715,6 +742,8 @@ pub enum PutMonadMessageError {
     /// The gate is misconfigured; fails closed (`500`) rather than silently skipping stamp
     /// verification.
     GateUnavailable(MonadMessageGateConfigError),
+    /// The bounded request body is not a valid or admissible Monad message protobuf.
+    Decode(String),
     /// [`process_monad_message`] rejected (or failed to process) the message.
     Process(ProcessMonadMessageError),
 }
@@ -738,11 +767,27 @@ impl IntoResponse for PutMonadMessageError {
                 );
                 StatusCode::INTERNAL_SERVER_ERROR.into_response()
             }
+            PutMonadMessageError::Decode(detail) => (
+                StatusCode::BAD_REQUEST,
+                Json(MonadMessageErrorBody {
+                    error: "invalid_monad_message",
+                    detail,
+                    exact_set_retained: Some(false),
+                }),
+            )
+                .into_response(),
             PutMonadMessageError::Process(err) => (
                 StatusCode::BAD_REQUEST,
                 Json(MonadMessageErrorBody {
                     error: "invalid_monad_message",
                     detail: err.to_string(),
+                    exact_set_retained: match err {
+                        ProcessMonadMessageError::Rejected(_)
+                        | ProcessMonadMessageError::RelayTimedOut => Some(true),
+                        ProcessMonadMessageError::PaymentSetBusy
+                        | ProcessMonadMessageError::RelayBusy => None,
+                        _ => Some(false),
+                    },
                 }),
             )
                 .into_response(),
@@ -750,12 +795,68 @@ impl IntoResponse for PutMonadMessageError {
     }
 }
 
+fn read_varint(bytes: &[u8], position: &mut usize) -> Result<u64, String> {
+    let mut value = 0u64;
+    for shift in (0..70).step_by(7) {
+        let byte = *bytes
+            .get(*position)
+            .ok_or_else(|| "truncated protobuf varint".to_string())?;
+        *position += 1;
+        if shift == 63 && byte > 1 {
+            return Err("protobuf varint overflow".to_string());
+        }
+        value |= u64::from(byte & 0x7f) << shift;
+        if byte & 0x80 == 0 {
+            return Ok(value);
+        }
+    }
+    Err("protobuf varint overflow".to_string())
+}
+
+/// Count repeated payment messages without asking prost to allocate an attacker-sized vector.
+fn validate_payment_wire_cardinality(bytes: &[u8]) -> Result<(), String> {
+    let mut position = 0usize;
+    let mut payments = 0usize;
+    while position < bytes.len() {
+        let key = read_varint(bytes, &mut position)?;
+        let field = key >> 3;
+        let wire = key & 7;
+        if field == 4 {
+            payments += 1;
+            if payments > MAX_STAMP_PAYMENTS {
+                return Err(format!(
+                    "too many stamp payments: {payments} (maximum {MAX_STAMP_PAYMENTS})"
+                ));
+            }
+        }
+        match wire {
+            0 => {
+                read_varint(bytes, &mut position)?;
+            }
+            1 => position = position.saturating_add(8),
+            2 => {
+                let length = read_varint(bytes, &mut position)? as usize;
+                position = position.saturating_add(length);
+            }
+            5 => position = position.saturating_add(4),
+            _ => return Err(format!("unsupported protobuf wire type {wire}")),
+        }
+        if position > bytes.len() {
+            return Err("truncated protobuf field".to_string());
+        }
+    }
+    Ok(())
+}
+
 /// `PUT /message/monad`: decode a [`proto::MonadStampedMessage`], recover its sender, verify its
 /// Monad stamp (broadcasting it, per ticket #19), and store it on success.
 pub async fn handle_put_monad_message(
-    Protobuf(message): Protobuf<proto::MonadStampedMessage>,
+    BoundedProtobufBody(body): BoundedProtobufBody<MAX_MONAD_MESSAGE_BODY_BYTES>,
     Extension(server): Extension<RegistryServer>,
 ) -> Result<Protobuf<proto::StoredMonadMessage>, PutMonadMessageError> {
+    validate_payment_wire_cardinality(&body).map_err(PutMonadMessageError::Decode)?;
+    let message = proto::MonadStampedMessage::decode(body.as_slice())
+        .map_err(|err| PutMonadMessageError::Decode(err.to_string()))?;
     let config = monad_message_gate()
         .as_ref()
         .map_err(|err| PutMonadMessageError::GateUnavailable(err.clone()))?;
@@ -792,6 +893,7 @@ impl IntoResponse for GetMonadMessageError {
                 Json(MonadMessageErrorBody {
                     error: "invalid_payload_hash",
                     detail: err.to_string(),
+                    exact_set_retained: None,
                 }),
             )
                 .into_response(),
@@ -885,6 +987,19 @@ mod tests {
         monad_stamp_relay::PollConfig, store::db::Db,
     };
     use cashweb_payload::chain_adapter::{ChainAdapter, MempoolAcceptResult, SubmitTxOutcome};
+
+    #[test]
+    fn rejects_more_than_64_payment_fields_before_protobuf_decode() {
+        // Field 4, length-delimited, empty nested message. Prost would allocate one vector entry
+        // for each occurrence; the wire scanner must reject the 65th first.
+        let bytes = [0x22, 0x00].repeat(MAX_STAMP_PAYMENTS + 1);
+        assert!(validate_payment_wire_cardinality(&bytes)
+            .unwrap_err()
+            .contains("too many stamp payments"));
+        assert!(
+            validate_payment_wire_cardinality(&[0x22, 0x00].repeat(MAX_STAMP_PAYMENTS)).is_ok()
+        );
+    }
 
     /// [`ChainAdapter`] stub: `process_monad_message`/`Registry::put_monad_message` never touch
     /// `Registry::chain_adapter` (see this module's docs on why the Monad path bypasses it

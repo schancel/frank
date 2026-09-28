@@ -149,12 +149,15 @@ const BROADCAST_MESSAGE_LOKAD_ID = new Uint8Array([0x50, 0x4f, 0x4e, 0x44]) // "
 /** `cashweb_registry::monad_stamp_verify::COMMITMENT_VERSION_TAG` (that file, line 66: `0x01`). */
 const COMMITMENT_VERSION_TAG = new Uint8Array([0x01])
 const PAYMENT_COMMITMENT_DOMAIN = toUtf8Bytes('frank:dm-stamp-payment:v1')
+const STAMP_COMMITMENT_LENGTH = 32
 
 /** `cashweb_registry::monad_stamp_verify::{CALLDATA_PREFIX_LEN, CALLDATA_COMMITMENT_LEN}` (5 + 32 =
  * 37 total): `<lokad_id: 4><version: 1><commitment: 32>`. Exported for tests that want to assert on
  * the exact calldata length independent of this module's other constants. */
 export const MONAD_STAMP_CALLDATA_LENGTH =
-  BROADCAST_MESSAGE_LOKAD_ID.length + COMMITMENT_VERSION_TAG.length + 32
+  BROADCAST_MESSAGE_LOKAD_ID.length +
+  COMMITMENT_VERSION_TAG.length +
+  STAMP_COMMITMENT_LENGTH
 
 /**
  * `MonadStampedMessage` from `monad_message.proto`, decoded/encoded here in plain-object form
@@ -474,7 +477,41 @@ export class MonadStampPendingAttemptError extends MonadStampError {
   }
 }
 
+/** A prior exact set completed while reconciling a new send request. The caller must refresh
+ * message state instead of silently paying again for the newly salted envelope. */
+export class MonadStampRecoveredAttemptError extends MonadStampError {
+  readonly payloadHashes: string[]
+
+  constructor(payloadHashes: string[]) {
+    super(`Recovered ${payloadHashes.length} prior stamp payment attempt(s)`)
+    this.payloadHashes = payloadHashes
+  }
+}
+
 const MAX_STAMP_PAYMENTS = 64
+export const MAX_MONAD_STAMPED_MESSAGE_BYTES = 2 * 1024 * 1024
+
+function exactSetRetained(responseData: unknown): boolean | undefined {
+  let parsed = responseData
+  if (responseData instanceof ArrayBuffer || ArrayBuffer.isView(responseData)) {
+    try {
+      const bytes =
+        responseData instanceof ArrayBuffer
+          ? new Uint8Array(responseData)
+          : new Uint8Array(
+              responseData.buffer,
+              responseData.byteOffset,
+              responseData.byteLength,
+            )
+      parsed = JSON.parse(new TextDecoder().decode(bytes))
+    } catch {
+      return undefined
+    }
+  }
+  if (typeof parsed !== 'object' || parsed === null) return undefined
+  const value = (parsed as Record<string, unknown>).exact_set_retained
+  return typeof value === 'boolean' ? value : undefined
+}
 
 function defaultSleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms))
@@ -607,11 +644,12 @@ export class MonadStampClient {
 
   private async putStampedMessage(
     message: MonadStampedMessageProto,
+    encoded = encodeMonadStampedMessage(message),
   ): Promise<StoredMonadMessageProto> {
     const response = await axios({
       method: 'put',
       url: `${this.relayBaseUrl}/message/monad`,
-      data: encodeMonadStampedMessage(message),
+      data: encoded,
       // Bug fix (ticket #8's e2e demo): this used to send `application/octet-stream`, which the
       // live `PUT /message/monad` route always rejected with a `400 wrong-content-type` --
       // `handle_put_monad_message` decodes its body via the same generic
@@ -641,11 +679,19 @@ export class MonadStampClient {
     if (params.encryptedPayload.length === 0) {
       throw new Error('encryptedPayload must not be empty')
     }
+    if (params.encryptedPayload.length > MAX_MONAD_STAMPED_MESSAGE_BYTES) {
+      throw new Error(
+        `encryptedPayload exceeds the ${MAX_MONAD_STAMPED_MESSAGE_BYTES}-byte message limit`,
+      )
+    }
     if (
       this.attemptJournal !== undefined &&
       this.attemptJournal.getAll().length > 0
     ) {
-      await this.resumePendingAttempts()
+      const recovered = await this.resumePendingAttempts()
+      if (recovered.length > 0) {
+        throw new MonadStampRecoveredAttemptError(recovered)
+      }
       const stillPending = this.attemptJournal
         .getAll()
         .map(attempt => attempt.payloadHashHex)
@@ -655,8 +701,11 @@ export class MonadStampClient {
     }
 
     const payloadHash = computeMonadStampCommitment(params.encryptedPayload)
+    // Quote with an all-nonzero commitment. The RPC therefore applies the active network's
+    // worst-case calldata schedule (including EIP-7623) without this client hardcoding gas-table
+    // arithmetic that could become stale after another repricing.
     const quoteCalldata = buildMonadStampCalldata(
-      computeMonadStampPaymentCommitment(payloadHash, 0),
+      new Uint8Array(STAMP_COMMITMENT_LENGTH).fill(0xff),
     )
     const payloadHashHex = toBareHex(payloadHash)
     const quoteDestination = deriveMonadStampChildPublic({
@@ -689,6 +738,7 @@ export class MonadStampClient {
     const quotes: Array<{
       index: number
       address: string
+      balanceWei: bigint
       capacityWei: bigint
       resolvedOverrides: MonadTxOverrides
     }> = []
@@ -712,16 +762,21 @@ export class MonadStampClient {
       if (feePerGas === undefined) {
         throw new Error('Unable to determine a maximum fee for stamp payment')
       }
-      const feeReserveWei = probe.gasLimit * feePerGas
+      const quotedGasLimit = params.overrides?.gasLimit ?? probe.gasLimit
+      const feeReserveWei = quotedGasLimit * feePerGas
       const capacityWei =
         balance > feeReserveWei ? balance - feeReserveWei : BigInt(0)
       quotes.push({
         index: record.index,
         address: record.address,
+        balanceWei: balance,
         capacityWei,
         resolvedOverrides: {
           nonce: probe.nonce,
-          gasLimit: probe.gasLimit,
+          // A caller-supplied limit is deliberate. Otherwise each final child is estimated with
+          // its actual commitment bytes; the capacity quote above reserves the worst-case
+          // zero/nonzero calldata variance.
+          gasLimit: params.overrides?.gasLimit,
           maxFeePerGas: probe.maxFeePerGas,
           maxPriorityFeePerGas: probe.maxPriorityFeePerGas,
           gasPrice: probe.gasPrice,
@@ -767,16 +822,24 @@ export class MonadStampClient {
         const quote = quoteByIndex.get(selection.index)
         if (quote === undefined)
           throw new Error('Selected account lost its quote')
-        signedTxs.push(
-          await signer.buildAndSignCall(
-            destination.address,
-            selection.paymentValueWei,
-            buildMonadStampCalldata(
-              computeMonadStampPaymentCommitment(payloadHash, paymentIndex),
-            ),
-            quote.resolvedOverrides,
+        const signedTx = await signer.buildAndSignCall(
+          destination.address,
+          selection.paymentValueWei,
+          buildMonadStampCalldata(
+            computeMonadStampPaymentCommitment(payloadHash, paymentIndex),
           ),
+          quote.resolvedOverrides,
         )
+        const feePerGas = signedTx.maxFeePerGas ?? signedTx.gasPrice
+        if (
+          feePerGas === undefined ||
+          signedTx.value + signedTx.gasLimit * feePerGas > quote.balanceWei
+        ) {
+          throw new Error(
+            `Final stamp payment at funding index ${selection.index} exceeds its quoted account capacity`,
+          )
+        }
+        signedTxs.push(signedTx)
       }
     } catch (err) {
       for (const handle of handles) {
@@ -794,10 +857,20 @@ export class MonadStampClient {
       encryptedPayload: params.encryptedPayload,
       payloadHash,
     }
+    const encodedMessage = encodeMonadStampedMessage(message)
+    if (encodedMessage.byteLength > MAX_MONAD_STAMPED_MESSAGE_BYTES) {
+      for (const handle of handles) {
+        this.leaseManager.releaseLease(handle, 'failed')
+      }
+      await this.pool.flush()
+      throw new Error(
+        `Encoded Monad stamped message is ${encodedMessage.byteLength} bytes; maximum is ${MAX_MONAD_STAMPED_MESSAGE_BYTES}`,
+      )
+    }
     try {
       await this.attemptJournal?.put({
         payloadHashHex,
-        messageBytes: Array.from(encodeMonadStampedMessage(message)),
+        messageBytes: Array.from(encodedMessage),
         leaseIndices: handles.map(handle => handle.index),
       })
     } catch (err) {
@@ -830,13 +903,26 @@ export class MonadStampClient {
                 },
         })
         sweeps.push(released.sweep)
+        if (
+          released.sweep?.swept === false &&
+          released.sweep.reason === 'sweep-error'
+        ) {
+          break
+        }
       }
       return sweeps
     }
 
     try {
-      const stored = await this.putStampedMessage(message)
+      const stored = await this.putStampedMessage(message, encodedMessage)
       const changeSweeps = await releaseAll('confirmed')
+      if (
+        changeSweeps.some(
+          sweep => sweep?.swept === false && sweep.reason === 'sweep-error',
+        )
+      ) {
+        throw new MonadStampPendingAttemptError([payloadHashHex])
+      }
       await this.attemptJournal?.delete(payloadHashHex)
       return {
         stored,
@@ -846,7 +932,17 @@ export class MonadStampClient {
         changeSweeps,
       }
     } catch (err) {
+      if (err instanceof MonadStampPendingAttemptError) throw err
       if (axios.isAxiosError(err) && err.response) {
+        if (exactSetRetained(err.response.data) === false) {
+          await releaseAll('failed')
+          await this.attemptJournal?.delete(payloadHashHex)
+          throw new MonadStampRejectedError(
+            `Relay rejected the Monad-stamped message before retaining its payment set (HTTP ${err.response.status})`,
+            err.response.status,
+            err.response.data,
+          )
+        }
         if (this.attemptJournal !== undefined) {
           // The relay may have accepted a prefix of this exact payment set before returning an
           // error. Keep the journal and reservations intact so reconciliation can replay only the
@@ -871,6 +967,13 @@ export class MonadStampClient {
       )
       if (stored !== undefined) {
         const changeSweeps = await releaseAll('confirmed')
+        if (
+          changeSweeps.some(
+            sweep => sweep?.swept === false && sweep.reason === 'sweep-error',
+          )
+        ) {
+          throw new MonadStampPendingAttemptError([payloadHashHex])
+        }
         await this.attemptJournal?.delete(payloadHashHex)
         return {
           stored,
@@ -921,20 +1024,32 @@ export class MonadStampClient {
               provider: this.provider,
               httpClient: this.httpClient,
             })
-            await this.changePool
-              .sweepToChange({
-                burnIndex: index,
-                burnAddress: record.address,
-                burnAccountSigner: signer,
-                provider: this.provider,
-              })
-              .catch(() => undefined)
+            await this.changePool.sweepToChange({
+              burnIndex: index,
+              burnAddress: record.address,
+              burnAccountSigner: signer,
+              provider: this.provider,
+            })
           }
         }
         await this.attemptJournal.delete(attempt.payloadHashHex)
         completed.push(attempt.payloadHashHex)
-      } catch {
-        // Retain the raw set and keep its accounts unavailable for a later retry.
+      } catch (err) {
+        if (
+          axios.isAxiosError(err) &&
+          err.response &&
+          exactSetRetained(err.response.data) === false
+        ) {
+          for (const index of attempt.leaseIndices) {
+            const record = this.pool.getRecord(index)
+            if (record !== undefined && record.status !== 'spent') {
+              this.pool.setStatus(index, 'retired')
+            }
+          }
+          await this.pool.flush()
+          await this.attemptJournal.delete(attempt.payloadHashHex)
+        }
+        // Otherwise retain the raw set and keep its accounts unavailable for a later retry.
       }
     }
     return completed

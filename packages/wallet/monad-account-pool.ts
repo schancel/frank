@@ -302,12 +302,13 @@ export class MonadSubAccountPool {
       burnValue: params.burnValue,
       gasReserve: params.gasReserve,
       overrides: params.overrides,
-      onFunded: result => {
+      onFunded: async result => {
         this.store.put({
           index: result.index,
           address: result.address,
           status: 'available',
         })
+        await this.store.flush()
       },
     })
   }
@@ -343,7 +344,7 @@ export interface FanOutFundingResult {
  * normally between sends. (A future caller wanting throughput could pass explicit, pre-planned
  * `overrides.nonce` values per target and parallelize — out of scope here.)
  *
- * `onFunded`, if given, is invoked synchronously right after each individual target's send
+ * `onFunded`, if given, is awaited right after each individual target's send
  * succeeds (not batched at the end) — added for ticket #34's `MonadSubAccountPool.topUpPool()`, so
  * it can durably persist each freshly-funded index as `'available'` incrementally, rather than
  * losing already-funded targets' bookkeeping if a later target in the same batch throws.
@@ -354,7 +355,7 @@ export async function fanOutFundSubAccounts(params: {
   burnValue: bigint
   gasReserve: bigint
   overrides?: MonadTxOverrides
-  onFunded?: (result: FanOutFundingResult) => void
+  onFunded?: (result: FanOutFundingResult) => void | Promise<void>
 }): Promise<FanOutFundingResult[]> {
   // `BigInt(0)` rather than a `0n` literal: this app's tsconfig targets ES2017, which doesn't
   // support BigInt literal syntax (only the `bigint` type/`BigInt(...)` calls) — the same
@@ -384,7 +385,7 @@ export async function fanOutFundSubAccounts(params: {
       txHash,
     }
     results.push(result)
-    params.onFunded?.(result)
+    await params.onFunded?.(result)
   }
   return results
 }

@@ -90,6 +90,7 @@ import ChatMessageReply from '../components/chat/messages/ChatMessageReply.vue'
 import { errorNotify, insufficientStampNotify } from '../utils/notifications'
 import { defaultAcceptancePrice, stampLowerLimit } from '../utils/constants'
 import { useMonadWallet } from '../utils/clients'
+import { MonadStampRecoveredAttemptError } from '@frank/wallet/monad-stamp-client'
 
 import { debounce, QScrollArea } from 'quasar'
 
@@ -127,6 +128,7 @@ export default defineComponent({
       scrollDigest: null as string | null,
       chatWidth: 0,
       message: '',
+      recoveredDraftAwaitingConfirmation: null as string | null,
     }
   },
   setup() {
@@ -163,6 +165,21 @@ export default defineComponent({
     })
   },
   methods: {
+    confirmRecoveredDraft(message: string) {
+      this.$q
+        .dialog({
+          title: 'Previous message recovered',
+          message:
+            'A previously pending message was delivered. Send this draft as a separate new message?',
+          ok: { label: 'Send as new' },
+          cancel: true,
+          persistent: true,
+        })
+        .onOk(() => {
+          this.recoveredDraftAwaitingConfirmation = null
+          void this.sendMessage(message)
+        })
+    },
     toSendFileDialog(args: unknown) {
       this.$emit('sendFileClicked', args)
     },
@@ -262,6 +279,10 @@ export default defineComponent({
       }, 50)()
     },
     async sendMessage(message: string) {
+      if (this.recoveredDraftAwaitingConfirmation === message) {
+        this.confirmRecoveredDraft(message)
+        return
+      }
       const stampAmount = this.getStampAmount(this.address)
       const acceptancePrice =
         this.getAcceptancePrice(this.address) ?? defaultAcceptancePrice
@@ -285,6 +306,14 @@ export default defineComponent({
           items: [{ type: 'text', text: message }],
         })
       } catch (err) {
+        if (err instanceof MonadStampRecoveredAttemptError) {
+          // Recovery completed an older, already-authorized exact payment set. The current draft
+          // may or may not describe that same message, so neither silently discard it nor send it
+          // on the next ordinary click. Require an explicit second authorization.
+          this.recoveredDraftAwaitingConfirmation = message
+          this.confirmRecoveredDraft(message)
+          return
+        }
         errorNotify(err instanceof Error ? err : new Error(String(err)))
         return
       }

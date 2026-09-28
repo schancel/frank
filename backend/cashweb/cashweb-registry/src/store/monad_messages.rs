@@ -219,6 +219,7 @@ impl<'a> DbMonadMessages<'a> {
             by_time_key(message.timestamp, payload_hash),
             payload_hash,
         );
+        batch.delete_cf(self.cf_monad_message_attempts, payload_hash);
         self.db.write_batch(batch)?;
         Ok(())
     }
@@ -365,12 +366,30 @@ mod tests {
             timestamp: 1234,
             network_tag: Vec::new(),
         };
+        let policy = MonadMessageAttemptPolicy {
+            recipient_pubkey: vec![2; 33],
+            min_value_wei: 123,
+        };
+        assert_eq!(
+            db.monad_messages().claim_attempt(
+                &payload_hash,
+                stored.message.as_ref().unwrap(),
+                &policy,
+            )?,
+            MonadMessageAttemptClaim::New
+        );
         db.monad_messages().put(&payload_hash, &stored)?;
         assert_eq!(
             db.monad_messages().get(&payload_hash)?,
             Some(stored.clone())
         );
         assert_eq!(db.monad_messages().get_existing(&payload_hash)?, stored);
+        assert_eq!(
+            db.monad_messages()
+                .get_attempt(&payload_hash, stored.message.as_ref().unwrap())?,
+            MonadMessageAttemptClaim::Missing,
+            "completed attempts must be deleted in the same batch as the stored message"
+        );
 
         Ok(())
     }

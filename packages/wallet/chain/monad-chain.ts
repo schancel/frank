@@ -110,7 +110,9 @@ import { MonadIdentity, fetchMonadProfile } from '../monad-identity'
 import {
   MonadStampClient,
   recoverMonadStampPayments,
+  sweepRecoveredMonadStampPayment,
 } from '../monad-stamp-client'
+import { deriveMonadStampChildPrivate } from '../monad-stamp-stealth'
 import { fetchMonadMessagesSince } from '@frank/cashweb/relay/monad-message-feed'
 import {
   buildEnvelope,
@@ -383,7 +385,7 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
               payloadHashHex,
               payment.childIndex,
             )
-            if (existing?.status === 'swept') continue
+            if (existing !== undefined) continue
             await wallet.stampPaymentJournal.put({
               payloadHashHex,
               childIndex: payment.childIndex,
@@ -430,6 +432,78 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
         })
       }
       return received
+    },
+
+    async listRecoveredStampPayments({ wallet }) {
+      const monadWallet = asMonadWallet(wallet)
+      return (monadWallet.stampPaymentJournal?.getAll() ?? []).map(record => ({
+        payloadDigest: record.payloadHashHex,
+        childIndex: record.childIndex,
+        txHash: record.txHash,
+        address: toChainAddress(record.address),
+        valueWei: BigInt(record.valueWei),
+        status: record.status,
+        sweepTxHash: record.sweepTxHash,
+      }))
+    },
+
+    async sweepRecoveredStampPayment({
+      wallet,
+      payloadDigest,
+      childIndex,
+      destination,
+    }) {
+      const monadWallet = asMonadWallet(wallet)
+      const journal = monadWallet.stampPaymentJournal
+      if (journal === undefined) {
+        throw new Error('Stamp-payment recovery journal is not configured')
+      }
+      const record = journal.get(payloadDigest, childIndex)
+      if (record === undefined) {
+        throw new Error(
+          `No recovered stamp payment ${payloadDigest}:${childIndex}`,
+        )
+      }
+      if (record.status === 'swept') {
+        throw new Error(
+          `Stamp payment ${payloadDigest}:${childIndex} was already swept`,
+        )
+      }
+      const child = deriveMonadStampChildPrivate({
+        payloadHash: getBytes(`0x${payloadDigest}`),
+        recipientPrivateKey: getBytes(monadWallet.identity.toPrivateKeyHex()),
+        paymentIndex: childIndex,
+      })
+      if (child.address.toLowerCase() !== record.address.toLowerCase()) {
+        throw new Error(
+          `Recovered stamp-payment address ${record.address} does not match derived child ${child.address}`,
+        )
+      }
+      const outcome = await sweepRecoveredMonadStampPayment({
+        payment: {
+          childIndex,
+          address: child.address,
+          privateKey: child.privateKey,
+          txHash: record.txHash,
+          valueWei: BigInt(record.valueWei),
+        },
+        destinationAddress: destination.raw,
+        provider: monadWallet.provider,
+        httpClient: monadWallet.httpClient,
+      })
+      if (outcome.swept) {
+        await journal.put({
+          ...record,
+          status: 'swept',
+          sweepTxHash: outcome.txHash,
+        })
+        return {
+          swept: true,
+          txHash: outcome.txHash,
+          valueWei: outcome.valueWei,
+        }
+      }
+      return outcome
     },
   }
 

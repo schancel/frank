@@ -202,6 +202,16 @@ describe('LevelChangePoolStore', () => {
         createdAt: 42,
       })
       storeA.setNextIndex(1)
+      storeA.setPendingIntent({
+        index: 1,
+        address: '0xccc',
+        sourceBurnIndex: 6,
+        sourceBurnAddress: '0xddd',
+        sweptValueWei: '456',
+        rawTx: '0xraw',
+        txHash: '0xpending',
+        createdAt: 43,
+      })
       await storeA.Close()
 
       const storeB = new LevelChangePoolStore(dir)
@@ -209,6 +219,10 @@ describe('LevelChangePoolStore', () => {
       expect(storeB.getNextIndex()).toBe(1)
       expect(storeB.getAll()).toHaveLength(1)
       expect(storeB.getRecord(0)?.sweptValueWei).toBe('123')
+      expect(storeB.getPendingIntent()).toMatchObject({
+        index: 1,
+        txHash: '0xpending',
+      })
       await storeB.Close()
     } finally {
       fs.rmSync(dir, { recursive: true, force: true })
@@ -422,7 +436,7 @@ describe('MonadChangePool', () => {
       expect(provider.getFeeData).not.toHaveBeenCalled()
     })
 
-    it('propagates a submit failure without a record but permanently consumes the reserved destination', async () => {
+    it('journals an ambiguous submit without creating a seed-recovery gap', async () => {
       const pool = makePool()
       const { signer, httpClient } = makeBurnAccountSigner()
       httpClient.submitRawTransaction.mockRejectedValueOnce(
@@ -444,8 +458,30 @@ describe('MonadChangePool', () => {
         }),
       ).rejects.toThrow('relay down')
 
-      expect(pool.nextUnusedIndex()).toBe(1)
+      expect(pool.nextUnusedIndex()).toBe(0)
       expect(pool.records()).toEqual([])
+      expect(
+        (
+          pool as unknown as {
+            store: InMemoryChangePoolStore
+          }
+        ).store.getPendingIntent(),
+      ).toMatchObject({ index: 0, sourceBurnIndex: 0 })
+
+      httpClient.getTransactionReceipt.mockResolvedValueOnce({
+        status: 'success',
+      } as never)
+      const recovered = await pool.sweepToChange({
+        burnIndex: 0,
+        burnAddress: '0xburn',
+        burnAccountSigner: signer,
+        provider,
+        overrides: { maxFeePerGas: 1n, maxPriorityFeePerGas: 1n },
+      })
+      expect(recovered.swept).toBe(true)
+      expect(pool.nextUnusedIndex()).toBe(1)
+      expect(pool.records()).toHaveLength(1)
+      expect(httpClient.submitRawTransaction).toHaveBeenCalledTimes(1)
     })
   })
 })

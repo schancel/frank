@@ -521,6 +521,17 @@ describe('createMonadChain: directMessages.fetchSince', () => {
     expect(stampPaymentJournal.get('ab'.repeat(32), 0)).not.toHaveProperty(
       'privateKey',
     )
+    await expect(
+      chain.directMessages.listRecoveredStampPayments({ wallet }),
+    ).resolves.toEqual([
+      expect.objectContaining({
+        payloadDigest: 'ab'.repeat(32),
+        childIndex: 0,
+        address: { raw: stampDestination.address },
+        valueWei: 123n,
+        status: 'discovered',
+      }),
+    ])
   })
 
   it('skips envelopes addressed to someone else', async () => {
@@ -560,6 +571,58 @@ describe('createMonadChain: directMessages.fetchSince', () => {
 
     expect(received).toHaveLength(0)
     expect(mockedFetchMonadProfile).not.toHaveBeenCalled()
+  })
+
+  it('explicitly sweeps a journaled recipient child and marks it swept', async () => {
+    const chain = createMonadChain(TEST_CONFIG)
+    const bob = MonadIdentity.fromPrivateKeyHex(BOB_PRIVATE_KEY_HEX)
+    const eve = MonadIdentity.fromPrivateKeyHex(EVE_PRIVATE_KEY_HEX)
+    const wallet = makeWallet(bob)
+    const journal = new InMemoryStampPaymentJournal()
+    wallet.stampPaymentJournal = journal
+    const payloadDigest = 'ab'.repeat(32)
+    const child = deriveMonadStampChildPublic({
+      payloadHash: getBytes(`0x${payloadDigest}`),
+      recipientPublicKey: new Uint8Array(bob.compressedPubKey),
+      paymentIndex: 0,
+    })
+    await journal.put({
+      payloadHashHex: payloadDigest,
+      childIndex: 0,
+      txHash: `0x${'12'.repeat(32)}`,
+      address: child.address,
+      valueWei: '10000',
+      status: 'discovered',
+    })
+    wallet.provider = {
+      getBalance: jest.fn().mockResolvedValue(100_000n),
+      getFeeData: jest.fn().mockResolvedValue({ maxFeePerGas: 1n }),
+    } as unknown as MonadChainWalletHandle['provider']
+    const sweepTxHash = `0x${'34'.repeat(32)}`
+    MonadAccountTxSigner.mockImplementationOnce(() => ({
+      address: child.address,
+      buildAndSignTransfer: jest.fn().mockResolvedValue({
+        to: eve.address.raw,
+      }),
+      submit: jest.fn().mockResolvedValue(sweepTxHash),
+    }))
+
+    await expect(
+      chain.directMessages.sweepRecoveredStampPayment({
+        wallet,
+        payloadDigest,
+        childIndex: 0,
+        destination: eve.address,
+      }),
+    ).resolves.toEqual({
+      swept: true,
+      txHash: sweepTxHash,
+      valueWei: 58_000n,
+    })
+    expect(journal.get(payloadDigest, 0)).toMatchObject({
+      status: 'swept',
+      sweepTxHash,
+    })
   })
 })
 

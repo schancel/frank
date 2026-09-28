@@ -375,9 +375,9 @@ describe('nonce-race sequencing proof (#21)', () => {
   })
 
   it('scenario 3 (documented): if the first tx never confirms, the lease retires the sub-account (stuck) instead of deadlocking a later, unrelated stamp on a different account', async () => {
-    // Two sub-accounts: one gets burned through the abandon path, the other proves the pool isn't
-    // deadlocked afterward.
-    const pool = makePool(2)
+    // Four sub-accounts: the preferred two-payment set is retired through the abandon path, and
+    // the other two prove the pool isn't deadlocked afterward.
+    const pool = makePool(4)
     const { client } = makeClient(pool)
 
     // Every PUT is a network-level failure (no HTTP response at all -- "genuinely unknown" per
@@ -407,9 +407,8 @@ describe('nonce-race sequencing proof (#21)', () => {
 
     // Per #18: 'stuck' -> 'retired', never 'available' again (never reused with a guessed nonce).
     const retired = pool.records().filter(r => r.status === 'retired')
-    expect(retired).toHaveLength(1)
-    const retiredIndex = retired[0].index
-    expect(pool.getRecord(retiredIndex)?.status).toBe('retired')
+    expect(retired).toHaveLength(2)
+    const retiredIndices = retired.map(record => record.index)
 
     // No deadlock: a subsequent, unrelated stamp attempt (default acquireLease -- never waits)
     // succeeds immediately by picking the other, still-'available' sub-account. If the lease
@@ -430,11 +429,16 @@ describe('nonce-race sequencing proof (#21)', () => {
         overrides: FEE_OVERRIDES,
       })
 
-    expect(nextResult.leaseIndices[0]).not.toBe(retiredIndex)
+    expect(nextResult.leaseIndices).toHaveLength(2)
+    expect(
+      nextResult.leaseIndices.every(index => !retiredIndices.includes(index)),
+    ).toBe(true)
     // Ticket #34: this stamp's own confirmed release retires it as 'spent' -- terminal, never
     // 'available' again (it completed successfully and consumed the account, unlike the first).
     expect(pool.getRecord(nextResult.leaseIndices[0])?.status).toBe('spent')
     // The retired account is still retired -- this ticket does not implement recovery for it.
-    expect(pool.getRecord(retiredIndex)?.status).toBe('retired')
+    for (const index of retiredIndices) {
+      expect(pool.getRecord(index)?.status).toBe('retired')
+    }
   })
 })

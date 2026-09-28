@@ -8,7 +8,11 @@ import { store } from '../adapters/level-message-store'
 import { toChainDisplayAddress } from '../utils/chain-address'
 import { formatBalance } from '../utils/formatting'
 import { activeChain } from '@frank/wallet/chain'
-import type { DirectMessageSendResult, WalletHandle } from '@frank/wallet/chain'
+import type {
+  DirectMessagePreparationProgress,
+  DirectMessageSendResult,
+  WalletHandle,
+} from '@frank/wallet/chain'
 import { Utxo } from '@frank/cashweb/types/utxo'
 import type {
   Message,
@@ -498,10 +502,14 @@ export const useChatStore = defineStore('chats', {
       wallet,
       address,
       items,
+      onPreparationProgress,
     }: {
       wallet: WalletHandle
       address: string
       items: MessageItem[]
+      onPreparationProgress?: (
+        progress: DirectMessagePreparationProgress,
+      ) => void
     }): Promise<DirectMessageSendResult> {
       const recipient = activeChain.parseAddress(address)
       assert(recipient, `Invalid recipient address: ${address}`)
@@ -522,6 +530,9 @@ export const useChatStore = defineStore('chats', {
         wallet,
         recipient,
         items,
+        ...(onPreparationProgress === undefined
+          ? {}
+          : { onPreparationProgress }),
       })
 
       this.sendMessageLocal({

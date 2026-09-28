@@ -70,17 +70,20 @@ describe('stores/chats.ts (ticket #42)', () => {
     it('sends through activeChain.directMessages.send and records a confirmed message', async () => {
       const chats = useChatStore()
       const wallet = makeWallet(SENDER_ADDRESS)
+      const onPreparationProgress = jest.fn()
       const sendSpy = jest
         .spyOn(activeChain.directMessages, 'send')
         .mockResolvedValue({
           payloadDigest: 'deadbeef',
           stampValueWei: 1_000_000_000_000n,
+          preparationTxHashes: [],
         })
 
       const result = await chats.sendMessage({
         wallet,
         address: RECIPIENT_ADDRESS,
         items: [{ type: 'text', text: 'hello' }],
+        onPreparationProgress,
       })
 
       expect(result.payloadDigest).toBe('deadbeef')
@@ -88,6 +91,7 @@ describe('stores/chats.ts (ticket #42)', () => {
         wallet,
         recipient: { raw: RECIPIENT_ADDRESS },
         items: [{ type: 'text', text: 'hello' }],
+        onPreparationProgress,
       })
 
       const chat = chats.chats[RECIPIENT_ADDRESS]
@@ -106,6 +110,7 @@ describe('stores/chats.ts (ticket #42)', () => {
       jest.spyOn(activeChain.directMessages, 'send').mockResolvedValue({
         payloadDigest: 'abc123',
         stampValueWei: 42n,
+        preparationTxHashes: [],
       })
 
       await chats.sendMessage({

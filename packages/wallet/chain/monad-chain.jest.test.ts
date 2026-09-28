@@ -40,6 +40,7 @@ jest.mock('../monad-stamp-client', () => {
       submitStampedMessage: jest.fn(),
       resumePendingAttempts: jest.fn().mockResolvedValue([]),
     })),
+    quoteMonadStampPaymentGasReserve: jest.fn().mockResolvedValue(100n),
   }
 })
 jest.mock('../monad-topic-post-client', () => {
@@ -124,7 +125,12 @@ function makeWallet(identity: MonadIdentity): MonadChainWalletHandle {
     // These are never dereferenced by real logic in this test file: every client that would
     // actually use them (`MonadStampClient`/`MonadTopicPostClient`/`MonadTopicVoteClient`) is
     // mocked above, so `MonadChain` only ever passes this bundle through to a mock constructor.
-    pool: {} as MonadChainWalletHandle['pool'],
+    pool: {
+      prepareStampInventory: jest.fn().mockResolvedValue({
+        fundingTxHashes: [],
+        selectedAccountCount: 2,
+      }),
+    } as unknown as MonadChainWalletHandle['pool'],
     leaseManager: {} as MonadChainWalletHandle['leaseManager'],
     provider: {} as MonadChainWalletHandle['provider'],
     httpClient: {} as MonadChainWalletHandle['httpClient'],
@@ -190,10 +196,12 @@ describe('createMonadChain: createWallet', () => {
     expect(walletA.identity.address.raw).not.toBe(walletB.identity.address.raw)
   })
 
-  it('pre-derives subAccountPoolSize sub-accounts into the pool', async () => {
+  it('pre-derives unfunded accounts without moving funds on wallet open', async () => {
     const wallet = (await chain.createWallet(seed)) as MonadChainWalletHandle
     const records = wallet.pool.ensureSize(0)
     expect(records).toHaveLength(TEST_CONFIG.subAccountPoolSize)
+    expect(records.every(record => record.status === 'unfunded')).toBe(true)
+    expect(MonadAccountTxSigner).not.toHaveBeenCalled()
   })
 })
 
@@ -336,21 +344,30 @@ describe('createMonadChain: directMessages.send', () => {
     }))
 
     const items: MessageItem[] = [{ type: 'text', text: 'hi bob' } as TextItem]
+    const onPreparationProgress = jest.fn()
     const result = await chain.directMessages.send({
       wallet,
       recipient: bob.address,
       items,
+      onPreparationProgress,
     })
 
     expect(result).toEqual({
       payloadDigest: 'deadbeef',
       stampValueWei: TEST_CONFIG.defaultStampValueWei,
+      preparationTxHashes: [],
     })
     expect(mockedFetchMonadProfile).toHaveBeenCalledWith({
       relayBaseUrl: wallet.relayBaseUrl,
       address: bob.address,
     })
     expect(MonadStampClient).toHaveBeenCalledWith(wallet)
+    expect(wallet.pool.prepareStampInventory).toHaveBeenCalledWith(
+      expect.objectContaining({
+        stampValueWei: TEST_CONFIG.defaultStampValueWei,
+        onProgress: onPreparationProgress,
+      }),
+    )
     expect(submitStampedMessage).toHaveBeenCalledTimes(1)
     const call = submitStampedMessage.mock.calls[0][0]
     // Ticket #57: a DM's stamp pays the recipient -- it must NOT be the fixed
@@ -382,6 +399,54 @@ describe('createMonadChain: directMessages.send', () => {
         items: [{ type: 'text', text: 'hi' }],
       }),
     ).rejects.toThrow(/No registered profile/)
+  })
+
+  it('serializes concurrent sends through preparation, payment, and relay submission', async () => {
+    const chain = createMonadChain(TEST_CONFIG)
+    const alice = MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX)
+    const bob = MonadIdentity.fromPrivateKeyHex(BOB_PRIVATE_KEY_HEX)
+    const wallet = makeWallet(alice)
+    mockedFetchMonadProfile.mockResolvedValue({
+      address: bob.address,
+      pubKey: new Uint8Array(bob.compressedPubKey),
+    })
+
+    let finishFirst!: (value: unknown) => void
+    const firstPending = new Promise(resolve => {
+      finishFirst = resolve
+    })
+    const submitStampedMessage = jest
+      .fn()
+      .mockImplementationOnce(() => firstPending)
+      .mockResolvedValueOnce({ payloadHashHex: 'second' })
+    ;(MonadStampClient as jest.Mock).mockImplementation(() => ({
+      submitStampedMessage,
+    }))
+
+    const first = chain.directMessages.send({
+      wallet,
+      recipient: bob.address,
+      items: [{ type: 'text', text: 'first' }],
+    })
+    await new Promise(resolve => setImmediate(resolve))
+    const second = chain.directMessages.send({
+      wallet,
+      recipient: bob.address,
+      items: [{ type: 'text', text: 'second' }],
+    })
+    await new Promise(resolve => setImmediate(resolve))
+
+    expect(submitStampedMessage).toHaveBeenCalledTimes(1)
+    expect(mockedFetchMonadProfile).toHaveBeenCalledTimes(1)
+
+    finishFirst({ payloadHashHex: 'first' })
+    await expect(first).resolves.toEqual(
+      expect.objectContaining({ payloadDigest: 'first' }),
+    )
+    await expect(second).resolves.toEqual(
+      expect.objectContaining({ payloadDigest: 'second' }),
+    )
+    expect(submitStampedMessage).toHaveBeenCalledTimes(2)
   })
 
   it('rejects unsupported item kinds before ever calling fetchProfile/MonadStampClient', async () => {

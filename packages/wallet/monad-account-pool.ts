@@ -2,7 +2,7 @@
  * HD sub-account pool + fan-out funding for Monad (ticket #14).
  *
  * Implements `PLAN.md`'s M5/constraint-3 privacy pool: instead of one hot wallet address
- * accumulating a linkable on-chain history across every stamp/burn, we derive independent
+ * accumulating a linkable on-chain history across every stamp payment or broadcast, we derive independent
  * `m/44'/60'/0'/0/i` sub-account EOAs (`./monad-hd-keyring.ts`) from a single root secret, fund
  * each one from a main account (`fanOutFundSubAccounts`, below), and hand out each one exactly
  * once (`MonadSubAccountPool.selectForStamp`) — never reusing an address, like a UTXO.
@@ -26,12 +26,9 @@
  *     (itself called synchronously by `MonadStampClient.submitStampedMessage`, #13) — funding is
  *     unavoidably async (it submits real transactions via `fanOutFundSubAccounts`), so it can't run
  *     inside that synchronous call chain without restructuring callers this ticket doesn't own.
- *     Instead, production callers are expected to invoke `topUpPool()` periodically (e.g. a
- *     background interval, or opportunistically after each successful lease release) to keep the
- *     buffer replenished ahead of actual demand. If the buffer is ever fully drained before a
- *     top-up lands, `selectForStamp()` simply returns `undefined` (same "no available account"
- *     behavior as before) rather than blocking on a top-up — callers that want to wait already have
- *     `acquireLeaseWhenAvailable` (`monad-account-lease.ts`) for that.
+ *     Ticket #79 wires production DMs through `prepareStampInventory()` only after the user presses
+ *     Send. `topUpPool()` remains an explicit API for non-DM callers; neither path moves funds merely
+ *     because a wallet was opened.
  *
  *     Buffer size is a caller-supplied `bufferSize` (default `DEFAULT_TOPUP_BUFFER_SIZE = 5`,
  *     below). Tradeoff: a bigger buffer means fewer, larger fan-out batches — cheaper in aggregate
@@ -50,8 +47,8 @@
  * detection/retirement (`'in-use'`/`'spent'`/`'retired'` transitions). This module only derives
  * accounts, persists their `{ index, address, status }` records, funds them, and picks the next
  * `'available'` one for a caller to use — it never mutates a record's status to `'in-use'`,
- * `'spent'`, or `'retired'` on its own (only `topUpPool()` writes `'available'`, once funding for a
- * freshly-derived index actually succeeds). That keeps the state model (`SubAccountRecord`,
+ * `'spent'`, or `'retired'` on its own. The funding paths write `'available'` only after a
+ * successful receipt. That keeps the state model (`SubAccountRecord`,
  * `SubAccountPoolStore`) ready for #18's lease logic to build on top of.
  *
  * Also explicitly out of scope, per the ticket's own non-goals and `PLAN.md` constraint 3: solving
@@ -75,6 +72,7 @@ import {
   SubAccountRecord,
   SubAccountStatus,
 } from './storage/sub-account-pool-storage'
+import { selectStampAccounts } from './monad-stamp-account-selection'
 
 export type {
   SubAccountPoolStore,
@@ -86,6 +84,28 @@ export type {
  * maintain ahead of demand when the caller doesn't specify its own `bufferSize` — see this file's
  * header ("Look-ahead funding buffer") for the tradeoff this default balances. */
 export const DEFAULT_TOPUP_BUFFER_SIZE = 5
+
+export type StampInventoryPreparationProgress =
+  | { stage: 'checking' }
+  | {
+      stage: 'funding'
+      completed: number
+      total: number
+      feeReserveWei: bigint
+      txHash?: string
+    }
+  | { stage: 'ready'; fundingTxHashes: string[] }
+
+export interface StampInventoryPreparationResult {
+  fundingTxHashes: string[]
+  selectedAccountCount: number
+}
+
+export interface FundingReceiptOptions {
+  intervalMs?: number
+  maxAttempts?: number
+  sleep?: (ms: number) => Promise<void>
+}
 
 /**
  * Tracks an ever-growing pool of HD-derived sub-accounts, persisted via a `SubAccountPoolStore` so
@@ -101,6 +121,8 @@ export class MonadSubAccountPool {
    * across a restart just means the round-robin order restarts, which affects fairness, not
    * correctness (an account is never selected while unavailable). */
   private lastSelectedIndex = -1
+  /** Serializes main-account funding so concurrent Sends cannot sign the same pending nonce. */
+  private preparationQueue: Promise<void> = Promise.resolve()
 
   constructor(params: {
     keyring: MonadHdKeyring
@@ -113,11 +135,25 @@ export class MonadSubAccountPool {
   /**
    * Ensures the pool has at least `size` derived sub-accounts recorded in the store, deriving
    * (from the keyring, deterministically) and persisting any missing ones as `'available'`.
+   * `prepareStampInventory` treats that legacy marker as untrusted and checks its chain balance
+   * before selection; new funding attempts use the explicit `unfunded`/`funding` states.
    * Idempotent and safe to call on every app start with a fixed desired pool size — existing
    * records, and whatever status ticket #18's lease logic has since put them in, are left
    * untouched. Returns every record currently in the pool (not just the newly-added ones).
    */
   ensureSize(size: number): SubAccountRecord[] {
+    return this.ensureSizeWithStatus(size, 'available')
+  }
+
+  /** Production derivation path: records new addresses without claiming they hold funds. */
+  ensureUnfundedSize(size: number): SubAccountRecord[] {
+    return this.ensureSizeWithStatus(size, 'unfunded')
+  }
+
+  private ensureSizeWithStatus(
+    size: number,
+    initialStatus: 'available' | 'unfunded',
+  ): SubAccountRecord[] {
     if (!Number.isInteger(size) || size < 0) {
       throw new Error(`Pool size must be a non-negative integer, got ${size}`)
     }
@@ -127,7 +163,7 @@ export class MonadSubAccountPool {
         this.store.put({
           index: derived.index,
           address: derived.address,
-          status: 'available',
+          status: initialStatus,
         })
       }
     }
@@ -154,7 +190,11 @@ export class MonadSubAccountPool {
     if (existing === undefined) {
       throw new Error(`No sub-account at index ${index} in the pool`)
     }
-    const updated: SubAccountRecord = { ...existing, status }
+    if (status === 'funding') {
+      throw new Error('Use a durable funding attempt to enter funding state')
+    }
+    const { fundingAttempt: _fundingAttempt, ...base } = existing
+    const updated: SubAccountRecord = { ...base, status }
     this.store.put(updated)
     return updated
   }
@@ -162,6 +202,287 @@ export class MonadSubAccountPool {
   /** Waits until all pool mutations made so far have reached persistent storage. */
   async flush(): Promise<void> {
     await this.store.flush()
+  }
+
+  /**
+   * Prepares receipt-confirmed, single-use sender inventory for one stamp payment. The preferred
+   * two-account shape is 3/8 + 5/8: deliberately unequal and only created as account inventory,
+   * never imposed later as an artificial split of a message payment. One account remains a valid
+   * fallback when the value is too small or already-available inventory dictates it.
+   */
+  async prepareStampInventory(params: {
+    mainAccountSigner: MonadAccountTxSigner
+    provider: Provider
+    stampValueWei: bigint
+    gasReserveWei: bigint
+    fundingOverrides?: MonadTxOverrides
+    onProgress?: (progress: StampInventoryPreparationProgress) => void
+    receipt?: FundingReceiptOptions
+  }): Promise<StampInventoryPreparationResult> {
+    const run = this.preparationQueue.then(() =>
+      this.prepareStampInventoryExclusive(params),
+    )
+    this.preparationQueue = run.then(
+      () => undefined,
+      () => undefined,
+    )
+    return run
+  }
+
+  private async prepareStampInventoryExclusive(params: {
+    mainAccountSigner: MonadAccountTxSigner
+    provider: Provider
+    stampValueWei: bigint
+    gasReserveWei: bigint
+    fundingOverrides?: MonadTxOverrides
+    onProgress?: (progress: StampInventoryPreparationProgress) => void
+    receipt?: FundingReceiptOptions
+  }): Promise<StampInventoryPreparationResult> {
+    const zero = BigInt(0)
+    if (params.stampValueWei <= zero) {
+      throw new Error(
+        `stampValueWei must be positive, got ${params.stampValueWei}`,
+      )
+    }
+    if (params.gasReserveWei < zero) {
+      throw new Error(
+        `gasReserveWei must be non-negative, got ${params.gasReserveWei}`,
+      )
+    }
+    params.onProgress?.({ stage: 'checking' })
+
+    const fundingTxHashes: string[] = []
+    for (const record of this.store.getAll()) {
+      if (record.status === 'funding') {
+        const txHash = await this.finishFundingAttempt(
+          record,
+          params.mainAccountSigner,
+          params.receipt,
+        )
+        fundingTxHashes.push(txHash)
+      } else if (record.status === 'available') {
+        // A legacy `available` record is ambiguous: it may be merely derived, or it may have been
+        // used before confirmed leases became terminal. Never re-fund that address. An empty one
+        // is retired; production-created `unfunded` records are the only refill targets.
+        const balance = await params.provider.getBalance(record.address)
+        const transactionCount = await params.provider.getTransactionCount(
+          record.address,
+          'pending',
+        )
+        if (transactionCount > 0 || balance <= params.gasReserveWei) {
+          this.store.put({ ...record, status: 'retired' })
+        }
+      }
+    }
+    await this.store.flush()
+
+    let accounts = await this.fundedCapacities(
+      params.provider,
+      params.gasReserveWei,
+    )
+    let selection = this.selectFundedCapacity(params.stampValueWei, accounts)
+    if (
+      selection.length >= 2 ||
+      (params.stampValueWei === BigInt(1) && selection.length === 1)
+    ) {
+      params.onProgress?.({ stage: 'ready', fundingTxHashes })
+      return {
+        fundingTxHashes,
+        selectedAccountCount: selection.length,
+      }
+    }
+
+    const firstCapacity = (params.stampValueWei * BigInt(3)) / BigInt(8)
+    const preferredFirstCapacity =
+      firstCapacity > zero ? firstCapacity : BigInt(1)
+    const existingCapacity = accounts.reduce(
+      (total, account) => total + account.capacityWei,
+      zero,
+    )
+    const capacities =
+      existingCapacity > zero
+        ? [
+            existingCapacity < params.stampValueWei
+              ? params.stampValueWei - existingCapacity
+              : preferredFirstCapacity,
+          ]
+        : [
+            preferredFirstCapacity,
+            params.stampValueWei - preferredFirstCapacity,
+          ].filter(capacity => capacity > zero)
+
+    const unfunded = this.store
+      .getAll()
+      .filter(record => record.status === 'unfunded')
+    while (unfunded.length < capacities.length) {
+      const index = this.nextFreshIndex()
+      const derived = this.keyring.deriveSubAccount(index)
+      const record: SubAccountRecord = {
+        index,
+        address: derived.address,
+        status: 'unfunded',
+      }
+      this.store.put(record)
+      unfunded.push(record)
+    }
+    await this.store.flush()
+
+    for (const [offset, paymentCapacityWei] of capacities.entries()) {
+      const target = unfunded[offset]
+      const result = await this.fundAccount({
+        target,
+        paymentCapacityWei,
+        gasReserveWei: params.gasReserveWei,
+        mainAccountSigner: params.mainAccountSigner,
+        overrides: params.fundingOverrides,
+        receipt: params.receipt,
+        onSigned: signedTx =>
+          params.onProgress?.({
+            stage: 'funding',
+            completed: offset,
+            total: capacities.length,
+            feeReserveWei: params.gasReserveWei,
+            txHash: signedTx.txHash,
+          }),
+      })
+      fundingTxHashes.push(result.txHash)
+      params.onProgress?.({
+        stage: 'funding',
+        completed: offset + 1,
+        total: capacities.length,
+        feeReserveWei: params.gasReserveWei,
+        txHash: result.txHash,
+      })
+    }
+
+    accounts = await this.fundedCapacities(
+      params.provider,
+      params.gasReserveWei,
+    )
+    selection = this.selectFundedCapacity(params.stampValueWei, accounts)
+    if (selection.length === 0) {
+      throw new Error(
+        'Receipt-confirmed stamp accounts do not have enough current fee-adjusted capacity',
+      )
+    }
+    params.onProgress?.({ stage: 'ready', fundingTxHashes })
+    return { fundingTxHashes, selectedAccountCount: selection.length }
+  }
+
+  private async fundedCapacities(
+    provider: Provider,
+    gasReserveWei: bigint,
+  ): Promise<Array<{ index: number; address: string; capacityWei: bigint }>> {
+    const accounts = []
+    for (const record of this.store.getAll()) {
+      if (record.status !== 'available') continue
+      const balance = await provider.getBalance(record.address)
+      accounts.push({
+        index: record.index,
+        address: record.address,
+        capacityWei:
+          balance > gasReserveWei ? balance - gasReserveWei : BigInt(0),
+      })
+    }
+    return accounts
+  }
+
+  private selectFundedCapacity(
+    stampValueWei: bigint,
+    accounts: Array<{ index: number; address: string; capacityWei: bigint }>,
+  ) {
+    try {
+      return selectStampAccounts({ amountWei: stampValueWei, accounts })
+    } catch {
+      return []
+    }
+  }
+
+  private async finishFundingAttempt(
+    record: SubAccountRecord,
+    signer: MonadAccountTxSigner,
+    options?: FundingReceiptOptions,
+    resubmit = true,
+  ): Promise<string> {
+    const attempt = record.fundingAttempt
+    if (record.status !== 'funding' || attempt === undefined) {
+      throw new Error(
+        `Sub-account ${record.index} has no durable funding attempt`,
+      )
+    }
+    let status = await signer.getStatus(attempt.txHash)
+    if (status === 'pending' && resubmit) {
+      // An already-known/nonce-too-low response is compatible with a prior successful broadcast;
+      // the receipt, never the resend response, decides eligibility.
+      await signer
+        .submitRaw(attempt.rawTx, attempt.txHash)
+        .catch(() => undefined)
+    }
+    const maxAttempts = options?.maxAttempts ?? 30
+    const intervalMs = options?.intervalMs ?? 2_000
+    const sleep =
+      options?.sleep ??
+      ((ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms)))
+    for (
+      let attemptNumber = 0;
+      status === 'pending' && attemptNumber < maxAttempts;
+      attemptNumber++
+    ) {
+      if (attemptNumber > 0 || resubmit) await sleep(intervalMs)
+      status = await signer.getStatus(attempt.txHash)
+    }
+    if (status === 'pending') {
+      throw new Error(`Funding transaction ${attempt.txHash} is still pending`)
+    }
+    if (status === 'failed') {
+      const { fundingAttempt: _fundingAttempt, ...base } = record
+      this.store.put({ ...base, status: 'retired' })
+      await this.store.flush()
+      throw new Error(`Funding transaction ${attempt.txHash} failed`)
+    }
+    const { fundingAttempt: _fundingAttempt, ...base } = record
+    this.store.put({ ...base, status: 'available' })
+    await this.store.flush()
+    return attempt.txHash
+  }
+
+  private async fundAccount(params: {
+    target: Pick<SubAccountRecord, 'index' | 'address'>
+    paymentCapacityWei: bigint
+    gasReserveWei: bigint
+    mainAccountSigner: MonadAccountTxSigner
+    overrides?: MonadTxOverrides
+    receipt?: FundingReceiptOptions
+    onSigned?: (signedTx: SignedMonadTx) => void
+  }): Promise<FanOutFundingResult> {
+    const fundedValue = params.paymentCapacityWei + params.gasReserveWei
+    const signedTx = await params.mainAccountSigner.buildAndSignTransfer(
+      params.target.address,
+      fundedValue,
+      params.overrides,
+    )
+    this.store.put({
+      ...params.target,
+      status: 'funding',
+      fundingAttempt: { rawTx: signedTx.rawTx, txHash: signedTx.txHash },
+    })
+    // The exact signed transaction is durable before it can reach the RPC.
+    await this.store.flush()
+    params.onSigned?.(signedTx)
+    await params.mainAccountSigner.submit(signedTx)
+    const txHash = await this.finishFundingAttempt(
+      this.store.getByIndex(params.target.index) as SubAccountRecord,
+      params.mainAccountSigner,
+      params.receipt,
+      false,
+    )
+    return {
+      index: params.target.index,
+      address: params.target.address,
+      fundedValue,
+      signedTx,
+      txHash,
+    }
   }
 
   /** Re-derives the private key for sub-account `index` (deterministically, from the keyring —
@@ -257,15 +578,9 @@ export class MonadSubAccountPool {
    * out. See this file's header ("Look-ahead funding buffer") for why this is a separate,
    * explicitly-invoked async method rather than something `selectForStamp()` triggers itself.
    *
-   * A freshly-derived index is only persisted into the store (as `'available'`) once its funding
-   * transaction has actually been submitted — via `fanOutFundSubAccounts`'s `onFunded` hook, called
-   * per-target as soon as that target's send succeeds, not batched at the end. That matters for
-   * partial-failure recovery: if `fanOutFundSubAccounts` throws partway through this call (e.g. the
-   * N-th of M targets' submit fails), every target funded *before* the throw is already durably
-   * recorded as `'available'`, and the next `topUpPool()` call's `nextFreshIndex()` correctly
-   * resumes after them rather than re-deriving (and re-funding) the same indices. The error still
-   * propagates to this call's caller so the shortfall/failure is visible, rather than being
-   * silently swallowed.
+   * Every exact signed transaction is persisted as `'funding'` before submission, and a target
+   * becomes `'available'` only after a successful receipt. A retry resumes the same raw transaction
+   * rather than allocating another nonce or funding the same child twice.
    *
    * Returns the funding results for whatever was actually topped up (empty if the buffer was
    * already full).
@@ -276,6 +591,7 @@ export class MonadSubAccountPool {
     gasReserve: bigint
     bufferSize?: number
     overrides?: MonadTxOverrides
+    receipt?: FundingReceiptOptions
   }): Promise<FanOutFundingResult[]> {
     const bufferSize = params.bufferSize ?? DEFAULT_TOPUP_BUFFER_SIZE
     if (!Number.isInteger(bufferSize) || bufferSize < 0) {
@@ -283,34 +599,59 @@ export class MonadSubAccountPool {
         `bufferSize must be a non-negative integer, got ${bufferSize}`,
       )
     }
+    if (params.burnValue < BigInt(0)) {
+      throw new Error(`burnValue must be >= 0, got ${params.burnValue}`)
+    }
+    if (params.gasReserve < BigInt(0)) {
+      throw new Error(`gasReserve must be >= 0, got ${params.gasReserve}`)
+    }
+    for (const record of this.store.getAll()) {
+      if (record.status === 'funding') {
+        await this.finishFundingAttempt(
+          record,
+          params.mainAccountSigner,
+          params.receipt,
+        )
+      }
+    }
+
     const currentlyAvailable = this.store
       .getAll()
       .filter(record => record.status === 'available').length
     const deficit = bufferSize - currentlyAvailable
     if (deficit <= 0) return []
 
-    const startIndex = this.nextFreshIndex()
-    const targets = Array.from({ length: deficit }, (_, offset) => {
-      const index = startIndex + offset
+    const targets = this.store
+      .getAll()
+      .filter(record => record.status === 'unfunded')
+      .slice(0, deficit)
+    while (targets.length < deficit) {
+      const index = this.nextFreshIndex()
       const derived = this.keyring.deriveSubAccount(index)
-      return { index, address: derived.address }
-    })
+      const target: SubAccountRecord = {
+        index,
+        address: derived.address,
+        status: 'unfunded',
+      }
+      this.store.put(target)
+      targets.push(target)
+    }
+    await this.store.flush()
 
-    return fanOutFundSubAccounts({
-      mainAccountSigner: params.mainAccountSigner,
-      targets,
-      burnValue: params.burnValue,
-      gasReserve: params.gasReserve,
-      overrides: params.overrides,
-      onFunded: async result => {
-        this.store.put({
-          index: result.index,
-          address: result.address,
-          status: 'available',
-        })
-        await this.store.flush()
-      },
-    })
+    const results: FanOutFundingResult[] = []
+    for (const target of targets) {
+      results.push(
+        await this.fundAccount({
+          target,
+          paymentCapacityWei: params.burnValue,
+          gasReserveWei: params.gasReserve,
+          mainAccountSigner: params.mainAccountSigner,
+          overrides: params.overrides,
+          receipt: params.receipt,
+        }),
+      )
+    }
+    return results
   }
 }
 

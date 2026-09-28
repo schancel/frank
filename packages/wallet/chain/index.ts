@@ -15,6 +15,7 @@ export type {
   ActiveChain,
   ChainAddress,
   DirectMessageClient,
+  DirectMessagePreparationProgress,
   DirectMessageReceived,
   DirectMessageSendResult,
   FrankIdentityHandle,

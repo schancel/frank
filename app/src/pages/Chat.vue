@@ -76,6 +76,13 @@
         v-model:stamp-amount="stampAmount"
         @sendMessage="sendMessage"
       />
+      <div
+        v-if="stampPreparationStatus"
+        class="text-caption text-center q-pb-sm text-accent"
+        role="status"
+      >
+        {{ stampPreparationStatus }}
+      </div>
     </q-footer>
   </div>
 </template>
@@ -91,6 +98,10 @@ import { errorNotify, insufficientStampNotify } from '../utils/notifications'
 import { defaultAcceptancePrice, stampLowerLimit } from '../utils/constants'
 import { useMonadWallet } from '../utils/clients'
 import { MonadStampRecoveredAttemptError } from '@frank/wallet/monad-stamp-client'
+import {
+  activeChain,
+  type DirectMessagePreparationProgress,
+} from '@frank/wallet/chain'
 
 import { debounce, QScrollArea } from 'quasar'
 
@@ -129,6 +140,7 @@ export default defineComponent({
       chatWidth: 0,
       message: '',
       recoveredDraftAwaitingConfirmation: null as string | null,
+      stampPreparationStatus: null as string | null,
     }
   },
   setup() {
@@ -300,12 +312,31 @@ export default defineComponent({
       // session, 2026-09-27) by actually clicking Send in a real browser and finding the message
       // never left the input box.
       try {
+        this.stampPreparationStatus = 'Checking private stamp accounts…'
         await this.sendDirectMessage({
           wallet: useMonadWallet(),
           address: this.address,
           items: [{ type: 'text', text: message }],
+          onPreparationProgress: (
+            progress: DirectMessagePreparationProgress,
+          ) => {
+            if (progress.stage === 'checking') {
+              this.stampPreparationStatus = 'Checking private stamp accounts…'
+            } else if (progress.stage === 'funding') {
+              const feeReserve = activeChain.toDisplayAmount(
+                progress.feeReserveWei,
+              )
+              this.stampPreparationStatus =
+                `Preparing private stamp accounts (${progress.completed}/${progress.total} on-chain transactions; ` +
+                `up to ${feeReserve} ${activeChain.unit} fee reserve each)…`
+            } else {
+              this.stampPreparationStatus =
+                'Private stamp accounts ready; sending message…'
+            }
+          },
         })
       } catch (err) {
+        this.stampPreparationStatus = null
         if (err instanceof MonadStampRecoveredAttemptError) {
           // Recovery completed an older, already-authorized exact payment set. The current draft
           // may or may not describe that same message, so neither silently discard it nor send it
@@ -317,6 +348,7 @@ export default defineComponent({
         errorNotify(err instanceof Error ? err : new Error(String(err)))
         return
       }
+      this.stampPreparationStatus = null
       this.message = ''
       this.replyDigest = null
       // After message send, scroll to bottom if not already there

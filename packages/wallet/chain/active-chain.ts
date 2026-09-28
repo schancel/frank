@@ -100,7 +100,20 @@ export interface ProfileInfo {
 export interface DirectMessageSendResult {
   payloadDigest: string
   stampValueWei: bigint
+  /** Main-account transactions used to prepare sender inventory for this Send, if any. */
+  preparationTxHashes: string[]
 }
+
+export type DirectMessagePreparationProgress =
+  | { stage: 'checking' }
+  | {
+      stage: 'funding'
+      completed: number
+      total: number
+      feeReserveWei: bigint
+      txHash?: string
+    }
+  | { stage: 'ready'; fundingTxHashes: string[] }
 
 /** A single decrypted, received direct message. See this file's header, deviation 2, for why this
  * isn't `ReceivedMessageWrapper` (`../types/user-interface.ts`). */
@@ -142,6 +155,7 @@ export interface DirectMessageClient {
     wallet: WalletHandle
     recipient: ChainAddress
     items: MessageItem[]
+    onPreparationProgress?: (progress: DirectMessagePreparationProgress) => void
   }): Promise<DirectMessageSendResult>
   fetchSince(params: {
     wallet: WalletHandle

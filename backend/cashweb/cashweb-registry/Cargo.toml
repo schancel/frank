@@ -92,12 +92,20 @@ rlp = "0.5"
 # of a SHA256 one), so no new elliptic-curve crate (e.g. `k256`) is needed.
 sha3 = "0.10"
 
+# Stamp-payment stealth children (ticket #60) preserve Stamp's BIP32-compatible public/private
+# derivation. HMAC-SHA512 is the BIP32 child PRF; secp256k1-abc is already the workspace's curve
+# implementation and exposes the public/private tweak operations needed for watch-only derivation.
+hmac = "0.12"
+sha2 = "0.10"
+secp256k1-abc = { git = "https://github.com/raipay/secp256k1-abc" }
+
 [build-dependencies]
 # Build Protobuf structs
 prost-build = "0.11"
 
 [dev-dependencies]
 bitcoinsuite-ecc-secp256k1 = { path = "../../bitcoinsuite/bitcoinsuite-ecc-secp256k1" }
+hex-literal = "0.3"
 
 # assert_eq! and assert_ne! with colored diffs
 pretty_assertions = "1.2"

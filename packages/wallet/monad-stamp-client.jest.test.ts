@@ -157,7 +157,9 @@ function makeClient(overrides?: {
 }) {
   const pool = overrides?.pool ?? makePool()
   const leaseManager = new SubAccountLeaseManager(pool)
-  const provider = overrides?.provider ?? makeChainProvider()
+  // The normal fixture models segmented account inventory: each account can contribute 6,000
+  // wei, so a 10,000-wei stamp naturally consumes 6,000 + 4,000 without an artificial split.
+  const provider = overrides?.provider ?? makeCapacityProvider([6_000n, 6_000n])
   const httpClient = makeMockHttpClient()
   const client = new MonadStampClient({
     pool,
@@ -351,7 +353,7 @@ describe('MonadStampClient.submitStampedMessage', () => {
         expect(getBytes(parsed.data).slice(5)).toEqual(
           computeMonadStampPaymentCommitment(expectedCommitment, index),
         )
-        expect(parsed.value).toBe(5_000n)
+        expect(parsed.value).toBe(index === 0 ? 6_000n : 4_000n)
       }
 
       return {
@@ -392,7 +394,7 @@ describe('MonadStampClient.submitStampedMessage', () => {
     })
     expect(recovered).toHaveLength(2)
     expect(recovered[0].txHash).toBe(result.txHashes[0])
-    expect(recovered[0].valueWei).toBe(5_000n)
+    expect(recovered[0].valueWei).toBe(6_000n)
     expect(
       computeAddress(new SigningKey(recovered[0].privateKey).publicKey),
     ).toBe(recovered[0].address)
@@ -525,8 +527,12 @@ describe('MonadStampClient.submitStampedMessage', () => {
         (gas, byte) => gas + (byte === 0 ? 10 : 40),
         0,
       )
+    const quoteBalance =
+      BigInt(
+        calldataFloor(buildMonadStampCalldata(new Uint8Array(32).fill(0xff))),
+      ) + 6_000n
     const provider = makeStubProvider(async req => {
-      if (req.method === 'getBalance') return '0xde0b6b3a7640000'
+      if (req.method === 'getBalance') return `0x${quoteBalance.toString(16)}`
       if (req.method === 'getTransactionCount')
         return `0x${(nonce++).toString(16)}`
       if (req.method === 'estimateGas') {

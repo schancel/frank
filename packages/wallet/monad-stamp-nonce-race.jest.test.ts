@@ -124,6 +124,19 @@ function makeChainProvider() {
   })
 }
 
+function makeSegmentedChainProvider() {
+  let nonce = 0
+  const feeReserve = FEE_OVERRIDES.gasLimit * FEE_OVERRIDES.maxFeePerGas
+  return makeStubProvider(async req => {
+    if (req.method === 'getTransactionCount')
+      return `0x${(nonce++).toString(16)}`
+    if (req.method === 'estimateGas') return '0x5208'
+    if (req.method === 'getBalance')
+      return `0x${(feeReserve + 6_000n).toString(16)}`
+    throw new Error(`unexpected _perform: ${req.method}`)
+  })
+}
+
 function makeMockHttpClient(): jest.Mocked<MonadTxSubmitter> {
   return {
     submitRawTransaction: jest.fn(),
@@ -148,9 +161,8 @@ function storedMessageBytes(message: MonadStampedMessageProto): Uint8Array {
   return writer.getResultBuffer()
 }
 
-function makeClient(pool: MonadSubAccountPool) {
+function makeClient(pool: MonadSubAccountPool, provider = makeChainProvider()) {
   const leaseManager = new SubAccountLeaseManager(pool)
-  const provider = makeChainProvider()
   const httpClient = makeMockHttpClient()
   const client = new MonadStampClient({
     pool,
@@ -166,7 +178,7 @@ function hexOf(bytes: Uint8Array): string {
   return '0x' + Buffer.from(bytes).toString('hex')
 }
 
-/** Decodes a `PUT /message/monad` request body and returns the nonce the enclosed raw burn tx was
+/** Decodes a `PUT /message/monad` request body and returns the nonce the enclosed stamp tx was
  * actually signed with. */
 function nonceOfPutBody(body: Buffer): number {
   const sent = decodeMonadStampedMessage(new Uint8Array(body))
@@ -378,7 +390,7 @@ describe('nonce-race sequencing proof (#21)', () => {
     // Four sub-accounts: the preferred two-payment set is retired through the abandon path, and
     // the other two prove the pool isn't deadlocked afterward.
     const pool = makePool(4)
-    const { client } = makeClient(pool)
+    const { client } = makeClient(pool, makeSegmentedChainProvider())
 
     // Every PUT is a network-level failure (no HTTP response at all -- "genuinely unknown" per
     // monad-stamp-client.ts's header), and the abandon-poll GET never finds a stored message

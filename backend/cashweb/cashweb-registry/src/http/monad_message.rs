@@ -94,7 +94,11 @@
 //! An unconfigured or invalid gate fails every request closed (`500`), rather than silently
 //! skipping stamp verification, mirroring `pop_protection`'s same fail-closed choice.
 
-use std::{collections::HashSet, fmt, sync::OnceLock};
+use std::{
+    collections::{HashMap, HashSet},
+    fmt,
+    sync::{Arc, OnceLock, Weak},
+};
 
 use axum::{
     extract::{Path, Query},
@@ -118,7 +122,30 @@ use crate::{
     monad_stamp_verify::{parse_commitment_calldata, ExpectedStampTransaction},
     proto,
     registry::Registry,
+    store::monad_messages::MonadMessageAttemptClaim,
 };
+
+const MAX_STAMP_PAYMENTS: usize = 64;
+static PAYMENT_SET_LOCKS: OnceLock<
+    tokio::sync::Mutex<HashMap<[u8; 32], Weak<tokio::sync::Mutex<()>>>>,
+> = OnceLock::new();
+
+async fn lock_payment_set(payload_hash: [u8; 32]) -> tokio::sync::OwnedMutexGuard<()> {
+    let locks = PAYMENT_SET_LOCKS.get_or_init(|| tokio::sync::Mutex::new(HashMap::new()));
+    let lock = {
+        let mut locks = locks.lock().await;
+        locks.retain(|_, lock| lock.strong_count() > 0);
+        match locks.get(&payload_hash).and_then(Weak::upgrade) {
+            Some(lock) => lock,
+            None => {
+                let lock = Arc::new(tokio::sync::Mutex::new(()));
+                locks.insert(payload_hash, Arc::downgrade(&lock));
+                lock
+            }
+        }
+    };
+    lock.lock_owned().await
+}
 
 /// Errors processing a [`proto::MonadStampedMessage`], independent of HTTP/axum (see
 /// [`process_monad_message`]) so this logic can be unit-tested directly against a mock
@@ -141,6 +168,10 @@ pub enum ProcessMonadMessageError {
     RecipientProfileNotFound(Address),
     /// A direct message must carry at least one payment transaction.
     MissingStampPayments,
+    /// Payment-set cardinality is bounded before any transaction cryptography or RPC work.
+    TooManyStampPayments(usize),
+    /// This payload hash is already bound to a different canonical raw payment set.
+    ConflictingPaymentSet,
     /// Reusing a child index would send multiple payments to the same one-time destination.
     DuplicateChildIndex(u32),
     /// Child indices must be exactly `0..n-1` in wire order.
@@ -216,6 +247,14 @@ impl fmt::Display for ProcessMonadMessageError {
             ProcessMonadMessageError::MissingStampPayments => {
                 write!(f, "a direct message requires at least one stamp payment")
             }
+            ProcessMonadMessageError::TooManyStampPayments(actual) => write!(
+                f,
+                "a direct message may contain at most {MAX_STAMP_PAYMENTS} stamp payments, got {actual}"
+            ),
+            ProcessMonadMessageError::ConflictingPaymentSet => write!(
+                f,
+                "payload hash is already bound to a different stamp-payment set"
+            ),
             ProcessMonadMessageError::DuplicateChildIndex(index) => {
                 write!(f, "stamp payment child index {index} is duplicated")
             }
@@ -388,6 +427,11 @@ pub async fn process_monad_message<T: JsonRpcTransport + Clone>(
     if request.stamp_payments.is_empty() {
         return Err(ProcessMonadMessageError::MissingStampPayments);
     }
+    if request.stamp_payments.len() > MAX_STAMP_PAYMENTS {
+        return Err(ProcessMonadMessageError::TooManyStampPayments(
+            request.stamp_payments.len(),
+        ));
+    }
 
     let payload_hash: [u8; 32] = request
         .payload_hash
@@ -485,6 +529,28 @@ pub async fn process_monad_message<T: JsonRpcTransport + Clone>(
             required: min_value_wei,
             actual: preflight_total_value_wei,
         });
+    }
+
+    // Serialize one payload hash from durable claim through final storage. This prevents two
+    // concurrent requests from broadcasting different sets before either one becomes visible.
+    let _payment_set_guard = lock_payment_set(payload_hash).await;
+    if let Some(existing) = registry
+        .get_monad_message(declared_hash.as_slice())
+        .map_err(ProcessMonadMessageError::Infrastructure)?
+    {
+        if existing.message.as_ref() == Some(&request) {
+            return Ok(existing);
+        }
+        return Err(ProcessMonadMessageError::ConflictingPaymentSet);
+    }
+    match registry
+        .claim_monad_message_attempt(declared_hash.as_slice(), &request)
+        .map_err(ProcessMonadMessageError::Infrastructure)?
+    {
+        MonadMessageAttemptClaim::New | MonadMessageAttemptClaim::ExistingExact => {}
+        MonadMessageAttemptClaim::Conflict => {
+            return Err(ProcessMonadMessageError::ConflictingPaymentSet)
+        }
     }
 
     let mut total_value_wei = 0u128;
@@ -1066,6 +1132,52 @@ mod tests {
             .unwrap()
             .expect("message should be stored");
         assert_eq!(fetched, stored);
+
+        let calls_after_first_submission = transport.calls().len();
+        let retried = process_monad_message(
+            &transport,
+            &registry,
+            10_000,
+            fast_poll(),
+            b"MONT",
+            message.clone(),
+        )
+        .await
+        .expect("an exact retry should return the already-stored message");
+        assert_eq!(retried, stored);
+        assert_eq!(
+            transport.calls().len(),
+            calls_after_first_submission,
+            "an exact retry must not rebroadcast the payment"
+        );
+
+        let alternate_sender = EccSecp256k1::default()
+            .seckey_from_array([0x78; 32])
+            .unwrap();
+        let (alternate_raw_tx, _) = signed_eip1559_tx(
+            &alternate_sender,
+            41454,
+            0,
+            payment_destination,
+            10_000,
+            &calldata,
+        );
+        let conflicting = make_message(alternate_raw_tx, message.encrypted_payload.clone());
+        let err = process_monad_message(
+            &transport,
+            &registry,
+            10_000,
+            fast_poll(),
+            b"MONT",
+            conflicting,
+        )
+        .await
+        .expect_err("a payload cannot be rebound to a different payment set");
+        assert!(matches!(
+            err,
+            ProcessMonadMessageError::ConflictingPaymentSet
+        ));
+        assert_eq!(transport.calls().len(), calls_after_first_submission);
     }
 
     #[tokio::test]

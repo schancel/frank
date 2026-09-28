@@ -483,6 +483,17 @@ impl Registry {
         self.db.monad_messages().get(payload_hash)
     }
 
+    /// Reserve a payload hash for one exact signed payment set before broadcasting any member.
+    pub(crate) fn claim_monad_message_attempt(
+        &self,
+        payload_hash: &[u8],
+        message: &proto::MonadStampedMessage,
+    ) -> Result<crate::store::monad_messages::MonadMessageAttemptClaim> {
+        self.db
+            .monad_messages()
+            .claim_attempt(payload_hash, message)
+    }
+
     /// Fully verify and write a Monad-native profile registration (ticket #45) -- the Monad
     /// equivalent of [`Registry::put_metadata`]. See `crate::monad_profile_verify`'s module docs
     /// for why this uses an explicit pubkey+signature check (mirroring Lotus's own solution to

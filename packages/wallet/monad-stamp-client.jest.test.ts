@@ -331,12 +331,14 @@ describe('MonadStampClient.submitStampedMessage', () => {
       expect(sentMessage.payloadHash).toEqual(expectedCommitment)
       // The raw payment must be a validly-decodable, real signed transaction whose calldata carries
       // the same commitment.
-      expect(sentMessage.stampPayments).toHaveLength(1)
-      const parsed = Transaction.from(hexOf(sentMessage.stampPayments[0].rawTx))
-      expect(getBytes(parsed.data).slice(5)).toEqual(
-        computeMonadStampPaymentCommitment(expectedCommitment, 0),
-      )
-      expect(parsed.value).toBe(10_000n)
+      expect(sentMessage.stampPayments).toHaveLength(2)
+      for (const [index, payment] of sentMessage.stampPayments.entries()) {
+        const parsed = Transaction.from(hexOf(payment.rawTx))
+        expect(getBytes(parsed.data).slice(5)).toEqual(
+          computeMonadStampPaymentCommitment(expectedCommitment, index),
+        )
+        expect(parsed.value).toBe(5_000n)
+      }
 
       return {
         data: storedMessageBytes(sentMessage),
@@ -360,23 +362,23 @@ describe('MonadStampClient.submitStampedMessage', () => {
     // Ticket #34: a confirmed release retires the account as 'spent' -- permanently excluded from
     // future selection, never back to 'available' for reuse.
     expect(pool.getRecord(result.leaseIndices[0])?.status).toBe('spent')
-    expect(sweepToChange).toHaveBeenCalledTimes(1)
-    expect(result.changeSweeps).toEqual([
-      {
+    expect(sweepToChange).toHaveBeenCalledTimes(2)
+    expect(result.changeSweeps).toEqual(
+      Array(2).fill({
         swept: false,
         reason: 'below-dust-threshold',
         balanceWei: 1n,
         dustThresholdWei: 2n,
-      },
-    ])
+      }),
+    )
 
     const recovered = recoverMonadStampPayments({
       message: result.stored.message as MonadStampedMessageProto,
       recipientPrivateKey: getBytes(`0x${'44'.repeat(32)}`),
     })
-    expect(recovered).toHaveLength(1)
+    expect(recovered).toHaveLength(2)
     expect(recovered[0].txHash).toBe(result.txHashes[0])
-    expect(recovered[0].valueWei).toBe(10_000n)
+    expect(recovered[0].valueWei).toBe(5_000n)
     expect(
       computeAddress(new SigningKey(recovered[0].privateKey).publicKey),
     ).toBe(recovered[0].address)
@@ -401,9 +403,9 @@ describe('MonadStampClient.submitStampedMessage', () => {
       }),
     ).rejects.toThrow(MonadStampRejectedError)
 
-    // Every sub-account in the pool must now be 'retired' (only one was leased; find it).
+    // Every selected sub-account is retired after a definitive relay rejection.
     const retired = pool.records().filter(r => r.status === 'retired')
-    expect(retired).toHaveLength(1)
+    expect(retired).toHaveLength(2)
   })
 
   it('greedily constructs a canonical, domain-separated multi-payment set', async () => {
@@ -456,9 +458,13 @@ describe('MonadStampClient.submitStampedMessage', () => {
 
     let putCalls = 0
     let getCalls = 0
+    let submittedMessage: MonadStampedMessageProto | undefined
     mockedAxios.mockImplementation(async config => {
       if (config.method === 'put') {
         putCalls++
+        submittedMessage = decodeMonadStampedMessage(
+          new Uint8Array(config.data as Buffer),
+        )
         const networkErr = Object.assign(new Error('socket hang up'), {
           isAxiosError: true,
           response: undefined,
@@ -467,13 +473,9 @@ describe('MonadStampClient.submitStampedMessage', () => {
       }
       // GET /message/monad/:payload_hash
       getCalls++
-      const sentMessage: MonadStampedMessageProto = {
-        stampPayments: [{ childIndex: 0, rawTx: new Uint8Array([1]) }],
-        encryptedPayload,
-        payloadHash: computeMonadStampCommitment(encryptedPayload),
-      }
+      if (submittedMessage === undefined) throw new Error('missing PUT message')
       return {
-        data: storedMessageBytes(sentMessage),
+        data: storedMessageBytes(submittedMessage),
         status: 200,
         statusText: 'OK',
         headers: {},
@@ -525,7 +527,43 @@ describe('MonadStampClient.submitStampedMessage', () => {
     ).rejects.toThrow(MonadStampAbandonedError)
 
     const retired = pool.records().filter(r => r.status === 'retired')
-    expect(retired).toHaveLength(1)
+    expect(retired).toHaveLength(2)
+  })
+
+  it('does not confirm a different stored payment set after an ambiguous PUT', async () => {
+    const { client, pool } = makeClient()
+    mockedAxios.mockImplementation(async config => {
+      if (config.method === 'put') {
+        throw Object.assign(new Error('socket hang up'), {
+          isAxiosError: true,
+          response: undefined,
+        })
+      }
+      const conflicting: MonadStampedMessageProto = {
+        encryptedPayload: new TextEncoder().encode('different'),
+        payloadHash: new Uint8Array(32).fill(0x55),
+        stampPayments: [{ childIndex: 0, rawTx: new Uint8Array([1, 2, 3]) }],
+      }
+      return {
+        data: storedMessageBytes(conflicting),
+        status: 200,
+        statusText: 'OK',
+        headers: {},
+        config,
+      }
+    })
+
+    await expect(
+      client.submitStampedMessage({
+        encryptedPayload: new TextEncoder().encode('ambiguous exact set'),
+        recipientPublicKey: RECIPIENT_PUBLIC_KEY,
+        stampValueWei: 10_000n,
+        overrides: FEE_OVERRIDES,
+        abandonPoll: { maxAttempts: 1, intervalMs: 0 },
+      }),
+    ).rejects.toThrow(MonadStampAbandonedError)
+
+    expect(pool.records().filter(r => r.status === 'retired')).toHaveLength(2)
   })
 })
 

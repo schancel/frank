@@ -38,7 +38,7 @@ use thiserror::Error;
 
 use crate::{
     proto,
-    store::db::{Db, CF, CF_MONAD_MESSAGES, CF_MONAD_MESSAGES_BY_TIME},
+    store::db::{Db, CF, CF_MONAD_MESSAGES, CF_MONAD_MESSAGES_BY_TIME, CF_MONAD_MESSAGE_ATTEMPTS},
 };
 
 /// Build the `CF_MONAD_MESSAGES_BY_TIME` key for a given `(timestamp, payload_hash)` pair. Kept
@@ -53,6 +53,18 @@ pub struct DbMonadMessages<'a> {
     db: &'a Db,
     cf_monad_messages: &'a CF,
     cf_monad_messages_by_time: &'a CF,
+    cf_monad_message_attempts: &'a CF,
+}
+
+/// Result of claiming a payload hash for one exact canonical payment set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MonadMessageAttemptClaim {
+    /// No attempt existed; this exact set was persisted.
+    New,
+    /// The same exact protobuf message was already persisted and may resume.
+    ExistingExact,
+    /// A different payment set already owns this payload hash.
+    Conflict,
 }
 
 /// Errors indicating some Monad-message store error.
@@ -76,10 +88,34 @@ impl<'a> DbMonadMessages<'a> {
     pub fn new(db: &'a Db) -> Self {
         let cf_monad_messages = db.cf(CF_MONAD_MESSAGES).unwrap();
         let cf_monad_messages_by_time = db.cf(CF_MONAD_MESSAGES_BY_TIME).unwrap();
+        let cf_monad_message_attempts = db.cf(CF_MONAD_MESSAGE_ATTEMPTS).unwrap();
         DbMonadMessages {
             db,
             cf_monad_messages,
             cf_monad_messages_by_time,
+            cf_monad_message_attempts,
+        }
+    }
+
+    /// Persist the exact raw payment set before its first broadcast. The caller serializes claims
+    /// for a given payload hash, making this read/insert decision atomic within one relay process.
+    pub fn claim_attempt(
+        &self,
+        payload_hash: &[u8],
+        message: &proto::MonadStampedMessage,
+    ) -> Result<MonadMessageAttemptClaim> {
+        let encoded = message.encode_to_vec();
+        match self.db.get(self.cf_monad_message_attempts, payload_hash)? {
+            Some(existing) if existing.as_ref() == encoded.as_slice() => {
+                Ok(MonadMessageAttemptClaim::ExistingExact)
+            }
+            Some(_) => Ok(MonadMessageAttemptClaim::Conflict),
+            None => {
+                let mut batch = rocksdb::WriteBatch::default();
+                batch.put_cf(self.cf_monad_message_attempts, payload_hash, encoded);
+                self.db.write_batch(batch)?;
+                Ok(MonadMessageAttemptClaim::New)
+            }
         }
     }
 
@@ -157,6 +193,10 @@ impl<'a> DbMonadMessages<'a> {
             CF_MONAD_MESSAGES_BY_TIME,
             rocksdb::Options::default(),
         ));
+        columns.push(ColumnFamilyDescriptor::new(
+            CF_MONAD_MESSAGE_ATTEMPTS,
+            rocksdb::Options::default(),
+        ));
     }
 }
 
@@ -171,7 +211,50 @@ mod tests {
     use bitcoinsuite_error::Result;
     use pretty_assertions::assert_eq;
 
-    use crate::{proto, store::db::Db};
+    use crate::{
+        proto,
+        store::{db::Db, monad_messages::MonadMessageAttemptClaim},
+    };
+
+    #[test]
+    fn test_claim_attempt_binds_payload_to_exact_payment_set() -> Result<()> {
+        let _ = bitcoinsuite_error::install();
+        let tempdir = tempdir::TempDir::new("cashweb-registry-store--monad-attempt")?;
+        let db_path = tempdir.path().join("db.rocksdb");
+        let payload_hash = vec![8u8; 32];
+        let message = proto::MonadStampedMessage {
+            encrypted_payload: vec![4, 5, 6],
+            payload_hash: payload_hash.clone(),
+            stamp_payments: vec![proto::MonadStampPayment {
+                child_index: 0,
+                raw_tx: vec![1, 2, 3],
+            }],
+        };
+
+        {
+            let db = Db::open(&db_path)?;
+            assert_eq!(
+                db.monad_messages().claim_attempt(&payload_hash, &message)?,
+                MonadMessageAttemptClaim::New
+            );
+        }
+
+        // Reopening the database proves the claim survives a relay restart.
+        let db = Db::open(&db_path)?;
+        assert_eq!(
+            db.monad_messages().claim_attempt(&payload_hash, &message)?,
+            MonadMessageAttemptClaim::ExistingExact
+        );
+        let mut conflicting = message;
+        conflicting.stamp_payments[0].raw_tx.push(4);
+        assert_eq!(
+            db.monad_messages()
+                .claim_attempt(&payload_hash, &conflicting)?,
+            MonadMessageAttemptClaim::Conflict
+        );
+
+        Ok(())
+    }
 
     #[test]
     fn test_db_monad_messages() -> Result<()> {

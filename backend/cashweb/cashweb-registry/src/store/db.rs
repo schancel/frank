@@ -30,6 +30,9 @@ pub(crate) const CF_MONAD_MESSAGES: &str = "monad_messages";
 /// in timestamp order without scanning the whole (payload_hash-keyed) primary CF -- mirrors
 /// `DbTopics`'s `CF_MESSAGES` "topic_digest ++ timestamp" key layout, minus the topic prefix.
 pub(crate) const CF_MONAD_MESSAGES_BY_TIME: &str = "monad_messages_by_time";
+/// Canonical in-progress direct-message payment sets, keyed by payload hash. Persisting the exact
+/// set makes crash/retry resume the original raw transactions instead of accepting a second set.
+pub(crate) const CF_MONAD_MESSAGE_ATTEMPTS: &str = "monad_message_attempts";
 /// Ticket #30: stores [`crate::proto::StoredMonadTopicPost`], keyed by `payload_hash`. Parallel
 /// to `CF_MONAD_MESSAGES` -- see `crate::store::monad_topics`'s module docs.
 pub(crate) const CF_MONAD_TOPIC_POSTS: &str = "monad_topic_posts";

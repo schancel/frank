@@ -236,6 +236,8 @@ export interface ActiveChain {
   readonly unit: string
   /** Default raw native-chain value for a direct-message stamp payment. */
   readonly defaultStampValue: bigint
+  /** Default raw native-chain value burned for a topic post or vote. */
+  readonly defaultTopicVoteValue: bigint
   toDisplayAmount(raw: bigint): string
   fromDisplayAmount(display: string): bigint
   formatAddress(addr: ChainAddress): string

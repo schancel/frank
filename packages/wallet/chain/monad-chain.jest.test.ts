@@ -114,6 +114,7 @@ const TEST_CONFIG: MonadChainConfig = {
   networkTag: 'MONT',
   stampBurnAddress: '0x000000000000000000000000000000000000dEaD',
   defaultStampValueWei: 1_000_000_000_000n,
+  defaultTopicVoteValueWei: 1_000_000_000_000n,
   subAccountPoolSize: 3,
   walletStorageLocation: false,
 }
@@ -151,6 +152,9 @@ describe('createMonadChain: basic chain properties', () => {
   it('exposes the Monad name/unit', () => {
     expect(chain.name).toBe('monad')
     expect(chain.unit).toBe('MON')
+    expect(chain.defaultTopicVoteValue).toBe(
+      TEST_CONFIG.defaultTopicVoteValueWei,
+    )
   })
 
   it('round-trips display <-> raw amounts', () => {

@@ -53,7 +53,7 @@
  *      only "does it deadlock or silently misbehave" is asserted here, per the ticket's acceptance
  *      criteria.)
  */
-import { JsonRpcProvider, Transaction, getBytes } from 'ethers'
+import { JsonRpcProvider, SigningKey, Transaction, getBytes } from 'ethers'
 import axios from 'axios'
 
 import { MonadHdKeyring } from './monad-hd-keyring'
@@ -78,7 +78,9 @@ const mockedAxios = axios as jest.Mocked<typeof axios>
 
 const TEST_MNEMONIC =
   'test test test test test test test test test test test junk'
-const BURN_ADDRESS = '0x000000000000000000000000000000000000dEaD'
+const RECIPIENT_PUBLIC_KEY = getBytes(
+  SigningKey.computePublicKey(`0x${'44'.repeat(32)}`, true),
+)
 const CHAIN_ID = 10143
 
 const FEE_OVERRIDES = {
@@ -117,6 +119,7 @@ function makeChainProvider() {
     if (req.method === 'getTransactionCount')
       return `0x${(nonce++).toString(16)}`
     if (req.method === 'estimateGas') return '0x5208'
+    if (req.method === 'getBalance') return '0xde0b6b3a7640000'
     throw new Error(`unexpected _perform: ${req.method}`)
   })
 }
@@ -131,8 +134,6 @@ function makeMockHttpClient(): jest.Mocked<MonadTxSubmitter> {
 function storedMessageBytes(message: MonadStampedMessageProto): Uint8Array {
   const stored: StoredMonadMessageProto = {
     message,
-    senderAddress: getBytes('0x' + '11'.repeat(20)),
-    txHash: getBytes('0x' + '22'.repeat(32)),
     timestamp: 1_700_000_000_000,
     networkTag: new Uint8Array(),
   }
@@ -143,8 +144,6 @@ function storedMessageBytes(message: MonadStampedMessageProto): Uint8Array {
     1,
     encodeMonadStampedMessage(stored.message as MonadStampedMessageProto),
   )
-  writer.writeBytes(2, stored.senderAddress)
-  writer.writeBytes(3, stored.txHash)
   writer.writeInt64(4, stored.timestamp)
   return writer.getResultBuffer()
 }
@@ -171,7 +170,7 @@ function hexOf(bytes: Uint8Array): string {
  * actually signed with. */
 function nonceOfPutBody(body: Buffer): number {
   const sent = decodeMonadStampedMessage(new Uint8Array(body))
-  return Transaction.from(hexOf(sent.rawBurnTx)).nonce
+  return Transaction.from(hexOf(sent.stampPayments[0].rawTx)).nonce
 }
 
 function successResponse(sentMessage: MonadStampedMessageProto) {
@@ -195,10 +194,12 @@ function deferred<T>() {
   return { promise, resolve }
 }
 
-async function flushMicrotasks(times = 10): Promise<void> {
-  for (let i = 0; i < times; i++) {
-    await Promise.resolve()
+async function waitUntil(condition: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    if (condition()) return
+    await new Promise(resolve => setTimeout(resolve, 1))
   }
+  throw new Error('condition did not become true within test budget')
 }
 
 beforeEach(() => {
@@ -231,7 +232,7 @@ describe('nonce-race sequencing proof (#21)', () => {
     // is now parked on `firstPut.promise` (the relay "hasn't confirmed yet").
     const firstResultPromise = client.submitStampedMessage({
       encryptedPayload: payloadA,
-      destinationAddress: BURN_ADDRESS,
+      recipientPublicKey: RECIPIENT_PUBLIC_KEY,
       stampValueWei: 10_000n,
       overrides: FEE_OVERRIDES,
     })
@@ -239,7 +240,7 @@ describe('nonce-race sequencing proof (#21)', () => {
     // Let the first call's build/sign/PUT-issue microtasks run before firing the second -- this is
     // the ticket's "second issued before the first's broadcast has confirmed" race: the relay has
     // not responded (firstPut is still pending) when the second attempt starts.
-    await flushMicrotasks()
+    await waitUntil(() => putCalls === 1)
     expect(pool.getRecord(0)?.status).toBe('in-use')
     expect(putCalls).toBe(1)
 
@@ -248,7 +249,7 @@ describe('nonce-race sequencing proof (#21)', () => {
     // never waits.
     const secondResultPromise = client.submitStampedMessage({
       encryptedPayload: payloadB,
-      destinationAddress: BURN_ADDRESS,
+      recipientPublicKey: RECIPIENT_PUBLIC_KEY,
       stampValueWei: 10_000n,
       overrides: FEE_OVERRIDES,
     })
@@ -298,12 +299,12 @@ describe('nonce-race sequencing proof (#21)', () => {
 
     const firstResultPromise = client.submitStampedMessage({
       encryptedPayload: payloadA,
-      destinationAddress: BURN_ADDRESS,
+      recipientPublicKey: RECIPIENT_PUBLIC_KEY,
       stampValueWei: 10_000n,
       overrides: FEE_OVERRIDES,
     })
 
-    await flushMicrotasks()
+    await waitUntil(() => putCalls === 1)
     expect(pool.getRecord(0)?.status).toBe('in-use')
     expect(putCalls).toBe(1)
 
@@ -313,7 +314,7 @@ describe('nonce-race sequencing proof (#21)', () => {
     const secondResultPromise = client
       .submitStampedMessage({
         encryptedPayload: payloadB,
-        destinationAddress: BURN_ADDRESS,
+        recipientPublicKey: RECIPIENT_PUBLIC_KEY,
         stampValueWei: 10_000n,
         overrides: FEE_OVERRIDES,
         waitForLease: { pollIntervalMs: 5, timeoutMs: 5_000 },
@@ -357,9 +358,8 @@ describe('nonce-race sequencing proof (#21)', () => {
     expect(secondResult.stored.message?.encryptedPayload).toEqual(payloadB)
 
     // The two stamps NEVER used the same sub-account -- the whole point of this correction.
-    expect(firstResult.leaseIndex).toBe(0)
-    expect(secondResult.leaseIndex).toBe(1)
-    expect(secondResult.leaseIndex).not.toBe(firstResult.leaseIndex)
+    expect(firstResult.leaseIndices).toEqual([0])
+    expect(secondResult.leaseIndices).toEqual([1])
 
     // Still strictly sequenced (never built/sent concurrently), independent of sharing an account.
     expect(putBodies).toHaveLength(2)
@@ -394,7 +394,7 @@ describe('nonce-race sequencing proof (#21)', () => {
     await expect(
       client.submitStampedMessage({
         encryptedPayload: new TextEncoder().encode('never confirms'),
-        destinationAddress: BURN_ADDRESS,
+        recipientPublicKey: RECIPIENT_PUBLIC_KEY,
         stampValueWei: 10_000n,
         overrides: FEE_OVERRIDES,
         abandonPoll: {
@@ -425,15 +425,15 @@ describe('nonce-race sequencing proof (#21)', () => {
     const nextResult: StampMonadMessageResult =
       await client.submitStampedMessage({
         encryptedPayload: new TextEncoder().encode('unrelated later stamp'),
-        destinationAddress: BURN_ADDRESS,
+        recipientPublicKey: RECIPIENT_PUBLIC_KEY,
         stampValueWei: 10_000n,
         overrides: FEE_OVERRIDES,
       })
 
-    expect(nextResult.leaseIndex).not.toBe(retiredIndex)
+    expect(nextResult.leaseIndices[0]).not.toBe(retiredIndex)
     // Ticket #34: this stamp's own confirmed release retires it as 'spent' -- terminal, never
     // 'available' again (it completed successfully and consumed the account, unlike the first).
-    expect(pool.getRecord(nextResult.leaseIndex)?.status).toBe('spent')
+    expect(pool.getRecord(nextResult.leaseIndices[0])?.status).toBe('spent')
     // The retired account is still retired -- this ticket does not implement recovery for it.
     expect(pool.getRecord(retiredIndex)?.status).toBe('retired')
   })

@@ -1,6 +1,6 @@
 //! Standalone, **not wired into app logic**, live smoke test for
 //! [`cashweb_registry::monad_stamp_verify`] (ticket #16), proving the mechanics of
-//! `verify_stamp_burn` (and the `eth_getTransactionByHash` call it needs, now
+//! `verify_stamp_transaction` (and the `eth_getTransactionByHash` call it needs, now
 //! `MonadHttpClient::get_transaction_by_hash` -- see ticket #25) actually work against real Monad
 //! testnet chain data, not simulated data.
 //!
@@ -16,11 +16,11 @@
 //! ## What this does and doesn't prove
 //! - It scans recent blocks for a real, currently-live transaction (no hardcoded tx hash, so this
 //!   keeps working as the testnet chain moves forward), then feeds its hash into
-//!   `verify_stamp_burn`.
+//!   `verify_stamp_transaction`.
 //! - It proves the full pipeline runs against live data end-to-end: fetching the real receipt via
 //!   `MonadHttpClient::get_transaction_receipt`, fetching the real transaction via
 //!   `MonadHttpClient::get_transaction_by_hash`, and running the real transaction's `value` and
-//!   `input` bytes through the same recipient/value/calldata checks `verify_stamp_burn` would
+//!   `input` bytes through the same recipient/value/calldata checks `verify_stamp_transaction` would
 //!   apply to an actual Stamp burn.
 //! - It deliberately does **not** prove verification of a *genuine* Stamp burn (no real STMP/POND
 //!   burn transaction is known to exist on testnet yet -- that requires ticket #13's client-side
@@ -34,7 +34,7 @@
 
 use cashweb_registry::monad_http::{BlockTag, GetLogsFilter, Hash32, MonadHttpClient};
 use cashweb_registry::monad_stamp_verify::{
-    verify_stamp_burn, ExpectedBurn, StampBurnVerification,
+    verify_stamp_transaction, ExpectedStampTransaction, StampTransactionVerification,
 };
 
 /// Alchemy's free tier caps a single `eth_getLogs` call to a 10-block range.
@@ -46,7 +46,7 @@ const MAX_WINDOWS_TO_SCAN: u64 = 500;
 
 #[tokio::test]
 #[ignore = "hits the live Monad testnet endpoint over the network; run explicitly, see module docs"]
-async fn live_verify_stamp_burn_against_real_tx() {
+async fn live_verify_stamp_transaction_against_real_tx() {
     let rpc_url = std::env::var("MONAD_TESTNET_HTTP_RPC_URL").expect(
         "MONAD_TESTNET_HTTP_RPC_URL must be set to run this live smoke test (see module docs \
          for how to source it from the repo's gitignored .env)",
@@ -55,7 +55,7 @@ async fn live_verify_stamp_burn_against_real_tx() {
         .parse()
         .expect("MONAD_TESTNET_HTTP_RPC_URL is not a valid URL");
 
-    // `MonadHttpClient` and `verify_stamp_burn` both need a `JsonRpcTransport` (the latter builds
+    // `MonadHttpClient` and `verify_stamp_transaction` both need a `JsonRpcTransport` (the latter builds
     // its own internal `MonadHttpClient` from it). `HttpTransport` is `Clone`, so one instance
     // covers both.
     let transport = cashweb_registry::monad_http::HttpTransport::new(rpc_url);
@@ -118,23 +118,23 @@ async fn live_verify_stamp_burn_against_real_tx() {
         .to
         .expect("sample transaction unexpectedly has no `to` (contract creation)");
 
-    // 3. Run the real tx hash through `verify_stamp_burn` end-to-end: real receipt fetch, real
+    // 3. Run the real tx hash through `verify_stamp_transaction` end-to-end: real receipt fetch, real
     // status check, real recipient/value check (set up to pass, using the tx's own real
     // to/value), and real calldata decode (which must reject this tx's genuine, non-Stamp-shaped
     // calldata).
-    let expected = ExpectedBurn {
+    let expected = ExpectedStampTransaction {
         commitment_id: *b"STMP",
         commitment: bitcoinsuite_core::Sha256::new([0u8; 32]),
         destination_address: real_to,
         min_value_wei: 0,
     };
-    let outcome = verify_stamp_burn(&transport, tx_hash, &expected)
+    let outcome = verify_stamp_transaction(&transport, tx_hash, &expected)
         .await
-        .expect("verify_stamp_burn hit an infrastructure error against live data");
-    println!("[live] verify_stamp_burn outcome: {outcome:?}");
+        .expect("verify_stamp_transaction hit an infrastructure error against live data");
+    println!("[live] verify_stamp_transaction outcome: {outcome:?}");
 
     assert!(
-        matches!(outcome, StampBurnVerification::MalformedCalldata(_)),
+        matches!(outcome, StampTransactionVerification::MalformedCalldata(_)),
         "expected a real (non-Stamp) tx's calldata to be rejected as malformed, got {outcome:?}"
     );
 }

@@ -4,18 +4,27 @@
  * `axios` is mocked (`jest.mock('axios')`) so `PUT /message/monad` / `GET
  * /message/monad/:payload_hash` never touch a real network — each test drives the mock to exercise
  * one of `submitStampedMessage`'s documented outcomes (2xx success, HTTP-level rejection,
- * network-failure-then-found-via-poll, network-failure-then-abandoned). Burn-tx construction goes
+ * network-failure-then-found-via-poll, network-failure-then-abandoned). Payment construction goes
  * through a real `MonadSubAccountPool`/`MonadAccountTxSigner` against a stubbed ethers
  * `JsonRpcProvider._perform` (same technique `monad-account-tx.jest.test.ts` uses), so the signed
  * raw tx and its calldata are real, decodable bytes, not placeholders.
  */
-import { JsonRpcProvider, Transaction, getBytes, sha256 } from 'ethers'
+import {
+  JsonRpcProvider,
+  SigningKey,
+  Transaction,
+  computeAddress,
+  getBytes,
+  getAddress,
+  sha256,
+} from 'ethers'
 import axios from 'axios'
 
 import { MonadHdKeyring } from './monad-hd-keyring'
 import { MonadSubAccountPool } from './monad-account-pool'
 import { SubAccountLeaseManager } from './monad-account-lease'
 import { MonadTxSubmitter } from './monad-account-tx'
+import { MonadChangePool } from './monad-change-pool'
 import {
   MonadStampAbandonedError,
   MonadStampClient,
@@ -23,9 +32,12 @@ import {
   MONAD_STAMP_CALLDATA_LENGTH,
   buildMonadStampCalldata,
   computeMonadStampCommitment,
+  computeMonadStampPaymentCommitment,
   decodeMonadStampedMessage,
   decodeStoredMonadMessage,
   encodeMonadStampedMessage,
+  recoverMonadStampPayments,
+  sweepRecoveredMonadStampPayment,
   MonadStampedMessageProto,
   StoredMonadMessageProto,
 } from './monad-stamp-client'
@@ -35,8 +47,9 @@ const mockedAxios = axios as jest.Mocked<typeof axios>
 
 const TEST_MNEMONIC =
   'test test test test test test test test test test test junk'
-const BURN_ADDRESS = '0x000000000000000000000000000000000000dEaD'
-const RECIPIENT_ADDRESS = '0x4444444444444444444444444444444444444444'
+const RECIPIENT_PUBLIC_KEY = getBytes(
+  SigningKey.computePublicKey(`0x${'44'.repeat(32)}`, true),
+)
 const CHAIN_ID = 10143
 
 // Explicit fee/gas overrides for every `submitStampedMessage` call below, so `ethers`'
@@ -82,6 +95,24 @@ function makeChainProvider() {
     if (req.method === 'getTransactionCount')
       return `0x${(nonce++).toString(16)}`
     if (req.method === 'estimateGas') return '0x5208'
+    if (req.method === 'getBalance') return '0xde0b6b3a7640000'
+    throw new Error(`unexpected _perform: ${req.method}`)
+  })
+}
+
+function makeCapacityProvider(capacities: bigint[]) {
+  let nonce = 0
+  let balanceRead = 0
+  const feeReserve = FEE_OVERRIDES.gasLimit * FEE_OVERRIDES.maxFeePerGas
+  return makeStubProvider(async req => {
+    if (req.method === 'getTransactionCount') {
+      return `0x${(nonce++).toString(16)}`
+    }
+    if (req.method === 'estimateGas') return '0x5208'
+    if (req.method === 'getBalance') {
+      const capacity = capacities[balanceRead++] ?? 0n
+      return `0x${(feeReserve + capacity).toString(16)}`
+    }
     throw new Error(`unexpected _perform: ${req.method}`)
   })
 }
@@ -89,8 +120,6 @@ function makeChainProvider() {
 function storedMessageBytes(message: MonadStampedMessageProto): Uint8Array {
   const stored: StoredMonadMessageProto = {
     message,
-    senderAddress: getBytes('0x' + '11'.repeat(20)),
-    txHash: getBytes('0x' + '22'.repeat(32)),
     timestamp: 1_700_000_000_000,
     // Ticket #39: exercise a nonzero network_tag through the round trip below too, so
     // `decodeStoredMonadMessage` is proven to decode field 5 correctly, not just fields 1-4.
@@ -106,23 +135,26 @@ function storedMessageBytes(message: MonadStampedMessageProto): Uint8Array {
     1,
     encodeMonadStampedMessage(stored.message as MonadStampedMessageProto),
   )
-  writer.writeBytes(2, stored.senderAddress)
-  writer.writeBytes(3, stored.txHash)
   writer.writeInt64(4, stored.timestamp)
   writer.writeBytes(5, stored.networkTag)
   return writer.getResultBuffer()
 }
 
-function makeClient(overrides?: { pool?: MonadSubAccountPool }) {
+function makeClient(overrides?: {
+  pool?: MonadSubAccountPool
+  changePool?: MonadChangePool
+  provider?: ReturnType<typeof makeChainProvider>
+}) {
   const pool = overrides?.pool ?? makePool()
   const leaseManager = new SubAccountLeaseManager(pool)
-  const provider = makeChainProvider()
+  const provider = overrides?.provider ?? makeChainProvider()
   const httpClient = makeMockHttpClient()
   const client = new MonadStampClient({
     pool,
     leaseManager,
     provider,
     httpClient,
+    changePool: overrides?.changePool,
     relayBaseUrl: 'https://relay.example.com/',
   })
   return { client, pool, leaseManager, provider, httpClient }
@@ -151,6 +183,15 @@ describe('calldata / commitment construction', () => {
     expect(Array.from(bytes.slice(5))).toEqual(Array.from(commitment))
   })
 
+  it('domain-separates otherwise-related payment children', () => {
+    const payloadHash = new Uint8Array(32).fill(0x42)
+    const child0 = computeMonadStampPaymentCommitment(payloadHash, 0)
+    const child1 = computeMonadStampPaymentCommitment(payloadHash, 1)
+    expect(child0).toHaveLength(32)
+    expect(child1).toHaveLength(32)
+    expect(child0).not.toEqual(child1)
+  })
+
   it('rejects a commitment that is not exactly 32 bytes', () => {
     expect(() => buildMonadStampCalldata(new Uint8Array(31))).toThrow(
       /32 bytes/,
@@ -158,10 +199,82 @@ describe('calldata / commitment construction', () => {
   })
 })
 
+describe('recipient stamp-payment sweep', () => {
+  const childPrivateKey = getBytes(`0x${'55'.repeat(32)}`)
+  const childAddress = computeAddress(new SigningKey(childPrivateKey).publicKey)
+  const payment = {
+    childIndex: 0,
+    address: childAddress,
+    privateKey: childPrivateKey,
+    txHash: `0x${'aa'.repeat(32)}`,
+    valueWei: 10_000n,
+  }
+
+  it('subtracts child-paid gas and submits a plain transfer', async () => {
+    const provider = makeStubProvider(async req => {
+      if (req.method === 'getBalance') return '0x2710'
+      throw new Error(`unexpected _perform: ${req.method}`)
+    })
+    const httpClient = makeMockHttpClient()
+    httpClient.submitRawTransaction.mockImplementation(async rawTx => {
+      const hash = Transaction.from(rawTx).hash
+      if (hash === null) throw new Error('expected signed transaction')
+      return hash
+    })
+
+    const outcome = await sweepRecoveredMonadStampPayment({
+      payment,
+      destinationAddress: `0x${'66'.repeat(20)}`,
+      provider,
+      httpClient,
+      dustThresholdWei: 1_000n,
+      overrides: {
+        ...FEE_OVERRIDES,
+        nonce: 0,
+        chainId: BigInt(CHAIN_ID),
+      },
+    })
+
+    expect(outcome.swept).toBe(true)
+    if (!outcome.swept) throw new Error('expected sweep')
+    expect(outcome.valueWei).toBe(9_000n)
+    const submitted = Transaction.from(
+      httpClient.submitRawTransaction.mock.calls[0][0],
+    )
+    expect(submitted.value).toBe(9_000n)
+    expect(submitted.data).toBe('0x')
+    expect(submitted.to).toBe(getAddress(`0x${'66'.repeat(20)}`))
+  })
+
+  it('leaves an uneconomic child untouched', async () => {
+    const provider = makeStubProvider(async req => {
+      if (req.method === 'getBalance') return '0x3e8'
+      throw new Error(`unexpected _perform: ${req.method}`)
+    })
+    const httpClient = makeMockHttpClient()
+
+    await expect(
+      sweepRecoveredMonadStampPayment({
+        payment,
+        destinationAddress: `0x${'66'.repeat(20)}`,
+        provider,
+        httpClient,
+        dustThresholdWei: 1_000n,
+      }),
+    ).resolves.toEqual({
+      swept: false,
+      reason: 'below-dust-threshold',
+      balanceWei: 1_000n,
+      dustThresholdWei: 1_000n,
+    })
+    expect(httpClient.submitRawTransaction).not.toHaveBeenCalled()
+  })
+})
+
 describe('protobuf encode/decode round trip', () => {
   it('round-trips MonadStampedMessage through encode -> decode', () => {
     const message: MonadStampedMessageProto = {
-      rawBurnTx: new Uint8Array([1, 2, 3, 4]),
+      stampPayments: [{ childIndex: 0, rawTx: new Uint8Array([1, 2, 3, 4]) }],
       encryptedPayload: new TextEncoder().encode('super secret'),
       payloadHash: new Uint8Array(32).fill(0x42),
     }
@@ -173,14 +286,12 @@ describe('protobuf encode/decode round trip', () => {
 
   it('round-trips a StoredMonadMessage, including the nested MonadStampedMessage', () => {
     const message: MonadStampedMessageProto = {
-      rawBurnTx: new Uint8Array([9, 9, 9]),
+      stampPayments: [{ childIndex: 0, rawTx: new Uint8Array([9, 9, 9]) }],
       encryptedPayload: new Uint8Array([7, 7]),
       payloadHash: new Uint8Array(32).fill(0x11),
     }
     const decoded = decodeStoredMonadMessage(storedMessageBytes(message))
     expect(decoded.message).toEqual(message)
-    expect(decoded.senderAddress).toEqual(getBytes('0x' + '11'.repeat(20)))
-    expect(decoded.txHash).toEqual(getBytes('0x' + '22'.repeat(32)))
     expect(decoded.timestamp).toBe(1_700_000_000_000)
     // Ticket #39: network_tag (field 5) round-trips through the real generated bindings.
     expect(decoded.networkTag).toEqual(new TextEncoder().encode('MONT'))
@@ -199,7 +310,14 @@ describe('MonadStampClient.submitStampedMessage', () => {
   })
 
   it('PUTs the assembled MonadStampedMessage and releases the lease as confirmed on 2xx', async () => {
-    const { client, pool } = makeClient()
+    const sweepToChange = jest.fn().mockResolvedValue({
+      swept: false,
+      reason: 'below-dust-threshold',
+      balanceWei: 1n,
+      dustThresholdWei: 2n,
+    })
+    const changePool = { sweepToChange } as unknown as MonadChangePool
+    const { client, pool } = makeClient({ changePool })
     const encryptedPayload = new TextEncoder().encode('hi')
     const expectedCommitment = computeMonadStampCommitment(encryptedPayload)
 
@@ -211,11 +329,13 @@ describe('MonadStampClient.submitStampedMessage', () => {
       )
       expect(sentMessage.encryptedPayload).toEqual(encryptedPayload)
       expect(sentMessage.payloadHash).toEqual(expectedCommitment)
-      // The raw burn tx must be a validly-decodable, real signed transaction whose calldata carries
+      // The raw payment must be a validly-decodable, real signed transaction whose calldata carries
       // the same commitment.
-      const parsed = Transaction.from(hexOf(sentMessage.rawBurnTx))
-      expect(getBytes(parsed.data).slice(5)).toEqual(expectedCommitment)
-      expect(parsed.to?.toLowerCase()).toBe(RECIPIENT_ADDRESS.toLowerCase())
+      expect(sentMessage.stampPayments).toHaveLength(1)
+      const parsed = Transaction.from(hexOf(sentMessage.stampPayments[0].rawTx))
+      expect(getBytes(parsed.data).slice(5)).toEqual(
+        computeMonadStampPaymentCommitment(expectedCommitment, 0),
+      )
       expect(parsed.value).toBe(10_000n)
 
       return {
@@ -229,16 +349,37 @@ describe('MonadStampClient.submitStampedMessage', () => {
 
     const result = await client.submitStampedMessage({
       encryptedPayload,
-      destinationAddress: RECIPIENT_ADDRESS,
+      recipientPublicKey: RECIPIENT_PUBLIC_KEY,
       stampValueWei: 10_000n,
       overrides: FEE_OVERRIDES,
+      abandonPoll: { maxAttempts: 1, intervalMs: 0 },
     })
 
     expect(result.payloadHashHex).toBe(hexNoPrefix(expectedCommitment))
     expect(result.stored.message?.payloadHash).toEqual(expectedCommitment)
     // Ticket #34: a confirmed release retires the account as 'spent' -- permanently excluded from
     // future selection, never back to 'available' for reuse.
-    expect(pool.getRecord(result.leaseIndex)?.status).toBe('spent')
+    expect(pool.getRecord(result.leaseIndices[0])?.status).toBe('spent')
+    expect(sweepToChange).toHaveBeenCalledTimes(1)
+    expect(result.changeSweeps).toEqual([
+      {
+        swept: false,
+        reason: 'below-dust-threshold',
+        balanceWei: 1n,
+        dustThresholdWei: 2n,
+      },
+    ])
+
+    const recovered = recoverMonadStampPayments({
+      message: result.stored.message as MonadStampedMessageProto,
+      recipientPrivateKey: getBytes(`0x${'44'.repeat(32)}`),
+    })
+    expect(recovered).toHaveLength(1)
+    expect(recovered[0].txHash).toBe(result.txHashes[0])
+    expect(recovered[0].valueWei).toBe(10_000n)
+    expect(
+      computeAddress(new SigningKey(recovered[0].privateKey).publicKey),
+    ).toBe(recovered[0].address)
   })
 
   it('retires the sub-account and throws MonadStampRejectedError on an HTTP error response', async () => {
@@ -254,7 +395,7 @@ describe('MonadStampClient.submitStampedMessage', () => {
     await expect(
       client.submitStampedMessage({
         encryptedPayload: new TextEncoder().encode('rejected'),
-        destinationAddress: BURN_ADDRESS,
+        recipientPublicKey: RECIPIENT_PUBLIC_KEY,
         stampValueWei: 10_000n,
         overrides: FEE_OVERRIDES,
       }),
@@ -263,6 +404,50 @@ describe('MonadStampClient.submitStampedMessage', () => {
     // Every sub-account in the pool must now be 'retired' (only one was leased; find it).
     const retired = pool.records().filter(r => r.status === 'retired')
     expect(retired).toHaveLength(1)
+  })
+
+  it('greedily constructs a canonical, domain-separated multi-payment set', async () => {
+    const pool = makePool(3)
+    const provider = makeCapacityProvider([4_500n, 2_000n, 3_500n])
+    const { client } = makeClient({ pool, provider })
+    const encryptedPayload = new TextEncoder().encode('segmented payment')
+    let sentMessage: MonadStampedMessageProto | undefined
+
+    mockedAxios.mockImplementationOnce(async config => {
+      sentMessage = decodeMonadStampedMessage(
+        new Uint8Array(config.data as Buffer),
+      )
+      return {
+        data: storedMessageBytes(sentMessage),
+        status: 200,
+        statusText: 'OK',
+        headers: {},
+        config,
+      }
+    })
+
+    const result = await client.submitStampedMessage({
+      encryptedPayload,
+      recipientPublicKey: RECIPIENT_PUBLIC_KEY,
+      stampValueWei: 10_000n,
+      overrides: FEE_OVERRIDES,
+      abandonPoll: { maxAttempts: 1, intervalMs: 0 },
+    })
+
+    expect(sentMessage).toBeDefined()
+    const payments = (sentMessage as MonadStampedMessageProto).stampPayments
+    expect(payments.map(payment => payment.childIndex)).toEqual([0, 1, 2])
+    const transactions = payments.map(payment =>
+      Transaction.from(hexOf(payment.rawTx)),
+    )
+    expect(transactions.map(tx => tx.value)).toEqual([4_500n, 3_500n, 2_000n])
+    expect(new Set(transactions.map(tx => tx.from)).size).toBe(3)
+    expect(new Set(transactions.map(tx => tx.to)).size).toBe(3)
+    expect(new Set(transactions.map(tx => tx.data)).size).toBe(3)
+    expect(result.txHashes).toHaveLength(3)
+    expect(
+      pool.records().filter(record => record.status === 'spent'),
+    ).toHaveLength(3)
   })
 
   it('falls back to polling GET and confirms when a network failure is followed by a found message', async () => {
@@ -283,7 +468,7 @@ describe('MonadStampClient.submitStampedMessage', () => {
       // GET /message/monad/:payload_hash
       getCalls++
       const sentMessage: MonadStampedMessageProto = {
-        rawBurnTx: new Uint8Array([1]),
+        stampPayments: [{ childIndex: 0, rawTx: new Uint8Array([1]) }],
         encryptedPayload,
         payloadHash: computeMonadStampCommitment(encryptedPayload),
       }
@@ -298,7 +483,7 @@ describe('MonadStampClient.submitStampedMessage', () => {
 
     const result = await client.submitStampedMessage({
       encryptedPayload,
-      destinationAddress: BURN_ADDRESS,
+      recipientPublicKey: RECIPIENT_PUBLIC_KEY,
       stampValueWei: 10_000n,
       overrides: FEE_OVERRIDES,
       abandonPoll: {
@@ -312,7 +497,7 @@ describe('MonadStampClient.submitStampedMessage', () => {
     expect(getCalls).toBe(1)
     expect(result.stored.message?.encryptedPayload).toEqual(encryptedPayload)
     // Ticket #34: same as above -- confirmed means 'spent', never 'available' again.
-    expect(pool.getRecord(result.leaseIndex)?.status).toBe('spent')
+    expect(pool.getRecord(result.leaseIndices[0])?.status).toBe('spent')
   })
 
   it('retires as stuck and throws MonadStampAbandonedError when the fallback poll never finds it', async () => {
@@ -328,7 +513,7 @@ describe('MonadStampClient.submitStampedMessage', () => {
     await expect(
       client.submitStampedMessage({
         encryptedPayload: new TextEncoder().encode('lost forever'),
-        destinationAddress: BURN_ADDRESS,
+        recipientPublicKey: RECIPIENT_PUBLIC_KEY,
         stampValueWei: 10_000n,
         overrides: FEE_OVERRIDES,
         abandonPoll: {

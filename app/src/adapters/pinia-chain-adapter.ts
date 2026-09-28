@@ -20,8 +20,8 @@
  * (`@frank/cashweb/types/user-interface.ts`), a Lotus-shaped type (`copartyPubKey: PublicKey` from
  * `bitcore-lib-xpi`, `outpoints: Utxo[]`). `toReceivedMessageWrapper` below adapts one into the
  * other:
- * - `outpoints: []` / `burnValueWei: record.burnValueWei` -- see `stores/chats.ts`'s header for the
- *   #42 decision to add `burnValueWei` additively rather than replace `outpoints`.
+ * - `outpoints: []` / `stampValueWei: record.stampValueWei` -- see `stores/chats.ts`'s header for the
+ *   #42 decision to add `stampValueWei` additively rather than replace `outpoints`.
  * - `copartyPubKey` needs an actual `PublicKey` (not optional on `ReceivedMessageWrapper`), only
  *   used by `receiveMessages` as a placeholder for `contacts.addLoadingContact` when the sender
  *   isn't already a known contact -- `contacts.refresh` (rewritten by this ticket) immediately
@@ -58,7 +58,7 @@ export async function toReceivedMessageWrapper(
 
   const copartyAddress = activeChain.formatAddress(record.senderAddress)
   const destinationAddress = activeChain.formatAddress(record.recipientAddress)
-  const stampValue = Number(record.burnValueWei)
+  const stampValue = Number(record.stampValueWei)
 
   return {
     outbound: false,
@@ -74,7 +74,7 @@ export async function toReceivedMessageWrapper(
       serverTime: record.receivedTime,
       receivedTime: record.receivedTime,
       outpoints: [],
-      burnValueWei: record.burnValueWei,
+      stampValueWei: record.stampValueWei,
       senderAddress: copartyAddress,
       destinationAddress,
     },

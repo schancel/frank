@@ -32,41 +32,44 @@ export type ChatMessage = {
   outpoints: Utxo[]
   /** See this file's header decision note: additive Monad-side value field, alongside
    * `outpoints` rather than replacing it (ticket #42). */
-  burnValueWei?: bigint
+  stampValueWei?: bigint
   senderAddress: string
   payloadDigest: string
 }
 
 /**
- * ## Decision (#42): `burnValueWei` added alongside `outpoints`, not in place of it
+ * ## Decision (#42): `stampValueWei` added alongside `outpoints`, not in place of it
  *
  * `ChatMessage`/`Message`/`ReceivedMessage`'s `outpoints: Utxo[]` (used by `stampPrice` below, for
- * unread-badge sort value) has no Monad equivalent -- Monad's stamp burns are a single scalar
- * (`DirectMessageSendResult.burnValueWei`/`DirectMessageReceived.burnValueWei`,
- * `@frank/wallet/chain/active-chain.ts`), never UTXOs. Chosen: add `burnValueWei?: bigint` as a new,
+ * unread-badge sort value) has no Monad equivalent -- Monad's stamp payment is represented as an aggregate scalar
+ * (`DirectMessageSendResult.stampValueWei`/`DirectMessageReceived.stampValueWei`,
+ * `@frank/wallet/chain/active-chain.ts`), never UTXOs. Chosen: add `stampValueWei?: bigint` as a new,
  * optional field alongside `outpoints` (which stays required, defaulted to `[]` for Monad-sourced
  * messages) rather than replacing `outpoints` outright. Why: `outpoints` is still read outside this
  * file's scope (`components/chat/messages/ChatMessage.vue`'s own `stampPrice(this.message.outpoints)`
  * call, for its stamp-price display) -- replacing the field would force touching that component
  * (and the Lotus-still-wired `pinia-relay-adapter.ts`/leveldb `MessageWrapper` persistence path)
  * as part of this ticket, well outside its stated file scope (`stores/chats.ts`/`contacts.ts`).
- * Leaving `outpoints` alone and adding `burnValueWei` additively is strictly less invasive and
+ * Leaving `outpoints` alone and adding `stampValueWei` additively is strictly less invasive and
  * keeps both chains' messages structurally valid at every existing call site; `ChatMessage.vue`'s
  * stamp-price display simply continues to show 0 for Monad-received messages until ticket #44
  * (PLAN.md's own scope for "remaining hardcoded XPI/Lotus-address UI spots") updates it.
  *
- * `burnPrice` below is the one narrow addition needed on this file's own two `stampPrice(...)`
- * call sites so Monad messages sort/badge correctly using their real burn value instead of always
+ * `messageStampPrice` below is the narrow adapter needed on this file's own two `stampPrice(...)`
+ * call sites so Monad messages sort/badge correctly using their real payment value instead of always
  * reading as 0 (`stampPrice([])` for a message with no `outpoints`).
  */
-function burnPrice(message: { outpoints: Utxo[]; burnValueWei?: bigint }) {
-  if (message.burnValueWei !== undefined) {
+function messageStampPrice(message: {
+  outpoints: Utxo[]
+  stampValueWei?: bigint
+}) {
+  if (message.stampValueWei !== undefined) {
     // Wei -> plain number for sort/badge purposes only, matching Lotus's own pre-existing
-    // sort-value use of `stampPrice` (satoshis as a plain number). Default burn values
+    // sort-value use of `stampPrice` (satoshis as a plain number). Default stamp values
     // (CASHWEB_STAMP_MIN_BURN_VALUE_WEI, e.g. 1e12) are far below Number.MAX_SAFE_INTEGER
-    // (~9e15), so this is lossless in practice; a pathologically large burn would only ever
+    // (~9e15), so this is lossless in practice; a pathologically large payment would only ever
     // affect display sort order, never a financial computation.
-    return Number(message.burnValueWei)
+    return Number(message.stampValueWei)
   }
   return stampPrice(message.outpoints)
 }
@@ -185,7 +188,7 @@ export async function rehydateChat(chatState: RestorableState): Promise<State> {
     chat.messages.push(message)
     chat.lastReceived = message.serverTime
     const messageValue =
-      burnPrice(message) +
+      messageStampPrice(message) +
       message.items.reduce((totalValue, entry) => {
         switch (entry.type) {
           case 'stealth':
@@ -399,7 +402,7 @@ export const useChatStore = defineStore('chats', {
       index: payloadDigest,
       items,
       outpoints = [],
-      burnValueWei,
+      stampValueWei,
       status = 'pending',
       previousHash = null,
     }: {
@@ -410,7 +413,7 @@ export const useChatStore = defineStore('chats', {
       outpoints: Utxo[]
       /** See this file's header decision note (ticket #42) -- additive Monad-side value,
        * alongside `outpoints`. `undefined` for Lotus-origin sends. */
-      burnValueWei?: bigint
+      stampValueWei?: bigint
       status: string
       previousHash: string | null
     }) {
@@ -423,7 +426,7 @@ export const useChatStore = defineStore('chats', {
         serverTime: timestamp,
         receivedTime: timestamp,
         outpoints,
-        burnValueWei,
+        stampValueWei,
         senderAddress,
         messageHash: payloadDigest,
       }
@@ -482,7 +485,7 @@ export const useChatStore = defineStore('chats', {
      * precomputes a message's payload digest client-side *before* submitting it, so the same
      * `index` is reused across its `messageSending` -> `messageSent`/`messageSendError` events,
      * letting `sendMessageLocal` update one message's `status` in place. `MonadStampClient` (#41)
-     * only returns a real `payloadDigest` *after* the burn tx is built and submitted -- there's no
+     * only returns a real `payloadDigest` *after* the stamp payments are built and submitted -- there's no
      * equivalent client-side pre-image to optimistically key an in-flight message by. Reusing
      * `sendMessageLocal`'s `previousHash` reconciliation path with a synthetic temp id was
      * considered and rejected: that branch (see `sendMessageLocal` above) only ever deletes the
@@ -527,7 +530,7 @@ export const useChatStore = defineStore('chats', {
         index: result.payloadDigest,
         items,
         outpoints: [],
-        burnValueWei: result.burnValueWei,
+        stampValueWei: result.stampValueWei,
         status: 'confirmed',
         previousHash: null,
       })
@@ -711,7 +714,7 @@ export const useChatStore = defineStore('chats', {
         chat.messages.push(message)
         chat.lastReceived = message.serverTime
         const messageValue =
-          burnPrice(message) +
+          messageStampPrice(message) +
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           message.items.reduce((totalValue: number, entry: any) => {
             switch (entry.type) {

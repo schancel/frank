@@ -1,4 +1,4 @@
-//! Contains `DbMonadMessages`, allowing storage of Monad-stamped broadcast messages
+//! Contains `DbMonadMessages`, allowing storage of Monad-stamped direct messages
 //! ([`proto::StoredMonadMessage`], ticket #27).
 //!
 //! ## Why this is a separate store from `DbTopics`
@@ -10,7 +10,7 @@
 //! `Tx` shape. That storage path is therefore **not** chain-agnostic despite appearances -- it was
 //! checked (not assumed) while implementing this ticket, per the ticket's own instruction to find
 //! out whether the existing storage path could be reused. A [`proto::MonadStampedMessage`] has no
-//! Lotus `Tx` to hand it (its `raw_burn_tx` is an RLP-encoded EVM transaction), so it can't be
+//! Lotus `Tx` to hand it (its `stamp_payments` are RLP-encoded EVM transactions), so it can't be
 //! wrapped into a `SignedPayload<proto::BroadcastMessage>` without either faking a `BurnTx` (which
 //! would corrupt `DbTopics`'s indexing invariants) or forking `SignedPayload` itself (out of scope
 //! -- `cashweb-payload` is explicitly off limits for this ticket). Hence: a separate, much simpler
@@ -185,12 +185,13 @@ mod tests {
 
         let stored = proto::StoredMonadMessage {
             message: Some(proto::MonadStampedMessage {
-                raw_burn_tx: vec![1, 2, 3],
                 encrypted_payload: vec![4, 5, 6],
                 payload_hash: payload_hash.clone(),
+                stamp_payments: vec![proto::MonadStampPayment {
+                    child_index: 0,
+                    raw_tx: vec![1, 2, 3],
+                }],
             }),
-            sender_address: vec![9u8; 20],
-            tx_hash: vec![8u8; 32],
             timestamp: 1234,
             network_tag: Vec::new(),
         };
@@ -219,12 +220,13 @@ mod tests {
     fn make_stored(payload_hash: Vec<u8>, timestamp: i64) -> proto::StoredMonadMessage {
         proto::StoredMonadMessage {
             message: Some(proto::MonadStampedMessage {
-                raw_burn_tx: vec![1, 2, 3],
                 encrypted_payload: vec![4, 5, 6],
                 payload_hash: payload_hash.clone(),
+                stamp_payments: vec![proto::MonadStampPayment {
+                    child_index: 0,
+                    raw_tx: vec![1, 2, 3],
+                }],
             }),
-            sender_address: vec![9u8; 20],
-            tx_hash: vec![8u8; 32],
             timestamp,
             network_tag: Vec::new(),
         }

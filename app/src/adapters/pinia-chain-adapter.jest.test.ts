@@ -49,7 +49,7 @@ function makeRecord(
     recipientAddress: { raw: RECIPIENT_ADDRESS },
     items: [{ type: 'text', text: 'hi' }],
     payloadDigest: 'digest-1',
-    burnValueWei: 1_000_000_000_000n,
+    stampValueWei: 1_000_000_000_000n,
     receivedTime: 1_700_000_000_000,
     ...overrides,
   }
@@ -76,7 +76,7 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
       expect(wrapper?.index).toBe('digest-1')
       expect(wrapper?.stampValue).toBe(1_000_000_000_000)
       expect(wrapper?.message.outpoints).toEqual([])
-      expect(wrapper?.message.burnValueWei).toBe(1_000_000_000_000n)
+      expect(wrapper?.message.stampValueWei).toBe(1_000_000_000_000n)
       expect(wrapper?.message.destinationAddress).toBe(RECIPIENT_ADDRESS)
     })
 

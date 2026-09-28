@@ -12,8 +12,9 @@
  *
  * `MonadStampedMessage.encrypted_payload` is opaque bytes to the relay (its own doc comment says
  * so) -- so this module puts a small plaintext JSON *envelope* there instead of a bare ciphertext
- * blob: `{ v: 1, from: <sender's Frank identity address>, to: <recipient's Frank identity
- * address>, salt: <hex>, ciphertext: <hex> }`. A poller (`qwen-bot.livecheck.ts`) fetches the
+ * blob: `{ v: 1, networkTag, from, to, salt, ciphertext }`. Including the Frank network tag in
+ * the hashed envelope domain-separates payload/stamp derivation across chains. A poller
+ * (`qwen-bot.livecheck.ts`) fetches the
  * `since` page, JSON-parses each message's `encrypted_payload`, and keeps only the ones whose `to`
  * matches its own Frank identity address -- an exact-match filter, not "attempt decryption and see
  * if it parses" (this ticket's other suggested option), because that heuristic is genuinely
@@ -54,6 +55,7 @@ const payloadConstructor = new PayloadConstructor({
 
 export interface MonadMessageEnvelope {
   v: 1
+  networkTag: string
   from: string
   to: string
   /** Hex-encoded, 16 random bytes -- the ECDH salt for this message only (see this file's
@@ -68,6 +70,7 @@ function isMonadMessageEnvelope(value: unknown): value is MonadMessageEnvelope {
   const candidate = value as Record<string, unknown>
   return (
     candidate.v === 1 &&
+    typeof candidate.networkTag === 'string' &&
     typeof candidate.from === 'string' &&
     typeof candidate.to === 'string' &&
     typeof candidate.salt === 'string' &&
@@ -84,6 +87,8 @@ export function buildEnvelope(params: {
   toAddress: string
   toPubKey: Buffer
   plaintext: string
+  /** Frank network tag (for example `MONT`), not an EVM chain ID. */
+  networkTag: string
 }): Uint8Array {
   const salt = randomBytes(16)
   const sharedKey = payloadConstructor.constructSharedKey(
@@ -97,6 +102,7 @@ export function buildEnvelope(params: {
   )
   const envelope: MonadMessageEnvelope = {
     v: 1,
+    networkTag: params.networkTag,
     from: params.fromAddress,
     to: params.toAddress,
     salt: salt.toString('hex'),

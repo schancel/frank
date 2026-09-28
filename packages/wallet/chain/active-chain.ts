@@ -22,7 +22,7 @@
  *
  * 1. **`WalletHandle` needed to grow past `{ identity }`.** `directMessages.send`/`topics.post`/
  *    `.vote` all need a *sender-specific* signing/leasing/HTTP bundle to actually build and submit
- *    a burn transaction (`MonadStampClient`/`MonadTopicPostClient`/`MonadTopicVoteClient` all take
+ *    a stamp transaction (`MonadStampClient`/`MonadTopicPostClient`/`MonadTopicVoteClient` all take
  *    the same `{ pool, leaseManager, provider, httpClient, relayBaseUrl }` shape, formalized as
  *    `MonadWalletHandle` in `../wallet/monad-wallet-handle.ts`). The generic `WalletHandle` below
  *    still only *promises* `identity` -- it's `MonadChain`'s own concrete `MonadChainWalletHandle`
@@ -36,7 +36,7 @@
  *    from `bitcore-lib-xpi`, `stampValue: number`) -- and `PLAN.md`'s own M9 notes explicitly flag
  *    this exact situation: "`ChatMessage.outpoints: Utxo[]`/`ForumMessage.satoshis` are UTXO-shaped
  *    fields baked into stored message types -- #42/#43 need an explicit decision on the Monad-side
- *    replacement ..., not a silent type change." Forcing Monad's real fields (`burnValueWei:
+ *    replacement ..., not a silent type change." Forcing Monad's real fields (`stampValueWei:
  *    bigint`, no UTXOs, no bitcore pubkey) into `ReceivedMessageWrapper` here would be exactly the
  *    silent type change PLAN.md warns against, so this ticket introduces its own minimal, honestly
  *    Monad-shaped type instead and leaves folding it into (or replacing) `ReceivedMessageWrapper`
@@ -99,7 +99,7 @@ export interface ProfileInfo {
 
 export interface DirectMessageSendResult {
   payloadDigest: string
-  burnValueWei: bigint
+  stampValueWei: bigint
 }
 
 /** A single decrypted, received direct message. See this file's header, deviation 2, for why this
@@ -110,9 +110,9 @@ export interface DirectMessageReceived {
   items: MessageItem[]
   /** Bare (no `0x`) hex `payload_hash` of the stamped message this was decoded from. */
   payloadDigest: string
-  /** Wei actually burned in the message's stamp transaction (read back from the signed burn tx
-   * itself, not merely echoing a configured constant -- see `./monad-chain.ts`). */
-  burnValueWei: bigint
+  /** Wei actually paid across the message's stamp transactions (read back from the signed raw
+   * transactions, not merely echoing a configured constant -- see `./monad-chain.ts`). */
+  stampValueWei: bigint
   /** Milliseconds since the Unix epoch, as recorded by the relay. */
   receivedTime: number
 }

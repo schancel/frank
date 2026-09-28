@@ -32,6 +32,7 @@
  */
 import { readFileSync } from 'fs'
 import { resolve } from 'path'
+import { Transaction, hexlify } from 'ethers'
 
 import { fetchMonadIdentityPubKey } from '@frank/wallet/monad-identity'
 import {
@@ -75,9 +76,10 @@ function extractText(plaintext: string): string {
 async function main() {
   const relayBaseUrl = process.env.E2E_DEMO_RELAY_URL ?? 'http://127.0.0.1:8098'
   const rpcUrl = requiredEnv('MONAD_TESTNET_HTTP_RPC_URL')
+  const networkTag = requiredEnv('FRANK_NETWORK_TAG')
   // Ticket #57: no MONAD_STAMP_BURN_ADDRESS here -- this message's stamp pays its real
   // recipient (botAddress, below), not a fixed address.
-  const burnValueWei = BigInt(requiredEnv('CASHWEB_STAMP_MIN_BURN_VALUE_WEI'))
+  const stampValueWei = BigInt(requiredEnv('CASHWEB_STAMP_MIN_BURN_VALUE_WEI'))
 
   const identityJsonPath = resolve(
     process.cwd(),
@@ -134,7 +136,7 @@ async function main() {
     relayBaseUrl,
     mainWalletJsonPath,
     poolSize: messages.length,
-    burnValueWei,
+    stampValueWei,
     label: 'sender',
   })
 
@@ -146,23 +148,25 @@ async function main() {
       `\n== Turn ${turnIndex + 1}/${messages.length}: "${message}" ==`,
     )
     const sendTimestamp = Date.now()
-
     console.log('Stamping + sending the message over Monad testnet ...')
     // Ticket #77: goes through the shared `sendDirectMessageText` helper (`qwen-bot-common.ts`),
     // extracted from this exact build-envelope-then-submit sequence (previously duplicated between
     // this file and `qwen-bot.livecheck.ts`'s reply logic) -- a DM's stamp pays its recipient (the
-    // bot), not a fixed burn address (ticket #57), which the helper's `destinationAddress` always
-    // does.
+    // bot), not a fixed burn address (ticket #57); the helper derives its one-time stealth
+    // destinations from the bot's registered public key.
     const sent = await sendDirectMessageText({
       stampClient,
       fromIdentity: identity,
       toAddress: botAddress,
       toPubKey: botPubKey,
       text: message,
-      stampValueWei: burnValueWei,
+      stampValueWei,
+      networkTag,
     })
     console.log(
-      `Sent -- payload_hash=${sent.payloadHashHex} burn tx=${sent.txHash}`,
+      `Sent -- payload_hash=${
+        sent.payloadHashHex
+      } stamp txs=${sent.txHashes.join(',')}`,
     )
 
     console.log(
@@ -192,11 +196,13 @@ async function main() {
             senderPubKey: botPubKey,
           }),
         )
-        const replyTxHash = `0x${Buffer.from(stored_.txHash).toString('hex')}`
+        const replyTxHash = stored_.message.stampPayments
+          .map(payment => Transaction.from(hexlify(payment.rawTx)).hash)
+          .join(',')
         console.log(`Reply text: "${plaintext}"`)
-        console.log(`Reply burn tx: ${replyTxHash}`)
+        console.log(`Reply stamp txs: ${replyTxHash}`)
         transcript.push({
-          sentTx: sent.txHash,
+          sentTx: sent.txHashes.join(','),
           replyTx: replyTxHash,
           reply: plaintext,
         })

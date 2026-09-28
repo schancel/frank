@@ -1,8 +1,8 @@
 //! Server-side verification of a Monad topic burn-weighted vote (ticket #30).
 //!
 //! This is the direction-aware, exact-value counterpart of
-//! [`crate::monad_stamp_verify::verify_stamp_burn`]. That module's [`crate::monad_stamp_verify::
-//! ExpectedBurn`]/[`crate::monad_stamp_verify::StampBurnVerification`] implement a
+//! [`crate::monad_stamp_verify::verify_stamp_transaction`]. That module's [`crate::monad_stamp_verify::
+//! ExpectedStampTransaction`]/[`crate::monad_stamp_verify::StampTransactionVerification`] implement a
 //! *minimum-threshold* pass/fail check (Stamp only cares that *enough* was burned; the exact
 //! amount is discarded) over a `<lokad_id: 4><version: 1><commitment: 32>` calldata layout with no
 //! room for a vote direction. A burn-weighted vote needs both of those things instead: the *exact*
@@ -39,14 +39,10 @@
 //!   convention numerically (1 = up, 0 = down) even though EVM calldata has no opcode concept to
 //!   literally reuse (same reasoning [`crate::monad_stamp_verify::COMMITMENT_VERSION_TAG`]'s docs
 //!   give for using a plain byte instead of a Script opcode).
-//! - `commitment` is `SHA256(target payload_hash)`'s... no -- see below: unlike Stamp's
-//!   commitment (which hashes `SHA256(pubkey) || payload_hash)` because it needs to bind a
-//!   specific pubkey), a topic vote has no separate pubkey to bind at all (identity is
-//!   `ecrecover`-only, same as [`crate::monad_message`](crate::http::monad_message)'s scheme), so
-//!   `commitment` is simply the *target* `payload_hash` itself (32 bytes, unhashed further) --
+//! - `commitment` is simply the *target* `payload_hash` itself (32 bytes, unhashed further) --
 //!   the `payload_hash` of the post being voted on (for a [`crate::proto::MonadTopicVote`]) or of
 //!   the post being created (for a [`crate::proto::MonadTopicPost`]'s own initial vote). This
-//!   mirrors [`crate::http::monad_message::process_monad_message`]'s binding (`raw_burn_tx`'s
+//!   mirrors [`crate::http::monad_message::process_monad_message`]'s binding (each stamp payment's
 //!   calldata commits to `payload_hash` directly, not to a further hash of it) rather than
 //!   [`crate::monad_stamp_verify::calc_expected_commitment`]'s pubkey-binding preimage, since
 //!   there's no pubkey field anywhere in this ticket's proto messages to bind against (see
@@ -67,8 +63,8 @@
 //! ## Why this can't just call [`crate::monad_stamp_relay::broadcast_and_verify_stamp`]
 //!
 //! `broadcast_and_verify_stamp` is hardcoded, by its own signature, to
-//! [`crate::monad_stamp_verify::ExpectedBurn`] in and
-//! [`crate::monad_stamp_verify::StampBurnVerification`] out -- it calls `verify_stamp_burn`
+//! [`crate::monad_stamp_verify::ExpectedStampTransaction`] in and
+//! [`crate::monad_stamp_verify::StampTransactionVerification`] out -- it calls `verify_stamp_transaction`
 //! directly, with no seam to substitute a different verification function or a differently-shaped
 //! calldata/outcome type. Its outcome type also has nowhere to carry the exact burned value or
 //! direction this ticket needs as the vote's weight, even where its checks otherwise overlap
@@ -77,9 +73,9 @@
 //! forbid. [`crate::monad_topic_relay::broadcast_and_verify_topic_vote`] therefore mirrors its
 //! broadcast+poll *shape* byte-for-byte (down to reusing
 //! [`crate::monad_stamp_relay::PollConfig`] directly rather than redefining an equivalent type)
-//! but calls [`verify_topic_vote_burn`] instead of `verify_stamp_burn`. This is the same kind of
+//! but calls [`verify_topic_vote_burn`] instead of `verify_stamp_transaction`. This is the same kind of
 //! "found it's not actually reusable as-is, documented why, extended instead" situation this
-//! ticket's own body already calls out for `ExpectedBurn`/`StampBurnVerification` -- it turns out
+//! ticket's own body already calls out for `ExpectedStampTransaction`/`StampTransactionVerification` -- it turns out
 //! to also apply to the relay wrapper one level up, not just the verification primitive itself.
 
 use bitcoinsuite_core::Sha256;
@@ -245,7 +241,7 @@ pub fn parse_topic_vote_calldata(
 }
 
 /// What's required of a burn tx for it to count as a valid topic vote Unlike
-/// [`crate::monad_stamp_verify::ExpectedBurn`], there is deliberately no `min_value_wei` -- any
+/// [`crate::monad_stamp_verify::ExpectedStampTransaction`], there is deliberately no `min_value_wei` -- any
 /// nonnegative value burned to `burn_address` with the right recipient/commitment is accepted,
 /// and its exact value becomes the vote's weight (see module docs).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -258,7 +254,7 @@ pub struct ExpectedTopicBurn {
 }
 
 /// Outcome of verifying a Monad burn tx against an [`ExpectedTopicBurn`]. Structurally mirrors
-/// [`crate::monad_stamp_verify::StampBurnVerification`], minus
+/// [`crate::monad_stamp_verify::StampTransactionVerification`], minus
 /// `InsufficientValue`/`WrongCommitment`'s Stamp framing: verification here doesn't threshold the
 /// value at all, it returns it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -298,7 +294,7 @@ pub enum TopicVoteBurnVerification {
 /// Verify that `tx_hash` is a valid topic-vote burn against `expected`, returning its exact
 /// value + direction as the vote's weight rather than a pass/fail against a minimum.
 ///
-/// Mirrors [`crate::monad_stamp_verify::verify_stamp_burn`]'s flow (fetch receipt, check
+/// Mirrors [`crate::monad_stamp_verify::verify_stamp_transaction`]'s flow (fetch receipt, check
 /// status/recipient, fetch full tx, decode+check calldata) -- see this module's docs for why it
 /// can't call that function directly given the different calldata layout and richer outcome type.
 ///
@@ -341,7 +337,7 @@ where
         .wrap_err_with(|| format!("fetching Monad tx {tx_hash}"))?;
     let tx = match tx {
         Some(tx) => tx,
-        // Same node-inconsistency reasoning as `verify_stamp_burn`: a receipt with no matching
+        // Same node-inconsistency reasoning as `verify_stamp_transaction`: a receipt with no matching
         // transaction record is an infrastructure failure, not a normal verification outcome.
         None => bail!(
             "Monad tx {tx_hash} has a receipt but eth_getTransactionByHash returned nothing \
@@ -549,7 +545,7 @@ mod tests {
         Address::from_hex(&hex_addr(0x44)).unwrap()
     }
 
-    fn expected_burn(commitment: Sha256) -> ExpectedTopicBurn {
+    fn expected_stamp_transaction(commitment: Sha256) -> ExpectedTopicBurn {
         ExpectedTopicBurn {
             commitment,
             burn_address: burn_address(),
@@ -581,7 +577,7 @@ mod tests {
         let outcome = verify_topic_vote_burn(
             &transport,
             Hash32::from_hex(&hex_hash(0x11)).unwrap(),
-            &expected_burn(commitment),
+            &expected_stamp_transaction(commitment),
         )
         .await
         .unwrap();
@@ -617,7 +613,7 @@ mod tests {
         let outcome = verify_topic_vote_burn(
             &transport,
             Hash32::from_hex(&hex_hash(0x11)).unwrap(),
-            &expected_burn(commitment),
+            &expected_stamp_transaction(commitment),
         )
         .await
         .unwrap();
@@ -651,7 +647,7 @@ mod tests {
         let outcome = verify_topic_vote_burn(
             &transport,
             Hash32::from_hex(&hex_hash(0x11)).unwrap(),
-            &expected_burn(expected_commitment.clone()),
+            &expected_stamp_transaction(expected_commitment.clone()),
         )
         .await
         .unwrap();
@@ -675,7 +671,7 @@ mod tests {
         let outcome = verify_topic_vote_burn(
             &transport,
             Hash32::from_hex(&hex_hash(0x11)).unwrap(),
-            &expected_burn(commitment),
+            &expected_stamp_transaction(commitment),
         )
         .await
         .unwrap();
@@ -701,7 +697,7 @@ mod tests {
         let outcome = verify_topic_vote_burn(
             &transport,
             Hash32::from_hex(&hex_hash(0x11)).unwrap(),
-            &expected_burn(commitment),
+            &expected_stamp_transaction(commitment),
         )
         .await
         .unwrap();
@@ -718,7 +714,7 @@ mod tests {
         let outcome = verify_topic_vote_burn(
             &transport,
             Hash32::from_hex(&hex_hash(0x11)).unwrap(),
-            &expected_burn(commitment),
+            &expected_stamp_transaction(commitment),
         )
         .await
         .unwrap();
@@ -747,7 +743,7 @@ mod tests {
         let outcome = verify_topic_vote_burn(
             &transport,
             Hash32::from_hex(&hex_hash(0x11)).unwrap(),
-            &expected_burn(commitment),
+            &expected_stamp_transaction(commitment),
         )
         .await
         .unwrap();

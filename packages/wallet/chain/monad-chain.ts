@@ -107,7 +107,10 @@ import { MonadHttpClient } from '../monad-http'
 import { MonadAccountTxSigner } from '../monad-account-tx'
 import { MonadWalletHandle } from '../monad-wallet-handle'
 import { MonadIdentity, fetchMonadProfile } from '../monad-identity'
-import { MonadStampClient } from '../monad-stamp-client'
+import {
+  MonadStampClient,
+  recoverMonadStampPayments,
+} from '../monad-stamp-client'
 import { fetchMonadMessagesSince } from '@frank/cashweb/relay/monad-message-feed'
 import {
   buildEnvelope,
@@ -126,6 +129,10 @@ import {
 import { readViteEnv } from './vite-env'
 import { LevelSubAccountPoolStore } from '../storage/level-sub-account-pool-store'
 import { LevelChangePoolStore } from '../storage/level-change-pool-store'
+import {
+  InMemoryStampPaymentJournal,
+  LevelStampPaymentJournal,
+} from '../storage/stamp-payment-journal'
 
 export interface MonadChainConfig {
   /** Monad JSON-RPC HTTP endpoint, e.g. `MONAD_TESTNET_HTTP_RPC_URL`. */
@@ -360,6 +367,29 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
         if (envelope === undefined) continue
         if (envelope.to.toLowerCase() !== myAddress) continue
 
+        const payloadHashHex = bareHex(record.message.payloadHash)
+        if (wallet.stampPaymentJournal !== undefined) {
+          const recovered = recoverMonadStampPayments({
+            message: record.message,
+            recipientPrivateKey: getBytes(wallet.identity.toPrivateKeyHex()),
+          })
+          for (const payment of recovered) {
+            const existing = wallet.stampPaymentJournal.get(
+              payloadHashHex,
+              payment.childIndex,
+            )
+            if (existing?.status === 'swept') continue
+            wallet.stampPaymentJournal.put({
+              payloadHashHex,
+              childIndex: payment.childIndex,
+              txHash: payment.txHash,
+              address: payment.address,
+              valueWei: payment.valueWei.toString(),
+              status: 'discovered',
+            })
+          }
+        }
+
         const senderProfile = await fetchMonadProfile({
           relayBaseUrl: wallet.relayBaseUrl,
           address: toChainAddress(envelope.from),
@@ -389,7 +419,7 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
           senderAddress: toChainAddress(envelope.from),
           recipientAddress: toChainAddress(envelope.to),
           items: deserializeMessageItems(plaintext),
-          payloadDigest: bareHex(record.message.payloadHash),
+          payloadDigest: payloadHashHex,
           stampValueWei,
           receivedTime: record.timestamp,
         })
@@ -518,7 +548,17 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
           storageLocation === undefined
             ? undefined
             : new LevelChangePoolStore(storageLocation)
-        await Promise.all([subAccountStore?.Open(), changeStore?.Open()])
+        const stampPaymentJournal =
+          storageLocation === undefined
+            ? new InMemoryStampPaymentJournal()
+            : new LevelStampPaymentJournal(storageLocation)
+        await Promise.all([
+          subAccountStore?.Open(),
+          changeStore?.Open(),
+          stampPaymentJournal instanceof LevelStampPaymentJournal
+            ? stampPaymentJournal.Open()
+            : undefined,
+        ])
 
         const pool = new MonadSubAccountPool({
           keyring,
@@ -542,6 +582,7 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
           provider,
           httpClient,
           changePool,
+          stampPaymentJournal,
           relayBaseUrl: config.relayBaseUrl,
         }
       })()

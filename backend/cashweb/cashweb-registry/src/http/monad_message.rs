@@ -652,6 +652,18 @@ pub async fn process_monad_message<T: JsonRpcTransport + Clone>(
                     outcome,
                 ));
             }
+            outcome @ StampRelayOutcome::VerificationFailed { .. } => {
+                // The exact transaction has a confirmed receipt and permanently failed stamp
+                // verification. Replaying the same signed bytes cannot change that result, even
+                // if an earlier member of this set verified. Release the claim so the client can
+                // retire every sender account in the failed set and construct a replacement.
+                registry
+                    .delete_monad_message_attempt(declared_hash.as_slice())
+                    .map_err(ProcessMonadMessageError::Infrastructure)?;
+                return Err(ProcessMonadMessageError::RejectedWithoutRetainedSet(
+                    outcome,
+                ));
+            }
             other => return Err(ProcessMonadMessageError::Rejected(other)),
         }
     }
@@ -1561,6 +1573,61 @@ mod tests {
                 .unwrap(),
             MonadMessageAttemptClaim::Missing,
             "a free rejection must not leave a permanent exact-set claim"
+        );
+    }
+
+    #[tokio::test]
+    async fn confirmed_failed_payment_releases_unreplayable_exact_set_claim() {
+        let (_tempdir, registry) = test_registry();
+        let encrypted_payload = format!(
+            r#"{{"to":"{}","networkTag":"MONT"}}"#,
+            hex_addr(recipient_address())
+        )
+        .into_bytes();
+        let commitment = Sha256::digest(encrypted_payload.clone().into());
+        let destination = stamp_destination(&commitment);
+        let sender = EccSecp256k1::default()
+            .seckey_from_array([0x7b; 32])
+            .unwrap();
+        let (raw_tx, _) = signed_eip1559_tx(
+            &sender,
+            41454,
+            0,
+            destination,
+            10_000,
+            &commitment_calldata_bytes(&commitment, 0),
+        );
+        let message = make_message(raw_tx, encrypted_payload);
+        let to = hex_addr(destination);
+        let transport = MockTransport::default();
+        transport.set("eth_getTransactionReceipt", receipt_json(&to, "0x0"));
+
+        let err = process_monad_message(
+            &transport,
+            &registry,
+            10_000,
+            fast_poll(),
+            b"MONT",
+            message.clone(),
+        )
+        .await
+        .expect_err("a confirmed failed payment can never make this exact set valid");
+
+        assert!(matches!(
+            err,
+            ProcessMonadMessageError::RejectedWithoutRetainedSet(
+                StampRelayOutcome::VerificationFailed {
+                    outcome: crate::monad_stamp_verify::StampTransactionVerification::TxFailed,
+                    ..
+                }
+            )
+        ));
+        assert_eq!(
+            registry
+                .get_monad_message_attempt(&message.payload_hash, &message)
+                .unwrap(),
+            MonadMessageAttemptClaim::Missing,
+            "a permanently invalid exact set must not block replacement messages"
         );
     }
 

@@ -81,7 +81,7 @@ import {
   InMemoryChangePoolStore,
 } from './storage/change-pool-storage'
 
-export {
+export type {
   ChangeAccountRecord,
   ChangePoolStore,
 } from './storage/change-pool-storage'

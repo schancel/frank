@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import level, { LevelDB } from 'level'
+import level, { type LevelDB } from 'level'
 import { join } from 'path'
 
 export interface OutgoingStampAttempt {

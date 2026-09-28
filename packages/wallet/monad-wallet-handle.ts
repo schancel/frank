@@ -15,8 +15,8 @@ import { MonadSubAccountPool } from './monad-account-pool'
 import { SubAccountLeaseManager } from './monad-account-lease'
 import { MonadTxSubmitter } from './monad-account-tx'
 import { MonadChangePool } from './monad-change-pool'
-import { StampPaymentJournal } from './storage/stamp-payment-journal'
-import { StampAttemptJournal } from './storage/stamp-attempt-journal'
+import type { StampPaymentJournal } from './storage/stamp-payment-journal'
+import type { StampAttemptJournal } from './storage/stamp-attempt-journal'
 
 export interface MonadWalletHandle {
   pool: MonadSubAccountPool

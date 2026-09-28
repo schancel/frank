@@ -47,6 +47,13 @@
               v-else-if="item.type == 'text'"
               :text="item.text"
             />
+            <!-- Previously silently unrendered (no branch existed at all for this or any other
+            unhandled type) -- a real preview string instead, via the same registry `chats.ts` now
+            uses for the sidebar/notifications, so this can never silently go blank again as new
+            types get added. -->
+            <span v-else class="text-caption text-italic">
+              {{ getMessageItemPreview(item) }}
+            </span>
           </template>
         </div>
         <template #stamp>
@@ -84,9 +91,12 @@ import DeleteMessageDialog from '../../dialogs/DeleteMessageDialog.vue'
 import TransactionDialog from '../../dialogs/TransactionDialog.vue'
 import { stampPrice } from '@frank/cashweb/legacy-wallet/helpers'
 import { activeChain } from '@frank/wallet/chain'
-import { Message, MessageItem } from '@frank/cashweb/types/messages'
+import { getMessageItemPreview } from '@frank/wallet/message-item-plugins'
+import '@frank/wallet/message-item-plugins/built-in'
+import { Message } from '@frank/cashweb/types/messages'
 import { useMonadWallet } from '../../../utils/clients'
 import { errorNotify } from '../../../utils/notifications'
+import { getMessageItemRenderer } from '../../../utils/message-item-renderers'
 
 export default defineComponent({
   name: 'ChatMessage',
@@ -113,6 +123,7 @@ export default defineComponent({
       deleteMessage: chats.deleteMessage,
       getStampAmount: chats.getStampAmount,
       sendDirectMessage: chats.sendMessage,
+      getMessageItemPreview,
     }
   },
   props: {
@@ -187,17 +198,6 @@ export default defineComponent({
     },
   },
   computed: {
-    items() {
-      const sorted: {
-        text?: MessageItem
-        image?: MessageItem
-        reply?: MessageItem
-        stealth?: MessageItem
-        p2pkh?: MessageItem
-      } = {}
-      this.message.items.map(item => (sorted[item.type] = item))
-      return sorted
-    },
     bubbleSize() {
       // Default chatbubble size; assume small screen
       let base = 9
@@ -212,16 +212,19 @@ export default defineComponent({
         base = 3
         textLen = 70
       }
-      const text = this.items.text?.type === 'text' ? this.items.text?.text : ''
-      const image =
-        this.items.image?.type === 'image' ? this.items.image?.image : ''
-      const reply =
-        this.items.reply?.type === 'reply'
-          ? this.items.reply?.payloadDigest
-          : ''
-      if ((text && text.length >= textLen) || image) {
+      // Was two more hand-written per-type checks (text-length-or-image, else reply) before the
+      // renderer registry existed -- `some()` over every item preserves the exact original
+      // precedence (large always wins over small, never nets out to a no-op when a message somehow
+      // has both).
+      const wantsLarge = this.message.items.some(item =>
+        getMessageItemRenderer(item.type)?.wantsLargeBubble?.(item, { textLen }),
+      )
+      const wantsSmall = this.message.items.some(item =>
+        getMessageItemRenderer(item.type)?.wantsSmallBubble?.(item),
+      )
+      if (wantsLarge) {
         base += 1
-      } else if (reply) {
+      } else if (wantsSmall) {
         base -= 1
       }
       return String(base)

@@ -308,6 +308,52 @@ export async function fetchMonadProfilesSince(params: {
   }))
 }
 
+/** Server-side clamp on `searchMonadProfiles`'s `limit` -- mirrors
+ * `cashweb-registry`'s `store::monad_profiles::MAX_SEARCH_RESULTS` (ticket #48). Not enforced
+ * client-side (the relay clamps regardless of what's requested); kept here purely as a documented
+ * reference for callers deciding what to ask for. */
+export const MONAD_PROFILE_SEARCH_MAX_RESULTS = 100
+
+/** `GET /metadata/monad/search?prefix=<text>&limit=<n>` (ticket #48): prefix-search registered
+ * Monad profiles by their normalized (lowercased) `display_name`, matching case-insensitively.
+ * `limit` defaults to the relay's own default (currently 20) when omitted, and is clamped to
+ * `MONAD_PROFILE_SEARCH_MAX_RESULTS` server-side regardless of what's requested.
+ *
+ * Reuses `ListMonadProfilesResponse`/`MonadProfileListingEntry` -- the exact same wire shape
+ * `fetchMonadProfilesSince` already decodes -- since a search result is just a differently
+ * filtered list of the same `{address, signedPayload}` pairs; only the query differs, so this
+ * mirrors that function's decode step closely rather than inventing a new shape.
+ *
+ * Unlike `fetchCuratedDefaultContacts`, this does *not* fail soft: mirrors
+ * `fetchMonadProfilesSince`'s own convention of letting a network/decode error propagate to the
+ * caller, since (like that function) there's no natural "empty" fallback that wouldn't silently
+ * mask a broken relay from a caller that actually needs search results (e.g. a UI search box
+ * should be able to distinguish "no matches" from "the request failed"). */
+export async function searchMonadProfiles(params: {
+  relayBaseUrl: string
+  prefix: string
+  limit?: number
+}): Promise<MonadProfileListingEntry[]> {
+  const response = await axios({
+    method: 'get',
+    url: `${params.relayBaseUrl.replace(/\/+$/, '')}/metadata/monad/search`,
+    params: {
+      prefix: params.prefix,
+      ...(params.limit === undefined ? {} : { limit: params.limit }),
+    },
+    responseType: 'arraybuffer',
+  })
+  const decoded = ListMonadProfilesResponse.deserializeBinary(
+    new Uint8Array(response.data),
+  )
+  return decoded.getEntriesList().map(entry => ({
+    address: entry.getAddress(),
+    signedPayload: SignedPayload.deserializeBinary(
+      entry.getSignedPayload_asU8(),
+    ),
+  }))
+}
+
 /** One entry in the relay's operator-curated default-contacts list -- see
  * `fetchCuratedDefaultContacts`. Shape matches `stores/contacts.ts`'s `addDefaultContact` param
  * exactly (`{address, name}`), so callers can pass an entry straight through. */

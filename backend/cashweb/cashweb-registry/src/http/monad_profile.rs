@@ -35,6 +35,17 @@
 //! profiles without already knowing their addresses out of band. Same-path-different-method
 //! precedent as `/message/monad`'s own `PUT`/`GET(since=)` pair -- this route has no `:addr`
 //! segment, so it can't collide with `/metadata/monad/:addr` above.
+//!
+//! ## Name search (`GET /metadata/monad/search?prefix=<text>&limit=<n>`, ticket #48)
+//!
+//! Prefix-only (not fuzzy) search over registered profiles' `display_name` `AddressEntry`, per
+//! this ticket's own design-decision comment thread on GitHub issue #48. Reuses
+//! [`proto::ListMonadProfilesResponse`]/[`proto::ListMonadProfilesEntry`] -- the exact same shape
+//! ticket #75's `since`-listing route already defined -- since the entry shape (`address` +
+//! `signed_payload`) is identical here; only the query/filter differs, so no new proto message was
+//! needed. See `crate::store::monad_profiles`'s module docs for the `CF_MONAD_PROFILES_BY_NAME`
+//! index this reads, and `crate::http::server`'s module docs on `into_router()` for why this is a
+//! static path segment (so it can't collide with the dynamic `/metadata/monad/:addr` route).
 
 use std::str::FromStr;
 
@@ -166,4 +177,260 @@ pub async fn handle_list_monad_profiles(
         })
         .collect();
     Ok(Protobuf(proto::ListMonadProfilesResponse { entries }))
+}
+
+/// Default `limit` for [`handle_search_monad_profiles`] when the query param is omitted --
+/// distinct from (and smaller than) `crate::store::monad_profiles::MAX_SEARCH_RESULTS`, which is
+/// the hard clamp applied regardless of what a caller asks for.
+const DEFAULT_SEARCH_LIMIT: usize = 20;
+
+/// Query parameters for [`handle_search_monad_profiles`].
+#[derive(Debug, Deserialize)]
+pub struct SearchMonadProfilesQuery {
+    /// Name prefix to search for, matched case-insensitively against each profile's normalized
+    /// `display_name` entry. Defaults to `""` (matches every named profile) when omitted.
+    prefix: Option<String>,
+    /// Maximum number of results to return. Defaults to [`DEFAULT_SEARCH_LIMIT`] when omitted,
+    /// clamped to `crate::store::monad_profiles::MAX_SEARCH_RESULTS` regardless of what's
+    /// requested.
+    limit: Option<usize>,
+}
+
+/// `GET /metadata/monad/search?prefix=<text>&limit=<n>`: prefix-search registered Monad profiles
+/// by their normalized `display_name` (ticket #48). See this module's docs for the design this
+/// implements. Reuses [`ListMonadProfilesError`]/[`proto::ListMonadProfilesResponse`] --
+/// infrastructure failures here are the same shape as [`handle_list_monad_profiles`]'s.
+pub async fn handle_search_monad_profiles(
+    Query(params): Query<SearchMonadProfilesQuery>,
+    Extension(server): Extension<RegistryServer>,
+) -> std::result::Result<Protobuf<proto::ListMonadProfilesResponse>, ListMonadProfilesError> {
+    let prefix = params.prefix.unwrap_or_default();
+    let limit = params.limit.unwrap_or(DEFAULT_SEARCH_LIMIT);
+    let entries = server
+        .registry
+        .search_monad_profiles_by_name(&prefix, limit)
+        .map_err(ListMonadProfilesError::Infrastructure)?
+        .into_iter()
+        .map(|(address, signed_payload)| proto::ListMonadProfilesEntry {
+            address: address.to_hex(),
+            signed_payload: Some(signed_payload),
+        })
+        .collect();
+    Ok(Protobuf(proto::ListMonadProfilesResponse { entries }))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use bitcoinsuite_core::{ecc::Ecc, Hashed, Net, Sha256};
+    use bitcoinsuite_ecc_secp256k1::EccSecp256k1;
+    use cashweb_payload::payload::SignatureScheme;
+    use hyper::{Body, Request, StatusCode};
+    use prost::Message;
+    use tower::ServiceExt;
+
+    use super::*;
+    use crate::{
+        http::{pop_protection::PopGate, server::RegistryServer},
+        monad_evm_tx::address_from_uncompressed_pubkey,
+        p2p::peers::Peers,
+        store::db::Db,
+        test_instance::placeholder_pop_conf,
+    };
+
+    /// A [`cashweb_payload::chain_adapter::ChainAdapter`] never actually called -- Monad profile
+    /// registration never touches it (see `Registry::put_monad_profile`'s docs). Mirrors
+    /// `registry::tests::NeverCalledChainAdapter` exactly, duplicated here (rather than exported
+    /// from `registry`'s `#[cfg(test)]` module, which isn't visible to this module) since it's a
+    /// small, self-contained test fixture.
+    #[derive(Debug)]
+    struct NeverCalledChainAdapter;
+
+    #[async_trait::async_trait]
+    impl cashweb_payload::chain_adapter::ChainAdapter for NeverCalledChainAdapter {
+        async fn submit_tx(
+            &self,
+            _raw_tx: &[u8],
+        ) -> bitcoinsuite_error::Result<cashweb_payload::chain_adapter::SubmitTxOutcome> {
+            Ok(cashweb_payload::chain_adapter::SubmitTxOutcome::AlreadyConfirmed)
+        }
+        async fn get_tx(
+            &self,
+            _txid: &bitcoinsuite_core::Sha256d,
+        ) -> bitcoinsuite_error::Result<Option<Vec<u8>>> {
+            Ok(None)
+        }
+        async fn test_accept(
+            &self,
+            _raw_tx: &[u8],
+        ) -> bitcoinsuite_error::Result<cashweb_payload::chain_adapter::MempoolAcceptResult>
+        {
+            Ok(Ok(()))
+        }
+        async fn subscribe_new_blocks(
+            &self,
+        ) -> bitcoinsuite_error::Result<tokio::sync::mpsc::Receiver<bitcoinsuite_core::Sha256d>>
+        {
+            let (_sender, receiver) = tokio::sync::mpsc::channel(1);
+            Ok(receiver)
+        }
+        fn decode_burn(
+            &self,
+            _commitment_id: [u8; 4],
+            _burn_output_script: &bitcoinsuite_core::Script,
+        ) -> bitcoinsuite_error::Result<bitcoinsuite_core::Sha256> {
+            unimplemented!("Monad profile registration never touches ChainAdapter")
+        }
+    }
+
+    fn test_registry(name: &str) -> (tempdir::TempDir, Registry) {
+        let tempdir = tempdir::TempDir::new(name).unwrap();
+        let db = Db::open(tempdir.path().join("db.rocksdb")).unwrap();
+        let registry = Registry::new(db, Arc::new(NeverCalledChainAdapter), Net::Regtest);
+        (tempdir, registry)
+    }
+
+    fn test_server(registry: Registry) -> RegistryServer {
+        let pop_gate = PopGate::from_conf_if_enabled(&placeholder_pop_conf());
+        RegistryServer {
+            registry: Arc::new(registry),
+            peers: Arc::new(Peers::new("http://127.0.0.1:1".to_string(), vec![])),
+            pop_gate: Arc::new(pop_gate),
+            curated_defaults: Arc::new(vec![]),
+        }
+    }
+
+    /// Builds a validly-signed [`cashweb_payload::proto::SignedPayload`] for `profile`, signed by
+    /// `seckey_byte` -- mirrors `registry::tests::sign_monad_profile` exactly (duplicated for the
+    /// same reason as [`NeverCalledChainAdapter`] above), and the [`Address`] it registers under.
+    fn sign_monad_profile(
+        seckey_byte: u8,
+        profile: &proto::MonadProfile,
+    ) -> (cashweb_payload::proto::SignedPayload, Address) {
+        let ecc = EccSecp256k1::default();
+        let seckey = ecc.seckey_from_array([seckey_byte; 32]).unwrap();
+        let pubkey = ecc.derive_pubkey(&seckey);
+        let uncompressed = ecc.serialize_pubkey_uncompressed(&pubkey);
+        let address = address_from_uncompressed_pubkey(&uncompressed);
+
+        let payload = profile.encode_to_vec();
+        let payload_hash = Sha256::digest(payload.clone().into());
+        let sig = ecc.sign(&seckey, payload_hash.byte_array().clone());
+
+        let signed = cashweb_payload::proto::SignedPayload {
+            pubkey: pubkey.as_slice().to_vec(),
+            sig: sig.to_vec(),
+            sig_scheme: SignatureScheme::Ecdsa.into(),
+            payload,
+            payload_hash: payload_hash.as_slice().to_vec(),
+            burn_amount: 0,
+            burn_txs: vec![],
+        };
+        (signed, address)
+    }
+
+    fn named_profile(timestamp: i64, name: &str) -> proto::MonadProfile {
+        proto::MonadProfile {
+            timestamp,
+            ttl: 1000 * 60 * 60 * 24 * 365,
+            entries: vec![proto::AddressEntry {
+                kind: "display_name".to_string(),
+                headers: Default::default(),
+                body: name.as_bytes().to_vec(),
+            }],
+        }
+    }
+
+    #[tokio::test]
+    async fn handler_returns_matching_profiles() {
+        let (_tempdir, registry) = test_registry("cashweb-registry--search-monad-profiles-match");
+        let (alice_signed, alice_address) = sign_monad_profile(1, &named_profile(100, "Alice"));
+        registry
+            .put_monad_profile(alice_address, alice_signed.clone())
+            .unwrap();
+        let (bob_signed, bob_address) = sign_monad_profile(2, &named_profile(101, "Bob"));
+        registry.put_monad_profile(bob_address, bob_signed).unwrap();
+        let server = test_server(registry);
+
+        let query = SearchMonadProfilesQuery {
+            prefix: Some("ali".to_string()),
+            limit: None,
+        };
+        let Protobuf(response) = handle_search_monad_profiles(Query(query), Extension(server))
+            .await
+            .unwrap();
+        assert_eq!(response.entries.len(), 1);
+        assert_eq!(response.entries[0].address, alice_address.to_hex());
+        assert_eq!(response.entries[0].signed_payload, Some(alice_signed));
+    }
+
+    #[tokio::test]
+    async fn handler_returns_empty_when_nothing_matches() {
+        let (_tempdir, registry) = test_registry("cashweb-registry--search-monad-profiles-empty");
+        let (signed, address) = sign_monad_profile(1, &named_profile(100, "Alice"));
+        registry.put_monad_profile(address, signed).unwrap();
+        let server = test_server(registry);
+
+        let query = SearchMonadProfilesQuery {
+            prefix: Some("zzz".to_string()),
+            limit: None,
+        };
+        let Protobuf(response) = handle_search_monad_profiles(Query(query), Extension(server))
+            .await
+            .unwrap();
+        assert_eq!(response.entries, vec![]);
+    }
+
+    #[tokio::test]
+    async fn handler_clamps_limit_to_max_search_results() {
+        let (_tempdir, registry) = test_registry("cashweb-registry--search-monad-profiles-clamp");
+        for i in 0..10u8 {
+            let (signed, address) =
+                sign_monad_profile(i + 1, &named_profile(100 + i as i64, &format!("name{i}")));
+            registry.put_monad_profile(address, signed).unwrap();
+        }
+        let server = test_server(registry);
+
+        // Request far fewer than what's available; the handler must not silently ignore `limit`.
+        let query = SearchMonadProfilesQuery {
+            prefix: Some("name".to_string()),
+            limit: Some(3),
+        };
+        let Protobuf(response) = handle_search_monad_profiles(Query(query), Extension(server))
+            .await
+            .unwrap();
+        assert_eq!(response.entries.len(), 3);
+    }
+
+    /// Exercises the *real* router built by [`RegistryServer::into_router`] end-to-end -- proves
+    /// the static `/metadata/monad/search` segment isn't swallowed by the dynamic
+    /// `/metadata/monad/:addr` route registered just above it, mirroring
+    /// `http::curated_defaults::tests::route_is_not_swallowed_by_dynamic_addr_route`'s identical
+    /// precedent for the sibling `/metadata/monad/curated-defaults` route.
+    #[tokio::test]
+    async fn route_is_not_swallowed_by_dynamic_addr_route() {
+        let (_tempdir, registry) = test_registry("cashweb-registry--search-monad-profiles-router");
+        let (signed, address) = sign_monad_profile(1, &named_profile(100, "Alice"));
+        registry.put_monad_profile(address, signed.clone()).unwrap();
+        let server = test_server(registry);
+        let router = server.into_router();
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/metadata/monad/search?prefix=ali")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body_bytes = hyper::body::to_bytes(response.into_body()).await.unwrap();
+        let body = proto::ListMonadProfilesResponse::decode(body_bytes).unwrap();
+        assert_eq!(body.entries.len(), 1);
+        assert_eq!(body.entries[0].address, address.to_hex());
+        assert_eq!(body.entries[0].signed_payload, Some(signed));
+    }
 }

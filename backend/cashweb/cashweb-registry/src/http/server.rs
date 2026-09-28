@@ -8,7 +8,7 @@ use crate::{
     },
     http::monad_profile::{
         fetch_profile_or_not_found, handle_get_monad_profile, handle_list_monad_profiles,
-        handle_put_monad_profile,
+        handle_put_monad_profile, handle_search_monad_profiles,
     },
     http::monad_topics::{
         handle_get_monad_topic_post, handle_list_monad_topic_posts, handle_list_topics,
@@ -186,6 +186,16 @@ impl RegistryServer {
             .route(
                 "/metadata/monad/curated-defaults",
                 routing::get(handle_get_curated_default_contacts),
+            )
+            // `GET /metadata/monad/search?prefix=<text>&limit=<n>` (ticket #48): prefix-search
+            // registered profiles by normalized `display_name` -- see
+            // `crate::http::monad_profile`'s module docs for the design this implements. Another
+            // static segment alongside `/metadata/monad/curated-defaults` above, so the same
+            // static-vs-dynamic precedence reasoning already documented there applies here too:
+            // this can't collide with the dynamic `/metadata/monad/:addr` route.
+            .route(
+                "/metadata/monad/search",
+                routing::get(handle_search_monad_profiles),
             )
             .route("/messages/:topic", routing::get(handle_get_messages))
             .route("/messages", routing::get(handle_get_all_messages))

@@ -20,6 +20,7 @@ import {
   fetchMonadProfile,
   fetchMonadProfilesSince,
   registerMonadIdentity,
+  searchMonadProfiles,
 } from './monad-identity'
 
 jest.mock('axios')
@@ -237,6 +238,98 @@ describe('fetchMonadProfilesSince', () => {
     })
 
     expect(profiles).toEqual([])
+  })
+})
+
+describe('searchMonadProfiles', () => {
+  it('GETs /metadata/monad/search?prefix=&limit= and decodes each entry, including its SignedPayload', async () => {
+    const identity = MonadIdentity.fromSeed(SEED)
+    const signedPayload = new SignedPayload()
+    signedPayload.setPublicKey(identity.compressedPubKey)
+    signedPayload.setScheme(SignedPayload.SignatureScheme.ECDSA)
+
+    const entry = new ListMonadProfilesEntry()
+    entry.setAddress(identity.address.raw)
+    entry.setSignedPayload(signedPayload.serializeBinary())
+    const wireResponse = new ListMonadProfilesResponse()
+    wireResponse.addEntries(entry)
+
+    mockedAxios.mockResolvedValueOnce({
+      status: 200,
+      data: Buffer.from(wireResponse.serializeBinary()),
+      statusText: 'OK',
+      headers: {},
+      config: {},
+    })
+
+    const profiles = await searchMonadProfiles({
+      relayBaseUrl: RELAY_BASE_URL,
+      prefix: 'ali',
+      limit: 5,
+    })
+
+    expect(mockedAxios).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: 'get',
+        url: `${RELAY_BASE_URL}/metadata/monad/search`,
+        params: { prefix: 'ali', limit: 5 },
+      }),
+    )
+    expect(profiles).toHaveLength(1)
+    expect(profiles[0].address).toBe(identity.address.raw)
+    expect(Buffer.from(profiles[0].signedPayload.getPublicKey_asU8())).toEqual(
+      identity.compressedPubKey,
+    )
+    expect(profiles[0].signedPayload.getScheme()).toBe(
+      SignedPayload.SignatureScheme.ECDSA,
+    )
+  })
+
+  it('omits `limit` from the query when not provided', async () => {
+    const emptyResponse = new ListMonadProfilesResponse()
+    mockedAxios.mockResolvedValueOnce({
+      status: 200,
+      data: Buffer.from(emptyResponse.serializeBinary()),
+      statusText: 'OK',
+      headers: {},
+      config: {},
+    })
+
+    await searchMonadProfiles({ relayBaseUrl: RELAY_BASE_URL, prefix: 'bob' })
+
+    expect(mockedAxios).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: 'get',
+        url: `${RELAY_BASE_URL}/metadata/monad/search`,
+        params: { prefix: 'bob' },
+      }),
+    )
+  })
+
+  it('returns [] on an empty ListMonadProfilesResponse (no matches)', async () => {
+    const emptyResponse = new ListMonadProfilesResponse()
+    mockedAxios.mockResolvedValueOnce({
+      status: 200,
+      data: Buffer.from(emptyResponse.serializeBinary()),
+      statusText: 'OK',
+      headers: {},
+      config: {},
+    })
+
+    const profiles = await searchMonadProfiles({
+      relayBaseUrl: RELAY_BASE_URL,
+      prefix: 'zzz',
+    })
+
+    expect(profiles).toEqual([])
+  })
+
+  it('propagates a network error, mirroring fetchMonadProfilesSince (no fail-soft)', async () => {
+    mockedAxios.mockRejectedValueOnce(new Error('network down'))
+
+    await expect(
+      searchMonadProfiles({ relayBaseUrl: RELAY_BASE_URL, prefix: 'ali' }),
+    ).rejects.toThrow('network down')
   })
 })
 

@@ -50,4 +50,33 @@ describe('stamp payment recovery journal', () => {
       fs.rmSync(dir, { recursive: true, force: true })
     }
   })
+
+  it('persists an exact pending sweep intent across a LevelDB restart', async () => {
+    const os = await import('os')
+    const path = await import('path')
+    const fs = await import('fs')
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'stamp-payment-journal-'))
+    const pending: StampPaymentRecoveryRecord = {
+      ...DISCOVERED,
+      status: 'sweep-pending',
+      sweepTxHash: `0x${'33'.repeat(32)}`,
+      sweepRawTx: `0x${'44'.repeat(96)}`,
+      sweepValueWei: '100',
+      sweepDestinationAddress: `0x${'55'.repeat(20)}`,
+    }
+    try {
+      const first = new LevelStampPaymentJournal(dir)
+      await first.Open()
+      await first.put(pending)
+      await first.Close()
+
+      const reopened = new LevelStampPaymentJournal(dir)
+      await reopened.Open()
+      expect(reopened.get(DISCOVERED.payloadHashHex, 1)).toEqual(pending)
+      expect(reopened.getAll()[0]).not.toHaveProperty('privateKey')
+      await reopened.Close()
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
 })

@@ -269,9 +269,12 @@ export type MonadStampPaymentSweepOutcome =
     }
   | {
       swept: false
-      reason: 'below-dust-threshold'
-      balanceWei: bigint
-      dustThresholdWei: bigint
+      reason: 'below-dust-threshold' | 'pending'
+      balanceWei?: bigint
+      dustThresholdWei?: bigint
+      txHash?: string
+      valueWei?: bigint
+      destinationAddress?: string
     }
 
 /** Reconstruct every one-time payment key from a stored message and the recipient identity key.
@@ -325,14 +328,19 @@ export async function sweepRecoveredMonadStampPayment(params: {
   destinationAddress: string
   provider: Provider
   httpClient: MonadTxSubmitter
+  signer?: MonadAccountTxSigner
   dustThresholdWei?: bigint
   overrides?: MonadTxOverrides
+  /** Durably record the exact signed bytes before the first RPC submission. */
+  onSigned?: (signedTx: SignedMonadTx) => Promise<void>
 }): Promise<MonadStampPaymentSweepOutcome> {
-  const signer = new MonadAccountTxSigner({
-    privateKey: hexlify(params.payment.privateKey),
-    provider: params.provider,
-    httpClient: params.httpClient,
-  })
+  const signer =
+    params.signer ??
+    new MonadAccountTxSigner({
+      privateKey: hexlify(params.payment.privateKey),
+      provider: params.provider,
+      httpClient: params.httpClient,
+    })
   if (signer.address.toLowerCase() !== params.payment.address.toLowerCase()) {
     throw new Error(
       `Recovered stamp-payment key resolves to ${signer.address}, expected ${params.payment.address}`,
@@ -357,7 +365,21 @@ export async function sweepRecoveredMonadStampPayment(params: {
     valueWei,
     params.overrides,
   )
+  await params.onSigned?.(signed)
   const txHash = await signer.submit(signed)
+  const status = await signer.getStatus(txHash)
+  if (status === 'failed') {
+    throw new Error(`Recipient stamp-payment sweep ${txHash} failed on-chain`)
+  }
+  if (status === 'pending') {
+    return {
+      swept: false,
+      reason: 'pending',
+      txHash,
+      valueWei,
+      destinationAddress: signed.to,
+    }
+  }
   return {
     swept: true,
     txHash,
@@ -905,7 +927,7 @@ export class MonadStampClient {
         sweeps.push(released.sweep)
         if (
           released.sweep?.swept === false &&
-          released.sweep.reason === 'sweep-error'
+          released.sweep.reason !== 'below-dust-threshold'
         ) {
           break
         }
@@ -918,7 +940,8 @@ export class MonadStampClient {
       const changeSweeps = await releaseAll('confirmed')
       if (
         changeSweeps.some(
-          sweep => sweep?.swept === false && sweep.reason === 'sweep-error',
+          sweep =>
+            sweep?.swept === false && sweep.reason !== 'below-dust-threshold',
         )
       ) {
         throw new MonadStampPendingAttemptError([payloadHashHex])
@@ -969,7 +992,8 @@ export class MonadStampClient {
         const changeSweeps = await releaseAll('confirmed')
         if (
           changeSweeps.some(
-            sweep => sweep?.swept === false && sweep.reason === 'sweep-error',
+            sweep =>
+              sweep?.swept === false && sweep.reason !== 'below-dust-threshold',
           )
         ) {
           throw new MonadStampPendingAttemptError([payloadHashHex])
@@ -1024,12 +1048,15 @@ export class MonadStampClient {
               provider: this.provider,
               httpClient: this.httpClient,
             })
-            await this.changePool.sweepToChange({
+            const sweep = await this.changePool.sweepToChange({
               burnIndex: index,
               burnAddress: record.address,
               burnAccountSigner: signer,
               provider: this.provider,
             })
+            if (!sweep.swept && sweep.reason === 'sweep-pending') {
+              throw new MonadStampPendingAttemptError([attempt.payloadHashHex])
+            }
           }
         }
         await this.attemptJournal.delete(attempt.payloadHashHex)

@@ -479,6 +479,51 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
           `Recovered stamp-payment address ${record.address} does not match derived child ${child.address}`,
         )
       }
+      const childSigner = new MonadAccountTxSigner({
+        privateKey: hexlify(child.privateKey),
+        provider: monadWallet.provider,
+        httpClient: monadWallet.httpClient,
+      })
+      if (record.status === 'sweep-pending') {
+        if (
+          record.sweepTxHash === undefined ||
+          record.sweepRawTx === undefined ||
+          record.sweepValueWei === undefined
+        ) {
+          throw new Error(
+            `Pending stamp-payment sweep ${payloadDigest}:${childIndex} is missing its signed intent`,
+          )
+        }
+        const status = await childSigner.getStatus(record.sweepTxHash)
+        if (status === 'confirmed') {
+          await journal.put({
+            ...record,
+            status: 'swept',
+            sweepRawTx: undefined,
+          })
+          return {
+            swept: true,
+            txHash: record.sweepTxHash,
+            valueWei: BigInt(record.sweepValueWei),
+          }
+        }
+        if (status === 'pending') {
+          await childSigner.submitRaw(record.sweepRawTx, record.sweepTxHash)
+          return {
+            swept: false,
+            reason: 'pending',
+            txHash: record.sweepTxHash,
+          }
+        }
+        await journal.put({
+          ...record,
+          status: 'discovered',
+          sweepTxHash: undefined,
+          sweepRawTx: undefined,
+          sweepValueWei: undefined,
+          sweepDestinationAddress: undefined,
+        })
+      }
       const outcome = await sweepRecoveredMonadStampPayment({
         payment: {
           childIndex,
@@ -490,12 +535,26 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
         destinationAddress: destination.raw,
         provider: monadWallet.provider,
         httpClient: monadWallet.httpClient,
+        signer: childSigner,
+        onSigned: async signedTx => {
+          await journal.put({
+            ...record,
+            status: 'sweep-pending',
+            sweepTxHash: signedTx.txHash,
+            sweepRawTx: signedTx.rawTx,
+            sweepValueWei: signedTx.value.toString(),
+            sweepDestinationAddress: signedTx.to,
+          })
+        },
       })
       if (outcome.swept) {
         await journal.put({
           ...record,
           status: 'swept',
           sweepTxHash: outcome.txHash,
+          sweepRawTx: undefined,
+          sweepValueWei: outcome.valueWei.toString(),
+          sweepDestinationAddress: outcome.destinationAddress,
         })
         return {
           swept: true,

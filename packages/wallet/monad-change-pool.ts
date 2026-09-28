@@ -131,13 +131,14 @@ export type ChangeSweepOutcome =
     }
   | {
       swept: false
-      reason: 'below-dust-threshold' | 'sweep-error'
+      reason: 'below-dust-threshold' | 'sweep-pending' | 'sweep-error'
       balanceWei?: bigint
       dustThresholdWei?: bigint
       /** Present only when `reason === 'sweep-error'` (see `releaseLeaseAndSweepChange`, which is
        * the only caller that produces this reason -- `sweepToChange` itself never swallows a
        * build/submit failure, it always propagates). */
       error?: unknown
+      txHash?: string
     }
 
 /**
@@ -283,7 +284,11 @@ export class MonadChangePool {
         // No receipt can mean either not accepted or merely pending. Re-submit only the exact
         // signed bytes; an ambiguous/already-known error deliberately leaves the intent intact.
         await params.burnAccountSigner.submitRaw(pending.rawTx, pending.txHash)
-        return this.finalizeIntent(pending)
+        return {
+          swept: false,
+          reason: 'sweep-pending',
+          txHash: pending.txHash,
+        }
       }
     }
 
@@ -322,8 +327,18 @@ export class MonadChangePool {
     this.store.setPendingIntent(intent)
     await this.store.flush()
     await params.burnAccountSigner.submit(signedTx)
-
-    return this.finalizeIntent(intent)
+    const status = await params.burnAccountSigner.getStatus(signedTx.txHash)
+    if (status === 'confirmed') return this.finalizeIntent(intent)
+    if (status === 'failed') {
+      this.store.clearPendingIntent()
+      await this.store.flush()
+      throw new Error(`Change sweep ${signedTx.txHash} failed on-chain`)
+    }
+    return {
+      swept: false,
+      reason: 'sweep-pending',
+      txHash: signedTx.txHash,
+    }
   }
 
   private async finalizeIntent(

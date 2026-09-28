@@ -58,9 +58,6 @@
       <q-scroll-area class="q-px-none col">
         <q-list v-bind="$attrs">
           <q-separator />
-          <q-item>
-            <q-item-label header>Forums</q-item-label>
-          </q-item>
           <q-item
             v-for="name in discoveredTopicNames"
             :key="name"

@@ -1,13 +1,13 @@
 <template>
   <div class="column full-height">
     <!-- Relay reconnect dialog -->
-    <q-dialog v-model="relayConnectOpen">
+    <q-dialog v-if="legacyRelayEnabled" v-model="relayConnectOpen">
       <relay-connect-dialog />
     </q-dialog>
 
     <q-tabs v-model="tab" v-if="$status.setup">
       <q-tab v-if="$status.setup" name="settings" icon="settings" />
-      <q-tab name="contacts" icon="contacts">
+      <q-tab name="contacts" icon="contacts" @click="$router.push('/')">
         <q-badge
           floating
           color="secondary"
@@ -50,7 +50,7 @@
           <q-item-label caption>{{ formattedBalance }}</q-item-label>
         </q-item-section>
         <q-item-section
-          v-if="!relayConnected"
+          v-if="legacyRelayEnabled && !relayConnected"
           side
           clickable
           @click="relayConnectOpen = true"
@@ -99,6 +99,8 @@ export default defineComponent({
         () =>
           `${activeChain.toDisplayAmount(balance.value)} ${activeChain.unit}`,
       ),
+      legacyRelayEnabled:
+        import.meta.env.QCLI_MONAD_SKIP_LEGACY_SETUP_GATE === 'false',
     }
   },
   components: {

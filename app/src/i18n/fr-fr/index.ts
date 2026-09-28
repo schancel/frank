@@ -50,11 +50,11 @@ export default {
   setup: {
     loginOrSignUp: 'Connexion/Inscription',
     welcome: 'Bienvenue',
-    welcomeToStampChat: 'StampChat - Bienvenue !',
+    welcomeToStampChat: 'Bienvenue sur Frank !',
     eulaDisclaimer:
-      'Ce logiciel est un prototype qui peut perdre vos fonds. Gardez les sommes importantes en Lotus dans des logiciels plus mature.',
+      'Frank est un logiciel expérimental. Il peut contenir des erreurs susceptibles de retarder des messages ou d’entraîner une perte de fonds. N’utilisez que des montants que vous pouvez vous permettre de perdre.',
     eulaYouUnderstand:
-      'En cliquant sur "Accepter", vous comprenez que ce logiciel est fourni "Tel quel", sans garantie d\'aucune sorte, explicite ou implicite, y compris, mais sans s\'y limiter, les garanties de qualité marchande, d\'adéquation à un usage particulier et de non-contrefaçon.',
+      'En cliquant sur « Accepter », vous reconnaissez que Frank est fourni « tel quel », sans garantie d’aucune sorte, expresse ou implicite.',
     setupWallet: 'Setup de votre compte', //---- 'Character Setup'
     eula: 'Contrat de licence',
     deposit: 'Deposer des Lotus',

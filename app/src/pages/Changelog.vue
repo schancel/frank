@@ -20,6 +20,32 @@
           @scroll="scrollHandler"
           class="q-px-sm absolute full-width full-height"
         >
+          <div class="text-h6">2026-09-28 — Frank Monad Preview</div>
+          <div class="text-body1">
+            <ul>
+              <li>
+                Port direct messages and topic broadcasts to Monad testnet.
+              </li>
+              <li>
+                Pay direct-message stamps to recipient-controlled stealth
+                addresses, split across disposable sender accounts.
+              </li>
+              <li>
+                Add Monad identity registration, profile discovery, name search,
+                and curated default contacts.
+              </li>
+              <li>Add Qwen bot replies and automatic welcome messages.</li>
+              <li>
+                Add Monad topic discovery, posting, voting, and relay-side
+                verification.
+              </li>
+              <li>
+                Restore fresh-account setup and remove dead Lotus services from
+                the default Monad startup path.
+              </li>
+            </ul>
+          </div>
+
           <div class="text-h6">v0.0.23 Changelog</div>
           <div class="text-body1">
             <ul>

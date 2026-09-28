@@ -304,25 +304,7 @@ export const useContactStore = defineStore('contacts', {
       chats.deleteChat(address)
       delete this.contacts[apiAddress]
     },
-    /**
-     * `contacts.ts`'s network-calling entry points (ticket #42 acceptance criteria): resolves a
-     * profile via `activeChain.formatAddress`/`parseAddress`/`fetchProfile` instead of the old
-     * `toAPIAddress`/`RegistryHandler`/`ReadOnlyRelayClient` trio.
-     *
-     * ## Known gap: no name/bio/avatar/relayURL/acceptancePrice from `activeChain.fetchProfile`
-     *
-     * Unlike the old Lotus `RegistryHandler` (relay-URL lookup) + `ReadOnlyRelayClient.getRelayData`
-     * (name/bio/avatar/inbox) pair, `ActiveChain.fetchProfile` (`@frank/wallet/chain/active-chain.ts`)
-     * only ever returns `{ address, pubKey }` -- by design, not an oversight: the Monad-side
-     * `AddressMetadata` registered via `@frank/wallet/monad-identity.ts` is deliberately empty
-     * of vCard content ("no vCard content, just proving registration itself", that file's own doc
-     * comment), and `ActiveChain` has no per-contact relay-URL concept at all (Monad uses one
-     * global `relayBaseUrl`, internal to `MonadChain`, never exposed through the interface). So a
-     * contact resolved this way only ever gets a real `pubKey` -- `profile.name`/`bio`/`avatar`
-     * stay at their existing/default values (never fabricated), `relayURL` is `null` (no longer a
-     * meaningful per-contact concept), and `inbox.acceptancePrice` falls back to
-     * `defaultAcceptancePrice`. Flagged here so this isn't mistaken for a bug later.
-     */
+    /** Resolve a signed Monad profile through the active-chain seam. */
     async fetchAndAddContact({
       address,
       contact,
@@ -351,6 +333,9 @@ export const useContactStore = defineStore('contacts', {
             relayURL: null,
             profile: {
               ...defaultRelayData.profile,
+              name: profileInfo.name ?? '',
+              bio: profileInfo.bio ?? '',
+              avatar: profileInfo.avatar ?? '',
               pubKey: markRaw(
                 PublicKey.fromBuffer(Buffer.from(profileInfo.pubKey)),
               ),
@@ -397,11 +382,6 @@ export const useContactStore = defineStore('contacts', {
       const expired =
         lastUpdateTime &&
         moment(lastUpdateTime).add(updateInterval, 'milliseconds').isBefore(now)
-      // NOTE: `activeChain.fetchProfile` never returns an avatar (see `fetchAndAddContact`'s doc
-      // comment for why) -- `noPicture` is therefore always true for a Monad contact, so `refresh`
-      // never short-circuits on this branch alone (it still short-circuits via `!expired` once
-      // `updateInterval` hasn't elapsed). Slightly more frequent refetching than the old Lotus
-      // behavior, not a correctness issue -- left as-is rather than silently dropping the check.
       const noPicture = oldContactInfo.profile && !oldContactInfo.profile.avatar
       if (!expired && !noPicture) {
         // Short circuit if we already updated this contact recently.
@@ -423,6 +403,9 @@ export const useContactStore = defineStore('contacts', {
           address,
           profile: {
             ...oldContactInfo.profile,
+            name: profileInfo.name ?? oldContactInfo.profile.name,
+            bio: profileInfo.bio ?? oldContactInfo.profile.bio,
+            avatar: profileInfo.avatar ?? oldContactInfo.profile.avatar,
             pubKey: markRaw(
               PublicKey.fromBuffer(Buffer.from(profileInfo.pubKey)),
             ),

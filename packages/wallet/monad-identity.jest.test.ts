@@ -10,8 +10,13 @@ import axios from 'axios'
 import __pb_signed_payload_payload_pb from '@frank/cashweb/signed_payload/payload_pb'
 const { SignedPayload } = __pb_signed_payload_payload_pb
 import __pb_registry_metadata_pb from '@frank/cashweb/registry/metadata_pb'
-const { ListMonadProfilesEntry, ListMonadProfilesResponse } =
-  __pb_registry_metadata_pb
+const {
+  AddressMetadata,
+  Entry,
+  Header,
+  ListMonadProfilesEntry,
+  ListMonadProfilesResponse,
+} = __pb_registry_metadata_pb
 import {
   MONAD_IDENTITY_DERIVATION_PATH,
   MonadIdentity,
@@ -109,6 +114,40 @@ describe('registerMonadIdentity', () => {
     )
     expect(signedPayload.getScheme()).toBe(SignedPayload.SignatureScheme.ECDSA)
   })
+
+  it('signs display name, bio, and avatar into the Monad profile', async () => {
+    const identity = MonadIdentity.fromSeed(SEED)
+    mockedAxios.mockResolvedValueOnce({ status: 200, data: new Uint8Array() })
+
+    await registerMonadIdentity({
+      relayBaseUrl: RELAY_BASE_URL,
+      identity,
+      profile: {
+        name: 'Alice',
+        bio: 'Testing Frank',
+        avatar: 'data:image/png;base64,AQID',
+      },
+    })
+
+    const call = mockedAxios.mock.calls.at(-1)?.[0]
+    expect(call).toBeDefined()
+    const signed = SignedPayload.deserializeBinary(
+      new Uint8Array(call?.data as Buffer),
+    )
+    const metadata = AddressMetadata.deserializeBinary(
+      signed.getPayload_asU8(),
+    )
+    const entries = metadata.getEntriesList()
+    expect(entries.map(entry => entry.getKind())).toEqual([
+      'display_name',
+      'bio',
+      'avatar',
+    ])
+    expect(new TextDecoder().decode(entries[0].getBody_asU8())).toBe('Alice')
+    expect(Buffer.from(entries[2].getBody_asU8())).toEqual(
+      Buffer.from([1, 2, 3]),
+    )
+  })
 })
 
 describe('fetchMonadIdentityPubKey / fetchMonadProfile', () => {
@@ -175,6 +214,37 @@ describe('fetchMonadIdentityPubKey / fetchMonadProfile', () => {
     expect(Buffer.from(profile?.pubKey ?? [])).toEqual(
       identity.compressedPubKey,
     )
+  })
+
+  it('fetchMonadProfile decodes the signed user-facing fields', async () => {
+    const identity = MonadIdentity.fromSeed(SEED)
+    const metadata = new AddressMetadata()
+    const name = new Entry()
+    name.setKind('display_name')
+    name.setBody(new TextEncoder().encode('Alice'))
+    const avatar = new Entry()
+    avatar.setKind('avatar')
+    avatar.setBody(new Uint8Array([1, 2, 3]))
+    const contentType = new Header()
+    contentType.setName('content-type')
+    contentType.setValue('image/png')
+    avatar.addHeaders(contentType)
+    metadata.setEntriesList([name, avatar])
+    const signedPayload = new SignedPayload()
+    signedPayload.setPublicKey(identity.compressedPubKey)
+    signedPayload.setPayload(metadata.serializeBinary())
+    mockedAxios.mockResolvedValueOnce({
+      status: 200,
+      data: Buffer.from(signedPayload.serializeBinary()),
+    })
+
+    const profile = await fetchMonadProfile({
+      relayBaseUrl: RELAY_BASE_URL,
+      address: identity.address,
+    })
+
+    expect(profile?.name).toBe('Alice')
+    expect(profile?.avatar).toBe('data:image/png;base64,AQID')
   })
 })
 

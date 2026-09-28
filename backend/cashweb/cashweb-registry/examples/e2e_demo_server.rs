@@ -50,7 +50,7 @@
 //! cargo run -p cashweb-registry --example e2e_demo_server -- 127.0.0.1:8098
 //! ```
 
-use std::{net::SocketAddr, sync::Arc};
+use std::{net::SocketAddr, str::FromStr, sync::Arc};
 
 use async_trait::async_trait;
 use bitcoinsuite_core::{Hashed, Net, Script, Sha256, Sha256d};
@@ -58,7 +58,10 @@ use bitcoinsuite_error::Result;
 use cashweb_config::PopConf;
 use cashweb_payload::chain_adapter::{ChainAdapter, MempoolAcceptResult, SubmitTxOutcome};
 use cashweb_registry::{
-    http::{pop_protection::PopGate, server::RegistryServer},
+    http::{
+        curated_defaults::CuratedDefaultContact, pop_protection::PopGate, server::RegistryServer,
+    },
+    monad_http::Address,
     p2p::peers::Peers,
     registry::Registry,
     store::db::Db,
@@ -175,12 +178,23 @@ async fn main() -> Result<()> {
     let pop_gate = Arc::new(PopGate::from_conf_if_enabled(&demo_pop_conf()));
     info!("POP protection is disabled for this demo (ticket #35 default) -- identity registration needs no payment");
 
+    let curated_defaults = match std::env::var("FRANK_DEMO_CURATED_CONTACT_ADDRESS") {
+        Ok(raw_address) => {
+            let address = Address::from_str(&raw_address)
+                .expect("FRANK_DEMO_CURATED_CONTACT_ADDRESS must be a 0x-prefixed EVM address");
+            let name = std::env::var("FRANK_DEMO_CURATED_CONTACT_NAME")
+                .unwrap_or_else(|_| "Qwen".to_string());
+            info!("Curated default contact: {name} ({raw_address})");
+            vec![CuratedDefaultContact { address, name }]
+        }
+        Err(_) => vec![],
+    };
+
     let server = RegistryServer {
         registry,
         peers,
         pop_gate,
-        // No curated defaults for this demo (ticket #49).
-        curated_defaults: Arc::new(vec![]),
+        curated_defaults: Arc::new(curated_defaults),
     };
     let router = server.into_router();
 

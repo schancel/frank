@@ -119,6 +119,19 @@ export default defineComponent({
       }
     },
     setupConnections() {
+      if (import.meta.env.QCLI_MONAD_SKIP_LEGACY_SETUP_GATE !== 'false') {
+        fetchCuratedDefaultContacts({
+          relayBaseUrl: loadMonadChainConfigFromEnv().relayBaseUrl,
+        })
+          .then(async contacts => {
+            for (const contact of contacts) {
+              this.addDefaultContact(contact)
+            }
+            await this.refreshContacts()
+          })
+          .catch(err => console.error(err))
+        return
+      }
       // Not currently setup. User needs to go through setup flow first
       if (!this.relayToken()) {
         return
@@ -142,15 +155,13 @@ export default defineComponent({
       fetchCuratedDefaultContacts({
         relayBaseUrl: loadMonadChainConfigFromEnv().relayBaseUrl,
       })
-        .then(contacts => {
+        .then(async contacts => {
           for (const contact of contacts) {
             this.addDefaultContact(contact)
           }
+          await this.refreshContacts()
         })
         .catch(err => console.error(err))
-      this.$nextTick(() =>
-        this.refreshContacts().catch(err => console.error(err)),
-      )
 
       // const lastReceived = this.lastReceived
       const t0 = performance.now()

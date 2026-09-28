@@ -191,6 +191,11 @@ async function main() {
   console.log(`Bot Frank identity address: ${identity.displayAddress}`)
   console.log(`(handoff written to ${handoffJsonPath})`)
 
+  // Funding the bot's disposable sender accounts can take a while on a congested testnet. Start
+  // the profile cursor before that work so a user who signs up during bot initialization is not
+  // silently missed by the welcome flow.
+  const profileWatchStartedAt = Date.now()
+
   const { stampClient, mainAccountSigner } = await setUpFundedStampClient({
     rpcUrl,
     relayBaseUrl,
@@ -225,7 +230,9 @@ async function main() {
   // signup" means and a real risk to the shared, already-documented-as-scarce funding wallet
   // balance (see `qwen-bot-common.ts`'s header). Only registrations from this run's own startup
   // onward are treated as "new".
-  let sinceProfiles = Date.now()
+  let sinceProfiles = Number(
+    process.env.QWEN_BOT_PROFILE_SINCE_MS ?? profileWatchStartedAt,
+  )
 
   console.log(
     `\nPolling ${relayBaseUrl}/message/monad?since=<t> every ${pollIntervalMs}ms for messages addressed to ${identity.displayAddress} ...`,

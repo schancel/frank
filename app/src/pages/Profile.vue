@@ -35,6 +35,12 @@
 import { defineComponent } from 'vue'
 
 import { useProfileStore } from 'src/stores/my-profile'
+import { useActiveWallet } from 'src/composables/useActiveWallet'
+import { loadMonadChainConfigFromEnv } from '@frank/wallet/chain/monad-chain'
+import {
+  MonadIdentity,
+  registerMonadIdentity,
+} from '@frank/wallet/monad-identity'
 
 import Profile from '../components/Profile.vue'
 import { errorNotify } from '../utils/notifications'
@@ -76,32 +82,24 @@ export default defineComponent({
   methods: {
     async updateRelayData() {
       // Set profile
-      const client = this.$relayClient
-
-      // Create metadata
-      const idPrivKey = this.$wallet.identityPrivKey
-      if (!idPrivKey) {
-        return
-      }
-      const acceptancePrice = this.relayData.inbox.acceptancePrice
-
       this.$q.loading.show({
         delay: 100,
         message: this.$t('profileDialog.pushingProfile'),
       })
 
       try {
-        await client.updateProfile(
-          idPrivKey,
-          this.relayData.profile,
-          acceptancePrice,
-        )
+        const wallet = await useActiveWallet()
+        await registerMonadIdentity({
+          relayBaseUrl: loadMonadChainConfigFromEnv().relayBaseUrl,
+          identity: wallet.identity as MonadIdentity,
+          profile: this.relayData.profile,
+        })
         this.setRelayData(this.relayData)
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
       } catch (err: any) {
         console.error(err)
         // TODO: Move specialization down error displayer
-        if (err.response.status === 413) {
+        if (err.response?.status === 413) {
           errorNotify(new Error(this.$t('profileDialog.avatarTooLarge')))
           this.$q.loading.hide()
           throw err

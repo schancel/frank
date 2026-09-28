@@ -133,6 +133,9 @@ export default defineComponent({
         this.contact = {
           profile: {
             ...defaultRelayData.profile,
+            name: profileInfo.name ?? '',
+            bio: profileInfo.bio ?? '',
+            avatar: profileInfo.avatar ?? '',
             pubKey: markRaw(PublicKey.fromBuffer(profileInfo.pubKey)),
           },
         }

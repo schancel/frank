@@ -86,7 +86,8 @@ import { PrivateKey, crypto as bitcoreCrypto } from 'bitcore-lib-xpi'
 import axios from 'axios'
 
 import __pb_registry_metadata_pb from '@frank/cashweb/registry/metadata_pb'
-const { AddressMetadata, ListMonadProfilesResponse } = __pb_registry_metadata_pb
+const { AddressMetadata, Entry, Header, ListMonadProfilesResponse } =
+  __pb_registry_metadata_pb
 import __pb_signed_payload_payload_pb from '@frank/cashweb/signed_payload/payload_pb'
 const { SignedPayload } = __pb_signed_payload_payload_pb
 import { ChainAddress, HDSeed, ProfileInfo } from './chain/active-chain'
@@ -175,11 +176,49 @@ export class MonadIdentity implements FrankIdentityHandle {
  * `AddressMetadata` -- the same "no vCard content, just proving registration itself" shape
  * `lotus-identity.ts`'s `buildSignedAddressMetadata` uses (see that function's doc comment for why
  * an empty `burn_txs`/`transactions` list is sufficient with POP disabled). */
-function buildSignedAddressMetadata(identity: MonadIdentity): Buffer {
+export interface MonadProfileFields {
+  name?: string
+  bio?: string
+  avatar?: string
+}
+
+function profileEntries(profile: MonadProfileFields = {}) {
+  const entries: InstanceType<typeof Entry>[] = []
+  const addTextEntry = (kind: string, value?: string) => {
+    if (!value) return
+    const entry = new Entry()
+    entry.setKind(kind)
+    entry.setBody(new TextEncoder().encode(value))
+    entries.push(entry)
+  }
+
+  addTextEntry('display_name', profile.name)
+  addTextEntry('bio', profile.bio)
+
+  if (profile.avatar) {
+    const match = /^data:([^;,]+);base64,(.+)$/.exec(profile.avatar)
+    if (match) {
+      const avatar = new Entry()
+      avatar.setKind('avatar')
+      avatar.setBody(Buffer.from(match[2], 'base64'))
+      const contentType = new Header()
+      contentType.setName('content-type')
+      contentType.setValue(match[1])
+      avatar.addHeaders(contentType)
+      entries.push(avatar)
+    }
+  }
+  return entries
+}
+
+function buildSignedAddressMetadata(
+  identity: MonadIdentity,
+  profile: MonadProfileFields = {},
+): Buffer {
   const metadata = new AddressMetadata()
   metadata.setTimestamp(Date.now())
   metadata.setTtl(1000 * 60 * 60 * 24 * 365) // 1 year, in milliseconds
-  metadata.setEntriesList([])
+  metadata.setEntriesList(profileEntries(profile))
   const serializedPayload = Buffer.from(metadata.serializeBinary())
   const payloadHash = bitcoreCrypto.Hash.sha256(serializedPayload)
 
@@ -202,8 +241,9 @@ function buildSignedAddressMetadata(identity: MonadIdentity): Buffer {
 export async function registerMonadIdentity(params: {
   relayBaseUrl: string
   identity: MonadIdentity
+  profile?: MonadProfileFields
 }): Promise<void> {
-  const body = buildSignedAddressMetadata(params.identity)
+  const body = buildSignedAddressMetadata(params.identity, params.profile)
   await axios({
     method: 'put',
     url: `${params.relayBaseUrl.replace(/\/+$/, '')}/metadata/${
@@ -252,12 +292,48 @@ export async function fetchMonadProfile(params: {
   relayBaseUrl: string
   address: ChainAddress
 }): Promise<ProfileInfo | undefined> {
-  const pubKey = await fetchMonadIdentityPubKey({
-    relayBaseUrl: params.relayBaseUrl,
-    address: params.address.raw,
-  })
-  if (pubKey === undefined) return undefined
-  return { address: params.address, pubKey: new Uint8Array(pubKey) }
+  try {
+    const response = await axios({
+      method: 'get',
+      url: `${params.relayBaseUrl.replace(/\/+$/, '')}/metadata/${
+        params.address.raw
+      }`,
+      responseType: 'arraybuffer',
+    })
+    const signedPayload = SignedPayload.deserializeBinary(
+      new Uint8Array(response.data),
+    )
+    const metadata = AddressMetadata.deserializeBinary(
+      signedPayload.getPayload_asU8(),
+    )
+    const result: ProfileInfo = {
+      address: params.address,
+      pubKey: signedPayload.getPublicKey_asU8(),
+    }
+    for (const entry of metadata.getEntriesList()) {
+      const kind = entry.getKind()
+      if (kind === 'display_name') {
+        result.name = new TextDecoder().decode(entry.getBody_asU8())
+      } else if (kind === 'bio') {
+        result.bio = new TextDecoder().decode(entry.getBody_asU8())
+      } else if (kind === 'avatar') {
+        const contentType =
+          entry
+            .getHeadersList()
+            .find(header => header.getName() === 'content-type')
+            ?.getValue() ?? 'image/png'
+        result.avatar = `data:${contentType};base64,${Buffer.from(
+          entry.getBody_asU8(),
+        ).toString('base64')}`
+      }
+    }
+    return result
+  } catch (err) {
+    if (axios.isAxiosError(err) && err.response?.status === 404) {
+      return undefined
+    }
+    throw err
+  }
 }
 
 /** One entry of `fetchMonadProfilesSince`'s result: a registered Monad profile's address, paired

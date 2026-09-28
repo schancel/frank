@@ -24,6 +24,7 @@ import { boot } from 'quasar/wrappers'
 
 import { activeChain } from '@frank/wallet/chain'
 import { useWalletStore } from '../stores/wallet'
+import { useProfileStore } from '../stores/my-profile'
 import { useMonadWallet } from '../utils/clients'
 import { startDirectMessagePolling } from '../adapters/pinia-chain-adapter'
 import {
@@ -70,9 +71,14 @@ const DIRECT_MESSAGE_POLL_INTERVAL_MS = Number(
 async function ensureIdentityRegistered(
   identity: MonadIdentity,
   config: MonadChainConfig,
+  profile: { name?: string; bio?: string; avatar?: string },
 ): Promise<void> {
   try {
-    await registerMonadIdentity({ relayBaseUrl: config.relayBaseUrl, identity })
+    await registerMonadIdentity({
+      relayBaseUrl: config.relayBaseUrl,
+      identity,
+      profile,
+    })
     console.log(
       `monad-direct-messages boot: registered identity ${identity.displayAddress} with ${config.relayBaseUrl}`,
     )
@@ -88,6 +94,8 @@ async function ensureIdentityRegistered(
 export default boot(async () => {
   const walletStore = useWalletStore()
   await walletStore.restored
+  const profileStore = useProfileStore()
+  await profileStore.restored
 
   if (!walletStore.seedPhrase) {
     console.log(
@@ -104,6 +112,7 @@ export default boot(async () => {
   await ensureIdentityRegistered(
     wallet.identity as MonadIdentity,
     loadMonadChainConfigFromEnv(),
+    profileStore.profile,
   )
 
   startDirectMessagePolling({

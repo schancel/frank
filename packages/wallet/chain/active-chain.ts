@@ -95,6 +95,10 @@ export interface ProfileInfo {
   /** Raw registered public key bytes (secp256k1), if any -- needed to derive an ECDH shared key
    * for direct-message encryption (`../wallet/monad-message-envelope.ts`). */
   pubKey: Uint8Array
+  /** Optional user-facing profile fields carried by the signed registration. */
+  name?: string
+  bio?: string
+  avatar?: string
 }
 
 export interface DirectMessageSendResult {

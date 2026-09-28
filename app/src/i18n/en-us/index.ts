@@ -46,11 +46,11 @@ export default {
   setup: {
     loginOrSignUp: 'Login/Sign Up',
     welcome: 'Welcome',
-    welcomeToStampChat: 'StampChat - Bienvenue !',
+    welcomeToStampChat: 'Welcome to Frank!',
     eulaDisclaimer:
-      'This software is very prototype cryptomessenger, and may lose funds. Keep larger amounts of Lotus in more established wallets.',
+      'Frank is experimental software. It may contain bugs that delay messages or cause a loss of funds. Only use amounts you can afford to lose.',
     eulaYouUnderstand:
-      'By clicking "Agree", you understand that this software is provided "As is", without warranty of any kind, express or implied, including but not limited to the warranties of merchantability, fitness for a particular purpose and non- infringement.',
+      'By clicking "Agree", you acknowledge that Frank is provided "as is", without warranties of any kind, express or implied.',
     setupWallet: 'Character Setup',
     eula: 'EULA',
     deposit: 'Deposit Lotus',

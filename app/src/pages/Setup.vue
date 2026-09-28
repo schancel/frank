@@ -164,10 +164,10 @@ export default defineComponent({
   },
   emits: ['setupCompleted', 'toggleMyDrawerOpen'],
   methods: {
-    selectRandomAvatar() {
+    selectRandomAvatar(): Promise<string> {
       const avatarName =
         defaultAvatars[Math.floor(Math.random() * defaultAvatars.length)]
-      const toDataURL = (callback: (dataURL: string) => void) => {
+      return new Promise((resolve, reject) => {
         const img = new Image()
         img.crossOrigin = 'Anonymous'
         img.onload = function () {
@@ -177,8 +177,9 @@ export default defineComponent({
           canvas.width = img.naturalWidth
           ctx?.drawImage(img, 0, 0)
           const dataURL = canvas.toDataURL()
-          callback(dataURL)
+          resolve(dataURL)
         }
+        img.onerror = () => reject(new Error('Unable to load default avatar'))
         // See Profile.vue's identical fix: ticket #51's Vite migration missed this webpack-only
         // dynamic `require()` for a resolved asset URL -- `new URL(..., import.meta.url)` is
         // Vite's native replacement.
@@ -186,9 +187,6 @@ export default defineComponent({
           `../assets/avatars/${avatarName}`,
           import.meta.url,
         ).href
-      }
-      toDataURL((dataUrl: string) => {
-        this.avatar = dataUrl
       })
     },
     newWallet() {
@@ -454,7 +452,7 @@ export default defineComponent({
       )
       await this.$emit('setupCompleted')
     },
-    next() {
+    async next() {
       const stepper = this.$refs.stepper as QStepper
 
       switch (this.step) {
@@ -475,6 +473,20 @@ export default defineComponent({
           // with the relay -- this is a pragmatic bridge to a working signup, not the real Monad-
           // native onboarding UI #47 still wants designed (no seed-backup reminder screen, no
           // display name wired to a Monad profile yet, "Deposit" step now unreachable dead UI).
+          if (!this.avatar) {
+            this.avatar = await this.selectRandomAvatar()
+          }
+          this.setRelayData({
+            profile: {
+              name: this.accountData.name || 'Frank User',
+              bio: '',
+              avatar: this.avatar,
+            },
+            inbox: defaultRelayData.inbox,
+          })
+          // Pinia's LevelDB subscription writes asynchronously. Give the profile mutation time to
+          // reach storage before the reload that initializes the new Monad wallet.
+          await new Promise(resolve => window.setTimeout(resolve, 100))
           window.location.hash = '#/'
           window.location.reload()
           break
@@ -534,6 +546,11 @@ export default defineComponent({
           return 'Unknown'
       }
     },
+  },
+  mounted() {
+    void this.selectRandomAvatar().then(avatar => {
+      this.avatar = avatar
+    })
   },
 })
 </script>

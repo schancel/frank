@@ -26,7 +26,9 @@
         <q-avatar rounded :style="contactColorStyle">
           <img :src="profileAvatar(contactProfile?.avatar, address)" />
         </q-avatar>
-        <q-toolbar-title class="h6">{{ contactProfile.name }}</q-toolbar-title>
+        <q-toolbar-title class="h6" :style="contactNameColorStyle">{{
+          contactProfile.name
+        }}</q-toolbar-title>
         <q-space />
         <q-btn
           class="q-px-sm"
@@ -103,6 +105,17 @@ export default defineComponent({
         return {}
       }
       return { boxShadow: `0 0 0 3px ${pubKeyToColor(pubKey.toBuffer())}` }
+    },
+    // Direct user feedback: the avatar ring alone was too easy to miss -- the same color cue is
+    // now also applied to the name text itself (kept alongside the ring, not instead of it, so
+    // there are two independent places a key change is visible). Same `pubKeyToColor` call, same
+    // "no pubkey yet" -> no color fallback as `contactColorStyle` above.
+    contactNameColorStyle() {
+      const pubKey = this.contactProfile?.pubKey
+      if (!pubKey) {
+        return {}
+      }
+      return { color: pubKeyToColor(pubKey.toBuffer()) }
     },
   },
 })

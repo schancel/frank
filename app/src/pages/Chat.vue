@@ -434,6 +434,13 @@ export default defineComponent({
       // Scroll to bottom if user was already there.
       this.scrollBottom()
     },
+    stampPreparationStatus() {
+      // The footer grows/shrinks as this status caption appears/disappears/changes text, which
+      // Quasar's q-layout accounts for by shrinking the scroll-area's own viewport live -- but
+      // that alone doesn't move scrollTop, so a pending message sitting right at the old bottom
+      // edge ends up hidden underneath the now-taller footer until the user scrolls manually.
+      this.scrollBottom()
+    },
     'active'(newActive) {
       if (!newActive) {
         return

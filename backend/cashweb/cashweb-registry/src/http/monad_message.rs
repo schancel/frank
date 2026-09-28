@@ -660,6 +660,7 @@ mod tests {
     #[derive(Clone, Default)]
     struct MockTransport {
         responses: Arc<Mutex<HashMap<String, Value>>>,
+        calls: Arc<Mutex<Vec<String>>>,
     }
 
     impl MockTransport {
@@ -669,6 +670,10 @@ mod tests {
                 .unwrap()
                 .insert(method.to_string(), response);
             self
+        }
+
+        fn calls(&self) -> Vec<String> {
+            self.calls.lock().unwrap().clone()
         }
     }
 
@@ -681,6 +686,7 @@ mod tests {
     #[async_trait]
     impl JsonRpcTransport for MockTransport {
         async fn call(&self, method: &str, _params: Value) -> Result<Value, MonadRpcError> {
+            self.calls.lock().unwrap().push(method.to_string());
             if method == "eth_sendRawTransaction" {
                 return Ok(Value::String(hex_hash(0x11)));
             }
@@ -850,8 +856,9 @@ mod tests {
 
             // No RPC responses are configured. Reaching broadcast would therefore produce an
             // infrastructure error instead of the required structural rejection.
+            let transport = MockTransport::default();
             let err = process_monad_message(
-                &MockTransport::default(),
+                &transport,
                 &registry,
                 10_000,
                 fast_poll(),
@@ -865,6 +872,11 @@ mod tests {
                 err,
                 ProcessMonadMessageError::MissingOrInvalidRecipient(_)
             ));
+            assert_eq!(
+                transport.calls(),
+                Vec::<String>::new(),
+                "invalid recipient must be rejected before any RPC, especially broadcast"
+            );
             assert_eq!(
                 registry.get_monad_message(&message.payload_hash).unwrap(),
                 None

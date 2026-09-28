@@ -36,6 +36,7 @@ const mockedAxios = axios as jest.Mocked<typeof axios>
 const TEST_MNEMONIC =
   'test test test test test test test test test test test junk'
 const BURN_ADDRESS = '0x000000000000000000000000000000000000dEaD'
+const RECIPIENT_ADDRESS = '0x4444444444444444444444444444444444444444'
 const CHAIN_ID = 10143
 
 // Explicit fee/gas overrides for every `submitStampedMessage` call below, so `ethers`'
@@ -214,6 +215,8 @@ describe('MonadStampClient.submitStampedMessage', () => {
       // the same commitment.
       const parsed = Transaction.from(hexOf(sentMessage.rawBurnTx))
       expect(getBytes(parsed.data).slice(5)).toEqual(expectedCommitment)
+      expect(parsed.to?.toLowerCase()).toBe(RECIPIENT_ADDRESS.toLowerCase())
+      expect(parsed.value).toBe(10_000n)
 
       return {
         data: storedMessageBytes(sentMessage),
@@ -226,7 +229,7 @@ describe('MonadStampClient.submitStampedMessage', () => {
 
     const result = await client.submitStampedMessage({
       encryptedPayload,
-      destinationAddress: BURN_ADDRESS,
+      destinationAddress: RECIPIENT_ADDRESS,
       stampValueWei: 10_000n,
       overrides: FEE_OVERRIDES,
     })

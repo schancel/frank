@@ -86,7 +86,7 @@ import { PrivateKey, crypto as bitcoreCrypto } from 'bitcore-lib-xpi'
 import axios from 'axios'
 
 import __pb_registry_metadata_pb from '@frank/cashweb/registry/metadata_pb'
-const { AddressMetadata } = __pb_registry_metadata_pb
+const { AddressMetadata, ListMonadProfilesResponse } = __pb_registry_metadata_pb
 import __pb_signed_payload_payload_pb from '@frank/cashweb/signed_payload/payload_pb'
 const { SignedPayload } = __pb_signed_payload_payload_pb
 import { ChainAddress, HDSeed, ProfileInfo } from './chain/active-chain'
@@ -258,6 +258,54 @@ export async function fetchMonadProfile(params: {
   })
   if (pubKey === undefined) return undefined
   return { address: params.address, pubKey: new Uint8Array(pubKey) }
+}
+
+/** One entry of `fetchMonadProfilesSince`'s result: a registered Monad profile's address, paired
+ * with its full `SignedPayload` envelope exactly as `fetchMonadIdentityPubKey`/`GET
+ * /metadata/monad/:addr` would return for that address alone (ticket #77). */
+export interface MonadProfileListingEntry {
+  address: string
+  // `InstanceType<typeof SignedPayload>`, not a bare `SignedPayload` type reference: the
+  // commonjs-default-import + destructure pattern this file uses for generated `_pb` bindings
+  // (see the `__pb_signed_payload_payload_pb` import above) only preserves `SignedPayload` as a
+  // value binding, not a type -- using it bare here would hit the same pre-existing `TS2749`
+  // ("refers to a value, but is being used as a type") already present elsewhere in this package
+  // for other generated proto classes (e.g. `monad-topic-post-client.ts`'s
+  // `StoredMonadTopicPost`/`BroadcastEntry`, `monad-topic-tally-client.ts`'s
+  // `MonadTopicPostView`) -- not introduced fresh here.
+  signedPayload: InstanceType<typeof SignedPayload>
+}
+
+/** `GET /metadata/monad?since=<sinceMs>` (ticket #75's endpoint, ticket #77's client): every
+ * Monad profile registered at or after `sinceMs` (milliseconds since the Unix epoch), ordered by
+ * registration timestamp ascending -- mirrors `fetchMonadMessagesSince`'s
+ * (`../cashweb/relay/monad-message-feed.ts`, ticket #37) identical "since cursor" shape for
+ * messages, letting a caller (e.g. the Qwen bot, ticket #77) discover newly-registered identities
+ * by polling with an advancing cursor.
+ *
+ * `ListMonadProfilesEntry.signed_payload` (`@frank/cashweb/registry/metadata_pb`) is a raw
+ * `bytes` field client-side, not a nested message type -- see `metadata.proto`'s doc comment on
+ * that message for why (wire-identical to the backend's embedded-message field either way) -- so
+ * it's decoded here via `SignedPayload.deserializeBinary` rather than a nested-message getter. */
+export async function fetchMonadProfilesSince(params: {
+  relayBaseUrl: string
+  sinceMs: number
+}): Promise<MonadProfileListingEntry[]> {
+  const response = await axios({
+    method: 'get',
+    url: `${params.relayBaseUrl.replace(/\/+$/, '')}/metadata/monad`,
+    params: { since: params.sinceMs },
+    responseType: 'arraybuffer',
+  })
+  const decoded = ListMonadProfilesResponse.deserializeBinary(
+    new Uint8Array(response.data),
+  )
+  return decoded.getEntriesList().map(entry => ({
+    address: entry.getAddress(),
+    signedPayload: SignedPayload.deserializeBinary(
+      entry.getSignedPayload_asU8(),
+    ),
+  }))
 }
 
 /** One entry in the relay's operator-curated default-contacts list -- see

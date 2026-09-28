@@ -40,3 +40,34 @@ message Peer {
 
 // A list of peers.
 message Peers { repeated Peer peers = 1; }
+
+// One entry of ListMonadProfilesResponse (ticket #77, client-side counterpart of the backend's
+// `ListMonadProfilesEntry` -- see `backend/cashweb/cashweb-registry/proto/monad_profile.proto`).
+// Field-number-matched to the backend message so the wire format is identical even though the
+// package/message names differ, mirroring this file's existing `AddressMetadata`/`MonadProfile`
+// relationship (see that backend proto's own doc comment).
+message ListMonadProfilesEntry {
+  // 0x-prefixed, EIP-55-checksummed 20-byte Monad address this profile is registered under.
+  string address = 1;
+  // The raw serialized `wrapper.SignedPayload` bytes (see
+  // `../../signed_payload/proto/payload.proto`), exactly as returned by GET
+  // /metadata/monad/:addr -- decoded separately via that file's own generated binding
+  // (`SignedPayload.deserializeBinary`) rather than imported here as a nested message type. A
+  // protobuf embedded-message field and a `bytes` field share the same wire encoding (length-
+  // delimited), so this is wire-identical to the backend's `cashweb.payload.SignedPayload
+  // signed_payload = 2` field; avoiding the nested-message import also sidesteps a cross-
+  // proto-directory `--proto_path` this package's `generate_protobufs.sh` (and every other
+  // client-side proto directory's) doesn't otherwise need or support.
+  bytes signed_payload = 2;
+}
+
+// Response for GET /metadata/monad?since=<timestamp> (ticket #75/#77): every Monad profile
+// registered at or after `since`, ordered by registration timestamp ascending. Client-side
+// counterpart of the backend's `ListMonadProfilesResponse` (see that backend proto's doc comment)
+// -- lets a bot discover newly-registered identities by polling with an advancing cursor,
+// mirroring `StoredMonadMessages`/`GET /message/monad?since=` (ticket #37/#72's precedent for this
+// exact "add message(s) to an existing client proto file + regenerate" pattern).
+message ListMonadProfilesResponse {
+  // Profiles registered at or after the request's `since`, ordered by timestamp ascending.
+  repeated ListMonadProfilesEntry entries = 1;
+}

@@ -35,19 +35,16 @@ import { resolve } from 'path'
 
 import { fetchMonadIdentityPubKey } from '@frank/wallet/monad-identity'
 import {
-  buildEnvelope,
   decryptEnvelope,
   parseEnvelope,
 } from '@frank/cashweb/relay/monad-message-envelope'
 import { fetchMonadMessagesSince } from '@frank/cashweb/relay/monad-message-feed'
-import {
-  deserializeMessageItems,
-  serializeMessageItems,
-} from '@frank/wallet/chain/monad-chain'
+import { deserializeMessageItems } from '@frank/wallet/chain/monad-chain'
 import {
   loadOrCreateIdentity,
   registerAndLog,
   requiredEnv,
+  sendDirectMessageText,
   setUpFundedStampClient,
 } from './qwen-bot-common'
 
@@ -149,21 +146,19 @@ async function main() {
       `\n== Turn ${turnIndex + 1}/${messages.length}: "${message}" ==`,
     )
     const sendTimestamp = Date.now()
-    const envelope = buildEnvelope({
-      fromAddress: identity.displayAddress,
-      fromPrivateKey: identity.toBitcorePrivateKey(),
-      toAddress: botAddress,
-      toPubKey: botPubKey,
-      // Wrapped as the real UI's MessageItem[] wire shape (see `extractText`'s doc comment) so the
-      // bot (which now also expects this shape first) parses it the same way a real UI would send.
-      plaintext: serializeMessageItems([{ type: 'text', text: message }]),
-    })
 
     console.log('Stamping + sending the message over Monad testnet ...')
-    const sent = await stampClient.submitStampedMessage({
-      encryptedPayload: envelope,
-      // Ticket #57: a DM's stamp pays its recipient (the bot), not a fixed burn address.
-      destinationAddress: botAddress,
+    // Ticket #77: goes through the shared `sendDirectMessageText` helper (`qwen-bot-common.ts`),
+    // extracted from this exact build-envelope-then-submit sequence (previously duplicated between
+    // this file and `qwen-bot.livecheck.ts`'s reply logic) -- a DM's stamp pays its recipient (the
+    // bot), not a fixed burn address (ticket #57), which the helper's `destinationAddress` always
+    // does.
+    const sent = await sendDirectMessageText({
+      stampClient,
+      fromIdentity: identity,
+      toAddress: botAddress,
+      toPubKey: botPubKey,
+      text: message,
       stampValueWei: burnValueWei,
     })
     console.log(

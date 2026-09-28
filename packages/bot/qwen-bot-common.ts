@@ -65,8 +65,13 @@ import {
   FanOutFundingResult,
 } from '@frank/wallet/monad-account-pool'
 import { SubAccountLeaseManager } from '@frank/wallet/monad-account-lease'
-import { MonadStampClient } from '@frank/wallet/monad-stamp-client'
+import {
+  MonadStampClient,
+  StampMonadMessageResult,
+} from '@frank/wallet/monad-stamp-client'
 import { MonadIdentity, registerMonadIdentity } from '@frank/wallet/monad-identity'
+import { buildEnvelope } from '@frank/cashweb/relay/monad-message-envelope'
+import { serializeMessageItems } from '@frank/wallet/chain/monad-chain'
 
 export function requiredEnv(name: string): string {
   const value = process.env[name]
@@ -139,6 +144,12 @@ export async function registerAndLog(params: {
 export interface FundedStampSetup {
   provider: JsonRpcProvider
   stampClient: MonadStampClient
+  /** The main funded testnet wallet's own signer (ticket #77): exposed here so a caller can send
+   * plain native-value transfers (e.g. funding a brand-new user's address on registration) without
+   * re-deriving its own `MonadAccountTxSigner` from `mainWalletJsonPath` a second time. Not part of
+   * `MonadStampClient`'s own surface -- that class only ever spends from the disposable sub-account
+   * pool (`pool`/`leaseManager`), never the main account directly. */
+  mainAccountSigner: MonadAccountTxSigner
 }
 
 /** Waits (polling `getStatus`) for `txHash` to reach a terminal state, throwing if it fails or
@@ -293,5 +304,38 @@ export async function setUpFundedStampClient(params: {
     relayBaseUrl: params.relayBaseUrl,
   })
 
-  return { provider, stampClient }
+  return { provider, stampClient, mainAccountSigner }
+}
+
+/**
+ * Builds the E2E-encrypted envelope for `text` (wrapped as the real UI's `MessageItem[]` wire
+ * shape -- see `qwen-bot.livecheck.ts`'s `extractText` doc comment for why) and sends it as a
+ * stamped direct message via `stampClient.submitStampedMessage`, paying `toAddress` itself (ticket
+ * #57: a DM's stamp always pays its recipient, never a fixed burn address).
+ *
+ * Ticket #77: factored out of `qwen-bot.livecheck.ts`'s reply-sending logic and
+ * `qwen-bot-send-demo.livecheck.ts`'s outgoing-message logic (which duplicated this exact
+ * build-envelope-then-submit sequence) so the new auto-greet behavior can reuse the same real
+ * DM-sending path instead of a third copy of it.
+ */
+export async function sendDirectMessageText(params: {
+  stampClient: MonadStampClient
+  fromIdentity: MonadIdentity
+  toAddress: string
+  toPubKey: Buffer
+  text: string
+  stampValueWei: bigint
+}): Promise<StampMonadMessageResult> {
+  const envelope = buildEnvelope({
+    fromAddress: params.fromIdentity.displayAddress,
+    fromPrivateKey: params.fromIdentity.toBitcorePrivateKey(),
+    toAddress: params.toAddress,
+    toPubKey: params.toPubKey,
+    plaintext: serializeMessageItems([{ type: 'text', text: params.text }]),
+  })
+  return params.stampClient.submitStampedMessage({
+    encryptedPayload: envelope,
+    destinationAddress: params.toAddress,
+    stampValueWei: params.stampValueWei,
+  })
 }

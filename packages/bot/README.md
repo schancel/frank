@@ -238,6 +238,39 @@ yarn send-demo
 own `ActiveChain` seam (`@frank/wallet/chain`) instead of the bot's own hand-rolled calls -- see
 that file's own header comment for its specific env vars.
 
+## Auto-greet / auto-fund new signups (ticket #77)
+
+Alongside its Qwen-reply behavior, `qwen-bot.livecheck.ts` also polls the live
+`GET /metadata/monad?since=<t>` route (ticket #75, via `fetchMonadProfilesSince`,
+`@frank/wallet/monad-identity`) for newly-registered Monad profiles. For each one seen after the
+bot's own startup (never itself), it sends a real greeting DM (the same stamped-message path used
+for Qwen replies, factored into `qwen-bot-common.ts`'s `sendDirectMessageText`) and funds the new
+address with a small amount of real testnet MON, sent directly via `MonadAccountTxSigner.
+buildAndSignTransfer` on the main funded wallet -- see `qwen-bot.livecheck.ts`'s own header comment
+(point 5) for why that primitive was used instead of `fanOutFundSubAccounts`
+(`@frank/wallet/monad-account-pool.ts`), which this ticket's own text originally suggested but
+which is actually scoped to funding the bot's *own* derived sub-account pool, not arbitrary
+third-party addresses.
+
+Configuration (env vars, all optional):
+
+- `QWEN_BOT_MAX_GREETINGS` -- max new registrations to greet+fund per run (default `5`). Also
+  widens the bot's pre-funded stamp sub-account pool (`poolSize = maxReplies + maxGreetings`),
+  since a greeting DM consumes a disposable sub-account exactly like a Qwen reply does.
+- `QWEN_BOT_GREETING_MESSAGE` -- the greeting DM's text (default: a short welcome message).
+- `QWEN_BOT_FUND_VALUE_WEI` -- wei sent to each newly-greeted address (default `1000000000000000`,
+  i.e. 0.001 MON -- a small, symbolic amount, not full burn-cost coverage).
+
+Idempotency: matches this script's own message-reply loop's risk tolerance -- an in-memory
+`Set` of already-greeted addresses avoids double-greeting/double-funding within a single run, but
+(like `processedPayloadHashes` for messages) isn't persisted across restarts. A restart could in
+principle re-greet an address it already greeted in a prior run; there's no persistent dedupe
+layer for this manually-run demo script, matching its existing standard.
+
+**Not live-tested in the environment this ticket was implemented in** -- no funded testnet wallet
+or live relay was available in that sandbox. Verified via `yarn jest`/`tsc --noEmit`/code review
+only; see the ticket's PR description for the exact commands run.
+
 ## Non-goals (per the ticket)
 
 Production hardening, multi-user bot support, prompt/persona design polish, and a full

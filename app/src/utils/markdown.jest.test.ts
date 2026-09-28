@@ -24,9 +24,7 @@ import { renderMarkdown, purify } from './markdown'
 
 jest.mock('quasar', () => ({
   colors: {
-    getPaletteColor: jest.fn(
-      (name: string) => `mock-color(${name})`,
-    ),
+    getPaletteColor: jest.fn((name: string) => `mock-color(${name})`),
   },
 }))
 

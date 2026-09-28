@@ -4,7 +4,11 @@
  */
 import { processInput } from './chat'
 
-function makeItem(kind: string, type: string, file: File | null): DataTransferItem {
+function makeItem(
+  kind: string,
+  type: string,
+  file: File | null,
+): DataTransferItem {
   return {
     kind,
     type,

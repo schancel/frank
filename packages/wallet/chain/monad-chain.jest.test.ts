@@ -217,6 +217,23 @@ describe('createMonadChain: fetchProfile', () => {
       await chain.fetchProfile({ raw: '0x' + '00'.repeat(20) }),
     ).toBeUndefined()
   })
+
+  it('uses opts.relayBaseUrl instead of the chain default when given (ticket #78)', async () => {
+    const chain = createMonadChain(TEST_CONFIG)
+    const addr = { raw: '0x000000000000000000000000000000000000dEaD' }
+    const profile = { address: addr, pubKey: new Uint8Array([1, 2, 3]) }
+    mockedFetchMonadProfile.mockResolvedValueOnce(profile)
+
+    const result = await chain.fetchProfile(addr, {
+      relayBaseUrl: 'https://someone-elses-relay.example',
+    })
+
+    expect(result).toBe(profile)
+    expect(mockedFetchMonadProfile).toHaveBeenCalledWith({
+      relayBaseUrl: 'https://someone-elses-relay.example',
+      address: addr,
+    })
+  })
 })
 
 describe('createMonadChain: nativeTransfers', () => {

@@ -120,3 +120,40 @@ message MonadTopicPostViews {
   // The matching posts, ordered by `post.post.timestamp` ascending.
   repeated MonadTopicPostView views = 1;
 }
+
+// Per-distinct-topic discovery stats (ticket #72), stored in `CF_MONAD_TOPIC_DISCOVERY`. Topics
+// stay emergent/tag-based -- there is no separate topic-registration flow and no separate
+// anti-spam gate for appearing in this index: a topic post already requires a real burn
+// transaction to store (see `monad_topic_verify`'s module docs), so a topic name showing up here
+// is already gated by that same cost. See this ticket's design-decision comment on GitHub issue
+// #72, and `crate::store::monad_topics`'s module docs for exactly how/when these fields update.
+message TopicDiscoveryStats {
+  // Total number of posts stored under this topic. Incremented by exactly one per genuinely new
+  // `payload_hash` stored under the topic; a retried `put` of an already-stored `payload_hash`
+  // does not double-count.
+  uint64 post_count = 1;
+  // Milliseconds since the Unix epoch of the most recent post stored under this topic (the
+  // maximum of every stored post's own `timestamp` for this topic). Never decreases.
+  int64 last_activity_ms = 2;
+}
+
+// One entry of `ListTopicsResponse` (ticket #72): a discovered topic name paired with its current
+// [`TopicDiscoveryStats`], flattened onto a single message for a simpler wire shape than nesting.
+message TopicDiscoveryEntry {
+  // The topic name itself. Stored/keyed as the raw string (see `crate::store::monad_topics`'s
+  // module docs for why this index, unlike `CF_MONAD_TOPIC_POSTS_BY_TOPIC`, doesn't hash it).
+  string topic = 1;
+  // Same as `TopicDiscoveryStats.post_count`.
+  uint64 post_count = 2;
+  // Same as `TopicDiscoveryStats.last_activity_ms`.
+  int64 last_activity_ms = 3;
+}
+
+// Response shape for `GET /message/monad/topics/discover` (ticket #72): every distinct topic name
+// this relay has stored at least one post for, ordered by `last_activity_ms` descending. No
+// pagination cursor -- see `crate::store::monad_topics::DbMonadTopicPosts::list_topics`'s docs for
+// why (small keyspace; add pagination if this ever becomes a real scaling concern).
+message ListTopicsResponse {
+  // The discovered topics, ordered by `last_activity_ms` descending.
+  repeated TopicDiscoveryEntry entries = 1;
+}

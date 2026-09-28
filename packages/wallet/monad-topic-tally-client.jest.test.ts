@@ -39,12 +39,14 @@ import { SubAccountLeaseManager } from './monad-account-lease'
 import { MonadTxSubmitter } from './monad-account-tx'
 import { ForumMessageEntry } from '@frank/cashweb/types/forum'
 import {
+  ListTopicsResponse,
   MonadTopicPost,
   MonadTopicPostView,
   MonadTopicPostViews,
   MonadTopicVote,
   StoredMonadTopicPost,
   StoredMonadTopicVoteEntry,
+  TopicDiscoveryEntry,
 } from './topic_message_pb'
 import {
   MonadTopicPostClient,
@@ -52,6 +54,7 @@ import {
 } from './monad-topic-post-client'
 import { MonadTopicVoteClient } from './monad-topic-vote-client'
 import {
+  fetchDiscoveredTopics,
   fetchMonadTopicPostView,
   fetchMonadTopicPostsSince,
 } from './monad-topic-tally-client'
@@ -630,5 +633,123 @@ describe('post -> vote -> tally, chained through the real #31/#32/#33 clients', 
     expect(listed[0].post?.post?.payloadHash).toEqual(
       getBytes('0x' + postResult.payloadHashHex),
     )
+  })
+})
+
+// =================================================================================================
+// 4. fetchDiscoveredTopics (ticket #72)
+// =================================================================================================
+
+describe('fetchDiscoveredTopics', () => {
+  beforeEach(() => {
+    jest.clearAllMocks()
+    mockedAxios.isAxiosError.mockImplementation(
+      (e: unknown) => (e as { isAxiosError?: boolean })?.isAxiosError === true,
+    )
+  })
+
+  function discoveryEntry(
+    topic: string,
+    postCount: number,
+    lastActivityMs: number,
+  ): TopicDiscoveryEntry {
+    const entry = new TopicDiscoveryEntry()
+    entry.setTopic(topic)
+    entry.setPostCount(postCount)
+    entry.setLastActivityMs(lastActivityMs)
+    return entry
+  }
+
+  it('GETs /message/monad/topics/discover and decodes every entry', async () => {
+    const response = new ListTopicsResponse()
+    response.setEntriesList([
+      discoveryEntry('topic.newest', 3, 300),
+      discoveryEntry('topic.oldest', 1, 100),
+    ])
+    mockedAxios.mockImplementationOnce(async config => {
+      expect(config.method).toBe('get')
+      expect(config.url).toBe(`${RELAY_BASE_URL}/message/monad/topics/discover`)
+      expect(config.responseType).toBe('arraybuffer')
+      return {
+        data: Buffer.from(response.serializeBinary()),
+        status: 200,
+        statusText: 'OK',
+        headers: {},
+        config,
+      }
+    })
+
+    const result = await fetchDiscoveredTopics({ relayBaseUrl: RELAY_BASE_URL })
+
+    expect(result).toEqual([
+      { topic: 'topic.newest', postCount: 3, lastActivityMs: 300 },
+      { topic: 'topic.oldest', postCount: 1, lastActivityMs: 100 },
+    ])
+  })
+
+  it('strips a trailing slash from relayBaseUrl before building the discover URL', async () => {
+    mockedAxios.mockImplementationOnce(async config => {
+      expect(config.url).toBe(`${RELAY_BASE_URL}/message/monad/topics/discover`)
+      return {
+        data: Buffer.from(new ListTopicsResponse().serializeBinary()),
+        status: 200,
+        statusText: 'OK',
+        headers: {},
+        config,
+      }
+    })
+
+    await fetchDiscoveredTopics({ relayBaseUrl: `${RELAY_BASE_URL}/` })
+  })
+
+  it('decodes an empty response as an empty array', async () => {
+    mockedAxios.mockImplementationOnce(async () => ({
+      data: Buffer.from(new ListTopicsResponse().serializeBinary()),
+      status: 200,
+      statusText: 'OK',
+      headers: {},
+      config: {},
+    }))
+
+    expect(
+      await fetchDiscoveredTopics({ relayBaseUrl: RELAY_BASE_URL }),
+    ).toEqual([])
+  })
+
+  it('fails soft (returns []) on a network-level error, unlike the other fetchers in this file', async () => {
+    mockedAxios.mockImplementationOnce(async () => {
+      throw new Error('socket hang up')
+    })
+
+    const result = await fetchDiscoveredTopics({ relayBaseUrl: RELAY_BASE_URL })
+    expect(result).toEqual([])
+  })
+
+  it('fails soft (returns []) on a non-2xx HTTP error', async () => {
+    mockedAxios.mockImplementationOnce(async () => {
+      const err = Object.assign(new Error('Internal Server Error'), {
+        isAxiosError: true,
+        response: { status: 500, data: undefined },
+      })
+      throw err
+    })
+
+    const result = await fetchDiscoveredTopics({ relayBaseUrl: RELAY_BASE_URL })
+    expect(result).toEqual([])
+  })
+
+  it('fails soft (returns []) on a malformed/undecodable response body', async () => {
+    mockedAxios.mockImplementationOnce(async () => ({
+      // Tag byte 0x0a (field 1, length-delimited) declares a 5-byte payload but supplies none --
+      // a truncated length-delimited field, guaranteed to throw during decode.
+      data: Buffer.from([0x0a, 0x05]),
+      status: 200,
+      statusText: 'OK',
+      headers: {},
+      config: {},
+    }))
+
+    const result = await fetchDiscoveredTopics({ relayBaseUrl: RELAY_BASE_URL })
+    expect(result).toEqual([])
   })
 })

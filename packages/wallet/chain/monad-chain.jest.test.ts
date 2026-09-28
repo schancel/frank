@@ -84,6 +84,7 @@ const { MonadTopicVoteClient } = jest.requireMock('../monad-topic-vote-client')
 const { MonadAccountTxSigner } = jest.requireMock('../monad-account-tx')
 import { fetchMonadMessagesSince } from '@frank/cashweb/relay/monad-message-feed'
 import {
+  fetchDiscoveredTopics,
   fetchMonadTopicPostView,
   fetchMonadTopicPostsSince,
 } from '../monad-topic-tally-client'
@@ -97,6 +98,8 @@ const mockedFetchMonadTopicPostsSince =
   >
 const mockedFetchMonadTopicPostView =
   fetchMonadTopicPostView as jest.MockedFunction<typeof fetchMonadTopicPostView>
+const mockedFetchDiscoveredTopics =
+  fetchDiscoveredTopics as jest.MockedFunction<typeof fetchDiscoveredTopics>
 const mockedFetchMonadProfile = fetchMonadProfile as jest.MockedFunction<
   typeof fetchMonadProfile
 >
@@ -690,6 +693,22 @@ describe('createMonadChain: topics.fetchByTopic / fetchOne / viewToForumMessage'
     const chain = createMonadChain(TEST_CONFIG)
     mockedFetchMonadTopicPostView.mockResolvedValueOnce(undefined)
     expect(await chain.topics.fetchOne('00'.repeat(32))).toBeUndefined()
+  })
+
+  it('discoverTopics reads via the chain-level relayBaseUrl (no wallet needed)', async () => {
+    const chain = createMonadChain(TEST_CONFIG)
+    mockedFetchDiscoveredTopics.mockResolvedValueOnce([
+      { topic: 'general', postCount: 3, lastActivityMs: 500 },
+    ])
+
+    const result = await chain.topics.discoverTopics()
+
+    expect(mockedFetchDiscoveredTopics).toHaveBeenCalledWith({
+      relayBaseUrl: TEST_CONFIG.relayBaseUrl,
+    })
+    expect(result).toEqual([
+      { topic: 'general', postCount: 3, lastActivityMs: 500 },
+    ])
   })
 })
 

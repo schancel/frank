@@ -46,6 +46,15 @@ pub(crate) const CF_MONAD_TOPIC_VOTES: &str = "monad_topic_votes";
 /// `"a"` would incorrectly also return `"ab"`'s posts). Lets `DbMonadTopicPosts::list_by_topic`
 /// range-scan a single topic's posts in timestamp order -- see `crate::store::monad_topics`'s module docs.
 pub(crate) const CF_MONAD_TOPIC_POSTS_BY_TOPIC: &str = "monad_topic_posts_by_topic";
+/// Ticket #72: secondary index over `CF_MONAD_TOPIC_POSTS`, keyed directly by the raw topic name
+/// string (value: an encoded `proto::TopicDiscoveryStats`) -- unlike
+/// `CF_MONAD_TOPIC_POSTS_BY_TOPIC`, this index is looked up by exact topic match, never
+/// prefix-scanned, so there's no byte-prefix ambiguity to hash away (see
+/// `crate::store::monad_topics`'s module docs). Lets `DbMonadTopicPosts::list_topics` discover
+/// every distinct topic name this relay has seen a post for, without a client already knowing
+/// topic names out of band -- topics stay emergent/tag-based, so this is the closest thing to a
+/// "topic list" this crate has.
+pub(crate) const CF_MONAD_TOPIC_DISCOVERY: &str = "monad_topic_discovery";
 /// Ticket #45: stores the `cashweb_payload::proto::SignedPayload` envelope of a Monad-native
 /// profile registration (`PUT`/`GET /metadata/monad/:addr`), keyed directly by the registrant's
 /// raw 20-byte Monad address -- see `crate::store::monad_profiles`'s module docs for why this is

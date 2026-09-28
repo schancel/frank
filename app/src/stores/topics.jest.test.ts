@@ -26,6 +26,7 @@ jest.mock('@frank/wallet/chain', () => ({
       vote: jest.fn(),
       fetchByTopic: jest.fn(),
       fetchOne: jest.fn(),
+      discoverTopics: jest.fn(),
     },
   },
 }))
@@ -37,6 +38,7 @@ const mockedPost = activeChain.topics.post as jest.Mock
 const mockedVote = activeChain.topics.vote as jest.Mock
 const mockedFetchByTopic = activeChain.topics.fetchByTopic as jest.Mock
 const mockedFetchOne = activeChain.topics.fetchOne as jest.Mock
+const mockedDiscoverTopics = activeChain.topics.discoverTopics as jest.Mock
 
 const testWallet = {
   identity: { address: { raw: '0xabc' }, displayAddress: '0xabc' },
@@ -190,6 +192,62 @@ describe('useTopicStore: refreshMessages', () => {
     await store.refreshMessages({ wallet: testWallet, topic: 'stamp' })
 
     expect(store.topics['stamp'].messages).toHaveLength(0)
+  })
+})
+
+describe('useTopicStore: refreshDiscoveredTopics', () => {
+  it('merges discovered topics into state.topics alongside the hardcoded defaults', async () => {
+    const store = useTopicStore()
+    // Simulate the hardcoded `defaultTopics` seed (normally hydrated by `storage.restore`):
+    // `refreshDiscoveredTopics` must not remove or replace these.
+    store.ensureTopic('stamp')
+    store.ensureTopic('news')
+
+    mockedDiscoverTopics.mockResolvedValueOnce([
+      { topic: 'general', postCount: 5, lastActivityMs: 1_000 },
+      { topic: 'trading', postCount: 1, lastActivityMs: 2_000 },
+    ])
+
+    await store.refreshDiscoveredTopics()
+
+    expect(mockedDiscoverTopics).toHaveBeenCalledWith()
+    // Hardcoded defaults are still present.
+    expect(store.getTopics).toEqual(
+      expect.arrayContaining(['stamp', 'news', 'general', 'trading']),
+    )
+  })
+
+  it('does not clobber an already-known topic (e.g. its accumulated messages)', async () => {
+    const store = useTopicStore()
+    const topicState = store.ensureTopic('stamp')
+    topicState.messages.push({
+      poster: '0xposter',
+      topic: 'stamp',
+      satoshis: 1,
+      entries: [],
+      payloadDigest: 'existing',
+      timestamp: new Date(),
+      replies: [],
+    })
+
+    mockedDiscoverTopics.mockResolvedValueOnce([
+      { topic: 'stamp', postCount: 10, lastActivityMs: 999 },
+    ])
+
+    await store.refreshDiscoveredTopics()
+
+    expect(store.topics['stamp'].messages).toHaveLength(1)
+    expect(store.topics['stamp'].messages[0].payloadDigest).toBe('existing')
+  })
+
+  it('does nothing (and does not throw) when discovery returns no topics', async () => {
+    const store = useTopicStore()
+    store.ensureTopic('stamp')
+    mockedDiscoverTopics.mockResolvedValueOnce([])
+
+    await expect(store.refreshDiscoveredTopics()).resolves.toBeUndefined()
+
+    expect(store.getTopics).toEqual(['stamp'])
   })
 })
 

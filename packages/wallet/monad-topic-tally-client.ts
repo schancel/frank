@@ -1,7 +1,10 @@
 /**
  * Client-side read/tally functions for Monad topic posts (ticket #33): fetch every post under a
  * topic, and fetch a single post by its `payload_hash` -- each response already carries the
- * relay's own tallied `vote_weight`.
+ * relay's own tallied `vote_weight`. Also home to [`fetchDiscoveredTopics`] (ticket #72), the
+ * client for the relay's topic-discovery index (`GET /message/monad/topics/discover`) -- grouped
+ * here rather than a new file since it hits the same `/message/monad/topics*` route family and
+ * decodes the same `topic_message_pb` bindings as the rest of this file.
  *
  * This is the last piece of the topic-broadcast feature (#26/#30/#31/#32/#40, see `PLAN.md`'s M8
  * section): the Lotus reference this mirrors, `app/src/cashweb/registry/index.ts`'s
@@ -83,7 +86,8 @@
 import axios from 'axios'
 
 import __pb_topic_message_pb from './topic_message_pb'
-const { MonadTopicPostView, MonadTopicPostViews } = __pb_topic_message_pb
+const { MonadTopicPostView, MonadTopicPostViews, ListTopicsResponse } =
+  __pb_topic_message_pb
 import {
   MonadTopicPostProto,
   MonadTopicPostViewProto,
@@ -174,5 +178,62 @@ export async function fetchMonadTopicPostView(params: {
       return undefined
     }
     throw err
+  }
+}
+
+/** A single discovered topic, as returned by [`fetchDiscoveredTopics`] -- decoded from a
+ * `TopicDiscoveryEntry` (ticket #72). */
+export type DiscoveredTopic = {
+  topic: string
+  postCount: number
+  lastActivityMs: number
+}
+
+/** `GET /message/monad/topics/discover` (ticket #72): every distinct topic name the relay has
+ * stored at least one post for, each paired with its post count and last-activity timestamp,
+ * ordered by `lastActivityMs` descending -- the server's own contract
+ * (`handle_list_topics`/`ListTopicsResponse`, `backend/cashweb/cashweb-registry/src/http/
+ * monad_topics.rs`).
+ *
+ * Per the design decision recorded on GitHub issue #72, topics stay emergent/tag-based: there is
+ * no separate topic-registration flow, and no separate anti-spam gate for a topic name showing up
+ * here -- a topic post already requires a real burn transaction to store, so this endpoint is
+ * simply exposing the relay's own bookkeeping of topic names it has observed a post for. No
+ * `since`/pagination parameter -- the route returns everything (see the Rust handler's own docs
+ * for why: a small keyspace, not something that needs pagination yet).
+ *
+ * Fail-soft: unlike [`fetchMonadTopicPostView`]/[`fetchMonadTopicPostsSince`] above (which throw
+ * on anything but a 404), this swallows *any* failure (network error, non-2xx response, or a
+ * malformed/undecodable response body) and returns `[]`, logging the failure via `console.error`.
+ * This mirrors ticket #49's `fetchCuratedDefaultContacts` (`monad-identity.ts`) fail-soft
+ * convention: discovery is purely additive on top of `app/src/stores/topics.ts`'s hardcoded
+ * `defaultTopics` fallback, so a broken/unreachable relay should degrade to "just the defaults",
+ * not break the Forum page. */
+export async function fetchDiscoveredTopics(params: {
+  relayBaseUrl: string
+}): Promise<DiscoveredTopic[]> {
+  try {
+    const response = await axios({
+      method: 'get',
+      url: `${params.relayBaseUrl.replace(
+        /\/+$/,
+        '',
+      )}/message/monad/topics/discover`,
+      responseType: 'arraybuffer',
+    })
+    const decoded = ListTopicsResponse.deserializeBinary(
+      new Uint8Array(response.data),
+    )
+    return decoded.getEntriesList().map(entry => ({
+      topic: entry.getTopic(),
+      postCount: entry.getPostCount(),
+      lastActivityMs: entry.getLastActivityMs(),
+    }))
+  } catch (err) {
+    console.error(
+      'monad-topic-tally-client: failed to fetch discovered topics',
+      err,
+    )
+    return []
   }
 }

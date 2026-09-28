@@ -118,6 +118,7 @@ import {
 } from '../monad-topic-post-client'
 import { MonadTopicVoteClient } from '../monad-topic-vote-client'
 import {
+  fetchDiscoveredTopics,
   fetchMonadTopicPostView,
   fetchMonadTopicPostsSince,
 } from '../monad-topic-tally-client'
@@ -453,6 +454,13 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
         payloadHashHex: payloadDigest,
       })
       return view ? viewToForumMessage(view) : undefined
+    },
+
+    async discoverTopics() {
+      // No wallet needed -- same "read via the chain's own configured relayBaseUrl" shape as
+      // `fetchOne` above. `fetchDiscoveredTopics` itself already fails soft (`[]`), so there's
+      // nothing further to catch here.
+      return fetchDiscoveredTopics({ relayBaseUrl: config.relayBaseUrl })
     },
   }
 

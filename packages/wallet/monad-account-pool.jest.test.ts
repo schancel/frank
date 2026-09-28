@@ -280,6 +280,7 @@ describe('MonadSubAccountPool', () => {
         logs: [],
       }))
       const mainWallet = Wallet.createRandom()
+      balances.set(mainWallet.address.toLowerCase(), 1_000_000n)
       const provider = makeStubProvider(async request => {
         if (request.method === 'getTransactionCount') {
           const address = (
@@ -311,6 +312,7 @@ describe('MonadSubAccountPool', () => {
         pool,
         provider,
         store,
+        mainAddress: mainWallet.address,
       }
     }
 
@@ -408,6 +410,74 @@ describe('MonadSubAccountPool', () => {
 
       expect(result.selectedAccountCount).toBe(1)
       expect(httpClient.submitRawTransaction).toHaveBeenCalledTimes(1)
+    })
+
+    it('fails before broadcasting when the complete preferred funding set is unaffordable', async () => {
+      const {
+        balances,
+        httpClient,
+        mainAccountSigner,
+        mainAddress,
+        pool,
+        provider,
+      } = setupPreparation()
+      // Preferred set: (375 + 10) + (625 + 10) of value, plus two 21,000-gas
+      // funding transfers at a 1-wei fee cap = 43,020 wei total.
+      balances.set(mainAddress.toLowerCase(), 22_009n)
+
+      await expect(
+        pool.prepareStampInventory({
+          mainAccountSigner,
+          provider,
+          stampValueWei: 1_000n,
+          gasReserveWei: 10n,
+          fundingOverrides: {
+            gasLimit: 21_000n,
+            maxFeePerGas: 1n,
+            maxPriorityFeePerGas: 1n,
+            chainId: BigInt(CHAIN_ID),
+          },
+          receipt: { maxAttempts: 0 },
+        }),
+      ).rejects.toThrow(/need up to 22010 wei, have 22009 wei/)
+
+      expect(httpClient.submitRawTransaction).not.toHaveBeenCalled()
+      expect(pool.records().every(record => record.status === 'unfunded')).toBe(
+        true,
+      )
+    })
+
+    it('falls back to one funded account when one is affordable but the preferred two are not', async () => {
+      const {
+        balances,
+        httpClient,
+        mainAccountSigner,
+        mainAddress,
+        pool,
+        provider,
+      } = setupPreparation()
+      balances.set(mainAddress.toLowerCase(), 22_010n)
+
+      const result = await pool.prepareStampInventory({
+        mainAccountSigner,
+        provider,
+        stampValueWei: 1_000n,
+        gasReserveWei: 10n,
+        fundingOverrides: {
+          gasLimit: 21_000n,
+          maxFeePerGas: 1n,
+          maxPriorityFeePerGas: 1n,
+          chainId: BigInt(CHAIN_ID),
+        },
+        receipt: { maxAttempts: 0 },
+      })
+
+      expect(result.selectedAccountCount).toBe(1)
+      expect(httpClient.submitRawTransaction).toHaveBeenCalledTimes(1)
+      const funded = Transaction.from(
+        httpClient.submitRawTransaction.mock.calls[0][0],
+      )
+      expect(funded.value).toBe(1_010n)
     })
 
     it('serializes concurrent preparations so main-account nonces remain distinct', async () => {

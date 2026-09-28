@@ -66,6 +66,16 @@ pub(crate) const CF_MONAD_PROFILES: &str = "monad_profiles";
 /// `DbMonadProfiles::list_since` discover newly-registered profiles in timestamp order, e.g. for a
 /// bot to auto-greet/auto-fund new signups.
 pub(crate) const CF_MONAD_PROFILES_BY_TIME: &str = "monad_profiles_by_time";
+/// Ticket #48: secondary index over `CF_MONAD_PROFILES`, keyed by `normalized_name.as_bytes() ++
+/// address` (value: the raw address) -- normalized_name is the profile's `display_name`
+/// `AddressEntry` body, lowercased. Unlike `CF_MONAD_TOPIC_POSTS_BY_TOPIC`'s hashed-topic index,
+/// this one keeps the raw (unhashed) UTF-8 bytes of the normalized name as the key prefix, because
+/// its whole purpose is prefix scanning (`DbMonadProfiles::search_by_name`) -- hashing would
+/// destroy the sort order a prefix scan depends on. Multiple profiles may share the same
+/// normalized name, hence appending `address` to the key for uniqueness, same reasoning as
+/// `CF_MONAD_PROFILES_BY_TIME`'s `timestamp ++ address` key. See
+/// `crate::store::monad_profiles`'s module docs for how this is maintained/queried.
+pub(crate) const CF_MONAD_PROFILES_BY_NAME: &str = "monad_profiles_by_name";
 
 pub(crate) type CF = rocksdb::ColumnFamily;
 

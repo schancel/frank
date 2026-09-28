@@ -544,6 +544,19 @@ impl Registry {
         self.db.monad_profiles().list_since(since)
     }
 
+    /// Prefix-search registered Monad profiles by their normalized `display_name` (ticket #48),
+    /// ordered by normalized name ascending, capped at `limit` (clamped to
+    /// `store::monad_profiles::MAX_SEARCH_RESULTS` regardless of what the caller requests) -- see
+    /// `crate::store::monad_profiles`'s module docs for the `CF_MONAD_PROFILES_BY_NAME` index this
+    /// reads, and `crate::http::monad_profile`'s module docs for the route this backs.
+    pub(crate) fn search_monad_profiles_by_name(
+        &self,
+        prefix: &str,
+        limit: usize,
+    ) -> Result<Vec<(Address, cashweb_payload::proto::SignedPayload)>> {
+        self.db.monad_profiles().search_by_name(prefix, limit)
+    }
+
     /// List every [`proto::StoredMonadMessage`] stored with `timestamp >= since` (ticket #37),
     /// ordered by `timestamp` ascending -- see `crate::http::monad_message`'s module docs for how
     /// this is used, and for why it can't filter by intended recipient.

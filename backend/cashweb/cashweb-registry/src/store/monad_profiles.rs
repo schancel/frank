@@ -33,6 +33,20 @@
 //! -- verified against that file directly (see `crate::monad_profile_verify`'s module docs for the
 //! full wire-format cross-check this ticket did against the real, already-merged TS client), not
 //! assumed.
+//!
+//! ## `search_by_name` (ticket #48)
+//!
+//! `CF_MONAD_PROFILES_BY_NAME` is a second secondary index, keyed by `normalized_name.as_bytes()
+//! ++ address` (value: the raw address), maintained alongside `CF_MONAD_PROFILES_BY_TIME` on
+//! every [`DbMonadProfiles::put`]. `normalized_name` is the first `entries` item with `kind ==
+//! "display_name"`, its `body` decoded as UTF-8 and lowercased -- see
+//! [`normalized_display_name`]. A profile with no `display_name` entry, an empty/whitespace-only
+//! one, or one whose body isn't valid UTF-8, isn't indexed at all (nothing to search on; this is a
+//! best-effort optional field, not an error). Keeping the raw (unhashed) UTF-8 bytes as the key
+//! prefix -- unlike `CF_MONAD_TOPIC_POSTS_BY_TOPIC`'s hashed-topic index -- is deliberate: this
+//! index's whole purpose is prefix scanning ([`DbMonadProfiles::search_by_name`]), and hashing
+//! would destroy the sort order a prefix scan depends on. Search is intentionally prefix-only (not
+//! fuzzy) for this first pass, matching ticket #48's own scoping decision.
 
 use std::fmt::Debug;
 
@@ -44,8 +58,14 @@ use thiserror::Error;
 use crate::{
     monad_http::Address,
     proto,
-    store::db::{Db, CF, CF_MONAD_PROFILES, CF_MONAD_PROFILES_BY_TIME},
+    store::db::{Db, CF, CF_MONAD_PROFILES, CF_MONAD_PROFILES_BY_NAME, CF_MONAD_PROFILES_BY_TIME},
 };
+
+/// Server-side clamp on how many results [`DbMonadProfiles::search_by_name`] (and therefore `GET
+/// /metadata/monad/search`) will ever return in one page, regardless of what a caller requests --
+/// matches `/metadata`'s existing Lotus range-endpoint convention
+/// (`crate::http::server::handle_get_metadata_range`'s `MAX_NUM_ITEMS`).
+pub const MAX_SEARCH_RESULTS: usize = 100;
 
 /// Build the `CF_MONAD_PROFILES_BY_TIME` key for a given `(timestamp, address)` pair. Kept as a
 /// free function so [`DbMonadProfiles::put`] and [`DbMonadProfiles::list_since`] can't disagree on
@@ -54,11 +74,46 @@ fn by_time_key(timestamp: i64, address: &[u8]) -> Vec<u8> {
     [timestamp.to_be_bytes().as_ref(), address].concat()
 }
 
+/// Build the `CF_MONAD_PROFILES_BY_NAME` key for a given `(normalized_name, address)` pair. Kept
+/// as a free function so [`DbMonadProfiles::put`] and [`DbMonadProfiles::search_by_name`] can't
+/// disagree on the encoding -- mirrors [`by_time_key`] exactly.
+fn by_name_key(normalized_name: &str, address: &[u8]) -> Vec<u8> {
+    [normalized_name.as_bytes(), address].concat()
+}
+
+/// Lowercase-normalize a raw display-name string -- the same normalization applied both when
+/// indexing a profile's `display_name` entry ([`normalized_display_name`]) and when a search
+/// prefix is submitted ([`DbMonadProfiles::search_by_name`]), so the two can't drift. Trims
+/// leading/trailing whitespace first; an empty result means "nothing to search on".
+fn normalize_name(raw: &str) -> String {
+    raw.trim().to_lowercase()
+}
+
+/// Extract and normalize `profile`'s `display_name`, if it has one worth indexing (ticket #48):
+/// the first `entries` item with `kind == "display_name"`, its `body` decoded as UTF-8 and
+/// lowercased via [`normalize_name`]. Returns [`None`] -- not an error -- if there's no such
+/// entry, its body isn't valid UTF-8, or the normalized name is empty; a malformed/absent optional
+/// field must never fail the whole `put`.
+fn normalized_display_name(profile: &proto::MonadProfile) -> Option<String> {
+    let entry = profile
+        .entries
+        .iter()
+        .find(|entry| entry.kind == "display_name")?;
+    let raw = std::str::from_utf8(&entry.body).ok()?;
+    let normalized = normalize_name(raw);
+    if normalized.is_empty() {
+        None
+    } else {
+        Some(normalized)
+    }
+}
+
 /// Allows access to stored Monad-native profile registrations.
 pub struct DbMonadProfiles<'a> {
     db: &'a Db,
     cf_monad_profiles: &'a CF,
     cf_monad_profiles_by_time: &'a CF,
+    cf_monad_profiles_by_name: &'a CF,
 }
 
 /// Errors indicating some Monad-profile store error.
@@ -92,10 +147,12 @@ impl<'a> DbMonadProfiles<'a> {
     pub fn new(db: &'a Db) -> Self {
         let cf_monad_profiles = db.cf(CF_MONAD_PROFILES).unwrap();
         let cf_monad_profiles_by_time = db.cf(CF_MONAD_PROFILES_BY_TIME).unwrap();
+        let cf_monad_profiles_by_name = db.cf(CF_MONAD_PROFILES_BY_NAME).unwrap();
         DbMonadProfiles {
             db,
             cf_monad_profiles,
             cf_monad_profiles_by_time,
+            cf_monad_profiles_by_name,
         }
     }
 
@@ -110,6 +167,13 @@ impl<'a> DbMonadProfiles<'a> {
     /// under `address`, its old by-time index entry is removed first (in the same batch) so an
     /// update with a new `timestamp` doesn't leave a stale, orphaned index row behind -- mirrors
     /// `DbMonadMessages::put`'s identical "remove old index entry on overwrite" handling.
+    ///
+    /// Also maintains `CF_MONAD_PROFILES_BY_NAME` (ticket #48's `search_by_name`), keyed by the
+    /// profile's normalized `display_name` entry (see [`normalized_display_name`]). Same
+    /// overwrite-safety care as the by-time index: if a profile already existed under `address`,
+    /// its old by-name index entry (if any) is removed first, so a profile that changes its name
+    /// -- or removes it -- doesn't leave a stale name-index entry pointing at it. If the *new*
+    /// profile has no indexable name, only the removal happens; no new by-name entry is written.
     pub fn put(
         &self,
         address: &Address,
@@ -125,14 +189,27 @@ impl<'a> DbMonadProfiles<'a> {
                     self.cf_monad_profiles_by_time,
                     by_time_key(existing_profile.timestamp, &address.0),
                 );
+                if let Some(existing_name) = normalized_display_name(&existing_profile) {
+                    batch.delete_cf(
+                        self.cf_monad_profiles_by_name,
+                        by_name_key(&existing_name, &address.0),
+                    );
+                }
             }
         }
         batch.put_cf(self.cf_monad_profiles, address.0, signed.encode_to_vec());
         batch.put_cf(
             self.cf_monad_profiles_by_time,
             by_time_key(profile.timestamp, &address.0),
-            address.0.to_vec(),
+            address.0,
         );
+        if let Some(new_name) = normalized_display_name(&profile) {
+            batch.put_cf(
+                self.cf_monad_profiles_by_name,
+                by_name_key(&new_name, &address.0),
+                address.0,
+            );
+        }
         self.db.write_batch(batch)?;
         Ok(())
     }
@@ -182,6 +259,55 @@ impl<'a> DbMonadProfiles<'a> {
         .collect()
     }
 
+    /// Prefix-search `CF_MONAD_PROFILES_BY_NAME` for every profile whose normalized `display_name`
+    /// starts with `prefix` (ticket #48), lowercase-normalizing `prefix` the same way indexing
+    /// does ([`normalize_name`]) so search stays case-insensitive. Results are ordered by
+    /// normalized name ascending (the index's own key order), capped at `limit`, clamped to
+    /// [`MAX_SEARCH_RESULTS`] regardless of what the caller requests. Each matched address is
+    /// resolved back to its full stored profile via [`DbMonadProfiles::get`].
+    ///
+    /// An empty/whitespace-only `prefix` normalizes to `""`, matching every indexed (i.e. named)
+    /// profile -- there's no special-casing needed since `CF_MONAD_PROFILES_BY_NAME` only ever
+    /// contains entries with a non-empty normalized name to begin with.
+    pub fn search_by_name(
+        &self,
+        prefix: &str,
+        limit: usize,
+    ) -> Result<Vec<(Address, cashweb_payload::proto::SignedPayload)>> {
+        let limit = limit.min(MAX_SEARCH_RESULTS);
+        let normalized_prefix = normalize_name(prefix);
+        let prefix_bytes = normalized_prefix.as_bytes();
+        let start_key = by_name_key(&normalized_prefix, &[]);
+        let iter = self.db.rocksdb().iterator_cf(
+            self.cf_monad_profiles_by_name,
+            IteratorMode::From(&start_key, Direction::Forward),
+        );
+        let mut results = Vec::new();
+        for item in iter {
+            if results.len() == limit {
+                break;
+            }
+            let (key, address_bytes) = item?;
+            if !key.starts_with(prefix_bytes) {
+                break;
+            }
+            let address = Address(
+                address_bytes
+                    .as_ref()
+                    .try_into()
+                    .map_err(|_| InvalidIndexedAddress(hex::encode(&address_bytes)))?,
+            );
+            let signed = self.get(&address)?.ok_or_else(|| {
+                CannotDecodeSignedPayload(format!(
+                    "indexed address {} has no primary record",
+                    hex::encode(address.0)
+                ))
+            })?;
+            results.push((address, signed));
+        }
+        Ok(results)
+    }
+
     pub(crate) fn add_cfs(columns: &mut Vec<ColumnFamilyDescriptor>) {
         columns.push(ColumnFamilyDescriptor::new(
             CF_MONAD_PROFILES,
@@ -189,6 +315,10 @@ impl<'a> DbMonadProfiles<'a> {
         ));
         columns.push(ColumnFamilyDescriptor::new(
             CF_MONAD_PROFILES_BY_TIME,
+            rocksdb::Options::default(),
+        ));
+        columns.push(ColumnFamilyDescriptor::new(
+            CF_MONAD_PROFILES_BY_NAME,
             rocksdb::Options::default(),
         ));
     }
@@ -208,13 +338,25 @@ mod tests {
 
     use crate::{monad_http::Address, proto, store::db::Db};
 
+    use super::{normalized_display_name, MAX_SEARCH_RESULTS};
+
     /// `timestamp` is a real field now (ticket #75's by-time index decodes it), not just a seed
     /// for varying the `sig` bytes -- callers pick it explicitly so tests can assert ordering.
     fn sample_signed_payload(timestamp: i64) -> cashweb_payload::proto::SignedPayload {
+        sample_signed_payload_with_entries(timestamp, vec![])
+    }
+
+    /// Like [`sample_signed_payload`], but with caller-specified `entries` -- lets ticket #48's
+    /// tests build a `display_name` `AddressEntry` (or, for the non-UTF8 test, one with an
+    /// intentionally invalid body).
+    fn sample_signed_payload_with_entries(
+        timestamp: i64,
+        entries: Vec<proto::AddressEntry>,
+    ) -> cashweb_payload::proto::SignedPayload {
         let profile = proto::MonadProfile {
             timestamp,
             ttl: 0,
-            entries: vec![],
+            entries,
         };
         cashweb_payload::proto::SignedPayload {
             pubkey: vec![2; 33],
@@ -225,6 +367,22 @@ mod tests {
             burn_amount: 0,
             burn_txs: vec![],
         }
+    }
+
+    /// Like [`sample_signed_payload`], but with a `display_name` `AddressEntry` whose body is
+    /// `name` (as raw bytes -- may be invalid UTF-8, for ticket #48's non-UTF8 test).
+    fn sample_signed_payload_named(
+        timestamp: i64,
+        name: impl AsRef<[u8]>,
+    ) -> cashweb_payload::proto::SignedPayload {
+        sample_signed_payload_with_entries(
+            timestamp,
+            vec![proto::AddressEntry {
+                kind: "display_name".to_string(),
+                headers: Default::default(),
+                body: name.as_ref().to_vec(),
+            }],
+        )
     }
 
     #[test]
@@ -316,6 +474,176 @@ mod tests {
         store.put(&address, &retried)?;
 
         assert_eq!(store.list_since(0)?, vec![(address, retried)]);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_normalized_display_name() {
+        let named = |body: &[u8]| proto::MonadProfile {
+            timestamp: 0,
+            ttl: 0,
+            entries: vec![proto::AddressEntry {
+                kind: "display_name".to_string(),
+                headers: Default::default(),
+                body: body.to_vec(),
+            }],
+        };
+        // Normal case: lowercased.
+        assert_eq!(
+            normalized_display_name(&named(b"AliceInWonderland")),
+            Some("aliceinwonderland".to_string())
+        );
+        // Leading/trailing whitespace trimmed.
+        assert_eq!(
+            normalized_display_name(&named(b"  Bob  ")),
+            Some("bob".to_string())
+        );
+        // No entries at all: nothing to index.
+        assert_eq!(
+            normalized_display_name(&proto::MonadProfile {
+                timestamp: 0,
+                ttl: 0,
+                entries: vec![],
+            }),
+            None
+        );
+        // Entry present, but wrong kind: nothing to index.
+        assert_eq!(
+            normalized_display_name(&proto::MonadProfile {
+                timestamp: 0,
+                ttl: 0,
+                entries: vec![proto::AddressEntry {
+                    kind: "avatar".to_string(),
+                    headers: Default::default(),
+                    body: b"Alice".to_vec(),
+                }],
+            }),
+            None
+        );
+        // Empty-string name: nothing to index.
+        assert_eq!(normalized_display_name(&named(b"")), None);
+        // Whitespace-only name: nothing to index.
+        assert_eq!(normalized_display_name(&named(b"   ")), None);
+        // Non-UTF8 body: nothing to index (not an error).
+        assert_eq!(normalized_display_name(&named(&[0xff, 0xfe, 0xfd])), None);
+    }
+
+    #[test]
+    fn test_search_by_name_prefix_matches_and_ordering() -> Result<()> {
+        let _ = bitcoinsuite_error::install();
+        let tempdir = tempdir::TempDir::new("cashweb-registry-store--monad-profiles-search")?;
+        let db = Db::open(tempdir.path().join("db.rocksdb"))?;
+        let store = db.monad_profiles();
+
+        let alice = Address([1u8; 20]);
+        let alicia = Address([2u8; 20]);
+        let bob = Address([3u8; 20]);
+        let no_name = Address([4u8; 20]);
+        let empty_name = Address([5u8; 20]);
+        let bad_utf8 = Address([6u8; 20]);
+
+        let alice_payload = sample_signed_payload_named(100, "Alice");
+        let alicia_payload = sample_signed_payload_named(101, "ALICIA");
+        let bob_payload = sample_signed_payload_named(102, "Bob");
+        let no_name_payload = sample_signed_payload(103);
+        let empty_name_payload = sample_signed_payload_named(104, "");
+        // An AddressEntry with kind "display_name" but a non-UTF8 body -- must not error the put,
+        // and must not be indexed/searchable.
+        let bad_utf8_payload = sample_signed_payload_named(105, [0xff, 0xfe, 0xfd]);
+
+        store.put(&alice, &alice_payload)?;
+        store.put(&alicia, &alicia_payload)?;
+        store.put(&bob, &bob_payload)?;
+        store.put(&no_name, &no_name_payload)?;
+        store.put(&empty_name, &empty_name_payload)?;
+        store.put(&bad_utf8, &bad_utf8_payload)?;
+
+        // Prefix "ali" matches both "alice" and "alicia" (case-insensitively), not "bob".
+        let mut results = store.search_by_name("ali", 10)?;
+        results.sort_by_key(|(addr, _)| addr.0);
+        let mut expected = vec![
+            (alice, alice_payload.clone()),
+            (alicia, alicia_payload.clone()),
+        ];
+        expected.sort_by_key(|(addr, _)| addr.0);
+        assert_eq!(results, expected);
+
+        // Search prefix itself is case-insensitive too.
+        assert_eq!(
+            store.search_by_name("ALI", 10)?.len(),
+            2,
+            "uppercase search prefix should still match lowercased index entries"
+        );
+
+        // Exact, non-overlapping prefix.
+        assert_eq!(store.search_by_name("bob", 10)?, vec![(bob, bob_payload)]);
+
+        // No match.
+        assert_eq!(store.search_by_name("zzz", 10)?, vec![]);
+
+        // Profiles with no name, an empty name, or a non-UTF8 name body are never returned by any
+        // search, including the empty-prefix "match everything named" case.
+        let all_named = store.search_by_name("", 10)?;
+        let all_named_addresses: Vec<Address> = all_named.iter().map(|(addr, _)| *addr).collect();
+        assert!(!all_named_addresses.contains(&no_name));
+        assert!(!all_named_addresses.contains(&empty_name));
+        assert!(!all_named_addresses.contains(&bad_utf8));
+        assert_eq!(all_named_addresses.len(), 3); // alice, alicia, bob
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_search_by_name_update_removes_stale_entry() -> Result<()> {
+        let _ = bitcoinsuite_error::install();
+        let tempdir =
+            tempdir::TempDir::new("cashweb-registry-store--monad-profiles-search-update")?;
+        let db = Db::open(tempdir.path().join("db.rocksdb"))?;
+        let store = db.monad_profiles();
+        let address = Address([9u8; 20]);
+
+        store.put(&address, &sample_signed_payload_named(100, "OldName"))?;
+        assert_eq!(store.search_by_name("old", 10)?.len(), 1);
+
+        // Re-registering under a new name must remove the old by-name index entry, not just add a
+        // new one -- otherwise searching by the old prefix would still find this address.
+        let updated = sample_signed_payload_named(200, "NewName");
+        store.put(&address, &updated)?;
+
+        assert_eq!(store.search_by_name("old", 10)?, vec![]);
+        assert_eq!(store.search_by_name("new", 10)?, vec![(address, updated)]);
+
+        // Re-registering with the name removed entirely must also remove the old by-name index
+        // entry.
+        let unnamed = sample_signed_payload(300);
+        store.put(&address, &unnamed)?;
+        assert_eq!(store.search_by_name("new", 10)?, vec![]);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_search_by_name_clamps_to_max_results() -> Result<()> {
+        let _ = bitcoinsuite_error::install();
+        let tempdir = tempdir::TempDir::new("cashweb-registry-store--monad-profiles-search-clamp")?;
+        let db = Db::open(tempdir.path().join("db.rocksdb"))?;
+        let store = db.monad_profiles();
+
+        // Register more than MAX_SEARCH_RESULTS profiles sharing a common name prefix.
+        let total = MAX_SEARCH_RESULTS + 5;
+        for i in 0..total {
+            let mut address_bytes = [0u8; 20];
+            address_bytes[16..20].copy_from_slice(&(i as u32).to_be_bytes());
+            let address = Address(address_bytes);
+            let name = format!("shared-{i:04}");
+            store.put(&address, &sample_signed_payload_named(i as i64, name))?;
+        }
+
+        // Even asking for more than the max, and more than `total`, yields at most
+        // MAX_SEARCH_RESULTS.
+        let results = store.search_by_name("shared", total * 2)?;
+        assert_eq!(results.len(), MAX_SEARCH_RESULTS);
 
         Ok(())
     }

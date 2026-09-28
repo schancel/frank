@@ -41,6 +41,20 @@ export interface ChangeAccountRecord {
   createdAt: number
 }
 
+/** Crash-recovery journal for the one change sweep currently being submitted. The raw signed
+ * transaction is safe to replay byte-for-byte: its sender, nonce, destination and value cannot
+ * change. Keeping only one intent also preserves the contiguous HD prefix used by seed recovery. */
+export interface ChangeSweepIntent {
+  index: number
+  address: string
+  sourceBurnIndex: number
+  sourceBurnAddress: string
+  sweptValueWei: string
+  rawTx: string
+  txHash: string
+  createdAt: number
+}
+
 /**
  * Persistence boundary for `MonadChangePool`'s state: the "next unused change index" pointer
  * (ticket #36 acceptance criterion 2) plus the audit trail of change outputs actually swept into
@@ -58,6 +72,9 @@ export interface ChangePoolStore {
   getRecord(index: number): ChangeAccountRecord | undefined
   /** Every persisted change record, sorted by index. */
   getAll(): ChangeAccountRecord[]
+  getPendingIntent(): ChangeSweepIntent | undefined
+  setPendingIntent(intent: ChangeSweepIntent): void
+  clearPendingIntent(): void
   /** Wait until every preceding mutation is durable. */
   flush(): Promise<void>
   clear(): Promise<void>
@@ -74,6 +91,7 @@ function assertValidIndex(index: number, label: string): void {
 export class InMemoryChangePoolStore implements ChangePoolStore {
   private nextIndex = 0
   private recordsByIndex = new Map<number, ChangeAccountRecord>()
+  private pendingIntent?: ChangeSweepIntent
 
   getNextIndex(): number {
     return this.nextIndex
@@ -98,10 +116,25 @@ export class InMemoryChangePoolStore implements ChangePoolStore {
     )
   }
 
+  getPendingIntent(): ChangeSweepIntent | undefined {
+    return this.pendingIntent === undefined
+      ? undefined
+      : { ...this.pendingIntent }
+  }
+
+  setPendingIntent(intent: ChangeSweepIntent): void {
+    this.pendingIntent = { ...intent }
+  }
+
+  clearPendingIntent(): void {
+    this.pendingIntent = undefined
+  }
+
   async flush(): Promise<void> {}
 
   async clear(): Promise<void> {
     this.nextIndex = 0
     this.recordsByIndex.clear()
+    this.pendingIntent = undefined
   }
 }

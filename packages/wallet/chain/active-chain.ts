@@ -117,6 +117,25 @@ export interface DirectMessageReceived {
   receivedTime: number
 }
 
+export interface RecoveredStampPaymentInfo {
+  payloadDigest: string
+  childIndex: number
+  txHash: string
+  address: ChainAddress
+  valueWei: bigint
+  status: 'discovered' | 'swept'
+  sweepTxHash?: string
+}
+
+export type RecoveredStampPaymentSweepResult =
+  | { swept: true; txHash: string; valueWei: bigint }
+  | {
+      swept: false
+      reason: 'below-dust-threshold'
+      balanceWei: bigint
+      dustThresholdWei: bigint
+    }
+
 export interface DirectMessageClient {
   send(params: {
     wallet: WalletHandle
@@ -127,6 +146,15 @@ export interface DirectMessageClient {
     wallet: WalletHandle
     sinceMs: number
   }): Promise<DirectMessageReceived[]>
+  listRecoveredStampPayments(params: {
+    wallet: WalletHandle
+  }): Promise<RecoveredStampPaymentInfo[]>
+  sweepRecoveredStampPayment(params: {
+    wallet: WalletHandle
+    payloadDigest: string
+    childIndex: number
+    destination: ChainAddress
+  }): Promise<RecoveredStampPaymentSweepResult>
 }
 
 /** Standard native-asset wallet operations, independent of Frank's mandatory message stamps. */

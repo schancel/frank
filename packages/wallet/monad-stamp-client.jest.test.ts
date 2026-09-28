@@ -34,6 +34,7 @@ import {
   MonadStampClient,
   MonadStampRejectedError,
   MonadStampPendingAttemptError,
+  MonadStampRecoveredAttemptError,
   MONAD_STAMP_CALLDATA_LENGTH,
   buildMonadStampCalldata,
   computeMonadStampCommitment,
@@ -76,7 +77,10 @@ function makePool(size = 2): MonadSubAccountPool {
 }
 
 function makeStubProvider(
-  perform: (req: { method: string }) => Promise<unknown>,
+  perform: (req: {
+    method: string
+    transaction?: { data?: string }
+  }) => Promise<unknown>,
 ) {
   const provider = new JsonRpcProvider('http://127.0.0.1:1', CHAIN_ID, {
     staticNetwork: true,
@@ -509,6 +513,65 @@ describe('MonadStampClient.submitStampedMessage', () => {
     ).toHaveLength(3)
   })
 
+  it('quotes worst-case calldata but estimates each selected child with its exact bytes', async () => {
+    const estimatedData: string[] = []
+    let nonce = 0
+    const calldataFloor = (data: string) =>
+      21_000 +
+      Array.from(getBytes(data)).reduce(
+        (gas, byte) => gas + (byte === 0 ? 10 : 40),
+        0,
+      )
+    const provider = makeStubProvider(async req => {
+      if (req.method === 'getBalance') return '0xde0b6b3a7640000'
+      if (req.method === 'getTransactionCount')
+        return `0x${(nonce++).toString(16)}`
+      if (req.method === 'estimateGas') {
+        const data = req.transaction?.data
+        if (data === undefined) throw new Error('estimateGas request has no data')
+        estimatedData.push(data)
+        return `0x${calldataFloor(data).toString(16)}`
+      }
+      throw new Error(`unexpected _perform: ${req.method}`)
+    })
+    const { client } = makeClient({ provider })
+    mockedAxios.mockImplementationOnce(async config => {
+      const sent = decodeMonadStampedMessage(
+        new Uint8Array(config.data as Buffer),
+      )
+      for (const payment of sent.stampPayments) {
+        const tx = Transaction.from(hexOf(payment.rawTx))
+        expect(Number(tx.gasLimit)).toBe(calldataFloor(tx.data))
+      }
+      return {
+        data: storedMessageBytes(sent),
+        status: 200,
+        statusText: 'OK',
+        headers: {},
+        config,
+      }
+    })
+
+    await client.submitStampedMessage({
+      encryptedPayload: new TextEncoder().encode('gas-vector-7'),
+      recipientPublicKey: RECIPIENT_PUBLIC_KEY,
+      stampValueWei: 10_000n,
+      overrides: {
+        maxFeePerGas: 1n,
+        maxPriorityFeePerGas: 1n,
+        chainId: BigInt(CHAIN_ID),
+      },
+    })
+
+    expect(estimatedData).toHaveLength(4)
+    for (const quoteData of estimatedData.slice(0, 2)) {
+      expect(Array.from(getBytes(quoteData).slice(5))).toEqual(
+        Array(32).fill(0xff),
+      )
+    }
+    expect(estimatedData[2]).not.toBe(estimatedData[3])
+  })
+
   it('falls back to polling GET and confirms when a network failure is followed by a found message', async () => {
     const { client, pool } = makeClient()
     const encryptedPayload = new TextEncoder().encode('flaky network')
@@ -619,6 +682,57 @@ describe('MonadStampClient.submitStampedMessage', () => {
     await expect(client.resumePendingAttempts()).resolves.toHaveLength(1)
     expect(stampAttemptJournal.getAll()).toHaveLength(0)
     expect(pool.records().filter(r => r.status === 'spent')).toHaveLength(2)
+  })
+
+  it('stops a new send after recovering an older exact payment set', async () => {
+    const stampAttemptJournal = new InMemoryStampAttemptJournal()
+    const { client } = makeClient({
+      pool: makePool(4),
+      stampAttemptJournal,
+    })
+    const oldPayload = new TextEncoder().encode('older authorized message')
+    const newPayload = new TextEncoder().encode('new draft')
+    mockedAxios.mockRejectedValueOnce({
+      isAxiosError: true,
+      response: {
+        status: 400,
+        data: { exact_set_retained: true },
+      },
+    })
+
+    await expect(
+      client.submitStampedMessage({
+        encryptedPayload: oldPayload,
+        recipientPublicKey: RECIPIENT_PUBLIC_KEY,
+        stampValueWei: 10_000n,
+        overrides: FEE_OVERRIDES,
+      }),
+    ).rejects.toThrow(MonadStampPendingAttemptError)
+
+    mockedAxios.mockImplementationOnce(async config => {
+      const replayed = decodeMonadStampedMessage(
+        new Uint8Array(config.data as Buffer),
+      )
+      expect(replayed.encryptedPayload).toEqual(oldPayload)
+      return {
+        data: storedMessageBytes(replayed),
+        status: 200,
+        statusText: 'OK',
+        headers: {},
+        config,
+      }
+    })
+    await expect(
+      client.submitStampedMessage({
+        encryptedPayload: newPayload,
+        recipientPublicKey: RECIPIENT_PUBLIC_KEY,
+        stampValueWei: 10_000n,
+        overrides: FEE_OVERRIDES,
+      }),
+    ).rejects.toThrow(MonadStampRecoveredAttemptError)
+
+    expect(mockedAxios).toHaveBeenCalledTimes(2)
+    expect(stampAttemptJournal.getAll()).toEqual([])
   })
 
   it('rejects a split larger than the relay maximum before leasing or PUT', async () => {

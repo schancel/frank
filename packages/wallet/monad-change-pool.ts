@@ -78,12 +78,14 @@ import { SubAccountRecord } from './storage/sub-account-pool-storage'
 import {
   ChangeAccountRecord,
   ChangePoolStore,
+  ChangeSweepIntent,
   InMemoryChangePoolStore,
 } from './storage/change-pool-storage'
 
 export type {
   ChangeAccountRecord,
   ChangePoolStore,
+  ChangeSweepIntent,
 } from './storage/change-pool-storage'
 
 /** Standard EVM plain-value-transfer gas cost (no calldata, EOA recipient) -- the same figure this
@@ -212,10 +214,10 @@ export class MonadChangePool {
    * on-chain leftover balance via `provider.getBalance` (real balance, not the amount originally
    * funded minus a guessed gas cost), and if it clears the dust threshold (see this file's
    * header), builds/signs/submits a transfer of `balance - dustThreshold` to the next unused
-   * change address. The next-index reservation is durably advanced before signing or broadcast;
-   * a failed attempt can therefore leave a harmless gap, but a crash can never cause reuse of a
-   * destination that may already have received funds. A successful submission then persists its
-   * audit record.
+   * change address. Before broadcast it durably journals the exact signed sweep while leaving the
+   * next-index pointer in place. A retry either observes its receipt or replays those same bytes,
+   * then advances the pointer together with the audit record. This preserves the contiguous HD
+   * prefix that seed-only recovery scans without risking a second transaction to the same child.
    *
    * Returns `{ swept: false, reason: 'below-dust-threshold' }` (never throws) when the leftover
    * balance doesn't clear the threshold. Any build/submit failure propagates as a thrown error to
@@ -241,6 +243,50 @@ export class MonadChangePool {
     dustThresholdWei?: bigint
     overrides?: MonadTxOverrides
   }): Promise<ChangeSweepOutcome> {
+    const priorRecord = this.store
+      .getAll()
+      .find(record => record.sourceBurnIndex === params.burnIndex)
+    if (priorRecord !== undefined) {
+      const staleIntent = this.store.getPendingIntent()
+      if (staleIntent?.sourceBurnIndex === params.burnIndex) {
+        this.store.setNextIndex(
+          Math.max(this.store.getNextIndex(), priorRecord.index + 1),
+        )
+        this.store.clearPendingIntent()
+        await this.store.flush()
+      }
+      return {
+        swept: true,
+        record: priorRecord,
+        sweptValueWei: BigInt(priorRecord.sweptValueWei),
+      }
+    }
+
+    let pending = this.store.getPendingIntent()
+    if (pending !== undefined) {
+      if (pending.sourceBurnIndex !== params.burnIndex) {
+        throw new Error(
+          `Change sweep for burn account ${pending.sourceBurnIndex} must be reconciled before allocating another destination`,
+        )
+      }
+      const status = await params.burnAccountSigner.getStatus(pending.txHash)
+      if (status === 'confirmed') {
+        return this.finalizeIntent(pending)
+      }
+      if (status === 'failed') {
+        // A mined failure consumed the source nonce but did not fund the destination. The same
+        // contiguous change index is therefore still unused and can receive a newly signed retry.
+        this.store.clearPendingIntent()
+        await this.store.flush()
+        pending = undefined
+      } else {
+        // No receipt can mean either not accepted or merely pending. Re-submit only the exact
+        // signed bytes; an ambiguous/already-known error deliberately leaves the intent intact.
+        await params.burnAccountSigner.submitRaw(pending.rawTx, pending.txHash)
+        return this.finalizeIntent(pending)
+      }
+    }
+
     const balanceWei = await params.provider.getBalance(params.burnAddress)
     const dustThresholdWei =
       params.dustThresholdWei ??
@@ -258,31 +304,49 @@ export class MonadChangePool {
     const sweptValueWei = balanceWei - dustThresholdWei
     const { index, address } = this.peekNextChangeAddress()
 
-    // Reserve and durably advance the index before broadcasting. A crash may leave a harmless
-    // gap, but can never rewind and reuse a change destination that might already be funded.
-    this.store.setNextIndex(index + 1)
-    await this.store.flush()
-
     const signedTx = await params.burnAccountSigner.buildAndSignTransfer(
       address,
       sweptValueWei,
       params.overrides,
     )
-    const txHash = await params.burnAccountSigner.submit(signedTx)
-
-    const record: ChangeAccountRecord = {
+    const intent: ChangeSweepIntent = {
       index,
       address,
       sourceBurnIndex: params.burnIndex,
       sourceBurnAddress: params.burnAddress,
       sweptValueWei: sweptValueWei.toString(),
-      txHash,
+      rawTx: signedTx.rawTx,
+      txHash: signedTx.txHash,
       createdAt: Date.now(),
     }
-    this.store.putRecord(record)
+    this.store.setPendingIntent(intent)
     await this.store.flush()
+    await params.burnAccountSigner.submit(signedTx)
 
-    return { swept: true, record, sweptValueWei }
+    return this.finalizeIntent(intent)
+  }
+
+  private async finalizeIntent(
+    intent: ChangeSweepIntent,
+  ): Promise<ChangeSweepOutcome> {
+    const record: ChangeAccountRecord = {
+      index: intent.index,
+      address: intent.address,
+      sourceBurnIndex: intent.sourceBurnIndex,
+      sourceBurnAddress: intent.sourceBurnAddress,
+      sweptValueWei: intent.sweptValueWei,
+      txHash: intent.txHash,
+      createdAt: intent.createdAt,
+    }
+    this.store.putRecord(record)
+    this.store.setNextIndex(intent.index + 1)
+    this.store.clearPendingIntent()
+    await this.store.flush()
+    return {
+      swept: true,
+      record,
+      sweptValueWei: BigInt(record.sweptValueWei),
+    }
   }
 }
 

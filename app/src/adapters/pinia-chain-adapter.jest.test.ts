@@ -129,12 +129,12 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
         sinceMs: 0,
       })
 
-      // Next interval tick should use the advanced sinceMs (the first record's receivedTime).
+      // The relay bound is inclusive, so advance one millisecond past the received record.
       await wait(30)
       expect(fetchSinceSpy.mock.calls.length).toBeGreaterThanOrEqual(2)
       expect(fetchSinceSpy).toHaveBeenNthCalledWith(2, {
         wallet,
-        sinceMs: 1_700_000_000_000,
+        sinceMs: 1_700_000_000_001,
       })
       // No new messages on any subsequent poll.
       expect(receiveMessagesSpy).toHaveBeenCalledTimes(1)

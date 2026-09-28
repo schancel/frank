@@ -60,10 +60,10 @@ const CALLDATA_COMMITMENT_LEN: usize = 32;
 
 /// Version tag for the `<lokad_id><version><commitment>` calldata layout this module decodes.
 ///
-/// Analogous to [`cashweb_payload::verify::COMMITMENT_VERSION_OPCODE`], but a plain byte rather
-/// than a Bitcoin Script opcode: EVM calldata has no opcode concept, so there's no need to encode
-/// this as `OP_1` the way the Lotus OP_RETURN script does.
-pub const COMMITMENT_VERSION_TAG: u8 = 0x01;
+/// Version 2 distinguishes the split, child-bound direct-message payment protocol from the
+/// original version-1 single-transaction format. This is intentionally independent of the topic
+/// commitment version, whose wire format did not change.
+pub const COMMITMENT_VERSION_TAG: u8 = 0x02;
 
 /// Recompute the same commitment preimage math as (private, un-reachable from here)
 /// `cashweb_payload::verify::calc_commitment`: `SHA256(SHA256(pubkey) || payload_hash)`.

@@ -425,6 +425,13 @@ function toBareHex(bytes: Uint8Array): string {
   return hexlify(bytes).slice(2)
 }
 
+function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
+  return (
+    left.length === right.length &&
+    left.every((value, index) => value === right[index])
+  )
+}
+
 /** Base class for every error this module throws. */
 export class MonadStampError extends Error {}
 
@@ -552,6 +559,7 @@ export class MonadStampClient {
 
   private async pollForStoredMessage(
     payloadHashHex: string,
+    expectedMessage: MonadStampedMessageProto,
     options?: AbandonPollOptions,
   ): Promise<StoredMonadMessageProto | undefined> {
     const intervalMs = options?.intervalMs ?? 2000
@@ -567,7 +575,15 @@ export class MonadStampClient {
       const stored = await this.fetchStoredMessage(payloadHashHex).catch(
         () => undefined,
       )
-      if (stored !== undefined) return stored
+      if (
+        stored?.message !== undefined &&
+        bytesEqual(
+          encodeMonadStampedMessage(stored.message),
+          encodeMonadStampedMessage(expectedMessage),
+        )
+      ) {
+        return stored
+      }
     }
     return undefined
   }
@@ -789,6 +805,7 @@ export class MonadStampClient {
       // message before the connection dropped. Fall back to polling the read side before giving up.
       const stored = await this.pollForStoredMessage(
         payloadHashHex,
+        message,
         params.abandonPoll,
       )
       if (stored !== undefined) {

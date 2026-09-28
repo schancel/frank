@@ -111,6 +111,10 @@ export default defineComponent({
   },
   data() {
     return {
+      // Kept in sync with the current route by the `$route` watcher below (not purely
+      // click-driven) -- otherwise navigating into /forum any way other than clicking the
+      // "Forum" q-tab directly (e.g. the compose button on the Forum page itself) left this
+      // stuck showing "Contacts" as active while the main pane showed Forum content.
       tab: 'contacts',
       // My Drawer
       walletOpen: false,
@@ -121,6 +125,20 @@ export default defineComponent({
       compact: false as boolean,
       myDrawerOpen: false as boolean,
     }
+  },
+  watch: {
+    '$route.path': {
+      immediate: true,
+      handler(path: string) {
+        // Only force the highlight *into* 'forum' -- never override a direct 'settings' click,
+        // which has no route of its own (SettingsPanel is shown via `v-show`, not navigation).
+        // `/new-post` (not `/forum/new-post`) is intentionally a top-level path -- see
+        // `router/index.ts`'s own comment on `protectedRoutes` -- but is still a Forum page.
+        if (path.startsWith('/forum') || path.startsWith('/new-post')) {
+          this.tab = 'forum'
+        }
+      },
+    },
   },
   methods: {
     tweak(offset: number, viewportHeight: number) {

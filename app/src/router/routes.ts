@@ -4,7 +4,11 @@ export function createRoutes(): RouteRecordRaw[] {
   const routes: RouteRecordRaw[] = [
     {
       path: '/',
-      redirect: '/topic/news',
+      // Ticket #61 made Forum the primary nav surface (flat Topics hidden from nav in favor of
+      // it) -- this root redirect was never updated to match and still sent every fresh load,
+      // and every "Contacts" tab click (LeftDrawer.vue's `@click="$router.push('/')"`), to the
+      // old, unmigrated, Lotus/XPI-labeled flat Topics view instead.
+      redirect: '/forum',
       component: () => import('layouts/MainLayout.vue'),
       children: [
         {

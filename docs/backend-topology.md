@@ -1,41 +1,48 @@
 # Frank backend topology
 
-Status: design proposal for issue #87. The route namespace and compatibility policy below require
-owner approval before implementation.
+Status: owner-approved direction for #87, refined by `public-federation-plan.md`. Individual wire,
+storage, and route migrations remain staged behind their implementation tickets.
 
 ## Goals
 
 - Keep one operator-facing `cashwebd` binary.
-- Federate public profiles and public pubsub records over the small-world peer graph.
+- Federate compact public address-directory records, relay descriptors, and public pubsub records
+  over the small-world peer graph.
+- Keep full signed presentation profiles on the user's selected relay while allowing verified
+  fetches and caches.
 - Keep direct-message mailbox records inside the responsible operator's private cluster.
 - Make it structurally difficult for a future replication feature to gossip mailbox ciphertext,
   delivery metadata, or payment-attempt state.
 - Let an operator enable only the subsystems they intend to host.
 
-One binary does not imply one replication domain. The process should compose three services with
+One binary does not imply one replication domain. The process should compose four services with
 separate storage facades and route groups:
 
-1. `ProfileDirectory`: signed profiles, search indexes, relay/mailbox routing capabilities, and
-   curated defaults.
-2. `Pubsub`: public topic posts, votes, discovery indexes, and the legacy Lotus broadcast data kept
-   for Monad-wallet compatibility.
-3. `Mailbox`: inbox/outbox records, exact stamp-payment attempts, delivery jobs, tombstones, and
+1. `Directory`: compact signed account-to-relay bindings, relay descriptors, rotation/revocation
+   state, and directory admission policy.
+2. `Profiles`: full signed display names, biographies, avatars, application capabilities, and
+   curated defaults stored on the selected relay. Profiles are publicly fetchable but not public
+   gossip records.
+3. `Pubsub`: Monad-native public topic posts, votes, discovery indexes, and future topic events.
+   The Lotus broadcast/topic subsystem is deprecated and is not an input to the new federation.
+4. `Mailbox`: inbox/outbox records, exact stamp-payment attempts, delivery jobs, tombstones, and
    client notification state.
 
-Node-local peer health, retry timers, and migration bookkeeping form a fourth operational class;
+Node-local peer health, retry timers, and migration bookkeeping form a fifth operational class;
 they are not application records and are never federated.
 
 ## Current durable-data classification
 
 | RocksDB column family | Class | Public peer replication |
 | --- | --- | --- |
-| `metadata`, `pkh_by_time` | public profile/directory (legacy Lotus) | allowed |
-| `monad_profiles`, `monad_profiles_by_time`, `monad_profiles_by_name` | public profile/directory | allowed |
-| `topic_messages`, `message_payloads`, `topic_burn_txs` | public pubsub (legacy Lotus broadcasts) | allowed |
+| `metadata`, `pkh_by_time` | public address directory (legacy Lotus) | allowed |
+| `monad_profiles`, `monad_profiles_by_time`, `monad_profiles_by_name` | relay-local presentation profile | forbidden |
+| `topic_messages`, `message_payloads`, `topic_burn_txs` | deprecated Lotus broadcasts | forbidden |
 | `monad_topic_posts`, `monad_topic_posts_by_topic`, `monad_topic_discovery`, `monad_topic_votes` | public pubsub | allowed |
 | `monad_messages`, `monad_messages_by_time` | private mailbox | forbidden |
 | `monad_message_attempts` | private mailbox/payment state | forbidden |
 | future outbox, delivery-job, tombstone, and notification column families | private mailbox | forbidden |
+| future address-directory and relay-descriptor families | public directory | allowed through an explicit facade |
 | future peer health, crawl frontier, schema version, and migration journal | node-local operational | forbidden |
 
 For the hackathon, these classes may remain column families in one RocksDB database. The security
@@ -45,18 +52,23 @@ the logical ownership boundary must exist first so that split does not require r
 
 ## Replication boundaries
 
-Public federation receives only `ProfileDirectory` and `Pubsub` interfaces. It may enumerate and
-apply signed public records, but it cannot import the mailbox store module or access a generic
-column-family iterator. Every replicated record carries a network tag and protocol version, and is
-validated as if received from an untrusted client before insertion.
+Public federation receives only `Directory` and `Pubsub` interfaces. It may enumerate and apply
+signed public records, but it cannot import the presentation-profile or mailbox store modules or
+access a generic column-family iterator. Every replicated record carries a network tag and
+protocol version, and is validated as if received from an untrusted client before insertion.
+
+The current Monad profile store is not a temporary directory implementation: it contains display
+name, bio, avatar, and search data that the original system kept on the selected relay. Federation
+must wait for the dedicated directory schema rather than copying these full records as an
+intermediate compatibility measure.
 
 Mailbox replication, if enabled for an operator's private cluster, is a different interface,
 configuration block, and authentication domain. Public peer discovery must never return private
 cluster endpoints or credentials. A single-node operator is valid and is the hackathon default.
 
 Tests must construct a database containing every record class, run public catch-up and push, and
-prove that only the public allowlist appears at the receiving peer. Adding a new column family must
-not implicitly make it public.
+prove that only the public allowlist appears at the receiving peer. In particular, neither full
+profiles nor mailbox data may appear. Adding a new column family must not implicitly make it public.
 
 ## Proposed canonical HTTP namespace
 
@@ -66,14 +78,20 @@ replication domain second:
 
 | Domain | Canonical routes |
 | --- | --- |
-| Profiles | `/monad/profiles`, `/monad/profiles/:address`, `/monad/profiles/search`, `/monad/profiles/curated-defaults` |
+| Directory | `/directory`, `/directory/:network/:address`, `/directory/relays/:node_id` |
+| Profiles | `/profiles/:network/:address`, `/profiles/search`, `/profiles/curated-defaults` |
 | Mailbox | `/monad/mailbox/inbox`, `/monad/mailbox/outbox`, `/monad/mailbox/sync`, `/monad/mailbox/events` |
 | Pubsub | `/monad/pubsub/topics`, `/monad/pubsub/posts`, `/monad/pubsub/posts/:payload_hash`, `/monad/pubsub/votes`, `/monad/pubsub/events` |
 
 Future store-and-forward and deletion routes extend the mailbox domain rather than creating
 another top-level convention, for example `/monad/mailbox/deliveries` and
 `/monad/mailbox/tombstones`. Peer discovery and public catch-up live under
-`/monad/federation/...`.
+`/v1/federation/...`.
+
+Public federation itself uses chain-generic `/v1/federation/...` routes and carries `NetworkTag`
+inside validated records and capability negotiation. The remaining chain-prefixed client routes in
+this table are transitional and must converge with #59 rather than multiplying federation paths
+for every supported network.
 
 `inbox`, `outbox`, and the other named resources are storage and command views, not independent
 replay streams. `/monad/mailbox/sync?cursor=<opaque>` is the single authoritative, mailbox-scoped
@@ -94,8 +112,10 @@ evidence.
 
 Recommended compatibility policy: update the in-repository Rust, TypeScript, app, and bot clients
 in one reviewed change and remove the old Monad paths rather than maintaining permanent aliases.
-The legacy Lotus routes remain available only when the Lotus-compatible route group is enabled.
-This is an HTTP-path migration only; it does not require a protobuf or message wire-format change.
+The legacy Lotus routes remain isolated while the staged deletion removes their remaining callers
+and compatibility module. They do not become aliases for Monad writes, and no new federation, UI,
+or stored format may depend on them. The HTTP route migration itself does not require a protobuf
+change; replacing the Forum's reused Lotus content payload does and is reviewed separately.
 
 ## Configuration and process lifecycle
 
@@ -123,7 +143,7 @@ that enabled background workers have their required service and storage dependen
 The process starts in this order:
 
 1. open RocksDB and complete schema migrations;
-2. construct the three typed stores;
+2. construct the typed directory, profile, pubsub, mailbox, and node-local stores;
 3. construct enabled route groups;
 4. start private mailbox-cluster workers, if configured;
 5. start public federation discovery/catch-up, if configured;
@@ -165,8 +185,8 @@ operation per message in transport order.
 
 1. Approve this classification, canonical route names, and cutover policy.
 2. Add service configuration and route-group constructors; keep storage bytes unchanged.
-3. Replace generic federation database access with the public profile/pubsub facades and add the
-   private-record non-replication integration test.
+3. Replace generic federation database access with public directory/pubsub facades and add the
+   full-profile/private-record non-replication integration test.
 4. Implement seed-and-crawl public federation in #88.
 5. Implement private SMTP-style mailbox delivery in #89.
 6. Add mailbox SSE/WebSocket notification and polling catch-up in #55.

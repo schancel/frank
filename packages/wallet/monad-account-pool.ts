@@ -299,7 +299,7 @@ export class MonadSubAccountPool {
       (total, account) => total + account.capacityWei,
       zero,
     )
-    const capacities =
+    let capacities =
       existingCapacity > zero
         ? [
             existingCapacity < params.stampValueWei
@@ -326,6 +326,47 @@ export class MonadSubAccountPool {
       unfunded.push(record)
     }
     await this.store.flush()
+
+    const availableMainBalance = await params.provider.getBalance(
+      params.mainAccountSigner.address,
+      'pending',
+    )
+    let requiredMainBalance = await this.requiredFundingBalance({
+      capacities,
+      targets: unfunded,
+      gasReserveWei: params.gasReserveWei,
+      provider: params.provider,
+      overrides: params.fundingOverrides,
+    })
+    if (
+      requiredMainBalance > availableMainBalance &&
+      existingCapacity === zero &&
+      capacities.length > 1
+    ) {
+      // Two unequal payment accounts are preferred, but one remains protocol-valid. If the
+      // identity account cannot afford two separate funding fees, try the smallest valid batch
+      // before rejecting the Send. This is an inventory fallback, not an equal split.
+      const fallbackCapacities = [params.stampValueWei]
+      const fallbackRequired = await this.requiredFundingBalance({
+        capacities: fallbackCapacities,
+        targets: unfunded,
+        gasReserveWei: params.gasReserveWei,
+        provider: params.provider,
+        overrides: params.fundingOverrides,
+      })
+      if (fallbackRequired <= availableMainBalance) {
+        capacities = fallbackCapacities
+        requiredMainBalance = fallbackRequired
+      } else {
+        requiredMainBalance = fallbackRequired
+      }
+    }
+    if (requiredMainBalance > availableMainBalance) {
+      throw new Error(
+        'Insufficient main account balance to prepare stamp accounts: ' +
+          `need up to ${requiredMainBalance} wei, have ${availableMainBalance} wei`,
+      )
+    }
 
     for (const [offset, paymentCapacityWei] of capacities.entries()) {
       const target = unfunded[offset]
@@ -367,6 +408,41 @@ export class MonadSubAccountPool {
     }
     params.onProgress?.({ stage: 'ready', fundingTxHashes })
     return { fundingTxHashes, selectedAccountCount: selection.length }
+  }
+
+  private async requiredFundingBalance(params: {
+    capacities: bigint[]
+    targets: Array<Pick<SubAccountRecord, 'address'>>
+    gasReserveWei: bigint
+    provider: Provider
+    overrides?: MonadTxOverrides
+  }): Promise<bigint> {
+    let total = BigInt(0)
+    for (const [offset, capacityWei] of params.capacities.entries()) {
+      const target = params.targets[offset]
+      if (target === undefined) {
+        throw new Error('Missing derived target for stamp-account funding')
+      }
+      const fundedValue = capacityWei + params.gasReserveWei
+      const gasLimit =
+        params.overrides?.gasLimit ??
+        (await params.provider.estimateGas({
+          from: params.mainAccountSigner.address,
+          to: target.address,
+          value: fundedValue,
+        }))
+      let feePerGas =
+        params.overrides?.gasPrice ?? params.overrides?.maxFeePerGas
+      if (feePerGas === undefined) {
+        const feeData = await params.provider.getFeeData()
+        feePerGas = feeData.maxFeePerGas ?? feeData.gasPrice ?? undefined
+      }
+      if (feePerGas === undefined) {
+        throw new Error('Unable to quote a fee cap for stamp-account funding')
+      }
+      total += fundedValue + gasLimit * feePerGas
+    }
+    return total
   }
 
   private async fundedCapacities(

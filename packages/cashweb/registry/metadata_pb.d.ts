@@ -131,3 +131,51 @@ export namespace Peers {
   }
 }
 
+export class ListMonadProfilesEntry extends jspb.Message {
+  getAddress(): string;
+  setAddress(value: string): void;
+
+  getSignedPayload(): Uint8Array | string;
+  getSignedPayload_asU8(): Uint8Array;
+  getSignedPayload_asB64(): string;
+  setSignedPayload(value: Uint8Array | string): void;
+
+  serializeBinary(): Uint8Array;
+  toObject(includeInstance?: boolean): ListMonadProfilesEntry.AsObject;
+  static toObject(includeInstance: boolean, msg: ListMonadProfilesEntry): ListMonadProfilesEntry.AsObject;
+  static extensions: {[key: number]: jspb.ExtensionFieldInfo<jspb.Message>};
+  static extensionsBinary: {[key: number]: jspb.ExtensionFieldBinaryInfo<jspb.Message>};
+  static serializeBinaryToWriter(message: ListMonadProfilesEntry, writer: jspb.BinaryWriter): void;
+  static deserializeBinary(bytes: Uint8Array): ListMonadProfilesEntry;
+  static deserializeBinaryFromReader(message: ListMonadProfilesEntry, reader: jspb.BinaryReader): ListMonadProfilesEntry;
+}
+
+export namespace ListMonadProfilesEntry {
+  export type AsObject = {
+    address: string,
+    signedPayload: Uint8Array | string,
+  }
+}
+
+export class ListMonadProfilesResponse extends jspb.Message {
+  clearEntriesList(): void;
+  getEntriesList(): Array<ListMonadProfilesEntry>;
+  setEntriesList(value: Array<ListMonadProfilesEntry>): void;
+  addEntries(value?: ListMonadProfilesEntry, index?: number): ListMonadProfilesEntry;
+
+  serializeBinary(): Uint8Array;
+  toObject(includeInstance?: boolean): ListMonadProfilesResponse.AsObject;
+  static toObject(includeInstance: boolean, msg: ListMonadProfilesResponse): ListMonadProfilesResponse.AsObject;
+  static extensions: {[key: number]: jspb.ExtensionFieldInfo<jspb.Message>};
+  static extensionsBinary: {[key: number]: jspb.ExtensionFieldBinaryInfo<jspb.Message>};
+  static serializeBinaryToWriter(message: ListMonadProfilesResponse, writer: jspb.BinaryWriter): void;
+  static deserializeBinary(bytes: Uint8Array): ListMonadProfilesResponse;
+  static deserializeBinaryFromReader(message: ListMonadProfilesResponse, reader: jspb.BinaryReader): ListMonadProfilesResponse;
+}
+
+export namespace ListMonadProfilesResponse {
+  export type AsObject = {
+    entriesList: Array<ListMonadProfilesEntry.AsObject>,
+  }
+}
+

@@ -29,6 +29,19 @@
  *    it to the relay's live `PUT /message/monad` route (#13/#19/#27) -- the relay itself
  *    broadcasts, confirms, and verifies that exact tx against real Monad testnet before storing
  *    it, exactly as `monad-e2e-demo.livecheck.ts` (#8) already proved for a single message.
+ * 5. (Ticket #77) In the same poll loop, also polls the real, live `GET /metadata/monad?since=<t>`
+ *    route (ticket #75) for newly-registered Monad profiles via `fetchMonadProfilesSince`
+ *    (`../wallet/monad-identity.ts`). For each one (never itself), sends it a real greeting DM
+ *    (the same `sendDirectMessageText` path step 4 uses) and funds its address with a small
+ *    amount of real testnet MON from the main funded wallet, via `MonadAccountTxSigner.
+ *    buildAndSignTransfer` directly -- *not* `fanOutFundSubAccounts` (`../wallet/
+ *    monad-account-pool.ts`), despite that being this ticket's own initial suggestion: that
+ *    function's `targets` are typed as (and exist to fund) the bot's *own* derived sub-account
+ *    pool records, not arbitrary third-party addresses -- `buildAndSignTransfer`/`.submit()` on
+ *    the main account signer is the actual plain "send N wei to any address" primitive
+ *    (confirmed by reading `ActiveChain.nativeTransfers.send`'s own real implementation in
+ *    `../wallet/chain/monad-chain.ts`, which itself just calls `buildAndSignTransfer` -- the
+ *    `ActiveChain`/`WalletHandle` wrapper around it isn't otherwise used anywhere in this bot).
  *
  * ## Usage
  *
@@ -44,26 +57,33 @@
  *
  * Prints its own Frank identity address on startup (and writes it to `QWEN_BOT_HANDOFF_JSON`) --
  * that's what `qwen-bot-send-demo.livecheck.ts` addresses its first message to.
+ *
+ * Ticket #77's auto-greet/auto-fund behavior (see point 5 above) is configured via:
+ *   QWEN_BOT_MAX_GREETINGS      -- max new profile registrations to greet+fund per run (default 5)
+ *   QWEN_BOT_GREETING_MESSAGE   -- the greeting DM's text (default: a short welcome message)
+ *   QWEN_BOT_FUND_VALUE_WEI     -- wei sent to each newly-greeted address (default 0.001 MON)
  */
 import { writeFileSync } from 'fs'
 import { resolve } from 'path'
 
-import { fetchMonadIdentityPubKey } from '@frank/wallet/monad-identity'
+import __pb_registry_metadata_pb from '@frank/cashweb/registry/metadata_pb'
+const { AddressMetadata } = __pb_registry_metadata_pb
 import {
-  buildEnvelope,
+  fetchMonadIdentityPubKey,
+  fetchMonadProfilesSince,
+} from '@frank/wallet/monad-identity'
+import {
   decryptEnvelope,
   parseEnvelope,
 } from '@frank/cashweb/relay/monad-message-envelope'
 import { fetchMonadMessagesSince } from '@frank/cashweb/relay/monad-message-feed'
-import {
-  deserializeMessageItems,
-  serializeMessageItems,
-} from '@frank/wallet/chain/monad-chain'
+import { deserializeMessageItems } from '@frank/wallet/chain/monad-chain'
 import { QwenChatMessage, QwenClient } from './qwen-client'
 import {
   loadOrCreateIdentity,
   registerAndLog,
   requiredEnv,
+  sendDirectMessageText,
   setUpFundedStampClient,
 } from './qwen-bot-common'
 
@@ -133,10 +153,32 @@ async function main() {
     process.env.QWEN_BOT_IDLE_TIMEOUT_MS ?? 10 * 60 * 1000,
   )
 
+  // Ticket #77: auto-greet/auto-fund newly-registered Monad profiles, alongside this script's
+  // pre-existing Qwen-reply behavior. `QWEN_BOT_MAX_GREETINGS` caps how many strangers' addresses
+  // get a real funding transfer per run -- `setUpFundedStampClient` pre-funds `poolSize` disposable
+  // stamp sub-accounts up front (see below), and every greeting DM *also* consumes one of those,
+  // same as a Qwen reply does, so this bounds that up-front cost the same way `maxReplies` already
+  // does.
+  const maxGreetings = Number(process.env.QWEN_BOT_MAX_GREETINGS ?? 5)
+  const greetingMessage =
+    process.env.QWEN_BOT_GREETING_MESSAGE ??
+    "Welcome to Frank! I'm a bot -- here's a little MON to help you get started sending your " +
+      'first stamped message.'
+  // Default: 0.001 MON -- a small, symbolic "welcome" amount, not full burn-cost coverage (compare
+  // `CASHWEB_STAMP_MIN_BURN_VALUE_WEI`, this bot's own per-message stamp value). Deliberately
+  // modest given this codebase's documented history of the shared testnet funding wallet running
+  // low (see `qwen-bot-common.ts`'s header, "Gas budget").
+  const fundValueWei = BigInt(
+    process.env.QWEN_BOT_FUND_VALUE_WEI ?? '1000000000000000',
+  )
+
   console.log('== Ticket #9: Qwen 3.8 Max bot over Frank (Monad testnet) ==')
   console.log(`Relay:        ${relayBaseUrl}`)
   console.log(`Qwen model:   ${qwenModel} @ ${qwenEndpoint}`)
   console.log(`Max replies:  ${maxReplies}`)
+  console.log(
+    `Max greetings: ${maxGreetings} (funding each with ${fundValueWei} wei)`,
+  )
 
   const identity = loadOrCreateIdentity(identityJsonPath, 'bot')
   await registerAndLog({ relayBaseUrl, identity, label: 'bot' })
@@ -147,11 +189,12 @@ async function main() {
   console.log(`Bot Frank identity address: ${identity.displayAddress}`)
   console.log(`(handoff written to ${handoffJsonPath})`)
 
-  const { stampClient } = await setUpFundedStampClient({
+  const { stampClient, mainAccountSigner } = await setUpFundedStampClient({
     rpcUrl,
     relayBaseUrl,
     mainWalletJsonPath,
-    poolSize: maxReplies,
+    // Sized for both Qwen replies AND greeting DMs -- see `maxGreetings`'s doc comment above.
+    poolSize: maxReplies + maxGreetings,
     burnValueWei,
     label: 'bot',
   })
@@ -165,21 +208,118 @@ async function main() {
   const senderPubKeyCache = new Map<string, Buffer>()
   const conversations = new Map<string, QwenChatMessage[]>()
   const processedPayloadHashes = new Set<string>()
+  const greetedAddresses = new Set<string>()
 
   let since = 0
   let repliesSent = 0
+  let greetingsSent = 0
   let lastActivityAt = Date.now()
+
+  // Ticket #77's own sketch used `sinceProfiles = 0` (every historical registration). Deliberately
+  // starting from "now" instead: a live relay this bot points at may already have many
+  // pre-existing registrations from earlier tickets' own runs (this file's neighboring scripts,
+  // `monad-e2e-demo.livecheck.ts`, etc.) -- starting at 0 would immediately try to greet-and-fund
+  // every one of them on this bot's very first poll, which is both not what "auto-greet a new
+  // signup" means and a real risk to the shared, already-documented-as-scarce funding wallet
+  // balance (see `qwen-bot-common.ts`'s header). Only registrations from this run's own startup
+  // onward are treated as "new".
+  let sinceProfiles = Date.now()
 
   console.log(
     `\nPolling ${relayBaseUrl}/message/monad?since=<t> every ${pollIntervalMs}ms for messages addressed to ${identity.displayAddress} ...`,
   )
+  console.log(
+    `Polling ${relayBaseUrl}/metadata/monad?since=<t> every ${pollIntervalMs}ms for new profile registrations (greeting + funding up to ${maxGreetings}) ...`,
+  )
 
-  while (repliesSent < maxReplies) {
+  // Runs until both quotas are met (or the idle timeout fires) -- greeting/funding new signups is
+  // no longer gated behind "has the Qwen-reply quota been reached", since it's now this script's
+  // second, independent piece of demoed behavior (ticket #77).
+  while (repliesSent < maxReplies || greetingsSent < maxGreetings) {
     if (Date.now() - lastActivityAt > idleTimeoutMs) {
       console.log(
-        `\nNo messages addressed to us within ${idleTimeoutMs}ms of the last activity -- exiting.`,
+        `\nNo activity (messages or new profile registrations) within ${idleTimeoutMs}ms -- exiting.`,
       )
       break
+    }
+
+    if (greetingsSent < maxGreetings) {
+      const newProfiles = await fetchMonadProfilesSince({
+        relayBaseUrl,
+        sinceMs: sinceProfiles,
+      })
+      let maxSeenProfileTimestamp = sinceProfiles - 1
+
+      for (const profile of newProfiles) {
+        // The registration timestamp lives inside the signed `AddressMetadata` payload itself
+        // (`ListMonadProfilesEntry` only carries `address` + the raw `SignedPayload` bytes -- see
+        // `metadata.proto`'s doc comment on that message) -- decode it to advance the cursor the
+        // same way `since`/`maxSeenTimestamp` already does for messages above.
+        const registeredAt = AddressMetadata.deserializeBinary(
+          profile.signedPayload.getPayload_asU8(),
+        ).getTimestamp()
+        maxSeenProfileTimestamp = Math.max(
+          maxSeenProfileTimestamp,
+          registeredAt,
+        )
+
+        if (
+          profile.address.toLowerCase() ===
+          identity.displayAddress.toLowerCase()
+        ) {
+          continue // never greet/fund ourselves
+        }
+        if (greetedAddresses.has(profile.address)) continue // idempotency guard
+        if (greetingsSent >= maxGreetings) break
+
+        greetedAddresses.add(profile.address)
+        lastActivityAt = Date.now()
+        console.log(
+          `\n[bot] new profile registration: ${
+            profile.address
+          } (registered ${new Date(registeredAt).toISOString()})`,
+        )
+
+        try {
+          console.log(`[bot] sending greeting DM to ${profile.address} ...`)
+          const greeting = await sendDirectMessageText({
+            stampClient,
+            fromIdentity: identity,
+            toAddress: profile.address,
+            toPubKey: Buffer.from(profile.signedPayload.getPublicKey_asU8()),
+            text: greetingMessage,
+            stampValueWei: burnValueWei,
+          })
+          console.log(
+            `[bot] greeting sent -- payload_hash=${greeting.payloadHashHex} stamp tx=${greeting.txHash}`,
+          )
+        } catch (err) {
+          console.error(`[bot] failed to greet ${profile.address}:`, err)
+        }
+
+        try {
+          console.log(
+            `[bot] funding ${profile.address} with ${fundValueWei} wei from the main wallet (${mainAccountSigner.address}) ...`,
+          )
+          const signedFundTx = await mainAccountSigner.buildAndSignTransfer(
+            profile.address,
+            fundValueWei,
+          )
+          const fundTxHash = await mainAccountSigner.submit(signedFundTx)
+          console.log(`[bot] funding tx sent: ${fundTxHash}`)
+        } catch (err) {
+          console.error(`[bot] failed to fund ${profile.address}:`, err)
+        }
+
+        // Counted once per newly-greeted address regardless of whether the greeting DM and/or the
+        // funding transfer above individually succeeded -- `greetedAddresses` already guards
+        // against re-attempting this same address on a later poll/restart (see this loop's header
+        // comment; matches this script's existing risk tolerance for the message-reply path, which
+        // similarly never retries a `processedPayloadHashes` entry).
+        greetingsSent++
+      }
+
+      if (newProfiles.length > 0) sinceProfiles = maxSeenProfileTimestamp + 1
     }
 
     const stored = await fetchMonadMessagesSince({
@@ -246,26 +386,21 @@ async function main() {
       history.push({ role: 'assistant', content: completion.content })
       conversations.set(envelope.from, history)
 
-      const replyEnvelope = buildEnvelope({
-        fromAddress: identity.displayAddress,
-        fromPrivateKey: identity.toBitcorePrivateKey(),
+      console.log('[bot] stamping + sending reply over Monad testnet ...')
+      // Ticket #77: goes through the shared `sendDirectMessageText` helper (`qwen-bot-common.ts`),
+      // extracted from this exact build-envelope-then-submit sequence (previously duplicated
+      // between this file and `qwen-bot-send-demo.livecheck.ts`) -- also the same path the new
+      // auto-greet logic below uses. Ticket #57: a reply is a direct message, so its stamp must
+      // pay the recipient (`envelope.from`, the human it's replying to) -- not burn to the fixed
+      // `MONAD_STAMP_BURN_ADDRESS`, which is only correct for a broadcast with no single
+      // recipient (see `chain/monad-chain.ts`'s `directMessages.send` for the same fix), and the
+      // helper's `destinationAddress` always does this.
+      const result = await sendDirectMessageText({
+        stampClient,
+        fromIdentity: identity,
         toAddress: envelope.from,
         toPubKey: senderPubKey,
-        // Wrapped as the real UI's MessageItem[] wire shape (see `extractText`'s doc comment) so a
-        // real Frank UI wallet can decode this reply, not just this ticket's own scripts.
-        plaintext: serializeMessageItems([
-          { type: 'text', text: completion.content },
-        ]),
-      })
-
-      console.log('[bot] stamping + sending reply over Monad testnet ...')
-      const result = await stampClient.submitStampedMessage({
-        encryptedPayload: replyEnvelope,
-        // Ticket #57: a reply is a direct message, so its stamp must pay the recipient
-        // (`envelope.from`, the human it's replying to) -- not burn to the fixed
-        // MONAD_STAMP_BURN_ADDRESS, which is only correct for a broadcast with no single
-        // recipient. See `chain/monad-chain.ts`'s `directMessages.send` for the same fix.
-        destinationAddress: envelope.from,
+        text: completion.content,
         stampValueWei: burnValueWei,
       })
       console.log(
@@ -276,13 +411,15 @@ async function main() {
     }
 
     if (stored.length > 0) since = maxSeenTimestamp + 1
-    if (repliesSent >= maxReplies) break
+    if (repliesSent >= maxReplies && greetingsSent >= maxGreetings) break
     await sleep(pollIntervalMs)
   }
 
   console.log(
     `\nDone. Sent ${repliesSent} real Qwen-generated repl${
       repliesSent === 1 ? 'y' : 'ies'
+    } and greeted+funded ${greetingsSent} new profile registration${
+      greetingsSent === 1 ? '' : 's'
     } over Monad testnet.`,
   )
 }

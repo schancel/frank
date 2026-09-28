@@ -9,12 +9,16 @@ import axios from 'axios'
 
 import __pb_signed_payload_payload_pb from '@frank/cashweb/signed_payload/payload_pb'
 const { SignedPayload } = __pb_signed_payload_payload_pb
+import __pb_registry_metadata_pb from '@frank/cashweb/registry/metadata_pb'
+const { ListMonadProfilesEntry, ListMonadProfilesResponse } =
+  __pb_registry_metadata_pb
 import {
   MONAD_IDENTITY_DERIVATION_PATH,
   MonadIdentity,
   fetchCuratedDefaultContacts,
   fetchMonadIdentityPubKey,
   fetchMonadProfile,
+  fetchMonadProfilesSince,
   registerMonadIdentity,
 } from './monad-identity'
 
@@ -170,6 +174,69 @@ describe('fetchMonadIdentityPubKey / fetchMonadProfile', () => {
     expect(Buffer.from(profile?.pubKey ?? [])).toEqual(
       identity.compressedPubKey,
     )
+  })
+})
+
+describe('fetchMonadProfilesSince', () => {
+  it('GETs /metadata/monad?since=<sinceMs> and decodes each entry, including its SignedPayload', async () => {
+    const identity = MonadIdentity.fromSeed(SEED)
+    const signedPayload = new SignedPayload()
+    signedPayload.setPublicKey(identity.compressedPubKey)
+    signedPayload.setScheme(SignedPayload.SignatureScheme.ECDSA)
+
+    const entry = new ListMonadProfilesEntry()
+    entry.setAddress(identity.address.raw)
+    entry.setSignedPayload(signedPayload.serializeBinary())
+    const wireResponse = new ListMonadProfilesResponse()
+    wireResponse.addEntries(entry)
+
+    mockedAxios.mockResolvedValueOnce({
+      status: 200,
+      data: Buffer.from(wireResponse.serializeBinary()),
+      statusText: 'OK',
+      headers: {},
+      config: {},
+    })
+
+    const sinceMs = 1_700_000_000_000
+    const profiles = await fetchMonadProfilesSince({
+      relayBaseUrl: RELAY_BASE_URL,
+      sinceMs,
+    })
+
+    expect(mockedAxios).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: 'get',
+        url: `${RELAY_BASE_URL}/metadata/monad`,
+        params: { since: sinceMs },
+      }),
+    )
+    expect(profiles).toHaveLength(1)
+    expect(profiles[0].address).toBe(identity.address.raw)
+    expect(Buffer.from(profiles[0].signedPayload.getPublicKey_asU8())).toEqual(
+      identity.compressedPubKey,
+    )
+    expect(profiles[0].signedPayload.getScheme()).toBe(
+      SignedPayload.SignatureScheme.ECDSA,
+    )
+  })
+
+  it('returns [] on an empty ListMonadProfilesResponse', async () => {
+    const emptyResponse = new ListMonadProfilesResponse()
+    mockedAxios.mockResolvedValueOnce({
+      status: 200,
+      data: Buffer.from(emptyResponse.serializeBinary()),
+      statusText: 'OK',
+      headers: {},
+      config: {},
+    })
+
+    const profiles = await fetchMonadProfilesSince({
+      relayBaseUrl: RELAY_BASE_URL,
+      sinceMs: 0,
+    })
+
+    expect(profiles).toEqual([])
   })
 })
 

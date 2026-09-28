@@ -2,15 +2,18 @@
 /**
  * @fileoverview
  * @enhanceable
+ * @suppress {missingRequire} reports error on implicit type usages.
  * @suppress {messageConventions} JS Compiler reports an error if a variable or
  *     field starts with 'MSG_' and isn't a translatable message.
  * @public
  */
 // GENERATED CODE -- DO NOT EDIT!
+/* eslint-disable */
+// @ts-nocheck
 
 var jspb = require('google-protobuf');
 var goog = jspb;
-var global = Function('return this')();
+var global = globalThis;
 
 goog.exportSymbol('proto.broadcast.BroadcastEntry', null, global);
 goog.exportSymbol('proto.broadcast.BroadcastMessage', null, global);
@@ -110,9 +113,9 @@ proto.broadcast.ForumPost.prototype.toObject = function(opt_includeInstance) {
  */
 proto.broadcast.ForumPost.toObject = function(includeInstance, msg) {
   var f, obj = {
-    title: jspb.Message.getFieldWithDefault(msg, 1, ""),
-    url: jspb.Message.getFieldWithDefault(msg, 2, ""),
-    message: jspb.Message.getFieldWithDefault(msg, 3, "")
+title: jspb.Message.getFieldWithDefault(msg, 1, ""),
+url: jspb.Message.getFieldWithDefault(msg, 2, ""),
+message: jspb.Message.getFieldWithDefault(msg, 3, "")
   };
 
   if (includeInstance) {
@@ -125,7 +128,7 @@ proto.broadcast.ForumPost.toObject = function(includeInstance, msg) {
 
 /**
  * Deserializes binary data (in protobuf wire format).
- * @param {jspb.ByteSource} bytes The bytes to deserialize.
+ * @param {jspb.binary.bytesource.ByteSource} bytes The bytes to deserialize.
  * @return {!proto.broadcast.ForumPost}
  */
 proto.broadcast.ForumPost.deserializeBinary = function(bytes) {
@@ -300,9 +303,9 @@ proto.broadcast.BroadcastEntry.prototype.toObject = function(opt_includeInstance
  */
 proto.broadcast.BroadcastEntry.toObject = function(includeInstance, msg) {
   var f, obj = {
-    kind: jspb.Message.getFieldWithDefault(msg, 1, ""),
-    headersMap: (f = msg.getHeadersMap()) ? f.toObject(includeInstance, undefined) : [],
-    payload: msg.getPayload_asB64()
+kind: jspb.Message.getFieldWithDefault(msg, 1, ""),
+headersMap: (f = msg.getHeadersMap()) ? f.toObject(includeInstance, undefined) : [],
+payload: msg.getPayload_asB64()
   };
 
   if (includeInstance) {
@@ -315,7 +318,7 @@ proto.broadcast.BroadcastEntry.toObject = function(includeInstance, msg) {
 
 /**
  * Deserializes binary data (in protobuf wire format).
- * @param {jspb.ByteSource} bytes The bytes to deserialize.
+ * @param {jspb.binary.bytesource.ByteSource} bytes The bytes to deserialize.
  * @return {!proto.broadcast.BroadcastEntry}
  */
 proto.broadcast.BroadcastEntry.deserializeBinary = function(bytes) {
@@ -391,7 +394,12 @@ proto.broadcast.BroadcastEntry.serializeBinaryToWriter = function(message, write
   }
   f = message.getHeadersMap(true);
   if (f && f.getLength() > 0) {
-    f.serializeBinary(2, writer, jspb.BinaryWriter.prototype.writeString, jspb.BinaryWriter.prototype.writeString);
+jspb.internal.public_for_gencode.serializeMapToBinary(
+    message.getHeadersMap(true),
+    2,
+    writer,
+    jspb.BinaryWriter.prototype.writeString,
+    jspb.BinaryWriter.prototype.writeString);
   }
   f = message.getPayload_asU8();
   if (f.length > 0) {
@@ -440,7 +448,8 @@ proto.broadcast.BroadcastEntry.prototype.getHeadersMap = function(opt_noLazyCrea
  */
 proto.broadcast.BroadcastEntry.prototype.clearHeadersMap = function() {
   this.getHeadersMap().clear();
-  return this;};
+  return this;
+};
 
 
 /**
@@ -524,11 +533,11 @@ proto.broadcast.BroadcastMessage.prototype.toObject = function(opt_includeInstan
  */
 proto.broadcast.BroadcastMessage.toObject = function(includeInstance, msg) {
   var f, obj = {
-    topic: jspb.Message.getFieldWithDefault(msg, 1, ""),
-    timestamp: jspb.Message.getFieldWithDefault(msg, 2, 0),
-    entriesList: jspb.Message.toObjectList(msg.getEntriesList(),
+topic: jspb.Message.getFieldWithDefault(msg, 1, ""),
+timestamp: jspb.Message.getFieldWithDefault(msg, 2, 0),
+entriesList: jspb.Message.toObjectList(msg.getEntriesList(),
     proto.broadcast.BroadcastEntry.toObject, includeInstance),
-    parentDigest: msg.getParentDigest_asB64()
+parentDigest: msg.getParentDigest_asB64()
   };
 
   if (includeInstance) {
@@ -541,7 +550,7 @@ proto.broadcast.BroadcastMessage.toObject = function(includeInstance, msg) {
 
 /**
  * Deserializes binary data (in protobuf wire format).
- * @param {jspb.ByteSource} bytes The bytes to deserialize.
+ * @param {jspb.binary.bytesource.ByteSource} bytes The bytes to deserialize.
  * @return {!proto.broadcast.BroadcastMessage}
  */
 proto.broadcast.BroadcastMessage.deserializeBinary = function(bytes) {

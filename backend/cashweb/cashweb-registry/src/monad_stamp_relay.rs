@@ -156,12 +156,18 @@ where
 {
     let client = MonadHttpClient::with_transport(transport.clone());
 
-    let tx_hash = match client.send_raw_transaction(raw_tx).await {
-        Ok(submitted) => submitted.tx_hash,
+    let (tx_hash, nonce_error) = match client.send_raw_transaction(raw_tx).await {
+        Ok(submitted) => (submitted.tx_hash, None),
         // Retrying the exact canonical set after a partial response loss must resume verification,
         // not fail merely because the node has already seen the same bytes. Continue using the
         // deterministic hash of the submitted raw transaction.
-        Err(MonadRpcError::AlreadyKnown { .. }) => Hash32(Keccak256::digest(raw_tx).into()),
+        Err(MonadRpcError::AlreadyKnown { .. }) => (Hash32(Keccak256::digest(raw_tx).into()), None),
+        // The exact bytes may already be mined even when the node reports a consumed nonce. Verify
+        // their deterministic hash; if no exact receipt appears, preserve the nonce failure because
+        // a replacement transaction may instead have consumed it.
+        Err(err @ MonadRpcError::NonceTooLow { .. }) => {
+            (Hash32(Keccak256::digest(raw_tx).into()), Some(err))
+        }
         Err(err) => return Ok(StampRelayOutcome::BroadcastFailed(err)),
     };
 
@@ -179,7 +185,10 @@ where
                     tokio::time::sleep(poll.interval).await;
                     continue;
                 }
-                return Ok(StampRelayOutcome::ConfirmationTimedOut { tx_hash });
+                return Ok(match nonce_error {
+                    Some(err) => StampRelayOutcome::BroadcastFailed(err),
+                    None => StampRelayOutcome::ConfirmationTimedOut { tx_hash },
+                });
             }
             StampTransactionVerification::Verified { value_wei } => {
                 return Ok(StampRelayOutcome::Verified { tx_hash, value_wei });
@@ -484,6 +493,7 @@ mod tests {
     async fn broadcast_failure_is_distinguishable_from_verification_failure() {
         let transport = MockTransport::default();
         transport.fail_send_raw_transaction("nonce too low: next nonce 5, tx nonce 3");
+        transport.set("eth_getTransactionReceipt", Value::Null);
 
         let outcome = broadcast_and_verify_stamp(
             &transport,
@@ -499,8 +509,40 @@ mod tests {
             StampRelayOutcome::BroadcastFailed(MonadRpcError::NonceTooLow { .. })
         ));
         assert!(!outcome.is_verified());
-        // Never even attempts to poll for a receipt once broadcast itself failed.
-        assert_eq!(transport.call_count("eth_getTransactionReceipt"), 0);
+        // It checks the exact raw hash before preserving the nonce failure, because the exact
+        // transaction may have mined before the relay received its response.
+        assert_eq!(transport.call_count("eth_getTransactionReceipt"), 5);
+    }
+
+    #[tokio::test]
+    async fn nonce_too_low_resumes_when_the_exact_raw_transaction_was_mined() {
+        let commitment = make_commitment();
+        let to = hex_addr(0x44);
+        let raw_tx = [0xde, 0xad, 0xbe, 0xef];
+        let expected_hash = Hash32(Keccak256::digest(raw_tx).into());
+        let transport = MockTransport::default();
+        transport.fail_send_raw_transaction("nonce too low");
+        transport.set("eth_getTransactionReceipt", receipt_json(&to, "0x1"));
+        transport.set(
+            "eth_getTransactionByHash",
+            tx_json(&to, 10_000, &commitment_calldata(&commitment)),
+        );
+
+        let outcome = broadcast_and_verify_stamp(
+            &transport,
+            &raw_tx,
+            &expected_stamp_transaction(commitment),
+            fast_poll(),
+        )
+        .await
+        .unwrap();
+
+        match outcome {
+            StampRelayOutcome::Verified { tx_hash, .. } => {
+                assert_eq!(tx_hash, expected_hash);
+            }
+            other => panic!("expected Verified, got {other:?}"),
+        }
     }
 
     #[tokio::test]

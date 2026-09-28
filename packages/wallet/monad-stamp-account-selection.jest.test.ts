@@ -7,6 +7,15 @@ const account = (index: number, capacityWei: bigint) => ({
 })
 
 describe('selectStampAccounts', () => {
+  it('uses two equally funded accounts when both are available', () => {
+    expect(
+      selectStampAccounts({
+        amountWei: 100n,
+        accounts: [account(0, 100n), account(1, 100n)],
+      }).map(selected => selected.paymentValueWei),
+    ).toEqual([50n, 50n])
+  })
+
   it('uses the greatest lower bound repeatedly when segmented accounts can meet the soft two-payment goal', () => {
     expect(
       selectStampAccounts({

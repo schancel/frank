@@ -318,6 +318,7 @@ export default defineComponent({
     const chatScroll = ref<QScrollArea | null>(null)
 
     return {
+      bottom,
       chatScroll,
       scrollBottom() {
         const scrollArea = chatScroll.value

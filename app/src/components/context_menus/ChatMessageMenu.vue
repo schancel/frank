@@ -45,7 +45,7 @@ import { defineComponent, PropType } from 'vue'
 
 import { copyToClipboard } from 'quasar'
 import { useChatStore } from 'src/stores/chats'
-import { Message } from 'src/cashweb/types/messages'
+import { Message } from '@frank/cashweb/types/messages'
 
 export default defineComponent({
   props: {

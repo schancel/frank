@@ -20,9 +20,12 @@
               {{ $t('transactionDialog.txId') }}
             </span>
             <q-item-label>
-              <a :href="`https://explorer.givelotus.org/tx/${outpoint.txId}`">{{
-                outpoint.txId
-              }}</a>
+              <a
+                :href="transactionExplorerUrl(outpoint.txId)"
+                target="_blank"
+                rel="noopener noreferrer"
+                >{{ outpoint.txId }}</a
+              >
             </q-item-label>
             <span class="text-bold">
               {{ $t('transactionDialog.txType') }}
@@ -50,7 +53,8 @@
 <script lang="ts">
 import { defineComponent, PropType } from 'vue'
 import { toDisplayAddress } from 'src/utils/address'
-import { Utxo } from 'src/cashweb/types/utxo'
+import { Utxo } from '@frank/cashweb/types/utxo'
+import { transactionExplorerUrl } from 'src/utils/explorer'
 
 // `toDisplayAddress` (Lotus-only) is left as-is here rather than swapped for `activeChain`
 // (ticket #44): this dialog's `outpoints` prop is always `[]` for Monad-sourced messages
@@ -79,6 +83,7 @@ export default defineComponent({
   },
   setup() {
     return {
+      transactionExplorerUrl,
       extractAddress(outpointAddress: string) {
         return toDisplayAddress(outpointAddress)
       },

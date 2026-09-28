@@ -41,7 +41,7 @@ import ChatMessageImage from './ChatMessageImage.vue'
 import ChatMessageStealth from './ChatMessageStealth.vue'
 import { useChatStore } from 'src/stores/chats'
 import { useContactStore } from 'src/stores/contacts'
-import { MessageItem } from 'src/cashweb/types/messages'
+import { MessageItem } from '@frank/cashweb/types/messages'
 
 export default defineComponent({
   name: 'ChatMessageReply',

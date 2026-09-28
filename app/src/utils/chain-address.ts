@@ -7,11 +7,11 @@
  * points (`refresh`/`fetchAndAddContact`). See #42's handoff for the full reasoning.
  *
  * Mirrors `toDisplayAddress`'s *role* -- a single canonical string used as the actual key in
- * `state.chats`/`state.contacts` (`../cashweb/chain/active-chain.ts`'s `ChainAddress` doc comment:
+ * `state.chats`/`state.contacts` (`@frank/wallet/chain/active-chain.ts`'s `ChainAddress` doc comment:
  * "the canonical string form ... for storage keys") -- via `activeChain.parseAddress`/
  * `formatAddress` instead of bitcore.
  */
-import { activeChain } from '../cashweb/chain'
+import { activeChain } from '@frank/wallet/chain'
 
 /** Canonicalizes `address` to `activeChain`'s own canonical string form -- the same value used as
  * the key in `state.chats`/`state.contacts`. Throws if `address` doesn't parse as a valid address

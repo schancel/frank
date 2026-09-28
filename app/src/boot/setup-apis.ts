@@ -1,13 +1,13 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 import { defaultRelayUrl, chronikServers } from '../utils/constants'
-import { Wallet } from '../cashweb/wallet'
+import { Wallet } from '@frank/cashweb/legacy-wallet'
 import { getRelayClient } from '../adapters/pinia-relay-adapter'
 import { store as levelDbUtxoStore } from '../adapters/level-utxo-store'
 import { boot } from 'quasar/wrappers'
-import { Utxo, UtxoId } from 'src/cashweb/types/utxo'
+import { Utxo, UtxoId } from '@frank/cashweb/types/utxo'
 import { reactive } from 'vue'
-import { UtxoStore } from 'src/cashweb/wallet/storage/storage'
+import { UtxoStore } from '@frank/cashweb/legacy-wallet/storage/storage'
 import { ChronikClient, WsEndpoint } from 'chronik-client'
 import { useWalletStore } from 'src/stores/wallet'
 import { useProfileStore } from 'src/stores/my-profile'
@@ -123,12 +123,22 @@ export default boot(async ({ app }) => {
     setup: false,
   })
   app.config.globalProperties.$status = status
-  console.log('xPrivKey', xPrivKey)
   // Check if setup was finished.
   // TODO: There should be a better way to do this.
   const profile = profileStore.profile
   console.log('profile.name', profile.name)
-  status.setup = !!xPrivKey && !!profile.name
+  // Ticket #47: `profile.name` is set only by the old Lotus registry/relay round-trip
+  // (Setup.vue's now-bypassed setupRelayData()/setUpRegistry()), which a Monad-only signup never
+  // runs -- so this was permanently false forever after a real Monad signup, leaving the drawer
+  // stuck showing "Login/Sign Up" even for a fully working identity. `walletStore.seedPhrase`
+  // existing is exactly the same "is this wallet set up" signal router/index.ts's
+  // `skipLegacySetupGate` already uses to let a Monad-only user reach `/chat` at all; mirrored here
+  // (same env var, same default-on) so the drawer's own gate agrees with the router's.
+  const skipLegacySetupGate =
+    import.meta.env.QCLI_MONAD_SKIP_LEGACY_SETUP_GATE !== 'false'
+  status.setup =
+    (!!xPrivKey && !!profile.name) ||
+    (skipLegacySetupGate && !!walletStore.seedPhrase)
   if (xPrivKey && profile.name) {
     console.log('Loaded previous private key')
     wallet.setXPrivKey(xPrivKey)
@@ -143,7 +153,6 @@ export default boot(async ({ app }) => {
   const relayStore = useRelayClientStore()
   await relayStore.restored
   const token = relayStore.token
-  console.log('relayToken', token)
   if (token) {
     relayClient.setToken(token)
   }

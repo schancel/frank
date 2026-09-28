@@ -35,13 +35,6 @@
                   dense
                   color="primary"
                   flat
-                  icon="swap_vert"
-                  @click="toggleLegacy"
-                />
-                <q-btn
-                  dense
-                  color="primary"
-                  flat
                   icon="content_copy"
                   @click="copyAddress"
                 />
@@ -58,63 +51,57 @@
 </template>
 
 <script lang="ts">
-import { defineComponent, computed } from 'vue'
+import { computed, defineComponent, onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 
 import QrcodeVue from 'qrcode.vue'
-import { formatBalance } from '../utils/formatting'
 import { copyToClipboard } from 'quasar'
-import { useWalletStore } from 'src/stores/wallet'
+import { activeChain } from '@frank/wallet/chain'
+import { useActiveWallet } from 'src/composables/useActiveWallet'
+import { addressCopiedNotify, errorNotify } from 'src/utils/notifications'
 
 export default defineComponent({
   setup() {
-    const wallet = useWalletStore()
+    const router = useRouter()
+    const balance = ref(0n)
+    const displayAddress = ref('')
+
+    onMounted(async () => {
+      try {
+        const wallet = await useActiveWallet()
+        displayAddress.value = wallet.identity.displayAddress
+        balance.value = await activeChain.nativeTransfers.getBalance({ wallet })
+      } catch (err) {
+        errorNotify(
+          err instanceof Error
+            ? err
+            : new Error('Failed to load Monad wallet balance'),
+        )
+      }
+    })
+
     return {
-      formattedBalance: computed(() => {
-        return formatBalance(wallet.balance)
-      }),
+      displayAddress,
+      formattedBalance: computed(
+        () =>
+          `${activeChain.toDisplayAmount(balance.value)} ${activeChain.unit}`,
+      ),
+      close() {
+        window.history.length > 1 ? router.go(-1) : router.push('/')
+      },
+      async copyAddress() {
+        if (!displayAddress.value) return
+        try {
+          await copyToClipboard(displayAddress.value)
+          addressCopiedNotify()
+        } catch {
+          errorNotify(new Error('Unable to copy the Monad address'))
+        }
+      },
     }
   },
   components: {
     QrcodeVue,
-  },
-  data() {
-    return {
-      seedPhraseOpen: false as boolean,
-      legacy: false as boolean,
-    }
-  },
-  methods: {
-    toggleLegacy() {
-      this.legacy = !this.legacy
-    },
-    copyAddress() {
-      if (!this.displayAddress) {
-        return
-      }
-      copyToClipboard(this.displayAddress)
-        .then(() => {
-          this.$q.notify({
-            message: `<div class="text-center">${this.$t(
-              'receiveBitcoinDialog.addressCopied',
-            )}</div>`,
-            html: true,
-            color: 'purple',
-          })
-        })
-        .catch(() => {
-          // fail
-        })
-    },
-    close() {
-      window.history.length > 1 ? this.$router.go(-1) : this.$router.push('/')
-    },
-  },
-  computed: {
-    displayAddress(): string | undefined {
-      return this.legacy
-        ? this.$wallet.myAddress?.toXAddress()
-        : this.$wallet.displayAddress
-    },
   },
 })
 </script>

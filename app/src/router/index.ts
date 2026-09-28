@@ -28,10 +28,26 @@ import { useWalletStore } from 'src/stores/wallet'
 // decision" framing: `MONAD_SKIP_LEGACY_SETUP_GATE` defaults to on (skip -- a seed phrase existing
 // is enough), set it to the literal string "false" to restore the original Lotus-wizard-completion
 // requirement once #47 (porting Setup.vue to Monad) actually lands.
-const skipLegacySetupGate = process.env.MONAD_SKIP_LEGACY_SETUP_GATE !== 'false'
+//
+// Ticket #54 fix (found live doing real end-to-end GUI testing): this was
+// `process.env.MONAD_SKIP_LEGACY_SETUP_GATE`, silently always `undefined` in the browser bundle
+// under this toolchain regardless of what's configured (see `app/quasar.config.js`'s own
+// investigation for the full story -- `viteConf.define` doesn't reach first-party source at all
+// here). `import.meta.env.QCLI_KEY` (Quasar's own env-var-prefix convention) is the mechanism
+// that actually works, confirmed live: set `QCLI_MONAD_SKIP_LEGACY_SETUP_GATE=false` (not
+// `MONAD_SKIP_LEGACY_SETUP_GATE=false`) to restore the strict gate.
+const skipLegacySetupGate =
+  import.meta.env.QCLI_MONAD_SKIP_LEGACY_SETUP_GATE !== 'false'
 
 const unprotectedRoutes = ['/', '/setup', '/forum', '/changelog']
-const protectedRoutes = ['/forum/new-post']
+// Was '/forum/new-post' -- routes.ts declares this child route's path with a leading slash
+// (`/new-post`), which Vue Router treats as absolute (top-level), not relative to its `forum`
+// parent. The real route (confirmed against every actual `:to` link in the app -- ForumDrawer.vue,
+// ForumLayout.vue, ForumMessage.vue, ForumPost.vue) is `/new-post`; `/forum/new-post` never
+// matches any navigation at all, so this gate silently never fired, in either
+// `skipLegacySetupGate` mode (masked by the bypass anyway) or the strict mode
+// `MONAD_SKIP_LEGACY_SETUP_GATE=false` is meant to restore.
+const protectedRoutes = ['/new-post']
 
 async function ensureChatState(address?: string) {
   const chatStore = useChatStore()

@@ -48,13 +48,9 @@ module.exports = {
   // See https://github.com/vuejs/vue-jest/issues/188#issuecomment-620750728
   moduleFileExtensions: ['vue', 'js', 'jsx', 'json', 'ts', 'tsx'],
   moduleNameMapper: {
-    // Fixed as part of ticket #42: 'quasar/dist/quasar.common.js' doesn't exist in the installed
-    // Quasar 2.15.1 (that filename is a stale Quasar-1-era convention) -- this mapping was never
-    // actually exercised by any pre-#42 test, since none of them transitively imported anything
-    // that pulls in 'quasar' (e.g. `utils/notifications.ts`) until this ticket's first-ever
-    // `stores/*.ts` jest tests did. `dist/quasar.cjs.prod.js` is Quasar's own `package.json` `main`
-    // (the real CJS entry point jest/node `require` should resolve to).
-    '^quasar$': 'quasar/dist/quasar.cjs.prod.js',
+    // Use Quasar's CommonJS server entry in Jest. The older
+    // `quasar.cjs.prod.js` filename disappeared in Quasar 2.33.
+    '^quasar$': 'quasar/dist/quasar.server.prod.cjs',
     '^~/(.*)$': '<rootDir>/$1',
     '^src/(.*)$': '<rootDir>/src/$1',
     '^app/(.*)$': '<rootDir>/$1',
@@ -67,6 +63,11 @@ module.exports = {
     // @quasar/quasar-app-extension-testing-unit-jest just for a css stub; jest-transform-stub
     // below turns any matched css/asset file into a stub module anyway.
     '.*css$': '<rootDir>/test/jest/utils/stub.css',
+    // Ticket #54: same substitution as @frank/wallet's own jest.config.js (see that file's
+    // comment, and chain/vite-env.ts's own header, for the full story) -- these tests
+    // transitively pull in @frank/wallet/chain, which imports the real `vite-env.ts` (a genuine
+    // `import.meta.env` reference Jest can never parse) via this exact relative specifier.
+    '^\\./vite-env$': '<rootDir>/../packages/wallet/chain/vite-env.node.ts',
   },
   transform: {
     // See https://jestjs.io/docs/en/configuration.html#transformignorepatterns-array-string

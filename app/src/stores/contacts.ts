@@ -9,7 +9,7 @@ import {
   displayNetwork,
   defaultAcceptancePrice,
 } from '../utils/constants'
-import { activeChain } from '../cashweb/chain'
+import { activeChain } from '@frank/wallet/chain'
 import moment from 'moment'
 import { toChainDisplayAddress } from '../utils/chain-address'
 import { mapObjIndexed } from 'ramda'
@@ -312,9 +312,9 @@ export const useContactStore = defineStore('contacts', {
      * ## Known gap: no name/bio/avatar/relayURL/acceptancePrice from `activeChain.fetchProfile`
      *
      * Unlike the old Lotus `RegistryHandler` (relay-URL lookup) + `ReadOnlyRelayClient.getRelayData`
-     * (name/bio/avatar/inbox) pair, `ActiveChain.fetchProfile` (`../cashweb/chain/active-chain.ts`)
+     * (name/bio/avatar/inbox) pair, `ActiveChain.fetchProfile` (`@frank/wallet/chain/active-chain.ts`)
      * only ever returns `{ address, pubKey }` -- by design, not an oversight: the Monad-side
-     * `AddressMetadata` registered via `../cashweb/wallet/monad-identity.ts` is deliberately empty
+     * `AddressMetadata` registered via `@frank/wallet/monad-identity.ts` is deliberately empty
      * of vCard content ("no vCard content, just proving registration itself", that file's own doc
      * comment), and `ActiveChain` has no per-contact relay-URL concept at all (Monad uses one
      * global `relayBaseUrl`, internal to `MonadChain`, never exposed through the interface). So a

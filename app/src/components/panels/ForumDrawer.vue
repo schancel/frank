@@ -40,7 +40,7 @@
           <q-input
             class="q-mx-sm q-pa-none"
             v-model="threshold"
-            label="Vote Threshold"
+            :label="`Vote Threshold (${chainUnit})`"
             style="width: 250px"
             use-input
           />
@@ -64,6 +64,7 @@ import { useForumStore } from 'src/stores/forum'
 import { storeToRefs } from 'pinia'
 import { defineComponent } from 'vue'
 
+import { activeChain } from '@frank/wallet/chain'
 import { sortModes, SortMode } from '../../utils/sorting'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
 
@@ -96,6 +97,10 @@ export default defineComponent({
     return {
       sortModes: sortModes,
       durations: DURATIONS,
+      // Ticket #61: the field itself now interprets this in the active chain's display unit
+      // (chain/monad-chain.ts's fromDisplayAmount, MON) -- labeling it so a Monad user doesn't
+      // read this as a Lotus-XPI amount, matching the mismatch already found in Forum.vue.
+      chainUnit: activeChain.unit,
     }
   },
   methods: {

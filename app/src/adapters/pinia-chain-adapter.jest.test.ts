@@ -19,8 +19,8 @@ import {
   toReceivedMessageWrapper,
 } from './pinia-chain-adapter'
 import { useChatStore } from '../stores/chats'
-import { activeChain } from '../cashweb/chain'
-import type { DirectMessageReceived, WalletHandle } from '../cashweb/chain'
+import { activeChain } from '@frank/wallet/chain'
+import type { DirectMessageReceived, WalletHandle } from '@frank/wallet/chain'
 
 jest.mock('../utils/notifications', () => ({
   desktopNotify: jest.fn(),

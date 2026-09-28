@@ -103,8 +103,8 @@ export default {
   SettingPanel: {
     newContact: 'Nouveau contact',
     contacts: 'Contacts',
-    sendBitcoinCash: 'Envoyer des Lotus',
-    recieveBitcoinCash: 'Reçevoir des Lotus',
+    sendMonad: 'Envoyer des MON',
+    receiveMonad: 'Recevoir des MON',
     profile: 'Profil',
     settings: 'Configuration',
     wipeAndSave: 'Consolidation du portefeuille',
@@ -118,7 +118,7 @@ export default {
   sendAddressDialog: {
     sendToAddress: "Envoyer vers l'adresse",
     enterBitcoinCashAddress: "Saisissez l'adresse de destination...",
-    enterAmount: 'Saisissez le montant (Lotus)',
+    enterAmount: 'Saisissez le montant (MON)',
     cancel: 'Annuler',
     send: 'Envoyer',
   },

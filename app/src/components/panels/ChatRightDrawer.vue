@@ -1,10 +1,5 @@
 <template>
   <div class="column full-height">
-    <!-- Send Lotus dialog -->
-    <q-dialog v-model="sendBitcoinOpen">
-      <send-lotus-dialog :address="address" :contact="contact.profile" />
-    </q-dialog>
-
     <!-- TODO: Renable these features at a later data. They don't work correctly, but were only for demo purposes. -->
 
     <!-- Clear history dialog -->
@@ -35,34 +30,6 @@
     <!-- Scroll area -->
     <q-scroll-area class="col">
       <q-list padding>
-        <q-item>
-          <q-item-section avatar>
-            <q-icon name="post_add" />
-          </q-item-section>
-          <q-item-section>
-            {{ $t('chatRightDrawer.stampPrice') }}
-          </q-item-section>
-          <q-item-section>
-            <q-input
-              dense
-              v-model="stampAmount"
-              borderless
-              input-class="text-right"
-              suffix="Lotus"
-            />
-          </q-item-section>
-        </q-item>
-        <q-item clickable v-ripple @click="sendBitcoinOpen = true">
-          <q-item-section avatar>
-            <q-icon name="attach_money" />
-          </q-item-section>
-          <q-item-section>
-            {{ $t('chatRightDrawer.sendLotus') }}
-          </q-item-section>
-        </q-item>
-
-        <q-separator />
-
         <q-item
           clickable
           v-ripple
@@ -87,25 +54,19 @@
 import { defineComponent } from 'vue'
 
 import ContactCard from './ContactCard.vue'
-import SendLotusDialog from '../dialogs/SendLotusDialog.vue'
 import { useContactStore } from 'src/stores/contacts'
-import { useChatStore } from 'src/stores/chats'
 
 export default defineComponent({
   setup() {
-    const chatsStore = useChatStore()
     const contactStore = useContactStore()
 
     return {
-      setStampAmount: chatsStore.setStampAmount,
       setNotify: contactStore.setNotify,
       getNotify: contactStore.getNotify,
-      getStampAmount: chatsStore.getStampAmount,
     }
   },
   components: {
     ContactCard,
-    SendLotusDialog,
   },
   props: {
     address: {
@@ -128,27 +89,11 @@ export default defineComponent({
         this.setNotify({ address: this.address, value: Boolean(value) })
       },
     },
-    stampAmount: {
-      get(): string {
-        return Number(this.getStampAmount(this.address) / 1000000).toFixed(2)
-      },
-      set(amount: string) {
-        const amountNumber = Number(amount)
-        if (isNaN(amountNumber)) {
-          return
-        }
-        this.setStampAmount({
-          address: this.address,
-          stampAmount: Number(amountNumber) * 1000000,
-        })
-      },
-    },
   },
   data: function () {
     return {
       confirmClearOpen: false,
       confirmDeleteOpen: false,
-      sendBitcoinOpen: false,
     }
   },
 })

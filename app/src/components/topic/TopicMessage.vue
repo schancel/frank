@@ -57,7 +57,7 @@ import type { PropType } from 'vue'
 import { renderMarkdown } from '../../utils/markdown'
 import { useContactStore } from 'src/stores/contacts'
 
-import { ForumMessage } from '../../cashweb/types/forum'
+import { ForumMessage } from '@frank/cashweb/types/forum'
 import { useTopicStore } from 'src/stores/topics'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
 

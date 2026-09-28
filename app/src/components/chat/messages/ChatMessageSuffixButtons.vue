@@ -45,7 +45,7 @@ const ButtonNames = ['reply', 'forward', 'info', 'delete'] as const
 const ButtonEvents = ButtonNames.map(
   buttonName => `${buttonName}Click` as const,
 )
-type ButtonType = typeof ButtonNames[number]
+type ButtonType = (typeof ButtonNames)[number]
 
 export default defineComponent({
   name: 'ChatMessageSuffixButtons',

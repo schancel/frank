@@ -8,10 +8,10 @@
 import { setActivePinia, createPinia } from 'pinia'
 
 import { useForumStore } from './forum'
-import { ForumMessage } from '../cashweb/types/forum'
-import { WalletHandle } from '../cashweb/chain'
+import { ForumMessage } from '@frank/cashweb/types/forum'
+import { WalletHandle } from '@frank/wallet/chain'
 
-jest.mock('../cashweb/chain', () => ({
+jest.mock('@frank/wallet/chain', () => ({
   activeChain: {
     topics: {
       post: jest.fn(),
@@ -23,7 +23,7 @@ jest.mock('../cashweb/chain', () => ({
 }))
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const { activeChain } = jest.requireMock('../cashweb/chain')
+const { activeChain } = jest.requireMock('@frank/wallet/chain')
 
 const mockedPost = activeChain.topics.post as jest.Mock
 const mockedVote = activeChain.topics.vote as jest.Mock

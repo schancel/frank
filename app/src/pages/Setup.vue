@@ -83,8 +83,8 @@ import { QStepper } from 'quasar'
 import { HDPrivateKey } from 'bitcore-lib-xpi'
 import { generateMnemonic } from 'bip39'
 
-import { RegistryHandler } from '../cashweb/registry'
-import pop from '../cashweb/pop'
+import { RegistryHandler } from '@frank/cashweb/registry'
+import pop from '@frank/cashweb/pop'
 import { getRelayClient } from '../adapters/pinia-relay-adapter'
 import {
   defaultRelayUrl,
@@ -99,7 +99,6 @@ import AccountStep from '../components/setup/AccountStep.vue'
 import DepositStep from '../components/setup/DepositStep.vue'
 import EulaStep from '../components/setup/EULAStep.vue'
 
-import WalletGenWorker from 'worker-loader!../workers/xpriv_generate'
 import { useRelayClientStore } from 'src/stores/relay-client'
 import { useWalletStore } from 'src/stores/wallet'
 import { useChatStore } from 'src/stores/chats'
@@ -180,7 +179,13 @@ export default defineComponent({
           const dataURL = canvas.toDataURL()
           callback(dataURL)
         }
-        img.src = require(`../assets/avatars/${avatarName}`)
+        // See Profile.vue's identical fix: ticket #51's Vite migration missed this webpack-only
+        // dynamic `require()` for a resolved asset URL -- `new URL(..., import.meta.url)` is
+        // Vite's native replacement.
+        img.src = new URL(
+          `../assets/avatars/${avatarName}`,
+          import.meta.url,
+        ).href
       }
       toDataURL((dataUrl: string) => {
         this.avatar = dataUrl
@@ -197,7 +202,13 @@ export default defineComponent({
       return new Promise<void>((resolve, reject) => {
         // Setup worker
         // TODO: What was the point of doing this in a worker?
-        const worker = new WalletGenWorker()
+        // Vite's native worker import (replaced webpack's `worker-loader!` prefix, ticket #51 --
+        // the Vite migration) -- `new URL(..., import.meta.url)` + `{ type: 'module' }` is Vite's
+        // documented way to construct a Web Worker from a TS/JS file without a special loader.
+        const worker = new Worker(
+          new URL('../workers/xpriv_generate.ts', import.meta.url),
+          { type: 'module' },
+        )
         worker.onmessage = async event => {
           try {
             // Prepare wallet
@@ -451,11 +462,21 @@ export default defineComponent({
           stepper.next()
           break
         case 2:
-          this.selectRandomAvatar()
-          this.newWallet()
-            .then(() => this.setupRelayData())
-            .then(() => stepper.next())
-            .catch(err => errorNotify(err))
+          // Ticket #47 (real signup bug, found live 2026-09-27: this wizard permanently blocked
+          // every fresh user -- see forwardEnabled()'s comment): this used to chain into
+          // newWallet()/setupRelayData(), both entirely Lotus-registry-specific (deriving a Lotus
+          // HDPrivateKey via a worker, then looking an existing profile up on a live Lotus
+          // registry/relay) that this Monad-only deployment has no working backend for, and that
+          // Monad messaging/identity doesn't need at all -- boot/monad-direct-messages.ts derives
+          // everything Monad needs straight from walletStore.seedPhrase, already set by this
+          // component's own setup() the instant /setup was visited. That boot file only runs once
+          // at app startup though, so a full reload (not just an in-SPA route change) is required
+          // for it to pick the now-existing seed phrase up and actually register the Monad identity
+          // with the relay -- this is a pragmatic bridge to a working signup, not the real Monad-
+          // native onboarding UI #47 still wants designed (no seed-backup reminder screen, no
+          // display name wired to a Monad profile yet, "Deposit" step now unreachable dead UI).
+          window.location.hash = '#/'
+          window.location.reload()
           break
         case 3:
           this.setupSettings()
@@ -471,18 +492,16 @@ export default defineComponent({
   },
   computed: {
     forwardEnabled() {
-      if (!this.$indexer.connected) {
-        return false
-      }
-      console.log('isWalletValid', this.isWalletValid)
-      console.log('isWalletSufficient', this.isWalletSufficient)
-      console.log('isRelayValid', this.isRelayValid)
-
+      // Ticket #47 (real signup bug): this used to hard-block every step, including the EULA's own
+      // "Agree" button, on `this.$indexer.connected` -- a live Lotus chronik indexer this Monad-only
+      // deployment never stands up, so this was permanently false and no fresh user could ever get
+      // past step 1. Chronik/indexer connectivity has nothing to do with agreeing to terms or
+      // generating a seed phrase; dropped entirely. `next()`'s case 2 no longer reaches step 3 (see
+      // its own comment), so `isRelayValid`/`isWalletSufficient` (both real-Lotus-balance/relay
+      // checks a Monad-only user could never satisfy) are no longer gates on this path either.
       switch (this.step) {
         case 2:
           return this.isWalletValid
-        case 3:
-          return this.isRelayValid && this.isWalletSufficient
         default:
           return true
       }

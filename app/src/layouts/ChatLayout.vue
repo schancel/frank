@@ -14,11 +14,6 @@
       <send-file-dialog :address="address" :file="image" />
     </q-dialog>
 
-    <!-- Send money dialog -->
-    <q-dialog v-model="sendMoneyOpen">
-      <send-lotus-dialog :address="address" :contact="contactProfile" />
-    </q-dialog>
-
     <q-header>
       <q-toolbar class="q-pl-sm">
         <q-btn
@@ -28,7 +23,7 @@
           @click="() => $emit('toggleMyDrawerOpen')"
           icon="menu"
         />
-        <q-avatar rounded>
+        <q-avatar rounded :style="contactColorStyle">
           <img :src="contactProfile.avatar" />
         </q-avatar>
         <q-toolbar-title class="h6">{{ contactProfile.name }}</q-toolbar-title>
@@ -43,10 +38,7 @@
       </q-toolbar>
     </q-header>
 
-    <router-view
-      @sendFileClicked="toSendFileDialog"
-      @giveLotusClicked="sendMoneyOpen = true"
-    />
+    <router-view @sendFileClicked="toSendFileDialog" />
   </div>
 </template>
 
@@ -56,15 +48,14 @@ import { RouteLocationNormalized } from 'vue-router'
 
 import RightDrawer from '../components/panels/ChatRightDrawer.vue'
 import SendFileDialog from '../components/dialogs/SendFileDialog.vue'
-import SendLotusDialog from '../components/dialogs/SendLotusDialog.vue'
 import { useContactStore } from 'src/stores/contacts'
+import { pubKeyToColor } from 'src/utils/formatting'
 
 export default defineComponent({
   emits: ['toggleMyDrawerOpen'],
   components: {
     RightDrawer,
     SendFileDialog,
-    SendLotusDialog,
   },
   setup() {
     const contactStore = useContactStore()
@@ -76,7 +67,6 @@ export default defineComponent({
   data() {
     return {
       sendFileOpen: false as boolean,
-      sendMoneyOpen: false as boolean,
       address: this.$route.params.address as string,
       contactDrawerOpen: false,
       image: null as unknown | null,
@@ -99,6 +89,18 @@ export default defineComponent({
   computed: {
     contactProfile() {
       return this.getContact(this.address)?.profile
+    },
+    // Ticket #50: a spoofing/impersonation cue -- a colored ring around the contact's avatar,
+    // derived from their public key. Same name/avatar with a suddenly-different ring color is
+    // the tell that the underlying key changed (a genuine key rotation, #46, or someone spoofing
+    // this contact's identity). No ring at all just means no pubkey is known yet for this
+    // contact (e.g. a pending/unconfirmed add) -- not itself suspicious.
+    contactColorStyle() {
+      const pubKey = this.contactProfile?.pubKey
+      if (!pubKey) {
+        return {}
+      }
+      return { boxShadow: `0 0 0 3px ${pubKeyToColor(pubKey.toBuffer())}` }
     },
   },
 })

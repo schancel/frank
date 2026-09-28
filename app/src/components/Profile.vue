@@ -163,7 +163,11 @@ export default defineComponent({
           const dataURL = canvas.toDataURL()
           callback(dataURL)
         }
-        img.src = require(`../assets/avatars/${name}`)
+        // Ticket #51's Vite migration missed this: webpack's dynamic `require()` for a resolved
+        // asset URL has no equivalent under Vite (no global `require` exists in dev at all) --
+        // `new URL(..., import.meta.url)` is Vite's native replacement, statically analyzable
+        // for a bounded-directory template literal like this one.
+        img.src = new URL(`../assets/avatars/${name}`, import.meta.url).href
       }
       toDataURL(dataUrl => {
         this.internalAvatar = dataUrl

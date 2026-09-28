@@ -174,7 +174,14 @@ pub fn parse_commitment_calldata(
     Ok(Sha256::new(commitment_bytes.try_into().unwrap()))
 }
 
-/// What's required of a burn tx for it to count as a valid Stamp.
+/// What's required of a stamp tx for it to count as a valid Stamp.
+///
+/// Ticket #57's terminology fix: `destination_address` is deliberately not called
+/// `burn_address` -- this struct is shared by both the broadcast path (`monad_topics.rs`, where
+/// the value genuinely is burned to a fixed dead address) and the direct-message path
+/// (`monad_message.rs`, where it's a real payment to the message's own recipient, never burned).
+/// Calling a real payment a "burn" is exactly the conflation that caused #57's bug in the first
+/// place -- this struct's field names stay accurate for both callers instead of assuming burn.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExpectedBurn {
     /// LOKAD ID the calldata's commitment must be tagged with (e.g.
@@ -184,13 +191,16 @@ pub struct ExpectedBurn {
     /// `cashweb_payload::verify`'s private `calc_commitment`, given the message's pubkey and
     /// payload hash).
     pub commitment: Sha256,
-    /// Address the burn tx must be sent to.
-    pub burn_address: Address,
-    /// Minimum value (in wei) the burn tx must carry.
+    /// Address the stamp tx's value must be sent to -- a burn address for a broadcast, or the
+    /// message's own recipient for a direct message (see this struct's header).
+    pub destination_address: Address,
+    /// Minimum value (in wei) the stamp tx must carry.
     pub min_value_wei: u128,
 }
 
-/// Outcome of verifying a Monad burn tx against an [`ExpectedBurn`].
+/// Outcome of verifying a Monad stamp transaction against an [`ExpectedBurn`]. The type name is
+/// retained for compatibility with the broadcast path that originally introduced it; a direct
+/// message uses the same checks for a recipient payment, not a burn.
 ///
 /// Distinguishes every way the check can fail (mirroring the granularity of
 /// `cashweb_payload::verify::ValidateSignedPayloadError` for the Lotus path), rather than
@@ -198,16 +208,16 @@ pub struct ExpectedBurn {
 /// `TxNotConfirmed` as "try again later" but `WrongCommitment` as "reject immediately").
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StampBurnVerification {
-    /// The burn tx confirmed successfully, was sent to the expected address, carries at least
+    /// The stamp transaction confirmed successfully, was sent to the expected address, carries at least
     /// the required value, and its calldata commitment matches the expected commitment.
     Verified,
     /// The node has no receipt for this tx hash (unmined, or unknown to the node).
     TxNotConfirmed,
     /// The tx was mined but reverted (`status` = 0).
     TxFailed,
-    /// The tx wasn't sent to the expected burn address.
+    /// The tx wasn't sent to the expected destination address.
     WrongRecipient {
-        /// The burn address the tx was expected to be sent to.
+        /// The address the tx was expected to be sent to (see [`ExpectedBurn::destination_address`]).
         expected: Address,
         /// The tx's actual recipient (`None` for a contract-creation tx).
         actual: Option<Address>,
@@ -230,7 +240,7 @@ pub enum StampBurnVerification {
     },
 }
 
-/// Verify that `tx_hash` is a valid Stamp burn against `expected`.
+/// Verify that `tx_hash` is a valid Stamp transaction against `expected`.
 ///
 /// Fetches the tx's receipt via [`MonadHttpClient::get_transaction_receipt`] and, if confirmed
 /// and successful, the full transaction via [`MonadHttpClient::get_transaction_by_hash`] to check
@@ -263,9 +273,9 @@ where
         return Ok(StampBurnVerification::TxFailed);
     }
 
-    if receipt.to != Some(expected.burn_address) {
+    if receipt.to != Some(expected.destination_address) {
         return Ok(StampBurnVerification::WrongRecipient {
-            expected: expected.burn_address,
+            expected: expected.destination_address,
             actual: receipt.to,
         });
     }
@@ -481,7 +491,7 @@ mod tests {
         })
     }
 
-    fn burn_address() -> Address {
+    fn destination_address() -> Address {
         Address::from_hex(&hex_addr(0x44)).unwrap()
     }
 
@@ -489,7 +499,7 @@ mod tests {
         ExpectedBurn {
             commitment_id: ADDRESS_METADATA_LOKAD_ID_FOR_TESTS,
             commitment,
-            burn_address: burn_address(),
+            destination_address: destination_address(),
             min_value_wei,
         }
     }
@@ -590,7 +600,7 @@ mod tests {
         assert_eq!(
             outcome,
             StampBurnVerification::WrongRecipient {
-                expected: burn_address(),
+                expected: destination_address(),
                 actual: Some(Address::from_hex(&actual_to).unwrap()),
             },
         );

@@ -109,7 +109,7 @@ pub enum StampRelayOutcome {
         /// Hash of the broadcast (still-unconfirmed) transaction.
         tx_hash: Hash32,
     },
-    /// The tx confirmed, but [`verify_stamp_burn`] didn't return `Verified` (wrong recipient,
+    /// The tx confirmed, but [`verify_stamp_burn`] didn't return `Verified` (wrong destination,
     /// insufficient value, wrong/malformed commitment, or the tx itself reverted).
     VerificationFailed {
         /// Hash of the confirmed transaction that failed verification.
@@ -160,7 +160,9 @@ where
     for attempt in 0..max_attempts {
         let outcome = verify_stamp_burn(transport, tx_hash, expected)
             .await
-            .wrap_err_with(|| format!("verifying Monad stamp burn {tx_hash} after broadcast"))?;
+            .wrap_err_with(|| {
+                format!("verifying Monad stamp transaction {tx_hash} after broadcast")
+            })?;
 
         match outcome {
             StampBurnVerification::TxNotConfirmed => {
@@ -251,7 +253,7 @@ mod tests {
         ExpectedBurn {
             commitment_id: STMP,
             commitment,
-            burn_address: Address::from_hex(&hex_addr(0x44)).unwrap(),
+            destination_address: Address::from_hex(&hex_addr(0x44)).unwrap(),
             min_value_wei: 10_000,
         }
     }

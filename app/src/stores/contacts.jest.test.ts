@@ -23,7 +23,7 @@ jest.mock('../utils/notifications', () => ({
 
 import { useContactStore } from './contacts'
 import type { ContactState } from './contacts'
-import { activeChain } from '../cashweb/chain'
+import { activeChain } from '@frank/wallet/chain'
 
 const ADDRESS = '0x3e3e3e3e3e3E3E3E3e3e3E3E3e3e3E3E3e3E3E3e'
 const ADDRESS_LOWERCASE = ADDRESS.toLowerCase()

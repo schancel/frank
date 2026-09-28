@@ -1,5 +1,9 @@
-# Builds the Quasar SPA and serves it as static files via nginx. Build context is `app/` (this
-# directory).
+# Builds the Quasar SPA and serves it as static files via nginx.
+#
+# Ticket #53 (package split): build context is now the *repo root* (see docker-compose.yml --
+# `context: .`, `dockerfile: app/Dockerfile`), not `app/` -- app/ is a yarn workspace member now,
+# and needs the root package.json/yarn.lock plus every sibling `packages/*` (including the
+# promoted-from-app/local_modules/ `bn.js`/`bitcore-lib-xpi`) to install at all.
 #
 # python3/make/g++ are installed defensively for native-addon deps that may need to compile from
 # source (this app's dependency tree still carries several old crypto/browserify-family packages
@@ -13,32 +17,38 @@ RUN apt-get update \
 
 WORKDIR /build
 COPY package.json yarn.lock ./
-COPY local_modules ./local_modules
+COPY app/package.json app/package.json
+COPY packages/cashweb/package.json packages/cashweb/package.json
+COPY packages/wallet/package.json packages/wallet/package.json
+COPY packages/bot/package.json packages/bot/package.json
+COPY packages/bn.js/package.json packages/bn.js/package.json
+COPY packages/bitcore-lib-xpi/package.json packages/bitcore-lib-xpi/package.json
 RUN yarn install --frozen-lockfile
 
 COPY . .
 
-# Real Alchemy/relay config baked into the bundle at build time (see quasar.conf.js's `build.env`
-# comment: webpack's DefinePlugin only substitutes what's explicitly listed there, so these must be
-# real env vars *at this build step*, not just present in some `.env` file nothing here reads).
-# Passed through as build ARGs from docker-compose.yml rather than hardcoded, since the real values
-# (a real Alchemy API key) are secrets that must come from the environment, never committed.
-ARG MONAD_TESTNET_HTTP_RPC_URL
-ARG MONAD_RELAY_BASE_URL
-ARG MONAD_STAMP_BURN_ADDRESS
-ARG CASHWEB_STAMP_MIN_BURN_VALUE_WEI
-ENV MONAD_TESTNET_HTTP_RPC_URL=${MONAD_TESTNET_HTTP_RPC_URL}
-ENV MONAD_RELAY_BASE_URL=${MONAD_RELAY_BASE_URL}
-ENV MONAD_STAMP_BURN_ADDRESS=${MONAD_STAMP_BURN_ADDRESS}
-ENV CASHWEB_STAMP_MIN_BURN_VALUE_WEI=${CASHWEB_STAMP_MIN_BURN_VALUE_WEI}
+# Ticket #54: Quasar's own `QCLI_`-prefixed env var convention (confirmed live -- see that
+# ticket's commit) is what actually reaches `import.meta.env` in the built bundle; a plain
+# `MONAD_TESTNET_HTTP_RPC_URL` env var here has no effect at all. Passed through as build ARGs
+# from docker-compose.yml rather than hardcoded, since the real values (a real Alchemy API key)
+# are secrets that must come from the environment, never committed.
+ARG QCLI_MONAD_TESTNET_HTTP_RPC_URL
+ARG QCLI_MONAD_RELAY_BASE_URL
+ARG QCLI_MONAD_STAMP_BURN_ADDRESS
+ARG QCLI_CASHWEB_STAMP_MIN_BURN_VALUE_WEI
+ENV QCLI_MONAD_TESTNET_HTTP_RPC_URL=${QCLI_MONAD_TESTNET_HTTP_RPC_URL}
+ENV QCLI_MONAD_RELAY_BASE_URL=${QCLI_MONAD_RELAY_BASE_URL}
+ENV QCLI_MONAD_STAMP_BURN_ADDRESS=${QCLI_MONAD_STAMP_BURN_ADDRESS}
+ENV QCLI_CASHWEB_STAMP_MIN_BURN_VALUE_WEI=${QCLI_CASHWEB_STAMP_MIN_BURN_VALUE_WEI}
 
+WORKDIR /build/app
 # Explicit `-m spa`: `package.json`'s own `build` script targets electron (`-m electron -b
 # builder`, for desktop packaging) -- this demo needs the plain browser SPA build instead, output
 # to the framework default `dist/spa`.
 RUN npx quasar build -m spa
 
 FROM nginx:1.27-alpine
-COPY --from=builder /build/dist/spa /usr/share/nginx/html
-COPY nginx.conf /etc/nginx/conf.d/default.conf
+COPY --from=builder /build/app/dist/spa /usr/share/nginx/html
+COPY app/nginx.conf /etc/nginx/conf.d/default.conf
 
 EXPOSE 80

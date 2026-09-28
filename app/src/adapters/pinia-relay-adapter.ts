@@ -1,8 +1,8 @@
-import { RelayClient } from '../cashweb/relay'
+import { RelayClient } from '@frank/cashweb/relay'
 import { defaultRelayUrl, networkName } from '../utils/constants'
 import { store as levelDbStore } from './level-message-store'
 import { toRaw, reactive } from 'vue'
-import { Wallet } from 'src/cashweb/wallet'
+import { Wallet } from '@frank/cashweb/legacy-wallet'
 import { useContactStore } from 'src/stores/contacts'
 import { useChatStore } from 'src/stores/chats'
 

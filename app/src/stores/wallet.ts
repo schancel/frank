@@ -1,10 +1,10 @@
 import { defineStore } from 'pinia'
 import { markRaw, toRaw } from 'vue'
 
-import { calcUtxoId } from '../cashweb/wallet/helpers'
+import { calcUtxoId } from '@frank/cashweb/legacy-wallet/helpers'
 import { store as levelOutpointStore } from '../adapters/level-utxo-store'
 import { HDPrivateKey } from 'bitcore-lib-xpi'
-import { Utxo } from 'src/cashweb/types/utxo'
+import { Utxo } from '@frank/cashweb/types/utxo'
 
 export interface State {
   xPrivKey: HDPrivateKey | null

@@ -30,9 +30,9 @@ import { createPinia, setActivePinia } from 'pinia'
 
 import { useChatStore } from './chats'
 import { useContactStore } from './contacts'
-import { activeChain } from '../cashweb/chain'
-import type { WalletHandle } from '../cashweb/chain'
-import type { ReceivedMessageWrapper } from '../cashweb/types/user-interface'
+import { activeChain } from '@frank/wallet/chain'
+import type { WalletHandle } from '@frank/wallet/chain'
+import type { ReceivedMessageWrapper } from '@frank/cashweb/types/user-interface'
 
 jest.mock('../adapters/level-message-store', () => ({
   store: Promise.resolve({

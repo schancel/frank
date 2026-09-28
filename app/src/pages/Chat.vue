@@ -87,7 +87,6 @@ import ChatMessageComponent from '../components/chat/messages/ChatMessage.vue'
 import ChatInput from '../components/chat/ChatInput.vue'
 import ChatMessageReply from '../components/chat/messages/ChatMessageReply.vue'
 
-import { addressColorFromStr } from '../utils/formatting'
 import { errorNotify, insufficientStampNotify } from '../utils/notifications'
 import { defaultAcceptancePrice, stampLowerLimit } from '../utils/constants'
 import { useMonadWallet } from '../utils/clients'
@@ -238,7 +237,7 @@ export default defineComponent({
           return
         }
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const message = (this.$refs[digest] as typeof ChatMessageComponent[])
+        const message = (this.$refs[digest] as (typeof ChatMessageComponent)[])
           .slice()
           .shift()
 
@@ -261,9 +260,6 @@ export default defineComponent({
         this.scrollDigest = null
         this.$nextTick(() => message.$el.scrollIntoView({ behavior: 'smooth' }))
       }, 50)()
-    },
-    nameColor() {
-      return addressColorFromStr(this.address)
     },
     async sendMessage(message: string) {
       const stampAmount = this.getStampAmount(this.address)

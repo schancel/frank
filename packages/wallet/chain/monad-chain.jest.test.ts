@@ -12,7 +12,7 @@
  * crypto with no network dependency, and exercising them for real is a stronger check that
  * `directMessages.send`/`fetchSince` actually encrypt/decrypt, not merely pass a plaintext through.
  */
-import { getBytes, hexlify } from 'ethers'
+import { Wallet, getBytes, hexlify } from 'ethers'
 
 import { MonadIdentity } from '../monad-identity'
 import { StoredMonadMessageProto } from '../monad-stamp-client'
@@ -29,6 +29,8 @@ import {
   viewToForumMessage,
 } from './monad-chain'
 import { WalletHandle } from './active-chain'
+import { deriveMonadStampChildPublic } from '../monad-stamp-stealth'
+import { InMemoryStampPaymentJournal } from '../storage/stamp-payment-journal'
 
 jest.mock('../monad-stamp-client', () => {
   const actual = jest.requireActual('../monad-stamp-client')
@@ -423,6 +425,12 @@ describe('createMonadChain: directMessages.fetchSince', () => {
     const alice = MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX)
     const bob = MonadIdentity.fromPrivateKeyHex(BOB_PRIVATE_KEY_HEX)
     const wallet = makeWallet(bob)
+    const stampPaymentJournal = new InMemoryStampPaymentJournal()
+    wallet.stampPaymentJournal = stampPaymentJournal
+    wallet.provider = {
+      getBalance: jest.fn().mockResolvedValue(0n),
+      getFeeData: jest.fn().mockResolvedValue({ maxFeePerGas: 1n }),
+    } as unknown as MonadChainWalletHandle['provider']
 
     // Build a real envelope from Alice to Bob, exactly the way `directMessages.send` would.
     const { buildEnvelope } = jest.requireActual(
@@ -438,16 +446,29 @@ describe('createMonadChain: directMessages.fetchSince', () => {
       networkTag: TEST_CONFIG.networkTag,
     })
 
-    // A signed raw payment isn't needed for `parseEnvelope`/filtering, but `fetchSince` reads
-    // `stampValueWei` back from it -- use an empty payment set here (the documented `0n` fallback) to
-    // keep this test focused on the envelope/decrypt wiring; the payment-value read-back is exercised
-    // in registered wallet client tests (`monad-stamp-client.jest.test.ts`) and the field's own
-    // `Transaction.from` behavior is standard ethers.
+    const payloadHash = getBytes('0x' + 'ab'.repeat(32))
+    const stampDestination = deriveMonadStampChildPublic({
+      payloadHash,
+      recipientPublicKey: new Uint8Array(bob.compressedPubKey),
+      paymentIndex: 0,
+    })
+    const rawStampPayment = await new Wallet(
+      ALICE_PRIVATE_KEY_HEX,
+    ).signTransaction({
+      type: 2,
+      chainId: 10143,
+      nonce: 0,
+      to: stampDestination.address,
+      value: 123n,
+      gasLimit: 60_000n,
+      maxFeePerGas: 2n,
+      maxPriorityFeePerGas: 1n,
+    })
     const addressedToBob: StoredMonadMessageProto = {
       message: {
-        stampPayments: [],
+        stampPayments: [{ childIndex: 0, rawTx: getBytes(rawStampPayment) }],
         encryptedPayload: envelopeBytes,
-        payloadHash: getBytes('0x' + 'ab'.repeat(32)),
+        payloadHash,
       },
       timestamp: 1_700_000_000_000,
       networkTag: new Uint8Array(0),
@@ -487,8 +508,18 @@ describe('createMonadChain: directMessages.fetchSince', () => {
     expect(received[0].recipientAddress.raw).toBe(bob.address.raw)
     expect(received[0].items).toEqual(items)
     expect(received[0].payloadDigest).toBe('ab'.repeat(32))
-    expect(received[0].stampValueWei).toBe(0n)
+    expect(received[0].stampValueWei).toBe(123n)
     expect(received[0].receivedTime).toBe(1_700_000_000_000)
+    expect(stampPaymentJournal.get('ab'.repeat(32), 0)).toMatchObject({
+      payloadHashHex: 'ab'.repeat(32),
+      childIndex: 0,
+      address: stampDestination.address,
+      valueWei: '123',
+      status: 'discovered',
+    })
+    expect(stampPaymentJournal.get('ab'.repeat(32), 0)).not.toHaveProperty(
+      'privateKey',
+    )
   })
 
   it('skips envelopes addressed to someone else', async () => {

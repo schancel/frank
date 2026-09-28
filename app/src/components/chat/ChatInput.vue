@@ -1,7 +1,7 @@
 <template>
   <div class="row">
     <q-toolbar class="q-px-sm">
-      <q-btn dense flat icon="unfold_more">
+      <q-btn dense flat icon="unfold_more" :disable="disable">
         <q-menu>
           <q-list style="min-width: 100px">
             <q-item clickable v-close-popup @click="sendFileClicked">
@@ -49,6 +49,7 @@
         @keydown.enter.exact="sendMessage"
         @mousedown.self.stop
         v-model="innerMessage"
+        :disable="disable"
         :placeholder="$t('chatInput.placeHolder')"
       />
       <q-space />
@@ -58,6 +59,7 @@
         round
         icon="local_post_office"
         aria-label="Stamp payment"
+        :disable="disable"
       >
         <q-tooltip>{{ stampLabel }}</q-tooltip>
         <q-menu anchor="top middle" self="bottom middle">
@@ -92,6 +94,7 @@
         flat
         icon="send"
         class="q-btn"
+        :disable="disable"
         @mousedown.prevent="sendMessage"
       />
     </q-toolbar>
@@ -116,6 +119,10 @@ export default defineComponent({
     stampAmount: {
       type: String,
       default: () => activeChain.toDisplayAmount(activeChain.defaultStampValue),
+    },
+    disable: {
+      type: Boolean,
+      default: false,
     },
   },
   emits: [
@@ -149,6 +156,9 @@ export default defineComponent({
       inputBox.focus()
     },
     sendMessage() {
+      if (this.disable) {
+        return
+      }
       this.$emit('sendMessage', this.innerMessage)
     },
     sendFileClicked() {

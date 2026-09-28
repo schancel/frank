@@ -74,6 +74,7 @@
         ref="chatInput"
         v-model:message="message"
         v-model:stamp-amount="stampAmount"
+        :disable="sendingMessage"
         @sendMessage="sendMessage"
       />
       <div
@@ -141,6 +142,7 @@ export default defineComponent({
       message: '',
       recoveredDraftAwaitingConfirmation: null as string | null,
       stampPreparationStatus: null as string | null,
+      sendingMessage: false,
     }
   },
   setup() {
@@ -291,6 +293,9 @@ export default defineComponent({
       }, 50)()
     },
     async sendMessage(message: string) {
+      if (this.sendingMessage) {
+        return
+      }
       if (this.recoveredDraftAwaitingConfirmation === message) {
         this.confirmRecoveredDraft(message)
         return
@@ -304,6 +309,13 @@ export default defineComponent({
       if (!message) {
         return
       }
+      // Move the submitted text into the optimistic outbox bubble immediately. The user should
+      // never be editing the contents of a message whose accounts and stamp payments are already
+      // being prepared.
+      const submittedMessage = message
+      this.sendingMessage = true
+      this.message = ''
+      this.replyDigest = null
       // Was calling the old Lotus `$relayClient.sendMessage` directly, completely bypassing
       // `stores/chats.ts`'s `sendMessage` (ticket #42's real, tested `activeChain.directMessages.send`
       // wiring) -- that store action always existed and worked, but nothing in the actual UI ever
@@ -316,7 +328,7 @@ export default defineComponent({
         await this.sendDirectMessage({
           wallet: useMonadWallet(),
           address: this.address,
-          items: [{ type: 'text', text: message }],
+          items: [{ type: 'text', text: submittedMessage }],
           stampValue,
           onPreparationProgress: (
             progress: DirectMessagePreparationProgress,
@@ -337,21 +349,20 @@ export default defineComponent({
           },
         })
       } catch (err) {
-        this.stampPreparationStatus = null
         if (err instanceof MonadStampRecoveredAttemptError) {
           // Recovery completed an older, already-authorized exact payment set. The current draft
           // may or may not describe that same message, so neither silently discard it nor send it
           // on the next ordinary click. Require an explicit second authorization.
-          this.recoveredDraftAwaitingConfirmation = message
-          this.confirmRecoveredDraft(message)
+          this.recoveredDraftAwaitingConfirmation = submittedMessage
+          this.confirmRecoveredDraft(submittedMessage)
           return
         }
         errorNotify(err instanceof Error ? err : new Error(String(err)))
         return
+      } finally {
+        this.stampPreparationStatus = null
+        this.sendingMessage = false
       }
-      this.stampPreparationStatus = null
-      this.message = ''
-      this.replyDigest = null
       // After message send, scroll to bottom if not already there
       if (!this.bottom) {
         this.$nextTick(this.buttonScrollBottom)

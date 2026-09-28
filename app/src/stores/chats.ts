@@ -133,6 +133,13 @@ function freshChatsState(): State {
   }
 }
 
+let pendingMessageSequence = 0
+
+function nextPendingMessageId(timestamp: number): string {
+  pendingMessageSequence += 1
+  return `pending:${timestamp}:${pendingMessageSequence}`
+}
+
 export type RestorableState = {
   activeChatAddr: string | null
   chats: Record<string, ChatState | undefined>
@@ -487,13 +494,16 @@ export const useChatStore = defineStore('chats', {
       }
 
       if (previousHash && previousHash in this.messages) {
-        // we have the message already, just need to update some fields and return
+        // Replace an optimistic/retried message with the newly keyed message. Monad cannot know
+        // the final payload digest until its stamp payments have been submitted, so pending UI
+        // entries use a local id and reconcile through this path once the real digest exists.
         const msgIndex = chat.messages.findIndex(
           msg => msg.payloadDigest === previousHash,
         )
-        chat.messages.splice(msgIndex, 1)
-        delete this.messages[payloadDigest]
-        return
+        if (msgIndex >= 0) {
+          chat.messages.splice(msgIndex, 1)
+        }
+        delete this.messages[previousHash]
       }
 
       this.messages[payloadDigest] = message
@@ -508,24 +518,7 @@ export const useChatStore = defineStore('chats', {
         address: displayAddress,
       }
     },
-    /**
-     * Sends a direct message through `activeChain.directMessages.send` (ticket #42 acceptance
-     * criterion) and locally echoes it via the existing `sendMessageLocal` action, unchanged.
-     *
-     * Deliberate simplification vs. the old WS-based Lotus flow (`adapters/pinia-relay-adapter.ts`):
-     * no optimistic "sending..." bubble. The old flow could show one because `RelayClient`
-     * precomputes a message's payload digest client-side *before* submitting it, so the same
-     * `index` is reused across its `messageSending` -> `messageSent`/`messageSendError` events,
-     * letting `sendMessageLocal` update one message's `status` in place. `MonadStampClient` (#41)
-     * only returns a real `payloadDigest` *after* the stamp payments are built and submitted -- there's no
-     * equivalent client-side pre-image to optimistically key an in-flight message by. Reusing
-     * `sendMessageLocal`'s `previousHash` reconciliation path with a synthetic temp id was
-     * considered and rejected: that branch (see `sendMessageLocal` above) only ever deletes the
-     * pending message and returns, it never re-inserts the confirmed one -- a pre-existing quirk
-     * out of this ticket's non-goals to fix. So this action simply awaits the send and records the
-     * message once, already 'confirmed'. A failed send throws to the caller (e.g. for a UI-level
-     * error toast) without touching store state.
-     */
+    /** Sends a direct message while keeping an optimistic local outbox entry visible. */
     async sendMessage({
       wallet,
       address,
@@ -556,17 +549,46 @@ export const useChatStore = defineStore('chats', {
         }
       }
 
-      const result = await activeChain.directMessages.send({
-        wallet,
-        recipient,
+      const timestamp = Date.now()
+      const pendingMessageId = nextPendingMessageId(timestamp)
+      this.sendMessageLocal({
+        address: displayAddress,
+        senderAddress: wallet.identity.displayAddress,
+        index: pendingMessageId,
         items,
-        ...(stampValue === undefined ? {} : { stampValue }),
-        ...(onPreparationProgress === undefined
-          ? {}
-          : { onPreparationProgress }),
+        outpoints: [],
+        stampValueWei: stampValue,
+        status: 'pending',
+        previousHash: null,
+        timestamp,
       })
 
-      const timestamp = Date.now()
+      let result: DirectMessageSendResult
+      try {
+        result = await activeChain.directMessages.send({
+          wallet,
+          recipient,
+          items,
+          ...(stampValue === undefined ? {} : { stampValue }),
+          ...(onPreparationProgress === undefined
+            ? {}
+            : { onPreparationProgress }),
+        })
+      } catch (error) {
+        this.sendMessageLocal({
+          address: displayAddress,
+          senderAddress: wallet.identity.displayAddress,
+          index: pendingMessageId,
+          items,
+          outpoints: [],
+          stampValueWei: stampValue,
+          status: 'error',
+          previousHash: null,
+          timestamp,
+        })
+        throw error
+      }
+
       const persistedMessage: Message = {
         outbound: true,
         status: 'confirmed',
@@ -578,6 +600,22 @@ export const useChatStore = defineStore('chats', {
         stampPayments: result.stampPayments,
         senderAddress: wallet.identity.displayAddress,
       }
+      // Reconcile the UI before local persistence. Delivery is already irreversible at this point;
+      // if Level storage fails, leaving the bubble pending/error would invite a duplicate retry and
+      // another payment for a message the relay already accepted.
+      this.sendMessageLocal({
+        address: displayAddress,
+        senderAddress: wallet.identity.displayAddress,
+        index: result.payloadDigest,
+        items,
+        outpoints: [],
+        stampValueWei: result.stampValueWei,
+        stampPayments: result.stampPayments,
+        status: 'confirmed',
+        previousHash: pendingMessageId,
+        timestamp,
+      })
+
       const messageStore = await store
       await messageStore.saveMessage(
         {
@@ -589,19 +627,6 @@ export const useChatStore = defineStore('chats', {
         },
         { advanceCursor: false },
       )
-
-      this.sendMessageLocal({
-        address: displayAddress,
-        senderAddress: wallet.identity.displayAddress,
-        index: result.payloadDigest,
-        items,
-        outpoints: [],
-        stampValueWei: result.stampValueWei,
-        stampPayments: result.stampPayments,
-        status: 'confirmed',
-        previousHash: null,
-        timestamp,
-      })
 
       return result
     },

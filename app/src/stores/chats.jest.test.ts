@@ -88,6 +88,60 @@ describe('stores/chats.ts (ticket #42)', () => {
   })
 
   describe('sendMessage', () => {
+    it('shows one pending message immediately and reconciles it after the send completes', async () => {
+      const chats = useChatStore()
+      const wallet = makeWallet(SENDER_ADDRESS)
+      let resolveSend:
+        | ((result: {
+            payloadDigest: string
+            stampValueWei: bigint
+            preparationTxHashes: string[]
+          }) => void)
+        | undefined
+      jest.spyOn(activeChain.directMessages, 'send').mockReturnValue(
+        new Promise(resolve => {
+          resolveSend = resolve
+        }),
+      )
+
+      const sending = chats.sendMessage({
+        wallet,
+        address: RECIPIENT_ADDRESS,
+        items: [{ type: 'text', text: 'optimistic hello' }],
+        stampValue: 123n,
+      })
+
+      const pending = chats.chats[RECIPIENT_ADDRESS]?.messages
+      expect(pending).toHaveLength(1)
+      expect(pending?.[0]).toEqual(
+        expect.objectContaining({
+          status: 'pending',
+          items: [{ type: 'text', text: 'optimistic hello' }],
+          stampValueWei: 123n,
+        }),
+      )
+
+      resolveSend?.({
+        payloadDigest: 'confirmed-digest',
+        stampValueWei: 123n,
+        preparationTxHashes: [],
+      })
+      await sending
+
+      const confirmed = chats.chats[RECIPIENT_ADDRESS]?.messages
+      expect(confirmed).toHaveLength(1)
+      expect(confirmed?.[0]).toEqual(
+        expect.objectContaining({
+          payloadDigest: 'confirmed-digest',
+          status: 'confirmed',
+          items: [{ type: 'text', text: 'optimistic hello' }],
+        }),
+      )
+      expect(
+        Object.keys(chats.messages).filter(key => key.startsWith('pending:')),
+      ).toEqual([])
+    })
+
     it('sends through activeChain.directMessages.send and records a confirmed message', async () => {
       const chats = useChatStore()
       const wallet = makeWallet(SENDER_ADDRESS)
@@ -171,7 +225,7 @@ describe('stores/chats.ts (ticket #42)', () => {
       expect(sendSpy).not.toHaveBeenCalled()
     })
 
-    it('propagates a send failure without recording a confirmed message', async () => {
+    it('propagates a send failure and marks the optimistic message as failed', async () => {
       const chats = useChatStore()
       const wallet = makeWallet(SENDER_ADDRESS)
       jest
@@ -186,8 +240,44 @@ describe('stores/chats.ts (ticket #42)', () => {
         }),
       ).rejects.toThrow('no registered profile')
 
-      // The chat shell may exist (created before the send attempt), but no message was recorded.
-      expect(chats.chats[RECIPIENT_ADDRESS]?.messages ?? []).toHaveLength(0)
+      const messages = chats.chats[RECIPIENT_ADDRESS]?.messages ?? []
+      expect(messages).toHaveLength(1)
+      expect(messages[0]).toEqual(
+        expect.objectContaining({
+          status: 'error',
+          items: [{ type: 'text', text: 'hi' }],
+        }),
+      )
+      expect(mockMessageStore.saveMessage).not.toHaveBeenCalled()
+    })
+
+    it('does not make a delivered message look retryable when local persistence fails', async () => {
+      const chats = useChatStore()
+      const wallet = makeWallet(SENDER_ADDRESS)
+      jest.spyOn(activeChain.directMessages, 'send').mockResolvedValue({
+        payloadDigest: 'delivered-digest',
+        stampValueWei: 321n,
+        preparationTxHashes: [],
+      })
+      mockMessageStore.saveMessage.mockRejectedValueOnce(
+        new Error('local storage unavailable'),
+      )
+
+      await expect(
+        chats.sendMessage({
+          wallet,
+          address: RECIPIENT_ADDRESS,
+          items: [{ type: 'text', text: 'already delivered' }],
+          stampValue: 321n,
+        }),
+      ).rejects.toThrow('local storage unavailable')
+
+      expect(chats.chats[RECIPIENT_ADDRESS]?.messages).toEqual([
+        expect.objectContaining({
+          payloadDigest: 'delivered-digest',
+          status: 'confirmed',
+        }),
+      ])
     })
   })
 

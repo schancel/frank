@@ -17,7 +17,12 @@
         />
       </q-tab>
 
-      <q-tab name="topics" icon="forum" />
+      <!-- Per-owner decision (2026-09-27, following #61): the flat groupchat-style Topics list is
+      hidden in favor of the Forum's threaded view -- both still work (stores/topics.ts and
+      stores/forum.ts share the same activeChain.topics data), but only Forum is surfaced in nav
+      now. This tab navigates straight to /forum rather than switching local drawer content, since
+      Forum is a full page/route, not another sidebar-list mode like contacts/settings. -->
+      <q-tab name="forum" icon="forum" @click="$router.push('/forum')" />
     </q-tabs>
 
     <settings-panel v-if="$status.setup" v-show="tab == 'settings'" />
@@ -27,7 +32,6 @@
     </div>
 
     <chat-list v-show="tab == 'contacts'" v-bind="$attrs" :compact="false" />
-    <topic-list v-show="tab == 'topics'" v-bind="$attrs" :compact="false" />
 
     <q-list v-if="$status.setup">
       <q-separator />
@@ -55,7 +59,6 @@ import { storeToRefs } from 'pinia'
 
 import ChatList from '../chat/ChatList.vue'
 import ChatListLink from '../chat/ChatListLink.vue'
-import TopicList from '../topic/TopicList.vue'
 import SettingsPanel from '../panels/SettingsPanel.vue'
 import RelayConnectDialog from '../dialogs/RelayConnectDialog.vue'
 
@@ -92,13 +95,12 @@ export default defineComponent({
   components: {
     ChatListLink,
     ChatList,
-    TopicList,
     SettingsPanel,
     RelayConnectDialog,
   },
   data() {
     return {
-      tab: 'topics',
+      tab: 'contacts',
       // My Drawer
       walletOpen: false,
       relayConnectOpen: false,

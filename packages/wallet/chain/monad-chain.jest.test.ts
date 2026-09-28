@@ -108,6 +108,7 @@ const TEST_CONFIG: MonadChainConfig = {
   stampBurnAddress: '0x000000000000000000000000000000000000dEaD',
   defaultStampValueWei: 1_000_000_000_000n,
   subAccountPoolSize: 3,
+  walletStorageLocation: false,
 }
 
 const ALICE_PRIVATE_KEY_HEX = '0x' + '11'.repeat(31) + '1a' // 32 bytes, distinct from Bob/Eve below
@@ -172,6 +173,7 @@ describe('createMonadChain: createWallet', () => {
   it('derives a deterministic, EIP-55-checksummed identity address from the seed', async () => {
     const walletA = await chain.createWallet(seed)
     const walletB = await chain.createWallet(seed)
+    expect(walletB).toBe(walletA)
     expect(walletA.identity.address.raw).toBe(walletB.identity.address.raw)
     expect(walletA.identity.address.raw).toMatch(/^0x[0-9a-fA-F]{40}$/)
   })

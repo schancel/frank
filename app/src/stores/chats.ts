@@ -297,19 +297,26 @@ export const useChatStore = defineStore('chats', {
       return chat.stampAmount ?? defaultStampAmount
     },
     getLatestMessage: state => (address: string) => {
+      // Real bug found live: this used to return a placeholder `{ outbound: false, text: '' }`
+      // object (named `nopInfo`, i.e. "nothing to show") for both "no chat exists yet" and "chat
+      // exists but has zero messages" -- but `ChatListItem.vue`'s only caller checks `info ===
+      // null` to decide whether to render anything, and a non-null object with an empty `text`
+      // doesn't match that check. Net effect: `latestMessageBody` still built `'Them: ' +
+      // slicedText` (with `outbound: false` always meaning "Them", regardless of there being no
+      // real message at all), producing a literal "Them: " with nothing after it in the chat
+      // list -- exactly what a freshly-added contact with no messages yet showed. Returning
+      // `null` here instead, matching the sibling `!lastItem` case a few lines below (which
+      // already correctly returns `null` for its own "nothing to render" case) and the caller's
+      // existing, correct `null` handling.
       const displayAddress = toChainDisplayAddress(address)
-      const nopInfo = {
-        outbound: false,
-        text: '',
-      }
       const chat = state.chats[displayAddress]
       if (!chat) {
-        return nopInfo
+        return null
       }
 
       const nMessages = Object.keys(chat.messages).length
       if (nMessages === 0) {
-        return nopInfo
+        return null
       }
 
       const lastMessage = chat.messages[chat.messages.length - 1]

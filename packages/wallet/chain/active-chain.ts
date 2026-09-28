@@ -184,8 +184,52 @@ export interface ActiveChain {
   createWallet(seed: HDSeed): Promise<WalletHandle>
   nativeTransfers: NativeTransferClient
   /** Look up an identity's registered profile/pubkey. Returns `undefined` if nothing is
-   * registered under `addr` yet. */
-  fetchProfile(addr: ChainAddress): Promise<ProfileInfo | undefined>
+   * registered under `addr` yet. `opts.relayBaseUrl`, when given, looks the address up against
+   * that relay instead of this chain's own configured default (ticket #78 -- a client-initiated,
+   * one-off "finger this specific relay" lookup, not a change to which relay the chain otherwise
+   * talks to). */
+  fetchProfile(
+    addr: ChainAddress,
+    opts?: { relayBaseUrl?: string },
+  ): Promise<ProfileInfo | undefined>
   directMessages: DirectMessageClient
   topics: TopicBroadcastClient
+}
+
+/** Parsed result of {@link parseAddressWithOptionalRelay}. */
+export interface AddressWithOptionalRelay {
+  /** Everything before the last `@`, or the whole input if there's no `@`. */
+  address: string
+  /** Everything after the last `@`, normalized to an `http(s)://` base URL, or `undefined` if
+   * the input had no `@`. */
+  relayBaseUrl?: string
+}
+
+/** Parses a "finger"-style `address@relayHost` input (ticket #78): splits on the *last* `@` (an
+ * address itself never contains one, so this is unambiguous), and normalizes the right-hand side
+ * into a base URL `fetchProfile`'s `opts.relayBaseUrl` can use directly.
+ *
+ * - No `@` present: returns `{ address: input }` -- today's existing single-field behavior,
+ *   completely unchanged (this is the common case; a future UI built on this can use one input
+ *   field for both, not two).
+ * - `@relayHost` present: `relayHost` is used as-is if it already has an `http://`/`https://`
+ *   scheme, otherwise `https://` is prepended (the common case -- typing a bare hostname should
+ *   mean "the usual secure default", not force the user to type a scheme every time).
+ *
+ * Pure parsing only -- does not validate that `address` is a real chain address (that's
+ * `ActiveChain.parseAddress`'s job) or that `relayBaseUrl` points at a reachable relay (that's
+ * whatever calls `fetchProfile` with it). Deliberately not wired into any UI component yet -- see
+ * issue #78's own comment thread for why the actual entry point (`AddContact.vue` or a new
+ * dialog) is a separate, not-yet-decided UX question. */
+export function parseAddressWithOptionalRelay(
+  input: string,
+): AddressWithOptionalRelay {
+  const at = input.lastIndexOf('@')
+  if (at === -1) {
+    return { address: input }
+  }
+  const address = input.slice(0, at)
+  const host = input.slice(at + 1)
+  const relayBaseUrl = /^https?:\/\//i.test(host) ? host : `https://${host}`
+  return { address, relayBaseUrl }
 }

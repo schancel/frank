@@ -513,9 +513,12 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
 
     nativeTransfers,
 
-    async fetchProfile(addr: ChainAddress): Promise<ProfileInfo | undefined> {
+    async fetchProfile(
+      addr: ChainAddress,
+      opts?: { relayBaseUrl?: string },
+    ): Promise<ProfileInfo | undefined> {
       return fetchMonadProfile({
-        relayBaseUrl: config.relayBaseUrl,
+        relayBaseUrl: opts?.relayBaseUrl ?? config.relayBaseUrl,
         address: addr,
       })
     },

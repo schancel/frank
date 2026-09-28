@@ -1,87 +1,87 @@
 <template>
-  <q-page-container>
-    <q-page class="q-ma-none q-pa-sm">
-      <q-card class="q-ma-sm">
-        <q-form @submit="post">
-          <q-card-section>
-            <q-input
-              label="Offering"
-              v-model="offering"
-              :suffix="chainUnit"
-              :rules="[val => Number.parseFloat(val) || 'Invalid number']"
-              lazy-rules
-            />
-            <q-select
-              label="Topic"
-              :disable="!!getMessage(parentDigest)"
-              v-model="topic"
-              :options="topics"
-              @filter="filterTopics"
-              use-input
-              @new-value="createValue"
-              new-value-mode="add-unique"
-              input-debounce="0"
-              :rules="[
-                val =>
-                  (val && val.length > 0 && /^[a-z0-9.-]+$/.test(val)) ||
-                  'Only numbers, lowercase, periods and dashes allowed',
-                val =>
-                  !val.split('.').some(val => val.length === 0) ||
-                  'Topic segments not allowed to be empty',
-              ]"
-              lazy-rules
-            >
-              <template #no-option>
-                <q-item>
-                  <q-item-section class="text-grey">No results</q-item-section>
-                </q-item>
-              </template>
-            </q-select>
-            <q-input label="Post Title" v-model="title" />
-            <q-input
-              label="URL"
-              v-model="url"
-              :rules="[val => !val || validateUrl(val) || 'Invalid URL']"
-              lazy-rules
-            />
-            <q-card-section class="row q-pa-none">
-              <q-card-section class="col-xs-12 col-md q-pa-none q-pr-xs">
-                <q-input label="Message" v-model="message" type="textarea" />
-              </q-card-section>
-
-              <q-card-section
-                class="col-xs-12 col-md-6 q-pa-none q-pt-md"
-                v-show="this.message"
-              >
-                <div class="text-weight-bold text-caption">Message Preview</div>
-                <q-card-section class="q-pa-none q-pt-xs">
-                  <span class="mdstyle" v-html="markedMessage" />
-                </q-card-section>
-              </q-card-section>
-            </q-card-section>
-          </q-card-section>
-          <q-card-actions align="right">
-            <q-btn
-              @click="back"
-              label="back"
-              color="negative"
-              class="q-ma-sm"
-            />
-            <q-btn type="submit" label="Post" color="primary" class="q-ma-sm" />
-          </q-card-actions>
-        </q-form>
-      </q-card>
-
-      <q-card class="q-ma-sm" v-if="getMessage(parentDigest)">
-        <q-card-section>Replying to:</q-card-section>
-        <a-message
-          :message="getMessage(parentDigest)"
-          :show-replies="false"
-          :compact="true"
+  <!-- Real bug found live: this page used to wrap itself in its own <q-page-container><q-page>,
+  but it's already rendered inside ForumLayout.vue's own <q-page-container><q-page><router-view />
+  -- ForumLayout is the actual layout for every route nested under it (see routes.ts: 'forum's
+  children include this page, Forum.vue, and ForumPost.vue). Quasar's q-page-container computes
+  its content offset from the single shared q-layout instance (the outer MainLayout.vue's), so
+  nesting a second one here double-applied that offset calculation -- the visible symptom was the
+  whole form rendering shifted right with a large empty gap on the left, worse the narrower the
+  actual available width. Neither Forum.vue nor ForumPost.vue (the other two pages under this same
+  layout) wrap themselves this way -- this page was the only one that did, confirmed by checking
+  both siblings before making this change. -->
+  <q-card class="q-ma-none q-pa-sm">
+    <q-form @submit="post">
+      <q-card-section>
+        <q-input
+          label="Offering"
+          v-model="offering"
+          :suffix="chainUnit"
+          :rules="[val => Number.parseFloat(val) || 'Invalid number']"
+          lazy-rules
         />
-      </q-card>
-    </q-page>
-  </q-page-container>
+        <q-select
+          label="Topic"
+          :disable="!!getMessage(parentDigest)"
+          v-model="topic"
+          :options="topics"
+          @filter="filterTopics"
+          use-input
+          @new-value="createValue"
+          new-value-mode="add-unique"
+          input-debounce="0"
+          :rules="[
+            val =>
+              (val && val.length > 0 && /^[a-z0-9.-]+$/.test(val)) ||
+              'Only numbers, lowercase, periods and dashes allowed',
+            val =>
+              !val.split('.').some(val => val.length === 0) ||
+              'Topic segments not allowed to be empty',
+          ]"
+          lazy-rules
+        >
+          <template #no-option>
+            <q-item>
+              <q-item-section class="text-grey">No results</q-item-section>
+            </q-item>
+          </template>
+        </q-select>
+        <q-input label="Post Title" v-model="title" />
+        <q-input
+          label="URL"
+          v-model="url"
+          :rules="[val => !val || validateUrl(val) || 'Invalid URL']"
+          lazy-rules
+        />
+        <!-- Ticket feedback (real, direct): the side-by-side Message/Preview split used Quasar's
+        row/col grid (col-md / col-md-6), which breakpoints off the *viewport* width, not this
+        card's own width -- so it went side-by-side even when the card itself was narrow, squeezing
+        both halves uncomfortably. Stacked vertically instead, always, regardless of viewport. -->
+        <q-card-section class="col-12 q-pa-none">
+          <q-input label="Message" v-model="message" type="textarea" />
+        </q-card-section>
+
+        <q-card-section class="col-12 q-pa-none q-pt-md" v-show="this.message">
+          <div class="text-weight-bold text-caption">Message Preview</div>
+          <q-card-section class="q-pa-none q-pt-xs">
+            <span class="mdstyle" v-html="markedMessage" />
+          </q-card-section>
+        </q-card-section>
+      </q-card-section>
+      <q-card-actions align="right">
+        <q-btn @click="back" label="back" color="negative" class="q-ma-sm" />
+        <q-btn type="submit" label="Post" color="primary" class="q-ma-sm" />
+      </q-card-actions>
+    </q-form>
+  </q-card>
+
+  <q-card class="q-ma-sm" v-if="getMessage(parentDigest)">
+    <q-card-section>Replying to:</q-card-section>
+    <a-message
+      :message="getMessage(parentDigest)"
+      :show-replies="false"
+      :compact="true"
+    />
+  </q-card>
 </template>
 
 <script lang="ts">

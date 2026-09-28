@@ -532,6 +532,18 @@ impl Registry {
         self.db.monad_profiles().get(&address)
     }
 
+    /// List every `(address, SignedPayload)` registered with the profile's own `timestamp >=
+    /// since` (ticket #75), ordered by `timestamp` ascending -- see
+    /// `crate::store::monad_profiles`'s module docs for the by-time index this reads, and
+    /// `crate::http::monad_profile`'s module docs for how a bot uses this to auto-greet/auto-fund
+    /// new signups.
+    pub(crate) fn list_monad_profiles_since(
+        &self,
+        since: i64,
+    ) -> Result<Vec<(Address, cashweb_payload::proto::SignedPayload)>> {
+        self.db.monad_profiles().list_since(since)
+    }
+
     /// List every [`proto::StoredMonadMessage`] stored with `timestamp >= since` (ticket #37),
     /// ordered by `timestamp` ascending -- see `crate::http::monad_message`'s module docs for how
     /// this is used, and for why it can't filter by intended recipient.
@@ -1635,6 +1647,40 @@ mod tests {
 
         registry.put_monad_profile(address, signed.clone())?;
         assert_eq!(registry.get_monad_profile(address)?, Some(signed));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_list_monad_profiles_since_discovers_new_registrations_by_time() -> Result<()> {
+        // Ticket #75: the actual bot-facing use case -- discover newly-registered addresses via
+        // the full put_monad_profile -> list_monad_profiles_since path (real signature
+        // verification, not the store-layer test's bypassed put).
+        let _ = bitcoinsuite_error::install();
+        let (_tempdir, registry) =
+            test_monad_profile_registry("cashweb-registry--registry-monad-profile-list-since");
+
+        let early_key = registry.ecc.seckey_from_array([1; 32])?;
+        let (early_signed, early_address) =
+            sign_monad_profile(&early_key, &sample_monad_profile(100));
+        registry.put_monad_profile(early_address, early_signed.clone())?;
+
+        let late_key = registry.ecc.seckey_from_array([2; 32])?;
+        let (late_signed, late_address) = sign_monad_profile(&late_key, &sample_monad_profile(200));
+        registry.put_monad_profile(late_address, late_signed.clone())?;
+
+        assert_eq!(
+            registry.list_monad_profiles_since(0)?,
+            vec![
+                (early_address, early_signed),
+                (late_address, late_signed.clone())
+            ],
+        );
+        assert_eq!(
+            registry.list_monad_profiles_since(200)?,
+            vec![(late_address, late_signed)],
+        );
+        assert_eq!(registry.list_monad_profiles_since(201)?, vec![]);
 
         Ok(())
     }

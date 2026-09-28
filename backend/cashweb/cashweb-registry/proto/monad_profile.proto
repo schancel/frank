@@ -2,6 +2,7 @@ syntax = "proto3";
 package cashweb.registry;
 
 import "registry.proto";
+import "payload.proto";
 
 // MonadProfile is the Monad-native equivalent of AddressMetadata (ticket #45): user-specified
 // profile content covered by the registrant's signature. Field-number-compatible with
@@ -18,4 +19,25 @@ message MonadProfile {
     int64 ttl = 2;
     // User-specified profile data (wallet-defined kind/headers/body entries).
     repeated AddressEntry entries = 3;
+}
+
+// One entry of ListMonadProfilesResponse (ticket #75). A SignedPayload doesn't carry its own
+// owning address anywhere retrievable without the DB key it's stored under, so this pairs them
+// explicitly -- mirrors registry.proto's GetMetadataRangeEntry (the Lotus-side equivalent), field
+// for field.
+message ListMonadProfilesEntry {
+    // 0x-prefixed, EIP-55-checksummed 20-byte Monad address this profile is registered under.
+    string address = 1;
+    // The exact SignedPayload envelope as stored/returned by GET /metadata/monad/:addr -- not
+    // re-wrapped, so a caller can verify it exactly as it would a single-address fetch.
+    cashweb.payload.SignedPayload signed_payload = 2;
+}
+
+// Response for GET /metadata/monad?since=<timestamp> (ticket #75): every Monad profile
+// registered at or after `since`, ordered by registration timestamp ascending. Lets a bot
+// discover newly-registered identities by polling with an advancing cursor, mirroring
+// StoredMonadMessages/GET /message/monad?since= (ticket #37)'s identical shape for messages.
+message ListMonadProfilesResponse {
+    // Profiles registered at or after the request's `since`, ordered by timestamp ascending.
+    repeated ListMonadProfilesEntry entries = 1;
 }

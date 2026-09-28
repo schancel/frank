@@ -6,7 +6,8 @@ use crate::{
         handle_get_monad_message, handle_list_monad_messages, handle_put_monad_message,
     },
     http::monad_profile::{
-        fetch_profile_or_not_found, handle_get_monad_profile, handle_put_monad_profile,
+        fetch_profile_or_not_found, handle_get_monad_profile, handle_list_monad_profiles,
+        handle_put_monad_profile,
     },
     http::monad_topics::{
         handle_get_monad_topic_post, handle_list_monad_topic_posts, handle_put_monad_topic_post,
@@ -161,6 +162,11 @@ impl RegistryServer {
                 "/metadata/monad/:addr",
                 routing::put(handle_put_monad_profile).get(handle_get_monad_profile),
             )
+            // `GET /metadata/monad?since=<timestamp>` (ticket #75): registration discovery, e.g.
+            // for a bot to auto-greet/auto-fund new signups -- see
+            // `crate::http::monad_profile`'s module docs. No `:addr` segment, so this can't
+            // collide with the route directly above.
+            .route("/metadata/monad", routing::get(handle_list_monad_profiles))
             .route("/messages/:topic", routing::get(handle_get_messages))
             .route("/messages", routing::get(handle_get_all_messages))
             .route("/message", routing::put(handle_put_message))

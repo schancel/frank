@@ -26,13 +26,29 @@
 //!   for any future client that addresses Monad profiles explicitly), and
 //! - the plain `/metadata/:addr` dispatch so the real, already-shipped `monad-identity.ts` client
 //!   actually works against a live relay -- the concrete thing ticket #42 is blocked on.
+//!
+//! ## Registration discovery (`GET /metadata/monad?since=<timestamp>`, ticket #75)
+//!
+//! Mirrors `crate::http::monad_message`'s `GET /message/monad?since=` exactly: a client (e.g. a
+//! bot that wants to auto-greet/auto-fund new signups) polls this with an advancing cursor (the
+//! highest registration `timestamp` it's already seen, plus one) to discover newly-registered
+//! profiles without already knowing their addresses out of band. Same-path-different-method
+//! precedent as `/message/monad`'s own `PUT`/`GET(since=)` pair -- this route has no `:addr`
+//! segment, so it can't collide with `/metadata/monad/:addr` above.
 
 use std::str::FromStr;
 
-use axum::{extract::Path, Extension};
-use bitcoinsuite_error::{ErrorMeta, Result};
+use axum::{
+    extract::{Path, Query},
+    http::StatusCode,
+    response::{IntoResponse, Response},
+    Extension,
+};
+use bitcoinsuite_error::{ErrorMeta, Report, Result};
 use cashweb_http_utils::protobuf::Protobuf;
+use serde::Deserialize;
 use thiserror::Error;
+use tracing::Level;
 
 use crate::{
     http::{error::HttpRegistryError, server::RegistryServer},
@@ -103,4 +119,51 @@ pub(crate) fn fetch_profile_or_not_found(
     Ok(registry
         .get_monad_profile(address)?
         .ok_or(ProfileNotFound(address))?)
+}
+
+/// Query parameters for [`handle_list_monad_profiles`].
+#[derive(Debug, Deserialize)]
+pub struct ListMonadProfilesQuery {
+    /// Only return profiles registered at or after this many milliseconds since the Unix epoch.
+    /// Defaults to `0` (i.e. every registered profile) when omitted.
+    since: Option<i64>,
+}
+
+/// Error type for [`handle_list_monad_profiles`].
+#[derive(Debug)]
+pub enum ListMonadProfilesError {
+    /// A storage-level error.
+    Infrastructure(Report),
+}
+
+impl IntoResponse for ListMonadProfilesError {
+    fn into_response(self) -> Response {
+        match self {
+            ListMonadProfilesError::Infrastructure(err) => {
+                tracing::event!(Level::ERROR, error = %err, "infrastructure failure listing Monad profiles");
+                StatusCode::INTERNAL_SERVER_ERROR.into_response()
+            }
+        }
+    }
+}
+
+/// `GET /metadata/monad?since=<timestamp>`: list every Monad profile registered at or after
+/// `since` (milliseconds since the Unix epoch), ordered by registration timestamp ascending
+/// (ticket #75). See this module's docs for the registration-discovery use case.
+pub async fn handle_list_monad_profiles(
+    Query(params): Query<ListMonadProfilesQuery>,
+    Extension(server): Extension<RegistryServer>,
+) -> std::result::Result<Protobuf<proto::ListMonadProfilesResponse>, ListMonadProfilesError> {
+    let since = params.since.unwrap_or(0);
+    let entries = server
+        .registry
+        .list_monad_profiles_since(since)
+        .map_err(ListMonadProfilesError::Infrastructure)?
+        .into_iter()
+        .map(|(address, signed_payload)| proto::ListMonadProfilesEntry {
+            address: address.to_hex(),
+            signed_payload: Some(signed_payload),
+        })
+        .collect();
+    Ok(Protobuf(proto::ListMonadProfilesResponse { entries }))
 }

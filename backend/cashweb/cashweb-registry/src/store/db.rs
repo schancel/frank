@@ -51,6 +51,12 @@ pub(crate) const CF_MONAD_TOPIC_POSTS_BY_TOPIC: &str = "monad_topic_posts_by_top
 /// raw 20-byte Monad address -- see `crate::store::monad_profiles`'s module docs for why this is
 /// separate from `CF_METADATA` (which is keyed by a Lotus-only `PubKeyHash`).
 pub(crate) const CF_MONAD_PROFILES: &str = "monad_profiles";
+/// Ticket #75: secondary index over `CF_MONAD_PROFILES`, keyed by `timestamp.to_be_bytes() ++
+/// address` (value: the raw address, so a range scan doesn't need a second lookup to know which
+/// `CF_MONAD_PROFILES` entry to fetch) -- mirrors `CF_MONAD_MESSAGES_BY_TIME` exactly. Lets
+/// `DbMonadProfiles::list_since` discover newly-registered profiles in timestamp order, e.g. for a
+/// bot to auto-greet/auto-fund new signups.
+pub(crate) const CF_MONAD_PROFILES_BY_TIME: &str = "monad_profiles_by_time";
 
 pub(crate) type CF = rocksdb::ColumnFamily;
 

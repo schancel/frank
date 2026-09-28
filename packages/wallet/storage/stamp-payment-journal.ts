@@ -2,11 +2,15 @@
 import level, { type LevelDB } from 'level'
 import { join } from 'path'
 
-export type StampPaymentRecoveryStatus = 'discovered' | 'swept'
+export type StampPaymentRecoveryStatus =
+  | 'discovered'
+  | 'sweep-pending'
+  | 'swept'
 
 /** Public bookkeeping for a recipient-owned one-time stamp destination. Private child keys are
  * deliberately absent: they are reconstructed from the identity key only while attempting a
- * sweep. */
+ * sweep. A pending sweep retains only its already-signed transaction bytes so a restart can
+ * reconcile or replay the exact transaction without creating a conflicting nonce spend. */
 export interface StampPaymentRecoveryRecord {
   payloadHashHex: string
   childIndex: number
@@ -15,6 +19,9 @@ export interface StampPaymentRecoveryRecord {
   valueWei: string
   status: StampPaymentRecoveryStatus
   sweepTxHash?: string
+  sweepRawTx?: string
+  sweepValueWei?: string
+  sweepDestinationAddress?: string
 }
 
 export interface StampPaymentJournal {

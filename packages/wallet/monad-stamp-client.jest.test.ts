@@ -227,6 +227,9 @@ describe('recipient stamp-payment sweep', () => {
       throw new Error(`unexpected _perform: ${req.method}`)
     })
     const httpClient = makeMockHttpClient()
+    httpClient.getTransactionReceipt.mockResolvedValue({
+      status: 'success',
+    } as never)
     httpClient.submitRawTransaction.mockImplementation(async rawTx => {
       const hash = Transaction.from(rawTx).hash
       if (hash === null) throw new Error('expected signed transaction')
@@ -528,7 +531,8 @@ describe('MonadStampClient.submitStampedMessage', () => {
         return `0x${(nonce++).toString(16)}`
       if (req.method === 'estimateGas') {
         const data = req.transaction?.data
-        if (data === undefined) throw new Error('estimateGas request has no data')
+        if (data === undefined)
+          throw new Error('estimateGas request has no data')
         estimatedData.push(data)
         return `0x${calldataFloor(data).toString(16)}`
       }

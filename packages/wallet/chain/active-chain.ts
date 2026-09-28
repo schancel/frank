@@ -123,7 +123,7 @@ export interface RecoveredStampPaymentInfo {
   txHash: string
   address: ChainAddress
   valueWei: bigint
-  status: 'discovered' | 'swept'
+  status: 'discovered' | 'sweep-pending' | 'swept'
   sweepTxHash?: string
 }
 
@@ -131,9 +131,10 @@ export type RecoveredStampPaymentSweepResult =
   | { swept: true; txHash: string; valueWei: bigint }
   | {
       swept: false
-      reason: 'below-dust-threshold'
-      balanceWei: bigint
-      dustThresholdWei: bigint
+      reason: 'below-dust-threshold' | 'pending'
+      balanceWei?: bigint
+      dustThresholdWei?: bigint
+      txHash?: string
     }
 
 export interface DirectMessageClient {

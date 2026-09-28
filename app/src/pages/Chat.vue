@@ -26,6 +26,15 @@
             </template>
           </div>
         </q-scroll-area>
+        <!-- Anchored to the top (not the footer) so it never grows/shrinks the footer and pushes
+        an in-flight message out from under the input box while sending. -->
+        <div
+          v-if="stampPreparationStatus"
+          class="absolute-top full-width text-caption text-center bg-accent text-white q-py-xs"
+          role="status"
+        >
+          {{ stampPreparationStatus }}
+        </div>
         <q-page-sticky
           position="bottom-right"
           :offset="[18, 18]"
@@ -77,13 +86,6 @@
         :disable="sendingMessage"
         @sendMessage="sendMessage"
       />
-      <div
-        v-if="stampPreparationStatus"
-        class="text-caption text-center q-pb-sm text-accent"
-        role="status"
-      >
-        {{ stampPreparationStatus }}
-      </div>
     </q-footer>
   </div>
 </template>
@@ -432,13 +434,6 @@ export default defineComponent({
   watch: {
     'messages.length'() {
       // Scroll to bottom if user was already there.
-      this.scrollBottom()
-    },
-    stampPreparationStatus() {
-      // The footer grows/shrinks as this status caption appears/disappears/changes text, which
-      // Quasar's q-layout accounts for by shrinking the scroll-area's own viewport live -- but
-      // that alone doesn't move scrollTop, so a pending message sitting right at the old bottom
-      // edge ends up hidden underneath the now-taller footer until the user scrolls manually.
       this.scrollBottom()
     },
     'active'(newActive) {

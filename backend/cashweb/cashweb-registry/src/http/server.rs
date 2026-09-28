@@ -166,10 +166,7 @@ impl RegistryServer {
             // for a bot to auto-greet/auto-fund new signups -- see
             // `crate::http::monad_profile`'s module docs. No `:addr` segment, so this can't
             // collide with the route directly above.
-            .route(
-                "/metadata/monad",
-                routing::get(handle_list_monad_profiles),
-            )
+            .route("/metadata/monad", routing::get(handle_list_monad_profiles))
             .route("/messages/:topic", routing::get(handle_get_messages))
             .route("/messages", routing::get(handle_get_all_messages))
             .route("/message", routing::put(handle_put_message))

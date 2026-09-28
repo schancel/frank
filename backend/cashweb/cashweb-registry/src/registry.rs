@@ -1666,13 +1666,15 @@ mod tests {
         registry.put_monad_profile(early_address, early_signed.clone())?;
 
         let late_key = registry.ecc.seckey_from_array([2; 32])?;
-        let (late_signed, late_address) =
-            sign_monad_profile(&late_key, &sample_monad_profile(200));
+        let (late_signed, late_address) = sign_monad_profile(&late_key, &sample_monad_profile(200));
         registry.put_monad_profile(late_address, late_signed.clone())?;
 
         assert_eq!(
             registry.list_monad_profiles_since(0)?,
-            vec![(early_address, early_signed), (late_address, late_signed.clone())],
+            vec![
+                (early_address, early_signed),
+                (late_address, late_signed.clone())
+            ],
         );
         assert_eq!(
             registry.list_monad_profiles_since(200)?,

@@ -120,8 +120,7 @@ impl<'a> DbMonadProfiles<'a> {
 
         let mut batch = rocksdb::WriteBatch::default();
         if let Some(existing) = self.get(address)? {
-            if let Ok(existing_profile) = proto::MonadProfile::decode(existing.payload.as_slice())
-            {
+            if let Ok(existing_profile) = proto::MonadProfile::decode(existing.payload.as_slice()) {
                 batch.delete_cf(
                     self.cf_monad_profiles_by_time,
                     by_time_key(existing_profile.timestamp, &address.0),
@@ -304,9 +303,8 @@ mod tests {
     #[test]
     fn test_list_since_after_retry_with_new_timestamp_has_no_stale_entry() -> Result<()> {
         let _ = bitcoinsuite_error::install();
-        let tempdir = tempdir::TempDir::new(
-            "cashweb-registry-store--monad-profiles-list-since-retry",
-        )?;
+        let tempdir =
+            tempdir::TempDir::new("cashweb-registry-store--monad-profiles-list-since-retry")?;
         let db = Db::open(tempdir.path().join("db.rocksdb"))?;
         let store = db.monad_profiles();
         let address = Address([7u8; 20]);

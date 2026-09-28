@@ -2,15 +2,18 @@
 /**
  * @fileoverview
  * @enhanceable
+ * @suppress {missingRequire} reports error on implicit type usages.
  * @suppress {messageConventions} JS Compiler reports an error if a variable or
  *     field starts with 'MSG_' and isn't a translatable message.
  * @public
  */
 // GENERATED CODE -- DO NOT EDIT!
+/* eslint-disable */
+// @ts-nocheck
 
 var jspb = require('google-protobuf');
 var goog = jspb;
-var global = Function('return this')();
+var global = globalThis;
 
 goog.exportSymbol('proto.p2pkh.P2PKHEntry', null, global);
 /**
@@ -66,7 +69,7 @@ proto.p2pkh.P2PKHEntry.prototype.toObject = function(opt_includeInstance) {
  */
 proto.p2pkh.P2PKHEntry.toObject = function(includeInstance, msg) {
   var f, obj = {
-    transaction: msg.getTransaction_asB64()
+transaction: msg.getTransaction_asB64()
   };
 
   if (includeInstance) {
@@ -79,7 +82,7 @@ proto.p2pkh.P2PKHEntry.toObject = function(includeInstance, msg) {
 
 /**
  * Deserializes binary data (in protobuf wire format).
- * @param {jspb.ByteSource} bytes The bytes to deserialize.
+ * @param {jspb.binary.bytesource.ByteSource} bytes The bytes to deserialize.
  * @return {!proto.p2pkh.P2PKHEntry}
  */
 proto.p2pkh.P2PKHEntry.deserializeBinary = function(bytes) {

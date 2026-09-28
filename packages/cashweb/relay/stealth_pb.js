@@ -2,15 +2,18 @@
 /**
  * @fileoverview
  * @enhanceable
+ * @suppress {missingRequire} reports error on implicit type usages.
  * @suppress {messageConventions} JS Compiler reports an error if a variable or
  *     field starts with 'MSG_' and isn't a translatable message.
  * @public
  */
 // GENERATED CODE -- DO NOT EDIT!
+/* eslint-disable */
+// @ts-nocheck
 
 var jspb = require('google-protobuf');
 var goog = jspb;
-var global = Function('return this')();
+var global = globalThis;
 
 goog.exportSymbol('proto.stealth.StealthOutpoints', null, global);
 goog.exportSymbol('proto.stealth.StealthPaymentEntry', null, global);
@@ -95,8 +98,8 @@ proto.stealth.StealthOutpoints.prototype.toObject = function(opt_includeInstance
  */
 proto.stealth.StealthOutpoints.toObject = function(includeInstance, msg) {
   var f, obj = {
-    stealthTx: msg.getStealthTx_asB64(),
-    voutsList: (f = jspb.Message.getRepeatedField(msg, 2)) == null ? undefined : f
+stealthTx: msg.getStealthTx_asB64(),
+voutsList: (f = jspb.Message.getRepeatedField(msg, 2)) == null ? undefined : f
   };
 
   if (includeInstance) {
@@ -109,7 +112,7 @@ proto.stealth.StealthOutpoints.toObject = function(includeInstance, msg) {
 
 /**
  * Deserializes binary data (in protobuf wire format).
- * @param {jspb.ByteSource} bytes The bytes to deserialize.
+ * @param {jspb.binary.bytesource.ByteSource} bytes The bytes to deserialize.
  * @return {!proto.stealth.StealthOutpoints}
  */
 proto.stealth.StealthOutpoints.deserializeBinary = function(bytes) {
@@ -138,8 +141,7 @@ proto.stealth.StealthOutpoints.deserializeBinaryFromReader = function(msg, reade
       msg.setStealthTx(value);
       break;
     case 2:
-      var value = /** @type {!Array<number>} */ (reader.readPackedUint32());
-      msg.setVoutsList(value);
+      reader.readPackableUint32Into(msg.getVoutsList());
       break;
     default:
       reader.skipField();
@@ -305,8 +307,8 @@ proto.stealth.StealthPaymentEntry.prototype.toObject = function(opt_includeInsta
  */
 proto.stealth.StealthPaymentEntry.toObject = function(includeInstance, msg) {
   var f, obj = {
-    ephemeralPubKey: msg.getEphemeralPubKey_asB64(),
-    outpointsList: jspb.Message.toObjectList(msg.getOutpointsList(),
+ephemeralPubKey: msg.getEphemeralPubKey_asB64(),
+outpointsList: jspb.Message.toObjectList(msg.getOutpointsList(),
     proto.stealth.StealthOutpoints.toObject, includeInstance)
   };
 
@@ -320,7 +322,7 @@ proto.stealth.StealthPaymentEntry.toObject = function(includeInstance, msg) {
 
 /**
  * Deserializes binary data (in protobuf wire format).
- * @param {jspb.ByteSource} bytes The bytes to deserialize.
+ * @param {jspb.binary.bytesource.ByteSource} bytes The bytes to deserialize.
  * @return {!proto.stealth.StealthPaymentEntry}
  */
 proto.stealth.StealthPaymentEntry.deserializeBinary = function(bytes) {

@@ -1,5 +1,9 @@
-echo 'Generating Registry protobuffers...'
-../../../node_modules/protoc/protoc/bin/protoc \
+#!/usr/bin/env bash
+set -euo pipefail
+
+echo 'Generating Registry protobuf bindings...'
+REPO_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
+PATH="$REPO_ROOT/node_modules/.bin:$PATH" protoc \
   --proto_path=./proto \
   --js_out=import_style=commonjs,binary:. \
   --ts_out=. \

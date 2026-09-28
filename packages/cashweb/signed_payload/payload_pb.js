@@ -2,15 +2,18 @@
 /**
  * @fileoverview
  * @enhanceable
+ * @suppress {missingRequire} reports error on implicit type usages.
  * @suppress {messageConventions} JS Compiler reports an error if a variable or
  *     field starts with 'MSG_' and isn't a translatable message.
  * @public
  */
 // GENERATED CODE -- DO NOT EDIT!
+/* eslint-disable */
+// @ts-nocheck
 
 var jspb = require('google-protobuf');
 var goog = jspb;
-var global = Function('return this')();
+var global = globalThis;
 
 goog.exportSymbol('proto.wrapper.BurnOutputs', null, global);
 goog.exportSymbol('proto.wrapper.SignedPayload', null, global);
@@ -111,8 +114,8 @@ proto.wrapper.BurnOutputs.prototype.toObject = function(opt_includeInstance) {
  */
 proto.wrapper.BurnOutputs.toObject = function(includeInstance, msg) {
   var f, obj = {
-    tx: msg.getTx_asB64(),
-    index: jspb.Message.getFieldWithDefault(msg, 2, 0)
+tx: msg.getTx_asB64(),
+index: jspb.Message.getFieldWithDefault(msg, 2, 0)
   };
 
   if (includeInstance) {
@@ -125,7 +128,7 @@ proto.wrapper.BurnOutputs.toObject = function(includeInstance, msg) {
 
 /**
  * Deserializes binary data (in protobuf wire format).
- * @param {jspb.ByteSource} bytes The bytes to deserialize.
+ * @param {jspb.binary.bytesource.ByteSource} bytes The bytes to deserialize.
  * @return {!proto.wrapper.BurnOutputs}
  */
 proto.wrapper.BurnOutputs.deserializeBinary = function(bytes) {
@@ -302,13 +305,13 @@ proto.wrapper.SignedPayload.prototype.toObject = function(opt_includeInstance) {
  */
 proto.wrapper.SignedPayload.toObject = function(includeInstance, msg) {
   var f, obj = {
-    publicKey: msg.getPublicKey_asB64(),
-    signature: msg.getSignature_asB64(),
-    scheme: jspb.Message.getFieldWithDefault(msg, 3, 0),
-    payload: msg.getPayload_asB64(),
-    payloadDigest: msg.getPayloadDigest_asB64(),
-    burnAmount: jspb.Message.getFieldWithDefault(msg, 6, 0),
-    transactionsList: jspb.Message.toObjectList(msg.getTransactionsList(),
+publicKey: msg.getPublicKey_asB64(),
+signature: msg.getSignature_asB64(),
+scheme: jspb.Message.getFieldWithDefault(msg, 3, 0),
+payload: msg.getPayload_asB64(),
+payloadDigest: msg.getPayloadDigest_asB64(),
+burnAmount: jspb.Message.getFieldWithDefault(msg, 6, 0),
+transactionsList: jspb.Message.toObjectList(msg.getTransactionsList(),
     proto.wrapper.BurnOutputs.toObject, includeInstance)
   };
 
@@ -322,7 +325,7 @@ proto.wrapper.SignedPayload.toObject = function(includeInstance, msg) {
 
 /**
  * Deserializes binary data (in protobuf wire format).
- * @param {jspb.ByteSource} bytes The bytes to deserialize.
+ * @param {jspb.binary.bytesource.ByteSource} bytes The bytes to deserialize.
  * @return {!proto.wrapper.SignedPayload}
  */
 proto.wrapper.SignedPayload.deserializeBinary = function(bytes) {
@@ -746,7 +749,7 @@ proto.wrapper.SignedPayloadSet.prototype.toObject = function(opt_includeInstance
  */
 proto.wrapper.SignedPayloadSet.toObject = function(includeInstance, msg) {
   var f, obj = {
-    itemsList: jspb.Message.toObjectList(msg.getItemsList(),
+itemsList: jspb.Message.toObjectList(msg.getItemsList(),
     proto.wrapper.SignedPayload.toObject, includeInstance)
   };
 
@@ -760,7 +763,7 @@ proto.wrapper.SignedPayloadSet.toObject = function(includeInstance, msg) {
 
 /**
  * Deserializes binary data (in protobuf wire format).
- * @param {jspb.ByteSource} bytes The bytes to deserialize.
+ * @param {jspb.binary.bytesource.ByteSource} bytes The bytes to deserialize.
  * @return {!proto.wrapper.SignedPayloadSet}
  */
 proto.wrapper.SignedPayloadSet.deserializeBinary = function(bytes) {

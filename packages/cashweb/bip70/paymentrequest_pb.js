@@ -2,15 +2,18 @@
 /**
  * @fileoverview
  * @enhanceable
+ * @suppress {missingRequire} reports error on implicit type usages.
  * @suppress {messageConventions} JS Compiler reports an error if a variable or
  *     field starts with 'MSG_' and isn't a translatable message.
  * @public
  */
 // GENERATED CODE -- DO NOT EDIT!
+/* eslint-disable */
+// @ts-nocheck
 
 var jspb = require('google-protobuf');
 var goog = jspb;
-var global = Function('return this')();
+var global = globalThis;
 
 goog.exportSymbol('proto.bip70.Output', null, global);
 goog.exportSymbol('proto.bip70.Payment', null, global);
@@ -176,8 +179,8 @@ proto.bip70.Output.prototype.toObject = function(opt_includeInstance) {
  */
 proto.bip70.Output.toObject = function(includeInstance, msg) {
   var f, obj = {
-    amount: jspb.Message.getFieldWithDefault(msg, 1, 0),
-    script: msg.getScript_asB64()
+amount: jspb.Message.getFieldWithDefault(msg, 1, 0),
+script: msg.getScript_asB64()
   };
 
   if (includeInstance) {
@@ -190,7 +193,7 @@ proto.bip70.Output.toObject = function(includeInstance, msg) {
 
 /**
  * Deserializes binary data (in protobuf wire format).
- * @param {jspb.ByteSource} bytes The bytes to deserialize.
+ * @param {jspb.binary.bytesource.ByteSource} bytes The bytes to deserialize.
  * @return {!proto.bip70.Output}
  */
 proto.bip70.Output.deserializeBinary = function(bytes) {
@@ -403,14 +406,14 @@ proto.bip70.PaymentDetails.prototype.toObject = function(opt_includeInstance) {
  */
 proto.bip70.PaymentDetails.toObject = function(includeInstance, msg) {
   var f, obj = {
-    network: jspb.Message.getFieldWithDefault(msg, 1, "main"),
-    outputsList: jspb.Message.toObjectList(msg.getOutputsList(),
+network: jspb.Message.getFieldWithDefault(msg, 1, "main"),
+outputsList: jspb.Message.toObjectList(msg.getOutputsList(),
     proto.bip70.Output.toObject, includeInstance),
-    time: (f = jspb.Message.getField(msg, 3)) == null ? undefined : f,
-    expires: (f = jspb.Message.getField(msg, 4)) == null ? undefined : f,
-    memo: (f = jspb.Message.getField(msg, 5)) == null ? undefined : f,
-    paymentUrl: (f = jspb.Message.getField(msg, 6)) == null ? undefined : f,
-    merchantData: msg.getMerchantData_asB64()
+time: (f = jspb.Message.getField(msg, 3)) == null ? undefined : f,
+expires: (f = jspb.Message.getField(msg, 4)) == null ? undefined : f,
+memo: (f = jspb.Message.getField(msg, 5)) == null ? undefined : f,
+paymentUrl: (f = jspb.Message.getField(msg, 6)) == null ? undefined : f,
+merchantData: msg.getMerchantData_asB64()
   };
 
   if (includeInstance) {
@@ -423,7 +426,7 @@ proto.bip70.PaymentDetails.toObject = function(includeInstance, msg) {
 
 /**
  * Deserializes binary data (in protobuf wire format).
- * @param {jspb.ByteSource} bytes The bytes to deserialize.
+ * @param {jspb.binary.bytesource.ByteSource} bytes The bytes to deserialize.
  * @return {!proto.bip70.PaymentDetails}
  */
 proto.bip70.PaymentDetails.deserializeBinary = function(bytes) {
@@ -868,11 +871,11 @@ proto.bip70.PaymentRequest.prototype.toObject = function(opt_includeInstance) {
  */
 proto.bip70.PaymentRequest.toObject = function(includeInstance, msg) {
   var f, obj = {
-    paymentDetailsVersion: jspb.Message.getFieldWithDefault(msg, 1, 1),
-    pkiType: jspb.Message.getFieldWithDefault(msg, 2, "none"),
-    pkiData: msg.getPkiData_asB64(),
-    serializedPaymentDetails: msg.getSerializedPaymentDetails_asB64(),
-    signature: msg.getSignature_asB64()
+paymentDetailsVersion: jspb.Message.getFieldWithDefault(msg, 1, 1),
+pkiType: jspb.Message.getFieldWithDefault(msg, 2, "none"),
+pkiData: msg.getPkiData_asB64(),
+serializedPaymentDetails: msg.getSerializedPaymentDetails_asB64(),
+signature: msg.getSignature_asB64()
   };
 
   if (includeInstance) {
@@ -885,7 +888,7 @@ proto.bip70.PaymentRequest.toObject = function(includeInstance, msg) {
 
 /**
  * Deserializes binary data (in protobuf wire format).
- * @param {jspb.ByteSource} bytes The bytes to deserialize.
+ * @param {jspb.binary.bytesource.ByteSource} bytes The bytes to deserialize.
  * @return {!proto.bip70.PaymentRequest}
  */
 proto.bip70.PaymentRequest.deserializeBinary = function(bytes) {
@@ -1287,7 +1290,7 @@ proto.bip70.X509Certificates.prototype.toObject = function(opt_includeInstance) 
  */
 proto.bip70.X509Certificates.toObject = function(includeInstance, msg) {
   var f, obj = {
-    certificateList: msg.getCertificateList_asB64()
+certificateList: msg.getCertificateList_asB64()
   };
 
   if (includeInstance) {
@@ -1300,7 +1303,7 @@ proto.bip70.X509Certificates.toObject = function(includeInstance, msg) {
 
 /**
  * Deserializes binary data (in protobuf wire format).
- * @param {jspb.ByteSource} bytes The bytes to deserialize.
+ * @param {jspb.binary.bytesource.ByteSource} bytes The bytes to deserialize.
  * @return {!proto.bip70.X509Certificates}
  */
 proto.bip70.X509Certificates.deserializeBinary = function(bytes) {
@@ -1467,11 +1470,11 @@ proto.bip70.Payment.prototype.toObject = function(opt_includeInstance) {
  */
 proto.bip70.Payment.toObject = function(includeInstance, msg) {
   var f, obj = {
-    merchantData: msg.getMerchantData_asB64(),
-    transactionsList: msg.getTransactionsList_asB64(),
-    refundToList: jspb.Message.toObjectList(msg.getRefundToList(),
+merchantData: msg.getMerchantData_asB64(),
+transactionsList: msg.getTransactionsList_asB64(),
+refundToList: jspb.Message.toObjectList(msg.getRefundToList(),
     proto.bip70.Output.toObject, includeInstance),
-    memo: (f = jspb.Message.getField(msg, 4)) == null ? undefined : f
+memo: (f = jspb.Message.getField(msg, 4)) == null ? undefined : f
   };
 
   if (includeInstance) {
@@ -1484,7 +1487,7 @@ proto.bip70.Payment.toObject = function(includeInstance, msg) {
 
 /**
  * Deserializes binary data (in protobuf wire format).
- * @param {jspb.ByteSource} bytes The bytes to deserialize.
+ * @param {jspb.binary.bytesource.ByteSource} bytes The bytes to deserialize.
  * @return {!proto.bip70.Payment}
  */
 proto.bip70.Payment.deserializeBinary = function(bytes) {
@@ -1813,8 +1816,8 @@ proto.bip70.PaymentACK.prototype.toObject = function(opt_includeInstance) {
  */
 proto.bip70.PaymentACK.toObject = function(includeInstance, msg) {
   var f, obj = {
-    payment: (f = msg.getPayment()) && proto.bip70.Payment.toObject(includeInstance, f),
-    memo: (f = jspb.Message.getField(msg, 2)) == null ? undefined : f
+payment: (f = msg.getPayment()) && proto.bip70.Payment.toObject(includeInstance, f),
+memo: (f = jspb.Message.getField(msg, 2)) == null ? undefined : f
   };
 
   if (includeInstance) {
@@ -1827,7 +1830,7 @@ proto.bip70.PaymentACK.toObject = function(includeInstance, msg) {
 
 /**
  * Deserializes binary data (in protobuf wire format).
- * @param {jspb.ByteSource} bytes The bytes to deserialize.
+ * @param {jspb.binary.bytesource.ByteSource} bytes The bytes to deserialize.
  * @return {!proto.bip70.PaymentACK}
  */
 proto.bip70.PaymentACK.deserializeBinary = function(bytes) {

@@ -2,15 +2,18 @@
 /**
  * @fileoverview
  * @enhanceable
+ * @suppress {missingRequire} reports error on implicit type usages.
  * @suppress {messageConventions} JS Compiler reports an error if a variable or
  *     field starts with 'MSG_' and isn't a translatable message.
  * @public
  */
 // GENERATED CODE -- DO NOT EDIT!
+/* eslint-disable */
+// @ts-nocheck
 
 var jspb = require('google-protobuf');
 var goog = jspb;
-var global = Function('return this')();
+var global = globalThis;
 
 goog.exportSymbol('proto.relay.Header', null, global);
 goog.exportSymbol('proto.relay.Message', null, global);
@@ -332,8 +335,8 @@ proto.relay.Header.prototype.toObject = function(opt_includeInstance) {
  */
 proto.relay.Header.toObject = function(includeInstance, msg) {
   var f, obj = {
-    name: jspb.Message.getFieldWithDefault(msg, 1, ""),
-    value: jspb.Message.getFieldWithDefault(msg, 2, "")
+name: jspb.Message.getFieldWithDefault(msg, 1, ""),
+value: jspb.Message.getFieldWithDefault(msg, 2, "")
   };
 
   if (includeInstance) {
@@ -346,7 +349,7 @@ proto.relay.Header.toObject = function(includeInstance, msg) {
 
 /**
  * Deserializes binary data (in protobuf wire format).
- * @param {jspb.ByteSource} bytes The bytes to deserialize.
+ * @param {jspb.binary.bytesource.ByteSource} bytes The bytes to deserialize.
  * @return {!proto.relay.Header}
  */
 proto.relay.Header.deserializeBinary = function(bytes) {
@@ -371,11 +374,11 @@ proto.relay.Header.deserializeBinaryFromReader = function(msg, reader) {
     var field = reader.getFieldNumber();
     switch (field) {
     case 1:
-      var value = /** @type {string} */ (reader.readString());
+      var value = /** @type {string} */ (reader.readStringRequireUtf8());
       msg.setName(value);
       break;
     case 2:
-      var value = /** @type {string} */ (reader.readString());
+      var value = /** @type {string} */ (reader.readStringRequireUtf8());
       msg.setValue(value);
       break;
     default:
@@ -499,10 +502,10 @@ proto.relay.ProfileEntry.prototype.toObject = function(opt_includeInstance) {
  */
 proto.relay.ProfileEntry.toObject = function(includeInstance, msg) {
   var f, obj = {
-    kind: jspb.Message.getFieldWithDefault(msg, 1, ""),
-    headersList: jspb.Message.toObjectList(msg.getHeadersList(),
+kind: jspb.Message.getFieldWithDefault(msg, 1, ""),
+headersList: jspb.Message.toObjectList(msg.getHeadersList(),
     proto.relay.Header.toObject, includeInstance),
-    body: msg.getBody_asB64()
+body: msg.getBody_asB64()
   };
 
   if (includeInstance) {
@@ -515,7 +518,7 @@ proto.relay.ProfileEntry.toObject = function(includeInstance, msg) {
 
 /**
  * Deserializes binary data (in protobuf wire format).
- * @param {jspb.ByteSource} bytes The bytes to deserialize.
+ * @param {jspb.binary.bytesource.ByteSource} bytes The bytes to deserialize.
  * @return {!proto.relay.ProfileEntry}
  */
 proto.relay.ProfileEntry.deserializeBinary = function(bytes) {
@@ -540,7 +543,7 @@ proto.relay.ProfileEntry.deserializeBinaryFromReader = function(msg, reader) {
     var field = reader.getFieldNumber();
     switch (field) {
     case 1:
-      var value = /** @type {string} */ (reader.readString());
+      var value = /** @type {string} */ (reader.readStringRequireUtf8());
       msg.setKind(value);
       break;
     case 2:
@@ -743,9 +746,9 @@ proto.relay.Profile.prototype.toObject = function(opt_includeInstance) {
  */
 proto.relay.Profile.toObject = function(includeInstance, msg) {
   var f, obj = {
-    timestamp: jspb.Message.getFieldWithDefault(msg, 1, 0),
-    ttl: jspb.Message.getFieldWithDefault(msg, 2, 0),
-    entriesList: jspb.Message.toObjectList(msg.getEntriesList(),
+timestamp: jspb.Message.getFieldWithDefault(msg, 1, 0),
+ttl: jspb.Message.getFieldWithDefault(msg, 2, 0),
+entriesList: jspb.Message.toObjectList(msg.getEntriesList(),
     proto.relay.ProfileEntry.toObject, includeInstance)
   };
 
@@ -759,7 +762,7 @@ proto.relay.Profile.toObject = function(includeInstance, msg) {
 
 /**
  * Deserializes binary data (in protobuf wire format).
- * @param {jspb.ByteSource} bytes The bytes to deserialize.
+ * @param {jspb.binary.bytesource.ByteSource} bytes The bytes to deserialize.
  * @return {!proto.relay.Profile}
  */
 proto.relay.Profile.deserializeBinary = function(bytes) {
@@ -963,10 +966,10 @@ proto.relay.PayloadEntry.prototype.toObject = function(opt_includeInstance) {
  */
 proto.relay.PayloadEntry.toObject = function(includeInstance, msg) {
   var f, obj = {
-    kind: jspb.Message.getFieldWithDefault(msg, 1, ""),
-    headersList: jspb.Message.toObjectList(msg.getHeadersList(),
+kind: jspb.Message.getFieldWithDefault(msg, 1, ""),
+headersList: jspb.Message.toObjectList(msg.getHeadersList(),
     proto.relay.Header.toObject, includeInstance),
-    body: msg.getBody_asB64()
+body: msg.getBody_asB64()
   };
 
   if (includeInstance) {
@@ -979,7 +982,7 @@ proto.relay.PayloadEntry.toObject = function(includeInstance, msg) {
 
 /**
  * Deserializes binary data (in protobuf wire format).
- * @param {jspb.ByteSource} bytes The bytes to deserialize.
+ * @param {jspb.binary.bytesource.ByteSource} bytes The bytes to deserialize.
  * @return {!proto.relay.PayloadEntry}
  */
 proto.relay.PayloadEntry.deserializeBinary = function(bytes) {
@@ -1004,7 +1007,7 @@ proto.relay.PayloadEntry.deserializeBinaryFromReader = function(msg, reader) {
     var field = reader.getFieldNumber();
     switch (field) {
     case 1:
-      var value = /** @type {string} */ (reader.readString());
+      var value = /** @type {string} */ (reader.readStringRequireUtf8());
       msg.setKind(value);
       break;
     case 2:
@@ -1207,8 +1210,8 @@ proto.relay.Payload.prototype.toObject = function(opt_includeInstance) {
  */
 proto.relay.Payload.toObject = function(includeInstance, msg) {
   var f, obj = {
-    timestamp: jspb.Message.getFieldWithDefault(msg, 1, 0),
-    entriesList: jspb.Message.toObjectList(msg.getEntriesList(),
+timestamp: jspb.Message.getFieldWithDefault(msg, 1, 0),
+entriesList: jspb.Message.toObjectList(msg.getEntriesList(),
     proto.relay.PayloadEntry.toObject, includeInstance)
   };
 
@@ -1222,7 +1225,7 @@ proto.relay.Payload.toObject = function(includeInstance, msg) {
 
 /**
  * Deserializes binary data (in protobuf wire format).
- * @param {jspb.ByteSource} bytes The bytes to deserialize.
+ * @param {jspb.binary.bytesource.ByteSource} bytes The bytes to deserialize.
  * @return {!proto.relay.Payload}
  */
 proto.relay.Payload.deserializeBinary = function(bytes) {
@@ -1397,8 +1400,8 @@ proto.relay.StampOutpoints.prototype.toObject = function(opt_includeInstance) {
  */
 proto.relay.StampOutpoints.toObject = function(includeInstance, msg) {
   var f, obj = {
-    stampTx: msg.getStampTx_asB64(),
-    voutsList: (f = jspb.Message.getRepeatedField(msg, 2)) == null ? undefined : f
+stampTx: msg.getStampTx_asB64(),
+voutsList: (f = jspb.Message.getRepeatedField(msg, 2)) == null ? undefined : f
   };
 
   if (includeInstance) {
@@ -1411,7 +1414,7 @@ proto.relay.StampOutpoints.toObject = function(includeInstance, msg) {
 
 /**
  * Deserializes binary data (in protobuf wire format).
- * @param {jspb.ByteSource} bytes The bytes to deserialize.
+ * @param {jspb.binary.bytesource.ByteSource} bytes The bytes to deserialize.
  * @return {!proto.relay.StampOutpoints}
  */
 proto.relay.StampOutpoints.deserializeBinary = function(bytes) {
@@ -1440,8 +1443,7 @@ proto.relay.StampOutpoints.deserializeBinaryFromReader = function(msg, reader) {
       msg.setStampTx(value);
       break;
     case 2:
-      var value = /** @type {!Array<number>} */ (reader.readPackedUint32());
-      msg.setVoutsList(value);
+      reader.readPackableUint32Into(msg.getVoutsList());
       break;
     default:
       reader.skipField();
@@ -1607,8 +1609,8 @@ proto.relay.Stamp.prototype.toObject = function(opt_includeInstance) {
  */
 proto.relay.Stamp.toObject = function(includeInstance, msg) {
   var f, obj = {
-    stampType: jspb.Message.getFieldWithDefault(msg, 1, 0),
-    stampOutpointsList: jspb.Message.toObjectList(msg.getStampOutpointsList(),
+stampType: jspb.Message.getFieldWithDefault(msg, 1, 0),
+stampOutpointsList: jspb.Message.toObjectList(msg.getStampOutpointsList(),
     proto.relay.StampOutpoints.toObject, includeInstance)
   };
 
@@ -1622,7 +1624,7 @@ proto.relay.Stamp.toObject = function(includeInstance, msg) {
 
 /**
  * Deserializes binary data (in protobuf wire format).
- * @param {jspb.ByteSource} bytes The bytes to deserialize.
+ * @param {jspb.binary.bytesource.ByteSource} bytes The bytes to deserialize.
  * @return {!proto.relay.Stamp}
  */
 proto.relay.Stamp.deserializeBinary = function(bytes) {
@@ -1798,16 +1800,16 @@ proto.relay.Message.prototype.toObject = function(opt_includeInstance) {
  */
 proto.relay.Message.toObject = function(includeInstance, msg) {
   var f, obj = {
-    sourcePublicKey: msg.getSourcePublicKey_asB64(),
-    destinationPublicKey: msg.getDestinationPublicKey_asB64(),
-    receivedTime: jspb.Message.getFieldWithDefault(msg, 3, 0),
-    payloadDigest: msg.getPayloadDigest_asB64(),
-    stamp: (f = msg.getStamp()) && proto.relay.Stamp.toObject(includeInstance, f),
-    scheme: jspb.Message.getFieldWithDefault(msg, 6, 0),
-    salt: msg.getSalt_asB64(),
-    payloadHmac: msg.getPayloadHmac_asB64(),
-    payloadSize: jspb.Message.getFieldWithDefault(msg, 9, 0),
-    payload: msg.getPayload_asB64()
+sourcePublicKey: msg.getSourcePublicKey_asB64(),
+destinationPublicKey: msg.getDestinationPublicKey_asB64(),
+receivedTime: jspb.Message.getFieldWithDefault(msg, 3, 0),
+payloadDigest: msg.getPayloadDigest_asB64(),
+stamp: (f = msg.getStamp()) && proto.relay.Stamp.toObject(includeInstance, f),
+scheme: jspb.Message.getFieldWithDefault(msg, 6, 0),
+salt: msg.getSalt_asB64(),
+payloadHmac: msg.getPayloadHmac_asB64(),
+payloadSize: jspb.Message.getFieldWithDefault(msg, 9, 0),
+payload: msg.getPayload_asB64()
   };
 
   if (includeInstance) {
@@ -1820,7 +1822,7 @@ proto.relay.Message.toObject = function(includeInstance, msg) {
 
 /**
  * Deserializes binary data (in protobuf wire format).
- * @param {jspb.ByteSource} bytes The bytes to deserialize.
+ * @param {jspb.binary.bytesource.ByteSource} bytes The bytes to deserialize.
  * @return {!proto.relay.Message}
  */
 proto.relay.Message.deserializeBinary = function(bytes) {
@@ -2378,7 +2380,7 @@ proto.relay.MessageSet.prototype.toObject = function(opt_includeInstance) {
  */
 proto.relay.MessageSet.toObject = function(includeInstance, msg) {
   var f, obj = {
-    messagesList: jspb.Message.toObjectList(msg.getMessagesList(),
+messagesList: jspb.Message.toObjectList(msg.getMessagesList(),
     proto.relay.Message.toObject, includeInstance)
   };
 
@@ -2392,7 +2394,7 @@ proto.relay.MessageSet.toObject = function(includeInstance, msg) {
 
 /**
  * Deserializes binary data (in protobuf wire format).
- * @param {jspb.ByteSource} bytes The bytes to deserialize.
+ * @param {jspb.binary.bytesource.ByteSource} bytes The bytes to deserialize.
  * @return {!proto.relay.MessageSet}
  */
 proto.relay.MessageSet.deserializeBinary = function(bytes) {
@@ -2531,8 +2533,8 @@ proto.relay.PushError.prototype.toObject = function(opt_includeInstance) {
  */
 proto.relay.PushError.toObject = function(includeInstance, msg) {
   var f, obj = {
-    statusCode: jspb.Message.getFieldWithDefault(msg, 1, 0),
-    errorText: jspb.Message.getFieldWithDefault(msg, 2, "")
+statusCode: jspb.Message.getFieldWithDefault(msg, 1, 0),
+errorText: jspb.Message.getFieldWithDefault(msg, 2, "")
   };
 
   if (includeInstance) {
@@ -2545,7 +2547,7 @@ proto.relay.PushError.toObject = function(includeInstance, msg) {
 
 /**
  * Deserializes binary data (in protobuf wire format).
- * @param {jspb.ByteSource} bytes The bytes to deserialize.
+ * @param {jspb.binary.bytesource.ByteSource} bytes The bytes to deserialize.
  * @return {!proto.relay.PushError}
  */
 proto.relay.PushError.deserializeBinary = function(bytes) {
@@ -2574,7 +2576,7 @@ proto.relay.PushError.deserializeBinaryFromReader = function(msg, reader) {
       msg.setStatusCode(value);
       break;
     case 2:
-      var value = /** @type {string} */ (reader.readString());
+      var value = /** @type {string} */ (reader.readStringRequireUtf8());
       msg.setErrorText(value);
       break;
     default:
@@ -2691,7 +2693,7 @@ proto.relay.PushErrors.prototype.toObject = function(opt_includeInstance) {
  */
 proto.relay.PushErrors.toObject = function(includeInstance, msg) {
   var f, obj = {
-    errorsMap: (f = msg.getErrorsMap()) ? f.toObject(includeInstance, proto.relay.PushError.toObject) : []
+errorsMap: (f = msg.getErrorsMap()) ? f.toObject(includeInstance, proto.relay.PushError.toObject) : []
   };
 
   if (includeInstance) {
@@ -2704,7 +2706,7 @@ proto.relay.PushErrors.toObject = function(includeInstance, msg) {
 
 /**
  * Deserializes binary data (in protobuf wire format).
- * @param {jspb.ByteSource} bytes The bytes to deserialize.
+ * @param {jspb.binary.bytesource.ByteSource} bytes The bytes to deserialize.
  * @return {!proto.relay.PushErrors}
  */
 proto.relay.PushErrors.deserializeBinary = function(bytes) {
@@ -2765,7 +2767,13 @@ proto.relay.PushErrors.serializeBinaryToWriter = function(message, writer) {
   var f = undefined;
   f = message.getErrorsMap(true);
   if (f && f.getLength() > 0) {
-    f.serializeBinary(1, writer, jspb.BinaryWriter.prototype.writeInt32, jspb.BinaryWriter.prototype.writeMessage, proto.relay.PushError.serializeBinaryToWriter);
+jspb.internal.public_for_gencode.serializeMapToBinary(
+    message.getErrorsMap(true),
+    1,
+    writer,
+    jspb.BinaryWriter.prototype.writeInt32,
+    jspb.BinaryWriter.prototype.writeMessage,
+    proto.relay.PushError.serializeBinaryToWriter);
   }
 };
 
@@ -2789,7 +2797,8 @@ proto.relay.PushErrors.prototype.getErrorsMap = function(opt_noLazyCreate) {
  */
 proto.relay.PushErrors.prototype.clearErrorsMap = function() {
   this.getErrorsMap().clear();
-  return this;};
+  return this;
+};
 
 
 
@@ -2831,12 +2840,12 @@ proto.relay.MessagePage.prototype.toObject = function(opt_includeInstance) {
  */
 proto.relay.MessagePage.toObject = function(includeInstance, msg) {
   var f, obj = {
-    messagesList: jspb.Message.toObjectList(msg.getMessagesList(),
+messagesList: jspb.Message.toObjectList(msg.getMessagesList(),
     proto.relay.Message.toObject, includeInstance),
-    startTime: jspb.Message.getFieldWithDefault(msg, 2, 0),
-    endTime: jspb.Message.getFieldWithDefault(msg, 3, 0),
-    startDigest: msg.getStartDigest_asB64(),
-    endDigest: msg.getEndDigest_asB64()
+startTime: jspb.Message.getFieldWithDefault(msg, 2, 0),
+endTime: jspb.Message.getFieldWithDefault(msg, 3, 0),
+startDigest: msg.getStartDigest_asB64(),
+endDigest: msg.getEndDigest_asB64()
   };
 
   if (includeInstance) {
@@ -2849,7 +2858,7 @@ proto.relay.MessagePage.toObject = function(includeInstance, msg) {
 
 /**
  * Deserializes binary data (in protobuf wire format).
- * @param {jspb.ByteSource} bytes The bytes to deserialize.
+ * @param {jspb.binary.bytesource.ByteSource} bytes The bytes to deserialize.
  * @return {!proto.relay.MessagePage}
  */
 proto.relay.MessagePage.deserializeBinary = function(bytes) {
@@ -3159,11 +3168,11 @@ proto.relay.PayloadPage.prototype.toObject = function(opt_includeInstance) {
  */
 proto.relay.PayloadPage.toObject = function(includeInstance, msg) {
   var f, obj = {
-    payloadsList: msg.getPayloadsList_asB64(),
-    startTime: jspb.Message.getFieldWithDefault(msg, 2, 0),
-    endTime: jspb.Message.getFieldWithDefault(msg, 3, 0),
-    startDigest: msg.getStartDigest_asB64(),
-    endDigest: msg.getEndDigest_asB64()
+payloadsList: msg.getPayloadsList_asB64(),
+startTime: jspb.Message.getFieldWithDefault(msg, 2, 0),
+endTime: jspb.Message.getFieldWithDefault(msg, 3, 0),
+startDigest: msg.getStartDigest_asB64(),
+endDigest: msg.getEndDigest_asB64()
   };
 
   if (includeInstance) {
@@ -3176,7 +3185,7 @@ proto.relay.PayloadPage.toObject = function(includeInstance, msg) {
 
 /**
  * Deserializes binary data (in protobuf wire format).
- * @param {jspb.ByteSource} bytes The bytes to deserialize.
+ * @param {jspb.binary.bytesource.ByteSource} bytes The bytes to deserialize.
  * @return {!proto.relay.PayloadPage}
  */
 proto.relay.PayloadPage.deserializeBinary = function(bytes) {

@@ -2,15 +2,18 @@
 /**
  * @fileoverview
  * @enhanceable
+ * @suppress {missingRequire} reports error on implicit type usages.
  * @suppress {messageConventions} JS Compiler reports an error if a variable or
  *     field starts with 'MSG_' and isn't a translatable message.
  * @public
  */
 // GENERATED CODE -- DO NOT EDIT!
+/* eslint-disable */
+// @ts-nocheck
 
 var jspb = require('google-protobuf');
 var goog = jspb;
-var global = Function('return this')();
+var global = globalThis;
 
 goog.exportSymbol('proto.filters.Filters', null, global);
 goog.exportSymbol('proto.filters.PriceFilter', null, global);
@@ -88,9 +91,9 @@ proto.filters.PriceFilter.prototype.toObject = function(opt_includeInstance) {
  */
 proto.filters.PriceFilter.toObject = function(includeInstance, msg) {
   var f, obj = {
-    pb_public: jspb.Message.getBooleanFieldWithDefault(msg, 1, false),
-    acceptancePrice: jspb.Message.getFieldWithDefault(msg, 2, 0),
-    notificationPrice: jspb.Message.getFieldWithDefault(msg, 3, 0)
+pb_public: jspb.Message.getBooleanFieldWithDefault(msg, 1, false),
+acceptancePrice: jspb.Message.getFieldWithDefault(msg, 2, 0),
+notificationPrice: jspb.Message.getFieldWithDefault(msg, 3, 0)
   };
 
   if (includeInstance) {
@@ -103,7 +106,7 @@ proto.filters.PriceFilter.toObject = function(includeInstance, msg) {
 
 /**
  * Deserializes binary data (in protobuf wire format).
- * @param {jspb.ByteSource} bytes The bytes to deserialize.
+ * @param {jspb.binary.bytesource.ByteSource} bytes The bytes to deserialize.
  * @return {!proto.filters.PriceFilter}
  */
 proto.filters.PriceFilter.deserializeBinary = function(bytes) {
@@ -278,7 +281,7 @@ proto.filters.Filters.prototype.toObject = function(opt_includeInstance) {
  */
 proto.filters.Filters.toObject = function(includeInstance, msg) {
   var f, obj = {
-    priceFilter: (f = msg.getPriceFilter()) && proto.filters.PriceFilter.toObject(includeInstance, f)
+priceFilter: (f = msg.getPriceFilter()) && proto.filters.PriceFilter.toObject(includeInstance, f)
   };
 
   if (includeInstance) {
@@ -291,7 +294,7 @@ proto.filters.Filters.toObject = function(includeInstance, msg) {
 
 /**
  * Deserializes binary data (in protobuf wire format).
- * @param {jspb.ByteSource} bytes The bytes to deserialize.
+ * @param {jspb.binary.bytesource.ByteSource} bytes The bytes to deserialize.
  * @return {!proto.filters.Filters}
  */
 proto.filters.Filters.deserializeBinary = function(bytes) {

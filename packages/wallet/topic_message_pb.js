@@ -287,16 +287,7 @@ proto.cashweb.registry.MonadTopicPost.deserializeBinaryFromReader = function(msg
     var field = reader.getFieldNumber();
     switch (field) {
     case 1:
-      // Patched from the generator's default `readStringRequireUtf8()` (ticket #31, reapplied
-      // after this file was regenerated again for ticket #72's `TopicDiscoveryStats`/
-      // `TopicDiscoveryEntry`/`ListTopicsResponse` addition): this repo's pinned `google-protobuf`
-      // npm runtime is 3.19.1, which doesn't define that method at all (`TypeError:
-      // reader.readStringRequireUtf8 is not a function`) -- only 4.x adds it. The installed
-      // `protoc-gen-js` emits `readStringRequireUtf8()` unconditionally for every `string` field
-      // regardless of target runtime version, so this file hits it again on every regeneration.
-      // `readString()` (used by every other _pb.js file in this repo) is semantically equivalent
-      // for well-formed UTF-8 input.
-      var value = /** @type {string} */ (reader.readString());
+      var value = /** @type {string} */ (reader.readStringRequireUtf8());
       msg.setTopic(value);
       break;
     case 2:
@@ -2014,10 +2005,7 @@ proto.cashweb.registry.TopicDiscoveryEntry.deserializeBinaryFromReader = functio
     var field = reader.getFieldNumber();
     switch (field) {
     case 1:
-      // See `MonadTopicPost.deserializeBinaryFromReader`'s identical patch/comment above -- same
-      // pinned `google-protobuf` 3.19.1 runtime gap, same fix (`readString()` instead of the
-      // generator's default `readStringRequireUtf8()`).
-      var value = /** @type {string} */ (reader.readString());
+      var value = /** @type {string} */ (reader.readStringRequireUtf8());
       msg.setTopic(value);
       break;
     case 2:

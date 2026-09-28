@@ -95,21 +95,12 @@ export function selectStampAccounts(params: {
       accounts.findIndex(candidate => candidate.index === account.index),
       1,
     )
-    const remainingCapacity = accounts.reduce(
-      (sum, candidate) => sum + candidate.capacityWei,
-      BigInt(0),
-    )
-    // Stay at the preferred cap when the remaining inventory can finish the payment. Otherwise
-    // this account contributes the amount required to keep the set solvent. This makes the soft
-    // two-payment target work for equally funded pools without invalidating a one-account fallback.
-    const preferredContribution =
-      account.capacityWei < requisite ? account.capacityWei : requisite
-    const requiredContribution =
-      remaining > remainingCapacity ? remaining - remainingCapacity : BigInt(0)
+    // The preferred cap shapes which account is selected; it does not manufacture an equal split
+    // by withholding usable capacity from that account. As in Stamp's UTXO builder, consume the
+    // selected coin up to the remaining amount. Segmented inventory normally yields multiple
+    // payments, while a single sufficiently large account remains a valid fallback.
     const paymentValueWei =
-      preferredContribution > requiredContribution
-        ? preferredContribution
-        : requiredContribution
+      account.capacityWei < remaining ? account.capacityWei : remaining
     selected.push({ ...account, paymentValueWei })
     remaining -= paymentValueWei
   }

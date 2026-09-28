@@ -1,0 +1,22 @@
+{
+  "name": "@frank/adaptor-signatures",
+  "version": "0.0.1",
+  "description": "Research prototype: ECDSA adaptor signatures (\"scriptless scripts\") over secp256k1. Standalone crypto primitive, not wired into any wallet/message code -- see README-less commit message / PR description for context (ticket: research/ecdsa-adaptor-sigs branch). Implements the DLEQ-based ECDSA adaptor signature construction from the discreetlogcontracts/dlcspecs ECDSA-adaptor.md spec (Fournier + Aumayr et al.), plus an added Schnorr proof-of-knowledge of the tweak secret so the construction is sound outside the DLC-only context that spec restricts itself to.",
+  "license": "MIT",
+  "private": true,
+  "main": "src/index.ts",
+  "scripts": {
+    "test": "jest"
+  },
+  "dependencies": {
+    "@noble/curves": "^2.4.0",
+    "@noble/hashes": "^2.4.0"
+  },
+  "devDependencies": {
+    "@types/jest": "^29",
+    "@types/node": "^16.11.11",
+    "jest": "^29",
+    "ts-jest": "^29",
+    "typescript": "^5.9.3"
+  }
+}

@@ -7,7 +7,12 @@
 
     <q-tabs v-model="tab" v-if="$status.setup">
       <q-tab v-if="$status.setup" name="settings" icon="settings" />
-      <q-tab name="contacts" icon="contacts" @click="$router.push('/')">
+      <!-- No @click navigation here, matching "settings" -- this tab only switches the drawer's
+      local display mode (the chat-list, already always in the DOM), it doesn't own a route of
+      its own. It used to do `$router.push('/')`, which (via `/`'s own redirect) always navigated
+      to whatever the "primary" route was -- `/topic/news` before #61, `/forum` after this fix --
+      fighting with the "forum" tab below for control of `tab`'s value on every click. -->
+      <q-tab name="contacts" icon="contacts">
         <q-badge
           floating
           color="secondary"
@@ -64,6 +69,7 @@
 
 <script lang="ts">
 import { computed, defineComponent, onMounted, ref } from 'vue'
+import { useRoute } from 'vue-router'
 import { storeToRefs } from 'pinia'
 
 import ChatList from '../chat/ChatList.vue'
@@ -83,6 +89,7 @@ export default defineComponent({
     const chats = useChatStore()
     const { totalUnread } = storeToRefs(chats)
     const balance = ref(0n)
+    const route = useRoute()
 
     onMounted(async () => {
       try {
@@ -93,7 +100,37 @@ export default defineComponent({
       }
     })
 
+    // Drives the left rail's active-tab highlight (`q-tabs v-model="tab"`). A writable computed,
+    // not a plain `data()` ref watched from the Options API side (the previous attempt at this
+    // fix) -- `useRoute()`'s reactive `route` is the Composition API's own, more direct seam onto
+    // routing state, and a computed getter/setter is the standard Vue 3 pattern for a v-model
+    // that needs to be driven by one source (the route, for "forum") but stay freely settable by
+    // the other (a direct "contacts"/"settings" tab click, neither of which owns a route of its
+    // own -- see this file's template for why "contacts" no longer navigates at all).
+    const localTab = ref<'contacts' | 'settings'>('contacts')
+    const tab = computed<string>({
+      get() {
+        // `/new-post` (not `/forum/new-post`) is intentionally a top-level path -- see
+        // `router/index.ts`'s own comment on `protectedRoutes` -- but is still a Forum page.
+        if (
+          route.path.startsWith('/forum') ||
+          route.path.startsWith('/new-post')
+        ) {
+          return 'forum'
+        }
+        return localTab.value
+      },
+      set(value: string) {
+        if (value === 'contacts' || value === 'settings') {
+          localTab.value = value
+        }
+        // Clicking "forum" itself navigates via the template's own `@click`, which updates
+        // `route.path`, which this computed's getter already reacts to -- nothing to store here.
+      },
+    })
+
     return {
+      tab,
       totalUnread: totalUnread,
       formattedBalance: computed(
         () =>
@@ -111,11 +148,8 @@ export default defineComponent({
   },
   data() {
     return {
-      // Kept in sync with the current route by the `$route` watcher below (not purely
-      // click-driven) -- otherwise navigating into /forum any way other than clicking the
-      // "Forum" q-tab directly (e.g. the compose button on the Forum page itself) left this
-      // stuck showing "Contacts" as active while the main pane showed Forum content.
-      tab: 'contacts',
+      // `tab` itself now comes from `setup()`'s writable computed (route-driven for "forum",
+      // freely settable for "contacts"/"settings") -- not declared here.
       // My Drawer
       walletOpen: false,
       relayConnectOpen: false,
@@ -125,20 +159,6 @@ export default defineComponent({
       compact: false as boolean,
       myDrawerOpen: false as boolean,
     }
-  },
-  watch: {
-    '$route.path': {
-      immediate: true,
-      handler(path: string) {
-        // Only force the highlight *into* 'forum' -- never override a direct 'settings' click,
-        // which has no route of its own (SettingsPanel is shown via `v-show`, not navigation).
-        // `/new-post` (not `/forum/new-post`) is intentionally a top-level path -- see
-        // `router/index.ts`'s own comment on `protectedRoutes` -- but is still a Forum page.
-        if (path.startsWith('/forum') || path.startsWith('/new-post')) {
-          this.tab = 'forum'
-        }
-      },
-    },
   },
   methods: {
     tweak(offset: number, viewportHeight: number) {

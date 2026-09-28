@@ -8,6 +8,11 @@ import { store } from '../adapters/level-message-store'
 import { toChainDisplayAddress } from '../utils/chain-address'
 import { formatBalance } from '../utils/formatting'
 import { activeChain } from '@frank/wallet/chain'
+import {
+  getMessageItemPreview,
+  tallyMessageItemsValue,
+} from '@frank/wallet/message-item-plugins'
+import '@frank/wallet/message-item-plugins/built-in'
 import type {
   DirectMessagePreparationProgress,
   DirectMessageSendResult,
@@ -209,15 +214,7 @@ export async function rehydateChat(chatState: RestorableState): Promise<State> {
     chat.messages.push(message)
     chat.lastReceived = message.serverTime
     const messageValue =
-      messageStampPrice(message) +
-      message.items.reduce((totalValue, entry) => {
-        switch (entry.type) {
-          case 'stealth':
-            return totalValue + entry.amount
-          default:
-            return totalValue
-        }
-      }, 0)
+      messageStampPrice(message) + tallyMessageItemsValue(message.items)
     if (
       !newMsg.outbound &&
       chat.lastRead &&
@@ -339,31 +336,15 @@ export const useChatStore = defineStore('chats', {
         console.error(displayAddress)
         return null
       }
-      if (lastItem.type === 'text') {
-        const info = {
-          outbound: lastMessage.outbound,
-          text: lastItem.text,
-        }
-        return info
-      }
 
-      if (lastItem.type === 'image') {
-        const info = {
-          outbound: lastMessage.outbound,
-          text: 'Sent image',
-        }
-        return info
+      // Previously a hand-written if-chain here (text/image/stealth only) that fell through to a
+      // dangling `nopInfo` reference for `reply`/`p2pkh` -- a live ReferenceError, since an earlier
+      // fix removed `nopInfo`'s declaration without noticing this third use site. Routed through the
+      // registry instead: every registered type gets real preview text, not a crash.
+      return {
+        outbound: lastMessage.outbound,
+        text: getMessageItemPreview(lastItem),
       }
-
-      if (lastItem.type === 'stealth') {
-        const info = {
-          outbound: lastMessage.outbound,
-          text: 'Sent Lotus',
-        }
-        return info
-      }
-
-      return nopInfo
     },
     getLastReceived(state) {
       return state.lastReceived
@@ -829,16 +810,7 @@ export const useChatStore = defineStore('chats', {
         chat.messages.push(message)
         chat.lastReceived = message.serverTime
         const messageValue =
-          messageStampPrice(message) +
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          message.items.reduce((totalValue: number, entry: any) => {
-            switch (entry.type) {
-              case 'stealth':
-                return totalValue + entry.amount
-              default:
-                return totalValue
-            }
-          }, 0)
+          messageStampPrice(message) + tallyMessageItemsValue(message.items)
         if (
           displayAddress !== this.activeChatAddr &&
           chat.lastRead < message.serverTime

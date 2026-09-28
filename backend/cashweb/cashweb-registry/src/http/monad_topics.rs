@@ -578,6 +578,56 @@ pub async fn handle_list_monad_topic_posts(
     Ok(Protobuf(proto::MonadTopicPostViews { views }))
 }
 
+/// Error type for [`handle_list_topics`].
+#[derive(Debug)]
+pub enum ListTopicsError {
+    /// A storage-level error.
+    Infrastructure(Report),
+}
+
+impl IntoResponse for ListTopicsError {
+    fn into_response(self) -> Response {
+        match self {
+            ListTopicsError::Infrastructure(err) => {
+                tracing::event!(Level::ERROR, error = %err, "infrastructure failure listing discovered topics");
+                StatusCode::INTERNAL_SERVER_ERROR.into_response()
+            }
+        }
+    }
+}
+
+/// `GET /message/monad/topics/discover` (ticket #72): list every distinct topic name this relay
+/// has stored at least one post for, each paired with its post count and last-activity timestamp,
+/// ordered by last-activity descending.
+///
+/// Per the design decision recorded on GitHub issue #72, topics stay emergent/tag-based -- no
+/// separate topic-registration flow, and no separate anti-spam gate for showing up in this index:
+/// a topic post already requires a real burn transaction to store (see
+/// [`handle_put_monad_topic_post`]/`monad_topic_verify`'s module docs), so a topic name appearing
+/// here is already gated by that same cost. Accordingly, this route uses protobuf like the rest of
+/// the `/message/monad/*` routes (unlike ticket #49's curated-defaults route, which deliberately
+/// used plain JSON for an unrelated reason -- see that ticket's own route for why). No gate/burn
+/// check here either, same as [`handle_list_monad_topic_posts`] -- reads aren't payment/burn-gated
+/// anywhere in this crate. No `since`/pagination parameter -- see
+/// `crate::store::monad_topics::DbMonadTopicPosts::list_topics`'s docs for why (small keyspace;
+/// the client/route can add pagination later if that ever changes).
+pub async fn handle_list_topics(
+    Extension(server): Extension<RegistryServer>,
+) -> Result<Protobuf<proto::ListTopicsResponse>, ListTopicsError> {
+    let entries = server
+        .registry
+        .list_topics()
+        .map_err(ListTopicsError::Infrastructure)?
+        .into_iter()
+        .map(|(topic, stats)| proto::TopicDiscoveryEntry {
+            topic,
+            post_count: stats.post_count,
+            last_activity_ms: stats.last_activity_ms,
+        })
+        .collect();
+    Ok(Protobuf(proto::ListTopicsResponse { entries }))
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -1202,5 +1252,90 @@ mod tests {
         let expected = registry.get_monad_topic_post_view(&hash).unwrap().unwrap();
         assert_eq!(views[0].vote_weight, expected.vote_weight);
         assert_eq!(views[0].vote_weight, 700);
+    }
+
+    /// Ticket #72: `handle_list_topics` surfaces every distinct topic discovered via `put`
+    /// (through `store_monad_topic_post_at`), each with its own post count, ordered by
+    /// last-activity descending.
+    #[tokio::test]
+    async fn handle_list_topics_returns_discovered_topics_ordered_by_last_activity() {
+        let (_tempdir, registry) = test_registry();
+        store_monad_topic_post_at(&registry, vec![0x01; 32], "topic.oldest", 100);
+        store_monad_topic_post_at(&registry, vec![0x02; 32], "topic.newest", 300);
+        // A second post to "topic.oldest", still older than "topic.newest"'s single post.
+        store_monad_topic_post_at(&registry, vec![0x03; 32], "topic.oldest", 150);
+
+        let server = test_server(registry);
+        let Protobuf(response) = handle_list_topics(Extension(server))
+            .await
+            .expect("listing discovered topics should succeed");
+
+        let entries: Vec<(String, u64, i64)> = response
+            .entries
+            .into_iter()
+            .map(|entry| (entry.topic, entry.post_count, entry.last_activity_ms))
+            .collect();
+        assert_eq!(
+            entries,
+            vec![
+                ("topic.newest".to_string(), 1, 300),
+                ("topic.oldest".to_string(), 2, 150),
+            ]
+        );
+    }
+
+    /// Build a [`RegistryServer`] around `registry`, wired the same harmless way
+    /// `crate::http::monad_message`'s own (module-private) `test_server` helper does (POP
+    /// disabled, no real peers) -- needed by
+    /// [`route_get_discover_hits_handle_list_topics_and_is_not_shadowed_by_sibling_routes`] below,
+    /// which drives the real [`axum::Router`] rather than calling a handler function directly.
+    fn test_server(registry: Registry) -> RegistryServer {
+        use crate::{p2p::peers::Peers, test_instance::placeholder_pop_conf};
+
+        let pop_gate =
+            crate::http::pop_protection::PopGate::from_conf_if_enabled(&placeholder_pop_conf());
+        RegistryServer {
+            registry: Arc::new(registry),
+            peers: Arc::new(Peers::new("http://127.0.0.1:1".to_string(), vec![])),
+            pop_gate: Arc::new(pop_gate),
+            // No curated defaults needed by this route's tests (ticket #49, merged after this
+            // helper was originally written).
+            curated_defaults: Arc::new(vec![]),
+        }
+    }
+
+    /// Ticket #72's route-level acceptance criterion: `GET /message/monad/topics/discover` must
+    /// reach [`handle_list_topics`] through the *real* [`axum::Router`] built by
+    /// [`crate::http::server::RegistryServer::into_router`] -- not just via a direct handler call
+    /// -- and must not be swallowed by either sibling route registered under the same
+    /// `/message/monad/topics` prefix: `GET /message/monad/topics` (topic-filtered listing, which
+    /// requires `?topic=`) or `GET /message/monad/topics/:payload_hash` (a wildcard segment at the
+    /// same path depth as "discover"). See `into_router`'s routing-precedence comment for why a
+    /// static segment always wins over a wildcard one registered at the same position.
+    #[tokio::test]
+    async fn route_get_discover_hits_handle_list_topics_and_is_not_shadowed_by_sibling_routes() {
+        use prost::Message;
+        use tower::ServiceExt;
+
+        let (_tempdir, registry) = test_registry();
+        store_monad_topic_post_at(&registry, vec![0xaa; 32], "topic.discoverable", 500);
+
+        let router = test_server(registry).into_router();
+
+        let request = axum::http::Request::builder()
+            .method("GET")
+            .uri("/message/monad/topics/discover")
+            .body(hyper::Body::empty())
+            .unwrap();
+        let response = router.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = hyper::body::to_bytes(response.into_body()).await.unwrap();
+        let decoded = proto::ListTopicsResponse::decode(body.as_ref())
+            .expect("response body should decode as ListTopicsResponse");
+        assert_eq!(decoded.entries.len(), 1);
+        assert_eq!(decoded.entries[0].topic, "topic.discoverable");
+        assert_eq!(decoded.entries[0].post_count, 1);
+        assert_eq!(decoded.entries[0].last_activity_ms, 500);
     }
 }

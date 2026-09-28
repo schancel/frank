@@ -209,3 +209,77 @@ export namespace MonadTopicPostViews {
   }
 }
 
+export class TopicDiscoveryStats extends jspb.Message {
+  getPostCount(): number;
+  setPostCount(value: number): void;
+
+  getLastActivityMs(): number;
+  setLastActivityMs(value: number): void;
+
+  serializeBinary(): Uint8Array;
+  toObject(includeInstance?: boolean): TopicDiscoveryStats.AsObject;
+  static toObject(includeInstance: boolean, msg: TopicDiscoveryStats): TopicDiscoveryStats.AsObject;
+  static extensions: {[key: number]: jspb.ExtensionFieldInfo<jspb.Message>};
+  static extensionsBinary: {[key: number]: jspb.ExtensionFieldBinaryInfo<jspb.Message>};
+  static serializeBinaryToWriter(message: TopicDiscoveryStats, writer: jspb.BinaryWriter): void;
+  static deserializeBinary(bytes: Uint8Array): TopicDiscoveryStats;
+  static deserializeBinaryFromReader(message: TopicDiscoveryStats, reader: jspb.BinaryReader): TopicDiscoveryStats;
+}
+
+export namespace TopicDiscoveryStats {
+  export type AsObject = {
+    postCount: number,
+    lastActivityMs: number,
+  }
+}
+
+export class TopicDiscoveryEntry extends jspb.Message {
+  getTopic(): string;
+  setTopic(value: string): void;
+
+  getPostCount(): number;
+  setPostCount(value: number): void;
+
+  getLastActivityMs(): number;
+  setLastActivityMs(value: number): void;
+
+  serializeBinary(): Uint8Array;
+  toObject(includeInstance?: boolean): TopicDiscoveryEntry.AsObject;
+  static toObject(includeInstance: boolean, msg: TopicDiscoveryEntry): TopicDiscoveryEntry.AsObject;
+  static extensions: {[key: number]: jspb.ExtensionFieldInfo<jspb.Message>};
+  static extensionsBinary: {[key: number]: jspb.ExtensionFieldBinaryInfo<jspb.Message>};
+  static serializeBinaryToWriter(message: TopicDiscoveryEntry, writer: jspb.BinaryWriter): void;
+  static deserializeBinary(bytes: Uint8Array): TopicDiscoveryEntry;
+  static deserializeBinaryFromReader(message: TopicDiscoveryEntry, reader: jspb.BinaryReader): TopicDiscoveryEntry;
+}
+
+export namespace TopicDiscoveryEntry {
+  export type AsObject = {
+    topic: string,
+    postCount: number,
+    lastActivityMs: number,
+  }
+}
+
+export class ListTopicsResponse extends jspb.Message {
+  clearEntriesList(): void;
+  getEntriesList(): Array<TopicDiscoveryEntry>;
+  setEntriesList(value: Array<TopicDiscoveryEntry>): void;
+  addEntries(value?: TopicDiscoveryEntry, index?: number): TopicDiscoveryEntry;
+
+  serializeBinary(): Uint8Array;
+  toObject(includeInstance?: boolean): ListTopicsResponse.AsObject;
+  static toObject(includeInstance: boolean, msg: ListTopicsResponse): ListTopicsResponse.AsObject;
+  static extensions: {[key: number]: jspb.ExtensionFieldInfo<jspb.Message>};
+  static extensionsBinary: {[key: number]: jspb.ExtensionFieldBinaryInfo<jspb.Message>};
+  static serializeBinaryToWriter(message: ListTopicsResponse, writer: jspb.BinaryWriter): void;
+  static deserializeBinary(bytes: Uint8Array): ListTopicsResponse;
+  static deserializeBinaryFromReader(message: ListTopicsResponse, reader: jspb.BinaryReader): ListTopicsResponse;
+}
+
+export namespace ListTopicsResponse {
+  export type AsObject = {
+    entriesList: Array<TopicDiscoveryEntry.AsObject>,
+  }
+}
+

@@ -11,8 +11,8 @@ use crate::{
         handle_put_monad_profile,
     },
     http::monad_topics::{
-        handle_get_monad_topic_post, handle_list_monad_topic_posts, handle_put_monad_topic_post,
-        handle_put_monad_topic_vote,
+        handle_get_monad_topic_post, handle_list_monad_topic_posts, handle_list_topics,
+        handle_put_monad_topic_post, handle_put_monad_topic_vote,
     },
     http::pop_protection::{self, MonadReceiptVerifier, PopChallenge, PopGate, PopGateConfigError},
     monad_http::{Address as MonadAddress, HttpTransport},
@@ -223,6 +223,16 @@ impl RegistryServer {
             .route(
                 "/message/monad/topics/vote",
                 routing::put(handle_put_monad_topic_vote),
+            )
+            // `GET /message/monad/topics/discover` (ticket #72): topic-discovery listing -- see
+            // `crate::http::monad_topics::handle_list_topics`'s docs. Another static segment at
+            // the same path depth as "vote" above, so the same "static segments take priority
+            // over the `:payload_hash` wildcard segment at this position" reasoning already
+            // documented just above applies here too: this can't be shadowed by, or shadow,
+            // `/message/monad/topics/:payload_hash` below.
+            .route(
+                "/message/monad/topics/discover",
+                routing::get(handle_list_topics),
             )
             .route(
                 "/message/monad/topics/:payload_hash",

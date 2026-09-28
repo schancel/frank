@@ -49,6 +49,36 @@
 //!   already-verified vote twice (e.g. a client retrying a request whose response it never saw)
 //!   an idempotent overwrite rather than a double-counted duplicate entry, mirroring
 //!   `DbMonadMessages::put`'s same idempotency note for the analogous replay case.
+//!
+//! ## Topic discovery (`list_topics`, ticket #72)
+//!
+//! Per the design decision on GitHub issue #72, topics stay emergent/tag-based: there's no
+//! separate topic-registration flow, and no separate anti-spam gate for showing up in a discovery
+//! index -- a topic post already requires a real burn transaction to store (see
+//! `monad_topic_verify`'s module docs), so a topic name appearing in `CF_MONAD_TOPIC_DISCOVERY` is
+//! already gated by that same cost.
+//!
+//! `CF_MONAD_TOPIC_DISCOVERY` is a secondary index over `CF_MONAD_TOPIC_POSTS`, keyed by the raw
+//! topic name string itself (value: an encoded [`proto::TopicDiscoveryStats`]), maintained
+//! alongside the other indexes on every [`DbMonadTopicPosts::put`], in the same `WriteBatch`. Two
+//! judgment calls worth documenting explicitly:
+//! - **Don't hash the topic here.** Unlike `CF_MONAD_TOPIC_POSTS_BY_TOPIC`, this index is only
+//!   ever looked up by exact topic match (`get`), never range/prefix-scanned -- its whole purpose
+//!   is to reveal topic names, so there's no ambiguity to hash away and hashing would just make
+//!   the stored key unreadable for no benefit.
+//! - **Full scan + in-memory sort for [`DbMonadTopicPosts::list_topics`], not a second,
+//!   time-ordered index.** Sorting by `last_activity_ms` descending across the whole keyspace
+//!   would need either that, or a full scan here. This is expected to stay a small number of
+//!   distinct topics (tens to low thousands, not millions), so a full scan + in-memory sort is the
+//!   right, simple choice -- don't over-engineer a second index until this is an actual, measured
+//!   scaling problem.
+//!
+//! `post_count` is incremented by exactly one only when [`DbMonadTopicPosts::put`] is storing a
+//! genuinely new `payload_hash` (i.e. `self.get(payload_hash)?` returned `None` before this call)
+//! -- a client retrying a request whose response it never saw re-`put`s the same `payload_hash`
+//! and must not double-count. `last_activity_ms` is instead updated unconditionally to
+//! `max(existing, post.timestamp)`, even on a retry: a legitimate update landing with a later
+//! timestamp should still be able to bump last-activity.
 
 use std::fmt::Debug;
 
@@ -61,7 +91,8 @@ use thiserror::Error;
 use crate::{
     proto,
     store::db::{
-        Db, CF, CF_MONAD_TOPIC_POSTS, CF_MONAD_TOPIC_POSTS_BY_TOPIC, CF_MONAD_TOPIC_VOTES,
+        Db, CF, CF_MONAD_TOPIC_DISCOVERY, CF_MONAD_TOPIC_POSTS, CF_MONAD_TOPIC_POSTS_BY_TOPIC,
+        CF_MONAD_TOPIC_VOTES,
     },
 };
 
@@ -83,6 +114,7 @@ pub struct DbMonadTopicPosts<'a> {
     db: &'a Db,
     cf_monad_topic_posts: &'a CF,
     cf_monad_topic_posts_by_topic: &'a CF,
+    cf_monad_topic_discovery: &'a CF,
 }
 
 /// Errors indicating some topic-post store error.
@@ -97,6 +129,18 @@ pub enum DbMonadTopicPostsError {
     #[invalid_user_input()]
     #[error("No topic post found for payload hash {0}")]
     NotFound(String),
+
+    /// Database contains an invalid protobuf `TopicDiscoveryStats` (ticket #72).
+    #[critical()]
+    #[error("Inconsistent db: Cannot decode TopicDiscoveryStats: {0}")]
+    CannotDecodeDiscoveryStats(String),
+
+    /// `CF_MONAD_TOPIC_DISCOVERY`'s key wasn't valid UTF-8 (ticket #72). Can't happen via the real
+    /// `put` path (the key is always a `proto::MonadTopicPost.topic`, a `String`), so this is a
+    /// caller-contract/db-consistency violation, not a reachable runtime state in practice.
+    #[critical()]
+    #[error("Inconsistent db: topic discovery key isn't valid UTF-8: {0}")]
+    InvalidTopicKey(String),
 }
 
 use self::DbMonadTopicPostsError::*;
@@ -106,10 +150,12 @@ impl<'a> DbMonadTopicPosts<'a> {
     pub fn new(db: &'a Db) -> Self {
         let cf_monad_topic_posts = db.cf(CF_MONAD_TOPIC_POSTS).unwrap();
         let cf_monad_topic_posts_by_topic = db.cf(CF_MONAD_TOPIC_POSTS_BY_TOPIC).unwrap();
+        let cf_monad_topic_discovery = db.cf(CF_MONAD_TOPIC_DISCOVERY).unwrap();
         DbMonadTopicPosts {
             db,
             cf_monad_topic_posts,
             cf_monad_topic_posts_by_topic,
+            cf_monad_topic_discovery,
         }
     }
 
@@ -124,7 +170,12 @@ impl<'a> DbMonadTopicPosts<'a> {
     /// `topic`) doesn't leave a stale, orphaned index row behind.
     pub fn put(&self, payload_hash: &[u8], post: &proto::StoredMonadTopicPost) -> Result<()> {
         let mut batch = rocksdb::WriteBatch::default();
-        if let Some(existing) = self.get(payload_hash)? {
+        let existing = self.get(payload_hash)?;
+        // Ticket #72: whether this call is storing a genuinely new post (vs. a client retrying a
+        // request whose response it never saw) -- only a genuinely new post bumps
+        // `CF_MONAD_TOPIC_DISCOVERY`'s `post_count` below.
+        let is_new_post = existing.is_none();
+        if let Some(existing) = &existing {
             if let Some(existing_post) = existing.post.as_ref() {
                 let existing_digest = topic_digest(&existing_post.topic);
                 batch.delete_cf(
@@ -145,9 +196,71 @@ impl<'a> DbMonadTopicPosts<'a> {
                 by_topic_key(&digest, post.timestamp, payload_hash),
                 payload_hash,
             );
+
+            // Ticket #72: keep the topic-discovery index up to date in the same batch as
+            // everything else above -- see this module's docs for exactly how `post_count`/
+            // `last_activity_ms` are meant to evolve.
+            let existing_stats = self.discovery_stats(&new_post.topic)?;
+            let base_count = existing_stats.as_ref().map_or(0, |stats| stats.post_count);
+            let post_count = if is_new_post {
+                base_count + 1
+            } else {
+                base_count
+            };
+            let last_activity_ms = existing_stats
+                .map_or(0, |stats| stats.last_activity_ms)
+                .max(post.timestamp);
+            let stats = proto::TopicDiscoveryStats {
+                post_count,
+                last_activity_ms,
+            };
+            batch.put_cf(
+                self.cf_monad_topic_discovery,
+                new_post.topic.as_bytes(),
+                stats.encode_to_vec(),
+            );
         }
         self.db.write_batch(batch)?;
         Ok(())
+    }
+
+    /// Look up `topic`'s current [`proto::TopicDiscoveryStats`] in `CF_MONAD_TOPIC_DISCOVERY`.
+    /// [`None`] if no post has ever been stored under `topic`.
+    fn discovery_stats(&self, topic: &str) -> Result<Option<proto::TopicDiscoveryStats>> {
+        let serialized = match self
+            .db
+            .get(self.cf_monad_topic_discovery, topic.as_bytes())?
+        {
+            Some(serialized) => serialized,
+            None => return Ok(None),
+        };
+        let stats = proto::TopicDiscoveryStats::decode(serialized.as_ref())
+            .wrap_err_with(|| CannotDecodeDiscoveryStats(hex::encode(&serialized)))?;
+        Ok(Some(stats))
+    }
+
+    /// List every distinct topic name this relay has stored at least one post for, together with
+    /// its current [`proto::TopicDiscoveryStats`], ordered by `last_activity_ms` descending
+    /// (ticket #72). See this module's docs for why this is a full scan + in-memory sort rather
+    /// than a second, time-ordered index -- no pagination cursor is offered (yet) for the same
+    /// reason: this is expected to stay a small keyspace (tens to low thousands of distinct
+    /// topics, not millions), so add pagination if that ever stops being true.
+    pub fn list_topics(&self) -> Result<Vec<(String, proto::TopicDiscoveryStats)>> {
+        let mut topics = Vec::new();
+        let iter = self
+            .db
+            .rocksdb()
+            .iterator_cf(self.cf_monad_topic_discovery, IteratorMode::Start);
+        for item in iter {
+            let (key, value) = item.wrap_err(super::db::DbError::RocksDb)?;
+            let topic =
+                String::from_utf8(key.to_vec()).map_err(|_| InvalidTopicKey(hex::encode(&key)))?;
+            let stats = proto::TopicDiscoveryStats::decode(value.as_ref())
+                .wrap_err_with(|| CannotDecodeDiscoveryStats(hex::encode(&value)))?;
+            topics.push((topic, stats));
+        }
+        topics.sort_by(|a, b| b.1.last_activity_ms.cmp(&a.1.last_activity_ms));
+        Ok(topics)
     }
 
     /// Retrieve a [`proto::StoredMonadTopicPost`] by its `payload_hash`. [`None`] if not found.
@@ -208,6 +321,10 @@ impl<'a> DbMonadTopicPosts<'a> {
         columns.push(ColumnFamilyDescriptor::new(CF_MONAD_TOPIC_POSTS, options));
         columns.push(ColumnFamilyDescriptor::new(
             CF_MONAD_TOPIC_POSTS_BY_TOPIC,
+            rocksdb::Options::default(),
+        ));
+        columns.push(ColumnFamilyDescriptor::new(
+            CF_MONAD_TOPIC_DISCOVERY,
             rocksdb::Options::default(),
         ));
     }
@@ -533,6 +650,84 @@ mod tests {
             format!("{:?}", db.monad_topic_votes()),
             "DbMonadTopicVotes { .. }"
         );
+        Ok(())
+    }
+
+    /// Ticket #72: two posts to different topics, then a second post to one of them --
+    /// `post_count` should increment correctly per-topic and `last_activity_ms` should advance to
+    /// the newer post's timestamp without ever decreasing.
+    #[test]
+    fn test_list_topics_tracks_post_count_and_last_activity_per_topic() -> Result<()> {
+        let _ = bitcoinsuite_error::install();
+        let tempdir = tempdir::TempDir::new("cashweb-registry-store--topic-discovery")?;
+        let db = Db::open(tempdir.path().join("db.rocksdb"))?;
+        let store = db.monad_topic_posts();
+
+        store.put(&[1u8; 32], &post_with(vec![1u8; 32], "topic.alpha", 100))?;
+        store.put(&[2u8; 32], &post_with(vec![2u8; 32], "topic.beta", 150))?;
+        // A second post to "topic.alpha", with a later timestamp.
+        store.put(&[3u8; 32], &post_with(vec![3u8; 32], "topic.alpha", 300))?;
+
+        let topics: std::collections::HashMap<String, proto::TopicDiscoveryStats> =
+            store.list_topics()?.into_iter().collect();
+
+        let alpha = topics.get("topic.alpha").expect("topic.alpha discovered");
+        assert_eq!(alpha.post_count, 2);
+        assert_eq!(alpha.last_activity_ms, 300);
+
+        let beta = topics.get("topic.beta").expect("topic.beta discovered");
+        assert_eq!(beta.post_count, 1);
+        assert_eq!(beta.last_activity_ms, 150);
+
+        Ok(())
+    }
+
+    /// Ticket #72: retrying a `put` for the same `payload_hash` (e.g. a client re-sending a
+    /// request whose response it never saw) must not double-count `post_count`, even though
+    /// `last_activity_ms` may still legitimately advance if the retry carries a later timestamp.
+    #[test]
+    fn test_list_topics_retry_of_same_payload_hash_does_not_double_count() -> Result<()> {
+        let _ = bitcoinsuite_error::install();
+        let tempdir = tempdir::TempDir::new("cashweb-registry-store--topic-discovery-retry")?;
+        let db = Db::open(tempdir.path().join("db.rocksdb"))?;
+        let store = db.monad_topic_posts();
+
+        let payload_hash = vec![7u8; 32];
+        store.put(
+            &payload_hash,
+            &post_with(payload_hash.clone(), "retry.topic", 100),
+        )?;
+        // Same payload_hash, later timestamp -- a retry, not a new post.
+        store.put(
+            &payload_hash,
+            &post_with(payload_hash.clone(), "retry.topic", 200),
+        )?;
+
+        let topics: std::collections::HashMap<String, proto::TopicDiscoveryStats> =
+            store.list_topics()?.into_iter().collect();
+        let stats = topics.get("retry.topic").expect("retry.topic discovered");
+        assert_eq!(stats.post_count, 1);
+        assert_eq!(stats.last_activity_ms, 200);
+
+        Ok(())
+    }
+
+    /// Ticket #72: `list_topics` orders its results by `last_activity_ms` descending.
+    #[test]
+    fn test_list_topics_orders_by_last_activity_descending() -> Result<()> {
+        let _ = bitcoinsuite_error::install();
+        let tempdir = tempdir::TempDir::new("cashweb-registry-store--topic-discovery-order")?;
+        let db = Db::open(tempdir.path().join("db.rocksdb"))?;
+        let store = db.monad_topic_posts();
+
+        store.put(&[1u8; 32], &post_with(vec![1u8; 32], "topic.oldest", 100))?;
+        store.put(&[2u8; 32], &post_with(vec![2u8; 32], "topic.newest", 300))?;
+        store.put(&[3u8; 32], &post_with(vec![3u8; 32], "topic.middle", 200))?;
+
+        let topics = store.list_topics()?;
+        let names: Vec<String> = topics.into_iter().map(|(topic, _)| topic).collect();
+        assert_eq!(names, vec!["topic.newest", "topic.middle", "topic.oldest"]);
+
         Ok(())
     }
 }

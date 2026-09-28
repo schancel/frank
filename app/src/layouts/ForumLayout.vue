@@ -49,6 +49,7 @@ import { defineComponent } from 'vue'
 import { storeToRefs } from 'pinia'
 
 import { useForumStore } from 'src/stores/forum'
+import { useTopicStore } from 'src/stores/topics'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
 
 import ForumDrawer from '../components/panels/ForumDrawer.vue'
@@ -61,11 +62,21 @@ export default defineComponent({
   },
   setup() {
     const forumStore = useForumStore()
+    const topicStore = useTopicStore()
     const { topics, selectedTopic } = storeToRefs(forumStore)
 
     return {
       refreshMessages: forumStore.refreshMessages,
       setSelectedTopic: forumStore.setSelectedTopic,
+      // Ticket #72: `refreshDiscoveredTopics` merges relay-discovered topics into `useTopicStore`
+      // (the store `AddTopic.vue`/`TopicList.vue`/`TopicDrawer.vue` read from, distinct from this
+      // layout's own `forumStore`) alongside its hardcoded `defaultTopics` fallback. Wired here
+      // (this layout's `mounted()` below) rather than at global app startup: unlike ticket #49's
+      // curated contacts (which matter immediately, before the user picks a screen), a topic list
+      // is only relevant once someone has actually opened the Forum -- this layout wraps every
+      // Forum-area route (`Forum.vue`/`Topic.vue` via `router-view`), so its `mounted()` hook is
+      // this codebase's real "the user opened the Forum" moment.
+      refreshDiscoveredTopics: topicStore.refreshDiscoveredTopics,
       topics,
       storeSelectedTopic: selectedTopic,
     }
@@ -74,6 +85,10 @@ export default defineComponent({
   emits: ['toggleMyDrawerOpen'],
   mounted() {
     this.refreshContent()
+    // Fire-and-forget: `refreshDiscoveredTopics` already fails soft (never throws, see
+    // `stores/topics.ts`), so there's nothing meaningful to await or catch here -- matches
+    // `refreshContent`'s own un-awaited call just above.
+    this.refreshDiscoveredTopics()
   },
   methods: {
     toggleSettingsDrawerOpen() {

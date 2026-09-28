@@ -293,6 +293,26 @@ export const useTopicStore = defineStore('topics', {
       // Need to refetch so we get the right proxy object
       return this.getMessage(payloadDigest)
     },
+    async refreshDiscoveredTopics() {
+      // Ticket #72: augment `defaultTopics` (the hardcoded seed list, still restored as a
+      // fail-soft fallback below) with real topics discovered from the relay's own
+      // `CF_MONAD_TOPIC_DISCOVERY` index -- see the design-decision comment on GitHub issue #72:
+      // topics stay emergent/tag-based, so this is simply "every topic name the relay has seen a
+      // real (burn-gated) post for," not a curated/moderated list.
+      //
+      // `activeChain.topics.discoverTopics()` already fails soft (`[]`) on any network/decode
+      // error (`../../packages/wallet/monad-topic-tally-client.ts`'s `fetchDiscoveredTopics`), so
+      // an unreachable relay just leaves `this.topics` as whatever it already was (the hardcoded
+      // defaults, plus anything discovered on a previous successful call) -- never throws, never
+      // clears existing topics.
+      const discovered = await activeChain.topics.discoverTopics()
+      for (const { topic } of discovered) {
+        // `ensureTopic` is idempotent and never overwrites an already-known topic's state (e.g.
+        // its accumulated `messages`/`lastUpdate`), so calling it for a topic the user is already
+        // subscribed to (or that was already discovered on a previous call) is a harmless no-op.
+        this.ensureTopic(topic)
+      }
+    },
     async addOffering({
       wallet,
       payloadDigest,

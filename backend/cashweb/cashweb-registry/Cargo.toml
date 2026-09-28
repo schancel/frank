@@ -105,8 +105,11 @@ pretty_assertions = "1.2"
 # Temporary directories, automatically removed
 tempdir = "0.3"
 
-# Already pulled in transitively by axum 0.5's server/"ws" features; added directly here (dev-only)
-# so `http::curated_defaults`'s router-level test (ticket #49) can build a raw `hyper::Request` and
-# read a response body via `hyper::body::to_bytes` without needing a full bitcoind-backed
-# `RegistryTestInstance`/real TCP listener.
+# Needed by router-level tests that drive the real `Router` end-to-end (via
+# `tower::ServiceExt::oneshot`) and read back the response body -- only usable as a *direct*
+# dependency (Cargo doesn't expose transitive deps for `use`), even though it's already pulled in
+# transitively via `axum`. Same version `cashweb-http-utils` already depends on directly for the
+# same reason (building/decoding protobuf HTTP bodies). Added independently by both ticket #49
+# (`http::curated_defaults`'s router test) and ticket #72 (`http::monad_topics`'s discovery-route
+# router test) -- one declaration serves both.
 hyper = "0.14"

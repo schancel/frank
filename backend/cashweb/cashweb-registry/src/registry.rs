@@ -649,6 +649,15 @@ impl Registry {
             })
             .collect()
     }
+
+    /// List every distinct topic name this relay has stored at least one post for, together with
+    /// its current post count and last-activity timestamp, ordered by last-activity descending
+    /// (ticket #72). See `crate::store::monad_topics`'s module docs for the discovery index this
+    /// delegates to, and this ticket's design-decision comment on GitHub issue #72 for why topics
+    /// stay emergent/tag-based rather than a first-class registration.
+    pub(crate) fn list_topics(&self) -> Result<Vec<(String, proto::TopicDiscoveryStats)>> {
+        self.db.monad_topic_posts().list_topics()
+    }
 }
 
 #[cfg(test)]

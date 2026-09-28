@@ -162,6 +162,15 @@ export interface TopicBroadcastClient {
     sinceMs?: number
   }): Promise<ForumMessage[]>
   fetchOne(payloadDigest: string): Promise<ForumMessage | undefined>
+  /** Discover distinct topic names the relay has seen at least one (burn-gated) post for, each
+   * with its post count and last-activity timestamp, ordered by last-activity descending (ticket
+   * #72). No `wallet` needed -- like `fetchOne`, this is a plain read against the chain's own
+   * configured relay. Fails soft (`[]`) on any error -- see `../monad-topic-tally-client.ts`'s
+   * `fetchDiscoveredTopics` for why: this is purely additive discovery on top of
+   * `app/src/stores/topics.ts`'s hardcoded default topic list. */
+  discoverTopics(): Promise<
+    { topic: string; postCount: number; lastActivityMs: number }[]
+  >
 }
 
 export interface ActiveChain {

@@ -51,10 +51,19 @@
  * (bypassing `fundAll`, not editing it) with its own `onFunded` bookkeeping, so a retry after a
  * nonce race only re-attempts whichever sub-accounts didn't already get a real funding tx
  * broadcast, rather than re-funding (and double-spending on) ones that already succeeded.
+ *
+ * **2026-09-28: no longer the default path.** `fundPoolWithRetry` still exists and still works
+ * exactly as described above, but as of `setUpFundedStampClient`'s "Lazy per-send funding" update
+ * it only runs when a caller explicitly opts in with a nonzero `poolSize` (`monad-ui-verify.
+ * livecheck.ts`, which needs a pool pre-funded before it ever calls `directMessages.send`). Both
+ * bot scripts fund lazily per-send instead (`sendDirectMessageText`'s `pool.prepareStampInventory`
+ * call), which sidesteps this contention almost entirely: instead of one burst of N
+ * near-simultaneous transactions from a single account, funding happens in small
+ * (`DEFAULT_TOPUP_BUFFER_SIZE = 5`) top-ups spread out one send at a time.
  */
 import { readFileSync, existsSync, writeFileSync } from 'fs'
 
-import { JsonRpcProvider } from 'ethers'
+import { JsonRpcProvider, Provider } from 'ethers'
 
 import { MonadHttpClient } from '@frank/wallet/monad-http'
 import { MonadAccountTxSigner } from '@frank/wallet/monad-account-tx'
@@ -70,6 +79,7 @@ import { SubAccountLeaseManager } from '@frank/wallet/monad-account-lease'
 import {
   MonadStampClient,
   StampMonadMessageResult,
+  quoteMonadStampPaymentGasReserve,
 } from '@frank/wallet/monad-stamp-client'
 import { MonadIdentity, registerMonadIdentity } from '@frank/wallet/monad-identity'
 import { buildEnvelope } from '@frank/cashweb/relay/monad-message-envelope'
@@ -152,6 +162,10 @@ export interface FundedStampSetup {
    * `MonadStampClient`'s own surface -- that class only ever spends from the disposable sub-account
    * pool (`pool`/`leaseManager`), never the main account directly. */
   mainAccountSigner: MonadAccountTxSigner
+  /** Exposed so a caller can lazily top this up per-send via `pool.prepareStampInventory` (see
+   * `sendDirectMessageText`) instead of pre-funding a large fixed batch up front -- see this
+   * file's header, "Lazy per-send funding", for why. */
+  pool: MonadSubAccountPool
 }
 
 /** Waits (polling `getStatus`) for `txHash` to reach a terminal state, throwing if it fails or
@@ -236,16 +250,31 @@ export async function fundPoolWithRetry(params: {
 }
 
 /**
- * Derives a fresh HD sub-account pool (ticket #14), funds `poolSize` sub-accounts from the main
- * funded testnet wallet at `mainWalletJsonPath`, waits for every funding tx to confirm, and wires
- * up a `MonadStampClient` ready to send Stamp-over-Monad messages. See this file's header for how
- * `gasReserve` is sized against this ticket's very tight remaining testnet balance.
+ * Derives a fresh HD sub-account pool (ticket #14) and wires up a `MonadStampClient` ready to send
+ * Stamp-over-Monad messages, against the main funded testnet wallet at `mainWalletJsonPath`.
+ *
+ * **Lazy per-send funding (direct user feedback, 2026-09-28):** this used to eagerly pre-fund
+ * `poolSize` sub-accounts all at once via `fundPoolWithRetry`, sized to `maxReplies + maxGreetings`
+ * by callers -- which meant a long-running bot with generous limits fired a burst of dozens (or,
+ * mistakenly, thousands) of near-simultaneous funding transactions from one account before ever
+ * reaching its message-polling loop, hitting exactly the nonce contention `fundPoolWithRetry`'s own
+ * header describes, with no bound on how bad a large `poolSize` makes it. The real app's own send
+ * path (`ActiveChain.directMessages.send`, `chain/monad-chain.ts`) never pre-funds like this --
+ * it calls `pool.prepareStampInventory()` right before each individual send, topping up only the
+ * shortfall (default buffer of `DEFAULT_TOPUP_BUFFER_SIZE = 5`, see `monad-account-pool.ts`).
+ * `sendDirectMessageText` (below) now does the same. `poolSize` stays as an opt-in for a caller
+ * that genuinely needs a pool pre-funded before its first send (`monad-ui-verify.livecheck.ts`
+ * grafts this pool onto an otherwise-unfunded wallet specifically so it doesn't need to) --
+ * omitting it (or passing `0`) skips eager funding entirely, which is what both bot scripts do now.
+ *
+ * See this file's header for how `gasReserve` is sized against this ticket's very tight remaining
+ * testnet balance.
  */
 export async function setUpFundedStampClient(params: {
   rpcUrl: string
   relayBaseUrl: string
   mainWalletJsonPath: string
-  poolSize: number
+  poolSize?: number
   stampValueWei: bigint
   label: string
 }): Promise<FundedStampSetup> {
@@ -267,37 +296,40 @@ export async function setUpFundedStampClient(params: {
   const changePool = new MonadChangePool({
     keyring: MonadChangeKeyring.fromMnemonic(mnemonic),
   })
-  pool.ensureSize(params.poolSize)
 
-  const feeData = await provider.getFeeData()
-  const fallbackMaxFeePerGas = BigInt(250000000000) // 250 gwei -- only if the node can't report feeData at all
-  const maxFeePerGas = feeData.maxFeePerGas ?? fallbackMaxFeePerGas
-  const estimatedBurnGasLimit = BigInt(23000)
-  const gasReserve =
-    (maxFeePerGas * estimatedBurnGasLimit * BigInt(11)) / BigInt(10)
-  console.log(
-    `[${params.label}] maxFeePerGas=${maxFeePerGas} wei; funding each sub-account with stampValue=${params.stampValueWei} + gasReserve=${gasReserve} wei`,
-  )
+  if (params.poolSize) {
+    pool.ensureSize(params.poolSize)
 
-  const funded = await fundPoolWithRetry({
-    pool,
-    mainAccountSigner,
-    stampValueWei: params.stampValueWei,
-    gasReserve,
-    label: params.label,
-  })
-  for (const f of funded) {
+    const feeData = await provider.getFeeData()
+    const fallbackMaxFeePerGas = BigInt(250000000000) // 250 gwei -- only if the node can't report feeData at all
+    const maxFeePerGas = feeData.maxFeePerGas ?? fallbackMaxFeePerGas
+    const estimatedBurnGasLimit = BigInt(23000)
+    const gasReserve =
+      (maxFeePerGas * estimatedBurnGasLimit * BigInt(11)) / BigInt(10)
     console.log(
-      `[${params.label}] funded ${f.address} (sub-account ${f.index}) with ${f.fundedValue} wei, tx ${f.txHash}`,
+      `[${params.label}] maxFeePerGas=${maxFeePerGas} wei; funding each sub-account with stampValue=${params.stampValueWei} + gasReserve=${gasReserve} wei`,
     )
-    await waitForConfirmation(
+
+    const funded = await fundPoolWithRetry({
+      pool,
       mainAccountSigner,
-      f.txHash,
-      `${params.label} funding tx (sub-account ${f.index})`,
-    )
-    console.log(
-      `[${params.label}] funding tx for sub-account ${f.index} confirmed on-chain`,
-    )
+      stampValueWei: params.stampValueWei,
+      gasReserve,
+      label: params.label,
+    })
+    for (const f of funded) {
+      console.log(
+        `[${params.label}] funded ${f.address} (sub-account ${f.index}) with ${f.fundedValue} wei, tx ${f.txHash}`,
+      )
+      await waitForConfirmation(
+        mainAccountSigner,
+        f.txHash,
+        `${params.label} funding tx (sub-account ${f.index})`,
+      )
+      console.log(
+        `[${params.label}] funding tx for sub-account ${f.index} confirmed on-chain`,
+      )
+    }
   }
 
   const leaseManager = new SubAccountLeaseManager(pool)
@@ -310,22 +342,29 @@ export async function setUpFundedStampClient(params: {
     relayBaseUrl: params.relayBaseUrl,
   })
 
-  return { provider, stampClient, mainAccountSigner }
+  return { provider, stampClient, mainAccountSigner, pool }
 }
 
 /**
- * Builds the E2E-encrypted envelope for `text` (wrapped as the real UI's `MessageItem[]` wire
- * shape -- see `qwen-bot.livecheck.ts`'s `extractText` doc comment for why) and sends it as a
- * stamped direct message via `stampClient.submitStampedMessage`, paying `toAddress` itself (ticket
- * #57: a DM's stamp always pays its recipient, never a fixed burn address).
+ * Tops up `pool` with only whatever it's short of for one stamp payment of `stampValueWei`
+ * (mirroring `ActiveChain.directMessages.send`'s own call, `chain/monad-chain.ts`), builds the
+ * E2E-encrypted envelope for `text` (wrapped as the real UI's `MessageItem[]` wire shape -- see
+ * `qwen-bot.livecheck.ts`'s `extractText` doc comment for why), and sends it as a stamped direct
+ * message via `stampClient.submitStampedMessage`, paying `toAddress` itself (ticket #57: a DM's
+ * stamp always pays its recipient, never a fixed burn address).
  *
  * Ticket #77: factored out of `qwen-bot.livecheck.ts`'s reply-sending logic and
  * `qwen-bot-send-demo.livecheck.ts`'s outgoing-message logic (which duplicated this exact
  * build-envelope-then-submit sequence) so the new auto-greet behavior can reuse the same real
- * DM-sending path instead of a third copy of it.
+ * DM-sending path instead of a third copy of it. The lazy top-up (2026-09-28) was folded in here
+ * rather than left to each call site, so every caller gets it for free -- see
+ * `setUpFundedStampClient`'s own header for why this replaced pre-funding a big pool up front.
  */
 export async function sendDirectMessageText(params: {
   stampClient: MonadStampClient
+  pool: MonadSubAccountPool
+  mainAccountSigner: MonadAccountTxSigner
+  provider: Provider
   fromIdentity: MonadIdentity
   toAddress: string
   toPubKey: Buffer
@@ -333,6 +372,17 @@ export async function sendDirectMessageText(params: {
   stampValueWei: bigint
   networkTag: string
 }): Promise<StampMonadMessageResult> {
+  const gasReserveWei = await quoteMonadStampPaymentGasReserve({
+    signer: params.mainAccountSigner,
+    recipientPublicKey: params.toPubKey,
+  })
+  await params.pool.prepareStampInventory({
+    mainAccountSigner: params.mainAccountSigner,
+    provider: params.provider,
+    stampValueWei: params.stampValueWei,
+    gasReserveWei,
+  })
+
   const envelope = buildEnvelope({
     fromAddress: params.fromIdentity.displayAddress,
     fromPrivateKey: params.fromIdentity.toBitcorePrivateKey(),

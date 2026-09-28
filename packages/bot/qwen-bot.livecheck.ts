@@ -184,10 +184,9 @@ async function main() {
 
   // Ticket #77: auto-greet/auto-fund newly-registered Monad profiles, alongside this script's
   // pre-existing Qwen-reply behavior. `QWEN_BOT_MAX_GREETINGS` caps how many strangers' addresses
-  // get a real funding transfer per run -- `setUpFundedStampClient` pre-funds `poolSize` disposable
-  // stamp sub-accounts up front (see below), and every greeting DM *also* consumes one of those,
-  // same as a Qwen reply does, so this bounds that up-front cost the same way `maxReplies` already
-  // does.
+  // get a real funding transfer per run; every greeting DM consumes a stamp sub-account the same
+  // way a Qwen reply does (2026-09-28: funded lazily per-send now, see `setUpFundedStampClient`'s
+  // header -- no longer a fixed pool sized to this number up front).
   const maxGreetings = Number(process.env.QWEN_BOT_MAX_GREETINGS ?? 5)
   const greetingMessage =
     process.env.QWEN_BOT_GREETING_MESSAGE ??
@@ -218,20 +217,21 @@ async function main() {
   console.log(`Bot Frank identity address: ${identity.displayAddress}`)
   console.log(`(handoff written to ${handoffJsonPath})`)
 
-  // Funding the bot's disposable sender accounts can take a while on a congested testnet. Start
-  // the profile cursor before that work so a user who signs up during bot initialization is not
-  // silently missed by the welcome flow.
   const profileWatchStartedAt = Date.now()
 
-  const { stampClient, mainAccountSigner } = await setUpFundedStampClient({
-    rpcUrl,
-    relayBaseUrl,
-    mainWalletJsonPath,
-    // Sized for both Qwen replies AND greeting DMs -- see `maxGreetings`'s doc comment above.
-    poolSize: maxReplies + maxGreetings,
-    stampValueWei,
-    label: 'bot',
-  })
+  // No `poolSize` -- sub-accounts are funded lazily, per send, inside `sendDirectMessageText`
+  // (see `setUpFundedStampClient`'s header, "Lazy per-send funding"). This is what actually fixed
+  // tonight's nonce-contention pain: a fixed pool sized to `maxReplies + maxGreetings` meant a big
+  // burst of near-simultaneous funding transactions from one account before the bot ever reached
+  // its polling loop.
+  const { stampClient, mainAccountSigner, provider, pool } =
+    await setUpFundedStampClient({
+      rpcUrl,
+      relayBaseUrl,
+      mainWalletJsonPath,
+      stampValueWei,
+      label: 'bot',
+    })
 
   const qwen = new QwenClient({
     apiKey: qwenApiKey,
@@ -330,6 +330,9 @@ async function main() {
           console.log(`[bot] sending greeting DM to ${profile.address} ...`)
           const greeting = await sendDirectMessageText({
             stampClient,
+            pool,
+            mainAccountSigner,
+            provider,
             fromIdentity: identity,
             toAddress: profile.address,
             toPubKey: Buffer.from(profile.signedPayload.getPublicKey_asU8()),
@@ -450,6 +453,9 @@ async function main() {
       // helper derives one-time stealth destinations from the recipient's registered public key.
       const result = await sendDirectMessageText({
         stampClient,
+        pool,
+        mainAccountSigner,
+        provider,
         fromIdentity: identity,
         toAddress: envelope.from,
         toPubKey: senderPubKey,

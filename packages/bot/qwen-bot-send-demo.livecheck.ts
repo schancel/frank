@@ -9,8 +9,9 @@
  * Run `qwen-bot.livecheck.ts` first (it registers its identity and writes its address to
  * `QWEN_BOT_HANDOFF_JSON`, default `/tmp/qwen-bot-handoff.json`), then run this in a separate
  * process/shell while the bot is polling. `qwen-bot.livecheck.ts` must be started with
- * `QWEN_BOT_MAX_REPLIES` set to at least the number of messages this script will send (its
- * sub-account pool is sized to that up front -- see `setUpFundedStampClient`'s doc comment).
+ * `QWEN_BOT_MAX_REPLIES` set to at least the number of messages this script will send, since
+ * that's the bot's own reply quota -- unrelated to sub-account funding, which both scripts now do
+ * lazily per-send (see `setUpFundedStampClient`'s doc comment, "Lazy per-send funding").
  *
  * `QWEN_BOT_MESSAGES` (a JSON array of strings) sends more than one turn, sequentially -- waiting
  * for each reply before sending the next -- for a real multi-turn "conversation" (the bot's own
@@ -131,14 +132,15 @@ async function main() {
     )
   }
 
-  const { stampClient } = await setUpFundedStampClient({
-    rpcUrl,
-    relayBaseUrl,
-    mainWalletJsonPath,
-    poolSize: messages.length,
-    stampValueWei,
-    label: 'sender',
-  })
+  // No `poolSize` -- funded lazily, per send (see `setUpFundedStampClient`'s doc comment).
+  const { stampClient, mainAccountSigner, provider, pool } =
+    await setUpFundedStampClient({
+      rpcUrl,
+      relayBaseUrl,
+      mainWalletJsonPath,
+      stampValueWei,
+      label: 'sender',
+    })
 
   const transcript: Array<{ sentTx: string; replyTx: string; reply: string }> =
     []
@@ -156,6 +158,9 @@ async function main() {
     // destinations from the bot's registered public key.
     const sent = await sendDirectMessageText({
       stampClient,
+      pool,
+      mainAccountSigner,
+      provider,
       fromIdentity: identity,
       toAddress: botAddress,
       toPubKey: botPubKey,

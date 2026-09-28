@@ -63,6 +63,12 @@
  *   QWEN_BOT_GREETING_MESSAGE   -- the greeting DM's text (default: a short welcome message)
  *   QWEN_BOT_STAMP_VALUE_WEI    -- wei paid as Qwen's DM stamp (default 0.01 MON)
  *   QWEN_BOT_FUND_VALUE_WEI     -- wei sent to each newly-greeted address (default 0.05 MON)
+ *
+ * State persistence (direct user feedback, 2026-09-28 -- see `qwen-bot-state.ts`'s own header):
+ *   QWEN_BOT_STATE_DIR          -- where the `level` DB of polling cursors, greeted-addresses/
+ *                                  processed-message idempotency sets, and per-user Qwen
+ *                                  conversation history is kept (default /tmp/qwen-bot-state).
+ *                                  Survives restarts -- delete this directory to start clean.
  */
 import { writeFileSync } from 'fs'
 import { resolve } from 'path'
@@ -80,7 +86,7 @@ import {
 } from '@frank/cashweb/relay/monad-message-envelope'
 import { fetchMonadMessagesSince } from '@frank/cashweb/relay/monad-message-feed'
 import { deserializeMessageItems } from '@frank/wallet/chain/monad-chain'
-import { QwenChatMessage, QwenClient } from './qwen-client'
+import { QwenClient } from './qwen-client'
 import {
   loadOrCreateIdentity,
   registerAndLog,
@@ -88,6 +94,7 @@ import {
   sendDirectMessageText,
   setUpFundedStampClient,
 } from './qwen-bot-common'
+import { QwenBotStateStore } from './qwen-bot-state'
 
 function sleep(ms: number): Promise<void> {
   return new Promise(r => setTimeout(r, ms))
@@ -162,6 +169,13 @@ async function main() {
     process.env.E2E_DEMO_MAIN_WALLET_JSON ??
       '../frank-worktrees/spike-demo/spike/data/chain-wallet.json',
   )
+  // Persists polling cursors, the greeted-addresses/processed-message idempotency sets, and each
+  // user's Qwen conversation history across restarts -- see qwen-bot-state.ts's own header for
+  // the concrete user-visible bug this fixes.
+  const stateDirPath = resolve(
+    process.cwd(),
+    process.env.QWEN_BOT_STATE_DIR ?? '/tmp/qwen-bot-state',
+  )
   const pollIntervalMs = Number(process.env.QWEN_BOT_POLL_INTERVAL_MS ?? 4000)
   const maxReplies = Number(process.env.QWEN_BOT_MAX_REPLIES ?? 1)
   const idleTimeoutMs = Number(
@@ -225,17 +239,21 @@ async function main() {
     model: qwenModel,
   })
 
+  // Not persisted, deliberately -- see qwen-bot-state.ts's header for why (cheaply re-fetchable).
   const senderPubKeyCache = new Map<string, Buffer>()
-  const conversations = new Map<string, QwenChatMessage[]>()
-  const processedPayloadHashes = new Set<string>()
-  const greetedAddresses = new Set<string>()
+
+  const state = new QwenBotStateStore(stateDirPath)
+  await state.Open()
+  console.log(`[bot] persisted state loaded from ${stateDirPath}`)
 
   // A process restart must not replay every retained message and pay for duplicate replies.
   // Start at this run's pre-funding boundary so messages arriving during the potentially slow
   // account setup are still handled. The override exists for deliberate historical backfills.
-  let since = Number(
-    process.env.QWEN_BOT_MESSAGE_SINCE_MS ?? profileWatchStartedAt,
-  )
+  // Persisted state (a real previous run's cursor) wins over both when present -- that's the
+  // whole point of this fix: a restart should resume, not rewind to "now" and lose the plot.
+  let since =
+    state.getSince() ??
+    Number(process.env.QWEN_BOT_MESSAGE_SINCE_MS ?? profileWatchStartedAt)
   let repliesSent = 0
   let greetingsSent = 0
   let lastActivityAt = Date.now()
@@ -247,10 +265,11 @@ async function main() {
   // every one of them on this bot's very first poll, which is both not what "auto-greet a new
   // signup" means and a real risk to the shared, already-documented-as-scarce funding wallet
   // balance (see `qwen-bot-common.ts`'s header). Only registrations from this run's own startup
-  // onward are treated as "new".
-  let sinceProfiles = Number(
-    process.env.QWEN_BOT_PROFILE_SINCE_MS ?? profileWatchStartedAt,
-  )
+  // onward are treated as "new" -- unless a persisted cursor from a real previous run exists, in
+  // which case that wins (same "resume, don't rewind" reasoning as `since` just above).
+  let sinceProfiles =
+    state.getSinceProfiles() ??
+    Number(process.env.QWEN_BOT_PROFILE_SINCE_MS ?? profileWatchStartedAt)
 
   console.log(
     `\nPolling ${relayBaseUrl}/message/monad?since=<t> every ${pollIntervalMs}ms for messages addressed to ${identity.displayAddress} ...`,
@@ -296,10 +315,10 @@ async function main() {
         ) {
           continue // never greet/fund ourselves
         }
-        if (greetedAddresses.has(profile.address)) continue // idempotency guard
+        if (state.hasGreeted(profile.address)) continue // idempotency guard, persisted
         if (greetingsSent >= maxGreetings) break
 
-        greetedAddresses.add(profile.address)
+        state.addGreeted(profile.address)
         lastActivityAt = Date.now()
         console.log(
           `\n[bot] new profile registration: ${
@@ -347,7 +366,10 @@ async function main() {
         greetingsSent++
       }
 
-      if (newProfiles.length > 0) sinceProfiles = maxSeenProfileTimestamp + 1
+      if (newProfiles.length > 0) {
+        sinceProfiles = maxSeenProfileTimestamp + 1
+        state.setSinceProfiles(sinceProfiles)
+      }
     }
 
     const stored = await fetchMonadMessagesSince({
@@ -363,8 +385,8 @@ async function main() {
       const payloadHashHex = Buffer.from(message.message.payloadHash).toString(
         'hex',
       )
-      if (processedPayloadHashes.has(payloadHashHex)) continue
-      processedPayloadHashes.add(payloadHashHex)
+      if (state.hasProcessed(payloadHashHex)) continue
+      state.addProcessed(payloadHashHex)
 
       const envelope = parseEnvelope(message.message.encryptedPayload)
       if (!envelope) continue // not our envelope convention -- e.g. #8's plain-JSON demo blob
@@ -404,7 +426,7 @@ async function main() {
       const plaintext = extractText(rawPlaintext)
       console.log(`[bot] decrypted: "${plaintext}"`)
 
-      const history = conversations.get(envelope.from) ?? [
+      const history = state.getConversation(envelope.from) ?? [
         { role: 'system', content: SYSTEM_PROMPT },
       ]
       history.push({ role: 'user', content: plaintext })
@@ -415,7 +437,7 @@ async function main() {
       console.log(`[bot] Qwen reply: "${completion.content}"`)
 
       history.push({ role: 'assistant', content: completion.content })
-      conversations.set(envelope.from, history)
+      state.setConversation(envelope.from, history)
 
       console.log('[bot] stamping + sending reply over Monad testnet ...')
       // Ticket #77: goes through the shared `sendDirectMessageText` helper (`qwen-bot-common.ts`),
@@ -444,11 +466,18 @@ async function main() {
       if (repliesSent >= maxReplies) break
     }
 
-    if (stored.length > 0) since = maxSeenTimestamp + 1
+    if (stored.length > 0) {
+      since = maxSeenTimestamp + 1
+      state.setSince(since)
+    }
     if (repliesSent >= maxReplies && greetingsSent >= maxGreetings) break
+    // Flushed once per poll cycle (not just at final Close()) so a crash mid-run loses at most
+    // the current cycle's writes, not everything back to the last clean exit.
+    await state.flush()
     await sleep(pollIntervalMs)
   }
 
+  await state.Close()
   console.log(
     `\nDone. Sent ${repliesSent} real Qwen-generated repl${
       repliesSent === 1 ? 'y' : 'ies'

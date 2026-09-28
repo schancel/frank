@@ -685,7 +685,7 @@ pub async fn process_monad_message<T: JsonRpcTransport + Clone>(
     };
 
     let stored = registry
-        .put_monad_message(declared_hash.as_slice(), stored, network_tag)
+        .put_monad_message(declared_hash.as_slice(), recipient, stored, network_tag)
         .map_err(ProcessMonadMessageError::Infrastructure)?;
 
     Ok(stored)
@@ -1342,6 +1342,17 @@ mod tests {
             .unwrap()
             .expect("message should be stored");
         assert_eq!(fetched, stored);
+        assert_eq!(
+            registry
+                .list_monad_messages_for_recipient_since(recipient_address(), 0)
+                .unwrap(),
+            vec![stored.clone()],
+            "the validated envelope recipient must own the mailbox index entry"
+        );
+        assert!(registry
+            .list_monad_messages_for_recipient_since(Address([0x99; 20]), 0)
+            .unwrap()
+            .is_empty());
 
         let calls_after_first_submission = transport.calls().len();
         let retried = process_monad_message(
@@ -1935,6 +1946,7 @@ mod tests {
     /// already covers) with an explicit `timestamp`, for [`list_since`]-focused tests below where
     /// the interesting behavior is the read side, not verification.
     fn store_at(registry: &Registry, payload_hash: Vec<u8>, timestamp: i64) {
+        let recipient = Address([0x44; 20]);
         let stored = proto::StoredMonadMessage {
             message: Some(proto::MonadStampedMessage {
                 encrypted_payload: vec![4, 5, 6],
@@ -1948,7 +1960,7 @@ mod tests {
             network_tag: Vec::new(),
         };
         registry
-            .put_monad_message(&payload_hash, stored, &[])
+            .put_monad_message(&payload_hash, recipient, stored, &[])
             .unwrap();
     }
 

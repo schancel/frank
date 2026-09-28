@@ -30,6 +30,11 @@ pub(crate) const CF_MONAD_MESSAGES: &str = "monad_messages";
 /// in timestamp order without scanning the whole (payload_hash-keyed) primary CF -- mirrors
 /// `DbTopics`'s `CF_MESSAGES` "topic_digest ++ timestamp" key layout, minus the topic prefix.
 pub(crate) const CF_MONAD_MESSAGES_BY_TIME: &str = "monad_messages_by_time";
+/// Recipient-scoped secondary index over `CF_MONAD_MESSAGES`, keyed by the recipient's raw
+/// 20-byte address followed by `timestamp.to_be_bytes() ++ payload_hash`. This is derived from
+/// the already-validated routing envelope and lets a mailbox read only its own journal without
+/// changing the stored protobuf record.
+pub(crate) const CF_MONAD_MESSAGES_BY_RECIPIENT_TIME: &str = "monad_messages_by_recipient_time";
 /// Canonical in-progress direct-message payment sets, keyed by payload hash. Persisting the exact
 /// set makes crash/retry resume the original raw transactions instead of accepting a second set.
 pub(crate) const CF_MONAD_MESSAGE_ATTEMPTS: &str = "monad_message_attempts";

@@ -17,17 +17,18 @@
 //! store, keyed directly by `payload_hash` (mirroring `DbTopics`'s `cf_payloads` column family,
 //! minus the topic-indexing machinery this simpler message shape doesn't need).
 //!
-//! ## `list_since` (ticket #37)
+//! ## Time indexes
 //!
 //! `CF_MONAD_MESSAGES_BY_TIME` is a secondary index, keyed by `timestamp.to_be_bytes() ++
 //! payload_hash` (value: the `payload_hash`), maintained alongside the primary
 //! `CF_MONAD_MESSAGES` on every [`DbMonadMessages::put`]. It exists so [`DbMonadMessages::
 //! list_since`] can range-scan messages in timestamp order -- mirroring `DbTopics`'s `CF_MESSAGES`
 //! "topic_digest ++ timestamp" key layout (see `crate::store::topics::DbTopics::get_messages_to`),
-//! minus the topic prefix this simpler message shape has no equivalent of. See `crate::http::
-//! monad_message`'s module docs (and ticket #37's handoff) for why this can list messages by time
-//! but **not** filter by intended recipient: nothing in [`proto::MonadStampedMessage`]/
-//! [`proto::StoredMonadMessage`] identifies one.
+//! minus the topic prefix this simpler message shape has no equivalent of.
+//!
+//! `CF_MONAD_MESSAGES_BY_RECIPIENT_TIME` adds the fixed-width recipient routing address before
+//! that suffix. The address is derived from the already-validated envelope when the primary
+//! record is written; it is intentionally an index fact rather than a new protobuf field.
 
 use std::fmt::Debug;
 
@@ -38,8 +39,12 @@ use rocksdb::{ColumnFamilyDescriptor, Direction, IteratorMode};
 use thiserror::Error;
 
 use crate::{
+    monad_http::Address,
     proto,
-    store::db::{Db, CF, CF_MONAD_MESSAGES, CF_MONAD_MESSAGES_BY_TIME, CF_MONAD_MESSAGE_ATTEMPTS},
+    store::db::{
+        Db, CF, CF_MONAD_MESSAGES, CF_MONAD_MESSAGES_BY_RECIPIENT_TIME, CF_MONAD_MESSAGES_BY_TIME,
+        CF_MONAD_MESSAGE_ATTEMPTS,
+    },
 };
 
 /// Build the `CF_MONAD_MESSAGES_BY_TIME` key for a given `(timestamp, payload_hash)` pair. Kept
@@ -49,11 +54,23 @@ fn by_time_key(timestamp: i64, payload_hash: &[u8]) -> Vec<u8> {
     [timestamp.to_be_bytes().as_ref(), payload_hash].concat()
 }
 
+/// Build the recipient-owned journal key. The fixed-width address prefix makes it safe to stop a
+/// forward range scan as soon as the iterator reaches another recipient.
+fn by_recipient_time_key(recipient: &Address, timestamp: i64, payload_hash: &[u8]) -> Vec<u8> {
+    [
+        recipient.0.as_ref(),
+        timestamp.to_be_bytes().as_ref(),
+        payload_hash,
+    ]
+    .concat()
+}
+
 /// Allows access to stored Monad-stamped messages.
 pub struct DbMonadMessages<'a> {
     db: &'a Db,
     cf_monad_messages: &'a CF,
     cf_monad_messages_by_time: &'a CF,
+    cf_monad_messages_by_recipient_time: &'a CF,
     cf_monad_message_attempts: &'a CF,
 }
 
@@ -103,11 +120,14 @@ impl<'a> DbMonadMessages<'a> {
     pub fn new(db: &'a Db) -> Self {
         let cf_monad_messages = db.cf(CF_MONAD_MESSAGES).unwrap();
         let cf_monad_messages_by_time = db.cf(CF_MONAD_MESSAGES_BY_TIME).unwrap();
+        let cf_monad_messages_by_recipient_time =
+            db.cf(CF_MONAD_MESSAGES_BY_RECIPIENT_TIME).unwrap();
         let cf_monad_message_attempts = db.cf(CF_MONAD_MESSAGE_ATTEMPTS).unwrap();
         DbMonadMessages {
             db,
             cf_monad_messages,
             cf_monad_messages_by_time,
+            cf_monad_messages_by_recipient_time,
             cf_monad_message_attempts,
         }
     }
@@ -201,12 +221,24 @@ impl<'a> DbMonadMessages<'a> {
     /// message already existed under this `payload_hash`, its old by-time index entry is removed
     /// first (in the same batch) so a retry with a different `timestamp` doesn't leave a stale,
     /// orphaned index row behind.
-    pub fn put(&self, payload_hash: &[u8], message: &proto::StoredMonadMessage) -> Result<()> {
+    pub fn put(
+        &self,
+        payload_hash: &[u8],
+        recipient: &Address,
+        message: &proto::StoredMonadMessage,
+    ) -> Result<()> {
         let mut batch = rocksdb::WriteBatch::default();
         if let Some(existing) = self.get(payload_hash)? {
             batch.delete_cf(
                 self.cf_monad_messages_by_time,
                 by_time_key(existing.timestamp, payload_hash),
+            );
+            // `payload_hash` commits the routing envelope, so an exact retry cannot change the
+            // recipient. The caller supplies the same validated recipient while the stored
+            // protobuf deliberately remains unchanged.
+            batch.delete_cf(
+                self.cf_monad_messages_by_recipient_time,
+                by_recipient_time_key(recipient, existing.timestamp, payload_hash),
             );
         }
         batch.put_cf(
@@ -217,6 +249,11 @@ impl<'a> DbMonadMessages<'a> {
         batch.put_cf(
             self.cf_monad_messages_by_time,
             by_time_key(message.timestamp, payload_hash),
+            payload_hash,
+        );
+        batch.put_cf(
+            self.cf_monad_messages_by_recipient_time,
+            by_recipient_time_key(recipient, message.timestamp, payload_hash),
             payload_hash,
         );
         batch.delete_cf(self.cf_monad_message_attempts, payload_hash);
@@ -260,11 +297,39 @@ impl<'a> DbMonadMessages<'a> {
         .collect()
     }
 
+    /// List one recipient's messages with `timestamp >= since`, ordered by timestamp ascending.
+    /// This is the storage boundary for the future authenticated mailbox sync route; the legacy
+    /// global list remains available until that route and its client migration land together.
+    pub fn list_for_recipient_since(
+        &self,
+        recipient: &Address,
+        since: i64,
+    ) -> Result<Vec<proto::StoredMonadMessage>> {
+        let start_key = by_recipient_time_key(recipient, since, &[]);
+        let iter = self.db.rocksdb().iterator_cf(
+            self.cf_monad_messages_by_recipient_time,
+            IteratorMode::From(&start_key, Direction::Forward),
+        );
+        let mut messages = Vec::new();
+        for item in iter {
+            let (key, payload_hash) = item?;
+            if !key.starts_with(&recipient.0) {
+                break;
+            }
+            messages.push(self.get_existing(&payload_hash)?);
+        }
+        Ok(messages)
+    }
+
     pub(crate) fn add_cfs(columns: &mut Vec<ColumnFamilyDescriptor>) {
         let options = rocksdb::Options::default();
         columns.push(ColumnFamilyDescriptor::new(CF_MONAD_MESSAGES, options));
         columns.push(ColumnFamilyDescriptor::new(
             CF_MONAD_MESSAGES_BY_TIME,
+            rocksdb::Options::default(),
+        ));
+        columns.push(ColumnFamilyDescriptor::new(
+            CF_MONAD_MESSAGES_BY_RECIPIENT_TIME,
             rocksdb::Options::default(),
         ));
         columns.push(ColumnFamilyDescriptor::new(
@@ -286,6 +351,7 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     use crate::{
+        monad_http::Address,
         proto,
         store::{
             db::Db,
@@ -311,7 +377,6 @@ mod tests {
             recipient_pubkey: vec![2; 33],
             min_value_wei: 42,
         };
-
         {
             let db = Db::open(&db_path)?;
             assert_eq!(
@@ -371,6 +436,7 @@ mod tests {
             recipient_pubkey: vec![2; 33],
             min_value_wei: 123,
         };
+        let recipient = Address([1; 20]);
         assert_eq!(
             db.monad_messages().claim_attempt(
                 &payload_hash,
@@ -379,7 +445,8 @@ mod tests {
             )?,
             MonadMessageAttemptClaim::New
         );
-        db.monad_messages().put(&payload_hash, &stored)?;
+        db.monad_messages()
+            .put(&payload_hash, &recipient, &stored)?;
         assert_eq!(
             db.monad_messages().get(&payload_hash)?,
             Some(stored.clone())
@@ -396,8 +463,15 @@ mod tests {
         let reopened = Db::open(&db_path)?;
         assert_eq!(
             reopened.monad_messages().get(&payload_hash)?,
-            Some(stored),
+            Some(stored.clone()),
             "local Monad mailbox records must survive a server/database restart"
+        );
+        assert_eq!(
+            reopened
+                .monad_messages()
+                .list_for_recipient_since(&recipient, 0)?,
+            vec![stored],
+            "the recipient-owned journal index must survive a server/database restart"
         );
 
         Ok(())
@@ -440,11 +514,24 @@ mod tests {
         let early = make_stored(vec![1u8; 32], 100);
         let middle = make_stored(vec![2u8; 32], 200);
         let late = make_stored(vec![3u8; 32], 300);
+        let recipient = Address([1; 20]);
 
         // Insert out of order to prove `list_since` sorts by timestamp, not insertion order.
-        store.put(&late.message.as_ref().unwrap().payload_hash, &late)?;
-        store.put(&early.message.as_ref().unwrap().payload_hash, &early)?;
-        store.put(&middle.message.as_ref().unwrap().payload_hash, &middle)?;
+        store.put(
+            &late.message.as_ref().unwrap().payload_hash,
+            &recipient,
+            &late,
+        )?;
+        store.put(
+            &early.message.as_ref().unwrap().payload_hash,
+            &recipient,
+            &early,
+        )?;
+        store.put(
+            &middle.message.as_ref().unwrap().payload_hash,
+            &recipient,
+            &middle,
+        )?;
 
         assert_eq!(
             store.list_since(0)?,
@@ -466,13 +553,80 @@ mod tests {
         let payload_hash = vec![7u8; 32];
         let first = make_stored(payload_hash.clone(), 100);
         let retried = make_stored(payload_hash.clone(), 200);
+        let recipient = Address([1; 20]);
 
-        store.put(&payload_hash, &first)?;
-        store.put(&payload_hash, &retried)?;
+        store.put(&payload_hash, &recipient, &first)?;
+        store.put(&payload_hash, &recipient, &retried)?;
 
         // Only the latest write should show up -- the stale by-time index entry from the first
         // `put` (timestamp 100) must have been cleaned up, not left as an orphaned duplicate.
         assert_eq!(store.list_since(0)?, vec![retried]);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_list_for_recipient_isolates_orders_and_respects_cursor() -> Result<()> {
+        let _ = bitcoinsuite_error::install();
+        let tempdir =
+            tempdir::TempDir::new("cashweb-registry-store--monad-messages-list-for-recipient")?;
+        let db = Db::open(tempdir.path().join("db.rocksdb"))?;
+        let store = db.monad_messages();
+        let alice = Address([0x11; 20]);
+        let bob = Address([0x22; 20]);
+
+        let alice_early = make_stored(vec![1u8; 32], 100);
+        let bob_middle = make_stored(vec![2u8; 32], 150);
+        let alice_late = make_stored(vec![3u8; 32], 200);
+
+        store.put(
+            &alice_late.message.as_ref().unwrap().payload_hash,
+            &alice,
+            &alice_late,
+        )?;
+        store.put(
+            &bob_middle.message.as_ref().unwrap().payload_hash,
+            &bob,
+            &bob_middle,
+        )?;
+        store.put(
+            &alice_early.message.as_ref().unwrap().payload_hash,
+            &alice,
+            &alice_early,
+        )?;
+
+        assert_eq!(
+            store.list_for_recipient_since(&alice, 0)?,
+            vec![alice_early.clone(), alice_late.clone()]
+        );
+        assert_eq!(
+            store.list_for_recipient_since(&alice, 200)?,
+            vec![alice_late]
+        );
+        assert_eq!(store.list_for_recipient_since(&bob, 0)?, vec![bob_middle]);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_recipient_list_after_retry_has_no_stale_entry() -> Result<()> {
+        let _ = bitcoinsuite_error::install();
+        let tempdir =
+            tempdir::TempDir::new("cashweb-registry-store--monad-messages-recipient-retry")?;
+        let db = Db::open(tempdir.path().join("db.rocksdb"))?;
+        let store = db.monad_messages();
+        let recipient = Address([0x33; 20]);
+        let payload_hash = vec![7u8; 32];
+        let first = make_stored(payload_hash.clone(), 100);
+        let retried = make_stored(payload_hash.clone(), 200);
+
+        store.put(&payload_hash, &recipient, &first)?;
+        store.put(&payload_hash, &recipient, &retried)?;
+
+        assert_eq!(
+            store.list_for_recipient_since(&recipient, 0)?,
+            vec![retried]
+        );
 
         Ok(())
     }

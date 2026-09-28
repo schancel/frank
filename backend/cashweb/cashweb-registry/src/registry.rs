@@ -464,6 +464,7 @@ impl Registry {
     pub(crate) fn put_monad_message(
         &self,
         payload_hash: &[u8],
+        recipient: Address,
         message: proto::StoredMonadMessage,
         network_tag: &[u8],
     ) -> Result<proto::StoredMonadMessage> {
@@ -471,7 +472,9 @@ impl Registry {
             network_tag: network_tag.to_vec(),
             ..message
         };
-        self.db.monad_messages().put(payload_hash, &message)?;
+        self.db
+            .monad_messages()
+            .put(payload_hash, &recipient, &message)?;
         Ok(message)
     }
 
@@ -584,13 +587,26 @@ impl Registry {
     }
 
     /// List every [`proto::StoredMonadMessage`] stored with `timestamp >= since` (ticket #37),
-    /// ordered by `timestamp` ascending -- see `crate::http::monad_message`'s module docs for how
-    /// this is used, and for why it can't filter by intended recipient.
+    /// ordered by `timestamp` ascending. This remains the legacy global compatibility view until
+    /// an authenticated recipient-scoped HTTP route is introduced.
     pub(crate) fn list_monad_messages_since(
         &self,
         since: i64,
     ) -> Result<Vec<proto::StoredMonadMessage>> {
         self.db.monad_messages().list_since(since)
+    }
+
+    /// List the recipient-owned portion of the Monad mailbox journal. The recipient is derived
+    /// from the validated routing envelope when the message is stored, not from query-time
+    /// metadata supplied by the sender.
+    pub fn list_monad_messages_for_recipient_since(
+        &self,
+        recipient: Address,
+        since: i64,
+    ) -> Result<Vec<proto::StoredMonadMessage>> {
+        self.db
+            .monad_messages()
+            .list_for_recipient_since(&recipient, since)
     }
 
     /// Store a [`proto::StoredMonadTopicPost`] (ticket #30), once its initial vote's burn has

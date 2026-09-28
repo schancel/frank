@@ -334,6 +334,7 @@ export class MonadSubAccountPool {
     let requiredMainBalance = await this.requiredFundingBalance({
       capacities,
       targets: unfunded,
+      fromAddress: params.mainAccountSigner.address,
       gasReserveWei: params.gasReserveWei,
       provider: params.provider,
       overrides: params.fundingOverrides,
@@ -350,6 +351,7 @@ export class MonadSubAccountPool {
       const fallbackRequired = await this.requiredFundingBalance({
         capacities: fallbackCapacities,
         targets: unfunded,
+        fromAddress: params.mainAccountSigner.address,
         gasReserveWei: params.gasReserveWei,
         provider: params.provider,
         overrides: params.fundingOverrides,
@@ -413,6 +415,7 @@ export class MonadSubAccountPool {
   private async requiredFundingBalance(params: {
     capacities: bigint[]
     targets: Array<Pick<SubAccountRecord, 'address'>>
+    fromAddress: string
     gasReserveWei: bigint
     provider: Provider
     overrides?: MonadTxOverrides
@@ -427,7 +430,7 @@ export class MonadSubAccountPool {
       const gasLimit =
         params.overrides?.gasLimit ??
         (await params.provider.estimateGas({
-          from: params.mainAccountSigner.address,
+          from: params.fromAddress,
           to: target.address,
           value: fundedValue,
         }))

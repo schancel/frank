@@ -354,6 +354,33 @@ describe('MonadSubAccountPool', () => {
       expect(progress[progress.length - 1]).toBe('ready')
     })
 
+    it('estimates ordinary UI funding from the main account when gasLimit is not overridden', async () => {
+      const { mainAccountSigner, mainAddress, pool, provider } =
+        setupPreparation()
+      const estimateGas = jest
+        .spyOn(provider, 'estimateGas')
+        .mockResolvedValue(21_000n)
+
+      const result = await pool.prepareStampInventory({
+        mainAccountSigner,
+        provider,
+        stampValueWei: 1_000n,
+        gasReserveWei: 10n,
+        fundingOverrides: {
+          maxFeePerGas: 1n,
+          maxPriorityFeePerGas: 1n,
+          chainId: BigInt(CHAIN_ID),
+        },
+        receipt: { maxAttempts: 0 },
+      })
+
+      expect(result.selectedAccountCount).toBe(2)
+      expect(estimateGas).toHaveBeenCalled()
+      expect(estimateGas.mock.calls[0][0]).toEqual(
+        expect.objectContaining({ from: mainAddress }),
+      )
+    })
+
     it('retires a used legacy available address even when it still has spendable balance', async () => {
       const {
         balances,

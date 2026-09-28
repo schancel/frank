@@ -54,6 +54,29 @@
             to="/new-post"
           />
         </q-item>
+
+        <!-- Ticket #72 built a real backend index of discovered topic names (post count +
+        last-activity) plus a store action to fetch it (`useTopicStore().refreshDiscoveredTopics`,
+        wired into `ForumLayout.vue`'s `mounted()`) -- but nothing in the actual visible UI ever
+        read the result. The "Topic" field above was the only way to switch topics, and it's a
+        free-text input: you had to already know a topic's exact name to type it in. This list
+        surfaces that already-built, already-fetched discovery data as something genuinely
+        clickable. -->
+        <q-separator class="q-my-sm" />
+        <q-item-label header>Browse Topics</q-item-label>
+        <q-item
+          v-for="name in discoveredTopicNames"
+          :key="name"
+          clickable
+          :active="name === selectedTopic"
+          active-class="text-primary"
+          @click="setTopic(name)"
+        >
+          <q-item-section>{{ name }}</q-item-section>
+        </q-item>
+        <q-item v-if="discoveredTopicNames.length === 0">
+          <q-item-section class="text-grey">No topics discovered yet.</q-item-section>
+        </q-item>
       </q-list>
     </q-scroll-area>
   </div>
@@ -61,8 +84,9 @@
 
 <script lang="ts">
 import { useForumStore } from 'src/stores/forum'
+import { useTopicStore } from 'src/stores/topics'
 import { storeToRefs } from 'pinia'
-import { defineComponent } from 'vue'
+import { computed, defineComponent, onMounted } from 'vue'
 
 import { activeChain } from '@frank/wallet/chain'
 import { sortModes, SortMode } from '../../utils/sorting'
@@ -79,8 +103,22 @@ export default defineComponent({
     const forum = useForumStore()
     const { topics, selectedTopic, sortMode, duration, voteThreshold } =
       storeToRefs(forum)
+
+    // Ticket #72's discovery index + `refreshDiscoveredTopics` action already exist on
+    // `useTopicStore` (a separate, older store from `useForumStore` above -- see this file's
+    // template comment) -- fetch it here too, alongside `ForumLayout.vue`'s own call on mount, so
+    // this drawer's list is fresh whenever it's actually opened, not just once at layout mount.
+    const topicStore = useTopicStore()
+    onMounted(() => {
+      topicStore.refreshDiscoveredTopics()
+    })
+    const discoveredTopicNames = computed(() =>
+      Object.keys(topicStore.topics).sort(),
+    )
+
     return {
       topics,
+      discoveredTopicNames,
       storeSelectedTopic: selectedTopic,
       storeSortMode: sortMode,
       storeDuration: duration,

@@ -31,7 +31,16 @@
       <chat-list-link title="Login/Sign Up" route="/setup" icon="login" />
     </div>
 
-    <chat-list v-show="tab == 'contacts'" v-bind="$attrs" :compact="false" />
+    <!-- Ticket #61 (found in review): the "forum" tab navigates away entirely (it's a full
+    page/route, not a sidebar-list mode) rather than switching to some 'tab == "forum"' content
+    here -- so without this, clicking it left this whole drawer body blank (matched neither
+    'settings' nor 'contacts'). Falling back to showing contacts is an arbitrary but reasonable
+    default; there's no forum-specific content this drawer could show instead. -->
+    <chat-list
+      v-show="tab == 'contacts' || tab == 'forum'"
+      v-bind="$attrs"
+      :compact="false"
+    />
 
     <q-list v-if="$status.setup">
       <q-separator />

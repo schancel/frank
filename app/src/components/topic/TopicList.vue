@@ -8,12 +8,6 @@
             <q-item-label>Topics</q-item-label>
           </q-item-section>
           <q-space />
-          <!-- Ticket #61 (found live): /forum -- a real Reddit-style threaded view over this same
-          topic data (stores/forum.ts calls the identical activeChain.topics API as this flat feed)
-          -- had no reachable link anywhere in the app; only a hand-typed URL could reach it. -->
-          <q-btn dense flat icon="dashboard" @click="() => openPage($router, '/forum')">
-            <q-tooltip>View as Forum</q-tooltip>
-          </q-btn>
           <q-btn
             dense
             flat

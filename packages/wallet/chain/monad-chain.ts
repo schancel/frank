@@ -154,6 +154,8 @@ export interface MonadChainConfig {
   stampBurnAddress: string
   /** Default aggregate value, in wei, `directMessages.send` pays per Stamp message. */
   defaultStampValueWei: bigint
+  /** Default value, in wei, burned for a topic post or vote. */
+  defaultTopicVoteValueWei: bigint
   /** How many single-use funding sub-accounts `createWallet` pre-derives into the pool. */
   subAccountPoolSize: number
   /** Parent LevelDB location for durable sender-account and change state. `false` is reserved for
@@ -192,6 +194,11 @@ export function loadMonadChainConfigFromEnv(): MonadChainConfig {
       '0x000000000000000000000000000000000000dEaD',
     defaultStampValueWei: BigInt(
       readEnv('FRANK_DM_DEFAULT_STAMP_VALUE_WEI') ?? '10000000000000000',
+    ),
+    defaultTopicVoteValueWei: BigInt(
+      readEnv('FRANK_TOPIC_DEFAULT_VOTE_VALUE_WEI') ??
+        readEnv('CASHWEB_STAMP_MIN_BURN_VALUE_WEI') ??
+        '1000000000000',
     ),
     subAccountPoolSize: Number(readEnv('MONAD_SUB_ACCOUNT_POOL_SIZE') ?? '8'),
     walletStorageLocation:
@@ -718,6 +725,7 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
     name: 'monad',
     unit: 'MON',
     defaultStampValue: config.defaultStampValueWei,
+    defaultTopicVoteValue: config.defaultTopicVoteValueWei,
 
     toDisplayAmount(raw: bigint): string {
       return formatEther(raw)

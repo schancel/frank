@@ -92,6 +92,7 @@ import { renderMarkdown } from '../utils/markdown'
 import { useForumStore } from 'src/stores/forum'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
 import { activeChain } from '@frank/wallet/chain'
+import { displayToSafeRawAmount } from 'src/utils/chain-amount'
 
 import AMessage from '../components/forum/ForumMessage.vue'
 import { errorNotify, infoNotify } from 'src/utils/notifications'
@@ -116,7 +117,7 @@ export default defineComponent({
     const forum = useForumStore()
     const parentDigest = this.$route.params.parentDigest as string
     return {
-      offering: 10,
+      offering: activeChain.toDisplayAmount(activeChain.defaultTopicVoteValue),
       topic: forum.index[parentDigest]?.topic ?? '',
       topics: [] as string[],
       title: '',
@@ -180,7 +181,10 @@ export default defineComponent({
         await this.postMessage({
           wallet,
           entry,
-          satoshis: this.offering * 1_000_000,
+          satoshis: displayToSafeRawAmount(
+            activeChain,
+            this.offering.toString(),
+          ),
           topic: this.topic,
           parentDigest: this.parentDigest,
         })

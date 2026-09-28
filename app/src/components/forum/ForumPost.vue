@@ -3,14 +3,14 @@
     <q-card-section class="row" horizontal>
       <q-card-section class="col-shrink q-pa-none q-ma-none bg-on-secondary">
         <q-card-section class="q-pa-none q-ma-none text-center">
-          <q-btn flat icon="arrow_drop_up" padding="0" @click="addVotes(10)" />
+          <q-btn flat icon="arrow_drop_up" padding="0" @click="addVotes(1)" />
         </q-card-section>
         <q-card-section class="q-pa-none q-ma-none text-center">
           <q-btn
             flat
             icon="arrow_drop_down"
             padding="0"
-            @click="addVotes(-10)"
+            @click="addVotes(-1)"
           />
         </q-card-section>
       </q-card-section>
@@ -53,7 +53,7 @@
           </q-card-section>
         </template>
         <q-card-actions class="q-ma-none q-pa-none">
-          <span>{{ formatSatoshis(message.satoshis) }} xpi by</span>
+          <span>{{ formatVoteWeight(message.satoshis) }} by</span>
           <q-btn
             no-caps
             flat
@@ -110,6 +110,8 @@ import AMessageReplies from './ForumMessageReplies.vue'
 import { MessageWithReplies, useForumStore } from 'src/stores/forum'
 import { useContactStore } from 'src/stores/contacts'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
+import { activeChain } from '@frank/wallet/chain'
+import { formatSafeRawAmount, rawToSafeNumber } from 'src/utils/chain-amount'
 
 export default defineComponent({
   setup() {
@@ -167,8 +169,8 @@ export default defineComponent({
   },
   emits: ['set-topic'],
   methods: {
-    formatSatoshis(value: number) {
-      return (value / 1_000_000).toFixed(0)
+    formatVoteWeight(value: number) {
+      return formatSafeRawAmount(activeChain, value)
     },
     markedMessage(text: string) {
       return renderMarkdown(text, this.$q.dark.isActive)
@@ -180,8 +182,10 @@ export default defineComponent({
         address.substring(address.length - 6, address.length)
       )
     },
-    addVotes(xpi: number) {
-      this.voteAmount += xpi * 1_000_000
+    addVotes(direction: number) {
+      this.voteAmount +=
+        direction *
+        rawToSafeNumber(activeChain, activeChain.defaultTopicVoteValue)
       if (this.timeoutId) {
         clearTimeout(this.timeoutId)
       }

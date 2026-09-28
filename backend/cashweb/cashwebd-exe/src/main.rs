@@ -12,6 +12,7 @@ use cashweb_registry::{
     p2p::{
         peer::Peer,
         peers::{InitialMetadataDownloadParams, Peers},
+        public_store::PublicFederationStore,
     },
     registry::Registry,
     store::db::Db,
@@ -94,7 +95,7 @@ async fn main() -> Result<()> {
     let peers = Arc::new(Peers::new(conf.url.to_string(), our_peers));
 
     let imd_params = InitialMetadataDownloadParams {
-        registry: &registry,
+        public_store: PublicFederationStore::new(registry.as_ref()),
         num_sampled_peers: conf.registry.imd.num_sampled_peers,
         timeout_peer: Duration::from_millis(conf.registry.imd.timeout_peer_ms),
         num_failed_for_wait: conf.registry.imd.num_failed_for_wait,

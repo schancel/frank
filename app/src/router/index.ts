@@ -4,7 +4,7 @@ import {
   createWebHistory,
   createWebHashHistory,
 } from 'vue-router'
-import type { RouteLocationNormalized, NavigationGuardNext } from 'vue-router'
+import type { RouteLocationNormalized } from 'vue-router'
 import { createRoutes } from './routes'
 import { useContactStore } from 'src/stores/contacts'
 import { useProfileStore } from 'src/stores/my-profile'
@@ -67,10 +67,14 @@ async function ensureChatState(address?: string) {
 
 // Note: ssrContext is also available
 export default () => {
+  // Ticket-adjacent fix (console noise found live throughout tonight's testing): rewritten from
+  // the deprecated `next()` callback style to Vue Router 4's own preferred return-value style
+  // (see https://router.vuejs.org/guide/advanced/navigation-guards.html#Optional-third-argument-next)
+  // -- `next()` becomes `return` (undefined = allow navigation), `next('/setup')` becomes
+  // `return '/setup'`. Purely mechanical; the actual gating logic is unchanged.
   async function redirectIfNoProfile(
     to: RouteLocationNormalized,
     from: RouteLocationNormalized,
-    next: NavigationGuardNext,
   ) {
     if (
       to.fullPath.startsWith('/chat') &&
@@ -96,10 +100,10 @@ export default () => {
       (unprotectedRoutes.some(path => to.fullPath.startsWith(path)) &&
         !protectedRoutes.some(path => to.fullPath.startsWith(path)))
     ) {
-      next()
+      return
     } else {
       console.log('nav to setup!')
-      next('/setup')
+      return '/setup'
     }
   }
 

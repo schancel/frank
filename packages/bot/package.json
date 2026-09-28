@@ -14,7 +14,8 @@
     "@frank/wallet": "*",
     "axios": "^0.24.0",
     "bip39": "^3.0.2",
-    "ethers": "^6.17.0"
+    "ethers": "^6.17.0",
+    "level": "^7.0.0"
   },
   "devDependencies": {
     "@types/node": "^16.11.11",

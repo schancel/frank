@@ -179,6 +179,8 @@ async fn main() -> Result<()> {
         registry,
         peers,
         pop_gate,
+        // No curated defaults for this demo (ticket #49).
+        curated_defaults: Arc::new(vec![]),
     };
     let router = server.into_router();
 

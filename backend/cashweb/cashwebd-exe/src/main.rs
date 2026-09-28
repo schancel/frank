@@ -4,7 +4,9 @@ use bitcoinsuite_bitcoind::rpc_client::BitcoindRpcClient;
 use bitcoinsuite_error::{Result, WrapErr};
 use cashweb_config::parse_conf;
 use cashweb_registry::{
-    http::{pop_protection::PopGate, server::RegistryServer},
+    http::{
+        curated_defaults::build_curated_defaults, pop_protection::PopGate, server::RegistryServer,
+    },
     lotus_adapter::LotusAdapter,
     p2p::{
         peer::Peer,
@@ -107,10 +109,22 @@ async fn main() -> Result<()> {
         Some(Ok(_)) => {}
     }
 
+    // Operator-curated default contacts (ticket #49): built once here from real config
+    // (`conf.registry.curated_defaults`), same "build once at startup from real config" pattern as
+    // `pop_gate` just above. Unlike `pop_gate`, a bad entry here fails startup outright (`wrap_err`
+    // below) rather than degrading to a per-request `500` -- there's no legitimate "serve traffic
+    // with broken curated-defaults config" state to fall back to, so failing fast on an operator
+    // typo is strictly better than shipping it.
+    let curated_defaults = Arc::new(
+        build_curated_defaults(&conf.registry.curated_defaults)
+            .wrap_err("Invalid registry.curated_defaults entry in configuration file")?,
+    );
+
     let server = RegistryServer {
         registry: Arc::clone(&registry),
         peers: Arc::clone(&peers),
         pop_gate,
+        curated_defaults,
     };
 
     let router = server.into_router();

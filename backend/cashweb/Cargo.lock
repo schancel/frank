@@ -389,6 +389,7 @@ dependencies = [
  "cashweb-pop-token",
  "futures",
  "hex",
+ "hyper",
  "json",
  "pretty_assertions",
  "prost",

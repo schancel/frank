@@ -40,29 +40,6 @@ export const defaultAvatars = [
 export const defaultStampAmount = 1_000_000 // Sats
 export const stampLowerLimit = 1 // XPI
 
-export const defaultContacts = [
-  {
-    name: 'Shammah',
-    address: 'lotus_16PSJPAVocAM5behRWxqwQnpEVRPJrV4XxbthBhJR',
-  },
-  {
-    name: 'Matthew',
-    address: 'lotus_16PSJPFMAXn1VQ7cUwCzHEp7g32JjxocGK8afvGZy',
-  },
-  {
-    name: 'Sean Ballard',
-    address: 'lotus_16PSJMijz6kXyfAuHSqW73Dympd2E42n4R3WHFQ6U',
-  },
-  {
-    name: 'Korv',
-    address: 'lotus_16PSJQ56Mb2QoBKZKHMfJ4wo7TZ7AUQXxDJkqKfp4',
-  },
-  {
-    name: 'Alex Ugorji',
-    address: 'lotus_16PSJPyy31QzuGQNqXq26r3i6GL6QBVR7S9caLxE2',
-  },
-]
-
 // Contact defaults
 export const defaultUpdateInterval = 1000 * 60 * 60 * 1 * 1
 

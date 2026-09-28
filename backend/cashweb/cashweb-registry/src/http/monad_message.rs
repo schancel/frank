@@ -992,6 +992,8 @@ mod tests {
             registry: Arc::new(registry),
             peers: Arc::new(Peers::new("http://127.0.0.1:1".to_string(), vec![])),
             pop_gate: Arc::new(pop_gate),
+            // No curated defaults needed by this route's tests (ticket #49).
+            curated_defaults: Arc::new(vec![]),
         }
     }
 

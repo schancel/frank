@@ -12,6 +12,7 @@ const { SignedPayload } = __pb_signed_payload_payload_pb
 import {
   MONAD_IDENTITY_DERIVATION_PATH,
   MonadIdentity,
+  fetchCuratedDefaultContacts,
   fetchMonadIdentityPubKey,
   fetchMonadProfile,
   registerMonadIdentity,
@@ -169,5 +170,64 @@ describe('fetchMonadIdentityPubKey / fetchMonadProfile', () => {
     expect(Buffer.from(profile?.pubKey ?? [])).toEqual(
       identity.compressedPubKey,
     )
+  })
+})
+
+describe('fetchCuratedDefaultContacts', () => {
+  it('GETs /metadata/monad/curated-defaults and returns the configured entries', async () => {
+    const entries = [
+      { address: '0x' + '11'.repeat(20), name: 'Welcome Bot' },
+      { address: '0x' + '22'.repeat(20), name: 'Support' },
+    ]
+    mockedAxios.mockResolvedValueOnce({
+      status: 200,
+      data: { entries },
+      statusText: 'OK',
+      headers: {},
+      config: {},
+    })
+
+    const contacts = await fetchCuratedDefaultContacts({
+      relayBaseUrl: RELAY_BASE_URL,
+    })
+
+    expect(contacts).toEqual(entries)
+    expect(mockedAxios).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: 'get',
+        url: `${RELAY_BASE_URL}/metadata/monad/curated-defaults`,
+      }),
+    )
+  })
+
+  it('returns [] and does not throw on a 404/network error', async () => {
+    mockedAxios.mockRejectedValueOnce(
+      Object.assign(new Error('not found'), {
+        isAxiosError: true,
+        response: { status: 404 },
+      }),
+    )
+
+    const contacts = await fetchCuratedDefaultContacts({
+      relayBaseUrl: RELAY_BASE_URL,
+    })
+
+    expect(contacts).toEqual([])
+  })
+
+  it('returns [] and does not throw on a malformed response body (missing entries)', async () => {
+    mockedAxios.mockResolvedValueOnce({
+      status: 200,
+      data: {},
+      statusText: 'OK',
+      headers: {},
+      config: {},
+    })
+
+    const contacts = await fetchCuratedDefaultContacts({
+      relayBaseUrl: RELAY_BASE_URL,
+    })
+
+    expect(contacts).toEqual([])
   })
 })

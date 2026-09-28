@@ -33,6 +33,7 @@ import { openChat } from 'src/utils/routes'
 
 import ContactBookDialog from 'src/components/dialogs/ContactBookDialog.vue'
 import { useWallet } from './utils/clients'
+import { monadModeEnabled } from './utils/runtime-mode'
 
 export default defineComponent({
   components: {
@@ -119,7 +120,7 @@ export default defineComponent({
       }
     },
     setupConnections() {
-      if (import.meta.env.QCLI_MONAD_SKIP_LEGACY_SETUP_GATE !== 'false') {
+      if (monadModeEnabled()) {
         fetchCuratedDefaultContacts({
           relayBaseUrl: loadMonadChainConfigFromEnv().relayBaseUrl,
         })

@@ -10,6 +10,7 @@ import { useContactStore } from 'src/stores/contacts'
 import { useProfileStore } from 'src/stores/my-profile'
 import { useChatStore } from 'src/stores/chats'
 import { useWalletStore } from 'src/stores/wallet'
+import { monadModeEnabled } from 'src/utils/runtime-mode'
 
 // Found live tonight (autonomous overnight session, 2026-09-27), by actually driving a real
 // browser: this guard's `profileStore.profile.name` check can never become true through the
@@ -36,8 +37,7 @@ import { useWalletStore } from 'src/stores/wallet'
 // here). `import.meta.env.QCLI_KEY` (Quasar's own env-var-prefix convention) is the mechanism
 // that actually works, confirmed live: set `QCLI_MONAD_SKIP_LEGACY_SETUP_GATE=false` (not
 // `MONAD_SKIP_LEGACY_SETUP_GATE=false`) to restore the strict gate.
-const skipLegacySetupGate =
-  import.meta.env.QCLI_MONAD_SKIP_LEGACY_SETUP_GATE !== 'false'
+const skipLegacySetupGate = monadModeEnabled()
 
 const unprotectedRoutes = ['/setup', '/forum', '/changelog']
 // Was '/forum/new-post' -- routes.ts declares this child route's path with a leading slash

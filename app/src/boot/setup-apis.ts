@@ -1,14 +1,12 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 import { defaultRelayUrl, chronikServers } from '../utils/constants'
-import { Wallet } from '@frank/cashweb/legacy-wallet'
-import { getRelayClient } from '../adapters/pinia-relay-adapter'
-import { store as levelDbUtxoStore } from '../adapters/level-utxo-store'
+import type { Wallet } from '@frank/cashweb/legacy-wallet'
 import { boot } from 'quasar/wrappers'
-import { Utxo, UtxoId } from '@frank/cashweb/types/utxo'
+import type { Utxo, UtxoId } from '@frank/cashweb/types/utxo'
 import { reactive } from 'vue'
-import { UtxoStore } from '@frank/cashweb/legacy-wallet/storage/storage'
-import { ChronikClient, WsEndpoint } from 'chronik-client'
+import type { UtxoStore } from '@frank/cashweb/legacy-wallet/storage/storage'
+import type { WsEndpoint } from 'chronik-client'
 import { useWalletStore } from 'src/stores/wallet'
 import { useProfileStore } from 'src/stores/my-profile'
 import { useRelayClientStore } from 'src/stores/relay-client'
@@ -16,8 +14,8 @@ import { useContactStore } from 'src/stores/contacts'
 import { useAppearanceStore } from 'src/stores/appearance'
 import { useForumStore } from 'src/stores/forum'
 import { useTopicStore } from 'src/stores/topics'
-import { useRelayClient, useWallet } from 'src/utils/clients'
 import { useChatStore } from 'src/stores/chats'
+import { monadModeEnabled } from 'src/utils/runtime-mode'
 
 function instrumentIndexerClient({
   chronikWs,
@@ -39,13 +37,14 @@ function instrumentIndexerClient({
   chronikWs.onError = err => console.error('Chronik error:', err)
 }
 
-function createAndBindNewIndexerClient({
+async function createAndBindNewIndexerClient({
   observables,
   wallet,
 }: {
   observables: any
   wallet: Wallet
 }) {
+  const { ChronikClient } = await import('chronik-client')
   const chronikConf =
     chronikServers[Math.floor(Math.random() * chronikServers.length)]
   console.log('Using chronik server:', chronikConf)
@@ -66,6 +65,10 @@ function createAndBindNewIndexerClient({
 }
 
 async function getWalletClient() {
+  const [{ Wallet }, { store: levelDbUtxoStore }] = await Promise.all([
+    import('@frank/cashweb/legacy-wallet'),
+    import('../adapters/level-utxo-store'),
+  ])
   const utxoStore = await levelDbUtxoStore
   const wallet = useWalletStore()
   // FIXME: This shouldn't be necessary, but the GUI needs real time
@@ -106,20 +109,6 @@ async function getWalletClient() {
 }
 
 export default boot(async ({ app }) => {
-  const wallet = await getWalletClient()
-  const indexerObservables = reactive({ connected: false })
-  // The hackathon build is Monad-only. Keep constructing the legacy wallet because existing Vue
-  // components still expect `$wallet`, but do not open a dead Lotus Chronik websocket unless the
-  // operator explicitly restores the legacy setup gate. This also prevents a fresh Monad signup
-  // screen from continuously logging Chronik connection errors.
-  const skipLegacySetupGate =
-    import.meta.env.QCLI_MONAD_SKIP_LEGACY_SETUP_GATE !== 'false'
-  if (!skipLegacySetupGate) {
-    createAndBindNewIndexerClient({
-      observables: indexerObservables,
-      wallet,
-    })
-  }
   const walletStore = useWalletStore()
   await walletStore.restored
   const profileStore = useProfileStore()
@@ -144,24 +133,7 @@ export default boot(async ({ app }) => {
   // (same env var, same default-on) so the drawer's own gate agrees with the router's.
   status.setup =
     (!!xPrivKey && !!profile.name) ||
-    (skipLegacySetupGate && !!walletStore.seedPhrase)
-  if (xPrivKey && profile.name) {
-    console.log('Loaded previous private key')
-    wallet.setXPrivKey(xPrivKey)
-    status.setup = true
-  }
-  const { client: relayClient, observables: relayObservables } =
-    await getRelayClient({
-      relayUrl: defaultRelayUrl,
-      wallet,
-    })
-
-  const relayStore = useRelayClientStore()
-  await relayStore.restored
-  const token = relayStore.token
-  if (token) {
-    relayClient.setToken(token)
-  }
+    (monadModeEnabled() && !!walletStore.seedPhrase)
 
   const contactStore = useContactStore()
   await contactStore.restored
@@ -178,9 +150,43 @@ export default boot(async ({ app }) => {
   const topicStore = useTopicStore()
   await topicStore.restored
 
+  // Monad mode must not instantiate or expose any part of the old Lotus mailbox protocol. Those
+  // objects open their own database/network stack and previously caused misleading reconnect UI
+  // even though all active messaging uses the Monad chain adapter.
+  if (monadModeEnabled()) {
+    return
+  }
+
+  const wallet = await getWalletClient()
+  const indexerObservables = reactive({ connected: false })
+  await createAndBindNewIndexerClient({
+    observables: indexerObservables,
+    wallet,
+  })
+
+  if (xPrivKey && profile.name) {
+    console.log('Loaded previous private key')
+    wallet.setXPrivKey(xPrivKey)
+    status.setup = true
+  }
+
+  const [{ getRelayClient }, { useRelayClient, useWallet }] = await Promise.all(
+    [import('../adapters/pinia-relay-adapter'), import('src/utils/clients')],
+  )
+  const { client: relayClient, observables: relayObservables } =
+    await getRelayClient({
+      relayUrl: defaultRelayUrl,
+      wallet,
+    })
+
+  const relayStore = useRelayClientStore()
+  await relayStore.restored
+  if (relayStore.token) {
+    relayClient.setToken(relayStore.token)
+  }
+
   app.config.globalProperties.$wallet = useWallet(wallet)
   app.config.globalProperties.$indexer = indexerObservables
   app.config.globalProperties.$relayClient = useRelayClient(relayClient)
   app.config.globalProperties.$relay = relayObservables
-  app.config.globalProperties.$status = status
 })

@@ -82,6 +82,7 @@ import { openChat, openPage } from '../../utils/routes'
 import { useChatStore } from 'src/stores/chats'
 import { activeChain } from '@frank/wallet/chain'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
+import { legacyLotusModeEnabled } from 'src/utils/runtime-mode'
 
 const compactCutoff = 325
 
@@ -101,7 +102,8 @@ export default defineComponent({
     // the chat-list's own "Add contacts from the drawer above..." empty state already
     // communicates that, so doing nothing here is the correct, safe fallback.
     function openActiveOrRecentChat() {
-      const address = chats.activeChatAddr ?? chats.getSortedChatOrder[0]?.address
+      const address =
+        chats.activeChatAddr ?? chats.getSortedChatOrder[0]?.address
       if (address) {
         router.push(`/chat/${address}`)
       }
@@ -150,8 +152,7 @@ export default defineComponent({
         () =>
           `${activeChain.toDisplayAmount(balance.value)} ${activeChain.unit}`,
       ),
-      legacyRelayEnabled:
-        import.meta.env.QCLI_MONAD_SKIP_LEGACY_SETUP_GATE === 'false',
+      legacyRelayEnabled: legacyLotusModeEnabled(),
     }
   },
   components: {

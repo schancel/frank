@@ -503,6 +503,12 @@ impl Registry {
         self.db.monad_messages().get_attempt(payload_hash, message)
     }
 
+    /// Release an exact-set claim only when the relay knows no member was accepted. Ambiguous or
+    /// partially verified attempts must remain bound to their original signed bytes.
+    pub(crate) fn delete_monad_message_attempt(&self, payload_hash: &[u8]) -> Result<()> {
+        self.db.monad_messages().delete_attempt(payload_hash)
+    }
+
     /// Fully verify and write a Monad-native profile registration (ticket #45) -- the Monad
     /// equivalent of [`Registry::put_metadata`]. See `crate::monad_profile_verify`'s module docs
     /// for why this uses an explicit pubkey+signature check (mirroring Lotus's own solution to

@@ -237,6 +237,9 @@ pub enum ProcessMonadMessageError {
     /// Every non-[`StampRelayOutcome::Verified`] outcome is a rejection, never a silent store, per
     /// ticket #19's acceptance criteria.
     Rejected(StampRelayOutcome),
+    /// The first payment was definitively refused before any set member was accepted, so the
+    /// durable exact-set claim was released and the sender may safely construct another set.
+    RejectedWithoutRetainedSet(StampRelayOutcome),
     /// An infrastructure-level failure (RPC/transport error, or a storage error) rather than a
     /// rejection of the message itself.
     Infrastructure(Report),
@@ -331,6 +334,9 @@ impl fmt::Display for ProcessMonadMessageError {
             }
             ProcessMonadMessageError::Rejected(outcome) => {
                 write!(f, "Monad stamp rejected: {outcome:?}")
+            }
+            ProcessMonadMessageError::RejectedWithoutRetainedSet(outcome) => {
+                write!(f, "Monad stamp rejected before retaining its payment set: {outcome:?}")
             }
             ProcessMonadMessageError::Infrastructure(err) => {
                 write!(f, "infrastructure failure: {err}")
@@ -632,6 +638,20 @@ pub async fn process_monad_message<T: JsonRpcTransport + Clone>(
                     .checked_add(value_wei)
                     .ok_or(ProcessMonadMessageError::TotalValueOverflow)?;
             }
+            outcome @ StampRelayOutcome::BroadcastFailed(
+                crate::monad_http::MonadRpcError::InsufficientFunds { .. },
+            ) if total_value_wei == 0 => {
+                // The node definitively refused the first member; no prefix can have landed in
+                // this attempt. Releasing the claim avoids a free, permanent disk-growth vector.
+                // Transport errors, nonce ambiguity, timeouts, and failures after any verified
+                // prefix deliberately retain the exact set.
+                registry
+                    .delete_monad_message_attempt(declared_hash.as_slice())
+                    .map_err(ProcessMonadMessageError::Infrastructure)?;
+                return Err(ProcessMonadMessageError::RejectedWithoutRetainedSet(
+                    outcome,
+                ));
+            }
             other => return Err(ProcessMonadMessageError::Rejected(other)),
         }
     }
@@ -784,6 +804,7 @@ impl IntoResponse for PutMonadMessageError {
                     exact_set_retained: match err {
                         ProcessMonadMessageError::Rejected(_)
                         | ProcessMonadMessageError::RelayTimedOut => Some(true),
+                        ProcessMonadMessageError::RejectedWithoutRetainedSet(_) => Some(false),
                         ProcessMonadMessageError::PaymentSetBusy
                         | ProcessMonadMessageError::RelayBusy => None,
                         _ => Some(false),
@@ -1197,6 +1218,25 @@ mod tests {
         }
     }
 
+    #[derive(Clone, Debug, Default)]
+    struct InsufficientFundsTransport;
+
+    #[async_trait]
+    impl JsonRpcTransport for InsufficientFundsTransport {
+        async fn call(&self, method: &str, _params: Value) -> Result<Value, MonadRpcError> {
+            if method == "eth_sendRawTransaction" {
+                return Err(MonadRpcError::InsufficientFunds {
+                    method: method.to_string(),
+                    message: "insufficient funds for gas * price + value".to_string(),
+                });
+            }
+            Err(MonadRpcError::InvalidResponse {
+                method: method.to_string(),
+                reason: "unexpected call after definitive broadcast rejection".to_string(),
+            })
+        }
+    }
+
     #[async_trait]
     impl JsonRpcTransport for MockTransport {
         async fn call(&self, method: &str, _params: Value) -> Result<Value, MonadRpcError> {
@@ -1474,6 +1514,54 @@ mod tests {
         .await
         .expect("an unfinished exact retry keeps the minimum accepted before its first broadcast");
         assert_eq!(stored.message, Some(message));
+    }
+
+    #[tokio::test]
+    async fn first_insufficient_funds_rejection_releases_exact_set_claim() {
+        let (_tempdir, registry) = test_registry();
+        let encrypted_payload = format!(
+            r#"{{"to":"{}","networkTag":"MONT"}}"#,
+            hex_addr(recipient_address())
+        )
+        .into_bytes();
+        let commitment = Sha256::digest(encrypted_payload.clone().into());
+        let destination = stamp_destination(&commitment);
+        let sender = EccSecp256k1::default()
+            .seckey_from_array([0x7a; 32])
+            .unwrap();
+        let (raw_tx, _) = signed_eip1559_tx(
+            &sender,
+            41454,
+            0,
+            destination,
+            10_000,
+            &commitment_calldata_bytes(&commitment, 0),
+        );
+        let message = make_message(raw_tx, encrypted_payload);
+
+        let err = process_monad_message(
+            &InsufficientFundsTransport,
+            &registry,
+            10_000,
+            fast_poll(),
+            b"MONT",
+            message.clone(),
+        )
+        .await
+        .expect_err("an unfunded first payment must be rejected");
+        assert!(matches!(
+            err,
+            ProcessMonadMessageError::RejectedWithoutRetainedSet(
+                StampRelayOutcome::BroadcastFailed(MonadRpcError::InsufficientFunds { .. })
+            )
+        ));
+        assert_eq!(
+            registry
+                .get_monad_message_attempt(&message.payload_hash, &message)
+                .unwrap(),
+            MonadMessageAttemptClaim::Missing,
+            "a free rejection must not leave a permanent exact-set claim"
+        );
     }
 
     #[tokio::test]

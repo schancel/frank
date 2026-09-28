@@ -46,28 +46,39 @@
     topics/forums. This list surfaces the same relay-discovered topic data already wired up in
     ForumDrawer.vue's own "Browse Topics" section, but here in the left rail, where a user
     actually expects a per-tab list -- clicking a topic switches the Forum's selected topic and
-    navigates there if not already on /forum. -->
-    <q-list v-show="tab == 'forum'" v-bind="$attrs">
-      <q-separator />
-      <q-item>
-        <q-item-label header>Forums</q-item-label>
-      </q-item>
-      <q-item
-        v-for="name in discoveredTopicNames"
-        :key="name"
-        clickable
-        :active="name === selectedForumTopic"
-        active-class="text-primary"
-        @click="browseForumTopic(name)"
-      >
-        <q-item-section>{{ name }}</q-item-section>
-      </q-item>
-      <q-item v-if="discoveredTopicNames.length === 0">
-        <q-item-section class="text-grey"
-          >No forums discovered yet.</q-item-section
-        >
-      </q-item>
-    </q-list>
+    navigates there if not already on /forum.
+
+    Wrapped exactly like ChatList.vue's own template (`full-width column col` +
+    `q-scroll-area class="q-px-none col"`) -- an earlier version of this was a bare `q-list` with
+    neither, which (a) looked visually inconsistent with the rest of this drawer (no scroll
+    handling, no consistent width/column behavior) and (b) didn't fill the remaining flex space,
+    so "Balance" below no longer stayed pinned to the bottom of the drawer the way it does for
+    every other tab -- it just sat directly under however many topics happened to be listed. -->
+    <div class="full-width column col" v-show="tab == 'forum'">
+      <q-scroll-area class="q-px-none col">
+        <q-list v-bind="$attrs">
+          <q-separator />
+          <q-item>
+            <q-item-label header>Forums</q-item-label>
+          </q-item>
+          <q-item
+            v-for="name in discoveredTopicNames"
+            :key="name"
+            clickable
+            :active="name === selectedForumTopic"
+            active-class="text-primary"
+            @click="browseForumTopic(name)"
+          >
+            <q-item-section>{{ name }}</q-item-section>
+          </q-item>
+          <q-item v-if="discoveredTopicNames.length === 0">
+            <q-item-section class="text-grey"
+              >No forums discovered yet.</q-item-section
+            >
+          </q-item>
+        </q-list>
+      </q-scroll-area>
+    </div>
 
     <q-list v-if="$status.setup">
       <q-separator />

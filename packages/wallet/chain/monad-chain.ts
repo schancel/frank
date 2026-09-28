@@ -125,6 +125,8 @@ import {
   fetchMonadTopicPostsSince,
 } from '../monad-topic-tally-client'
 import { readViteEnv } from './vite-env'
+import { LevelSubAccountPoolStore } from '../storage/level-sub-account-pool-store'
+import { LevelChangePoolStore } from '../storage/level-change-pool-store'
 
 export interface MonadChainConfig {
   /** Monad JSON-RPC HTTP endpoint, e.g. `MONAD_TESTNET_HTTP_RPC_URL`. */
@@ -140,6 +142,10 @@ export interface MonadChainConfig {
   defaultStampValueWei: bigint
   /** How many single-use funding sub-accounts `createWallet` pre-derives into the pool. */
   subAccountPoolSize: number
+  /** Parent LevelDB location for durable sender-account and change state. `false` is reserved for
+   * isolated tests; production must persist these records so recreating a wallet cannot reuse a
+   * sender account or rewind the change derivation path. */
+  walletStorageLocation: string | false
 }
 
 // Ticket #54 (found live doing real end-to-end GUI testing against a real relay + real Alchemy
@@ -174,6 +180,8 @@ export function loadMonadChainConfigFromEnv(): MonadChainConfig {
       readEnv('CASHWEB_STAMP_MIN_BURN_VALUE_WEI') ?? '1000000000000',
     ),
     subAccountPoolSize: Number(readEnv('MONAD_SUB_ACCOUNT_POOL_SIZE') ?? '8'),
+    walletStorageLocation:
+      readEnv('MONAD_WALLET_STORAGE_LOCATION') ?? 'frank-monad-wallet-state',
   }
 }
 
@@ -295,6 +303,7 @@ export function viewToForumMessage(
  * header, "Configuration", for why config is a param here (unlike the `MonadChain` singleton
  * below, which reads it from env). */
 export function createMonadChain(config: MonadChainConfig): ActiveChain {
+  const walletsByIdentity = new Map<string, Promise<MonadChainWalletHandle>>()
   const directMessages: DirectMessageClient = {
     async send(params): Promise<DirectMessageSendResult> {
       const wallet = asMonadWallet(params.wallet)
@@ -495,33 +504,62 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
     },
 
     async createWallet(seed): Promise<WalletHandle> {
-      const keyring = MonadHdKeyring.fromMnemonic(
-        seed.mnemonic,
-        seed.passphrase,
-      )
-      const pool = new MonadSubAccountPool({ keyring })
-      pool.ensureSize(config.subAccountPoolSize)
-      const changePool = new MonadChangePool({
-        keyring: MonadChangeKeyring.fromMnemonic(
+      const identity = MonadIdentity.fromSeed(seed)
+      const identityKey = identity.address.raw.toLowerCase()
+      const existing = walletsByIdentity.get(identityKey)
+      if (existing !== undefined) return existing
+
+      const pending = (async (): Promise<MonadChainWalletHandle> => {
+        const keyring = MonadHdKeyring.fromMnemonic(
           seed.mnemonic,
           seed.passphrase,
-        ),
-      })
-      const leaseManager = new SubAccountLeaseManager(pool)
-      const provider = new JsonRpcProvider(config.rpcUrl)
-      const httpClient = new MonadHttpClient({ rpcUrl: config.rpcUrl })
-      const identity = MonadIdentity.fromSeed(seed)
+        )
+        const storageLocation =
+          config.walletStorageLocation === false
+            ? undefined
+            : `${config.walletStorageLocation}-${identityKey}`
+        const subAccountStore =
+          storageLocation === undefined
+            ? undefined
+            : new LevelSubAccountPoolStore(storageLocation)
+        const changeStore =
+          storageLocation === undefined
+            ? undefined
+            : new LevelChangePoolStore(storageLocation)
+        await Promise.all([subAccountStore?.Open(), changeStore?.Open()])
 
-      const wallet: MonadChainWalletHandle = {
-        identity,
-        pool,
-        leaseManager,
-        provider,
-        httpClient,
-        changePool,
-        relayBaseUrl: config.relayBaseUrl,
+        const pool = new MonadSubAccountPool({
+          keyring,
+          store: subAccountStore,
+        })
+        pool.ensureSize(config.subAccountPoolSize)
+        const changePool = new MonadChangePool({
+          keyring: MonadChangeKeyring.fromMnemonic(
+            seed.mnemonic,
+            seed.passphrase,
+          ),
+          store: changeStore,
+        })
+        const leaseManager = new SubAccountLeaseManager(pool)
+        const provider = new JsonRpcProvider(config.rpcUrl)
+        const httpClient = new MonadHttpClient({ rpcUrl: config.rpcUrl })
+        return {
+          identity,
+          pool,
+          leaseManager,
+          provider,
+          httpClient,
+          changePool,
+          relayBaseUrl: config.relayBaseUrl,
+        }
+      })()
+      walletsByIdentity.set(identityKey, pending)
+      try {
+        return await pending
+      } catch (err) {
+        walletsByIdentity.delete(identityKey)
+        throw err
       }
-      return wallet
     },
 
     nativeTransfers,

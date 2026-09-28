@@ -23,7 +23,7 @@ import axios from 'axios'
 import { MonadHdKeyring } from './monad-hd-keyring'
 import { MonadSubAccountPool } from './monad-account-pool'
 import { SubAccountLeaseManager } from './monad-account-lease'
-import { MonadTxSubmitter } from './monad-account-tx'
+import { MonadAccountTxSigner, MonadTxSubmitter } from './monad-account-tx'
 import { MonadChangePool } from './monad-change-pool'
 import {
   InMemoryStampAttemptJournal,
@@ -42,6 +42,7 @@ import {
   decodeMonadStampedMessage,
   decodeStoredMonadMessage,
   encodeMonadStampedMessage,
+  quoteMonadStampPaymentGasReserve,
   recoverMonadStampPayments,
   sweepRecoveredMonadStampPayment,
   MonadStampedMessageProto,
@@ -209,6 +210,31 @@ describe('calldata / commitment construction', () => {
     expect(() => buildMonadStampCalldata(new Uint8Array(31))).toThrow(
       /32 bytes/,
     )
+  })
+
+  it('quotes a worst-case stamp-payment fee reserve with headroom', async () => {
+    const provider = makeStubProvider(async req => {
+      throw new Error(`unexpected _perform: ${req.method}`)
+    })
+    const signer = new MonadAccountTxSigner({
+      privateKey: `0x${'55'.repeat(32)}`,
+      provider,
+      httpClient: makeMockHttpClient(),
+    })
+
+    await expect(
+      quoteMonadStampPaymentGasReserve({
+        signer,
+        recipientPublicKey: RECIPIENT_PUBLIC_KEY,
+        overrides: {
+          nonce: 0,
+          gasLimit: 60_000n,
+          maxFeePerGas: 2_000_000_000n,
+          maxPriorityFeePerGas: 1_000_000_000n,
+          chainId: BigInt(CHAIN_ID),
+        },
+      }),
+    ).resolves.toBe(150_000_000_000_000n)
   })
 })
 

@@ -109,6 +109,7 @@ import { MonadWalletHandle } from '../monad-wallet-handle'
 import { MonadIdentity, fetchMonadProfile } from '../monad-identity'
 import {
   MonadStampClient,
+  quoteMonadStampPaymentGasReserve,
   recoverMonadStampPayments,
   sweepRecoveredMonadStampPayment,
 } from '../monad-stamp-client'
@@ -317,45 +318,84 @@ export function viewToForumMessage(
  * below, which reads it from env). */
 export function createMonadChain(config: MonadChainConfig): ActiveChain {
   const walletsByIdentity = new Map<string, Promise<MonadChainWalletHandle>>()
+  const directMessageSendQueues = new WeakMap<
+    MonadChainWalletHandle,
+    Promise<void>
+  >()
+  const sendDirectMessageExclusive = async (
+    params: Parameters<DirectMessageClient['send']>[0],
+    wallet: MonadChainWalletHandle,
+  ): Promise<DirectMessageSendResult> => {
+    const plaintext = serializeMessageItems(params.items)
+
+    const recipientProfile = await fetchMonadProfile({
+      relayBaseUrl: wallet.relayBaseUrl,
+      address: params.recipient,
+    })
+    if (recipientProfile === undefined) {
+      throw new Error(
+        `No registered profile/pubkey found for ${params.recipient.raw}`,
+      )
+    }
+
+    const envelopeBytes = buildEnvelope({
+      fromAddress: wallet.identity.address.raw,
+      fromPrivateKey: wallet.identity.toBitcorePrivateKey(),
+      toAddress: params.recipient.raw,
+      toPubKey: Buffer.from(recipientProfile.pubKey),
+      plaintext,
+      networkTag: config.networkTag,
+    })
+
+    const mainAccountSigner = new MonadAccountTxSigner({
+      privateKey: wallet.identity.toPrivateKeyHex(),
+      provider: wallet.provider,
+      httpClient: wallet.httpClient,
+    })
+    const gasReserveWei = await quoteMonadStampPaymentGasReserve({
+      signer: mainAccountSigner,
+      recipientPublicKey: recipientProfile.pubKey,
+    })
+    const preparation = await wallet.pool.prepareStampInventory({
+      mainAccountSigner,
+      provider: wallet.provider,
+      stampValueWei: config.defaultStampValueWei,
+      gasReserveWei,
+      onProgress: params.onPreparationProgress,
+    })
+
+    const stampClient = new MonadStampClient(wallet)
+    const result = await stampClient.submitStampedMessage({
+      encryptedPayload: envelopeBytes,
+      // Ticket #57: a DM's stamp is a real payment to the recipient (mirroring Lotus's
+      // `constructStampTransactions`, which derives the stamp output address from the
+      // recipient's own pubkey), not a burn to the fixed dead address -- that's `topics`'
+      // `post`/`vote` below, where there's no single recipient to pay.
+      recipientPublicKey: recipientProfile.pubKey,
+      stampValueWei: config.defaultStampValueWei,
+    })
+
+    return {
+      payloadDigest: result.payloadHashHex,
+      stampValueWei: config.defaultStampValueWei,
+      preparationTxHashes: preparation.fundingTxHashes,
+    }
+  }
+
   const directMessages: DirectMessageClient = {
     async send(params): Promise<DirectMessageSendResult> {
       const wallet = asMonadWallet(params.wallet)
-      const plaintext = serializeMessageItems(params.items)
-
-      const recipientProfile = await fetchMonadProfile({
-        relayBaseUrl: wallet.relayBaseUrl,
-        address: params.recipient,
-      })
-      if (recipientProfile === undefined) {
-        throw new Error(
-          `No registered profile/pubkey found for ${params.recipient.raw}`,
-        )
-      }
-
-      const envelopeBytes = buildEnvelope({
-        fromAddress: wallet.identity.address.raw,
-        fromPrivateKey: wallet.identity.toBitcorePrivateKey(),
-        toAddress: params.recipient.raw,
-        toPubKey: Buffer.from(recipientProfile.pubKey),
-        plaintext,
-        networkTag: config.networkTag,
-      })
-
-      const stampClient = new MonadStampClient(wallet)
-      const result = await stampClient.submitStampedMessage({
-        encryptedPayload: envelopeBytes,
-        // Ticket #57: a DM's stamp is a real payment to the recipient (mirroring Lotus's
-        // `constructStampTransactions`, which derives the stamp output address from the
-        // recipient's own pubkey), not a burn to the fixed dead address -- that's `topics`'
-        // `post`/`vote` below, where there's no single recipient to pay.
-        recipientPublicKey: recipientProfile.pubKey,
-        stampValueWei: config.defaultStampValueWei,
-      })
-
-      return {
-        payloadDigest: result.payloadHashHex,
-        stampValueWei: config.defaultStampValueWei,
-      }
+      const run = (
+        directMessageSendQueues.get(wallet) ?? Promise.resolve()
+      ).then(() => sendDirectMessageExclusive(params, wallet))
+      directMessageSendQueues.set(
+        wallet,
+        run.then(
+          () => undefined,
+          () => undefined,
+        ),
+      )
+      return run
     },
 
     async fetchSince(params): Promise<DirectMessageReceived[]> {
@@ -716,7 +756,7 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
           keyring,
           store: subAccountStore,
         })
-        pool.ensureSize(config.subAccountPoolSize)
+        pool.ensureUnfundedSize(config.subAccountPoolSize)
         const pendingLeaseIndices = new Set(
           stampAttemptJournal.getAll().flatMap(attempt => attempt.leaseIndices),
         )

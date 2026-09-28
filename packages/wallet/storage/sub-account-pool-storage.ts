@@ -17,15 +17,18 @@
 
 /**
  * A sub-account's lifecycle state within the pool.
- *   - `'available'`: idle, funded, never-before-used, and eligible to be selected for a new
- *     stamp/burn.
+ *   - `'unfunded'`: derived and persisted, but not yet funded or eligible for selection.
+ *   - `'funding'`: an exact main-account funding transaction is durably recorded and awaiting a
+ *     successful receipt. `fundingAttempt` is required in this state.
+ *   - `'available'`: idle, receipt-confirmed, never-before-used, and eligible for a new stamp
+ *     payment or broadcast transaction.
  *   - `'in-use'`: currently leased for an in-flight (unconfirmed) transaction. This ticket never
  *     transitions an account *into* this state — that's ticket #18's lease acquire/release logic.
  *     The field exists now purely as the hook #18 needs.
  *   - `'spent'`: the account's one-and-only transaction confirmed successfully. Terminal, like
  *     `'retired'` below — excluded from `selectForStamp()`/future selection forever — but recorded
  *     under a distinct name for bookkeeping/observability: unlike `'retired'`, a `'spent'` account's
- *     funds (minus the burn/gas actually used) were deliberately consumed as intended, not
+ *     funds (minus the payment or broadcast value and gas) were deliberately consumed, not
  *     abandoned mid-flight. **Correction (ticket #34, after #14/#18/#21 shipped):** the original
  *     model routed a successful (`'confirmed'`) outcome back to `'available'` for reuse — that
  *     defeated Stamp's UTXO-style unlinkability goal (`PLAN.md` constraint 3) by letting a small
@@ -38,16 +41,38 @@
  *     that leftover balance is a separate, currently-unimplemented sub-problem — see
  *     `monad-account-pool.ts`'s header for why it's out of scope here).
  */
-export type SubAccountStatus = 'available' | 'in-use' | 'spent' | 'retired'
+export type SubAccountStatus =
+  | 'unfunded'
+  | 'funding'
+  | 'available'
+  | 'in-use'
+  | 'spent'
+  | 'retired'
+
+export interface SubAccountFundingAttempt {
+  /** Exact signed transaction retained so a restart retries the same nonce and transfer. */
+  rawTx: string
+  txHash: string
+}
 
 /** Persisted state for one HD-derived sub-account. Never carries a private key — see file header.
  */
-export interface SubAccountRecord {
+interface SubAccountRecordBase {
   /** BIP-44 index (`m/44'/60'/0'/0/{index}`); the durable identity of this sub-account. */
   index: number
   address: string
-  status: SubAccountStatus
 }
+
+/** `fundingAttempt` is required exactly while funding, so persisted code cannot create a funding
+ * state with no exact transaction to resume. The additive fields keep existing Level rows valid. */
+export type SubAccountRecord = SubAccountRecordBase &
+  (
+    | { status: 'funding'; fundingAttempt: SubAccountFundingAttempt }
+    | {
+        status: Exclude<SubAccountStatus, 'funding'>
+        fundingAttempt?: undefined
+      }
+  )
 
 /**
  * Persistence boundary for `MonadSubAccountPool`'s state. Concrete implementations: an in-memory

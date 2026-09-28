@@ -251,9 +251,288 @@ describe('MonadSubAccountPool', () => {
     })
   })
 
+  describe('prepareStampInventory', () => {
+    function setupPreparation() {
+      const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC)
+      const store = new InMemorySubAccountPoolStore()
+      const pool = new MonadSubAccountPool({ keyring, store })
+      pool.ensureUnfundedSize(3)
+      const balances = new Map<string, bigint>()
+      const childNonces = new Map<string, number>()
+      let nonce = 0
+      const httpClient = makeMockHttpClient()
+      httpClient.submitRawTransaction.mockImplementation(async rawTx => {
+        const transaction = Transaction.from(rawTx)
+        balances.set(
+          transaction.to!.toLowerCase(),
+          (balances.get(transaction.to!.toLowerCase()) ?? 0n) +
+            transaction.value,
+        )
+        return transaction.hash
+      })
+      httpClient.getTransactionReceipt.mockImplementation(async txHash => ({
+        txHash,
+        blockNumber: 1,
+        blockHash: '0x' + '00'.repeat(32),
+        status: 'success',
+        gasUsed: 21_000n,
+        effectiveGasPrice: 1n,
+        logs: [],
+      }))
+      const mainWallet = Wallet.createRandom()
+      const provider = makeStubProvider(async request => {
+        if (request.method === 'getTransactionCount') {
+          const address = (
+            request as unknown as { address: string; blockTag?: string }
+          ).address.toLowerCase()
+          return address === mainWallet.address.toLowerCase()
+            ? nonce++
+            : (request as unknown as { blockTag?: string }).blockTag ===
+              'pending'
+            ? childNonces.get(address) ?? 0
+            : 0
+        }
+        if (request.method === 'getBalance') {
+          const address = (request as unknown as { address: string }).address
+          return balances.get(address.toLowerCase()) ?? 0n
+        }
+        throw new Error(`unexpected _perform: ${request.method}`)
+      })
+      const mainAccountSigner = new MonadAccountTxSigner({
+        privateKey: mainWallet.privateKey,
+        provider,
+        httpClient,
+      })
+      return {
+        balances,
+        childNonces,
+        httpClient,
+        mainAccountSigner,
+        pool,
+        provider,
+        store,
+      }
+    }
+
+    it('does not move funds on derivation, then prepares unequal receipt-confirmed accounts on Send', async () => {
+      const { httpClient, mainAccountSigner, pool, provider } =
+        setupPreparation()
+      expect(httpClient.submitRawTransaction).not.toHaveBeenCalled()
+
+      const progress: string[] = []
+      const result = await pool.prepareStampInventory({
+        mainAccountSigner,
+        provider,
+        stampValueWei: 1_000n,
+        gasReserveWei: 10n,
+        fundingOverrides: {
+          gasLimit: 21_000n,
+          maxFeePerGas: 1n,
+          maxPriorityFeePerGas: 1n,
+          chainId: BigInt(CHAIN_ID),
+        },
+        receipt: { maxAttempts: 0 },
+        onProgress: event => progress.push(event.stage),
+      })
+
+      expect(result.selectedAccountCount).toBe(2)
+      expect(result.fundingTxHashes).toHaveLength(2)
+      expect(httpClient.submitRawTransaction).toHaveBeenCalledTimes(2)
+      expect(
+        pool.records().filter(record => record.status === 'available'),
+      ).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ index: 0 }),
+          expect.objectContaining({ index: 1 }),
+        ]),
+      )
+      expect(await provider.getBalance(pool.getRecord(0)!.address)).toBe(385n)
+      expect(await provider.getBalance(pool.getRecord(1)!.address)).toBe(635n)
+      expect(progress[0]).toBe('checking')
+      expect(progress[progress.length - 1]).toBe('ready')
+    })
+
+    it('retires a used legacy available address even when it still has spendable balance', async () => {
+      const {
+        balances,
+        childNonces,
+        httpClient,
+        mainAccountSigner,
+        pool,
+        provider,
+      } = setupPreparation()
+      pool.setStatus(0, 'available')
+      balances.set(pool.getRecord(0)!.address.toLowerCase(), 1_000n)
+      childNonces.set(pool.getRecord(0)!.address.toLowerCase(), 1)
+
+      await pool.prepareStampInventory({
+        mainAccountSigner,
+        provider,
+        stampValueWei: 1_000n,
+        gasReserveWei: 10n,
+        fundingOverrides: {
+          gasLimit: 21_000n,
+          maxFeePerGas: 1n,
+          maxPriorityFeePerGas: 1n,
+          chainId: BigInt(CHAIN_ID),
+        },
+        receipt: { maxAttempts: 0 },
+      })
+
+      expect(pool.getRecord(0)?.status).toBe('retired')
+      const fundedDestinations = httpClient.submitRawTransaction.mock.calls.map(
+        ([raw]) => Transaction.from(raw).to!.toLowerCase(),
+      )
+      expect(fundedDestinations).not.toContain(
+        pool.getRecord(0)!.address.toLowerCase(),
+      )
+    })
+
+    it('funds one real account for the one-wei fallback instead of reporting an empty pool ready', async () => {
+      const { httpClient, mainAccountSigner, pool, provider } =
+        setupPreparation()
+
+      const result = await pool.prepareStampInventory({
+        mainAccountSigner,
+        provider,
+        stampValueWei: 1n,
+        gasReserveWei: 10n,
+        fundingOverrides: {
+          gasLimit: 21_000n,
+          maxFeePerGas: 1n,
+          maxPriorityFeePerGas: 1n,
+          chainId: BigInt(CHAIN_ID),
+        },
+        receipt: { maxAttempts: 0 },
+      })
+
+      expect(result.selectedAccountCount).toBe(1)
+      expect(httpClient.submitRawTransaction).toHaveBeenCalledTimes(1)
+    })
+
+    it('serializes concurrent preparations so main-account nonces remain distinct', async () => {
+      const { httpClient, mainAccountSigner, pool, provider } =
+        setupPreparation()
+      await Promise.all([
+        pool.prepareStampInventory({
+          mainAccountSigner,
+          provider,
+          stampValueWei: 1_000n,
+          gasReserveWei: 10n,
+          fundingOverrides: {
+            gasLimit: 21_000n,
+            maxFeePerGas: 1n,
+            maxPriorityFeePerGas: 1n,
+            chainId: BigInt(CHAIN_ID),
+          },
+          receipt: { maxAttempts: 0 },
+        }),
+        pool.prepareStampInventory({
+          mainAccountSigner,
+          provider,
+          stampValueWei: 1_000n,
+          gasReserveWei: 10n,
+          fundingOverrides: {
+            gasLimit: 21_000n,
+            maxFeePerGas: 1n,
+            maxPriorityFeePerGas: 1n,
+            chainId: BigInt(CHAIN_ID),
+          },
+          receipt: { maxAttempts: 0 },
+        }),
+      ])
+
+      const nonces = httpClient.submitRawTransaction.mock.calls.map(
+        ([raw]) => Transaction.from(raw).nonce,
+      )
+      expect(nonces).toEqual([0, 1])
+    })
+
+    it('resubmits the exact durable funding transaction after restart and funds only the missing capacity', async () => {
+      const { balances, httpClient, mainAccountSigner, pool, provider, store } =
+        setupPreparation()
+      const first = pool.getRecord(0)!
+      const signed = await mainAccountSigner.buildAndSignTransfer(
+        first.address,
+        385n,
+        {
+          gasLimit: 21_000n,
+          maxFeePerGas: 1n,
+          maxPriorityFeePerGas: 1n,
+          chainId: BigInt(CHAIN_ID),
+        },
+      )
+      store.put({
+        ...first,
+        status: 'funding',
+        fundingAttempt: {
+          rawTx: signed.rawTx,
+          txHash: signed.txHash,
+        },
+      })
+      const broadcasted = new Set<string>()
+      httpClient.submitRawTransaction.mockImplementation(async rawTx => {
+        const transaction = Transaction.from(rawTx)
+        broadcasted.add(transaction.hash)
+        balances.set(transaction.to!.toLowerCase(), transaction.value)
+        return transaction.hash
+      })
+      httpClient.getTransactionReceipt.mockImplementation(async txHash =>
+        broadcasted.has(txHash)
+          ? {
+              txHash,
+              blockNumber: 1,
+              blockHash: '0x' + '00'.repeat(32),
+              status: 'success',
+              gasUsed: 21_000n,
+              effectiveGasPrice: 1n,
+              logs: [],
+            }
+          : undefined,
+      )
+
+      const restarted = new MonadSubAccountPool({
+        keyring: MonadHdKeyring.fromMnemonic(TEST_MNEMONIC),
+        store,
+      })
+      const result = await restarted.prepareStampInventory({
+        mainAccountSigner,
+        provider,
+        stampValueWei: 1_000n,
+        gasReserveWei: 10n,
+        fundingOverrides: {
+          gasLimit: 21_000n,
+          maxFeePerGas: 1n,
+          maxPriorityFeePerGas: 1n,
+          chainId: BigInt(CHAIN_ID),
+        },
+        receipt: { intervalMs: 0, maxAttempts: 1 },
+      })
+
+      expect(httpClient.submitRawTransaction).toHaveBeenCalledWith(signed.rawTx)
+      expect(result.fundingTxHashes[0]).toBe(signed.txHash)
+      expect(result.fundingTxHashes).toHaveLength(2)
+      const fundedValues = httpClient.submitRawTransaction.mock.calls.map(
+        ([raw]) => Transaction.from(raw).value,
+      )
+      expect(fundedValues).toEqual([385n, 635n])
+      expect(restarted.getRecord(0)?.status).toBe('available')
+      expect(restarted.getRecord(0)?.fundingAttempt).toBeUndefined()
+    })
+  })
+
   describe('topUpPool (ticket #34: indefinite growth + look-ahead funding buffer)', () => {
     async function makeSigner(nonceStart = 0) {
       const httpClient = makeMockHttpClient()
+      httpClient.getTransactionReceipt.mockImplementation(async txHash => ({
+        txHash,
+        blockNumber: 1,
+        blockHash: '0x' + '00'.repeat(32),
+        status: 'success',
+        gasUsed: 21_000n,
+        effectiveGasPrice: 1n,
+        logs: [],
+      }))
       let nonce = nonceStart
       const provider = makeStubProvider(async req => {
         if (req.method === 'getTransactionCount')
@@ -369,7 +648,37 @@ describe('MonadSubAccountPool', () => {
       expect(pool.selectForStamp()?.index).toBe(0)
     })
 
-    it('persists each successfully-funded index incrementally via onFunded, surviving a partial fan-out failure', async () => {
+    it('does not make a submitted top-up eligible before its receipt succeeds', async () => {
+      const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC)
+      const pool = new MonadSubAccountPool({ keyring })
+      const httpClient = makeMockHttpClient()
+      const provider = makeStubProvider(async req => {
+        if (req.method === 'getTransactionCount') return '0x0'
+        if (req.method === 'estimateGas') return '0x5208'
+        throw new Error(`unexpected _perform: ${req.method}`)
+      })
+      const mainAccountSigner = new MonadAccountTxSigner({
+        privateKey: Wallet.createRandom().privateKey,
+        provider,
+        httpClient,
+      })
+
+      await expect(
+        pool.topUpPool({
+          mainAccountSigner,
+          burnValue: 1n,
+          gasReserve: 1n,
+          bufferSize: 1,
+          overrides: { maxFeePerGas: 1n, maxPriorityFeePerGas: 1n },
+          receipt: { maxAttempts: 0 },
+        }),
+      ).rejects.toThrow(/still pending/)
+
+      expect(pool.getRecord(0)?.status).toBe('funding')
+      expect(pool.selectForStamp()).toBeUndefined()
+    })
+
+    it('persists exact retry state when a later top-up submission fails', async () => {
       const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC)
       const pool = new MonadSubAccountPool({ keyring })
 
@@ -395,6 +704,15 @@ describe('MonadSubAccountPool', () => {
           return Transaction.from(rawTxHex).hash
         },
       )
+      httpClient.getTransactionReceipt.mockImplementation(async txHash => ({
+        txHash,
+        blockNumber: 1,
+        blockHash: '0x' + '00'.repeat(32),
+        status: 'success',
+        gasUsed: 21_000n,
+        effectiveGasPrice: 1n,
+        logs: [],
+      }))
 
       await expect(
         pool.topUpPool({
@@ -408,8 +726,10 @@ describe('MonadSubAccountPool', () => {
 
       // Index 0's funding succeeded before the throw -- it must be recorded as available.
       expect(pool.getRecord(0)?.status).toBe('available')
-      // Index 1's funding failed -- nothing persisted for it; a retry resumes at index 1, not 2.
-      expect(pool.getRecord(1)).toBeUndefined()
+      // Index 1's exact signed transaction was persisted before its submit failed. A retry resumes
+      // that raw transaction rather than deriving or funding another child.
+      expect(pool.getRecord(1)?.status).toBe('funding')
+      expect(pool.getRecord(1)?.fundingAttempt?.rawTx).toBeDefined()
     })
   })
 })

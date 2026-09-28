@@ -413,6 +413,36 @@ export function buildMonadStampCalldata(commitment: Uint8Array): string {
   ])
 }
 
+/** Quotes a current worst-case fee reserve for one stamp payment without submitting anything. */
+export async function quoteMonadStampPaymentGasReserve(params: {
+  signer: MonadAccountTxSigner
+  recipientPublicKey: Uint8Array
+  /** Deterministic transaction fields for tests; production resolves all fields from the RPC. */
+  overrides?: MonadTxOverrides
+}): Promise<bigint> {
+  const worstCaseCommitment = new Uint8Array(STAMP_COMMITMENT_LENGTH).fill(0xff)
+  const derivationScalar = new Uint8Array(STAMP_COMMITMENT_LENGTH)
+  derivationScalar[STAMP_COMMITMENT_LENGTH - 1] = 1
+  const destination = deriveMonadStampChildPublic({
+    payloadHash: derivationScalar,
+    recipientPublicKey: params.recipientPublicKey,
+    paymentIndex: 0,
+  }).address
+  const probe = await params.signer.buildAndSignCall(
+    destination,
+    BigInt(1),
+    buildMonadStampCalldata(worstCaseCommitment),
+    params.overrides,
+  )
+  const feePerGas = probe.maxFeePerGas ?? probe.gasPrice
+  if (feePerGas === undefined) {
+    throw new Error('Unable to determine a maximum fee for stamp payment')
+  }
+  // Keep a modest fee headroom because funding must confirm before the child constructs its real
+  // payment. The underlying gas limit and fee cap still come from the current RPC quote.
+  return (probe.gasLimit * feePerGas * BigInt(5)) / BigInt(4)
+}
+
 /** Domain-separated commitment for one member of a payment set. Distinct child calldata prevents
  * a passive chain observer from grouping every split solely because it repeats the payload hash. */
 export function computeMonadStampPaymentCommitment(

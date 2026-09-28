@@ -497,7 +497,8 @@ mod tests {
     fn test_db_monad_topic_posts() -> Result<()> {
         let _ = bitcoinsuite_error::install();
         let tempdir = tempdir::TempDir::new("cashweb-registry-store--topic-posts")?;
-        let db = Db::open(tempdir.path().join("db.rocksdb"))?;
+        let db_path = tempdir.path().join("db.rocksdb");
+        let db = Db::open(&db_path)?;
 
         let payload_hash = vec![7u8; 32];
         assert_eq!(db.monad_topic_posts().get(&payload_hash)?, None);
@@ -510,6 +511,14 @@ mod tests {
             Some(stored.clone())
         );
         assert_eq!(db.monad_topic_posts().get_existing(&payload_hash)?, stored);
+
+        drop(db);
+        let reopened = Db::open(&db_path)?;
+        assert_eq!(
+            reopened.monad_topic_posts().get(&payload_hash)?,
+            Some(post(&payload_hash)),
+            "Monad pubsub records must survive a server/database restart"
+        );
 
         Ok(())
     }

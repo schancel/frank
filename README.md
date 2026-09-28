@@ -153,17 +153,28 @@ cp .env.example .env
 
 Set `MONAD_TESTNET_HTTP_RPC_URL` in `.env`. The remaining example values are suitable for local testnet development; never commit secrets or funded private keys.
 
-Start the in-memory development relay:
+Start the persistent Monad development server:
 
 ```bash
 cd backend/cashweb
 set -a
 source ../../.env
 set +a
+cargo run -p cashwebd-exe -- cashwebd.local.toml
+```
+
+The default local config stores profiles, messages, and topics in
+`backend/cashweb/data/registry.rocksdb`, which is gitignored and survives server restarts. It
+deliberately omits `[bitcoin_rpc]`: legacy Lotus routes fail closed, while the Monad routes do not
+require a running Lotus daemon.
+
+For an isolated throwaway run, use the explicitly ephemeral test/demo server instead:
+
+```bash
 cargo run -p cashweb-registry --example e2e_demo_server -- 127.0.0.1:8098
 ```
 
-The demo relay uses a fresh temporary database after every restart, so identities and profiles must be registered again.
+That command creates a fresh temporary database and deletes it when the process exits.
 
 In another terminal, start the browser client:
 

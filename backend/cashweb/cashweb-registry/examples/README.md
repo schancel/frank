@@ -34,6 +34,10 @@ prove).
 
 ## Step 1: start the demo registry server
 
+This command is intentionally ephemeral and test-only: it deletes its temporary RocksDB database
+when stopped. For normal frontend development, use the persistent `cashwebd-exe` command in the
+repository root README instead.
+
 ```sh
 cd backend/cashweb
 set -a; source ../../.env; set +a

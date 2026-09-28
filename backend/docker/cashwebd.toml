@@ -7,11 +7,10 @@
 # entirely separate from this file's `cashweb_config::parse_conf` mechanism. See docker-compose.yml
 # for where those env vars actually get set.
 #
-# `[bitcoin_rpc]` below is a placeholder: `RegistryConf`/`CashwebdConf` (cashweb-config/src/lib.rs)
-# require it unconditionally (not an `Option`), but nothing in this demo ever dials it --
-# `LotusAdapter`'s `BitcoindRpcClient` is only actually called from Lotus-only routes
-# (`PUT /registry`, `PUT /message`, peer metadata sync), none of which this Monad-only demo
-# exercises. Likewise `[registry.pop]`'s sub-fields (`monad_rpc_url`/`hmac_secret`/
+# `[bitcoin_rpc]` is deliberately omitted: `cashwebd-exe` installs a fail-closed adapter for
+# legacy Lotus routes while continuing to serve Monad routes. Add real Lotus RPC credentials to
+# enable compatibility; a fake endpoint is no longer necessary. `[registry.pop]`'s sub-fields
+# (`monad_rpc_url`/`hmac_secret`/
 # `payment_recipient`/`min_value_wei`) are required by `PopConf`'s schema even though `enabled =
 # false` skips the gate entirely (ticket #35's fail-open demo default) -- see that struct's own doc
 # comment for why `enabled` has no `#[serde(default)]`.
@@ -38,8 +37,3 @@ min_value_wei = "0"
 # [[registry.curated_defaults]]
 # address = "0x0000000000000000000000000000000000000000"
 # name = "Welcome Bot"
-
-[bitcoin_rpc]
-url = "http://unused.invalid:0"
-rpc_user = "unused"
-rpc_pass = "unused"

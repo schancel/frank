@@ -424,6 +424,7 @@ dependencies = [
  "bitcoinsuite-core",
  "bitcoinsuite-error",
  "cashweb-config",
+ "cashweb-payload",
  "cashweb-registry",
  "rand 0.8.5",
  "thiserror",

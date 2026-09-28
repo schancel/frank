@@ -4,6 +4,7 @@ use bitcoinsuite_bitcoind::rpc_client::BitcoindRpcClient;
 use bitcoinsuite_error::{Result, WrapErr};
 use cashweb_config::parse_conf;
 use cashweb_registry::{
+    disabled_chain_adapter::DisabledChainAdapter,
     http::{
         curated_defaults::build_curated_defaults, pop_protection::PopGate, server::RegistryServer,
     },
@@ -54,9 +55,34 @@ async fn main() -> Result<()> {
         .wrap_err_with(|| ReadConfigFail(conf_path.clone()))?;
     let conf = parse_conf(&conf_contents).wrap_err_with(|| InvalidConfigFail(conf_path.clone()))?;
 
+    if let Some(parent) = conf
+        .registry
+        .db_path
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+    {
+        std::fs::create_dir_all(parent).wrap_err_with(|| {
+            format!(
+                "Creating registry database directory {} failed",
+                parent.display()
+            )
+        })?;
+    }
     let db = Db::open(&conf.registry.db_path)?;
-    let bitcoind = BitcoindRpcClient::new(conf.bitcoin_rpc);
-    let chain_adapter = Arc::new(LotusAdapter::new(bitcoind));
+    let chain_adapter = match conf.bitcoin_rpc.clone() {
+        Some(bitcoin_rpc) => {
+            let bitcoind = BitcoindRpcClient::new(bitcoin_rpc);
+            Arc::new(LotusAdapter::new(bitcoind))
+                as Arc<dyn cashweb_payload::chain_adapter::ChainAdapter>
+        }
+        None => {
+            tracing::event!(
+                tracing::Level::WARN,
+                "Lotus support is disabled ([bitcoin_rpc] omitted); serving Monad routes only"
+            );
+            Arc::new(DisabledChainAdapter)
+        }
+    };
 
     let registry = Arc::new(Registry::new(db, chain_adapter, conf.registry.net));
     let our_peers = conf

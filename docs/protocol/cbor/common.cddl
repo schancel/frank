@@ -31,4 +31,3 @@ signature-entry = {
   1: account-ref,
   2: bstr .size (1..512),
 }
-

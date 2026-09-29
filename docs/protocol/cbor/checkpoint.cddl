@@ -28,4 +28,3 @@ tombstone-fact-payload = {
   ? 2: digest-32, ; exact deleted revision/content identity if known
   * uint => any,
 }
-

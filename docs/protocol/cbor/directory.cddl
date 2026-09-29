@@ -33,4 +33,3 @@ key-transition = {
   3: bstr .size (1..512), ; signature by prior/offline authority
   * uint => any,
 }
-

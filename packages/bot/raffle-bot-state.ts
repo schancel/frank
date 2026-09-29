@@ -45,6 +45,32 @@ export interface RaffleRoundRecord {
   entrants: RaffleEntrant[]
 }
 
+export class RaffleEntrantIdentityCollisionError extends Error {
+  constructor(address: string) {
+    super(
+      `Persisted raffle round contains duplicate EVM identity after canonicalization: ${address}`,
+    )
+    this.name = 'RaffleEntrantIdentityCollisionError'
+  }
+}
+
+function canonicalizePersistedRound(
+  round: RaffleRoundRecord,
+): RaffleRoundRecord {
+  const identities = new Set<string>()
+  const entrants = round.entrants.map(entrant => {
+    const address = canonicalMonadEnvelopeAddress(entrant.address)
+    if (identities.has(address)) {
+      // Both entries may represent real paid entropy. Silently dropping either would alter the
+      // committed draw, so startup must stop before this round can be mutated or drawn.
+      throw new RaffleEntrantIdentityCollisionError(address)
+    }
+    identities.add(address)
+    return { ...entrant, address }
+  })
+  return { ...round, entrants }
+}
+
 export function hasRaffleEntrant(
   round: RaffleRoundRecord,
   address: string,
@@ -78,6 +104,7 @@ export class RaffleBotStateStore {
     // See qwen-bot-state.ts's identical line for why this is needed on a fresh machine.
     mkdirSync(this.dbLocation, { recursive: true })
     this.openedDb = level(this.dbLocation)
+    let migratedRound: RaffleRoundRecord | undefined
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     for await (const [key, value] of this.db.iterator({}) as any) {
       if (key === PENDING_SEED_KEY) {
@@ -86,16 +113,17 @@ export class RaffleBotStateStore {
         this.pendingServerSeedHash = JSON.parse(value)
       } else if (key === ROUND_KEY) {
         const round = JSON.parse(value) as RaffleRoundRecord
-        this.currentRound = {
-          ...round,
-          entrants: round.entrants.map(entrant => ({
-            ...entrant,
-            address: canonicalMonadEnvelopeAddress(entrant.address),
-          })),
-        }
+        migratedRound = canonicalizePersistedRound(round)
+        this.currentRound = migratedRound
       } else if (key.startsWith(PROCESSED_PREFIX)) {
         this.processedPayloadHashes.add(key.slice(PROCESSED_PREFIX.length))
       }
+    }
+    if (migratedRound !== undefined) {
+      // Persist the canonical representation only after the whole raw record passed collision
+      // validation. Repeating this on later opens writes the same bytes, making migration
+      // idempotent without changing entrant order or entropy.
+      await this.db.put(ROUND_KEY, JSON.stringify(migratedRound))
     }
   }
 
@@ -133,13 +161,7 @@ export class RaffleBotStateStore {
   }
 
   setCurrentRound(round: RaffleRoundRecord): void {
-    const canonicalRound = {
-      ...round,
-      entrants: round.entrants.map(entrant => ({
-        ...entrant,
-        address: canonicalMonadEnvelopeAddress(entrant.address),
-      })),
-    }
+    const canonicalRound = canonicalizePersistedRound(round)
     this.currentRound = canonicalRound
     this.pendingWrites.push(
       this.db.put(ROUND_KEY, JSON.stringify(canonicalRound)),

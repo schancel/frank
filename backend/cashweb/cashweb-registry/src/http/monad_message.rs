@@ -369,13 +369,19 @@ struct ValidatedMonadMessageEnvelope {
     recipient: Address,
 }
 
-/// The only routing information needed when resuming a durable exact attempt. The attempt digest
-/// proves these are the same payload bytes that passed the admission policy which created the
-/// claim, so this parser deliberately does not re-apply today's v2 policy to historical v1 bytes.
+/// The base historical routing shape needed when resuming a durable exact attempt. Records before
+/// envelope versioning had no `v`, so exact compatibility must neither require nor interpret it.
+/// The attempt digest proves these are the payload bytes which created the claim.
 #[derive(Deserialize)]
 struct ClaimedMonadMessageEnvelope {
-    v: u64,
     to: String,
+    #[serde(rename = "networkTag")]
+    network_tag: Option<String>,
+}
+
+struct ClaimedMonadMessageRouting {
+    recipient: Address,
+    network_tag: Option<Vec<u8>>,
 }
 
 const PAYMENT_COMMITMENT_DOMAIN: &[u8] = b"frank:dm-stamp-payment:v1";
@@ -503,19 +509,17 @@ fn validate_envelope(
     Ok(ValidatedMonadMessageEnvelope { recipient })
 }
 
-fn recipient_from_claimed_envelope(
+fn routing_from_claimed_envelope(
     encrypted_payload: &[u8],
-) -> Result<Address, ProcessMonadMessageError> {
+) -> Result<ClaimedMonadMessageRouting, ProcessMonadMessageError> {
     let envelope: ClaimedMonadMessageEnvelope = serde_json::from_slice(encrypted_payload)
         .map_err(|err| ProcessMonadMessageError::InvalidEnvelope(err.to_string()))?;
-    if envelope.v != 1 && envelope.v != 2 {
-        return Err(ProcessMonadMessageError::InvalidEnvelope(format!(
-            "unsupported claimed version {}",
-            envelope.v
-        )));
-    }
-    Address::from_hex(&envelope.to).map_err(|err| {
+    let recipient = Address::from_hex(&envelope.to).map_err(|err| {
         ProcessMonadMessageError::InvalidEnvelope(format!("invalid claimed to address: {err}"))
+    })?;
+    Ok(ClaimedMonadMessageRouting {
+        recipient,
+        network_tag: envelope.network_tag.map(String::into_bytes),
     })
 }
 
@@ -605,11 +609,20 @@ pub async fn process_monad_message<T: JsonRpcTransport + Clone>(
     let existing_attempt = registry
         .get_monad_message_attempt(declared_hash.as_slice(), &request)
         .map_err(ProcessMonadMessageError::Infrastructure)?;
-    let (policy, recipient) = match &existing_attempt {
-        MonadMessageAttemptClaim::ExistingExact(policy) => (
-            policy.clone(),
-            recipient_from_claimed_envelope(&request.encrypted_payload)?,
-        ),
+    let (policy, recipient, admitted_network_tag) = match &existing_attempt {
+        MonadMessageAttemptClaim::ExistingExact(policy) => {
+            let routing = routing_from_claimed_envelope(&request.encrypted_payload)?;
+            // Format-v1 claims predate frozen network attribution. Recover their historically
+            // admitted optional tag from the exact payload. If the base historical shape had no
+            // tag, preserve that uncertainty as the established empty/unknown stored tag rather
+            // than falsely rebinding the record to today's relay configuration.
+            let admitted_network_tag = policy
+                .network_tag
+                .clone()
+                .or(routing.network_tag)
+                .unwrap_or_default();
+            (policy.clone(), routing.recipient, admitted_network_tag)
+        }
         MonadMessageAttemptClaim::Conflict => {
             return Err(ProcessMonadMessageError::ConflictingPaymentSet)
         }
@@ -628,8 +641,10 @@ pub async fn process_monad_message<T: JsonRpcTransport + Clone>(
                 MonadMessageAttemptPolicy {
                     recipient_pubkey: recipient_profile.pubkey,
                     min_value_wei,
+                    network_tag: Some(network_tag.to_vec()),
                 },
                 recipient,
+                network_tag.to_vec(),
             )
         }
         MonadMessageAttemptClaim::New => unreachable!("lookup cannot create an attempt"),
@@ -809,7 +824,12 @@ pub async fn process_monad_message<T: JsonRpcTransport + Clone>(
     };
 
     let stored = registry
-        .put_monad_message(declared_hash.as_slice(), recipient, stored, network_tag)
+        .put_monad_message(
+            declared_hash.as_slice(),
+            recipient,
+            stored,
+            &admitted_network_tag,
+        )
         .map_err(ProcessMonadMessageError::Infrastructure)?;
 
     Ok(stored)
@@ -1589,7 +1609,7 @@ mod tests {
         let (_tempdir, registry) = test_registry();
         // Ticket #57: encrypted_payload must parse as a MonadMessageEnvelope now, since the
         // expected payment destination comes from its own `to` field rather than a fixed address.
-        let encrypted_payload = valid_envelope(recipient_address(), "MONT");
+        let encrypted_payload = valid_envelope(recipient_address(), "MON1");
         let commitment = Sha256::digest(encrypted_payload.clone().into());
 
         let seckey = EccSecp256k1::default()
@@ -1615,7 +1635,7 @@ mod tests {
             &registry,
             10_000,
             fast_poll(),
-            b"MONT",
+            b"MON1",
             message.clone(),
         )
         .await
@@ -1623,7 +1643,7 @@ mod tests {
 
         assert_eq!(stored.message, Some(message.clone()));
         // Ticket #39: the relay's configured network tag is stamped onto the stored record.
-        assert_eq!(stored.network_tag, b"MONT");
+        assert_eq!(stored.network_tag, b"MON1");
 
         // And it's retrievable afterwards.
         let fetched = registry
@@ -1791,6 +1811,7 @@ mod tests {
         let policy = MonadMessageAttemptPolicy {
             recipient_pubkey: recipient_pubkey.as_slice().to_vec(),
             min_value_wei: 10_000,
+            network_tag: Some(b"MONT".to_vec()),
         };
         assert_eq!(
             registry
@@ -1821,14 +1842,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unfinished_legacy_v1_exact_retry_resumes_and_completes_atomically() {
+    async fn unfinished_versionless_exact_retry_resumes_with_historical_network() {
         let (_tempdir, registry) = test_registry();
         let uppercase = |address: Address| {
             let hex = address.to_hex();
             format!("0x{}", hex[2..].to_ascii_uppercase())
         };
         let encrypted_payload = serde_json::to_vec(&serde_json::json!({
-            "v": 1,
             "networkTag": "MONT",
             "from": uppercase(Address([0xab; 20])),
             "to": uppercase(recipient_address()),
@@ -1854,6 +1874,7 @@ mod tests {
         let policy = MonadMessageAttemptPolicy {
             recipient_pubkey: recipient_pubkey.as_slice().to_vec(),
             min_value_wei: 10_000,
+            network_tag: None,
         };
         assert_eq!(
             registry
@@ -1879,9 +1900,13 @@ mod tests {
             message.clone(),
         )
         .await
-        .expect("a durable exact v1 attempt resumes under its frozen policy");
+        .expect("a durable exact versionless attempt resumes under its frozen policy");
 
         assert_eq!(stored.message, Some(message.clone()));
+        assert_eq!(
+            stored.network_tag, b"MONT",
+            "an old-format claim recovers attribution from its exact historical envelope"
+        );
         assert_eq!(
             transport
                 .calls()
@@ -2112,6 +2137,17 @@ mod tests {
                 "legacy v1",
                 serde_json::to_vec(&serde_json::json!({
                     "v": 1,
+                    "networkTag": "MONT",
+                    "from": Address([0x11; 20]).to_hex(),
+                    "to": recipient_address().to_hex(),
+                    "salt": "00".repeat(16),
+                    "ciphertext": "11".repeat(16),
+                }))
+                .unwrap(),
+            ),
+            (
+                "unclaimed versionless historical envelope",
+                serde_json::to_vec(&serde_json::json!({
                     "networkTag": "MONT",
                     "from": Address([0x11; 20]).to_hex(),
                     "to": recipient_address().to_hex(),

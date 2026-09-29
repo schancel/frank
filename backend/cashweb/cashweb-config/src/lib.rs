@@ -61,8 +61,11 @@ pub struct RegistryConf {
 /// binaries cannot read newer versioned outbox rows.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 pub struct MonadMailboxConf {
-    /// Whether admission and reconciliation are enabled. A disabled deployment must omit the
-    /// admission route and does not start a worker; durable rows remain readable.
+    /// Whether admission and reconciliation are enabled. This is the only switch for
+    /// `PUT /message/monad` and the private mailbox routes: no environment variable enables or
+    /// configures them. A disabled deployment omits those routes (every `/message/monad` request
+    /// other than the separate topic routes answers 404) and does not start a worker; durable rows
+    /// remain readable.
     pub enabled: bool,
     /// Monad JSON-RPC endpoint. Required exactly when `enabled` is true.
     pub rpc_url: Option<url::Url>,
@@ -189,8 +192,9 @@ pub struct PopConf {
     /// the rest of this struct to parse into a valid gate at server-construction time, or every
     /// gated request fails closed with a `500` (see this struct's docs).
     pub enabled: bool,
-    /// Monad JSON-RPC endpoint used to verify payment transaction receipts (same convention as
-    /// the `MONAD_TESTNET_HTTP_RPC_URL` env var used elsewhere in this crate/`cashweb-registry`).
+    /// Monad JSON-RPC endpoint used to verify payment transaction receipts. (The direct-message
+    /// mailbox has its own `registry.monad_mailbox.rpc_url`; only the topic routes still read the
+    /// `MONAD_TESTNET_HTTP_RPC_URL` environment variable.)
     pub monad_rpc_url: url::Url,
     /// Server-side secret used to sign/verify bearer tokens (HMAC). Must be a long random string
     /// kept only in server config; there is deliberately no built-in default.
@@ -502,6 +506,39 @@ mod tests {
             ]
         );
         Ok(())
+    }
+
+    #[test]
+    fn deployed_default_configurations_keep_the_monad_mailbox_disabled() {
+        // The mailbox is opt-in: both checked-in defaults must parse and stay explicitly
+        // disabled, so deploying this binary with them changes no served route.
+        for (name, config) in [
+            (
+                "cashwebd.local.toml",
+                include_str!("../../cashwebd.local.toml"),
+            ),
+            (
+                "docker/cashwebd.toml",
+                include_str!("../../../docker/cashwebd.toml"),
+            ),
+        ] {
+            let conf = parse_conf(config).unwrap_or_else(|err| panic!("{name}: {err}"));
+            assert_eq!(
+                conf.registry.monad_mailbox,
+                MonadMailboxConf {
+                    enabled: false,
+                    rpc_url: None,
+                    min_value_wei: None,
+                    expected_chain_id: None,
+                },
+                "{name}"
+            );
+            assert_eq!(
+                conf.registry.monad_mailbox.mode(),
+                Ok(MonadMailboxMode::Disabled),
+                "{name}"
+            );
+        }
     }
 
     #[test]

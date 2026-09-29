@@ -45,9 +45,9 @@ const QInputStub = defineComponent({
     modelValue: { type: String, default: '' },
     readonly: { type: Boolean, default: false },
   },
-  emits: ['update:modelValue'],
+  emits: ['update:modelValue', 'blur'],
   template:
-    '<textarea :aria-label="label" :readonly="readonly" :value="modelValue" @input="$emit(\'update:modelValue\', $event.target.value)" />',
+    '<textarea :aria-label="label" :readonly="readonly" :value="modelValue" @input="$emit(\'update:modelValue\', $event.target.value)" @blur="$emit(\'blur\')" />',
 })
 
 const messages: Record<string, string> = {
@@ -109,6 +109,60 @@ describe('AccountStep import flow', () => {
 
     expect(wrapper.emitted('update:account-data')?.at(-1)?.[0]).toEqual({
       name: '',
+      seed: VALID_MNEMONIC,
+      valid: true,
+    })
+  })
+})
+
+describe('AccountStep display name contract', () => {
+  async function enterNewAccountName(name: string) {
+    const wrapper = mountStep(VALID_MNEMONIC)
+    const vm = wrapper.vm as unknown as { newAccount(): void }
+    vm.newAccount()
+    await nextTick()
+    await wrapper.find('textarea[aria-label="profile.name"]').setValue(name)
+    return wrapper
+  }
+
+  it.each(['', '   ', '\t\n', '\u00a0\u2003'])(
+    'rejects a blank display name %#',
+    async name => {
+      const wrapper = await enterNewAccountName(name)
+      const emitted = wrapper.emitted('update:account-data')?.at(-1)?.[0]
+
+      expect(emitted).toEqual({
+        name: '',
+        seed: VALID_MNEMONIC,
+        valid: false,
+      })
+      expect(typeof (emitted as { valid: unknown }).valid).toBe('boolean')
+    },
+  )
+
+  it('emits a trimmed valid name without rewriting the field on every keystroke', async () => {
+    const wrapper = await enterNewAccountName('  Alice  ')
+
+    expect(wrapper.emitted('update:account-data')?.at(-1)?.[0]).toEqual({
+      name: 'Alice',
+      seed: VALID_MNEMONIC,
+      valid: true,
+    })
+    expect(
+      wrapper.find('textarea[aria-label="profile.name"]').element.value,
+    ).toBe('  Alice  ')
+
+    await wrapper.find('textarea[aria-label="profile.name"]').trigger('blur')
+    expect(
+      wrapper.find('textarea[aria-label="profile.name"]').element.value,
+    ).toBe('Alice')
+  })
+
+  it('preserves meaningful interior spacing', async () => {
+    const wrapper = await enterNewAccountName('Alice  Bob')
+
+    expect(wrapper.emitted('update:account-data')?.at(-1)?.[0]).toEqual({
+      name: 'Alice  Bob',
       seed: VALID_MNEMONIC,
       valid: true,
     })

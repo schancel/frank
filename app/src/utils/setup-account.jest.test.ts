@@ -1,6 +1,9 @@
 import { MonadIdentity } from '@frank/wallet/monad-identity'
 
-import { commitValidatedSetupSeed } from './setup-account'
+import {
+  commitValidatedSetupName,
+  commitValidatedSetupSeed,
+} from './setup-account'
 
 const VALID_MNEMONIC =
   'test test test test test test test test test test test junk'
@@ -30,5 +33,28 @@ describe('setup account seed commitment', () => {
     expect(
       MonadIdentity.fromSeed({ mnemonic: persistedSeed }).address.raw,
     ).toBe('0x8C8d35429F74ec245F8Ef2f4Fd1e551cFF97d650')
+  })
+})
+
+describe('setup account display name commitment', () => {
+  it('persists and returns exactly the normalized name', () => {
+    const persistName = jest.fn()
+
+    const committedName = commitValidatedSetupName(
+      '\u00a0Alice  Bob\u2003',
+      persistName,
+    )
+
+    expect(committedName).toBe('Alice  Bob')
+    expect(persistName).toHaveBeenCalledWith(committedName)
+  })
+
+  it('rejects invalid input without persisting it', () => {
+    const persistName = jest.fn()
+
+    expect(() => commitValidatedSetupName('   ', persistName)).toThrow(
+      /invalid profile display name/i,
+    )
+    expect(persistName).not.toHaveBeenCalled()
   })
 })

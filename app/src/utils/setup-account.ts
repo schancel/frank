@@ -1,4 +1,5 @@
 import { validateMnemonic } from 'bip39'
+import { requireValidProfileDisplayName } from '@frank/wallet/profile-display-name'
 
 /** Canonical form accepted by Frank's current English BIP-39 setup UI. */
 export function normalizeSetupMnemonic(seed: string): string {
@@ -20,4 +21,14 @@ export function commitValidatedSetupSeed(
   }
   persistSeed(normalizedSeed)
   return normalizedSeed
+}
+
+/** Revalidate at setup's final persistence boundary and persist exactly the canonical value. */
+export function commitValidatedSetupName(
+  name: string,
+  persistName: (name: string) => void,
+): string {
+  const normalizedName = requireValidProfileDisplayName(name)
+  persistName(normalizedName)
+  return normalizedName
 }

@@ -1,0 +1,67 @@
+{
+  "version": 1,
+  "cases": [
+    { "id": "empty", "input": "", "valid": false },
+    {
+      "id": "ascii-whitespace-only",
+      "input": " \t\n ",
+      "valid": false,
+      "normalized": ""
+    },
+    {
+      "id": "unicode-whitespace-only",
+      "input": "\u00a0\u2003",
+      "valid": false,
+      "normalized": ""
+    },
+    {
+      "id": "ascii-edge-whitespace",
+      "input": "  Alice  ",
+      "valid": true,
+      "normalized": "Alice"
+    },
+    {
+      "id": "unicode-edge-whitespace",
+      "input": "\u00a0Bob\u2003",
+      "valid": true,
+      "normalized": "Bob"
+    },
+    {
+      "id": "interior-spacing",
+      "input": "Alice  Bob",
+      "valid": true,
+      "normalized": "Alice  Bob"
+    },
+    { "id": "emoji", "input": "😀", "valid": true, "normalized": "😀" },
+    {
+      "id": "combining-mark-preserved",
+      "input": "é",
+      "valid": true,
+      "normalized": "é"
+    },
+    { "id": "c0-control", "input": "A\u0000B", "valid": false },
+    { "id": "c1-control", "input": "A\u0085B", "valid": false },
+    { "id": "line-separator", "input": "A\u2028B", "valid": false },
+    { "id": "paragraph-separator", "input": "A\u2029B", "valid": false },
+    {
+      "id": "128-scalars",
+      "inputRepeat": { "value": "a", "count": 128 },
+      "valid": true
+    },
+    {
+      "id": "129-scalars",
+      "inputRepeat": { "value": "a", "count": 129 },
+      "valid": false
+    },
+    {
+      "id": "512-utf8-bytes",
+      "inputRepeat": { "value": "😀", "count": 128 },
+      "valid": true
+    },
+    {
+      "id": "513-utf8-bytes",
+      "inputRepeat": { "value": "😀", "count": 128, "suffix": "a" },
+      "valid": false
+    }
+  ]
+}

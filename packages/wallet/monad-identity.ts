@@ -96,6 +96,7 @@ import __pb_signed_payload_payload_pb from '@frank/cashweb/signed_payload/payloa
 const { SignedPayload } = __pb_signed_payload_payload_pb
 import { ChainAddress, HDSeed, ProfileInfo } from './chain/active-chain'
 import type { FrankIdentityHandle } from './chain/active-chain'
+import { requireValidProfileDisplayName } from './profile-display-name'
 
 /** Reserved BIP-44 path (account index `1'`) for the stable Frank identity key -- see this file's
  * header for why it's kept structurally separate from both `monad-hd-keyring.ts`'s burner
@@ -196,7 +197,11 @@ function profileEntries(profile: MonadProfileFields = {}) {
     entries.push(entry)
   }
 
-  addTextEntry('display_name', profile.name)
+  const displayName =
+    profile.name === undefined
+      ? undefined
+      : requireValidProfileDisplayName(profile.name)
+  addTextEntry('display_name', displayName)
   addTextEntry('bio', profile.bio)
 
   if (profile.avatar) {

@@ -95,7 +95,10 @@ import {
 } from '../utils/constants'
 import { errorNotify } from '../utils/notifications'
 import { persistSetupAndReload } from '../utils/setup-persistence'
-import { commitValidatedSetupSeed } from '../utils/setup-account'
+import {
+  commitValidatedSetupName,
+  commitValidatedSetupSeed,
+} from '../utils/setup-account'
 
 import AccountStep from '../components/setup/AccountStep.vue'
 import DepositStep from '../components/setup/DepositStep.vue'
@@ -484,14 +487,18 @@ export default defineComponent({
             this.accountData.seed,
             seed => this.setSeedPhrase(seed),
           )
-          this.setRelayData({
-            profile: {
-              name: this.accountData.name || 'Frank User',
-              bio: '',
-              avatar: this.avatar,
-            },
-            inbox: defaultRelayData.inbox,
-          })
+          this.accountData.name = commitValidatedSetupName(
+            this.accountData.name,
+            name =>
+              this.setRelayData({
+                profile: {
+                  name,
+                  bio: '',
+                  avatar: this.avatar,
+                },
+                inbox: defaultRelayData.inbox,
+              }),
+          )
           // The next boot initializes the Monad identity from these stores, so
           // neither write may be left in flight when the page reloads.
           await this.persistSetupAndReload()

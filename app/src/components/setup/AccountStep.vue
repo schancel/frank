@@ -31,7 +31,11 @@
         :label="$t('profile.name')"
         lazy-rules
         style="width: 100%"
-        :rules="[val => !!val || val.length > 0 || $t('profile.pleaseType')]"
+        :rules="[
+          val =>
+            validateProfileDisplayName(val).valid || $t('profile.pleaseType'),
+        ]"
+        @blur="commitName"
       />
       <q-input
         :readonly="action === 'new'"
@@ -73,6 +77,7 @@ import { copyToClipboard } from 'quasar'
 import { generateMnemonic, validateMnemonic } from 'bip39'
 import { seedCopiedNotify } from '../../utils/notifications'
 import { normalizeSetupMnemonic } from '../../utils/setup-account'
+import { validateProfileDisplayName } from '@frank/wallet/profile-display-name'
 
 interface AccountData {
   name: string
@@ -98,9 +103,12 @@ export default defineComponent({
     const isSeedValid = computed(() => {
       return validateMnemonic(normalizeSetupMnemonic(rawSeed.value))
     })
+    const displayName = computed(() =>
+      validateProfileDisplayName(rawName.value),
+    )
     const isValid = computed(() => {
       if (action.value === 'new') {
-        return rawName.value.length > 0 && isSeedValid.value
+        return displayName.value.valid && isSeedValid.value
       }
       if (action.value === 'import') {
         return isSeedValid.value
@@ -109,7 +117,8 @@ export default defineComponent({
     })
     const emitAccountData = () => {
       emit('update:account-data', {
-        name: rawName.value,
+        name:
+          action.value === 'new' ? displayName.value.normalized : rawName.value,
         seed: normalizeSetupMnemonic(rawSeed.value),
         valid: isValid.value,
       })
@@ -140,8 +149,14 @@ export default defineComponent({
       rawSeed,
       isSeedValid,
       isValid,
+      validateProfileDisplayName,
       seed,
       name,
+      commitName() {
+        if (action.value !== 'new') return
+        rawName.value = displayName.value.normalized
+        emitAccountData()
+      },
       copySeed() {
         copyToClipboard(seed.value)
           .then(() => {

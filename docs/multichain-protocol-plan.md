@@ -223,6 +223,15 @@ contradicts this plan.
 
 ## Runtime adapter fan-in
 
+> **Identity model is superseded by #177.** The `ImmutableSourceEvent`/`StreamObservation` keys,
+> commitments, k-way merge, and identity/deduplication rules below are the preserved pre-#177
+> draft. They put `source_instance_id` in immutable event identity and would emit a retained event
+> once per observation generation, and they use a bare logical `post_id` as an event key. The
+> normative model is
+> [fan-in identity and replay](./protocol/multichain/fan-in-identity-replay.md)
+> ([#177](https://github.com/schancel/frank/issues/177)); where the two differ, that document
+> governs, and F4 must implement it. Reconciling this section is tracked on #59 and is not done here.
+
 `ActiveChain` remains useful as the per-chain facade, but the application composition root must no
 longer select exactly one instance. A `MultichainEventView` owns a configured set of adapters and
 depends only on their public profile/mailbox/pubsub interfaces. Adapters own chain-native parsing,

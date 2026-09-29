@@ -1,0 +1,45 @@
+; Type 2 wraps and signs the complete type-4 statement frame. This avoids a
+; signature-containing-itself cycle while binding exact framing and versions.
+
+directory-attestation = {
+  0: framed-object, ; type-4 directory-statement frame
+  1: [1*16 signature-entry],
+  * uint => frank-value,
+}
+
+directory-statement = {
+  0: network-tag,
+  1: account-ref, ; directory subject: the currently registered key; changes only through one linked type-7 transition (README S10)
+  2: uint .le 18446744073709551615, ; monotonic revision
+  3: timestamp,
+  4: [1*32 relay-binding],
+  ? 5: [1*16 key-transition],
+  ? 6: timestamp, ; expiry, if present
+  ? 7: [1*8 account-ref], ; offline recovery authorities
+  * uint => frank-value,
+}
+
+relay-binding = {
+  0: bstr .size (16..64), ; relay_id, derived by its registered algorithm
+  1: tstr .size (1..2048), ; exact opaque URI: README S4 characters and scheme; no codec normalization
+  2: account-ref, ; relay signing/payment identity
+  3: timestamp, ; binding expiry
+  * uint => frank-value,
+}
+
+key-transition = {
+  0: framed-object, ; type-7 key-transition-statement frame
+  1: uint .le 65535, ; authorization/signature algorithm
+  2: account-ref, ; signer; must equal statement prior_authority
+  3: bstr .size (1..512), ; signature of the T2a transcript
+  * uint => frank-value,
+}
+
+key-transition-statement = {
+  0: network-tag,
+  1: account-ref, ; directory subject
+  2: account-ref, ; prior registered or offline recovery authority
+  3: 1..18446744073709551615, ; revision
+  4: account-ref, ; new key
+  * uint => frank-value,
+}

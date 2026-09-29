@@ -1,0 +1,30 @@
+mailbox-checkpoint = {
+  0: network-tag,
+  1: account-ref, ; mailbox owner/destination identity
+  2: uuid-16, ; checkpoint_id, not a serialization hash
+  3: timestamp,
+  4: [0*4096 journal-fact],
+  ? 5: [0*4096 opaque-section],
+  * uint => frank-value,
+}
+
+journal-fact = {
+  0: timestamp,
+  1: uuid-16, ; stable fact_id and equal-timestamp tiebreaker
+  2: uint .le 65535, ; fact kind
+  3: bstr .size (0..8388608), ; opaque in version 1: retained exactly, never interpreted (README section 6)
+  * uint => frank-value,
+}
+
+opaque-section = {
+  0: uint .le 4294967295, ; section type
+  1: 1..4294967295, ; section schema version
+  2: bstr .size (0..8388608), ; retained exactly; framed when a Frank object
+}
+
+tombstone-fact-payload = {
+  0: uint .le 65535, ; deleted object family
+  1: bstr .size (1..256), ; stable logical object identifier
+  ? 2: digest-32, ; exact deleted revision/content identity if known
+  * uint => frank-value,
+}

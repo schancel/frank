@@ -60,29 +60,60 @@ export const useForumStore = defineStore('forum', {
     },
 
     setEntries(messages: ForumMessage[]) {
-      const newMessages = messages
-        .filter(m => !(m.payloadDigest in this.index))
-        .map(m => ({ ...m, replies: [] }))
-      this.messages.push(
-        ...newMessages.filter(m => !(m.payloadDigest in this.index)),
-      )
+      const canonicalByDigest = new Map<string, MessageWithReplies>()
+      const canonicalMessages: MessageWithReplies[] = []
+      for (const message of this.messages) {
+        if (canonicalByDigest.has(message.payloadDigest)) {
+          continue
+        }
+        canonicalByDigest.set(message.payloadDigest, message)
+        canonicalMessages.push(message)
+      }
+      this.messages = canonicalMessages
+
+      for (const message of messages) {
+        const existingMessage = canonicalByDigest.get(message.payloadDigest)
+        if (existingMessage) {
+          existingMessage.satoshis = message.satoshis
+          continue
+        }
+
+        const newMessage: MessageWithReplies = { ...message, replies: [] }
+        this.messages.push(newMessage)
+        const canonicalMessage = this.messages[this.messages.length - 1]
+        canonicalByDigest.set(message.payloadDigest, canonicalMessage)
+      }
+
       this.index = indexBy(message => message.payloadDigest, this.messages)
       this.topics = uniq(messages.map(message => message.topic))
-      for (const message of newMessages) {
+      for (const message of this.messages) {
+        message.replies = []
+      }
+      for (const message of this.messages) {
         if (!message.parentDigest) {
           continue
         }
-        if (!(message.parentDigest in this.index)) {
+        const parent = this.index[message.parentDigest]
+        if (!parent) {
           continue
         }
-        const replies = this.index[message.parentDigest]?.replies
-        const found = replies?.some(
-          reply => reply.payloadDigest === message.payloadDigest,
-        )
-        if (found) {
-          return
+        const visitedDigests = new Set([message.payloadDigest])
+        let ancestor: MessageWithReplies | undefined = parent
+        let cyclic = false
+        while (ancestor) {
+          if (visitedDigests.has(ancestor.payloadDigest)) {
+            cyclic = true
+            break
+          }
+          visitedDigests.add(ancestor.payloadDigest)
+          ancestor = ancestor.parentDigest
+            ? this.index[ancestor.parentDigest]
+            : undefined
         }
-        this.index[message.parentDigest]?.replies.push(message)
+        if (cyclic) {
+          continue
+        }
+        parent.replies.push(message)
       }
     },
     setMessage(message: ForumMessage) {

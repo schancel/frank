@@ -1,0 +1,36 @@
+; Type 2 wraps and signs the complete type-4 statement frame. This avoids a
+; signature-containing-itself cycle while binding exact framing and versions.
+
+directory-attestation = {
+  0: framed-object, ; type-4 directory-statement frame
+  1: [1*16 signature-entry],
+  * uint => any,
+}
+
+directory-statement = {
+  0: network-tag,
+  1: account-ref, ; long-lived lookup identity
+  2: uint .le 18446744073709551615, ; monotonic revision
+  3: timestamp,
+  4: [1*32 relay-binding],
+  ? 5: [1*16 key-transition],
+  ? 6: timestamp, ; expiry, if present
+  * uint => any,
+}
+
+relay-binding = {
+  0: bstr .size (16..64), ; relay_id, derived by its registered algorithm
+  1: tstr .size (1..2048), ; normalized endpoint
+  2: account-ref, ; relay signing/payment identity
+  3: timestamp, ; binding expiry
+  * uint => any,
+}
+
+key-transition = {
+  0: uint .ge 1 .le 18446744073709551615, ; revision
+  1: account-ref, ; new key
+  2: uint .le 65535, ; authorization/signature algorithm
+  3: bstr .size (1..512), ; signature by prior/offline authority
+  * uint => any,
+}
+

@@ -53,6 +53,24 @@ pub(crate) fn recipient_signature_work() -> usize {
 /// # let db: cashweb_registry::store::db::Db = todo!();
 /// let _ = db.monad_outbox();
 /// ```
+///
+/// ```compile_fail
+/// use cashweb_registry::registry::Registry;
+/// let _ = Registry::claim_monad_outbox;
+/// ```
+///
+/// ```compile_fail
+/// use cashweb_registry::{
+///     monad_http::Address,
+///     store::monad_outbox::MonadOutboxPolicy,
+/// };
+/// let _ = MonadOutboxPolicy {
+///     recipient: Address([0; 20]),
+///     recipient_pubkey: vec![2; 33],
+///     min_value_wei: 1,
+///     network_tag: b"testnet".to_vec(),
+/// };
+/// ```
 #[derive(Debug)]
 pub struct Registry {
     /// Database storing the address metadata in RocksDB.
@@ -550,7 +568,7 @@ impl Registry {
     /// This is the durable replacement seam for legacy digest-only attempts. Production keeps
     /// only read access to those rows so an exact request can atomically adopt matching evidence;
     /// legacy claim/delete mutators above are test-only.
-    pub fn claim_monad_outbox(
+    pub(crate) fn claim_monad_outbox(
         &self,
         message: &proto::MonadStampedMessage,
         policy: &crate::store::monad_outbox::MonadOutboxPolicy,
@@ -601,6 +619,17 @@ impl Registry {
         self.db
             .monad_outbox()
             .replace_minimum_for_test(payload_hash, min_value_wei)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn replace_monad_outbox_recipient_for_test(
+        &self,
+        payload_hash: &[u8],
+        recipient: Address,
+    ) -> Result<()> {
+        self.db
+            .monad_outbox()
+            .replace_recipient_for_test(payload_hash, recipient)
     }
 
     /// Read one hash-only child state in focused recovery tests.
@@ -978,6 +1007,7 @@ impl Registry {
     /// List every [`proto::StoredMonadMessage`] stored with `timestamp >= since` (ticket #37),
     /// ordered by `timestamp` ascending. This remains the legacy global compatibility view until
     /// an authenticated recipient-scoped HTTP route is introduced.
+    #[cfg(test)]
     pub(crate) fn list_monad_messages_since(
         &self,
         since: i64,

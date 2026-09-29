@@ -16,6 +16,12 @@
 //! the next signed query. The old unauthenticated exact/global GET routes are deliberately not
 //! installed.
 //!
+//! ```compile_fail
+//! use cashweb_registry::http::monad_message::{
+//!     handle_get_monad_message, handle_list_monad_messages,
+//! };
+//! ```
+//!
 //! ## Why a separate route, and a separate message type, instead of extending `PUT /message`
 //!
 //! `handle_put_message` (in `crate::http::server`) decodes a `cashweb_payload::proto::
@@ -858,15 +864,16 @@ async fn admit_monad_message<T: JsonRpcTransport + Clone>(
     {
         MonadMessageAttemptClaim::ExistingExact(legacy) => {
             let routing = routing_from_claimed_envelope(&request.encrypted_payload)?;
-            MonadOutboxPolicy {
-                recipient: routing.recipient,
-                recipient_pubkey: legacy.recipient_pubkey,
-                min_value_wei: legacy.min_value_wei,
-                network_tag: legacy
+            MonadOutboxPolicy::new(
+                routing.recipient,
+                legacy.recipient_pubkey,
+                legacy.min_value_wei,
+                legacy
                     .network_tag
                     .or(routing.network_tag)
                     .unwrap_or_default(),
-            }
+            )
+            .map_err(|err| ProcessMonadMessageError::InvalidEnvelope(err.to_string()))?
         }
         MonadMessageAttemptClaim::Conflict => {
             return Err(ProcessMonadMessageError::ConflictingPaymentSet)
@@ -879,12 +886,13 @@ async fn admit_monad_message<T: JsonRpcTransport + Clone>(
                 .ok_or(ProcessMonadMessageError::RecipientProfileNotFound(
                     recipient,
                 ))?;
-            MonadOutboxPolicy {
+            MonadOutboxPolicy::new(
                 recipient,
-                recipient_pubkey: profile.pubkey,
+                profile.pubkey,
                 min_value_wei,
-                network_tag: network_tag.to_vec(),
-            }
+                network_tag.to_vec(),
+            )
+            .map_err(|err| ProcessMonadMessageError::InvalidEnvelope(err.to_string()))?
         }
         MonadMessageAttemptClaim::New => unreachable!("lookup cannot create an attempt"),
     };
@@ -1955,12 +1963,8 @@ pub(crate) async fn handle_get_private_monad_recovery(
     // The work meter includes one bounded record/member lookahead used to discover overflow, so
     // it may exceed the half-budget while the omitted row remains reachable from the cursor.
     for recovery in &page.recoveries {
-        crate::monad_outbox::validate_monad_recovery_record(
-            recovery,
-            runtime.expected_chain_id(),
-            runtime.reconcile().limits.max_members,
-        )
-        .map_err(PrivateMailboxError::Infrastructure)?;
+        crate::monad_outbox::validate_monad_recovery_record(recovery, runtime.expected_chain_id())
+            .map_err(PrivateMailboxError::Infrastructure)?;
     }
     let recoveries = page
         .recoveries
@@ -2098,8 +2102,9 @@ fn map_private_store_error(err: Report) -> PrivateMailboxError {
 }
 
 /// Error type for [`handle_get_monad_message`].
+#[cfg(test)]
 #[derive(Debug)]
-pub enum GetMonadMessageError {
+pub(crate) enum GetMonadMessageError {
     /// The `:payload_hash` path segment wasn't valid hex.
     InvalidHex(hex::FromHexError),
     /// No message stored for the given `payload_hash`.
@@ -2108,6 +2113,7 @@ pub enum GetMonadMessageError {
     Infrastructure(Report),
 }
 
+#[cfg(test)]
 impl IntoResponse for GetMonadMessageError {
     fn into_response(self) -> Response {
         match self {
@@ -2132,7 +2138,8 @@ impl IntoResponse for GetMonadMessageError {
 /// `GET /message/monad/:payload_hash`: fetch a previously-stored [`proto::StoredMonadMessage`] by
 /// its hex-encoded `payload_hash`. Exists mainly so the accept path (this ticket's acceptance
 /// criteria) can be proven end-to-end: PUT, then GET the same `payload_hash` back.
-pub async fn handle_get_monad_message(
+#[cfg(test)]
+pub(crate) async fn handle_get_monad_message(
     Path(hex_hash): Path<String>,
     Extension(server): Extension<RegistryServer>,
 ) -> Result<Protobuf<proto::StoredMonadMessage>, GetMonadMessageError> {
@@ -2146,20 +2153,23 @@ pub async fn handle_get_monad_message(
 }
 
 /// Query parameters for [`handle_list_monad_messages`].
+#[cfg(test)]
 #[derive(Debug, Deserialize)]
-pub struct ListMonadMessagesQuery {
+pub(crate) struct ListMonadMessagesQuery {
     /// Only return messages stored at or after this many milliseconds since the Unix epoch.
     /// Defaults to `0` (i.e. every stored message) when omitted.
     since: Option<i64>,
 }
 
 /// Error type for [`handle_list_monad_messages`].
+#[cfg(test)]
 #[derive(Debug)]
-pub enum ListMonadMessagesError {
+pub(crate) enum ListMonadMessagesError {
     /// A storage-level error.
     Infrastructure(Report),
 }
 
+#[cfg(test)]
 impl IntoResponse for ListMonadMessagesError {
     fn into_response(self) -> Response {
         match self {
@@ -2177,7 +2187,8 @@ impl IntoResponse for ListMonadMessagesError {
 /// (the highest `timestamp` it's already seen, plus one) to find new messages without already
 /// knowing their `payload_hash` out of band. See this module's docs for why it can't additionally
 /// filter by intended recipient (no such field exists on the wire format yet).
-pub async fn handle_list_monad_messages(
+#[cfg(test)]
+pub(crate) async fn handle_list_monad_messages(
     Query(params): Query<ListMonadMessagesQuery>,
     Extension(server): Extension<RegistryServer>,
 ) -> Result<Protobuf<proto::StoredMonadMessages>, ListMonadMessagesError> {
@@ -2310,6 +2321,17 @@ mod tests {
         crate::monad_evm_tx::address_from_uncompressed_pubkey(
             &ecc.serialize_pubkey_uncompressed(&pubkey),
         )
+    }
+
+    fn test_outbox_policy() -> MonadOutboxPolicy {
+        let recipient_pubkey = EccSecp256k1::default().derive_pubkey(&recipient_seckey());
+        MonadOutboxPolicy::new(
+            recipient_address(),
+            recipient_pubkey.as_slice().to_vec(),
+            10_000,
+            b"MONT".to_vec(),
+        )
+        .unwrap()
     }
 
     fn stamp_destination_at(payload_hash: &Sha256, child_index: u32) -> Address {
@@ -3650,6 +3672,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn enabled_mailbox_omits_legacy_exact_and_global_get_routes() {
+        let (_tempdir, registry) = test_registry();
+        let mut server = test_server(registry);
+        server.monad_mailbox = crate::monad_mailbox::MonadMailboxRuntime::enabled(
+            HttpTransport::new("http://127.0.0.1:1".parse().unwrap()),
+            Arc::new(crate::monad_outbox::MonadOutboxReconcileConfig::default()),
+            1,
+            b"MONT".to_vec(),
+        );
+        let router = server.into_router();
+        for uri in ["/message/monad", "/message/monad/00"] {
+            let response = router
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .method("GET")
+                        .uri(uri)
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "GET {uri}");
+        }
+    }
+
+    #[tokio::test]
     async fn conflict_response_tells_wallet_to_release_the_submitted_reservation() {
         let response =
             PutMonadMessageError::Process(ProcessMonadMessageError::ConflictingPaymentSet)
@@ -3804,13 +3853,7 @@ mod tests {
     async fn noncanonical_pending_owner_reports_retained_without_rpc() -> Result<(), Report> {
         let message = valid_signed_message(0x76, 0x57);
         let (_tempdir, registry) = test_registry();
-        let recipient_pubkey = EccSecp256k1::default().derive_pubkey(&recipient_seckey());
-        let policy = MonadOutboxPolicy {
-            recipient: recipient_address(),
-            recipient_pubkey: recipient_pubkey.as_slice().to_vec(),
-            min_value_wei: 10_000,
-            network_tag: b"MONT".to_vec(),
-        };
+        let policy = test_outbox_policy();
         let config = crate::monad_outbox::MonadOutboxReconcileConfig::default();
         assert!(matches!(
             registry.claim_monad_outbox(&message, &policy, 1, &config.limits)?,
@@ -3890,16 +3933,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn legacy_recipient_pubkey_mismatch_rejects_before_claim_or_rpc() -> Result<(), Report> {
+        let message = valid_signed_message(0x7a, 0x5b);
+        let (_tempdir, registry) = test_registry();
+        let ecc = EccSecp256k1::default();
+        let unrelated_secret = ecc.seckey_from_array([0x66; 32]).unwrap();
+        let unrelated_pubkey = ecc.derive_pubkey(&unrelated_secret);
+        assert!(matches!(
+            registry.claim_monad_message_attempt(
+                &message.payload_hash,
+                &message,
+                &MonadMessageAttemptPolicy {
+                    recipient_pubkey: unrelated_pubkey.as_slice().to_vec(),
+                    min_value_wei: 10_000,
+                    network_tag: Some(b"MONT".to_vec()),
+                },
+            )?,
+            MonadMessageAttemptClaim::New
+        ));
+        let transport = MockTransport::default();
+        let config = crate::monad_outbox::MonadOutboxReconcileConfig::default();
+        let permits = MonadOutboxPermitPool::new(config.max_concurrency);
+        let error = admit_monad_message(
+            &transport,
+            &registry,
+            &config,
+            &permits,
+            10_000,
+            b"MONT",
+            message.clone(),
+        )
+        .await
+        .expect_err("legacy routing cannot be rebound to an unrelated public key");
+        assert!(matches!(
+            error,
+            ProcessMonadMessageError::InvalidEnvelope(_)
+        ));
+        assert!(transport.calls().is_empty());
+        assert!(registry
+            .monad_outbox_record(&message.payload_hash)?
+            .is_none());
+        assert!(registry.get_monad_message(&message.payload_hash)?.is_none());
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn terminal_response_reports_post_gc_retention_truth() -> Result<(), Report> {
         let message = valid_signed_message(0x77, 0x58);
         let (_tempdir, registry) = test_registry();
-        let recipient_pubkey = EccSecp256k1::default().derive_pubkey(&recipient_seckey());
-        let policy = MonadOutboxPolicy {
-            recipient: recipient_address(),
-            recipient_pubkey: recipient_pubkey.as_slice().to_vec(),
-            min_value_wei: 10_000,
-            network_tag: b"MONT".to_vec(),
-        };
+        let policy = test_outbox_policy();
         let mut limits = crate::store::monad_outbox::MonadOutboxLimits::default();
         limits.max_history_records = 0;
         assert!(matches!(
@@ -4211,13 +4293,7 @@ mod tests {
         let target = valid_signed_message(0x66, 0x43);
         let mut capacity_config = crate::monad_outbox::MonadOutboxReconcileConfig::default();
         capacity_config.limits.max_active_claims = 1;
-        let recipient_pubkey = EccSecp256k1::default().derive_pubkey(&recipient_seckey());
-        let policy = MonadOutboxPolicy {
-            recipient: recipient_address(),
-            recipient_pubkey: recipient_pubkey.as_slice().to_vec(),
-            min_value_wei: 10_000,
-            network_tag: b"MONT".to_vec(),
-        };
+        let policy = test_outbox_policy();
         assert!(matches!(
             capacity_registry
                 .claim_monad_outbox(&blocker, &policy, 1, &capacity_config.limits)
@@ -4280,13 +4356,7 @@ mod tests {
         let (_tempdir, registry) = test_registry();
         let registry = Arc::new(registry);
         let message = valid_signed_message(0x67, 0x44);
-        let recipient_pubkey = EccSecp256k1::default().derive_pubkey(&recipient_seckey());
-        let policy = MonadOutboxPolicy {
-            recipient: recipient_address(),
-            recipient_pubkey: recipient_pubkey.as_slice().to_vec(),
-            min_value_wei: 10_000,
-            network_tag: b"MONT".to_vec(),
-        };
+        let policy = test_outbox_policy();
         let mut config = crate::monad_outbox::MonadOutboxReconcileConfig::default();
         config.limits.max_history_records = 0;
         registry.claim_monad_outbox(&message, &policy, 1, &config.limits)?;
@@ -4571,13 +4641,7 @@ mod tests {
     ) -> Result<(), Report> {
         let (_tempdir, registry) = test_registry();
         let config = crate::monad_outbox::MonadOutboxReconcileConfig::default();
-        let recipient_pubkey = EccSecp256k1::default().derive_pubkey(&recipient_seckey());
-        let policy = MonadOutboxPolicy {
-            recipient: recipient_address(),
-            recipient_pubkey: recipient_pubkey.as_slice().to_vec(),
-            min_value_wei: 10_000,
-            network_tag: b"MONT".to_vec(),
-        };
+        let policy = test_outbox_policy();
         let mut messages = vec![
             valid_signed_message(0x81, 0x61),
             valid_signed_message(0x82, 0x62),
@@ -4715,13 +4779,7 @@ mod tests {
     async fn private_recovery_fails_closed_on_corrupt_canonical_state() -> Result<(), Report> {
         let (_tempdir, registry) = test_registry();
         let config = crate::monad_outbox::MonadOutboxReconcileConfig::default();
-        let recipient_pubkey = EccSecp256k1::default().derive_pubkey(&recipient_seckey());
-        let policy = MonadOutboxPolicy {
-            recipient: recipient_address(),
-            recipient_pubkey: recipient_pubkey.as_slice().to_vec(),
-            min_value_wei: 10_000,
-            network_tag: b"MONT".to_vec(),
-        };
+        let policy = test_outbox_policy();
         let message = valid_signed_message(0x84, 0x64);
         registry.claim_monad_outbox(&message, &policy, 1, &config.limits)?;
         let lease = match registry.acquire_monad_outbox_reconcile_lease(

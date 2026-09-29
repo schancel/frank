@@ -32,7 +32,7 @@ const MAX_HISTORY_RECORDS_HARD: usize = 4096;
 // At the hard 2 MiB canonical cap, one migration chunk retains at most ~32 MiB of row values.
 const MIGRATION_BATCH_SIZE: usize = 16;
 const MAX_CANONICAL_BYTES_HARD: usize = 2 * 1024 * 1024;
-const MAX_MEMBERS_HARD: usize = 4096;
+pub(crate) const MAX_MEMBERS_HARD: usize = 4096;
 const MAX_LAST_ERROR_BYTES_HARD: usize = 4096;
 const MAX_NETWORK_TAG_BYTES_HARD: usize = 64;
 const MAX_RECIPIENT_PUBKEY_BYTES_HARD: usize = 65;
@@ -180,13 +180,47 @@ impl MonadOutboxLimits {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MonadOutboxPolicy {
     /// Validated mailbox owner.
-    pub recipient: Address,
+    pub(crate) recipient: Address,
     /// Recipient key used to derive every child destination.
-    pub recipient_pubkey: Vec<u8>,
+    pub(crate) recipient_pubkey: Vec<u8>,
     /// Aggregate minimum accepted at admission time.
-    pub min_value_wei: u128,
+    pub(crate) min_value_wei: u128,
     /// Validated relay network tag.
-    pub network_tag: Vec<u8>,
+    pub(crate) network_tag: Vec<u8>,
+}
+
+impl MonadOutboxPolicy {
+    /// Construct policy only when its routing address is owned by the supplied compressed key.
+    pub(crate) fn new(
+        recipient: Address,
+        recipient_pubkey: Vec<u8>,
+        min_value_wei: u128,
+        network_tag: Vec<u8>,
+    ) -> Result<Self> {
+        let policy = Self {
+            recipient,
+            recipient_pubkey,
+            min_value_wei,
+            network_tag,
+        };
+        policy.validate_recipient_authority()?;
+        Ok(policy)
+    }
+
+    /// Revalidate the durable routing authority before recovery or publication.
+    pub(crate) fn validate_recipient_authority(&self) -> Result<()> {
+        let derived =
+            crate::monad_stamp_stealth::recipient_address_from_public_key(&self.recipient_pubkey)
+                .map_err(|_| InvalidRecipientPublicKey)?;
+        if derived != self.recipient {
+            return Err(RecipientPublicKeyMismatch {
+                claimed: self.recipient,
+                derived,
+            }
+            .into());
+        }
+        Ok(())
+    }
 }
 
 /// Aggregate durable lifecycle of one canonical request.
@@ -429,6 +463,19 @@ pub enum DbMonadOutboxError {
         actual: usize,
         /// Configured byte ceiling.
         maximum: usize,
+    },
+    /// The frozen compressed recipient key is not a valid secp256k1 public key.
+    #[invalid_user_input()]
+    #[error("Monad outbox recipient public key is invalid")]
+    InvalidRecipientPublicKey,
+    /// The frozen routing address is not owned by the frozen compressed recipient key.
+    #[invalid_user_input()]
+    #[error("Monad outbox recipient {claimed:?} differs from public-key address {derived:?}")]
+    RecipientPublicKeyMismatch {
+        /// Address supplied by the routing envelope.
+        claimed: Address,
+        /// Canonical Monad address derived from the compressed key.
+        derived: Address,
     },
     /// A configured writer bound exceeds the corresponding durable decoder cap.
     #[invalid_user_input()]
@@ -705,6 +752,7 @@ impl<'a> DbMonadOutbox<'a> {
         let payload_hash = checked_payload_hash(payload_hash)?;
         let canonical_message = message.encode_to_vec();
         validate_limits(limits)?;
+        policy.validate_recipient_authority()?;
         let _guard = self.db.lock_monad_outbox();
         if let Some(existing) = self.get(&payload_hash)? {
             let exact = match existing.canonical_message.as_deref() {
@@ -757,14 +805,14 @@ impl<'a> DbMonadOutbox<'a> {
                 (policy.clone(), false)
             }
             crate::store::monad_messages::MonadMessageAttemptClaim::ExistingExact(legacy) => (
-                MonadOutboxPolicy {
-                    recipient: policy.recipient,
-                    recipient_pubkey: legacy.recipient_pubkey,
-                    min_value_wei: legacy.min_value_wei,
-                    network_tag: legacy
+                MonadOutboxPolicy::new(
+                    policy.recipient,
+                    legacy.recipient_pubkey,
+                    legacy.min_value_wei,
+                    legacy
                         .network_tag
                         .unwrap_or_else(|| policy.network_tag.clone()),
-                },
+                )?,
                 true,
             ),
             crate::store::monad_messages::MonadMessageAttemptClaim::Conflict
@@ -911,6 +959,23 @@ impl<'a> DbMonadOutbox<'a> {
             .ok_or_else(|| CorruptRecord("test outbox row is missing".to_string()))?;
         active_policy(&record)?;
         record.policy.as_mut().expect("checked above").min_value_wei = min_value_wei;
+        self.db
+            .put(self.cf_outbox, &payload_hash, encode_record(&record))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn replace_recipient_for_test(
+        &self,
+        payload_hash: &[u8],
+        recipient: Address,
+    ) -> Result<()> {
+        let payload_hash = checked_payload_hash(payload_hash)?;
+        let _guard = self.db.lock_monad_outbox();
+        let mut record = self
+            .get(&payload_hash)?
+            .ok_or_else(|| CorruptRecord("test outbox row is missing".to_string()))?;
+        active_policy(&record)?;
+        record.policy.as_mut().expect("checked above").recipient = recipient;
         self.db
             .put(self.cf_outbox, &payload_hash, encode_record(&record))
     }
@@ -1677,7 +1742,6 @@ impl<'a> DbMonadOutbox<'a> {
                 members.iter(),
                 members.len(),
                 expected_chain_id,
-                limits.max_members,
             )?;
         }
         let child_indices = message
@@ -2240,6 +2304,7 @@ fn validate_claim(
     policy: &MonadOutboxPolicy,
     limits: &MonadOutboxLimits,
 ) -> Result<()> {
+    policy.validate_recipient_authority()?;
     if canonical.len() > limits.max_canonical_bytes {
         return Err(CanonicalTooLarge {
             actual: canonical.len(),
@@ -2709,12 +2774,29 @@ mod tests {
     }
 
     fn policy() -> MonadOutboxPolicy {
-        MonadOutboxPolicy {
-            recipient: Address([0x44; 20]),
-            recipient_pubkey: vec![2; 33],
-            min_value_wei: 10,
-            network_tag: b"testnet".to_vec(),
-        }
+        let recipient_pubkey = vec![2; 33];
+        policy_for_public_key(recipient_pubkey)
+    }
+
+    fn policy_for_public_key(recipient_pubkey: Vec<u8>) -> MonadOutboxPolicy {
+        MonadOutboxPolicy::new(
+            crate::monad_stamp_stealth::recipient_address_from_public_key(&recipient_pubkey)
+                .unwrap(),
+            recipient_pubkey,
+            10,
+            b"testnet".to_vec(),
+        )
+        .unwrap()
+    }
+
+    fn policy_for_secret(byte: u8) -> MonadOutboxPolicy {
+        let secp = secp256k1_abc::Secp256k1::new();
+        let secret = secp256k1_abc::SecretKey::from_slice(&[byte; 32]).unwrap();
+        policy_for_public_key(
+            secp256k1_abc::PublicKey::from_secret_key(&secp, &secret)
+                .serialize()
+                .to_vec(),
+        )
     }
 
     fn put_legacy_active_record(
@@ -2868,7 +2950,7 @@ mod tests {
         let db = Db::open(tempdir.path().join("db.rocksdb"))?;
         let request = message(&[b"legacy exact raw"]);
         let legacy = MonadMessageAttemptPolicy {
-            recipient_pubkey: vec![3; 33],
+            recipient_pubkey: policy().recipient_pubkey,
             min_value_wei: 77,
             network_tag: Some(b"legacy-net".to_vec()),
         };
@@ -2950,8 +3032,7 @@ mod tests {
             store.claim(&second.payload_hash, &second, &policy(), 2, &limits)?,
             MonadOutboxClaim::AtCapacity
         );
-        let mut other_policy = policy();
-        other_policy.recipient = Address([0x99; 20]);
+        let other_policy = policy_for_secret(0x33);
         assert_eq!(
             store.claim(&third.payload_hash, &third, &other_policy, 3, &limits)?,
             MonadOutboxClaim::New
@@ -2998,8 +3079,7 @@ mod tests {
         let mut limits = MonadOutboxLimits::default();
         limits.max_recovery_bytes = reservation * 2;
         limits.max_recovery_bytes_per_recipient = usize::MAX;
-        let mut other = policy();
-        other.recipient = Address([0x99; 20]);
+        let other = policy_for_secret(0x34);
         assert_eq!(
             store.claim(&request.payload_hash, &request, &policy(), 1, &limits)?,
             MonadOutboxClaim::New
@@ -3009,7 +3089,7 @@ mod tests {
             MonadOutboxClaim::New,
             "the exact global byte boundary is admissible"
         );
-        other.recipient = Address([0x98; 20]);
+        let other = policy_for_secret(0x35);
         assert_eq!(
             store.claim(&third.payload_hash, &third, &other, 3, &limits)?,
             MonadOutboxClaim::AtCapacity,
@@ -3520,6 +3600,89 @@ mod tests {
         zero.max_history_age = Duration::from_secs(u64::MAX);
         store.gc_history(now, &zero)?;
         assert!(store.get(&no_prefix_hash)?.is_none());
+        let recoveries = store.confirmed_prefixes_for_recipient(&policy().recipient, 10)?;
+        assert_eq!(recoveries.len(), 1);
+        assert_eq!(
+            recoveries[0].payload_hash.as_slice(),
+            with_prefix.payload_hash
+        );
+        assert_eq!(recoveries[0].confirmed_prefix.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn v4_migration_reclassifies_deployed_no_prefix_terminal_state() -> Result<()> {
+        let tempdir = tempdir::TempDir::new("monad-outbox-v4-deployed-upgrade")?;
+        let path = tempdir.path().join("db.rocksdb");
+        let no_prefix = message_with_seed(b"v4 stale no prefix", &[b"no-prefix-raw"]);
+        let with_prefix =
+            message_with_seed(b"v4 retained prefix", &[b"prefix-zero", b"prefix-one"]);
+        let limits = MonadOutboxLimits::default();
+        {
+            let db = Db::open(&path)?;
+            let store = db.monad_outbox();
+            store.claim(&no_prefix.payload_hash, &no_prefix, &policy(), 100, &limits)?;
+            store.terminal_observed_member(
+                &no_prefix.payload_hash,
+                0,
+                MonadOutboxTerminal::StaleNonce,
+                "deployed terminal",
+                102,
+                &limits,
+            )?;
+            let no_prefix_hash: [u8; 32] = no_prefix.payload_hash.as_slice().try_into().unwrap();
+            db.put(
+                store.cf_recipient,
+                recipient_key(&policy().recipient, &no_prefix_hash),
+                [],
+            )?;
+
+            store.claim(
+                &with_prefix.payload_hash,
+                &with_prefix,
+                &policy(),
+                110,
+                &limits,
+            )?;
+            store.confirm_observed_member(&with_prefix.payload_hash, 0, 10, 7, 111)?;
+            store.terminal_observed_member(
+                &with_prefix.payload_hash,
+                1,
+                MonadOutboxTerminal::StaleNonce,
+                "retained recovery obligation",
+                112,
+                &limits,
+            )?;
+            assert!(db.get(store.cf_meta, b"outbox-lifecycle-v3")?.is_some());
+            db.rocksdb()
+                .delete_cf(store.cf_meta, b"outbox-terminal-recovery-v4")?;
+            db.rocksdb()
+                .delete_cf(store.cf_meta, b"outbox-terminal-recovery-v4-cursor")?;
+        }
+
+        let mut zero_history = limits;
+        zero_history.max_history_records = 0;
+        zero_history.max_history_bytes = 0;
+        let db = Db::open_with_monad_outbox_limits(&path, &zero_history)?;
+        let store = db.monad_outbox();
+        assert!(db
+            .get(store.cf_meta, b"outbox-terminal-recovery-v4")?
+            .is_some());
+        let no_prefix_hash: [u8; 32] = no_prefix.payload_hash.as_slice().try_into().unwrap();
+        assert!(store.get(&no_prefix_hash)?.is_none());
+        assert!(db
+            .get(
+                store.cf_recipient,
+                recipient_key(&policy().recipient, &no_prefix_hash),
+            )?
+            .is_none());
+        assert_eq!(
+            db.rocksdb()
+                .iterator_cf(store.cf_history, IteratorMode::Start)
+                .count(),
+            0,
+            "zero history bounds are applied during the deployed v4 upgrade"
+        );
         let recoveries = store.confirmed_prefixes_for_recipient(&policy().recipient, 10)?;
         assert_eq!(recoveries.len(), 1);
         assert_eq!(

@@ -3,6 +3,12 @@
 //! Recovery always checks the deterministic exact transaction hash before considering a replay.
 //! Each child transition is persisted before the next child is examined, so a restart preserves
 //! an already-confirmed prefix without ever treating a competing nonce winner as confirmed.
+//!
+//! ```compile_fail
+//! use cashweb_registry::monad_outbox::{
+//!     reconcile_monad_outbox, reconcile_monad_outbox_with_permits,
+//! };
+//! ```
 
 use std::{sync::Arc, time::Duration};
 
@@ -125,7 +131,7 @@ pub enum MonadOutboxReconcileOutcome {
 
 /// Test convenience wrapper; production callers must supply the process-owned shared pool.
 #[cfg(test)]
-pub async fn reconcile_monad_outbox<T>(
+pub(crate) async fn reconcile_monad_outbox<T>(
     transport: &T,
     registry: &Registry,
     payload_hash: &[u8],
@@ -139,7 +145,7 @@ where
 }
 
 /// Reconcile one claim under the process-owned direct/background concurrency bound.
-pub async fn reconcile_monad_outbox_with_permits<T>(
+pub(crate) async fn reconcile_monad_outbox_with_permits<T>(
     transport: &T,
     registry: &Registry,
     payload_hash: &[u8],
@@ -186,22 +192,13 @@ where
                     "delivered inbox row has no canonical message".to_string(),
                 )
             })?;
-            validate_persisted_message(
-                message,
-                payload_hash,
-                config.expected_chain_id,
-                config.limits.max_members,
-            )?;
+            validate_persisted_message(message, payload_hash, config.expected_chain_id)?;
             return Ok(MonadOutboxReconcileOutcome::Delivered(stored));
         }
         MonadOutboxLifecycle::FullyConfirmed => {
-            if let Err(err) = validate_persisted_record(
-                registry,
-                &record,
-                payload_hash,
-                config.expected_chain_id,
-                config.limits.max_members,
-            ) {
+            if let Err(err) =
+                validate_persisted_record(registry, &record, payload_hash, config.expected_chain_id)
+            {
                 let transition = registry.terminal_monad_outbox_claim(
                     payload_hash,
                     MonadOutboxTerminal::CorruptReference,
@@ -237,7 +234,6 @@ where
         &record,
         payload_hash,
         config.expected_chain_id,
-        config.limits.max_members,
     ) {
         Ok(message) => message,
         Err(err) => {
@@ -526,19 +522,19 @@ fn validate_persisted_record(
     record: &crate::store::monad_outbox::MonadOutboxRecord,
     payload_hash: &[u8],
     expected_chain_id: u64,
-    max_members: usize,
 ) -> Result<proto::MonadStampedMessage> {
     let message = crate::store::monad_outbox::DbMonadOutbox::canonical_message(record)?;
     let canonical = record.canonical_message.as_deref().expect("decoded above");
     if message.encode_to_vec() != canonical {
         bail!("persisted canonical request uses a noncanonical protobuf encoding");
     }
-    validate_persisted_message(&message, payload_hash, expected_chain_id, max_members)?;
+    validate_persisted_message(&message, payload_hash, expected_chain_id)?;
     let policy = record.policy.as_ref().ok_or_else(|| {
         crate::store::monad_outbox::DbMonadOutboxError::CorruptRecord(
             "active outbox row has no frozen policy".to_string(),
         )
     })?;
+    policy.validate_recipient_authority()?;
     let key: [u8; 32] = payload_hash.try_into().expect("validated payload hash");
     let require_fully_confirmed = record.lifecycle == MonadOutboxLifecycle::FullyConfirmed;
     let mut members = Vec::with_capacity(message.stamp_payments.len());
@@ -583,7 +579,6 @@ fn validate_persisted_record(
             members.iter(),
             members.len(),
             expected_chain_id,
-            max_members,
         )?;
     }
     Ok(message)
@@ -593,17 +588,12 @@ fn validate_persisted_record(
 pub(crate) fn validate_monad_recovery_record(
     recovery: &ConfirmedPrefixRecovery,
     expected_chain_id: u64,
-    max_members: usize,
 ) -> Result<()> {
     if recovery.message.encode_to_vec() != recovery.canonical_message {
         bail!("recovery canonical request uses a noncanonical protobuf encoding");
     }
-    validate_persisted_message(
-        &recovery.message,
-        &recovery.payload_hash,
-        expected_chain_id,
-        max_members,
-    )?;
+    validate_persisted_message(&recovery.message, &recovery.payload_hash, expected_chain_id)?;
+    recovery.policy.validate_recipient_authority()?;
     if recovery
         .confirmed_prefix
         .len()
@@ -628,7 +618,6 @@ pub(crate) fn validate_monad_recovery_record(
                 .len()
                 .saturating_add(recovery.remaining_members.len()),
             expected_chain_id,
-            max_members,
         );
     }
     for (payment, member) in recovery.message.stamp_payments.iter().zip(
@@ -668,7 +657,6 @@ fn validate_persisted_message(
     message: &proto::MonadStampedMessage,
     payload_hash: &[u8],
     expected_chain_id: u64,
-    max_members: usize,
 ) -> Result<()> {
     let key: [u8; 32] = payload_hash.try_into().map_err(|_| {
         crate::store::monad_outbox::DbMonadOutboxError::InvalidPayloadHashLength(payload_hash.len())
@@ -680,10 +668,13 @@ fn validate_persisted_message(
     if actual.as_slice() != key {
         bail!("persisted payload hash differs from SHA256(encrypted_payload)");
     }
-    if message.stamp_payments.is_empty() || message.stamp_payments.len() > max_members {
+    if message.stamp_payments.is_empty()
+        || message.stamp_payments.len() > crate::store::monad_outbox::MAX_MEMBERS_HARD
+    {
         bail!(
-            "persisted payment cardinality {} is outside 1..={max_members}",
-            message.stamp_payments.len()
+            "persisted payment cardinality {} is outside 1..={}",
+            message.stamp_payments.len(),
+            crate::store::monad_outbox::MAX_MEMBERS_HARD,
         );
     }
     for (position, payment) in message.stamp_payments.iter().enumerate() {
@@ -721,7 +712,6 @@ pub(crate) fn validate_fully_confirmed_snapshot<'a, I>(
     members: I,
     member_count: usize,
     expected_chain_id: u64,
-    max_members: usize,
 ) -> Result<()>
 where
     I: Iterator<Item = &'a crate::store::monad_outbox::MonadOutboxMember>,
@@ -729,7 +719,8 @@ where
     if message.encode_to_vec() != canonical_message {
         bail!("fully-confirmed canonical request uses a noncanonical protobuf encoding");
     }
-    validate_persisted_message(message, payload_hash, expected_chain_id, max_members)?;
+    validate_persisted_message(message, payload_hash, expected_chain_id)?;
+    policy.validate_recipient_authority()?;
     if member_count != message.stamp_payments.len() {
         bail!("fully-confirmed member count differs from canonical request");
     }
@@ -787,12 +778,7 @@ fn current_outcome(
                         "delivered inbox row has no canonical message".to_string(),
                     )
                 })?;
-                validate_persisted_message(
-                    message,
-                    payload_hash,
-                    config.expected_chain_id,
-                    config.limits.max_members,
-                )?;
+                validate_persisted_message(message, payload_hash, config.expected_chain_id)?;
                 MonadOutboxReconcileOutcome::Delivered(stored)
             }
             MonadOutboxLifecycle::Terminal(terminal) => {
@@ -804,7 +790,6 @@ fn current_outcome(
                     &record,
                     payload_hash,
                     config.expected_chain_id,
-                    config.limits.max_members,
                 ) {
                     let transition = registry.terminal_monad_outbox_claim(
                         payload_hash,
@@ -1622,12 +1607,14 @@ mod tests {
                 payload_hash: payload_hash.to_vec(),
                 stamp_payments: payments,
             },
-            MonadOutboxPolicy {
-                recipient: Address([0x44; 20]),
+            MonadOutboxPolicy::new(
+                crate::monad_stamp_stealth::recipient_address_from_public_key(&recipient_pubkey)
+                    .unwrap(),
                 recipient_pubkey,
-                min_value_wei: (behaviors.len() as u128) * 10,
-                network_tag: b"testnet".to_vec(),
-            },
+                (behaviors.len() as u128) * 10,
+                b"testnet".to_vec(),
+            )
+            .unwrap(),
             transport,
         )
     }
@@ -1699,6 +1686,120 @@ mod tests {
         );
         assert!(registry.get_monad_message(&payload_hash)?.is_some());
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn lowered_member_limit_does_not_strand_accepted_durable_claims() -> Result<()> {
+        let tempdir = tempdir::TempDir::new("monad-outbox-frozen-member-bound")?;
+        let mut admitted = fast_config();
+        admitted.limits.max_members = 2;
+        let mut lowered = fast_config();
+        lowered.limits.max_members = 1;
+
+        let pending_path = tempdir.path().join("pending.rocksdb");
+        let (pending, pending_policy, pending_transport) = fixture_with_seed(
+            b"pending accepted under two-member bound",
+            &[SendBehavior::Accept, SendBehavior::Accept],
+            &[true, true],
+        );
+        {
+            let pending_registry = registry(&pending_path);
+            pending_registry.claim_monad_outbox(
+                &pending,
+                &pending_policy,
+                now_ms(),
+                &admitted.limits,
+            )?;
+        }
+        let pending_registry = registry(&pending_path);
+        assert!(matches!(
+            reconcile_monad_outbox(
+                &pending_transport,
+                &pending_registry,
+                &pending.payload_hash,
+                &lowered,
+            )
+            .await?,
+            MonadOutboxReconcileOutcome::Delivered(_)
+        ));
+
+        let prefix_path = tempdir.path().join("prefix.rocksdb");
+        let (prefix, prefix_policy, prefix_transport) = fixture_with_seed(
+            b"prefix accepted under two-member bound",
+            &[SendBehavior::Accept, SendBehavior::Accept],
+            &[true, true],
+        );
+        {
+            let prefix_registry = registry(&prefix_path);
+            prefix_registry.claim_monad_outbox(
+                &prefix,
+                &prefix_policy,
+                now_ms(),
+                &admitted.limits,
+            )?;
+            let lease = match prefix_registry.acquire_monad_outbox_reconcile_lease(
+                &prefix.payload_hash,
+                0,
+                now_ms(),
+                &admitted.limits,
+            )? {
+                MonadOutboxLeaseAcquire::Acquired { lease, .. } => lease,
+                other => panic!("expected frozen-member-bound lease, got {other:?}"),
+            };
+            prefix_registry.complete_confirmed_monad_outbox_member(
+                &prefix.payload_hash,
+                0,
+                lease,
+                10,
+                7,
+                now_ms(),
+            )?;
+        }
+        let prefix_registry = registry(&prefix_path);
+        let recovery = prefix_registry
+            .confirmed_monad_outbox_prefixes(prefix_policy.recipient, 1)?
+            .pop()
+            .expect("accepted confirmed prefix remains recoverable after limit lowering");
+        validate_monad_recovery_record(&recovery, lowered.expected_chain_id)?;
+        assert!(matches!(
+            reconcile_monad_outbox(
+                &prefix_transport,
+                &prefix_registry,
+                &prefix.payload_hash,
+                &lowered,
+            )
+            .await?,
+            MonadOutboxReconcileOutcome::Delivered(_)
+        ));
+
+        let rejected_registry = registry(&tempdir.path().join("new.rocksdb"));
+        let (rejected, rejected_policy, _) = fixture_with_seed(
+            b"new two-member claim after lowering",
+            &[SendBehavior::Accept, SendBehavior::Accept],
+            &[true, true],
+        );
+        assert!(rejected_registry
+            .claim_monad_outbox(&rejected, &rejected_policy, now_ms(), &lowered.limits,)
+            .is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn persisted_cardinality_uses_stable_hard_bound() {
+        let (request, _, _) = fixture(&[SendBehavior::Accept], &[true]);
+        let mut empty = request.clone();
+        empty.stamp_payments.clear();
+        assert!(validate_persisted_message(&empty, &empty.payload_hash, 41_454).is_err());
+
+        let mut oversized = request;
+        let template = oversized.stamp_payments[0].clone();
+        oversized.stamp_payments = (0..=crate::store::monad_outbox::MAX_MEMBERS_HARD)
+            .map(|index| proto::MonadStampPayment {
+                child_index: index as u32,
+                ..template.clone()
+            })
+            .collect();
+        assert!(validate_persisted_message(&oversized, &oversized.payload_hash, 41_454).is_err());
     }
 
     #[tokio::test]
@@ -2347,6 +2448,96 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn recipient_public_key_is_the_only_routing_authority() -> Result<()> {
+        let tempdir = tempdir::TempDir::new("monad-outbox-recipient-authority")?;
+        let config = fast_config();
+
+        let rejected_registry = registry(&tempdir.path().join("rejected.rocksdb"));
+        let (rejected, mut mismatched_policy, rejected_transport) =
+            fixture(&[SendBehavior::Accept], &[true]);
+        mismatched_policy.recipient = Address([0x44; 20]);
+        let error = rejected_registry
+            .claim_monad_outbox(&rejected, &mismatched_policy, now_ms(), &config.limits)
+            .expect_err("an unrelated routing address must fail before durable claim");
+        assert!(format!("{error:#}").contains("differs from public-key address"));
+        assert!(rejected_registry
+            .monad_outbox_record(&rejected.payload_hash)?
+            .is_none());
+        assert!(rejected_transport.calls().is_empty());
+
+        let corrupt_registry = registry(&tempdir.path().join("corrupt.rocksdb"));
+        let (corrupt, corrupt_policy, corrupt_transport) =
+            fixture(&[SendBehavior::Accept, SendBehavior::Accept], &[true, true]);
+        corrupt_registry.claim_monad_outbox(&corrupt, &corrupt_policy, now_ms(), &config.limits)?;
+        let lease = match corrupt_registry.acquire_monad_outbox_reconcile_lease(
+            &corrupt.payload_hash,
+            0,
+            now_ms(),
+            &config.limits,
+        )? {
+            MonadOutboxLeaseAcquire::Acquired { lease, .. } => lease,
+            other => panic!("expected recipient-authority fixture lease, got {other:?}"),
+        };
+        corrupt_registry.complete_confirmed_monad_outbox_member(
+            &corrupt.payload_hash,
+            0,
+            lease,
+            10,
+            7,
+            now_ms(),
+        )?;
+        corrupt_registry
+            .replace_monad_outbox_recipient_for_test(&corrupt.payload_hash, Address([0x44; 20]))?;
+        assert!(corrupt_registry
+            .confirmed_monad_outbox_prefixes(corrupt_policy.recipient, 1)
+            .is_err());
+        assert_eq!(
+            reconcile_monad_outbox(
+                &corrupt_transport,
+                &corrupt_registry,
+                &corrupt.payload_hash,
+                &config,
+            )
+            .await?,
+            MonadOutboxReconcileOutcome::Terminal(MonadOutboxTerminal::CorruptReference)
+        );
+        assert!(corrupt_transport.calls().is_empty());
+        assert!(corrupt_registry
+            .get_monad_message(&corrupt.payload_hash)?
+            .is_none());
+
+        let matching_registry = registry(&tempdir.path().join("matching.rocksdb"));
+        let (matching, matching_policy, matching_transport) =
+            fixture(&[SendBehavior::Accept], &[true]);
+        matching_registry.claim_monad_outbox(
+            &matching,
+            &matching_policy,
+            now_ms(),
+            &config.limits,
+        )?;
+        assert!(matches!(
+            reconcile_monad_outbox(
+                &matching_transport,
+                &matching_registry,
+                &matching.payload_hash,
+                &config,
+            )
+            .await?,
+            MonadOutboxReconcileOutcome::Delivered(_)
+        ));
+        assert_eq!(
+            matching_registry
+                .list_monad_messages_for_recipient_since(matching_policy.recipient, 0)?
+                .len(),
+            1
+        );
+        assert!(matching_registry
+            .list_monad_messages_for_recipient_since(Address([0x44; 20]), 0)?
+            .is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn confirmed_member_value_is_revalidated_from_exact_signed_bytes_before_finalize(
     ) -> Result<()> {
         let tempdir = tempdir::TempDir::new("monad-outbox-confirmed-value-corruption")?;
@@ -2423,12 +2614,9 @@ mod tests {
             .confirmed_monad_outbox_prefixes(partial_policy.recipient, 1)?
             .pop()
             .expect("partial confirmed prefix must remain recoverable");
-        assert!(validate_monad_recovery_record(
-            &partial_recovery,
-            config.expected_chain_id,
-            config.limits.max_members,
-        )
-        .is_err());
+        assert!(
+            validate_monad_recovery_record(&partial_recovery, config.expected_chain_id,).is_err()
+        );
         assert_eq!(
             reconcile_monad_outbox(
                 &partial_transport,
@@ -2481,12 +2669,9 @@ mod tests {
             .confirmed_monad_outbox_prefixes(minimum_policy.recipient, 1)?
             .pop()
             .expect("fully confirmed row must remain recoverable before publication");
-        assert!(validate_monad_recovery_record(
-            &minimum_recovery,
-            config.expected_chain_id,
-            config.limits.max_members,
-        )
-        .is_err());
+        assert!(
+            validate_monad_recovery_record(&minimum_recovery, config.expected_chain_id,).is_err()
+        );
         assert_eq!(
             reconcile_monad_outbox(
                 &minimum_transport,
@@ -2630,11 +2815,7 @@ mod tests {
             recovery_page_work_counts(),
             (65, exact_budget, 65, exact_budget)
         );
-        validate_monad_recovery_record(
-            &page.recoveries[0],
-            41_454,
-            MonadOutboxLimits::default().max_members,
-        )?;
+        validate_monad_recovery_record(&page.recoveries[0], 41_454)?;
         assert_eq!(
             recovery_page_work_counts(),
             (65, exact_budget, 65, exact_budget),

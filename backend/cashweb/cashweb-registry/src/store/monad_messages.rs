@@ -538,6 +538,7 @@ impl<'a> DbMonadMessages<'a> {
     /// discover newly-stored messages by polling with an advancing cursor, without already
     /// knowing their `payload_hash` out of band -- see this module's docs for why this can't
     /// additionally filter by intended recipient.
+    #[cfg(test)]
     pub(crate) fn list_since(&self, since: i64) -> Result<Vec<proto::StoredMonadMessage>> {
         let start_key = by_time_key(since, &[]);
         let iter = self.db.rocksdb().iterator_cf(

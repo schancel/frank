@@ -3005,6 +3005,15 @@ impl<'a> DbMonadOutbox<'a> {
         let Some(record) = self.get(&payload_hash)? else {
             return Ok(MonadRecoveryAck::Absent);
         };
+        // Recipient ownership is decided before anything else, so another recipient can never
+        // distinguish an active, terminal, or absent claim by probing a payload hash.
+        match record.policy.as_ref() {
+            Some(policy) if policy.recipient != *recipient => {
+                return Ok(MonadRecoveryAck::WrongRecipient)
+            }
+            None => return Ok(MonadRecoveryAck::Absent),
+            Some(_) => {}
+        }
         if matches!(
             record.lifecycle,
             MonadOutboxLifecycle::Pending | MonadOutboxLifecycle::FullyConfirmed
@@ -4656,6 +4665,7 @@ mod tests {
         request: &proto::MonadStampedMessage,
         policy: &MonadOutboxPolicy,
         version: u8,
+        member_attempts: u32,
     ) -> Result<[u8; 32]> {
         let payload_hash: [u8; 32] = request.payload_hash.as_slice().try_into().unwrap();
         let diagnostic = "x".repeat(MAX_LAST_ERROR_BYTES_HARD);
@@ -4694,7 +4704,9 @@ mod tests {
             let mut member = vec![version, 0, 0];
             member.extend_from_slice(&Hash32(Keccak256::digest(&payment.raw_tx).into()).0);
             // Zero attempts: never submitted, so terminalization leaves no recovery obligation.
-            member.extend_from_slice(&0u32.to_be_bytes());
+            // A nonzero count models a predecessor that started (and may have completed) a send:
+            // legacy rows carry no exposure flag, so decoding must treat that as possibly exposed.
+            member.extend_from_slice(&member_attempts.to_be_bytes());
             member.extend_from_slice(&101i64.to_be_bytes());
             member.extend_from_slice(&0u128.to_be_bytes());
             member.extend_from_slice(&0u64.to_be_bytes());
@@ -5111,6 +5123,9 @@ mod tests {
                 other => panic!("expected quota fixture lease, got {other:?}"),
             };
             let detail = "x".repeat(MAX_LAST_ERROR_BYTES_HARD * 2);
+            let aggregate_before = db
+                .get(store.cf_outbox, &request.payload_hash)?
+                .expect("claimed aggregate row");
             assert_eq!(
                 store.complete_pending_member(
                     &request.payload_hash,
@@ -5122,12 +5137,15 @@ mod tests {
                 )?,
                 MonadOutboxTransition::Applied
             );
-            // Member completion no longer rewrites the aggregate row; only the child carries it.
-            assert!(store
-                .get(&request.payload_hash)?
-                .unwrap()
-                .last_error
-                .is_empty());
+            // Member completion never rewrites the aggregate row: its bytes are identical, so an
+            // oversized child diagnostic cannot grow it past its reservation.
+            assert_eq!(
+                db.get(store.cf_outbox, &request.payload_hash)?
+                    .expect("aggregate row")
+                    .as_ref(),
+                aggregate_before.as_ref()
+            );
+            // Only the child row carries the diagnostic, hard-bounded at MAX_LAST_ERROR_BYTES_HARD.
             assert_eq!(
                 store
                     .get_member(&request.payload_hash, 0)?
@@ -6910,7 +6928,7 @@ mod tests {
                     message_with_seed(&[version, per_recipient as u8, 1], &[b"new-active-raw"]);
                 {
                     let db = Db::open(&path)?;
-                    put_legacy_active_record(&db, &legacy, &policy(), version)?;
+                    put_legacy_active_record(&db, &legacy, &policy(), version, 0)?;
                 }
                 let db = Db::open(&path)?;
                 let store = db.monad_outbox();
@@ -8025,6 +8043,144 @@ mod tests {
         put_stored_message(&db, [4; 32], vec![foreign])?;
         let err = bind_to_completion(&db.monad_outbox(), 41_454).unwrap_err();
         assert!(err.to_string().contains("differs from configured"), "{err}");
+        Ok(())
+    }
+    #[test]
+    fn legacy_attempted_member_is_exposed_and_retained_until_it_ages_out() -> Result<()> {
+        for version in [RECORD_VERSION_V1, RECORD_VERSION_V2] {
+            let tempdir = tempdir::TempDir::new("monad-outbox-legacy-attempted")?;
+            let path = tempdir.path().join("db.rocksdb");
+            let legacy = message_with_seed(&[version, 0xa7], &[b"legacy-attempted-raw"]);
+            {
+                let db = Db::open(&path)?;
+                // Two persisted attempts: the predecessor may have submitted these bytes.
+                put_legacy_active_record(&db, &legacy, &policy(), version, 2)?;
+            }
+            let db = Db::open(&path)?;
+            let store = db.monad_outbox();
+            let hash: [u8; 32] = legacy.payload_hash.as_slice().try_into().unwrap();
+            let member = store.get_member(&hash, 0)?.unwrap();
+            assert_eq!(member.attempts, 2);
+            assert!(
+                member.exposed,
+                "a legacy member with persisted attempts is treated as possibly exposed"
+            );
+
+            let mut limits = MonadOutboxLimits::default();
+            limits.max_recovery_records = 1;
+            limits.max_recovery_records_per_recipient = 1;
+            limits.max_unconfirmed_recovery_age = Duration::from_millis(1_000);
+            let lease = lease_at(&store, &hash, 0, 10_000, &limits);
+            assert_eq!(
+                store.complete_terminal_member(
+                    &hash,
+                    0,
+                    lease,
+                    MonadOutboxTerminal::StaleNonce,
+                    "lost",
+                    10_001,
+                    &limits,
+                )?,
+                MonadOutboxTransition::Applied
+            );
+            // Unlike the zero-attempt fixture, this terminal keeps its recovery obligation.
+            assert!(db
+                .get(
+                    store.cf_recipient,
+                    recipient_key(&policy().recipient, &hash)
+                )?
+                .is_some());
+            assert_eq!(
+                store
+                    .confirmed_prefixes_for_recipient(&policy().recipient, 10)?
+                    .len(),
+                1
+            );
+            let next = message_with_seed(&[version, 0xa8], &[b"next"]);
+            assert_eq!(
+                store.claim(&next.payload_hash, &next, &policy(), 10_002, &limits)?,
+                MonadOutboxClaim::AtCapacity,
+                "the retained legacy obligation still owns the only recovery slot"
+            );
+            // The exposure-only obligation is bounded: it ages out and frees the slot.
+            assert_eq!(
+                store.expire_unconfirmed_recovery(10_001 + 1_001, &limits)?,
+                1
+            );
+            assert!(store.get(&hash)?.is_none());
+            assert_eq!(
+                store.claim(&next.payload_hash, &next, &policy(), 12_000, &limits)?,
+                MonadOutboxClaim::New
+            );
+        }
+        Ok(())
+    }
+
+    fn put_inbox_message(db: &Db, recipient: Address, seed: &[u8], timestamp: i64) -> [u8; 32] {
+        let envelope = format!(
+            r#"{{"to":"{}","seed":"{}"}}"#,
+            recipient.to_hex(),
+            hex::encode(seed)
+        )
+        .into_bytes();
+        let hash: [u8; 32] = Sha256::digest(envelope.clone().into())
+            .as_slice()
+            .try_into()
+            .unwrap();
+        let stored = proto::StoredMonadMessage {
+            message: Some(proto::MonadStampedMessage {
+                encrypted_payload: envelope,
+                payload_hash: hash.to_vec(),
+                stamp_payments: vec![],
+            }),
+            timestamp,
+            network_tag: vec![],
+        };
+        db.monad_messages().put(&hash, &recipient, &stored).unwrap();
+        hash
+    }
+
+    #[test]
+    fn inbox_page_stops_at_the_recipient_prefix_boundary_for_the_lower_sorted_recipient(
+    ) -> Result<()> {
+        let tempdir = tempdir::TempDir::new("monad-inbox-prefix-boundary")?;
+        let db = Db::open(tempdir.path().join("db.rocksdb"))?;
+        let store = db.monad_outbox();
+        // Recipient keys sort by address, so `lower` is followed in the index by `higher`'s rows.
+        let lower = Address([0x01; 20]);
+        let higher = Address([0x02; 20]);
+        let lower_hashes = [
+            put_inbox_message(&db, lower, b"lower-a", 10),
+            put_inbox_message(&db, lower, b"lower-b", 20),
+        ];
+        let higher_hash = put_inbox_message(&db, higher, b"higher-a", 15);
+
+        for limit in [2usize, 3, 10] {
+            let page = store.validated_inbox_page(&lower, 0, None, limit, usize::MAX)?;
+            let returned = page
+                .messages
+                .iter()
+                .map(|stored| stored.message.as_ref().unwrap().payload_hash.clone())
+                .collect::<Vec<_>>();
+            assert_eq!(
+                returned,
+                lower_hashes
+                    .iter()
+                    .map(|hash| hash.to_vec())
+                    .collect::<Vec<_>>(),
+                "limit {limit}: only the queried recipient's rows are returned"
+            );
+            assert!(
+                page.next_cursor.is_none(),
+                "limit {limit}: the adjacent recipient's row is not `more`"
+            );
+        }
+        let page = store.validated_inbox_page(&higher, 0, None, 10, usize::MAX)?;
+        assert_eq!(page.messages.len(), 1);
+        assert_eq!(
+            page.messages[0].message.as_ref().unwrap().payload_hash,
+            higher_hash.to_vec()
+        );
         Ok(())
     }
 }

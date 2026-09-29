@@ -196,6 +196,19 @@ pub enum DbMonadMessagesError {
 
 use self::DbMonadMessagesError::*;
 
+/// Outcome of consuming a recipient-authenticated mailbox challenge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ChallengeConsumption {
+    /// The nonce was unused and is now durably consumed.
+    Consumed,
+    /// The challenge is expired or its nonce was already consumed (an authentication failure).
+    Rejected,
+    /// The recipient already has the maximum number of live consumed challenges. This is a
+    /// retryable resource condition, not an authentication failure: capacity returns as the
+    /// recipient's earlier challenges expire.
+    AtCapacity,
+}
+
 impl<'a> DbMonadMessages<'a> {
     /// Create a new [`DbMonadMessages`] instance.
     pub(crate) fn new(db: &'a Db) -> Self {
@@ -321,8 +334,8 @@ impl<'a> DbMonadMessages<'a> {
     }
 
     #[cfg(test)]
-    /// Release a claim after the first transaction was definitively rejected by the RPC before
-    /// any member of the set verified. Timeout/accepted ambiguity deliberately does not call this.
+    /// Release a claim (test-only: production releases digest-only claims solely through exact
+    /// adoption into the canonical outbox).
     pub(crate) fn delete_attempt(&self, payload_hash: &[u8]) -> Result<()> {
         let _guard = self.db.lock_monad_outbox();
         let mut batch = rocksdb::WriteBatch::default();
@@ -352,9 +365,9 @@ impl<'a> DbMonadMessages<'a> {
         expires_at_ms: i64,
         now_ms: i64,
         per_recipient_cap: usize,
-    ) -> Result<bool> {
+    ) -> Result<ChallengeConsumption> {
         if expires_at_ms < now_ms || per_recipient_cap == 0 {
-            return Ok(false);
+            return Ok(ChallengeConsumption::Rejected);
         }
         let _guard = self.db.lock_monad_outbox();
         let exact_key = mailbox_auth_exact_key(&epoch, &recipient, &nonce);
@@ -367,7 +380,7 @@ impl<'a> DbMonadMessages<'a> {
                 .map(i64::from_be_bytes)
                 .map_err(|_| DbMonadMessagesError::CorruptMailboxAuthRecord)?;
             if existing_expiry >= now_ms {
-                return Ok(false);
+                return Ok(ChallengeConsumption::Rejected);
             }
             batch.delete_cf(self.cf_monad_message_attempts, &exact_key);
             batch.delete_cf(
@@ -437,7 +450,7 @@ impl<'a> DbMonadMessages<'a> {
                 active += 1;
                 if active >= per_recipient_cap {
                     self.db.write_batch(batch)?;
-                    return Ok(false);
+                    return Ok(ChallengeConsumption::AtCapacity);
                 }
             }
         }
@@ -453,7 +466,7 @@ impl<'a> DbMonadMessages<'a> {
             [],
         );
         self.db.write_batch(batch)?;
-        Ok(true)
+        Ok(ChallengeConsumption::Consumed)
     }
 
     #[cfg(test)]
@@ -709,6 +722,8 @@ impl Debug for DbMonadMessages<'_> {
 mod tests {
     use bitcoinsuite_error::Result;
     use pretty_assertions::assert_eq;
+
+    use super::ChallengeConsumption;
 
     use crate::{
         monad_http::Address,
@@ -1089,28 +1104,51 @@ mod tests {
         {
             let db = Db::open(&path)?;
             let store = db.monad_messages();
-            assert!(store.consume_mailbox_challenge(epoch, victim, nonce, 10_000, 1, 2)?);
+            assert_eq!(
+                store.consume_mailbox_challenge(epoch, victim, nonce, 10_000, 1, 2)?,
+                ChallengeConsumption::Consumed
+            );
             for index in 0..512u64 {
                 let mut address = [0u8; 20];
                 address[..8].copy_from_slice(&index.to_be_bytes());
-                assert!(store.consume_mailbox_challenge(
-                    epoch,
-                    Address(address),
-                    [index as u8; 32],
-                    10_000,
-                    2,
-                    2,
-                )?);
+                assert_eq!(
+                    store.consume_mailbox_challenge(
+                        epoch,
+                        Address(address),
+                        [index as u8; 32],
+                        10_000,
+                        2,
+                        2,
+                    )?,
+                    ChallengeConsumption::Consumed
+                );
             }
-            assert!(!store.consume_mailbox_challenge(epoch, victim, nonce, 10_000, 3, 2)?);
-            assert!(store.consume_mailbox_challenge(epoch, victim, [0x23; 32], 10_000, 3, 2)?);
-            assert!(!store.consume_mailbox_challenge(epoch, victim, [0x24; 32], 10_000, 3, 2)?);
+            assert_eq!(
+                store.consume_mailbox_challenge(epoch, victim, nonce, 10_000, 3, 2)?,
+                ChallengeConsumption::Rejected,
+                "a replayed nonce is an authentication failure"
+            );
+            assert_eq!(
+                store.consume_mailbox_challenge(epoch, victim, [0x23; 32], 10_000, 3, 2)?,
+                ChallengeConsumption::Consumed
+            );
+            assert_eq!(
+                store.consume_mailbox_challenge(epoch, victim, [0x24; 32], 10_000, 3, 2)?,
+                ChallengeConsumption::AtCapacity,
+                "the per-recipient cap is a retryable capacity condition"
+            );
         }
         {
             let db = Db::open(&path)?;
             let store = db.monad_messages();
-            assert!(!store.consume_mailbox_challenge(epoch, victim, nonce, 10_000, 4, 2)?);
-            assert!(store.consume_mailbox_challenge(epoch, victim, nonce, 20_000, 10_001, 2)?);
+            assert_eq!(
+                store.consume_mailbox_challenge(epoch, victim, nonce, 10_000, 4, 2)?,
+                ChallengeConsumption::Rejected
+            );
+            assert_eq!(
+                store.consume_mailbox_challenge(epoch, victim, nonce, 20_000, 10_001, 2)?,
+                ChallengeConsumption::Consumed
+            );
         }
         Ok(())
     }

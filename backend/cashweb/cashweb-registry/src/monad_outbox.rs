@@ -1506,6 +1506,13 @@ mod tests {
             self.calls.lock().unwrap().clone()
         }
 
+        fn sends(&self) -> usize {
+            self.calls()
+                .iter()
+                .filter(|method| method.as_str() == "eth_sendRawTransaction")
+                .count()
+        }
+
         fn set_confirmed(&self, hash: Hash32, confirmed: bool) {
             self.specs.lock().unwrap().get_mut(&hash).unwrap().confirmed = confirmed;
         }
@@ -3532,6 +3539,52 @@ mod tests {
             1,
             "HTTP and worker RPC activity must never exceed the one process permit"
         );
+        Ok(())
+    }
+
+    /// Member-level equivalent of "one durable replay attempt for two racing reconcilers": with a
+    /// send that is accepted but never mined, the claim stays pending, so the durable member row
+    /// (unlike a delivered claim's compact tombstone) can prove exactly one attempt was charged.
+    #[tokio::test]
+    async fn dual_reconcilers_charge_exactly_one_member_attempt() -> Result<()> {
+        let tempdir = tempdir::TempDir::new("monad-outbox-dual-attempts")?;
+        let active_registry = Arc::new(registry(&tempdir.path().join("db.rocksdb")));
+        let (request, policy, transport) = fixture(&[SendBehavior::AcceptNeverMined], &[false]);
+        let mut config = fast_config();
+        config.limits.retry_backoff_base = Duration::from_secs(1_000);
+        config.limits.max_retry_backoff = Duration::from_secs(1_000);
+        active_registry.claim_monad_outbox(&request, &policy, now_ms(), &config.limits)?;
+        let payload_hash = request.payload_hash.clone();
+        let gate = Arc::new(tokio::sync::Barrier::new(3));
+        let spawn_reconciler = || {
+            let registry = Arc::clone(&active_registry);
+            let transport = transport.clone();
+            let payload_hash = payload_hash.clone();
+            let config = config.clone();
+            let gate = Arc::clone(&gate);
+            tokio::spawn(async move {
+                gate.wait().await;
+                reconcile_monad_outbox(&transport, &registry, &payload_hash, &config).await
+            })
+        };
+        let first = spawn_reconciler();
+        let second = spawn_reconciler();
+        gate.wait().await;
+        assert_eq!(first.await.unwrap()?, MonadOutboxReconcileOutcome::Pending);
+        assert_eq!(second.await.unwrap()?, MonadOutboxReconcileOutcome::Pending);
+        assert_eq!(
+            transport.sends(),
+            1,
+            "the exact transaction is broadcast once"
+        );
+        let member = active_registry
+            .monad_outbox_member(&payload_hash, 0)?
+            .unwrap();
+        assert_eq!(
+            member.attempts, 1,
+            "exactly one attempt is charged to the member"
+        );
+        assert!(member.exposed, "the accepted send is recorded as exposure");
         Ok(())
     }
 

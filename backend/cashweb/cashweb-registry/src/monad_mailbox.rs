@@ -14,7 +14,7 @@ use crate::{
 
 type HmacSha256 = Hmac<Sha256>;
 
-const CHALLENGE_TTL_MS: i64 = 60_000;
+pub(crate) const CHALLENGE_TTL_MS: i64 = 60_000;
 pub(crate) const MAX_USED_CHALLENGES_PER_RECIPIENT: usize = 8;
 const CHALLENGE_MAC_DOMAIN: &[u8] = b"frank:mailbox-challenge-mac:v1\0";
 const CURSOR_MAC_DOMAIN: &[u8] = b"frank:mailbox-cursor-mac:v1\0";
@@ -552,5 +552,64 @@ mod tests {
             enabled.decode_cursor(Address([4; 20]), MailboxResource::Inbox, &"aa".repeat(4096),),
             None
         );
+    }
+    #[test]
+    fn cursor_mac_rejects_tampered_position_forged_mac_and_other_runtime() {
+        let runtime = runtime();
+        let enabled = runtime.as_enabled().unwrap();
+        let recipient = Address([4; 20]);
+        for (resource, cursor) in [
+            (
+                MailboxResource::Inbox,
+                MailboxCursor::Inbox {
+                    timestamp: 9,
+                    payload_hash: [7; 32],
+                },
+            ),
+            (
+                MailboxResource::Recovery,
+                MailboxCursor::Recovery {
+                    payload_hash: [8; 32],
+                },
+            ),
+        ] {
+            let encoded = enabled.encode_cursor(recipient, cursor);
+            assert_eq!(
+                enabled.decode_cursor(recipient, resource, &encoded),
+                Some(cursor)
+            );
+            let bytes = hex::decode(&encoded).unwrap();
+            // Every single-byte change is rejected: header, recipient, position, and MAC alike.
+            for index in 0..bytes.len() {
+                let mut forged = bytes.clone();
+                forged[index] ^= 0x01;
+                assert_eq!(
+                    enabled.decode_cursor(recipient, resource, &hex::encode(forged)),
+                    None,
+                    "{resource:?}: byte {index} of the cursor is not covered by its MAC"
+                );
+            }
+            // A structurally perfect cursor whose MAC was computed with another key.
+            let other_runtime = MonadMailboxRuntime::enabled_with_auth_secret_for_test(
+                HttpTransport::new("http://127.0.0.1:1".parse().unwrap()),
+                Arc::new(MonadOutboxReconcileConfig::default()),
+                1,
+                b"MONT".to_vec(),
+                [0x99; 32],
+            );
+            let foreign = other_runtime
+                .as_enabled()
+                .unwrap()
+                .encode_cursor(recipient, cursor);
+            assert_eq!(enabled.decode_cursor(recipient, resource, &foreign), None);
+            // A zeroed MAC over an otherwise valid position.
+            let mut unsigned = bytes.clone();
+            let mac_start = unsigned.len() - 32;
+            unsigned[mac_start..].fill(0);
+            assert_eq!(
+                enabled.decode_cursor(recipient, resource, &hex::encode(unsigned)),
+                None
+            );
+        }
     }
 }

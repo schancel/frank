@@ -213,85 +213,112 @@ depends only on their public profile/mailbox/pubsub interfaces. Adapters own cha
 validation, addresses, amounts, transaction references, and cursors. They do not import the merge
 view or another adapter.
 
-Each adapter normalizes only the common event envelope:
+Each adapter separates the immutable source record from local projections:
 
 ```text
-AdapterEvent {
+ImmutableSourceEvent {
   key: (source_network_tag, stream_kind, source_instance_id, source_event_id)
-  source_order_key: adapter-defined immutable comparable bytes
-  event_commitment: domain-separated digest of canonical normalized event bytes
-  presentation_time: { seconds: bigint, nanos: uint32 }
-  relay_origin: authenticated origin record
-  entries: opaque or decrypted entries with their own optional NetworkTags
-  native: chain-specific typed event
+  source_order: (source_order_key, source_event_id)
+  ordering_time: { seconds: bigint, nanos: uint32 }
+  authenticated_origin: immutable source-authenticated facts
+  canonical_source_bytes: exact opaque encrypted/native source bytes
+  event_commitment: domain-separated digest of the fields above
+}
+
+LocalEventProjection {
+  key
+  decrypted_entries
+  chain_specific_decoded_view
+  fetched_at
+  discovered_at
+  render_metadata
 }
 ```
 
-`native` is a discriminated adapter-owned value, not a generic transaction. The merge layer may
-index common display metadata but cannot reinterpret it. `source_instance_id` is an authenticated
-relay node/source identity, not a configured URL or local adapter name. Time uses lossless signed
-seconds plus `0..999_999_999` nanoseconds, consistent with #106/#133; JavaScript represents seconds
-as `bigint`, never a `number` millisecond count.
+`source_instance_id` is an authenticated relay node/source identity, not a configured URL or local
+adapter name. `canonical_source_bytes` retains the chain-specific discriminated source format; it
+is not a generic transaction. Decryption, parsing, contact resolution, fetch time, discovery time,
+relative time, and rendering are replaceable local projections. Fetching an event while locked and
+decrypting it later changes only `LocalEventProjection`; its key, commitment, source order, and
+canonical merge position remain identical.
+
+`ordering_time` is mandatory, immutable, authenticated by or deterministically derived from the
+source record, and always committed. It uses lossless signed seconds plus `0..999_999_999`
+nanoseconds, consistent with #106/#133; JavaScript represents seconds as `bigint`, never a `number`
+millisecond count. Mutable fetch, discovery, receipt, or render times are local projection data and
+never participate in canonical ordering.
+
+An adapter whose source has no immutable wall-clock time must define a reviewed deterministic
+fallback from immutable source order. For example, an adapter with a nonnegative integer sequence
+`n` maps it to `seconds = n / 1_000_000_000` and `nanos = n % 1_000_000_000`; a compound chain
+position uses an adapter-specified injective rank before the same mapping. The mapping is part of
+that adapter's contract and vectors. If no immutable time or deterministic injective source-order
+rank is accepted, the adapter rejects the event rather than using arrival or fetch time.
 
 `event_commitment` is a domain-separated digest (for example,
-`frank:normalized-adapter-event:v1`) over the canonical normalized bytes containing the full
-four-part key, `source_order_key`, authenticated origin facts, and exact entry/native content. It
-also binds `presentation_time` when that time is an immutable source fact. Local render labels,
-relative-time strings, and any other mutable presentation-only field are excluded. The normalized
-schema and digest vectors land with F4 after #131 freezes canonical encoding. The commitment is
-persisted atomically with the event and cannot be recomputed from a lossy UI model.
+`frank:normalized-adapter-event:v1`) over one canonical encoding of only the full four-part key,
+strict `source_order`, immutable `ordering_time`, immutable authenticated origin facts, and exact
+`canonical_source_bytes`. The digest excludes itself and every decrypted, decoded, UI, fetch,
+discovery, and render projection. Its normalized schema and vectors land with F4 after #131 freezes
+canonical encoding. The event and commitment persist atomically and cannot be reconstructed from a
+lossy projection.
 
 Each authoritative source stream is scoped by `(NetworkTag, stream_kind, source_instance_id,
-authorization_scope)`. Its adapter yields events in immutable `source_order_key` order. Mailbox
-authorization scope is the exact network-qualified `account_address` controlled by the registered
-destination key; selective pubsub scope is a subscription identity plus generation. A
-profile/public stream uses its declared query or global-feed scope.
+authorization_scope)`. Within that complete scope, `(source_order_key, source_event_id)` must be a
+unique strict total order and pages must be strictly increasing by that tuple. Equal
+`source_order_key` values are allowed only because immutable `source_event_id` is the required
+tie-breaker. Mailbox authorization scope is the exact network-qualified `account_address`
+controlled by the registered destination key; selective pubsub scope is a subscription identity
+plus generation. A profile/public stream uses its declared query or global-feed scope.
 
 ### Two-adapter example
 
-Assume one Lotus mailbox source returns this authoritative sequence, including a regressing
-presentation timestamp:
+Assume one Lotus mailbox source returns this authoritative sequence. Its equal order keys prove the
+event-ID tie-breaker, and its immutable ordering time regresses:
 
 ```text
-L1 key=(LTUS, mailbox, relay-L, lotus:0009) order=0009 commit=cL1 time=(1720000000,900000000)
-L2 key=(LTUS, mailbox, relay-L, lotus:0010) order=0010 commit=cL2 time=(1719999999,100000000)
+L1 key=(LTUS, mailbox, relay-L, lotus:0009) source_order=(0009,lotus:0009)
+   ordering_time=(1720000000,900000000) commitment=cL1
+L2 key=(LTUS, mailbox, relay-L, lotus:0010) source_order=(0009,lotus:0010)
+   ordering_time=(1719999999,100000000) commitment=cL2
 ```
 
 and one Monad mailbox source returns:
 
 ```text
-M1 key=(MONT, mailbox, relay-M, monad:0031) order=0031 commit=cM1 time=(1720000000,100000000)
-M2 key=(MONT, mailbox, relay-M, monad:0032) order=0032 commit=cM2 time=(1720000000,300000000)
+M1 key=(MONT, mailbox, relay-M, monad:0031) source_order=(0031,monad:0031)
+   ordering_time=(1720000000,100000000) commitment=cM1
+M2 key=(MONT, mailbox, relay-M, monad:0032) source_order=(0032,monad:0032)
+   ordering_time=(1720000000,300000000) commitment=cM2
 ```
 
-The deterministic presentation view is a k-way merge. Only the next unconsumed head of each source
-stream is eligible. Among eligible heads, compare this tuple bytewise (and compare the timestamp as
-the exact seconds/nanoseconds pair):
+The deterministic canonical view is a k-way merge. Only the next unconsumed head of each source
+stream is eligible. Among eligible heads, compare this tuple bytewise, comparing time as the exact
+seconds/nanoseconds pair:
 
 ```text
-(presentation_time, NetworkTag, stream_kind, source_instance_id,
+(ordering_time, NetworkTag, stream_kind, source_instance_id,
  source_order_key, source_event_id)
 ```
 
-The result is `M1, M2, L1, L2`. `L2` can never precede `L1`, even though its timestamp regresses,
-because it is not eligible until `L1` is consumed. Every comparison has explicit tie-breakers, so
-response timing, locale, and JavaScript object iteration cannot affect the result. Presentation
-time is relay- or chain-authenticated metadata, never an untrusted timestamp inside encrypted
-content.
+The result is `M1, M2, L1, L2`. `L2` can never precede `L1`, despite its regressing ordering time
+and equal `source_order_key`, because it is not eligible until `L1` is consumed and its event ID is
+the within-source tie-breaker. Response timing, mutable discovery time, locale, decryption state,
+and JavaScript object iteration cannot affect the result.
 
-If `relay-L` later returns the `L1` key with altered content and commitment `cL1-prime`, the fan-in
-does not treat it as a duplicate: it preserves the stored `L1/cL1`, quarantines that page, leaves
-the relay-L cursor unchanged, and marks relay-L stale/error.
+If `relay-L` later returns the `L1` key with altered canonical source bytes, source order, immutable
+ordering time, or authenticated origin facts, its commitment differs. Fan-in preserves stored
+`L1/cL1`, quarantines the page, leaves the relay-L cursor unchanged, and marks relay-L stale/error.
 
 This is a deterministic materialized view, not a claim of cross-chain causality. If an outage later
-reveals an older source sequence, rebuilding the same set produces the same k-way order while
-preserving every source edge. An optional notification list may be append-only by local discovery
-time, but it is not the canonical conversation/event order.
+reveals an older source sequence, rebuilding the same immutable records produces the same k-way
+order while preserving every source edge. An optional notification list may use local discovery
+time, but it is not canonical event order.
 
-State replay never uses `presentation_time` or the cross-source presentation merge. It applies each
-source in `source_order_key` order. A domain object changed by more than one source must carry an
-explicit version, predecessor/causal reference, or separately specified commutative reducer; the
-fan-in layer must not manufacture state authority from timestamps.
+State replay never uses local projection times or the cross-source canonical merge. It applies each
+source in strict `(source_order_key, source_event_id)` order. A domain object changed by more than
+one source must carry an explicit version, predecessor/causal reference, or separately specified
+commutative reducer; fan-in must not manufacture state authority from timestamps.
 
 ### Identity and deduplication
 
@@ -304,15 +331,17 @@ stream_kind, source_instance_id, source_event_id)` tuple; source-local identifie
 therefore cannot collide.
 
 Exact retries first look up the full `key` and then compare `event_commitment`. Equal commitments
-are an idempotent retry. Reuse of an existing key with a different commitment is source
-equivocation or corruption: reject and quarantine the entire page, preserve the prior event, do
-not advance that source cursor, and mark the source stale/error for operator and client visibility.
-The merge must never overwrite the event or silently drop the conflicting body and advance.
+are an idempotent retry regardless of local locked/decrypted projection state. Reuse of an existing
+key with a different commitment is source equivocation or corruption: reject and quarantine the
+entire page, preserve the prior immutable event and its projections, do not advance that source
+cursor, and mark the source stale/error. Never overwrite the event or silently drop the conflict
+and advance.
 
-A separate content digest may collapse equivalent content for presentation, but all distinct relay
-origins remain attached. If the same envelope is stamped independently on two chains, those are
-two source events even when their content digest is equal. Per-entry attribution always comes from
-that entry's tag; deduplication never overwrites it with `key.source_network_tag`.
+A separate digest of decrypted content may collapse equivalent presentation projections, but it is
+not exact event identity and does not alter source records. All distinct authenticated origins
+remain attached. If the same envelope is stamped independently on two chains, those are two source
+events even when decrypted content is equal. Per-entry attribution always comes from the decrypted
+entry's tag; projection deduplication never overwrites it with `key.source_network_tag`.
 
 ### Checkpoints, reconnect, and partial outage
 
@@ -324,21 +353,22 @@ and is never used as a substitute for these fields. Each value is an adapter-own
 plus its advertised high-water mark. The cursor and server authorization are bound to the complete
 key. The merge layer never decodes, compares, increments, re-scopes, or synthesizes cursors.
 
-For each page, canonical validation, commitment verification, event-plus-commitment insertion,
-exact-key/commitment deduplication, origin attachment, and that adapter's cursor advance commit
-atomically. Any unequal commitment for an existing key aborts and quarantines the page before the
-cursor transaction. A crash before commit replays the page; a crash after commit resumes after it.
-On reconnect, the adapter resumes from its last committed cursor. If a relay reports cursor expiry
-or restart invalidation, the adapter follows its declared snapshot or safe-origin replay path and
-relies on stable keys plus commitments for idempotence; it never falls back to `timestamp + 1`.
+For each page, canonical validation, strict source-order validation, commitment verification,
+immutable-event-plus-commitment insertion, exact-key/commitment deduplication, origin attachment,
+and that adapter's cursor advance commit atomically. Any reused key with changed immutable source
+bytes, order, ordering time, or origin aborts and quarantines the page before the cursor transaction.
+A crash before commit replays the page; a crash after commit resumes after it. On reconnect, the
+adapter resumes from its last committed cursor. If a relay reports cursor expiry or restart
+invalidation, the adapter follows its declared snapshot or safe-origin replay path and relies on
+stable keys plus commitments for idempotence; it never falls back to `timestamp + 1`.
 
 An unavailable adapter does not stop healthy adapters. Its checkpoint remains unchanged, its
-source stream is marked stale with the last successful high-water mark and lossless timestamp, and
-the merged view continues with an explicit partial-data status. Sends requiring the unavailable
-adapter fail or queue only under that adapter's declared policy; they never fail over to another
-chain. When it reconnects, backlog pages are applied atomically and the materialized k-way view is
-updated without violating source order. The UI clears the stale marker only after reaching the
-adapter's new high-water mark.
+source stream is marked stale with the last committed high-water mark and immutable ordering time,
+and the merged view continues with an explicit partial-data status. Mutable last-fetch time may be
+shown only as local status. Sends requiring the unavailable adapter fail or queue only under that
+adapter's declared policy; they never fail over to another chain. When it reconnects, backlog pages
+are applied atomically and the materialized k-way view updates without violating source order. The
+UI clears the stale marker only after reaching the adapter's new high-water mark.
 
 ## Resource limits are not message semantics
 
@@ -372,7 +402,7 @@ in this documentation ticket.
 | F1 — **refine #132 and #136 after #131** | In #132, define canonical-CBOR DM/message-item schemas with separate stamp, per-entry reference, and settlement roles plus discriminated EVM/UTXO references. In #136, apply the same attribution rule to topic entries that reference chains. Shared golden vectors include this composite fixture and reject NetworkTag/native-variant mismatch. | Preserve exact legacy bytes under their explicit legacy readers; never transcode them. Unknown supported CBOR item kinds remain opaque. No new protobuf schema or generated-binding work is prescribed here. |
 | F2 — **new issue: canonical route groups and aliases** | After #60 authentication/state prerequisites, add independently mountable profiles/mailbox/pubsub routers, the complete mailbox surface above, route integration tests, and the bounded non-security alias inventory. No storage-byte change. | Canonical routes are additive. Removal is a later landing after the three alias triggers pass. The two unauthenticated legacy GETs stay removed. |
 | F3 — **new issue: in-repository client route cutover** | Switch typed clients, wallet adapters, bots, frontend configuration, and live checks together; prove canonical-only client traffic against one binary with all three groups mounted and with each group disabled in turn. | Roll back clients while reviewed aliases remain. Successful live integration permits F5; there is no invented external waiting window. |
-| F4 — **new issue: multichain fan-in state and integration proof** | Introduce `MultichainEventView`, two real adapter instances, four-part exact observation keys, canonical event commitments, lossless timestamp vectors, k-way order tests with regressing times, complete authorization-scoped checkpoints, outage/reconnect/cursor-expiry tests, and per-entry attribution checks. A key-reuse/different-body fixture proves the prior event and cursor survive, the page is quarantined, and the source becomes stale/error. | Requires an actual second adapter and accepted cursor contracts. Adapter/runtime restoration is its own prerequisite. The compile-time seam is removed only after all current consumers use fan-in. |
+| F4 — **new issue: multichain fan-in state and integration proof** | Introduce `MultichainEventView`, two real adapter instances, four-part exact observation keys, immutable-source commitments, lossless ordering-time vectors, strict-source-order and k-way merge tests, complete authorization-scoped checkpoints, outage/reconnect/cursor-expiry tests, and per-entry attribution checks. Fixtures prove: equal `source_order_key` is ordered by event ID; locked→decrypted projection preserves key/commitment/order; changed mutable discovery time preserves order; key reuse with changed source bytes or committed ordering time quarantines without replacing the event or advancing the cursor and marks the source stale/error. | Requires an actual second adapter and accepted cursor contracts. Adapter/runtime restoration is its own prerequisite. The compile-time seam is removed only after all current consumers use fan-in. |
 | F5 — **new issue: alias deletion** | After in-repo cutover and live proof, remove the bounded aliases. Repository scans and route tests prove old Monad routes are gone, the removed unauthenticated reads return `404`, unauthenticated canonical reads return `401`, Monad-form `/metadata/:addr` dispatch is gone, and Lotus-form `/metadata/:addr` still works. | Re-enable only the non-security alias inventory for rollback; never restore the global feed or public payload-hash lookup. |
 | Existing #65/#87/#88/#89/#111/#133/#135 work | Federation, import/delivery, public nanosecond records, and mailbox topology consume the boundaries here but retain their own authority, storage, authentication, encoding, and replication contracts. | None may infer an entry's network from relay provenance, expose mailbox records through public federation, or create a cursor outside the complete authorization scope. |
 

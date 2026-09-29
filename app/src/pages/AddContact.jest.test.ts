@@ -1,39 +1,37 @@
-/**
- * Component-logic tests load AddContact.vue's TypeScript block directly. The repository's
- * checked-in Babel config names an undeclared legacy Vue-transform plugin, so importing an SFC
- * under Jest fails before component code runs. Exercising the exported options object keeps this
- * regression at the real watcher/method boundary without changing dependency scope.
- */
-import fs from 'fs'
-import path from 'path'
-import ts from 'typescript'
+/** @jest-environment jsdom */
 
-import enUs from '../i18n/en-us'
-import frFr from '../i18n/fr-fr'
+import { mount, VueWrapper } from '@vue/test-utils'
+import * as quasar from 'quasar'
+import { defineComponent, h, nextTick } from 'vue'
+
+import enUS from 'src/i18n/en-us'
+import frFR from 'src/i18n/fr-fr'
+import { activeChain } from '@frank/wallet/chain'
+import { openChat } from 'src/utils/routes'
+import AddContact from './AddContact.vue'
+
+const mockAddContactToStore = jest.fn()
+jest.mock('src/stores/contacts', () => ({
+  defaultRelayData: { profile: { name: '', bio: '', avatar: '' } },
+  useContactStore: () => ({ addContact: mockAddContactToStore }),
+}))
+jest.mock('@frank/wallet/chain', () => ({
+  activeChain: {
+    parseAddress: jest.fn(),
+    formatAddress: jest.fn(),
+    fetchProfile: jest.fn(),
+  },
+}))
+jest.mock('bitcore-lib-xpi', () => ({
+  PublicKey: { fromBuffer: jest.fn(() => ({ kind: 'public-key' })) },
+}))
+jest.mock('src/utils/routes', () => ({ openChat: jest.fn() }))
 
 type ChainAddress = { raw: string }
 type ProfileInfo = {
   address: ChainAddress
   name?: string
-  bio?: string
-  avatar?: string
   pubKey: Uint8Array
-}
-type Contact = { profile?: { name?: string } }
-type AcceptedLookup = { resolvedAddress: string; contact: Contact }
-type Page = {
-  address: string
-  acceptedLookup: AcceptedLookup | null
-  canAdd: boolean
-  addContact(): void
-  [key: string]: unknown
-}
-type ComponentOptions = {
-  data(): Record<string, unknown>
-  setup(): Record<string, unknown>
-  computed: Record<string, (this: Page) => unknown>
-  watch: { address(this: Page, address: string): Promise<void> }
-  methods: Record<string, (this: Page, ...args: never[]) => unknown>
 }
 type Deferred<T> = {
   promise: Promise<T>
@@ -41,323 +39,454 @@ type Deferred<T> = {
   reject(error: unknown): void
 }
 
+const DEBOUNCE_MS = 250
 const ADDRESS_A = 'canonical:a'
 const ADDRESS_B = 'canonical:b'
 const ADDRESS_C = 'canonical:c'
+// Different spellings of the same canonical address ('A' is a re-cased 'a').
 const parsedAddresses: Record<string, ChainAddress> = {
   a: { raw: ADDRESS_A },
   A: { raw: ADDRESS_A },
   b: { raw: ADDRESS_B },
   c: { raw: ADDRESS_C },
 }
-
-const mockAddContactToStore = jest.fn()
-const mockOpenChat = jest.fn()
+const chain = activeChain as unknown as {
+  parseAddress: jest.Mock
+  formatAddress: jest.Mock
+  fetchProfile: jest.Mock
+}
+const mockOpenChat = openChat as jest.Mock
 const mockRouter = { go: jest.fn(), push: jest.fn() }
-const activeChain = {
-  name: 'Test chain',
-  parseAddress: jest.fn<ChainAddress | undefined, [string]>(),
-  formatAddress: jest.fn<string, [ChainAddress]>(),
-  fetchProfile: jest.fn<Promise<ProfileInfo | undefined>, [ChainAddress]>(),
+
+function translate(key: string, params: Record<string, unknown> = {}): string {
+  const value = key
+    .split('.')
+    .reduce<any>((node, part) => node?.[part], enUS as any)
+  return typeof value === 'string'
+    ? value.replace(/\{(\w+)\}/g, (_m, k: string) => String(params[k]))
+    : key
 }
 
-const componentSource = fs.readFileSync(
-  path.join(__dirname, 'AddContact.vue'),
-  'utf8',
-)
-
-function loadComponent(): ComponentOptions {
-  const script = componentSource.match(
-    /<script lang="ts">([\s\S]*?)<\/script>/,
-  )?.[1]
-  if (!script) {
-    throw new Error('AddContact.vue TypeScript block not found')
-  }
-  const withoutImports = script.replace(
-    /import[\s\S]*?from\s+['"][^'"]+['"]\s*/g,
-    '',
-  )
-  const javascript = ts.transpileModule(withoutImports, {
-    compilerOptions: {
-      module: ts.ModuleKind.CommonJS,
-      target: ts.ScriptTarget.ES2020,
+// Quasar's real components render nothing under the SSR build Jest is aliased to, so each Q*
+// element becomes a plain element that keeps the attributes/listeners/slots the page puts on it.
+function passthrough(tag: string) {
+  return defineComponent({
+    props: { modelValue: null, label: null },
+    setup(props, { slots }) {
+      return () =>
+        h(tag, [props.label as string | undefined, slots.default?.()])
     },
-  }).outputText
-  const evaluate = new Function(
-    'exports',
-    'defineComponent',
-    'markRaw',
-    'ref',
-    'activeChain',
-    'PublicKey',
-    'defaultRelayData',
-    'useContactStore',
-    'openChat',
-    `${javascript}; return exports.default`,
-  ) as (...args: unknown[]) => ComponentOptions
-
-  return evaluate(
-    {},
-    (options: ComponentOptions) => options,
-    (value: unknown) => value,
-    (value: unknown) => ({ value }),
-    activeChain,
-    { fromBuffer: jest.fn(() => ({ kind: 'public-key' })) },
-    { profile: { name: '', bio: '', avatar: '' } },
-    () => ({ addContact: mockAddContactToStore }),
-    mockOpenChat,
-  )
+  })
 }
-
-const component = loadComponent()
-
-function createPage(): Page {
-  const page = Object.assign(
-    component.data(),
-    component.setup(),
-    component.methods,
-    { $router: mockRouter },
-  ) as unknown as Page
-  for (const [name, getter] of Object.entries(component.computed)) {
-    Object.defineProperty(page, name, { get: () => getter.call(page) })
-  }
-  return page
-}
-
-function startAddress(page: Page, address: string): Promise<void> {
-  page.address = address
-  return component.watch.address.call(page, address)
-}
+const QInputStub = defineComponent({
+  props: { modelValue: String },
+  emits: ['update:modelValue'],
+  setup(props, { emit }) {
+    return () =>
+      h('input', {
+        value: props.modelValue,
+        onInput: (e: Event) =>
+          emit('update:modelValue', (e.target as HTMLInputElement).value),
+      })
+  },
+})
+const QBtnStub = defineComponent({
+  props: { label: String, disable: Boolean },
+  setup(props) {
+    return () => h('button', { disabled: props.disable }, props.label)
+  },
+})
+const quasarStubs: Record<string, any> = Object.fromEntries(
+  Object.keys(quasar)
+    .filter(name => /^Q[A-Z]/.test(name))
+    .map(name => [name, passthrough('div')]),
+)
+quasarStubs.QInput = QInputStub
+quasarStubs.QBtn = QBtnStub
 
 function deferred<T>(): Deferred<T> {
   let resolve!: (value: T) => void
   let reject!: (error: unknown) => void
-  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
-    resolve = resolvePromise
-    reject = rejectPromise
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res
+    reject = rej
   })
   return { promise, resolve, reject }
 }
 
 function profile(address: string, name: string): ProfileInfo {
-  return {
-    address: { raw: address },
-    name,
-    pubKey: Uint8Array.from([2]),
-  }
+  return { address: { raw: address }, name, pubKey: Uint8Array.from([2]) }
 }
 
 async function settle(): Promise<void> {
-  await Promise.resolve()
-  await Promise.resolve()
+  for (let i = 0; i < 5; i++) {
+    await Promise.resolve()
+  }
+  await nextTick()
 }
 
+function mountPage(): VueWrapper {
+  return mount(AddContact, {
+    global: {
+      components: quasarStubs,
+      mocks: { $t: translate, $router: mockRouter },
+    },
+  })
+}
+
+// Types into the address field and lets the watcher run (the lookup itself is still debounced).
+async function type(wrapper: VueWrapper, value: string): Promise<void> {
+  await wrapper.find('input').setValue(value)
+  await settle()
+}
+// Types, waits out the debounce so the lookup fires, and lets it reach the (deferred) fetch.
+async function typeAndFire(wrapper: VueWrapper, value: string): Promise<void> {
+  await type(wrapper, value)
+  jest.advanceTimersByTime(DEBOUNCE_MS)
+  await settle()
+}
+
+const addButton = (w: VueWrapper) =>
+  w.findAll('button').find(b => b.text() === 'Add')!
+const isBusy = (w: VueWrapper) => w.find('input').attributes('aria-busy')
+const status = (w: VueWrapper) => w.find('[role="status"]').text()
+const skeletons = (w: VueWrapper) => w.findAll('[aria-hidden="true"]')
+const notFoundCard = (w: VueWrapper) => w.find('[name="error"]')
+
 describe('AddContact latest lookup', () => {
+  let wrapper: VueWrapper
+
   beforeEach(() => {
+    jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] })
     mockAddContactToStore.mockReset()
     mockOpenChat.mockReset()
     mockRouter.go.mockReset()
     mockRouter.push.mockReset()
-    activeChain.parseAddress.mockReset()
-    activeChain.formatAddress.mockReset()
-    activeChain.fetchProfile.mockReset()
-    activeChain.parseAddress.mockImplementation(input => parsedAddresses[input])
-    activeChain.formatAddress.mockImplementation(address => address.raw)
+    chain.parseAddress.mockReset()
+    chain.formatAddress.mockReset()
+    chain.fetchProfile.mockReset()
+    chain.parseAddress.mockImplementation(input => parsedAddresses[input])
+    chain.formatAddress.mockImplementation(address => address.raw)
+    wrapper = mountPage()
   })
 
-  it('canonicalizes the lookup, performs one fetch, and commits the exact accepted pair', async () => {
-    activeChain.fetchProfile.mockResolvedValue(profile(ADDRESS_A, 'Alice'))
-    const page = createPage()
+  afterEach(() => {
+    wrapper.unmount()
+    jest.useRealTimers()
+  })
 
-    await startAddress(page, '  a  ')
+  it('canonicalizes the lookup, fetches once, and commits the exact accepted pair', async () => {
+    chain.fetchProfile.mockResolvedValue(profile(ADDRESS_A, 'Alice'))
 
-    expect(activeChain.parseAddress).toHaveBeenCalledWith('a')
-    expect(activeChain.fetchProfile).toHaveBeenCalledTimes(1)
-    expect(activeChain.fetchProfile).toHaveBeenCalledWith(parsedAddresses.a)
-    expect(page.acceptedLookup?.resolvedAddress).toBe(ADDRESS_A)
-    expect(page.acceptedLookup?.contact.profile?.name).toBe('Alice')
-    expect(page.canAdd).toBe(true)
+    await typeAndFire(wrapper, '  a  ')
 
-    const acceptedContact = page.acceptedLookup?.contact
-    page.addContact()
+    expect(chain.parseAddress).toHaveBeenCalledWith('a')
+    expect(chain.fetchProfile).toHaveBeenCalledTimes(1)
+    expect(chain.fetchProfile).toHaveBeenCalledWith(parsedAddresses.a)
+    expect(status(wrapper)).toContain('Alice')
+    expect(addButton(wrapper).attributes('disabled')).toBeUndefined()
+
+    await addButton(wrapper).trigger('click')
 
     expect(mockAddContactToStore).toHaveBeenCalledTimes(1)
     expect(mockAddContactToStore).toHaveBeenCalledWith({
       address: ADDRESS_A,
-      contact: acceptedContact,
+      contact: {
+        profile: expect.objectContaining({
+          name: 'Alice',
+          bio: '',
+          avatar: '',
+        }),
+      },
     })
+    // The canonical resolved address, not the raw '  a  ' the user typed.
     expect(mockOpenChat).toHaveBeenCalledTimes(1)
     expect(mockOpenChat).toHaveBeenCalledWith(mockRouter, ADDRESS_A)
+  })
+
+  it('adds through the Enter key only when a lookup was accepted', async () => {
+    chain.fetchProfile.mockResolvedValue(profile(ADDRESS_A, 'Alice'))
+    await type(wrapper, 'a')
+    await wrapper.find('input').trigger('keydown.enter')
+    expect(mockAddContactToStore).not.toHaveBeenCalled()
+
+    jest.advanceTimersByTime(DEBOUNCE_MS)
+    await settle()
+    await wrapper.find('input').trigger('keydown.enter')
+    expect(mockOpenChat).toHaveBeenCalledWith(mockRouter, ADDRESS_A)
+  })
+
+  describe('debounce', () => {
+    it('shows pending immediately but fetches once, after the last keystroke settles', async () => {
+      chain.fetchProfile.mockResolvedValue(profile(ADDRESS_C, 'Carol'))
+
+      await type(wrapper, 'a')
+      expect(isBusy(wrapper)).toBe('true')
+      jest.advanceTimersByTime(DEBOUNCE_MS - 1)
+      await type(wrapper, 'b')
+      jest.advanceTimersByTime(DEBOUNCE_MS - 1)
+      await type(wrapper, 'c')
+      expect(chain.fetchProfile).not.toHaveBeenCalled()
+      expect(isBusy(wrapper)).toBe('true')
+
+      jest.advanceTimersByTime(1)
+      await settle()
+      expect(chain.fetchProfile).not.toHaveBeenCalled()
+      jest.advanceTimersByTime(DEBOUNCE_MS)
+      await settle()
+
+      expect(chain.fetchProfile).toHaveBeenCalledTimes(1)
+      expect(chain.fetchProfile).toHaveBeenCalledWith(parsedAddresses.c)
+      expect(isBusy(wrapper)).toBe('false')
+    })
+
+    it('drops the scheduled lookup when the input becomes empty or unparseable', async () => {
+      await type(wrapper, 'a')
+      await type(wrapper, '')
+      expect(isBusy(wrapper)).toBe('false')
+      await type(wrapper, 'b')
+      await type(wrapper, 'not-an-address')
+      jest.advanceTimersByTime(DEBOUNCE_MS * 2)
+      await settle()
+
+      expect(chain.fetchProfile).not.toHaveBeenCalled()
+      expect(isBusy(wrapper)).toBe('false')
+    })
+
+    it('cancels the scheduled lookup on unmount', async () => {
+      const other = mountPage()
+      await other.find('input').setValue('a')
+      await settle()
+      other.unmount()
+      jest.advanceTimersByTime(DEBOUNCE_MS * 2)
+      await settle()
+
+      expect(chain.fetchProfile).not.toHaveBeenCalled()
+    })
   })
 
   it('keeps B when B resolves before an older A lookup', async () => {
     const lookupA = deferred<ProfileInfo | undefined>()
     const lookupB = deferred<ProfileInfo | undefined>()
-    activeChain.fetchProfile
+    chain.fetchProfile
       .mockImplementationOnce(() => lookupA.promise)
       .mockImplementationOnce(() => lookupB.promise)
-    const page = createPage()
 
-    void startAddress(page, 'a')
-    void startAddress(page, 'b')
+    await typeAndFire(wrapper, 'a')
+    await typeAndFire(wrapper, 'b')
     lookupB.resolve(profile(ADDRESS_B, 'Bob'))
     await settle()
-    expect(page.acceptedLookup?.resolvedAddress).toBe(ADDRESS_B)
+    expect(status(wrapper)).toContain('Bob')
 
     lookupA.resolve(profile(ADDRESS_A, 'Alice'))
     await settle()
-    expect(page.acceptedLookup?.resolvedAddress).toBe(ADDRESS_B)
-    expect(page.acceptedLookup?.contact.profile?.name).toBe('Bob')
+    expect(status(wrapper)).toContain('Bob')
 
-    const acceptedContact = page.acceptedLookup?.contact
-    page.addContact()
+    await addButton(wrapper).trigger('click')
     expect(mockAddContactToStore).toHaveBeenCalledWith({
       address: ADDRESS_B,
-      contact: acceptedContact,
+      contact: { profile: expect.objectContaining({ name: 'Bob' }) },
     })
     expect(mockOpenChat).toHaveBeenCalledWith(mockRouter, ADDRESS_B)
   })
 
-  it('ignores stale rejection and stale not-found completions', async () => {
+  it('ignores a stale rejection and a stale not-found completion', async () => {
     const staleRejection = deferred<ProfileInfo | undefined>()
     const currentB = deferred<ProfileInfo | undefined>()
     const staleNotFound = deferred<ProfileInfo | undefined>()
     const currentA = deferred<ProfileInfo | undefined>()
-    activeChain.fetchProfile
+    chain.fetchProfile
       .mockImplementationOnce(() => staleRejection.promise)
       .mockImplementationOnce(() => currentB.promise)
       .mockImplementationOnce(() => staleNotFound.promise)
       .mockImplementationOnce(() => currentA.promise)
-    const page = createPage()
 
-    void startAddress(page, 'a')
-    void startAddress(page, 'b')
+    await typeAndFire(wrapper, 'a')
+    await typeAndFire(wrapper, 'b')
     currentB.resolve(profile(ADDRESS_B, 'Bob'))
     await settle()
     staleRejection.reject(new Error('old lookup failed'))
     await settle()
-    expect(page.acceptedLookup?.resolvedAddress).toBe(ADDRESS_B)
+    expect(status(wrapper)).toContain('Bob')
 
-    void startAddress(page, 'c')
-    void startAddress(page, 'a')
+    await typeAndFire(wrapper, 'c')
+    await typeAndFire(wrapper, 'a')
     currentA.resolve(profile(ADDRESS_A, 'Alice'))
     await settle()
     staleNotFound.resolve(undefined)
     await settle()
-    expect(page.acceptedLookup?.resolvedAddress).toBe(ADDRESS_A)
+    expect(status(wrapper)).toContain('Alice')
   })
 
   it('ignores A settling while B is pending and refuses Add', async () => {
     const lookupA = deferred<ProfileInfo | undefined>()
     const lookupB = deferred<ProfileInfo | undefined>()
-    activeChain.fetchProfile
+    chain.fetchProfile
       .mockImplementationOnce(() => lookupA.promise)
       .mockImplementationOnce(() => lookupB.promise)
-    const page = createPage()
 
-    void startAddress(page, 'a')
-    void startAddress(page, 'b')
+    await typeAndFire(wrapper, 'a')
+    await typeAndFire(wrapper, 'b')
     lookupA.resolve(profile(ADDRESS_A, 'Alice'))
     await settle()
-    expect(page.acceptedLookup).toBeNull()
-    expect(page.canAdd).toBe(false)
-    page.addContact()
+
+    expect(isBusy(wrapper)).toBe('true')
+    expect(addButton(wrapper).attributes('disabled')).toBeDefined()
+    await wrapper.find('input').trigger('keydown.enter')
     expect(mockAddContactToStore).not.toHaveBeenCalled()
     expect(mockOpenChat).not.toHaveBeenCalled()
+  })
+
+  it('keeps the current lookup pending when a stale lookup rejects', async () => {
+    const staleRejection = deferred<ProfileInfo | undefined>()
+    const currentB = deferred<ProfileInfo | undefined>()
+    chain.fetchProfile
+      .mockImplementationOnce(() => staleRejection.promise)
+      .mockImplementationOnce(() => currentB.promise)
+
+    await typeAndFire(wrapper, 'a')
+    await typeAndFire(wrapper, 'b')
+    staleRejection.reject(new Error('old lookup failed'))
+    await settle()
+
+    expect(isBusy(wrapper)).toBe('true')
+    expect(skeletons(wrapper)).toHaveLength(3)
+    expect(status(wrapper)).toBe(translate('newContactDialog.loading'))
+
+    currentB.resolve(profile(ADDRESS_B, 'Bob'))
+    await settle()
+    expect(isBusy(wrapper)).toBe('false')
+    expect(status(wrapper)).toContain('Bob')
+  })
+
+  it('clears pending when the current lookup itself rejects', async () => {
+    chain.fetchProfile.mockRejectedValue(new Error('offline'))
+
+    await typeAndFire(wrapper, 'a')
+
+    expect(isBusy(wrapper)).toBe('false')
+    expect(addButton(wrapper).attributes('disabled')).toBeDefined()
+  })
+
+  describe('retyping the same address in a different case', () => {
+    // 'a' and 'A' canonicalize to the same address, so only the lookup generation can tell the
+    // older request from the newer one.
+    it('does not let the older lookup overwrite the newer one when it resolves last', async () => {
+      const older = deferred<ProfileInfo | undefined>()
+      const newer = deferred<ProfileInfo | undefined>()
+      chain.fetchProfile
+        .mockImplementationOnce(() => older.promise)
+        .mockImplementationOnce(() => newer.promise)
+
+      await typeAndFire(wrapper, 'a')
+      await typeAndFire(wrapper, 'A')
+      newer.resolve(profile(ADDRESS_A, 'Newer'))
+      await settle()
+      older.resolve(profile(ADDRESS_A, 'Older'))
+      await settle()
+
+      expect(status(wrapper)).toContain('Newer')
+      await addButton(wrapper).trigger('click')
+      expect(mockAddContactToStore).toHaveBeenCalledWith({
+        address: ADDRESS_A,
+        contact: { profile: expect.objectContaining({ name: 'Newer' }) },
+      })
+    })
+
+    it('does not accept the older lookup while the newer one is still pending', async () => {
+      const older = deferred<ProfileInfo | undefined>()
+      const newer = deferred<ProfileInfo | undefined>()
+      chain.fetchProfile
+        .mockImplementationOnce(() => older.promise)
+        .mockImplementationOnce(() => newer.promise)
+
+      await typeAndFire(wrapper, 'a')
+      await typeAndFire(wrapper, 'A')
+      older.resolve(profile(ADDRESS_A, 'Older'))
+      await settle()
+
+      expect(isBusy(wrapper)).toBe('true')
+      expect(addButton(wrapper).attributes('disabled')).toBeDefined()
+      expect(status(wrapper)).toBe(translate('newContactDialog.loading'))
+    })
   })
 
   it('invalidates an accepted lookup when the input is cleared or changed', async () => {
-    activeChain.fetchProfile.mockResolvedValue(profile(ADDRESS_A, 'Alice'))
-    const page = createPage()
+    chain.fetchProfile.mockResolvedValue(profile(ADDRESS_A, 'Alice'))
 
-    await startAddress(page, 'a')
-    expect(page.acceptedLookup).not.toBeNull()
-    await startAddress(page, '')
-    expect(page.acceptedLookup).toBeNull()
+    await typeAndFire(wrapper, 'a')
+    expect(addButton(wrapper).attributes('disabled')).toBeUndefined()
+    await type(wrapper, '')
+    expect(addButton(wrapper).attributes('disabled')).toBeDefined()
 
-    await startAddress(page, 'a')
-    expect(page.acceptedLookup).not.toBeNull()
-    await startAddress(page, 'not-an-address')
-    expect(page.acceptedLookup).toBeNull()
-    expect(page.canAdd).toBe(false)
+    await typeAndFire(wrapper, 'a')
+    expect(addButton(wrapper).attributes('disabled')).toBeUndefined()
+    await type(wrapper, 'not-an-address')
+    expect(addButton(wrapper).attributes('disabled')).toBeDefined()
+
+    await typeAndFire(wrapper, 'a')
+    expect(addButton(wrapper).attributes('disabled')).toBeUndefined()
+    await type(wrapper, 'b') // valid, lookup not yet fired
+    expect(addButton(wrapper).attributes('disabled')).toBeDefined()
+    await wrapper.find('input').trigger('keydown.enter')
+    expect(mockAddContactToStore).not.toHaveBeenCalled()
   })
 
   it('rejects a profile whose returned address does not match the requested address', async () => {
-    activeChain.fetchProfile.mockResolvedValue(profile(ADDRESS_B, 'Impostor'))
-    const page = createPage()
+    chain.fetchProfile.mockResolvedValue(profile(ADDRESS_B, 'Impostor'))
 
-    await startAddress(page, 'a')
+    await typeAndFire(wrapper, 'a')
 
-    expect(page.acceptedLookup).toBeNull()
-    expect(page.canAdd).toBe(false)
-    page.addContact()
+    expect(addButton(wrapper).attributes('disabled')).toBeDefined()
+    await wrapper.find('input').trigger('keydown.enter')
     expect(mockAddContactToStore).not.toHaveBeenCalled()
     expect(mockOpenChat).not.toHaveBeenCalled()
   })
 
-  it('freshly normalizes canonical-equivalent input for enablement and execution', async () => {
-    activeChain.fetchProfile.mockResolvedValue(profile(ADDRESS_A, 'Alice'))
-    const page = createPage()
-    await startAddress(page, 'a')
-    const acceptedContact = page.acceptedLookup?.contact
-    activeChain.parseAddress.mockClear()
-    activeChain.formatAddress.mockClear()
+  describe('not-found state', () => {
+    it('shows the card and announces it for a non-empty unresolvable address', async () => {
+      await type(wrapper, 'not-an-address')
 
-    page.address = '  A  '
-    expect(page.canAdd).toBe(true)
-    expect(activeChain.parseAddress).toHaveBeenCalledWith('A')
-    expect(activeChain.formatAddress).toHaveBeenCalledWith(parsedAddresses.A)
-
-    page.addContact()
-    expect(activeChain.parseAddress).toHaveBeenCalledTimes(2)
-    expect(activeChain.formatAddress).toHaveBeenCalledTimes(2)
-    expect(mockAddContactToStore).toHaveBeenCalledWith({
-      address: ADDRESS_A,
-      contact: acceptedContact,
-    })
-    expect(mockOpenChat).toHaveBeenCalledWith(mockRouter, ADDRESS_A)
-  })
-
-  it('safely disables and refuses Add when fresh normalization throws', async () => {
-    activeChain.fetchProfile.mockResolvedValue(profile(ADDRESS_A, 'Alice'))
-    const page = createPage()
-    await startAddress(page, 'a')
-    page.address = 'broken'
-    activeChain.parseAddress.mockImplementation(() => {
-      throw new Error('invalid address')
+      expect(notFoundCard(wrapper).exists()).toBe(true)
+      expect(status(wrapper)).toBe(translate('newContactDialog.notFound'))
     })
 
-    expect(() => page.canAdd).not.toThrow()
-    expect(page.canAdd).toBe(false)
-    expect(() => page.addContact()).not.toThrow()
-    expect(mockAddContactToStore).not.toHaveBeenCalled()
-    expect(mockOpenChat).not.toHaveBeenCalled()
+    it.each(['   ', '\t'])(
+      'shows neither the card nor an announcement for whitespace-only input %j',
+      async value => {
+        await type(wrapper, 'not-an-address')
+        await type(wrapper, value)
+
+        expect(notFoundCard(wrapper).exists()).toBe(false)
+        expect(status(wrapper)).toBe('')
+      },
+    )
+
+    it('shows the card for a resolved-but-missing profile once loading ends', async () => {
+      chain.fetchProfile.mockResolvedValue(undefined)
+
+      await typeAndFire(wrapper, 'a')
+
+      expect(notFoundCard(wrapper).exists()).toBe(true)
+      expect(status(wrapper)).toBe(translate('newContactDialog.notFound'))
+    })
   })
 
-  it('provides a persistent localized status region and bounded decorative skeletons', () => {
-    const template = componentSource.match(
-      /<template>([\s\S]*?)<\/template>/,
-    )?.[1]
-    expect(template).toBeDefined()
-    const statusRegion = template?.match(
-      /<div[^>]*class="q-sr-only"[^>]*role="status"[^>]*aria-live="polite"[^>]*>/,
-    )?.[0]
-    expect(statusRegion).toBeDefined()
-    expect(statusRegion).not.toContain('v-if')
-    expect(template).toContain(':aria-busy="loading"')
-    expect(template).toContain("$t('newContactDialog.loading')")
-    expect(template).toContain("$t('newContactDialog.notFound')")
-    expect(template).toContain("$t('newContactDialog.found'")
-    expect(enUs.newContactDialog.loading).toBeTruthy()
-    expect(enUs.newContactDialog.found).toContain('{name}')
-    expect(frFr.newContactDialog.loading).toBeTruthy()
-    expect(frFr.newContactDialog.found).toContain('{name}')
+  it('has a persistent localized status region and bounded decorative skeletons', async () => {
+    expect(wrapper.find('[role="status"][aria-live="polite"]').exists()).toBe(
+      true,
+    )
+    expect(skeletons(wrapper)).toHaveLength(0)
+    expect(isBusy(wrapper)).toBe('false')
 
-    const skeletons = template?.match(/<q-skeleton\b[^>]*\/>/g) ?? []
-    expect(skeletons).toHaveLength(3)
-    for (const skeleton of skeletons) {
-      expect(skeleton).toContain('aria-hidden="true"')
-      expect(skeleton).toContain('animation="none"')
-    }
+    chain.fetchProfile.mockReturnValue(new Promise(() => undefined))
+    await typeAndFire(wrapper, 'a')
+
+    expect(wrapper.find('[role="status"]').exists()).toBe(true)
+    expect(skeletons(wrapper)).toHaveLength(3)
+    expect(status(wrapper)).toBe(enUS.newContactDialog.loading)
+    expect(enUS.newContactDialog.found).toContain('{name}')
+    expect(frFR.newContactDialog.loading).toBeTruthy()
+    expect(frFR.newContactDialog.found).toContain('{name}')
   })
 })

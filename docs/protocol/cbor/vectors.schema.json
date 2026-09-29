@@ -249,14 +249,11 @@
             "properties": {
               "validation_context": {
                 "properties": {
-                  "operation": {
-                    "enum": ["generic", "typed", "full"]
-                  },
                   "opaque_retention_allowed": {
                     "const": true
                   }
                 },
-                "required": ["operation", "opaque_retention_allowed"]
+                "required": ["opaque_retention_allowed"]
               }
             }
           }

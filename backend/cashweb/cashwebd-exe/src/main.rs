@@ -2,7 +2,7 @@ use std::{io::Read, sync::Arc, time::Duration};
 
 use bitcoinsuite_bitcoind::rpc_client::BitcoindRpcClient;
 use bitcoinsuite_error::{Result, WrapErr};
-use cashweb_config::{parse_conf, MonadMailboxMode};
+use cashweb_config::{parse_conf, CashwebdConf, MonadMailboxMode};
 use cashweb_registry::{
     disabled_chain_adapter::DisabledChainAdapter,
     http::{
@@ -27,7 +27,7 @@ use tracing_subscriber::fmt;
 pub enum CashwebdExeError {
     #[error(
         "No configuration provided. Specify a path, or '-' to read configuration from stdin: \
-         cargo run -- <config path|->"
+         cashwebd-exe [--check-config] <config path|->"
     )]
     NoConfigFile,
 
@@ -58,6 +58,23 @@ fn read_conf_contents(conf_path: &str, stdin: &mut impl Read) -> Result<String> 
     Ok(conf_contents)
 }
 
+fn read_and_validate_conf(
+    conf_path: &str,
+    stdin: &mut impl Read,
+) -> Result<(CashwebdConf, MonadMailboxMode)> {
+    let conf_contents = read_conf_contents(conf_path, stdin)?;
+    let conf =
+        parse_conf(&conf_contents).wrap_err_with(|| InvalidConfigFail(conf_path.to_owned()))?;
+    // Validate the mailbox lifecycle before opening the database or binding a socket. The same
+    // typed mode is the serialized seam the HTTP owner will use to omit admission when disabled.
+    let mailbox_mode = conf
+        .registry
+        .monad_mailbox
+        .mode()
+        .wrap_err("Invalid registry.monad_mailbox configuration")?;
+    Ok((conf, mailbox_mode))
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let format = fmt::format()
@@ -68,16 +85,17 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt().event_format(format).init();
     bitcoinsuite_error::install()?;
 
-    let conf_path = std::env::args().nth(1).ok_or(NoConfigFile)?;
-    let conf_contents = read_conf_contents(&conf_path, &mut std::io::stdin().lock())?;
-    let conf = parse_conf(&conf_contents).wrap_err_with(|| InvalidConfigFail(conf_path.clone()))?;
-    // Validate the mailbox lifecycle before opening the database or binding a socket. The same
-    // typed mode is the serialized seam the HTTP owner will use to omit admission when disabled.
-    let mailbox_mode = conf
-        .registry
-        .monad_mailbox
-        .mode()
-        .wrap_err("Invalid registry.monad_mailbox configuration")?;
+    let mut args = std::env::args().skip(1);
+    let first_arg = args.next().ok_or(NoConfigFile)?;
+    let (check_only, conf_path) = if first_arg == "--check-config" {
+        (true, args.next().ok_or(NoConfigFile)?)
+    } else {
+        (false, first_arg)
+    };
+    let (conf, mailbox_mode) = read_and_validate_conf(&conf_path, &mut std::io::stdin().lock())?;
+    if check_only {
+        return Ok(());
+    }
     let outbox_config = MonadOutboxReconcileConfig::default();
     outbox_config.validate()?;
 
@@ -213,7 +231,7 @@ async fn main() -> Result<()> {
 mod tests {
     use std::io::{Cursor, Error, ErrorKind, Read};
 
-    use super::read_conf_contents;
+    use super::{read_and_validate_conf, read_conf_contents};
 
     #[test]
     fn reads_configuration_from_stdin_for_dash_path() {
@@ -236,5 +254,21 @@ mod tests {
         assert!(error
             .to_string()
             .contains("Failed to read configuration from stdin"));
+    }
+
+    #[test]
+    fn check_config_path_uses_the_production_parser_and_mailbox_validation() {
+        let mut valid = Cursor::new(include_bytes!("../../cashwebd.local.toml"));
+        read_and_validate_conf("-", &mut valid).expect("checked-in local config should validate");
+
+        let invalid = include_str!("../../cashwebd.local.toml").replace(
+            "[registry.monad_mailbox]\nenabled = false",
+            "[registry.monad_mailbox]\nenabled = true",
+        );
+        let error = read_and_validate_conf("-", &mut Cursor::new(invalid))
+            .expect_err("enabled mailbox without its RPC URL must fail validation");
+        assert!(error
+            .to_string()
+            .contains("Invalid registry.monad_mailbox configuration"));
     }
 }

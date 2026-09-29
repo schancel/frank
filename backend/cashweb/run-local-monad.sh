@@ -50,13 +50,23 @@ if ! awk '
     exit 70
 fi
 
-# Process substitution feeds the generated configuration to the daemon through standard input.
-# The private RPC URL therefore never gains a filesystem directory entry, even if this launcher
-# or the server is killed without an opportunity to clean up. Redirecting the pipe onto fd 0 (as
-# opposed to passing its `/dev/fd/*` path) preserves it through the Cargo-slot and Cargo exec chain.
 cd -- "$script_dir"
-exec "$repo_root/.agents/scripts/with-cargo-slot" \
-    "$cargo_command" run -p cashwebd-exe -- - < <(MONAD_TESTNET_HTTP_RPC_URL="$rpc_url" awk '
+target_dir="$("$repo_root/.agents/scripts/with-cargo-slot" bash -c '
+    cargo_command="$1"
+    "$cargo_command" build -p cashwebd-exe --bin cashwebd-exe >&2
+    if [[ -z "${CARGO_TARGET_DIR:-}" ]]; then
+        echo "run-local-monad: Cargo slot did not provide an isolated target directory" >&2
+        exit 70
+    fi
+    printf "%s" "$CARGO_TARGET_DIR"
+' run-local-monad-build "$cargo_command")"
+cashwebd="$target_dir/debug/cashwebd-exe"
+if [[ ! -x "$cashwebd" ]]; then
+    echo "run-local-monad: built daemon is not executable: $cashwebd" >&2
+    exit 70
+fi
+
+runtime_config="$(MONAD_TESTNET_HTTP_RPC_URL="$rpc_url" awk '
     /^\[registry\.monad_mailbox\]$/ {
         in_monad_mailbox = 1
         print
@@ -69,4 +79,11 @@ exec "$repo_root/.agents/scripts/with-cargo-slot" \
         next
     }
     { print }
-' "$base_config")
+' "$base_config")"
+
+# Validate the exact generated text through the production parser before starting the daemon. The
+# private RPC URL stays in shell memory and anonymous pipes: it is never a process argument, named
+# runtime file, or inherited environment value. The Cargo slot covers compilation only, so the
+# long-lived relay cannot block builds in other worktrees.
+printf '%s\n' "$runtime_config" | "$cashwebd" --check-config -
+exec "$cashwebd" - < <(printf '%s\n' "$runtime_config")

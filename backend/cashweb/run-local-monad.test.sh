@@ -15,18 +15,28 @@ mkdir -p \
     "$fixture_root/backend/cashweb" \
     "$fixture_root/bin" \
     "$fixture_root/tmp"
+git init -q "$fixture_root"
 cp "$script_dir/run-local-monad.sh" "$fixture_root/backend/cashweb/"
 cp "$script_dir/cashwebd.local.toml" "$fixture_root/backend/cashweb/"
-
-cat >"$fixture_root/.agents/scripts/with-cargo-slot" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-exec "$@"
-EOF
+cp "$repo_root/.agents/scripts/with-cargo-slot" "$fixture_root/.agents/scripts/"
 
 cat >"$fixture_root/bin/fake-cargo" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+[[ "${1:-}" == "build" ]]
+[[ -n "${CARGO_TARGET_DIR:-}" ]]
+mkdir -p "$CARGO_TARGET_DIR/debug"
+cat >"$CARGO_TARGET_DIR/debug/cashwebd-exe" <<'DAEMON'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == "--check-config" ]]; then
+    [[ "${2:-}" == "-" ]]
+    config="$(cat)"
+    grep -q '^\[registry\.monad_mailbox\]$' <<<"$config"
+    grep -q '^enabled = true$' <<<"$config"
+    grep -q '^rpc_url = "https\?://' <<<"$config"
+    exit 0
+fi
 printf '%s\n' "$@" >"$FRANK_LAUNCHER_ARGS"
 cat >"$FRANK_LAUNCHER_CONFIG"
 if [[ "${FRANK_LAUNCHER_MODE:-}" == "block" ]]; then
@@ -35,6 +45,8 @@ if [[ "${FRANK_LAUNCHER_MODE:-}" == "block" ]]; then
         sleep 1
     done
 fi
+DAEMON
+chmod +x "$CARGO_TARGET_DIR/debug/cashwebd-exe"
 EOF
 chmod +x \
     "$fixture_root/.agents/scripts/with-cargo-slot" \
@@ -45,6 +57,7 @@ launcher="$fixture_root/backend/cashweb/run-local-monad.sh"
 args_file="$fixture_root/args"
 config_file="$fixture_root/config"
 dummy_rpc_url="https://rpc.invalid.example/v2/test-only"
+export XDG_CACHE_HOME="$fixture_root/cache"
 
 if env -u MONAD_TESTNET_HTTP_RPC_URL \
     CARGO="$fixture_root/bin/fake-cargo" \
@@ -76,7 +89,7 @@ fi
         "$launcher"
 )
 
-diff -u <(printf '%s\n' run -p cashwebd-exe -- -) "$args_file"
+diff -u <(printf '%s\n' -) "$args_file"
 [[ "$(grep -c '^\[registry\.monad_mailbox\]$' "$config_file")" -eq 1 ]]
 [[ "$(grep -c '^enabled = true$' "$config_file")" -eq 1 ]]
 [[ "$(grep -Fxc "rpc_url = \"$dummy_rpc_url\"" "$config_file")" -eq 1 ]]
@@ -102,6 +115,8 @@ for _ in {1..100}; do
     sleep 0.01
 done
 [[ -s "$config_file" ]]
+FRANK_CARGO_SLOT_TIMEOUT_SECONDS=1 \
+    "$fixture_root/.agents/scripts/with-cargo-slot" true
 kill -TERM "$launcher_pid"
 if wait "$launcher_pid"; then
     echo "TERM unexpectedly produced a successful launcher exit" >&2

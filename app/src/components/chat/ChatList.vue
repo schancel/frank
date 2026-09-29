@@ -49,6 +49,7 @@ import { useChatStore } from '../../stores/chats'
 import { openChat, openPage } from '../../utils/routes'
 import { useRouter } from 'vue-router'
 import { useQuasar } from 'quasar'
+import { isNarrowWidth } from '../../utils/layout'
 import { activeChain } from '@frank/wallet/chain'
 
 export default defineComponent({
@@ -67,12 +68,10 @@ export default defineComponent({
         // Direct user feedback (2026-09-29, ticket #123): on a narrow/mobile viewport the
         // drawer this list lives in is an overlay covering the whole chat -- selecting a chat
         // used to leave that overlay open on top of the chat it just navigated to, so the chat
-        // was unusable until the user separately dismissed the drawer. Same 800px threshold as
-        // MainLayout.vue's own `drawerBreakpoint` (not shared as an import -- this file has no
-        // existing dependency on that layout component, and duplicating one screen-width number
-        // is simpler than adding one). Desktop (>=800px) never emits this: the sidebar is meant
-        // to stay open there.
-        if ($q.screen.width < 800) {
+        // was unusable until the user separately dismissed the drawer. Same shared threshold
+        // as MainLayout.vue's drawer (`utils/layout`). Desktop (>800px) never emits this: the
+        // sidebar is meant to stay open there.
+        if (isNarrowWidth($q.screen.width)) {
           emit('closeDrawer')
         }
       },

@@ -22,6 +22,12 @@ export default {
     emojiPickerTitle: 'Select an emoji',
     stampPrice: 'Stamp Price',
   },
+  leftDrawer: {
+    settings: 'Settings',
+    contacts: 'Contacts',
+    forum: 'Forum',
+    unread: '{count} unread messages',
+  },
   chatList: {
     noContactMessage: 'Add contacts from the drawer above...',
     balance: 'Balance',

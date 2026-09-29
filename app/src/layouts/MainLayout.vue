@@ -23,6 +23,8 @@
 <script lang="ts">
 import { defineComponent } from 'vue'
 
+import { DRAWER_BREAKPOINT, isNarrowWidth } from '../utils/layout'
+
 import LeftDrawer from '../components/panels/LeftDrawer.vue'
 
 const compactWidth = 70
@@ -36,7 +38,7 @@ const compactMidpoint = (compactCutoff + compactWidth) / 2
 // unconditionally, so a page loaded directly at a narrow width (no resize event to trigger
 // Quasar's own breakpoint-crossing logic) showed the drawer open as a permanent overlay,
 // squeezing the actual chat/forum content into a sliver instead of collapsing it out of the way.
-const drawerBreakpoint = 800
+const drawerBreakpoint = DRAWER_BREAKPOINT
 
 export default defineComponent({
   components: {
@@ -48,14 +50,29 @@ export default defineComponent({
   emits: ['setupCompleted'],
   data() {
     return {
+      removeAfterEach: undefined as (() => void) | undefined,
       trueSplitterRatio: compactCutoff,
       // See `drawerBreakpoint`'s own comment above for why this can't just be `true`.
-      myDrawerOpen: this.$q.screen.width >= drawerBreakpoint,
+      myDrawerOpen: !isNarrowWidth(this.$q.screen.width),
       contactDrawerOpen: false as boolean,
       compact: false,
       compactWidth,
       drawerBreakpoint,
     }
+  },
+  created() {
+    // Every navigation that leaves the drawer (chat select, forum tab, forum topic, settings
+    // items, balance/receive, ...) must dismiss the overlay on narrow screens, otherwise it
+    // stays on top of the page just navigated to. One router hook instead of a per-call-site
+    // emit; desktop keeps the drawer open.
+    this.removeAfterEach = this.$router.afterEach(() => {
+      if (isNarrowWidth(this.$q.screen.width)) {
+        this.myDrawerOpen = false
+      }
+    })
+  },
+  beforeUnmount() {
+    this.removeAfterEach?.()
   },
   methods: {
     toggleContactDrawerOpen() {

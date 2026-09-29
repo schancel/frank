@@ -16,18 +16,32 @@
       data-testid="icon-rail"
     >
       <q-tabs v-model="tab" vertical class="col full-width">
-        <q-tab name="settings" icon="settings" />
+        <q-tab
+          name="settings"
+          icon="settings"
+          :aria-label="$t('leftDrawer.settings')"
+        >
+          <q-tooltip>{{ $t('leftDrawer.settings') }}</q-tooltip>
+        </q-tab>
         <!-- Navigates to the active (or most recently used) chat, so this tab actually shows
         something different from "forum" in the main pane -- an earlier version of this fix
         removed navigation entirely to stop it fighting with "forum" over `/`, but that also made
         clicking it a visible no-op whenever you were already on /forum (same main content, same
         chat-list underneath, nothing about the click was ever observable). openActiveOrRecentChat
         navigates to a genuinely different, contacts-focused route instead of re-using `/`. -->
-        <q-tab name="contacts" icon="contacts" @click="openActiveOrRecentChat">
+        <q-tab
+          name="contacts"
+          icon="contacts"
+          :aria-label="$t('leftDrawer.contacts')"
+          @click="openActiveOrRecentChat"
+        >
+          <q-tooltip>{{ $t('leftDrawer.contacts') }}</q-tooltip>
           <q-badge
             floating
             color="secondary"
             :label="totalUnread"
+            role="img"
+            :aria-label="$t('leftDrawer.unread', { count: totalUnread })"
             class="q-my-xs"
             v-if="totalUnread !== 0"
           />
@@ -38,7 +52,14 @@
         stores/forum.ts share the same activeChain.topics data), but only Forum is surfaced in nav
         now. This tab navigates straight to /forum rather than switching local drawer content,
         since Forum is a full page/route, not another sidebar-list mode like contacts/settings. -->
-        <q-tab name="forum" icon="forum" @click="$router.push('/forum')" />
+        <q-tab
+          name="forum"
+          icon="forum"
+          :aria-label="$t('leftDrawer.forum')"
+          @click="$router.push('/forum')"
+        >
+          <q-tooltip>{{ $t('leftDrawer.forum') }}</q-tooltip>
+        </q-tab>
       </q-tabs>
     </div>
 

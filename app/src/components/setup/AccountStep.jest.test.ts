@@ -38,6 +38,18 @@ const QBtnStub = defineComponent({
     '<button :aria-label="ariaLabel" :data-icon="icon" @click="$emit(\'click\')">{{ label }}</button>',
 })
 
+const QInputStub = defineComponent({
+  inheritAttrs: false,
+  props: {
+    label: { type: String, default: '' },
+    modelValue: { type: String, default: '' },
+    readonly: { type: Boolean, default: false },
+  },
+  emits: ['update:modelValue'],
+  template:
+    '<textarea :aria-label="label" :readonly="readonly" :value="modelValue" @input="$emit(\'update:modelValue\', $event.target.value)" />',
+})
+
 const messages: Record<string, string> = {
   'accountStep.newAccount': 'New Account',
   'accountStep.importAccount': 'Import Account',
@@ -56,7 +68,7 @@ function mountStep(seed = 'eagerly generated unrelated seed') {
       },
       stubs: {
         QBtn: QBtnStub,
-        QInput: true,
+        QInput: QInputStub,
         QSpace: true,
       },
     },
@@ -68,12 +80,13 @@ describe('AccountStep import flow', () => {
     const wrapper = mountStep()
     const vm = wrapper.vm as unknown as {
       importAccount(): void
-      seed: string
     }
 
     vm.importAccount()
-    vm.seed = 'not a recovery phrase'
     await nextTick()
+    await wrapper
+      .find('textarea[aria-label="profile.seedEntry"]')
+      .setValue('not a recovery phrase')
 
     expect(wrapper.emitted('update:account-data')?.at(-1)?.[0]).toEqual({
       name: '',
@@ -86,12 +99,13 @@ describe('AccountStep import flow', () => {
     const wrapper = mountStep()
     const vm = wrapper.vm as unknown as {
       importAccount(): void
-      seed: string
     }
 
     vm.importAccount()
-    vm.seed = `  ${VALID_MNEMONIC.toUpperCase()}  `
     await nextTick()
+    await wrapper
+      .find('textarea[aria-label="profile.seedEntry"]')
+      .setValue(`  ${VALID_MNEMONIC.toUpperCase()}  `)
 
     expect(wrapper.emitted('update:account-data')?.at(-1)?.[0]).toEqual({
       name: '',
@@ -166,6 +180,9 @@ describe('AccountStep recovery phrase controls', () => {
       valid: true,
     })
     expect(vm.rawSeed).toBe(VALID_MNEMONIC)
+    expect(
+      wrapper.find('textarea[aria-label="profile.seedEntry"]').element.value,
+    ).toBe(VALID_MNEMONIC)
 
     vm.copySeed()
     expect(copyToClipboard).toHaveBeenLastCalledWith(VALID_MNEMONIC)

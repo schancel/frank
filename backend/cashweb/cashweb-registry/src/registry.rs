@@ -516,8 +516,9 @@ impl Registry {
     }
 
     /// Atomically claim one canonical Monad payment request and all hash-only child references.
-    /// This is the durable replacement seam for the legacy digest-only attempt methods above;
-    /// those remain temporarily until the HTTP admission owner switches its concurrent branch.
+    /// This is the durable replacement seam for legacy digest-only attempts. Production keeps
+    /// only read access to those rows so an exact request can atomically adopt matching evidence;
+    /// legacy claim/delete mutators above are test-only.
     pub fn claim_monad_outbox(
         &self,
         message: &proto::MonadStampedMessage,
@@ -742,6 +743,26 @@ impl Registry {
             .confirmed_prefixes_for_recipient(&recipient, limit)
     }
 
+    /// Return one strict-forward, scan-bounded recipient recovery page.
+    pub fn confirmed_monad_outbox_prefixes_page(
+        &self,
+        recipient: Address,
+        cursor: Option<[u8; 32]>,
+        limit: usize,
+        scan_limit: usize,
+        max_canonical_bytes: usize,
+    ) -> Result<crate::store::monad_outbox::ConfirmedPrefixRecoveryPage> {
+        self.db
+            .monad_outbox()
+            .confirmed_prefixes_for_recipient_page(
+                &recipient,
+                cursor,
+                limit,
+                scan_limit,
+                max_canonical_bytes,
+            )
+    }
+
     /// Fully verify and write a Monad-native profile registration (ticket #45) -- the Monad
     /// equivalent of [`Registry::put_metadata`]. See `crate::monad_profile_verify`'s module docs
     /// for why this uses an explicit pubkey+signature check (mirroring Lotus's own solution to
@@ -799,6 +820,19 @@ impl Registry {
         digest: [u8; 32],
         signature: &[u8],
     ) -> Result<bool> {
+        self.verify_monad_recipient_signature_observed(recipient, digest, signature, || {})
+    }
+
+    fn verify_monad_recipient_signature_observed<F>(
+        &self,
+        recipient: Address,
+        digest: [u8; 32],
+        signature: &[u8],
+        before_verify: F,
+    ) -> Result<bool>
+    where
+        F: FnOnce(),
+    {
         let profile = self.db.monad_profiles().get(&recipient)?;
         let registered = profile.is_some();
         let candidate = profile.map(|profile| profile.pubkey).unwrap_or_else(|| {
@@ -815,7 +849,11 @@ impl Registry {
             return Ok(false);
         };
         let sig: Bytes = signature.into();
-        Ok(registered && self.ecc.verify(&pubkey, digest.into(), &sig).is_ok())
+        before_verify();
+        let verified = self.ecc.verify(&pubkey, digest.into(), &sig).is_ok();
+        // Bitwise `&` is deliberate: missing profiles must execute the same ECDSA verification
+        // work against the fixed dummy key before their uniform false result is selected.
+        Ok(registered & verified)
     }
 
     /// List every `(address, SignedPayload)` registered with the profile's own `timestamp >=
@@ -871,12 +909,13 @@ impl Registry {
         &self,
         recipient: Address,
         since: i64,
-        after: Option<[u8; 32]>,
+        cursor: Option<crate::store::monad_messages::RecipientMessageCursor>,
         limit: usize,
-    ) -> Result<Vec<proto::StoredMonadMessage>> {
+        max_bytes: usize,
+    ) -> Result<crate::store::monad_messages::RecipientMessagePage> {
         self.db
             .monad_messages()
-            .list_for_recipient_since_capped(&recipient, since, after, limit)
+            .list_for_recipient_since_capped(&recipient, since, cursor, limit, max_bytes)
     }
 
     /// Store a [`proto::StoredMonadTopicPost`] (ticket #30), once its initial vote's burn has
@@ -2106,6 +2145,37 @@ mod tests {
             test_monad_profile_registry("cashweb-registry--registry-monad-profile-not-found");
         let address = crate::monad_http::Address([3u8; 20]);
         assert_eq!(registry.get_monad_profile(address)?, None);
+        Ok(())
+    }
+
+    #[test]
+    fn missing_and_registered_recipients_both_execute_one_signature_verification() -> Result<()> {
+        let (_tempdir, registry) =
+            test_monad_profile_registry("cashweb-registry--registry-recipient-auth-work");
+        let seckey = registry.ecc.seckey_from_array([9; 32])?;
+        let (signed, registered) = sign_monad_profile(&seckey, &sample_monad_profile(1000));
+        registry.put_monad_profile(registered, signed)?;
+        let wrong_digest = Sha256::digest(b"wrong digest".as_slice().into());
+        let bad_signature = registry
+            .ecc
+            .sign(&seckey, wrong_digest.byte_array().clone())
+            .to_vec();
+        let requested_digest = [0x77; 32];
+
+        for recipient in [registered, crate::monad_http::Address([0xee; 20])] {
+            let calls = std::cell::Cell::new(0);
+            assert!(!registry.verify_monad_recipient_signature_observed(
+                recipient,
+                requested_digest,
+                &bad_signature,
+                || calls.set(calls.get() + 1),
+            )?);
+            assert_eq!(
+                calls.get(),
+                1,
+                "each result executes exactly one ECDSA verify"
+            );
+        }
         Ok(())
     }
 }

@@ -10,6 +10,7 @@ use bitcoinsuite_core::{Hashed, Sha256};
 use bitcoinsuite_error::{bail, Result, WrapErr};
 use cashweb_payload::verify::BROADCAST_MESSAGE_LOKAD_ID;
 use futures::{stream, StreamExt};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::{
     monad_evm_tx::{decode_signed_transaction, DecodedSignedTransaction},
@@ -77,6 +78,33 @@ impl MonadOutboxReconcileConfig {
     }
 }
 
+/// One process-owned permit pool shared by every direct and background reconciliation flow.
+#[derive(Debug, Clone)]
+pub struct MonadOutboxPermitPool {
+    permits: Arc<Semaphore>,
+}
+
+impl MonadOutboxPermitPool {
+    /// Bound combined reconciliation work to the configured process-wide concurrency.
+    pub fn new(max_concurrency: usize) -> Self {
+        Self {
+            permits: Arc::new(Semaphore::new(max_concurrency.max(1))),
+        }
+    }
+
+    async fn acquire(&self) -> OwnedSemaphorePermit {
+        Arc::clone(&self.permits)
+            .acquire_owned()
+            .await
+            .expect("process-owned reconciliation semaphore is never closed")
+    }
+
+    #[cfg(test)]
+    fn available_permits(&self) -> usize {
+        self.permits.available_permits()
+    }
+}
+
 /// Observable outcome of reconciling one payload hash.
 #[derive(Debug, Clone, PartialEq)]
 pub enum MonadOutboxReconcileOutcome {
@@ -90,7 +118,8 @@ pub enum MonadOutboxReconcileOutcome {
     Missing,
 }
 
-/// Reconcile one durable claim. Safe to call from HTTP admission or the startup worker.
+/// Test convenience wrapper; production callers must supply the process-owned shared pool.
+#[cfg(test)]
 pub async fn reconcile_monad_outbox<T>(
     transport: &T,
     registry: &Registry,
@@ -100,11 +129,26 @@ pub async fn reconcile_monad_outbox<T>(
 where
     T: JsonRpcTransport + Clone,
 {
+    let permits = MonadOutboxPermitPool::new(config.max_concurrency);
+    reconcile_monad_outbox_with_permits(transport, registry, payload_hash, config, &permits).await
+}
+
+/// Reconcile one claim under the process-owned direct/background concurrency bound.
+pub async fn reconcile_monad_outbox_with_permits<T>(
+    transport: &T,
+    registry: &Registry,
+    payload_hash: &[u8],
+    config: &MonadOutboxReconcileConfig,
+    permits: &MonadOutboxPermitPool,
+) -> Result<MonadOutboxReconcileOutcome>
+where
+    T: JsonRpcTransport + Clone,
+{
     config.validate()?;
-    match tokio::time::timeout(
-        config.claim_timeout,
-        reconcile_monad_outbox_inner(transport, registry, payload_hash, config),
-    )
+    match tokio::time::timeout(config.claim_timeout, async {
+        let _permit = permits.acquire().await;
+        reconcile_monad_outbox_inner(transport, registry, payload_hash, config).await
+    })
     .await
     {
         Ok(result) => result,
@@ -726,7 +770,8 @@ impl Drop for MonadOutboxWorker {
     }
 }
 
-/// Start an immediate bounded scan followed by bounded periodic reconciliation.
+/// Test convenience wrapper which constructs its own worker-only permit pool.
+#[cfg(test)]
 pub async fn start_monad_outbox_worker<T>(
     transport: T,
     registry: Arc<Registry>,
@@ -735,7 +780,8 @@ pub async fn start_monad_outbox_worker<T>(
 where
     T: JsonRpcTransport + Clone + Send + Sync + 'static,
 {
-    start_monad_outbox_worker_shared(transport, registry, Arc::new(config)).await
+    let permits = MonadOutboxPermitPool::new(config.max_concurrency);
+    start_monad_outbox_worker_shared(transport, registry, Arc::new(config), permits).await
 }
 
 /// Start the worker with the same immutable config identity owned by HTTP admission.
@@ -743,6 +789,7 @@ pub async fn start_monad_outbox_worker_shared<T>(
     transport: T,
     registry: Arc<Registry>,
     config: Arc<MonadOutboxReconcileConfig>,
+    permits: MonadOutboxPermitPool,
 ) -> Result<MonadOutboxWorker>
 where
     T: JsonRpcTransport + Clone + Send + Sync + 'static,
@@ -753,7 +800,7 @@ where
     // cardinality, and concurrency dimension has a finite configured ceiling.
     tokio::time::timeout(
         config.initial_recovery_timeout,
-        reconcile_active(&transport, &registry, &config, true),
+        reconcile_active(&transport, &registry, &config, &permits, true),
     )
     .await
     .wrap_err("Monad outbox initial recovery deadline elapsed")??;
@@ -769,7 +816,7 @@ where
                     }
                 }
             }
-            let scan = reconcile_active(&transport, &registry, &config, false);
+            let scan = reconcile_active(&transport, &registry, &config, &permits, false);
             tokio::select! {
                 result = scan => {
                     if let Err(err) = result {
@@ -799,6 +846,7 @@ async fn reconcile_active<T>(
     transport: &T,
     registry: &Arc<Registry>,
     config: &MonadOutboxReconcileConfig,
+    permits: &MonadOutboxPermitPool,
     fail_on_claim_error: bool,
 ) -> Result<()>
 where
@@ -816,8 +864,14 @@ where
         after = active.last().copied();
         let mut reconciliations = stream::iter(active)
             .map(|payload_hash| async move {
-                let result =
-                    reconcile_monad_outbox(transport, registry, &payload_hash, config).await;
+                let result = reconcile_monad_outbox_with_permits(
+                    transport,
+                    registry,
+                    &payload_hash,
+                    config,
+                    permits,
+                )
+                .await;
                 (payload_hash, result)
             })
             .buffer_unordered(concurrency);
@@ -845,7 +899,13 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashMap, sync::Mutex};
+    use std::{
+        collections::HashMap,
+        sync::{
+            atomic::{AtomicBool, AtomicUsize, Ordering},
+            Mutex,
+        },
+    };
 
     use async_trait::async_trait;
     use bitcoinsuite_core::{ecc::Ecc, Net};
@@ -1077,6 +1137,38 @@ mod tests {
                 }
                 _ => panic!("unexpected method {method}"),
             }
+        }
+    }
+
+    #[derive(Clone, Debug)]
+    struct ConcurrencyTransport {
+        inner: FakeTransport,
+        block_next: Arc<AtomicBool>,
+        entered: Arc<tokio::sync::Notify>,
+        release: Arc<tokio::sync::Notify>,
+        active: Arc<AtomicUsize>,
+        max_active: Arc<AtomicUsize>,
+    }
+
+    struct ActiveCallGuard(Arc<AtomicUsize>);
+
+    impl Drop for ActiveCallGuard {
+        fn drop(&mut self) {
+            self.0.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+
+    #[async_trait]
+    impl JsonRpcTransport for ConcurrencyTransport {
+        async fn call(&self, method: &str, params: Value) -> Result<Value, MonadRpcError> {
+            let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+            self.max_active.fetch_max(active, Ordering::SeqCst);
+            let _guard = ActiveCallGuard(Arc::clone(&self.active));
+            if self.block_next.swap(false, Ordering::SeqCst) {
+                self.entered.notify_one();
+                self.release.notified().await;
+            }
+            self.inner.call(method, params).await
         }
     }
 
@@ -1855,7 +1947,15 @@ mod tests {
         config.max_concurrency = 1;
         config.rpc_timeout = Duration::from_millis(5);
         config.claim_timeout = Duration::from_millis(20);
-        reconcile_active(&hanging_transport, &active_registry, &config, false).await?;
+        let permits = MonadOutboxPermitPool::new(config.max_concurrency);
+        reconcile_active(
+            &hanging_transport,
+            &active_registry,
+            &config,
+            &permits,
+            false,
+        )
+        .await?;
         assert!(active_registry
             .get_monad_message(&ready.payload_hash)?
             .is_some());
@@ -2047,5 +2147,82 @@ mod tests {
         }
         worker.shutdown().await;
         panic!("startup worker did not deliver the active claim")
+    }
+
+    #[tokio::test]
+    async fn http_and_background_worker_share_one_process_rpc_permit_pool() -> Result<()> {
+        let tempdir = tempdir::TempDir::new("monad-outbox-shared-permits")?;
+        let registry = Arc::new(registry(&tempdir.path().join("db.rocksdb")));
+        let (first, first_policy, first_transport) =
+            fixture_with_seed(b"shared-permit-worker", &[SendBehavior::Accept], &[true]);
+        let (second, second_policy, second_transport) =
+            fixture_with_seed(b"shared-permit-http", &[SendBehavior::Accept], &[true]);
+        first_transport.specs.lock().unwrap().extend(
+            second_transport
+                .specs
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(hash, spec)| (*hash, spec.clone())),
+        );
+        let transport = ConcurrencyTransport {
+            inner: first_transport,
+            block_next: Arc::new(AtomicBool::new(false)),
+            entered: Arc::new(tokio::sync::Notify::new()),
+            release: Arc::new(tokio::sync::Notify::new()),
+            active: Arc::new(AtomicUsize::new(0)),
+            max_active: Arc::new(AtomicUsize::new(0)),
+        };
+        let mut config = fast_config();
+        config.max_concurrency = 1;
+        config.scan_interval = Duration::from_millis(1);
+        let config = Arc::new(config);
+        let permits = MonadOutboxPermitPool::new(config.max_concurrency);
+        let worker = start_monad_outbox_worker_shared(
+            transport.clone(),
+            Arc::clone(&registry),
+            Arc::clone(&config),
+            permits.clone(),
+        )
+        .await?;
+
+        registry.claim_monad_outbox(&first, &first_policy, now_ms(), &config.limits)?;
+        registry.claim_monad_outbox(&second, &second_policy, now_ms(), &config.limits)?;
+        transport.block_next.store(true, Ordering::SeqCst);
+        tokio::time::timeout(Duration::from_secs(1), transport.entered.notified())
+            .await
+            .expect("background reconciliation entered its first RPC");
+        assert_eq!(permits.available_permits(), 0);
+
+        let direct = tokio::spawn({
+            let transport = transport.clone();
+            let registry = Arc::clone(&registry);
+            let config = Arc::clone(&config);
+            let permits = permits.clone();
+            let payload_hash = second.payload_hash.clone();
+            async move {
+                reconcile_monad_outbox_with_permits(
+                    &transport,
+                    &registry,
+                    &payload_hash,
+                    &config,
+                    &permits,
+                )
+                .await
+            }
+        });
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(transport.max_active.load(Ordering::SeqCst), 1);
+        transport.release.notify_one();
+        let _ = tokio::time::timeout(Duration::from_secs(2), direct)
+            .await
+            .expect("direct reconciliation finishes after the shared permit is released")??;
+        worker.shutdown().await;
+        assert_eq!(
+            transport.max_active.load(Ordering::SeqCst),
+            1,
+            "HTTP and worker RPC activity must never exceed the one process permit"
+        );
+        Ok(())
     }
 }

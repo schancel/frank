@@ -156,6 +156,11 @@ async fn main() -> Result<()> {
                     transport,
                     Arc::clone(&registry),
                     Arc::clone(&outbox_config),
+                    runtime
+                        .as_enabled()
+                        .expect("runtime was constructed enabled")
+                        .outbox_permits()
+                        .clone(),
                 )
                 .await?;
                 (runtime, Some(worker))

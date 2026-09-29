@@ -280,7 +280,11 @@ impl RegistryServer {
                         header::HeaderName::from_static("x-frank-mailbox-nonce"),
                         header::HeaderName::from_static("x-frank-mailbox-expires-at-ms"),
                         header::HeaderName::from_static("x-frank-mailbox-signature"),
+                        header::HeaderName::from_static("x-frank-mailbox-token"),
                     ])
+                    .expose_headers([header::HeaderName::from_static(
+                        "x-frank-mailbox-next-cursor",
+                    )])
                     // allow requests from any origin
                     .allow_origin(Any),
             )

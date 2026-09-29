@@ -301,6 +301,19 @@ pub struct ConfirmedPrefixRecovery {
     pub lifecycle: MonadOutboxLifecycle,
 }
 
+/// One scan-bounded page of recipient recovery facts in payload-hash order.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConfirmedPrefixRecoveryPage {
+    /// Eligible complete recovery records found within this scan window.
+    pub recoveries: Vec<ConfirmedPrefixRecovery>,
+    /// Last scanned payload hash when more recipient-index work remains.
+    pub next_cursor: Option<[u8; 32]>,
+    /// Recipient-index rows examined, bounded by the caller's scan limit.
+    pub scanned: usize,
+    /// Aggregate canonical protobuf bytes materialized for returned records.
+    pub canonical_bytes: usize,
+}
+
 /// Durable outbox failures.
 #[derive(Debug, Error, ErrorMeta)]
 pub enum DbMonadOutboxError {
@@ -365,6 +378,19 @@ pub enum DbMonadOutboxError {
     #[invalid_user_input()]
     #[error("Monad outbox child {0} does not exist")]
     MemberNotFound(u32),
+    /// A private recovery cursor no longer names an exact recipient index row.
+    #[invalid_user_input()]
+    #[error("Private Monad recovery cursor is stale or belongs to another recipient")]
+    StalePrivateRecoveryCursor,
+    /// One complete recovery record cannot fit within the caller's bounded materialization.
+    #[invalid_user_input()]
+    #[error("Private Monad recovery record requires {required} bytes, page budget is {maximum}")]
+    RecoveryRecordExceedsPageBudget {
+        /// Canonical request bytes needed for the first record.
+        required: usize,
+        /// Requested bounded canonical byte budget.
+        maximum: usize,
+    },
     /// Database-owned encoding is malformed or internally inconsistent.
     #[critical()]
     #[error("Inconsistent Monad outbox database record: {0}")]
@@ -1372,22 +1398,67 @@ impl<'a> DbMonadOutbox<'a> {
         recipient: &Address,
         limit: usize,
     ) -> Result<Vec<ConfirmedPrefixRecovery>> {
+        Ok(self
+            .confirmed_prefixes_for_recipient_page(recipient, None, limit, usize::MAX, usize::MAX)?
+            .recoveries)
+    }
+
+    /// Scan one strict-forward, work-bounded recovery page ordered by payload hash.
+    ///
+    /// A supplied cursor must still exist in this recipient's exact recovery index. The scan may
+    /// advance over rows with no confirmed prefix; `next_cursor` therefore names the last scanned
+    /// row, not necessarily the last returned row.
+    pub fn confirmed_prefixes_for_recipient_page(
+        &self,
+        recipient: &Address,
+        cursor: Option<[u8; 32]>,
+        limit: usize,
+        scan_limit: usize,
+        max_canonical_bytes: usize,
+    ) -> Result<ConfirmedPrefixRecoveryPage> {
         if limit == 0 {
-            return Ok(Vec::new());
+            return Ok(ConfirmedPrefixRecoveryPage {
+                recoveries: Vec::new(),
+                next_cursor: None,
+                scanned: 0,
+                canonical_bytes: 0,
+            });
         }
         let _guard = self.db.lock_monad_outbox();
         let prefix = recipient.0;
-        let mut recoveries = Vec::new();
-        for item in self
-            .db
-            .rocksdb()
-            .prefix_iterator_cf(self.cf_recipient, prefix)
-        {
+        let start_key = match cursor {
+            Some(payload_hash) => {
+                let key = recipient_key(recipient, &payload_hash);
+                if self.db.get(self.cf_recipient, &key)?.is_none() {
+                    return Err(StalePrivateRecoveryCursor.into());
+                }
+                key.to_vec()
+            }
+            None => prefix.to_vec(),
+        };
+        let mut recoveries: Vec<ConfirmedPrefixRecovery> = Vec::new();
+        let mut scanned = 0usize;
+        let mut canonical_bytes = 0usize;
+        let mut last_scanned = None;
+        let mut has_more = false;
+        for item in self.db.rocksdb().iterator_cf(
+            self.cf_recipient,
+            IteratorMode::From(&start_key, Direction::Forward),
+        ) {
             let (key, _) = item?;
             if key.len() != RECIPIENT_KEY_LEN || !key.starts_with(&prefix) {
                 break;
             }
+            if cursor.is_some() && key.as_ref() == start_key.as_slice() {
+                continue;
+            }
+            if scanned == scan_limit || recoveries.len() == limit {
+                has_more = true;
+                break;
+            }
             let payload_hash = checked_payload_hash(&key[20..])?;
+            scanned += 1;
+            last_scanned = Some(payload_hash);
             let record = self.get(&payload_hash)?.ok_or_else(|| {
                 CorruptRecord("recipient index references missing outbox".to_string())
             })?;
@@ -1407,18 +1478,36 @@ impl<'a> DbMonadOutbox<'a> {
                 }
             }
             if !confirmed_prefix.is_empty() {
+                let message_bytes = message.encoded_len();
+                if canonical_bytes.saturating_add(message_bytes) > max_canonical_bytes {
+                    if recoveries.is_empty() {
+                        return Err(RecoveryRecordExceedsPageBudget {
+                            required: message_bytes,
+                            maximum: max_canonical_bytes,
+                        }
+                        .into());
+                    }
+                    has_more = true;
+                    // This record was inspected but not returned; continue from the previous
+                    // returned record so a subsequent larger-budget page cannot omit it.
+                    last_scanned = recoveries.last().map(|recovery| recovery.payload_hash);
+                    break;
+                }
+                canonical_bytes += message_bytes;
                 recoveries.push(ConfirmedPrefixRecovery {
                     payload_hash,
                     message,
                     confirmed_prefix,
                     lifecycle: record.lifecycle,
                 });
-                if recoveries.len() == limit {
-                    break;
-                }
             }
         }
-        Ok(recoveries)
+        Ok(ConfirmedPrefixRecoveryPage {
+            recoveries,
+            next_cursor: has_more.then_some(last_scanned).flatten(),
+            scanned,
+            canonical_bytes,
+        })
     }
 
     fn active_count_up_to(&self, limit: usize) -> Result<usize> {
@@ -2684,6 +2773,70 @@ mod tests {
         assert!(store
             .confirmed_prefixes_for_recipient(&policy().recipient, 0)?
             .is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn recovery_pages_are_strict_forward_scan_and_byte_bounded() -> Result<()> {
+        let tempdir = tempdir::TempDir::new("monad-outbox-recovery-pages")?;
+        let db = Db::open(tempdir.path().join("db.rocksdb"))?;
+        let limits = MonadOutboxLimits::default();
+        let store = db.monad_outbox();
+        let mut requests = (0..3u8)
+            .map(|index| {
+                let seed = vec![0x40 + index; 16];
+                let raw0 = vec![0x80 + index; 24];
+                let raw1 = vec![0xc0 + index; 24];
+                message_with_seed(&seed, &[&raw0, &raw1])
+            })
+            .collect::<Vec<_>>();
+        requests.sort_by(|left, right| left.payload_hash.cmp(&right.payload_hash));
+        for request in &requests {
+            store.claim(&request.payload_hash, request, &policy(), 100, &limits)?;
+            store.confirm_observed_member(&request.payload_hash, 0, 10, 1, 110)?;
+        }
+
+        let mut cursor = None;
+        let mut recovered = Vec::new();
+        loop {
+            let page = store.confirmed_prefixes_for_recipient_page(
+                &policy().recipient,
+                cursor,
+                1,
+                1,
+                usize::MAX,
+            )?;
+            assert!(page.scanned <= 1);
+            recovered.extend(page.recoveries.iter().map(|item| item.payload_hash));
+            cursor = page.next_cursor;
+            if cursor.is_none() {
+                break;
+            }
+        }
+        assert_eq!(
+            recovered,
+            requests
+                .iter()
+                .map(|request| request.payload_hash.as_slice().try_into().unwrap())
+                .collect::<Vec<[u8; 32]>>()
+        );
+
+        let required = requests[0].encoded_len();
+        let err = store
+            .confirmed_prefixes_for_recipient_page(&policy().recipient, None, 1, 1, required - 1)
+            .unwrap_err();
+        assert!(matches!(
+            err.downcast_ref::<DbMonadOutboxError>(),
+            Some(DbMonadOutboxError::RecoveryRecordExceedsPageBudget { .. })
+        ));
+        let foreign = Address([0xfe; 20]);
+        let err = store
+            .confirmed_prefixes_for_recipient_page(&foreign, Some(recovered[0]), 1, 1, usize::MAX)
+            .unwrap_err();
+        assert!(matches!(
+            err.downcast_ref::<DbMonadOutboxError>(),
+            Some(DbMonadOutboxError::StalePrivateRecoveryCursor)
+        ));
         Ok(())
     }
 

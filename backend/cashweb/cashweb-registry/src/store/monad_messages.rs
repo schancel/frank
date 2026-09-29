@@ -65,6 +65,26 @@ fn by_recipient_time_key(recipient: &Address, timestamp: i64, payload_hash: &[u8
     .concat()
 }
 
+/// Strict-forward cursor for the recipient journal's composite `(timestamp, payload_hash)` order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RecipientMessageCursor {
+    /// Stored message timestamp.
+    pub timestamp: i64,
+    /// Deterministic tie-breaker for equal timestamps.
+    pub payload_hash: [u8; 32],
+}
+
+/// One encoded-size-bounded recipient inbox page.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RecipientMessagePage {
+    /// Complete records; records are never split to satisfy a byte budget.
+    pub messages: Vec<proto::StoredMonadMessage>,
+    /// Last returned composite key when another record remains.
+    pub next_cursor: Option<RecipientMessageCursor>,
+    /// Exact protobuf response-body size for `StoredMonadMessages { messages }`.
+    pub encoded_bytes: usize,
+}
+
 /// Allows access to stored Monad-stamped messages.
 pub struct DbMonadMessages<'a> {
     db: &'a Db,
@@ -114,6 +134,21 @@ pub enum DbMonadMessagesError {
     #[invalid_user_input()]
     #[error("No Monad message found for payload hash {0}")]
     NotFound(String),
+
+    /// A private cursor no longer names an exact recipient index row.
+    #[invalid_user_input()]
+    #[error("Private Monad inbox cursor is stale or belongs to another recipient")]
+    StalePrivateCursor,
+
+    /// One complete record cannot fit within the caller's bounded response budget.
+    #[invalid_user_input()]
+    #[error("Private Monad inbox record requires {required} bytes, page budget is {maximum}")]
+    RecordExceedsPageBudget {
+        /// Exact encoded response bytes required for this one record.
+        required: usize,
+        /// Requested bounded response bytes.
+        maximum: usize,
+    },
 }
 
 use self::DbMonadMessagesError::*;
@@ -379,41 +414,103 @@ impl<'a> DbMonadMessages<'a> {
         Ok(messages)
     }
 
-    /// List a bounded page from one recipient-owned journal.
+    /// List a strict-forward page from one recipient journal.
+    ///
+    /// Keys are ordered by `(timestamp, payload_hash)`. A supplied cursor must still exist under
+    /// this exact recipient and must not precede `since`. At most `limit + 1` index rows and
+    /// `limit` primary records are examined. The byte budget is the exact protobuf response size;
+    /// a record is either returned whole or rejected as too large.
     pub fn list_for_recipient_since_capped(
         &self,
         recipient: &Address,
         since: i64,
-        after: Option<[u8; 32]>,
+        cursor: Option<RecipientMessageCursor>,
         limit: usize,
-    ) -> Result<Vec<proto::StoredMonadMessage>> {
-        if limit == 0 {
-            return Ok(Vec::new());
+        max_bytes: usize,
+    ) -> Result<RecipientMessagePage> {
+        if limit == 0 || max_bytes == 0 {
+            return Ok(RecipientMessagePage {
+                messages: Vec::new(),
+                next_cursor: None,
+                encoded_bytes: 0,
+            });
         }
-        let start_key = by_recipient_time_key(
-            recipient,
-            since,
-            after.as_ref().map(<[u8; 32]>::as_slice).unwrap_or(&[]),
-        );
+        let start_key = match cursor {
+            Some(cursor) => {
+                if cursor.timestamp < since {
+                    return Err(StalePrivateCursor.into());
+                }
+                let key = by_recipient_time_key(recipient, cursor.timestamp, &cursor.payload_hash);
+                let indexed = self
+                    .db
+                    .get(self.cf_monad_messages_by_recipient_time, &key)?
+                    .filter(|indexed| indexed.as_ref() == cursor.payload_hash)
+                    .is_some();
+                if !indexed {
+                    return Err(StalePrivateCursor.into());
+                }
+                key
+            }
+            None => by_recipient_time_key(recipient, since, &[]),
+        };
         let iter = self.db.rocksdb().iterator_cf(
             self.cf_monad_messages_by_recipient_time,
             IteratorMode::From(&start_key, Direction::Forward),
         );
         let mut messages = Vec::with_capacity(limit);
+        let mut encoded_bytes = 0usize;
+        let mut has_more = false;
         for item in iter {
             let (key, payload_hash) = item?;
             if !key.starts_with(&recipient.0) {
                 break;
             }
-            if after.is_some() && key.as_ref() == start_key.as_slice() {
+            if cursor.is_some() && key.as_ref() == start_key.as_slice() {
                 continue;
             }
-            messages.push(self.get_existing(&payload_hash)?);
             if messages.len() == limit {
+                has_more = true;
                 break;
             }
+            let message = self.get_existing(&payload_hash)?;
+            let record_len = message.encoded_len();
+            let added = 1 + prost_varint_len(record_len as u64) + record_len;
+            if encoded_bytes.saturating_add(added) > max_bytes {
+                if messages.is_empty() {
+                    return Err(RecordExceedsPageBudget {
+                        required: added,
+                        maximum: max_bytes,
+                    }
+                    .into());
+                }
+                has_more = true;
+                break;
+            }
+            encoded_bytes += added;
+            messages.push(message);
         }
-        Ok(messages)
+        let next_cursor = if has_more {
+            messages.last().and_then(|message| {
+                let payload_hash: [u8; 32] = message
+                    .message
+                    .as_ref()?
+                    .payload_hash
+                    .as_slice()
+                    .try_into()
+                    .ok()?;
+                Some(RecipientMessageCursor {
+                    timestamp: message.timestamp,
+                    payload_hash,
+                })
+            })
+        } else {
+            None
+        };
+        Ok(RecipientMessagePage {
+            messages,
+            next_cursor,
+            encoded_bytes,
+        })
     }
 
     pub(crate) fn add_cfs(columns: &mut Vec<ColumnFamilyDescriptor>) {
@@ -432,6 +529,15 @@ impl<'a> DbMonadMessages<'a> {
             rocksdb::Options::default(),
         ));
     }
+}
+
+fn prost_varint_len(mut value: u64) -> usize {
+    let mut len = 1;
+    while value >= 0x80 {
+        value >>= 7;
+        len += 1;
+    }
+    len
 }
 
 impl Debug for DbMonadMessages<'_> {
@@ -725,6 +831,87 @@ mod tests {
             vec![retried]
         );
 
+        Ok(())
+    }
+
+    #[test]
+    fn recipient_pages_use_strict_composite_cursor_without_gaps_or_duplicates() -> Result<()> {
+        let tempdir = tempdir::TempDir::new("cashweb-registry-store--monad-page-cursor")?;
+        let db = Db::open(tempdir.path().join("db.rocksdb"))?;
+        let store = db.monad_messages();
+        let recipient = Address([0x44; 20]);
+        let other = Address([0x55; 20]);
+        for (hash_byte, timestamp) in [(3, 100), (1, 100), (2, 200)] {
+            let stored = make_stored(vec![hash_byte; 32], timestamp);
+            store.put(
+                &stored.message.as_ref().unwrap().payload_hash,
+                &recipient,
+                &stored,
+            )?;
+        }
+        let foreign = make_stored(vec![9; 32], 100);
+        store.put(
+            &foreign.message.as_ref().unwrap().payload_hash,
+            &other,
+            &foreign,
+        )?;
+
+        let mut cursor = None;
+        let mut hashes = Vec::new();
+        loop {
+            let page =
+                store.list_for_recipient_since_capped(&recipient, 0, cursor, 1, usize::MAX)?;
+            hashes.extend(
+                page.messages
+                    .iter()
+                    .map(|stored| stored.message.as_ref().unwrap().payload_hash[0]),
+            );
+            cursor = page.next_cursor;
+            if cursor.is_none() {
+                break;
+            }
+        }
+        assert_eq!(hashes, vec![1, 3, 2]);
+
+        let foreign_cursor = super::RecipientMessageCursor {
+            timestamp: 100,
+            payload_hash: [9; 32],
+        };
+        let err = store
+            .list_for_recipient_since_capped(&recipient, 0, Some(foreign_cursor), 1, usize::MAX)
+            .unwrap_err();
+        assert_eq!(
+            err.downcast_ref::<super::DbMonadMessagesError>(),
+            Some(&super::DbMonadMessagesError::StalePrivateCursor)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn recipient_page_byte_budget_never_splits_a_large_record() -> Result<()> {
+        let tempdir = tempdir::TempDir::new("cashweb-registry-store--monad-page-budget")?;
+        let db = Db::open(tempdir.path().join("db.rocksdb"))?;
+        let store = db.monad_messages();
+        let recipient = Address([0x66; 20]);
+        let mut stored = make_stored(vec![7; 32], 100);
+        stored.message.as_mut().unwrap().encrypted_payload = vec![0xa5; 2 * 1024 * 1024 - 256];
+        store.put(
+            &stored.message.as_ref().unwrap().payload_hash,
+            &recipient,
+            &stored,
+        )?;
+
+        let full =
+            store.list_for_recipient_since_capped(&recipient, 0, None, 1, 2 * 1024 * 1024)?;
+        assert_eq!(full.messages, vec![stored]);
+        assert!(full.encoded_bytes <= 2 * 1024 * 1024);
+        let err = store
+            .list_for_recipient_since_capped(&recipient, 0, None, 1, full.encoded_bytes - 1)
+            .unwrap_err();
+        assert!(matches!(
+            err.downcast_ref::<super::DbMonadMessagesError>(),
+            Some(super::DbMonadMessagesError::RecordExceedsPageBudget { .. })
+        ));
         Ok(())
     }
 }

@@ -1,6 +1,10 @@
 import { RecoveredMonadStampPayment } from '@frank/wallet/monad-stamp-client'
 
-import { summarizeRecoveredPayments } from './raffle-bot.livecheck'
+import {
+  evaluateLeaveRequest,
+  summarizeRecoveredPayments,
+} from './raffle-bot.livecheck'
+import { RaffleRoundRecord } from './raffle-bot-state'
 
 /**
  * Ticket #121 regression: an earlier version of `raffle-bot.livecheck.ts` read only
@@ -64,11 +68,100 @@ describe('summarizeRecoveredPayments', () => {
   it('reduces to the single-payment case unchanged', () => {
     const only = fakePayment(0, 20_000_000_000_000_000n, '0xdeadbeef')
 
-    const { totalValueWei, combinedTxHash } = summarizeRecoveredPayments([
-      only,
-    ])
+    const { totalValueWei, combinedTxHash } = summarizeRecoveredPayments([only])
 
     expect(totalValueWei).toBe(only.valueWei)
     expect(combinedTxHash).toBe(only.txHash)
+  })
+})
+
+/**
+ * Ticket #120 (leave/cancel entry before a round fills): `evaluateLeaveRequest` is the pure
+ * decision behind that feature, split out from the network-calling refund the same way
+ * `summarizeRecoveredPayments` above is split from its own sweep loop.
+ */
+describe('evaluateLeaveRequest', () => {
+  const PLAYER_A = '0x1111111111111111111111111111111111111111'
+  const PLAYER_B = '0x2222222222222222222222222222222222222222'
+
+  function round(entrants: RaffleRoundRecord['entrants']): RaffleRoundRecord {
+    return {
+      raffleId: 'round-1',
+      entryPriceWei: '20000000000000000',
+      maxEntries: 5,
+      serverSeedHash: 'commitment-hash',
+      entrants,
+    }
+  }
+
+  it('removes the requester and refunds exactly their entry price', () => {
+    const current = round([
+      { address: PLAYER_A, txHash: '0xa' },
+      { address: PLAYER_B, txHash: '0xb' },
+    ])
+
+    const result = evaluateLeaveRequest({
+      round: current,
+      raffleId: 'round-1',
+      requesterAddress: PLAYER_B,
+    })
+
+    expect(result).toEqual({
+      ok: true,
+      refundWei: 20000000000000000n,
+      updatedRound: {
+        ...round([{ address: PLAYER_A, txHash: '0xa' }]),
+        leavers: [PLAYER_B],
+      },
+    })
+  })
+
+  it('rejects a requester who never entered the round', () => {
+    const current = round([{ address: PLAYER_A, txHash: '0xa' }])
+
+    const result = evaluateLeaveRequest({
+      round: current,
+      raffleId: 'round-1',
+      requesterAddress: PLAYER_B,
+    })
+
+    expect(result).toEqual({
+      ok: false,
+      reason: 'you are not entered in the current round',
+    })
+  })
+
+  it('rejects a leave naming a round that has already closed and rotated', () => {
+    // Simulates the race: PLAYER_A's `leave` for 'round-1' arrives after that round already
+    // drew and a fresh 'round-2' opened -- even if PLAYER_A happens to also be entered in
+    // round-2, a stale leave for round-1 must never be mistaken for "leave round-2."
+    const currentRoundTwo = round([{ address: PLAYER_A, txHash: '0xnew' }])
+    const withNewId = { ...currentRoundTwo, raffleId: 'round-2' }
+
+    const result = evaluateLeaveRequest({
+      round: withNewId,
+      raffleId: 'round-1',
+      requesterAddress: PLAYER_A,
+    })
+
+    expect(result).toEqual({
+      ok: false,
+      reason: 'that round has already closed -- nothing to leave',
+    })
+    // The entrant is untouched -- no accidental removal from the round it didn't name.
+    expect(withNewId.entrants).toEqual([{ address: PLAYER_A, txHash: '0xnew' }])
+  })
+
+  it('never mutates the round it was given', () => {
+    const current = round([{ address: PLAYER_A, txHash: '0xa' }])
+    const snapshot = JSON.parse(JSON.stringify(current))
+
+    evaluateLeaveRequest({
+      round: current,
+      raffleId: 'round-1',
+      requesterAddress: PLAYER_A,
+    })
+
+    expect(current).toEqual(snapshot)
   })
 })

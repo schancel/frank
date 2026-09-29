@@ -104,20 +104,23 @@ export interface DigitalGoodsItem {
 export interface RaffleItem {
   type: 'raffle'
   raffleId: string
-  action: 'announce' | 'enter' | 'joined' | 'draw' | 'error'
-  /** `announce`/`joined`/`draw`: the flat price every entrant pays -- fixed for a round, verified
-   * the same way `DigitalGoodsItem.priceWei` is (this message's own stamp value), never trusted
-   * from a self-reported field on the wire. */
+  action: 'announce' | 'enter' | 'joined' | 'leave' | 'left' | 'draw' | 'error'
+  /** `announce`/`joined`/`left`/`draw`: the flat price every entrant pays -- fixed for a round,
+   * verified the same way `DigitalGoodsItem.priceWei` is (this message's own stamp value), never
+   * trusted from a self-reported field on the wire. Also what a `leave` refunds in full -- an
+   * entrant who leaves before the round fills gets their entire entry back, not a partial cut, so
+   * the round's collected pot always stays exactly `entryPriceWei * entrants.length` for whoever
+   * is still entered when it draws (see this type's own header, "undrainable"). */
   entryPriceWei?: string
-  /** `announce`/`joined`: how many entries this round takes before it closes and draws. */
+  /** `announce`/`joined`/`left`: how many entries this round takes before it closes and draws. */
   maxEntries?: number
-  /** `announce`/`joined`: how many entries have been accepted so far, including this one for
-   * `joined`. */
+  /** `announce`/`joined`/`left`: how many entries remain accepted so far, including this one for
+   * `joined` (or excluding it, for `left`). */
   entryCount?: number
-  /** `announce`/`joined`: the bot's commitment to this round's draw seed -- generated and hashed
-   * *before* this round accepted its first entry (see `@frank/wallet/message-item-plugins/raffle/draw.ts`'s header for
-   * why that ordering is the entire fairness property this relies on). Same for every entrant in a
-   * round. */
+  /** `announce`/`joined`/`left`: the bot's commitment to this round's draw seed -- generated and
+   * hashed *before* this round accepted its first entry (see
+   * `@frank/wallet/message-item-plugins/raffle/draw.ts`'s header for why that ordering is the
+   * entire fairness property this relies on). Same for every entrant in a round. */
   serverSeedHash?: string
   /** `draw` only: the winning entrant's address. */
   winnerAddress?: string

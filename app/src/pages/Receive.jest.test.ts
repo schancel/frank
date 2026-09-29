@@ -3,8 +3,17 @@
 import { shallowMount } from '@vue/test-utils'
 
 import Receive from './Receive.vue'
+import enUS from 'src/i18n/en-us'
 
 const mockGetBalance = jest.fn()
+
+// Resolve real en-us strings (dotted keys), like the app does.
+function t(key: string): string {
+  const value = key
+    .split('.')
+    .reduce<unknown>((o, k) => (o as Record<string, unknown>)?.[k], enUS)
+  return typeof value === 'string' ? value : key
+}
 
 jest.mock('vue-router', () => ({
   useRouter: () => ({ go: jest.fn(), push: jest.fn() }),
@@ -46,7 +55,7 @@ describe('Receive balance', () => {
   function mountReceive() {
     return shallowMount(Receive, {
       global: {
-        mocks: { $t: (key: string) => key },
+        mocks: { $t: t },
         stubs: Object.fromEntries(
           ['q-page-container', 'q-page', 'q-card', 'q-card-section'].map(n => [
             n,
@@ -65,8 +74,8 @@ describe('Receive balance', () => {
     expect(region.text()).toBe('\u2014')
     await advance(0)
     expect(region.text()).toBe('\u2014')
-    expect(wrapper.find('[data-testid="receive-balance-error"]').exists()).toBe(
-      true,
+    expect(wrapper.get('[data-testid="receive-balance-error"]').text()).toBe(
+      'Balance unavailable. Retrying.',
     )
     mockGetBalance.mockResolvedValue(0n)
     await advance(30000)
@@ -86,9 +95,7 @@ describe('Receive balance', () => {
     expect(region.attributes('role')).toBe('status')
     expect(region.attributes('aria-live')).toBe('polite')
     const labelId = region.attributes('aria-labelledby')
-    expect(wrapper.get(`#${labelId}`).text()).toBe(
-      'receiveBitcoinDialog.walletStatus',
-    )
+    expect(wrapper.get(`#${labelId}`).text()).toBe('Wallet Status')
     const node = region.element.firstChild
     await advance(15000)
     expect(region.element.firstChild).toBe(node)

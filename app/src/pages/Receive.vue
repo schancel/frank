@@ -22,7 +22,7 @@
             class="text-negative text-caption text-center"
             data-testid="receive-balance-error"
           >
-            Balance unavailable. Retrying.
+            {{ $t('receiveBitcoinDialog.balanceUnavailable') }}
           </div>
         </q-card-section>
         <q-separator />

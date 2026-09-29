@@ -133,6 +133,7 @@ export default {
   },
   receiveBitcoinDialog: {
     walletStatus: 'Wallet Status',
+    balanceUnavailable: 'Balance unavailable. Retrying.',
     close: 'Close',
     addressCopied: 'Address copied to clipboard',
   },

@@ -135,6 +135,7 @@ export default {
   },
   receiveBitcoinDialog: {
     walletStatus: 'Etat du wallet',
+    balanceUnavailable: 'Solde indisponible. Nouvelle tentative.',
     addressCopied: 'Adresse copiée dans le presse papier',
   },
   sendAddressDialog: {

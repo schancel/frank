@@ -43,6 +43,21 @@ const LEGACY_MAX_MEMBER_ATTEMPTS: u32 = 32;
 const LEGACY_RETRY_BACKOFF_BASE: Duration = Duration::from_secs(1);
 const LEGACY_RETRY_BACKOFF_MAX: Duration = Duration::from_secs(5 * 60);
 
+#[cfg(test)]
+thread_local! {
+    static MIGRATION_FAIL_AFTER_BATCH_BEFORE_GC: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+fn migration_failpoint_after_batch_before_gc() -> bool {
+    MIGRATION_FAIL_AFTER_BATCH_BEFORE_GC.replace(false)
+}
+
+#[cfg(test)]
+fn arm_migration_failpoint_after_batch_before_gc() {
+    MIGRATION_FAIL_AFTER_BATCH_BEFORE_GC.set(true);
+}
+
 /// Resource bounds applied before an outbox batch can amplify an untrusted request on disk.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MonadOutboxLimits {
@@ -407,7 +422,7 @@ impl<'a> DbMonadOutbox<'a> {
         const MIGRATION_KEY: &[u8] = b"outbox-lifecycle-v3";
         const CURSOR_KEY: &[u8] = b"outbox-lifecycle-v3-cursor";
         if self.db.get(self.cf_meta, MIGRATION_KEY)?.is_some() {
-            return Ok(());
+            return self.gc_history(unix_now_ms(), &MonadOutboxLimits::default());
         }
         loop {
             let cursor = self.db.get(self.cf_meta, CURSOR_KEY)?;
@@ -494,6 +509,13 @@ impl<'a> DbMonadOutbox<'a> {
             }
             batch.put_cf(self.cf_meta, CURSOR_KEY, &rows.last().unwrap().0);
             self.db.write_batch(batch)?;
+            #[cfg(test)]
+            if migration_failpoint_after_batch_before_gc() {
+                return Err(CorruptRecord(
+                    "test failpoint after migration history batch before GC".to_string(),
+                )
+                .into());
+            }
             drop(_guard);
             self.gc_history(unix_now_ms(), &MonadOutboxLimits::default())?;
         }
@@ -663,15 +685,31 @@ impl<'a> DbMonadOutbox<'a> {
 
     /// Enumerate at most `limit` nonterminal claims. The active index prevents a full DB scan.
     pub fn list_active(&self, limit: usize) -> Result<Vec<[u8; 32]>> {
+        self.list_active_after(None, limit)
+    }
+
+    /// Enumerate one strictly-forward page of nonterminal claims. Pagination is independent of
+    /// the current admission ceiling so lowering that ceiling cannot strand older durable work.
+    pub fn list_active_after(
+        &self,
+        after: Option<[u8; 32]>,
+        limit: usize,
+    ) -> Result<Vec<[u8; 32]>> {
         let mut active = Vec::new();
-        for item in self
-            .db
-            .rocksdb()
-            .iterator_cf(self.cf_active, IteratorMode::Start)
-            .take(limit)
-        {
+        let mode = after
+            .as_ref()
+            .map(|key| IteratorMode::From(key, Direction::Forward))
+            .unwrap_or(IteratorMode::Start);
+        for item in self.db.rocksdb().iterator_cf(self.cf_active, mode) {
             let (key, _) = item?;
-            active.push(checked_payload_hash(&key)?);
+            let payload_hash = checked_payload_hash(&key)?;
+            if after == Some(payload_hash) {
+                continue;
+            }
+            active.push(payload_hash);
+            if active.len() == limit {
+                break;
+            }
         }
         Ok(active)
     }
@@ -2785,6 +2823,61 @@ mod tests {
                 .get(store.cf_history, history_key(timestamp, &hash))?
                 .is_none());
         }
+        Ok(())
+    }
+
+    #[test]
+    fn reopen_runs_gc_after_crash_between_history_batch_and_gc() -> Result<()> {
+        let tempdir = tempdir::TempDir::new("monad-outbox-history-reopen")?;
+        let path = tempdir.path().join("db.rocksdb");
+        {
+            let db = Db::open(&path)?;
+            let store = db.monad_outbox();
+            let now = unix_now_ms();
+            let terminal = MonadOutboxRecord {
+                canonical_message: Some(message(&[b"migration terminal"]).encode_to_vec()),
+                policy: Some(policy()),
+                created_at_ms: now,
+                updated_at_ms: now,
+                expires_at_ms: now,
+                max_member_attempts: 1,
+                retry_backoff_base_ms: 0,
+                max_retry_backoff_ms: 0,
+                lifecycle: MonadOutboxLifecycle::Terminal(MonadOutboxTerminal::StaleNonce),
+                reconciliation_attempts: 1,
+                last_error: String::new(),
+            };
+            let terminal_hash: [u8; 32] = [0xfe; 32];
+            db.put(store.cf_outbox, terminal_hash, encode_record(&terminal))?;
+            let mut batch = rocksdb::WriteBatch::default();
+            for index in 0..=MAX_HISTORY_RECORDS_HARD {
+                let hash: [u8; 32] = Sha256::digest(index.to_be_bytes().as_slice().into())
+                    .as_slice()
+                    .try_into()
+                    .unwrap();
+                batch.put_cf(
+                    store.cf_history,
+                    history_key(index as i64, &hash),
+                    1u64.to_be_bytes(),
+                );
+            }
+            batch.delete_cf(store.cf_meta, b"outbox-lifecycle-v3");
+            batch.delete_cf(store.cf_meta, b"outbox-lifecycle-v3-cursor");
+            db.write_batch(batch)?;
+        }
+
+        arm_migration_failpoint_after_batch_before_gc();
+        assert!(
+            Db::open(&path).is_err(),
+            "failpoint must simulate the crash window"
+        );
+
+        let db = Db::open(&path)?;
+        let history_count = db
+            .rocksdb()
+            .iterator_cf(db.monad_outbox().cf_history, IteratorMode::Start)
+            .count();
+        assert!(history_count <= MAX_HISTORY_RECORDS_HARD);
         Ok(())
     }
 

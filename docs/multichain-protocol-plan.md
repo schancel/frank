@@ -161,7 +161,7 @@ cursor both bind the exact network-qualified `account_address`.
 | `GET /metadata/monad?since=...` | global profile registration discovery | `GET /monad/v1/profiles?cursor=...` | compatibility handler retains `since` semantics; no fabricated conversion to an opaque cursor |
 | `GET /metadata/monad/search` | profile-name search | `GET /monad/v1/profiles/search` | bounded alias |
 | `GET /metadata/monad/curated-defaults` | operator-curated contacts | `GET /monad/v1/profiles/curated-defaults` | bounded alias |
-| `PUT /message/monad` | submit a stamped private message | `PUT /monad/v1/mailbox/messages` | alias only after both paths use #60's one durable admission operation; never dual-write |
+| `PUT /message/monad` | submit a stamped private message to the current relay | `PUT /monad/v1/mailbox/messages` | alias only for #60 recipient admission; it never authors authoritative sender-outbox state, which requires #89's authenticated client-to-home flow |
 | `GET /message/monad/:payload_hash` | unauthenticated retained-message lookup | authenticated `inbox`, `outbox`, or `recovery` view | removed security surface after #60; no alias and no canonical public hash lookup |
 | `GET /message/monad?since=...` | unauthenticated global timestamp feed | authenticated `GET /monad/v1/mailbox/sync/:account_address?cursor=...` | removed security surface after #60; no alias and no timestamp-cursor translation |
 | #60 private inbox/recovery/auth routes | authenticated private reads on reviewed legacy prefixes | canonical auth, inbox, recovery, and sync routes above | bounded aliases using identical authorization and opaque-cursor scope; never weaken auth while forwarding |
@@ -176,7 +176,8 @@ cursor both bind the exact network-qualified `account_address`.
 An alias preserves the old method, body, status, response shape, authentication, and authorization
 while invoking the same typed operation as the canonical handler. It does not translate a Lotus
 transaction into an EVM transaction, treat `since + 1` as a cursor, or expose mailbox data through
-pubsub.
+pubsub. In particular, routing legacy `PUT /message/monad` through a canonical handler cannot
+manufacture a sender outbox: until #89 lands, only recipient admission semantics are available.
 
 ### Alias ownership, removal, and rollback
 
@@ -218,8 +219,9 @@ Each adapter separates the immutable source record from local projections:
 ```text
 ImmutableSourceEvent {
   key: (source_network_tag, stream_kind, source_instance_id, source_event_id)
+  authorization_scope: canonical immutable scope bytes
   source_order: (source_order_key, source_event_id)
-  ordering_time: { seconds: bigint, nanos: uint32 }
+  ordering_time: { seconds: int64 represented as bigint, nanos: uint32 }
   authenticated_origin: immutable source-authenticated facts
   canonical_source_bytes: exact opaque encrypted/native source bytes
   event_commitment: domain-separated digest of the fields above
@@ -243,25 +245,30 @@ decrypting it later changes only `LocalEventProjection`; its key, commitment, so
 canonical merge position remain identical.
 
 `ordering_time` is mandatory, immutable, authenticated by or deterministically derived from the
-source record, and always committed. It uses lossless signed seconds plus `0..999_999_999`
-nanoseconds, consistent with #106/#133; JavaScript represents seconds as `bigint`, never a `number`
-millisecond count. Mutable fetch, discovery, receipt, or render times are local projection data and
-never participate in canonical ordering.
+source record, and always committed. Seconds are a checked signed `int64`; nanoseconds are an
+unsigned `uint32` restricted to `0..999_999_999`, consistent with #106/#133. JavaScript represents
+seconds as `bigint`, never a `number` millisecond count. Mutable fetch, discovery, receipt, or render
+times are local projection data and never participate in canonical ordering.
 
 An adapter whose source has no immutable wall-clock time must define a reviewed deterministic
-fallback from immutable source order. For example, an adapter with a nonnegative integer sequence
-`n` maps it to `seconds = n / 1_000_000_000` and `nanos = n % 1_000_000_000`; a compound chain
-position uses an adapter-specified injective rank before the same mapping. The mapping is part of
-that adapter's contract and vectors. If no immutable time or deterministic injective source-order
-rank is accepted, the adapter rejects the event rather than using arrival or fetch time.
+fallback from immutable source order. It first maps the full source-order domain injectively to a
+nonnegative integer rank `r`, then computes integer `seconds = r / 1_000_000_000` and
+`nanos = r % 1_000_000_000`. The conversion is checked: `seconds` must be at most `INT64_MAX` and
+`nanos` at most `999_999_999`, so the greatest accepted rank is
+`INT64_MAX * 1_000_000_000 + 999_999_999`; the next rank rejects as overflow. Compound chain
+positions require an adapter-specified checked injective ranking with a frozen domain and bounds.
+Negative ranks, lossy truncation, wrapping, and saturation reject. If no immutable time or checked
+deterministic source-order rank is accepted, the adapter rejects the event rather than using
+arrival or fetch time. Boundary fixtures require the maximum rank to produce
+`(INT64_MAX,999_999_999)` and maximum-plus-one to reject before event persistence or cursor advance.
 
 `event_commitment` is a domain-separated digest (for example,
 `frank:normalized-adapter-event:v1`) over one canonical encoding of only the full four-part key,
-strict `source_order`, immutable `ordering_time`, immutable authenticated origin facts, and exact
-`canonical_source_bytes`. The digest excludes itself and every decrypted, decoded, UI, fetch,
-discovery, and render projection. Its normalized schema and vectors land with F4 after #131 freezes
-canonical encoding. The event and commitment persist atomically and cannot be reconstructed from a
-lossy projection.
+canonical `authorization_scope`, strict `source_order`, immutable `ordering_time`, immutable
+authenticated origin facts, and exact `canonical_source_bytes`. The digest excludes itself and
+every decrypted, decoded, UI, fetch, discovery, and render projection. Its normalized schema and
+vectors land with F4 after #131 freezes canonical encoding. The immutable event, scope, and
+commitment persist atomically and cannot be reconstructed from a lossy projection.
 
 Each authoritative source stream is scoped by `(NetworkTag, stream_kind, source_instance_id,
 authorization_scope)`. Within that complete scope, `(source_order_key, source_event_id)` must be a
@@ -270,6 +277,13 @@ unique strict total order and pages must be strictly increasing by that tuple. E
 tie-breaker. Mailbox authorization scope is the exact network-qualified `account_address`
 controlled by the registered destination key; selective pubsub scope is a subscription identity
 plus generation. A profile/public stream uses its declared query or global-feed scope.
+
+`authorization_scope` is a discriminated canonical byte value, not a display label or implicit
+adapter configuration. The mailbox variant encodes the durable network account, the pubsub variant
+encodes subscription identity plus generation, and public-feed variants encode their accepted
+query/global scope. On reload, fan-in reconstructs stream grouping and the checkpoint key directly
+from the persisted event's `(NetworkTag, stream_kind, source_instance_id, authorization_scope)`;
+it never guesses scope from the current UI session or relay URL.
 
 ### Two-adapter example
 
@@ -293,13 +307,20 @@ M2 key=(MONT, mailbox, relay-M, monad:0032) source_order=(0032,monad:0032)
 ```
 
 The deterministic canonical view is a k-way merge. Only the next unconsumed head of each source
-stream is eligible. Among eligible heads, compare this tuple bytewise, comparing time as the exact
-seconds/nanoseconds pair:
+stream is eligible. Among eligible heads, compare this tuple in order:
 
 ```text
 (ordering_time, NetworkTag, stream_kind, source_instance_id,
  source_order_key, source_event_id)
 ```
+
+Compare `ordering_time.seconds` numerically as signed `int64`, then `ordering_time.nanos`
+numerically as unsigned `uint32`. Compare only the remaining canonical byte fields bytewise.
+`NetworkTag`, `stream_kind`, `source_instance_id`, `source_order_key`, and `source_event_id` each
+have a frozen canonical byte representation for this comparator; typed enum or display forms are
+normalized before comparison. Encoded integer bytes are never compared lexicographically.
+Cross-language fixtures include `(-2,0) < (-1,0) < (-1,999999999) < (0,0)` so negative seconds
+cannot be misordered by unsigned or encoded-byte comparison.
 
 The result is `M1, M2, L1, L2`. `L2` can never precede `L1`, despite its regressing ordering time
 and equal `source_order_key`, because it is not eligible until `L1` is consumed and its event ID is
@@ -355,12 +376,13 @@ key. The merge layer never decodes, compares, increments, re-scopes, or synthesi
 
 For each page, canonical validation, strict source-order validation, commitment verification,
 immutable-event-plus-commitment insertion, exact-key/commitment deduplication, origin attachment,
-and that adapter's cursor advance commit atomically. Any reused key with changed immutable source
-bytes, order, ordering time, or origin aborts and quarantines the page before the cursor transaction.
-A crash before commit replays the page; a crash after commit resumes after it. On reconnect, the
-adapter resumes from its last committed cursor. If a relay reports cursor expiry or restart
-invalidation, the adapter follows its declared snapshot or safe-origin replay path and relies on
-stable keys plus commitments for idempotence; it never falls back to `timestamp + 1`.
+and that adapter's cursor advance commit atomically. Every event's persisted canonical
+`authorization_scope` must equal the authorized page/checkpoint scope. Any reused key with changed
+scope, source bytes, order, ordering time, or origin aborts and quarantines the page before the
+cursor transaction. A crash before commit replays the page; a crash after commit resumes after it.
+On reconnect, the adapter resumes from its last committed cursor. If a relay reports cursor expiry
+or restart invalidation, the adapter follows its declared snapshot or safe-origin replay path and
+relies on stable keys plus commitments for idempotence; it never falls back to `timestamp + 1`.
 
 An unavailable adapter does not stop healthy adapters. Its checkpoint remains unchanged, its
 source stream is marked stale with the last committed high-water mark and immutable ordering time,
@@ -400,11 +422,12 @@ in this documentation ticket.
 | --- | --- | --- |
 | F0 — **#131 deterministic-CBOR proof** | Freeze the language-neutral profile/framing and Rust/browser vectors before any new multichain record schema. The vectors include lossless seconds/nanoseconds and hostile canonicalization/resource cases. | No production writer changes. This is a prerequisite, not a codec implementation hidden in #59. |
 | F1 — **refine #132 and #136 after #131** | In #132, define canonical-CBOR DM/message-item schemas with separate stamp, per-entry reference, and settlement roles plus discriminated EVM/UTXO references. In #136, apply the same attribution rule to topic entries that reference chains. Shared golden vectors include this composite fixture and reject NetworkTag/native-variant mismatch. | Preserve exact legacy bytes under their explicit legacy readers; never transcode them. Unknown supported CBOR item kinds remain opaque. No new protobuf schema or generated-binding work is prescribed here. |
-| F2 — **new issue: canonical route groups and aliases** | After #60 authentication/state prerequisites, add independently mountable profiles/mailbox/pubsub routers, the complete mailbox surface above, route integration tests, and the bounded non-security alias inventory. No storage-byte change. | Canonical routes are additive. Removal is a later landing after the three alias triggers pass. The two unauthenticated legacy GETs stay removed. |
+| F2 — **new issue: canonical route groups and aliases** | After #60 authentication/state prerequisites, add independently mountable profiles/mailbox/pubsub routers, the complete route inventory above, route integration tests, and the bounded non-security alias inventory. Enabling durable mailbox sync/outbox/import also waits for #134 and #89 as applicable; this routing landing does not invent their records. | Canonical routes are additive. Removal is a later landing after the three alias triggers pass. The two unauthenticated legacy GETs stay removed. |
 | F3 — **new issue: in-repository client route cutover** | Switch typed clients, wallet adapters, bots, frontend configuration, and live checks together; prove canonical-only client traffic against one binary with all three groups mounted and with each group disabled in turn. | Roll back clients while reviewed aliases remain. Successful live integration permits F5; there is no invented external waiting window. |
-| F4 — **new issue: multichain fan-in state and integration proof** | Introduce `MultichainEventView`, two real adapter instances, four-part exact observation keys, immutable-source commitments, lossless ordering-time vectors, strict-source-order and k-way merge tests, complete authorization-scoped checkpoints, outage/reconnect/cursor-expiry tests, and per-entry attribution checks. Fixtures prove: equal `source_order_key` is ordered by event ID; locked→decrypted projection preserves key/commitment/order; changed mutable discovery time preserves order; key reuse with changed source bytes or committed ordering time quarantines without replacing the event or advancing the cursor and marks the source stale/error. | Requires an actual second adapter and accepted cursor contracts. Adapter/runtime restoration is its own prerequisite. The compile-time seam is removed only after all current consumers use fan-in. |
+| F3a — **#134 mailbox durability predecessor** | After #131 and stable mailbox semantics, define and persist canonical mailbox event/checkpoint records, including authorization scope, immutable source bytes, commitment, and cursor atomicity. This is the stack predecessor for any mailbox-backed fan-in adapter or durable canonical `sync`; it does not implement generic multichain merging. | Preserve exact old and new checkpoint bytes under explicit readers. A mailbox adapter in F4 cannot land ahead of this predecessor. |
+| F4 — **new issue: generic multichain fan-in state and integration proof** | Introduce generic `MultichainEventView` contracts and two real adapter instances with four-part keys, persisted canonical scopes, immutable-source commitments, strict-source-order and k-way merge tests, complete authorization-scoped checkpoints, outage/reconnect/cursor-expiry tests, and per-entry attribution checks. Fixtures prove: equal `source_order_key` is ordered by event ID; signed-second negative times order numerically; fallback rank max succeeds and max+1 rejects; persisted scope reconstructs grouping/checkpoints; locked→decrypted projection preserves key/commitment/order; changed discovery time preserves order; and key reuse with changed scope, source bytes, or ordering time quarantines without replacement or cursor advance. | The generic contract is subsystem-neutral. An actual second adapter and accepted cursor contract are required; the mailbox adapter specifically stacks on #134, while other adapters use their own durable-record owner. Adapter/runtime restoration remains separate. |
 | F5 — **new issue: alias deletion** | After in-repo cutover and live proof, remove the bounded aliases. Repository scans and route tests prove old Monad routes are gone, the removed unauthenticated reads return `404`, unauthenticated canonical reads return `401`, Monad-form `/metadata/:addr` dispatch is gone, and Lotus-form `/metadata/:addr` still works. | Re-enable only the non-security alias inventory for rollback; never restore the global feed or public payload-hash lookup. |
-| Existing #65/#87/#88/#89/#111/#133/#135 work | Federation, import/delivery, public nanosecond records, and mailbox topology consume the boundaries here but retain their own authority, storage, authentication, encoding, and replication contracts. | None may infer an entry's network from relay provenance, expose mailbox records through public federation, or create a cursor outside the complete authorization scope. |
+| Existing #65/#87/#88/#89/#111/#133/#134/#135 work | Federation, delivery/import, public nanosecond records, and mailbox durable records/topology consume the boundaries here but retain their own authority, storage, authentication, encoding, and replication contracts. #134 specifically owns mailbox journal/checkpoint persistence; F4 owns only generic fan-in behavior. | None may infer an entry's network from relay provenance, expose mailbox records through public federation, create a cursor outside the complete authorization scope, or let generic F4 bypass #134's mailbox record contract. |
 
 Issue #60 remains an active, independent wallet/private-mailbox scope. This plan neither changes its
 candidate nor treats it as the owner of F1–F5. Atomic-swap execution, plugin rendering/protocols,

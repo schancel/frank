@@ -24,8 +24,10 @@ import {
   attemptRefund,
   handleMove,
   PayoutBackoff,
+  runBlackjackLoop,
   settlePayouts,
 } from './blackjack-bot.livecheck'
+import { listPayouts, requeuePayout, runAdminCli } from './blackjack-payout-admin.livecheck'
 
 jest.mock('./qwen-bot-common', () => ({
   loadOrCreateIdentity: jest.fn(),
@@ -529,6 +531,348 @@ describe('blackjack payout is durable and exactly-once (#215)', () => {
       )
       expect(state.getGame('bad')?.payout).toBeUndefined()
       expect(state.getGame('bad')?.authority).not.toBe('verified-wager-sender')
+    })
+  })
+
+  // ---- round 2: rollback shape, loop hold/idle/cursor, backoff, alerts, operator tool ---------
+  describe('rollback shape (rows without a payout are byte-shaped like main)', () => {
+    const MAIN_KEYS = [
+      'authority', 'dealtCount', 'doubleWagerWei', 'doubled', 'playerAddress', 'revealed',
+      'serverSeed', 'serverSeedHash', 'wagerTxHash', 'wagerWei',
+    ]
+    async function rawRow(id: string) {
+      await state.Close()
+      const db = level(join(directory, 'blackjack-bot-state'), { keyEncoding: 'binary', valueEncoding: 'binary' } as never) as any
+      const raw = JSON.parse((await db.get(Buffer.from(`game:${id}`))).toString())
+      await db.close()
+      state = new BlackjackBotStateStore(directory)
+      await state.Open()
+      return raw
+    }
+
+    it('in-progress, hit and resolved-loss rows carry exactly main\'s keys (no payout key)', async () => {
+      await startWinningGame()
+      expect(Object.keys(await rawRow('game-a')).sort()).toEqual(MAIN_KEYS)
+      await state.resolveGameWithPayout({ gameId: 'game-a', dealtCount: 4, payoutWei: 0n }) // a loss
+      expect(Object.keys(await rawRow('game-a')).sort()).toEqual(MAIN_KEYS)
+    })
+
+    it('a row that owes a payout still round-trips through every state', async () => {
+      await startWinningGame()
+      chain.failSubmit = { error: new Error('x'), reachesMempool: false }
+      await stand()
+      const before = state.getPayout('game-a')!
+      expect(Object.keys(await rawRow('game-a'))).toContain('payout')
+      await reopen()
+      expect(state.getPayout('game-a')).toEqual(before)
+      expect(before).toMatchObject({ status: 'submitting', nonce: 0 })
+    })
+  })
+
+  describe('poll loop', () => {
+    let t: number
+    let onSleep: (() => void) | undefined
+    const now = () => t
+    const sleep = async (ms: number) => {
+      t += ms
+      if (t > 50_000_000) throw new Error('runaway loop') // a broken loop fails, never hangs
+      onSleep?.()
+    }
+    const msg = (ts: number, n: number) => ({ timestamp: ts, message: { payloadHash: Buffer.from([n]) } }) as never
+    let relay: Array<{ timestamp: number; message: { payloadHash: Buffer } }>
+    let fetchCalls: number[]
+    let handled: number[]
+
+    beforeEach(() => {
+      t = 1000
+      onSleep = undefined
+      relay = []
+      fetchCalls = []
+      handled = []
+    })
+    const loop = (over: Record<string, unknown> = {}) =>
+      runBlackjackLoop({
+        state,
+        mainAccountSigner: chain as never,
+        pollIntervalMs: 100,
+        maxHands: 1000,
+        idleTimeoutMs: 1000,
+        drainTimeoutMs: 5000,
+        now,
+        sleep,
+        fetchMessages: async (since: number) => {
+          fetchCalls.push(since)
+          return relay.filter((m) => m.timestamp >= since) as never
+        },
+        processMessage: async (m: never) => {
+          handled.push((m as { timestamp: number }).timestamp)
+          return undefined
+        },
+        ...over,
+      } as never)
+    const stopAfter = (n: number) => {
+      let i = 0
+      onSleep = () => {
+        if (++i >= n) throw new Error('stop')
+      }
+    }
+
+    it('a genuinely idle bot still exits cleanly after the idle timeout', async () => {
+      const r = await loop()
+      expect(r).toMatchObject({ handsResolved: 0, exitCode: 0, unsettled: [] })
+      expect(t).toBeGreaterThan(1000 + 1000)
+    })
+
+    it('the payout hold is not idleness: no idle exit while a payout is open, exit 0 once it confirms', async () => {
+      await startWinningGame()
+      await stand() // submitted, never mined yet
+      t = 1000
+      let mined = false
+      onSleep = () => {
+        if (t >= 1000 + 5000 && !mined) {
+          mined = true
+          chain.mine()
+        }
+      }
+      relay = [{ timestamp: 1500, message: { payloadHash: Buffer.from([9]) } }]
+      const r = await loop({ drainTimeoutMs: 300 })
+      expect(mined).toBe(true) // it waited well past idleTimeoutMs (1000) for the confirmation
+      expect(handled).toEqual([1500]) // and then went on to serve the message held meanwhile
+      expect(r).toMatchObject({ exitCode: 0, unsettled: [] })
+      expect(paid()).toBe(200n)
+    })
+
+    it('messages held during a payout stall are fetched after a restart (durable cursor)', async () => {
+      await startWinningGame()
+      await stand() // in flight, not mined
+      t = 1000
+      relay = [{ timestamp: 1500, message: { payloadHash: Buffer.from([1]) } }]
+      stopAfter(4)
+      await expect(loop()).rejects.toThrow('stop')
+      expect(fetchCalls).toEqual([]) // held: nothing was fetched or consumed
+      expect(handled).toEqual([])
+      expect(state.getSince()).toBe(1000)
+
+      chain.mine()
+      await reopen()
+      onSleep = undefined
+      t = 900000 // the restart happens much later
+      fetchCalls = []
+      await loop()
+      expect(fetchCalls[0]).toBe(1000) // NOT Date.now()
+      expect(handled).toEqual([1500])
+      expect(state.getSince()).toBe(1501)
+    })
+
+    it('a fresh database starts at "now" and persists it; the cursor never passes unhandled messages', async () => {
+      expect(state.getSince()).toBeUndefined()
+      relay = [
+        { timestamp: 2000, message: { payloadHash: Buffer.from([1]) } },
+        { timestamp: 2001, message: { payloadHash: Buffer.from([2]) } },
+      ]
+      let first = true
+      const r = await loop({
+        maxHands: 1,
+        processMessage: async (m: { timestamp: number }) => {
+          handled.push(m.timestamp)
+          if (!first) return undefined
+          first = false
+          return { action: 'reveal', gameId: 'x' }
+        },
+      })
+      expect(r.handsResolved).toBe(1)
+      expect(handled).toEqual([2000]) // stopped at the hand limit, 2001 left unread
+      expect(state.getSince()).toBe(1000) // not advanced past the unread message
+      await reopen()
+      handled = []
+      await loop()
+      expect(handled).toEqual([2001]) // 2000 is deduped by hasProcessed
+    })
+
+    it('a normal single hand through the loop: reveal then payout, exit 0 after the drain confirms it', async () => {
+      relay = [{ timestamp: 2000, message: { payloadHash: Buffer.from([7]) } }]
+      onSleep = () => chain.mine()
+      let n = 0
+      const r = await loop({
+        maxHands: 1,
+        processMessage: async () => {
+          if (n++ > 0) return undefined
+          await bet()
+          chain.events.length = 0
+          await stand()
+          return { action: 'stand', gameId: 'game-a' }
+        },
+      })
+      expect(chain.events).toEqual(['dm', 'build', 'submitRaw'])
+      expect(r).toMatchObject({ handsResolved: 1, exitCode: 0, unsettled: [] })
+      expect(paid()).toBe(200n)
+    })
+
+    it('exits non-zero, with a structured warning, when a payout is still unsettled', async () => {
+      await startWinningGame()
+      chain.failBuild = new Error('reverting recipient')
+      await stand() // owed, build keeps failing
+      const errors = jest.spyOn(console, 'error').mockImplementation(() => undefined)
+      const r = await loop({ drainTimeoutMs: 300 })
+      expect(r.exitCode).toBe(1)
+      expect(r.unsettled).toHaveLength(1)
+      expect(r.unsettled[0]).toMatch(/^game-a:(owed|stuck)$/)
+      expect(errors).toHaveBeenCalledWith(expect.stringContaining('EXITING WITH UNSETTLED PAYOUTS'))
+      errors.mockRestore()
+    })
+  })
+
+  describe('settle: slow is not failed, stuck is loud', () => {
+    it('a pending receipt or a payout waiting behind another never backs off, and the receipt is read every poll', async () => {
+      await startWinningGame()
+      await stand() // A in flight
+      const getStatus = jest.spyOn(chain, 'getStatus')
+      const second = `0x${'CD'.repeat(32)}`
+      let s2 = ''
+      for (let i = 0; !s2; i++) {
+        const c = `b-seed-${i}`
+        if (!handValue(dealInitialCards(deriveDeck(c, second.toLowerCase(), 0)).playerCards).blackjack) s2 = c
+      }
+      await state.setPendingCommitment(s2, sha256Hex(s2))
+      await move('bet', hydrated('bet', {
+        gameId: 'game-b', wagerTxHash: second,
+        verifiedWager: { fromAddress: PLAYER, toAddress: DEALER, valueWei: 100n },
+      }))
+      await state.resolveGameWithPayout({ gameId: 'game-b', dealtCount: 4, payoutWei: 300n })
+      const backoff: PayoutBackoff = new Map()
+      getStatus.mockClear()
+      for (let i = 0; i < 10; i++) await settle(backoff, 1000 + i)
+      expect(getStatus).toHaveBeenCalledTimes(10)
+      for (const track of backoff.values()) expect(track).toMatchObject({ failures: 0, nextAt: 0 })
+      // One confirmation later, the waiting payout is signed in that very poll (no accrued delay).
+      chain.mine()
+      await settle(backoff, 1011)
+      expect(state.getPayout('game-a')?.status).toBe('confirmed')
+      expect(state.getPayout('game-b')?.status).toBe('submitted')
+    })
+
+    it('genuine failures still back off exponentially, and a build that keeps throwing becomes stuck with an alert', async () => {
+      await startWinningGame()
+      chain.failBuild = new Error('estimateGas reverted')
+      await stand()
+      const errors = jest.spyOn(console, 'error').mockImplementation(() => undefined)
+      const backoff: PayoutBackoff = new Map()
+      const base = Date.now()
+      let t = base
+      const buildsAt = chain.builds
+      await settle(backoff, t) // failure 2 (stand's own attempt is not tracked)
+      await settle(backoff, t + 1) // inside backoff: skipped
+      expect(chain.builds).toBe(buildsAt + 1)
+      for (let i = 0; i < 12 && state.getPayout('game-a')?.status === 'owed'; i++) {
+        t += 61000
+        await settle(backoff, t)
+      }
+      expect(state.getPayout('game-a')?.status).toBe('stuck')
+      const alert = errors.mock.calls.map((c) => String(c[0])).find((l) => l.includes('PAYOUT STUCK') && l.includes('"status":"stuck"'))!
+      const body = JSON.parse(alert.slice(alert.indexOf('{')))
+      expect(body).toMatchObject({ gameId: 'game-a', status: 'stuck', amountWei: '200', nonce: null, txHash: null })
+      expect(body.action).toContain('OPERATOR ACTION')
+      // Exposure still counts the debt; no more build attempts once stuck.
+      expect(state.openExposureWei()).toBe(200n)
+      const builds = chain.builds
+      await settle(backoff, t + 61000)
+      expect(chain.builds).toBe(builds)
+      errors.mockRestore()
+    })
+
+    it('PAYOUT STUCK for an aged unconfirmed payout carries nonce and txHash and is rate limited; failed re-alerts after a restart', async () => {
+      await startWinningGame()
+      await stand() // submitted, never mines
+      const p = state.getPayout('game-a')!
+      const errors = jest.spyOn(console, 'error').mockImplementation(() => undefined)
+      const alerts = () => errors.mock.calls.map((c) => String(c[0])).filter((l) => l.includes('PAYOUT STUCK'))
+      const backoff: PayoutBackoff = new Map()
+      const t0 = p.owedAt
+      await settle(backoff, t0 + 1000)
+      expect(alerts()).toHaveLength(0) // young
+      await settle(backoff, t0 + 6 * 60 * 1000)
+      expect(alerts()).toHaveLength(1)
+      await settle(backoff, t0 + 7 * 60 * 1000)
+      expect(alerts()).toHaveLength(1) // rate limited
+      await settle(backoff, t0 + 17 * 60 * 1000)
+      expect(alerts()).toHaveLength(2)
+      const body = JSON.parse(alerts()[0].slice(alerts()[0].indexOf('{')))
+      expect(body).toMatchObject({ gameId: 'game-a', status: 'submitted', nonce: 0, txHash: p.txHash })
+      expect(body.ageMs).toBeGreaterThan(5 * 60 * 1000)
+
+      // Reverted on chain: failed, and OPERATOR ACTION again at every restart, not only once.
+      chain.revertNext = true
+      chain.mine()
+      await settle(backoff, t0 + 18 * 60 * 1000)
+      expect(state.getPayout('game-a')?.status).toBe('failed')
+      errors.mockClear()
+      await settle(new Map(), t0 + 60 * 1000) // "restart": fresh in-memory tracking, payout is young
+      expect(alerts()).toHaveLength(1)
+      expect(alerts()[0]).toContain('OPERATOR ACTION')
+      errors.mockRestore()
+    })
+  })
+
+  describe('operator tool', () => {
+    async function failedPayout() {
+      await startWinningGame()
+      await stand()
+      chain.revertNext = true
+      chain.mine()
+      const errors = jest.spyOn(console, 'error').mockImplementation(() => undefined)
+      await settle()
+      errors.mockRestore()
+      expect(state.getPayout('game-a')?.status).toBe('failed')
+    }
+
+    it('list shows every non-confirmed payout', async () => {
+      await failedPayout()
+      expect(listPayouts(state)).toEqual([
+        expect.objectContaining({ gameId: 'game-a', status: 'failed', amountWei: '200', nonce: 0, playerAddress: PLAYER_CANON }),
+      ])
+    })
+
+    it('requeue needs the explicit flag, refuses non failed/stuck payouts, and re-signs a failed one exactly once', async () => {
+      await failedPayout()
+      await expect(requeuePayout(state, 'game-a', { verifiedNotMined: false })).rejects.toThrow('--i-verified-not-mined')
+      expect(state.getPayout('game-a')?.status).toBe('failed')
+
+      await requeuePayout(state, 'game-a', { verifiedNotMined: true })
+      expect(state.getPayout('game-a')).toEqual({ status: 'owed', amountWei: 200n, owedAt: expect.any(Number) })
+      await reopen()
+      await settle()
+      chain.mine()
+      await settle()
+      expect(state.getPayout('game-a')?.status).toBe('confirmed')
+      expect(paid()).toBe(200n) // the reverted tx moved nothing; the fresh one paid once
+      expect(chain.builds).toBe(2)
+      for (const status of ['confirmed'] as const) {
+        await expect(requeuePayout(state, 'game-a', { verifiedNotMined: true })).rejects.toThrow(status)
+      }
+    })
+
+    it('refuses to requeue owed, submitting and submitted payouts', async () => {
+      await startWinningGame()
+      chain.failBuild = new Error('x')
+      await stand()
+      await expect(requeuePayout(state, 'game-a', { verifiedNotMined: true })).rejects.toThrow('owed')
+      chain.failBuild = undefined
+      chain.failSubmit = { error: new Error('x'), reachesMempool: false }
+      await settle()
+      expect(state.getPayout('game-a')?.status).toBe('submitting')
+      await expect(requeuePayout(state, 'game-a', { verifiedNotMined: true })).rejects.toThrow('submitting')
+      await settle(undefined, Date.now() + 1)
+      await expect(requeuePayout(state, 'game-a', { verifiedNotMined: true })).rejects.toThrow('submitted')
+      expect(state.getPayout('game-a')?.rawTx).toBeDefined()
+    })
+
+    it('the CLI wraps the same guards', async () => {
+      await failedPayout()
+      const log = jest.spyOn(console, 'error').mockImplementation(() => undefined)
+      expect(await runAdminCli(['requeue', 'game-a'], state)).toBe(1)
+      expect(await runAdminCli(['requeue', 'game-a', '--i-verified-not-mined'], state)).toBe(0)
+      expect(await runAdminCli(['bogus'], state)).toBe(2)
+      log.mockRestore()
     })
   })
 })

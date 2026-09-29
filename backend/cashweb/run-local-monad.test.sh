@@ -12,6 +12,7 @@ trap cleanup EXIT HUP INT TERM
 
 mkdir -p \
     "$fixture_root/.agents/scripts" \
+    "$fixture_root/.cargo" \
     "$fixture_root/backend/cashweb" \
     "$fixture_root/bin" \
     "$fixture_root/tmp"
@@ -25,8 +26,21 @@ cat >"$fixture_root/bin/fake-cargo" <<'EOF'
 set -euo pipefail
 [[ "${1:-}" == "build" ]]
 [[ -n "${CARGO_TARGET_DIR:-}" ]]
-mkdir -p "$CARGO_TARGET_DIR/debug"
-cat >"$CARGO_TARGET_DIR/debug/cashwebd-exe" <<'DAEMON'
+target_name="${CARGO_BUILD_TARGET:-}"
+if [[ -z "$target_name" ]]; then
+    repo_root="$(git rev-parse --show-toplevel)"
+    if [[ -f "$repo_root/.cargo/config.toml" ]]; then
+        target_name="$(sed -n 's/^[[:space:]]*target[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' \
+            "$repo_root/.cargo/config.toml")"
+    fi
+fi
+artifact_dir="$CARGO_TARGET_DIR"
+if [[ -n "$target_name" ]]; then
+    artifact_dir="$artifact_dir/$target_name"
+fi
+artifact="$artifact_dir/debug/cashwebd-exe"
+mkdir -p "$artifact_dir/debug"
+cat >"$artifact" <<'DAEMON'
 #!/usr/bin/env bash
 set -euo pipefail
 if [[ "${1:-}" == "--check-config" ]]; then
@@ -46,7 +60,14 @@ if [[ "${FRANK_LAUNCHER_MODE:-}" == "block" ]]; then
     done
 fi
 DAEMON
-chmod +x "$CARGO_TARGET_DIR/debug/cashwebd-exe"
+chmod +x "$artifact"
+FRANK_FAKE_ARTIFACT="$artifact" perl -MJSON::PP=encode_json -e '
+    print encode_json({
+        reason => "compiler-artifact",
+        target => {name => "cashwebd-exe", kind => ["bin"]},
+        executable => $ENV{FRANK_FAKE_ARTIFACT},
+    }), "\n";
+'
 EOF
 chmod +x \
     "$fixture_root/.agents/scripts/with-cargo-slot" \
@@ -94,6 +115,32 @@ diff -u <(printf '%s\n' -) "$args_file"
 [[ "$(grep -c '^enabled = true$' "$config_file")" -eq 1 ]]
 [[ "$(grep -Fxc "rpc_url = \"$dummy_rpc_url\"" "$config_file")" -eq 1 ]]
 [[ -z "$(find "$fixture_root/tmp" -type f -print -quit)" ]]
+
+configured_target="fixture-host-target"
+rm -f -- "$args_file" "$config_file"
+CARGO_BUILD_TARGET="$configured_target" \
+    MONAD_TESTNET_HTTP_RPC_URL="$dummy_rpc_url" \
+    CARGO="$fixture_root/bin/fake-cargo" \
+    FRANK_LAUNCHER_ARGS="$args_file" \
+    FRANK_LAUNCHER_CONFIG="$config_file" \
+    "$launcher"
+[[ -n "$(find "$fixture_root/cache/cargo-target" \
+    -path "*/$configured_target/debug/cashwebd-exe" -type f -perm -u+x -print -quit)" ]]
+[[ -s "$config_file" ]]
+
+cat >"$fixture_root/.cargo/config.toml" <<EOF
+[build]
+target = "$configured_target"
+EOF
+rm -f -- "$args_file" "$config_file"
+env -u CARGO_BUILD_TARGET \
+    MONAD_TESTNET_HTTP_RPC_URL="$dummy_rpc_url" \
+    CARGO="$fixture_root/bin/fake-cargo" \
+    FRANK_LAUNCHER_ARGS="$args_file" \
+    FRANK_LAUNCHER_CONFIG="$config_file" \
+    "$launcher"
+[[ -s "$config_file" ]]
+rm -f -- "$fixture_root/.cargo/config.toml"
 
 cp "$repo_root/.env.example" "$fixture_root/.env"
 printf '\nCARGO=%q\nFRANK_LAUNCHER_ARGS=%q\nFRANK_LAUNCHER_CONFIG=%q\n' \

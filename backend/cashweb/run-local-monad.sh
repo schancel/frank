@@ -51,16 +51,32 @@ if ! awk '
 fi
 
 cd -- "$script_dir"
-target_dir="$("$repo_root/.agents/scripts/with-cargo-slot" bash -c '
-    cargo_command="$1"
-    "$cargo_command" build -p cashwebd-exe --bin cashwebd-exe >&2
-    if [[ -z "${CARGO_TARGET_DIR:-}" ]]; then
-        echo "run-local-monad: Cargo slot did not provide an isolated target directory" >&2
-        exit 70
-    fi
-    printf "%s" "$CARGO_TARGET_DIR"
-' run-local-monad-build "$cargo_command")"
-cashwebd="$target_dir/debug/cashwebd-exe"
+artifact_parser='
+    my $record = decode_json($_);
+    if (($record->{reason} // "") eq "compiler-message") {
+        my $rendered = $record->{message}->{rendered};
+        print STDERR $rendered if defined $rendered;
+        next;
+    }
+    next unless ($record->{reason} // "") eq "compiler-artifact";
+    next unless ($record->{target}->{name} // "") eq "cashwebd-exe";
+    next unless grep { $_ eq "bin" } @{$record->{target}->{kind} // []};
+    next unless defined $record->{executable};
+    die "run-local-monad: Cargo reported multiple cashwebd-exe artifacts\n"
+        if defined $artifact;
+    $artifact = $record->{executable};
+    END {
+        die "run-local-monad: Cargo did not report a cashwebd-exe artifact\n"
+            unless defined $artifact;
+        print $artifact;
+    }
+'
+cashwebd="$("$repo_root/.agents/scripts/with-cargo-slot" bash -c '
+    set -euo pipefail
+    "$1" build -p cashwebd-exe --bin cashwebd-exe \
+        --message-format=json-render-diagnostics |
+        perl -MJSON::PP=decode_json -ne "$2"
+' run-local-monad-build "$cargo_command" "$artifact_parser")"
 if [[ ! -x "$cashwebd" ]]; then
     echo "run-local-monad: built daemon is not executable: $cashwebd" >&2
     exit 70

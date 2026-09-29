@@ -12,6 +12,10 @@ export interface OutgoingStampAttempt {
   /** Compressed recipient public key needed to validate every journaled one-time destination
    * without trusting the relay or performing network I/O during restart. */
   recipientPublicKeyHex?: string
+  /** Conservative terminal authority state for bytes rejected as noncanonical by a relay that
+   * may nevertheless have broadcast a prefix before upgrading its canonicality rules. */
+  authorityState?: 'pending' | 'incompatible-protobuf'
+  authorityReason?: 'noncanonical_protobuf'
 }
 
 export interface StampAttemptJournal {
@@ -29,19 +33,41 @@ function cloneAttempt(attempt: OutgoingStampAttempt): OutgoingStampAttempt {
   }
 }
 
+function assertAttemptReplacement(
+  prior: OutgoingStampAttempt | undefined,
+  next: OutgoingStampAttempt
+): void {
+  if (prior === undefined) return
+  const immutablePrior = {
+    ...prior,
+    authorityState: undefined,
+    authorityReason: undefined,
+  }
+  const immutableNext = {
+    ...next,
+    authorityState: undefined,
+    authorityReason: undefined,
+  }
+  if (JSON.stringify(immutablePrior) !== JSON.stringify(immutableNext)) {
+    throw new Error('Cannot replace a stamp attempt with different exact bytes')
+  }
+  const priorState = prior.authorityState ?? 'pending'
+  const nextState = next.authorityState ?? 'pending'
+  if (
+    (priorState === 'incompatible-protobuf' && nextState !== priorState) ||
+    (nextState === 'incompatible-protobuf' &&
+      next.authorityReason !== 'noncanonical_protobuf')
+  ) {
+    throw new Error('Stamp-attempt authority state cannot move backward')
+  }
+}
+
 export class InMemoryStampAttemptJournal implements StampAttemptJournal {
   private readonly attempts = new Map<string, OutgoingStampAttempt>()
   private readonly leaseReferenceCounts = new Map<number, number>()
   async put(attempt: OutgoingStampAttempt): Promise<void> {
     const prior = this.attempts.get(attempt.payloadHashHex)
-    if (
-      prior !== undefined &&
-      JSON.stringify(prior) !== JSON.stringify(attempt)
-    ) {
-      throw new Error(
-        'Cannot replace a stamp attempt with different exact bytes'
-      )
-    }
+    assertAttemptReplacement(prior, attempt)
     this.attempts.set(attempt.payloadHashHex, cloneAttempt(attempt))
     if (prior === undefined) this.addLeaseReferences(attempt, 1)
   }
@@ -158,14 +184,7 @@ export class LevelStampAttemptJournal implements StampAttemptJournal {
   async put(attempt: OutgoingStampAttempt): Promise<void> {
     this.assertMutationAllowed()
     const prior = this.attempts.get(attempt.payloadHashHex)
-    if (
-      prior !== undefined &&
-      JSON.stringify(prior) !== JSON.stringify(attempt)
-    ) {
-      throw new Error(
-        'Cannot replace a stamp attempt with different exact bytes'
-      )
-    }
+    assertAttemptReplacement(prior, attempt)
     await this.db.put(attempt.payloadHashHex, JSON.stringify(attempt))
     this.attempts.set(attempt.payloadHashHex, cloneAttempt(attempt))
     if (prior === undefined) this.addLeaseReferences(attempt, 1)

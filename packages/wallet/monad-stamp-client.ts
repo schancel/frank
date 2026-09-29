@@ -138,7 +138,10 @@ import {
   isMonadStampWalletHandle,
   unsafeCreateMonadStampWalletHandleForTests,
 } from './monad-wallet-handle'
-import type { StampAttemptJournal } from './storage/stamp-attempt-journal'
+import type {
+  OutgoingStampAttempt,
+  StampAttemptJournal,
+} from './storage/stamp-attempt-journal'
 import { selectStampAccounts } from './monad-stamp-account-selection'
 import {
   deriveMonadStampChildPrivate,
@@ -686,6 +689,20 @@ export class MonadStampPendingAttemptError extends MonadStampError {
   }
 }
 
+/** Exact journaled bytes were rejected under a relay protobuf canonicality policy that cannot
+ * prove no payment was broadcast. The retained attempt requires an explicit authority audit or
+ * reset proof and must never be silently replaced. */
+export class MonadStampAuthorityAuditRequiredError extends MonadStampError {
+  readonly payloadHashes: string[]
+
+  constructor(payloadHashes: string[]) {
+    super(
+      `Cannot replace ${payloadHashes.length} stamp attempt(s) rejected as noncanonical protobuf without authority audit/reset proof`
+    )
+    this.payloadHashes = payloadHashes
+  }
+}
+
 /** A prior exact set completed while reconciling a new send request. The caller must refresh
  * message state instead of silently paying again for the newly salted envelope. */
 export class MonadStampRecoveredAttemptError extends MonadStampError {
@@ -709,6 +726,13 @@ export function assertMonadStampPaymentCount(count: number): void {
 }
 
 function exactSetRetained(responseData: unknown): boolean | undefined {
+  const parsed = parseRelayResponse(responseData)
+  if (typeof parsed !== 'object' || parsed === null) return undefined
+  const value = (parsed as Record<string, unknown>).exact_set_retained
+  return typeof value === 'boolean' ? value : undefined
+}
+
+function parseRelayResponse(responseData: unknown): unknown {
   let parsed = responseData
   if (responseData instanceof ArrayBuffer || ArrayBuffer.isView(responseData)) {
     try {
@@ -725,9 +749,16 @@ function exactSetRetained(responseData: unknown): boolean | undefined {
       return undefined
     }
   }
-  if (typeof parsed !== 'object' || parsed === null) return undefined
-  const value = (parsed as Record<string, unknown>).exact_set_retained
-  return typeof value === 'boolean' ? value : undefined
+  return parsed
+}
+
+function isNoncanonicalProtobufRejection(responseData: unknown): boolean {
+  const parsed = parseRelayResponse(responseData)
+  return (
+    typeof parsed === 'object' &&
+    parsed !== null &&
+    (parsed as Record<string, unknown>).error === 'noncanonical_protobuf'
+  )
 }
 
 function defaultSleep(ms: number): Promise<void> {
@@ -1110,13 +1141,15 @@ export class MonadStampClient {
         `Encoded Monad stamped message is ${encodedMessage.byteLength} bytes; maximum is ${MAX_MONAD_STAMPED_MESSAGE_BYTES}`
       )
     }
+    const journaledAttempt: OutgoingStampAttempt = {
+      payloadHashHex,
+      messageBytes: Array.from(encodedMessage),
+      leaseIndices: handles.map((handle) => handle.index),
+      recipientPublicKeyHex: hexlify(params.recipientPublicKey),
+      authorityState: 'pending',
+    }
     try {
-      await this.attemptJournal.put({
-        payloadHashHex,
-        messageBytes: Array.from(encodedMessage),
-        leaseIndices: handles.map((handle) => handle.index),
-        recipientPublicKeyHex: hexlify(params.recipientPublicKey),
-      })
+      await this.attemptJournal.put(journaledAttempt)
     } catch (err) {
       for (const handle of handles) {
         this.leaseManager.releaseLease(handle, 'failed')
@@ -1207,6 +1240,14 @@ export class MonadStampClient {
     } catch (err) {
       if (err instanceof MonadStampPendingAttemptError) throw err
       if (axios.isAxiosError(err) && err.response) {
+        if (isNoncanonicalProtobufRejection(err.response.data)) {
+          await this.attemptJournal.put({
+            ...journaledAttempt,
+            authorityState: 'incompatible-protobuf',
+            authorityReason: 'noncanonical_protobuf',
+          })
+          throw new MonadStampAuthorityAuditRequiredError([payloadHashHex])
+        }
         if (exactSetRetained(err.response.data) === false) {
           await releaseAll('failed')
           await this.attemptJournal.delete(payloadHashHex)
@@ -1278,7 +1319,14 @@ export class MonadStampClient {
     await this.walletState.reconcileRestoreState()
     this.walletState?.assertNoOrphanedLeases()
     if (this.activeSubmissions > 0) return
-    if (this.attemptJournal.getAll().length === 0) return
+    const attempts = this.attemptJournal.getAll()
+    const incompatible = attempts
+      .filter((attempt) => attempt.authorityState === 'incompatible-protobuf')
+      .map((attempt) => attempt.payloadHashHex)
+    if (incompatible.length > 0) {
+      throw new MonadStampAuthorityAuditRequiredError(incompatible)
+    }
+    if (attempts.length === 0) return
     const recovered = await this.resumePendingAttempts()
     if (recovered.length > 0) {
       throw new MonadStampRecoveredAttemptError(recovered)
@@ -1299,6 +1347,7 @@ export class MonadStampClient {
     this.walletState?.assertSemanticallyValid()
     const completed: string[] = []
     for (const attempt of this.attemptJournal.getAll()) {
+      if (attempt.authorityState === 'incompatible-protobuf') continue
       // The journal write and pool-status writes live in separate LevelDBs. A hard crash can make
       // the durable raw set visible before one of the earlier `in-use` status writes. Reassert the
       // reservation before any network await so the wallet can never return an apparently
@@ -1377,6 +1426,18 @@ export class MonadStampClient {
         await this.attemptJournal.delete(attempt.payloadHashHex)
         completed.push(attempt.payloadHashHex)
       } catch (err) {
+        if (
+          axios.isAxiosError(err) &&
+          err.response &&
+          isNoncanonicalProtobufRejection(err.response.data)
+        ) {
+          await this.attemptJournal.put({
+            ...attempt,
+            authorityState: 'incompatible-protobuf',
+            authorityReason: 'noncanonical_protobuf',
+          })
+          continue
+        }
         if (
           axios.isAxiosError(err) &&
           err.response &&

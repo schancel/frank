@@ -43,6 +43,14 @@ async function deleteRoot(location: string): Promise<void> {
       request.onblocked = () => reject(new Error('IndexedDB cleanup blocked'))
     })
   }
+  await new Promise<void>((resolve, reject) => {
+    const request = idb.deleteDatabase(
+      `frank-monad-wallet-creation:${canonical}`
+    )
+    request.onsuccess = () => resolve()
+    request.onerror = () => reject(request.error)
+    request.onblocked = () => reject(new Error('IndexedDB cleanup blocked'))
+  })
 }
 
 async function createLegacyRoot(
@@ -236,6 +244,8 @@ export async function runMonadWalletBundleBrowserCheck(): Promise<void> {
   const finalizedRoot = `${prefix}-finalized`
   const emptyLegacyRoot = `${prefix}-empty-legacy`
   const callerSeedRoot = `${prefix}-caller-seed`
+  const invalidModeRoot = `${prefix}-invalid-mode`
+  const callerCreationCrashRoots: string[] = []
   const crashRoots: string[] = []
   try {
     await createLegacyRoot(migratedRoot)
@@ -278,6 +288,81 @@ export async function runMonadWalletBundleBrowserCheck(): Promise<void> {
       ),
       'empty browser legacy root wrote a manifest'
     )
+
+    let invalidModeRejected = false
+    try {
+      await openMonadWalletBundle({
+        location: invalidModeRoot,
+        seed: { mnemonic: MNEMONIC },
+        mode: 'create',
+        createSeedIfEmpty: true,
+      } as never)
+    } catch {
+      invalidModeRejected = true
+    }
+    assert(invalidModeRejected, 'invalid browser creation mode was accepted')
+    assert(
+      !(await (globalThis as any).indexedDB.databases()).some(
+        (database: { name?: string }) =>
+          database.name?.includes(invalidModeRoot)
+      ),
+      'invalid browser creation mode wrote IndexedDB state'
+    )
+
+    for (const phase of [
+      'creation-intent',
+      'validated',
+      'marker',
+      'sub-account-pool',
+      'change-pool',
+      'outgoing-stamp-attempts',
+      'stamp-payment-journal',
+      'manifest',
+    ] as const) {
+      const creationCrashRoot = `${prefix}-caller-crash-${phase}`
+      callerCreationCrashRoots.push(creationCrashRoot)
+      let crashed = false
+      try {
+        await openMonadWalletBundle({
+          location: creationCrashRoot,
+          seed: { mnemonic: MNEMONIC },
+          mode: 'create',
+          onMigrationPhase: async (current) => {
+            if (current === phase) throw new Error(`browser crash ${phase}`)
+          },
+        })
+      } catch {
+        crashed = true
+      }
+      assert(crashed, `browser creation did not crash at ${phase}`)
+      let wrongSeedRejected = false
+      try {
+        await openMonadWalletBundle({
+          location: creationCrashRoot,
+          seed: { mnemonic: WRONG_MNEMONIC },
+          mode: 'create',
+        })
+      } catch {
+        wrongSeedRejected = true
+      }
+      assert(
+        wrongSeedRejected,
+        `browser creation intent accepted wrong seed after ${phase}`
+      )
+      const resumed = await openMonadWalletBundle({
+        location: creationCrashRoot,
+        seed: { mnemonic: MNEMONIC },
+        mode: 'create',
+      })
+      await resumed.close()
+      assert(
+        !(await (globalThis as any).indexedDB.databases()).some(
+          (database: { name?: string }) =>
+            database.name === `frank-monad-wallet-creation:${creationCrashRoot}`
+        ),
+        `browser creation intent survived successful resume after ${phase}`
+      )
+    }
 
     const callerSeedContenders = await Promise.allSettled([
       openMonadWalletBundle({
@@ -519,6 +604,8 @@ export async function runMonadWalletBundleBrowserCheck(): Promise<void> {
     await deleteRoot(finalizedRoot)
     await deleteRoot(emptyLegacyRoot)
     await deleteRoot(callerSeedRoot)
+    await deleteRoot(invalidModeRoot)
+    for (const root of callerCreationCrashRoots) await deleteRoot(root)
     for (const root of crashRoots) await deleteRoot(root)
   }
 }

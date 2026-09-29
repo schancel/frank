@@ -1,6 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import level, { type LevelDB } from 'level'
 import { join } from 'path'
+import { Transaction } from 'ethers'
 import { validateWalletComponentBeforeOpen } from './wallet-root-guard'
 
 const WALLET_BINDING_KEY = '__wallet_binding__'
@@ -58,13 +59,29 @@ export interface StampPaymentJournal {
   withPaymentLock<T>(
     payloadHashHex: string,
     childIndex: number,
-    operation: () => Promise<T>
+    operation: (locked: LockedStampPaymentJournal) => Promise<T>
   ): Promise<T>
+  assertOpen(): void
   getAll(): StampPaymentRecoveryRecord[]
+  Close(): Promise<void>
+}
+
+export interface LockedStampPaymentJournal {
+  get(): StampPaymentRecoveryRecord | undefined
+  put(record: StampPaymentRecoveryRecord): Promise<void>
 }
 
 function key(payloadHashHex: string, childIndex: number): string {
   return `${payloadHashHex}:${childIndex}`
+}
+
+function assertLockedRecordIdentity(
+  recordKey: string,
+  record: StampPaymentRecoveryRecord
+): void {
+  if (key(record.payloadHashHex, record.childIndex) !== recordKey) {
+    throw new Error('Locked stamp-payment record identity cannot change')
+  }
 }
 
 function cloneRecord(
@@ -84,8 +101,20 @@ export class InMemoryStampPaymentJournal implements StampPaymentJournal {
   private readonly records = new Map<string, StampPaymentRecoveryRecord>()
   private mutationTail: Promise<void> = Promise.resolve()
   private readonly paymentQueues = new Map<string, Promise<void>>()
+  private lifecycle: 'open' | 'closing' | 'closed' = 'open'
+  private closePromise?: Promise<void>
 
-  private mutate<T>(operation: () => T | Promise<T>): Promise<T> {
+  assertOpen(): void {
+    if (this.lifecycle !== 'open') {
+      throw new Error('Stamp-payment journal is closing or closed')
+    }
+  }
+
+  private mutate<T>(
+    operation: () => T | Promise<T>,
+    admitted = false
+  ): Promise<T> {
+    if (!admitted) this.assertOpen()
     const run = this.mutationTail.then(operation)
     this.mutationTail = run.then(
       () => undefined,
@@ -98,6 +127,7 @@ export class InMemoryStampPaymentJournal implements StampPaymentJournal {
     payloadHashHex: string,
     childIndex: number
   ): StampPaymentRecoveryRecord | undefined {
+    this.assertOpen()
     const record = this.records.get(key(payloadHashHex, childIndex))
     return record === undefined ? undefined : cloneRecord(record)
   }
@@ -128,12 +158,28 @@ export class InMemoryStampPaymentJournal implements StampPaymentJournal {
   withPaymentLock<T>(
     payloadHashHex: string,
     childIndex: number,
-    operation: () => Promise<T>
+    operation: (locked: LockedStampPaymentJournal) => Promise<T>
   ): Promise<T> {
+    this.assertOpen()
     const recordKey = key(payloadHashHex, childIndex)
     const run = (this.paymentQueues.get(recordKey) ?? Promise.resolve())
       .then(() => this.mutationTail)
-      .then(operation)
+      .then(() => {
+        const locked: LockedStampPaymentJournal = {
+          get: () => {
+            const record = this.records.get(recordKey)
+            return record === undefined ? undefined : cloneRecord(record)
+          },
+          put: (record) =>
+            this.mutate(() => {
+              assertLockedRecordIdentity(recordKey, record)
+              assertPaymentAuthorityShape(record)
+              assertMonotonicPaymentRecord(this.records.get(recordKey), record)
+              this.records.set(recordKey, cloneRecord(record))
+            }, true),
+        }
+        return operation(locked)
+      })
     const tail = run.then(
       () => undefined,
       () => undefined
@@ -148,7 +194,19 @@ export class InMemoryStampPaymentJournal implements StampPaymentJournal {
   }
 
   getAll(): StampPaymentRecoveryRecord[] {
+    this.assertOpen()
     return Array.from(this.records.values()).map(cloneRecord)
+  }
+
+  Close(): Promise<void> {
+    if (this.closePromise !== undefined) return this.closePromise
+    this.lifecycle = 'closing'
+    this.closePromise = (async () => {
+      await Promise.all(Array.from(this.paymentQueues.values()))
+      await this.mutationTail
+      this.lifecycle = 'closed'
+    })()
+    return this.closePromise
   }
 }
 
@@ -163,8 +221,17 @@ export class LevelStampPaymentJournal implements StampPaymentJournal {
   private loadedBindingId?: string
   private mutationTail: Promise<void> = Promise.resolve()
   private readonly paymentQueues = new Map<string, Promise<void>>()
+  private lifecycle: 'new' | 'opening' | 'open' | 'closing' | 'closed' = 'new'
+  private closePromise?: Promise<void>
 
-  private mutate<T>(operation: () => Promise<T>): Promise<T> {
+  assertOpen(): void {
+    if (this.lifecycle !== 'open') {
+      throw new Error('Stamp-payment journal is not open')
+    }
+  }
+
+  private mutate<T>(operation: () => Promise<T>, admitted = false): Promise<T> {
+    if (!admitted) this.assertOpen()
     const run = this.mutationTail.then(operation)
     this.mutationTail = run.then(
       () => undefined,
@@ -192,6 +259,10 @@ export class LevelStampPaymentJournal implements StampPaymentJournal {
   }
 
   async Open(): Promise<void> {
+    if (this.lifecycle !== 'new') {
+      throw new Error('Stamp-payment journal cannot be reopened')
+    }
+    this.lifecycle = 'opening'
     this.assertMutationAllowed()
     validateWalletComponentBeforeOpen(
       this.rootLocation,
@@ -227,6 +298,7 @@ export class LevelStampPaymentJournal implements StampPaymentJournal {
       }
     }
     this.loadedBindingId = storedBindingId
+    this.lifecycle = 'open'
   }
 
   bindingId(): string | undefined {
@@ -237,6 +309,7 @@ export class LevelStampPaymentJournal implements StampPaymentJournal {
     resolvedLegacyRecords: StampPaymentRecoveryRecord[] = []
   ): Promise<void> {
     if (this.expectedBindingId === undefined) return
+    this.assertOpen()
     this.assertMutationAllowed()
     for (const record of resolvedLegacyRecords) {
       const recordKey = key(record.payloadHashHex, record.childIndex)
@@ -270,14 +343,26 @@ export class LevelStampPaymentJournal implements StampPaymentJournal {
   }
 
   async Close(): Promise<void> {
-    await this.mutationTail
-    await this.db.close()
+    if (this.closePromise !== undefined) return this.closePromise
+    if (this.lifecycle === 'new' && this.openedDb === undefined) {
+      this.lifecycle = 'closed'
+      return
+    }
+    this.lifecycle = 'closing'
+    this.closePromise = (async () => {
+      await Promise.all(Array.from(this.paymentQueues.values()))
+      await this.mutationTail
+      await this.openedDb?.close()
+      this.lifecycle = 'closed'
+    })()
+    return this.closePromise
   }
 
   get(
     payloadHashHex: string,
     childIndex: number
   ): StampPaymentRecoveryRecord | undefined {
+    this.assertOpen()
     const record = this.records.get(key(payloadHashHex, childIndex))
     return record === undefined ? undefined : cloneRecord(record)
   }
@@ -315,12 +400,30 @@ export class LevelStampPaymentJournal implements StampPaymentJournal {
   withPaymentLock<T>(
     payloadHashHex: string,
     childIndex: number,
-    operation: () => Promise<T>
+    operation: (locked: LockedStampPaymentJournal) => Promise<T>
   ): Promise<T> {
+    this.assertOpen()
     const recordKey = key(payloadHashHex, childIndex)
     const run = (this.paymentQueues.get(recordKey) ?? Promise.resolve())
       .then(() => this.mutationTail)
-      .then(operation)
+      .then(() => {
+        const locked: LockedStampPaymentJournal = {
+          get: () => {
+            const record = this.records.get(recordKey)
+            return record === undefined ? undefined : cloneRecord(record)
+          },
+          put: (record) =>
+            this.mutate(async () => {
+              this.assertMutationAllowed()
+              assertLockedRecordIdentity(recordKey, record)
+              assertPaymentAuthorityShape(record)
+              assertMonotonicPaymentRecord(this.records.get(recordKey), record)
+              await this.db.put(recordKey, JSON.stringify(record))
+              this.records.set(recordKey, cloneRecord(record))
+            }, true),
+        }
+        return operation(locked)
+      })
     const tail = run.then(
       () => undefined,
       () => undefined
@@ -335,6 +438,7 @@ export class LevelStampPaymentJournal implements StampPaymentJournal {
   }
 
   getAll(): StampPaymentRecoveryRecord[] {
+    this.assertOpen()
     return Array.from(this.records.values()).map(cloneRecord)
   }
 }
@@ -381,6 +485,15 @@ function assertPaymentAuthorityShape(record: StampPaymentRecoveryRecord): void {
       ))
   ) {
     throw new Error('Stamp-payment failed sweep ledger is invalid')
+  }
+  for (const failed of record.failedSweeps ?? []) {
+    const transaction = decodeSweepTransaction(failed.rawTx, failed.txHash)
+    if (
+      transaction.value.toString() !== failed.valueWei ||
+      transaction.to?.toLowerCase() !== failed.destinationAddress.toLowerCase()
+    ) {
+      throw new Error('Stamp-payment failed sweep transaction is inconsistent')
+    }
   }
   if (record.status === 'sweep-failed') {
     const terminal = record.failedSweeps?.[record.failedSweeps.length - 1]
@@ -473,6 +586,12 @@ function assertMonotonicPaymentRecord(
     }
   }
   if (prior.status === 'sweep-pending' && next.status === 'sweep-failed') {
+    if (
+      (next.failedSweeps ?? []).length !==
+      (prior.failedSweeps ?? []).length + 1
+    ) {
+      throw new Error('A failed sweep must append exactly one terminal row')
+    }
     const appended = next.failedSweeps?.[next.failedSweeps.length - 1]
     if (
       appended === undefined ||
@@ -488,13 +607,33 @@ function assertMonotonicPaymentRecord(
     assertSweepFieldsEqual(prior, next)
   }
   if (prior.status === 'sweep-failed' && next.status === 'sweep-pending') {
-    if (prior.sweepTxHash === next.sweepTxHash) {
-      throw new Error('A mined failed sweep nonce cannot be replayed')
-    }
     if (
       (prior.failedSweeps ?? []).length !== (next.failedSweeps ?? []).length
     ) {
       throw new Error('A fresh sweep cannot alter the failed sweep ledger')
+    }
+    const candidate = decodeSweepTransaction(
+      next.sweepRawTx as string,
+      next.sweepTxHash as string
+    )
+    let highestFailedNonce = -1
+    for (const failed of prior.failedSweeps ?? []) {
+      if (
+        failed.txHash.toLowerCase() ===
+          (next.sweepTxHash as string).toLowerCase() ||
+        failed.rawTx.toLowerCase() === (next.sweepRawTx as string).toLowerCase()
+      ) {
+        throw new Error('A mined failed sweep transaction cannot be replayed')
+      }
+      highestFailedNonce = Math.max(
+        highestFailedNonce,
+        decodeSweepTransaction(failed.rawTx, failed.txHash).nonce
+      )
+    }
+    if (candidate.nonce <= highestFailedNonce) {
+      throw new Error(
+        'A fresh sweep nonce must exceed every mined failed nonce'
+      )
     }
   }
   if (
@@ -508,6 +647,18 @@ function assertMonotonicPaymentRecord(
       throw new Error('A terminal sweep ledger cannot be extended')
     }
   }
+}
+
+function decodeSweepTransaction(rawTx: string, txHash: string): Transaction {
+  const transaction = Transaction.from(rawTx)
+  if (
+    transaction.hash === null ||
+    transaction.hash.toLowerCase() !== txHash.toLowerCase() ||
+    transaction.serialized.toLowerCase() !== rawTx.toLowerCase()
+  ) {
+    throw new Error('Stamp-payment sweep transaction bytes are invalid')
+  }
+  return transaction
 }
 
 function assertSweepFieldsEqual(

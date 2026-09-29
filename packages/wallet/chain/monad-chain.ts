@@ -138,6 +138,7 @@ import {
   createInMemoryMonadWalletBundle,
   openMonadWalletBundle,
 } from '../storage/monad-wallet-bundle'
+import { MonadRpcError } from '../monad-http'
 
 export interface MonadChainConfig {
   /** Monad JSON-RPC HTTP endpoint, e.g. `MONAD_TESTNET_HTTP_RPC_URL`. */
@@ -504,13 +505,20 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
         try {
           assertMonadStampPaymentCount(record.message.stampPayments.length)
           const parsedEnvelope = parseEnvelope(record.message.encryptedPayload)
-          if (
-            parsedEnvelope === undefined ||
-            parsedEnvelope.to.toLowerCase() !== myAddress
-          ) {
+          if (parsedEnvelope === undefined) {
             continue
           }
-          envelope = parsedEnvelope
+          // Both untrusted envelope addresses must be canonical before the payment set is
+          // journaled or either address is used for a profile lookup. A malformed paid row is
+          // isolated like every other malformed feed row and cannot poison later valid rows.
+          const canonicalFrom = getAddress(parsedEnvelope.from)
+          const canonicalTo = getAddress(parsedEnvelope.to)
+          if (canonicalTo.toLowerCase() !== myAddress) continue
+          envelope = {
+            ...parsedEnvelope,
+            from: canonicalFrom,
+            to: canonicalTo,
+          }
           payloadHashHex = bareHex(record.message.payloadHash)
           recovered = recoverMonadStampPayments({
             message: record.message,
@@ -618,8 +626,10 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
       if (journal === undefined) {
         throw new Error('Stamp-payment recovery journal is not configured')
       }
-      return journal.withPaymentLock(payloadDigest, childIndex, async () => {
-        let record = journal.get(payloadDigest, childIndex)
+      journal.assertOpen()
+      const withPaymentLock = journal.withPaymentLock.bind(journal)
+      return withPaymentLock(payloadDigest, childIndex, async (locked) => {
+        let record = locked.get()
         if (record === undefined) {
           throw new Error(
             `No recovered stamp payment ${payloadDigest}:${childIndex}`
@@ -673,7 +683,7 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
               },
             ],
           }
-          await journal.put(failed)
+          await locked.put(failed)
           return failed
         }
 
@@ -701,7 +711,7 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
             signer: childSigner,
             onSigned: async (signedTx) => {
               signedSweepRawTx = signedTx.rawTx
-              await journal.put({
+              await locked.put({
                 ...base,
                 status: 'sweep-pending',
                 sweepTxHash: signedTx.txHash,
@@ -712,7 +722,7 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
             },
           })
           if (outcome.swept) {
-            await journal.put({
+            await locked.put({
               ...base,
               status: 'swept',
               sweepTxHash: outcome.txHash,
@@ -743,9 +753,7 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
               destinationAddress: outcome.destinationAddress,
             }
           }
-          const failed = await retainFailedSweep(
-            journal.get(payloadDigest, childIndex)
-          )
+          const failed = await retainFailedSweep(locked.get())
           if (!retryAfterImmediateFailure) {
             throw new Error(
               `Recipient stamp-payment sweep ${outcome.txHash} failed on-chain`
@@ -766,7 +774,7 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
           }
           let status = await childSigner.getStatus(record.sweepTxHash)
           if (status === 'confirmed') {
-            await journal.put({
+            await locked.put({
               ...record,
               status: 'swept',
             })
@@ -779,10 +787,23 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
           if (status === 'pending') {
             // No receipt is ambiguous with a crash immediately before submission. Rebroadcast
             // the exact journaled bytes, then reconcile again before returning.
-            await childSigner.submitRaw(record.sweepRawTx, record.sweepTxHash)
+            try {
+              await childSigner.submitRaw(record.sweepRawTx, record.sweepTxHash)
+            } catch (error) {
+              if (
+                !(error instanceof MonadRpcError) ||
+                (error.kind !== 'already-known' &&
+                  error.kind !== 'nonce-too-low')
+              ) {
+                throw error
+              }
+              // These two responses can describe an earlier exact broadcast, but never prove
+              // which transaction consumed the nonce. Only the exact hash's receipt below may
+              // authorize completion or a fresh nonce.
+            }
             status = await childSigner.getStatus(record.sweepTxHash)
             if (status === 'confirmed') {
-              await journal.put({ ...record, status: 'swept' })
+              await locked.put({ ...record, status: 'swept' })
               return {
                 swept: true as const,
                 txHash: record.sweepTxHash,

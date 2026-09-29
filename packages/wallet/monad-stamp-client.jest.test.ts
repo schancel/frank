@@ -36,6 +36,7 @@ import {
 } from './storage/stamp-attempt-journal'
 import {
   MonadStampAbandonedError,
+  MonadStampAuthorityAuditRequiredError,
   MonadStampClient,
   MonadStampRejectedError,
   MonadStampPendingAttemptError,
@@ -402,9 +403,7 @@ describe('recipient stamp-payment recovery bounds', () => {
     expect(() =>
       recoverMonadStampPayments({
         message: {
-          stampPayments: [
-            { childIndex: 0, rawTx: getBytes(nonCanonical) },
-          ],
+          stampPayments: [{ childIndex: 0, rawTx: getBytes(nonCanonical) }],
           encryptedPayload,
           payloadHash,
         },
@@ -650,6 +649,51 @@ describe('MonadStampClient.submitStampedMessage', () => {
     // Every selected sub-account is retired after a definitive relay rejection.
     const retired = pool.records().filter((r) => r.status === 'retired')
     expect(retired).toHaveLength(2)
+  })
+
+  it('retains noncanonical protobuf attempts for explicit authority audit even when the relay claims no exact set', async () => {
+    const stampAttemptJournal = new InMemoryStampAttemptJournal()
+    const { client, pool } = makeClient({ stampAttemptJournal })
+    mockedAxios.mockRejectedValueOnce({
+      isAxiosError: true,
+      response: {
+        status: 400,
+        data: {
+          error: 'noncanonical_protobuf',
+          exact_set_retained: false,
+        },
+      },
+    })
+
+    await expect(
+      client.submitStampedMessage({
+        encryptedPayload: new TextEncoder().encode('pre-upgrade bytes'),
+        recipientPublicKey: RECIPIENT_PUBLIC_KEY,
+        stampValueWei: 10_000n,
+        overrides: FEE_OVERRIDES,
+      })
+    ).rejects.toThrow(MonadStampAuthorityAuditRequiredError)
+    expect(stampAttemptJournal.getAll()).toEqual([
+      expect.objectContaining({
+        authorityState: 'incompatible-protobuf',
+        authorityReason: 'noncanonical_protobuf',
+      }),
+    ])
+    expect(
+      pool.records().filter((record) => record.status === 'in-use')
+    ).toHaveLength(2)
+
+    await expect(
+      client.submitStampedMessage({
+        encryptedPayload: new TextEncoder().encode('replacement forbidden'),
+        recipientPublicKey: RECIPIENT_PUBLIC_KEY,
+        stampValueWei: 10_000n,
+        overrides: FEE_OVERRIDES,
+      })
+    ).rejects.toThrow(MonadStampAuthorityAuditRequiredError)
+    await expect(client.resumePendingAttempts()).resolves.toEqual([])
+    expect(mockedAxios).toHaveBeenCalledTimes(1)
+    expect(stampAttemptJournal.getAll()).toHaveLength(1)
   })
 
   it('keeps an exact journaled set pending after an HTTP response that may follow a partial broadcast', async () => {

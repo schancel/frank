@@ -104,6 +104,7 @@ export function prepareSecureWalletRootWithProvenance(
   const allowedEntries = new Set<string>([
     ...WALLET_COMPONENT_NAMES,
     '.frank-wallet.lock',
+    '.frank-wallet-creation.json',
   ])
   const unexpected = fs
     .readdirSync(canonical)

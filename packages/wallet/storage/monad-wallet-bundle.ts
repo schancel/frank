@@ -137,6 +137,7 @@ export function assertMonadWalletBundleProvenance(
 }
 
 type MigrationPhase =
+  | 'creation-intent'
   | 'validated'
   | 'marker'
   | 'sub-account-pool'
@@ -214,6 +215,198 @@ interface LegacyMigrationResolutions {
   changes: Map<number, ChangeAccountRecord>
   payments: Map<string, StampPaymentRecoveryRecord>
   hasSemanticState: boolean
+  hasCounterOnlyState: boolean
+}
+
+interface WalletCreationIntent {
+  version: 1
+  kind: 'caller-supplied' | 'generated'
+  bindingId: string
+  seedFingerprint: string
+  persistedSeed?: PersistedSeed
+}
+
+const NODE_CREATION_INTENT_FILE = '.frank-wallet-creation.json'
+const BROWSER_CREATION_INTENT_STORE = 'creation-intent'
+const BROWSER_CREATION_INTENT_KEY = 'intent'
+
+function parseCreationIntent(value: string): WalletCreationIntent {
+  const parsed = JSON.parse(value) as Partial<WalletCreationIntent>
+  if (
+    typeof parsed !== 'object' ||
+    parsed === null ||
+    Object.keys(parsed).some(
+      (key) =>
+        ![
+          'version',
+          'kind',
+          'bindingId',
+          'seedFingerprint',
+          'persistedSeed',
+        ].includes(key)
+    ) ||
+    parsed.version !== 1 ||
+    (parsed.kind !== 'caller-supplied' && parsed.kind !== 'generated') ||
+    typeof parsed.bindingId !== 'string' ||
+    !/^[0-9a-f]{64}$/i.test(parsed.bindingId) ||
+    typeof parsed.seedFingerprint !== 'string' ||
+    !/^0x[0-9a-f]{64}$/i.test(parsed.seedFingerprint) ||
+    (parsed.kind === 'caller-supplied' && parsed.persistedSeed !== undefined) ||
+    (parsed.kind === 'generated' && parsed.persistedSeed === undefined)
+  ) {
+    throw new Error('Invalid wallet creation intent')
+  }
+  if (parsed.persistedSeed !== undefined) {
+    parseSeed(JSON.stringify(parsed.persistedSeed))
+  }
+  return parsed as WalletCreationIntent
+}
+
+function browserCreationIntentName(location: string): string {
+  return `frank-monad-wallet-creation:${location}`
+}
+
+async function readWalletCreationIntent(
+  location: string
+): Promise<WalletCreationIntent | undefined> {
+  if (!isBrowserWalletStorage()) {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const fs = require('fs') as typeof import('fs')
+    const intentPath = join(location, NODE_CREATION_INTENT_FILE)
+    let stat: import('fs').Stats
+    try {
+      stat = fs.lstatSync(intentPath)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined
+      throw error
+    }
+    if (
+      stat.isSymbolicLink() ||
+      !stat.isFile() ||
+      stat.nlink !== 1 ||
+      stat.uid !== process.getuid?.() ||
+      (stat.mode & 0o777) !== 0o600
+    ) {
+      throw new Error(
+        'Wallet creation intent must be an owner-only regular file'
+      )
+    }
+    return parseCreationIntent(fs.readFileSync(intentPath, 'utf8'))
+  }
+
+  const indexedDb = (globalThis as any).indexedDB
+  const databaseName = browserCreationIntentName(location)
+  const databases = (await indexedDb.databases()) as Array<{ name?: string }>
+  if (!databases.some((database) => database.name === databaseName)) {
+    return undefined
+  }
+  const database = await new Promise<any>((resolveOpen, rejectOpen) => {
+    const request = indexedDb.open(databaseName)
+    request.onerror = () => rejectOpen(request.error)
+    request.onsuccess = () => resolveOpen(request.result)
+  })
+  try {
+    return await new Promise<WalletCreationIntent>(
+      (resolveRead, rejectRead) => {
+        if (
+          !database.objectStoreNames.contains(BROWSER_CREATION_INTENT_STORE)
+        ) {
+          rejectRead(new Error('Invalid browser wallet creation intent'))
+          return
+        }
+        const transaction = database.transaction(
+          BROWSER_CREATION_INTENT_STORE,
+          'readonly'
+        )
+        const request = transaction
+          .objectStore(BROWSER_CREATION_INTENT_STORE)
+          .get(BROWSER_CREATION_INTENT_KEY)
+        request.onerror = () => rejectRead(request.error)
+        request.onsuccess = () => {
+          if (typeof request.result !== 'string') {
+            rejectRead(new Error('Invalid browser wallet creation intent'))
+            return
+          }
+          resolveRead(parseCreationIntent(request.result))
+        }
+      }
+    )
+  } finally {
+    database.close()
+  }
+}
+
+async function createWalletCreationIntent(
+  location: string,
+  intent: WalletCreationIntent
+): Promise<void> {
+  const encoded = JSON.stringify(intent)
+  if (!isBrowserWalletStorage()) {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const fs = require('fs') as typeof import('fs')
+    const intentPath = join(location, NODE_CREATION_INTENT_FILE)
+    const descriptor = fs.openSync(intentPath, 'wx', 0o600)
+    try {
+      fs.writeFileSync(descriptor, encoded)
+      fs.fsyncSync(descriptor)
+    } finally {
+      fs.closeSync(descriptor)
+    }
+    const rootDescriptor = fs.openSync(location, 'r')
+    try {
+      fs.fsyncSync(rootDescriptor)
+    } finally {
+      fs.closeSync(rootDescriptor)
+    }
+    return
+  }
+
+  const indexedDb = (globalThis as any).indexedDB
+  const databaseName = browserCreationIntentName(location)
+  await new Promise<void>((resolveCreate, rejectCreate) => {
+    const request = indexedDb.open(databaseName, 1)
+    request.onupgradeneeded = () => {
+      const store = request.result.createObjectStore(
+        BROWSER_CREATION_INTENT_STORE
+      )
+      store.add(encoded, BROWSER_CREATION_INTENT_KEY)
+    }
+    request.onerror = () => rejectCreate(request.error)
+    request.onsuccess = () => {
+      request.result.close()
+      resolveCreate()
+    }
+  })
+}
+
+async function clearWalletCreationIntent(location: string): Promise<void> {
+  if (!isBrowserWalletStorage()) {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const fs = require('fs') as typeof import('fs')
+    const intentPath = join(location, NODE_CREATION_INTENT_FILE)
+    try {
+      fs.unlinkSync(intentPath)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    }
+    const rootDescriptor = fs.openSync(location, 'r')
+    try {
+      fs.fsyncSync(rootDescriptor)
+    } finally {
+      fs.closeSync(rootDescriptor)
+    }
+    return
+  }
+  const indexedDb = (globalThis as any).indexedDB
+  await new Promise<void>((resolveDelete, rejectDelete) => {
+    const request = indexedDb.deleteDatabase(
+      browserCreationIntentName(location)
+    )
+    request.onsuccess = () => resolveDelete()
+    request.onerror = () => rejectDelete(request.error)
+    request.onblocked = () =>
+      rejectDelete(new Error('Browser wallet creation intent deletion blocked'))
+  })
 }
 
 function seedFingerprint(
@@ -540,6 +733,8 @@ function validateLoadedState(params: {
         'leaseIndices',
         'recipientPublicKeyHex',
         'envelopeRecipientAddress',
+        'authorityState',
+        'authorityReason',
       ],
       'stamp-attempt journal record'
     )
@@ -555,7 +750,14 @@ function validateLoadedState(params: {
       new Set(attempt.leaseIndices).size !== attempt.leaseIndices.length ||
       attempt.leaseIndices.some(
         (index) => !Number.isSafeInteger(index) || index < 0
-      )
+      ) ||
+      (attempt.authorityState !== undefined &&
+        attempt.authorityState !== 'pending' &&
+        attempt.authorityState !== 'incompatible-protobuf') ||
+      (attempt.authorityState === 'incompatible-protobuf' &&
+        attempt.authorityReason !== 'noncanonical_protobuf') ||
+      (attempt.authorityReason !== undefined &&
+        attempt.authorityState !== 'incompatible-protobuf')
     ) {
       throw new Error('Invalid stamp-attempt journal record')
     }
@@ -776,19 +978,21 @@ async function validateLegacySnapshot(params: {
       allowUnresolvedLegacyAttempts: true,
       allowUnresolvedLegacyFinalizedRows: true,
     })
+    const hasAuthenticatedRows =
+      pool.records().length > 0 ||
+      pool.terminalCheckpoints().length > 0 ||
+      changePool.records().length > 0 ||
+      changePool.pendingIntent() !== undefined ||
+      attemptJournal.getAll().length > 0 ||
+      paymentJournal.getAll().length > 0
+    const hasCounters =
+      pool.nextUnusedIndex() > 0 || changePool.nextUnusedIndex() > 0
     const resolutions: LegacyMigrationResolutions = {
       attempts: new Map(),
       changes: new Map(),
       payments: new Map(),
-      hasSemanticState:
-        pool.records().length > 0 ||
-        pool.terminalCheckpoints().length > 0 ||
-        pool.nextUnusedIndex() > 0 ||
-        changePool.records().length > 0 ||
-        changePool.pendingIntent() !== undefined ||
-        changePool.nextUnusedIndex() > 0 ||
-        attemptJournal.getAll().length > 0 ||
-        paymentJournal.getAll().length > 0,
+      hasSemanticState: hasAuthenticatedRows || hasCounters,
+      hasCounterOnlyState: hasCounters && !hasAuthenticatedRows,
     }
     const attemptOverlay = new InMemoryStampAttemptJournal()
     for (const attempt of attemptJournal.getAll()) {
@@ -1195,6 +1399,7 @@ export function createInMemoryMonadWalletBundle(params: {
     store: new InMemorySubAccountPoolStore(),
     requireStampReconciliationPreflight: true,
   })
+  const paymentJournal = new InMemoryStampPaymentJournal()
   return makeBundle({
     durability: 'test-only-ephemeral',
     bindingId: newBindingId(),
@@ -1204,16 +1409,49 @@ export function createInMemoryMonadWalletBundle(params: {
       store: new InMemoryChangePoolStore(),
     }),
     attemptJournal: new InMemoryStampAttemptJournal(),
-    paymentJournal: new InMemoryStampPaymentJournal(),
+    paymentJournal,
     subKeyring,
     changeKeyring,
-    close: async () => undefined,
+    close: () => paymentJournal.Close(),
   })
 }
 
 export async function openMonadWalletBundle(
   params: OpenMonadWalletBundleParams
 ): Promise<MonadWalletPersistenceBundle> {
+  const runtimeParams = params as unknown as {
+    location: string
+    seed?: { mnemonic: string; passphrase?: string }
+    createSeedIfEmpty?: boolean
+    mode?: 'create' | 'restore'
+  }
+  if (
+    (runtimeParams.mode !== undefined &&
+      runtimeParams.mode !== 'create' &&
+      runtimeParams.mode !== 'restore') ||
+    (runtimeParams.createSeedIfEmpty !== undefined &&
+      runtimeParams.createSeedIfEmpty !== true &&
+      runtimeParams.createSeedIfEmpty !== false) ||
+    (runtimeParams.seed !== undefined &&
+      (typeof runtimeParams.seed !== 'object' ||
+        runtimeParams.seed === null ||
+        typeof runtimeParams.seed.mnemonic !== 'string' ||
+        runtimeParams.seed.mnemonic.length === 0 ||
+        (runtimeParams.seed.passphrase !== undefined &&
+          typeof runtimeParams.seed.passphrase !== 'string'))) ||
+    (runtimeParams.seed !== undefined &&
+      runtimeParams.createSeedIfEmpty === true) ||
+    (runtimeParams.mode === 'restore' && runtimeParams.seed === undefined) ||
+    (runtimeParams.mode === 'create' &&
+      runtimeParams.seed === undefined &&
+      runtimeParams.createSeedIfEmpty !== true) ||
+    (runtimeParams.createSeedIfEmpty === true &&
+      runtimeParams.mode === 'restore') ||
+    (runtimeParams.seed === undefined &&
+      runtimeParams.createSeedIfEmpty !== true)
+  ) {
+    throw new Error('Invalid Monad wallet creation/restore mode')
+  }
   const preparedRoot = prepareSecureWalletRootWithProvenance(params.location)
   const location = preparedRoot.location
   const nodeLease = await acquireNodeWalletRootLease(location)
@@ -1230,6 +1468,7 @@ export async function openMonadWalletBundle(
     const namespaceNeverExisted = isBrowserWalletStorage()
       ? existing.size === 0
       : preparedRoot.nodeRootCreated
+    let creationIntent = await readWalletCreationIntent(location)
     const componentNames = [
       'sub-account-pool',
       'change-pool',
@@ -1243,6 +1482,7 @@ export async function openMonadWalletBundle(
     if (
       !hasManifestDatabase &&
       hasLegacyComponents &&
+      creationIntent === undefined &&
       componentNames.some((name) => !existing.has(name))
     ) {
       throw new Error(
@@ -1287,11 +1527,15 @@ export async function openMonadWalletBundle(
     if (
       finalized === undefined &&
       migration === undefined &&
-      hasManifestDatabase
+      hasManifestDatabase &&
+      creationIntent === undefined
     ) {
       throw new Error('Refusing to replace an invalid wallet manifest')
     }
 
+    const explicitCallerSeedCreation =
+      params.seed !== undefined && params.mode === 'create'
+    const generatedSeedCreation = params.createSeedIfEmpty === true
     let seed: PersistedSeed
     if (params.seed !== undefined) {
       seed = {
@@ -1303,6 +1547,8 @@ export async function openMonadWalletBundle(
       seed = parseSeed(JSON.stringify(migration.persistedSeed))
     } else if (storedSeedValue !== undefined) {
       seed = parseSeed(storedSeedValue)
+    } else if (creationIntent?.kind === 'generated') {
+      seed = parseSeed(JSON.stringify(creationIntent.persistedSeed))
     } else if (!hasManifestDatabase && params.createSeedIfEmpty) {
       seed = {
         version: 1,
@@ -1323,7 +1569,9 @@ export async function openMonadWalletBundle(
     )
     const fingerprint = seedFingerprint(subKeyring, changeKeyring)
     const expectedFingerprint =
-      finalized?.seedFingerprint ?? migration?.seedFingerprint
+      finalized?.seedFingerprint ??
+      migration?.seedFingerprint ??
+      creationIntent?.seedFingerprint
     if (
       expectedFingerprint !== undefined &&
       fingerprint !== expectedFingerprint
@@ -1331,11 +1579,67 @@ export async function openMonadWalletBundle(
       throw new Error('Wallet seed does not match the durable wallet manifest')
     }
 
+    if (creationIntent !== undefined) {
+      if (
+        finalized !== undefined &&
+        (creationIntent.bindingId !== finalized.bindingId ||
+          creationIntent.seedFingerprint !== finalized.seedFingerprint)
+      ) {
+        throw new Error(
+          'Wallet creation intent does not match the finalized wallet manifest'
+        )
+      }
+      const expectedKind = explicitCallerSeedCreation
+        ? 'caller-supplied'
+        : generatedSeedCreation
+        ? 'generated'
+        : undefined
+      if (
+        finalized === undefined &&
+        (expectedKind === undefined || creationIntent.kind !== expectedKind)
+      ) {
+        throw new Error(
+          'Wallet creation intent requires the exact original creation mode'
+        )
+      }
+    }
     const bindingId =
-      finalized?.bindingId ?? migration?.bindingId ?? newBindingId()
+      finalized?.bindingId ??
+      migration?.bindingId ??
+      creationIntent?.bindingId ??
+      newBindingId()
     const isMigration = finalized === undefined
+    if (
+      finalized === undefined &&
+      migration === undefined &&
+      (explicitCallerSeedCreation || generatedSeedCreation) &&
+      creationIntent === undefined
+    ) {
+      if (explicitCallerSeedCreation && !namespaceNeverExisted) {
+        throw new Error(
+          'Caller-seed creation requires a storage namespace created by this exclusive acquisition'
+        )
+      }
+      if (hasLegacyComponents) {
+        throw new Error(
+          'First-use creation cannot adopt an existing component namespace'
+        )
+      }
+      const intent: WalletCreationIntent = {
+        version: 1,
+        kind: explicitCallerSeedCreation ? 'caller-supplied' : 'generated',
+        bindingId,
+        seedFingerprint: fingerprint,
+        ...(generatedSeedCreation ? { persistedSeed: seed } : {}),
+      }
+      await createWalletCreationIntent(location, intent)
+      creationIntent = intent
+      await params.onMigrationPhase?.('creation-intent')
+    }
     const legacyResolutions =
-      !hasManifestDatabase && hasLegacyComponents
+      !hasManifestDatabase &&
+      hasLegacyComponents &&
+      creationIntent === undefined
         ? await validateLegacySnapshot({
             location,
             subKeyring,
@@ -1351,9 +1655,13 @@ export async function openMonadWalletBundle(
             changes: new Map<number, ChangeAccountRecord>(),
             payments: new Map<string, StampPaymentRecoveryRecord>(),
             hasSemanticState: false,
+            hasCounterOnlyState: false,
           }
-    const explicitCallerSeedCreation =
-      params.seed !== undefined && params.mode === 'create'
+    if (legacyResolutions.hasCounterOnlyState) {
+      throw new Error(
+        'Unbound legacy high-water counters require authenticated seed-bound recovery evidence'
+      )
+    }
     const semanticallyEmptyUnboundRoot =
       finalized === undefined &&
       migration === undefined &&
@@ -1362,7 +1670,8 @@ export async function openMonadWalletBundle(
       migration?.restoreMode === true ||
       (semanticallyEmptyUnboundRoot &&
         params.seed !== undefined &&
-        (!explicitCallerSeedCreation || !namespaceNeverExisted))
+        (!explicitCallerSeedCreation ||
+          (!namespaceNeverExisted && creationIntent === undefined)))
     if (isEmptySuppliedSeedRestore) {
       throw new Error(
         'Restoring a supplied seed into an empty wallet root is disabled without a verifiable seed-bound allocation ledger; restore the wallet state backup or create a new seed'
@@ -1659,6 +1968,11 @@ export async function openMonadWalletBundle(
       assertLeaseHeld()
       await (manifestDb as any).batch(writes)
       await params.onMigrationPhase?.('manifest')
+    }
+    if (creationIntent !== undefined) {
+      assertLeaseHeld()
+      await clearWalletCreationIntent(location)
+      creationIntent = undefined
     }
 
     let repairedChangeRecovery = false

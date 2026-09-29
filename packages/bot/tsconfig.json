@@ -4,6 +4,11 @@
     "esModuleInterop": true,
     "module": "esnext",
     "moduleResolution": "node",
+    "baseUrl": ".",
+    "paths": {
+      "@frank/cashweb/*": ["../cashweb/*"],
+      "@frank/wallet/*": ["../wallet/*"]
+    },
     "noEmit": true,
     "resolveJsonModule": true,
     "forceConsistentCasingInFileNames": true,
@@ -14,9 +19,6 @@
     "lib": ["es2020"],
     "types": ["node"]
   },
-  "include": [
-    "**/*",
-    "../bitcore-lib-xpi/types.d.ts"
-  ],
-  "exclude": ["node_modules"]
+  "include": ["**/*", "../bitcore-lib-xpi/types.d.ts"],
+  "exclude": ["node_modules", "**/*.jest.spec.ts", "**/*.jest.test.ts"]
 }

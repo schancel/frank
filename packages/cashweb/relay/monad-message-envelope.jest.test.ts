@@ -7,6 +7,7 @@ import {
   MAX_MONAD_ENVELOPE_PLAINTEXT_BYTES,
   MonadMessageEnvelopeV2,
   buildEnvelope,
+  canonicalMonadEnvelopeAddress,
   decryptEnvelope,
   decryptEnvelopeV2,
   parseEnvelope,
@@ -357,6 +358,8 @@ describe("Monad message envelope v2", () => {
       )
     ).toBe(true);
     expect(sameMonadEnvelopeAddress(aliceAddress, bobAddress)).toBe(false);
+    expect(canonicalMonadEnvelopeAddress("LocalUser")).toBe("LocalUser");
+    expect(sameMonadEnvelopeAddress("LocalUser", "localuser")).toBe(false);
   });
 
   it.each([
@@ -447,6 +450,27 @@ describe("legacy v1 read compatibility", () => {
     const parsed = parseEnvelope(Buffer.from(JSON.stringify(fixture)));
     expect(parsed).toEqual(fixture);
     if (parsed === undefined) throw new Error("expected legacy fixture");
+    expect(
+      decryptEnvelope({
+        envelope: parsed,
+        myPrivateKey: bobPrivateKey,
+        senderPubKey: alicePubKey,
+      })
+    ).toBe("legacy hello");
+  });
+
+  it("parses and decrypts historical uppercase routing addresses", () => {
+    const fixture: LegacyMonadMessageEnvelopeV1 = {
+      v: 1,
+      networkTag: "MONT",
+      from: aliceAddress.toUpperCase().replace("0X", "0x"),
+      to: bobAddress.toUpperCase().replace("0X", "0x"),
+      salt: "000102030405060708090a0b0c0d0e0f",
+      ciphertext: "0883c052cf7a91ff20dab2c3a06bb75f",
+    };
+    const parsed = parseEnvelope(Buffer.from(JSON.stringify(fixture)));
+    expect(parsed).toEqual(fixture);
+    if (parsed?.v !== 1) throw new Error("expected legacy fixture");
     expect(
       decryptEnvelope({
         envelope: parsed,

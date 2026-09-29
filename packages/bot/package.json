@@ -7,7 +7,8 @@
   "scripts": {
     "bot": "tsx qwen-bot.livecheck.ts",
     "send-demo": "tsx qwen-bot-send-demo.livecheck.ts",
-    "ui-verify": "tsx monad-ui-verify.livecheck.ts"
+    "ui-verify": "tsx monad-ui-verify.livecheck.ts",
+    "test": "jest"
   },
   "dependencies": {
     "@frank/cashweb": "*",
@@ -18,7 +19,10 @@
     "level": "^7.0.0"
   },
   "devDependencies": {
+    "@types/jest": "^29",
     "@types/node": "^16.11.11",
+    "jest": "^29",
+    "ts-jest": "^29",
     "tsx": "^4.19.0",
     "typescript": "^5.9.3"
   }

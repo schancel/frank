@@ -382,8 +382,8 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
       stampValueWei: params.stampValue ?? config.defaultStampValueWei,
     })
 
-    const stampPayments = result.stored?.message?.stampPayments.flatMap(
-      payment => {
+    const stampPayments =
+      result.stored?.message?.stampPayments.flatMap(payment => {
         const tx = Transaction.from(hexlify(payment.rawTx))
         return tx.hash === null || tx.to === null
           ? []
@@ -394,8 +394,7 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
                 valueWei: tx.value,
               },
             ]
-      },
-    ) ?? []
+      }) ?? []
     return {
       payloadDigest: result.payloadHashHex,
       stampValueWei: params.stampValue ?? config.defaultStampValueWei,
@@ -465,16 +464,18 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
         })
         if (senderProfile === undefined) continue
 
-        let plaintext: string
+        let items: MessageItem[]
         try {
-          plaintext = decryptEnvelope({
-            envelope,
-            myPrivateKey: wallet.identity.toBitcorePrivateKey(),
-            senderPubKey: Buffer.from(senderProfile.pubKey),
-          })
+          items = deserializeMessageItems(
+            decryptEnvelope({
+              envelope,
+              myPrivateKey: wallet.identity.toBitcorePrivateKey(),
+              senderPubKey: Buffer.from(senderProfile.pubKey),
+            }),
+          )
         } catch {
-          // Wrong/stale key, corrupted ciphertext, etc. -- skip rather than surface a parse error
-          // for one bad message out of a whole page.
+          // Wrong/stale key, corrupted ciphertext, or authenticated but malformed plaintext: one
+          // poison record must not reject the rest of this mailbox page.
           continue
         }
 
@@ -499,7 +500,7 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
         received.push({
           senderAddress: toChainAddress(envelope.from),
           recipientAddress: toChainAddress(envelope.to),
-          items: deserializeMessageItems(plaintext),
+          items,
           payloadDigest: payloadHashHex,
           stampValueWei,
           stampPayments,

@@ -213,6 +213,15 @@ function isAddress(value: unknown): value is string {
   });
 }
 
+/**
+ * Legacy v1 authenticated neither routing field, and historical writers did not promise an
+ * EIP-55 spelling. Keep its read-only parser syntax-based and case-insensitive so casing alone
+ * cannot strand an already-stored message. New v2 envelopes continue through {@link isAddress}.
+ */
+function isLegacyAddress(value: unknown): value is string {
+  return typeof value === "string" && /^0x[0-9a-fA-F]{40}$/.test(value);
+}
+
 function isNetworkTag(value: unknown): value is string {
   return (
     typeof value === "string" &&
@@ -262,8 +271,8 @@ function isLegacyMonadMessageEnvelopeV1(
   return (
     value.v === LEGACY_ENVELOPE_VERSION &&
     isNetworkTag(value.networkTag) &&
-    isAddress(value.from) &&
-    isAddress(value.to) &&
+    isLegacyAddress(value.from) &&
+    isLegacyAddress(value.to) &&
     isLowerHexBytes(value.salt, { exactBytes: 16 }) &&
     isLowerHexBytes(value.ciphertext, {
       minBytes: 16,
@@ -455,9 +464,16 @@ export function decryptEnvelope(params: {
   });
 }
 
+/** Canonical durable key for a syntactically valid EVM identity; non-address keys stay distinct. */
+export function canonicalMonadEnvelopeAddress(address: string): string {
+  return /^0x[0-9a-fA-F]{40}$/.test(address) ? address.toLowerCase() : address;
+}
+
 /** Compare relay-visible EVM identities without making checksum casing part of identity. */
 export function sameMonadEnvelopeAddress(left: string, right: string): boolean {
-  return left.toLowerCase() === right.toLowerCase();
+  return (
+    canonicalMonadEnvelopeAddress(left) === canonicalMonadEnvelopeAddress(right)
+  );
 }
 
 /**

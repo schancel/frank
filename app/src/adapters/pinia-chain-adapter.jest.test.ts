@@ -162,6 +162,40 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
       expect(fetchSinceSpy.mock.calls.length).toBe(callsAtStop)
     })
 
+    it('advances beyond a valid record returned after an earlier poison record was filtered', async () => {
+      const chats = useChatStore()
+      const receiveMessagesSpy = jest.spyOn(chats, 'receiveMessages')
+      jest.spyOn(activeChain, 'fetchProfile').mockResolvedValue({
+        address: { raw: SENDER_ADDRESS },
+        pubKey: PUB_KEY_BYTES,
+      })
+      // MonadChain.fetchSince filters the authenticated malformed record at timestamp 100 and
+      // returns the valid record later in the same relay page.
+      const fetchSinceSpy = jest
+        .spyOn(activeChain.directMessages, 'fetchSince')
+        .mockResolvedValueOnce([
+          makeRecord({
+            payloadDigest: 'valid-after-poison',
+            receivedTime: 200,
+          }),
+        ])
+        .mockResolvedValue([])
+
+      const polling = startDirectMessagePolling({ wallet, intervalMs: 20 })
+      try {
+        await wait(35)
+        expect(receiveMessagesSpy).toHaveBeenCalledWith([
+          expect.objectContaining({ index: 'valid-after-poison' }),
+        ])
+        expect(fetchSinceSpy).toHaveBeenNthCalledWith(2, {
+          wallet,
+          sinceMs: 201,
+        })
+      } finally {
+        polling.stop()
+      }
+    })
+
     it('does not let one failed poll stop future polling', async () => {
       const chats = useChatStore()
       const receiveMessagesSpy = jest.spyOn(chats, 'receiveMessages')

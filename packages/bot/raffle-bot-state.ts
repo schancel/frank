@@ -22,6 +22,11 @@ import { mkdirSync } from 'fs'
 import level, { LevelDB } from 'level'
 import { join } from 'path'
 
+import {
+  canonicalMonadEnvelopeAddress,
+  sameMonadEnvelopeAddress,
+} from '@frank/cashweb/relay/monad-message-envelope'
+
 const PENDING_SEED_KEY = '__pending_server_seed__'
 const PENDING_SEED_HASH_KEY = '__pending_server_seed_hash__'
 const ROUND_KEY = '__current_round__'
@@ -38,6 +43,15 @@ export interface RaffleRoundRecord {
   maxEntries: number
   serverSeedHash: string
   entrants: RaffleEntrant[]
+}
+
+export function hasRaffleEntrant(
+  round: RaffleRoundRecord,
+  address: string,
+): boolean {
+  return round.entrants.some(entrant =>
+    sameMonadEnvelopeAddress(entrant.address, address),
+  )
 }
 
 export class RaffleBotStateStore {
@@ -71,7 +85,14 @@ export class RaffleBotStateStore {
       } else if (key === PENDING_SEED_HASH_KEY) {
         this.pendingServerSeedHash = JSON.parse(value)
       } else if (key === ROUND_KEY) {
-        this.currentRound = JSON.parse(value)
+        const round = JSON.parse(value) as RaffleRoundRecord
+        this.currentRound = {
+          ...round,
+          entrants: round.entrants.map(entrant => ({
+            ...entrant,
+            address: canonicalMonadEnvelopeAddress(entrant.address),
+          })),
+        }
       } else if (key.startsWith(PROCESSED_PREFIX)) {
         this.processedPayloadHashes.add(key.slice(PROCESSED_PREFIX.length))
       }
@@ -88,7 +109,9 @@ export class RaffleBotStateStore {
     this.pendingWrites = []
   }
 
-  getPendingCommitment(): { serverSeed: string; serverSeedHash: string } | undefined {
+  getPendingCommitment():
+    | { serverSeed: string; serverSeedHash: string }
+    | undefined {
     if (!this.pendingServerSeed || !this.pendingServerSeedHash) return undefined
     return {
       serverSeed: this.pendingServerSeed,
@@ -110,8 +133,17 @@ export class RaffleBotStateStore {
   }
 
   setCurrentRound(round: RaffleRoundRecord): void {
-    this.currentRound = round
-    this.pendingWrites.push(this.db.put(ROUND_KEY, JSON.stringify(round)))
+    const canonicalRound = {
+      ...round,
+      entrants: round.entrants.map(entrant => ({
+        ...entrant,
+        address: canonicalMonadEnvelopeAddress(entrant.address),
+      })),
+    }
+    this.currentRound = canonicalRound
+    this.pendingWrites.push(
+      this.db.put(ROUND_KEY, JSON.stringify(canonicalRound)),
+    )
   }
 
   hasProcessed(payloadHashHex: string): boolean {

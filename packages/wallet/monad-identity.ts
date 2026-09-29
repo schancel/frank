@@ -29,12 +29,16 @@
  *
  * ## Reusing `bitcore-lib-xpi`'s ECDH/AES/ECDSA code without any Lotus addressing
  *
- * `./monad-message-envelope.ts` (ticket #9) already implements this codebase's ECDH+AES-256-CBC
- * scheme on top of `bitcore-lib-xpi`'s `PrivateKey`/`PublicKey` -- but purely as a secp256k1
+ * `../cashweb/relay/monad-message-envelope.ts` implements the current deniable v2 envelope:
+ * secp256k1 ECDH, HKDF-SHA256, and AES-256-GCM with the network and routing tuple authenticated as
+ * associated data. It retains AES-CBC v1 only as a read path for already-stored records. Both use
+ * `bitcore-lib-xpi`'s `PrivateKey`/`PublicKey` purely as a secp256k1
  * elliptic-curve-math + symmetric-crypto vehicle already in this codebase's dependency tree, not
  * because Lotus addressing is fundamentally involved (that module never calls
  * `computeLotusAddress`, and its envelope's `from`/`to` fields are plain, format-agnostic
- * strings). secp256k1 is the same curve Monad/Ethereum accounts use, so the *same raw 32-byte
+ * strings). Routing and durable consumer keys treat valid 20-byte EVM addresses case-independently
+ * even though this identity presents its preferred EIP-55 spelling. secp256k1 is the same curve
+ * Monad/Ethereum accounts use, so the *same raw 32-byte
  * private key* this module derives via `ethers` HD derivation can be wrapped in a
  * `bitcore-lib-xpi` `PrivateKey` purely to reuse that existing ECDH code (`toBitcorePrivateKey`
  * below) and `bitcore-lib-xpi`'s DER ECDSA signer (`signHash`, for `AddressMetadata` registration
@@ -165,7 +169,7 @@ export class MonadIdentity implements FrankIdentityHandle {
   }
 
   /** Wraps this identity's raw private key in a `bitcore-lib-xpi` `PrivateKey`, purely to reuse
-   * `./monad-message-envelope.ts`'s existing ECDH implementation (see this file's header) -- never
+   * the Monad envelope's ECDH implementation (see this file's header) -- never
    * used for Lotus address derivation. */
   toBitcorePrivateKey(): PrivateKey {
     return new PrivateKey(this.wallet.privateKey.slice(2))

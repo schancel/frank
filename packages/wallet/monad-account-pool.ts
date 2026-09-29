@@ -68,6 +68,7 @@ import {
 } from './monad-account-tx'
 import {
   InMemorySubAccountPoolStore,
+  assertSubAccountStatusTransition,
   SubAccountPoolStore,
   SubAccountRecoveryDisposition,
   SubAccountRecord,
@@ -131,6 +132,7 @@ export class MonadSubAccountPool {
   private readonly requireStampReconciliationPreflight: boolean
   private stampPreparationAuthorized = false
   private compactionCursor = -1
+  private walletOperationGate?: <T>(operation: () => Promise<T>) => Promise<T>
 
   constructor(params: {
     keyring: MonadHdKeyring
@@ -141,6 +143,16 @@ export class MonadSubAccountPool {
     this.store = params.store ?? new InMemorySubAccountPoolStore()
     this.requireStampReconciliationPreflight =
       params.requireStampReconciliationPreflight ?? false
+  }
+
+  /** Bundle-owned lifecycle gate. Persistence factories attach this before exposing the pool. */
+  attachWalletOperationGate(
+    gate: <T>(operation: () => Promise<T>) => Promise<T>
+  ): void {
+    if (this.walletOperationGate !== undefined) {
+      throw new Error('Sub-account pool already has a wallet operation gate')
+    }
+    this.walletOperationGate = gate
   }
 
   /**
@@ -261,6 +273,7 @@ export class MonadSubAccountPool {
     if (status === 'funding') {
       throw new Error('Use a durable funding attempt to enter funding state')
     }
+    assertSubAccountStatusTransition(existing.status, status)
     const { fundingAttempt: _fundingAttempt, ...base } = existing
     const updated: SubAccountRecord = { ...base, status }
     this.store.put(updated)
@@ -380,6 +393,23 @@ export class MonadSubAccountPool {
    * fallback when the value is too small or already-available inventory dictates it.
    */
   async prepareStampInventory(params: {
+    mainAccountSigner: MonadAccountTxSigner
+    provider: Provider
+    stampValueWei: bigint
+    gasReserveWei: bigint
+    fundingOverrides?: MonadTxOverrides
+    onProgress?: (progress: StampInventoryPreparationProgress) => void
+    receipt?: FundingReceiptOptions
+  }): Promise<StampInventoryPreparationResult> {
+    if (this.walletOperationGate !== undefined) {
+      return this.walletOperationGate(() =>
+        this.prepareStampInventoryAdmitted(params)
+      )
+    }
+    return this.prepareStampInventoryAdmitted(params)
+  }
+
+  private async prepareStampInventoryAdmitted(params: {
     mainAccountSigner: MonadAccountTxSigner
     provider: Provider
     stampValueWei: bigint

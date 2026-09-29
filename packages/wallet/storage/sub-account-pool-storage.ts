@@ -114,6 +114,46 @@ export type SubAccountRecord = SubAccountRecordBase &
       }
   )
 
+/** Shared structural lifecycle boundary for loaded and live sub-account state. */
+export function assertSubAccountLifecycleMatrix(
+  record: SubAccountRecord
+): void {
+  const { funding, spend, recovery } = record.lifecycle ?? {}
+  if (
+    ((record.status === 'unfunded' || record.status === 'funding') &&
+      (funding !== undefined ||
+        spend !== undefined ||
+        recovery !== undefined)) ||
+    (record.status === 'available' &&
+      (spend !== undefined || recovery !== undefined)) ||
+    (record.status === 'in-use' && recovery !== undefined) ||
+    (record.status === 'spent' && spend === undefined) ||
+    (recovery !== undefined && spend === undefined)
+  ) {
+    throw new Error(
+      `Sub-account ${record.index} status/lifecycle combination is invalid`
+    )
+  }
+}
+
+export function assertSubAccountStatusTransition(
+  prior: SubAccountStatus,
+  next: SubAccountStatus
+): void {
+  if (prior === next) return
+  const allowed: Record<SubAccountStatus, readonly SubAccountStatus[]> = {
+    unfunded: ['funding'],
+    funding: ['available', 'retired'],
+    available: ['in-use', 'retired'],
+    'in-use': ['spent', 'retired'],
+    spent: [],
+    retired: [],
+  }
+  if (!allowed[prior].includes(next)) {
+    throw new Error(`Sub-account lifecycle cannot move ${prior} -> ${next}`)
+  }
+}
+
 /**
  * Persistence boundary for `MonadSubAccountPool`'s state. Concrete implementations: an in-memory
  * one (`InMemorySubAccountPoolStore`, below — used in tests and as a lightweight default) and a

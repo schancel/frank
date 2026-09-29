@@ -87,11 +87,9 @@
  *     needlessly fragile; retiring is the conservative, "never silently reuse" choice this
  *     codebase's lease module already documents as its default).
  *   - **No HTTP response at all** (network/timeout failure — genuinely unknown whether the relay
- *     ever received/broadcast/stored the message before the connection dropped): falls back to
- *     polling `GET /message/monad/:payload_hash` (`pollForStoredMessage`) a bounded number of times.
- *     Found → `'confirmed'`. Still not found after the poll budget is exhausted → `'stuck'` (the
- *     documented abandonment path this ticket calls for), and `MonadStampAbandonedError` is thrown
- *     so the caller knows the outcome is unresolved (not confirmed-failed, just abandoned).
+ *     received the message): retries the already-journaled PUT bytes exactly. A success proves the
+ *     retained set; an authoritative `retained:false` rejection terminalizes it; exhaustion keeps
+ *     the attempt unresolved and throws `MonadStampAbandonedError`.
  *   - **Building/signing a payment itself throws** (before any network call to the relay at all —
  *     e.g. a bad address, or a transient RPC failure while `MonadAccountTxSigner` reads
  *     gas/fee/nonce from the chain): also released as `'failed'`. No transaction was ever broadcast
@@ -185,8 +183,8 @@ export interface MonadStampedMessageProto {
 }
 
 /**
- * `StoredMonadMessage` from `monad_message.proto` — what both `PUT /message/monad`'s success
- * response and `GET /message/monad/:payload_hash` return. The old sender/hash assertions are
+ * `StoredMonadMessage` from `monad_message.proto` — the successful `PUT /message/monad` response.
+ * The old sender/hash assertions are
  * reserved at fields 2 and 3; `timestamp = 4`, `network_tag = 5`.
  */
 export interface StoredMonadMessageProto {
@@ -243,7 +241,7 @@ export function decodeMonadStampedMessage(
 }
 
 /** Decode protobuf wire-format bytes into a {@link StoredMonadMessageProto} — what the relay
- * returns from both `PUT /message/monad` and `GET /message/monad/:payload_hash`. */
+ * returns from a successful `PUT /message/monad`. */
 export function decodeStoredMonadMessage(
   bytes: Uint8Array
 ): StoredMonadMessageProto {
@@ -663,10 +661,9 @@ function relayRejectionDetail(detail: unknown): string | undefined {
   return undefined
 }
 
-/** Thrown when a network-level failure left the outcome genuinely unknown, and polling
- * `GET /message/monad/:payload_hash` never turned up a stored message within the configured
- * budget (see this file's header, "Lease release policy"). The lease has already been released as
- * `'stuck'` (retired) by the time this is thrown. */
+/** Thrown when exact retries of journaled bytes cannot establish an authoritative outcome within
+ * the configured budget (see this file's header, "Lease release policy"). The attempt and lease
+ * remain durable and unavailable for replacement. */
 export class MonadStampAbandonedError extends MonadStampError {
   readonly payloadHashHex: string
 
@@ -754,23 +751,26 @@ function parseRelayResponse(responseData: unknown): unknown {
 
 function isNoncanonicalProtobufRejection(responseData: unknown): boolean {
   const parsed = parseRelayResponse(responseData)
-  return (
-    typeof parsed === 'object' &&
-    parsed !== null &&
-    (parsed as Record<string, unknown>).error === 'noncanonical_protobuf'
-  )
+  if (typeof parsed !== 'object' || parsed === null) return false
+  const detail = (parsed as Record<string, unknown>).error
+  if (typeof detail !== 'string') return false
+  const normalized = detail.trim().toLowerCase()
+  return [
+    'noncanonical_protobuf',
+    'noncanonical protobuf',
+    'non-canonical protobuf',
+  ].includes(normalized)
 }
 
 function defaultSleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-/** Options for the `GET /message/monad/:payload_hash` fallback poll used when a `PUT` attempt fails
- * with no HTTP response at all (see this file's header, "Lease release policy"). */
+/** Options for exact `PUT /message/monad` retries after an ambiguous transport failure. */
 export interface AbandonPollOptions {
-  /** Delay between poll attempts, in ms. Default 2000. */
+  /** Delay between retry attempts, in ms. Default 2000. */
   intervalMs?: number
-  /** Number of `GET` attempts before giving up. Default 5. */
+  /** Number of exact `PUT` retries before giving up. Default 5. */
   maxAttempts?: number
   /** Injectable in place of the real `setTimeout`-based delay, for deterministic tests. */
   sleep?: (ms: number) => Promise<void>
@@ -791,17 +791,17 @@ export interface StampMonadMessageParams {
    * failing immediately when the pool is fully leased. Omit for the default immediate-reject
    * behavior (`SubAccountLeaseManager.acquireLease`). */
   waitForLease?: AcquireLeaseWhenAvailableOptions
-  /** Overrides the default fallback poll used only when a `PUT` attempt fails with no HTTP response
+  /** Overrides the default exact retry used only when a `PUT` attempt fails with no HTTP response
    * at all (see this file's header, "Lease release policy"). */
   abandonPoll?: AbandonPollOptions
 }
 
 /** Outcome of a successful `submitStampedMessage` call — all payment transactions confirmed and the
- * relay stored the message (see this file's header: a 2xx `PUT /message/monad` response, or a
- * found `GET` after the network-failure fallback poll, are the only two ways to reach this). */
+ * relay stored the message (see this file's header: only a correlated 2xx response to the exact
+ * journaled `PUT /message/monad` bytes can reach this). */
 export interface StampMonadMessageResult {
   stored: StoredMonadMessageProto
-  /** Bare (no `0x`) hex of `h_m` — also `GET /message/monad/:payload_hash`'s path segment. */
+  /** Bare (no `0x`) hex of `h_m`. */
   payloadHashHex: string
   txHashes: string[]
   leaseIndices: number[]
@@ -813,7 +813,7 @@ export interface StampMonadMessageResult {
 
 /**
  * Ties together sub-account leasing (#14/#18), payment construction (#11), and the live
- * `PUT /message/monad` / `GET /message/monad/:payload_hash` HTTP surface (#27) into one call:
+ * `PUT /message/monad` HTTP surface (#27) into one call:
  * "stamp this encrypted payload onto Monad and hand it to the relay." See this file's header for
  * the full commitment/calldata/protobuf/lease-release design.
  */
@@ -854,30 +854,8 @@ export class MonadStampClient {
     )
   }
 
-  /** Fetch a previously-stored message by its bare-hex `payload_hash` via
-   * `GET /message/monad/:payload_hash`. Returns `undefined` on a `404` (not yet stored/found) — any
-   * other non-2xx response, or a network-level failure, propagates as a thrown error. */
-  async fetchStoredMessage(
-    payloadHashHex: string
-  ): Promise<StoredMonadMessageProto | undefined> {
-    this.walletState.assertOpen()
-    try {
-      const response = await axios({
-        method: 'get',
-        url: `${this.relayBaseUrl}/message/monad/${payloadHashHex}`,
-        responseType: 'arraybuffer',
-      })
-      return decodeStoredMonadMessage(new Uint8Array(response.data))
-    } catch (err) {
-      if (axios.isAxiosError(err) && err.response?.status === 404) {
-        return undefined
-      }
-      throw err
-    }
-  }
-
-  private async pollForStoredMessage(
-    payloadHashHex: string,
+  private async retryExactPut(
+    message: MonadStampedMessageProto,
     expectedMessageBytes: Uint8Array,
     options?: AbandonPollOptions
   ): Promise<StoredMonadMessageProto | undefined> {
@@ -886,19 +864,12 @@ export class MonadStampClient {
     const sleep = options?.sleep ?? defaultSleep
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       if (attempt > 0) await sleep(intervalMs)
-      // A single poll attempt failing (another network hiccup, a transient 5xx, ...) is not itself
-      // proof of abandonment -- only exhausting the whole poll budget without ever finding the
-      // message is. Swallow per-attempt errors here and let the loop keep trying; the overall
-      // "genuinely unknown" -> `'stuck'` outcome is decided by the caller once every attempt in the
-      // budget has been spent.
-      const stored = await this.fetchStoredMessage(payloadHashHex).catch(
-        () => undefined
-      )
-      if (
-        stored?.messageBytes !== undefined &&
-        bytesEqual(stored.messageBytes, expectedMessageBytes)
-      ) {
-        return stored
+      try {
+        return await this.putStampedMessage(message, expectedMessageBytes)
+      } catch (error) {
+        if (axios.isAxiosError(error) && error.response !== undefined) {
+          throw error
+        }
       }
     }
     return undefined
@@ -951,7 +922,14 @@ export class MonadStampClient {
   async submitStampedMessage(
     params: StampMonadMessageParams
   ): Promise<StampMonadMessageResult> {
-    this.walletState.assertOpen()
+    return this.walletState.runOperation(() =>
+      this.submitStampedMessageAdmitted(params)
+    )
+  }
+
+  private async submitStampedMessageAdmitted(
+    params: StampMonadMessageParams
+  ): Promise<StampMonadMessageResult> {
     if (params.encryptedPayload.length === 0) {
       throw new Error('encryptedPayload must not be empty')
     }
@@ -1240,7 +1218,10 @@ export class MonadStampClient {
     } catch (err) {
       if (err instanceof MonadStampPendingAttemptError) throw err
       if (axios.isAxiosError(err) && err.response) {
-        if (isNoncanonicalProtobufRejection(err.response.data)) {
+        if (
+          isNoncanonicalProtobufRejection(err.response.data) &&
+          exactSetRetained(err.response.data) !== false
+        ) {
           await this.attemptJournal.put({
             ...journaledAttempt,
             authorityState: 'incompatible-protobuf',
@@ -1267,14 +1248,40 @@ export class MonadStampClient {
         throw new MonadStampPendingAttemptError([payloadHashHex])
       }
 
-      // A missing HTTP response or a semantically invalid 2xx is genuinely ambiguous: the relay
-      // may still have received/broadcast/stored the exact message. Poll the read side before
-      // giving up, and require byte-for-byte equality there too.
-      const stored = await this.pollForStoredMessage(
-        payloadHashHex,
-        encodedMessage,
-        params.abandonPoll
-      )
+      // A missing response is ambiguous. Replay only the already-journaled exact bytes; the relay
+      // owns semantic deduplication and returns authoritative retained status on any rejection.
+      let stored: StoredMonadMessageProto | undefined
+      try {
+        stored = await this.retryExactPut(
+          message,
+          encodedMessage,
+          params.abandonPoll
+        )
+      } catch (retryError) {
+        if (axios.isAxiosError(retryError) && retryError.response) {
+          if (
+            isNoncanonicalProtobufRejection(retryError.response.data) &&
+            exactSetRetained(retryError.response.data) !== false
+          ) {
+            await this.attemptJournal.put({
+              ...journaledAttempt,
+              authorityState: 'incompatible-protobuf',
+              authorityReason: 'noncanonical_protobuf',
+            })
+            throw new MonadStampAuthorityAuditRequiredError([payloadHashHex])
+          }
+          if (exactSetRetained(retryError.response.data) === false) {
+            await releaseAll('failed')
+            await this.attemptJournal.delete(payloadHashHex)
+            throw new MonadStampRejectedError(
+              'Relay authoritatively rejected the exact retried payment set',
+              retryError.response.status,
+              retryError.response.data
+            )
+          }
+        }
+        throw retryError
+      }
       if (stored !== undefined) {
         const changeSweeps = await releaseAll('confirmed')
         if (
@@ -1296,8 +1303,7 @@ export class MonadStampClient {
       }
 
       throw new MonadStampAbandonedError(
-        'Monad stamp submission abandoned: no response from the relay, and ' +
-          `GET /message/monad/${payloadHashHex} never found a stored message`,
+        'Monad stamp submission abandoned after bounded exact-byte PUT retries returned no authoritative response',
         payloadHashHex
       )
     }
@@ -1305,7 +1311,10 @@ export class MonadStampClient {
 
   /** Single wallet-owned preflight for every operation that may fund or sign a new stamp. */
   async reconcileOrThrow(): Promise<void> {
-    this.walletState.assertOpen()
+    return this.walletState.runOperation(() => this.reconcileOrThrowAdmitted())
+  }
+
+  private async reconcileOrThrowAdmitted(): Promise<void> {
     if (this.activeSubmissions > 0) {
       throw new MonadStampPendingAttemptError(
         this.attemptJournal.getAll().map((attempt) => attempt.payloadHashHex)
@@ -1327,7 +1336,7 @@ export class MonadStampClient {
       throw new MonadStampAuthorityAuditRequiredError(incompatible)
     }
     if (attempts.length === 0) return
-    const recovered = await this.resumePendingAttempts()
+    const recovered = await this.resumePendingAttemptsAdmitted()
     if (recovered.length > 0) {
       throw new MonadStampRecoveredAttemptError(recovered)
     }
@@ -1342,7 +1351,12 @@ export class MonadStampClient {
   /** Replay crash-surviving attempts byte-for-byte. Exact-set relay binding makes this safe when
    * only a prefix of the transactions landed before the previous process stopped. */
   async resumePendingAttempts(): Promise<string[]> {
-    this.walletState.assertOpen()
+    return this.walletState.runOperation(() =>
+      this.resumePendingAttemptsAdmitted()
+    )
+  }
+
+  private async resumePendingAttemptsAdmitted(): Promise<string[]> {
     await this.walletState?.repairAttemptSpendLifecycles()
     this.walletState?.assertSemanticallyValid()
     const completed: string[] = []
@@ -1429,7 +1443,8 @@ export class MonadStampClient {
         if (
           axios.isAxiosError(err) &&
           err.response &&
-          isNoncanonicalProtobufRejection(err.response.data)
+          isNoncanonicalProtobufRejection(err.response.data) &&
+          exactSetRetained(err.response.data) !== false
         ) {
           await this.attemptJournal.put({
             ...attempt,

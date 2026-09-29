@@ -20,6 +20,7 @@ import {
 import { deriveMonadStampChildPublic } from '../monad-stamp-stealth'
 import type { StampAttemptJournal } from './stamp-attempt-journal'
 import type { StampPaymentJournal } from './stamp-payment-journal'
+import { assertSubAccountLifecycleMatrix } from './sub-account-pool-storage'
 
 function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
   return (
@@ -99,6 +100,7 @@ export function validateMonadWalletState(params: {
   )
 
   for (const record of params.pool.records()) {
+    assertSubAccountLifecycleMatrix(record)
     if (record.fundingAttempt !== undefined) {
       const transaction = parseSignedTransaction(
         record.fundingAttempt.rawTx,

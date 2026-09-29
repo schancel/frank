@@ -97,6 +97,7 @@ export function unsafeCreateMonadStampWalletHandleForTests(
       stampAttemptJournal: params.stampAttemptJournal,
       stampPaymentJournal: params.stampPaymentJournal,
       assertOpen: () => undefined,
+      runOperation: <T>(operation: () => Promise<T>): Promise<T> => operation(),
       assertNoOrphanedLeases: () => undefined,
       assertSemanticallyValid: () => undefined,
       repairAttemptSpendLifecycles: async () => undefined,

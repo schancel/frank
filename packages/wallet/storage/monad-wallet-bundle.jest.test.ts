@@ -6,13 +6,14 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   rmSync,
   renameSync,
   symlinkSync,
   writeFileSync,
 } from 'fs'
 import { tmpdir } from 'os'
-import { join } from 'path'
+import { basename, dirname, join } from 'path'
 import { spawn, spawnSync } from 'child_process'
 import { Transaction, Wallet, computeAddress, getBytes, hexlify } from 'ethers'
 import level from 'level'
@@ -63,11 +64,13 @@ async function createLegacyRoot(
   const payments = new LevelStampPaymentJournal(location)
   await sub.Open()
   if (withRecord) {
-    sub.put({
-      index: 7,
-      address: keyring.deriveSubAccount(7).address,
-      status: 'unfunded',
-    })
+    for (let index = 0; index <= 7; index++) {
+      sub.put({
+        index,
+        address: keyring.deriveSubAccount(index).address,
+        status: 'unfunded',
+      })
+    }
   }
   await sub.Close()
   await change.Open()
@@ -85,6 +88,15 @@ async function createNewCallerSeedRoot(location: string) {
     seed: { mnemonic: FIRST_MNEMONIC },
     mode: 'create',
   })
+}
+
+async function createNewGeneratedSeedRoot(location: string) {
+  rmSync(location, { recursive: true, force: true })
+  return openMonadWalletBundle({ location, createSeedIfEmpty: true })
+}
+
+function creationStage(location: string): string {
+  return join(dirname(location), `.${basename(location)}.frank-wallet-create`)
 }
 
 async function createSignedLegacyAttempt(location: string): Promise<{
@@ -312,6 +324,7 @@ describe('Monad wallet persistence bundle', () => {
 
   afterEach(() => {
     rmSync(root, { recursive: true, force: true })
+    rmSync(creationStage(root), { recursive: true, force: true })
   })
 
   it('creates and reopens one complete bound bundle', async () => {
@@ -334,10 +347,7 @@ describe('Monad wallet persistence bundle', () => {
   })
 
   it('atomically creates a seed only for an empty root and reopens it', async () => {
-    const first = await openMonadWalletBundle({
-      location: root,
-      createSeedIfEmpty: true,
-    })
+    const first = await createNewGeneratedSeedRoot(root)
     const firstAddress = first.pool.deriveNextUnfunded().address
     await first.pool.flush()
     await first.close()
@@ -388,6 +398,75 @@ describe('Monad wallet persistence bundle', () => {
     expect(existsSync(untouched)).toBe(false)
   })
 
+  it('rejects a missing restore root without creating its directory or lock', async () => {
+    rmSync(root, { recursive: true, force: true })
+    await expect(
+      openMonadWalletBundle({
+        location: root,
+        seed: { mnemonic: FIRST_MNEMONIC },
+      })
+    ).rejects.toThrow(/missing Node root/i)
+    expect(existsSync(root)).toBe(false)
+
+    const created = await createNewCallerSeedRoot(root)
+    await created.close()
+  })
+
+  it.each([
+    'temp-written',
+    'temp-synced',
+    'intent-published',
+    'root-published',
+  ] as const)(
+    'resumes exact first-use creation after a %s publication crash',
+    async (phase) => {
+      rmSync(root, { recursive: true, force: true })
+      await expect(
+        openMonadWalletBundle({
+          location: root,
+          seed: { mnemonic: FIRST_MNEMONIC },
+          mode: 'create',
+          onNodeCreationPublishPhase: (current) => {
+            if (current === phase) throw new Error(`publish:${phase}`)
+          },
+        })
+      ).rejects.toThrow(`publish:${phase}`)
+
+      const resumed = await openMonadWalletBundle({
+        location: root,
+        seed: { mnemonic: FIRST_MNEMONIC },
+        mode: 'create',
+      })
+      expect(resumed.pool.nextUnusedIndex()).toBe(0)
+      await resumed.close()
+      expect(existsSync(creationStage(root))).toBe(false)
+    }
+  )
+
+  it('rejects a wrong seed against an abandoned durable creation intent', async () => {
+    rmSync(root, { recursive: true, force: true })
+    await expect(
+      openMonadWalletBundle({
+        location: root,
+        seed: { mnemonic: FIRST_MNEMONIC },
+        mode: 'create',
+        onNodeCreationPublishPhase: (phase) => {
+          if (phase === 'intent-published') throw new Error('intent crash')
+        },
+      })
+    ).rejects.toThrow('intent crash')
+    expect(existsSync(root)).toBe(false)
+
+    await expect(
+      openMonadWalletBundle({
+        location: root,
+        seed: { mnemonic: SECOND_MNEMONIC },
+        mode: 'create',
+      })
+    ).rejects.toThrow(/intent does not match/i)
+    expect(existsSync(root)).toBe(false)
+  })
+
   it.each([
     'creation-intent',
     'validated',
@@ -435,6 +514,93 @@ describe('Monad wallet persistence bundle', () => {
     }
   )
 
+  it.each([
+    [
+      'bindingId',
+      (marker: Record<string, unknown>) => ({
+        ...marker,
+        bindingId: 'aa'.repeat(32),
+      }),
+    ],
+    [
+      'seedFingerprint',
+      (marker: Record<string, unknown>) => ({
+        ...marker,
+        seedFingerprint: `0x${'aa'.repeat(32)}`,
+      }),
+    ],
+    [
+      'creationMode',
+      (marker: Record<string, unknown>) => ({
+        ...marker,
+        creationMode: undefined,
+      }),
+    ],
+    [
+      'persistedSeed',
+      (marker: Record<string, unknown>) => ({
+        ...marker,
+        persistedSeed: {
+          version: 1,
+          mnemonic: SECOND_MNEMONIC,
+          passphrase: '',
+        },
+      }),
+    ],
+    [
+      'restoreMode',
+      (marker: Record<string, unknown>) => ({
+        ...marker,
+        restoreMode: true,
+      }),
+    ],
+  ] as const)(
+    'rejects creation-intent/migration-marker %s mismatch before component open',
+    async (_field, mutate) => {
+      rmSync(root, { recursive: true, force: true })
+      await expect(
+        openMonadWalletBundle({
+          location: root,
+          seed: { mnemonic: FIRST_MNEMONIC },
+          mode: 'create',
+          onMigrationPhase: async (phase) => {
+            if (phase === 'marker') throw new Error('marker crash')
+          },
+        })
+      ).rejects.toThrow('marker crash')
+
+      const manifest = level(join(root, 'wallet-manifest'), {
+        createIfMissing: false,
+      })
+      const marker = JSON.parse(await manifest.get('migration')) as Record<
+        string,
+        unknown
+      >
+      const poisonedMarker = JSON.stringify(mutate(marker))
+      await manifest.put('migration', poisonedMarker)
+      await manifest.close()
+      const rootEntriesBefore = readdirSync(root).sort()
+
+      await expect(
+        openMonadWalletBundle({
+          location: root,
+          seed: { mnemonic: FIRST_MNEMONIC },
+          mode: 'create',
+        })
+      ).rejects.toThrow(
+        /intent does not match the migration marker|seed does not match the durable wallet/i
+      )
+      expect(readdirSync(root).sort()).toEqual(rootEntriesBefore)
+      const reopenedManifest = level(join(root, 'wallet-manifest'), {
+        createIfMissing: false,
+      })
+      await expect(reopenedManifest.get('migration')).resolves.toBe(
+        poisonedMarker
+      )
+      await reopenedManifest.close()
+    }
+  )
+
   it('persists and resumes a generated seed only through its creation intent', async () => {
     rmSync(root, { recursive: true, force: true })
     await expect(
@@ -460,19 +626,56 @@ describe('Monad wallet persistence bundle', () => {
     expect(existsSync(join(root, '.frank-wallet-creation.json'))).toBe(false)
   })
 
-  it('rejects an unbound counter-only legacy root without binding it', async () => {
+  it('rejects unbound counters plus unrelated payment evidence for every seed without binding', async () => {
     await createLegacyRoot(root, false)
     const counterStore = new LevelSubAccountPoolStore(root)
     await counterStore.Open()
     counterStore.setNextIndex(7)
     await counterStore.Close()
 
-    await expect(
-      openMonadWalletBundle({
-        location: root,
-        seed: { mnemonic: FIRST_MNEMONIC },
-      })
-    ).rejects.toThrow(/high-water counters.*authenticated/i)
+    const payloadHash = computeMonadStampCommitment(
+      new TextEncoder().encode('unrelated retained payment')
+    )
+    const recipient = new Wallet(`0x${'44'.repeat(32)}`)
+    const child = deriveMonadStampChildPublic({
+      payloadHash,
+      recipientPublicKey: getBytes(recipient.signingKey.compressedPublicKey),
+      paymentIndex: 0,
+    })
+    const rawTx = await new Wallet(`0x${'55'.repeat(32)}`).signTransaction({
+      to: child.address,
+      value: 7n,
+      data: buildMonadStampCalldata(
+        computeMonadStampPaymentCommitment(payloadHash, 0)
+      ),
+      nonce: 0,
+      gasLimit: 50_000n,
+      gasPrice: 1n,
+      chainId: 1,
+    })
+    const paymentJournal = new LevelStampPaymentJournal(root)
+    await paymentJournal.Open()
+    await paymentJournal.put({
+      payloadHashHex: hexlify(payloadHash).slice(2),
+      childIndex: 0,
+      txHash: Transaction.from(rawTx).hash as string,
+      rawTx,
+      recipientPublicKeyHex: recipient.signingKey.compressedPublicKey,
+      envelopeRecipientAddress: recipient.address,
+      address: child.address,
+      valueWei: '7',
+      status: 'discovered',
+    })
+    await paymentJournal.Close()
+
+    for (const mnemonic of [FIRST_MNEMONIC, SECOND_MNEMONIC]) {
+      await expect(
+        openMonadWalletBundle({
+          location: root,
+          seed: { mnemonic },
+        })
+      ).rejects.toThrow(/high-water domain.*authenticated/i)
+    }
     expect(existsSync(join(root, 'wallet-manifest'))).toBe(false)
     const raw = level(join(root, 'sub-account-pool'), {
       createIfMissing: false,
@@ -916,10 +1119,7 @@ describe('Monad wallet persistence bundle', () => {
   })
 
   it('keeps exclusive ownership for the lifetime of a Node bundle', async () => {
-    const first = await openMonadWalletBundle({
-      location: root,
-      createSeedIfEmpty: true,
-    })
+    const first = await createNewGeneratedSeedRoot(root)
     await expect(
       openMonadWalletBundle({ location: root, createSeedIfEmpty: true })
     ).rejects.toThrow()
@@ -1018,10 +1218,7 @@ describe('Monad wallet persistence bundle', () => {
   })
 
   it('enforces the same root lease across Node processes', async () => {
-    const first = await openMonadWalletBundle({
-      location: root,
-      createSeedIfEmpty: true,
-    })
+    const first = await createNewGeneratedSeedRoot(root)
     const child = spawnSync(
       process.execPath,
       [
@@ -1054,6 +1251,7 @@ describe('Monad wallet persistence bundle', () => {
 
   it('releases the kernel root lock after SIGKILL and preserves high-water', async () => {
     const ready = join(root, '..', `wallet-lock-ready-${process.pid}`)
+    rmSync(root, { recursive: true, force: true })
     const child = spawn(
       process.execPath,
       [
@@ -1070,14 +1268,27 @@ describe('Monad wallet persistence bundle', () => {
           FRANK_WALLET_SIGKILL_ROOT: root,
           FRANK_WALLET_SIGKILL_READY: ready,
         },
-        stdio: 'ignore',
+        stdio: ['ignore', 'pipe', 'pipe'],
       }
     )
-    const deadline = Date.now() + 10_000
+    let childOutput = ''
+    child.stdout?.on('data', (chunk) => {
+      childOutput += String(chunk)
+    })
+    child.stderr?.on('data', (chunk) => {
+      childOutput += String(chunk)
+    })
+    const deadline = Date.now() + 20_000
     while (!existsSync(ready) && Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, 25))
     }
-    expect(existsSync(ready)).toBe(true)
+    if (!existsSync(ready)) {
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill('SIGKILL')
+        await new Promise<void>((resolve) => child.once('exit', () => resolve()))
+      }
+      throw new Error(`SIGKILL lock probe never became ready:\n${childOutput}`)
+    }
     child.kill('SIGKILL')
     await new Promise<void>((resolve) => child.once('exit', () => resolve()))
 
@@ -1097,7 +1308,7 @@ describe('Monad wallet persistence bundle', () => {
     expect(successor?.pool.nextUnusedIndex()).toBe(1)
     await successor?.close()
     rmSync(ready, { force: true })
-  })
+  }, 30_000)
 
   const childSigkillProbe = process.env.FRANK_WALLET_SIGKILL_ROOT ? it : it.skip
   childSigkillProbe('child process SIGKILL lock probe', async () => {
@@ -1137,10 +1348,7 @@ describe('Monad wallet persistence bundle', () => {
   })
 
   it('fences every later mutation after the Node ownership file is replaced', async () => {
-    const bundle = await openMonadWalletBundle({
-      location: root,
-      createSeedIfEmpty: true,
-    })
+    const bundle = await createNewGeneratedSeedRoot(root)
     const lockPath = join(root, '.frank-wallet.lock')
     rmSync(lockPath)
     writeFileSync(lockPath, 'replacement', { mode: 0o600 })
@@ -1151,6 +1359,8 @@ describe('Monad wallet persistence bundle', () => {
   })
 
   it('fences mutations when root or lock permissions change during ownership', async () => {
+    const initialized = await createNewGeneratedSeedRoot(root)
+    await initialized.close()
     for (const target of ['root', 'lock'] as const) {
       const bundle = await openMonadWalletBundle({
         location: root,
@@ -1172,10 +1382,7 @@ describe('Monad wallet persistence bundle', () => {
   })
 
   it('fences a replaced root even when its lock artifact is hard-linked into the replacement', async () => {
-    const bundle = await openMonadWalletBundle({
-      location: root,
-      createSeedIfEmpty: true,
-    })
+    const bundle = await createNewGeneratedSeedRoot(root)
     const originalRoot = `${root}-original`
     renameSync(root, originalRoot)
     mkdirSync(root, { mode: 0o700 })
@@ -1214,10 +1421,7 @@ describe('Monad wallet persistence bundle', () => {
   })
 
   it('rejects finalized manifest v1 roots without upgrading or mutating them', async () => {
-    const current = await openMonadWalletBundle({
-      location: root,
-      createSeedIfEmpty: true,
-    })
+    const current = await createNewGeneratedSeedRoot(root)
     current.pool.deriveNextUnfunded()
     await current.pool.flush()
     await current.close()
@@ -1599,6 +1803,7 @@ describe('Monad wallet persistence bundle', () => {
       valueWei: '1',
       thresholdWei: '2',
     })
+    bundle.pool.setStatus(0, 'in-use')
     bundle.pool.setStatus(0, 'spent')
     await bundle.stampAttemptJournal.put({
       payloadHashHex: 'ab'.repeat(32),

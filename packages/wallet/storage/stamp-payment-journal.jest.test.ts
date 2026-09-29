@@ -3,16 +3,32 @@ import {
   LevelStampPaymentJournal,
   StampPaymentRecoveryRecord,
 } from './stamp-payment-journal'
-import { Transaction, Wallet } from 'ethers'
+import { SigningKey, Transaction, Wallet, getBytes, hexlify } from 'ethers'
+import {
+  deriveMonadStampChildPrivate,
+  deriveMonadStampChildPublic,
+} from '../monad-stamp-stealth'
+
+const RECIPIENT_PRIVATE_KEY = `0x${'99'.repeat(32)}`
+const RECIPIENT_PUBLIC_KEY = SigningKey.computePublicKey(
+  RECIPIENT_PRIVATE_KEY,
+  true
+)
+const RECIPIENT = new Wallet(RECIPIENT_PRIVATE_KEY)
+const PAYMENT_CHILD = deriveMonadStampChildPublic({
+  payloadHash: getBytes(`0x${'ab'.repeat(32)}`),
+  recipientPublicKey: getBytes(RECIPIENT_PUBLIC_KEY),
+  paymentIndex: 1,
+})
 
 const DISCOVERED: StampPaymentRecoveryRecord = {
   payloadHashHex: 'ab'.repeat(32),
   childIndex: 1,
   txHash: `0x${'11'.repeat(32)}`,
   rawTx: '0x01',
-  recipientPublicKeyHex: `0x02${'33'.repeat(32)}`,
-  envelopeRecipientAddress: `0x${'44'.repeat(20)}`,
-  address: `0x${'22'.repeat(20)}`,
+  recipientPublicKeyHex: RECIPIENT_PUBLIC_KEY,
+  envelopeRecipientAddress: RECIPIENT.address,
+  address: PAYMENT_CHILD.address,
   valueWei: '123',
   status: 'discovered',
 }
@@ -23,7 +39,12 @@ async function signedSweep(nonce: number): Promise<{
   txHash: string
   rawTx: string
 }> {
-  const rawTx = await new Wallet(`0x${'99'.repeat(32)}`).signTransaction({
+  const child = deriveMonadStampChildPrivate({
+    payloadHash: getBytes(`0x${DISCOVERED.payloadHashHex}`),
+    recipientPrivateKey: getBytes(RECIPIENT_PRIVATE_KEY),
+    paymentIndex: DISCOVERED.childIndex,
+  })
+  const rawTx = await new Wallet(hexlify(child.privateKey)).signTransaction({
     to: SWEEP_DESTINATION,
     value: 100n,
     nonce,
@@ -60,11 +81,12 @@ describe('stamp payment recovery journal', () => {
   })
   it('forbids replacing or rewinding a durable signed sweep intent', async () => {
     const journal = new InMemoryStampPaymentJournal()
+    const sweep = await signedSweep(0)
     const pending: StampPaymentRecoveryRecord = {
       ...DISCOVERED,
       status: 'sweep-pending',
-      sweepTxHash: `0x${'33'.repeat(32)}`,
-      sweepRawTx: '0x1234',
+      sweepTxHash: sweep.txHash,
+      sweepRawTx: sweep.rawTx,
       sweepValueWei: '100',
       sweepDestinationAddress: `0x${'55'.repeat(20)}`,
     }
@@ -72,7 +94,7 @@ describe('stamp payment recovery journal', () => {
     await journal.put(pending)
     await expect(
       journal.put({ ...pending, sweepRawTx: '0xabcd' })
-    ).rejects.toThrow(/immutable/i)
+    ).rejects.toThrow()
     await expect(journal.put(DISCOVERED)).rejects.toThrow(/backward/i)
     await journal.put({ ...pending, status: 'swept' })
     await expect(journal.put(pending)).rejects.toThrow(/backward/i)
@@ -147,17 +169,67 @@ describe('stamp payment recovery journal', () => {
           },
         ],
       })
-    ).rejects.toThrow(/exactly one/i)
+    ).rejects.toThrow(/fabricated|exactly one/i)
+    expect(journal.getAll()).toEqual([pending])
+  })
+
+  it('keeps the failed ledger byte-identical outside the exact pending-to-failed append', async () => {
+    const journal = new InMemoryStampPaymentJournal()
+    const sweep = await signedSweep(0)
+    const pending: StampPaymentRecoveryRecord = {
+      ...DISCOVERED,
+      status: 'sweep-pending',
+      sweepTxHash: sweep.txHash,
+      sweepRawTx: sweep.rawTx,
+      sweepValueWei: '100',
+      sweepDestinationAddress: SWEEP_DESTINATION,
+    }
+    const fabricated = {
+      txHash: sweep.txHash,
+      rawTx: sweep.rawTx,
+      valueWei: '100',
+      destinationAddress: SWEEP_DESTINATION,
+    }
+    await journal.put(DISCOVERED)
+    await expect(
+      journal.put({ ...pending, failedSweeps: [fabricated] })
+    ).rejects.toThrow(/fabricated/i)
+    await journal.put(pending)
+    await expect(
+      journal.put({ ...pending, status: 'swept', failedSweeps: [fabricated] })
+    ).rejects.toThrow(/fabricated/i)
+    expect(journal.getAll()).toEqual([pending])
+  })
+
+  it('rejects noncanonical sweep authority without mutating memory', async () => {
+    const journal = new InMemoryStampPaymentJournal()
+    const sweep = await signedSweep(0)
+    const pending: StampPaymentRecoveryRecord = {
+      ...DISCOVERED,
+      status: 'sweep-pending',
+      sweepTxHash: sweep.txHash,
+      sweepRawTx: sweep.rawTx,
+      sweepValueWei: '100',
+      sweepDestinationAddress: SWEEP_DESTINATION,
+    }
+    await journal.put(pending)
+    await expect(
+      journal.put({ ...pending, sweepValueWei: '101' })
+    ).rejects.toThrow(/inconsistent/i)
+    await expect(
+      journal.put({ ...pending, sweepTxHash: `0x${'77'.repeat(32)}` })
+    ).rejects.toThrow(/invalid/i)
     expect(journal.getAll()).toEqual([pending])
   })
   it('updates one public record without ever requiring a private key', async () => {
     const journal = new InMemoryStampPaymentJournal()
+    const sweep = await signedSweep(0)
     await journal.put(DISCOVERED)
     const pending: StampPaymentRecoveryRecord = {
       ...DISCOVERED,
       status: 'sweep-pending',
-      sweepTxHash: `0x${'33'.repeat(32)}`,
-      sweepRawTx: '0x1234',
+      sweepTxHash: sweep.txHash,
+      sweepRawTx: sweep.rawTx,
       sweepValueWei: '100',
       sweepDestinationAddress: `0x${'55'.repeat(20)}`,
     }
@@ -197,11 +269,12 @@ describe('stamp payment recovery journal', () => {
     const path = await import('path')
     const fs = await import('fs')
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'stamp-payment-journal-'))
+    const sweep = await signedSweep(0)
     const pending: StampPaymentRecoveryRecord = {
       ...DISCOVERED,
       status: 'sweep-pending',
-      sweepTxHash: `0x${'33'.repeat(32)}`,
-      sweepRawTx: `0x${'44'.repeat(96)}`,
+      sweepTxHash: sweep.txHash,
+      sweepRawTx: sweep.rawTx,
       sweepValueWei: '100',
       sweepDestinationAddress: `0x${'55'.repeat(20)}`,
     }
@@ -215,6 +288,38 @@ describe('stamp payment recovery journal', () => {
       await reopened.Open()
       expect(reopened.get(DISCOVERED.payloadHashHex, 1)).toEqual(pending)
       expect(reopened.getAll()[0]).not.toHaveProperty('privateKey')
+      await reopened.Close()
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('rejects invalid sweep authority before a Level mutation and reopens the prior row', async () => {
+    const os = await import('os')
+    const path = await import('path')
+    const fs = await import('fs')
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'stamp-payment-journal-'))
+    const sweep = await signedSweep(0)
+    const pending: StampPaymentRecoveryRecord = {
+      ...DISCOVERED,
+      status: 'sweep-pending',
+      sweepTxHash: sweep.txHash,
+      sweepRawTx: sweep.rawTx,
+      sweepValueWei: '100',
+      sweepDestinationAddress: SWEEP_DESTINATION,
+    }
+    try {
+      const first = new LevelStampPaymentJournal(dir)
+      await first.Open()
+      await first.put(pending)
+      await expect(
+        first.put({ ...pending, sweepDestinationAddress: RECIPIENT.address })
+      ).rejects.toThrow(/inconsistent/i)
+      await first.Close()
+
+      const reopened = new LevelStampPaymentJournal(dir)
+      await reopened.Open()
+      expect(reopened.getAll()).toEqual([pending])
       await reopened.Close()
     } finally {
       fs.rmSync(dir, { recursive: true, force: true })

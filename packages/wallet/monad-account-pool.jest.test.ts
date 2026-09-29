@@ -349,6 +349,18 @@ describe('MonadSubAccountPool', () => {
         /No sub-account at index 9/
       )
     })
+
+    it('never relabels a terminal spent account as reusable', () => {
+      const pool = new MonadSubAccountPool({
+        keyring: MonadHdKeyring.fromMnemonic(TEST_MNEMONIC),
+      })
+      pool.ensureSize(1)
+      pool.setStatus(0, 'in-use')
+      pool.setStatus(0, 'spent')
+      expect(() => pool.setStatus(0, 'available')).toThrow(/cannot move/i)
+      expect(() => pool.setStatus(0, 'unfunded')).toThrow(/cannot move/i)
+      expect(pool.getRecord(0)?.status).toBe('spent')
+    })
   })
 
   describe('prepareStampInventory', () => {
@@ -489,8 +501,9 @@ describe('MonadSubAccountPool', () => {
         mainAccountSigner,
         pool,
         provider,
+        store,
       } = setupPreparation()
-      pool.setStatus(0, 'available')
+      store.put({ ...pool.getRecord(0)!, status: 'available' })
       balances.set(pool.getRecord(0)!.address.toLowerCase(), 1_000n)
       childNonces.set(pool.getRecord(0)!.address.toLowerCase(), 1)
 
@@ -790,6 +803,7 @@ describe('MonadSubAccountPool', () => {
       const pool = new MonadSubAccountPool({ keyring })
       pool.ensureSize(2)
       pool.setStatus(0, 'in-use')
+      pool.setStatus(1, 'in-use')
       pool.setStatus(1, 'spent')
       // 0 available records currently -- both existing indices are used up.
 

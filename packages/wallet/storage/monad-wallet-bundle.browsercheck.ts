@@ -19,6 +19,7 @@ import { LevelStampAttemptJournal } from './stamp-attempt-journal'
 import { LevelStampPaymentJournal } from './stamp-payment-journal'
 import {
   WALLET_COMPONENT_NAMES,
+  acquireBrowserWalletRootLease,
   canonicalWalletStorageLocation,
 } from './wallet-root-guard'
 
@@ -71,11 +72,13 @@ async function createLegacyRoot(
     ).document.body.textContent = `MONAD_WALLET_BROWSERCHECK_LEGACY_OPEN_${index}`
   }
   if (withRecord) {
-    ;(stores[0] as LevelSubAccountPoolStore).put({
-      index: 7,
-      address: keyring.deriveSubAccount(7).address,
-      status: 'unfunded',
-    })
+    for (let index = 0; index <= 7; index++) {
+      ;(stores[0] as LevelSubAccountPoolStore).put({
+        index,
+        address: keyring.deriveSubAccount(index).address,
+        status: 'unfunded',
+      })
+    }
   }
   for (const store of stores.slice().reverse()) await store.Close()
 }
@@ -596,6 +599,32 @@ export async function runMonadWalletBundleBrowserCheck(): Promise<void> {
     })
     assert(aliasSuccessor.pool.nextUnusedIndex() === 1, 'alias split storage')
     await aliasSuccessor.close()
+
+    const browserNavigator = (globalThis as any).navigator
+    const realLocks = browserNavigator.locks
+    Object.defineProperty(browserNavigator, 'locks', {
+      configurable: true,
+      value: {
+        request: () => Promise.reject(new Error('injected Web Lock failure')),
+      },
+    })
+    try {
+      const outcome = await Promise.race([
+        acquireBrowserWalletRootLease(`${prefix}-rejected-lock`).then(
+          () => 'resolved',
+          () => 'rejected'
+        ),
+        new Promise<string>((resolve) =>
+          setTimeout(() => resolve('hung'), 1_000)
+        ),
+      ])
+      assert(outcome === 'rejected', 'Web Lock rejection hung readiness')
+    } finally {
+      Object.defineProperty(browserNavigator, 'locks', {
+        configurable: true,
+        value: realLocks,
+      })
+    }
   } finally {
     await deleteRoot(migratedRoot)
     await deleteRoot(concurrentRoot)

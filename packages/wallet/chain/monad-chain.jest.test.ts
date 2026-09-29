@@ -165,6 +165,35 @@ function makeWallet(identity: MonadIdentity): MonadChainWalletHandle {
   return wallet
 }
 
+async function signedChildSweep(params: {
+  identity: MonadIdentity
+  payloadDigest: string
+  childIndex: number
+  destination: string
+  valueWei: bigint
+  nonce?: number
+}) {
+  const child = deriveMonadStampChildPrivate({
+    payloadHash: getBytes(`0x${params.payloadDigest}`),
+    recipientPrivateKey: getBytes(params.identity.toPrivateKeyHex()),
+    paymentIndex: params.childIndex,
+  })
+  const rawTx = await new Wallet(hexlify(child.privateKey)).signTransaction({
+    to: params.destination,
+    value: params.valueWei,
+    nonce: params.nonce ?? 0,
+    gasLimit: 21_000n,
+    gasPrice: 1n,
+    chainId: 1,
+  })
+  return {
+    to: params.destination,
+    value: params.valueWei,
+    rawTx,
+    txHash: Transaction.from(rawTx).hash as string,
+  }
+}
+
 beforeEach(() => {
   jest.clearAllMocks()
 })
@@ -941,11 +970,18 @@ describe('createMonadChain: directMessages.fetchSince', () => {
     ])
 
     const discovered = stampPaymentJournal.get(payloadHashHex, 0)!
+    const retainedSweep = await signedChildSweep({
+      identity: bob,
+      payloadDigest: payloadHashHex,
+      childIndex: 0,
+      destination: alice.address.raw,
+      valueWei: 1n,
+    })
     await stampPaymentJournal.put({
       ...discovered,
       status: 'sweep-pending',
-      sweepTxHash: `0x${'45'.repeat(32)}`,
-      sweepRawTx: '0x1234',
+      sweepTxHash: retainedSweep.txHash,
+      sweepRawTx: retainedSweep.rawTx,
       sweepValueWei: '1',
       sweepDestinationAddress: alice.address.raw,
     })
@@ -1076,13 +1112,14 @@ describe('createMonadChain: directMessages.fetchSince', () => {
       getBalance: jest.fn().mockResolvedValue(100_000n),
       getFeeData: jest.fn().mockResolvedValue({ maxFeePerGas: 1n }),
     } as unknown as MonadChainWalletHandle['provider']
-    const sweepTxHash = `0x${'34'.repeat(32)}`
-    const signedSweep = {
-      to: eve.address.raw,
-      value: 58_000n,
-      txHash: sweepTxHash,
-      rawTx: '0xsigned',
-    }
+    const signedSweep = await signedChildSweep({
+      identity: bob,
+      payloadDigest,
+      childIndex: 0,
+      destination: eve.address.raw,
+      valueWei: 58_000n,
+    })
+    const sweepTxHash = signedSweep.txHash
     MonadAccountTxSigner.mockImplementationOnce(() => ({
       address: child.address,
       buildAndSignTransfer: jest.fn().mockResolvedValue(signedSweep),
@@ -1107,7 +1144,7 @@ describe('createMonadChain: directMessages.fetchSince', () => {
     expect(journal.get(payloadDigest, 0)).toMatchObject({
       status: 'sweep-pending',
       sweepTxHash,
-      sweepRawTx: '0xsigned',
+      sweepRawTx: signedSweep.rawTx,
     })
 
     MonadAccountTxSigner.mockImplementationOnce(() => ({
@@ -1162,12 +1199,13 @@ describe('createMonadChain: directMessages.fetchSince', () => {
       getBalance: jest.fn().mockResolvedValue(100_000n),
       getFeeData: jest.fn().mockResolvedValue({ maxFeePerGas: 1n }),
     } as unknown as MonadChainWalletHandle['provider']
-    const signed = {
-      to: eve.address.raw,
-      value: 58_000n,
-      txHash: `0x${'34'.repeat(32)}`,
-      rawTx: '0xexact',
-    }
+    const signed = await signedChildSweep({
+      identity: bob,
+      payloadDigest,
+      childIndex: 0,
+      destination: eve.address.raw,
+      valueWei: 58_000n,
+    })
     const buildAndSignTransfer = jest.fn().mockResolvedValue(signed)
     const submit = jest.fn().mockResolvedValue(signed.txHash)
     const submitRaw = jest.fn().mockResolvedValue(signed.txHash)

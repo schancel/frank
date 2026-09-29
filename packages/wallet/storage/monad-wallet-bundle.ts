@@ -38,6 +38,7 @@ import {
 } from './stamp-payment-journal'
 import {
   InMemorySubAccountPoolStore,
+  assertSubAccountLifecycleMatrix,
   type SubAccountRecord,
 } from './sub-account-pool-storage'
 import { validateMonadWalletState } from './monad-wallet-state-validator'
@@ -46,7 +47,9 @@ import {
   acquireNodeWalletRootLease,
   existingWalletComponents,
   isBrowserWalletStorage,
+  nodeWalletRootExists,
   prepareSecureWalletRootWithProvenance,
+  publishNodeWalletRootWithIntent,
   validateWalletComponentBeforeOpen,
 } from './wallet-root-guard'
 
@@ -116,6 +119,9 @@ export interface MonadWalletPersistenceBundle {
   readonly stampAttemptJournal: StampAttemptJournal
   readonly stampPaymentJournal: StampPaymentJournal
   assertOpen(): void
+  /** Admits one complete stateful wallet operation. Close stops admission immediately and waits
+   * for every admitted operation before closing stores or releasing root ownership. */
+  runOperation<T>(operation: () => Promise<T>): Promise<T>
   assertSemanticallyValid(): void
   repairAttemptSpendLifecycles(): Promise<void>
   reconcileRestoreState(): Promise<void>
@@ -151,6 +157,15 @@ type OpenMonadWalletBundleTestHooks = {
   onMigrationPhase?: (phase: MigrationPhase) => void | Promise<void>
   /** Crash seam after a component binding commits but before the marker advances. */
   onMigrationBind?: (component: MigrationPhase) => void | Promise<void>
+  /** Node first-use crash seam. The final root is absent before `root-published`. */
+  onNodeCreationPublishPhase?: (
+    phase:
+      | 'staged'
+      | 'temp-written'
+      | 'temp-synced'
+      | 'intent-published'
+      | 'root-published'
+  ) => void
 }
 
 export interface MonadSeedRestoreSource {
@@ -215,7 +230,20 @@ interface LegacyMigrationResolutions {
   changes: Map<number, ChangeAccountRecord>
   payments: Map<string, StampPaymentRecoveryRecord>
   hasSemanticState: boolean
-  hasCounterOnlyState: boolean
+  hasUnauthenticatedSenderHighWater: boolean
+  hasUnauthenticatedChangeHighWater: boolean
+}
+
+function isCompleteAllocationPrefix(
+  nextIndex: number,
+  allocatedIndices: Iterable<number>
+): boolean {
+  if (nextIndex === 0) return true
+  const sorted = Array.from(new Set(allocatedIndices)).sort((a, b) => a - b)
+  return (
+    sorted.length === nextIndex &&
+    sorted.every((index, offset) => index === offset)
+  )
 }
 
 interface WalletCreationIntent {
@@ -345,13 +373,24 @@ async function createWalletCreationIntent(
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const fs = require('fs') as typeof import('fs')
     const intentPath = join(location, NODE_CREATION_INTENT_FILE)
-    const descriptor = fs.openSync(intentPath, 'wx', 0o600)
+    const temporaryPath = `${intentPath}.tmp`
+    try {
+      const abandoned = fs.lstatSync(temporaryPath)
+      if (abandoned.isSymbolicLink() || !abandoned.isFile()) {
+        throw new Error('Invalid wallet creation intent temporary')
+      }
+      fs.unlinkSync(temporaryPath)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    }
+    const descriptor = fs.openSync(temporaryPath, 'wx', 0o600)
     try {
       fs.writeFileSync(descriptor, encoded)
       fs.fsyncSync(descriptor)
     } finally {
       fs.closeSync(descriptor)
     }
+    fs.renameSync(temporaryPath, intentPath)
     const rootDescriptor = fs.openSync(location, 'r')
     try {
       fs.fsyncSync(rootDescriptor)
@@ -647,6 +686,7 @@ function validateLoadedState(params: {
     ) {
       throw new Error(`Invalid stored sub-account ${record.index} schema`)
     }
+    assertSubAccountLifecycleMatrix(record)
     if (record.fundingAttempt !== undefined) {
       assertOnlyKeys(
         record.fundingAttempt,
@@ -978,6 +1018,14 @@ async function validateLegacySnapshot(params: {
       allowUnresolvedLegacyAttempts: true,
       allowUnresolvedLegacyFinalizedRows: true,
     })
+    const senderEvidenceIndices = [
+      ...pool.records().map((record) => record.index),
+      ...pool.terminalCheckpoints().map((checkpoint) => checkpoint.index),
+      ...attemptJournal.getAll().flatMap((attempt) => attempt.leaseIndices),
+    ]
+    const changeEvidenceIndices = changePool
+      .records()
+      .map((record) => record.index)
     const hasAuthenticatedRows =
       pool.records().length > 0 ||
       pool.terminalCheckpoints().length > 0 ||
@@ -992,7 +1040,14 @@ async function validateLegacySnapshot(params: {
       changes: new Map(),
       payments: new Map(),
       hasSemanticState: hasAuthenticatedRows || hasCounters,
-      hasCounterOnlyState: hasCounters && !hasAuthenticatedRows,
+      hasUnauthenticatedSenderHighWater: !isCompleteAllocationPrefix(
+        pool.nextUnusedIndex(),
+        senderEvidenceIndices
+      ),
+      hasUnauthenticatedChangeHighWater: !isCompleteAllocationPrefix(
+        changePool.nextUnusedIndex(),
+        changeEvidenceIndices
+      ),
     }
     const attemptOverlay = new InMemoryStampAttemptJournal()
     for (const attempt of attemptJournal.getAll()) {
@@ -1185,8 +1240,23 @@ function makeBundle(params: {
   recoverySource?: MonadSeedRestoreSource
   close: () => Promise<void>
 }): MonadWalletPersistenceBundle {
-  let closed = false
+  let lifecycle: 'open' | 'closing' | 'closed' = 'open'
+  let activeOperations = 0
+  let resolveDrained: (() => void) | undefined
   let closePromise: Promise<void> | undefined
+  const runOperation = async <T>(operation: () => Promise<T>): Promise<T> => {
+    if (lifecycle !== 'open') {
+      throw new Error('Monad wallet bundle is closing or closed')
+    }
+    activeOperations++
+    try {
+      return await operation()
+    } finally {
+      activeOperations--
+      if (activeOperations === 0) resolveDrained?.()
+    }
+  }
+  params.pool.attachWalletOperationGate(runOperation)
   const leaseManager = new SubAccountLeaseManager(params.pool)
   const assertNoOrphanedLeases = (): void => {
     const referenced = new Set(
@@ -1210,8 +1280,11 @@ function makeBundle(params: {
     stampAttemptJournal: params.attemptJournal,
     stampPaymentJournal: params.paymentJournal,
     assertOpen(): void {
-      if (closed) throw new Error('Monad wallet bundle is closed')
+      if (lifecycle !== 'open') {
+        throw new Error('Monad wallet bundle is closing or closed')
+      }
     },
+    runOperation,
     assertSemanticallyValid: () =>
       validateMonadWalletState({
         pool: params.pool,
@@ -1222,6 +1295,7 @@ function makeBundle(params: {
         changeKeyring: params.changeKeyring,
       }),
     async repairAttemptSpendLifecycles(): Promise<void> {
+      return runOperation(async () => {
       validateMonadWalletState({
         pool: params.pool,
         changePool: params.changePool,
@@ -1289,8 +1363,10 @@ function makeBundle(params: {
         await params.pool.flush()
       }
       this.assertSemanticallyValid()
+      })
     },
     async reconcileRestoreState(): Promise<void> {
+      return runOperation(async () => {
       await this.repairAttemptSpendLifecycles()
       const referenced = new Set(
         params.attemptJournal
@@ -1357,22 +1433,33 @@ function makeBundle(params: {
       await params.pool.flush()
       await params.pool.compactTerminalAccounts({ limit: recovered.length })
       this.assertSemanticallyValid()
+      })
     },
     assertNoOrphanedLeases,
     async compactTerminalAccounts(limit: number): Promise<number> {
-      const pendingChange = params.changePool.pendingSourceBurnIndex()
-      return params.pool.compactTerminalAccounts({
-        limit,
-        isReferenced: (index) =>
-          index === pendingChange ||
-          params.attemptJournal.referencesLeaseIndex(index),
+      return runOperation(async () => {
+        const pendingChange = params.changePool.pendingSourceBurnIndex()
+        return params.pool.compactTerminalAccounts({
+          limit,
+          isReferenced: (index) =>
+            index === pendingChange ||
+            params.attemptJournal.referencesLeaseIndex(index),
+        })
       })
     },
     close(): Promise<void> {
       if (closePromise !== undefined) return closePromise
-      closed = true
+      lifecycle = 'closing'
       trustedPersistentBundles.delete(bundle as object)
-      closePromise = params.close()
+      closePromise = (async () => {
+        if (activeOperations > 0) {
+          await new Promise<void>((resolve) => {
+            resolveDrained = resolve
+          })
+        }
+        await params.close()
+        lifecycle = 'closed'
+      })()
       return closePromise
     },
   })
@@ -1452,7 +1539,59 @@ export async function openMonadWalletBundle(
   ) {
     throw new Error('Invalid Monad wallet creation/restore mode')
   }
-  const preparedRoot = prepareSecureWalletRootWithProvenance(params.location)
+  let nodeCreationPublished = false
+  if (!isBrowserWalletStorage() && !nodeWalletRootExists(params.location)) {
+    const isExplicitCreate =
+      runtimeParams.mode === 'create' ||
+      runtimeParams.createSeedIfEmpty === true
+    if (!isExplicitCreate) {
+      throw new Error(
+        'Cannot restore a Monad wallet from a missing Node root; restore the state backup or explicitly create a new wallet'
+      )
+    }
+    const creationSeed: PersistedSeed =
+      runtimeParams.seed === undefined
+        ? {
+            version: 1,
+            mnemonic: MonadHdKeyring.generate().mnemonic,
+            passphrase: '',
+          }
+        : {
+            version: 1,
+            mnemonic: runtimeParams.seed.mnemonic,
+            passphrase: runtimeParams.seed.passphrase ?? '',
+          }
+    const creationSubKeyring = MonadHdKeyring.fromMnemonic(
+      creationSeed.mnemonic,
+      creationSeed.passphrase
+    )
+    const creationChangeKeyring = MonadChangeKeyring.fromMnemonic(
+      creationSeed.mnemonic,
+      creationSeed.passphrase
+    )
+    const creationIntent: WalletCreationIntent = {
+      version: 1,
+      kind: runtimeParams.seed === undefined ? 'generated' : 'caller-supplied',
+      bindingId: newBindingId(),
+      seedFingerprint: seedFingerprint(
+        creationSubKeyring,
+        creationChangeKeyring
+      ),
+      ...(runtimeParams.seed === undefined
+        ? { persistedSeed: creationSeed }
+        : {}),
+    }
+    publishNodeWalletRootWithIntent(
+      params.location,
+      JSON.stringify(creationIntent),
+      params.onNodeCreationPublishPhase
+    )
+    nodeCreationPublished = true
+  }
+  const preparedRoot = prepareSecureWalletRootWithProvenance(
+    params.location,
+    false
+  )
   const location = preparedRoot.location
   const nodeLease = await acquireNodeWalletRootLease(location)
   const browserLease = await acquireBrowserWalletRootLease(location)
@@ -1469,6 +1608,9 @@ export async function openMonadWalletBundle(
       ? existing.size === 0
       : preparedRoot.nodeRootCreated
     let creationIntent = await readWalletCreationIntent(location)
+    if (nodeCreationPublished) {
+      await params.onMigrationPhase?.('creation-intent')
+    }
     const componentNames = [
       'sub-account-pool',
       'change-pool',
@@ -1602,6 +1744,22 @@ export async function openMonadWalletBundle(
           'Wallet creation intent requires the exact original creation mode'
         )
       }
+      if (
+        migration !== undefined &&
+        (creationIntent.bindingId !== migration.bindingId ||
+          creationIntent.seedFingerprint !== migration.seedFingerprint ||
+          migration.restoreMode !== undefined ||
+          (creationIntent.kind === 'caller-supplied'
+            ? migration.creationMode !== 'caller-supplied' ||
+              migration.persistedSeed !== undefined
+            : migration.creationMode !== undefined ||
+              JSON.stringify(migration.persistedSeed) !==
+                JSON.stringify(creationIntent.persistedSeed)))
+      ) {
+        throw new Error(
+          'Wallet creation intent does not match the migration marker'
+        )
+      }
     }
     const bindingId =
       finalized?.bindingId ??
@@ -1615,9 +1773,9 @@ export async function openMonadWalletBundle(
       (explicitCallerSeedCreation || generatedSeedCreation) &&
       creationIntent === undefined
     ) {
-      if (explicitCallerSeedCreation && !namespaceNeverExisted) {
+      if (!namespaceNeverExisted) {
         throw new Error(
-          'Caller-seed creation requires a storage namespace created by this exclusive acquisition'
+          'First-use creation requires a storage namespace created by this exclusive acquisition'
         )
       }
       if (hasLegacyComponents) {
@@ -1655,11 +1813,15 @@ export async function openMonadWalletBundle(
             changes: new Map<number, ChangeAccountRecord>(),
             payments: new Map<string, StampPaymentRecoveryRecord>(),
             hasSemanticState: false,
-            hasCounterOnlyState: false,
+            hasUnauthenticatedSenderHighWater: false,
+            hasUnauthenticatedChangeHighWater: false,
           }
-    if (legacyResolutions.hasCounterOnlyState) {
+    if (
+      legacyResolutions.hasUnauthenticatedSenderHighWater ||
+      legacyResolutions.hasUnauthenticatedChangeHighWater
+    ) {
       throw new Error(
-        'Unbound legacy high-water counters require authenticated seed-bound recovery evidence'
+        'Each unbound legacy high-water domain requires complete authenticated seed-bound recovery evidence'
       )
     }
     const semanticallyEmptyUnboundRoot =

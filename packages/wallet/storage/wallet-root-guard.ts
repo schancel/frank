@@ -62,8 +62,152 @@ export interface PreparedWalletRoot {
   nodeRootCreated: boolean
 }
 
+export function nodeWalletRootExists(location: string): boolean {
+  if (isBrowserWalletStorage()) return false
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const fs = require('fs') as typeof import('fs')
+  return (
+    lstatIfPresent(fs, canonicalWalletStorageLocation(location)) !== undefined
+  )
+}
+
+/** Publishes a first-use Node root only after its complete seed-bound intent is durable inside a
+ * same-filesystem staging directory. `/bin/mv -n` maps to the platform's no-replace rename path;
+ * the postcondition check treats an existing final namespace as a hard failure. */
+export function publishNodeWalletRootWithIntent(
+  location: string,
+  encodedIntent: string,
+  onPhase?: (
+    phase:
+      | 'staged'
+      | 'temp-written'
+      | 'temp-synced'
+      | 'intent-published'
+      | 'root-published'
+  ) => void
+): void {
+  if (isBrowserWalletStorage()) return
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const fs = require('fs') as typeof import('fs')
+  // Keep the Node-only publisher out of the browser module graph.
+  const nodeRequire = require as NodeRequire
+  const childProcess = nodeRequire(
+    ['child', 'process'].join('_')
+  ) as typeof import('child_process')
+  const canonical = canonicalWalletStorageLocation(location)
+  if (lstatIfPresent(fs, canonical) !== undefined) {
+    throw new Error('First-use wallet creation requires a missing Node root')
+  }
+  const parent = dirname(canonical)
+  fs.mkdirSync(parent, { recursive: true, mode: 0o700 })
+  const base = canonical.slice(parent.length + 1)
+  const staging = join(parent, `.${base}.frank-wallet-create`)
+  let stagingStat = lstatIfPresent(fs, staging)
+  if (stagingStat === undefined) {
+    fs.mkdirSync(staging, { mode: 0o700 })
+    stagingStat = fs.lstatSync(staging)
+  }
+  if (
+    stagingStat.isSymbolicLink() ||
+    !stagingStat.isDirectory() ||
+    (stagingStat.mode & 0o777) !== 0o700
+  ) {
+    throw new Error('Wallet creation staging path is not a private directory')
+  }
+  assertOwnedByCurrentUser(stagingStat, 'Wallet creation staging path')
+  onPhase?.('staged')
+
+  const finalIntent = join(staging, '.frank-wallet-creation.json')
+  const existingIntent = lstatIfPresent(fs, finalIntent)
+  if (existingIntent !== undefined) {
+    const retainedIntent = fs.readFileSync(finalIntent, 'utf8')
+    let sameSeedBoundIntent = retainedIntent === encodedIntent
+    if (!sameSeedBoundIntent) {
+      try {
+        const retained = JSON.parse(retainedIntent) as Record<string, unknown>
+        const requested = JSON.parse(encodedIntent) as Record<string, unknown>
+        const { bindingId: _retainedBinding, ...retainedAuthority } = retained
+        const { bindingId: _requestedBinding, ...requestedAuthority } =
+          requested
+        sameSeedBoundIntent =
+          JSON.stringify(retainedAuthority) ===
+          JSON.stringify(requestedAuthority)
+      } catch {
+        sameSeedBoundIntent = false
+      }
+    }
+    if (
+      existingIntent.isSymbolicLink() ||
+      !existingIntent.isFile() ||
+      existingIntent.nlink !== 1 ||
+      (existingIntent.mode & 0o777) !== 0o600 ||
+      !sameSeedBoundIntent
+    ) {
+      throw new Error('Abandoned wallet creation intent does not match')
+    }
+  } else {
+    const temporaryIntent = join(staging, '.frank-wallet-creation.json.tmp')
+    const abandonedTemporary = lstatIfPresent(fs, temporaryIntent)
+    if (abandonedTemporary !== undefined) {
+      if (
+        abandonedTemporary.isSymbolicLink() ||
+        !abandonedTemporary.isFile() ||
+        abandonedTemporary.nlink !== 1
+      ) {
+        throw new Error('Invalid abandoned wallet creation intent temporary')
+      }
+      assertOwnedByCurrentUser(
+        abandonedTemporary,
+        'Wallet creation intent temporary'
+      )
+      fs.unlinkSync(temporaryIntent)
+    }
+    const descriptor = fs.openSync(temporaryIntent, 'wx', 0o600)
+    try {
+      fs.writeFileSync(descriptor, encodedIntent)
+      onPhase?.('temp-written')
+      fs.fsyncSync(descriptor)
+      onPhase?.('temp-synced')
+    } finally {
+      fs.closeSync(descriptor)
+    }
+    fs.renameSync(temporaryIntent, finalIntent)
+    onPhase?.('intent-published')
+    const stagingDescriptor = fs.openSync(staging, 'r')
+    try {
+      fs.fsyncSync(stagingDescriptor)
+    } finally {
+      fs.closeSync(stagingDescriptor)
+    }
+  }
+
+  const stagedIdentity = fs.lstatSync(staging)
+  const moved = childProcess.spawnSync('/bin/mv', ['-n', staging, canonical], {
+    stdio: 'pipe',
+  })
+  const publishedIdentity = lstatIfPresent(fs, canonical)
+  if (
+    moved.error !== undefined ||
+    moved.status !== 0 ||
+    lstatIfPresent(fs, staging) !== undefined ||
+    publishedIdentity === undefined ||
+    publishedIdentity.dev !== stagedIdentity.dev ||
+    publishedIdentity.ino !== stagedIdentity.ino
+  ) {
+    throw new Error('Wallet root appeared before atomic creation publish')
+  }
+  onPhase?.('root-published')
+  const parentDescriptor = fs.openSync(parent, 'r')
+  try {
+    fs.fsyncSync(parentDescriptor)
+  } finally {
+    fs.closeSync(parentDescriptor)
+  }
+}
+
 export function prepareSecureWalletRootWithProvenance(
-  location: string
+  location: string,
+  createIfMissing = true
 ): PreparedWalletRoot {
   const canonical = canonicalWalletStorageLocation(location)
   if (isBrowserWalletStorage()) {
@@ -74,6 +218,9 @@ export function prepareSecureWalletRootWithProvenance(
   let rootLstat = lstatIfPresent(fs, canonical)
   let nodeRootCreated = false
   if (rootLstat === undefined) {
+    if (!createIfMissing) {
+      throw new Error('Wallet root does not exist')
+    }
     fs.mkdirSync(dirname(canonical), { recursive: true, mode: 0o700 })
     try {
       // The non-recursive final mkdir is the creation provenance boundary: EEXIST means this
@@ -105,6 +252,7 @@ export function prepareSecureWalletRootWithProvenance(
     ...WALLET_COMPONENT_NAMES,
     '.frank-wallet.lock',
     '.frank-wallet-creation.json',
+    '.frank-wallet-creation.json.tmp',
   ])
   const unexpected = fs
     .readdirSync(canonical)
@@ -516,31 +664,52 @@ export async function acquireBrowserWalletRootLease(
   let releaseHold: (() => void) | undefined
   let held = false
   let resolveReady!: (acquired: boolean) => void
-  const ready = new Promise<boolean>((resolvePromise) => {
+  let rejectReady!: (error: unknown) => void
+  let completionError: unknown
+  const ready = new Promise<boolean>((resolvePromise, rejectPromise) => {
     resolveReady = resolvePromise
+    rejectReady = rejectPromise
   })
-  const completion = locks.request(
-    `frank-monad-wallet:${canonical}`,
-    { ifAvailable: true, mode: 'exclusive' },
-    async (lock: unknown) => {
-      if (lock === null || lock === undefined) {
-        resolveReady(false)
-        return
-      }
-      held = true
-      resolveReady(true)
-      await new Promise<void>((resolvePromise) => {
-        releaseHold = resolvePromise
-      })
-      held = false
-    }
-  )
+  let completion: Promise<unknown>
+  try {
+    completion = Promise.resolve(
+      locks.request(
+        `frank-monad-wallet:${canonical}`,
+        { ifAvailable: true, mode: 'exclusive' },
+        async (lock: unknown) => {
+          if (lock === null || lock === undefined) {
+            resolveReady(false)
+            return
+          }
+          held = true
+          resolveReady(true)
+          await new Promise<void>((resolvePromise) => {
+            releaseHold = resolvePromise
+          })
+          held = false
+        }
+      )
+    )
+  } catch (error) {
+    throw error
+  }
+  // Web Locks may reject before invoking the callback. Feed that failure into readiness as well
+  // as retaining the completion promise for release, so acquisition neither hangs nor produces
+  // an unhandled rejection.
+  void completion.catch((error) => {
+    completionError = error
+    held = false
+    rejectReady(error)
+  })
   if (!(await ready)) {
     await completion
     throw new Error('Wallet root is already open in another browser context')
   }
   return {
     assertHeld(): void {
+      if (completionError !== undefined) {
+        throw new Error('Browser wallet root lock was lost')
+      }
       if (!held) throw new Error('Browser wallet root lock was lost')
     },
     async release(): Promise<void> {

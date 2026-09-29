@@ -1,7 +1,8 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import level, { type LevelDB } from 'level'
 import { join } from 'path'
-import { Transaction } from 'ethers'
+import { getAddress, getBytes, Transaction } from 'ethers'
+import { deriveMonadStampChildPublic } from '../monad-stamp-stealth'
 import { validateWalletComponentBeforeOpen } from './wallet-root-guard'
 
 const WALLET_BINDING_KEY = '__wallet_binding__'
@@ -507,6 +508,25 @@ function assertPaymentAuthorityShape(record: StampPaymentRecoveryRecord): void {
       throw new Error('Failed stamp-payment sweep authority is incomplete')
     }
   }
+  if (record.status !== 'discovered') {
+    const derivedAddress = deriveMonadStampChildPublic({
+      payloadHash: getBytes(`0x${record.payloadHashHex}`),
+      recipientPublicKey: getBytes(record.recipientPublicKeyHex),
+      paymentIndex: record.childIndex,
+    }).address
+    if (getAddress(record.address) !== getAddress(derivedAddress)) {
+      throw new Error('Stamp-payment sweep sender is not the derived child')
+    }
+    assertSweepTransaction(record, {
+      txHash: record.sweepTxHash as string,
+      rawTx: record.sweepRawTx as string,
+      valueWei: record.sweepValueWei as string,
+      destinationAddress: record.sweepDestinationAddress as string,
+    })
+    for (const failed of record.failedSweeps ?? []) {
+      assertSweepTransaction(record, failed)
+    }
+  }
 }
 
 function preflightDiscoveredSet(
@@ -560,7 +580,11 @@ function assertMonotonicPaymentRecord(
   next: StampPaymentRecoveryRecord
 ): void {
   assertCompatibleStampPaymentAuthority(prior, next)
-  assertFailedSweepLedger(prior?.failedSweeps, next.failedSweeps)
+  assertFailedSweepLedger(
+    prior?.failedSweeps,
+    next.failedSweeps,
+    prior?.status === 'sweep-pending' && next.status === 'sweep-failed'
+  )
   if (prior === undefined) return
   if (
     (prior.status === 'discovered' &&
@@ -661,6 +685,23 @@ function decodeSweepTransaction(rawTx: string, txHash: string): Transaction {
   return transaction
 }
 
+function assertSweepTransaction(
+  record: StampPaymentRecoveryRecord,
+  sweep: FailedStampPaymentSweep
+): Transaction {
+  const transaction = decodeSweepTransaction(sweep.rawTx, sweep.txHash)
+  if (
+    transaction.from === null ||
+    getAddress(transaction.from) !== getAddress(record.address) ||
+    transaction.to === null ||
+    getAddress(transaction.to) !== getAddress(sweep.destinationAddress) ||
+    transaction.value.toString() !== sweep.valueWei
+  ) {
+    throw new Error('Stamp-payment sweep transaction authority is inconsistent')
+  }
+  return transaction
+}
+
 function assertSweepFieldsEqual(
   prior: StampPaymentRecoveryRecord,
   next: StampPaymentRecoveryRecord
@@ -679,12 +720,13 @@ function assertSweepFieldsEqual(
 
 function assertFailedSweepLedger(
   prior: FailedStampPaymentSweep[] | undefined,
-  next: FailedStampPaymentSweep[] | undefined
+  next: FailedStampPaymentSweep[] | undefined,
+  allowExactAppend: boolean
 ): void {
   const priorRows = prior ?? []
   const nextRows = next ?? []
-  if (nextRows.length < priorRows.length) {
-    throw new Error('Stamp-payment failed sweep ledger cannot shrink')
+  if (nextRows.length !== priorRows.length + (allowExactAppend ? 1 : 0)) {
+    throw new Error('Stamp-payment failed sweep ledger cannot be fabricated')
   }
   for (let index = 0; index < priorRows.length; index++) {
     if (JSON.stringify(priorRows[index]) !== JSON.stringify(nextRows[index])) {

@@ -27,8 +27,8 @@
  *   Alchemy endpoint, polls for its receipt, verifies the payment commitment/value, and only then
  *   stores the message -- so a 2xx response here means a real stamp payment is confirmed on live
  *   Monad testnet.
- * - `GET /message/monad/:payload_hash` (right after) proves the stored message is retrievable --
- *   see this file's tail comment for what this does and does NOT prove about "delivery".
+ * - The correlated successful `PUT` response proves the exact message was retained; this demo does
+ *   not depend on or advertise a public exact-message `GET` surface.
  *
  * ## Content encryption is out of scope here
  *
@@ -211,18 +211,13 @@ async function main() {
     )} (now 'spent', never reused)`
   )
 
-  // --- 4. Prove GET /message/monad/:payload_hash round-trips the same thing. ---
-  console.log(
-    '\n== Fetching the message back via GET /message/monad/:payload_hash =='
-  )
-  const fetched = await stampClient.fetchStoredMessage(result.payloadHashHex)
-  if (!fetched)
-    throw new Error('expected the just-stored message to be fetchable')
-  const fetchedText = new TextDecoder().decode(
-    fetched.message?.encryptedPayload
+  // The successful PUT response itself carries the exact retained message authority. The public
+  // relay intentionally has no payload-hash GET endpoint; crash recovery replays these exact bytes.
+  const retainedText = new TextDecoder().decode(
+    result.stored.message?.encryptedPayload
   )
   console.log(
-    `Fetched payload matches: ${fetchedText === JSON.stringify(message)}`
+    `Retained payload matches: ${retainedText === JSON.stringify(message)}`
   )
   const fetchedTxHashes =
     fetched.message?.stampPayments.map(

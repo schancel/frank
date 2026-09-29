@@ -149,13 +149,18 @@ export class InMemorySubAccountPoolStore implements SubAccountPoolStore {
   }
 
   put(record: SubAccountRecord): void {
+    if (this.checkpointsByIndex.has(record.index)) {
+      throw new Error(
+        `Cannot recreate compacted sub-account index ${record.index}`
+      )
+    }
     this.recordsByIndex.set(record.index, { ...record })
     this.nextIndex = Math.max(this.nextIndex, record.index + 1)
   }
 
   getAll(): SubAccountRecord[] {
     return Array.from(this.recordsByIndex.values()).sort(
-      (a, b) => a.index - b.index,
+      (a, b) => a.index - b.index
     )
   }
 
@@ -167,7 +172,7 @@ export class InMemorySubAccountPoolStore implements SubAccountPoolStore {
     assertSubAccountIndex(index, 'Next sub-account index')
     if (index < this.nextIndex) {
       throw new Error(
-        'Sub-account allocation high-water mark cannot move backward',
+        'Sub-account allocation high-water mark cannot move backward'
       )
     }
     this.nextIndex = index
@@ -196,13 +201,13 @@ export class InMemorySubAccountPoolStore implements SubAccountPoolStore {
 export function assertSubAccountIndex(index: number, label: string): void {
   if (!Number.isSafeInteger(index) || index < 0) {
     throw new Error(
-      `${label} must be a non-negative safe integer, got ${index}`,
+      `${label} must be a non-negative safe integer, got ${index}`
     )
   }
 }
 
 export function cloneCheckpoint(
-  checkpoint: TerminalSubAccountCheckpoint,
+  checkpoint: TerminalSubAccountCheckpoint
 ): TerminalSubAccountCheckpoint {
   return JSON.parse(JSON.stringify(checkpoint)) as TerminalSubAccountCheckpoint
 }

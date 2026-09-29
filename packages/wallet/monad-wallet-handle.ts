@@ -39,3 +39,83 @@ export interface MonadWalletHandle {
    * trims its own trailing slash, so this may or may not have one. */
   relayBaseUrl: string
 }
+
+const COMPLETE_STAMP_WALLET = Symbol('complete-stamp-wallet')
+
+/** Opaque stamped-send authority. Component references are deliberately absent: the client must
+ * derive every persistence dependency from the one branded bundle. */
+export interface MonadStampWalletHandle {
+  readonly [COMPLETE_STAMP_WALLET]: true
+  readonly walletState: MonadWalletPersistenceBundle
+  readonly provider: Provider
+  readonly httpClient: MonadTxSubmitter
+  readonly relayBaseUrl: string
+}
+
+export function createMonadStampWalletHandle(params: {
+  walletState: MonadWalletPersistenceBundle
+  provider: Provider
+  httpClient: MonadTxSubmitter
+  relayBaseUrl: string
+}): MonadStampWalletHandle {
+  if (params.walletState.durability !== 'persistent') {
+    throw new Error(
+      'Production Monad stamped sends require a durable complete wallet bundle'
+    )
+  }
+  return { ...params, [COMPLETE_STAMP_WALLET]: true }
+}
+
+/** Explicitly unsafe composition seam for isolated unit tests only. Production code must use
+ * `createMonadStampWalletHandle`, which rejects ephemeral or separately threaded components. */
+export function unsafeCreateMonadStampWalletHandleForTests(
+  params: MonadWalletHandle
+): MonadStampWalletHandle {
+  if (params.stampAttemptJournal === undefined) {
+    throw new Error(
+      'Monad stamped sends require a crash-safe stamp-attempt journal'
+    )
+  }
+  const walletState =
+    params.walletState ??
+    ({
+      durability: 'test-only-ephemeral',
+      pool: params.pool,
+      leaseManager: params.leaseManager,
+      changePool: params.changePool,
+      stampAttemptJournal: params.stampAttemptJournal,
+      stampPaymentJournal: params.stampPaymentJournal,
+      assertNoOrphanedLeases: () => undefined,
+      assertSemanticallyValid: () => undefined,
+      repairAttemptSpendLifecycles: async () => undefined,
+      reconcileRestoreState: async () => undefined,
+    } as unknown as MonadWalletPersistenceBundle)
+  if (
+    walletState.pool !== params.pool ||
+    walletState.leaseManager !== params.leaseManager ||
+    walletState.changePool !== params.changePool ||
+    walletState.stampAttemptJournal !== params.stampAttemptJournal ||
+    walletState.stampPaymentJournal !== params.stampPaymentJournal
+  ) {
+    throw new Error(
+      'Monad wallet components do not belong to one persistence bundle'
+    )
+  }
+  return {
+    [COMPLETE_STAMP_WALLET]: true,
+    walletState,
+    provider: params.provider,
+    httpClient: params.httpClient,
+    relayBaseUrl: params.relayBaseUrl,
+  }
+}
+
+export function isMonadStampWalletHandle(
+  value: unknown
+): value is MonadStampWalletHandle {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    (value as Partial<MonadStampWalletHandle>)[COMPLETE_STAMP_WALLET] === true
+  )
+}

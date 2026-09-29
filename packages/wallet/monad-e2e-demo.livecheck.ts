@@ -66,34 +66,30 @@ import { JsonRpcProvider, Transaction, hexlify } from 'ethers'
 
 import { MonadHttpClient } from './monad-http'
 import { MonadAccountTxSigner } from './monad-account-tx'
-import { MonadHdKeyring } from './monad-hd-keyring'
-import { MonadChangeKeyring } from './monad-change-keyring'
-import { MonadChangePool } from './monad-change-pool'
-import { MonadSubAccountPool } from './monad-account-pool'
-import { SubAccountLeaseManager } from './monad-account-lease'
-import { InMemoryStampAttemptJournal } from './storage/stamp-attempt-journal'
 import { MonadStampClient } from './monad-stamp-client'
 import { MonadIdentity, registerMonadIdentity } from './monad-identity'
+import { createMonadStampWalletHandle } from './monad-wallet-handle'
+import { openMonadWalletBundle } from './storage/monad-wallet-bundle'
 
 function requiredEnv(name: string): string {
   const value = process.env[name]
   if (!value) {
     throw new Error(
       `Missing required env var ${name} -- see this file's header for the full list, and ` +
-        'backend/cashweb/cashweb-registry/examples/README.md for how to source it from .env',
+        'backend/cashweb/cashweb-registry/examples/README.md for how to source it from .env'
     )
   }
   return value
 }
 
 function sleep(ms: number): Promise<void> {
-  return new Promise(r => setTimeout(r, ms))
+  return new Promise((r) => setTimeout(r, ms))
 }
 
 async function waitForConfirmation(
   signer: MonadAccountTxSigner,
   txHash: string,
-  label: string,
+  label: string
 ): Promise<void> {
   for (let attempt = 0; attempt < 60; attempt++) {
     const status = await signer.getStatus(txHash)
@@ -110,17 +106,17 @@ async function waitForConfirmation(
 async function main() {
   const rpcUrl = requiredEnv('MONAD_TESTNET_HTTP_RPC_URL')
   const minStampValueWei = BigInt(
-    requiredEnv('CASHWEB_STAMP_MIN_BURN_VALUE_WEI'),
+    requiredEnv('CASHWEB_STAMP_MIN_BURN_VALUE_WEI')
   )
   const relayBaseUrl = process.env.E2E_DEMO_RELAY_URL ?? 'http://127.0.0.1:8098'
   const walletJsonPath = resolve(
     process.cwd(),
     process.env.E2E_DEMO_MAIN_WALLET_JSON ??
-      '../frank-worktrees/spike-demo/spike/data/chain-wallet.json',
+      '../frank-worktrees/spike-demo/spike/data/chain-wallet.json'
   )
 
   console.log(
-    '== Ticket #8 e2e demo: stamped message relay-to-relay on Monad testnet ==',
+    '== Ticket #8 e2e demo: stamped message relay-to-relay on Monad testnet =='
   )
   console.log(`RPC:          ${rpcUrl}`)
   console.log(`Min stamp:    ${minStampValueWei} wei`)
@@ -133,7 +129,7 @@ async function main() {
   }
   console.log(`Main funding account: ${mainWallet.address}`)
   const recipientIdentity = MonadIdentity.fromPrivateKeyHex(
-    mainWallet.privateKey,
+    mainWallet.privateKey
   )
   await registerMonadIdentity({ relayBaseUrl, identity: recipientIdentity })
   console.log(`Recipient identity: ${recipientIdentity.address.raw}`)
@@ -147,18 +143,24 @@ async function main() {
     httpClient,
   })
 
-  // --- 1. Derive + fund one fresh sub-account from the main funded account. ---
-  const { keyring, mnemonic } = MonadHdKeyring.generate()
-  console.log(
-    `\nGenerated a fresh sub-account-pool mnemonic for this demo run: "${mnemonic}"`,
-  )
-  console.log('(ephemeral -- this pool is thrown away when this process exits)')
-
-  const pool = new MonadSubAccountPool({ keyring })
-  const changePool = new MonadChangePool({
-    keyring: MonadChangeKeyring.fromMnemonic(mnemonic),
+  // --- 1. Atomically create/reopen one durable complete wallet bundle. ---
+  const walletState = await openMonadWalletBundle({
+    location: resolve(
+      process.cwd(),
+      process.env.E2E_DEMO_WALLET_STATE ?? '.monad-e2e-wallet'
+    ),
+    createSeedIfEmpty: true,
   })
-  pool.ensureSize(1)
+  const { pool } = walletState
+  await new MonadStampClient(
+    createMonadStampWalletHandle({
+      walletState,
+      provider,
+      httpClient,
+      relayBaseUrl,
+    })
+  ).reconcileOrThrow()
+  pool.ensureUnfundedSize(1)
 
   const gasReserve = BigInt('20000000000000000') // 0.02 MON headroom for gas fees
   console.log('\n== Funding sub-account 0 from the main account ==')
@@ -168,7 +170,7 @@ async function main() {
     gasReserve,
   })
   console.log(
-    `Funded ${funded.address} with ${funded.fundedValue} wei, tx ${funded.txHash}`,
+    `Funded ${funded.address} with ${funded.fundedValue} wei, tx ${funded.txHash}`
   )
   await waitForConfirmation(mainAccountSigner, funded.txHash, 'funding tx')
   console.log('Funding tx confirmed on-chain.')
@@ -184,16 +186,14 @@ async function main() {
   const encryptedPayload = new TextEncoder().encode(JSON.stringify(message))
 
   // --- 3. Stamp + relay the message. ---
-  const leaseManager = new SubAccountLeaseManager(pool)
-  const stampClient = new MonadStampClient({
-    pool,
-    leaseManager,
-    provider,
-    httpClient,
-    changePool,
-    stampAttemptJournal: new InMemoryStampAttemptJournal(),
-    relayBaseUrl,
-  })
+  const stampClient = new MonadStampClient(
+    createMonadStampWalletHandle({
+      walletState,
+      provider,
+      httpClient,
+      relayBaseUrl,
+    })
+  )
 
   console.log('\n== Submitting the stamped message to the relay ==')
   const result = await stampClient.submitStampedMessage({
@@ -207,35 +207,35 @@ async function main() {
   console.log(`  stamp tx hashes: ${result.txHashes.join(', ')}`)
   console.log(
     `  sub-accounts leased: ${result.leaseIndices.join(
-      ', ',
-    )} (now 'spent', never reused)`,
+      ', '
+    )} (now 'spent', never reused)`
   )
 
   // --- 4. Prove GET /message/monad/:payload_hash round-trips the same thing. ---
   console.log(
-    '\n== Fetching the message back via GET /message/monad/:payload_hash ==',
+    '\n== Fetching the message back via GET /message/monad/:payload_hash =='
   )
   const fetched = await stampClient.fetchStoredMessage(result.payloadHashHex)
   if (!fetched)
     throw new Error('expected the just-stored message to be fetchable')
   const fetchedText = new TextDecoder().decode(
-    fetched.message?.encryptedPayload,
+    fetched.message?.encryptedPayload
   )
   console.log(
-    `Fetched payload matches: ${fetchedText === JSON.stringify(message)}`,
+    `Fetched payload matches: ${fetchedText === JSON.stringify(message)}`
   )
   const fetchedTxHashes =
     fetched.message?.stampPayments.map(
-      payment => Transaction.from(hexlify(payment.rawTx)).hash,
+      (payment) => Transaction.from(hexlify(payment.rawTx)).hash
     ) ?? []
   const fetchedDestinations =
     fetched.message?.stampPayments.map(
-      payment => Transaction.from(hexlify(payment.rawTx)).to,
+      (payment) => Transaction.from(hexlify(payment.rawTx)).to
     ) ?? []
   console.log(
     `Fetched stamp tx hashes match: ${
       JSON.stringify(fetchedTxHashes) === JSON.stringify(result.txHashes)
-    }`,
+    }`
   )
 
   // --- Hand off the broadcast tx hash for independent, separate-process on-chain verification. ---
@@ -249,20 +249,21 @@ async function main() {
         paymentDestinations: fetchedDestinations,
       },
       null,
-      2,
-    ),
+      2
+    )
   )
   console.log(
-    `\nWrote handoff file for independent verification: ${handoffPath}`,
+    `\nWrote handoff file for independent verification: ${handoffPath}`
   )
   console.log(
     'Run: node /tmp/monad-e2e-demo/verify-onchain-tx.livecheck.js ' +
-      result.txHashes[0],
+      result.txHashes[0]
   )
   console.log('\nAll steps completed.')
+  await walletState.close()
 }
 
-main().catch(err => {
+main().catch((err) => {
   console.error('\nE2E DEMO FAILED:', err)
   process.exit(1)
 })

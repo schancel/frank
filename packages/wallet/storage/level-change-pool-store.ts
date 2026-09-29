@@ -35,11 +35,18 @@ export class LevelChangePoolStore implements ChangePoolStore {
   private pendingIntent?: ChangeSweepIntent
   private pendingWrites: Promise<unknown>[] = []
   private readonly expectedBindingId?: string
+  private readonly allowUnboundForMigration: boolean
+  private loadedBindingId?: string
 
-  constructor(location: string, expectedBindingId?: string) {
+  constructor(
+    location: string,
+    expectedBindingId?: string,
+    allowUnboundForMigration = false
+  ) {
     this.dbLocation = join(location, 'change-pool')
     this.cache = new Map<number, ChangeAccountRecord>()
     this.expectedBindingId = expectedBindingId
+    this.allowUnboundForMigration = allowUnboundForMigration
   }
 
   private get db() {
@@ -54,6 +61,7 @@ export class LevelChangePoolStore implements ChangePoolStore {
    * Open()`. */
   async Open(): Promise<void> {
     this.openedDb = level(this.dbLocation)
+    await (this.openedDb as any).open()
     await this.loadData()
   }
 
@@ -66,15 +74,16 @@ export class LevelChangePoolStore implements ChangePoolStore {
     // Same stale-ambient-type workaround `LevelSubAccountPoolStore.loadData` uses -- see that
     // file's header for the full explanation of why `iterator()` is typed `any` here.
     let storedBindingId: string | undefined
-    let hasRecords = false
     for await (const [key, value] of this.db.iterator({}) as any) {
       if (key === WALLET_BINDING_KEY) {
         storedBindingId = value
         continue
       }
-      hasRecords = true
       if (key === NEXT_INDEX_KEY) {
         this.nextIndex = JSON.parse(value)
+        if (!Number.isSafeInteger(this.nextIndex) || this.nextIndex < 0) {
+          throw new Error('Invalid stored next change index')
+        }
         continue
       }
       if (key === PENDING_INTENT_KEY) {
@@ -82,6 +91,14 @@ export class LevelChangePoolStore implements ChangePoolStore {
         continue
       }
       const record: ChangeAccountRecord = JSON.parse(value)
+      if (String(record.index) !== key || !/^\d+$/.test(key)) {
+        throw new Error('Change-account key does not match its index')
+      }
+      if (this.bySourceBurnIndex.has(record.sourceBurnIndex)) {
+        throw new Error(
+          `Duplicate change source sub-account ${record.sourceBurnIndex}`
+        )
+      }
       this.cache.set(record.index, record)
       this.bySourceBurnIndex.set(record.sourceBurnIndex, record)
     }
@@ -92,15 +109,27 @@ export class LevelChangePoolStore implements ChangePoolStore {
       ) {
         throw new Error('Change store belongs to a different wallet root')
       }
-      if (storedBindingId === undefined && hasRecords) {
-        throw new Error('Refusing to adopt an unbound non-empty change store')
+      if (storedBindingId === undefined && !this.allowUnboundForMigration) {
+        throw new Error('Refusing to open an unbound change store')
       }
     }
+    this.loadedBindingId = storedBindingId
+  }
+
+  bindingId(): string | undefined {
+    return this.loadedBindingId
   }
 
   async Bind(): Promise<void> {
     if (this.expectedBindingId === undefined) return
-    await this.db.put(WALLET_BINDING_KEY, this.expectedBindingId)
+    await (this.db as any).batch([
+      { type: 'put', key: WALLET_BINDING_KEY, value: this.expectedBindingId },
+      {
+        type: 'put',
+        key: NEXT_INDEX_KEY,
+        value: JSON.stringify(this.nextIndex),
+      },
+    ])
   }
 
   getNextIndex(): number {
@@ -110,7 +139,7 @@ export class LevelChangePoolStore implements ChangePoolStore {
   setNextIndex(index: number): void {
     if (!Number.isInteger(index) || index < 0) {
       throw new Error(
-        `Next change index must be a non-negative integer, got ${index}`,
+        `Next change index must be a non-negative integer, got ${index}`
       )
     }
     this.nextIndex = index
@@ -119,10 +148,16 @@ export class LevelChangePoolStore implements ChangePoolStore {
   }
 
   putRecord(record: ChangeAccountRecord): void {
+    const priorSource = this.bySourceBurnIndex.get(record.sourceBurnIndex)
+    if (priorSource !== undefined && priorSource.index !== record.index) {
+      throw new Error(
+        `Source sub-account ${record.sourceBurnIndex} already has change index ${priorSource.index}`
+      )
+    }
     this.cache.set(record.index, { ...record })
     this.bySourceBurnIndex.set(record.sourceBurnIndex, { ...record })
     this.pendingWrites.push(
-      this.db.put(String(record.index), JSON.stringify(record)),
+      this.db.put(String(record.index), JSON.stringify(record))
     )
   }
 
@@ -147,7 +182,7 @@ export class LevelChangePoolStore implements ChangePoolStore {
   setPendingIntent(intent: ChangeSweepIntent): void {
     this.pendingIntent = { ...intent }
     this.pendingWrites.push(
-      this.db.put(PENDING_INTENT_KEY, JSON.stringify(intent)),
+      this.db.put(PENDING_INTENT_KEY, JSON.stringify(intent))
     )
   }
 

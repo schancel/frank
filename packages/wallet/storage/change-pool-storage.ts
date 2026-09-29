@@ -105,6 +105,14 @@ export class InMemoryChangePoolStore implements ChangePoolStore {
   }
 
   putRecord(record: ChangeAccountRecord): void {
+    const priorSource = this.recordsBySourceBurnIndex.get(
+      record.sourceBurnIndex
+    )
+    if (priorSource !== undefined && priorSource.index !== record.index) {
+      throw new Error(
+        `Source sub-account ${record.sourceBurnIndex} already has change index ${priorSource.index}`
+      )
+    }
     this.recordsByIndex.set(record.index, { ...record })
     this.recordsBySourceBurnIndex.set(record.sourceBurnIndex, { ...record })
   }
@@ -119,7 +127,7 @@ export class InMemoryChangePoolStore implements ChangePoolStore {
 
   getAll(): ChangeAccountRecord[] {
     return Array.from(this.recordsByIndex.values()).sort(
-      (a, b) => a.index - b.index,
+      (a, b) => a.index - b.index
     )
   }
 

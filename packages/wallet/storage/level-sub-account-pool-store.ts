@@ -32,11 +32,18 @@ export class LevelSubAccountPoolStore implements SubAccountPoolStore {
   private nextIndex = 0
   private pendingWrites: Promise<unknown>[] = []
   private readonly expectedBindingId?: string
+  private readonly allowUnboundForMigration: boolean
+  private loadedBindingId?: string
 
-  constructor(location: string, expectedBindingId?: string) {
+  constructor(
+    location: string,
+    expectedBindingId?: string,
+    allowUnboundForMigration = false
+  ) {
     this.dbLocation = join(location, 'sub-account-pool')
     this.cache = new Map<number, SubAccountRecord>()
     this.expectedBindingId = expectedBindingId
+    this.allowUnboundForMigration = allowUnboundForMigration
   }
 
   private get db() {
@@ -50,6 +57,7 @@ export class LevelSubAccountPoolStore implements SubAccountPoolStore {
    * called (and awaited) before using the store — same lifecycle as `LevelUtxoStore.Open()`. */
   async Open(): Promise<void> {
     this.openedDb = level(this.dbLocation)
+    await (this.openedDb as any).open()
     await this.loadData()
   }
 
@@ -68,13 +76,11 @@ export class LevelSubAccountPoolStore implements SubAccountPoolStore {
     // (`./level-storage.ts`) sidesteps the same stale-type mismatch by typing its iterator field
     // `any`; this does the same, locally, rather than editing that shared ambient declaration.
     let storedBindingId: string | undefined
-    let hasRecords = false
     for await (const [key, value] of this.db.iterator({}) as any) {
       if (key === WALLET_BINDING_KEY) {
         storedBindingId = value
         continue
       }
-      hasRecords = true
       if (key === NEXT_INDEX_KEY) {
         const parsed: unknown = JSON.parse(value)
         assertSubAccountIndex(parsed as number, 'Stored next sub-account index')
@@ -83,13 +89,28 @@ export class LevelSubAccountPoolStore implements SubAccountPoolStore {
       }
       if (key.startsWith(CHECKPOINT_PREFIX)) {
         const checkpoint = JSON.parse(value) as TerminalSubAccountCheckpoint
+        if (`${CHECKPOINT_PREFIX}${checkpoint.index}` !== key) {
+          throw new Error('Terminal checkpoint key does not match its index')
+        }
         this.checkpoints.set(checkpoint.index, checkpoint)
+        this.nextIndex = Math.max(this.nextIndex, checkpoint.index + 1)
         continue
       }
       const record: SubAccountRecord = JSON.parse(value)
+      if (String(record.index) !== key || !/^\d+$/.test(key)) {
+        throw new Error('Sub-account key does not match its index')
+      }
+      if (this.checkpoints.has(record.index)) {
+        throw new Error(`Sub-account ${record.index} also has a checkpoint`)
+      }
       this.cache.set(record.index, record)
       this.nextIndex = Math.max(this.nextIndex, record.index + 1)
       void key // key is the stringified index; the parsed record's own `index` field is used.
+    }
+    for (const index of this.checkpoints.keys()) {
+      if (this.cache.has(index)) {
+        throw new Error(`Sub-account ${index} also has a checkpoint`)
+      }
     }
     if (this.expectedBindingId !== undefined) {
       if (
@@ -98,17 +119,27 @@ export class LevelSubAccountPoolStore implements SubAccountPoolStore {
       ) {
         throw new Error('Sub-account store belongs to a different wallet root')
       }
-      if (storedBindingId === undefined && hasRecords) {
-        throw new Error(
-          'Refusing to adopt an unbound non-empty sub-account store',
-        )
+      if (storedBindingId === undefined && !this.allowUnboundForMigration) {
+        throw new Error('Refusing to open an unbound sub-account store')
       }
     }
+    this.loadedBindingId = storedBindingId
+  }
+
+  bindingId(): string | undefined {
+    return this.loadedBindingId
   }
 
   async Bind(): Promise<void> {
     if (this.expectedBindingId === undefined) return
-    await this.db.put(WALLET_BINDING_KEY, this.expectedBindingId)
+    await (this.db as any).batch([
+      { type: 'put', key: WALLET_BINDING_KEY, value: this.expectedBindingId },
+      {
+        type: 'put',
+        key: NEXT_INDEX_KEY,
+        value: JSON.stringify(this.nextIndex),
+      },
+    ])
   }
 
   getByIndex(index: number): SubAccountRecord | undefined {
@@ -116,9 +147,14 @@ export class LevelSubAccountPoolStore implements SubAccountPoolStore {
   }
 
   put(record: SubAccountRecord): void {
+    if (this.checkpoints.has(record.index)) {
+      throw new Error(
+        `Cannot recreate compacted sub-account index ${record.index}`
+      )
+    }
     this.cache.set(record.index, { ...record })
     this.pendingWrites.push(
-      this.db.put(String(record.index), JSON.stringify(record)),
+      this.db.put(String(record.index), JSON.stringify(record))
     )
     if (record.index + 1 > this.nextIndex) this.setNextIndex(record.index + 1)
   }
@@ -135,7 +171,7 @@ export class LevelSubAccountPoolStore implements SubAccountPoolStore {
     assertSubAccountIndex(index, 'Next sub-account index')
     if (index < this.nextIndex) {
       throw new Error(
-        'Sub-account allocation high-water mark cannot move backward',
+        'Sub-account allocation high-water mark cannot move backward'
       )
     }
     this.nextIndex = index
@@ -153,7 +189,7 @@ export class LevelSubAccountPoolStore implements SubAccountPoolStore {
           value: JSON.stringify(checkpoint),
         },
         { type: 'del', key: String(checkpoint.index) },
-      ]),
+      ])
     )
   }
 

@@ -12,6 +12,7 @@ it('persists an exact outgoing attempt across restart until deletion', async () 
     payloadHashHex: 'ab'.repeat(32),
     messageBytes: [1, 2, 3],
     leaseIndices: [4, 7],
+    recipientPublicKeyHex: `02${'11'.repeat(32)}`,
   }
   try {
     const first = new LevelStampAttemptJournal(dir)

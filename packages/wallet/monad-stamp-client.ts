@@ -129,7 +129,12 @@ import {
   MonadTxSubmitter,
   SignedMonadTx,
 } from './monad-account-tx'
-import { MonadWalletHandle } from './monad-wallet-handle'
+import {
+  type MonadStampWalletHandle,
+  type MonadWalletHandle,
+  isMonadStampWalletHandle,
+  unsafeCreateMonadStampWalletHandleForTests,
+} from './monad-wallet-handle'
 import type { StampAttemptJournal } from './storage/stamp-attempt-journal'
 import { selectStampAccounts } from './monad-stamp-account-selection'
 import {
@@ -196,18 +201,18 @@ export interface StoredMonadMessageProto {
 /** Encode a {@link MonadStampedMessageProto} to protobuf wire-format bytes, via the generated
  * `MonadStampedMessage` class. */
 export function encodeMonadStampedMessage(
-  msg: MonadStampedMessageProto,
+  msg: MonadStampedMessageProto
 ): Uint8Array {
   const pb = new MonadStampedMessage()
   pb.setEncryptedPayload(msg.encryptedPayload)
   pb.setPayloadHash(msg.payloadHash)
   pb.setStampPaymentsList(
-    msg.stampPayments.map(payment => {
+    msg.stampPayments.map((payment) => {
       const paymentPb = new MonadStampPayment()
       paymentPb.setChildIndex(payment.childIndex)
       paymentPb.setRawTx(payment.rawTx)
       return paymentPb
-    }),
+    })
   )
   return pb.serializeBinary()
 }
@@ -215,11 +220,11 @@ export function encodeMonadStampedMessage(
 /** Decode protobuf wire-format bytes into a {@link MonadStampedMessageProto}. Round-trips with
  * {@link encodeMonadStampedMessage}. */
 export function decodeMonadStampedMessage(
-  bytes: Uint8Array,
+  bytes: Uint8Array
 ): MonadStampedMessageProto {
   const pb = MonadStampedMessage.deserializeBinary(bytes)
   return {
-    stampPayments: pb.getStampPaymentsList().map(payment => ({
+    stampPayments: pb.getStampPaymentsList().map((payment) => ({
       childIndex: payment.getChildIndex(),
       rawTx: payment.getRawTx_asU8(),
     })),
@@ -231,14 +236,14 @@ export function decodeMonadStampedMessage(
 /** Decode protobuf wire-format bytes into a {@link StoredMonadMessageProto} — what the relay
  * returns from both `PUT /message/monad` and `GET /message/monad/:payload_hash`. */
 export function decodeStoredMonadMessage(
-  bytes: Uint8Array,
+  bytes: Uint8Array
 ): StoredMonadMessageProto {
   const pb = StoredMonadMessage.deserializeBinary(bytes)
   const nested = pb.getMessage()
   return {
     message: nested
       ? {
-          stampPayments: nested.getStampPaymentsList().map(payment => ({
+          stampPayments: nested.getStampPaymentsList().map((payment) => ({
             childIndex: payment.getChildIndex(),
             rawTx: payment.getRawTx_asU8(),
           })),
@@ -287,10 +292,10 @@ export function recoverMonadStampPayments(params: {
   recipientPrivateKey: Uint8Array
 }): RecoveredMonadStampPayment[] {
   const seenChildren = new Set<number>()
-  return params.message.stampPayments.map(payment => {
+  return params.message.stampPayments.map((payment) => {
     if (seenChildren.has(payment.childIndex)) {
       throw new Error(
-        `Duplicate stamp-payment child index ${payment.childIndex}`,
+        `Duplicate stamp-payment child index ${payment.childIndex}`
       )
     }
     seenChildren.add(payment.childIndex)
@@ -304,12 +309,12 @@ export function recoverMonadStampPayments(params: {
       throw new Error(
         `Stamp payment child ${payment.childIndex} pays ${
           tx.to ?? 'no address'
-        }, expected ${child.address}`,
+        }, expected ${child.address}`
       )
     }
     if (tx.hash === null) {
       throw new Error(
-        `Stamp payment child ${payment.childIndex} is not a signed transaction`,
+        `Stamp payment child ${payment.childIndex} is not a signed transaction`
       )
     }
     return {
@@ -345,7 +350,7 @@ export async function sweepRecoveredMonadStampPayment(params: {
     })
   if (signer.address.toLowerCase() !== params.payment.address.toLowerCase()) {
     throw new Error(
-      `Recovered stamp-payment key resolves to ${signer.address}, expected ${params.payment.address}`,
+      `Recovered stamp-payment key resolves to ${signer.address}, expected ${params.payment.address}`
     )
   }
 
@@ -365,7 +370,7 @@ export async function sweepRecoveredMonadStampPayment(params: {
   const signed = await signer.buildAndSignTransfer(
     params.destinationAddress,
     valueWei,
-    params.overrides,
+    params.overrides
   )
   await params.onSigned?.(signed)
   const txHash = await signer.submit(signed)
@@ -394,7 +399,7 @@ export async function sweepRecoveredMonadStampPayment(params: {
  * on-chain commitments are derived from this hash by {@link computeMonadStampPaymentCommitment}.
  * Returns the raw 32-byte hash, not hex. */
 export function computeMonadStampCommitment(
-  encryptedPayload: Uint8Array,
+  encryptedPayload: Uint8Array
 ): Uint8Array {
   return getBytes(sha256(encryptedPayload))
 }
@@ -405,7 +410,7 @@ export function computeMonadStampCommitment(
 export function buildMonadStampCalldata(commitment: Uint8Array): string {
   if (commitment.length !== 32) {
     throw new Error(
-      `Monad stamp commitment must be exactly 32 bytes, got ${commitment.length}`,
+      `Monad stamp commitment must be exactly 32 bytes, got ${commitment.length}`
     )
   }
   return concat([
@@ -434,7 +439,7 @@ export async function quoteMonadStampPaymentGasReserve(params: {
     destination,
     BigInt(1),
     buildMonadStampCalldata(worstCaseCommitment),
-    params.overrides,
+    params.overrides
   )
   const feePerGas = probe.maxFeePerGas ?? probe.gasPrice
   if (feePerGas === undefined) {
@@ -449,11 +454,11 @@ export async function quoteMonadStampPaymentGasReserve(params: {
  * a passive chain observer from grouping every split solely because it repeats the payload hash. */
 export function computeMonadStampPaymentCommitment(
   payloadHash: Uint8Array,
-  childIndex: number,
+  childIndex: number
 ): Uint8Array {
   if (payloadHash.length !== 32) {
     throw new Error(
-      `Monad stamp payload hash must be exactly 32 bytes, got ${payloadHash.length}`,
+      `Monad stamp payload hash must be exactly 32 bytes, got ${payloadHash.length}`
     )
   }
   if (
@@ -462,7 +467,7 @@ export function computeMonadStampPaymentCommitment(
     childIndex > 0xffffffff
   ) {
     throw new Error(
-      `Stamp payment child index must be a uint32, got ${childIndex}`,
+      `Stamp payment child index must be a uint32, got ${childIndex}`
     )
   }
   const indexBytes = Uint8Array.from([
@@ -472,7 +477,7 @@ export function computeMonadStampPaymentCommitment(
     childIndex & 0xff,
   ])
   return getBytes(
-    sha256(concat([PAYMENT_COMMITMENT_DOMAIN, payloadHash, indexBytes])),
+    sha256(concat([PAYMENT_COMMITMENT_DOMAIN, payloadHash, indexBytes]))
   )
 }
 
@@ -534,7 +539,7 @@ export class MonadStampPendingAttemptError extends MonadStampError {
 
   constructor(payloadHashes: string[]) {
     super(
-      `Cannot create another stamp payment while ${payloadHashes.length} prior attempt(s) remain pending`,
+      `Cannot create another stamp payment while ${payloadHashes.length} prior attempt(s) remain pending`
     )
     this.payloadHashes = payloadHashes
   }
@@ -564,7 +569,7 @@ function exactSetRetained(responseData: unknown): boolean | undefined {
           : new Uint8Array(
               responseData.buffer,
               responseData.byteOffset,
-              responseData.byteLength,
+              responseData.byteLength
             )
       parsed = JSON.parse(new TextDecoder().decode(bytes))
     } catch {
@@ -577,7 +582,7 @@ function exactSetRetained(responseData: unknown): boolean | undefined {
 }
 
 function defaultSleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms))
+  return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 /** Options for the `GET /message/monad/:payload_hash` fallback poll used when a `PUT` attempt fails
@@ -639,45 +644,40 @@ export class MonadStampClient {
   private readonly httpClient: MonadTxSubmitter
   private readonly changePool: MonadChangePool | undefined
   private readonly attemptJournal: StampAttemptJournal
-  private readonly walletState: MonadWalletHandle['walletState']
+  private readonly walletState: MonadStampWalletHandle['walletState']
   private activeSubmissions = 0
   /** Base URL of the `cashweb-registry` relay, e.g. `https://relay.example.com` — no trailing
    * slash. `/message/monad` (`PUT`) and `/message/monad/:payload_hash` (`GET`) are appended to it. */
   private readonly relayBaseUrl: string
 
-  constructor(params: MonadWalletHandle) {
-    this.pool = params.pool
-    this.leaseManager = params.leaseManager
+  constructor(params: MonadStampWalletHandle) {
+    if (!isMonadStampWalletHandle(params)) {
+      throw new Error(
+        'MonadStampClient requires a factory-produced complete wallet handle'
+      )
+    }
+    const walletState = params.walletState
+    this.pool = walletState.pool
+    this.leaseManager = walletState.leaseManager
     this.provider = params.provider
     this.httpClient = params.httpClient
-    this.changePool = params.changePool
-    this.walletState = params.walletState
-    if (params.stampAttemptJournal === undefined) {
-      throw new Error(
-        'Monad stamped sends require a crash-safe stamp-attempt journal',
-      )
-    }
-    this.attemptJournal = params.stampAttemptJournal
-    if (
-      this.walletState !== undefined &&
-      (this.walletState.pool !== params.pool ||
-        this.walletState.leaseManager !== params.leaseManager ||
-        this.walletState.changePool !== params.changePool ||
-        this.walletState.stampAttemptJournal !== params.stampAttemptJournal ||
-        this.walletState.stampPaymentJournal !== params.stampPaymentJournal)
-    ) {
-      throw new Error(
-        'Monad wallet components do not belong to one persistence bundle',
-      )
-    }
+    this.changePool = walletState.changePool
+    this.walletState = walletState
+    this.attemptJournal = walletState.stampAttemptJournal
     this.relayBaseUrl = params.relayBaseUrl.replace(/\/+$/, '')
+  }
+
+  static unsafeCreateForTests(params: MonadWalletHandle): MonadStampClient {
+    return new MonadStampClient(
+      unsafeCreateMonadStampWalletHandleForTests(params)
+    )
   }
 
   /** Fetch a previously-stored message by its bare-hex `payload_hash` via
    * `GET /message/monad/:payload_hash`. Returns `undefined` on a `404` (not yet stored/found) — any
    * other non-2xx response, or a network-level failure, propagates as a thrown error. */
   async fetchStoredMessage(
-    payloadHashHex: string,
+    payloadHashHex: string
   ): Promise<StoredMonadMessageProto | undefined> {
     try {
       const response = await axios({
@@ -697,7 +697,7 @@ export class MonadStampClient {
   private async pollForStoredMessage(
     payloadHashHex: string,
     expectedMessage: MonadStampedMessageProto,
-    options?: AbandonPollOptions,
+    options?: AbandonPollOptions
   ): Promise<StoredMonadMessageProto | undefined> {
     const intervalMs = options?.intervalMs ?? 2000
     const maxAttempts = options?.maxAttempts ?? 5
@@ -710,13 +710,13 @@ export class MonadStampClient {
       // "genuinely unknown" -> `'stuck'` outcome is decided by the caller once every attempt in the
       // budget has been spent.
       const stored = await this.fetchStoredMessage(payloadHashHex).catch(
-        () => undefined,
+        () => undefined
       )
       if (
         stored?.message !== undefined &&
         bytesEqual(
           encodeMonadStampedMessage(stored.message),
-          encodeMonadStampedMessage(expectedMessage),
+          encodeMonadStampedMessage(expectedMessage)
         )
       ) {
         return stored
@@ -727,7 +727,7 @@ export class MonadStampClient {
 
   private async putStampedMessage(
     message: MonadStampedMessageProto,
-    encoded = encodeMonadStampedMessage(message),
+    encoded = encodeMonadStampedMessage(message)
   ): Promise<StoredMonadMessageProto> {
     const response = await axios({
       method: 'put',
@@ -754,7 +754,7 @@ export class MonadStampClient {
       // this exact payment set. Treat a missing/different nested message like a lost response so
       // the caller keeps its journal and reservations until the exact read side confirms it.
       throw new Error(
-        'Relay returned success without the exact submitted Monad-stamped message',
+        'Relay returned success without the exact submitted Monad-stamped message'
       )
     }
     return stored
@@ -769,7 +769,7 @@ export class MonadStampClient {
    * fallback `GET` poll.
    */
   async submitStampedMessage(
-    params: StampMonadMessageParams,
+    params: StampMonadMessageParams
   ): Promise<StampMonadMessageResult> {
     await this.reconcilePendingOrThrow()
     this.activeSubmissions++
@@ -781,14 +781,14 @@ export class MonadStampClient {
   }
 
   private async submitStampedMessageAfterPreflight(
-    params: StampMonadMessageParams,
+    params: StampMonadMessageParams
   ): Promise<StampMonadMessageResult> {
     if (params.encryptedPayload.length === 0) {
       throw new Error('encryptedPayload must not be empty')
     }
     if (params.encryptedPayload.length > MAX_MONAD_STAMPED_MESSAGE_BYTES) {
       throw new Error(
-        `encryptedPayload exceeds the ${MAX_MONAD_STAMPED_MESSAGE_BYTES}-byte message limit`,
+        `encryptedPayload exceeds the ${MAX_MONAD_STAMPED_MESSAGE_BYTES}-byte message limit`
       )
     }
     const payloadHash = computeMonadStampCommitment(params.encryptedPayload)
@@ -796,7 +796,7 @@ export class MonadStampClient {
     // worst-case calldata schedule (including EIP-7623) without this client hardcoding gas-table
     // arithmetic that could become stale after another repricing.
     const quoteCalldata = buildMonadStampCalldata(
-      new Uint8Array(STAMP_COMMITMENT_LENGTH).fill(0xff),
+      new Uint8Array(STAMP_COMMITMENT_LENGTH).fill(0xff)
     )
     const payloadHashHex = toBareHex(payloadHash)
     const quoteDestination = deriveMonadStampChildPublic({
@@ -807,7 +807,7 @@ export class MonadStampClient {
 
     let availableRecords = this.pool
       .records()
-      .filter(candidate => candidate.status === 'available')
+      .filter((candidate) => candidate.status === 'available')
     if (availableRecords.length === 0 && params.waitForLease !== undefined) {
       const sleep = params.waitForLease.sleep ?? defaultSleep
       const now = params.waitForLease.now ?? Date.now
@@ -817,12 +817,12 @@ export class MonadStampClient {
         await sleep(pollIntervalMs)
         availableRecords = this.pool
           .records()
-          .filter(candidate => candidate.status === 'available')
+          .filter((candidate) => candidate.status === 'available')
       }
     }
     if (availableRecords.length === 0) {
       throw new NoAvailableSubAccountError(
-        'No available sub-account to quote for a stamp payment',
+        'No available sub-account to quote for a stamp payment'
       )
     }
 
@@ -847,7 +847,7 @@ export class MonadStampClient {
         quoteDestination,
         BigInt(1),
         quoteCalldata,
-        params.overrides,
+        params.overrides
       )
       const feePerGas = probe.maxFeePerGas ?? probe.gasPrice
       if (feePerGas === undefined) {
@@ -883,10 +883,10 @@ export class MonadStampClient {
     })
     if (selected.length > MAX_STAMP_PAYMENTS) {
       throw new Error(
-        `Stamp payment requires ${selected.length} accounts; relay maximum is ${MAX_STAMP_PAYMENTS}`,
+        `Stamp payment requires ${selected.length} accounts; relay maximum is ${MAX_STAMP_PAYMENTS}`
       )
     }
-    const quoteByIndex = new Map(quotes.map(quote => [quote.index, quote]))
+    const quoteByIndex = new Map(quotes.map((quote) => [quote.index, quote]))
     const handles: AccountLeaseHandle[] = []
     const signedTxs: SignedMonadTx[] = []
     try {
@@ -917,9 +917,9 @@ export class MonadStampClient {
           destination.address,
           selection.paymentValueWei,
           buildMonadStampCalldata(
-            computeMonadStampPaymentCommitment(payloadHash, paymentIndex),
+            computeMonadStampPaymentCommitment(payloadHash, paymentIndex)
           ),
-          quote.resolvedOverrides,
+          quote.resolvedOverrides
         )
         const feePerGas = signedTx.maxFeePerGas ?? signedTx.gasPrice
         if (
@@ -927,7 +927,7 @@ export class MonadStampClient {
           signedTx.value + signedTx.gasLimit * feePerGas > quote.balanceWei
         ) {
           throw new Error(
-            `Final stamp payment at funding index ${selection.index} exceeds its quoted account capacity`,
+            `Final stamp payment at funding index ${selection.index} exceeds its quoted account capacity`
           )
         }
         signedTxs.push(signedTx)
@@ -955,14 +955,15 @@ export class MonadStampClient {
       }
       await this.pool.flush()
       throw new Error(
-        `Encoded Monad stamped message is ${encodedMessage.byteLength} bytes; maximum is ${MAX_MONAD_STAMPED_MESSAGE_BYTES}`,
+        `Encoded Monad stamped message is ${encodedMessage.byteLength} bytes; maximum is ${MAX_MONAD_STAMPED_MESSAGE_BYTES}`
       )
     }
     try {
       await this.attemptJournal.put({
         payloadHashHex,
         messageBytes: Array.from(encodedMessage),
-        leaseIndices: handles.map(handle => handle.index),
+        leaseIndices: handles.map((handle) => handle.index),
+        recipientPublicKeyHex: hexlify(params.recipientPublicKey),
       })
     } catch (err) {
       for (const handle of handles) {
@@ -981,7 +982,7 @@ export class MonadStampClient {
     }
     await this.pool.flush()
     const releaseAll = async (
-      outcome: 'confirmed' | 'failed' | 'stuck',
+      outcome: 'confirmed' | 'failed' | 'stuck'
     ): Promise<Array<ChangeSweepOutcome | undefined>> => {
       const sweeps: Array<ChangeSweepOutcome | undefined> = []
       for (const handle of handles) {
@@ -1037,8 +1038,8 @@ export class MonadStampClient {
       const changeSweeps = await releaseAll('confirmed')
       if (
         changeSweeps.some(
-          sweep =>
-            sweep?.swept === false && sweep.reason !== 'below-dust-threshold',
+          (sweep) =>
+            sweep?.swept === false && sweep.reason !== 'below-dust-threshold'
         )
       ) {
         throw new MonadStampPendingAttemptError([payloadHashHex])
@@ -1047,8 +1048,8 @@ export class MonadStampClient {
       return {
         stored,
         payloadHashHex,
-        txHashes: signedTxs.map(signedTx => signedTx.txHash),
-        leaseIndices: handles.map(handle => handle.index),
+        txHashes: signedTxs.map((signedTx) => signedTx.txHash),
+        leaseIndices: handles.map((handle) => handle.index),
         changeSweeps,
       }
     } catch (err) {
@@ -1063,7 +1064,7 @@ export class MonadStampClient {
               err.response.status
             })${detail ? `: ${detail}` : ''}`,
             err.response.status,
-            err.response.data,
+            err.response.data
           )
         }
         // The relay may have accepted a prefix of this exact payment set before returning an
@@ -1079,14 +1080,14 @@ export class MonadStampClient {
       const stored = await this.pollForStoredMessage(
         payloadHashHex,
         message,
-        params.abandonPoll,
+        params.abandonPoll
       )
       if (stored !== undefined) {
         const changeSweeps = await releaseAll('confirmed')
         if (
           changeSweeps.some(
-            sweep =>
-              sweep?.swept === false && sweep.reason !== 'below-dust-threshold',
+            (sweep) =>
+              sweep?.swept === false && sweep.reason !== 'below-dust-threshold'
           )
         ) {
           throw new MonadStampPendingAttemptError([payloadHashHex])
@@ -1095,8 +1096,8 @@ export class MonadStampClient {
         return {
           stored,
           payloadHashHex,
-          txHashes: signedTxs.map(signedTx => signedTx.txHash),
-          leaseIndices: handles.map(handle => handle.index),
+          txHashes: signedTxs.map((signedTx) => signedTx.txHash),
+          leaseIndices: handles.map((handle) => handle.index),
           changeSweeps,
         }
       }
@@ -1104,7 +1105,7 @@ export class MonadStampClient {
       throw new MonadStampAbandonedError(
         'Monad stamp submission abandoned: no response from the relay, and ' +
           `GET /message/monad/${payloadHashHex} never found a stored message`,
-        payloadHashHex,
+        payloadHashHex
       )
     }
   }
@@ -1113,7 +1114,7 @@ export class MonadStampClient {
   async reconcileOrThrow(): Promise<void> {
     if (this.activeSubmissions > 0) {
       throw new MonadStampPendingAttemptError(
-        this.attemptJournal.getAll().map(attempt => attempt.payloadHashHex),
+        this.attemptJournal.getAll().map((attempt) => attempt.payloadHashHex)
       )
     }
     await this.reconcilePendingOrThrow()
@@ -1121,6 +1122,7 @@ export class MonadStampClient {
   }
 
   private async reconcilePendingOrThrow(): Promise<void> {
+    await this.walletState.reconcileRestoreState()
     this.walletState?.assertNoOrphanedLeases()
     if (this.activeSubmissions > 0) return
     if (this.attemptJournal.getAll().length === 0) return
@@ -1130,7 +1132,7 @@ export class MonadStampClient {
     }
     const stillPending = this.attemptJournal
       .getAll()
-      .map(attempt => attempt.payloadHashHex)
+      .map((attempt) => attempt.payloadHashHex)
     if (stillPending.length > 0) {
       throw new MonadStampPendingAttemptError(stillPending)
     }
@@ -1139,6 +1141,8 @@ export class MonadStampClient {
   /** Replay crash-surviving attempts byte-for-byte. Exact-set relay binding makes this safe when
    * only a prefix of the transactions landed before the previous process stopped. */
   async resumePendingAttempts(): Promise<string[]> {
+    await this.walletState?.repairAttemptSpendLifecycles()
+    this.walletState?.assertSemanticallyValid()
     const completed: string[] = []
     for (const attempt of this.attemptJournal.getAll()) {
       // The journal write and pool-status writes live in separate LevelDBs. A hard crash can make
@@ -1152,7 +1156,7 @@ export class MonadStampClient {
       await this.pool.flush()
       try {
         const message = decodeMonadStampedMessage(
-          Uint8Array.from(attempt.messageBytes),
+          Uint8Array.from(attempt.messageBytes)
         )
         for (const [offset, index] of attempt.leaseIndices.entries()) {
           const record = this.pool.getRecord(index)
@@ -1162,7 +1166,7 @@ export class MonadStampClient {
             const transaction = Transaction.from(hexlify(payment.rawTx))
             if (transaction.hash === null) {
               throw new Error(
-                `Journaled stamp payment for sub-account ${index} is unsigned`,
+                `Journaled stamp payment for sub-account ${index} is unsigned`
               )
             }
             this.pool.recordSpendTransaction(index, {

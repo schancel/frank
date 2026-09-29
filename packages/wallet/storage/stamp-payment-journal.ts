@@ -29,7 +29,7 @@ export interface StampPaymentRecoveryRecord {
 export interface StampPaymentJournal {
   get(
     payloadHashHex: string,
-    childIndex: number,
+    childIndex: number
   ): StampPaymentRecoveryRecord | undefined
   put(record: StampPaymentRecoveryRecord): Promise<void>
   getAll(): StampPaymentRecoveryRecord[]
@@ -44,7 +44,7 @@ export class InMemoryStampPaymentJournal implements StampPaymentJournal {
 
   get(
     payloadHashHex: string,
-    childIndex: number,
+    childIndex: number
   ): StampPaymentRecoveryRecord | undefined {
     return this.records.get(key(payloadHashHex, childIndex))
   }
@@ -65,10 +65,17 @@ export class LevelStampPaymentJournal implements StampPaymentJournal {
   private openedDb?: LevelDB
   private readonly records = new Map<string, StampPaymentRecoveryRecord>()
   private readonly expectedBindingId?: string
+  private readonly allowUnboundForMigration: boolean
+  private loadedBindingId?: string
 
-  constructor(location: string, expectedBindingId?: string) {
+  constructor(
+    location: string,
+    expectedBindingId?: string,
+    allowUnboundForMigration = false
+  ) {
     this.dbLocation = join(location, 'stamp-payment-journal')
     this.expectedBindingId = expectedBindingId
+    this.allowUnboundForMigration = allowUnboundForMigration
   }
 
   private get db(): LevelDB {
@@ -78,16 +85,19 @@ export class LevelStampPaymentJournal implements StampPaymentJournal {
 
   async Open(): Promise<void> {
     this.openedDb = level(this.dbLocation)
+    await (this.openedDb as any).open()
     let storedBindingId: string | undefined
-    let hasRecords = false
     for await (const [dbKey, value] of this.db.iterator({}) as any) {
       if (dbKey === WALLET_BINDING_KEY) {
         storedBindingId = value
         continue
       }
-      hasRecords = true
       const record = JSON.parse(value) as StampPaymentRecoveryRecord
-      this.records.set(key(record.payloadHashHex, record.childIndex), record)
+      const expectedKey = key(record.payloadHashHex, record.childIndex)
+      if (dbKey !== expectedKey) {
+        throw new Error('Stamp-payment key does not match its identity')
+      }
+      this.records.set(expectedKey, record)
     }
     if (this.expectedBindingId !== undefined) {
       if (
@@ -95,15 +105,18 @@ export class LevelStampPaymentJournal implements StampPaymentJournal {
         storedBindingId !== this.expectedBindingId
       ) {
         throw new Error(
-          'Stamp-payment journal belongs to a different wallet root',
+          'Stamp-payment journal belongs to a different wallet root'
         )
       }
-      if (storedBindingId === undefined && hasRecords) {
-        throw new Error(
-          'Refusing to adopt an unbound non-empty stamp-payment journal',
-        )
+      if (storedBindingId === undefined && !this.allowUnboundForMigration) {
+        throw new Error('Refusing to open an unbound stamp-payment journal')
       }
     }
+    this.loadedBindingId = storedBindingId
+  }
+
+  bindingId(): string | undefined {
+    return this.loadedBindingId
   }
 
   async Bind(): Promise<void> {
@@ -117,7 +130,7 @@ export class LevelStampPaymentJournal implements StampPaymentJournal {
 
   get(
     payloadHashHex: string,
-    childIndex: number,
+    childIndex: number
   ): StampPaymentRecoveryRecord | undefined {
     return this.records.get(key(payloadHashHex, childIndex))
   }

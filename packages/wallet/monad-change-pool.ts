@@ -108,13 +108,13 @@ const DUST_SAFETY_MULTIPLIER = BigInt(2)
  * default to fall back to, and silently sweeping with an unknown gas cost risks losing the whole
  * leftover balance to fees (or failing outright). */
 export async function estimateDustThresholdWei(
-  provider: Provider,
+  provider: Provider
 ): Promise<bigint> {
   const feeData = await provider.getFeeData()
   const feePerGas = feeData.maxFeePerGas ?? feeData.gasPrice
   if (feePerGas === null || feePerGas === undefined) {
     throw new Error(
-      'Unable to estimate a sweep dust threshold: provider returned neither maxFeePerGas nor gasPrice',
+      'Unable to estimate a sweep dust threshold: provider returned neither maxFeePerGas nor gasPrice'
     )
   }
   return PLAIN_TRANSFER_GAS_LIMIT * feePerGas * DUST_SAFETY_MULTIPLIER
@@ -181,6 +181,12 @@ export class MonadChangePool {
     return this.store.getPendingIntent()?.sourceBurnIndex
   }
 
+  /** Full pending intent for network-free persistence validation. Callers must treat the returned
+   * value as read-only; stores return a defensive copy. */
+  pendingIntent(): ChangeSweepIntent | undefined {
+    return this.store.getPendingIntent()
+  }
+
   /** Derives (without persisting or mutating anything) the index/address a sweep would currently
    * land on -- i.e. `deriveChangeAccount(nextUnusedIndex())`. Read-only; safe to call any number
    * of times without side effects. */
@@ -202,7 +208,7 @@ export class MonadChangePool {
   setNextUnusedIndex(index: number, opts: { force?: boolean } = {}): void {
     if (!Number.isInteger(index) || index < 0) {
       throw new Error(
-        `Next change index must be a non-negative integer, got ${index}`,
+        `Next change index must be a non-negative integer, got ${index}`
       )
     }
     const current = this.store.getNextIndex()
@@ -212,7 +218,7 @@ export class MonadChangePool {
         `Refusing to rewind next-change-index pointer from ${current} to ${index} while ` +
           `${existingRecords.length} change record(s) already exist locally -- this would risk ` +
           're-deriving/reusing an already-swept-to index. Pass { force: true } if you are certain ' +
-          "this store's records are stale/wrong.",
+          "this store's records are stale/wrong."
       )
     }
     this.store.setNextIndex(index)
@@ -257,7 +263,7 @@ export class MonadChangePool {
       const staleIntent = this.store.getPendingIntent()
       if (staleIntent?.sourceBurnIndex === params.burnIndex) {
         this.store.setNextIndex(
-          Math.max(this.store.getNextIndex(), priorRecord.index + 1),
+          Math.max(this.store.getNextIndex(), priorRecord.index + 1)
         )
         this.store.clearPendingIntent()
         await this.store.flush()
@@ -273,7 +279,7 @@ export class MonadChangePool {
     if (pending !== undefined) {
       if (pending.sourceBurnIndex !== params.burnIndex) {
         throw new Error(
-          `Change sweep for burn account ${pending.sourceBurnIndex} must be reconciled before allocating another destination`,
+          `Change sweep for burn account ${pending.sourceBurnIndex} must be reconciled before allocating another destination`
         )
       }
       const status = await params.burnAccountSigner.getStatus(pending.txHash)
@@ -318,7 +324,7 @@ export class MonadChangePool {
     const signedTx = await params.burnAccountSigner.buildAndSignTransfer(
       address,
       sweptValueWei,
-      params.overrides,
+      params.overrides
     )
     const intent: ChangeSweepIntent = {
       index,
@@ -348,7 +354,7 @@ export class MonadChangePool {
   }
 
   private async finalizeIntent(
-    intent: ChangeSweepIntent,
+    intent: ChangeSweepIntent
   ): Promise<ChangeSweepOutcome> {
     const record: ChangeAccountRecord = {
       index: intent.index,
@@ -391,7 +397,7 @@ interface SweepAfterReleaseParams {
  * never undo or mask the lease release that already succeeded by the time this runs. */
 async function sweepIfSpent(
   record: SubAccountRecord,
-  params: SweepAfterReleaseParams,
+  params: SweepAfterReleaseParams
 ): Promise<ChangeSweepOutcome | undefined> {
   if (record.status !== 'spent') return undefined
   try {
@@ -461,7 +467,7 @@ export async function awaitLeaseSettlementAndSweepChange(
   params: AwaitLeaseSettlementParams & {
     /** Omit entirely to just await settlement with no sweep attempt at all. */
     sweep?: SweepAfterReleaseParams
-  },
+  }
 ): Promise<AwaitLeaseSettlementAndSweepResult> {
   const settlement = await awaitLeaseSettlement(params)
   if (params.sweep === undefined) {

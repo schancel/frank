@@ -284,6 +284,9 @@ export function deserializeMessageItems(plaintext: string): MessageItem[] {
       throw new Error('Decrypted direct-message item was not an object')
     }
     const candidate = item as Record<string, unknown>
+    if (typeof candidate.type !== 'string') {
+      throw new Error('Invalid direct-message item type')
+    }
     switch (candidate.type) {
       case 'text':
         if (typeof candidate.text !== 'string') {
@@ -307,8 +310,9 @@ export function deserializeMessageItems(plaintext: string): MessageItem[] {
         if (
           typeof candidate.gameId !== 'string' ||
           candidate.gameId.length === 0 ||
+          typeof candidate.action !== 'string' ||
           !['bet', 'deal', 'hit', 'stand', 'reveal'].includes(
-            String(candidate.action)
+            candidate.action
           ) ||
           ['wagerTxHash', 'serverSeedHash', 'serverSeed'].some(
             (field) =>
@@ -331,20 +335,22 @@ export function deserializeMessageItems(plaintext: string): MessageItem[] {
               Number(candidate.dealerUpCard) < 0 ||
               Number(candidate.dealerUpCard) > 51)) ||
           (candidate.outcome !== undefined &&
-            ![
-              'player_win',
-              'dealer_win',
-              'push',
-              'player_blackjack',
-            ].includes(String(candidate.outcome)))
+            (typeof candidate.outcome !== 'string' ||
+              ![
+                'player_win',
+                'dealer_win',
+                'push',
+                'player_blackjack',
+              ].includes(candidate.outcome)))
         ) {
           throw new Error('Invalid blackjack direct-message item')
         }
         break
       case 'digital-goods':
         if (
+          typeof candidate.action !== 'string' ||
           !['catalog', 'request', 'fulfill', 'error'].includes(
-            String(candidate.action)
+            candidate.action
           ) ||
           (candidate.itemId !== undefined &&
             typeof candidate.itemId !== 'string') ||
@@ -364,7 +370,7 @@ export function deserializeMessageItems(plaintext: string): MessageItem[] {
                   typeof (entry as Record<string, unknown>).priceWei !==
                     'string' ||
                   !/^\d+$/.test(
-                    String((entry as Record<string, unknown>).priceWei)
+                    (entry as Record<string, unknown>).priceWei as string
                   )
               )))
         ) {

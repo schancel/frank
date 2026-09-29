@@ -439,6 +439,167 @@ describe('serializeMessageItems / deserializeMessageItems', () => {
       serializeMessageItems([{ type: 'p2pkh', address: '0xabc', amount: 1000 }])
     ).toThrow(/p2pkh/)
   })
+
+  it.each([
+    ['text value', { type: 'text', text: 1 }],
+    ['reply digest', { type: 'reply', payloadDigest: 'not-a-digest' }],
+    ['image value', { type: 'image', image: {} }],
+    ['numeric type', { type: 1 }],
+    ['boolean type', { type: true }],
+    ['null type', { type: null }],
+    ['blackjack game', { type: 'blackjack-move', gameId: 1, action: 'bet' }],
+    [
+      'blackjack action array',
+      { type: 'blackjack-move', gameId: 'g', action: ['bet'] },
+    ],
+    [
+      'blackjack action boolean',
+      { type: 'blackjack-move', gameId: 'g', action: true },
+    ],
+    [
+      'blackjack action null',
+      { type: 'blackjack-move', gameId: 'g', action: null },
+    ],
+    [
+      'blackjack optional string',
+      {
+        type: 'blackjack-move',
+        gameId: 'g',
+        action: 'bet',
+        wagerTxHash: 1,
+      },
+    ],
+    [
+      'blackjack cards',
+      {
+        type: 'blackjack-move',
+        gameId: 'g',
+        action: 'deal',
+        playerCards: [52],
+      },
+    ],
+    [
+      'blackjack up card',
+      {
+        type: 'blackjack-move',
+        gameId: 'g',
+        action: 'deal',
+        dealerUpCard: '1',
+      },
+    ],
+    [
+      'blackjack outcome array',
+      {
+        type: 'blackjack-move',
+        gameId: 'g',
+        action: 'reveal',
+        outcome: ['push'],
+      },
+    ],
+    [
+      'blackjack outcome number',
+      {
+        type: 'blackjack-move',
+        gameId: 'g',
+        action: 'reveal',
+        outcome: 1,
+      },
+    ],
+    [
+      'blackjack outcome boolean',
+      {
+        type: 'blackjack-move',
+        gameId: 'g',
+        action: 'reveal',
+        outcome: true,
+      },
+    ],
+    [
+      'blackjack outcome null',
+      {
+        type: 'blackjack-move',
+        gameId: 'g',
+        action: 'reveal',
+        outcome: null,
+      },
+    ],
+    [
+      'digital action array',
+      { type: 'digital-goods', action: ['request'], itemId: 'one' },
+    ],
+    [
+      'digital action number',
+      { type: 'digital-goods', action: 1, itemId: 'one' },
+    ],
+    [
+      'digital action boolean',
+      { type: 'digital-goods', action: true, itemId: 'one' },
+    ],
+    [
+      'digital action null',
+      { type: 'digital-goods', action: null, itemId: 'one' },
+    ],
+    [
+      'digital optional value',
+      { type: 'digital-goods', action: 'request', itemId: 1 },
+    ],
+    [
+      'digital catalog',
+      {
+        type: 'digital-goods',
+        action: 'catalog',
+        catalog: [{ itemId: 'one', description: 'one', priceWei: -1 }],
+      },
+    ],
+  ])('rejects malformed supported %s items', (_description, item) => {
+    expect(() => deserializeMessageItems(JSON.stringify([item]))).toThrow(
+      /direct-message/i
+    )
+  })
+
+  it.each([
+    ['type', { type: 'text' }, 'text'],
+    [
+      'blackjack action',
+      { type: 'blackjack-move', gameId: 'g', action: 'bet' },
+      'bet',
+    ],
+    [
+      'blackjack outcome',
+      {
+        type: 'blackjack-move',
+        gameId: 'g',
+        action: 'reveal',
+        outcome: 'push',
+      },
+      'push',
+    ],
+    [
+      'digital action',
+      { type: 'digital-goods', action: 'request', itemId: 'one' },
+      'request',
+    ],
+  ])('rejects a coercive object in the %s field', (_label, item, allowed) => {
+    const field =
+      _label === 'type'
+        ? 'type'
+        : _label === 'blackjack outcome'
+        ? 'outcome'
+        : 'action'
+    const coercive = {
+      toString: () => allowed,
+      valueOf: () => allowed,
+    }
+    const parsed = [{ ...item, [field]: coercive }]
+    const parse = jest.spyOn(JSON, 'parse').mockReturnValueOnce(parsed)
+    try {
+      expect(() => deserializeMessageItems('coercive')).toThrow(
+        /direct-message/i
+      )
+    } finally {
+      parse.mockRestore()
+    }
+  })
 })
 
 describe('createMonadChain: directMessages.send', () => {
@@ -923,6 +1084,10 @@ describe('createMonadChain: directMessages.fetchSince', () => {
     }
 
     try {
+      const validProfile = {
+        address: alice.address,
+        pubKey: new Uint8Array(alice.compressedPubKey),
+      }
       const cases = [
         {
           record: await paidRecord(
@@ -947,20 +1112,64 @@ describe('createMonadChain: directMessages.fetchSince', () => {
             12,
             true
           ),
-          profile: {
-            address: alice.address,
-            pubKey: new Uint8Array(alice.compressedPubKey),
-          },
+          profile: validProfile,
         },
         {
           record: await paidRecord(
             JSON.stringify([{ type: 'not-supported', value: 'poison' }]),
             13
           ),
-          profile: {
-            address: alice.address,
-            pubKey: new Uint8Array(alice.compressedPubKey),
-          },
+          profile: validProfile,
+        },
+        {
+          record: await paidRecord(
+            JSON.stringify([
+              { type: 'blackjack-move', gameId: 'array', action: ['bet'] },
+            ]),
+            14
+          ),
+          profile: validProfile,
+        },
+        {
+          record: await paidRecord(
+            JSON.stringify([
+              { type: 'blackjack-move', gameId: 'number', action: 1 },
+            ]),
+            15
+          ),
+          profile: validProfile,
+        },
+        {
+          record: await paidRecord(
+            JSON.stringify([
+              { type: 'blackjack-move', gameId: 'object', action: {} },
+            ]),
+            16
+          ),
+          profile: validProfile,
+        },
+        {
+          record: await paidRecord(
+            JSON.stringify([
+              {
+                type: 'blackjack-move',
+                gameId: 'outcome',
+                action: 'reveal',
+                outcome: ['push'],
+              },
+            ]),
+            17
+          ),
+          profile: validProfile,
+        },
+        {
+          record: await paidRecord(
+            JSON.stringify([
+              { type: 'digital-goods', action: ['request'], itemId: 'one' },
+            ]),
+            18
+          ),
+          profile: validProfile,
         },
       ]
       for (const candidate of cases) {
@@ -974,13 +1183,10 @@ describe('createMonadChain: directMessages.fetchSince', () => {
 
       const valid = await paidRecord(
         serializeMessageItems([{ type: 'text', text: 'valid' }]),
-        14
+        19
       )
       mockedFetchMonadMessagesSince.mockResolvedValueOnce([valid])
-      mockedFetchMonadProfile.mockResolvedValueOnce({
-        address: alice.address,
-        pubKey: new Uint8Array(alice.compressedPubKey),
-      })
+      mockedFetchMonadProfile.mockResolvedValueOnce(validProfile)
       await expect(
         chain.directMessages.fetchSince({ wallet, sinceMs: 0 })
       ).resolves.toHaveLength(1)
@@ -1785,18 +1991,18 @@ describe('createMonadChain: economic operation lifecycle', () => {
               voteWeightWei: 1n,
             })
       await expect(newOperation).rejects.toThrow(/closing or closed/i)
-      await expect(
-        openMonadWalletBundle({ location, seed })
-      ).rejects.toThrow(/already open/i)
+      await expect(openMonadWalletBundle({ location, seed })).rejects.toThrow(
+        /already open/i
+      )
       expect(closed).toBe(false)
 
       resume()
       await operation
       await closing
       expect(closed).toBe(true)
-      expect(kind === 'post' ? submitTopicPost : castVote).toHaveBeenCalledTimes(
-        1
-      )
+      expect(
+        kind === 'post' ? submitTopicPost : castVote
+      ).toHaveBeenCalledTimes(1)
 
       const successor = await openMonadWalletBundle({ location, seed })
       expect(successor.pool.getRecord(0)?.status).toBe('retired')

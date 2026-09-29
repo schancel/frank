@@ -51,6 +51,7 @@ import {
   nodeWalletCreationRecoveryExists,
   nodeWalletRootIsPrivateEmpty,
   type NodeWalletCreationClaim,
+  type NodeWalletCreationPhase,
   prepareSecureWalletRootWithProvenance,
   publishNodeWalletRootWithIntent,
   readPrivateNodeCreationFile,
@@ -163,15 +164,7 @@ type OpenMonadWalletBundleTestHooks = {
   onMigrationBind?: (component: MigrationPhase) => void | Promise<void>
   /** Node first-use crash seam. The final root is absent before `root-published`. */
   onNodeCreationPublishPhase?: (
-    phase:
-      | 'staged'
-      | 'temp-written'
-      | 'temp-synced'
-      | 'intent-published'
-      | 'before-root-publish'
-      | 'root-published'
-      | 'intent-linked'
-      | 'before-claim-cleanup'
+    phase: NodeWalletCreationPhase
   ) => void | Promise<void>
 }
 
@@ -1721,6 +1714,25 @@ export async function openMonadWalletBundle(
 
     const finalized =
       manifestValue === undefined ? undefined : parseManifest(manifestValue)
+    if (
+      !isBrowserWalletStorage() &&
+      creationIntent !== undefined &&
+      nodeCreationClaim === undefined &&
+      finalized === undefined
+    ) {
+      throw new Error(
+        'Node wallet creation intent has neither a durable inode-bound claim nor a finalized wallet manifest'
+      )
+    }
+    if (
+      nodeCreationClaim?.missingIntent === true &&
+      (finalized === undefined ||
+        finalized.bindingId !== nodeCreationClaim.rootIdentity.bindingId)
+    ) {
+      throw new Error(
+        'Legacy wallet creation cleanup claim does not match a finalized wallet manifest'
+      )
+    }
     if (finalized?.version === 1) {
       throw new Error(
         'Monad wallet manifest v1 cannot be opened safely; restore a current state backup, rescan into a new root, or create a new seed'
@@ -1740,6 +1752,15 @@ export async function openMonadWalletBundle(
     const explicitCallerSeedCreation =
       params.seed !== undefined && params.mode === 'create'
     const generatedSeedCreation = params.createSeedIfEmpty === true
+    if (
+      nodeCreationClaim?.missingIntent === true &&
+      ((storedSeedValue !== undefined && !generatedSeedCreation) ||
+        (storedSeedValue === undefined && !explicitCallerSeedCreation))
+    ) {
+      throw new Error(
+        'Legacy wallet creation cleanup claim requires the exact original creation mode'
+      )
+    }
     let seed: PersistedSeed
     if (params.seed !== undefined) {
       seed = {
@@ -2193,15 +2214,15 @@ export async function openMonadWalletBundle(
       await (manifestDb as any).batch(writes)
       await params.onMigrationPhase?.('manifest')
     }
-    if (creationIntent !== undefined) {
-      assertLeaseHeld()
-      await clearWalletCreationIntent(location)
-      creationIntent = undefined
-    }
     if (nodeCreationClaim !== undefined) {
       assertLeaseHeld()
       await nodeCreationClaim.finalize()
       nodeCreationClaim = undefined
+      creationIntent = undefined
+    } else if (creationIntent !== undefined) {
+      assertLeaseHeld()
+      await clearWalletCreationIntent(location)
+      creationIntent = undefined
     }
 
     let repairedChangeRecovery = false

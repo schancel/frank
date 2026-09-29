@@ -38,6 +38,7 @@ import { LevelStampPaymentJournal } from './stamp-payment-journal'
 import {
   acquireNodeWalletRootLease,
   nodeAdvisoryLockCommand,
+  type NodeWalletCreationPhase,
 } from './wallet-root-guard'
 import {
   MonadWalletOrphanedAccountError,
@@ -103,12 +104,29 @@ function creationStages(location: string): string[] {
     .map((entry) => join(parent, entry))
 }
 
+function creationCleanupArtifacts(location: string): string[] {
+  const parent = dirname(location)
+  const prefix = `.${basename(location)}.frank-wallet-cleanup.`
+  return readdirSync(parent)
+    .filter((entry) => entry.startsWith(prefix))
+    .map((entry) => join(parent, entry))
+}
+
 function creationLock(location: string): string {
   return join(
     dirname(location),
     `.${basename(location)}.frank-wallet-creation.lock`
   )
 }
+
+const creationCleanupCrashPhases = [
+  'before-claim-retirement',
+  'claim-retired',
+  'tombstone-intent-unlinked',
+  'tombstone-identity-unlinked',
+  'tombstone-removed',
+  'root-intent-unlinked',
+] as const
 
 async function createSignedLegacyAttempt(location: string): Promise<{
   recipientPublicKeyHex: string
@@ -337,6 +355,9 @@ describe('Monad wallet persistence bundle', () => {
     rmSync(root, { recursive: true, force: true })
     for (const stage of creationStages(root)) {
       rmSync(stage, { recursive: true, force: true })
+    }
+    for (const cleanup of creationCleanupArtifacts(root)) {
+      rmSync(cleanup, { recursive: true, force: true })
     }
     rmSync(creationLock(root), { force: true })
   })
@@ -627,7 +648,303 @@ describe('Monad wallet persistence bundle', () => {
     }
   })
 
-  it('resumes after the finalized wallet reaches the creation-claim cleanup boundary', async () => {
+  it.each(
+    (['caller', 'generated'] as const).flatMap((kind) =>
+      creationCleanupCrashPhases.map((phase) => [kind, phase] as const)
+    )
+  )(
+    'resumes exact %s creation after %s cleanup crash',
+    async (kind, crashPhase) => {
+      rmSync(root, { recursive: true, force: true })
+      const crash = (phase: NodeWalletCreationPhase) => {
+        if (phase === crashPhase) throw new Error(`cleanup:${crashPhase}`)
+      }
+      await expect(
+        kind === 'caller'
+          ? openMonadWalletBundle({
+              location: root,
+              seed: { mnemonic: FIRST_MNEMONIC },
+              mode: 'create',
+              onNodeCreationPublishPhase: crash,
+            })
+          : openMonadWalletBundle({
+              location: root,
+              createSeedIfEmpty: true,
+              onNodeCreationPublishPhase: crash,
+            })
+      ).rejects.toThrow(`cleanup:${crashPhase}`)
+      expect(existsSync(root)).toBe(true)
+      const hasRetainedClaim =
+        crashPhase === 'before-claim-retirement' ||
+        crashPhase === 'claim-retired' ||
+        crashPhase === 'tombstone-intent-unlinked' ||
+        crashPhase === 'tombstone-identity-unlinked'
+      expect(
+        creationStages(root).length + creationCleanupArtifacts(root).length
+      ).toBe(hasRetainedClaim ? 1 : 0)
+      const rootIntent = join(root, '.frank-wallet-creation.json')
+      expect(existsSync(rootIntent)).toBe(crashPhase !== 'root-intent-unlinked')
+      const [retainedClaim] = [
+        ...creationStages(root),
+        ...creationCleanupArtifacts(root),
+      ]
+      const expectedClaimEntries =
+        crashPhase === 'before-claim-retirement' ||
+        crashPhase === 'claim-retired'
+          ? ['.frank-wallet-creation.json', '.frank-wallet-root-identity.json']
+          : crashPhase === 'tombstone-intent-unlinked'
+          ? ['.frank-wallet-root-identity.json']
+          : crashPhase === 'tombstone-identity-unlinked'
+          ? []
+          : undefined
+      if (expectedClaimEntries !== undefined) {
+        expect(readdirSync(retainedClaim).sort()).toEqual(expectedClaimEntries)
+      }
+      if (crashPhase !== 'root-intent-unlinked') {
+        expect(lstatSync(rootIntent).nlink).toBe(
+          crashPhase === 'before-claim-retirement' ||
+            crashPhase === 'claim-retired'
+            ? 2
+            : 1
+        )
+      }
+
+      const resumed =
+        kind === 'caller'
+          ? await openMonadWalletBundle({
+              location: root,
+              seed: { mnemonic: FIRST_MNEMONIC },
+              mode: 'create',
+            })
+          : await openMonadWalletBundle({
+              location: root,
+              createSeedIfEmpty: true,
+            })
+      expect(resumed.pool.nextUnusedIndex()).toBe(0)
+      await resumed.close()
+      expect(creationStages(root)).toEqual([])
+      expect(creationCleanupArtifacts(root)).toEqual([])
+      expect(existsSync(join(root, '.frank-wallet-creation.json'))).toBe(false)
+    }
+  )
+
+  it.each(['caller', 'generated'] as const)(
+    'leaves a retired %s claim untouched for a wrong seed or creation mode',
+    async (kind) => {
+      rmSync(root, { recursive: true, force: true })
+      const crashAtRetirement = (phase: NodeWalletCreationPhase) => {
+        if (phase === 'claim-retired') throw new Error('retired boundary')
+      }
+      await expect(
+        kind === 'caller'
+          ? openMonadWalletBundle({
+              location: root,
+              seed: { mnemonic: FIRST_MNEMONIC },
+              mode: 'create',
+              onNodeCreationPublishPhase: crashAtRetirement,
+            })
+          : openMonadWalletBundle({
+              location: root,
+              createSeedIfEmpty: true,
+              onNodeCreationPublishPhase: crashAtRetirement,
+            })
+      ).rejects.toThrow('retired boundary')
+      const [cleanup] = creationCleanupArtifacts(root)
+      const rootIntentPath = join(root, '.frank-wallet-creation.json')
+      const beforeIntent = readFileSync(rootIntentPath)
+      const beforeEntries = readdirSync(cleanup).sort()
+      const beforeFiles = beforeEntries.map((entry) =>
+        readFileSync(join(cleanup, entry))
+      )
+
+      const incompatible =
+        kind === 'caller'
+          ? [
+              () =>
+                openMonadWalletBundle({
+                  location: root,
+                  seed: { mnemonic: SECOND_MNEMONIC },
+                  mode: 'create',
+                }),
+              () =>
+                openMonadWalletBundle({
+                  location: root,
+                  createSeedIfEmpty: true,
+                }),
+            ]
+          : [
+              () =>
+                openMonadWalletBundle({
+                  location: root,
+                  seed: { mnemonic: FIRST_MNEMONIC },
+                  mode: 'create',
+                }),
+            ]
+      for (const attempt of incompatible) {
+        await expect(attempt()).rejects.toThrow(/seed|intent|generated/i)
+        expect(readFileSync(rootIntentPath)).toEqual(beforeIntent)
+        expect(readdirSync(cleanup).sort()).toEqual(beforeEntries)
+        for (const [index, entry] of beforeEntries.entries()) {
+          expect(readFileSync(join(cleanup, entry))).toEqual(beforeFiles[index])
+        }
+      }
+
+      const resumed =
+        kind === 'caller'
+          ? await openMonadWalletBundle({
+              location: root,
+              seed: { mnemonic: FIRST_MNEMONIC },
+              mode: 'create',
+            })
+          : await openMonadWalletBundle({
+              location: root,
+              createSeedIfEmpty: true,
+            })
+      await resumed.close()
+    }
+  )
+
+  it.each(['caller', 'generated'] as const)(
+    'recovers the identity-only legacy %s cleanup prefix',
+    async (kind) => {
+      rmSync(root, { recursive: true, force: true })
+      const stopBeforeRetirement = (phase: NodeWalletCreationPhase) => {
+        if (phase === 'before-claim-retirement') {
+          throw new Error('retain active claim')
+        }
+      }
+      await expect(
+        kind === 'caller'
+          ? openMonadWalletBundle({
+              location: root,
+              seed: { mnemonic: FIRST_MNEMONIC },
+              mode: 'create',
+              onNodeCreationPublishPhase: stopBeforeRetirement,
+            })
+          : openMonadWalletBundle({
+              location: root,
+              createSeedIfEmpty: true,
+              onNodeCreationPublishPhase: stopBeforeRetirement,
+            })
+      ).rejects.toThrow('retain active claim')
+      const [stage] = creationStages(root)
+      rmSync(join(root, '.frank-wallet-creation.json'))
+      rmSync(join(stage, '.frank-wallet-creation.json'))
+      expect(readdirSync(stage)).toEqual(['.frank-wallet-root-identity.json'])
+
+      let generatedSeed: { mnemonic: string; passphrase: string } | undefined
+      if (kind === 'generated') {
+        const manifest = level(join(root, 'wallet-manifest'), {
+          createIfMissing: false,
+        })
+        generatedSeed = JSON.parse(await manifest.get('seed'))
+        await manifest.close()
+      }
+      await expect(
+        kind === 'caller'
+          ? openMonadWalletBundle({
+              location: root,
+              createSeedIfEmpty: true,
+            })
+          : openMonadWalletBundle({
+              location: root,
+              seed: generatedSeed,
+              mode: 'create',
+            })
+      ).rejects.toThrow(/exact original creation mode/i)
+      expect(readdirSync(stage)).toEqual(['.frank-wallet-root-identity.json'])
+
+      const resumed =
+        kind === 'caller'
+          ? await openMonadWalletBundle({
+              location: root,
+              seed: { mnemonic: FIRST_MNEMONIC },
+              mode: 'create',
+            })
+          : await openMonadWalletBundle({
+              location: root,
+              createSeedIfEmpty: true,
+            })
+      await resumed.close()
+      expect(creationStages(root)).toEqual([])
+      expect(creationCleanupArtifacts(root)).toEqual([])
+    }
+  )
+
+  it.each([
+    'directory symlink',
+    'weak directory permissions',
+    'identity FIFO',
+    'identity symlink',
+    'overlinked identity',
+    'unowned directory',
+  ] as const)(
+    'rejects a retired creation claim with a hostile %s without clearing root intent',
+    async (variant) => {
+      rmSync(root, { recursive: true, force: true })
+      await expect(
+        openMonadWalletBundle({
+          location: root,
+          seed: { mnemonic: FIRST_MNEMONIC },
+          mode: 'create',
+          onNodeCreationPublishPhase: (phase) => {
+            if (phase === 'claim-retired') throw new Error('retained tombstone')
+          },
+        })
+      ).rejects.toThrow('retained tombstone')
+      const [cleanup] = creationCleanupArtifacts(root)
+      const identity = join(cleanup, '.frank-wallet-root-identity.json')
+      const outside = `${root}-hostile-cleanup`
+      let lstatSpy: jest.SpyInstance | undefined
+      rmSync(outside, { recursive: true, force: true })
+      if (variant === 'directory symlink') {
+        renameSync(cleanup, outside)
+        symlinkSync(outside, cleanup)
+      } else if (variant === 'weak directory permissions') {
+        chmodSync(cleanup, 0o755)
+      } else if (variant === 'identity FIFO') {
+        rmSync(identity)
+        expect(spawnSync('mkfifo', [identity]).status).toBe(0)
+        chmodSync(identity, 0o600)
+      } else if (variant === 'identity symlink') {
+        rmSync(identity)
+        symlinkSync(join(root, '.frank-wallet-creation.json'), identity)
+      } else if (variant === 'overlinked identity') {
+        linkSync(identity, outside)
+      } else {
+        const realLstatSync = require('fs').lstatSync
+        lstatSpy = jest
+          .spyOn(require('fs'), 'lstatSync')
+          .mockImplementation((path: string) => {
+            const stat = realLstatSync(path)
+            if (path === cleanup) {
+              Object.defineProperty(stat, 'uid', {
+                value: (process.getuid?.() ?? stat.uid) + 1,
+              })
+            }
+            return stat
+          })
+      }
+
+      try {
+        await expect(
+          openMonadWalletBundle({
+            location: root,
+            seed: { mnemonic: FIRST_MNEMONIC },
+            mode: 'create',
+          })
+        ).rejects.toThrow(
+          /private directory|owner-only regular file|owned by the current user/i
+        )
+        expect(existsSync(join(root, '.frank-wallet-creation.json'))).toBe(true)
+      } finally {
+        lstatSpy?.mockRestore()
+        rmSync(outside, { recursive: true, force: true })
+      }
+    }
+  )
+
+  it('rejects a copied intent in a replacement root while a retired inode claim exists', async () => {
     rmSync(root, { recursive: true, force: true })
     await expect(
       openMonadWalletBundle({
@@ -635,24 +952,70 @@ describe('Monad wallet persistence bundle', () => {
         seed: { mnemonic: FIRST_MNEMONIC },
         mode: 'create',
         onNodeCreationPublishPhase: (phase) => {
-          if (phase === 'before-claim-cleanup') {
-            throw new Error('claim cleanup boundary')
-          }
+          if (phase === 'claim-retired') throw new Error('retired replacement')
         },
       })
-    ).rejects.toThrow('claim cleanup boundary')
-    expect(creationStages(root)).toHaveLength(1)
-    expect(existsSync(join(root, '.frank-wallet-creation.json'))).toBe(false)
-
-    const resumed = await openMonadWalletBundle({
-      location: root,
-      seed: { mnemonic: FIRST_MNEMONIC },
-      mode: 'create',
+    ).rejects.toThrow('retired replacement')
+    const retained = readFileSync(
+      join(root, '.frank-wallet-creation.json'),
+      'utf8'
+    )
+    const displaced = `${root}-retired-original`
+    rmSync(displaced, { recursive: true, force: true })
+    renameSync(root, displaced)
+    mkdirSync(root, { mode: 0o700 })
+    writeFileSync(join(root, '.frank-wallet-creation.json'), retained, {
+      mode: 0o600,
     })
-    expect(resumed.pool.nextUnusedIndex()).toBe(0)
-    await resumed.close()
-    expect(creationStages(root)).toEqual([])
-    expect(existsSync(join(root, '.frank-wallet-creation.json'))).toBe(false)
+    const replacementIdentity = lstatSync(root)
+    try {
+      await expect(
+        openMonadWalletBundle({
+          location: root,
+          seed: { mnemonic: FIRST_MNEMONIC },
+          mode: 'create',
+        })
+      ).rejects.toThrow(/identity does not match cleanup claim/i)
+      expect(lstatSync(root).ino).toBe(replacementIdentity.ino)
+      expect(readdirSync(root)).toEqual(['.frank-wallet-creation.json'])
+      expect(
+        readFileSync(join(root, '.frank-wallet-creation.json'), 'utf8')
+      ).toBe(retained)
+    } finally {
+      rmSync(displaced, { recursive: true, force: true })
+    }
+  })
+
+  it('rejects a root-only intent backed by an unfinalized manifest database', async () => {
+    rmSync(root, { recursive: true, force: true })
+    await expect(
+      openMonadWalletBundle({
+        location: root,
+        seed: { mnemonic: FIRST_MNEMONIC },
+        mode: 'create',
+        onNodeCreationPublishPhase: (phase) => {
+          if (phase === 'intent-linked') throw new Error('retain root intent')
+        },
+      })
+    ).rejects.toThrow('retain root intent')
+    for (const stage of creationStages(root)) {
+      rmSync(stage, { recursive: true, force: true })
+    }
+    const fakeManifest = level(join(root, 'wallet-manifest'))
+    await fakeManifest.open()
+    await fakeManifest.close()
+    const intentPath = join(root, '.frank-wallet-creation.json')
+    const retainedIntent = readFileSync(intentPath)
+
+    await expect(
+      openMonadWalletBundle({
+        location: root,
+        seed: { mnemonic: FIRST_MNEMONIC },
+        mode: 'create',
+      })
+    ).rejects.toThrow(/neither.*claim nor a finalized wallet manifest/i)
+    expect(readFileSync(intentPath)).toEqual(retainedIntent)
+    expect(existsSync(join(root, 'sub-account-pool'))).toBe(false)
   })
 
   it.each([
@@ -746,7 +1109,9 @@ describe('Monad wallet persistence bundle', () => {
         seed: { mnemonic: FIRST_MNEMONIC },
         mode: 'create',
       })
-    ).rejects.toThrow(/missing Node root|not bound to the durable creation claim/i)
+    ).rejects.toThrow(
+      /missing Node root|not bound to the durable creation claim/i
+    )
     expect(readFileSync(sentinel)).toEqual(before)
     expect(readdirSync(root)).toEqual(['competitor-owned'])
   })
@@ -1016,7 +1381,8 @@ describe('Monad wallet persistence bundle', () => {
           location: root,
           createSeedIfEmpty: true,
           onNodeCreationPublishPhase: (phase) => {
-            if (phase === 'intent-published') throw new Error('retain generated')
+            if (phase === 'intent-published')
+              throw new Error('retain generated')
           },
         })
       ).rejects.toThrow('retain generated')
@@ -1752,7 +2118,9 @@ describe('Monad wallet persistence bundle', () => {
     if (!existsSync(ready)) {
       if (child.exitCode === null && child.signalCode === null) {
         child.kill('SIGKILL')
-        await new Promise<void>((resolve) => child.once('exit', () => resolve()))
+        await new Promise<void>((resolve) =>
+          child.once('exit', () => resolve())
+        )
       }
       throw new Error(`SIGKILL lock probe never became ready:\n${childOutput}`)
     }

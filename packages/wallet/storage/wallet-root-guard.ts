@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { dirname, join, normalize, resolve, sep } from 'path'
+import { basename, dirname, join, normalize, resolve, sep } from 'path'
 
 export const WALLET_COMPONENT_NAMES = [
   'wallet-manifest',
@@ -77,6 +77,12 @@ function nodeCreationStagePrefix(canonical: string): string {
   return `.${base}.frank-wallet-create.`
 }
 
+function nodeCreationCleanupPrefix(canonical: string): string {
+  const parent = dirname(canonical)
+  const base = canonical.slice(parent.length + 1)
+  return `.${base}.frank-wallet-cleanup.`
+}
+
 export function nodeWalletCreationRecoveryExists(location: string): boolean {
   if (isBrowserWalletStorage()) return false
   // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -86,7 +92,11 @@ export function nodeWalletCreationRecoveryExists(location: string): boolean {
   try {
     return fs
       .readdirSync(parent)
-      .some((entry) => entry.startsWith(nodeCreationStagePrefix(canonical)))
+      .some(
+        (entry) =>
+          entry.startsWith(nodeCreationStagePrefix(canonical)) ||
+          entry.startsWith(nodeCreationCleanupPrefix(canonical))
+      )
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
     throw error
@@ -144,14 +154,34 @@ export interface NodeWalletCreationIntentSource {
   validateRetained(encodedIntent: string): void
 }
 
+export type NodeWalletCreationPhase =
+  | 'staged'
+  | 'temp-written'
+  | 'temp-synced'
+  | 'intent-published'
+  | 'before-root-publish'
+  | 'root-published'
+  | 'intent-linked'
+  | 'before-claim-cleanup'
+  | 'before-claim-retirement'
+  | 'claim-retired'
+  | 'tombstone-intent-unlinked'
+  | 'tombstone-identity-unlinked'
+  | 'tombstone-removed'
+  | 'root-intent-unlinked'
+
 export interface NodeWalletCreationClaim {
+  /** Empty only when `missingIntent` identifies the exact legacy identity-only prefix. */
   readonly encodedIntent: string
-  readonly rootIdentity: { dev: string; ino: string }
+  readonly rootIdentity: { dev: string; ino: string; bindingId: string }
+  /** True only for the exact R11 identity-only cleanup crash state. The bundle must authenticate
+   * seed and creation mode against its finalized manifest before calling `finalize`. */
+  readonly missingIntent: boolean
   /** Revalidates the published root without mutating it. */
   assertRootIdentity(): void
   /** Removes the sibling claim only after the caller has finalized the wallet under its root
-   * lease. The root creation intent may already have been removed; the retained staged link is
-   * sufficient to resume an interrupted cleanup against the same inode. */
+   * lease. Retirement first atomically moves the complete claim to a validated tombstone; the
+   * root intent remains authoritative until tombstone GC completes. */
   finalize(): Promise<void>
 }
 
@@ -262,7 +292,7 @@ function creationIntentBindingId(encodedIntent: string): string {
 
 function parseNodeCreationRootIdentity(
   encoded: string,
-  bindingId: string
+  bindingId?: string
 ): NodeCreationRootIdentity {
   let parsed: Partial<NodeCreationRootIdentity>
   try {
@@ -277,7 +307,9 @@ function parseNodeCreationRootIdentity(
       (key) => !['version', 'bindingId', 'dev', 'ino'].includes(key)
     ) ||
     parsed.version !== 1 ||
-    parsed.bindingId?.toLowerCase() !== bindingId ||
+    typeof parsed.bindingId !== 'string' ||
+    !/^[0-9a-f]{64}$/i.test(parsed.bindingId) ||
+    (bindingId !== undefined && parsed.bindingId.toLowerCase() !== bindingId) ||
     typeof parsed.dev !== 'string' ||
     !/^\d+$/.test(parsed.dev) ||
     typeof parsed.ino !== 'string' ||
@@ -285,7 +317,186 @@ function parseNodeCreationRootIdentity(
   ) {
     throw new Error('Invalid wallet creation root identity')
   }
-  return parsed as NodeCreationRootIdentity
+  return {
+    ...(parsed as NodeCreationRootIdentity),
+    bindingId: parsed.bindingId.toLowerCase(),
+  }
+}
+
+function nodeCreationCleanupPath(
+  canonical: string,
+  staging: string,
+  identity: NodeCreationRootIdentity,
+  missingIntent: boolean
+): string {
+  const stageSuffix = basename(staging).slice(
+    nodeCreationStagePrefix(canonical).length
+  )
+  if (!/^[A-Za-z0-9_-]+$/.test(stageSuffix)) {
+    throw new Error('Wallet creation staging identity is invalid')
+  }
+  return join(
+    dirname(canonical),
+    `${nodeCreationCleanupPrefix(canonical)}${identity.bindingId}.${
+      identity.dev
+    }.${identity.ino}.${missingIntent ? 'legacy' : 'complete'}.${stageSuffix}`
+  )
+}
+
+function parseNodeCreationCleanupIdentity(
+  canonical: string,
+  path: string
+): { identity: NodeCreationRootIdentity; missingIntent: boolean } {
+  const name = basename(path)
+  const prefix = nodeCreationCleanupPrefix(canonical)
+  if (!name.startsWith(prefix)) {
+    throw new Error('Invalid wallet creation cleanup name')
+  }
+  const match = name
+    .slice(prefix.length)
+    .match(
+      /^([0-9a-f]{64})\.(\d+)\.(\d+)\.(complete|legacy)\.([A-Za-z0-9_-]+)$/i
+    )
+  if (match === null) {
+    throw new Error('Invalid wallet creation cleanup identity')
+  }
+  return {
+    identity: {
+      version: 1,
+      bindingId: match[1].toLowerCase(),
+      dev: match[2],
+      ino: match[3],
+    },
+    missingIntent: match[4].toLowerCase() === 'legacy',
+  }
+}
+
+function inspectNodeCreationCleanup(
+  fs: typeof import('fs'),
+  canonical: string,
+  cleanupPath: string,
+  validateRetainedIntent: (encoded: string) => void,
+  expectedIdentity?: NodeCreationRootIdentity,
+  expectedIntent?: string
+): {
+  identity: NodeCreationRootIdentity
+  encodedIntent: string | undefined
+  missingIntent: boolean
+  entries: string[]
+} {
+  const cleanupStat = fs.lstatSync(cleanupPath)
+  if (
+    cleanupStat.isSymbolicLink() ||
+    !cleanupStat.isDirectory() ||
+    (cleanupStat.mode & 0o777) !== 0o700
+  ) {
+    throw new Error('Wallet creation cleanup path is not a private directory')
+  }
+  assertOwnedByCurrentUser(cleanupStat, 'Wallet creation cleanup path')
+  const parsedName = parseNodeCreationCleanupIdentity(canonical, cleanupPath)
+  const { identity, missingIntent } = parsedName
+  if (
+    expectedIdentity !== undefined &&
+    (identity.bindingId !== expectedIdentity.bindingId ||
+      identity.dev !== expectedIdentity.dev ||
+      identity.ino !== expectedIdentity.ino)
+  ) {
+    throw new Error('Wallet creation cleanup name changed')
+  }
+  const root = fs.lstatSync(canonical)
+  if (
+    root.isSymbolicLink() ||
+    !root.isDirectory() ||
+    (root.mode & 0o777) !== 0o700 ||
+    String(root.dev) !== identity.dev ||
+    String(root.ino) !== identity.ino
+  ) {
+    throw new Error('Wallet root identity does not match cleanup claim')
+  }
+  assertOwnedByCurrentUser(root, 'Wallet root')
+  const entries = fs.readdirSync(cleanupPath).sort()
+  if (
+    entries.some(
+      (entry) =>
+        entry !== NODE_CREATION_INTENT_FILE &&
+        entry !== NODE_CREATION_ROOT_IDENTITY_FILE
+    )
+  ) {
+    throw new Error('Wallet creation cleanup path contains unexpected data')
+  }
+  for (const entry of entries) {
+    assertPrivateCreationFile(
+      fs.lstatSync(join(cleanupPath, entry)),
+      'Wallet creation cleanup file',
+      entry === NODE_CREATION_INTENT_FILE ? [2] : [1]
+    )
+  }
+  const hasIntent = entries.includes(NODE_CREATION_INTENT_FILE)
+  const hasIdentity = entries.includes(NODE_CREATION_ROOT_IDENTITY_FILE)
+  if (
+    (missingIntent && hasIntent) ||
+    (!missingIntent && hasIntent && !hasIdentity)
+  ) {
+    throw new Error('Wallet creation cleanup intent state is invalid')
+  }
+  const rootIntentPath = join(canonical, NODE_CREATION_INTENT_FILE)
+  const encodedIntent = readPrivateNodeCreationFile(
+    rootIntentPath,
+    'Wallet creation intent',
+    false,
+    hasIntent ? [2] : [1]
+  )
+  if (missingIntent) {
+    if (encodedIntent !== undefined) {
+      throw new Error(
+        'Legacy wallet creation cleanup unexpectedly has an intent'
+      )
+    }
+  } else if (encodedIntent === undefined) {
+    throw new Error('Wallet creation cleanup lost its root intent')
+  } else {
+    validateRetainedIntent(encodedIntent)
+    if (
+      creationIntentBindingId(encodedIntent) !== identity.bindingId ||
+      (expectedIntent !== undefined && encodedIntent !== expectedIntent)
+    ) {
+      throw new Error('Wallet creation cleanup binding or intent changed')
+    }
+  }
+  if (hasIntent) {
+    const cleanupIntentPath = join(cleanupPath, NODE_CREATION_INTENT_FILE)
+    const cleanupIntent = readPrivateNodeCreationFile(
+      cleanupIntentPath,
+      'Wallet creation cleanup intent',
+      false,
+      [2]
+    )
+    const rootIntentStat = fs.lstatSync(rootIntentPath)
+    const cleanupIntentStat = fs.lstatSync(cleanupIntentPath)
+    if (
+      cleanupIntent !== encodedIntent ||
+      rootIntentStat.dev !== cleanupIntentStat.dev ||
+      rootIntentStat.ino !== cleanupIntentStat.ino
+    ) {
+      throw new Error('Wallet creation cleanup intent authority is invalid')
+    }
+  }
+  if (hasIdentity) {
+    const retainedIdentity = parseNodeCreationRootIdentity(
+      readPrivateNodeCreationFile(
+        join(cleanupPath, NODE_CREATION_ROOT_IDENTITY_FILE),
+        'Wallet creation cleanup root identity'
+      ) ?? '',
+      identity.bindingId
+    )
+    if (
+      retainedIdentity.dev !== identity.dev ||
+      retainedIdentity.ino !== identity.ino
+    ) {
+      throw new Error('Wallet creation cleanup identity changed')
+    }
+  }
+  return { identity, encodedIntent, missingIntent, entries }
 }
 
 function fsyncDirectory(fs: typeof import('fs'), path: string): void {
@@ -419,17 +630,7 @@ async function acquireNodeCreationLock(
 export async function publishNodeWalletRootWithIntent(
   location: string,
   intentSource: string | NodeWalletCreationIntentSource,
-  onPhase?: (
-    phase:
-      | 'staged'
-      | 'temp-written'
-      | 'temp-synced'
-      | 'intent-published'
-      | 'before-root-publish'
-      | 'root-published'
-      | 'intent-linked'
-      | 'before-claim-cleanup'
-  ) => void | Promise<void>
+  onPhase?: (phase: NodeWalletCreationPhase) => void | Promise<void>
 ): Promise<NodeWalletCreationClaim> {
   if (isBrowserWalletStorage()) {
     throw new Error('Node wallet root publication is unavailable in browsers')
@@ -441,6 +642,7 @@ export async function publishNodeWalletRootWithIntent(
   fs.mkdirSync(parent, { recursive: true, mode: 0o700 })
   const base = canonical.slice(parent.length + 1)
   const stagePrefix = nodeCreationStagePrefix(canonical)
+  const cleanupPrefix = nodeCreationCleanupPrefix(canonical)
   const lockPath = join(parent, `.${base}.frank-wallet-creation.lock`)
   const releaseCreationLock = await acquireNodeCreationLock(lockPath)
   try {
@@ -456,14 +658,48 @@ export async function publishNodeWalletRootWithIntent(
       }
       creationIntentBindingId(retained)
     }
-    const abandonedStages = fs
-      .readdirSync(parent)
+    const siblingEntries = fs.readdirSync(parent)
+    const abandonedStages = siblingEntries
       .filter((entry) => entry.startsWith(stagePrefix))
       .map((entry) => join(parent, entry))
       .sort()
+    const cleanupArtifacts = siblingEntries
+      .filter((entry) => entry.startsWith(cleanupPrefix))
+      .map((entry) => join(parent, entry))
+      .sort()
+    if (cleanupArtifacts.length > 1) {
+      throw new Error('Multiple wallet creation cleanup claims require audit')
+    }
+    if (cleanupArtifacts.length > 0 && abandonedStages.length > 0) {
+      throw new Error('Wallet creation has ambiguous active and cleanup claims')
+    }
     let staging: string | undefined
+    let cleanup: string | undefined
+    let claimRetired = false
+    let missingIntent = false
     let encodedIntent: string | undefined
     let intentAlreadyInRoot = false
+    let claimedRootIdentity: NodeCreationRootIdentity | undefined
+    const existingRoot = lstatIfPresent(fs, canonical)
+
+    if (cleanupArtifacts.length === 1) {
+      cleanup = cleanupArtifacts[0]
+      const inspected = inspectNodeCreationCleanup(
+        fs,
+        canonical,
+        cleanup,
+        validateRetainedIntent
+      )
+      encodedIntent = inspected.encodedIntent
+      missingIntent = inspected.missingIntent
+      claimRetired = true
+      intentAlreadyInRoot = true
+      claimedRootIdentity = inspected.identity
+      // A rename observed after a crash may not have reached stable storage before the crash.
+      // Make the tombstone name durable before allowing finalization to remove its contents.
+      fsyncDirectory(fs, parent)
+    }
+
     for (const candidate of abandonedStages) {
       const candidateStat = fs.lstatSync(candidate)
       if (
@@ -471,7 +707,9 @@ export async function publishNodeWalletRootWithIntent(
         !candidateStat.isDirectory() ||
         (candidateStat.mode & 0o777) !== 0o700
       ) {
-        throw new Error('Wallet creation staging path is not a private directory')
+        throw new Error(
+          'Wallet creation staging path is not a private directory'
+        )
       }
       assertOwnedByCurrentUser(candidateStat, 'Wallet creation staging path')
       const entries = fs.readdirSync(candidate)
@@ -546,6 +784,42 @@ export async function publishNodeWalletRootWithIntent(
         candidateIntentInRoot = true
       }
       if (retainedIntent === undefined) {
+        if (
+          entries.length === 1 &&
+          entries[0] === NODE_CREATION_ROOT_IDENTITY_FILE &&
+          lstatIfPresent(fs, join(canonical, NODE_CREATION_INTENT_FILE)) ===
+            undefined
+        ) {
+          const identity = parseNodeCreationRootIdentity(
+            readPrivateNodeCreationFile(
+              join(candidate, NODE_CREATION_ROOT_IDENTITY_FILE),
+              'Wallet creation root identity'
+            ) ?? ''
+          )
+          if (
+            existingRoot === undefined ||
+            existingRoot.isSymbolicLink() ||
+            !existingRoot.isDirectory() ||
+            (existingRoot.mode & 0o777) !== 0o700 ||
+            String(existingRoot.dev) !== identity.dev ||
+            String(existingRoot.ino) !== identity.ino
+          ) {
+            throw new Error(
+              'Wallet root identity does not match legacy cleanup claim'
+            )
+          }
+          assertOwnedByCurrentUser(existingRoot, 'Wallet root')
+          if (staging !== undefined) {
+            throw new Error(
+              'Multiple abandoned wallet creation intents require audit'
+            )
+          }
+          staging = candidate
+          missingIntent = true
+          intentAlreadyInRoot = true
+          claimedRootIdentity = identity
+          continue
+        }
         if (entries.length === 0) {
           fs.rmdirSync(candidate)
           continue
@@ -561,16 +835,16 @@ export async function publishNodeWalletRootWithIntent(
       }
       validateRetainedIntent(retainedIntent)
       if (staging !== undefined) {
-        throw new Error('Multiple abandoned wallet creation intents require audit')
+        throw new Error(
+          'Multiple abandoned wallet creation intents require audit'
+        )
       }
       staging = candidate
       encodedIntent = retainedIntent
       intentAlreadyInRoot = candidateIntentInRoot
     }
 
-    const existingRoot = lstatIfPresent(fs, canonical)
-    let claimedRootIdentity: NodeCreationRootIdentity | undefined
-    if (existingRoot !== undefined) {
+    if (!claimRetired && existingRoot !== undefined) {
       if (
         existingRoot.isSymbolicLink() ||
         !existingRoot.isDirectory() ||
@@ -579,49 +853,56 @@ export async function publishNodeWalletRootWithIntent(
         throw new Error('First-use wallet creation found an invalid Node root')
       }
       assertOwnedByCurrentUser(existingRoot, 'Wallet root')
-      if (staging === undefined || encodedIntent === undefined) {
-        throw new Error('First-use wallet creation requires a missing Node root')
-      }
-      const bindingId = creationIntentBindingId(encodedIntent)
-      const identityPath = join(staging, NODE_CREATION_ROOT_IDENTITY_FILE)
-      let encodedIdentity = readPrivateNodeCreationFile(
-        identityPath,
-        'Wallet creation root identity'
-      )
-      if (encodedIdentity === undefined) {
-        const temporaryIdentityPath = join(
-          staging,
-          NODE_CREATION_ROOT_IDENTITY_TEMP
-        )
-        const temporaryIdentity = readPrivateNodeCreationFile(
-          temporaryIdentityPath,
-          'Wallet creation root identity temporary',
-          true
-        )
-        if (temporaryIdentity !== undefined) {
-          parseNodeCreationRootIdentity(temporaryIdentity, bindingId)
-          fs.renameSync(temporaryIdentityPath, identityPath)
-          fsyncDirectory(fs, staging)
-          encodedIdentity = temporaryIdentity
-        }
-      }
-      if (encodedIdentity === undefined) {
-        throw new Error(
-          'Existing wallet root is not bound to the durable creation claim'
-        )
-      }
-      const identity = parseNodeCreationRootIdentity(
-        encodedIdentity,
-        bindingId
-      )
       if (
-        identity.dev !== String(existingRoot.dev) ||
-        identity.ino !== String(existingRoot.ino)
+        staging === undefined ||
+        (encodedIntent === undefined && !missingIntent)
       ) {
-        throw new Error('Wallet root identity does not match creation claim')
+        throw new Error(
+          'First-use wallet creation requires a missing Node root'
+        )
       }
-      claimedRootIdentity = identity
-    } else if (staging === undefined) {
+      if (!missingIntent) {
+        const bindingId = creationIntentBindingId(encodedIntent!)
+        const identityPath = join(staging, NODE_CREATION_ROOT_IDENTITY_FILE)
+        let encodedIdentity = readPrivateNodeCreationFile(
+          identityPath,
+          'Wallet creation root identity'
+        )
+        if (encodedIdentity === undefined) {
+          const temporaryIdentityPath = join(
+            staging,
+            NODE_CREATION_ROOT_IDENTITY_TEMP
+          )
+          const temporaryIdentity = readPrivateNodeCreationFile(
+            temporaryIdentityPath,
+            'Wallet creation root identity temporary',
+            true
+          )
+          if (temporaryIdentity !== undefined) {
+            parseNodeCreationRootIdentity(temporaryIdentity, bindingId)
+            fs.renameSync(temporaryIdentityPath, identityPath)
+            fsyncDirectory(fs, staging)
+            encodedIdentity = temporaryIdentity
+          }
+        }
+        if (encodedIdentity === undefined) {
+          throw new Error(
+            'Existing wallet root is not bound to the durable creation claim'
+          )
+        }
+        const identity = parseNodeCreationRootIdentity(
+          encodedIdentity,
+          bindingId
+        )
+        if (
+          identity.dev !== String(existingRoot.dev) ||
+          identity.ino !== String(existingRoot.ino)
+        ) {
+          throw new Error('Wallet root identity does not match creation claim')
+        }
+        claimedRootIdentity = identity
+      }
+    } else if (!claimRetired && staging === undefined) {
       staging = fs.mkdtempSync(join(parent, stagePrefix))
       fs.chmodSync(staging, 0o700)
       encodedIntent =
@@ -648,18 +929,27 @@ export async function publishNodeWalletRootWithIntent(
       fsyncDirectory(fs, staging)
     }
 
-    if (staging === undefined || encodedIntent === undefined) {
+    if (
+      (staging === undefined && cleanup === undefined) ||
+      (encodedIntent === undefined && !missingIntent)
+    ) {
       throw new Error('Wallet creation intent was not established')
     }
 
-    if (existingRoot === undefined) {
+    if (!claimRetired && existingRoot === undefined) {
+      if (staging === undefined) {
+        throw new Error('Wallet creation staging path is unavailable')
+      }
+      const activeStaging = staging
       if (
         lstatIfPresent(
           fs,
-          join(staging, NODE_CREATION_ROOT_IDENTITY_FILE)
+          join(activeStaging, NODE_CREATION_ROOT_IDENTITY_FILE)
         ) !== undefined ||
-        lstatIfPresent(fs, join(staging, NODE_CREATION_ROOT_IDENTITY_TEMP)) !==
-          undefined
+        lstatIfPresent(
+          fs,
+          join(activeStaging, NODE_CREATION_ROOT_IDENTITY_TEMP)
+        ) !== undefined
       ) {
         throw new Error('Wallet root disappeared after creation was bound')
       }
@@ -689,17 +979,17 @@ export async function publishNodeWalletRootWithIntent(
       assertOwnedByCurrentUser(publishedRoot, 'Wallet root')
       const rootIdentity: NodeCreationRootIdentity = {
         version: 1,
-        bindingId: creationIntentBindingId(encodedIntent),
+        bindingId: creationIntentBindingId(encodedIntent!),
         dev: String(publishedRoot.dev),
         ino: String(publishedRoot.ino),
       }
       writePrivateCreationFile(
         fs,
-        join(staging, NODE_CREATION_ROOT_IDENTITY_TEMP),
-        join(staging, NODE_CREATION_ROOT_IDENTITY_FILE),
+        join(activeStaging, NODE_CREATION_ROOT_IDENTITY_TEMP),
+        join(activeStaging, NODE_CREATION_ROOT_IDENTITY_FILE),
         JSON.stringify(rootIdentity)
       )
-      fsyncDirectory(fs, staging)
+      fsyncDirectory(fs, activeStaging)
       fsyncDirectory(fs, parent)
       await onPhase?.('root-published')
       const afterHook = fs.lstatSync(canonical)
@@ -733,59 +1023,177 @@ export async function publishNodeWalletRootWithIntent(
       }
     }
 
-    const stagedIntent = join(staging, NODE_CREATION_INTENT_FILE)
+    const stagedIntent =
+      staging === undefined
+        ? undefined
+        : join(staging, NODE_CREATION_INTENT_FILE)
     const rootIntent = join(canonical, NODE_CREATION_INTENT_FILE)
     if (!intentAlreadyInRoot) {
       // Hard-link publication is atomic and no-replace; an unexpected root file is untouched.
       assertClaimedRootIdentity()
-      fs.linkSync(stagedIntent, rootIntent)
+      fs.linkSync(stagedIntent!, rootIntent)
       fsyncDirectory(fs, canonical)
       await onPhase?.('intent-linked')
       assertClaimedRootIdentity()
-    } else if (lstatIfPresent(fs, stagedIntent) === undefined) {
+    } else if (
+      !claimRetired &&
+      !missingIntent &&
+      lstatIfPresent(fs, stagedIntent!) === undefined
+    ) {
       // Resume the narrow legacy crash window after the old publisher removed the staged link but
       // before it removed the inode claim. Re-establish the retained link before handing off.
       assertClaimedRootIdentity()
-      fs.linkSync(rootIntent, stagedIntent)
-      fsyncDirectory(fs, staging)
+      fs.linkSync(rootIntent, stagedIntent!)
+      fsyncDirectory(fs, staging!)
     }
     return {
-      encodedIntent,
+      encodedIntent: encodedIntent ?? '',
       rootIdentity: {
         dev: claimedRootIdentity.dev,
         ino: claimedRootIdentity.ino,
+        bindingId: claimedRootIdentity.bindingId,
       },
+      missingIntent,
       assertRootIdentity: assertClaimedRootIdentity,
       async finalize(): Promise<void> {
         const releaseCleanupLock = await acquireNodeCreationLock(lockPath)
         try {
-          assertClaimedRootIdentity()
-          const retained = readPrivateNodeCreationFile(
-            stagedIntent,
-            'Wallet creation intent',
-            false,
-            [1, 2]
-          )
-          validateRetainedIntent(retained ?? '')
-          const identity = parseNodeCreationRootIdentity(
-            readPrivateNodeCreationFile(
-              join(staging!, NODE_CREATION_ROOT_IDENTITY_FILE),
-              'Wallet creation root identity'
-            ) ?? '',
-            creationIntentBindingId(encodedIntent!)
-          )
-          if (
-            identity.dev !== claimedRootIdentity?.dev ||
-            identity.ino !== claimedRootIdentity?.ino
-          ) {
-            throw new Error('Wallet creation cleanup claim changed')
+          const expectedIdentity = claimedRootIdentity!
+          const validateActiveClaim = (): void => {
+            assertClaimedRootIdentity()
+            const activeEntries = fs.readdirSync(staging!).sort()
+            if (
+              (missingIntent &&
+                (activeEntries.length !== 1 ||
+                  activeEntries[0] !== NODE_CREATION_ROOT_IDENTITY_FILE)) ||
+              (!missingIntent &&
+                (activeEntries.length !== 2 ||
+                  activeEntries[0] !== NODE_CREATION_INTENT_FILE ||
+                  activeEntries[1] !== NODE_CREATION_ROOT_IDENTITY_FILE))
+            ) {
+              throw new Error('Wallet creation active claim is incomplete')
+            }
+            if (missingIntent) {
+              if (lstatIfPresent(fs, rootIntent) !== undefined) {
+                throw new Error(
+                  'Legacy wallet creation claim unexpectedly has an intent'
+                )
+              }
+            } else {
+              const retained = readPrivateNodeCreationFile(
+                stagedIntent!,
+                'Wallet creation intent',
+                false,
+                [2]
+              )
+              const retainedRoot = readPrivateNodeCreationFile(
+                rootIntent,
+                'Wallet creation root intent',
+                false,
+                [2]
+              )
+              validateRetainedIntent(retained ?? '')
+              const stagedStat = fs.lstatSync(stagedIntent!)
+              const rootStat = fs.lstatSync(rootIntent)
+              if (
+                retained !== encodedIntent ||
+                retainedRoot !== encodedIntent ||
+                stagedStat.dev !== rootStat.dev ||
+                stagedStat.ino !== rootStat.ino
+              ) {
+                throw new Error(
+                  'Wallet creation active intent authority changed'
+                )
+              }
+            }
+            const identity = parseNodeCreationRootIdentity(
+              readPrivateNodeCreationFile(
+                join(staging!, NODE_CREATION_ROOT_IDENTITY_FILE),
+                'Wallet creation root identity'
+              ) ?? '',
+              expectedIdentity.bindingId
+            )
+            if (
+              identity.dev !== expectedIdentity.dev ||
+              identity.ino !== expectedIdentity.ino
+            ) {
+              throw new Error('Wallet creation cleanup claim changed')
+            }
           }
-          await onPhase?.('before-claim-cleanup')
-          assertClaimedRootIdentity()
-          fs.unlinkSync(stagedIntent)
-          fs.unlinkSync(join(staging!, NODE_CREATION_ROOT_IDENTITY_FILE))
-          fs.rmdirSync(staging!)
+          const validateCleanup = (cleanupPath: string): string[] => {
+            assertClaimedRootIdentity()
+            return inspectNodeCreationCleanup(
+              fs,
+              canonical,
+              cleanupPath,
+              validateRetainedIntent,
+              expectedIdentity,
+              encodedIntent
+            ).entries
+          }
+
+          let cleanupPath = cleanup
+          if (!claimRetired) {
+            validateActiveClaim()
+            await onPhase?.('before-claim-cleanup')
+            await onPhase?.('before-claim-retirement')
+            validateActiveClaim()
+            cleanupPath = nodeCreationCleanupPath(
+              canonical,
+              staging!,
+              expectedIdentity,
+              missingIntent
+            )
+            if (lstatIfPresent(fs, cleanupPath) !== undefined) {
+              throw new Error('Wallet creation cleanup destination exists')
+            }
+            fs.renameSync(staging!, cleanupPath)
+            claimRetired = true
+            cleanup = cleanupPath
+            await onPhase?.('claim-retired')
+            assertClaimedRootIdentity()
+            fsyncDirectory(fs, parent)
+          }
+          if (cleanupPath === undefined) {
+            throw new Error('Wallet creation cleanup claim is unavailable')
+          }
+
+          let cleanupEntries = validateCleanup(cleanupPath)
+          if (cleanupEntries.includes(NODE_CREATION_INTENT_FILE)) {
+            fs.unlinkSync(join(cleanupPath, NODE_CREATION_INTENT_FILE))
+            fsyncDirectory(fs, cleanupPath)
+            await onPhase?.('tombstone-intent-unlinked')
+            cleanupEntries = validateCleanup(cleanupPath)
+          }
+          if (cleanupEntries.includes(NODE_CREATION_ROOT_IDENTITY_FILE)) {
+            fs.unlinkSync(join(cleanupPath, NODE_CREATION_ROOT_IDENTITY_FILE))
+            fsyncDirectory(fs, cleanupPath)
+            await onPhase?.('tombstone-identity-unlinked')
+            validateCleanup(cleanupPath)
+          }
+          fs.rmdirSync(cleanupPath)
           fsyncDirectory(fs, parent)
+          cleanup = undefined
+          await onPhase?.('tombstone-removed')
+          assertClaimedRootIdentity()
+          if (!missingIntent) {
+            const retainedRootIntent = readPrivateNodeCreationFile(
+              rootIntent,
+              'Wallet creation intent',
+              false,
+              [1]
+            )
+            validateRetainedIntent(retainedRootIntent ?? '')
+            if (retainedRootIntent !== encodedIntent) {
+              throw new Error(
+                'Wallet creation intent changed before retirement'
+              )
+            }
+            fs.unlinkSync(rootIntent)
+            await onPhase?.('root-intent-unlinked')
+            assertClaimedRootIdentity()
+            fsyncDirectory(fs, canonical)
+          }
         } finally {
           await releaseCleanupLock()
         }

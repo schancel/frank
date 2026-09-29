@@ -107,6 +107,8 @@ pub(crate) struct MailboxRequestBinding {
     pub(crate) max_bytes: usize,
     /// Exact terminal recovery payload being acknowledged, absent on read requests.
     pub(crate) recovery_payload_hash: Option<[u8; 32]>,
+    /// Exact durable obligation generation being acknowledged, absent on read requests.
+    pub(crate) recovery_obligation_id: Option<[u8; 32]>,
 }
 
 impl MailboxRequestBinding {
@@ -138,6 +140,11 @@ impl MailboxRequestBinding {
                 &self
                     .recovery_payload_hash
                     .expect("recovery acknowledgement binding requires a payload hash"),
+            );
+            bytes.extend_from_slice(
+                &self
+                    .recovery_obligation_id
+                    .expect("recovery acknowledgement binding requires an obligation ID"),
             );
         }
     }
@@ -444,6 +451,7 @@ mod tests {
             limit: 10,
             max_bytes: 1024,
             recovery_payload_hash: None,
+            recovery_obligation_id: None,
         }
     }
 

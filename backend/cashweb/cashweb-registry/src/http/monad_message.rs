@@ -238,6 +238,9 @@ pub enum ProcessMonadMessageError {
         /// Whether the exact caller bytes still have a durable owner after terminal GC.
         retained: bool,
     },
+    /// Validation failed before an exact digest-only predecessor owner could be adopted. The
+    /// inner error is preserved while the HTTP response reports that the exact set remains owned.
+    LegacyExactRetained(Box<ProcessMonadMessageError>),
     /// Reusing a child index would send multiple payments to the same one-time destination.
     DuplicateChildIndex(u32),
     /// Child indices must be exactly `0..n-1` in wire order.
@@ -353,6 +356,7 @@ impl fmt::Display for ProcessMonadMessageError {
             ProcessMonadMessageError::OutboxTerminal { terminal, .. } => {
                 write!(f, "the exact stamp-payment set is terminal: {terminal:?}")
             }
+            ProcessMonadMessageError::LegacyExactRetained(err) => err.fmt(f),
             ProcessMonadMessageError::DuplicateChildIndex(index) => {
                 write!(f, "stamp payment child index {index} is duplicated")
             }
@@ -846,9 +850,12 @@ async fn admit_monad_message<T: JsonRpcTransport + Clone>(
         });
     }
 
+    let legacy_owned = matches!(&ownership, MonadMessageOwnership::LegacyExact(_));
+
     let policy = match ownership {
         MonadMessageOwnership::LegacyExact(legacy) => {
-            let routing = routing_from_claimed_envelope(&request.encrypted_payload)?;
+            let routing = routing_from_claimed_envelope(&request.encrypted_payload)
+                .map_err(|err| ProcessMonadMessageError::LegacyExactRetained(Box::new(err)))?;
             MonadOutboxPolicy::new(
                 routing.recipient,
                 legacy.recipient_pubkey,
@@ -858,7 +865,11 @@ async fn admit_monad_message<T: JsonRpcTransport + Clone>(
                     .or(routing.network_tag)
                     .unwrap_or_default(),
             )
-            .map_err(|err| ProcessMonadMessageError::InvalidEnvelope(err.to_string()))?
+            .map_err(|err| {
+                ProcessMonadMessageError::LegacyExactRetained(Box::new(
+                    ProcessMonadMessageError::InvalidEnvelope(err.to_string()),
+                ))
+            })?
         }
         MonadMessageOwnership::Missing => {
             let recipient = validate_envelope(&request.encrypted_payload, network_tag)?.recipient;
@@ -881,7 +892,15 @@ async fn admit_monad_message<T: JsonRpcTransport + Clone>(
         | MonadMessageOwnership::OutboxExact(_) => unreachable!("handled above"),
     };
     let payload_hash: [u8; 32] = request.payload_hash.as_slice().try_into().expect("checked");
-    validate_payment_set(&request, payload_hash, &policy, config.expected_chain_id)?;
+    validate_payment_set(&request, payload_hash, &policy, config.expected_chain_id).map_err(
+        |err| {
+            if legacy_owned {
+                ProcessMonadMessageError::LegacyExactRetained(Box::new(err))
+            } else {
+                err
+            }
+        },
+    )?;
     match registry
         .claim_monad_outbox(&request, &policy, now_ms(), &config.limits)
         .map_err(ProcessMonadMessageError::Infrastructure)?
@@ -1254,7 +1273,8 @@ fn exact_set_retained(err: &ProcessMonadMessageError) -> Option<bool> {
         ProcessMonadMessageError::Rejected(_)
         | ProcessMonadMessageError::RelayTimedOut
         | ProcessMonadMessageError::OutboxPending
-        | ProcessMonadMessageError::OutboxAtCapacityExactLegacy => Some(true),
+        | ProcessMonadMessageError::OutboxAtCapacityExactLegacy
+        | ProcessMonadMessageError::LegacyExactRetained(_) => Some(true),
         ProcessMonadMessageError::RejectedWithoutRetainedSet(_) => Some(false),
         ProcessMonadMessageError::OutboxTerminal { retained, .. } => Some(*retained),
         ProcessMonadMessageError::PaymentSetBusy | ProcessMonadMessageError::RelayBusy => None,
@@ -1476,11 +1496,13 @@ pub(crate) struct MailboxChallengeBody {
     max_bytes: usize,
     network_tag: String,
     recovery_payload_hash: Option<String>,
+    recovery_obligation_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
 pub(crate) struct ConfirmedPrefixBody {
     payload_hash: String,
+    obligation_id: String,
     canonical_message: String,
     confirmed_children: Vec<u32>,
     lifecycle: String,
@@ -1529,6 +1551,7 @@ pub(crate) struct PrivateChallengeQuery {
     limit: Option<usize>,
     max_bytes: Option<usize>,
     recovery_payload_hash: Option<String>,
+    recovery_obligation_id: Option<String>,
 }
 
 #[derive(Debug)]
@@ -1649,6 +1672,7 @@ fn private_binding(
     limit: usize,
     max_bytes: usize,
     recovery_payload_hash: Option<[u8; 32]>,
+    recovery_obligation_id: Option<[u8; 32]>,
 ) -> Result<MailboxRequestBinding, PrivateMailboxError> {
     let runtime = server
         .monad_mailbox
@@ -1673,6 +1697,7 @@ fn private_binding(
         limit,
         max_bytes,
         recovery_payload_hash,
+        recovery_obligation_id,
     })
 }
 
@@ -1789,12 +1814,20 @@ pub(crate) async fn handle_issue_mailbox_challenge(
 ) -> Result<Json<MailboxChallengeBody>, PrivateMailboxError> {
     let recipient = parse_private_recipient(&recipient)?;
     let requested_since = private_since(params.since)?;
-    let (resource, default_limit, since, recovery_payload_hash) = match params.resource.as_str() {
-        "inbox" if params.recovery_payload_hash.is_none() => {
-            (MailboxResource::Inbox, 50, requested_since, None)
+    let (resource, default_limit, since, recovery_payload_hash, recovery_obligation_id) =
+        match params.resource.as_str() {
+        "inbox"
+            if params.recovery_payload_hash.is_none()
+                && params.recovery_obligation_id.is_none() =>
+        {
+            (MailboxResource::Inbox, 50, requested_since, None, None)
         }
-        "recovery" if requested_since == 0 && params.recovery_payload_hash.is_none() => {
-            (MailboxResource::Recovery, 20, 0, None)
+        "recovery"
+            if requested_since == 0
+                && params.recovery_payload_hash.is_none()
+                && params.recovery_obligation_id.is_none() =>
+        {
+            (MailboxResource::Recovery, 20, 0, None, None)
         }
         "recovery_ack"
             if requested_since == 0
@@ -1813,7 +1846,24 @@ pub(crate) async fn handle_issue_mailbox_challenge(
                         .map(|()| decoded)
                 })
                 .ok_or(PrivateMailboxError::InvalidLimit)?;
-            (MailboxResource::RecoveryAck, 1, 0, Some(payload_hash))
+            let obligation_id = params
+                .recovery_obligation_id
+                .as_deref()
+                .and_then(|value| {
+                    let mut decoded = [0; 32];
+                    (value.len() == 64)
+                        .then(|| hex::decode_to_slice(value, &mut decoded).ok())
+                        .flatten()
+                        .map(|()| decoded)
+                })
+                .ok_or(PrivateMailboxError::InvalidLimit)?;
+            (
+                MailboxResource::RecoveryAck,
+                1,
+                0,
+                Some(payload_hash),
+                Some(obligation_id),
+            )
         }
         _ => return Err(PrivateMailboxError::InvalidLimit),
     };
@@ -1836,6 +1886,7 @@ pub(crate) async fn handle_issue_mailbox_challenge(
         limit,
         max_bytes,
         recovery_payload_hash,
+        recovery_obligation_id,
     )?;
     let runtime = server
         .monad_mailbox
@@ -1859,6 +1910,7 @@ pub(crate) async fn handle_issue_mailbox_challenge(
         max_bytes,
         network_tag: hex::encode(runtime.network_tag()),
         recovery_payload_hash: recovery_payload_hash.map(hex::encode),
+        recovery_obligation_id: recovery_obligation_id.map(hex::encode),
     }))
 }
 
@@ -1881,6 +1933,7 @@ pub(crate) async fn handle_get_private_monad_messages(
         params.cursor.as_deref(),
         limit,
         max_bytes,
+        None,
         None,
     )?;
     let authentication = parse_private_authentication(&headers, &server, &binding)?;
@@ -1947,6 +2000,7 @@ pub(crate) async fn handle_get_private_monad_recovery(
         limit,
         max_bytes,
         None,
+        None,
     )?;
     let authentication = parse_private_authentication(&headers, &server, &binding)?;
     let runtime = server
@@ -1988,6 +2042,7 @@ pub(crate) async fn handle_get_private_monad_recovery(
         .into_iter()
         .map(|recovery| ConfirmedPrefixBody {
             payload_hash: hex::encode(recovery.payload_hash),
+            obligation_id: hex::encode(recovery.obligation_id),
             canonical_message: hex::encode(recovery.message.encode_to_vec()),
             confirmed_children: recovery
                 .confirmed_prefix
@@ -2057,12 +2112,13 @@ pub(crate) async fn handle_get_private_monad_recovery(
 
 /// Retire one exact terminal recovery obligation after the recipient has durably imported it.
 pub(crate) async fn handle_ack_private_monad_recovery(
-    Path((recipient, payload_hash)): Path<(String, String)>,
+    Path((recipient, payload_hash, obligation_id)): Path<(String, String, String)>,
     headers: HeaderMap,
     Extension(server): Extension<RegistryServer>,
 ) -> Result<Response, PrivateMailboxError> {
     let recipient = parse_private_recipient(&recipient)?;
     let payload_hash = parse_recovery_payload_hash(&payload_hash)?;
+    let obligation_id = parse_recovery_payload_hash(&obligation_id)?;
     let binding = private_binding(
         &server,
         recipient,
@@ -2072,6 +2128,7 @@ pub(crate) async fn handle_ack_private_monad_recovery(
         1,
         0,
         Some(payload_hash),
+        Some(obligation_id),
     )?;
     let authentication = parse_private_authentication(&headers, &server, &binding)?;
     let runtime = server
@@ -2084,7 +2141,7 @@ pub(crate) async fn handle_ack_private_monad_recovery(
     authenticate_private_recipient(authentication, &server, &binding)?;
     match server
         .registry
-        .acknowledge_monad_outbox_recovery(recipient, &payload_hash)
+        .acknowledge_monad_outbox_recovery(recipient, &payload_hash, &obligation_id)
         .map_err(PrivateMailboxError::Infrastructure)?
     {
         MonadRecoveryAck::Acknowledged | MonadRecoveryAck::Absent => {
@@ -2811,6 +2868,9 @@ mod tests {
         if resource == "recovery_ack" {
             bytes.extend_from_slice(
                 &hex::decode(challenge["recovery_payload_hash"].as_str().unwrap()).unwrap(),
+            );
+            bytes.extend_from_slice(
+                &hex::decode(challenge["recovery_obligation_id"].as_str().unwrap()).unwrap(),
             );
         }
         let network_tag = hex::decode(challenge["network_tag"].as_str().unwrap()).unwrap();
@@ -4640,8 +4700,8 @@ mod tests {
             &registry,
             &config,
             &permits,
-            99_999,
-            b"DIFFERENT",
+            10_000,
+            b"MONT",
             message.clone(),
         )
         .await
@@ -4845,6 +4905,7 @@ mod tests {
             limit: 1,
             max_bytes: 1024,
             recovery_payload_hash: None,
+            recovery_obligation_id: None,
         };
         let mut headers = signed_private_headers(&server, &binding);
         headers.insert(
@@ -4930,6 +4991,7 @@ mod tests {
                 limit: Some(1),
                 max_bytes: Some(1024),
                 recovery_payload_hash: None,
+                recovery_obligation_id: None,
             }),
             Extension(server.clone()),
         )
@@ -4961,6 +5023,7 @@ mod tests {
                 limit: Some(1),
                 max_bytes: Some(1024),
                 recovery_payload_hash: None,
+                recovery_obligation_id: None,
             }),
             Extension(server.clone()),
         )
@@ -5012,6 +5075,7 @@ mod tests {
                 limit: Some(1),
                 max_bytes: Some(1024),
                 recovery_payload_hash: None,
+                recovery_obligation_id: None,
             }),
             Extension(server.clone()),
         )
@@ -5138,6 +5202,16 @@ mod tests {
             limit: None,
             max_bytes: None,
             recovery_payload_hash: Some(hex::encode(payload_hash)),
+            recovery_obligation_id: Some(hex::encode(
+                server
+                    .registry
+                    .confirmed_monad_outbox_prefixes(recipient, 10)
+                    .unwrap()
+                    .into_iter()
+                    .find(|recovery| recovery.payload_hash.as_slice() == payload_hash)
+                    .map(|recovery| recovery.obligation_id)
+                    .unwrap_or([0; 32]),
+            )),
         };
 
         let Json(challenge) = handle_issue_mailbox_challenge(
@@ -5155,7 +5229,11 @@ mod tests {
         );
         assert!(matches!(
             handle_ack_private_monad_recovery(
-                Path((recipient.to_hex(), hex::encode(&active.payload_hash))),
+                Path((
+                    recipient.to_hex(),
+                    hex::encode(&active.payload_hash),
+                    challenge["recovery_obligation_id"].as_str().unwrap().to_string(),
+                )),
                 headers,
                 Extension(server.clone()),
             )
@@ -5185,7 +5263,11 @@ mod tests {
             handle_ack_private_monad_recovery(
                 Path((
                     wrong_recipient.to_hex(),
-                    hex::encode(&terminal.payload_hash)
+                    hex::encode(&terminal.payload_hash),
+                    wrong_challenge["recovery_obligation_id"]
+                        .as_str()
+                        .unwrap()
+                        .to_string(),
                 )),
                 wrong_headers,
                 Extension(server.clone()),
@@ -5213,7 +5295,14 @@ mod tests {
         );
         assert!(matches!(
             handle_ack_private_monad_recovery(
-                Path((recipient.to_hex(), hex::encode(&active.payload_hash))),
+                Path((
+                    recipient.to_hex(),
+                    hex::encode(&active.payload_hash),
+                    active_challenge["recovery_obligation_id"]
+                        .as_str()
+                        .unwrap()
+                        .to_string(),
+                )),
                 active_headers,
                 Extension(server.clone()),
             )
@@ -5235,7 +5324,11 @@ mod tests {
         );
         assert_eq!(
             handle_ack_private_monad_recovery(
-                Path((recipient.to_hex(), hex::encode(&terminal.payload_hash))),
+                Path((
+                    recipient.to_hex(),
+                    hex::encode(&terminal.payload_hash),
+                    challenge["recovery_obligation_id"].as_str().unwrap().to_string(),
+                )),
                 headers,
                 Extension(server.clone()),
             )
@@ -5272,7 +5365,14 @@ mod tests {
         );
         assert_eq!(
             handle_ack_private_monad_recovery(
-                Path((recipient.to_hex(), hex::encode(&terminal.payload_hash))),
+                Path((
+                    recipient.to_hex(),
+                    hex::encode(&terminal.payload_hash),
+                    retry_challenge["recovery_obligation_id"]
+                        .as_str()
+                        .unwrap()
+                        .to_string(),
+                )),
                 retry_headers,
                 Extension(server),
             )
@@ -5304,6 +5404,7 @@ mod tests {
             limit: 10,
             max_bytes: 1024,
             recovery_payload_hash: None,
+            recovery_obligation_id: None,
         };
         let challenge = runtime.issue_challenge(&binding, now_ms());
         let digest = Sha256::digest(mailbox_auth_preimage(challenge, &binding, b"MONT").into());
@@ -5389,6 +5490,7 @@ mod tests {
             limit: 1,
             max_bytes: 1024,
             recovery_payload_hash: None,
+            recovery_obligation_id: None,
         };
         for header in [MAILBOX_EPOCH_HEADER, MAILBOX_SIGNATURE_HEADER] {
             let mut headers = signed_private_headers(&server, &binding);
@@ -5409,6 +5511,7 @@ mod tests {
                 Some(&"aa".repeat(4096)),
                 1,
                 1024,
+                None,
                 None,
             ),
             Err(PrivateMailboxError::Unauthorized)
@@ -5467,6 +5570,7 @@ mod tests {
             limit: 1,
             max_bytes: 64 * 1024,
             recovery_payload_hash: None,
+            recovery_obligation_id: None,
         };
         let mut first_request = axum::http::Request::builder()
             .method("GET")
@@ -5601,6 +5705,7 @@ mod tests {
             limit: 1,
             max_bytes: 64 * 1024,
             recovery_payload_hash: None,
+            recovery_obligation_id: None,
         };
         let headers = signed_private_headers(&server, &binding);
         let error = handle_get_private_monad_recovery(

@@ -642,8 +642,7 @@ impl Registry {
             .replace_recipient_for_test(payload_hash, recipient)
     }
 
-    /// Read one hash-only child state in focused recovery tests.
-    #[cfg(test)]
+    /// Read one exact child state after a conditional transition loses its lease race.
     pub(crate) fn monad_outbox_member(
         &self,
         payload_hash: &[u8],
@@ -785,6 +784,26 @@ impl Registry {
         )
     }
 
+    /// Persist exact transaction-body visibility without a receipt as possible exposure.
+    pub(crate) fn complete_submitted_monad_outbox_member(
+        &self,
+        payload_hash: &[u8],
+        child_index: u32,
+        lease: crate::store::monad_outbox::MonadOutboxLease,
+        detail: &str,
+        now_ms: i64,
+        limits: &crate::store::monad_outbox::MonadOutboxLimits,
+    ) -> Result<crate::store::monad_outbox::MonadOutboxTransition> {
+        self.db.monad_outbox().complete_submitted_member(
+            payload_hash,
+            child_index,
+            lease,
+            detail,
+            now_ms,
+            limits,
+        )
+    }
+
     /// Complete an owned replay generation with a permanent losing outcome.
     pub(crate) fn complete_terminal_monad_outbox_member(
         &self,
@@ -891,10 +910,11 @@ impl Registry {
         &self,
         recipient: Address,
         payload_hash: &[u8],
+        obligation_id: &[u8],
     ) -> Result<crate::store::monad_outbox::MonadRecoveryAck> {
         self.db
             .monad_outbox()
-            .acknowledge_terminal_recovery(&recipient, payload_hash)
+            .acknowledge_terminal_recovery(&recipient, payload_hash, obligation_id)
     }
 
     /// Fully verify and write a Monad-native profile registration (ticket #45) -- the Monad
@@ -1071,8 +1091,8 @@ impl Registry {
         max_bytes: usize,
     ) -> Result<crate::store::monad_messages::RecipientMessagePage> {
         self.db
-            .monad_messages()
-            .list_for_recipient_since_capped(&recipient, since, cursor, limit, max_bytes)
+            .monad_outbox()
+            .validated_inbox_page(&recipient, since, cursor, limit, max_bytes)
     }
 
     /// Store a [`proto::StoredMonadTopicPost`] (ticket #30), once its initial vote's burn has

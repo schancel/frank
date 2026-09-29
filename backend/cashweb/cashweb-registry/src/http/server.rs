@@ -228,7 +228,7 @@ impl RegistryServer {
                     routing::get(handle_get_private_monad_recovery),
                 )
                 .route(
-                    "/message/monad/recovery/:recipient/:payload_hash/ack",
+                    "/message/monad/recovery/:recipient/:payload_hash/:obligation_id/ack",
                     routing::post(handle_ack_private_monad_recovery),
                 )
         } else {

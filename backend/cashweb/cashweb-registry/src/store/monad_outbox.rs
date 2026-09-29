@@ -9,7 +9,9 @@ use std::{fmt::Debug, time::Duration};
 use bitcoinsuite_core::{Hashed, Sha256};
 use bitcoinsuite_error::{ErrorMeta, Result, WrapErr};
 use prost::Message;
+use rand::{rngs::OsRng, RngCore};
 use rocksdb::{ColumnFamilyDescriptor, Direction, IteratorMode};
+use serde::Deserialize;
 use sha3::{Digest, Keccak256};
 use thiserror::Error;
 
@@ -18,15 +20,17 @@ use crate::{
     monad_http::{Address, Hash32},
     proto,
     store::db::{
-        Db, CF, CF_MONAD_MESSAGES, CF_MONAD_MESSAGE_ATTEMPTS, CF_MONAD_OUTBOX_ACTIVE_V1,
-        CF_MONAD_OUTBOX_HISTORY_V2, CF_MONAD_OUTBOX_MEMBERS_V1, CF_MONAD_OUTBOX_META_V2,
-        CF_MONAD_OUTBOX_RECIPIENT_V1, CF_MONAD_OUTBOX_V1,
+        Db, CF, CF_MONAD_MESSAGES, CF_MONAD_MESSAGES_BY_RECIPIENT_TIME,
+        CF_MONAD_MESSAGE_ATTEMPTS, CF_MONAD_OUTBOX_ACTIVE_V1, CF_MONAD_OUTBOX_HISTORY_V2,
+        CF_MONAD_OUTBOX_MEMBERS_V1, CF_MONAD_OUTBOX_META_V2, CF_MONAD_OUTBOX_RECIPIENT_V1,
+        CF_MONAD_OUTBOX_V1,
     },
 };
 
 const RECORD_VERSION_V1: u8 = 1;
 const RECORD_VERSION_V2: u8 = 2;
 const RECORD_VERSION: u8 = 3;
+const MEMBER_RECORD_VERSION: u8 = 4;
 const PAYLOAD_HASH_LEN: usize = 32;
 const MEMBER_KEY_LEN: usize = PAYLOAD_HASH_LEN + 4;
 const RECIPIENT_KEY_LEN: usize = 20 + PAYLOAD_HASH_LEN;
@@ -42,9 +46,16 @@ const MAX_NETWORK_TAG_BYTES_HARD: usize = 64;
 const MAX_RECIPIENT_PUBKEY_BYTES_HARD: usize = 65;
 const RECOVERY_QUOTA_MIGRATION_KEY: &[u8] = b"outbox-recovery-quota-v5";
 const RECOVERY_QUOTA_CURSOR_KEY: &[u8] = b"outbox-recovery-quota-v5-cursor";
+const RECOVERY_QUOTA_CURSOR_STATE_KEY: &[u8] = b"outbox-recovery-quota-v5-cursor-state";
 const RECOVERY_QUOTA_GLOBAL_KEY: &[u8] = b"outbox-recovery-quota-v5-global";
 const RECOVERY_QUOTA_RECIPIENT_PREFIX: &[u8] = b"outbox-recovery-quota-v5-recipient:";
 const RECOVERY_QUOTA_RECORD_PREFIX: &[u8] = b"outbox-recovery-quota-v5-record:";
+const RECOVERY_QUOTA_OWNER_PREFIX: &[u8] = b"outbox-recovery-quota-v5-owner:";
+const RECOVERY_OBLIGATION_ID_PREFIX: &[u8] = b"outbox-recovery-obligation-v1-record:";
+const RECOVERY_OBLIGATION_MIGRATION_KEY: &[u8] = b"outbox-recovery-obligation-v1";
+const RECOVERY_OBLIGATION_CURSOR_KEY: &[u8] = b"outbox-recovery-obligation-v1-cursor";
+const RECOVERY_OBLIGATION_CURSOR_STATE_KEY: &[u8] =
+    b"outbox-recovery-obligation-v1-cursor-state";
 const CHAIN_BINDING_KEY: &[u8] = b"outbox-chain-id-v1";
 const CHAIN_BINDING_PENDING_KEY: &[u8] = b"outbox-chain-id-v1-pending";
 const CHAIN_BINDING_CURSOR_KEY: &[u8] = b"outbox-chain-id-v1-cursor";
@@ -68,6 +79,7 @@ thread_local! {
     static RECONCILIATION_SNAPSHOT_WORK: std::cell::Cell<(usize, usize)> = const { std::cell::Cell::new((0, 0)) };
     static QUOTA_ADMISSION_META_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static QUOTA_ADMISSION_CORPUS_DECODES: std::cell::Cell<(bool, usize)> = const { std::cell::Cell::new((false, 0)) };
+    static OUTBOX_CANONICAL_WRITE_WORK: std::cell::Cell<(usize, usize)> = const { std::cell::Cell::new((0, 0)) };
 }
 
 #[cfg(test)]
@@ -78,6 +90,16 @@ pub(crate) fn reset_reconciliation_snapshot_work_counts() {
 #[cfg(test)]
 pub(crate) fn reconciliation_snapshot_work_counts() -> (usize, usize) {
     RECONCILIATION_SNAPSHOT_WORK.get()
+}
+
+#[cfg(test)]
+fn reset_outbox_canonical_write_work() {
+    OUTBOX_CANONICAL_WRITE_WORK.set((0, 0));
+}
+
+#[cfg(test)]
+fn outbox_canonical_write_work() -> (usize, usize) {
+    OUTBOX_CANONICAL_WRITE_WORK.get()
 }
 
 #[cfg(test)]
@@ -381,6 +403,9 @@ pub struct MonadOutboxMember {
     pub state: MonadOutboxMemberState,
     /// Persisted attempt count.
     pub attempts: u32,
+    /// The exact signed transaction may have reached the chain or a node's submission pool.
+    /// Once true this evidence is monotonic and remains recipient-recoverable until acknowledgement.
+    pub exposed: bool,
     /// Monotonic durable lease generation. Completion must present this exact token.
     pub lease_generation: u64,
     /// Unix millisecond deadline after which another reconciler may acquire a new generation.
@@ -476,6 +501,8 @@ pub enum MonadOutboxTransition {
 pub struct ConfirmedPrefixRecovery {
     /// Payload hash identifying the request.
     pub payload_hash: [u8; 32],
+    /// Durable generation identity used to compare-and-delete an acknowledged obligation.
+    pub obligation_id: [u8; 32],
     /// Exact canonical request reconstructed from the one outbox copy.
     pub message: proto::MonadStampedMessage,
     /// Confirmed members from child zero up to the first non-confirmed child.
@@ -538,7 +565,12 @@ struct RecoveryQuotaUsage {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RecoveryFacts {
     None,
-    ConfirmedPrefix,
+    Obligation,
+}
+
+#[derive(Deserialize)]
+struct StoredEnvelopeRecipient {
+    to: String,
 }
 
 impl RecoveryQuotaUsage {
@@ -701,6 +733,109 @@ impl<'a> DbMonadOutbox<'a> {
         }
     }
 
+    fn append_outbox_put(
+        &self,
+        batch: &mut rocksdb::WriteBatch,
+        payload_hash: &[u8],
+        encoded: &[u8],
+    ) {
+        #[cfg(test)]
+        {
+            let (writes, bytes) = OUTBOX_CANONICAL_WRITE_WORK.get();
+            OUTBOX_CANONICAL_WRITE_WORK.set((
+                writes.saturating_add(1),
+                bytes.saturating_add(encoded.len()),
+            ));
+        }
+        batch.put_cf(self.cf_outbox, payload_hash, encoded);
+    }
+
+    fn migration_complete(
+        &self,
+        marker_key: &[u8],
+        cursor_key: &[u8],
+        cursor_state_key: &[u8],
+        name: &str,
+    ) -> Result<bool> {
+        let Some(marker) = self.db.get(self.cf_meta, marker_key)? else {
+            return Ok(false);
+        };
+        if !marker.is_empty()
+            || self.db.get(self.cf_meta, cursor_key)?.is_some()
+            || self.db.get(self.cf_meta, cursor_state_key)?.is_some()
+        {
+            return Err(CorruptRecord(format!(
+                "{name} completion marker has incoherent migration state"
+            ))
+            .into());
+        }
+        Ok(true)
+    }
+
+    fn validated_outbox_migration_cursor(
+        &self,
+        cursor_key: &[u8],
+        cursor_state_key: &[u8],
+        name: &str,
+    ) -> Result<Option<[u8; 32]>> {
+        let cursor = self.db.get(self.cf_meta, cursor_key)?;
+        let state = self.db.get(self.cf_meta, cursor_state_key)?;
+        let (cursor, state) = match (cursor, state) {
+            (Some(cursor), Some(state)) => (cursor, state),
+            (None, None) => return Ok(None),
+            _ => {
+                return Err(CorruptRecord(format!(
+                    "{name} cursor has no matching resumable state"
+                ))
+                .into());
+            }
+        };
+        let cursor = checked_payload_hash(&cursor).map_err(|_| {
+            CorruptRecord(format!("{name} cursor has invalid fixed-width shape"))
+        })?;
+        if self.db.get(self.cf_outbox, cursor)?.is_none() {
+            return Err(CorruptRecord(format!(
+                "{name} cursor does not reference the next extant outbox row"
+            ))
+            .into());
+        }
+        if state.as_ref() != migration_cursor_state(name, &cursor) {
+            return Err(CorruptRecord(format!(
+                "{name} cursor differs from its atomic resumable state"
+            ))
+            .into());
+        }
+        Ok(Some(cursor))
+    }
+
+    /// Return one migration page and the still-unprocessed lookahead key. Persisting that key as
+    /// the cursor makes progress independently verifiable: it is always an extant source row and
+    /// is processed inclusively after restart.
+    fn outbox_migration_page(
+        &self,
+        cursor: Option<[u8; 32]>,
+    ) -> Result<(Vec<(Vec<u8>, Vec<u8>)>, Option<[u8; 32]>)> {
+        let mode = cursor
+            .as_ref()
+            .map(|key| IteratorMode::From(key, Direction::Forward))
+            .unwrap_or(IteratorMode::Start);
+        let mut rows = Vec::with_capacity(MIGRATION_BATCH_SIZE + 1);
+        for item in self.db.rocksdb().iterator_cf(self.cf_outbox, mode) {
+            let (key, value) = item?;
+            rows.push((key.to_vec(), value.to_vec()));
+            if rows.len() == MIGRATION_BATCH_SIZE + 1 {
+                break;
+            }
+        }
+        let next_cursor = if rows.len() > MIGRATION_BATCH_SIZE {
+            let (key, _) = rows.pop().expect("lookahead row exists");
+            Some(checked_payload_hash(&key)?)
+        } else {
+            None
+        };
+        Ok((rows, next_cursor))
+    }
+
     /// Upgrade legacy delivered ownership/cursors and index bounded legacy terminal history.
     /// Progress is committed with each bounded chunk, so a crash resumes after the last key
     /// without accumulating the whole outbox in memory.
@@ -710,35 +845,24 @@ impl<'a> DbMonadOutbox<'a> {
     ) -> Result<()> {
         const MIGRATION_KEY: &[u8] = b"outbox-lifecycle-v3";
         const CURSOR_KEY: &[u8] = b"outbox-lifecycle-v3-cursor";
-        if self.db.get(self.cf_meta, MIGRATION_KEY)?.is_some() {
+        const CURSOR_STATE_KEY: &[u8] = b"outbox-lifecycle-v3-cursor-state";
+        if self.migration_complete(
+            MIGRATION_KEY,
+            CURSOR_KEY,
+            CURSOR_STATE_KEY,
+            "v3 outbox migration",
+        )? {
             self.migrate_terminal_recovery_classification(limits)?;
             self.gc_history(unix_now_ms(), limits)?;
             return self.migrate_recovery_quota_accounting();
         }
         loop {
-            let cursor = self.db.get(self.cf_meta, CURSOR_KEY)?;
-            let mode = cursor
-                .as_deref()
-                .map(|key| IteratorMode::From(key, Direction::Forward))
-                .unwrap_or(IteratorMode::Start);
-            let mut rows = Vec::with_capacity(MIGRATION_BATCH_SIZE);
-            for item in self.db.rocksdb().iterator_cf(self.cf_outbox, mode) {
-                let (key, value) = item?;
-                if cursor.as_deref() == Some(key.as_ref()) {
-                    continue;
-                }
-                rows.push((key.to_vec(), value.to_vec()));
-                if rows.len() == MIGRATION_BATCH_SIZE {
-                    break;
-                }
-            }
-            if rows.is_empty() {
-                let mut batch = rocksdb::WriteBatch::default();
-                batch.put_cf(self.cf_meta, MIGRATION_KEY, []);
-                batch.delete_cf(self.cf_meta, CURSOR_KEY);
-                self.db.write_batch(batch)?;
-                break;
-            }
+            let cursor = self.validated_outbox_migration_cursor(
+                CURSOR_KEY,
+                CURSOR_STATE_KEY,
+                "v3 outbox migration",
+            )?;
+            let (rows, next_cursor) = self.outbox_migration_page(cursor)?;
 
             let _guard = self.db.lock_monad_outbox();
             let mut batch = rocksdb::WriteBatch::default();
@@ -776,7 +900,7 @@ impl<'a> DbMonadOutbox<'a> {
                     record.policy = None;
                     record.last_error.clear();
                     let encoded = encode_record(&record);
-                    batch.put_cf(self.cf_outbox, payload_hash, &encoded);
+                    self.append_outbox_put(&mut batch, &payload_hash, &encoded);
                     batch.delete_cf(self.cf_active, payload_hash);
                     batch.delete_cf(
                         self.cf_recipient,
@@ -793,24 +917,43 @@ impl<'a> DbMonadOutbox<'a> {
                         history_key(record.updated_at_ms, &payload_hash),
                         (encoded.len() as u64).to_be_bytes(),
                     );
-                } else if matches!(record.lifecycle, MonadOutboxLifecycle::Terminal(_))
-                    && self.recovery_facts_locked(&payload_hash, &record)? == RecoveryFacts::None
-                {
-                    if let Some(policy) = record.policy.as_ref() {
+                } else if matches!(record.lifecycle, MonadOutboxLifecycle::Terminal(_)) {
+                    let has_evidence = self.has_recovery_evidence_locked(&payload_hash, &record)?;
+                    if has_evidence {
+                        let policy = active_policy(&record)?;
+                        batch.put_cf(
+                            self.cf_recipient,
+                            recipient_key(&policy.recipient, &payload_hash),
+                            [],
+                        );
+                    } else {
+                        if let Some(policy) = record.policy.as_ref() {
                         batch.delete_cf(
                             self.cf_recipient,
                             recipient_key(&policy.recipient, &payload_hash),
                         );
+                        }
+                        batch.put_cf(
+                            self.cf_history,
+                            history_key(record.updated_at_ms, &payload_hash),
+                            self.retained_claim_bytes_locked(&payload_hash, &record, value.len())?
+                                .to_be_bytes(),
+                        );
                     }
-                    batch.put_cf(
-                        self.cf_history,
-                        history_key(record.updated_at_ms, &payload_hash),
-                        self.retained_claim_bytes_locked(&payload_hash, &record, value.len())?
-                            .to_be_bytes(),
-                    );
                 }
             }
-            batch.put_cf(self.cf_meta, CURSOR_KEY, &rows.last().unwrap().0);
+            if let Some(next_cursor) = next_cursor {
+                batch.put_cf(self.cf_meta, CURSOR_KEY, next_cursor);
+                batch.put_cf(
+                    self.cf_meta,
+                    CURSOR_STATE_KEY,
+                    migration_cursor_state("v3 outbox migration", &next_cursor),
+                );
+            } else {
+                batch.put_cf(self.cf_meta, MIGRATION_KEY, []);
+                batch.delete_cf(self.cf_meta, CURSOR_KEY);
+                batch.delete_cf(self.cf_meta, CURSOR_STATE_KEY);
+            }
             self.db.write_batch(batch)?;
             #[cfg(test)]
             if migration_failpoint_after_batch_before_gc() {
@@ -821,6 +964,9 @@ impl<'a> DbMonadOutbox<'a> {
             }
             drop(_guard);
             self.gc_history(unix_now_ms(), limits)?;
+            if next_cursor.is_none() {
+                break;
+            }
         }
         self.migrate_terminal_recovery_classification(limits)?;
         self.gc_history(unix_now_ms(), limits)?;
@@ -830,64 +976,75 @@ impl<'a> DbMonadOutbox<'a> {
     fn migrate_terminal_recovery_classification(&self, limits: &MonadOutboxLimits) -> Result<()> {
         const MIGRATION_KEY: &[u8] = b"outbox-terminal-recovery-v4";
         const CURSOR_KEY: &[u8] = b"outbox-terminal-recovery-v4-cursor";
-        if self.db.get(self.cf_meta, MIGRATION_KEY)?.is_some() {
+        const CURSOR_STATE_KEY: &[u8] = b"outbox-terminal-recovery-v4-cursor-state";
+        if self.migration_complete(
+            MIGRATION_KEY,
+            CURSOR_KEY,
+            CURSOR_STATE_KEY,
+            "v4 outbox migration",
+        )? {
             return Ok(());
         }
         loop {
-            let cursor = self.db.get(self.cf_meta, CURSOR_KEY)?;
-            let mode = cursor
-                .as_deref()
-                .map(|key| IteratorMode::From(key, Direction::Forward))
-                .unwrap_or(IteratorMode::Start);
-            let mut rows = Vec::with_capacity(MIGRATION_BATCH_SIZE);
-            for item in self.db.rocksdb().iterator_cf(self.cf_outbox, mode) {
-                let (key, value) = item?;
-                if cursor.as_deref() == Some(key.as_ref()) {
-                    continue;
-                }
-                rows.push((key.to_vec(), value.to_vec()));
-                if rows.len() == MIGRATION_BATCH_SIZE {
-                    break;
-                }
-            }
-            if rows.is_empty() {
-                let mut batch = rocksdb::WriteBatch::default();
-                batch.put_cf(self.cf_meta, MIGRATION_KEY, []);
-                batch.delete_cf(self.cf_meta, CURSOR_KEY);
-                self.db.write_batch(batch)?;
-                return self.gc_history(unix_now_ms(), limits);
-            }
+            let cursor = self.validated_outbox_migration_cursor(
+                CURSOR_KEY,
+                CURSOR_STATE_KEY,
+                "v4 outbox migration",
+            )?;
+            let (rows, next_cursor) = self.outbox_migration_page(cursor)?;
 
             let _guard = self.db.lock_monad_outbox();
             let mut batch = rocksdb::WriteBatch::default();
             for (key, encoded_record) in &rows {
                 let payload_hash = checked_payload_hash(key)?;
                 let record = decode_record(encoded_record)?;
-                if matches!(record.lifecycle, MonadOutboxLifecycle::Terminal(_))
-                    && self.recovery_facts_locked(&payload_hash, &record)? == RecoveryFacts::None
-                {
-                    if let Some(policy) = record.policy.as_ref() {
+                if matches!(record.lifecycle, MonadOutboxLifecycle::Terminal(_)) {
+                    let has_evidence = self.has_recovery_evidence_locked(&payload_hash, &record)?;
+                    if has_evidence {
+                        let policy = active_policy(&record)?;
+                        batch.put_cf(
+                            self.cf_recipient,
+                            recipient_key(&policy.recipient, &payload_hash),
+                            [],
+                        );
+                    } else {
+                        if let Some(policy) = record.policy.as_ref() {
                         batch.delete_cf(
                             self.cf_recipient,
                             recipient_key(&policy.recipient, &payload_hash),
                         );
+                        }
+                        batch.put_cf(
+                            self.cf_history,
+                            history_key(record.updated_at_ms, &payload_hash),
+                            self.retained_claim_bytes_locked(
+                                &payload_hash,
+                                &record,
+                                encoded_record.len(),
+                            )?
+                            .to_be_bytes(),
+                        );
                     }
-                    batch.put_cf(
-                        self.cf_history,
-                        history_key(record.updated_at_ms, &payload_hash),
-                        self.retained_claim_bytes_locked(
-                            &payload_hash,
-                            &record,
-                            encoded_record.len(),
-                        )?
-                        .to_be_bytes(),
-                    );
                 }
             }
-            batch.put_cf(self.cf_meta, CURSOR_KEY, &rows.last().unwrap().0);
+            if let Some(next_cursor) = next_cursor {
+                batch.put_cf(self.cf_meta, CURSOR_KEY, next_cursor);
+                batch.put_cf(
+                    self.cf_meta,
+                    CURSOR_STATE_KEY,
+                    migration_cursor_state("v4 outbox migration", &next_cursor),
+                );
+            } else {
+                batch.put_cf(self.cf_meta, MIGRATION_KEY, []);
+                batch.delete_cf(self.cf_meta, CURSOR_KEY);
+                batch.delete_cf(self.cf_meta, CURSOR_STATE_KEY);
+            }
             self.db.write_batch(batch)?;
             drop(_guard);
             self.gc_history(unix_now_ms(), limits)?;
+            if next_cursor.is_none() {
+                return Ok(());
+            }
         }
     }
 
@@ -895,53 +1052,46 @@ impl<'a> DbMonadOutbox<'a> {
     /// The page cursor and its counter increments share one write batch, so a crash can neither
     /// double-count nor skip a row when the database is reopened.
     fn migrate_recovery_quota_accounting(&self) -> Result<()> {
-        if self
-            .db
-            .get(self.cf_meta, RECOVERY_QUOTA_MIGRATION_KEY)?
-            .is_some()
-        {
-            return Ok(());
+        if self.migration_complete(
+            RECOVERY_QUOTA_MIGRATION_KEY,
+            RECOVERY_QUOTA_CURSOR_KEY,
+            RECOVERY_QUOTA_CURSOR_STATE_KEY,
+            "v5 recovery quota migration",
+        )? {
+            self.read_required_quota_usage_locked(
+                RECOVERY_QUOTA_GLOBAL_KEY,
+                "global recovery quota counter",
+            )?;
+            return self.migrate_recovery_obligation_ids();
         }
         loop {
-            let cursor = self.db.get(self.cf_meta, RECOVERY_QUOTA_CURSOR_KEY)?;
-            let mode = cursor
-                .as_deref()
-                .map(|key| IteratorMode::From(key, Direction::Forward))
-                .unwrap_or(IteratorMode::Start);
-            let mut rows = Vec::with_capacity(MIGRATION_BATCH_SIZE);
-            for item in self.db.rocksdb().iterator_cf(self.cf_outbox, mode) {
-                let (key, value) = item?;
-                if cursor.as_deref() == Some(key.as_ref()) {
-                    continue;
-                }
-                rows.push((key.to_vec(), value.to_vec()));
-                if rows.len() == MIGRATION_BATCH_SIZE {
-                    break;
-                }
+            let cursor = self.validated_outbox_migration_cursor(
+                RECOVERY_QUOTA_CURSOR_KEY,
+                RECOVERY_QUOTA_CURSOR_STATE_KEY,
+                "v5 recovery quota migration",
+            )?;
+            let global_exists = self
+                .db
+                .get(self.cf_meta, RECOVERY_QUOTA_GLOBAL_KEY)?
+                .is_some();
+            if cursor.is_some() != global_exists {
+                return Err(CorruptRecord(
+                    "v5 recovery quota migration cursor/counter state is incoherent".to_string(),
+                )
+                .into());
             }
+            let (rows, next_cursor) = self.outbox_migration_page(cursor)?;
             let _guard = self.db.lock_monad_outbox();
-            if rows.is_empty() {
-                let mut batch = rocksdb::WriteBatch::default();
-                if self
-                    .db
-                    .get(self.cf_meta, RECOVERY_QUOTA_GLOBAL_KEY)?
-                    .is_none()
-                {
-                    batch.put_cf(
-                        self.cf_meta,
-                        RECOVERY_QUOTA_GLOBAL_KEY,
-                        encode_quota_usage(RecoveryQuotaUsage::default()),
-                    );
-                }
-                batch.put_cf(self.cf_meta, RECOVERY_QUOTA_MIGRATION_KEY, []);
-                batch.delete_cf(self.cf_meta, RECOVERY_QUOTA_CURSOR_KEY);
-                self.db.write_batch(batch)?;
-                return Ok(());
-            }
-
-            let mut global = self.read_quota_usage_locked(RECOVERY_QUOTA_GLOBAL_KEY)?;
+            let mut global = if cursor.is_some() {
+                self.read_required_quota_usage_locked(
+                    RECOVERY_QUOTA_GLOBAL_KEY,
+                    "global recovery quota counter",
+                )?
+            } else {
+                RecoveryQuotaUsage::default()
+            };
             let mut recipients = Vec::<(Address, RecoveryQuotaUsage)>::new();
-            let mut reservations = Vec::<([u8; 32], u64)>::new();
+            let mut reservations = Vec::<([u8; 32], Address, u64)>::new();
             for (key, encoded_record) in &rows {
                 let payload_hash = checked_payload_hash(key)?;
                 let record = decode_record(encoded_record)?;
@@ -978,7 +1128,7 @@ impl<'a> DbMonadOutbox<'a> {
                     _ => self.recovery_reserved_claim_bytes_locked(&payload_hash, &record)?,
                 };
                 global = global.checked_add(retained)?;
-                reservations.push((payload_hash, retained));
+                reservations.push((payload_hash, policy.recipient, retained));
                 let recipient_position = recipients
                     .iter()
                     .position(|(recipient, _)| *recipient == policy.recipient);
@@ -987,7 +1137,7 @@ impl<'a> DbMonadOutbox<'a> {
                     None => {
                         recipients.push((
                             policy.recipient,
-                            self.read_recipient_quota_usage_locked(&policy.recipient)?,
+                            self.read_recipient_quota_usage_for_reserve_locked(&policy.recipient)?,
                         ));
                         recipients.len() - 1
                     }
@@ -1008,19 +1158,118 @@ impl<'a> DbMonadOutbox<'a> {
                     encode_quota_usage(usage),
                 );
             }
-            for (payload_hash, retained) in reservations {
+            for (payload_hash, recipient, retained) in reservations {
                 batch.put_cf(
                     self.cf_meta,
                     recovery_quota_record_key(&payload_hash),
                     retained.to_be_bytes(),
                 );
+                batch.put_cf(
+                    self.cf_meta,
+                    recovery_quota_owner_key(&recipient, &payload_hash),
+                    [],
+                );
             }
-            batch.put_cf(
-                self.cf_meta,
-                RECOVERY_QUOTA_CURSOR_KEY,
-                &rows.last().expect("page is nonempty").0,
-            );
+            if let Some(next_cursor) = next_cursor {
+                batch.put_cf(self.cf_meta, RECOVERY_QUOTA_CURSOR_KEY, next_cursor);
+                batch.put_cf(
+                    self.cf_meta,
+                    RECOVERY_QUOTA_CURSOR_STATE_KEY,
+                    migration_cursor_state("v5 recovery quota migration", &next_cursor),
+                );
+            } else {
+                batch.put_cf(self.cf_meta, RECOVERY_QUOTA_MIGRATION_KEY, []);
+                batch.delete_cf(self.cf_meta, RECOVERY_QUOTA_CURSOR_KEY);
+                batch.delete_cf(self.cf_meta, RECOVERY_QUOTA_CURSOR_STATE_KEY);
+            }
             self.db.write_batch(batch)?;
+            if next_cursor.is_none() {
+                return self.migrate_recovery_obligation_ids();
+            }
+        }
+    }
+
+    /// Backfill a durable acknowledgement generation for preexisting quota-owned claims.
+    /// The deterministic legacy value is written once; every newly admitted claim receives fresh
+    /// randomness, so an unused signed acknowledgement can never cross a delete/re-admit ABA.
+    fn migrate_recovery_obligation_ids(&self) -> Result<()> {
+        if self.migration_complete(
+            RECOVERY_OBLIGATION_MIGRATION_KEY,
+            RECOVERY_OBLIGATION_CURSOR_KEY,
+            RECOVERY_OBLIGATION_CURSOR_STATE_KEY,
+            "recovery obligation identity migration",
+        )? {
+            return Ok(());
+        }
+        loop {
+            let cursor = self.validated_outbox_migration_cursor(
+                RECOVERY_OBLIGATION_CURSOR_KEY,
+                RECOVERY_OBLIGATION_CURSOR_STATE_KEY,
+                "recovery obligation identity migration",
+            )?;
+            let (rows, next_cursor) = self.outbox_migration_page(cursor)?;
+            let _guard = self.db.lock_monad_outbox();
+            let mut batch = rocksdb::WriteBatch::default();
+            for (key, encoded_record) in &rows {
+                let payload_hash = checked_payload_hash(key)?;
+                let record = decode_record(encoded_record)?;
+                if self
+                    .db
+                    .get(self.cf_meta, recovery_quota_record_key(&payload_hash))?
+                    .is_none()
+                {
+                    continue;
+                }
+                if self.has_recovery_evidence_locked(&payload_hash, &record)? {
+                    let policy = active_policy(&record)?;
+                    batch.put_cf(
+                        self.cf_recipient,
+                        recipient_key(&policy.recipient, &payload_hash),
+                        [],
+                    );
+                }
+                let obligation_key = recovery_obligation_id_key(&payload_hash);
+                if let Some(existing) = self.db.get(self.cf_meta, &obligation_key)? {
+                    checked_payload_hash(&existing).map_err(|_| {
+                        CorruptRecord(
+                            "recovery obligation identity has invalid fixed-width shape"
+                                .to_string(),
+                        )
+                    })?;
+                    continue;
+                }
+                let canonical = record.canonical_message.as_deref().ok_or_else(|| {
+                    CorruptRecord(
+                        "quota-owned outbox row has no canonical recovery bytes".to_string(),
+                    )
+                })?;
+                let mut preimage = Vec::with_capacity(64 + canonical.len());
+                preimage.extend_from_slice(b"frank:legacy-recovery-obligation:v1");
+                preimage.extend_from_slice(&payload_hash);
+                preimage.extend_from_slice(&record.created_at_ms.to_be_bytes());
+                preimage.extend_from_slice(canonical);
+                let id = Sha256::digest(preimage.into());
+                batch.put_cf(self.cf_meta, obligation_key, id.as_slice());
+            }
+            if let Some(next_cursor) = next_cursor {
+                batch.put_cf(self.cf_meta, RECOVERY_OBLIGATION_CURSOR_KEY, next_cursor);
+                batch.put_cf(
+                    self.cf_meta,
+                    RECOVERY_OBLIGATION_CURSOR_STATE_KEY,
+                    migration_cursor_state(
+                        "recovery obligation identity migration",
+                        &next_cursor,
+                    ),
+                );
+            } else {
+                batch.put_cf(self.cf_meta, RECOVERY_OBLIGATION_MIGRATION_KEY, []);
+                batch.delete_cf(self.cf_meta, RECOVERY_OBLIGATION_CURSOR_KEY);
+                batch.delete_cf(self.cf_meta, RECOVERY_OBLIGATION_CURSOR_STATE_KEY);
+            }
+            self.db.write_batch(batch)?;
+            if next_cursor.is_none() {
+                return Ok(());
+            }
         }
     }
 
@@ -1211,6 +1460,7 @@ impl<'a> DbMonadOutbox<'a> {
                     tx_hash: Hash32(Keccak256::digest(&payment.raw_tx).into()),
                     state: MonadOutboxMemberState::Pending,
                     attempts: 0,
+                    exposed: false,
                     lease_generation: 0,
                     lease_until_ms: 0,
                     next_replay_at_ms: now_ms,
@@ -1252,7 +1502,7 @@ impl<'a> DbMonadOutbox<'a> {
             &policy.recipient,
             reservation_bytes as u64,
         )?;
-        batch.put_cf(self.cf_outbox, payload_hash, encoded_record);
+        self.append_outbox_put(&mut batch, &payload_hash, &encoded_record);
         batch.put_cf(self.cf_active, payload_hash, now_ms.to_be_bytes());
         for (child_index, encoded_member) in members {
             batch.put_cf(
@@ -1724,9 +1974,6 @@ impl<'a> DbMonadOutbox<'a> {
             {
                 break;
             }
-            if !member_updates.is_empty() {
-                record.updated_at_ms = now_ms;
-            }
             inspected_bytes = inspected_bytes.saturating_add(claim_bytes);
             staged.push((payload_hash, record, member_updates));
             if staged.len() == claim_limit {
@@ -1744,10 +1991,7 @@ impl<'a> DbMonadOutbox<'a> {
             });
         }
         let mut batch = rocksdb::WriteBatch::default();
-        for (payload_hash, record, member_updates) in &staged {
-            if !member_updates.is_empty() {
-                batch.put_cf(self.cf_outbox, payload_hash, encode_record(record));
-            }
+        for (payload_hash, _record, member_updates) in &staged {
             for (child_index, encoded) in member_updates {
                 batch.put_cf(
                     self.cf_members,
@@ -1780,7 +2024,7 @@ impl<'a> DbMonadOutbox<'a> {
     ) -> Result<MonadOutboxLeaseAcquire> {
         let payload_hash = checked_payload_hash(payload_hash)?;
         let _guard = self.db.lock_monad_outbox();
-        let mut record = self
+        let record = self
             .get(&payload_hash)?
             .ok_or_else(|| CorruptRecord("active claim has no outbox row".to_string()))?;
         match record.lifecycle {
@@ -1811,9 +2055,7 @@ impl<'a> DbMonadOutbox<'a> {
         member.lease_generation = member.lease_generation.saturating_add(1).max(1);
         let lease_ms = i64::try_from(limits.member_lease.as_millis()).unwrap_or(i64::MAX);
         member.lease_until_ms = now_ms.saturating_add(lease_ms.max(1));
-        record.updated_at_ms = now_ms;
         let mut batch = rocksdb::WriteBatch::default();
-        batch.put_cf(self.cf_outbox, payload_hash, encode_record(&record));
         batch.put_cf(
             self.cf_members,
             member_key(&payload_hash, child_index),
@@ -1883,18 +2125,22 @@ impl<'a> DbMonadOutbox<'a> {
             return Ok(MonadOutboxReplayStart::Terminal(terminal));
         }
         member.attempts += 1;
+        member.exposed = true;
         member.updated_at_ms = now_ms;
         member.last_error.clear();
-        record.reconciliation_attempts = record.reconciliation_attempts.saturating_add(1);
-        record.updated_at_ms = now_ms;
-        record.last_error.clear();
         let mut batch = rocksdb::WriteBatch::default();
-        batch.put_cf(self.cf_outbox, payload_hash, encode_record(&record));
         batch.put_cf(
             self.cf_members,
             member_key(&payload_hash, child_index),
             encode_member(&member),
         );
+        if child_index == 0 {
+            batch.put_cf(
+                self.cf_recipient,
+                recipient_key(&active_policy(&record)?.recipient, &payload_hash),
+                [],
+            );
+        }
         self.db.write_batch(batch)?;
         Ok(MonadOutboxReplayStart::Started(member))
     }
@@ -1985,7 +2231,7 @@ impl<'a> DbMonadOutbox<'a> {
     ) -> Result<MonadOutboxTransition> {
         let payload_hash = checked_payload_hash(payload_hash)?;
         let _guard = self.db.lock_monad_outbox();
-        let mut record = self
+        let record = self
             .get(&payload_hash)?
             .ok_or_else(|| CorruptRecord("confirmed child has no outbox row".to_string()))?;
         if !matches!(record.lifecycle, MonadOutboxLifecycle::Pending) {
@@ -2001,6 +2247,14 @@ impl<'a> DbMonadOutbox<'a> {
         {
             return Ok(MonadOutboxTransition::Stale);
         }
+        for prior_index in 0..child_index {
+            let prior = self
+                .get_member(&payload_hash, prior_index)?
+                .ok_or(MemberNotFound(prior_index))?;
+            if !matches!(prior.state, MonadOutboxMemberState::Confirmed { .. }) {
+                return Ok(MonadOutboxTransition::Stale);
+            }
+        }
         member.state = MonadOutboxMemberState::Confirmed {
             value_wei,
             block_number,
@@ -2008,10 +2262,7 @@ impl<'a> DbMonadOutbox<'a> {
         member.lease_until_ms = 0;
         member.updated_at_ms = now_ms;
         member.last_error.clear();
-        record.updated_at_ms = now_ms;
-        record.last_error.clear();
         let mut batch = rocksdb::WriteBatch::default();
-        batch.put_cf(self.cf_outbox, payload_hash, encode_record(&record));
         batch.put_cf(
             self.cf_members,
             member_key(&payload_hash, child_index),
@@ -2036,10 +2287,53 @@ impl<'a> DbMonadOutbox<'a> {
         now_ms: i64,
         limits: &MonadOutboxLimits,
     ) -> Result<MonadOutboxTransition> {
+        self.complete_pending_member_inner(
+            payload_hash,
+            child_index,
+            lease,
+            detail,
+            now_ms,
+            limits,
+            false,
+        )
+    }
+
+    /// Persist an exact transaction-body observation without requiring a receipt. This is
+    /// monotonic evidence that the signed bytes may already be economically exposed.
+    pub(crate) fn complete_submitted_member(
+        &self,
+        payload_hash: &[u8],
+        child_index: u32,
+        lease: MonadOutboxLease,
+        detail: &str,
+        now_ms: i64,
+        limits: &MonadOutboxLimits,
+    ) -> Result<MonadOutboxTransition> {
+        self.complete_pending_member_inner(
+            payload_hash,
+            child_index,
+            lease,
+            detail,
+            now_ms,
+            limits,
+            true,
+        )
+    }
+
+    fn complete_pending_member_inner(
+        &self,
+        payload_hash: &[u8],
+        child_index: u32,
+        lease: MonadOutboxLease,
+        detail: &str,
+        now_ms: i64,
+        limits: &MonadOutboxLimits,
+        exposed: bool,
+    ) -> Result<MonadOutboxTransition> {
         validate_limits(limits)?;
         let payload_hash = checked_payload_hash(payload_hash)?;
         let _guard = self.db.lock_monad_outbox();
-        let mut record = self
+        let record = self
             .get(&payload_hash)?
             .ok_or_else(|| CorruptRecord("pending child has no outbox row".to_string()))?;
         if !matches!(record.lifecycle, MonadOutboxLifecycle::Pending) {
@@ -2054,7 +2348,8 @@ impl<'a> DbMonadOutbox<'a> {
             return Ok(MonadOutboxTransition::Stale);
         }
         let detail = bounded_text(detail, limits.max_last_error_bytes);
-        member.last_error = detail.clone();
+        member.last_error = detail;
+        member.exposed |= exposed;
         member.updated_at_ms = now_ms;
         member.lease_until_ms = 0;
         member.next_replay_at_ms = now_ms.saturating_add(retry_backoff_ms(
@@ -2062,15 +2357,19 @@ impl<'a> DbMonadOutbox<'a> {
             record.retry_backoff_base_ms,
             record.max_retry_backoff_ms,
         ));
-        record.last_error = detail;
-        record.updated_at_ms = now_ms;
         let mut batch = rocksdb::WriteBatch::default();
-        batch.put_cf(self.cf_outbox, payload_hash, encode_record(&record));
         batch.put_cf(
             self.cf_members,
             member_key(&payload_hash, child_index),
             encode_member(&member),
         );
+        if child_index == 0 && member.exposed {
+            batch.put_cf(
+                self.cf_recipient,
+                recipient_key(&active_policy(&record)?.recipient, &payload_hash),
+                [],
+            );
+        }
         self.db.write_batch(batch)?;
         Ok(MonadOutboxTransition::Applied)
     }
@@ -2188,7 +2487,7 @@ impl<'a> DbMonadOutbox<'a> {
         record.last_error = bounded_text(detail, limits.max_last_error_bytes);
         let mut batch = rocksdb::WriteBatch::default();
         let encoded = encode_record(&record);
-        batch.put_cf(self.cf_outbox, payload_hash, &encoded);
+        self.append_outbox_put(&mut batch, &payload_hash, &encoded);
         batch.delete_cf(self.cf_active, payload_hash);
         if self.recovery_facts_locked(&payload_hash, &record)? == RecoveryFacts::None {
             if let Some(policy) = record.policy.as_ref() {
@@ -2232,7 +2531,7 @@ impl<'a> DbMonadOutbox<'a> {
         let encoded = encode_record(record);
         let encoded_member = encode_member(member);
         let mut batch = rocksdb::WriteBatch::default();
-        batch.put_cf(self.cf_outbox, payload_hash, &encoded);
+        self.append_outbox_put(&mut batch, payload_hash, &encoded);
         batch.put_cf(
             self.cf_members,
             member_key(payload_hash, member.child_index),
@@ -2299,7 +2598,8 @@ impl<'a> DbMonadOutbox<'a> {
             record.last_error = "confirmed total below frozen minimum".to_string();
             record.updated_at_ms = now_ms;
             let mut batch = rocksdb::WriteBatch::default();
-            batch.put_cf(self.cf_outbox, payload_hash, encode_record(&record));
+            let encoded = encode_record(&record);
+            self.append_outbox_put(&mut batch, &payload_hash, &encoded);
             batch.delete_cf(self.cf_active, payload_hash);
             self.db.write_batch(batch)?;
             return Ok(false);
@@ -2307,7 +2607,8 @@ impl<'a> DbMonadOutbox<'a> {
         record.lifecycle = MonadOutboxLifecycle::FullyConfirmed;
         record.updated_at_ms = now_ms;
         let mut batch = rocksdb::WriteBatch::default();
-        batch.put_cf(self.cf_outbox, payload_hash, encode_record(&record));
+        let encoded = encode_record(&record);
+        self.append_outbox_put(&mut batch, &payload_hash, &encoded);
         self.db.write_batch(batch)?;
         Ok(true)
     }
@@ -2355,7 +2656,7 @@ impl<'a> DbMonadOutbox<'a> {
                 record.last_error.clear();
                 let encoded = encode_record(&record);
                 let mut batch = rocksdb::WriteBatch::default();
-                batch.put_cf(self.cf_outbox, payload_hash, &encoded);
+                self.append_outbox_put(&mut batch, &payload_hash, &encoded);
                 batch.delete_cf(self.cf_active, payload_hash);
                 batch.delete_cf(
                     self.cf_recipient,
@@ -2427,7 +2728,7 @@ impl<'a> DbMonadOutbox<'a> {
             &policy.recipient,
             &stored,
         )?;
-        batch.put_cf(self.cf_outbox, payload_hash, &encoded_tombstone);
+        self.append_outbox_put(&mut batch, &payload_hash, &encoded_tombstone);
         batch.delete_cf(self.cf_active, payload_hash);
         batch.delete_cf(
             self.cf_recipient,
@@ -2445,6 +2746,133 @@ impl<'a> DbMonadOutbox<'a> {
         drop(_guard);
         self.gc_history(now_ms, limits)?;
         Ok(stored)
+    }
+
+    /// Read one recipient inbox page while treating both the journal index and primary protobuf
+    /// as untrusted durable facts. Every returned row is cross-checked before it can cross the
+    /// authenticated HTTP boundary.
+    pub(crate) fn validated_inbox_page(
+        &self,
+        recipient: &Address,
+        since: i64,
+        cursor: Option<crate::store::monad_messages::RecipientMessageCursor>,
+        limit: usize,
+        max_bytes: usize,
+    ) -> Result<crate::store::monad_messages::RecipientMessagePage> {
+        use crate::store::monad_messages::{
+            DbMonadMessagesError, RecipientMessageCursor, RecipientMessagePage,
+        };
+
+        if limit == 0 || max_bytes == 0 {
+            return Ok(RecipientMessagePage {
+                messages: Vec::new(),
+                next_cursor: None,
+                encoded_bytes: 0,
+            });
+        }
+        let start_key = match cursor {
+            Some(cursor) => {
+                if cursor.timestamp < since {
+                    return Err(DbMonadMessagesError::StalePrivateCursor.into());
+                }
+                inbox_recipient_key(recipient, cursor.timestamp, &cursor.payload_hash)
+            }
+            None => inbox_recipient_key(recipient, since, &[]),
+        };
+        let cf_index = self.db.cf(CF_MONAD_MESSAGES_BY_RECIPIENT_TIME)?;
+        let cf_primary = self.db.cf(CF_MONAD_MESSAGES)?;
+        let mut messages = Vec::with_capacity(limit);
+        let mut encoded_bytes = 0usize;
+        let mut last_cursor = None;
+        let mut has_more = false;
+        for item in self.db.rocksdb().iterator_cf(
+            cf_index,
+            IteratorMode::From(&start_key, Direction::Forward),
+        ) {
+            let (key, value) = item?;
+            if !key.starts_with(&recipient.0) {
+                break;
+            }
+            if cursor.is_some() && key.as_ref() == start_key.as_slice() {
+                continue;
+            }
+            let (timestamp, payload_hash) =
+                validate_inbox_recipient_index(recipient, &key, &value)?;
+            if timestamp < since {
+                return Err(CorruptRecord(
+                    "recipient inbox index precedes its requested lower bound".to_string(),
+                )
+                .into());
+            }
+            if messages.len() == limit {
+                has_more = true;
+                break;
+            }
+            let encoded = self.db.get(cf_primary, payload_hash)?.ok_or_else(|| {
+                CorruptRecord("recipient inbox index references missing primary row".to_string())
+            })?;
+            let stored = proto::StoredMonadMessage::decode(encoded.as_ref()).wrap_err_with(|| {
+                CorruptRecord("recipient inbox primary protobuf cannot decode".to_string())
+            })?;
+            if stored.timestamp != timestamp {
+                return Err(CorruptRecord(
+                    "recipient inbox index timestamp differs from its primary row".to_string(),
+                )
+                .into());
+            }
+            let message = stored.message.as_ref().ok_or_else(|| {
+                CorruptRecord("recipient inbox primary has no canonical message".to_string())
+            })?;
+            let inner_hash = checked_payload_hash(&message.payload_hash).map_err(|_| {
+                CorruptRecord("recipient inbox primary has malformed payload hash".to_string())
+            })?;
+            if inner_hash != payload_hash
+                || Sha256::digest(message.encrypted_payload.clone().into()).as_slice()
+                    != payload_hash
+            {
+                return Err(CorruptRecord(
+                    "recipient inbox primary payload ownership is inconsistent".to_string(),
+                )
+                .into());
+            }
+            let envelope: StoredEnvelopeRecipient =
+                serde_json::from_slice(&message.encrypted_payload).map_err(|_| {
+                    CorruptRecord("recipient inbox envelope cannot decode".to_string())
+                })?;
+            let routed_recipient = Address::from_hex(&envelope.to).map_err(|_| {
+                CorruptRecord("recipient inbox envelope has invalid routing owner".to_string())
+            })?;
+            if routed_recipient != *recipient {
+                return Err(CorruptRecord(
+                    "recipient inbox index points at another recipient's primary row".to_string(),
+                )
+                .into());
+            }
+            let record_len = stored.encoded_len();
+            let added = 1 + protobuf_varint_len(record_len as u64) + record_len;
+            if encoded_bytes.saturating_add(added) > max_bytes {
+                if messages.is_empty() {
+                    return Err(DbMonadMessagesError::RecordExceedsPageBudget {
+                        required: added,
+                        maximum: max_bytes,
+                    }
+                    .into());
+                }
+                has_more = true;
+                break;
+            }
+            encoded_bytes += added;
+            messages.push(stored);
+            last_cursor = Some(RecipientMessageCursor {
+                timestamp,
+                payload_hash,
+            });
+        }
+        Ok(RecipientMessagePage {
+            messages,
+            next_cursor: has_more.then_some(last_cursor).flatten(),
+            encoded_bytes,
+        })
     }
 
     /// List retained confirmed prefixes for one already-validated recipient.
@@ -2470,8 +2898,10 @@ impl<'a> DbMonadOutbox<'a> {
         &self,
         recipient: &Address,
         payload_hash: &[u8],
+        obligation_id: &[u8],
     ) -> Result<MonadRecoveryAck> {
         let payload_hash = checked_payload_hash(payload_hash)?;
+        let obligation_id = checked_payload_hash(obligation_id)?;
         let _guard = self.db.lock_monad_outbox();
         let Some(record) = self.get(&payload_hash)? else {
             return Ok(MonadRecoveryAck::Absent);
@@ -2485,13 +2915,16 @@ impl<'a> DbMonadOutbox<'a> {
         if record.lifecycle == MonadOutboxLifecycle::Delivered {
             return Ok(MonadRecoveryAck::Absent);
         }
+        if self.recovery_obligation_id_locked(&payload_hash)? != obligation_id {
+            return Ok(MonadRecoveryAck::Absent);
+        }
         let policy = active_policy(&record)?.clone();
         match self.recovery_facts_locked(&payload_hash, &record)? {
             RecoveryFacts::None => return Ok(MonadRecoveryAck::Absent),
-            RecoveryFacts::ConfirmedPrefix if policy.recipient != *recipient => {
+            RecoveryFacts::Obligation if policy.recipient != *recipient => {
                 return Ok(MonadRecoveryAck::WrongRecipient)
             }
-            RecoveryFacts::ConfirmedPrefix => {}
+            RecoveryFacts::Obligation => {}
         }
         let message = Self::canonical_message(&record)?;
         let mut batch = rocksdb::WriteBatch::default();
@@ -2630,7 +3063,12 @@ impl<'a> DbMonadOutbox<'a> {
                     remaining_members.push(member);
                 }
             }
-            if !confirmed_prefix.is_empty() {
+            let terminal_exposure = matches!(record.lifecycle, MonadOutboxLifecycle::Terminal(_))
+                && remaining_members
+                    .first()
+                    .map(|member| member.child_index == 0 && member.exposed)
+                    .unwrap_or(false);
+            if !confirmed_prefix.is_empty() || terminal_exposure {
                 let message_bytes = message.encoded_len();
                 if canonical_bytes.saturating_add(message_bytes) > max_canonical_bytes {
                     if recoveries.is_empty() {
@@ -2655,6 +3093,7 @@ impl<'a> DbMonadOutbox<'a> {
                 })?;
                 recoveries.push(ConfirmedPrefixRecovery {
                     payload_hash,
+                    obligation_id: self.recovery_obligation_id_locked(&payload_hash)?,
                     message,
                     confirmed_prefix,
                     lifecycle: record.lifecycle,
@@ -2695,21 +3134,25 @@ impl<'a> DbMonadOutbox<'a> {
     ) -> Result<bool> {
         #[cfg(test)]
         QUOTA_ADMISSION_META_READS.set(QUOTA_ADMISSION_META_READS.get().saturating_add(1));
-        if self
-            .db
-            .get(self.cf_meta, RECOVERY_QUOTA_MIGRATION_KEY)?
-            .is_none()
-        {
+        if !self.migration_complete(
+            RECOVERY_QUOTA_MIGRATION_KEY,
+            RECOVERY_QUOTA_CURSOR_KEY,
+            RECOVERY_QUOTA_CURSOR_STATE_KEY,
+            "v5 recovery quota migration",
+        )? {
             return Err(CorruptRecord(
                 "recovery quota accounting migration is incomplete".to_string(),
             )
             .into());
         }
         let global = self
-            .read_quota_usage_locked(RECOVERY_QUOTA_GLOBAL_KEY)?
+            .read_required_quota_usage_locked(
+                RECOVERY_QUOTA_GLOBAL_KEY,
+                "global recovery quota counter",
+            )?
             .checked_add(new_bytes as u64)?;
         let recipient_usage = self
-            .read_recipient_quota_usage_locked(recipient)?
+            .read_recipient_quota_usage_for_reserve_locked(recipient)?
             .checked_add(new_bytes as u64)?;
         Ok(global.records <= limits.max_recovery_records as u64
             && global.bytes <= limits.max_recovery_bytes as u64
@@ -2717,19 +3160,70 @@ impl<'a> DbMonadOutbox<'a> {
             && recipient_usage.bytes <= limits.max_recovery_bytes_per_recipient as u64)
     }
 
-    fn read_quota_usage_locked(&self, key: &[u8]) -> Result<RecoveryQuotaUsage> {
+    fn read_required_quota_usage_locked(
+        &self,
+        key: &[u8],
+        name: &str,
+    ) -> Result<RecoveryQuotaUsage> {
         #[cfg(test)]
         QUOTA_ADMISSION_META_READS.set(QUOTA_ADMISSION_META_READS.get().saturating_add(1));
-        self.db
+        let encoded = self
+            .db
             .get(self.cf_meta, key)?
-            .as_deref()
-            .map(decode_quota_usage)
-            .transpose()
-            .map(|usage| usage.unwrap_or_default())
+            .ok_or_else(|| CorruptRecord(format!("{name} is missing")))?;
+        decode_quota_usage(&encoded)
     }
 
-    fn read_recipient_quota_usage_locked(&self, recipient: &Address) -> Result<RecoveryQuotaUsage> {
-        self.read_quota_usage_locked(&recovery_quota_recipient_key(recipient))
+    fn recipient_has_live_reservation_locked(&self, recipient: &Address) -> Result<bool> {
+        let prefix = recovery_quota_owner_recipient_prefix(recipient);
+        let mut rows = self.db.rocksdb().iterator_cf(
+            self.cf_meta,
+            IteratorMode::From(&prefix, Direction::Forward),
+        );
+        let Some(item) = rows.next() else {
+            return Ok(false);
+        };
+        let (key, value) = item?;
+        if !key.starts_with(&prefix) {
+            return Ok(false);
+        }
+        if key.len() != prefix.len() + PAYLOAD_HASH_LEN || !value.is_empty() {
+            return Err(CorruptRecord(
+                "recipient recovery quota owner index is malformed".to_string(),
+            )
+            .into());
+        }
+        Ok(true)
+    }
+
+    fn read_recipient_quota_usage_for_reserve_locked(
+        &self,
+        recipient: &Address,
+    ) -> Result<RecoveryQuotaUsage> {
+        #[cfg(test)]
+        QUOTA_ADMISSION_META_READS.set(QUOTA_ADMISSION_META_READS.get().saturating_add(1));
+        let encoded = self
+            .db
+            .get(self.cf_meta, recovery_quota_recipient_key(recipient))?;
+        let has_owner = self.recipient_has_live_reservation_locked(recipient)?;
+        match encoded {
+            Some(encoded) => {
+                let usage = decode_quota_usage(&encoded)?;
+                if (usage.records == 0) == has_owner {
+                    return Err(CorruptRecord(
+                        "recipient recovery quota counter disagrees with its live owner index"
+                            .to_string(),
+                    )
+                    .into());
+                }
+                Ok(usage)
+            }
+            None if has_owner => Err(CorruptRecord(
+                "recipient recovery quota counter is missing for a live owner".to_string(),
+            )
+            .into()),
+            None => Ok(RecoveryQuotaUsage::default()),
+        }
     }
 
     fn append_quota_reserve_locked(
@@ -2740,11 +3234,35 @@ impl<'a> DbMonadOutbox<'a> {
         bytes: u64,
     ) -> Result<()> {
         let global = self
-            .read_quota_usage_locked(RECOVERY_QUOTA_GLOBAL_KEY)?
+            .read_required_quota_usage_locked(
+                RECOVERY_QUOTA_GLOBAL_KEY,
+                "global recovery quota counter",
+            )?
             .checked_add(bytes)?;
         let recipient_usage = self
-            .read_recipient_quota_usage_locked(recipient)?
+            .read_recipient_quota_usage_for_reserve_locked(recipient)?
             .checked_add(bytes)?;
+        if self
+            .db
+            .get(self.cf_meta, recovery_quota_record_key(payload_hash))?
+            .is_some()
+            || self
+                .db
+                .get(
+                    self.cf_meta,
+                    recovery_quota_owner_key(recipient, payload_hash),
+                )?
+                .is_some()
+            || self
+                .db
+                .get(self.cf_meta, recovery_obligation_id_key(payload_hash))?
+                .is_some()
+        {
+            return Err(CorruptRecord(
+                "new recovery claim already has quota reservation metadata".to_string(),
+            )
+            .into());
+        }
         batch.put_cf(
             self.cf_meta,
             RECOVERY_QUOTA_GLOBAL_KEY,
@@ -2759,6 +3277,18 @@ impl<'a> DbMonadOutbox<'a> {
             self.cf_meta,
             recovery_quota_record_key(payload_hash),
             bytes.to_be_bytes(),
+        );
+        batch.put_cf(
+            self.cf_meta,
+            recovery_quota_owner_key(recipient, payload_hash),
+            [],
+        );
+        let mut obligation_id = [0; 32];
+        OsRng.fill_bytes(&mut obligation_id);
+        batch.put_cf(
+            self.cf_meta,
+            recovery_obligation_id_key(payload_hash),
+            obligation_id,
         );
         Ok(())
     }
@@ -2777,23 +3307,59 @@ impl<'a> DbMonadOutbox<'a> {
             })?;
         let bytes = decode_u64_meta(&encoded, "recovery quota record reservation")?;
         let global = self
-            .read_quota_usage_locked(RECOVERY_QUOTA_GLOBAL_KEY)?
+            .read_required_quota_usage_locked(
+                RECOVERY_QUOTA_GLOBAL_KEY,
+                "global recovery quota counter",
+            )?
             .checked_sub(bytes)?;
+        let owner_key = recovery_quota_owner_key(recipient, payload_hash);
+        let owner = self
+            .db
+            .get(self.cf_meta, &owner_key)?
+            .ok_or_else(|| CorruptRecord("recovery quota owner index is missing".to_string()))?;
+        if !owner.is_empty() {
+            return Err(CorruptRecord(
+                "recovery quota owner index value is malformed".to_string(),
+            )
+            .into());
+        }
         let recipient_usage = self
-            .read_recipient_quota_usage_locked(recipient)?
+            .read_required_quota_usage_locked(
+                &recovery_quota_recipient_key(recipient),
+                "recipient recovery quota counter",
+            )?
             .checked_sub(bytes)?;
         batch.put_cf(
             self.cf_meta,
             RECOVERY_QUOTA_GLOBAL_KEY,
             encode_quota_usage(global),
         );
-        batch.put_cf(
-            self.cf_meta,
-            recovery_quota_recipient_key(recipient),
-            encode_quota_usage(recipient_usage),
-        );
+        if recipient_usage == RecoveryQuotaUsage::default() {
+            batch.delete_cf(self.cf_meta, recovery_quota_recipient_key(recipient));
+        } else {
+            batch.put_cf(
+                self.cf_meta,
+                recovery_quota_recipient_key(recipient),
+                encode_quota_usage(recipient_usage),
+            );
+        }
         batch.delete_cf(self.cf_meta, recovery_quota_record_key(payload_hash));
+        batch.delete_cf(self.cf_meta, owner_key);
+        batch.delete_cf(self.cf_meta, recovery_obligation_id_key(payload_hash));
         Ok(())
+    }
+
+    fn recovery_obligation_id_locked(&self, payload_hash: &[u8; 32]) -> Result<[u8; 32]> {
+        let encoded = self
+            .db
+            .get(self.cf_meta, recovery_obligation_id_key(payload_hash))?
+            .ok_or_else(|| CorruptRecord("recovery obligation identity is missing".to_string()))?;
+        checked_payload_hash(&encoded).map_err(|_| {
+            CorruptRecord(
+                "recovery obligation identity has invalid fixed-width shape".to_string(),
+            )
+            .into()
+        })
     }
 
     fn recovery_reserved_claim_bytes_locked(
@@ -2842,17 +3408,7 @@ impl<'a> DbMonadOutbox<'a> {
                 Err(CorruptRecord("owned outbox row has no frozen policy".to_string()).into())
             };
         };
-        let message = Self::canonical_message(record)?;
-        let first = message.stamp_payments.first().ok_or_else(|| {
-            CorruptRecord("owned canonical request has no child zero".to_string())
-        })?;
-        if first.child_index != 0 {
-            return Err(CorruptRecord("canonical child zero index is missing".to_string()).into());
-        }
-        let first_member = self.get_member(payload_hash, 0)?.ok_or_else(|| {
-            CorruptRecord("canonical child zero member row is missing".to_string())
-        })?;
-        if !matches!(first_member.state, MonadOutboxMemberState::Confirmed { .. }) {
+        if !self.has_recovery_evidence_locked(payload_hash, record)? {
             return Ok(RecoveryFacts::None);
         }
         if self
@@ -2864,11 +3420,32 @@ impl<'a> DbMonadOutbox<'a> {
             .is_none()
         {
             return Err(CorruptRecord(
-                "confirmed child zero has no recipient recovery index".to_string(),
+                "recoverable child zero has no recipient recovery index".to_string(),
             )
             .into());
         }
-        Ok(RecoveryFacts::ConfirmedPrefix)
+        Ok(RecoveryFacts::Obligation)
+    }
+
+    fn has_recovery_evidence_locked(
+        &self,
+        payload_hash: &[u8; 32],
+        record: &MonadOutboxRecord,
+    ) -> Result<bool> {
+        let message = Self::canonical_message(record)?;
+        let first = message.stamp_payments.first().ok_or_else(|| {
+            CorruptRecord("owned canonical request has no child zero".to_string())
+        })?;
+        if first.child_index != 0 {
+            return Err(CorruptRecord("canonical child zero index is missing".to_string()).into());
+        }
+        let first_member = self.get_member(payload_hash, 0)?.ok_or_else(|| {
+            CorruptRecord("canonical child zero member row is missing".to_string())
+        })?;
+        Ok(matches!(
+            first_member.state,
+            MonadOutboxMemberState::Confirmed { .. }
+        ) || first_member.exposed)
     }
 
     fn retained_claim_bytes_locked(
@@ -3002,6 +3579,18 @@ fn checked_payload_hash(bytes: &[u8]) -> Result<[u8; 32]> {
     bytes
         .try_into()
         .map_err(|_| InvalidPayloadHashLength(bytes.len()).into())
+}
+
+fn migration_cursor_state(name: &str, cursor: &[u8; 32]) -> [u8; 32] {
+    let mut preimage = Vec::with_capacity(48 + name.len());
+    preimage.extend_from_slice(b"frank:outbox-migration-cursor:v1");
+    preimage.extend_from_slice(&(name.len() as u32).to_be_bytes());
+    preimage.extend_from_slice(name.as_bytes());
+    preimage.extend_from_slice(cursor);
+    Sha256::digest(preimage.into())
+        .as_slice()
+        .try_into()
+        .expect("SHA256 is 32 bytes")
 }
 
 fn unix_now_ms() -> i64 {
@@ -3158,6 +3747,44 @@ fn recipient_key(recipient: &Address, payload_hash: &[u8; 32]) -> [u8; RECIPIENT
     key
 }
 
+fn inbox_recipient_key(recipient: &Address, timestamp: i64, payload_hash: &[u8]) -> Vec<u8> {
+    [
+        recipient.0.as_slice(),
+        timestamp.to_be_bytes().as_slice(),
+        payload_hash,
+    ]
+    .concat()
+}
+
+fn validate_inbox_recipient_index(
+    recipient: &Address,
+    key: &[u8],
+    value: &[u8],
+) -> Result<(i64, [u8; 32])> {
+    const KEY_LEN: usize = 20 + 8 + 32;
+    if key.len() != KEY_LEN || value.len() != PAYLOAD_HASH_LEN || key[..20] != recipient.0 {
+        return Err(CorruptRecord("recipient inbox index row is malformed".to_string()).into());
+    }
+    let payload_hash = checked_payload_hash(value)?;
+    if key[28..] != payload_hash {
+        return Err(CorruptRecord(
+            "recipient inbox index suffix differs from its primary pointer".to_string(),
+        )
+        .into());
+    }
+    let timestamp = i64::from_be_bytes(key[20..28].try_into().expect("length checked"));
+    Ok((timestamp, payload_hash))
+}
+
+fn protobuf_varint_len(mut value: u64) -> usize {
+    let mut len = 1;
+    while value >= 0x80 {
+        value >>= 7;
+        len += 1;
+    }
+    len
+}
+
 fn recovery_quota_recipient_key(recipient: &Address) -> Vec<u8> {
     let mut key = Vec::with_capacity(RECOVERY_QUOTA_RECIPIENT_PREFIX.len() + recipient.0.len());
     key.extend_from_slice(RECOVERY_QUOTA_RECIPIENT_PREFIX);
@@ -3168,6 +3795,26 @@ fn recovery_quota_recipient_key(recipient: &Address) -> Vec<u8> {
 fn recovery_quota_record_key(payload_hash: &[u8; 32]) -> Vec<u8> {
     let mut key = Vec::with_capacity(RECOVERY_QUOTA_RECORD_PREFIX.len() + payload_hash.len());
     key.extend_from_slice(RECOVERY_QUOTA_RECORD_PREFIX);
+    key.extend_from_slice(payload_hash);
+    key
+}
+
+fn recovery_quota_owner_recipient_prefix(recipient: &Address) -> Vec<u8> {
+    let mut key = Vec::with_capacity(RECOVERY_QUOTA_OWNER_PREFIX.len() + recipient.0.len());
+    key.extend_from_slice(RECOVERY_QUOTA_OWNER_PREFIX);
+    key.extend_from_slice(&recipient.0);
+    key
+}
+
+fn recovery_quota_owner_key(recipient: &Address, payload_hash: &[u8; 32]) -> Vec<u8> {
+    let mut key = recovery_quota_owner_recipient_prefix(recipient);
+    key.extend_from_slice(payload_hash);
+    key
+}
+
+fn recovery_obligation_id_key(payload_hash: &[u8; 32]) -> Vec<u8> {
+    let mut key = Vec::with_capacity(RECOVERY_OBLIGATION_ID_PREFIX.len() + payload_hash.len());
+    key.extend_from_slice(RECOVERY_OBLIGATION_ID_PREFIX);
     key.extend_from_slice(payload_hash);
     key
 }
@@ -3422,9 +4069,10 @@ fn encode_member(member: &MonadOutboxMember) -> Vec<u8> {
         MonadOutboxMemberState::Terminal(reason) => (2, terminal_tag(reason), 0, 0),
     };
     let mut bytes = Vec::with_capacity(80 + member.last_error.len());
-    bytes.extend_from_slice(&[RECORD_VERSION, state, terminal]);
+    bytes.extend_from_slice(&[MEMBER_RECORD_VERSION, state, terminal]);
     bytes.extend_from_slice(&member.tx_hash.0);
     bytes.extend_from_slice(&member.attempts.to_be_bytes());
+    bytes.push(u8::from(member.exposed));
     bytes.extend_from_slice(&member.updated_at_ms.to_be_bytes());
     bytes.extend_from_slice(&value.to_be_bytes());
     bytes.extend_from_slice(&block.to_be_bytes());
@@ -3438,17 +4086,38 @@ fn encode_member(member: &MonadOutboxMember) -> Vec<u8> {
 fn decode_member(child_index: u32, bytes: &[u8]) -> Result<MonadOutboxMember> {
     let mut cursor = Cursor::new(bytes);
     let version = cursor.u8()?;
-    if version != RECORD_VERSION_V1 && version != RECORD_VERSION_V2 && version != RECORD_VERSION {
+    if version != RECORD_VERSION_V1
+        && version != RECORD_VERSION_V2
+        && version != RECORD_VERSION
+        && version != MEMBER_RECORD_VERSION
+    {
         return Err(CorruptRecord(format!("unsupported member record version {version}")).into());
     }
     let state_tag = cursor.u8()?;
     let terminal_tag = cursor.u8()?;
     let tx_hash = Hash32(cursor.array()?);
     let attempts = cursor.u32()?;
+    let exposed = if version == MEMBER_RECORD_VERSION {
+        match cursor.u8()? {
+            0 => false,
+            1 => true,
+            _ => {
+                return Err(CorruptRecord(
+                    "member exposure flag has invalid encoding".to_string(),
+                )
+                .into())
+            }
+        }
+    } else {
+        // Older rows charged attempts immediately before submission. Treating any charged
+        // attempt as possibly exposed is the only crash-safe interpretation during upgrade.
+        attempts > 0
+    };
     let updated_at_ms = cursor.i64()?;
     let value_wei = cursor.u128()?;
     let block_number = cursor.u64()?;
-    let (lease_generation, lease_until_ms, next_replay_at_ms) = if version == RECORD_VERSION {
+    let (lease_generation, lease_until_ms, next_replay_at_ms) =
+        if version == RECORD_VERSION || version == MEMBER_RECORD_VERSION {
         (cursor.u64()?, cursor.i64()?, cursor.i64()?)
     } else if version == RECORD_VERSION_V2 {
         (cursor.u64()?, cursor.i64()?, updated_at_ms)
@@ -3471,6 +4140,7 @@ fn decode_member(child_index: u32, bytes: &[u8]) -> Result<MonadOutboxMember> {
         tx_hash,
         state,
         attempts,
+        exposed,
         lease_generation,
         lease_until_ms,
         next_replay_at_ms,
@@ -3705,6 +4375,14 @@ mod tests {
             .delete_cf(db.monad_outbox().cf_meta, RECOVERY_QUOTA_CURSOR_KEY)?;
         db.rocksdb()
             .delete_cf(db.monad_outbox().cf_meta, RECOVERY_QUOTA_GLOBAL_KEY)?;
+        db.rocksdb().delete_cf(
+            db.monad_outbox().cf_meta,
+            RECOVERY_OBLIGATION_MIGRATION_KEY,
+        )?;
+        db.rocksdb().delete_cf(
+            db.monad_outbox().cf_meta,
+            RECOVERY_OBLIGATION_CURSOR_KEY,
+        )?;
         db.rocksdb().delete_cf(
             db.monad_outbox().cf_meta,
             recovery_quota_recipient_key(&policy.recipient),
@@ -4249,25 +4927,32 @@ mod tests {
         {
             let db = Db::open(&path)?;
             let store = db.monad_outbox();
-            assert_eq!(
-                store
-                    .confirmed_prefixes_for_recipient(&policy().recipient, 1)?
-                    .len(),
-                1
-            );
+            let recoveries =
+                store.confirmed_prefixes_for_recipient(&policy().recipient, 1)?;
+            assert_eq!(recoveries.len(), 1);
+            let obligation_id = recoveries[0].obligation_id;
             assert_eq!(
                 store.acknowledge_terminal_recovery(
                     &policy_for_secret(0x41).recipient,
                     &request.payload_hash,
+                    &obligation_id,
                 )?,
                 MonadRecoveryAck::WrongRecipient
             );
             assert_eq!(
-                store.acknowledge_terminal_recovery(&policy().recipient, &request.payload_hash)?,
+                store.acknowledge_terminal_recovery(
+                    &policy().recipient,
+                    &request.payload_hash,
+                    &obligation_id,
+                )?,
                 MonadRecoveryAck::Acknowledged
             );
             assert_eq!(
-                store.acknowledge_terminal_recovery(&policy().recipient, &request.payload_hash)?,
+                store.acknowledge_terminal_recovery(
+                    &policy().recipient,
+                    &request.payload_hash,
+                    &obligation_id,
+                )?,
                 MonadRecoveryAck::Absent
             );
         }
@@ -4526,6 +5211,7 @@ mod tests {
                     block_number: 1,
                 },
                 attempts: 1,
+                exposed: false,
                 lease_generation: 0,
                 lease_until_ms: 0,
                 next_replay_at_ms: 200,
@@ -4656,6 +5342,7 @@ mod tests {
                             MonadOutboxMemberState::Terminal(MonadOutboxTerminal::StaleNonce)
                         },
                         attempts: 1,
+                        exposed: false,
                         lease_generation: 0,
                         lease_until_ms: 0,
                         next_replay_at_ms: now,
@@ -5577,6 +6264,7 @@ mod tests {
                     ),
                     state: MonadOutboxMemberState::Pending,
                     attempts: 0,
+                    exposed: false,
                     lease_generation: 0,
                     lease_until_ms: 0,
                     next_replay_at_ms: 0,
@@ -5693,6 +6381,7 @@ mod tests {
                     tx_hash: Hash32(Keccak256::digest(&request.stamp_payments[0].raw_tx).into()),
                     state: MonadOutboxMemberState::Pending,
                     attempts: 0,
+                    exposed: false,
                     lease_generation: 0,
                     lease_until_ms: 0,
                     next_replay_at_ms: 0,
@@ -6087,6 +6776,396 @@ mod tests {
         let decoded_member = db.monad_outbox().get_member(&payload_hash, 0)?.unwrap();
         assert_eq!(decoded_member.lease_generation, 4);
         assert_eq!(decoded_member.next_replay_at_ms, 101);
+        Ok(())
+    }
+
+    #[test]
+    fn quota_metadata_fails_closed_but_new_recipients_and_zero_cleanup_remain_o1() -> Result<()> {
+        let tempdir = tempdir::TempDir::new("monad-outbox-quota-corruption")?;
+        let db = Db::open(tempdir.path().join("db.rocksdb"))?;
+        let store = db.monad_outbox();
+        let limits = MonadOutboxLimits::default();
+        let first = message_with_seed(b"quota owner", &[b"first"]);
+        let second = message_with_seed(b"quota blocked", &[b"second"]);
+        store.claim(&first.payload_hash, &first, &policy(), 1, &limits)?;
+        db.rocksdb()
+            .delete_cf(store.cf_meta, RECOVERY_QUOTA_GLOBAL_KEY)?;
+        assert!(store
+            .claim(&second.payload_hash, &second, &policy(), 2, &limits)
+            .is_err());
+        assert!(store.get(&second.payload_hash)?.is_none());
+        let second_hash: [u8; 32] = second.payload_hash.as_slice().try_into().unwrap();
+        assert!(db
+            .get(store.cf_meta, recovery_quota_record_key(&second_hash))?
+            .is_none());
+
+        let tempdir = tempdir::TempDir::new("monad-outbox-recipient-quota-corruption")?;
+        let db = Db::open(tempdir.path().join("db.rocksdb"))?;
+        let store = db.monad_outbox();
+        let first_policy = policy();
+        let other_policy = policy_for_secret(0x42);
+        store.claim(&first.payload_hash, &first, &first_policy, 1, &limits)?;
+        db.rocksdb().delete_cf(
+            store.cf_meta,
+            recovery_quota_recipient_key(&first_policy.recipient),
+        )?;
+        assert!(store
+            .claim(&second.payload_hash, &second, &first_policy, 2, &limits)
+            .is_err());
+        let other = message_with_seed(b"genuinely new recipient", &[b"other"]);
+        assert_eq!(
+            store.claim(&other.payload_hash, &other, &other_policy, 3, &limits)?,
+            MonadOutboxClaim::New
+        );
+
+        let tempdir = tempdir::TempDir::new("monad-outbox-zero-recipient-cleanup")?;
+        let db = Db::open(tempdir.path().join("db.rocksdb"))?;
+        let store = db.monad_outbox();
+        store.claim(&first.payload_hash, &first, &first_policy, 1, &limits)?;
+        store.terminal_observed_member(
+            &first.payload_hash,
+            0,
+            MonadOutboxTerminal::BroadcastRejected,
+            "never submitted",
+            2,
+            &limits,
+        )?;
+        let first_hash: [u8; 32] = first.payload_hash.as_slice().try_into().unwrap();
+        assert!(db
+            .get(
+                store.cf_meta,
+                recovery_quota_recipient_key(&first_policy.recipient),
+            )?
+            .is_none());
+        assert!(db
+            .get(
+                store.cf_meta,
+                recovery_quota_owner_key(&first_policy.recipient, &first_hash),
+            )?
+            .is_none());
+        assert!(db
+            .get(store.cf_meta, recovery_obligation_id_key(&first_hash))?
+            .is_none());
+        assert_eq!(
+            store.claim(&second.payload_hash, &second, &first_policy, 3, &limits)?,
+            MonadOutboxClaim::New
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn migration_cursors_require_atomic_coherent_state_before_any_mutation() -> Result<()> {
+        for generation in [3u8, 4, 5] {
+            let tempdir = tempdir::TempDir::new(&format!("monad-outbox-v{generation}-cursor"))?;
+            let db = Db::open(tempdir.path().join("db.rocksdb"))?;
+            let store = db.monad_outbox();
+            let limits = MonadOutboxLimits::default();
+            let first = message_with_seed(&[generation, 1], &[b"first"]);
+            let second = message_with_seed(&[generation, 2], &[b"second"]);
+            store.claim(&first.payload_hash, &first, &policy(), 1, &limits)?;
+            store.claim(&second.payload_hash, &second, &policy(), 2, &limits)?;
+            let high: [u8; 32] = first
+                .payload_hash
+                .as_slice()
+                .max(second.payload_hash.as_slice())
+                .try_into()
+                .unwrap();
+            let (marker, cursor, state) = match generation {
+                3 => (
+                    b"outbox-lifecycle-v3".as_slice(),
+                    b"outbox-lifecycle-v3-cursor".as_slice(),
+                    b"outbox-lifecycle-v3-cursor-state".as_slice(),
+                ),
+                4 => (
+                    b"outbox-terminal-recovery-v4".as_slice(),
+                    b"outbox-terminal-recovery-v4-cursor".as_slice(),
+                    b"outbox-terminal-recovery-v4-cursor-state".as_slice(),
+                ),
+                _ => (
+                    RECOVERY_QUOTA_MIGRATION_KEY,
+                    RECOVERY_QUOTA_CURSOR_KEY,
+                    RECOVERY_QUOTA_CURSOR_STATE_KEY,
+                ),
+            };
+            db.rocksdb().delete_cf(store.cf_meta, marker)?;
+            db.rocksdb().put_cf(store.cf_meta, cursor, high)?;
+            db.rocksdb().delete_cf(store.cf_meta, state)?;
+            let first_before = db.get(store.cf_outbox, &first.payload_hash)?.unwrap();
+            let result = match generation {
+                3 => store.migrate_legacy_delivered_ownership(&limits),
+                4 => store.migrate_terminal_recovery_classification(&limits),
+                _ => store.migrate_recovery_quota_accounting(),
+            };
+            assert!(result.is_err());
+            assert_eq!(
+                db.get(store.cf_outbox, &first.payload_hash)?.unwrap().as_ref(),
+                first_before.as_ref()
+            );
+            assert!(db.get(store.cf_meta, marker)?.is_none());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn recipient_inbox_reader_rejects_cross_owner_and_semantic_truncation() -> Result<()> {
+        let tempdir = tempdir::TempDir::new("monad-inbox-corruption")?;
+        let db = Db::open(tempdir.path().join("db.rocksdb"))?;
+        let store = db.monad_outbox();
+        let recipient_a = policy().recipient;
+        let recipient_b = policy_for_secret(0x42).recipient;
+        let envelope_b = format!(r#"{{"to":"{}"}}"#, recipient_b.to_hex()).into_bytes();
+        let hash_b: [u8; 32] = Sha256::digest(envelope_b.clone().into())
+            .as_slice()
+            .try_into()
+            .unwrap();
+        let stored_b = proto::StoredMonadMessage {
+            message: Some(proto::MonadStampedMessage {
+                encrypted_payload: envelope_b,
+                payload_hash: hash_b.to_vec(),
+                stamp_payments: vec![],
+            }),
+            timestamp: 10,
+            network_tag: vec![],
+        };
+        db.monad_messages()
+            .put(&hash_b, &recipient_b, &stored_b)?;
+        db.put(
+            db.cf(CF_MONAD_MESSAGES_BY_RECIPIENT_TIME)?,
+            inbox_recipient_key(&recipient_a, 10, &hash_b),
+            hash_b,
+        )?;
+        assert!(store
+            .validated_inbox_page(&recipient_a, 0, None, 1, usize::MAX)
+            .is_err());
+
+        let corrupt_hash = [0x01; 32];
+        db.put(
+            db.cf(CF_MONAD_MESSAGES)?,
+            corrupt_hash,
+            proto::StoredMonadMessage {
+                message: None,
+                timestamp: 1,
+                network_tag: vec![],
+            }
+            .encode_to_vec(),
+        )?;
+        db.put(
+            db.cf(CF_MONAD_MESSAGES_BY_RECIPIENT_TIME)?,
+            inbox_recipient_key(&recipient_a, 1, &corrupt_hash),
+            corrupt_hash,
+        )?;
+        assert!(store
+            .validated_inbox_page(&recipient_a, 0, None, 1, usize::MAX)
+            .is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn member_leases_and_confirmations_do_not_rewrite_large_canonical_rows() -> Result<()> {
+        let tempdir = tempdir::TempDir::new("monad-outbox-write-amplification")?;
+        let db = Db::open(tempdir.path().join("db.rocksdb"))?;
+        let store = db.monad_outbox();
+        let raws = (0..MAX_MEMBERS_HARD)
+            .map(|index| vec![index as u8; 30_000])
+            .collect::<Vec<_>>();
+        let raw_refs = raws.iter().map(Vec::as_slice).collect::<Vec<_>>();
+        let request = message(&raw_refs);
+        let limits = MonadOutboxLimits::default();
+        store.claim(&request.payload_hash, &request, &policy(), 1, &limits)?;
+        reset_outbox_canonical_write_work();
+        for child_index in 0..MAX_MEMBERS_HARD as u32 {
+            let lease = match store.acquire_reconcile_lease(
+                &request.payload_hash,
+                child_index,
+                2 + i64::from(child_index),
+                &limits,
+            )? {
+                MonadOutboxLeaseAcquire::Acquired { lease, .. } => lease,
+                other => panic!("expected lease, got {other:?}"),
+            };
+            assert_eq!(
+                store.complete_confirmed_member(
+                    &request.payload_hash,
+                    child_index,
+                    lease,
+                    1,
+                    7,
+                    100 + i64::from(child_index),
+                )?,
+                MonadOutboxTransition::Applied
+            );
+        }
+        assert_eq!(outbox_canonical_write_work(), (0, 0));
+        Ok(())
+    }
+
+    #[test]
+    fn acknowledgement_generation_blocks_aba_and_exposed_zero_prefix_survives_gc() -> Result<()> {
+        let tempdir = tempdir::TempDir::new("monad-outbox-ack-generation")?;
+        let path = tempdir.path().join("db.rocksdb");
+        let mut limits = MonadOutboxLimits::default();
+        limits.max_member_attempts = 1;
+        let first = message_with_seed(b"same payload", &[b"first payment", b"first tail"]);
+        let second = message_with_seed(b"same payload", &[b"second payment", b"second tail"]);
+        let recipient = policy().recipient;
+        let stale_id;
+        {
+            let db = Db::open(&path)?;
+            let store = db.monad_outbox();
+            store.claim(&first.payload_hash, &first, &policy(), 1, &limits)?;
+            store.confirm_observed_member(&first.payload_hash, 0, 1, 7, 2)?;
+            store.terminal_observed_member(
+                &first.payload_hash,
+                1,
+                MonadOutboxTerminal::StaleNonce,
+                "first terminal",
+                3,
+                &limits,
+            )?;
+            stale_id = store.confirmed_prefixes_for_recipient(&recipient, 1)?[0].obligation_id;
+            assert_eq!(
+                store.acknowledge_terminal_recovery(
+                    &recipient,
+                    &first.payload_hash,
+                    &stale_id,
+                )?,
+                MonadRecoveryAck::Acknowledged
+            );
+            store.claim(&second.payload_hash, &second, &policy(), 4, &limits)?;
+            store.confirm_observed_member(&second.payload_hash, 0, 1, 8, 5)?;
+            store.terminal_observed_member(
+                &second.payload_hash,
+                1,
+                MonadOutboxTerminal::StaleNonce,
+                "second terminal",
+                6,
+                &limits,
+            )?;
+            let current_id = store.confirmed_prefixes_for_recipient(&recipient, 1)?[0].obligation_id;
+            assert_ne!(current_id, stale_id);
+            assert_eq!(
+                store.acknowledge_terminal_recovery(
+                    &recipient,
+                    &second.payload_hash,
+                    &stale_id,
+                )?,
+                MonadRecoveryAck::Absent
+            );
+            assert!(store.get(&second.payload_hash)?.is_some());
+        }
+
+        let exposed = message_with_seed(b"exposed no prefix", &[b"possibly submitted"]);
+        {
+            let db = Db::open(&path)?;
+            let store = db.monad_outbox();
+            store.claim(&exposed.payload_hash, &exposed, &policy(), 10, &limits)?;
+            let first_lease = match store.acquire_reconcile_lease(
+                &exposed.payload_hash,
+                0,
+                11,
+                &limits,
+            )? {
+                MonadOutboxLeaseAcquire::Acquired { lease, .. } => lease,
+                other => panic!("expected lease, got {other:?}"),
+            };
+            store.begin_replay_attempt(
+                &exposed.payload_hash,
+                0,
+                first_lease,
+                12,
+                &limits,
+            )?;
+            store.complete_pending_member(
+                &exposed.payload_hash,
+                0,
+                first_lease,
+                "accepted without receipt",
+                13,
+                &limits,
+            )?;
+            let second_lease = match store.acquire_reconcile_lease(
+                &exposed.payload_hash,
+                0,
+                i64::MAX - 1,
+                &limits,
+            )? {
+                MonadOutboxLeaseAcquire::Acquired { lease, .. } => lease,
+                other => panic!("expected second lease, got {other:?}"),
+            };
+            assert!(matches!(
+                store.begin_replay_attempt(
+                    &exposed.payload_hash,
+                    0,
+                    second_lease,
+                    i64::MAX - 1,
+                    &limits,
+                )?,
+                MonadOutboxReplayStart::Terminal(MonadOutboxTerminal::Expired)
+                    | MonadOutboxReplayStart::Terminal(MonadOutboxTerminal::AttemptsExhausted)
+            ));
+            let recovery = store.confirmed_prefixes_for_recipient(&recipient, 10)?;
+            assert!(recovery.iter().any(|entry| {
+                entry.payload_hash.as_slice() == exposed.payload_hash
+                    && entry.confirmed_prefix.is_empty()
+            }));
+            let mut gc = limits.clone();
+            gc.max_history_records = 0;
+            gc.max_history_bytes = 0;
+            gc.max_history_age = Duration::ZERO;
+            store.gc_history(i64::MAX, &gc)?;
+            assert!(store.get(&exposed.payload_hash)?.is_some());
+        }
+        let db = Db::open(&path)?;
+        assert!(db.monad_outbox().get(&exposed.payload_hash)?.is_some());
+        assert!(db
+            .monad_outbox()
+            .confirmed_prefixes_for_recipient(&recipient, 10)?
+            .iter()
+            .any(|entry| entry.payload_hash.as_slice() == exposed.payload_hash));
+        Ok(())
+    }
+
+    #[test]
+    fn confirmations_are_prefix_closed_across_stale_lease_generations() -> Result<()> {
+        let tempdir = tempdir::TempDir::new("monad-outbox-prefix-closed")?;
+        let db = Db::open(tempdir.path().join("db.rocksdb"))?;
+        let store = db.monad_outbox();
+        let mut limits = MonadOutboxLimits::default();
+        limits.member_lease = Duration::from_millis(1);
+        let request = message(&[b"zero", b"one"]);
+        store.claim(&request.payload_hash, &request, &policy(), 1, &limits)?;
+        let old = match store.acquire_reconcile_lease(&request.payload_hash, 0, 2, &limits)? {
+            MonadOutboxLeaseAcquire::Acquired { lease, .. } => lease,
+            other => panic!("expected old lease, got {other:?}"),
+        };
+        let fresh = match store.acquire_reconcile_lease(&request.payload_hash, 0, 4, &limits)? {
+            MonadOutboxLeaseAcquire::Acquired { lease, .. } => lease,
+            other => panic!("expected fresh lease, got {other:?}"),
+        };
+        assert_eq!(
+            store.complete_confirmed_member(&request.payload_hash, 0, old, 1, 7, 5)?,
+            MonadOutboxTransition::Stale
+        );
+        let child_one = match store.acquire_reconcile_lease(&request.payload_hash, 1, 5, &limits)? {
+            MonadOutboxLeaseAcquire::Acquired { lease, .. } => lease,
+            other => panic!("expected child-one lease, got {other:?}"),
+        };
+        assert_eq!(
+            store.complete_confirmed_member(&request.payload_hash, 1, child_one, 1, 7, 6)?,
+            MonadOutboxTransition::Stale
+        );
+        assert_eq!(
+            store.complete_confirmed_member(&request.payload_hash, 0, fresh, 1, 7, 7)?,
+            MonadOutboxTransition::Applied
+        );
+        assert_eq!(
+            store.complete_confirmed_member(&request.payload_hash, 0, old, 1, 7, 8)?,
+            MonadOutboxTransition::Stale
+        );
+        assert!(matches!(
+            store.get_member(&request.payload_hash, 0)?.unwrap().state,
+            MonadOutboxMemberState::Confirmed { .. }
+        ));
         Ok(())
     }
 }

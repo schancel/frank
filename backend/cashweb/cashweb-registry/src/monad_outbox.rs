@@ -390,12 +390,31 @@ where
                     now_ms(),
                 )?;
                 if transition == MonadOutboxTransition::Stale {
-                    match current_outcome(registry, payload_hash, config)? {
-                        MonadOutboxReconcileOutcome::Pending => continue,
-                        outcome => return Ok(outcome),
+                    if let Some(outcome) = outcome_after_stale_confirmation(
+                        registry,
+                        payload_hash,
+                        payment.child_index,
+                        config,
+                    )? {
+                        return Ok(outcome);
                     }
                 }
                 continue;
+            }
+            ExactCheck::Submitted => {
+                let transition = registry.complete_submitted_monad_outbox_member(
+                    payload_hash,
+                    payment.child_index,
+                    lease,
+                    "exact signed transaction is visible without a receipt",
+                    now_ms(),
+                    &config.limits,
+                )?;
+                return if transition == MonadOutboxTransition::Applied {
+                    Ok(MonadOutboxReconcileOutcome::Pending)
+                } else {
+                    current_outcome(registry, payload_hash, config)
+                };
             }
             ExactCheck::Invalid(detail) => {
                 let transition = registry.complete_terminal_monad_outbox_member(
@@ -483,9 +502,13 @@ where
                     now_ms(),
                 )?;
                 if transition == MonadOutboxTransition::Stale {
-                    match current_outcome(registry, payload_hash, config)? {
-                        MonadOutboxReconcileOutcome::Pending => continue,
-                        outcome => return Ok(outcome),
+                    if let Some(outcome) = outcome_after_stale_confirmation(
+                        registry,
+                        payload_hash,
+                        payment.child_index,
+                        config,
+                    )? {
+                        return Ok(outcome);
                     }
                 }
             }
@@ -530,6 +553,26 @@ where
             &config.limits,
         )?,
     ))
+}
+
+fn outcome_after_stale_confirmation(
+    registry: &Registry,
+    payload_hash: &[u8],
+    child_index: u32,
+    config: &MonadOutboxReconcileConfig,
+) -> Result<Option<MonadOutboxReconcileOutcome>> {
+    let member = registry
+        .monad_outbox_member(payload_hash, child_index)?
+        .ok_or_else(|| {
+            crate::store::monad_outbox::DbMonadOutboxError::CorruptRecord(
+                "stale confirmation completion lost its durable child row".to_string(),
+            )
+        })?;
+    if matches!(member.state, MonadOutboxMemberState::Confirmed { .. }) {
+        Ok(None)
+    } else {
+        Ok(Some(current_outcome(registry, payload_hash, config)?))
+    }
 }
 
 fn validate_persisted_record(
@@ -866,6 +909,7 @@ enum MemberOutcome {
 
 enum ExactCheck {
     Missing,
+    Submitted,
     Confirmed { value_wei: u128, block_number: u64 },
     Invalid(String),
     Infrastructure(String),
@@ -896,14 +940,19 @@ async fn check_exact<T: JsonRpcTransport + Clone>(
     }
     let client = MonadHttpClient::with_transport(transport.clone());
     let receipt = match client.get_transaction_receipt(tx_hash).await {
-        Ok(Some(receipt)) => receipt,
-        Ok(None) => return ExactCheck::Missing,
+        Ok(Some(receipt)) => Some(receipt),
+        Ok(None) => None,
         Err(err) => return ExactCheck::Infrastructure(err.to_string()),
     };
-    if receipt.transaction_hash != tx_hash {
+    if receipt
+        .as_ref()
+        .map(|receipt| receipt.transaction_hash != tx_hash)
+        .unwrap_or(false)
+    {
         return ExactCheck::Infrastructure(format!(
             "receipt returned hash {} for requested exact hash {}",
-            receipt.transaction_hash, tx_hash
+            receipt.as_ref().expect("checked above").transaction_hash,
+            tx_hash
         ));
     }
     let transaction = match client.get_transaction_by_hash(tx_hash).await {
@@ -914,22 +963,29 @@ async fn check_exact<T: JsonRpcTransport + Clone>(
                 transaction.hash, tx_hash
             ))
         }
-        Ok(None) => {
+        Ok(None) if receipt.is_some() => {
             return ExactCheck::Infrastructure(
                 "exact receipt exists but transaction lookup returned nothing".to_string(),
             )
         }
+        Ok(None) => return ExactCheck::Missing,
         Err(err) => return ExactCheck::Infrastructure(err.to_string()),
     };
-    if receipt.from != canonical.sender
-        || receipt.to != canonical.destination
-        || transaction.from != canonical.sender
+    if transaction.from != canonical.sender
         || transaction.to != canonical.destination
         || transaction.value != canonical.value_wei
         || transaction.input != canonical.input
     {
         return ExactCheck::Infrastructure(
             "RPC transaction/receipt body does not match canonical signed transaction".to_string(),
+        );
+    }
+    let Some(receipt) = receipt else {
+        return ExactCheck::Submitted;
+    };
+    if receipt.from != canonical.sender || receipt.to != canonical.destination {
+        return ExactCheck::Infrastructure(
+            "RPC receipt body does not match canonical signed transaction".to_string(),
         );
     }
     match receipt.status {
@@ -1027,6 +1083,9 @@ async fn replay_member<T: JsonRpcTransport + Clone>(
             MemberOutcome::Terminal(MonadOutboxTerminal::VerificationFailed, detail)
         }
         ExactCheck::Infrastructure(detail) => MemberOutcome::Pending(detail),
+        ExactCheck::Submitted => MemberOutcome::Pending(
+            "exact signed transaction remains submitted without a receipt".to_string(),
+        ),
         ExactCheck::Missing if nonce_too_low => {
             prove_stale_nonce(transport, tx_hash, canonical, expected, config).await
         }
@@ -1082,6 +1141,9 @@ async fn prove_stale_nonce<T: JsonRpcTransport + Clone>(
             MemberOutcome::Terminal(MonadOutboxTerminal::VerificationFailed, detail)
         }
         ExactCheck::Infrastructure(detail) => MemberOutcome::Pending(detail),
+        ExactCheck::Submitted => MemberOutcome::Pending(
+            "exact signed transaction remains submitted without a receipt".to_string(),
+        ),
         ExactCheck::Missing => MemberOutcome::Pending(format!(
             "confirmed account nonce {confirmed_nonce} advanced past canonical nonce {}, but no competing transaction identity was proven",
             decoded.nonce

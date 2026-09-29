@@ -11,7 +11,11 @@ database column names. Values described as opaque remain owned by the linked fol
 
 The executable examples are the adjacent
 [fan-in fixture manifest](./fan-in-fixtures.json). The manifest uses readable symbolic bytes and
-commitments deliberately; those labels are not candidate encodings.
+commitments deliberately; those labels are not candidate encodings. Dotted-string object and
+revision types in this document and the manifest (for example `public.topic-post`) are readable
+labels. Their mapping to the numeric frame type ids of the
+[deterministic CBOR spec](../cbor/README.md) is owned by the later migration tickets (#67, #113,
+#130) and is not assumed here.
 
 ## Required shape
 
@@ -31,31 +35,61 @@ LogicalObjectKey
 
 `LogicalObjectKey` identifies the protocol object whose revisions may be reduced. It contains:
 
+- the `NetworkTag` (an opaque value; it is explicit authenticated data and the sole network
+  authority, as in the CBOR spec);
+- a typed authority namespace (for a public object the authenticated author/authority; for a
+  recipient-private delivery the recipient destination, see below);
 - a typed protocol/object namespace; and
 - that protocol's opaque logical object identifier.
 
-The owning protocol defines the identifier and whether a network is intrinsic to it. Generic fan-in
-MUST NOT add or remove a network qualifier to manufacture cross-network identity. An implementation
-MUST reject a value whose type and object identifier disagree rather than coerce it to a string.
+An identifier reused under a different authority or `NetworkTag` is a different key, not a
+conflict (Decision #205). Values remain opaque and typed; byte forms are owned by #67/#113/#130.
+An implementation MUST reject a value whose type and object identifier disagree rather than coerce
+it to a string.
 
 ### `CanonicalRevisionKey`
 
 `CanonicalRevisionKey` identifies one immutable revision. It contains the complete
-`LogicalObjectKey`, a typed revision namespace, and the owning protocol's opaque revision identifier.
+`LogicalObjectKey` (therefore the authority namespace and `NetworkTag`), a typed revision
+namespace, and the owning protocol's opaque revision identifier. Creation, edit, and
+deletion/tombstone revisions each have their own revision identifier under the one logical object;
+a tombstone never reuses the key of the revision it supersedes.
 For a public replicated revision, it MUST NOT contain a relay ID, source peer ID, endpoint, crawl
 generation, subscription, cursor, arrival time, or source position. The same revision learned from
 two relays or replayed through a later crawl generation therefore has one key.
 
-A recipient-private delivery uses a `LogicalObjectKey` variant containing a `NetworkId`, the
-network-qualified opaque destination, and the recipient-specific opaque `DeliveryId`; its
-`CanonicalRevisionKey` adds the opaque delivery-revision identifier. Neither key nor its public
-metadata may expose a plaintext content hash, a cross-recipient logical message ID, or another
-content identity that lets a relay correlate plaintext-equivalent deliveries. Any separate
-application-level association learned after decryption belongs in a local projection.
+**Private deliveries (Decision #203).** A recipient-private canonical object is exactly one
+delivery with exactly one revision. Its `LogicalObjectKey` authority is the recipient destination
+(the account address, see the assumption below), and its object identifier is the
+recipient-specific opaque `DeliveryId`. Consistent with CBOR section 6, the message id, type-8
+revision, and content digest live inside encrypted content, and each recipient receives different
+bytes. Therefore:
 
-`NetworkId`, public object/revision identifiers, destinations, and delivery IDs remain typed and
-opaque. Their applicable byte-encoding decisions belong to #67, #113, and #130; this document does
-not choose them or infer a derivation rule from a fixture label.
+- there is no plaintext predecessor field, chain id, or edit relation on any relay-visible record,
+  and an edit of a private message is a second, unrelated delivery with its own `DeliveryId`;
+- edit linkage exists only in the decrypted `LocalProjection`;
+- while locked, logical-object output for a private delivery is a `locked-opaque` item carrying no
+  relation to any other item; and
+- neither key nor public metadata may expose a plaintext content hash, cross-recipient logical
+  message ID, or other identity that lets a relay correlate deliveries. A relay-visible pseudonymous
+  chain id may be added later as a new optional field; removing one later would be much harder.
+
+**Assumption needing owner confirmation (Decision #206).** The destination in the private key is the
+recipient's account address. Key rotation (CBOR type-7 transitions) is assumed not to change the
+account address, so rotation does not split a chain or a private key. If a transition does change
+the destination account, this must be revisited (an alias map is the recorded fallback).
+
+### Canonical source bytes
+
+"Canonical source bytes" means the **complete FRNK frame** (CBOR F6: the whole frame including its
+nine-byte header) of the identity-bearing object type that the owning protocol names for that
+revision, exactly as received, without decode/re-encode normalization. A wrapper around that object
+(for example a type-2 signature wrapper around a type-4 statement) is observation provenance, not
+revision identity: extra, stripped, or reordered signature entries change the wrapper but not the
+revision, exactly as CBOR section 6 keys directory records on the opened type-4 statement. An
+unknown type, or a frame whose minimum reader version is unsupported, is retained only as an
+observation of opaque bytes (CBOR E3, and T1: no content hash is defined for an unknown type) and
+MUST NOT become a `CanonicalRevision`.
 
 ### `CanonicalRevision`
 
@@ -64,7 +98,7 @@ commitment MUST be domain separated and commit to all of:
 
 1. the complete typed `CanonicalRevisionKey`;
 2. every immutable authenticated fact required to validate the revision;
-3. the exact canonical source bytes, without decode/re-encode normalization; and
+3. the canonical source bytes defined above; and
 4. the complete intrinsic deterministic event-order tuple defined by the owning protocol.
 
 The revision commitment MUST exclude source/relay identity, endpoint, crawl or subscription scope,
@@ -84,23 +118,37 @@ An observation is a separately keyed edge saying where a node encountered a revi
 `SourceGeneration` is a typed opaque generation under that scope. None of these fields enters public
 revision identity.
 
-The observation commitment is independently domain separated from the revision commitment and MUST
-bind:
+**Difference from the #177 contract.** The accepted solution contract on #177 defines the
+`ObservationKey` as including the canonical revision key. This model deliberately excludes it: the
+key is only where the source said the occurrence is, and the revision it points to is a committed
+attribute. Otherwise a source that re-points one position at a different revision would create a
+second, apparently unrelated key instead of a detectable same-key conflict. The revision key and
+commitment are still bound by the observation commitment, so nothing the contract wanted to bind is
+lost. This is a stated deviation for maintainer sign-off.
 
-1. the complete `ObservationKey`, including source instance, typed scope and generation, and source
-   position;
+The observation commitment is independently domain separated from the revision commitment and binds
+**only**:
+
+1. the complete `ObservationKey`;
 2. the referenced `CanonicalRevisionKey` and revision commitment; and
-3. all source-provided provenance and order facts used to validate that occurrence.
+3. the source-authenticated position/order assertion the source made for that occurrence.
 
-Local receipt time, retry counters, health scores, and quarantine administration MUST NOT enter the
-observation commitment. Exact observation commitment serialization remains owned by #130.
+Peer path, page, relay receipt, local validation status, receipt time, retry counters, health
+scores, and quarantine administration are **non-committed local metadata**: they are stored beside
+the observation, never enter its commitment, and never decide retry equality. Retry equality is
+judged on the observation commitment. Exact serialization remains owned by #130.
+
+**Batch trust.** An item's key source, scope, and generation MUST equal the authenticated batch's.
+Otherwise the batch is rejected and nothing is persisted under that key (or any other item of the
+batch, including the cursor); a source cannot write evidence under another source's identity.
 
 ### `LocalProjection`
 
 A local projection is a replaceable row keyed independently from the canonical revision. Its key
 includes the revision key, projection kind, and local viewer/security context needed to prevent one
 recipient's state from overwriting another's. It may contain decryption status, decrypted
-application material, validation caches, UI state, or a locally recovered logical-message mapping.
+application material, validation caches, UI state, the decrypted edit relation between private
+deliveries, or a locally recovered logical-message mapping.
 
 Changing a projection from `locked` to `decrypted` MUST NOT rewrite the revision, its commitment, an
 observation, or a source cursor. Projections are reconstructible conveniences unless their owning
@@ -108,46 +156,64 @@ feature explicitly defines otherwise; they are never replicated as canonical fac
 
 ## Ingest and conflict semantics
 
-An ingest batch belongs to exactly one `SourceInstanceId`, typed `SourceScope`, and
-`SourceGeneration`, and advances at most that source cursor. In one atomic transaction the node MUST
-persist, as applicable:
+An ingest batch belongs to exactly one authenticated `SourceInstanceId`, typed `SourceScope`, and
+`SourceGeneration`, and advances at most that source cursor. Generation authorization is owned by
+the owning protocol: an observation from a generation the protocol does not authorize is
+quarantined, not output-eligible. In one atomic transaction the node MUST persist, as applicable:
 
 - a new canonical revision or a revision-conflict variant;
-- a new observation or an observation-conflict variant (including quarantine state); and
+- a new observation or a quarantined observation variant; and
 - the resulting source cursor.
 
-A crash MUST expose either the whole transaction or none of it. A cursor MUST NOT name source work
-whose evidence was not durably recorded.
+A crash MUST expose either the whole transaction or none of it. If any item fails (invalid key, limit,
+write failure), the whole batch including its cursor rolls back.
 
-An identical retry—same keys, commitments, exact bytes, provenance, and order facts—is idempotent:
-it creates no new row, conflict, or output. Cursor advancement itself may also be an idempotent
-write.
+**Cursors.** A cursor is monotonic per `(source, scope, generation)`, advances only atomically with
+the batch, and names only a position that has a durable observation row or a durable quarantine row.
+A batch that rejects wholesale leaves the cursor where it was.
 
-If an existing `CanonicalRevisionKey` is presented with different exact source bytes, immutable
-authenticated facts, intrinsic order tuple, or revision commitment, the node MUST:
+An identical retry, judged on commitments (revision commitment; observation commitment) with the
+same keys, is idempotent: it creates no new row, conflict, quarantine row, or output.
 
-- preserve the existing and incoming variants as revision-conflict evidence;
-- mark that revision key ambiguous and suppress it from canonical revision output and logical-object
-  reduction; and
-- still record the source occurrence or its quarantine result and atomically settle the cursor.
+### Revision conflicts and ambiguity (Decisions #201, #202)
 
-No arrival-order or relay-preference rule may select a variant.
+If an existing `CanonicalRevisionKey` is presented with different source bytes, immutable
+authenticated facts, order tuple, or commitment, the outcome depends on authentication:
 
-If an existing `ObservationKey` is presented with a different revision reference/commitment, typed
-scope or generation representation, source-order fact, provenance fact, or observation commitment,
-the node MUST preserve both variants as observation-conflict evidence and quarantine that source
-occurrence. It MUST NOT reinterpret the new body under a fabricated key. A durable quarantine MAY
-advance that source's cursor to prevent infinite poison replay, but the quarantined occurrence MUST
-never create canonical output. A matching revision learned through an independent valid observation
-remains eligible.
+- **The variant authenticates under the owning protocol.** Two authenticated variants of one key are
+  equivocation. Preserve both as revision-conflict evidence, mark the key ambiguous, and suppress
+  it from canonical revision output and logical-object reduction. The ambiguity marker is durable:
+  eviction of variant bytes MUST NOT clear it. Any edit whose predecessor key is ambiguous is
+  withheld from output and reported as blocked, not silently dropped.
+- **The variant fails owning-protocol validation.** It is an invalid observation quarantined on its
+  source. It never creates an ambiguity marker, so one hostile relay cannot hide a real revision.
+
+No arrival-order or relay-preference rule may select a variant. There is no convergence mechanism
+now: output is a deterministic function of the evidence a node holds, and it is independent of
+arrival order. Nodes holding different evidence may differ; an evidence-exchange rule is a possible
+later follow-up and nothing here blocks it.
+
+### Observation conflicts (Decision #204)
+
+If an existing `ObservationKey` (already matched against the authenticated batch identity) is
+presented with a different commitment, for example the same position asserted for a different
+revision or a changed source-authenticated order fact, the node stores the new one as a separate
+**quarantined variant**. The first valid row stays valid and the key is **not** ambiguous. A
+revision reachable only through a quarantined observation is not output-eligible; it becomes
+eligible through any independent valid observation. A durable quarantine row lets the cursor
+name that position, but the cursor never moves backward and stays at the last recorded position
+when the variant shares the position of the valid row.
 
 ## Output and reduction
 
-The canonical revision view emits an unambiguous `CanonicalRevisionKey` at most once, regardless of
-how many observations point to it. It positions revisions only by
-`(IntrinsicOrderTuple, CanonicalRevisionKey)`, using the key as the deterministic final tie-breaker.
-It MUST NOT use observation arrival, relay identity, source position, cursor, generation, or local
-decryption time as an ordering input.
+The canonical revision view emits an unambiguous, output-eligible `CanonicalRevisionKey` at most
+once, regardless of how many observations point to it. It positions revisions only by
+`(IntrinsicOrderTuple, CanonicalRevisionKey)`. The tuple is compared element-wise as typed unsigned
+values (a value of a different type never compares equal); ties are broken by the bytewise canonical
+key bytes, whose byte encoding is owned by the migration ticket #130. This mirrors CBOR S5/S6:
+numeric fields first, then bytewise bytes; unlike S5, equal tuples are legal here and tie-broken
+(as S6's `fact_id` tiebreaker) because the key is unique. It MUST NOT use observation arrival, relay
+identity, source position, cursor, generation, or local decryption time.
 
 The intrinsic tuple is supplied and validated under the owning protocol's rules. Fan-in does not
 derive it from a wall clock. A protocol that cannot yet supply its final tuple must keep the tuple
@@ -157,34 +223,46 @@ Logical-object output groups canonical revisions by `LogicalObjectKey` and calls
 protocol reducer. The reducer owns predecessor validity, create/edit/delete rules, authorization,
 fork behavior, and any deterministic conflict result. Generic fan-in MUST NOT choose an edit winner,
 apply last-arrival-wins, or silently linearize conflicting revisions. If no reducer is available,
-revision output remains usable while logical-object output is explicitly unavailable.
+revision output remains usable while logical-object output is explicitly unavailable. Private
+deliveries have no relay-visible reducer; their output is `locked-opaque` items until a local
+projection is decrypted.
+
+**Consumers.** Value-bearing consumers (payouts, pots) MUST read only the reduced canonical view,
+never observation counts or the number of relays that saw a revision. If a revision already emitted
+is later found ambiguous (a second authenticated variant arrives), the view emits a retraction for
+it and for every revision withheld as blocked behind it; consumers MUST treat emission as
+provisional unless the owning protocol defines finality, and reversing an external effect is that
+protocol's responsibility.
 
 ## Restart and projection transitions
 
 After restart, a node reconstructs views exclusively from committed revision rows, observation rows,
 conflict/quarantine rows, projections, and per-source cursors. It MUST NOT depend on an in-memory seen
-set, delivery order, transport replay timing, or an uncommitted high-water mark. Replaying the next
-batch against those rows uses the same rules as first ingest.
+set, delivery order, transport replay timing, or an uncommitted high-water mark. A restart from a
+conflicted or quarantined state reproduces the same output, and replaying an identical batch uses the
+same rules as first ingest.
 
-A locked-to-decrypted transition replaces only the matching local projection. It may make a private
-logical object visible to the local recipient, but it does not emit another canonical revision and
-does not alter canonical ordering.
+A locked-to-decrypted transition replaces only the matching local projection. It may reveal an edit
+relation between two private deliveries to the local recipient, but it does not emit another
+canonical revision and does not alter canonical ordering.
 
 ## Field ownership and commitment boundary
 
-| Field or decision | Owner | Revision commitment | Observation commitment |
-| --- | --- | --- | --- |
-| Typed logical-object and revision key fields | owning application protocol; byte form #67/#113 | include | include by reference |
-| Private `NetworkId`, destination, `DeliveryId` | delivery protocol; applicable byte forms #67/#113 | include | include by reference |
-| Immutable authenticated facts | owning application protocol | include | only through revision commitment unless also source provenance |
-| Exact canonical source bytes | protocol decoder/canonicalization work #130 | include exactly | only through revision commitment |
-| Intrinsic deterministic order tuple | owning application protocol, integrated by #59 | include | include when asserted by source |
-| Source instance, typed scope/generation, source position | journal/federation source (#111/#134) | exclude | include |
-| Source provenance and source-order facts | journal/federation source (#111/#134) | exclude | include |
-| Cursor, arrival time, retries, peer health | local ingest (#59/#134) | exclude | exclude |
-| Locked/decrypted/UI/cache state | local projection owner (#59) | exclude | exclude |
-| Hash/serialization algorithm and domain tags | #130 | owns encoding | owns encoding |
-| Logical conflict resolution | owning protocol reducer | result is not recommitted by fan-in | exclude |
+| Field or decision                                                           | Owner                                             | Revision commitment                 | Observation commitment           |
+| --------------------------------------------------------------------------- | ------------------------------------------------- | ----------------------------------- | -------------------------------- |
+| Typed logical-object and revision key fields (authority, `NetworkTag`, ids) | owning application protocol; byte form #67/#113   | include                             | include by reference             |
+| Private destination (account address), `DeliveryId`                         | delivery protocol; applicable byte forms #67/#113 | include                             | include by reference             |
+| Immutable authenticated facts                                               | owning application protocol                       | include                             | only through revision commitment |
+| Canonical source bytes (complete identity-bearing FRNK frame)               | protocol decoder/canonicalization work #130       | include exactly                     | only through revision commitment |
+| Intrinsic deterministic order tuple                                         | owning application protocol, integrated by #59    | include                             | exclude                          |
+| Source instance, typed scope/generation, source position                    | journal/federation source (#111/#134)             | exclude                             | include                          |
+| Source-authenticated position/order assertion                               | journal/federation source (#111/#134)             | exclude                             | include                          |
+| Peer path, page, relay receipt, local validation status                     | local ingest (#59/#134)                           | exclude                             | exclude (local metadata)         |
+| Cursor, arrival time, retries, peer health                                  | local ingest (#59/#134)                           | exclude                             | exclude                          |
+| Locked/decrypted/UI/cache state, private edit relation                      | local projection owner (#59)                      | exclude                             | exclude                          |
+| Hash/serialization algorithm and domain tags, key-byte tie-break            | #130                                              | owns encoding                       | owns encoding                    |
+| Generation authorization                                                    | owning protocol                                   | exclude                             | exclude                          |
+| Logical conflict resolution                                                 | owning protocol reducer                           | result is not recommitted by fan-in | exclude                          |
 
 One fact has one authoritative home: revision facts in `CanonicalRevision`, source occurrence facts in
 `Observation`, local mutable facts in `LocalProjection`, and replay progress in `SourceCursor`.
@@ -197,17 +275,21 @@ An implementation MUST configure and enforce finite limits before allocating or 
 - canonical source bytes per revision, authenticated facts, order-tuple fields, key component bytes,
   provenance bytes, and observation bytes;
 - items and total bytes per atomic source batch;
+- observations per revision and observations per source;
+- generations and cursors per `(source, scope)`;
+- ambiguity markers and quarantine rows (per source and in total);
 - retained conflicting variants and total evidence bytes per revision and observation key;
+- revisions per logical object and the pending-predecessor buffer (edits waiting for a predecessor);
 - concurrent batches per source and total outstanding validation work; and
 - projection bytes and reducer work per logical object.
 
-Limits MUST be measured on the exact accepted bytes, not only decoded objects. Over-limit input is a
-durable rejection or quarantine reason under the applicable source occurrence; it never becomes
-canonical output. A node MAY advance a cursor past durably recorded poison input. It MUST retain
-enough bounded evidence (key, commitment, reason, and an operator-configured bounded byte sample or
-digest) to distinguish the rejection from absence. Eviction of full conflict variants MUST preserve
-the fact that the key is ambiguous; eviction MUST NOT rehabilitate canonical output. Backpressure
-MUST precede dropping an accepted atomic batch.
+Limits MUST be measured on the exact accepted bytes, not only decoded objects. Input over a quota is
+rejected as a whole batch and that source's cursor is held: it never becomes canonical output, and
+the node MUST NOT evict an ambiguity marker to make room (variant bytes may be evicted, markers may
+not). Before rejecting, a node MAY durably record a bounded quarantine row (key, commitment, reason,
+and a bounded byte sample or digest) so the rejection is distinguishable from absence, but only if
+the quarantine quota has room; otherwise it holds the cursor. Backpressure MUST precede dropping an
+accepted atomic batch.
 
 ## Fixture obligations
 
@@ -217,14 +299,24 @@ output, and logical-object output when a reducer applies. It covers:
 
 - `generation-replay`: replay of one revision from `G1` into `G2`;
 - `two-relay-public`: public `E1` observed from `R1` and `R2`;
-- `private-create-edit`: recipient delivery `P1` creation plus its edit observed at `R2`;
-- `revision-key-changed-bytes`: changed bytes under one revision key;
-- `observation-key-changed-body`: changed scope/order/provenance under one observation key;
-- `locked-to-decrypted`: a projection-only transition; and
-- `restart-from-durable-state`: restart and retry from persisted rows/cursors only.
+- `authority-namespace-key`: the same ids under a different authority are a different key;
+- `public-post-edit`: public post `E1` creation plus its edit;
+- `tombstone-identity`: a tombstone has its own revision key under the same logical object;
+- `private-create-edit`: two private deliveries with distinct ids and no plaintext predecessor;
+- `revision-key-changed-bytes`: an authenticated variant under one revision key suppresses it;
+- `unauthenticated-variant-quarantined`: a variant failing owning-protocol validation suppresses
+  nothing;
+- `retract-on-late-ambiguity`: an emitted revision, and its dependent edit, retracted;
+- `observation-key-changed-body`: same observation key, one changed fact, quarantined variant;
+- `batch-key-mismatch-rejected`: an item key not equal to the batch identity;
+- `crash-atomicity-batch-rollback`: second item fails, whole batch and cursor roll back;
+- `locked-to-decrypted`: a projection-only transition revealing the local edit relation;
+- `restart-from-durable-state`: restart and retry from persisted rows/cursors only; and
+- `restart-from-quarantined-state`: restart from a conflicted/quarantined state.
 
-Symbolic values such as `bytes:E1:v1`, `commit:rev:E1:v1`, and `opaque:delivery:P1` make each case
-readable without a protocol decoder. They assert equality and inequality only, not byte encoding.
+Symbolic values such as `frame:post:E1:v1`, `commit:revision:E1:v1`, and `opaque:delivery:P1` make each
+case readable without a protocol decoder. They assert equality and inequality only, not byte
+encoding. A fixture runner is a follow-up; the manifest is checked by an ad hoc script until then.
 
 ## Delivery map
 
@@ -238,9 +330,39 @@ readable without a protocol decoder. They assert equality and inequality only, n
   identifier byte decisions; this model requires the resulting private identifier to remain
   recipient-specific without prescribing its derivation.
 - [#130](https://github.com/schancel/frank/issues/130) owns exact canonical bytes, domain separation,
-  and commitment serialization/digest choices.
+  commitment serialization/digest choices, and the key-byte tie-break encoding.
 - [#134](https://github.com/schancel/frank/issues/134) owns durable mailbox replay/cursor behavior and
   must use the atomic/quarantine boundary above.
 
 This prerequisite does not implement or authorize any of those tickets. In particular it creates no
 route, schema, protobuf, migration, generated output, or production reducer.
+
+## Decisions
+
+- [#201](https://github.com/schancel/frank/issues/201): a revision is suppressed as ambiguous only
+  by an authenticated variant; an unauthenticated variant is a quarantined observation.
+- [#202](https://github.com/schancel/frank/issues/202): no convergence mechanism for ambiguity
+  evidence yet; output is a deterministic function of held evidence.
+- [#203](https://github.com/schancel/frank/issues/203): private edits are local decrypted relations,
+  not relay-visible chains.
+- [#204](https://github.com/schancel/frank/issues/204): a conflicting observation is a quarantined
+  inert variant; the first valid row stands.
+- [#205](https://github.com/schancel/frank/issues/205): authority and `NetworkTag` are part of the
+  public revision key.
+- [#206](https://github.com/schancel/frank/issues/206): the private destination is the account
+  address and rotation does not split chains (assumption pending owner confirmation).
+
+## #177 acceptance criteria
+
+| Criterion                                                                                                   | Where met                                                                                        |
+| ----------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| Normative keys and commitments for events and observation edges, relay-independent versus provenance fields | `CanonicalRevisionKey`, `CanonicalRevision`, `Observation`, field ownership table                |
+| Mailbox/private and public identity rules differ                                                            | private deliveries under `CanonicalRevisionKey`; `private-create-edit`                           |
+| One-output projection across relays or generations, with canonical position                                 | Output and reduction; `generation-replay`, `two-relay-public`                                    |
+| Strict per-source ordering, atomic cursor, no cross-source replay authority                                 | Ingest (Cursors); `crash-atomicity-batch-rollback`                                               |
+| Revision identity keeps logical id, no event-identity reuse                                                 | `CanonicalRevisionKey`; `public-post-edit`, `tombstone-identity`                                 |
+| Retry versus equivocation for revision rows and observation edges separately                                | Revision conflicts; Observation conflicts; changed-bytes and changed-body fixtures               |
+| Fixtures: G1 to G2, R1 and R2, post plus edit, changed bytes, changed observation, locked to decrypted      | fixture list above                                                                               |
+| Checkpoint reconstruction after restart from persisted records                                              | Restart; `restart-from-durable-state`, `restart-from-quarantined-state`                          |
+| Map to #59 and the #111/#113/#134 boundaries                                                                | Delivery map                                                                                     |
+| Maintainer sign-off before production work                                                                  | Not met; required. Also needed: sign-off on the ObservationKey deviation and the #206 assumption |

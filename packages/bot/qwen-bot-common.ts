@@ -62,20 +62,21 @@
  * (`DEFAULT_TOPUP_BUFFER_SIZE = 5`) top-ups spread out one send at a time.
  */
 import { readFileSync, existsSync, writeFileSync } from 'fs'
+import { tmpdir } from 'os'
+import { join } from 'path'
 
 import { JsonRpcProvider, Provider } from 'ethers'
 
 import { MonadHttpClient } from '@frank/wallet/monad-http'
-import { MonadAccountTxSigner } from '@frank/wallet/monad-account-tx'
-import { MonadHdKeyring } from '@frank/wallet/monad-hd-keyring'
-import { MonadChangeKeyring } from '@frank/wallet/monad-change-keyring'
-import { MonadChangePool } from '@frank/wallet/monad-change-pool'
+import {
+  MonadAccountTxSigner,
+  MonadTxSubmitter,
+} from '@frank/wallet/monad-account-tx'
 import {
   MonadSubAccountPool,
   fanOutFundSubAccounts,
   FanOutFundingResult,
 } from '@frank/wallet/monad-account-pool'
-import { SubAccountLeaseManager } from '@frank/wallet/monad-account-lease'
 import {
   MonadStampClient,
   StampMonadMessageResult,
@@ -88,7 +89,11 @@ import {
   registerMonadIdentity,
 } from '@frank/wallet/monad-identity'
 import type { ProfileInfo } from '@frank/wallet/chain/active-chain'
-import { openPersistentStampPool } from './stamp-pool-seed'
+import { createMonadStampWalletHandle } from '@frank/wallet/monad-wallet-handle'
+import {
+  MonadWalletPersistenceBundle,
+  openMonadWalletBundle,
+} from '@frank/wallet/storage/monad-wallet-bundle'
 import { buildEnvelope } from '@frank/cashweb/relay/monad-message-envelope'
 import { serializeMessageItems } from '@frank/wallet/chain/monad-chain'
 import { MessageItem } from '@frank/cashweb/types/messages'
@@ -216,6 +221,7 @@ export function profileMatches(
 export interface FundedStampSetup {
   provider: JsonRpcProvider
   stampClient: MonadStampClient
+  walletState: MonadWalletPersistenceBundle
   /** The main funded testnet wallet's own signer (ticket #77): exposed here so a caller can send
    * plain native-value transfers (e.g. funding a brand-new user's address on registration) without
    * re-deriving its own `MonadAccountTxSigner` from `mainWalletJsonPath` a second time. Not part of
@@ -226,8 +232,8 @@ export interface FundedStampSetup {
    * `sendDirectMessageText`) instead of pre-funding a large fixed batch up front -- see this
    * file's header, "Lazy per-send funding", for why. */
   pool: MonadSubAccountPool
-  /** Flushes and closes the persisted pool records (a no-op without `stateDir`). Call at shutdown. */
-  closePool(): Promise<void>
+  /** Flushes and closes the complete wallet bundle, then releases the owned RPC provider. */
+  close(): Promise<void>
 }
 
 /** Waits (polling `getStatus`) for `txHash` to reach a terminal state, throwing if it fails or
@@ -334,8 +340,8 @@ export function loadMainAccountSigner(params: {
 }
 
 /**
- * Derives a fresh HD sub-account pool (ticket #14) and wires up a `MonadStampClient` ready to send
- * Stamp-over-Monad messages, against the main funded testnet wallet at `mainWalletJsonPath`.
+ * Opens one seed-bound durable wallet bundle and wires up a `MonadStampClient` ready to send
+ * Stamp-over-Monad messages against the main funded testnet wallet at `mainWalletJsonPath`.
  *
  * **Lazy per-send funding (direct user feedback, 2026-09-28):** this used to eagerly pre-fund
  * `poolSize` sub-accounts all at once via `fundPoolWithRetry`, sized to `maxReplies + maxGreetings`
@@ -358,86 +364,119 @@ export async function setUpFundedStampClient(params: {
   rpcUrl: string
   relayBaseUrl: string
   mainWalletJsonPath: string
+  /** Stable root for the HD seed, account pools, and exact payment journals. */
+  stateRoot?: string
   poolSize?: number
   stampValueWei: bigint
   label: string
-  /** The bot's state directory (#313). When set, the pool's seed and records persist there, so a
-   * restart reuses the same sub-accounts and leftover funds stay recoverable. Without it the pool
-   * is a throwaway in-memory one (only the human-simulating tools do that). */
-  stateDir?: string
+  /** Deterministic no-network test seams. Production callers omit both. */
+  provider?: JsonRpcProvider
+  httpClient?: MonadTxSubmitter
 }): Promise<FundedStampSetup> {
-  const httpClient = new MonadHttpClient({ rpcUrl: params.rpcUrl })
-  const { provider, mainAccountSigner } = loadMainAccountSigner({
-    rpcUrl: params.rpcUrl,
-    mainWalletJsonPath: params.mainWalletJsonPath,
+  const ownsProvider = params.provider === undefined
+  const provider = params.provider ?? new JsonRpcProvider(params.rpcUrl)
+  const httpClient =
+    params.httpClient ?? new MonadHttpClient({ rpcUrl: params.rpcUrl })
+
+  const mainWallet = JSON.parse(
+    readFileSync(params.mainWalletJsonPath, 'utf8'),
+  ) as { address: string; privateKey: string }
+  const mainAccountSigner = new MonadAccountTxSigner({
+    privateKey: mainWallet.privateKey,
+    provider,
     httpClient,
   })
   console.log(
     `[${params.label}] main funding account: ${mainAccountSigner.address}`,
   )
 
-  let pool: MonadSubAccountPool
-  let changePool: MonadChangePool
-  let closePool: () => Promise<void> = async () => {}
-  if (params.stateDir) {
-    ;({ pool, changePool, close: closePool } = await openPersistentStampPool(
-      params.stateDir,
-      params.label,
-    ))
-  } else {
-    const { keyring, mnemonic } = MonadHdKeyring.generate()
-    pool = new MonadSubAccountPool({ keyring })
-    changePool = new MonadChangePool({
-      keyring: MonadChangeKeyring.fromMnemonic(mnemonic),
-    })
-  }
-
-  if (params.poolSize) {
-    pool.ensureSize(params.poolSize)
-
-    const feeData = await provider.getFeeData()
-    const fallbackMaxFeePerGas = BigInt(250000000000) // 250 gwei -- only if the node can't report feeData at all
-    const maxFeePerGas = feeData.maxFeePerGas ?? fallbackMaxFeePerGas
-    const estimatedBurnGasLimit = BigInt(23000)
-    const gasReserve =
-      (maxFeePerGas * estimatedBurnGasLimit * BigInt(11)) / BigInt(10)
-    console.log(
-      `[${params.label}] maxFeePerGas=${maxFeePerGas} wei; funding each sub-account with stampValue=${params.stampValueWei} + gasReserve=${gasReserve} wei`,
-    )
-
-    const funded = await fundPoolWithRetry({
-      pool,
-      mainAccountSigner,
-      stampValueWei: params.stampValueWei,
-      gasReserve,
-      label: params.label,
-    })
-    for (const f of funded) {
-      console.log(
-        `[${params.label}] funded ${f.address} (sub-account ${f.index}) with ${f.fundedValue} wei, tx ${f.txHash}`,
-      )
-      await waitForConfirmation(
-        mainAccountSigner,
-        f.txHash,
-        `${params.label} funding tx (sub-account ${f.index})`,
-      )
-      console.log(
-        `[${params.label}] funding tx for sub-account ${f.index} confirmed on-chain`,
-      )
+  const stateRoot =
+    params.stateRoot ?? join(tmpdir(), 'frank-funded-stamp-state', params.label)
+  let walletState: MonadWalletPersistenceBundle | undefined
+  let closed = false
+  const close = async (): Promise<void> => {
+    if (closed) return
+    closed = true
+    let closeError: unknown
+    try {
+      await walletState?.close()
+    } catch (err) {
+      closeError = err
+    } finally {
+      if (ownsProvider) provider.destroy()
     }
+    if (closeError !== undefined) throw closeError
   }
 
-  const leaseManager = new SubAccountLeaseManager(pool)
-  const stampClient = new MonadStampClient({
-    pool,
-    leaseManager,
-    provider,
-    httpClient,
-    changePool,
-    relayBaseUrl: params.relayBaseUrl,
-  })
+  try {
+    walletState = await openMonadWalletBundle({
+      location: stateRoot,
+      createSeedIfEmpty: true,
+      mode: 'create',
+    })
+    const pool = walletState.pool
+    const stampClient = new MonadStampClient(
+      createMonadStampWalletHandle({
+        walletState,
+        provider,
+        httpClient,
+        relayBaseUrl: params.relayBaseUrl,
+      }),
+    )
+    // Reconcile retained exact payment authority before funding or signing anything new.
+    await stampClient.reconcileOrThrow()
 
-  return { provider, stampClient, mainAccountSigner, pool, closePool }
+    if (params.poolSize) {
+      pool.ensureSize(params.poolSize)
+
+      const feeData = await provider.getFeeData()
+      const fallbackMaxFeePerGas = BigInt(250000000000) // 250 gwei -- only if the node can't report feeData at all
+      const maxFeePerGas = feeData.maxFeePerGas ?? fallbackMaxFeePerGas
+      const estimatedStampGasLimit = BigInt(23000)
+      const gasReserve =
+        (maxFeePerGas * estimatedStampGasLimit * BigInt(11)) / BigInt(10)
+      console.log(
+        `[${params.label}] maxFeePerGas=${maxFeePerGas} wei; funding each sub-account with stampValue=${params.stampValueWei} + gasReserve=${gasReserve} wei`,
+      )
+
+      const funded = await fundPoolWithRetry({
+        pool,
+        mainAccountSigner,
+        stampValueWei: params.stampValueWei,
+        gasReserve,
+        label: params.label,
+      })
+      for (const f of funded) {
+        console.log(
+          `[${params.label}] funded ${f.address} (sub-account ${f.index}) with ${f.fundedValue} wei, tx ${f.txHash}`,
+        )
+        await waitForConfirmation(
+          mainAccountSigner,
+          f.txHash,
+          `${params.label} funding tx (sub-account ${f.index})`,
+        )
+        console.log(
+          `[${params.label}] funding tx for sub-account ${f.index} confirmed on-chain`,
+        )
+      }
+    }
+
+    return {
+      provider,
+      stampClient,
+      walletState,
+      mainAccountSigner,
+      pool,
+      close,
+    }
+  } catch (err) {
+    try {
+      await close()
+    } catch {
+      // Preserve the startup/reconciliation error that made the setup unusable.
+    }
+    throw err
+  }
 }
 
 /**
@@ -470,6 +509,9 @@ export async function sendDirectMessageItems(params: {
   stampValueWei: bigint
   networkTag: string
 }): Promise<StampMonadMessageResult> {
+  // This authorizes inventory preparation only after all crash-surviving exact attempts and
+  // recipient-payment recovery facts have reached a safe state.
+  await params.stampClient.reconcileOrThrow()
   const gasReserveWei = await quoteMonadStampPaymentGasReserve({
     signer: params.mainAccountSigner,
     recipientPublicKey: params.toPubKey,

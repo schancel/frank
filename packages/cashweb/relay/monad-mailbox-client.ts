@@ -43,7 +43,8 @@
  *   retried with bounded exponential backoff (honouring Retry-After), then
  *   {@link MonadMailboxRetryableError}.
  *
- * The relay keeps at most 8 unexpired consumed challenges per recipient, so more than ~8
+ * The relay keeps a bounded number of unexpired consumed challenges per recipient (8 in #197 as
+ * first merged; the follow-up this client assumes raises it to 30 per 60 s), so more than ~8
  * authenticated pages inside 60 s can be refused; {@link fetchMonadMailboxInbox} therefore asks for
  * 100 rows per page (the maximum) and a caller that gets a truncated result simply polls again.
  */
@@ -126,8 +127,10 @@ export interface MailboxRetryOptions {
   maxAttempts?: number
   /** First backoff delay; doubles per attempt. Default 500 ms. */
   baseDelayMs?: number
-  /** Upper bound for one delay (also caps Retry-After). Default 15 000 ms. */
+  /** Upper bound for one exponential-backoff delay. Default 15 000 ms. */
   maxDelayMs?: number
+  /** Upper bound for a relay-supplied Retry-After (non-capacity 429). Default 60 000 ms. */
+  maxRetryAfterMs?: number
   sleep?: (ms: number) => Promise<void>
 }
 
@@ -358,11 +361,13 @@ class Backoff {
   private readonly max: number
   private readonly base: number
   private readonly cap: number
+  private readonly hintCap: number
   private readonly sleeper: (ms: number) => Promise<void>
   constructor(options: MailboxRetryOptions | undefined) {
     this.max = Math.max(1, options?.maxAttempts ?? 4)
     this.base = options?.baseDelayMs ?? 500
     this.cap = options?.maxDelayMs ?? 15_000
+    this.hintCap = options?.maxRetryAfterMs ?? 60_000
     this.sleeper = options?.sleep ?? defaultSleep
   }
   /** Returns false when the budget is spent. */
@@ -370,7 +375,14 @@ class Backoff {
     this.attempt += 1
     if (this.attempt >= this.max) return false
     const exponential = this.base * 2 ** (this.attempt - 1)
-    await this.sleeper(Math.min(this.cap, Math.max(exponential, hintMs ?? 0)))
+    // Our own backoff is capped tightly, but a relay's explicit Retry-After is honoured up to a
+    // separate, larger bound (retrying earlier than asked just burns attempts).
+    await this.sleeper(
+      Math.max(
+        Math.min(this.cap, exponential),
+        Math.min(this.hintCap, hintMs ?? 0),
+      ),
+    )
     return true
   }
 }
@@ -551,6 +563,7 @@ async function signedRequest(
   ) => Promise<MailboxHttpResponse>,
   what: string,
 ): Promise<MailboxHttpResponse> {
+  recipientBytes(auth.recipient) // fail locally on a malformed recipient, before any request
   const http = auth.http ?? defaultHttp
   const base = auth.relayBaseUrl.replace(/\/+$/, '')
   // Track which step failed so a 401 is classified correctly.

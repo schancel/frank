@@ -35,12 +35,20 @@ import { PublicKey } from 'bitcore-lib-xpi'
 
 import { activeChain } from '@frank/wallet/chain'
 import type { DirectMessageReceived, WalletHandle } from '@frank/wallet/chain'
+import {
+  MonadMailboxChallengeCapacityError,
+  MonadMailboxUnavailableError,
+} from '@frank/cashweb/relay/monad-mailbox-client'
 import type { ReceivedMessageWrapper } from '@frank/cashweb/types/user-interface'
 import { useChatStore } from '../stores/chats'
 
 /** Default direct-message poll interval, in milliseconds -- within issue #42's suggested 5-10s
  * range. Configurable via `MONAD_DM_POLL_INTERVAL_MS` (see `src/boot/monad-direct-messages.ts`). */
 export const DEFAULT_DIRECT_MESSAGE_POLL_INTERVAL_MS = 7000
+
+/** Longest pause between polls while the relay has no mailbox (404): progressive backoff from
+ * the poll interval, doubling, capped here. */
+export const MAX_MAILBOX_UNAVAILABLE_BACKOFF_MS = 60_000
 
 /** Adapts one `DirectMessageReceived` record into a `ReceivedMessageWrapper`, or `undefined` if
  * the sender's profile/pubkey can't be resolved right now (logged, not thrown -- one bad/
@@ -106,11 +114,16 @@ export function startDirectMessagePolling({
 }): DirectMessagePolling {
   const chats = useChatStore()
   let sinceMs = chats.getLastReceived ?? 0
-  let inFlight = false
+  let stopped = false
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let unavailableFailures = 0
 
+  // Polls are chained (next one is scheduled when this one settles), never overlapping, so the
+  // delay can adapt to what the relay just told us.
   const poll = async () => {
-    if (inFlight) return
-    inFlight = true
+    const startedAt = Date.now()
+    let nextDelayMs = intervalMs
+    let steady = true
     try {
       const received = await activeChain.directMessages.fetchSince({
         wallet,
@@ -123,6 +136,7 @@ export function startDirectMessagePolling({
             reason,
           ),
       })
+      unavailableFailures = 0
       if (received.length === 0) {
         return
       }
@@ -149,18 +163,44 @@ export function startDirectMessagePolling({
         sinceMs = nextSinceMs
       }
     } catch (err) {
-      console.error('direct-message polling failed', err)
+      if (err instanceof MonadMailboxChallengeCapacityError) {
+        // The relay caps authenticated reads per recipient per minute; hammering only extends
+        // the outage. Wait as long as the relay asked, but keep the loop alive.
+        steady = false
+        nextDelayMs = Math.max(intervalMs, err.retryAfterMs)
+        console.warn(
+          `direct-message polling rate limited; retrying in ${nextDelayMs} ms`,
+        )
+      } else if (err instanceof MonadMailboxUnavailableError) {
+        steady = false
+        unavailableFailures += 1
+        nextDelayMs = Math.min(
+          MAX_MAILBOX_UNAVAILABLE_BACKOFF_MS,
+          intervalMs * 2 ** unavailableFailures,
+        )
+        console.error(
+          `relay has no direct-message mailbox; retrying in ${nextDelayMs} ms`,
+          err,
+        )
+      } else {
+        console.error('direct-message polling failed', err)
+      }
     } finally {
-      inFlight = false
+      // Steady state keeps a fixed cadence (interval measured start to start); relay-requested
+      // pauses are honoured in full.
+      const delay = steady
+        ? Math.max(0, nextDelayMs - (Date.now() - startedAt))
+        : nextDelayMs
+      if (!stopped) timer = setTimeout(() => void poll(), delay)
     }
   }
 
-  const timer = setInterval(() => {
-    void poll()
-  }, intervalMs)
   void poll()
 
   return {
-    stop: () => clearInterval(timer),
+    stop: () => {
+      stopped = true
+      if (timer !== undefined) clearTimeout(timer)
+    },
   }
 }

@@ -22,7 +22,10 @@ const { MonadStampPayment } = __pb_monad_message_pb
 export const MOCK_MAX_PAGE = 100
 export const MOCK_MAX_BYTES = 2 * 1024 * 1024 * 2 + 16 * 1024
 const CHALLENGE_TTL_MS = 60_000
-const MAX_USED_CHALLENGES = 8
+/** Relay cap on unexpired consumed challenges per recipient. #197 as merged has 8; the relay
+ * follow-up this client assumes raises it to 30 (per 60 s). Override per test with
+ * `maxUsedChallenges`. */
+export const DEFAULT_MOCK_MAX_USED_CHALLENGES = 30
 const CURSOR_MAC_DOMAIN = Buffer.from('frank:mailbox-cursor-mac:v1\0')
 const CHALLENGE_MAC_DOMAIN = Buffer.from('frank:mailbox-challenge-mac:v1\0')
 const AUTH_DOMAIN = 'frank:mailbox-http-auth:v2'
@@ -50,6 +53,7 @@ export interface MockRelayOptions {
   enabled?: boolean
   networkTag?: Buffer
   now?: () => number
+  maxUsedChallenges?: number
 }
 
 export interface InjectedResponse {
@@ -72,6 +76,7 @@ export class MockMailboxRelay {
   readonly enabled: boolean
   readonly networkTag: Buffer
   private readonly now: () => number
+  private readonly maxUsedChallenges: number
   private readonly epoch = randomBytes(32)
   private readonly secret = randomBytes(32)
   private readonly profiles = new Map<string, Buffer>()
@@ -97,6 +102,8 @@ export class MockMailboxRelay {
     this.enabled = options.enabled ?? true
     this.networkTag = options.networkTag ?? Buffer.from('MONT')
     this.now = options.now ?? (() => Date.now())
+    this.maxUsedChallenges =
+      options.maxUsedChallenges ?? DEFAULT_MOCK_MAX_USED_CHALLENGES
   }
 
   registerProfile(address: string, compressedPubKey: Uint8Array) {
@@ -464,7 +471,7 @@ export class MockMailboxRelay {
       this.used.set(recipient, bucket)
       throw unauthorized() // replay stays an ordinary auth failure
     }
-    if (bucket.size >= MAX_USED_CHALLENGES) {
+    if (bucket.size >= this.maxUsedChallenges) {
       this.used.set(recipient, bucket)
       throw new HttpFail({
         ...json(429, { error: 'mailbox_challenge_capacity' }),

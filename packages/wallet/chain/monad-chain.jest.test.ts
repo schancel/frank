@@ -24,6 +24,7 @@ import { MessageItem, TextItem } from '@frank/cashweb/types/messages'
 import {
   MonadChainConfig,
   MonadChainWalletHandle,
+  MAILBOX_RECOVERY_SYNC_INTERVAL_MS,
   createMonadChain,
   deserializeMessageItems,
   serializeMessageItems,
@@ -1255,9 +1256,50 @@ describe('createMonadChain: directMessages.fetchSince mailbox behaviour', () => 
       records: [await recoveryRecord(bob, 'terminal:expired', 'ab')],
     })
     mockedAckRecovery.mockRejectedValueOnce(new Error('ack failed'))
-    await expect(
-      chain.directMessages.fetchSince({ wallet, sinceMs: 0 }),
-    ).resolves.toEqual([])
+    // Recovery is throttled per wallet, so let the interval elapse before the second attempt.
+    const realNow = Date.now()
+    const nowSpy = jest
+      .spyOn(Date, 'now')
+      .mockReturnValue(realNow + MAILBOX_RECOVERY_SYNC_INTERVAL_MS + 1)
+    try {
+      await expect(
+        chain.directMessages.fetchSince({ wallet, sinceMs: 0 }),
+      ).resolves.toEqual([])
+      expect(mockedAckRecovery).toHaveBeenCalledTimes(1)
+    } finally {
+      nowSpy.mockRestore()
+    }
+  })
+
+  it('syncs recovery at most once per interval so a steady poll spends one challenge (inbox only)', async () => {
+    const chain = createMonadChain(TEST_CONFIG)
+    const { wallet } = walletWithJournal()
+    mockedFetchMonadMessagesSince.mockResolvedValue([])
+    const t0 = Date.now()
+    const nowSpy = jest.spyOn(Date, 'now')
+    try {
+      for (const offset of [0, 7_000, 14_000, 59_000]) {
+        nowSpy.mockReturnValue(t0 + offset)
+        await chain.directMessages.fetchSince({ wallet, sinceMs: 0 })
+      }
+      expect(mockedFetchMonadMessagesSince).toHaveBeenCalledTimes(4)
+      expect(mockedFetchRecoveries).toHaveBeenCalledTimes(1)
+      nowSpy.mockReturnValue(t0 + MAILBOX_RECOVERY_SYNC_INTERVAL_MS + 1)
+      await chain.directMessages.fetchSince({ wallet, sinceMs: 0 })
+      expect(mockedFetchRecoveries).toHaveBeenCalledTimes(2)
+    } finally {
+      nowSpy.mockRestore()
+    }
+  })
+
+  it('a failed recovery read is not retried on the very next poll', async () => {
+    const chain = createMonadChain(TEST_CONFIG)
+    const { wallet } = walletWithJournal()
+    mockedFetchMonadMessagesSince.mockResolvedValue([])
+    mockedFetchRecoveries.mockRejectedValue(new Error('relay down'))
+    await chain.directMessages.fetchSince({ wallet, sinceMs: 0 })
+    await chain.directMessages.fetchSince({ wallet, sinceMs: 0 })
+    expect(mockedFetchRecoveries).toHaveBeenCalledTimes(1)
   })
 
   it('propagates a missing mailbox (404) instead of reporting an empty inbox, and skips recovery', async () => {

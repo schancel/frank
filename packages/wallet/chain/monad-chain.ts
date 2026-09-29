@@ -280,12 +280,24 @@ function bareHex(bytes: Uint8Array): string {
  * Best-effort relative to the inbox read (which already succeeded when this runs): a relay/network
  * failure here is retried on the next poll rather than failing message delivery.
  */
+/** Recovery obligations change rarely, but each read spends one of the relay's per-recipient
+ * authenticated-request slots (a challenge is consumed per signed read). Polling inbox + recovery
+ * every few seconds exhausts that budget, so recovery is synced at most this often per wallet. */
+export const MAILBOX_RECOVERY_SYNC_INTERVAL_MS = 60_000
+const lastRecoverySync = new WeakMap<object, number>()
+
 async function syncMailboxRecoveries(
   wallet: MonadChainWalletHandle,
   mailbox: MailboxAuthParams,
 ): Promise<void> {
   const journal = wallet.stampPaymentJournal
   if (journal === undefined) return
+  const now = Date.now()
+  const last = lastRecoverySync.get(wallet)
+  if (last !== undefined && now - last < MAILBOX_RECOVERY_SYNC_INTERVAL_MS)
+    return
+  // Stamp the attempt (not just success): a failing relay must not be re-asked every poll.
+  lastRecoverySync.set(wallet, now)
   let records
   try {
     records = (await fetchMonadMailboxRecoveries(mailbox)).records

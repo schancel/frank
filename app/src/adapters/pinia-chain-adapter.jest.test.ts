@@ -123,6 +123,12 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
     // proved unreliable in practice (polls never observed as run), so this favors a few tens of
     // milliseconds of real wall-clock time for a much more robust test.
     const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
+    // Condition-based wait: a fixed sleep is flaky when the machine is busy (full jest run).
+    const waitUntil = async (condition: () => boolean, timeoutMs = 3000) => {
+      const deadline = Date.now() + timeoutMs
+      while (!condition() && Date.now() < deadline) await wait(5)
+      await wait(5)
+    }
 
     it('feeds fetchSince results into chats.receiveMessages and advances sinceMs', async () => {
       const chats = useChatStore()
@@ -228,7 +234,7 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
 
       const polling = startDirectMessagePolling({ wallet, intervalMs: 20 })
       try {
-        await wait(35)
+        await waitUntil(() => fetchSinceSpy.mock.calls.length >= 2)
         expect(receiveMessagesSpy).toHaveBeenCalledWith([
           expect.objectContaining({ index: 'valid-after-poison' }),
         ])
@@ -286,7 +292,7 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
 
       const polling = startDirectMessagePolling({ wallet, intervalMs: 20 })
       try {
-        await wait(35)
+        await waitUntil(() => fetchSinceSpy.mock.calls.length >= 2)
         expect(consoleErrorSpy).toHaveBeenCalled()
         expect(receiveMessagesSpy).toHaveBeenCalledTimes(1)
         expect(fetchSinceSpy).toHaveBeenNthCalledWith(2, {
@@ -322,7 +328,7 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
 
       const polling = startDirectMessagePolling({ wallet, intervalMs: 20 })
       try {
-        await wait(35)
+        await waitUntil(() => fetchSinceSpy.mock.calls.length >= 2)
         expect(consoleErrorSpy).toHaveBeenCalled()
         expect(receiveMessagesSpy).toHaveBeenCalledWith([
           expect.objectContaining({ index: 'later' }),

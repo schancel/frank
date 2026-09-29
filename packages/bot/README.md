@@ -95,7 +95,7 @@ real network — excluded from `jest`'s `testMatch`, meant to be run manually):
 
 > **Historical (pre-PR #197).** The relay now serves each recipient only its own inbox behind a
 > signed challenge, so bots read `fetchMonadMessagesSince({ ...mailboxAuthFor(identity, relayBaseUrl),
-> sinceMs })` and no longer download the global feed. The envelope's `to` check below is retained as
+sinceMs })` and no longer download the global feed. The envelope's `to` check below is retained as
 > defence in depth.
 
 Ticket #37's `GET /message/monad?since=<t>` returns **every** stored message — there's no

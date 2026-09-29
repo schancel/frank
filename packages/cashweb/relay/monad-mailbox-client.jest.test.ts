@@ -166,6 +166,7 @@ interface Fixture {
 
 function makeFixture(
   options: {
+    maxUsedChallenges?: number
     enabled?: boolean
     register?: boolean
     signWith?: PrivateKey
@@ -178,7 +179,10 @@ function makeFixture(
       .update(privateKey.toBuffer())
       .digest('hex')
       .slice(0, 40)
-  const relay = new MockMailboxRelay({ enabled: options.enabled })
+  const relay = new MockMailboxRelay({
+    enabled: options.enabled,
+    maxUsedChallenges: options.maxUsedChallenges,
+  })
   if (options.register !== false) {
     relay.registerProfile(address, privateKey.toPublicKey().toBuffer())
   }
@@ -353,7 +357,7 @@ describe('fetchMonadMailboxInbox / fetchMonadMessagesSince', () => {
   })
 
   it('a later-page failure returns a complete-timestamp prefix (relay caps 8 unexpired challenges), first-page failure throws', async () => {
-    const f = makeFixture()
+    const f = makeFixture({ maxUsedChallenges: 8 })
     for (let i = 0; i < 12; i++)
       f.relay.addMessage(message(f.address, 100 + i, i))
     const truncated = await fetchMonadMailboxInbox({
@@ -374,7 +378,7 @@ describe('fetchMonadMailboxInbox / fetchMonadMessagesSince', () => {
     expect(capacity).toMatchObject({ status: 429, retryAfterMs: 60_000 })
     expect(f.sleeps).toEqual([]) // capacity only returns on expiry: not retried in-call
     // The feed wrapper reports truncation to the caller.
-    const g = makeFixture()
+    const g = makeFixture({ maxUsedChallenges: 8 })
     for (let i = 0; i < 12; i++)
       g.relay.addMessage(message(g.address, 100 + i, i))
     const reasons: unknown[] = []
@@ -427,7 +431,9 @@ describe('fetchMonadMailboxInbox / fetchMonadMessagesSince', () => {
         sinceMs: nextSince,
       })
       const all = [...first, ...second]
-      expect(all.map(m => m.timestamp).sort((a, b) => a - b)).toEqual([99, 100, 100])
+      expect(all.map(m => m.timestamp).sort((a, b) => a - b)).toEqual([
+        99, 100, 100,
+      ])
       expect(
         new Set(all.map(m => bytesToHex(m.message!.payloadHash))).size,
       ).toBe(3)
@@ -508,6 +514,54 @@ describe('mailbox disabled / unknown relay', () => {
   })
 })
 
+describe('local validation before anything is sent', () => {
+  it('refuses to sign a challenge with a foreign signing_domain (no cross-protocol signature)', async () => {
+    const f = makeFixture()
+    const originalHttp = f.auth.http!
+    f.auth.http = async request => {
+      const response = await originalHttp(request)
+      if (request.url.includes('/auth/')) {
+        const body = JSON.parse(
+          new TextDecoder().decode(response.data as Uint8Array),
+        )
+        body.signing_domain = 'frank:something-else:v1'
+        response.data = new TextEncoder().encode(JSON.stringify(body))
+      }
+      return response
+    }
+    await expect(
+      fetchMonadMessagesSince({ ...f.auth, sinceMs: 0 }),
+    ).rejects.toThrow(/signing_domain/)
+    expect(f.signCalls()).toBe(0)
+  })
+
+  it.each([
+    ['payload hash not hex', 'nothex', '22'.repeat(32)],
+    ['payload hash upper-case', 'AB'.repeat(32), '22'.repeat(32)],
+    ['payload hash short', '11'.repeat(31), '22'.repeat(32)],
+    ['obligation id not hex', '11'.repeat(32), 'zz'.repeat(32)],
+    ['obligation id long', '11'.repeat(32), '22'.repeat(33)],
+  ])(
+    'ack rejects %s locally: no request is made and nothing is signed',
+    async (_name, payloadHashHex, obligationIdHex) => {
+      const f = makeFixture()
+      await expect(
+        ackMonadMailboxRecovery({ ...f.auth, payloadHashHex, obligationIdHex }),
+      ).rejects.toBeInstanceOf(MonadMailboxRequestError)
+      expect(f.relay.log).toHaveLength(0)
+      expect(f.signCalls()).toBe(0)
+    },
+  )
+
+  it('rejects a malformed recipient locally', async () => {
+    const f = makeFixture()
+    await expect(
+      fetchMonadMessagesSince({ ...f.auth, recipient: '0x1234', sinceMs: 0 }),
+    ).rejects.toBeInstanceOf(MonadMailboxRequestError)
+    expect(f.signCalls()).toBe(0)
+  })
+})
+
 describe('authentication failures', () => {
   it('an unregistered recipient is a 401 auth error (one fresh-challenge retry, then throw)', async () => {
     const f = makeFixture({ register: false })
@@ -577,7 +631,7 @@ describe('retry / rate limit handling', () => {
     expect(f.sleeps).toEqual([100, 200])
   })
 
-  it('honours Retry-After on 429 (seconds and HTTP-date), capped by maxDelayMs', async () => {
+  it('honours Retry-After on 429 (seconds), capped by maxRetryAfterMs', async () => {
     const f = makeFixture()
     f.relay.addMessage(message(f.address, 100, 1))
     f.relay.inject('challenge', {
@@ -593,7 +647,14 @@ describe('retry / rate limit handling', () => {
       headers: { 'retry-after': '120' },
     })
     await fetchMonadMailboxInboxPage({ ...f.auth, sinceMs: 0 })
-    expect(f.sleeps).toEqual([10_000]) // capped
+    expect(f.sleeps).toEqual([60_000]) // Retry-After honoured, capped at maxRetryAfterMs (F4)
+    f.sleeps.length = 0
+    f.relay.inject('challenge', {
+      status: 429,
+      headers: { 'retry-after': '3600' },
+    })
+    await fetchMonadMailboxInboxPage({ ...f.auth, sinceMs: 0 })
+    expect(f.sleeps).toEqual([60_000])
   })
 
   it('gives up after maxAttempts with a retryable error that says so', async () => {

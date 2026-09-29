@@ -148,12 +148,13 @@ crate) and `src/monad_ws.rs` (a WS *client*, subscribing to Monad's own `eth_sub
 block-header feed for internal `ChainAdapter` use — nothing to do with pushing messages to
 recipients). The app's legacy `RelayClient`/`isomorphic-ws` WS code (`app/src/cashweb/relay/
 index.ts`) targets a different, pre-Monad relay-server protocol entirely, not this registry's HTTP
-API. **A Monad-message recipient today has no way to be pushed a new message; they can only poll
-`GET /message/monad/:payload_hash`** (and would need the payload hash out-of-band, since there's
-also no "list new messages for me" endpoint on this path — only `Registry::get_monad_message` by
-exact hash). This demo's step above (`GET` right after `PUT`) proves the read side works, but does
-not and cannot prove "delivery" in the sense of a live push, because that mechanism doesn't exist
-yet for this message path.
+API. **A Monad-message recipient today has no way to be pushed a new message; they can only poll their
+own authenticated inbox** (`POST /message/monad/auth/:recipient` challenge, then a signed
+`GET /message/monad/inbox/:recipient`; the unauthenticated `GET /message/monad/:payload_hash` and
+`GET /message/monad?since=` were removed in PR #197). This demo's read-back step therefore reads the
+recipient's mailbox after the `PUT`; it proves the read side works, but does not and cannot prove
+"delivery" in the sense of a live push, because that mechanism doesn't exist yet for this message
+path.
 
 ## Step 4: independently verify the broadcast on-chain (acceptance criterion 4)
 

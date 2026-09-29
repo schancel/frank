@@ -1816,57 +1816,57 @@ pub(crate) async fn handle_issue_mailbox_challenge(
     let requested_since = private_since(params.since)?;
     let (resource, default_limit, since, recovery_payload_hash, recovery_obligation_id) =
         match params.resource.as_str() {
-        "inbox"
-            if params.recovery_payload_hash.is_none()
-                && params.recovery_obligation_id.is_none() =>
-        {
-            (MailboxResource::Inbox, 50, requested_since, None, None)
-        }
-        "recovery"
-            if requested_since == 0
-                && params.recovery_payload_hash.is_none()
-                && params.recovery_obligation_id.is_none() =>
-        {
-            (MailboxResource::Recovery, 20, 0, None, None)
-        }
-        "recovery_ack"
-            if requested_since == 0
-                && params.cursor.is_none()
-                && params.limit.is_none()
-                && params.max_bytes.is_none() =>
-        {
-            let payload_hash = params
-                .recovery_payload_hash
-                .as_deref()
-                .and_then(|value| {
-                    let mut decoded = [0; 32];
-                    (value.len() == 64)
-                        .then(|| hex::decode_to_slice(value, &mut decoded).ok())
-                        .flatten()
-                        .map(|()| decoded)
-                })
-                .ok_or(PrivateMailboxError::InvalidLimit)?;
-            let obligation_id = params
-                .recovery_obligation_id
-                .as_deref()
-                .and_then(|value| {
-                    let mut decoded = [0; 32];
-                    (value.len() == 64)
-                        .then(|| hex::decode_to_slice(value, &mut decoded).ok())
-                        .flatten()
-                        .map(|()| decoded)
-                })
-                .ok_or(PrivateMailboxError::InvalidLimit)?;
-            (
-                MailboxResource::RecoveryAck,
-                1,
-                0,
-                Some(payload_hash),
-                Some(obligation_id),
-            )
-        }
-        _ => return Err(PrivateMailboxError::InvalidLimit),
-    };
+            "inbox"
+                if params.recovery_payload_hash.is_none()
+                    && params.recovery_obligation_id.is_none() =>
+            {
+                (MailboxResource::Inbox, 50, requested_since, None, None)
+            }
+            "recovery"
+                if requested_since == 0
+                    && params.recovery_payload_hash.is_none()
+                    && params.recovery_obligation_id.is_none() =>
+            {
+                (MailboxResource::Recovery, 20, 0, None, None)
+            }
+            "recovery_ack"
+                if requested_since == 0
+                    && params.cursor.is_none()
+                    && params.limit.is_none()
+                    && params.max_bytes.is_none() =>
+            {
+                let payload_hash = params
+                    .recovery_payload_hash
+                    .as_deref()
+                    .and_then(|value| {
+                        let mut decoded = [0; 32];
+                        (value.len() == 64)
+                            .then(|| hex::decode_to_slice(value, &mut decoded).ok())
+                            .flatten()
+                            .map(|()| decoded)
+                    })
+                    .ok_or(PrivateMailboxError::InvalidLimit)?;
+                let obligation_id = params
+                    .recovery_obligation_id
+                    .as_deref()
+                    .and_then(|value| {
+                        let mut decoded = [0; 32];
+                        (value.len() == 64)
+                            .then(|| hex::decode_to_slice(value, &mut decoded).ok())
+                            .flatten()
+                            .map(|()| decoded)
+                    })
+                    .ok_or(PrivateMailboxError::InvalidLimit)?;
+                (
+                    MailboxResource::RecoveryAck,
+                    1,
+                    0,
+                    Some(payload_hash),
+                    Some(obligation_id),
+                )
+            }
+            _ => return Err(PrivateMailboxError::InvalidLimit),
+        };
     let limit = if resource == MailboxResource::RecoveryAck {
         1
     } else {
@@ -4217,9 +4217,11 @@ mod tests {
         )
         .await
         .expect_err("legacy routing cannot be rebound to an unrelated public key");
+        // The unrelated legacy attempt row is retained, but the rebinding itself is rejected.
         assert!(matches!(
             error,
-            ProcessMonadMessageError::InvalidEnvelope(_)
+            ProcessMonadMessageError::LegacyExactRetained(inner)
+                if matches!(*inner, ProcessMonadMessageError::InvalidEnvelope(_))
         ));
         assert!(transport.calls().is_empty());
         assert!(registry
@@ -5232,7 +5234,10 @@ mod tests {
                 Path((
                     recipient.to_hex(),
                     hex::encode(&active.payload_hash),
-                    challenge["recovery_obligation_id"].as_str().unwrap().to_string(),
+                    challenge["recovery_obligation_id"]
+                        .as_str()
+                        .unwrap()
+                        .to_string(),
                 )),
                 headers,
                 Extension(server.clone()),
@@ -5327,7 +5332,10 @@ mod tests {
                 Path((
                     recipient.to_hex(),
                     hex::encode(&terminal.payload_hash),
-                    challenge["recovery_obligation_id"].as_str().unwrap().to_string(),
+                    challenge["recovery_obligation_id"]
+                        .as_str()
+                        .unwrap()
+                        .to_string(),
                 )),
                 headers,
                 Extension(server.clone()),

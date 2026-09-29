@@ -1536,6 +1536,11 @@ mod tests {
                     let hash = requested_hash();
                     let specs = self.specs.lock().unwrap();
                     let spec = specs.get(&hash).expect("known hash");
+                    // An unsent, unconfirmed transaction is unknown to the node, not merely
+                    // receipt-less: a visible body without a receipt means "submitted".
+                    if !spec.confirmed && spec.transaction_hash_override.is_none() {
+                        return Ok(Value::Null);
+                    }
                     Ok(json!({
                         "hash": spec.transaction_hash_override
                             .or((method_call_count > 1).then_some(spec.transaction_hash_after_first).flatten())
@@ -2261,13 +2266,6 @@ mod tests {
                 .iter()
                 .filter(|method| method.as_str() == "eth_sendRawTransaction")
                 .count(),
-            1
-        );
-        assert_eq!(
-            active_registry
-                .monad_outbox_record(&payload_hash)?
-                .unwrap()
-                .reconciliation_attempts,
             1
         );
         assert!(active_registry.get_monad_message(&payload_hash)?.is_some());

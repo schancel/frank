@@ -34,7 +34,7 @@ fn check_config_cli_accepts_the_checked_in_local_configuration() {
 fn check_config_cli_accepts_an_enabled_monad_mailbox_without_starting_it() {
     let enabled = include_str!("../../cashwebd.local.toml").replace(
         "[registry.monad_mailbox]\nenabled = false",
-        "[registry.monad_mailbox]\nenabled = true\nrpc_url = \"https://rpc.invalid\"",
+        "[registry.monad_mailbox]\nenabled = true\nrpc_url = \"https://rpc.invalid\"\nmin_value_wei = \"1\"\nexpected_chain_id = 143",
     );
     let output = check_stdin(enabled.as_bytes());
     assert!(

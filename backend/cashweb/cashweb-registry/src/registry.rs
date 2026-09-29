@@ -912,9 +912,11 @@ impl Registry {
         payload_hash: &[u8],
         obligation_id: &[u8],
     ) -> Result<crate::store::monad_outbox::MonadRecoveryAck> {
-        self.db
-            .monad_outbox()
-            .acknowledge_terminal_recovery(&recipient, payload_hash, obligation_id)
+        self.db.monad_outbox().acknowledge_terminal_recovery(
+            &recipient,
+            payload_hash,
+            obligation_id,
+        )
     }
 
     /// Fully verify and write a Monad-native profile registration (ticket #45) -- the Monad

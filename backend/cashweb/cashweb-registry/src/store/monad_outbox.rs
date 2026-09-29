@@ -20,10 +20,9 @@ use crate::{
     monad_http::{Address, Hash32},
     proto,
     store::db::{
-        Db, CF, CF_MONAD_MESSAGES, CF_MONAD_MESSAGES_BY_RECIPIENT_TIME,
-        CF_MONAD_MESSAGE_ATTEMPTS, CF_MONAD_OUTBOX_ACTIVE_V1, CF_MONAD_OUTBOX_HISTORY_V2,
-        CF_MONAD_OUTBOX_MEMBERS_V1, CF_MONAD_OUTBOX_META_V2, CF_MONAD_OUTBOX_RECIPIENT_V1,
-        CF_MONAD_OUTBOX_V1,
+        Db, CF, CF_MONAD_MESSAGES, CF_MONAD_MESSAGES_BY_RECIPIENT_TIME, CF_MONAD_MESSAGE_ATTEMPTS,
+        CF_MONAD_OUTBOX_ACTIVE_V1, CF_MONAD_OUTBOX_HISTORY_V2, CF_MONAD_OUTBOX_MEMBERS_V1,
+        CF_MONAD_OUTBOX_META_V2, CF_MONAD_OUTBOX_RECIPIENT_V1, CF_MONAD_OUTBOX_V1,
     },
 };
 
@@ -54,8 +53,7 @@ const RECOVERY_QUOTA_OWNER_PREFIX: &[u8] = b"outbox-recovery-quota-v5-owner:";
 const RECOVERY_OBLIGATION_ID_PREFIX: &[u8] = b"outbox-recovery-obligation-v1-record:";
 const RECOVERY_OBLIGATION_MIGRATION_KEY: &[u8] = b"outbox-recovery-obligation-v1";
 const RECOVERY_OBLIGATION_CURSOR_KEY: &[u8] = b"outbox-recovery-obligation-v1-cursor";
-const RECOVERY_OBLIGATION_CURSOR_STATE_KEY: &[u8] =
-    b"outbox-recovery-obligation-v1-cursor-state";
+const RECOVERY_OBLIGATION_CURSOR_STATE_KEY: &[u8] = b"outbox-recovery-obligation-v1-cursor-state";
 const CHAIN_BINDING_KEY: &[u8] = b"outbox-chain-id-v1";
 const CHAIN_BINDING_PENDING_KEY: &[u8] = b"outbox-chain-id-v1-pending";
 const CHAIN_BINDING_CURSOR_KEY: &[u8] = b"outbox-chain-id-v1-cursor";
@@ -790,9 +788,8 @@ impl<'a> DbMonadOutbox<'a> {
                 .into());
             }
         };
-        let cursor = checked_payload_hash(&cursor).map_err(|_| {
-            CorruptRecord(format!("{name} cursor has invalid fixed-width shape"))
-        })?;
+        let cursor = checked_payload_hash(&cursor)
+            .map_err(|_| CorruptRecord(format!("{name} cursor has invalid fixed-width shape")))?;
         if self.db.get(self.cf_outbox, cursor)?.is_none() {
             return Err(CorruptRecord(format!(
                 "{name} cursor does not reference the next extant outbox row"
@@ -928,10 +925,10 @@ impl<'a> DbMonadOutbox<'a> {
                         );
                     } else {
                         if let Some(policy) = record.policy.as_ref() {
-                        batch.delete_cf(
-                            self.cf_recipient,
-                            recipient_key(&policy.recipient, &payload_hash),
-                        );
+                            batch.delete_cf(
+                                self.cf_recipient,
+                                recipient_key(&policy.recipient, &payload_hash),
+                            );
                         }
                         batch.put_cf(
                             self.cf_history,
@@ -1009,10 +1006,10 @@ impl<'a> DbMonadOutbox<'a> {
                         );
                     } else {
                         if let Some(policy) = record.policy.as_ref() {
-                        batch.delete_cf(
-                            self.cf_recipient,
-                            recipient_key(&policy.recipient, &payload_hash),
-                        );
+                            batch.delete_cf(
+                                self.cf_recipient,
+                                recipient_key(&policy.recipient, &payload_hash),
+                            );
                         }
                         batch.put_cf(
                             self.cf_history,
@@ -1184,6 +1181,8 @@ impl<'a> DbMonadOutbox<'a> {
             }
             self.db.write_batch(batch)?;
             if next_cursor.is_none() {
+                // The chained migration takes the same non-reentrant lock.
+                drop(_guard);
                 return self.migrate_recovery_obligation_ids();
             }
         }
@@ -1256,10 +1255,7 @@ impl<'a> DbMonadOutbox<'a> {
                 batch.put_cf(
                     self.cf_meta,
                     RECOVERY_OBLIGATION_CURSOR_STATE_KEY,
-                    migration_cursor_state(
-                        "recovery obligation identity migration",
-                        &next_cursor,
-                    ),
+                    migration_cursor_state("recovery obligation identity migration", &next_cursor),
                 );
             } else {
                 batch.put_cf(self.cf_meta, RECOVERY_OBLIGATION_MIGRATION_KEY, []);
@@ -2785,10 +2781,11 @@ impl<'a> DbMonadOutbox<'a> {
         let mut encoded_bytes = 0usize;
         let mut last_cursor = None;
         let mut has_more = false;
-        for item in self.db.rocksdb().iterator_cf(
-            cf_index,
-            IteratorMode::From(&start_key, Direction::Forward),
-        ) {
+        for item in self
+            .db
+            .rocksdb()
+            .iterator_cf(cf_index, IteratorMode::From(&start_key, Direction::Forward))
+        {
             let (key, value) = item?;
             if !key.starts_with(&recipient.0) {
                 break;
@@ -2811,9 +2808,10 @@ impl<'a> DbMonadOutbox<'a> {
             let encoded = self.db.get(cf_primary, payload_hash)?.ok_or_else(|| {
                 CorruptRecord("recipient inbox index references missing primary row".to_string())
             })?;
-            let stored = proto::StoredMonadMessage::decode(encoded.as_ref()).wrap_err_with(|| {
-                CorruptRecord("recipient inbox primary protobuf cannot decode".to_string())
-            })?;
+            let stored =
+                proto::StoredMonadMessage::decode(encoded.as_ref()).wrap_err_with(|| {
+                    CorruptRecord("recipient inbox primary protobuf cannot decode".to_string())
+                })?;
             if stored.timestamp != timestamp {
                 return Err(CorruptRecord(
                     "recipient inbox index timestamp differs from its primary row".to_string(),
@@ -3318,10 +3316,9 @@ impl<'a> DbMonadOutbox<'a> {
             .get(self.cf_meta, &owner_key)?
             .ok_or_else(|| CorruptRecord("recovery quota owner index is missing".to_string()))?;
         if !owner.is_empty() {
-            return Err(CorruptRecord(
-                "recovery quota owner index value is malformed".to_string(),
-            )
-            .into());
+            return Err(
+                CorruptRecord("recovery quota owner index value is malformed".to_string()).into(),
+            );
         }
         let recipient_usage = self
             .read_required_quota_usage_locked(
@@ -3355,10 +3352,8 @@ impl<'a> DbMonadOutbox<'a> {
             .get(self.cf_meta, recovery_obligation_id_key(payload_hash))?
             .ok_or_else(|| CorruptRecord("recovery obligation identity is missing".to_string()))?;
         checked_payload_hash(&encoded).map_err(|_| {
-            CorruptRecord(
-                "recovery obligation identity has invalid fixed-width shape".to_string(),
-            )
-            .into()
+            CorruptRecord("recovery obligation identity has invalid fixed-width shape".to_string())
+                .into()
         })
     }
 
@@ -3442,10 +3437,10 @@ impl<'a> DbMonadOutbox<'a> {
         let first_member = self.get_member(payload_hash, 0)?.ok_or_else(|| {
             CorruptRecord("canonical child zero member row is missing".to_string())
         })?;
-        Ok(matches!(
-            first_member.state,
-            MonadOutboxMemberState::Confirmed { .. }
-        ) || first_member.exposed)
+        Ok(
+            matches!(first_member.state, MonadOutboxMemberState::Confirmed { .. })
+                || first_member.exposed,
+        )
     }
 
     fn retained_claim_bytes_locked(
@@ -4102,10 +4097,9 @@ fn decode_member(child_index: u32, bytes: &[u8]) -> Result<MonadOutboxMember> {
             0 => false,
             1 => true,
             _ => {
-                return Err(CorruptRecord(
-                    "member exposure flag has invalid encoding".to_string(),
+                return Err(
+                    CorruptRecord("member exposure flag has invalid encoding".to_string()).into(),
                 )
-                .into())
             }
         }
     } else {
@@ -4118,12 +4112,12 @@ fn decode_member(child_index: u32, bytes: &[u8]) -> Result<MonadOutboxMember> {
     let block_number = cursor.u64()?;
     let (lease_generation, lease_until_ms, next_replay_at_ms) =
         if version == RECORD_VERSION || version == MEMBER_RECORD_VERSION {
-        (cursor.u64()?, cursor.i64()?, cursor.i64()?)
-    } else if version == RECORD_VERSION_V2 {
-        (cursor.u64()?, cursor.i64()?, updated_at_ms)
-    } else {
-        (0, 0, updated_at_ms)
-    };
+            (cursor.u64()?, cursor.i64()?, cursor.i64()?)
+        } else if version == RECORD_VERSION_V2 {
+            (cursor.u64()?, cursor.i64()?, updated_at_ms)
+        } else {
+            (0, 0, updated_at_ms)
+        };
     let last_error = cursor.string(4096)?;
     cursor.finish()?;
     let state = match state_tag {
@@ -4344,7 +4338,8 @@ mod tests {
         for payment in &request.stamp_payments {
             let mut member = vec![version, 0, 0];
             member.extend_from_slice(&Hash32(Keccak256::digest(&payment.raw_tx).into()).0);
-            member.extend_from_slice(&2u32.to_be_bytes());
+            // Zero attempts: never submitted, so terminalization leaves no recovery obligation.
+            member.extend_from_slice(&0u32.to_be_bytes());
             member.extend_from_slice(&101i64.to_be_bytes());
             member.extend_from_slice(&0u128.to_be_bytes());
             member.extend_from_slice(&0u64.to_be_bytes());
@@ -4375,14 +4370,10 @@ mod tests {
             .delete_cf(db.monad_outbox().cf_meta, RECOVERY_QUOTA_CURSOR_KEY)?;
         db.rocksdb()
             .delete_cf(db.monad_outbox().cf_meta, RECOVERY_QUOTA_GLOBAL_KEY)?;
-        db.rocksdb().delete_cf(
-            db.monad_outbox().cf_meta,
-            RECOVERY_OBLIGATION_MIGRATION_KEY,
-        )?;
-        db.rocksdb().delete_cf(
-            db.monad_outbox().cf_meta,
-            RECOVERY_OBLIGATION_CURSOR_KEY,
-        )?;
+        db.rocksdb()
+            .delete_cf(db.monad_outbox().cf_meta, RECOVERY_OBLIGATION_MIGRATION_KEY)?;
+        db.rocksdb()
+            .delete_cf(db.monad_outbox().cf_meta, RECOVERY_OBLIGATION_CURSOR_KEY)?;
         db.rocksdb().delete_cf(
             db.monad_outbox().cf_meta,
             recovery_quota_recipient_key(&policy.recipient),
@@ -4772,10 +4763,12 @@ mod tests {
                 )?,
                 MonadOutboxTransition::Applied
             );
-            assert_eq!(
-                store.get(&request.payload_hash)?.unwrap().last_error.len(),
-                MAX_LAST_ERROR_BYTES_HARD
-            );
+            // Member completion no longer rewrites the aggregate row; only the child carries it.
+            assert!(store
+                .get(&request.payload_hash)?
+                .unwrap()
+                .last_error
+                .is_empty());
             assert_eq!(
                 store
                     .get_member(&request.payload_hash, 0)?
@@ -4927,8 +4920,7 @@ mod tests {
         {
             let db = Db::open(&path)?;
             let store = db.monad_outbox();
-            let recoveries =
-                store.confirmed_prefixes_for_recipient(&policy().recipient, 1)?;
+            let recoveries = store.confirmed_prefixes_for_recipient(&policy().recipient, 1)?;
             assert_eq!(recoveries.len(), 1);
             let obligation_id = recoveries[0].obligation_id;
             assert_eq!(
@@ -5367,6 +5359,16 @@ mod tests {
                 .delete_cf(store.cf_meta, b"outbox-lifecycle-v3")?;
             db.rocksdb()
                 .delete_cf(store.cf_meta, b"outbox-lifecycle-v3-cursor")?;
+            // A genuinely pre-v5 database has neither quota nor obligation-identity state.
+            for key in [
+                RECOVERY_QUOTA_MIGRATION_KEY,
+                RECOVERY_QUOTA_CURSOR_KEY,
+                RECOVERY_QUOTA_GLOBAL_KEY,
+                RECOVERY_OBLIGATION_MIGRATION_KEY,
+                RECOVERY_OBLIGATION_CURSOR_KEY,
+            ] {
+                db.rocksdb().delete_cf(store.cf_meta, key)?;
+            }
         }
         let db = Db::open(&path)?;
         let store = db.monad_outbox();
@@ -6898,7 +6900,9 @@ mod tests {
             };
             assert!(result.is_err());
             assert_eq!(
-                db.get(store.cf_outbox, &first.payload_hash)?.unwrap().as_ref(),
+                db.get(store.cf_outbox, &first.payload_hash)?
+                    .unwrap()
+                    .as_ref(),
                 first_before.as_ref()
             );
             assert!(db.get(store.cf_meta, marker)?.is_none());
@@ -6927,8 +6931,7 @@ mod tests {
             timestamp: 10,
             network_tag: vec![],
         };
-        db.monad_messages()
-            .put(&hash_b, &recipient_b, &stored_b)?;
+        db.monad_messages().put(&hash_b, &recipient_b, &stored_b)?;
         db.put(
             db.cf(CF_MONAD_MESSAGES_BY_RECIPIENT_TIME)?,
             inbox_recipient_key(&recipient_a, 10, &hash_b),
@@ -7024,11 +7027,7 @@ mod tests {
             )?;
             stale_id = store.confirmed_prefixes_for_recipient(&recipient, 1)?[0].obligation_id;
             assert_eq!(
-                store.acknowledge_terminal_recovery(
-                    &recipient,
-                    &first.payload_hash,
-                    &stale_id,
-                )?,
+                store.acknowledge_terminal_recovery(&recipient, &first.payload_hash, &stale_id,)?,
                 MonadRecoveryAck::Acknowledged
             );
             store.claim(&second.payload_hash, &second, &policy(), 4, &limits)?;
@@ -7041,14 +7040,11 @@ mod tests {
                 6,
                 &limits,
             )?;
-            let current_id = store.confirmed_prefixes_for_recipient(&recipient, 1)?[0].obligation_id;
+            let current_id =
+                store.confirmed_prefixes_for_recipient(&recipient, 1)?[0].obligation_id;
             assert_ne!(current_id, stale_id);
             assert_eq!(
-                store.acknowledge_terminal_recovery(
-                    &recipient,
-                    &second.payload_hash,
-                    &stale_id,
-                )?,
+                store.acknowledge_terminal_recovery(&recipient, &second.payload_hash, &stale_id,)?,
                 MonadRecoveryAck::Absent
             );
             assert!(store.get(&second.payload_hash)?.is_some());
@@ -7059,22 +7055,12 @@ mod tests {
             let db = Db::open(&path)?;
             let store = db.monad_outbox();
             store.claim(&exposed.payload_hash, &exposed, &policy(), 10, &limits)?;
-            let first_lease = match store.acquire_reconcile_lease(
-                &exposed.payload_hash,
-                0,
-                11,
-                &limits,
-            )? {
-                MonadOutboxLeaseAcquire::Acquired { lease, .. } => lease,
-                other => panic!("expected lease, got {other:?}"),
-            };
-            store.begin_replay_attempt(
-                &exposed.payload_hash,
-                0,
-                first_lease,
-                12,
-                &limits,
-            )?;
+            let first_lease =
+                match store.acquire_reconcile_lease(&exposed.payload_hash, 0, 11, &limits)? {
+                    MonadOutboxLeaseAcquire::Acquired { lease, .. } => lease,
+                    other => panic!("expected lease, got {other:?}"),
+                };
+            store.begin_replay_attempt(&exposed.payload_hash, 0, first_lease, 12, &limits)?;
             store.complete_pending_member(
                 &exposed.payload_hash,
                 0,

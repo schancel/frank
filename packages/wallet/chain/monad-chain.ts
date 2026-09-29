@@ -855,42 +855,57 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
         throw new Error('Transfer value must be greater than zero')
       }
       const monadWallet = asMonadWallet(wallet)
-      const signer = new MonadAccountTxSigner({
-        privateKey: monadWallet.identity.toPrivateKeyHex(),
-        provider: monadWallet.provider,
-        httpClient: monadWallet.httpClient,
-      })
-      const signed = await signer.buildAndSignTransfer(recipient.raw, value)
-      return { txHash: await signer.submit(signed) }
+      const run = async (): Promise<{ txHash: string }> => {
+        const signer = new MonadAccountTxSigner({
+          privateKey: monadWallet.identity.toPrivateKeyHex(),
+          provider: monadWallet.provider,
+          httpClient: monadWallet.httpClient,
+        })
+        const signed = await signer.buildAndSignTransfer(recipient.raw, value)
+        return { txHash: await signer.submit(signed) }
+      }
+      return typeof monadWallet.walletState?.runOperation === 'function'
+        ? monadWallet.walletState.runOperation(run)
+        : run()
     },
   }
 
   const topics: TopicBroadcastClient = {
     async post(params): Promise<{ payloadDigest: string }> {
       const wallet = asMonadWallet(params.wallet)
-      const client = new MonadTopicPostClient(wallet)
-      const result = await client.submitTopicPost({
-        topic: params.topic,
-        entries: params.entries,
-        parentPostHash: params.parentDigest
-          ? getBytes(`0x${params.parentDigest}`)
-          : undefined,
-        direction: params.direction,
-        burnAddress: config.stampBurnAddress,
-        voteWeightWei: params.voteWeightWei,
-      })
-      return { payloadDigest: result.payloadHashHex }
+      const run = async (): Promise<{ payloadDigest: string }> => {
+        const client = new MonadTopicPostClient(wallet)
+        const result = await client.submitTopicPost({
+          topic: params.topic,
+          entries: params.entries,
+          parentPostHash: params.parentDigest
+            ? getBytes(`0x${params.parentDigest}`)
+            : undefined,
+          direction: params.direction,
+          burnAddress: config.stampBurnAddress,
+          voteWeightWei: params.voteWeightWei,
+        })
+        return { payloadDigest: result.payloadHashHex }
+      }
+      return typeof wallet.walletState?.runOperation === 'function'
+        ? wallet.walletState.runOperation(run)
+        : run()
     },
 
     async vote(params): Promise<void> {
       const wallet = asMonadWallet(params.wallet)
-      const client = new MonadTopicVoteClient(wallet)
-      await client.castVote({
-        targetPayloadHash: getBytes(`0x${params.payloadDigest}`),
-        direction: params.direction,
-        burnAddress: config.stampBurnAddress,
-        voteWeightWei: params.voteWeightWei,
-      })
+      const run = async (): Promise<void> => {
+        const client = new MonadTopicVoteClient(wallet)
+        await client.castVote({
+          targetPayloadHash: getBytes(`0x${params.payloadDigest}`),
+          direction: params.direction,
+          burnAddress: config.stampBurnAddress,
+          voteWeightWei: params.voteWeightWei,
+        })
+      }
+      return typeof wallet.walletState?.runOperation === 'function'
+        ? wallet.walletState.runOperation(run)
+        : run()
     },
 
     async fetchByTopic(params): Promise<ForumMessage[]> {

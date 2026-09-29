@@ -12,6 +12,9 @@
  * crypto with no network dependency, and exercising them for real is a stronger check that
  * `directMessages.send`/`fetchSince` actually encrypt/decrypt, not merely pass a plaintext through.
  */
+import { mkdtempSync, rmSync } from 'fs'
+import { tmpdir } from 'os'
+import { join } from 'path'
 import { Transaction, Wallet, getBytes, hexlify } from 'ethers'
 
 import { MonadIdentity } from '../monad-identity'
@@ -43,6 +46,7 @@ import {
 import { InMemoryStampPaymentJournal } from '../storage/stamp-payment-journal'
 import { buildEnvelope } from '@frank/cashweb/relay/monad-message-envelope'
 import { MonadRpcError } from '../monad-http'
+import { openMonadWalletBundle } from '../storage/monad-wallet-bundle'
 
 jest.mock('../storage/monad-wallet-bundle', () => {
   const actual = jest.requireActual('../storage/monad-wallet-bundle')
@@ -161,6 +165,7 @@ function makeWallet(identity: MonadIdentity): MonadChainWalletHandle {
   wallet.walletState = {
     durability: 'persistent',
     assertOpen: jest.fn(),
+    runOperation: jest.fn(<T>(operation: () => Promise<T>) => operation()),
   } as MonadChainWalletHandle['walletState']
   return wallet
 }
@@ -392,6 +397,7 @@ describe('createMonadChain: nativeTransfers', () => {
       1_500_000_000_000_000_000n
     )
     expect(submit).toHaveBeenCalledWith(signed)
+    expect(wallet.walletState?.runOperation).toHaveBeenCalledTimes(1)
   })
 
   it('rejects zero-value transfers before constructing a signer', async () => {
@@ -1506,6 +1512,7 @@ describe('createMonadChain: topics.post', () => {
     expect(call.voteWeightWei).toBe(5_000n)
     expect(call.burnAddress).toBe(TEST_CONFIG.stampBurnAddress)
     expect(hexlify(call.parentPostHash)).toBe('0x' + 'aa'.repeat(32))
+    expect(wallet.walletState?.runOperation).toHaveBeenCalledTimes(1)
   })
 })
 
@@ -1539,7 +1546,126 @@ describe('createMonadChain: topics.vote', () => {
     expect(call.direction).toBe('down')
     expect(call.voteWeightWei).toBe(7_000n)
     expect(call.burnAddress).toBe(TEST_CONFIG.stampBurnAddress)
+    expect(wallet.walletState?.runOperation).toHaveBeenCalledTimes(1)
   })
+})
+
+describe('createMonadChain: economic operation lifecycle', () => {
+  it.each(['post', 'vote'] as const)(
+    'drains a paused topic %s before close and persists its terminal write',
+    async (kind) => {
+      const parent = mkdtempSync(join(tmpdir(), 'monad-chain-topic-gate-'))
+      const storagePrefix = join(parent, 'wallet')
+      const seed = {
+        mnemonic: 'test test test test test test test test test test test junk',
+      }
+      const chain = createMonadChain({
+        ...TEST_CONFIG,
+        walletStorageLocation: storagePrefix,
+      })
+      const wallet = (await chain.createWallet(seed)) as MonadChainWalletHandle
+      if (wallet.walletState === undefined) {
+        throw new Error('persistent wallet state was not created')
+      }
+      const location = `${storagePrefix}-${wallet.identity.address.raw.toLowerCase()}`
+      let entered!: () => void
+      let resume!: () => void
+      const putStarted = new Promise<void>((resolve) => {
+        entered = resolve
+      })
+      const pausedPut = new Promise<void>((resolve) => {
+        resume = resolve
+      })
+      const completeTerminalWrite = async () => {
+        entered()
+        await pausedPut
+        const record = wallet.pool.getRecord(0)
+        if (record === undefined) throw new Error('missing topic funding row')
+        wallet.pool.restoreTerminalEvidence({ ...record, status: 'retired' })
+        await wallet.pool.flush()
+      }
+      const submitTopicPost = jest.fn(async () => {
+        await completeTerminalWrite()
+        return {
+          stored: {},
+          payloadHashHex: 'feedface',
+          txHash: '0xtx',
+          leaseIndex: 0,
+        }
+      })
+      const castVote = jest.fn(async () => {
+        await completeTerminalWrite()
+        return {
+          stored: {},
+          targetPayloadHashHex: 'aa'.repeat(32),
+          txHash: '0xtx',
+          leaseIndex: 0,
+        }
+      })
+      ;(MonadTopicPostClient as jest.Mock).mockImplementation(() => ({
+        submitTopicPost,
+      }))
+      ;(MonadTopicVoteClient as jest.Mock).mockImplementation(() => ({
+        castVote,
+      }))
+
+      const operation =
+        kind === 'post'
+          ? chain.topics.post({
+              wallet,
+              topic: 'gated',
+              entries: [{ kind: 'post', message: 'paused relay put' }],
+              direction: 'up',
+              voteWeightWei: 1n,
+            })
+          : chain.topics.vote({
+              wallet,
+              payloadDigest: 'bb'.repeat(32),
+              direction: 'down',
+              voteWeightWei: 1n,
+            })
+      await putStarted
+      let closed = false
+      const closing = wallet.walletState.close().then(() => {
+        closed = true
+      })
+
+      const newOperation =
+        kind === 'post'
+          ? chain.topics.post({
+              wallet,
+              topic: 'rejected',
+              entries: [{ kind: 'post', message: 'after closing' }],
+              direction: 'up',
+              voteWeightWei: 1n,
+            })
+          : chain.topics.vote({
+              wallet,
+              payloadDigest: 'cc'.repeat(32),
+              direction: 'up',
+              voteWeightWei: 1n,
+            })
+      await expect(newOperation).rejects.toThrow(/closing or closed/i)
+      await expect(
+        openMonadWalletBundle({ location, seed })
+      ).rejects.toThrow(/already open/i)
+      expect(closed).toBe(false)
+
+      resume()
+      await operation
+      await closing
+      expect(closed).toBe(true)
+      expect(kind === 'post' ? submitTopicPost : castVote).toHaveBeenCalledTimes(
+        1
+      )
+
+      const successor = await openMonadWalletBundle({ location, seed })
+      expect(successor.pool.getRecord(0)?.status).toBe('retired')
+      await successor.close()
+      rmSync(parent, { recursive: true, force: true })
+    },
+    20_000
+  )
 })
 
 function makeTopicPostProto(payloadHashByte: number): MonadTopicPostProto {

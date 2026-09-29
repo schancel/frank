@@ -95,8 +95,19 @@ async function createNewGeneratedSeedRoot(location: string) {
   return openMonadWalletBundle({ location, createSeedIfEmpty: true })
 }
 
-function creationStage(location: string): string {
-  return join(dirname(location), `.${basename(location)}.frank-wallet-create`)
+function creationStages(location: string): string[] {
+  const parent = dirname(location)
+  const prefix = `.${basename(location)}.frank-wallet-create.`
+  return readdirSync(parent)
+    .filter((entry) => entry.startsWith(prefix))
+    .map((entry) => join(parent, entry))
+}
+
+function creationLock(location: string): string {
+  return join(
+    dirname(location),
+    `.${basename(location)}.frank-wallet-creation.lock`
+  )
 }
 
 async function createSignedLegacyAttempt(location: string): Promise<{
@@ -324,7 +335,10 @@ describe('Monad wallet persistence bundle', () => {
 
   afterEach(() => {
     rmSync(root, { recursive: true, force: true })
-    rmSync(creationStage(root), { recursive: true, force: true })
+    for (const stage of creationStages(root)) {
+      rmSync(stage, { recursive: true, force: true })
+    }
+    rmSync(creationLock(root), { force: true })
   })
 
   it('creates and reopens one complete bound bundle', async () => {
@@ -413,9 +427,11 @@ describe('Monad wallet persistence bundle', () => {
   })
 
   it.each([
+    'staged',
     'temp-written',
     'temp-synced',
     'intent-published',
+    'before-root-publish',
     'root-published',
   ] as const)(
     'resumes exact first-use creation after a %s publication crash',
@@ -439,7 +455,7 @@ describe('Monad wallet persistence bundle', () => {
       })
       expect(resumed.pool.nextUnusedIndex()).toBe(0)
       await resumed.close()
-      expect(existsSync(creationStage(root))).toBe(false)
+      expect(creationStages(root)).toEqual([])
     }
   )
 
@@ -465,6 +481,125 @@ describe('Monad wallet persistence bundle', () => {
       })
     ).rejects.toThrow(/intent does not match/i)
     expect(existsSync(root)).toBe(false)
+  })
+
+  it('rejects a wrong seed after root publication without touching the empty claimed root', async () => {
+    rmSync(root, { recursive: true, force: true })
+    await expect(
+      openMonadWalletBundle({
+        location: root,
+        seed: { mnemonic: FIRST_MNEMONIC },
+        mode: 'create',
+        onNodeCreationPublishPhase: (phase) => {
+          if (phase === 'root-published') throw new Error('claimed root crash')
+        },
+      })
+    ).rejects.toThrow('claimed root crash')
+    expect(readdirSync(root)).toEqual([])
+    expect(creationStages(root)).toHaveLength(1)
+
+    await expect(
+      openMonadWalletBundle({
+        location: root,
+        seed: { mnemonic: SECOND_MNEMONIC },
+        mode: 'create',
+      })
+    ).rejects.toThrow(/intent does not match/i)
+    expect(readdirSync(root)).toEqual([])
+    expect(creationStages(root)).toHaveLength(1)
+
+    const resumed = await openMonadWalletBundle({
+      location: root,
+      seed: { mnemonic: FIRST_MNEMONIC },
+      mode: 'create',
+    })
+    await resumed.close()
+  })
+
+  it.each([
+    ['same seed', FIRST_MNEMONIC],
+    ['different seed', SECOND_MNEMONIC],
+  ])(
+    'serializes concurrent %s creators before root publication',
+    async (_description, contenderMnemonic) => {
+      rmSync(root, { recursive: true, force: true })
+      let entered!: () => void
+      let resume!: () => void
+      const atBarrier = new Promise<void>((resolve) => {
+        entered = resolve
+      })
+      const barrier = new Promise<void>((resolve) => {
+        resume = resolve
+      })
+      const creator = openMonadWalletBundle({
+        location: root,
+        seed: { mnemonic: FIRST_MNEMONIC },
+        mode: 'create',
+        onNodeCreationPublishPhase: async (phase) => {
+          if (phase === 'before-root-publish') {
+            entered()
+            await barrier
+          }
+        },
+      })
+      await atBarrier
+      expect(existsSync(root)).toBe(false)
+      expect(creationStages(root)).toHaveLength(1)
+
+      await expect(
+        openMonadWalletBundle({
+          location: root,
+          seed: { mnemonic: contenderMnemonic },
+          mode: 'create',
+        })
+      ).rejects.toThrow(/creation is already active/i)
+      expect(existsSync(root)).toBe(false)
+      expect(creationStages(root)).toHaveLength(1)
+
+      resume()
+      const created = await creator
+      await created.close()
+      expect(creationStages(root)).toEqual([])
+      const reopened = await openMonadWalletBundle({
+        location: root,
+        seed: { mnemonic: FIRST_MNEMONIC },
+      })
+      await reopened.close()
+    }
+  )
+
+  it('does not mutate a competing root that appears at the publication barrier', async () => {
+    rmSync(root, { recursive: true, force: true })
+    let entered!: () => void
+    let resume!: () => void
+    const atBarrier = new Promise<void>((resolve) => {
+      entered = resolve
+    })
+    const barrier = new Promise<void>((resolve) => {
+      resume = resolve
+    })
+    const creator = openMonadWalletBundle({
+      location: root,
+      seed: { mnemonic: FIRST_MNEMONIC },
+      mode: 'create',
+      onNodeCreationPublishPhase: async (phase) => {
+        if (phase === 'before-root-publish') {
+          entered()
+          await barrier
+        }
+      },
+    })
+    await atBarrier
+    mkdirSync(root, { mode: 0o700 })
+    const sentinel = join(root, 'competitor-owned')
+    writeFileSync(sentinel, 'untouched', { mode: 0o600 })
+    const before = readFileSync(sentinel)
+    resume()
+
+    await expect(creator).rejects.toThrow(/appeared before atomic/i)
+    expect(readFileSync(sentinel)).toEqual(before)
+    expect(readdirSync(root)).toEqual(['competitor-owned'])
+    expect(creationStages(root)).toEqual([])
   })
 
   it.each([
@@ -695,6 +830,8 @@ describe('Monad wallet persistence bundle', () => {
       })
     ).rejects.toThrow(/exclusive acquisition/i)
     expect(existsSync(join(root, 'wallet-manifest'))).toBe(false)
+    expect(readdirSync(root)).toEqual([])
+    expect(existsSync(join(root, '.frank-wallet.lock'))).toBe(false)
 
     const created = await createNewCallerSeedRoot(root)
     expect(created.pool.deriveNextUnfunded().address).toBe(

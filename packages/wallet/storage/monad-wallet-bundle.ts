@@ -48,6 +48,8 @@ import {
   existingWalletComponents,
   isBrowserWalletStorage,
   nodeWalletRootExists,
+  nodeWalletCreationRecoveryExists,
+  nodeWalletRootIsPrivateEmpty,
   prepareSecureWalletRootWithProvenance,
   publishNodeWalletRootWithIntent,
   validateWalletComponentBeforeOpen,
@@ -164,8 +166,9 @@ type OpenMonadWalletBundleTestHooks = {
       | 'temp-written'
       | 'temp-synced'
       | 'intent-published'
+      | 'before-root-publish'
       | 'root-published'
-  ) => void
+  ) => void | Promise<void>
 }
 
 export interface MonadSeedRestoreSource {
@@ -1539,8 +1542,26 @@ export async function openMonadWalletBundle(
   ) {
     throw new Error('Invalid Monad wallet creation/restore mode')
   }
+  const explicitNodeCreation =
+    !isBrowserWalletStorage() &&
+    (runtimeParams.mode === 'create' ||
+      runtimeParams.createSeedIfEmpty === true)
+  if (
+    explicitNodeCreation &&
+    nodeWalletRootExists(params.location) &&
+    !nodeWalletCreationRecoveryExists(params.location) &&
+    nodeWalletRootIsPrivateEmpty(params.location)
+  ) {
+    throw new Error(
+      'First-use wallet creation requires a missing Node root created by this exclusive acquisition or an exact durable creation claim'
+    )
+  }
   let nodeCreationPublished = false
-  if (!isBrowserWalletStorage() && !nodeWalletRootExists(params.location)) {
+  if (
+    !isBrowserWalletStorage() &&
+    (!nodeWalletRootExists(params.location) ||
+      nodeWalletCreationRecoveryExists(params.location))
+  ) {
     const isExplicitCreate =
       runtimeParams.mode === 'create' ||
       runtimeParams.createSeedIfEmpty === true
@@ -1581,7 +1602,7 @@ export async function openMonadWalletBundle(
         ? { persistedSeed: creationSeed }
         : {}),
     }
-    publishNodeWalletRootWithIntent(
+    await publishNodeWalletRootWithIntent(
       params.location,
       JSON.stringify(creationIntent),
       params.onNodeCreationPublishPhase

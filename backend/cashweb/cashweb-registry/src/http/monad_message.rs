@@ -4358,6 +4358,16 @@ mod tests {
         Ok(())
     }
 
+    /// Private-read capacity exhaustion is a retryable 503 with a stable error code.
+    #[tokio::test]
+    async fn private_read_capacity_maps_to_retryable_503() {
+        let response = PrivateMailboxError::AtCapacity.into_response();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = hyper::body::to_bytes(response.into_body()).await.unwrap();
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["error"], "mailbox_auth_retryable");
+    }
+
     #[tokio::test]
     async fn private_read_capacity_is_checked_before_profile_or_signature_work() {
         let (_tempdir, registry) = test_registry();

@@ -458,6 +458,30 @@ pub enum MonadRpcError {
 }
 
 impl MonadRpcError {
+    /// Whether this error from `eth_sendRawTransaction` proves the node did NOT accept the
+    /// transaction. Anything else (timeouts, transport errors, 5xx/408, unparsable or unrecognised
+    /// replies) is ambiguous: the node may have accepted it.
+    ///
+    /// A non-2xx HTTP status in 400..500 (other than 408 Request Timeout) means the gateway
+    /// refused the request itself (rate limit, auth, bad request) before executing the call.
+    pub fn definitively_rejected_send(&self) -> bool {
+        match self {
+            MonadRpcError::InsufficientFunds { .. }
+            | MonadRpcError::ReplacementUnderpriced { .. }
+            | MonadRpcError::NonceTooLow { .. } => true,
+            MonadRpcError::Rpc { message, .. } => {
+                let lower = message.to_lowercase();
+                DEFINITIVE_REJECTION_PHRASES
+                    .iter()
+                    .any(|phrase| lower.contains(phrase))
+            }
+            MonadRpcError::HttpStatus { status, .. } => {
+                (400..500).contains(status) && *status != 408
+            }
+            _ => false,
+        }
+    }
+
     fn transport(method: &str, source: reqwest::Error) -> Self {
         MonadRpcError::Transport {
             method: method.to_string(),
@@ -466,6 +490,35 @@ impl MonadRpcError {
     }
 }
 
+/// Phrasings (lowercase) by which geth/Besu/reth/Nethermind-style nodes say they already hold the
+/// exact transaction. These mean the send is effectively accepted.
+const ALREADY_KNOWN_PHRASES: &[&str] = &[
+    "already known",
+    "known transaction",
+    "already imported",
+    "alreadyknown",
+    "already exists",
+];
+
+/// Phrasings (lowercase) by which a node states it did NOT accept a submitted transaction. Kept
+/// deliberately conservative: an unrecognised error after a send is ambiguous. Each entry is a
+/// stable pre-pool validation failure, so the transaction cannot have entered the pool.
+const DEFINITIVE_REJECTION_PHRASES: &[&str] = &[
+    // Sender cannot pay value + gas.
+    "insufficient funds",
+    // Fee too low to enter or replace in the pool.
+    "transaction underpriced",
+    "max fee per gas less than block base fee",
+    // Static validity failures checked before pooling.
+    "intrinsic gas too low",
+    "exceeds block gas limit",
+    "invalid sender",
+    "invalid signature",
+    "invalid chain id",
+    // The node states the nonce gap is not queued.
+    "nonce too high",
+];
+
 /// Classify a raw JSON-RPC error object into a [`MonadRpcError`], recognizing well-known
 /// EVM-node error message patterns (these providers, including Alchemy, don't expose stable
 /// error *codes* for these cases, only conventional message text, so classification is
@@ -473,7 +526,10 @@ impl MonadRpcError {
 fn classify_rpc_error(method: &str, error: JsonRpcErrorBody) -> MonadRpcError {
     let method = method.to_string();
     let lower = error.message.to_lowercase();
-    if lower.contains("nonce too low") {
+    if lower.contains("nonce too low")
+        || lower.contains("nonce is too low")
+        || lower.contains("noncetoolow")
+    {
         MonadRpcError::NonceTooLow {
             method,
             message: error.message,
@@ -488,7 +544,10 @@ fn classify_rpc_error(method: &str, error: JsonRpcErrorBody) -> MonadRpcError {
             method,
             message: error.message,
         }
-    } else if lower.contains("already known") {
+    } else if ALREADY_KNOWN_PHRASES
+        .iter()
+        .any(|phrase| lower.contains(phrase))
+    {
         MonadRpcError::AlreadyKnown {
             method,
             message: error.message,
@@ -608,6 +667,13 @@ impl JsonRpcTransport for HttpTransport {
             .map_err(|source| MonadRpcError::transport(method, source))?;
 
         if !status.is_success() {
+            // Gateways often wrap a JSON-RPC error in a non-2xx reply; classify it by content.
+            if let Some(error) = serde_json::from_slice::<JsonRpcResponse>(&body_bytes)
+                .ok()
+                .and_then(|parsed| parsed.error)
+            {
+                return Err(classify_rpc_error(method, error));
+            }
             return Err(MonadRpcError::HttpStatus {
                 method: method.to_string(),
                 status: status.as_u16(),
@@ -812,6 +878,127 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    fn rpc_error(message: &str) -> MonadRpcError {
+        classify_rpc_error(
+            "eth_sendRawTransaction",
+            JsonRpcErrorBody {
+                code: -32000,
+                message: message.to_string(),
+                data: None,
+            },
+        )
+    }
+
+    #[test]
+    fn send_error_classification_recognises_node_holds_tx_phrasings() {
+        for message in [
+            "already known",
+            "ALREADY KNOWN",
+            "known transaction: 0xabc",
+            "Transaction already imported",
+            "AlreadyKnown",
+        ] {
+            assert!(
+                matches!(rpc_error(message), MonadRpcError::AlreadyKnown { .. }),
+                "{message}"
+            );
+        }
+        for message in ["nonce too low", "Nonce is too low", "NonceTooLow: 3 < 5"] {
+            assert!(
+                matches!(rpc_error(message), MonadRpcError::NonceTooLow { .. }),
+                "{message}"
+            );
+        }
+    }
+
+    #[test]
+    fn only_whitelisted_or_typed_rejections_are_definitive() {
+        for message in [
+            "insufficient funds for gas * price + value",
+            "replacement transaction underpriced",
+            "Transaction underpriced",
+            "max fee per gas less than block base fee",
+            "intrinsic gas too low",
+            "exceeds block gas limit",
+            "invalid sender",
+            "Invalid Signature",
+            "invalid chain id for signer",
+            "nonce too high",
+        ] {
+            assert!(rpc_error(message).definitively_rejected_send(), "{message}");
+        }
+        // Unrecognised phrasings and accepted-tx phrasings must NOT clear exposure.
+        assert!(!rpc_error("internal error").definitively_rejected_send());
+        assert!(!rpc_error("txpool is full").definitively_rejected_send());
+        let http = |status| MonadRpcError::HttpStatus {
+            method: "m".into(),
+            status,
+            body: String::new(),
+        };
+        for status in [400u16, 401, 403, 404, 413, 429] {
+            assert!(http(status).definitively_rejected_send(), "{status}");
+        }
+        for status in [408u16, 500, 502, 503, 504, 301] {
+            assert!(!http(status).definitively_rejected_send(), "{status}");
+        }
+        assert!(!MonadRpcError::InvalidResponse {
+            method: "m".into(),
+            reason: "x".into()
+        }
+        .definitively_rejected_send());
+    }
+
+    /// Serve one canned HTTP response on a loopback port and return the transport for it.
+    async fn canned_http_transport(status: &str, body: &str) -> HttpTransport {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let response = format!(
+            "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 8192];
+            let _ = socket.read(&mut buf).await;
+            socket.write_all(response.as_bytes()).await.unwrap();
+        });
+        HttpTransport::new(format!("http://{addr}").parse().unwrap())
+    }
+
+    #[tokio::test]
+    async fn non_2xx_json_rpc_error_bodies_are_classified_by_content() {
+        let body =
+            r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"insufficient funds"}}"#;
+        let err = canned_http_transport("400 Bad Request", body)
+            .await
+            .call("eth_sendRawTransaction", json!(["0x00"]))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, MonadRpcError::InsufficientFunds { .. }),
+            "{err:?}"
+        );
+
+        let err = canned_http_transport("429 Too Many Requests", "slow down")
+            .await
+            .call("eth_sendRawTransaction", json!(["0x00"]))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, MonadRpcError::HttpStatus { status: 429, .. }),
+            "{err:?}"
+        );
+        assert!(err.definitively_rejected_send());
+
+        let err = canned_http_transport("502 Bad Gateway", "<html>")
+            .await
+            .call("eth_sendRawTransaction", json!(["0x00"]))
+            .await
+            .unwrap_err();
+        assert!(!err.definitively_rejected_send(), "{err:?}");
+    }
 
     /// Mock [`JsonRpcTransport`] that records every call made to it and returns a
     /// caller-provided canned response, so [`MonadHttpClient`]'s request-shaping logic (method

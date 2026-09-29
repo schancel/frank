@@ -1,0 +1,631 @@
+{
+  "format": "frank.multichain.fan-in-fixtures",
+  "schema_version": 1,
+  "description": "Encoding-agnostic state-transition fixtures. Opaque and bytes labels assert equality only.",
+  "manifest_schema": {
+    "required_fixture_fields": [
+      "id",
+      "covers",
+      "initial_state",
+      "ingest",
+      "expected_state",
+      "canonical_revision_output",
+      "logical_object_output",
+      "assertions"
+    ],
+    "required_state_fields": [
+      "revisions",
+      "observations",
+      "local_projections",
+      "revision_conflicts",
+      "observation_conflicts",
+      "quarantines",
+      "cursors"
+    ],
+    "reference_collections": {
+      "revisions": "record_catalog.revisions",
+      "observations": "record_catalog.observations",
+      "local_projections": "record_catalog.local_projections",
+      "revision_conflicts": "record_catalog.revision_conflicts",
+      "observation_conflicts": "record_catalog.observation_conflicts",
+      "quarantines": "record_catalog.quarantines",
+      "cursors": "record_catalog.cursors",
+      "canonical_revision_output": "record_catalog.revisions"
+    },
+    "constraints": [
+      "fixture ids are unique",
+      "all state and output references resolve through reference_collections",
+      "an atomic ingest cursor_after_ref uses the ingest source, scope, and generation",
+      "canonical_revision_output contains no duplicate revision ref",
+      "a revision_conflict key is absent from canonical_revision_output",
+      "quarantined occurrences create no canonical_revision_output entry by themselves"
+    ]
+  },
+  "field_owners": {
+    "logical_and_revision_identifier_bytes": "#67/#113 (opaque here)",
+    "canonical_source_bytes_and_commitment_encoding": "#130 (symbolic here)",
+    "intrinsic_order_tuple": "owning protocol, integrated by #59",
+    "source_scope_generation_position_and_provenance": "#111/#134",
+    "cursor_and_atomic_ingest": "#59/#134",
+    "logical_reduction": "owning protocol reducer, dispatched by #59",
+    "local_projection": "local consumer under #59"
+  },
+  "record_catalog": {
+    "revisions": {
+      "REV-E1": {
+        "revision_key": {
+          "logical_object_key": {
+            "object_type": "public.topic-post",
+            "object_id": "opaque:object:E1"
+          },
+          "revision_type": "public.event",
+          "revision_id": "opaque:revision:E1"
+        },
+        "authenticated_facts": {
+          "author": "opaque:author:A1",
+          "action": "create"
+        },
+        "canonical_source_bytes": "bytes:E1:v1",
+        "intrinsic_order_tuple": ["opaque:protocol-order:10"],
+        "revision_commitment": "commit:revision:E1:v1"
+      },
+      "REV-P1-CREATE": {
+        "revision_key": {
+          "logical_object_key": {
+            "object_type": "recipient.private-delivery",
+            "network_id": "opaque:network:N1",
+            "destination": "opaque:destination:N1:D1",
+            "delivery_id": "opaque:recipient-delivery:P1"
+          },
+          "revision_type": "private.create",
+          "revision_id": "opaque:revision:P1:create"
+        },
+        "authenticated_facts": {
+          "author": "opaque:author:A2",
+          "action": "create"
+        },
+        "canonical_source_bytes": "bytes:P1:create:v1",
+        "intrinsic_order_tuple": ["opaque:protocol-order:20"],
+        "revision_commitment": "commit:revision:P1:create:v1"
+      },
+      "REV-P1-EDIT": {
+        "revision_key": {
+          "logical_object_key": {
+            "object_type": "recipient.private-delivery",
+            "network_id": "opaque:network:N1",
+            "destination": "opaque:destination:N1:D1",
+            "delivery_id": "opaque:recipient-delivery:P1"
+          },
+          "revision_type": "private.edit",
+          "revision_id": "opaque:revision:P1:edit"
+        },
+        "authenticated_facts": {
+          "author": "opaque:author:A2",
+          "action": "edit",
+          "predecessor": "opaque:revision:P1:create"
+        },
+        "canonical_source_bytes": "bytes:P1:edit:v1",
+        "intrinsic_order_tuple": ["opaque:protocol-order:21"],
+        "revision_commitment": "commit:revision:P1:edit:v1"
+      },
+      "REV-E2": {
+        "revision_key": {
+          "logical_object_key": {
+            "object_type": "public.topic-post",
+            "object_id": "opaque:object:E2"
+          },
+          "revision_type": "public.event",
+          "revision_id": "opaque:revision:E2"
+        },
+        "authenticated_facts": {
+          "author": "opaque:author:A1",
+          "action": "create"
+        },
+        "canonical_source_bytes": "bytes:E2:v1",
+        "intrinsic_order_tuple": ["opaque:protocol-order:30"],
+        "revision_commitment": "commit:revision:E2:v1"
+      }
+    },
+    "observations": {
+      "OBS-R1-PUBLIC-G1-10-E1": {
+        "observation_key": {
+          "source_instance_id": "opaque:source:R1",
+          "source_scope": {"type": "public-stream", "value": "opaque:scope:S1"},
+          "source_generation": "opaque:generation:G1",
+          "source_position": "opaque:position:10"
+        },
+        "revision_ref": "REV-E1",
+        "revision_commitment": "commit:revision:E1:v1",
+        "provenance_facts": {"peer_path": "opaque:path:R1", "validation": "valid"},
+        "source_order_facts": {"page": "opaque:page:1", "ordinal": "opaque:ordinal:10"},
+        "observation_commitment": "commit:observation:R1:S1:G1:10:E1"
+      },
+      "OBS-R1-PUBLIC-G2-10-E1": {
+        "observation_key": {
+          "source_instance_id": "opaque:source:R1",
+          "source_scope": {"type": "public-stream", "value": "opaque:scope:S1"},
+          "source_generation": "opaque:generation:G2",
+          "source_position": "opaque:position:10"
+        },
+        "revision_ref": "REV-E1",
+        "revision_commitment": "commit:revision:E1:v1",
+        "provenance_facts": {"peer_path": "opaque:path:R1", "validation": "valid"},
+        "source_order_facts": {"page": "opaque:page:1", "ordinal": "opaque:ordinal:10"},
+        "observation_commitment": "commit:observation:R1:S1:G2:10:E1"
+      },
+      "OBS-R2-PUBLIC-G1-44-E1": {
+        "observation_key": {
+          "source_instance_id": "opaque:source:R2",
+          "source_scope": {"type": "public-stream", "value": "opaque:scope:S1"},
+          "source_generation": "opaque:generation:G1",
+          "source_position": "opaque:position:44"
+        },
+        "revision_ref": "REV-E1",
+        "revision_commitment": "commit:revision:E1:v1",
+        "provenance_facts": {"peer_path": "opaque:path:R2", "validation": "valid"},
+        "source_order_facts": {"page": "opaque:page:4", "ordinal": "opaque:ordinal:44"},
+        "observation_commitment": "commit:observation:R2:S1:G1:44:E1"
+      },
+      "OBS-R2-PUBLIC-G1-44-E1-CHANGED": {
+        "observation_key": {
+          "source_instance_id": "opaque:source:R2",
+          "source_scope": {"type": "public-stream", "value": "opaque:scope:S1"},
+          "source_generation": "opaque:generation:G1",
+          "source_position": "opaque:position:44"
+        },
+        "revision_ref": "REV-E1",
+        "revision_commitment": "commit:revision:E1:changed",
+        "provenance_facts": {"peer_path": "opaque:path:R2", "validation": "valid"},
+        "source_order_facts": {"page": "opaque:page:4", "ordinal": "opaque:ordinal:44"},
+        "observation_commitment": "commit:observation:R2:S1:G1:44:E1:changed"
+      },
+      "OBS-R2-PRIVATE-G1-70-P1-CREATE": {
+        "observation_key": {
+          "source_instance_id": "opaque:source:R2",
+          "source_scope": {"type": "recipient-mailbox", "value": "opaque:scope:N1:D1"},
+          "source_generation": "opaque:generation:G1",
+          "source_position": "opaque:position:70"
+        },
+        "revision_ref": "REV-P1-CREATE",
+        "revision_commitment": "commit:revision:P1:create:v1",
+        "provenance_facts": {"relay_receipt": "opaque:receipt:70", "validation": "valid"},
+        "source_order_facts": {"mailbox_sequence": "opaque:sequence:70"},
+        "observation_commitment": "commit:observation:R2:mailbox:G1:70:P1:create"
+      },
+      "OBS-R2-PRIVATE-G1-71-P1-EDIT": {
+        "observation_key": {
+          "source_instance_id": "opaque:source:R2",
+          "source_scope": {"type": "recipient-mailbox", "value": "opaque:scope:N1:D1"},
+          "source_generation": "opaque:generation:G1",
+          "source_position": "opaque:position:71"
+        },
+        "revision_ref": "REV-P1-EDIT",
+        "revision_commitment": "commit:revision:P1:edit:v1",
+        "provenance_facts": {"relay_receipt": "opaque:receipt:71", "validation": "valid"},
+        "source_order_facts": {"mailbox_sequence": "opaque:sequence:71"},
+        "observation_commitment": "commit:observation:R2:mailbox:G1:71:P1:edit"
+      },
+      "OBS-R1-PUBLIC-G1-30-E2": {
+        "observation_key": {
+          "source_instance_id": "opaque:source:R1",
+          "source_scope": {"type": "public-stream", "value": "opaque:scope:S1"},
+          "source_generation": "opaque:generation:G1",
+          "source_position": "opaque:position:30"
+        },
+        "revision_ref": "REV-E2",
+        "revision_commitment": "commit:revision:E2:v1",
+        "provenance_facts": {"peer_path": "opaque:path:R1", "validation": "valid"},
+        "source_order_facts": {"page": "opaque:page:3", "ordinal": "opaque:ordinal:30"},
+        "observation_commitment": "commit:observation:R1:S1:G1:30:E2"
+      }
+    },
+    "local_projections": {
+      "PROJ-P1-LOCKED": {
+        "projection_key": {
+          "revision_ref": "REV-P1-EDIT",
+          "projection_type": "recipient-view",
+          "viewer_context": "opaque:local-viewer:V1"
+        },
+        "state": "locked",
+        "local_payload": null
+      },
+      "PROJ-P1-DECRYPTED": {
+        "projection_key": {
+          "revision_ref": "REV-P1-EDIT",
+          "projection_type": "recipient-view",
+          "viewer_context": "opaque:local-viewer:V1"
+        },
+        "state": "decrypted",
+        "local_payload": "opaque:local-plaintext:P1:edit"
+      }
+    },
+    "revision_conflicts": {
+      "REVCONFLICT-E1-BYTES": {
+        "revision_ref": "REV-E1",
+        "reason": "same CanonicalRevisionKey, different exact source bytes and commitment",
+        "variants": [
+          {"canonical_source_bytes": "bytes:E1:v1", "revision_commitment": "commit:revision:E1:v1"},
+          {"canonical_source_bytes": "bytes:E1:changed", "revision_commitment": "commit:revision:E1:changed"}
+        ],
+        "canonical_output_suppressed": true
+      }
+    },
+    "observation_conflicts": {
+      "OBSCONFLICT-R1-S9": {
+        "observation_ref": "OBS-R1-PUBLIC-G1-30-E2",
+        "reason": "supplied ObservationKey reused with a body whose scope, order, and provenance differ",
+        "variants": [
+          {
+            "body_scope": {"type": "public-stream", "value": "opaque:scope:S1"},
+            "source_order_facts": {"page": "opaque:page:3", "ordinal": "opaque:ordinal:30"},
+            "provenance_facts": {"peer_path": "opaque:path:R1", "validation": "valid"},
+            "observation_commitment": "commit:observation:R1:S1:G1:30:E2"
+          },
+          {
+            "body_scope": {"type": "recipient-mailbox", "value": "opaque:scope:N9:D9"},
+            "source_order_facts": {"page": "opaque:page:99", "ordinal": "opaque:ordinal:1"},
+            "provenance_facts": {"peer_path": "opaque:path:forged", "validation": "claimed-valid"},
+            "observation_commitment": "commit:observation:R1:changed-body"
+          }
+        ]
+      }
+    },
+    "quarantines": {
+      "QUARANTINE-R1-S9": {
+        "observation_ref": "OBS-R1-PUBLIC-G1-30-E2",
+        "reason": "observation-key/body mismatch",
+        "durable": true,
+        "may_advance_cursor": true,
+        "canonical_output_allowed": false
+      }
+    },
+    "cursors": {
+      "CURSOR-R1-S1-G1-10": {
+        "source_instance_id": "opaque:source:R1",
+        "source_scope": {"type": "public-stream", "value": "opaque:scope:S1"},
+        "source_generation": "opaque:generation:G1",
+        "position": "opaque:position:10"
+      },
+      "CURSOR-R1-S1-G1-30": {
+        "source_instance_id": "opaque:source:R1",
+        "source_scope": {"type": "public-stream", "value": "opaque:scope:S1"},
+        "source_generation": "opaque:generation:G1",
+        "position": "opaque:position:30"
+      },
+      "CURSOR-R1-S1-G1-31": {
+        "source_instance_id": "opaque:source:R1",
+        "source_scope": {"type": "public-stream", "value": "opaque:scope:S1"},
+        "source_generation": "opaque:generation:G1",
+        "position": "opaque:position:31"
+      },
+      "CURSOR-R1-S1-G2-10": {
+        "source_instance_id": "opaque:source:R1",
+        "source_scope": {"type": "public-stream", "value": "opaque:scope:S1"},
+        "source_generation": "opaque:generation:G2",
+        "position": "opaque:position:10"
+      },
+      "CURSOR-R2-S1-G1-44": {
+        "source_instance_id": "opaque:source:R2",
+        "source_scope": {"type": "public-stream", "value": "opaque:scope:S1"},
+        "source_generation": "opaque:generation:G1",
+        "position": "opaque:position:44"
+      },
+      "CURSOR-R2-MAILBOX-G1-71": {
+        "source_instance_id": "opaque:source:R2",
+        "source_scope": {"type": "recipient-mailbox", "value": "opaque:scope:N1:D1"},
+        "source_generation": "opaque:generation:G1",
+        "position": "opaque:position:71"
+      }
+    }
+  },
+  "fixtures": [
+    {
+      "id": "generation-replay",
+      "covers": "The same public E1 observed in G1 and replayed in G2.",
+      "initial_state": {
+        "revisions": ["REV-E1"],
+        "observations": ["OBS-R1-PUBLIC-G1-10-E1"],
+        "local_projections": [],
+        "revision_conflicts": [],
+        "observation_conflicts": [],
+        "quarantines": [],
+        "cursors": ["CURSOR-R1-S1-G1-10"]
+      },
+      "ingest": {
+        "kind": "atomic_source_batch",
+        "source_instance_id": "opaque:source:R1",
+        "source_scope": {"type": "public-stream", "value": "opaque:scope:S1"},
+        "source_generation": "opaque:generation:G2",
+        "items": [{"revision_ref": "REV-E1", "observation_ref": "OBS-R1-PUBLIC-G2-10-E1"}],
+        "cursor_after_ref": "CURSOR-R1-S1-G2-10"
+      },
+      "expected_state": {
+        "revisions": ["REV-E1"],
+        "observations": ["OBS-R1-PUBLIC-G1-10-E1", "OBS-R1-PUBLIC-G2-10-E1"],
+        "local_projections": [],
+        "revision_conflicts": [],
+        "observation_conflicts": [],
+        "quarantines": [],
+        "cursors": ["CURSOR-R1-S1-G1-10", "CURSOR-R1-S1-G2-10"]
+      },
+      "canonical_revision_output": ["REV-E1"],
+      "logical_object_output": {
+        "status": "reduced",
+        "objects": [{"logical_object": "opaque:object:E1", "state": "created", "revision_refs": ["REV-E1"]}]
+      },
+      "assertions": [
+        "G2 creates a second observation, not a second canonical revision",
+        "generation and source position do not affect revision identity",
+        "E1 emits once"
+      ]
+    },
+    {
+      "id": "two-relay-public",
+      "covers": "Public E1 observed independently from R1 and R2.",
+      "initial_state": {
+        "revisions": ["REV-E1"],
+        "observations": ["OBS-R1-PUBLIC-G1-10-E1"],
+        "local_projections": [],
+        "revision_conflicts": [],
+        "observation_conflicts": [],
+        "quarantines": [],
+        "cursors": ["CURSOR-R1-S1-G1-10"]
+      },
+      "ingest": {
+        "kind": "atomic_source_batch",
+        "source_instance_id": "opaque:source:R2",
+        "source_scope": {"type": "public-stream", "value": "opaque:scope:S1"},
+        "source_generation": "opaque:generation:G1",
+        "items": [{"revision_ref": "REV-E1", "observation_ref": "OBS-R2-PUBLIC-G1-44-E1"}],
+        "cursor_after_ref": "CURSOR-R2-S1-G1-44"
+      },
+      "expected_state": {
+        "revisions": ["REV-E1"],
+        "observations": ["OBS-R1-PUBLIC-G1-10-E1", "OBS-R2-PUBLIC-G1-44-E1"],
+        "local_projections": [],
+        "revision_conflicts": [],
+        "observation_conflicts": [],
+        "quarantines": [],
+        "cursors": ["CURSOR-R1-S1-G1-10", "CURSOR-R2-S1-G1-44"]
+      },
+      "canonical_revision_output": ["REV-E1"],
+      "logical_object_output": {
+        "status": "reduced",
+        "objects": [{"logical_object": "opaque:object:E1", "state": "created", "revision_refs": ["REV-E1"]}]
+      },
+      "assertions": [
+        "relay identity occurs only in observations",
+        "R2 arrival does not reposition or re-emit E1",
+        "E1 emits once"
+      ]
+    },
+    {
+      "id": "private-create-edit",
+      "covers": "Recipient-private P1 creation and edit delivered by R2.",
+      "initial_state": {
+        "revisions": [],
+        "observations": [],
+        "local_projections": [],
+        "revision_conflicts": [],
+        "observation_conflicts": [],
+        "quarantines": [],
+        "cursors": []
+      },
+      "ingest": {
+        "kind": "atomic_source_batch",
+        "source_instance_id": "opaque:source:R2",
+        "source_scope": {"type": "recipient-mailbox", "value": "opaque:scope:N1:D1"},
+        "source_generation": "opaque:generation:G1",
+        "items": [
+          {"revision_ref": "REV-P1-CREATE", "observation_ref": "OBS-R2-PRIVATE-G1-70-P1-CREATE"},
+          {"revision_ref": "REV-P1-EDIT", "observation_ref": "OBS-R2-PRIVATE-G1-71-P1-EDIT"}
+        ],
+        "cursor_after_ref": "CURSOR-R2-MAILBOX-G1-71"
+      },
+      "expected_state": {
+        "revisions": ["REV-P1-CREATE", "REV-P1-EDIT"],
+        "observations": ["OBS-R2-PRIVATE-G1-70-P1-CREATE", "OBS-R2-PRIVATE-G1-71-P1-EDIT"],
+        "local_projections": [],
+        "revision_conflicts": [],
+        "observation_conflicts": [],
+        "quarantines": [],
+        "cursors": ["CURSOR-R2-MAILBOX-G1-71"]
+      },
+      "canonical_revision_output": ["REV-P1-CREATE", "REV-P1-EDIT"],
+      "logical_object_output": {
+        "status": "reduced",
+        "reducer": "recipient.private-delivery",
+        "objects": [{
+          "logical_object": "opaque:recipient-delivery:P1",
+          "state": "edited",
+          "revision_refs": ["REV-P1-CREATE", "REV-P1-EDIT"]
+        }]
+      },
+      "assertions": [
+        "the logical key is network-qualified destination plus recipient-specific delivery id",
+        "no plaintext digest or cross-recipient content identity is present",
+        "create precedes edit by intrinsic order, not mailbox positions 70 and 71",
+        "only the owning reducer accepts the predecessor and applies the edit"
+      ]
+    },
+    {
+      "id": "revision-key-changed-bytes",
+      "covers": "Changed exact source bytes under E1's existing revision key.",
+      "initial_state": {
+        "revisions": ["REV-E1"],
+        "observations": ["OBS-R1-PUBLIC-G1-10-E1"],
+        "local_projections": [],
+        "revision_conflicts": [],
+        "observation_conflicts": [],
+        "quarantines": [],
+        "cursors": ["CURSOR-R1-S1-G1-10"]
+      },
+      "ingest": {
+        "kind": "atomic_source_batch",
+        "source_instance_id": "opaque:source:R2",
+        "source_scope": {"type": "public-stream", "value": "opaque:scope:S1"},
+        "source_generation": "opaque:generation:G1",
+        "items": [{
+          "claimed_revision_ref": "REV-E1",
+          "incoming_exact_source_bytes": "bytes:E1:changed",
+          "incoming_revision_commitment": "commit:revision:E1:changed",
+          "observation_ref": "OBS-R2-PUBLIC-G1-44-E1-CHANGED"
+        }],
+        "cursor_after_ref": "CURSOR-R2-S1-G1-44"
+      },
+      "expected_state": {
+        "revisions": ["REV-E1"],
+        "observations": ["OBS-R1-PUBLIC-G1-10-E1", "OBS-R2-PUBLIC-G1-44-E1-CHANGED"],
+        "local_projections": [],
+        "revision_conflicts": ["REVCONFLICT-E1-BYTES"],
+        "observation_conflicts": [],
+        "quarantines": [],
+        "cursors": ["CURSOR-R1-S1-G1-10", "CURSOR-R2-S1-G1-44"]
+      },
+      "canonical_revision_output": [],
+      "logical_object_output": {
+        "status": "suppressed-ambiguous-revision",
+        "objects": []
+      },
+      "assertions": [
+        "both byte variants remain as bounded conflict evidence",
+        "E1 is suppressed rather than selected by first or last arrival",
+        "observation evidence and R2 cursor commit atomically with the conflict"
+      ]
+    },
+    {
+      "id": "observation-key-changed-body",
+      "covers": "One supplied observation key reused with changed scope, order, and provenance.",
+      "initial_state": {
+        "revisions": ["REV-E2"],
+        "observations": ["OBS-R1-PUBLIC-G1-30-E2"],
+        "local_projections": [],
+        "revision_conflicts": [],
+        "observation_conflicts": [],
+        "quarantines": [],
+        "cursors": ["CURSOR-R1-S1-G1-30"]
+      },
+      "ingest": {
+        "kind": "atomic_source_batch",
+        "source_instance_id": "opaque:source:R1",
+        "source_scope": {"type": "public-stream", "value": "opaque:scope:S1"},
+        "source_generation": "opaque:generation:G1",
+        "items": [{
+          "claimed_observation_ref": "OBS-R1-PUBLIC-G1-30-E2",
+          "incoming_body_scope": {"type": "recipient-mailbox", "value": "opaque:scope:N9:D9"},
+          "incoming_source_order_facts": {"page": "opaque:page:99", "ordinal": "opaque:ordinal:1"},
+          "incoming_provenance_facts": {"peer_path": "opaque:path:forged", "validation": "claimed-valid"},
+          "incoming_observation_commitment": "commit:observation:R1:changed-body"
+        }],
+        "cursor_after_ref": "CURSOR-R1-S1-G1-31",
+        "cursor_policy": "advance after durable quarantine to prevent poison replay"
+      },
+      "expected_state": {
+        "revisions": ["REV-E2"],
+        "observations": ["OBS-R1-PUBLIC-G1-30-E2"],
+        "local_projections": [],
+        "revision_conflicts": [],
+        "observation_conflicts": ["OBSCONFLICT-R1-S9"],
+        "quarantines": ["QUARANTINE-R1-S9"],
+        "cursors": ["CURSOR-R1-S1-G1-31"]
+      },
+      "canonical_revision_output": ["REV-E2"],
+      "logical_object_output": {
+        "status": "reduced-from-prior-valid-observation",
+        "objects": [{"logical_object": "opaque:object:E2", "state": "created", "revision_refs": ["REV-E2"]}]
+      },
+      "assertions": [
+        "the changed body is not re-keyed or accepted as a second observation",
+        "the source occurrence is durably quarantined and produces no canonical output",
+        "cursor advancement and quarantine evidence are atomic",
+        "the prior independently valid occurrence keeps E2 eligible"
+      ]
+    },
+    {
+      "id": "locked-to-decrypted",
+      "covers": "A recipient unlocks an already persisted P1 edit.",
+      "initial_state": {
+        "revisions": ["REV-P1-CREATE", "REV-P1-EDIT"],
+        "observations": ["OBS-R2-PRIVATE-G1-70-P1-CREATE", "OBS-R2-PRIVATE-G1-71-P1-EDIT"],
+        "local_projections": ["PROJ-P1-LOCKED"],
+        "revision_conflicts": [],
+        "observation_conflicts": [],
+        "quarantines": [],
+        "cursors": ["CURSOR-R2-MAILBOX-G1-71"]
+      },
+      "ingest": {
+        "kind": "replace_local_projection",
+        "replace_ref": "PROJ-P1-LOCKED",
+        "with_ref": "PROJ-P1-DECRYPTED"
+      },
+      "expected_state": {
+        "revisions": ["REV-P1-CREATE", "REV-P1-EDIT"],
+        "observations": ["OBS-R2-PRIVATE-G1-70-P1-CREATE", "OBS-R2-PRIVATE-G1-71-P1-EDIT"],
+        "local_projections": ["PROJ-P1-DECRYPTED"],
+        "revision_conflicts": [],
+        "observation_conflicts": [],
+        "quarantines": [],
+        "cursors": ["CURSOR-R2-MAILBOX-G1-71"]
+      },
+      "canonical_revision_output": ["REV-P1-CREATE", "REV-P1-EDIT"],
+      "logical_object_output": {
+        "status": "locally-readable",
+        "objects": [{
+          "logical_object": "opaque:recipient-delivery:P1",
+          "state": "edited",
+          "revision_refs": ["REV-P1-CREATE", "REV-P1-EDIT"],
+          "local_projection_ref": "PROJ-P1-DECRYPTED"
+        }]
+      },
+      "assertions": [
+        "only the replaceable local projection changes",
+        "revision and observation commitments are unchanged",
+        "cursor is unchanged",
+        "no canonical revision is emitted a second time"
+      ]
+    },
+    {
+      "id": "restart-from-durable-state",
+      "covers": "Restart reconstructs state, then receives an identical retry.",
+      "initial_state": {
+        "revisions": ["REV-E1"],
+        "observations": ["OBS-R1-PUBLIC-G1-10-E1", "OBS-R2-PUBLIC-G1-44-E1"],
+        "local_projections": [],
+        "revision_conflicts": [],
+        "observation_conflicts": [],
+        "quarantines": [],
+        "cursors": ["CURSOR-R1-S1-G1-10", "CURSOR-R2-S1-G1-44"]
+      },
+      "ingest": {
+        "kind": "restart_then_atomic_identical_retry",
+        "reconstruct_from": ["persisted rows", "persisted conflicts", "persisted cursors"],
+        "forbidden_inputs": ["in-memory seen set", "prior arrival sequence", "transport high-water mark"],
+        "source_instance_id": "opaque:source:R2",
+        "source_scope": {"type": "public-stream", "value": "opaque:scope:S1"},
+        "source_generation": "opaque:generation:G1",
+        "items": [{"revision_ref": "REV-E1", "observation_ref": "OBS-R2-PUBLIC-G1-44-E1"}],
+        "cursor_after_ref": "CURSOR-R2-S1-G1-44"
+      },
+      "expected_state": {
+        "revisions": ["REV-E1"],
+        "observations": ["OBS-R1-PUBLIC-G1-10-E1", "OBS-R2-PUBLIC-G1-44-E1"],
+        "local_projections": [],
+        "revision_conflicts": [],
+        "observation_conflicts": [],
+        "quarantines": [],
+        "cursors": ["CURSOR-R1-S1-G1-10", "CURSOR-R2-S1-G1-44"]
+      },
+      "canonical_revision_output": ["REV-E1"],
+      "logical_object_output": {
+        "status": "reduced",
+        "objects": [{"logical_object": "opaque:object:E1", "state": "created", "revision_refs": ["REV-E1"]}]
+      },
+      "assertions": [
+        "restart output is derived only from persisted records",
+        "the identical retry adds no row, conflict, or output",
+        "the already committed cursor remains stable",
+        "E1 emits at most once in the reconstructed view"
+      ]
+    }
+  ]
+}

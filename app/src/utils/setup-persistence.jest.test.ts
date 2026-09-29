@@ -53,4 +53,21 @@ describe('setup persistence boundary', () => {
     expect(location.reload).not.toHaveBeenCalled()
     expect(notifyError).toHaveBeenCalledWith(failure)
   })
+
+  it('normalizes non-Error persistence failures for the user', async () => {
+    const location = { hash: '#/setup', reload: jest.fn() }
+    const notifyError = jest.fn()
+
+    await expect(
+      persistSetupAndReload(
+        { flushPersistence: () => Promise.reject('storage unavailable') },
+        { flushPersistence: () => Promise.resolve() },
+        location,
+        notifyError,
+      ),
+    ).rejects.toThrow('storage unavailable')
+
+    expect(notifyError).toHaveBeenCalledWith(expect.any(Error))
+    expect(location.reload).not.toHaveBeenCalled()
+  })
 })

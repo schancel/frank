@@ -202,14 +202,18 @@ describe('Pinia persistence barrier', () => {
     await store.restored
     await store.flushPersistence()
 
+    const catchSpy = jest.spyOn(Promise.prototype, 'catch')
+    const catchesBeforeMutation = catchSpy.mock.calls.length
     store.setValue(1)
     await nextTick()
-    write.reject(new Error('disk unavailable'))
-    // No consumer has called the barrier yet. The plugin itself must attach a
-    // rejection handler synchronously while retaining the error for callers.
-    await new Promise(resolve => window.setTimeout(resolve, 0))
+    // No consumer has called the barrier yet. The plugin itself must already
+    // have attached a rejection handler to the newly-created aggregate.
+    expect(catchSpy.mock.calls.length).toBeGreaterThan(catchesBeforeMutation)
 
-    await expect(store.flushPersistence()).rejects.toThrow('disk unavailable')
+    const barrier = store.flushPersistence()
+    write.reject(new Error('disk unavailable'))
+    await expect(barrier).rejects.toThrow('disk unavailable')
+    catchSpy.mockRestore()
   })
 
   it('coalesces same-tick mutations and waits for the final-state write', async () => {

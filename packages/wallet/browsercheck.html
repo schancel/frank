@@ -1,0 +1,12 @@
+<!DOCTYPE html>
+<html>
+  <body>
+    MONAD_WALLET_BROWSERCHECK_RUNNING
+    <!-- Build this disposable artifact before serving:
+         esbuild storage/monad-wallet-bundle.browsercheck.ts --bundle --platform=browser
+         --format=esm --alias:path=path-browserify --external:fs
+         --inject:storage/browser-process-shim.ts --define:global=globalThis
+         --outfile=browsercheck.bundle.js -->
+    <script type="module" src="/browsercheck.bundle.js"></script>
+  </body>
+</html>

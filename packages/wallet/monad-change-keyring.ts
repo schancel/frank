@@ -26,8 +26,7 @@
  * instead; nothing downstream (`monad-change-pool.ts`, `monad-change-recovery.ts`) depends on how
  * the derivation itself is implemented, only on `deriveChangeAccount(index)`'s shape.
  */
-import * as bip39 from 'bip39'
-import { HDNodeWallet, Mnemonic } from 'ethers'
+import { HDNodeWallet, Mnemonic, randomBytes, wordlists } from 'ethers'
 
 /** BIP-44 path prefix for Monad (coin type 60) **change** accounts -- branch `1`, as opposed to
  * `monad-hd-keyring.ts`'s branch `0` burn/spend accounts. `{index}` is appended per-derivation. */
@@ -38,7 +37,7 @@ const CHANGE_DERIVATION_PATH_PREFIX = "m/44'/60'/0'/1"
 export function changeAccountPath(index: number): string {
   if (!Number.isInteger(index) || index < 0) {
     throw new Error(
-      `Change account index must be a non-negative integer, got ${index}`,
+      `Change account index must be a non-negative integer, got ${index}`
     )
   }
   return `${CHANGE_DERIVATION_PATH_PREFIX}/${index}`
@@ -71,7 +70,11 @@ export class MonadChangeKeyring {
    * `MonadHdKeyring.generate()` once and feed its `mnemonic` into `MonadChangeKeyring.
    * fromMnemonic()` -- this method exists mainly for standalone testing/tooling. */
   static generate(): { keyring: MonadChangeKeyring; mnemonic: string } {
-    const mnemonic = bip39.generateMnemonic()
+    const mnemonic = Mnemonic.fromEntropy(
+      randomBytes(16),
+      '',
+      wordlists.en
+    ).phrase
     return { keyring: MonadChangeKeyring.fromMnemonic(mnemonic), mnemonic }
   }
 
@@ -80,7 +83,7 @@ export class MonadChangeKeyring {
    * branches derive from one shared root secret. `passphrase` is the optional BIP-39 25th-word
    * passphrase (defaults to none). */
   static fromMnemonic(mnemonic: string, passphrase = ''): MonadChangeKeyring {
-    if (!bip39.validateMnemonic(mnemonic)) {
+    if (!Mnemonic.isValidMnemonic(mnemonic, wordlists.en)) {
       throw new Error('Invalid BIP-39 mnemonic')
     }
     const seed = Mnemonic.fromPhrase(mnemonic, passphrase).computeSeed()

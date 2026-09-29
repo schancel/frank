@@ -74,12 +74,14 @@
 import {
   JsonRpcProvider,
   Transaction,
+  computeAddress,
   formatEther,
   getAddress,
   getBytes,
   hexlify,
   parseEther,
 } from 'ethers'
+import axios from 'axios'
 
 import {
   ActiveChain,
@@ -98,16 +100,17 @@ import __pb_broadcast_pb from '@frank/cashweb/registry/broadcast_pb'
 const { BroadcastMessage, ForumPost: BroadcastForumPostPayload } =
   __pb_broadcast_pb
 
-import { MonadHdKeyring } from '../monad-hd-keyring'
-import { MonadChangeKeyring } from '../monad-change-keyring'
-import { MonadChangePool } from '../monad-change-pool'
-import { MonadSubAccountPool } from '../monad-account-pool'
-import { SubAccountLeaseManager } from '../monad-account-lease'
 import { MonadHttpClient } from '../monad-http'
 import { MonadAccountTxSigner } from '../monad-account-tx'
-import { MonadWalletHandle } from '../monad-wallet-handle'
+import {
+  MonadWalletHandle,
+  createMonadStampWalletHandle,
+} from '../monad-wallet-handle'
 import { MonadIdentity, fetchMonadProfile } from '../monad-identity'
 import {
+  assertMonadStampPaymentCount,
+  decodeStoredMonadMessage,
+  decodeMonadStampedMessage,
   MonadStampClient,
   quoteMonadStampPaymentGasReserve,
   recoverMonadStampPayments,
@@ -131,16 +134,11 @@ import {
   fetchMonadTopicPostsSince,
 } from '../monad-topic-tally-client'
 import { readViteEnv } from './vite-env'
-import { LevelSubAccountPoolStore } from '../storage/level-sub-account-pool-store'
-import { LevelChangePoolStore } from '../storage/level-change-pool-store'
 import {
-  InMemoryStampPaymentJournal,
-  LevelStampPaymentJournal,
-} from '../storage/stamp-payment-journal'
-import {
-  InMemoryStampAttemptJournal,
-  LevelStampAttemptJournal,
-} from '../storage/stamp-attempt-journal'
+  createInMemoryMonadWalletBundle,
+  openMonadWalletBundle,
+} from '../storage/monad-wallet-bundle'
+import { MonadRpcError } from '../monad-http'
 
 export interface MonadChainConfig {
   /** Monad JSON-RPC HTTP endpoint, e.g. `MONAD_TESTNET_HTTP_RPC_URL`. */
@@ -193,12 +191,12 @@ export function loadMonadChainConfigFromEnv(): MonadChainConfig {
       readEnv('MONAD_STAMP_BURN_ADDRESS') ??
       '0x000000000000000000000000000000000000dEaD',
     defaultStampValueWei: BigInt(
-      readEnv('FRANK_DM_DEFAULT_STAMP_VALUE_WEI') ?? '10000000000000000',
+      readEnv('FRANK_DM_DEFAULT_STAMP_VALUE_WEI') ?? '10000000000000000'
     ),
     defaultTopicVoteValueWei: BigInt(
       readEnv('FRANK_TOPIC_DEFAULT_VOTE_VALUE_WEI') ??
         readEnv('CASHWEB_STAMP_MIN_BURN_VALUE_WEI') ??
-        '1000000000000',
+        '1000000000000'
     ),
     subAccountPoolSize: Number(readEnv('MONAD_SUB_ACCOUNT_POOL_SIZE') ?? '8'),
     walletStorageLocation:
@@ -232,7 +230,7 @@ function asMonadWallet(wallet: WalletHandle): MonadChainWalletHandle {
   ) {
     throw new Error(
       'Expected a MonadChainWalletHandle (produced by MonadChain.createWallet), got a ' +
-        'WalletHandle missing the Monad wallet-client bundle',
+        'WalletHandle missing the Monad wallet-client bundle'
     )
   }
   return candidate as MonadChainWalletHandle
@@ -246,6 +244,18 @@ function bareHex(bytes: Uint8Array): string {
   return hexlify(bytes).slice(2)
 }
 
+function assertCompressedSecp256k1PublicKey(
+  publicKey: Uint8Array,
+  label: string
+): void {
+  if (
+    publicKey.length !== 33 ||
+    (publicKey[0] !== 0x02 && publicKey[0] !== 0x03)
+  ) {
+    throw new Error(`${label} must be a compressed 33-byte secp256k1 key`)
+  }
+}
+
 /** JSON-serializes `items` for use as a direct message's plaintext -- only the item kinds that
  * have a real Monad-side meaning (see this file's header). Throws on `'stealth'`/`'p2pkh'` items,
  * which have no Monad equivalent to build (no UTXO coin selection exists on this chain -- see
@@ -255,7 +265,7 @@ export function serializeMessageItems(items: MessageItem[]): string {
     if (item.type === 'stealth' || item.type === 'p2pkh') {
       throw new Error(
         `MonadChain direct messages don't support '${item.type}' items: on-chain-payment-` +
-          "embedded-in-message has no Monad equivalent (see PLAN.md's M9 notes)",
+          "embedded-in-message has no Monad equivalent (see PLAN.md's M9 notes)"
       )
     }
   }
@@ -272,13 +282,48 @@ export function deserializeMessageItems(plaintext: string): MessageItem[] {
   return parsed as MessageItem[]
 }
 
+export async function resolveLegacyAttemptRecipientFromEnvelope(params: {
+  relayBaseUrl: string
+  messageBytes: readonly number[]
+}): Promise<Uint8Array> {
+  const message = decodeMonadStampedMessage(
+    Uint8Array.from(params.messageBytes)
+  )
+  const envelope = parseEnvelope(message.encryptedPayload)
+  if (envelope === undefined) {
+    throw new Error('Legacy stamp attempt has no retained recipient envelope')
+  }
+  const profile = await fetchMonadProfile({
+    relayBaseUrl: params.relayBaseUrl,
+    address: { raw: getAddress(envelope.to) },
+  })
+  if (profile === undefined) {
+    throw new Error(
+      'Legacy stamp attempt recipient profile does not match its retained envelope'
+    )
+  }
+  assertCompressedSecp256k1PublicKey(
+    profile.pubKey,
+    'Legacy stamp attempt recipient profile'
+  )
+  if (
+    getAddress(computeAddress(hexlify(profile.pubKey))) !==
+    getAddress(envelope.to)
+  ) {
+    throw new Error(
+      'Legacy stamp attempt recipient profile does not match its retained envelope'
+    )
+  }
+  return profile.pubKey
+}
+
 /** Adapts a `MonadTopicPostViewProto` (`../wallet/monad-topic-tally-client.ts`) into the
  * pre-existing `ForumMessage` shape (`../types/forum.ts`) -- mirrors `../registry/index.ts`'s
  * `parseWrapper` field-for-field; see this file's header for the per-field reasoning. Returns
  * `undefined` if `view` doesn't carry a stored post (shouldn't happen for a view actually returned
  * by the relay, but keeps this function total). */
 export function viewToForumMessage(
-  view: MonadTopicPostViewProto,
+  view: MonadTopicPostViewProto
 ): ForumMessage | undefined {
   const stored = view.post
   const post = stored?.post
@@ -286,7 +331,7 @@ export function viewToForumMessage(
 
   const entries: ForumMessageEntry[] = []
   const broadcastMessage = BroadcastMessage.deserializeBinary(
-    post.encryptedPayload,
+    post.encryptedPayload
   )
   for (const entry of broadcastMessage.getEntriesList()) {
     const kind = entry.getKind()
@@ -331,8 +376,20 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
   >()
   const sendDirectMessageExclusive = async (
     params: Parameters<DirectMessageClient['send']>[0],
-    wallet: MonadChainWalletHandle,
+    wallet: MonadChainWalletHandle
   ): Promise<DirectMessageSendResult> => {
+    if (wallet.walletState === undefined) {
+      throw new Error('Monad stamped sends require a complete wallet bundle')
+    }
+    const stampClient = new MonadStampClient(
+      createMonadStampWalletHandle({
+        walletState: wallet.walletState,
+        provider: wallet.provider,
+        httpClient: wallet.httpClient,
+        relayBaseUrl: wallet.relayBaseUrl,
+      })
+    )
+    await stampClient.reconcileOrThrow()
     const plaintext = serializeMessageItems(params.items)
 
     const recipientProfile = await fetchMonadProfile({
@@ -341,7 +398,19 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
     })
     if (recipientProfile === undefined) {
       throw new Error(
-        `No registered profile/pubkey found for ${params.recipient.raw}`,
+        `No registered profile/pubkey found for ${params.recipient.raw}`
+      )
+    }
+    assertCompressedSecp256k1PublicKey(
+      recipientProfile.pubKey,
+      'Monad recipient profile'
+    )
+    if (
+      getAddress(computeAddress(hexlify(recipientProfile.pubKey))) !==
+      getAddress(params.recipient.raw)
+    ) {
+      throw new Error(
+        `Registered profile key does not match recipient ${params.recipient.raw}`
       )
     }
 
@@ -371,7 +440,6 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
       onProgress: params.onPreparationProgress,
     })
 
-    const stampClient = new MonadStampClient(wallet)
     const result = await stampClient.submitStampedMessage({
       encryptedPayload: envelopeBytes,
       // Ticket #57: a DM's stamp is a real payment to the recipient (mirroring Lotus's
@@ -383,7 +451,7 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
     })
 
     const stampPayments =
-      result.stored?.message?.stampPayments.flatMap(payment => {
+      result.stored?.message?.stampPayments.flatMap((payment) => {
         const tx = Transaction.from(hexlify(payment.rawTx))
         return tx.hash === null || tx.to === null
           ? []
@@ -413,8 +481,8 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
         wallet,
         run.then(
           () => undefined,
-          () => undefined,
-        ),
+          () => undefined
+        )
       )
       return run
     },
@@ -431,32 +499,50 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
 
       for (const record of stored) {
         if (record.message === undefined) continue
-        const envelope = parseEnvelope(record.message.encryptedPayload)
-        if (envelope === undefined) continue
-        if (envelope.to.toLowerCase() !== myAddress) continue
-
-        const payloadHashHex = bareHex(record.message.payloadHash)
-        if (wallet.stampPaymentJournal !== undefined) {
-          const recovered = recoverMonadStampPayments({
+        let envelope: NonNullable<ReturnType<typeof parseEnvelope>>
+        let recovered: ReturnType<typeof recoverMonadStampPayments>
+        let payloadHashHex: string
+        try {
+          assertMonadStampPaymentCount(record.message.stampPayments.length)
+          const parsedEnvelope = parseEnvelope(record.message.encryptedPayload)
+          if (parsedEnvelope === undefined) {
+            continue
+          }
+          // Both untrusted envelope addresses must be canonical before the payment set is
+          // journaled or either address is used for a profile lookup. A malformed paid row is
+          // isolated like every other malformed feed row and cannot poison later valid rows.
+          const canonicalFrom = getAddress(parsedEnvelope.from)
+          const canonicalTo = getAddress(parsedEnvelope.to)
+          if (canonicalTo.toLowerCase() !== myAddress) continue
+          envelope = {
+            ...parsedEnvelope,
+            from: canonicalFrom,
+            to: canonicalTo,
+          }
+          payloadHashHex = bareHex(record.message.payloadHash)
+          recovered = recoverMonadStampPayments({
             message: record.message,
             recipientPrivateKey: getBytes(wallet.identity.toPrivateKeyHex()),
+            envelopeRecipientAddress: envelope.to,
           })
-          for (const payment of recovered) {
-            const existing = wallet.stampPaymentJournal.get(
-              payloadHashHex,
-              payment.childIndex,
-            )
-            if (existing !== undefined) continue
-            await wallet.stampPaymentJournal.put({
-              payloadHashHex,
-              childIndex: payment.childIndex,
-              txHash: payment.txHash,
-              address: payment.address,
-              valueWei: payment.valueWei.toString(),
-              status: 'discovered',
-            })
-          }
+        } catch {
+          // Malformed relay rows are isolated. Transport failures occur outside this block and
+          // journal failures occur only after the complete row has been preflighted.
+          continue
         }
+
+        const discovered = recovered.map((payment) => ({
+          payloadHashHex,
+          childIndex: payment.childIndex,
+          txHash: payment.txHash,
+          rawTx: payment.rawTx,
+          recipientPublicKeyHex: payment.recipientPublicKeyHex,
+          envelopeRecipientAddress: payment.envelopeRecipientAddress,
+          address: payment.address,
+          valueWei: payment.valueWei.toString(),
+          status: 'discovered' as const,
+        }))
+        await wallet.stampPaymentJournal?.putDiscovered(discovered)
 
         const senderProfile = await fetchMonadProfile({
           relayBaseUrl: wallet.relayBaseUrl,
@@ -464,38 +550,42 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
         })
         if (senderProfile === undefined) continue
 
+        let plaintext: string
         let items: MessageItem[]
         try {
-          items = deserializeMessageItems(
-            decryptEnvelope({
-              envelope,
-              myPrivateKey: wallet.identity.toBitcorePrivateKey(),
-              senderPubKey: Buffer.from(senderProfile.pubKey),
-            }),
+          assertCompressedSecp256k1PublicKey(
+            senderProfile.pubKey,
+            'Monad sender profile'
           )
+          if (
+            getAddress(computeAddress(hexlify(senderProfile.pubKey))) !==
+            getAddress(envelope.from)
+          ) {
+            throw new Error(
+              'Monad sender profile does not match the retained envelope sender'
+            )
+          }
+          plaintext = decryptEnvelope({
+            envelope,
+            myPrivateKey: wallet.identity.toBitcorePrivateKey(),
+            senderPubKey: Buffer.from(senderProfile.pubKey),
+          })
+          items = deserializeMessageItems(plaintext)
         } catch {
-          // Wrong/stale key, corrupted ciphertext, or authenticated but malformed plaintext: one
-          // poison record must not reject the rest of this mailbox page.
+          // Wrong/stale key, mismatched sender authority, corrupted ciphertext, or authenticated
+          // but malformed plaintext: one poison record must not reject the rest of this page.
           continue
         }
 
-        const stampValueWei = record.message.stampPayments.reduce(
-          (sum, payment) =>
-            sum + Transaction.from(hexlify(payment.rawTx)).value,
-          BigInt(0),
+        const stampValueWei = recovered.reduce(
+          (sum, payment) => sum + payment.valueWei,
+          BigInt(0)
         )
-        const stampPayments = record.message.stampPayments.flatMap(payment => {
-          const tx = Transaction.from(hexlify(payment.rawTx))
-          return tx.hash === null || tx.to === null
-            ? []
-            : [
-                {
-                  txHash: tx.hash,
-                  destinationAddress: tx.to,
-                  valueWei: tx.value,
-                },
-              ]
-        })
+        const stampPayments = recovered.map((payment) => ({
+          txHash: payment.txHash,
+          destinationAddress: payment.address,
+          valueWei: payment.valueWei,
+        }))
 
         received.push({
           senderAddress: toChainAddress(envelope.from),
@@ -512,15 +602,17 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
 
     async listRecoveredStampPayments({ wallet }) {
       const monadWallet = asMonadWallet(wallet)
-      return (monadWallet.stampPaymentJournal?.getAll() ?? []).map(record => ({
-        payloadDigest: record.payloadHashHex,
-        childIndex: record.childIndex,
-        txHash: record.txHash,
-        address: toChainAddress(record.address),
-        valueWei: BigInt(record.valueWei),
-        status: record.status,
-        sweepTxHash: record.sweepTxHash,
-      }))
+      return (monadWallet.stampPaymentJournal?.getAll() ?? []).map(
+        (record) => ({
+          payloadDigest: record.payloadHashHex,
+          childIndex: record.childIndex,
+          txHash: record.txHash,
+          address: toChainAddress(record.address),
+          valueWei: BigInt(record.valueWei),
+          status: record.status,
+          sweepTxHash: record.sweepTxHash,
+        })
+      )
     },
 
     async sweepRecoveredStampPayment({
@@ -534,111 +626,204 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
       if (journal === undefined) {
         throw new Error('Stamp-payment recovery journal is not configured')
       }
-      const record = journal.get(payloadDigest, childIndex)
-      if (record === undefined) {
-        throw new Error(
-          `No recovered stamp payment ${payloadDigest}:${childIndex}`,
-        )
-      }
-      if (record.status === 'swept') {
-        throw new Error(
-          `Stamp payment ${payloadDigest}:${childIndex} was already swept`,
-        )
-      }
-      const child = deriveMonadStampChildPrivate({
-        payloadHash: getBytes(`0x${payloadDigest}`),
-        recipientPrivateKey: getBytes(monadWallet.identity.toPrivateKeyHex()),
-        paymentIndex: childIndex,
-      })
-      if (child.address.toLowerCase() !== record.address.toLowerCase()) {
-        throw new Error(
-          `Recovered stamp-payment address ${record.address} does not match derived child ${child.address}`,
-        )
-      }
-      const childSigner = new MonadAccountTxSigner({
-        privateKey: hexlify(child.privateKey),
-        provider: monadWallet.provider,
-        httpClient: monadWallet.httpClient,
-      })
-      if (record.status === 'sweep-pending') {
-        if (
-          record.sweepTxHash === undefined ||
-          record.sweepRawTx === undefined ||
-          record.sweepValueWei === undefined
-        ) {
+      journal.assertOpen()
+      const withPaymentLock = journal.withPaymentLock.bind(journal)
+      return withPaymentLock(payloadDigest, childIndex, async (locked) => {
+        let record = locked.get()
+        if (record === undefined) {
           throw new Error(
-            `Pending stamp-payment sweep ${payloadDigest}:${childIndex} is missing its signed intent`,
+            `No recovered stamp payment ${payloadDigest}:${childIndex}`
           )
         }
-        const status = await childSigner.getStatus(record.sweepTxHash)
-        if (status === 'confirmed') {
-          await journal.put({
-            ...record,
-            status: 'swept',
-            sweepRawTx: undefined,
-          })
-          return {
-            swept: true,
-            txHash: record.sweepTxHash,
-            valueWei: BigInt(record.sweepValueWei),
-          }
+        if (record.status === 'swept') {
+          throw new Error(
+            `Stamp payment ${payloadDigest}:${childIndex} was already swept`
+          )
         }
-        if (status === 'pending') {
-          await childSigner.submitRaw(record.sweepRawTx, record.sweepTxHash)
-          return {
-            swept: false,
-            reason: 'pending',
-            txHash: record.sweepTxHash,
-          }
-        }
-        await journal.put({
-          ...record,
-          status: 'discovered',
-          sweepTxHash: undefined,
-          sweepRawTx: undefined,
-          sweepValueWei: undefined,
-          sweepDestinationAddress: undefined,
+        const child = deriveMonadStampChildPrivate({
+          payloadHash: getBytes(`0x${payloadDigest}`),
+          recipientPrivateKey: getBytes(monadWallet.identity.toPrivateKeyHex()),
+          paymentIndex: childIndex,
         })
-      }
-      const outcome = await sweepRecoveredMonadStampPayment({
-        payment: {
-          childIndex,
-          address: child.address,
-          privateKey: child.privateKey,
-          txHash: record.txHash,
-          valueWei: BigInt(record.valueWei),
-        },
-        destinationAddress: destination.raw,
-        provider: monadWallet.provider,
-        httpClient: monadWallet.httpClient,
-        signer: childSigner,
-        onSigned: async signedTx => {
-          await journal.put({
-            ...record,
-            status: 'sweep-pending',
-            sweepTxHash: signedTx.txHash,
-            sweepRawTx: signedTx.rawTx,
-            sweepValueWei: signedTx.value.toString(),
-            sweepDestinationAddress: signedTx.to,
+        if (child.address.toLowerCase() !== record.address.toLowerCase()) {
+          throw new Error(
+            `Recovered stamp-payment address ${record.address} does not match derived child ${child.address}`
+          )
+        }
+        const childSigner = new MonadAccountTxSigner({
+          privateKey: hexlify(child.privateKey),
+          provider: monadWallet.provider,
+          httpClient: monadWallet.httpClient,
+        })
+
+        const retainFailedSweep = async (
+          pending: typeof record
+        ): Promise<NonNullable<typeof record>> => {
+          if (
+            pending === undefined ||
+            pending.sweepTxHash === undefined ||
+            pending.sweepRawTx === undefined ||
+            pending.sweepValueWei === undefined ||
+            pending.sweepDestinationAddress === undefined
+          ) {
+            throw new Error(
+              `Failed stamp-payment sweep ${payloadDigest}:${childIndex} is missing its signed intent`
+            )
+          }
+          const failed = {
+            ...pending,
+            status: 'sweep-failed' as const,
+            failedSweeps: [
+              ...(pending.failedSweeps ?? []),
+              {
+                txHash: pending.sweepTxHash,
+                rawTx: pending.sweepRawTx,
+                valueWei: pending.sweepValueWei,
+                destinationAddress: pending.sweepDestinationAddress,
+              },
+            ],
+          }
+          await locked.put(failed)
+          return failed
+        }
+
+        const signFresh = async (
+          base: NonNullable<typeof record>,
+          retryAfterImmediateFailure: boolean
+        ): Promise<
+          Awaited<ReturnType<DirectMessageClient['sweepRecoveredStampPayment']>>
+        > => {
+          let signedSweepRawTx: string | undefined
+          const outcome = await sweepRecoveredMonadStampPayment({
+            payment: {
+              childIndex,
+              address: child.address,
+              privateKey: child.privateKey,
+              txHash: base.txHash,
+              rawTx: base.rawTx,
+              recipientPublicKeyHex: base.recipientPublicKeyHex,
+              envelopeRecipientAddress: base.envelopeRecipientAddress,
+              valueWei: BigInt(base.valueWei),
+            },
+            destinationAddress: destination.raw,
+            provider: monadWallet.provider,
+            httpClient: monadWallet.httpClient,
+            signer: childSigner,
+            onSigned: async (signedTx) => {
+              signedSweepRawTx = signedTx.rawTx
+              await locked.put({
+                ...base,
+                status: 'sweep-pending',
+                sweepTxHash: signedTx.txHash,
+                sweepRawTx: signedTx.rawTx,
+                sweepValueWei: signedTx.value.toString(),
+                sweepDestinationAddress: signedTx.to,
+              })
+            },
           })
-        },
+          if (outcome.swept) {
+            await locked.put({
+              ...base,
+              status: 'swept',
+              sweepTxHash: outcome.txHash,
+              sweepRawTx: signedSweepRawTx,
+              sweepValueWei: outcome.valueWei.toString(),
+              sweepDestinationAddress: outcome.destinationAddress,
+            })
+            return {
+              swept: true,
+              txHash: outcome.txHash,
+              valueWei: outcome.valueWei,
+            }
+          }
+          if (outcome.reason === 'below-dust-threshold') {
+            return {
+              swept: false,
+              reason: 'below-dust-threshold',
+              balanceWei: outcome.balanceWei,
+              dustThresholdWei: outcome.dustThresholdWei,
+            }
+          }
+          if (outcome.reason === 'pending') {
+            return {
+              swept: false,
+              reason: 'pending',
+              txHash: outcome.txHash,
+              valueWei: outcome.valueWei,
+              destinationAddress: outcome.destinationAddress,
+            }
+          }
+          const failed = await retainFailedSweep(locked.get())
+          if (!retryAfterImmediateFailure) {
+            throw new Error(
+              `Recipient stamp-payment sweep ${outcome.txHash} failed on-chain`
+            )
+          }
+          return signFresh(failed, false)
+        }
+
+        if (record.status === 'sweep-pending') {
+          if (
+            record.sweepTxHash === undefined ||
+            record.sweepRawTx === undefined ||
+            record.sweepValueWei === undefined
+          ) {
+            throw new Error(
+              `Pending stamp-payment sweep ${payloadDigest}:${childIndex} is missing its signed intent`
+            )
+          }
+          let status = await childSigner.getStatus(record.sweepTxHash)
+          if (status === 'confirmed') {
+            await locked.put({
+              ...record,
+              status: 'swept',
+            })
+            return {
+              swept: true as const,
+              txHash: record.sweepTxHash,
+              valueWei: BigInt(record.sweepValueWei),
+            }
+          }
+          if (status === 'pending') {
+            // No receipt is ambiguous with a crash immediately before submission. Rebroadcast
+            // the exact journaled bytes, then reconcile again before returning.
+            try {
+              await childSigner.submitRaw(record.sweepRawTx, record.sweepTxHash)
+            } catch (error) {
+              if (
+                !(error instanceof MonadRpcError) ||
+                (error.kind !== 'already-known' &&
+                  error.kind !== 'nonce-too-low')
+              ) {
+                throw error
+              }
+              // These two responses can describe an earlier exact broadcast, but never prove
+              // which transaction consumed the nonce. Only the exact hash's receipt below may
+              // authorize completion or a fresh nonce.
+            }
+            status = await childSigner.getStatus(record.sweepTxHash)
+            if (status === 'confirmed') {
+              await locked.put({ ...record, status: 'swept' })
+              return {
+                swept: true as const,
+                txHash: record.sweepTxHash,
+                valueWei: BigInt(record.sweepValueWei),
+              }
+            }
+            if (status === 'pending') {
+              return {
+                swept: false as const,
+                reason: 'pending' as const,
+                txHash: record.sweepTxHash,
+                valueWei: BigInt(record.sweepValueWei),
+                destinationAddress: record.sweepDestinationAddress,
+              }
+            }
+          }
+          record = await retainFailedSweep(record)
+        }
+        return signFresh(record, true)
       })
-      if (outcome.swept) {
-        await journal.put({
-          ...record,
-          status: 'swept',
-          sweepTxHash: outcome.txHash,
-          sweepRawTx: undefined,
-          sweepValueWei: outcome.valueWei.toString(),
-          sweepDestinationAddress: outcome.destinationAddress,
-        })
-        return {
-          swept: true,
-          txHash: outcome.txHash,
-          valueWei: outcome.valueWei,
-        }
-      }
-      return outcome
     },
   }
 
@@ -755,84 +940,145 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
       if (existing !== undefined) return existing
 
       const pending = (async (): Promise<MonadChainWalletHandle> => {
-        const keyring = MonadHdKeyring.fromMnemonic(
-          seed.mnemonic,
-          seed.passphrase,
-        )
         const storageLocation =
           config.walletStorageLocation === false
             ? undefined
             : `${config.walletStorageLocation}-${identityKey}`
-        const subAccountStore =
-          storageLocation === undefined
-            ? undefined
-            : new LevelSubAccountPoolStore(storageLocation)
-        const changeStore =
-          storageLocation === undefined
-            ? undefined
-            : new LevelChangePoolStore(storageLocation)
-        const stampPaymentJournal =
-          storageLocation === undefined
-            ? new InMemoryStampPaymentJournal()
-            : new LevelStampPaymentJournal(storageLocation)
-        const stampAttemptJournal =
-          storageLocation === undefined
-            ? new InMemoryStampAttemptJournal()
-            : new LevelStampAttemptJournal(storageLocation)
-        await Promise.all([
-          subAccountStore?.Open(),
-          changeStore?.Open(),
-          stampPaymentJournal instanceof LevelStampPaymentJournal
-            ? stampPaymentJournal.Open()
-            : undefined,
-          stampAttemptJournal instanceof LevelStampAttemptJournal
-            ? stampAttemptJournal.Open()
-            : undefined,
-        ])
-
-        const pool = new MonadSubAccountPool({
-          keyring,
-          store: subAccountStore,
-        })
-        pool.ensureUnfundedSize(config.subAccountPoolSize)
-        const pendingLeaseIndices = new Set(
-          stampAttemptJournal.getAll().flatMap(attempt => attempt.leaseIndices),
-        )
-        for (const record of pool.records()) {
-          if (
-            record.status === 'in-use' &&
-            !pendingLeaseIndices.has(record.index)
-          ) {
-            // A crash during signing can persist the lease before the exact raw set exists. No
-            // relay broadcast is possible in that window, but the account is conservatively
-            // retired rather than silently reused with an uncertain locally-signed nonce.
-            pool.setStatus(record.index, 'retired')
-          }
-        }
-        await pool.flush()
-        const changePool = new MonadChangePool({
-          keyring: MonadChangeKeyring.fromMnemonic(
-            seed.mnemonic,
-            seed.passphrase,
-          ),
-          store: changeStore,
-        })
-        const leaseManager = new SubAccountLeaseManager(pool)
         const provider = new JsonRpcProvider(config.rpcUrl)
         const httpClient = new MonadHttpClient({ rpcUrl: config.rpcUrl })
-        const wallet: MonadChainWalletHandle = {
-          identity,
-          pool,
-          leaseManager,
-          provider,
-          httpClient,
-          changePool,
-          stampPaymentJournal,
-          stampAttemptJournal,
-          relayBaseUrl: config.relayBaseUrl,
+        const walletState =
+          storageLocation === undefined
+            ? createInMemoryMonadWalletBundle({
+                mnemonic: seed.mnemonic,
+                passphrase: seed.passphrase,
+              })
+            : await openMonadWalletBundle({
+                location: storageLocation,
+                seed: {
+                  mnemonic: seed.mnemonic,
+                  passphrase: seed.passphrase,
+                },
+                mode: 'create',
+                recovery: {
+                  provider,
+                  assertRelayAvailable: async () => {
+                    try {
+                      await axios({
+                        method: 'get',
+                        url: `${config.relayBaseUrl.replace(
+                          /\/+$/,
+                          ''
+                        )}/message/monad/${'00'.repeat(32)}`,
+                      })
+                    } catch (error) {
+                      if (
+                        !axios.isAxiosError(error) ||
+                        error.response?.status !== 404
+                      ) {
+                        throw error
+                      }
+                    }
+                  },
+                  // Standard EVM RPC cannot enumerate complete signed history by sender. A used
+                  // index with no local state therefore remains ambiguous and fails closed.
+                  recoverSenderEvidence: async () => undefined,
+                },
+                resolveLegacyAttemptRecipientPublicKey: async (attempt) => {
+                  return resolveLegacyAttemptRecipientFromEnvelope({
+                    relayBaseUrl: config.relayBaseUrl,
+                    messageBytes: attempt.messageBytes,
+                  })
+                },
+                resolveLegacyChangeRawTransaction: async (record) => {
+                  const rawTx = await provider.send(
+                    'eth_getRawTransactionByHash',
+                    [record.txHash]
+                  )
+                  if (typeof rawTx !== 'string') {
+                    throw new Error(
+                      `Missing authoritative change transaction ${record.txHash}`
+                    )
+                  }
+                  return rawTx
+                },
+                resolveLegacyPaymentAuthority: async (record) => {
+                  const response = await axios({
+                    method: 'get',
+                    url: `${config.relayBaseUrl.replace(
+                      /\/+$/,
+                      ''
+                    )}/message/monad/${record.payloadHashHex}`,
+                    responseType: 'arraybuffer',
+                  })
+                  const retained = decodeStoredMonadMessage(
+                    new Uint8Array(response.data)
+                  ).message
+                  if (
+                    retained === undefined ||
+                    bareHex(retained.payloadHash) !== record.payloadHashHex
+                  ) {
+                    throw new Error('Retained legacy payment message mismatch')
+                  }
+                  const envelope = parseEnvelope(retained.encryptedPayload)
+                  if (
+                    envelope === undefined ||
+                    getAddress(envelope.to) !== getAddress(identity.address.raw)
+                  ) {
+                    throw new Error('Retained legacy payment envelope mismatch')
+                  }
+                  const recovered = recoverMonadStampPayments({
+                    message: retained,
+                    recipientPrivateKey: getBytes(identity.toPrivateKeyHex()),
+                    envelopeRecipientAddress: envelope.to,
+                  }).find((payment) => payment.childIndex === record.childIndex)
+                  if (recovered === undefined) {
+                    throw new Error('Retained legacy payment child is missing')
+                  }
+                  return {
+                    rawTx: recovered.rawTx,
+                    recipientPublicKeyHex: recovered.recipientPublicKeyHex,
+                    envelopeRecipientAddress:
+                      recovered.envelopeRecipientAddress,
+                  }
+                },
+              })
+        try {
+          const {
+            pool,
+            changePool,
+            leaseManager,
+            stampPaymentJournal,
+            stampAttemptJournal,
+          } = walletState
+          const wallet: MonadChainWalletHandle = {
+            identity,
+            pool,
+            leaseManager,
+            provider,
+            httpClient,
+            changePool,
+            stampPaymentJournal,
+            stampAttemptJournal,
+            walletState,
+            relayBaseUrl: config.relayBaseUrl,
+          }
+          if (walletState.durability === 'persistent') {
+            await new MonadStampClient(
+              createMonadStampWalletHandle({
+                walletState,
+                provider,
+                httpClient,
+                relayBaseUrl: config.relayBaseUrl,
+              })
+            ).reconcileOrThrow()
+          }
+          pool.ensureUnfundedSize(config.subAccountPoolSize)
+          await pool.flush()
+          return wallet
+        } catch (error) {
+          await walletState.close().catch(() => undefined)
+          throw error
         }
-        await new MonadStampClient(wallet).resumePendingAttempts()
-        return wallet
       })()
       walletsByIdentity.set(identityKey, pending)
       try {
@@ -847,7 +1093,7 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
 
     async fetchProfile(
       addr: ChainAddress,
-      opts?: { relayBaseUrl?: string },
+      opts?: { relayBaseUrl?: string }
     ): Promise<ProfileInfo | undefined> {
       return fetchMonadProfile({
         relayBaseUrl: opts?.relayBaseUrl ?? config.relayBaseUrl,
@@ -864,5 +1110,5 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
  * this. See this file's header, "Configuration", for why reading env here (rather than in every
  * wallet client) is the right composition point. */
 export const MonadChain: ActiveChain = createMonadChain(
-  loadMonadChainConfigFromEnv(),
+  loadMonadChainConfigFromEnv()
 )

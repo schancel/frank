@@ -101,7 +101,7 @@ import {
  * `decodeMonadTopicPostView` -- written fresh here rather than imported, per this ticket's own
  * task description (see this file's header). */
 function decodeMonadTopicPostViewPb(
-  pb: MonadTopicPostView,
+  pb: InstanceType<typeof MonadTopicPostView>,
 ): MonadTopicPostViewProto {
   const storedPb = pb.getPost()
   let post: StoredMonadTopicPostProto | undefined

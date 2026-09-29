@@ -37,7 +37,7 @@ const TEST_MNEMONIC =
 const CHAIN_ID = 10143 // Monad testnet's chain ID; only a realistic stand-in here.
 
 function makeStubProvider(
-  perform: (req: { method: string }) => Promise<unknown>,
+  perform: (req: { method: string }) => Promise<unknown>
 ) {
   const provider = new JsonRpcProvider('http://127.0.0.1:1', CHAIN_ID, {
     staticNetwork: true,
@@ -51,7 +51,7 @@ function makeStubProvider(
 function makeMockHttpClient(): jest.Mocked<MonadTxSubmitter> {
   return {
     submitRawTransaction: jest.fn(
-      async (rawTxHex: string) => Transaction.from(rawTxHex).hash,
+      async (rawTxHex: string) => Transaction.from(rawTxHex).hash
     ),
     getTransactionReceipt: jest.fn(),
   }
@@ -89,13 +89,13 @@ describe('MonadHdKeyring', () => {
     expect(mnemonic.split(' ')).toHaveLength(12)
     const rebuilt = MonadHdKeyring.fromMnemonic(mnemonic)
     expect(keyring.deriveSubAccount(0).address).toBe(
-      rebuilt.deriveSubAccount(0).address,
+      rebuilt.deriveSubAccount(0).address
     )
   })
 
   it('rejects an invalid mnemonic', () => {
     expect(() => MonadHdKeyring.fromMnemonic('not a real mnemonic')).toThrow(
-      /invalid.*mnemonic/i,
+      /invalid.*mnemonic/i
     )
   })
 })
@@ -108,8 +108,8 @@ describe('MonadSubAccountPool', () => {
       const records = pool.ensureSize(3)
 
       expect(records).toHaveLength(3)
-      expect(records.map(r => r.index)).toEqual([0, 1, 2])
-      expect(records.every(r => r.status === 'available')).toBe(true)
+      expect(records.map((r) => r.index)).toEqual([0, 1, 2])
+      expect(records.every((r) => r.status === 'available')).toBe(true)
       expect(records[1].address).toBe(keyring.deriveSubAccount(1).address)
     })
 
@@ -145,6 +145,20 @@ describe('MonadSubAccountPool', () => {
       })
       expect(() => pool.ensureSize(-1)).toThrow()
     })
+
+    it('allocates after a 125k high-water mark without spreading account history', () => {
+      const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC)
+      const store = new InMemorySubAccountPoolStore()
+      store.setNextIndex(125_000)
+      const pool = new MonadSubAccountPool({ keyring, store })
+
+      const record = pool.deriveNextUnfunded()
+
+      expect(record.index).toBe(125_000)
+      expect(record.address).toBe(keyring.deriveSubAccount(125_000).address)
+      expect(pool.records()).toHaveLength(1)
+      expect(pool.nextUnusedIndex()).toBe(125_001)
+    })
   })
 
   describe('selectForStamp (per-stamp rotation)', () => {
@@ -158,7 +172,7 @@ describe('MonadSubAccountPool', () => {
 
       const selections = Array.from(
         { length: 5 },
-        () => pool.selectForStamp()?.index,
+        () => pool.selectForStamp()?.index
       )
 
       expect(selections).toEqual([0, 3, 0, 3, 0])
@@ -171,7 +185,7 @@ describe('MonadSubAccountPool', () => {
 
       pool.selectForStamp()
 
-      expect(pool.records().every(r => r.status === 'available')).toBe(true)
+      expect(pool.records().every((r) => r.status === 'available')).toBe(true)
     })
 
     it('returns undefined when no account is available', () => {
@@ -204,6 +218,92 @@ describe('MonadSubAccountPool', () => {
     })
   })
 
+  describe('terminal compaction', () => {
+    it('is bounded, skips referenced rows, and preserves a versioned recovery checkpoint', async () => {
+      const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC)
+      const store = new InMemorySubAccountPoolStore()
+      const pool = new MonadSubAccountPool({ keyring, store })
+      const lifecycle = {
+        funding: { rawTx: '0xfund', txHash: '0xfunding', valueWei: '100' },
+        spend: { rawTx: '0xspend', txHash: '0xspending', valueWei: '60' },
+        recovery: {
+          kind: 'dust' as const,
+          valueWei: '1',
+          thresholdWei: '2',
+        },
+      }
+      for (const index of [0, 1, 2]) {
+        const derived = keyring.deriveSubAccount(index)
+        store.put({
+          index,
+          address: derived.address,
+          status: 'spent',
+          lifecycle,
+        })
+      }
+
+      await expect(
+        pool.compactTerminalAccounts({
+          limit: 1,
+          referencedIndices: new Set([0]),
+          now: () => 123,
+        })
+      ).resolves.toBe(0)
+      await expect(
+        pool.compactTerminalAccounts({
+          limit: 1,
+          referencedIndices: new Set([0]),
+          now: () => 123,
+        })
+      ).resolves.toBe(1)
+
+      expect(pool.getRecord(0)).toBeDefined()
+      expect(pool.getRecord(1)).toBeUndefined()
+      expect(pool.getRecord(2)).toBeDefined()
+      expect(pool.terminalCheckpoints()).toEqual([
+        expect.objectContaining({
+          version: 1,
+          index: 1,
+          lifecycle,
+          compactedAt: 123,
+        }),
+      ])
+      expect(pool.nextUnusedIndex()).toBe(3)
+    })
+
+    it('inspects only the requested cursor window with 100k durable rows', async () => {
+      const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC)
+      const store = new InMemorySubAccountPoolStore()
+      const terminal = {
+        funding: { rawTx: '0xfund', txHash: '0xfunding', valueWei: '2' },
+        spend: { rawTx: '0xspend', txHash: '0xspending', valueWei: '1' },
+        recovery: { kind: 'none' as const, valueWei: '0' as const },
+      }
+      store.put({
+        index: 0,
+        address: keyring.deriveSubAccount(0).address,
+        status: 'spent',
+        lifecycle: terminal,
+      })
+      for (let index = 1; index < 100_000; index++) {
+        store.put({
+          index,
+          address: `0x${index.toString(16).padStart(40, '0')}`,
+          status: 'unfunded',
+        })
+      }
+      const scan = jest.spyOn(store, 'scanRecords')
+      const all = jest.spyOn(store, 'getAll')
+      const pool = new MonadSubAccountPool({ keyring, store })
+
+      await expect(
+        pool.compactTerminalAccounts({ limit: 1, now: () => 1 })
+      ).resolves.toBe(1)
+      expect(scan).toHaveBeenCalledWith(-1, 1)
+      expect(all).not.toHaveBeenCalled()
+    })
+  })
+
   describe('getSigner', () => {
     it('returns a MonadAccountTxSigner for the re-derived private key at that index', () => {
       const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC)
@@ -219,7 +319,7 @@ describe('MonadSubAccountPool', () => {
       })
 
       expect(signer.address.toLowerCase()).toBe(
-        keyring.deriveSubAccount(0).address.toLowerCase(),
+        keyring.deriveSubAccount(0).address.toLowerCase()
       )
     })
 
@@ -234,7 +334,7 @@ describe('MonadSubAccountPool', () => {
             throw new Error('unused')
           }),
           httpClient: makeMockHttpClient(),
-        }),
+        })
       ).toThrow(/No sub-account at index 5/)
     })
   })
@@ -246,7 +346,7 @@ describe('MonadSubAccountPool', () => {
       })
       pool.ensureSize(1)
       expect(() => pool.setStatus(9, 'retired')).toThrow(
-        /No sub-account at index 9/,
+        /No sub-account at index 9/
       )
     })
   })
@@ -261,16 +361,16 @@ describe('MonadSubAccountPool', () => {
       const childNonces = new Map<string, number>()
       let nonce = 0
       const httpClient = makeMockHttpClient()
-      httpClient.submitRawTransaction.mockImplementation(async rawTx => {
+      httpClient.submitRawTransaction.mockImplementation(async (rawTx) => {
         const transaction = Transaction.from(rawTx)
         balances.set(
           transaction.to!.toLowerCase(),
           (balances.get(transaction.to!.toLowerCase()) ?? 0n) +
-            transaction.value,
+            transaction.value
         )
         return transaction.hash
       })
-      httpClient.getTransactionReceipt.mockImplementation(async txHash => ({
+      httpClient.getTransactionReceipt.mockImplementation(async (txHash) => ({
         txHash,
         blockNumber: 1,
         blockHash: '0x' + '00'.repeat(32),
@@ -281,7 +381,7 @@ describe('MonadSubAccountPool', () => {
       }))
       const mainWallet = Wallet.createRandom()
       balances.set(mainWallet.address.toLowerCase(), 1_000_000n)
-      const provider = makeStubProvider(async request => {
+      const provider = makeStubProvider(async (request) => {
         if (request.method === 'getTransactionCount') {
           const address = (
             request as unknown as { address: string; blockTag?: string }
@@ -334,19 +434,19 @@ describe('MonadSubAccountPool', () => {
           chainId: BigInt(CHAIN_ID),
         },
         receipt: { maxAttempts: 0 },
-        onProgress: event => progress.push(event.stage),
+        onProgress: (event) => progress.push(event.stage),
       })
 
       expect(result.selectedAccountCount).toBe(2)
       expect(result.fundingTxHashes).toHaveLength(2)
       expect(httpClient.submitRawTransaction).toHaveBeenCalledTimes(2)
       expect(
-        pool.records().filter(record => record.status === 'available'),
+        pool.records().filter((record) => record.status === 'available')
       ).toEqual(
         expect.arrayContaining([
           expect.objectContaining({ index: 0 }),
           expect.objectContaining({ index: 1 }),
-        ]),
+        ])
       )
       expect(await provider.getBalance(pool.getRecord(0)!.address)).toBe(385n)
       expect(await provider.getBalance(pool.getRecord(1)!.address)).toBe(635n)
@@ -377,7 +477,7 @@ describe('MonadSubAccountPool', () => {
       expect(result.selectedAccountCount).toBe(2)
       expect(estimateGas).toHaveBeenCalled()
       expect(estimateGas.mock.calls[0][0]).toEqual(
-        expect.objectContaining({ from: mainAddress }),
+        expect.objectContaining({ from: mainAddress })
       )
     })
 
@@ -410,10 +510,10 @@ describe('MonadSubAccountPool', () => {
 
       expect(pool.getRecord(0)?.status).toBe('retired')
       const fundedDestinations = httpClient.submitRawTransaction.mock.calls.map(
-        ([raw]) => Transaction.from(raw).to!.toLowerCase(),
+        ([raw]) => Transaction.from(raw).to!.toLowerCase()
       )
       expect(fundedDestinations).not.toContain(
-        pool.getRecord(0)!.address.toLowerCase(),
+        pool.getRecord(0)!.address.toLowerCase()
       )
     })
 
@@ -465,13 +565,13 @@ describe('MonadSubAccountPool', () => {
             chainId: BigInt(CHAIN_ID),
           },
           receipt: { maxAttempts: 0 },
-        }),
+        })
       ).rejects.toThrow(/need up to 22010 wei, have 22009 wei/)
 
       expect(httpClient.submitRawTransaction).not.toHaveBeenCalled()
-      expect(pool.records().every(record => record.status === 'unfunded')).toBe(
-        true,
-      )
+      expect(
+        pool.records().every((record) => record.status === 'unfunded')
+      ).toBe(true)
     })
 
     it('falls back to one funded account when one is affordable but the preferred two are not', async () => {
@@ -502,7 +602,7 @@ describe('MonadSubAccountPool', () => {
       expect(result.selectedAccountCount).toBe(1)
       expect(httpClient.submitRawTransaction).toHaveBeenCalledTimes(1)
       const funded = Transaction.from(
-        httpClient.submitRawTransaction.mock.calls[0][0],
+        httpClient.submitRawTransaction.mock.calls[0][0]
       )
       expect(funded.value).toBe(1_010n)
     })
@@ -540,7 +640,7 @@ describe('MonadSubAccountPool', () => {
       ])
 
       const nonces = httpClient.submitRawTransaction.mock.calls.map(
-        ([raw]) => Transaction.from(raw).nonce,
+        ([raw]) => Transaction.from(raw).nonce
       )
       expect(nonces).toEqual([0, 1])
     })
@@ -557,7 +657,7 @@ describe('MonadSubAccountPool', () => {
           maxFeePerGas: 1n,
           maxPriorityFeePerGas: 1n,
           chainId: BigInt(CHAIN_ID),
-        },
+        }
       )
       store.put({
         ...first,
@@ -568,13 +668,13 @@ describe('MonadSubAccountPool', () => {
         },
       })
       const broadcasted = new Set<string>()
-      httpClient.submitRawTransaction.mockImplementation(async rawTx => {
+      httpClient.submitRawTransaction.mockImplementation(async (rawTx) => {
         const transaction = Transaction.from(rawTx)
         broadcasted.add(transaction.hash)
         balances.set(transaction.to!.toLowerCase(), transaction.value)
         return transaction.hash
       })
-      httpClient.getTransactionReceipt.mockImplementation(async txHash =>
+      httpClient.getTransactionReceipt.mockImplementation(async (txHash) =>
         broadcasted.has(txHash)
           ? {
               txHash,
@@ -585,7 +685,7 @@ describe('MonadSubAccountPool', () => {
               effectiveGasPrice: 1n,
               logs: [],
             }
-          : undefined,
+          : undefined
       )
 
       const restarted = new MonadSubAccountPool({
@@ -610,7 +710,7 @@ describe('MonadSubAccountPool', () => {
       expect(result.fundingTxHashes[0]).toBe(signed.txHash)
       expect(result.fundingTxHashes).toHaveLength(2)
       const fundedValues = httpClient.submitRawTransaction.mock.calls.map(
-        ([raw]) => Transaction.from(raw).value,
+        ([raw]) => Transaction.from(raw).value
       )
       expect(fundedValues).toEqual([385n, 635n])
       expect(restarted.getRecord(0)?.status).toBe('available')
@@ -621,7 +721,7 @@ describe('MonadSubAccountPool', () => {
   describe('topUpPool (ticket #34: indefinite growth + look-ahead funding buffer)', () => {
     async function makeSigner(nonceStart = 0) {
       const httpClient = makeMockHttpClient()
-      httpClient.getTransactionReceipt.mockImplementation(async txHash => ({
+      httpClient.getTransactionReceipt.mockImplementation(async (txHash) => ({
         txHash,
         blockNumber: 1,
         blockHash: '0x' + '00'.repeat(32),
@@ -631,7 +731,7 @@ describe('MonadSubAccountPool', () => {
         logs: [],
       }))
       let nonce = nonceStart
-      const provider = makeStubProvider(async req => {
+      const provider = makeStubProvider(async (req) => {
         if (req.method === 'getTransactionCount')
           return `0x${(nonce++).toString(16)}`
         if (req.method === 'estimateGas') return '0x5208'
@@ -660,12 +760,12 @@ describe('MonadSubAccountPool', () => {
 
       // ensureSize(2) already left 0 and 1 'available', so topping up to a buffer of 3 only needs
       // one fresh index -- 2, never re-deriving 0 or 1.
-      expect(results.map(r => r.index)).toEqual([2])
+      expect(results.map((r) => r.index)).toEqual([2])
       expect(pool.getRecord(2)?.status).toBe('available')
       expect(pool.getRecord(2)?.address).toBe(
-        keyring.deriveSubAccount(2).address,
+        keyring.deriveSubAccount(2).address
       )
-      expect(pool.records().map(r => r.index)).toEqual([0, 1, 2])
+      expect(pool.records().map((r) => r.index)).toEqual([0, 1, 2])
     })
 
     it('does nothing (funds nothing) when the buffer is already full', async () => {
@@ -703,7 +803,7 @@ describe('MonadSubAccountPool', () => {
       })
 
       // Growth resumes at index 2 (one past the highest known index), never re-touching 0 or 1.
-      expect(results.map(r => r.index)).toEqual([2, 3])
+      expect(results.map((r) => r.index)).toEqual([2, 3])
       expect(pool.getRecord(2)?.status).toBe('available')
       expect(pool.getRecord(3)?.status).toBe('available')
       expect(pool.getRecord(0)?.status).toBe('in-use') // untouched
@@ -723,8 +823,8 @@ describe('MonadSubAccountPool', () => {
       })
 
       expect(results).toHaveLength(DEFAULT_TOPUP_BUFFER_SIZE)
-      expect(results.map(r => r.index)).toEqual(
-        Array.from({ length: DEFAULT_TOPUP_BUFFER_SIZE }, (_, i) => i),
+      expect(results.map((r) => r.index)).toEqual(
+        Array.from({ length: DEFAULT_TOPUP_BUFFER_SIZE }, (_, i) => i)
       )
     })
 
@@ -749,7 +849,7 @@ describe('MonadSubAccountPool', () => {
       const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC)
       const pool = new MonadSubAccountPool({ keyring })
       const httpClient = makeMockHttpClient()
-      const provider = makeStubProvider(async req => {
+      const provider = makeStubProvider(async (req) => {
         if (req.method === 'getTransactionCount') return '0x0'
         if (req.method === 'estimateGas') return '0x5208'
         throw new Error(`unexpected _perform: ${req.method}`)
@@ -768,7 +868,7 @@ describe('MonadSubAccountPool', () => {
           bufferSize: 1,
           overrides: { maxFeePerGas: 1n, maxPriorityFeePerGas: 1n },
           receipt: { maxAttempts: 0 },
-        }),
+        })
       ).rejects.toThrow(/still pending/)
 
       expect(pool.getRecord(0)?.status).toBe('funding')
@@ -782,7 +882,7 @@ describe('MonadSubAccountPool', () => {
       const httpClient = makeMockHttpClient()
       let nonce = 0
       let call = 0
-      const provider = makeStubProvider(async req => {
+      const provider = makeStubProvider(async (req) => {
         if (req.method === 'getTransactionCount')
           return `0x${(nonce++).toString(16)}`
         if (req.method === 'estimateGas') return '0x5208'
@@ -799,9 +899,9 @@ describe('MonadSubAccountPool', () => {
           call++
           if (call === 2) throw new Error('simulated relay failure')
           return Transaction.from(rawTxHex).hash
-        },
+        }
       )
-      httpClient.getTransactionReceipt.mockImplementation(async txHash => ({
+      httpClient.getTransactionReceipt.mockImplementation(async (txHash) => ({
         txHash,
         blockNumber: 1,
         blockHash: '0x' + '00'.repeat(32),
@@ -818,7 +918,7 @@ describe('MonadSubAccountPool', () => {
           gasReserve: 1n,
           bufferSize: 2,
           overrides: { maxFeePerGas: 1n, maxPriorityFeePerGas: 1n },
-        }),
+        })
       ).rejects.toThrow('simulated relay failure')
 
       // Index 0's funding succeeded before the throw -- it must be recorded as available.
@@ -835,7 +935,7 @@ describe('fanOutFundSubAccounts', () => {
   async function makeMainAccountSigner(nonceStart = 0) {
     let nonce = nonceStart
     const httpClient = makeMockHttpClient()
-    const provider = makeStubProvider(async req => {
+    const provider = makeStubProvider(async (req) => {
       if (req.method === 'getTransactionCount')
         return `0x${(nonce++).toString(16)}`
       if (req.method === 'estimateGas') return '0x5208'
@@ -875,7 +975,7 @@ describe('fanOutFundSubAccounts', () => {
       expect(result.fundedValue).toBe(burnValue + gasReserve)
       expect(result.signedTx.value).toBe(burnValue + gasReserve)
       expect(result.signedTx.to.toLowerCase()).toBe(
-        targets[i].address.toLowerCase(),
+        targets[i].address.toLowerCase()
       )
     }
   })
@@ -899,7 +999,7 @@ describe('fanOutFundSubAccounts', () => {
       },
     })
 
-    expect(results.map(r => r.signedTx.nonce)).toEqual([5, 6, 7])
+    expect(results.map((r) => r.signedTx.nonce)).toEqual([5, 6, 7])
   })
 
   it('submits every built transaction through the main account signer', async () => {
@@ -931,7 +1031,7 @@ describe('fanOutFundSubAccounts', () => {
           { index: 0, address: '0x000000000000000000000000000000000000dea0' },
         ],
         ...amounts,
-      }),
+      })
     ).rejects.toThrow(/must be >= 0/)
   })
 
@@ -956,7 +1056,7 @@ describe('MonadSubAccountPool.fundAll', () => {
 
     let nonce = 0
     const httpClient = makeMockHttpClient()
-    const provider = makeStubProvider(async req => {
+    const provider = makeStubProvider(async (req) => {
       if (req.method === 'getTransactionCount')
         return `0x${(nonce++).toString(16)}`
       if (req.method === 'estimateGas') return '0x5208'
@@ -975,8 +1075,8 @@ describe('MonadSubAccountPool.fundAll', () => {
       overrides: { maxFeePerGas: 1n, maxPriorityFeePerGas: 1n },
     })
 
-    expect(results.map(r => r.index)).toEqual([0, 2]) // index 1 is in-use, skipped
-    expect(results.every(r => r.fundedValue === 120n)).toBe(true)
+    expect(results.map((r) => r.index)).toEqual([0, 2]) // index 1 is in-use, skipped
+    expect(results.every((r) => r.fundedValue === 120n)).toBe(true)
   })
 })
 
@@ -985,7 +1085,7 @@ describe('InMemorySubAccountPoolStore / LevelSubAccountPoolStore', () => {
     const store = new InMemorySubAccountPoolStore()
     store.put({ index: 2, address: '0xabc', status: 'available' })
     store.put({ index: 0, address: '0xdef', status: 'available' })
-    expect(store.getAll().map(r => r.index)).toEqual([0, 2])
+    expect(store.getAll().map((r) => r.index)).toEqual([0, 2])
   })
 
   it('LevelSubAccountPoolStore persists pool state across a simulated app restart', async () => {
@@ -1001,6 +1101,7 @@ describe('InMemorySubAccountPoolStore / LevelSubAccountPoolStore', () => {
       const poolA = new MonadSubAccountPool({ keyring, store: storeA })
       poolA.ensureSize(2)
       poolA.setStatus(1, 'in-use')
+      storeA.setNextIndex(125_000)
       await storeA.Close()
 
       const storeB = new LevelSubAccountPoolStore(dir)
@@ -1010,7 +1111,63 @@ describe('InMemorySubAccountPoolStore / LevelSubAccountPoolStore', () => {
       expect(poolB.records()).toHaveLength(2)
       expect(poolB.getRecord(1)?.status).toBe('in-use')
       expect(poolB.getRecord(0)?.address).toBe(
-        keyring.deriveSubAccount(0).address,
+        keyring.deriveSubAccount(0).address
+      )
+      expect(poolB.nextUnusedIndex()).toBe(125_000)
+      expect(poolB.deriveNextUnfunded().index).toBe(125_000)
+      await storeB.Close()
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('LevelSubAccountPoolStore durably replaces a complete terminal row with its checkpoint', async () => {
+    const os = await import('os')
+    const path = await import('path')
+    const fs = await import('fs')
+    const dir = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'sub-account-checkpoint-')
+    )
+    try {
+      const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC)
+      const storeA = new LevelSubAccountPoolStore(dir)
+      await storeA.Open()
+      const derived = keyring.deriveSubAccount(0)
+      storeA.put({
+        index: 0,
+        address: derived.address,
+        status: 'spent',
+        lifecycle: {
+          funding: { rawTx: '0xfund', txHash: '0xfundhash', valueWei: '10' },
+          spend: { rawTx: '0xspend', txHash: '0xspendhash', valueWei: '8' },
+          recovery: { kind: 'dust', valueWei: '1', thresholdWei: '2' },
+        },
+      })
+      const poolA = new MonadSubAccountPool({ keyring, store: storeA })
+      await expect(
+        poolA.compactTerminalAccounts({ limit: 1, now: () => 456 })
+      ).resolves.toBe(1)
+      await storeA.Close()
+
+      const storeB = new LevelSubAccountPoolStore(dir)
+      await storeB.Open()
+      const poolB = new MonadSubAccountPool({ keyring, store: storeB })
+      expect(poolB.getRecord(0)).toBeUndefined()
+      expect(poolB.terminalCheckpoints()).toEqual([
+        expect.objectContaining({ version: 1, index: 0, compactedAt: 456 }),
+      ])
+      expect(poolB.nextUnusedIndex()).toBe(1)
+      expect(() =>
+        storeB.put({
+          index: 0,
+          address: keyring.deriveSubAccount(0).address,
+          status: 'unfunded',
+        })
+      ).toThrow(/compacted sub-account index 0/)
+      poolB.ensureUnfundedSize(1)
+      expect(poolB.getRecord(0)).toBeUndefined()
+      expect(poolB.getRecord(1)?.address).toBe(
+        keyring.deriveSubAccount(1).address
       )
       await storeB.Close()
     } finally {

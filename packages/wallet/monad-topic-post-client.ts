@@ -219,7 +219,7 @@ export function decodeMonadTopicPost(bytes: Uint8Array): MonadTopicPostProto {
 }
 
 function decodeStoredMonadTopicPostPb(
-  pb: StoredMonadTopicPost,
+  pb: InstanceType<typeof StoredMonadTopicPost>,
 ): StoredMonadTopicPostProto {
   const nested = pb.getPost()
   return {
@@ -286,7 +286,7 @@ export function buildTopicPostPayload(params: {
     broadcastMessage.setParentDigest(params.parentPostHash)
   }
 
-  const protoEntries: BroadcastEntry[] = []
+  const protoEntries: Array<InstanceType<typeof BroadcastEntry>> = []
   for (const entry of params.entries) {
     if (entry.kind !== 'post') {
       throw new Error(`unsupported topic entry kind: ${entry.kind}`)

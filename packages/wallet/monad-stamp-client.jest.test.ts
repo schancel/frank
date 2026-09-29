@@ -13,9 +13,13 @@ import {
   JsonRpcProvider,
   SigningKey,
   Transaction,
+  Wallet,
   computeAddress,
+  decodeRlp,
+  encodeRlp,
   getBytes,
   getAddress,
+  hexlify,
   sha256,
 } from 'ethers'
 import axios from 'axios'
@@ -25,12 +29,14 @@ import { MonadSubAccountPool } from './monad-account-pool'
 import { SubAccountLeaseManager } from './monad-account-lease'
 import { MonadAccountTxSigner, MonadTxSubmitter } from './monad-account-tx'
 import { MonadChangePool } from './monad-change-pool'
+import { deriveMonadStampChildPublic } from './monad-stamp-stealth'
 import {
   InMemoryStampAttemptJournal,
   StampAttemptJournal,
 } from './storage/stamp-attempt-journal'
 import {
   MonadStampAbandonedError,
+  MonadStampAuthorityAuditRequiredError,
   MonadStampClient,
   MonadStampRejectedError,
   MonadStampPendingAttemptError,
@@ -55,7 +61,7 @@ const mockedAxios = axios as jest.Mocked<typeof axios>
 const TEST_MNEMONIC =
   'test test test test test test test test test test test junk'
 const RECIPIENT_PUBLIC_KEY = getBytes(
-  SigningKey.computePublicKey(`0x${'44'.repeat(32)}`, true),
+  SigningKey.computePublicKey(`0x${'44'.repeat(32)}`, true)
 )
 const CHAIN_ID = 10143
 
@@ -81,7 +87,7 @@ function makeStubProvider(
   perform: (req: {
     method: string
     transaction?: { data?: string }
-  }) => Promise<unknown>,
+  }) => Promise<unknown>
 ) {
   const provider = new JsonRpcProvider('http://127.0.0.1:1', CHAIN_ID, {
     staticNetwork: true,
@@ -101,7 +107,7 @@ function makeMockHttpClient(): jest.Mocked<MonadTxSubmitter> {
 
 function makeChainProvider() {
   let nonce = 0
-  return makeStubProvider(async req => {
+  return makeStubProvider(async (req) => {
     if (req.method === 'getTransactionCount')
       return `0x${(nonce++).toString(16)}`
     if (req.method === 'estimateGas') return '0x5208'
@@ -114,7 +120,7 @@ function makeCapacityProvider(capacities: bigint[]) {
   let nonce = 0
   let balanceRead = 0
   const feeReserve = FEE_OVERRIDES.gasLimit * FEE_OVERRIDES.maxFeePerGas
-  return makeStubProvider(async req => {
+  return makeStubProvider(async (req) => {
     if (req.method === 'getTransactionCount') {
       return `0x${(nonce++).toString(16)}`
     }
@@ -127,7 +133,10 @@ function makeCapacityProvider(capacities: bigint[]) {
   })
 }
 
-function storedMessageBytes(message: MonadStampedMessageProto): Uint8Array {
+function storedMessageBytes(
+  message: MonadStampedMessageProto,
+  exactMessageBytes = encodeMonadStampedMessage(message)
+): Uint8Array {
   const stored: StoredMonadMessageProto = {
     message,
     timestamp: 1_700_000_000_000,
@@ -141,10 +150,7 @@ function storedMessageBytes(message: MonadStampedMessageProto): Uint8Array {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const jspb = require('google-protobuf')
   const writer = new jspb.BinaryWriter()
-  writer.writeBytes(
-    1,
-    encodeMonadStampedMessage(stored.message as MonadStampedMessageProto),
-  )
+  writer.writeBytes(1, exactMessageBytes)
   writer.writeInt64(4, stored.timestamp)
   writer.writeBytes(5, stored.networkTag)
   return writer.getResultBuffer()
@@ -162,13 +168,15 @@ function makeClient(overrides?: {
   // wei, so a 10,000-wei stamp naturally consumes 6,000 + 4,000 without an artificial split.
   const provider = overrides?.provider ?? makeCapacityProvider([6_000n, 6_000n])
   const httpClient = makeMockHttpClient()
-  const client = new MonadStampClient({
+  const stampAttemptJournal =
+    overrides?.stampAttemptJournal ?? new InMemoryStampAttemptJournal()
+  const client = MonadStampClient.unsafeCreateForTests({
     pool,
     leaseManager,
     provider,
     httpClient,
     changePool: overrides?.changePool,
-    stampAttemptJournal: overrides?.stampAttemptJournal,
+    stampAttemptJournal,
     relayBaseUrl: 'https://relay.example.com/',
   })
   return { client, pool, leaseManager, provider, httpClient }
@@ -208,12 +216,12 @@ describe('calldata / commitment construction', () => {
 
   it('rejects a commitment that is not exactly 32 bytes', () => {
     expect(() => buildMonadStampCalldata(new Uint8Array(31))).toThrow(
-      /32 bytes/,
+      /32 bytes/
     )
   })
 
   it('quotes a worst-case stamp-payment fee reserve with headroom', async () => {
-    const provider = makeStubProvider(async req => {
+    const provider = makeStubProvider(async (req) => {
       throw new Error(`unexpected _perform: ${req.method}`)
     })
     const signer = new MonadAccountTxSigner({
@@ -233,7 +241,7 @@ describe('calldata / commitment construction', () => {
           maxPriorityFeePerGas: 1_000_000_000n,
           chainId: BigInt(CHAIN_ID),
         },
-      }),
+      })
     ).resolves.toBe(150_000_000_000_000n)
   })
 })
@@ -246,11 +254,14 @@ describe('recipient stamp-payment sweep', () => {
     address: childAddress,
     privateKey: childPrivateKey,
     txHash: `0x${'aa'.repeat(32)}`,
+    rawTx: '0x01',
+    recipientPublicKeyHex: hexlify(RECIPIENT_PUBLIC_KEY),
+    envelopeRecipientAddress: computeAddress(hexlify(RECIPIENT_PUBLIC_KEY)),
     valueWei: 10_000n,
   }
 
   it('subtracts child-paid gas and submits a plain transfer', async () => {
-    const provider = makeStubProvider(async req => {
+    const provider = makeStubProvider(async (req) => {
       if (req.method === 'getBalance') return '0x2710'
       throw new Error(`unexpected _perform: ${req.method}`)
     })
@@ -258,7 +269,7 @@ describe('recipient stamp-payment sweep', () => {
     httpClient.getTransactionReceipt.mockResolvedValue({
       status: 'success',
     } as never)
-    httpClient.submitRawTransaction.mockImplementation(async rawTx => {
+    httpClient.submitRawTransaction.mockImplementation(async (rawTx) => {
       const hash = Transaction.from(rawTx).hash
       if (hash === null) throw new Error('expected signed transaction')
       return hash
@@ -281,7 +292,7 @@ describe('recipient stamp-payment sweep', () => {
     if (!outcome.swept) throw new Error('expected sweep')
     expect(outcome.valueWei).toBe(9_000n)
     const submitted = Transaction.from(
-      httpClient.submitRawTransaction.mock.calls[0][0],
+      httpClient.submitRawTransaction.mock.calls[0][0]
     )
     expect(submitted.value).toBe(9_000n)
     expect(submitted.data).toBe('0x')
@@ -289,7 +300,7 @@ describe('recipient stamp-payment sweep', () => {
   })
 
   it('leaves an uneconomic child untouched', async () => {
-    const provider = makeStubProvider(async req => {
+    const provider = makeStubProvider(async (req) => {
       if (req.method === 'getBalance') return '0x3e8'
       throw new Error(`unexpected _perform: ${req.method}`)
     })
@@ -302,7 +313,7 @@ describe('recipient stamp-payment sweep', () => {
         provider,
         httpClient,
         dustThresholdWei: 1_000n,
-      }),
+      })
     ).resolves.toEqual({
       swept: false,
       reason: 'below-dust-threshold',
@@ -310,6 +321,95 @@ describe('recipient stamp-payment sweep', () => {
       dustThresholdWei: 1_000n,
     })
     expect(httpClient.submitRawTransaction).not.toHaveBeenCalled()
+  })
+})
+
+describe('recipient stamp-payment recovery bounds', () => {
+  it('accepts 1 and 64 payments and rejects 0 and 65 before decoding transactions', async () => {
+    const recipientPrivateKey = getBytes(`0x${'44'.repeat(32)}`)
+    const encryptedPayload = new Uint8Array([1])
+    const payloadHash = computeMonadStampCommitment(encryptedPayload)
+    const sender = new Wallet(`0x${'55'.repeat(32)}`)
+    const payments = await Promise.all(
+      Array.from({ length: 64 }, async (_, childIndex) => {
+        const destination = deriveMonadStampChildPublic({
+          payloadHash,
+          recipientPublicKey: RECIPIENT_PUBLIC_KEY,
+          paymentIndex: childIndex,
+        }).address
+        return {
+          childIndex,
+          rawTx: getBytes(
+            await sender.signTransaction({
+              type: 2,
+              chainId: CHAIN_ID,
+              nonce: childIndex,
+              to: destination,
+              value: 1n,
+              data: buildMonadStampCalldata(
+                computeMonadStampPaymentCommitment(payloadHash, childIndex)
+              ),
+              gasLimit: 21_000n,
+              maxFeePerGas: 2n,
+              maxPriorityFeePerGas: 1n,
+            })
+          ),
+        }
+      })
+    )
+    const recover = (
+      stampPayments: MonadStampedMessageProto['stampPayments']
+    ) =>
+      recoverMonadStampPayments({
+        message: {
+          stampPayments,
+          encryptedPayload,
+          payloadHash,
+        },
+        recipientPrivateKey,
+      })
+    expect(() => recover([])).toThrow(/1\.\.64/)
+    expect(recover(payments.slice(0, 1))).toHaveLength(1)
+    expect(recover(payments)).toHaveLength(64)
+    expect(() => recover([...payments, payments[0]])).toThrow(/1\.\.64/)
+  })
+
+  it('rejects signed transaction bytes that parse but are not the canonical serialization', async () => {
+    const recipientPrivateKey = getBytes(`0x${'44'.repeat(32)}`)
+    const encryptedPayload = new Uint8Array([9])
+    const payloadHash = computeMonadStampCommitment(encryptedPayload)
+    const destination = deriveMonadStampChildPublic({
+      payloadHash,
+      recipientPublicKey: RECIPIENT_PUBLIC_KEY,
+      paymentIndex: 0,
+    }).address
+    const canonical = await new Wallet(`0x${'55'.repeat(32)}`).signTransaction({
+      type: 0,
+      chainId: 1,
+      nonce: 0,
+      to: destination,
+      value: 1n,
+      data: buildMonadStampCalldata(
+        computeMonadStampPaymentCommitment(payloadHash, 0)
+      ),
+      gasLimit: 50_000n,
+      gasPrice: 1n,
+    })
+    const fields = decodeRlp(canonical) as string[]
+    fields[0] = '0x00'
+    const nonCanonical = encodeRlp(fields)
+    expect(Transaction.from(nonCanonical).serialized).toBe(canonical)
+
+    expect(() =>
+      recoverMonadStampPayments({
+        message: {
+          stampPayments: [{ childIndex: 0, rawTx: getBytes(nonCanonical) }],
+          encryptedPayload,
+          payloadHash,
+        },
+        recipientPrivateKey,
+      })
+    ).toThrow(/canonical signed serialization/i)
   })
 })
 
@@ -321,7 +421,7 @@ describe('protobuf encode/decode round trip', () => {
       payloadHash: new Uint8Array(32).fill(0x42),
     }
     const decoded = decodeMonadStampedMessage(
-      encodeMonadStampedMessage(message),
+      encodeMonadStampedMessage(message)
     )
     expect(decoded).toEqual(message)
   })
@@ -338,16 +438,111 @@ describe('protobuf encode/decode round trip', () => {
     // Ticket #39: network_tag (field 5) round-trips through the real generated bindings.
     expect(decoded.networkTag).toEqual(new TextEncoder().encode('MONT'))
   })
+
+  it('skips valid nine- and ten-byte unknown varints without numeric coercion', () => {
+    const message: MonadStampedMessageProto = {
+      stampPayments: [{ childIndex: 0, rawTx: new Uint8Array([9]) }],
+      encryptedPayload: new Uint8Array([7]),
+      payloadHash: new Uint8Array(32).fill(0x11),
+    }
+    const base = Array.from(storedMessageBytes(message))
+    for (const unknownVarint of [
+      [...Array(8).fill(0x80), 0x01],
+      [...Array(9).fill(0xff), 0x01],
+    ]) {
+      const decoded = decodeStoredMonadMessage(
+        Uint8Array.from([...base, 0x98, 0x06, ...unknownVarint])
+      )
+      expect(decoded.message).toEqual(message)
+    }
+  })
+
+  it('rejects overflowed or truncated unknown protobuf varints', () => {
+    const message: MonadStampedMessageProto = {
+      stampPayments: [{ childIndex: 0, rawTx: new Uint8Array([9]) }],
+      encryptedPayload: new Uint8Array([7]),
+      payloadHash: new Uint8Array(32).fill(0x11),
+    }
+    const base = Array.from(storedMessageBytes(message))
+    expect(() =>
+      decodeStoredMonadMessage(
+        Uint8Array.from([...base, 0x98, 0x06, ...Array(10).fill(0xff)])
+      )
+    ).toThrow(/protobuf|varint/i)
+    expect(() =>
+      decodeStoredMonadMessage(Uint8Array.from([...base, 0x98, 0x06, 0x80]))
+    ).toThrow(/protobuf|varint|truncated|end of the data/i)
+  })
+
+  it('skips balanced unknown protobuf groups without accepting nested field one', () => {
+    const message: MonadStampedMessageProto = {
+      stampPayments: [{ childIndex: 0, rawTx: new Uint8Array([9]) }],
+      encryptedPayload: new Uint8Array([7]),
+      payloadHash: new Uint8Array(32).fill(0x11),
+    }
+    const base = Array.from(storedMessageBytes(message))
+    const fakeNestedMessage = [0x0a, 0x02, 0xde, 0xad]
+    const group99Start = [0x9b, 0x06]
+    const group99End = [0x9c, 0x06]
+    const group100Start = [0xa3, 0x06]
+    const group100End = [0xa4, 0x06]
+    const decoded = decodeStoredMonadMessage(
+      Uint8Array.from([
+        ...group99Start,
+        ...fakeNestedMessage,
+        ...group100Start,
+        0x08,
+        0x01,
+        ...group100End,
+        ...group99End,
+        ...base,
+      ])
+    )
+    expect(decoded.message).toEqual(message)
+  })
+
+  it('rejects mismatched and truncated protobuf groups', () => {
+    const message: MonadStampedMessageProto = {
+      stampPayments: [{ childIndex: 0, rawTx: new Uint8Array([9]) }],
+      encryptedPayload: new Uint8Array([7]),
+      payloadHash: new Uint8Array(32).fill(0x11),
+    }
+    const base = Array.from(storedMessageBytes(message))
+    expect(() =>
+      decodeStoredMonadMessage(
+        Uint8Array.from([0x9b, 0x06, 0xa4, 0x06, ...base])
+      )
+    ).toThrow(/group|protobuf/i)
+    expect(() =>
+      decodeStoredMonadMessage(Uint8Array.from([...base, 0x9b, 0x06]))
+    ).toThrow(/group|protobuf|end of the data/i)
+  })
 })
 
 describe('MonadStampClient.submitStampedMessage', () => {
+  it('rejects a missing attempt journal before any signing or funding can begin', () => {
+    const pool = makePool()
+    const getSigner = jest.spyOn(pool, 'getSigner')
+
+    expect(() =>
+      MonadStampClient.unsafeCreateForTests({
+        pool,
+        leaseManager: new SubAccountLeaseManager(pool),
+        provider: makeCapacityProvider([6_000n, 6_000n]),
+        httpClient: makeMockHttpClient(),
+        relayBaseUrl: 'https://relay.invalid',
+      })
+    ).toThrow(/crash-safe stamp-attempt journal/i)
+    expect(getSigner).not.toHaveBeenCalled()
+  })
+
   beforeEach(() => {
     jest.clearAllMocks()
     // `jest.mock('axios')` automocks every export, including `isAxiosError`, to a bare `jest.fn()`
     // returning `undefined` -- give it a real implementation so `submitStampedMessage`'s
     // `axios.isAxiosError(err)` branches work the same way they would against the real library.
     mockedAxios.isAxiosError.mockImplementation(
-      (e: unknown) => (e as { isAxiosError?: boolean })?.isAxiosError === true,
+      (e: unknown) => (e as { isAxiosError?: boolean })?.isAxiosError === true
     )
   })
 
@@ -363,11 +558,11 @@ describe('MonadStampClient.submitStampedMessage', () => {
     const encryptedPayload = new TextEncoder().encode('hi')
     const expectedCommitment = computeMonadStampCommitment(encryptedPayload)
 
-    mockedAxios.mockImplementationOnce(async config => {
+    mockedAxios.mockImplementationOnce(async (config) => {
       expect(config.method).toBe('put')
       expect(config.url).toBe('https://relay.example.com/message/monad')
       const sentMessage = decodeMonadStampedMessage(
-        new Uint8Array(config.data as Buffer),
+        new Uint8Array(config.data as Buffer)
       )
       expect(sentMessage.encryptedPayload).toEqual(encryptedPayload)
       expect(sentMessage.payloadHash).toEqual(expectedCommitment)
@@ -377,7 +572,7 @@ describe('MonadStampClient.submitStampedMessage', () => {
       for (const [index, payment] of sentMessage.stampPayments.entries()) {
         const parsed = Transaction.from(hexOf(payment.rawTx))
         expect(getBytes(parsed.data).slice(5)).toEqual(
-          computeMonadStampPaymentCommitment(expectedCommitment, index),
+          computeMonadStampPaymentCommitment(expectedCommitment, index)
         )
         expect(parsed.value).toBe(index === 0 ? 6_000n : 4_000n)
       }
@@ -411,7 +606,7 @@ describe('MonadStampClient.submitStampedMessage', () => {
         reason: 'below-dust-threshold',
         balanceWei: 1n,
         dustThresholdWei: 2n,
-      }),
+      })
     )
 
     const recovered = recoverMonadStampPayments({
@@ -422,7 +617,7 @@ describe('MonadStampClient.submitStampedMessage', () => {
     expect(recovered[0].txHash).toBe(result.txHashes[0])
     expect(recovered[0].valueWei).toBe(6_000n)
     expect(
-      computeAddress(new SigningKey(recovered[0].privateKey).publicKey),
+      computeAddress(new SigningKey(recovered[0].privateKey).publicKey)
     ).toBe(recovered[0].address)
   })
 
@@ -431,7 +626,13 @@ describe('MonadStampClient.submitStampedMessage', () => {
     mockedAxios.mockImplementationOnce(async () => {
       const err = Object.assign(new Error('Bad Request'), {
         isAxiosError: true,
-        response: { status: 400, data: { error: 'invalid_monad_message' } },
+        response: {
+          status: 400,
+          data: {
+            error: 'invalid_monad_message',
+            exact_set_retained: false,
+          },
+        },
       })
       throw err
     })
@@ -442,12 +643,57 @@ describe('MonadStampClient.submitStampedMessage', () => {
         recipientPublicKey: RECIPIENT_PUBLIC_KEY,
         stampValueWei: 10_000n,
         overrides: FEE_OVERRIDES,
-      }),
+      })
     ).rejects.toThrow(MonadStampRejectedError)
 
     // Every selected sub-account is retired after a definitive relay rejection.
-    const retired = pool.records().filter(r => r.status === 'retired')
+    const retired = pool.records().filter((r) => r.status === 'retired')
     expect(retired).toHaveLength(2)
+  })
+
+  it('retains noncanonical protobuf attempts for explicit authority audit even when the relay claims no exact set', async () => {
+    const stampAttemptJournal = new InMemoryStampAttemptJournal()
+    const { client, pool } = makeClient({ stampAttemptJournal })
+    mockedAxios.mockRejectedValueOnce({
+      isAxiosError: true,
+      response: {
+        status: 400,
+        data: {
+          error: 'noncanonical_protobuf',
+          exact_set_retained: false,
+        },
+      },
+    })
+
+    await expect(
+      client.submitStampedMessage({
+        encryptedPayload: new TextEncoder().encode('pre-upgrade bytes'),
+        recipientPublicKey: RECIPIENT_PUBLIC_KEY,
+        stampValueWei: 10_000n,
+        overrides: FEE_OVERRIDES,
+      })
+    ).rejects.toThrow(MonadStampAuthorityAuditRequiredError)
+    expect(stampAttemptJournal.getAll()).toEqual([
+      expect.objectContaining({
+        authorityState: 'incompatible-protobuf',
+        authorityReason: 'noncanonical_protobuf',
+      }),
+    ])
+    expect(
+      pool.records().filter((record) => record.status === 'in-use')
+    ).toHaveLength(2)
+
+    await expect(
+      client.submitStampedMessage({
+        encryptedPayload: new TextEncoder().encode('replacement forbidden'),
+        recipientPublicKey: RECIPIENT_PUBLIC_KEY,
+        stampValueWei: 10_000n,
+        overrides: FEE_OVERRIDES,
+      })
+    ).rejects.toThrow(MonadStampAuthorityAuditRequiredError)
+    await expect(client.resumePendingAttempts()).resolves.toEqual([])
+    expect(mockedAxios).toHaveBeenCalledTimes(1)
+    expect(stampAttemptJournal.getAll()).toHaveLength(1)
   })
 
   it('keeps an exact journaled set pending after an HTTP response that may follow a partial broadcast', async () => {
@@ -466,12 +712,12 @@ describe('MonadStampClient.submitStampedMessage', () => {
         recipientPublicKey: RECIPIENT_PUBLIC_KEY,
         stampValueWei: 10_000n,
         overrides: FEE_OVERRIDES,
-      }),
+      })
     ).rejects.toThrow(MonadStampPendingAttemptError)
 
     expect(stampAttemptJournal.getAll()).toHaveLength(1)
     expect(
-      pool.records().filter(record => record.status === 'in-use'),
+      pool.records().filter((record) => record.status === 'in-use')
     ).toHaveLength(2)
   })
 
@@ -491,11 +737,11 @@ describe('MonadStampClient.submitStampedMessage', () => {
         recipientPublicKey: RECIPIENT_PUBLIC_KEY,
         stampValueWei: 10_000n,
         overrides: FEE_OVERRIDES,
-      }),
+      })
     ).rejects.toThrow('disk full')
 
     expect(
-      pool.records().filter(record => record.status === 'retired'),
+      pool.records().filter((record) => record.status === 'retired')
     ).toHaveLength(2)
     expect(mockedAxios).not.toHaveBeenCalled()
   })
@@ -507,9 +753,9 @@ describe('MonadStampClient.submitStampedMessage', () => {
     const encryptedPayload = new TextEncoder().encode('segmented payment')
     let sentMessage: MonadStampedMessageProto | undefined
 
-    mockedAxios.mockImplementationOnce(async config => {
+    mockedAxios.mockImplementationOnce(async (config) => {
       sentMessage = decodeMonadStampedMessage(
-        new Uint8Array(config.data as Buffer),
+        new Uint8Array(config.data as Buffer)
       )
       return {
         data: storedMessageBytes(sentMessage),
@@ -530,17 +776,17 @@ describe('MonadStampClient.submitStampedMessage', () => {
 
     expect(sentMessage).toBeDefined()
     const payments = (sentMessage as MonadStampedMessageProto).stampPayments
-    expect(payments.map(payment => payment.childIndex)).toEqual([0, 1, 2])
-    const transactions = payments.map(payment =>
-      Transaction.from(hexOf(payment.rawTx)),
+    expect(payments.map((payment) => payment.childIndex)).toEqual([0, 1, 2])
+    const transactions = payments.map((payment) =>
+      Transaction.from(hexOf(payment.rawTx))
     )
-    expect(transactions.map(tx => tx.value)).toEqual([4_500n, 3_500n, 2_000n])
-    expect(new Set(transactions.map(tx => tx.from)).size).toBe(3)
-    expect(new Set(transactions.map(tx => tx.to)).size).toBe(3)
-    expect(new Set(transactions.map(tx => tx.data)).size).toBe(3)
+    expect(transactions.map((tx) => tx.value)).toEqual([4_500n, 3_500n, 2_000n])
+    expect(new Set(transactions.map((tx) => tx.from)).size).toBe(3)
+    expect(new Set(transactions.map((tx) => tx.to)).size).toBe(3)
+    expect(new Set(transactions.map((tx) => tx.data)).size).toBe(3)
     expect(result.txHashes).toHaveLength(3)
     expect(
-      pool.records().filter(record => record.status === 'spent'),
+      pool.records().filter((record) => record.status === 'spent')
     ).toHaveLength(3)
   })
 
@@ -551,13 +797,13 @@ describe('MonadStampClient.submitStampedMessage', () => {
       21_000 +
       Array.from(getBytes(data)).reduce(
         (gas, byte) => gas + (byte === 0 ? 10 : 40),
-        0,
+        0
       )
     const quoteBalance =
       BigInt(
-        calldataFloor(buildMonadStampCalldata(new Uint8Array(32).fill(0xff))),
+        calldataFloor(buildMonadStampCalldata(new Uint8Array(32).fill(0xff)))
       ) + 6_000n
-    const provider = makeStubProvider(async req => {
+    const provider = makeStubProvider(async (req) => {
       if (req.method === 'getBalance') return `0x${quoteBalance.toString(16)}`
       if (req.method === 'getTransactionCount')
         return `0x${(nonce++).toString(16)}`
@@ -571,9 +817,9 @@ describe('MonadStampClient.submitStampedMessage', () => {
       throw new Error(`unexpected _perform: ${req.method}`)
     })
     const { client } = makeClient({ provider })
-    mockedAxios.mockImplementationOnce(async config => {
+    mockedAxios.mockImplementationOnce(async (config) => {
       const sent = decodeMonadStampedMessage(
-        new Uint8Array(config.data as Buffer),
+        new Uint8Array(config.data as Buffer)
       )
       for (const payment of sent.stampPayments) {
         const tx = Transaction.from(hexOf(payment.rawTx))
@@ -602,7 +848,7 @@ describe('MonadStampClient.submitStampedMessage', () => {
     expect(estimatedData).toHaveLength(4)
     for (const quoteData of estimatedData.slice(0, 2)) {
       expect(Array.from(getBytes(quoteData).slice(5))).toEqual(
-        Array(32).fill(0xff),
+        Array(32).fill(0xff)
       )
     }
     expect(estimatedData[2]).not.toBe(estimatedData[3])
@@ -615,11 +861,11 @@ describe('MonadStampClient.submitStampedMessage', () => {
     let putCalls = 0
     let getCalls = 0
     let submittedMessage: MonadStampedMessageProto | undefined
-    mockedAxios.mockImplementation(async config => {
+    mockedAxios.mockImplementation(async (config) => {
       if (config.method === 'put') {
         putCalls++
         submittedMessage = decodeMonadStampedMessage(
-          new Uint8Array(config.data as Buffer),
+          new Uint8Array(config.data as Buffer)
         )
         const networkErr = Object.assign(new Error('socket hang up'), {
           isAxiosError: true,
@@ -676,7 +922,27 @@ describe('MonadStampClient.submitStampedMessage', () => {
           stampPayments: submitted.stampPayments.map((payment, index) =>
             index === 0
               ? { ...payment, rawTx: new Uint8Array([1, 2, 3]) }
-              : payment,
+              : payment
+          ),
+        }),
+    ],
+    [
+      'only a different payload hash',
+      (submitted: MonadStampedMessageProto) =>
+        storedMessageBytes({
+          ...submitted,
+          payloadHash: new Uint8Array(32).fill(0x91),
+        }),
+    ],
+    [
+      'only a different child index',
+      (submitted: MonadStampedMessageProto) =>
+        storedMessageBytes({
+          ...submitted,
+          stampPayments: submitted.stampPayments.map((payment, index) =>
+            index === 0
+              ? { ...payment, childIndex: payment.childIndex + 7 }
+              : payment
           ),
         }),
     ],
@@ -686,10 +952,10 @@ describe('MonadStampClient.submitStampedMessage', () => {
       const stampAttemptJournal = new InMemoryStampAttemptJournal()
       const { client, pool } = makeClient({ stampAttemptJournal })
       let submittedMessage: MonadStampedMessageProto | undefined
-      mockedAxios.mockImplementation(async config => {
+      mockedAxios.mockImplementation(async (config) => {
         if (config.method === 'put') {
           submittedMessage = decodeMonadStampedMessage(
-            new Uint8Array(config.data as Buffer),
+            new Uint8Array(config.data as Buffer)
           )
           return {
             data: responseBytes(submittedMessage),
@@ -722,9 +988,9 @@ describe('MonadStampClient.submitStampedMessage', () => {
       expect(result.stored.message).toEqual(submittedMessage)
       expect(stampAttemptJournal.getAll()).toHaveLength(0)
       expect(
-        pool.records().filter(record => record.status === 'spent'),
+        pool.records().filter((record) => record.status === 'spent')
       ).toHaveLength(2)
-    },
+    }
   )
 
   it.each([
@@ -745,7 +1011,27 @@ describe('MonadStampClient.submitStampedMessage', () => {
           stampPayments: submitted.stampPayments.map((payment, index) =>
             index === 0
               ? { ...payment, rawTx: new Uint8Array([1, 2, 3]) }
-              : payment,
+              : payment
+          ),
+        }),
+    ],
+    [
+      'only a different payload hash',
+      (submitted: MonadStampedMessageProto) =>
+        storedMessageBytes({
+          ...submitted,
+          payloadHash: new Uint8Array(32).fill(0x92),
+        }),
+    ],
+    [
+      'only a different child index',
+      (submitted: MonadStampedMessageProto) =>
+        storedMessageBytes({
+          ...submitted,
+          stampPayments: submitted.stampPayments.map((payment, index) =>
+            index === 0
+              ? { ...payment, childIndex: payment.childIndex + 9 }
+              : payment
           ),
         }),
     ],
@@ -756,9 +1042,9 @@ describe('MonadStampClient.submitStampedMessage', () => {
       const pool = makePool()
       const first = makeClient({ pool, stampAttemptJournal }).client
       let submittedMessage: MonadStampedMessageProto | undefined
-      mockedAxios.mockImplementationOnce(async config => {
+      mockedAxios.mockImplementationOnce(async (config) => {
         submittedMessage = decodeMonadStampedMessage(
-          new Uint8Array(config.data as Buffer),
+          new Uint8Array(config.data as Buffer)
         )
         throw Object.assign(new Error('connection lost'), {
           isAxiosError: true,
@@ -769,7 +1055,7 @@ describe('MonadStampClient.submitStampedMessage', () => {
         Object.assign(new Error('not found'), {
           isAxiosError: true,
           response: { status: 404 },
-        }),
+        })
       )
 
       await expect(
@@ -779,16 +1065,16 @@ describe('MonadStampClient.submitStampedMessage', () => {
           stampValueWei: 10_000n,
           overrides: FEE_OVERRIDES,
           abandonPoll: { maxAttempts: 1, intervalMs: 0 },
-        }),
+        })
       ).rejects.toThrow(MonadStampAbandonedError)
       expect(stampAttemptJournal.getAll()).toHaveLength(1)
       expect(submittedMessage).toBeDefined()
 
       mockedAxios.mockReset()
       mockedAxios.isAxiosError.mockImplementation(
-        (e: unknown) => (e as { isAxiosError?: boolean })?.isAxiosError === true,
+        (e: unknown) => (e as { isAxiosError?: boolean })?.isAxiosError === true
       )
-      mockedAxios.mockImplementationOnce(async config => ({
+      mockedAxios.mockImplementationOnce(async (config) => ({
         data: responseBytes(submittedMessage as MonadStampedMessageProto),
         status: 200,
         statusText: 'OK',
@@ -800,13 +1086,13 @@ describe('MonadStampClient.submitStampedMessage', () => {
       await expect(resumed.resumePendingAttempts()).resolves.toEqual([])
       expect(stampAttemptJournal.getAll()).toHaveLength(1)
       expect(
-        pool.records().filter(record => record.status === 'spent'),
+        pool.records().filter((record) => record.status === 'spent')
       ).toHaveLength(0)
       expect(pool.selectForStamp()).toBeUndefined()
-    },
+    }
   )
 
-  it('retires as stuck and throws MonadStampAbandonedError when the fallback poll never finds it', async () => {
+  it('retains recoverable leases and throws MonadStampAbandonedError when the relay is unavailable', async () => {
     const stampAttemptJournal = new InMemoryStampAttemptJournal()
     const { client, pool } = makeClient({ stampAttemptJournal })
     mockedAxios.mockImplementation(async () => {
@@ -828,11 +1114,11 @@ describe('MonadStampClient.submitStampedMessage', () => {
           intervalMs: 0,
           sleep: async () => undefined,
         },
-      }),
+      })
     ).rejects.toThrow(MonadStampAbandonedError)
 
-    const retired = pool.records().filter(r => r.status === 'retired')
-    expect(retired).toHaveLength(2)
+    const retained = pool.records().filter((r) => r.status === 'in-use')
+    expect(retained).toHaveLength(2)
     expect(stampAttemptJournal.getAll()).toHaveLength(1)
     await expect(
       client.submitStampedMessage({
@@ -840,20 +1126,20 @@ describe('MonadStampClient.submitStampedMessage', () => {
         recipientPublicKey: RECIPIENT_PUBLIC_KEY,
         stampValueWei: 10_000n,
         overrides: FEE_OVERRIDES,
-      }),
+      })
     ).rejects.toThrow(MonadStampPendingAttemptError)
 
     // Simulate a cross-store crash where the awaited attempt journal persisted but the pool's
     // earlier status writes did not. A failed startup replay must reserve those
     // accounts again before returning control to the wallet.
-    for (const record of retired) pool.setStatus(record.index, 'available')
+    for (const record of retained) pool.setStatus(record.index, 'available')
     await expect(client.resumePendingAttempts()).resolves.toEqual([])
-    expect(pool.records().filter(r => r.status === 'in-use')).toHaveLength(2)
+    expect(pool.records().filter((r) => r.status === 'in-use')).toHaveLength(2)
 
     mockedAxios.mockReset()
-    mockedAxios.mockImplementationOnce(async config => {
+    mockedAxios.mockImplementationOnce(async (config) => {
       const message = decodeMonadStampedMessage(
-        new Uint8Array(config.data as Buffer),
+        new Uint8Array(config.data as Buffer)
       )
       return {
         data: storedMessageBytes(message),
@@ -865,7 +1151,7 @@ describe('MonadStampClient.submitStampedMessage', () => {
     })
     await expect(client.resumePendingAttempts()).resolves.toHaveLength(1)
     expect(stampAttemptJournal.getAll()).toHaveLength(0)
-    expect(pool.records().filter(r => r.status === 'spent')).toHaveLength(2)
+    expect(pool.records().filter((r) => r.status === 'spent')).toHaveLength(2)
   })
 
   it('stops a new send after recovering an older exact payment set', async () => {
@@ -890,12 +1176,12 @@ describe('MonadStampClient.submitStampedMessage', () => {
         recipientPublicKey: RECIPIENT_PUBLIC_KEY,
         stampValueWei: 10_000n,
         overrides: FEE_OVERRIDES,
-      }),
+      })
     ).rejects.toThrow(MonadStampPendingAttemptError)
 
-    mockedAxios.mockImplementationOnce(async config => {
+    mockedAxios.mockImplementationOnce(async (config) => {
       const replayed = decodeMonadStampedMessage(
-        new Uint8Array(config.data as Buffer),
+        new Uint8Array(config.data as Buffer)
       )
       expect(replayed.encryptedPayload).toEqual(oldPayload)
       return {
@@ -912,11 +1198,85 @@ describe('MonadStampClient.submitStampedMessage', () => {
         recipientPublicKey: RECIPIENT_PUBLIC_KEY,
         stampValueWei: 10_000n,
         overrides: FEE_OVERRIDES,
-      }),
+      })
     ).rejects.toThrow(MonadStampRecoveredAttemptError)
 
     expect(mockedAxios).toHaveBeenCalledTimes(2)
     expect(stampAttemptJournal.getAll()).toEqual([])
+  })
+
+  it('replays journaled protobuf bytes exactly when they contain an unknown field', async () => {
+    const originalJournal = new InMemoryStampAttemptJournal()
+    const { client, pool } = makeClient({
+      stampAttemptJournal: originalJournal,
+    })
+    mockedAxios.mockRejectedValueOnce({
+      isAxiosError: true,
+      response: { status: 400, data: { exact_set_retained: true } },
+    })
+    await expect(
+      client.submitStampedMessage({
+        encryptedPayload: new TextEncoder().encode('forward-compatible bytes'),
+        recipientPublicKey: RECIPIENT_PUBLIC_KEY,
+        stampValueWei: 10_000n,
+        overrides: FEE_OVERRIDES,
+      })
+    ).rejects.toThrow(MonadStampPendingAttemptError)
+
+    const original = originalJournal.getAll()[0]
+    // Unknown protobuf field 99, varint value 1. Decoding may ignore it, but retry authority is
+    // the journaled wire record, so these bytes must still reach the relay unchanged.
+    const exactBytes = [...original.messageBytes, 0x98, 0x06, 0x01]
+    const upgradedJournal = new InMemoryStampAttemptJournal()
+    await upgradedJournal.put({ ...original, messageBytes: exactBytes })
+    mockedAxios.mockImplementationOnce(async (config) => {
+      expect(Array.from(new Uint8Array(config.data as Buffer))).toEqual(
+        exactBytes
+      )
+      const decoded = decodeMonadStampedMessage(
+        new Uint8Array(config.data as Buffer)
+      )
+      return {
+        data: storedMessageBytes(decoded),
+        status: 200,
+        statusText: 'OK',
+        headers: {},
+        config,
+      }
+    })
+    const resumed = makeClient({ pool, stampAttemptJournal: upgradedJournal })
+    await expect(resumed.client.resumePendingAttempts()).resolves.toEqual([])
+    expect(upgradedJournal.getAll()).toHaveLength(1)
+    expect(pool.records().some((record) => record.status === 'spent')).toBe(
+      false
+    )
+
+    mockedAxios.mockImplementationOnce(async (config) => ({
+      data: storedMessageBytes(
+        decodeMonadStampedMessage(new Uint8Array(config.data as Buffer)),
+        new Uint8Array(config.data as Buffer)
+      ),
+      status: 200,
+      statusText: 'OK',
+      headers: {},
+      config,
+    }))
+    await expect(resumed.client.resumePendingAttempts()).resolves.toHaveLength(
+      1
+    )
+  })
+
+  it('rejects zero-value stamp input before reconciliation or network access', async () => {
+    const { client } = makeClient()
+    await expect(
+      client.submitStampedMessage({
+        encryptedPayload: new Uint8Array([1]),
+        recipientPublicKey: RECIPIENT_PUBLIC_KEY,
+        stampValueWei: 0n,
+        overrides: FEE_OVERRIDES,
+      })
+    ).rejects.toThrow(/stampValueWei must be positive/i)
+    expect(mockedAxios).not.toHaveBeenCalled()
   })
 
   it('rejects a split larger than the relay maximum before leasing or PUT', async () => {
@@ -930,17 +1290,17 @@ describe('MonadStampClient.submitStampedMessage', () => {
         recipientPublicKey: RECIPIENT_PUBLIC_KEY,
         stampValueWei: 65n,
         overrides: FEE_OVERRIDES,
-      }),
+      })
     ).rejects.toThrow(/within 64 payments/)
-    expect(pool.records().every(record => record.status === 'available')).toBe(
-      true,
-    )
+    expect(
+      pool.records().every((record) => record.status === 'available')
+    ).toBe(true)
     expect(mockedAxios).not.toHaveBeenCalled()
   })
 
   it('does not confirm a different stored payment set after an ambiguous PUT', async () => {
     const { client, pool } = makeClient()
-    mockedAxios.mockImplementation(async config => {
+    mockedAxios.mockImplementation(async (config) => {
       if (config.method === 'put') {
         throw Object.assign(new Error('socket hang up'), {
           isAxiosError: true,
@@ -968,10 +1328,10 @@ describe('MonadStampClient.submitStampedMessage', () => {
         stampValueWei: 10_000n,
         overrides: FEE_OVERRIDES,
         abandonPoll: { maxAttempts: 1, intervalMs: 0 },
-      }),
+      })
     ).rejects.toThrow(MonadStampAbandonedError)
 
-    expect(pool.records().filter(r => r.status === 'retired')).toHaveLength(2)
+    expect(pool.records().filter((r) => r.status === 'in-use')).toHaveLength(2)
   })
 })
 

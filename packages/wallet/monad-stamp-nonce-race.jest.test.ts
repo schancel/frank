@@ -66,12 +66,13 @@ import { MonadTxSubmitter } from './monad-account-tx'
 import {
   MonadStampAbandonedError,
   MonadStampClient,
+  MonadStampRecoveredAttemptError,
   MonadStampedMessageProto,
-  StampMonadMessageResult,
   StoredMonadMessageProto,
   decodeMonadStampedMessage,
   encodeMonadStampedMessage,
 } from './monad-stamp-client'
+import { InMemoryStampAttemptJournal } from './storage/stamp-attempt-journal'
 
 jest.mock('axios')
 const mockedAxios = axios as jest.Mocked<typeof axios>
@@ -79,7 +80,7 @@ const mockedAxios = axios as jest.Mocked<typeof axios>
 const TEST_MNEMONIC =
   'test test test test test test test test test test test junk'
 const RECIPIENT_PUBLIC_KEY = getBytes(
-  SigningKey.computePublicKey(`0x${'44'.repeat(32)}`, true),
+  SigningKey.computePublicKey(`0x${'44'.repeat(32)}`, true)
 )
 const CHAIN_ID = 10143
 
@@ -99,7 +100,7 @@ function makePool(size: number): MonadSubAccountPool {
 }
 
 function makeStubProvider(
-  perform: (req: { method: string }) => Promise<unknown>,
+  perform: (req: { method: string }) => Promise<unknown>
 ) {
   const provider = new JsonRpcProvider('http://127.0.0.1:1', CHAIN_ID, {
     staticNetwork: true,
@@ -115,7 +116,7 @@ function makeStubProvider(
  * same sub-account or different ones); this is not meant to model per-address chain state. */
 function makeChainProvider() {
   let nonce = 0
-  return makeStubProvider(async req => {
+  return makeStubProvider(async (req) => {
     if (req.method === 'getTransactionCount')
       return `0x${(nonce++).toString(16)}`
     if (req.method === 'estimateGas') return '0x5208'
@@ -127,7 +128,7 @@ function makeChainProvider() {
 function makeSegmentedChainProvider() {
   let nonce = 0
   const feeReserve = FEE_OVERRIDES.gasLimit * FEE_OVERRIDES.maxFeePerGas
-  return makeStubProvider(async req => {
+  return makeStubProvider(async (req) => {
     if (req.method === 'getTransactionCount')
       return `0x${(nonce++).toString(16)}`
     if (req.method === 'estimateGas') return '0x5208'
@@ -155,7 +156,7 @@ function storedMessageBytes(message: MonadStampedMessageProto): Uint8Array {
   const writer = new jspb.BinaryWriter()
   writer.writeBytes(
     1,
-    encodeMonadStampedMessage(stored.message as MonadStampedMessageProto),
+    encodeMonadStampedMessage(stored.message as MonadStampedMessageProto)
   )
   writer.writeInt64(4, stored.timestamp)
   return writer.getResultBuffer()
@@ -164,11 +165,12 @@ function storedMessageBytes(message: MonadStampedMessageProto): Uint8Array {
 function makeClient(pool: MonadSubAccountPool, provider = makeChainProvider()) {
   const leaseManager = new SubAccountLeaseManager(pool)
   const httpClient = makeMockHttpClient()
-  const client = new MonadStampClient({
+  const client = MonadStampClient.unsafeCreateForTests({
     pool,
     leaseManager,
     provider,
     httpClient,
+    stampAttemptJournal: new InMemoryStampAttemptJournal(),
     relayBaseUrl: 'https://relay.example.com',
   })
   return { client, leaseManager, provider, httpClient }
@@ -200,7 +202,7 @@ function successResponse(sentMessage: MonadStampedMessageProto) {
  * perspective the burn tx's on-chain confirmation status is simply unknown/pending until then. */
 function deferred<T>() {
   let resolve!: (value: T) => void
-  const promise = new Promise<T>(res => {
+  const promise = new Promise<T>((res) => {
     resolve = res
   })
   return { promise, resolve }
@@ -209,7 +211,7 @@ function deferred<T>() {
 async function waitUntil(condition: () => boolean): Promise<void> {
   for (let attempt = 0; attempt < 100; attempt++) {
     if (condition()) return
-    await new Promise(resolve => setTimeout(resolve, 1))
+    await new Promise((resolve) => setTimeout(resolve, 1))
   }
   throw new Error('condition did not become true within test budget')
 }
@@ -220,7 +222,7 @@ beforeEach(() => {
   // returning `undefined` -- give it a real implementation so `submitStampedMessage`'s
   // `axios.isAxiosError(err)` branches behave the same way they would against the real library.
   mockedAxios.isAxiosError.mockImplementation(
-    (e: unknown) => (e as { isAxiosError?: boolean })?.isAxiosError === true,
+    (e: unknown) => (e as { isAxiosError?: boolean })?.isAxiosError === true
   )
 })
 
@@ -267,7 +269,7 @@ describe('nonce-race sequencing proof (#21)', () => {
     })
 
     await expect(secondResultPromise).rejects.toBeInstanceOf(
-      NoAvailableSubAccountError,
+      NoAvailableSubAccountError
     )
     // The second attempt never got far enough to issue its own PUT -- only the first call's PUT
     // was ever made, proving no second nonce was ever fetched/used concurrently.
@@ -296,7 +298,7 @@ describe('nonce-race sequencing proof (#21)', () => {
     const firstPut = deferred<ReturnType<typeof successResponse>>()
     const putBodies: Buffer[] = []
     let putCalls = 0
-    mockedAxios.mockImplementation(async config => {
+    mockedAxios.mockImplementation(async (config) => {
       putCalls++
       const body = config.data as Buffer
       putBodies.push(body)
@@ -338,14 +340,14 @@ describe('nonce-race sequencing proof (#21)', () => {
     // Give the poll loop several real ticks to run while the first PUT is still unresolved -- it
     // must NOT have acquired the lease or settled yet: it is genuinely blocked/queued, not racing
     // the first for the same nonce.
-    await new Promise(resolve => setTimeout(resolve, 50))
+    await new Promise((resolve) => setTimeout(resolve, 50))
     expect(secondSettled).toBe(false)
     expect(pool.getRecord(0)?.status).toBe('in-use') // still held by the first attempt
     expect(putCalls).toBe(1) // second has not built/sent anything yet
 
     // Now the first attempt's relay response lands, releasing the lease as 'confirmed'.
     const firstSentMessage = decodeMonadStampedMessage(
-      new Uint8Array(putBodies[0]),
+      new Uint8Array(putBodies[0])
     )
     firstPut.resolve(successResponse(firstSentMessage))
     const firstResult = await firstResultPromise
@@ -356,7 +358,7 @@ describe('nonce-race sequencing proof (#21)', () => {
     // With the pool's only account now permanently spent (not 'available'), the second attempt
     // must still be genuinely blocked -- there is nothing to reuse. Give its poll loop a few more
     // real ticks to prove it does NOT (incorrectly) pick index 0 back up.
-    await new Promise(resolve => setTimeout(resolve, 30))
+    await new Promise((resolve) => setTimeout(resolve, 30))
     expect(secondSettled).toBe(false)
     expect(putCalls).toBe(1)
 
@@ -386,7 +388,7 @@ describe('nonce-race sequencing proof (#21)', () => {
     expect(putCalls).toBe(2)
   })
 
-  it('scenario 3 (documented): if the first tx never confirms, the lease retires the sub-account (stuck) instead of deadlocking a later, unrelated stamp on a different account', async () => {
+  it('scenario 3: relay outage retains the exact set and reconciles it before unrelated work', async () => {
     // Four sub-accounts: the preferred two-payment set is retired through the abandon path, and
     // the other two prove the pool isn't deadlocked afterward.
     const pool = makePool(4)
@@ -414,43 +416,40 @@ describe('nonce-race sequencing proof (#21)', () => {
           intervalMs: 0,
           sleep: async () => undefined,
         },
-      }),
+      })
     ).rejects.toThrow(MonadStampAbandonedError)
 
-    // Per #18: 'stuck' -> 'retired', never 'available' again (never reused with a guessed nonce).
-    const retired = pool.records().filter(r => r.status === 'retired')
-    expect(retired).toHaveLength(2)
-    const retiredIndices = retired.map(record => record.index)
+    // A relay outage is not evidence that the exact set was abandoned. Keep both reservations
+    // recoverable and unavailable rather than retiring them or paying a second set.
+    const retained = pool.records().filter((r) => r.status === 'in-use')
+    expect(retained).toHaveLength(2)
+    const retainedIndices = retained.map((record) => record.index)
 
     // No deadlock: a subsequent, unrelated stamp attempt (default acquireLease -- never waits)
     // succeeds immediately by picking the other, still-'available' sub-account. If the lease
     // module deadlocked, or the retired account were somehow still selectable, this would either
     // hang or throw (NoAvailableSubAccountError / SubAccountAlreadyLeasedError).
-    mockedAxios.mockImplementation(async config => {
+    mockedAxios.mockImplementation(async (config) => {
       const sentMessage = decodeMonadStampedMessage(
-        new Uint8Array(config.data as Buffer),
+        new Uint8Array(config.data as Buffer)
       )
       return successResponse(sentMessage)
     })
 
-    const nextResult: StampMonadMessageResult =
-      await client.submitStampedMessage({
+    await expect(
+      client.submitStampedMessage({
         encryptedPayload: new TextEncoder().encode('unrelated later stamp'),
         recipientPublicKey: RECIPIENT_PUBLIC_KEY,
         stampValueWei: 10_000n,
         overrides: FEE_OVERRIDES,
       })
+    ).rejects.toBeInstanceOf(MonadStampRecoveredAttemptError)
 
-    expect(nextResult.leaseIndices).toHaveLength(2)
-    expect(
-      nextResult.leaseIndices.every(index => !retiredIndices.includes(index)),
-    ).toBe(true)
-    // Ticket #34: this stamp's own confirmed release retires it as 'spent' -- terminal, never
-    // 'available' again (it completed successfully and consumed the account, unlike the first).
-    expect(pool.getRecord(nextResult.leaseIndices[0])?.status).toBe('spent')
-    // The retired account is still retired -- this ticket does not implement recovery for it.
-    for (const index of retiredIndices) {
-      expect(pool.getRecord(index)?.status).toBe('retired')
+    for (const index of retainedIndices) {
+      expect(pool.getRecord(index)?.status).toBe('spent')
     }
+    expect(
+      pool.records().filter((record) => record.status === 'available')
+    ).toHaveLength(2)
   })
 })

@@ -108,7 +108,12 @@ restricted profile (pass B, section 9), so text-key ordering is never needed.
 
 C2. Integers and lengths MUST use their shortest preferred encoding. A value
 that fits in the additional-information field or a smaller integer argument
-MUST NOT use a larger representation.
+MUST NOT use a larger representation. This minimality rule, and the
+`noncanonical` category, apply only to the argument of an integer and to the
+length or count of a string, array, or map. Tag numbers and float widths are
+not examined: any tag or float is the forbidden class (`schema`) whatever its
+width. A two-byte simple value `f8 xx` with `xx < 32` is `malformed` (RFC 8949
+section 3.3), and with `xx >= 32` is a forbidden simple value (`schema`).
 
 C3. All byte strings, text strings, arrays, and maps MUST have definite length.
 
@@ -179,7 +184,9 @@ limit; embedded frame bytes already lie inside that input and are not charged a
 second time. Container and item counters start at zero and monotonically count
 every decoded map, array, and scalar in the envelope, opened payload, and every
 recursively opened child frame. Logical depth starts at zero for the root
-envelope; entering a map or array adds one, and opening an embedded frame adds
+envelope; entering a map or array adds one, and the payload item is nested
+inside the envelope map, so its first array or map is at depth 2 and a payload
+may nest at most 31 levels; opening an embedded frame adds
 one before counting that child's envelope depth. A child parser inherits these
 counters and MUST NOT reset them. Implementations MUST fail without partially
 returning a typed object when any limit is exceeded.
@@ -545,7 +552,8 @@ category, and an implementation MUST NOT continue to report a later failure.
       and R3's 256 KiB for type 2 (type 3 uses the global limit), and the counts
       named by R2 through R4 read from the decoded fields before typed
       conversion: `resource`. R2's 256-item total across the opened graph is
-      charged as children are opened in 8.4, failing at the first item over;
+      charged when 8.4 begins opening each child, before that child's stage 2, failing
+      at the first item over;
    2. the type's CDDL structure and range rules, including network-tag,
       ASCII-identifier, and endpoint-ASCII syntax (S1, C6, S4), and C12 unknown
       keys: `schema`. A CDDL cardinality or `.size` bound that merely restates an
@@ -576,9 +584,9 @@ category, and an implementation MUST NOT continue to report a later failure.
    have finished and first checks its own ordering and uniqueness. S10 and the
    prior-authority selection run in the type-2 parent's stage 9, not in the
    type-4 child's. The checks are ordering, uniqueness, cross-field, network,
-   and S10,
-   the presence of an entry signed by the statement subject, and selection of
-   the prior authority (S4a, T2a): `semantic`. No signature or digest is
+   and S10, the presence of an entry signed by the statement subject,
+   selection of the prior authority (S4a, T2a), the S9 requirement that the
+   destination be key type 1, and T3a.5 index contiguity: `semantic`. No signature or digest is
    verified here.
 10. **Cryptographic and external checks**, `full` only, in this order:
     1. Decrypted content: the supplied decrypted frame is an embedded child of
@@ -602,7 +610,8 @@ proceeds in byte order and fails at the first item that violates a resource
 counter (`resource`) or is malformed (`malformed`). A declared length or count
 is checked against the limits when its header is read, before its content is
 examined, so an oversize declared length is `resource` even if the input is also
-truncated. Extra data after the single item (C9) is `malformed` and belongs to
+truncated. The element and entry limits also count the elements of an indefinite
+collection as they are read. Extra data after the single item (C9) is `malformed` and belongs to
 pass A. Only if pass A succeeds does pass B run, in byte order, failing at the
 first violation. Within one item, a non-minimal or indefinite encoding or a
 duplicate or out-of-order key is `noncanonical` and is reported before a

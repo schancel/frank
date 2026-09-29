@@ -137,9 +137,53 @@ pub enum MonadProfileVerifyError {
     #[invalid_client_input()]
     #[error("Failed to decode payload as MonadProfile: {0}")]
     InvalidProfilePayload(String),
+
+    /// A present `display_name` wasn't already in Decision #189's canonical signed form.
+    #[invalid_client_input()]
+    #[error("Invalid profile display_name: {0}")]
+    InvalidDisplayName(String),
 }
 
 use self::MonadProfileVerifyError::*;
+
+const DISPLAY_NAME_MAX_SCALARS: usize = 128;
+const DISPLAY_NAME_MAX_UTF8_BYTES: usize = 512;
+
+fn validate_display_names(profile: &proto::MonadProfile) -> Result<()> {
+    for entry in profile
+        .entries
+        .iter()
+        .filter(|entry| entry.kind == "display_name")
+    {
+        let name = std::str::from_utf8(&entry.body)
+            .map_err(|_| InvalidDisplayName("value is not valid UTF-8".to_string()))?;
+        let normalized = name.trim_matches(char::is_whitespace);
+        if normalized != name {
+            return Err(InvalidDisplayName("value has edge whitespace".to_string()).into());
+        }
+        if name.is_empty() {
+            return Err(InvalidDisplayName("value is empty".to_string()).into());
+        }
+        if name.chars().any(|character| {
+            matches!(character, '\u{0000}'..='\u{001f}' | '\u{007f}'..='\u{009f}' | '\u{2028}' | '\u{2029}')
+        }) {
+            return Err(InvalidDisplayName("value contains a forbidden character".to_string()).into());
+        }
+        if name.chars().count() > DISPLAY_NAME_MAX_SCALARS {
+            return Err(InvalidDisplayName(format!(
+                "value exceeds {DISPLAY_NAME_MAX_SCALARS} Unicode scalars"
+            ))
+            .into());
+        }
+        if name.len() > DISPLAY_NAME_MAX_UTF8_BYTES {
+            return Err(InvalidDisplayName(format!(
+                "value exceeds {DISPLAY_NAME_MAX_UTF8_BYTES} UTF-8 bytes"
+            ))
+            .into());
+        }
+    }
+    Ok(())
+}
 
 /// A successfully-verified Monad profile registration.
 #[derive(Debug, Clone, PartialEq)]
@@ -211,6 +255,7 @@ pub fn verify_monad_profile(
 
     let profile = proto::MonadProfile::decode(signed.payload.as_slice())
         .map_err(|err| InvalidProfilePayload(err.to_string()))?;
+    validate_display_names(&profile)?;
 
     Ok(VerifiedMonadProfile {
         payload_hash,
@@ -224,6 +269,7 @@ mod tests {
     use bitcoinsuite_ecc_secp256k1::EccSecp256k1;
     use pretty_assertions::assert_eq;
     use prost::Message;
+    use serde::Deserialize;
 
     use super::*;
 
@@ -270,6 +316,51 @@ mod tests {
         }
     }
 
+    fn display_name_profile(name: &str) -> proto::MonadProfile {
+        proto::MonadProfile {
+            entries: vec![proto::AddressEntry {
+                kind: "display_name".to_string(),
+                body: name.as_bytes().to_vec(),
+                ..Default::default()
+            }],
+            ..sample_profile(1234)
+        }
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct DisplayNameFixture {
+        cases: Vec<DisplayNameFixtureCase>,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct DisplayNameFixtureCase {
+        id: String,
+        input: Option<String>,
+        input_repeat: Option<DisplayNameRepeat>,
+        valid: bool,
+        normalized: Option<String>,
+    }
+
+    #[derive(Deserialize)]
+    struct DisplayNameRepeat {
+        value: String,
+        count: usize,
+        #[serde(default)]
+        suffix: String,
+    }
+
+    impl DisplayNameFixtureCase {
+        fn input(&self) -> String {
+            match (&self.input, &self.input_repeat) {
+                (Some(input), _) => input.clone(),
+                (None, Some(repeated)) => repeated.value.repeat(repeated.count) + &repeated.suffix,
+                (None, None) => panic!("Fixture {} has no input", self.id),
+            }
+        }
+    }
+
     #[test]
     fn verifies_a_validly_signed_profile() {
         let ecc = EccSecp256k1::default();
@@ -283,6 +374,62 @@ mod tests {
             verified.payload_hash,
             Sha256::digest(signed.payload.clone().into())
         );
+    }
+
+    #[test]
+    fn enforces_shared_display_name_fixtures_on_correctly_signed_profiles() {
+        let fixture: DisplayNameFixture = serde_json::from_str(include_str!(
+            "../../../../fixtures/profile-display-name-v1.json"
+        ))
+        .unwrap();
+        let ecc = EccSecp256k1::default();
+        let seckey = seckey(0x42);
+
+        for test_case in fixture.cases {
+            let input = test_case.input();
+            let wire_valid = test_case.valid
+                && test_case.normalized.as_deref().unwrap_or(input.as_str()) == input;
+            let profile = display_name_profile(&input);
+            let (signed, address) = sign_profile(&seckey, &profile);
+            let result = verify_monad_profile(&ecc, address, &signed);
+
+            if wire_valid {
+                assert_eq!(result.unwrap().profile, profile, "fixture {}", test_case.id);
+            } else {
+                assert!(
+                    matches!(
+                        result
+                            .unwrap_err()
+                            .downcast::<MonadProfileVerifyError>()
+                            .unwrap(),
+                        MonadProfileVerifyError::InvalidDisplayName(_)
+                    ),
+                    "fixture {}",
+                    test_case.id
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn validates_every_present_display_name() {
+        let ecc = EccSecp256k1::default();
+        let seckey = seckey(0x42);
+        let mut profile = display_name_profile("Alice");
+        profile.entries.push(proto::AddressEntry {
+            kind: "display_name".to_string(),
+            body: b"   ".to_vec(),
+            ..Default::default()
+        });
+        let (signed, address) = sign_profile(&seckey, &profile);
+
+        assert!(matches!(
+            verify_monad_profile(&ecc, address, &signed)
+                .unwrap_err()
+                .downcast::<MonadProfileVerifyError>()
+                .unwrap(),
+            MonadProfileVerifyError::InvalidDisplayName(_)
+        ));
     }
 
     #[test]

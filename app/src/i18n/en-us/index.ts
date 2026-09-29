@@ -199,6 +199,8 @@ export default {
     avatarTooLarge: 'Profile avatar is too large, select a smaller image.',
     unableContactRelay: 'Unable to contact relay server.',
     pushingProfile: 'Pushing new Profile...',
+    invalidName:
+      'Enter a public name: 1-128 characters, no control characters.',
     profile: 'Profile',
   },
   wipeWallet: {

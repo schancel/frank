@@ -19,11 +19,22 @@ describe('Setup persistence integration', () => {
       'this.accountData.seed = commitValidatedSetupSeed(',
     )
     expect(source).toContain('seed => this.setSeedPhrase(seed)')
+    expect(source).toContain(
+      'this.accountData.name = commitValidatedSetupName(',
+    )
+    expect(source).toContain('name =>\n              this.setRelayData({')
+    expect(source).toContain('name,\n                  bio:')
+    expect(source).not.toContain("name: this.accountData.name || 'Frank User'")
     expect(source).toContain('await this.persistSetupAndReload()')
     expect(
       source.indexOf('this.accountData.seed = commitValidatedSetupSeed('),
+    ).toBeLessThan(
+      source.indexOf('this.accountData.name = commitValidatedSetupName('),
+    )
+    expect(
+      source.indexOf('this.accountData.name = commitValidatedSetupName('),
     ).toBeLessThan(source.indexOf('this.setRelayData({'))
-    expect(source.indexOf('this.setRelayData({')).toBeLessThan(
+    expect(source.lastIndexOf('this.setRelayData({')).toBeLessThan(
       source.indexOf('await this.persistSetupAndReload()'),
     )
   })

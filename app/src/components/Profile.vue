@@ -28,10 +28,7 @@
                     :hint="$t('profile.nameHint')"
                     lazy-rules
                     style="width: 100%"
-                    :rules="[
-                      val =>
-                        (val && val.length > 0) || $t('profile.pleaseType'),
-                    ]"
+                    :rules="[nameRule]"
                   />
                 </div>
                 <div class="row q-pa-md">
@@ -97,6 +94,7 @@
 <script lang="ts">
 import { defineComponent } from 'vue'
 
+import { normalizedProfileName, profileNameRule } from '../utils/profile-name'
 import { defaultAvatars } from '../utils/constants'
 
 export default defineComponent({
@@ -179,6 +177,9 @@ export default defineComponent({
         defaultAvatars.length
       this.selectLocalAvatar(defaultAvatars[this.defaultAvatarIndex])
     },
+    nameRule(val: string): true | string {
+      return profileNameRule(val, this.$t('profile.pleaseType'))
+    },
     cycleAvatarRight() {
       this.defaultAvatarIndex =
         (this.defaultAvatarIndex + 1) % defaultAvatars.length
@@ -186,8 +187,8 @@ export default defineComponent({
     },
   },
   watch: {
-    internalName(value) {
-      this.$emit('update:name', value)
+    internalName(value: string) {
+      this.$emit('update:name', normalizedProfileName(value))
     },
     internalBio(value) {
       this.$emit('update:bio', value)

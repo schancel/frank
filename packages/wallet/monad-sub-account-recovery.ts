@@ -3,6 +3,7 @@ import type { Provider } from 'ethers'
 import type { MonadHdKeyring } from './monad-hd-keyring'
 
 export const DEFAULT_MAX_SUB_ACCOUNT_INDEX_SEARCH = 2 ** 20
+export const DEFAULT_SPARSE_GAP_LOOKAHEAD = 4
 
 export async function isSubAccountIndexUsed(
   provider: Provider,
@@ -24,6 +25,8 @@ export async function recoverNextSubAccountIndex(params: {
   maxIndex?: number
   /** First allocatable index. Restored roots reserve index 0, so they search from 1. */
   minimumIndex?: number
+  /** Bounded lookahead beyond the first apparent boundary, covering crash-created sparse gaps. */
+  sparseGapLookahead?: number
 }): Promise<number> {
   const maxIndex = params.maxIndex ?? DEFAULT_MAX_SUB_ACCOUNT_INDEX_SEARCH
   const minimumIndex = params.minimumIndex ?? 0
@@ -42,22 +45,43 @@ export async function recoverNextSubAccountIndex(params: {
       params.provider,
       params.keyring.deriveSubAccount(index).address
     )
-  if (!(await usedAt(minimumIndex))) return minimumIndex
-  let lo = minimumIndex
-  let hi = minimumIndex + 1
-  while (await usedAt(hi)) {
-    lo = hi
-    hi = minimumIndex + (hi - minimumIndex) * 2
-    if (hi > maxIndex) {
-      throw new Error(
-        `recoverNextSubAccountIndex: every index up to ${maxIndex} appears used`
-      )
+  let boundary = minimumIndex
+  if (await usedAt(minimumIndex)) {
+    let lo = minimumIndex
+    let hi = minimumIndex + 1
+    while (await usedAt(hi)) {
+      lo = hi
+      hi = minimumIndex + (hi - minimumIndex) * 2
+      if (hi > maxIndex) {
+        throw new Error(
+          `recoverNextSubAccountIndex: every index up to ${maxIndex} appears used`
+        )
+      }
+    }
+    while (hi - lo > 1) {
+      const mid = lo + Math.floor((hi - lo) / 2)
+      if (await usedAt(mid)) lo = mid
+      else hi = mid
+    }
+    boundary = hi
+  }
+  const lookahead = params.sparseGapLookahead ?? DEFAULT_SPARSE_GAP_LOOKAHEAD
+  if (!Number.isSafeInteger(lookahead) || lookahead < 1) {
+    throw new Error('sparseGapLookahead must be a positive safe integer')
+  }
+  let lastUsed = boundary - 1
+  let consecutiveUnused = 0
+  for (
+    let index = boundary;
+    index <= maxIndex && consecutiveUnused < lookahead;
+    index++
+  ) {
+    if (await usedAt(index)) {
+      lastUsed = index
+      consecutiveUnused = 0
+    } else {
+      consecutiveUnused++
     }
   }
-  while (hi - lo > 1) {
-    const mid = lo + Math.floor((hi - lo) / 2)
-    if (await usedAt(mid)) lo = mid
-    else hi = mid
-  }
-  return hi
+  return lastUsed + 1
 }

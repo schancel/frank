@@ -104,8 +104,11 @@
  */
 import {
   Provider,
+  SigningKey,
   Transaction,
+  computeAddress,
   concat,
+  getAddress,
   getBytes,
   hexlify,
   sha256,
@@ -185,6 +188,9 @@ export interface MonadStampedMessageProto {
  */
 export interface StoredMonadMessageProto {
   message: MonadStampedMessageProto | undefined
+  /** Exact nested wire bytes as retained by the relay. Unknown protobuf fields are authoritative
+   * for retry identity and must not be erased by decode/re-encode comparison. */
+  messageBytes?: Uint8Array
   /** Milliseconds since the Unix epoch. Decoded via `jspb.BinaryReader.readInt64`, which returns a
    * plain JS `number` (not `bigint`) — safe here since a millisecond timestamp is far below
    * `Number.MAX_SAFE_INTEGER` for a very long time yet. */
@@ -251,9 +257,56 @@ export function decodeStoredMonadMessage(
           payloadHash: nested.getPayloadHash_asU8(),
         }
       : undefined,
+    messageBytes: extractLengthDelimitedField(bytes, 1),
     timestamp: pb.getTimestamp(),
     networkTag: pb.getNetworkTag_asU8(),
   }
+}
+
+function extractLengthDelimitedField(
+  bytes: Uint8Array,
+  wantedField: number
+): Uint8Array | undefined {
+  let offset = 0
+  let found: Uint8Array | undefined
+  const readVarint = (): number => {
+    let value = 0
+    let multiplier = 1
+    for (let count = 0; count < 8 && offset < bytes.length; count++) {
+      const byte = bytes[offset++]
+      value += (byte & 0x7f) * multiplier
+      if ((byte & 0x80) === 0) return value
+      multiplier *= 128
+    }
+    throw new Error('Invalid protobuf varint in stored Monad message')
+  }
+  while (offset < bytes.length) {
+    const tag = readVarint()
+    const field = Math.floor(tag / 8)
+    const wireType = tag & 7
+    if (field < 1) throw new Error('Invalid protobuf field tag')
+    if (wireType === 0) {
+      readVarint()
+    } else if (wireType === 1) {
+      offset += 8
+    } else if (wireType === 2) {
+      const length = readVarint()
+      const end = offset + length
+      if (!Number.isSafeInteger(length) || end > bytes.length) {
+        throw new Error('Invalid protobuf length in stored Monad message')
+      }
+      if (field === wantedField) found = bytes.slice(offset, end)
+      offset = end
+    } else if (wireType === 5) {
+      offset += 4
+    } else {
+      throw new Error('Unsupported protobuf wire type in stored Monad message')
+    }
+    if (offset > bytes.length) {
+      throw new Error('Truncated protobuf stored Monad message')
+    }
+  }
+  return found
 }
 
 /** Spendable recipient-side view of one verified stamp-payment child. This is intentionally
@@ -264,6 +317,9 @@ export interface RecoveredMonadStampPayment {
   address: string
   privateKey: Uint8Array
   txHash: string
+  rawTx: string
+  recipientPublicKeyHex: string
+  envelopeRecipientAddress: string
   valueWei: bigint
 }
 
@@ -290,7 +346,21 @@ export type MonadStampPaymentSweepOutcome =
 export function recoverMonadStampPayments(params: {
   message: MonadStampedMessageProto
   recipientPrivateKey: Uint8Array
+  envelopeRecipientAddress?: string
 }): RecoveredMonadStampPayment[] {
+  assertMonadStampPaymentCount(params.message.stampPayments.length)
+  const recipientPublicKeyHex = SigningKey.computePublicKey(
+    hexlify(params.recipientPrivateKey),
+    true
+  )
+  const derivedRecipientAddress = computeAddress(recipientPublicKeyHex)
+  if (
+    params.envelopeRecipientAddress !== undefined &&
+    getAddress(params.envelopeRecipientAddress) !==
+      getAddress(derivedRecipientAddress)
+  ) {
+    throw new Error('Retained envelope recipient does not match its key')
+  }
   const seenChildren = new Set<number>()
   return params.message.stampPayments.map((payment) => {
     if (seenChildren.has(payment.childIndex)) {
@@ -322,6 +392,10 @@ export function recoverMonadStampPayments(params: {
       address: child.address,
       privateKey: child.privateKey,
       txHash: tx.hash,
+      rawTx: hexlify(payment.rawTx),
+      recipientPublicKeyHex,
+      envelopeRecipientAddress:
+        params.envelopeRecipientAddress ?? derivedRecipientAddress,
       valueWei: tx.value,
     }
   })
@@ -665,6 +739,7 @@ export class MonadStampClient {
       )
     }
     const walletState = params.walletState
+    walletState.assertOpen()
     this.pool = walletState.pool
     this.leaseManager = walletState.leaseManager
     this.provider = params.provider
@@ -687,6 +762,7 @@ export class MonadStampClient {
   async fetchStoredMessage(
     payloadHashHex: string
   ): Promise<StoredMonadMessageProto | undefined> {
+    this.walletState.assertOpen()
     try {
       const response = await axios({
         method: 'get',
@@ -704,7 +780,7 @@ export class MonadStampClient {
 
   private async pollForStoredMessage(
     payloadHashHex: string,
-    expectedMessage: MonadStampedMessageProto,
+    expectedMessageBytes: Uint8Array,
     options?: AbandonPollOptions
   ): Promise<StoredMonadMessageProto | undefined> {
     const intervalMs = options?.intervalMs ?? 2000
@@ -721,11 +797,8 @@ export class MonadStampClient {
         () => undefined
       )
       if (
-        stored?.message !== undefined &&
-        bytesEqual(
-          encodeMonadStampedMessage(stored.message),
-          encodeMonadStampedMessage(expectedMessage)
-        )
+        stored?.messageBytes !== undefined &&
+        bytesEqual(stored.messageBytes, expectedMessageBytes)
       ) {
         return stored
       }
@@ -756,10 +829,8 @@ export class MonadStampClient {
     const stored = decodeStoredMonadMessage(new Uint8Array(response.data))
     if (
       stored.message === undefined ||
-      !bytesEqual(
-        encodeMonadStampedMessage(stored.message),
-        encodeMonadStampedMessage(message)
-      )
+      stored.messageBytes === undefined ||
+      !bytesEqual(stored.messageBytes, encoded)
     ) {
       // A 2xx only proves that an HTTP peer answered. It does not prove that the relay retained
       // this exact payment set. Treat a missing/different nested message like a lost response so
@@ -782,6 +853,7 @@ export class MonadStampClient {
   async submitStampedMessage(
     params: StampMonadMessageParams
   ): Promise<StampMonadMessageResult> {
+    this.walletState.assertOpen()
     if (params.encryptedPayload.length === 0) {
       throw new Error('encryptedPayload must not be empty')
     }
@@ -1092,7 +1164,7 @@ export class MonadStampClient {
       // giving up, and require byte-for-byte equality there too.
       const stored = await this.pollForStoredMessage(
         payloadHashHex,
-        message,
+        encodedMessage,
         params.abandonPoll
       )
       if (stored !== undefined) {
@@ -1125,6 +1197,7 @@ export class MonadStampClient {
 
   /** Single wallet-owned preflight for every operation that may fund or sign a new stamp. */
   async reconcileOrThrow(): Promise<void> {
+    this.walletState.assertOpen()
     if (this.activeSubmissions > 0) {
       throw new MonadStampPendingAttemptError(
         this.attemptJournal.getAll().map((attempt) => attempt.payloadHashHex)
@@ -1154,6 +1227,7 @@ export class MonadStampClient {
   /** Replay crash-surviving attempts byte-for-byte. Exact-set relay binding makes this safe when
    * only a prefix of the transactions landed before the previous process stopped. */
   async resumePendingAttempts(): Promise<string[]> {
+    this.walletState.assertOpen()
     await this.walletState?.repairAttemptSpendLifecycles()
     this.walletState?.assertSemanticallyValid()
     const completed: string[] = []

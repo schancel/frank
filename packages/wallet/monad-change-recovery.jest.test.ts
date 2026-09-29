@@ -101,6 +101,29 @@ describe('isChangeIndexUsed', () => {
 })
 
 describe('recoverNextChangeIndex', () => {
+  it('looks through a bounded unused gap and never reuses a later used index', async () => {
+    const keyring = MonadChangeKeyring.fromMnemonic(TEST_MNEMONIC)
+    const used = new Set(
+      [0, 2].map(index =>
+        keyring.deriveChangeAccount(index).address.toLowerCase(),
+      ),
+    )
+    let calls = 0
+    const provider = {
+      getTransactionCount: async (address: string) => {
+        calls++
+        return used.has(address.toLowerCase()) ? 1 : 0
+      },
+      getBalance: async () => {
+        calls++
+        return 0n
+      },
+    } as unknown as Provider
+    await expect(
+      recoverNextChangeIndex({ keyring, provider, sparseGapLookahead: 3 }),
+    ).resolves.toBe(3)
+    expect(calls).toBeLessThanOrEqual(16)
+  })
   it('returns 0 immediately when index 0 is unused (a wallet with no change history yet)', async () => {
     const keyring = MonadChangeKeyring.fromMnemonic(TEST_MNEMONIC)
     const { provider } = makeSimulatedChainProvider(keyring, 0)

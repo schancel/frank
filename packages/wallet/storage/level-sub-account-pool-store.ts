@@ -6,6 +6,7 @@ import {
   assertSubAccountIndex,
   cloneCheckpoint,
   cloneSubAccountRecord,
+  lowerBoundAfter,
   SubAccountPoolStore,
   SubAccountRecord,
   TerminalSubAccountCheckpoint,
@@ -196,11 +197,8 @@ export class LevelSubAccountPoolStore implements SubAccountPoolStore {
     this.pendingWrites.push((this.db as any).batch(writes))
     for (const record of staged) {
       if (!this.cache.has(record.index)) {
-        const position = this.sortedRecordIndices.findIndex(
-          (index) => index > record.index
-        )
-        if (position < 0) this.sortedRecordIndices.push(record.index)
-        else this.sortedRecordIndices.splice(position, 0, record.index)
+        const position = lowerBoundAfter(this.sortedRecordIndices, record.index)
+        this.sortedRecordIndices.splice(position, 0, record.index)
       }
       this.cache.set(record.index, record)
     }
@@ -217,10 +215,8 @@ export class LevelSubAccountPoolStore implements SubAccountPoolStore {
     if (!Number.isSafeInteger(limit) || limit < 0) {
       throw new Error('Sub-account scan limit must be non-negative')
     }
-    const start = this.sortedRecordIndices.findIndex(
-      (index) => index > afterIndex
-    )
-    if (start < 0) return []
+    const start = lowerBoundAfter(this.sortedRecordIndices, afterIndex)
+    if (start === this.sortedRecordIndices.length) return []
     return this.sortedRecordIndices
       .slice(start, start + limit)
       .map((index) =>

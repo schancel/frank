@@ -68,6 +68,7 @@ export function createMonadStampWalletHandle(params: {
     )
   }
   assertMonadWalletBundleProvenance(params.walletState)
+  params.walletState.assertOpen()
   const handle: MonadStampWalletHandle = Object.freeze({
     ...params,
     [COMPLETE_STAMP_WALLET]: true as const,
@@ -95,6 +96,7 @@ export function unsafeCreateMonadStampWalletHandleForTests(
       changePool: params.changePool,
       stampAttemptJournal: params.stampAttemptJournal,
       stampPaymentJournal: params.stampPaymentJournal,
+      assertOpen: () => undefined,
       assertNoOrphanedLeases: () => undefined,
       assertSemanticallyValid: () => undefined,
       repairAttemptSpendLifecycles: async () => undefined,

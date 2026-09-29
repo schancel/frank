@@ -47,6 +47,7 @@ import { MonadChangeKeyring } from './monad-change-keyring'
  * change-account count at this hackathon's scale, while still cheap to search in O(log n) RPC
  * round-trips if genuinely needed. */
 export const DEFAULT_MAX_CHANGE_INDEX_SEARCH = 2 ** 20
+export const DEFAULT_SPARSE_CHANGE_GAP_LOOKAHEAD = 4
 
 /** The `nonce > 0 OR balance > 0` used/unused check this file's header describes, for a single
  * change-account address. Exported for reuse/testing (e.g. a caller wanting to sanity-check one
@@ -72,6 +73,8 @@ export interface RecoverNextChangeIndexParams {
   maxIndex?: number
   /** First allocatable index. Restored roots reserve index 0, so they search from 1. */
   minimumIndex?: number
+  /** Bounded lookahead beyond the first apparent boundary, covering crash-created sparse gaps. */
+  sparseGapLookahead?: number
 }
 
 /**
@@ -111,34 +114,48 @@ export async function recoverNextChangeIndex(
   const usedAt = (index: number): Promise<boolean> =>
     isChangeIndexUsed(provider, keyring.deriveChangeAccount(index).address)
 
-  if (!(await usedAt(minimumIndex))) return minimumIndex
-
-  // Exponential probe: find some hi that's unused, doubling from 1. `lo` always stays a known-used
-  // index (starts at 0, which we've just confirmed is used).
-  let lo = minimumIndex
-  let hi = minimumIndex + 1
-  while (await usedAt(hi)) {
-    lo = hi
-    hi = minimumIndex + (hi - minimumIndex) * 2
-    if (hi > maxIndex) {
-      throw new Error(
-        `recoverNextChangeIndex: every index up to maxIndex=${maxIndex} appears used -- this is ` +
-          'almost certainly a misconfigured provider/keyring (wrong network or wrong root secret) ' +
-          'rather than a genuinely enormous change-account history. Pass a larger maxIndex only if ' +
-          'you are certain that many change indices are legitimately used.'
-      )
+  let boundary = minimumIndex
+  if (await usedAt(minimumIndex)) {
+    // Exponential probe: find some hi that's unused, doubling from 1.
+    let lo = minimumIndex
+    let hi = minimumIndex + 1
+    while (await usedAt(hi)) {
+      lo = hi
+      hi = minimumIndex + (hi - minimumIndex) * 2
+      if (hi > maxIndex) {
+        throw new Error(
+          `recoverNextChangeIndex: every index up to maxIndex=${maxIndex} appears used -- this is ` +
+            'almost certainly a misconfigured provider/keyring (wrong network or wrong root secret) ' +
+            'rather than a genuinely enormous change-account history. Pass a larger maxIndex only if ' +
+            'you are certain that many change indices are legitimately used.'
+        )
+      }
     }
+    while (hi - lo > 1) {
+      const mid = lo + Math.floor((hi - lo) / 2)
+      if (await usedAt(mid)) lo = mid
+      else hi = mid
+    }
+    boundary = hi
   }
-
-  // Binary search the boundary within (lo, hi]: lo is used, hi is unused, invariant maintained on
-  // every iteration below.
-  while (hi - lo > 1) {
-    const mid = lo + Math.floor((hi - lo) / 2)
-    if (await usedAt(mid)) {
-      lo = mid
+  const lookahead =
+    params.sparseGapLookahead ?? DEFAULT_SPARSE_CHANGE_GAP_LOOKAHEAD
+  if (!Number.isSafeInteger(lookahead) || lookahead < 1) {
+    throw new Error('sparseGapLookahead must be a positive safe integer')
+  }
+  let lastUsed = boundary - 1
+  let consecutiveUnused = 0
+  for (
+    let index = boundary;
+    index <= maxIndex && consecutiveUnused < lookahead;
+    index++
+  ) {
+    if (await usedAt(index)) {
+      lastUsed = index
+      consecutiveUnused = 0
     } else {
-      hi = mid
+      consecutiveUnused++
     }
   }
-  return hi
+  return lastUsed + 1
 }

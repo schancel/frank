@@ -8,12 +8,23 @@ const DISCOVERED: StampPaymentRecoveryRecord = {
   payloadHashHex: 'ab'.repeat(32),
   childIndex: 1,
   txHash: `0x${'11'.repeat(32)}`,
+  rawTx: '0x01',
+  recipientPublicKeyHex: `0x02${'33'.repeat(32)}`,
+  envelopeRecipientAddress: `0x${'44'.repeat(20)}`,
   address: `0x${'22'.repeat(20)}`,
   valueWei: '123',
   status: 'discovered',
 }
 
 describe('stamp payment recovery journal', () => {
+  it('rejects conflicting authority for the same payload child identity', async () => {
+    const journal = new InMemoryStampPaymentJournal()
+    await journal.put(DISCOVERED)
+    await expect(journal.put({ ...DISCOVERED, rawTx: '0x02' })).rejects.toThrow(
+      /conflicting/i
+    )
+    expect(journal.getAll()).toEqual([DISCOVERED])
+  })
   it('updates one public record without ever requiring a private key', async () => {
     const journal = new InMemoryStampPaymentJournal()
     await journal.put(DISCOVERED)

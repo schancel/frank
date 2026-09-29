@@ -194,10 +194,8 @@ export class InMemorySubAccountPoolStore implements SubAccountPoolStore {
   }
 
   scanRecords(afterIndex: number, limit: number): SubAccountRecord[] {
-    const start = this.sortedRecordIndices.findIndex(
-      (index) => index > afterIndex
-    )
-    if (start < 0) return []
+    const start = lowerBoundAfter(this.sortedRecordIndices, afterIndex)
+    if (start === this.sortedRecordIndices.length) return []
     return this.sortedRecordIndices
       .slice(start, start + limit)
       .map((index) =>
@@ -250,11 +248,23 @@ export class InMemorySubAccountPoolStore implements SubAccountPoolStore {
       this.sortedRecordIndices.push(index)
       return
     }
-    const position = this.sortedRecordIndices.findIndex(
-      (existing) => existing > index
-    )
+    const position = lowerBoundAfter(this.sortedRecordIndices, index)
     this.sortedRecordIndices.splice(position, 0, index)
   }
+}
+
+export function lowerBoundAfter(
+  indices: readonly number[],
+  value: number
+): number {
+  let low = 0
+  let high = indices.length
+  while (low < high) {
+    const middle = low + Math.floor((high - low) / 2)
+    if (indices[middle] <= value) low = middle + 1
+    else high = middle
+  }
+  return low
 }
 
 export function assertSubAccountIndex(index: number, label: string): void {

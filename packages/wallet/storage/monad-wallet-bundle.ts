@@ -53,19 +53,26 @@ const MANIFEST_KEY = 'manifest'
 const SEED_KEY = 'seed'
 const MIGRATION_KEY = 'migration'
 const MANIFEST_SCHEMA = 'frank-monad-wallet-state'
-const MANIFEST_VERSION = 1
+const MANIFEST_VERSION = 2
+const CURRENT_MANIFEST_INTENTS = [
+  'sub-account-pool-v2',
+  'change-pool-v3-authoritative-tx',
+  'stamp-attempt-journal-v1',
+  'stamp-payment-journal-v2-authoritative-tx',
+] as const
+const LEGACY_MANIFEST_INTENTS = [
+  'sub-account-pool-v2',
+  'change-pool-v2',
+  'stamp-attempt-journal-v1',
+  'stamp-payment-journal-v1',
+] as const
 
 interface MonadWalletManifest {
   schema: typeof MANIFEST_SCHEMA
-  version: typeof MANIFEST_VERSION
+  version: 1 | typeof MANIFEST_VERSION
   bindingId: string
   seedFingerprint: string
-  intents: readonly [
-    'sub-account-pool-v2',
-    'change-pool-v2',
-    'stamp-attempt-journal-v1',
-    'stamp-payment-journal-v1'
-  ]
+  intents: readonly string[]
 }
 
 interface PersistedSeed {
@@ -106,6 +113,7 @@ export interface MonadWalletPersistenceBundle {
   readonly changePool: MonadChangePool
   readonly stampAttemptJournal: StampAttemptJournal
   readonly stampPaymentJournal: StampPaymentJournal
+  assertOpen(): void
   assertSemanticallyValid(): void
   repairAttemptSpendLifecycles(): Promise<void>
   reconcileRestoreState(): Promise<void>
@@ -138,6 +146,8 @@ type MigrationPhase =
 type OpenMonadWalletBundleTestHooks = {
   /** Deterministic crash-injection seam. Production callers must not supply it. */
   onMigrationPhase?: (phase: MigrationPhase) => void | Promise<void>
+  /** Crash seam after a component binding commits but before the marker advances. */
+  onMigrationBind?: (component: MigrationPhase) => void | Promise<void>
 }
 
 export interface MonadSeedRestoreSource {
@@ -209,14 +219,17 @@ function parseManifest(value: string): MonadWalletManifest {
         ].includes(key)
     ) ||
     parsed.schema !== MANIFEST_SCHEMA ||
-    parsed.version !== MANIFEST_VERSION ||
+    (parsed.version !== 1 && parsed.version !== MANIFEST_VERSION) ||
     typeof parsed.bindingId !== 'string' ||
     !/^[0-9a-f]{64}$/i.test(parsed.bindingId) ||
     typeof parsed.seedFingerprint !== 'string' ||
     !/^0x[0-9a-f]{64}$/i.test(parsed.seedFingerprint) ||
     !Array.isArray(parsed.intents) ||
     parsed.intents.join('|') !==
-      'sub-account-pool-v2|change-pool-v2|stamp-attempt-journal-v1|stamp-payment-journal-v1'
+      (parsed.version === 1
+        ? LEGACY_MANIFEST_INTENTS
+        : CURRENT_MANIFEST_INTENTS
+      ).join('|')
   ) {
     throw new Error('Unsupported or corrupt Monad wallet manifest')
   }
@@ -463,6 +476,7 @@ function validateLoadedState(params: {
         'sourceBurnAddress',
         'sweptValueWei',
         'txHash',
+        'rawTx',
         'createdAt',
       ],
       'stored change record'
@@ -492,6 +506,7 @@ function validateLoadedState(params: {
         'messageBytes',
         'leaseIndices',
         'recipientPublicKeyHex',
+        'envelopeRecipientAddress',
       ],
       'stamp-attempt journal record'
     )
@@ -534,6 +549,8 @@ function validateLoadedState(params: {
         'payloadHashHex',
         'childIndex',
         'txHash',
+        'rawTx',
+        'recipientPublicKeyHex',
         'address',
         'valueWei',
         'status',
@@ -546,6 +563,11 @@ function validateLoadedState(params: {
     )
     assertHex(payment.payloadHashHex, 32, 'stamp-payment payload hash')
     assertHex(payment.txHash, 32, 'stamp-payment transaction hash')
+    assertHex(
+      payment.recipientPublicKeyHex,
+      33,
+      'stamp-payment recipient public key'
+    )
     if (
       !Number.isSafeInteger(payment.childIndex) ||
       payment.childIndex < 0 ||
@@ -555,8 +577,9 @@ function validateLoadedState(params: {
       throw new Error('Invalid stamp-payment recovery record')
     }
     getAddress(payment.address)
+    getAddress(payment.envelopeRecipientAddress)
     if (
-      payment.status === 'sweep-pending' &&
+      payment.status !== 'discovered' &&
       (payment.sweepTxHash === undefined ||
         payment.sweepRawTx === undefined ||
         payment.sweepValueWei === undefined ||
@@ -565,6 +588,205 @@ function validateLoadedState(params: {
       throw new Error('Invalid pending stamp-payment recovery record')
     }
   }
+}
+
+async function validateLegacySnapshot(params: {
+  location: string
+  subKeyring: MonadHdKeyring
+  changeKeyring: MonadChangeKeyring
+  resolveLegacyAttemptRecipientPublicKey?: (
+    attempt: Readonly<OutgoingStampAttempt>
+  ) => Promise<string | Uint8Array>
+}): Promise<Map<string, string>> {
+  const components = [
+    'sub-account-pool',
+    'change-pool',
+    'outgoing-stamp-attempts',
+    'stamp-payment-journal',
+  ] as const
+  const browser = (globalThis as any).window !== undefined
+  let fs: typeof import('fs') | undefined
+  let snapshotRoot: string
+  const createdBrowserSnapshots: string[] = []
+  if (browser) {
+    snapshotRoot = `__frank-wallet-validation-${Date.now()}-${Math.random()
+      .toString(16)
+      .slice(2)}`
+    try {
+      for (const component of components) {
+        const destination = join(snapshotRoot, component)
+        await cloneBrowserLevelDatabaseReadOnly(
+          join(params.location, component),
+          destination
+        )
+        createdBrowserSnapshots.push(`level-js-${destination}`)
+      }
+    } catch (error) {
+      for (const name of createdBrowserSnapshots) {
+        await deleteBrowserDatabase(name).catch(() => undefined)
+      }
+      throw error
+    }
+  } else {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    fs = require('fs') as typeof import('fs')
+    // Keep the Node-only snapshot backend out of the browser module graph.
+    const nodeRequire = require as NodeRequire
+    const os = nodeRequire(['o', 's'].join('')) as typeof import('os')
+    snapshotRoot = fs.mkdtempSync(join(os.tmpdir(), 'frank-wallet-legacy-'))
+    fs.chmodSync(snapshotRoot, 0o700)
+    for (const component of components) {
+      fs.cpSync(
+        join(params.location, component),
+        join(snapshotRoot, component),
+        { recursive: true }
+      )
+    }
+  }
+  const stores: Array<{ Open(): Promise<void>; Close(): Promise<void> }> = []
+  try {
+    const subStore = new LevelSubAccountPoolStore(snapshotRoot)
+    const changeStore = new LevelChangePoolStore(snapshotRoot)
+    const attemptJournal = new LevelStampAttemptJournal(snapshotRoot)
+    const paymentJournal = new LevelStampPaymentJournal(snapshotRoot)
+    stores.push(subStore, changeStore, attemptJournal, paymentJournal)
+    for (const store of stores) await store.Open()
+    const pool = new MonadSubAccountPool({
+      keyring: params.subKeyring,
+      store: subStore,
+    })
+    const changePool = new MonadChangePool({
+      keyring: params.changeKeyring,
+      store: changeStore,
+    })
+    validateLoadedState({
+      pool,
+      changePool,
+      attemptJournal,
+      paymentJournal,
+      subKeyring: params.subKeyring,
+      changeKeyring: params.changeKeyring,
+      allowUnresolvedLegacyAttempts: true,
+    })
+    const resolutions = new Map<string, string>()
+    const overlay = new InMemoryStampAttemptJournal()
+    for (const attempt of attemptJournal.getAll()) {
+      let resolved = attempt
+      if (attempt.recipientPublicKeyHex === undefined) {
+        if (params.resolveLegacyAttemptRecipientPublicKey === undefined) {
+          throw new Error(
+            'Legacy stamp attempts require an authoritative retained-envelope recipient-key resolver'
+          )
+        }
+        const recipient = await params.resolveLegacyAttemptRecipientPublicKey(
+          attempt
+        )
+        const recipientHex =
+          typeof recipient === 'string' ? recipient : hexlify(recipient)
+        resolutions.set(attempt.payloadHashHex, recipientHex)
+        resolved = { ...attempt, recipientPublicKeyHex: recipientHex }
+      }
+      await overlay.put(resolved)
+    }
+    validateMonadWalletState({
+      pool,
+      changePool,
+      attemptJournal: overlay,
+      paymentJournal,
+      subKeyring: params.subKeyring,
+      changeKeyring: params.changeKeyring,
+      allowMissingAttemptSpend: true,
+      allowMissingChangeRecovery: true,
+    })
+    return resolutions
+  } finally {
+    for (const store of stores.reverse()) {
+      await store.Close().catch(() => undefined)
+    }
+    if (browser) {
+      for (const name of createdBrowserSnapshots) {
+        await deleteBrowserDatabase(name)
+      }
+    } else {
+      fs?.rmSync(snapshotRoot, { recursive: true, force: true })
+    }
+  }
+}
+
+async function cloneBrowserLevelDatabaseReadOnly(
+  sourceLocation: string,
+  destinationLocation: string
+): Promise<void> {
+  const indexedDb = (globalThis as any).indexedDB
+  const sourceName = `level-js-${sourceLocation}`
+  const source = await new Promise<any>((resolveDb, rejectDb) => {
+    const request = indexedDb.open(sourceName)
+    request.onupgradeneeded = () => {
+      request.transaction?.abort()
+      rejectDb(new Error(`Legacy browser component ${sourceName} is missing`))
+    }
+    request.onerror = () => rejectDb(request.error)
+    request.onsuccess = () => resolveDb(request.result)
+  })
+  let entries: Array<{ key: any; value: unknown }>
+  try {
+    entries = await new Promise((resolveEntries, rejectEntries) => {
+      if (!source.objectStoreNames.contains(sourceLocation)) {
+        rejectEntries(
+          new Error(`Invalid legacy browser component ${sourceName}`)
+        )
+        return
+      }
+      const transaction = source.transaction(sourceLocation, 'readonly')
+      const request = transaction.objectStore(sourceLocation).openCursor()
+      const values: Array<{ key: any; value: unknown }> = []
+      request.onsuccess = () => {
+        const cursor = request.result
+        if (cursor === null) return
+        values.push({ key: cursor.key, value: cursor.value })
+        cursor.continue()
+      }
+      transaction.onerror = () => rejectEntries(transaction.error)
+      transaction.onabort = () => rejectEntries(transaction.error)
+      transaction.oncomplete = () => resolveEntries(values)
+    })
+  } finally {
+    source.close()
+  }
+  const destinationName = `level-js-${destinationLocation}`
+  const destination = await new Promise<any>((resolveDb, rejectDb) => {
+    const request = indexedDb.open(destinationName, 1)
+    request.onupgradeneeded = () =>
+      request.result.createObjectStore(destinationLocation)
+    request.onerror = () => rejectDb(request.error)
+    request.onsuccess = () => resolveDb(request.result)
+  })
+  try {
+    await new Promise<void>((resolveWrite, rejectWrite) => {
+      const transaction = destination.transaction(
+        destinationLocation,
+        'readwrite'
+      )
+      const store = transaction.objectStore(destinationLocation)
+      for (const entry of entries) store.put(entry.value, entry.key)
+      transaction.onerror = () => rejectWrite(transaction.error)
+      transaction.onabort = () => rejectWrite(transaction.error)
+      transaction.oncomplete = () => resolveWrite()
+    })
+  } finally {
+    destination.close()
+  }
+}
+
+async function deleteBrowserDatabase(name: string): Promise<void> {
+  const indexedDb = (globalThis as any).indexedDB
+  await new Promise<void>((resolveDelete, rejectDelete) => {
+    const request = indexedDb.deleteDatabase(name)
+    request.onsuccess = () => resolveDelete()
+    request.onerror = () => rejectDelete(request.error)
+    request.onblocked = () =>
+      rejectDelete(new Error(`Browser validation snapshot ${name} is blocked`))
+  })
 }
 
 function makeBundle(params: {
@@ -579,6 +801,8 @@ function makeBundle(params: {
   recoverySource?: MonadSeedRestoreSource
   close: () => Promise<void>
 }): MonadWalletPersistenceBundle {
+  let closed = false
+  let closePromise: Promise<void> | undefined
   const leaseManager = new SubAccountLeaseManager(params.pool)
   const assertNoOrphanedLeases = (): void => {
     const referenced = new Set(
@@ -592,7 +816,8 @@ function makeBundle(params: {
       .map((record) => record.index)
     if (orphaned.length > 0) throw new MonadWalletOrphanedAccountError(orphaned)
   }
-  const bundle: MonadWalletPersistenceBundle = Object.freeze({
+  let bundle!: MonadWalletPersistenceBundle
+  bundle = Object.freeze({
     durability: params.durability,
     bindingId: params.bindingId,
     pool: params.pool,
@@ -600,6 +825,9 @@ function makeBundle(params: {
     changePool: params.changePool,
     stampAttemptJournal: params.attemptJournal,
     stampPaymentJournal: params.paymentJournal,
+    assertOpen(): void {
+      if (closed) throw new Error('Monad wallet bundle is closed')
+    },
     assertSemanticallyValid: () =>
       validateMonadWalletState({
         pool: params.pool,
@@ -756,7 +984,13 @@ function makeBundle(params: {
           params.attemptJournal.referencesLeaseIndex(index),
       })
     },
-    close: params.close,
+    close(): Promise<void> {
+      if (closePromise !== undefined) return closePromise
+      closed = true
+      trustedPersistentBundles.delete(bundle as object)
+      closePromise = params.close()
+      return closePromise
+    },
   })
   if (params.durability === 'persistent') {
     trustedPersistentBundles.add(bundle as object)
@@ -801,7 +1035,7 @@ export async function openMonadWalletBundle(
   params: OpenMonadWalletBundleParams
 ): Promise<MonadWalletPersistenceBundle> {
   const location = prepareSecureWalletRoot(params.location)
-  const nodeLease = acquireNodeWalletRootLease(location)
+  const nodeLease = await acquireNodeWalletRootLease(location)
   const browserLease = await acquireBrowserWalletRootLease(location)
   const assertLeaseHeld = (): void => {
     browserLease?.assertHeld()
@@ -911,6 +1145,16 @@ export async function openMonadWalletBundle(
     const bindingId =
       finalized?.bindingId ?? migration?.bindingId ?? newBindingId()
     const isMigration = finalized === undefined
+    const legacyRecipientResolutions =
+      !hasManifestDatabase && hasLegacyComponents
+        ? await validateLegacySnapshot({
+            location,
+            subKeyring,
+            changeKeyring,
+            resolveLegacyAttemptRecipientPublicKey:
+              params.resolveLegacyAttemptRecipientPublicKey,
+          })
+        : new Map<string, string>()
     const isEmptySuppliedSeedRestore =
       migration?.restoreMode === true ||
       (finalized === undefined &&
@@ -952,6 +1196,12 @@ export async function openMonadWalletBundle(
       const stageEvidence = async (index: number): Promise<void> => {
         const address = subKeyring.deriveSubAccount(index).address
         const evidence = await recovery.recoverSenderEvidence(index, address)
+        if (
+          evidence === undefined &&
+          !(await isSubAccountIndexUsed(recovery.provider, address))
+        ) {
+          return
+        }
         if (
           evidence === undefined ||
           evidence.index !== index ||
@@ -1046,6 +1296,28 @@ export async function openMonadWalletBundle(
         throw error
       }
     }
+    if (isMigration) {
+      const completed = migration?.completedComponents ?? 0
+      for (const [index, store] of stores.entries()) {
+        const actual = store.bindingId()
+        if (index < completed && actual !== bindingId) {
+          throw new Error(
+            `Migration provenance mismatch for completed component ${componentNames[index]}`
+          )
+        }
+        if (index === completed) {
+          if (actual !== undefined && actual !== bindingId) {
+            throw new Error(
+              `Migration boundary binding mismatch for ${componentNames[index]}`
+            )
+          }
+        } else if (index > completed && actual !== undefined) {
+          throw new Error(
+            `Migration provenance has a bound unfinished component ${componentNames[index]}`
+          )
+        }
+      }
+    }
     const pool = new MonadSubAccountPool({
       keyring: subKeyring,
       store: subStore,
@@ -1086,13 +1358,15 @@ export async function openMonadWalletBundle(
       for (const attempt of attemptJournal.getAll()) {
         let resolved = attempt
         if (unresolvedHashes.has(attempt.payloadHashHex)) {
-          const recipient = await params.resolveLegacyAttemptRecipientPublicKey(
-            Object.freeze({
-              ...attempt,
-              messageBytes: Object.freeze([...attempt.messageBytes]),
-              leaseIndices: Object.freeze([...attempt.leaseIndices]),
-            }) as unknown as Readonly<OutgoingStampAttempt>
-          )
+          const recipient =
+            legacyRecipientResolutions.get(attempt.payloadHashHex) ??
+            (await params.resolveLegacyAttemptRecipientPublicKey(
+              Object.freeze({
+                ...attempt,
+                messageBytes: Object.freeze([...attempt.messageBytes]),
+                leaseIndices: Object.freeze([...attempt.leaseIndices]),
+              }) as unknown as Readonly<OutgoingStampAttempt>
+            ))
           resolved = {
             ...attempt,
             recipientPublicKeyHex:
@@ -1122,6 +1396,7 @@ export async function openMonadWalletBundle(
       changeKeyring,
       allowMissingAttemptSpend: true,
       allowMissingAttemptRows: params.recovery !== undefined,
+      allowMissingChangeRecovery: true,
     })
 
     if (isMigration) {
@@ -1183,11 +1458,19 @@ export async function openMonadWalletBundle(
           changeKeyring,
         })
       }
-      for (const [index, store] of stores.entries()) {
-        if (store === attemptJournal) {
-          await attemptJournal.Bind(resolvedLegacyAttempts)
-        } else {
-          await store.Bind()
+      for (
+        let index = marker.completedComponents;
+        index < stores.length;
+        index++
+      ) {
+        const store = stores[index]
+        if (store.bindingId() === undefined) {
+          if (store === attemptJournal) {
+            await attemptJournal.Bind(resolvedLegacyAttempts)
+          } else {
+            await store.Bind()
+          }
+          await params.onMigrationBind?.(componentNames[index])
         }
         marker.completedComponents = index + 1
         assertLeaseHeld()
@@ -1199,12 +1482,7 @@ export async function openMonadWalletBundle(
         version: MANIFEST_VERSION,
         bindingId,
         seedFingerprint: fingerprint,
-        intents: [
-          'sub-account-pool-v2',
-          'change-pool-v2',
-          'stamp-attempt-journal-v1',
-          'stamp-payment-journal-v1',
-        ],
+        intents: CURRENT_MANIFEST_INTENTS,
       }
       const writes: Array<
         | { type: 'put'; key: string; value: string }
@@ -1223,6 +1501,43 @@ export async function openMonadWalletBundle(
       assertLeaseHeld()
       await (manifestDb as any).batch(writes)
       await params.onMigrationPhase?.('manifest')
+    }
+
+    let repairedChangeRecovery = false
+    for (const record of changePool.records()) {
+      const source = pool.getRecord(record.sourceBurnIndex)
+      if (source !== undefined && source.lifecycle?.recovery === undefined) {
+        pool.recordRecoveryDisposition(record.sourceBurnIndex, {
+          kind: 'change',
+          changeIndex: record.index,
+          address: record.address,
+          valueWei: record.sweptValueWei,
+          txHash: record.txHash,
+        })
+        repairedChangeRecovery = true
+      }
+    }
+    if (repairedChangeRecovery) await pool.flush()
+    validateMonadWalletState({
+      pool,
+      changePool,
+      attemptJournal,
+      paymentJournal,
+      subKeyring,
+      changeKeyring,
+      allowMissingAttemptSpend: true,
+      allowMissingAttemptRows: params.recovery !== undefined,
+    })
+    if (finalized?.version === 1) {
+      assertLeaseHeld()
+      await (manifestDb as LevelDB).put(
+        MANIFEST_KEY,
+        JSON.stringify({
+          ...finalized,
+          version: MANIFEST_VERSION,
+          intents: CURRENT_MANIFEST_INTENTS,
+        } satisfies MonadWalletManifest)
+      )
     }
 
     const close = async (): Promise<void> => {

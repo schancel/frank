@@ -212,6 +212,11 @@ export class MonadChangePool {
       )
     }
     const current = this.store.getNextIndex()
+    if (this.store.getPendingIntent() !== undefined) {
+      throw new Error(
+        'Cannot change next-change-index while a pending change intent exists'
+      )
+    }
     const existingRecords = this.store.getAll()
     if (index < current && existingRecords.length > 0 && !opts.force) {
       throw new Error(
@@ -361,6 +366,7 @@ export class MonadChangePool {
       sourceBurnAddress: intent.sourceBurnAddress,
       sweptValueWei: intent.sweptValueWei,
       txHash: intent.txHash,
+      rawTx: intent.rawTx,
       createdAt: intent.createdAt,
     }
     this.store.finalizePendingIntent(intent, record)

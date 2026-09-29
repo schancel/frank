@@ -201,7 +201,15 @@ export async function runMonadWalletBundleBrowserCheck(): Promise<void> {
         createSeedIfEmpty: true,
       }),
       openMonadWalletBundle({
-        location: `./${aliasRoot}`,
+        location: `${aliasRoot}/`,
+        createSeedIfEmpty: true,
+      }),
+      openMonadWalletBundle({
+        location: `${aliasRoot}\\`,
+        createSeedIfEmpty: true,
+      }),
+      openMonadWalletBundle({
+        location: `${prefix}-alias-parent\\..\\${aliasRoot}`,
         createSeedIfEmpty: true,
       }),
     ])

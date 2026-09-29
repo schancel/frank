@@ -1,4 +1,11 @@
-import { Transaction, getAddress, getBytes, hexlify, sha256 } from 'ethers'
+import {
+  Transaction,
+  computeAddress,
+  getAddress,
+  getBytes,
+  hexlify,
+  sha256,
+} from 'ethers'
 
 import type { MonadSubAccountPool } from '../monad-account-pool'
 import type { MonadChangePool } from '../monad-change-pool'
@@ -85,6 +92,7 @@ export function validateMonadWalletState(params: {
   changeKeyring: MonadChangeKeyring
   allowMissingAttemptSpend?: boolean
   allowMissingAttemptRows?: boolean
+  allowMissingChangeRecovery?: boolean
 }): void {
   const records = new Map(
     params.pool.records().map((record) => [record.index, record])
@@ -245,8 +253,72 @@ export function validateMonadWalletState(params: {
     })
   }
 
+  for (const change of params.changePool.records()) {
+    assertTransactionCheckpoint({
+      rawTx: change.rawTx,
+      txHash: change.txHash,
+      valueWei: change.sweptValueWei,
+      label: `change account ${change.index} funding`,
+      sender: change.sourceBurnAddress,
+      destination: change.address,
+    })
+    const source =
+      records.get(change.sourceBurnIndex) ??
+      params.pool
+        .terminalCheckpoints()
+        .find((checkpoint) => checkpoint.index === change.sourceBurnIndex)
+    const recovery = source?.lifecycle?.recovery
+    if (
+      source === undefined ||
+      getAddress(source.address) !== getAddress(change.sourceBurnAddress)
+    ) {
+      throw new Error('Invalid finalized change source authority')
+    }
+    if (recovery === undefined && params.allowMissingChangeRecovery) continue
+    if (
+      recovery?.kind !== 'change' ||
+      recovery.changeIndex !== change.index ||
+      normalizedHash(recovery.txHash) !== normalizedHash(change.txHash) ||
+      recovery.valueWei !== change.sweptValueWei ||
+      getAddress(recovery.address) !== getAddress(change.address)
+    ) {
+      throw new Error('Invalid finalized change recovery disposition')
+    }
+  }
+
   for (const payment of params.paymentJournal.getAll()) {
-    if (payment.status === 'sweep-pending') {
+    const recipientPublicKey = getBytes(payment.recipientPublicKeyHex)
+    if (
+      getAddress(computeAddress(hexlify(recipientPublicKey))) !==
+      getAddress(payment.envelopeRecipientAddress)
+    ) {
+      throw new Error('Stamp-payment recipient key does not match its envelope')
+    }
+    const destination = deriveMonadStampChildPublic({
+      payloadHash: getBytes(`0x${payment.payloadHashHex}`),
+      recipientPublicKey,
+      paymentIndex: payment.childIndex,
+    }).address
+    const incoming = assertTransactionCheckpoint({
+      rawTx: payment.rawTx,
+      txHash: payment.txHash,
+      valueWei: payment.valueWei,
+      label: `stamp-payment ${payment.payloadHashHex}:${payment.childIndex}`,
+      destination,
+    })
+    if (
+      getAddress(payment.address) !== getAddress(destination) ||
+      incoming.data.toLowerCase() !==
+        buildMonadStampCalldata(
+          computeMonadStampPaymentCommitment(
+            getBytes(`0x${payment.payloadHashHex}`),
+            payment.childIndex
+          )
+        ).toLowerCase()
+    ) {
+      throw new Error('Invalid stamp-payment recovery authority')
+    }
+    if (payment.status !== 'discovered') {
       assertTransactionCheckpoint({
         rawTx: payment.sweepRawTx as string,
         txHash: payment.sweepTxHash as string,

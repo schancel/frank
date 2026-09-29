@@ -37,6 +37,8 @@ export interface ChangeAccountRecord {
   sweptValueWei: string
   /** Hash of the sweep transaction that funded this change output. */
   txHash: string
+  /** Canonical signed transaction bytes. The hash alone is insufficient recovery authority. */
+  rawTx: string
   /** `Date.now()` at the time this record was persisted (informational only). */
   createdAt: number
 }
@@ -184,7 +186,6 @@ export function assertFinalizedIntent(
   const pending = store.getPendingIntent()
   const existing = store.getRecord(intent.index)
   const bySource = store.getBySourceBurnIndex(intent.sourceBurnIndex)
-  // The raw transaction is intentionally not copied into the audit row.
   const expected: ChangeAccountRecord = {
     index: intent.index,
     address: intent.address,
@@ -192,6 +193,7 @@ export function assertFinalizedIntent(
     sourceBurnAddress: intent.sourceBurnAddress,
     sweptValueWei: intent.sweptValueWei,
     txHash: intent.txHash,
+    rawTx: intent.rawTx,
     createdAt: intent.createdAt,
   }
   if (JSON.stringify(record) !== JSON.stringify(expected)) {

@@ -170,6 +170,7 @@ describe('InMemoryChangePoolStore', () => {
       sourceBurnAddress: '0xdead',
       sweptValueWei: '1',
       txHash: '0x1',
+      rawTx: '0x01',
       createdAt: 1,
     })
     store.putRecord({
@@ -179,6 +180,7 @@ describe('InMemoryChangePoolStore', () => {
       sourceBurnAddress: '0xbeef',
       sweptValueWei: '2',
       txHash: '0x2',
+      rawTx: '0x02',
       createdAt: 2,
     })
     expect(store.getAll().map(r => r.index)).toEqual([0, 2])
@@ -201,6 +203,7 @@ describe('LevelChangePoolStore', () => {
         sourceBurnAddress: '0xbbb',
         sweptValueWei: '123',
         txHash: '0xhash',
+        rawTx: '0x03',
         createdAt: 42,
       })
       storeA.setNextIndex(1)
@@ -321,6 +324,24 @@ describe('MonadChangePool', () => {
       const pool = makePool()
       expect(() => pool.setNextUnusedIndex(-1)).toThrow()
       expect(() => pool.setNextUnusedIndex(1.5)).toThrow()
+    })
+
+    it('never changes the high-water mark while a change intent is pending', () => {
+      const store = new InMemoryChangePoolStore()
+      const keyring = MonadChangeKeyring.fromMnemonic(TEST_MNEMONIC)
+      const pool = new MonadChangePool({ keyring, store })
+      store.setPendingIntent({
+        index: 0,
+        address: keyring.deriveChangeAccount(0).address,
+        sourceBurnIndex: 0,
+        sourceBurnAddress: '0x0000000000000000000000000000000000000001',
+        sweptValueWei: '1',
+        rawTx: '0x01',
+        txHash: `0x${'11'.repeat(32)}`,
+        createdAt: 1,
+      })
+      expect(() => pool.setNextUnusedIndex(1)).toThrow(/pending change intent/i)
+      expect(pool.nextUnusedIndex()).toBe(0)
     })
   })
 

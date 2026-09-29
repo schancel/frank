@@ -13,9 +13,11 @@ import {
   JsonRpcProvider,
   SigningKey,
   Transaction,
+  Wallet,
   computeAddress,
   getBytes,
   getAddress,
+  hexlify,
   sha256,
 } from 'ethers'
 import axios from 'axios'
@@ -25,6 +27,7 @@ import { MonadSubAccountPool } from './monad-account-pool'
 import { SubAccountLeaseManager } from './monad-account-lease'
 import { MonadAccountTxSigner, MonadTxSubmitter } from './monad-account-tx'
 import { MonadChangePool } from './monad-change-pool'
+import { deriveMonadStampChildPublic } from './monad-stamp-stealth'
 import {
   InMemoryStampAttemptJournal,
   StampAttemptJournal,
@@ -127,7 +130,10 @@ function makeCapacityProvider(capacities: bigint[]) {
   })
 }
 
-function storedMessageBytes(message: MonadStampedMessageProto): Uint8Array {
+function storedMessageBytes(
+  message: MonadStampedMessageProto,
+  exactMessageBytes = encodeMonadStampedMessage(message)
+): Uint8Array {
   const stored: StoredMonadMessageProto = {
     message,
     timestamp: 1_700_000_000_000,
@@ -141,10 +147,7 @@ function storedMessageBytes(message: MonadStampedMessageProto): Uint8Array {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const jspb = require('google-protobuf')
   const writer = new jspb.BinaryWriter()
-  writer.writeBytes(
-    1,
-    encodeMonadStampedMessage(stored.message as MonadStampedMessageProto)
-  )
+  writer.writeBytes(1, exactMessageBytes)
   writer.writeInt64(4, stored.timestamp)
   writer.writeBytes(5, stored.networkTag)
   return writer.getResultBuffer()
@@ -248,6 +251,9 @@ describe('recipient stamp-payment sweep', () => {
     address: childAddress,
     privateKey: childPrivateKey,
     txHash: `0x${'aa'.repeat(32)}`,
+    rawTx: '0x01',
+    recipientPublicKeyHex: hexlify(RECIPIENT_PUBLIC_KEY),
+    envelopeRecipientAddress: computeAddress(hexlify(RECIPIENT_PUBLIC_KEY)),
     valueWei: 10_000n,
   }
 
@@ -312,6 +318,53 @@ describe('recipient stamp-payment sweep', () => {
       dustThresholdWei: 1_000n,
     })
     expect(httpClient.submitRawTransaction).not.toHaveBeenCalled()
+  })
+})
+
+describe('recipient stamp-payment recovery bounds', () => {
+  it('accepts 1 and 64 payments and rejects 0 and 65 before decoding transactions', async () => {
+    const recipientPrivateKey = getBytes(`0x${'44'.repeat(32)}`)
+    const payloadHash = getBytes(`0x${'ab'.repeat(32)}`)
+    const sender = new Wallet(`0x${'55'.repeat(32)}`)
+    const payments = await Promise.all(
+      Array.from({ length: 64 }, async (_, childIndex) => {
+        const destination = deriveMonadStampChildPublic({
+          payloadHash,
+          recipientPublicKey: RECIPIENT_PUBLIC_KEY,
+          paymentIndex: childIndex,
+        }).address
+        return {
+          childIndex,
+          rawTx: getBytes(
+            await sender.signTransaction({
+              type: 2,
+              chainId: CHAIN_ID,
+              nonce: childIndex,
+              to: destination,
+              value: 1n,
+              gasLimit: 21_000n,
+              maxFeePerGas: 2n,
+              maxPriorityFeePerGas: 1n,
+            })
+          ),
+        }
+      })
+    )
+    const recover = (
+      stampPayments: MonadStampedMessageProto['stampPayments']
+    ) =>
+      recoverMonadStampPayments({
+        message: {
+          stampPayments,
+          encryptedPayload: new Uint8Array([1]),
+          payloadHash,
+        },
+        recipientPrivateKey,
+      })
+    expect(() => recover([])).toThrow(/1\.\.64/)
+    expect(recover(payments.slice(0, 1))).toHaveLength(1)
+    expect(recover(payments)).toHaveLength(64)
+    expect(() => recover([...payments, payments[0]])).toThrow(/1\.\.64/)
   })
 })
 
@@ -1023,6 +1076,22 @@ describe('MonadStampClient.submitStampedMessage', () => {
       }
     })
     const resumed = makeClient({ pool, stampAttemptJournal: upgradedJournal })
+    await expect(resumed.client.resumePendingAttempts()).resolves.toEqual([])
+    expect(upgradedJournal.getAll()).toHaveLength(1)
+    expect(pool.records().some((record) => record.status === 'spent')).toBe(
+      false
+    )
+
+    mockedAxios.mockImplementationOnce(async (config) => ({
+      data: storedMessageBytes(
+        decodeMonadStampedMessage(new Uint8Array(config.data as Buffer)),
+        new Uint8Array(config.data as Buffer)
+      ),
+      status: 200,
+      statusText: 'OK',
+      headers: {},
+      config,
+    }))
     await expect(resumed.client.resumePendingAttempts()).resolves.toHaveLength(
       1
     )

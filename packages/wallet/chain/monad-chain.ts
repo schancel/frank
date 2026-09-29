@@ -74,6 +74,7 @@
 import {
   JsonRpcProvider,
   Transaction,
+  computeAddress,
   formatEther,
   getAddress,
   getBytes,
@@ -107,6 +108,8 @@ import {
 } from '../monad-wallet-handle'
 import { MonadIdentity, fetchMonadProfile } from '../monad-identity'
 import {
+  assertMonadStampPaymentCount,
+  decodeMonadStampedMessage,
   MonadStampClient,
   quoteMonadStampPaymentGasReserve,
   recoverMonadStampPayments,
@@ -263,6 +266,33 @@ export function deserializeMessageItems(plaintext: string): MessageItem[] {
     throw new Error('Decrypted direct-message plaintext was not a JSON array')
   }
   return parsed as MessageItem[]
+}
+
+export async function resolveLegacyAttemptRecipientFromEnvelope(params: {
+  relayBaseUrl: string
+  messageBytes: readonly number[]
+}): Promise<Uint8Array> {
+  const message = decodeMonadStampedMessage(
+    Uint8Array.from(params.messageBytes)
+  )
+  const envelope = parseEnvelope(message.encryptedPayload)
+  if (envelope === undefined) {
+    throw new Error('Legacy stamp attempt has no retained recipient envelope')
+  }
+  const profile = await fetchMonadProfile({
+    relayBaseUrl: params.relayBaseUrl,
+    address: { raw: getAddress(envelope.to) },
+  })
+  if (
+    profile === undefined ||
+    getAddress(computeAddress(hexlify(profile.pubKey))) !==
+      getAddress(envelope.to)
+  ) {
+    throw new Error(
+      'Legacy stamp attempt recipient profile does not match its retained envelope'
+    )
+  }
+  return profile.pubKey
 }
 
 /** Adapts a `MonadTopicPostViewProto` (`../wallet/monad-topic-tally-client.ts`) into the
@@ -435,6 +465,7 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
 
       for (const record of stored) {
         if (record.message === undefined) continue
+        assertMonadStampPaymentCount(record.message.stampPayments.length)
         const envelope = parseEnvelope(record.message.encryptedPayload)
         if (envelope === undefined) continue
         if (envelope.to.toLowerCase() !== myAddress) continue
@@ -444,6 +475,7 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
           const recovered = recoverMonadStampPayments({
             message: record.message,
             recipientPrivateKey: getBytes(wallet.identity.toPrivateKeyHex()),
+            envelopeRecipientAddress: envelope.to,
           })
           for (const payment of recovered) {
             const existing = wallet.stampPaymentJournal.get(
@@ -455,6 +487,9 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
               payloadHashHex,
               childIndex: payment.childIndex,
               txHash: payment.txHash,
+              rawTx: payment.rawTx,
+              recipientPublicKeyHex: payment.recipientPublicKeyHex,
+              envelopeRecipientAddress: payment.envelopeRecipientAddress,
               address: payment.address,
               valueWei: payment.valueWei.toString(),
               status: 'discovered',
@@ -581,7 +616,6 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
           await journal.put({
             ...record,
             status: 'swept',
-            sweepRawTx: undefined,
           })
           return {
             swept: true,
@@ -606,12 +640,16 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
           sweepDestinationAddress: undefined,
         })
       }
+      let signedSweepRawTx: string | undefined
       const outcome = await sweepRecoveredMonadStampPayment({
         payment: {
           childIndex,
           address: child.address,
           privateKey: child.privateKey,
           txHash: record.txHash,
+          rawTx: record.rawTx,
+          recipientPublicKeyHex: record.recipientPublicKeyHex,
+          envelopeRecipientAddress: record.envelopeRecipientAddress,
           valueWei: BigInt(record.valueWei),
         },
         destinationAddress: destination.raw,
@@ -619,6 +657,7 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
         httpClient: monadWallet.httpClient,
         signer: childSigner,
         onSigned: async (signedTx) => {
+          signedSweepRawTx = signedTx.rawTx
           await journal.put({
             ...record,
             status: 'sweep-pending',
@@ -634,7 +673,7 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
           ...record,
           status: 'swept',
           sweepTxHash: outcome.txHash,
-          sweepRawTx: undefined,
+          sweepRawTx: signedSweepRawTx,
           sweepValueWei: outcome.valueWei.toString(),
           sweepDestinationAddress: outcome.destinationAddress,
         })
@@ -802,6 +841,12 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
                   // Standard EVM RPC cannot enumerate complete signed history by sender. A used
                   // index with no local state therefore remains ambiguous and fails closed.
                   recoverSenderEvidence: async () => undefined,
+                },
+                resolveLegacyAttemptRecipientPublicKey: async (attempt) => {
+                  return resolveLegacyAttemptRecipientFromEnvelope({
+                    relayBaseUrl: config.relayBaseUrl,
+                    messageBytes: attempt.messageBytes,
+                  })
                 },
               })
         try {

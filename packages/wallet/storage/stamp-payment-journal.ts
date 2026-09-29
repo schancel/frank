@@ -18,6 +18,12 @@ export interface StampPaymentRecoveryRecord {
   payloadHashHex: string
   childIndex: number
   txHash: string
+  /** Canonical signed incoming payment transaction retained for recovery validation. */
+  rawTx: string
+  /** Compressed recipient identity public key that owns this derived child. */
+  recipientPublicKeyHex: string
+  /** Recipient address parsed from the retained encrypted envelope. */
+  envelopeRecipientAddress: string
   address: string
   valueWei: string
   status: StampPaymentRecoveryStatus
@@ -52,6 +58,11 @@ export class InMemoryStampPaymentJournal implements StampPaymentJournal {
   }
 
   async put(record: StampPaymentRecoveryRecord): Promise<void> {
+    assertPaymentAuthorityShape(record)
+    assertCompatiblePaymentRecord(
+      this.records.get(key(record.payloadHashHex, record.childIndex)),
+      record
+    )
     this.records.set(key(record.payloadHashHex, record.childIndex), {
       ...record,
     })
@@ -152,12 +163,47 @@ export class LevelStampPaymentJournal implements StampPaymentJournal {
 
   async put(record: StampPaymentRecoveryRecord): Promise<void> {
     this.assertMutationAllowed()
+    assertPaymentAuthorityShape(record)
     const recordKey = key(record.payloadHashHex, record.childIndex)
+    assertCompatiblePaymentRecord(this.records.get(recordKey), record)
     await this.db.put(recordKey, JSON.stringify(record))
     this.records.set(recordKey, { ...record })
   }
 
   getAll(): StampPaymentRecoveryRecord[] {
     return Array.from(this.records.values()).map((record) => ({ ...record }))
+  }
+}
+
+function assertPaymentAuthorityShape(record: StampPaymentRecoveryRecord): void {
+  if (
+    typeof record.rawTx !== 'string' ||
+    typeof record.recipientPublicKeyHex !== 'string' ||
+    typeof record.envelopeRecipientAddress !== 'string'
+  ) {
+    throw new Error('Stamp-payment recovery authority is incomplete')
+  }
+}
+
+function assertCompatiblePaymentRecord(
+  prior: StampPaymentRecoveryRecord | undefined,
+  next: StampPaymentRecoveryRecord
+): void {
+  if (prior === undefined) return
+  for (const field of [
+    'payloadHashHex',
+    'childIndex',
+    'txHash',
+    'rawTx',
+    'recipientPublicKeyHex',
+    'envelopeRecipientAddress',
+    'address',
+    'valueWei',
+  ] as const) {
+    if (prior[field] !== next[field]) {
+      throw new Error(
+        `Conflicting stamp-payment recovery authority for ${next.payloadHashHex}:${next.childIndex}`
+      )
+    }
   }
 }

@@ -15,7 +15,10 @@
 import { Wallet, getBytes, hexlify } from 'ethers'
 
 import { MonadIdentity } from '../monad-identity'
-import { StoredMonadMessageProto } from '../monad-stamp-client'
+import {
+  StoredMonadMessageProto,
+  encodeMonadStampedMessage,
+} from '../monad-stamp-client'
 import { MonadTopicPostProto } from '../monad-topic-post-client'
 import { buildTopicPostPayload } from '../monad-topic-post-client'
 import { MessageItem, TextItem } from '@frank/cashweb/types/messages'
@@ -25,12 +28,14 @@ import {
   MonadChainWalletHandle,
   createMonadChain,
   deserializeMessageItems,
+  resolveLegacyAttemptRecipientFromEnvelope,
   serializeMessageItems,
   viewToForumMessage,
 } from './monad-chain'
 import { WalletHandle } from './active-chain'
 import { deriveMonadStampChildPublic } from '../monad-stamp-stealth'
 import { InMemoryStampPaymentJournal } from '../storage/stamp-payment-journal'
+import { buildEnvelope } from '@frank/cashweb/relay/monad-message-envelope'
 
 jest.mock('../storage/monad-wallet-bundle', () => {
   const actual = jest.requireActual('../storage/monad-wallet-bundle')
@@ -148,6 +153,7 @@ function makeWallet(identity: MonadIdentity): MonadChainWalletHandle {
   } as MonadChainWalletHandle
   wallet.walletState = {
     durability: 'persistent',
+    assertOpen: jest.fn(),
   } as MonadChainWalletHandle['walletState']
   return wallet
 }
@@ -187,6 +193,47 @@ describe('createMonadChain: basic chain properties', () => {
 
   it('parseAddress returns undefined for garbage input', () => {
     expect(chain.parseAddress('not-an-address')).toBeUndefined()
+  })
+})
+
+describe('legacy attempt recipient authority', () => {
+  it('resolves only the profile key bound to the retained envelope recipient', async () => {
+    const alice = MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX)
+    const bob = MonadIdentity.fromPrivateKeyHex(BOB_PRIVATE_KEY_HEX)
+    const envelope = buildEnvelope({
+      fromAddress: alice.address.raw,
+      fromPrivateKey: alice.toBitcorePrivateKey(),
+      toAddress: bob.address.raw,
+      toPubKey: bob.compressedPubKey,
+      plaintext: 'legacy',
+      networkTag: TEST_CONFIG.networkTag,
+    })
+    const messageBytes = encodeMonadStampedMessage({
+      stampPayments: [],
+      encryptedPayload: envelope,
+      payloadHash: getBytes(`0x${'ab'.repeat(32)}`),
+    })
+    mockedFetchMonadProfile.mockResolvedValueOnce({
+      address: bob.address,
+      pubKey: new Uint8Array(bob.compressedPubKey),
+    })
+    await expect(
+      resolveLegacyAttemptRecipientFromEnvelope({
+        relayBaseUrl: TEST_CONFIG.relayBaseUrl,
+        messageBytes,
+      })
+    ).resolves.toEqual(new Uint8Array(bob.compressedPubKey))
+
+    mockedFetchMonadProfile.mockResolvedValueOnce({
+      address: alice.address,
+      pubKey: new Uint8Array(alice.compressedPubKey),
+    })
+    await expect(
+      resolveLegacyAttemptRecipientFromEnvelope({
+        relayBaseUrl: TEST_CONFIG.relayBaseUrl,
+        messageBytes,
+      })
+    ).rejects.toThrow(/does not match/i)
   })
 })
 
@@ -533,6 +580,36 @@ describe('createMonadChain: directMessages.send', () => {
 })
 
 describe('createMonadChain: directMessages.fetchSince', () => {
+  it('enforces the shared 1..64 payment bound before processing a feed row', async () => {
+    const chain = createMonadChain(TEST_CONFIG)
+    const wallet = makeWallet(
+      MonadIdentity.fromPrivateKeyHex(BOB_PRIVATE_KEY_HEX)
+    )
+    const recordWithCount = (count: number): StoredMonadMessageProto => ({
+      message: {
+        stampPayments: Array.from({ length: count }, (_, childIndex) => ({
+          childIndex,
+          rawTx: new Uint8Array([1]),
+        })),
+        encryptedPayload: new Uint8Array([1]),
+        payloadHash: getBytes(`0x${'ab'.repeat(32)}`),
+      },
+      timestamp: 1,
+      networkTag: new Uint8Array(),
+    })
+    for (const count of [0, 65]) {
+      mockedFetchMonadMessagesSince.mockResolvedValueOnce([
+        recordWithCount(count),
+      ])
+      await expect(
+        chain.directMessages.fetchSince({ wallet, sinceMs: 0 })
+      ).rejects.toThrow(/1\.\.64/)
+    }
+    mockedFetchMonadMessagesSince.mockResolvedValueOnce([recordWithCount(64)])
+    await expect(
+      chain.directMessages.fetchSince({ wallet, sinceMs: 0 })
+    ).resolves.toEqual([])
+  })
   it('decrypts envelopes addressed to the wallet and skips everything else', async () => {
     const chain = createMonadChain(TEST_CONFIG)
     const alice = MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX)
@@ -588,7 +665,7 @@ describe('createMonadChain: directMessages.fetchSince', () => {
     }
     const notAnEnvelope: StoredMonadMessageProto = {
       message: {
-        stampPayments: [],
+        stampPayments: [{ childIndex: 0, rawTx: getBytes(rawStampPayment) }],
         encryptedPayload: new TextEncoder().encode(
           JSON.stringify({ hello: 'world' })
         ),
@@ -667,7 +744,17 @@ describe('createMonadChain: directMessages.fetchSince', () => {
     mockedFetchMonadMessagesSince.mockResolvedValueOnce([
       {
         message: {
-          stampPayments: [],
+          stampPayments: [
+            {
+              childIndex: 0,
+              rawTx: getBytes(
+                await new Wallet(ALICE_PRIVATE_KEY_HEX).signTransaction({
+                  to: eve.address.raw,
+                  value: 1n,
+                })
+              ),
+            },
+          ],
           encryptedPayload: envelopeBytes,
           payloadHash: getBytes('0x' + 'ef'.repeat(32)),
         },
@@ -702,6 +789,9 @@ describe('createMonadChain: directMessages.fetchSince', () => {
       payloadHashHex: payloadDigest,
       childIndex: 0,
       txHash: `0x${'12'.repeat(32)}`,
+      rawTx: `0x01`,
+      recipientPublicKeyHex: hexlify(bob.compressedPubKey),
+      envelopeRecipientAddress: bob.address.raw,
       address: child.address,
       valueWei: '10000',
       status: 'discovered',

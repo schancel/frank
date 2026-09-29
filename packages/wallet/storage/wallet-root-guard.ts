@@ -21,8 +21,14 @@ export function isBrowserWalletStorage(): boolean {
 /** One spelling for both the Web Lock and every level-js database name. */
 export function canonicalWalletStorageLocation(location: string): string {
   if (!isBrowserWalletStorage()) return resolve(location)
-  const canonical = normalize(location).replace(/\\/g, '/')
-  return canonical.replace(/^\.\//, '') || '.'
+  // path.normalize only treats the host platform's separator specially. Browser
+  // storage names must be stable even when a caller supplies Windows spelling on
+  // a Unix build host, so translate first and normalize second.
+  const canonical = normalize(location.replace(/\\/g, '/')).replace(/\\/g, '/')
+  const withoutDot = canonical.replace(/^\.\//, '')
+  const withoutTrailingSeparators =
+    withoutDot === '/' ? withoutDot : withoutDot.replace(/\/+$/, '')
+  return withoutTrailingSeparators || '.'
 }
 
 function lstatIfPresent(
@@ -167,33 +173,161 @@ export interface WalletRootLease {
   release(): Promise<void>
 }
 
-export function acquireNodeWalletRootLease(
+export function nodeAdvisoryLockCommand(
+  platform: NodeJS.Platform,
+  lockPath: string,
+  holderScript: string
+): { command: string; args: string[] } {
+  if (platform === 'darwin') {
+    return {
+      command: '/usr/bin/lockf',
+      args: [
+        '-k',
+        '-n',
+        '-w',
+        '-t',
+        '0',
+        lockPath,
+        process.execPath,
+        '-e',
+        holderScript,
+      ],
+    }
+  }
+  if (platform === 'linux') {
+    return {
+      command: '/usr/bin/flock',
+      args: ['-n', '-x', lockPath, process.execPath, '-e', holderScript],
+    }
+  }
+  throw new Error(
+    `Persistent Node wallet ownership is unsupported on platform ${platform}`
+  )
+}
+
+export async function acquireNodeWalletRootLease(
   location: string
-): WalletRootLease | undefined {
+): Promise<WalletRootLease | undefined> {
   if (isBrowserWalletStorage()) return undefined
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const fs = require('fs') as typeof import('fs')
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const crypto = require('crypto') as typeof import('crypto')
+  // Keep this Node-only ownership backend out of the browser module graph.
+  const nodeRequire = require as NodeRequire
+  const childProcess = nodeRequire(
+    ['child', 'process'].join('_')
+  ) as typeof import('child_process')
   const lockPath = resolve(location, '.frank-wallet.lock')
-  const token = `${process.pid}:${crypto.randomBytes(16).toString('hex')}`
-  let fd: number
-  try {
-    fd = fs.openSync(lockPath, 'wx', 0o600)
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
-      throw new Error(
-        'Wallet root is already open or has an unreleased crash lock; verify no owner is running before removing the lock'
-      )
+  let artifact = lstatIfPresent(fs, lockPath)
+  if (artifact === undefined) {
+    try {
+      fs.closeSync(fs.openSync(lockPath, 'wx', 0o600))
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
     }
-    throw error
+    artifact = fs.lstatSync(lockPath)
   }
+  if (artifact.isSymbolicLink() || !artifact.isFile()) {
+    throw new Error('Node wallet root lock artifact must be a regular file')
+  }
+  assertOwnedByCurrentUser(artifact, 'Node wallet root lock artifact')
+  if ((artifact.mode & 0o777) !== 0o600) {
+    throw new Error('Node wallet root lock artifact permissions must be 0600')
+  }
+
+  const holderScript = [
+    'process.stdout.write("FRANK_WALLET_LOCKED\\n")',
+    'process.stdin.on("end", () => process.exit(0))',
+    'process.stdin.resume()',
+  ].join(';')
+  const advisory = nodeAdvisoryLockCommand(
+    process.platform,
+    lockPath,
+    holderScript
+  )
+  const holder = childProcess.spawn(advisory.command, advisory.args, {
+    stdio: ['pipe', 'pipe', 'pipe'],
+  })
+  let stderr = ''
+  holder.stderr.setEncoding('utf8')
+  holder.stderr.on('data', (chunk: string) => {
+    stderr += chunk
+  })
+  await new Promise<void>((resolveReady, rejectReady) => {
+    let output = ''
+    let settled = false
+    const fail = (error: Error): void => {
+      if (settled) return
+      settled = true
+      rejectReady(error)
+    }
+    holder.once('error', fail)
+    holder.once('exit', () =>
+      fail(
+        new Error(
+          `Wallet root is already open in another process${
+            stderr.trim() === '' ? '' : `: ${stderr.trim()}`
+          }`
+        )
+      )
+    )
+    holder.stdout.setEncoding('utf8')
+    holder.stdout.on('data', (chunk: string) => {
+      output += chunk
+      if (!settled && output.includes('FRANK_WALLET_LOCKED\n')) {
+        settled = true
+        resolveReady()
+      }
+    })
+  })
+
+  const currentArtifact = fs.lstatSync(lockPath)
+  if (
+    !currentArtifact.isFile() ||
+    currentArtifact.dev !== artifact.dev ||
+    currentArtifact.ino !== artifact.ino
+  ) {
+    holder.stdin.end()
+    throw new Error('Node wallet root lock was replaced during acquisition')
+  }
+  const fd = fs.openSync(lockPath, 'r+')
+  const identity = fs.fstatSync(fd)
+  if (identity.dev !== artifact.dev || identity.ino !== artifact.ino) {
+    fs.closeSync(fd)
+    holder.stdin.end()
+    throw new Error('Node wallet root lock was replaced during acquisition')
+  }
+  const random = new Uint8Array(16)
+  const webCrypto = (globalThis as any).crypto as Crypto | undefined
+  if (
+    webCrypto === undefined ||
+    typeof webCrypto.getRandomValues !== 'function'
+  ) {
+    fs.closeSync(fd)
+    holder.stdin.end()
+    throw new Error('Secure randomness is unavailable for wallet lock fencing')
+  }
+  webCrypto.getRandomValues(random)
+  const token = `${process.pid}:${Array.from(random, (byte) =>
+    byte.toString(16).padStart(2, '0')
+  ).join('')}`
+  fs.ftruncateSync(fd, 0)
   fs.writeFileSync(fd, token, { encoding: 'utf8' })
   fs.fsyncSync(fd)
-  const identity = fs.fstatSync(fd)
   let held = true
+  let holderExited = false
+  holder.once('exit', () => {
+    holderExited = true
+  })
+  // The open stdin pipe is the lifetime edge. It closes automatically if the
+  // wallet process is killed, causing the lock holder to exit and the kernel to
+  // release the advisory lock. Unref it so an otherwise finished process can exit.
+  holder.unref()
+  holder.stdout.destroy()
+  holder.stderr.destroy()
+  ;(holder.stdin as any).unref?.()
   const lose = (message: string): never => {
     held = false
+    holder.stdin.end()
     try {
       fs.closeSync(fd)
     } catch {
@@ -201,44 +335,50 @@ export function acquireNodeWalletRootLease(
     }
     throw new Error(message)
   }
+  const assertHeld = (): void => {
+    if (!held) throw new Error('Node wallet root lock was lost')
+    if (
+      holderExited ||
+      holder.exitCode !== null ||
+      holder.signalCode !== null
+    ) {
+      lose('Node wallet root advisory lock was lost')
+    }
+    let current: import('fs').Stats | undefined
+    try {
+      current = fs.lstatSync(lockPath)
+    } catch {
+      lose('Node wallet root lock was removed')
+    }
+    if (
+      current === undefined ||
+      !current.isFile() ||
+      current.ino !== identity.ino ||
+      current.dev !== identity.dev
+    ) {
+      lose('Node wallet root lock was replaced')
+    }
+    let currentToken: string | undefined
+    try {
+      currentToken = fs.readFileSync(lockPath, 'utf8')
+    } catch {
+      lose('Node wallet root lock became unreadable')
+    }
+    if (currentToken !== token) lose('Node wallet root lock fence changed')
+  }
   return {
-    assertHeld(): void {
-      if (!held) throw new Error('Node wallet root lock was lost')
-      let current: import('fs').Stats | undefined
-      try {
-        current = fs.lstatSync(lockPath)
-      } catch {
-        lose('Node wallet root lock was removed')
-      }
-      if (
-        current === undefined ||
-        !current.isFile() ||
-        current.ino !== identity.ino ||
-        current.dev !== identity.dev
-      ) {
-        lose('Node wallet root lock was replaced')
-      }
-      let currentToken: string | undefined
-      try {
-        currentToken = fs.readFileSync(lockPath, 'utf8')
-      } catch {
-        lose('Node wallet root lock became unreadable')
-      }
-      if (currentToken !== token) lose('Node wallet root lock fence changed')
-    },
+    assertHeld,
     async release(): Promise<void> {
       if (!held) return
-      this.assertHeld()
+      assertHeld()
       held = false
       fs.closeSync(fd)
-      const current = lstatIfPresent(fs, lockPath)
-      if (
-        current !== undefined &&
-        current.ino === identity.ino &&
-        current.dev === identity.dev
-      ) {
-        fs.unlinkSync(lockPath)
-      }
+      holder.stdin.end()
+      await new Promise<void>((resolveExit) => {
+        if (holder.exitCode !== null || holder.signalCode !== null)
+          resolveExit()
+        else holder.once('exit', () => resolveExit())
+      })
     },
   }
 }

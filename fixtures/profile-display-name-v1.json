@@ -39,6 +39,18 @@
       "valid": true,
       "normalized": "é"
     },
+    {
+      "id": "decomposed-combining-sequence-unnormalized",
+      "input": "e\u0301",
+      "valid": true,
+      "normalized": "e\u0301"
+    },
+    {
+      "id": "next-line-edge-trimmed",
+      "input": "\u0085Alice\u0085",
+      "valid": true,
+      "normalized": "Alice"
+    },
     { "id": "c0-control", "input": "A\u0000B", "valid": false },
     { "id": "c1-control", "input": "A\u0085B", "valid": false },
     { "id": "line-separator", "input": "A\u2028B", "valid": false },

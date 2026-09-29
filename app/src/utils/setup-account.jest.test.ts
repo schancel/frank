@@ -42,6 +42,7 @@ describe('setup account display name commitment', () => {
 
     const committedName = commitValidatedSetupName(
       '\u00a0Alice  Bob\u2003',
+      true,
       persistName,
     )
 
@@ -52,7 +53,7 @@ describe('setup account display name commitment', () => {
   it('rejects invalid input without persisting it', () => {
     const persistName = jest.fn()
 
-    expect(() => commitValidatedSetupName('   ', persistName)).toThrow(
+    expect(() => commitValidatedSetupName('   ', true, persistName)).toThrow(
       /invalid profile display name/i,
     )
     expect(persistName).not.toHaveBeenCalled()

@@ -8,7 +8,10 @@ import { generateMnemonic } from 'bip39'
 import AccountStep from './AccountStep.vue'
 import enUs from '../../i18n/en-us'
 import frFr from '../../i18n/fr-fr'
-import { commitValidatedSetupSeed } from '../../utils/setup-account'
+import {
+  commitValidatedSetupName,
+  commitValidatedSetupSeed,
+} from '../../utils/setup-account'
 
 jest.mock('quasar', () => ({
   copyToClipboard: jest.fn(() => Promise.resolve()),
@@ -92,6 +95,7 @@ describe('AccountStep import flow', () => {
       name: '',
       seed: 'not a recovery phrase',
       valid: false,
+      nameRequired: false,
     })
   })
 
@@ -111,7 +115,50 @@ describe('AccountStep import flow', () => {
       name: '',
       seed: VALID_MNEMONIC,
       valid: true,
+      nameRequired: false,
     })
+  })
+})
+
+describe('AccountStep import account finalization', () => {
+  it('lets an imported account (no name collected) commit with the historical default', async () => {
+    const wrapper = mountStep()
+    const vm = wrapper.vm as unknown as { importAccount(): void }
+    vm.importAccount()
+    await nextTick()
+    await wrapper
+      .find('textarea[aria-label="profile.seedEntry"]')
+      .setValue(VALID_MNEMONIC)
+    const emitted = wrapper.emitted('update:account-data')?.at(-1)?.[0] as {
+      name: string
+      nameRequired: boolean
+      valid: boolean
+    }
+    const persistName = jest.fn()
+
+    expect(emitted.valid).toBe(true)
+    expect(emitted.name).toBe('')
+    expect(
+      commitValidatedSetupName(emitted.name, emitted.nameRequired, persistName),
+    ).toBe('Frank User')
+    expect(persistName).toHaveBeenCalledWith('Frank User')
+  })
+
+  it('still requires a valid name for a new account at finalization', async () => {
+    const wrapper = mountStep(VALID_MNEMONIC)
+    const vm = wrapper.vm as unknown as { newAccount(): void }
+    vm.newAccount()
+    await nextTick()
+    await wrapper.find('textarea[aria-label="profile.name"]').setValue('   ')
+    const emitted = wrapper.emitted('update:account-data')?.at(-1)?.[0] as {
+      name: string
+      nameRequired: boolean
+    }
+
+    expect(emitted.nameRequired).toBe(true)
+    expect(() =>
+      commitValidatedSetupName(emitted.name, emitted.nameRequired, jest.fn()),
+    ).toThrow(/invalid profile display name/i)
   })
 })
 
@@ -135,6 +182,7 @@ describe('AccountStep display name contract', () => {
         name: '',
         seed: VALID_MNEMONIC,
         valid: false,
+        nameRequired: true,
       })
       expect(typeof (emitted as { valid: unknown }).valid).toBe('boolean')
     },
@@ -147,6 +195,7 @@ describe('AccountStep display name contract', () => {
       name: 'Alice',
       seed: VALID_MNEMONIC,
       valid: true,
+      nameRequired: true,
     })
     expect(
       wrapper.find('textarea[aria-label="profile.name"]').element.value,
@@ -165,6 +214,7 @@ describe('AccountStep display name contract', () => {
       name: 'Alice  Bob',
       seed: VALID_MNEMONIC,
       valid: true,
+      nameRequired: true,
     })
   })
 })
@@ -232,6 +282,7 @@ describe('AccountStep recovery phrase controls', () => {
       name: 'Alice',
       seed: VALID_MNEMONIC,
       valid: true,
+      nameRequired: true,
     })
     expect(vm.rawSeed).toBe(VALID_MNEMONIC)
     expect(

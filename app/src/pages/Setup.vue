@@ -156,6 +156,7 @@ export default defineComponent({
       accountData: {
         name: '',
         valid: false,
+        nameRequired: false,
         seed: wallet.seedPhrase,
       },
       relayData: defaultRelayData,
@@ -489,6 +490,7 @@ export default defineComponent({
           )
           this.accountData.name = commitValidatedSetupName(
             this.accountData.name,
+            this.accountData.nameRequired,
             name =>
               this.setRelayData({
                 profile: {

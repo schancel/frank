@@ -23,12 +23,20 @@ export function commitValidatedSetupSeed(
   return normalizedSeed
 }
 
-/** Revalidate at setup's final persistence boundary and persist exactly the canonical value. */
+/** Import Account collects no public name; it keeps the historical placeholder. */
+export const IMPORTED_ACCOUNT_DEFAULT_NAME = 'Frank User'
+
+/** Revalidate a required (New Account) name at setup's final persistence boundary and persist
+ * exactly the canonical value. When no name was requested (Import Account) the historical
+ * default is persisted unchanged. */
 export function commitValidatedSetupName(
   name: string,
+  nameRequired: boolean | undefined,
   persistName: (name: string) => void,
 ): string {
-  const normalizedName = requireValidProfileDisplayName(name)
-  persistName(normalizedName)
-  return normalizedName
+  const committedName = nameRequired
+    ? requireValidProfileDisplayName(name)
+    : name || IMPORTED_ACCOUNT_DEFAULT_NAME
+  persistName(committedName)
+  return committedName
 }

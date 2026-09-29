@@ -83,6 +83,7 @@ interface AccountData {
   name: string
   seed: string
   valid?: boolean
+  nameRequired?: boolean
 }
 
 export default defineComponent({
@@ -121,6 +122,7 @@ export default defineComponent({
           action.value === 'new' ? displayName.value.normalized : rawName.value,
         seed: normalizeSetupMnemonic(rawSeed.value),
         valid: isValid.value,
+        nameRequired: action.value === 'new',
       })
     }
     const seed = computed({

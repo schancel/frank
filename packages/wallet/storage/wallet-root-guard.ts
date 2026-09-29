@@ -206,7 +206,13 @@ export function nodeAdvisoryLockCommand(
 }
 
 export async function acquireNodeWalletRootLease(
-  location: string
+  location: string,
+  testHooks: {
+    /** Deterministic acquisition-failure seam. Production callers must not supply it. */
+    beforePostReadyOperation?: (
+      operation: 'lstat' | 'open' | 'fstat' | 'random' | 'write' | 'fsync'
+    ) => void
+  } = {}
 ): Promise<WalletRootLease | undefined> {
   if (isBrowserWalletStorage()) return undefined
   // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -247,77 +253,119 @@ export async function acquireNodeWalletRootLease(
   const holder = childProcess.spawn(advisory.command, advisory.args, {
     stdio: ['pipe', 'pipe', 'pipe'],
   })
+  let fd: number | undefined
+  let holderExited = false
+  const holderExit = new Promise<void>((resolveExit) => {
+    holder.once('exit', () => {
+      holderExited = true
+      resolveExit()
+    })
+    holder.once('error', () => {
+      holderExited = true
+      resolveExit()
+    })
+  })
+  const closeFenceFd = (): void => {
+    if (fd === undefined) return
+    try {
+      fs.closeSync(fd)
+    } finally {
+      fd = undefined
+    }
+  }
+  const stopAndReapHolder = async (): Promise<void> => {
+    let closeError: unknown
+    try {
+      closeFenceFd()
+    } catch (error) {
+      closeError = error
+    }
+    // A successfully acquired lease deliberately unrefs this lifetime edge. Explicit cleanup
+    // must restore the refs before closing it so release cannot resolve until the helper has
+    // actually exited and the kernel has released the advisory lock.
+    holder.ref()
+    ;(holder.stdin as any).ref?.()
+    if (!holder.stdin.destroyed) holder.stdin.end()
+    await holderExit
+    if (closeError !== undefined) throw closeError
+  }
   let stderr = ''
   holder.stderr.setEncoding('utf8')
   holder.stderr.on('data', (chunk: string) => {
     stderr += chunk
   })
-  await new Promise<void>((resolveReady, rejectReady) => {
-    let output = ''
-    let settled = false
-    const fail = (error: Error): void => {
-      if (settled) return
-      settled = true
-      rejectReady(error)
-    }
-    holder.once('error', fail)
-    holder.once('exit', () =>
-      fail(
-        new Error(
-          `Wallet root is already open in another process${
-            stderr.trim() === '' ? '' : `: ${stderr.trim()}`
-          }`
+  let identity!: import('fs').Stats
+  let token!: string
+  try {
+    await new Promise<void>((resolveReady, rejectReady) => {
+      let output = ''
+      let settled = false
+      const fail = (error: Error): void => {
+        if (settled) return
+        settled = true
+        rejectReady(error)
+      }
+      holder.once('error', fail)
+      holder.once('exit', () =>
+        fail(
+          new Error(
+            `Wallet root is already open in another process${
+              stderr.trim() === '' ? '' : `: ${stderr.trim()}`
+            }`
+          )
         )
       )
-    )
-    holder.stdout.setEncoding('utf8')
-    holder.stdout.on('data', (chunk: string) => {
-      output += chunk
-      if (!settled && output.includes('FRANK_WALLET_LOCKED\n')) {
-        settled = true
-        resolveReady()
-      }
+      holder.stdout.setEncoding('utf8')
+      holder.stdout.on('data', (chunk: string) => {
+        output += chunk
+        if (!settled && output.includes('FRANK_WALLET_LOCKED\n')) {
+          settled = true
+          resolveReady()
+        }
+      })
     })
-  })
 
-  const currentArtifact = fs.lstatSync(lockPath)
-  if (
-    !currentArtifact.isFile() ||
-    currentArtifact.dev !== artifact.dev ||
-    currentArtifact.ino !== artifact.ino
-  ) {
-    holder.stdin.end()
-    throw new Error('Node wallet root lock was replaced during acquisition')
+    testHooks.beforePostReadyOperation?.('lstat')
+    const currentArtifact = fs.lstatSync(lockPath)
+    if (
+      !currentArtifact.isFile() ||
+      currentArtifact.dev !== artifact.dev ||
+      currentArtifact.ino !== artifact.ino
+    ) {
+      throw new Error('Node wallet root lock was replaced during acquisition')
+    }
+    testHooks.beforePostReadyOperation?.('open')
+    fd = fs.openSync(lockPath, 'r+')
+    testHooks.beforePostReadyOperation?.('fstat')
+    identity = fs.fstatSync(fd)
+    if (identity.dev !== artifact.dev || identity.ino !== artifact.ino) {
+      throw new Error('Node wallet root lock was replaced during acquisition')
+    }
+    const random = new Uint8Array(16)
+    const webCrypto = (globalThis as any).crypto as Crypto | undefined
+    if (
+      webCrypto === undefined ||
+      typeof webCrypto.getRandomValues !== 'function'
+    ) {
+      throw new Error(
+        'Secure randomness is unavailable for wallet lock fencing'
+      )
+    }
+    testHooks.beforePostReadyOperation?.('random')
+    webCrypto.getRandomValues(random)
+    token = `${process.pid}:${Array.from(random, (byte) =>
+      byte.toString(16).padStart(2, '0')
+    ).join('')}`
+    fs.ftruncateSync(fd, 0)
+    testHooks.beforePostReadyOperation?.('write')
+    fs.writeFileSync(fd, token, { encoding: 'utf8' })
+    testHooks.beforePostReadyOperation?.('fsync')
+    fs.fsyncSync(fd)
+  } catch (error) {
+    await stopAndReapHolder()
+    throw error
   }
-  const fd = fs.openSync(lockPath, 'r+')
-  const identity = fs.fstatSync(fd)
-  if (identity.dev !== artifact.dev || identity.ino !== artifact.ino) {
-    fs.closeSync(fd)
-    holder.stdin.end()
-    throw new Error('Node wallet root lock was replaced during acquisition')
-  }
-  const random = new Uint8Array(16)
-  const webCrypto = (globalThis as any).crypto as Crypto | undefined
-  if (
-    webCrypto === undefined ||
-    typeof webCrypto.getRandomValues !== 'function'
-  ) {
-    fs.closeSync(fd)
-    holder.stdin.end()
-    throw new Error('Secure randomness is unavailable for wallet lock fencing')
-  }
-  webCrypto.getRandomValues(random)
-  const token = `${process.pid}:${Array.from(random, (byte) =>
-    byte.toString(16).padStart(2, '0')
-  ).join('')}`
-  fs.ftruncateSync(fd, 0)
-  fs.writeFileSync(fd, token, { encoding: 'utf8' })
-  fs.fsyncSync(fd)
   let held = true
-  let holderExited = false
-  holder.once('exit', () => {
-    holderExited = true
-  })
   // The open stdin pipe is the lifetime edge. It closes automatically if the
   // wallet process is killed, causing the lock holder to exit and the kernel to
   // release the advisory lock. Unref it so an otherwise finished process can exit.
@@ -327,9 +375,11 @@ export async function acquireNodeWalletRootLease(
   ;(holder.stdin as any).unref?.()
   const lose = (message: string): never => {
     held = false
+    holder.ref()
+    ;(holder.stdin as any).ref?.()
     holder.stdin.end()
     try {
-      fs.closeSync(fd)
+      closeFenceFd()
     } catch {
       // The ownership failure is the actionable error.
     }
@@ -372,13 +422,7 @@ export async function acquireNodeWalletRootLease(
       if (!held) return
       assertHeld()
       held = false
-      fs.closeSync(fd)
-      holder.stdin.end()
-      await new Promise<void>((resolveExit) => {
-        if (holder.exitCode !== null || holder.signalCode !== null)
-          resolveExit()
-        else holder.once('exit', () => resolveExit())
-      })
+      await stopAndReapHolder()
     },
   }
 }

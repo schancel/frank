@@ -59,7 +59,7 @@ export class InMemoryStampPaymentJournal implements StampPaymentJournal {
 
   async put(record: StampPaymentRecoveryRecord): Promise<void> {
     assertPaymentAuthorityShape(record)
-    assertCompatiblePaymentRecord(
+    assertCompatibleStampPaymentAuthority(
       this.records.get(key(record.payloadHashHex, record.childIndex)),
       record
     )
@@ -143,10 +143,39 @@ export class LevelStampPaymentJournal implements StampPaymentJournal {
     return this.loadedBindingId
   }
 
-  async Bind(): Promise<void> {
+  async Bind(
+    resolvedLegacyRecords: StampPaymentRecoveryRecord[] = []
+  ): Promise<void> {
     if (this.expectedBindingId === undefined) return
     this.assertMutationAllowed()
-    await this.db.put(WALLET_BINDING_KEY, this.expectedBindingId)
+    for (const record of resolvedLegacyRecords) {
+      const recordKey = key(record.payloadHashHex, record.childIndex)
+      const existing = this.records.get(recordKey)
+      if (
+        existing === undefined ||
+        existing.txHash !== record.txHash ||
+        existing.address !== record.address
+      ) {
+        throw new Error(
+          'Legacy payment resolution no longer matches stored row'
+        )
+      }
+      assertPaymentAuthorityShape(record)
+    }
+    await (this.db as any).batch([
+      { type: 'put', key: WALLET_BINDING_KEY, value: this.expectedBindingId },
+      ...resolvedLegacyRecords.map((record) => ({
+        type: 'put' as const,
+        key: key(record.payloadHashHex, record.childIndex),
+        value: JSON.stringify(record),
+      })),
+    ])
+    for (const record of resolvedLegacyRecords) {
+      this.records.set(key(record.payloadHashHex, record.childIndex), {
+        ...record,
+      })
+    }
+    this.loadedBindingId = this.expectedBindingId
   }
 
   async Close(): Promise<void> {
@@ -165,7 +194,7 @@ export class LevelStampPaymentJournal implements StampPaymentJournal {
     this.assertMutationAllowed()
     assertPaymentAuthorityShape(record)
     const recordKey = key(record.payloadHashHex, record.childIndex)
-    assertCompatiblePaymentRecord(this.records.get(recordKey), record)
+    assertCompatibleStampPaymentAuthority(this.records.get(recordKey), record)
     await this.db.put(recordKey, JSON.stringify(record))
     this.records.set(recordKey, { ...record })
   }
@@ -185,7 +214,7 @@ function assertPaymentAuthorityShape(record: StampPaymentRecoveryRecord): void {
   }
 }
 
-function assertCompatiblePaymentRecord(
+export function assertCompatibleStampPaymentAuthority(
   prior: StampPaymentRecoveryRecord | undefined,
   next: StampPaymentRecoveryRecord
 ): void {

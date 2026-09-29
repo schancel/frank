@@ -1,8 +1,17 @@
 /** Real-browser IndexedDB/Web-Locks check. Run through Vite in Chrome; it deliberately uses the
  * package's browser-resolved `level` backend rather than a memory fake. */
 import { join } from 'path'
+import level from 'level'
+import { Transaction, Wallet, computeAddress, getBytes, hexlify } from 'ethers'
 
+import { MonadChangeKeyring } from '../monad-change-keyring'
 import { MonadHdKeyring } from '../monad-hd-keyring'
+import {
+  buildMonadStampCalldata,
+  computeMonadStampCommitment,
+  computeMonadStampPaymentCommitment,
+} from '../monad-stamp-client'
+import { deriveMonadStampChildPublic } from '../monad-stamp-stealth'
 import { LevelChangePoolStore } from './level-change-pool-store'
 import { LevelSubAccountPoolStore } from './level-sub-account-pool-store'
 import { openMonadWalletBundle } from './monad-wallet-bundle'
@@ -58,6 +67,143 @@ async function createLegacyRoot(location: string): Promise<void> {
   for (const store of stores.slice().reverse()) await store.Close()
 }
 
+async function createLegacyFinalizedRoot(location: string) {
+  const subKeyring = MonadHdKeyring.fromMnemonic(MNEMONIC)
+  const changeKeyring = MonadChangeKeyring.fromMnemonic(MNEMONIC)
+  const sender = subKeyring.deriveSubAccount(0)
+  const change = changeKeyring.deriveChangeAccount(0)
+  const funder = new Wallet(`0x${'11'.repeat(32)}`)
+  const fundingRaw = await funder.signTransaction({
+    to: sender.address,
+    value: 100n,
+    nonce: 0,
+    gasLimit: 21_000n,
+    gasPrice: 1n,
+    chainId: 1,
+  })
+  const spendRaw = await new Wallet(sender.privateKey).signTransaction({
+    to: funder.address,
+    value: 5n,
+    nonce: 0,
+    gasLimit: 50_000n,
+    gasPrice: 1n,
+    chainId: 1,
+  })
+  const changeRaw = await new Wallet(sender.privateKey).signTransaction({
+    to: change.address,
+    value: 80n,
+    nonce: 1,
+    gasLimit: 21_000n,
+    gasPrice: 1n,
+    chainId: 1,
+  })
+  const changeTxHash = Transaction.from(changeRaw).hash as string
+  const sub = new LevelSubAccountPoolStore(location)
+  await sub.Open()
+  sub.put({
+    index: 0,
+    address: sender.address,
+    status: 'spent',
+    lifecycle: {
+      funding: {
+        rawTx: fundingRaw,
+        txHash: Transaction.from(fundingRaw).hash as string,
+        valueWei: '100',
+      },
+      spend: {
+        rawTx: spendRaw,
+        txHash: Transaction.from(spendRaw).hash as string,
+        valueWei: '5',
+      },
+      recovery: {
+        kind: 'change',
+        valueWei: '80',
+        changeIndex: 0,
+        address: change.address,
+        txHash: changeTxHash,
+      },
+    },
+  })
+  await sub.Close()
+  const changeRecord = {
+    index: 0,
+    address: change.address,
+    sourceBurnIndex: 0,
+    sourceBurnAddress: sender.address,
+    sweptValueWei: '80',
+    txHash: changeTxHash,
+    rawTx: changeRaw,
+    createdAt: 1,
+  }
+  const changeStore = new LevelChangePoolStore(location)
+  await changeStore.Open()
+  changeStore.putRecord(changeRecord)
+  changeStore.setNextIndex(1)
+  await changeStore.Close()
+  const rawChange = level(join(location, 'change-pool'))
+  const { rawTx: _changeRaw, ...legacyChange } = changeRecord
+  await rawChange.put('0', JSON.stringify(legacyChange))
+  await rawChange.close()
+
+  const recipientPublicKeyHex = new Wallet(`0x${'22'.repeat(32)}`).signingKey
+    .compressedPublicKey
+  const envelopeRecipientAddress = computeAddress(recipientPublicKeyHex)
+  const payloadHash = computeMonadStampCommitment(
+    new TextEncoder().encode('browser legacy payment')
+  )
+  const destination = deriveMonadStampChildPublic({
+    payloadHash,
+    recipientPublicKey: getBytes(recipientPublicKeyHex),
+    paymentIndex: 0,
+  }).address
+  const paymentRaw = await funder.signTransaction({
+    to: destination,
+    value: 7n,
+    data: buildMonadStampCalldata(
+      computeMonadStampPaymentCommitment(payloadHash, 0)
+    ),
+    nonce: 1,
+    gasLimit: 50_000n,
+    gasPrice: 1n,
+    chainId: 1,
+  })
+  const payloadHashHex = hexlify(payloadHash).slice(2)
+  const paymentRecord = {
+    payloadHashHex,
+    childIndex: 0,
+    txHash: Transaction.from(paymentRaw).hash as string,
+    rawTx: paymentRaw,
+    recipientPublicKeyHex,
+    envelopeRecipientAddress,
+    address: destination,
+    valueWei: '7',
+    status: 'discovered' as const,
+  }
+  const payments = new LevelStampPaymentJournal(location)
+  await payments.Open()
+  await payments.put(paymentRecord)
+  await payments.Close()
+  const rawPayments = level(join(location, 'stamp-payment-journal'))
+  const {
+    rawTx: _paymentRaw,
+    recipientPublicKeyHex: _recipient,
+    envelopeRecipientAddress: _envelope,
+    ...legacyPayment
+  } = paymentRecord
+  await rawPayments.put(`${payloadHashHex}:0`, JSON.stringify(legacyPayment))
+  await rawPayments.close()
+  const attempts = new LevelStampAttemptJournal(location)
+  await attempts.Open()
+  await attempts.Close()
+  return {
+    changeRaw,
+    paymentRaw,
+    recipientPublicKeyHex,
+    envelopeRecipientAddress,
+    payloadHashHex,
+  }
+}
+
 export async function runMonadWalletBundleBrowserCheck(): Promise<void> {
   const prefix = `wallet-browsercheck-${Date.now()}`
   const report = (stage: string): void => {
@@ -82,6 +228,7 @@ export async function runMonadWalletBundleBrowserCheck(): Promise<void> {
   const concurrentRoot = `${prefix}-concurrent`
   const aliasRoot = `${prefix}-alias`
   const wrongRoot = `${prefix}-wrong`
+  const finalizedRoot = `${prefix}-finalized`
   const crashRoots: string[] = []
   try {
     await createLegacyRoot(migratedRoot)
@@ -100,6 +247,68 @@ export async function runMonadWalletBundleBrowserCheck(): Promise<void> {
     assert(reopened.pool.deriveNextUnfunded().index === 8, 'index was reused')
     report('MONAD_WALLET_BROWSERCHECK_REOPENED')
     await reopened.close()
+
+    const legacyFinalized = await createLegacyFinalizedRoot(finalizedRoot)
+    let finalizedOutageRejected = false
+    try {
+      await openMonadWalletBundle({
+        location: finalizedRoot,
+        seed: { mnemonic: MNEMONIC },
+        resolveLegacyChangeRawTransaction: async () => {
+          throw new Error('browser RPC outage')
+        },
+        resolveLegacyPaymentAuthority: async () => ({
+          rawTx: legacyFinalized.paymentRaw,
+          recipientPublicKeyHex: legacyFinalized.recipientPublicKeyHex,
+          envelopeRecipientAddress: legacyFinalized.envelopeRecipientAddress,
+        }),
+      })
+    } catch {
+      finalizedOutageRejected = true
+    }
+    assert(
+      finalizedOutageRejected,
+      'browser legacy authority outage was accepted'
+    )
+    assert(
+      !(await (globalThis as any).indexedDB.databases()).some(
+        (database: { name?: string }) =>
+          database.name === `level-js-${join(finalizedRoot, 'wallet-manifest')}`
+      ),
+      'browser authority outage wrote a manifest'
+    )
+    const finalized = await openMonadWalletBundle({
+      location: finalizedRoot,
+      seed: { mnemonic: MNEMONIC },
+      resolveLegacyChangeRawTransaction: async () => legacyFinalized.changeRaw,
+      resolveLegacyPaymentAuthority: async () => ({
+        rawTx: legacyFinalized.paymentRaw,
+        recipientPublicKeyHex: legacyFinalized.recipientPublicKeyHex,
+        envelopeRecipientAddress: legacyFinalized.envelopeRecipientAddress,
+      }),
+    })
+    assert(
+      finalized.changePool.records()[0].rawTx === legacyFinalized.changeRaw,
+      'browser legacy change authority was not persisted'
+    )
+    assert(
+      finalized.stampPaymentJournal.get(legacyFinalized.payloadHashHex, 0)
+        ?.envelopeRecipientAddress === legacyFinalized.envelopeRecipientAddress,
+      'browser legacy payment authority was not persisted'
+    )
+    await finalized.close()
+    const finalizedReopened = await openMonadWalletBundle({
+      location: finalizedRoot,
+      seed: { mnemonic: MNEMONIC },
+    })
+    assert(
+      finalizedReopened.stampPaymentJournal.get(
+        legacyFinalized.payloadHashHex,
+        0
+      )?.rawTx === legacyFinalized.paymentRaw,
+      'browser legacy payment authority was lost on reopen'
+    )
+    await finalizedReopened.close()
 
     const existingContenders = await Promise.allSettled([
       openMonadWalletBundle({
@@ -233,6 +442,7 @@ export async function runMonadWalletBundleBrowserCheck(): Promise<void> {
     await deleteRoot(concurrentRoot)
     await deleteRoot(aliasRoot)
     await deleteRoot(wrongRoot)
+    await deleteRoot(finalizedRoot)
     for (const root of crashRoots) await deleteRoot(root)
   }
 }

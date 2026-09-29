@@ -721,6 +721,53 @@ describe('createMonadChain: directMessages.fetchSince', () => {
         status: 'discovered',
       }),
     ])
+
+    const discovered = stampPaymentJournal.get('ab'.repeat(32), 0)!
+    await stampPaymentJournal.put({
+      ...discovered,
+      status: 'sweep-pending',
+      sweepTxHash: `0x${'45'.repeat(32)}`,
+      sweepRawTx: '0x1234',
+      sweepValueWei: '1',
+      sweepDestinationAddress: alice.address.raw,
+    })
+    mockedFetchMonadMessagesSince.mockResolvedValueOnce([addressedToBob])
+    mockedFetchMonadProfile.mockResolvedValueOnce({
+      address: alice.address,
+      pubKey: new Uint8Array(alice.compressedPubKey),
+    })
+    await chain.directMessages.fetchSince({ wallet, sinceMs: 0 })
+    expect(stampPaymentJournal.get('ab'.repeat(32), 0)?.status).toBe(
+      'sweep-pending'
+    )
+
+    const conflictingRaw = await new Wallet(
+      ALICE_PRIVATE_KEY_HEX
+    ).signTransaction({
+      type: 2,
+      chainId: 10143,
+      nonce: 1,
+      to: stampDestination.address,
+      value: 124n,
+      gasLimit: 60_000n,
+      maxFeePerGas: 2n,
+      maxPriorityFeePerGas: 1n,
+    })
+    mockedFetchMonadMessagesSince.mockResolvedValueOnce([
+      {
+        ...addressedToBob,
+        message: {
+          ...addressedToBob.message!,
+          stampPayments: [{ childIndex: 0, rawTx: getBytes(conflictingRaw) }],
+        },
+      },
+    ])
+    await expect(
+      chain.directMessages.fetchSince({ wallet, sinceMs: 0 })
+    ).rejects.toThrow(/conflicting stamp-payment recovery authority/i)
+    expect(stampPaymentJournal.get('ab'.repeat(32), 0)?.status).toBe(
+      'sweep-pending'
+    )
   })
 
   it('skips envelopes addressed to someone else', async () => {

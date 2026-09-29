@@ -109,6 +109,7 @@ import {
 import { MonadIdentity, fetchMonadProfile } from '../monad-identity'
 import {
   assertMonadStampPaymentCount,
+  decodeStoredMonadMessage,
   decodeMonadStampedMessage,
   MonadStampClient,
   quoteMonadStampPaymentGasReserve,
@@ -137,6 +138,7 @@ import {
   createInMemoryMonadWalletBundle,
   openMonadWalletBundle,
 } from '../storage/monad-wallet-bundle'
+import { assertCompatibleStampPaymentAuthority } from '../storage/stamp-payment-journal'
 
 export interface MonadChainConfig {
   /** Monad JSON-RPC HTTP endpoint, e.g. `MONAD_TESTNET_HTTP_RPC_URL`. */
@@ -482,8 +484,7 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
               payloadHashHex,
               payment.childIndex
             )
-            if (existing !== undefined) continue
-            await wallet.stampPaymentJournal.put({
+            const discovered = {
               payloadHashHex,
               childIndex: payment.childIndex,
               txHash: payment.txHash,
@@ -492,8 +493,14 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
               envelopeRecipientAddress: payment.envelopeRecipientAddress,
               address: payment.address,
               valueWei: payment.valueWei.toString(),
-              status: 'discovered',
-            })
+              status: 'discovered' as const,
+            }
+            assertCompatibleStampPaymentAuthority(existing, discovered)
+            // An exact repeated feed observation is idempotent. In particular it must not replace
+            // a locally pending/swept lifecycle with the feed's initial discovered status.
+            if (existing === undefined) {
+              await wallet.stampPaymentJournal.put(discovered)
+            }
           }
         }
 
@@ -820,6 +827,7 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
                 },
                 recovery: {
                   provider,
+                  maxIndex: 0,
                   assertRelayAvailable: async () => {
                     try {
                       await axios({
@@ -838,6 +846,11 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
                       }
                     }
                   },
+                  recoverAllocationHighWater: async () => {
+                    throw new Error(
+                      'Seed restore requires authoritative allocation high-water evidence'
+                    )
+                  },
                   // Standard EVM RPC cannot enumerate complete signed history by sender. A used
                   // index with no local state therefore remains ambiguous and fails closed.
                   recoverSenderEvidence: async () => undefined,
@@ -847,6 +860,58 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
                     relayBaseUrl: config.relayBaseUrl,
                     messageBytes: attempt.messageBytes,
                   })
+                },
+                resolveLegacyChangeRawTransaction: async (record) => {
+                  const rawTx = await provider.send(
+                    'eth_getRawTransactionByHash',
+                    [record.txHash]
+                  )
+                  if (typeof rawTx !== 'string') {
+                    throw new Error(
+                      `Missing authoritative change transaction ${record.txHash}`
+                    )
+                  }
+                  return rawTx
+                },
+                resolveLegacyPaymentAuthority: async (record) => {
+                  const response = await axios({
+                    method: 'get',
+                    url: `${config.relayBaseUrl.replace(
+                      /\/+$/,
+                      ''
+                    )}/message/monad/${record.payloadHashHex}`,
+                    responseType: 'arraybuffer',
+                  })
+                  const retained = decodeStoredMonadMessage(
+                    new Uint8Array(response.data)
+                  ).message
+                  if (
+                    retained === undefined ||
+                    bareHex(retained.payloadHash) !== record.payloadHashHex
+                  ) {
+                    throw new Error('Retained legacy payment message mismatch')
+                  }
+                  const envelope = parseEnvelope(retained.encryptedPayload)
+                  if (
+                    envelope === undefined ||
+                    getAddress(envelope.to) !== getAddress(identity.address.raw)
+                  ) {
+                    throw new Error('Retained legacy payment envelope mismatch')
+                  }
+                  const recovered = recoverMonadStampPayments({
+                    message: retained,
+                    recipientPrivateKey: getBytes(identity.toPrivateKeyHex()),
+                    envelopeRecipientAddress: envelope.to,
+                  }).find((payment) => payment.childIndex === record.childIndex)
+                  if (recovered === undefined) {
+                    throw new Error('Retained legacy payment child is missing')
+                  }
+                  return {
+                    rawTx: recovered.rawTx,
+                    recipientPublicKeyHex: recovered.recipientPublicKeyHex,
+                    envelopeRecipientAddress:
+                      recovered.envelopeRecipientAddress,
+                  }
                 },
               })
         try {

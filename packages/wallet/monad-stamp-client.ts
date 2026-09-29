@@ -269,33 +269,43 @@ function extractLengthDelimitedField(
 ): Uint8Array | undefined {
   let offset = 0
   let found: Uint8Array | undefined
-  const readVarint = (): number => {
-    let value = 0
-    let multiplier = 1
-    for (let count = 0; count < 8 && offset < bytes.length; count++) {
+  const readVarint = (): bigint => {
+    let value = BigInt(0)
+    let shift = BigInt(0)
+    for (let count = 0; count < 10 && offset < bytes.length; count++) {
       const byte = bytes[offset++]
-      value += (byte & 0x7f) * multiplier
+      // A protobuf uint64 may use all ten bytes, but its tenth byte can carry only bit zero.
+      if (count === 9 && (byte & 0xfe) !== 0) {
+        throw new Error('Invalid protobuf varint in stored Monad message')
+      }
+      value |= BigInt(byte & 0x7f) << shift
       if ((byte & 0x80) === 0) return value
-      multiplier *= 128
+      shift += BigInt(7)
     }
     throw new Error('Invalid protobuf varint in stored Monad message')
   }
   while (offset < bytes.length) {
     const tag = readVarint()
-    const field = Math.floor(tag / 8)
-    const wireType = tag & 7
-    if (field < 1) throw new Error('Invalid protobuf field tag')
+    const field = tag >> BigInt(3)
+    const wireType = Number(tag & BigInt(7))
+    if (field < BigInt(1) || field > BigInt(0x1fffffff)) {
+      throw new Error('Invalid protobuf field tag')
+    }
     if (wireType === 0) {
       readVarint()
     } else if (wireType === 1) {
       offset += 8
     } else if (wireType === 2) {
-      const length = readVarint()
+      const encodedLength = readVarint()
+      if (encodedLength > BigInt(Number.MAX_SAFE_INTEGER)) {
+        throw new Error('Invalid protobuf length in stored Monad message')
+      }
+      const length = Number(encodedLength)
       const end = offset + length
       if (!Number.isSafeInteger(length) || end > bytes.length) {
         throw new Error('Invalid protobuf length in stored Monad message')
       }
-      if (field === wantedField) found = bytes.slice(offset, end)
+      if (field === BigInt(wantedField)) found = bytes.slice(offset, end)
       offset = end
     } else if (wireType === 5) {
       offset += 4

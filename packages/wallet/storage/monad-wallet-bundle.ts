@@ -17,12 +17,11 @@ import { MonadChangePool } from '../monad-change-pool'
 import { MonadChangeKeyring } from '../monad-change-keyring'
 import { MonadHdKeyring } from '../monad-hd-keyring'
 import { decodeMonadStampedMessage } from '../monad-stamp-client'
-import { recoverNextChangeIndex } from '../monad-change-recovery'
+import { isSubAccountIndexUsed } from '../monad-sub-account-recovery'
 import {
-  isSubAccountIndexUsed,
-  recoverNextSubAccountIndex,
-} from '../monad-sub-account-recovery'
-import { InMemoryChangePoolStore } from './change-pool-storage'
+  InMemoryChangePoolStore,
+  type ChangeAccountRecord,
+} from './change-pool-storage'
 import { LevelChangePoolStore } from './level-change-pool-store'
 import { LevelSubAccountPoolStore } from './level-sub-account-pool-store'
 import {
@@ -34,6 +33,7 @@ import {
 import {
   InMemoryStampPaymentJournal,
   LevelStampPaymentJournal,
+  type StampPaymentRecoveryRecord,
   type StampPaymentJournal,
 } from './stamp-payment-journal'
 import {
@@ -154,13 +154,22 @@ export interface MonadSeedRestoreSource {
   provider: Provider
   /** Must prove the configured relay is reachable. A rejection aborts before durable writes. */
   assertRelayAvailable(): Promise<void>
+  /** Authoritative exclusive upper bounds for every index ever allocated on each derivation
+   * branch. An ordinary EVM RPC cannot infer these values because a locally allocated address may
+   * never have reached chain state. Empty-root restore therefore fails closed when this authority
+   * is unavailable instead of guessing from a run of unused addresses. */
+  recoverAllocationHighWater(): Promise<{
+    senderNextIndex: number
+    changeNextIndex: number
+  }>
   /** Returns complete terminal evidence for a used sender index. Missing evidence is ambiguous and
    * therefore aborts the restore without initializing the root. */
   recoverSenderEvidence(
     index: number,
     address: string
   ): Promise<SubAccountRecord | undefined>
-  maxIndex?: number
+  /** Inclusive workload bound independently configured for this recovery authority. */
+  maxIndex: number
 }
 
 export type OpenMonadWalletBundleParams = (
@@ -185,7 +194,25 @@ export type OpenMonadWalletBundleParams = (
     resolveLegacyAttemptRecipientPublicKey?: (
       attempt: Readonly<OutgoingStampAttempt>
     ) => Promise<string | Uint8Array>
+    /** Canonical signed sweep bytes fetched by the retained transaction hash. */
+    resolveLegacyChangeRawTransaction?: (
+      record: Readonly<ChangeAccountRecord>
+    ) => Promise<string | Uint8Array>
+    /** Exact retained relay-message authority for a pre-v2 recipient payment row. */
+    resolveLegacyPaymentAuthority?: (
+      record: Readonly<StampPaymentRecoveryRecord>
+    ) => Promise<{
+      rawTx: string | Uint8Array
+      recipientPublicKeyHex: string | Uint8Array
+      envelopeRecipientAddress: string
+    }>
   }
+
+interface LegacyMigrationResolutions {
+  attempts: Map<string, string>
+  changes: Map<number, ChangeAccountRecord>
+  payments: Map<string, StampPaymentRecoveryRecord>
+}
 
 function seedFingerprint(
   subKeyring: MonadHdKeyring,
@@ -386,6 +413,7 @@ function validateLoadedState(params: {
   changeKeyring: MonadChangeKeyring
   allowMissingAttemptRows?: boolean
   allowUnresolvedLegacyAttempts?: boolean
+  allowUnresolvedLegacyFinalizedRows?: boolean
 }): void {
   let highestSubAccountIndex = -1
   for (const record of params.pool.records()) {
@@ -551,6 +579,7 @@ function validateLoadedState(params: {
         'txHash',
         'rawTx',
         'recipientPublicKeyHex',
+        'envelopeRecipientAddress',
         'address',
         'valueWei',
         'status',
@@ -563,11 +592,23 @@ function validateLoadedState(params: {
     )
     assertHex(payment.payloadHashHex, 32, 'stamp-payment payload hash')
     assertHex(payment.txHash, 32, 'stamp-payment transaction hash')
-    assertHex(
-      payment.recipientPublicKeyHex,
-      33,
-      'stamp-payment recipient public key'
-    )
+    const unresolvedLegacyAuthority =
+      payment.rawTx === undefined ||
+      payment.recipientPublicKeyHex === undefined ||
+      payment.envelopeRecipientAddress === undefined
+    if (
+      unresolvedLegacyAuthority &&
+      !params.allowUnresolvedLegacyFinalizedRows
+    ) {
+      throw new Error('Stamp-payment recovery authority is incomplete')
+    }
+    if (payment.recipientPublicKeyHex !== undefined) {
+      assertHex(
+        payment.recipientPublicKeyHex,
+        33,
+        'stamp-payment recipient public key'
+      )
+    }
     if (
       !Number.isSafeInteger(payment.childIndex) ||
       payment.childIndex < 0 ||
@@ -577,7 +618,9 @@ function validateLoadedState(params: {
       throw new Error('Invalid stamp-payment recovery record')
     }
     getAddress(payment.address)
-    getAddress(payment.envelopeRecipientAddress)
+    if (payment.envelopeRecipientAddress !== undefined) {
+      getAddress(payment.envelopeRecipientAddress)
+    }
     if (
       payment.status !== 'discovered' &&
       (payment.sweepTxHash === undefined ||
@@ -597,7 +640,17 @@ async function validateLegacySnapshot(params: {
   resolveLegacyAttemptRecipientPublicKey?: (
     attempt: Readonly<OutgoingStampAttempt>
   ) => Promise<string | Uint8Array>
-}): Promise<Map<string, string>> {
+  resolveLegacyChangeRawTransaction?: (
+    record: Readonly<ChangeAccountRecord>
+  ) => Promise<string | Uint8Array>
+  resolveLegacyPaymentAuthority?: (
+    record: Readonly<StampPaymentRecoveryRecord>
+  ) => Promise<{
+    rawTx: string | Uint8Array
+    recipientPublicKeyHex: string | Uint8Array
+    envelopeRecipientAddress: string
+  }>
+}): Promise<LegacyMigrationResolutions> {
   const components = [
     'sub-account-pool',
     'change-pool',
@@ -667,9 +720,14 @@ async function validateLegacySnapshot(params: {
       subKeyring: params.subKeyring,
       changeKeyring: params.changeKeyring,
       allowUnresolvedLegacyAttempts: true,
+      allowUnresolvedLegacyFinalizedRows: true,
     })
-    const resolutions = new Map<string, string>()
-    const overlay = new InMemoryStampAttemptJournal()
+    const resolutions: LegacyMigrationResolutions = {
+      attempts: new Map(),
+      changes: new Map(),
+      payments: new Map(),
+    }
+    const attemptOverlay = new InMemoryStampAttemptJournal()
     for (const attempt of attemptJournal.getAll()) {
       let resolved = attempt
       if (attempt.recipientPublicKeyHex === undefined) {
@@ -683,16 +741,75 @@ async function validateLegacySnapshot(params: {
         )
         const recipientHex =
           typeof recipient === 'string' ? recipient : hexlify(recipient)
-        resolutions.set(attempt.payloadHashHex, recipientHex)
+        resolutions.attempts.set(attempt.payloadHashHex, recipientHex)
         resolved = { ...attempt, recipientPublicKeyHex: recipientHex }
       }
-      await overlay.put(resolved)
+      await attemptOverlay.put(resolved)
+    }
+    const changeOverlayStore = new InMemoryChangePoolStore()
+    changeOverlayStore.setNextIndex(changePool.nextUnusedIndex())
+    const pendingChange = changePool.pendingIntent()
+    if (pendingChange !== undefined)
+      changeOverlayStore.setPendingIntent(pendingChange)
+    for (const record of changePool.records()) {
+      let resolved = record
+      if (record.rawTx === undefined) {
+        if (params.resolveLegacyChangeRawTransaction === undefined) {
+          throw new Error(
+            'Legacy finalized change rows require an authoritative transaction resolver'
+          )
+        }
+        const rawTx = await params.resolveLegacyChangeRawTransaction(record)
+        resolved = {
+          ...record,
+          rawTx: typeof rawTx === 'string' ? rawTx : hexlify(rawTx),
+        }
+        resolutions.changes.set(record.index, resolved)
+      }
+      changeOverlayStore.putRecord(resolved)
+    }
+    const changeOverlay = new MonadChangePool({
+      keyring: params.changeKeyring,
+      store: changeOverlayStore,
+    })
+    const paymentOverlay = new InMemoryStampPaymentJournal()
+    for (const record of paymentJournal.getAll()) {
+      let resolved = record
+      if (
+        record.rawTx === undefined ||
+        record.recipientPublicKeyHex === undefined ||
+        record.envelopeRecipientAddress === undefined
+      ) {
+        if (params.resolveLegacyPaymentAuthority === undefined) {
+          throw new Error(
+            'Legacy stamp-payment rows require an authoritative retained-message resolver'
+          )
+        }
+        const authority = await params.resolveLegacyPaymentAuthority(record)
+        resolved = {
+          ...record,
+          rawTx:
+            typeof authority.rawTx === 'string'
+              ? authority.rawTx
+              : hexlify(authority.rawTx),
+          recipientPublicKeyHex:
+            typeof authority.recipientPublicKeyHex === 'string'
+              ? authority.recipientPublicKeyHex
+              : hexlify(authority.recipientPublicKeyHex),
+          envelopeRecipientAddress: authority.envelopeRecipientAddress,
+        }
+        resolutions.payments.set(
+          `${record.payloadHashHex}:${record.childIndex}`,
+          resolved
+        )
+      }
+      await paymentOverlay.put(resolved)
     }
     validateMonadWalletState({
       pool,
-      changePool,
-      attemptJournal: overlay,
-      paymentJournal,
+      changePool: changeOverlay,
+      attemptJournal: attemptOverlay,
+      paymentJournal: paymentOverlay,
       subKeyring: params.subKeyring,
       changeKeyring: params.changeKeyring,
       allowMissingAttemptSpend: true,
@@ -1145,7 +1262,7 @@ export async function openMonadWalletBundle(
     const bindingId =
       finalized?.bindingId ?? migration?.bindingId ?? newBindingId()
     const isMigration = finalized === undefined
-    const legacyRecipientResolutions =
+    const legacyResolutions =
       !hasManifestDatabase && hasLegacyComponents
         ? await validateLegacySnapshot({
             location,
@@ -1153,8 +1270,15 @@ export async function openMonadWalletBundle(
             changeKeyring,
             resolveLegacyAttemptRecipientPublicKey:
               params.resolveLegacyAttemptRecipientPublicKey,
+            resolveLegacyChangeRawTransaction:
+              params.resolveLegacyChangeRawTransaction,
+            resolveLegacyPaymentAuthority: params.resolveLegacyPaymentAuthority,
           })
-        : new Map<string, string>()
+        : {
+            attempts: new Map<string, string>(),
+            changes: new Map<number, ChangeAccountRecord>(),
+            payments: new Map<string, StampPaymentRecoveryRecord>(),
+          }
     const isEmptySuppliedSeedRestore =
       migration?.restoreMode === true ||
       (finalized === undefined &&
@@ -1173,26 +1297,23 @@ export async function openMonadWalletBundle(
       const recovery = params.recovery
       await recovery.assertRelayAvailable()
       const maxIndex = recovery.maxIndex
-      const [senderNext, changeNext, senderZeroUsed] = await Promise.all([
-        recoverNextSubAccountIndex({
-          keyring: subKeyring,
-          provider: recovery.provider,
-          maxIndex,
-          minimumIndex: 1,
-        }),
-        recoverNextChangeIndex({
-          keyring: changeKeyring,
-          provider: recovery.provider,
-          maxIndex,
-          minimumIndex: 1,
-        }),
-        isSubAccountIndexUsed(
-          recovery.provider,
-          subKeyring.deriveSubAccount(0).address
-        ),
-      ])
-      restoredSenderNextIndex = senderNext
-      restoredChangeNextIndex = changeNext
+      if (!Number.isSafeInteger(maxIndex) || maxIndex < 0) {
+        throw new Error('Seed restore requires a bounded authoritative range')
+      }
+      const allocationHighWater = await recovery.recoverAllocationHighWater()
+      const { senderNextIndex, changeNextIndex } = allocationHighWater
+      if (
+        !Number.isSafeInteger(senderNextIndex) ||
+        senderNextIndex < 1 ||
+        !Number.isSafeInteger(changeNextIndex) ||
+        changeNextIndex < 1 ||
+        senderNextIndex > maxIndex + 1 ||
+        changeNextIndex > maxIndex + 1
+      ) {
+        throw new Error('Invalid authoritative wallet allocation high-water')
+      }
+      restoredSenderNextIndex = senderNextIndex
+      restoredChangeNextIndex = changeNextIndex
       const stageEvidence = async (index: number): Promise<void> => {
         const address = subKeyring.deriveSubAccount(index).address
         const evidence = await recovery.recoverSenderEvidence(index, address)
@@ -1217,8 +1338,10 @@ export async function openMonadWalletBundle(
         }
         restoredSenderRecords.push(evidence)
       }
-      if (senderZeroUsed) await stageEvidence(0)
-      for (let index = 1; index < restoredSenderNextIndex; index++) {
+      // Index zero is reserved by convention even for a never-used restored seed. Exhaustively
+      // inspect every index below the authoritative bound; unused allocated gaps remain occupied
+      // by the durable high-water mark and can never be derived again.
+      for (let index = 0; index < restoredSenderNextIndex; index++) {
         await stageEvidence(index)
       }
       // Treat recovery input as hostile: validate the complete staged set before a manifest,
@@ -1336,6 +1459,7 @@ export async function openMonadWalletBundle(
       changeKeyring,
       allowMissingAttemptRows: params.recovery !== undefined,
       allowUnresolvedLegacyAttempts: isMigration,
+      allowUnresolvedLegacyFinalizedRows: isMigration,
     })
     const unresolvedAttempts = attemptJournal
       .getAll()
@@ -1359,7 +1483,7 @@ export async function openMonadWalletBundle(
         let resolved = attempt
         if (unresolvedHashes.has(attempt.payloadHashHex)) {
           const recipient =
-            legacyRecipientResolutions.get(attempt.payloadHashHex) ??
+            legacyResolutions.attempts.get(attempt.payloadHashHex) ??
             (await params.resolveLegacyAttemptRecipientPublicKey(
               Object.freeze({
                 ...attempt,
@@ -1385,13 +1509,88 @@ export async function openMonadWalletBundle(
         subKeyring,
         changeKeyring,
         allowMissingAttemptRows: params.recovery !== undefined,
+        allowUnresolvedLegacyFinalizedRows: isMigration,
       })
+    }
+    const resolvedLegacyChanges: ChangeAccountRecord[] = []
+    const validationChangeStore = new InMemoryChangePoolStore()
+    validationChangeStore.setNextIndex(changePool.nextUnusedIndex())
+    const pendingChange = changePool.pendingIntent()
+    if (pendingChange !== undefined)
+      validationChangeStore.setPendingIntent(pendingChange)
+    for (const record of changePool.records()) {
+      let resolved: ChangeAccountRecord | undefined = record
+      if (record.rawTx === undefined) {
+        resolved = legacyResolutions.changes.get(record.index)
+        if (
+          resolved === undefined &&
+          isMigration &&
+          params.resolveLegacyChangeRawTransaction !== undefined
+        ) {
+          const rawTx = await params.resolveLegacyChangeRawTransaction(record)
+          resolved = {
+            ...record,
+            rawTx: typeof rawTx === 'string' ? rawTx : hexlify(rawTx),
+          }
+        }
+      }
+      if (resolved === undefined) {
+        throw new Error(
+          'Legacy finalized change rows require authoritative transaction evidence'
+        )
+      }
+      if (resolved !== record) resolvedLegacyChanges.push(resolved)
+      validationChangeStore.putRecord(resolved)
+    }
+    const validationChangePool = new MonadChangePool({
+      keyring: changeKeyring,
+      store: validationChangeStore,
+    })
+    const resolvedLegacyPayments: StampPaymentRecoveryRecord[] = []
+    const validationPaymentJournal = new InMemoryStampPaymentJournal()
+    for (const record of paymentJournal.getAll()) {
+      const unresolved =
+        record.rawTx === undefined ||
+        record.recipientPublicKeyHex === undefined ||
+        record.envelopeRecipientAddress === undefined
+      let resolved: StampPaymentRecoveryRecord | undefined = record
+      if (unresolved) {
+        resolved = legacyResolutions.payments.get(
+          `${record.payloadHashHex}:${record.childIndex}`
+        )
+        if (
+          resolved === undefined &&
+          isMigration &&
+          params.resolveLegacyPaymentAuthority !== undefined
+        ) {
+          const authority = await params.resolveLegacyPaymentAuthority(record)
+          resolved = {
+            ...record,
+            rawTx:
+              typeof authority.rawTx === 'string'
+                ? authority.rawTx
+                : hexlify(authority.rawTx),
+            recipientPublicKeyHex:
+              typeof authority.recipientPublicKeyHex === 'string'
+                ? authority.recipientPublicKeyHex
+                : hexlify(authority.recipientPublicKeyHex),
+            envelopeRecipientAddress: authority.envelopeRecipientAddress,
+          }
+        }
+      }
+      if (resolved === undefined) {
+        throw new Error(
+          'Legacy stamp-payment rows require authoritative retained-message evidence'
+        )
+      }
+      if (resolved !== record) resolvedLegacyPayments.push(resolved)
+      await validationPaymentJournal.put(resolved)
     }
     validateMonadWalletState({
       pool,
-      changePool,
+      changePool: validationChangePool,
       attemptJournal: validationAttemptJournal,
-      paymentJournal,
+      paymentJournal: validationPaymentJournal,
       subKeyring,
       changeKeyring,
       allowMissingAttemptSpend: true,
@@ -1467,6 +1666,10 @@ export async function openMonadWalletBundle(
         if (store.bindingId() === undefined) {
           if (store === attemptJournal) {
             await attemptJournal.Bind(resolvedLegacyAttempts)
+          } else if (store === changeStore) {
+            await changeStore.Bind(resolvedLegacyChanges)
+          } else if (store === paymentJournal) {
+            await paymentJournal.Bind(resolvedLegacyPayments)
           } else {
             await store.Bind()
           }

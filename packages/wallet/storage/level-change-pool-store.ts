@@ -147,9 +147,19 @@ export class LevelChangePoolStore implements ChangePoolStore {
     return this.loadedBindingId
   }
 
-  async Bind(): Promise<void> {
+  async Bind(resolvedLegacyRecords: ChangeAccountRecord[] = []): Promise<void> {
     if (this.expectedBindingId === undefined) return
     this.assertMutationAllowed()
+    for (const record of resolvedLegacyRecords) {
+      const existing = this.cache.get(record.index)
+      if (
+        existing === undefined ||
+        existing.txHash !== record.txHash ||
+        existing.sourceBurnIndex !== record.sourceBurnIndex
+      ) {
+        throw new Error('Legacy change resolution no longer matches stored row')
+      }
+    }
     await (this.db as any).batch([
       { type: 'put', key: WALLET_BINDING_KEY, value: this.expectedBindingId },
       {
@@ -162,7 +172,17 @@ export class LevelChangePoolStore implements ChangePoolStore {
         key: `${BY_SOURCE_PREFIX}${record.sourceBurnIndex}`,
         value: JSON.stringify(record.index),
       })),
+      ...resolvedLegacyRecords.map((record) => ({
+        type: 'put' as const,
+        key: String(record.index),
+        value: JSON.stringify(record),
+      })),
     ])
+    for (const record of resolvedLegacyRecords) {
+      this.cache.set(record.index, { ...record })
+      this.bySourceBurnIndex.set(record.sourceBurnIndex, { ...record })
+    }
+    this.loadedBindingId = this.expectedBindingId
   }
 
   getNextIndex(): number {

@@ -393,6 +393,41 @@ describe('protobuf encode/decode round trip', () => {
     // Ticket #39: network_tag (field 5) round-trips through the real generated bindings.
     expect(decoded.networkTag).toEqual(new TextEncoder().encode('MONT'))
   })
+
+  it('skips valid nine- and ten-byte unknown varints without numeric coercion', () => {
+    const message: MonadStampedMessageProto = {
+      stampPayments: [{ childIndex: 0, rawTx: new Uint8Array([9]) }],
+      encryptedPayload: new Uint8Array([7]),
+      payloadHash: new Uint8Array(32).fill(0x11),
+    }
+    const base = Array.from(storedMessageBytes(message))
+    for (const unknownVarint of [
+      [...Array(8).fill(0x80), 0x01],
+      [...Array(9).fill(0xff), 0x01],
+    ]) {
+      const decoded = decodeStoredMonadMessage(
+        Uint8Array.from([...base, 0x98, 0x06, ...unknownVarint])
+      )
+      expect(decoded.message).toEqual(message)
+    }
+  })
+
+  it('rejects overflowed or truncated unknown protobuf varints', () => {
+    const message: MonadStampedMessageProto = {
+      stampPayments: [{ childIndex: 0, rawTx: new Uint8Array([9]) }],
+      encryptedPayload: new Uint8Array([7]),
+      payloadHash: new Uint8Array(32).fill(0x11),
+    }
+    const base = Array.from(storedMessageBytes(message))
+    expect(() =>
+      decodeStoredMonadMessage(
+        Uint8Array.from([...base, 0x98, 0x06, ...Array(10).fill(0xff)])
+      )
+    ).toThrow(/protobuf|varint/i)
+    expect(() =>
+      decodeStoredMonadMessage(Uint8Array.from([...base, 0x98, 0x06, 0x80]))
+    ).toThrow(/protobuf|varint|truncated|end of the data/i)
+  })
 })
 
 describe('MonadStampClient.submitStampedMessage', () => {

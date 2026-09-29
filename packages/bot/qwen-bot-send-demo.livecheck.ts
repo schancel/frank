@@ -37,8 +37,9 @@ import { Transaction, hexlify } from 'ethers'
 
 import { fetchMonadIdentityPubKey } from '@frank/wallet/monad-identity'
 import {
-  decryptEnvelope,
   parseEnvelope,
+  sameMonadEnvelopeAddress,
+  tryDecryptEnvelope,
 } from '@frank/cashweb/relay/monad-message-envelope'
 import { fetchMonadMessagesSince } from '@frank/cashweb/relay/monad-message-feed'
 import { deserializeMessageItems } from '@frank/wallet/chain/monad-chain'
@@ -191,16 +192,16 @@ async function main() {
         if (!stored_.message) continue
         const envelopeIn = parseEnvelope(stored_.message.encryptedPayload)
         if (!envelopeIn) continue
-        if (envelopeIn.to !== identity.displayAddress) continue
-        if (envelopeIn.from !== botAddress) continue
+        if (!sameMonadEnvelopeAddress(envelopeIn.to, identity.displayAddress)) continue
+        if (!sameMonadEnvelopeAddress(envelopeIn.from, botAddress)) continue
 
-        const plaintext = extractText(
-          decryptEnvelope({
-            envelope: envelopeIn,
-            myPrivateKey: identity.toBitcorePrivateKey(),
-            senderPubKey: botPubKey,
-          }),
-        )
+        const rawPlaintext = tryDecryptEnvelope({
+          envelope: envelopeIn,
+          myPrivateKey: identity.toBitcorePrivateKey(),
+          senderPubKey: botPubKey,
+        })
+        if (rawPlaintext === undefined) continue
+        const plaintext = extractText(rawPlaintext)
         const replyTxHash = stored_.message.stampPayments
           .map(payment => Transaction.from(hexlify(payment.rawTx)).hash)
           .join(',')

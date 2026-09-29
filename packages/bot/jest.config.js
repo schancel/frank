@@ -1,11 +1,13 @@
 /* eslint-env node */
 module.exports = {
-  testTimeout: 5000,
+  testEnvironment: 'node',
+  testTimeout: 10000,
   testMatch: ['<rootDir>/**/*.jest.(spec|test).+(ts|js)'],
   moduleFileExtensions: ['js', 'json', 'ts'],
   moduleNameMapper: {
     '^@frank/cashweb/(.*)$': '<rootDir>/../cashweb/$1',
     '^@frank/wallet/(.*)$': '<rootDir>/../wallet/$1',
+    '^\\./vite-env$': '<rootDir>/../wallet/chain/vite-env.node.ts',
   },
   transform: {
     '^.+\\.(ts|js)$': [

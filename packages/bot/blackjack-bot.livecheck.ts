@@ -86,6 +86,10 @@ import {
 import {
   BlackjackBotStateStore,
   BlackjackGameRecord,
+  InvalidBlackjackGameIdError,
+  normalizeBlackjackGameId,
+  normalizePlayerAddress,
+  normalizeWagerTxHash,
 } from './blackjack-bot-state'
 
 function sleep(ms: number): Promise<void> {
@@ -148,6 +152,11 @@ async function resolveAndReveal(params: {
     provider,
     state,
   } = params
+  if (record.authority !== 'verified-wager-sender') {
+    throw new Error(
+      'cannot resolve or pay a blackjack game without verified wager authority',
+    )
+  }
   const deck = deriveDeck(record.serverSeed, record.wagerTxHash, 0)
   const playerCards = playerCardsSoFar(deck, record.dealtCount)
   const playerValue = handValue(playerCards)
@@ -167,7 +176,7 @@ async function resolveAndReveal(params: {
     ? 'dealer_win'
     : resolveOutcome(playerValue, handValue(dealerCards))
 
-  state.setGame(gameId, { ...record, dealtCount, revealed: true })
+  await state.setGame(gameId, { ...record, dealtCount, revealed: true })
 
   console.log(
     `[blackjack-bot] resolving game ${gameId}: player=${JSON.stringify(playerCards)} dealer=${JSON.stringify(dealerCards)} outcome=${outcome}`,
@@ -213,7 +222,7 @@ async function resolveAndReveal(params: {
   }
 }
 
-async function handleMove(params: {
+export async function handleMove(params: {
   action: BlackjackMoveItem['action']
   hydrated: HydratedBlackjackMove
   senderAddress: string
@@ -243,7 +252,27 @@ async function handleMove(params: {
     mainAccountSigner,
     provider,
   } = params
-  const gameId = hydrated.gameId
+  let gameId: string
+  try {
+    gameId = normalizeBlackjackGameId(
+      (hydrated as unknown as { gameId: unknown }).gameId,
+    )
+  } catch {
+    console.log(`[blackjack-bot] rejecting ${action}: invalid gameId`)
+    await sendDirectMessageText({
+      stampClient,
+      pool,
+      mainAccountSigner,
+      provider,
+      fromIdentity: identity,
+      toAddress: senderAddress,
+      toPubKey: senderPubKey,
+      text: 'Blackjack: gameId must be a nonempty bounded string',
+      stampValueWei,
+      networkTag,
+    })
+    return
+  }
 
   async function sendError(text: string) {
     console.log(`[blackjack-bot] rejecting ${action} for game ${gameId}: ${text}`)
@@ -261,6 +290,16 @@ async function handleMove(params: {
     })
   }
 
+  let authenticatedPlayerAddress: string
+  let dealerAddress: string
+  try {
+    authenticatedPlayerAddress = normalizePlayerAddress(senderAddress)
+    dealerAddress = normalizePlayerAddress(identity.displayAddress)
+  } catch {
+    await sendError('message carried an invalid Monad address')
+    return
+  }
+
   if (action === 'bet') {
     if (state.getGame(gameId)) {
       await sendError('this gameId already has a hand in progress')
@@ -273,7 +312,26 @@ async function handleMove(params: {
       )
       return
     }
-    if (wager.toAddress.toLowerCase() !== identity.displayAddress.toLowerCase()) {
+    let wagerSenderAddress: string
+    let wagerRecipientAddress: string
+    let wagerTxHash: string
+    try {
+      wagerSenderAddress = normalizePlayerAddress(wager.fromAddress)
+      wagerRecipientAddress = normalizePlayerAddress(wager.toAddress)
+      wagerTxHash = normalizeWagerTxHash(hydrated.wagerTxHash ?? '')
+    } catch {
+      await sendError(
+        'wager transaction carried an invalid hash or Monad address',
+      )
+      return
+    }
+    if (wagerSenderAddress !== authenticatedPlayerAddress) {
+      await sendError(
+        'your authenticated identity did not send this wager transaction',
+      )
+      return
+    }
+    if (wagerRecipientAddress !== dealerAddress) {
       await sendError('your wager transaction did not pay this dealer')
       return
     }
@@ -288,29 +346,46 @@ async function handleMove(params: {
       await sendError('dealer has no pending seed commitment ready -- try again shortly')
       return
     }
-    // Immediately rotate to a fresh commitment for the *next* hand, generated now, before this
-    // hand's own reveal -- see this file's header, "Fairness scheme," and
-    // blackjack-bot-state.ts's header on why this ordering is the entire point.
+    // Prepare a fresh commitment for the *next* hand. The state store atomically installs it with
+    // this wager's global claim and game authority, so neither a crash nor a concurrent bet can
+    // consume only part of the transition.
     const nextServerSeed = generateServerSeed()
-    state.setPendingCommitment(nextServerSeed, sha256Hex(nextServerSeed))
-
-    const wagerTxHash = hydrated.wagerTxHash
-    if (!wagerTxHash) {
-      await sendError('bet message was missing its wager transaction hash')
-      return
-    }
     const deck = deriveDeck(commitment.serverSeed, wagerTxHash, 0)
     const { playerCards, dealerCards } = dealInitialCards(deck)
     const record: BlackjackGameRecord = {
+      authority: 'verified-wager-sender',
       serverSeed: commitment.serverSeed,
       serverSeedHash: commitment.serverSeedHash,
       wagerTxHash,
       wagerWei: wager.valueWei,
-      playerAddress: senderAddress,
+      playerAddress: wagerSenderAddress,
       dealtCount: 4,
       revealed: false,
     }
-    state.setGame(gameId, record)
+    const claim = await state.claimWagerAndCreateGame({
+      gameId,
+      wagerTxHash,
+      record,
+      expectedCommitment: commitment,
+      nextCommitment: {
+        serverSeed: nextServerSeed,
+        serverSeedHash: sha256Hex(nextServerSeed),
+      },
+    })
+    if (!claim.ok) {
+      if (claim.reason === 'game_exists') {
+        await sendError('this gameId already has a hand in progress')
+      } else if (claim.reason === 'wager_claimed') {
+        await sendError(
+          'this wager transaction has already authorized a blackjack game',
+        )
+      } else {
+        await sendError(
+          'dealer commitment changed while accepting the wager -- try again',
+        )
+      }
+      return
+    }
 
     await sendDirectMessageItems({
       stampClient,
@@ -318,7 +393,7 @@ async function handleMove(params: {
       mainAccountSigner,
       provider,
       fromIdentity: identity,
-      toAddress: senderAddress,
+      toAddress: record.playerAddress,
       toPubKey: senderPubKey,
       items: [
         {
@@ -352,9 +427,24 @@ async function handleMove(params: {
     return
   }
 
+  if (action === 'deal' || action === 'reveal') {
+    await sendError(`${action} is a dealer-only action`)
+    return
+  }
+
   const record = state.getGame(gameId)
-  if (!record || record.revealed) {
+  if (
+    !record ||
+    record.revealed ||
+    record.authority !== 'verified-wager-sender'
+  ) {
     await sendError('no in-progress hand found for this gameId')
+    return
+  }
+  if (record.playerAddress !== authenticatedPlayerAddress) {
+    await sendError(
+      'only the player who funded this wager can act on this game',
+    )
     return
   }
 
@@ -362,7 +452,7 @@ async function handleMove(params: {
     const deck = deriveDeck(record.serverSeed, record.wagerTxHash, 0)
     const newDealtCount = record.dealtCount + 1
     const playerCards = playerCardsSoFar(deck, newDealtCount)
-    state.setGame(gameId, { ...record, dealtCount: newDealtCount })
+    await state.setGame(gameId, { ...record, dealtCount: newDealtCount })
 
     await sendDirectMessageItems({
       stampClient,
@@ -370,7 +460,7 @@ async function handleMove(params: {
       mainAccountSigner,
       provider,
       fromIdentity: identity,
-      toAddress: senderAddress,
+      toAddress: record.playerAddress,
       toPubKey: senderPubKey,
       items: [{ type: 'blackjack-move', gameId, action: 'hit', playerCards }],
       stampValueWei,
@@ -411,8 +501,18 @@ async function handleMove(params: {
     })
     return
   }
+}
 
-  // 'deal'/'reveal' are always bot-outgoing, never received from a player -- nothing to handle.
+/** Validates the untrusted wire gameId before hydrate() can perform wager RPC lookups. */
+export async function hydrateMoveWithValidatedGameId(
+  raw: BlackjackMoveItem,
+  hydrate: (validated: BlackjackMoveItem) => Promise<HydratedBlackjackMove>,
+): Promise<HydratedBlackjackMove> {
+  const gameId = normalizeBlackjackGameId(
+    (raw as unknown as { gameId: unknown }).gameId,
+  )
+  const hydrated = await hydrate({ ...raw, gameId })
+  return { ...hydrated, gameId }
 }
 
 async function main() {
@@ -488,7 +588,7 @@ async function main() {
   // scheme").
   if (!state.getPendingCommitment()) {
     const serverSeed = generateServerSeed()
-    state.setPendingCommitment(serverSeed, sha256Hex(serverSeed))
+    await state.setPendingCommitment(serverSeed, sha256Hex(serverSeed))
     console.log('[blackjack-bot] generated initial pending seed commitment')
   }
 
@@ -561,11 +661,6 @@ async function main() {
       )
       if (!moveRaw) continue
 
-      lastActivityAt = Date.now()
-      console.log(
-        `\n[blackjack-bot] ${moveRaw.action} from ${envelope.from} (game ${moveRaw.gameId})`,
-      )
-
       const plugin = getMessageItemPlugin('blackjack-move')
       if (!plugin) throw new Error('blackjack-move plugin not registered')
       const context: MessageItemContext = {
@@ -578,7 +673,35 @@ async function main() {
       // envelope/decrypt above, so hydrate()'s context matches what it expects.
       ;(context.message as { senderAddress: string }).senderAddress = envelope.from
 
-      const hydrated = await plugin.hydrate(moveRaw, context)
+      let hydrated: HydratedBlackjackMove
+      try {
+        hydrated = await hydrateMoveWithValidatedGameId(moveRaw, (validated) =>
+          plugin.hydrate(validated, context),
+        )
+      } catch (error) {
+        if (!(error instanceof InvalidBlackjackGameIdError)) throw error
+        console.log(
+          `[blackjack-bot] rejecting ${moveRaw.action} from ${envelope.from}: invalid gameId`,
+        )
+        await sendDirectMessageText({
+          stampClient,
+          pool,
+          mainAccountSigner,
+          provider,
+          fromIdentity: identity,
+          toAddress: envelope.from,
+          toPubKey: senderPubKey,
+          text: 'Blackjack: gameId must be a nonempty bounded string',
+          stampValueWei,
+          networkTag,
+        })
+        continue
+      }
+
+      lastActivityAt = Date.now()
+      console.log(
+        `\n[blackjack-bot] ${moveRaw.action} from ${envelope.from} (game ${hydrated.gameId})`,
+      )
 
       try {
         await handleMove({
@@ -598,12 +721,12 @@ async function main() {
         })
       } catch (err) {
         console.error(
-          `[blackjack-bot] failed to handle ${moveRaw.action} for game ${moveRaw.gameId}:`,
+          `[blackjack-bot] failed to handle ${moveRaw.action} for game ${hydrated.gameId}:`,
           err,
         )
       }
 
-      if (moveRaw.action === 'reveal' || (state.getGame(moveRaw.gameId)?.revealed ?? false)) {
+      if (moveRaw.action === 'reveal' || (state.getGame(hydrated.gameId)?.revealed ?? false)) {
         handsResolved++
       }
       if (handsResolved >= maxHands) break
@@ -618,7 +741,9 @@ async function main() {
   console.log(`\nDone. Resolved ${handsResolved} hand${handsResolved === 1 ? '' : 's'}.`)
 }
 
-main().catch(err => {
-  console.error('BLACKJACK BOT FAILED:', err)
-  process.exit(1)
-})
+if (process.env.NODE_ENV !== 'test') {
+  main().catch(err => {
+    console.error('BLACKJACK BOT FAILED:', err)
+    process.exit(1)
+  })
+}

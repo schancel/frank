@@ -8,17 +8,30 @@
  * A trivia-style bot that pays a fixed reward for a correct answer has no cap tying its payout to
  * its revenue -- nothing stops it paying out more than it ever collects. This bot is structured so
  * that can't happen: every entry's price is that same message's own relay-verified stamp value (no
- * self-reported amount, same as `digital-goods.ts`'s `request`), those stamps pay this bot's own
- * identity address directly (ticket #57: a DM's stamp always pays its recipient), and a round's
- * payout is *arithmetically* `entryPriceWei * entrants.length` -- exactly what that round's entrants
- * already paid into this bot's own balance, never a number decided independently of that. The
- * payout transaction is even signed and sent from the bot's own identity address (`identitySigner`
- * below), not the shared `mainAccountSigner` demo wallet blackjack/vendor-bot draw from for their
- * own payouts/fulfillment -- so there is no path, buggy or adversarial, for a round to pay out
- * testnet MON this bot didn't itself just receive from that same round's entrants. The only thing
- * `mainAccountSigner` ever funds here is a small, flat, round-count-independent gas reserve on the
- * identity address (see `ensureIdentityFunded`) -- ordinary bot-operation overhead, not payout
- * money.
+ * self-reported amount, same as `digital-goods.ts`'s `request`), and a round's payout is
+ * *arithmetically* `entryPriceWei * entrants.length` -- exactly what that round's entrants already
+ * paid in, never a number decided independently of that. The payout transaction is signed and sent
+ * from the bot's own identity address (`identitySigner` below), not the shared `mainAccountSigner`
+ * demo wallet blackjack/vendor-bot draw from for their own payouts/fulfillment.
+ *
+ * **This property depends on entry funds actually reaching the identity's spendable balance,
+ * which they do not on their own** (ticket #121, found live 2026-09-28): a Monad DM stamp pays a
+ * one-time *derived child address* per payment (`deriveMonadStampChildPublic`, ticket #60's
+ * stealth-payment design), never the recipient identity's own EOA directly, despite an earlier
+ * version of this file's header claiming otherwise. `recoverAndSweepEntryPayment` below is what
+ * actually closes that gap: it reconstructs every child private key for an entry's message
+ * (`recoverMonadStampPayments`, verified against the real on-chain destination of each payment,
+ * never trusted from the message alone) and sweeps each one into the identity's own address
+ * (`sweepRecoveredMonadStampPayment`) *before* the entrant is ever credited into the round. An
+ * entrant is only added to `round.entrants` once every one of their payments has been swept and
+ * confirmed -- so by the time a round can possibly reach `maxEntries` and draw, the identity's own
+ * balance is a real, on-chain, already-confirmed reflection of every entrant's payment, not an
+ * assumption about where stamp value lands. The only thing `mainAccountSigner` ever funds here is
+ * a small, flat, round-count-independent gas reserve on the identity address (see
+ * `ensureIdentityFunded`) -- ordinary bot-operation overhead, never payout money -- and the payout
+ * path re-asserts the identity's balance actually covers the pot immediately before paying out, so
+ * a bug here fails closed (refuses to draw) rather than silently drawing the shortfall from that
+ * shared wallet.
  *
  * ## Fairness scheme
  *
@@ -48,7 +61,7 @@
 import { randomBytes } from 'crypto'
 import { resolve } from 'path'
 
-import { Provider, Transaction, hexlify } from 'ethers'
+import { getBytes, Provider } from 'ethers'
 
 import {
   canonicalMonadEnvelopeAddress,
@@ -62,14 +75,7 @@ import {
   MonadIdentity,
 } from '@frank/wallet/monad-identity'
 import { deserializeMessageItems } from '@frank/wallet/chain/monad-chain'
-import { Message, RaffleItem } from '@frank/cashweb/types/messages'
-import {
-  getMessageItemPlugin,
-  MessageItemContext,
-} from '@frank/wallet/message-item-plugins'
-import '@frank/wallet/message-item-plugins/built-in'
-import '@frank/wallet/message-item-plugins/raffle/plugin'
-import { HydratedRaffleItem } from '@frank/wallet/message-item-plugins/raffle/plugin'
+import { RaffleItem } from '@frank/cashweb/types/messages'
 import {
   combineEntrantEntropy,
   pickWinnerIndex,
@@ -77,6 +83,12 @@ import {
 } from '@frank/wallet/message-item-plugins/raffle/draw'
 import { MonadHttpClient } from '@frank/wallet/monad-http'
 import { MonadAccountTxSigner } from '@frank/wallet/monad-account-tx'
+import {
+  MonadStampedMessageProto,
+  RecoveredMonadStampPayment,
+  recoverMonadStampPayments,
+  sweepRecoveredMonadStampPayment,
+} from '@frank/wallet/monad-stamp-client'
 import {
   loadOrCreateIdentity,
   registerAndLog,
@@ -104,17 +116,107 @@ function generateRaffleId(): string {
   return randomBytes(16).toString('hex')
 }
 
-/** The raw relay response's `message.message` doesn't carry a pre-summed `stampValueWei` the way
- * the frontend's own `Message` does, nor the transaction hash of the payment that funded it --
- * derive both from the message's actual signed stamp payment transaction, same as
- * `vendor-bot.livecheck.ts`'s `sumStampPayments`. A raffle entry's stamp is always a single payment
- * (one stamped DM, one transfer to this bot), so `[0]` is the entry's own payment, not a sum. */
-function entryPayment(message: {
-  stampPayments: Array<{ rawTx: Uint8Array }>
-}): { valueWei: bigint; txHash: string } {
-  const tx = Transaction.from(hexlify(message.stampPayments[0].rawTx))
-  if (!tx.hash) throw new Error('entry payment transaction has no hash')
-  return { valueWei: tx.value, txHash: tx.hash }
+/** Pure, deterministic part of `recoverAndSweepEntryPayment` below -- exported and unit-tested
+ * (`raffle-bot.jest.test.ts`) separately from the network-calling sweep loop, since this is the
+ * part ticket #121 was actually about: binding an entry's value and entropy to its *complete*
+ * verified payment set, not just `stampPayments[0]`. Sorts by `childIndex` (not array/wire order)
+ * so two independent observers of the same message -- reconstructing this from the stored message
+ * in any order -- always agree on both figures. */
+export function summarizeRecoveredPayments(
+  recovered: RecoveredMonadStampPayment[],
+): { ordered: RecoveredMonadStampPayment[]; totalValueWei: bigint; combinedTxHash: string } {
+  const ordered = [...recovered].sort((a, b) => a.childIndex - b.childIndex)
+  const totalValueWei = ordered.reduce((sum, p) => sum + p.valueWei, 0n)
+  const combinedTxHash = combineEntrantEntropy(ordered.map(p => p.txHash))
+  return { ordered, totalValueWei, combinedTxHash }
+}
+
+/** Recovers and verifies every child payment for an entry's message (`recoverMonadStampPayments`,
+ * checked against each payment's real on-chain destination -- never trusted from the message
+ * alone), and only if their sum (`summarizeRecoveredPayments`) meets `minTotalValueWei` sweeps
+ * every one of them into `destinationAddress` (the bot's own identity) *before* returning success
+ * -- checking the threshold first means a short/insufficient entry never spends gas sweeping
+ * payments no round will ever credit. Returns a failure reason instead of throwing for any
+ * expected failure mode (a payment too small to sweep, one that never confirms) -- ticket #121's
+ * acceptance criteria: missing/partial/ambiguous payments must fail closed, not silently accept a
+ * short entry or leave funds unaccounted for. */
+async function recoverAndSweepEntryPayment(params: {
+  message: MonadStampedMessageProto
+  recipientPrivateKey: Uint8Array
+  minTotalValueWei: bigint
+  destinationAddress: string
+  provider: Provider
+  httpClient: MonadHttpClient
+  identitySigner: MonadAccountTxSigner
+  label: string
+}): Promise<
+  | { ok: true; totalValueWei: bigint; combinedTxHash: string }
+  | { ok: false; reason: string; totalValueWei?: bigint }
+> {
+  let recovered
+  try {
+    recovered = recoverMonadStampPayments({
+      message: params.message,
+      recipientPrivateKey: params.recipientPrivateKey,
+    })
+  } catch (err) {
+    return {
+      ok: false,
+      reason: `payment verification failed: ${err instanceof Error ? err.message : String(err)}`,
+    }
+  }
+  if (recovered.length === 0) {
+    return { ok: false, reason: 'message carries no stamp payments' }
+  }
+  const { ordered, totalValueWei, combinedTxHash } =
+    summarizeRecoveredPayments(recovered)
+
+  if (totalValueWei < params.minTotalValueWei) {
+    return {
+      ok: false,
+      reason: `payment ${totalValueWei} wei is below the required ${params.minTotalValueWei} wei`,
+      totalValueWei,
+    }
+  }
+
+  for (const payment of ordered) {
+    const outcome = await sweepRecoveredMonadStampPayment({
+      payment,
+      destinationAddress: params.destinationAddress,
+      provider: params.provider,
+      httpClient: params.httpClient,
+    })
+    if (outcome.swept) continue
+    if (outcome.reason === 'below-dust-threshold') {
+      return {
+        ok: false,
+        reason: `entry payment (child ${payment.childIndex}) is below the dust threshold to sweep`,
+      }
+    }
+    // 'pending': a sweep tx was already submitted for this child key. Wait for it rather than
+    // re-invoking the sweep (re-invoking would race the same child key's own nonce against its
+    // still-in-flight transaction).
+    if (!outcome.txHash) {
+      return {
+        ok: false,
+        reason: `sweep for child ${payment.childIndex} is pending with no tx hash to await`,
+      }
+    }
+    try {
+      await waitForConfirmation(
+        params.identitySigner,
+        outcome.txHash,
+        `${params.label} sweep (child ${payment.childIndex})`,
+      )
+    } catch (err) {
+      return {
+        ok: false,
+        reason: `sweep for child ${payment.childIndex} did not confirm: ${err instanceof Error ? err.message : String(err)}`,
+      }
+    }
+  }
+
+  return { ok: true, totalValueWei, combinedTxHash }
 }
 
 /** Tops up `identitySigner`'s own on-chain balance from `mainAccountSigner` if it's short of
@@ -217,6 +319,9 @@ async function main() {
     provider,
     httpClient,
   })
+  // Same private key, raw bytes -- `recoverMonadStampPayments` derives each entry's child payment
+  // keys from this, never anyone else's.
+  const recipientPrivateKey = getBytes(identity.toPrivateKeyHex())
 
   const state = new RaffleBotStateStore(stateDirPath)
   await state.Open()
@@ -280,14 +385,25 @@ async function main() {
         'hex',
       )
       if (state.hasProcessed(payloadHashHex)) continue
-      state.addProcessed(payloadHashHex)
+      // Deliberately NOT marked processed yet for a message that might turn out to carry a raffle
+      // `enter` -- see the `request` branch below, "Durability" comment, for why that path defers
+      // this until an entry is either fully credited or conclusively rejected. Every other exit
+      // below is a stateless no-op (nothing to resume), so marking immediately is safe there.
+      const markProcessed = () => state.addProcessed(payloadHashHex)
 
       const envelope = parseEnvelope(message.message.encryptedPayload)
-      if (!envelope) continue
-      if (!sameMonadEnvelopeAddress(envelope.to, identity.displayAddress))
+      if (!envelope) {
+        markProcessed()
         continue
-      if (sameMonadEnvelopeAddress(envelope.from, identity.displayAddress))
+      }
+      if (!sameMonadEnvelopeAddress(envelope.to, identity.displayAddress)) {
+        markProcessed()
         continue
+      }
+      if (sameMonadEnvelopeAddress(envelope.from, identity.displayAddress)) {
+        markProcessed()
+        continue
+      }
 
       const senderKey = canonicalMonadEnvelopeAddress(envelope.from)
       let senderPubKey = senderPubKeyCache.get(senderKey)
@@ -296,7 +412,10 @@ async function main() {
           relayBaseUrl,
           address: envelope.from,
         })
-        if (!senderPubKey) continue
+        if (!senderPubKey) {
+          markProcessed()
+          continue
+        }
         senderPubKeyCache.set(senderKey, senderPubKey)
       }
 
@@ -309,6 +428,7 @@ async function main() {
         console.warn(
           `[raffle-bot] rejected unauthenticated or undecryptable message ${payloadHashHex}`,
         )
+        markProcessed()
         continue
       }
 
@@ -316,6 +436,7 @@ async function main() {
       try {
         items = deserializeMessageItems(rawPlaintext)
       } catch {
+        markProcessed()
         continue
       }
       const request = items.find(
@@ -358,6 +479,7 @@ async function main() {
             serverSeedHash: round.serverSeedHash,
           },
         ])
+        markProcessed()
         continue
       }
 
@@ -372,47 +494,45 @@ async function main() {
             message: 'You have already entered this round.',
           },
         ])
+        markProcessed()
         continue
       }
 
-      const plugin = getMessageItemPlugin('raffle')
-      if (!plugin) throw new Error('raffle plugin not registered')
-      const context: MessageItemContext = {
-        message: {
-          ...(message.message as unknown as Message),
-          stampValueWei: entryPayment(message.message).valueWei,
-        },
-        index: items.indexOf(request),
+      // Recovers, verifies, and (only once the price threshold is met) sweeps every child payment
+      // this message actually made into this bot's own identity balance -- see this function's
+      // own header, and this file's header ("Why this bot can't be drained"), for why this
+      // replaced trusting `stampPayments[0]` alone. Not marked processed until this resolves
+      // either way (durability: see `markProcessed`'s own comment above) -- a restart mid-sweep
+      // safely re-attempts, since `sweepRecoveredMonadStampPayment` itself checks each child
+      // address's real on-chain balance before acting, and `hasRaffleEntrant` above already
+      // guards against crediting the same entrant twice.
+      const swept = await recoverAndSweepEntryPayment({
+        message: message.message,
+        recipientPrivateKey,
+        minTotalValueWei: BigInt(round.entryPriceWei),
+        destinationAddress: identity.displayAddress,
         provider,
-      }
-      const hydrated = (await plugin.hydrate(
-        request,
-        context,
-      )) as HydratedRaffleItem
-
-      if ((hydrated.paidWei ?? 0n) < BigInt(round.entryPriceWei)) {
-        console.log(
-          `[raffle-bot] rejecting -- paid ${hydrated.paidWei} wei, needed ${round.entryPriceWei} wei`,
-        )
+        httpClient,
+        identitySigner,
+        label: 'raffle-bot',
+      })
+      if (!swept.ok) {
+        console.log(`[raffle-bot] rejecting -- ${swept.reason}`)
         await sendReply([
           {
             type: 'raffle',
             raffleId: round.raffleId,
             action: 'error',
-            message: `Payment ${
-              hydrated.paidWei ?? 0n
-            } wei is below this round's entry price of ${
-              round.entryPriceWei
-            } wei`,
+            message: `Entry rejected: ${swept.reason}`,
           },
         ])
+        markProcessed()
         continue
       }
 
-      const { txHash } = entryPayment(message.message)
       const entrant: RaffleEntrant = {
         address: canonicalMonadEnvelopeAddress(envelope.from),
-        txHash,
+        txHash: swept.combinedTxHash,
       }
       const updatedEntrants = [...round.entrants, entrant]
       const updatedRound: RaffleRoundRecord = {
@@ -420,9 +540,13 @@ async function main() {
         entrants: updatedEntrants,
       }
       state.setCurrentRound(updatedRound)
+      // The entrant is durably credited (and the on-chain funds durably swept) as of the line
+      // above -- safe to mark this message processed now, whatever happens for the rest of this
+      // iteration (sending the 'joined' reply, or even a full round draw below).
+      markProcessed()
 
       console.log(
-        `[raffle-bot] ${envelope.from} entered round ${round.raffleId} (${updatedEntrants.length}/${round.maxEntries})`,
+        `[raffle-bot] ${envelope.from} entered round ${round.raffleId} (${updatedEntrants.length}/${round.maxEntries}, swept ${swept.totalValueWei} wei)`,
       )
 
       await sendReply([
@@ -500,9 +624,23 @@ async function main() {
         })
       }
 
+      // Fail closed (ticket #121 acceptance criteria): every entrant's payment was already swept
+      // into this identity's balance before they were ever credited into `round.entrants` above,
+      // so by the time a round can reach `maxEntries` its balance must already cover the pot on
+      // its own. If it doesn't, something upstream is broken -- refuse the draw rather than
+      // silently letting `ensureIdentityFunded` below paper over the gap with mainAccountSigner
+      // funds (exactly the bug this file used to have).
+      const identityBalanceWei = await provider.getBalance(
+        identity.displayAddress,
+      )
+      if (identityBalanceWei < potWei) {
+        throw new Error(
+          `[raffle-bot] refusing to draw round ${round.raffleId}: identity balance ${identityBalanceWei} wei is below the ${potWei} wei pot it should already hold from this round's swept entries`,
+        )
+      }
+
       // See this file's header, "Why this bot can't be drained" -- this only ever tops up a flat
-      // gas buffer, never the payout amount itself, and the payout is signed from the identity's
-      // own balance (funded by this exact round's entrants), never mainAccountSigner.
+      // gas buffer *on top of* the pot already confirmed above, never the payout amount itself.
       const feeData = await provider.getFeeData()
       const fallbackMaxFeePerGas = BigInt(250000000000)
       const maxFeePerGas = feeData.maxFeePerGas ?? fallbackMaxFeePerGas
@@ -512,7 +650,7 @@ async function main() {
         identityAddress: identity.displayAddress,
         mainAccountSigner,
         provider,
-        neededWei: potWei + gasBufferWei,
+        neededWei: identityBalanceWei + gasBufferWei,
         label: 'raffle-bot',
       })
 
@@ -545,7 +683,12 @@ async function main() {
   )
 }
 
-main().catch(err => {
-  console.error('RAFFLE BOT FAILED:', err)
-  process.exit(1)
-})
+// Guarded so `raffle-bot.jest.test.ts` can import `summarizeRecoveredPayments` above without this
+// script's own `main()` (real network calls, `requiredEnv` throwing outside a real run) executing
+// as an import side effect.
+if (require.main === module) {
+  main().catch(err => {
+    console.error('RAFFLE BOT FAILED:', err)
+    process.exit(1)
+  })
+}

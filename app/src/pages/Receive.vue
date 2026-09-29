@@ -3,13 +3,26 @@
     <q-page class="q-ma-none q-pa-sm">
       <q-card>
         <q-card-section>
-          <div class="text-h6">
+          <div class="text-h6" id="receive-balance-heading">
             {{ $t('receiveBitcoinDialog.walletStatus') }}
           </div>
         </q-card-section>
         <q-card-section>
-          <div class="text-bold text-subtitle1 text-center">
-            {{ formattedBalance }}
+          <div
+            class="text-bold text-subtitle1 text-center"
+            role="status"
+            aria-live="polite"
+            aria-labelledby="receive-balance-heading"
+            data-testid="receive-balance"
+          >
+            {{ balanceText }}
+          </div>
+          <div
+            v-if="hasError"
+            class="text-negative text-caption text-center"
+            data-testid="receive-balance-error"
+          >
+            {{ $t('receiveBitcoinDialog.balanceUnavailable') }}
           </div>
         </q-card-section>
         <q-separator />
@@ -56,21 +69,26 @@ import { useRouter } from 'vue-router'
 
 import QrcodeVue from 'qrcode.vue'
 import { copyToClipboard } from 'quasar'
-import { activeChain } from '@frank/wallet/chain'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
+import { useBalance } from 'src/composables/useBalance'
 import { addressCopiedNotify, errorNotify } from 'src/utils/notifications'
 
 export default defineComponent({
   setup() {
     const router = useRouter()
-    const balance = ref(0n)
+    // Shared with the drawer: one polling loop, so this page refreshes without a reload.
+    const { formattedBalance, loaded, hasError } = useBalance()
+    // An em dash (not "0") until the first successful fetch: an unloaded or failed balance must
+    // not look like a real zero.
+    const balanceText = computed(() =>
+      loaded.value ? formattedBalance.value : '\u2014',
+    )
     const displayAddress = ref('')
 
     onMounted(async () => {
       try {
         const wallet = await useActiveWallet()
         displayAddress.value = wallet.identity.displayAddress
-        balance.value = await activeChain.nativeTransfers.getBalance({ wallet })
       } catch (err) {
         errorNotify(
           err instanceof Error
@@ -82,10 +100,8 @@ export default defineComponent({
 
     return {
       displayAddress,
-      formattedBalance: computed(
-        () =>
-          `${activeChain.toDisplayAmount(balance.value)} ${activeChain.unit}`,
-      ),
+      balanceText,
+      hasError,
       close() {
         window.history.length > 1 ? router.go(-1) : router.push('/')
       },

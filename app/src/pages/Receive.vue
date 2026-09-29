@@ -51,26 +51,26 @@
 </template>
 
 <script lang="ts">
-import { computed, defineComponent, onMounted, ref } from 'vue'
+import { defineComponent, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
 import QrcodeVue from 'qrcode.vue'
 import { copyToClipboard } from 'quasar'
-import { activeChain } from '@frank/wallet/chain'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
+import { useBalance } from 'src/composables/useBalance'
 import { addressCopiedNotify, errorNotify } from 'src/utils/notifications'
 
 export default defineComponent({
   setup() {
     const router = useRouter()
-    const balance = ref(0n)
+    // Shared with the drawer: one polling loop, so this page refreshes without a reload.
+    const { formattedBalance } = useBalance()
     const displayAddress = ref('')
 
     onMounted(async () => {
       try {
         const wallet = await useActiveWallet()
         displayAddress.value = wallet.identity.displayAddress
-        balance.value = await activeChain.nativeTransfers.getBalance({ wallet })
       } catch (err) {
         errorNotify(
           err instanceof Error
@@ -82,10 +82,7 @@ export default defineComponent({
 
     return {
       displayAddress,
-      formattedBalance: computed(
-        () =>
-          `${activeChain.toDisplayAmount(balance.value)} ${activeChain.unit}`,
-      ),
+      formattedBalance,
       close() {
         window.history.length > 1 ? router.go(-1) : router.push('/')
       },

@@ -12,13 +12,13 @@
             filled
             dense
             :placeholder="$t('newContactDialog.enterBitcoinCashAddress')"
-            :aria-busy="loading"
+            :aria-busy="lookupPending"
             ref="address"
             @keydown.enter.prevent="addContact()"
           />
         </q-card-section>
         <div class="q-sr-only" role="status" aria-live="polite">
-          <span v-if="loading">{{ $t('newContactDialog.loading') }}</span>
+          <span v-if="lookupPending">{{ $t('newContactDialog.loading') }}</span>
           <span v-else-if="showNotFound">{{
             $t('newContactDialog.notFound')
           }}</span>
@@ -29,7 +29,7 @@
           }}</span>
         </div>
         <q-slide-transition>
-          <q-card-section class="q-py-none" v-if="loading">
+          <q-card-section class="q-py-none" v-if="lookupPending">
             <q-item>
               <q-item-section avatar>
                 <q-skeleton
@@ -101,7 +101,8 @@ import { activeChain } from '@frank/wallet/chain'
 import { PublicKey } from 'bitcore-lib-xpi'
 import { openChat } from 'src/utils/routes'
 
-// Delay between the last keystroke and the network lookup.
+// Pastes (the usual way a complete address arrives) look up immediately; edits made while a
+// lookup is scheduled, in flight, or just fired wait this long so a burst yields one fetch.
 const LOOKUP_DEBOUNCE_MS = 250
 
 type ChainAddress = Parameters<typeof activeChain.fetchProfile>[0]
@@ -120,7 +121,6 @@ export default defineComponent({
       // generation is still the latest, which is the single staleness mechanism.
       lookupGeneration: 0,
       lookupPending: false,
-      lookupTimer: null as ReturnType<typeof setTimeout> | null,
     }
   },
   setup() {
@@ -128,6 +128,11 @@ export default defineComponent({
 
     return {
       addressRef: ref<QInput | null>(null),
+      // Plain (non-reactive) bookkeeping: setup state is not deeply reactive.
+      lookupSchedule: {
+        timer: null as ReturnType<typeof setTimeout> | null,
+        lastFiredAt: -Infinity,
+      },
       addContactToStore: contactStore.addContact,
     }
   },
@@ -138,18 +143,20 @@ export default defineComponent({
     contact(): Partial<ContactState> | null {
       return this.acceptedLookup?.contact ?? null
     },
-    loading(): boolean {
-      return this.lookupPending
-    },
     showNotFound(): boolean {
       return (
-        !this.loading && this.contact === null && this.address.trim() !== ''
+        !this.lookupPending &&
+        this.contact === null &&
+        this.address.trim() !== ''
       )
     },
   },
   watch: {
     address(newAddress: string) {
       const generation = ++this.lookupGeneration
+      const busy =
+        this.lookupPending ||
+        Date.now() - this.lookupSchedule.lastFiredAt < LOOKUP_DEBOUNCE_MS
       this.cancelScheduledLookup()
       this.acceptedLookup = null
       this.lookupPending = false
@@ -161,14 +168,20 @@ export default defineComponent({
         return
       }
       this.lookupPending = true
-      this.lookupTimer = setTimeout(() => {
-        this.lookupTimer = null
+      const fire = () => {
+        this.lookupSchedule.timer = null
+        this.lookupSchedule.lastFiredAt = Date.now()
         void this.lookup(
           generation,
           normalizedAddress.chainAddress,
           normalizedAddress.resolvedAddress,
         )
-      }, LOOKUP_DEBOUNCE_MS)
+      }
+      if (busy) {
+        this.lookupSchedule.timer = setTimeout(fire, LOOKUP_DEBOUNCE_MS)
+      } else {
+        fire()
+      }
     },
   },
   methods: {
@@ -187,9 +200,9 @@ export default defineComponent({
       }
     },
     cancelScheduledLookup() {
-      if (this.lookupTimer !== null) {
-        clearTimeout(this.lookupTimer)
-        this.lookupTimer = null
+      if (this.lookupSchedule.timer !== null) {
+        clearTimeout(this.lookupSchedule.timer)
+        this.lookupSchedule.timer = null
       }
     },
     async lookup(

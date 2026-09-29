@@ -206,62 +206,114 @@ describe('AddContact latest lookup', () => {
 
   it('adds through the Enter key only when a lookup was accepted', async () => {
     chain.fetchProfile.mockResolvedValue(profile(ADDRESS_A, 'Alice'))
-    await type(wrapper, 'a')
     await wrapper.find('input').trigger('keydown.enter')
     expect(mockAddContactToStore).not.toHaveBeenCalled()
 
-    jest.advanceTimersByTime(DEBOUNCE_MS)
-    await settle()
+    await type(wrapper, 'a')
     await wrapper.find('input').trigger('keydown.enter')
     expect(mockOpenChat).toHaveBeenCalledWith(mockRouter, ADDRESS_A)
   })
 
-  describe('debounce', () => {
-    it('shows pending immediately but fetches once, after the last keystroke settles', async () => {
-      chain.fetchProfile.mockResolvedValue(profile(ADDRESS_C, 'Carol'))
+  describe('leading-edge debounce', () => {
+    const pending = () => new Promise<undefined>(() => undefined)
+
+    it('fetches a valid paste immediately, with no timer advanced', async () => {
+      chain.fetchProfile.mockReturnValue(pending())
 
       await type(wrapper, 'a')
-      expect(isBusy(wrapper)).toBe('true')
-      jest.advanceTimersByTime(DEBOUNCE_MS - 1)
-      await type(wrapper, 'b')
-      jest.advanceTimersByTime(DEBOUNCE_MS - 1)
-      await type(wrapper, 'c')
-      expect(chain.fetchProfile).not.toHaveBeenCalled()
-      expect(isBusy(wrapper)).toBe('true')
 
+      expect(chain.fetchProfile).toHaveBeenCalledTimes(1)
+      expect(chain.fetchProfile).toHaveBeenCalledWith(parsedAddresses.a)
+      expect(isBusy(wrapper)).toBe('true')
+    })
+
+    it('debounces a second edit made while the first lookup is in flight', async () => {
+      chain.fetchProfile.mockReturnValue(pending())
+
+      await type(wrapper, 'a')
+      await type(wrapper, 'b')
+      expect(chain.fetchProfile).toHaveBeenCalledTimes(1)
+      expect(isBusy(wrapper)).toBe('true')
+      jest.advanceTimersByTime(DEBOUNCE_MS - 1)
+      await settle()
+      expect(chain.fetchProfile).toHaveBeenCalledTimes(1)
       jest.advanceTimersByTime(1)
       await settle()
-      expect(chain.fetchProfile).not.toHaveBeenCalled()
+
+      expect(chain.fetchProfile).toHaveBeenCalledTimes(2)
+      expect(chain.fetchProfile).toHaveBeenLastCalledWith(parsedAddresses.b)
+    })
+
+    it('debounces an edit shortly after a lookup that already finished', async () => {
+      chain.fetchProfile.mockResolvedValue(profile(ADDRESS_A, 'Alice'))
+
+      await type(wrapper, 'a')
+      await settle()
+      await type(wrapper, 'b')
+      expect(chain.fetchProfile).toHaveBeenCalledTimes(1)
+      jest.advanceTimersByTime(DEBOUNCE_MS)
+      await settle()
+      expect(chain.fetchProfile).toHaveBeenCalledTimes(2)
+    })
+
+    it('fetches immediately again once the window has passed and nothing is in flight', async () => {
+      chain.fetchProfile.mockResolvedValue(profile(ADDRESS_A, 'Alice'))
+
+      await type(wrapper, 'a')
+      await settle()
+      jest.advanceTimersByTime(DEBOUNCE_MS)
+      await type(wrapper, 'b')
+
+      expect(chain.fetchProfile).toHaveBeenCalledTimes(2)
+    })
+
+    it('issues one further fetch, for the last value, after a rapid burst', async () => {
+      chain.fetchProfile.mockReturnValue(pending())
+
+      await type(wrapper, 'a')
+      await type(wrapper, 'b')
+      jest.advanceTimersByTime(DEBOUNCE_MS - 1)
+      await type(wrapper, 'A')
+      jest.advanceTimersByTime(DEBOUNCE_MS - 1)
+      await type(wrapper, 'c')
+      expect(chain.fetchProfile).toHaveBeenCalledTimes(1)
+
       jest.advanceTimersByTime(DEBOUNCE_MS)
       await settle()
 
-      expect(chain.fetchProfile).toHaveBeenCalledTimes(1)
-      expect(chain.fetchProfile).toHaveBeenCalledWith(parsedAddresses.c)
-      expect(isBusy(wrapper)).toBe('false')
+      expect(chain.fetchProfile).toHaveBeenCalledTimes(2)
+      expect(chain.fetchProfile).toHaveBeenLastCalledWith(parsedAddresses.c)
     })
 
     it('drops the scheduled lookup when the input becomes empty or unparseable', async () => {
+      chain.fetchProfile.mockReturnValue(pending())
+
       await type(wrapper, 'a')
+      await type(wrapper, 'b')
       await type(wrapper, '')
       expect(isBusy(wrapper)).toBe('false')
-      await type(wrapper, 'b')
+      await type(wrapper, 'c')
       await type(wrapper, 'not-an-address')
       jest.advanceTimersByTime(DEBOUNCE_MS * 2)
       await settle()
 
-      expect(chain.fetchProfile).not.toHaveBeenCalled()
+      expect(chain.fetchProfile).toHaveBeenCalledTimes(1)
       expect(isBusy(wrapper)).toBe('false')
     })
 
     it('cancels the scheduled lookup on unmount', async () => {
+      chain.fetchProfile.mockReturnValue(pending())
       const other = mountPage()
       await other.find('input').setValue('a')
       await settle()
+      await other.find('input').setValue('b')
+      await settle()
+      expect(chain.fetchProfile).toHaveBeenCalledTimes(1)
       other.unmount()
       jest.advanceTimersByTime(DEBOUNCE_MS * 2)
       await settle()
 
-      expect(chain.fetchProfile).not.toHaveBeenCalled()
+      expect(chain.fetchProfile).toHaveBeenCalledTimes(1)
     })
   })
 

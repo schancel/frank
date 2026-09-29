@@ -12,14 +12,45 @@
             filled
             dense
             :placeholder="$t('newContactDialog.enterBitcoinCashAddress')"
+            :aria-busy="loading"
             ref="address"
             @keydown.enter.prevent="addContact()"
           />
         </q-card-section>
+        <div class="q-sr-only" role="status" aria-live="polite">
+          <span v-if="loading">{{ $t('newContactDialog.loading') }}</span>
+          <span v-else-if="contact === null && address.trim() !== ''">{{
+            $t('newContactDialog.notFound')
+          }}</span>
+          <span v-else-if="contact">{{
+            $t('newContactDialog.found', {
+              name: contact.profile?.name ?? '',
+            })
+          }}</span>
+        </div>
         <q-slide-transition>
+          <q-card-section class="q-py-none" v-if="loading">
+            <q-item>
+              <q-item-section avatar>
+                <q-skeleton
+                  type="QAvatar"
+                  aria-hidden="true"
+                  animation="none"
+                />
+              </q-item-section>
+              <q-item-section>
+                <q-item-label>
+                  <q-skeleton type="text" aria-hidden="true" animation="none" />
+                </q-item-label>
+                <q-item-label caption>
+                  <q-skeleton type="text" aria-hidden="true" animation="none" />
+                </q-item-label>
+              </q-item-section>
+            </q-item>
+          </q-card-section>
           <q-card-section
             class="q-py-none"
-            v-if="contact === null && address !== ''"
+            v-else-if="contact === null && address !== ''"
           >
             <q-item>
               <q-item-section avatar>
@@ -30,21 +61,6 @@
                   $t('newContactDialog.notFound')
                 }}</q-item-label>
                 <!-- TODO: Error information here -->
-              </q-item-section>
-            </q-item>
-          </q-card-section>
-          <q-card-section class="q-py-none" v-else-if="loading">
-            <q-item>
-              <q-item-section avatar>
-                <q-skeleton type="QAvatar" />
-              </q-item-section>
-              <q-item-section>
-                <q-item-label>
-                  <q-skeleton type="text" />
-                </q-item-label>
-                <q-item-label caption>
-                  <q-skeleton type="text" />
-                </q-item-label>
               </q-item-section>
             </q-item>
           </q-card-section>
@@ -64,7 +80,7 @@
         <q-card-actions align="right">
           <q-btn label="Cancel" color="negative" @click="cancel" />
           <q-btn
-            :disable="contact === null"
+            :disable="!canAdd"
             label="Add"
             color="primary"
             @click="addContact()"
@@ -88,11 +104,19 @@ import { activeChain } from '@frank/wallet/chain'
 import { PublicKey } from 'bitcore-lib-xpi'
 import { openChat } from 'src/utils/routes'
 
+type AcceptedLookup = {
+  resolvedAddress: string
+  contact: Partial<ContactState>
+}
+
 export default defineComponent({
   data() {
     return {
       address: '',
-      contact: null as Partial<ContactState> | null,
+      acceptedLookup: null as AcceptedLookup | null,
+      currentCanonicalAddress: null as string | null,
+      lookupGeneration: 0,
+      lookupPending: false,
     }
   },
   setup() {
@@ -104,15 +128,31 @@ export default defineComponent({
     }
   },
   computed: {
+    canAdd(): boolean {
+      const currentAddress = this.canonicalizeAddress(this.address)
+      return Boolean(
+        this.acceptedLookup &&
+          this.acceptedLookup.resolvedAddress ===
+            this.currentCanonicalAddress &&
+          currentAddress?.resolvedAddress ===
+            this.acceptedLookup.resolvedAddress,
+      )
+    },
+    contact(): Partial<ContactState> | null {
+      return this.canAdd ? this.acceptedLookup?.contact ?? null : null
+    },
     loading(): boolean {
-      return this.address !== '' && this.contact === null
+      return this.lookupPending
     },
   },
   watch: {
     address: async function (newAddress) {
+      const generation = ++this.lookupGeneration
       const trimmedAddress = newAddress.trim()
+      this.acceptedLookup = null
+      this.currentCanonicalAddress = null
+      this.lookupPending = false
       if (trimmedAddress === '') {
-        this.contact = null
         return
       }
       try {
@@ -120,41 +160,81 @@ export default defineComponent({
         // `toAPIAddress`/`RegistryHandler`/`ReadOnlyRelayClient` trio (ticket #44) -- mirrors
         // `stores/contacts.ts`'s own `fetchAndAddContact` network-resolution branch, but kept
         // local here (not committed to the store) until the user actually clicks "Add".
-        const chainAddress = activeChain.parseAddress(trimmedAddress)
-        if (!chainAddress) {
-          this.contact = null
+        const normalizedAddress = this.canonicalizeAddress(trimmedAddress)
+        if (!normalizedAddress) {
           return
         }
+        const { chainAddress, resolvedAddress } = normalizedAddress
+        this.currentCanonicalAddress = resolvedAddress
+        this.lookupPending = true
         const profileInfo = await activeChain.fetchProfile(chainAddress)
-        if (!profileInfo) {
-          this.contact = null
+        const currentAddress = this.canonicalizeAddress(this.address)
+        if (
+          generation !== this.lookupGeneration ||
+          resolvedAddress !== this.currentCanonicalAddress ||
+          currentAddress?.resolvedAddress !== resolvedAddress
+        ) {
           return
         }
-        this.contact = {
-          profile: {
-            ...defaultRelayData.profile,
-            name: profileInfo.name ?? '',
-            bio: profileInfo.bio ?? '',
-            avatar: profileInfo.avatar ?? '',
-            pubKey: markRaw(PublicKey.fromBuffer(profileInfo.pubKey)),
+        this.lookupPending = false
+        if (!profileInfo) {
+          return
+        }
+        const returnedProfileAddress = activeChain.formatAddress(
+          profileInfo.address,
+        )
+        if (returnedProfileAddress !== resolvedAddress) {
+          return
+        }
+        this.acceptedLookup = {
+          resolvedAddress,
+          contact: {
+            profile: {
+              ...defaultRelayData.profile,
+              name: profileInfo.name ?? '',
+              bio: profileInfo.bio ?? '',
+              avatar: profileInfo.avatar ?? '',
+              pubKey: markRaw(PublicKey.fromBuffer(profileInfo.pubKey)),
+            },
           },
         }
       } catch {
-        this.contact = null
+        if (generation === this.lookupGeneration) {
+          this.lookupPending = false
+        }
       }
     },
   },
   methods: {
+    canonicalizeAddress(address: string) {
+      try {
+        const chainAddress = activeChain.parseAddress(address.trim())
+        if (!chainAddress) {
+          return null
+        }
+        return {
+          chainAddress,
+          resolvedAddress: activeChain.formatAddress(chainAddress),
+        }
+      } catch {
+        return null
+      }
+    },
     addContact() {
-      if (!this.contact) {
+      const acceptedLookup = this.acceptedLookup
+      const currentAddress = this.canonicalizeAddress(this.address)
+      if (
+        !acceptedLookup ||
+        acceptedLookup.resolvedAddress !== this.currentCanonicalAddress ||
+        currentAddress?.resolvedAddress !== acceptedLookup.resolvedAddress
+      ) {
         return
       }
-      const trimmedAddress = this.address.trim()
       this.addContactToStore({
-        address: trimmedAddress,
-        contact: this.contact,
+        address: acceptedLookup.resolvedAddress,
+        contact: acceptedLookup.contact,
       })
-      openChat(this.$router, trimmedAddress)
+      openChat(this.$router, acceptedLookup.resolvedAddress)
     },
     cancel() {
       window.history.length > 1 ? this.$router.go(-1) : this.$router.push('/')

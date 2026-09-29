@@ -97,7 +97,9 @@ export default {
   newContactDialog: {
     newContact: 'New Contact',
     enterBitcoinCashAddress: 'Enter address (0x...)',
+    loading: 'Looking up contact',
     notFound: 'Not Found',
+    found: 'Contact found: {name}',
   },
   newTopicDialog: {
     newTopic: 'Add Topic',

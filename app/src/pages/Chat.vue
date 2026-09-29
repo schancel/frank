@@ -394,7 +394,8 @@ export default defineComponent({
       if (this.sendingMessage) {
         return
       }
-      const stampValue = stampValueWei ?? activeChain.fromDisplayAmount(this.stampAmount)
+      const stampValue =
+        stampValueWei ?? activeChain.fromDisplayAmount(this.stampAmount)
       this.sendingMessage = true
       try {
         this.stampPreparationStatus = 'Checking private stamp accounts…'

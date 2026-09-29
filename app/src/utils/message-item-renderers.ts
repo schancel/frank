@@ -42,7 +42,9 @@ export function registerMessageItemRenderer<TRaw extends MessageItem>(
   registry.set(renderer.type, renderer as MessageItemRenderer)
 }
 
-export function getMessageItemRenderer(type: string): MessageItemRenderer | undefined {
+export function getMessageItemRenderer(
+  type: string,
+): MessageItemRenderer | undefined {
   return registry.get(type)
 }
 

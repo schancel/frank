@@ -388,13 +388,20 @@
             "properties": {
               "validation_context": {
                 "type": "object",
-                "required": ["payment_policy", "decrypted_frame_hex"],
+                "required": [
+                  "payment_policy",
+                  "decrypted_frame_hex",
+                  "recipient_directory_state"
+                ],
                 "properties": {
                   "payment_policy": {
                     "type": "object"
                   },
                   "decrypted_frame_hex": {
                     "type": "string"
+                  },
+                  "recipient_directory_state": {
+                    "type": "object"
                   }
                 }
               }
@@ -422,7 +429,11 @@
             "properties": {
               "validation_context": {
                 "type": "object",
-                "required": ["payment_policy", "decrypted_frame_hex"],
+                "required": [
+                  "payment_policy",
+                  "decrypted_frame_hex",
+                  "recipient_directory_state"
+                ],
                 "properties": {
                   "payment_policy": {
                     "type": "object"
@@ -468,7 +479,11 @@
           "then": {
             "properties": {
               "validation_context": {
-                "required": ["payment_policy", "decrypted_frame_hex"]
+                "required": [
+                  "payment_policy",
+                  "decrypted_frame_hex",
+                  "recipient_directory_state"
+                ]
               }
             }
           }
@@ -556,6 +571,16 @@
           "type": "integer",
           "minimum": 1,
           "maximum": 8388617
+        },
+        "recipient_directory_state": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/recipient-directory-state"
+            }
+          ]
         }
       }
     },
@@ -602,6 +627,37 @@
         "commitment_hex": {
           "type": "string",
           "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "recipient-directory-state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "current_statement_frame_hex",
+        "stamp_key_seen",
+        "previous_stamp_key_hex"
+      ],
+      "properties": {
+        "current_statement_frame_hex": {
+          "type": "string",
+          "pattern": "^(?:[0-9a-f]{2})*$",
+          "minLength": 2,
+          "maxLength": 16777236
+        },
+        "stamp_key_seen": {
+          "type": "boolean"
+        },
+        "previous_stamp_key_hex": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "pattern": "^0[23][0-9a-f]{64}$"
+            }
+          ]
         }
       }
     }

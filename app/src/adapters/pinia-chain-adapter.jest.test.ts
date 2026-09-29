@@ -201,7 +201,7 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
         })
 
       const polling = startDirectMessagePolling({ wallet, intervalMs: 20 })
-      await wait(80)
+      await waitUntil(() => receiveMessagesSpy.mock.calls.length >= 2)
       polling.stop()
 
       expect(warnSpy).toHaveBeenCalled()

@@ -27,7 +27,7 @@ import {
   runBlackjackLoop,
   settlePayouts,
 } from './blackjack-bot.livecheck'
-import { listPayouts, requeuePayout, runAdminCli } from './blackjack-payout-admin.livecheck'
+import { DOUBLE_PAYMENT_REMINDER, listPayouts, requeueNonceConsumed, requeuePayout, runAdminCli } from './blackjack-payout-admin.livecheck'
 
 jest.mock('./qwen-bot-common', () => ({
   loadOrCreateIdentity: jest.fn(),
@@ -689,6 +689,57 @@ describe('blackjack payout is durable and exactly-once (#215)', () => {
       expect(handled).toEqual([2001]) // 2000 is deduped by hasProcessed
     })
 
+    it('the processed marker is durable BEFORE a message is handled (at-most-once)', async () => {
+      relay = [{ timestamp: 2000, message: { payloadHash: Buffer.from([5]) } }]
+      const order: string[] = []
+      const realAdd = state.addProcessed.bind(state)
+      const realFlush = state.flush.bind(state)
+      jest.spyOn(state, 'addProcessed').mockImplementation((h: string) => { order.push('mark'); realAdd(h) })
+      jest.spyOn(state, 'flush').mockImplementation(async () => { order.push('flush'); await realFlush() })
+      await loop({
+        processMessage: async () => { order.push('handle'); return undefined },
+      })
+      const firstHandle = order.indexOf('handle')
+      expect(order.slice(0, firstHandle).lastIndexOf('flush')).toBeGreaterThan(order.indexOf('mark'))
+    })
+
+    it('a message whose handling throws is skipped after restart (not re-run, not crashing the loop) and logged', async () => {
+      relay = [{ timestamp: 2000, message: { payloadHash: Buffer.from([6]) } }]
+      const errors = jest.spyOn(console, 'error').mockImplementation(() => undefined)
+      const r = await loop({
+        processMessage: async (m: { timestamp: number }) => {
+          handled.push(m.timestamp)
+          throw new Error('hydrate RPC exploded')
+        },
+      })
+      expect(r.exitCode).toBe(0)
+      expect(handled).toEqual([2000])
+      expect(errors).toHaveBeenCalledWith(expect.stringContaining('MESSAGE FAILED'))
+      expect(String(errors.mock.calls.find((c) => String(c[0]).includes('MESSAGE FAILED'))![0])).toContain(Buffer.from([6]).toString('hex'))
+      await reopen() // restart
+      handled = []
+      await loop()
+      expect(handled).toEqual([]) // at-most-once: skipped, exactly as on main
+      errors.mockRestore()
+    })
+
+    it('a corrupt persisted cursor is ignored and logged, and the loop starts at now and repairs it', async () => {
+      await state.Close()
+      const db = level(join(directory, 'blackjack-bot-state'), { keyEncoding: 'binary', valueEncoding: 'binary' } as never) as any
+      await db.put(Buffer.from('__poll_since_ms__'), Buffer.from('"not-a-number"'))
+      await db.close()
+      const errors = jest.spyOn(console, 'error').mockImplementation(() => undefined)
+      state = new BlackjackBotStateStore(directory)
+      await state.Open()
+      expect(state.getSince()).toBeUndefined()
+      expect(errors).toHaveBeenCalledWith(expect.stringContaining('CURSOR CORRUPT'), expect.anything())
+      await loop()
+      expect(state.getSince()).toBe(1000)
+      await reopen()
+      expect(state.getSince()).toBe(1000)
+      errors.mockRestore()
+    })
+
     it('a normal single hand through the loop: reveal then payout, exit 0 after the drain confirms it', async () => {
       relay = [{ timestamp: 2000, message: { payloadHash: Buffer.from([7]) } }]
       onSleep = () => chain.mine()
@@ -708,15 +759,16 @@ describe('blackjack payout is durable and exactly-once (#215)', () => {
       expect(paid()).toBe(200n)
     })
 
-    it('exits non-zero, with a structured warning, when a payout is still unsettled', async () => {
+    it('exits non-zero, with a structured warning, when a payout is still unsettled (failed, needs an operator)', async () => {
       await startWinningGame()
-      chain.failBuild = new Error('reverting recipient')
-      await stand() // owed, build keeps failing
+      await stand()
+      chain.revertNext = true
+      chain.mine()
       const errors = jest.spyOn(console, 'error').mockImplementation(() => undefined)
+      await settle()
       const r = await loop({ drainTimeoutMs: 300 })
       expect(r.exitCode).toBe(1)
-      expect(r.unsettled).toHaveLength(1)
-      expect(r.unsettled[0]).toMatch(/^game-a:(owed|stuck)$/)
+      expect(r.unsettled).toEqual(['game-a:failed'])
       expect(errors).toHaveBeenCalledWith(expect.stringContaining('EXITING WITH UNSETTLED PAYOUTS'))
       errors.mockRestore()
     })
@@ -751,33 +803,64 @@ describe('blackjack payout is durable and exactly-once (#215)', () => {
       expect(state.getPayout('game-b')?.status).toBe('submitted')
     })
 
-    it('genuine failures still back off exponentially, and a build that keeps throwing becomes stuck with an alert', async () => {
+    it('a payout whose build keeps failing is retried forever at the 60s cap and never changes state, but alerts', async () => {
       await startWinningGame()
       chain.failBuild = new Error('estimateGas reverted')
       await stand()
       const errors = jest.spyOn(console, 'error').mockImplementation(() => undefined)
       const backoff: PayoutBackoff = new Map()
-      const base = Date.now()
+      const base = state.getPayout('game-a')!.owedAt
       let t = base
       const buildsAt = chain.builds
-      await settle(backoff, t) // failure 2 (stand's own attempt is not tracked)
+      await settle(backoff, t)
       await settle(backoff, t + 1) // inside backoff: skipped
       expect(chain.builds).toBe(buildsAt + 1)
-      for (let i = 0; i < 12 && state.getPayout('game-a')?.status === 'owed'; i++) {
+      for (let i = 0; i < 30; i++) {
         t += 61000
         await settle(backoff, t)
       }
-      expect(state.getPayout('game-a')?.status).toBe('stuck')
-      const alert = errors.mock.calls.map((c) => String(c[0])).find((l) => l.includes('PAYOUT STUCK') && l.includes('"status":"stuck"'))!
-      const body = JSON.parse(alert.slice(alert.indexOf('{')))
-      expect(body).toMatchObject({ gameId: 'game-a', status: 'stuck', amountWei: '200', nonce: null, txHash: null })
-      expect(body.action).toContain('OPERATOR ACTION')
-      // Exposure still counts the debt; no more build attempts once stuck.
+      expect(state.getPayout('game-a')).toMatchObject({ status: 'owed', amountWei: 200n })
+      expect(chain.builds).toBe(buildsAt + 31) // still trying, every 60s
+      expect(backoff.get('game-a')!.nextAt - t).toBe(60000) // capped
+      const alerts = errors.mock.calls.map((c) => String(c[0])).filter((l) => l.includes('PAYOUT STUCK'))
+      expect(alerts.length).toBeGreaterThanOrEqual(2)
+      expect(JSON.parse(alerts[0].slice(alerts[0].indexOf('{')))).toMatchObject({ gameId: 'game-a', status: 'owed' })
       expect(state.openExposureWei()).toBe(200n)
-      const builds = chain.builds
-      await settle(backoff, t + 61000)
-      expect(chain.builds).toBe(builds)
+      // The moment the payer is funded again it is paid, once.
+      chain.failBuild = undefined
+      t += 61000
+      await settle(backoff, t)
+      chain.mine()
+      await settle(backoff, t + 1)
+      expect(paid()).toBe(200n)
       errors.mockRestore()
+    })
+
+    it('re-broadcasts a submitted payout the node dropped, with the SAME bytes, on the 30s boundary; one payout results', async () => {
+      await startWinningGame()
+      await stand() // submitted at nonce 0
+      const p = state.getPayout('game-a')!
+      chain.mempool.delete(p.txHash!) // mempool eviction
+      const submits = () => chain.events.filter((e) => e === 'submitRaw').length
+      const backoff: PayoutBackoff = new Map()
+      const T = 10_000_000
+      const before = submits()
+      await settle(backoff, T) // first sighting: pendingSince = T
+      await settle(backoff, T + 29_999)
+      expect(submits()).toBe(before)
+      await settle(backoff, T + 30_000)
+      expect(submits()).toBe(before + 1)
+      expect(chain.mempool.get(p.txHash!)?.raw).toBe(p.rawTx)
+      await settle(backoff, T + 30_001) // interval restarts after a re-offer
+      expect(submits()).toBe(before + 1)
+      await settle(backoff, T + 60_000)
+      expect(submits()).toBe(before + 2) // (node says "already known"; harmless)
+      chain.mine()
+      await settle(backoff, T + 60_001)
+      expect(chain.builds).toBe(1)
+      expect(chain.mined.size).toBe(1)
+      expect(paid()).toBe(200n)
+      expect(state.getPayout('game-a')?.status).toBe('confirmed')
     })
 
     it('PAYOUT STUCK for an aged unconfirmed payout carries nonce and txHash and is rate limited; failed re-alerts after a restart', async () => {
@@ -832,12 +915,12 @@ describe('blackjack payout is durable and exactly-once (#215)', () => {
       ])
     })
 
-    it('requeue needs the explicit flag, refuses non failed/stuck payouts, and re-signs a failed one exactly once', async () => {
+    it('plain requeue needs --i-verified-reverted, accepts only failed, and re-signs once', async () => {
       await failedPayout()
-      await expect(requeuePayout(state, 'game-a', { verifiedNotMined: false })).rejects.toThrow('--i-verified-not-mined')
+      await expect(requeuePayout(state, 'game-a', { verifiedReverted: false })).rejects.toThrow('--i-verified-reverted')
       expect(state.getPayout('game-a')?.status).toBe('failed')
 
-      await requeuePayout(state, 'game-a', { verifiedNotMined: true })
+      await requeuePayout(state, 'game-a', { verifiedReverted: true })
       expect(state.getPayout('game-a')).toEqual({ status: 'owed', amountWei: 200n, owedAt: expect.any(Number) })
       await reopen()
       await settle()
@@ -846,31 +929,164 @@ describe('blackjack payout is durable and exactly-once (#215)', () => {
       expect(state.getPayout('game-a')?.status).toBe('confirmed')
       expect(paid()).toBe(200n) // the reverted tx moved nothing; the fresh one paid once
       expect(chain.builds).toBe(2)
-      for (const status of ['confirmed'] as const) {
-        await expect(requeuePayout(state, 'game-a', { verifiedNotMined: true })).rejects.toThrow(status)
-      }
+      await expect(requeuePayout(state, 'game-a', { verifiedReverted: true })).rejects.toThrow('confirmed')
     })
 
-    it('refuses to requeue owed, submitting and submitted payouts', async () => {
+    it('plain requeue refuses owed, submitting and submitted payouts', async () => {
       await startWinningGame()
       chain.failBuild = new Error('x')
       await stand()
-      await expect(requeuePayout(state, 'game-a', { verifiedNotMined: true })).rejects.toThrow('owed')
+      await expect(requeuePayout(state, 'game-a', { verifiedReverted: true })).rejects.toThrow('owed')
       chain.failBuild = undefined
       chain.failSubmit = { error: new Error('x'), reachesMempool: false }
       await settle()
       expect(state.getPayout('game-a')?.status).toBe('submitting')
-      await expect(requeuePayout(state, 'game-a', { verifiedNotMined: true })).rejects.toThrow('submitting')
+      await expect(requeuePayout(state, 'game-a', { verifiedReverted: true })).rejects.toThrow('submitting')
       await settle(undefined, Date.now() + 1)
-      await expect(requeuePayout(state, 'game-a', { verifiedNotMined: true })).rejects.toThrow('submitted')
+      await expect(requeuePayout(state, 'game-a', { verifiedReverted: true })).rejects.toThrow('submitted')
       expect(state.getPayout('game-a')?.rawTx).toBeDefined()
     })
 
-    it('the CLI wraps the same guards', async () => {
+    describe('--nonce-consumed-by (evidence-checked requeue of a signed payout)', () => {
+      const PAYER = `0x${'dd'.repeat(20)}`
+      const OTHER = `0x${'77'.repeat(32)}`
+      type Tx = { from: string; nonce: number; blockNumber: number | null }
+      let txs: Record<string, Tx | null>
+      let receipts: Record<string, { status: number } | null>
+      let count: number
+      let boom: string | undefined
+      const provider = () => ({
+        getTransaction: async (h: string) => {
+          if (boom === 'getTransaction') throw new Error('rpc down')
+          return txs[h.toLowerCase()] ?? null
+        },
+        getTransactionReceipt: async (h: string) => {
+          if (boom === 'getTransactionReceipt') throw new Error('rpc down')
+          return receipts[h.toLowerCase()] ?? null
+        },
+        getTransactionCount: async () => {
+          if (boom === 'getTransactionCount') throw new Error('rpc down')
+          return count
+        },
+      })
+      const run = (h = OTHER) =>
+        requeueNonceConsumed(state, 'game-a', { otherTxHash: h, payerAddress: PAYER, provider: provider() })
+
+      async function signedPayout(status: 'submitting' | 'submitted') {
+        await startWinningGame()
+        if (status === 'submitting') chain.failSubmit = { error: new Error('lost'), reachesMempool: false }
+        await stand()
+        expect(state.getPayout('game-a')?.status).toBe(status)
+        const p = state.getPayout('game-a')!
+        chain.mempool.delete(p.txHash!) // the old tx is gone from the node
+        // Another tx from the payer consumed nonce 0.
+        txs = { [OTHER]: { from: PAYER, nonce: 0, blockNumber: 5 } }
+        receipts = { [OTHER]: { status: 1 } }
+        count = 1
+        boom = undefined
+        return p
+      }
+      const unchanged = (p: { txHash?: string }) => {
+        expect(state.getPayout('game-a')).toMatchObject({ txHash: p.txHash })
+        expect(state.hasSignedUnconfirmedPayout()).toBe(true)
+      }
+
+      it.each(['submitting', 'submitted'] as const)('accepts %s when the nonce was consumed, then re-signs at the new nonce and pays once', async (status) => {
+        const p = await signedPayout(status)
+        await run()
+        expect(state.getPayout('game-a')).toEqual({ status: 'owed', amountWei: 200n, owedAt: expect.any(Number) })
+        // Fake chain: the external tx took nonce 0.
+        chain.mined.set(OTHER, { nonce: 0, to: PLAYER_CANON.replace(/a/gi, 'c'), value: 1n })
+        await reopen()
+        await settle()
+        chain.mine()
+        await settle()
+        expect(state.getPayout('game-a')?.status).toBe('confirmed')
+        expect(chain.mined.get(state.getPayout('game-a')!.txHash!)!.nonce).toBe(1)
+        expect(paid()).toBe(200n)
+        expect(p.txHash).toBeDefined()
+      })
+
+      it('refuses when the old payout tx actually mined', async () => {
+        const p = await signedPayout('submitted')
+        receipts[p.txHash!.toLowerCase()] = { status: 1 }
+        await expect(run()).rejects.toThrow(/HAS a receipt/)
+        unchanged(p)
+      })
+
+      it('refuses when the old payout tx is still pending on the node', async () => {
+        const p = await signedPayout('submitted')
+        txs[p.txHash!.toLowerCase()] = { from: PAYER, nonce: 0, blockNumber: null }
+        await expect(run()).rejects.toThrow(/still knows/)
+        unchanged(p)
+      })
+
+      it('refuses when the other tx is from a different sender', async () => {
+        const p = await signedPayout('submitted')
+        txs[OTHER]!.from = `0x${'ee'.repeat(20)}`
+        await expect(run()).rejects.toThrow(/not the payer/)
+        unchanged(p)
+      })
+
+      it('refuses when the other tx has a different nonce', async () => {
+        const p = await signedPayout('submitted')
+        txs[OTHER]!.nonce = 7
+        await expect(run()).rejects.toThrow(/nonce 7/)
+        unchanged(p)
+      })
+
+      it('refuses when the other tx is unconfirmed (pending or without a receipt)', async () => {
+        const p = await signedPayout('submitted')
+        txs[OTHER]!.blockNumber = null
+        await expect(run()).rejects.toThrow(/not confirmed/)
+        txs[OTHER]!.blockNumber = 5
+        receipts[OTHER] = null
+        await expect(run()).rejects.toThrow(/not confirmed/)
+        unchanged(p)
+      })
+
+      it("refuses when the payer's confirmed count does not exceed the nonce", async () => {
+        const p = await signedPayout('submitted')
+        count = 0
+        await expect(run()).rejects.toThrow(/not greater/)
+        unchanged(p)
+      })
+
+      it.each(['getTransaction', 'getTransactionReceipt', 'getTransactionCount'])('fails closed on an RPC error in %s', async (method) => {
+        const p = await signedPayout('submitted')
+        boom = method
+        await expect(run()).rejects.toThrow(/nothing changed/)
+        unchanged(p)
+      })
+
+      it('refuses the payout tx itself and refuses non-signed statuses', async () => {
+        const p = await signedPayout('submitted')
+        await expect(run(p.txHash)).rejects.toThrow(/itself/)
+        unchanged(p)
+        await state.requeuePayout('game-a', ['submitted'])
+        await expect(run()).rejects.toThrow(/owed/)
+      })
+
+      it('the CLI needs --payer and a provider, prints the double-payment reminder, and requeues on good evidence', async () => {
+        await signedPayout('submitted')
+        const log = jest.spyOn(console, 'log').mockImplementation(() => undefined)
+        const err = jest.spyOn(console, 'error').mockImplementation(() => undefined)
+        expect(await runAdminCli(['requeue', 'game-a', '--nonce-consumed-by', OTHER], state, { provider: provider() })).toBe(1)
+        expect(await runAdminCli(['requeue', 'game-a', '--nonce-consumed-by', OTHER, '--payer', PAYER], state)).toBe(1)
+        expect(await runAdminCli(['requeue', 'game-a', '--nonce-consumed-by', OTHER, '--payer', PAYER], state, { provider: provider() })).toBe(0)
+        expect(log).toHaveBeenCalledWith(DOUBLE_PAYMENT_REMINDER)
+        expect(state.getPayout('game-a')?.status).toBe('owed')
+        log.mockRestore()
+        err.mockRestore()
+      })
+    })
+
+    it('the plain CLI mode wraps the same guard', async () => {
       await failedPayout()
       const log = jest.spyOn(console, 'error').mockImplementation(() => undefined)
       expect(await runAdminCli(['requeue', 'game-a'], state)).toBe(1)
-      expect(await runAdminCli(['requeue', 'game-a', '--i-verified-not-mined'], state)).toBe(0)
+      expect(await runAdminCli(['requeue', 'game-a', '--i-verified-not-mined'], state)).toBe(1) // old flag is gone
+      expect(await runAdminCli(['requeue', 'game-a', '--i-verified-reverted'], state)).toBe(0)
       expect(await runAdminCli(['bogus'], state)).toBe(2)
       log.mockRestore()
     })

@@ -275,7 +275,7 @@ async function resolveAndReveal(params: {
 }
 
 /** Per-game in-memory settle bookkeeping (never persisted; a restart starts fresh, so a `failed`
- * or `stuck` payout alerts again at every restart). `failures` counts genuine failures only. */
+ * payout alerts again at every restart). `failures` counts genuine failures only. */
 export interface PayoutTrack {
   failures: number
   /** Earliest time a build/broadcast may be retried after a genuine failure. */
@@ -290,7 +290,6 @@ const PAYOUT_BACKOFF_BASE_MS = 2000
 const PAYOUT_BACKOFF_MAX_MS = 60000
 /** A signed payout that has no receipt this long after we first looked is re-broadcast (same bytes). */
 const PAYOUT_REBROADCAST_AFTER_MS = 30000
-const PAYOUT_MAX_BUILD_ATTEMPTS = 8
 const PAYOUT_STUCK_AFTER_MS = 5 * 60 * 1000
 const PAYOUT_ALERT_EVERY_MS = 10 * 60 * 1000
 
@@ -329,11 +328,7 @@ export async function attemptPayout(params: {
     let payout = state.getPayout(gameId)
     const game = state.getGame(gameId)
     if (!payout || !game) return 'none'
-    if (
-      payout.status === 'confirmed' ||
-      payout.status === 'failed' ||
-      payout.status === 'stuck'
-    ) {
+    if (payout.status === 'confirmed' || payout.status === 'failed') {
       return payout.status
     }
 
@@ -425,9 +420,11 @@ function payoutAlert(gameId: string, payout: PayoutRecord, now: number): string 
     nonce: payout.nonce ?? null,
     txHash: payout.txHash ?? null,
     action:
-      payout.status === 'failed' || payout.status === 'stuck'
-        ? 'OPERATOR ACTION: verify on chain, then `blackjack-payout-admin requeue <gameId> --i-verified-not-mined`'
-        : 'unconfirmed; the payer account is held until it confirms',
+      payout.status === 'failed'
+        ? 'OPERATOR ACTION: check the reverted receipt on an explorer, then `blackjack-payout-admin requeue <gameId> --i-verified-reverted`'
+        : payout.status === 'owed'
+          ? 'unpaid and being retried (build/sign failing?); check the payer balance and RPC'
+          : 'signed and unconfirmed; the payer account is held. If its nonce was consumed by another tx: `blackjack-payout-admin requeue <gameId> --nonce-consumed-by <txHash>`',
   })
 }
 
@@ -436,9 +433,10 @@ function payoutAlert(gameId: string, payout: PayoutRecord, now: number): string 
  * - A signed payout's receipt is checked on EVERY call (that is what releases the payer lane);
  *   only genuine failures (build/sign/submit/receipt-read throwing) back off, and a payout that is
  *   merely waiting (pending receipt, blocked behind another) never does.
- * - An `owed` payout whose build keeps throwing becomes `stuck` after a bounded number of attempts.
+ * - An `owed` payout whose build keeps throwing is retried forever (backoff capped at 60s); it
+ *   alerts but never changes state.
  * - Emits a structured, rate-limited `PAYOUT STUCK` line for any payout not confirmed after a
- *   threshold, and for every `failed`/`stuck` payout (again at each restart). */
+ *   threshold, and for every `failed` payout (again at each restart). */
 export async function settlePayouts(params: {
   state: BlackjackBotStateStore
   mainAccountSigner: MonadAccountTxSigner
@@ -446,14 +444,12 @@ export async function settlePayouts(params: {
   backoff?: PayoutBackoff
   stuckAfterMs?: number
   alertEveryMs?: number
-  maxBuildAttempts?: number
 }): Promise<void> {
   const { state, mainAccountSigner } = params
   const now = params.now ?? Date.now()
   const backoff = params.backoff ?? new Map()
   const stuckAfterMs = params.stuckAfterMs ?? PAYOUT_STUCK_AFTER_MS
   const alertEveryMs = params.alertEveryMs ?? PAYOUT_ALERT_EVERY_MS
-  const maxBuildAttempts = params.maxBuildAttempts ?? PAYOUT_MAX_BUILD_ATTEMPTS
   try {
     // Signed ones first so an in-flight transaction resolves before another is signed.
     const open = state
@@ -476,15 +472,6 @@ export async function settlePayouts(params: {
         track.failures += 1
         track.nextAt =
           now + Math.min(PAYOUT_BACKOFF_MAX_MS, PAYOUT_BACKOFF_BASE_MS * 2 ** (track.failures - 1))
-        if (payout.status === 'owed' && track.failures >= maxBuildAttempts) {
-          try {
-            await state.setPayoutState(gameId, { status: 'stuck' })
-            await state.flush()
-            track.lastAlertAt = undefined // a new state alerts at once
-          } catch (err) {
-            console.error(`[blackjack-bot] could not mark payout for game ${gameId} stuck:`, err)
-          }
-        }
       } else if (after && after.status !== payout.status) {
         track.failures = 0
         track.nextAt = 0
@@ -499,7 +486,7 @@ export async function settlePayouts(params: {
     for (const [gameId, payout] of state.getUnconfirmedPayouts()) {
       const track: PayoutTrack = backoff.get(gameId) ?? { failures: 0, nextAt: 0 }
       backoff.set(gameId, track)
-      const needsOperator = payout.status === 'failed' || payout.status === 'stuck'
+      const needsOperator = payout.status === 'failed'
       if (!needsOperator && now - payout.owedAt < stuckAfterMs) continue
       if (track.lastAlertAt !== undefined && now - track.lastAlertAt < alertEveryMs) continue
       track.lastAlertAt = now
@@ -1160,9 +1147,21 @@ export async function runBlackjackLoop(
 
       const payloadHashHex = Buffer.from(message.message.payloadHash).toString('hex')
       if (state.hasProcessed(payloadHashHex)) continue
+      // At-most-once handling: the marker is made DURABLE before the message is handled. If handling
+      // then throws or the process dies, the message is skipped on restart (exactly as on main) and
+      // never re-run; a per-message failure is logged (structured) instead of crashing the loop.
       state.addProcessed(payloadHashHex)
+      await state.flush()
 
-      const acted = await deps.processMessage(message)
+      let acted: { action: string; gameId: string } | undefined
+      try {
+        acted = await deps.processMessage(message)
+      } catch (err) {
+        console.error(
+          `[blackjack-bot] MESSAGE FAILED ${JSON.stringify({ payloadHash: payloadHashHex, timestamp: message.timestamp, error: String((err as Error)?.message ?? err) })} (marked processed; it will NOT be retried)`,
+        )
+        continue
+      }
       if (!acted) continue
       lastActivityAt = now()
       if (acted.action === 'reveal' || (state.getGame(acted.gameId)?.revealed ?? false)) {

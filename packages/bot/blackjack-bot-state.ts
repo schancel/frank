@@ -71,10 +71,9 @@ export interface RefundRecord {
  * - `confirmed`: a receipt shows success. Terminal.
  * - `failed`: the transaction mined but reverted (value not moved). Terminal for the bot, left for
  *   an operator (a re-sign would be sound here, but is deliberately not automated).
- * - `stuck`: the payout could not even be built/signed after a bounded number of attempts (e.g. a
- *   contract recipient whose gas estimation reverts). Nothing was signed. Operator only.
- * Both `failed` and `stuck` still count as owed in `openExposureWei` (the debt is real); the
- * operator tool's `requeue` is the way out. */
+ * A payout that cannot be built (RPC outage, estimateGas error, underfunded payer) simply stays
+ * `owed` and is retried forever; it alerts but never changes state. `failed` still counts as owed
+ * in `openExposureWei` (the debt is real); the operator tool's `requeue` is the way out. */
 export interface PayoutRecord {
   status: PayoutStatus
   amountWei: bigint
@@ -92,14 +91,12 @@ export type PayoutStatus =
   | 'submitted'
   | 'confirmed'
   | 'failed'
-  | 'stuck'
 const PAYOUT_STATUSES: readonly PayoutStatus[] = [
   'owed',
   'submitting',
   'submitted',
   'confirmed',
   'failed',
-  'stuck',
 ]
 
 export interface ServerSeedCommitment {
@@ -291,11 +288,21 @@ export class BlackjackBotStateStore {
           }
           this.pendingServerSeedHash = parsed
         } else if (key === SINCE_KEY) {
-          const parsed = JSON.parse(decodeUtf8Strict(valueBytes, 'poll cursor'))
-          if (!Number.isSafeInteger(parsed) || parsed < 0) {
-            throw new Error('poll cursor must be a non-negative integer')
+          // A corrupt cursor must not brick the bot: ignore it (the loop then starts at "now" and
+          // overwrites it) and say so loudly. Handled messages are still deduped by their markers.
+          try {
+            const parsed = JSON.parse(decodeUtf8Strict(valueBytes, 'poll cursor'))
+            if (!Number.isSafeInteger(parsed) || parsed < 0) {
+              throw new Error('poll cursor must be a non-negative integer')
+            }
+            this.sinceMs = parsed
+          } catch (err) {
+            console.error(
+              '[blackjack-bot] CURSOR CORRUPT: ignoring the persisted poll cursor and starting at now; messages sent while the bot was down may need manual review:',
+              err,
+            )
+            this.sinceMs = undefined
           }
-          this.sinceMs = parsed
         } else if (key.startsWith(GAME_PREFIX)) {
           const gameIdRaw = key.slice(GAME_PREFIX.length)
           let wagerTxHash: string | undefined
@@ -682,7 +689,7 @@ export class BlackjackBotStateStore {
     return this.games.get(normalizeBlackjackGameId(gameId))?.payout
   }
 
-  /** Every payout that is not `confirmed` (includes `failed`/`stuck`, which need an operator). */
+  /** Every payout that is not `confirmed` (includes `failed`, which needs an operator). */
   getUnconfirmedPayouts(): Array<[string, PayoutRecord]> {
     const rows: Array<[string, PayoutRecord]> = []
     for (const [gameId, game] of this.games) {
@@ -726,12 +733,11 @@ export class BlackjackBotStateStore {
       const current = existing?.payout
       if (!existing || !current) throw new Error('no payout is owed for this game')
       const allowed: Record<PayoutStatus, PayoutStatus[]> = {
-        owed: ['submitting', 'stuck'],
+        owed: ['submitting'],
         submitting: ['submitted', 'confirmed', 'failed'],
         submitted: ['confirmed', 'failed'],
         confirmed: [],
         failed: [],
-        stuck: [],
       }
       if (!allowed[current.status].includes(next.status)) {
         throw new Error(`illegal payout transition ${current.status} -> ${next.status}`)
@@ -760,34 +766,32 @@ export class BlackjackBotStateStore {
     })
   }
 
-  /** Operator escape hatch: moves a `failed`/`stuck` payout back to `owed`, dropping the journaled
-   * transaction so it is signed afresh. Refuses any other status. The caller (the admin tool) is
-   * responsible for having verified on chain that the old transaction did not and cannot mine. */
-  async requeuePayout(gameId: string): Promise<void> {
+  /** Operator escape hatch: moves a payout whose status is in `from` back to `owed`, dropping the
+   * journaled transaction so it is signed afresh. Refuses any other status. The caller (the admin
+   * tool) is responsible for the evidence: `failed` (mined, reverted) needs none beyond that
+   * receipt; `submitting`/`submitted` need proof the old tx can never mine (its nonce was consumed
+   * by another confirmed tx). */
+  async requeuePayout(gameId: string, from: readonly PayoutStatus[]): Promise<void> {
     const id = normalizeBlackjackGameId(gameId)
+    const check = (status: PayoutStatus | undefined) => {
+      if (!status) throw new Error('no payout is owed for this game')
+      if (!from.includes(status)) {
+        throw new Error(`this requeue mode only accepts ${from.join('/')} payouts (this one is ${status})`)
+      }
+    }
     // Refuse up front, outside the mutation queue: a rejected queued mutation would otherwise
     // resurface as an error from the next unrelated `flush()`.
-    const status = this.games.get(id)?.payout?.status
-    if (status !== 'failed' && status !== 'stuck') {
-      throw new Error(
-        status
-          ? `only a failed or stuck payout can be requeued (this one is ${status})`
-          : 'no payout is owed for this game',
-      )
-    }
+    check(this.games.get(id)?.payout?.status)
     await this.serializeMutation(async () => {
       const existing = this.games.get(id)
       const current = existing?.payout
-      if (!existing || !current) throw new Error('no payout is owed for this game')
-      if (current.status !== 'failed' && current.status !== 'stuck') {
-        throw new Error(`only a failed or stuck payout can be requeued (this one is ${current.status})`)
-      }
+      check(current?.status)
       const payout: PayoutRecord = {
         status: 'owed',
-        amountWei: current.amountWei,
-        owedAt: current.owedAt,
+        amountWei: current!.amountWei,
+        owedAt: current!.owedAt,
       }
-      const record: BlackjackGameRecord = { ...existing, payout }
+      const record: BlackjackGameRecord = { ...existing!, payout }
       await this.db.put(
         encodeUtf8(GAME_PREFIX + id) as never,
         encodeUtf8(serializeGameRecord(record)) as never,
@@ -1210,7 +1214,7 @@ function validateRuntimeGameRecord(
     if (record.authority !== 'verified-wager-sender' || !record.revealed) {
       throw new Error(`game ${gameId} has a payout without being a resolved verified game`)
     }
-    const signed = p.status !== 'owed' && p.status !== 'stuck'
+    const signed = p.status !== 'owed'
     if (signed !== (typeof p.rawTx === 'string' && typeof p.txHash === 'string')) {
       throw new Error(`game ${gameId} payout journal does not match its status`)
     }

@@ -50,6 +50,7 @@
         class="q-pa-xs q-ma-none"
         color="primary"
         icon="content_copy"
+        :aria-label="$t('accountStep.copyRecoveryPhrase')"
         @click="copySeed"
       />
       <q-btn
@@ -58,6 +59,7 @@
         class="q-pa-xs q-ma-none"
         color="primary"
         icon="refresh"
+        :aria-label="$t('accountStep.refreshRecoveryPhrase')"
         @click="generateMnemonic"
       />
     </div>
@@ -70,6 +72,13 @@ import { copyToClipboard } from 'quasar'
 
 import { generateMnemonic, validateMnemonic } from 'bip39'
 import { seedCopiedNotify } from '../../utils/notifications'
+import { normalizeSetupMnemonic } from '../../utils/setup-account'
+
+interface AccountData {
+  name: string
+  seed: string
+  valid?: boolean
+}
 
 export default defineComponent({
   model: {
@@ -77,7 +86,7 @@ export default defineComponent({
   },
   props: {
     accountData: {
-      type: Object as PropType<{ name: string; seed: string }>,
+      type: Object as PropType<AccountData>,
       required: true,
     },
   },
@@ -87,28 +96,31 @@ export default defineComponent({
     const rawName = ref(props.accountData.name)
     const rawSeed = ref(props.accountData.seed)
     const isSeedValid = computed(() => {
-      return validateMnemonic(rawSeed.value.toLowerCase().trim())
+      return validateMnemonic(normalizeSetupMnemonic(rawSeed.value))
     })
     const isValid = computed(() => {
       if (action.value === 'new') {
         return rawName.value.length > 0 && isSeedValid.value
       }
       if (action.value === 'import') {
-        return isSeedValid
+        return isSeedValid.value
       }
       return false
     })
+    const emitAccountData = () => {
+      emit('update:account-data', {
+        name: rawName.value,
+        seed: normalizeSetupMnemonic(rawSeed.value),
+        valid: isValid.value,
+      })
+    }
     const seed = computed({
       get() {
         return rawSeed.value
       },
       set(val: string) {
         rawSeed.value = val
-        emit('update:account-data', {
-          name: rawName,
-          seed: rawSeed.value.toLowerCase().trim(),
-          valid: isValid,
-        })
+        emitAccountData()
       },
     })
 
@@ -118,11 +130,7 @@ export default defineComponent({
       },
       set(val: string) {
         rawName.value = val
-        emit('update:account-data', {
-          name: rawName.value,
-          seed: rawSeed.value,
-          valid: isValid.value,
-        })
+        emitAccountData()
       },
     })
 
@@ -145,14 +153,17 @@ export default defineComponent({
       },
       generateMnemonic() {
         rawSeed.value = generateMnemonic()
+        emitAccountData()
       },
       newAccount() {
         action.value = 'new'
         rawName.value = ''
+        emitAccountData()
       },
       importAccount() {
         action.value = 'import'
         rawSeed.value = ''
+        emitAccountData()
       },
     }
   },

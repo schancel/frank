@@ -96,6 +96,7 @@ import { displayToSafeRawAmount } from 'src/utils/chain-amount'
 
 import AMessage from '../components/forum/ForumMessage.vue'
 import { errorNotify, infoNotify } from 'src/utils/notifications'
+import { submitPost } from 'src/utils/submit-post'
 
 export default defineComponent({
   setup() {
@@ -176,26 +177,24 @@ export default defineComponent({
         return
       }
 
-      try {
-        const wallet = await useActiveWallet()
-        await this.postMessage({
-          wallet,
-          entry,
-          satoshis: displayToSafeRawAmount(
-            activeChain,
-            this.offering.toString(),
-          ),
-          topic: this.topic,
-          parentDigest: this.parentDigest,
-        })
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      } catch (err: any) {
-        errorNotify(err)
-        return
-      } finally {
-        this.back()
-      }
-      infoNotify('Post created!')
+      await submitPost({
+        submit: async () => {
+          const wallet = await useActiveWallet()
+          await this.postMessage({
+            wallet,
+            entry,
+            satoshis: displayToSafeRawAmount(
+              activeChain,
+              this.offering.toString(),
+            ),
+            topic: this.topic,
+            parentDigest: this.parentDigest,
+          })
+        },
+        errorNotify,
+        infoNotify,
+        navigateBack: this.back,
+      })
     },
     back() {
       window.history.length > 1 ? this.$router.go(-1) : this.$router.push('/')

@@ -9,7 +9,7 @@ use std::{fmt::Debug, time::Duration};
 use bitcoinsuite_core::{Hashed, Sha256};
 use bitcoinsuite_error::{ErrorMeta, Result, WrapErr};
 use prost::Message;
-use rocksdb::{ColumnFamilyDescriptor, IteratorMode};
+use rocksdb::{ColumnFamilyDescriptor, Direction, IteratorMode};
 use sha3::{Digest, Keccak256};
 use thiserror::Error;
 
@@ -23,11 +23,25 @@ use crate::{
 };
 
 const RECORD_VERSION_V1: u8 = 1;
-const RECORD_VERSION: u8 = 2;
+const RECORD_VERSION_V2: u8 = 2;
+const RECORD_VERSION: u8 = 3;
 const PAYLOAD_HASH_LEN: usize = 32;
 const MEMBER_KEY_LEN: usize = PAYLOAD_HASH_LEN + 4;
 const RECIPIENT_KEY_LEN: usize = 20 + PAYLOAD_HASH_LEN;
 const MAX_HISTORY_RECORDS_HARD: usize = 4096;
+// At the hard 2 MiB canonical cap, one migration chunk retains at most ~32 MiB of row values.
+const MIGRATION_BATCH_SIZE: usize = 16;
+const MAX_CANONICAL_BYTES_HARD: usize = 2 * 1024 * 1024;
+const MAX_MEMBERS_HARD: usize = 4096;
+const MAX_LAST_ERROR_BYTES_HARD: usize = 4096;
+const MAX_NETWORK_TAG_BYTES_HARD: usize = 64;
+const MAX_RECIPIENT_PUBKEY_BYTES_HARD: usize = 65;
+// V1/V2 rows predate frozen retry policy. These fixed compatibility defaults match the policy
+// shipped with those formats; reopening them never consults mutable process configuration.
+const LEGACY_MAX_CLAIM_AGE: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+const LEGACY_MAX_MEMBER_ATTEMPTS: u32 = 32;
+const LEGACY_RETRY_BACKOFF_BASE: Duration = Duration::from_secs(1);
+const LEGACY_RETRY_BACKOFF_MAX: Duration = Duration::from_secs(5 * 60);
 
 /// Resource bounds applied before an outbox batch can amplify an untrusted request on disk.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -42,6 +56,10 @@ pub struct MonadOutboxLimits {
     pub max_claim_age: Duration,
     /// Maximum persisted attempts for one member.
     pub max_member_attempts: u32,
+    /// Frozen base delay between replay attempts for a newly claimed member.
+    pub retry_backoff_base: Duration,
+    /// Frozen maximum delay between replay attempts for a newly claimed member.
+    pub max_retry_backoff: Duration,
     /// Maximum UTF-8 bytes retained from an infrastructure or terminal error.
     pub max_last_error_bytes: usize,
     /// Maximum frozen network-tag bytes.
@@ -67,6 +85,8 @@ impl Default for MonadOutboxLimits {
             max_active_claims: 1024,
             max_claim_age: Duration::from_secs(7 * 24 * 60 * 60),
             max_member_attempts: 32,
+            retry_backoff_base: Duration::from_secs(1),
+            max_retry_backoff: Duration::from_secs(5 * 60),
             max_last_error_bytes: 512,
             max_network_tag_bytes: 64,
             max_recipient_pubkey_bytes: 65,
@@ -75,6 +95,13 @@ impl Default for MonadOutboxLimits {
             max_history_bytes: 16 * 1024 * 1024,
             max_history_age: Duration::from_secs(30 * 24 * 60 * 60),
         }
+    }
+}
+
+impl MonadOutboxLimits {
+    /// Reject writer settings that could create rows the hard-bounded decoder cannot reopen.
+    pub(crate) fn validate(&self) -> Result<()> {
+        validate_limits(self)
     }
 }
 
@@ -134,6 +161,14 @@ pub struct MonadOutboxRecord {
     pub created_at_ms: i64,
     /// Last durable transition time in Unix milliseconds.
     pub updated_at_ms: i64,
+    /// Frozen absolute expiry. Later process configuration cannot shorten an accepted claim.
+    pub expires_at_ms: i64,
+    /// Frozen member-attempt ceiling.
+    pub max_member_attempts: u32,
+    /// Frozen exponential backoff base in milliseconds.
+    pub retry_backoff_base_ms: u64,
+    /// Frozen exponential backoff ceiling in milliseconds.
+    pub max_retry_backoff_ms: u64,
     /// Aggregate lifecycle.
     pub lifecycle: MonadOutboxLifecycle,
     /// Number of persisted member-attempt starts.
@@ -173,6 +208,8 @@ pub struct MonadOutboxMember {
     pub lease_generation: u64,
     /// Unix millisecond deadline after which another reconciler may acquire a new generation.
     pub lease_until_ms: i64,
+    /// Frozen-policy-derived earliest time another replay attempt may start.
+    pub next_replay_at_ms: i64,
     /// Last transition time in Unix milliseconds.
     pub updated_at_ms: i64,
     /// Bounded diagnostic text.
@@ -298,6 +335,17 @@ pub enum DbMonadOutboxError {
         /// Configured byte ceiling.
         maximum: usize,
     },
+    /// A configured writer bound exceeds the corresponding durable decoder cap.
+    #[invalid_user_input()]
+    #[error("Monad outbox configured {field} limit {actual} exceeds codec cap {maximum}")]
+    ConfiguredLimitExceedsCodec {
+        /// Limit name.
+        field: &'static str,
+        /// Configured value.
+        actual: usize,
+        /// Hard decoder cap.
+        maximum: usize,
+    },
     /// A requested child is outside the canonical request.
     #[invalid_user_input()]
     #[error("Monad outbox child {0} does not exist")]
@@ -352,78 +400,105 @@ impl<'a> DbMonadOutbox<'a> {
         }
     }
 
-    /// Upgrade frozen-version delivered rows by removing their duplicate canonical outbox copy.
-    /// The inbox already owns those bytes atomically in v1; reopening completes the ownership
-    /// transfer before the database is returned to callers.
+    /// Upgrade legacy delivered ownership/cursors and index bounded legacy terminal history.
+    /// Progress is committed with each bounded chunk, so a crash resumes after the last key
+    /// without accumulating the whole outbox in memory.
     pub(crate) fn migrate_legacy_delivered_ownership(&self) -> Result<()> {
-        const MIGRATION_KEY: &[u8] = b"delivered-owner-v2";
+        const MIGRATION_KEY: &[u8] = b"outbox-lifecycle-v3";
+        const CURSOR_KEY: &[u8] = b"outbox-lifecycle-v3-cursor";
         if self.db.get(self.cf_meta, MIGRATION_KEY)?.is_some() {
             return Ok(());
         }
-        let mut payloads = Vec::new();
-        for item in self
-            .db
-            .rocksdb()
-            .iterator_cf(self.cf_outbox, IteratorMode::Start)
-        {
-            let (key, value) = item?;
-            let record = decode_record(&value)?;
-            if record.lifecycle == MonadOutboxLifecycle::Delivered
-                && record.canonical_message.is_some()
-            {
-                payloads.push(checked_payload_hash(&key)?);
+        loop {
+            let cursor = self.db.get(self.cf_meta, CURSOR_KEY)?;
+            let mode = cursor
+                .as_deref()
+                .map(|key| IteratorMode::From(key, Direction::Forward))
+                .unwrap_or(IteratorMode::Start);
+            let mut rows = Vec::with_capacity(MIGRATION_BATCH_SIZE);
+            for item in self.db.rocksdb().iterator_cf(self.cf_outbox, mode) {
+                let (key, value) = item?;
+                if cursor.as_deref() == Some(key.as_ref()) {
+                    continue;
+                }
+                rows.push((key.to_vec(), value.to_vec()));
+                if rows.len() == MIGRATION_BATCH_SIZE {
+                    break;
+                }
             }
-        }
-        for (index, payload_hash) in payloads.into_iter().enumerate() {
+            if rows.is_empty() {
+                let mut batch = rocksdb::WriteBatch::default();
+                batch.put_cf(self.cf_meta, MIGRATION_KEY, []);
+                batch.delete_cf(self.cf_meta, CURSOR_KEY);
+                self.db.write_batch(batch)?;
+                break;
+            }
+
             let _guard = self.db.lock_monad_outbox();
-            let mut record = self
-                .get(&payload_hash)?
-                .ok_or_else(|| CorruptRecord("legacy delivered row disappeared".to_string()))?;
-            if record.lifecycle != MonadOutboxLifecycle::Delivered
-                || record.canonical_message.is_none()
-            {
-                continue;
-            }
-            self.db
-                .monad_messages()
-                .get(&payload_hash)?
-                .ok_or_else(|| {
-                    CorruptRecord("legacy delivered row has no inbox owner".to_string())
-                })?;
-            let message = Self::canonical_message(&record)?;
-            let policy = active_policy(&record)?.clone();
-            record.canonical_message = None;
-            record.policy = None;
-            record.last_error.clear();
-            let encoded = encode_record(&record);
             let mut batch = rocksdb::WriteBatch::default();
-            batch.put_cf(self.cf_outbox, payload_hash, &encoded);
-            batch.delete_cf(self.cf_active, payload_hash);
-            batch.delete_cf(
-                self.cf_recipient,
-                recipient_key(&policy.recipient, &payload_hash),
-            );
-            for payment in message.stamp_payments {
-                batch.delete_cf(
-                    self.cf_members,
-                    member_key(&payload_hash, payment.child_index),
-                );
+            for (key, value) in &rows {
+                let payload_hash = checked_payload_hash(key)?;
+                let mut record = decode_record(value)?;
+                if record.lifecycle == MonadOutboxLifecycle::Delivered
+                    && record.canonical_message.is_some()
+                {
+                    let message = Self::canonical_message(&record)?;
+                    let policy = active_policy(&record)?.clone();
+                    let mut stored =
+                        self.db
+                            .monad_messages()
+                            .get(&payload_hash)?
+                            .ok_or_else(|| {
+                                CorruptRecord("legacy delivered row has no inbox owner".to_string())
+                            })?;
+                    if stored.timestamp != record.updated_at_ms {
+                        stored.timestamp = record.updated_at_ms;
+                        self.db.monad_messages().append_put_to_batch(
+                            &mut batch,
+                            &payload_hash,
+                            &policy.recipient,
+                            &stored,
+                        )?;
+                    }
+                    record.canonical_message = None;
+                    record.policy = None;
+                    record.last_error.clear();
+                    let encoded = encode_record(&record);
+                    batch.put_cf(self.cf_outbox, payload_hash, &encoded);
+                    batch.delete_cf(self.cf_active, payload_hash);
+                    batch.delete_cf(
+                        self.cf_recipient,
+                        recipient_key(&policy.recipient, &payload_hash),
+                    );
+                    for payment in message.stamp_payments {
+                        batch.delete_cf(
+                            self.cf_members,
+                            member_key(&payload_hash, payment.child_index),
+                        );
+                    }
+                    batch.put_cf(
+                        self.cf_history,
+                        history_key(record.updated_at_ms, &payload_hash),
+                        (encoded.len() as u64).to_be_bytes(),
+                    );
+                } else if matches!(record.lifecycle, MonadOutboxLifecycle::Terminal(_))
+                    && !self.has_recovery_facts_locked(&payload_hash, &record)?
+                {
+                    batch.put_cf(
+                        self.cf_history,
+                        history_key(record.updated_at_ms, &payload_hash),
+                        self.retained_claim_bytes_locked(&payload_hash, &record, value.len())?
+                            .to_be_bytes(),
+                    );
+                }
             }
-            batch.put_cf(
-                self.cf_history,
-                history_key(record.updated_at_ms, &payload_hash),
-                (encoded.len() as u64).to_be_bytes(),
-            );
+            batch.put_cf(self.cf_meta, CURSOR_KEY, &rows.last().unwrap().0);
             self.db.write_batch(batch)?;
             drop(_guard);
-            if (index + 1) % MAX_HISTORY_RECORDS_HARD == 0 {
-                self.gc_history(unix_now_ms(), &MonadOutboxLimits::default())?;
-            }
+            self.gc_history(unix_now_ms(), &MonadOutboxLimits::default())?;
         }
         self.gc_history(unix_now_ms(), &MonadOutboxLimits::default())?;
-        let mut batch = rocksdb::WriteBatch::default();
-        batch.put_cf(self.cf_meta, MIGRATION_KEY, []);
-        self.db.write_batch(batch)
+        Ok(())
     }
 
     /// Create the canonical row and all child references atomically, or classify an exact retry.
@@ -437,6 +512,7 @@ impl<'a> DbMonadOutbox<'a> {
     ) -> Result<MonadOutboxClaim> {
         let payload_hash = checked_payload_hash(payload_hash)?;
         let canonical_message = message.encode_to_vec();
+        validate_limits(limits)?;
         validate_claim(&payload_hash, message, &canonical_message, policy, limits)?;
 
         let _guard = self.db.lock_monad_outbox();
@@ -470,6 +546,10 @@ impl<'a> DbMonadOutbox<'a> {
                     policy: None,
                     created_at_ms: stored.timestamp,
                     updated_at_ms: stored.timestamp,
+                    expires_at_ms: stored.timestamp,
+                    max_member_attempts: 0,
+                    retry_backoff_base_ms: 0,
+                    max_retry_backoff_ms: 0,
                     lifecycle: MonadOutboxLifecycle::Delivered,
                     reconciliation_attempts: 0,
                     last_error: String::new(),
@@ -487,6 +567,10 @@ impl<'a> DbMonadOutbox<'a> {
             policy: Some(policy.clone()),
             created_at_ms: now_ms,
             updated_at_ms: now_ms,
+            expires_at_ms: now_ms.saturating_add(duration_ms_i64(limits.max_claim_age)),
+            max_member_attempts: limits.max_member_attempts,
+            retry_backoff_base_ms: duration_ms_u64(limits.retry_backoff_base),
+            max_retry_backoff_ms: duration_ms_u64(limits.max_retry_backoff),
             lifecycle: MonadOutboxLifecycle::Pending,
             reconciliation_attempts: 0,
             last_error: String::new(),
@@ -503,6 +587,7 @@ impl<'a> DbMonadOutbox<'a> {
                 attempts: 0,
                 lease_generation: 0,
                 lease_until_ms: 0,
+                next_replay_at_ms: now_ms,
                 updated_at_ms: now_ms,
                 last_error: String::new(),
             };
@@ -554,6 +639,7 @@ impl<'a> DbMonadOutbox<'a> {
         child_index: u32,
     ) -> Result<(MonadOutboxRecord, MonadOutboxMember, Vec<u8>)> {
         let payload_hash = checked_payload_hash(payload_hash)?;
+        let _guard = self.db.lock_monad_outbox();
         let record = self
             .get(&payload_hash)?
             .ok_or_else(|| CorruptRecord("member references missing outbox".to_string()))?;
@@ -659,6 +745,7 @@ impl<'a> DbMonadOutbox<'a> {
         now_ms: i64,
         limits: &MonadOutboxLimits,
     ) -> Result<MonadOutboxReplayStart> {
+        validate_limits(limits)?;
         let payload_hash = checked_payload_hash(payload_hash)?;
         let _guard = self.db.lock_monad_outbox();
         let mut record = self
@@ -675,11 +762,12 @@ impl<'a> DbMonadOutbox<'a> {
         {
             return Ok(MonadOutboxReplayStart::Stale);
         }
-        let age_ms = now_ms.saturating_sub(record.created_at_ms);
-        let max_age_ms = i64::try_from(limits.max_claim_age.as_millis()).unwrap_or(i64::MAX);
-        let terminal = if age_ms > max_age_ms {
+        if now_ms < member.next_replay_at_ms {
+            return Ok(MonadOutboxReplayStart::Stale);
+        }
+        let terminal = if now_ms > record.expires_at_ms {
             Some((MonadOutboxTerminal::Expired, "claim age limit exceeded"))
-        } else if member.attempts >= limits.max_member_attempts {
+        } else if member.attempts >= record.max_member_attempts {
             Some((
                 MonadOutboxTerminal::AttemptsExhausted,
                 "member attempt limit exceeded",
@@ -855,6 +943,7 @@ impl<'a> DbMonadOutbox<'a> {
         now_ms: i64,
         limits: &MonadOutboxLimits,
     ) -> Result<MonadOutboxTransition> {
+        validate_limits(limits)?;
         let payload_hash = checked_payload_hash(payload_hash)?;
         let _guard = self.db.lock_monad_outbox();
         let mut record = self
@@ -875,6 +964,11 @@ impl<'a> DbMonadOutbox<'a> {
         member.last_error = detail.clone();
         member.updated_at_ms = now_ms;
         member.lease_until_ms = 0;
+        member.next_replay_at_ms = now_ms.saturating_add(retry_backoff_ms(
+            member.attempts,
+            record.retry_backoff_base_ms,
+            record.max_retry_backoff_ms,
+        ));
         record.last_error = detail;
         record.updated_at_ms = now_ms;
         let mut batch = rocksdb::WriteBatch::default();
@@ -942,6 +1036,7 @@ impl<'a> DbMonadOutbox<'a> {
         now_ms: i64,
         limits: &MonadOutboxLimits,
     ) -> Result<MonadOutboxTransition> {
+        validate_limits(limits)?;
         let payload_hash = checked_payload_hash(payload_hash)?;
         let _guard = self.db.lock_monad_outbox();
         let mut record = self
@@ -982,14 +1077,15 @@ impl<'a> DbMonadOutbox<'a> {
         detail: &str,
         now_ms: i64,
         limits: &MonadOutboxLimits,
-    ) -> Result<()> {
+    ) -> Result<MonadOutboxTransition> {
+        validate_limits(limits)?;
         let payload_hash = checked_payload_hash(payload_hash)?;
         let _guard = self.db.lock_monad_outbox();
         let mut record = self
             .get(&payload_hash)?
             .ok_or_else(|| CorruptRecord("terminal claim has no outbox row".to_string()))?;
         if !matches!(record.lifecycle, MonadOutboxLifecycle::Pending) {
-            return Ok(());
+            return Ok(MonadOutboxTransition::Stale);
         }
         record.lifecycle = MonadOutboxLifecycle::Terminal(terminal);
         record.updated_at_ms = now_ms;
@@ -1008,7 +1104,8 @@ impl<'a> DbMonadOutbox<'a> {
         }
         self.db.write_batch(batch)?;
         drop(_guard);
-        self.gc_history(now_ms, limits)
+        self.gc_history(now_ms, limits)?;
+        Ok(MonadOutboxTransition::Applied)
     }
 
     fn write_terminal_locked(
@@ -1030,20 +1127,27 @@ impl<'a> DbMonadOutbox<'a> {
         record.updated_at_ms = now_ms;
         record.last_error = detail;
         let encoded = encode_record(record);
+        let encoded_member = encode_member(member);
         let mut batch = rocksdb::WriteBatch::default();
         batch.put_cf(self.cf_outbox, payload_hash, &encoded);
         batch.put_cf(
             self.cf_members,
             member_key(payload_hash, member.child_index),
-            encode_member(member),
+            &encoded_member,
         );
         batch.delete_cf(self.cf_active, payload_hash);
         if !self.has_recovery_facts_locked(payload_hash, record)? {
             batch.put_cf(
                 self.cf_history,
                 history_key(now_ms, payload_hash),
-                self.retained_claim_bytes_locked(payload_hash, record, encoded.len())?
-                    .to_be_bytes(),
+                self.retained_claim_bytes_with_member_locked(
+                    payload_hash,
+                    record,
+                    encoded.len(),
+                    member.child_index,
+                    encoded_member.len(),
+                )?
+                .to_be_bytes(),
             );
         }
         self.db.write_batch(batch)?;
@@ -1199,6 +1303,10 @@ impl<'a> DbMonadOutbox<'a> {
         recipient: &Address,
         limit: usize,
     ) -> Result<Vec<ConfirmedPrefixRecovery>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let _guard = self.db.lock_monad_outbox();
         let prefix = recipient.0;
         let mut recoveries = Vec::new();
         for item in self
@@ -1292,62 +1400,101 @@ impl<'a> DbMonadOutbox<'a> {
         Ok(total)
     }
 
+    fn retained_claim_bytes_with_member_locked(
+        &self,
+        payload_hash: &[u8; 32],
+        record: &MonadOutboxRecord,
+        encoded_record_len: usize,
+        staged_child_index: u32,
+        staged_member_len: usize,
+    ) -> Result<u64> {
+        let mut total = encoded_record_len as u64;
+        if let Ok(message) = Self::canonical_message(record) {
+            for payment in message.stamp_payments {
+                let len = if payment.child_index == staged_child_index {
+                    staged_member_len
+                } else {
+                    self.get_member(payload_hash, payment.child_index)?
+                        .map(|member| encode_member(&member).len())
+                        .unwrap_or_default()
+                };
+                total = total.saturating_add(len as u64);
+            }
+        }
+        Ok(total)
+    }
+
     /// Enforce bounded delivered/non-recoverable-terminal history. Recipient recovery rows are
     /// never indexed here and are defensively skipped if an inconsistent index is encountered.
     pub fn gc_history(&self, now_ms: i64, limits: &MonadOutboxLimits) -> Result<()> {
         let _guard = self.db.lock_monad_outbox();
         let max_records = limits.max_history_records.min(MAX_HISTORY_RECORDS_HARD);
-        let scan_limit = MAX_HISTORY_RECORDS_HARD.saturating_add(1);
-        let mut entries = Vec::new();
-        for item in self
-            .db
-            .rocksdb()
-            .iterator_cf(self.cf_history, IteratorMode::Start)
-            .take(scan_limit)
-        {
-            let (key, value) = item?;
-            let (timestamp, payload_hash) = decode_history_key(&key)?;
-            let bytes = value
-                .as_ref()
-                .try_into()
-                .map(u64::from_be_bytes)
-                .map_err(|_| CorruptRecord("history byte count is malformed".to_string()))?;
-            entries.push((key.to_vec(), timestamp, payload_hash, bytes));
-        }
         let max_age_ms = i64::try_from(limits.max_history_age.as_millis()).unwrap_or(i64::MAX);
-        let mut retained_count = entries.len();
-        let mut retained_bytes = entries
-            .iter()
-            .fold(0u64, |sum, entry| sum.saturating_add(entry.3));
-        let mut batch = rocksdb::WriteBatch::default();
-        for (key, timestamp, payload_hash, bytes) in entries {
-            let age_expired = now_ms.saturating_sub(timestamp) > max_age_ms;
-            let over_count = retained_count > max_records;
-            let over_bytes = retained_bytes > limits.max_history_bytes as u64;
-            if !age_expired && !over_count && !over_bytes {
-                continue;
+        loop {
+            let mut retained_count = 0usize;
+            let mut retained_bytes = 0u64;
+            for item in self
+                .db
+                .rocksdb()
+                .iterator_cf(self.cf_history, IteratorMode::Start)
+            {
+                let (_, value) = item?;
+                let bytes = value
+                    .as_ref()
+                    .try_into()
+                    .map(u64::from_be_bytes)
+                    .map_err(|_| CorruptRecord("history byte count is malformed".to_string()))?;
+                retained_count = retained_count.saturating_add(1);
+                retained_bytes = retained_bytes.saturating_add(bytes);
             }
-            let record = self.get(&payload_hash)?;
-            if let Some(record) = record {
-                if self.has_recovery_facts_locked(&payload_hash, &record)? {
-                    batch.delete_cf(self.cf_history, key);
-                    continue;
+
+            let mut changed = 0usize;
+            let mut batch = rocksdb::WriteBatch::default();
+            for item in self
+                .db
+                .rocksdb()
+                .iterator_cf(self.cf_history, IteratorMode::Start)
+            {
+                let (key, value) = item?;
+                let (timestamp, payload_hash) = decode_history_key(&key)?;
+                let bytes = value
+                    .as_ref()
+                    .try_into()
+                    .map(u64::from_be_bytes)
+                    .map_err(|_| CorruptRecord("history byte count is malformed".to_string()))?;
+                let age_expired = now_ms.saturating_sub(timestamp) > max_age_ms;
+                let over_count = retained_count > max_records;
+                let over_bytes = retained_bytes > limits.max_history_bytes as u64;
+                if !age_expired && !over_count && !over_bytes {
+                    break;
                 }
-                if let Ok(message) = Self::canonical_message(&record) {
-                    for payment in message.stamp_payments {
-                        batch.delete_cf(
-                            self.cf_members,
-                            member_key(&payload_hash, payment.child_index),
-                        );
+                let record = self.get(&payload_hash)?;
+                if let Some(record) = record {
+                    if !self.has_recovery_facts_locked(&payload_hash, &record)? {
+                        if let Ok(message) = Self::canonical_message(&record) {
+                            for payment in message.stamp_payments {
+                                batch.delete_cf(
+                                    self.cf_members,
+                                    member_key(&payload_hash, payment.child_index),
+                                );
+                            }
+                        }
+                        batch.delete_cf(self.cf_outbox, payload_hash);
                     }
                 }
-                batch.delete_cf(self.cf_outbox, payload_hash);
+                batch.delete_cf(self.cf_history, key);
+                retained_count = retained_count.saturating_sub(1);
+                retained_bytes = retained_bytes.saturating_sub(bytes);
+                changed += 1;
+                if changed == MAX_HISTORY_RECORDS_HARD {
+                    break;
+                }
             }
-            batch.delete_cf(self.cf_history, key);
-            retained_count = retained_count.saturating_sub(1);
-            retained_bytes = retained_bytes.saturating_sub(bytes);
+            if changed == 0 {
+                return Ok(());
+            }
+            self.db.write_batch(batch)?;
         }
-        self.db.write_batch(batch)
     }
 }
 
@@ -1376,6 +1523,59 @@ fn active_policy(record: &MonadOutboxRecord) -> Result<&MonadOutboxPolicy> {
     record.policy.as_ref().ok_or_else(|| {
         CorruptRecord("compact outbox tombstone has no active policy".to_string()).into()
     })
+}
+
+fn duration_ms_u64(duration: Duration) -> u64 {
+    duration.as_millis().try_into().unwrap_or(u64::MAX)
+}
+
+fn duration_ms_i64(duration: Duration) -> i64 {
+    duration.as_millis().try_into().unwrap_or(i64::MAX)
+}
+
+fn retry_backoff_ms(attempts: u32, base_ms: u64, max_ms: u64) -> i64 {
+    let multiplier = 1u128 << attempts.saturating_sub(1).min(31);
+    (u128::from(base_ms)
+        .saturating_mul(multiplier)
+        .min(u128::from(max_ms)))
+    .try_into()
+    .unwrap_or(i64::MAX)
+}
+
+fn validate_limits(limits: &MonadOutboxLimits) -> Result<()> {
+    for (field, actual, maximum) in [
+        (
+            "canonical bytes",
+            limits.max_canonical_bytes,
+            MAX_CANONICAL_BYTES_HARD,
+        ),
+        ("members", limits.max_members, MAX_MEMBERS_HARD),
+        (
+            "last-error bytes",
+            limits.max_last_error_bytes,
+            MAX_LAST_ERROR_BYTES_HARD,
+        ),
+        (
+            "network-tag bytes",
+            limits.max_network_tag_bytes,
+            MAX_NETWORK_TAG_BYTES_HARD,
+        ),
+        (
+            "recipient-public-key bytes",
+            limits.max_recipient_pubkey_bytes,
+            MAX_RECIPIENT_PUBKEY_BYTES_HARD,
+        ),
+    ] {
+        if actual > maximum {
+            return Err(ConfiguredLimitExceedsCodec {
+                field,
+                actual,
+                maximum,
+            }
+            .into());
+        }
+    }
+    Ok(())
 }
 
 fn validate_claim(
@@ -1529,6 +1729,10 @@ fn encode_record(record: &MonadOutboxRecord) -> Vec<u8> {
     bytes.extend_from_slice(&[RECORD_VERSION, lifecycle, terminal, kind]);
     bytes.extend_from_slice(&record.created_at_ms.to_be_bytes());
     bytes.extend_from_slice(&record.updated_at_ms.to_be_bytes());
+    bytes.extend_from_slice(&record.expires_at_ms.to_be_bytes());
+    bytes.extend_from_slice(&record.max_member_attempts.to_be_bytes());
+    bytes.extend_from_slice(&record.retry_backoff_base_ms.to_be_bytes());
+    bytes.extend_from_slice(&record.max_retry_backoff_ms.to_be_bytes());
     bytes.extend_from_slice(&record.reconciliation_attempts.to_be_bytes());
     put_bytes(&mut bytes, record.last_error.as_bytes());
     if let (Some(policy), Some(canonical_message)) = (&record.policy, &record.canonical_message) {
@@ -1547,7 +1751,7 @@ fn decode_record(bytes: &[u8]) -> Result<MonadOutboxRecord> {
     if version == RECORD_VERSION_V1 {
         return decode_record_v1(cursor);
     }
-    if version != RECORD_VERSION {
+    if version != RECORD_VERSION_V2 && version != RECORD_VERSION {
         return Err(CorruptRecord(format!("unsupported outbox record version {version}")).into());
     }
     let lifecycle_tag = cursor.u8()?;
@@ -1562,6 +1766,17 @@ fn decode_record(bytes: &[u8]) -> Result<MonadOutboxRecord> {
     };
     let created_at_ms = cursor.i64()?;
     let updated_at_ms = cursor.i64()?;
+    let (expires_at_ms, max_member_attempts, retry_backoff_base_ms, max_retry_backoff_ms) =
+        if version == RECORD_VERSION {
+            (cursor.i64()?, cursor.u32()?, cursor.u64()?, cursor.u64()?)
+        } else {
+            (
+                created_at_ms.saturating_add(duration_ms_i64(LEGACY_MAX_CLAIM_AGE)),
+                LEGACY_MAX_MEMBER_ATTEMPTS,
+                duration_ms_u64(LEGACY_RETRY_BACKOFF_BASE),
+                duration_ms_u64(LEGACY_RETRY_BACKOFF_MAX),
+            )
+        };
     let reconciliation_attempts = cursor.u32()?;
     let last_error = cursor.string(4096)?;
     let (policy, canonical_message) = match kind {
@@ -1596,6 +1811,10 @@ fn decode_record(bytes: &[u8]) -> Result<MonadOutboxRecord> {
         policy,
         created_at_ms,
         updated_at_ms,
+        expires_at_ms,
+        max_member_attempts,
+        retry_backoff_base_ms,
+        max_retry_backoff_ms,
         lifecycle,
         reconciliation_attempts,
         last_error,
@@ -1632,6 +1851,10 @@ fn decode_record_v1(mut cursor: Cursor<'_>) -> Result<MonadOutboxRecord> {
         }),
         created_at_ms,
         updated_at_ms,
+        expires_at_ms: created_at_ms.saturating_add(duration_ms_i64(LEGACY_MAX_CLAIM_AGE)),
+        max_member_attempts: LEGACY_MAX_MEMBER_ATTEMPTS,
+        retry_backoff_base_ms: duration_ms_u64(LEGACY_RETRY_BACKOFF_BASE),
+        max_retry_backoff_ms: duration_ms_u64(LEGACY_RETRY_BACKOFF_MAX),
         lifecycle,
         reconciliation_attempts,
         last_error,
@@ -1656,6 +1879,7 @@ fn encode_member(member: &MonadOutboxMember) -> Vec<u8> {
     bytes.extend_from_slice(&block.to_be_bytes());
     bytes.extend_from_slice(&member.lease_generation.to_be_bytes());
     bytes.extend_from_slice(&member.lease_until_ms.to_be_bytes());
+    bytes.extend_from_slice(&member.next_replay_at_ms.to_be_bytes());
     put_bytes(&mut bytes, member.last_error.as_bytes());
     bytes
 }
@@ -1663,7 +1887,7 @@ fn encode_member(member: &MonadOutboxMember) -> Vec<u8> {
 fn decode_member(child_index: u32, bytes: &[u8]) -> Result<MonadOutboxMember> {
     let mut cursor = Cursor::new(bytes);
     let version = cursor.u8()?;
-    if version != RECORD_VERSION_V1 && version != RECORD_VERSION {
+    if version != RECORD_VERSION_V1 && version != RECORD_VERSION_V2 && version != RECORD_VERSION {
         return Err(CorruptRecord(format!("unsupported member record version {version}")).into());
     }
     let state_tag = cursor.u8()?;
@@ -1673,10 +1897,12 @@ fn decode_member(child_index: u32, bytes: &[u8]) -> Result<MonadOutboxMember> {
     let updated_at_ms = cursor.i64()?;
     let value_wei = cursor.u128()?;
     let block_number = cursor.u64()?;
-    let (lease_generation, lease_until_ms) = if version == RECORD_VERSION {
-        (cursor.u64()?, cursor.i64()?)
+    let (lease_generation, lease_until_ms, next_replay_at_ms) = if version == RECORD_VERSION {
+        (cursor.u64()?, cursor.i64()?, cursor.i64()?)
+    } else if version == RECORD_VERSION_V2 {
+        (cursor.u64()?, cursor.i64()?, updated_at_ms)
     } else {
-        (0, 0)
+        (0, 0, updated_at_ms)
     };
     let last_error = cursor.string(4096)?;
     cursor.finish()?;
@@ -1696,6 +1922,7 @@ fn decode_member(child_index: u32, bytes: &[u8]) -> Result<MonadOutboxMember> {
         attempts,
         lease_generation,
         lease_until_ms,
+        next_replay_at_ms,
         updated_at_ms,
         last_error,
     })
@@ -2063,7 +2290,7 @@ mod tests {
                 &policy.recipient,
                 &proto::StoredMonadMessage {
                     message: Some(request.clone()),
-                    timestamp: 300,
+                    timestamp: 100,
                     network_tag: policy.network_tag.clone(),
                 },
             )?;
@@ -2089,6 +2316,7 @@ mod tests {
                 attempts: 1,
                 lease_generation: 0,
                 lease_until_ms: 0,
+                next_replay_at_ms: 200,
                 updated_at_ms: 200,
                 last_error: String::new(),
             };
@@ -2104,6 +2332,10 @@ mod tests {
             )?;
             db.rocksdb()
                 .delete_cf(store.cf_meta, b"delivered-owner-v2")?;
+            db.rocksdb()
+                .delete_cf(store.cf_meta, b"outbox-lifecycle-v3")?;
+            db.rocksdb()
+                .delete_cf(store.cf_meta, b"outbox-lifecycle-v3-cursor")?;
             assert_eq!(raw_occurrences(&db, raw), 2);
         }
         let db = Db::open(&path)?;
@@ -2120,6 +2352,105 @@ mod tests {
                 recipient_key(&policy().recipient, &payload_hash),
             )?
             .is_none());
+        let migrated = db.monad_messages().get(&payload_hash)?.unwrap();
+        assert_eq!(migrated.timestamp, 300);
+        assert_eq!(
+            db.monad_messages()
+                .list_for_recipient_since(&policy().recipient, 200)?,
+            vec![migrated]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn migration_indexes_v1_terminal_gc_without_erasing_confirmed_prefix() -> Result<()> {
+        let tempdir = tempdir::TempDir::new("monad-outbox-v1-terminal")?;
+        let path = tempdir.path().join("db.rocksdb");
+        let now = unix_now_ms();
+        let no_prefix = message_with_seed(b"v1 terminal no prefix", &[b"raw-no-prefix"]);
+        let with_prefix = message_with_seed(
+            b"v1 terminal prefix",
+            &[b"raw-prefix-zero", b"raw-prefix-one"],
+        );
+        {
+            let db = Db::open(&path)?;
+            let store = db.monad_outbox();
+            for (request, confirmed_prefix) in [(&no_prefix, false), (&with_prefix, true)] {
+                let payload_hash: [u8; 32] = request.payload_hash.as_slice().try_into().unwrap();
+                let policy = policy();
+                let mut record = vec![
+                    RECORD_VERSION_V1,
+                    3,
+                    terminal_tag(MonadOutboxTerminal::StaleNonce),
+                ];
+                record.extend_from_slice(&(now - 10).to_be_bytes());
+                record.extend_from_slice(&now.to_be_bytes());
+                record.extend_from_slice(&1u32.to_be_bytes());
+                record.extend_from_slice(&policy.min_value_wei.to_be_bytes());
+                record.extend_from_slice(&policy.recipient.0);
+                put_bytes(&mut record, &policy.recipient_pubkey);
+                put_bytes(&mut record, &policy.network_tag);
+                put_bytes(&mut record, b"legacy terminal");
+                put_bytes(&mut record, &request.encode_to_vec());
+                db.put(store.cf_outbox, payload_hash, record)?;
+                for payment in &request.stamp_payments {
+                    let member = MonadOutboxMember {
+                        child_index: payment.child_index,
+                        tx_hash: Hash32(Keccak256::digest(&payment.raw_tx).into()),
+                        state: if confirmed_prefix && payment.child_index == 0 {
+                            MonadOutboxMemberState::Confirmed {
+                                value_wei: 10,
+                                block_number: 1,
+                            }
+                        } else {
+                            MonadOutboxMemberState::Terminal(MonadOutboxTerminal::StaleNonce)
+                        },
+                        attempts: 1,
+                        lease_generation: 0,
+                        lease_until_ms: 0,
+                        next_replay_at_ms: now,
+                        updated_at_ms: now,
+                        last_error: String::new(),
+                    };
+                    db.put(
+                        store.cf_members,
+                        member_key(&payload_hash, payment.child_index),
+                        encode_member(&member),
+                    )?;
+                }
+                if confirmed_prefix {
+                    db.put(
+                        store.cf_recipient,
+                        recipient_key(&policy.recipient, &payload_hash),
+                        [],
+                    )?;
+                }
+            }
+            db.rocksdb()
+                .delete_cf(store.cf_meta, b"outbox-lifecycle-v3")?;
+            db.rocksdb()
+                .delete_cf(store.cf_meta, b"outbox-lifecycle-v3-cursor")?;
+        }
+        let db = Db::open(&path)?;
+        let store = db.monad_outbox();
+        let no_prefix_hash: [u8; 32] = no_prefix.payload_hash.as_slice().try_into().unwrap();
+        assert!(db
+            .rocksdb()
+            .iterator_cf(store.cf_history, IteratorMode::Start)
+            .any(|item| decode_history_key(&item.unwrap().0).unwrap().1 == no_prefix_hash));
+        let mut zero = MonadOutboxLimits::default();
+        zero.max_history_records = 0;
+        zero.max_history_bytes = 0;
+        zero.max_history_age = Duration::from_secs(u64::MAX);
+        store.gc_history(now, &zero)?;
+        assert!(store.get(&no_prefix_hash)?.is_none());
+        let recoveries = store.confirmed_prefixes_for_recipient(&policy().recipient, 10)?;
+        assert_eq!(recoveries.len(), 1);
+        assert_eq!(
+            recoveries[0].payload_hash.as_slice(),
+            with_prefix.payload_hash
+        );
+        assert_eq!(recoveries[0].confirmed_prefix.len(), 1);
         Ok(())
     }
 
@@ -2210,6 +2541,9 @@ mod tests {
         assert_eq!(recovered.len(), 1);
         assert_eq!(recovered[0].payload_hash.as_slice(), partial.payload_hash);
         assert_eq!(recovered[0].confirmed_prefix.len(), 1);
+        assert!(store
+            .confirmed_prefixes_for_recipient(&policy().recipient, 0)?
+            .is_empty());
         Ok(())
     }
 
@@ -2220,6 +2554,9 @@ mod tests {
         let mut limits = MonadOutboxLimits::default();
         limits.max_active_claims = 1;
         limits.max_last_error_bytes = 5;
+        limits.max_member_attempts = 1;
+        limits.retry_backoff_base = Duration::ZERO;
+        limits.max_retry_backoff = Duration::ZERO;
         let first = message(&[b"raw zero"]);
         let mut too_small = limits.clone();
         too_small.max_canonical_bytes = 1;
@@ -2227,6 +2564,13 @@ mod tests {
             .monad_outbox()
             .claim(&first.payload_hash, &first, &policy(), 100, &too_small)
             .is_err());
+        let mut over_codec_cap = limits.clone();
+        over_codec_cap.max_last_error_bytes = MAX_LAST_ERROR_BYTES_HARD + 1;
+        assert!(matches!(
+            db.monad_outbox()
+                .claim(&first.payload_hash, &first, &policy(), 100, &over_codec_cap),
+            Err(_)
+        ));
         assert_eq!(
             db.monad_outbox()
                 .claim(&first.payload_hash, &first, &policy(), 100, &limits,)?,
@@ -2275,7 +2619,6 @@ mod tests {
                 .last_error,
             "12345"
         );
-        limits.max_member_attempts = 1;
         let exhausted_lease =
             match db
                 .monad_outbox()
@@ -2296,17 +2639,23 @@ mod tests {
             MonadOutboxReplayStart::Terminal(MonadOutboxTerminal::AttemptsExhausted)
         );
 
-        limits.max_claim_age = Duration::ZERO;
+        let mut expired_limits = limits.clone();
+        expired_limits.max_claim_age = Duration::ZERO;
         assert_eq!(
-            db.monad_outbox()
-                .claim(&second.payload_hash, &second, &policy(), 100, &limits)?,
+            db.monad_outbox().claim(
+                &second.payload_hash,
+                &second,
+                &policy(),
+                100,
+                &expired_limits,
+            )?,
             MonadOutboxClaim::New
         );
         let expired_lease = match db.monad_outbox().acquire_reconcile_lease(
             &second.payload_hash,
             0,
             101,
-            &limits,
+            &expired_limits,
         )? {
             MonadOutboxLeaseAcquire::Acquired { lease, .. } => lease,
             other => panic!("expected lease, got {other:?}"),
@@ -2316,11 +2665,210 @@ mod tests {
             0,
             expired_lease,
             101,
-            &limits,
+            &expired_limits,
         )?;
         assert_eq!(
             expired,
             MonadOutboxReplayStart::Terminal(MonadOutboxTerminal::Expired)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn retry_expiry_and_attempt_policy_is_frozen_at_claim_and_reopen() -> Result<()> {
+        let tempdir = tempdir::TempDir::new("monad-outbox-frozen-policy")?;
+        let path = tempdir.path().join("db.rocksdb");
+        let request = message(&[b"frozen policy raw"]);
+        let mut accepted = MonadOutboxLimits::default();
+        accepted.max_claim_age = Duration::from_millis(100);
+        accepted.max_member_attempts = 2;
+        accepted.retry_backoff_base = Duration::from_millis(7);
+        accepted.max_retry_backoff = Duration::from_millis(9);
+        {
+            let db = Db::open(&path)?;
+            db.monad_outbox()
+                .claim(&request.payload_hash, &request, &policy(), 100, &accepted)?;
+        }
+        let db = Db::open(&path)?;
+        let store = db.monad_outbox();
+        let record = store.get(&request.payload_hash)?.unwrap();
+        assert_eq!(record.expires_at_ms, 200);
+        assert_eq!(record.max_member_attempts, 2);
+        assert_eq!(record.retry_backoff_base_ms, 7);
+        assert_eq!(record.max_retry_backoff_ms, 9);
+        let mut changed = accepted.clone();
+        changed.max_claim_age = Duration::ZERO;
+        changed.max_member_attempts = 0;
+        changed.retry_backoff_base = Duration::from_secs(60);
+        let lease = match store.acquire_reconcile_lease(&request.payload_hash, 0, 150, &changed)? {
+            MonadOutboxLeaseAcquire::Acquired { lease, .. } => lease,
+            other => panic!("expected lease, got {other:?}"),
+        };
+        assert!(matches!(
+            store.begin_replay_attempt(&request.payload_hash, 0, lease, 150, &changed)?,
+            MonadOutboxReplayStart::Started(_)
+        ));
+        store.complete_pending_member(&request.payload_hash, 0, lease, "retry", 150, &changed)?;
+        assert_eq!(
+            store
+                .get_member(&request.payload_hash, 0)?
+                .unwrap()
+                .next_replay_at_ms,
+            157
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn history_gc_converges_past_one_chunk_and_honors_bytes_and_age() -> Result<()> {
+        let tempdir = tempdir::TempDir::new("monad-outbox-history-converges")?;
+        let db = Db::open(tempdir.path().join("db.rocksdb"))?;
+        let store = db.monad_outbox();
+        let tombstone = MonadOutboxRecord {
+            canonical_message: None,
+            policy: None,
+            created_at_ms: 0,
+            updated_at_ms: 0,
+            expires_at_ms: 0,
+            max_member_attempts: 0,
+            retry_backoff_base_ms: 0,
+            max_retry_backoff_ms: 0,
+            lifecycle: MonadOutboxLifecycle::Delivered,
+            reconciliation_attempts: 0,
+            last_error: String::new(),
+        };
+        let encoded = encode_record(&tombstone);
+        let mut batch = rocksdb::WriteBatch::default();
+        for index in 0..(MAX_HISTORY_RECORDS_HARD + 17) {
+            let hash: [u8; 32] = Sha256::digest(index.to_be_bytes().as_slice().into())
+                .as_slice()
+                .try_into()
+                .unwrap();
+            batch.put_cf(store.cf_outbox, hash, &encoded);
+            batch.put_cf(
+                store.cf_history,
+                history_key(index as i64, &hash),
+                (encoded.len() as u64).to_be_bytes(),
+            );
+        }
+        db.write_batch(batch)?;
+        let mut limits = MonadOutboxLimits::default();
+        limits.max_history_records = 0;
+        limits.max_history_bytes = usize::MAX;
+        limits.max_history_age = Duration::from_secs(u64::MAX);
+        store.gc_history(10_000, &limits)?;
+        assert_eq!(
+            db.rocksdb()
+                .iterator_cf(store.cf_history, IteratorMode::Start)
+                .count(),
+            0
+        );
+
+        for (timestamp, bytes, now_ms, max_bytes, max_age) in [
+            (20_000i64, 10u64, 20_000i64, 0usize, Duration::from_secs(60)),
+            (1i64, 10u64, 2i64, usize::MAX, Duration::ZERO),
+        ] {
+            let hash: [u8; 32] = Sha256::digest(timestamp.to_be_bytes().as_slice().into())
+                .as_slice()
+                .try_into()
+                .unwrap();
+            db.put(
+                store.cf_history,
+                history_key(timestamp, &hash),
+                bytes.to_be_bytes(),
+            )?;
+            limits.max_history_records = MAX_HISTORY_RECORDS_HARD;
+            limits.max_history_bytes = max_bytes;
+            limits.max_history_age = max_age;
+            store.gc_history(now_ms, &limits)?;
+            assert!(db
+                .get(store.cf_history, history_key(timestamp, &hash))?
+                .is_none());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn terminal_history_accounts_for_staged_member_bytes() -> Result<()> {
+        let tempdir = tempdir::TempDir::new("monad-outbox-history-bytes")?;
+        let db = Db::open(tempdir.path().join("db.rocksdb"))?;
+        let store = db.monad_outbox();
+        let request = message(&[b"terminal byte accounting"]);
+        let limits = MonadOutboxLimits::default();
+        store.claim(&request.payload_hash, &request, &policy(), 100, &limits)?;
+        let lease = match store.acquire_reconcile_lease(&request.payload_hash, 0, 101, &limits)? {
+            MonadOutboxLeaseAcquire::Acquired { lease, .. } => lease,
+            other => panic!("expected lease, got {other:?}"),
+        };
+        store.complete_terminal_member(
+            &request.payload_hash,
+            0,
+            lease,
+            MonadOutboxTerminal::StaleNonce,
+            "terminal",
+            102,
+            &limits,
+        )?;
+        let hash: [u8; 32] = request.payload_hash.as_slice().try_into().unwrap();
+        let record = store.get(&hash)?.unwrap();
+        let member = store.get_member(&hash, 0)?.unwrap();
+        let retained = db.get(store.cf_history, history_key(102, &hash))?.unwrap();
+        assert_eq!(
+            u64::from_be_bytes(retained.as_ref().try_into().unwrap()),
+            (encode_record(&record).len() + encode_member(&member).len()) as u64
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn delivery_race_returns_monotonic_terminal_cas_and_consistent_recovery() -> Result<()> {
+        let tempdir = tempdir::TempDir::new("monad-outbox-finalize-race")?;
+        let db = std::sync::Arc::new(Db::open(tempdir.path().join("db.rocksdb"))?);
+        let request = message(&[b"finalize race raw"]);
+        let hash = request.payload_hash.clone();
+        let limits = MonadOutboxLimits::default();
+        db.monad_outbox()
+            .claim(&hash, &request, &policy(), 100, &limits)?;
+        db.monad_outbox()
+            .confirm_observed_member(&hash, 0, 10, 1, 200)?;
+        assert!(db.monad_outbox().mark_fully_confirmed(&hash, 250)?);
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+        let finalize = {
+            let db = std::sync::Arc::clone(&db);
+            let barrier = std::sync::Arc::clone(&barrier);
+            let hash = hash.clone();
+            let limits = limits.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                db.monad_outbox().finalize_delivery(&hash, 300, &limits)
+            })
+        };
+        let recover = {
+            let db = std::sync::Arc::clone(&db);
+            let barrier = std::sync::Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                barrier.wait();
+                db.monad_outbox()
+                    .confirmed_prefixes_for_recipient(&policy().recipient, 1)
+            })
+        };
+        barrier.wait();
+        assert_eq!(finalize.join().unwrap()?.timestamp, 300);
+        let recovery = recover.join().unwrap()?;
+        assert!(recovery.len() <= 1);
+        assert_eq!(
+            db.monad_outbox().terminal_claim(
+                &hash,
+                MonadOutboxTerminal::CorruptReference,
+                "late aggregate terminalization",
+                301,
+                &limits,
+            )?,
+            MonadOutboxTransition::Stale
+        );
+        assert_eq!(
+            db.monad_outbox().get(&hash)?.unwrap().lifecycle,
+            MonadOutboxLifecycle::Delivered
         );
         Ok(())
     }
@@ -2390,6 +2938,57 @@ mod tests {
         let decoded_member = db.monad_outbox().get_member(&payload_hash, 0)?.unwrap();
         assert_eq!(decoded_member.lease_generation, 0);
         assert_eq!(decoded_member.lease_until_ms, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn version_two_rows_decode_with_fixed_legacy_retry_policy() -> Result<()> {
+        let tempdir = tempdir::TempDir::new("monad-outbox-v2-compat")?;
+        let db = Db::open(tempdir.path().join("db.rocksdb"))?;
+        let request = message(&[b"v2 canonical raw"]);
+        let payload_hash: [u8; 32] = request.payload_hash.as_slice().try_into().unwrap();
+        let policy = policy();
+        let mut record = vec![RECORD_VERSION_V2, 0, 0, 0];
+        record.extend_from_slice(&100i64.to_be_bytes());
+        record.extend_from_slice(&101i64.to_be_bytes());
+        record.extend_from_slice(&3u32.to_be_bytes());
+        put_bytes(&mut record, b"v2 diagnostic");
+        record.extend_from_slice(&policy.min_value_wei.to_be_bytes());
+        record.extend_from_slice(&policy.recipient.0);
+        put_bytes(&mut record, &policy.recipient_pubkey);
+        put_bytes(&mut record, &policy.network_tag);
+        put_bytes(&mut record, &request.encode_to_vec());
+        db.put(db.monad_outbox().cf_outbox, payload_hash, record)?;
+
+        let tx_hash = Hash32(Keccak256::digest(b"v2 canonical raw").into());
+        let mut member = vec![RECORD_VERSION_V2, 0, 0];
+        member.extend_from_slice(&tx_hash.0);
+        member.extend_from_slice(&2u32.to_be_bytes());
+        member.extend_from_slice(&101i64.to_be_bytes());
+        member.extend_from_slice(&0u128.to_be_bytes());
+        member.extend_from_slice(&0u64.to_be_bytes());
+        member.extend_from_slice(&4u64.to_be_bytes());
+        member.extend_from_slice(&150i64.to_be_bytes());
+        put_bytes(&mut member, b"v2 pending");
+        db.put(
+            db.monad_outbox().cf_members,
+            member_key(&payload_hash, 0),
+            member,
+        )?;
+
+        let decoded = db.monad_outbox().get(&payload_hash)?.unwrap();
+        assert_eq!(
+            decoded.expires_at_ms,
+            100 + duration_ms_i64(LEGACY_MAX_CLAIM_AGE)
+        );
+        assert_eq!(decoded.max_member_attempts, LEGACY_MAX_MEMBER_ATTEMPTS);
+        assert_eq!(
+            decoded.retry_backoff_base_ms,
+            duration_ms_u64(LEGACY_RETRY_BACKOFF_BASE)
+        );
+        let decoded_member = db.monad_outbox().get_member(&payload_hash, 0)?.unwrap();
+        assert_eq!(decoded_member.lease_generation, 4);
+        assert_eq!(decoded_member.next_replay_at_ms, 101);
         Ok(())
     }
 }

@@ -7,16 +7,15 @@
 use std::{sync::Arc, time::Duration};
 
 use bitcoinsuite_core::{Hashed, Sha256};
-use bitcoinsuite_error::{Result, WrapErr};
+use bitcoinsuite_error::{bail, Result, WrapErr};
 use cashweb_payload::verify::BROADCAST_MESSAGE_LOKAD_ID;
 use futures::{stream, StreamExt};
 
 use crate::{
+    monad_evm_tx::decode_signed_transaction,
     monad_http::{Hash32, JsonRpcTransport, MonadHttpClient, MonadRpcError},
     monad_stamp_stealth::derive_monad_stamp_child_public,
-    monad_stamp_verify::{
-        verify_stamp_transaction, ExpectedStampTransaction, StampTransactionVerification,
-    },
+    monad_stamp_verify::{parse_commitment_calldata, ExpectedStampTransaction},
     proto,
     registry::Registry,
     store::monad_outbox::{
@@ -36,10 +35,6 @@ pub struct MonadOutboxReconcileConfig {
     pub poll_interval: Duration,
     /// Exact-receipt polls within one persisted attempt.
     pub receipt_poll_attempts: u32,
-    /// Exponential delay base between persisted attempts for one member.
-    pub retry_backoff_base: Duration,
-    /// Ceiling for exponential member retry backoff.
-    pub max_retry_backoff: Duration,
     /// Maximum claims reconciled concurrently.
     pub max_concurrency: usize,
     /// Delay between bounded scans after startup.
@@ -60,8 +55,6 @@ impl Default for MonadOutboxReconcileConfig {
             limits: MonadOutboxLimits::default(),
             poll_interval: Duration::from_millis(500),
             receipt_poll_attempts: 20,
-            retry_backoff_base: Duration::from_secs(1),
-            max_retry_backoff: Duration::from_secs(5 * 60),
             max_concurrency: 8,
             scan_interval: Duration::from_secs(30),
             rpc_timeout: Duration::from_secs(10),
@@ -95,6 +88,7 @@ pub async fn reconcile_monad_outbox<T>(
 where
     T: JsonRpcTransport + Clone,
 {
+    config.limits.validate()?;
     match tokio::time::timeout(
         config.claim_timeout,
         reconcile_monad_outbox_inner(transport, registry, payload_hash, config),
@@ -102,7 +96,7 @@ where
     .await
     {
         Ok(result) => result,
-        Err(_) => Ok(MonadOutboxReconcileOutcome::Pending),
+        Err(_) => bail!("Monad outbox claim reconciliation deadline elapsed"),
     }
 }
 
@@ -137,16 +131,20 @@ where
             match registry.monad_outbox_referenced_raw_tx(payload_hash, payment.child_index) {
                 Ok(referenced) => referenced,
                 Err(err) => {
-                    registry.terminal_monad_outbox_claim(
+                    let transition = registry.terminal_monad_outbox_claim(
                         payload_hash,
                         MonadOutboxTerminal::CorruptReference,
                         &err.to_string(),
                         now_ms(),
                         &config.limits,
                     )?;
-                    return Ok(MonadOutboxReconcileOutcome::Terminal(
-                        MonadOutboxTerminal::CorruptReference,
-                    ));
+                    return if transition == MonadOutboxTransition::Applied {
+                        Ok(MonadOutboxReconcileOutcome::Terminal(
+                            MonadOutboxTerminal::CorruptReference,
+                        ))
+                    } else {
+                        current_outcome(registry, payload_hash, config)
+                    };
                 }
             };
         record = loaded_record;
@@ -160,16 +158,20 @@ where
         let expected = match expected_payment(&record, payment.child_index, payload_hash) {
             Ok(expected) => expected,
             Err(err) => {
-                registry.terminal_monad_outbox_claim(
+                let transition = registry.terminal_monad_outbox_claim(
                     payload_hash,
                     MonadOutboxTerminal::CorruptReference,
                     &err.to_string(),
                     now_ms(),
                     &config.limits,
                 )?;
-                return Ok(MonadOutboxReconcileOutcome::Terminal(
-                    MonadOutboxTerminal::CorruptReference,
-                ));
+                return if transition == MonadOutboxTransition::Applied {
+                    Ok(MonadOutboxReconcileOutcome::Terminal(
+                        MonadOutboxTerminal::CorruptReference,
+                    ))
+                } else {
+                    current_outcome(registry, payload_hash, config)
+                };
             }
         };
 
@@ -253,10 +255,7 @@ where
             ExactCheck::Missing => {}
         }
 
-        if member.attempts > 0
-            && now_ms().saturating_sub(member.updated_at_ms)
-                < retry_backoff_ms(member.attempts, config)
-        {
+        if now_ms() < member.next_replay_at_ms {
             registry.release_monad_outbox_reconcile_lease(
                 payload_hash,
                 payment.child_index,
@@ -331,15 +330,7 @@ where
     }
 
     if !registry.mark_monad_outbox_fully_confirmed(payload_hash, now_ms())? {
-        let lifecycle = registry
-            .monad_outbox_record(payload_hash)?
-            .map(|record| record.lifecycle);
-        return Ok(match lifecycle {
-            Some(MonadOutboxLifecycle::Terminal(terminal)) => {
-                MonadOutboxReconcileOutcome::Terminal(terminal)
-            }
-            _ => MonadOutboxReconcileOutcome::Pending,
-        });
+        return current_outcome(registry, payload_hash, config);
     }
     Ok(MonadOutboxReconcileOutcome::Delivered(
         registry.finalize_monad_outbox(payload_hash, now_ms(), &config.limits)?,
@@ -360,9 +351,10 @@ fn current_outcome(
             MonadOutboxLifecycle::Terminal(terminal) => {
                 MonadOutboxReconcileOutcome::Terminal(terminal)
             }
-            MonadOutboxLifecycle::Pending | MonadOutboxLifecycle::FullyConfirmed => {
-                MonadOutboxReconcileOutcome::Pending
-            }
+            MonadOutboxLifecycle::FullyConfirmed => MonadOutboxReconcileOutcome::Delivered(
+                registry.finalize_monad_outbox(payload_hash, now_ms(), &config.limits)?,
+            ),
+            MonadOutboxLifecycle::Pending => MonadOutboxReconcileOutcome::Pending,
         },
     })
 }
@@ -424,15 +416,15 @@ async fn check_exact<T: JsonRpcTransport + Clone>(
         Err(err) => return ExactCheck::Infrastructure(err.to_string()),
     };
     if receipt.transaction_hash != tx_hash {
-        return ExactCheck::Invalid(format!(
+        return ExactCheck::Infrastructure(format!(
             "receipt returned hash {} for requested exact hash {}",
             receipt.transaction_hash, tx_hash
         ));
     }
-    match client.get_transaction_by_hash(tx_hash).await {
-        Ok(Some(transaction)) if transaction.hash == tx_hash => {}
+    let transaction = match client.get_transaction_by_hash(tx_hash).await {
+        Ok(Some(transaction)) if transaction.hash == tx_hash => transaction,
         Ok(Some(transaction)) => {
-            return ExactCheck::Invalid(format!(
+            return ExactCheck::Infrastructure(format!(
                 "transaction lookup returned hash {} for requested exact hash {}",
                 transaction.hash, tx_hash
             ))
@@ -443,19 +435,40 @@ async fn check_exact<T: JsonRpcTransport + Clone>(
             )
         }
         Err(err) => return ExactCheck::Infrastructure(err.to_string()),
+    };
+    if receipt.from != transaction.from || receipt.to != transaction.to {
+        return ExactCheck::Infrastructure(
+            "receipt and transaction RPC responses disagree on routing identity".to_string(),
+        );
     }
-    match verify_stamp_transaction(transport, tx_hash, expected).await {
-        Ok(StampTransactionVerification::Verified { value_wei }) => ExactCheck::Confirmed {
-            value_wei,
-            block_number: receipt.block_number,
-        },
-        Ok(StampTransactionVerification::TxNotConfirmed) => {
-            ExactCheck::Infrastructure("exact receipt disappeared during verification".to_string())
-        }
-        Ok(other) => {
-            ExactCheck::Invalid(format!("exact transaction failed verification: {other:?}"))
-        }
-        Err(err) => ExactCheck::Infrastructure(err.to_string()),
+    if receipt.succeeded() != Some(true) {
+        return ExactCheck::Invalid("exact transaction reverted".to_string());
+    }
+    if receipt.to != Some(expected.destination_address) {
+        return ExactCheck::Invalid(format!(
+            "exact transaction has wrong recipient: expected {}, got {:?}",
+            expected.destination_address, receipt.to
+        ));
+    }
+    if transaction.value < expected.min_value_wei {
+        return ExactCheck::Invalid(format!(
+            "exact transaction value {} is below minimum {}",
+            transaction.value, expected.min_value_wei
+        ));
+    }
+    let commitment = match parse_commitment_calldata(expected.commitment_id, &transaction.input) {
+        Ok(commitment) => commitment,
+        Err(err) => return ExactCheck::Invalid(err.to_string()),
+    };
+    if commitment != expected.commitment {
+        return ExactCheck::Invalid(format!(
+            "exact transaction commitment {} does not match {}",
+            commitment, expected.commitment
+        ));
+    }
+    ExactCheck::Confirmed {
+        value_wei: transaction.value,
+        block_number: receipt.block_number,
     }
 }
 
@@ -506,15 +519,12 @@ async fn replay_member<T: JsonRpcTransport + Clone>(
             Ok(send) => send,
             Err(_) => return MemberOutcome::Pending("broadcast RPC deadline elapsed".to_string()),
         };
-    let stale_if_missing = match send {
+    let nonce_too_low = match send {
         Ok(submitted) if submitted.tx_hash != tx_hash => {
-            return MemberOutcome::Terminal(
-                MonadOutboxTerminal::CorruptReference,
-                format!(
-                    "RPC returned {} for canonical transaction hash {}",
-                    submitted.tx_hash, tx_hash
-                ),
-            )
+            return MemberOutcome::Pending(format!(
+                "submission RPC returned {} for canonical transaction hash {}",
+                submitted.tx_hash, tx_hash
+            ))
         }
         Ok(_) | Err(MonadRpcError::AlreadyKnown { .. }) => false,
         Err(MonadRpcError::NonceTooLow { .. }) => true,
@@ -522,7 +532,7 @@ async fn replay_member<T: JsonRpcTransport + Clone>(
             return MemberOutcome::Pending(err.to_string())
         }
         Err(err @ MonadRpcError::InsufficientFunds { .. }) => {
-            return MemberOutcome::Terminal(MonadOutboxTerminal::BroadcastRejected, err.to_string())
+            return MemberOutcome::Pending(err.to_string())
         }
         Err(err) => return MemberOutcome::Pending(err.to_string()),
     };
@@ -539,14 +549,84 @@ async fn replay_member<T: JsonRpcTransport + Clone>(
             MemberOutcome::Terminal(MonadOutboxTerminal::VerificationFailed, detail)
         }
         ExactCheck::Infrastructure(detail) => MemberOutcome::Pending(detail),
-        ExactCheck::Missing if stale_if_missing => MemberOutcome::Terminal(
-            MonadOutboxTerminal::StaleNonce,
-            "funding nonce was consumed but the exact transaction hash has no receipt".to_string(),
-        ),
+        ExactCheck::Missing if nonce_too_low => {
+            prove_stale_nonce(transport, tx_hash, raw_tx, expected, config).await
+        }
         ExactCheck::Missing => MemberOutcome::Pending(
             "exact transaction remains unconfirmed after bounded polling".to_string(),
         ),
     }
+}
+
+async fn prove_stale_nonce<T: JsonRpcTransport + Clone>(
+    transport: &T,
+    tx_hash: Hash32,
+    raw_tx: &[u8],
+    expected: &ExpectedStampTransaction,
+    config: &MonadOutboxReconcileConfig,
+) -> MemberOutcome {
+    let decoded = match decode_signed_transaction(raw_tx) {
+        Ok(decoded) => decoded,
+        Err(err) => {
+            return MemberOutcome::Terminal(
+                MonadOutboxTerminal::CorruptReference,
+                format!("canonical transaction cannot be decoded: {err}"),
+            )
+        }
+    };
+    let nonce_result = tokio::time::timeout(
+        config.rpc_timeout,
+        transport.call(
+            "eth_getTransactionCount",
+            serde_json::json!([decoded.sender.to_hex(), "latest"]),
+        ),
+    )
+    .await;
+    let confirmed_nonce = match nonce_result {
+        Err(_) => return MemberOutcome::Pending("account nonce RPC deadline elapsed".to_string()),
+        Ok(Err(err)) => return MemberOutcome::Pending(err.to_string()),
+        Ok(Ok(value)) => match value.as_str().and_then(parse_hex_u64) {
+            Some(nonce) => nonce,
+            None => {
+                return MemberOutcome::Pending(format!(
+                    "account nonce RPC returned invalid quantity {value}"
+                ))
+            }
+        },
+    };
+    if confirmed_nonce <= decoded.nonce {
+        return MemberOutcome::Pending(format!(
+            "nonce-too-low response is not confirmed: account nonce {confirmed_nonce}, canonical nonce {}",
+            decoded.nonce
+        ));
+    }
+
+    match check_exact_bounded(transport, tx_hash, expected, config).await {
+        ExactCheck::Confirmed {
+            value_wei,
+            block_number,
+        } => MemberOutcome::Confirmed {
+            value_wei,
+            block_number,
+        },
+        ExactCheck::Invalid(detail) => {
+            MemberOutcome::Terminal(MonadOutboxTerminal::VerificationFailed, detail)
+        }
+        ExactCheck::Infrastructure(detail) => MemberOutcome::Pending(detail),
+        ExactCheck::Missing => MemberOutcome::Terminal(
+            MonadOutboxTerminal::StaleNonce,
+            format!(
+                "confirmed account nonce {confirmed_nonce} advanced past canonical nonce {}, and final exact lookup was missing",
+                decoded.nonce
+            ),
+        ),
+    }
+}
+
+fn parse_hex_u64(value: &str) -> Option<u64> {
+    value.strip_prefix("0x").and_then(|digits| {
+        u64::from_str_radix(if digits.is_empty() { "0" } else { digits }, 16).ok()
+    })
 }
 
 fn now_ms() -> i64 {
@@ -554,18 +634,6 @@ fn now_ms() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis()
-        .try_into()
-        .unwrap_or(i64::MAX)
-}
-
-fn retry_backoff_ms(attempts: u32, config: &MonadOutboxReconcileConfig) -> i64 {
-    let exponent = attempts.saturating_sub(1).min(31);
-    let multiplier = 1u128 << exponent;
-    config
-        .retry_backoff_base
-        .as_millis()
-        .saturating_mul(multiplier)
-        .min(config.max_retry_backoff.as_millis())
         .try_into()
         .unwrap_or(i64::MAX)
 }
@@ -608,11 +676,12 @@ pub async fn start_monad_outbox_worker<T>(
 where
     T: JsonRpcTransport + Clone + Send + Sync + 'static,
 {
+    config.limits.validate()?;
     // Readiness is intentionally after this bounded initial scan. Each exact RPC, claim, active
     // cardinality, and concurrency dimension has a finite configured ceiling.
     tokio::time::timeout(
         config.initial_recovery_timeout,
-        reconcile_active(&transport, &registry, &config),
+        reconcile_active(&transport, &registry, &config, true),
     )
     .await
     .wrap_err("Monad outbox initial recovery deadline elapsed")??;
@@ -628,7 +697,7 @@ where
                     }
                 }
             }
-            let scan = reconcile_active(&transport, &registry, &config);
+            let scan = reconcile_active(&transport, &registry, &config, false);
             tokio::select! {
                 result = scan => {
                     if let Err(err) = result {
@@ -658,17 +727,29 @@ async fn reconcile_active<T>(
     transport: &T,
     registry: &Arc<Registry>,
     config: &MonadOutboxReconcileConfig,
+    fail_on_claim_error: bool,
 ) -> Result<()>
 where
     T: JsonRpcTransport + Clone + Send + Sync + 'static,
 {
     let active = registry.list_active_monad_outboxes(config.limits.max_active_claims)?;
     let concurrency = config.max_concurrency.max(1);
-    stream::iter(active)
-        .for_each_concurrent(concurrency, |payload_hash| async move {
-            if let Err(err) =
-                reconcile_monad_outbox(transport, registry, &payload_hash, config).await
-            {
+    let mut reconciliations = stream::iter(active)
+        .map(|payload_hash| async move {
+            let result = reconcile_monad_outbox(transport, registry, &payload_hash, config).await;
+            (payload_hash, result)
+        })
+        .buffer_unordered(concurrency);
+    while let Some((payload_hash, result)) = reconciliations.next().await {
+        if let Err(err) = result {
+            if fail_on_claim_error {
+                return Err(err).wrap_err_with(|| {
+                    format!(
+                        "initial Monad outbox reconciliation failed for {}",
+                        hex::encode(payload_hash)
+                    )
+                });
+            } else {
                 tracing::event!(
                     tracing::Level::ERROR,
                     payload_hash = %hex::encode(payload_hash),
@@ -676,8 +757,8 @@ where
                     "Monad outbox claim reconciliation failed"
                 );
             }
-        })
-        .await;
+        }
+    }
     Ok(())
 }
 
@@ -686,13 +767,15 @@ mod tests {
     use std::{collections::HashMap, sync::Mutex};
 
     use async_trait::async_trait;
-    use bitcoinsuite_core::Net;
+    use bitcoinsuite_core::{ecc::Ecc, Net};
+    use bitcoinsuite_ecc_secp256k1::EccSecp256k1;
     use serde_json::{json, Value};
     use sha3::{Digest, Keccak256};
 
     use super::*;
     use crate::{
         disabled_chain_adapter::DisabledChainAdapter,
+        monad_evm_tx::test_support::signed_eip1559_tx,
         monad_http::Address,
         store::{
             db::Db,
@@ -706,6 +789,7 @@ mod tests {
         RpcFailure,
         NonceTooLow,
         ReplacementUnderpriced,
+        InsufficientFunds,
     }
 
     #[derive(Debug, Clone)]
@@ -714,10 +798,17 @@ mod tests {
         destination: Address,
         value_wei: u128,
         input: Vec<u8>,
+        sender: Address,
+        account_nonce: u64,
         confirmed: bool,
         send: SendBehavior,
         receipt_error: bool,
         hang_receipt: bool,
+        receipt_hash_override: Option<Hash32>,
+        transaction_hash_override: Option<Hash32>,
+        submission_hash_override: Option<Hash32>,
+        receipt_hash_after_first: Option<Hash32>,
+        transaction_hash_after_first: Option<Hash32>,
     }
 
     #[derive(Debug, Clone, Default)]
@@ -762,12 +853,42 @@ mod tests {
                 .unwrap()
                 .hang_receipt = hang_receipt;
         }
+
+        fn set_account_nonce(&self, hash: Hash32, account_nonce: u64) {
+            self.specs
+                .lock()
+                .unwrap()
+                .get_mut(&hash)
+                .unwrap()
+                .account_nonce = account_nonce;
+        }
+
+        fn set_hash_overrides(
+            &self,
+            hash: Hash32,
+            receipt: Option<Hash32>,
+            transaction: Option<Hash32>,
+            submission: Option<Hash32>,
+        ) {
+            let mut specs = self.specs.lock().unwrap();
+            let spec = specs.get_mut(&hash).unwrap();
+            spec.receipt_hash_override = receipt;
+            spec.transaction_hash_override = transaction;
+            spec.submission_hash_override = submission;
+        }
     }
 
     #[async_trait]
     impl JsonRpcTransport for FakeTransport {
         async fn call(&self, method: &str, params: Value) -> Result<Value, MonadRpcError> {
-            self.calls.lock().unwrap().push(method.to_string());
+            let method_call_count = {
+                let mut calls = self.calls.lock().unwrap();
+                calls.push(method.to_string());
+                calls
+                    .iter()
+                    .filter(|called| called.as_str() == method)
+                    .count()
+            };
             let requested_hash =
                 || Hash32::from_hex(params[0].as_str().expect("hash param")).expect("valid hash");
             match method {
@@ -795,10 +916,12 @@ mod tests {
                         return Ok(Value::Null);
                     }
                     Ok(json!({
-                        "transactionHash": hash.to_hex(),
+                        "transactionHash": spec.receipt_hash_override
+                            .or((method_call_count > 1).then_some(spec.receipt_hash_after_first).flatten())
+                            .unwrap_or(hash).to_hex(),
                         "blockHash": Hash32([0x22; 32]).to_hex(),
                         "blockNumber": "0x2a",
-                        "from": Address([0x33; 20]).to_hex(),
+                        "from": spec.sender.to_hex(),
                         "to": spec.destination.to_hex(),
                         "contractAddress": null,
                         "gasUsed": "0x5208",
@@ -811,11 +934,13 @@ mod tests {
                     let specs = self.specs.lock().unwrap();
                     let spec = specs.get(&hash).expect("known hash");
                     Ok(json!({
-                        "hash": hash.to_hex(),
+                        "hash": spec.transaction_hash_override
+                            .or((method_call_count > 1).then_some(spec.transaction_hash_after_first).flatten())
+                            .unwrap_or(hash).to_hex(),
                         "to": spec.destination.to_hex(),
                         "value": format!("0x{:x}", spec.value_wei),
                         "input": format!("0x{}", hex::encode(&spec.input)),
-                        "from": Address([0x33; 20]).to_hex(),
+                        "from": spec.sender.to_hex(),
                     }))
                 }
                 "eth_sendRawTransaction" => {
@@ -826,8 +951,12 @@ mod tests {
                     let spec = specs.get_mut(&hash).expect("known raw tx");
                     match spec.send {
                         SendBehavior::Accept => {
-                            spec.confirmed = true;
-                            Ok(Value::String(hash.to_hex()))
+                            if spec.submission_hash_override.is_none() {
+                                spec.confirmed = true;
+                            }
+                            Ok(Value::String(
+                                spec.submission_hash_override.unwrap_or(hash).to_hex(),
+                            ))
                         }
                         SendBehavior::RpcFailure => Err(MonadRpcError::Rpc {
                             method: method.to_string(),
@@ -845,7 +974,21 @@ mod tests {
                                 message: "replacement transaction underpriced".to_string(),
                             })
                         }
+                        SendBehavior::InsufficientFunds => Err(MonadRpcError::InsufficientFunds {
+                            method: method.to_string(),
+                            message: "insufficient funds".to_string(),
+                        }),
                     }
+                }
+                "eth_getTransactionCount" => {
+                    let sender = Address::from_hex(params[0].as_str().unwrap()).unwrap();
+                    let specs = self.specs.lock().unwrap();
+                    let nonce = specs
+                        .values()
+                        .find(|spec| spec.sender == sender)
+                        .expect("known sender")
+                        .account_nonce;
+                    Ok(Value::String(format!("0x{nonce:x}")))
                 }
                 _ => panic!("unexpected method {method}"),
             }
@@ -888,16 +1031,29 @@ mod tests {
             let mut input = Vec::from(BROADCAST_MESSAGE_LOKAD_ID);
             input.push(crate::monad_stamp_verify::COMMITMENT_VERSION_TAG);
             input.extend_from_slice(commitment.as_slice());
-            let raw_tx = format!("raw-{}-child-{index}", hex::encode(seed)).into_bytes();
+            let ecc = EccSecp256k1::default();
+            let seckey = ecc
+                .seckey_from_array([(index as u8).saturating_add(1); 32])
+                .unwrap();
+            let nonce = 0;
+            let (raw_tx, sender) =
+                signed_eip1559_tx(&seckey, 10_143, nonce, Address(child.address), 10, &input);
             transport.insert(TxSpec {
                 raw_tx: raw_tx.clone(),
                 destination: Address(child.address),
                 value_wei: 10,
                 input,
+                sender,
+                account_nonce: 1,
                 confirmed: confirmed[index],
                 send: behavior,
                 receipt_error: false,
                 hang_receipt: false,
+                receipt_hash_override: None,
+                transaction_hash_override: None,
+                submission_hash_override: None,
+                receipt_hash_after_first: None,
+                transaction_hash_after_first: None,
             });
             payments.push(proto::MonadStampPayment {
                 child_index: index as u32,
@@ -921,11 +1077,13 @@ mod tests {
     }
 
     fn fast_config() -> MonadOutboxReconcileConfig {
+        let mut limits = MonadOutboxLimits::default();
+        limits.retry_backoff_base = Duration::ZERO;
+        limits.max_retry_backoff = Duration::ZERO;
         MonadOutboxReconcileConfig {
+            limits,
             poll_interval: Duration::from_millis(1),
             receipt_poll_attempts: 1,
-            retry_backoff_base: Duration::ZERO,
-            max_retry_backoff: Duration::ZERO,
             scan_interval: Duration::from_millis(5),
             ..MonadOutboxReconcileConfig::default()
         }
@@ -1013,6 +1171,139 @@ mod tests {
         assert_eq!(recoveries.len(), 1);
         assert_eq!(recoveries[0].confirmed_prefix.len(), 1);
         assert!(registry.get_monad_message(&request.payload_hash)?.is_none());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn nonce_too_low_requires_confirmed_advancement_and_delayed_exact_receipt_wins(
+    ) -> Result<()> {
+        let tempdir = tempdir::TempDir::new("monad-outbox-nonce-proof")?;
+        let registry = registry(&tempdir.path().join("db.rocksdb"));
+        let (request, policy, transport) = fixture(&[SendBehavior::NonceTooLow], &[false]);
+        let tx_hash = Hash32(Keccak256::digest(&request.stamp_payments[0].raw_tx).into());
+        transport.set_account_nonce(tx_hash, 0);
+        let config = fast_config();
+        registry.claim_monad_outbox(&request, &policy, now_ms(), &config.limits)?;
+        assert_eq!(
+            reconcile_monad_outbox(&transport, &registry, &request.payload_hash, &config).await?,
+            MonadOutboxReconcileOutcome::Pending
+        );
+        assert_eq!(
+            registry
+                .monad_outbox_member(&request.payload_hash, 0)?
+                .unwrap()
+                .state,
+            MonadOutboxMemberState::Pending
+        );
+        transport.set_confirmed(tx_hash, true);
+        assert!(matches!(
+            reconcile_monad_outbox(&transport, &registry, &request.payload_hash, &config).await?,
+            MonadOutboxReconcileOutcome::Delivered(_)
+        ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn one_fetched_exact_pair_prevents_second_fetch_identity_swap() -> Result<()> {
+        let tempdir = tempdir::TempDir::new("monad-outbox-exact-pair")?;
+        let registry = registry(&tempdir.path().join("db.rocksdb"));
+        let (request, policy, transport) = fixture(&[SendBehavior::Accept], &[true]);
+        let tx_hash = Hash32(Keccak256::digest(&request.stamp_payments[0].raw_tx).into());
+        {
+            let mut specs = transport.specs.lock().unwrap();
+            let spec = specs.get_mut(&tx_hash).unwrap();
+            spec.receipt_hash_after_first = Some(Hash32([0xa1; 32]));
+            spec.transaction_hash_after_first = Some(Hash32([0xb2; 32]));
+        }
+        let config = fast_config();
+        registry.claim_monad_outbox(&request, &policy, now_ms(), &config.limits)?;
+        assert!(matches!(
+            reconcile_monad_outbox(&transport, &registry, &request.payload_hash, &config).await?,
+            MonadOutboxReconcileOutcome::Delivered(_)
+        ));
+        for method in ["eth_getTransactionReceipt", "eth_getTransactionByHash"] {
+            assert_eq!(
+                transport
+                    .calls()
+                    .iter()
+                    .filter(|called| called.as_str() == method)
+                    .count(),
+                1,
+                "verification must use one fetched receipt/transaction pair"
+            );
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn reversible_provider_failures_remain_pending_and_later_deliver() -> Result<()> {
+        let tempdir = tempdir::TempDir::new("monad-outbox-provider-failures")?;
+        let config = fast_config();
+        for (seed, receipt_wrong, transaction_wrong, submission_wrong, behavior, confirmed) in [
+            (
+                b"wrong-receipt".as_slice(),
+                true,
+                false,
+                false,
+                SendBehavior::Accept,
+                true,
+            ),
+            (
+                b"wrong-transaction".as_slice(),
+                false,
+                true,
+                false,
+                SendBehavior::Accept,
+                true,
+            ),
+            (
+                b"wrong-submission".as_slice(),
+                false,
+                false,
+                true,
+                SendBehavior::Accept,
+                false,
+            ),
+            (
+                b"later-funded".as_slice(),
+                false,
+                false,
+                false,
+                SendBehavior::InsufficientFunds,
+                false,
+            ),
+        ] {
+            let registry = registry(&tempdir.path().join(hex::encode(seed)));
+            let (request, policy, transport) = fixture_with_seed(seed, &[behavior], &[confirmed]);
+            let tx_hash = Hash32(Keccak256::digest(&request.stamp_payments[0].raw_tx).into());
+            let wrong = Hash32([0xcc; 32]);
+            transport.set_hash_overrides(
+                tx_hash,
+                receipt_wrong.then_some(wrong),
+                transaction_wrong.then_some(wrong),
+                submission_wrong.then_some(wrong),
+            );
+            registry.claim_monad_outbox(&request, &policy, now_ms(), &config.limits)?;
+            assert_eq!(
+                reconcile_monad_outbox(&transport, &registry, &request.payload_hash, &config)
+                    .await?,
+                MonadOutboxReconcileOutcome::Pending
+            );
+            assert_eq!(
+                registry
+                    .monad_outbox_member(&request.payload_hash, 0)?
+                    .unwrap()
+                    .state,
+                MonadOutboxMemberState::Pending
+            );
+            transport.set_hash_overrides(tx_hash, None, None, None);
+            transport.set_send(tx_hash, SendBehavior::Accept);
+            assert!(matches!(
+                reconcile_monad_outbox(&transport, &registry, &request.payload_hash, &config)
+                    .await?,
+                MonadOutboxReconcileOutcome::Delivered(_)
+            ));
+        }
         Ok(())
     }
 
@@ -1160,10 +1451,10 @@ mod tests {
         let (request, policy, transport) =
             fixture(&[SendBehavior::ReplacementUnderpriced], &[false]);
         let hash = Hash32(Keccak256::digest(&request.stamp_payments[0].raw_tx).into());
-        registry.claim_monad_outbox(&request, &policy, now_ms(), &MonadOutboxLimits::default())?;
+        let config = fast_config();
+        registry.claim_monad_outbox(&request, &policy, now_ms(), &config.limits)?;
         assert_eq!(
-            reconcile_monad_outbox(&transport, &registry, &request.payload_hash, &fast_config())
-                .await?,
+            reconcile_monad_outbox(&transport, &registry, &request.payload_hash, &config).await?,
             MonadOutboxReconcileOutcome::Pending
         );
         assert_eq!(
@@ -1175,8 +1466,7 @@ mod tests {
         );
         transport.set_send(hash, SendBehavior::Accept);
         assert!(matches!(
-            reconcile_monad_outbox(&transport, &registry, &request.payload_hash, &fast_config())
-                .await?,
+            reconcile_monad_outbox(&transport, &registry, &request.payload_hash, &config).await?,
             MonadOutboxReconcileOutcome::Delivered(_)
         ));
         Ok(())
@@ -1259,6 +1549,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn initial_recovery_propagates_per_claim_corruption_before_readiness() -> Result<()> {
+        let tempdir = tempdir::TempDir::new("monad-outbox-readiness-corrupt")?;
+        let path = tempdir.path().join("db.rocksdb");
+        let (request, policy, transport) = fixture(&[SendBehavior::Accept], &[false]);
+        let config = fast_config();
+        {
+            let registry = registry(&path);
+            registry.claim_monad_outbox(&request, &policy, now_ms(), &config.limits)?;
+        }
+        {
+            let db = Db::open(&path)?;
+            db.put(
+                db.cf(crate::store::db::CF_MONAD_OUTBOX_V1)?,
+                &request.payload_hash,
+                b"corrupt",
+            )?;
+        }
+        let registry = Arc::new(registry(&path));
+        let err = start_monad_outbox_worker(transport, registry, config)
+            .await
+            .expect_err("corrupt active claim must prevent readiness");
+        assert!(err
+            .to_string()
+            .contains("initial Monad outbox reconciliation failed"));
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn active_scan_deadlines_prevent_starvation_and_shutdown_is_bounded() -> Result<()> {
         let tempdir = tempdir::TempDir::new("monad-outbox-shutdown")?;
         let active_registry = Arc::new(registry(&tempdir.path().join("db.rocksdb")));
@@ -1294,7 +1612,7 @@ mod tests {
         config.max_concurrency = 1;
         config.rpc_timeout = Duration::from_millis(5);
         config.claim_timeout = Duration::from_millis(20);
-        reconcile_active(&hanging_transport, &active_registry, &config).await?;
+        reconcile_active(&hanging_transport, &active_registry, &config, false).await?;
         assert!(active_registry
             .get_monad_message(&ready.payload_hash)?
             .is_some());

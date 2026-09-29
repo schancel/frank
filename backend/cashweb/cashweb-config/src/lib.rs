@@ -76,13 +76,25 @@ pub enum MonadMailboxMode {
     },
 }
 
-/// Enabled mailbox configuration omitted its mandatory RPC endpoint.
+/// Invalid enabled mailbox RPC configuration.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct MonadMailboxConfigError;
+pub enum MonadMailboxConfigError {
+    /// Enabled mode omitted its mandatory endpoint.
+    MissingRpcUrl,
+    /// The endpoint is not a hosted HTTP(S) URL.
+    InvalidRpcUrl,
+}
 
 impl fmt::Display for MonadMailboxConfigError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("registry.monad_mailbox.rpc_url is required when the mailbox is enabled")
+        match self {
+            Self::MissingRpcUrl => f.write_str(
+                "registry.monad_mailbox.rpc_url is required when the mailbox is enabled",
+            ),
+            Self::InvalidRpcUrl => f.write_str(
+                "registry.monad_mailbox.rpc_url must be a hosted http(s) URL when the mailbox is enabled",
+            ),
+        }
     }
 }
 
@@ -94,10 +106,14 @@ impl MonadMailboxConf {
         if !self.enabled {
             return Ok(MonadMailboxMode::Disabled);
         }
-        self.rpc_url
+        let rpc_url = self
+            .rpc_url
             .clone()
-            .map(|rpc_url| MonadMailboxMode::Enabled { rpc_url })
-            .ok_or(MonadMailboxConfigError)
+            .ok_or(MonadMailboxConfigError::MissingRpcUrl)?;
+        if !matches!(rpc_url.scheme(), "http" | "https") || rpc_url.host_str().is_none() {
+            return Err(MonadMailboxConfigError::InvalidRpcUrl);
+        }
+        Ok(MonadMailboxMode::Enabled { rpc_url })
     }
 }
 
@@ -213,7 +229,7 @@ mod tests {
 
     use crate::{
         parse_conf, CashwebdConf, CuratedContactConf, InitialMetadataDownloadConf,
-        MonadMailboxConf, MonadMailboxMode, PopConf, RegistryConf,
+        MonadMailboxConf, MonadMailboxConfigError, MonadMailboxMode, PopConf, RegistryConf,
     };
 
     #[test]
@@ -480,5 +496,19 @@ mod tests {
             "enabled = true\nrpc_url = 'this is not a URL'"
         )
         .is_err());
+        for rejected in [
+            "file:///tmp/rpc",
+            "ftp://rpc.example/path",
+            "data:text/plain,rpc",
+        ] {
+            assert_eq!(
+                MonadMailboxConf {
+                    enabled: true,
+                    rpc_url: Some(rejected.parse().unwrap()),
+                }
+                .mode(),
+                Err(MonadMailboxConfigError::InvalidRpcUrl)
+            );
+        }
     }
 }

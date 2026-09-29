@@ -1,0 +1,51 @@
+; The four .cddl files are one schema: concatenate them (common.cddl first)
+; before compiling, because CDDL has no import. The `* uint => frank-value`
+; wildcards describe how a reader sees a newer compatible schema (README V6.3
+; and C12); at an exactly supported schema version an undeclared key is a
+; `schema` error, so validate the numbered prose rules too.
+; Normative structural schema for Frank deterministic CBOR v1.
+; README.md adds framing, canonicality, resource, semantic, and crypto rules.
+
+frank-envelope = {
+  0: uint .le 4294967295, ; type_id
+  1: 1..4294967295, ; schema_version
+  2: 1..4294967295, ; min_reader_version
+  3: bstr, ; exactly one restricted canonical-CBOR payload item
+}
+
+network-tag = tstr .size (1..64)
+digest-32 = bstr .size 32
+uuid-16 = bstr .size 16
+evm-quantity-256 = bstr .size 32
+
+timestamp = {
+  0: -9223372036854775808..9223372036854775807,
+  1: uint .le 999999999,
+}
+
+account-ref = {
+  0: uint .le 65535, ; allocated key_type
+  1: bstr .size (1..128), ; key bytes, interpreted only by key_type
+}
+
+; The generic profile value. Protocol maps use unsigned integer keys even when
+; their schema is not yet known; all other CBOR major/simple types are excluded.
+frank-value =
+  uint /
+  nint /
+  bstr /
+  tstr /
+  [* frank-value] /
+  {* uint => frank-value} /
+  false /
+  true /
+  null
+
+; A complete FRNK frame. CDDL sees bytes; README.md defines frame validation.
+framed-object = bstr .size (9..8388617)
+
+signature-entry = {
+  0: uint .le 65535, ; exact signature algorithm/profile identifier
+  1: account-ref,
+  2: bstr .size (1..512),
+}

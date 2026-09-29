@@ -91,11 +91,15 @@ export default {
   accountStep: {
     newAccount: 'New Account',
     importAccount: 'Import Account',
+    copyRecoveryPhrase: 'Copy recovery phrase',
+    refreshRecoveryPhrase: 'Generate a new recovery phrase',
   },
   newContactDialog: {
     newContact: 'New Contact',
     enterBitcoinCashAddress: 'Enter address (0x...)',
+    loading: 'Looking up contact',
     notFound: 'Not Found',
+    found: 'Contact found: {name}',
   },
   newTopicDialog: {
     newTopic: 'Add Topic',

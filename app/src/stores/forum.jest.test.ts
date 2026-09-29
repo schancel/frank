@@ -10,6 +10,7 @@ import { setActivePinia, createPinia } from 'pinia'
 import { useForumStore } from './forum'
 import { ForumMessage } from '@frank/cashweb/types/forum'
 import { WalletHandle } from '@frank/wallet/chain'
+import { sortPostsByMode } from 'src/utils/sorting'
 
 jest.mock('@frank/wallet/chain', () => ({
   activeChain: {
@@ -137,6 +138,186 @@ describe('useForumStore: refreshMessages', () => {
     await store.refreshMessages({ wallet: testWallet, topic: 'ignored' })
 
     expect(store.messages).toHaveLength(0)
+  })
+
+  it('updates an existing digest in every lookup without duplicating it', async () => {
+    const store = useForumStore()
+    const initial = makeMessage({ satoshis: 10 })
+    const updated = makeMessage({
+      poster: '0xdifferent-poster',
+      topic: 'different-topic',
+      satoshis: 25,
+      entries: [{ kind: 'post', message: 'different content' }],
+      timestamp: new Date('2030-01-01T00:00:00.000Z'),
+    })
+    mockedFetchByTopic
+      .mockResolvedValueOnce([initial])
+      .mockResolvedValueOnce([updated])
+      .mockResolvedValueOnce([updated])
+
+    await store.refreshMessages({ wallet: testWallet, topic: 'ignored' })
+    const canonicalMessage = store.messages[0]
+    await store.refreshMessages({ wallet: testWallet, topic: 'ignored' })
+    await store.refreshMessages({ wallet: testWallet, topic: 'ignored' })
+
+    expect(store.messages).toHaveLength(1)
+    expect(store.messages[0]).toBe(canonicalMessage)
+    expect(store.messages[0].satoshis).toBe(25)
+    expect(store.messages[0]).toMatchObject({
+      poster: initial.poster,
+      topic: initial.topic,
+      entries: initial.entries,
+      timestamp: initial.timestamp,
+    })
+    expect(store.index.deadbeef).toBe(canonicalMessage)
+    expect(store.getMessage('deadbeef')?.satoshis).toBe(25)
+    expect(
+      store.messages.filter(message => message.payloadDigest === 'deadbeef'),
+    ).toHaveLength(1)
+  })
+
+  it('makes refreshed satoshis available to hot/top ordering and threshold filtering', async () => {
+    const store = useForumStore()
+    const timestamp = new Date('2026-01-01T00:00:00.000Z')
+    const refreshed = makeMessage({ satoshis: 10, timestamp })
+    const comparison = makeMessage({
+      payloadDigest: 'comparison',
+      satoshis: 20,
+      timestamp,
+    })
+    mockedFetchByTopic
+      .mockResolvedValueOnce([refreshed, comparison])
+      .mockResolvedValueOnce([{ ...refreshed, satoshis: 25 }, comparison])
+
+    await store.refreshMessages({ wallet: testWallet, topic: 'ignored' })
+    expect(sortPostsByMode(store.messages, 'hot')[0].payloadDigest).toBe(
+      'comparison',
+    )
+    expect(sortPostsByMode(store.messages, 'top')[0].payloadDigest).toBe(
+      'comparison',
+    )
+    expect(store.messages.filter(message => message.satoshis >= 15)).toEqual([
+      expect.objectContaining({ payloadDigest: 'comparison' }),
+    ])
+
+    await store.refreshMessages({ wallet: testWallet, topic: 'ignored' })
+
+    expect(sortPostsByMode(store.messages, 'hot')[0].payloadDigest).toBe(
+      'deadbeef',
+    )
+    expect(sortPostsByMode(store.messages, 'top')[0].payloadDigest).toBe(
+      'deadbeef',
+    )
+    expect(
+      store.messages
+        .filter(message => message.satoshis >= 15)
+        .map(message => message.payloadDigest),
+    ).toEqual(['deadbeef', 'comparison'])
+  })
+})
+
+describe('useForumStore: setEntries', () => {
+  it('deduplicates restored rows before refreshing and relinking canonical messages', () => {
+    const parent = makeMessage({ payloadDigest: 'parent', satoshis: 10 })
+    const child = makeMessage({
+      payloadDigest: 'child',
+      parentDigest: parent.payloadDigest,
+      satoshis: 15,
+    })
+    const restoredStore = useForumStore()
+    restoredStore.$patch(
+      JSON.parse(
+        JSON.stringify({
+          messages: [
+            {
+              ...parent,
+              replies: [
+                { ...child, replies: [] },
+                { ...child, replies: [] },
+              ],
+            },
+            { ...parent, satoshis: 11, replies: [] },
+            { ...child, replies: [] },
+            { ...child, satoshis: 16, replies: [] },
+          ],
+          index: {
+            parent: { ...parent, satoshis: 11, replies: [] },
+            child: { ...child, satoshis: 16, replies: [] },
+          },
+        }),
+      ),
+    )
+    const canonicalParent = restoredStore.messages[0]
+    const canonicalChild = restoredStore.messages[2]
+
+    restoredStore.setEntries([
+      { ...parent, satoshis: 25 },
+      { ...child, satoshis: 30 },
+    ])
+
+    expect(
+      restoredStore.messages.map(message => message.payloadDigest),
+    ).toEqual(['parent', 'child'])
+    expect(restoredStore.messages[0]).toBe(canonicalParent)
+    expect(restoredStore.messages[1]).toBe(canonicalChild)
+    expect(canonicalParent.satoshis).toBe(25)
+    expect(canonicalChild.satoshis).toBe(30)
+    expect(restoredStore.index.parent).toBe(canonicalParent)
+    expect(restoredStore.index.child).toBe(canonicalChild)
+    expect(canonicalParent.replies).toHaveLength(1)
+    expect(canonicalParent.replies[0]).toBe(canonicalChild)
+  })
+
+  it('does not restore cyclic reply graphs and keeps valid reply links serializable', () => {
+    const selfParent = makeMessage({
+      payloadDigest: 'self-parent',
+      parentDigest: 'self-parent',
+    })
+    const cycleA = makeMessage({
+      payloadDigest: 'cycle-a',
+      parentDigest: 'cycle-b',
+    })
+    const cycleB = makeMessage({
+      payloadDigest: 'cycle-b',
+      parentDigest: 'cycle-a',
+    })
+    const cycleDescendant = makeMessage({
+      payloadDigest: 'cycle-descendant',
+      parentDigest: 'cycle-a',
+    })
+    const validParent = makeMessage({ payloadDigest: 'valid-parent' })
+    const validChild = makeMessage({
+      payloadDigest: 'valid-child',
+      parentDigest: 'valid-parent',
+    })
+    const restoredStore = useForumStore()
+    restoredStore.$patch(
+      JSON.parse(
+        JSON.stringify({
+          messages: [
+            selfParent,
+            cycleA,
+            cycleB,
+            cycleDescendant,
+            validParent,
+            validChild,
+          ].map(message => ({ ...message, replies: [] })),
+          index: {},
+        }),
+      ),
+    )
+
+    restoredStore.setEntries([])
+
+    expect(restoredStore.index['self-parent']?.replies).toEqual([])
+    expect(restoredStore.index['cycle-a']?.replies).toEqual([])
+    expect(restoredStore.index['cycle-b']?.replies).toEqual([])
+    expect(restoredStore.index['cycle-descendant']?.replies).toEqual([])
+    expect(restoredStore.index['valid-parent']?.replies).toHaveLength(1)
+    expect(restoredStore.index['valid-parent']?.replies[0]).toBe(
+      restoredStore.index['valid-child'],
+    )
+    expect(() => JSON.stringify(restoredStore.$state)).not.toThrow()
   })
 })
 

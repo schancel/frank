@@ -56,7 +56,6 @@ entries:
       network_tag: "MONT"             # role 2: referenced asset/network
       asset:
         evm:
-          chain_id: 10143
           asset_id: "native"
     ciphertext: "base64:..."
   - entry_id: "settlement-observation-1"
@@ -65,12 +64,15 @@ entries:
       network_tag: "MONT"             # role 3: execution/observation network
       evidence:
         evm:
-          chain_id: 10143
           transaction_hash: "0x91..."
           contract_address: "0x42..."
           log_index: 3
     ciphertext: "base64:..."
 ```
+
+The `NetworkTag` registry is the only authority for the native EVM chain ID, so the EVM variants do
+not repeat it. A later typed implementation derives the chain ID from `MONT`; a chain response with
+a different chain ID is a network-mismatch error, not an alternate interpretation of the entry.
 
 The relay uses the `LTUS` tag and the `lotus_utxo` variant to validate admission. It does not
 interpret the encrypted Monad entries and must not claim that the asset exists or settlement
@@ -116,55 +118,84 @@ Canonical v1 resources are frozen as follows:
 
 - `/monad/v1/profiles`, `/monad/v1/profiles/:address`,
   `/monad/v1/profiles/search`, and `/monad/v1/profiles/curated-defaults`;
-- `/monad/v1/mailbox/messages`, `/monad/v1/mailbox/messages/:payload_hash`, and
-  `/monad/v1/mailbox/sync`;
+- `PUT /monad/v1/mailbox/messages` for submission;
+- `POST /monad/v1/mailbox/auth/:mailbox_identity` for a bounded authentication challenge;
+- `GET /monad/v1/mailbox/inbox/:mailbox_identity`,
+  `GET /monad/v1/mailbox/outbox/:mailbox_identity`, and
+  `GET /monad/v1/mailbox/recovery/:mailbox_identity` for authenticated views;
+- `GET /monad/v1/mailbox/sync/:mailbox_identity?cursor=...` for authoritative catch-up;
+- `POST /monad/v1/mailbox/import/:mailbox_identity/quote` and
+  `POST /monad/v1/mailbox/import/:mailbox_identity/batch` for an authenticated import quote and
+  its authorized batch import; and
 - `/monad/v1/pubsub/posts`, `/monad/v1/pubsub/posts/:payload_hash`,
   `/monad/v1/pubsub/votes`, and `/monad/v1/pubsub/topics`.
 
-`sync` is the authoritative mailbox catch-up resource and takes an authenticated mailbox identity
-and opaque cursor. A notification channel may later wake a client, but cannot replace `sync` or
-invent a second cursor. Concrete authentication and the #60 record format are outside this plan.
+The canonical mailbox group depends on #60's authenticated private-mailbox contract. `inbox` is
+recipient-retained content; `outbox` includes the sender's authoritative self-sent bytes and
+delivery state; `recovery` exposes authenticated recovery facts, not secret material. A quote does
+not mutate the mailbox. A batch import consumes a bound authorization and emits ordinary journal
+events; it does not create an import-only replay stream.
+
+`sync` is the only authoritative mailbox catch-up cursor. It multiplexes inbox arrivals, outbox and
+delivery transitions, recovery changes, imports, and tombstones in one mailbox-scoped ordered
+journal. The three view routes may use bounded snapshot-page tokens, but those tokens are not replay
+cursors and cannot advance the `sync` checkpoint. A notification channel may wake a client with a
+newest-cursor hint, but cannot replace `sync` or invent a competing cursor. Authentication and the
+cursor both bind the exact `mailbox_identity`.
 
 ### Current-to-target matrix
 
 | Current route on the pinned base | Current purpose | Canonical target | Compatibility action |
 | --- | --- | --- | --- |
 | `PUT/GET /metadata/monad/:addr` | write/read one Monad profile | `PUT/GET /monad/v1/profiles/:address` | bounded alias preserving current request and response bytes |
+| `PUT/GET /metadata/:addr` when `:addr` is Monad-form | conditional Monad dispatch through the nominal Lotus route | `PUT/GET /monad/v1/profiles/:address` | bounded conditional alias; remove only the Monad dispatch branch after its callers move |
+| `PUT/GET /metadata/:addr` when `:addr` is Lotus-form | legacy Lotus metadata | future `/lotus/v1/profiles/:address` after separate Lotus-runtime design | preserve Lotus behavior; it is not part of Monad alias deletion |
 | `GET /metadata/monad?since=...` | global profile registration discovery | `GET /monad/v1/profiles?cursor=...` | compatibility handler retains `since` semantics; no fabricated conversion to an opaque cursor |
 | `GET /metadata/monad/search` | profile-name search | `GET /monad/v1/profiles/search` | bounded alias |
 | `GET /metadata/monad/curated-defaults` | operator-curated contacts | `GET /monad/v1/profiles/curated-defaults` | bounded alias |
-| `PUT /message/monad` | submit a stamped private message | `PUT /monad/v1/mailbox/messages` | compatibility handler; both paths must call one admission operation rather than dual-write |
-| `GET /message/monad/:payload_hash` | fetch one retained message | `GET /monad/v1/mailbox/messages/:payload_hash` | bounded alias until mailbox-auth migration declares the old unauthenticated read removable |
-| `GET /message/monad?since=...` | global timestamp message feed | `GET /monad/v1/mailbox/sync?cursor=...` | **not** a semantic alias; retain the legacy handler temporarily and remove it after authenticated per-mailbox sync is deployed |
+| `PUT /message/monad` | submit a stamped private message | `PUT /monad/v1/mailbox/messages` | alias only after both paths use #60's one durable admission operation; never dual-write |
+| `GET /message/monad/:payload_hash` | unauthenticated retained-message lookup | authenticated `inbox`, `outbox`, or `recovery` view | removed security surface after #60; no alias and no canonical public hash lookup |
+| `GET /message/monad?since=...` | unauthenticated global timestamp feed | authenticated `GET /monad/v1/mailbox/sync/:mailbox_identity?cursor=...` | removed security surface after #60; no alias and no timestamp-cursor translation |
+| #60 private inbox/recovery/auth routes | authenticated private reads on reviewed legacy prefixes | canonical auth, inbox, recovery, and sync routes above | bounded aliases using identical authorization and opaque-cursor scope; never weaken auth while forwarding |
+| no current route | authenticated sender outbox/self-sent view | `GET /monad/v1/mailbox/outbox/:mailbox_identity` | canonical only; #60/#89 state is a prerequisite |
+| no current route | mailbox migration quote and authorized import | canonical `POST .../import/:mailbox_identity/{quote,batch}` routes above | canonical only; depends on accepted #65/#89 import authority and #135 encoding |
 | `PUT/GET /message/monad/topics` | submit/list topic posts | `PUT/GET /monad/v1/pubsub/posts` | bounded alias |
 | `GET /message/monad/topics/:payload_hash` | fetch one topic post | `GET /monad/v1/pubsub/posts/:payload_hash` | bounded alias |
 | `PUT /message/monad/topics/vote` | submit a topic vote | `PUT /monad/v1/pubsub/votes` | bounded alias |
 | `GET /message/monad/topics/discover` | discover topics | `GET /monad/v1/pubsub/topics` | bounded alias |
-| `/metadata/:addr`, `/message`, `/messages...` | legacy Lotus profile/message shapes | future `/lotus/v1/...` only after a separate Lotus-runtime design | no Monad redirect or body conversion; keep isolated compatibility behavior |
+| `/message`, `/message/:payload_hash`, `/messages...` | legacy Lotus message shapes | future `/lotus/v1/...` only after a separate Lotus-runtime design | no Monad redirect or body conversion; preserve isolated Lotus behavior |
 
-An alias preserves the old method, body, status, and response shape while invoking the same typed
-operation as the canonical handler. It does not translate a Lotus transaction into an EVM
-transaction, treat `since + 1` as a cursor, or expose mailbox data through pubsub.
+An alias preserves the old method, body, status, response shape, authentication, and authorization
+while invoking the same typed operation as the canonical handler. It does not translate a Lotus
+transaction into an EVM transaction, treat `since + 1` as a cursor, or expose mailbox data through
+pubsub.
 
 ### Alias ownership, removal, and rollback
 
 The route-migration follow-up owns all Monad aliases as one inventory. Its accountable owner is
-`@schancel`; implementation can be delegated only after that issue records the exact releases and
-telemetry surface. Every alias response advertises the canonical route and deprecation deadline.
+`@schancel`. The current endpoints are experimental and have no external-customer compatibility
+promise, so the migration does not invent a release-count or telemetry waiting period.
 
 Aliases may be removed only when all of these are true:
 
 1. every in-repository Rust/TypeScript client, app, bot, and live check uses canonical routes;
-2. the canonical and alias integration suite has passed for two consecutive releases;
-3. supported-deployment telemetry has observed no alias request for at least 30 days; and
-4. for the global message feed, authenticated mailbox sync and its recovery proof have landed.
+2. one live integration run proves submission, authenticated inbox/outbox/recovery, sync replay,
+   and pubsub/profile behavior through canonical routes; and
+3. repository search plus route tests prove no supported in-repository caller uses the alias.
 
-The removal follow-up owns a repository reference scan and route-level `404` proof for every old
-path. If canonical-route errors or client rollback exceed the threshold recorded by the
-implementation issue, rollback re-enables the alias router and rolls clients back; it does not
-rewrite stored records. Before alias removal, rollback may disable the canonical router and leave
-the legacy handler active. A route migration that needs a database or wire rollback must stop and
-receive a new contract because that contradicts this plan.
+The global unauthenticated feed and payload-hash lookup are different: #60 removes them as security
+surfaces before canonical mailbox routing, so no migration stage retains or reintroduces them.
+Tests require `404` for those removed legacy reads and `401` for an unauthenticated canonical
+private read. Alias-deletion proof for `/metadata/:addr` is address-family-specific: a Monad-form
+request no longer dispatches to Monad, while a valid Lotus-form request still reaches the legacy
+Lotus handler. The route itself does not become a blanket `404`.
+
+Rollback before alias deletion disables the canonical router and moves in-repository callers back
+to the still-reviewed aliases. Mailbox rollback returns to #60's authenticated private routes; it
+never restores either unauthenticated GET. After alias deletion, rollback re-enables only the exact
+non-security alias inventory and rolls callers back. No rollback rewrites stored records. A route
+migration that needs a database or wire rollback must stop and receive a new contract because that
+contradicts this plan.
 
 ## Runtime adapter fan-in
 
@@ -178,9 +209,9 @@ Each adapter normalizes only the common event envelope:
 
 ```text
 AdapterEvent {
-  key: (source_network_tag, stream_kind, source_event_id)
+  key: (source_network_tag, stream_kind, source_instance_id, source_event_id)
   source_order_key: adapter-defined immutable comparable bytes
-  source_time_ms: authenticated relay/chain observation time
+  presentation_time: { seconds: bigint, nanos: uint32 }
   relay_origin: authenticated origin record
   entries: opaque or decrypted entries with their own optional NetworkTags
   native: chain-specific typed event
@@ -188,45 +219,67 @@ AdapterEvent {
 ```
 
 `native` is a discriminated adapter-owned value, not a generic transaction. The merge layer may
-index common display metadata but cannot reinterpret it.
+index common display metadata but cannot reinterpret it. `source_instance_id` is an authenticated
+relay node/source identity, not a configured URL or local adapter name. Time uses lossless signed
+seconds plus `0..999_999_999` nanoseconds, consistent with #106/#133; JavaScript represents seconds
+as `bigint`, never a `number` millisecond count.
+
+Each authoritative source stream is scoped by `(NetworkTag, stream_kind, source_instance_id,
+authorization_scope)`. Its adapter yields events in immutable `source_order_key` order. Mailbox
+authorization scope is the exact mailbox identity; selective pubsub scope is a subscription
+identity plus generation. A profile/public stream uses its declared query or global-feed scope.
 
 ### Two-adapter example
 
-Assume the Lotus adapter returns:
+Assume one Lotus mailbox source returns this authoritative sequence, including a regressing
+presentation timestamp:
 
 ```text
-L1 key=(LTUS, mailbox, lotus:0009) order=0009 time=1720000000100
-L2 key=(LTUS, pubsub, lotus:0010) order=0010 time=1720000000400
+L1 key=(LTUS, mailbox, relay-L, lotus:0009) order=0009 time=(1720000000,900000000)
+L2 key=(LTUS, mailbox, relay-L, lotus:0010) order=0010 time=(1719999999,100000000)
 ```
 
-and the Monad adapter returns:
+and one Monad mailbox source returns:
 
 ```text
-M1 key=(MONT, mailbox, monad:0031) order=0031 time=1720000000100
-M2 key=(MONT, pubsub, monad:0032) order=0032 time=1720000000300
+M1 key=(MONT, mailbox, relay-M, monad:0031) order=0031 time=(1720000000,100000000)
+M2 key=(MONT, mailbox, relay-M, monad:0032) order=0032 time=(1720000000,300000000)
 ```
 
-For any fixed observed set, the total display order is the bytewise ascending tuple:
+The deterministic presentation view is a k-way merge. Only the next unconsumed head of each source
+stream is eligible. Among eligible heads, compare this tuple bytewise (and compare the timestamp as
+the exact seconds/nanoseconds pair):
 
 ```text
-(source_time_ms, source_network_tag, stream_kind, source_order_key, source_event_id)
+(presentation_time, NetworkTag, stream_kind, source_instance_id,
+ source_order_key, source_event_id)
 ```
 
-The result is `L1, M1, M2, L2`: `L1` wins the equal-time tie because canonical `LTUS` bytes sort
-before `MONT`. `source_time_ms` is relay- or chain-authenticated metadata, never an untrusted
-timestamp inside encrypted content. Every field after it is an explicit tie-breaker, so iteration
-order, response timing, locale, and JavaScript object ordering cannot affect the result.
+The result is `M1, M2, L1, L2`. `L2` can never precede `L1`, even though its timestamp regresses,
+because it is not eligible until `L1` is consumed. Every comparison has explicit tie-breakers, so
+response timing, locale, and JavaScript object iteration cannot affect the result. Presentation
+time is relay- or chain-authenticated metadata, never an untrusted timestamp inside encrypted
+content.
 
 This is a deterministic materialized view, not a claim of cross-chain causality. If an outage later
-reveals an older event, it is inserted at its canonical position. An optional notification list may
-be append-only by local discovery time, but it is not the canonical conversation/event order.
+reveals an older source sequence, rebuilding the same set produces the same k-way order while
+preserving every source edge. An optional notification list may be append-only by local discovery
+time, but it is not the canonical conversation/event order.
+
+State replay never uses `presentation_time` or the cross-source presentation merge. It applies each
+source in `source_order_key` order. A domain object changed by more than one source must carry an
+explicit version, predecessor/causal reference, or separately specified commutative reducer; the
+fan-in layer must not manufacture state authority from timestamps.
 
 ### Identity and deduplication
 
 `source_event_id` is defined and tested by each adapter from immutable native identity: for
-example, a relay journal event id or a chain tuple such as block/transaction/log position. It is
-not a timestamp, display address, array index, or cursor. The `NetworkTag` and `stream_kind`
-namespaces prevent equal native ids on different networks or streams from colliding.
+example, a relay journal event id or a chain tuple such as block/transaction/log position. If the
+native identifier is narrower than `stream_kind`, the adapter includes its authorization scope in
+the bytes so it is unique within that source instance and kind. It is not a timestamp, display
+address, array index, or cursor. Exact observation identity is always the full `(NetworkTag,
+stream_kind, source_instance_id, source_event_id)` tuple; source-local identifiers from two relays
+therefore cannot collide.
 
 Exact retries deduplicate on the full `key`. A separate content digest may collapse equivalent
 content for presentation, but all distinct relay origins remain attached. If the same envelope is
@@ -236,9 +289,13 @@ with `key.source_network_tag`.
 
 ### Checkpoints, reconnect, and partial outage
 
-The durable fan-in checkpoint is a map keyed by `(adapter_id, NetworkTag, relay_id, stream_kind)`.
-Each value is an adapter-owned opaque cursor plus its advertised high-water mark. The merge layer
-never decodes, compares, increments, or synthesizes cursors.
+The durable fan-in checkpoint is a map keyed by `(NetworkTag, source_instance_id, stream_kind,
+authorization_scope)`. The authorization scope is the mailbox identity for mailbox sync, the
+subscription identity plus generation for selective pubsub, and the declared feed/query scope for
+profiles or other public streams. A local `adapter_id` is not cursor authority and is never used as
+a substitute for these fields. Each value is an adapter-owned opaque cursor plus its advertised
+high-water mark. The cursor and server authorization are bound to the complete key. The merge layer
+never decodes, compares, increments, re-scopes, or synthesizes cursors.
 
 For each page, validated event insertion, exact-key deduplication, origin attachment, and that
 adapter's cursor advance commit atomically. A crash before commit replays the page; a crash after
@@ -248,18 +305,19 @@ safe-origin replay path and relies on stable keys for idempotence; it never fall
 `timestamp + 1`.
 
 An unavailable adapter does not stop healthy adapters. Its checkpoint remains unchanged, its
-network is marked stale with the last successful high-water/time, and the merged view continues
-with an explicit partial-data status. Sends requiring the unavailable adapter fail or queue only
-under that adapter's declared policy; they never fail over to another chain. When it reconnects,
-backlog pages are applied atomically and events take their canonical positions. The UI clears the
-stale marker only after reaching the adapter's new high-water mark.
+source stream is marked stale with the last successful high-water mark and lossless timestamp, and
+the merged view continues with an explicit partial-data status. Sends requiring the unavailable
+adapter fail or queue only under that adapter's declared policy; they never fail over to another
+chain. When it reconnects, backlog pages are applied atomically and the materialized k-way view is
+updated without violating source order. The UI clears the stale marker only after reaching the
+adapter's new high-water mark.
 
 ## Resource limits are not message semantics
 
 This plan sets no 64 KiB envelope cap. Before any cap is enforced, the owning follow-up must measure
-current encrypted payload sizes, protobuf/JSON expansion, stamp evidence, HTTP framing,
-decompression, storage amplification, and catch-up page behavior against repository fixtures and a
-representative retained corpus.
+current encrypted payload sizes, existing protobuf/JSON expansion, proposed deterministic-CBOR
+overhead, stamp evidence, HTTP framing, decompression, storage amplification, and catch-up page
+behavior against repository fixtures and a representative retained corpus.
 
 Limits then live in separate, explicit policy layers:
 
@@ -274,19 +332,21 @@ and increasing a semantic format version must not silently disable resource prot
 
 ## Staged follow-on landings
 
-Issue #59 owns this plan only. Decision #169 owns the route prefix decision and is complete. The
-following implementation issues must be filed and accepted before production edits; `@schancel`
-owns unresolved product and compatibility decisions. Each row is a separate reviewed landing (or
-stack where stated), not hidden work in this documentation ticket.
+Issue #59 owns this plan only. Decision #169 owns the route prefix decision and is complete.
+`@schancel` owns unresolved product and compatibility decisions. Existing roadmap issues must
+reach their stated prerequisites, and new implementation issues must be filed and accepted, before
+production edits. Each row is a separate reviewed landing (or stack where stated), not hidden work
+in this documentation ticket.
 
 | Stage / owning issue | Boundary and proof | Compatibility and removal trigger |
 | --- | --- | --- |
-| F1 — **new issue: composite entry schema and golden fixtures** | Add explicit stamp, per-entry reference, and settlement-role tags plus discriminated EVM/UTXO references. Update both source protobuf copies and generated bindings in that issue. Golden encode/decode fixtures include the composite example and reject route/tag or variant/tag mismatch. | Readers preserve supported unknown encrypted entry kinds; no generic transaction blob. Old messages remain readable. No writer switches yet. |
-| F2 — **new issue: canonical route groups and aliases** | Add independently mountable profiles/mailbox/pubsub routers, route integration tests, deprecation metadata, and the alias inventory above. No storage-byte change. | Canonical routes are additive. Removal is a later landing after the four alias triggers pass. Decision #169 is the authority, not an invitation to alter #60. |
-| F3 — **new issue: in-repository client route cutover** | Switch generated clients, wallet adapters, bots, frontend configuration, and live checks together; prove canonical-only client traffic against one binary with all three groups mounted and with each group disabled in turn. | Roll back clients while aliases remain. This stage triggers the alias observation window; it does not remove aliases. |
-| F4 — **new issue: multichain fan-in state and integration proof** | Introduce `MultichainEventView`, two real adapter instances, stable-key fixtures, atomic per-adapter checkpoints, outage/reconnect/cursor-expiry tests, and per-entry attribution checks. | Requires an actual second adapter and accepted cursor contracts. It does not restore Lotus infrastructure inside this landing; adapter/runtime restoration is its own prerequisite. The compile-time seam is removed only after all current consumers use fan-in. |
-| F5 — **new issue: alias deletion** | Remove only aliases whose telemetry window and integration proof passed; prove repository references are gone and old routes return `404` without exposing another subsystem. | Re-enable the alias router for rollback. The global message feed cannot be removed until authenticated mailbox sync has landed. |
-| Existing #65/#87/#88/#89/#111 work | Federation and mailbox topology may consume the boundaries here, but retains its own authority, storage, authentication, and replication contracts. | None of those issues may infer a content entry's network from relay provenance or expose mailbox records through public pubsub/federation. |
+| F0 — **#131 deterministic-CBOR proof** | Freeze the language-neutral profile/framing and Rust/browser vectors before any new multichain record schema. The vectors include lossless seconds/nanoseconds and hostile canonicalization/resource cases. | No production writer changes. This is a prerequisite, not a codec implementation hidden in #59. |
+| F1 — **refine #132 and #136 after #131** | In #132, define canonical-CBOR DM/message-item schemas with separate stamp, per-entry reference, and settlement roles plus discriminated EVM/UTXO references. In #136, apply the same attribution rule to topic entries that reference chains. Shared golden vectors include this composite fixture and reject NetworkTag/native-variant mismatch. | Preserve exact legacy bytes under their explicit legacy readers; never transcode them. Unknown supported CBOR item kinds remain opaque. No new protobuf schema or generated-binding work is prescribed here. |
+| F2 — **new issue: canonical route groups and aliases** | After #60 authentication/state prerequisites, add independently mountable profiles/mailbox/pubsub routers, the complete mailbox surface above, route integration tests, and the bounded non-security alias inventory. No storage-byte change. | Canonical routes are additive. Removal is a later landing after the three alias triggers pass. The two unauthenticated legacy GETs stay removed. |
+| F3 — **new issue: in-repository client route cutover** | Switch typed clients, wallet adapters, bots, frontend configuration, and live checks together; prove canonical-only client traffic against one binary with all three groups mounted and with each group disabled in turn. | Roll back clients while reviewed aliases remain. Successful live integration permits F5; there is no invented external waiting window. |
+| F4 — **new issue: multichain fan-in state and integration proof** | Introduce `MultichainEventView`, two real adapter instances, four-part exact observation keys, lossless timestamp vectors, k-way order tests with regressing times, complete authorization-scoped checkpoints, outage/reconnect/cursor-expiry tests, and per-entry attribution checks. | Requires an actual second adapter and accepted cursor contracts. Adapter/runtime restoration is its own prerequisite. The compile-time seam is removed only after all current consumers use fan-in. |
+| F5 — **new issue: alias deletion** | After in-repo cutover and live proof, remove the bounded aliases. Repository scans and route tests prove old Monad routes are gone, the removed unauthenticated reads return `404`, unauthenticated canonical reads return `401`, Monad-form `/metadata/:addr` dispatch is gone, and Lotus-form `/metadata/:addr` still works. | Re-enable only the non-security alias inventory for rollback; never restore the global feed or public payload-hash lookup. |
+| Existing #65/#87/#88/#89/#111/#133/#135 work | Federation, import/delivery, public nanosecond records, and mailbox topology consume the boundaries here but retain their own authority, storage, authentication, encoding, and replication contracts. | None may infer an entry's network from relay provenance, expose mailbox records through public federation, or create a cursor outside the complete authorization scope. |
 
 Issue #60 remains an active, independent wallet/private-mailbox scope. This plan neither changes its
 candidate nor treats it as the owner of F1–F5. Atomic-swap execution, plugin rendering/protocols,
@@ -303,8 +363,10 @@ This plan was checked against base `53e218b47dcd59d4826b92cb63f69b61a65de33c`:
 - `backend/cashweb/cashweb-registry/src/http/monad_message.rs` documents why Monad and Lotus stamp
   transactions have different native shapes.
 - `backend/cashweb/cashweb-registry/proto/monad_message.proto` and
-  `backend/cashweb/cashweb-registry/proto/topic_message.proto` are backend wire sources; the latter
-  currently has a hand-kept client counterpart at `packages/wallet/proto/topic_message.proto`.
+  `backend/cashweb/cashweb-registry/proto/topic_message.proto` are current legacy/new-Frank wire
+  sources; the latter has a hand-kept client counterpart at
+  `packages/wallet/proto/topic_message.proto`. This plan does not extend them: #130–#137 govern the
+  deterministic-CBOR migration, with #131 preceding #132/#136.
 - `docs/backend-topology.md` separates profile, private-mailbox, and public-pubsub ownership, while
   `docs/public-federation-plan.md` defines `NetworkTag` as protocol data and separates relay origin
   from content assertions.

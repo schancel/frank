@@ -90,6 +90,26 @@ pub(crate) fn reconciliation_snapshot_work_counts() -> (usize, usize) {
     RECONCILIATION_SNAPSHOT_WORK.get()
 }
 
+static LEGACY_CHAIN_QUARANTINED: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// Number of stored payments skipped by chain binding because they carry no usable chain ID.
+/// Process-lifetime counter for operators and tests.
+pub(crate) fn legacy_chain_quarantined_total() -> u64 {
+    LEGACY_CHAIN_QUARANTINED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+fn note_legacy_chain_quarantine(payload_hash: &[u8], child_index: u32, reason: &str) {
+    LEGACY_CHAIN_QUARANTINED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    tracing::event!(
+        tracing::Level::WARN,
+        payload_hash = %hex::encode(payload_hash),
+        child_index,
+        reason,
+        "Quarantined stored Monad payment without a usable chain ID during chain binding"
+    );
+}
+
 #[cfg(test)]
 fn reset_outbox_canonical_write_work() {
     OUTBOX_CANONICAL_WRITE_WORK.set((0, 0));
@@ -213,6 +233,18 @@ pub struct MonadOutboxLimits {
     pub max_recovery_bytes_per_recipient: usize,
     /// Maximum age before another replay attempt is refused and retained as terminal.
     pub max_claim_age: Duration,
+    /// Maximum age of a claim that has no confirmed child. Payments normally confirm within
+    /// seconds, so an unconfirmed claim must not hold its recovery reservation for the full
+    /// `max_claim_age`. Applied on top of the frozen `expires_at_ms` (never extends it).
+    pub max_unconfirmed_claim_age: Duration,
+    /// Maximum age, measured from its terminal transition, of a retained recovery obligation
+    /// whose only evidence is unconfirmed exposure (no child was ever confirmed). Obligations
+    /// with a confirmed child are never aged out; only recipient acknowledgement retires them.
+    pub max_unconfirmed_recovery_age: Duration,
+    /// Maximum claims per recipient that own a reservation but have no confirmed child. Kept well
+    /// below `max_recovery_records_per_recipient` so unfunded or never-mined signed payments
+    /// cannot exhaust a recipient's whole recovery quota.
+    pub max_unconfirmed_claims_per_recipient: usize,
     /// Maximum persisted attempts for one member.
     pub max_member_attempts: u32,
     /// Frozen base delay between replay attempts for a newly claimed member.
@@ -247,6 +279,9 @@ impl Default for MonadOutboxLimits {
             max_recovery_records_per_recipient: 128,
             max_recovery_bytes_per_recipient: 256 * 1024 * 1024,
             max_claim_age: Duration::from_secs(7 * 24 * 60 * 60),
+            max_unconfirmed_claim_age: Duration::from_secs(6 * 60 * 60),
+            max_unconfirmed_recovery_age: Duration::from_secs(24 * 60 * 60),
+            max_unconfirmed_claims_per_recipient: 32,
             max_member_attempts: 32,
             retry_backoff_base: Duration::from_secs(1),
             max_retry_backoff: Duration::from_secs(5 * 60),
@@ -915,7 +950,8 @@ impl<'a> DbMonadOutbox<'a> {
                         (encoded.len() as u64).to_be_bytes(),
                     );
                 } else if matches!(record.lifecycle, MonadOutboxLifecycle::Terminal(_)) {
-                    let has_evidence = self.has_recovery_evidence_locked(&payload_hash, &record)?;
+                    let has_evidence =
+                        self.has_recovery_evidence_locked(&payload_hash, &record, None)?;
                     if has_evidence {
                         let policy = active_policy(&record)?;
                         batch.put_cf(
@@ -996,7 +1032,8 @@ impl<'a> DbMonadOutbox<'a> {
                 let payload_hash = checked_payload_hash(key)?;
                 let record = decode_record(encoded_record)?;
                 if matches!(record.lifecycle, MonadOutboxLifecycle::Terminal(_)) {
-                    let has_evidence = self.has_recovery_evidence_locked(&payload_hash, &record)?;
+                    let has_evidence =
+                        self.has_recovery_evidence_locked(&payload_hash, &record, None)?;
                     if has_evidence {
                         let policy = active_policy(&record)?;
                         batch.put_cf(
@@ -1219,7 +1256,7 @@ impl<'a> DbMonadOutbox<'a> {
                 {
                     continue;
                 }
-                if self.has_recovery_evidence_locked(&payload_hash, &record)? {
+                if self.has_recovery_evidence_locked(&payload_hash, &record, None)? {
                     let policy = active_policy(&record)?;
                     batch.put_cf(
                         self.cf_recipient,
@@ -1484,7 +1521,9 @@ impl<'a> DbMonadOutbox<'a> {
             &policy.recipient,
             reservation_bytes,
             limits,
-        )? {
+        )? || self.read_unconfirmed_count_locked(&policy.recipient)?
+            >= limits.max_unconfirmed_claims_per_recipient as u64
+        {
             return Ok(if adopted_legacy {
                 MonadOutboxClaim::AtCapacityExactLegacy
             } else {
@@ -1498,6 +1537,7 @@ impl<'a> DbMonadOutbox<'a> {
             &policy.recipient,
             reservation_bytes as u64,
         )?;
+        self.append_unconfirmed_mark_locked(&mut batch, &payload_hash, &policy.recipient)?;
         self.append_outbox_put(&mut batch, &payload_hash, &encoded_record);
         batch.put_cf(self.cf_active, payload_hash, now_ms.to_be_bytes());
         for (child_index, encoded_member) in members {
@@ -1870,6 +1910,14 @@ impl<'a> DbMonadOutbox<'a> {
                 self.db.write_batch(batch)?;
                 return Ok(ChainBindingProgress::Complete);
             }
+            let quarantined = legacy_chain_quarantined_total();
+            if quarantined > 0 {
+                tracing::event!(
+                    tracing::Level::WARN,
+                    quarantined,
+                    "Monad chain binding completed with stored payments lacking a usable chain ID"
+                );
+            }
             let mut batch = rocksdb::WriteBatch::default();
             batch.put_cf(
                 self.cf_meta,
@@ -1882,17 +1930,34 @@ impl<'a> DbMonadOutbox<'a> {
             return Ok(ChainBindingProgress::Complete);
         }
 
-        for (_, message) in &rows {
+        for (key, message) in &rows {
             for payment in &message.stamp_payments {
-                let decoded = decode_signed_transaction(&payment.raw_tx).map_err(|err| {
-                    CorruptRecord(format!("durable signed payment cannot decode: {err}"))
-                })?;
-                if decoded.chain_id != Some(expected_chain_id) {
-                    return Err(CorruptRecord(format!(
-                        "durable payment chain ID {:?} differs from configured {expected_chain_id}",
-                        decoded.chain_id
-                    ))
-                    .into());
+                // Rows written before chain binding existed may hold payments with no usable
+                // chain identity (pre-EIP-155 signatures, or bytes this decoder no longer
+                // accepts). They carry no evidence about which chain the database serves, so they
+                // are quarantined (skipped, logged, counted) instead of failing the whole open.
+                // A payment that *does* name a different chain is real evidence of a wrong
+                // runtime configuration and remains fatal.
+                let chain_id = match decode_signed_transaction(&payment.raw_tx) {
+                    Ok(decoded) => decoded.chain_id,
+                    Err(err) => {
+                        note_legacy_chain_quarantine(key, payment.child_index, &err.to_string());
+                        continue;
+                    }
+                };
+                match chain_id {
+                    Some(actual) if actual == expected_chain_id => {}
+                    Some(actual) => {
+                        return Err(CorruptRecord(format!(
+                            "durable payment chain ID {actual} differs from configured {expected_chain_id}"
+                        ))
+                        .into())
+                    }
+                    None => note_legacy_chain_quarantine(
+                        key,
+                        payment.child_index,
+                        "payment has no chain ID",
+                    ),
                 }
             }
         }
@@ -2098,7 +2163,7 @@ impl<'a> DbMonadOutbox<'a> {
         if now_ms < member.next_replay_at_ms {
             return Ok(MonadOutboxReplayStart::Stale);
         }
-        let terminal = if now_ms > record.expires_at_ms {
+        let terminal = if now_ms > claim_expiry_ms(&record, child_index > 0, limits) {
             Some((MonadOutboxTerminal::Expired, "claim age limit exceeded"))
         } else if member.attempts >= record.max_member_attempts {
             Some((
@@ -2122,8 +2187,12 @@ impl<'a> DbMonadOutbox<'a> {
             self.gc_history(now_ms, limits)?;
             return Ok(MonadOutboxReplayStart::Terminal(terminal));
         }
+        // Charging the attempt is durable before the send so a crash cannot grant free replays,
+        // but the attempt is NOT recipient-recoverable exposure: `exposed` is set only after the
+        // node accepts the transaction or an exact-hash lookup shows it (see
+        // `complete_submitted_member`). A rejected or unreachable send therefore never creates a
+        // recovery obligation, so unfunded signed payments cannot pin recovery quota.
         member.attempts += 1;
-        member.exposed = true;
         member.updated_at_ms = now_ms;
         member.last_error.clear();
         let mut batch = rocksdb::WriteBatch::default();
@@ -2132,13 +2201,6 @@ impl<'a> DbMonadOutbox<'a> {
             member_key(&payload_hash, child_index),
             encode_member(&member),
         );
-        if child_index == 0 {
-            batch.put_cf(
-                self.cf_recipient,
-                recipient_key(&active_policy(&record)?.recipient, &payload_hash),
-                [],
-            );
-        }
         self.db.write_batch(batch)?;
         Ok(MonadOutboxReplayStart::Started(member))
     }
@@ -2271,6 +2333,13 @@ impl<'a> DbMonadOutbox<'a> {
             recipient_key(&active_policy(&record)?.recipient, &payload_hash),
             [],
         );
+        if child_index == 0 {
+            self.append_unconfirmed_clear_locked(
+                &mut batch,
+                &payload_hash,
+                &active_policy(&record)?.recipient,
+            )?;
+        }
         self.db.write_batch(batch)?;
         Ok(MonadOutboxTransition::Applied)
     }
@@ -2346,8 +2415,30 @@ impl<'a> DbMonadOutbox<'a> {
             return Ok(MonadOutboxTransition::Stale);
         }
         let detail = bounded_text(detail, limits.max_last_error_bytes);
-        member.last_error = detail;
         member.exposed |= exposed;
+        // The exact lookup already ran without confirming this child, so claim age may be applied
+        // here too. Otherwise a member that stays visible-but-unmined or behind an ambiguous RPC
+        // never reaches `begin_replay_attempt` and would remain Pending forever.
+        if now_ms > claim_expiry_ms(&record, child_index > 0, limits) {
+            // The lookup was ambiguous, so a send that was attempted earlier may have reached
+            // the chain: keep it recoverable (bounded by the unconfirmed-recovery TTL) rather
+            // than releasing evidence we could not disprove.
+            member.exposed |= member.attempts > 0;
+            let mut record = record;
+            self.write_terminal_locked(
+                &payload_hash,
+                &mut record,
+                &mut member,
+                MonadOutboxTerminal::Expired,
+                "claim age limit exceeded",
+                now_ms,
+                limits,
+            )?;
+            drop(_guard);
+            self.gc_history(now_ms, limits)?;
+            return Ok(MonadOutboxTransition::Applied);
+        }
+        member.last_error = detail;
         member.updated_at_ms = now_ms;
         member.lease_until_ms = 0;
         member.next_replay_at_ms = now_ms.saturating_add(retry_backoff_ms(
@@ -2536,7 +2627,15 @@ impl<'a> DbMonadOutbox<'a> {
             &encoded_member,
         );
         batch.delete_cf(self.cf_active, payload_hash);
-        if self.recovery_facts_locked(payload_hash, record)? == RecoveryFacts::None {
+        // Evidence is judged against the member being staged: it has not been written yet, and
+        // exposure learned in this same transition must be retained atomically with it.
+        if self.has_recovery_evidence_locked(payload_hash, record, Some(member))? {
+            batch.put_cf(
+                self.cf_recipient,
+                recipient_key(&active_policy(record)?.recipient, payload_hash),
+                [],
+            );
+        } else {
             if let Some(policy) = record.policy.as_ref() {
                 self.append_quota_release_locked(&mut batch, payload_hash, &policy.recipient)?;
                 batch.delete_cf(
@@ -3160,6 +3259,69 @@ impl<'a> DbMonadOutbox<'a> {
             && recipient_usage.bytes <= limits.max_recovery_bytes_per_recipient as u64)
     }
 
+    /// Unconfirmed-claim counter for one recipient (O(1): one metadata read).
+    ///
+    /// Counts claims that own a recovery reservation but whose child zero is not confirmed. A
+    /// per-claim marker makes every increment and decrement idempotent, so the counter cannot
+    /// drift when a claim leaves the set through confirmation, terminalization, acknowledgement,
+    /// or age-out. Claims created before this accounting existed have no marker and are simply
+    /// not counted.
+    fn read_unconfirmed_count_locked(&self, recipient: &Address) -> Result<u64> {
+        #[cfg(test)]
+        QUOTA_ADMISSION_META_READS.set(QUOTA_ADMISSION_META_READS.get().saturating_add(1));
+        match self
+            .db
+            .get(self.cf_meta, unconfirmed_recipient_key(recipient))?
+        {
+            Some(encoded) => decode_u64_meta(&encoded, "unconfirmed claim counter"),
+            None => Ok(0),
+        }
+    }
+
+    fn append_unconfirmed_mark_locked(
+        &self,
+        batch: &mut rocksdb::WriteBatch,
+        payload_hash: &[u8; 32],
+        recipient: &Address,
+    ) -> Result<()> {
+        let count = self.read_unconfirmed_count_locked(recipient)?;
+        batch.put_cf(
+            self.cf_meta,
+            unconfirmed_recipient_key(recipient),
+            count.saturating_add(1).to_be_bytes(),
+        );
+        batch.put_cf(self.cf_meta, unconfirmed_owner_key(payload_hash), []);
+        Ok(())
+    }
+
+    /// Remove a claim from the unconfirmed set if (and only if) it is currently marked.
+    fn append_unconfirmed_clear_locked(
+        &self,
+        batch: &mut rocksdb::WriteBatch,
+        payload_hash: &[u8; 32],
+        recipient: &Address,
+    ) -> Result<()> {
+        if self
+            .db
+            .get(self.cf_meta, unconfirmed_owner_key(payload_hash))?
+            .is_none()
+        {
+            return Ok(());
+        }
+        let count = self.read_unconfirmed_count_locked(recipient)?;
+        if count <= 1 {
+            batch.delete_cf(self.cf_meta, unconfirmed_recipient_key(recipient));
+        } else {
+            batch.put_cf(
+                self.cf_meta,
+                unconfirmed_recipient_key(recipient),
+                (count - 1).to_be_bytes(),
+            );
+        }
+        batch.delete_cf(self.cf_meta, unconfirmed_owner_key(payload_hash));
+        Ok(())
+    }
+
     fn read_required_quota_usage_locked(
         &self,
         key: &[u8],
@@ -3345,6 +3507,7 @@ impl<'a> DbMonadOutbox<'a> {
         batch.delete_cf(self.cf_meta, recovery_quota_record_key(payload_hash));
         batch.delete_cf(self.cf_meta, owner_key);
         batch.delete_cf(self.cf_meta, recovery_obligation_id_key(payload_hash));
+        self.append_unconfirmed_clear_locked(batch, payload_hash, recipient)?;
         Ok(())
     }
 
@@ -3405,7 +3568,7 @@ impl<'a> DbMonadOutbox<'a> {
                 Err(CorruptRecord("owned outbox row has no frozen policy".to_string()).into())
             };
         };
-        if !self.has_recovery_evidence_locked(payload_hash, record)? {
+        if !self.has_recovery_evidence_locked(payload_hash, record, None)? {
             return Ok(RecoveryFacts::None);
         }
         if self
@@ -3428,6 +3591,7 @@ impl<'a> DbMonadOutbox<'a> {
         &self,
         payload_hash: &[u8; 32],
         record: &MonadOutboxRecord,
+        staged_member: Option<&MonadOutboxMember>,
     ) -> Result<bool> {
         let message = Self::canonical_message(record)?;
         let first = message.stamp_payments.first().ok_or_else(|| {
@@ -3436,9 +3600,12 @@ impl<'a> DbMonadOutbox<'a> {
         if first.child_index != 0 {
             return Err(CorruptRecord("canonical child zero index is missing".to_string()).into());
         }
-        let first_member = self.get_member(payload_hash, 0)?.ok_or_else(|| {
-            CorruptRecord("canonical child zero member row is missing".to_string())
-        })?;
+        let first_member = match staged_member.filter(|member| member.child_index == 0) {
+            Some(staged) => staged.clone(),
+            None => self.get_member(payload_hash, 0)?.ok_or_else(|| {
+                CorruptRecord("canonical child zero member row is missing".to_string())
+            })?,
+        };
         Ok(
             matches!(first_member.state, MonadOutboxMemberState::Confirmed { .. })
                 || first_member.exposed,
@@ -3484,6 +3651,158 @@ impl<'a> DbMonadOutbox<'a> {
             }
         }
         Ok(total)
+    }
+
+    /// Retire terminal recovery obligations whose only evidence is unconfirmed exposure once they
+    /// are older than `max_unconfirmed_recovery_age`, releasing their recovery reservation.
+    ///
+    /// A claim that ever had a confirmed child is never touched: real value moved and only the
+    /// recipient's acknowledgement may retire it. Work is bounded per page; pages are resumed
+    /// from the returned recipient-index position.
+    pub(crate) fn expire_unconfirmed_recovery_page(
+        &self,
+        after: Option<Vec<u8>>,
+        max_rows: usize,
+        now_ms: i64,
+        limits: &MonadOutboxLimits,
+    ) -> Result<(Option<Vec<u8>>, usize)> {
+        let max_age_ms = duration_ms_i64(limits.max_unconfirmed_recovery_age);
+        let _guard = self.db.lock_monad_outbox();
+        let mode = after
+            .as_deref()
+            .map(|key| IteratorMode::From(key, Direction::Forward))
+            .unwrap_or(IteratorMode::Start);
+        let mut batch = rocksdb::WriteBatch::default();
+        let mut expired = 0usize;
+        let mut scanned = 0usize;
+        let mut last = None;
+        let mut exhausted = true;
+        for item in self.db.rocksdb().iterator_cf(self.cf_recipient, mode) {
+            let (key, _) = item?;
+            if after.as_deref() == Some(key.as_ref()) {
+                continue;
+            }
+            if scanned == max_rows.max(1) {
+                exhausted = false;
+                break;
+            }
+            scanned += 1;
+            last = Some(key.to_vec());
+            if key.len() != RECIPIENT_KEY_LEN {
+                return Err(
+                    CorruptRecord("recipient recovery index is malformed".to_string()).into(),
+                );
+            }
+            let payload_hash = checked_payload_hash(&key[20..])?;
+            let Some(record) = self.get(&payload_hash)? else {
+                return Err(
+                    CorruptRecord("recipient index references missing outbox".to_string()).into(),
+                );
+            };
+            if !matches!(record.lifecycle, MonadOutboxLifecycle::Terminal(_))
+                || now_ms.saturating_sub(record.updated_at_ms) <= max_age_ms
+            {
+                continue;
+            }
+            let Some(policy) = record.policy.as_ref() else {
+                continue;
+            };
+            let first = self.get_member(&payload_hash, 0)?.ok_or_else(|| {
+                CorruptRecord("canonical child zero member row is missing".to_string())
+            })?;
+            if matches!(first.state, MonadOutboxMemberState::Confirmed { .. }) {
+                continue;
+            }
+            let message = Self::canonical_message(&record)?;
+            self.append_quota_release_locked(&mut batch, &payload_hash, &policy.recipient)?;
+            batch.delete_cf(self.cf_outbox, payload_hash);
+            batch.delete_cf(self.cf_active, payload_hash);
+            batch.delete_cf(self.cf_recipient, key.as_ref());
+            batch.delete_cf(
+                self.cf_history,
+                history_key(record.updated_at_ms, &payload_hash),
+            );
+            for payment in message.stamp_payments {
+                batch.delete_cf(
+                    self.cf_members,
+                    member_key(&payload_hash, payment.child_index),
+                );
+            }
+            expired += 1;
+            // Quota counters are read-modify-write inside `append_quota_release_locked`; commit
+            // each retirement so a later row in this page observes the decremented counters.
+            self.db.write_batch(std::mem::take(&mut batch))?;
+        }
+        Ok((if exhausted { None } else { last }, expired))
+    }
+
+    /// Retire every aged unconfirmed-exposure obligation, one bounded page at a time.
+    pub(crate) fn expire_unconfirmed_recovery(
+        &self,
+        now_ms: i64,
+        limits: &MonadOutboxLimits,
+    ) -> Result<usize> {
+        let mut cursor = None;
+        let mut total = 0usize;
+        loop {
+            let (next, expired) =
+                self.expire_unconfirmed_recovery_page(cursor, 256, now_ms, limits)?;
+            total += expired;
+            match next {
+                Some(next) => cursor = Some(next),
+                None => return Ok(total),
+            }
+        }
+    }
+
+    /// After a claim's reconciliation was cancelled by the per-claim deadline, push the next
+    /// replay time out by the frozen backoff so a stalled transport cannot be retried at scan
+    /// cadence. Only ever moves `next_replay_at_ms` forward; the durable lease is untouched.
+    pub(crate) fn backoff_after_cancelled_reconcile(
+        &self,
+        payload_hash: &[u8],
+        now_ms: i64,
+    ) -> Result<()> {
+        let payload_hash = checked_payload_hash(payload_hash)?;
+        let _guard = self.db.lock_monad_outbox();
+        let Some(record) = self.get(&payload_hash)? else {
+            return Ok(());
+        };
+        if !matches!(record.lifecycle, MonadOutboxLifecycle::Pending) {
+            return Ok(());
+        }
+        let message = Self::canonical_message(&record)?;
+        for payment in message.stamp_payments {
+            let Some(mut member) = self.get_member(&payload_hash, payment.child_index)? else {
+                continue;
+            };
+            if !matches!(member.state, MonadOutboxMemberState::Pending) {
+                continue;
+            }
+            // Only the child being processed can have a charged attempt; earlier children are
+            // confirmed and later ones are untouched.
+            if member.attempts == 0 {
+                break;
+            }
+            let earliest = now_ms.saturating_add(retry_backoff_ms(
+                member.attempts,
+                record.retry_backoff_base_ms,
+                record.max_retry_backoff_ms,
+            ));
+            if earliest > member.next_replay_at_ms {
+                member.next_replay_at_ms = earliest;
+                member.updated_at_ms = now_ms;
+                let mut batch = rocksdb::WriteBatch::default();
+                batch.put_cf(
+                    self.cf_members,
+                    member_key(&payload_hash, payment.child_index),
+                    encode_member(&member),
+                );
+                self.db.write_batch(batch)?;
+            }
+            break;
+        }
+        Ok(())
     }
 
     /// Enforce bounded delivered/non-recoverable-terminal history. Recipient recovery rows are
@@ -3603,6 +3922,25 @@ fn active_policy(record: &MonadOutboxRecord) -> Result<&MonadOutboxPolicy> {
     record.policy.as_ref().ok_or_else(|| {
         CorruptRecord("compact outbox tombstone has no active policy".to_string()).into()
     })
+}
+
+/// Effective claim expiry. A claim with no confirmed child is additionally bounded by the shorter
+/// unconfirmed age so it cannot hold recovery quota for the whole frozen claim lifetime. The
+/// frozen `expires_at_ms` is never extended.
+fn claim_expiry_ms(
+    record: &MonadOutboxRecord,
+    any_child_confirmed: bool,
+    limits: &MonadOutboxLimits,
+) -> i64 {
+    if any_child_confirmed {
+        record.expires_at_ms
+    } else {
+        record.expires_at_ms.min(
+            record
+                .created_at_ms
+                .saturating_add(duration_ms_i64(limits.max_unconfirmed_claim_age)),
+        )
+    }
 }
 
 fn duration_ms_u64(duration: Duration) -> u64 {
@@ -3805,6 +4143,21 @@ fn recovery_quota_owner_recipient_prefix(recipient: &Address) -> Vec<u8> {
 
 fn recovery_quota_owner_key(recipient: &Address, payload_hash: &[u8; 32]) -> Vec<u8> {
     let mut key = recovery_quota_owner_recipient_prefix(recipient);
+    key.extend_from_slice(payload_hash);
+    key
+}
+
+const UNCONFIRMED_RECIPIENT_PREFIX: &[u8] = b"outbox-unconfirmed-v1-recipient:";
+const UNCONFIRMED_OWNER_PREFIX: &[u8] = b"outbox-unconfirmed-v1-owner:";
+
+fn unconfirmed_recipient_key(recipient: &Address) -> Vec<u8> {
+    let mut key = UNCONFIRMED_RECIPIENT_PREFIX.to_vec();
+    key.extend_from_slice(&recipient.0);
+    key
+}
+
+fn unconfirmed_owner_key(payload_hash: &[u8; 32]) -> Vec<u8> {
+    let mut key = UNCONFIRMED_OWNER_PREFIX.to_vec();
     key.extend_from_slice(payload_hash);
     key
 }
@@ -4645,6 +4998,7 @@ mod tests {
         limits.max_active_claims = 256;
         limits.max_recovery_records = 256;
         limits.max_recovery_records_per_recipient = 256;
+        limits.max_unconfirmed_claims_per_recipient = 256;
         for seed in 0..64u8 {
             let request = message_with_seed(&[seed], &[b"quota corpus"]);
             assert_eq!(
@@ -4665,7 +5019,10 @@ mod tests {
             store.claim(&candidate.payload_hash, &candidate, &policy(), 100, &limits)?,
             MonadOutboxClaim::New
         );
-        assert_eq!(quota_admission_meta_reads(), 5);
+        // Global counter, recipient counter + owner probe, and the O(1) per-recipient
+        // unconfirmed-claim counter (read for the cap check and for the increment); none of
+        // them scales with the corpus.
+        assert_eq!(quota_admission_meta_reads(), 7);
         assert_eq!(
             finish_quota_admission_corpus_meter(),
             0,
@@ -7063,7 +7420,7 @@ mod tests {
                     other => panic!("expected lease, got {other:?}"),
                 };
             store.begin_replay_attempt(&exposed.payload_hash, 0, first_lease, 12, &limits)?;
-            store.complete_pending_member(
+            store.complete_submitted_member(
                 &exposed.payload_hash,
                 0,
                 first_lease,
@@ -7154,6 +7511,520 @@ mod tests {
             store.get_member(&request.payload_hash, 0)?.unwrap().state,
             MonadOutboxMemberState::Confirmed { .. }
         ));
+        Ok(())
+    }
+    fn lease_at(
+        store: &DbMonadOutbox<'_>,
+        payload_hash: &[u8],
+        child_index: u32,
+        now_ms: i64,
+        limits: &MonadOutboxLimits,
+    ) -> MonadOutboxLease {
+        match store
+            .acquire_reconcile_lease(payload_hash, child_index, now_ms, limits)
+            .unwrap()
+        {
+            MonadOutboxLeaseAcquire::Acquired { lease, .. } => lease,
+            other => panic!("expected lease, got {other:?}"),
+        }
+    }
+
+    fn one_slot_limits() -> MonadOutboxLimits {
+        let mut limits = MonadOutboxLimits::default();
+        limits.max_recovery_records = 1;
+        limits.max_recovery_records_per_recipient = 1;
+        limits.max_member_attempts = 1;
+        limits.retry_backoff_base = Duration::ZERO;
+        limits.max_retry_backoff = Duration::ZERO;
+        limits
+    }
+
+    #[test]
+    fn replay_attempt_before_send_is_not_recoverable_exposure() -> Result<()> {
+        let tempdir = tempdir::TempDir::new("monad-outbox-attempt-not-exposure")?;
+        let db = Db::open(tempdir.path().join("db.rocksdb"))?;
+        let store = db.monad_outbox();
+        let limits = one_slot_limits();
+        let recipient = policy().recipient;
+        let unfunded = message_with_seed(b"unfunded", &[b"signed but unfunded"]);
+        store.claim(&unfunded.payload_hash, &unfunded, &policy(), 1, &limits)?;
+        let lease = lease_at(&store, &unfunded.payload_hash, 0, 2, &limits);
+        assert!(matches!(
+            store.begin_replay_attempt(&unfunded.payload_hash, 0, lease, 3, &limits)?,
+            MonadOutboxReplayStart::Started(member) if !member.exposed && member.attempts == 1
+        ));
+        // The send is rejected (unfunded): nothing durable claims the bytes were exposed.
+        store.complete_pending_member(
+            &unfunded.payload_hash,
+            0,
+            lease,
+            "insufficient funds",
+            4,
+            &limits,
+        )?;
+        let member = store.get_member(&unfunded.payload_hash, 0)?.unwrap();
+        assert!(!member.exposed);
+        assert!(store
+            .confirmed_prefixes_for_recipient(&recipient, 10)?
+            .is_empty());
+
+        // The attempt budget is spent: the terminal claim must release its reserved quota
+        // instead of becoming a retained recipient obligation.
+        let lease = lease_at(&store, &unfunded.payload_hash, 0, 5, &limits);
+        assert_eq!(
+            store.begin_replay_attempt(&unfunded.payload_hash, 0, lease, 6, &limits)?,
+            MonadOutboxReplayStart::Terminal(MonadOutboxTerminal::AttemptsExhausted)
+        );
+        assert!(store
+            .confirmed_prefixes_for_recipient(&recipient, 10)?
+            .is_empty());
+        let next = message_with_seed(b"next claim", &[b"raw"]);
+        assert_eq!(
+            store.claim(&next.payload_hash, &next, &policy(), 7, &limits)?,
+            MonadOutboxClaim::New,
+            "the exhausted unfunded claim must not still hold the only recovery slot"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn expired_unexposed_claim_releases_quota_but_exposed_claim_is_retained() -> Result<()> {
+        let tempdir = tempdir::TempDir::new("monad-outbox-expired-quota")?;
+        let db = Db::open(tempdir.path().join("db.rocksdb"))?;
+        let store = db.monad_outbox();
+        let mut limits = one_slot_limits();
+        limits.max_member_attempts = 32;
+        limits.max_claim_age = Duration::from_millis(10);
+        let recipient = policy().recipient;
+
+        let unexposed = message_with_seed(b"expired unexposed", &[b"raw"]);
+        store.claim(&unexposed.payload_hash, &unexposed, &policy(), 1, &limits)?;
+        let lease = lease_at(&store, &unexposed.payload_hash, 0, 2, &limits);
+        assert_eq!(
+            store.begin_replay_attempt(&unexposed.payload_hash, 0, lease, 100, &limits)?,
+            MonadOutboxReplayStart::Terminal(MonadOutboxTerminal::Expired)
+        );
+        assert!(store
+            .confirmed_prefixes_for_recipient(&recipient, 10)?
+            .is_empty());
+
+        let exposed = message_with_seed(b"expired exposed", &[b"raw"]);
+        assert_eq!(
+            store.claim(&exposed.payload_hash, &exposed, &policy(), 200, &limits)?,
+            MonadOutboxClaim::New
+        );
+        let lease = lease_at(&store, &exposed.payload_hash, 0, 201, &limits);
+        store.complete_submitted_member(
+            &exposed.payload_hash,
+            0,
+            lease,
+            "visible",
+            202,
+            &limits,
+        )?;
+        let lease = lease_at(&store, &exposed.payload_hash, 0, 203, &limits);
+        assert_eq!(
+            store.begin_replay_attempt(&exposed.payload_hash, 0, lease, 400, &limits)?,
+            MonadOutboxReplayStart::Terminal(MonadOutboxTerminal::Expired)
+        );
+        assert_eq!(
+            store
+                .confirmed_prefixes_for_recipient(&recipient, 10)?
+                .len(),
+            1
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn exposure_is_recorded_only_by_submitted_completion() -> Result<()> {
+        let tempdir = tempdir::TempDir::new("monad-outbox-exposure-flag")?;
+        let db = Db::open(tempdir.path().join("db.rocksdb"))?;
+        let store = db.monad_outbox();
+        let mut limits = MonadOutboxLimits::default();
+        limits.retry_backoff_base = Duration::ZERO;
+        limits.max_retry_backoff = Duration::ZERO;
+        let request = message(&[b"zero"]);
+        store.claim(&request.payload_hash, &request, &policy(), 1, &limits)?;
+        let lease = lease_at(&store, &request.payload_hash, 0, 2, &limits);
+        store.begin_replay_attempt(&request.payload_hash, 0, lease, 3, &limits)?;
+        assert!(!store.get_member(&request.payload_hash, 0)?.unwrap().exposed);
+        store.complete_pending_member(&request.payload_hash, 0, lease, "rejected", 4, &limits)?;
+        assert!(!store.get_member(&request.payload_hash, 0)?.unwrap().exposed);
+        let lease = lease_at(&store, &request.payload_hash, 0, 5, &limits);
+        store.complete_submitted_member(&request.payload_hash, 0, lease, "accepted", 6, &limits)?;
+        let member = store.get_member(&request.payload_hash, 0)?.unwrap();
+        assert!(member.exposed);
+        assert_eq!(
+            member.attempts, 1,
+            "member-level attempt count is preserved"
+        );
+        // Exposure creates the recipient recovery index entry (listing waits for a terminal or
+        // confirmed prefix).
+        assert!(store
+            .db
+            .get(
+                store.cf_recipient,
+                recipient_key(
+                    &policy().recipient,
+                    &checked_payload_hash(&request.payload_hash)?
+                )
+            )?
+            .is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn unconfirmed_exposure_obligation_ages_out_but_confirmed_prefix_never_does() -> Result<()> {
+        let tempdir = tempdir::TempDir::new("monad-outbox-unconfirmed-ttl")?;
+        let db = Db::open(tempdir.path().join("db.rocksdb"))?;
+        let store = db.monad_outbox();
+        let mut limits = MonadOutboxLimits::default();
+        limits.max_recovery_records = 2;
+        limits.max_recovery_records_per_recipient = 2;
+        limits.max_unconfirmed_recovery_age = Duration::from_millis(1_000);
+        limits.retry_backoff_base = Duration::ZERO;
+        limits.max_retry_backoff = Duration::ZERO;
+        let recipient = policy().recipient;
+
+        // Never-mined exposure: accepted by a node, terminal, never confirmed.
+        let stuck = message_with_seed(b"stuck exposure", &[b"raw"]);
+        store.claim(&stuck.payload_hash, &stuck, &policy(), 1, &limits)?;
+        let lease = lease_at(&store, &stuck.payload_hash, 0, 2, &limits);
+        store.complete_submitted_member(&stuck.payload_hash, 0, lease, "queued", 3, &limits)?;
+        let lease = lease_at(&store, &stuck.payload_hash, 0, 4, &limits);
+        store.complete_terminal_member(
+            &stuck.payload_hash,
+            0,
+            lease,
+            MonadOutboxTerminal::AttemptsExhausted,
+            "exhausted",
+            10,
+            &limits,
+        )?;
+
+        // Real value moved: child zero confirmed, a later child lost.
+        let paid = message_with_seed(b"paid prefix", &[b"raw zero", b"raw one"]);
+        store.claim(&paid.payload_hash, &paid, &policy(), 11, &limits)?;
+        store.confirm_observed_member(&paid.payload_hash, 0, 5, 9, 12)?;
+        store.terminal_observed_member(
+            &paid.payload_hash,
+            1,
+            MonadOutboxTerminal::StaleNonce,
+            "lost",
+            13,
+            &limits,
+        )?;
+        assert_eq!(
+            store
+                .confirmed_prefixes_for_recipient(&recipient, 10)?
+                .len(),
+            2
+        );
+        let blocked = message_with_seed(b"blocked", &[b"raw"]);
+        assert_eq!(
+            store.claim(&blocked.payload_hash, &blocked, &policy(), 14, &limits)?,
+            MonadOutboxClaim::AtCapacity
+        );
+
+        // Before the TTL nothing is retired.
+        assert_eq!(store.expire_unconfirmed_recovery(1_000, &limits)?, 0);
+        assert_eq!(
+            store
+                .confirmed_prefixes_for_recipient(&recipient, 10)?
+                .len(),
+            2
+        );
+        // After it, only the never-confirmed exposure is retired and its slot is reusable.
+        assert_eq!(store.expire_unconfirmed_recovery(1_011, &limits)?, 1);
+        assert!(store.get(&stuck.payload_hash)?.is_none());
+        let remaining = store.confirmed_prefixes_for_recipient(&recipient, 10)?;
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].payload_hash.as_slice(), paid.payload_hash);
+        assert_eq!(
+            store.claim(&blocked.payload_hash, &blocked, &policy(), 1_012, &limits)?,
+            MonadOutboxClaim::New
+        );
+        // Far in the future the confirmed prefix is still owed to its recipient.
+        assert_eq!(store.expire_unconfirmed_recovery(i64::MAX / 2, &limits)?, 0);
+        assert!(store.get(&paid.payload_hash)?.is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn unconfirmed_claims_per_recipient_are_capped_below_recovery_quota() -> Result<()> {
+        let tempdir = tempdir::TempDir::new("monad-outbox-unconfirmed-cap")?;
+        let db = Db::open(tempdir.path().join("db.rocksdb"))?;
+        let store = db.monad_outbox();
+        let mut limits = MonadOutboxLimits::default();
+        limits.max_unconfirmed_claims_per_recipient = 2;
+        assert!(
+            limits.max_unconfirmed_claims_per_recipient < limits.max_recovery_records_per_recipient
+        );
+        let first = message_with_seed(b"cap first", &[b"raw"]);
+        let second = message_with_seed(b"cap second", &[b"raw"]);
+        let third = message_with_seed(b"cap third", &[b"raw"]);
+        assert_eq!(
+            store.claim(&first.payload_hash, &first, &policy(), 1, &limits)?,
+            MonadOutboxClaim::New
+        );
+        assert_eq!(
+            store.claim(&second.payload_hash, &second, &policy(), 2, &limits)?,
+            MonadOutboxClaim::New
+        );
+        assert_eq!(
+            store.claim(&third.payload_hash, &third, &policy(), 3, &limits)?,
+            MonadOutboxClaim::AtCapacity
+        );
+        // Another recipient is unaffected.
+        let other = message_with_seed(b"cap other", &[b"raw"]);
+        assert_eq!(
+            store.claim(
+                &other.payload_hash,
+                &other,
+                &policy_for_secret(0x33),
+                3,
+                &limits
+            )?,
+            MonadOutboxClaim::New
+        );
+        // Confirming child zero moves a claim out of the unconfirmed set.
+        store.confirm_observed_member(&first.payload_hash, 0, 5, 9, 4)?;
+        assert_eq!(
+            store.claim(&third.payload_hash, &third, &policy(), 5, &limits)?,
+            MonadOutboxClaim::New
+        );
+        // Terminalizing an unexposed claim releases its unconfirmed slot exactly once.
+        let lease = lease_at(&store, &second.payload_hash, 0, 6, &limits);
+        store.complete_terminal_member(
+            &second.payload_hash,
+            0,
+            lease,
+            MonadOutboxTerminal::VerificationFailed,
+            "bad",
+            7,
+            &limits,
+        )?;
+        let fourth = message_with_seed(b"cap fourth", &[b"raw"]);
+        assert_eq!(
+            store.claim(&fourth.payload_hash, &fourth, &policy(), 8, &limits)?,
+            MonadOutboxClaim::New
+        );
+        let fifth = message_with_seed(b"cap fifth", &[b"raw"]);
+        assert_eq!(
+            store.claim(&fifth.payload_hash, &fifth, &policy(), 9, &limits)?,
+            MonadOutboxClaim::AtCapacity
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn unconfirmed_claim_age_is_shorter_than_frozen_claim_age_until_a_child_confirms() -> Result<()>
+    {
+        let tempdir = tempdir::TempDir::new("monad-outbox-unconfirmed-age")?;
+        let db = Db::open(tempdir.path().join("db.rocksdb"))?;
+        let store = db.monad_outbox();
+        let mut limits = MonadOutboxLimits::default();
+        limits.max_unconfirmed_claim_age = Duration::from_millis(100);
+        limits.retry_backoff_base = Duration::ZERO;
+        limits.max_retry_backoff = Duration::ZERO;
+        assert!(limits.max_unconfirmed_claim_age < limits.max_claim_age);
+
+        let stuck = message_with_seed(b"age stuck", &[b"raw"]);
+        store.claim(&stuck.payload_hash, &stuck, &policy(), 1, &limits)?;
+        let lease = lease_at(&store, &stuck.payload_hash, 0, 2, &limits);
+        assert_eq!(
+            store.begin_replay_attempt(&stuck.payload_hash, 0, lease, 500, &limits)?,
+            MonadOutboxReplayStart::Terminal(MonadOutboxTerminal::Expired)
+        );
+
+        let paying = message_with_seed(b"age paying", &[b"zero", b"one"]);
+        store.claim(&paying.payload_hash, &paying, &policy(), 1, &limits)?;
+        store.confirm_observed_member(&paying.payload_hash, 0, 5, 9, 2)?;
+        let lease = lease_at(&store, &paying.payload_hash, 1, 3, &limits);
+        assert!(matches!(
+            store.begin_replay_attempt(&paying.payload_hash, 1, lease, 500, &limits)?,
+            MonadOutboxReplayStart::Started(_)
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn claim_age_terminalizes_submitted_and_ambiguous_members() -> Result<()> {
+        let tempdir = tempdir::TempDir::new("monad-outbox-age-all-paths")?;
+        let db = Db::open(tempdir.path().join("db.rocksdb"))?;
+        let store = db.monad_outbox();
+        let mut limits = MonadOutboxLimits::default();
+        limits.max_claim_age = Duration::from_millis(10);
+        limits.retry_backoff_base = Duration::ZERO;
+        limits.max_retry_backoff = Duration::ZERO;
+
+        let submitted = message_with_seed(b"age submitted", &[b"raw"]);
+        store.claim(&submitted.payload_hash, &submitted, &policy(), 1, &limits)?;
+        let lease = lease_at(&store, &submitted.payload_hash, 0, 2, &limits);
+        assert_eq!(
+            store.complete_submitted_member(
+                &submitted.payload_hash,
+                0,
+                lease,
+                "visible",
+                500,
+                &limits
+            )?,
+            MonadOutboxTransition::Applied
+        );
+        assert_eq!(
+            store.get(&submitted.payload_hash)?.unwrap().lifecycle,
+            MonadOutboxLifecycle::Terminal(MonadOutboxTerminal::Expired)
+        );
+        assert!(
+            store
+                .get_member(&submitted.payload_hash, 0)?
+                .unwrap()
+                .exposed
+        );
+
+        let ambiguous = message_with_seed(b"age ambiguous", &[b"raw"]);
+        store.claim(
+            &ambiguous.payload_hash,
+            &ambiguous,
+            &policy(),
+            1_000,
+            &limits,
+        )?;
+        let lease = lease_at(&store, &ambiguous.payload_hash, 0, 1_001, &limits);
+        assert_eq!(
+            store.complete_pending_member(
+                &ambiguous.payload_hash,
+                0,
+                lease,
+                "rpc down",
+                1_500,
+                &limits
+            )?,
+            MonadOutboxTransition::Applied
+        );
+        assert_eq!(
+            store.get(&ambiguous.payload_hash)?.unwrap().lifecycle,
+            MonadOutboxLifecycle::Terminal(MonadOutboxTerminal::Expired)
+        );
+        // No attempt was ever sent, so no exposure and nothing retained.
+        assert!(
+            !store
+                .get_member(&ambiguous.payload_hash, 0)?
+                .unwrap()
+                .exposed
+        );
+        assert!(store
+            .confirmed_prefixes_for_recipient(&policy().recipient, 10)?
+            .iter()
+            .all(|recovery| recovery.payload_hash.as_slice() != ambiguous.payload_hash));
+        Ok(())
+    }
+
+    #[test]
+    fn cancelled_reconcile_advances_replay_backoff_monotonically() -> Result<()> {
+        let tempdir = tempdir::TempDir::new("monad-outbox-cancel-backoff")?;
+        let db = Db::open(tempdir.path().join("db.rocksdb"))?;
+        let store = db.monad_outbox();
+        let mut limits = MonadOutboxLimits::default();
+        limits.retry_backoff_base = Duration::from_secs(10);
+        limits.max_retry_backoff = Duration::from_secs(600);
+        let request = message(&[b"zero"]);
+        store.claim(&request.payload_hash, &request, &policy(), 1_000, &limits)?;
+        let lease = lease_at(&store, &request.payload_hash, 0, 1_001, &limits);
+        store.begin_replay_attempt(&request.payload_hash, 0, lease, 1_002, &limits)?;
+        let before = store.get_member(&request.payload_hash, 0)?.unwrap();
+        store.backoff_after_cancelled_reconcile(&request.payload_hash, 5_000)?;
+        let after = store.get_member(&request.payload_hash, 0)?.unwrap();
+        assert!(after.next_replay_at_ms >= 5_000 + 10_000);
+        assert!(after.next_replay_at_ms > before.next_replay_at_ms);
+        assert_eq!(after.attempts, 1);
+        // Never moves backward on a later, earlier-timestamped cancellation.
+        store.backoff_after_cancelled_reconcile(&request.payload_hash, 1_000)?;
+        assert_eq!(
+            store
+                .get_member(&request.payload_hash, 0)?
+                .unwrap()
+                .next_replay_at_ms,
+            after.next_replay_at_ms
+        );
+        Ok(())
+    }
+
+    fn put_stored_message(db: &Db, key: [u8; 32], raw_txs: Vec<Vec<u8>>) -> Result<()> {
+        let message = proto::MonadStampedMessage {
+            encrypted_payload: b"legacy row".to_vec(),
+            payload_hash: key.to_vec(),
+            stamp_payments: raw_txs
+                .into_iter()
+                .enumerate()
+                .map(|(index, raw_tx)| proto::MonadStampPayment {
+                    child_index: index as u32,
+                    raw_tx,
+                })
+                .collect(),
+        };
+        let stored = proto::StoredMonadMessage {
+            message: Some(message),
+            timestamp: 1,
+            network_tag: b"testnet".to_vec(),
+        };
+        db.put(
+            db.cf(crate::store::db::CF_MONAD_MESSAGES)?,
+            key,
+            stored.encode_to_vec(),
+        )
+    }
+
+    fn bind_to_completion(store: &DbMonadOutbox<'_>, chain_id: u64) -> Result<()> {
+        while store.bind_chain_page(chain_id, 16, 1 << 20)? == ChainBindingProgress::More {}
+        Ok(())
+    }
+
+    #[test]
+    fn chain_binding_quarantines_legacy_rows_without_a_usable_chain_id() -> Result<()> {
+        use crate::monad_evm_tx::test_support::{signed_eip1559_tx, signed_unprotected_legacy_tx};
+        let tempdir = tempdir::TempDir::new("monad-outbox-chain-quarantine")?;
+        let db = Db::open(tempdir.path().join("db.rocksdb"))?;
+        let ecc = EccSecp256k1::default();
+        let seckey = ecc.seckey_from_array([7; 32]).unwrap();
+        let to = crate::monad_http::Address([9; 20]);
+        let legacy = signed_unprotected_legacy_tx(&seckey, 0, to, 1, b"legacy");
+        let (good, _) = signed_eip1559_tx(&seckey, 41_454, 1, to, 1, b"good");
+        put_stored_message(&db, [1; 32], vec![legacy])?;
+        put_stored_message(&db, [2; 32], vec![b"not a transaction".to_vec()])?;
+        put_stored_message(&db, [3; 32], vec![good])?;
+
+        let before = legacy_chain_quarantined_total();
+        bind_to_completion(&db.monad_outbox(), 41_454)?;
+        assert!(
+            legacy_chain_quarantined_total() >= before + 2,
+            "both the chain-less and the undecodable legacy payment are counted"
+        );
+        // The binding is durable and still enforced for later opens.
+        assert!(bind_to_completion(&db.monad_outbox(), 1).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn chain_binding_still_rejects_a_payment_naming_another_chain() -> Result<()> {
+        use crate::monad_evm_tx::test_support::signed_eip1559_tx;
+        let tempdir = tempdir::TempDir::new("monad-outbox-chain-mismatch")?;
+        let db = Db::open(tempdir.path().join("db.rocksdb"))?;
+        let ecc = EccSecp256k1::default();
+        let seckey = ecc.seckey_from_array([8; 32]).unwrap();
+        let (foreign, _) = signed_eip1559_tx(
+            &seckey,
+            1,
+            0,
+            crate::monad_http::Address([9; 20]),
+            1,
+            b"other chain",
+        );
+        put_stored_message(&db, [4; 32], vec![foreign])?;
+        let err = bind_to_completion(&db.monad_outbox(), 41_454).unwrap_err();
+        assert!(err.to_string().contains("differs from configured"), "{err}");
         Ok(())
     }
 }

@@ -382,6 +382,40 @@ pub(crate) mod test_support {
 
     use super::{keccak256, Address};
 
+    /// Construct a raw pre-EIP-155 legacy transaction (`v` is 27/28, so it carries no chain ID).
+    pub(crate) fn signed_unprotected_legacy_tx(
+        seckey: &SecKey,
+        nonce: u64,
+        to: Address,
+        value_wei: u128,
+        calldata: &[u8],
+    ) -> Vec<u8> {
+        let ecc = EccSecp256k1::default();
+        let mut unsigned = RlpStream::new();
+        unsigned.begin_list(6);
+        unsigned.append(&nonce);
+        unsigned.append(&1_000_000_000u64); // gasPrice
+        unsigned.append(&500_000u64); // gasLimit
+        unsigned.append(&to.0.as_ref());
+        unsigned.append(&value_wei.to_be_bytes().as_ref());
+        unsigned.append(&calldata);
+        let digest = keccak256(&unsigned.out());
+        let (recovery_id, sig_rs) = ecc.sign_recoverable(seckey, digest.into());
+
+        let mut signed = RlpStream::new();
+        signed.begin_list(9);
+        signed.append(&nonce);
+        signed.append(&1_000_000_000u64);
+        signed.append(&500_000u64);
+        signed.append(&to.0.as_ref());
+        signed.append(&value_wei.to_be_bytes().as_ref());
+        signed.append(&calldata);
+        signed.append(&(27 + recovery_id as u64));
+        signed.append(&sig_rs[..32].as_ref());
+        signed.append(&sig_rs[32..].as_ref());
+        signed.out().to_vec()
+    }
+
     /// Construct a raw, signed EIP-1559 transaction sending `value_wei` and `calldata` to `to`,
     /// signed by `seckey`. Returns the raw tx bytes and the signer's [`Address`] (so tests can
     /// assert [`super::recover_sender`] recovers exactly this address back out).

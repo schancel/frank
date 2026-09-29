@@ -700,7 +700,39 @@ impl Registry {
         now_ms: i64,
         limits: &crate::store::monad_outbox::MonadOutboxLimits,
     ) -> Result<()> {
-        self.db.monad_outbox().gc_history(now_ms, limits)
+        self.db.monad_outbox().gc_history(now_ms, limits)?;
+        self.db
+            .monad_outbox()
+            .expire_unconfirmed_recovery(now_ms, limits)?;
+        Ok(())
+    }
+
+    /// Terminal outcome of a claim, if it has one (one record read, no member decoding).
+    pub(crate) fn monad_outbox_terminal(
+        &self,
+        payload_hash: &[u8],
+    ) -> Result<Option<crate::store::monad_outbox::MonadOutboxTerminal>> {
+        Ok(self
+            .db
+            .monad_outbox()
+            .get(payload_hash)?
+            .and_then(|record| match record.lifecycle {
+                crate::store::monad_outbox::MonadOutboxLifecycle::Terminal(terminal) => {
+                    Some(terminal)
+                }
+                _ => None,
+            }))
+    }
+
+    /// Push out replay timing for a claim whose reconciliation hit the per-claim deadline.
+    pub(crate) fn backoff_monad_outbox_after_cancelled_reconcile(
+        &self,
+        payload_hash: &[u8],
+        now_ms: i64,
+    ) -> Result<()> {
+        self.db
+            .monad_outbox()
+            .backoff_after_cancelled_reconcile(payload_hash, now_ms)
     }
 
     /// Acquire one durable replay generation after exact-hash absence was observed.

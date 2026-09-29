@@ -19,7 +19,54 @@
  */
 import { Card, deriveDeck, handValue, sha256Hex } from './deck'
 
-export type BlackjackAction = 'bet' | 'deal' | 'hit' | 'stand' | 'reveal'
+/** Table limits. The client cannot query the dealer, and the bot advertises none in any message,
+ * so these documented constants are the shared default (the bot's `BLACKJACK_BOT_MIN_WAGER_WEI` /
+ * `BLACKJACK_BOT_MAX_WAGER_WEI` default to them). A dealer configured differently may still
+ * reject a bet the UI allows; the bot then refunds the verified stake. */
+export const BLACKJACK_DEFAULT_MIN_WAGER_WEI = 10n ** 16n // 0.01 MON
+export const BLACKJACK_DEFAULT_MAX_WAGER_WEI = 10n ** 18n // 1 MON
+
+/** Returns an error message if `wei` is not an acceptable bet at the default table limits. */
+export function validateBetWei(
+  wei: bigint,
+  minWei: bigint = BLACKJACK_DEFAULT_MIN_WAGER_WEI,
+  maxWei: bigint = BLACKJACK_DEFAULT_MAX_WAGER_WEI,
+): string | undefined {
+  if (typeof wei !== 'bigint' || wei <= 0n) return 'Bet must be greater than zero'
+  if (wei < minWei) return 'Bet is below the table minimum'
+  if (wei > maxWei) return 'Bet is above the table maximum'
+  return undefined
+}
+
+/** The dealer's rejection text. Keeps the readable "Blackjack: <text>" prefix (old clients show it
+ * as is) and appends a parseable, JSON-quoted gameId token so a client can tell WHICH game an
+ * error is about. */
+export function formatBlackjackError(gameId: string, text: string): string {
+  return `Blackjack: ${text} [game=${JSON.stringify(gameId)}]`
+}
+
+/** Inverse of `formatBlackjackError`; `undefined` for anything that is not a game-tagged dealer
+ * error (including untagged "Blackjack: ..." text). */
+export function parseBlackjackError(
+  raw: string,
+): { gameId: string; text: string } | undefined {
+  const match = /^Blackjack: ([\s\S]*) \[game=("(?:[^"\\]|\\.)*")\]$/.exec(raw)
+  if (!match) return undefined
+  try {
+    const gameId: unknown = JSON.parse(match[2])
+    return typeof gameId === 'string' ? { gameId, text: match[1] } : undefined
+  } catch {
+    return undefined
+  }
+}
+
+export type BlackjackAction =
+  | 'bet'
+  | 'deal'
+  | 'hit'
+  | 'stand'
+  | 'double'
+  | 'reveal'
 export type BlackjackOutcome =
   | 'player_win'
   | 'dealer_win'
@@ -41,6 +88,17 @@ export interface BlackjackGameState {
   /** Only ever set from `hydrate()`'s on-chain verification, never from a self-reported field --
    * see the message-item plugin (`./plugin.ts`) for how it's produced. */
   verifiedWagerWei?: bigint
+  /** Set once a `double` move is accepted -- payout math (bot-side) doubles the effective wager
+   * for this hand. Never inferred from `playerCards.length` alone (a 3-card hand can also happen
+   * from an ordinary `hit`), always from an explicit `double` move having been folded in. */
+  doubled?: boolean
+  /** True while the player's own `double` request has been folded but the dealer's broadcast card
+   * has not (the optimistic window). Only a bot error reply can end it early -- see
+   * `applyDoubleRejection`. */
+  doublePending?: boolean
+  /** Only present once `doubled` is true, and only ever from `hydrate()`'s own verification of the
+   * *second* wager transfer -- same trust rule as `verifiedWagerWei`. */
+  verifiedDoubleWagerWei?: bigint
   serverSeedHash?: string
   serverSeed?: string
   playerCards: Card[]
@@ -57,6 +115,9 @@ export interface HydratedBlackjackMove {
   gameId: string
   action: BlackjackAction
   wagerTxHash?: string
+  /** Only present for `double`: the hash `verifiedDoubleWager` was looked up by. The bot claims it
+   * in the same global keyspace as wager hashes so one transfer can back exactly one stake. */
+  doubleWagerTxHash?: string
   serverSeedHash?: string
   playerCards?: Card[]
   dealerUpCard?: Card
@@ -66,6 +127,13 @@ export interface HydratedBlackjackMove {
   /** Only present for `bet` -- the on-chain-verified wager, or `undefined` if verification failed
    * (unconfirmed, wrong sender, wrong recipient, ...). Never derived from a self-reported field. */
   verifiedWager?: {
+    fromAddress: string
+    toAddress: string
+    valueWei: bigint
+  }
+  /** Only present for `double` -- same trust rule as `verifiedWager`, for the *second* transfer a
+   * double-down needs (see `BlackjackMoveItem.doubleWagerTxHash`'s own header). */
+  verifiedDoubleWager?: {
     fromAddress: string
     toAddress: string
     valueWei: bigint
@@ -118,7 +186,10 @@ export function reduceBlackjackState(
         playerCards,
         dealerUpCard: hydrated.dealerUpCard,
         phase: value.blackjack ? 'dealer_turn' : 'player_turn',
-        availableActions: value.blackjack ? [] : ['hit', 'stand'],
+        // 'double' only ever offered here, on the freshly-dealt two-card hand -- never after a
+        // 'hit' (see that case below, which never re-adds it to its own availableActions), and
+        // never on a natural (already resolved, no actions at all).
+        availableActions: value.blackjack ? [] : ['hit', 'stand', 'double'],
       }
     }
     case 'hit': {
@@ -138,6 +209,44 @@ export function reduceBlackjackState(
         availableActions: value.bust ? [] : ['hit', 'stand'],
       }
     }
+    case 'double': {
+      // Reached twice per hand, same as 'hit' is reached twice -- once from the player's own
+      // outgoing request (phase still 'player_turn', carries the verified second transfer, no
+      // `playerCards` yet) and once from the dealer's broadcast of the resulting card (phase
+      // already moved to 'dealer_turn' by the first fold, since doubling is always exactly one
+      // more card then an automatic stand -- never another decision point). `doubled` already
+      // being true is what keeps that second fold eligible despite the phase having moved on;
+      // once the broadcast card actually lands (`playerCards.length` grows past 2), a third,
+      // replayed 'double' is correctly rejected by the length check below, same as every other
+      // case here guards against a message that doesn't belong to this point in the hand.
+      const awaitingBroadcastCard = prev?.doubled === true && prev.phase === 'dealer_turn'
+      if (
+        !prev ||
+        prev.playerCards.length !== 2 ||
+        !(prev.phase === 'player_turn' || awaitingBroadcastCard)
+      ) {
+        return prev ?? emptyState(hydrated)
+      }
+      const playerCards = hydrated.playerCards ?? prev.playerCards
+      const value = handValue(playerCards)
+      return {
+        ...prev,
+        playerCards,
+        doubled: true,
+        // Pending until the dealer's broadcast card (which carries `playerCards`) lands.
+        doublePending: hydrated.playerCards === undefined,
+        // 'double' is folded twice per hand -- once from the player's own outgoing request
+        // (carries the verified transfer, no `playerCards` yet) and once from the dealer's
+        // broadcast of the resulting card (carries `playerCards`, no transfer). Falling back to
+        // `prev`'s already-verified value keeps the second fold from clobbering it with
+        // `undefined`.
+        verifiedDoubleWagerWei:
+          hydrated.verifiedDoubleWager?.valueWei ?? prev.verifiedDoubleWagerWei,
+        phase: 'dealer_turn',
+        outcome: value.bust ? 'dealer_win' : undefined,
+        availableActions: [],
+      }
+    }
     case 'stand': {
       if (!prev || prev.phase !== 'player_turn') return prev ?? emptyState(hydrated)
       return { ...prev, phase: 'dealer_turn', availableActions: [] }
@@ -155,6 +264,33 @@ export function reduceBlackjackState(
         availableActions: ['bet'],
       }
     }
+  }
+}
+
+/**
+ * Undoes the optimistic double lockout when the dealer answered the player's `double` request
+ * with an error reply instead of a card. Only acts on the exact optimistic window (doubled, still
+ * two cards, no broadcast card, dealer_turn); anything else is returned unchanged, so a stray
+ * error can never rewind an authoritative state. Hit/stand are re-offered (not double: a second
+ * double needs a fresh transfer). If the dealer did in fact accept and its card broadcast arrives
+ * later, the 'double' fold is eligible again from player_turn and re-locks to the real state.
+ * Design limit: with no reply at all (old bot) the reducer cannot know, so the UI stays locked.
+ */
+export function applyDoubleRejection(state: BlackjackGameState): BlackjackGameState {
+  if (
+    !state.doublePending ||
+    state.phase !== 'dealer_turn' ||
+    state.playerCards.length !== 2
+  ) {
+    return state
+  }
+  return {
+    ...state,
+    phase: 'player_turn',
+    doubled: false,
+    doublePending: false,
+    verifiedDoubleWagerWei: undefined,
+    availableActions: ['hit', 'stand'],
   }
 }
 

@@ -3,6 +3,9 @@ import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import level from 'level'
+import { getAddress } from 'ethers'
+
+import { sha256Hex } from '@frank/wallet/message-item-plugins/blackjack/deck'
 
 import {
   BlackjackBotStateStore,
@@ -31,6 +34,8 @@ function gameRecord(
     playerAddress: PLAYER,
     dealtCount: 4,
     revealed: false,
+    doubled: false,
+    doubleWagerWei: undefined,
   }
 }
 
@@ -176,6 +181,11 @@ describe('BlackjackBotStateStore wager authority', () => {
       JSON.stringify({
         ...gameRecord(),
         authority: undefined,
+        // A truly pre-authority legacy row also predates double-down -- both keys are absent, not
+        // merely false/null, same as `authority` above (JSON.stringify drops an `undefined` key
+        // entirely, which is the point: this must round-trip as `LEGACY_GAME_KEYS`, not
+        // `PRE_DOUBLE_GAME_KEYS`).
+        doubled: undefined,
         wagerWei: '100',
       }),
     )
@@ -210,6 +220,9 @@ describe('BlackjackBotStateStore wager authority', () => {
         value: JSON.stringify({
           ...gameRecord(wagerTxHash),
           authority: 'legacy-unverified',
+          // Pre-double "current schema" row -- has `authority` but predates double-down, so this
+          // must round-trip as `PRE_DOUBLE_GAME_KEYS`, not pick up a stray `doubled` key.
+          doubled: undefined,
           wagerWei: '100',
           revealed: false,
         }),
@@ -300,15 +313,24 @@ describe('BlackjackBotStateStore wager authority', () => {
       {
         type: 'put',
         key: 'game:valid-game',
+        // `doubleWagerWei: null` explicitly (matching `serializeGameRecord`'s own real
+        // serialization) rather than leaving it `undefined` -- JSON.stringify drops an `undefined`
+        // property entirely, which would make this row miss `CURRENT_GAME_KEYS` by one key and
+        // wrongly quarantine a row this test needs to hydrate cleanly.
         value: JSON.stringify({
           ...gameRecord(normalizeWagerTxHash(OTHER_WAGER_HASH)),
           wagerWei: '100',
+          doubleWagerWei: null,
         }),
       },
       {
         type: 'put',
         key: 'game:',
-        value: JSON.stringify({ ...gameRecord(), wagerWei: '100' }),
+        value: JSON.stringify({
+          ...gameRecord(),
+          wagerWei: '100',
+          doubleWagerWei: null,
+        }),
       },
     ])
     await raw.close()
@@ -839,5 +861,92 @@ describe('BlackjackBotStateStore wager authority', () => {
     expect(() => normalizeWagerTxHash('0x1234')).toThrow(
       'wager transaction hash must be 32 bytes',
     )
+  })
+})
+
+describe('claimDoubleWagerAndUpdateGame', () => {
+  const H1 = `0x${'11'.repeat(32)}`
+  const H2 = `0x${'22'.repeat(32)}`
+  const D1 = `0x${'33'.repeat(32)}`
+  const player = getAddress(`0x${'aa'.repeat(20)}`)
+  let dir: string
+  let store: BlackjackBotStateStore
+  const rec = (over: Partial<BlackjackGameRecord> = {}): BlackjackGameRecord => ({
+    authority: 'verified-wager-sender',
+    serverSeed: 'seed',
+    serverSeedHash: sha256Hex('seed'),
+    wagerTxHash: H1,
+    wagerWei: 100n,
+    playerAddress: player,
+    dealtCount: 4,
+    revealed: false,
+    doubled: false,
+    doubleWagerWei: undefined,
+    ...over,
+  })
+  const next = { serverSeed: 'n', serverSeedHash: sha256Hex('n') }
+  const doubled = (): BlackjackGameRecord =>
+    rec({ dealtCount: 5, doubled: true, doubleWagerWei: 100n })
+
+  beforeEach(async () => {
+    dir = mkdtempSync(join(tmpdir(), 'bj-claim-'))
+    store = new BlackjackBotStateStore(dir)
+    await store.Open()
+    await store.setPendingCommitment('seed', sha256Hex('seed'))
+    await store.claimWagerAndCreateGame({
+      gameId: 'g',
+      wagerTxHash: H1,
+      record: rec(),
+      expectedCommitment: { serverSeed: 'seed', serverSeedHash: sha256Hex('seed') },
+      nextCommitment: next,
+    })
+  })
+  afterEach(async () => {
+    await store.Close()
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('claims the hash and doubles the game atomically, once, surviving restart', async () => {
+    expect(await store.claimDoubleWagerAndUpdateGame({ gameId: 'g', doubleWagerTxHash: D1, record: doubled() })).toEqual({ ok: true })
+    expect(store.getGame('g')?.doubled).toBe(true)
+    expect(await store.claimDoubleWagerAndUpdateGame({ gameId: 'g', doubleWagerTxHash: H2, record: doubled() })).toEqual({ ok: false, reason: 'game_state_changed' })
+    await store.Close()
+    store = new BlackjackBotStateStore(dir)
+    await store.Open()
+    expect(store.getGame('g')?.doubled).toBe(true)
+    // the claimed hash cannot be refunded or reused after restart
+    expect((await store.claimRefund({ txHash: D1, playerAddress: player, amountWei: 1n })).ok).toBe(false)
+  })
+
+  it('refuses a hash that is already claimed (the original wager) without changing the game', async () => {
+    expect(await store.claimDoubleWagerAndUpdateGame({ gameId: 'g', doubleWagerTxHash: H1, record: doubled() })).toEqual({ ok: false, reason: 'wager_claimed' })
+    expect(store.getGame('g')?.doubled).toBe(false)
+  })
+
+  it('refuses when the game has already taken a card', async () => {
+    await store.setGame('g', rec({ dealtCount: 5 }))
+    expect(await store.claimDoubleWagerAndUpdateGame({ gameId: 'g', doubleWagerTxHash: D1, record: rec({ dealtCount: 6, doubled: true, doubleWagerWei: 100n }) })).toEqual({ ok: false, reason: 'game_state_changed' })
+  })
+
+  it('openExposureWei counts undoubled (2.5x), doubled (2x combined) and pending refunds, minus the excluded game', async () => {
+    expect(store.openExposureWei()).toBe(250n)
+    await store.claimDoubleWagerAndUpdateGame({ gameId: 'g', doubleWagerTxHash: D1, record: doubled() })
+    expect(store.openExposureWei()).toBe(400n)
+    expect(store.openExposureWei('g')).toBe(0n)
+
+    await store.claimWagerAndCreateGame({
+      gameId: 'g2',
+      wagerTxHash: H2,
+      record: rec({ wagerTxHash: H2, serverSeed: 'n', serverSeedHash: sha256Hex('n') }),
+      expectedCommitment: next,
+      nextCommitment: { serverSeed: 'm', serverSeedHash: sha256Hex('m') },
+    })
+    expect(store.openExposureWei()).toBe(650n)
+    expect(store.openExposureWei('g')).toBe(250n)
+
+    await store.claimRefund({ txHash: `0x${'44'.repeat(32)}`, playerAddress: player, amountWei: 5n })
+    expect(store.openExposureWei()).toBe(655n)
+    await store.setRefundStatus(`0x${'44'.repeat(32)}`, 'sent', '0x1')
+    expect(store.openExposureWei()).toBe(650n)
   })
 })

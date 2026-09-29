@@ -83,6 +83,9 @@ pub struct MonadMessageAttemptPolicy {
     pub recipient_pubkey: Vec<u8>,
     /// Aggregate minimum accepted when this set was first validated.
     pub min_value_wei: u128,
+    /// Network under which this set was admitted. `None` is reserved for format-v1 attempt
+    /// records written before network attribution was frozen in the claim.
+    pub network_tag: Option<Vec<u8>>,
 }
 
 /// Result of looking up or claiming a payload hash for one exact canonical payment set.
@@ -137,12 +140,20 @@ impl<'a> DbMonadMessages<'a> {
         policy: &MonadMessageAttemptPolicy,
     ) -> Vec<u8> {
         let digest = Sha256::digest(message.encode_to_vec().into());
-        let mut encoded = Vec::with_capacity(50 + policy.recipient_pubkey.len());
-        encoded.push(1); // record format version
+        let mut encoded = Vec::with_capacity(
+            51 + policy.recipient_pubkey.len() + policy.network_tag.as_ref().map_or(0, Vec::len),
+        );
+        // `None` is used only by compatibility tests/decoding and preserves the exact v1 record
+        // shape. Every new production admission supplies a tag and writes v2.
+        encoded.push(if policy.network_tag.is_some() { 2 } else { 1 });
         encoded.extend_from_slice(digest.as_slice());
         encoded.extend_from_slice(&policy.min_value_wei.to_be_bytes());
         encoded.push(policy.recipient_pubkey.len() as u8);
         encoded.extend_from_slice(&policy.recipient_pubkey);
+        if let Some(network_tag) = &policy.network_tag {
+            encoded.push(network_tag.len() as u8);
+            encoded.extend_from_slice(network_tag);
+        }
         encoded
     }
 
@@ -157,7 +168,7 @@ impl<'a> DbMonadMessages<'a> {
             None => Ok(MonadMessageAttemptClaim::Missing),
             Some(existing)
                 if existing.len() >= 50
-                    && existing[0] == 1
+                    && matches!(existing[0], 1 | 2)
                     && &existing[1..33] == digest.as_slice() =>
             {
                 let min_value_wei = u128::from_be_bytes(
@@ -166,13 +177,26 @@ impl<'a> DbMonadMessages<'a> {
                         .expect("attempt minimum has a fixed width"),
                 );
                 let pubkey_len = existing[49] as usize;
-                if existing.len() != 50 + pubkey_len {
+                let pubkey_end = 50 + pubkey_len;
+                if existing.len() < pubkey_end {
                     return Ok(MonadMessageAttemptClaim::Conflict);
                 }
+                let network_tag = match existing[0] {
+                    1 if existing.len() == pubkey_end => None,
+                    2 if existing.len() > pubkey_end => {
+                        let tag_len = existing[pubkey_end] as usize;
+                        if existing.len() != pubkey_end + 1 + tag_len {
+                            return Ok(MonadMessageAttemptClaim::Conflict);
+                        }
+                        Some(existing[pubkey_end + 1..].to_vec())
+                    }
+                    _ => return Ok(MonadMessageAttemptClaim::Conflict),
+                };
                 Ok(MonadMessageAttemptClaim::ExistingExact(
                     MonadMessageAttemptPolicy {
-                        recipient_pubkey: existing[50..].to_vec(),
+                        recipient_pubkey: existing[50..pubkey_end].to_vec(),
                         min_value_wei,
+                        network_tag,
                     },
                 ))
             }
@@ -191,7 +215,12 @@ impl<'a> DbMonadMessages<'a> {
     ) -> Result<MonadMessageAttemptClaim> {
         match self.get_attempt(payload_hash, message)? {
             MonadMessageAttemptClaim::Missing => {
-                if policy.recipient_pubkey.len() > u8::MAX as usize {
+                if policy.recipient_pubkey.len() > u8::MAX as usize
+                    || policy
+                        .network_tag
+                        .as_ref()
+                        .is_some_and(|tag| tag.len() > u8::MAX as usize)
+                {
                     return Ok(MonadMessageAttemptClaim::Conflict);
                 }
                 let encoded = Self::encoded_attempt(message, policy);
@@ -376,6 +405,7 @@ mod tests {
         let policy = MonadMessageAttemptPolicy {
             recipient_pubkey: vec![2; 33],
             min_value_wei: 42,
+            network_tag: Some(b"MONT".to_vec()),
         };
         {
             let db = Db::open(&db_path)?;
@@ -435,6 +465,7 @@ mod tests {
         let policy = MonadMessageAttemptPolicy {
             recipient_pubkey: vec![2; 33],
             min_value_wei: 123,
+            network_tag: Some(b"MONT".to_vec()),
         };
         let recipient = Address([1; 20]);
         assert_eq!(

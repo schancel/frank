@@ -6,11 +6,15 @@
   "additionalProperties": false,
   "required": ["format", "cases"],
   "properties": {
-    "format": { "const": "frank-cbor-v1-vectors" },
+    "format": {
+      "const": "frank-cbor-v1-vectors"
+    },
     "cases": {
       "type": "array",
       "minItems": 1,
-      "items": { "$ref": "#/$defs/case" }
+      "items": {
+        "$ref": "#/$defs/case"
+      }
     }
   },
   "$defs": {
@@ -26,42 +30,73 @@
         "rules"
       ],
       "properties": {
-        "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$" },
-        "description": { "type": "string", "maxLength": 2048 },
-        "source": { "enum": ["typescript", "rust", "handcrafted"] },
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 2048
+        },
+        "source": {
+          "enum": ["typescript", "rust", "handcrafted"]
+        },
         "frame_hex": {
           "type": "string",
           "pattern": "^(?:[0-9a-f]{2})*$",
-          "maxLength": 16777234
+          "maxLength": 16777236
         },
-        "validation_context": { "$ref": "#/$defs/validation-context" },
-        "expectation": { "enum": ["accept", "reject", "retain"] },
+        "validation_context": {
+          "$ref": "#/$defs/validation-context"
+        },
+        "expectation": {
+          "enum": ["accept", "reject", "retain"]
+        },
         "rules": {
           "type": "array",
           "minItems": 1,
           "uniqueItems": true,
-          "items": { "type": "string", "pattern": "^[A-Z][0-9]+[a-z]?$" }
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Z][0-9]+[a-z]?(\\.[0-9]+)?$"
+          }
         },
-        "type_id": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
+        "type_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
         "schema_version": {
           "type": "integer",
           "minimum": 1,
           "maximum": 4294967295
         },
-        "content_hash_hex": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "content_hash_hex": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
         "retained_frame_hex": {
           "type": "string",
           "pattern": "^(?:[0-9a-f]{2})*$",
-          "maxLength": 16777234
+          "maxLength": 16777236
         },
-        "content_digest_hex": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
-        "payload_digest_hex": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "content_digest_hex": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "payload_digest_hex": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
         "payment_commitments_hex": {
           "type": "array",
           "minItems": 1,
           "maxItems": 64,
           "uniqueItems": true,
-          "items": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
         },
         "error_category": {
           "enum": [
@@ -92,10 +127,155 @@
         {
           "if": {
             "properties": {
-              "expectation": { "const": "accept" },
+              "expectation": {
+                "const": "reject"
+              },
               "validation_context": {
                 "properties": {
-                  "operation": { "enum": ["typed", "full"] }
+                  "operation": {
+                    "const": "frame"
+                  }
+                },
+                "required": ["operation"]
+              }
+            },
+            "required": ["expectation", "validation_context"]
+          },
+          "then": {
+            "properties": {
+              "error_category": {
+                "enum": ["frame", "unsupported", "resource"]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "expectation": {
+                "const": "reject"
+              },
+              "validation_context": {
+                "properties": {
+                  "operation": {
+                    "const": "generic"
+                  }
+                },
+                "required": ["operation"]
+              }
+            },
+            "required": ["expectation", "validation_context"]
+          },
+          "then": {
+            "properties": {
+              "error_category": {
+                "enum": [
+                  "frame",
+                  "unsupported",
+                  "resource",
+                  "malformed",
+                  "noncanonical",
+                  "schema"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "expectation": {
+                "const": "reject"
+              },
+              "validation_context": {
+                "properties": {
+                  "operation": {
+                    "const": "typed"
+                  }
+                },
+                "required": ["operation"]
+              }
+            },
+            "required": ["expectation", "validation_context"]
+          },
+          "then": {
+            "properties": {
+              "error_category": {
+                "enum": [
+                  "frame",
+                  "unsupported",
+                  "resource",
+                  "malformed",
+                  "noncanonical",
+                  "schema",
+                  "semantic"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "validation_context": {
+                "properties": {
+                  "operation": {
+                    "const": "full"
+                  }
+                },
+                "required": ["operation"]
+              }
+            },
+            "required": ["validation_context"]
+          },
+          "then": {
+            "properties": {
+              "validation_context": {
+                "required": [
+                  "payment_policy",
+                  "decrypted_frame_hex",
+                  "prior_directory_statement_frame_hex"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "expectation": {
+                "const": "retain"
+              }
+            },
+            "required": ["expectation"]
+          },
+          "then": {
+            "properties": {
+              "validation_context": {
+                "properties": {
+                  "operation": {
+                    "enum": ["generic", "typed", "full"]
+                  },
+                  "opaque_retention_allowed": {
+                    "const": true
+                  }
+                },
+                "required": ["operation", "opaque_retention_allowed"]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "expectation": {
+                "const": "accept"
+              },
+              "validation_context": {
+                "properties": {
+                  "operation": {
+                    "enum": ["typed", "full"]
+                  }
                 },
                 "required": ["operation"]
               }
@@ -112,7 +292,11 @@
         },
         {
           "if": {
-            "properties": { "expectation": { "const": "accept" } },
+            "properties": {
+              "expectation": {
+                "const": "accept"
+              }
+            },
             "required": ["expectation"]
           },
           "then": {
@@ -124,17 +308,27 @@
         },
         {
           "if": {
-            "properties": { "expectation": { "const": "reject" } },
+            "properties": {
+              "expectation": {
+                "const": "reject"
+              }
+            },
             "required": ["expectation"]
           },
           "then": {
             "required": ["error_category"],
-            "properties": { "retained_frame_hex": false }
+            "properties": {
+              "retained_frame_hex": false
+            }
           }
         },
         {
           "if": {
-            "properties": { "expectation": { "const": "retain" } },
+            "properties": {
+              "expectation": {
+                "const": "retain"
+              }
+            },
             "required": ["expectation"]
           },
           "then": {
@@ -151,10 +345,18 @@
         {
           "if": {
             "properties": {
-              "expectation": { "const": "accept" },
-              "type_id": { "const": 1 },
+              "expectation": {
+                "const": "accept"
+              },
+              "type_id": {
+                "const": 1
+              },
               "validation_context": {
-                "properties": { "operation": { "const": "full" } },
+                "properties": {
+                  "operation": {
+                    "const": "full"
+                  }
+                },
                 "required": ["operation"]
               }
             },
@@ -169,7 +371,15 @@
             "properties": {
               "validation_context": {
                 "type": "object",
-                "required": ["payment_policy", "decrypted_frame_hex"]
+                "required": ["payment_policy", "decrypted_frame_hex"],
+                "properties": {
+                  "payment_policy": {
+                    "type": "object"
+                  },
+                  "decrypted_frame_hex": {
+                    "type": "string"
+                  }
+                }
               }
             }
           }
@@ -177,9 +387,15 @@
         {
           "if": {
             "properties": {
-              "type_id": { "const": 1 },
+              "type_id": {
+                "const": 1
+              },
               "validation_context": {
-                "properties": { "operation": { "const": "full" } },
+                "properties": {
+                  "operation": {
+                    "const": "full"
+                  }
+                },
                 "required": ["operation"]
               }
             },
@@ -189,7 +405,15 @@
             "properties": {
               "validation_context": {
                 "type": "object",
-                "required": ["payment_policy", "decrypted_frame_hex"]
+                "required": ["payment_policy", "decrypted_frame_hex"],
+                "properties": {
+                  "payment_policy": {
+                    "type": "object"
+                  },
+                  "decrypted_frame_hex": {
+                    "type": "string"
+                  }
+                }
               }
             }
           }
@@ -197,9 +421,15 @@
         {
           "if": {
             "properties": {
-              "type_id": { "const": 2 },
+              "type_id": {
+                "const": 2
+              },
               "validation_context": {
-                "properties": { "operation": { "const": "full" } },
+                "properties": {
+                  "operation": {
+                    "const": "full"
+                  }
+                },
                 "required": ["operation"]
               }
             },
@@ -215,12 +445,20 @@
           }
         },
         {
-          "if": { "required": ["paired_case"] },
-          "then": { "required": ["pair_relation"] }
+          "if": {
+            "required": ["paired_case"]
+          },
+          "then": {
+            "required": ["pair_relation"]
+          }
         },
         {
-          "if": { "required": ["pair_relation"] },
-          "then": { "required": ["paired_case"] }
+          "if": {
+            "required": ["pair_relation"]
+          },
+          "then": {
+            "required": ["paired_case"]
+          }
         }
       ]
     },
@@ -229,12 +467,15 @@
       "additionalProperties": false,
       "required": [
         "operation",
+        "route_byte_limit",
         "reader_version",
         "supported_schemas",
         "opaque_retention_allowed"
       ],
       "properties": {
-        "operation": { "enum": ["frame", "generic", "typed", "full"] },
+        "operation": {
+          "enum": ["frame", "generic", "typed", "full"]
+        },
         "reader_version": {
           "type": "integer",
           "minimum": 1,
@@ -261,22 +502,47 @@
             }
           }
         },
-        "opaque_retention_allowed": { "type": "boolean" },
-        "decrypted_frame_hex": {
-          "type": "string",
-          "pattern": "^(?:[0-9a-f]{2})*$",
-          "maxLength": 16777234
+        "opaque_retention_allowed": {
+          "type": "boolean"
         },
-        "payment_policy": { "$ref": "#/$defs/payment-policy" },
-        "prior_directory_statement_frame_hex": {
+        "decrypted_frame_hex": {
           "oneOf": [
-            { "type": "null" },
+            {
+              "type": "null"
+            },
             {
               "type": "string",
               "pattern": "^(?:[0-9a-f]{2})*$",
-              "maxLength": 16777234
+              "maxLength": 16777236
             }
           ]
+        },
+        "payment_policy": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/payment-policy"
+            }
+          ]
+        },
+        "prior_directory_statement_frame_hex": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "pattern": "^(?:[0-9a-f]{2})*$",
+              "maxLength": 16777236
+            }
+          ]
+        },
+        "route_byte_limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8388617
         }
       }
     },
@@ -285,12 +551,17 @@
       "additionalProperties": false,
       "required": ["minimum_value_hex", "observations"],
       "properties": {
-        "minimum_value_hex": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "minimum_value_hex": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
         "observations": {
           "type": "array",
           "minItems": 1,
           "maxItems": 64,
-          "items": { "$ref": "#/$defs/payment-observation" }
+          "items": {
+            "$ref": "#/$defs/payment-observation"
+          }
         }
       }
     },
@@ -312,8 +583,14 @@
           "type": "string",
           "pattern": "^(?:[0-9a-f]{2}){1,128}$"
         },
-        "value_hex": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
-        "commitment_hex": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+        "value_hex": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "commitment_hex": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
       }
     }
   }

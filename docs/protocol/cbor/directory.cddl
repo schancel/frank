@@ -9,7 +9,7 @@ directory-attestation = {
 
 directory-statement = {
   0: network-tag,
-  1: account-ref, ; long-lived lookup identity
+  1: account-ref, ; directory subject: the currently registered key; changes only through one linked type-7 transition (README S10)
   2: uint .le 18446744073709551615, ; monotonic revision
   3: timestamp,
   4: [1*32 relay-binding],

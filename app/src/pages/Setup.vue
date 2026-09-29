@@ -136,7 +136,7 @@ export default defineComponent({
       seedPhrase: seedPhrase,
       setRelayData: myProfile.setRelayData,
       persistSetupAndReload: () =>
-        persistSetupAndReload(wallet, myProfile, window.location),
+        persistSetupAndReload(wallet, myProfile, window.location, errorNotify),
       resetWallet: wallet.reset,
       setXPrivKey: wallet.setXPrivKey,
       setSeedPhrase: wallet.setSeedPhrase,

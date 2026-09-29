@@ -16,8 +16,16 @@ export async function persistSetupAndReload(
   wallet: PersistenceBarrier,
   profile: PersistenceBarrier,
   location: ReloadLocation,
+  notifyError: (error: Error) => void,
 ): Promise<void> {
-  await Promise.all([wallet.flushPersistence(), profile.flushPersistence()])
+  try {
+    await Promise.all([wallet.flushPersistence(), profile.flushPersistence()])
+  } catch (error) {
+    const persistenceError =
+      error instanceof Error ? error : new Error(String(error))
+    notifyError(persistenceError)
+    throw persistenceError
+  }
   location.hash = '#/'
   location.reload()
 }

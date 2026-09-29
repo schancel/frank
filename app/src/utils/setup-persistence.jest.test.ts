@@ -15,11 +15,13 @@ describe('setup persistence boundary', () => {
     const walletWrite = deferred()
     const profileWrite = deferred()
     const location = { hash: '#/setup', reload: jest.fn() }
+    const notifyError = jest.fn()
 
     const completion = persistSetupAndReload(
       { flushPersistence: () => walletWrite.promise },
       { flushPersistence: () => profileWrite.promise },
       location,
+      notifyError,
     )
 
     walletWrite.resolve()
@@ -30,20 +32,25 @@ describe('setup persistence boundary', () => {
     await completion
     expect(location.hash).toBe('#/')
     expect(location.reload).toHaveBeenCalledTimes(1)
+    expect(notifyError).not.toHaveBeenCalled()
   })
 
   it('does not reload when persistence fails', async () => {
     const location = { hash: '#/setup', reload: jest.fn() }
+    const notifyError = jest.fn()
+    const failure = new Error('disk full')
 
     await expect(
       persistSetupAndReload(
         { flushPersistence: () => Promise.resolve() },
-        { flushPersistence: () => Promise.reject(new Error('disk full')) },
+        { flushPersistence: () => Promise.reject(failure) },
         location,
+        notifyError,
       ),
     ).rejects.toThrow('disk full')
 
     expect(location).toEqual({ hash: '#/setup', reload: expect.any(Function) })
     expect(location.reload).not.toHaveBeenCalled()
+    expect(notifyError).toHaveBeenCalledWith(failure)
   })
 })

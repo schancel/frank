@@ -420,8 +420,7 @@ function openChildren(
       }
     case 4: {
       if (!d.keyTransitions) {
-        const { keyTransitions: _omit, ...rest } = d
-        return rest
+        return { ...d, keyTransitions: undefined }
       }
       return {
         ...d,

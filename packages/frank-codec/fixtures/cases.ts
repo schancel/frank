@@ -1036,6 +1036,23 @@ function fixMap(n: number): Uint8Array {
   return Uint8Array.from(parts)
 }
 
+acc(
+  'limit-map-256-entries',
+  'Map of 256 entries.',
+  framePayload(fixMap(256)),
+  ['R1'],
+  g,
+)
+rej(
+  'limit-map-257-entries',
+  'Map declaring 257 entries.',
+  framePayload(fixMap(257)),
+  'resource',
+  '7',
+  ['R1'],
+  g,
+)
+
 /** An outer array holding two inner arrays of empty arrays, sized for a container total. */
 function containerHeavy(totalContainers: number): Uint8Array {
   // Envelope map (1) + outer array (1) + two inner arrays (2) + their empty-array elements.

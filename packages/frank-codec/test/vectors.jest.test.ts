@@ -72,7 +72,11 @@ describe('committed vector manifest', () => {
       f(m)
       return checkManifest(m, readme)
     }
-    const find = (m: Manifest, id: string) => m.cases.find(c => c.id === id)!
+    const find = (m: Manifest, id: string) => {
+      const c = m.cases.find(x => x.id === id)
+      if (!c) throw new Error(`no case ${id}`)
+      return c
+    }
     expect(tweak(m => m.cases.push({ ...m.cases[0] }))).toContainEqual(
       expect.stringContaining('duplicate case id'),
     )

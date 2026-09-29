@@ -70,6 +70,13 @@ impl Default for MonadOutboxReconcileConfig {
     }
 }
 
+impl MonadOutboxReconcileConfig {
+    /// Validate lifecycle bounds before database open or network readiness.
+    pub fn validate(&self) -> Result<()> {
+        self.limits.validate()
+    }
+}
+
 /// Observable outcome of reconciling one payload hash.
 #[derive(Debug, Clone, PartialEq)]
 pub enum MonadOutboxReconcileOutcome {
@@ -93,7 +100,7 @@ pub async fn reconcile_monad_outbox<T>(
 where
     T: JsonRpcTransport + Clone,
 {
-    config.limits.validate()?;
+    config.validate()?;
     match tokio::time::timeout(
         config.claim_timeout,
         reconcile_monad_outbox_inner(transport, registry, payload_hash, config),
@@ -507,11 +514,14 @@ async fn check_exact<T: JsonRpcTransport + Clone>(
         }
         Err(err) => return ExactCheck::Infrastructure(err.to_string()),
     };
-    if receipt.status != Some(1) {
-        return ExactCheck::Infrastructure(format!(
-            "exact receipt returned non-success or missing status {:?}",
-            receipt.status
-        ));
+    match receipt.status {
+        Some(1) => {}
+        Some(0) => return ExactCheck::Invalid("exact transaction reverted".to_string()),
+        status => {
+            return ExactCheck::Infrastructure(format!(
+                "exact receipt returned missing or unknown status {status:?}"
+            ))
+        }
     }
     if receipt.from != canonical.sender
         || receipt.to != canonical.destination
@@ -665,13 +675,10 @@ async fn prove_stale_nonce<T: JsonRpcTransport + Clone>(
             MemberOutcome::Terminal(MonadOutboxTerminal::VerificationFailed, detail)
         }
         ExactCheck::Infrastructure(detail) => MemberOutcome::Pending(detail),
-        ExactCheck::Missing => MemberOutcome::Terminal(
-            MonadOutboxTerminal::StaleNonce,
-            format!(
-                "confirmed account nonce {confirmed_nonce} advanced past canonical nonce {}, and final exact lookup was missing",
-                decoded.nonce
-            ),
-        ),
+        ExactCheck::Missing => MemberOutcome::Pending(format!(
+            "confirmed account nonce {confirmed_nonce} advanced past canonical nonce {}, but no competing transaction identity was proven",
+            decoded.nonce
+        )),
     }
 }
 
@@ -728,7 +735,7 @@ pub async fn start_monad_outbox_worker<T>(
 where
     T: JsonRpcTransport + Clone + Send + Sync + 'static,
 {
-    config.limits.validate()?;
+    config.validate()?;
     registry.gc_monad_outbox_history(now_ms(), &config.limits)?;
     // Readiness is intentionally after this bounded initial scan. Each exact RPC, claim, active
     // cardinality, and concurrency dimension has a finite configured ceiling.
@@ -1216,31 +1223,30 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stale_nonce_is_terminal_and_not_confirmed() -> Result<()> {
-        let tempdir = tempdir::TempDir::new("monad-outbox-stale")?;
-        let path = tempdir.path().join("db.rocksdb");
-        let registry = registry(&path);
-        let (request, policy, transport) = fixture(
-            &[SendBehavior::Accept, SendBehavior::NonceTooLow],
-            &[true, false],
-        );
+    async fn nonce_advancement_without_competing_identity_remains_pending_then_delivers(
+    ) -> Result<()> {
+        let tempdir = tempdir::TempDir::new("monad-outbox-nonce-hidden")?;
+        let registry = registry(&tempdir.path().join("db.rocksdb"));
+        let (request, policy, transport) = fixture(&[SendBehavior::NonceTooLow], &[false]);
+        let tx_hash = Hash32(Keccak256::digest(&request.stamp_payments[0].raw_tx).into());
+        let config = fast_config();
         registry.claim_monad_outbox(&request, &policy, now_ms(), &MonadOutboxLimits::default())?;
         assert_eq!(
-            reconcile_monad_outbox(&transport, &registry, &request.payload_hash, &fast_config(),)
-                .await?,
-            MonadOutboxReconcileOutcome::Terminal(MonadOutboxTerminal::StaleNonce)
+            reconcile_monad_outbox(&transport, &registry, &request.payload_hash, &config).await?,
+            MonadOutboxReconcileOutcome::Pending
         );
-        assert!(matches!(
+        assert_eq!(
             registry
-                .monad_outbox_member(&request.payload_hash, 1)?
+                .monad_outbox_member(&request.payload_hash, 0)?
                 .unwrap()
                 .state,
-            MonadOutboxMemberState::Terminal(MonadOutboxTerminal::StaleNonce)
+            MonadOutboxMemberState::Pending
+        );
+        transport.set_confirmed(tx_hash, true);
+        assert!(matches!(
+            reconcile_monad_outbox(&transport, &registry, &request.payload_hash, &config).await?,
+            MonadOutboxReconcileOutcome::Delivered(_)
         ));
-        let recoveries = registry.confirmed_monad_outbox_prefixes(policy.recipient, 10)?;
-        assert_eq!(recoveries.len(), 1);
-        assert_eq!(recoveries[0].confirmed_prefix.len(), 1);
-        assert!(registry.get_monad_message(&request.payload_hash)?.is_none());
         Ok(())
     }
 
@@ -1326,8 +1332,8 @@ mod tests {
                     3 => spec.transaction_destination = Some(Address([0xa3; 20])),
                     4 => spec.transaction_value_wei = canonical.value_wei + 1,
                     5 => spec.transaction_input.push(0xff),
-                    6 => spec.receipt_status = Some(0),
-                    7 => spec.receipt_status = None,
+                    6 => spec.receipt_status = None,
+                    7 => spec.receipt_status = Some(2),
                     _ => unreachable!(),
                 }
             }
@@ -1362,6 +1368,35 @@ mod tests {
                 MonadOutboxReconcileOutcome::Delivered(_)
             ));
         }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn explicit_reverted_receipt_is_terminal_verification_failure() -> Result<()> {
+        let tempdir = tempdir::TempDir::new("monad-outbox-reverted")?;
+        let registry = registry(&tempdir.path().join("db.rocksdb"));
+        let (request, policy, transport) = fixture(&[SendBehavior::Accept], &[true]);
+        let tx_hash = Hash32(Keccak256::digest(&request.stamp_payments[0].raw_tx).into());
+        transport
+            .specs
+            .lock()
+            .unwrap()
+            .get_mut(&tx_hash)
+            .unwrap()
+            .receipt_status = Some(0);
+        let config = fast_config();
+        registry.claim_monad_outbox(&request, &policy, now_ms(), &config.limits)?;
+        assert_eq!(
+            reconcile_monad_outbox(&transport, &registry, &request.payload_hash, &config).await?,
+            MonadOutboxReconcileOutcome::Terminal(MonadOutboxTerminal::VerificationFailed)
+        );
+        assert_eq!(
+            registry
+                .monad_outbox_member(&request.payload_hash, 0)?
+                .unwrap()
+                .state,
+            MonadOutboxMemberState::Terminal(MonadOutboxTerminal::VerificationFailed)
+        );
         Ok(())
     }
 

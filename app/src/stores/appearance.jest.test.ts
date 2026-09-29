@@ -43,7 +43,7 @@ describe('saveAppearance / restoreAppearance', () => {
     const storage = fakeStorage()
     const state: State = { darkMode: true, lastDismissed: 42, locale: 'fr-fr' }
 
-    saveAppearance(storage, state)
+    await saveAppearance(storage, state)
     const restored = await restoreAppearance(storage)
 
     expect(restored).toEqual(state)

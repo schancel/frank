@@ -417,7 +417,7 @@ export const useContactStore = defineStore('contacts', {
     },
   },
   storage: {
-    save(storage, _mutation, state): void {
+    save(storage, _mutation, state): Promise<void> {
       const reducedState = {
         ...state,
         contacts: mapObjIndexed(contact => {
@@ -438,7 +438,7 @@ export const useContactStore = defineStore('contacts', {
           }
         }, state.contacts),
       }
-      storage.put(
+      return storage.put(
         'contacts',
         JSON.stringify(reducedState, (k, v) => {
           switch (k) {

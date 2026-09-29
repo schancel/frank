@@ -12,8 +12,8 @@ export const useRelayClientStore = defineStore('relayClient', {
     },
   },
   storage: {
-    save(storage, _mutation, state): void {
-      storage.put('relayClient', JSON.stringify(state))
+    save(storage, _mutation, state): Promise<void> {
+      return storage.put('relayClient', JSON.stringify(state))
     },
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
     async restore(storage): Promise<Partial<State>> {

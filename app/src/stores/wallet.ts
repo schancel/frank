@@ -84,7 +84,7 @@ export const useWalletStore = defineStore('wallet', {
     },
   },
   storage: {
-    save(storage, _mutation, state): void {
+    save(storage, _mutation, state): Promise<void> {
       const wallet = {
         xPrivKey: state.xPrivKey ? toRaw(state.xPrivKey).toObject() : null,
         seedPhrase: state.seedPhrase,
@@ -92,7 +92,7 @@ export const useWalletStore = defineStore('wallet', {
         feePerByte: 2,
         balance: 0,
       }
-      storage.put('wallet', JSON.stringify(wallet))
+      return storage.put('wallet', JSON.stringify(wallet))
     },
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
     async restore(storage): Promise<Partial<State>> {

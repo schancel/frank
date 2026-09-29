@@ -14,8 +14,8 @@ export interface State {
 /** Extracted from the `storage` option below (same behavior) so it's directly unit-testable --
  * `boot/pinia.ts`'s generic persistence plugin is what actually wires these into the store's
  * lifecycle, which isn't worth reproducing in a unit test just to exercise this logic. */
-export function saveAppearance(storage: LevelDB, state: State): void {
-  storage.put('appearance', JSON.stringify(state))
+export function saveAppearance(storage: LevelDB, state: State): Promise<void> {
+  return storage.put('appearance', JSON.stringify(state))
 }
 
 export async function restoreAppearance(
@@ -43,8 +43,8 @@ export const useAppearanceStore = defineStore('appearance', {
     },
   },
   storage: {
-    save(storage, _mutation, state): void {
-      saveAppearance(storage, state)
+    save(storage, _mutation, state): Promise<void> {
+      return saveAppearance(storage, state)
     },
     restore(storage): Promise<Partial<State>> {
       return restoreAppearance(storage)

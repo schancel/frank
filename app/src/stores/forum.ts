@@ -232,8 +232,8 @@ export const useForumStore = defineStore('forum', {
     },
   },
   storage: {
-    save(storage, _mutation, state): void {
-      storage.put('forum', JSON.stringify(state))
+    save(storage, _mutation, state): Promise<void> {
+      return storage.put('forum', JSON.stringify(state))
     },
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
     async restore(storage): Promise<Partial<State>> {

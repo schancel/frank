@@ -630,7 +630,7 @@ fn validate_persisted_record(
     if message.encode_to_vec() != canonical {
         bail!("persisted canonical request uses a noncanonical protobuf encoding");
     }
-    validate_persisted_message(&message, payload_hash, expected_chain_id)?;
+    validate_persisted_message(message, payload_hash, expected_chain_id)?;
     let policy = record.policy.as_ref().ok_or_else(|| {
         crate::store::monad_outbox::DbMonadOutboxError::CorruptRecord(
             "active outbox row has no frozen policy".to_string(),
@@ -667,7 +667,7 @@ fn validate_persisted_record(
     }
     if require_fully_confirmed {
         validate_fully_confirmed_snapshot(
-            &message,
+            message,
             canonical,
             payload_hash,
             policy,

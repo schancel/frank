@@ -7901,6 +7901,12 @@ mod tests {
                 .unwrap()
                 .exposed
         );
+        // Exposure learned in the very transition that expires the claim is retained atomically:
+        // the obligation is recipient-visible and still owns its recovery reservation.
+        assert!(store
+            .confirmed_prefixes_for_recipient(&policy().recipient, 10)?
+            .iter()
+            .any(|recovery| recovery.payload_hash.as_slice() == submitted.payload_hash));
 
         let ambiguous = message_with_seed(b"age ambiguous", &[b"raw"]);
         store.claim(

@@ -4,6 +4,12 @@ import { join } from 'path'
 
 import { getAddress } from 'ethers'
 
+import {
+  buildEnvelope,
+  decryptEnvelope,
+  parseEnvelope,
+} from '@frank/cashweb/relay/monad-message-envelope'
+import { BlackjackMoveItem } from '@frank/cashweb/types/messages'
 import { deriveDeck, handValue, sha256Hex } from '@frank/wallet/blackjack/deck'
 import {
   dealInitialCards,
@@ -11,11 +17,23 @@ import {
   resolveOutcome,
 } from '@frank/wallet/blackjack/game'
 import {
+  deserializeMessageItems,
+  serializeMessageItems,
+} from '@frank/wallet/chain/monad-chain'
+import { MonadIdentity } from '@frank/wallet/monad-identity'
+import { getMessageItemPlugin } from '@frank/wallet/message-item-plugins'
+import {
   sendDirectMessageItems,
   sendDirectMessageText,
 } from './qwen-bot-common'
-import { BlackjackBotStateStore } from './blackjack-bot-state'
-import { handleMove } from './blackjack-bot.livecheck'
+import {
+  BlackjackBotStateStore,
+  MAX_BLACKJACK_GAME_ID_BYTES,
+} from './blackjack-bot-state'
+import {
+  handleMove,
+  hydrateMoveWithValidatedGameId,
+} from './blackjack-bot.livecheck'
 
 jest.mock('./qwen-bot-common', () => ({
   loadOrCreateIdentity: jest.fn(),
@@ -121,6 +139,98 @@ describe('blackjack move authorization', () => {
     expect(mainAccountSigner.submit).not.toHaveBeenCalled()
     expect(sendDirectMessageText).toHaveBeenCalledTimes(1)
   })
+
+  it('carries a legitimate envelope sender through hydration into wager authority', async () => {
+    // This pins the legitimate replay path only. It does not make the current CBC envelope
+    // authenticated; the companion AEAD work remains responsible for authenticating `from`.
+    const playerIdentity = MonadIdentity.generate()
+    const dealerIdentity = MonadIdentity.generate()
+    const rawMove: BlackjackMoveItem = {
+      type: 'blackjack-move',
+      gameId: 'envelope-game',
+      action: 'bet',
+      wagerTxHash: WAGER_HASH,
+    }
+    const envelope = parseEnvelope(
+      buildEnvelope({
+        fromAddress: playerIdentity.displayAddress,
+        fromPrivateKey: playerIdentity.toBitcorePrivateKey(),
+        toAddress: dealerIdentity.displayAddress,
+        toPubKey: dealerIdentity.compressedPubKey,
+        plaintext: serializeMessageItems([rawMove]),
+        networkTag: 'TEST',
+      }),
+    )!
+    const decrypted = decryptEnvelope({
+      envelope,
+      myPrivateKey: dealerIdentity.toBitcorePrivateKey(),
+      senderPubKey: playerIdentity.compressedPubKey,
+    })
+    const replayed = deserializeMessageItems(decrypted)[0] as BlackjackMoveItem
+    const plugin = getMessageItemPlugin('blackjack-move')!
+    const provider = {
+      getTransaction: jest.fn(async () => ({
+        from: playerIdentity.displayAddress,
+        to: dealerIdentity.displayAddress,
+        value: 100n,
+      })),
+      getTransactionReceipt: jest.fn(async () => ({ status: 1 })),
+    }
+    const moveHydrated = await hydrateMoveWithValidatedGameId(
+      replayed,
+      (validated) =>
+        plugin.hydrate(validated, {
+          message: { senderAddress: envelope.from } as never,
+          index: 0,
+          provider: provider as never,
+        }) as Promise<HydratedBlackjackMove>,
+    )
+
+    await handleMove({
+      action: 'bet',
+      hydrated: moveHydrated,
+      senderAddress: envelope.from,
+      senderPubKey: playerIdentity.compressedPubKey,
+      minWagerWei: 10n,
+      state,
+      identity: dealerIdentity,
+      networkTag: 'TEST',
+      stampValueWei: 1n,
+      stampClient: {} as never,
+      pool: {} as never,
+      mainAccountSigner: mainAccountSigner as never,
+      provider: provider as never,
+    })
+
+    expect(state.getGame('envelope-game')?.playerAddress).toBe(
+      playerIdentity.displayAddress,
+    )
+    expect(provider.getTransaction).toHaveBeenCalledWith(WAGER_HASH)
+  })
+
+  it.each([
+    ['object', {}],
+    ['empty', ''],
+    ['oversized', 'x'.repeat(MAX_BLACKJACK_GAME_ID_BYTES + 1)],
+  ])(
+    'rejects a %s gameId before wager hydration',
+    async (_label, invalidGameId) => {
+      const hydrate = jest.fn()
+      await expect(
+        hydrateMoveWithValidatedGameId(
+          {
+            type: 'blackjack-move',
+            gameId: invalidGameId,
+            action: 'bet',
+            wagerTxHash: WAGER_HASH,
+          } as never,
+          hydrate,
+        ),
+      ).rejects.toThrow('gameId')
+      expect(hydrate).not.toHaveBeenCalled()
+      expect(state.getPendingCommitment()?.serverSeed).toBe('initial-seed')
+    },
+  )
 
   it('rejects replaying one wager under a different game and player', async () => {
     await bet()
@@ -241,6 +351,9 @@ describe('blackjack move authorization', () => {
     expect(winningSeed).not.toBe('')
     await state.setPendingCommitment(winningSeed, sha256Hex(winningSeed))
     await bet()
+    await state.Close()
+    state = new BlackjackBotStateStore(directory)
+    await state.Open()
     jest.clearAllMocks()
 
     await move('stand', hydrated('stand'), `0x${PLAYER.slice(2).toUpperCase()}`)

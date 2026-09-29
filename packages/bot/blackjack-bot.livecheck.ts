@@ -85,6 +85,8 @@ import {
 import {
   BlackjackBotStateStore,
   BlackjackGameRecord,
+  InvalidBlackjackGameIdError,
+  normalizeBlackjackGameId,
   normalizePlayerAddress,
   normalizeWagerTxHash,
 } from './blackjack-bot-state'
@@ -244,7 +246,27 @@ export async function handleMove(params: {
     mainAccountSigner,
     provider,
   } = params
-  const gameId = hydrated.gameId
+  let gameId: string
+  try {
+    gameId = normalizeBlackjackGameId(
+      (hydrated as unknown as { gameId: unknown }).gameId,
+    )
+  } catch {
+    console.log(`[blackjack-bot] rejecting ${action}: invalid gameId`)
+    await sendDirectMessageText({
+      stampClient,
+      pool,
+      mainAccountSigner,
+      provider,
+      fromIdentity: identity,
+      toAddress: senderAddress,
+      toPubKey: senderPubKey,
+      text: 'Blackjack: gameId must be a nonempty bounded string',
+      stampValueWei,
+      networkTag,
+    })
+    return
+  }
 
   async function sendError(text: string) {
     console.log(`[blackjack-bot] rejecting ${action} for game ${gameId}: ${text}`)
@@ -471,6 +493,18 @@ export async function handleMove(params: {
   }
 }
 
+/** Validates the untrusted wire gameId before hydrate() can perform wager RPC lookups. */
+export async function hydrateMoveWithValidatedGameId(
+  raw: BlackjackMoveItem,
+  hydrate: (validated: BlackjackMoveItem) => Promise<HydratedBlackjackMove>,
+): Promise<HydratedBlackjackMove> {
+  const gameId = normalizeBlackjackGameId(
+    (raw as unknown as { gameId: unknown }).gameId,
+  )
+  const hydrated = await hydrate({ ...raw, gameId })
+  return { ...hydrated, gameId }
+}
+
 async function main() {
   const relayBaseUrl = process.env.E2E_DEMO_RELAY_URL ?? 'http://127.0.0.1:8098'
   const rpcUrl = requiredEnv('MONAD_TESTNET_HTTP_RPC_URL')
@@ -611,11 +645,6 @@ async function main() {
       )
       if (!moveRaw) continue
 
-      lastActivityAt = Date.now()
-      console.log(
-        `\n[blackjack-bot] ${moveRaw.action} from ${envelope.from} (game ${moveRaw.gameId})`,
-      )
-
       const plugin = getMessageItemPlugin('blackjack-move')
       if (!plugin) throw new Error('blackjack-move plugin not registered')
       const context: MessageItemContext = {
@@ -628,7 +657,35 @@ async function main() {
       // envelope/decrypt above, so hydrate()'s context matches what it expects.
       ;(context.message as { senderAddress: string }).senderAddress = envelope.from
 
-      const hydrated = await plugin.hydrate(moveRaw, context)
+      let hydrated: HydratedBlackjackMove
+      try {
+        hydrated = await hydrateMoveWithValidatedGameId(moveRaw, (validated) =>
+          plugin.hydrate(validated, context),
+        )
+      } catch (error) {
+        if (!(error instanceof InvalidBlackjackGameIdError)) throw error
+        console.log(
+          `[blackjack-bot] rejecting ${moveRaw.action} from ${envelope.from}: invalid gameId`,
+        )
+        await sendDirectMessageText({
+          stampClient,
+          pool,
+          mainAccountSigner,
+          provider,
+          fromIdentity: identity,
+          toAddress: envelope.from,
+          toPubKey: senderPubKey,
+          text: 'Blackjack: gameId must be a nonempty bounded string',
+          stampValueWei,
+          networkTag,
+        })
+        continue
+      }
+
+      lastActivityAt = Date.now()
+      console.log(
+        `\n[blackjack-bot] ${moveRaw.action} from ${envelope.from} (game ${hydrated.gameId})`,
+      )
 
       try {
         await handleMove({
@@ -648,12 +705,12 @@ async function main() {
         })
       } catch (err) {
         console.error(
-          `[blackjack-bot] failed to handle ${moveRaw.action} for game ${moveRaw.gameId}:`,
+          `[blackjack-bot] failed to handle ${moveRaw.action} for game ${hydrated.gameId}:`,
           err,
         )
       }
 
-      if (moveRaw.action === 'reveal' || (state.getGame(moveRaw.gameId)?.revealed ?? false)) {
+      if (moveRaw.action === 'reveal' || (state.getGame(hydrated.gameId)?.revealed ?? false)) {
         handsResolved++
       }
       if (handsResolved >= maxHands) break

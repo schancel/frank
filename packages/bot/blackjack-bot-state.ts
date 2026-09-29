@@ -2,8 +2,8 @@
  * Persisted state for `blackjack-bot.livecheck.ts`, mirroring `qwen-bot-state.ts`'s established
  * `level`-backed pattern exactly.
  *
- * Two kinds of state, both essential to the fairness scheme (`@frank/wallet/blackjack/deck.ts`'s
- * header):
+ * Three kinds of state, all essential to the fairness/authority scheme
+ * (`@frank/wallet/blackjack/deck.ts`'s header):
  *
  * - **The pending commitment** (`pendingServerSeed`/`pendingServerSeedHash`): the seed the bot will
  *   use for the *next* hand, generated and hashed before that hand's bet exists. Persisting this is
@@ -15,7 +15,10 @@
  *   a `hit` and to reconstruct the dealer's hand at reveal. `revealed` games are kept (not deleted)
  *   so a restart mid-poll-loop can't accidentally re-process and double-pay a hand it already
  *   resolved.
+ * - **Global wager claims** (`wagerTxHash -> gameId`): an independently keyed tombstone proving a
+ *   verified transaction can never authorize another hand, even if its game row is quarantined.
  */
+import { createHash } from 'crypto'
 import { mkdirSync } from 'fs'
 import { getAddress, isHexString } from 'ethers'
 import level, { LevelDB } from 'level'
@@ -26,10 +29,51 @@ const PENDING_SEED_HASH_KEY = '__pending_server_seed_hash__'
 const GAME_PREFIX = 'game:'
 const PROCESSED_PREFIX = 'processed:'
 const WAGER_CLAIM_PREFIX = 'wager-claim:'
+const QUARANTINED_GAME_PREFIX = 'quarantined-game:'
+
+export const MAX_BLACKJACK_GAME_ID_BYTES = 128
+
+export class InvalidBlackjackGameIdError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'InvalidBlackjackGameIdError'
+  }
+}
 
 export interface ServerSeedCommitment {
   serverSeed: string
   serverSeedHash: string
+}
+
+export function normalizeBlackjackGameId(gameId: unknown): string {
+  if (typeof gameId !== 'string' || gameId.length === 0) {
+    throw new InvalidBlackjackGameIdError(
+      'blackjack gameId must be a nonempty string',
+    )
+  }
+  if (Buffer.byteLength(gameId, 'utf8') > MAX_BLACKJACK_GAME_ID_BYTES) {
+    throw new InvalidBlackjackGameIdError(
+      `blackjack gameId must be at most ${MAX_BLACKJACK_GAME_ID_BYTES} bytes`,
+    )
+  }
+  return gameId
+}
+
+function hashServerSeed(serverSeed: string): string {
+  return createHash('sha256').update(serverSeed).digest('hex')
+}
+
+function validateCommitment(
+  commitment: ServerSeedCommitment,
+  label: string,
+): void {
+  if (
+    typeof commitment.serverSeed !== 'string' ||
+    typeof commitment.serverSeedHash !== 'string' ||
+    hashServerSeed(commitment.serverSeed) !== commitment.serverSeedHash
+  ) {
+    throw new Error(`${label} hash mismatch`)
+  }
 }
 
 export function normalizeWagerTxHash(wagerTxHash: string): string {
@@ -75,7 +119,7 @@ export class BlackjackBotStateStore {
   private pendingServerSeed?: string
   private pendingServerSeedHash?: string
   private games = new Map<string, BlackjackGameRecord>()
-  private wagerClaims = new Map<string, string>()
+  private wagerClaims = new Map<string, string | null>()
   private processedPayloadHashes = new Set<string>()
   private pendingWrites: Promise<unknown>[] = []
   private mutationQueue: Promise<void> = Promise.resolve()
@@ -95,79 +139,173 @@ export class BlackjackBotStateStore {
     // See qwen-bot-state.ts's identical line for why this is needed on a fresh machine.
     mkdirSync(this.dbLocation, { recursive: true })
     this.openedDb = level(this.dbLocation)
-    const missingClaimWrites: Array<{
-      type: 'put'
-      key: string
-      value: string
-    }> = []
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    for await (const [key, value] of this.db.iterator({}) as any) {
-      if (key === PENDING_SEED_KEY) {
-        this.pendingServerSeed = JSON.parse(value)
-      } else if (key === PENDING_SEED_HASH_KEY) {
-        this.pendingServerSeedHash = JSON.parse(value)
-      } else if (key.startsWith(GAME_PREFIX)) {
-        const parsed = JSON.parse(value)
-        const gameId = key.slice(GAME_PREFIX.length)
-        const authority =
-          parsed.authority === 'verified-wager-sender'
-            ? 'verified-wager-sender'
-            : 'legacy-unverified'
-        const record: BlackjackGameRecord = {
-          ...parsed,
-          authority,
-          wagerTxHash: normalizeWagerTxHash(parsed.wagerTxHash),
-          wagerWei: BigInt(parsed.wagerWei),
-          playerAddress: normalizePlayerAddress(parsed.playerAddress),
-          // An old record captured the envelope sender without proving that address funded the
-          // wager. Preserve the wager as consumed, but never let that unproven authority move or
-          // receive a payout after upgrade.
-          revealed:
-            authority === 'verified-wager-sender' ? parsed.revealed : true,
+    this.resetLoadedState()
+    try {
+      const repairWrites: Array<Record<string, unknown>> = []
+      const quarantinedGames: Array<{
+        key: string
+        value: string
+        wagerTxHash?: string
+      }> = []
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      for await (const [key, value] of this.db.iterator({}) as any) {
+        if (key === PENDING_SEED_KEY) {
+          this.pendingServerSeed = JSON.parse(value)
+        } else if (key === PENDING_SEED_HASH_KEY) {
+          this.pendingServerSeedHash = JSON.parse(value)
+        } else if (key.startsWith(GAME_PREFIX)) {
+          const gameIdRaw = key.slice(GAME_PREFIX.length)
+          let parsed: Record<string, unknown>
+          let wagerTxHash: string | undefined
+          try {
+            parsed = JSON.parse(value)
+            wagerTxHash = normalizeWagerTxHash(String(parsed.wagerTxHash))
+            const gameId = normalizeBlackjackGameId(gameIdRaw)
+            const authority =
+              parsed.authority === 'verified-wager-sender'
+                ? 'verified-wager-sender'
+                : 'legacy-unverified'
+            const record: BlackjackGameRecord = {
+              ...parsed,
+              authority,
+              serverSeed: String(parsed.serverSeed),
+              serverSeedHash: String(parsed.serverSeedHash),
+              wagerTxHash,
+              wagerWei: BigInt(String(parsed.wagerWei)),
+              playerAddress: normalizePlayerAddress(String(parsed.playerAddress)),
+              dealtCount: Number(parsed.dealtCount),
+              // An old record captured the envelope sender without proving that address funded
+              // the wager. Preserve it as consumed, but never allow that authority to act or pay.
+              revealed:
+                authority === 'verified-wager-sender'
+                  ? parsed.revealed === true
+                  : true,
+            }
+            validateCommitment(record, `game ${gameId} server seed commitment`)
+            this.games.set(gameId, freezeGameRecord(record))
+            if (authority === 'legacy-unverified' && parsed.revealed !== true) {
+              repairWrites.push({
+                type: 'put',
+                key: GAME_PREFIX + gameId,
+                value: serializeGameRecord(record),
+              })
+            }
+          } catch {
+            quarantinedGames.push({ key, value, wagerTxHash })
+          }
+        } else if (key.startsWith(PROCESSED_PREFIX)) {
+          this.processedPayloadHashes.add(key.slice(PROCESSED_PREFIX.length))
+        } else if (key.startsWith(WAGER_CLAIM_PREFIX)) {
+          const wagerTxHash = key.slice(WAGER_CLAIM_PREFIX.length)
+          if (normalizeWagerTxHash(wagerTxHash) !== wagerTxHash) {
+            throw new Error(`non-canonical wager claim key: ${key}`)
+          }
+          const parsed = JSON.parse(value)
+          try {
+            this.wagerClaims.set(
+              wagerTxHash,
+              normalizeBlackjackGameId(parsed.gameId),
+            )
+          } catch {
+            this.wagerClaims.set(wagerTxHash, null)
+            repairWrites.push({
+              type: 'put',
+              key,
+              value: JSON.stringify({ quarantined: true }),
+            })
+          }
         }
-        this.games.set(gameId, freezeGameRecord(record))
-        if (authority === 'legacy-unverified' && !parsed.revealed) {
-          missingClaimWrites.push({
+      }
+
+      const hasPendingSeed = this.pendingServerSeed !== undefined
+      const hasPendingHash = this.pendingServerSeedHash !== undefined
+      if (hasPendingSeed !== hasPendingHash) {
+        throw new Error('pending server seed commitment is incomplete')
+      }
+      if (hasPendingSeed && hasPendingHash) {
+        validateCommitment(
+          {
+            serverSeed: this.pendingServerSeed as string,
+            serverSeedHash: this.pendingServerSeedHash as string,
+          },
+          'pending server seed commitment',
+        )
+      }
+
+      for (const quarantined of quarantinedGames) {
+        repairWrites.push(
+          { type: 'del', key: quarantined.key },
+          {
+            type: 'put',
+            key:
+              QUARANTINED_GAME_PREFIX +
+              createHash('sha256').update(quarantined.key).digest('hex'),
+            value: quarantined.value,
+          },
+        )
+        if (
+          quarantined.wagerTxHash &&
+          !this.wagerClaims.has(quarantined.wagerTxHash)
+        ) {
+          this.wagerClaims.set(quarantined.wagerTxHash, null)
+          repairWrites.push({
+            type: 'put',
+            key: WAGER_CLAIM_PREFIX + quarantined.wagerTxHash,
+            value: JSON.stringify({ quarantined: true }),
+          })
+        }
+      }
+
+      // Pre-authority-fix game records did not have separate global claim keys. Backfill the claim
+      // so a restart cannot make an already-consumed wager reusable. A quarantined claim also
+      // tombstones any related game rather than trusting ambiguous authority.
+      for (const [gameId, loadedRecord] of this.games) {
+        const hasClaim = this.wagerClaims.has(loadedRecord.wagerTxHash)
+        const claimedGameId = this.wagerClaims.get(loadedRecord.wagerTxHash)
+        if (hasClaim && claimedGameId === null) {
+          const record = freezeGameRecord({
+            ...loadedRecord,
+            authority: 'legacy-unverified',
+            revealed: true,
+          })
+          this.games.set(gameId, record)
+          repairWrites.push({
             type: 'put',
             key: GAME_PREFIX + gameId,
             value: serializeGameRecord(record),
           })
+        } else if (claimedGameId && claimedGameId !== gameId) {
+          throw new Error(
+            `wager ${loadedRecord.wagerTxHash} is claimed by both ${claimedGameId} and ${gameId}`,
+          )
+        } else if (!hasClaim) {
+          this.wagerClaims.set(loadedRecord.wagerTxHash, gameId)
+          repairWrites.push({
+            type: 'put',
+            key: WAGER_CLAIM_PREFIX + loadedRecord.wagerTxHash,
+            value: JSON.stringify({ gameId }),
+          })
         }
-      } else if (key.startsWith(PROCESSED_PREFIX)) {
-        this.processedPayloadHashes.add(key.slice(PROCESSED_PREFIX.length))
-      } else if (key.startsWith(WAGER_CLAIM_PREFIX)) {
-        const wagerTxHash = key.slice(WAGER_CLAIM_PREFIX.length)
-        if (normalizeWagerTxHash(wagerTxHash) !== wagerTxHash) {
-          throw new Error(`non-canonical wager claim key: ${key}`)
-        }
-        this.wagerClaims.set(wagerTxHash, JSON.parse(value).gameId)
       }
+      if (repairWrites.length > 0) {
+        // level@7 has atomic batch at runtime, but its legacy LevelDB type alias omits it.
+        await (this.db as any).batch(repairWrites)
+      }
+    } catch (error) {
+      const openedDb = this.openedDb
+      this.openedDb = undefined
+      this.resetLoadedState()
+      await openedDb?.close()
+      throw error
     }
+  }
 
-    // Pre-authority-fix game records did not have separate global claim keys. Backfill the claim
-    // from their immutable wager hash so a restart cannot make an already-consumed wager reusable.
-    // If historical state already contains two games for one wager, fail closed rather than pick
-    // an arbitrary payout authority.
-    for (const [gameId, record] of this.games) {
-      const claimedGameId = this.wagerClaims.get(record.wagerTxHash)
-      if (claimedGameId && claimedGameId !== gameId) {
-        throw new Error(
-          `wager ${record.wagerTxHash} is claimed by both ${claimedGameId} and ${gameId}`,
-        )
-      }
-      if (!claimedGameId) {
-        this.wagerClaims.set(record.wagerTxHash, gameId)
-        missingClaimWrites.push({
-          type: 'put',
-          key: WAGER_CLAIM_PREFIX + record.wagerTxHash,
-          value: JSON.stringify({ gameId }),
-        })
-      }
-    }
-    if (missingClaimWrites.length > 0) {
-      // level@7 has atomic batch at runtime, but its legacy LevelDB type alias omits it.
-      await (this.db as any).batch(missingClaimWrites)
-    }
+  private resetLoadedState(): void {
+    this.pendingServerSeed = undefined
+    this.pendingServerSeedHash = undefined
+    this.games.clear()
+    this.wagerClaims.clear()
+    this.processedPayloadHashes.clear()
   }
 
   async Close(): Promise<void> {
@@ -192,7 +330,12 @@ export class BlackjackBotStateStore {
   }
 
   getPendingCommitment(): ServerSeedCommitment | undefined {
-    if (!this.pendingServerSeed || !this.pendingServerSeedHash) return undefined
+    if (
+      this.pendingServerSeed === undefined ||
+      this.pendingServerSeedHash === undefined
+    ) {
+      return undefined
+    }
     return {
       serverSeed: this.pendingServerSeed,
       serverSeedHash: this.pendingServerSeedHash,
@@ -203,6 +346,10 @@ export class BlackjackBotStateStore {
     serverSeed: string,
     serverSeedHash: string,
   ): Promise<void> {
+    validateCommitment(
+      { serverSeed, serverSeedHash },
+      'pending server seed commitment',
+    )
     await this.serializeMutation(async () => {
       await (this.db as any).batch([
         {
@@ -222,12 +369,14 @@ export class BlackjackBotStateStore {
   }
 
   getGame(gameId: string): BlackjackGameRecord | undefined {
-    return this.games.get(gameId)
+    return this.games.get(normalizeBlackjackGameId(gameId))
   }
 
   async setGame(gameId: string, record: BlackjackGameRecord): Promise<void> {
+    const normalizedGameId = normalizeBlackjackGameId(gameId)
+    validateCommitment(record, `game ${normalizedGameId} server seed commitment`)
     await this.serializeMutation(async () => {
-      const existing = this.games.get(gameId)
+      const existing = this.games.get(normalizedGameId)
       if (!existing) {
         throw new Error('a blackjack game must be created with its wager claim')
       }
@@ -247,8 +396,11 @@ export class BlackjackBotStateStore {
       ) {
         throw new Error('cannot move blackjack game state backwards')
       }
-      await this.db.put(GAME_PREFIX + gameId, serializeGameRecord(record))
-      this.games.set(gameId, freezeGameRecord(record))
+      await this.db.put(
+        GAME_PREFIX + normalizedGameId,
+        serializeGameRecord(record),
+      )
+      this.games.set(normalizedGameId, freezeGameRecord(record))
     })
   }
 
@@ -265,7 +417,18 @@ export class BlackjackBotStateStore {
         reason: 'game_exists' | 'wager_claimed' | 'commitment_changed'
       }
   > {
+    const gameId = normalizeBlackjackGameId(params.gameId)
+    void this.db
     const wagerTxHash = normalizeWagerTxHash(params.wagerTxHash)
+    validateCommitment(params.expectedCommitment, 'expected server seed commitment')
+    validateCommitment(params.nextCommitment, 'next server seed commitment')
+    validateCommitment(params.record, `game ${gameId} server seed commitment`)
+    if (
+      params.record.serverSeed !== params.expectedCommitment.serverSeed ||
+      params.record.serverSeedHash !== params.expectedCommitment.serverSeedHash
+    ) {
+      throw new Error('game commitment does not match the expected commitment')
+    }
     if (params.record.wagerTxHash !== wagerTxHash) {
       throw new Error('game wager hash does not match its wager claim')
     }
@@ -280,7 +443,19 @@ export class BlackjackBotStateStore {
     }
 
     return this.serializeMutation(async () => {
-      if (this.games.has(params.gameId)) {
+      if (
+        this.pendingServerSeed !== undefined &&
+        this.pendingServerSeedHash !== undefined
+      ) {
+        validateCommitment(
+          {
+            serverSeed: this.pendingServerSeed,
+            serverSeedHash: this.pendingServerSeedHash,
+          },
+          'pending server seed commitment',
+        )
+      }
+      if (this.games.has(gameId)) {
         return { ok: false as const, reason: 'game_exists' as const }
       }
       if (this.wagerClaims.has(wagerTxHash)) {
@@ -300,11 +475,11 @@ export class BlackjackBotStateStore {
         {
           type: 'put',
           key: WAGER_CLAIM_PREFIX + wagerTxHash,
-          value: JSON.stringify({ gameId: params.gameId }),
+          value: JSON.stringify({ gameId }),
         },
         {
           type: 'put',
-          key: GAME_PREFIX + params.gameId,
+          key: GAME_PREFIX + gameId,
           value: serializeGameRecord(params.record),
         },
         {
@@ -318,8 +493,8 @@ export class BlackjackBotStateStore {
           value: JSON.stringify(params.nextCommitment.serverSeedHash),
         },
       ])
-      this.wagerClaims.set(wagerTxHash, params.gameId)
-      this.games.set(params.gameId, freezeGameRecord(params.record))
+      this.wagerClaims.set(wagerTxHash, gameId)
+      this.games.set(gameId, freezeGameRecord(params.record))
       this.pendingServerSeed = params.nextCommitment.serverSeed
       this.pendingServerSeedHash = params.nextCommitment.serverSeedHash
       return { ok: true as const }

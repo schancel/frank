@@ -1,3 +1,4 @@
+import { createHash } from 'crypto'
 import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
@@ -6,11 +7,17 @@ import level from 'level'
 import {
   BlackjackBotStateStore,
   BlackjackGameRecord,
+  MAX_BLACKJACK_GAME_ID_BYTES,
   normalizeWagerTxHash,
 } from './blackjack-bot-state'
 
 const PLAYER = '0x1111111111111111111111111111111111111111'
 const WAGER_HASH = `0x${'AB'.repeat(32)}`
+const OTHER_WAGER_HASH = `0x${'CD'.repeat(32)}`
+
+function hashSeed(seed: string): string {
+  return createHash('sha256').update(seed).digest('hex')
+}
 
 function gameRecord(
   wagerTxHash = normalizeWagerTxHash(WAGER_HASH),
@@ -18,7 +25,7 @@ function gameRecord(
   return {
     authority: 'verified-wager-sender',
     serverSeed: 'committed-seed',
-    serverSeedHash: 'committed-hash',
+    serverSeedHash: hashSeed('committed-seed'),
     wagerTxHash,
     wagerWei: 100n,
     playerAddress: PLAYER,
@@ -49,21 +56,28 @@ describe('BlackjackBotStateStore wager authority', () => {
   }
 
   async function seedStore(store: BlackjackBotStateStore) {
-    await store.setPendingCommitment('committed-seed', 'committed-hash')
+    await store.setPendingCommitment(
+      'committed-seed',
+      hashSeed('committed-seed'),
+    )
   }
 
-  function claim(store: BlackjackBotStateStore, gameId: string) {
+  function claim(
+    store: BlackjackBotStateStore,
+    gameId: string,
+    wagerTxHash = WAGER_HASH,
+  ) {
     return store.claimWagerAndCreateGame({
       gameId,
-      wagerTxHash: WAGER_HASH,
-      record: gameRecord(),
+      wagerTxHash,
+      record: gameRecord(normalizeWagerTxHash(wagerTxHash)),
       expectedCommitment: {
         serverSeed: 'committed-seed',
-        serverSeedHash: 'committed-hash',
+        serverSeedHash: hashSeed('committed-seed'),
       },
       nextCommitment: {
         serverSeed: 'next-seed',
-        serverSeedHash: 'next-hash',
+        serverSeedHash: hashSeed('next-seed'),
       },
     })
   }
@@ -82,7 +96,7 @@ describe('BlackjackBotStateStore wager authority', () => {
     expect(store.getGame('game-b')).toBeUndefined()
     expect(store.getPendingCommitment()).toEqual({
       serverSeed: 'next-seed',
-      serverSeedHash: 'next-hash',
+      serverSeedHash: hashSeed('next-seed'),
     })
   })
 
@@ -102,6 +116,21 @@ describe('BlackjackBotStateStore wager authority', () => {
     expect(
       [store.getGame('game-a'), store.getGame('game-b')].filter(Boolean),
     ).toHaveLength(1)
+  })
+
+  it('allows only one of two different wagers sharing a stale commitment', async () => {
+    const store = await openStore()
+    await seedStore(store)
+
+    const results = await Promise.all([
+      claim(store, 'game-a', WAGER_HASH),
+      claim(store, 'game-b', OTHER_WAGER_HASH),
+    ])
+
+    expect(results.filter((result) => result.ok)).toHaveLength(1)
+    expect(results.filter((result) => !result.ok)).toEqual([
+      { ok: false, reason: 'commitment_changed' },
+    ])
   })
 
   it('rejects a replay after restart without rotating the pending commitment', async () => {
@@ -161,6 +190,163 @@ describe('BlackjackBotStateStore wager authority', () => {
       ok: false,
       reason: 'wager_claimed',
     })
+
+    await store.Close()
+    stores = []
+    const restarted = await openStore()
+    expect(restarted.getGame('legacy-game')).toMatchObject({
+      authority: 'legacy-unverified',
+      revealed: true,
+    })
+  })
+
+  it.each([
+    ['object', {}],
+    ['empty', ''],
+    ['oversized', 'x'.repeat(MAX_BLACKJACK_GAME_ID_BYTES + 1)],
+  ])(
+    'rejects a %s gameId without consuming the wager or commitment',
+    async (_label, invalidGameId) => {
+      const store = await openStore()
+      await seedStore(store)
+      const pendingBefore = store.getPendingCommitment()
+
+      await expect(
+        claim(store, invalidGameId as string),
+      ).rejects.toThrow('gameId')
+      expect(store.getPendingCommitment()).toEqual(pendingBefore)
+      await store.Close()
+      stores = []
+
+      const restarted = await openStore()
+      await expect(claim(restarted, 'valid-game')).resolves.toEqual({
+        ok: true,
+      })
+    },
+  )
+
+  it('quarantines an invalid persisted gameId without blocking valid state on later opens', async () => {
+    const raw = level(join(directory, 'blackjack-bot-state'))
+    await raw.batch([
+      {
+        type: 'put',
+        key: '__pending_server_seed__',
+        value: JSON.stringify('committed-seed'),
+      },
+      {
+        type: 'put',
+        key: '__pending_server_seed_hash__',
+        value: JSON.stringify(hashSeed('committed-seed')),
+      },
+      {
+        type: 'put',
+        key: 'game:valid-game',
+        value: JSON.stringify({
+          ...gameRecord(normalizeWagerTxHash(OTHER_WAGER_HASH)),
+          wagerWei: '100',
+        }),
+      },
+      {
+        type: 'put',
+        key: 'game:',
+        value: JSON.stringify({ ...gameRecord(), wagerWei: '100' }),
+      },
+    ])
+    await raw.close()
+
+    const store = await openStore()
+    expect(store.getGame('valid-game')).toBeDefined()
+    await expect(claim(store, 'replacement-game')).resolves.toEqual({
+      ok: false,
+      reason: 'wager_claimed',
+    })
+    await store.Close()
+    stores = []
+
+    const restarted = await openStore()
+    expect(restarted.getGame('valid-game')).toBeDefined()
+  })
+
+  it('fails closed on a torn pending commitment and can reopen after repair', async () => {
+    const raw = level(join(directory, 'blackjack-bot-state'))
+    await raw.batch([
+      {
+        type: 'put',
+        key: '__pending_server_seed__',
+        value: JSON.stringify('seed-b'),
+      },
+      {
+        type: 'put',
+        key: '__pending_server_seed_hash__',
+        value: JSON.stringify(hashSeed('seed-a')),
+      },
+    ])
+    await raw.close()
+
+    const poisoned = new BlackjackBotStateStore(directory)
+    await expect(poisoned.Open()).rejects.toThrow(
+      'pending server seed commitment hash mismatch',
+    )
+    await expect(claim(poisoned, 'must-not-open')).rejects.toThrow(
+      'No db opened',
+    )
+
+    const repair = level(join(directory, 'blackjack-bot-state'))
+    await repair.put(
+      '__pending_server_seed_hash__',
+      JSON.stringify(hashSeed('seed-b')),
+    )
+    await repair.close()
+
+    const restored = await openStore()
+    expect(restored.getPendingCommitment()).toEqual({
+      serverSeed: 'seed-b',
+      serverSeedHash: hashSeed('seed-b'),
+    })
+    await expect(
+      restored.claimWagerAndCreateGame({
+        gameId: 'restored-game',
+        wagerTxHash: WAGER_HASH,
+        record: {
+          ...gameRecord(),
+          serverSeed: 'seed-b',
+          serverSeedHash: hashSeed('seed-b'),
+        },
+        expectedCommitment: {
+          serverSeed: 'seed-b',
+          serverSeedHash: hashSeed('seed-b'),
+        },
+        nextCommitment: {
+          serverSeed: 'seed-c',
+          serverSeedHash: hashSeed('seed-c'),
+        },
+      }),
+    ).resolves.toEqual({ ok: true })
+  })
+
+  it('rejects invalid commitments at mutation boundaries without state changes', async () => {
+    const store = await openStore()
+    await expect(
+      store.setPendingCommitment('committed-seed', hashSeed('other-seed')),
+    ).rejects.toThrow('pending server seed commitment hash mismatch')
+    expect(store.getPendingCommitment()).toBeUndefined()
+
+    await seedStore(store)
+    const pendingBefore = store.getPendingCommitment()
+    await expect(
+      store.claimWagerAndCreateGame({
+        gameId: 'game-a',
+        wagerTxHash: WAGER_HASH,
+        record: gameRecord(),
+        expectedCommitment: pendingBefore!,
+        nextCommitment: {
+          serverSeed: 'next-seed',
+          serverSeedHash: hashSeed('not-next-seed'),
+        },
+      }),
+    ).rejects.toThrow('next server seed commitment hash mismatch')
+    expect(store.getGame('game-a')).toBeUndefined()
+    expect(store.getPendingCommitment()).toEqual(pendingBefore)
   })
 
   it('rejects malformed transaction hashes before they can become durable keys', () => {

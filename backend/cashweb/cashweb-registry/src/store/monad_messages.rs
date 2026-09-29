@@ -65,6 +65,45 @@ fn by_recipient_time_key(recipient: &Address, timestamp: i64, payload_hash: &[u8
     .concat()
 }
 
+const MAILBOX_AUTH_EXACT_PREFIX: &[u8] = b"\xffmailbox-auth-used-v1\0";
+const MAILBOX_AUTH_EXPIRY_PREFIX: &[u8] = b"\xffmailbox-auth-expiry-v1\0";
+const MAILBOX_AUTH_GC_BATCH: usize = 256;
+
+fn mailbox_auth_exact_key(epoch: &[u8; 32], recipient: &Address, nonce: &[u8; 32]) -> Vec<u8> {
+    [
+        MAILBOX_AUTH_EXACT_PREFIX,
+        epoch.as_slice(),
+        recipient.0.as_slice(),
+        nonce.as_slice(),
+    ]
+    .concat()
+}
+
+fn mailbox_auth_recipient_prefix(epoch: &[u8; 32], recipient: &Address) -> Vec<u8> {
+    [
+        MAILBOX_AUTH_EXACT_PREFIX,
+        epoch.as_slice(),
+        recipient.0.as_slice(),
+    ]
+    .concat()
+}
+
+fn mailbox_auth_expiry_key(
+    expires_at_ms: i64,
+    epoch: &[u8; 32],
+    recipient: &Address,
+    nonce: &[u8; 32],
+) -> Vec<u8> {
+    [
+        MAILBOX_AUTH_EXPIRY_PREFIX,
+        expires_at_ms.to_be_bytes().as_slice(),
+        epoch.as_slice(),
+        recipient.0.as_slice(),
+        nonce.as_slice(),
+    ]
+    .concat()
+}
+
 /// Strict-forward cursor for the recipient journal's composite `(timestamp, payload_hash)` order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RecipientMessageCursor {
@@ -125,6 +164,10 @@ pub enum MonadMessageAttemptClaim {
 /// Errors indicating some Monad-message store error.
 #[derive(Debug, Error, ErrorMeta, PartialEq, Eq)]
 pub enum DbMonadMessagesError {
+    /// Durable mailbox replay authority has an invalid fixed-width key or value.
+    #[critical()]
+    #[error("Inconsistent db: malformed mailbox authentication replay record")]
+    CorruptMailboxAuthRecord,
     /// Database contains an invalid protobuf `StoredMonadMessage`.
     #[critical()]
     #[error("Inconsistent db: Cannot decode StoredMonadMessage: {0}")]
@@ -290,6 +333,124 @@ impl<'a> DbMonadMessages<'a> {
         payload_hash: &[u8],
     ) {
         batch.delete_cf(self.cf_monad_message_attempts, payload_hash);
+    }
+
+    /// Atomically consume one recipient-authenticated mailbox challenge.
+    ///
+    /// Exact unexpired records are durable replay authority and are never evicted. The cap is
+    /// scoped only to this recipient and runtime epoch, so unrelated authenticated principals
+    /// cannot make the recipient fail closed. Expiry-index cleanup is bounded per call; exact
+    /// records remain authoritative even when their cleanup entry has not yet been visited.
+    pub fn consume_mailbox_challenge(
+        &self,
+        epoch: [u8; 32],
+        recipient: Address,
+        nonce: [u8; 32],
+        expires_at_ms: i64,
+        now_ms: i64,
+        per_recipient_cap: usize,
+    ) -> Result<bool> {
+        if expires_at_ms < now_ms || per_recipient_cap == 0 {
+            return Ok(false);
+        }
+        let _guard = self.db.lock_monad_outbox();
+        let exact_key = mailbox_auth_exact_key(&epoch, &recipient, &nonce);
+        let mut batch = rocksdb::WriteBatch::default();
+
+        if let Some(existing) = self.db.get(self.cf_monad_message_attempts, &exact_key)? {
+            let existing_expiry = existing
+                .as_ref()
+                .try_into()
+                .map(i64::from_be_bytes)
+                .map_err(|_| DbMonadMessagesError::CorruptMailboxAuthRecord)?;
+            if existing_expiry >= now_ms {
+                return Ok(false);
+            }
+            batch.delete_cf(self.cf_monad_message_attempts, &exact_key);
+            batch.delete_cf(
+                self.cf_monad_message_attempts,
+                mailbox_auth_expiry_key(existing_expiry, &epoch, &recipient, &nonce),
+            );
+        }
+
+        let expiry_prefix = MAILBOX_AUTH_EXPIRY_PREFIX;
+        let mut cleaned = 0usize;
+        for item in self.db.rocksdb().iterator_cf(
+            self.cf_monad_message_attempts,
+            IteratorMode::From(expiry_prefix, Direction::Forward),
+        ) {
+            let (key, _) = item?;
+            if !key.starts_with(expiry_prefix) || cleaned == MAILBOX_AUTH_GC_BATCH {
+                break;
+            }
+            let expiry_start = expiry_prefix.len();
+            let expiry_end = expiry_start + 8;
+            let expiry = key
+                .get(expiry_start..expiry_end)
+                .and_then(|bytes| bytes.try_into().ok())
+                .map(i64::from_be_bytes)
+                .ok_or(DbMonadMessagesError::CorruptMailboxAuthRecord)?;
+            if expiry >= now_ms {
+                break;
+            }
+            let suffix = key
+                .get(expiry_end..)
+                .ok_or(DbMonadMessagesError::CorruptMailboxAuthRecord)?;
+            if suffix.len() != 32 + 20 + 32 {
+                return Err(DbMonadMessagesError::CorruptMailboxAuthRecord.into());
+            }
+            let stale_exact = [MAILBOX_AUTH_EXACT_PREFIX, suffix].concat();
+            batch.delete_cf(self.cf_monad_message_attempts, stale_exact);
+            batch.delete_cf(self.cf_monad_message_attempts, key);
+            cleaned += 1;
+        }
+
+        let recipient_prefix = mailbox_auth_recipient_prefix(&epoch, &recipient);
+        let mut active = 0usize;
+        for item in self.db.rocksdb().iterator_cf(
+            self.cf_monad_message_attempts,
+            IteratorMode::From(&recipient_prefix, Direction::Forward),
+        ) {
+            let (key, value) = item?;
+            if !key.starts_with(&recipient_prefix) {
+                break;
+            }
+            let stored_expiry = value
+                .as_ref()
+                .try_into()
+                .map(i64::from_be_bytes)
+                .map_err(|_| DbMonadMessagesError::CorruptMailboxAuthRecord)?;
+            if stored_expiry < now_ms {
+                let stale_nonce: [u8; 32] = key
+                    .get(recipient_prefix.len()..)
+                    .and_then(|bytes| bytes.try_into().ok())
+                    .ok_or(DbMonadMessagesError::CorruptMailboxAuthRecord)?;
+                batch.delete_cf(self.cf_monad_message_attempts, key);
+                batch.delete_cf(
+                    self.cf_monad_message_attempts,
+                    mailbox_auth_expiry_key(stored_expiry, &epoch, &recipient, &stale_nonce),
+                );
+            } else {
+                active += 1;
+                if active >= per_recipient_cap {
+                    self.db.write_batch(batch)?;
+                    return Ok(false);
+                }
+            }
+        }
+
+        batch.put_cf(
+            self.cf_monad_message_attempts,
+            &exact_key,
+            expires_at_ms.to_be_bytes(),
+        );
+        batch.put_cf(
+            self.cf_monad_message_attempts,
+            mailbox_auth_expiry_key(expires_at_ms, &epoch, &recipient, &nonce),
+            [],
+        );
+        self.db.write_batch(batch)?;
+        Ok(true)
     }
 
     /// Store a [`proto::StoredMonadMessage`], keyed by its inner message's `payload_hash`, and
@@ -908,6 +1069,42 @@ mod tests {
             err.downcast_ref::<super::DbMonadMessagesError>(),
             Some(super::DbMonadMessagesError::RecordExceedsPageBudget { .. })
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn durable_mailbox_replay_authority_never_evicts_an_unexpired_victim() -> Result<()> {
+        let tempdir = tempdir::TempDir::new("cashweb-registry-store--mailbox-replay")?;
+        let path = tempdir.path().join("db.rocksdb");
+        let epoch = [0x11; 32];
+        let victim = Address([0xff; 20]);
+        let nonce = [0x22; 32];
+        {
+            let db = Db::open(&path)?;
+            let store = db.monad_messages();
+            assert!(store.consume_mailbox_challenge(epoch, victim, nonce, 10_000, 1, 2)?);
+            for index in 0..512u64 {
+                let mut address = [0u8; 20];
+                address[..8].copy_from_slice(&index.to_be_bytes());
+                assert!(store.consume_mailbox_challenge(
+                    epoch,
+                    Address(address),
+                    [index as u8; 32],
+                    10_000,
+                    2,
+                    2,
+                )?);
+            }
+            assert!(!store.consume_mailbox_challenge(epoch, victim, nonce, 10_000, 3, 2)?);
+            assert!(store.consume_mailbox_challenge(epoch, victim, [0x23; 32], 10_000, 3, 2)?);
+            assert!(!store.consume_mailbox_challenge(epoch, victim, [0x24; 32], 10_000, 3, 2)?);
+        }
+        {
+            let db = Db::open(&path)?;
+            let store = db.monad_messages();
+            assert!(!store.consume_mailbox_challenge(epoch, victim, nonce, 10_000, 4, 2)?);
+            assert!(store.consume_mailbox_challenge(epoch, victim, nonce, 20_000, 10_001, 2)?);
+        }
         Ok(())
     }
 }

@@ -1,9 +1,6 @@
 //! Process-owned configuration and authorization state for durable Monad direct messages.
 
-use std::{
-    collections::HashMap,
-    sync::{Arc, Mutex},
-};
+use std::sync::Arc;
 
 use hmac::{Hmac, Mac};
 use rand::RngCore;
@@ -18,8 +15,7 @@ use crate::{
 type HmacSha256 = Hmac<Sha256>;
 
 const CHALLENGE_TTL_MS: i64 = 60_000;
-const MAX_REPLAY_RECIPIENTS: usize = 256;
-const MAX_USED_CHALLENGES_PER_RECIPIENT: usize = 8;
+pub(crate) const MAX_USED_CHALLENGES_PER_RECIPIENT: usize = 8;
 const CHALLENGE_MAC_DOMAIN: &[u8] = b"frank:mailbox-challenge-mac:v1\0";
 const CURSOR_MAC_DOMAIN: &[u8] = b"frank:mailbox-cursor-mac:v1\0";
 const CURSOR_VERSION: u8 = 1;
@@ -148,31 +144,10 @@ pub struct MailboxChallenge {
     pub token: [u8; 32],
 }
 
-#[derive(Debug, Clone, Copy)]
-struct UsedChallenge {
-    expires_at_ms: i64,
-}
-
-#[derive(Debug, Default)]
-struct RecipientReplayState {
-    nonces: HashMap<[u8; 32], UsedChallenge>,
-    last_used: u64,
-}
-
-#[derive(Debug, Default)]
-struct ReplayState {
-    recipients: HashMap<Address, RecipientReplayState>,
-    sequence: u64,
-}
-
 #[derive(Debug)]
 struct MailboxAuthState {
     epoch: [u8; 32],
     secret: [u8; 32],
-    // Anonymous issuance is stateless. Successful uses occupy at most 256 recipient buckets with
-    // eight nonces each. Expired buckets are collected first; a new authenticated principal
-    // evicts the least-recently-used bucket rather than being rejected by unrelated principals.
-    used: Mutex<ReplayState>,
 }
 
 impl MailboxAuthState {
@@ -181,11 +156,7 @@ impl MailboxAuthState {
         let mut secret = [0; 32];
         rand::thread_rng().fill_bytes(&mut epoch);
         rand::thread_rng().fill_bytes(&mut secret);
-        Self {
-            epoch,
-            secret,
-            used: Mutex::new(ReplayState::default()),
-        }
+        Self { epoch, secret }
     }
 
     fn challenge_preimage(
@@ -236,70 +207,6 @@ impl MailboxAuthState {
         };
         mac.update(&self.challenge_preimage(binding, challenge.nonce, challenge.expires_at_ms));
         mac.verify_slice(&challenge.token).is_ok()
-    }
-
-    fn mark_used_after_recipient_auth(
-        &self,
-        recipient: Address,
-        challenge: MailboxChallenge,
-        now_ms: i64,
-    ) -> bool {
-        if challenge.epoch != self.epoch || challenge.expires_at_ms < now_ms {
-            return false;
-        }
-        let mut replay = self
-            .used
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        replay.recipients.retain(|_, state| {
-            state
-                .nonces
-                .retain(|_, entry| entry.expires_at_ms >= now_ms);
-            !state.nonces.is_empty()
-        });
-        replay.sequence = replay.sequence.wrapping_add(1);
-        let sequence = replay.sequence;
-        if let Some(state) = replay.recipients.get_mut(&recipient) {
-            if state.nonces.contains_key(&challenge.nonce)
-                || state.nonces.len() >= MAX_USED_CHALLENGES_PER_RECIPIENT
-            {
-                return false;
-            }
-            state.last_used = sequence;
-            state.nonces.insert(
-                challenge.nonce,
-                UsedChallenge {
-                    expires_at_ms: challenge.expires_at_ms,
-                },
-            );
-            return true;
-        }
-        if replay.recipients.len() >= MAX_REPLAY_RECIPIENTS {
-            if let Some(oldest) = replay
-                .recipients
-                .iter()
-                .min_by_key(|(_, state)| state.last_used)
-                .map(|(recipient, _)| *recipient)
-            {
-                replay.recipients.remove(&oldest);
-            }
-        }
-        if replay.recipients.len() >= MAX_REPLAY_RECIPIENTS {
-            return false;
-        }
-        replay.recipients.insert(
-            recipient,
-            RecipientReplayState {
-                nonces: HashMap::from([(
-                    challenge.nonce,
-                    UsedChallenge {
-                        expires_at_ms: challenge.expires_at_ms,
-                    },
-                )]),
-                last_used: sequence,
-            },
-        );
-        true
     }
 
     fn encode_cursor(&self, recipient: Address, cursor: MailboxCursor) -> String {
@@ -435,17 +342,6 @@ impl EnabledMonadMailboxRuntime {
         self.auth.verify(binding, challenge, now_ms)
     }
 
-    /// Record one nonce only after its registered recipient signature was accepted.
-    pub(crate) fn mark_challenge_used(
-        &self,
-        recipient: Address,
-        challenge: MailboxChallenge,
-        now_ms: i64,
-    ) -> bool {
-        self.auth
-            .mark_used_after_recipient_auth(recipient, challenge, now_ms)
-    }
-
     /// Encode a process-authenticated strict-forward private cursor.
     pub(crate) fn encode_cursor(&self, recipient: Address, cursor: MailboxCursor) -> String {
         self.auth.encode_cursor(recipient, cursor)
@@ -502,8 +398,6 @@ mod tests {
         let challenge = enabled.issue_challenge(&request, 1_000);
         assert!(enabled.verify_challenge(&request, challenge, 1_001));
         assert!(!enabled.verify_challenge(&binding(Address([2; 20])), challenge, 1_001));
-        assert!(enabled.mark_challenge_used(recipient, challenge, 1_001));
-        assert!(!enabled.mark_challenge_used(recipient, challenge, 1_001));
 
         let expired = enabled.issue_challenge(&request, 2_000);
         assert!(!enabled.verify_challenge(&request, expired, expired.expires_at_ms + 1));
@@ -515,59 +409,10 @@ mod tests {
         let enabled = runtime.as_enabled().unwrap();
         let recipient = Address([3; 20]);
         let request = binding(recipient);
-        for _ in 0..(MAX_REPLAY_RECIPIENTS * MAX_USED_CHALLENGES_PER_RECIPIENT * 2) {
+        for _ in 0..4096 {
             let challenge = enabled.issue_challenge(&request, 0);
             assert!(enabled.verify_challenge(&request, challenge, 0));
         }
-        assert!(enabled
-            .auth
-            .used
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .recipients
-            .is_empty());
-
-        for _ in 0..MAX_USED_CHALLENGES_PER_RECIPIENT {
-            let challenge = enabled.issue_challenge(&request, 0);
-            assert!(enabled.mark_challenge_used(recipient, challenge, 0));
-        }
-        let over = enabled.issue_challenge(&request, 0);
-        assert!(!enabled.mark_challenge_used(recipient, over, 0));
-    }
-
-    #[test]
-    fn authenticated_replay_state_is_bounded_without_cross_recipient_rejection() {
-        let runtime = runtime();
-        let enabled = runtime.as_enabled().unwrap();
-        let victim = Address([0xff; 20]);
-        let victim_challenge = enabled.issue_challenge(&binding(victim), 0);
-        assert!(enabled.mark_challenge_used(victim, victim_challenge, 0));
-        for recipient_index in 0..128 {
-            let mut address = [0u8; 20];
-            address[..8].copy_from_slice(&(recipient_index as u64).to_be_bytes());
-            let recipient = Address(address);
-            let request = binding(recipient);
-            let challenge = enabled.issue_challenge(&request, 0);
-            assert!(enabled.mark_challenge_used(recipient, challenge, 0));
-        }
-        assert!(!enabled.mark_challenge_used(victim, victim_challenge, 0));
-        for recipient_index in 128..(MAX_REPLAY_RECIPIENTS + 64) {
-            let mut address = [0u8; 20];
-            address[..8].copy_from_slice(&(recipient_index as u64).to_be_bytes());
-            let recipient = Address(address);
-            let challenge = enabled.issue_challenge(&binding(recipient), 0);
-            assert!(enabled.mark_challenge_used(recipient, challenge, 0));
-        }
-        assert!(
-            enabled
-                .auth
-                .used
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .recipients
-                .len()
-                <= MAX_REPLAY_RECIPIENTS
-        );
     }
 
     #[test]

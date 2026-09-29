@@ -190,7 +190,7 @@ where
         }
         MonadOutboxLifecycle::FullyConfirmed => {
             if let Err(err) =
-                validate_persisted_record(&record, payload_hash, config.expected_chain_id)
+                validate_persisted_record(registry, &record, payload_hash, config.expected_chain_id)
             {
                 let transition = registry.terminal_monad_outbox_claim(
                     payload_hash,
@@ -217,7 +217,12 @@ where
         MonadOutboxLifecycle::Pending => {}
     }
 
-    let message = match validate_persisted_record(&record, payload_hash, config.expected_chain_id) {
+    let message = match validate_persisted_record(
+        registry,
+        &record,
+        payload_hash,
+        config.expected_chain_id,
+    ) {
         Ok(message) => message,
         Err(err) => {
             let transition = registry.terminal_monad_outbox_claim(
@@ -496,6 +501,7 @@ where
 }
 
 fn validate_persisted_record(
+    registry: &Registry,
     record: &crate::store::monad_outbox::MonadOutboxRecord,
     payload_hash: &[u8],
     expected_chain_id: u64,
@@ -506,7 +512,52 @@ fn validate_persisted_record(
         bail!("persisted canonical request uses a noncanonical protobuf encoding");
     }
     validate_persisted_message(&message, payload_hash, expected_chain_id)?;
+    let policy = record.policy.as_ref().ok_or_else(|| {
+        crate::store::monad_outbox::DbMonadOutboxError::CorruptRecord(
+            "active outbox row has no frozen policy".to_string(),
+        )
+    })?;
+    let key: [u8; 32] = payload_hash.try_into().expect("validated payload hash");
+    for payment in &message.stamp_payments {
+        let (loaded_record, member, raw_tx) =
+            registry.monad_outbox_referenced_raw_tx(payload_hash, payment.child_index)?;
+        if loaded_record.canonical_message != record.canonical_message
+            || loaded_record.policy != record.policy
+            || raw_tx != payment.raw_tx
+        {
+            bail!("persisted member references a different canonical owner");
+        }
+        let decoded = decode_signed_transaction(&raw_tx)
+            .wrap_err("decoding persisted referenced signed payment")?;
+        let expected_destination =
+            derive_monad_stamp_child_public(key, &policy.recipient_pubkey, payment.child_index)?;
+        if decoded.destination != Some(crate::monad_http::Address(expected_destination.address)) {
+            bail!("persisted payment destination differs from frozen recipient derivation");
+        }
+        if decoded.value_wei == 0 {
+            bail!("persisted payment has zero signed value");
+        }
+        if let MonadOutboxMemberState::Confirmed { value_wei, .. } = member.state {
+            if value_wei != decoded.value_wei {
+                bail!("persisted confirmation value differs from signed transaction value");
+            }
+        }
+    }
     Ok(message)
+}
+
+/// Validate one private recovery row against its canonical owner and every member reference.
+pub(crate) fn validate_monad_recovery_record(
+    registry: &Registry,
+    payload_hash: &[u8],
+    expected_chain_id: u64,
+) -> Result<()> {
+    let record = registry.monad_outbox_record(payload_hash)?.ok_or_else(|| {
+        crate::store::monad_outbox::DbMonadOutboxError::CorruptRecord(
+            "recovery row references missing outbox".to_string(),
+        )
+    })?;
+    validate_persisted_record(registry, &record, payload_hash, expected_chain_id).map(|_| ())
 }
 
 fn validate_persisted_message(
@@ -576,9 +627,12 @@ fn current_outcome(
                 MonadOutboxReconcileOutcome::Terminal(terminal)
             }
             MonadOutboxLifecycle::FullyConfirmed => {
-                if let Err(err) =
-                    validate_persisted_record(&record, payload_hash, config.expected_chain_id)
-                {
+                if let Err(err) = validate_persisted_record(
+                    registry,
+                    &record,
+                    payload_hash,
+                    config.expected_chain_id,
+                ) {
                     let transition = registry.terminal_monad_outbox_claim(
                         payload_hash,
                         MonadOutboxTerminal::CorruptReference,
@@ -937,6 +991,9 @@ where
 {
     config.validate()?;
     registry.gc_monad_outbox_history(now_ms(), &config.limits)?;
+    registry
+        .supersede_monad_outbox_startup_leases(now_ms())
+        .wrap_err("initial Monad outbox reconciliation failed during stale-lease supersession")?;
     // Readiness is intentionally after this bounded initial scan. Each exact RPC, claim, active
     // cardinality, and concurrency dimension has a finite configured ceiling.
     tokio::time::timeout(
@@ -2025,6 +2082,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn startup_supersedes_prior_process_lease_before_readiness() -> Result<()> {
+        let tempdir = tempdir::TempDir::new("monad-outbox-startup-stale-lease")?;
+        let path = tempdir.path().join("db.rocksdb");
+        let (request, policy, transport) = fixture(&[SendBehavior::Accept], &[true]);
+        let config = fast_config();
+        {
+            let registry = registry(&path);
+            registry.claim_monad_outbox(&request, &policy, now_ms(), &config.limits)?;
+            match registry.acquire_monad_outbox_reconcile_lease(
+                &request.payload_hash,
+                0,
+                now_ms(),
+                &config.limits,
+            )? {
+                MonadOutboxLeaseAcquire::Acquired { .. } => {}
+                other => panic!("expected stale startup lease, got {other:?}"),
+            }
+        };
+        let registry = Arc::new(registry(&path));
+        let worker = start_monad_outbox_worker(transport, Arc::clone(&registry), config).await?;
+        assert!(registry.get_monad_message(&request.payload_hash)?.is_some());
+        assert!(registry
+            .monad_outbox_member(&request.payload_hash, 0)?
+            .is_none());
+        worker.shutdown().await;
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn initial_recovery_propagates_per_claim_corruption_before_readiness() -> Result<()> {
         let tempdir = tempdir::TempDir::new("monad-outbox-readiness-corrupt")?;
         let path = tempdir.path().join("db.rocksdb");
@@ -2080,6 +2166,41 @@ mod tests {
                 .lifecycle,
             MonadOutboxLifecycle::Terminal(MonadOutboxTerminal::CorruptReference)
         ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn confirmed_member_value_is_revalidated_from_exact_signed_bytes_before_finalize(
+    ) -> Result<()> {
+        let tempdir = tempdir::TempDir::new("monad-outbox-confirmed-value-corruption")?;
+        let registry = registry(&tempdir.path().join("db.rocksdb"));
+        let (request, policy, transport) = fixture(&[SendBehavior::Accept], &[true]);
+        let config = fast_config();
+        registry.claim_monad_outbox(&request, &policy, now_ms(), &config.limits)?;
+        let lease = match registry.acquire_monad_outbox_reconcile_lease(
+            &request.payload_hash,
+            0,
+            now_ms(),
+            &config.limits,
+        )? {
+            MonadOutboxLeaseAcquire::Acquired { lease, .. } => lease,
+            other => panic!("expected corruption fixture lease, got {other:?}"),
+        };
+        registry.complete_confirmed_monad_outbox_member(
+            &request.payload_hash,
+            0,
+            lease,
+            11,
+            7,
+            now_ms(),
+        )?;
+        assert!(registry.mark_monad_outbox_fully_confirmed(&request.payload_hash, now_ms())?);
+        assert_eq!(
+            reconcile_monad_outbox(&transport, &registry, &request.payload_hash, &config).await?,
+            MonadOutboxReconcileOutcome::Terminal(MonadOutboxTerminal::CorruptReference)
+        );
+        assert!(transport.calls().is_empty());
+        assert!(registry.get_monad_message(&request.payload_hash)?.is_none());
         Ok(())
     }
 

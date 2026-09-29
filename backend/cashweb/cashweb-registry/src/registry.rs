@@ -602,6 +602,11 @@ impl Registry {
         self.db.monad_outbox().list_active_after(after, limit)
     }
 
+    /// Supersede durable member leases left by the prior process before readiness.
+    pub(crate) fn supersede_monad_outbox_startup_leases(&self, now_ms: i64) -> Result<()> {
+        self.db.monad_outbox().supersede_startup_leases(now_ms)
+    }
+
     /// Enforce configured compact-history bounds independently of new claim transitions.
     pub(crate) fn gc_monad_outbox_history(
         &self,
@@ -850,6 +855,26 @@ impl Registry {
         signature: &[u8],
     ) -> Result<bool> {
         self.verify_monad_recipient_signature_observed(recipient, digest, signature, || {})
+    }
+
+    /// Atomically persist one successfully authenticated mailbox challenge as consumed.
+    pub(crate) fn consume_monad_mailbox_challenge(
+        &self,
+        epoch: [u8; 32],
+        recipient: Address,
+        nonce: [u8; 32],
+        expires_at_ms: i64,
+        now_ms: i64,
+        per_recipient_cap: usize,
+    ) -> Result<bool> {
+        self.db.monad_messages().consume_mailbox_challenge(
+            epoch,
+            recipient,
+            nonce,
+            expires_at_ms,
+            now_ms,
+            per_recipient_cap,
+        )
     }
 
     fn verify_monad_recipient_signature_observed<F>(

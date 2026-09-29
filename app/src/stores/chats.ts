@@ -836,7 +836,7 @@ export const useChatStore = defineStore('chats', {
     },
   },
   storage: {
-    save(storage, _mutation, state): void {
+    save(storage, _mutation, state): Promise<void> {
       const chats = {
         activeChatAddr: pathOr(undefined, ['activeChatAddr'], state),
         // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -850,7 +850,7 @@ export const useChatStore = defineStore('chats', {
         messages: {},
         lastReceived: state.lastReceived ?? 0,
       }
-      storage.put('chats', JSON.stringify(chats))
+      return storage.put('chats', JSON.stringify(chats))
     },
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
     async restore(storage, metadata): Promise<Partial<State>> {

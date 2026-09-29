@@ -94,6 +94,7 @@ import {
   networkName,
 } from '../utils/constants'
 import { errorNotify } from '../utils/notifications'
+import { persistSetupAndReload } from '../utils/setup-persistence'
 
 import AccountStep from '../components/setup/AccountStep.vue'
 import DepositStep from '../components/setup/DepositStep.vue'
@@ -134,6 +135,8 @@ export default defineComponent({
       setUpdateInterval: contacts.setUpdateInterval,
       seedPhrase: seedPhrase,
       setRelayData: myProfile.setRelayData,
+      persistSetupAndReload: () =>
+        persistSetupAndReload(wallet, myProfile, window.location, errorNotify),
       resetWallet: wallet.reset,
       setXPrivKey: wallet.setXPrivKey,
       setSeedPhrase: wallet.setSeedPhrase,
@@ -484,11 +487,9 @@ export default defineComponent({
             },
             inbox: defaultRelayData.inbox,
           })
-          // Pinia's LevelDB subscription writes asynchronously. Give the profile mutation time to
-          // reach storage before the reload that initializes the new Monad wallet.
-          await new Promise(resolve => window.setTimeout(resolve, 100))
-          window.location.hash = '#/'
-          window.location.reload()
+          // The next boot initializes the Monad identity from these stores, so
+          // neither write may be left in flight when the page reloads.
+          await this.persistSetupAndReload()
           break
         case 3:
           this.setupSettings()

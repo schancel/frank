@@ -50,6 +50,7 @@ import {
   nodeWalletRootExists,
   nodeWalletCreationRecoveryExists,
   nodeWalletRootIsPrivateEmpty,
+  type NodeWalletCreationClaim,
   prepareSecureWalletRootWithProvenance,
   publishNodeWalletRootWithIntent,
   readPrivateNodeCreationFile,
@@ -170,6 +171,7 @@ type OpenMonadWalletBundleTestHooks = {
       | 'before-root-publish'
       | 'root-published'
       | 'intent-linked'
+      | 'before-claim-cleanup'
   ) => void | Promise<void>
 }
 
@@ -306,7 +308,9 @@ async function readWalletCreationIntent(
     const intentPath = join(location, NODE_CREATION_INTENT_FILE)
     const encoded = readPrivateNodeCreationFile(
       intentPath,
-      'Wallet creation intent'
+      'Wallet creation intent',
+      false,
+      [1, 2]
     )
     return encoded === undefined ? undefined : parseCreationIntent(encoded)
   }
@@ -1565,6 +1569,7 @@ export async function openMonadWalletBundle(
     )
   }
   let nodeCreationPublished = false
+  let nodeCreationClaim: NodeWalletCreationClaim | undefined
   if (
     !isBrowserWalletStorage() &&
     (!nodeWalletRootExists(params.location) ||
@@ -1635,7 +1640,7 @@ export async function openMonadWalletBundle(
         authenticateGeneratedCreationIntent(encoded)
       },
     }
-    await publishNodeWalletRootWithIntent(
+    nodeCreationClaim = await publishNodeWalletRootWithIntent(
       params.location,
       runtimeParams.seed === undefined ? generatedIntentSource : callerIntent(),
       params.onNodeCreationPublishPhase
@@ -1647,7 +1652,10 @@ export async function openMonadWalletBundle(
     false
   )
   const location = preparedRoot.location
-  const nodeLease = await acquireNodeWalletRootLease(location)
+  nodeCreationClaim?.assertRootIdentity()
+  const nodeLease = await acquireNodeWalletRootLease(location, {
+    expectedRootIdentity: nodeCreationClaim?.rootIdentity,
+  })
   const browserLease = await acquireBrowserWalletRootLease(location)
   const assertLeaseHeld = (): void => {
     browserLease?.assertHeld()
@@ -2189,6 +2197,11 @@ export async function openMonadWalletBundle(
       assertLeaseHeld()
       await clearWalletCreationIntent(location)
       creationIntent = undefined
+    }
+    if (nodeCreationClaim !== undefined) {
+      assertLeaseHeld()
+      await nodeCreationClaim.finalize()
+      nodeCreationClaim = undefined
     }
 
     let repairedChangeRecovery = false

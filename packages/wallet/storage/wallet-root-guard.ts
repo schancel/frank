@@ -144,6 +144,17 @@ export interface NodeWalletCreationIntentSource {
   validateRetained(encodedIntent: string): void
 }
 
+export interface NodeWalletCreationClaim {
+  readonly encodedIntent: string
+  readonly rootIdentity: { dev: string; ino: string }
+  /** Revalidates the published root without mutating it. */
+  assertRootIdentity(): void
+  /** Removes the sibling claim only after the caller has finalized the wallet under its root
+   * lease. The root creation intent may already have been removed; the retained staged link is
+   * sufficient to resume an interrupted cleanup against the same inode. */
+  finalize(): Promise<void>
+}
+
 function assertPrivateCreationFile(
   stat: import('fs').Stats,
   label: string,
@@ -417,8 +428,9 @@ export async function publishNodeWalletRootWithIntent(
       | 'before-root-publish'
       | 'root-published'
       | 'intent-linked'
+      | 'before-claim-cleanup'
   ) => void | Promise<void>
-): Promise<string> {
+): Promise<NodeWalletCreationClaim> {
   if (isBrowserWalletStorage()) {
     throw new Error('Node wallet root publication is unavailable in browsers')
   }
@@ -435,7 +447,9 @@ export async function publishNodeWalletRootWithIntent(
     const validateRetainedIntent = (retained: string): void => {
       if (typeof intentSource === 'string') {
         if (!sameSeedBoundCreationIntent(retained, intentSource)) {
-          throw new Error('Abandoned wallet creation intent does not match')
+          throw new Error(
+            'Abandoned wallet creation intent does not match: seed does not match durable claim'
+          )
         }
       } else {
         intentSource.validateRetained(retained)
@@ -555,6 +569,7 @@ export async function publishNodeWalletRootWithIntent(
     }
 
     const existingRoot = lstatIfPresent(fs, canonical)
+    let claimedRootIdentity: NodeCreationRootIdentity | undefined
     if (existingRoot !== undefined) {
       if (
         existingRoot.isSymbolicLink() ||
@@ -564,12 +579,7 @@ export async function publishNodeWalletRootWithIntent(
         throw new Error('First-use wallet creation found an invalid Node root')
       }
       assertOwnedByCurrentUser(existingRoot, 'Wallet root')
-      const rootEntries = fs.readdirSync(canonical)
-      if (
-        rootEntries.some((entry) => entry !== NODE_CREATION_INTENT_FILE) ||
-        staging === undefined ||
-        encodedIntent === undefined
-      ) {
+      if (staging === undefined || encodedIntent === undefined) {
         throw new Error('First-use wallet creation requires a missing Node root')
       }
       const bindingId = creationIntentBindingId(encodedIntent)
@@ -610,6 +620,7 @@ export async function publishNodeWalletRootWithIntent(
       ) {
         throw new Error('Wallet root identity does not match creation claim')
       }
+      claimedRootIdentity = identity
     } else if (staging === undefined) {
       staging = fs.mkdtempSync(join(parent, stagePrefix))
       fs.chmodSync(staging, 0o700)
@@ -691,25 +702,95 @@ export async function publishNodeWalletRootWithIntent(
       fsyncDirectory(fs, staging)
       fsyncDirectory(fs, parent)
       await onPhase?.('root-published')
+      const afterHook = fs.lstatSync(canonical)
+      if (
+        afterHook.isSymbolicLink() ||
+        !afterHook.isDirectory() ||
+        String(afterHook.dev) !== rootIdentity.dev ||
+        String(afterHook.ino) !== rootIdentity.ino
+      ) {
+        throw new Error('Wallet root identity changed after publication')
+      }
+      claimedRootIdentity = rootIdentity
+    }
+
+    if (claimedRootIdentity === undefined) {
+      throw new Error('Wallet root was not bound to the durable creation claim')
+    }
+    const assertClaimedRootIdentity = (): void => {
+      const current = fs.lstatSync(canonical)
+      if (
+        current.isSymbolicLink() ||
+        !current.isDirectory() ||
+        String(current.dev) !== claimedRootIdentity?.dev ||
+        String(current.ino) !== claimedRootIdentity?.ino
+      ) {
+        throw new Error('Wallet root identity does not match creation claim')
+      }
+      assertOwnedByCurrentUser(current, 'Wallet root')
+      if ((current.mode & 0o777) !== 0o700) {
+        throw new Error('Wallet root permissions changed during creation')
+      }
     }
 
     const stagedIntent = join(staging, NODE_CREATION_INTENT_FILE)
     const rootIntent = join(canonical, NODE_CREATION_INTENT_FILE)
     if (!intentAlreadyInRoot) {
       // Hard-link publication is atomic and no-replace; an unexpected root file is untouched.
+      assertClaimedRootIdentity()
       fs.linkSync(stagedIntent, rootIntent)
       fsyncDirectory(fs, canonical)
       await onPhase?.('intent-linked')
-      fs.unlinkSync(stagedIntent)
-      fsyncDirectory(fs, staging)
-    } else if (lstatIfPresent(fs, stagedIntent) !== undefined) {
-      fs.unlinkSync(stagedIntent)
+      assertClaimedRootIdentity()
+    } else if (lstatIfPresent(fs, stagedIntent) === undefined) {
+      // Resume the narrow legacy crash window after the old publisher removed the staged link but
+      // before it removed the inode claim. Re-establish the retained link before handing off.
+      assertClaimedRootIdentity()
+      fs.linkSync(rootIntent, stagedIntent)
       fsyncDirectory(fs, staging)
     }
-    fs.unlinkSync(join(staging, NODE_CREATION_ROOT_IDENTITY_FILE))
-    fs.rmdirSync(staging)
-    fsyncDirectory(fs, parent)
-    return encodedIntent
+    return {
+      encodedIntent,
+      rootIdentity: {
+        dev: claimedRootIdentity.dev,
+        ino: claimedRootIdentity.ino,
+      },
+      assertRootIdentity: assertClaimedRootIdentity,
+      async finalize(): Promise<void> {
+        const releaseCleanupLock = await acquireNodeCreationLock(lockPath)
+        try {
+          assertClaimedRootIdentity()
+          const retained = readPrivateNodeCreationFile(
+            stagedIntent,
+            'Wallet creation intent',
+            false,
+            [1, 2]
+          )
+          validateRetainedIntent(retained ?? '')
+          const identity = parseNodeCreationRootIdentity(
+            readPrivateNodeCreationFile(
+              join(staging!, NODE_CREATION_ROOT_IDENTITY_FILE),
+              'Wallet creation root identity'
+            ) ?? '',
+            creationIntentBindingId(encodedIntent!)
+          )
+          if (
+            identity.dev !== claimedRootIdentity?.dev ||
+            identity.ino !== claimedRootIdentity?.ino
+          ) {
+            throw new Error('Wallet creation cleanup claim changed')
+          }
+          await onPhase?.('before-claim-cleanup')
+          assertClaimedRootIdentity()
+          fs.unlinkSync(stagedIntent)
+          fs.unlinkSync(join(staging!, NODE_CREATION_ROOT_IDENTITY_FILE))
+          fs.rmdirSync(staging!)
+          fsyncDirectory(fs, parent)
+        } finally {
+          await releaseCleanupLock()
+        }
+      },
+    }
   } finally {
     await releaseCreationLock()
   }
@@ -898,6 +979,8 @@ export async function acquireNodeWalletRootLease(
       operation: 'lstat' | 'open' | 'fstat' | 'random' | 'write' | 'fsync'
     ) => void
     onHolderReady?: (holder: import('child_process').ChildProcess) => void
+    /** Creation-time inode authority. It is checked before the lock artifact can be created. */
+    expectedRootIdentity?: { dev: string; ino: string }
   } = {}
 ): Promise<WalletRootLease | undefined> {
   if (isBrowserWalletStorage()) return undefined
@@ -908,6 +991,17 @@ export async function acquireNodeWalletRootLease(
   const childProcess = nodeRequire(
     ['child', 'process'].join('_')
   ) as typeof import('child_process')
+  const rootIdentity = fs.lstatSync(location)
+  if (rootIdentity.isSymbolicLink() || !rootIdentity.isDirectory()) {
+    throw new Error('Wallet root identity changed before lock acquisition')
+  }
+  if (
+    testHooks.expectedRootIdentity !== undefined &&
+    (String(rootIdentity.dev) !== testHooks.expectedRootIdentity.dev ||
+      String(rootIdentity.ino) !== testHooks.expectedRootIdentity.ino)
+  ) {
+    throw new Error('Wallet root identity does not match creation claim')
+  }
   const lockPath = resolve(location, '.frank-wallet.lock')
   let artifact = lstatIfPresent(fs, lockPath)
   if (artifact === undefined) {
@@ -928,9 +1022,14 @@ export async function acquireNodeWalletRootLease(
   if ((artifact.mode & 0o777) !== 0o600) {
     throw new Error('Node wallet root lock artifact permissions must be 0600')
   }
-  const rootIdentity = fs.lstatSync(location)
-  if (rootIdentity.isSymbolicLink() || !rootIdentity.isDirectory()) {
-    throw new Error('Wallet root identity changed before lock acquisition')
+  const rootAfterArtifact = fs.lstatSync(location)
+  if (
+    rootAfterArtifact.isSymbolicLink() ||
+    !rootAfterArtifact.isDirectory() ||
+    rootAfterArtifact.dev !== rootIdentity.dev ||
+    rootAfterArtifact.ino !== rootIdentity.ino
+  ) {
+    throw new Error('Wallet root identity changed during lock acquisition')
   }
 
   const holderScript = [

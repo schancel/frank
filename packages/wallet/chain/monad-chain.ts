@@ -279,6 +279,102 @@ export function deserializeMessageItems(plaintext: string): MessageItem[] {
   if (!Array.isArray(parsed)) {
     throw new Error('Decrypted direct-message plaintext was not a JSON array')
   }
+  for (const item of parsed) {
+    if (typeof item !== 'object' || item === null || Array.isArray(item)) {
+      throw new Error('Decrypted direct-message item was not an object')
+    }
+    const candidate = item as Record<string, unknown>
+    switch (candidate.type) {
+      case 'text':
+        if (typeof candidate.text !== 'string') {
+          throw new Error('Invalid text direct-message item')
+        }
+        break
+      case 'reply':
+        if (
+          typeof candidate.payloadDigest !== 'string' ||
+          !/^[0-9a-f]{64}$/i.test(candidate.payloadDigest)
+        ) {
+          throw new Error('Invalid reply direct-message item')
+        }
+        break
+      case 'image':
+        if (typeof candidate.image !== 'string') {
+          throw new Error('Invalid image direct-message item')
+        }
+        break
+      case 'blackjack-move':
+        if (
+          typeof candidate.gameId !== 'string' ||
+          candidate.gameId.length === 0 ||
+          !['bet', 'deal', 'hit', 'stand', 'reveal'].includes(
+            String(candidate.action)
+          ) ||
+          ['wagerTxHash', 'serverSeedHash', 'serverSeed'].some(
+            (field) =>
+              candidate[field] !== undefined &&
+              typeof candidate[field] !== 'string'
+          ) ||
+          ['playerCards', 'dealerCards'].some((field) => {
+            const cards = candidate[field]
+            return (
+              cards !== undefined &&
+              (!Array.isArray(cards) ||
+                cards.some(
+                  (card) =>
+                    !Number.isInteger(card) || card < 0 || card > 51
+                ))
+            )
+          }) ||
+          (candidate.dealerUpCard !== undefined &&
+            (!Number.isInteger(candidate.dealerUpCard) ||
+              Number(candidate.dealerUpCard) < 0 ||
+              Number(candidate.dealerUpCard) > 51)) ||
+          (candidate.outcome !== undefined &&
+            ![
+              'player_win',
+              'dealer_win',
+              'push',
+              'player_blackjack',
+            ].includes(String(candidate.outcome)))
+        ) {
+          throw new Error('Invalid blackjack direct-message item')
+        }
+        break
+      case 'digital-goods':
+        if (
+          !['catalog', 'request', 'fulfill', 'error'].includes(
+            String(candidate.action)
+          ) ||
+          (candidate.itemId !== undefined &&
+            typeof candidate.itemId !== 'string') ||
+          (candidate.message !== undefined &&
+            typeof candidate.message !== 'string') ||
+          (candidate.catalog !== undefined &&
+            (!Array.isArray(candidate.catalog) ||
+              candidate.catalog.some(
+                (entry) =>
+                  typeof entry !== 'object' ||
+                  entry === null ||
+                  Array.isArray(entry) ||
+                  typeof (entry as Record<string, unknown>).itemId !==
+                    'string' ||
+                  typeof (entry as Record<string, unknown>).description !==
+                    'string' ||
+                  typeof (entry as Record<string, unknown>).priceWei !==
+                    'string' ||
+                  !/^\d+$/.test(
+                    String((entry as Record<string, unknown>).priceWei)
+                  )
+              )))
+        ) {
+          throw new Error('Invalid digital-goods direct-message item')
+        }
+        break
+      default:
+        throw new Error('Unsupported direct-message item type')
+    }
+  }
   return parsed as MessageItem[]
 }
 
@@ -543,7 +639,7 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
             valueWei: payment.valueWei.toString(),
             status: 'discovered' as const,
           }))
-          await wallet.stampPaymentJournal?.putDiscovered(discovered)
+          wallet.stampPaymentJournal?.assertDiscovered(discovered)
 
           const senderProfile = await fetchMonadProfile({
             relayBaseUrl: wallet.relayBaseUrl,
@@ -577,6 +673,8 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
             // for one bad message out of a whole page.
             continue
           }
+
+          await wallet.stampPaymentJournal?.putDiscovered(discovered)
 
           const stampValueWei = recovered.reduce(
             (sum, payment) => sum + payment.valueWei,

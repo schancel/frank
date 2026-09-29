@@ -52,6 +52,8 @@ export interface StampPaymentJournal {
     childIndex: number
   ): StampPaymentRecoveryRecord | undefined
   put(record: StampPaymentRecoveryRecord): Promise<void>
+  /** Pure immutable-authority preflight; it never mutates the journal. */
+  assertDiscovered(records: StampPaymentRecoveryRecord[]): void
   /** Atomically records one completely prevalidated message's discovered child set. Exact rows
    * already in a later lifecycle are preserved; any conflicting authority aborts the whole set. */
   putDiscovered(records: StampPaymentRecoveryRecord[]): Promise<void>
@@ -145,6 +147,11 @@ export class InMemoryStampPaymentJournal implements StampPaymentJournal {
         cloneRecord(record)
       )
     })
+  }
+
+  assertDiscovered(records: StampPaymentRecoveryRecord[]): void {
+    this.assertOpen()
+    preflightDiscoveredSet(this.records, records)
   }
 
   async putDiscovered(records: StampPaymentRecoveryRecord[]): Promise<void> {
@@ -377,6 +384,11 @@ export class LevelStampPaymentJournal implements StampPaymentJournal {
       await this.db.put(recordKey, JSON.stringify(record))
       this.records.set(recordKey, cloneRecord(record))
     })
+  }
+
+  assertDiscovered(records: StampPaymentRecoveryRecord[]): void {
+    this.assertOpen()
+    preflightDiscoveredSet(this.records, records)
   }
 
   async putDiscovered(records: StampPaymentRecoveryRecord[]): Promise<void> {

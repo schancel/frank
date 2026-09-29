@@ -43,7 +43,10 @@ import {
   deriveMonadStampChildPrivate,
   deriveMonadStampChildPublic,
 } from '../monad-stamp-stealth'
-import { InMemoryStampPaymentJournal } from '../storage/stamp-payment-journal'
+import {
+  InMemoryStampPaymentJournal,
+  LevelStampPaymentJournal,
+} from '../storage/stamp-payment-journal'
 import { buildEnvelope } from '@frank/cashweb/relay/monad-message-envelope'
 import { MonadRpcError } from '../monad-http'
 import { openMonadWalletBundle } from '../storage/monad-wallet-bundle'
@@ -859,6 +862,142 @@ describe('createMonadChain: directMessages.fetchSince', () => {
       hexlify(computeMonadStampCommitment(validEnvelope)).slice(2)
     )
   })
+  it('durably journals only rows whose profile, decryption, and items fully validate', async () => {
+    const location = mkdtempSync(join(tmpdir(), 'monad-incoming-preflight-'))
+    const chain = createMonadChain(TEST_CONFIG)
+    const alice = MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX)
+    const bob = MonadIdentity.fromPrivateKeyHex(BOB_PRIVATE_KEY_HEX)
+    const eve = MonadIdentity.fromPrivateKeyHex(EVE_PRIVATE_KEY_HEX)
+    const wallet = makeWallet(bob)
+    const journal = new LevelStampPaymentJournal(location)
+    await journal.Open()
+    wallet.stampPaymentJournal = journal
+    let journalClosed = false
+
+    const paidRecord = async (
+      plaintext: string,
+      nonce: number,
+      corruptCiphertext = false
+    ): Promise<StoredMonadMessageProto> => {
+      let encryptedPayload = buildEnvelope({
+        fromAddress: alice.address.raw,
+        fromPrivateKey: alice.toBitcorePrivateKey(),
+        toAddress: bob.address.raw,
+        toPubKey: bob.compressedPubKey,
+        plaintext,
+        networkTag: TEST_CONFIG.networkTag,
+      })
+      if (corruptCiphertext) {
+        const parsed = JSON.parse(
+          new TextDecoder().decode(encryptedPayload)
+        ) as Record<string, unknown>
+        parsed.ciphertext = '00'
+        encryptedPayload = new TextEncoder().encode(JSON.stringify(parsed))
+      }
+      const payloadHash = computeMonadStampCommitment(encryptedPayload)
+      const child = deriveMonadStampChildPublic({
+        payloadHash,
+        recipientPublicKey: new Uint8Array(bob.compressedPubKey),
+        paymentIndex: 0,
+      })
+      const rawTx = await new Wallet(ALICE_PRIVATE_KEY_HEX).signTransaction({
+        to: child.address,
+        value: 1n,
+        data: buildMonadStampCalldata(
+          computeMonadStampPaymentCommitment(payloadHash, 0)
+        ),
+        nonce,
+        gasLimit: 50_000n,
+        gasPrice: 1n,
+        chainId: 1,
+      })
+      return {
+        message: {
+          stampPayments: [{ childIndex: 0, rawTx: getBytes(rawTx) }],
+          encryptedPayload,
+          payloadHash,
+        },
+        timestamp: nonce + 1,
+        networkTag: new Uint8Array(),
+      }
+    }
+
+    try {
+      const cases = [
+        {
+          record: await paidRecord(
+            serializeMessageItems([{ type: 'text', text: 'missing' }]),
+            10
+          ),
+          profile: undefined,
+        },
+        {
+          record: await paidRecord(
+            serializeMessageItems([{ type: 'text', text: 'wrong key' }]),
+            11
+          ),
+          profile: {
+            address: alice.address,
+            pubKey: new Uint8Array(eve.compressedPubKey),
+          },
+        },
+        {
+          record: await paidRecord(
+            serializeMessageItems([{ type: 'text', text: 'bad cipher' }]),
+            12,
+            true
+          ),
+          profile: {
+            address: alice.address,
+            pubKey: new Uint8Array(alice.compressedPubKey),
+          },
+        },
+        {
+          record: await paidRecord(
+            JSON.stringify([{ type: 'not-supported', value: 'poison' }]),
+            13
+          ),
+          profile: {
+            address: alice.address,
+            pubKey: new Uint8Array(alice.compressedPubKey),
+          },
+        },
+      ]
+      for (const candidate of cases) {
+        mockedFetchMonadMessagesSince.mockResolvedValueOnce([candidate.record])
+        mockedFetchMonadProfile.mockResolvedValueOnce(candidate.profile)
+        await expect(
+          chain.directMessages.fetchSince({ wallet, sinceMs: 0 })
+        ).resolves.toEqual([])
+        expect(journal.getAll()).toEqual([])
+      }
+
+      const valid = await paidRecord(
+        serializeMessageItems([{ type: 'text', text: 'valid' }]),
+        14
+      )
+      mockedFetchMonadMessagesSince.mockResolvedValueOnce([valid])
+      mockedFetchMonadProfile.mockResolvedValueOnce({
+        address: alice.address,
+        pubKey: new Uint8Array(alice.compressedPubKey),
+      })
+      await expect(
+        chain.directMessages.fetchSince({ wallet, sinceMs: 0 })
+      ).resolves.toHaveLength(1)
+      expect(journal.getAll()).toHaveLength(1)
+      await journal.Close()
+      journalClosed = true
+
+      const reopened = new LevelStampPaymentJournal(location)
+      await reopened.Open()
+      expect(reopened.getAll()).toHaveLength(1)
+      await reopened.Close()
+    } finally {
+      if (!journalClosed) await journal.Close().catch(() => undefined)
+      rmSync(location, { recursive: true, force: true })
+    }
+  })
+
   it('decrypts envelopes addressed to the wallet and skips everything else', async () => {
     const chain = createMonadChain(TEST_CONFIG)
     const alice = MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX)

@@ -552,6 +552,109 @@ describe('Monad wallet persistence bundle', () => {
     }
   })
 
+  it('rejects a normally returning root-published hook that swaps the claimed inode', async () => {
+    rmSync(root, { recursive: true, force: true })
+    const displaced = `${root}-hook-original`
+    rmSync(displaced, { recursive: true, force: true })
+    let replacementIdentity: ReturnType<typeof lstatSync> | undefined
+    try {
+      await expect(
+        openMonadWalletBundle({
+          location: root,
+          seed: { mnemonic: FIRST_MNEMONIC },
+          mode: 'create',
+          onNodeCreationPublishPhase: (phase) => {
+            if (phase !== 'root-published') return
+            renameSync(root, displaced)
+            mkdirSync(root, { mode: 0o700 })
+            writeFileSync(join(root, 'competitor-owned'), 'untouched', {
+              mode: 0o600,
+            })
+            replacementIdentity = lstatSync(root)
+          },
+        })
+      ).rejects.toThrow(/identity changed after publication/i)
+      expect(readFileSync(join(root, 'competitor-owned'), 'utf8')).toBe(
+        'untouched'
+      )
+      expect(lstatSync(root).ino).toBe(replacementIdentity?.ino)
+      expect(readdirSync(root)).toEqual(['competitor-owned'])
+    } finally {
+      rmSync(displaced, { recursive: true, force: true })
+    }
+  })
+
+  it('rejects a copied creation intent in a replacement inode', async () => {
+    rmSync(root, { recursive: true, force: true })
+    await expect(
+      openMonadWalletBundle({
+        location: root,
+        seed: { mnemonic: FIRST_MNEMONIC },
+        mode: 'create',
+        onMigrationPhase: (phase) => {
+          if (phase === 'creation-intent') throw new Error('intent boundary')
+        },
+      })
+    ).rejects.toThrow('intent boundary')
+    const retained = readFileSync(
+      join(root, '.frank-wallet-creation.json'),
+      'utf8'
+    )
+    const displaced = `${root}-intent-original`
+    rmSync(displaced, { recursive: true, force: true })
+    renameSync(root, displaced)
+    mkdirSync(root, { mode: 0o700 })
+    writeFileSync(join(root, '.frank-wallet-creation.json'), retained, {
+      mode: 0o600,
+    })
+    const replacementIdentity = lstatSync(root)
+    const replacementEntries = readdirSync(root)
+    try {
+      await expect(
+        openMonadWalletBundle({
+          location: root,
+          seed: { mnemonic: FIRST_MNEMONIC },
+          mode: 'create',
+        })
+      ).rejects.toThrow(/link authority|identity|owner-only regular file/i)
+      expect(lstatSync(root).ino).toBe(replacementIdentity.ino)
+      expect(readdirSync(root)).toEqual(replacementEntries)
+      expect(
+        readFileSync(join(root, '.frank-wallet-creation.json'), 'utf8')
+      ).toBe(retained)
+    } finally {
+      rmSync(displaced, { recursive: true, force: true })
+    }
+  })
+
+  it('resumes after the finalized wallet reaches the creation-claim cleanup boundary', async () => {
+    rmSync(root, { recursive: true, force: true })
+    await expect(
+      openMonadWalletBundle({
+        location: root,
+        seed: { mnemonic: FIRST_MNEMONIC },
+        mode: 'create',
+        onNodeCreationPublishPhase: (phase) => {
+          if (phase === 'before-claim-cleanup') {
+            throw new Error('claim cleanup boundary')
+          }
+        },
+      })
+    ).rejects.toThrow('claim cleanup boundary')
+    expect(creationStages(root)).toHaveLength(1)
+    expect(existsSync(join(root, '.frank-wallet-creation.json'))).toBe(false)
+
+    const resumed = await openMonadWalletBundle({
+      location: root,
+      seed: { mnemonic: FIRST_MNEMONIC },
+      mode: 'create',
+    })
+    expect(resumed.pool.nextUnusedIndex()).toBe(0)
+    await resumed.close()
+    expect(creationStages(root)).toEqual([])
+    expect(existsSync(join(root, '.frank-wallet-creation.json'))).toBe(false)
+  })
+
   it.each([
     ['same seed', FIRST_MNEMONIC],
     ['different seed', SECOND_MNEMONIC],

@@ -55,6 +55,10 @@ pub struct RegistryConf {
 }
 
 /// Typed durable Monad mailbox configuration.
+///
+/// Disabling the mailbox is the supported rollback and preserves durable rows for the current
+/// binary. Operators requiring binary downgrade must snapshot before upgrading because older
+/// binaries cannot read newer versioned outbox rows.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 pub struct MonadMailboxConf {
     /// Whether admission and reconciliation are enabled. A disabled deployment must omit the

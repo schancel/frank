@@ -561,8 +561,21 @@ impl Registry {
     }
 
     /// Enumerate the bounded set of claims which need startup reconciliation.
-    pub(crate) fn list_active_monad_outboxes(&self, limit: usize) -> Result<Vec<[u8; 32]>> {
-        self.db.monad_outbox().list_active(limit)
+    pub(crate) fn list_active_monad_outboxes_after(
+        &self,
+        after: Option<[u8; 32]>,
+        limit: usize,
+    ) -> Result<Vec<[u8; 32]>> {
+        self.db.monad_outbox().list_active_after(after, limit)
+    }
+
+    /// Enforce configured compact-history bounds independently of new claim transitions.
+    pub(crate) fn gc_monad_outbox_history(
+        &self,
+        now_ms: i64,
+        limits: &crate::store::monad_outbox::MonadOutboxLimits,
+    ) -> Result<()> {
+        self.db.monad_outbox().gc_history(now_ms, limits)
     }
 
     /// Acquire one durable replay generation after exact-hash absence was observed.

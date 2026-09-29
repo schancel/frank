@@ -512,6 +512,183 @@ impl Registry {
         self.db.monad_messages().delete_attempt(payload_hash)
     }
 
+    /// Atomically claim one canonical Monad payment request and all hash-only child references.
+    /// This is the durable replacement seam for the legacy digest-only attempt methods above;
+    /// those remain temporarily until the HTTP admission owner switches its concurrent branch.
+    pub fn claim_monad_outbox(
+        &self,
+        message: &proto::MonadStampedMessage,
+        policy: &crate::store::monad_outbox::MonadOutboxPolicy,
+        now_ms: i64,
+        limits: &crate::store::monad_outbox::MonadOutboxLimits,
+    ) -> Result<crate::store::monad_outbox::MonadOutboxClaim> {
+        self.db
+            .monad_outbox()
+            .claim(&message.payload_hash, message, policy, now_ms, limits)
+    }
+
+    /// Read one canonical outbox record.
+    pub(crate) fn monad_outbox_record(
+        &self,
+        payload_hash: &[u8],
+    ) -> Result<Option<crate::store::monad_outbox::MonadOutboxRecord>> {
+        self.db.monad_outbox().get(payload_hash)
+    }
+
+    /// Read one hash-only child state in focused recovery tests.
+    #[cfg(test)]
+    pub(crate) fn monad_outbox_member(
+        &self,
+        payload_hash: &[u8],
+        child_index: u32,
+    ) -> Result<Option<crate::store::monad_outbox::MonadOutboxMember>> {
+        self.db.monad_outbox().get_member(payload_hash, child_index)
+    }
+
+    /// Recover canonical raw bytes through an index/hash-checked child reference.
+    pub(crate) fn monad_outbox_referenced_raw_tx(
+        &self,
+        payload_hash: &[u8],
+        child_index: u32,
+    ) -> Result<(
+        crate::store::monad_outbox::MonadOutboxRecord,
+        crate::store::monad_outbox::MonadOutboxMember,
+        Vec<u8>,
+    )> {
+        self.db
+            .monad_outbox()
+            .referenced_raw_tx(payload_hash, child_index)
+    }
+
+    /// Enumerate the bounded set of claims which need startup reconciliation.
+    pub(crate) fn list_active_monad_outboxes(&self, limit: usize) -> Result<Vec<[u8; 32]>> {
+        self.db.monad_outbox().list_active(limit)
+    }
+
+    /// Persist the attempt budget before external reconciliation work.
+    pub(crate) fn begin_monad_outbox_attempt(
+        &self,
+        payload_hash: &[u8],
+        child_index: u32,
+        now_ms: i64,
+        limits: &crate::store::monad_outbox::MonadOutboxLimits,
+    ) -> Result<crate::store::monad_outbox::MonadOutboxMember> {
+        self.db
+            .monad_outbox()
+            .begin_attempt(payload_hash, child_index, now_ms, limits)
+    }
+
+    /// Persist exact-receipt confirmation before advancing to the next child.
+    pub(crate) fn confirm_monad_outbox_member(
+        &self,
+        payload_hash: &[u8],
+        child_index: u32,
+        value_wei: u128,
+        block_number: u64,
+        now_ms: i64,
+    ) -> Result<()> {
+        self.db.monad_outbox().confirm_member(
+            payload_hash,
+            child_index,
+            value_wei,
+            block_number,
+            now_ms,
+        )
+    }
+
+    /// Persist a bounded transient reconciliation error.
+    pub(crate) fn record_monad_outbox_pending_error(
+        &self,
+        payload_hash: &[u8],
+        child_index: u32,
+        detail: &str,
+        now_ms: i64,
+        limits: &crate::store::monad_outbox::MonadOutboxLimits,
+    ) -> Result<()> {
+        self.db.monad_outbox().record_pending_error(
+            payload_hash,
+            child_index,
+            detail,
+            now_ms,
+            limits,
+        )
+    }
+
+    /// Persist a permanent losing outcome without deleting confirmed-prefix facts.
+    pub(crate) fn terminal_monad_outbox_member(
+        &self,
+        payload_hash: &[u8],
+        child_index: u32,
+        terminal: crate::store::monad_outbox::MonadOutboxTerminal,
+        detail: &str,
+        now_ms: i64,
+        limits: &crate::store::monad_outbox::MonadOutboxLimits,
+    ) -> Result<()> {
+        self.db.monad_outbox().terminal_member(
+            payload_hash,
+            child_index,
+            terminal,
+            detail,
+            now_ms,
+            limits,
+        )
+    }
+
+    /// Persist a terminal aggregate when a corrupt child reference cannot be updated safely.
+    pub(crate) fn terminal_monad_outbox_claim(
+        &self,
+        payload_hash: &[u8],
+        terminal: crate::store::monad_outbox::MonadOutboxTerminal,
+        detail: &str,
+        now_ms: i64,
+        limits: &crate::store::monad_outbox::MonadOutboxLimits,
+    ) -> Result<()> {
+        self.db
+            .monad_outbox()
+            .terminal_claim(payload_hash, terminal, detail, now_ms, limits)
+    }
+
+    /// Verify all child states and persist the fully-confirmed aggregate transition.
+    pub(crate) fn mark_monad_outbox_fully_confirmed(
+        &self,
+        payload_hash: &[u8],
+        now_ms: i64,
+    ) -> Result<bool> {
+        self.db
+            .monad_outbox()
+            .mark_fully_confirmed(payload_hash, now_ms)
+    }
+
+    /// Atomically publish the canonical message to the recipient inbox and mark it delivered.
+    pub(crate) fn finalize_monad_outbox(
+        &self,
+        payload_hash: &[u8],
+        now_ms: i64,
+    ) -> Result<proto::StoredMonadMessage> {
+        self.db
+            .monad_outbox()
+            .finalize_delivery(payload_hash, now_ms)
+    }
+
+    /// Recipient-private recovery view for retained, incomplete confirmed prefixes. This method
+    /// is intentionally absent from `PublicFederationStore`.
+    ///
+    /// ```compile_fail
+    /// use cashweb_registry::{monad_http::Address, p2p::public_store::PublicFederationStore};
+    /// fn cannot_federate_private_recovery(store: PublicFederationStore<'_>) {
+    ///     let _ = store.confirmed_monad_outbox_prefixes(Address([0; 20]), 10);
+    /// }
+    /// ```
+    pub fn confirmed_monad_outbox_prefixes(
+        &self,
+        recipient: Address,
+        limit: usize,
+    ) -> Result<Vec<crate::store::monad_outbox::ConfirmedPrefixRecovery>> {
+        self.db
+            .monad_outbox()
+            .confirmed_prefixes_for_recipient(&recipient, limit)
+    }
+
     /// Fully verify and write a Monad-native profile registration (ticket #45) -- the Monad
     /// equivalent of [`Registry::put_metadata`]. See `crate::monad_profile_verify`'s module docs
     /// for why this uses an explicit pubkey+signature check (mirroring Lotus's own solution to

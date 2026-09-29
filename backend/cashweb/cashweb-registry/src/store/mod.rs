@@ -4,6 +4,7 @@
 pub mod db;
 pub mod metadata;
 pub mod monad_messages;
+pub mod monad_outbox;
 pub mod monad_profiles;
 pub mod monad_topics;
 pub mod pubkeyhash;

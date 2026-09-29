@@ -91,6 +91,8 @@ export default {
   accountStep: {
     newAccount: 'New Account',
     importAccount: 'Import Account',
+    copyRecoveryPhrase: 'Copy recovery phrase',
+    refreshRecoveryPhrase: 'Generate a new recovery phrase',
   },
   newContactDialog: {
     newContact: 'New Contact',

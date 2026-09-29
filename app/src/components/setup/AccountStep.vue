@@ -50,6 +50,7 @@
         class="q-pa-xs q-ma-none"
         color="primary"
         icon="content_copy"
+        :aria-label="$t('accountStep.copyRecoveryPhrase')"
         @click="copySeed"
       />
       <q-btn
@@ -58,6 +59,7 @@
         class="q-pa-xs q-ma-none"
         color="primary"
         icon="refresh"
+        :aria-label="$t('accountStep.refreshRecoveryPhrase')"
         @click="generateMnemonic"
       />
     </div>

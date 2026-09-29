@@ -36,11 +36,10 @@
 //! ## Configuration
 //!
 //! `FRANK_NETWORK_TAG` (see `.env.example`), read once from the environment via
-//! [`frank_network_tag`], a process-wide [`OnceLock`] mirroring `crate::http::monad_message`'s/
-//! `crate::http::monad_topics`'s own gate-config convention. Lives in its own module (rather than
-//! duplicated in each of those, the way `MONAD_TESTNET_HTTP_RPC_URL`/`MONAD_STAMP_BURN_ADDRESS`
-//! are) because both need it and this ticket already touches both modules, so there's no reason to
-//! repeat the env-read.
+//! [`frank_network_tag`], a process-wide [`OnceLock`] mirroring `crate::http::monad_topics`'s own
+//! gate-config convention. `cashwebd-exe` reads it once at startup and hands it to the enabled
+//! mailbox runtime (`crate::monad_mailbox::MonadMailboxRuntime`), which admits only envelopes
+//! carrying that tag; the topic routes read it directly.
 //!
 //! Deliberately **optional** (unlike the burn-verification gate configs, which fail every request
 //! closed when misconfigured, since an unverified stamp must never be silently accepted): an unset

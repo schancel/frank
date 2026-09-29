@@ -119,29 +119,37 @@ Canonical v1 resources are frozen as follows:
 - `/monad/v1/profiles`, `/monad/v1/profiles/:address`,
   `/monad/v1/profiles/search`, and `/monad/v1/profiles/curated-defaults`;
 - `PUT /monad/v1/mailbox/messages` for submission;
-- `POST /monad/v1/mailbox/auth/:mailbox_identity` for a bounded authentication challenge;
-- `GET /monad/v1/mailbox/inbox/:mailbox_identity`,
-  `GET /monad/v1/mailbox/outbox/:mailbox_identity`, and
-  `GET /monad/v1/mailbox/recovery/:mailbox_identity` for authenticated views;
-- `GET /monad/v1/mailbox/sync/:mailbox_identity?cursor=...` for authoritative catch-up;
-- `POST /monad/v1/mailbox/import/:mailbox_identity/quote` and
-  `POST /monad/v1/mailbox/import/:mailbox_identity/batch` for an authenticated import quote and
+- `POST /monad/v1/mailbox/auth/:account_address` for a bounded authentication challenge;
+- `GET /monad/v1/mailbox/inbox/:account_address`,
+  `GET /monad/v1/mailbox/outbox/:account_address`, and
+  `GET /monad/v1/mailbox/recovery/:account_address` for authenticated views;
+- `GET /monad/v1/mailbox/sync/:account_address?cursor=...` for authoritative catch-up;
+- `POST /monad/v1/mailbox/import/:account_address/quote` and
+  `POST /monad/v1/mailbox/import/:account_address/batch` for an authenticated import quote and
   its authorized batch import; and
 - `/monad/v1/pubsub/posts`, `/monad/v1/pubsub/posts/:payload_hash`,
   `/monad/v1/pubsub/votes`, and `/monad/v1/pubsub/topics`.
 
-The canonical mailbox group depends on #60's authenticated private-mailbox contract. `inbox` is
-recipient-retained content; `outbox` includes the sender's authoritative self-sent bytes and
-delivery state; `recovery` exposes authenticated recovery facts, not secret material. A quote does
-not mutate the mailbox. A batch import consumes a bound authorization and emits ordinary journal
-events; it does not create an import-only replay stream.
+The canonical mailbox group depends on #60's authenticated private-mailbox contract.
+The durable account is `(NetworkTag, address_type, canonical_address_bytes)`; `account_address` is
+only that account's canonical route encoding, parsed at the edge in the request's authenticated
+`NetworkTag` context. The address is derived from and controlled by the one registered destination
+public key. Pending #60's canonical recipient-address and registered-key verification is
+authoritative. There is no separately issued mailbox ID, mailbox-encryption key, or stamp-payment
+key; mailbox addressing, read authority, and recipient stamp derivation remain roles of that one
+registered destination key.
+
+`inbox` is recipient-retained content; `outbox` includes the sender's authoritative self-sent bytes
+and delivery state; `recovery` exposes authenticated recovery facts, not secret material. A quote
+does not mutate the mailbox. A batch import consumes a bound authorization and emits ordinary
+journal events; it does not create an import-only replay stream.
 
 `sync` is the only authoritative mailbox catch-up cursor. It multiplexes inbox arrivals, outbox and
 delivery transitions, recovery changes, imports, and tombstones in one mailbox-scoped ordered
 journal. The three view routes may use bounded snapshot-page tokens, but those tokens are not replay
 cursors and cannot advance the `sync` checkpoint. A notification channel may wake a client with a
 newest-cursor hint, but cannot replace `sync` or invent a competing cursor. Authentication and the
-cursor both bind the exact `mailbox_identity`.
+cursor both bind the exact network-qualified `account_address`.
 
 ### Current-to-target matrix
 
@@ -155,10 +163,10 @@ cursor both bind the exact `mailbox_identity`.
 | `GET /metadata/monad/curated-defaults` | operator-curated contacts | `GET /monad/v1/profiles/curated-defaults` | bounded alias |
 | `PUT /message/monad` | submit a stamped private message | `PUT /monad/v1/mailbox/messages` | alias only after both paths use #60's one durable admission operation; never dual-write |
 | `GET /message/monad/:payload_hash` | unauthenticated retained-message lookup | authenticated `inbox`, `outbox`, or `recovery` view | removed security surface after #60; no alias and no canonical public hash lookup |
-| `GET /message/monad?since=...` | unauthenticated global timestamp feed | authenticated `GET /monad/v1/mailbox/sync/:mailbox_identity?cursor=...` | removed security surface after #60; no alias and no timestamp-cursor translation |
+| `GET /message/monad?since=...` | unauthenticated global timestamp feed | authenticated `GET /monad/v1/mailbox/sync/:account_address?cursor=...` | removed security surface after #60; no alias and no timestamp-cursor translation |
 | #60 private inbox/recovery/auth routes | authenticated private reads on reviewed legacy prefixes | canonical auth, inbox, recovery, and sync routes above | bounded aliases using identical authorization and opaque-cursor scope; never weaken auth while forwarding |
-| no current route | authenticated sender outbox/self-sent view | `GET /monad/v1/mailbox/outbox/:mailbox_identity` | canonical only; #60/#89 state is a prerequisite |
-| no current route | mailbox migration quote and authorized import | canonical `POST .../import/:mailbox_identity/{quote,batch}` routes above | canonical only; depends on accepted #65/#89 import authority and #135 encoding |
+| no current route | authenticated sender outbox/self-sent view | `GET /monad/v1/mailbox/outbox/:account_address` | canonical only; #60/#89 state is a prerequisite |
+| no current route | mailbox migration quote and authorized import | canonical `POST .../import/:account_address/{quote,batch}` routes above | canonical only; depends on accepted #65/#89 import authority and #135 encoding |
 | `PUT/GET /message/monad/topics` | submit/list topic posts | `PUT/GET /monad/v1/pubsub/posts` | bounded alias |
 | `GET /message/monad/topics/:payload_hash` | fetch one topic post | `GET /monad/v1/pubsub/posts/:payload_hash` | bounded alias |
 | `PUT /message/monad/topics/vote` | submit a topic vote | `PUT /monad/v1/pubsub/votes` | bounded alias |
@@ -211,6 +219,7 @@ Each adapter normalizes only the common event envelope:
 AdapterEvent {
   key: (source_network_tag, stream_kind, source_instance_id, source_event_id)
   source_order_key: adapter-defined immutable comparable bytes
+  event_commitment: domain-separated digest of canonical normalized event bytes
   presentation_time: { seconds: bigint, nanos: uint32 }
   relay_origin: authenticated origin record
   entries: opaque or decrypted entries with their own optional NetworkTags
@@ -224,10 +233,19 @@ relay node/source identity, not a configured URL or local adapter name. Time use
 seconds plus `0..999_999_999` nanoseconds, consistent with #106/#133; JavaScript represents seconds
 as `bigint`, never a `number` millisecond count.
 
+`event_commitment` is a domain-separated digest (for example,
+`frank:normalized-adapter-event:v1`) over the canonical normalized bytes containing the full
+four-part key, `source_order_key`, authenticated origin facts, and exact entry/native content. It
+also binds `presentation_time` when that time is an immutable source fact. Local render labels,
+relative-time strings, and any other mutable presentation-only field are excluded. The normalized
+schema and digest vectors land with F4 after #131 freezes canonical encoding. The commitment is
+persisted atomically with the event and cannot be recomputed from a lossy UI model.
+
 Each authoritative source stream is scoped by `(NetworkTag, stream_kind, source_instance_id,
 authorization_scope)`. Its adapter yields events in immutable `source_order_key` order. Mailbox
-authorization scope is the exact mailbox identity; selective pubsub scope is a subscription
-identity plus generation. A profile/public stream uses its declared query or global-feed scope.
+authorization scope is the exact network-qualified `account_address` controlled by the registered
+destination key; selective pubsub scope is a subscription identity plus generation. A
+profile/public stream uses its declared query or global-feed scope.
 
 ### Two-adapter example
 
@@ -235,15 +253,15 @@ Assume one Lotus mailbox source returns this authoritative sequence, including a
 presentation timestamp:
 
 ```text
-L1 key=(LTUS, mailbox, relay-L, lotus:0009) order=0009 time=(1720000000,900000000)
-L2 key=(LTUS, mailbox, relay-L, lotus:0010) order=0010 time=(1719999999,100000000)
+L1 key=(LTUS, mailbox, relay-L, lotus:0009) order=0009 commit=cL1 time=(1720000000,900000000)
+L2 key=(LTUS, mailbox, relay-L, lotus:0010) order=0010 commit=cL2 time=(1719999999,100000000)
 ```
 
 and one Monad mailbox source returns:
 
 ```text
-M1 key=(MONT, mailbox, relay-M, monad:0031) order=0031 time=(1720000000,100000000)
-M2 key=(MONT, mailbox, relay-M, monad:0032) order=0032 time=(1720000000,300000000)
+M1 key=(MONT, mailbox, relay-M, monad:0031) order=0031 commit=cM1 time=(1720000000,100000000)
+M2 key=(MONT, mailbox, relay-M, monad:0032) order=0032 commit=cM2 time=(1720000000,300000000)
 ```
 
 The deterministic presentation view is a k-way merge. Only the next unconsumed head of each source
@@ -260,6 +278,10 @@ because it is not eligible until `L1` is consumed. Every comparison has explicit
 response timing, locale, and JavaScript object iteration cannot affect the result. Presentation
 time is relay- or chain-authenticated metadata, never an untrusted timestamp inside encrypted
 content.
+
+If `relay-L` later returns the `L1` key with altered content and commitment `cL1-prime`, the fan-in
+does not treat it as a duplicate: it preserves the stored `L1/cL1`, quarantines that page, leaves
+the relay-L cursor unchanged, and marks relay-L stale/error.
 
 This is a deterministic materialized view, not a claim of cross-chain causality. If an outage later
 reveals an older source sequence, rebuilding the same set produces the same k-way order while
@@ -281,28 +303,34 @@ address, array index, or cursor. Exact observation identity is always the full `
 stream_kind, source_instance_id, source_event_id)` tuple; source-local identifiers from two relays
 therefore cannot collide.
 
-Exact retries deduplicate on the full `key`. A separate content digest may collapse equivalent
-content for presentation, but all distinct relay origins remain attached. If the same envelope is
-stamped independently on two chains, those are two source events even when their content digest is
-equal. Per-entry attribution always comes from that entry's tag; deduplication never overwrites it
-with `key.source_network_tag`.
+Exact retries first look up the full `key` and then compare `event_commitment`. Equal commitments
+are an idempotent retry. Reuse of an existing key with a different commitment is source
+equivocation or corruption: reject and quarantine the entire page, preserve the prior event, do
+not advance that source cursor, and mark the source stale/error for operator and client visibility.
+The merge must never overwrite the event or silently drop the conflicting body and advance.
+
+A separate content digest may collapse equivalent content for presentation, but all distinct relay
+origins remain attached. If the same envelope is stamped independently on two chains, those are
+two source events even when their content digest is equal. Per-entry attribution always comes from
+that entry's tag; deduplication never overwrites it with `key.source_network_tag`.
 
 ### Checkpoints, reconnect, and partial outage
 
 The durable fan-in checkpoint is a map keyed by `(NetworkTag, source_instance_id, stream_kind,
-authorization_scope)`. The authorization scope is the mailbox identity for mailbox sync, the
-subscription identity plus generation for selective pubsub, and the declared feed/query scope for
-profiles or other public streams. A local `adapter_id` is not cursor authority and is never used as
-a substitute for these fields. Each value is an adapter-owned opaque cursor plus its advertised
-high-water mark. The cursor and server authorization are bound to the complete key. The merge layer
-never decodes, compares, increments, re-scopes, or synthesizes cursors.
+authorization_scope)`. The authorization scope is the network-qualified `account_address` for
+mailbox sync, the subscription identity plus generation for selective pubsub, and the declared
+feed/query scope for profiles or other public streams. A local `adapter_id` is not cursor authority
+and is never used as a substitute for these fields. Each value is an adapter-owned opaque cursor
+plus its advertised high-water mark. The cursor and server authorization are bound to the complete
+key. The merge layer never decodes, compares, increments, re-scopes, or synthesizes cursors.
 
-For each page, validated event insertion, exact-key deduplication, origin attachment, and that
-adapter's cursor advance commit atomically. A crash before commit replays the page; a crash after
-commit resumes after it. On reconnect, the adapter resumes from its last committed cursor. If a
-relay reports cursor expiry or restart invalidation, the adapter follows its declared snapshot or
-safe-origin replay path and relies on stable keys for idempotence; it never falls back to
-`timestamp + 1`.
+For each page, canonical validation, commitment verification, event-plus-commitment insertion,
+exact-key/commitment deduplication, origin attachment, and that adapter's cursor advance commit
+atomically. Any unequal commitment for an existing key aborts and quarantines the page before the
+cursor transaction. A crash before commit replays the page; a crash after commit resumes after it.
+On reconnect, the adapter resumes from its last committed cursor. If a relay reports cursor expiry
+or restart invalidation, the adapter follows its declared snapshot or safe-origin replay path and
+relies on stable keys plus commitments for idempotence; it never falls back to `timestamp + 1`.
 
 An unavailable adapter does not stop healthy adapters. Its checkpoint remains unchanged, its
 source stream is marked stale with the last successful high-water mark and lossless timestamp, and
@@ -344,7 +372,7 @@ in this documentation ticket.
 | F1 — **refine #132 and #136 after #131** | In #132, define canonical-CBOR DM/message-item schemas with separate stamp, per-entry reference, and settlement roles plus discriminated EVM/UTXO references. In #136, apply the same attribution rule to topic entries that reference chains. Shared golden vectors include this composite fixture and reject NetworkTag/native-variant mismatch. | Preserve exact legacy bytes under their explicit legacy readers; never transcode them. Unknown supported CBOR item kinds remain opaque. No new protobuf schema or generated-binding work is prescribed here. |
 | F2 — **new issue: canonical route groups and aliases** | After #60 authentication/state prerequisites, add independently mountable profiles/mailbox/pubsub routers, the complete mailbox surface above, route integration tests, and the bounded non-security alias inventory. No storage-byte change. | Canonical routes are additive. Removal is a later landing after the three alias triggers pass. The two unauthenticated legacy GETs stay removed. |
 | F3 — **new issue: in-repository client route cutover** | Switch typed clients, wallet adapters, bots, frontend configuration, and live checks together; prove canonical-only client traffic against one binary with all three groups mounted and with each group disabled in turn. | Roll back clients while reviewed aliases remain. Successful live integration permits F5; there is no invented external waiting window. |
-| F4 — **new issue: multichain fan-in state and integration proof** | Introduce `MultichainEventView`, two real adapter instances, four-part exact observation keys, lossless timestamp vectors, k-way order tests with regressing times, complete authorization-scoped checkpoints, outage/reconnect/cursor-expiry tests, and per-entry attribution checks. | Requires an actual second adapter and accepted cursor contracts. Adapter/runtime restoration is its own prerequisite. The compile-time seam is removed only after all current consumers use fan-in. |
+| F4 — **new issue: multichain fan-in state and integration proof** | Introduce `MultichainEventView`, two real adapter instances, four-part exact observation keys, canonical event commitments, lossless timestamp vectors, k-way order tests with regressing times, complete authorization-scoped checkpoints, outage/reconnect/cursor-expiry tests, and per-entry attribution checks. A key-reuse/different-body fixture proves the prior event and cursor survive, the page is quarantined, and the source becomes stale/error. | Requires an actual second adapter and accepted cursor contracts. Adapter/runtime restoration is its own prerequisite. The compile-time seam is removed only after all current consumers use fan-in. |
 | F5 — **new issue: alias deletion** | After in-repo cutover and live proof, remove the bounded aliases. Repository scans and route tests prove old Monad routes are gone, the removed unauthenticated reads return `404`, unauthenticated canonical reads return `401`, Monad-form `/metadata/:addr` dispatch is gone, and Lotus-form `/metadata/:addr` still works. | Re-enable only the non-security alias inventory for rollback; never restore the global feed or public payload-hash lookup. |
 | Existing #65/#87/#88/#89/#111/#133/#135 work | Federation, import/delivery, public nanosecond records, and mailbox topology consume the boundaries here but retain their own authority, storage, authentication, encoding, and replication contracts. | None may infer an entry's network from relay provenance, expose mailbox records through public federation, or create a cursor outside the complete authorization scope. |
 

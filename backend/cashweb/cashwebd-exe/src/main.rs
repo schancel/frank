@@ -99,7 +99,14 @@ async fn main() -> Result<()> {
     if check_only {
         return Ok(());
     }
-    let outbox_config = Arc::new(MonadOutboxReconcileConfig::default());
+    let mut outbox_config = MonadOutboxReconcileConfig::default();
+    if let MonadMailboxMode::Enabled {
+        expected_chain_id, ..
+    } = &mailbox_mode
+    {
+        outbox_config.expected_chain_id = *expected_chain_id;
+    }
+    let outbox_config = Arc::new(outbox_config);
     outbox_config.validate()?;
 
     if let Some(parent) = conf
@@ -144,6 +151,7 @@ async fn main() -> Result<()> {
             MonadMailboxMode::Enabled {
                 rpc_url,
                 min_value_wei,
+                expected_chain_id: _,
             } => {
                 let transport = HttpTransport::new(rpc_url);
                 let runtime = MonadMailboxRuntime::enabled(

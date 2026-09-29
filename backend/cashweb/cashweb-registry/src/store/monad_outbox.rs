@@ -242,6 +242,8 @@ pub enum MonadOutboxClaim {
     Conflict,
     /// The configured active-claim bound was reached before writing anything.
     AtCapacity,
+    /// Capacity prevented migration, but the exact legacy row still durably owns these bytes.
+    AtCapacityExactLegacy,
 }
 
 /// Opaque durable generation authorizing one replay completion.
@@ -378,10 +380,6 @@ pub enum DbMonadOutboxError {
     #[invalid_user_input()]
     #[error("Monad outbox child {0} does not exist")]
     MemberNotFound(u32),
-    /// A private recovery cursor no longer names an exact recipient index row.
-    #[invalid_user_input()]
-    #[error("Private Monad recovery cursor is stale or belongs to another recipient")]
-    StalePrivateRecoveryCursor,
     /// One complete recovery record cannot fit within the caller's bounded materialization.
     #[invalid_user_input()]
     #[error("Private Monad recovery record requires {required} bytes, page budget is {maximum}")]
@@ -633,7 +631,11 @@ impl<'a> DbMonadOutbox<'a> {
         };
         validate_claim(&payload_hash, message, &canonical_message, &policy, limits)?;
         if self.active_count_up_to(limits.max_active_claims)? >= limits.max_active_claims {
-            return Ok(MonadOutboxClaim::AtCapacity);
+            return Ok(if adopted_legacy {
+                MonadOutboxClaim::AtCapacityExactLegacy
+            } else {
+                MonadOutboxClaim::AtCapacity
+            });
         }
 
         let record = MonadOutboxRecord {
@@ -687,6 +689,22 @@ impl<'a> DbMonadOutbox<'a> {
             .get(self.cf_outbox, payload_hash)?
             .map(|bytes| decode_record(&bytes))
             .transpose()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn replace_canonical_for_test(
+        &self,
+        payload_hash: &[u8],
+        message: &proto::MonadStampedMessage,
+    ) -> Result<()> {
+        let payload_hash = checked_payload_hash(payload_hash)?;
+        let _guard = self.db.lock_monad_outbox();
+        let mut record = self
+            .get(&payload_hash)?
+            .ok_or_else(|| CorruptRecord("test outbox row is missing".to_string()))?;
+        record.canonical_message = Some(message.encode_to_vec());
+        self.db
+            .put(self.cf_outbox, &payload_hash, encode_record(&record))
     }
 
     /// Decode the canonical request owned by an outbox record.
@@ -1179,7 +1197,10 @@ impl<'a> DbMonadOutbox<'a> {
         let mut record = self
             .get(&payload_hash)?
             .ok_or_else(|| CorruptRecord("terminal claim has no outbox row".to_string()))?;
-        if !matches!(record.lifecycle, MonadOutboxLifecycle::Pending) {
+        if !matches!(
+            record.lifecycle,
+            MonadOutboxLifecycle::Pending | MonadOutboxLifecycle::FullyConfirmed
+        ) {
             return Ok(MonadOutboxTransition::Stale);
         }
         record.lifecycle = MonadOutboxLifecycle::Terminal(terminal);
@@ -1405,9 +1426,9 @@ impl<'a> DbMonadOutbox<'a> {
 
     /// Scan one strict-forward, work-bounded recovery page ordered by payload hash.
     ///
-    /// A supplied cursor must still exist in this recipient's exact recovery index. The scan may
-    /// advance over rows with no confirmed prefix; `next_cursor` therefore names the last scanned
-    /// row, not necessarily the last returned row.
+    /// A supplied authenticated cursor is a lexicographic position and need not still exist. The
+    /// scan may advance over rows with no confirmed prefix; `next_cursor` therefore names the last
+    /// scanned row, not necessarily the last returned row.
     pub fn confirmed_prefixes_for_recipient_page(
         &self,
         recipient: &Address,
@@ -1427,13 +1448,7 @@ impl<'a> DbMonadOutbox<'a> {
         let _guard = self.db.lock_monad_outbox();
         let prefix = recipient.0;
         let start_key = match cursor {
-            Some(payload_hash) => {
-                let key = recipient_key(recipient, &payload_hash);
-                if self.db.get(self.cf_recipient, &key)?.is_none() {
-                    return Err(StalePrivateRecoveryCursor.into());
-                }
-                key.to_vec()
-            }
+            Some(payload_hash) => recipient_key(recipient, &payload_hash).to_vec(),
             None => prefix.to_vec(),
         };
         let mut recoveries: Vec<ConfirmedPrefixRecovery> = Vec::new();
@@ -2829,14 +2844,17 @@ mod tests {
             err.downcast_ref::<DbMonadOutboxError>(),
             Some(DbMonadOutboxError::RecoveryRecordExceedsPageBudget { .. })
         ));
-        let foreign = Address([0xfe; 20]);
-        let err = store
-            .confirmed_prefixes_for_recipient_page(&foreign, Some(recovered[0]), 1, 1, usize::MAX)
-            .unwrap_err();
-        assert!(matches!(
-            err.downcast_ref::<DbMonadOutboxError>(),
-            Some(DbMonadOutboxError::StalePrivateRecoveryCursor)
-        ));
+        store.confirm_observed_member(&requests[0].payload_hash, 1, 10, 2, 120)?;
+        assert!(store.mark_fully_confirmed(&requests[0].payload_hash, 130)?);
+        store.finalize_delivery(&requests[0].payload_hash, 140, &limits)?;
+        let after_deleted = store.confirmed_prefixes_for_recipient_page(
+            &policy().recipient,
+            Some(recovered[0]),
+            1,
+            1,
+            usize::MAX,
+        )?;
+        assert_eq!(after_deleted.recoveries[0].payload_hash, recovered[1]);
         Ok(())
     }
 

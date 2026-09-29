@@ -147,6 +147,7 @@ fn left_pad_32(bytes: &[u8]) -> Result<[u8; 32], EvmTxError> {
 /// to produce the signing digest, plus the decoded `(recovery_id, r, s)`.
 struct SigningMaterial {
     preimage: Vec<u8>,
+    chain_id: Option<u64>,
     recovery_id: i32,
     r: [u8; 32],
     s: [u8; 32],
@@ -157,6 +158,8 @@ struct SigningMaterial {
 pub struct DecodedSignedTransaction {
     /// Keccak256 hash of the signed raw bytes.
     pub tx_hash: crate::monad_http::Hash32,
+    /// EIP-155/EIP-1559 chain identity (`None` only for an unprotected legacy transaction).
+    pub chain_id: Option<u64>,
     /// ECDSA-recovered disposable funding account.
     pub sender: Address,
     /// Signed funding-account nonce.
@@ -270,6 +273,7 @@ fn decode_legacy(raw_tx: &[u8]) -> Result<SigningMaterial, EvmTxError> {
 
     Ok(SigningMaterial {
         preimage: stream.out().to_vec(),
+        chain_id,
         recovery_id,
         r,
         s,
@@ -291,6 +295,7 @@ fn decode_eip1559(payload: &[u8]) -> Result<SigningMaterial, EvmTxError> {
     }
 
     let y_parity: u64 = rlp.at(9)?.as_val()?;
+    let chain_id: u64 = rlp.at(0)?.as_val()?;
     let (r, s) = decode_r_s(&rlp, 10, 11)?;
 
     let mut stream = RlpStream::new();
@@ -303,6 +308,7 @@ fn decode_eip1559(payload: &[u8]) -> Result<SigningMaterial, EvmTxError> {
 
     Ok(SigningMaterial {
         preimage,
+        chain_id: Some(chain_id),
         recovery_id: y_parity as i32,
         r,
         s,
@@ -316,7 +322,7 @@ fn decode_eip1559(payload: &[u8]) -> Result<SigningMaterial, EvmTxError> {
 /// all: `raw_tx`'s own ECDSA signature (over its own RLP-encoded contents) *is* the proof of who
 /// sent it, recoverable without the sender ever having published their public key up front (per
 /// PLAN.md constraint 5).
-pub fn recover_sender(raw_tx: &[u8]) -> Result<Address, EvmTxError> {
+fn recover_sender_and_chain_id(raw_tx: &[u8]) -> Result<(Address, Option<u64>), EvmTxError> {
     let first_byte = *raw_tx.first().ok_or(EvmTxError::Empty)?;
     let signing_material = if first_byte == EIP1559_TYPE {
         decode_eip1559(&raw_tx[1..])?
@@ -336,15 +342,24 @@ pub fn recover_sender(raw_tx: &[u8]) -> Result<Address, EvmTxError> {
         .recover_sig(&compact_sig, signing_material.recovery_id, digest.into())
         .map_err(|err| EvmTxError::RecoveryFailed(format!("{err:?}")))?;
     let uncompressed = ecc.serialize_pubkey_uncompressed(&pubkey);
-    Ok(address_from_uncompressed_pubkey(&uncompressed))
+    Ok((
+        address_from_uncompressed_pubkey(&uncompressed),
+        signing_material.chain_id,
+    ))
+}
+
+/// Recover only the authenticated sender address from one supported signed transaction.
+pub fn recover_sender(raw_tx: &[u8]) -> Result<Address, EvmTxError> {
+    recover_sender_and_chain_id(raw_tx).map(|(sender, _)| sender)
 }
 
 /// Decode and authenticate all fields the relay can validate before it broadcasts anything.
 pub fn decode_signed_transaction(raw_tx: &[u8]) -> Result<DecodedSignedTransaction, EvmTxError> {
-    let sender = recover_sender(raw_tx)?;
+    let (sender, chain_id) = recover_sender_and_chain_id(raw_tx)?;
     let (nonce, destination, value_wei, input) = decode_transaction_fields(raw_tx)?;
     Ok(DecodedSignedTransaction {
         tx_hash: crate::monad_http::Hash32(keccak256(raw_tx)),
+        chain_id,
         sender,
         nonce,
         destination,
@@ -446,6 +461,7 @@ mod tests {
         assert_eq!(recovered, expected_sender);
         let decoded = decode_signed_transaction(&raw_tx).unwrap();
         assert_eq!(decoded.sender, expected_sender);
+        assert_eq!(decoded.chain_id, Some(41_454));
         assert_eq!(decoded.nonce, 0);
         assert_eq!(decoded.destination, Some(to));
         assert_eq!(decoded.value_wei, 10_000);

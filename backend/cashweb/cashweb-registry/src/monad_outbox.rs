@@ -10,6 +10,7 @@ use bitcoinsuite_core::{Hashed, Sha256};
 use bitcoinsuite_error::{bail, Result, WrapErr};
 use cashweb_payload::verify::BROADCAST_MESSAGE_LOKAD_ID;
 use futures::{stream, StreamExt};
+use prost::Message;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::{
@@ -30,6 +31,8 @@ const PAYMENT_COMMITMENT_DOMAIN: &[u8] = b"frank:dm-stamp-payment:v1";
 /// Bounded startup/background reconciliation settings.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MonadOutboxReconcileConfig {
+    /// EVM chain identity required by admission and rechecked during recovery.
+    pub expected_chain_id: u64,
     /// Durable storage bounds, including claim age/attempt budgets.
     pub limits: MonadOutboxLimits,
     /// Poll delay after an accepted or ambiguous replay.
@@ -57,6 +60,7 @@ pub struct MonadOutboxReconcileConfig {
 impl Default for MonadOutboxReconcileConfig {
     fn default() -> Self {
         Self {
+            expected_chain_id: 41_454,
             limits: MonadOutboxLimits::default(),
             poll_interval: Duration::from_millis(500),
             receipt_poll_attempts: 20,
@@ -170,7 +174,39 @@ where
         None => return Ok(MonadOutboxReconcileOutcome::Missing),
     };
     match record.lifecycle {
-        MonadOutboxLifecycle::Delivered | MonadOutboxLifecycle::FullyConfirmed => {
+        MonadOutboxLifecycle::Delivered => {
+            let stored = registry.get_monad_message(payload_hash)?.ok_or_else(|| {
+                crate::store::monad_outbox::DbMonadOutboxError::CorruptRecord(
+                    "delivered outbox row has no inbox owner".to_string(),
+                )
+            })?;
+            let message = stored.message.as_ref().ok_or_else(|| {
+                crate::store::monad_outbox::DbMonadOutboxError::CorruptRecord(
+                    "delivered inbox row has no canonical message".to_string(),
+                )
+            })?;
+            validate_persisted_message(message, payload_hash, config.expected_chain_id)?;
+            return Ok(MonadOutboxReconcileOutcome::Delivered(stored));
+        }
+        MonadOutboxLifecycle::FullyConfirmed => {
+            if let Err(err) =
+                validate_persisted_record(&record, payload_hash, config.expected_chain_id)
+            {
+                let transition = registry.terminal_monad_outbox_claim(
+                    payload_hash,
+                    MonadOutboxTerminal::CorruptReference,
+                    &err.to_string(),
+                    now_ms(),
+                    &config.limits,
+                )?;
+                return if transition == MonadOutboxTransition::Applied {
+                    Ok(MonadOutboxReconcileOutcome::Terminal(
+                        MonadOutboxTerminal::CorruptReference,
+                    ))
+                } else {
+                    current_outcome(registry, payload_hash, config)
+                };
+            }
             return Ok(MonadOutboxReconcileOutcome::Delivered(
                 registry.finalize_monad_outbox(payload_hash, now_ms(), &config.limits)?,
             ));
@@ -181,7 +217,25 @@ where
         MonadOutboxLifecycle::Pending => {}
     }
 
-    let message = crate::store::monad_outbox::DbMonadOutbox::canonical_message(&record)?;
+    let message = match validate_persisted_record(&record, payload_hash, config.expected_chain_id) {
+        Ok(message) => message,
+        Err(err) => {
+            let transition = registry.terminal_monad_outbox_claim(
+                payload_hash,
+                MonadOutboxTerminal::CorruptReference,
+                &err.to_string(),
+                now_ms(),
+                &config.limits,
+            )?;
+            return if transition == MonadOutboxTransition::Applied {
+                Ok(MonadOutboxReconcileOutcome::Terminal(
+                    MonadOutboxTerminal::CorruptReference,
+                ))
+            } else {
+                current_outcome(registry, payload_hash, config)
+            };
+        }
+    };
     for payment in &message.stamp_payments {
         let (loaded_record, member, raw_tx) =
             match registry.monad_outbox_referenced_raw_tx(payload_hash, payment.child_index) {
@@ -441,6 +495,61 @@ where
     ))
 }
 
+fn validate_persisted_record(
+    record: &crate::store::monad_outbox::MonadOutboxRecord,
+    payload_hash: &[u8],
+    expected_chain_id: u64,
+) -> Result<proto::MonadStampedMessage> {
+    let message = crate::store::monad_outbox::DbMonadOutbox::canonical_message(record)?;
+    let canonical = record.canonical_message.as_deref().expect("decoded above");
+    if message.encode_to_vec() != canonical {
+        bail!("persisted canonical request uses a noncanonical protobuf encoding");
+    }
+    validate_persisted_message(&message, payload_hash, expected_chain_id)?;
+    Ok(message)
+}
+
+fn validate_persisted_message(
+    message: &proto::MonadStampedMessage,
+    payload_hash: &[u8],
+    expected_chain_id: u64,
+) -> Result<()> {
+    let key: [u8; 32] = payload_hash.try_into().map_err(|_| {
+        crate::store::monad_outbox::DbMonadOutboxError::InvalidPayloadHashLength(payload_hash.len())
+    })?;
+    if message.payload_hash.as_slice() != key {
+        bail!("persisted row key differs from embedded payload hash");
+    }
+    let actual = Sha256::digest(message.encrypted_payload.clone().into());
+    if actual.as_slice() != key {
+        bail!("persisted payload hash differs from SHA256(encrypted_payload)");
+    }
+    for (position, payment) in message.stamp_payments.iter().enumerate() {
+        if payment.child_index as usize != position {
+            bail!(
+                "persisted child index {} is noncanonical",
+                payment.child_index
+            );
+        }
+        let decoded = decode_signed_transaction(&payment.raw_tx)
+            .wrap_err("decoding persisted signed payment")?;
+        if decoded.chain_id != Some(expected_chain_id) {
+            bail!(
+                "persisted payment chain ID {:?} differs from expected {}",
+                decoded.chain_id,
+                expected_chain_id
+            );
+        }
+        let commitment = parse_commitment_calldata(BROADCAST_MESSAGE_LOKAD_ID, &decoded.input)
+            .wrap_err("decoding persisted payment commitment")?;
+        let expected = payment_commitment(&key, payment.child_index);
+        if commitment != expected {
+            bail!("persisted payment commitment differs from canonical payload hash");
+        }
+    }
+    Ok(())
+}
+
 fn current_outcome(
     registry: &Registry,
     payload_hash: &[u8],
@@ -449,15 +558,47 @@ fn current_outcome(
     Ok(match registry.monad_outbox_record(payload_hash)? {
         None => MonadOutboxReconcileOutcome::Missing,
         Some(record) => match record.lifecycle {
-            MonadOutboxLifecycle::Delivered => MonadOutboxReconcileOutcome::Delivered(
-                registry.finalize_monad_outbox(payload_hash, now_ms(), &config.limits)?,
-            ),
+            MonadOutboxLifecycle::Delivered => {
+                let stored = registry.get_monad_message(payload_hash)?.ok_or_else(|| {
+                    crate::store::monad_outbox::DbMonadOutboxError::CorruptRecord(
+                        "delivered outbox row has no inbox owner".to_string(),
+                    )
+                })?;
+                let message = stored.message.as_ref().ok_or_else(|| {
+                    crate::store::monad_outbox::DbMonadOutboxError::CorruptRecord(
+                        "delivered inbox row has no canonical message".to_string(),
+                    )
+                })?;
+                validate_persisted_message(message, payload_hash, config.expected_chain_id)?;
+                MonadOutboxReconcileOutcome::Delivered(stored)
+            }
             MonadOutboxLifecycle::Terminal(terminal) => {
                 MonadOutboxReconcileOutcome::Terminal(terminal)
             }
-            MonadOutboxLifecycle::FullyConfirmed => MonadOutboxReconcileOutcome::Delivered(
-                registry.finalize_monad_outbox(payload_hash, now_ms(), &config.limits)?,
-            ),
+            MonadOutboxLifecycle::FullyConfirmed => {
+                if let Err(err) =
+                    validate_persisted_record(&record, payload_hash, config.expected_chain_id)
+                {
+                    let transition = registry.terminal_monad_outbox_claim(
+                        payload_hash,
+                        MonadOutboxTerminal::CorruptReference,
+                        &err.to_string(),
+                        now_ms(),
+                        &config.limits,
+                    )?;
+                    if transition == MonadOutboxTransition::Applied {
+                        MonadOutboxReconcileOutcome::Terminal(MonadOutboxTerminal::CorruptReference)
+                    } else {
+                        return current_outcome(registry, payload_hash, config);
+                    }
+                } else {
+                    MonadOutboxReconcileOutcome::Delivered(registry.finalize_monad_outbox(
+                        payload_hash,
+                        now_ms(),
+                        &config.limits,
+                    )?)
+                }
+            }
             MonadOutboxLifecycle::Pending => MonadOutboxReconcileOutcome::Pending,
         },
     })
@@ -1214,7 +1355,7 @@ mod tests {
                 .unwrap();
             let nonce = 0;
             let (raw_tx, sender) =
-                signed_eip1559_tx(&seckey, 10_143, nonce, Address(child.address), 10, &input);
+                signed_eip1559_tx(&seckey, 41_454, nonce, Address(child.address), 10, &input);
             transport.insert(TxSpec {
                 raw_tx: raw_tx.clone(),
                 sender,
@@ -1908,6 +2049,37 @@ mod tests {
         assert!(err
             .to_string()
             .contains("initial Monad outbox reconciliation failed"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn persisted_payload_hash_corruption_is_terminal_before_rpc_or_publication() -> Result<()>
+    {
+        let tempdir = tempdir::TempDir::new("monad-outbox-payload-corruption")?;
+        let registry = registry(&tempdir.path().join("db.rocksdb"));
+        let (request, policy, transport) = fixture(&[SendBehavior::Accept], &[true]);
+        let config = fast_config();
+        assert!(matches!(
+            registry.claim_monad_outbox(&request, &policy, now_ms(), &config.limits)?,
+            MonadOutboxClaim::New
+        ));
+        let mut corrupted = request.clone();
+        corrupted.encrypted_payload.push(0xff);
+        registry.replace_monad_outbox_canonical_for_test(&request.payload_hash, &corrupted)?;
+
+        assert_eq!(
+            reconcile_monad_outbox(&transport, &registry, &request.payload_hash, &config).await?,
+            MonadOutboxReconcileOutcome::Terminal(MonadOutboxTerminal::CorruptReference)
+        );
+        assert!(transport.calls().is_empty());
+        assert!(registry.get_monad_message(&request.payload_hash)?.is_none());
+        assert!(matches!(
+            registry
+                .monad_outbox_record(&request.payload_hash)?
+                .unwrap()
+                .lifecycle,
+            MonadOutboxLifecycle::Terminal(MonadOutboxTerminal::CorruptReference)
+        ));
         Ok(())
     }
 

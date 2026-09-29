@@ -69,6 +69,9 @@ pub struct MonadMailboxConf {
     /// Aggregate direct-message stamp minimum, as a decimal string because TOML has no `u128`.
     /// Required exactly when the mailbox is enabled.
     pub min_value_wei: Option<String>,
+    /// EIP-155/EIP-1559 chain ID every signed stamp payment must carry.
+    /// Required exactly when the mailbox is enabled.
+    pub expected_chain_id: Option<u64>,
 }
 
 /// Validated mailbox mode consumed once, before database open or socket readiness.
@@ -82,6 +85,8 @@ pub enum MonadMailboxMode {
         rpc_url: url::Url,
         /// Validated aggregate direct-message stamp minimum.
         min_value_wei: u128,
+        /// Required EVM chain identity for signed stamp payments.
+        expected_chain_id: u64,
     },
 }
 
@@ -94,6 +99,8 @@ pub enum MonadMailboxConfigError {
     InvalidRpcUrl,
     /// Enabled mode omitted or malformed its aggregate stamp minimum.
     InvalidMinValueWei,
+    /// Enabled mode omitted its expected EVM chain identity.
+    MissingExpectedChainId,
 }
 
 impl fmt::Display for MonadMailboxConfigError {
@@ -107,6 +114,9 @@ impl fmt::Display for MonadMailboxConfigError {
             ),
             Self::InvalidMinValueWei => f.write_str(
                 "registry.monad_mailbox.min_value_wei must be a decimal u128 when the mailbox is enabled",
+            ),
+            Self::MissingExpectedChainId => f.write_str(
+                "registry.monad_mailbox.expected_chain_id is required when the mailbox is enabled",
             ),
         }
     }
@@ -133,9 +143,13 @@ impl MonadMailboxConf {
             .ok_or(MonadMailboxConfigError::InvalidMinValueWei)?
             .parse()
             .map_err(|_| MonadMailboxConfigError::InvalidMinValueWei)?;
+        let expected_chain_id = self
+            .expected_chain_id
+            .ok_or(MonadMailboxConfigError::MissingExpectedChainId)?;
         Ok(MonadMailboxMode::Enabled {
             rpc_url,
             min_value_wei,
+            expected_chain_id,
         })
     }
 }
@@ -319,6 +333,7 @@ mod tests {
                         enabled: false,
                         rpc_url: None,
                         min_value_wei: None,
+                        expected_chain_id: None,
                     },
                     curated_defaults: vec![],
                 },
@@ -391,6 +406,7 @@ mod tests {
                         enabled: false,
                         rpc_url: None,
                         min_value_wei: None,
+                        expected_chain_id: None,
                     },
                     curated_defaults: vec![],
                 },
@@ -495,6 +511,7 @@ mod tests {
                 enabled: false,
                 rpc_url: None,
                 min_value_wei: None,
+                expected_chain_id: None,
             }
             .mode()
             .unwrap(),
@@ -504,6 +521,7 @@ mod tests {
             enabled: true,
             rpc_url: None,
             min_value_wei: Some("1".to_string()),
+            expected_chain_id: Some(41454),
         }
         .mode()
         .is_err());
@@ -513,16 +531,28 @@ mod tests {
                 enabled: true,
                 rpc_url: Some(rpc_url.clone()),
                 min_value_wei: Some("1000".to_string()),
+                expected_chain_id: Some(41454),
             }
             .mode()
             .unwrap(),
             MonadMailboxMode::Enabled {
                 rpc_url,
                 min_value_wei: 1000,
+                expected_chain_id: 41454,
             }
         );
         let missing: MonadMailboxConf = toml::from_str("enabled = true").unwrap();
         assert!(missing.mode().is_err());
+        assert_eq!(
+            MonadMailboxConf {
+                enabled: true,
+                rpc_url: Some("https://rpc.example".parse().unwrap()),
+                min_value_wei: Some("1".to_string()),
+                expected_chain_id: None,
+            }
+            .mode(),
+            Err(MonadMailboxConfigError::MissingExpectedChainId)
+        );
         assert!(toml::from_str::<MonadMailboxConf>(
             "enabled = true\nrpc_url = 'this is not a URL'"
         )
@@ -537,6 +567,7 @@ mod tests {
                     enabled: true,
                     rpc_url: Some(rejected.parse().unwrap()),
                     min_value_wei: Some("1".to_string()),
+                    expected_chain_id: Some(41454),
                 }
                 .mode(),
                 Err(MonadMailboxConfigError::InvalidRpcUrl)

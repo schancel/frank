@@ -18,7 +18,7 @@ use crate::{
 type HmacSha256 = Hmac<Sha256>;
 
 const CHALLENGE_TTL_MS: i64 = 60_000;
-const MAX_USED_CHALLENGES_GLOBAL: usize = 1024;
+const MAX_REPLAY_RECIPIENTS: usize = 256;
 const MAX_USED_CHALLENGES_PER_RECIPIENT: usize = 8;
 const CHALLENGE_MAC_DOMAIN: &[u8] = b"frank:mailbox-challenge-mac:v1\0";
 const CURSOR_MAC_DOMAIN: &[u8] = b"frank:mailbox-cursor-mac:v1\0";
@@ -150,17 +150,29 @@ pub struct MailboxChallenge {
 
 #[derive(Debug, Clone, Copy)]
 struct UsedChallenge {
-    recipient: Address,
     expires_at_ms: i64,
+}
+
+#[derive(Debug, Default)]
+struct RecipientReplayState {
+    nonces: HashMap<[u8; 32], UsedChallenge>,
+    last_used: u64,
+}
+
+#[derive(Debug, Default)]
+struct ReplayState {
+    recipients: HashMap<Address, RecipientReplayState>,
+    sequence: u64,
 }
 
 #[derive(Debug)]
 struct MailboxAuthState {
     epoch: [u8; 32],
     secret: [u8; 32],
-    // Anonymous challenge issuance is stateless. Only a recipient-authenticated successful use
-    // enters this bounded replay set.
-    used: Mutex<HashMap<[u8; 32], UsedChallenge>>,
+    // Anonymous issuance is stateless. Successful uses occupy at most 256 recipient buckets with
+    // eight nonces each. Expired buckets are collected first; a new authenticated principal
+    // evicts the least-recently-used bucket rather than being rejected by unrelated principals.
+    used: Mutex<ReplayState>,
 }
 
 impl MailboxAuthState {
@@ -172,7 +184,7 @@ impl MailboxAuthState {
         Self {
             epoch,
             secret,
-            used: Mutex::new(HashMap::new()),
+            used: Mutex::new(ReplayState::default()),
         }
     }
 
@@ -232,26 +244,59 @@ impl MailboxAuthState {
         challenge: MailboxChallenge,
         now_ms: i64,
     ) -> bool {
-        let mut used = self
+        if challenge.epoch != self.epoch || challenge.expires_at_ms < now_ms {
+            return false;
+        }
+        let mut replay = self
             .used
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        used.retain(|_, entry| entry.expires_at_ms >= now_ms);
-        if used.contains_key(&challenge.nonce)
-            || used.len() >= MAX_USED_CHALLENGES_GLOBAL
-            || used
-                .values()
-                .filter(|entry| entry.recipient == recipient)
-                .count()
-                >= MAX_USED_CHALLENGES_PER_RECIPIENT
-        {
+        replay.recipients.retain(|_, state| {
+            state
+                .nonces
+                .retain(|_, entry| entry.expires_at_ms >= now_ms);
+            !state.nonces.is_empty()
+        });
+        replay.sequence = replay.sequence.wrapping_add(1);
+        let sequence = replay.sequence;
+        if let Some(state) = replay.recipients.get_mut(&recipient) {
+            if state.nonces.contains_key(&challenge.nonce)
+                || state.nonces.len() >= MAX_USED_CHALLENGES_PER_RECIPIENT
+            {
+                return false;
+            }
+            state.last_used = sequence;
+            state.nonces.insert(
+                challenge.nonce,
+                UsedChallenge {
+                    expires_at_ms: challenge.expires_at_ms,
+                },
+            );
+            return true;
+        }
+        if replay.recipients.len() >= MAX_REPLAY_RECIPIENTS {
+            if let Some(oldest) = replay
+                .recipients
+                .iter()
+                .min_by_key(|(_, state)| state.last_used)
+                .map(|(recipient, _)| *recipient)
+            {
+                replay.recipients.remove(&oldest);
+            }
+        }
+        if replay.recipients.len() >= MAX_REPLAY_RECIPIENTS {
             return false;
         }
-        used.insert(
-            challenge.nonce,
-            UsedChallenge {
-                recipient,
-                expires_at_ms: challenge.expires_at_ms,
+        replay.recipients.insert(
+            recipient,
+            RecipientReplayState {
+                nonces: HashMap::from([(
+                    challenge.nonce,
+                    UsedChallenge {
+                        expires_at_ms: challenge.expires_at_ms,
+                    },
+                )]),
+                last_used: sequence,
             },
         );
         true
@@ -276,17 +321,22 @@ impl MailboxAuthState {
         resource: MailboxResource,
         encoded: &str,
     ) -> Option<MailboxCursor> {
-        let bytes = hex::decode(encoded).ok()?;
         let position_len = match resource {
             MailboxResource::Inbox => 8 + 32,
             MailboxResource::Recovery => 32,
         };
         let unsigned_len = 2 + 20 + position_len;
-        if bytes.len() != unsigned_len + 32
-            || bytes[0] != CURSOR_VERSION
-            || bytes[1] != resource.tag()
-            || bytes[2..22] != recipient.0
-        {
+        let decoded_len = unsigned_len + 32;
+        if encoded.len() != decoded_len * 2 {
+            return None;
+        }
+        // The longest cursor is the inbox form: version/resource + recipient + timestamp/hash
+        // position + MAC. Validate encoded length before touching a decoder so attacker-sized
+        // query strings never drive proportional heap allocation.
+        let mut decoded = [0u8; 94];
+        hex::decode_to_slice(encoded, &mut decoded[..decoded_len]).ok()?;
+        let bytes = &decoded[..decoded_len];
+        if bytes[0] != CURSOR_VERSION || bytes[1] != resource.tag() || bytes[2..22] != recipient.0 {
             return None;
         }
         let mut preimage = Vec::with_capacity(CURSOR_MAC_DOMAIN.len() + unsigned_len);
@@ -359,6 +409,11 @@ impl EnabledMonadMailboxRuntime {
     /// Validated network tag for newly admitted envelopes.
     pub fn network_tag(&self) -> &[u8] {
         &self.network_tag
+    }
+
+    /// Required EVM chain identity shared by admission and recovery.
+    pub fn expected_chain_id(&self) -> u64 {
+        self.reconcile.expected_chain_id
     }
 
     /// Issue a stateless short-lived challenge bound to the complete future request.
@@ -460,7 +515,7 @@ mod tests {
         let enabled = runtime.as_enabled().unwrap();
         let recipient = Address([3; 20]);
         let request = binding(recipient);
-        for _ in 0..(MAX_USED_CHALLENGES_GLOBAL * 2) {
+        for _ in 0..(MAX_REPLAY_RECIPIENTS * MAX_USED_CHALLENGES_PER_RECIPIENT * 2) {
             let challenge = enabled.issue_challenge(&request, 0);
             assert!(enabled.verify_challenge(&request, challenge, 0));
         }
@@ -469,6 +524,7 @@ mod tests {
             .used
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .recipients
             .is_empty());
 
         for _ in 0..MAX_USED_CHALLENGES_PER_RECIPIENT {
@@ -480,22 +536,38 @@ mod tests {
     }
 
     #[test]
-    fn authenticated_used_state_has_global_cap_without_anonymous_reservations() {
+    fn authenticated_replay_state_is_bounded_without_cross_recipient_rejection() {
         let runtime = runtime();
         let enabled = runtime.as_enabled().unwrap();
-        for recipient_index in 0..(MAX_USED_CHALLENGES_GLOBAL / MAX_USED_CHALLENGES_PER_RECIPIENT) {
+        let victim = Address([0xff; 20]);
+        let victim_challenge = enabled.issue_challenge(&binding(victim), 0);
+        assert!(enabled.mark_challenge_used(victim, victim_challenge, 0));
+        for recipient_index in 0..128 {
             let mut address = [0u8; 20];
             address[..8].copy_from_slice(&(recipient_index as u64).to_be_bytes());
             let recipient = Address(address);
             let request = binding(recipient);
-            for _ in 0..MAX_USED_CHALLENGES_PER_RECIPIENT {
-                let challenge = enabled.issue_challenge(&request, 0);
-                assert!(enabled.mark_challenge_used(recipient, challenge, 0));
-            }
+            let challenge = enabled.issue_challenge(&request, 0);
+            assert!(enabled.mark_challenge_used(recipient, challenge, 0));
         }
-        let recipient = Address([0xff; 20]);
-        let challenge = enabled.issue_challenge(&binding(recipient), 0);
-        assert!(!enabled.mark_challenge_used(recipient, challenge, 0));
+        assert!(!enabled.mark_challenge_used(victim, victim_challenge, 0));
+        for recipient_index in 128..(MAX_REPLAY_RECIPIENTS + 64) {
+            let mut address = [0u8; 20];
+            address[..8].copy_from_slice(&(recipient_index as u64).to_be_bytes());
+            let recipient = Address(address);
+            let challenge = enabled.issue_challenge(&binding(recipient), 0);
+            assert!(enabled.mark_challenge_used(recipient, challenge, 0));
+        }
+        assert!(
+            enabled
+                .auth
+                .used
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .recipients
+                .len()
+                <= MAX_REPLAY_RECIPIENTS
+        );
     }
 
     #[test]
@@ -547,6 +619,10 @@ mod tests {
         );
         assert_eq!(
             enabled.decode_cursor(Address([4; 20]), MailboxResource::Inbox, "not-hex"),
+            None
+        );
+        assert_eq!(
+            enabled.decode_cursor(Address([4; 20]), MailboxResource::Inbox, &"aa".repeat(4096),),
             None
         );
     }

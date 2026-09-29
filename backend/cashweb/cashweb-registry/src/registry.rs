@@ -2,6 +2,9 @@
 
 use std::sync::Arc;
 
+#[cfg(test)]
+use std::cell::Cell;
+
 use bitcoinsuite_core::{ecc::Ecc, lotus_txid, Bytes, Hashed, LotusAddress, Net, Sha256d};
 use bitcoinsuite_ecc_secp256k1::EccSecp256k1;
 use bitcoinsuite_error::{ErrorMeta, Result};
@@ -19,6 +22,21 @@ use crate::{
     proto::{self, BroadcastMessage},
     store::{db::Db, pubkeyhash::PubKeyHash},
 };
+
+#[cfg(test)]
+thread_local! {
+    static RECIPIENT_SIGNATURE_WORK: Cell<usize> = const { Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_recipient_signature_work() {
+    RECIPIENT_SIGNATURE_WORK.set(0);
+}
+
+#[cfg(test)]
+pub(crate) fn recipient_signature_work() -> usize {
+    RECIPIENT_SIGNATURE_WORK.get()
+}
 
 /// Cashweb [`Registry`] stores [`SignedPayload`]s containing [`proto::AddressMetadata`] for
 /// addresses.
@@ -539,6 +557,17 @@ impl Registry {
         self.db.monad_outbox().get(payload_hash)
     }
 
+    #[cfg(test)]
+    pub(crate) fn replace_monad_outbox_canonical_for_test(
+        &self,
+        payload_hash: &[u8],
+        message: &proto::MonadStampedMessage,
+    ) -> Result<()> {
+        self.db
+            .monad_outbox()
+            .replace_canonical_for_test(payload_hash, message)
+    }
+
     /// Read one hash-only child state in focused recovery tests.
     #[cfg(test)]
     pub(crate) fn monad_outbox_member(
@@ -833,6 +862,8 @@ impl Registry {
     where
         F: FnOnce(),
     {
+        #[cfg(test)]
+        RECIPIENT_SIGNATURE_WORK.set(RECIPIENT_SIGNATURE_WORK.get() + 1);
         let profile = self.db.monad_profiles().get(&recipient)?;
         let registered = profile.is_some();
         let candidate = profile.map(|profile| profile.pubkey).unwrap_or_else(|| {

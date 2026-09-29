@@ -416,8 +416,8 @@ impl<'a> DbMonadMessages<'a> {
 
     /// List a strict-forward page from one recipient journal.
     ///
-    /// Keys are ordered by `(timestamp, payload_hash)`. A supplied cursor must still exist under
-    /// this exact recipient and must not precede `since`. At most `limit + 1` index rows and
+    /// Keys are ordered by `(timestamp, payload_hash)`. A supplied authenticated cursor need not
+    /// still exist, but must not precede `since`. At most `limit + 1` index rows and
     /// `limit` primary records are examined. The byte budget is the exact protobuf response size;
     /// a record is either returned whole or rejected as too large.
     pub fn list_for_recipient_since_capped(
@@ -440,16 +440,7 @@ impl<'a> DbMonadMessages<'a> {
                 if cursor.timestamp < since {
                     return Err(StalePrivateCursor.into());
                 }
-                let key = by_recipient_time_key(recipient, cursor.timestamp, &cursor.payload_hash);
-                let indexed = self
-                    .db
-                    .get(self.cf_monad_messages_by_recipient_time, &key)?
-                    .filter(|indexed| indexed.as_ref() == cursor.payload_hash)
-                    .is_some();
-                if !indexed {
-                    return Err(StalePrivateCursor.into());
-                }
-                key
+                by_recipient_time_key(recipient, cursor.timestamp, &cursor.payload_hash)
             }
             None => by_recipient_time_key(recipient, since, &[]),
         };
@@ -873,16 +864,21 @@ mod tests {
         }
         assert_eq!(hashes, vec![1, 3, 2]);
 
-        let foreign_cursor = super::RecipientMessageCursor {
+        let deleted_position = super::RecipientMessageCursor {
             timestamp: 100,
-            payload_hash: [9; 32],
+            payload_hash: [2; 32],
         };
-        let err = store
-            .list_for_recipient_since_capped(&recipient, 0, Some(foreign_cursor), 1, usize::MAX)
-            .unwrap_err();
+        let continued = store.list_for_recipient_since_capped(
+            &recipient,
+            0,
+            Some(deleted_position),
+            1,
+            usize::MAX,
+        )?;
         assert_eq!(
-            err.downcast_ref::<super::DbMonadMessagesError>(),
-            Some(&super::DbMonadMessagesError::StalePrivateCursor)
+            continued.messages[0].message.as_ref().unwrap().payload_hash,
+            vec![3; 32],
+            "a lexicographic cursor remains usable after its row was deleted"
         );
         Ok(())
     }

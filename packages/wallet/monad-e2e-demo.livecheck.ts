@@ -151,111 +151,106 @@ async function main() {
     ),
     createSeedIfEmpty: true,
   })
-  const { pool } = walletState
-  await new MonadStampClient(
-    createMonadStampWalletHandle({
-      walletState,
-      provider,
-      httpClient,
-      relayBaseUrl,
-    })
-  ).reconcileOrThrow()
-  pool.ensureUnfundedSize(1)
-
-  const gasReserve = BigInt('20000000000000000') // 0.02 MON headroom for gas fees
-  console.log('\n== Funding sub-account 0 from the main account ==')
-  const [funded] = await pool.fundAll({
-    mainAccountSigner,
-    burnValue: minStampValueWei,
-    gasReserve,
-  })
-  console.log(
-    `Funded ${funded.address} with ${funded.fundedValue} wei, tx ${funded.txHash}`
-  )
-  await waitForConfirmation(mainAccountSigner, funded.txHash, 'funding tx')
-  console.log('Funding tx confirmed on-chain.')
-
-  // --- 2. Build the (opaque, unencrypted-for-this-demo -- see file header) message payload. ---
-  const message = {
-    from: mainWallet.address,
-    to: recipientIdentity.address.raw,
-    demo: 'ticket-8-e2e-demo',
-    text: 'Hello over Monad testnet via a real Stamp payment + cashweb-registry relay.',
-    sentAt: new Date().toISOString(),
-  }
-  const encryptedPayload = new TextEncoder().encode(JSON.stringify(message))
-
-  // --- 3. Stamp + relay the message. ---
-  const stampClient = new MonadStampClient(
-    createMonadStampWalletHandle({
-      walletState,
-      provider,
-      httpClient,
-      relayBaseUrl,
-    })
-  )
-
-  console.log('\n== Submitting the stamped message to the relay ==')
-  const result = await stampClient.submitStampedMessage({
-    encryptedPayload,
-    recipientPublicKey: recipientIdentity.compressedPubKey,
-    stampValueWei: minStampValueWei,
-  })
-
-  console.log('Relay accepted the message.')
-  console.log(`  payload_hash: ${result.payloadHashHex}`)
-  console.log(`  stamp tx hashes: ${result.txHashes.join(', ')}`)
-  console.log(
-    `  sub-accounts leased: ${result.leaseIndices.join(
-      ', '
-    )} (now 'spent', never reused)`
-  )
-
-  // The successful PUT response itself carries the exact retained message authority. The public
-  // relay intentionally has no payload-hash GET endpoint; crash recovery replays these exact bytes.
-  const retainedText = new TextDecoder().decode(
-    result.stored.message?.encryptedPayload
-  )
-  console.log(
-    `Retained payload matches: ${retainedText === JSON.stringify(message)}`
-  )
-  const fetchedTxHashes =
-    fetched.message?.stampPayments.map(
-      (payment) => Transaction.from(hexlify(payment.rawTx)).hash
-    ) ?? []
-  const fetchedDestinations =
-    fetched.message?.stampPayments.map(
-      (payment) => Transaction.from(hexlify(payment.rawTx)).to
-    ) ?? []
-  console.log(
-    `Fetched stamp tx hashes match: ${
-      JSON.stringify(fetchedTxHashes) === JSON.stringify(result.txHashes)
-    }`
-  )
-
-  // --- Hand off the broadcast tx hash for independent, separate-process on-chain verification. ---
-  const handoffPath = resolve(process.cwd(), '/tmp/e2e-demo-stamp-tx.json')
-  writeFileSync(
-    handoffPath,
-    JSON.stringify(
-      {
-        txHash: result.txHashes[0],
-        payloadHashHex: result.payloadHashHex,
-        paymentDestinations: fetchedDestinations,
-      },
-      null,
-      2
+  try {
+    const { pool } = walletState
+    const stampClient = new MonadStampClient(
+      createMonadStampWalletHandle({
+        walletState,
+        provider,
+        httpClient,
+        relayBaseUrl,
+      })
     )
-  )
-  console.log(
-    `\nWrote handoff file for independent verification: ${handoffPath}`
-  )
-  console.log(
-    'Run: node /tmp/monad-e2e-demo/verify-onchain-tx.livecheck.js ' +
-      result.txHashes[0]
-  )
-  console.log('\nAll steps completed.')
-  await walletState.close()
+    await stampClient.reconcileOrThrow()
+
+    const gasReserve = BigInt('20000000000000000') // 0.02 MON headroom for gas fees
+    console.log('\n== Preparing durable stamp inventory ==')
+    const preparation = await pool.prepareStampInventory({
+      mainAccountSigner,
+      provider,
+      stampValueWei: minStampValueWei,
+      gasReserveWei: gasReserve,
+    })
+    console.log(
+      `Inventory ready; funding txs: ${preparation.fundingTxHashes.join(', ')}`
+    )
+
+    // --- 2. Build the (opaque, unencrypted-for-this-demo -- see file header) message payload. ---
+    const message = {
+      from: mainWallet.address,
+      to: recipientIdentity.address.raw,
+      demo: 'ticket-8-e2e-demo',
+      text: 'Hello over Monad testnet via a real Stamp payment + cashweb-registry relay.',
+      sentAt: new Date().toISOString(),
+    }
+    const encryptedPayload = new TextEncoder().encode(JSON.stringify(message))
+
+    // --- 3. Stamp + relay the message. ---
+    console.log('\n== Submitting the stamped message to the relay ==')
+    const result = await stampClient.submitStampedMessage({
+      encryptedPayload,
+      recipientPublicKey: recipientIdentity.compressedPubKey,
+      stampValueWei: minStampValueWei,
+    })
+
+    console.log('Relay accepted the message.')
+    console.log(`  payload_hash: ${result.payloadHashHex}`)
+    console.log(`  stamp tx hashes: ${result.txHashes.join(', ')}`)
+    console.log(
+      `  sub-accounts leased: ${result.leaseIndices.join(
+        ', '
+      )} (now 'spent', never reused)`
+    )
+
+    // The successful PUT response itself carries the exact retained message authority. The public
+    // relay intentionally has no payload-hash GET endpoint; crash recovery replays these exact bytes.
+    const retainedMessage = result.stored.message
+    if (retainedMessage === undefined) {
+      throw new Error('relay success omitted the retained stamped message')
+    }
+    const retainedText = new TextDecoder().decode(
+      retainedMessage.encryptedPayload
+    )
+    console.log(
+      `Retained payload matches: ${retainedText === JSON.stringify(message)}`
+    )
+    const retainedTxHashes = retainedMessage.stampPayments.map(
+      (payment) => Transaction.from(hexlify(payment.rawTx)).hash
+    )
+    const retainedDestinations = retainedMessage.stampPayments.map(
+      (payment) => Transaction.from(hexlify(payment.rawTx)).to
+    )
+    console.log(
+      `Retained stamp tx hashes match: ${
+        JSON.stringify(retainedTxHashes) === JSON.stringify(result.txHashes)
+      }`
+    )
+
+    // --- Hand off the broadcast tx hash for independent, separate-process on-chain verification. ---
+    const handoffPath = resolve(process.cwd(), '/tmp/e2e-demo-stamp-tx.json')
+    writeFileSync(
+      handoffPath,
+      JSON.stringify(
+        {
+          txHash: result.txHashes[0],
+          payloadHashHex: result.payloadHashHex,
+          paymentDestinations: retainedDestinations,
+        },
+        null,
+        2
+      )
+    )
+    console.log(
+      `\nWrote handoff file for independent verification: ${handoffPath}`
+    )
+    console.log(
+      'Run: node /tmp/monad-e2e-demo/verify-onchain-tx.livecheck.js ' +
+        result.txHashes[0]
+    )
+    console.log('\nAll steps completed.')
+  } finally {
+    await walletState.close()
+  }
 }
 
 main().catch((err) => {

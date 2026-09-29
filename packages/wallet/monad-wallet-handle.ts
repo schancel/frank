@@ -17,6 +17,7 @@ import { MonadTxSubmitter } from './monad-account-tx'
 import { MonadChangePool } from './monad-change-pool'
 import type { StampPaymentJournal } from './storage/stamp-payment-journal'
 import type { StampAttemptJournal } from './storage/stamp-attempt-journal'
+import type { TopicOperationJournal } from './storage/topic-operation-journal'
 import {
   assertMonadWalletBundleProvenance,
   type MonadWalletPersistenceBundle,
@@ -35,6 +36,8 @@ export interface MonadWalletHandle {
   stampPaymentJournal?: StampPaymentJournal
   /** Durable exact raw payment sets awaiting a definitive relay success. */
   stampAttemptJournal?: StampAttemptJournal
+  /** Exact byte authority for crash-replayable topic posts and votes. */
+  topicOperationJournal?: TopicOperationJournal
   /** Complete wallet-owned persistence authority. Production stamp composition supplies this so
    * pools and journals cannot be assembled from unrelated roots. */
   walletState?: MonadWalletPersistenceBundle
@@ -96,6 +99,7 @@ export function unsafeCreateMonadStampWalletHandleForTests(
       changePool: params.changePool,
       stampAttemptJournal: params.stampAttemptJournal,
       stampPaymentJournal: params.stampPaymentJournal,
+      topicOperationJournal: params.topicOperationJournal,
       assertOpen: () => undefined,
       runOperation: <T>(operation: () => Promise<T>): Promise<T> => operation(),
       assertNoOrphanedLeases: () => undefined,
@@ -108,7 +112,9 @@ export function unsafeCreateMonadStampWalletHandleForTests(
     walletState.leaseManager !== params.leaseManager ||
     walletState.changePool !== params.changePool ||
     walletState.stampAttemptJournal !== params.stampAttemptJournal ||
-    walletState.stampPaymentJournal !== params.stampPaymentJournal
+    walletState.stampPaymentJournal !== params.stampPaymentJournal ||
+    (params.topicOperationJournal !== undefined &&
+      walletState.topicOperationJournal !== params.topicOperationJournal)
   ) {
     throw new Error(
       'Monad wallet components do not belong to one persistence bundle'

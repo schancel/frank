@@ -34,6 +34,7 @@ import {
   InMemoryStampAttemptJournal,
   StampAttemptJournal,
 } from './storage/stamp-attempt-journal'
+import { createInMemoryMonadWalletBundle } from './storage/monad-wallet-bundle'
 import {
   MonadStampAbandonedError,
   MonadStampAuthorityAuditRequiredError,
@@ -621,6 +622,71 @@ describe('MonadStampClient.submitStampedMessage', () => {
     ).toBe(recovered[0].address)
   })
 
+  it('automatically compacts a bounded eligible terminal batch after durable success', async () => {
+    const bundle = createInMemoryMonadWalletBundle({ mnemonic: TEST_MNEMONIC })
+    bundle.pool.ensureSize(2)
+    const funder = Wallet.createRandom()
+    for (let index = 0; index < 2; index++) {
+      const record = bundle.pool.getRecord(index)!
+      const rawTx = await funder.signTransaction({
+        to: record.address,
+        value: 10_000n,
+        nonce: index,
+        gasLimit: 21_000n,
+        gasPrice: 1n,
+        chainId: CHAIN_ID,
+      })
+      bundle.pool.recordFundingTransaction(index, {
+        rawTx,
+        txHash: Transaction.from(rawTx).hash as string,
+        valueWei: '10000',
+      })
+    }
+    jest.spyOn(bundle.changePool, 'sweepToChange').mockResolvedValue({
+      swept: false,
+      reason: 'below-dust-threshold',
+      balanceWei: 1n,
+      dustThresholdWei: 2n,
+    })
+    const provider = makeCapacityProvider([6_000n, 6_000n])
+    const httpClient = makeMockHttpClient()
+    const client = MonadStampClient.unsafeCreateForTests({
+      pool: bundle.pool,
+      leaseManager: bundle.leaseManager,
+      provider,
+      httpClient,
+      changePool: bundle.changePool,
+      stampAttemptJournal: bundle.stampAttemptJournal,
+      stampPaymentJournal: bundle.stampPaymentJournal,
+      topicOperationJournal: bundle.topicOperationJournal,
+      walletState: bundle,
+      relayBaseUrl: 'https://relay.example.com/',
+    })
+    mockedAxios.mockImplementationOnce(async (config) => {
+      const sent = decodeMonadStampedMessage(
+        new Uint8Array(config.data as Buffer)
+      )
+      return {
+        data: storedMessageBytes(sent),
+        status: 200,
+        statusText: 'OK',
+        headers: {},
+        config,
+      }
+    })
+
+    await client.submitStampedMessage({
+      encryptedPayload: new TextEncoder().encode('compact after success'),
+      recipientPublicKey: RECIPIENT_PUBLIC_KEY,
+      stampValueWei: 10_000n,
+      overrides: FEE_OVERRIDES,
+    })
+
+    expect(bundle.stampAttemptJournal.getAll()).toEqual([])
+    expect(bundle.pool.records()).toEqual([])
+    expect(bundle.pool.terminalCheckpoints()).toHaveLength(2)
+  })
+
   it('retires the sub-account and throws MonadStampRejectedError on an HTTP error response', async () => {
     const { client, pool } = makeClient()
     mockedAxios.mockImplementationOnce(async () => {
@@ -1051,7 +1117,10 @@ describe('MonadStampClient.submitStampedMessage', () => {
       })
 
       await expect(
-        makeClient({ pool, stampAttemptJournal }).client.resumePendingAttempts()
+        makeClient({
+          pool,
+          stampAttemptJournal,
+        }).client.resumePendingAttempts()
       ).resolves.toEqual([])
       expect(stampAttemptJournal.getAll()).toHaveLength(expectedAttempts)
       if (retained) {
@@ -1279,6 +1348,45 @@ describe('MonadStampClient.submitStampedMessage', () => {
     ).rejects.toThrow(MonadStampRecoveredAttemptError)
 
     expect(mockedAxios).toHaveBeenCalledTimes(2)
+    expect(stampAttemptJournal.getAll()).toEqual([])
+  })
+
+  it('treats a successfully recovered startup attempt as usable startup state', async () => {
+    const stampAttemptJournal = new InMemoryStampAttemptJournal()
+    const { client } = makeClient({
+      pool: makePool(4),
+      stampAttemptJournal,
+    })
+    const payload = new TextEncoder().encode('startup retained message')
+    mockedAxios.mockRejectedValueOnce({
+      isAxiosError: true,
+      response: {
+        status: 400,
+        data: { exact_set_retained: true },
+      },
+    })
+    await expect(
+      client.submitStampedMessage({
+        encryptedPayload: payload,
+        recipientPublicKey: RECIPIENT_PUBLIC_KEY,
+        stampValueWei: 10_000n,
+        overrides: FEE_OVERRIDES,
+      })
+    ).rejects.toThrow(MonadStampPendingAttemptError)
+
+    mockedAxios.mockImplementationOnce(async (config) => {
+      const replayed = decodeMonadStampedMessage(
+        new Uint8Array(config.data as Buffer)
+      )
+      return {
+        data: storedMessageBytes(replayed),
+        status: 200,
+        statusText: 'OK',
+        headers: {},
+        config,
+      }
+    })
+    await expect(client.reconcileStartupOrThrow()).resolves.toBeUndefined()
     expect(stampAttemptJournal.getAll()).toEqual([])
   })
 

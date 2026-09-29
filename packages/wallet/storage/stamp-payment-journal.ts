@@ -4,6 +4,7 @@ import { join } from 'path'
 import { getAddress, getBytes, Transaction } from 'ethers'
 import { deriveMonadStampChildPublic } from '../monad-stamp-stealth'
 import { validateWalletComponentBeforeOpen } from './wallet-root-guard'
+import { durableBatch, durablePut, openDurableLevel } from './level-durability'
 
 const WALLET_BINDING_KEY = '__wallet_binding__'
 
@@ -278,7 +279,11 @@ export class LevelStampPaymentJournal implements StampPaymentJournal {
       false
     )
     this.openedDb = level(this.dbLocation)
-    await (this.openedDb as any).open()
+    await openDurableLevel(
+      this.openedDb,
+      this.rootLocation,
+      'stamp-payment-journal'
+    )
     let storedBindingId: string | undefined
     for await (const [dbKey, value] of this.db.iterator({}) as any) {
       if (dbKey === WALLET_BINDING_KEY) {
@@ -333,7 +338,7 @@ export class LevelStampPaymentJournal implements StampPaymentJournal {
       }
       assertPaymentAuthorityShape(record)
     }
-    await (this.db as any).batch([
+    await durableBatch(this.db, [
       { type: 'put', key: WALLET_BINDING_KEY, value: this.expectedBindingId },
       ...resolvedLegacyRecords.map((record) => ({
         type: 'put' as const,
@@ -381,7 +386,7 @@ export class LevelStampPaymentJournal implements StampPaymentJournal {
       assertPaymentAuthorityShape(record)
       const recordKey = key(record.payloadHashHex, record.childIndex)
       assertMonotonicPaymentRecord(this.records.get(recordKey), record)
-      await this.db.put(recordKey, JSON.stringify(record))
+      await durablePut(this.db, recordKey, JSON.stringify(record))
       this.records.set(recordKey, cloneRecord(record))
     })
   }
@@ -396,7 +401,8 @@ export class LevelStampPaymentJournal implements StampPaymentJournal {
       this.assertMutationAllowed()
       const staged = preflightDiscoveredSet(this.records, records)
       if (staged.size > 0) {
-        await (this.db as any).batch(
+        await durableBatch(
+          this.db,
           Array.from(staged, ([recordKey, record]) => ({
             type: 'put' as const,
             key: recordKey,
@@ -431,7 +437,7 @@ export class LevelStampPaymentJournal implements StampPaymentJournal {
               assertLockedRecordIdentity(recordKey, record)
               assertPaymentAuthorityShape(record)
               assertMonotonicPaymentRecord(this.records.get(recordKey), record)
-              await this.db.put(recordKey, JSON.stringify(record))
+              await durablePut(this.db, recordKey, JSON.stringify(record))
               this.records.set(recordKey, cloneRecord(record))
             }, true),
         }

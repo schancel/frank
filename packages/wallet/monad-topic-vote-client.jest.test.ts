@@ -60,7 +60,7 @@ function makePool(size = 2): MonadSubAccountPool {
 }
 
 function makeStubProvider(
-  perform: (req: { method: string }) => Promise<unknown>,
+  perform: (req: { method: string }) => Promise<unknown>
 ) {
   const provider = new JsonRpcProvider('http://127.0.0.1:1', CHAIN_ID, {
     staticNetwork: true,
@@ -80,7 +80,7 @@ function makeMockHttpClient(): jest.Mocked<MonadTxSubmitter> {
 
 function makeChainProvider() {
   let nonce = 0
-  return makeStubProvider(async req => {
+  return makeStubProvider(async (req) => {
     if (req.method === 'getTransactionCount')
       return `0x${(nonce++).toString(16)}`
     if (req.method === 'estimateGas') return '0x5208'
@@ -89,7 +89,7 @@ function makeChainProvider() {
 }
 
 function storedVoteEntryBytes(
-  entry: StoredMonadTopicVoteEntryProto,
+  entry: StoredMonadTopicVoteEntryProto
 ): Uint8Array {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const jspb = require('google-protobuf')
@@ -100,6 +100,23 @@ function storedVoteEntryBytes(
   writer.writeInt64(4, entry.timestamp)
   writer.writeSint64(5, entry.weight)
   return writer.getResultBuffer()
+}
+
+function matchingStoredVoteEntryBytes(
+  vote: MonadTopicVoteProto,
+  direction: 'up' | 'down'
+): Uint8Array {
+  const transaction = Transaction.from(hexOf(vote.rawBurnTx))
+  return storedVoteEntryBytes({
+    targetPayloadHash: vote.targetPayloadHash,
+    senderAddress: getBytes(transaction.from as string),
+    txHash: getBytes(transaction.hash as string),
+    timestamp: 1_700_000_000_000,
+    weight:
+      direction === 'up'
+        ? Number(transaction.value)
+        : -Number(transaction.value),
+  })
 }
 
 function makeClient(overrides?: { pool?: MonadSubAccountPool }) {
@@ -187,7 +204,7 @@ describe('calldata construction', () => {
 
   it('rejects a commitment that is not exactly 32 bytes', () => {
     expect(() => buildMonadTopicVoteCalldata('up', new Uint8Array(31))).toThrow(
-      /32 bytes/,
+      /32 bytes/
     )
   })
 
@@ -198,7 +215,7 @@ describe('calldata construction', () => {
     const targetPayloadHash = new Uint8Array(32).fill(0x42)
     const calldata = buildMonadTopicVoteCalldata('up', targetPayloadHash)
     expect(Array.from(getBytes(calldata).slice(6))).toEqual(
-      Array.from(targetPayloadHash),
+      Array.from(targetPayloadHash)
     )
   })
 })
@@ -245,7 +262,7 @@ describe('MonadTopicVoteClient.castVote', () => {
     // returning `undefined` -- give it a real implementation so `castVote`'s
     // `axios.isAxiosError(err)` branches work the same way they would against the real library.
     mockedAxios.isAxiosError.mockImplementation(
-      (e: unknown) => (e as { isAxiosError?: boolean })?.isAxiosError === true,
+      (e: unknown) => (e as { isAxiosError?: boolean })?.isAxiosError === true
     )
   })
 
@@ -272,7 +289,7 @@ describe('MonadTopicVoteClient.castVote', () => {
       ;(mockedAxios as unknown as jest.Mock).mockImplementationOnce(
         async (config: any) => {
           const sent = decodeMonadTopicVote(
-            new Uint8Array(config.data as Buffer),
+            new Uint8Array(config.data as Buffer)
           )
           exactRawTx = hexOf(sent.rawBurnTx)
           expect(
@@ -326,6 +343,162 @@ describe('MonadTopicVoteClient.castVote', () => {
     }
   })
 
+  it.each(['relay-stored', 'relay-not-stored'] as const)(
+    'replays the exact durable vote after a lost response (%s)',
+    async () => {
+      const parent = mkdtempSync(join(tmpdir(), 'monad-topic-vote-replay-'))
+      const location = join(parent, 'wallet')
+      let first: Awaited<ReturnType<typeof openMonadWalletBundle>> | undefined
+      let reopened:
+        | Awaited<ReturnType<typeof openMonadWalletBundle>>
+        | undefined
+      try {
+        first = await openMonadWalletBundle({
+          location,
+          seed: { mnemonic: TEST_MNEMONIC },
+          mode: 'create',
+        })
+        await fundPersistentPool(first.pool)
+        const provider = makeChainProvider()
+        const httpClient = makeMockHttpClient()
+        const handle = {
+          pool: first.pool,
+          leaseManager: first.leaseManager,
+          provider,
+          httpClient,
+          changePool: first.changePool,
+          stampPaymentJournal: first.stampPaymentJournal,
+          stampAttemptJournal: first.stampAttemptJournal,
+          topicOperationJournal: first.topicOperationJournal,
+          walletState: first,
+          relayBaseUrl: 'https://relay.example.com/',
+        }
+        let exactRequest: Uint8Array | undefined
+        mockedAxios.mockImplementationOnce(async (config) => {
+          expect(first?.topicOperationJournal.getAll()).toHaveLength(1)
+          exactRequest = new Uint8Array(config.data as Buffer)
+          throw Object.assign(new Error('lost response'), {
+            isAxiosError: true,
+            response: undefined,
+          })
+        })
+        await expect(
+          new MonadTopicVoteClient(handle).castVote({
+            targetPayloadHash: TARGET_PAYLOAD_HASH,
+            direction: 'down',
+            burnAddress: BURN_ADDRESS,
+            voteWeightWei: 10_000n,
+            overrides: FEE_OVERRIDES,
+          })
+        ).rejects.toThrow(MonadTopicVoteAbandonedError)
+        expect(first.topicOperationJournal.getAll()).toHaveLength(1)
+        expect(first.pool.getRecord(0)?.status).toBe('in-use')
+        const staged = first.pool.getRecord(0)!
+        const { spend: _spend, ...retainedLifecycle } = staged.lifecycle ?? {}
+        first.pool.applyPrevalidatedRecoveryRecords([
+          { ...staged, lifecycle: retainedLifecycle },
+        ])
+        await first.pool.flush()
+        expect(first.pool.getRecord(0)?.lifecycle?.spend).toBeUndefined()
+        await first.close()
+        first = undefined
+
+        reopened = await openMonadWalletBundle({
+          location,
+          seed: { mnemonic: TEST_MNEMONIC },
+        })
+        const replayed: Uint8Array[] = []
+        mockedAxios.mockImplementationOnce(async (config) => {
+          expect(reopened?.pool.getRecord(0)?.lifecycle?.spend).toBeDefined()
+          const bytes = new Uint8Array(config.data as Buffer)
+          replayed.push(bytes)
+          const vote = decodeMonadTopicVote(bytes)
+          return {
+            data: matchingStoredVoteEntryBytes(vote, 'down'),
+            status: 200,
+            statusText: 'OK',
+            headers: {},
+            config,
+          }
+        })
+        await new MonadTopicVoteClient({
+          ...handle,
+          pool: reopened.pool,
+          leaseManager: reopened.leaseManager,
+          changePool: reopened.changePool,
+          stampPaymentJournal: reopened.stampPaymentJournal,
+          stampAttemptJournal: reopened.stampAttemptJournal,
+          topicOperationJournal: reopened.topicOperationJournal,
+          walletState: reopened,
+        }).resumePendingOperations()
+        expect(replayed).toHaveLength(1)
+        expect(replayed[0]).toEqual(exactRequest)
+        expect(reopened.topicOperationJournal.getAll()).toEqual([])
+        expect(reopened.pool.getRecord(0)?.status).toBe('spent')
+      } finally {
+        await first?.close().catch(() => undefined)
+        await reopened?.close().catch(() => undefined)
+        rmSync(parent, { recursive: true, force: true })
+      }
+    }
+  )
+
+  it('retains durable authority when a valid 2xx vote response is mismatched', async () => {
+    const parent = mkdtempSync(join(tmpdir(), 'monad-topic-vote-mismatch-'))
+    const location = join(parent, 'wallet')
+    const bundle = await openMonadWalletBundle({
+      location,
+      seed: { mnemonic: TEST_MNEMONIC },
+      mode: 'create',
+    })
+    try {
+      await fundPersistentPool(bundle.pool)
+      const provider = makeChainProvider()
+      const httpClient = makeMockHttpClient()
+      mockedAxios.mockImplementationOnce(async (config) => {
+        const vote = decodeMonadTopicVote(new Uint8Array(config.data as Buffer))
+        return {
+          data: storedVoteEntryBytes({
+            targetPayloadHash: vote.targetPayloadHash,
+            senderAddress: getBytes('0x' + '11'.repeat(20)),
+            txHash: getBytes('0x' + '22'.repeat(32)),
+            timestamp: 1,
+            weight: 10_000,
+          }),
+          status: 200,
+          statusText: 'OK',
+          headers: {},
+          config,
+        }
+      })
+      await expect(
+        new MonadTopicVoteClient({
+          pool: bundle.pool,
+          leaseManager: bundle.leaseManager,
+          provider,
+          httpClient,
+          changePool: bundle.changePool,
+          stampPaymentJournal: bundle.stampPaymentJournal,
+          stampAttemptJournal: bundle.stampAttemptJournal,
+          topicOperationJournal: bundle.topicOperationJournal,
+          walletState: bundle,
+          relayBaseUrl: 'https://relay.example.com/',
+        }).castVote({
+          targetPayloadHash: TARGET_PAYLOAD_HASH,
+          direction: 'up',
+          burnAddress: BURN_ADDRESS,
+          voteWeightWei: 10_000n,
+          overrides: FEE_OVERRIDES,
+        })
+      ).rejects.toThrow(MonadTopicVoteAbandonedError)
+      expect(bundle.topicOperationJournal.getAll()).toHaveLength(1)
+      expect(bundle.pool.getRecord(0)?.status).toBe('in-use')
+    } finally {
+      await bundle.close()
+      rmSync(parent, { recursive: true, force: true })
+    }
+  })
+
   it('signs the exact vote weight as the tx value -- not merely a minimum', async () => {
     // This is the whole point of a vote vs. a stamp burn (see this file's/module's header): the
     // burned value itself IS the weight. Use a deliberately odd, non-round value to prove nothing
@@ -333,9 +506,9 @@ describe('MonadTopicVoteClient.castVote', () => {
     const { client } = makeClient()
     const oddWeightWei = 123_456_789_012_345n
 
-    mockedAxios.mockImplementationOnce(async config => {
+    mockedAxios.mockImplementationOnce(async (config) => {
       const sentVote = decodeMonadTopicVote(
-        new Uint8Array(config.data as Buffer),
+        new Uint8Array(config.data as Buffer)
       )
       const parsed = Transaction.from(hexOf(sentVote.rawBurnTx))
       // The exact wei value signed into the tx must equal the requested vote weight exactly.
@@ -371,16 +544,16 @@ describe('MonadTopicVoteClient.castVote', () => {
   it('PUTs the assembled MonadTopicVote referencing the target payload_hash and releases the lease as confirmed on 2xx', async () => {
     const { client, pool } = makeClient()
 
-    mockedAxios.mockImplementationOnce(async config => {
+    mockedAxios.mockImplementationOnce(async (config) => {
       expect(config.method).toBe('put')
       expect(config.url).toBe(
-        'https://relay.example.com/message/monad/topics/vote',
+        'https://relay.example.com/message/monad/topics/vote'
       )
       expect(config.headers).toEqual({
         'Content-Type': 'application/x-protobuf',
       })
       const sentVote = decodeMonadTopicVote(
-        new Uint8Array(config.data as Buffer),
+        new Uint8Array(config.data as Buffer)
       )
       expect(sentVote.targetPayloadHash).toEqual(TARGET_PAYLOAD_HASH)
 
@@ -389,7 +562,7 @@ describe('MonadTopicVoteClient.castVote', () => {
       const parsed = Transaction.from(hexOf(sentVote.rawBurnTx))
       expect(getBytes(parsed.data).slice(6)).toEqual(TARGET_PAYLOAD_HASH)
       expect(getBytes(parsed.data).slice(0, 4)).toEqual(
-        new Uint8Array([0x54, 0x50, 0x49, 0x43]),
+        new Uint8Array([0x54, 0x50, 0x49, 0x43])
       )
       expect(getBytes(parsed.data)[5]).toBe(0x01) // up-vote
       expect(parsed.value).toBe(10_000n)
@@ -429,9 +602,9 @@ describe('MonadTopicVoteClient.castVote', () => {
   it('encodes a down-vote direction byte in the signed calldata', async () => {
     const { client } = makeClient()
 
-    mockedAxios.mockImplementationOnce(async config => {
+    mockedAxios.mockImplementationOnce(async (config) => {
       const sentVote = decodeMonadTopicVote(
-        new Uint8Array(config.data as Buffer),
+        new Uint8Array(config.data as Buffer)
       )
       const parsed = Transaction.from(hexOf(sentVote.rawBurnTx))
       expect(getBytes(parsed.data)[5]).toBe(0x00) // down-vote
@@ -480,11 +653,11 @@ describe('MonadTopicVoteClient.castVote', () => {
         burnAddress: BURN_ADDRESS,
         voteWeightWei: 10_000n,
         overrides: FEE_OVERRIDES,
-      }),
+      })
     ).rejects.toThrow(MonadTopicVoteRejectedError)
 
     // Every sub-account in the pool must now be 'retired' (only one was leased; find it).
-    const retired = pool.records().filter(r => r.status === 'retired')
+    const retired = pool.records().filter((r) => r.status === 'retired')
     expect(retired).toHaveLength(1)
   })
 
@@ -505,12 +678,12 @@ describe('MonadTopicVoteClient.castVote', () => {
         burnAddress: BURN_ADDRESS,
         voteWeightWei: 10_000n,
         overrides: FEE_OVERRIDES,
-      }),
+      })
     ).rejects.toThrow(MonadTopicVoteAbandonedError)
 
     // Unlike `monad-stamp-client.ts`, there is no fallback GET poll available in this ticket's
     // scope -- a network failure always retires immediately, never confirms.
-    const retired = pool.records().filter(r => r.status === 'retired')
+    const retired = pool.records().filter((r) => r.status === 'retired')
     expect(retired).toHaveLength(1)
   })
 
@@ -526,11 +699,11 @@ describe('MonadTopicVoteClient.castVote', () => {
         burnAddress: 'not-an-address',
         voteWeightWei: 10_000n,
         overrides: FEE_OVERRIDES,
-      }),
+      })
     ).rejects.toThrow()
 
     expect(mockedAxios).not.toHaveBeenCalled()
-    const retired = pool.records().filter(r => r.status === 'retired')
+    const retired = pool.records().filter((r) => r.status === 'retired')
     expect(retired).toHaveLength(1)
   })
 
@@ -544,11 +717,11 @@ describe('MonadTopicVoteClient.castVote', () => {
         burnAddress: BURN_ADDRESS,
         voteWeightWei: 10_000n,
         overrides: FEE_OVERRIDES,
-      }),
+      })
     ).rejects.toThrow(/32 bytes/)
 
     // No lease should have been acquired/consumed at all.
-    expect(pool.records().every(r => r.status === 'available')).toBe(true)
+    expect(pool.records().every((r) => r.status === 'available')).toBe(true)
   })
 
   it('rejects a negative voteWeightWei before leasing anything', async () => {
@@ -561,10 +734,10 @@ describe('MonadTopicVoteClient.castVote', () => {
         burnAddress: BURN_ADDRESS,
         voteWeightWei: -1n,
         overrides: FEE_OVERRIDES,
-      }),
+      })
     ).rejects.toThrow(/nonnegative/)
 
-    expect(pool.records().every(r => r.status === 'available')).toBe(true)
+    expect(pool.records().every((r) => r.status === 'available')).toBe(true)
   })
 })
 

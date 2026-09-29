@@ -65,7 +65,11 @@
 import { Provider } from 'ethers'
 
 import { MonadChangeKeyring } from './monad-change-keyring'
-import { MonadAccountTxSigner, MonadTxOverrides } from './monad-account-tx'
+import {
+  MonadAccountTxSigner,
+  MonadTxOverrides,
+  type MonadTxSubmitter,
+} from './monad-account-tx'
 import {
   AccountLeaseHandle,
   AwaitLeaseSettlementParams,
@@ -79,8 +83,10 @@ import {
   ChangeAccountRecord,
   ChangePoolStore,
   ChangeSweepIntent,
+  RecoveredChangeAccount,
   InMemoryChangePoolStore,
 } from './storage/change-pool-storage'
+import type { MonadWalletOperationAdmission } from './storage/monad-wallet-bundle'
 
 export type {
   ChangeAccountRecord,
@@ -150,6 +156,10 @@ export type ChangeSweepOutcome =
 export class MonadChangePool {
   private readonly keyring: MonadChangeKeyring
   private readonly store: ChangePoolStore
+  private walletOperationGate?: <T>(
+    operation: (admission: MonadWalletOperationAdmission) => Promise<T>,
+    admission?: MonadWalletOperationAdmission
+  ) => Promise<T>
 
   constructor(params: {
     keyring: MonadChangeKeyring
@@ -157,6 +167,18 @@ export class MonadChangePool {
   }) {
     this.keyring = params.keyring
     this.store = params.store ?? new InMemoryChangePoolStore()
+  }
+
+  attachWalletOperationGate(
+    gate: <T>(
+      operation: (admission: MonadWalletOperationAdmission) => Promise<T>,
+      admission?: MonadWalletOperationAdmission
+    ) => Promise<T>
+  ): void {
+    if (this.walletOperationGate !== undefined) {
+      throw new Error('Change pool already has a wallet operation gate')
+    }
+    this.walletOperationGate = gate
   }
 
   /** The next change index that has never had a sweep land on it. */
@@ -167,6 +189,33 @@ export class MonadChangePool {
   /** Every change record actually swept into existence so far, sorted by index. */
   records(): ChangeAccountRecord[] {
     return this.store.getAll()
+  }
+
+  recoveredAccounts(): RecoveredChangeAccount[] {
+    return this.store.getRecoveredAccounts()
+  }
+
+  /** Persists a complete chain-scanned restore snapshot before the root is bound. */
+  applyRecoveredAccounts(records: readonly RecoveredChangeAccount[]): void {
+    this.store.putRecoveredAccounts(records)
+  }
+
+  getRecoveredSigner(
+    index: number,
+    params: { provider: Provider; httpClient: MonadTxSubmitter }
+  ): MonadAccountTxSigner {
+    if (
+      !this.store
+        .getRecoveredAccounts()
+        .some((record) => record.index === index)
+    ) {
+      throw new Error(`No recovered change account at index ${index}`)
+    }
+    return new MonadAccountTxSigner({
+      privateKey: this.keyring.deriveChangeAccount(index).privateKey,
+      provider: params.provider,
+      httpClient: params.httpClient,
+    })
   }
 
   getRecord(index: number): ChangeAccountRecord | undefined {
@@ -245,24 +294,47 @@ export class MonadChangePool {
    * below for the composed lease-release path, which *does* catch it (as `reason: 'sweep-error'`)
    * so a transient sweep failure never undoes an already-successful lease release.
    */
-  async sweepToChange(params: {
-    /** The just-spent burn sub-account's index, recorded on the resulting `ChangeAccountRecord`
-     * purely for audit/observability (see that interface's doc comment). */
-    burnIndex: number
-    burnAddress: string
-    /** Signer for the burn account at `burnAddress` -- e.g. `MonadSubAccountPool.getSigner
-     * (burnIndex, { provider, httpClient })`. Used to build/sign/submit the sweep transfer. */
-    burnAccountSigner: MonadAccountTxSigner
-    /** ethers `Provider` used to read `burnAddress`'s real on-chain balance and (unless
-     * `dustThresholdWei` is given) current fee data. Same "separate `Provider` handle" pattern
-     * `monad-account-tx.ts`/`monad-account-pool.ts` already use for chain reads
-     * `MonadHttpClient` doesn't expose. */
-    provider: Provider
-    /** Overrides `estimateDustThresholdWei`'s computed value -- mainly for tests/determinism, or
-     * a caller with its own fee-cost model. */
-    dustThresholdWei?: bigint
-    overrides?: MonadTxOverrides
-  }): Promise<ChangeSweepOutcome> {
+  async sweepToChange(
+    params: {
+      /** The just-spent burn sub-account's index, recorded on the resulting `ChangeAccountRecord`
+       * purely for audit/observability (see that interface's doc comment). */
+      burnIndex: number
+      burnAddress: string
+      /** Signer for the burn account at `burnAddress` -- e.g. `MonadSubAccountPool.getSigner
+       * (burnIndex, { provider, httpClient })`. Used to build/sign/submit the sweep transfer. */
+      burnAccountSigner: MonadAccountTxSigner
+      /** ethers `Provider` used to read `burnAddress`'s real on-chain balance and (unless
+       * `dustThresholdWei` is given) current fee data. Same "separate `Provider` handle" pattern
+       * `monad-account-tx.ts`/`monad-account-pool.ts` already use for chain reads
+       * `MonadHttpClient` doesn't expose. */
+      provider: Provider
+      /** Overrides `estimateDustThresholdWei`'s computed value -- mainly for tests/determinism, or
+       * a caller with its own fee-cost model. */
+      dustThresholdWei?: bigint
+      overrides?: MonadTxOverrides
+    },
+    admission?: MonadWalletOperationAdmission
+  ): Promise<ChangeSweepOutcome> {
+    if (this.walletOperationGate !== undefined) {
+      return this.walletOperationGate(
+        (admitted) => this.sweepToChangeAdmitted(params, admitted),
+        admission
+      )
+    }
+    return this.sweepToChangeAdmitted(params, admission)
+  }
+
+  private async sweepToChangeAdmitted(
+    params: {
+      burnIndex: number
+      burnAddress: string
+      burnAccountSigner: MonadAccountTxSigner
+      provider: Provider
+      dustThresholdWei?: bigint
+      overrides?: MonadTxOverrides
+    },
+    _admission?: MonadWalletOperationAdmission
+  ): Promise<ChangeSweepOutcome> {
     const priorRecord = this.store.getBySourceBurnIndex(params.burnIndex)
     if (priorRecord !== undefined) {
       const staleIntent = this.store.getPendingIntent()
@@ -405,6 +477,7 @@ interface SweepAfterReleaseParams {
   provider: Provider
   dustThresholdWei?: bigint
   overrides?: MonadTxOverrides
+  admission?: MonadWalletOperationAdmission
 }
 
 /** Attempts a sweep for a just-released burn account record, but only if it actually became
@@ -419,14 +492,17 @@ async function sweepIfSpent(
 ): Promise<ChangeSweepOutcome | undefined> {
   if (record.status !== 'spent') return undefined
   try {
-    return await params.changePool.sweepToChange({
-      burnIndex: record.index,
-      burnAddress: record.address,
-      burnAccountSigner: params.burnAccountSigner,
-      provider: params.provider,
-      dustThresholdWei: params.dustThresholdWei,
-      overrides: params.overrides,
-    })
+    return await params.changePool.sweepToChange(
+      {
+        burnIndex: record.index,
+        burnAddress: record.address,
+        burnAccountSigner: params.burnAccountSigner,
+        provider: params.provider,
+        dustThresholdWei: params.dustThresholdWei,
+        overrides: params.overrides,
+      },
+      params.admission
+    )
   } catch (error) {
     return { swept: false, reason: 'sweep-error', error }
   }

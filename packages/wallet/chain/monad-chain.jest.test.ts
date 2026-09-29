@@ -15,7 +15,7 @@
 import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { Transaction, Wallet, getBytes, hexlify } from 'ethers'
+import { JsonRpcProvider, Transaction, Wallet, getBytes, hexlify } from 'ethers'
 
 import { MonadIdentity } from '../monad-identity'
 import {
@@ -306,6 +306,40 @@ describe('createMonadChain: createWallet', () => {
     expect(records).toHaveLength(TEST_CONFIG.subAccountPoolSize)
     expect(records.every((record) => record.status === 'unfunded')).toBe(true)
     expect(MonadAccountTxSigner).not.toHaveBeenCalled()
+  })
+
+  it('exposes a distinct provider-only seed restore API', async () => {
+    const parent = mkdtempSync(join(tmpdir(), 'monad-chain-seed-restore-'))
+    const getTransactionCount = jest
+      .spyOn(JsonRpcProvider.prototype, 'getTransactionCount')
+      .mockResolvedValue(0)
+    const getBalance = jest
+      .spyOn(JsonRpcProvider.prototype, 'getBalance')
+      .mockResolvedValue(0n)
+    try {
+      const restoredChain = createMonadChain({
+        ...TEST_CONFIG,
+        walletStorageLocation: join(parent, 'wallet'),
+      })
+      const wallet = (await restoredChain.restoreWallet(seed, {
+        senderIndexCap: 3,
+        changeIndexCap: 3,
+        scanBatchSize: 2,
+      })) as MonadChainWalletHandle
+      expect(wallet.walletState?.durability).toBe('persistent')
+      expect(wallet.pool.records()).toHaveLength(TEST_CONFIG.subAccountPoolSize)
+      expect(
+        wallet.pool.records().every((record) => record.status === 'unfunded')
+      ).toBe(true)
+      expect(wallet.changePool?.nextUnusedIndex()).toBe(0)
+      expect(getTransactionCount).toHaveBeenCalledTimes(8)
+      expect(getBalance).toHaveBeenCalledTimes(8)
+      await wallet.walletState?.close()
+    } finally {
+      getTransactionCount.mockRestore()
+      getBalance.mockRestore()
+      rmSync(parent, { recursive: true, force: true })
+    }
   })
 })
 
@@ -1896,6 +1930,85 @@ describe('createMonadChain: topics.vote', () => {
 })
 
 describe('createMonadChain: economic operation lifecycle', () => {
+  it('drains an admitted direct-message send through terminal persistence before close', async () => {
+    const parent = mkdtempSync(join(tmpdir(), 'monad-chain-dm-gate-'))
+    const storagePrefix = join(parent, 'wallet')
+    const seed = {
+      mnemonic: 'test test test test test test test test test test test junk',
+    }
+    const chain = createMonadChain({
+      ...TEST_CONFIG,
+      walletStorageLocation: storagePrefix,
+    })
+    const wallet = (await chain.createWallet(seed)) as MonadChainWalletHandle
+    if (wallet.walletState === undefined) {
+      throw new Error('persistent wallet state was not created')
+    }
+    const bob = MonadIdentity.fromPrivateKeyHex(BOB_PRIVATE_KEY_HEX)
+    mockedFetchMonadProfile.mockResolvedValue({
+      address: bob.address,
+      pubKey: new Uint8Array(bob.compressedPubKey),
+    })
+    jest.spyOn(wallet.pool, 'prepareStampInventory').mockResolvedValue({
+      fundingTxHashes: ['0xfunded'],
+      selectedAccountCount: 1,
+    })
+    let entered!: () => void
+    let resume!: () => void
+    const relayStarted = new Promise<void>((resolve) => {
+      entered = resolve
+    })
+    const relayBarrier = new Promise<void>((resolve) => {
+      resume = resolve
+    })
+    const submitStampedMessage = jest.fn(async () => {
+      entered()
+      await relayBarrier
+      const record = wallet.pool.getRecord(0)
+      if (record === undefined) throw new Error('missing funded row')
+      wallet.pool.restoreTerminalEvidence({ ...record, status: 'retired' })
+      await wallet.pool.flush()
+      return { payloadHashHex: 'ab'.repeat(32) }
+    })
+    ;(MonadStampClient as jest.Mock).mockImplementation(() => ({
+      reconcileOrThrow: jest.fn().mockResolvedValue(undefined),
+      submitStampedMessage,
+    }))
+
+    const send = chain.directMessages.send({
+      wallet,
+      recipient: bob.address,
+      items: [{ type: 'text', text: 'drain me' }],
+    })
+    await relayStarted
+    let closed = false
+    const closing = wallet.walletState.close().then(() => {
+      closed = true
+    })
+    await expect(
+      chain.directMessages.send({
+        wallet,
+        recipient: bob.address,
+        items: [{ type: 'text', text: 'too late' }],
+      })
+    ).rejects.toThrow(/closing or closed/i)
+    expect(closed).toBe(false)
+
+    resume()
+    await expect(send).resolves.toEqual(
+      expect.objectContaining({ payloadDigest: 'ab'.repeat(32) })
+    )
+    await closing
+    expect(closed).toBe(true)
+    expect(submitStampedMessage).toHaveBeenCalledTimes(1)
+
+    const location = `${storagePrefix}-${wallet.identity.address.raw.toLowerCase()}`
+    const successor = await openMonadWalletBundle({ location, seed })
+    expect(successor.pool.getRecord(0)?.status).toBe('retired')
+    await successor.close()
+    rmSync(parent, { recursive: true, force: true })
+  })
+
   it.each(['post', 'vote'] as const)(
     'drains a paused topic %s before close and persists its terminal write',
     async (kind) => {

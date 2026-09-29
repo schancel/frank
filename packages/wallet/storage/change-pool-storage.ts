@@ -57,6 +57,15 @@ export interface ChangeSweepIntent {
   createdAt: number
 }
 
+/** Chain-authenticated seed-restore evidence. It deliberately contains no fabricated funding
+ * transaction; the derived key remains available for a later user-directed sweep. */
+export interface RecoveredChangeAccount {
+  index: number
+  address: string
+  nonce: number
+  balanceWei: string
+}
+
 /**
  * Persistence boundary for `MonadChangePool`'s state: the "next unused change index" pointer
  * (ticket #36 acceptance criterion 2) plus the audit trail of change outputs actually swept into
@@ -75,6 +84,8 @@ export interface ChangePoolStore {
   getBySourceBurnIndex(index: number): ChangeAccountRecord | undefined
   /** Every persisted change record, sorted by index. */
   getAll(): ChangeAccountRecord[]
+  putRecoveredAccounts(records: readonly RecoveredChangeAccount[]): void
+  getRecoveredAccounts(): RecoveredChangeAccount[]
   getPendingIntent(): ChangeSweepIntent | undefined
   setPendingIntent(intent: ChangeSweepIntent): void
   clearPendingIntent(): void
@@ -102,6 +113,7 @@ export class InMemoryChangePoolStore implements ChangePoolStore {
   private recordsByIndex = new Map<number, ChangeAccountRecord>()
   private recordsBySourceBurnIndex = new Map<number, ChangeAccountRecord>()
   private pendingIntent?: ChangeSweepIntent
+  private recoveredAccountsByIndex = new Map<number, RecoveredChangeAccount>()
 
   getNextIndex(): number {
     return this.nextIndex
@@ -141,6 +153,19 @@ export class InMemoryChangePoolStore implements ChangePoolStore {
       .map((record) => ({ ...record }))
   }
 
+  putRecoveredAccounts(records: readonly RecoveredChangeAccount[]): void {
+    for (const record of records) {
+      this.recoveredAccountsByIndex.set(record.index, { ...record })
+      this.nextIndex = Math.max(this.nextIndex, record.index + 1)
+    }
+  }
+
+  getRecoveredAccounts(): RecoveredChangeAccount[] {
+    return Array.from(this.recoveredAccountsByIndex.values())
+      .sort((left, right) => left.index - right.index)
+      .map((record) => ({ ...record }))
+  }
+
   getPendingIntent(): ChangeSweepIntent | undefined {
     return this.pendingIntent === undefined
       ? undefined
@@ -148,6 +173,10 @@ export class InMemoryChangePoolStore implements ChangePoolStore {
   }
 
   setPendingIntent(intent: ChangeSweepIntent): void {
+    if (this.pendingIntent !== undefined) {
+      if (JSON.stringify(this.pendingIntent) === JSON.stringify(intent)) return
+      throw new Error('Cannot replace an active change sweep intent')
+    }
     this.pendingIntent = { ...intent }
   }
 
@@ -172,6 +201,7 @@ export class InMemoryChangePoolStore implements ChangePoolStore {
     this.recordsByIndex.clear()
     this.recordsBySourceBurnIndex.clear()
     this.pendingIntent = undefined
+    this.recoveredAccountsByIndex.clear()
   }
 }
 

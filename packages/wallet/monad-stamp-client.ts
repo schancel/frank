@@ -140,6 +140,7 @@ import type {
   OutgoingStampAttempt,
   StampAttemptJournal,
 } from './storage/stamp-attempt-journal'
+import type { MonadWalletOperationAdmission } from './storage/monad-wallet-bundle'
 import { selectStampAccounts } from './monad-stamp-account-selection'
 import {
   deriveMonadStampChildPrivate,
@@ -848,6 +849,15 @@ export class MonadStampClient {
     this.relayBaseUrl = params.relayBaseUrl.replace(/\/+$/, '')
   }
 
+  private async compactTerminalAccounts(
+    admission: MonadWalletOperationAdmission
+  ): Promise<void> {
+    const compact = this.walletState.compactTerminalAccounts
+    if (typeof compact === 'function') {
+      await compact.call(this.walletState, 8, admission)
+    }
+  }
+
   static unsafeCreateForTests(params: MonadWalletHandle): MonadStampClient {
     return new MonadStampClient(
       unsafeCreateMonadStampWalletHandleForTests(params)
@@ -920,15 +930,18 @@ export class MonadStampClient {
    * fallback `GET` poll.
    */
   async submitStampedMessage(
-    params: StampMonadMessageParams
+    params: StampMonadMessageParams,
+    admission?: MonadWalletOperationAdmission
   ): Promise<StampMonadMessageResult> {
-    return this.walletState.runOperation(() =>
-      this.submitStampedMessageAdmitted(params)
+    return this.walletState.runOperation(
+      (admitted) => this.submitStampedMessageAdmitted(params, admitted),
+      admission
     )
   }
 
   private async submitStampedMessageAdmitted(
-    params: StampMonadMessageParams
+    params: StampMonadMessageParams,
+    admission: MonadWalletOperationAdmission
   ): Promise<StampMonadMessageResult> {
     if (params.encryptedPayload.length === 0) {
       throw new Error('encryptedPayload must not be empty')
@@ -944,17 +957,18 @@ export class MonadStampClient {
     if (params.stampValueWei <= BigInt(0)) {
       throw new Error('stampValueWei must be positive')
     }
-    await this.reconcilePendingOrThrow()
+    await this.reconcilePendingOrThrow(admission)
     this.activeSubmissions++
     try {
-      return await this.submitStampedMessageAfterPreflight(params)
+      return await this.submitStampedMessageAfterPreflight(params, admission)
     } finally {
       this.activeSubmissions--
     }
   }
 
   private async submitStampedMessageAfterPreflight(
-    params: StampMonadMessageParams
+    params: StampMonadMessageParams,
+    admission: MonadWalletOperationAdmission
   ): Promise<StampMonadMessageResult> {
     const payloadHash = computeMonadStampCommitment(params.encryptedPayload)
     // Quote with an all-nonzero commitment. The RPC therefore applies the active network's
@@ -1164,6 +1178,7 @@ export class MonadStampClient {
                   changePool: this.changePool,
                   burnAccountSigner: signer,
                   provider: this.provider,
+                  admission,
                 },
         })
         sweeps.push(released.sweep)
@@ -1208,6 +1223,7 @@ export class MonadStampClient {
         throw new MonadStampPendingAttemptError([payloadHashHex])
       }
       await this.attemptJournal.delete(payloadHashHex)
+      await this.compactTerminalAccounts(admission)
       return {
         stored,
         payloadHashHex,
@@ -1232,6 +1248,7 @@ export class MonadStampClient {
         if (exactSetRetained(err.response.data) === false) {
           await releaseAll('failed')
           await this.attemptJournal.delete(payloadHashHex)
+          await this.compactTerminalAccounts(admission)
           const detail = relayRejectionDetail(err.response.data)
           throw new MonadStampRejectedError(
             `Relay rejected the Monad-stamped message before retaining its payment set (HTTP ${
@@ -1273,6 +1290,7 @@ export class MonadStampClient {
           if (exactSetRetained(retryError.response.data) === false) {
             await releaseAll('failed')
             await this.attemptJournal.delete(payloadHashHex)
+            await this.compactTerminalAccounts(admission)
             throw new MonadStampRejectedError(
               'Relay authoritatively rejected the exact retried payment set',
               retryError.response.status,
@@ -1293,6 +1311,7 @@ export class MonadStampClient {
           throw new MonadStampPendingAttemptError([payloadHashHex])
         }
         await this.attemptJournal.delete(payloadHashHex)
+        await this.compactTerminalAccounts(admission)
         return {
           stored,
           payloadHashHex,
@@ -1310,22 +1329,44 @@ export class MonadStampClient {
   }
 
   /** Single wallet-owned preflight for every operation that may fund or sign a new stamp. */
-  async reconcileOrThrow(): Promise<void> {
-    return this.walletState.runOperation(() => this.reconcileOrThrowAdmitted())
+  async reconcileOrThrow(
+    admission?: MonadWalletOperationAdmission
+  ): Promise<void> {
+    return this.walletState.runOperation(
+      (admitted) => this.reconcileOrThrowAdmitted(admitted, true),
+      admission
+    )
   }
 
-  private async reconcileOrThrowAdmitted(): Promise<void> {
+  /** Startup consumes successfully recovered prior work without presenting it as a failure of the
+   * newly opened wallet. Interactive preflight retains the notification error. */
+  async reconcileStartupOrThrow(
+    admission?: MonadWalletOperationAdmission
+  ): Promise<void> {
+    return this.walletState.runOperation(
+      (admitted) => this.reconcileOrThrowAdmitted(admitted, false),
+      admission
+    )
+  }
+
+  private async reconcileOrThrowAdmitted(
+    admission: MonadWalletOperationAdmission,
+    notifyRecovered: boolean
+  ): Promise<void> {
     if (this.activeSubmissions > 0) {
       throw new MonadStampPendingAttemptError(
         this.attemptJournal.getAll().map((attempt) => attempt.payloadHashHex)
       )
     }
-    await this.reconcilePendingOrThrow()
+    await this.reconcilePendingOrThrow(admission, notifyRecovered)
     this.pool.authorizeStampInventoryPreparation()
   }
 
-  private async reconcilePendingOrThrow(): Promise<void> {
-    await this.walletState.reconcileRestoreState()
+  private async reconcilePendingOrThrow(
+    admission: MonadWalletOperationAdmission,
+    notifyRecovered = true
+  ): Promise<void> {
+    await this.walletState.reconcileRestoreState(admission)
     this.walletState?.assertNoOrphanedLeases()
     if (this.activeSubmissions > 0) return
     const attempts = this.attemptJournal.getAll()
@@ -1336,8 +1377,8 @@ export class MonadStampClient {
       throw new MonadStampAuthorityAuditRequiredError(incompatible)
     }
     if (attempts.length === 0) return
-    const recovered = await this.resumePendingAttemptsAdmitted()
-    if (recovered.length > 0) {
+    const recovered = await this.resumePendingAttemptsAdmitted(admission)
+    if (notifyRecovered && recovered.length > 0) {
       throw new MonadStampRecoveredAttemptError(recovered)
     }
     const stillPending = this.attemptJournal
@@ -1350,14 +1391,19 @@ export class MonadStampClient {
 
   /** Replay crash-surviving attempts byte-for-byte. Exact-set relay binding makes this safe when
    * only a prefix of the transactions landed before the previous process stopped. */
-  async resumePendingAttempts(): Promise<string[]> {
-    return this.walletState.runOperation(() =>
-      this.resumePendingAttemptsAdmitted()
+  async resumePendingAttempts(
+    admission?: MonadWalletOperationAdmission
+  ): Promise<string[]> {
+    return this.walletState.runOperation(
+      (admitted) => this.resumePendingAttemptsAdmitted(admitted),
+      admission
     )
   }
 
-  private async resumePendingAttemptsAdmitted(): Promise<string[]> {
-    await this.walletState?.repairAttemptSpendLifecycles()
+  private async resumePendingAttemptsAdmitted(
+    admission: MonadWalletOperationAdmission
+  ): Promise<string[]> {
+    await this.walletState?.repairAttemptSpendLifecycles(admission)
     this.walletState?.assertSemanticallyValid()
     const completed: string[] = []
     for (const attempt of this.attemptJournal.getAll()) {
@@ -1409,12 +1455,15 @@ export class MonadStampClient {
               provider: this.provider,
               httpClient: this.httpClient,
             })
-            const sweep = await this.changePool.sweepToChange({
-              burnIndex: index,
-              burnAddress: record.address,
-              burnAccountSigner: signer,
-              provider: this.provider,
-            })
+            const sweep = await this.changePool.sweepToChange(
+              {
+                burnIndex: index,
+                burnAddress: record.address,
+                burnAccountSigner: signer,
+                provider: this.provider,
+              },
+              admission
+            )
             if (sweep.swept) {
               this.pool.recordRecoveryDisposition(index, {
                 kind: 'change',
@@ -1438,6 +1487,7 @@ export class MonadStampClient {
           }
         }
         await this.attemptJournal.delete(attempt.payloadHashHex)
+        await this.compactTerminalAccounts(admission)
         completed.push(attempt.payloadHashHex)
       } catch (err) {
         if (
@@ -1466,6 +1516,7 @@ export class MonadStampClient {
           }
           await this.pool.flush()
           await this.attemptJournal.delete(attempt.payloadHashHex)
+          await this.compactTerminalAccounts(admission)
         }
         // Otherwise retain the raw set and keep its accounts unavailable for a later retry.
       }

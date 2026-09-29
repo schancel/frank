@@ -21,6 +21,7 @@ import { decodeMonadStampedMessage } from '../monad-stamp-client'
 import {
   InMemoryChangePoolStore,
   type ChangeAccountRecord,
+  type RecoveredChangeAccount,
 } from './change-pool-storage'
 import { LevelChangePoolStore } from './level-change-pool-store'
 import { LevelSubAccountPoolStore } from './level-sub-account-pool-store'
@@ -42,6 +43,13 @@ import {
   type SubAccountRecord,
 } from './sub-account-pool-storage'
 import { validateMonadWalletState } from './monad-wallet-state-validator'
+import {
+  InMemoryTopicOperationJournal,
+  LevelTopicOperationJournal,
+  TOPIC_OPERATION_KEY_PREFIX,
+  type TopicOperationJournal,
+} from './topic-operation-journal'
+import { durableBatch, durablePut, openDurableLevel } from './level-durability'
 import {
   acquireBrowserWalletRootLease,
   acquireNodeWalletRootLease,
@@ -115,6 +123,11 @@ export class MonadWalletOrphanedAccountError extends Error {
   }
 }
 
+/** Opaque proof that a complete high-level operation was admitted before close began. */
+export interface MonadWalletOperationAdmission {
+  readonly walletBindingId: string
+}
+
 export interface MonadWalletPersistenceBundle {
   readonly durability: 'persistent' | 'test-only-ephemeral'
   readonly bindingId: string
@@ -123,15 +136,26 @@ export interface MonadWalletPersistenceBundle {
   readonly changePool: MonadChangePool
   readonly stampAttemptJournal: StampAttemptJournal
   readonly stampPaymentJournal: StampPaymentJournal
+  readonly topicOperationJournal: TopicOperationJournal
   assertOpen(): void
   /** Admits one complete stateful wallet operation. Close stops admission immediately and waits
    * for every admitted operation before closing stores or releasing root ownership. */
-  runOperation<T>(operation: () => Promise<T>): Promise<T>
+  runOperation<T>(
+    operation: (admission: MonadWalletOperationAdmission) => Promise<T>,
+    admission?: MonadWalletOperationAdmission
+  ): Promise<T>
   assertSemanticallyValid(): void
-  repairAttemptSpendLifecycles(): Promise<void>
-  reconcileRestoreState(): Promise<void>
+  repairAttemptSpendLifecycles(
+    admission?: MonadWalletOperationAdmission
+  ): Promise<void>
+  reconcileRestoreState(
+    admission?: MonadWalletOperationAdmission
+  ): Promise<void>
   assertNoOrphanedLeases(): void
-  compactTerminalAccounts(limit: number): Promise<number>
+  compactTerminalAccounts(
+    limit: number,
+    admission?: MonadWalletOperationAdmission
+  ): Promise<number>
   close(): Promise<void>
 }
 
@@ -234,6 +258,169 @@ interface LegacyMigrationResolutions {
   hasUnauthenticatedChangeHighWater: boolean
 }
 
+interface MonadSeedRestoreSnapshot {
+  senderRecords: SubAccountRecord[]
+  recoveredChanges: RecoveredChangeAccount[]
+  nextChangeIndex: number
+}
+
+const INTERNAL_SEED_RESTORE_SNAPSHOT = Symbol('seed-restore-snapshot')
+
+export interface RestoreMonadWalletBundleFromSeedParams {
+  location: string
+  seed: { mnemonic: string; passphrase?: string }
+  provider: Provider
+  /** Inclusive funding-branch index cap. The complete range is queried; no gap heuristic is
+   * accepted because previously allocated senders may be arbitrarily sparse. */
+  senderIndexCap: number
+  /** Inclusive change-branch cap. Change allocation is a contiguous finalized prefix. */
+  changeIndexCap: number
+  /** Limits concurrent RPC pairs without changing the exhaustive range. */
+  scanBatchSize?: number
+  /** Deterministic crash injection for repository tests. */
+  testHooks?: OpenMonadWalletBundleTestHooks
+}
+
+interface ScannedAccountUsage {
+  index: number
+  address: string
+  nonce: number
+  balanceWei: bigint
+}
+
+function assertRestoreScanBound(value: number, label: string): void {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new Error(`${label} must be a non-negative safe integer`)
+  }
+}
+
+async function scanDerivedBranch(params: {
+  provider: Provider
+  indexCap: number
+  batchSize: number
+  deriveAddress(index: number): string
+}): Promise<ScannedAccountUsage[]> {
+  const scanned: ScannedAccountUsage[] = []
+  for (let start = 0; start <= params.indexCap; start += params.batchSize) {
+    const end = Math.min(params.indexCap + 1, start + params.batchSize)
+    const batch = await Promise.all(
+      Array.from({ length: end - start }, async (_, offset) => {
+        const index = start + offset
+        const address = params.deriveAddress(index)
+        const [nonce, balanceWei] = await Promise.all([
+          params.provider.getTransactionCount(address),
+          params.provider.getBalance(address),
+        ])
+        if (!Number.isSafeInteger(nonce) || nonce < 0) {
+          throw new Error(`Invalid chain nonce for restore index ${index}`)
+        }
+        if (typeof balanceWei !== 'bigint' || balanceWei < BigInt(0)) {
+          throw new Error(`Invalid chain balance for restore index ${index}`)
+        }
+        return { index, address, nonce, balanceWei }
+      })
+    )
+    scanned.push(...batch)
+  }
+  return scanned
+}
+
+/** Imports a seed by first reconstructing both allocation branches exclusively from chain RPC.
+ * No relay, message store, or local wallet database is consulted during discovery. The durable
+ * root is not created or modified until the bounded scan has completed and passed every invariant.
+ */
+export async function restoreMonadWalletBundleFromSeed(
+  params: RestoreMonadWalletBundleFromSeedParams
+): Promise<MonadWalletPersistenceBundle> {
+  assertRestoreScanBound(params.senderIndexCap, 'senderIndexCap')
+  assertRestoreScanBound(params.changeIndexCap, 'changeIndexCap')
+  const batchSize = params.scanBatchSize ?? 32
+  if (!Number.isSafeInteger(batchSize) || batchSize < 1 || batchSize > 256) {
+    throw new Error('scanBatchSize must be a safe integer from 1 through 256')
+  }
+  const passphrase = params.seed.passphrase ?? ''
+  const subKeyring = MonadHdKeyring.fromMnemonic(
+    params.seed.mnemonic,
+    passphrase
+  )
+  const changeKeyring = MonadChangeKeyring.fromMnemonic(
+    params.seed.mnemonic,
+    passphrase
+  )
+  const senderUsage = await scanDerivedBranch({
+    provider: params.provider,
+    indexCap: params.senderIndexCap,
+    batchSize,
+    deriveAddress: (index) => subKeyring.deriveSubAccount(index).address,
+  })
+  const highestUsedSender = senderUsage.reduce(
+    (highest, usage) =>
+      usage.nonce > 0 || usage.balanceWei > BigInt(0)
+        ? Math.max(highest, usage.index)
+        : highest,
+    -1
+  )
+  if (highestUsedSender === params.senderIndexCap) {
+    throw new Error(
+      'Sender restore scan reached a used cap index; increase senderIndexCap'
+    )
+  }
+  const senderRecords: SubAccountRecord[] = senderUsage
+    .slice(0, highestUsedSender + 1)
+    .map((usage) => ({
+      index: usage.index,
+      address: usage.address,
+      status: 'retired',
+      lifecycle: {
+        legacyTerminal: { version: 1, reason: 'base-era-terminal' },
+      },
+    }))
+
+  const changeUsage = await scanDerivedBranch({
+    provider: params.provider,
+    indexCap: params.changeIndexCap,
+    batchSize,
+    deriveAddress: (index) => changeKeyring.deriveChangeAccount(index).address,
+  })
+  const firstUnusedChange = changeUsage.findIndex(
+    (usage) => usage.nonce === 0 && usage.balanceWei === BigInt(0)
+  )
+  if (firstUnusedChange < 0) {
+    throw new Error(
+      'Change restore scan reached a fully used cap; increase changeIndexCap'
+    )
+  }
+  if (
+    changeUsage
+      .slice(firstUnusedChange + 1)
+      .some((usage) => usage.nonce > 0 || usage.balanceWei > BigInt(0))
+  ) {
+    throw new Error('Change restore scan found a non-contiguous used index')
+  }
+  const recoveredChanges: RecoveredChangeAccount[] = changeUsage
+    .slice(0, firstUnusedChange)
+    .map((usage) => ({
+      index: usage.index,
+      address: usage.address,
+      nonce: usage.nonce,
+      balanceWei: usage.balanceWei.toString(),
+    }))
+  const internalParams = {
+    location: params.location,
+    seed: params.seed,
+    mode: 'restore' as const,
+    ...params.testHooks,
+    [INTERNAL_SEED_RESTORE_SNAPSHOT]: {
+      senderRecords,
+      recoveredChanges,
+      nextChangeIndex: firstUnusedChange,
+    } satisfies MonadSeedRestoreSnapshot,
+  }
+  return openMonadWalletBundle(
+    internalParams as unknown as OpenMonadWalletBundleParams
+  )
+}
+
 function isCompleteAllocationPrefix(
   nextIndex: number,
   allocatedIndices: Iterable<number>
@@ -320,31 +507,35 @@ async function readWalletCreationIntent(
     request.onsuccess = () => resolveOpen(request.result)
   })
   try {
-    return await new Promise<WalletCreationIntent>(
-      (resolveRead, rejectRead) => {
-        if (
-          !database.objectStoreNames.contains(BROWSER_CREATION_INTENT_STORE)
-        ) {
-          rejectRead(new Error('Invalid browser wallet creation intent'))
-          return
-        }
-        const transaction = database.transaction(
-          BROWSER_CREATION_INTENT_STORE,
-          'readonly'
-        )
-        const request = transaction
-          .objectStore(BROWSER_CREATION_INTENT_STORE)
-          .get(BROWSER_CREATION_INTENT_KEY)
-        request.onerror = () => rejectRead(request.error)
-        request.onsuccess = () => {
-          if (typeof request.result !== 'string') {
-            rejectRead(new Error('Invalid browser wallet creation intent'))
-            return
-          }
-          resolveRead(parseCreationIntent(request.result))
-        }
+    const raw = await new Promise<unknown>((resolveRead, rejectRead) => {
+      if (!database.objectStoreNames.contains(BROWSER_CREATION_INTENT_STORE)) {
+        rejectRead(new Error('Invalid browser wallet creation intent'))
+        return
       }
-    )
+      const transaction = database.transaction(
+        BROWSER_CREATION_INTENT_STORE,
+        'readonly'
+      )
+      transaction.onabort = () =>
+        rejectRead(
+          transaction.error ??
+            new Error('Browser wallet creation intent read aborted')
+        )
+      transaction.onerror = () => rejectRead(transaction.error)
+      const request = transaction
+        .objectStore(BROWSER_CREATION_INTENT_STORE)
+        .get(BROWSER_CREATION_INTENT_KEY)
+      request.onerror = () => rejectRead(request.error)
+      request.onsuccess = () => resolveRead(request.result)
+    })
+    if (raw === undefined) return undefined
+    if (typeof raw !== 'string') {
+      throw new Error('Invalid browser wallet creation intent')
+    }
+    // Parse outside the IndexedDB callback. A malformed value therefore rejects this async
+    // operation normally and cannot escape as an uncaught event-handler exception that strands
+    // the database connection or its surrounding Web Lock.
+    return parseCreationIntent(raw)
   } finally {
     database.close()
   }
@@ -388,20 +579,50 @@ async function createWalletCreationIntent(
 
   const indexedDb = (globalThis as any).indexedDB
   const databaseName = browserCreationIntentName(location)
-  await new Promise<void>((resolveCreate, rejectCreate) => {
+  const database = await new Promise<any>((resolveCreate, rejectCreate) => {
     const request = indexedDb.open(databaseName, 1)
     request.onupgradeneeded = () => {
-      const store = request.result.createObjectStore(
-        BROWSER_CREATION_INTENT_STORE
-      )
-      store.add(encoded, BROWSER_CREATION_INTENT_KEY)
+      request.result.createObjectStore(BROWSER_CREATION_INTENT_STORE)
     }
     request.onerror = () => rejectCreate(request.error)
-    request.onsuccess = () => {
-      request.result.close()
-      resolveCreate()
-    }
+    request.onsuccess = () => resolveCreate(request.result)
   })
+  try {
+    await new Promise<void>((resolveCreate, rejectCreate) => {
+      let transaction: any
+      try {
+        transaction = database.transaction(
+          BROWSER_CREATION_INTENT_STORE,
+          'readwrite',
+          { durability: 'strict' }
+        )
+      } catch {
+        rejectCreate(
+          new Error(
+            'Persistent browser wallet storage requires strict IndexedDB durability'
+          )
+        )
+        return
+      }
+      if (transaction.durability !== 'strict') {
+        transaction.abort()
+        rejectCreate(
+          new Error(
+            'Persistent browser wallet storage requires strict IndexedDB durability'
+          )
+        )
+        return
+      }
+      transaction.oncomplete = () => resolveCreate()
+      transaction.onabort = () => rejectCreate(transaction.error)
+      transaction.onerror = () => rejectCreate(transaction.error)
+      transaction
+        .objectStore(BROWSER_CREATION_INTENT_STORE)
+        .add(encoded, BROWSER_CREATION_INTENT_KEY)
+    })
+  } finally {
+    database.close()
+  }
 }
 
 async function clearWalletCreationIntent(location: string): Promise<void> {
@@ -423,10 +644,54 @@ async function clearWalletCreationIntent(location: string): Promise<void> {
     return
   }
   const indexedDb = (globalThis as any).indexedDB
+  const databaseName = browserCreationIntentName(location)
+  const databases = (await indexedDb.databases()) as Array<{ name?: string }>
+  if (!databases.some((database) => database.name === databaseName)) return
+  const database = await new Promise<any>((resolveOpen, rejectOpen) => {
+    const request = indexedDb.open(databaseName)
+    request.onerror = () => rejectOpen(request.error)
+    request.onsuccess = () => resolveOpen(request.result)
+  })
+  try {
+    await new Promise<void>((resolveDelete, rejectDelete) => {
+      let transaction: any
+      try {
+        transaction = database.transaction(
+          BROWSER_CREATION_INTENT_STORE,
+          'readwrite',
+          { durability: 'strict' }
+        )
+      } catch {
+        rejectDelete(
+          new Error(
+            'Persistent browser wallet storage requires strict IndexedDB durability'
+          )
+        )
+        return
+      }
+      if (transaction.durability !== 'strict') {
+        transaction.abort()
+        rejectDelete(
+          new Error(
+            'Persistent browser wallet storage requires strict IndexedDB durability'
+          )
+        )
+        return
+      }
+      transaction.oncomplete = () => resolveDelete()
+      transaction.onabort = () => rejectDelete(transaction.error)
+      transaction.onerror = () => rejectDelete(transaction.error)
+      transaction
+        .objectStore(BROWSER_CREATION_INTENT_STORE)
+        .delete(BROWSER_CREATION_INTENT_KEY)
+    })
+  } finally {
+    database.close()
+  }
+  // The strictly durable record deletion above is the commit. Removing the empty database is
+  // cleanup only; if machine loss resurrects its shell, the missing record is already committed.
   await new Promise<void>((resolveDelete, rejectDelete) => {
-    const request = indexedDb.deleteDatabase(
-      browserCreationIntentName(location)
-    )
+    const request = indexedDb.deleteDatabase(databaseName)
     request.onsuccess = () => resolveDelete()
     request.onerror = () => rejectDelete(request.error)
     request.onblocked = () =>
@@ -456,10 +721,7 @@ function authenticateGeneratedCreationIntent(
     throw new Error('Abandoned wallet creation intent has the wrong mode')
   }
   const seed = parseSeed(JSON.stringify(intent.persistedSeed))
-  const subKeyring = MonadHdKeyring.fromMnemonic(
-    seed.mnemonic,
-    seed.passphrase
-  )
+  const subKeyring = MonadHdKeyring.fromMnemonic(seed.mnemonic, seed.passphrase)
   const changeKeyring = MonadChangeKeyring.fromMnemonic(
     seed.mnemonic,
     seed.passphrase
@@ -475,7 +737,17 @@ function newBindingId(): string {
 }
 
 function parseManifest(value: string): MonadWalletManifest {
-  const parsed = JSON.parse(value) as Partial<MonadWalletManifest>
+  const decoded: unknown = JSON.parse(value)
+  if (typeof decoded !== 'object' || decoded === null) {
+    throw new Error('Unsupported or corrupt Monad wallet manifest')
+  }
+  const parsed = decoded as Partial<MonadWalletManifest>
+  const expectedIntents =
+    parsed.version === 1
+      ? LEGACY_MANIFEST_INTENTS
+      : parsed.version === MANIFEST_VERSION
+      ? CURRENT_MANIFEST_INTENTS
+      : undefined
   if (
     Object.keys(parsed).some(
       (key) =>
@@ -494,11 +766,12 @@ function parseManifest(value: string): MonadWalletManifest {
     typeof parsed.seedFingerprint !== 'string' ||
     !/^0x[0-9a-f]{64}$/i.test(parsed.seedFingerprint) ||
     !Array.isArray(parsed.intents) ||
-    parsed.intents.join('|') !==
-      (parsed.version === 1
-        ? LEGACY_MANIFEST_INTENTS
-        : CURRENT_MANIFEST_INTENTS
-      ).join('|')
+    expectedIntents === undefined ||
+    parsed.intents.length !== expectedIntents.length ||
+    parsed.intents.some(
+      (intent, index) =>
+        typeof intent !== 'string' || intent !== expectedIntents[index]
+    )
   ) {
     throw new Error('Unsupported or corrupt Monad wallet manifest')
   }
@@ -582,7 +855,11 @@ function validateLifecycle(value: unknown, label: string): void {
   if (value === null || typeof value !== 'object') {
     throw new Error(`Invalid ${label} lifecycle`)
   }
-  assertOnlyKeys(value, ['funding', 'spend', 'recovery'], `${label} lifecycle`)
+  assertOnlyKeys(
+    value,
+    ['funding', 'spend', 'recovery', 'legacyTerminal'],
+    `${label} lifecycle`
+  )
   const lifecycle = value as Record<string, unknown>
   for (const transactionName of ['funding', 'spend']) {
     const transaction = lifecycle[transactionName]
@@ -618,7 +895,10 @@ function validateLifecycle(value: unknown, label: string): void {
         ? ['kind', 'valueWei', 'thresholdWei']
         : ['kind', 'valueWei']
     assertOnlyKeys(recovery, allowed, `${label} recovery disposition`)
-    if (!['change', 'dust', 'none'].includes(String(disposition.kind))) {
+    if (
+      typeof disposition.kind !== 'string' ||
+      !['change', 'dust', 'none'].includes(disposition.kind)
+    ) {
       throw new Error(`Invalid ${label} recovery disposition`)
     }
     if (disposition.kind === 'change') {
@@ -645,6 +925,21 @@ function validateLifecycle(value: unknown, label: string): void {
       }
     } else if (disposition.valueWei !== '0') {
       throw new Error(`Invalid ${label} recovery disposition`)
+    }
+  }
+  if (lifecycle.legacyTerminal !== undefined) {
+    const legacy = lifecycle.legacyTerminal
+    if (legacy === null || typeof legacy !== 'object') {
+      throw new Error(`Invalid ${label} legacy terminal marker`)
+    }
+    assertOnlyKeys(
+      legacy,
+      ['version', 'reason'],
+      `${label} legacy terminal marker`
+    )
+    const fields = legacy as Record<string, unknown>
+    if (fields.version !== 1 || fields.reason !== 'base-era-terminal') {
+      throw new Error(`Invalid ${label} legacy terminal marker`)
     }
   }
 }
@@ -727,7 +1022,14 @@ function validateLoadedState(params: {
     highestSubAccountIndex = Math.max(highestSubAccountIndex, checkpoint.index)
     if (
       checkpoint.version !== 1 ||
+      !Number.isSafeInteger(checkpoint.index) ||
+      checkpoint.index < 0 ||
+      typeof checkpoint.address !== 'string' ||
+      (checkpoint.status !== 'spent' && checkpoint.status !== 'retired') ||
+      typeof checkpoint.denominationWei !== 'string' ||
       !/^\d+$/.test(checkpoint.denominationWei) ||
+      !Number.isSafeInteger(checkpoint.compactedAt) ||
+      checkpoint.compactedAt < 0 ||
       getAddress(checkpoint.address) !==
         params.subKeyring.deriveSubAccount(checkpoint.index).address
     ) {
@@ -768,6 +1070,28 @@ function validateLoadedState(params: {
       throw new Error(`Invalid stored change record ${record.index}`)
     }
     assertHex(record.txHash, 32, 'stored change transaction hash')
+  }
+  for (const record of params.changePool.recoveredAccounts()) {
+    assertOnlyKeys(
+      record,
+      ['index', 'address', 'nonce', 'balanceWei'],
+      'recovered change account'
+    )
+    highestChangeIndex = Math.max(highestChangeIndex, record.index)
+    if (
+      !Number.isSafeInteger(record.index) ||
+      record.index < 0 ||
+      typeof record.address !== 'string' ||
+      getAddress(record.address) !==
+        params.changeKeyring.deriveChangeAccount(record.index).address ||
+      !Number.isSafeInteger(record.nonce) ||
+      record.nonce < 0 ||
+      typeof record.balanceWei !== 'string' ||
+      !/^\d+$/.test(record.balanceWei) ||
+      (record.nonce === 0 && record.balanceWei === '0')
+    ) {
+      throw new Error(`Invalid recovered change account ${record.index}`)
+    }
   }
   if (params.changePool.nextUnusedIndex() <= highestChangeIndex) {
     throw new Error('Stored change high-water mark would reuse an index')
@@ -1002,7 +1326,7 @@ async function validateLegacySnapshot(params: {
   }
   const stores: Array<{ Open(): Promise<void>; Close(): Promise<void> }> = []
   try {
-    const subStore = new LevelSubAccountPoolStore(snapshotRoot)
+    const subStore = new LevelSubAccountPoolStore(snapshotRoot, undefined, true)
     const changeStore = new LevelChangePoolStore(snapshotRoot)
     const attemptJournal = new LevelStampAttemptJournal(snapshotRoot)
     const paymentJournal = new LevelStampPaymentJournal(snapshotRoot)
@@ -1243,6 +1567,7 @@ function makeBundle(params: {
   changePool: MonadChangePool
   attemptJournal: StampAttemptJournal
   paymentJournal: StampPaymentJournal
+  topicJournal: TopicOperationJournal
   subKeyring: MonadHdKeyring
   changeKeyring: MonadChangeKeyring
   recoverySource?: MonadSeedRestoreSource
@@ -1250,26 +1575,53 @@ function makeBundle(params: {
 }): MonadWalletPersistenceBundle {
   let lifecycle: 'open' | 'closing' | 'closed' = 'open'
   let activeOperations = 0
+  let operationTail: Promise<void> = Promise.resolve()
+  const activeAdmissions = new WeakSet<object>()
   let resolveDrained: (() => void) | undefined
   let closePromise: Promise<void> | undefined
-  const runOperation = async <T>(operation: () => Promise<T>): Promise<T> => {
+  const runOperation = async <T>(
+    operation: (admission: MonadWalletOperationAdmission) => Promise<T>,
+    admission?: MonadWalletOperationAdmission
+  ): Promise<T> => {
+    if (admission !== undefined) {
+      if (!activeAdmissions.has(admission as object)) {
+        throw new Error(
+          'Monad wallet operation admission is invalid or expired'
+        )
+      }
+      return operation(admission)
+    }
     if (lifecycle !== 'open') {
       throw new Error('Monad wallet bundle is closing or closed')
     }
+    const admitted = Object.freeze({
+      walletBindingId: params.bindingId,
+    }) satisfies MonadWalletOperationAdmission
+    activeAdmissions.add(admitted)
     activeOperations++
+    const run = operationTail.then(() => operation(admitted))
+    operationTail = run.then(
+      () => undefined,
+      () => undefined
+    )
     try {
-      return await operation()
+      return await run
     } finally {
+      activeAdmissions.delete(admitted)
       activeOperations--
       if (activeOperations === 0) resolveDrained?.()
     }
   }
   params.pool.attachWalletOperationGate(runOperation)
+  params.changePool.attachWalletOperationGate(runOperation)
   const leaseManager = new SubAccountLeaseManager(params.pool)
   const assertNoOrphanedLeases = (): void => {
-    const referenced = new Set(
-      params.attemptJournal.getAll().flatMap((attempt) => attempt.leaseIndices)
-    )
+    const referenced = new Set([
+      ...params.attemptJournal
+        .getAll()
+        .flatMap((attempt) => attempt.leaseIndices),
+      ...params.topicJournal.getAll().map((operation) => operation.leaseIndex),
+    ])
     const orphaned = params.pool
       .records()
       .filter(
@@ -1287,6 +1639,7 @@ function makeBundle(params: {
     changePool: params.changePool,
     stampAttemptJournal: params.attemptJournal,
     stampPaymentJournal: params.paymentJournal,
+    topicOperationJournal: params.topicJournal,
     assertOpen(): void {
       if (lifecycle !== 'open') {
         throw new Error('Monad wallet bundle is closing or closed')
@@ -1302,158 +1655,186 @@ function makeBundle(params: {
         subKeyring: params.subKeyring,
         changeKeyring: params.changeKeyring,
       }),
-    async repairAttemptSpendLifecycles(): Promise<void> {
+    async repairAttemptSpendLifecycles(
+      admission?: MonadWalletOperationAdmission
+    ): Promise<void> {
       return runOperation(async () => {
-      validateMonadWalletState({
-        pool: params.pool,
-        changePool: params.changePool,
-        attemptJournal: params.attemptJournal,
-        paymentJournal: params.paymentJournal,
-        subKeyring: params.subKeyring,
-        changeKeyring: params.changeKeyring,
-        allowMissingAttemptSpend: true,
-        allowMissingAttemptRows: true,
-      })
-      const stagedByIndex = new Map(
-        params.pool.records().map((record) => [record.index, record])
-      )
-      const repairedIndices = new Set<number>()
-      for (const attempt of params.attemptJournal.getAll()) {
-        const message = decodeMonadStampedMessage(
-          Uint8Array.from(attempt.messageBytes)
-        )
-        for (const [offset, index] of attempt.leaseIndices.entries()) {
-          const record =
-            stagedByIndex.get(index) ?? params.pool.stageJournaledInUse(index)
-          const payment = message.stampPayments[offset]
-          if (record?.lifecycle?.spend !== undefined || payment === undefined) {
-            continue
-          }
-          const transaction = Transaction.from(hexlify(payment.rawTx))
-          stagedByIndex.set(index, {
-            ...record,
-            lifecycle: {
-              ...record.lifecycle,
-              spend: {
-                rawTx: hexlify(payment.rawTx),
-                txHash: transaction.hash as string,
-                valueWei: transaction.value.toString(),
-              },
-            },
-          })
-          repairedIndices.add(index)
-        }
-      }
-      if (repairedIndices.size > 0) {
-        const stagedStore = new InMemorySubAccountPoolStore()
-        stagedStore.putMany(Array.from(stagedByIndex.values()))
-        stagedStore.setNextIndex(params.pool.nextUnusedIndex())
-        for (const checkpoint of params.pool.terminalCheckpoints()) {
-          stagedStore.replaceWithCheckpoint(checkpoint)
-        }
-        const stagedPool = new MonadSubAccountPool({
-          keyring: params.subKeyring,
-          store: stagedStore,
-        })
         validateMonadWalletState({
-          pool: stagedPool,
+          pool: params.pool,
           changePool: params.changePool,
           attemptJournal: params.attemptJournal,
           paymentJournal: params.paymentJournal,
           subKeyring: params.subKeyring,
           changeKeyring: params.changeKeyring,
+          allowMissingAttemptSpend: true,
+          allowMissingAttemptRows: true,
         })
-        params.pool.applyPrevalidatedRecoveryRecords(
-          Array.from(repairedIndices).map(
-            (index) => stagedByIndex.get(index) as SubAccountRecord
+        const stagedByIndex = new Map(
+          params.pool.records().map((record) => [record.index, record])
+        )
+        const repairedIndices = new Set<number>()
+        for (const attempt of params.attemptJournal.getAll()) {
+          const message = decodeMonadStampedMessage(
+            Uint8Array.from(attempt.messageBytes)
           )
-        )
-        await params.pool.flush()
-      }
-      this.assertSemanticallyValid()
-      })
-    },
-    async reconcileRestoreState(): Promise<void> {
-      return runOperation(async () => {
-      await this.repairAttemptSpendLifecycles()
-      const referenced = new Set(
-        params.attemptJournal
-          .getAll()
-          .flatMap((attempt) => attempt.leaseIndices)
-      )
-      const orphans = params.pool
-        .records()
-        .filter(
-          (record) =>
-            record.status === 'in-use' && !referenced.has(record.index)
-        )
-      if (orphans.length === 0) return
-      if (params.recoverySource === undefined) {
-        throw new MonadWalletOrphanedAccountError(
-          orphans.map((record) => record.index)
-        )
-      }
-      await params.recoverySource.assertRelayAvailable()
-      const recovered: SubAccountRecord[] = []
-      for (const orphan of orphans) {
-        const evidence = await params.recoverySource.recoverSenderEvidence(
-          orphan.index,
-          orphan.address
-        )
-        if (
-          evidence === undefined ||
-          evidence.index !== orphan.index ||
-          getAddress(evidence.address) !== getAddress(orphan.address) ||
-          (evidence.status !== 'spent' && evidence.status !== 'retired') ||
-          evidence.lifecycle?.funding === undefined ||
-          evidence.lifecycle.spend === undefined ||
-          evidence.lifecycle.recovery === undefined
-        ) {
-          throw new MonadWalletOrphanedAccountError(
-            orphans.map((record) => record.index)
-          )
-        }
-        for (const [kind, checkpoint] of [
-          ['funding', evidence.lifecycle.funding],
-          ['spend', evidence.lifecycle.spend],
-        ] as const) {
-          const transaction = Transaction.from(checkpoint.rawTx)
-          if (
-            transaction.hash === null ||
-            transaction.hash.toLowerCase() !==
-              checkpoint.txHash.toLowerCase() ||
-            transaction.value.toString() !== checkpoint.valueWei ||
-            (kind === 'funding' &&
-              (transaction.to === null ||
-                getAddress(transaction.to) !== getAddress(orphan.address))) ||
-            (kind === 'spend' &&
-              (transaction.from === null ||
-                getAddress(transaction.from) !== getAddress(orphan.address)))
-          ) {
-            throw new Error(`Invalid recovered ${kind} transaction evidence`)
+          for (const [offset, index] of attempt.leaseIndices.entries()) {
+            const prior =
+              stagedByIndex.get(index) ?? params.pool.stageJournaledInUse(index)
+            const record: SubAccountRecord =
+              prior.status === 'available'
+                ? { ...prior, status: 'in-use' }
+                : prior
+            const payment = message.stampPayments[offset]
+            if (payment === undefined) {
+              continue
+            }
+            if (record.lifecycle?.spend !== undefined && record === prior) {
+              continue
+            }
+            const transaction = Transaction.from(hexlify(payment.rawTx))
+            stagedByIndex.set(index, {
+              ...record,
+              lifecycle: {
+                ...record.lifecycle,
+                spend: {
+                  rawTx: hexlify(payment.rawTx),
+                  txHash: transaction.hash as string,
+                  valueWei: transaction.value.toString(),
+                },
+              },
+            })
+            repairedIndices.add(index)
           }
         }
-        recovered.push(evidence)
-      }
-      for (const evidence of recovered) {
-        params.pool.restoreTerminalEvidence(evidence)
-      }
-      await params.pool.flush()
-      await params.pool.compactTerminalAccounts({ limit: recovered.length })
-      this.assertSemanticallyValid()
-      })
+        if (repairedIndices.size > 0) {
+          const stagedStore = new InMemorySubAccountPoolStore()
+          stagedStore.putMany(Array.from(stagedByIndex.values()))
+          stagedStore.setNextIndex(params.pool.nextUnusedIndex())
+          for (const checkpoint of params.pool.terminalCheckpoints()) {
+            stagedStore.replaceWithCheckpoint(checkpoint)
+          }
+          const stagedPool = new MonadSubAccountPool({
+            keyring: params.subKeyring,
+            store: stagedStore,
+          })
+          validateMonadWalletState({
+            pool: stagedPool,
+            changePool: params.changePool,
+            attemptJournal: params.attemptJournal,
+            paymentJournal: params.paymentJournal,
+            subKeyring: params.subKeyring,
+            changeKeyring: params.changeKeyring,
+          })
+          params.pool.applyPrevalidatedRecoveryRecords(
+            Array.from(repairedIndices).map(
+              (index) => stagedByIndex.get(index) as SubAccountRecord
+            )
+          )
+          await params.pool.flush()
+        }
+        this.assertSemanticallyValid()
+      }, admission)
+    },
+    async reconcileRestoreState(
+      admission?: MonadWalletOperationAdmission
+    ): Promise<void> {
+      return runOperation(async (admitted) => {
+        await this.repairAttemptSpendLifecycles(admitted)
+        const referenced = new Set([
+          ...params.attemptJournal
+            .getAll()
+            .flatMap((attempt) => attempt.leaseIndices),
+          ...params.topicJournal
+            .getAll()
+            .map((operation) => operation.leaseIndex),
+        ])
+        const orphans = params.pool
+          .records()
+          .filter(
+            (record) =>
+              record.status === 'in-use' && !referenced.has(record.index)
+          )
+        const preBroadcast = orphans.filter(
+          (record) => record.lifecycle?.spend === undefined
+        )
+        for (const orphan of preBroadcast) {
+          params.pool.setStatus(orphan.index, 'retired')
+        }
+        if (preBroadcast.length > 0) await params.pool.flush()
+        const spendBearing = orphans.filter(
+          (record) => record.lifecycle?.spend !== undefined
+        )
+        if (spendBearing.length === 0) return
+        if (params.recoverySource === undefined) {
+          throw new MonadWalletOrphanedAccountError(
+            spendBearing.map((record) => record.index)
+          )
+        }
+        await params.recoverySource.assertRelayAvailable()
+        const recovered: SubAccountRecord[] = []
+        for (const orphan of spendBearing) {
+          const evidence = await params.recoverySource.recoverSenderEvidence(
+            orphan.index,
+            orphan.address
+          )
+          if (
+            evidence === undefined ||
+            evidence.index !== orphan.index ||
+            getAddress(evidence.address) !== getAddress(orphan.address) ||
+            (evidence.status !== 'spent' && evidence.status !== 'retired') ||
+            evidence.lifecycle?.funding === undefined ||
+            evidence.lifecycle.spend === undefined ||
+            evidence.lifecycle.recovery === undefined
+          ) {
+            throw new MonadWalletOrphanedAccountError(
+              spendBearing.map((record) => record.index)
+            )
+          }
+          for (const [kind, checkpoint] of [
+            ['funding', evidence.lifecycle.funding],
+            ['spend', evidence.lifecycle.spend],
+          ] as const) {
+            const transaction = Transaction.from(checkpoint.rawTx)
+            if (
+              transaction.hash === null ||
+              transaction.hash.toLowerCase() !==
+                checkpoint.txHash.toLowerCase() ||
+              transaction.value.toString() !== checkpoint.valueWei ||
+              (kind === 'funding' &&
+                (transaction.to === null ||
+                  getAddress(transaction.to) !== getAddress(orphan.address))) ||
+              (kind === 'spend' &&
+                (transaction.from === null ||
+                  getAddress(transaction.from) !== getAddress(orphan.address)))
+            ) {
+              throw new Error(`Invalid recovered ${kind} transaction evidence`)
+            }
+          }
+          recovered.push(evidence)
+        }
+        for (const evidence of recovered) {
+          params.pool.restoreTerminalEvidence(evidence)
+        }
+        await params.pool.flush()
+        await params.pool.compactTerminalAccounts({ limit: recovered.length })
+        this.assertSemanticallyValid()
+      }, admission)
     },
     assertNoOrphanedLeases,
-    async compactTerminalAccounts(limit: number): Promise<number> {
+    async compactTerminalAccounts(
+      limit: number,
+      admission?: MonadWalletOperationAdmission
+    ): Promise<number> {
       return runOperation(async () => {
         const pendingChange = params.changePool.pendingSourceBurnIndex()
         return params.pool.compactTerminalAccounts({
           limit,
           isReferenced: (index) =>
             index === pendingChange ||
-            params.attemptJournal.referencesLeaseIndex(index),
+            params.attemptJournal.referencesLeaseIndex(index) ||
+            params.topicJournal.referencesLeaseIndex(index),
         })
-      })
+      }, admission)
     },
     close(): Promise<void> {
       if (closePromise !== undefined) return closePromise
@@ -1505,6 +1886,7 @@ export function createInMemoryMonadWalletBundle(params: {
     }),
     attemptJournal: new InMemoryStampAttemptJournal(),
     paymentJournal,
+    topicJournal: new InMemoryTopicOperationJournal(),
     subKeyring,
     changeKeyring,
     close: () => paymentJournal.Close(),
@@ -1519,7 +1901,9 @@ export async function openMonadWalletBundle(
     seed?: { mnemonic: string; passphrase?: string }
     createSeedIfEmpty?: boolean
     mode?: 'create' | 'restore'
+    [INTERNAL_SEED_RESTORE_SNAPSHOT]?: MonadSeedRestoreSnapshot
   }
+  const seedRestoreSnapshot = runtimeParams[INTERNAL_SEED_RESTORE_SNAPSHOT]
   if (
     (runtimeParams.mode !== undefined &&
       runtimeParams.mode !== 'create' &&
@@ -1550,9 +1934,11 @@ export async function openMonadWalletBundle(
   const explicitNodeCreation =
     !isBrowserWalletStorage() &&
     (runtimeParams.mode === 'create' ||
-      runtimeParams.createSeedIfEmpty === true)
+      runtimeParams.createSeedIfEmpty === true ||
+      seedRestoreSnapshot !== undefined)
   if (
     explicitNodeCreation &&
+    seedRestoreSnapshot === undefined &&
     nodeWalletRootExists(params.location) &&
     !nodeWalletCreationRecoveryExists(params.location) &&
     nodeWalletRootIsPrivateEmpty(params.location)
@@ -1566,11 +1952,14 @@ export async function openMonadWalletBundle(
   if (
     !isBrowserWalletStorage() &&
     (!nodeWalletRootExists(params.location) ||
-      nodeWalletCreationRecoveryExists(params.location))
+      nodeWalletCreationRecoveryExists(params.location) ||
+      (seedRestoreSnapshot !== undefined &&
+        nodeWalletRootIsPrivateEmpty(params.location)))
   ) {
     const isExplicitCreate =
       runtimeParams.mode === 'create' ||
-      runtimeParams.createSeedIfEmpty === true
+      runtimeParams.createSeedIfEmpty === true ||
+      seedRestoreSnapshot !== undefined
     if (!isExplicitCreate) {
       throw new Error(
         'Cannot restore a Monad wallet from a missing Node root; restore the state backup or explicitly create a new wallet'
@@ -1636,7 +2025,8 @@ export async function openMonadWalletBundle(
     nodeCreationClaim = await publishNodeWalletRootWithIntent(
       params.location,
       runtimeParams.seed === undefined ? generatedIntentSource : callerIntent(),
-      params.onNodeCreationPublishPhase
+      params.onNodeCreationPublishPhase,
+      { replacePrivateEmptyRoot: seedRestoreSnapshot !== undefined }
     )
     nodeCreationPublished = true
   }
@@ -1655,6 +2045,7 @@ export async function openMonadWalletBundle(
     nodeLease?.assertHeld()
   }
   let manifestDb: LevelDB | undefined
+  let topicJournal: LevelTopicOperationJournal | undefined
   const openedStores: Array<{ Close(): Promise<void> }> = []
   try {
     assertLeaseHeld()
@@ -1696,10 +2087,13 @@ export async function openMonadWalletBundle(
       manifestDb = (level as any)(join(location, 'wallet-manifest'), {
         createIfMissing: false,
       }) as LevelDB
-      await (manifestDb as any).open()
+      await openDurableLevel(manifestDb, location, 'wallet-manifest')
       const entries = new Map<string, string>()
       for await (const [key, value] of manifestDb.iterator({}) as any) {
-        if (![MANIFEST_KEY, MIGRATION_KEY, SEED_KEY].includes(key)) {
+        if (
+          ![MANIFEST_KEY, MIGRATION_KEY, SEED_KEY].includes(key) &&
+          !key.startsWith(TOPIC_OPERATION_KEY_PREFIX)
+        ) {
           throw new Error(`Invalid wallet manifest key ${key}`)
         }
         entries.set(key, value)
@@ -1818,6 +2212,8 @@ export async function openMonadWalletBundle(
         ? 'caller-supplied'
         : generatedSeedCreation
         ? 'generated'
+        : seedRestoreSnapshot !== undefined
+        ? 'caller-supplied'
         : undefined
       if (
         finalized === undefined &&
@@ -1831,7 +2227,8 @@ export async function openMonadWalletBundle(
         migration !== undefined &&
         (creationIntent.bindingId !== migration.bindingId ||
           creationIntent.seedFingerprint !== migration.seedFingerprint ||
-          migration.restoreMode !== undefined ||
+          migration.restoreMode !==
+            (seedRestoreSnapshot !== undefined ? true : undefined) ||
           (creationIntent.kind === 'caller-supplied'
             ? migration.creationMode !== 'caller-supplied' ||
               migration.persistedSeed !== undefined
@@ -1853,7 +2250,10 @@ export async function openMonadWalletBundle(
     if (
       finalized === undefined &&
       migration === undefined &&
-      (explicitCallerSeedCreation || generatedSeedCreation) &&
+      (explicitCallerSeedCreation ||
+        generatedSeedCreation ||
+        seedRestoreSnapshot !== undefined) &&
+      !hasLegacyComponents &&
       creationIntent === undefined
     ) {
       if (!namespaceNeverExisted) {
@@ -1868,7 +2268,10 @@ export async function openMonadWalletBundle(
       }
       const intent: WalletCreationIntent = {
         version: 1,
-        kind: explicitCallerSeedCreation ? 'caller-supplied' : 'generated',
+        kind:
+          explicitCallerSeedCreation || seedRestoreSnapshot !== undefined
+            ? 'caller-supplied'
+            : 'generated',
         bindingId,
         seedFingerprint: fingerprint,
         ...(generatedSeedCreation ? { persistedSeed: seed } : {}),
@@ -1917,7 +2320,7 @@ export async function openMonadWalletBundle(
         params.seed !== undefined &&
         (!explicitCallerSeedCreation ||
           (!namespaceNeverExisted && creationIntent === undefined)))
-    if (isEmptySuppliedSeedRestore) {
+    if (isEmptySuppliedSeedRestore && seedRestoreSnapshot === undefined) {
       throw new Error(
         'Restoring a supplied seed into an empty wallet root is disabled without a verifiable seed-bound allocation ledger; restore the wallet state backup or create a new seed'
       )
@@ -1994,6 +2397,44 @@ export async function openMonadWalletBundle(
       keyring: changeKeyring,
       store: changeStore,
     })
+    if (seedRestoreSnapshot !== undefined) {
+      if (!isMigration || changePool.records().length > 0) {
+        throw new Error('Seed restore requires a new empty wallet namespace')
+      }
+      const currentSenders = pool.records()
+      const currentRecoveredChanges = changePool.recoveredAccounts()
+      if (
+        currentSenders.length > 0 &&
+        JSON.stringify(currentSenders) !==
+          JSON.stringify(seedRestoreSnapshot.senderRecords)
+      ) {
+        throw new Error('Seed restore sender snapshot changed during retry')
+      }
+      if (
+        currentRecoveredChanges.length > 0 &&
+        JSON.stringify(currentRecoveredChanges) !==
+          JSON.stringify(seedRestoreSnapshot.recoveredChanges)
+      ) {
+        throw new Error('Seed restore change snapshot changed during retry')
+      }
+      if (
+        changePool.nextUnusedIndex() !== 0 &&
+        changePool.nextUnusedIndex() !== seedRestoreSnapshot.nextChangeIndex
+      ) {
+        throw new Error('Seed restore change high-water changed during retry')
+      }
+      if (currentSenders.length === 0) {
+        pool.applyPrevalidatedRecoveryRecords(seedRestoreSnapshot.senderRecords)
+      }
+      if (currentRecoveredChanges.length === 0) {
+        changePool.applyRecoveredAccounts(seedRestoreSnapshot.recoveredChanges)
+      }
+      if (changePool.nextUnusedIndex() < seedRestoreSnapshot.nextChangeIndex) {
+        changePool.setNextUnusedIndex(seedRestoreSnapshot.nextChangeIndex)
+      }
+      await pool.flush()
+      await changeStore.flush()
+    }
     validateLoadedState({
       pool,
       changePool,
@@ -2148,7 +2589,7 @@ export async function openMonadWalletBundle(
         assertLeaseHeld()
         validateWalletComponentBeforeOpen(location, 'wallet-manifest', false)
         manifestDb = level(join(location, 'wallet-manifest'))
-        await (manifestDb as any).open()
+        await openDurableLevel(manifestDb, location, 'wallet-manifest')
       }
       const marker: WalletMigrationMarker = {
         version: 1,
@@ -2156,14 +2597,16 @@ export async function openMonadWalletBundle(
         seedFingerprint: fingerprint,
         completedComponents: migration?.completedComponents ?? 0,
         ...(params.createSeedIfEmpty ? { persistedSeed: seed } : {}),
-        ...(isEmptySuppliedSeedRestore ? { restoreMode: true as const } : {}),
-        ...(explicitCallerSeedCreation
+        ...(seedRestoreSnapshot !== undefined
+          ? { restoreMode: true as const }
+          : {}),
+        ...(explicitCallerSeedCreation || seedRestoreSnapshot !== undefined
           ? { creationMode: 'caller-supplied' as const }
           : {}),
       }
       if (migration === undefined) {
         assertLeaseHeld()
-        await manifestDb.put(MIGRATION_KEY, JSON.stringify(marker))
+        await durablePut(manifestDb, MIGRATION_KEY, JSON.stringify(marker))
         await params.onMigrationPhase?.('marker')
       }
       for (
@@ -2186,7 +2629,7 @@ export async function openMonadWalletBundle(
         }
         marker.completedComponents = index + 1
         assertLeaseHeld()
-        await manifestDb.put(MIGRATION_KEY, JSON.stringify(marker))
+        await durablePut(manifestDb, MIGRATION_KEY, JSON.stringify(marker))
         await params.onMigrationPhase?.(componentNames[index])
       }
       const manifest: MonadWalletManifest = {
@@ -2211,7 +2654,7 @@ export async function openMonadWalletBundle(
         })
       }
       assertLeaseHeld()
-      await (manifestDb as any).batch(writes)
+      await durableBatch(manifestDb, writes)
       await params.onMigrationPhase?.('manifest')
     }
     if (nodeCreationClaim !== undefined) {
@@ -2250,6 +2693,11 @@ export async function openMonadWalletBundle(
       allowMissingAttemptSpend: true,
       allowMissingAttemptRows: params.recovery !== undefined,
     })
+    if (manifestDb === undefined) {
+      throw new Error('Wallet manifest database was not established')
+    }
+    topicJournal = new LevelTopicOperationJournal(manifestDb, assertLeaseHeld)
+    await topicJournal.Open()
     const close = async (): Promise<void> => {
       let firstError: unknown
       for (const store of stores.slice().reverse()) {
@@ -2275,6 +2723,7 @@ export async function openMonadWalletBundle(
       changePool,
       attemptJournal,
       paymentJournal,
+      topicJournal,
       subKeyring,
       changeKeyring,
       recoverySource: params.recovery,

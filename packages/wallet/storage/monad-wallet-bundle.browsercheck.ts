@@ -81,6 +81,53 @@ async function readBrowserCreationIntent(location: string): Promise<{
   }
 }
 
+async function writeRawBrowserCreationIntent(
+  location: string,
+  encoded: string
+): Promise<void> {
+  const idb = (globalThis as any).indexedDB
+  const databaseName = `frank-monad-wallet-creation:${canonicalWalletStorageLocation(
+    location
+  )}`
+  const database = await new Promise<any>((resolve, reject) => {
+    const request = idb.open(databaseName, 1)
+    request.onupgradeneeded = () =>
+      request.result.createObjectStore('creation-intent')
+    request.onsuccess = () => resolve(request.result)
+    request.onerror = () => reject(request.error)
+  })
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const transaction = database.transaction('creation-intent', 'readwrite', {
+        durability: 'strict',
+      })
+      transaction.objectStore('creation-intent').put(encoded, 'intent')
+      transaction.oncomplete = () => resolve()
+      transaction.onerror = () => reject(transaction.error)
+      transaction.onabort = () => reject(transaction.error)
+    })
+  } finally {
+    database.close()
+  }
+}
+
+async function createEmptyBrowserCreationIntentDatabase(
+  location: string
+): Promise<void> {
+  const idb = (globalThis as any).indexedDB
+  const databaseName = `frank-monad-wallet-creation:${canonicalWalletStorageLocation(
+    location
+  )}`
+  const database = await new Promise<any>((resolve, reject) => {
+    const request = idb.open(databaseName, 1)
+    request.onupgradeneeded = () =>
+      request.result.createObjectStore('creation-intent')
+    request.onsuccess = () => resolve(request.result)
+    request.onerror = () => reject(request.error)
+  })
+  database.close()
+}
+
 async function createLegacyRoot(
   location: string,
   withRecord = true
@@ -275,6 +322,10 @@ export async function runMonadWalletBundleBrowserCheck(): Promise<void> {
   const emptyLegacyRoot = `${prefix}-empty-legacy`
   const callerSeedRoot = `${prefix}-caller-seed`
   const invalidModeRoot = `${prefix}-invalid-mode`
+  const malformedIntentRoots = [
+    `${prefix}-malformed-json-intent`,
+    `${prefix}-malformed-shape-intent`,
+  ]
   const callerCreationCrashRoots: string[] = []
   const generatedCreationCrashRoots: string[] = []
   const crashRoots: string[] = []
@@ -339,6 +390,50 @@ export async function runMonadWalletBundleBrowserCheck(): Promise<void> {
       ),
       'invalid browser creation mode wrote IndexedDB state'
     )
+
+    for (const [index, encoded] of [
+      '{',
+      JSON.stringify({ version: 1 }),
+    ].entries()) {
+      const malformedRoot = malformedIntentRoots[index]
+      await writeRawBrowserCreationIntent(malformedRoot, encoded)
+      let pageError: unknown
+      const onError = (event: any) => {
+        pageError = event.error ?? event.message
+      }
+      ;(globalThis as any).addEventListener('error', onError)
+      try {
+        const outcome = await Promise.race([
+          openMonadWalletBundle({
+            location: malformedRoot,
+            seed: { mnemonic: MNEMONIC },
+            mode: 'create',
+          }).then(
+            () => 'resolved',
+            () => 'rejected'
+          ),
+          new Promise<string>((resolve) =>
+            setTimeout(() => resolve('hung'), 1_000)
+          ),
+        ])
+        assert(
+          outcome === 'rejected',
+          'malformed browser intent did not reject promptly'
+        )
+        assert(
+          pageError === undefined,
+          'malformed browser intent escaped as a page error'
+        )
+        const lease = await acquireBrowserWalletRootLease(malformedRoot)
+        assert(
+          lease !== undefined,
+          'malformed browser intent stranded its Web Lock'
+        )
+        await lease.release()
+      } finally {
+        ;(globalThis as any).removeEventListener('error', onError)
+      }
+    }
 
     for (const phase of [
       'creation-intent',
@@ -483,6 +578,17 @@ export async function runMonadWalletBundleBrowserCheck(): Promise<void> {
       'browser caller-seed root did not reopen'
     )
     await callerReopened.close()
+    await createEmptyBrowserCreationIntentDatabase(callerSeedRoot)
+    const callerAfterIntentCleanupCrash = await openMonadWalletBundle({
+      location: callerSeedRoot,
+      seed: { mnemonic: MNEMONIC },
+      mode: 'create',
+    })
+    assert(
+      callerAfterIntentCleanupCrash.pool.nextUnusedIndex() === 1,
+      'empty browser creation-intent residue blocked reopen'
+    )
+    await callerAfterIntentCleanupCrash.close()
 
     const legacyFinalized = await createLegacyFinalizedRoot(finalizedRoot)
     let finalizedOutageRejected = false
@@ -708,6 +814,7 @@ export async function runMonadWalletBundleBrowserCheck(): Promise<void> {
     await deleteRoot(emptyLegacyRoot)
     await deleteRoot(callerSeedRoot)
     await deleteRoot(invalidModeRoot)
+    for (const root of malformedIntentRoots) await deleteRoot(root)
     for (const root of callerCreationCrashRoots) await deleteRoot(root)
     for (const root of generatedCreationCrashRoots) await deleteRoot(root)
     for (const root of crashRoots) await deleteRoot(root)

@@ -2,6 +2,12 @@
 import level, { type LevelDB } from 'level'
 import { join } from 'path'
 import { validateWalletComponentBeforeOpen } from './wallet-root-guard'
+import {
+  durableBatch,
+  durableDelete,
+  durablePut,
+  openDurableLevel,
+} from './level-durability'
 
 const WALLET_BINDING_KEY = '__wallet_binding__'
 
@@ -129,7 +135,11 @@ export class LevelStampAttemptJournal implements StampAttemptJournal {
       false
     )
     this.openedDb = level(this.dbLocation)
-    await (this.openedDb as any).open()
+    await openDurableLevel(
+      this.openedDb,
+      this.rootLocation,
+      'outgoing-stamp-attempts'
+    )
     let storedBindingId: string | undefined
     for await (const [key, value] of this.db.iterator({}) as any) {
       if (key === WALLET_BINDING_KEY) {
@@ -166,7 +176,7 @@ export class LevelStampAttemptJournal implements StampAttemptJournal {
   ): Promise<void> {
     if (this.expectedBindingId === undefined) return
     this.assertMutationAllowed()
-    await (this.db as any).batch([
+    await durableBatch(this.db, [
       { type: 'put', key: WALLET_BINDING_KEY, value: this.expectedBindingId },
       ...resolvedAttempts.map((attempt) => ({
         type: 'put' as const,
@@ -185,14 +195,14 @@ export class LevelStampAttemptJournal implements StampAttemptJournal {
     this.assertMutationAllowed()
     const prior = this.attempts.get(attempt.payloadHashHex)
     assertAttemptReplacement(prior, attempt)
-    await this.db.put(attempt.payloadHashHex, JSON.stringify(attempt))
+    await durablePut(this.db, attempt.payloadHashHex, JSON.stringify(attempt))
     this.attempts.set(attempt.payloadHashHex, cloneAttempt(attempt))
     if (prior === undefined) this.addLeaseReferences(attempt, 1)
   }
   async delete(payloadHashHex: string): Promise<void> {
     this.assertMutationAllowed()
     const prior = this.attempts.get(payloadHashHex)
-    await this.db.del(payloadHashHex)
+    await durableDelete(this.db, payloadHashHex)
     this.attempts.delete(payloadHashHex)
     if (prior !== undefined) this.addLeaseReferences(prior, -1)
   }

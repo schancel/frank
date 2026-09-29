@@ -95,11 +95,18 @@ export function validateMonadWalletState(params: {
   allowMissingAttemptRows?: boolean
   allowMissingChangeRecovery?: boolean
 }): void {
+  const recordSnapshot = params.pool.records()
+  const checkpointSnapshot = params.pool.terminalCheckpoints()
+  const changeSnapshot = params.changePool.records()
+  const recoveredChangeSnapshot = params.changePool.recoveredAccounts()
   const records = new Map(
-    params.pool.records().map((record) => [record.index, record])
+    recordSnapshot.map((record) => [record.index, record])
+  )
+  const checkpoints = new Map(
+    checkpointSnapshot.map((checkpoint) => [checkpoint.index, checkpoint])
   )
 
-  for (const record of params.pool.records()) {
+  for (const record of recordSnapshot) {
     assertSubAccountLifecycleMatrix(record)
     if (record.fundingAttempt !== undefined) {
       const transaction = parseSignedTransaction(
@@ -133,7 +140,7 @@ export function validateMonadWalletState(params: {
     }
   }
 
-  for (const checkpoint of params.pool.terminalCheckpoints()) {
+  for (const checkpoint of checkpointSnapshot) {
     assertTransactionCheckpoint({
       ...checkpoint.lifecycle.funding,
       label: `checkpoint ${checkpoint.index} funding`,
@@ -229,9 +236,10 @@ export function validateMonadWalletState(params: {
   const pending = params.changePool.pendingIntent()
   if (pending !== undefined) {
     const source = records.get(pending.sourceBurnIndex)
-    const highestChangeIndex = params.changePool
-      .records()
-      .reduce((highest, record) => Math.max(highest, record.index), -1)
+    const highestChangeIndex = [
+      ...changeSnapshot,
+      ...recoveredChangeSnapshot,
+    ].reduce((highest, record) => Math.max(highest, record.index), -1)
     if (
       source === undefined ||
       getAddress(source.address) !== getAddress(pending.sourceBurnAddress) ||
@@ -255,7 +263,7 @@ export function validateMonadWalletState(params: {
     })
   }
 
-  for (const change of params.changePool.records()) {
+  for (const change of changeSnapshot) {
     assertTransactionCheckpoint({
       rawTx: change.rawTx,
       txHash: change.txHash,
@@ -266,9 +274,7 @@ export function validateMonadWalletState(params: {
     })
     const source =
       records.get(change.sourceBurnIndex) ??
-      params.pool
-        .terminalCheckpoints()
-        .find((checkpoint) => checkpoint.index === change.sourceBurnIndex)
+      checkpoints.get(change.sourceBurnIndex)
     const recovery = source?.lifecycle?.recovery
     if (
       source === undefined ||
@@ -286,6 +292,36 @@ export function validateMonadWalletState(params: {
     ) {
       throw new Error('Invalid finalized change recovery disposition')
     }
+  }
+
+  const finalizedChangeIndices = new Set(
+    changeSnapshot.map((record) => record.index)
+  )
+  for (const [offset, recovered] of recoveredChangeSnapshot.entries()) {
+    if (
+      typeof recovered.index !== 'number' ||
+      !Number.isSafeInteger(recovered.index) ||
+      recovered.index < 0 ||
+      recovered.index !== offset ||
+      typeof recovered.address !== 'string' ||
+      typeof recovered.nonce !== 'number' ||
+      !Number.isSafeInteger(recovered.nonce) ||
+      recovered.nonce < 0 ||
+      typeof recovered.balanceWei !== 'string' ||
+      !/^\d+$/.test(recovered.balanceWei) ||
+      (recovered.nonce === 0 && BigInt(recovered.balanceWei) === BigInt(0)) ||
+      finalizedChangeIndices.has(recovered.index) ||
+      getAddress(recovered.address) !==
+        params.changeKeyring.deriveChangeAccount(recovered.index).address
+    ) {
+      throw new Error(`Invalid recovered change account ${offset}`)
+    }
+  }
+  if (
+    recoveredChangeSnapshot.length > 0 &&
+    params.changePool.nextUnusedIndex() < recoveredChangeSnapshot.length
+  ) {
+    throw new Error('Recovered change high-water mark moved backward')
   }
 
   for (const payment of params.paymentJournal.getAll()) {

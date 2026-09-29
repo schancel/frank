@@ -12,6 +12,12 @@ import {
   TerminalSubAccountCheckpoint,
 } from './sub-account-pool-storage'
 import { validateWalletComponentBeforeOpen } from './wallet-root-guard'
+import {
+  durableBatch,
+  durableClear,
+  durablePut,
+  openDurableLevel,
+} from './level-durability'
 
 const NEXT_INDEX_KEY = '__next_index__'
 const CHECKPOINT_PREFIX = '__terminal_checkpoint__:'
@@ -40,6 +46,7 @@ export class LevelSubAccountPoolStore implements SubAccountPoolStore {
   private readonly assertMutationAllowed: () => void
   private readonly rootLocation: string
   private loadedBindingId?: string
+  private readonly normalizedLegacyRows = new Map<number, SubAccountRecord>()
 
   constructor(
     location: string,
@@ -72,7 +79,7 @@ export class LevelSubAccountPoolStore implements SubAccountPoolStore {
       false
     )
     this.openedDb = level(this.dbLocation)
-    await (this.openedDb as any).open()
+    await openDurableLevel(this.openedDb, this.rootLocation, 'sub-account-pool')
     await this.loadData()
   }
 
@@ -111,12 +118,31 @@ export class LevelSubAccountPoolStore implements SubAccountPoolStore {
         this.nextIndex = Math.max(this.nextIndex, checkpoint.index + 1)
         continue
       }
-      const record: SubAccountRecord = JSON.parse(value)
+      let record: SubAccountRecord = JSON.parse(value)
       if (String(record.index) !== key || !/^\d+$/.test(key)) {
         throw new Error('Sub-account key does not match its index')
       }
       if (this.checkpoints.has(record.index)) {
         throw new Error(`Sub-account ${record.index} also has a checkpoint`)
+      }
+      if (
+        this.allowUnboundForMigration &&
+        record.status === 'spent' &&
+        record.lifecycle === undefined
+      ) {
+        record = {
+          ...record,
+          lifecycle: {
+            legacyTerminal: {
+              version: 1,
+              reason: 'base-era-terminal',
+            },
+          },
+        }
+        this.normalizedLegacyRows.set(
+          record.index,
+          cloneSubAccountRecord(record)
+        )
       }
       this.cache.set(record.index, record)
       this.sortedRecordIndices.push(record.index)
@@ -150,14 +176,20 @@ export class LevelSubAccountPoolStore implements SubAccountPoolStore {
   async Bind(): Promise<void> {
     if (this.expectedBindingId === undefined) return
     this.assertMutationAllowed()
-    await (this.db as any).batch([
+    await durableBatch(this.db, [
       { type: 'put', key: WALLET_BINDING_KEY, value: this.expectedBindingId },
       {
         type: 'put',
         key: NEXT_INDEX_KEY,
         value: JSON.stringify(this.nextIndex),
       },
+      ...Array.from(this.normalizedLegacyRows.values()).map((record) => ({
+        type: 'put' as const,
+        key: String(record.index),
+        value: JSON.stringify(record),
+      })),
     ])
+    this.normalizedLegacyRows.clear()
   }
 
   getByIndex(index: number): SubAccountRecord | undefined {
@@ -194,7 +226,7 @@ export class LevelSubAccountPoolStore implements SubAccountPoolStore {
         value: JSON.stringify(nextIndex),
       })
     }
-    this.pendingWrites.push((this.db as any).batch(writes))
+    this.pendingWrites.push(durableBatch(this.db, writes))
     for (const record of staged) {
       if (!this.cache.has(record.index)) {
         const position = lowerBoundAfter(this.sortedRecordIndices, record.index)
@@ -237,7 +269,9 @@ export class LevelSubAccountPoolStore implements SubAccountPoolStore {
       )
     }
     this.nextIndex = index
-    this.pendingWrites.push(this.db.put(NEXT_INDEX_KEY, JSON.stringify(index)))
+    this.pendingWrites.push(
+      durablePut(this.db, NEXT_INDEX_KEY, JSON.stringify(index))
+    )
   }
 
   replaceWithCheckpoint(checkpoint: TerminalSubAccountCheckpoint): void {
@@ -248,7 +282,7 @@ export class LevelSubAccountPoolStore implements SubAccountPoolStore {
       (index) => index !== checkpoint.index
     )
     this.pendingWrites.push(
-      (this.db as any).batch([
+      durableBatch(this.db, [
         {
           type: 'put',
           key: `${CHECKPOINT_PREFIX}${checkpoint.index}`,
@@ -281,6 +315,6 @@ export class LevelSubAccountPoolStore implements SubAccountPoolStore {
     this.sortedRecordIndices = []
     this.checkpoints = new Map<number, TerminalSubAccountCheckpoint>()
     this.nextIndex = 0
-    await this.db.clear()
+    await durableClear(this.db)
   }
 }

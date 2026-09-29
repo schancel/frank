@@ -1,7 +1,9 @@
 /* eslint-env node */
 module.exports = {
   setupFilesAfterEnv: ['<rootDir>/jest.setup.js'],
-  testTimeout: 5000,
+  // Persistent-wallet tests exercise real fsync/Level sync barriers and advisory-lock helpers.
+  // Those durability boundaries are intentionally slower than Level's former sync:false writes.
+  testTimeout: 30000,
   testMatch: ['<rootDir>/**/*.jest.(spec|test).+(ts|js)'],
   moduleFileExtensions: ['js', 'json', 'ts'],
   // Ticket #54: `chain/vite-env.ts` contains a real `import.meta.env` reference (see its own

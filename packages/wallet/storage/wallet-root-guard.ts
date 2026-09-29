@@ -52,6 +52,43 @@ function assertOwnedByCurrentUser(
   }
 }
 
+/** Every mutable pathname component must either be protected from other users' renames or be a
+ * sticky shared directory such as `/tmp`. The wallet/root entries themselves are checked
+ * separately for ownership and private modes. */
+function assertTrustedNodeAncestry(
+  fs: typeof import('fs'),
+  path: string
+): void {
+  const pending = [resolve(path)]
+  const visited = new Set<string>()
+  while (pending.length > 0) {
+    let current = pending.pop() as string
+    for (;;) {
+      if (visited.has(current)) break
+      visited.add(current)
+      const stat = lstatIfPresent(fs, current)
+      if (stat !== undefined) {
+        if (stat.isSymbolicLink()) {
+          pending.push(fs.realpathSync(current))
+        } else {
+          if (!stat.isDirectory()) {
+            throw new Error('Wallet storage ancestry must contain directories')
+          }
+          const mode = stat.mode & 0o7777
+          if ((mode & 0o022) !== 0 && (mode & 0o1000) === 0) {
+            throw new Error(
+              'Wallet storage ancestry must not be group/world writable without the sticky bit'
+            )
+          }
+        }
+      }
+      const parent = dirname(current)
+      if (parent === current) break
+      current = parent
+    }
+  }
+}
+
 /** Performs every Unix trust check before the first Level constructor can touch the root. A
  * historical owner-only-write 0755 root is hardened once, after its identity and owner are
  * validated. Group/world-writable roots are never adopted. */
@@ -135,7 +172,9 @@ function sameSeedBoundCreationIntent(
     const requested = JSON.parse(requestedIntent) as Record<string, unknown>
     const { bindingId: _retainedBinding, ...retainedAuthority } = retained
     const { bindingId: _requestedBinding, ...requestedAuthority } = requested
-    return JSON.stringify(retainedAuthority) === JSON.stringify(requestedAuthority)
+    return (
+      JSON.stringify(retainedAuthority) === JSON.stringify(requestedAuthority)
+    )
   } catch {
     return false
   }
@@ -160,6 +199,7 @@ export type NodeWalletCreationPhase =
   | 'temp-synced'
   | 'intent-published'
   | 'before-root-publish'
+  | 'root-created'
   | 'root-published'
   | 'intent-linked'
   | 'before-claim-cleanup'
@@ -630,7 +670,8 @@ async function acquireNodeCreationLock(
 export async function publishNodeWalletRootWithIntent(
   location: string,
   intentSource: string | NodeWalletCreationIntentSource,
-  onPhase?: (phase: NodeWalletCreationPhase) => void | Promise<void>
+  onPhase?: (phase: NodeWalletCreationPhase) => void | Promise<void>,
+  options: { replacePrivateEmptyRoot?: boolean } = {}
 ): Promise<NodeWalletCreationClaim> {
   if (isBrowserWalletStorage()) {
     throw new Error('Node wallet root publication is unavailable in browsers')
@@ -639,13 +680,29 @@ export async function publishNodeWalletRootWithIntent(
   const fs = require('fs') as typeof import('fs')
   const canonical = canonicalWalletStorageLocation(location)
   const parent = dirname(canonical)
+  assertTrustedNodeAncestry(fs, parent)
   fs.mkdirSync(parent, { recursive: true, mode: 0o700 })
+  assertTrustedNodeAncestry(fs, parent)
   const base = canonical.slice(parent.length + 1)
   const stagePrefix = nodeCreationStagePrefix(canonical)
   const cleanupPrefix = nodeCreationCleanupPrefix(canonical)
   const lockPath = join(parent, `.${base}.frank-wallet-creation.lock`)
   const releaseCreationLock = await acquireNodeCreationLock(lockPath)
   try {
+    const parentIdentity = fs.lstatSync(parent)
+    const assertParentIdentity = (): void => {
+      const current = fs.lstatSync(parent)
+      if (
+        current.isSymbolicLink() ||
+        !current.isDirectory() ||
+        current.dev !== parentIdentity.dev ||
+        current.ino !== parentIdentity.ino
+      ) {
+        throw new Error('Wallet storage parent identity changed')
+      }
+      assertTrustedNodeAncestry(fs, parent)
+    }
+    assertParentIdentity()
     const validateRetainedIntent = (retained: string): void => {
       if (typeof intentSource === 'string') {
         if (!sameSeedBoundCreationIntent(retained, intentSource)) {
@@ -680,7 +737,34 @@ export async function publishNodeWalletRootWithIntent(
     let encodedIntent: string | undefined
     let intentAlreadyInRoot = false
     let claimedRootIdentity: NodeCreationRootIdentity | undefined
-    const existingRoot = lstatIfPresent(fs, canonical)
+    let existingRoot = lstatIfPresent(fs, canonical)
+
+    // A seed import may target a user-created empty directory. Remove only the exact private,
+    // owned, still-empty inode while holding the sibling creation lock, then fsync its parent so
+    // the normal staged-claim protocol can publish and bind a fresh inode. Ordinary first-use
+    // creation deliberately retains the stricter missing-root rule.
+    if (
+      options.replacePrivateEmptyRoot === true &&
+      existingRoot !== undefined &&
+      cleanupArtifacts.length === 0 &&
+      abandonedStages.length === 0
+    ) {
+      if (
+        existingRoot.isSymbolicLink() ||
+        !existingRoot.isDirectory() ||
+        (existingRoot.mode & 0o777) !== 0o700
+      ) {
+        throw new Error('Seed restore found an invalid Node root')
+      }
+      assertOwnedByCurrentUser(existingRoot, 'Wallet root')
+      if (fs.readdirSync(canonical).length !== 0) {
+        throw new Error('Seed restore requires a missing or empty wallet root')
+      }
+      assertParentIdentity()
+      fs.rmdirSync(canonical)
+      fsyncDirectory(fs, parent)
+      existingRoot = undefined
+    }
 
     if (cleanupArtifacts.length === 1) {
       cleanup = cleanupArtifacts[0]
@@ -844,6 +928,35 @@ export async function publishNodeWalletRootWithIntent(
       intentAlreadyInRoot = candidateIntentInRoot
     }
 
+    if (
+      !claimRetired &&
+      existingRoot !== undefined &&
+      staging !== undefined &&
+      encodedIntent !== undefined &&
+      !missingIntent &&
+      fs.readdirSync(staging).sort().join('|') === NODE_CREATION_INTENT_FILE &&
+      lstatIfPresent(fs, join(staging, NODE_CREATION_ROOT_IDENTITY_FILE)) ===
+        undefined &&
+      lstatIfPresent(fs, join(staging, NODE_CREATION_ROOT_IDENTITY_TEMP)) ===
+        undefined &&
+      lstatIfPresent(fs, join(canonical, NODE_CREATION_INTENT_FILE)) ===
+        undefined &&
+      !existingRoot.isSymbolicLink() &&
+      existingRoot.isDirectory() &&
+      (existingRoot.mode & 0o777) === 0o700
+    ) {
+      assertOwnedByCurrentUser(existingRoot, 'Wallet root')
+      if (fs.readdirSync(canonical).length !== 0) {
+        throw new Error(
+          'First-use wallet creation requires a missing Node root: unbound root is not empty'
+        )
+      }
+      assertParentIdentity()
+      fs.rmdirSync(canonical)
+      fsyncDirectory(fs, parent)
+      existingRoot = undefined
+    }
+
     if (!claimRetired && existingRoot !== undefined) {
       if (
         existingRoot.isSymbolicLink() ||
@@ -960,6 +1073,7 @@ export async function publishNodeWalletRootWithIntent(
         fs.closeSync(claimParentDescriptor)
       }
       await onPhase?.('before-root-publish')
+      assertParentIdentity()
       try {
         fs.mkdirSync(canonical, { mode: 0o700 })
       } catch (error) {
@@ -968,6 +1082,7 @@ export async function publishNodeWalletRootWithIntent(
         }
         throw error
       }
+      await onPhase?.('root-created')
       const publishedRoot = fs.lstatSync(canonical)
       if (
         publishedRoot.isSymbolicLink() ||
@@ -1214,6 +1329,7 @@ export function prepareSecureWalletRootWithProvenance(
   }
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const fs = require('fs') as typeof import('fs')
+  assertTrustedNodeAncestry(fs, dirname(canonical))
   let rootLstat = lstatIfPresent(fs, canonical)
   let nodeRootCreated = false
   if (rootLstat === undefined) {
@@ -1221,6 +1337,7 @@ export function prepareSecureWalletRootWithProvenance(
       throw new Error('Wallet root does not exist')
     }
     fs.mkdirSync(dirname(canonical), { recursive: true, mode: 0o700 })
+    assertTrustedNodeAncestry(fs, dirname(canonical))
     try {
       // The non-recursive final mkdir is the creation provenance boundary: EEXIST means this
       // caller did not create the wallet namespace, even if the directory is otherwise empty.
@@ -1236,12 +1353,12 @@ export function prepareSecureWalletRootWithProvenance(
   }
   assertOwnedByCurrentUser(rootLstat, 'Wallet root')
   const mode = rootLstat.mode & 0o777
-  if (mode === 0o755) {
+  if (mode !== 0o700 && (mode & 0o022) === 0 && (mode & 0o700) === 0o700) {
     fs.chmodSync(canonical, 0o700)
     rootLstat = fs.lstatSync(canonical)
   } else if (mode !== 0o700) {
     throw new Error(
-      `Wallet root permissions must be 0700 (legacy 0755 is hardened automatically), got ${mode.toString(
+      `Wallet root permissions must be 0700 (safe owner-controlled legacy modes are hardened automatically), got ${mode.toString(
         8
       )}`
     )
@@ -1279,6 +1396,7 @@ export function validateWalletComponentBeforeOpen(
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const fs = require('fs') as typeof import('fs')
   const canonical = resolve(location)
+  assertTrustedNodeAncestry(fs, dirname(canonical))
   const rootLstat = fs.lstatSync(canonical)
   if (rootLstat.isSymbolicLink() || !rootLstat.isDirectory()) {
     throw new Error('Wallet root identity changed before database open')
@@ -1548,7 +1666,9 @@ export async function acquireNodeWalletRootLease(
       throw new Error('Node wallet root lock was replaced during acquisition')
     }
     const random = new Uint8Array(16)
-    const webCrypto = (globalThis as any).crypto as Crypto | undefined
+    const webCrypto = (globalThis as any).crypto as
+      | { getRandomValues<T extends ArrayBufferView>(array: T): T }
+      | undefined
     if (
       webCrypto === undefined ||
       typeof webCrypto.getRandomValues !== 'function'

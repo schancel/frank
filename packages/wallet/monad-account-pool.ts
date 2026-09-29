@@ -76,6 +76,7 @@ import {
   SubAccountTransactionCheckpoint,
   TerminalSubAccountCheckpoint,
 } from './storage/sub-account-pool-storage'
+import type { MonadWalletOperationAdmission } from './storage/monad-wallet-bundle'
 import { selectStampAccounts } from './monad-stamp-account-selection'
 
 export type {
@@ -132,7 +133,10 @@ export class MonadSubAccountPool {
   private readonly requireStampReconciliationPreflight: boolean
   private stampPreparationAuthorized = false
   private compactionCursor = -1
-  private walletOperationGate?: <T>(operation: () => Promise<T>) => Promise<T>
+  private walletOperationGate?: <T>(
+    operation: (admission: MonadWalletOperationAdmission) => Promise<T>,
+    admission?: MonadWalletOperationAdmission
+  ) => Promise<T>
 
   constructor(params: {
     keyring: MonadHdKeyring
@@ -147,7 +151,10 @@ export class MonadSubAccountPool {
 
   /** Bundle-owned lifecycle gate. Persistence factories attach this before exposing the pool. */
   attachWalletOperationGate(
-    gate: <T>(operation: () => Promise<T>) => Promise<T>
+    gate: <T>(
+      operation: (admission: MonadWalletOperationAdmission) => Promise<T>,
+      admission?: MonadWalletOperationAdmission
+    ) => Promise<T>
   ): void {
     if (this.walletOperationGate !== undefined) {
       throw new Error('Sub-account pool already has a wallet operation gate')
@@ -392,18 +399,22 @@ export class MonadSubAccountPool {
    * never imposed later as an artificial split of a message payment. One account remains a valid
    * fallback when the value is too small or already-available inventory dictates it.
    */
-  async prepareStampInventory(params: {
-    mainAccountSigner: MonadAccountTxSigner
-    provider: Provider
-    stampValueWei: bigint
-    gasReserveWei: bigint
-    fundingOverrides?: MonadTxOverrides
-    onProgress?: (progress: StampInventoryPreparationProgress) => void
-    receipt?: FundingReceiptOptions
-  }): Promise<StampInventoryPreparationResult> {
+  async prepareStampInventory(
+    params: {
+      mainAccountSigner: MonadAccountTxSigner
+      provider: Provider
+      stampValueWei: bigint
+      gasReserveWei: bigint
+      fundingOverrides?: MonadTxOverrides
+      onProgress?: (progress: StampInventoryPreparationProgress) => void
+      receipt?: FundingReceiptOptions
+    },
+    admission?: MonadWalletOperationAdmission
+  ): Promise<StampInventoryPreparationResult> {
     if (this.walletOperationGate !== undefined) {
-      return this.walletOperationGate(() =>
-        this.prepareStampInventoryAdmitted(params)
+      return this.walletOperationGate(
+        () => this.prepareStampInventoryAdmitted(params),
+        admission
       )
     }
     return this.prepareStampInventoryAdmitted(params)

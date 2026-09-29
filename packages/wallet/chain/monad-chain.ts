@@ -137,6 +137,8 @@ import { readViteEnv } from './vite-env'
 import {
   createInMemoryMonadWalletBundle,
   openMonadWalletBundle,
+  restoreMonadWalletBundleFromSeed,
+  type MonadWalletOperationAdmission,
 } from '../storage/monad-wallet-bundle'
 import { MonadRpcError } from '../monad-http'
 
@@ -325,8 +327,7 @@ export function deserializeMessageItems(plaintext: string): MessageItem[] {
               cards !== undefined &&
               (!Array.isArray(cards) ||
                 cards.some(
-                  (card) =>
-                    !Number.isInteger(card) || card < 0 || card > 51
+                  (card) => !Number.isInteger(card) || card < 0 || card > 51
                 ))
             )
           }) ||
@@ -478,7 +479,8 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
   >()
   const sendDirectMessageExclusive = async (
     params: Parameters<DirectMessageClient['send']>[0],
-    wallet: MonadChainWalletHandle
+    wallet: MonadChainWalletHandle,
+    admission: MonadWalletOperationAdmission
   ): Promise<DirectMessageSendResult> => {
     if (wallet.walletState === undefined) {
       throw new Error('Monad stamped sends require a complete wallet bundle')
@@ -491,7 +493,7 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
         relayBaseUrl: wallet.relayBaseUrl,
       })
     )
-    await stampClient.reconcileOrThrow()
+    await stampClient.reconcileOrThrow(admission)
     const plaintext = serializeMessageItems(params.items)
 
     const recipientProfile = await fetchMonadProfile({
@@ -534,15 +536,19 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
       signer: mainAccountSigner,
       recipientPublicKey: recipientProfile.pubKey,
     })
-    const preparation = await wallet.pool.prepareStampInventory({
+    const preparationParams = {
       mainAccountSigner,
       provider: wallet.provider,
       stampValueWei: params.stampValue ?? config.defaultStampValueWei,
       gasReserveWei,
       onProgress: params.onPreparationProgress,
-    })
+    }
+    const preparation =
+      admission === undefined
+        ? await wallet.pool.prepareStampInventory(preparationParams)
+        : await wallet.pool.prepareStampInventory(preparationParams, admission)
 
-    const result = await stampClient.submitStampedMessage({
+    const submissionParams = {
       encryptedPayload: envelopeBytes,
       // Ticket #57: a DM's stamp is a real payment to the recipient (mirroring Lotus's
       // `constructStampTransactions`, which derives the stamp output address from the
@@ -550,7 +556,11 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
       // `post`/`vote` below, where there's no single recipient to pay.
       recipientPublicKey: recipientProfile.pubKey,
       stampValueWei: params.stampValue ?? config.defaultStampValueWei,
-    })
+    }
+    const result =
+      admission === undefined
+        ? await stampClient.submitStampedMessage(submissionParams)
+        : await stampClient.submitStampedMessage(submissionParams, admission)
 
     const stampPayments =
       result.stored?.message?.stampPayments.flatMap((payment) => {
@@ -576,17 +586,22 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
   const directMessages: DirectMessageClient = {
     async send(params): Promise<DirectMessageSendResult> {
       const wallet = asMonadWallet(params.wallet)
-      const run = (
-        directMessageSendQueues.get(wallet) ?? Promise.resolve()
-      ).then(() => sendDirectMessageExclusive(params, wallet))
-      directMessageSendQueues.set(
-        wallet,
-        run.then(
-          () => undefined,
-          () => undefined
+      if (wallet.walletState === undefined) {
+        throw new Error('Monad stamped sends require a complete wallet bundle')
+      }
+      return wallet.walletState.runOperation(async (admission) => {
+        const run = (
+          directMessageSendQueues.get(wallet) ?? Promise.resolve()
+        ).then(() => sendDirectMessageExclusive(params, wallet, admission))
+        directMessageSendQueues.set(
+          wallet,
+          run.then(
+            () => undefined,
+            () => undefined
+          )
         )
-      )
-      return run
+        return run
+      })
     },
 
     async fetchSince(params): Promise<DirectMessageReceived[]> {
@@ -977,18 +992,23 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
   const topics: TopicBroadcastClient = {
     async post(params): Promise<{ payloadDigest: string }> {
       const wallet = asMonadWallet(params.wallet)
-      const run = async (): Promise<{ payloadDigest: string }> => {
+      const run = async (
+        admission?: MonadWalletOperationAdmission
+      ): Promise<{ payloadDigest: string }> => {
         const client = new MonadTopicPostClient(wallet)
-        const result = await client.submitTopicPost({
-          topic: params.topic,
-          entries: params.entries,
-          parentPostHash: params.parentDigest
-            ? getBytes(`0x${params.parentDigest}`)
-            : undefined,
-          direction: params.direction,
-          burnAddress: config.stampBurnAddress,
-          voteWeightWei: params.voteWeightWei,
-        })
+        const result = await client.submitTopicPost(
+          {
+            topic: params.topic,
+            entries: params.entries,
+            parentPostHash: params.parentDigest
+              ? getBytes(`0x${params.parentDigest}`)
+              : undefined,
+            direction: params.direction,
+            burnAddress: config.stampBurnAddress,
+            voteWeightWei: params.voteWeightWei,
+          },
+          admission
+        )
         return { payloadDigest: result.payloadHashHex }
       }
       return typeof wallet.walletState?.runOperation === 'function'
@@ -998,14 +1018,19 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
 
     async vote(params): Promise<void> {
       const wallet = asMonadWallet(params.wallet)
-      const run = async (): Promise<void> => {
+      const run = async (
+        admission?: MonadWalletOperationAdmission
+      ): Promise<void> => {
         const client = new MonadTopicVoteClient(wallet)
-        await client.castVote({
-          targetPayloadHash: getBytes(`0x${params.payloadDigest}`),
-          direction: params.direction,
-          burnAddress: config.stampBurnAddress,
-          voteWeightWei: params.voteWeightWei,
-        })
+        await client.castVote(
+          {
+            targetPayloadHash: getBytes(`0x${params.payloadDigest}`),
+            direction: params.direction,
+            burnAddress: config.stampBurnAddress,
+            voteWeightWei: params.voteWeightWei,
+          },
+          admission
+        )
       }
       return typeof wallet.walletState?.runOperation === 'function'
         ? wallet.walletState.runOperation(run)
@@ -1195,18 +1220,32 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
             changePool,
             stampPaymentJournal,
             stampAttemptJournal,
+            topicOperationJournal: walletState.topicOperationJournal,
             walletState,
             relayBaseUrl: config.relayBaseUrl,
           }
           if (walletState.durability === 'persistent') {
-            await new MonadStampClient(
+            const stampClient = new MonadStampClient(
               createMonadStampWalletHandle({
                 walletState,
                 provider,
                 httpClient,
                 relayBaseUrl: config.relayBaseUrl,
               })
-            ).reconcileOrThrow()
+            )
+            if (typeof stampClient.reconcileStartupOrThrow === 'function') {
+              await stampClient.reconcileStartupOrThrow()
+            } else {
+              await stampClient.reconcileOrThrow()
+            }
+            const postClient = new MonadTopicPostClient(wallet)
+            if (typeof postClient.resumePendingOperations === 'function') {
+              await postClient.resumePendingOperations()
+            }
+            const voteClient = new MonadTopicVoteClient(wallet)
+            if (typeof voteClient.resumePendingOperations === 'function') {
+              await voteClient.resumePendingOperations()
+            }
           }
           pool.ensureUnfundedSize(config.subAccountPoolSize)
           await pool.flush()
@@ -1222,6 +1261,83 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
       } catch (err) {
         walletsByIdentity.delete(identityKey)
         throw err
+      }
+    },
+
+    async restoreWallet(seed, options): Promise<WalletHandle> {
+      if (config.walletStorageLocation === false) {
+        throw new Error('Seed restore requires persistent wallet storage')
+      }
+      const identity = MonadIdentity.fromSeed(seed)
+      const identityKey = identity.address.raw.toLowerCase()
+      if (walletsByIdentity.has(identityKey)) {
+        throw new Error('Wallet is already open; close it before seed restore')
+      }
+      const pending = (async (): Promise<MonadChainWalletHandle> => {
+        const provider = new JsonRpcProvider(config.rpcUrl)
+        const httpClient = new MonadHttpClient({ rpcUrl: config.rpcUrl })
+        const walletState = await restoreMonadWalletBundleFromSeed({
+          location: `${config.walletStorageLocation}-${identityKey}`,
+          seed: {
+            mnemonic: seed.mnemonic,
+            passphrase: seed.passphrase,
+          },
+          provider,
+          senderIndexCap: options.senderIndexCap,
+          changeIndexCap: options.changeIndexCap,
+          scanBatchSize: options.scanBatchSize,
+        })
+        try {
+          const wallet: MonadChainWalletHandle = {
+            identity,
+            pool: walletState.pool,
+            leaseManager: walletState.leaseManager,
+            provider,
+            httpClient,
+            changePool: walletState.changePool,
+            stampPaymentJournal: walletState.stampPaymentJournal,
+            stampAttemptJournal: walletState.stampAttemptJournal,
+            topicOperationJournal: walletState.topicOperationJournal,
+            walletState,
+            relayBaseUrl: config.relayBaseUrl,
+          }
+          const stampClient = new MonadStampClient(
+            createMonadStampWalletHandle({
+              walletState,
+              provider,
+              httpClient,
+              relayBaseUrl: config.relayBaseUrl,
+            })
+          )
+          if (typeof stampClient.reconcileStartupOrThrow === 'function') {
+            await stampClient.reconcileStartupOrThrow()
+          } else {
+            await stampClient.reconcileOrThrow()
+          }
+          const postClient = new MonadTopicPostClient(wallet)
+          if (typeof postClient.resumePendingOperations === 'function') {
+            await postClient.resumePendingOperations()
+          }
+          const voteClient = new MonadTopicVoteClient(wallet)
+          if (typeof voteClient.resumePendingOperations === 'function') {
+            await voteClient.resumePendingOperations()
+          }
+          for (let index = 0; index < config.subAccountPoolSize; index++) {
+            walletState.pool.deriveNextUnfunded()
+          }
+          await walletState.pool.flush()
+          return wallet
+        } catch (error) {
+          await walletState.close().catch(() => undefined)
+          throw error
+        }
+      })()
+      walletsByIdentity.set(identityKey, pending)
+      try {
+        return await pending
+      } catch (error) {
+        walletsByIdentity.delete(identityKey)
+        throw error
       }
     },
 

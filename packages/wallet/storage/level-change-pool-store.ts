@@ -6,9 +6,17 @@ import {
   ChangePoolStore,
   ChangeAccountRecord,
   ChangeSweepIntent,
+  RecoveredChangeAccount,
   assertFinalizedIntent,
 } from './change-pool-storage'
 import { validateWalletComponentBeforeOpen } from './wallet-root-guard'
+import {
+  durableBatch,
+  durableClear,
+  durableDelete,
+  durablePut,
+  openDurableLevel,
+} from './level-durability'
 
 /** Reserved `level` key for the persisted "next unused change index" pointer. Never collides with
  * a record key (`String(record.index)`, i.e. plain decimal digits only) since this key contains a
@@ -17,6 +25,7 @@ const NEXT_INDEX_KEY = '__next_index__'
 const PENDING_INTENT_KEY = '__pending_sweep_intent__'
 const WALLET_BINDING_KEY = '__wallet_binding__'
 const BY_SOURCE_PREFIX = '__by_source__:'
+const RECOVERED_PREFIX = '__recovered_change__:'
 
 /**
  * `level`-backed `ChangePoolStore`, mirroring `LevelSubAccountPoolStore`
@@ -36,6 +45,7 @@ export class LevelChangePoolStore implements ChangePoolStore {
   private bySourceBurnIndex = new Map<number, ChangeAccountRecord>()
   private nextIndex = 0
   private pendingIntent?: ChangeSweepIntent
+  private recoveredAccountsByIndex = new Map<number, RecoveredChangeAccount>()
   private pendingWrites: Promise<unknown>[] = []
   private readonly expectedBindingId?: string
   private readonly allowUnboundForMigration: boolean
@@ -71,7 +81,7 @@ export class LevelChangePoolStore implements ChangePoolStore {
     this.assertMutationAllowed()
     validateWalletComponentBeforeOpen(this.rootLocation, 'change-pool', false)
     this.openedDb = level(this.dbLocation)
-    await (this.openedDb as any).open()
+    await openDurableLevel(this.openedDb, this.rootLocation, 'change-pool')
     await this.loadData()
   }
 
@@ -108,6 +118,17 @@ export class LevelChangePoolStore implements ChangePoolStore {
           throw new Error('Invalid stored change source index')
         }
         storedSourceIndices.set(source, target)
+        continue
+      }
+      if (key.startsWith(RECOVERED_PREFIX)) {
+        const record = JSON.parse(value) as RecoveredChangeAccount
+        if (`${RECOVERED_PREFIX}${record.index}` !== key) {
+          throw new Error(
+            'Recovered change-account key does not match its index'
+          )
+        }
+        this.recoveredAccountsByIndex.set(record.index, record)
+        this.nextIndex = Math.max(this.nextIndex, record.index + 1)
         continue
       }
       const record: ChangeAccountRecord = JSON.parse(value)
@@ -160,7 +181,7 @@ export class LevelChangePoolStore implements ChangePoolStore {
         throw new Error('Legacy change resolution no longer matches stored row')
       }
     }
-    await (this.db as any).batch([
+    await durableBatch(this.db, [
       { type: 'put', key: WALLET_BINDING_KEY, value: this.expectedBindingId },
       {
         type: 'put',
@@ -198,7 +219,9 @@ export class LevelChangePoolStore implements ChangePoolStore {
     }
     this.nextIndex = index
     // TODO: Handle errors here (same caveat as `LevelSubAccountPoolStore.put`).
-    this.pendingWrites.push(this.db.put(NEXT_INDEX_KEY, JSON.stringify(index)))
+    this.pendingWrites.push(
+      durablePut(this.db, NEXT_INDEX_KEY, JSON.stringify(index))
+    )
   }
 
   putRecord(record: ChangeAccountRecord): void {
@@ -212,7 +235,7 @@ export class LevelChangePoolStore implements ChangePoolStore {
     this.cache.set(record.index, { ...record })
     this.bySourceBurnIndex.set(record.sourceBurnIndex, { ...record })
     this.pendingWrites.push(
-      (this.db as any).batch([
+      durableBatch(this.db, [
         {
           type: 'put',
           key: String(record.index),
@@ -243,6 +266,31 @@ export class LevelChangePoolStore implements ChangePoolStore {
       .map((record) => ({ ...record }))
   }
 
+  putRecoveredAccounts(records: readonly RecoveredChangeAccount[]): void {
+    this.assertMutationAllowed()
+    if (records.length === 0) return
+    this.pendingWrites.push(
+      durableBatch(
+        this.db,
+        records.map((record) => ({
+          type: 'put' as const,
+          key: `${RECOVERED_PREFIX}${record.index}`,
+          value: JSON.stringify(record),
+        }))
+      )
+    )
+    for (const record of records) {
+      this.recoveredAccountsByIndex.set(record.index, { ...record })
+      this.nextIndex = Math.max(this.nextIndex, record.index + 1)
+    }
+  }
+
+  getRecoveredAccounts(): RecoveredChangeAccount[] {
+    return Array.from(this.recoveredAccountsByIndex.values())
+      .sort((left, right) => left.index - right.index)
+      .map((record) => ({ ...record }))
+  }
+
   getPendingIntent(): ChangeSweepIntent | undefined {
     return this.pendingIntent === undefined
       ? undefined
@@ -251,16 +299,20 @@ export class LevelChangePoolStore implements ChangePoolStore {
 
   setPendingIntent(intent: ChangeSweepIntent): void {
     this.assertMutationAllowed()
+    if (this.pendingIntent !== undefined) {
+      if (JSON.stringify(this.pendingIntent) === JSON.stringify(intent)) return
+      throw new Error('Cannot replace an active change sweep intent')
+    }
     this.pendingIntent = { ...intent }
     this.pendingWrites.push(
-      this.db.put(PENDING_INTENT_KEY, JSON.stringify(intent))
+      durablePut(this.db, PENDING_INTENT_KEY, JSON.stringify(intent))
     )
   }
 
   clearPendingIntent(): void {
     this.assertMutationAllowed()
     this.pendingIntent = undefined
-    this.pendingWrites.push(this.db.del(PENDING_INTENT_KEY))
+    this.pendingWrites.push(durableDelete(this.db, PENDING_INTENT_KEY))
   }
 
   finalizePendingIntent(
@@ -271,7 +323,7 @@ export class LevelChangePoolStore implements ChangePoolStore {
     assertFinalizedIntent(this, intent, record)
     const nextIndex = Math.max(this.nextIndex, intent.index + 1)
     this.pendingWrites.push(
-      (this.db as any).batch([
+      durableBatch(this.db, [
         {
           type: 'put',
           key: String(record.index),
@@ -312,6 +364,6 @@ export class LevelChangePoolStore implements ChangePoolStore {
     this.bySourceBurnIndex = new Map<number, ChangeAccountRecord>()
     this.nextIndex = 0
     this.pendingIntent = undefined
-    await this.db.clear()
+    await durableClear(this.db)
   }
 }

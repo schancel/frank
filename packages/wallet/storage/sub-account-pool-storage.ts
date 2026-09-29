@@ -76,6 +76,9 @@ export interface SubAccountLifecycle {
   funding?: SubAccountTransactionCheckpoint
   spend?: SubAccountTransactionCheckpoint
   recovery?: SubAccountRecoveryDisposition
+  /** Explicit migration marker for a base-era terminal row that predates retained transaction
+   * bytes. It remains terminal/non-reusable without fabricating authority that never existed. */
+  legacyTerminal?: { version: 1; reason: 'base-era-terminal' }
 }
 
 /** Durable replacement for a compacted terminal account row. It deliberately retains the
@@ -118,16 +121,24 @@ export type SubAccountRecord = SubAccountRecordBase &
 export function assertSubAccountLifecycleMatrix(
   record: SubAccountRecord
 ): void {
-  const { funding, spend, recovery } = record.lifecycle ?? {}
+  const { funding, spend, recovery, legacyTerminal } = record.lifecycle ?? {}
+  const isLegacyTerminal =
+    legacyTerminal?.version === 1 &&
+    legacyTerminal.reason === 'base-era-terminal'
   if (
     ((record.status === 'unfunded' || record.status === 'funding') &&
       (funding !== undefined ||
         spend !== undefined ||
-        recovery !== undefined)) ||
+        recovery !== undefined ||
+        legacyTerminal !== undefined)) ||
     (record.status === 'available' &&
-      (spend !== undefined || recovery !== undefined)) ||
-    (record.status === 'in-use' && recovery !== undefined) ||
-    (record.status === 'spent' && spend === undefined) ||
+      (spend !== undefined ||
+        recovery !== undefined ||
+        legacyTerminal !== undefined)) ||
+    (record.status === 'in-use' &&
+      (recovery !== undefined || legacyTerminal !== undefined)) ||
+    (record.status === 'spent' && spend === undefined && !isLegacyTerminal) ||
+    (spend !== undefined && legacyTerminal !== undefined) ||
     (recovery !== undefined && spend === undefined)
   ) {
     throw new Error(

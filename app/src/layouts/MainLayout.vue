@@ -22,6 +22,7 @@
 
 <script lang="ts">
 import { defineComponent } from 'vue'
+import type { NavigationFailure, RouteLocationNormalized } from 'vue-router'
 
 import { DRAWER_BREAKPOINT, isNarrowWidth } from '../utils/layout'
 
@@ -50,6 +51,7 @@ export default defineComponent({
   emits: ['setupCompleted'],
   data() {
     return {
+      railNavigation: false,
       removeAfterEach: undefined as (() => void) | undefined,
       trueSplitterRatio: compactCutoff,
       // See `drawerBreakpoint`'s own comment above for why this can't just be `true`.
@@ -60,16 +62,35 @@ export default defineComponent({
       drawerBreakpoint,
     }
   },
+  provide() {
+    return {
+      markRailNavigation: () => {
+        this.railNavigation = true
+      },
+    }
+  },
   created() {
-    // Every navigation that leaves the drawer (chat select, forum tab, forum topic, settings
-    // items, balance/receive, ...) must dismiss the overlay on narrow screens, otherwise it
+    // Every navigation that picks a destination from the drawer (chat select, forum topic,
+    // settings items, balance/receive, ...) must dismiss the overlay on narrow screens, otherwise it
     // stays on top of the page just navigated to. One router hook instead of a per-call-site
     // emit; desktop keeps the drawer open.
-    this.removeAfterEach = this.$router.afterEach(() => {
-      if (isNarrowWidth(this.$q.screen.width)) {
-        this.myDrawerOpen = false
-      }
-    })
+    this.removeAfterEach = this.$router.afterEach(
+      (
+        _to: RouteLocationNormalized,
+        _from: RouteLocationNormalized,
+        failure?: NavigationFailure | void,
+      ) => {
+        // Consume the rail-tab marker on every navigation outcome so it can't leak.
+        const railTab = this.railNavigation
+        this.railNavigation = false
+        // Duplicate/cancelled/blocked navigations never left the drawer; rail-tab switches
+        // stay inside it.
+        if (failure || railTab) return
+        if (isNarrowWidth(this.$q.screen.width)) {
+          this.myDrawerOpen = false
+        }
+      },
+    )
   },
   beforeUnmount() {
     this.removeAfterEach?.()

@@ -26,7 +26,8 @@ export default {
     settings: 'Settings',
     contacts: 'Contacts',
     forum: 'Forum',
-    unread: '{count} unread messages',
+    contactsUnreadOne: 'Contacts, {count} unread message',
+    contactsUnreadOther: 'Contacts, {count} unread messages',
   },
   chatList: {
     noContactMessage: 'Add contacts from the drawer above...',

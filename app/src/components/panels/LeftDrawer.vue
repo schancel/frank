@@ -32,7 +32,7 @@
         <q-tab
           name="contacts"
           icon="contacts"
-          :aria-label="$t('leftDrawer.contacts')"
+          :aria-label="contactsLabel()"
           @click="openActiveOrRecentChat"
         >
           <q-tooltip>{{ $t('leftDrawer.contacts') }}</q-tooltip>
@@ -40,8 +40,7 @@
             floating
             color="secondary"
             :label="totalUnread"
-            role="img"
-            :aria-label="$t('leftDrawer.unread', { count: totalUnread })"
+            aria-hidden="true"
             class="q-my-xs"
             v-if="totalUnread !== 0"
           />
@@ -56,7 +55,7 @@
           name="forum"
           icon="forum"
           :aria-label="$t('leftDrawer.forum')"
-          @click="$router.push('/forum')"
+          @click="openForumTab"
         >
           <q-tooltip>{{ $t('leftDrawer.forum') }}</q-tooltip>
         </q-tab>
@@ -145,6 +144,7 @@ import {
   ref,
   watch,
 } from 'vue'
+import { inject } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
 
@@ -178,10 +178,21 @@ export default defineComponent({
     // "settings"). A brand new user with zero conversations yet has nothing to navigate to --
     // the chat-list's own "Add contacts from the drawer above..." empty state already
     // communicates that, so doing nothing here is the correct, safe fallback.
+    // Rail-tab switches keep the mobile overlay open (the user is still browsing the drawer);
+    // only picking a destination closes it. MainLayout provides the marker its router hook honors.
+    const markRailNavigation = inject<() => void>(
+      'markRailNavigation',
+      () => {},
+    )
+    function openForumTab() {
+      markRailNavigation()
+      return router.push('/forum')
+    }
     function openActiveOrRecentChat() {
       const address =
         chats.activeChatAddr ?? chats.getSortedChatOrder[0]?.address
       if (address) {
+        markRailNavigation()
         router.push(`/chat/${address}`)
       }
     }
@@ -302,6 +313,7 @@ export default defineComponent({
     return {
       tab,
       openActiveOrRecentChat,
+      openForumTab,
       discoveredTopicNames,
       selectedForumTopic,
       browseForumTopic,
@@ -347,6 +359,16 @@ export default defineComponent({
     },
     contactClicked(address: string) {
       openChat(this.$router, address)
+    },
+    contactsLabel(): string {
+      const n = this.totalUnread
+      if (!n) return this.$t('leftDrawer.contacts')
+      return this.$t(
+        n === 1
+          ? 'leftDrawer.contactsUnreadOne'
+          : 'leftDrawer.contactsUnreadOther',
+        { count: n },
+      )
     },
     openReceive() {
       openPage(this.$router, '/receive')

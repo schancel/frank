@@ -16,19 +16,27 @@ jest.mock('vue-router', () => ({
   useRoute: () => mockRouterRef.current.currentRoute.value,
   useRouter: () => mockRouterRef.current,
 }))
+const mockUnread = { value: 3 }
 jest.mock('src/stores/chats', () => ({
   useChatStore: () =>
     jest.requireActual('vue').reactive({
-      totalUnread: 3,
+      totalUnread: mockUnread.value,
       getSortedChatOrder: [{ address: 'addr1', totalUnreadMessages: 0 }],
       activeChatAddr: undefined,
     }),
 }))
 jest.mock('src/stores/topics', () => ({
-  useTopicStore: () => ({ topics: {}, refreshDiscoveredTopics: jest.fn() }),
+  useTopicStore: () => ({
+    topics: { alpha: {} },
+    refreshDiscoveredTopics: jest.fn(),
+  }),
 }))
 jest.mock('src/stores/forum', () => ({
-  useForumStore: () => ({ selectedTopic: '' }),
+  useForumStore: () => ({
+    selectedTopic: '',
+    setSelectedTopic: jest.fn(),
+    refreshMessages: jest.fn(),
+  }),
 }))
 jest.mock('src/stores/my-profile', () => ({
   useProfileStore: () =>
@@ -104,10 +112,11 @@ function translate(key: string, params: Record<string, unknown> = {}): string {
 // the sibling suites mock it too. This fake keeps the parts under test real: afterEach hooks
 // fire after every push/replace, and currentRoute drives openPage()'s replace-vs-push choice.
 function createFakeRouter() {
-  const hooks: Array<() => void> = []
+  type Hook = (to: unknown, from: unknown, failure?: unknown) => void
+  const hooks: Hook[] = []
   const router = {
     currentRoute: { value: { path: '/' } },
-    afterEach: (fn: () => void) => {
+    afterEach: (fn: Hook) => {
       hooks.push(fn)
       return () => hooks.splice(hooks.indexOf(fn), 1)
     },
@@ -115,8 +124,15 @@ function createFakeRouter() {
     replace: jest.fn(async (path: string) => navigate(path)),
   }
   function navigate(path: string) {
+    // Like vue-router: a navigation to the current path is a "duplicated" failure, and
+    // afterEach hooks still run with it.
+    const failure =
+      path === router.currentRoute.value.path
+        ? { type: 'duplicated' }
+        : undefined
+    const from = router.currentRoute.value
     router.currentRoute.value = { path }
-    hooks.slice().forEach(fn => fn())
+    hooks.slice().forEach(fn => fn({ path }, from, failure))
   }
   return router
 }
@@ -195,13 +211,42 @@ async function openDrawer(w: VueWrapper) {
 }
 
 describe('MainLayout closes the mobile overlay on navigation', () => {
-  it('closes after the forum tab on a narrow screen', async () => {
+  it('stays open when switching rail tabs (forum, contacts) on a narrow screen', async () => {
     const { wrapper, router } = await mountLayout(390)
     await openDrawer(wrapper)
     await tabs(wrapper)[2].trigger('click')
     await flushPromises()
     expect(router.push).toHaveBeenCalledWith('/forum')
+    expect(open(wrapper)).toBe('true')
+    await tabs(wrapper)[1].trigger('click')
+    await flushPromises()
+    expect(router.push).toHaveBeenCalledWith('/chat/addr1')
+    expect(open(wrapper)).toBe('true')
+    // The marker does not leak: the next real destination still closes the overlay.
+    await byText(wrapper, 'Profile')[0].trigger('click')
+    await flushPromises()
     expect(open(wrapper)).toBe('false')
+  })
+
+  it('closes after picking a forum topic on a narrow screen', async () => {
+    const { wrapper, router } = await mountLayout(390)
+    await openDrawer(wrapper)
+    await byText(wrapper, 'alpha').slice(-1)[0].trigger('click')
+    await flushPromises()
+    expect(router.push).toHaveBeenCalledWith('/forum')
+    expect(open(wrapper)).toBe('false')
+  })
+
+  it('does not close for a duplicate navigation', async () => {
+    const { wrapper } = await mountLayout(390)
+    await openDrawer(wrapper)
+    await byText(wrapper, 'Profile')[0].trigger('click')
+    await flushPromises()
+    expect(open(wrapper)).toBe('false')
+    await openDrawer(wrapper)
+    await byText(wrapper, 'Profile')[0].trigger('click') // already on /profile
+    await flushPromises()
+    expect(open(wrapper)).toBe('true')
   })
 
   it('closes after a Settings panel item on a narrow screen', async () => {
@@ -243,15 +288,26 @@ describe('LeftDrawer icon rail accessible names', () => {
   it('gives every icon-only tab an aria-label and a tooltip', async () => {
     const { wrapper } = await mountLayout(1024)
     const labels = tabs(wrapper).map(t => t.attributes('aria-label'))
-    expect(labels).toEqual(['Settings', 'Contacts', 'Forum'])
+    expect(labels).toEqual(['Settings', 'Contacts, 3 unread messages', 'Forum'])
     for (const [i, name] of ['Settings', 'Contacts', 'Forum'].entries()) {
       expect(tabs(wrapper)[i].find('[data-testid="tooltip"]').text()).toBe(name)
     }
   })
 
-  it('gives the unread badge accessible text', async () => {
-    const { wrapper } = await mountLayout(1024)
-    const badge = tabs(wrapper)[1].find('[role="img"]')
-    expect(badge.attributes('aria-label')).toBe('3 unread messages')
+  it('announces the unread count in the Contacts tab label, singular and plural', async () => {
+    mockUnread.value = 1
+    const one = await mountLayout(1024)
+    expect(tabs(one.wrapper)[1].attributes('aria-label')).toBe(
+      'Contacts, 1 unread message',
+    )
+    mockUnread.value = 3
+    const many = await mountLayout(1024)
+    expect(tabs(many.wrapper)[1].attributes('aria-label')).toBe(
+      'Contacts, 3 unread messages',
+    )
+    mockUnread.value = 0
+    const none = await mountLayout(1024)
+    expect(tabs(none.wrapper)[1].attributes('aria-label')).toBe('Contacts')
+    mockUnread.value = 3
   })
 })

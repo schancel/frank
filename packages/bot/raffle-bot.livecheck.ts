@@ -102,6 +102,7 @@ import {
   RaffleBotStateStore,
   RaffleEntrant,
   RaffleRoundRecord,
+  removeRaffleEntrant,
 } from './raffle-bot-state'
 
 function sleep(ms: number): Promise<void> {
@@ -114,6 +115,37 @@ function generateServerSeed(): string {
 
 function generateRaffleId(): string {
   return randomBytes(16).toString('hex')
+}
+
+/** Pure decision for a `leave` request -- no I/O, exported and unit-tested
+ * (`raffle-bot-state.jest.test.ts`) separately from the network-calling refund below, the same
+ * split `summarizeRecoveredPayments` uses for `enter`. Requires `raffleId` to match the *current*
+ * round explicitly (not just relying on the entrant lookup below to fail) so a `leave` that arrives
+ * late, after the round it names has already drawn and rotated, is rejected on its own terms --
+ * a stale `leave` for an old round must never be mistaken for a request to leave whatever new
+ * round the same address might legitimately be entered in by the time it's processed. */
+export function evaluateLeaveRequest(params: {
+  round: RaffleRoundRecord
+  raffleId: string
+  requesterAddress: string
+}):
+  | { ok: true; updatedRound: RaffleRoundRecord; refundWei: bigint }
+  | { ok: false; reason: string } {
+  const { round, raffleId, requesterAddress } = params
+  if (round.raffleId !== raffleId) {
+    return {
+      ok: false,
+      reason: 'that round has already closed -- nothing to leave',
+    }
+  }
+  if (!hasRaffleEntrant(round, requesterAddress)) {
+    return { ok: false, reason: 'you are not entered in the current round' }
+  }
+  return {
+    ok: true,
+    updatedRound: removeRaffleEntrant(round, requesterAddress),
+    refundWei: BigInt(round.entryPriceWei),
+  }
 }
 
 /** Pure, deterministic part of `recoverAndSweepEntryPayment` below -- exported and unit-tested
@@ -246,6 +278,16 @@ async function ensureIdentityFunded(params: {
     txHash,
     `${params.label} identity funding`,
   )
+}
+
+/** A flat, single-transfer gas reserve -- shared by the draw payout and the leave refund below,
+ * the only two places this bot ever sends its own identity's funds out. Never scaled to a round's
+ * pot size (see this file's header, "Why this bot can't be drained"). */
+async function computeGasBufferWei(provider: Provider): Promise<bigint> {
+  const feeData = await provider.getFeeData()
+  const fallbackMaxFeePerGas = BigInt(250000000000)
+  const maxFeePerGas = feeData.maxFeePerGas ?? fallbackMaxFeePerGas
+  return (maxFeePerGas * BigInt(21000) * BigInt(11)) / BigInt(10)
 }
 
 async function main() {
@@ -443,6 +485,10 @@ async function main() {
         (item): item is RaffleItem =>
           item.type === 'raffle' && item.action === 'enter',
       )
+      const leaveRequest = items.find(
+        (item): item is RaffleItem =>
+          item.type === 'raffle' && item.action === 'leave',
+      )
 
       lastActivityAt = Date.now()
 
@@ -464,6 +510,89 @@ async function main() {
         })
 
       const round = state.getCurrentRound() as RaffleRoundRecord
+
+      if (leaveRequest) {
+        console.log(`\n[raffle-bot] leave request from ${envelope.from}`)
+        const evaluation = evaluateLeaveRequest({
+          round,
+          raffleId: leaveRequest.raffleId,
+          requesterAddress: envelope.from,
+        })
+        if (!evaluation.ok) {
+          await sendReply([
+            {
+              type: 'raffle',
+              raffleId: round.raffleId,
+              action: 'error',
+              message: evaluation.reason,
+            },
+          ])
+          markProcessed()
+          continue
+        }
+        // Durably remove the entrant before attempting the refund transfer -- mirrors the `enter`
+        // path's own "credit first, mark processed" ordering above: once this is persisted, a
+        // restart must never re-evaluate the same leave request against a round that no longer
+        // has this entrant in it (see `evaluateLeaveRequest`'s own "not entered" rejection, which
+        // is what a naive retry would now hit). The refund below carries the same accepted,
+        // non-atomic-with-payout risk the draw payout already has (see its own comment below) --
+        // not solved here, matching this codebase's existing bar for this class of problem.
+        state.setCurrentRound(evaluation.updatedRound)
+        markProcessed()
+
+        console.log(
+          `[raffle-bot] ${envelope.from} left round ${round.raffleId} (${evaluation.updatedRound.entrants.length}/${round.maxEntries}), refunding ${evaluation.refundWei} wei`,
+        )
+
+        const identityBalanceWei = await provider.getBalance(
+          identity.displayAddress,
+        )
+        if (identityBalanceWei < evaluation.refundWei) {
+          // Should be unreachable -- this entrant's own payment was already swept into the
+          // identity's balance on `enter` (this file's header, "Why this bot can't be drained")
+          // -- but fail closed rather than silently shorting the refund if it ever isn't.
+          console.error(
+            `[raffle-bot] cannot refund ${envelope.from}: identity balance ${identityBalanceWei} wei is below the ${evaluation.refundWei} wei owed`,
+          )
+          await sendReply([
+            {
+              type: 'raffle',
+              raffleId: round.raffleId,
+              action: 'error',
+              message:
+                'Left the round, but the refund could not be sent right now -- please contact support.',
+            },
+          ])
+          continue
+        }
+        const gasBufferWei = await computeGasBufferWei(provider)
+        await ensureIdentityFunded({
+          identityAddress: identity.displayAddress,
+          mainAccountSigner,
+          provider,
+          neededWei: identityBalanceWei + gasBufferWei,
+          label: 'raffle-bot',
+        })
+        const refundTx = await identitySigner.buildAndSignTransfer(
+          envelope.from,
+          evaluation.refundWei,
+        )
+        const refundTxHash = await identitySigner.submit(refundTx)
+        console.log(`[raffle-bot] refund tx sent: ${refundTxHash}`)
+
+        await sendReply([
+          {
+            type: 'raffle',
+            raffleId: round.raffleId,
+            action: 'left',
+            entryPriceWei: round.entryPriceWei,
+            maxEntries: round.maxEntries,
+            entryCount: evaluation.updatedRound.entrants.length,
+            serverSeedHash: round.serverSeedHash,
+          },
+        ])
+        continue
+      }
 
       if (!request) {
         // Any other message from a would-be entrant gets the current round's status.
@@ -641,11 +770,7 @@ async function main() {
 
       // See this file's header, "Why this bot can't be drained" -- this only ever tops up a flat
       // gas buffer *on top of* the pot already confirmed above, never the payout amount itself.
-      const feeData = await provider.getFeeData()
-      const fallbackMaxFeePerGas = BigInt(250000000000)
-      const maxFeePerGas = feeData.maxFeePerGas ?? fallbackMaxFeePerGas
-      const gasBufferWei =
-        (maxFeePerGas * BigInt(21000) * BigInt(11)) / BigInt(10)
+      const gasBufferWei = await computeGasBufferWei(provider)
       await ensureIdentityFunded({
         identityAddress: identity.displayAddress,
         mainAccountSigner,

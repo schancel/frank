@@ -80,6 +80,23 @@ export function hasRaffleEntrant(
   )
 }
 
+/** Pure removal, no I/O -- the caller (`raffle-bot.livecheck.ts`'s `evaluateLeaveRequest`) is
+ * responsible for persisting the result via `setCurrentRound` and for the refund transfer that
+ * must accompany a real leave. Preserves the relative order of every remaining entrant (join
+ * order matters for `combineEntrantEntropy` -- removing one entrant must never reshuffle the
+ * others' contribution to a future draw's entropy). */
+export function removeRaffleEntrant(
+  round: RaffleRoundRecord,
+  address: string,
+): RaffleRoundRecord {
+  return {
+    ...round,
+    entrants: round.entrants.filter(
+      entrant => !sameMonadEnvelopeAddress(entrant.address, address),
+    ),
+  }
+}
+
 export class RaffleBotStateStore {
   private readonly dbLocation: string
   private openedDb?: LevelDB

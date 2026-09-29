@@ -25,6 +25,21 @@
         item.maxEntries ?? '?'
       }}
       entered. Waiting for the round to fill...
+      <div class="q-mt-xs">
+        <q-btn
+          label="Leave"
+          dense
+          flat
+          color="negative"
+          :loading="leaving"
+          :disable="leaving"
+          @click="onLeave"
+        />
+      </div>
+    </div>
+    <div v-else-if="item.action === 'left'" class="text-caption">
+      Left the raffle -- {{ item.entryCount ?? 0 }}/{{ item.maxEntries ?? '?' }}
+      entered. Your entry was refunded.
     </div>
     <template v-else-if="item.action === 'draw'">
       <div class="text-caption text-weight-bold" :class="outcomeClass">
@@ -78,6 +93,7 @@ export default defineComponent({
   data() {
     return {
       entering: false,
+      leaving: false,
       myAddress: null as string | null,
     }
   },
@@ -158,6 +174,24 @@ export default defineComponent({
         errorNotify(err instanceof Error ? err : new Error(String(err)))
       } finally {
         this.entering = false
+      }
+    },
+    async onLeave() {
+      if (this.leaving) return
+      this.leaving = true
+      try {
+        // No stamp-value override -- a leave carries no payment of its own (the bot refunds the
+        // original entry from its own balance), same pattern as blackjack's hit/stand rather than
+        // its bet.
+        this.$emit('sendFollowUp', {
+          items: [
+            { type: 'raffle', raffleId: this.item.raffleId, action: 'leave' },
+          ],
+        })
+      } catch (err) {
+        errorNotify(err instanceof Error ? err : new Error(String(err)))
+      } finally {
+        this.leaving = false
       }
     },
   },

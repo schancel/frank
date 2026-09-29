@@ -16,5 +16,8 @@ describe('Setup persistence integration', () => {
       'persistSetupAndReload(wallet, myProfile, window.location, errorNotify)',
     )
     expect(source).toContain('await this.persistSetupAndReload()')
+    expect(source.indexOf('this.setRelayData({')).toBeLessThan(
+      source.indexOf('await this.persistSetupAndReload()'),
+    )
   })
 })

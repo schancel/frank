@@ -102,7 +102,9 @@ export default {
   newContactDialog: {
     newContact: 'Nouveau contact',
     enterBitcoinCashAddress: 'Entrez une adresse Lotus...',
+    loading: 'Recherche du contact',
     notFound: 'Non trouvé',
+    found: 'Contact trouvé : {name}',
   },
   newTopicDialog: {
     newTopic: 'Créer un nouveau topic',

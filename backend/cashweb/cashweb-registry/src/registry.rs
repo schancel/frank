@@ -565,68 +565,104 @@ impl Registry {
         self.db.monad_outbox().list_active(limit)
     }
 
-    /// Persist the attempt budget before external reconciliation work.
-    pub(crate) fn begin_monad_outbox_attempt(
+    /// Acquire one durable replay generation after exact-hash absence was observed.
+    pub(crate) fn acquire_monad_outbox_reconcile_lease(
         &self,
         payload_hash: &[u8],
         child_index: u32,
         now_ms: i64,
         limits: &crate::store::monad_outbox::MonadOutboxLimits,
-    ) -> Result<crate::store::monad_outbox::MonadOutboxMember> {
+    ) -> Result<crate::store::monad_outbox::MonadOutboxLeaseAcquire> {
         self.db
             .monad_outbox()
-            .begin_attempt(payload_hash, child_index, now_ms, limits)
+            .acquire_reconcile_lease(payload_hash, child_index, now_ms, limits)
     }
 
-    /// Persist exact-receipt confirmation before advancing to the next child.
-    pub(crate) fn confirm_monad_outbox_member(
+    /// Charge replay age/attempt budgets after the leased exact lookup resolved missing.
+    pub(crate) fn begin_monad_outbox_replay_attempt(
         &self,
         payload_hash: &[u8],
         child_index: u32,
+        lease: crate::store::monad_outbox::MonadOutboxLease,
+        now_ms: i64,
+        limits: &crate::store::monad_outbox::MonadOutboxLimits,
+    ) -> Result<crate::store::monad_outbox::MonadOutboxReplayStart> {
+        self.db.monad_outbox().begin_replay_attempt(
+            payload_hash,
+            child_index,
+            lease,
+            now_ms,
+            limits,
+        )
+    }
+
+    /// Release a scan lease without consuming or extending replay backoff.
+    pub(crate) fn release_monad_outbox_reconcile_lease(
+        &self,
+        payload_hash: &[u8],
+        child_index: u32,
+        lease: crate::store::monad_outbox::MonadOutboxLease,
+    ) -> Result<crate::store::monad_outbox::MonadOutboxTransition> {
+        self.db
+            .monad_outbox()
+            .release_reconcile_lease(payload_hash, child_index, lease)
+    }
+
+    /// Complete an owned replay generation with exact confirmation.
+    pub(crate) fn complete_confirmed_monad_outbox_member(
+        &self,
+        payload_hash: &[u8],
+        child_index: u32,
+        lease: crate::store::monad_outbox::MonadOutboxLease,
         value_wei: u128,
         block_number: u64,
         now_ms: i64,
-    ) -> Result<()> {
-        self.db.monad_outbox().confirm_member(
+    ) -> Result<crate::store::monad_outbox::MonadOutboxTransition> {
+        self.db.monad_outbox().complete_confirmed_member(
             payload_hash,
             child_index,
+            lease,
             value_wei,
             block_number,
             now_ms,
         )
     }
 
-    /// Persist a bounded transient reconciliation error.
-    pub(crate) fn record_monad_outbox_pending_error(
+    /// Complete an owned replay generation with a bounded transient error.
+    pub(crate) fn complete_pending_monad_outbox_member(
         &self,
         payload_hash: &[u8],
         child_index: u32,
+        lease: crate::store::monad_outbox::MonadOutboxLease,
         detail: &str,
         now_ms: i64,
         limits: &crate::store::monad_outbox::MonadOutboxLimits,
-    ) -> Result<()> {
-        self.db.monad_outbox().record_pending_error(
+    ) -> Result<crate::store::monad_outbox::MonadOutboxTransition> {
+        self.db.monad_outbox().complete_pending_member(
             payload_hash,
             child_index,
+            lease,
             detail,
             now_ms,
             limits,
         )
     }
 
-    /// Persist a permanent losing outcome without deleting confirmed-prefix facts.
-    pub(crate) fn terminal_monad_outbox_member(
+    /// Complete an owned replay generation with a permanent losing outcome.
+    pub(crate) fn complete_terminal_monad_outbox_member(
         &self,
         payload_hash: &[u8],
         child_index: u32,
+        lease: crate::store::monad_outbox::MonadOutboxLease,
         terminal: crate::store::monad_outbox::MonadOutboxTerminal,
         detail: &str,
         now_ms: i64,
         limits: &crate::store::monad_outbox::MonadOutboxLimits,
-    ) -> Result<()> {
-        self.db.monad_outbox().terminal_member(
+    ) -> Result<crate::store::monad_outbox::MonadOutboxTransition> {
+        self.db.monad_outbox().complete_terminal_member(
             payload_hash,
             child_index,
+            lease,
             terminal,
             detail,
             now_ms,
@@ -664,10 +700,11 @@ impl Registry {
         &self,
         payload_hash: &[u8],
         now_ms: i64,
+        limits: &crate::store::monad_outbox::MonadOutboxLimits,
     ) -> Result<proto::StoredMonadMessage> {
         self.db
             .monad_outbox()
-            .finalize_delivery(payload_hash, now_ms)
+            .finalize_delivery(payload_hash, now_ms, limits)
     }
 
     /// Recipient-private recovery view for retained, incomplete confirmed prefixes. This method

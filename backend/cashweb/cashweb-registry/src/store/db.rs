@@ -48,6 +48,11 @@ pub(crate) const CF_MONAD_OUTBOX_MEMBERS_V1: &str = "monad_outbox_members_v1";
 pub(crate) const CF_MONAD_OUTBOX_ACTIVE_V1: &str = "monad_outbox_active_v1";
 /// Recipient-private recovery index keyed by `recipient_address ++ payload_hash`.
 pub(crate) const CF_MONAD_OUTBOX_RECIPIENT_V1: &str = "monad_outbox_recipient_v1";
+/// Time-ordered bounded history index for compact delivered tombstones and terminal claims that
+/// have no confirmed-prefix recovery obligation. Values store the total retained record bytes.
+pub(crate) const CF_MONAD_OUTBOX_HISTORY_V2: &str = "monad_outbox_history_v2";
+/// Small schema/migration markers for additive outbox upgrades.
+pub(crate) const CF_MONAD_OUTBOX_META_V2: &str = "monad_outbox_meta_v2";
 /// Ticket #30: stores [`crate::proto::StoredMonadTopicPost`], keyed by `payload_hash`. Parallel
 /// to `CF_MONAD_MESSAGES` -- see `crate::store::monad_topics`'s module docs.
 pub(crate) const CF_MONAD_TOPIC_POSTS: &str = "monad_topic_posts";
@@ -134,7 +139,9 @@ impl Db {
         DbMonadTopicPosts::add_cfs(&mut cfs);
         DbMonadTopicVotes::add_cfs(&mut cfs);
         DbMonadProfiles::add_cfs(&mut cfs);
-        Self::open_with_cfs(path, cfs)
+        let db = Self::open_with_cfs(path, cfs)?;
+        db.monad_outbox().migrate_legacy_delivered_ownership()?;
+        Ok(db)
     }
 
     /// Returns `DbMetadata`, allowing access to registry metadata.

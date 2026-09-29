@@ -162,8 +162,11 @@ for _ in {1..100}; do
     sleep 0.01
 done
 [[ -s "$config_file" ]]
-FRANK_CARGO_SLOT_TIMEOUT_SECONDS=1 \
-    "$fixture_root/.agents/scripts/with-cargo-slot" true
+(
+    cd "$fixture_root"
+    FRANK_CARGO_SLOT_TIMEOUT_SECONDS=1 \
+        "$fixture_root/.agents/scripts/with-cargo-slot" true
+)
 kill -TERM "$launcher_pid"
 if wait "$launcher_pid"; then
     echo "TERM unexpectedly produced a successful launcher exit" >&2

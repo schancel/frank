@@ -94,6 +94,7 @@ import {
   networkName,
 } from '../utils/constants'
 import { errorNotify } from '../utils/notifications'
+import { commitValidatedSetupSeed } from '../utils/setup-account'
 
 import AccountStep from '../components/setup/AccountStep.vue'
 import DepositStep from '../components/setup/DepositStep.vue'
@@ -476,6 +477,10 @@ export default defineComponent({
           if (!this.avatar) {
             this.avatar = await this.selectRandomAvatar()
           }
+          this.accountData.seed = commitValidatedSetupSeed(
+            this.accountData.seed,
+            seed => this.setSeedPhrase(seed),
+          )
           this.setRelayData({
             profile: {
               name: this.accountData.name || 'Frank User',

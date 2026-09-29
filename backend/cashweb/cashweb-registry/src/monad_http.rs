@@ -459,11 +459,17 @@ pub enum MonadRpcError {
 
 impl MonadRpcError {
     /// Whether this error from `eth_sendRawTransaction` proves the node did NOT accept the
-    /// transaction. Anything else (timeouts, transport errors, 5xx/408, unparsable or unrecognised
-    /// replies) is ambiguous: the node may have accepted it.
+    /// transaction. Anything else is ambiguous: the node may have accepted it.
     ///
-    /// A non-2xx HTTP status in 400..500 (other than 408 Request Timeout) means the gateway
-    /// refused the request itself (rate limit, auth, bad request) before executing the call.
+    /// The rule is STATUS-FIRST and independent of body shape:
+    /// - A message/body saying the node already holds or queued the tx is never definitive.
+    /// - HTTP 400, 401, 403, 404, 405, 413, 414, 429: the gateway refused the request before
+    ///   executing the call, so definitive whatever the body says.
+    /// - Every other non-2xx status (all 5xx, 408, 409, 425, 499, other 4xx, 3xx) is ambiguous,
+    ///   even if the body contains a rejection phrase.
+    /// - On a 2xx JSON-RPC error: typed insufficient-funds / underpriced / nonce-too-low, or a
+    ///   message on the explicit rejection whitelist.
+    /// - Transport errors, timeouts and unparsable replies are ambiguous.
     pub fn definitively_rejected_send(&self) -> bool {
         match self {
             MonadRpcError::InsufficientFunds { .. }
@@ -471,12 +477,29 @@ impl MonadRpcError {
             | MonadRpcError::NonceTooLow { .. } => true,
             MonadRpcError::Rpc { message, .. } => {
                 let lower = message.to_lowercase();
-                DEFINITIVE_REJECTION_PHRASES
+                !says_node_holds_tx(&lower)
+                    && DEFINITIVE_REJECTION_PHRASES
+                        .iter()
+                        .any(|phrase| lower.contains(phrase))
+            }
+            MonadRpcError::HttpStatus { status, body, .. } => {
+                matches!(status, 400 | 401 | 403 | 404 | 405 | 413 | 414 | 429)
+                    && !says_node_holds_tx(&body.to_lowercase())
+            }
+            _ => false,
+        }
+    }
+
+    /// Whether the error says the node already holds the exact transaction (typed reply, or any
+    /// HTTP status whose body says so).
+    pub fn says_tx_already_held(&self) -> bool {
+        match self {
+            MonadRpcError::AlreadyKnown { .. } => true,
+            MonadRpcError::HttpStatus { body, .. } => {
+                let lower = body.to_lowercase();
+                ALREADY_KNOWN_PHRASES
                     .iter()
                     .any(|phrase| lower.contains(phrase))
-            }
-            MonadRpcError::HttpStatus { status, .. } => {
-                (400..500).contains(status) && *status != 408
             }
             _ => false,
         }
@@ -500,15 +523,28 @@ const ALREADY_KNOWN_PHRASES: &[&str] = &[
     "already exists",
 ];
 
+/// Phrasing (lowercase) by which a node says it queued the transaction rather than rejecting it.
+const QUEUED_PHRASE: &str = "queued";
+
+/// Whether an error message says the node already holds (or queued) the transaction. Checked
+/// BEFORE every rejection classification: a message that also contains a rejection phrase (for
+/// example "nonce too high, tx queued") is ambiguous, never definitive.
+fn says_node_holds_tx(lower: &str) -> bool {
+    lower.contains(QUEUED_PHRASE)
+        || ALREADY_KNOWN_PHRASES
+            .iter()
+            .any(|phrase| lower.contains(phrase))
+}
+
 /// Phrasings (lowercase) by which a node states it did NOT accept a submitted transaction. Kept
 /// deliberately conservative: an unrecognised error after a send is ambiguous. Each entry is a
 /// stable pre-pool validation failure, so the transaction cannot have entered the pool.
 const DEFINITIVE_REJECTION_PHRASES: &[&str] = &[
-    // Sender cannot pay value + gas.
-    "insufficient funds",
-    // Fee too low to enter or replace in the pool.
+    // (Insufficient funds is classified as the typed `InsufficientFunds` error before this list.)
+    // Fee too low to enter or replace in the pool. ("max fee per gas less than block base fee" is
+    // deliberately NOT listed: some pools queue such transactions until the base fee falls, so
+    // it does not prove non-acceptance.)
     "transaction underpriced",
-    "max fee per gas less than block base fee",
     // Static validity failures checked before pooling.
     "intrinsic gas too low",
     "exceeds block gas limit",
@@ -526,7 +562,25 @@ const DEFINITIVE_REJECTION_PHRASES: &[&str] = &[
 fn classify_rpc_error(method: &str, error: JsonRpcErrorBody) -> MonadRpcError {
     let method = method.to_string();
     let lower = error.message.to_lowercase();
-    if lower.contains("nonce too low")
+    if says_node_holds_tx(&lower) {
+        if ALREADY_KNOWN_PHRASES
+            .iter()
+            .any(|phrase| lower.contains(phrase))
+        {
+            MonadRpcError::AlreadyKnown {
+                method,
+                message: error.message,
+            }
+        } else {
+            // "queued" without an already-known phrase: the node holds it; ambiguous generic error.
+            MonadRpcError::Rpc {
+                method,
+                code: error.code,
+                message: error.message,
+                data: error.data,
+            }
+        }
+    } else if lower.contains("nonce too low")
         || lower.contains("nonce is too low")
         || lower.contains("noncetoolow")
     {
@@ -541,14 +595,6 @@ fn classify_rpc_error(method: &str, error: JsonRpcErrorBody) -> MonadRpcError {
         }
     } else if lower.contains("replacement transaction underpriced") {
         MonadRpcError::ReplacementUnderpriced {
-            method,
-            message: error.message,
-        }
-    } else if ALREADY_KNOWN_PHRASES
-        .iter()
-        .any(|phrase| lower.contains(phrase))
-    {
-        MonadRpcError::AlreadyKnown {
             method,
             message: error.message,
         }
@@ -667,13 +713,7 @@ impl JsonRpcTransport for HttpTransport {
             .map_err(|source| MonadRpcError::transport(method, source))?;
 
         if !status.is_success() {
-            // Gateways often wrap a JSON-RPC error in a non-2xx reply; classify it by content.
-            if let Some(error) = serde_json::from_slice::<JsonRpcResponse>(&body_bytes)
-                .ok()
-                .and_then(|parsed| parsed.error)
-            {
-                return Err(classify_rpc_error(method, error));
-            }
+            // Status-first: the body is kept only for already-known detection.
             return Err(MonadRpcError::HttpStatus {
                 method: method.to_string(),
                 status: status.as_u16(),
@@ -898,6 +938,7 @@ mod tests {
             "known transaction: 0xabc",
             "Transaction already imported",
             "AlreadyKnown",
+            "Already Exists in the pool",
         ] {
             assert!(
                 matches!(rpc_error(message), MonadRpcError::AlreadyKnown { .. }),
@@ -915,10 +956,10 @@ mod tests {
     #[test]
     fn only_whitelisted_or_typed_rejections_are_definitive() {
         for message in [
+            "nonce too low",
             "insufficient funds for gas * price + value",
             "replacement transaction underpriced",
             "Transaction underpriced",
-            "max fee per gas less than block base fee",
             "intrinsic gas too low",
             "exceeds block gas limit",
             "invalid sender",
@@ -928,19 +969,60 @@ mod tests {
         ] {
             assert!(rpc_error(message).definitively_rejected_send(), "{message}");
         }
-        // Unrecognised phrasings and accepted-tx phrasings must NOT clear exposure.
-        assert!(!rpc_error("internal error").definitively_rejected_send());
-        assert!(!rpc_error("txpool is full").definitively_rejected_send());
-        let http = |status| MonadRpcError::HttpStatus {
+        // Unrecognised phrasings, queue-style phrasings and accepted-tx phrasings must NOT clear
+        // exposure. "max fee per gas less than block base fee" is not proven pre-pool.
+        for message in [
+            "internal error",
+            "txpool is full",
+            "max fee per gas less than block base fee",
+            "nonce too high, tx queued",
+            "insufficient funds but already known",
+            "known transaction: 0xabc",
+            "already exists",
+        ] {
+            assert!(
+                !rpc_error(message).definitively_rejected_send(),
+                "{message}"
+            );
+        }
+        let http = |status, body: &str| MonadRpcError::HttpStatus {
             method: "m".into(),
             status,
-            body: String::new(),
+            body: body.to_string(),
         };
-        for status in [400u16, 401, 403, 404, 413, 429] {
-            assert!(http(status).definitively_rejected_send(), "{status}");
+        for status in [400u16, 401, 403, 404, 405, 413, 414, 429] {
+            for body in [
+                "",
+                "plain text",
+                r#"{"error":{"code":429,"message":"exceeded compute units per second capacity"}}"#,
+                r#"{"error":{"code":-1,"message":"something unrecognised"}}"#,
+            ] {
+                assert!(
+                    http(status, body).definitively_rejected_send(),
+                    "{status} {body}"
+                );
+            }
+            // A body saying the node holds/queued the tx is never definitive.
+            assert!(
+                !http(status, "already known").definitively_rejected_send(),
+                "{status}"
+            );
+            assert!(
+                !http(status, "tx queued").definitively_rejected_send(),
+                "{status}"
+            );
         }
-        for status in [408u16, 500, 502, 503, 504, 301] {
-            assert!(!http(status).definitively_rejected_send(), "{status}");
+        // Every other status is ambiguous, even with a rejection phrase in the body.
+        for status in [
+            301u16, 399, 402, 406, 407, 408, 409, 410, 411, 412, 415, 422, 424, 425, 426, 428, 431,
+            451, 499, 500, 501, 502, 503, 504, 599,
+        ] {
+            for body in ["", "insufficient funds", "nonce too high"] {
+                assert!(
+                    !http(status, body).definitively_rejected_send(),
+                    "{status} {body}"
+                );
+            }
         }
         assert!(!MonadRpcError::InvalidResponse {
             method: "m".into(),
@@ -968,36 +1050,65 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn non_2xx_json_rpc_error_bodies_are_classified_by_content() {
-        let body =
-            r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"insufficient funds"}}"#;
-        let err = canned_http_transport("400 Bad Request", body)
-            .await
-            .call("eth_sendRawTransaction", json!(["0x00"]))
-            .await
-            .unwrap_err();
-        assert!(
-            matches!(err, MonadRpcError::InsufficientFunds { .. }),
-            "{err:?}"
-        );
+    async fn non_2xx_replies_are_classified_status_first_over_the_wire() {
+        let rate_limit = r#"{"jsonrpc":"2.0","id":1,"error":{"code":429,"message":"exceeded compute units per second capacity"}}"#;
+        let known = r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"already known"}}"#;
+        let nonce_high =
+            r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"nonce too high"}}"#;
+        for (status, body, definitive, held) in [
+            ("429 Too Many Requests", rate_limit, true, false),
+            ("429 Too Many Requests", "slow down", true, false),
+            (
+                "403 Forbidden",
+                r#"{"error":{"code":1,"message":"weird"}}"#,
+                true,
+                false,
+            ),
+            ("400 Bad Request", "", true, false),
+            ("500 Internal Server Error", nonce_high, false, false),
+            ("502 Bad Gateway", "<html>", false, false),
+            ("499 Client Closed Request", "", false, false),
+            ("409 Conflict", "", false, false),
+            ("425 Too Early", "", false, false),
+            ("408 Request Timeout", "", false, false),
+            ("429 Too Many Requests", known, false, true),
+            ("500 Internal Server Error", known, false, true),
+        ] {
+            let err = canned_http_transport(status, body)
+                .await
+                .call("eth_sendRawTransaction", json!(["0x00"]))
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(err, MonadRpcError::HttpStatus { .. }),
+                "{status}: {err:?}"
+            );
+            assert_eq!(
+                err.definitively_rejected_send(),
+                definitive,
+                "{status} {body}"
+            );
+            assert_eq!(err.says_tx_already_held(), held, "{status} {body}");
+        }
+    }
 
-        let err = canned_http_transport("429 Too Many Requests", "slow down")
-            .await
-            .call("eth_sendRawTransaction", json!(["0x00"]))
-            .await
-            .unwrap_err();
-        assert!(
-            matches!(err, MonadRpcError::HttpStatus { status: 429, .. }),
-            "{err:?}"
-        );
-        assert!(err.definitively_rejected_send());
-
-        let err = canned_http_transport("502 Bad Gateway", "<html>")
-            .await
-            .call("eth_sendRawTransaction", json!(["0x00"]))
-            .await
-            .unwrap_err();
-        assert!(!err.definitively_rejected_send(), "{err:?}");
+    #[test]
+    fn already_known_and_queued_are_checked_before_rejection_phrases() {
+        for message in [
+            "Nonce too high, tx queued",
+            "insufficient funds; already imported",
+        ] {
+            let err = rpc_error(message);
+            assert!(!err.definitively_rejected_send(), "{message}: {err:?}");
+        }
+        assert!(matches!(
+            rpc_error("known transaction 0x1 (nonce too low)"),
+            MonadRpcError::AlreadyKnown { .. }
+        ));
+        assert!(matches!(
+            rpc_error("nonce too high, tx queued"),
+            MonadRpcError::Rpc { .. }
+        ));
     }
 
     /// Mock [`JsonRpcTransport`] that records every call made to it and returns a

@@ -1117,7 +1117,8 @@ async fn replay_member<T: JsonRpcTransport + Clone>(
                 submitted.tx_hash, tx_hash
             ))
         }
-        Ok(_) | Err(MonadRpcError::AlreadyKnown { .. }) => (false, true),
+        Ok(_) => (false, true),
+        Err(err) if err.says_tx_already_held() => (false, true),
         Err(MonadRpcError::NonceTooLow { .. }) => (true, false),
         // Only a node-stated (or gateway-refused) rejection proves it was not accepted.
         Err(err) if err.definitively_rejected_send() => {

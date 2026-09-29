@@ -62,8 +62,10 @@ interpret an object when its supported semantic-reader version is less than
 `min_reader_version`. `min_reader_version` MUST NOT exceed `schema_version`.
 
 E3. `payload` MUST contain exactly one data item satisfying section 3. A known
-type additionally applies its CDDL and semantic rules. An unknown type or
-schema MAY be retained and forwarded only as the original complete frame.
+type additionally applies its CDDL and semantic rules. An unknown type, or a
+schema whose `min_reader_version` is unsupported, MAY be retained and forwarded
+only as the original complete frame. V6 exclusively governs a newer schema
+whose minimum reader version is supported.
 
 E4. A forwarder MUST NOT decode and re-encode a signed, hashed, committed, or
 unknown object. Successful validation does not authorize reconstruction.
@@ -146,19 +148,23 @@ global limits.
 | `MAX_FRAME_BYTES`       | 8,388,617 (8 MiB body + 9-byte frame) | Complete frame                                          |
 | `MAX_BODY_BYTES`        |                     8,388,608 (8 MiB) | Envelope CBOR body                                      |
 | `MAX_DEPTH`             |                                    32 | Nested CBOR arrays/maps, including envelope and payload |
-| `MAX_CONTAINERS`        |                                16,384 | Arrays plus maps in one frame                           |
+| `MAX_CONTAINERS`        |                                16,384 | Arrays plus maps in one validation operation            |
 | `MAX_ITEMS`             |                                65,536 | Scalars plus containers in one validation operation     |
 | `MAX_MAP_ENTRIES`       |                                   256 | Entries in any one map                                  |
 | `MAX_ARRAY_ELEMENTS`    |                                 8,192 | Elements in any one array                               |
 | `MAX_BYTE_STRING_BYTES` |                             8,388,608 | Any byte string before type-specific limits             |
 | `MAX_TEXT_STRING_BYTES` |                     262,144 (256 KiB) | Any UTF-8 text string                                   |
 
-R1. Counters include values inside the payload byte string after it is opened
-for canonical validation. When a schema causes nested frames to be opened, one
-shared validation budget accumulates their bytes, depth, containers, and total
-items; a child parser MUST NOT reset the parent's counters. Implementations
-MUST fail without partially returning a typed object when any limit is
-exceeded.
+R1. One validation operation begins at one externally supplied root frame.
+Before decoding, its complete byte length is charged once against the frame
+limit; embedded frame bytes already lie inside that input and are not charged a
+second time. Container and item counters start at zero and monotonically count
+every decoded map, array, and scalar in the envelope, opened payload, and every
+recursively opened child frame. Logical depth starts at zero for the root
+envelope; entering a map or array adds one, and opening an embedded frame adds
+one before counting that child's envelope depth. A child parser inherits these
+counters and MUST NOT reset them. Implementations MUST fail without partially
+returning a typed object when any limit is exceeded.
 
 R2. The direct-message frame limit is 1 MiB, with at most 256 message items
 total across the recursively opened item graph, 64 payment members, and 512 KiB
@@ -197,14 +203,17 @@ allocates key type 1 to 33-byte compressed SEC1 secp256k1 public keys, 2 to
 S2a. Version 1 allocates signature algorithm 1 to strict-DER, low-S secp256k1
 ECDSA over the 32-byte SHA-256 transcript digest; 2 to BIP340 Schnorr over that
 digest, including BIP340's tagged challenge construction; and 16 to RFC 8032
-Ed25519 over the complete common transcript. Algorithm 3 is reserved for a
-future reviewed BCH-style Schnorr profile and MUST reject until that profile
-freezes its distinct challenge construction. Signatures from algorithms 2 and
-3 are never interchangeable merely because both use secp256k1.
+Ed25519 over the complete common transcript. Algorithm 3 is Bitcoin Cash's
+[May-2019 Schnorr profile](https://documentation.cash/protocol/forks/2019-05-15-schnorr.html)
+over the 32-byte SHA-256 transcript digest, including its `(r,s)` encoding,
+compressed SEC1 key, and distinct challenge construction. Signatures from
+algorithms 2 and 3 are never interchangeable merely because both use
+secp256k1.
 
 S2b. Algorithm 1 requires key type 1 and a strict-DER signature of 8 through 72
-bytes; algorithm 2 requires key type 3 and exactly 64 signature bytes; algorithm
-16 requires key type 2 and exactly 64 signature bytes. Any other
+bytes; algorithm 2 requires key type 3 and exactly 64 signature bytes;
+algorithm 3 requires key type 1 and exactly 64 signature bytes; algorithm 16
+requires key type 2 and exactly 64 signature bytes. Any other
 algorithm/key-type/length combination is unsupported, not a signature failure.
 
 S2c. Encryption-suite identifier 65535 is reserved for opaque proof-vector
@@ -250,6 +259,21 @@ type-5 payload's network and recipient account. After decryption, type 6's
 network MUST also equal type 5's network, and its T1a digest MUST equal its
 opened type-8 revision frame. Message-item array order is authored semantic
 order, not a set to be resorted.
+
+S9. The type-1 destination account MUST be key type 1. For each payment, the
+T3 digest, destination account key, and child index derive the exact #60 child
+public key and chain address. Payment field 3 MUST equal that canonical address,
+the independently observed transaction destination MUST equal field 3, and
+payment destinations MUST be independently unique. Value and commitment checks
+from S3 and T4 remain separately required.
+
+S10. When a directory update changes its subject, exactly one accepted
+transition MUST link the previous statement to the new statement: the type-7
+network equals both statement networks; `directory_subject` equals the previous
+subject; `revision` equals the new statement revision and exceeds the previous
+revision; and `new_key` equals the new statement subject. Its prior authority
+must satisfy S4a/T2a. A valid transition for another network, subject, revision,
+or successor does not authorize the update.
 
 ## 6. Fixture schemas and identity boundaries
 
@@ -356,7 +380,17 @@ u16be(len(domain)) || ascii(domain)
 ```
 
 T1. The content hash is SHA-256 of the common transcript with domain
-`frank/content-hash/v1` and empty context.
+`frank/content-hash/v1` and empty context. Its network argument is mandatory and
+is selected without caller discretion:
+
+|             Type | T1 network source                               |
+| ---------------: | ----------------------------------------------- |
+| 1, 3, 4, 5, 6, 7 | The validated payload's field 0                 |
+|                2 | The opened type-4 statement's validated field 0 |
+|        8, 16, 17 | The literal `frank`                             |
+
+Content hashes are undefined for an unknown type. A pure opaque forwarder
+therefore retains unknown bytes but does not invent a verified content hash.
 
 T1a. A stable plaintext `content_digest` is SHA-256 of the common transcript
 with domain `frank/message-content/v1`, where `frame` is the complete type-8
@@ -369,11 +403,11 @@ individual chain-bearing entries retain their own network tags.
 
 T2. A directory signature uses the common transcript with domain
 `frank/directory-signature/v1`, where `frame` is the complete type-4 directory
-statement frame. Algorithms 1 and 2 sign its 32-byte SHA-256 digest; algorithm
-16 signs the transcript bytes directly as required by S2a. The algorithm
-identifier lives in the type-2 signature entry and selects its exact
+statement frame. Algorithms 1, 2, and 3 sign its 32-byte SHA-256 digest;
+algorithm 16 signs the transcript bytes directly as required by S2a. The
+algorithm identifier lives in the type-2 signature entry and selects its exact
 signing/verification rules. Schnorr identifiers distinguish BIP340 from
-BCH-style Schnorr and other incompatible challenge hashes. `context` is empty.
+BCH-2019 Schnorr and other incompatible challenge hashes. `context` is empty.
 
 T2a. A key-transition authorization uses the common transcript with domain
 `frank/key-transition-signature/v1`, where `frame` is the complete type-7
@@ -437,6 +471,27 @@ error category, and normative rules. Positive vectors additionally name the
 type/schema and expected content hash. Hostile vectors retain their bytes even
 when parsing fails so both implementations test the same input.
 
+Each case's `validation_context` is normative input, not commentary, so no
+ambient chain, database, reader, or decryption state can change its outcome.
+`operation` selects the final section-9 stage: `frame` stops after stage 4,
+`generic` after stage 7, `typed` after stage 9, and `full` includes stage 10.
+`reader_version`, one highest supported schema per type, and
+`opaque_retention_allowed` drive V6. The supported-schema list is sorted by
+numeric type ID and has independently unique type IDs.
+
+For a full type-1 case, `payment_policy` provides the 32-byte minimum and
+authoritative chain observations keyed by independently unique transaction ID;
+the encoded payment assertions must match those observations. The
+`decrypted_frame_hex` value is the exact authenticated decryption result to
+validate as type 6. For proof-only encryption suite 65535, it is also exactly
+the bytes carried in the ciphertext field; this is a deterministic codec
+fixture, not a production cipher.
+
+For a full type-2 case, `prior_directory_statement_frame_hex` is either `null`
+for bootstrap or the exact last accepted type-4 frame used for revision,
+subject, transition, and offline-authority checks. These context fields make
+acceptance or rejection a pure function of the manifest case.
+
 The positive type-1 direct-message case MUST also record
 `content_digest_hex`, `payload_digest_hex`, and every
 `payment_commitments_hex` value. Implementations compare those outputs with T1a,
@@ -451,6 +506,17 @@ implementations MUST NOT continue merely to report a later failure. Within CBOR
 validation, malformed syntax precedes canonicality, resource counters fail at
 the first item that exceeds the shared budget, and typed schema checks follow a
 fully valid canonical item.
+
+| Failure                                                                                                                                                     | Category        |
+| ----------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------- |
+| Too many root bytes; any byte/depth/container/item/type-specific limit                                                                                      | `resource`      |
+| Short header, bad magic, declared-length mismatch, concatenated frame, bytes outside the declared body                                                      | `frame`         |
+| Unknown frame version; uninterpretable type/schema; unallocated algorithm, suite, or algorithm/key pairing                                                  | `unsupported`   |
+| Truncated/invalid CBOR syntax, invalid UTF-8, reserved additional information, or extra CBOR item in body/payload                                           | `malformed`     |
+| Non-minimal integer/length, indefinite value, duplicate/out-of-order map key, or another alternate encoding of an allowed value                             | `noncanonical`  |
+| Canonical but forbidden CBOR class (float, tag, forbidden simple value), envelope/CDDL type mismatch, missing/extra required key, or scalar range violation | `schema`        |
+| Semantic list order/uniqueness, revision, endpoint ASCII, cross-field, authority-selection, or network-equality failure                                     | `semantic`      |
+| Digest/hash/signature mismatch, wrong derived payment destination, transaction observation mismatch, or on-chain commitment mismatch                        | `cryptographic` |
 
 Vector case IDs MUST be unique. `paired_case`, when present, MUST name a
 different existing case, be reciprocal, and indicate two cases whose

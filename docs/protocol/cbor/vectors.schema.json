@@ -634,20 +634,13 @@
     "recipient-directory-state": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "current_statement_frame_hex",
-        "stamp_key_seen",
-        "previous_stamp_key_hex"
-      ],
+      "required": ["current_statement_frame_hex", "previous_stamp_key_hex"],
       "properties": {
         "current_statement_frame_hex": {
           "type": "string",
           "pattern": "^(?:[0-9a-f]{2})*$",
           "minLength": 2,
           "maxLength": 16777236
-        },
-        "stamp_key_seen": {
-          "type": "boolean"
         },
         "previous_stamp_key_hex": {
           "oneOf": [

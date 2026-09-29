@@ -27,8 +27,10 @@ frame opaquely, but MUST NOT interpret it as version 1.
 F3. The declared body length MUST equal all bytes remaining after the nine-byte
 header. Truncation, concatenated frames, and trailing bytes MUST reject.
 
-F4. The applicable frame-size limit MUST be checked before allocating or
-decoding the body.
+F4. The stage 1 limits (`route_byte_limit` and `MAX_FRAME_BYTES`) MUST be
+checked before allocating or decoding the body. The type-specific frame limits
+of R2 and R3 apply at stage 8.1 of section 9 instead, so a malformed or
+unknown-type frame never reports them.
 
 F5. Failure of magic, version, length, CBOR, schema, or semantic validation
 MUST NOT trigger protobuf, JSON, BCS, or other codec fallback.
@@ -545,15 +547,27 @@ category, and an implementation MUST NOT continue to report a later failure.
    3. allocated-identifier checks (S2b, S2c; every encryption suite other than
       65535 is unallocated in version 1): `unsupported`;
    4. recursive opening of only the byte-string fields that the schema declares
-      as framed objects. Each child runs stages 2 through 9 as an embedded
-      frame with the root operation's shared counters (R1) and is not charged
-      against `route_byte_limit`. Where the schema declares a field open (a
-      message item or opaque section), a child with an unknown type or unknown
-      frame version is retained as exact bytes whatever `opaque_retention_allowed`
-      says, and is not a failure; that flag governs only the root frame (V6.1).
+      as framed objects (never opaque sections). Each child is an embedded
+      frame with the root operation's shared counters (R1), not charged against
+      `route_byte_limit`, and runs as follows:
+      - In an open field (a message item), the child runs stages 2 through 9
+        with V6 applied to it. An unknown type or unknown frame version is
+        retained as exact bytes whatever `opaque_retention_allowed` says and is
+        not a failure; that flag governs only the root frame (V6.1).
+      - In a required-type field (S8) and for the decrypted frame (10.1), the
+        child runs stages 2 through 6, then its `type_id` MUST equal the
+        required type, otherwise `semantic` (an unknown type is `semantic`
+        too), then stages 7 through 9. V6.1 retention never applies; an unknown
+        frame version at stage 3 or a `min_reader_version` above the reader's
+        is `unsupported`.
 9. **Semantics** needing only the root frame, its opened children, and, for a
    type-2 case, the context's prior statement (a `typed` or `full` case always
-   supplies it): ordering, uniqueness, cross-field, network, and S10 checks,
+   supplies it). A child's own stage 9 covers only checks needing neither its
+   parent nor the prior statement; a parent's stage 9 runs after its children
+   have finished and first checks its own ordering and uniqueness. S10 and the
+   prior-authority selection run in the type-2 parent's stage 9, not in the
+   type-4 child's. The checks are ordering, uniqueness, cross-field, network,
+   and S10,
    the presence of an entry signed by the statement subject, and selection of
    the prior authority (S4a, T2a): `semantic`. No signature or digest is
    verified here.
@@ -561,9 +575,7 @@ category, and an implementation MUST NOT continue to report a later failure.
     1. Decrypted content: the supplied decrypted frame is an embedded child of
        the type-5 payload sharing its counters and not charged against
        `route_byte_limit`, but its length is checked against `MAX_FRAME_BYTES`
-       (`resource`). It runs stages 2 through 6, then its `type_id` MUST be 6,
-       otherwise `semantic` (the V6 decision does not apply, so an unknown type
-       is `semantic` too), then stages 7 through 9. For suite 65535 its bytes
+       (`resource`). It runs as a required-type child (8.4) of type 6. For suite 65535 its bytes
        MUST equal the ciphertext field, otherwise `cryptographic`.
     2. S8's type-6 network equality: `semantic`.
     3. S8's T1a digest equality: `cryptographic`.

@@ -1,0 +1,219 @@
+// At-limit accepts and one-over rejects for the limits too large for the committed manifest.
+import {
+  FrankCodecError,
+  MAX_FRAME_BYTES,
+  contentHash,
+  defaultContext,
+  validateFrame,
+} from '../src'
+import type { Encodable, ParsedFrame } from '../src'
+import {
+  M,
+  NET,
+  acct1,
+  acct2,
+  attestationFrame,
+  bytesOf,
+  concatBytes,
+  deliveryFrame,
+  fact,
+  fr,
+  framePayload,
+  hex,
+  section,
+  sig,
+  statementPayload,
+  type5Payload,
+} from '../fixtures/builders'
+
+function outcome(f: Uint8Array, ctx = {}): string {
+  try {
+    return validateFrame(f, defaultContext(ctx)).kind
+  } catch (e) {
+    if (!(e instanceof FrankCodecError)) throw e
+    return `${e.category}@${e.stage}`
+  }
+}
+
+const generic = { operation: 'generic' as const, opaqueRetentionAllowed: true }
+
+describe('global limits', () => {
+  it('accepts a frame of exactly MAX_FRAME_BYTES and rejects one byte more at stage 1', () => {
+    // envelope (17 bytes) + payload byte-string item (5-byte head) filling 8 MiB exactly.
+    const dataLen = 8_388_608 - 22
+    const payload = concatBytes(
+      hex('5a'),
+      Uint8Array.of(0, 0, 0, 0),
+      new Uint8Array(dataLen),
+    )
+    new DataView(payload.buffer).setUint32(1, dataLen)
+    const f = framePayload(payload, 0xffff0001)
+    expect(f.length).toBe(MAX_FRAME_BYTES)
+    expect(outcome(f, generic)).toBe('retained')
+    expect(outcome(concatBytes(f, Uint8Array.of(0)), generic)).toBe(
+      'resource@1',
+    )
+  })
+
+  it('counts every item, keys included, against MAX_ITEMS = 131,072 in one operation', () => {
+    // Envelope map + 4 keys + 4 values = 9 items; the payload array is 1, 16 inner arrays are 16.
+    const payloadWithScalars = (scalars: number): Uint8Array => {
+      const arrays = 16
+      const first = 8192
+      let left = scalars
+      const bodies: Uint8Array[] = []
+      for (let i = 0; i < arrays; i++) {
+        const n = Math.min(first, left)
+        left -= n
+        bodies.push(
+          concatBytes(Uint8Array.of(0x99, n >> 8, n & 255), new Uint8Array(n)),
+        )
+      }
+      expect(left).toBe(0)
+      return concatBytes(Uint8Array.of(0x80 | arrays), ...bodies)
+    }
+    const atLimit = 131_072 - 9 - 1 - 16
+    expect(
+      outcome(framePayload(payloadWithScalars(atLimit), 0xffff0001), generic),
+    ).toBe('retained')
+    expect(
+      outcome(
+        framePayload(payloadWithScalars(atLimit + 1), 0xffff0001),
+        generic,
+      ),
+    ).toBe('resource@7')
+  })
+
+  it('counts map keys as items (R1): 256-entry maps cost 513 items each', () => {
+    const map256 = (): Uint8Array => {
+      const parts: number[] = [0xb9, 1, 0]
+      for (let k = 0; k < 256; k++) {
+        if (k < 24) parts.push(k)
+        else parts.push(0x18, k)
+        parts.push(0)
+      }
+      return Uint8Array.from(parts)
+    }
+    // 255 maps of 256 entries = 255 * 513 = 130,815 items, plus 9 envelope items and 1 array.
+    const arrays = (n: number): Uint8Array => {
+      const head =
+        n < 256 ? Uint8Array.of(0x98, n) : Uint8Array.of(0x99, n >> 8, n & 255)
+      const m = map256()
+      return concatBytes(head, ...Array.from({ length: n }, () => m))
+    }
+    expect(outcome(framePayload(arrays(255), 0xffff0001), generic)).toBe(
+      'retained',
+    )
+    expect(outcome(framePayload(arrays(256), 0xffff0001), generic)).toBe(
+      'resource@7',
+    )
+  })
+
+  it('accepts a 262,144-byte text and rejects 262,145 as resource, not malformed', () => {
+    const ok = fr(17, M([[0, 'a'.repeat(262_144)]]))
+    const t = (validateFrame(ok, defaultContext()) as ParsedFrame).typed
+    expect(t).toMatchObject({ type: 17 })
+    expect(outcome(fr(17, M([[0, 'a'.repeat(262_145)]])))).toBe('resource@7')
+    // Text size counts UTF-8 bytes, not characters.
+    expect(outcome(fr(17, M([[0, '€'.repeat(87_381)]])))).toBe('parsed') // 262,143 bytes
+    expect(outcome(fr(17, M([[0, '€'.repeat(87_382)]])))).toBe('resource@7') // 262,146 bytes
+  })
+})
+
+describe('type-specific limits (R2-R4)', () => {
+  it('bounds the ciphertext at 524,288 bytes (resource at 8.1)', () => {
+    const p = (n: number) =>
+      fr(5, new Map([...type5Payload(), [5, new Uint8Array(n)]]))
+    expect(outcome(p(524_288))).toBe('parsed')
+    expect(outcome(p(524_289))).toBe('resource@8.1')
+  })
+
+  /** A type-5 child at schema 2 padded with an unknown field so the parent hits a byte size. */
+  const paddedDelivery = (pad: number): Uint8Array => {
+    const child = fr(
+      5,
+      new Map<number, Encodable>([...type5Payload(), [9, new Uint8Array(pad)]]),
+      2,
+      1,
+    )
+    return deliveryFrame({ payloadFrame: child, payments: 2 })
+  }
+
+  it('bounds a type-1 frame at 1 MiB (R2) using the root frame length', () => {
+    // Find the pad making the delivery exactly 1,048,576 bytes; length grows 1:1 with the pad.
+    let pad = 1_040_000
+    pad += 1_048_576 - paddedDelivery(pad).length
+    const exact = paddedDelivery(pad)
+    expect(exact.length).toBe(1_048_576)
+    expect(outcome(exact)).toBe('parsed')
+    const over = paddedDelivery(pad + 1)
+    expect(over.length).toBe(1_048_577)
+    expect(outcome(over)).toBe('resource@8.1')
+  })
+
+  it('bounds a type-2 frame at 256 KiB (R3)', () => {
+    const stmt = (pad: number) =>
+      fr(
+        4,
+        new Map<number, Encodable>([
+          ...statementPayload(),
+          [9, new Uint8Array(pad)],
+        ]),
+        2,
+        1,
+      )
+    const att = (pad: number) => attestationFrame(stmt(pad), [sig(acct2(1))])
+    let pad = 260_000
+    pad += 262_144 - att(pad).length
+    const opts = { priorDirectoryStatementFrame: null }
+    expect(att(pad).length).toBe(262_144)
+    expect(outcome(att(pad), opts)).toBe('parsed')
+    expect(att(pad + 1).length).toBe(262_145)
+    expect(outcome(att(pad + 1), opts)).toBe('resource@8.1')
+  })
+
+  it('lets a maximal checkpoint (4,096 facts + 4,096 sections) fit one counter (R1 rationale)', () => {
+    const facts = Array.from({ length: 4096 }, (_, i) =>
+      fact(1_000_000 + i, 0, 0),
+    )
+    // fact ids must be unique: derive from the index.
+    const withIds = facts.map((f, i) => {
+      const id = new Uint8Array(16)
+      new DataView(id.buffer).setUint32(12, i)
+      return new Map(f).set(1, id)
+    })
+    const sections = Array.from({ length: 4096 }, (_, i) =>
+      section(i, 1, new Uint8Array(0)),
+    )
+    const cp = fr(
+      3,
+      M([
+        [0, NET],
+        [1, acct1(5)],
+        [2, bytesOf(16, 77)],
+        [
+          3,
+          M([
+            [0, 1],
+            [1, 0],
+          ]),
+        ],
+        [4, withIds],
+        [5, sections],
+      ]),
+    )
+    const r = validateFrame(
+      cp,
+      defaultContext({ priorDirectoryStatementFrame: null }),
+    )
+    expect(r.kind).toBe('parsed')
+    expect(contentHash(r as ParsedFrame)).toHaveLength(32)
+    const t = (r as ParsedFrame).typed
+    if (t?.type !== 3) throw new Error('type 3 expected')
+    expect(t.facts).toHaveLength(4096)
+    expect(t.sections).toHaveLength(4096)
+    // One more fact is a resource error at 8.1.
+    const over = fr(3, M([[4, Array.from({ length: 4097 }, () => M([]))]]))
+    expect(outcome(over)).toBe('resource@8.1')
+  })
+})

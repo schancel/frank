@@ -1,0 +1,47 @@
+{
+  "note": "Recorded by test/bcs-falsification.jest.test.ts; regenerate with FRANK_UPDATE_BCS_RESULT=1.",
+  "library": "@mysten/bcs 2.1.2 (reference bytes only; not a dependency)",
+  "encodedFixtureSizes": {
+    "directMessage": {
+      "cborFrameBytes": 852,
+      "bcsBytes": 768
+    },
+    "directory": {
+      "cborFrameBytes": 434,
+      "bcsBytes": 363
+    },
+    "checkpoint": {
+      "cborFrameBytes": 289,
+      "bcsBytes": 256
+    },
+    "decryptedRevisionWithUnknownItem": {
+      "cborFrameBytes": 242,
+      "bcsBytes": 109
+    }
+  },
+  "sizeCaveat": "The type-5 ciphertext field carries the type-6 frame verbatim in both encodings (suite 65535), and BCS drops the four-byte-per-field key/map framing; sizes are informational only.",
+  "libraryI64": "The BCS specification (github.com/diem/bcs) defines signed 8/16/32/64/128-bit integers as two-complement little-endian. The library @mysten/bcs 2.1.2 exposes no i64 constructor; the mini writer here carries timestamps.seconds (i64) as the equivalent two-complement u64 bytes.",
+  "e1_additive_field_appended_to_top_level_struct": {
+    "strictV1Reader": "error: 6 trailing bytes a v1 reader cannot interpret",
+    "lenientV1Reader": "accepted: {\"network\":\"frank-test\",\"keyType\":2,\"revision\":\"18446744073709551615\",\"endpoints\":[\"https://r1.example/\",\"https://r2.example/\"],\"trailing\":6}",
+    "interpretation": "Only a struct-final field can be ignored, and only by a lenient reader that stops early; the added field is not delimited, so it cannot be retained as a field."
+  },
+  "e2_additive_field_in_struct_inside_a_vector": {
+    "strictV1Reader": "error: BCS: read past the end",
+    "lenientV1Reader": "error: BCS: read past the end",
+    "interpretation": "The added byte shifts every following element: without a per-element length the v1 reader cannot skip it."
+  },
+  "e3_additive_enum_variant": {
+    "v1Reader": "error: unknown enum variant 3: no length to skip it",
+    "interpretation": "An unknown variant index has no length, so the reader cannot skip or retain it or the items after it."
+  },
+  "e4_unknown_message_item_type": {
+    "interpretation": "A v1 BCS schema can carry a future item type only through an explicit Opaque { type_id, bytes } variant; the fixtures needed one (enum variant 2), i.e. an opaque wrapper.",
+    "opaqueVariantPresentInFixtureBytes": true
+  },
+  "e5_opaque_wrapper_designed_in_from_v1": {
+    "v2WriterWithWrapperV1Reader": "accepted: {\"network\":\"frank-test\",\"keyType\":2,\"revision\":\"18446744073709551615\",\"endpoints\":[\"https://r1.example/\",\"https://r2.example/\"],\"trailing\":0}",
+    "interpretation": "Tested on a reduced statement struct (five fields including a relay vector), not on the fixtures: with an empty length-prefixed extension blob after each relay from v1 on, the v1 reader accepted the v2 bytes."
+  },
+  "scope": "Outcomes above were produced by running the experiments with the mini BCS reader/writer: sizes and E4 on the fixtures, E1-E3 and E5 on a reduced statement struct or item enum. Interpretations are the author's reading of those outcomes, not a general claim about every BCS schema discipline."
+}

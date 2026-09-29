@@ -1,6 +1,7 @@
 import { PrivateKey, crypto as bitcoreCrypto } from "bitcore-lib-xpi";
 
 import { IDENTITY_KEY_NETWORK_NAME } from "../legacy-wallet/lotus-identity";
+import { PayloadConstructor } from "./crypto";
 import {
   LegacyMonadMessageEnvelopeV1,
   MAX_MONAD_ENVELOPE_PLAINTEXT_BYTES,
@@ -10,6 +11,7 @@ import {
   decryptEnvelopeV2,
   parseEnvelope,
 } from "./monad-message-envelope";
+import { MonadStampedMessage, MonadStampPayment } from "./monad_message_pb";
 
 const alicePrivateKey = PrivateKey.fromBuffer(
   Buffer.from("11".repeat(32), "hex"),
@@ -422,5 +424,61 @@ describe("legacy v1 read compatibility", () => {
         senderPubKey: alicePubKey,
       })
     ).toBe("legacy hello");
+  });
+
+  it("reads a historically valid near-cap ciphertext whose signed request fits 2 MiB", () => {
+    const ciphertextBytes = 982_544;
+    const salt = Buffer.from("00112233445566778899aabbccddeeff", "hex");
+    const legacyCrypto = new PayloadConstructor({
+      networkName: IDENTITY_KEY_NETWORK_NAME,
+    });
+    const sharedKey = legacyCrypto.constructSharedKey(
+      alicePrivateKey,
+      bobPrivateKey.toPublicKey(),
+      salt
+    );
+    // PKCS#7 adds one byte to this 15-mod-16 plaintext, producing the historical ciphertext size.
+    const plaintext = Buffer.alloc(ciphertextBytes - 1, 0x61);
+    const ciphertext = Buffer.from(legacyCrypto.encrypt(sharedKey, plaintext));
+    expect(ciphertext).toHaveLength(ciphertextBytes);
+
+    const fixture: LegacyMonadMessageEnvelopeV1 = {
+      v: 1,
+      networkTag: "MONT",
+      from: aliceAddress,
+      to: bobAddress,
+      salt: salt.toString("hex"),
+      ciphertext: ciphertext.toString("hex"),
+    };
+    const envelopeBytes = Buffer.from(JSON.stringify(fixture));
+
+    // Real offline-signed EIP-1559 transfer fixture (chain 10143), representative of the payment
+    // bytes carried alongside the envelope in MonadStampedMessage.
+    const rawSignedPayment = Buffer.from(
+      "02f87482279f2a843b9aca00847735940082520894000000000000000000000000000000000000dead" +
+        "880de0b6b3a764000080c001a0f6e40fcbe38269601e35c9304273101e0e69128ccb13c66734990a" +
+        "825d2b0b23a04eb4a16dc6287ab5e47d9e24d4cdcf4da765d9cd15a9c1e5aeb97d557db0a612",
+      "hex"
+    );
+    const payment = new MonadStampPayment();
+    payment.setChildIndex(0);
+    payment.setRawTx(rawSignedPayment);
+    const request = new MonadStampedMessage();
+    request.setEncryptedPayload(envelopeBytes);
+    request.setPayloadHash(bitcoreCrypto.Hash.sha256(envelopeBytes));
+    request.addStampPayments(payment);
+    expect(request.serializeBinary().length).toBeLessThan(2 * 1024 * 1024);
+
+    const parsed = parseEnvelope(envelopeBytes);
+    expect(parsed?.v).toBe(1);
+    if (parsed?.v !== 1) throw new Error("expected legacy v1 envelope");
+    const decrypted = decryptEnvelope({
+      envelope: parsed,
+      myPrivateKey: bobPrivateKey,
+      senderPubKey: alicePubKey,
+    });
+    expect(decrypted).toHaveLength(plaintext.length);
+    expect(decrypted.startsWith("a")).toBe(true);
+    expect(decrypted.endsWith("a")).toBe(true);
   });
 });

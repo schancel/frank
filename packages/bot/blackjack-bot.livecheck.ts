@@ -48,8 +48,9 @@ import { resolve } from 'path'
 import { JsonRpcProvider, Provider } from 'ethers'
 
 import {
-  decryptEnvelope,
   parseEnvelope,
+  sameMonadEnvelopeAddress,
+  tryDecryptEnvelope,
 } from '@frank/cashweb/relay/monad-message-envelope'
 import { fetchMonadMessagesSince } from '@frank/cashweb/relay/monad-message-feed'
 import {
@@ -524,8 +525,8 @@ async function main() {
 
       const envelope = parseEnvelope(message.message.encryptedPayload)
       if (!envelope) continue
-      if (envelope.to !== identity.displayAddress) continue
-      if (envelope.from === identity.displayAddress) continue
+      if (!sameMonadEnvelopeAddress(envelope.to, identity.displayAddress)) continue
+      if (sameMonadEnvelopeAddress(envelope.from, identity.displayAddress)) continue
 
       let senderPubKey = senderPubKeyCache.get(envelope.from)
       if (!senderPubKey) {
@@ -537,11 +538,17 @@ async function main() {
         senderPubKeyCache.set(envelope.from, senderPubKey)
       }
 
-      const rawPlaintext = decryptEnvelope({
+      const rawPlaintext = tryDecryptEnvelope({
         envelope,
         myPrivateKey: identity.toBitcorePrivateKey(),
         senderPubKey,
       })
+      if (rawPlaintext === undefined) {
+        console.warn(
+          `[blackjack-bot] rejected unauthenticated or undecryptable message ${payloadHashHex}`,
+        )
+        continue
+      }
 
       let items
       try {

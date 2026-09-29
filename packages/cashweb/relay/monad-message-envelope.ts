@@ -454,3 +454,24 @@ export function decryptEnvelope(params: {
     senderPubKey: params.senderPubKey,
   });
 }
+
+/** Compare relay-visible EVM identities without making checksum casing part of identity. */
+export function sameMonadEnvelopeAddress(left: string, right: string): boolean {
+  return left.toLowerCase() === right.toLowerCase();
+}
+
+/**
+ * Decrypt one untrusted stored record without allowing a malformed key or failed authentication
+ * tag to abort a mailbox polling loop. Callers must treat `undefined` as a rejected record.
+ */
+export function tryDecryptEnvelope(params: {
+  envelope: MonadMessageEnvelope;
+  myPrivateKey: PrivateKey;
+  senderPubKey: Buffer;
+}): string | undefined {
+  try {
+    return decryptEnvelope(params);
+  } catch {
+    return undefined;
+  }
+}

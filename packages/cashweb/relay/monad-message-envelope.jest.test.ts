@@ -10,6 +10,8 @@ import {
   decryptEnvelope,
   decryptEnvelopeV2,
   parseEnvelope,
+  sameMonadEnvelopeAddress,
+  tryDecryptEnvelope,
 } from "./monad-message-envelope";
 import { MonadStampedMessage, MonadStampPayment } from "./monad_message_pb";
 
@@ -327,6 +329,34 @@ describe("Monad message envelope v2", () => {
         senderPubKey: alicePubKey,
       })
     ).toThrow();
+  });
+
+  it("lets a mailbox consumer reject one unauthenticated record without throwing", () => {
+    const envelope = buildFixedV2();
+    expect(
+      tryDecryptEnvelope({
+        envelope: { ...envelope, tag: flipFirstByte(envelope.tag) },
+        myPrivateKey: bobPrivateKey,
+        senderPubKey: alicePubKey,
+      })
+    ).toBeUndefined();
+    expect(
+      tryDecryptEnvelope({
+        envelope,
+        myPrivateKey: bobPrivateKey,
+        senderPubKey: alicePubKey,
+      })
+    ).toBe("authenticated hello");
+  });
+
+  it("compares valid EVM envelope addresses independently of checksum casing", () => {
+    expect(
+      sameMonadEnvelopeAddress(
+        "0xde709f2102306220921060314715629080e2fb77",
+        "0xDE709F2102306220921060314715629080E2FB77"
+      )
+    ).toBe(true);
+    expect(sameMonadEnvelopeAddress(aliceAddress, bobAddress)).toBe(false);
   });
 
   it.each([

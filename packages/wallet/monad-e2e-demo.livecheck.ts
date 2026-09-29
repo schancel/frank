@@ -71,6 +71,7 @@ import { MonadChangeKeyring } from './monad-change-keyring'
 import { MonadChangePool } from './monad-change-pool'
 import { MonadSubAccountPool } from './monad-account-pool'
 import { SubAccountLeaseManager } from './monad-account-lease'
+import { InMemoryStampAttemptJournal } from './storage/stamp-attempt-journal'
 import { MonadStampClient } from './monad-stamp-client'
 import { MonadIdentity, registerMonadIdentity } from './monad-identity'
 
@@ -190,6 +191,7 @@ async function main() {
     provider,
     httpClient,
     changePool,
+    stampAttemptJournal: new InMemoryStampAttemptJournal(),
     relayBaseUrl,
   })
 

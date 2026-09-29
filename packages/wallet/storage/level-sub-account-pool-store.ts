@@ -3,9 +3,16 @@ import level, { LevelDB } from 'level'
 import { join } from 'path'
 
 import {
+  assertSubAccountIndex,
+  cloneCheckpoint,
   SubAccountPoolStore,
   SubAccountRecord,
+  TerminalSubAccountCheckpoint,
 } from './sub-account-pool-storage'
+
+const NEXT_INDEX_KEY = '__next_index__'
+const CHECKPOINT_PREFIX = '__terminal_checkpoint__:'
+const WALLET_BINDING_KEY = '__wallet_binding__'
 
 /**
  * `level`-backed `SubAccountPoolStore`, mirroring `LevelUtxoStore` (`./level-storage.ts`): an
@@ -21,11 +28,15 @@ export class LevelSubAccountPoolStore implements SubAccountPoolStore {
   private readonly dbLocation: string
   private openedDb?: LevelDB
   private cache: Map<number, SubAccountRecord>
+  private checkpoints = new Map<number, TerminalSubAccountCheckpoint>()
+  private nextIndex = 0
   private pendingWrites: Promise<unknown>[] = []
+  private readonly expectedBindingId?: string
 
-  constructor(location: string) {
+  constructor(location: string, expectedBindingId?: string) {
     this.dbLocation = join(location, 'sub-account-pool')
     this.cache = new Map<number, SubAccountRecord>()
+    this.expectedBindingId = expectedBindingId
   }
 
   private get db() {
@@ -56,11 +67,48 @@ export class LevelSubAccountPoolStore implements SubAccountPoolStore {
     // tuples, with no separate "open" promise to await first. `LevelUtxoStore`'s own iterator
     // (`./level-storage.ts`) sidesteps the same stale-type mismatch by typing its iterator field
     // `any`; this does the same, locally, rather than editing that shared ambient declaration.
+    let storedBindingId: string | undefined
+    let hasRecords = false
     for await (const [key, value] of this.db.iterator({}) as any) {
+      if (key === WALLET_BINDING_KEY) {
+        storedBindingId = value
+        continue
+      }
+      hasRecords = true
+      if (key === NEXT_INDEX_KEY) {
+        const parsed: unknown = JSON.parse(value)
+        assertSubAccountIndex(parsed as number, 'Stored next sub-account index')
+        this.nextIndex = parsed as number
+        continue
+      }
+      if (key.startsWith(CHECKPOINT_PREFIX)) {
+        const checkpoint = JSON.parse(value) as TerminalSubAccountCheckpoint
+        this.checkpoints.set(checkpoint.index, checkpoint)
+        continue
+      }
       const record: SubAccountRecord = JSON.parse(value)
       this.cache.set(record.index, record)
+      this.nextIndex = Math.max(this.nextIndex, record.index + 1)
       void key // key is the stringified index; the parsed record's own `index` field is used.
     }
+    if (this.expectedBindingId !== undefined) {
+      if (
+        storedBindingId !== undefined &&
+        storedBindingId !== this.expectedBindingId
+      ) {
+        throw new Error('Sub-account store belongs to a different wallet root')
+      }
+      if (storedBindingId === undefined && hasRecords) {
+        throw new Error(
+          'Refusing to adopt an unbound non-empty sub-account store',
+        )
+      }
+    }
+  }
+
+  async Bind(): Promise<void> {
+    if (this.expectedBindingId === undefined) return
+    await this.db.put(WALLET_BINDING_KEY, this.expectedBindingId)
   }
 
   getByIndex(index: number): SubAccountRecord | undefined {
@@ -72,10 +120,47 @@ export class LevelSubAccountPoolStore implements SubAccountPoolStore {
     this.pendingWrites.push(
       this.db.put(String(record.index), JSON.stringify(record)),
     )
+    if (record.index + 1 > this.nextIndex) this.setNextIndex(record.index + 1)
   }
 
   getAll(): SubAccountRecord[] {
     return Array.from(this.cache.values()).sort((a, b) => a.index - b.index)
+  }
+
+  getNextIndex(): number {
+    return this.nextIndex
+  }
+
+  setNextIndex(index: number): void {
+    assertSubAccountIndex(index, 'Next sub-account index')
+    if (index < this.nextIndex) {
+      throw new Error(
+        'Sub-account allocation high-water mark cannot move backward',
+      )
+    }
+    this.nextIndex = index
+    this.pendingWrites.push(this.db.put(NEXT_INDEX_KEY, JSON.stringify(index)))
+  }
+
+  replaceWithCheckpoint(checkpoint: TerminalSubAccountCheckpoint): void {
+    this.checkpoints.set(checkpoint.index, cloneCheckpoint(checkpoint))
+    this.cache.delete(checkpoint.index)
+    this.pendingWrites.push(
+      (this.db as any).batch([
+        {
+          type: 'put',
+          key: `${CHECKPOINT_PREFIX}${checkpoint.index}`,
+          value: JSON.stringify(checkpoint),
+        },
+        { type: 'del', key: String(checkpoint.index) },
+      ]),
+    )
+  }
+
+  getCheckpoints(): TerminalSubAccountCheckpoint[] {
+    return Array.from(this.checkpoints.values())
+      .sort((a, b) => a.index - b.index)
+      .map(cloneCheckpoint)
   }
 
   async flush(): Promise<void> {
@@ -90,6 +175,8 @@ export class LevelSubAccountPoolStore implements SubAccountPoolStore {
   async clear(): Promise<void> {
     await this.flush()
     this.cache = new Map<number, SubAccountRecord>()
+    this.checkpoints = new Map<number, TerminalSubAccountCheckpoint>()
+    this.nextIndex = 0
     await this.db.clear()
   }
 }

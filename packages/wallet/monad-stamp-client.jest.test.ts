@@ -162,13 +162,15 @@ function makeClient(overrides?: {
   // wei, so a 10,000-wei stamp naturally consumes 6,000 + 4,000 without an artificial split.
   const provider = overrides?.provider ?? makeCapacityProvider([6_000n, 6_000n])
   const httpClient = makeMockHttpClient()
+  const stampAttemptJournal =
+    overrides?.stampAttemptJournal ?? new InMemoryStampAttemptJournal()
   const client = new MonadStampClient({
     pool,
     leaseManager,
     provider,
     httpClient,
     changePool: overrides?.changePool,
-    stampAttemptJournal: overrides?.stampAttemptJournal,
+    stampAttemptJournal,
     relayBaseUrl: 'https://relay.example.com/',
   })
   return { client, pool, leaseManager, provider, httpClient }
@@ -341,6 +343,23 @@ describe('protobuf encode/decode round trip', () => {
 })
 
 describe('MonadStampClient.submitStampedMessage', () => {
+  it('rejects a missing attempt journal before any signing or funding can begin', () => {
+    const pool = makePool()
+    const getSigner = jest.spyOn(pool, 'getSigner')
+
+    expect(
+      () =>
+        new MonadStampClient({
+          pool,
+          leaseManager: new SubAccountLeaseManager(pool),
+          provider: makeCapacityProvider([6_000n, 6_000n]),
+          httpClient: makeMockHttpClient(),
+          relayBaseUrl: 'https://relay.invalid',
+        }),
+    ).toThrow(/crash-safe stamp-attempt journal/i)
+    expect(getSigner).not.toHaveBeenCalled()
+  })
+
   beforeEach(() => {
     jest.clearAllMocks()
     // `jest.mock('axios')` automocks every export, including `isAxiosError`, to a bare `jest.fn()`
@@ -431,7 +450,13 @@ describe('MonadStampClient.submitStampedMessage', () => {
     mockedAxios.mockImplementationOnce(async () => {
       const err = Object.assign(new Error('Bad Request'), {
         isAxiosError: true,
-        response: { status: 400, data: { error: 'invalid_monad_message' } },
+        response: {
+          status: 400,
+          data: {
+            error: 'invalid_monad_message',
+            exact_set_retained: false,
+          },
+        },
       })
       throw err
     })
@@ -680,6 +705,26 @@ describe('MonadStampClient.submitStampedMessage', () => {
           ),
         }),
     ],
+    [
+      'only a different payload hash',
+      (submitted: MonadStampedMessageProto) =>
+        storedMessageBytes({
+          ...submitted,
+          payloadHash: new Uint8Array(32).fill(0x91),
+        }),
+    ],
+    [
+      'only a different child index',
+      (submitted: MonadStampedMessageProto) =>
+        storedMessageBytes({
+          ...submitted,
+          stampPayments: submitted.stampPayments.map((payment, index) =>
+            index === 0
+              ? { ...payment, childIndex: payment.childIndex + 7 }
+              : payment,
+          ),
+        }),
+    ],
   ])(
     'treats a 2xx containing %s as ambiguous and confirms only through an exact GET',
     async (_description, responseBytes) => {
@@ -749,6 +794,26 @@ describe('MonadStampClient.submitStampedMessage', () => {
           ),
         }),
     ],
+    [
+      'only a different payload hash',
+      (submitted: MonadStampedMessageProto) =>
+        storedMessageBytes({
+          ...submitted,
+          payloadHash: new Uint8Array(32).fill(0x92),
+        }),
+    ],
+    [
+      'only a different child index',
+      (submitted: MonadStampedMessageProto) =>
+        storedMessageBytes({
+          ...submitted,
+          stampPayments: submitted.stampPayments.map((payment, index) =>
+            index === 0
+              ? { ...payment, childIndex: payment.childIndex + 9 }
+              : payment,
+          ),
+        }),
+    ],
   ])(
     'retains a pending attempt when resume receives %s in a 2xx',
     async (_description, responseBytes) => {
@@ -786,7 +851,8 @@ describe('MonadStampClient.submitStampedMessage', () => {
 
       mockedAxios.mockReset()
       mockedAxios.isAxiosError.mockImplementation(
-        (e: unknown) => (e as { isAxiosError?: boolean })?.isAxiosError === true,
+        (e: unknown) =>
+          (e as { isAxiosError?: boolean })?.isAxiosError === true,
       )
       mockedAxios.mockImplementationOnce(async config => ({
         data: responseBytes(submittedMessage as MonadStampedMessageProto),
@@ -806,7 +872,7 @@ describe('MonadStampClient.submitStampedMessage', () => {
     },
   )
 
-  it('retires as stuck and throws MonadStampAbandonedError when the fallback poll never finds it', async () => {
+  it('retains recoverable leases and throws MonadStampAbandonedError when the relay is unavailable', async () => {
     const stampAttemptJournal = new InMemoryStampAttemptJournal()
     const { client, pool } = makeClient({ stampAttemptJournal })
     mockedAxios.mockImplementation(async () => {
@@ -831,8 +897,8 @@ describe('MonadStampClient.submitStampedMessage', () => {
       }),
     ).rejects.toThrow(MonadStampAbandonedError)
 
-    const retired = pool.records().filter(r => r.status === 'retired')
-    expect(retired).toHaveLength(2)
+    const retained = pool.records().filter(r => r.status === 'in-use')
+    expect(retained).toHaveLength(2)
     expect(stampAttemptJournal.getAll()).toHaveLength(1)
     await expect(
       client.submitStampedMessage({
@@ -846,7 +912,7 @@ describe('MonadStampClient.submitStampedMessage', () => {
     // Simulate a cross-store crash where the awaited attempt journal persisted but the pool's
     // earlier status writes did not. A failed startup replay must reserve those
     // accounts again before returning control to the wallet.
-    for (const record of retired) pool.setStatus(record.index, 'available')
+    for (const record of retained) pool.setStatus(record.index, 'available')
     await expect(client.resumePendingAttempts()).resolves.toEqual([])
     expect(pool.records().filter(r => r.status === 'in-use')).toHaveLength(2)
 
@@ -971,7 +1037,7 @@ describe('MonadStampClient.submitStampedMessage', () => {
       }),
     ).rejects.toThrow(MonadStampAbandonedError)
 
-    expect(pool.records().filter(r => r.status === 'retired')).toHaveLength(2)
+    expect(pool.records().filter(r => r.status === 'in-use')).toHaveLength(2)
   })
 })
 

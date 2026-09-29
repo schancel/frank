@@ -221,6 +221,7 @@ describe('LevelChangePoolStore', () => {
       expect(storeB.getNextIndex()).toBe(1)
       expect(storeB.getAll()).toHaveLength(1)
       expect(storeB.getRecord(0)?.sweptValueWei).toBe('123')
+      expect(storeB.getBySourceBurnIndex(5)?.index).toBe(0)
       expect(storeB.getPendingIntent()).toMatchObject({
         index: 1,
         txHash: '0xpending',
@@ -373,6 +374,7 @@ describe('MonadChangePool', () => {
       expect(outcome.sweptValueWei).toBe(balance - dust)
       expect(outcome.record.index).toBe(0)
       expect(outcome.record.sourceBurnIndex).toBe(7)
+      expect(pool.getBySourceBurnIndex(7)).toEqual(outcome.record)
       expect(outcome.record.sourceBurnAddress).toBe('0xburn7')
       expect(outcome.record.address).toBe(
         MonadChangeKeyring.fromMnemonic(TEST_MNEMONIC).deriveChangeAccount(0)

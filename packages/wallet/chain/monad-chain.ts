@@ -98,11 +98,6 @@ import __pb_broadcast_pb from '@frank/cashweb/registry/broadcast_pb'
 const { BroadcastMessage, ForumPost: BroadcastForumPostPayload } =
   __pb_broadcast_pb
 
-import { MonadHdKeyring } from '../monad-hd-keyring'
-import { MonadChangeKeyring } from '../monad-change-keyring'
-import { MonadChangePool } from '../monad-change-pool'
-import { MonadSubAccountPool } from '../monad-account-pool'
-import { SubAccountLeaseManager } from '../monad-account-lease'
 import { MonadHttpClient } from '../monad-http'
 import { MonadAccountTxSigner } from '../monad-account-tx'
 import { MonadWalletHandle } from '../monad-wallet-handle'
@@ -131,16 +126,10 @@ import {
   fetchMonadTopicPostsSince,
 } from '../monad-topic-tally-client'
 import { readViteEnv } from './vite-env'
-import { LevelSubAccountPoolStore } from '../storage/level-sub-account-pool-store'
-import { LevelChangePoolStore } from '../storage/level-change-pool-store'
 import {
-  InMemoryStampPaymentJournal,
-  LevelStampPaymentJournal,
-} from '../storage/stamp-payment-journal'
-import {
-  InMemoryStampAttemptJournal,
-  LevelStampAttemptJournal,
-} from '../storage/stamp-attempt-journal'
+  createInMemoryMonadWalletBundle,
+  openMonadWalletBundle,
+} from '../storage/monad-wallet-bundle'
 
 export interface MonadChainConfig {
   /** Monad JSON-RPC HTTP endpoint, e.g. `MONAD_TESTNET_HTTP_RPC_URL`. */
@@ -333,6 +322,8 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
     params: Parameters<DirectMessageClient['send']>[0],
     wallet: MonadChainWalletHandle,
   ): Promise<DirectMessageSendResult> => {
+    const stampClient = new MonadStampClient(wallet)
+    await stampClient.reconcileOrThrow()
     const plaintext = serializeMessageItems(params.items)
 
     const recipientProfile = await fetchMonadProfile({
@@ -371,7 +362,6 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
       onProgress: params.onPreparationProgress,
     })
 
-    const stampClient = new MonadStampClient(wallet)
     const result = await stampClient.submitStampedMessage({
       encryptedPayload: envelopeBytes,
       // Ticket #57: a DM's stamp is a real payment to the recipient (mirroring Lotus's
@@ -754,84 +744,54 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
       if (existing !== undefined) return existing
 
       const pending = (async (): Promise<MonadChainWalletHandle> => {
-        const keyring = MonadHdKeyring.fromMnemonic(
-          seed.mnemonic,
-          seed.passphrase,
-        )
         const storageLocation =
           config.walletStorageLocation === false
             ? undefined
             : `${config.walletStorageLocation}-${identityKey}`
-        const subAccountStore =
+        const walletState =
           storageLocation === undefined
-            ? undefined
-            : new LevelSubAccountPoolStore(storageLocation)
-        const changeStore =
-          storageLocation === undefined
-            ? undefined
-            : new LevelChangePoolStore(storageLocation)
-        const stampPaymentJournal =
-          storageLocation === undefined
-            ? new InMemoryStampPaymentJournal()
-            : new LevelStampPaymentJournal(storageLocation)
-        const stampAttemptJournal =
-          storageLocation === undefined
-            ? new InMemoryStampAttemptJournal()
-            : new LevelStampAttemptJournal(storageLocation)
-        await Promise.all([
-          subAccountStore?.Open(),
-          changeStore?.Open(),
-          stampPaymentJournal instanceof LevelStampPaymentJournal
-            ? stampPaymentJournal.Open()
-            : undefined,
-          stampAttemptJournal instanceof LevelStampAttemptJournal
-            ? stampAttemptJournal.Open()
-            : undefined,
-        ])
-
-        const pool = new MonadSubAccountPool({
-          keyring,
-          store: subAccountStore,
-        })
-        pool.ensureUnfundedSize(config.subAccountPoolSize)
-        const pendingLeaseIndices = new Set(
-          stampAttemptJournal.getAll().flatMap(attempt => attempt.leaseIndices),
-        )
-        for (const record of pool.records()) {
-          if (
-            record.status === 'in-use' &&
-            !pendingLeaseIndices.has(record.index)
-          ) {
-            // A crash during signing can persist the lease before the exact raw set exists. No
-            // relay broadcast is possible in that window, but the account is conservatively
-            // retired rather than silently reused with an uncertain locally-signed nonce.
-            pool.setStatus(record.index, 'retired')
+            ? createInMemoryMonadWalletBundle({
+                mnemonic: seed.mnemonic,
+                passphrase: seed.passphrase,
+              })
+            : await openMonadWalletBundle({
+                location: storageLocation,
+                seed: {
+                  mnemonic: seed.mnemonic,
+                  passphrase: seed.passphrase,
+                },
+              })
+        try {
+          const {
+            pool,
+            changePool,
+            leaseManager,
+            stampPaymentJournal,
+            stampAttemptJournal,
+          } = walletState
+          walletState.assertNoOrphanedLeases()
+          const provider = new JsonRpcProvider(config.rpcUrl)
+          const httpClient = new MonadHttpClient({ rpcUrl: config.rpcUrl })
+          const wallet: MonadChainWalletHandle = {
+            identity,
+            pool,
+            leaseManager,
+            provider,
+            httpClient,
+            changePool,
+            stampPaymentJournal,
+            stampAttemptJournal,
+            walletState,
+            relayBaseUrl: config.relayBaseUrl,
           }
+          await new MonadStampClient(wallet).reconcileOrThrow()
+          pool.ensureUnfundedSize(config.subAccountPoolSize)
+          await pool.flush()
+          return wallet
+        } catch (error) {
+          await walletState.close().catch(() => undefined)
+          throw error
         }
-        await pool.flush()
-        const changePool = new MonadChangePool({
-          keyring: MonadChangeKeyring.fromMnemonic(
-            seed.mnemonic,
-            seed.passphrase,
-          ),
-          store: changeStore,
-        })
-        const leaseManager = new SubAccountLeaseManager(pool)
-        const provider = new JsonRpcProvider(config.rpcUrl)
-        const httpClient = new MonadHttpClient({ rpcUrl: config.rpcUrl })
-        const wallet: MonadChainWalletHandle = {
-          identity,
-          pool,
-          leaseManager,
-          provider,
-          httpClient,
-          changePool,
-          stampPaymentJournal,
-          stampAttemptJournal,
-          relayBaseUrl: config.relayBaseUrl,
-        }
-        await new MonadStampClient(wallet).resumePendingAttempts()
-        return wallet
       })()
       walletsByIdentity.set(identityKey, pending)
       try {

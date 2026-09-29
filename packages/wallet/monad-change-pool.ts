@@ -173,6 +173,14 @@ export class MonadChangePool {
     return this.store.getRecord(index)
   }
 
+  getBySourceBurnIndex(index: number): ChangeAccountRecord | undefined {
+    return this.store.getBySourceBurnIndex(index)
+  }
+
+  pendingSourceBurnIndex(): number | undefined {
+    return this.store.getPendingIntent()?.sourceBurnIndex
+  }
+
   /** Derives (without persisting or mutating anything) the index/address a sweep would currently
    * land on -- i.e. `deriveChangeAccount(nextUnusedIndex())`. Read-only; safe to call any number
    * of times without side effects. */
@@ -244,9 +252,7 @@ export class MonadChangePool {
     dustThresholdWei?: bigint
     overrides?: MonadTxOverrides
   }): Promise<ChangeSweepOutcome> {
-    const priorRecord = this.store
-      .getAll()
-      .find(record => record.sourceBurnIndex === params.burnIndex)
+    const priorRecord = this.store.getBySourceBurnIndex(params.burnIndex)
     if (priorRecord !== undefined) {
       const staleIntent = this.store.getPendingIntent()
       if (staleIntent?.sourceBurnIndex === params.burnIndex) {

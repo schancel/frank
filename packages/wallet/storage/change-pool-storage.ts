@@ -70,6 +70,7 @@ export interface ChangePoolStore {
   setNextIndex(index: number): void
   putRecord(record: ChangeAccountRecord): void
   getRecord(index: number): ChangeAccountRecord | undefined
+  getBySourceBurnIndex(index: number): ChangeAccountRecord | undefined
   /** Every persisted change record, sorted by index. */
   getAll(): ChangeAccountRecord[]
   getPendingIntent(): ChangeSweepIntent | undefined
@@ -91,6 +92,7 @@ function assertValidIndex(index: number, label: string): void {
 export class InMemoryChangePoolStore implements ChangePoolStore {
   private nextIndex = 0
   private recordsByIndex = new Map<number, ChangeAccountRecord>()
+  private recordsBySourceBurnIndex = new Map<number, ChangeAccountRecord>()
   private pendingIntent?: ChangeSweepIntent
 
   getNextIndex(): number {
@@ -104,10 +106,15 @@ export class InMemoryChangePoolStore implements ChangePoolStore {
 
   putRecord(record: ChangeAccountRecord): void {
     this.recordsByIndex.set(record.index, { ...record })
+    this.recordsBySourceBurnIndex.set(record.sourceBurnIndex, { ...record })
   }
 
   getRecord(index: number): ChangeAccountRecord | undefined {
     return this.recordsByIndex.get(index)
+  }
+
+  getBySourceBurnIndex(index: number): ChangeAccountRecord | undefined {
+    return this.recordsBySourceBurnIndex.get(index)
   }
 
   getAll(): ChangeAccountRecord[] {
@@ -135,6 +142,7 @@ export class InMemoryChangePoolStore implements ChangePoolStore {
   async clear(): Promise<void> {
     this.nextIndex = 0
     this.recordsByIndex.clear()
+    this.recordsBySourceBurnIndex.clear()
     this.pendingIntent = undefined
   }
 }

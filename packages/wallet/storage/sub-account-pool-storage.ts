@@ -55,12 +55,52 @@ export interface SubAccountFundingAttempt {
   txHash: string
 }
 
+export interface SubAccountTransactionCheckpoint {
+  rawTx: string
+  txHash: string
+  valueWei: string
+}
+
+export type SubAccountRecoveryDisposition =
+  | {
+      kind: 'change'
+      changeIndex: number
+      address: string
+      txHash: string
+      valueWei: string
+    }
+  | { kind: 'dust'; valueWei: string; thresholdWei: string }
+  | { kind: 'none'; valueWei: '0' }
+
+export interface SubAccountLifecycle {
+  funding?: SubAccountTransactionCheckpoint
+  spend?: SubAccountTransactionCheckpoint
+  recovery?: SubAccountRecoveryDisposition
+}
+
+/** Durable replacement for a compacted terminal account row. It deliberately retains the
+ * transactions and residual disposition needed to audit/recover the account without retaining
+ * the mutable pool row forever. */
+export interface TerminalSubAccountCheckpoint {
+  version: 1
+  index: number
+  address: string
+  status: 'spent' | 'retired'
+  /** Selected payment denomination, separate from funding gas headroom. */
+  denominationWei: string
+  lifecycle: Required<
+    Pick<SubAccountLifecycle, 'funding' | 'spend' | 'recovery'>
+  >
+  compactedAt: number
+}
+
 /** Persisted state for one HD-derived sub-account. Never carries a private key — see file header.
  */
 interface SubAccountRecordBase {
   /** BIP-44 index (`m/44'/60'/0'/0/{index}`); the durable identity of this sub-account. */
   index: number
   address: string
+  lifecycle?: SubAccountLifecycle
 }
 
 /** `fundingAttempt` is required exactly while funding, so persisted code cannot create a funding
@@ -84,6 +124,11 @@ export interface SubAccountPoolStore {
   getByIndex(index: number): SubAccountRecord | undefined
   put(record: SubAccountRecord): void
   getAll(): SubAccountRecord[]
+  /** Persistent allocation high-water mark. It never moves backward when rows are compacted. */
+  getNextIndex(): number
+  setNextIndex(index: number): void
+  replaceWithCheckpoint(checkpoint: TerminalSubAccountCheckpoint): void
+  getCheckpoints(): TerminalSubAccountCheckpoint[]
   /** Waits until every preceding mutation is durable. In-memory stores resolve immediately. */
   flush(): Promise<void>
   clear(): Promise<void>
@@ -93,6 +138,11 @@ export interface SubAccountPoolStore {
  * tests, and as a default before a persisted store is wired up. */
 export class InMemorySubAccountPoolStore implements SubAccountPoolStore {
   private readonly recordsByIndex = new Map<number, SubAccountRecord>()
+  private readonly checkpointsByIndex = new Map<
+    number,
+    TerminalSubAccountCheckpoint
+  >()
+  private nextIndex = 0
 
   getByIndex(index: number): SubAccountRecord | undefined {
     return this.recordsByIndex.get(index)
@@ -100,6 +150,7 @@ export class InMemorySubAccountPoolStore implements SubAccountPoolStore {
 
   put(record: SubAccountRecord): void {
     this.recordsByIndex.set(record.index, { ...record })
+    this.nextIndex = Math.max(this.nextIndex, record.index + 1)
   }
 
   getAll(): SubAccountRecord[] {
@@ -108,9 +159,50 @@ export class InMemorySubAccountPoolStore implements SubAccountPoolStore {
     )
   }
 
+  getNextIndex(): number {
+    return this.nextIndex
+  }
+
+  setNextIndex(index: number): void {
+    assertSubAccountIndex(index, 'Next sub-account index')
+    if (index < this.nextIndex) {
+      throw new Error(
+        'Sub-account allocation high-water mark cannot move backward',
+      )
+    }
+    this.nextIndex = index
+  }
+
+  replaceWithCheckpoint(checkpoint: TerminalSubAccountCheckpoint): void {
+    this.checkpointsByIndex.set(checkpoint.index, cloneCheckpoint(checkpoint))
+    this.recordsByIndex.delete(checkpoint.index)
+  }
+
+  getCheckpoints(): TerminalSubAccountCheckpoint[] {
+    return Array.from(this.checkpointsByIndex.values())
+      .sort((a, b) => a.index - b.index)
+      .map(cloneCheckpoint)
+  }
+
   async flush(): Promise<void> {}
 
   async clear(): Promise<void> {
     this.recordsByIndex.clear()
+    this.checkpointsByIndex.clear()
+    this.nextIndex = 0
   }
+}
+
+export function assertSubAccountIndex(index: number, label: string): void {
+  if (!Number.isSafeInteger(index) || index < 0) {
+    throw new Error(
+      `${label} must be a non-negative safe integer, got ${index}`,
+    )
+  }
+}
+
+export function cloneCheckpoint(
+  checkpoint: TerminalSubAccountCheckpoint,
+): TerminalSubAccountCheckpoint {
+  return JSON.parse(JSON.stringify(checkpoint)) as TerminalSubAccountCheckpoint
 }

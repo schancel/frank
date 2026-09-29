@@ -2,6 +2,8 @@
 import level, { type LevelDB } from 'level'
 import { join } from 'path'
 
+const WALLET_BINDING_KEY = '__wallet_binding__'
+
 export type StampPaymentRecoveryStatus =
   | 'discovered'
   | 'sweep-pending'
@@ -62,9 +64,11 @@ export class LevelStampPaymentJournal implements StampPaymentJournal {
   private readonly dbLocation: string
   private openedDb?: LevelDB
   private readonly records = new Map<string, StampPaymentRecoveryRecord>()
+  private readonly expectedBindingId?: string
 
-  constructor(location: string) {
+  constructor(location: string, expectedBindingId?: string) {
     this.dbLocation = join(location, 'stamp-payment-journal')
+    this.expectedBindingId = expectedBindingId
   }
 
   private get db(): LevelDB {
@@ -74,10 +78,37 @@ export class LevelStampPaymentJournal implements StampPaymentJournal {
 
   async Open(): Promise<void> {
     this.openedDb = level(this.dbLocation)
-    for await (const [, value] of this.db.iterator({}) as any) {
+    let storedBindingId: string | undefined
+    let hasRecords = false
+    for await (const [dbKey, value] of this.db.iterator({}) as any) {
+      if (dbKey === WALLET_BINDING_KEY) {
+        storedBindingId = value
+        continue
+      }
+      hasRecords = true
       const record = JSON.parse(value) as StampPaymentRecoveryRecord
       this.records.set(key(record.payloadHashHex, record.childIndex), record)
     }
+    if (this.expectedBindingId !== undefined) {
+      if (
+        storedBindingId !== undefined &&
+        storedBindingId !== this.expectedBindingId
+      ) {
+        throw new Error(
+          'Stamp-payment journal belongs to a different wallet root',
+        )
+      }
+      if (storedBindingId === undefined && hasRecords) {
+        throw new Error(
+          'Refusing to adopt an unbound non-empty stamp-payment journal',
+        )
+      }
+    }
+  }
+
+  async Bind(): Promise<void> {
+    if (this.expectedBindingId === undefined) return
+    await this.db.put(WALLET_BINDING_KEY, this.expectedBindingId)
   }
 
   async Close(): Promise<void> {

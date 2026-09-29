@@ -66,12 +66,13 @@ import { MonadTxSubmitter } from './monad-account-tx'
 import {
   MonadStampAbandonedError,
   MonadStampClient,
+  MonadStampRecoveredAttemptError,
   MonadStampedMessageProto,
-  StampMonadMessageResult,
   StoredMonadMessageProto,
   decodeMonadStampedMessage,
   encodeMonadStampedMessage,
 } from './monad-stamp-client'
+import { InMemoryStampAttemptJournal } from './storage/stamp-attempt-journal'
 
 jest.mock('axios')
 const mockedAxios = axios as jest.Mocked<typeof axios>
@@ -169,6 +170,7 @@ function makeClient(pool: MonadSubAccountPool, provider = makeChainProvider()) {
     leaseManager,
     provider,
     httpClient,
+    stampAttemptJournal: new InMemoryStampAttemptJournal(),
     relayBaseUrl: 'https://relay.example.com',
   })
   return { client, leaseManager, provider, httpClient }
@@ -386,7 +388,7 @@ describe('nonce-race sequencing proof (#21)', () => {
     expect(putCalls).toBe(2)
   })
 
-  it('scenario 3 (documented): if the first tx never confirms, the lease retires the sub-account (stuck) instead of deadlocking a later, unrelated stamp on a different account', async () => {
+  it('scenario 3: relay outage retains the exact set and reconciles it before unrelated work', async () => {
     // Four sub-accounts: the preferred two-payment set is retired through the abandon path, and
     // the other two prove the pool isn't deadlocked afterward.
     const pool = makePool(4)
@@ -417,10 +419,11 @@ describe('nonce-race sequencing proof (#21)', () => {
       }),
     ).rejects.toThrow(MonadStampAbandonedError)
 
-    // Per #18: 'stuck' -> 'retired', never 'available' again (never reused with a guessed nonce).
-    const retired = pool.records().filter(r => r.status === 'retired')
-    expect(retired).toHaveLength(2)
-    const retiredIndices = retired.map(record => record.index)
+    // A relay outage is not evidence that the exact set was abandoned. Keep both reservations
+    // recoverable and unavailable rather than retiring them or paying a second set.
+    const retained = pool.records().filter(r => r.status === 'in-use')
+    expect(retained).toHaveLength(2)
+    const retainedIndices = retained.map(record => record.index)
 
     // No deadlock: a subsequent, unrelated stamp attempt (default acquireLease -- never waits)
     // succeeds immediately by picking the other, still-'available' sub-account. If the lease
@@ -433,24 +436,20 @@ describe('nonce-race sequencing proof (#21)', () => {
       return successResponse(sentMessage)
     })
 
-    const nextResult: StampMonadMessageResult =
-      await client.submitStampedMessage({
+    await expect(
+      client.submitStampedMessage({
         encryptedPayload: new TextEncoder().encode('unrelated later stamp'),
         recipientPublicKey: RECIPIENT_PUBLIC_KEY,
         stampValueWei: 10_000n,
         overrides: FEE_OVERRIDES,
-      })
+      }),
+    ).rejects.toBeInstanceOf(MonadStampRecoveredAttemptError)
 
-    expect(nextResult.leaseIndices).toHaveLength(2)
-    expect(
-      nextResult.leaseIndices.every(index => !retiredIndices.includes(index)),
-    ).toBe(true)
-    // Ticket #34: this stamp's own confirmed release retires it as 'spent' -- terminal, never
-    // 'available' again (it completed successfully and consumed the account, unlike the first).
-    expect(pool.getRecord(nextResult.leaseIndices[0])?.status).toBe('spent')
-    // The retired account is still retired -- this ticket does not implement recovery for it.
-    for (const index of retiredIndices) {
-      expect(pool.getRecord(index)?.status).toBe('retired')
+    for (const index of retainedIndices) {
+      expect(pool.getRecord(index)?.status).toBe('spent')
     }
+    expect(
+      pool.records().filter(record => record.status === 'available'),
+    ).toHaveLength(2)
   })
 })

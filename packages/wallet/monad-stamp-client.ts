@@ -130,6 +130,7 @@ import {
   SignedMonadTx,
 } from './monad-account-tx'
 import { MonadWalletHandle } from './monad-wallet-handle'
+import type { StampAttemptJournal } from './storage/stamp-attempt-journal'
 import { selectStampAccounts } from './monad-stamp-account-selection'
 import {
   deriveMonadStampChildPrivate,
@@ -637,7 +638,9 @@ export class MonadStampClient {
   private readonly provider: Provider
   private readonly httpClient: MonadTxSubmitter
   private readonly changePool: MonadChangePool | undefined
-  private readonly attemptJournal: MonadWalletHandle['stampAttemptJournal']
+  private readonly attemptJournal: StampAttemptJournal
+  private readonly walletState: MonadWalletHandle['walletState']
+  private activeSubmissions = 0
   /** Base URL of the `cashweb-registry` relay, e.g. `https://relay.example.com` — no trailing
    * slash. `/message/monad` (`PUT`) and `/message/monad/:payload_hash` (`GET`) are appended to it. */
   private readonly relayBaseUrl: string
@@ -648,7 +651,25 @@ export class MonadStampClient {
     this.provider = params.provider
     this.httpClient = params.httpClient
     this.changePool = params.changePool
+    this.walletState = params.walletState
+    if (params.stampAttemptJournal === undefined) {
+      throw new Error(
+        'Monad stamped sends require a crash-safe stamp-attempt journal',
+      )
+    }
     this.attemptJournal = params.stampAttemptJournal
+    if (
+      this.walletState !== undefined &&
+      (this.walletState.pool !== params.pool ||
+        this.walletState.leaseManager !== params.leaseManager ||
+        this.walletState.changePool !== params.changePool ||
+        this.walletState.stampAttemptJournal !== params.stampAttemptJournal ||
+        this.walletState.stampPaymentJournal !== params.stampPaymentJournal)
+    ) {
+      throw new Error(
+        'Monad wallet components do not belong to one persistence bundle',
+      )
+    }
     this.relayBaseUrl = params.relayBaseUrl.replace(/\/+$/, '')
   }
 
@@ -750,6 +771,18 @@ export class MonadStampClient {
   async submitStampedMessage(
     params: StampMonadMessageParams,
   ): Promise<StampMonadMessageResult> {
+    await this.reconcilePendingOrThrow()
+    this.activeSubmissions++
+    try {
+      return await this.submitStampedMessageAfterPreflight(params)
+    } finally {
+      this.activeSubmissions--
+    }
+  }
+
+  private async submitStampedMessageAfterPreflight(
+    params: StampMonadMessageParams,
+  ): Promise<StampMonadMessageResult> {
     if (params.encryptedPayload.length === 0) {
       throw new Error('encryptedPayload must not be empty')
     }
@@ -758,22 +791,6 @@ export class MonadStampClient {
         `encryptedPayload exceeds the ${MAX_MONAD_STAMPED_MESSAGE_BYTES}-byte message limit`,
       )
     }
-    if (
-      this.attemptJournal !== undefined &&
-      this.attemptJournal.getAll().length > 0
-    ) {
-      const recovered = await this.resumePendingAttempts()
-      if (recovered.length > 0) {
-        throw new MonadStampRecoveredAttemptError(recovered)
-      }
-      const stillPending = this.attemptJournal
-        .getAll()
-        .map(attempt => attempt.payloadHashHex)
-      if (stillPending.length > 0) {
-        throw new MonadStampPendingAttemptError(stillPending)
-      }
-    }
-
     const payloadHash = computeMonadStampCommitment(params.encryptedPayload)
     // Quote with an all-nonzero commitment. The RPC therefore applies the active network's
     // worst-case calldata schedule (including EIP-7623) without this client hardcoding gas-table
@@ -942,7 +959,7 @@ export class MonadStampClient {
       )
     }
     try {
-      await this.attemptJournal?.put({
+      await this.attemptJournal.put({
         payloadHashHex,
         messageBytes: Array.from(encodedMessage),
         leaseIndices: handles.map(handle => handle.index),
@@ -954,6 +971,15 @@ export class MonadStampClient {
       await this.pool.flush()
       throw err
     }
+    for (const [offset, handle] of handles.entries()) {
+      const signedTx = signedTxs[offset]
+      this.pool.recordSpendTransaction(handle.index, {
+        rawTx: signedTx.rawTx,
+        txHash: signedTx.txHash,
+        valueWei: signedTx.value.toString(),
+      })
+    }
+    await this.pool.flush()
     const releaseAll = async (
       outcome: 'confirmed' | 'failed' | 'stuck',
     ): Promise<Array<ChangeSweepOutcome | undefined>> => {
@@ -977,6 +1003,25 @@ export class MonadStampClient {
                 },
         })
         sweeps.push(released.sweep)
+        if (released.sweep?.swept === true) {
+          this.pool.recordRecoveryDisposition(handle.index, {
+            kind: 'change',
+            changeIndex: released.sweep.record.index,
+            address: released.sweep.record.address,
+            txHash: released.sweep.record.txHash,
+            valueWei: released.sweep.record.sweptValueWei,
+          })
+          await this.pool.flush()
+        } else if (released.sweep?.reason === 'below-dust-threshold') {
+          this.pool.recordRecoveryDisposition(handle.index, {
+            kind: 'dust',
+            valueWei: (released.sweep.balanceWei ?? BigInt(0)).toString(),
+            thresholdWei: (
+              released.sweep.dustThresholdWei ?? BigInt(0)
+            ).toString(),
+          })
+          await this.pool.flush()
+        }
         if (
           released.sweep?.swept === false &&
           released.sweep.reason !== 'below-dust-threshold'
@@ -998,7 +1043,7 @@ export class MonadStampClient {
       ) {
         throw new MonadStampPendingAttemptError([payloadHashHex])
       }
-      await this.attemptJournal?.delete(payloadHashHex)
+      await this.attemptJournal.delete(payloadHashHex)
       return {
         stored,
         payloadHashHex,
@@ -1011,32 +1056,21 @@ export class MonadStampClient {
       if (axios.isAxiosError(err) && err.response) {
         if (exactSetRetained(err.response.data) === false) {
           await releaseAll('failed')
-          await this.attemptJournal?.delete(payloadHashHex)
+          await this.attemptJournal.delete(payloadHashHex)
           const detail = relayRejectionDetail(err.response.data)
           throw new MonadStampRejectedError(
-            `Relay rejected the Monad-stamped message before retaining its payment set (HTTP ${err.response.status})${
-              detail ? `: ${detail}` : ''
-            }`,
+            `Relay rejected the Monad-stamped message before retaining its payment set (HTTP ${
+              err.response.status
+            })${detail ? `: ${detail}` : ''}`,
             err.response.status,
             err.response.data,
           )
         }
-        if (this.attemptJournal !== undefined) {
-          // The relay may have accepted a prefix of this exact payment set before returning an
-          // error. Keep the journal and reservations intact so reconciliation can replay only the
-          // already-authorized bytes; presenting this as a terminal rejection could prompt a
-          // caller to create a second salted payment and pay twice.
-          throw new MonadStampPendingAttemptError([payloadHashHex])
-        }
-        await releaseAll('failed')
-        const detail = relayRejectionDetail(err.response.data)
-        throw new MonadStampRejectedError(
-          `Relay rejected the Monad-stamped message (HTTP ${err.response.status})${
-            detail ? `: ${detail}` : ''
-          }`,
-          err.response.status,
-          err.response.data,
-        )
+        // The relay may have accepted a prefix of this exact payment set before returning an
+        // error. Keep the journal and reservations intact so reconciliation can replay only the
+        // already-authorized bytes; presenting this as a terminal rejection could prompt a
+        // caller to create a second salted payment and pay twice.
+        throw new MonadStampPendingAttemptError([payloadHashHex])
       }
 
       // A missing HTTP response or a semantically invalid 2xx is genuinely ambiguous: the relay
@@ -1057,7 +1091,7 @@ export class MonadStampClient {
         ) {
           throw new MonadStampPendingAttemptError([payloadHashHex])
         }
-        await this.attemptJournal?.delete(payloadHashHex)
+        await this.attemptJournal.delete(payloadHashHex)
         return {
           stored,
           payloadHashHex,
@@ -1067,7 +1101,6 @@ export class MonadStampClient {
         }
       }
 
-      await releaseAll('stuck')
       throw new MonadStampAbandonedError(
         'Monad stamp submission abandoned: no response from the relay, and ' +
           `GET /message/monad/${payloadHashHex} never found a stored message`,
@@ -1076,10 +1109,36 @@ export class MonadStampClient {
     }
   }
 
+  /** Single wallet-owned preflight for every operation that may fund or sign a new stamp. */
+  async reconcileOrThrow(): Promise<void> {
+    if (this.activeSubmissions > 0) {
+      throw new MonadStampPendingAttemptError(
+        this.attemptJournal.getAll().map(attempt => attempt.payloadHashHex),
+      )
+    }
+    await this.reconcilePendingOrThrow()
+    this.pool.authorizeStampInventoryPreparation()
+  }
+
+  private async reconcilePendingOrThrow(): Promise<void> {
+    this.walletState?.assertNoOrphanedLeases()
+    if (this.activeSubmissions > 0) return
+    if (this.attemptJournal.getAll().length === 0) return
+    const recovered = await this.resumePendingAttempts()
+    if (recovered.length > 0) {
+      throw new MonadStampRecoveredAttemptError(recovered)
+    }
+    const stillPending = this.attemptJournal
+      .getAll()
+      .map(attempt => attempt.payloadHashHex)
+    if (stillPending.length > 0) {
+      throw new MonadStampPendingAttemptError(stillPending)
+    }
+  }
+
   /** Replay crash-surviving attempts byte-for-byte. Exact-set relay binding makes this safe when
    * only a prefix of the transactions landed before the previous process stopped. */
   async resumePendingAttempts(): Promise<string[]> {
-    if (this.attemptJournal === undefined) return []
     const completed: string[] = []
     for (const attempt of this.attemptJournal.getAll()) {
       // The journal write and pool-status writes live in separate LevelDBs. A hard crash can make
@@ -1095,6 +1154,25 @@ export class MonadStampClient {
         const message = decodeMonadStampedMessage(
           Uint8Array.from(attempt.messageBytes),
         )
+        for (const [offset, index] of attempt.leaseIndices.entries()) {
+          const record = this.pool.getRecord(index)
+          const payment = message.stampPayments[offset]
+          if (record === undefined || payment === undefined) continue
+          if (record.lifecycle?.spend === undefined) {
+            const transaction = Transaction.from(hexlify(payment.rawTx))
+            if (transaction.hash === null) {
+              throw new Error(
+                `Journaled stamp payment for sub-account ${index} is unsigned`,
+              )
+            }
+            this.pool.recordSpendTransaction(index, {
+              rawTx: hexlify(payment.rawTx),
+              txHash: transaction.hash,
+              valueWei: transaction.value.toString(),
+            })
+          }
+        }
+        await this.pool.flush()
         await this.putStampedMessage(message)
         for (const index of attempt.leaseIndices) {
           const record = this.pool.getRecord(index)
@@ -1113,6 +1191,23 @@ export class MonadStampClient {
               burnAccountSigner: signer,
               provider: this.provider,
             })
+            if (sweep.swept) {
+              this.pool.recordRecoveryDisposition(index, {
+                kind: 'change',
+                changeIndex: sweep.record.index,
+                address: sweep.record.address,
+                txHash: sweep.record.txHash,
+                valueWei: sweep.record.sweptValueWei,
+              })
+              await this.pool.flush()
+            } else if (sweep.reason === 'below-dust-threshold') {
+              this.pool.recordRecoveryDisposition(index, {
+                kind: 'dust',
+                valueWei: (sweep.balanceWei ?? BigInt(0)).toString(),
+                thresholdWei: (sweep.dustThresholdWei ?? BigInt(0)).toString(),
+              })
+              await this.pool.flush()
+            }
             if (!sweep.swept && sweep.reason === 'sweep-pending') {
               throw new MonadStampPendingAttemptError([attempt.payloadHashHex])
             }

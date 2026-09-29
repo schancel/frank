@@ -163,6 +163,19 @@ describe('recoverNextChangeIndex', () => {
     ).rejects.toThrow(/maxIndex/)
   })
 
+  it('fails closed when the chain provider is unavailable', async () => {
+    const keyring = MonadChangeKeyring.fromMnemonic(TEST_MNEMONIC)
+    const outage = new Error('rpc unavailable')
+    const provider = {
+      getTransactionCount: jest.fn().mockRejectedValue(outage),
+      getBalance: jest.fn().mockRejectedValue(outage),
+    } as unknown as Provider
+
+    await expect(recoverNextChangeIndex({ keyring, provider })).rejects.toBe(
+      outage,
+    )
+  })
+
   it('DEFAULT_MAX_CHANGE_INDEX_SEARCH is a sane, generous default', () => {
     expect(DEFAULT_MAX_CHANGE_INDEX_SEARCH).toBeGreaterThan(1000)
   })

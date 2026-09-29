@@ -145,6 +145,20 @@ describe('MonadSubAccountPool', () => {
       })
       expect(() => pool.ensureSize(-1)).toThrow()
     })
+
+    it('allocates after a 125k high-water mark without spreading account history', () => {
+      const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC)
+      const store = new InMemorySubAccountPoolStore()
+      store.setNextIndex(125_000)
+      const pool = new MonadSubAccountPool({ keyring, store })
+
+      const record = pool.deriveNextUnfunded()
+
+      expect(record.index).toBe(125_000)
+      expect(record.address).toBe(keyring.deriveSubAccount(125_000).address)
+      expect(pool.records()).toHaveLength(1)
+      expect(pool.nextUnusedIndex()).toBe(125_001)
+    })
   })
 
   describe('selectForStamp (per-stamp rotation)', () => {
@@ -201,6 +215,53 @@ describe('MonadSubAccountPool', () => {
       // Newly retiring index 2 after it's already been passed shouldn't affect 0/1 rotation order.
       pool.setStatus(2, 'retired')
       expect(pool.selectForStamp()?.index).toBe(0)
+    })
+  })
+
+  describe('terminal compaction', () => {
+    it('is bounded, skips referenced rows, and preserves a versioned recovery checkpoint', async () => {
+      const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC)
+      const store = new InMemorySubAccountPoolStore()
+      const pool = new MonadSubAccountPool({ keyring, store })
+      const lifecycle = {
+        funding: { rawTx: '0xfund', txHash: '0xfunding', valueWei: '100' },
+        spend: { rawTx: '0xspend', txHash: '0xspending', valueWei: '60' },
+        recovery: {
+          kind: 'dust' as const,
+          valueWei: '1',
+          thresholdWei: '2',
+        },
+      }
+      for (const index of [0, 1, 2]) {
+        const derived = keyring.deriveSubAccount(index)
+        store.put({
+          index,
+          address: derived.address,
+          status: 'spent',
+          lifecycle,
+        })
+      }
+
+      await expect(
+        pool.compactTerminalAccounts({
+          limit: 1,
+          referencedIndices: new Set([0]),
+          now: () => 123,
+        }),
+      ).resolves.toBe(1)
+
+      expect(pool.getRecord(0)).toBeDefined()
+      expect(pool.getRecord(1)).toBeUndefined()
+      expect(pool.getRecord(2)).toBeDefined()
+      expect(pool.terminalCheckpoints()).toEqual([
+        expect.objectContaining({
+          version: 1,
+          index: 1,
+          lifecycle,
+          compactedAt: 123,
+        }),
+      ])
+      expect(pool.nextUnusedIndex()).toBe(3)
     })
   })
 
@@ -1001,6 +1062,7 @@ describe('InMemorySubAccountPoolStore / LevelSubAccountPoolStore', () => {
       const poolA = new MonadSubAccountPool({ keyring, store: storeA })
       poolA.ensureSize(2)
       poolA.setStatus(1, 'in-use')
+      storeA.setNextIndex(125_000)
       await storeA.Close()
 
       const storeB = new LevelSubAccountPoolStore(dir)
@@ -1012,6 +1074,48 @@ describe('InMemorySubAccountPoolStore / LevelSubAccountPoolStore', () => {
       expect(poolB.getRecord(0)?.address).toBe(
         keyring.deriveSubAccount(0).address,
       )
+      expect(poolB.nextUnusedIndex()).toBe(125_000)
+      expect(poolB.deriveNextUnfunded().index).toBe(125_000)
+      await storeB.Close()
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('LevelSubAccountPoolStore durably replaces a complete terminal row with its checkpoint', async () => {
+    const os = await import('os')
+    const path = await import('path')
+    const fs = await import('fs')
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sub-account-checkpoint-'))
+    try {
+      const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC)
+      const storeA = new LevelSubAccountPoolStore(dir)
+      await storeA.Open()
+      const derived = keyring.deriveSubAccount(0)
+      storeA.put({
+        index: 0,
+        address: derived.address,
+        status: 'spent',
+        lifecycle: {
+          funding: { rawTx: '0xfund', txHash: '0xfundhash', valueWei: '10' },
+          spend: { rawTx: '0xspend', txHash: '0xspendhash', valueWei: '8' },
+          recovery: { kind: 'dust', valueWei: '1', thresholdWei: '2' },
+        },
+      })
+      const poolA = new MonadSubAccountPool({ keyring, store: storeA })
+      await expect(
+        poolA.compactTerminalAccounts({ limit: 1, now: () => 456 }),
+      ).resolves.toBe(1)
+      await storeA.Close()
+
+      const storeB = new LevelSubAccountPoolStore(dir)
+      await storeB.Open()
+      const poolB = new MonadSubAccountPool({ keyring, store: storeB })
+      expect(poolB.getRecord(0)).toBeUndefined()
+      expect(poolB.terminalCheckpoints()).toEqual([
+        expect.objectContaining({ version: 1, index: 0, compactedAt: 456 }),
+      ])
+      expect(poolB.nextUnusedIndex()).toBe(1)
       await storeB.Close()
     } finally {
       fs.rmSync(dir, { recursive: true, force: true })

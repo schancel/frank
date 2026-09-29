@@ -39,6 +39,7 @@ jest.mock('../monad-stamp-client', () => {
     MonadStampClient: jest.fn().mockImplementation(() => ({
       submitStampedMessage: jest.fn(),
       resumePendingAttempts: jest.fn().mockResolvedValue([]),
+      reconcileOrThrow: jest.fn().mockResolvedValue(undefined),
     })),
     quoteMonadStampPaymentGasReserve: jest.fn().mockResolvedValue(100n),
   }
@@ -365,6 +366,7 @@ describe('createMonadChain: directMessages.send', () => {
     })
     ;(MonadStampClient as jest.Mock).mockImplementation(() => ({
       submitStampedMessage,
+      reconcileOrThrow: jest.fn().mockResolvedValue(undefined),
     }))
 
     const items: MessageItem[] = [{ type: 'text', text: 'hi bob' } as TextItem]
@@ -428,6 +430,29 @@ describe('createMonadChain: directMessages.send', () => {
     ).rejects.toThrow(/No registered profile/)
   })
 
+  it('runs the client-owned reconciliation preflight before profile lookup or inventory preparation', async () => {
+    const chain = createMonadChain(TEST_CONFIG)
+    const alice = MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX)
+    const bob = MonadIdentity.fromPrivateKeyHex(BOB_PRIVATE_KEY_HEX)
+    const wallet = makeWallet(alice)
+    const failure = new Error('retained exact set')
+    ;(MonadStampClient as jest.Mock).mockImplementation(() => ({
+      reconcileOrThrow: jest.fn().mockRejectedValue(failure),
+      submitStampedMessage: jest.fn(),
+    }))
+
+    await expect(
+      chain.directMessages.send({
+        wallet,
+        recipient: bob.address,
+        items: [{ type: 'text', text: 'must wait' }],
+      }),
+    ).rejects.toBe(failure)
+
+    expect(mockedFetchMonadProfile).not.toHaveBeenCalled()
+    expect(wallet.pool.prepareStampInventory).not.toHaveBeenCalled()
+  })
+
   it('serializes concurrent sends through preparation, payment, and relay submission', async () => {
     const chain = createMonadChain(TEST_CONFIG)
     const alice = MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX)
@@ -448,6 +473,7 @@ describe('createMonadChain: directMessages.send', () => {
       .mockResolvedValueOnce({ payloadHashHex: 'second' })
     ;(MonadStampClient as jest.Mock).mockImplementation(() => ({
       submitStampedMessage,
+      reconcileOrThrow: jest.fn().mockResolvedValue(undefined),
     }))
 
     const first = chain.directMessages.send({

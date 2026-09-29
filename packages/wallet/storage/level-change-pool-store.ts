@@ -13,6 +13,7 @@ import {
  * non-digit character. */
 const NEXT_INDEX_KEY = '__next_index__'
 const PENDING_INTENT_KEY = '__pending_sweep_intent__'
+const WALLET_BINDING_KEY = '__wallet_binding__'
 
 /**
  * `level`-backed `ChangePoolStore`, mirroring `LevelSubAccountPoolStore`
@@ -29,13 +30,16 @@ export class LevelChangePoolStore implements ChangePoolStore {
   private readonly dbLocation: string
   private openedDb?: LevelDB
   private cache: Map<number, ChangeAccountRecord>
+  private bySourceBurnIndex = new Map<number, ChangeAccountRecord>()
   private nextIndex = 0
   private pendingIntent?: ChangeSweepIntent
   private pendingWrites: Promise<unknown>[] = []
+  private readonly expectedBindingId?: string
 
-  constructor(location: string) {
+  constructor(location: string, expectedBindingId?: string) {
     this.dbLocation = join(location, 'change-pool')
     this.cache = new Map<number, ChangeAccountRecord>()
+    this.expectedBindingId = expectedBindingId
   }
 
   private get db() {
@@ -61,7 +65,14 @@ export class LevelChangePoolStore implements ChangePoolStore {
   private async loadData(): Promise<void> {
     // Same stale-ambient-type workaround `LevelSubAccountPoolStore.loadData` uses -- see that
     // file's header for the full explanation of why `iterator()` is typed `any` here.
+    let storedBindingId: string | undefined
+    let hasRecords = false
     for await (const [key, value] of this.db.iterator({}) as any) {
+      if (key === WALLET_BINDING_KEY) {
+        storedBindingId = value
+        continue
+      }
+      hasRecords = true
       if (key === NEXT_INDEX_KEY) {
         this.nextIndex = JSON.parse(value)
         continue
@@ -72,7 +83,24 @@ export class LevelChangePoolStore implements ChangePoolStore {
       }
       const record: ChangeAccountRecord = JSON.parse(value)
       this.cache.set(record.index, record)
+      this.bySourceBurnIndex.set(record.sourceBurnIndex, record)
     }
+    if (this.expectedBindingId !== undefined) {
+      if (
+        storedBindingId !== undefined &&
+        storedBindingId !== this.expectedBindingId
+      ) {
+        throw new Error('Change store belongs to a different wallet root')
+      }
+      if (storedBindingId === undefined && hasRecords) {
+        throw new Error('Refusing to adopt an unbound non-empty change store')
+      }
+    }
+  }
+
+  async Bind(): Promise<void> {
+    if (this.expectedBindingId === undefined) return
+    await this.db.put(WALLET_BINDING_KEY, this.expectedBindingId)
   }
 
   getNextIndex(): number {
@@ -92,6 +120,7 @@ export class LevelChangePoolStore implements ChangePoolStore {
 
   putRecord(record: ChangeAccountRecord): void {
     this.cache.set(record.index, { ...record })
+    this.bySourceBurnIndex.set(record.sourceBurnIndex, { ...record })
     this.pendingWrites.push(
       this.db.put(String(record.index), JSON.stringify(record)),
     )
@@ -99,6 +128,10 @@ export class LevelChangePoolStore implements ChangePoolStore {
 
   getRecord(index: number): ChangeAccountRecord | undefined {
     return this.cache.get(index)
+  }
+
+  getBySourceBurnIndex(index: number): ChangeAccountRecord | undefined {
+    return this.bySourceBurnIndex.get(index)
   }
 
   getAll(): ChangeAccountRecord[] {
@@ -135,6 +168,7 @@ export class LevelChangePoolStore implements ChangePoolStore {
   async clear(): Promise<void> {
     await this.flush()
     this.cache = new Map<number, ChangeAccountRecord>()
+    this.bySourceBurnIndex = new Map<number, ChangeAccountRecord>()
     this.nextIndex = 0
     this.pendingIntent = undefined
     await this.db.clear()

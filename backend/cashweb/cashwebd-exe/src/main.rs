@@ -2,7 +2,7 @@ use std::{io::Read, sync::Arc, time::Duration};
 
 use bitcoinsuite_bitcoind::rpc_client::BitcoindRpcClient;
 use bitcoinsuite_error::{Result, WrapErr};
-use cashweb_config::parse_conf;
+use cashweb_config::{parse_conf, MonadMailboxMode};
 use cashweb_registry::{
     disabled_chain_adapter::DisabledChainAdapter,
     http::{
@@ -57,6 +57,13 @@ async fn main() -> Result<()> {
     file.read_to_string(&mut conf_contents)
         .wrap_err_with(|| ReadConfigFail(conf_path.clone()))?;
     let conf = parse_conf(&conf_contents).wrap_err_with(|| InvalidConfigFail(conf_path.clone()))?;
+    // Validate the mailbox lifecycle before opening the database or binding a socket. The same
+    // typed mode is the serialized seam the HTTP owner will use to omit admission when disabled.
+    let mailbox_mode = conf
+        .registry
+        .monad_mailbox
+        .mode()
+        .wrap_err("Invalid registry.monad_mailbox configuration")?;
 
     if let Some(parent) = conf
         .registry
@@ -88,44 +95,22 @@ async fn main() -> Result<()> {
     };
 
     let registry = Arc::new(Registry::new(db, chain_adapter, conf.registry.net));
-    let outbox_worker: Option<MonadOutboxWorker> = match std::env::var(
-        "CASHWEB_MONAD_OUTBOX_RECONCILIATION_ENABLED",
-    )
-    .ok()
-    .as_deref()
-    {
-        Some("0" | "false" | "off") => {
+    let outbox_worker: Option<MonadOutboxWorker> = match mailbox_mode {
+        MonadMailboxMode::Disabled => {
             tracing::event!(
                 tracing::Level::WARN,
-                "Monad outbox startup reconciliation is explicitly disabled; durable records remain readable"
+                "Monad mailbox is explicitly disabled; omit admission and retain durable rows as readable"
             );
             None
         }
-        _ => match std::env::var("MONAD_TESTNET_HTTP_RPC_URL") {
-            Ok(value) => match value.parse() {
-                Ok(rpc_url) => Some(start_monad_outbox_worker(
-                    HttpTransport::new(rpc_url),
-                    Arc::clone(&registry),
-                    MonadOutboxReconcileConfig::default(),
-                )),
-                Err(err) => {
-                    tracing::event!(
-                        tracing::Level::ERROR,
-                        error = %err,
-                        "Monad outbox startup reconciliation is unavailable: MONAD_TESTNET_HTTP_RPC_URL is invalid"
-                    );
-                    None
-                }
-            },
-            Err(err) => {
-                tracing::event!(
-                    tracing::Level::ERROR,
-                    error = %err,
-                    "Monad outbox startup reconciliation is unavailable: MONAD_TESTNET_HTTP_RPC_URL is unset"
-                );
-                None
-            }
-        },
+        MonadMailboxMode::Enabled { rpc_url } => Some(
+            start_monad_outbox_worker(
+                HttpTransport::new(rpc_url),
+                Arc::clone(&registry),
+                MonadOutboxReconcileConfig::default(),
+            )
+            .await?,
+        ),
     };
     let our_peers = conf
         .registry

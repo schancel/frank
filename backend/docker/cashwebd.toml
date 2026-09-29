@@ -23,6 +23,9 @@ db_path = "/data/registry.rocksdb"
 net = "mainnet"
 peers = []
 
+[registry.monad_mailbox]
+enabled = false
+
 [registry.pop]
 enabled = false
 monad_rpc_url = "http://unused.invalid"

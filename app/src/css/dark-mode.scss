@@ -1,13 +1,31 @@
 body.body--dark {
-  --q-color-background: #1f1f1f;
-  --q-color-text: white;
+  --q-color-background: #121218;
+  --q-color-text: #ececf2;
   // TODO: Figure out how to use global quasar scss variables
-  --q-color-bg-active: #3b3b3b;
-  // ChatMessage.vue + ChatMessageReply.vue
-  --q-message-color-sent: #673ab7; // deep-purple
-  --q-message-color: #455a64; // blue-grey-8
+  --q-color-bg-active: #26262f;
+  // ChatMessage.vue + ChatMessageReply.vue -- sent stays close to $primary but lifted a bit
+  // (#b37dff vs. $primary's #9d5cff) since a saturated violet at full strength reads as duller,
+  // lower-contrast against a near-black page than the same hue lightened slightly.
+  --q-message-color-sent: #b37dff;
+  --q-message-color: #242430;
+  --q-message-text-sent: #ffffff;
+  --q-message-text-received: #ececf2;
   --q-reply-bg: rgba(0, 0, 0, 0.44);
   --q-reply-border-left: 4px solid white;
+  // Chat.vue's message-list background -- a faint brand-colored wash (never a repeating tile/
+  // pattern asset) so the chat surface reads as designed rather than a flat fill, without
+  // borrowing any other messenger's actual wallpaper artwork.
+  --q-chat-background: radial-gradient(
+      ellipse 900px 700px at 12% -10%,
+      rgba(157, 92, 255, 0.22),
+      transparent 60%
+    ),
+    radial-gradient(
+      ellipse 900px 700px at 100% 115%,
+      rgba(0, 217, 163, 0.13),
+      transparent 60%
+    ),
+    #121218;
 
   background: var(--q-color-background);
   color: var(--q-color-text);

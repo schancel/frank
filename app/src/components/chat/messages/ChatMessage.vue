@@ -303,16 +303,20 @@ export default defineComponent({
       const amount = stampPrice(this.message.outpoints)
       return Number(amount / 1000000).toFixed(2) + ' XPI'
     },
+    // Named hooks into `--q-message-color-sent`/`--q-message-color` (app.scss's own header on
+    // these classes explains the currentColor mechanism) -- was hardcoded to fixed Quasar palette
+    // swatches ('deep-purple'/'blue-grey-8') that never actually reflected this app's own brand
+    // colors, and couldn't be tuned per light/dark mode independently of those swatches.
     bgColor() {
-      const isDark = this.$q.dark.isActive
-      if (this.message.outbound) {
-        return isDark ? 'deep-purple' : 'deep-purple-2'
-      } else {
-        return isDark ? 'blue-grey-8' : 'blue-grey-2'
-      }
+      return this.message.outbound ? 'message-sent' : 'message-received'
     },
+    // Sent bubbles are always a bold, filled brand color in both light and dark mode, so their
+    // text is always white; received bubbles are a neutral surface that itself flips with the
+    // mode, so their text follows suit.
     textColor() {
-      return this.$q.dark.isActive ? 'white' : 'black'
+      return this.message.outbound
+        ? 'message-sent-text'
+        : 'message-received-text'
     },
   },
 })

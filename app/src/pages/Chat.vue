@@ -1,7 +1,7 @@
 <template>
   <div>
     <q-page-container>
-      <q-page>
+      <q-page class="chat-page-background">
         <q-scroll-area
           ref="chatScroll"
           @scroll="scrollHandler"

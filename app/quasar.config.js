@@ -300,6 +300,20 @@ export default configure(ctx => {
     devServer: {
       open: true, // opens browser window automatically
       port: 8080,
+      // Found live while working on the chat redesign (2026-09-28): this repo's git-worktree
+      // workflow (packages/frank_worktree_node_modules_symlink_bug.md) symlinks a worktree's
+      // node_modules/@frank/* entries -- and reuses third-party packages -- from wherever the
+      // *main* checkout lives, which is outside the worktree's own directory tree. Vite's default
+      // `server.fs.strict` refuses to serve any file reached through a symlink that escapes the
+      // project root, which silently 404s things like @quasar/extras's Material Icons webfont
+      // with no visible error in the app itself (just a "no icon glyph, fall back to the ligature
+      // text name" rendering, easy to mistake for an offline/no-network issue). `strict: false`
+      // is a dev-only relaxation (never touches the production build) -- the standard, portable
+      // way to make a Vite dev server work with a monorepo/worktree layout without hardcoding any
+      // one checkout's absolute path into this committed config.
+      fs: {
+        strict: false,
+      },
     },
 
     // animations: 'all', // --- includes all animations

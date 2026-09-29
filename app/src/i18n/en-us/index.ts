@@ -7,6 +7,14 @@ export default {
     donationMessage:
       'Thank you for participating in our vision of the future of online communications. Please consider donating to our efforts by sending real BCH to bitcoincash:qq7vt04md0pt6fk5szhcx4cgsfuzmppy5u4hxshr4a',
   },
+  chatLayout: {
+    info: 'Info',
+    infoTitle: 'Info',
+    mute: 'Mute',
+    unmute: 'Unmute',
+    selectMessages: 'Select Messages',
+    selectMessagesTitle: 'Select Messages',
+  },
   chatInput: {
     giveLotusSecretly: 'Give Lotus Secretly',
     attachImage: 'Attach Image',
@@ -26,6 +34,9 @@ export default {
     stampPrice: 'Stamp Price',
     sendLotus: 'Send Lotus',
     notifications: 'Notifications',
+    clearHistory: 'Clear History',
+    deleteChat: 'Delete Chat',
+    unknownContact: 'Unknown',
   },
   sendLotusDialog: {
     sendLotusTo: 'Send Lotus to',

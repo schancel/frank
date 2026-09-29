@@ -34,9 +34,10 @@ export function commitValidatedSetupName(
   nameRequired: boolean | undefined,
   persistName: (name: string) => void,
 ): string {
-  const committedName = nameRequired
-    ? requireValidProfileDisplayName(name)
-    : name || IMPORTED_ACCOUNT_DEFAULT_NAME
+  const committedName =
+    nameRequired !== false
+      ? requireValidProfileDisplayName(name)
+      : name || IMPORTED_ACCOUNT_DEFAULT_NAME
   persistName(committedName)
   return committedName
 }

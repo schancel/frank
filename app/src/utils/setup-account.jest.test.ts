@@ -59,3 +59,15 @@ describe('setup account display name commitment', () => {
     expect(persistName).not.toHaveBeenCalled()
   })
 })
+
+describe('setup name commitment fails closed', () => {
+  it('treats an undefined nameRequired as required', () => {
+    expect(() => commitValidatedSetupName('   ', undefined, jest.fn())).toThrow(
+      /invalid profile display name/i,
+    )
+  })
+
+  it('only an explicit false skips validation', () => {
+    expect(commitValidatedSetupName('', false, jest.fn())).toBe('Frank User')
+  })
+})

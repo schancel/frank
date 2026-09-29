@@ -85,41 +85,41 @@ import {
   getBytes,
   hexlify,
   randomBytes,
-} from "ethers";
-import { PrivateKey, crypto as bitcoreCrypto } from "bitcore-lib-xpi";
-import axios from "axios";
+} from 'ethers'
+import { PrivateKey, crypto as bitcoreCrypto } from 'bitcore-lib-xpi'
+import axios from 'axios'
 
-import __pb_registry_metadata_pb from "@frank/cashweb/registry/metadata_pb";
+import __pb_registry_metadata_pb from '@frank/cashweb/registry/metadata_pb'
 const { AddressMetadata, Entry, Header, ListMonadProfilesResponse } =
-  __pb_registry_metadata_pb;
-import __pb_signed_payload_payload_pb from "@frank/cashweb/signed_payload/payload_pb";
-const { SignedPayload } = __pb_signed_payload_payload_pb;
-import { ChainAddress, HDSeed, ProfileInfo } from "./chain/active-chain";
-import type { FrankIdentityHandle } from "./chain/active-chain";
+  __pb_registry_metadata_pb
+import __pb_signed_payload_payload_pb from '@frank/cashweb/signed_payload/payload_pb'
+const { SignedPayload } = __pb_signed_payload_payload_pb
+import { ChainAddress, HDSeed, ProfileInfo } from './chain/active-chain'
+import type { FrankIdentityHandle } from './chain/active-chain'
 import {
   requireValidProfileDisplayName,
   validateProfileDisplayName,
-} from "./profile-display-name";
+} from './profile-display-name'
 
 /** Reserved BIP-44 path (account index `1'`) for the stable Frank identity key -- see this file's
  * header for why it's kept structurally separate from both `monad-hd-keyring.ts`'s burner
  * sub-account branch (`m/44'/60'/0'/0/i`) and `monad-change-keyring.ts`'s change-account branch
  * (`m/44'/60'/0'/1/i`, ticket #36). */
-export const MONAD_IDENTITY_DERIVATION_PATH = "m/44'/60'/1'/0/0";
+export const MONAD_IDENTITY_DERIVATION_PATH = "m/44'/60'/1'/0/0"
 
 /** A Monad-native Frank identity: a secp256k1 keypair plus its EIP-55 checksummed address (see
  * this file's header). Implements `FrankIdentityHandle` (`../chain/active-chain.ts`) so it can be
  * used directly as `WalletHandle.identity`, while exposing the extra private-key-backed methods
  * (`signHash`/`toBitcorePrivateKey`) `../chain/monad-chain.ts` needs internally. */
 export class MonadIdentity implements FrankIdentityHandle {
-  readonly address: ChainAddress;
-  readonly displayAddress: string;
-  private readonly wallet: Wallet;
+  readonly address: ChainAddress
+  readonly displayAddress: string
+  private readonly wallet: Wallet
 
   private constructor(wallet: Wallet) {
-    this.wallet = wallet;
-    this.address = { raw: wallet.address };
-    this.displayAddress = wallet.address;
+    this.wallet = wallet
+    this.address = { raw: wallet.address }
+    this.displayAddress = wallet.address
   }
 
   /** Derives the identity key deterministically from `seed`, at
@@ -127,17 +127,17 @@ export class MonadIdentity implements FrankIdentityHandle {
   static fromSeed(seed: HDSeed): MonadIdentity {
     const computedSeed = Mnemonic.fromPhrase(
       seed.mnemonic,
-      seed.passphrase ?? ""
-    ).computeSeed();
+      seed.passphrase ?? '',
+    ).computeSeed()
     const node = HDNodeWallet.fromSeed(computedSeed).derivePath(
-      MONAD_IDENTITY_DERIVATION_PATH
-    );
-    return new MonadIdentity(new Wallet(node.privateKey));
+      MONAD_IDENTITY_DERIVATION_PATH,
+    )
+    return new MonadIdentity(new Wallet(node.privateKey))
   }
 
   /** Rebuilds a previously-generated identity from its raw `0x`-prefixed private key hex. */
   static fromPrivateKeyHex(privateKeyHex: string): MonadIdentity {
-    return new MonadIdentity(new Wallet(privateKeyHex));
+    return new MonadIdentity(new Wallet(privateKeyHex))
   }
 
   /** A fresh, independently-random identity with no HD relationship to any seed/burn pool --
@@ -147,19 +147,19 @@ export class MonadIdentity implements FrankIdentityHandle {
    * `Wallet.createRandom()`'s result directly: that returns an `HDNodeWallet`, a sibling type of
    * `Wallet` in ethers v6 (not a subtype), which this class's private field isn't typed for. */
   static generate(): MonadIdentity {
-    return MonadIdentity.fromPrivateKeyHex(hexlify(randomBytes(32)));
+    return MonadIdentity.fromPrivateKeyHex(hexlify(randomBytes(32)))
   }
 
   /** Raw `0x`-prefixed private key -- for persisting between runs. Never logged/serialized by this
    * class itself. */
   toPrivateKeyHex(): string {
-    return this.wallet.privateKey;
+    return this.wallet.privateKey
   }
 
   /** Compressed (33-byte) secp256k1 public key -- the form the registry's `PubKeyHash`/`Registry`
    * store expects (mirrors `lotus-identity.ts`'s own `FrankIdentity.pubKey`). */
   get compressedPubKey(): Buffer {
-    return Buffer.from(getBytes(this.wallet.signingKey.compressedPublicKey));
+    return Buffer.from(getBytes(this.wallet.signingKey.compressedPublicKey))
   }
 
   /** DER-encoded ECDSA signature over `hash`, via this identity's key -- the signature scheme
@@ -168,18 +168,15 @@ export class MonadIdentity implements FrankIdentityHandle {
    * `bitcore-lib-xpi`'s ECDSA signer purely for its DER encoder -- no Lotus addressing involved
    * (see this file's header). */
   signHash(hash: Buffer): Buffer {
-    const signature = bitcoreCrypto.ECDSA.sign(
-      hash,
-      this.toBitcorePrivateKey()
-    );
-    return (signature as unknown as { toDER(): Buffer }).toDER();
+    const signature = bitcoreCrypto.ECDSA.sign(hash, this.toBitcorePrivateKey())
+    return (signature as unknown as { toDER(): Buffer }).toDER()
   }
 
   /** Wraps this identity's raw private key in a `bitcore-lib-xpi` `PrivateKey`, purely to reuse
    * the Monad envelope's ECDH implementation (see this file's header) -- never
    * used for Lotus address derivation. */
   toBitcorePrivateKey(): PrivateKey {
-    return new PrivateKey(this.wallet.privateKey.slice(2));
+    return new PrivateKey(this.wallet.privateKey.slice(2))
   }
 }
 
@@ -188,20 +185,20 @@ export class MonadIdentity implements FrankIdentityHandle {
  * `lotus-identity.ts`'s `buildSignedAddressMetadata` uses (see that function's doc comment for why
  * an empty `burn_txs`/`transactions` list is sufficient with POP disabled). */
 export interface MonadProfileFields {
-  name?: string;
-  bio?: string;
-  avatar?: string;
+  name?: string
+  bio?: string
+  avatar?: string
 }
 
 function profileEntries(profile: MonadProfileFields = {}) {
-  const entries: InstanceType<typeof Entry>[] = [];
+  const entries: InstanceType<typeof Entry>[] = []
   const addTextEntry = (kind: string, value?: string) => {
-    if (!value) return;
-    const entry = new Entry();
-    entry.setKind(kind);
-    entry.setBody(new TextEncoder().encode(value));
-    entries.push(entry);
-  };
+    if (!value) return
+    const entry = new Entry()
+    entry.setKind(kind)
+    entry.setBody(new TextEncoder().encode(value))
+    entries.push(entry)
+  }
 
   // An empty or whitespace-only stored name means "never set" and is simply not signed; any
   // other invalid name (controls, over-long, lone surrogates) is refused per Decision #189.
@@ -209,46 +206,46 @@ function profileEntries(profile: MonadProfileFields = {}) {
     profile.name === undefined ||
     !validateProfileDisplayName(profile.name).normalized
       ? undefined
-      : requireValidProfileDisplayName(profile.name);
-  addTextEntry("display_name", displayName);
-  addTextEntry("bio", profile.bio);
+      : requireValidProfileDisplayName(profile.name)
+  addTextEntry('display_name', displayName)
+  addTextEntry('bio', profile.bio)
 
   if (profile.avatar) {
-    const match = /^data:([^;,]+);base64,(.+)$/.exec(profile.avatar);
+    const match = /^data:([^;,]+);base64,(.+)$/.exec(profile.avatar)
     if (match) {
-      const avatar = new Entry();
-      avatar.setKind("avatar");
-      avatar.setBody(Buffer.from(match[2], "base64"));
-      const contentType = new Header();
-      contentType.setName("content-type");
-      contentType.setValue(match[1]);
-      avatar.addHeaders(contentType);
-      entries.push(avatar);
+      const avatar = new Entry()
+      avatar.setKind('avatar')
+      avatar.setBody(Buffer.from(match[2], 'base64'))
+      const contentType = new Header()
+      contentType.setName('content-type')
+      contentType.setValue(match[1])
+      avatar.addHeaders(contentType)
+      entries.push(avatar)
     }
   }
-  return entries;
+  return entries
 }
 
 function buildSignedAddressMetadata(
   identity: MonadIdentity,
-  profile: MonadProfileFields = {}
+  profile: MonadProfileFields = {},
 ): Buffer {
-  const metadata = new AddressMetadata();
-  metadata.setTimestamp(Date.now());
-  metadata.setTtl(1000 * 60 * 60 * 24 * 365); // 1 year, in milliseconds
-  metadata.setEntriesList(profileEntries(profile));
-  const serializedPayload = Buffer.from(metadata.serializeBinary());
-  const payloadHash = bitcoreCrypto.Hash.sha256(serializedPayload);
+  const metadata = new AddressMetadata()
+  metadata.setTimestamp(Date.now())
+  metadata.setTtl(1000 * 60 * 60 * 24 * 365) // 1 year, in milliseconds
+  metadata.setEntriesList(profileEntries(profile))
+  const serializedPayload = Buffer.from(metadata.serializeBinary())
+  const payloadHash = bitcoreCrypto.Hash.sha256(serializedPayload)
 
-  const signedPayload = new SignedPayload();
-  signedPayload.setPublicKey(identity.compressedPubKey);
-  signedPayload.setPayload(serializedPayload);
-  signedPayload.setPayloadDigest(payloadHash);
-  signedPayload.setScheme(SignedPayload.SignatureScheme.ECDSA);
-  signedPayload.setBurnAmount(0);
-  signedPayload.setTransactionsList([]);
-  signedPayload.setSignature(identity.signHash(payloadHash));
-  return Buffer.from(signedPayload.serializeBinary());
+  const signedPayload = new SignedPayload()
+  signedPayload.setPublicKey(identity.compressedPubKey)
+  signedPayload.setPayload(serializedPayload)
+  signedPayload.setPayloadDigest(payloadHash)
+  signedPayload.setScheme(SignedPayload.SignatureScheme.ECDSA)
+  signedPayload.setBurnAmount(0)
+  signedPayload.setTransactionsList([])
+  signedPayload.setSignature(identity.signHash(payloadHash))
+  return Buffer.from(signedPayload.serializeBinary())
 }
 
 /** `PUT /metadata/:addr` (no POP payment proof) -- mirrors `lotus-identity.ts`'s
@@ -257,22 +254,22 @@ function buildSignedAddressMetadata(
  * path. Requires an `Origin` header -- `RelayInfo::parse_from_headers` fails the whole request
  * with `MissingOrigin` otherwise. */
 export async function registerMonadIdentity(params: {
-  relayBaseUrl: string;
-  identity: MonadIdentity;
-  profile?: MonadProfileFields;
+  relayBaseUrl: string
+  identity: MonadIdentity
+  profile?: MonadProfileFields
 }): Promise<void> {
-  const body = buildSignedAddressMetadata(params.identity, params.profile);
+  const body = buildSignedAddressMetadata(params.identity, params.profile)
   await axios({
-    method: "put",
-    url: `${params.relayBaseUrl.replace(/\/+$/, "")}/metadata/${
+    method: 'put',
+    url: `${params.relayBaseUrl.replace(/\/+$/, '')}/metadata/${
       params.identity.address.raw
     }`,
     data: body,
     headers: {
-      "Content-Type": "application/x-protobuf",
-      Origin: "http://frank.local",
+      'Content-Type': 'application/x-protobuf',
+      'Origin': 'http://frank.local',
     },
-  });
+  })
 }
 
 /** `GET /metadata/:addr`: fetches a previously-registered identity's `SignedPayload` (mainly for
@@ -280,26 +277,26 @@ export async function registerMonadIdentity(params: {
  * `./monad-message-envelope.ts`). Returns `undefined` on a `404`. Mirrors `lotus-identity.ts`'s
  * `fetchIdentityPubKey` exactly, just taking/returning a Monad `ChainAddress`. */
 export async function fetchMonadIdentityPubKey(params: {
-  relayBaseUrl: string;
-  address: string;
+  relayBaseUrl: string
+  address: string
 }): Promise<Buffer | undefined> {
   try {
     const response = await axios({
-      method: "get",
-      url: `${params.relayBaseUrl.replace(/\/+$/, "")}/metadata/${
+      method: 'get',
+      url: `${params.relayBaseUrl.replace(/\/+$/, '')}/metadata/${
         params.address
       }`,
-      responseType: "arraybuffer",
-    });
+      responseType: 'arraybuffer',
+    })
     const signedPayload = SignedPayload.deserializeBinary(
-      new Uint8Array(response.data)
-    );
-    return Buffer.from(signedPayload.getPublicKey_asU8());
+      new Uint8Array(response.data),
+    )
+    return Buffer.from(signedPayload.getPublicKey_asU8())
   } catch (err) {
     if (axios.isAxiosError(err) && err.response?.status === 404) {
-      return undefined;
+      return undefined
     }
-    throw err;
+    throw err
   }
 }
 
@@ -307,50 +304,50 @@ export async function fetchMonadIdentityPubKey(params: {
  * `fetchMonadIdentityPubKey` and wraps it as a `ProfileInfo` (`../chain/active-chain.ts`). Returns
  * `undefined` if nothing is registered under `address` yet. */
 export async function fetchMonadProfile(params: {
-  relayBaseUrl: string;
-  address: ChainAddress;
+  relayBaseUrl: string
+  address: ChainAddress
 }): Promise<ProfileInfo | undefined> {
   try {
     const response = await axios({
-      method: "get",
-      url: `${params.relayBaseUrl.replace(/\/+$/, "")}/metadata/${
+      method: 'get',
+      url: `${params.relayBaseUrl.replace(/\/+$/, '')}/metadata/${
         params.address.raw
       }`,
-      responseType: "arraybuffer",
-    });
+      responseType: 'arraybuffer',
+    })
     const signedPayload = SignedPayload.deserializeBinary(
-      new Uint8Array(response.data)
-    );
+      new Uint8Array(response.data),
+    )
     const metadata = AddressMetadata.deserializeBinary(
-      signedPayload.getPayload_asU8()
-    );
+      signedPayload.getPayload_asU8(),
+    )
     const result: ProfileInfo = {
       address: params.address,
       pubKey: signedPayload.getPublicKey_asU8(),
-    };
+    }
     for (const entry of metadata.getEntriesList()) {
-      const kind = entry.getKind();
-      if (kind === "display_name") {
-        result.name = new TextDecoder().decode(entry.getBody_asU8());
-      } else if (kind === "bio") {
-        result.bio = new TextDecoder().decode(entry.getBody_asU8());
-      } else if (kind === "avatar") {
+      const kind = entry.getKind()
+      if (kind === 'display_name') {
+        result.name = new TextDecoder().decode(entry.getBody_asU8())
+      } else if (kind === 'bio') {
+        result.bio = new TextDecoder().decode(entry.getBody_asU8())
+      } else if (kind === 'avatar') {
         const contentType =
           entry
             .getHeadersList()
-            .find((header) => header.getName() === "content-type")
-            ?.getValue() ?? "image/png";
+            .find(header => header.getName() === 'content-type')
+            ?.getValue() ?? 'image/png'
         result.avatar = `data:${contentType};base64,${Buffer.from(
-          entry.getBody_asU8()
-        ).toString("base64")}`;
+          entry.getBody_asU8(),
+        ).toString('base64')}`
       }
     }
-    return result;
+    return result
   } catch (err) {
     if (axios.isAxiosError(err) && err.response?.status === 404) {
-      return undefined;
+      return undefined
     }
-    throw err;
+    throw err
   }
 }
 
@@ -358,7 +355,7 @@ export async function fetchMonadProfile(params: {
  * with its full `SignedPayload` envelope exactly as `fetchMonadIdentityPubKey`/`GET
  * /metadata/monad/:addr` would return for that address alone (ticket #77). */
 export interface MonadProfileListingEntry {
-  address: string;
+  address: string
   // `InstanceType<typeof SignedPayload>`, not a bare `SignedPayload` type reference: the
   // commonjs-default-import + destructure pattern this file uses for generated `_pb` bindings
   // (see the `__pb_signed_payload_payload_pb` import above) only preserves `SignedPayload` as a
@@ -367,7 +364,7 @@ export interface MonadProfileListingEntry {
   // for other generated proto classes (e.g. `monad-topic-post-client.ts`'s
   // `StoredMonadTopicPost`/`BroadcastEntry`, `monad-topic-tally-client.ts`'s
   // `MonadTopicPostView`) -- not introduced fresh here.
-  signedPayload: InstanceType<typeof SignedPayload>;
+  signedPayload: InstanceType<typeof SignedPayload>
 }
 
 /** `GET /metadata/monad?since=<sinceMs>` (ticket #75's endpoint, ticket #77's client): every
@@ -382,31 +379,31 @@ export interface MonadProfileListingEntry {
  * that message for why (wire-identical to the backend's embedded-message field either way) -- so
  * it's decoded here via `SignedPayload.deserializeBinary` rather than a nested-message getter. */
 export async function fetchMonadProfilesSince(params: {
-  relayBaseUrl: string;
-  sinceMs: number;
+  relayBaseUrl: string
+  sinceMs: number
 }): Promise<MonadProfileListingEntry[]> {
   const response = await axios({
-    method: "get",
-    url: `${params.relayBaseUrl.replace(/\/+$/, "")}/metadata/monad`,
+    method: 'get',
+    url: `${params.relayBaseUrl.replace(/\/+$/, '')}/metadata/monad`,
     params: { since: params.sinceMs },
-    responseType: "arraybuffer",
-  });
+    responseType: 'arraybuffer',
+  })
   const decoded = ListMonadProfilesResponse.deserializeBinary(
-    new Uint8Array(response.data)
-  );
-  return decoded.getEntriesList().map((entry) => ({
+    new Uint8Array(response.data),
+  )
+  return decoded.getEntriesList().map(entry => ({
     address: entry.getAddress(),
     signedPayload: SignedPayload.deserializeBinary(
-      entry.getSignedPayload_asU8()
+      entry.getSignedPayload_asU8(),
     ),
-  }));
+  }))
 }
 
 /** Server-side clamp on `searchMonadProfiles`'s `limit` -- mirrors
  * `cashweb-registry`'s `store::monad_profiles::MAX_SEARCH_RESULTS` (ticket #48). Not enforced
  * client-side (the relay clamps regardless of what's requested); kept here purely as a documented
  * reference for callers deciding what to ask for. */
-export const MONAD_PROFILE_SEARCH_MAX_RESULTS = 100;
+export const MONAD_PROFILE_SEARCH_MAX_RESULTS = 100
 
 /** `GET /metadata/monad/search?prefix=<text>&limit=<n>` (ticket #48): prefix-search registered
  * Monad profiles by their normalized (lowercased) `display_name`, matching case-insensitively.
@@ -424,36 +421,36 @@ export const MONAD_PROFILE_SEARCH_MAX_RESULTS = 100;
  * mask a broken relay from a caller that actually needs search results (e.g. a UI search box
  * should be able to distinguish "no matches" from "the request failed"). */
 export async function searchMonadProfiles(params: {
-  relayBaseUrl: string;
-  prefix: string;
-  limit?: number;
+  relayBaseUrl: string
+  prefix: string
+  limit?: number
 }): Promise<MonadProfileListingEntry[]> {
   const response = await axios({
-    method: "get",
-    url: `${params.relayBaseUrl.replace(/\/+$/, "")}/metadata/monad/search`,
+    method: 'get',
+    url: `${params.relayBaseUrl.replace(/\/+$/, '')}/metadata/monad/search`,
     params: {
       prefix: params.prefix,
       ...(params.limit === undefined ? {} : { limit: params.limit }),
     },
-    responseType: "arraybuffer",
-  });
+    responseType: 'arraybuffer',
+  })
   const decoded = ListMonadProfilesResponse.deserializeBinary(
-    new Uint8Array(response.data)
-  );
-  return decoded.getEntriesList().map((entry) => ({
+    new Uint8Array(response.data),
+  )
+  return decoded.getEntriesList().map(entry => ({
     address: entry.getAddress(),
     signedPayload: SignedPayload.deserializeBinary(
-      entry.getSignedPayload_asU8()
+      entry.getSignedPayload_asU8(),
     ),
-  }));
+  }))
 }
 
 /** One entry in the relay's operator-curated default-contacts list -- see
  * `fetchCuratedDefaultContacts`. Shape matches `stores/contacts.ts`'s `addDefaultContact` param
  * exactly (`{address, name}`), so callers can pass an entry straight through. */
 export interface CuratedDefaultContact {
-  address: string;
-  name: string;
+  address: string
+  name: string
 }
 
 /** `GET /metadata/monad/curated-defaults` (ticket #49): fetches the relay's operator-curated
@@ -461,19 +458,19 @@ export interface CuratedDefaultContact {
  * Fails soft (empty array) on any error -- this is a nice-to-have UX seed, not something that
  * should ever block app startup if a relay is slow/down/misconfigured. */
 export async function fetchCuratedDefaultContacts(params: {
-  relayBaseUrl: string;
+  relayBaseUrl: string
 }): Promise<CuratedDefaultContact[]> {
   try {
     const response = await axios({
-      method: "get",
+      method: 'get',
       url: `${params.relayBaseUrl.replace(
         /\/+$/,
-        ""
+        '',
       )}/metadata/monad/curated-defaults`,
-    });
-    return response.data?.entries ?? [];
+    })
+    return response.data?.entries ?? []
   } catch (err) {
-    console.error("failed to fetch curated default contacts", err);
-    return [];
+    console.error('failed to fetch curated default contacts', err)
+    return []
   }
 }

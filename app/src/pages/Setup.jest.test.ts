@@ -15,7 +15,14 @@ describe('Setup persistence integration', () => {
     expect(source).toContain(
       'persistSetupAndReload(wallet, myProfile, window.location, errorNotify)',
     )
+    expect(source).toContain(
+      'this.accountData.seed = commitValidatedSetupSeed(',
+    )
+    expect(source).toContain('seed => this.setSeedPhrase(seed)')
     expect(source).toContain('await this.persistSetupAndReload()')
+    expect(
+      source.indexOf('this.accountData.seed = commitValidatedSetupSeed('),
+    ).toBeLessThan(source.indexOf('this.setRelayData({'))
     expect(source.indexOf('this.setRelayData({')).toBeLessThan(
       source.indexOf('await this.persistSetupAndReload()'),
     )

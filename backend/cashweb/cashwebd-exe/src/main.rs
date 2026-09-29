@@ -64,6 +64,8 @@ async fn main() -> Result<()> {
         .monad_mailbox
         .mode()
         .wrap_err("Invalid registry.monad_mailbox configuration")?;
+    let outbox_config = MonadOutboxReconcileConfig::default();
+    outbox_config.validate()?;
 
     if let Some(parent) = conf
         .registry
@@ -78,7 +80,7 @@ async fn main() -> Result<()> {
             )
         })?;
     }
-    let db = Db::open(&conf.registry.db_path)?;
+    let db = Db::open_with_monad_outbox_limits(&conf.registry.db_path, &outbox_config.limits)?;
     let chain_adapter = match conf.bitcoin_rpc.clone() {
         Some(bitcoin_rpc) => {
             let bitcoind = BitcoindRpcClient::new(bitcoin_rpc);
@@ -107,7 +109,7 @@ async fn main() -> Result<()> {
             start_monad_outbox_worker(
                 HttpTransport::new(rpc_url),
                 Arc::clone(&registry),
-                MonadOutboxReconcileConfig::default(),
+                outbox_config,
             )
             .await?,
         ),

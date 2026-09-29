@@ -115,7 +115,7 @@ impl Default for MonadOutboxLimits {
 
 impl MonadOutboxLimits {
     /// Reject writer settings that could create rows the hard-bounded decoder cannot reopen.
-    pub(crate) fn validate(&self) -> Result<()> {
+    pub fn validate(&self) -> Result<()> {
         validate_limits(self)
     }
 }
@@ -418,11 +418,14 @@ impl<'a> DbMonadOutbox<'a> {
     /// Upgrade legacy delivered ownership/cursors and index bounded legacy terminal history.
     /// Progress is committed with each bounded chunk, so a crash resumes after the last key
     /// without accumulating the whole outbox in memory.
-    pub(crate) fn migrate_legacy_delivered_ownership(&self) -> Result<()> {
+    pub(crate) fn migrate_legacy_delivered_ownership(
+        &self,
+        limits: &MonadOutboxLimits,
+    ) -> Result<()> {
         const MIGRATION_KEY: &[u8] = b"outbox-lifecycle-v3";
         const CURSOR_KEY: &[u8] = b"outbox-lifecycle-v3-cursor";
         if self.db.get(self.cf_meta, MIGRATION_KEY)?.is_some() {
-            return self.gc_history(unix_now_ms(), &MonadOutboxLimits::default());
+            return self.gc_history(unix_now_ms(), limits);
         }
         loop {
             let cursor = self.db.get(self.cf_meta, CURSOR_KEY)?;
@@ -517,9 +520,9 @@ impl<'a> DbMonadOutbox<'a> {
                 .into());
             }
             drop(_guard);
-            self.gc_history(unix_now_ms(), &MonadOutboxLimits::default())?;
+            self.gc_history(unix_now_ms(), limits)?;
         }
-        self.gc_history(unix_now_ms(), &MonadOutboxLimits::default())?;
+        self.gc_history(unix_now_ms(), limits)?;
         Ok(())
     }
 
@@ -2878,6 +2881,89 @@ mod tests {
             .iterator_cf(db.monad_outbox().cf_history, IteratorMode::Start)
             .count();
         assert!(history_count <= MAX_HISTORY_RECORDS_HARD);
+        Ok(())
+    }
+
+    #[test]
+    fn config_aware_reopen_preserves_permissive_history_and_applies_stricter_policy() -> Result<()>
+    {
+        let tempdir = tempdir::TempDir::new("monad-outbox-configured-reopen")?;
+        let path = tempdir.path().join("db.rocksdb");
+        let old = unix_now_ms().saturating_sub(31 * 24 * 60 * 60 * 1000);
+        let payload_hash = [0xd1; 32];
+        let record = MonadOutboxRecord {
+            canonical_message: None,
+            policy: None,
+            created_at_ms: old,
+            updated_at_ms: old,
+            expires_at_ms: old,
+            max_member_attempts: 0,
+            retry_backoff_base_ms: 0,
+            max_retry_backoff_ms: 0,
+            lifecycle: MonadOutboxLifecycle::Delivered,
+            reconciliation_attempts: 0,
+            last_error: String::new(),
+        };
+        let encoded = encode_record(&record);
+        {
+            let db = Db::open(&path)?;
+            let store = db.monad_outbox();
+            db.put(store.cf_outbox, payload_hash, &encoded)?;
+            db.put(
+                store.cf_history,
+                history_key(old, &payload_hash),
+                (encoded.len() as u64).to_be_bytes(),
+            )?;
+        }
+        let mut permissive = MonadOutboxLimits::default();
+        permissive.max_history_age = Duration::from_secs(365 * 24 * 60 * 60);
+        let db = Db::open_with_monad_outbox_limits(&path, &permissive)?;
+        assert!(db.monad_outbox().get(&payload_hash)?.is_some());
+        drop(db);
+
+        let mut strict = permissive;
+        strict.max_history_records = 0;
+        let db = Db::open_with_monad_outbox_limits(&path, &strict)?;
+        assert!(db.monad_outbox().get(&payload_hash)?.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn crash_resumed_migration_reuses_supplied_retention_limits() -> Result<()> {
+        let tempdir = tempdir::TempDir::new("monad-outbox-configured-crash")?;
+        let path = tempdir.path().join("db.rocksdb");
+        let old = unix_now_ms().saturating_sub(31 * 24 * 60 * 60 * 1000);
+        let request = message_with_seed(b"configured crash", &[b"migration raw"]);
+        let payload_hash: [u8; 32] = request.payload_hash.as_slice().try_into().unwrap();
+        {
+            let db = Db::open(&path)?;
+            let store = db.monad_outbox();
+            let terminal = MonadOutboxRecord {
+                canonical_message: Some(request.encode_to_vec()),
+                policy: Some(policy()),
+                created_at_ms: old,
+                updated_at_ms: old,
+                expires_at_ms: old,
+                max_member_attempts: 1,
+                retry_backoff_base_ms: 0,
+                max_retry_backoff_ms: 0,
+                lifecycle: MonadOutboxLifecycle::Terminal(MonadOutboxTerminal::StaleNonce),
+                reconciliation_attempts: 1,
+                last_error: String::new(),
+            };
+            let mut batch = rocksdb::WriteBatch::default();
+            batch.put_cf(store.cf_outbox, payload_hash, encode_record(&terminal));
+            batch.delete_cf(store.cf_meta, b"outbox-lifecycle-v3");
+            batch.delete_cf(store.cf_meta, b"outbox-lifecycle-v3-cursor");
+            db.write_batch(batch)?;
+        }
+        let mut permissive = MonadOutboxLimits::default();
+        permissive.max_history_age = Duration::from_secs(365 * 24 * 60 * 60);
+        arm_migration_failpoint_after_batch_before_gc();
+        assert!(Db::open_with_monad_outbox_limits(&path, &permissive).is_err());
+
+        let db = Db::open_with_monad_outbox_limits(&path, &permissive)?;
+        assert!(db.monad_outbox().get(&payload_hash)?.is_some());
         Ok(())
     }
 

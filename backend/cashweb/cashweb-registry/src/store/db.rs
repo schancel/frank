@@ -8,7 +8,7 @@ use thiserror::Error;
 
 use crate::store::metadata::DbMetadata;
 use crate::store::monad_messages::DbMonadMessages;
-use crate::store::monad_outbox::DbMonadOutbox;
+use crate::store::monad_outbox::{DbMonadOutbox, MonadOutboxLimits};
 use crate::store::monad_profiles::DbMonadProfiles;
 use crate::store::monad_topics::{DbMonadTopicPosts, DbMonadTopicVotes};
 use crate::store::topics::DbTopics;
@@ -131,6 +131,16 @@ impl Db {
     /// Opens the database under the specified path.
     /// Creates the database file and necessary column families if necessary.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
+        Self::open_with_monad_outbox_limits(path, &MonadOutboxLimits::default())
+    }
+
+    /// Open with the exact runtime outbox retention policy. Production startup uses this path so
+    /// migration cannot delete history under temporary defaults before readiness applies config.
+    pub fn open_with_monad_outbox_limits(
+        path: impl AsRef<Path>,
+        limits: &MonadOutboxLimits,
+    ) -> Result<Self> {
+        limits.validate()?;
         let mut cfs = Vec::new();
         DbMetadata::add_cfs(&mut cfs);
         DbTopics::add_cfs(&mut cfs);
@@ -140,7 +150,8 @@ impl Db {
         DbMonadTopicVotes::add_cfs(&mut cfs);
         DbMonadProfiles::add_cfs(&mut cfs);
         let db = Self::open_with_cfs(path, cfs)?;
-        db.monad_outbox().migrate_legacy_delivered_ownership()?;
+        db.monad_outbox()
+            .migrate_legacy_delivered_ownership(limits)?;
         Ok(db)
     }
 

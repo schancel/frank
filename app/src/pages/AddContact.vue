@@ -12,14 +12,14 @@
             filled
             dense
             :placeholder="$t('newContactDialog.enterBitcoinCashAddress')"
-            :aria-busy="loading"
+            :aria-busy="lookupPending"
             ref="address"
             @keydown.enter.prevent="addContact()"
           />
         </q-card-section>
         <div class="q-sr-only" role="status" aria-live="polite">
-          <span v-if="loading">{{ $t('newContactDialog.loading') }}</span>
-          <span v-else-if="contact === null && address.trim() !== ''">{{
+          <span v-if="lookupPending">{{ $t('newContactDialog.loading') }}</span>
+          <span v-else-if="showNotFound">{{
             $t('newContactDialog.notFound')
           }}</span>
           <span v-else-if="contact">{{
@@ -29,7 +29,7 @@
           }}</span>
         </div>
         <q-slide-transition>
-          <q-card-section class="q-py-none" v-if="loading">
+          <q-card-section class="q-py-none" v-if="lookupPending">
             <q-item>
               <q-item-section avatar>
                 <q-skeleton
@@ -48,10 +48,7 @@
               </q-item-section>
             </q-item>
           </q-card-section>
-          <q-card-section
-            class="q-py-none"
-            v-else-if="contact === null && address !== ''"
-          >
+          <q-card-section class="q-py-none" v-else-if="showNotFound">
             <q-item>
               <q-item-section avatar>
                 <q-icon color="negative" name="error" size="xl" />
@@ -104,6 +101,12 @@ import { activeChain } from '@frank/wallet/chain'
 import { PublicKey } from 'bitcore-lib-xpi'
 import { openChat } from 'src/utils/routes'
 
+// Pastes (the usual way a complete address arrives) look up immediately; edits made while a
+// lookup is scheduled, in flight, or just fired wait this long so a burst yields one fetch.
+const LOOKUP_DEBOUNCE_MS = 250
+
+type ChainAddress = Parameters<typeof activeChain.fetchProfile>[0]
+
 type AcceptedLookup = {
   resolvedAddress: string
   contact: Partial<ContactState>
@@ -114,7 +117,8 @@ export default defineComponent({
     return {
       address: '',
       acceptedLookup: null as AcceptedLookup | null,
-      currentCanonicalAddress: null as string | null,
+      // Bumped on every address change; a lookup may only publish a result while its own
+      // generation is still the latest, which is the single staleness mechanism.
       lookupGeneration: 0,
       lookupPending: false,
     }
@@ -124,56 +128,95 @@ export default defineComponent({
 
     return {
       addressRef: ref<QInput | null>(null),
+      // Plain (non-reactive) bookkeeping: setup state is not deeply reactive.
+      lookupSchedule: {
+        timer: null as ReturnType<typeof setTimeout> | null,
+        lastFiredAt: -Infinity,
+      },
       addContactToStore: contactStore.addContact,
     }
   },
   computed: {
     canAdd(): boolean {
-      const currentAddress = this.canonicalizeAddress(this.address)
-      return Boolean(
-        this.acceptedLookup &&
-          this.acceptedLookup.resolvedAddress ===
-            this.currentCanonicalAddress &&
-          currentAddress?.resolvedAddress ===
-            this.acceptedLookup.resolvedAddress,
-      )
+      return this.acceptedLookup !== null
     },
     contact(): Partial<ContactState> | null {
-      return this.canAdd ? this.acceptedLookup?.contact ?? null : null
+      return this.acceptedLookup?.contact ?? null
     },
-    loading(): boolean {
-      return this.lookupPending
+    showNotFound(): boolean {
+      return (
+        !this.lookupPending &&
+        this.contact === null &&
+        this.address.trim() !== ''
+      )
     },
   },
   watch: {
-    address: async function (newAddress) {
+    address(newAddress: string) {
       const generation = ++this.lookupGeneration
-      const trimmedAddress = newAddress.trim()
+      const busy =
+        this.lookupPending ||
+        Date.now() - this.lookupSchedule.lastFiredAt < LOOKUP_DEBOUNCE_MS
+      this.cancelScheduledLookup()
       this.acceptedLookup = null
-      this.currentCanonicalAddress = null
       this.lookupPending = false
-      if (trimmedAddress === '') {
+      if (newAddress.trim() === '') {
         return
       }
+      const normalizedAddress = this.canonicalizeAddress(newAddress)
+      if (!normalizedAddress) {
+        return
+      }
+      this.lookupPending = true
+      const fire = () => {
+        this.lookupSchedule.timer = null
+        this.lookupSchedule.lastFiredAt = Date.now()
+        void this.lookup(
+          generation,
+          normalizedAddress.chainAddress,
+          normalizedAddress.resolvedAddress,
+        )
+      }
+      if (busy) {
+        this.lookupSchedule.timer = setTimeout(fire, LOOKUP_DEBOUNCE_MS)
+      } else {
+        fire()
+      }
+    },
+  },
+  methods: {
+    canonicalizeAddress(address: string) {
       try {
-        // Resolve via the active chain instead of the old Lotus-only
-        // `toAPIAddress`/`RegistryHandler`/`ReadOnlyRelayClient` trio (ticket #44) -- mirrors
-        // `stores/contacts.ts`'s own `fetchAndAddContact` network-resolution branch, but kept
-        // local here (not committed to the store) until the user actually clicks "Add".
-        const normalizedAddress = this.canonicalizeAddress(trimmedAddress)
-        if (!normalizedAddress) {
-          return
+        const chainAddress = activeChain.parseAddress(address.trim())
+        if (!chainAddress) {
+          return null
         }
-        const { chainAddress, resolvedAddress } = normalizedAddress
-        this.currentCanonicalAddress = resolvedAddress
-        this.lookupPending = true
+        return {
+          chainAddress,
+          resolvedAddress: activeChain.formatAddress(chainAddress),
+        }
+      } catch {
+        return null
+      }
+    },
+    cancelScheduledLookup() {
+      if (this.lookupSchedule.timer !== null) {
+        clearTimeout(this.lookupSchedule.timer)
+        this.lookupSchedule.timer = null
+      }
+    },
+    async lookup(
+      generation: number,
+      chainAddress: ChainAddress,
+      resolvedAddress: string,
+    ) {
+      // Resolve via the active chain instead of the old Lotus-only
+      // `toAPIAddress`/`RegistryHandler`/`ReadOnlyRelayClient` trio (ticket #44) -- mirrors
+      // `stores/contacts.ts`'s own `fetchAndAddContact` network-resolution branch, but kept
+      // local here (not committed to the store) until the user actually clicks "Add".
+      try {
         const profileInfo = await activeChain.fetchProfile(chainAddress)
-        const currentAddress = this.canonicalizeAddress(this.address)
-        if (
-          generation !== this.lookupGeneration ||
-          resolvedAddress !== this.currentCanonicalAddress ||
-          currentAddress?.resolvedAddress !== resolvedAddress
-        ) {
+        if (generation !== this.lookupGeneration) {
           return
         }
         this.lookupPending = false
@@ -204,37 +247,13 @@ export default defineComponent({
         }
       }
     },
-  },
-  methods: {
-    canonicalizeAddress(address: string) {
-      try {
-        const chainAddress = activeChain.parseAddress(address.trim())
-        if (!chainAddress) {
-          return null
-        }
-        return {
-          chainAddress,
-          resolvedAddress: activeChain.formatAddress(chainAddress),
-        }
-      } catch {
-        return null
-      }
-    },
     addContact() {
-      const acceptedLookup = this.acceptedLookup
-      const currentAddress = this.canonicalizeAddress(this.address)
-      if (
-        !acceptedLookup ||
-        acceptedLookup.resolvedAddress !== this.currentCanonicalAddress ||
-        currentAddress?.resolvedAddress !== acceptedLookup.resolvedAddress
-      ) {
+      if (!this.canAdd) {
         return
       }
-      this.addContactToStore({
-        address: acceptedLookup.resolvedAddress,
-        contact: acceptedLookup.contact,
-      })
-      openChat(this.$router, acceptedLookup.resolvedAddress)
+      const { resolvedAddress, contact } = this.acceptedLookup as AcceptedLookup
+      this.addContactToStore({ address: resolvedAddress, contact })
+      openChat(this.$router, resolvedAddress)
     },
     cancel() {
       window.history.length > 1 ? this.$router.go(-1) : this.$router.push('/')
@@ -242,6 +261,9 @@ export default defineComponent({
   },
   mounted() {
     this.addressRef?.$el.focus()
+  },
+  beforeUnmount() {
+    this.cancelScheduledLookup()
   },
 })
 </script>

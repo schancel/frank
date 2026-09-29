@@ -88,7 +88,7 @@
 //! recipient): this module used to also read `MONAD_STAMP_BURN_ADDRESS` here, same as
 //! `monad_topics.rs`'s own separate config still does for broadcasts (no single recipient to
 //! pay). `process_monad_message` no longer reads it at all -- the expected payment destination for
-//! a direct message is the message's own claimed recipient ([`extract_recipient`]), not a
+//! a direct message is the message's own validated recipient ([`validate_envelope`]), not a
 //! server-configured constant. See that function's doc comment for the full reasoning.
 //!
 //! An unconfigured or invalid gate fails every request closed (`500`), rather than silently
@@ -112,6 +112,7 @@ use cashweb_http_utils::protobuf::{BoundedProtobufBody, Protobuf};
 use cashweb_payload::verify::BROADCAST_MESSAGE_LOKAD_ID;
 use prost::Message;
 use serde::{Deserialize, Serialize};
+use sha3::{Digest as _, Keccak256};
 use tracing::Level;
 
 use crate::{
@@ -128,6 +129,11 @@ use crate::{
 
 const MAX_STAMP_PAYMENTS: usize = 64;
 const MAX_MONAD_MESSAGE_BODY_BYTES: usize = 2 * 1024 * 1024;
+const MAX_ENVELOPE_CIPHERTEXT_BYTES: usize = 1024 * 1024;
+const MAX_ENVELOPE_NETWORK_TAG_BYTES: usize = 32;
+const ENVELOPE_HKDF_SALT_BYTES: usize = 32;
+const ENVELOPE_GCM_NONCE_BYTES: usize = 12;
+const ENVELOPE_GCM_TAG_BYTES: usize = 16;
 static PAYMENT_SET_LOCKS: OnceLock<
     tokio::sync::Mutex<HashMap<(usize, [u8; 32]), Weak<tokio::sync::Mutex<()>>>>,
 > = OnceLock::new();
@@ -162,11 +168,8 @@ async fn try_lock_payment_set(
 /// [`JsonRpcTransport`], the same way `monad_stamp_relay`/`monad_stamp_verify` test themselves.
 #[derive(Debug)]
 pub enum ProcessMonadMessageError {
-    /// `encrypted_payload` doesn't parse as the client's own `MonadMessageEnvelope` JSON shape
-    /// (`{v, networkTag, from, to, salt, ciphertext}`, `packages/cashweb/relay/monad-message-envelope.ts` --
-    /// `to` is deliberately left unencrypted there for routing) -- see [`extract_recipient`]'s own
-    /// doc comment for why this is required, not best-effort.
-    MissingOrInvalidRecipient(String),
+    /// `encrypted_payload` is not a complete, canonical v2 authenticated envelope.
+    InvalidEnvelope(String),
     /// The envelope was hashed for a different Frank network than this relay serves.
     NetworkTagMismatch {
         /// Relay-configured tag.
@@ -248,11 +251,8 @@ pub enum ProcessMonadMessageError {
 impl fmt::Display for ProcessMonadMessageError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ProcessMonadMessageError::MissingOrInvalidRecipient(detail) => {
-                write!(
-                    f,
-                    "couldn't determine recipient address from encrypted_payload: {detail}"
-                )
+            ProcessMonadMessageError::InvalidEnvelope(detail) => {
+                write!(f, "invalid Monad message envelope: {detail}")
             }
             ProcessMonadMessageError::NetworkTagMismatch { expected, actual } => write!(
                 f,
@@ -345,15 +345,23 @@ impl fmt::Display for ProcessMonadMessageError {
     }
 }
 
-/// The client's own `MonadMessageEnvelope` JSON shape (`app/src/cashweb/wallet/
-/// monad-message-envelope.ts`): `{v, networkTag, from, to, salt, ciphertext}`. Routing and network
-/// binding matter here; encrypted content remains opaque. `#[derive(Deserialize)]` ignores other
-/// fields by default, so this stays valid if the client adds additive fields later.
+/// The client's authenticated v2 envelope. `#[derive(Deserialize)]` ignores additive fields, but
+/// duplicate required fields remain ambiguous JSON and are rejected by serde.
 #[derive(Deserialize)]
 struct MonadMessageEnvelope {
-    to: String,
+    v: u64,
     #[serde(rename = "networkTag")]
-    network_tag: Option<String>,
+    network_tag: String,
+    from: String,
+    to: String,
+    salt: String,
+    nonce: String,
+    ciphertext: String,
+    tag: String,
+}
+
+struct ValidatedMonadMessageEnvelope {
+    recipient: Address,
 }
 
 const PAYMENT_COMMITMENT_DOMAIN: &[u8] = b"frank:dm-stamp-payment:v1";
@@ -366,43 +374,117 @@ fn payment_commitment(payload_hash: &[u8; 32], child_index: u32) -> Sha256 {
     Sha256::digest(preimage.into())
 }
 
-/// Ticket #57 (found live: real Monad DMs were burning stamp value to the fixed relay-configured
-/// address instead of paying the recipient -- the recipient got nothing). Parses
-/// `encrypted_payload` as a [`MonadMessageEnvelope`] and returns its `to` field as an [`Address`].
-///
-/// This is **required**, not best-effort: `/message/monad` (this module) is exclusively the
-/// direct-message path -- `MonadTopicPost`/`monad_topics.rs` is a separate proto and handler with
-/// its own, still-fixed-address burn verification, since a topic broadcast genuinely has no
-/// single recipient to pay. Every real `MonadStampedMessage` submission *is* a DM, so every one of
-/// them must carry a real recipient to verify the stamp payment against -- a message that doesn't parse as
-/// this envelope shape (or carries an invalid `to`) is rejected outright
-/// ([`ProcessMonadMessageError::MissingOrInvalidRecipient`]), the same fail-closed posture
-/// [`process_monad_message`]'s other checks already take, rather than silently falling back to
-/// the fixed address (which would just resurrect this exact bug for any message the relay
-/// happens not to be able to parse).
-///
-/// `to`/`from` are deliberately left unencrypted in the envelope for routing (see that file's own
-/// header) -- only `ciphertext` is actually encrypted -- so this needs no decryption and no
-/// knowledge of any private key, matching how the rest of this function treats
-/// `encrypted_payload` as opaque *content* while still being able to check *structure* around it
-/// (same principle as the `payload_hash` check just above, which hashes the whole blob without
-/// needing to understand it).
-fn extract_recipient(
+fn validate_lower_hex_field(
+    name: &str,
+    value: &str,
+    exact_bytes: Option<usize>,
+    min_bytes: usize,
+    max_bytes: usize,
+) -> Result<(), ProcessMonadMessageError> {
+    if value.is_empty()
+        || value.len() % 2 != 0
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(ProcessMonadMessageError::InvalidEnvelope(format!(
+            "{name} must be canonical lower-case hex"
+        )));
+    }
+    let bytes = value.len() / 2;
+    if let Some(expected) = exact_bytes {
+        if bytes != expected {
+            return Err(ProcessMonadMessageError::InvalidEnvelope(format!(
+                "{name} must be exactly {expected} bytes"
+            )));
+        }
+    } else if bytes < min_bytes || bytes > max_bytes {
+        return Err(ProcessMonadMessageError::InvalidEnvelope(format!(
+            "{name} must be {min_bytes}..={max_bytes} bytes"
+        )));
+    }
+    Ok(())
+}
+
+/// Accept the canonical lower-case EVM form or a correctly checksummed EIP-55 form. Upper-case
+/// non-checksummed and incorrectly checksummed mixed-case spellings are rejected so routing and
+/// authenticated associated data have one meaningful representation per accepted spelling.
+fn parse_canonical_address(name: &str, value: &str) -> Result<Address, ProcessMonadMessageError> {
+    let address = Address::from_hex(value).map_err(|err| {
+        ProcessMonadMessageError::InvalidEnvelope(format!("invalid {name} address: {err}"))
+    })?;
+    let body = &value[2..];
+    let lower = body.to_ascii_lowercase();
+    if body != lower {
+        let checksum = Keccak256::digest(lower.as_bytes());
+        let valid_checksum = body.bytes().enumerate().all(|(index, byte)| {
+            if byte.is_ascii_digit() {
+                return true;
+            }
+            let hash_byte = checksum[index / 2];
+            let nibble = if index % 2 == 0 {
+                hash_byte >> 4
+            } else {
+                hash_byte & 0x0f
+            };
+            byte.is_ascii_uppercase() == (nibble >= 8)
+        });
+        if !valid_checksum {
+            return Err(ProcessMonadMessageError::InvalidEnvelope(format!(
+                "{name} address is not canonical lower-case or valid EIP-55"
+            )));
+        }
+    }
+    Ok(address)
+}
+
+/// Fully validate the current authenticated envelope before transaction decoding, RPC, attempt
+/// claims, or storage. The relay cannot verify AEAD authenticity, but it rejects malformed,
+/// legacy, and unsupported shapes and reuses the validated `to` address for payment routing.
+fn validate_envelope(
     encrypted_payload: &[u8],
     expected_network_tag: &[u8],
-) -> Result<Address, ProcessMonadMessageError> {
+) -> Result<ValidatedMonadMessageEnvelope, ProcessMonadMessageError> {
     let envelope: MonadMessageEnvelope = serde_json::from_slice(encrypted_payload)
-        .map_err(|err| ProcessMonadMessageError::MissingOrInvalidRecipient(err.to_string()))?;
-    if !expected_network_tag.is_empty()
-        && envelope.network_tag.as_deref().map(str::as_bytes) != Some(expected_network_tag)
+        .map_err(|err| ProcessMonadMessageError::InvalidEnvelope(err.to_string()))?;
+    if envelope.v != 2 {
+        return Err(ProcessMonadMessageError::InvalidEnvelope(format!(
+            "unsupported version {} (expected 2)",
+            envelope.v
+        )));
+    }
+    if envelope.network_tag.is_empty()
+        || envelope.network_tag.len() > MAX_ENVELOPE_NETWORK_TAG_BYTES
     {
+        return Err(ProcessMonadMessageError::InvalidEnvelope(format!(
+            "networkTag must be 1..={MAX_ENVELOPE_NETWORK_TAG_BYTES} UTF-8 bytes"
+        )));
+    }
+    let _sender = parse_canonical_address("from", &envelope.from)?;
+    let recipient = parse_canonical_address("to", &envelope.to)?;
+    validate_lower_hex_field("salt", &envelope.salt, Some(ENVELOPE_HKDF_SALT_BYTES), 0, 0)?;
+    validate_lower_hex_field(
+        "nonce",
+        &envelope.nonce,
+        Some(ENVELOPE_GCM_NONCE_BYTES),
+        0,
+        0,
+    )?;
+    validate_lower_hex_field(
+        "ciphertext",
+        &envelope.ciphertext,
+        None,
+        1,
+        MAX_ENVELOPE_CIPHERTEXT_BYTES,
+    )?;
+    validate_lower_hex_field("tag", &envelope.tag, Some(ENVELOPE_GCM_TAG_BYTES), 0, 0)?;
+    if envelope.network_tag.as_bytes() != expected_network_tag {
         return Err(ProcessMonadMessageError::NetworkTagMismatch {
             expected: expected_network_tag.to_vec(),
-            actual: envelope.network_tag,
+            actual: Some(envelope.network_tag),
         });
     }
-    Address::from_hex(&envelope.to)
-        .map_err(|err| ProcessMonadMessageError::MissingOrInvalidRecipient(err.to_string()))
+    Ok(ValidatedMonadMessageEnvelope { recipient })
 }
 
 /// Decode, verify, broadcast-and-confirm, and (on success) store a [`proto::MonadStampedMessage`].
@@ -447,6 +529,8 @@ pub async fn process_monad_message<T: JsonRpcTransport + Clone>(
             actual: actual_hash,
         });
     }
+    let envelope = validate_envelope(&request.encrypted_payload, network_tag)?;
+    let recipient = envelope.recipient;
     // Completed exact retries are immutable historical facts. Return them before consulting
     // mutable current relay policy (minimum value, profile rotation, network configuration).
     if let Some(existing) = registry
@@ -459,7 +543,6 @@ pub async fn process_monad_message<T: JsonRpcTransport + Clone>(
         return Err(ProcessMonadMessageError::ConflictingPaymentSet);
     }
 
-    let recipient = extract_recipient(&request.encrypted_payload, network_tag)?;
     if request.stamp_payments.is_empty() {
         return Err(ProcessMonadMessageError::MissingStampPayments);
     }
@@ -1144,6 +1227,30 @@ mod tests {
         addr.to_hex()
     }
 
+    fn valid_envelope(recipient: Address, network_tag: &str) -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({
+            "v": 2,
+            "networkTag": network_tag,
+            "from": "0x52908400098527886E0F7030069857D2E4169EE7",
+            "to": recipient.to_hex(),
+            "salt": "00".repeat(ENVELOPE_HKDF_SALT_BYTES),
+            "nonce": "11".repeat(ENVELOPE_GCM_NONCE_BYTES),
+            "ciphertext": "22",
+            "tag": "33".repeat(ENVELOPE_GCM_TAG_BYTES),
+            "futureField": "ignored",
+        }))
+        .unwrap()
+    }
+
+    fn envelope_with_field(base: &Value, name: &str, value: Value) -> Vec<u8> {
+        let mut envelope = base.clone();
+        envelope
+            .as_object_mut()
+            .expect("test envelope is an object")
+            .insert(name.to_string(), value);
+        serde_json::to_vec(&envelope).unwrap()
+    }
+
     fn hex_hash(byte: u8) -> String {
         format!("0x{}", hex::encode([byte; 32]))
     }
@@ -1296,11 +1403,7 @@ mod tests {
         let (_tempdir, registry) = test_registry();
         // Ticket #57: encrypted_payload must parse as a MonadMessageEnvelope now, since the
         // expected payment destination comes from its own `to` field rather than a fixed address.
-        let encrypted_payload = format!(
-            r#"{{"to":"{}","networkTag":"MONT"}}"#,
-            hex_addr(recipient_address())
-        )
-        .into_bytes();
+        let encrypted_payload = valid_envelope(recipient_address(), "MONT");
         let commitment = Sha256::digest(encrypted_payload.clone().into());
 
         let seckey = EccSecp256k1::default()
@@ -1404,11 +1507,7 @@ mod tests {
     #[tokio::test]
     async fn distinct_payment_set_is_verified_and_summed() {
         let (_tempdir, registry) = test_registry();
-        let encrypted_payload = format!(
-            r#"{{"to":"{}","networkTag":"MONT"}}"#,
-            hex_addr(recipient_address())
-        )
-        .into_bytes();
+        let encrypted_payload = valid_envelope(recipient_address(), "MONT");
         let commitment = Sha256::digest(encrypted_payload.clone().into());
         let calldata_0 = commitment_calldata(&commitment, 0);
         let calldata_1 = commitment_calldata(&commitment, 1);
@@ -1487,11 +1586,7 @@ mod tests {
     #[tokio::test]
     async fn unfinished_exact_retry_uses_its_original_minimum() {
         let (_tempdir, registry) = test_registry();
-        let encrypted_payload = format!(
-            r#"{{"to":"{}","networkTag":"MONT"}}"#,
-            hex_addr(recipient_address())
-        )
-        .into_bytes();
+        let encrypted_payload = valid_envelope(recipient_address(), "MONT");
         let commitment = Sha256::digest(encrypted_payload.clone().into());
         let destination = stamp_destination(&commitment);
         let sender = EccSecp256k1::default()
@@ -1542,11 +1637,7 @@ mod tests {
     #[tokio::test]
     async fn first_insufficient_funds_rejection_releases_exact_set_claim() {
         let (_tempdir, registry) = test_registry();
-        let encrypted_payload = format!(
-            r#"{{"to":"{}","networkTag":"MONT"}}"#,
-            hex_addr(recipient_address())
-        )
-        .into_bytes();
+        let encrypted_payload = valid_envelope(recipient_address(), "MONT");
         let commitment = Sha256::digest(encrypted_payload.clone().into());
         let destination = stamp_destination(&commitment);
         let sender = EccSecp256k1::default()
@@ -1590,11 +1681,7 @@ mod tests {
     #[tokio::test]
     async fn confirmed_failed_payment_releases_unreplayable_exact_set_claim() {
         let (_tempdir, registry) = test_registry();
-        let encrypted_payload = format!(
-            r#"{{"to":"{}","networkTag":"MONT"}}"#,
-            hex_addr(recipient_address())
-        )
-        .into_bytes();
+        let encrypted_payload = valid_envelope(recipient_address(), "MONT");
         let commitment = Sha256::digest(encrypted_payload.clone().into());
         let destination = stamp_destination(&commitment);
         let sender = EccSecp256k1::default()
@@ -1645,11 +1732,7 @@ mod tests {
     #[tokio::test]
     async fn noncanonical_child_index_is_rejected_before_broadcast() {
         let (_tempdir, registry) = test_registry();
-        let encrypted_payload = format!(
-            r#"{{"to":"{}","networkTag":"MONT"}}"#,
-            hex_addr(recipient_address())
-        )
-        .into_bytes();
+        let encrypted_payload = valid_envelope(recipient_address(), "MONT");
         let commitment = Sha256::digest(encrypted_payload.clone().into());
         let sender = EccSecp256k1::default()
             .seckey_from_array([0x73; 32])
@@ -1688,11 +1771,7 @@ mod tests {
     #[tokio::test]
     async fn fixed_broadcast_burn_address_is_rejected_for_direct_message() {
         let (_tempdir, registry) = test_registry();
-        let encrypted_payload = format!(
-            r#"{{"to":"{}","networkTag":"MONT"}}"#,
-            hex_addr(recipient_address())
-        )
-        .into_bytes();
+        let encrypted_payload = valid_envelope(recipient_address(), "MONT");
         let commitment = Sha256::digest(encrypted_payload.clone().into());
 
         let seckey = EccSecp256k1::default()
@@ -1722,7 +1801,7 @@ mod tests {
             &registry,
             10_000,
             fast_poll(),
-            &[],
+            b"MONT",
             message.clone(),
         )
         .await
@@ -1743,12 +1822,87 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn invalid_recipient_is_rejected_before_broadcast_or_storage() {
-        for encrypted_payload in [
-            b"not-json".to_vec(),
-            br#"{"from":"0x11"}"#.to_vec(),
-            br#"{"to":"not-an-address"}"#.to_vec(),
-        ] {
+    async fn malformed_envelopes_are_rejected_before_decode_rpc_claim_or_storage() {
+        let base: Value =
+            serde_json::from_slice(&valid_envelope(recipient_address(), "MONT")).unwrap();
+        let without_tag = {
+            let mut value = base.clone();
+            value.as_object_mut().unwrap().remove("tag");
+            value
+        };
+        let malformed = vec![
+            ("not JSON", b"not-json".to_vec()),
+            (
+                "missing required field",
+                serde_json::to_vec(&without_tag).unwrap(),
+            ),
+            (
+                "legacy v1",
+                serde_json::to_vec(&serde_json::json!({
+                    "v": 1,
+                    "networkTag": "MONT",
+                    "from": Address([0x11; 20]).to_hex(),
+                    "to": recipient_address().to_hex(),
+                    "salt": "00".repeat(16),
+                    "ciphertext": "11".repeat(16),
+                }))
+                .unwrap(),
+            ),
+            (
+                "unknown version",
+                envelope_with_field(&base, "v", serde_json::json!(3)),
+            ),
+            (
+                "invalid from address",
+                envelope_with_field(&base, "from", serde_json::json!("0x11")),
+            ),
+            (
+                "noncanonical to address",
+                envelope_with_field(
+                    &base,
+                    "to",
+                    serde_json::json!(format!("0x{}", "AA".repeat(20))),
+                ),
+            ),
+            (
+                "short salt",
+                envelope_with_field(&base, "salt", serde_json::json!("00")),
+            ),
+            (
+                "non-hex salt",
+                envelope_with_field(
+                    &base,
+                    "salt",
+                    serde_json::json!("gg".repeat(ENVELOPE_HKDF_SALT_BYTES)),
+                ),
+            ),
+            (
+                "long nonce",
+                envelope_with_field(
+                    &base,
+                    "nonce",
+                    serde_json::json!("00".repeat(ENVELOPE_GCM_NONCE_BYTES + 1)),
+                ),
+            ),
+            (
+                "empty ciphertext",
+                envelope_with_field(&base, "ciphertext", serde_json::json!("")),
+            ),
+            (
+                "oversized ciphertext",
+                envelope_with_field(
+                    &base,
+                    "ciphertext",
+                    serde_json::json!("00".repeat(MAX_ENVELOPE_CIPHERTEXT_BYTES + 1)),
+                ),
+            ),
+            (
+                "short tag",
+                envelope_with_field(&base, "tag", serde_json::json!("00")),
+            ),
+        ];
+
+        for (case, encrypted_payload) in malformed {
             let (_tempdir, registry) = test_registry();
             let commitment = Sha256::digest(encrypted_payload.clone().into());
             let seckey = EccSecp256k1::default()
@@ -1773,24 +1927,39 @@ mod tests {
                 &registry,
                 10_000,
                 fast_poll(),
-                &[],
+                b"MONT",
                 message.clone(),
             )
             .await
-            .expect_err("invalid envelope recipient must be rejected");
+            .unwrap_err();
 
-            assert!(matches!(
-                err,
-                ProcessMonadMessageError::MissingOrInvalidRecipient(_)
-            ));
+            assert!(
+                matches!(err, ProcessMonadMessageError::InvalidEnvelope(_)),
+                "{case}: {err}"
+            );
             assert_eq!(
                 transport.calls(),
                 Vec::<String>::new(),
-                "invalid recipient must be rejected before any RPC, especially broadcast"
+                "{case}: malformed envelope must be rejected before any RPC"
             );
             assert_eq!(
                 registry.get_monad_message(&message.payload_hash).unwrap(),
-                None
+                None,
+                "{case}: malformed envelope must not be stored"
+            );
+            assert_eq!(
+                registry
+                    .get_monad_message_attempt(&message.payload_hash, &message)
+                    .unwrap(),
+                MonadMessageAttemptClaim::Missing,
+                "{case}: malformed envelope must not claim a payment attempt"
+            );
+            assert!(
+                registry
+                    .list_monad_messages_for_recipient_since(recipient_address(), 0)
+                    .unwrap()
+                    .is_empty(),
+                "{case}: malformed envelope must not create a recipient index row"
             );
         }
     }
@@ -1798,11 +1967,7 @@ mod tests {
     #[tokio::test]
     async fn wrong_network_tag_is_rejected_before_broadcast() {
         let (_tempdir, registry) = test_registry();
-        let encrypted_payload = format!(
-            r#"{{"to":"{}","networkTag":"MON1"}}"#,
-            hex_addr(recipient_address())
-        )
-        .into_bytes();
+        let encrypted_payload = valid_envelope(recipient_address(), "MON1");
         let message = make_message(vec![0xc0], encrypted_payload);
         let transport = MockTransport::default();
 
@@ -1824,11 +1989,7 @@ mod tests {
         let (_tempdir, registry) = test_registry();
         // Ticket #57: see recipient_payment_is_accepted_and_stored's comment -- must parse as an
         // envelope.
-        let encrypted_payload = format!(
-            r#"{{"to":"{}","networkTag":"MONT"}}"#,
-            hex_addr(recipient_address())
-        )
-        .into_bytes();
+        let encrypted_payload = valid_envelope(recipient_address(), "MONT");
         let commitment = Sha256::digest(encrypted_payload.clone().into());
 
         let seckey = EccSecp256k1::default()
@@ -1855,7 +2016,7 @@ mod tests {
             &registry,
             10_000,
             fast_poll(),
-            &[],
+            b"MONT",
             message.clone(),
         )
         .await
@@ -1884,9 +2045,10 @@ mod tests {
         // No transport responses configured at all: if this reached the network, it would panic.
         let transport = MockTransport::default();
 
-        let err = process_monad_message(&transport, &registry, 10_000, fast_poll(), &[], message)
-            .await
-            .expect_err("mismatched payload_hash should be rejected");
+        let err =
+            process_monad_message(&transport, &registry, 10_000, fast_poll(), b"MONT", message)
+                .await
+                .expect_err("mismatched payload_hash should be rejected");
 
         assert!(matches!(
             err,
@@ -1897,17 +2059,14 @@ mod tests {
     #[tokio::test]
     async fn malformed_raw_payment_tx_is_rejected() {
         let (_tempdir, registry) = test_registry();
-        let encrypted_payload = format!(
-            r#"{{"to":"{}","networkTag":"MONT"}}"#,
-            hex_addr(recipient_address())
-        )
-        .into_bytes();
+        let encrypted_payload = valid_envelope(recipient_address(), "MONT");
         let message = make_message(vec![0x01, 0xc0], encrypted_payload);
         let transport = MockTransport::default();
 
-        let err = process_monad_message(&transport, &registry, 10_000, fast_poll(), &[], message)
-            .await
-            .expect_err("malformed stamp payment should be rejected");
+        let err =
+            process_monad_message(&transport, &registry, 10_000, fast_poll(), b"MONT", message)
+                .await
+                .expect_err("malformed stamp payment should be rejected");
 
         assert!(matches!(
             err,

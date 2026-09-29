@@ -45,7 +45,10 @@ async function deleteRoot(location: string): Promise<void> {
   }
 }
 
-async function createLegacyRoot(location: string): Promise<void> {
+async function createLegacyRoot(
+  location: string,
+  withRecord = true
+): Promise<void> {
   const keyring = MonadHdKeyring.fromMnemonic(MNEMONIC)
   const stores = [
     new LevelSubAccountPoolStore(location),
@@ -59,11 +62,13 @@ async function createLegacyRoot(location: string): Promise<void> {
       globalThis as any
     ).document.body.textContent = `MONAD_WALLET_BROWSERCHECK_LEGACY_OPEN_${index}`
   }
-  ;(stores[0] as LevelSubAccountPoolStore).put({
-    index: 7,
-    address: keyring.deriveSubAccount(7).address,
-    status: 'unfunded',
-  })
+  if (withRecord) {
+    ;(stores[0] as LevelSubAccountPoolStore).put({
+      index: 7,
+      address: keyring.deriveSubAccount(7).address,
+      status: 'unfunded',
+    })
+  }
   for (const store of stores.slice().reverse()) await store.Close()
 }
 
@@ -229,6 +234,8 @@ export async function runMonadWalletBundleBrowserCheck(): Promise<void> {
   const aliasRoot = `${prefix}-alias`
   const wrongRoot = `${prefix}-wrong`
   const finalizedRoot = `${prefix}-finalized`
+  const emptyLegacyRoot = `${prefix}-empty-legacy`
+  const callerSeedRoot = `${prefix}-caller-seed`
   const crashRoots: string[] = []
   try {
     await createLegacyRoot(migratedRoot)
@@ -247,6 +254,73 @@ export async function runMonadWalletBundleBrowserCheck(): Promise<void> {
     assert(reopened.pool.deriveNextUnfunded().index === 8, 'index was reused')
     report('MONAD_WALLET_BROWSERCHECK_REOPENED')
     await reopened.close()
+
+    await createLegacyRoot(emptyLegacyRoot, false)
+    let emptyLegacyRejected = false
+    try {
+      await openMonadWalletBundle({
+        location: emptyLegacyRoot,
+        seed: { mnemonic: MNEMONIC },
+        mode: 'create',
+      })
+    } catch {
+      emptyLegacyRejected = true
+    }
+    assert(
+      emptyLegacyRejected,
+      'semantically empty browser legacy root accepted a supplied seed'
+    )
+    assert(
+      !(await (globalThis as any).indexedDB.databases()).some(
+        (database: { name?: string }) =>
+          database.name ===
+          `level-js-${join(emptyLegacyRoot, 'wallet-manifest')}`
+      ),
+      'empty browser legacy root wrote a manifest'
+    )
+
+    const callerSeedContenders = await Promise.allSettled([
+      openMonadWalletBundle({
+        location: callerSeedRoot,
+        seed: { mnemonic: MNEMONIC },
+        mode: 'create',
+      }),
+      openMonadWalletBundle({
+        location: callerSeedRoot,
+        seed: { mnemonic: MNEMONIC },
+        mode: 'create',
+      }),
+    ])
+    const callerSeedWinners = callerSeedContenders.filter(
+      (result) => result.status === 'fulfilled'
+    )
+    assert(
+      callerSeedWinners.length === 1,
+      'browser caller-seed root had multiple creators'
+    )
+    const callerCreatedResult = callerSeedWinners[0]
+    assert(
+      callerCreatedResult.status === 'fulfilled',
+      'browser caller-seed root had no creator'
+    )
+    const callerCreated = callerCreatedResult.value
+    assert(
+      callerCreated.pool.deriveNextUnfunded().address ===
+        MonadHdKeyring.fromMnemonic(MNEMONIC).deriveSubAccount(0).address,
+      'browser caller-seed creation substituted a different seed'
+    )
+    await callerCreated.pool.flush()
+    await callerCreated.close()
+    const callerReopened = await openMonadWalletBundle({
+      location: callerSeedRoot,
+      seed: { mnemonic: MNEMONIC },
+      mode: 'create',
+    })
+    assert(
+      callerReopened.pool.nextUnusedIndex() === 1,
+      'browser caller-seed root did not reopen'
+    )
+    await callerReopened.close()
 
     const legacyFinalized = await createLegacyFinalizedRoot(finalizedRoot)
     let finalizedOutageRejected = false
@@ -443,6 +517,8 @@ export async function runMonadWalletBundleBrowserCheck(): Promise<void> {
     await deleteRoot(aliasRoot)
     await deleteRoot(wrongRoot)
     await deleteRoot(finalizedRoot)
+    await deleteRoot(emptyLegacyRoot)
+    await deleteRoot(callerSeedRoot)
     for (const root of crashRoots) await deleteRoot(root)
   }
 }

@@ -8,7 +8,15 @@ const WALLET_BINDING_KEY = '__wallet_binding__'
 export type StampPaymentRecoveryStatus =
   | 'discovered'
   | 'sweep-pending'
+  | 'sweep-failed'
   | 'swept'
+
+export interface FailedStampPaymentSweep {
+  txHash: string
+  rawTx: string
+  valueWei: string
+  destinationAddress: string
+}
 
 /** Public bookkeeping for a recipient-owned one-time stamp destination. Private child keys are
  * deliberately absent: they are reconstructed from the identity key only while attempting a
@@ -31,6 +39,9 @@ export interface StampPaymentRecoveryRecord {
   sweepRawTx?: string
   sweepValueWei?: string
   sweepDestinationAddress?: string
+  /** Append-only terminal ledger for mined reverts. The active sweep fields may advance to a
+   * fresh nonce only after the reverted intent has been retained here. */
+  failedSweeps?: FailedStampPaymentSweep[]
 }
 
 export interface StampPaymentJournal {
@@ -39,6 +50,16 @@ export interface StampPaymentJournal {
     childIndex: number
   ): StampPaymentRecoveryRecord | undefined
   put(record: StampPaymentRecoveryRecord): Promise<void>
+  /** Atomically records one completely prevalidated message's discovered child set. Exact rows
+   * already in a later lifecycle are preserved; any conflicting authority aborts the whole set. */
+  putDiscovered(records: StampPaymentRecoveryRecord[]): Promise<void>
+  /** Serializes the complete read/sign/journal/submit lifecycle for one payment across every
+   * wallet handle sharing this durable journal. */
+  withPaymentLock<T>(
+    payloadHashHex: string,
+    childIndex: number,
+    operation: () => Promise<T>
+  ): Promise<T>
   getAll(): StampPaymentRecoveryRecord[]
 }
 
@@ -46,30 +67,88 @@ function key(payloadHashHex: string, childIndex: number): string {
   return `${payloadHashHex}:${childIndex}`
 }
 
+function cloneRecord(
+  record: StampPaymentRecoveryRecord
+): StampPaymentRecoveryRecord {
+  return {
+    ...record,
+    ...(record.failedSweeps === undefined
+      ? {}
+      : {
+          failedSweeps: record.failedSweeps.map((failed) => ({ ...failed })),
+        }),
+  }
+}
+
 export class InMemoryStampPaymentJournal implements StampPaymentJournal {
   private readonly records = new Map<string, StampPaymentRecoveryRecord>()
+  private mutationTail: Promise<void> = Promise.resolve()
+  private readonly paymentQueues = new Map<string, Promise<void>>()
+
+  private mutate<T>(operation: () => T | Promise<T>): Promise<T> {
+    const run = this.mutationTail.then(operation)
+    this.mutationTail = run.then(
+      () => undefined,
+      () => undefined
+    )
+    return run
+  }
 
   get(
     payloadHashHex: string,
     childIndex: number
   ): StampPaymentRecoveryRecord | undefined {
     const record = this.records.get(key(payloadHashHex, childIndex))
-    return record === undefined ? undefined : { ...record }
+    return record === undefined ? undefined : cloneRecord(record)
   }
 
   async put(record: StampPaymentRecoveryRecord): Promise<void> {
-    assertPaymentAuthorityShape(record)
-    assertMonotonicPaymentRecord(
-      this.records.get(key(record.payloadHashHex, record.childIndex)),
-      record
-    )
-    this.records.set(key(record.payloadHashHex, record.childIndex), {
-      ...record,
+    await this.mutate(() => {
+      assertPaymentAuthorityShape(record)
+      assertMonotonicPaymentRecord(
+        this.records.get(key(record.payloadHashHex, record.childIndex)),
+        record
+      )
+      this.records.set(
+        key(record.payloadHashHex, record.childIndex),
+        cloneRecord(record)
+      )
     })
   }
 
+  async putDiscovered(records: StampPaymentRecoveryRecord[]): Promise<void> {
+    await this.mutate(() => {
+      const staged = preflightDiscoveredSet(this.records, records)
+      for (const [recordKey, record] of staged) {
+        this.records.set(recordKey, cloneRecord(record))
+      }
+    })
+  }
+
+  withPaymentLock<T>(
+    payloadHashHex: string,
+    childIndex: number,
+    operation: () => Promise<T>
+  ): Promise<T> {
+    const recordKey = key(payloadHashHex, childIndex)
+    const run = (this.paymentQueues.get(recordKey) ?? Promise.resolve())
+      .then(() => this.mutationTail)
+      .then(operation)
+    const tail = run.then(
+      () => undefined,
+      () => undefined
+    )
+    this.paymentQueues.set(recordKey, tail)
+    void tail.then(() => {
+      if (this.paymentQueues.get(recordKey) === tail) {
+        this.paymentQueues.delete(recordKey)
+      }
+    })
+    return run
+  }
+
   getAll(): StampPaymentRecoveryRecord[] {
-    return Array.from(this.records.values()).map((record) => ({ ...record }))
+    return Array.from(this.records.values()).map(cloneRecord)
   }
 }
 
@@ -82,6 +161,17 @@ export class LevelStampPaymentJournal implements StampPaymentJournal {
   private readonly assertMutationAllowed: () => void
   private readonly rootLocation: string
   private loadedBindingId?: string
+  private mutationTail: Promise<void> = Promise.resolve()
+  private readonly paymentQueues = new Map<string, Promise<void>>()
+
+  private mutate<T>(operation: () => Promise<T>): Promise<T> {
+    const run = this.mutationTail.then(operation)
+    this.mutationTail = run.then(
+      () => undefined,
+      () => undefined
+    )
+    return run
+  }
 
   constructor(
     location: string,
@@ -171,14 +261,16 @@ export class LevelStampPaymentJournal implements StampPaymentJournal {
       })),
     ])
     for (const record of resolvedLegacyRecords) {
-      this.records.set(key(record.payloadHashHex, record.childIndex), {
-        ...record,
-      })
+      this.records.set(
+        key(record.payloadHashHex, record.childIndex),
+        cloneRecord(record)
+      )
     }
     this.loadedBindingId = this.expectedBindingId
   }
 
   async Close(): Promise<void> {
+    await this.mutationTail
     await this.db.close()
   }
 
@@ -187,20 +279,63 @@ export class LevelStampPaymentJournal implements StampPaymentJournal {
     childIndex: number
   ): StampPaymentRecoveryRecord | undefined {
     const record = this.records.get(key(payloadHashHex, childIndex))
-    return record === undefined ? undefined : { ...record }
+    return record === undefined ? undefined : cloneRecord(record)
   }
 
   async put(record: StampPaymentRecoveryRecord): Promise<void> {
-    this.assertMutationAllowed()
-    assertPaymentAuthorityShape(record)
-    const recordKey = key(record.payloadHashHex, record.childIndex)
-    assertMonotonicPaymentRecord(this.records.get(recordKey), record)
-    await this.db.put(recordKey, JSON.stringify(record))
-    this.records.set(recordKey, { ...record })
+    await this.mutate(async () => {
+      this.assertMutationAllowed()
+      assertPaymentAuthorityShape(record)
+      const recordKey = key(record.payloadHashHex, record.childIndex)
+      assertMonotonicPaymentRecord(this.records.get(recordKey), record)
+      await this.db.put(recordKey, JSON.stringify(record))
+      this.records.set(recordKey, cloneRecord(record))
+    })
+  }
+
+  async putDiscovered(records: StampPaymentRecoveryRecord[]): Promise<void> {
+    await this.mutate(async () => {
+      this.assertMutationAllowed()
+      const staged = preflightDiscoveredSet(this.records, records)
+      if (staged.size > 0) {
+        await (this.db as any).batch(
+          Array.from(staged, ([recordKey, record]) => ({
+            type: 'put' as const,
+            key: recordKey,
+            value: JSON.stringify(record),
+          }))
+        )
+      }
+      for (const [recordKey, record] of staged) {
+        this.records.set(recordKey, cloneRecord(record))
+      }
+    })
+  }
+
+  withPaymentLock<T>(
+    payloadHashHex: string,
+    childIndex: number,
+    operation: () => Promise<T>
+  ): Promise<T> {
+    const recordKey = key(payloadHashHex, childIndex)
+    const run = (this.paymentQueues.get(recordKey) ?? Promise.resolve())
+      .then(() => this.mutationTail)
+      .then(operation)
+    const tail = run.then(
+      () => undefined,
+      () => undefined
+    )
+    this.paymentQueues.set(recordKey, tail)
+    void tail.then(() => {
+      if (this.paymentQueues.get(recordKey) === tail) {
+        this.paymentQueues.delete(recordKey)
+      }
+    })
+    return run
   }
 
   getAll(): StampPaymentRecoveryRecord[] {
-    return Array.from(this.records.values()).map((record) => ({ ...record }))
+    return Array.from(this.records.values()).map(cloneRecord)
   }
 }
 
@@ -212,6 +347,76 @@ function assertPaymentAuthorityShape(record: StampPaymentRecoveryRecord): void {
   ) {
     throw new Error('Stamp-payment recovery authority is incomplete')
   }
+  if (
+    !['discovered', 'sweep-pending', 'sweep-failed', 'swept'].includes(
+      record.status
+    ) ||
+    (record.status !== 'discovered' &&
+      (typeof record.sweepTxHash !== 'string' ||
+        typeof record.sweepRawTx !== 'string' ||
+        typeof record.sweepValueWei !== 'string' ||
+        typeof record.sweepDestinationAddress !== 'string'))
+  ) {
+    throw new Error('Stamp-payment sweep authority is incomplete')
+  }
+  if (
+    record.status === 'discovered' &&
+    (record.sweepTxHash !== undefined ||
+      record.sweepRawTx !== undefined ||
+      record.sweepValueWei !== undefined ||
+      record.sweepDestinationAddress !== undefined ||
+      (record.failedSweeps?.length ?? 0) > 0)
+  ) {
+    throw new Error('Discovered stamp-payment row cannot contain sweep state')
+  }
+  if (
+    record.failedSweeps !== undefined &&
+    (!Array.isArray(record.failedSweeps) ||
+      record.failedSweeps.some(
+        (failed) =>
+          typeof failed.txHash !== 'string' ||
+          typeof failed.rawTx !== 'string' ||
+          typeof failed.valueWei !== 'string' ||
+          typeof failed.destinationAddress !== 'string'
+      ))
+  ) {
+    throw new Error('Stamp-payment failed sweep ledger is invalid')
+  }
+  if (record.status === 'sweep-failed') {
+    const terminal = record.failedSweeps?.[record.failedSweeps.length - 1]
+    if (
+      terminal === undefined ||
+      terminal.txHash !== record.sweepTxHash ||
+      terminal.rawTx !== record.sweepRawTx ||
+      terminal.valueWei !== record.sweepValueWei ||
+      terminal.destinationAddress !== record.sweepDestinationAddress
+    ) {
+      throw new Error('Failed stamp-payment sweep authority is incomplete')
+    }
+  }
+}
+
+function preflightDiscoveredSet(
+  current: ReadonlyMap<string, StampPaymentRecoveryRecord>,
+  records: StampPaymentRecoveryRecord[]
+): Map<string, StampPaymentRecoveryRecord> {
+  const staged = new Map<string, StampPaymentRecoveryRecord>()
+  for (const record of records) {
+    assertPaymentAuthorityShape(record)
+    if (record.status !== 'discovered') {
+      throw new Error(
+        'A discovered stamp-payment set must contain discovered rows'
+      )
+    }
+    const recordKey = key(record.payloadHashHex, record.childIndex)
+    if (staged.has(recordKey)) {
+      throw new Error(`Duplicate stamp-payment recovery row ${recordKey}`)
+    }
+    const prior = current.get(recordKey)
+    assertCompatibleStampPaymentAuthority(prior, record)
+    if (prior === undefined) staged.set(recordKey, cloneRecord(record))
+  }
+  return staged
 }
 
 export function assertCompatibleStampPaymentAuthority(
@@ -242,14 +447,20 @@ function assertMonotonicPaymentRecord(
   next: StampPaymentRecoveryRecord
 ): void {
   assertCompatibleStampPaymentAuthority(prior, next)
+  assertFailedSweepLedger(prior?.failedSweeps, next.failedSweeps)
   if (prior === undefined) return
   if (
+    (prior.status === 'discovered' &&
+      next.status !== 'discovered' &&
+      next.status !== 'sweep-pending') ||
     (prior.status === 'sweep-pending' && next.status === 'discovered') ||
+    (prior.status === 'sweep-failed' && next.status === 'discovered') ||
+    (prior.status === 'sweep-failed' && next.status === 'swept') ||
     (prior.status === 'swept' && next.status !== 'swept')
   ) {
     throw new Error('Stamp-payment recovery lifecycle cannot move backward')
   }
-  if (prior.status === 'sweep-pending' || prior.status === 'swept') {
+  if (prior.status === 'sweep-pending' && next.status !== 'sweep-failed') {
     for (const field of [
       'sweepTxHash',
       'sweepRawTx',
@@ -259,6 +470,74 @@ function assertMonotonicPaymentRecord(
       if (prior[field] !== next[field]) {
         throw new Error('Stamp-payment signed sweep intent is immutable')
       }
+    }
+  }
+  if (prior.status === 'sweep-pending' && next.status === 'sweep-failed') {
+    const appended = next.failedSweeps?.[next.failedSweeps.length - 1]
+    if (
+      appended === undefined ||
+      appended.txHash !== prior.sweepTxHash ||
+      appended.rawTx !== prior.sweepRawTx ||
+      appended.valueWei !== prior.sweepValueWei ||
+      appended.destinationAddress !== prior.sweepDestinationAddress
+    ) {
+      throw new Error(
+        'A failed sweep must durably retain its exact signed intent'
+      )
+    }
+    assertSweepFieldsEqual(prior, next)
+  }
+  if (prior.status === 'sweep-failed' && next.status === 'sweep-pending') {
+    if (prior.sweepTxHash === next.sweepTxHash) {
+      throw new Error('A mined failed sweep nonce cannot be replayed')
+    }
+    if (
+      (prior.failedSweeps ?? []).length !== (next.failedSweeps ?? []).length
+    ) {
+      throw new Error('A fresh sweep cannot alter the failed sweep ledger')
+    }
+  }
+  if (
+    (prior.status === 'sweep-failed' && next.status === 'sweep-failed') ||
+    (prior.status === 'swept' && next.status === 'swept')
+  ) {
+    assertSweepFieldsEqual(prior, next)
+    if (
+      (prior.failedSweeps ?? []).length !== (next.failedSweeps ?? []).length
+    ) {
+      throw new Error('A terminal sweep ledger cannot be extended')
+    }
+  }
+}
+
+function assertSweepFieldsEqual(
+  prior: StampPaymentRecoveryRecord,
+  next: StampPaymentRecoveryRecord
+): void {
+  for (const field of [
+    'sweepTxHash',
+    'sweepRawTx',
+    'sweepValueWei',
+    'sweepDestinationAddress',
+  ] as const) {
+    if (prior[field] !== next[field]) {
+      throw new Error('Stamp-payment signed sweep intent is immutable')
+    }
+  }
+}
+
+function assertFailedSweepLedger(
+  prior: FailedStampPaymentSweep[] | undefined,
+  next: FailedStampPaymentSweep[] | undefined
+): void {
+  const priorRows = prior ?? []
+  const nextRows = next ?? []
+  if (nextRows.length < priorRows.length) {
+    throw new Error('Stamp-payment failed sweep ledger cannot shrink')
+  }
+  for (let index = 0; index < priorRows.length; index++) {
+    if (JSON.stringify(priorRows[index]) !== JSON.stringify(nextRows[index])) {
+      throw new Error('Stamp-payment failed sweep ledger is immutable')
     }
   }
 }

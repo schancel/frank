@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { join, normalize, resolve, sep } from 'path'
+import { dirname, join, normalize, resolve, sep } from 'path'
 
 export const WALLET_COMPONENT_NAMES = [
   'wallet-manifest',
@@ -55,14 +55,34 @@ function assertOwnedByCurrentUser(
 /** Performs every Unix trust check before the first Level constructor can touch the root. A
  * historical owner-only-write 0755 root is hardened once, after its identity and owner are
  * validated. Group/world-writable roots are never adopted. */
-export function prepareSecureWalletRoot(location: string): string {
+export interface PreparedWalletRoot {
+  location: string
+  /** True only when this call atomically created the final Node root directory. Browser
+   * namespace provenance is established after acquiring the Web Lock and inspecting IDB. */
+  nodeRootCreated: boolean
+}
+
+export function prepareSecureWalletRootWithProvenance(
+  location: string
+): PreparedWalletRoot {
   const canonical = canonicalWalletStorageLocation(location)
-  if (isBrowserWalletStorage()) return canonical
+  if (isBrowserWalletStorage()) {
+    return { location: canonical, nodeRootCreated: false }
+  }
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const fs = require('fs') as typeof import('fs')
   let rootLstat = lstatIfPresent(fs, canonical)
+  let nodeRootCreated = false
   if (rootLstat === undefined) {
-    fs.mkdirSync(canonical, { recursive: true, mode: 0o700 })
+    fs.mkdirSync(dirname(canonical), { recursive: true, mode: 0o700 })
+    try {
+      // The non-recursive final mkdir is the creation provenance boundary: EEXIST means this
+      // caller did not create the wallet namespace, even if the directory is otherwise empty.
+      fs.mkdirSync(canonical, { mode: 0o700 })
+      nodeRootCreated = true
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+    }
     rootLstat = fs.lstatSync(canonical)
   }
   if (rootLstat.isSymbolicLink() || !rootLstat.isDirectory()) {
@@ -94,7 +114,11 @@ export function prepareSecureWalletRoot(location: string): string {
   for (const child of WALLET_COMPONENT_NAMES) {
     validateWalletComponentBeforeOpen(canonical, child, false)
   }
-  return rootReal
+  return { location: rootReal, nodeRootCreated }
+}
+
+export function prepareSecureWalletRoot(location: string): string {
+  return prepareSecureWalletRootWithProvenance(location).location
 }
 
 /** Re-checks root and component identity immediately before each Level constructor/open. */
@@ -197,7 +221,9 @@ export function nodeAdvisoryLockCommand(
   if (platform === 'linux') {
     return {
       command: '/usr/bin/flock',
-      args: ['-n', '-x', lockPath, process.execPath, '-e', holderScript],
+      // --no-fork makes the helper itself the kernel lock owner. Waiting for that PID to exit is
+      // therefore sufficient proof that the advisory lock has actually been released.
+      args: ['-n', '-x', '-F', lockPath, process.execPath, '-e', holderScript],
     }
   }
   throw new Error(
@@ -236,9 +262,16 @@ export async function acquireNodeWalletRootLease(
   if (artifact.isSymbolicLink() || !artifact.isFile()) {
     throw new Error('Node wallet root lock artifact must be a regular file')
   }
+  if (artifact.nlink !== 1) {
+    throw new Error('Node wallet root lock artifact must not be hard-linked')
+  }
   assertOwnedByCurrentUser(artifact, 'Node wallet root lock artifact')
   if ((artifact.mode & 0o777) !== 0o600) {
     throw new Error('Node wallet root lock artifact permissions must be 0600')
+  }
+  const rootIdentity = fs.lstatSync(location)
+  if (rootIdentity.isSymbolicLink() || !rootIdentity.isDirectory()) {
+    throw new Error('Wallet root identity changed before lock acquisition')
   }
 
   const holderScript = [
@@ -403,6 +436,7 @@ export async function acquireNodeWalletRootLease(
     if (
       current === undefined ||
       !current.isFile() ||
+      current.nlink !== 1 ||
       current.ino !== identity.ino ||
       current.dev !== identity.dev
     ) {
@@ -429,7 +463,9 @@ export async function acquireNodeWalletRootLease(
     if (
       currentRoot === undefined ||
       currentRoot.isSymbolicLink() ||
-      !currentRoot.isDirectory()
+      !currentRoot.isDirectory() ||
+      currentRoot.dev !== rootIdentity.dev ||
+      currentRoot.ino !== rootIdentity.ino
     ) {
       lose('Node wallet root identity changed')
     }

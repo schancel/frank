@@ -15,6 +15,8 @@ import {
   Transaction,
   Wallet,
   computeAddress,
+  decodeRlp,
+  encodeRlp,
   getBytes,
   getAddress,
   hexlify,
@@ -369,6 +371,46 @@ describe('recipient stamp-payment recovery bounds', () => {
     expect(recover(payments.slice(0, 1))).toHaveLength(1)
     expect(recover(payments)).toHaveLength(64)
     expect(() => recover([...payments, payments[0]])).toThrow(/1\.\.64/)
+  })
+
+  it('rejects signed transaction bytes that parse but are not the canonical serialization', async () => {
+    const recipientPrivateKey = getBytes(`0x${'44'.repeat(32)}`)
+    const encryptedPayload = new Uint8Array([9])
+    const payloadHash = computeMonadStampCommitment(encryptedPayload)
+    const destination = deriveMonadStampChildPublic({
+      payloadHash,
+      recipientPublicKey: RECIPIENT_PUBLIC_KEY,
+      paymentIndex: 0,
+    }).address
+    const canonical = await new Wallet(`0x${'55'.repeat(32)}`).signTransaction({
+      type: 0,
+      chainId: 1,
+      nonce: 0,
+      to: destination,
+      value: 1n,
+      data: buildMonadStampCalldata(
+        computeMonadStampPaymentCommitment(payloadHash, 0)
+      ),
+      gasLimit: 50_000n,
+      gasPrice: 1n,
+    })
+    const fields = decodeRlp(canonical) as string[]
+    fields[0] = '0x00'
+    const nonCanonical = encodeRlp(fields)
+    expect(Transaction.from(nonCanonical).serialized).toBe(canonical)
+
+    expect(() =>
+      recoverMonadStampPayments({
+        message: {
+          stampPayments: [
+            { childIndex: 0, rawTx: getBytes(nonCanonical) },
+          ],
+          encryptedPayload,
+          payloadHash,
+        },
+        recipientPrivateKey,
+      })
+    ).toThrow(/canonical signed serialization/i)
   })
 })
 

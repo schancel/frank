@@ -363,7 +363,7 @@ export type MonadStampPaymentSweepOutcome =
     }
   | {
       swept: false
-      reason: 'below-dust-threshold' | 'pending'
+      reason: 'below-dust-threshold' | 'pending' | 'failed'
       balanceWei?: bigint
       dustThresholdWei?: bigint
       txHash?: string
@@ -417,6 +417,11 @@ export function recoverMonadStampPayments(params: {
       paymentIndex: payment.childIndex,
     })
     const tx = Transaction.from(hexlify(payment.rawTx))
+    if (hexlify(payment.rawTx) !== tx.serialized) {
+      throw new Error(
+        `Stamp payment child ${payment.childIndex} raw transaction is not its canonical signed serialization`
+      )
+    }
     if (tx.to?.toLowerCase() !== child.address.toLowerCase()) {
       throw new Error(
         `Stamp payment child ${payment.childIndex} pays ${
@@ -506,7 +511,13 @@ export async function sweepRecoveredMonadStampPayment(params: {
   const txHash = await signer.submit(signed)
   const status = await signer.getStatus(txHash)
   if (status === 'failed') {
-    throw new Error(`Recipient stamp-payment sweep ${txHash} failed on-chain`)
+    return {
+      swept: false,
+      reason: 'failed',
+      txHash,
+      valueWei,
+      destinationAddress: signed.to,
+    }
   }
   if (status === 'pending') {
     return {

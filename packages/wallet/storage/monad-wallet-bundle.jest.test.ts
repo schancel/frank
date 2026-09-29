@@ -1,10 +1,12 @@
 import {
   chmodSync,
   existsSync,
+  linkSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
   rmSync,
+  renameSync,
   symlinkSync,
   writeFileSync,
 } from 'fs'
@@ -73,6 +75,15 @@ async function createLegacyRoot(
   await attempts.Close()
   await payments.Open()
   await payments.Close()
+}
+
+async function createNewCallerSeedRoot(location: string) {
+  rmSync(location, { recursive: true, force: true })
+  return openMonadWalletBundle({
+    location,
+    seed: { mnemonic: FIRST_MNEMONIC },
+    mode: 'create',
+  })
 }
 
 async function createSignedLegacyAttempt(location: string): Promise<{
@@ -285,6 +296,7 @@ describe('Monad wallet persistence bundle', () => {
     })
     expect(nodeAdvisoryLockCommand('linux', '/lock', 'hold')).toMatchObject({
       command: '/usr/bin/flock',
+      args: expect.arrayContaining(['-F']),
     })
     expect(() => nodeAdvisoryLockCommand('win32', '/lock', 'hold')).toThrow(
       /unsupported/i
@@ -302,11 +314,7 @@ describe('Monad wallet persistence bundle', () => {
   })
 
   it('creates and reopens one complete bound bundle', async () => {
-    await createLegacyRoot(root, false)
-    const first = await openMonadWalletBundle({
-      location: root,
-      seed: { mnemonic: FIRST_MNEMONIC },
-    })
+    const first = await createNewCallerSeedRoot(root)
     first.pool.ensureUnfundedSize(2)
     await first.pool.flush()
     const bindingId = first.bindingId
@@ -338,6 +346,57 @@ describe('Monad wallet persistence bundle', () => {
       createSeedIfEmpty: true,
     })
     expect(reopened.pool.getRecord(0)?.address).toBe(firstAddress)
+    await reopened.close()
+  })
+
+  it('treats semantically empty pre-manifest component stores as an empty restore and writes nothing', async () => {
+    await createLegacyRoot(root, false)
+
+    await expect(
+      openMonadWalletBundle({
+        location: root,
+        seed: { mnemonic: FIRST_MNEMONIC },
+      })
+    ).rejects.toThrow(/state backup|new seed|allocation ledger/i)
+
+    expect(existsSync(join(root, 'wallet-manifest'))).toBe(false)
+    for (const component of [
+      'sub-account-pool',
+      'change-pool',
+      'outgoing-stamp-attempts',
+      'stamp-payment-journal',
+    ]) {
+      const raw = level(join(root, component), { createIfMissing: false })
+      const entries: unknown[] = []
+      for await (const entry of raw.iterator({}) as never) entries.push(entry)
+      await raw.close()
+      expect(entries).toEqual([])
+    }
+  })
+
+  it('accepts an explicit caller seed only for a storage root created by that acquisition', async () => {
+    await expect(
+      openMonadWalletBundle({
+        location: root,
+        seed: { mnemonic: FIRST_MNEMONIC },
+        mode: 'create',
+      })
+    ).rejects.toThrow(/state backup|new seed|allocation ledger/i)
+    expect(existsSync(join(root, 'wallet-manifest'))).toBe(false)
+
+    const created = await createNewCallerSeedRoot(root)
+    expect(created.pool.deriveNextUnfunded().address).toBe(
+      MonadHdKeyring.fromMnemonic(FIRST_MNEMONIC).deriveSubAccount(0).address
+    )
+    await created.pool.flush()
+    await created.close()
+
+    const reopened = await openMonadWalletBundle({
+      location: root,
+      seed: { mnemonic: FIRST_MNEMONIC },
+      mode: 'create',
+    })
+    expect(reopened.pool.nextUnusedIndex()).toBe(1)
     await reopened.close()
   })
 
@@ -959,12 +1018,36 @@ describe('Monad wallet persistence bundle', () => {
     }
   })
 
-  it('rejects a different seed before opening or mutating component stores', async () => {
-    await createLegacyRoot(root, false)
-    const first = await openMonadWalletBundle({
+  it('fences a replaced root even when its lock artifact is hard-linked into the replacement', async () => {
+    const bundle = await openMonadWalletBundle({
       location: root,
-      seed: { mnemonic: FIRST_MNEMONIC },
+      createSeedIfEmpty: true,
     })
+    const originalRoot = `${root}-original`
+    renameSync(root, originalRoot)
+    mkdirSync(root, { mode: 0o700 })
+    linkSync(
+      join(originalRoot, '.frank-wallet.lock'),
+      join(root, '.frank-wallet.lock')
+    )
+
+    expect(() => bundle.pool.deriveNextUnfunded()).toThrow(
+      /identity|hard-linked|replaced/i
+    )
+    await expect(bundle.close()).resolves.toBeUndefined()
+
+    rmSync(root, { recursive: true, force: true })
+    renameSync(originalRoot, root)
+    const successor = await openMonadWalletBundle({
+      location: root,
+      createSeedIfEmpty: true,
+    })
+    expect(successor.pool.nextUnusedIndex()).toBe(0)
+    await successor.close()
+  })
+
+  it('rejects a different seed before opening or mutating component stores', async () => {
+    const first = await createNewCallerSeedRoot(root)
     first.pool.ensureUnfundedSize(1)
     await first.pool.flush()
     await first.close()
@@ -1031,11 +1114,7 @@ describe('Monad wallet persistence bundle', () => {
   })
 
   it('rejects a foreign seed-derived row before any network access', async () => {
-    await createLegacyRoot(root, false)
-    const first = await openMonadWalletBundle({
-      location: root,
-      seed: { mnemonic: FIRST_MNEMONIC },
-    })
+    const first = await createNewCallerSeedRoot(root)
     const bindingId = first.bindingId
     await first.close()
 
@@ -1058,11 +1137,7 @@ describe('Monad wallet persistence bundle', () => {
   })
 
   it('rejects unexpected durable record fields before mutation', async () => {
-    await createLegacyRoot(root, false)
-    const first = await openMonadWalletBundle({
-      location: root,
-      seed: { mnemonic: FIRST_MNEMONIC },
-    })
+    const first = await createNewCallerSeedRoot(root)
     const bindingId = first.bindingId
     const record = first.pool.deriveNextUnfunded()
     await first.pool.flush()
@@ -1129,11 +1204,7 @@ describe('Monad wallet persistence bundle', () => {
   })
 
   it('rejects a forged persistent bundle even when it copies a real bundle brand shape', async () => {
-    await createLegacyRoot(root, false)
-    const genuine = await openMonadWalletBundle({
-      location: root,
-      seed: { mnemonic: FIRST_MNEMONIC },
-    })
+    const genuine = await createNewCallerSeedRoot(root)
     const other = createInMemoryMonadWalletBundle({
       mnemonic: SECOND_MNEMONIC,
     })
@@ -1154,11 +1225,7 @@ describe('Monad wallet persistence bundle', () => {
   })
 
   it('revokes bundle provenance on idempotent close before signing or network', async () => {
-    await createLegacyRoot(root, false)
-    const bundle = await openMonadWalletBundle({
-      location: root,
-      seed: { mnemonic: FIRST_MNEMONIC },
-    })
+    const bundle = await createNewCallerSeedRoot(root)
     const handle = createMonadStampWalletHandle({
       walletState: bundle,
       provider: {} as never,
@@ -1262,11 +1329,7 @@ describe('Monad wallet persistence bundle', () => {
   })
 
   it('leaves a row-without-journal untouched when restore relay evidence is unavailable', async () => {
-    await createLegacyRoot(root, false)
-    const first = await openMonadWalletBundle({
-      location: root,
-      seed: { mnemonic: FIRST_MNEMONIC },
-    })
+    const first = await createNewCallerSeedRoot(root)
     first.pool.ensureSize(1)
     first.leaseManager.acquireLease()
     await first.pool.flush()
@@ -1292,11 +1355,7 @@ describe('Monad wallet persistence bundle', () => {
   })
 
   it('reconstructs a journal-without-row from its validated exact signed bytes', async () => {
-    await createLegacyRoot(root, false)
-    const first = await openMonadWalletBundle({
-      location: root,
-      seed: { mnemonic: FIRST_MNEMONIC },
-    })
+    const first = await createNewCallerSeedRoot(root)
     first.pool.ensureSize(1)
     first.leaseManager.acquireLease()
     const payload = new TextEncoder().encode('recover exact attempt')

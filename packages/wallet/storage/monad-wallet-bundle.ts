@@ -5,6 +5,7 @@ import {
   Transaction,
   type Provider,
   getAddress,
+  getBytes,
   hexlify,
   keccak256,
   randomBytes,
@@ -44,7 +45,8 @@ import {
   acquireBrowserWalletRootLease,
   acquireNodeWalletRootLease,
   existingWalletComponents,
-  prepareSecureWalletRoot,
+  isBrowserWalletStorage,
+  prepareSecureWalletRootWithProvenance,
   validateWalletComponentBeforeOpen,
 } from './wallet-root-guard'
 
@@ -87,6 +89,7 @@ interface WalletMigrationMarker {
   completedComponents: number
   persistedSeed?: PersistedSeed
   restoreMode?: true
+  creationMode?: 'caller-supplied'
 }
 
 export class MonadWalletOrphanedAccountError extends Error {
@@ -171,6 +174,15 @@ export type OpenMonadWalletBundleParams = (
     }
   | {
       location: string
+      seed: { mnemonic: string; passphrase?: string }
+      createSeedIfEmpty?: false
+      /** Explicit first-use creation with this exact caller-owned seed. This succeeds for an
+       * unbound root only when exclusive acquisition proves the storage namespace never existed. */
+      mode: 'create'
+      recovery?: MonadSeedRestoreSource
+    }
+  | {
+      location: string
       seed?: undefined
       createSeedIfEmpty: true
       mode?: 'create'
@@ -201,6 +213,7 @@ interface LegacyMigrationResolutions {
   attempts: Map<string, string>
   changes: Map<number, ChangeAccountRecord>
   payments: Map<string, StampPaymentRecoveryRecord>
+  hasSemanticState: boolean
 }
 
 function seedFingerprint(
@@ -281,6 +294,7 @@ function parseMigration(value: string): WalletMigrationMarker {
           'completedComponents',
           'persistedSeed',
           'restoreMode',
+          'creationMode',
         ].includes(key)
     ) ||
     parsed.version !== 1 ||
@@ -291,7 +305,9 @@ function parseMigration(value: string): WalletMigrationMarker {
     !Number.isSafeInteger(parsed.completedComponents) ||
     (parsed.completedComponents as number) < 0 ||
     (parsed.completedComponents as number) > 4 ||
-    (parsed.restoreMode !== undefined && parsed.restoreMode !== true)
+    (parsed.restoreMode !== undefined && parsed.restoreMode !== true) ||
+    (parsed.creationMode !== undefined &&
+      parsed.creationMode !== 'caller-supplied')
   ) {
     throw new Error('Invalid wallet migration marker')
   }
@@ -576,6 +592,7 @@ function validateLoadedState(params: {
         'sweepRawTx',
         'sweepValueWei',
         'sweepDestinationAddress',
+        'failedSweeps',
       ],
       'stamp-payment recovery record'
     )
@@ -597,12 +614,18 @@ function validateLoadedState(params: {
         33,
         'stamp-payment recipient public key'
       )
+      const recipientKey = getBytes(payment.recipientPublicKeyHex)
+      if (recipientKey[0] !== 0x02 && recipientKey[0] !== 0x03) {
+        throw new Error('Stamp-payment recipient public key is not compressed')
+      }
     }
     if (
       !Number.isSafeInteger(payment.childIndex) ||
       payment.childIndex < 0 ||
       !/^\d+$/.test(payment.valueWei) ||
-      !['discovered', 'sweep-pending', 'swept'].includes(payment.status)
+      !['discovered', 'sweep-pending', 'sweep-failed', 'swept'].includes(
+        payment.status
+      )
     ) {
       throw new Error('Invalid stamp-payment recovery record')
     }
@@ -618,6 +641,48 @@ function validateLoadedState(params: {
         payment.sweepDestinationAddress === undefined)
     ) {
       throw new Error('Invalid pending stamp-payment recovery record')
+    }
+    if (
+      payment.status === 'discovered' &&
+      (payment.sweepTxHash !== undefined ||
+        payment.sweepRawTx !== undefined ||
+        payment.sweepValueWei !== undefined ||
+        payment.sweepDestinationAddress !== undefined ||
+        (payment.failedSweeps?.length ?? 0) > 0)
+    ) {
+      throw new Error('Invalid discovered stamp-payment recovery record')
+    }
+    if (
+      payment.failedSweeps !== undefined &&
+      (!Array.isArray(payment.failedSweeps) ||
+        payment.failedSweeps.some(
+          (failed) =>
+            typeof failed.txHash !== 'string' ||
+            typeof failed.rawTx !== 'string' ||
+            !/^\d+$/.test(failed.valueWei) ||
+            typeof failed.destinationAddress !== 'string'
+        ))
+    ) {
+      throw new Error('Invalid failed stamp-payment sweep ledger')
+    }
+    for (const failed of payment.failedSweeps ?? []) {
+      assertOnlyKeys(
+        failed,
+        ['txHash', 'rawTx', 'valueWei', 'destinationAddress'],
+        'failed stamp-payment sweep record'
+      )
+    }
+    if (payment.status === 'sweep-failed') {
+      const terminal = payment.failedSweeps?.[payment.failedSweeps.length - 1]
+      if (
+        terminal === undefined ||
+        terminal.txHash !== payment.sweepTxHash ||
+        terminal.rawTx !== payment.sweepRawTx ||
+        terminal.valueWei !== payment.sweepValueWei ||
+        terminal.destinationAddress !== payment.sweepDestinationAddress
+      ) {
+        throw new Error('Invalid failed stamp-payment sweep authority')
+      }
     }
   }
 }
@@ -715,6 +780,15 @@ async function validateLegacySnapshot(params: {
       attempts: new Map(),
       changes: new Map(),
       payments: new Map(),
+      hasSemanticState:
+        pool.records().length > 0 ||
+        pool.terminalCheckpoints().length > 0 ||
+        pool.nextUnusedIndex() > 0 ||
+        changePool.records().length > 0 ||
+        changePool.pendingIntent() !== undefined ||
+        changePool.nextUnusedIndex() > 0 ||
+        attemptJournal.getAll().length > 0 ||
+        paymentJournal.getAll().length > 0,
     }
     const attemptOverlay = new InMemoryStampAttemptJournal()
     for (const attempt of attemptJournal.getAll()) {
@@ -1140,7 +1214,8 @@ export function createInMemoryMonadWalletBundle(params: {
 export async function openMonadWalletBundle(
   params: OpenMonadWalletBundleParams
 ): Promise<MonadWalletPersistenceBundle> {
-  const location = prepareSecureWalletRoot(params.location)
+  const preparedRoot = prepareSecureWalletRootWithProvenance(params.location)
+  const location = preparedRoot.location
   const nodeLease = await acquireNodeWalletRootLease(location)
   const browserLease = await acquireBrowserWalletRootLease(location)
   const assertLeaseHeld = (): void => {
@@ -1152,6 +1227,9 @@ export async function openMonadWalletBundle(
   try {
     assertLeaseHeld()
     const existing = await existingWalletComponents(location)
+    const namespaceNeverExisted = isBrowserWalletStorage()
+      ? existing.size === 0
+      : preparedRoot.nodeRootCreated
     const componentNames = [
       'sub-account-pool',
       'change-pool',
@@ -1272,13 +1350,19 @@ export async function openMonadWalletBundle(
             attempts: new Map<string, string>(),
             changes: new Map<number, ChangeAccountRecord>(),
             payments: new Map<string, StampPaymentRecoveryRecord>(),
+            hasSemanticState: false,
           }
+    const explicitCallerSeedCreation =
+      params.seed !== undefined && params.mode === 'create'
+    const semanticallyEmptyUnboundRoot =
+      finalized === undefined &&
+      migration === undefined &&
+      (!hasLegacyComponents || !legacyResolutions.hasSemanticState)
     const isEmptySuppliedSeedRestore =
       migration?.restoreMode === true ||
-      (finalized === undefined &&
-        migration === undefined &&
-        !hasLegacyComponents &&
-        params.seed !== undefined)
+      (semanticallyEmptyUnboundRoot &&
+        params.seed !== undefined &&
+        (!explicitCallerSeedCreation || !namespaceNeverExisted))
     if (isEmptySuppliedSeedRestore) {
       throw new Error(
         'Restoring a supplied seed into an empty wallet root is disabled without a verifiable seed-bound allocation ledger; restore the wallet state backup or create a new seed'
@@ -1519,6 +1603,9 @@ export async function openMonadWalletBundle(
         completedComponents: migration?.completedComponents ?? 0,
         ...(params.createSeedIfEmpty ? { persistedSeed: seed } : {}),
         ...(isEmptySuppliedSeedRestore ? { restoreMode: true as const } : {}),
+        ...(explicitCallerSeedCreation
+          ? { creationMode: 'caller-supplied' as const }
+          : {}),
       }
       if (migration === undefined) {
         assertLeaseHeld()

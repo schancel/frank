@@ -328,5 +328,15 @@ export function validateMonadWalletState(params: {
         destination: payment.sweepDestinationAddress as string,
       })
     }
+    for (const [index, failed] of (payment.failedSweeps ?? []).entries()) {
+      assertTransactionCheckpoint({
+        rawTx: failed.rawTx,
+        txHash: failed.txHash,
+        valueWei: failed.valueWei,
+        label: `stamp-payment ${payment.payloadHashHex}:${payment.childIndex} failed sweep ${index}`,
+        sender: payment.address,
+        destination: failed.destinationAddress,
+      })
+    }
   }
 }

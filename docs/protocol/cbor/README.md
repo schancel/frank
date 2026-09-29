@@ -59,7 +59,7 @@ E1. All four keys are required. Other envelope keys are forbidden in version
 
 E2. `schema_version` and `min_reader_version` begin at 1. A reader MUST NOT
 interpret an object when its supported semantic-reader version is less than
-`min_reader_version`.
+`min_reader_version`. `min_reader_version` MUST NOT exceed `schema_version`.
 
 E3. `payload` MUST contain exactly one data item satisfying section 3. A known
 type additionally applies its CDDL and semantic rules. An unknown type or
@@ -70,21 +70,31 @@ unknown object. Successful validation does not authorize reconstruction.
 
 E5. Type identifiers are never reused. Version 1 reserves:
 
-| Type ID | Name                                       | Schema                                         |
-| ------: | ------------------------------------------ | ---------------------------------------------- |
-|       1 | Recipient-specific direct-message delivery | [direct-message.cddl](direct-message.cddl)     |
-|       2 | Signed directory attestation               | [directory.cddl](directory.cddl)               |
-|       3 | Mailbox checkpoint                         | [checkpoint.cddl](checkpoint.cddl)             |
-|       4 | Directory statement signed by type 2       | [directory.cddl](directory.cddl)               |
-|  16–255 | Core message-item kinds                    | Allocated by a future reviewed registry change |
+|    Type ID | Name                                       | Schema                                     |
+| ---------: | ------------------------------------------ | ------------------------------------------ |
+|          1 | Recipient-specific direct-message delivery | [direct-message.cddl](direct-message.cddl) |
+|          2 | Signed directory attestation               | [directory.cddl](directory.cddl)           |
+|          3 | Mailbox checkpoint                         | [checkpoint.cddl](checkpoint.cddl)         |
+|          4 | Directory statement signed by type 2       | [directory.cddl](directory.cddl)           |
+|          5 | Recipient-encrypted payload                | [direct-message.cddl](direct-message.cddl) |
+|          6 | Decrypted message content                  | [direct-message.cddl](direct-message.cddl) |
+|          7 | Key-transition statement                   | [directory.cddl](directory.cddl)           |
+|          8 | Plaintext message-content revision         | [direct-message.cddl](direct-message.cddl) |
+|         16 | Container message item                     | [direct-message.cddl](direct-message.cddl) |
+|         17 | UTF-8 text message item                    | [direct-message.cddl](direct-message.cddl) |
+| 0xffff0001 | Proof-only unknown future message item     | Opaque fixture payload                     |
 
-Unassigned identifiers remain reserved and MUST NOT be emitted.
+Unassigned identifiers remain reserved and MUST NOT be emitted. The proof-only
+identifier MUST NOT appear in a production writer; it remains permanently
+reserved so the unknown-item vector never acquires a different meaning.
 
 ## 3. Restricted deterministic-CBOR profile
 
-C1. Maps use the RFC 8949 section 4.2.1 bytewise order: sort first by encoded
-key length and then lexicographically by the encoded key bytes. Integer keys
-are required for extensible protocol records.
+C1. Maps use the RFC 8949 section 4.2.1 bytewise lexicographic order of each
+key's deterministic encoding. Integer keys are required for extensible
+protocol records. Because version 1 map keys are unsigned integers in their
+shortest encoding, their encoded-byte order is also deterministic across
+implementations.
 
 C2. Integers and lengths MUST use their shortest preferred encoding. A value
 that fits in the additional-information field or a smaller integer argument
@@ -137,19 +147,24 @@ global limits.
 | `MAX_BODY_BYTES`        |                     8,388,608 (8 MiB) | Envelope CBOR body                                      |
 | `MAX_DEPTH`             |                                    32 | Nested CBOR arrays/maps, including envelope and payload |
 | `MAX_CONTAINERS`        |                                16,384 | Arrays plus maps in one frame                           |
+| `MAX_ITEMS`             |                                65,536 | Scalars plus containers in one validation operation     |
 | `MAX_MAP_ENTRIES`       |                                   256 | Entries in any one map                                  |
 | `MAX_ARRAY_ELEMENTS`    |                                 8,192 | Elements in any one array                               |
 | `MAX_BYTE_STRING_BYTES` |                             8,388,608 | Any byte string before type-specific limits             |
 | `MAX_TEXT_STRING_BYTES` |                     262,144 (256 KiB) | Any UTF-8 text string                                   |
 
 R1. Counters include values inside the payload byte string after it is opened
-for canonical validation. Implementations MUST fail without partially
-returning a typed object when any limit is exceeded.
+for canonical validation. When a schema causes nested frames to be opened, one
+shared validation budget accumulates their bytes, depth, containers, and total
+items; a child parser MUST NOT reset the parent's counters. Implementations
+MUST fail without partially returning a typed object when any limit is
+exceeded.
 
-R2. The direct-message frame limit is 1 MiB, with at most 256 message items, 64
-payment members, and 512 KiB in one encrypted payload. This deliberately
-permits messages larger than 64 KiB while requiring large media to be chunked
-or referenced rather than embedded without bound.
+R2. The direct-message frame limit is 1 MiB, with at most 256 message items
+total across the recursively opened item graph, 64 payment members, and 512 KiB
+in one encrypted payload. This deliberately permits messages larger than 64
+KiB while requiring large media to be chunked or referenced rather than
+embedded without bound.
 
 R3. The directory-attestation frame limit is 256 KiB, with at most 32 relay
 bindings and 16 signatures.
@@ -168,6 +183,12 @@ S1. Network tags are lowercase ASCII identifiers matching
 `[a-z0-9][a-z0-9._-]{0,63}`. Network tags are protocol data, not URL path
 components.
 
+S1a. Numeric values compare by mathematical value. Byte strings compare
+lexicographically by unsigned byte value. Text strings compare
+lexicographically by their exact UTF-8 bytes. Tuples compare the first unequal
+component using its declared comparator; a shorter otherwise-equal byte/text
+string sorts first. Language-native locale or UTF-16 ordering MUST NOT be used.
+
 S2. An account reference is ordered by `(key_type, key_bytes)`. Key type is an
 allocated unsigned identifier, not an inference from byte length. Version 1
 allocates key type 1 to 33-byte compressed SEC1 secp256k1 public keys, 2 to
@@ -181,20 +202,54 @@ future reviewed BCH-style Schnorr profile and MUST reject until that profile
 freezes its distinct challenge construction. Signatures from algorithms 2 and
 3 are never interchangeable merely because both use secp256k1.
 
-S3. Payment members are ordered by `(child_index, transaction_id)` and unique
-by both fields. Their amounts need not be equal. A payment set is valid only
-when the independently verified member values sum to the applicable minimum.
+S2b. Algorithm 1 requires key type 1 and a strict-DER signature of 8 through 72
+bytes; algorithm 2 requires key type 3 and exactly 64 signature bytes; algorithm
+16 requires key type 2 and exactly 64 signature bytes. Any other
+algorithm/key-type/length combination is unsupported, not a signature failure.
 
-S4. Relay bindings are ordered by `(relay_id, endpoint)` and unique by
-`relay_id`. Signatures are ordered by `(algorithm, signer_key_type,
-signer_key_bytes)` and unique by that tuple.
+S2c. Encryption-suite identifier 65535 is reserved for opaque proof-vector
+ciphertext and MUST NOT be emitted by a production writer. Production suites
+are allocated only with their nonce, key-agreement, authentication/deniability,
+and failure rules. The codec does not infer a suite from nonce length.
 
-S5. Key transitions are ordered by `(revision, new_key_type, new_key_bytes)`.
-Two transitions with the same revision are invalid rather than tie-broken.
+S3. Payment members are ordered by numeric `child_index`, then bytewise
+`transaction_id`. Child indices and transaction identifiers MUST each be
+independently unique. Child indices are non-hardened BIP32 indices in
+`0..2147483647`. Amounts need not be equal. Independently verified values are
+added with checked unsigned 256-bit arithmetic; overflow rejects. Their sum
+MUST be greater than or equal to the applicable minimum. Each encoded amount
+MUST exactly equal the independently observed value in its verified chain
+transaction; an encoded assertion is never payment evidence by itself.
 
-S6. Checkpoint journal facts are ordered by `(seconds, nanoseconds, fact_id)`.
-Timestamps do not create identity: `fact_id` remains the stable tiebreaker and
-must be unique within a checkpoint.
+S4. Relay bindings are ordered by bytewise `relay_id`, then UTF-8-bytewise
+`endpoint`, and unique by `relay_id`. Endpoints are exact opaque ASCII URI
+strings for signing, equality, and ordering: the codec performs no case,
+default-port, percent-escape, Unicode-host, or trailing-slash normalization. A
+consumer separately validates allowed schemes before use. Signatures are
+ordered by numeric `algorithm`, numeric `signer_key_type`, then bytewise
+`signer_key_bytes`, and unique by that complete tuple.
+
+S4a. Offline recovery authorities are ordered by numeric key type, then
+bytewise key bytes, and unique by that complete account-reference tuple. A
+transition may use only an authority present in the last accepted statement,
+not one introduced by the statement being authorized.
+
+S5. Key transitions are ordered by the numeric revision, numeric new-key type,
+and bytewise new-key bytes parsed from their type-7 statement frame. Two
+transitions with the same revision are invalid rather than tie-broken.
+
+S6. Checkpoint journal facts are ordered by numeric `(seconds, nanoseconds)`,
+then bytewise `fact_id`. Timestamps do not create identity: `fact_id` remains
+the stable tiebreaker and MUST be independently unique within a checkpoint.
+
+S7. Opaque checkpoint sections are ordered by numeric `(section_type,
+schema_version)` and MUST have independently unique `section_type` values.
+
+S8. A type-1 delivery's network and destination account MUST equal the opened
+type-5 payload's network and recipient account. After decryption, type 6's
+network MUST also equal type 5's network, and its T1a digest MUST equal its
+opened type-8 revision frame. Message-item array order is authored semantic
+order, not a set to be resorted.
 
 ## 6. Fixture schemas and identity boundaries
 
@@ -205,17 +260,19 @@ normative.
 
 ### Direct messages and recursive items
 
-The type-1 delivery contains one recipient-specific encrypted-payload frame,
-its SHA-256 digest, and a sorted payment set. One valid payment member is
+The type-1 delivery contains one type-5 recipient-encrypted-payload frame, its
+T3 digest, and a sorted payment set. The decrypted plaintext of type 5 is a
+complete type-6 message-content frame. One valid payment member is
 permitted when the wallet cannot economically source the preferred two or more.
-`message_id` and plaintext
-`content_digest` belong inside encrypted content; they are not relay-visible
-delivery identity. Each recipient may therefore have different encrypted bytes
-and a different payload digest for the same logical message.
+`message_id`, the type-8 plaintext revision frame, and its T1a content digest
+belong inside encrypted content; they are not relay-visible delivery identity.
+Each recipient may therefore have different encrypted bytes and a different
+payload digest for the same logical message.
 
-A known container message item holds complete child frames as byte strings.
-Unknown item types remain exact child-frame bytes. The proof fixture MUST
-contain at least two levels and an unknown nested item.
+A type-16 container message item holds complete child frames as byte strings;
+type 17 is a text item. Unknown item types remain exact child-frame bytes. The
+proof fixture MUST contain at least two levels and the permanently reserved
+proof-only unknown type `0xffff0001`.
 
 Direct-message stamps are payments to recipient-derived addresses. They are not
 burns. A payment member commits to this recipient-specific encrypted-payload
@@ -226,7 +283,13 @@ a different payload.
 
 Type 4 is the complete framed statement. Type 2 wraps that exact frame and a
 sorted signature set, avoiding a signature-containing-itself cycle. A
-signature authenticates the complete type-4 frame through section 8. The proof
+signature authenticates the complete type-4 frame through section 8. Every
+attestation MUST contain a verified signature whose signer exactly equals the
+statement subject, proving possession of the claimed current key. A bootstrap
+record needs no predecessor. If an update changes the currently registered
+subject, it additionally needs a valid T2a transition authorized by the prior
+key or a registered offline recovery authority. Merely carrying a valid
+signature from an unrelated key never authorizes a directory record. The proof
 fixture contains two relay bindings, `u64::MAX` revision, and a seconds plus
 nanoseconds timestamp.
 
@@ -241,8 +304,8 @@ message item whose exact bytes survive every round trip.
 ## 7. Evolution and retention
 
 V1. Adding an optional integer-keyed payload field increments
-`schema_version`. It need not raise `min_reader_version` when an older reader
-can safely retain/forward the original frame without interpreting the field.
+`schema_version`. It need not raise `min_reader_version` when the older reader
+can safely process the known projection while retaining the original frame.
 
 V2. Changing cryptographic meaning, validation, identity, ordering, or a
 required field raises `min_reader_version`. Existing frames never change
@@ -260,11 +323,28 @@ V5. Existing protobuf and JSON objects are never relabeled or transcoded into
 the same identity. A later migration uses explicit routes/content types or a
 bounded version transition. Hostile bytes are never codec-guessed.
 
+V6. After generic validation, a reader applies this mandatory decision:
+
+1. Unknown `type_id`, unsupported frame version, or
+   `min_reader_version > reader_version`: opaque retention only where the
+   containing contract permits it; otherwise reject as unsupported.
+2. Known type and `schema_version <= highest_supported_schema`: interpret the
+   exact supported schema, retaining the original frame alongside the typed
+   projection.
+3. Known type, newer `schema_version`, and
+   `min_reader_version <= reader_version`: interpret only fields defined by the
+   reader's highest supported schema, retain unknown fields plus the original
+   frame, and never reconstruct that frame for forwarding or verification.
+
+An application MUST NOT claim that unknown semantics were verified. This
+decision is identical in TypeScript and Rust.
+
 ## 8. Cryptographic transcripts
 
 All lengths below are unsigned big-endian integers. `utf8(x)` is the exact UTF-8
-encoding of a normalized protocol string. `frame` is the complete bytes from
-section 1. Concatenation is written `||`.
+encoding of the already schema-validated string; the transcript performs no
+additional normalization. `frame` is the complete bytes from section 1.
+Concatenation is written `||`.
 
 The common transcript is:
 
@@ -278,25 +358,49 @@ u16be(len(domain)) || ascii(domain)
 T1. The content hash is SHA-256 of the common transcript with domain
 `frank/content-hash/v1` and empty context.
 
+T1a. A stable plaintext `content_digest` is SHA-256 of the common transcript
+with domain `frank/message-content/v1`, where `frame` is the complete type-8
+message-content-revision frame and context is empty. The type-8 frame excludes
+recipient encryption and logical `message_id`, so recipient fanout preserves
+content identity while edits produce a new digest. Its transcript network tag
+is the literal `frank`, matching the type-8 field, so a composite message's
+logical content remains independent of which settlement rail delivered it;
+individual chain-bearing entries retain their own network tags.
+
 T2. A directory signature uses the common transcript with domain
 `frank/directory-signature/v1`, where `frame` is the complete type-4 directory
 statement frame. Algorithms 1 and 2 sign its 32-byte SHA-256 digest; algorithm
 16 signs the transcript bytes directly as required by S2a. The algorithm
 identifier lives in the type-2 signature entry and selects its exact
 signing/verification rules. Schnorr identifiers distinguish BIP340 from
-BCH-style Schnorr and other incompatible challenge hashes.
+BCH-style Schnorr and other incompatible challenge hashes. `context` is empty.
 
-T3. A recipient stamp-child derivation digest is SHA-256 of the common
-transcript with domain `frank/stamp-payment-child/v1`, where `frame` is the
-recipient-specific encrypted-payload frame and context is
-`u32be(child_index)`. This preserves one-message use: changing any payload byte,
-network, frame metadata, or child index changes the derived destination.
+T2a. A key-transition authorization uses the common transcript with domain
+`frank/key-transition-signature/v1`, where `frame` is the complete type-7
+key-transition-statement frame and the network argument MUST equal its network
+field. The statement binds the directory subject, prior authority, revision,
+and new key. The signature entry outside that frame names the algorithm; its
+signer MUST exactly equal `prior_authority`, and that authority MUST be the
+currently registered key or a separately registered offline recovery authority.
+`context` is empty.
 
-T4. A payment-set commitment is SHA-256 of the common transcript with domain
-`frank/stamp-payment-set/v1`, where `frame` is the encrypted-payload frame and
-context is the exact canonical CBOR encoding of the sorted payment-members
-array. Relay delivery fees use a separate domain and are not part of this
-transcript.
+T3. The recipient payload digest used as the stamp stealth root is SHA-256 of
+the common transcript with domain `frank/recipient-payload/v1`, where `frame`
+is the complete type-5 recipient-encrypted-payload frame and context is empty.
+The accepted #60 derivation then adds this digest as a secp256k1 scalar to the
+recipient public key and derives the non-hardened BIP32 path
+`m/44/145/child_index/0`; this codec does not redesign that math. As in #60,
+zero or a value greater than or equal to the secp256k1 group order rejects
+rather than reducing modulo the order; a sender constructs fresh encrypted
+payload bytes instead.
+
+T4. Each payment member's on-chain commitment is
+`SHA256(ascii("frank:dm-stamp-payment:v1") || T3_digest ||
+u32be(child_index))`. The exact 32-byte value MUST be present in the verified
+transaction commitment field and field 4 of that payment member. A missing or
+different value rejects. Changing the payload frame, network, versions, or
+child index therefore prevents transaction reuse for another message. Relay
+delivery fees use a separate domain and are not part of this transcript.
 
 T5. Protocol signatures and commitments MUST bind the network tag passed to
 the transcript and MUST confirm it equals the frame's typed network field.
@@ -310,15 +414,17 @@ canonical encoding alone is not authentication.
 A version-1 implementation validates in this order:
 
 1. Caller-supplied route/object byte limit.
-2. Magic and frame version.
-3. Declared length, global length, and exact input exhaustion.
-4. Restricted-CBOR syntax, canonicality, and global resource counters for the
+2. Minimum header length and magic.
+3. Frame version.
+4. Declared length, global length, and exact input exhaustion.
+5. Restricted-CBOR syntax, canonicality, and global resource counters for the
    envelope.
-5. Exact common-envelope keys and scalar ranges.
-6. Restricted-CBOR syntax, canonicality, and resource counters for payload.
-7. Known-type schema and per-type resource limits.
-8. Semantic ordering, uniqueness, cross-field, network, and digest checks.
-9. Signature, payment, or other cryptographic verification.
+6. Exact common-envelope keys and scalar ranges.
+7. Restricted-CBOR syntax, canonicality, and shared resource counters for the
+   payload and recursively opened child frames.
+8. Known-type schema and per-type resource limits.
+9. Semantic ordering, uniqueness, cross-field, network, and digest checks.
+10. Signature, payment, or other cryptographic verification.
 
 No stage may consume funds, mark a payment used, advance a mailbox cursor, or
 persist an interpreted record before every applicable later stage succeeds.
@@ -331,6 +437,24 @@ error category, and normative rules. Positive vectors additionally name the
 type/schema and expected content hash. Hostile vectors retain their bytes even
 when parsing fails so both implementations test the same input.
 
+The positive type-1 direct-message case MUST also record
+`content_digest_hex`, `payload_digest_hex`, and every
+`payment_commitments_hex` value. Implementations compare those outputs with T1a,
+T3, T4, the encoded payment member, and the simulated verifier-visible
+transaction commitment.
+
 Stable error categories are: `frame`, `unsupported`, `resource`, `malformed`,
 `noncanonical`, `schema`, `semantic`, and `cryptographic`. Public APIs may give
-more detail but MUST preserve this cross-language category.
+more detail but MUST preserve this cross-language category. When bytes violate
+multiple rules, the validation order in section 9 selects the first category;
+implementations MUST NOT continue merely to report a later failure. Within CBOR
+validation, malformed syntax precedes canonicality, resource counters fail at
+the first item that exceeds the shared budget, and typed schema checks follow a
+fully valid canonical item.
+
+Vector case IDs MUST be unique. `paired_case`, when present, MUST name a
+different existing case, be reciprocal, and indicate two cases whose
+relationship is asserted by their descriptions (for example, an accepted frame
+and its one-byte cryptographic mutation). Dangling, self, one-way, and duplicate
+pairs make the manifest invalid even though JSON Schema cannot express these
+cross-record constraints.

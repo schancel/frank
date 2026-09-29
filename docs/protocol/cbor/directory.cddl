@@ -15,21 +15,31 @@ directory-statement = {
   4: [1*32 relay-binding],
   ? 5: [1*16 key-transition],
   ? 6: timestamp, ; expiry, if present
+  ? 7: [1*8 account-ref], ; offline recovery authorities
   * uint => frank-value,
 }
 
 relay-binding = {
   0: bstr .size (16..64), ; relay_id, derived by its registered algorithm
-  1: tstr .size (1..2048), ; normalized endpoint
+  1: tstr .size (1..2048), ; exact opaque ASCII URI; no codec normalization
   2: account-ref, ; relay signing/payment identity
   3: timestamp, ; binding expiry
   * uint => frank-value,
 }
 
 key-transition = {
-  0: uint .ge 1 .le 18446744073709551615, ; revision
-  1: account-ref, ; new key
-  2: uint .le 65535, ; authorization/signature algorithm
-  3: bstr .size (1..512), ; signature by prior/offline authority
+  0: framed-object, ; type-7 key-transition-statement frame
+  1: uint .le 65535, ; authorization/signature algorithm
+  2: account-ref, ; signer; must equal statement prior_authority
+  3: bstr .size (1..512), ; signature of the T2a transcript
+  * uint => frank-value,
+}
+
+key-transition-statement = {
+  0: network-tag,
+  1: account-ref, ; directory subject
+  2: account-ref, ; prior registered or offline recovery authority
+  3: uint .ge 1 .le 18446744073709551615, ; revision
+  4: account-ref, ; new key
   * uint => frank-value,
 }

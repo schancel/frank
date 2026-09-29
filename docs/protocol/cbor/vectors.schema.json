@@ -32,7 +32,7 @@
           "type": "array",
           "minItems": 1,
           "uniqueItems": true,
-          "items": { "type": "string", "pattern": "^[A-Z][0-9]+$" }
+          "items": { "type": "string", "pattern": "^[A-Z][0-9]+[a-z]?$" }
         },
         "type_id": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
         "schema_version": {
@@ -41,6 +41,15 @@
           "maximum": 4294967295
         },
         "content_hash_hex": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "content_digest_hex": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "payload_digest_hex": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "payment_commitments_hex": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+        },
         "error_category": {
           "enum": [
             "frame",
@@ -69,6 +78,22 @@
         {
           "if": { "properties": { "expectation": { "const": "reject" } } },
           "then": { "required": ["error_category"] }
+        },
+        {
+          "if": {
+            "properties": {
+              "expectation": { "const": "accept" },
+              "type_id": { "const": 1 }
+            },
+            "required": ["type_id"]
+          },
+          "then": {
+            "required": [
+              "content_digest_hex",
+              "payload_digest_hex",
+              "payment_commitments_hex"
+            ]
+          }
         }
       ]
     }

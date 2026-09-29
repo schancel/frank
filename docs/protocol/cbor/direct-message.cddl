@@ -6,23 +6,40 @@ direct-message-delivery = {
   0: network-tag,
   1: account-ref, ; destination account/payment root identity
   2: framed-object, ; recipient-specific encrypted-payload frame
-  3: digest-32, ; SHA-256 of the exact field-2 frame
+  3: digest-32, ; T3 digest of the exact field-2 frame
   4: [1*64 payment-member], ; two or more preferred, one permitted
   * uint => frank-value, ; additive fields retained only under README.md rules
 }
 
 payment-member = {
-  0: uint .le 4294967295, ; non-hardened stamp child index
+  0: uint .le 2147483647, ; non-hardened BIP32 stamp child index
   1: bstr .size (1..128), ; chain transaction identifier
   2: evm-quantity-256, ; verified value, fixed-width big-endian
   3: bstr .size (1..128), ; derived destination/address bytes
+  4: digest-32, ; exact T4 commitment verified in the transaction
 }
 
 encrypted-message-content = {
   0: network-tag,
   1: uuid-16, ; stable logical message_id; encrypted in a real delivery
-  2: digest-32, ; plaintext content_digest; encrypted in a real delivery
-  3: [1*256 framed-object], ; message-item frames
+  2: framed-object, ; type-8 message-content-revision frame
+  3: digest-32, ; T1a digest of field 2
+  * uint => frank-value,
+}
+
+recipient-encrypted-payload = {
+  0: network-tag,
+  1: account-ref, ; routing sender identity, not transferable authorship proof
+  2: account-ref, ; routing recipient identity
+  3: uint .le 65535, ; exact encryption-suite identifier
+  4: bstr .size (1..64), ; suite-defined nonce
+  5: bstr .size (1..524288), ; ciphertext of a complete type-6 frame
+  * uint => frank-value,
+}
+
+message-content-revision = {
+  0: "frank", ; chain-independent logical-content transcript network domain
+  1: [1*256 framed-object], ; ordered semantic message-item frames
   * uint => frank-value,
 }
 

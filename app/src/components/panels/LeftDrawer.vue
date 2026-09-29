@@ -182,7 +182,7 @@ export default defineComponent({
     // only picking a destination closes it. MainLayout provides the marker its router hook honors.
     const markRailNavigation = inject<() => void>(
       'markRailNavigation',
-      () => {},
+      () => undefined, // standalone (outside MainLayout): nothing to mark
     )
     function openForumTab() {
       markRailNavigation()

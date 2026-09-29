@@ -658,6 +658,154 @@ describe('MonadStampClient.submitStampedMessage', () => {
     expect(pool.getRecord(result.leaseIndices[0])?.status).toBe('spent')
   })
 
+  it.each([
+    ['an empty protobuf', () => new Uint8Array()],
+    [
+      'a different stored message',
+      (submitted: MonadStampedMessageProto) =>
+        storedMessageBytes({
+          ...submitted,
+          encryptedPayload: new TextEncoder().encode('different message'),
+        }),
+    ],
+    [
+      'the same payload with different payment bytes',
+      (submitted: MonadStampedMessageProto) =>
+        storedMessageBytes({
+          ...submitted,
+          stampPayments: submitted.stampPayments.map((payment, index) =>
+            index === 0
+              ? { ...payment, rawTx: new Uint8Array([1, 2, 3]) }
+              : payment,
+          ),
+        }),
+    ],
+  ])(
+    'treats a 2xx containing %s as ambiguous and confirms only through an exact GET',
+    async (_description, responseBytes) => {
+      const stampAttemptJournal = new InMemoryStampAttemptJournal()
+      const { client, pool } = makeClient({ stampAttemptJournal })
+      let submittedMessage: MonadStampedMessageProto | undefined
+      mockedAxios.mockImplementation(async config => {
+        if (config.method === 'put') {
+          submittedMessage = decodeMonadStampedMessage(
+            new Uint8Array(config.data as Buffer),
+          )
+          return {
+            data: responseBytes(submittedMessage),
+            status: 200,
+            statusText: 'OK',
+            headers: {},
+            config,
+          }
+        }
+        if (submittedMessage === undefined)
+          throw new Error('missing submitted message')
+        return {
+          data: storedMessageBytes(submittedMessage),
+          status: 200,
+          statusText: 'OK',
+          headers: {},
+          config,
+        }
+      })
+
+      const result = await client.submitStampedMessage({
+        encryptedPayload: new TextEncoder().encode('correlate response'),
+        recipientPublicKey: RECIPIENT_PUBLIC_KEY,
+        stampValueWei: 10_000n,
+        overrides: FEE_OVERRIDES,
+        abandonPoll: { maxAttempts: 1, intervalMs: 0 },
+      })
+
+      expect(mockedAxios).toHaveBeenCalledTimes(2)
+      expect(result.stored.message).toEqual(submittedMessage)
+      expect(stampAttemptJournal.getAll()).toHaveLength(0)
+      expect(
+        pool.records().filter(record => record.status === 'spent'),
+      ).toHaveLength(2)
+    },
+  )
+
+  it.each([
+    ['an empty protobuf', () => new Uint8Array()],
+    [
+      'a different stored message',
+      (submitted: MonadStampedMessageProto) =>
+        storedMessageBytes({
+          ...submitted,
+          encryptedPayload: new TextEncoder().encode('different message'),
+        }),
+    ],
+    [
+      'the same payload with different payment bytes',
+      (submitted: MonadStampedMessageProto) =>
+        storedMessageBytes({
+          ...submitted,
+          stampPayments: submitted.stampPayments.map((payment, index) =>
+            index === 0
+              ? { ...payment, rawTx: new Uint8Array([1, 2, 3]) }
+              : payment,
+          ),
+        }),
+    ],
+  ])(
+    'retains a pending attempt when resume receives %s in a 2xx',
+    async (_description, responseBytes) => {
+      const stampAttemptJournal = new InMemoryStampAttemptJournal()
+      const pool = makePool()
+      const first = makeClient({ pool, stampAttemptJournal }).client
+      let submittedMessage: MonadStampedMessageProto | undefined
+      mockedAxios.mockImplementationOnce(async config => {
+        submittedMessage = decodeMonadStampedMessage(
+          new Uint8Array(config.data as Buffer),
+        )
+        throw Object.assign(new Error('connection lost'), {
+          isAxiosError: true,
+          response: undefined,
+        })
+      })
+      mockedAxios.mockRejectedValue(
+        Object.assign(new Error('not found'), {
+          isAxiosError: true,
+          response: { status: 404 },
+        }),
+      )
+
+      await expect(
+        first.submitStampedMessage({
+          encryptedPayload: new TextEncoder().encode('resume correlation'),
+          recipientPublicKey: RECIPIENT_PUBLIC_KEY,
+          stampValueWei: 10_000n,
+          overrides: FEE_OVERRIDES,
+          abandonPoll: { maxAttempts: 1, intervalMs: 0 },
+        }),
+      ).rejects.toThrow(MonadStampAbandonedError)
+      expect(stampAttemptJournal.getAll()).toHaveLength(1)
+      expect(submittedMessage).toBeDefined()
+
+      mockedAxios.mockReset()
+      mockedAxios.isAxiosError.mockImplementation(
+        (e: unknown) => (e as { isAxiosError?: boolean })?.isAxiosError === true,
+      )
+      mockedAxios.mockImplementationOnce(async config => ({
+        data: responseBytes(submittedMessage as MonadStampedMessageProto),
+        status: 200,
+        statusText: 'OK',
+        headers: {},
+        config,
+      }))
+
+      const resumed = makeClient({ pool, stampAttemptJournal }).client
+      await expect(resumed.resumePendingAttempts()).resolves.toEqual([])
+      expect(stampAttemptJournal.getAll()).toHaveLength(1)
+      expect(
+        pool.records().filter(record => record.status === 'spent'),
+      ).toHaveLength(0)
+      expect(pool.selectForStamp()).toBeUndefined()
+    },
+  )
+
   it('retires as stuck and throws MonadStampAbandonedError when the fallback poll never finds it', async () => {
     const stampAttemptJournal = new InMemoryStampAttemptJournal()
     const { client, pool } = makeClient({ stampAttemptJournal })

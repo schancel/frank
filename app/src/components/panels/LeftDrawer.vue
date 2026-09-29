@@ -186,7 +186,10 @@ export default defineComponent({
 
     onMounted(() => {
       void refreshBalance()
-      balancePollHandle = setInterval(() => void refreshBalance(), balancePollMs)
+      balancePollHandle = setInterval(
+        () => void refreshBalance(),
+        balancePollMs,
+      )
       // Fire-and-forget, same convention as `ForumLayout.vue`'s own identical call --
       // `refreshDiscoveredTopics` already fails soft and never throws (`stores/topics.ts`).
       // Called here too (not just there) so this list is populated even if the user never opens

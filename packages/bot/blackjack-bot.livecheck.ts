@@ -38,6 +38,13 @@
  * `submitting` and is never retried automatically. Bets/doubles are refused (and refunded) when
  * the payout account's balance cannot cover all open games' worst-case payouts plus the new one.
  *
+ * A resolved hand's payout is durable (ticket #215): the game is marked revealed and the payout
+ * recorded as `owed` in ONE write, then `owed -> submitting` (signed bytes journaled before the
+ * broadcast) `-> submitted -> confirmed` (only a successful receipt clears it). A restart or the
+ * poll loop re-broadcasts the same signed bytes -- never re-signs -- and no other payer-account
+ * transaction is signed while a signed payout is unconfirmed (it owns the nonce). See
+ * `attemptPayout`/`settlePayouts`.
+ *
  * ## Usage
  *
  *   cd packages/bot
@@ -89,7 +96,7 @@ import {
 } from '@frank/wallet/message-item-plugins/blackjack/game'
 import { MonadStampClient } from '@frank/wallet/monad-stamp-client'
 import { MonadSubAccountPool } from '@frank/wallet/monad-account-pool'
-import { MonadAccountTxSigner } from '@frank/wallet/monad-account-tx'
+import { MonadAccountTxSigner, MonadTxStatus } from '@frank/wallet/monad-account-tx'
 import {
   loadOrCreateIdentity,
   registerAndLog,
@@ -105,6 +112,7 @@ import {
   normalizeBlackjackGameId,
   normalizePlayerAddress,
   normalizeWagerTxHash,
+  PayoutRecord,
 } from './blackjack-bot-state'
 
 function sleep(ms: number): Promise<void> {
@@ -199,49 +207,220 @@ async function resolveAndReveal(params: {
     ? 'dealer_win'
     : resolveOutcome(playerValue, handValue(dealerCards))
 
-  await state.setGame(gameId, { ...record, dealtCount, revealed: true })
+  const multiplier = payoutMultiplier(outcome)
+  const payoutWei =
+    multiplier > 0
+      ? (BigInt(Math.round(multiplier * 1000)) * effectiveWagerWei) / 1000n
+      : 0n
+
+  // Resolving the hand and recording what it owes are ONE atomic write: there is no durable state
+  // in which the game is revealed but its payout is not recorded. Nothing external happens before
+  // this write is durable, so a failure or crash anywhere after it is recovered by `settlePayouts`.
+  const resolved = await state.resolveGameWithPayout({
+    gameId,
+    dealtCount,
+    payoutWei,
+  })
+  await state.flush()
+  if (!resolved.ok) {
+    // Already resolved (and its payout, if any, already journaled): never resolve twice.
+    console.log(`[blackjack-bot] game ${gameId} was already resolved (${resolved.reason}); skipping`)
+    return
+  }
 
   console.log(
     `[blackjack-bot] resolving game ${gameId}: player=${JSON.stringify(playerCards)} dealer=${JSON.stringify(dealerCards)} outcome=${outcome}`,
   )
 
-  await sendDirectMessageItems({
-    stampClient,
-    pool,
-    mainAccountSigner,
-    provider,
-    fromIdentity: identity,
-    toAddress: record.playerAddress,
-    toPubKey: senderPubKey,
-    items: [
-      {
-        type: 'blackjack-move',
-        gameId,
-        action: 'reveal',
-        dealerCards,
-        serverSeed: record.serverSeed,
-        outcome,
-      },
-    ],
-    stampValueWei,
-    networkTag,
-  })
+  // A failed reveal message must not cost the winner their payout: the payout is already owed and
+  // is attempted (and, if need be, retried from the poll loop) regardless.
+  try {
+    await sendDirectMessageItems({
+      stampClient,
+      pool,
+      mainAccountSigner,
+      provider,
+      fromIdentity: identity,
+      toAddress: record.playerAddress,
+      toPubKey: senderPubKey,
+      items: [
+        {
+          type: 'blackjack-move',
+          gameId,
+          action: 'reveal',
+          dealerCards,
+          serverSeed: record.serverSeed,
+          outcome,
+        },
+      ],
+      stampValueWei,
+      networkTag,
+    })
+  } catch (err) {
+    console.error(
+      `[blackjack-bot] reveal message for game ${gameId} failed (payout is still owed and will proceed):`,
+      err,
+    )
+  }
 
-  const multiplier = payoutMultiplier(outcome)
-  if (multiplier > 0) {
-    const payoutWei =
-      (BigInt(Math.round(multiplier * 1000)) * effectiveWagerWei) / 1000n
+  if (payoutWei > 0n) {
     console.log(
       `[blackjack-bot] paying out ${payoutWei} wei (${multiplier}x) to ${record.playerAddress} ...`,
     )
-    const signedTx = await mainAccountSigner.buildAndSignTransfer(
-      record.playerAddress,
-      payoutWei,
-    )
-    const txHash = await mainAccountSigner.submit(signedTx)
-    console.log(`[blackjack-bot] payout tx sent: ${txHash}`)
+    await attemptPayout({ state, gameId, mainAccountSigner })
   } else {
     console.log('[blackjack-bot] dealer wins -- no payout, wager already received as the bet.')
+  }
+}
+
+/** Per-game in-memory retry backoff for `settlePayouts` (never persisted; a restart retries at
+ * once). */
+export type PayoutBackoff = Map<string, { failures: number; nextAt: number }>
+
+const PAYOUT_BACKOFF_BASE_MS = 2000
+const PAYOUT_BACKOFF_MAX_MS = 60000
+
+/**
+ * Drives one owed payout forward, exactly once, and NEVER throws (the caller is the poll loop; a
+ * payout problem must be retried, not crash the bot).
+ *
+ * `owed`       -> build + sign; journal `rawTx`/`txHash` durably (`submitting`) BEFORE broadcasting.
+ * `submitting` -> the signed bytes may already be in the mempool. Check the receipt; if none,
+ *                 re-broadcast the SAME bytes. Never re-sign: a second signed transfer could mine
+ *                 in addition to the first.
+ * `submitted`  -> accepted by the node; wait for a receipt (re-broadcasting the same bytes if it
+ *                 is still absent, which covers mempool eviction).
+ * receipt ok   -> `confirmed` (the only way a payout stops being owed). A reverted receipt marks
+ *                 it `failed` for an operator.
+ *
+ * A signed payout that cannot be shown to have mined is left as-is and reported on every attempt
+ * (fail closed): re-signing is only sound if the transaction provably can never mine, and this bot
+ * has no proof better than one RPC node's opinion, so that decision is an operator's.
+ */
+export async function attemptPayout(params: {
+  state: BlackjackBotStateStore
+  gameId: string
+  mainAccountSigner: MonadAccountTxSigner
+}): Promise<PayoutRecord['status'] | 'none' | 'blocked'> {
+  const { state, gameId, mainAccountSigner } = params
+  try {
+    let payout = state.getPayout(gameId)
+    const game = state.getGame(gameId)
+    if (!payout || !game) return 'none'
+    if (payout.status === 'confirmed' || payout.status === 'failed') {
+      return payout.status
+    }
+
+    if (payout.status === 'owed') {
+      // One signed payout in flight at a time: an unconfirmed signed transaction owns its payer
+      // nonce, and anything signed from the chain's pending count meanwhile could take it.
+      if (state.hasSignedUnconfirmedPayout()) return 'blocked'
+      let signedTx
+      try {
+        signedTx = await mainAccountSigner.buildAndSignTransfer(
+          game.playerAddress,
+          payout.amountWei,
+        )
+      } catch (err) {
+        console.error(
+          `[blackjack-bot] payout of ${payout.amountWei} wei for game ${gameId} could not be built/signed (stays owed, will retry):`,
+          err,
+        )
+        return 'owed'
+      }
+      // Durable before anything is broadcast. If this write fails the signed bytes are simply
+      // dropped: nothing left this process, so a later re-sign is safe.
+      await state.setPayoutState(gameId, {
+        status: 'submitting',
+        rawTx: signedTx.rawTx,
+        txHash: signedTx.txHash,
+      })
+      await state.flush()
+      payout = state.getPayout(gameId)!
+    } else {
+      // A signed transaction may already have mined (e.g. we crashed or lost the RPC response after
+      // broadcasting). Only a successful receipt clears the debt.
+      let status: MonadTxStatus
+      try {
+        status = await mainAccountSigner.getStatus(payout.txHash!)
+      } catch (err) {
+        console.error(`[blackjack-bot] could not read the receipt of payout ${payout.txHash}:`, err)
+        return payout.status
+      }
+      if (status === 'confirmed') {
+        await state.setPayoutState(gameId, { status: 'confirmed' })
+        await state.flush()
+        console.log(`[blackjack-bot] payout ${payout.txHash} for game ${gameId} confirmed`)
+        return 'confirmed'
+      }
+      if (status === 'failed') {
+        await state.setPayoutState(gameId, { status: 'failed' })
+        await state.flush()
+        console.error(
+          `[blackjack-bot] OPERATOR ACTION: payout ${payout.txHash} for game ${gameId} mined but reverted; ${payout.amountWei} wei is still owed to ${game.playerAddress}`,
+        )
+        return 'failed'
+      }
+    }
+
+    // Broadcast exactly the journaled bytes.
+    try {
+      await mainAccountSigner.submitRaw(payout.rawTx!, payout.txHash!)
+    } catch (err) {
+      console.error(
+        `[blackjack-bot] broadcast of payout ${payout.txHash} for game ${gameId} did not succeed (it may already be in the mempool). Retrying the SAME signed bytes, never re-signing; if this persists an operator must inspect the tx:`,
+        err,
+      )
+      return payout.status
+    }
+    if (payout.status === 'submitting') {
+      await state.setPayoutState(gameId, { status: 'submitted' })
+      await state.flush()
+    }
+    console.log(`[blackjack-bot] payout tx sent: ${payout.txHash}`)
+    return 'submitted'
+  } catch (err) {
+    console.error(`[blackjack-bot] payout attempt for game ${gameId} failed (will retry):`, err)
+    return 'blocked'
+  }
+}
+
+/** Poll-loop entry: advances every open payout, oldest state first, honouring per-game backoff.
+ * Never throws. */
+export async function settlePayouts(params: {
+  state: BlackjackBotStateStore
+  mainAccountSigner: MonadAccountTxSigner
+  now?: number
+  backoff?: PayoutBackoff
+}): Promise<void> {
+  const { state, mainAccountSigner } = params
+  const now = params.now ?? Date.now()
+  const backoff = params.backoff ?? new Map()
+  try {
+    // Signed ones first so an in-flight transaction resolves before another is signed.
+    const open = state
+      .getOpenPayouts()
+      .sort(([, a], [, b]) => Number(a.status === 'owed') - Number(b.status === 'owed'))
+    for (const [gameId, payout] of open) {
+      const wait = backoff.get(gameId)
+      if (wait && now < wait.nextAt) continue
+      const result = await attemptPayout({ state, gameId, mainAccountSigner })
+      const after = state.getPayout(gameId)
+      const progressed =
+        result === 'confirmed' || (after && after.status !== payout.status)
+      if (result === 'confirmed' || (progressed && result !== 'owed')) {
+        backoff.delete(gameId)
+      } else {
+        const failures = (wait?.failures ?? 0) + 1
+        backoff.set(gameId, {
+          failures,
+          nextAt:
+            now + Math.min(PAYOUT_BACKOFF_MAX_MS, PAYOUT_BACKOFF_BASE_MS * 2 ** (failures - 1)),
+        })
+      }
+    }
+  } catch (err) {
+    console.error('[blackjack-bot] settling payouts failed (will retry):', err)
   }
 }
 
@@ -258,6 +437,8 @@ export async function attemptRefund(params: {
   const refund = state.getRefund(txHash)
   if (!refund) return 'none'
   if (refund.status !== 'pending') return refund.status
+  // A signed, unconfirmed payout owns its payer nonce; do not sign anything beside it.
+  if (state.hasSignedUnconfirmedPayout()) return 'pending'
   let signedTx
   try {
     signedTx = await mainAccountSigner.buildAndSignTransfer(
@@ -906,6 +1087,7 @@ async function main() {
     console.log('[blackjack-bot] generated initial pending seed commitment')
   }
 
+  const payoutBackoff: PayoutBackoff = new Map()
   const senderPubKeyCache = new Map<string, Buffer>()
   let since = Date.now()
   let handsResolved = 0
@@ -921,7 +1103,17 @@ async function main() {
       break
     }
 
+    // Owed payouts first (restart recovery included): re-broadcast/confirm before anything else
+    // may sign on the payer account. Never throws.
+    await settlePayouts({ state, mainAccountSigner, backoff: payoutBackoff })
     await retryPendingRefunds(state, mainAccountSigner)
+    // While a signed payout is unconfirmed the payer account is reserved for it (its nonce). Do not
+    // consume or advance past any message until it clears; the messages are picked up next poll.
+    if (state.hasSignedUnconfirmedPayout()) {
+      await state.flush()
+      await sleep(pollIntervalMs)
+      continue
+    }
 
     const stored = await fetchMonadMessagesSince({
       relayBaseUrl,
@@ -929,7 +1121,12 @@ async function main() {
     })
     let maxSeenTimestamp = since - 1
 
+    let heldForPayout = false
     for (const message of stored) {
+      if (state.hasSignedUnconfirmedPayout()) {
+        heldForPayout = true
+        break
+      }
       maxSeenTimestamp = Math.max(maxSeenTimestamp, message.timestamp)
       if (!message.message) continue
 
@@ -1049,7 +1246,7 @@ async function main() {
       if (handsResolved >= maxHands) break
     }
 
-    if (stored.length > 0) since = maxSeenTimestamp + 1
+    if (stored.length > 0 && !heldForPayout) since = maxSeenTimestamp + 1
     await state.flush()
     await sleep(pollIntervalMs)
   }

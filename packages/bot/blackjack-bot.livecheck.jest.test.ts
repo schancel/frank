@@ -66,6 +66,8 @@ describe('blackjack move authorization', () => {
     address: string
     buildAndSignTransfer: jest.Mock
     submit: jest.Mock
+    submitRaw: jest.Mock
+    getStatus: jest.Mock
   }
   let getBalance: jest.Mock
 
@@ -78,8 +80,13 @@ describe('blackjack move authorization', () => {
     getBalance = jest.fn(async () => 10n ** 30n)
     mainAccountSigner = {
       address: `0x${'dd'.repeat(20)}`,
-      buildAndSignTransfer: jest.fn(async () => 'signed-payout'),
+      buildAndSignTransfer: jest.fn(async () => ({
+        rawTx: '0xsigned-payout',
+        txHash: '0xpayout',
+      })),
       submit: jest.fn(async () => '0xpayout'),
+      submitRaw: jest.fn(async (_raw: string, hash: string) => hash),
+      getStatus: jest.fn(async () => 'pending'),
     }
   })
 
@@ -454,7 +461,7 @@ describe('blackjack move authorization', () => {
       getAddress(PLAYER),
       200n,
     )
-    expect(mainAccountSigner.submit).toHaveBeenCalledWith('signed-payout')
+    expect(mainAccountSigner.submitRaw).toHaveBeenCalledWith('0xsigned-payout', '0xpayout')
     expect(sendDirectMessageItems).toHaveBeenCalledWith(
       expect.objectContaining({ toAddress: getAddress(PLAYER) }),
     )
@@ -707,7 +714,7 @@ describe('blackjack move authorization', () => {
   it('doubled win pays 2x the combined stake', async () => {
     await settleDouble('dwin', (s) => s.outcome === 'player_win')
     expect(mainAccountSigner.buildAndSignTransfer).toHaveBeenCalledWith(getAddress(PLAYER), 400n)
-    expect(mainAccountSigner.submit).toHaveBeenCalledWith('signed-payout')
+    expect(mainAccountSigner.submitRaw).toHaveBeenCalledWith('0xsigned-payout', '0xpayout')
     expect(sendDirectMessageItems).toHaveBeenCalledWith(
       expect.objectContaining({ items: [expect.objectContaining({ action: 'double' })] }),
     )

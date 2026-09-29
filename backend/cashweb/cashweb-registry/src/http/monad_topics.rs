@@ -16,22 +16,20 @@
 //!
 //! ## Configuration
 //!
-//! Reuses the *same* two canonical env vars `crate::http::monad_message`'s
-//! `MonadMessageGateConfig` reads (`MONAD_TESTNET_HTTP_RPC_URL`, `MONAD_STAMP_BURN_ADDRESS` --
-//! see `.env.example`), rather than inventing topic-specific ones: a topic vote burns to the same
-//! configured Stamp burn address, just tagged with [`crate::monad_topic_verify::
-//! TOPIC_VOTE_LOKAD_ID`] in its calldata instead of `POND`/`STMP`, so there's no reason for a
-//! second, easy-to-typo burn-address var (exactly the class of bug ticket #8's e2e demo found and
-//! fixed for `monad_message.rs`). Unlike that module's gate, there's no
-//! `CASHWEB_STAMP_MIN_BURN_VALUE_WEI` equivalent here: a topic vote's exact value *is* its
-//! weight, never thresholded against a minimum (see `monad_topic_verify`'s module docs), so
-//! nothing here needs a minimum-value config at all.
+//! Reads two canonical env vars (`MONAD_TESTNET_HTTP_RPC_URL`, `MONAD_STAMP_BURN_ADDRESS` -- see
+//! `.env.example`) through [`MonadTopicGateConfig`], rather than inventing topic-specific ones: a
+//! topic vote burns to the same configured Stamp burn address, just tagged with
+//! [`crate::monad_topic_verify::TOPIC_VOTE_LOKAD_ID`] in its calldata, so there's no reason for a
+//! second, easy-to-typo burn-address var. There is no minimum-value config: a topic vote's exact
+//! value *is* its weight, never thresholded against a minimum (see `monad_topic_verify`'s module
+//! docs).
 //!
-//! `monad_message_gate`'s own gate config (in `crate::http::monad_message`) is private to that
-//! module and that module can't be edited to expose it, so this module reads its own
-//! process-wide `OnceLock`, following the same fail-closed convention (`crate::http::
-//! pop_protection`'s "read once from the environment on first use" pattern, restated in
-//! `monad_message`'s own docs).
+//! The direct-message route (`crate::http::monad_message`) no longer uses environment gating at
+//! all: it exists only when `[registry.monad_mailbox]` is enabled in the validated `cashwebd`
+//! configuration, which carries its own RPC URL, aggregate minimum, and expected chain ID.
+//!
+//! This module reads its own process-wide `OnceLock`, following the fail-closed convention
+//! (`crate::http::pop_protection`'s "read once from the environment on first use" pattern).
 
 use std::{fmt, sync::OnceLock};
 

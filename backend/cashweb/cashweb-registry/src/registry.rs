@@ -549,19 +549,13 @@ impl Registry {
             .claim_attempt(payload_hash, message, policy)
     }
 
+    #[cfg(test)]
     pub(crate) fn get_monad_message_attempt(
         &self,
         payload_hash: &[u8],
         message: &proto::MonadStampedMessage,
     ) -> Result<crate::store::monad_messages::MonadMessageAttemptClaim> {
         self.db.monad_messages().get_attempt(payload_hash, message)
-    }
-
-    /// Release an exact-set claim only when the relay knows no member was accepted. Ambiguous or
-    /// partially verified attempts must remain bound to their original signed bytes.
-    #[cfg(test)]
-    pub(crate) fn delete_monad_message_attempt(&self, payload_hash: &[u8]) -> Result<()> {
-        self.db.monad_messages().delete_attempt(payload_hash)
     }
 
     /// Atomically claim one canonical Monad payment request and all hash-only child references.
@@ -590,6 +584,7 @@ impl Registry {
             .classify_ownership(&message.payload_hash, message)
     }
 
+    #[cfg(test)]
     /// Read one canonical outbox record.
     pub(crate) fn monad_outbox_record(
         &self,
@@ -698,7 +693,39 @@ impl Registry {
         now_ms: i64,
         limits: &crate::store::monad_outbox::MonadOutboxLimits,
     ) -> Result<()> {
-        self.db.monad_outbox().gc_history(now_ms, limits)
+        self.db.monad_outbox().gc_history(now_ms, limits)?;
+        self.db
+            .monad_outbox()
+            .expire_unconfirmed_recovery(now_ms, limits)?;
+        Ok(())
+    }
+
+    /// Terminal outcome of a claim, if it has one (one record read, no member decoding).
+    pub(crate) fn monad_outbox_terminal(
+        &self,
+        payload_hash: &[u8],
+    ) -> Result<Option<crate::store::monad_outbox::MonadOutboxTerminal>> {
+        Ok(self
+            .db
+            .monad_outbox()
+            .get(payload_hash)?
+            .and_then(|record| match record.lifecycle {
+                crate::store::monad_outbox::MonadOutboxLifecycle::Terminal(terminal) => {
+                    Some(terminal)
+                }
+                _ => None,
+            }))
+    }
+
+    /// Push out replay timing for a claim whose reconciliation hit the per-claim deadline.
+    pub(crate) fn backoff_monad_outbox_after_cancelled_reconcile(
+        &self,
+        payload_hash: &[u8],
+        now_ms: i64,
+    ) -> Result<()> {
+        self.db
+            .monad_outbox()
+            .backoff_after_cancelled_reconcile(payload_hash, now_ms)
     }
 
     /// Acquire one durable replay generation after exact-hash absence was observed.
@@ -988,7 +1015,7 @@ impl Registry {
         expires_at_ms: i64,
         now_ms: i64,
         per_recipient_cap: usize,
-    ) -> Result<bool> {
+    ) -> Result<crate::store::monad_messages::ChallengeConsumption> {
         self.db.monad_messages().consume_mailbox_challenge(
             epoch,
             recipient,

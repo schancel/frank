@@ -33,11 +33,12 @@
 //! constraint 1) -- it isn't chain infrastructure at all, real or fake, it's a no-op.
 //!
 //! **This stub is scoped to the demo's identity-registration step only.** The actually-in-scope,
-//! actually-real part of this ticket -- the Monad-stamped-message path (`PUT`/`GET
-//! /message/monad*`, `src/http/monad_message.rs`) -- never touches `Registry::chain_adapter` at
-//! all (see that module's own docs, "Storage" section) and is served by this exact same process
-//! talking to the real Monad testnet over the real `MONAD_TESTNET_HTTP_RPC_URL` (Alchemy) --
-//! wired identically to `cashwebd-exe`, nothing stubbed there.
+//! actually-real part of the original ticket -- the Monad-stamped-message path
+//! (`src/http/monad_message.rs`) -- never touches `Registry::chain_adapter` at all (see that
+//! module's own docs, "Storage" section). NOTE: that path now exists only when the durable mailbox
+//! is enabled by `cashwebd` configuration, and this demo server constructs its router with the
+//! mailbox **disabled**, so it does not serve `/message/monad`; use
+//! `backend/cashweb/run-local-monad.sh` for the enabled relay.
 //!
 //! ## Usage
 //!
@@ -146,25 +147,12 @@ async fn main() -> Result<()> {
         .parse()
         .expect("usage: e2e_demo_server [host:port]");
 
-    // Sanity-check the Monad-stamp env vars this process needs are actually set, and fail fast
-    // with a clear message rather than a 500 on the first `PUT /message/monad` (see
-    // `http/monad_message.rs`'s `MonadMessageGateConfig::from_env`, which this indirectly proves
-    // out at startup). Ticket #57: MONAD_STAMP_BURN_ADDRESS dropped off this list -- the DM path's
-    // `MonadMessageGateConfig` no longer reads it at all (the expected payment destination is now the
-    // message's own claimed recipient, not a server-configured constant); that var still matters
-    // for `monad_topics.rs`'s separate broadcast path, just not this demo, which only exercises
-    // `/message/monad`.
-    for var in [
-        "MONAD_TESTNET_HTTP_RPC_URL",
-        "CASHWEB_STAMP_MIN_BURN_VALUE_WEI",
-    ] {
-        if std::env::var(var).is_err() {
-            eprintln!(
-                "warning: {var} is not set -- PUT /message/monad will fail closed with a 500 \
-                 until it is (see backend/cashweb/cashweb-registry/examples/README.md)"
-            );
-        }
-    }
+    // This demo constructs its router with the durable Monad mailbox disabled (see
+    // `monad_mailbox` below), so `PUT /message/monad` is not served. The mailbox is configured by
+    // `[registry.monad_mailbox]` in a `cashwebd` config (see `backend/cashweb/run-local-monad.sh`),
+    // never by environment variables. Only the separate topic routes still read
+    // `MONAD_TESTNET_HTTP_RPC_URL`/`MONAD_STAMP_BURN_ADDRESS` from the environment.
+    info!("Monad mailbox is disabled in this demo: /message/monad is not served");
 
     // Temp RocksDB dir for this demo run's registry state. Kept alive for the process's whole
     // lifetime by holding onto `_db_dir`; removed automatically on drop (process exit).

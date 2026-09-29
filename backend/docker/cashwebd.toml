@@ -1,11 +1,13 @@
 # Static docker-compose config for `cashwebd-exe` (see ../Dockerfile). This file deliberately
-# holds no real secrets and needs no templating at container-start time: the genuinely-variable,
-# secret-bearing config for the hackathon demo (the real Alchemy RPC URL, burn address, network
-# tag) is read lazily, per-request, from plain env vars by `cashweb-registry`'s own
-# `OnceLock`-based gate configs (`http/monad_message.rs::MonadMessageGateConfig::from_env`,
-# `http/monad_topics.rs::MonadTopicGateConfig::from_env`, `network_tag.rs::network_tag`) --
-# entirely separate from this file's `cashweb_config::parse_conf` mechanism. See docker-compose.yml
-# for where those env vars actually get set.
+# holds no real secrets and needs no templating at container-start time.
+#
+# The durable Monad direct-message mailbox (`PUT /message/monad` and the authenticated inbox and
+# recovery routes) is configured ONLY by `[registry.monad_mailbox]` below and is explicitly
+# disabled here: a disabled relay answers 404 for every `/message/monad` request other than the
+# separate topic routes (`/message/monad/topics...`), which still read
+# `MONAD_TESTNET_HTTP_RPC_URL`/`MONAD_STAMP_BURN_ADDRESS` from the environment (see
+# docker-compose.yml). Enabling the mailbox needs `enabled = true`, `rpc_url`, `min_value_wei` and
+# `expected_chain_id` here, and a client that speaks the authenticated mailbox routes.
 #
 # `[bitcoin_rpc]` is deliberately omitted: `cashwebd-exe` installs a fail-closed adapter for
 # legacy Lotus routes while continuing to serve Monad routes. Add real Lotus RPC credentials to

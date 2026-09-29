@@ -170,9 +170,30 @@ where
     .await
     {
         Ok(result) => result,
-        Err(_) => bail!("Monad outbox claim reconciliation deadline elapsed"),
+        Err(_) => {
+            // The dropped future may have charged a replay attempt without reaching its own
+            // backoff write. Advance the frozen backoff so the next scan cannot replay at scan
+            // cadence against a stalled transport. Best effort: the deadline error still wins.
+            if let Err(err) =
+                registry.backoff_monad_outbox_after_cancelled_reconcile(payload_hash, now_ms())
+            {
+                tracing::event!(
+                    tracing::Level::WARN,
+                    payload_hash = %hex::encode(payload_hash),
+                    error = %err,
+                    "Failed to advance replay backoff after claim deadline"
+                );
+            }
+            Err(ClaimDeadlineElapsed.into())
+        }
     }
 }
+
+/// The per-claim reconciliation deadline elapsed. This is a transient scheduling outcome, never a
+/// durable integrity failure, so initial recovery defers such claims to the background worker.
+#[derive(Debug, thiserror::Error)]
+#[error("Monad outbox claim reconciliation deadline elapsed")]
+pub(crate) struct ClaimDeadlineElapsed;
 
 async fn reconcile_monad_outbox_inner<T>(
     transport: &T,
@@ -411,7 +432,7 @@ where
                     &config.limits,
                 )?;
                 return if transition == MonadOutboxTransition::Applied {
-                    Ok(MonadOutboxReconcileOutcome::Pending)
+                    pending_or_expired(registry, payload_hash)
                 } else {
                     current_outcome(registry, payload_hash, config)
                 };
@@ -450,7 +471,7 @@ where
                     now_ms(),
                     &config.limits,
                 )?;
-                return Ok(MonadOutboxReconcileOutcome::Pending);
+                return pending_or_expired(registry, payload_hash);
             }
             ExactCheck::Missing => {}
         }
@@ -521,7 +542,18 @@ where
                     now_ms(),
                     &config.limits,
                 )?;
-                return Ok(MonadOutboxReconcileOutcome::Pending);
+                return pending_or_expired(registry, payload_hash);
+            }
+            MemberOutcome::Submitted(detail) => {
+                registry.complete_submitted_monad_outbox_member(
+                    payload_hash,
+                    payment.child_index,
+                    lease,
+                    &detail,
+                    now_ms(),
+                    &config.limits,
+                )?;
+                return pending_or_expired(registry, payload_hash);
             }
             MemberOutcome::Terminal(terminal, detail) => {
                 let transition = registry.complete_terminal_monad_outbox_member(
@@ -555,6 +587,18 @@ where
     ))
 }
 
+/// Outcome after a pending/submitted completion. Those completions also apply claim age, so the
+/// claim may have just become terminal instead of remaining pending.
+fn pending_or_expired(
+    registry: &Registry,
+    payload_hash: &[u8],
+) -> Result<MonadOutboxReconcileOutcome> {
+    Ok(match registry.monad_outbox_terminal(payload_hash)? {
+        Some(terminal) => MonadOutboxReconcileOutcome::Terminal(terminal),
+        None => MonadOutboxReconcileOutcome::Pending,
+    })
+}
+
 fn outcome_after_stale_confirmation(
     registry: &Registry,
     payload_hash: &[u8],
@@ -586,7 +630,7 @@ fn validate_persisted_record(
     if message.encode_to_vec() != canonical {
         bail!("persisted canonical request uses a noncanonical protobuf encoding");
     }
-    validate_persisted_message(&message, payload_hash, expected_chain_id)?;
+    validate_persisted_message(message, payload_hash, expected_chain_id)?;
     let policy = record.policy.as_ref().ok_or_else(|| {
         crate::store::monad_outbox::DbMonadOutboxError::CorruptRecord(
             "active outbox row has no frozen policy".to_string(),
@@ -623,7 +667,7 @@ fn validate_persisted_record(
     }
     if require_fully_confirmed {
         validate_fully_confirmed_snapshot(
-            &message,
+            message,
             canonical,
             payload_hash,
             policy,
@@ -902,8 +946,15 @@ fn payment_commitment(payload_hash: &[u8; 32], child_index: u32) -> Sha256 {
 }
 
 enum MemberOutcome {
-    Confirmed { value_wei: u128, block_number: u64 },
+    Confirmed {
+        value_wei: u128,
+        block_number: u64,
+    },
+    /// Still unresolved and the node never accepted or showed the exact signed bytes.
     Pending(String),
+    /// Still unresolved, but the node accepted the transaction or an exact-hash lookup shows it.
+    /// Only this outcome makes the member recipient-recoverable exposure.
+    Submitted(String),
     Terminal(MonadOutboxTerminal, String),
 }
 
@@ -1053,21 +1104,18 @@ async fn replay_member<T: JsonRpcTransport + Clone>(
             Ok(send) => send,
             Err(_) => return MemberOutcome::Pending("broadcast RPC deadline elapsed".to_string()),
         };
-    let nonce_too_low = match send {
+    let (nonce_too_low, accepted) = match send {
+        // The node reported a different hash than the canonical transaction. It nevertheless
+        // took a submission for these bytes, so treat the exact transaction as possibly exposed.
         Ok(submitted) if submitted.tx_hash != tx_hash => {
-            return MemberOutcome::Pending(format!(
+            return MemberOutcome::Submitted(format!(
                 "submission RPC returned {} for canonical transaction hash {}",
                 submitted.tx_hash, tx_hash
             ))
         }
-        Ok(_) | Err(MonadRpcError::AlreadyKnown { .. }) => false,
-        Err(MonadRpcError::NonceTooLow { .. }) => true,
-        Err(err @ MonadRpcError::ReplacementUnderpriced { .. }) => {
-            return MemberOutcome::Pending(err.to_string())
-        }
-        Err(err @ MonadRpcError::InsufficientFunds { .. }) => {
-            return MemberOutcome::Pending(err.to_string())
-        }
+        Ok(_) | Err(MonadRpcError::AlreadyKnown { .. }) => (false, true),
+        Err(MonadRpcError::NonceTooLow { .. }) => (true, false),
+        // Every other send error means the node did not accept the transaction.
         Err(err) => return MemberOutcome::Pending(err.to_string()),
     };
 
@@ -1082,14 +1130,15 @@ async fn replay_member<T: JsonRpcTransport + Clone>(
         ExactCheck::Invalid(detail) => {
             MemberOutcome::Terminal(MonadOutboxTerminal::VerificationFailed, detail)
         }
+        ExactCheck::Infrastructure(detail) if accepted => MemberOutcome::Submitted(detail),
         ExactCheck::Infrastructure(detail) => MemberOutcome::Pending(detail),
-        ExactCheck::Submitted => MemberOutcome::Pending(
+        ExactCheck::Submitted => MemberOutcome::Submitted(
             "exact signed transaction remains submitted without a receipt".to_string(),
         ),
         ExactCheck::Missing if nonce_too_low => {
             prove_stale_nonce(transport, tx_hash, canonical, expected, config).await
         }
-        ExactCheck::Missing => MemberOutcome::Pending(
+        ExactCheck::Missing => MemberOutcome::Submitted(
             "exact transaction remains unconfirmed after bounded polling".to_string(),
         ),
     }
@@ -1141,7 +1190,7 @@ async fn prove_stale_nonce<T: JsonRpcTransport + Clone>(
             MemberOutcome::Terminal(MonadOutboxTerminal::VerificationFailed, detail)
         }
         ExactCheck::Infrastructure(detail) => MemberOutcome::Pending(detail),
-        ExactCheck::Submitted => MemberOutcome::Pending(
+        ExactCheck::Submitted => MemberOutcome::Submitted(
             "exact signed transaction remains submitted without a receipt".to_string(),
         ),
         ExactCheck::Missing => MemberOutcome::Pending(format!(
@@ -1220,7 +1269,8 @@ where
     T: JsonRpcTransport + Clone + Send + Sync + 'static,
 {
     config.validate()?;
-    tokio::time::timeout(config.initial_recovery_timeout, async {
+    let recovery_deadline = tokio::time::Instant::now() + config.initial_recovery_timeout;
+    tokio::time::timeout_at(recovery_deadline, async {
         loop {
             let progress = registry.bind_monad_outbox_chain_page(
                 config.expected_chain_id,
@@ -1254,11 +1304,27 @@ where
             }
             tokio::task::yield_now().await;
         }
-        reconcile_active(&transport, &registry, &config, &permits, true).await
+        Ok::<(), bitcoinsuite_error::Report>(())
     })
     .await
     .wrap_err("Monad outbox initial recovery deadline elapsed")?
     .wrap_err("initial Monad outbox reconciliation failed")?;
+    // Local durable validation above is mandatory before readiness. Network reconciliation is
+    // best effort within the remaining budget: integrity errors still fail startup, but a slow
+    // transport merely defers unfinished claims to the background worker.
+    match tokio::time::timeout_at(
+        recovery_deadline,
+        reconcile_active(&transport, &registry, &config, &permits, true),
+    )
+    .await
+    {
+        Ok(result) => result.wrap_err("initial Monad outbox reconciliation failed")?,
+        Err(_) => tracing::event!(
+            tracing::Level::WARN,
+            "Initial Monad outbox reconciliation deadline elapsed; the background worker will \
+             finish remaining claims"
+        ),
+    }
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
     let shutdown_grace = config.shutdown_grace;
     let join = tokio::spawn(async move {
@@ -1332,7 +1398,12 @@ where
             .buffer_unordered(concurrency);
         while let Some((payload_hash, result)) = reconciliations.next().await {
             if let Err(err) = result {
-                if fail_on_claim_error {
+                // Only durable-integrity (or storage) failures may block readiness. A claim that
+                // merely ran into its per-claim deadline is a slow-transport symptom, which the
+                // background worker retries with backoff; failing startup on it would let RPC
+                // slowness take the whole relay down.
+                let deadline_only = err.chain().any(|cause| cause.is::<ClaimDeadlineElapsed>());
+                if fail_on_claim_error && !deadline_only {
                     return Err(err).wrap_err_with(|| {
                         format!(
                             "initial Monad outbox reconciliation failed for {}",
@@ -1389,6 +1460,10 @@ mod tests {
         NonceTooLow,
         ReplacementUnderpriced,
         InsufficientFunds,
+        /// The node accepts the transaction into its pool but it is never mined or visible.
+        AcceptNeverMined,
+        /// The broadcast RPC never answers.
+        Hang,
     }
 
     #[derive(Debug, Clone)]
@@ -1429,6 +1504,13 @@ mod tests {
 
         fn calls(&self) -> Vec<String> {
             self.calls.lock().unwrap().clone()
+        }
+
+        fn sends(&self) -> usize {
+            self.calls()
+                .iter()
+                .filter(|method| method.as_str() == "eth_sendRawTransaction")
+                .count()
         }
 
         fn set_confirmed(&self, hash: Hash32, confirmed: bool) {
@@ -1555,9 +1637,23 @@ mod tests {
                     let raw = hex::decode(params[0].as_str().unwrap().strip_prefix("0x").unwrap())
                         .unwrap();
                     let hash = Hash32(Keccak256::digest(&raw).into());
+                    let hangs = matches!(
+                        self.specs
+                            .lock()
+                            .unwrap()
+                            .get(&hash)
+                            .expect("known raw tx")
+                            .send,
+                        SendBehavior::Hang
+                    );
+                    if hangs {
+                        futures::future::pending::<()>().await;
+                    }
                     let mut specs = self.specs.lock().unwrap();
                     let spec = specs.get_mut(&hash).expect("known raw tx");
                     match spec.send {
+                        SendBehavior::Hang => unreachable!("handled above"),
+                        SendBehavior::AcceptNeverMined => Ok(Value::String(hash.to_hex())),
                         SendBehavior::Accept => {
                             if spec.submission_hash_override.is_none() {
                                 spec.confirmed = true;
@@ -2273,8 +2369,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn exact_lookup_precedes_expiry_attempt_budget_and_ambiguity_stays_pending() -> Result<()>
-    {
+    async fn exact_lookup_precedes_expiry_attempt_budget_and_expired_ambiguity_terminalizes(
+    ) -> Result<()> {
         let tempdir = tempdir::TempDir::new("monad-outbox-order")?;
         let confirmed_registry = registry(&tempdir.path().join("confirmed.rocksdb"));
         let (confirmed, policy, transport) =
@@ -2318,13 +2414,20 @@ mod tests {
                 &config,
             )
             .await?,
-            MonadOutboxReconcileOutcome::Pending
+            MonadOutboxReconcileOutcome::Terminal(MonadOutboxTerminal::Expired)
         );
         let member = ambiguous_registry
             .monad_outbox_member(&ambiguous.payload_hash, 0)?
             .unwrap();
+        // An ambiguous exact lookup never charges an attempt or replays. Once the claim is aged
+        // out it must not stay Pending forever either: expiry is applied on this path, and with
+        // no attempt ever sent there is no exposure, so nothing is retained.
         assert_eq!(member.attempts, 0);
-        assert_eq!(member.state, MonadOutboxMemberState::Pending);
+        assert!(!member.exposed);
+        assert_eq!(
+            member.state,
+            MonadOutboxMemberState::Terminal(MonadOutboxTerminal::Expired)
+        );
         Ok(())
     }
 
@@ -3436,6 +3539,215 @@ mod tests {
             1,
             "HTTP and worker RPC activity must never exceed the one process permit"
         );
+        Ok(())
+    }
+
+    /// Member-level equivalent of "one durable replay attempt for two racing reconcilers": with a
+    /// send that is accepted but never mined, the claim stays pending, so the durable member row
+    /// (unlike a delivered claim's compact tombstone) can prove exactly one attempt was charged.
+    #[tokio::test]
+    async fn dual_reconcilers_charge_exactly_one_member_attempt() -> Result<()> {
+        let tempdir = tempdir::TempDir::new("monad-outbox-dual-attempts")?;
+        let active_registry = Arc::new(registry(&tempdir.path().join("db.rocksdb")));
+        let (request, policy, transport) = fixture(&[SendBehavior::AcceptNeverMined], &[false]);
+        let mut config = fast_config();
+        config.limits.retry_backoff_base = Duration::from_secs(1_000);
+        config.limits.max_retry_backoff = Duration::from_secs(1_000);
+        active_registry.claim_monad_outbox(&request, &policy, now_ms(), &config.limits)?;
+        let payload_hash = request.payload_hash.clone();
+        let gate = Arc::new(tokio::sync::Barrier::new(3));
+        let spawn_reconciler = || {
+            let registry = Arc::clone(&active_registry);
+            let transport = transport.clone();
+            let payload_hash = payload_hash.clone();
+            let config = config.clone();
+            let gate = Arc::clone(&gate);
+            tokio::spawn(async move {
+                gate.wait().await;
+                reconcile_monad_outbox(&transport, &registry, &payload_hash, &config).await
+            })
+        };
+        let first = spawn_reconciler();
+        let second = spawn_reconciler();
+        gate.wait().await;
+        assert_eq!(first.await.unwrap()?, MonadOutboxReconcileOutcome::Pending);
+        assert_eq!(second.await.unwrap()?, MonadOutboxReconcileOutcome::Pending);
+        assert_eq!(
+            transport.sends(),
+            1,
+            "the exact transaction is broadcast once"
+        );
+        let member = active_registry
+            .monad_outbox_member(&payload_hash, 0)?
+            .unwrap();
+        assert_eq!(
+            member.attempts, 1,
+            "exactly one attempt is charged to the member"
+        );
+        assert!(member.exposed, "the accepted send is recorded as exposure");
+        Ok(())
+    }
+
+    fn one_slot_config(max_member_attempts: u32) -> MonadOutboxReconcileConfig {
+        let mut config = fast_config();
+        config.limits.max_recovery_records = 1;
+        config.limits.max_recovery_records_per_recipient = 1;
+        config.limits.max_member_attempts = max_member_attempts;
+        config
+    }
+
+    /// Drive one claim to a terminal outcome by repeated scans; returns that outcome.
+    async fn reconcile_until_terminal(
+        transport: &FakeTransport,
+        registry: &Registry,
+        payload_hash: &[u8],
+        config: &MonadOutboxReconcileConfig,
+    ) -> Result<MonadOutboxTerminal> {
+        for _ in 0..16 {
+            if let MonadOutboxReconcileOutcome::Terminal(terminal) =
+                reconcile_monad_outbox(transport, registry, payload_hash, config).await?
+            {
+                return Ok(terminal);
+            }
+        }
+        panic!("claim never became terminal");
+    }
+
+    #[tokio::test]
+    async fn unfunded_or_unreachable_sends_never_pin_recovery_quota() -> Result<()> {
+        // An unfunded signed payment (node rejects it) and a full RPC outage both burn the
+        // whole attempt budget. Neither may leave a retained terminal obligation that keeps
+        // the recipient's recovery slot reserved until an acknowledgement that never comes.
+        for (seed, behavior) in [
+            (b"unfunded".as_slice(), SendBehavior::InsufficientFunds),
+            (b"rpc outage".as_slice(), SendBehavior::RpcFailure),
+            (
+                b"underpriced".as_slice(),
+                SendBehavior::ReplacementUnderpriced,
+            ),
+        ] {
+            let tempdir = tempdir::TempDir::new("monad-outbox-unfunded-quota")?;
+            let registry = registry(&tempdir.path().join("db.rocksdb"));
+            let (request, policy, transport) = fixture_with_seed(seed, &[behavior], &[false]);
+            let config = one_slot_config(3);
+            registry.claim_monad_outbox(&request, &policy, now_ms(), &config.limits)?;
+            assert_eq!(
+                reconcile_until_terminal(&transport, &registry, &request.payload_hash, &config)
+                    .await?,
+                MonadOutboxTerminal::AttemptsExhausted
+            );
+            let member = registry
+                .monad_outbox_member(&request.payload_hash, 0)?
+                .unwrap();
+            assert!(!member.exposed, "a rejected send is not exposure");
+            assert_eq!(member.attempts, 3, "member-level attempts were charged");
+            assert!(
+                registry
+                    .confirmed_monad_outbox_prefixes(policy.recipient, 10)?
+                    .is_empty(),
+                "nothing is recoverable for a payment no node ever accepted"
+            );
+            // The single recovery slot is free again.
+            let (next, next_policy, _) =
+                fixture_with_seed(b"next after exhaustion", &[SendBehavior::Accept], &[false]);
+            assert!(matches!(
+                registry.claim_monad_outbox(&next, &next_policy, now_ms(), &config.limits)?,
+                MonadOutboxClaim::New
+            ));
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn accepted_but_never_mined_payment_is_the_only_retained_exposure() -> Result<()> {
+        let tempdir = tempdir::TempDir::new("monad-outbox-accepted-exposure")?;
+        let registry = registry(&tempdir.path().join("db.rocksdb"));
+        let (request, policy, transport) = fixture(&[SendBehavior::AcceptNeverMined], &[false]);
+        let config = one_slot_config(2);
+        registry.claim_monad_outbox(&request, &policy, now_ms(), &config.limits)?;
+        assert_eq!(
+            reconcile_until_terminal(&transport, &registry, &request.payload_hash, &config).await?,
+            MonadOutboxTerminal::AttemptsExhausted
+        );
+        let member = registry
+            .monad_outbox_member(&request.payload_hash, 0)?
+            .unwrap();
+        assert!(member.exposed, "the node accepted these signed bytes");
+        assert_eq!(
+            registry
+                .confirmed_monad_outbox_prefixes(policy.recipient, 10)?
+                .len(),
+            1
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn claim_deadline_cancellation_advances_replay_backoff() -> Result<()> {
+        let tempdir = tempdir::TempDir::new("monad-outbox-cancel-backoff")?;
+        let registry = registry(&tempdir.path().join("db.rocksdb"));
+        let (request, policy, transport) = fixture(&[SendBehavior::Hang], &[false]);
+        let mut config = fast_config();
+        config.limits.retry_backoff_base = Duration::from_secs(100);
+        config.limits.max_retry_backoff = Duration::from_secs(1_000);
+        config.rpc_timeout = Duration::from_secs(30);
+        config.claim_timeout = Duration::from_millis(200);
+        registry.claim_monad_outbox(&request, &policy, now_ms(), &config.limits)?;
+        let started = now_ms();
+        let err = reconcile_monad_outbox(&transport, &registry, &request.payload_hash, &config)
+            .await
+            .expect_err("the hung broadcast hits the per-claim deadline");
+        assert!(err.chain().any(|cause| cause.is::<ClaimDeadlineElapsed>()));
+        let member = registry
+            .monad_outbox_member(&request.payload_hash, 0)?
+            .unwrap();
+        assert_eq!(member.attempts, 1);
+        assert!(
+            member.next_replay_at_ms >= started + 100_000,
+            "next replay {} must honor the frozen backoff after cancellation (started {started})",
+            member.next_replay_at_ms
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn initial_recovery_defers_claim_deadline_but_not_integrity_failure() -> Result<()> {
+        let tempdir = tempdir::TempDir::new("monad-outbox-startup-deadline")?;
+        let path = tempdir.path().join("db.rocksdb");
+        let (request, policy, transport) = fixture(&[SendBehavior::Hang], &[false]);
+        let mut config = fast_config();
+        config.rpc_timeout = Duration::from_secs(30);
+        config.claim_timeout = Duration::from_millis(100);
+        {
+            let registry = registry(&path);
+            registry.claim_monad_outbox(&request, &policy, now_ms(), &config.limits)?;
+        }
+        // A slow transport must not take the relay down: the claim is left for the worker.
+        let worker =
+            start_monad_outbox_worker(transport.clone(), Arc::new(registry(&path)), config.clone())
+                .await
+                .expect("a claim deadline is deferred to the background worker");
+        worker.shutdown().await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn initial_recovery_scan_deadline_is_deferred_not_fatal() -> Result<()> {
+        let tempdir = tempdir::TempDir::new("monad-outbox-startup-scan-deadline")?;
+        let path = tempdir.path().join("db.rocksdb");
+        let (request, policy, transport) = fixture(&[SendBehavior::Hang], &[false]);
+        let mut config = fast_config();
+        config.rpc_timeout = Duration::from_secs(30);
+        config.claim_timeout = Duration::from_secs(30);
+        config.initial_recovery_timeout = Duration::from_millis(300);
+        {
+            let registry = registry(&path);
+            registry.claim_monad_outbox(&request, &policy, now_ms(), &config.limits)?;
+        }
+        let worker = start_monad_outbox_worker(transport, Arc::new(registry(&path)), config)
+            .await
+            .expect("the whole-scan deadline defers network work instead of failing startup");
+        worker.shutdown().await;
         Ok(())
     }
 }

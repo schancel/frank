@@ -1,5 +1,26 @@
 # Ticket #8 runbook: live e2e demo on Monad testnet
 
+> [!IMPORTANT]
+> **Historical runbook, partly superseded.** This document records the ticket #8 demo, written when
+> `PUT /message/monad` was gated by process environment variables (`MONAD_TESTNET_HTTP_RPC_URL`,
+> `CASHWEB_STAMP_MIN_BURN_VALUE_WEI`) and the relay served unauthenticated `GET /message/monad`
+> reads. Neither is true any more:
+>
+> - `PUT /message/monad` and the authenticated inbox/recovery routes exist only when
+>   `[registry.monad_mailbox]` is enabled in the `cashwebd` configuration (`enabled = true` plus
+>   `rpc_url`, `min_value_wei`, `expected_chain_id`). `backend/cashweb/run-local-monad.sh`
+>   generates that configuration from `.env` (`MONAD_TESTNET_HTTP_RPC_URL`,
+>   `CASHWEB_STAMP_MIN_BURN_VALUE_WEI`, `MONAD_TESTNET_CHAIN_ID`); the relay process itself no longer
+>   reads the two variables above for this route.
+> - The old unauthenticated exact/global `GET /message/monad...` routes are removed.
+> - `e2e_demo_server` (Step 1) constructs its router with the mailbox **disabled**, so it does not
+>   serve `/message/monad` at all. Step 3's message round trip needs the enabled mailbox (start the
+>   relay with `run-local-monad.sh` instead) and a client that speaks the authenticated mailbox
+>   routes.
+>
+> Steps that only concern identity registration (Step 2) and the on-chain verification remain
+> accurate. The environment-variable and unauthenticated-GET details below are kept as history.
+
 This is the reproduction runbook for issue #8 ("E2E integration demo on Monad testnet"): register
 an identity, send a stamped message relay-to-relay on real Monad testnet, and independently verify
 the resulting burn tx on-chain via Alchemy.
@@ -23,9 +44,11 @@ prove).
   MONAD_TESTNET_HTTP_RPC_URL=https://monad-testnet.g.alchemy.com/v2/<your-alchemy-key>
   MONAD_STAMP_BURN_ADDRESS=0x000000000000000000000000000000000000dEaD
   CASHWEB_STAMP_MIN_BURN_VALUE_WEI=1000000000000
+  MONAD_TESTNET_CHAIN_ID=10143
   ```
-  (The last two lines were missing from this repo's `.env.example` before this ticket — see "Bugs
-  found and fixed" below.)
+  (Copy `.env.example`. Today `run-local-monad.sh` turns the RPC URL, minimum, and chain ID into the
+  relay's `[registry.monad_mailbox]` table; the relay itself no longer reads the minimum from the
+  environment. The burn address still matters only for the topic routes.)
 - A funded Monad testnet account's private key, as a small JSON file `{ "address": "0x...",
   "privateKey": "0x..." }`. This ticket's own run reused the account at
   `frank-worktrees/spike-demo/spike/data/chain-wallet.json` (~9.9976 MON confirmed live via

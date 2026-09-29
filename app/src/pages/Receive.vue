@@ -3,13 +3,26 @@
     <q-page class="q-ma-none q-pa-sm">
       <q-card>
         <q-card-section>
-          <div class="text-h6">
+          <div class="text-h6" id="receive-balance-heading">
             {{ $t('receiveBitcoinDialog.walletStatus') }}
           </div>
         </q-card-section>
         <q-card-section>
-          <div class="text-bold text-subtitle1 text-center">
-            {{ formattedBalance }}
+          <div
+            class="text-bold text-subtitle1 text-center"
+            role="status"
+            aria-live="polite"
+            aria-labelledby="receive-balance-heading"
+            data-testid="receive-balance"
+          >
+            {{ balanceText }}
+          </div>
+          <div
+            v-if="hasError"
+            class="text-negative text-caption text-center"
+            data-testid="receive-balance-error"
+          >
+            Balance unavailable. Retrying.
           </div>
         </q-card-section>
         <q-separator />
@@ -51,7 +64,7 @@
 </template>
 
 <script lang="ts">
-import { defineComponent, onMounted, ref } from 'vue'
+import { computed, defineComponent, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
 import QrcodeVue from 'qrcode.vue'
@@ -64,7 +77,12 @@ export default defineComponent({
   setup() {
     const router = useRouter()
     // Shared with the drawer: one polling loop, so this page refreshes without a reload.
-    const { formattedBalance } = useBalance()
+    const { formattedBalance, loaded, hasError } = useBalance()
+    // An em dash (not "0") until the first successful fetch: an unloaded or failed balance must
+    // not look like a real zero.
+    const balanceText = computed(() =>
+      loaded.value ? formattedBalance.value : '\u2014',
+    )
     const displayAddress = ref('')
 
     onMounted(async () => {
@@ -82,7 +100,8 @@ export default defineComponent({
 
     return {
       displayAddress,
-      formattedBalance,
+      balanceText,
+      hasError,
       close() {
         window.history.length > 1 ? router.go(-1) : router.push('/')
       },

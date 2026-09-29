@@ -4,21 +4,16 @@ import { defineComponent, h, nextTick } from 'vue'
 import { mount as vtuMount } from '@vue/test-utils'
 
 import {
+  APP_STATE_EVENT,
   BALANCE_BACKOFF_MAX_MS,
   BALANCE_POLL_MS,
-  configureBalancePolling,
   nextBalanceDelay,
-  refresh,
   useBalance,
 } from './useBalance'
 
 const mockGetBalance = jest.fn()
-const capacitor = {
-  isNative: false,
-  broken: false,
-  listener: undefined as ((s: { isActive: boolean }) => void) | undefined,
-  remove: jest.fn(),
-}
+let mockSeed = 'a'
+const mockWallets: Record<string, Promise<unknown>> = {}
 
 jest.mock('@frank/wallet/chain', () => ({
   activeChain: {
@@ -29,27 +24,24 @@ jest.mock('@frank/wallet/chain', () => ({
     },
   },
 }))
+// Like the real one: memoized per seed, so a seed change yields a different promise.
 jest.mock('src/composables/useActiveWallet', () => ({
-  useActiveWallet: jest.fn(async () => ({})),
+  useActiveWallet: jest.fn(
+    () => (mockWallets[mockSeed] ??= Promise.resolve({ seed: mockSeed })),
+  ),
 }))
-jest.mock('@capacitor/core', () => ({
-  get Capacitor() {
-    if (capacitor.broken) throw new Error('plugin unavailable')
-    return { isNative: capacitor.isNative }
-  },
-  Plugins: {
-    App: {
-      addListener: (_: string, fn: (s: { isActive: boolean }) => void) => {
-        capacitor.listener = fn
-        return { remove: capacitor.remove }
-      },
-    },
-  },
-}))
+
+let refresh: () => Promise<void> = async () => undefined
+let loadedNow: () => boolean = () => false
+let errorNow: () => boolean = () => false
 
 const Consumer = defineComponent({
   setup() {
-    const { formattedBalance } = useBalance()
+    const api = useBalance()
+    const { formattedBalance } = api
+    refresh = api.refresh
+    loadedNow = () => api.loaded.value
+    errorNow = () => api.hasError.value
     return () => h('span', formattedBalance.value)
   },
 })
@@ -61,9 +53,6 @@ function mount(component: typeof Consumer) {
   mounted.push(wrapper)
   return wrapper
 }
-
-// Drives `refresh` from a consumer so tests can use the exposed function.
-let manualRefresh: () => Promise<void> = refresh
 
 async function advance(ms: number) {
   jest.advanceTimersByTime(ms)
@@ -86,18 +75,16 @@ describe('useBalance', () => {
     })
     mockGetBalance.mockReset()
     mockGetBalance.mockResolvedValue(1n)
-    capacitor.isNative = false
-    capacitor.broken = false
-    capacitor.listener = undefined
-    capacitor.remove.mockReset()
+    mockSeed = 'a'
+    for (const k of Object.keys(mockWallets)) delete mockWallets[k]
+    jest.spyOn(Math, 'random').mockReturnValue(0.5)
     errorSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined)
-    manualRefresh = refresh
   })
   afterEach(() => {
     mounted.splice(0).forEach(w => w.unmount())
     setHidden(false)
-    configureBalancePolling()
     errorSpy.mockRestore()
+    jest.restoreAllMocks()
     jest.useRealTimers()
   })
 
@@ -149,7 +136,7 @@ describe('useBalance', () => {
   })
 
   it('backs off with jitter after failures and resets on success', async () => {
-    configureBalancePolling({ random: () => 1 }) // always the top of the jitter window
+    jest.spyOn(Math, 'random').mockReturnValue(1) // always the top of the jitter window
     mockGetBalance.mockRejectedValue(new Error('rpc down'))
     const wrapper = mount(Consumer)
     await advance(0)
@@ -172,7 +159,7 @@ describe('useBalance', () => {
     await advance(BALANCE_POLL_MS)
     expect(mockGetBalance).toHaveBeenCalledTimes(5)
     // Jitter window low end.
-    configureBalancePolling({ random: () => 0 })
+    jest.spyOn(Math, 'random').mockReturnValue(0)
     mockGetBalance.mockRejectedValue(new Error('rpc down'))
     await advance(BALANCE_POLL_MS)
     expect(mockGetBalance).toHaveBeenCalledTimes(6)
@@ -188,7 +175,7 @@ describe('useBalance', () => {
   })
 
   it('never exceeds the backoff cap', async () => {
-    configureBalancePolling({ random: () => 1 })
+    jest.spyOn(Math, 'random').mockReturnValue(1)
     mockGetBalance.mockRejectedValue(new Error('rpc down'))
     const wrapper = mount(Consumer)
     await advance(0)
@@ -236,7 +223,7 @@ describe('useBalance', () => {
     await advance(0)
     await advance(BALANCE_POLL_MS * 3)
     expect(mockGetBalance).toHaveBeenCalledTimes(1)
-    await manualRefresh()
+    await refresh()
     expect(mockGetBalance).toHaveBeenCalledTimes(2)
     wrapper.unmount()
   })
@@ -249,7 +236,7 @@ describe('useBalance', () => {
     mockGetBalance.mockResolvedValueOnce(9n)
     const wrapper = mount(Consumer)
     await advance(0)
-    await manualRefresh()
+    await refresh()
     await nextTick()
     expect(wrapper.text()).toBe('9 MON')
     resolveOld(1n)
@@ -260,14 +247,14 @@ describe('useBalance', () => {
   })
 
   it('does not count a stale failure toward backoff', async () => {
-    configureBalancePolling({ random: () => 1 })
+    jest.spyOn(Math, 'random').mockReturnValue(1)
     let rejectOld: (e: Error) => void = () => undefined
     mockGetBalance.mockReturnValueOnce(
       new Promise<bigint>((_, reject) => (rejectOld = reject)),
     )
     const wrapper = mount(Consumer)
     await advance(0)
-    await manualRefresh() // newer request succeeds
+    await refresh() // newer request succeeds
     rejectOld(new Error('late'))
     await advance(0)
     await advance(BALANCE_POLL_MS)
@@ -275,47 +262,184 @@ describe('useBalance', () => {
     wrapper.unmount()
   })
 
-  describe('Capacitor app pause/resume', () => {
-    it('pauses on background and refreshes on resume when native', async () => {
-      capacitor.isNative = true
+  describe('native app pause/resume (frank:app-state)', () => {
+    const appState = (isActive: boolean) =>
+      window.dispatchEvent(
+        new CustomEvent(APP_STATE_EVENT, { detail: { isActive } }),
+      )
+
+    it('pauses on background and refreshes on resume', async () => {
       const wrapper = mount(Consumer)
       await advance(0)
-      expect(capacitor.listener).toBeDefined()
-      capacitor.listener?.({ isActive: false })
+      appState(false)
       await advance(BALANCE_POLL_MS * 3)
       expect(mockGetBalance).toHaveBeenCalledTimes(1)
-      capacitor.listener?.({ isActive: true })
+      appState(true)
       await advance(0)
       expect(mockGetBalance).toHaveBeenCalledTimes(2)
       await advance(BALANCE_POLL_MS)
       expect(mockGetBalance).toHaveBeenCalledTimes(3)
       wrapper.unmount()
-      expect(capacitor.remove).toHaveBeenCalledTimes(1)
     })
 
-    it('does not register the plugin listener on the web', async () => {
+    it('does not re-arm the timer when a fetch settles after backgrounding', async () => {
+      let resolve: (v: bigint) => void = () => undefined
+      mockGetBalance.mockReturnValueOnce(
+        new Promise<bigint>(r => (resolve = r)),
+      )
       const wrapper = mount(Consumer)
       await advance(0)
-      expect(capacitor.listener).toBeUndefined()
+      appState(false)
+      resolve(3n)
+      await advance(0)
+      expect(jest.getTimerCount()).toBe(0)
+      await advance(BALANCE_POLL_MS * 3)
+      expect(mockGetBalance).toHaveBeenCalledTimes(1)
       wrapper.unmount()
     })
 
-    it('falls back to visibilitychange when the plugin is unavailable', async () => {
-      const warn = jest
-        .spyOn(console, 'warn')
-        .mockImplementation(() => undefined)
-      capacitor.broken = true
+    it('works with no event ever dispatched and removes its listener', async () => {
+      const remove = jest.spyOn(window, 'removeEventListener')
       const wrapper = mount(Consumer)
       await advance(0)
-      expect(warn).toHaveBeenCalled()
-      setHidden(true)
-      await advance(BALANCE_POLL_MS * 2)
-      expect(mockGetBalance).toHaveBeenCalledTimes(1)
-      setHidden(false)
-      await advance(0)
+      await advance(BALANCE_POLL_MS)
       expect(mockGetBalance).toHaveBeenCalledTimes(2)
       wrapper.unmount()
-      warn.mockRestore()
+      expect(remove).toHaveBeenCalledWith(APP_STATE_EVENT, expect.any(Function))
+      appState(true) // no listener left
+      await advance(0)
+      expect(mockGetBalance).toHaveBeenCalledTimes(2)
     })
+  })
+
+  describe('active wallet identity', () => {
+    it('does not let an in-flight response for the old wallet write after a seed change', async () => {
+      let resolveOld: (v: bigint) => void = () => undefined
+      mockGetBalance.mockReturnValueOnce(
+        new Promise<bigint>(r => (resolveOld = r)),
+      )
+      const wrapper = mount(Consumer)
+      await advance(0)
+      mockSeed = 'b'
+      mockGetBalance.mockResolvedValueOnce(2n)
+      await refresh()
+      await nextTick()
+      expect(wrapper.text()).toBe('2 MON')
+      resolveOld(99n)
+      await advance(0)
+      await nextTick()
+      expect(wrapper.text()).toBe('2 MON')
+      wrapper.unmount()
+    })
+
+    it('ignores an old-wallet response that lands after a seed change with no newer fetch', async () => {
+      let resolveOld: (v: bigint) => void = () => undefined
+      mockGetBalance.mockReturnValueOnce(
+        new Promise<bigint>(r => (resolveOld = r)),
+      )
+      const wrapper = mount(Consumer)
+      await advance(0)
+      mockSeed = 'b'
+      resolveOld(99n)
+      await advance(0)
+      expect(loadedNow()).toBe(false)
+      wrapper.unmount()
+    })
+
+    it('drops the old value at once on a seed change, even if the new fetch fails', async () => {
+      mockGetBalance.mockResolvedValueOnce(5n)
+      const wrapper = mount(Consumer)
+      await advance(0)
+      expect(loadedNow()).toBe(true)
+      mockSeed = 'b'
+      mockGetBalance.mockRejectedValue(new Error('rpc down'))
+      await refresh()
+      expect(loadedNow()).toBe(false)
+      expect(errorNow()).toBe(true)
+      wrapper.unmount()
+    })
+
+    it('shows no old value when remounting after a seed change', async () => {
+      mockGetBalance.mockResolvedValueOnce(5n)
+      const first = mount(Consumer)
+      await advance(0)
+      first.unmount()
+      mockSeed = 'b'
+      mockGetBalance.mockReturnValueOnce(new Promise(() => undefined))
+      const second = mount(Consumer)
+      await advance(0)
+      expect(loadedNow()).toBe(false)
+      second.unmount()
+    })
+
+    it('ignores a stale fetch that settles after the last unmount and a remount', async () => {
+      let resolveOld: (v: bigint) => void = () => undefined
+      mockGetBalance.mockReturnValueOnce(
+        new Promise<bigint>(r => (resolveOld = r)),
+      )
+      const first = mount(Consumer)
+      await advance(0)
+      first.unmount()
+      mockGetBalance.mockReturnValueOnce(new Promise(() => undefined))
+      const second = mount(Consumer)
+      await advance(0)
+      resolveOld(42n)
+      await advance(0)
+      expect(loadedNow()).toBe(false)
+      second.unmount()
+    })
+  })
+
+  describe('loaded / error state', () => {
+    it('is not loaded before the first success, errors on failure, recovers', async () => {
+      mockGetBalance.mockRejectedValueOnce(new Error('rpc down'))
+      const wrapper = mount(Consumer)
+      expect(loadedNow()).toBe(false)
+      await advance(0)
+      expect(loadedNow()).toBe(false)
+      expect(errorNow()).toBe(true)
+      await advance(30000)
+      expect(loadedNow()).toBe(true)
+      expect(errorNow()).toBe(false)
+      wrapper.unmount()
+    })
+  })
+
+  it('a superseded failing request neither counts toward backoff nor clears the newer guard', async () => {
+    let rejectOld: (e: Error) => void = () => undefined
+    mockGetBalance.mockReturnValueOnce(
+      new Promise<bigint>((_, reject) => (rejectOld = reject)),
+    )
+    mockGetBalance.mockReturnValueOnce(new Promise(() => undefined)) // newer, hangs
+    const wrapper = mount(Consumer)
+    await advance(0)
+    void refresh() // supersedes; the newer request hangs
+    await advance(0)
+    rejectOld(new Error('late'))
+    await advance(0)
+    expect(errorNow()).toBe(false)
+    // Newer request is still pending: ticks must still be skipped.
+    await advance(BALANCE_POLL_MS * 3)
+    expect(mockGetBalance).toHaveBeenCalledTimes(2)
+    wrapper.unmount()
+  })
+
+  it('a superseded failure does not lengthen the next backoff delay', async () => {
+    jest.spyOn(Math, 'random').mockReturnValue(1)
+    let rejectOld: (e: Error) => void = () => undefined
+    mockGetBalance.mockReturnValueOnce(
+      new Promise<bigint>((_, reject) => (rejectOld = reject)),
+    )
+    const wrapper = mount(Consumer)
+    await advance(0)
+    mockGetBalance.mockRejectedValue(new Error('rpc down'))
+    await refresh() // newer request fails: 1 failure, next attempt in 30s
+    rejectOld(new Error('late')) // stale: must not count
+    await advance(0)
+    await advance(30000)
+    expect(mockGetBalance).toHaveBeenCalledTimes(3) // 2 failures now: next in 60s, not 120s
+    await advance(60000)
+    expect(mockGetBalance).toHaveBeenCalledTimes(4)
+    wrapper.unmount()
   })
 })

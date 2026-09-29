@@ -3,7 +3,6 @@
 import { shallowMount } from '@vue/test-utils'
 
 import LeftDrawer from './LeftDrawer.vue'
-import { configureBalancePolling } from 'src/composables/useBalance'
 
 const mockGetBalance = jest.fn()
 
@@ -29,8 +28,10 @@ jest.mock('@frank/wallet/chain', () => ({
     },
   },
 }))
+// One stable promise, like the real memoized-per-seed useActiveWallet (useBalance keys on it).
+const mockWallet = Promise.resolve({})
 jest.mock('src/composables/useActiveWallet', () => ({
-  useActiveWallet: jest.fn(async () => ({})),
+  useActiveWallet: jest.fn(() => mockWallet),
 }))
 jest.mock('src/utils/runtime-mode', () => ({
   legacyLotusModeEnabled: () => false,
@@ -71,7 +72,7 @@ describe('LeftDrawer balance polling', () => {
   })
   afterEach(() => {
     setHidden(false)
-    configureBalancePolling()
+    jest.restoreAllMocks()
     jest.useRealTimers()
   })
 
@@ -92,7 +93,7 @@ describe('LeftDrawer balance polling', () => {
 
   it('keeps polling after a failed fetch', async () => {
     // Moved with the polling into useBalance: a failure now backs off (15-30s); pin jitter low.
-    configureBalancePolling({ random: () => 0 })
+    jest.spyOn(Math, 'random').mockReturnValue(0)
     mockGetBalance.mockRejectedValueOnce(new Error('offline'))
     const wrapper = mountDrawer()
     await advance(0)
@@ -131,7 +132,7 @@ describe('LeftDrawer balance polling', () => {
 
   it('logs a failed fetch and keeps polling', async () => {
     // Moved with the polling into useBalance: a failure now backs off (15-30s); pin jitter low.
-    configureBalancePolling({ random: () => 0 })
+    jest.spyOn(Math, 'random').mockReturnValue(0)
     const spy = jest.spyOn(console, 'error').mockImplementation(() => undefined)
     mockGetBalance.mockRejectedValueOnce(new Error('offline'))
     const wrapper = mountDrawer()

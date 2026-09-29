@@ -11,41 +11,57 @@
  *   response unable to overwrite a newer balance. `refresh()` bypasses the guard and supersedes
  *   whatever is in flight.
  * - Polling pauses while `document.hidden` and refreshes immediately when visible again. On a
- *   Capacitor native app the plugin's `appStateChange` (pause/resume) does the same. The plugin
- *   ships inside `@capacitor/core` 2.x (no extra dependency), is imported lazily and gated on
- *   `Capacitor.isNative`, and any failure to load it falls back to `visibilitychange` alone.
+ *   Capacitor native app, `boot/capacitor.ts` (capacitor mode only) forwards the plugin's
+ *   `appStateChange` as a `frank:app-state` window event handled the same way (a backgrounded app
+ *   never re-arms the timer). There is no Capacitor import here.
  * - After failures the next tick is delayed with exponential backoff (bounded, "equal jitter":
  *   half deterministic, half random) so clients do not hammer an unhealthy RPC in lockstep. A
  *   success resets it. Failures are logged with `console.error`; there is no UI error state.
  */
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { activeChain } from '@frank/wallet/chain'
+import { activeChain, WalletHandle } from '@frank/wallet/chain'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
+
+/** Window event the capacitor-only boot file dispatches on native app pause/resume, so this
+ * composable needs no Capacitor import (the SPA/Electron builds deliberately never load it). */
+export const APP_STATE_EVENT = 'frank:app-state'
 
 export const BALANCE_POLL_MS = 15000
 export const BALANCE_BACKOFF_MAX_MS = 5 * 60 * 1000
 
-const balance = ref(0n)
+// null until the first successful fetch for the active wallet (so consumers can tell "not
+// loaded" from a real zero); cleared when the wallet changes or the last consumer unmounts.
+const balance = ref<bigint | null>(null)
+const hasError = ref(false)
+const loaded = computed(() => balance.value !== null)
 const formattedBalance = computed(
-  () => `${activeChain.toDisplayAmount(balance.value)} ${activeChain.unit}`,
+  () =>
+    `${activeChain.toDisplayAmount(balance.value ?? 0n)} ${activeChain.unit}`,
 )
 
 let consumers = 0
 let requestId = 0
 let pending = false
 let failures = 0
+let backgrounded = false
 let timer: ReturnType<typeof setTimeout> | undefined
-let random: () => number = Math.random
-let removeAppListener: (() => void) | undefined
-let appListenerGeneration = 0
+// Identity of the wallet the current value/in-flight request belong to. `useActiveWallet`
+// memoizes its promise per seed phrase, so a new seed yields a new promise.
+let walletKey: Promise<WalletHandle> | undefined
 
-/** Test seam: inject the random source used for jitter. Call with no argument to restore. */
-export function configureBalancePolling(opts: { random?: () => number } = {}) {
-  random = opts.random ?? Math.random
+function currentWalletKey(): Promise<WalletHandle> | undefined {
+  try {
+    return useActiveWallet()
+  } catch {
+    return undefined // no seed yet
+  }
 }
 
 /** Delay before the next tick: the base interval while healthy, else bounded jittered backoff. */
-export function nextBalanceDelay(failureCount: number, rand = random): number {
+export function nextBalanceDelay(
+  failureCount: number,
+  rand = Math.random,
+): number {
   if (failureCount <= 0) return BALANCE_POLL_MS
   const cap = Math.min(
     BALANCE_BACKOFF_MAX_MS,
@@ -61,31 +77,46 @@ function clearTimer() {
 
 function schedule() {
   clearTimer()
-  if (consumers === 0 || document.hidden) return
+  if (consumers === 0 || document.hidden || backgrounded) return
   timer = setTimeout(() => {
     timer = undefined
     if (pending)
       schedule() // still waiting on a fetch: skip this tick, keep ticking
-    else void refresh()
+    else void fetchBalance(true)
   }, nextBalanceDelay(failures))
 }
 
 /** Fetches now. `force` (also what `refresh()` does) bypasses the in-flight guard. */
 async function fetchBalance(force: boolean) {
+  const key = currentWalletKey()
+  if (key !== walletKey) {
+    // Wallet changed: drop the old value and invalidate anything still in flight for it.
+    walletKey = key
+    balance.value = null
+    hasError.value = false
+    failures = 0
+    requestId++
+    pending = false
+  }
   if (pending && !force) return
   const id = ++requestId
   pending = true
   schedule()
+  const isCurrent = () => id === requestId && currentWalletKey() === key
   try {
-    const wallet = await useActiveWallet()
+    const wallet = await (key ?? useActiveWallet())
     const next = await activeChain.nativeTransfers.getBalance({ wallet })
-    if (id !== requestId) return
+    if (!isCurrent()) return
     balance.value = next
+    hasError.value = false
     failures = 0
   } catch (err) {
     // The setup route may render the drawer before a seed exists; log and keep polling.
     console.error('balance refresh failed', err)
-    if (id === requestId) failures++
+    if (isCurrent()) {
+      failures++
+      hasError.value = true
+    }
   } finally {
     if (id === requestId) {
       pending = false
@@ -94,13 +125,9 @@ async function fetchBalance(force: boolean) {
   }
 }
 
-/** Manual refresh that supersedes any in-flight request. */
-export function refresh(): Promise<void> {
-  return fetchBalance(true)
-}
-
 function resume() {
-  void refresh()
+  backgrounded = false
+  void fetchBalance(true)
 }
 
 function onVisibilityChange() {
@@ -108,36 +135,22 @@ function onVisibilityChange() {
   else resume()
 }
 
-async function listenForAppState() {
-  const generation = ++appListenerGeneration
-  try {
-    const { Capacitor, Plugins } = await import('@capacitor/core')
-    if (!Capacitor.isNative || generation !== appListenerGeneration) return
-    const handle = Plugins?.App?.addListener('appStateChange', state => {
-      if (state.isActive) resume()
-      else clearTimer()
-    })
-    if (!handle) return
-    removeAppListener = () => void handle.remove()
-    // Stopped while the import was in flight: undo immediately.
-    if (generation !== appListenerGeneration) stopAppListener()
-  } catch (err) {
-    // Web build / plugin unavailable: visibilitychange alone still covers the browser.
-    console.warn('app pause/resume listener unavailable', err)
+function onAppState(event: Event) {
+  const isActive = (event as CustomEvent<{ isActive: boolean }>).detail
+    ?.isActive
+  if (isActive) {
+    resume()
+  } else {
+    backgrounded = true
+    clearTimer()
   }
-}
-
-function stopAppListener() {
-  appListenerGeneration++
-  removeAppListener?.()
-  removeAppListener = undefined
 }
 
 function acquire() {
   consumers++
   if (consumers === 1) {
     document.addEventListener('visibilitychange', onVisibilityChange)
-    void listenForAppState()
+    window.addEventListener(APP_STATE_EVENT, onAppState)
   }
   void fetchBalance(false)
 }
@@ -147,7 +160,11 @@ function release() {
   if (consumers > 0) return
   clearTimer()
   document.removeEventListener('visibilitychange', onVisibilityChange)
-  stopAppListener()
+  window.removeEventListener(APP_STATE_EVENT, onAppState)
+  backgrounded = false
+  balance.value = null
+  hasError.value = false
+  walletKey = undefined
   // Invalidate anything in flight so a fresh first consumer never inherits a stale guard.
   requestId++
   pending = false
@@ -157,5 +174,10 @@ function release() {
 export function useBalance() {
   onMounted(acquire)
   onUnmounted(release)
-  return { balance, formattedBalance, refresh }
+  return {
+    formattedBalance,
+    loaded,
+    hasError,
+    refresh: () => fetchBalance(true),
+  }
 }

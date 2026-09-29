@@ -24,10 +24,9 @@ jest.mock('@frank/wallet/chain', () => ({
     },
   },
 }))
+const mockWallet = Promise.resolve({ identity: { displayAddress: '0xabc' } })
 jest.mock('src/composables/useActiveWallet', () => ({
-  useActiveWallet: jest.fn(async () => ({
-    identity: { displayAddress: '0xabc' },
-  })),
+  useActiveWallet: jest.fn(() => mockWallet),
 }))
 
 async function advance(ms: number) {
@@ -44,9 +43,8 @@ describe('Receive balance', () => {
   })
   afterEach(() => jest.useRealTimers())
 
-  it('shows an updated balance without a reload', async () => {
-    mockGetBalance.mockResolvedValueOnce(1n).mockResolvedValue(4n)
-    const wrapper = shallowMount(Receive, {
+  function mountReceive() {
+    return shallowMount(Receive, {
       global: {
         mocks: { $t: (key: string) => key },
         stubs: Object.fromEntries(
@@ -57,6 +55,49 @@ describe('Receive balance', () => {
         ),
       },
     })
+  }
+
+  it('shows a dash, not 0, until loaded, and an inline error on failure', async () => {
+    mockGetBalance.mockRejectedValueOnce(new Error('rpc down'))
+    const spy = jest.spyOn(console, 'error').mockImplementation(() => undefined)
+    const wrapper = mountReceive()
+    const region = wrapper.get('[data-testid="receive-balance"]')
+    expect(region.text()).toBe('\u2014')
+    await advance(0)
+    expect(region.text()).toBe('\u2014')
+    expect(wrapper.find('[data-testid="receive-balance-error"]').exists()).toBe(
+      true,
+    )
+    mockGetBalance.mockResolvedValue(0n)
+    await advance(30000)
+    expect(region.text()).toBe('0 MON') // a real zero is shown as such
+    expect(wrapper.find('[data-testid="receive-balance-error"]').exists()).toBe(
+      false,
+    )
+    wrapper.unmount()
+    spy.mockRestore()
+  })
+
+  it('exposes the balance as a labelled polite live region that does not re-announce', async () => {
+    mockGetBalance.mockResolvedValue(3n)
+    const wrapper = mountReceive()
+    await advance(0)
+    const region = wrapper.get('[data-testid="receive-balance"]')
+    expect(region.attributes('role')).toBe('status')
+    expect(region.attributes('aria-live')).toBe('polite')
+    const labelId = region.attributes('aria-labelledby')
+    expect(wrapper.get(`#${labelId}`).text()).toBe(
+      'receiveBitcoinDialog.walletStatus',
+    )
+    const node = region.element.firstChild
+    await advance(15000)
+    expect(region.element.firstChild).toBe(node)
+    wrapper.unmount()
+  })
+
+  it('shows an updated balance without a reload', async () => {
+    mockGetBalance.mockResolvedValueOnce(1n).mockResolvedValue(4n)
+    const wrapper = mountReceive()
     await advance(0)
     expect(wrapper.text()).toContain('1 MON')
     await advance(15000)

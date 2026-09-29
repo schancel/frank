@@ -22,6 +22,7 @@
                 :ref="msg.payloadDigest"
                 @replyClicked="({ payloadDigest }) => setReply(payloadDigest)"
                 @replyDivClick="scrollToMessage"
+                @sendFollowUp="sendFollowUpItems"
               />
             </template>
           </div>
@@ -105,6 +106,7 @@ import {
   activeChain,
   type DirectMessagePreparationProgress,
 } from '@frank/wallet/chain'
+import { MessageItem } from '@frank/cashweb/types/messages'
 
 import { debounce, QScrollArea } from 'quasar'
 
@@ -366,6 +368,55 @@ export default defineComponent({
         this.sendingMessage = false
       }
       // After message send, scroll to bottom if not already there
+      if (!this.bottom) {
+        this.$nextTick(this.buttonScrollBottom)
+      }
+    },
+    // Handles a plugin renderer's `sendFollowUp` emit (see ChatMessage.vue's own relay of it --
+    // e.g. blackjack's Hit/Stand buttons) by feeding arbitrary items through the exact same
+    // prepare-and-send pipeline `sendMessage` uses for free text: same sendingMessage/
+    // stampPreparationStatus UX, same error handling. Deliberately simpler than `sendMessage` in
+    // one respect -- no recovered-draft-confirmation flow, since a button click isn't a resendable
+    // "draft" the way typed text is; a recovered-attempt error here just surfaces as a plain
+    // notification instead.
+    async sendFollowUpItems({ items }: { items: MessageItem[] }) {
+      if (this.sendingMessage) {
+        return
+      }
+      const stampValue = activeChain.fromDisplayAmount(this.stampAmount)
+      this.sendingMessage = true
+      try {
+        this.stampPreparationStatus = 'Checking private stamp accounts…'
+        await this.sendDirectMessage({
+          wallet: useMonadWallet(),
+          address: this.address,
+          items,
+          stampValue,
+          onPreparationProgress: (
+            progress: DirectMessagePreparationProgress,
+          ) => {
+            if (progress.stage === 'checking') {
+              this.stampPreparationStatus = 'Checking private stamp accounts…'
+            } else if (progress.stage === 'funding') {
+              const feeReserve = activeChain.toDisplayAmount(
+                progress.feeReserveWei,
+              )
+              this.stampPreparationStatus =
+                `Preparing private stamp accounts (${progress.completed}/${progress.total} on-chain transactions; ` +
+                `up to ${feeReserve} ${activeChain.unit} fee reserve each)…`
+            } else {
+              this.stampPreparationStatus =
+                'Private stamp accounts ready; sending message…'
+            }
+          },
+        })
+      } catch (err) {
+        errorNotify(err instanceof Error ? err : new Error(String(err)))
+        return
+      } finally {
+        this.stampPreparationStatus = null
+        this.sendingMessage = false
+      }
       if (!this.bottom) {
         this.$nextTick(this.buttonScrollBottom)
       }

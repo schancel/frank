@@ -47,6 +47,12 @@
               v-else-if="item.type == 'text'"
               :text="item.text"
             />
+            <chat-message-blackjack
+              v-else-if="item.type == 'blackjack-move'"
+              :item="item"
+              :address="address"
+              @sendFollowUp="handleSendFollowUp"
+            />
             <!-- Previously silently unrendered (no branch existed at all for this or any other
             unhandled type) -- a real preview string instead, via the same registry `chats.ts` now
             uses for the sidebar/notifications, so this can never silently go blank again as new
@@ -86,6 +92,7 @@ import ChatMessageReply from './ChatMessageReply.vue'
 import ChatMessageText from './ChatMessageText.vue'
 import ChatMessageImage from './ChatMessageImage.vue'
 import ChatMessageStealth from './ChatMessageStealth.vue'
+import ChatMessageBlackjack from './ChatMessageBlackjack.vue'
 import ChatMessageSuffix from './ChatMessageSuffix.vue'
 import DeleteMessageDialog from '../../dialogs/DeleteMessageDialog.vue'
 import TransactionDialog from '../../dialogs/TransactionDialog.vue'
@@ -93,7 +100,8 @@ import { stampPrice } from '@frank/cashweb/legacy-wallet/helpers'
 import { activeChain } from '@frank/wallet/chain'
 import { getMessageItemPreview } from '@frank/wallet/message-item-plugins'
 import '@frank/wallet/message-item-plugins/built-in'
-import { Message } from '@frank/cashweb/types/messages'
+import '@frank/wallet/message-item-plugins/blackjack'
+import { Message, MessageItem } from '@frank/cashweb/types/messages'
 import { useMonadWallet } from '../../../utils/clients'
 import { errorNotify } from '../../../utils/notifications'
 import { getMessageItemRenderer } from '../../../utils/message-item-renderers'
@@ -104,13 +112,14 @@ export default defineComponent({
     // ChatMessageMenu,
     ChatMessageReply,
     ChatMessageText,
+    ChatMessageBlackjack,
     ChatMessageImage,
     ChatMessageStealth,
     ChatMessageSuffix,
     TransactionDialog,
     DeleteMessageDialog,
   },
-  emits: ['replyClicked', 'replyDivClick'],
+  emits: ['replyClicked', 'replyDivClick', 'sendFollowUp'],
   data() {
     return {
       transactionDialog: false,
@@ -158,6 +167,14 @@ export default defineComponent({
   methods: {
     handleReplyDivClick(args: string) {
       this.$emit('replyDivClick', args)
+    },
+    // Relayed up to Chat.vue the same way replyClicked/replyDivClick already are -- a plugin
+    // renderer (e.g. blackjack's Hit/Stand buttons) emits this to request a new message be sent
+    // as this conversation's natural next turn, without needing its own parallel send pipeline
+    // (stamp-prep status, error handling, disabled-while-sending -- all free-text sends already
+    // get this via Chat.vue's own sendMessage, this reuses it rather than duplicating it).
+    handleSendFollowUp(payload: { items: MessageItem[] }) {
+      this.$emit('sendFollowUp', payload)
     },
     swipeRight() {
       this.replyClicked({

@@ -84,6 +84,7 @@ import {
 import { MonadIdentity, registerMonadIdentity } from '@frank/wallet/monad-identity'
 import { buildEnvelope } from '@frank/cashweb/relay/monad-message-envelope'
 import { serializeMessageItems } from '@frank/wallet/chain/monad-chain'
+import { MessageItem } from '@frank/cashweb/types/messages'
 
 export function requiredEnv(name: string): string {
   const value = process.env[name]
@@ -348,7 +349,7 @@ export async function setUpFundedStampClient(params: {
 /**
  * Tops up `pool` with only whatever it's short of for one stamp payment of `stampValueWei`
  * (mirroring `ActiveChain.directMessages.send`'s own call, `chain/monad-chain.ts`), builds the
- * E2E-encrypted envelope for `text` (wrapped as the real UI's `MessageItem[]` wire shape -- see
+ * E2E-encrypted envelope for `items` (the real UI's `MessageItem[]` wire shape -- see
  * `qwen-bot.livecheck.ts`'s `extractText` doc comment for why), and sends it as a stamped direct
  * message via `stampClient.submitStampedMessage`, paying `toAddress` itself (ticket #57: a DM's
  * stamp always pays its recipient, never a fixed burn address).
@@ -359,8 +360,11 @@ export async function setUpFundedStampClient(params: {
  * DM-sending path instead of a third copy of it. The lazy top-up (2026-09-28) was folded in here
  * rather than left to each call site, so every caller gets it for free -- see
  * `setUpFundedStampClient`'s own header for why this replaced pre-funding a big pool up front.
+ * Generalized from a text-only `sendDirectMessageText` (2026-09-28) once the blackjack bot needed
+ * to send a `blackjack-move` item instead of plain text -- see `sendDirectMessageText` below,
+ * which is now just a one-line wrapper over this for the (still very common) plain-text case.
  */
-export async function sendDirectMessageText(params: {
+export async function sendDirectMessageItems(params: {
   stampClient: MonadStampClient
   pool: MonadSubAccountPool
   mainAccountSigner: MonadAccountTxSigner
@@ -368,7 +372,7 @@ export async function sendDirectMessageText(params: {
   fromIdentity: MonadIdentity
   toAddress: string
   toPubKey: Buffer
-  text: string
+  items: MessageItem[]
   stampValueWei: bigint
   networkTag: string
 }): Promise<StampMonadMessageResult> {
@@ -388,12 +392,30 @@ export async function sendDirectMessageText(params: {
     fromPrivateKey: params.fromIdentity.toBitcorePrivateKey(),
     toAddress: params.toAddress,
     toPubKey: params.toPubKey,
-    plaintext: serializeMessageItems([{ type: 'text', text: params.text }]),
+    plaintext: serializeMessageItems(params.items),
     networkTag: params.networkTag,
   })
   return params.stampClient.submitStampedMessage({
     encryptedPayload: envelope,
     recipientPublicKey: params.toPubKey,
     stampValueWei: params.stampValueWei,
+  })
+}
+
+export async function sendDirectMessageText(params: {
+  stampClient: MonadStampClient
+  pool: MonadSubAccountPool
+  mainAccountSigner: MonadAccountTxSigner
+  provider: Provider
+  fromIdentity: MonadIdentity
+  toAddress: string
+  toPubKey: Buffer
+  text: string
+  stampValueWei: bigint
+  networkTag: string
+}): Promise<StampMonadMessageResult> {
+  return sendDirectMessageItems({
+    ...params,
+    items: [{ type: 'text', text: params.text }],
   })
 }

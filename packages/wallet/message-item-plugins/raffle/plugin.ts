@@ -1,14 +1,13 @@
 /**
- * Registers the `raffle` message item type with the shared plugin registry (`./index.ts`). Mirrors
- * `digital-goods.ts`'s plugin almost exactly: an `enter`'s payment is that same message's own
+ * Registers the `raffle` message item type with the shared plugin registry (`../index.ts`). Mirrors
+ * `digital-goods/plugin.ts` almost exactly: an `enter`'s payment is that same message's own
  * stamp, already relay-verified before the message could ever be stored -- there's nothing left to
  * verify externally (contrast blackjack's wager, a *separate* transfer the relay knows nothing
- * about). See `@frank/wallet/raffle/draw.ts` for the provably-fair winner-selection this feeds
- * into.
+ * about). See `./draw.ts` for the provably-fair winner-selection this feeds into.
  */
 import { RaffleItem } from '@frank/cashweb/types/messages'
 
-import { registerMessageItemPlugin } from './index'
+import { registerMessageItemPlugin } from '../index'
 
 export interface HydratedRaffleItem extends RaffleItem {
   /** Only set for `enter` -- copied straight from the message's own relay-verified stamp value,

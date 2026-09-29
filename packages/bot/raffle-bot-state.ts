@@ -2,7 +2,7 @@
  * Persisted state for `raffle-bot.livecheck.ts`, mirroring `blackjack-bot-state.ts`'s established
  * `level`-backed pattern (itself mirroring `qwen-bot-state.ts`).
  *
- * Two kinds of state, both essential to the fairness scheme (`@frank/wallet/raffle/draw.ts`'s
+ * Two kinds of state, both essential to the fairness scheme (`@frank/wallet/message-item-plugins/raffle/draw.ts`'s
  * header):
  *
  * - **The pending commitment** (`pendingServerSeed`/`pendingServerSeedHash`): at any moment this is

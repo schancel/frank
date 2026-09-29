@@ -2,7 +2,7 @@
  * Provably-fair deck derivation and hand-value math for the blackjack demo (shared, isomorphic --
  * no Vue, no bot-specific imports -- so the bot's own dealing logic and the frontend's independent
  * verification use the exact same code, never two hand-written reimplementations that could drift
- * apart). See `../message-item-plugins/blackjack.ts` for how this plugs into the message-item
+ * apart). See `./plugin.ts` for how this plugs into the message-item
  * registry, and its own header for the fairness-ordering property this module's derivation
  * depends on (the server seed must be generated *before* the client seed it's combined with here
  * is known).

@@ -7,7 +7,7 @@
  *
  * ## Fairness scheme
  *
- * See `@frank/wallet/blackjack/deck.ts`'s header for the full "why," and `blackjack-bot-state.ts`'s
+ * See `@frank/wallet/message-item-plugins/blackjack/deck.ts`'s header for the full "why," and `blackjack-bot-state.ts`'s
  * header for why the pending commitment must be persisted. Short version: this bot always holds a
  * `serverSeed` it generated (and hashed) *before* any bet that might use it exists. A `bet`'s own
  * wager transaction hash becomes the shuffle's client-seed entropy the instant that bet is
@@ -63,14 +63,14 @@ import {
   MessageItemContext,
 } from '@frank/wallet/message-item-plugins'
 import '@frank/wallet/message-item-plugins/built-in'
-import '@frank/wallet/message-item-plugins/blackjack'
-import { Card, deriveDeck, handValue, sha256Hex } from '@frank/wallet/blackjack/deck'
+import '@frank/wallet/message-item-plugins/blackjack/plugin'
+import { Card, deriveDeck, handValue, sha256Hex } from '@frank/wallet/message-item-plugins/blackjack/deck'
 import {
   BlackjackOutcome,
   dealInitialCards,
   HydratedBlackjackMove,
   resolveOutcome,
-} from '@frank/wallet/blackjack/game'
+} from '@frank/wallet/message-item-plugins/blackjack/game'
 import { MonadStampClient } from '@frank/wallet/monad-stamp-client'
 import { MonadSubAccountPool } from '@frank/wallet/monad-account-pool'
 import { MonadAccountTxSigner } from '@frank/wallet/monad-account-tx'
@@ -113,7 +113,7 @@ function payoutMultiplier(outcome: BlackjackOutcome): number {
 
 /** Reconstructs the player's cards dealt so far during their own turn (before a 'stand'/'reveal'
  * has happened) -- valid only up to that point, since after standing the same trailing deck
- * indices belong to the dealer instead. See `@frank/wallet/blackjack/game.ts`'s "Dealing order
+ * indices belong to the dealer instead. See `@frank/wallet/message-item-plugins/blackjack/game.ts`'s "Dealing order
  * convention" for why indices 0/2 are always the player's initial two cards and every index from 4
  * onward is whichever hit/draw consumed it next, in order. */
 function playerCardsSoFar(deck: Card[], dealtCount: number): Card[] {

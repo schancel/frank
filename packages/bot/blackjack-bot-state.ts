@@ -2,7 +2,7 @@
  * Persisted state for `blackjack-bot.livecheck.ts`, mirroring `qwen-bot-state.ts`'s established
  * `level`-backed pattern exactly.
  *
- * Two kinds of state, both essential to the fairness scheme (`@frank/wallet/blackjack/deck.ts`'s
+ * Two kinds of state, both essential to the fairness scheme (`@frank/wallet/message-item-plugins/blackjack/deck.ts`'s
  * header):
  *
  * - **The pending commitment** (`pendingServerSeed`/`pendingServerSeedHash`): the seed the bot will
@@ -30,12 +30,12 @@ export interface BlackjackGameRecord {
   serverSeedHash: string
   wagerTxHash: string
   /** The on-chain-verified wager amount (see `hydrate()` in
-   * `@frank/wallet/message-item-plugins/blackjack.ts`) -- never a self-reported figure. Persisted
+   * `@frank/wallet/message-item-plugins/blackjack/plugin.ts`) -- never a self-reported figure. Persisted
    * here (not re-verified at payout time) since the bot already confirmed it once at `bet` time. */
   wagerWei: bigint
   playerAddress: string
   /** How many cards have been dealt so far (starts at 4: player's 2 + dealer's 2), per the dealing
-   * order convention `@frank/wallet/blackjack/game.ts`'s header defines -- the next card dealt is
+   * order convention `@frank/wallet/message-item-plugins/blackjack/game.ts`'s header defines -- the next card dealt is
    * always `deck[dealtCount]`. */
   dealtCount: number
   revealed: boolean

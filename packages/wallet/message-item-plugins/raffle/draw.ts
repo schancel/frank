@@ -1,9 +1,9 @@
 /**
  * Provably-fair winner selection for the raffle bot demo -- same commit-reveal shape as
- * `@frank/wallet/blackjack/deck.ts` (the bot commits to a seed's hash *before* it can know which
+ * `../blackjack/deck.ts` (the bot commits to a seed's hash *before* it can know which
  * entrants -- and therefore which entry-payment tx hashes -- this round will end up with), reduced
  * to a single draw instead of a full deck shuffle, since a raffle only ever needs one winner index,
- * not 52 ordered cards. Reuses `sha256Hex` from `blackjack/deck.ts` (a generic primitive, not
+ * not 52 ordered cards. Reuses `sha256Hex` from `../blackjack/deck.ts` (a generic primitive, not
  * blackjack-specific); the HMAC draw itself is small and shaped differently enough (one draw vs. a
  * Fisher-Yates stream) that inlining it here is clearer than growing deck.ts into a shared-but-
  * barely-reused abstraction for it.

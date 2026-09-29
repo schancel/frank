@@ -13,7 +13,7 @@
  * verified as a real on-chain payment before ever storing the message. There is nothing left for
  * this bot to go verify externally (contrast `blackjack-bot.livecheck.ts`'s wager, a *separate*
  * transfer the relay knows nothing about) -- `hydrate()` in
- * `@frank/wallet/message-item-plugins/digital-goods.ts` just reads that already-trustworthy field.
+ * `@frank/wallet/message-item-plugins/digital-goods/plugin.ts` just reads that already-trustworthy field.
  *
  * ## Usage
  *
@@ -47,8 +47,8 @@ import {
   MessageItemContext,
 } from '@frank/wallet/message-item-plugins'
 import '@frank/wallet/message-item-plugins/built-in'
-import '@frank/wallet/message-item-plugins/digital-goods'
-import { HydratedDigitalGoods } from '@frank/wallet/message-item-plugins/digital-goods'
+import '@frank/wallet/message-item-plugins/digital-goods/plugin'
+import { HydratedDigitalGoods } from '@frank/wallet/message-item-plugins/digital-goods/plugin'
 import {
   loadOrCreateIdentity,
   registerAndLog,

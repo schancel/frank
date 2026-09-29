@@ -39,18 +39,21 @@ import { defineComponent, PropType } from 'vue'
 
 import { BlackjackMoveItem } from '@frank/cashweb/types/messages'
 import { activeChain } from '@frank/wallet/chain'
-import { cardLabel, handValue } from '@frank/wallet/blackjack/deck'
+import {
+  cardLabel,
+  handValue,
+} from '@frank/wallet/message-item-plugins/blackjack/deck'
 import {
   BlackjackAction,
   BlackjackGameState,
   verifyRevealedHand,
-} from '@frank/wallet/blackjack/game'
+} from '@frank/wallet/message-item-plugins/blackjack/game'
 import {
   getMessageItemPlugin,
   MessageItemContext,
 } from '@frank/wallet/message-item-plugins'
 import '@frank/wallet/message-item-plugins/built-in'
-import '@frank/wallet/message-item-plugins/blackjack'
+import '@frank/wallet/message-item-plugins/blackjack/plugin'
 
 import { useChatStore } from '../../../stores/chats'
 import { useMonadWallet } from '../../../utils/clients'

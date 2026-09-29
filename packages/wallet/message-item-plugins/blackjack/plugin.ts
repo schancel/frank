@@ -1,5 +1,5 @@
 /**
- * Registers the `blackjack-move` message item type with the shared plugin registry (`./index.ts`).
+ * Registers the `blackjack-move` message item type with the shared plugin registry (`../index.ts`).
  * `hydrate()` is the one place a `bet` move's wager gets verified against a real on-chain
  * transaction instead of trusting any self-reported amount -- there is no amount field on the wire
  * type at all (see `BlackjackMoveItem`'s own header on `@frank/cashweb/types/messages`), so the
@@ -13,8 +13,8 @@ import {
   BlackjackGameState,
   HydratedBlackjackMove,
   reduceBlackjackState,
-} from '../blackjack/game'
-import { registerMessageItemPlugin } from './index'
+} from './game'
+import { registerMessageItemPlugin } from '../index'
 
 /** Looks up `wagerTxHash` on-chain and reports what it actually shows -- confirmed or not, real
  * sender/recipient/value -- without judging whether it's "enough" or "to the right place" (that's

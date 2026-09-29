@@ -57,7 +57,7 @@ import { defineComponent, PropType } from 'vue'
 
 import { RaffleItem } from '@frank/cashweb/types/messages'
 import { activeChain } from '@frank/wallet/chain'
-import { verifyRaffleDraw } from '@frank/wallet/raffle/draw'
+import { verifyRaffleDraw } from '@frank/wallet/message-item-plugins/raffle/draw'
 
 import { useActiveWallet } from '../../../composables/useActiveWallet'
 import { errorNotify } from '../../../utils/notifications'

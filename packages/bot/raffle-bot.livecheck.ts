@@ -22,7 +22,7 @@
  *
  * ## Fairness scheme
  *
- * See `@frank/wallet/raffle/draw.ts`'s header for the full "why." Short version: this bot always
+ * See `@frank/wallet/message-item-plugins/raffle/draw.ts`'s header for the full "why." Short version: this bot always
  * holds a `serverSeed` it generated (and hashed) *before* the round that will use it had any
  * entrants. Each entrant's own entry-payment tx hash is folded into that round's combined entropy
  * the instant their entry is accepted. At `draw`, the seed is published in plaintext so anyone can
@@ -66,9 +66,9 @@ import {
   MessageItemContext,
 } from '@frank/wallet/message-item-plugins'
 import '@frank/wallet/message-item-plugins/built-in'
-import '@frank/wallet/message-item-plugins/raffle'
-import { HydratedRaffleItem } from '@frank/wallet/message-item-plugins/raffle'
-import { combineEntrantEntropy, pickWinnerIndex, sha256Hex } from '@frank/wallet/raffle/draw'
+import '@frank/wallet/message-item-plugins/raffle/plugin'
+import { HydratedRaffleItem } from '@frank/wallet/message-item-plugins/raffle/plugin'
+import { combineEntrantEntropy, pickWinnerIndex, sha256Hex } from '@frank/wallet/message-item-plugins/raffle/draw'
 import { MonadHttpClient } from '@frank/wallet/monad-http'
 import { MonadAccountTxSigner } from '@frank/wallet/monad-account-tx'
 import {

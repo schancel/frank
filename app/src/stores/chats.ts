@@ -22,9 +22,9 @@ import '@frank/wallet/message-item-plugins/built-in'
 // app (an uncaught error mid-render-effect left Vue's tree inconsistent, cascading into unrelated
 // component updates). Pre-existing gap for blackjack/digital-goods, closed here for all three while
 // fixing it for `raffle`.
-import '@frank/wallet/message-item-plugins/blackjack'
-import '@frank/wallet/message-item-plugins/digital-goods'
-import '@frank/wallet/message-item-plugins/raffle'
+import '@frank/wallet/message-item-plugins/blackjack/plugin'
+import '@frank/wallet/message-item-plugins/digital-goods/plugin'
+import '@frank/wallet/message-item-plugins/raffle/plugin'
 import type {
   DirectMessagePreparationProgress,
   DirectMessageSendResult,

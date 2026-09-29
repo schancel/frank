@@ -373,17 +373,28 @@ export default defineComponent({
       }
     },
     // Handles a plugin renderer's `sendFollowUp` emit (see ChatMessage.vue's own relay of it --
-    // e.g. blackjack's Hit/Stand buttons) by feeding arbitrary items through the exact same
-    // prepare-and-send pipeline `sendMessage` uses for free text: same sendingMessage/
-    // stampPreparationStatus UX, same error handling. Deliberately simpler than `sendMessage` in
-    // one respect -- no recovered-draft-confirmation flow, since a button click isn't a resendable
-    // "draft" the way typed text is; a recovered-attempt error here just surfaces as a plain
-    // notification instead.
-    async sendFollowUpItems({ items }: { items: MessageItem[] }) {
+    // e.g. blackjack's Hit/Stand buttons, or the vendor-bot catalog's own Buy buttons) by feeding
+    // arbitrary items through the exact same prepare-and-send pipeline `sendMessage` uses for free
+    // text: same sendingMessage/stampPreparationStatus UX, same error handling. Deliberately
+    // simpler than `sendMessage` in one respect -- no recovered-draft-confirmation flow, since a
+    // button click isn't a resendable "draft" the way typed text is; a recovered-attempt error
+    // here just surfaces as a plain notification instead.
+    //
+    // `stampValueWei` is an optional override of the user's own configured default stamp amount --
+    // needed for a digital-goods purchase, where the price paid *is* the message's stamp value
+    // (see `DigitalGoodsItem`'s own header on `@frank/cashweb/types/messages`), which is very
+    // unlikely to equal whatever this user happens to have their own default stamp set to.
+    async sendFollowUpItems({
+      items,
+      stampValueWei,
+    }: {
+      items: MessageItem[]
+      stampValueWei?: bigint
+    }) {
       if (this.sendingMessage) {
         return
       }
-      const stampValue = activeChain.fromDisplayAmount(this.stampAmount)
+      const stampValue = stampValueWei ?? activeChain.fromDisplayAmount(this.stampAmount)
       this.sendingMessage = true
       try {
         this.stampPreparationStatus = 'Checking private stamp accounts…'

@@ -65,6 +65,27 @@ export interface BlackjackMoveItem {
   outcome?: 'player_win' | 'dealer_win' | 'push' | 'player_blackjack'
 }
 
+/**
+ * A flat-price digital goods purchase against a vendor bot (ticket #63, "bot-driven ads / 1-click
+ * purchase") -- simpler than `BlackjackMoveItem`'s case, since there's no fairness/randomness
+ * protocol needed for "pay a fixed price, receive an item." No self-reported amount field on
+ * `request` either, for the same reason as blackjack's `bet`: the price paid is that same
+ * message's own real, relay-verified stamp value (`Message.stampValueWei`), never a number read
+ * from this JSON payload. That's a deliberate difference from blackjack's wager, which needed a
+ * *separate* transfer since a wager is a variable amount unsuited to doubling as the flat anti-spam
+ * stamp fee -- a catalog item's price is naturally bounded and fixed, so it can just *be* the stamp.
+ */
+export interface DigitalGoodsItem {
+  type: 'digital-goods'
+  action: 'catalog' | 'request' | 'fulfill' | 'error'
+  /** `catalog` only: what the vendor currently has for sale. */
+  catalog?: Array<{ itemId: string; description: string; priceWei: string }>
+  /** `request` only: which catalog item this message's own stamp payment is meant to buy. */
+  itemId?: string
+  /** `error` only: e.g. "payment below this item's price," "unknown itemId." */
+  message?: string
+}
+
 export type MessageItem =
   | StealthItem
   | P2PKHSendItem
@@ -72,6 +93,7 @@ export type MessageItem =
   | ReplyItem
   | ImageItem
   | BlackjackMoveItem
+  | DigitalGoodsItem
 
 export interface Message {
   outbound: boolean

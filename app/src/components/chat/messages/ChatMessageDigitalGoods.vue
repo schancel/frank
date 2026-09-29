@@ -1,0 +1,83 @@
+<template>
+  <div class="digital-goods q-pa-sm" style="min-width: 220px">
+    <template v-if="item.action === 'catalog'">
+      <div class="text-caption text-weight-bold q-mb-xs">Catalog</div>
+      <div
+        v-for="entry in item.catalog"
+        :key="entry.itemId"
+        class="row items-center q-gutter-sm q-mb-xs"
+      >
+        <div class="col text-caption">
+          {{ entry.description }} -- {{ displayPrice(entry.priceWei) }}
+        </div>
+        <q-btn
+          label="Buy"
+          dense
+          color="primary"
+          :loading="buyingItemId === entry.itemId"
+          :disable="!!buyingItemId"
+          @click="onBuy(entry)"
+        />
+      </div>
+    </template>
+    <div v-else-if="item.action === 'request'" class="text-caption">
+      Requested: {{ item.itemId }}
+    </div>
+    <div v-else-if="item.action === 'fulfill'" class="text-caption text-weight-bold">
+      Here's your purchase ({{ item.itemId }}):
+    </div>
+    <div v-else-if="item.action === 'error'" class="text-caption text-negative">
+      {{ item.message }}
+    </div>
+  </div>
+</template>
+
+<script lang="ts">
+import { defineComponent, PropType } from 'vue'
+
+import { DigitalGoodsItem } from '@frank/cashweb/types/messages'
+import { activeChain } from '@frank/wallet/chain'
+
+import { errorNotify } from '../../../utils/notifications'
+
+export default defineComponent({
+  name: 'ChatMessageDigitalGoods',
+  props: {
+    item: {
+      type: Object as PropType<DigitalGoodsItem>,
+      required: true,
+    },
+    address: {
+      type: String,
+      required: true,
+    },
+  },
+  emits: ['sendFollowUp'],
+  data() {
+    return {
+      buyingItemId: null as string | null,
+    }
+  },
+  methods: {
+    displayPrice(priceWei: string): string {
+      return `${activeChain.toDisplayAmount(BigInt(priceWei))} ${activeChain.unit}`
+    },
+    async onBuy(entry: { itemId: string; priceWei: string }) {
+      if (this.buyingItemId) return
+      this.buyingItemId = entry.itemId
+      try {
+        this.$emit('sendFollowUp', {
+          items: [
+            { type: 'digital-goods', action: 'request', itemId: entry.itemId },
+          ],
+          stampValueWei: BigInt(entry.priceWei),
+        })
+      } catch (err) {
+        errorNotify(err instanceof Error ? err : new Error(String(err)))
+      } finally {
+        this.buyingItemId = null
+      }
+    },
+  },
+})
+</script>

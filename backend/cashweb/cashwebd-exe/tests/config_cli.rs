@@ -31,6 +31,20 @@ fn check_config_cli_accepts_the_checked_in_local_configuration() {
 }
 
 #[test]
+fn check_config_cli_accepts_an_enabled_monad_mailbox_without_starting_it() {
+    let enabled = include_str!("../../cashwebd.local.toml").replace(
+        "[registry.monad_mailbox]\nenabled = false",
+        "[registry.monad_mailbox]\nenabled = true\nrpc_url = \"https://rpc.invalid\"",
+    );
+    let output = check_stdin(enabled.as_bytes());
+    assert!(
+        output.status.success(),
+        "checker failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
 fn check_config_cli_rejects_invalid_mailbox_configuration() {
     let invalid = include_str!("../../cashwebd.local.toml").replace(
         "[registry.monad_mailbox]\nenabled = false",

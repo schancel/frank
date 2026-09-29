@@ -17,6 +17,7 @@ import {
   MailboxChallenge,
   MailboxAuthParams,
   MonadMailboxAuthError,
+  MonadMailboxError,
   MonadMailboxChallengeCapacityError,
   MonadMailboxProtocolError,
   MonadMailboxRecordTooLargeError,
@@ -351,7 +352,7 @@ describe('fetchMonadMailboxInbox / fetchMonadMessagesSince', () => {
     expect(restarted.log.filter(l => l.route === 'challenge')).toHaveLength(1) // not retried
   })
 
-  it('a later-page failure returns the valid prefix (relay caps 8 unexpired challenges), first-page failure throws', async () => {
+  it('a later-page failure returns a complete-timestamp prefix (relay caps 8 unexpired challenges), first-page failure throws', async () => {
     const f = makeFixture()
     for (let i = 0; i < 12; i++)
       f.relay.addMessage(message(f.address, 100 + i, i))
@@ -360,7 +361,7 @@ describe('fetchMonadMailboxInbox / fetchMonadMessagesSince', () => {
       sinceMs: 0,
       pageLimit: 1,
     })
-    expect(truncated.messages).toHaveLength(8) // the 9th challenge use is refused
+    expect(truncated.messages).toHaveLength(7) // 8 fetched, the 9th refused; last row's group dropped
     expect(truncated.truncatedBy).toBeInstanceOf(
       MonadMailboxChallengeCapacityError,
     )
@@ -383,8 +384,79 @@ describe('fetchMonadMailboxInbox / fetchMonadMessagesSince', () => {
       pageLimit: 1,
       onTruncated: reason => reasons.push(reason),
     })
-    expect(messages).toHaveLength(8)
+    expect(messages).toHaveLength(7)
     expect(reasons).toHaveLength(1)
+  })
+
+  describe('truncation never strands the rest of a timestamp group (F1)', () => {
+    /** Fails every inbox read after the first `okReads`, as a dropped connection / 500 would. */
+    function failAfter(f: Fixture, okReads: number, status = 500) {
+      const original = f.auth.http!
+      let reads = 0
+      f.auth.http = async request => {
+        if (request.url.includes('/inbox/') && ++reads > okReads) {
+          return { status, headers: {}, data: new Uint8Array() }
+        }
+        return original(request)
+      }
+    }
+
+    it('drops the trailing same-timestamp rows, so since=lastTimestamp+1 loses nothing', async () => {
+      const f = makeFixture()
+      f.relay.addMessage(message(f.address, 99, 1)) // X
+      f.relay.addMessage(message(f.address, 100, 2)) // A
+      f.relay.addMessage(message(f.address, 100, 3)) // B, same timestamp as A
+      const healthy = f.auth.http!
+      failAfter(f, 1) // page 1 = [X, A], page 2 (would be [B]) fails
+
+      const reasons: unknown[] = []
+      const first = await fetchMonadMessagesSince({
+        ...f.auth,
+        sinceMs: 0,
+        pageLimit: 2,
+        onTruncated: r => reasons.push(r),
+      })
+      expect(reasons).toHaveLength(1)
+      expect(first.map(m => m.timestamp)).toEqual([99]) // A was fetched but is withheld
+
+      // The consumer advances exactly like the app/bots: since = lastTimestamp + 1.
+      const nextSince = first[first.length - 1].timestamp + 1
+      f.auth.http = healthy
+      const second = await fetchMonadMessagesSince({
+        ...f.auth,
+        sinceMs: nextSince,
+      })
+      const all = [...first, ...second]
+      expect(all.map(m => m.timestamp).sort((a, b) => a - b)).toEqual([99, 100, 100])
+      expect(
+        new Set(all.map(m => bytesToHex(m.message!.payloadHash))).size,
+      ).toBe(3)
+    })
+
+    it('when every fetched row shares one timestamp there is no safe prefix: the error is thrown, not an empty success', async () => {
+      const f = makeFixture()
+      for (const byte of [1, 2, 3])
+        f.relay.addMessage(message(f.address, 100, byte))
+      failAfter(f, 1)
+      await expect(
+        fetchMonadMessagesSince({ ...f.auth, sinceMs: 0, pageLimit: 2 }),
+      ).rejects.toBeInstanceOf(MonadMailboxError)
+    })
+
+    it('a page-budget stop applies the same rule', async () => {
+      const f = makeFixture()
+      f.relay.addMessage(message(f.address, 99, 1))
+      f.relay.addMessage(message(f.address, 100, 2))
+      f.relay.addMessage(message(f.address, 100, 3))
+      const result = await fetchMonadMailboxInbox({
+        ...f.auth,
+        sinceMs: 0,
+        pageLimit: 2,
+        maxPages: 1,
+      })
+      expect(result.truncatedBy).toBeInstanceOf(MonadMailboxRetryableError)
+      expect(result.messages.map(m => m.timestamp)).toEqual([99])
+    })
   })
 
   it('stops instead of looping when the relay repeats a cursor', async () => {

@@ -115,6 +115,13 @@ export function startDirectMessagePolling({
       const received = await activeChain.directMessages.fetchSince({
         wallet,
         sinceMs,
+        // The result is already cut back to a complete timestamp group, so advancing below is
+        // safe; the remainder is fetched by the next poll.
+        onTruncated: reason =>
+          console.warn(
+            'direct-message inbox page truncated; will continue',
+            reason,
+          ),
       })
       if (received.length === 0) {
         return

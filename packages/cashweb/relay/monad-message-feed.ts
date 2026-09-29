@@ -29,7 +29,7 @@ import type { StoredMonadMessageProto } from '@frank/wallet/monad-stamp-client'
  *
  * Throws {@link MonadMailboxError} subclasses on failure -- notably
  * `MonadMailboxUnavailableError` when the relay has no mailbox (never an empty result). If a
- * page after the first fails, the valid prefix is returned and `onTruncated` (if given) is told
+ * page after the first fails, a prefix ending on a complete timestamp group is returned (so `since = lastTimestamp + 1` never skips rows; if no complete group exists the error is thrown) and `onTruncated` (if given) is told
  * why; the next poll continues from the newest returned timestamp.
  */
 export async function fetchMonadMessagesSince(

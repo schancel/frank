@@ -262,14 +262,23 @@ function bareHex(bytes: Uint8Array): string {
 /**
  * Imports the recipient-owned payments of relay recovery obligations into the wallet's stamp
  * payment journal (status `discovered`, so the ordinary sweep path can spend them) and then, only
- * once every confirmed child of an obligation is journalled, acknowledges terminal obligations so
- * the relay can retire them. Obligations that are not terminal (`pending`, `fully_confirmed`,
- * `delivered`) are never acked -- the relay answers 409 for them. Without a journal nothing is
- * imported and nothing is acked, because an ack asserts the facts were durably imported.
+ * when it is safe, acknowledges terminal obligations so the relay can retire them.
  *
- * This is best-effort relative to the inbox read (which already succeeded when this runs): a
- * relay/network failure here is retried on the next poll rather than failing message delivery,
- * and one malformed record is skipped without acking it.
+ * Ack safety (the relay forgets the obligation, so the journal becomes the only record of the
+ * one-time-address payments):
+ * - only a `durable` journal may trigger an ack; an in-memory journal (e.g. `walletStorageLocation:
+ *   false`) is still filled for the current session but never acks, so a restart re-reads the
+ *   obligation from the relay;
+ * - for a terminal obligation EVERY child of the canonical message is journalled, not just the
+ *   confirmed prefix: expired/attempts-exhausted claims can still have unconfirmed children land
+ *   on chain after the ack, and the sweep checks the on-chain balance;
+ * - the ack is sent only after every `confirmedChildren` index is verifiably present in the
+ *   journal. A record whose confirmed child cannot be recovered is left un-acked.
+ * Non-terminal obligations (`pending`, `fully_confirmed`, `delivered`) import the confirmed
+ * children and are never acked (the relay answers 409).
+ *
+ * Best-effort relative to the inbox read (which already succeeded when this runs): a relay/network
+ * failure here is retried on the next poll rather than failing message delivery.
  */
 async function syncMailboxRecoveries(
   wallet: MonadChainWalletHandle,
@@ -283,30 +292,42 @@ async function syncMailboxRecoveries(
   } catch {
     return
   }
+  const recipientPrivateKey = getBytes(wallet.identity.toPrivateKeyHex())
   for (const record of records) {
     try {
+      const terminal = record.lifecycle.startsWith('terminal:')
       const confirmed = new Set(record.confirmedChildren)
-      const recovered = recoverMonadStampPayments({
-        message: {
-          ...record.canonicalMessage,
-          stampPayments: record.canonicalMessage.stampPayments.filter(payment =>
-            confirmed.has(payment.childIndex),
-          ),
-        },
-        recipientPrivateKey: getBytes(wallet.identity.toPrivateKeyHex()),
-      })
-      for (const payment of recovered) {
-        if (journal.get(record.payloadHashHex, payment.childIndex)) continue
-        await journal.put({
-          payloadHashHex: record.payloadHashHex,
-          childIndex: payment.childIndex,
-          txHash: payment.txHash,
-          address: payment.address,
-          valueWei: payment.valueWei.toString(),
-          status: 'discovered',
-        })
+      const wanted = record.canonicalMessage.stampPayments.filter(
+        payment => terminal || confirmed.has(payment.childIndex),
+      )
+      for (const payment of wanted) {
+        // One child at a time: an unrecoverable unconfirmed child must not block the confirmed
+        // ones, while an unrecoverable confirmed child is caught by the check below.
+        let recovered
+        try {
+          recovered = recoverMonadStampPayments({
+            message: { ...record.canonicalMessage, stampPayments: [payment] },
+            recipientPrivateKey,
+          })
+        } catch {
+          continue
+        }
+        for (const child of recovered) {
+          if (journal.get(record.payloadHashHex, child.childIndex)) continue
+          await journal.put({
+            payloadHashHex: record.payloadHashHex,
+            childIndex: child.childIndex,
+            txHash: child.txHash,
+            address: child.address,
+            valueWei: child.valueWei.toString(),
+            status: 'discovered',
+          })
+        }
       }
-      if (record.lifecycle.startsWith('terminal:')) {
+      const confirmedJournalled = record.confirmedChildren.every(
+        index => journal.get(record.payloadHashHex, index) !== undefined,
+      )
+      if (terminal && journal.durable && confirmedJournalled) {
         await ackMonadMailboxRecovery({
           ...mailbox,
           payloadHashHex: record.payloadHashHex,
@@ -498,6 +519,7 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
       const stored = await fetchMonadMessagesSince({
         ...mailbox,
         sinceMs: params.sinceMs,
+        onTruncated: params.onTruncated,
       })
       await syncMailboxRecoveries(wallet, mailbox)
 

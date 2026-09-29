@@ -144,6 +144,7 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
       expect(fetchSinceSpy).toHaveBeenNthCalledWith(1, {
         wallet,
         sinceMs: 0,
+        onTruncated: expect.any(Function),
       })
 
       // The relay bound is inclusive, so advance one millisecond past the received record.
@@ -152,6 +153,7 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
       expect(fetchSinceSpy).toHaveBeenNthCalledWith(2, {
         wallet,
         sinceMs: 1_700_000_000_001,
+        onTruncated: expect.any(Function),
       })
       // No new messages on any subsequent poll.
       expect(receiveMessagesSpy).toHaveBeenCalledTimes(1)
@@ -160,6 +162,49 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
       const callsAtStop = fetchSinceSpy.mock.calls.length
       await wait(60)
       expect(fetchSinceSpy.mock.calls.length).toBe(callsAtStop)
+    })
+
+    it('a truncated inbox scan never skips the rest of a timestamp group (F1 regression)', async () => {
+      const chats = useChatStore()
+      const receiveMessagesSpy = jest.spyOn(chats, 'receiveMessages')
+      jest.spyOn(activeChain, 'fetchProfile').mockResolvedValue({
+        address: { raw: SENDER_ADDRESS },
+        pubKey: PUB_KEY_BYTES,
+      })
+      const warnSpy = jest
+        .spyOn(console, 'warn')
+        .mockImplementation(() => undefined)
+      // Relay rows: X@99, A@100, B@100 (same timestamp). The first scan fetched [X, A] on page 1
+      // and page 2 failed; the client cuts the result back to the complete group [X] and reports
+      // the truncation. `since` is inclusive, so the next poll from 100 must still return A and B.
+      const rows = [
+        makeRecord({ payloadDigest: 'x', receivedTime: 99 }),
+        makeRecord({ payloadDigest: 'a', receivedTime: 100 }),
+        makeRecord({ payloadDigest: 'b', receivedTime: 100 }),
+      ]
+      let firstScan = true
+      const fetchSinceSpy = jest
+        .spyOn(activeChain.directMessages, 'fetchSince')
+        .mockImplementation(async ({ sinceMs, onTruncated }) => {
+          if (firstScan) {
+            firstScan = false
+            onTruncated?.(new Error('page 2 failed'))
+            return rows.filter(r => r.receivedTime === 99)
+          }
+          return rows.filter(r => r.receivedTime >= sinceMs)
+        })
+
+      const polling = startDirectMessagePolling({ wallet, intervalMs: 20 })
+      await wait(80)
+      polling.stop()
+
+      expect(warnSpy).toHaveBeenCalled()
+      expect(fetchSinceSpy.mock.calls[1][0].sinceMs).toBe(100)
+      const digests = receiveMessagesSpy.mock.calls.flatMap(([batch]) =>
+        batch.map(m => m.payloadDigest ?? (m as { digest?: string }).digest),
+      )
+      expect(receiveMessagesSpy).toHaveBeenCalledTimes(2)
+      expect(digests).toHaveLength(3)
     })
 
     it('advances beyond a valid record returned after an earlier poison record was filtered', async () => {
@@ -190,6 +235,7 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
         expect(fetchSinceSpy).toHaveBeenNthCalledWith(2, {
           wallet,
           sinceMs: 201,
+          onTruncated: expect.any(Function),
         })
       } finally {
         polling.stop()
@@ -246,6 +292,7 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
         expect(fetchSinceSpy).toHaveBeenNthCalledWith(2, {
           wallet,
           sinceMs: 0,
+          onTruncated: expect.any(Function),
         })
       } finally {
         polling.stop()
@@ -283,6 +330,7 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
         expect(fetchSinceSpy).toHaveBeenNthCalledWith(2, {
           wallet,
           sinceMs: 0,
+          onTruncated: expect.any(Function),
         })
       } finally {
         polling.stop()

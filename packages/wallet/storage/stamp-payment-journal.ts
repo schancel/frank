@@ -25,6 +25,10 @@ export interface StampPaymentRecoveryRecord {
 }
 
 export interface StampPaymentJournal {
+  /** True only if `put` survives a process restart. Recovery obligations are acknowledged to the
+   * relay (which then retires them) only after import into a durable journal; a non-durable
+   * journal may still be used for the current session but must never trigger an ack. */
+  readonly durable: boolean
   get(
     payloadHashHex: string,
     childIndex: number,
@@ -38,6 +42,7 @@ function key(payloadHashHex: string, childIndex: number): string {
 }
 
 export class InMemoryStampPaymentJournal implements StampPaymentJournal {
+  readonly durable: boolean = false
   private readonly records = new Map<string, StampPaymentRecoveryRecord>()
 
   get(
@@ -59,6 +64,7 @@ export class InMemoryStampPaymentJournal implements StampPaymentJournal {
 }
 
 export class LevelStampPaymentJournal implements StampPaymentJournal {
+  readonly durable = true
   private readonly dbLocation: string
   private openedDb?: LevelDB
   private readonly records = new Map<string, StampPaymentRecoveryRecord>()

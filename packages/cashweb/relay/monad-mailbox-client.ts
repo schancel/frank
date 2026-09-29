@@ -677,16 +677,22 @@ export async function fetchMonadMailboxInboxPage(
 
 export interface MailboxInboxResult {
   messages: StoredMonadMessageProto[]
-  /** Set when a later page failed after earlier pages succeeded: `messages` is a valid prefix
-   * (ordered by timestamp, payload hash) and a later poll from the last timestamp continues. */
+  /** Set when a later page failed (or the page budget ran out) after earlier pages succeeded.
+   * `messages` is then a prefix that ends on a COMPLETE timestamp group: rows sharing the last
+   * returned timestamp are dropped, because the relay's cursor is `(timestamp, payload_hash)` and
+   * `since` is inclusive, so a caller that advances `since = lastTimestamp + 1` would otherwise
+   * skip the rest of a half-fetched group forever. Advancing to `lastTimestamp + 1` is therefore
+   * safe, and the dropped rows are refetched by the next poll. */
   truncatedBy?: MonadMailboxError
 }
 
 /**
  * Every inbox row at or after `sinceMs`, following `x-frank-mailbox-next-cursor` until the relay
  * stops returning one. Rows are de-duplicated by payload hash. A failure on the *first* page
- * throws; a failure on a later page returns the valid prefix with `truncatedBy` set (the relay
- * caps consumed challenges per recipient, so very large backlogs are drained over several polls).
+ * throws; a failure on a later page returns a complete-timestamp-group prefix with `truncatedBy` set
+ * (the relay caps consumed challenges per recipient, so very large backlogs are drained over
+ * several polls). If every row fetched so far shares one timestamp there is no safe prefix, so the
+ * truncation error itself is thrown rather than returning an empty-looking success.
  */
 export async function fetchMonadMailboxInbox(
   params: MailboxAuthParams & {
@@ -709,7 +715,10 @@ export async function fetchMonadMailboxInbox(
       })
     } catch (err) {
       if (page > 0 && err instanceof MonadMailboxError) {
-        return { messages, truncatedBy: err }
+        return {
+          messages: completeTimestampPrefix(messages, err),
+          truncatedBy: err,
+        }
       }
       throw err
     }
@@ -727,12 +736,25 @@ export async function fetchMonadMailboxInbox(
     }
     cursor = result.nextCursor
   }
+  const budget = new MonadMailboxRetryableError(
+    `inbox scan stopped after ${maxPages} pages; poll again to continue`,
+  )
   return {
-    messages,
-    truncatedBy: new MonadMailboxRetryableError(
-      `inbox scan stopped after ${maxPages} pages; poll again to continue`,
-    ),
+    messages: completeTimestampPrefix(messages, budget),
+    truncatedBy: budget,
   }
+}
+
+/** Drop the trailing rows that share the last timestamp; throw `reason` if nothing would remain. */
+function completeTimestampPrefix(
+  messages: StoredMonadMessageProto[],
+  reason: MonadMailboxError,
+): StoredMonadMessageProto[] {
+  const lastTimestamp = messages[messages.length - 1]?.timestamp
+  let end = messages.length
+  while (end > 0 && messages[end - 1].timestamp === lastTimestamp) end--
+  if (end === 0) throw reason
+  return messages.slice(0, end)
 }
 
 // --- recovery -------------------------------------------------------------------------------

@@ -1070,10 +1070,12 @@ describe('createMonadChain: directMessages.fetchSince mailbox behaviour', () => 
     }
   }
 
-  function walletWithJournal() {
+  /** `durable` stands in for a `LevelStampPaymentJournal` (persists across restarts). */
+  function walletWithJournal(durable = true) {
     const bob = MonadIdentity.fromPrivateKeyHex(BOB_PRIVATE_KEY_HEX)
     const wallet = makeWallet(bob)
     const journal = new InMemoryStampPaymentJournal()
+    ;(journal as { durable: boolean }).durable = durable
     wallet.stampPaymentJournal = journal
     return { bob, wallet, journal }
   }
@@ -1089,12 +1091,20 @@ describe('createMonadChain: directMessages.fetchSince mailbox behaviour', () => 
       chain.directMessages.fetchSince({ wallet, sinceMs: 0 }),
     ).resolves.toEqual([])
 
+    // F3: a terminal obligation journals EVERY child (child 1 was not confirmed yet but may still
+    // land on chain after the ack), and the ack follows only once child 0 is journalled.
     expect(journal.getAll()).toEqual([
       expect.objectContaining({
         payloadHashHex: 'ab'.repeat(32),
         childIndex: 0,
         status: 'discovered',
         valueWei: '100',
+      }),
+      expect.objectContaining({
+        payloadHashHex: 'ab'.repeat(32),
+        childIndex: 1,
+        status: 'discovered',
+        valueWei: '101',
       }),
     ])
     expect(mockedAckRecovery).toHaveBeenCalledTimes(1)
@@ -1118,8 +1128,80 @@ describe('createMonadChain: directMessages.fetchSince mailbox behaviour', () => 
       ],
     })
     await chain.directMessages.fetchSince({ wallet, sinceMs: 0 })
-    expect(journal.getAll()).toHaveLength(2)
+    // Non-terminal: only the confirmed child (0) of each is imported.
+    expect(
+      journal
+        .getAll()
+        .map(r => `${r.payloadHashHex.slice(0, 2)}:${r.childIndex}`),
+    ).toEqual(['ab:0', 'ac:0'])
     expect(mockedAckRecovery).not.toHaveBeenCalled()
+  })
+
+  it('F1: passes onTruncated through to the mailbox feed so callers can observe truncation', async () => {
+    const chain = createMonadChain(TEST_CONFIG)
+    const { wallet } = walletWithJournal()
+    const onTruncated = jest.fn()
+    mockedFetchMonadMessagesSince.mockResolvedValueOnce([])
+    await chain.directMessages.fetchSince({ wallet, sinceMs: 5, onTruncated })
+    expect(mockedFetchMonadMessagesSince.mock.calls[0][0].onTruncated).toBe(
+      onTruncated,
+    )
+  })
+
+  it('F2: an in-memory (non-durable) journal is filled but NEVER acks a terminal obligation', async () => {
+    const chain = createMonadChain(TEST_CONFIG)
+    const { bob, wallet, journal } = walletWithJournal(false)
+    mockedFetchMonadMessagesSince.mockResolvedValueOnce([])
+    mockedFetchRecoveries.mockResolvedValueOnce({
+      records: [await recoveryRecord(bob, 'terminal:expired', 'ab')],
+    })
+    await chain.directMessages.fetchSince({ wallet, sinceMs: 0 })
+    expect(journal.getAll()).toHaveLength(2) // usable for this session
+    expect(mockedAckRecovery).not.toHaveBeenCalled() // relay keeps the obligation for a restart
+  })
+
+  it('the real journal implementations declare durability correctly', () => {
+    expect(new InMemoryStampPaymentJournal().durable).toBe(false)
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { LevelStampPaymentJournal } = jest.requireActual(
+      '../storage/stamp-payment-journal',
+    )
+    expect(new LevelStampPaymentJournal('/nonexistent').durable).toBe(true)
+  })
+
+  it('F3: does not ack when a confirmed child could not be journalled, even if other children were', async () => {
+    const chain = createMonadChain(TEST_CONFIG)
+    const { bob, wallet, journal } = walletWithJournal()
+    mockedFetchMonadMessagesSince.mockResolvedValueOnce([])
+    mockedFetchRecoveries.mockResolvedValueOnce({
+      records: [
+        await recoveryRecord(bob, 'terminal:expired', 'ab', {
+          wrongDestination: true,
+        }),
+      ],
+    })
+    await chain.directMessages.fetchSince({ wallet, sinceMs: 0 })
+    expect(journal.getAll().map(r => r.childIndex)).toEqual([1]) // unconfirmed child still kept
+    expect(mockedAckRecovery).not.toHaveBeenCalled()
+  })
+
+  it('F3: an unrecoverable UNCONFIRMED child does not block the ack of a fully journalled confirmed prefix', async () => {
+    const chain = createMonadChain(TEST_CONFIG)
+    const { bob, wallet, journal } = walletWithJournal()
+    mockedFetchMonadMessagesSince.mockResolvedValueOnce([])
+    const record = await recoveryRecord(
+      bob,
+      'terminal:attempts_exhausted',
+      'ab',
+    )
+    record.canonicalMessage.stampPayments[1] = {
+      childIndex: 1,
+      rawTx: new Uint8Array([1, 2, 3]),
+    }
+    mockedFetchRecoveries.mockResolvedValueOnce({ records: [record] })
+    await chain.directMessages.fetchSince({ wallet, sinceMs: 0 })
+    expect(journal.getAll().map(r => r.childIndex)).toEqual([0])
+    expect(mockedAckRecovery).toHaveBeenCalledTimes(1)
   })
 
   it('does not ack a record it could not import (wrong destination) and still handles the next one', async () => {
@@ -1135,9 +1217,13 @@ describe('createMonadChain: directMessages.fetchSince mailbox behaviour', () => 
       ],
     })
     await chain.directMessages.fetchSince({ wallet, sinceMs: 0 })
-    expect(journal.getAll().map(r => r.payloadHashHex)).toEqual([
-      'ac'.repeat(32),
-    ])
+    // 'ab' has an unrecoverable CONFIRMED child 0 (its unconfirmed child 1 is still kept but the
+    // record is not acked); 'ac' is fully journalled and acked.
+    expect(
+      journal
+        .getAll()
+        .map(r => `${r.payloadHashHex.slice(0, 2)}:${r.childIndex}`),
+    ).toEqual(['ab:1', 'ac:0', 'ac:1'])
     expect(mockedAckRecovery).toHaveBeenCalledTimes(1)
     expect(mockedAckRecovery).toHaveBeenCalledWith(
       expect.objectContaining({ payloadHashHex: 'ac'.repeat(32) }),

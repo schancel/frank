@@ -18,6 +18,7 @@ describe('Setup persistence integration', () => {
     expect(source).toContain(
       'this.accountData.seed = commitValidatedSetupSeed(',
     )
+    expect(source).toContain('seed => this.setSeedPhrase(seed)')
     expect(source).toContain('await this.persistSetupAndReload()')
     expect(
       source.indexOf('this.accountData.seed = commitValidatedSetupSeed('),

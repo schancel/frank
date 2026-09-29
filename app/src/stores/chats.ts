@@ -13,6 +13,18 @@ import {
   tallyMessageItemsValue,
 } from '@frank/wallet/message-item-plugins'
 import '@frank/wallet/message-item-plugins/built-in'
+// Sidebar/notification previews (`getMessageItemPreview` above) need every registered type's
+// plugin loaded here too, not just `built-in` -- found live (CDP-driven testing while building the
+// raffle bot, 2026-09-28): a chat list item for a bot conversation can render before that bot's own
+// `ChatMessage.vue` (the only other place these side-effect imports lived) ever mounts, e.g. the
+// very first incoming message from a bot type the user hasn't opened a chat with yet. Before this
+// fix, `getMessageItemPreview` threw "No message item plugin registered," which crashed the whole
+// app (an uncaught error mid-render-effect left Vue's tree inconsistent, cascading into unrelated
+// component updates). Pre-existing gap for blackjack/digital-goods, closed here for all three while
+// fixing it for `raffle`.
+import '@frank/wallet/message-item-plugins/blackjack'
+import '@frank/wallet/message-item-plugins/digital-goods'
+import '@frank/wallet/message-item-plugins/raffle'
 import type {
   DirectMessagePreparationProgress,
   DirectMessageSendResult,

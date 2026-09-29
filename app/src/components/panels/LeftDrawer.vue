@@ -82,7 +82,9 @@
       <q-item clickable>
         <q-item-section @click="openReceive">
           <q-item-label>{{ $t('chatList.balance') }}</q-item-label>
-          <q-item-label caption>{{ formattedBalance }}</q-item-label>
+          <q-item-label caption role="status" aria-live="polite">{{
+            formattedBalance
+          }}</q-item-label>
         </q-item-section>
         <q-item-section
           v-if="legacyRelayEnabled && !relayConnected"
@@ -173,23 +175,54 @@ export default defineComponent({
     // payment out, ...) never showed up without a full app reload. Poll instead, same lifecycle-
     // scoped `setInterval`-with-cleanup shape as `Chat.vue`'s own `window.addEventListener(
     // 'resize', ...)` / `beforeUnmount` pair.
-    async function refreshBalance() {
+    // Skips a poll tick while a fetch is still pending, and a monotonic request id makes sure a
+    // superseded (older) response can never overwrite a newer balance. `force` is only used by
+    // the visibility refresh, which deliberately supersedes a possibly hung request.
+    let balanceRequestId = 0
+    let balancePending = false
+    async function refreshBalance(force = false) {
+      if (balancePending && !force) return
+      const requestId = ++balanceRequestId
+      balancePending = true
       try {
         const wallet = await useActiveWallet()
-        balance.value = await activeChain.nativeTransfers.getBalance({ wallet })
-      } catch {
-        // The setup route may render the drawer before a seed exists.
+        const next = await activeChain.nativeTransfers.getBalance({ wallet })
+        if (requestId === balanceRequestId) balance.value = next
+      } catch (err) {
+        // The setup route may render the drawer before a seed exists; log and keep polling.
+        console.error('balance refresh failed', err)
+      } finally {
+        if (requestId === balanceRequestId) balancePending = false
       }
     }
     const balancePollMs = 15000
     let balancePollHandle: ReturnType<typeof setInterval> | undefined
 
-    onMounted(() => {
-      void refreshBalance()
+    // Poll only while the page is visible; refresh right away when it becomes visible again.
+    function startBalancePoll() {
+      stopBalancePoll()
       balancePollHandle = setInterval(
         () => void refreshBalance(),
         balancePollMs,
       )
+    }
+    function stopBalancePoll() {
+      clearInterval(balancePollHandle)
+      balancePollHandle = undefined
+    }
+    function onVisibilityChange() {
+      if (document.hidden) {
+        stopBalancePoll()
+      } else {
+        void refreshBalance(true)
+        startBalancePoll()
+      }
+    }
+
+    onMounted(() => {
+      void refreshBalance()
+      if (!document.hidden) startBalancePoll()
+      document.addEventListener('visibilitychange', onVisibilityChange)
       // Fire-and-forget, same convention as `ForumLayout.vue`'s own identical call --
       // `refreshDiscoveredTopics` already fails soft and never throws (`stores/topics.ts`).
       // Called here too (not just there) so this list is populated even if the user never opens
@@ -199,7 +232,8 @@ export default defineComponent({
     })
 
     onUnmounted(() => {
-      clearInterval(balancePollHandle)
+      stopBalancePoll()
+      document.removeEventListener('visibilitychange', onVisibilityChange)
     })
 
     // Drives the left rail's active-tab highlight (`q-tabs v-model="tab"`). A plain, freely

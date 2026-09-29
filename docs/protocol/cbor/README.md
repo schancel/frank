@@ -137,6 +137,12 @@ C11. Source map insertion order MUST NOT affect encoded output. A protocol set
 MUST be represented as a list sorted by its declared semantic key and MUST
 reject duplicate semantic keys.
 
+C12. For an exact supported `schema_version`, an integer map key not explicitly
+defined by that schema is a `schema` error. The `* uint => frank-value` CDDL
+wildcards describe fields that an older reader may encounter only when V6.3
+processes a newer compatible schema; they do not permit undeclared fields to be
+smuggled into schema version 1.
+
 ## 4. Resource limits
 
 The limits below are part of version 1, not recommendations. A narrower route
@@ -267,7 +273,9 @@ the independently observed transaction destination MUST equal field 3, and
 payment destinations MUST be independently unique. Value and commitment checks
 from S3 and T4 remain separately required.
 
-S10. When a directory update changes its subject, exactly one accepted
+S10. Every non-bootstrap directory statement revision MUST be greater than the
+last accepted statement revision for that directory identity. When an update
+changes its subject, exactly one accepted
 transition MUST link the previous statement to the new statement: the type-7
 network equals both statement networks; `directory_subject` equals the previous
 subject; `revision` equals the new statement revision and exceeds the previous
@@ -428,6 +436,33 @@ zero or a value greater than or equal to the secp256k1 group order rejects
 rather than reducing modulo the order; a sender constructs fresh encrypted
 payload bytes instead.
 
+T3a. The #60 derivation referenced by S9 is byte-exact:
+
+1. Interpret the 32-byte T3 digest as an unsigned big-endian integer `h`.
+   Require `1 <= h < n`, where `n` is the secp256k1 group order.
+2. Parse the destination account's 33-byte compressed SEC1 key as point `P`.
+   The stamp root public point is `P + h*G`; reject infinity. The root chain
+   code is the exact 32-byte T3 digest.
+3. Starting from that public point and chain code, apply non-hardened BIP32
+   public CKD to the numeric path `m/44/145/child_index/0`. At each component
+   `i`, compute `I = HMAC-SHA512(chain_code,
+   compressed_parent_point || u32be(i))`; interpret `I[0..32]` as unsigned
+   big-endian `IL`, require `1 <= IL < n`, set the child point to
+   `parent_point + IL*G` (reject infinity), and set the next chain code to
+   `I[32..64]`.
+4. Serialize the final child point uncompressed, remove its `04` prefix, hash
+   the remaining 64 bytes with Keccak-256, and use the final 20 bytes as the EVM
+   destination address.
+5. Every child index MUST be a non-hardened `uint31` (`< 2^31`). A payment
+   set's sorted child indices MUST be exactly contiguous
+   `0..member_count-1`. Any invalid scalar/point/CKD step rejects the delivery;
+   implementations do not skip to another index.
+
+The recipient reconstructs the same spend key by setting the root private
+scalar to `(recipient_private + h) mod n` (reject zero) and applying the same
+non-hardened CKD components and rejection rules. This key-recovery rule does
+not make the relay capable of deriving recipient private keys.
+
 T4. Each payment member's on-chain commitment is
 `SHA256(ascii("frank:dm-stamp-payment:v1") || T3_digest ||
 u32be(child_index))`. The exact 32-byte value MUST be present in the verified
@@ -455,8 +490,13 @@ A version-1 implementation validates in this order:
    envelope.
 6. Exact common-envelope keys and scalar ranges.
 7. Restricted-CBOR syntax, canonicality, and shared resource counters for the
-   payload and recursively opened child frames.
-8. Known-type schema and per-type resource limits.
+   payload's single CBOR item. This stage does not interpret byte strings as
+   child frames.
+8. Known-type schema and per-type resource limits, followed by recursive
+   opening of only those byte-string fields that the selected schema declares
+   as framed objects. Opened children inherit the root operation's shared
+   counters. The externally supplied decrypted type-6 frame is not a structural
+   child of encrypted type 5 and is opened only at stage 10 for `full`.
 9. Semantic ordering, uniqueness, cross-field, network, and digest checks.
 10. Signature, payment, or other cryptographic verification.
 
@@ -466,10 +506,12 @@ persist an interpreted record before every applicable later stage succeeds.
 ## 10. Vector manifest
 
 [vectors.schema.json](vectors.schema.json) defines the committed corpus index.
-Every case names its source implementation, complete frame hex, expected stable
-error category, and normative rules. Positive vectors additionally name the
-type/schema and expected content hash. Hostile vectors retain their bytes even
-when parsing fails so both implementations test the same input.
+Every case names its source implementation, complete frame hex, outcome, and
+normative rules. A `reject` case names its stable error category. An `accept`
+case run through `typed` or `full` additionally names the type/schema and
+expected content hash. A `retain` case names the exact retained frame bytes and
+does not claim interpreted semantics. Hostile vectors retain their input bytes
+even when parsing fails so both implementations test the same input.
 
 Each case's `validation_context` is normative input, not commentary, so no
 ambient chain, database, reader, or decryption state can change its outcome.
@@ -479,7 +521,8 @@ ambient chain, database, reader, or decryption state can change its outcome.
 `opaque_retention_allowed` drive V6. The supported-schema list is sorted by
 numeric type ID and has independently unique type IDs.
 
-For a full type-1 case, `payment_policy` provides the 32-byte minimum and
+For every full type-1 case, including rejections, `payment_policy` provides
+the 32-byte minimum and
 authoritative chain observations keyed by independently unique transaction ID;
 the encoded payment assertions must match those observations. The
 `decrypted_frame_hex` value is the exact authenticated decryption result to
@@ -487,7 +530,8 @@ validate as type 6. For proof-only encryption suite 65535, it is also exactly
 the bytes carried in the ciphertext field; this is a deterministic codec
 fixture, not a production cipher.
 
-For a full type-2 case, `prior_directory_statement_frame_hex` is either `null`
+For every full type-2 case, including rejections,
+`prior_directory_statement_frame_hex` is either `null`
 for bootstrap or the exact last accepted type-4 frame used for revision,
 subject, transition, and offline-authority checks. These context fields make
 acceptance or rejection a pure function of the manifest case.
@@ -496,7 +540,18 @@ The positive type-1 direct-message case MUST also record
 `content_digest_hex`, `payload_digest_hex`, and every
 `payment_commitments_hex` value. Implementations compare those outputs with T1a,
 T3, T4, the encoded payment member, and the simulated verifier-visible
-transaction commitment.
+transaction commitment. `payment_commitments_hex` position `i` corresponds
+exactly to payment member position `i` after the S3 sort; it is not independently
+sorted.
+
+`paired_case` relationships are reciprocal: both named cases MUST exist, name
+each other, and carry the same `pair_relation`. `one_byte_mutation` requires
+equal-length `frame_hex` values differing at exactly one byte and demonstrates
+T6. `insertion_order_equivalent` relates independently constructed values whose
+canonical frames must be identical. `cross_language_roundtrip` relates the
+TypeScript- and Rust-origin copies of the same frame. `opaque_retention` relates
+an input and retained output whose bytes must be identical. A `retain` case's
+`retained_frame_hex` MUST equal its `frame_hex` byte for byte.
 
 Stable error categories are: `frame`, `unsupported`, `resource`, `malformed`,
 `noncanonical`, `schema`, `semantic`, and `cryptographic`. Public APIs may give

@@ -324,7 +324,8 @@ describe('recipient stamp-payment sweep', () => {
 describe('recipient stamp-payment recovery bounds', () => {
   it('accepts 1 and 64 payments and rejects 0 and 65 before decoding transactions', async () => {
     const recipientPrivateKey = getBytes(`0x${'44'.repeat(32)}`)
-    const payloadHash = getBytes(`0x${'ab'.repeat(32)}`)
+    const encryptedPayload = new Uint8Array([1])
+    const payloadHash = computeMonadStampCommitment(encryptedPayload)
     const sender = new Wallet(`0x${'55'.repeat(32)}`)
     const payments = await Promise.all(
       Array.from({ length: 64 }, async (_, childIndex) => {
@@ -342,6 +343,9 @@ describe('recipient stamp-payment recovery bounds', () => {
               nonce: childIndex,
               to: destination,
               value: 1n,
+              data: buildMonadStampCalldata(
+                computeMonadStampPaymentCommitment(payloadHash, childIndex)
+              ),
               gasLimit: 21_000n,
               maxFeePerGas: 2n,
               maxPriorityFeePerGas: 1n,
@@ -356,7 +360,7 @@ describe('recipient stamp-payment recovery bounds', () => {
       recoverMonadStampPayments({
         message: {
           stampPayments,
-          encryptedPayload: new Uint8Array([1]),
+          encryptedPayload,
           payloadHash,
         },
         recipientPrivateKey,
@@ -427,6 +431,50 @@ describe('protobuf encode/decode round trip', () => {
     expect(() =>
       decodeStoredMonadMessage(Uint8Array.from([...base, 0x98, 0x06, 0x80]))
     ).toThrow(/protobuf|varint|truncated|end of the data/i)
+  })
+
+  it('skips balanced unknown protobuf groups without accepting nested field one', () => {
+    const message: MonadStampedMessageProto = {
+      stampPayments: [{ childIndex: 0, rawTx: new Uint8Array([9]) }],
+      encryptedPayload: new Uint8Array([7]),
+      payloadHash: new Uint8Array(32).fill(0x11),
+    }
+    const base = Array.from(storedMessageBytes(message))
+    const fakeNestedMessage = [0x0a, 0x02, 0xde, 0xad]
+    const group99Start = [0x9b, 0x06]
+    const group99End = [0x9c, 0x06]
+    const group100Start = [0xa3, 0x06]
+    const group100End = [0xa4, 0x06]
+    const decoded = decodeStoredMonadMessage(
+      Uint8Array.from([
+        ...group99Start,
+        ...fakeNestedMessage,
+        ...group100Start,
+        0x08,
+        0x01,
+        ...group100End,
+        ...group99End,
+        ...base,
+      ])
+    )
+    expect(decoded.message).toEqual(message)
+  })
+
+  it('rejects mismatched and truncated protobuf groups', () => {
+    const message: MonadStampedMessageProto = {
+      stampPayments: [{ childIndex: 0, rawTx: new Uint8Array([9]) }],
+      encryptedPayload: new Uint8Array([7]),
+      payloadHash: new Uint8Array(32).fill(0x11),
+    }
+    const base = Array.from(storedMessageBytes(message))
+    expect(() =>
+      decodeStoredMonadMessage(
+        Uint8Array.from([0x9b, 0x06, 0xa4, 0x06, ...base])
+      )
+    ).toThrow(/group|protobuf/i)
+    expect(() =>
+      decodeStoredMonadMessage(Uint8Array.from([...base, 0x9b, 0x06]))
+    ).toThrow(/group|protobuf|end of the data/i)
   })
 })
 

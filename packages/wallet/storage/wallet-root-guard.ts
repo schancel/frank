@@ -212,6 +212,7 @@ export async function acquireNodeWalletRootLease(
     beforePostReadyOperation?: (
       operation: 'lstat' | 'open' | 'fstat' | 'random' | 'write' | 'fsync'
     ) => void
+    onHolderReady?: (holder: import('child_process').ChildProcess) => void
   } = {}
 ): Promise<WalletRootLease | undefined> {
   if (isBrowserWalletStorage()) return undefined
@@ -289,6 +290,11 @@ export async function acquireNodeWalletRootLease(
     await holderExit
     if (closeError !== undefined) throw closeError
   }
+  let cleanupPromise: Promise<void> | undefined
+  const cleanup = (): Promise<void> => {
+    cleanupPromise ??= stopAndReapHolder()
+    return cleanupPromise
+  }
   let stderr = ''
   holder.stderr.setEncoding('utf8')
   holder.stderr.on('data', (chunk: string) => {
@@ -324,6 +330,7 @@ export async function acquireNodeWalletRootLease(
         }
       })
     })
+    testHooks.onHolderReady?.(holder)
 
     testHooks.beforePostReadyOperation?.('lstat')
     const currentArtifact = fs.lstatSync(lockPath)
@@ -362,7 +369,7 @@ export async function acquireNodeWalletRootLease(
     testHooks.beforePostReadyOperation?.('fsync')
     fs.fsyncSync(fd)
   } catch (error) {
-    await stopAndReapHolder()
+    await cleanup()
     throw error
   }
   let held = true
@@ -375,14 +382,7 @@ export async function acquireNodeWalletRootLease(
   ;(holder.stdin as any).unref?.()
   const lose = (message: string): never => {
     held = false
-    holder.ref()
-    ;(holder.stdin as any).ref?.()
-    holder.stdin.end()
-    try {
-      closeFenceFd()
-    } catch {
-      // The ownership failure is the actionable error.
-    }
+    void cleanup().catch(() => undefined)
     throw new Error(message)
   }
   const assertHeld = (): void => {
@@ -408,6 +408,40 @@ export async function acquireNodeWalletRootLease(
     ) {
       lose('Node wallet root lock was replaced')
     }
+    const verifiedCurrent = current as import('fs').Stats
+    try {
+      assertOwnedByCurrentUser(
+        verifiedCurrent,
+        'Node wallet root lock artifact'
+      )
+    } catch {
+      lose('Node wallet root lock ownership changed')
+    }
+    if ((verifiedCurrent.mode & 0o777) !== 0o600) {
+      lose('Node wallet root lock permissions changed')
+    }
+    let currentRoot: import('fs').Stats | undefined
+    try {
+      currentRoot = fs.lstatSync(location)
+    } catch {
+      lose('Node wallet root was removed')
+    }
+    if (
+      currentRoot === undefined ||
+      currentRoot.isSymbolicLink() ||
+      !currentRoot.isDirectory()
+    ) {
+      lose('Node wallet root identity changed')
+    }
+    const verifiedRoot = currentRoot as import('fs').Stats
+    try {
+      assertOwnedByCurrentUser(verifiedRoot, 'Wallet root')
+    } catch {
+      lose('Node wallet root ownership changed')
+    }
+    if ((verifiedRoot.mode & 0o777) !== 0o700) {
+      lose('Node wallet root permissions changed')
+    }
     let currentToken: string | undefined
     try {
       currentToken = fs.readFileSync(lockPath, 'utf8')
@@ -419,10 +453,16 @@ export async function acquireNodeWalletRootLease(
   return {
     assertHeld,
     async release(): Promise<void> {
-      if (!held) return
-      assertHeld()
-      held = false
-      await stopAndReapHolder()
+      if (held) {
+        try {
+          assertHeld()
+        } catch (error) {
+          await cleanup()
+          throw error
+        }
+        held = false
+      }
+      await cleanup()
     },
   }
 }

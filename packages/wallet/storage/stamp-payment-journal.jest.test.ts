@@ -25,6 +25,25 @@ describe('stamp payment recovery journal', () => {
     )
     expect(journal.getAll()).toEqual([DISCOVERED])
   })
+  it('forbids replacing or rewinding a durable signed sweep intent', async () => {
+    const journal = new InMemoryStampPaymentJournal()
+    const pending: StampPaymentRecoveryRecord = {
+      ...DISCOVERED,
+      status: 'sweep-pending',
+      sweepTxHash: `0x${'33'.repeat(32)}`,
+      sweepRawTx: '0x1234',
+      sweepValueWei: '100',
+      sweepDestinationAddress: `0x${'55'.repeat(20)}`,
+    }
+    await journal.put(DISCOVERED)
+    await journal.put(pending)
+    await expect(
+      journal.put({ ...pending, sweepRawTx: '0xabcd' })
+    ).rejects.toThrow(/immutable/i)
+    await expect(journal.put(DISCOVERED)).rejects.toThrow(/backward/i)
+    await journal.put({ ...pending, status: 'swept' })
+    await expect(journal.put(pending)).rejects.toThrow(/backward/i)
+  })
   it('updates one public record without ever requiring a private key', async () => {
     const journal = new InMemoryStampPaymentJournal()
     await journal.put(DISCOVERED)

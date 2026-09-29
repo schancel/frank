@@ -59,7 +59,7 @@ export class InMemoryStampPaymentJournal implements StampPaymentJournal {
 
   async put(record: StampPaymentRecoveryRecord): Promise<void> {
     assertPaymentAuthorityShape(record)
-    assertCompatibleStampPaymentAuthority(
+    assertMonotonicPaymentRecord(
       this.records.get(key(record.payloadHashHex, record.childIndex)),
       record
     )
@@ -194,7 +194,7 @@ export class LevelStampPaymentJournal implements StampPaymentJournal {
     this.assertMutationAllowed()
     assertPaymentAuthorityShape(record)
     const recordKey = key(record.payloadHashHex, record.childIndex)
-    assertCompatibleStampPaymentAuthority(this.records.get(recordKey), record)
+    assertMonotonicPaymentRecord(this.records.get(recordKey), record)
     await this.db.put(recordKey, JSON.stringify(record))
     this.records.set(recordKey, { ...record })
   }
@@ -233,6 +233,32 @@ export function assertCompatibleStampPaymentAuthority(
       throw new Error(
         `Conflicting stamp-payment recovery authority for ${next.payloadHashHex}:${next.childIndex}`
       )
+    }
+  }
+}
+
+function assertMonotonicPaymentRecord(
+  prior: StampPaymentRecoveryRecord | undefined,
+  next: StampPaymentRecoveryRecord
+): void {
+  assertCompatibleStampPaymentAuthority(prior, next)
+  if (prior === undefined) return
+  if (
+    (prior.status === 'sweep-pending' && next.status === 'discovered') ||
+    (prior.status === 'swept' && next.status !== 'swept')
+  ) {
+    throw new Error('Stamp-payment recovery lifecycle cannot move backward')
+  }
+  if (prior.status === 'sweep-pending' || prior.status === 'swept') {
+    for (const field of [
+      'sweepTxHash',
+      'sweepRawTx',
+      'sweepValueWei',
+      'sweepDestinationAddress',
+    ] as const) {
+      if (prior[field] !== next[field]) {
+        throw new Error('Stamp-payment signed sweep intent is immutable')
+      }
     }
   }
 }

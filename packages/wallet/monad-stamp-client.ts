@@ -284,38 +284,59 @@ function extractLengthDelimitedField(
     }
     throw new Error('Invalid protobuf varint in stored Monad message')
   }
-  while (offset < bytes.length) {
-    const tag = readVarint()
-    const field = tag >> BigInt(3)
-    const wireType = Number(tag & BigInt(7))
-    if (field < BigInt(1) || field > BigInt(0x1fffffff)) {
-      throw new Error('Invalid protobuf field tag')
-    }
-    if (wireType === 0) {
-      readVarint()
-    } else if (wireType === 1) {
-      offset += 8
-    } else if (wireType === 2) {
-      const encodedLength = readVarint()
-      if (encodedLength > BigInt(Number.MAX_SAFE_INTEGER)) {
-        throw new Error('Invalid protobuf length in stored Monad message')
+  const scanFields = (endGroupField?: bigint): void => {
+    while (offset < bytes.length) {
+      const tag = readVarint()
+      const field = tag >> BigInt(3)
+      const wireType = Number(tag & BigInt(7))
+      if (field < BigInt(1) || field > BigInt(0x1fffffff)) {
+        throw new Error('Invalid protobuf field tag')
       }
-      const length = Number(encodedLength)
-      const end = offset + length
-      if (!Number.isSafeInteger(length) || end > bytes.length) {
-        throw new Error('Invalid protobuf length in stored Monad message')
+      if (wireType === 4) {
+        if (endGroupField === undefined || field !== endGroupField) {
+          throw new Error(
+            'Mismatched protobuf end group in stored Monad message'
+          )
+        }
+        return
       }
-      if (field === BigInt(wantedField)) found = bytes.slice(offset, end)
-      offset = end
-    } else if (wireType === 5) {
-      offset += 4
-    } else {
-      throw new Error('Unsupported protobuf wire type in stored Monad message')
+      if (wireType === 0) {
+        readVarint()
+      } else if (wireType === 1) {
+        offset += 8
+      } else if (wireType === 2) {
+        const encodedLength = readVarint()
+        if (encodedLength > BigInt(Number.MAX_SAFE_INTEGER)) {
+          throw new Error('Invalid protobuf length in stored Monad message')
+        }
+        const length = Number(encodedLength)
+        const end = offset + length
+        if (!Number.isSafeInteger(length) || end > bytes.length) {
+          throw new Error('Invalid protobuf length in stored Monad message')
+        }
+        // A same-numbered field nested in an unknown group is not the top-level stored message.
+        if (endGroupField === undefined && field === BigInt(wantedField)) {
+          found = bytes.slice(offset, end)
+        }
+        offset = end
+      } else if (wireType === 3) {
+        scanFields(field)
+      } else if (wireType === 5) {
+        offset += 4
+      } else {
+        throw new Error(
+          'Unsupported protobuf wire type in stored Monad message'
+        )
+      }
+      if (offset > bytes.length) {
+        throw new Error('Truncated protobuf stored Monad message')
+      }
     }
-    if (offset > bytes.length) {
-      throw new Error('Truncated protobuf stored Monad message')
+    if (endGroupField !== undefined) {
+      throw new Error('Truncated protobuf group in stored Monad message')
     }
   }
+  scanFields()
   return found
 }
 
@@ -359,6 +380,14 @@ export function recoverMonadStampPayments(params: {
   envelopeRecipientAddress?: string
 }): RecoveredMonadStampPayment[] {
   assertMonadStampPaymentCount(params.message.stampPayments.length)
+  if (
+    hexlify(computeMonadStampCommitment(params.message.encryptedPayload)) !==
+    hexlify(params.message.payloadHash)
+  ) {
+    throw new Error(
+      'Stamp-payment payload hash does not match encrypted payload'
+    )
+  }
   const recipientPublicKeyHex = SigningKey.computePublicKey(
     hexlify(params.recipientPrivateKey),
     true
@@ -372,7 +401,10 @@ export function recoverMonadStampPayments(params: {
     throw new Error('Retained envelope recipient does not match its key')
   }
   const seenChildren = new Set<number>()
-  return params.message.stampPayments.map((payment) => {
+  return params.message.stampPayments.map((payment, paymentIndex) => {
+    if (payment.childIndex !== paymentIndex) {
+      throw new Error('Stamp-payment children are not in canonical order')
+    }
     if (seenChildren.has(payment.childIndex)) {
       throw new Error(
         `Duplicate stamp-payment child index ${payment.childIndex}`
@@ -395,6 +427,20 @@ export function recoverMonadStampPayments(params: {
     if (tx.hash === null) {
       throw new Error(
         `Stamp payment child ${payment.childIndex} is not a signed transaction`
+      )
+    }
+    if (tx.value <= BigInt(0)) {
+      throw new Error(`Stamp payment child ${payment.childIndex} has no value`)
+    }
+    const expectedCalldata = buildMonadStampCalldata(
+      computeMonadStampPaymentCommitment(
+        params.message.payloadHash,
+        payment.childIndex
+      )
+    )
+    if (tx.data.toLowerCase() !== expectedCalldata.toLowerCase()) {
+      throw new Error(
+        `Stamp payment child ${payment.childIndex} has invalid commitment calldata`
       )
     }
     return {

@@ -354,6 +354,10 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
     MonadChainWalletHandle,
     Promise<void>
   >()
+  const stampPaymentSweepQueues = new WeakMap<
+    MonadChainWalletHandle,
+    Map<string, Promise<void>>
+  >()
   const sendDirectMessageExclusive = async (
     params: Parameters<DirectMessageClient['send']>[0],
     wallet: MonadChainWalletHandle
@@ -379,6 +383,14 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
     if (recipientProfile === undefined) {
       throw new Error(
         `No registered profile/pubkey found for ${params.recipient.raw}`
+      )
+    }
+    if (
+      getAddress(computeAddress(hexlify(recipientProfile.pubKey))) !==
+      getAddress(params.recipient.raw)
+    ) {
+      throw new Error(
+        `Registered profile key does not match recipient ${params.recipient.raw}`
       )
     }
 
@@ -578,119 +590,133 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
       destination,
     }) {
       const monadWallet = asMonadWallet(wallet)
-      const journal = monadWallet.stampPaymentJournal
-      if (journal === undefined) {
-        throw new Error('Stamp-payment recovery journal is not configured')
+      let queues = stampPaymentSweepQueues.get(monadWallet)
+      if (queues === undefined) {
+        queues = new Map()
+        stampPaymentSweepQueues.set(monadWallet, queues)
       }
-      const record = journal.get(payloadDigest, childIndex)
-      if (record === undefined) {
-        throw new Error(
-          `No recovered stamp payment ${payloadDigest}:${childIndex}`
-        )
-      }
-      if (record.status === 'swept') {
-        throw new Error(
-          `Stamp payment ${payloadDigest}:${childIndex} was already swept`
-        )
-      }
-      const child = deriveMonadStampChildPrivate({
-        payloadHash: getBytes(`0x${payloadDigest}`),
-        recipientPrivateKey: getBytes(monadWallet.identity.toPrivateKeyHex()),
-        paymentIndex: childIndex,
-      })
-      if (child.address.toLowerCase() !== record.address.toLowerCase()) {
-        throw new Error(
-          `Recovered stamp-payment address ${record.address} does not match derived child ${child.address}`
-        )
-      }
-      const childSigner = new MonadAccountTxSigner({
-        privateKey: hexlify(child.privateKey),
-        provider: monadWallet.provider,
-        httpClient: monadWallet.httpClient,
-      })
-      if (record.status === 'sweep-pending') {
-        if (
-          record.sweepTxHash === undefined ||
-          record.sweepRawTx === undefined ||
-          record.sweepValueWei === undefined
-        ) {
+      const paymentKey = `${payloadDigest}:${childIndex}`
+      const execute = async () => {
+        const journal = monadWallet.stampPaymentJournal
+        if (journal === undefined) {
+          throw new Error('Stamp-payment recovery journal is not configured')
+        }
+        const record = journal.get(payloadDigest, childIndex)
+        if (record === undefined) {
           throw new Error(
-            `Pending stamp-payment sweep ${payloadDigest}:${childIndex} is missing its signed intent`
+            `No recovered stamp payment ${payloadDigest}:${childIndex}`
           )
         }
-        const status = await childSigner.getStatus(record.sweepTxHash)
-        if (status === 'confirmed') {
+        if (record.status === 'swept') {
+          throw new Error(
+            `Stamp payment ${payloadDigest}:${childIndex} was already swept`
+          )
+        }
+        const child = deriveMonadStampChildPrivate({
+          payloadHash: getBytes(`0x${payloadDigest}`),
+          recipientPrivateKey: getBytes(monadWallet.identity.toPrivateKeyHex()),
+          paymentIndex: childIndex,
+        })
+        if (child.address.toLowerCase() !== record.address.toLowerCase()) {
+          throw new Error(
+            `Recovered stamp-payment address ${record.address} does not match derived child ${child.address}`
+          )
+        }
+        const childSigner = new MonadAccountTxSigner({
+          privateKey: hexlify(child.privateKey),
+          provider: monadWallet.provider,
+          httpClient: monadWallet.httpClient,
+        })
+        if (record.status === 'sweep-pending') {
+          if (
+            record.sweepTxHash === undefined ||
+            record.sweepRawTx === undefined ||
+            record.sweepValueWei === undefined
+          ) {
+            throw new Error(
+              `Pending stamp-payment sweep ${payloadDigest}:${childIndex} is missing its signed intent`
+            )
+          }
+          const status = await childSigner.getStatus(record.sweepTxHash)
+          if (status === 'confirmed') {
+            await journal.put({
+              ...record,
+              status: 'swept',
+            })
+            return {
+              swept: true as const,
+              txHash: record.sweepTxHash,
+              valueWei: BigInt(record.sweepValueWei),
+            }
+          }
+          if (status === 'pending') {
+            return {
+              swept: false as const,
+              reason: 'pending' as const,
+              txHash: record.sweepTxHash,
+            }
+          }
+          await childSigner.submitRaw(record.sweepRawTx, record.sweepTxHash)
+          return {
+            swept: false as const,
+            reason: 'pending' as const,
+            txHash: record.sweepTxHash,
+          }
+        }
+        let signedSweepRawTx: string | undefined
+        const outcome = await sweepRecoveredMonadStampPayment({
+          payment: {
+            childIndex,
+            address: child.address,
+            privateKey: child.privateKey,
+            txHash: record.txHash,
+            rawTx: record.rawTx,
+            recipientPublicKeyHex: record.recipientPublicKeyHex,
+            envelopeRecipientAddress: record.envelopeRecipientAddress,
+            valueWei: BigInt(record.valueWei),
+          },
+          destinationAddress: destination.raw,
+          provider: monadWallet.provider,
+          httpClient: monadWallet.httpClient,
+          signer: childSigner,
+          onSigned: async (signedTx) => {
+            signedSweepRawTx = signedTx.rawTx
+            await journal.put({
+              ...record,
+              status: 'sweep-pending',
+              sweepTxHash: signedTx.txHash,
+              sweepRawTx: signedTx.rawTx,
+              sweepValueWei: signedTx.value.toString(),
+              sweepDestinationAddress: signedTx.to,
+            })
+          },
+        })
+        if (outcome.swept) {
           await journal.put({
             ...record,
             status: 'swept',
+            sweepTxHash: outcome.txHash,
+            sweepRawTx: signedSweepRawTx,
+            sweepValueWei: outcome.valueWei.toString(),
+            sweepDestinationAddress: outcome.destinationAddress,
           })
           return {
-            swept: true,
-            txHash: record.sweepTxHash,
-            valueWei: BigInt(record.sweepValueWei),
+            swept: true as const,
+            txHash: outcome.txHash,
+            valueWei: outcome.valueWei,
           }
         }
-        if (status === 'pending') {
-          await childSigner.submitRaw(record.sweepRawTx, record.sweepTxHash)
-          return {
-            swept: false,
-            reason: 'pending',
-            txHash: record.sweepTxHash,
-          }
-        }
-        await journal.put({
-          ...record,
-          status: 'discovered',
-          sweepTxHash: undefined,
-          sweepRawTx: undefined,
-          sweepValueWei: undefined,
-          sweepDestinationAddress: undefined,
-        })
+        return outcome
       }
-      let signedSweepRawTx: string | undefined
-      const outcome = await sweepRecoveredMonadStampPayment({
-        payment: {
-          childIndex,
-          address: child.address,
-          privateKey: child.privateKey,
-          txHash: record.txHash,
-          rawTx: record.rawTx,
-          recipientPublicKeyHex: record.recipientPublicKeyHex,
-          envelopeRecipientAddress: record.envelopeRecipientAddress,
-          valueWei: BigInt(record.valueWei),
-        },
-        destinationAddress: destination.raw,
-        provider: monadWallet.provider,
-        httpClient: monadWallet.httpClient,
-        signer: childSigner,
-        onSigned: async (signedTx) => {
-          signedSweepRawTx = signedTx.rawTx
-          await journal.put({
-            ...record,
-            status: 'sweep-pending',
-            sweepTxHash: signedTx.txHash,
-            sweepRawTx: signedTx.rawTx,
-            sweepValueWei: signedTx.value.toString(),
-            sweepDestinationAddress: signedTx.to,
-          })
-        },
-      })
-      if (outcome.swept) {
-        await journal.put({
-          ...record,
-          status: 'swept',
-          sweepTxHash: outcome.txHash,
-          sweepRawTx: signedSweepRawTx,
-          sweepValueWei: outcome.valueWei.toString(),
-          sweepDestinationAddress: outcome.destinationAddress,
-        })
-        return {
-          swept: true,
-          txHash: outcome.txHash,
-          valueWei: outcome.valueWei,
-        }
-      }
-      return outcome
+      const run = (queues.get(paymentKey) ?? Promise.resolve()).then(execute)
+      queues.set(
+        paymentKey,
+        run.then(
+          () => undefined,
+          () => undefined
+        )
+      )
+      return run
     },
   }
 
@@ -827,7 +853,6 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
                 },
                 recovery: {
                   provider,
-                  maxIndex: 0,
                   assertRelayAvailable: async () => {
                     try {
                       await axios({
@@ -845,11 +870,6 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
                         throw error
                       }
                     }
-                  },
-                  recoverAllocationHighWater: async () => {
-                    throw new Error(
-                      'Seed restore requires authoritative allocation high-water evidence'
-                    )
                   },
                   // Standard EVM RPC cannot enumerate complete signed history by sender. A used
                   // index with no local state therefore remains ambiguous and fails closed.

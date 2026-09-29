@@ -17,7 +17,6 @@ import { MonadChangePool } from '../monad-change-pool'
 import { MonadChangeKeyring } from '../monad-change-keyring'
 import { MonadHdKeyring } from '../monad-hd-keyring'
 import { decodeMonadStampedMessage } from '../monad-stamp-client'
-import { isSubAccountIndexUsed } from '../monad-sub-account-recovery'
 import {
   InMemoryChangePoolStore,
   type ChangeAccountRecord,
@@ -154,22 +153,12 @@ export interface MonadSeedRestoreSource {
   provider: Provider
   /** Must prove the configured relay is reachable. A rejection aborts before durable writes. */
   assertRelayAvailable(): Promise<void>
-  /** Authoritative exclusive upper bounds for every index ever allocated on each derivation
-   * branch. An ordinary EVM RPC cannot infer these values because a locally allocated address may
-   * never have reached chain state. Empty-root restore therefore fails closed when this authority
-   * is unavailable instead of guessing from a run of unused addresses. */
-  recoverAllocationHighWater(): Promise<{
-    senderNextIndex: number
-    changeNextIndex: number
-  }>
   /** Returns complete terminal evidence for a used sender index. Missing evidence is ambiguous and
    * therefore aborts the restore without initializing the root. */
   recoverSenderEvidence(
     index: number,
     address: string
   ): Promise<SubAccountRecord | undefined>
-  /** Inclusive workload bound independently configured for this recovery authority. */
-  maxIndex: number
 }
 
 export type OpenMonadWalletBundleParams = (
@@ -1210,6 +1199,11 @@ export async function openMonadWalletBundle(
 
     const finalized =
       manifestValue === undefined ? undefined : parseManifest(manifestValue)
+    if (finalized?.version === 1) {
+      throw new Error(
+        'Monad wallet manifest v1 cannot be opened safely; restore a current state backup, rescan into a new root, or create a new seed'
+      )
+    }
     const migration =
       migrationValue === undefined ? undefined : parseMigration(migrationValue)
     if (
@@ -1285,98 +1279,10 @@ export async function openMonadWalletBundle(
         migration === undefined &&
         !hasLegacyComponents &&
         params.seed !== undefined)
-    let restoredSenderRecords: SubAccountRecord[] = []
-    let restoredSenderNextIndex: number | undefined
-    let restoredChangeNextIndex: number | undefined
     if (isEmptySuppliedSeedRestore) {
-      if (params.recovery === undefined) {
-        throw new Error(
-          'Supplied seed with an empty root requires explicit seed-restore evidence'
-        )
-      }
-      const recovery = params.recovery
-      await recovery.assertRelayAvailable()
-      const maxIndex = recovery.maxIndex
-      if (!Number.isSafeInteger(maxIndex) || maxIndex < 0) {
-        throw new Error('Seed restore requires a bounded authoritative range')
-      }
-      const allocationHighWater = await recovery.recoverAllocationHighWater()
-      const { senderNextIndex, changeNextIndex } = allocationHighWater
-      if (
-        !Number.isSafeInteger(senderNextIndex) ||
-        senderNextIndex < 1 ||
-        !Number.isSafeInteger(changeNextIndex) ||
-        changeNextIndex < 1 ||
-        senderNextIndex > maxIndex + 1 ||
-        changeNextIndex > maxIndex + 1
-      ) {
-        throw new Error('Invalid authoritative wallet allocation high-water')
-      }
-      restoredSenderNextIndex = senderNextIndex
-      restoredChangeNextIndex = changeNextIndex
-      const stageEvidence = async (index: number): Promise<void> => {
-        const address = subKeyring.deriveSubAccount(index).address
-        const evidence = await recovery.recoverSenderEvidence(index, address)
-        if (
-          evidence === undefined &&
-          !(await isSubAccountIndexUsed(recovery.provider, address))
-        ) {
-          return
-        }
-        if (
-          evidence === undefined ||
-          evidence.index !== index ||
-          getAddress(evidence.address) !== address ||
-          (evidence.status !== 'spent' && evidence.status !== 'retired') ||
-          evidence.lifecycle?.funding === undefined ||
-          evidence.lifecycle.spend === undefined ||
-          evidence.lifecycle.recovery === undefined
-        ) {
-          throw new Error(
-            `Ambiguous seed restore evidence for used sender index ${index}`
-          )
-        }
-        restoredSenderRecords.push(evidence)
-      }
-      // Index zero is reserved by convention even for a never-used restored seed. Exhaustively
-      // inspect every index below the authoritative bound; unused allocated gaps remain occupied
-      // by the durable high-water mark and can never be derived again.
-      for (let index = 0; index < restoredSenderNextIndex; index++) {
-        await stageEvidence(index)
-      }
-      // Treat recovery input as hostile: validate the complete staged set before a manifest,
-      // component binding, high-water mark, or row can be written.
-      const stagedStore = new InMemorySubAccountPoolStore()
-      for (const evidence of restoredSenderRecords) stagedStore.put(evidence)
-      stagedStore.setNextIndex(Math.max(1, restoredSenderNextIndex))
-      const stagedPool = new MonadSubAccountPool({
-        keyring: subKeyring,
-        store: stagedStore,
-      })
-      const stagedChangeStore = new InMemoryChangePoolStore()
-      stagedChangeStore.setNextIndex(Math.max(1, restoredChangeNextIndex))
-      const stagedChangePool = new MonadChangePool({
-        keyring: changeKeyring,
-        store: stagedChangeStore,
-      })
-      const stagedAttempts = new InMemoryStampAttemptJournal()
-      const stagedPayments = new InMemoryStampPaymentJournal()
-      validateLoadedState({
-        pool: stagedPool,
-        changePool: stagedChangePool,
-        attemptJournal: stagedAttempts,
-        paymentJournal: stagedPayments,
-        subKeyring,
-        changeKeyring,
-      })
-      validateMonadWalletState({
-        pool: stagedPool,
-        changePool: stagedChangePool,
-        attemptJournal: stagedAttempts,
-        paymentJournal: stagedPayments,
-        subKeyring,
-        changeKeyring,
-      })
+      throw new Error(
+        'Restoring a supplied seed into an empty wallet root is disabled without a verifiable seed-bound allocation ledger; restore the wallet state backup or create a new seed'
+      )
     }
     if (
       finalized !== undefined &&
@@ -1619,44 +1525,6 @@ export async function openMonadWalletBundle(
         await manifestDb.put(MIGRATION_KEY, JSON.stringify(marker))
         await params.onMigrationPhase?.('marker')
       }
-      if (restoredSenderNextIndex !== undefined) {
-        const checkpointIndices = new Set(
-          pool.terminalCheckpoints().map((checkpoint) => checkpoint.index)
-        )
-        for (const record of restoredSenderRecords) {
-          if (
-            pool.getRecord(record.index) === undefined &&
-            !checkpointIndices.has(record.index)
-          ) {
-            subStore.put(record)
-          }
-        }
-        subStore.setNextIndex(Math.max(1, restoredSenderNextIndex))
-        changePool.setNextUnusedIndex(
-          Math.max(1, restoredChangeNextIndex as number)
-        )
-        await subStore.flush()
-        await changeStore.flush()
-        await pool.compactTerminalAccounts({
-          limit: restoredSenderRecords.length,
-        })
-        validateLoadedState({
-          pool,
-          changePool,
-          attemptJournal,
-          paymentJournal,
-          subKeyring,
-          changeKeyring,
-        })
-        validateMonadWalletState({
-          pool,
-          changePool,
-          attemptJournal,
-          paymentJournal,
-          subKeyring,
-          changeKeyring,
-        })
-      }
       for (
         let index = marker.completedComponents;
         index < stores.length;
@@ -1731,18 +1599,6 @@ export async function openMonadWalletBundle(
       allowMissingAttemptSpend: true,
       allowMissingAttemptRows: params.recovery !== undefined,
     })
-    if (finalized?.version === 1) {
-      assertLeaseHeld()
-      await (manifestDb as LevelDB).put(
-        MANIFEST_KEY,
-        JSON.stringify({
-          ...finalized,
-          version: MANIFEST_VERSION,
-          intents: CURRENT_MANIFEST_INTENTS,
-        } satisfies MonadWalletManifest)
-      )
-    }
-
     const close = async (): Promise<void> => {
       let firstError: unknown
       for (const store of stores.slice().reverse()) {

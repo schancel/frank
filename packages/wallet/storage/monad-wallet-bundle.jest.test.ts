@@ -341,11 +341,24 @@ describe('Monad wallet persistence bundle', () => {
     await reopened.close()
   })
 
-  it('fails an empty supplied-seed restore on relay outage without creating databases', async () => {
+  it('rejects hostile empty-root allocation counts before network or durable writes', async () => {
     const provider = {
-      getTransactionCount: jest.fn(),
-      getBalance: jest.fn(),
+      getTransactionCount: jest.fn(async (address: string) =>
+        address ===
+        MonadHdKeyring.fromMnemonic(FIRST_MNEMONIC).deriveSubAccount(6).address
+          ? 1
+          : 0
+      ),
+      getBalance: jest.fn(async () => 0n),
     }
+    const assertRelayAvailable = jest.fn(async () => undefined)
+    const recoverAllocationHighWater = jest.fn(async () => ({
+      // Hostile/stale authority claims only index zero was allocated despite later chain history.
+      senderNextIndex: 1,
+      changeNextIndex: 1,
+    }))
+    const recoverSenderEvidence = jest.fn(async () => undefined)
+
     await expect(
       openMonadWalletBundle({
         location: root,
@@ -353,422 +366,17 @@ describe('Monad wallet persistence bundle', () => {
         recovery: {
           provider: provider as never,
           maxIndex: 10,
-          assertRelayAvailable: async () => {
-            throw new Error('relay unavailable')
-          },
-          recoverAllocationHighWater: async () => ({
-            senderNextIndex: 1,
-            changeNextIndex: 1,
-          }),
-          recoverSenderEvidence: async () => undefined,
-        },
-      })
-    ).rejects.toThrow(/relay unavailable/)
-    expect(provider.getTransactionCount).not.toHaveBeenCalled()
-    expect(existsSync(join(root, 'wallet-manifest'))).toBe(false)
-    expect(existsSync(join(root, 'sub-account-pool'))).toBe(false)
-  })
-
-  it('restores a used sender as a terminal checkpoint and never initializes index zero', async () => {
-    const keyring = MonadHdKeyring.fromMnemonic(FIRST_MNEMONIC)
-    const sender = keyring.deriveSubAccount(0)
-    const fundingSigner = Wallet.createRandom()
-    const fundingRaw = await fundingSigner.signTransaction({
-      to: sender.address,
-      value: 100n,
-      nonce: 0,
-      gasLimit: 21_000n,
-      gasPrice: 1n,
-      chainId: 1,
-    })
-    const spendRaw = await new Wallet(sender.privateKey).signTransaction({
-      to: Wallet.createRandom().address,
-      value: 60n,
-      nonce: 0,
-      gasLimit: 21_000n,
-      gasPrice: 1n,
-      chainId: 1,
-    })
-    const provider = {
-      getTransactionCount: jest.fn(async (address: string) =>
-        address === sender.address ? 1 : 0
-      ),
-      getBalance: jest.fn(async () => 0n),
-    }
-    const recoverSenderEvidence = jest.fn(
-      async (index: number, address: string) =>
-        index === 6
-          ? {
-              index,
-              address,
-              status: 'spent' as const,
-              lifecycle: {
-                funding: {
-                  rawTx: fundingRaw,
-                  txHash: Transaction.from(fundingRaw).hash as string,
-                  valueWei: '100',
-                },
-                spend: {
-                  rawTx: spendRaw,
-                  txHash: Transaction.from(spendRaw).hash as string,
-                  valueWei: '60',
-                },
-                recovery: {
-                  kind: 'dust' as const,
-                  valueWei: '1',
-                  thresholdWei: '2',
-                },
-              },
-            }
-          : undefined
-    )
-    const restored = await openMonadWalletBundle({
-      location: root,
-      seed: { mnemonic: FIRST_MNEMONIC },
-      recovery: {
-        provider: provider as never,
-        maxIndex: 10,
-        assertRelayAvailable: async () => undefined,
-        recoverAllocationHighWater: async () => ({
-          senderNextIndex: 1,
-          changeNextIndex: 1,
-        }),
-        recoverSenderEvidence: async (index, address) => ({
-          index,
-          address,
-          status: 'spent',
-          lifecycle: {
-            funding: {
-              rawTx: fundingRaw,
-              txHash: Transaction.from(fundingRaw).hash as string,
-              valueWei: '100',
-            },
-            spend: {
-              rawTx: spendRaw,
-              txHash: Transaction.from(spendRaw).hash as string,
-              valueWei: '60',
-            },
-            recovery: { kind: 'dust', valueWei: '1', thresholdWei: '2' },
-          },
-        }),
-      },
-    })
-    expect(restored.pool.getRecord(0)).toBeUndefined()
-    expect(restored.pool.terminalCheckpoints()).toHaveLength(1)
-    expect(restored.pool.deriveNextUnfunded().index).toBe(1)
-    expect(restored.changePool.nextUnusedIndex()).toBe(1)
-    await restored.close()
-  })
-
-  it('discovers index one across repeated local-loss restores while index zero stays reserved', async () => {
-    const subKeyring = MonadHdKeyring.fromMnemonic(FIRST_MNEMONIC)
-    const changeKeyring = MonadChangeKeyring.fromMnemonic(FIRST_MNEMONIC)
-    const sender = subKeyring.deriveSubAccount(1)
-    const change = changeKeyring.deriveChangeAccount(1)
-    const fundingRaw = await Wallet.createRandom().signTransaction({
-      to: sender.address,
-      value: 100n,
-      nonce: 0,
-      gasLimit: 21_000n,
-      gasPrice: 1n,
-      chainId: 1,
-    })
-    const spendRaw = await new Wallet(sender.privateKey).signTransaction({
-      to: Wallet.createRandom().address,
-      value: 60n,
-      nonce: 0,
-      gasLimit: 21_000n,
-      gasPrice: 1n,
-      chainId: 1,
-    })
-    const provider = {
-      getTransactionCount: jest.fn(async (address: string) =>
-        address === sender.address || address === change.address ? 1 : 0
-      ),
-      getBalance: jest.fn(async () => 0n),
-    }
-    const recoverSenderEvidence = jest.fn(
-      async (index: number, address: string) =>
-        index === 1
-          ? {
-              index,
-              address,
-              status: 'spent' as const,
-              lifecycle: {
-                funding: {
-                  rawTx: fundingRaw,
-                  txHash: Transaction.from(fundingRaw).hash as string,
-                  valueWei: '100',
-                },
-                spend: {
-                  rawTx: spendRaw,
-                  txHash: Transaction.from(spendRaw).hash as string,
-                  valueWei: '60',
-                },
-                recovery: {
-                  kind: 'dust' as const,
-                  valueWei: '1',
-                  thresholdWei: '2',
-                },
-              },
-            }
-          : undefined
-    )
-    const restore = async () =>
-      openMonadWalletBundle({
-        location: root,
-        seed: { mnemonic: FIRST_MNEMONIC },
-        recovery: {
-          provider: provider as never,
-          maxIndex: 10,
-          assertRelayAvailable: async () => undefined,
-          recoverAllocationHighWater: async () => ({
-            senderNextIndex: 2,
-            changeNextIndex: 2,
-          }),
+          assertRelayAvailable,
+          recoverAllocationHighWater,
           recoverSenderEvidence,
-        },
+        } as never,
       })
+    ).rejects.toThrow(/state backup|new seed|allocation ledger/i)
 
-    const first = await restore()
-    expect(first.pool.nextUnusedIndex()).toBe(2)
-    expect(first.changePool.nextUnusedIndex()).toBe(2)
-    await first.close()
-    rmSync(root, { recursive: true, force: true })
-    mkdirSync(root, { mode: 0o700 })
-
-    const second = await restore()
-    expect(second.pool.deriveNextUnfunded().index).toBe(2)
-    expect(second.changePool.nextUnusedIndex()).toBe(2)
-    expect(recoverSenderEvidence).toHaveBeenCalledTimes(4)
-    await second.close()
-  })
-
-  it('discovers a later used sender/change index across an initial unused gap', async () => {
-    const subKeyring = MonadHdKeyring.fromMnemonic(FIRST_MNEMONIC)
-    const changeKeyring = MonadChangeKeyring.fromMnemonic(FIRST_MNEMONIC)
-    const sender = subKeyring.deriveSubAccount(2)
-    const usedChange = changeKeyring.deriveChangeAccount(2)
-    const fundingRaw = await Wallet.createRandom().signTransaction({
-      to: sender.address,
-      value: 100n,
-      nonce: 0,
-      gasLimit: 21_000n,
-      gasPrice: 1n,
-      chainId: 1,
-    })
-    const spendRaw = await new Wallet(sender.privateKey).signTransaction({
-      to: Wallet.createRandom().address,
-      value: 60n,
-      nonce: 0,
-      gasLimit: 21_000n,
-      gasPrice: 1n,
-      chainId: 1,
-    })
-    const provider = {
-      getTransactionCount: jest.fn(async (address: string) =>
-        address === sender.address || address === usedChange.address ? 1 : 0
-      ),
-      getBalance: jest.fn(async () => 0n),
-    }
-    const recoverSenderEvidence = jest.fn(async (index: number) =>
-      index === 2
-        ? {
-            index,
-            address: sender.address,
-            status: 'spent' as const,
-            lifecycle: {
-              funding: {
-                rawTx: fundingRaw,
-                txHash: Transaction.from(fundingRaw).hash as string,
-                valueWei: '100',
-              },
-              spend: {
-                rawTx: spendRaw,
-                txHash: Transaction.from(spendRaw).hash as string,
-                valueWei: '60',
-              },
-              recovery: {
-                kind: 'dust' as const,
-                valueWei: '1',
-                thresholdWei: '2',
-              },
-            },
-          }
-        : undefined
-    )
-    const restored = await openMonadWalletBundle({
-      location: root,
-      seed: { mnemonic: FIRST_MNEMONIC },
-      recovery: {
-        provider: provider as never,
-        maxIndex: 10,
-        assertRelayAvailable: async () => undefined,
-        recoverAllocationHighWater: async () => ({
-          senderNextIndex: 3,
-          changeNextIndex: 3,
-        }),
-        recoverSenderEvidence,
-      },
-    })
-    expect(restored.pool.nextUnusedIndex()).toBe(3)
-    expect(restored.changePool.nextUnusedIndex()).toBe(3)
-    expect(restored.pool.terminalCheckpoints().map((row) => row.index)).toEqual(
-      [2]
-    )
-    expect(recoverSenderEvidence).toHaveBeenCalledWith(1, expect.any(String))
-    expect(recoverSenderEvidence).toHaveBeenCalledWith(2, sender.address)
-    await restored.close()
-  })
-
-  it('never reuses retired gaps before a later allocated sender index', async () => {
-    const keyring = MonadHdKeyring.fromMnemonic(FIRST_MNEMONIC)
-    const sender = keyring.deriveSubAccount(6)
-    const fundingRaw = await Wallet.createRandom().signTransaction({
-      to: sender.address,
-      value: 100n,
-      nonce: 0,
-      gasLimit: 21_000n,
-      gasPrice: 1n,
-      chainId: 1,
-    })
-    const spendRaw = await new Wallet(sender.privateKey).signTransaction({
-      to: Wallet.createRandom().address,
-      value: 60n,
-      nonce: 0,
-      gasLimit: 21_000n,
-      gasPrice: 1n,
-      chainId: 1,
-    })
-    const provider = {
-      getTransactionCount: jest.fn(async (address: string) =>
-        address === sender.address ? 1 : 0
-      ),
-      getBalance: jest.fn(async () => 0n),
-    }
-    const recoverSenderEvidence = jest.fn(
-      async (index: number, address: string) =>
-        index === 6
-          ? {
-              index,
-              address,
-              status: 'spent' as const,
-              lifecycle: {
-                funding: {
-                  rawTx: fundingRaw,
-                  txHash: Transaction.from(fundingRaw).hash as string,
-                  valueWei: '100',
-                },
-                spend: {
-                  rawTx: spendRaw,
-                  txHash: Transaction.from(spendRaw).hash as string,
-                  valueWei: '60',
-                },
-                recovery: {
-                  kind: 'dust' as const,
-                  valueWei: '1',
-                  thresholdWei: '2',
-                },
-              },
-            }
-          : undefined
-    )
-    const restored = await openMonadWalletBundle({
-      location: root,
-      seed: { mnemonic: FIRST_MNEMONIC },
-      recovery: {
-        provider: provider as never,
-        maxIndex: 10,
-        assertRelayAvailable: async () => undefined,
-        recoverAllocationHighWater: async () => ({
-          senderNextIndex: 7,
-          changeNextIndex: 1,
-        }),
-        recoverSenderEvidence,
-      },
-    })
-    expect(restored.pool.nextUnusedIndex()).toBe(7)
-    expect(restored.pool.deriveNextUnfunded().index).toBe(7)
-    expect(recoverSenderEvidence).toHaveBeenCalledTimes(7)
-    expect(provider.getTransactionCount).toHaveBeenCalledTimes(6)
-    await restored.close()
-  })
-
-  it('leaves an empty restore root untouched when allocation authority is unavailable', async () => {
-    const provider = {
-      getTransactionCount: jest.fn(),
-      getBalance: jest.fn(),
-    }
-    await expect(
-      openMonadWalletBundle({
-        location: root,
-        seed: { mnemonic: FIRST_MNEMONIC },
-        recovery: {
-          provider: provider as never,
-          maxIndex: 10,
-          assertRelayAvailable: async () => undefined,
-          recoverAllocationHighWater: async () => {
-            throw new Error('allocation authority unavailable')
-          },
-          recoverSenderEvidence: async () => undefined,
-        },
-      })
-    ).rejects.toThrow(/allocation authority unavailable/)
+    expect(assertRelayAvailable).not.toHaveBeenCalled()
+    expect(recoverAllocationHighWater).not.toHaveBeenCalled()
+    expect(recoverSenderEvidence).not.toHaveBeenCalled()
     expect(provider.getTransactionCount).not.toHaveBeenCalled()
-    expect(existsSync(join(root, 'wallet-manifest'))).toBe(false)
-    expect(existsSync(join(root, 'sub-account-pool'))).toBe(false)
-  })
-
-  it('validates all restore evidence before creating a marker or component database', async () => {
-    const keyring = MonadHdKeyring.fromMnemonic(FIRST_MNEMONIC)
-    const sender = keyring.deriveSubAccount(1)
-    const rawTx = await Wallet.createRandom().signTransaction({
-      to: sender.address,
-      value: 1n,
-      nonce: 0,
-      gasLimit: 21_000n,
-      gasPrice: 1n,
-      chainId: 1,
-    })
-    const provider = {
-      getTransactionCount: jest.fn(async (address: string) =>
-        address === sender.address ? 1 : 0
-      ),
-      getBalance: jest.fn(async () => 0n),
-    }
-    await expect(
-      openMonadWalletBundle({
-        location: root,
-        seed: { mnemonic: FIRST_MNEMONIC },
-        recovery: {
-          provider: provider as never,
-          maxIndex: 10,
-          assertRelayAvailable: async () => undefined,
-          recoverAllocationHighWater: async () => ({
-            senderNextIndex: 2,
-            changeNextIndex: 1,
-          }),
-          recoverSenderEvidence: async (index, address) => ({
-            index,
-            address,
-            status: 'spent',
-            lifecycle: {
-              funding: {
-                rawTx,
-                txHash: `0x${'ff'.repeat(32)}`,
-                valueWei: '1',
-              },
-              spend: {
-                rawTx,
-                txHash: Transaction.from(rawTx).hash as string,
-                valueWei: '1',
-              },
-              recovery: { kind: 'none', valueWei: '0' },
-            },
-          }),
-        },
-      })
-    ).rejects.toThrow(/transaction hash mismatch|funding/i)
     expect(existsSync(join(root, 'wallet-manifest'))).toBe(false)
     expect(existsSync(join(root, 'sub-account-pool'))).toBe(false)
   })
@@ -1138,6 +746,33 @@ describe('Monad wallet persistence bundle', () => {
     }
   })
 
+  it('awaits lost-lock cleanup before release resolves and a successor acquires', async () => {
+    let holderPid: number | undefined
+    const lease = await acquireNodeWalletRootLease(root, {
+      onHolderReady: (holder) => {
+        holderPid = holder.pid
+      },
+    })
+    expect(holderPid).toBeDefined()
+    process.kill(holderPid as number, 'SIGSTOP')
+    writeFileSync(join(root, '.frank-wallet.lock'), 'changed-fence')
+    expect(() => lease?.assertHeld()).toThrow(/fence changed/i)
+
+    let released = false
+    const release = lease?.release().then(() => {
+      released = true
+    })
+    await new Promise((resolve) => setTimeout(resolve, 25))
+    expect(released).toBe(false)
+    process.kill(holderPid as number, 'SIGCONT')
+    await release
+    expect(released).toBe(true)
+
+    const successor = await acquireNodeWalletRootLease(root)
+    expect(successor).toBeDefined()
+    await successor?.release()
+  })
+
   it('does not keep an idle process alive for a forgotten lease', async () => {
     const child = spawnSync(
       process.execPath,
@@ -1303,6 +938,27 @@ describe('Monad wallet persistence bundle', () => {
     expect(existsSync(lockPath)).toBe(true)
   })
 
+  it('fences mutations when root or lock permissions change during ownership', async () => {
+    for (const target of ['root', 'lock'] as const) {
+      const bundle = await openMonadWalletBundle({
+        location: root,
+        createSeedIfEmpty: true,
+      })
+      const path = target === 'root' ? root : join(root, '.frank-wallet.lock')
+      chmodSync(path, target === 'root' ? 0o777 : 0o666)
+      expect(() => bundle.pool.deriveNextUnfunded()).toThrow(/permissions/i)
+      chmodSync(path, target === 'root' ? 0o700 : 0o600)
+      await bundle.close()
+
+      const successor = await openMonadWalletBundle({
+        location: root,
+        createSeedIfEmpty: true,
+      })
+      expect(successor.pool.nextUnusedIndex()).toBe(0)
+      await successor.close()
+    }
+  })
+
   it('rejects a different seed before opening or mutating component stores', async () => {
     await createLegacyRoot(root, false)
     const first = await openMonadWalletBundle({
@@ -1319,6 +975,41 @@ describe('Monad wallet persistence bundle', () => {
         seed: { mnemonic: SECOND_MNEMONIC },
       })
     ).rejects.toThrow(/seed does not match/i)
+  })
+
+  it('rejects finalized manifest v1 roots without upgrading or mutating them', async () => {
+    const current = await openMonadWalletBundle({
+      location: root,
+      createSeedIfEmpty: true,
+    })
+    current.pool.deriveNextUnfunded()
+    await current.pool.flush()
+    await current.close()
+    const manifest = level(join(root, 'wallet-manifest'))
+    const parsed = JSON.parse(await manifest.get('manifest'))
+    const legacy = JSON.stringify({
+      ...parsed,
+      version: 1,
+      intents: [
+        'sub-account-pool-v2',
+        'change-pool-v2',
+        'stamp-attempt-journal-v1',
+        'stamp-payment-journal-v1',
+      ],
+    })
+    await manifest.put('manifest', legacy)
+    await manifest.close()
+
+    await expect(
+      openMonadWalletBundle({ location: root, createSeedIfEmpty: true })
+    ).rejects.toThrow(/manifest v1|state backup|new seed/i)
+    const unchangedManifest = level(join(root, 'wallet-manifest'))
+    expect(await unchangedManifest.get('manifest')).toBe(legacy)
+    await unchangedManifest.close()
+    const unchangedPool = new LevelSubAccountPoolStore(root)
+    await unchangedPool.Open()
+    expect(unchangedPool.getByIndex(0)?.status).toBe('unfunded')
+    await unchangedPool.Close()
   })
 
   it('refuses to place a manifest over an unbound non-empty root', async () => {
@@ -1586,12 +1277,8 @@ describe('Monad wallet persistence bundle', () => {
       seed: { mnemonic: FIRST_MNEMONIC },
       recovery: {
         provider: {} as never,
-        maxIndex: 10,
         assertRelayAvailable: async () => {
           throw new Error('relay unavailable')
-        },
-        recoverAllocationHighWater: async () => {
-          throw new Error('not used for a bound root')
         },
         recoverSenderEvidence: async () => undefined,
       },
@@ -1662,11 +1349,7 @@ describe('Monad wallet persistence bundle', () => {
       seed: { mnemonic: FIRST_MNEMONIC },
       recovery: {
         provider: {} as never,
-        maxIndex: 10,
         assertRelayAvailable: async () => undefined,
-        recoverAllocationHighWater: async () => {
-          throw new Error('not used for a bound root')
-        },
         recoverSenderEvidence: async () => undefined,
       },
     })

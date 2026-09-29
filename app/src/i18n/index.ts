@@ -1,5 +1,7 @@
 import enUS from './en-us'
 import frFR from './fr-fr'
+import quasarEnUS from 'quasar/lang/en-US'
+import quasarFr from 'quasar/lang/fr'
 
 const defaultLocale = 'en-us'
 
@@ -8,23 +10,30 @@ const messages = {
   'fr-fr': frFR,
 }
 
+type SupportedLocale = keyof typeof messages
+
 const translatedLocaleOptions = [
   { value: 'en-us', label: 'English' },
   { value: 'fr-fr', label: 'Français' },
 ]
 
-/** Maps this app's own vue-i18n locale codes to Quasar's own lang-pack module names -- the two
- * don't share a naming scheme (Quasar ships `en-US`/`fr`, not `en-us`/`fr-fr`), so this can't be
- * derived mechanically from `defaultLocale`/`translatedLocaleOptions` above. Every entry in
- * `translatedLocaleOptions` must have one here -- ticket #156. */
-const quasarLangPackByLocale: Record<string, string> = {
-  'en-us': 'en-US',
-  'fr-fr': 'fr',
-}
+/** Maps this app's own vue-i18n locale codes to statically imported Quasar language packs. Bare
+ * package specifiers cannot be assembled at runtime: Vite cannot transform
+ * `import(`quasar/lang/${name}`)`, so a real browser receives an unresolved module specifier and
+ * the app fails before rendering. Every locale option must have an explicit import here. */
+const quasarLangPackByLocale = {
+  'en-us': quasarEnUS,
+  'fr-fr': quasarFr,
+} satisfies Record<SupportedLocale, typeof quasarEnUS>
+
+const quasarLangPackForLocale = (locale: string) =>
+  Object.prototype.hasOwnProperty.call(quasarLangPackByLocale, locale)
+    ? quasarLangPackByLocale[locale as SupportedLocale]
+    : quasarLangPackByLocale[defaultLocale]
 
 export {
   messages,
   defaultLocale,
   translatedLocaleOptions as localeOptions,
-  quasarLangPackByLocale,
+  quasarLangPackForLocale,
 }

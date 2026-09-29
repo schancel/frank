@@ -8,7 +8,7 @@
  * directly) so it works the same from a Composition-API ref (`v => (i18nLocale.value = v)`) and
  * from Options-API's `this.$i18n.locale` property (`v => (this.$i18n.locale = v)`).
  */
-import { quasarLangPackByLocale, defaultLocale } from 'src/i18n'
+import { quasarLangPackForLocale } from 'src/i18n'
 
 export interface QuasarLangTarget {
   lang: { set: (pack: unknown) => void }
@@ -20,9 +20,5 @@ export async function applyLocale(params: {
   locale: string
 }): Promise<void> {
   params.setI18nLocale(params.locale)
-  const packName =
-    quasarLangPackByLocale[params.locale] ??
-    quasarLangPackByLocale[defaultLocale]
-  const language = await import(`quasar/lang/${packName}`)
-  params.$q.lang.set(language.default)
+  params.$q.lang.set(quasarLangPackForLocale(params.locale))
 }

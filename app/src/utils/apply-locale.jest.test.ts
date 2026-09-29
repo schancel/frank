@@ -2,9 +2,8 @@ import { applyLocale } from './apply-locale'
 
 describe('applyLocale', () => {
   it('sets the i18n locale and loads the matching real Quasar lang pack for every known locale', async () => {
-    // Real module resolution, not mocked -- ticket #156 was partly a naming mismatch bug
-    // (`quasarLangPackByLocale`), so this test's whole point is catching a mapping that points at
-    // a Quasar lang-pack module that doesn't actually exist.
+    // Real statically imported modules, not mocked -- a computed bare-module import works in Jest
+    // but is left unresolved by Vite in a real browser (#179).
     for (const [locale, expectedIsoName] of [
       ['en-us', 'en-US'],
       ['fr-fr', 'fr'],

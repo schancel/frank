@@ -1,6 +1,6 @@
 import { parseEther } from 'ethers'
 
-import { blackjackErrorText, parseBetInput } from './blackjack-bet'
+import { parseBetInput } from './blackjack-bet'
 
 describe('parseBetInput', () => {
   it.each(['0.01', '0.1', '1', '1.0', ' 0.5 ', '.5'])('accepts %s', v => {
@@ -33,14 +33,5 @@ describe('parseBetInput', () => {
   })
   it('rejects amounts with more than 18 decimals via the parser', () => {
     expect(parseBetInput(parseEther, '0.1234567890123456789').ok).toBe(false)
-  })
-})
-
-describe('blackjackErrorText', () => {
-  it('extracts the dealer error text', () => {
-    expect(
-      blackjackErrorText('Blackjack: this hand has already been doubled'),
-    ).toBe('this hand has already been doubled')
-    expect(blackjackErrorText('hello')).toBeUndefined()
   })
 })

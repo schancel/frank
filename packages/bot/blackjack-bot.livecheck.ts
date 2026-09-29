@@ -83,6 +83,7 @@ import {
   BLACKJACK_DEFAULT_MAX_WAGER_WEI,
   BlackjackOutcome,
   dealInitialCards,
+  formatBlackjackError,
   HydratedBlackjackMove,
   resolveOutcome,
 } from '@frank/wallet/message-item-plugins/blackjack/game'
@@ -382,7 +383,7 @@ export async function handleMove(params: {
       fromIdentity: identity,
       toAddress: senderAddress,
       toPubKey: senderPubKey,
-      text: `Blackjack: ${text}`,
+      text: formatBlackjackError(gameId, text),
       stampValueWei,
       networkTag,
     })

@@ -2,6 +2,8 @@ import { deriveDeck, handValue, sha256Hex } from './deck'
 import {
   applyDoubleRejection,
   BlackjackGameState,
+  formatBlackjackError,
+  parseBlackjackError,
   validateBetWei,
   HydratedBlackjackMove,
   reduceBlackjackState,
@@ -223,6 +225,16 @@ describe('double lockout recovery', () => {
     expect(broadcast.availableActions).toEqual([])
   })
 
+  it('only acts in dealer_turn', () => {
+    const s: BlackjackGameState = { ...requestDouble(dealt()), phase: 'player_turn' }
+    expect(applyDoubleRejection(s)).toBe(s)
+  })
+
+  it('only acts while the hand still has exactly two cards', () => {
+    const s: BlackjackGameState = { ...requestDouble(dealt()), playerCards: [9, 10, 3] }
+    expect(applyDoubleRejection(s)).toBe(s)
+  })
+
   it('never rewinds a state the dealer already answered', () => {
     const answered = reduceBlackjackState(
       requestDouble(dealt()),
@@ -231,6 +243,21 @@ describe('double lockout recovery', () => {
     expect(applyDoubleRejection(answered)).toBe(answered)
     const fresh = dealt()
     expect(applyDoubleRejection(fresh)).toBe(fresh)
+  })
+})
+
+describe('blackjack error token', () => {
+  it('round-trips awkward game ids and stays readable', () => {
+    for (const id of ['g1', 'a"b', 'x\\y', 'has [game="z"] inside', 'line\nbreak', 'é🃏']) {
+      const text = formatBlackjackError(id, 'nope: really')
+      expect(text.startsWith('Blackjack: nope: really')).toBe(true)
+      expect(parseBlackjackError(text)).toEqual({ gameId: id, text: 'nope: really' })
+    }
+  })
+  it('does not parse untagged or foreign text', () => {
+    expect(parseBlackjackError('Blackjack: nope')).toBeUndefined()
+    expect(parseBlackjackError('hello [game="g1"]')).toBeUndefined()
+    expect(parseBlackjackError('Blackjack: x [game=g1]')).toBeUndefined()
   })
 })
 

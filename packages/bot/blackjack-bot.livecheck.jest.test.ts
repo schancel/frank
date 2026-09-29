@@ -19,6 +19,7 @@ import {
 import {
   dealInitialCards,
   HydratedBlackjackMove,
+  parseBlackjackError,
   resolveOutcome,
 } from '@frank/wallet/message-item-plugins/blackjack/game'
 import {
@@ -38,6 +39,7 @@ import {
 import {
   handleMove,
   hydrateMoveWithValidatedGameId,
+  attemptRefund,
   retryPendingRefunds,
 } from './blackjack-bot.livecheck'
 
@@ -849,4 +851,79 @@ describe('blackjack move authorization', () => {
     expect(mainAccountSigner.buildAndSignTransfer).toHaveBeenCalledWith(getAddress(PLAYER), 100n)
     expect(state.getRefund(DOUBLE_HASH)?.status).toBe('sent')
   })
+
+  // ---- round 2: refund authorization, bankroll accounting, tagged errors -----------------
+  it('tags every error reply with the game id (parseable, still readable)', async () => {
+    await move('deal', hydrated('deal', { gameId: 'weird "id" [game=x]' }))
+    const text = (sendDirectMessageText as jest.Mock).mock.calls[0][0].text as string
+    expect(text.startsWith('Blackjack: deal is a dealer-only action')).toBe(true)
+    expect(parseBlackjackError(text)).toEqual({
+      gameId: 'weird "id" [game=x]',
+      text: 'deal is a dealer-only action',
+    })
+  })
+
+  it('does not refund a double transfer sent by someone other than the authenticated player', async () => {
+    // No such game -> rejected through the pre-record path that still tries to refund.
+    await move(
+      'double',
+      validDouble({
+        gameId: 'nope',
+        verifiedDoubleWager: { fromAddress: ATTACKER, toAddress: DEALER, valueWei: 100n },
+      }),
+    )
+    expect(mainAccountSigner.buildAndSignTransfer).not.toHaveBeenCalled()
+    expect(state.getRefund(DOUBLE_HASH)).toBeUndefined()
+  })
+
+  it('does not refund a double transfer that did not pay this dealer', async () => {
+    await move(
+      'double',
+      validDouble({
+        gameId: 'nope',
+        verifiedDoubleWager: { fromAddress: PLAYER, toAddress: ATTACKER, valueWei: 100n },
+      }),
+    )
+    expect(mainAccountSigner.buildAndSignTransfer).not.toHaveBeenCalled()
+    expect(state.getRefund(DOUBLE_HASH)).toBeUndefined()
+  })
+
+  it('does refund a valid double transfer for a game that does not exist', async () => {
+    await move('double', validDouble({ gameId: 'nope' }))
+    expect(mainAccountSigner.buildAndSignTransfer).toHaveBeenCalledWith(getAddress(PLAYER), 100n)
+  })
+
+  it('accepts a double when the balance covers only its own game re-priced (excludeGameId)', async () => {
+    const seed = findSeed('excl', notNatural)
+    await seedAndBet(seed)
+    getBalance.mockResolvedValue(400n) // 2*(100+100); would need 650 if the game were double counted
+    await move('double', validDouble())
+    expect(state.getGame('game-a')?.doubled).toBe(true)
+  })
+
+  it('counts queued refunds against the bankroll', async () => {
+    await state.claimRefund({ txHash: OTHER_HASH, playerAddress: PLAYER, amountWei: 1000n })
+    getBalance.mockResolvedValue(1249n) // 1000 owed + 250 worst case = 1250
+    await bet()
+    expect(state.getGame('game-a')).toBeUndefined()
+    getBalance.mockResolvedValue(1250n)
+    await bet({ wagerTxHash: `0x${'12'.repeat(32)}` })
+    expect(state.getGame('game-a')).toBeDefined()
+  })
+
+  it.each(['sent', 'submitting'] as const)(
+    'attemptRefund never re-sends a %s refund',
+    async (status) => {
+      await state.claimRefund({ txHash: OTHER_HASH, playerAddress: PLAYER, amountWei: 7n })
+      await state.setRefundStatus(OTHER_HASH, status, status === 'sent' ? '0xdone' : undefined)
+      const result = await attemptRefund({
+        state,
+        txHash: OTHER_HASH,
+        mainAccountSigner: mainAccountSigner as never,
+      })
+      expect(result).toBe(status)
+      expect(mainAccountSigner.buildAndSignTransfer).not.toHaveBeenCalled()
+      expect(mainAccountSigner.submit).not.toHaveBeenCalled()
+    },
+  )
 })

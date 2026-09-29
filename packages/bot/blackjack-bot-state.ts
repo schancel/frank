@@ -699,7 +699,7 @@ export class BlackjackBotStateStore {
   }
 
   /** Sum of the worst-case payouts owed on unresolved games (2.5x an undoubled stake, 2x a
-   * doubled one), optionally excluding one game. Used for the bankroll check. */
+   * doubled one), optionally excluding one game, plus pending refunds. Used for the bankroll check. */
   openExposureWei(excludeGameId?: string): bigint {
     let total = 0n
     for (const [gameId, game] of this.games) {
@@ -708,6 +708,10 @@ export class BlackjackBotStateStore {
       total += game.doubled
         ? 2n * (game.wagerWei + (game.doubleWagerWei ?? 0n))
         : (2500n * game.wagerWei) / 1000n
+    }
+    // Queued refunds are debts against the same balance.
+    for (const refund of this.refunds.values()) {
+      if (refund.status === 'pending') total += refund.amountWei
     }
     return total
   }

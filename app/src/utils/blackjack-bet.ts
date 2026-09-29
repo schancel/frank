@@ -24,10 +24,3 @@ export function parseBetInput(
   const error = validateBetWei(wei)
   return error ? { ok: false, error } : { ok: true, wei }
 }
-
-/** The dealer bot's rejections arrive as plain text messages prefixed "Blackjack: ". */
-export function blackjackErrorText(text: string): string | undefined {
-  return text.startsWith('Blackjack: ')
-    ? text.slice('Blackjack: '.length)
-    : undefined
-}

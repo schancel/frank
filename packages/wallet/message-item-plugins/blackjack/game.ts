@@ -38,6 +38,28 @@ export function validateBetWei(
   return undefined
 }
 
+/** The dealer's rejection text. Keeps the readable "Blackjack: <text>" prefix (old clients show it
+ * as is) and appends a parseable, JSON-quoted gameId token so a client can tell WHICH game an
+ * error is about. */
+export function formatBlackjackError(gameId: string, text: string): string {
+  return `Blackjack: ${text} [game=${JSON.stringify(gameId)}]`
+}
+
+/** Inverse of `formatBlackjackError`; `undefined` for anything that is not a game-tagged dealer
+ * error (including untagged "Blackjack: ..." text). */
+export function parseBlackjackError(
+  raw: string,
+): { gameId: string; text: string } | undefined {
+  const match = /^Blackjack: ([\s\S]*) \[game=("(?:[^"\\]|\\.)*")\]$/.exec(raw)
+  if (!match) return undefined
+  try {
+    const gameId: unknown = JSON.parse(match[2])
+    return typeof gameId === 'string' ? { gameId, text: match[1] } : undefined
+  } catch {
+    return undefined
+  }
+}
+
 export type BlackjackAction =
   | 'bet'
   | 'deal'

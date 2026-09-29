@@ -927,4 +927,26 @@ describe('claimDoubleWagerAndUpdateGame', () => {
     await store.setGame('g', rec({ dealtCount: 5 }))
     expect(await store.claimDoubleWagerAndUpdateGame({ gameId: 'g', doubleWagerTxHash: D1, record: rec({ dealtCount: 6, doubled: true, doubleWagerWei: 100n }) })).toEqual({ ok: false, reason: 'game_state_changed' })
   })
+
+  it('openExposureWei counts undoubled (2.5x), doubled (2x combined) and pending refunds, minus the excluded game', async () => {
+    expect(store.openExposureWei()).toBe(250n)
+    await store.claimDoubleWagerAndUpdateGame({ gameId: 'g', doubleWagerTxHash: D1, record: doubled() })
+    expect(store.openExposureWei()).toBe(400n)
+    expect(store.openExposureWei('g')).toBe(0n)
+
+    await store.claimWagerAndCreateGame({
+      gameId: 'g2',
+      wagerTxHash: H2,
+      record: rec({ wagerTxHash: H2, serverSeed: 'n', serverSeedHash: sha256Hex('n') }),
+      expectedCommitment: next,
+      nextCommitment: { serverSeed: 'm', serverSeedHash: sha256Hex('m') },
+    })
+    expect(store.openExposureWei()).toBe(650n)
+    expect(store.openExposureWei('g')).toBe(250n)
+
+    await store.claimRefund({ txHash: `0x${'44'.repeat(32)}`, playerAddress: player, amountWei: 5n })
+    expect(store.openExposureWei()).toBe(655n)
+    await store.setRefundStatus(`0x${'44'.repeat(32)}`, 'sent', '0x1')
+    expect(store.openExposureWei()).toBe(650n)
+  })
 })

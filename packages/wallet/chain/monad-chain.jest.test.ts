@@ -13,6 +13,7 @@
  * `directMessages.send`/`fetchSince` actually encrypt/decrypt, not merely pass a plaintext through.
  */
 import { Wallet, getBytes, hexlify } from 'ethers'
+import { crypto as bitcoreCrypto } from 'bitcore-lib-xpi'
 
 import { MonadIdentity } from '../monad-identity'
 import { StoredMonadMessageProto } from '../monad-stamp-client'
@@ -61,7 +62,16 @@ jest.mock('../monad-topic-vote-client', () => {
     })),
   }
 })
-jest.mock('@frank/cashweb/relay/monad-message-feed')
+// Explicit factories, not automocks: automock generation loads the real modules in an isolated
+// registry, which makes `bitcore-lib-xpi`'s "more than one instance" guard throw.
+jest.mock('@frank/cashweb/relay/monad-message-feed', () => ({
+  fetchMonadMessagesSince: jest.fn(),
+}))
+jest.mock('@frank/cashweb/relay/monad-mailbox-client', () => ({
+  ...jest.requireActual('@frank/cashweb/relay/monad-mailbox-client'),
+  fetchMonadMailboxRecoveries: jest.fn(),
+  ackMonadMailboxRecovery: jest.fn(),
+}))
 jest.mock('../monad-topic-tally-client')
 jest.mock('../monad-identity', () => {
   const actual = jest.requireActual('../monad-identity')
@@ -88,12 +98,23 @@ const { MonadTopicVoteClient } = jest.requireMock('../monad-topic-vote-client')
 const { MonadAccountTxSigner } = jest.requireMock('../monad-account-tx')
 import { fetchMonadMessagesSince } from '@frank/cashweb/relay/monad-message-feed'
 import {
+  ackMonadMailboxRecovery,
+  fetchMonadMailboxRecoveries,
+} from '@frank/cashweb/relay/monad-mailbox-client'
+import {
   fetchDiscoveredTopics,
   fetchMonadTopicPostView,
   fetchMonadTopicPostsSince,
 } from '../monad-topic-tally-client'
 import { fetchMonadProfile } from '../monad-identity'
 
+const mockedFetchRecoveries =
+  fetchMonadMailboxRecoveries as jest.MockedFunction<
+    typeof fetchMonadMailboxRecoveries
+  >
+const mockedAckRecovery = ackMonadMailboxRecovery as jest.MockedFunction<
+  typeof ackMonadMailboxRecovery
+>
 const mockedFetchMonadMessagesSince =
   fetchMonadMessagesSince as jest.MockedFunction<typeof fetchMonadMessagesSince>
 const mockedFetchMonadTopicPostsSince =
@@ -144,6 +165,8 @@ function makeWallet(identity: MonadIdentity): MonadChainWalletHandle {
 
 beforeEach(() => {
   jest.clearAllMocks()
+  mockedFetchRecoveries.mockResolvedValue({ records: [] })
+  mockedAckRecovery.mockResolvedValue(undefined)
 })
 
 describe('createMonadChain: basic chain properties', () => {
@@ -623,10 +646,23 @@ describe('createMonadChain: directMessages.fetchSince', () => {
       sinceMs: 0,
     })
 
+    // The inbox is the wallet's OWN mailbox, authenticated with its identity key.
     expect(mockedFetchMonadMessagesSince).toHaveBeenCalledWith({
       relayBaseUrl: wallet.relayBaseUrl,
+      recipient: bob.address.raw,
+      signDigest: expect.any(Function),
       sinceMs: 0,
     })
+    const { signDigest } = mockedFetchMonadMessagesSince.mock.calls[0][0]
+    const digest = new Uint8Array(32).fill(7)
+    const der = Buffer.from(await signDigest(digest))
+    expect(
+      bitcoreCrypto.ECDSA.verify(
+        Buffer.from(digest),
+        bitcoreCrypto.Signature.fromDER(der),
+        bob.toBitcorePrivateKey().toPublicKey(),
+      ),
+    ).toBe(true)
     expect(received).toHaveLength(1)
     expect(received[0].senderAddress.raw).toBe(alice.address.raw)
     expect(received[0].recipientAddress.raw).toBe(bob.address.raw)
@@ -975,6 +1011,179 @@ describe('createMonadChain: topics.fetchByTopic / fetchOne / viewToForumMessage'
     expect(result).toEqual([
       { topic: 'general', postCount: 3, lastActivityMs: 500 },
     ])
+  })
+})
+
+describe('createMonadChain: directMessages.fetchSince mailbox behaviour', () => {
+  const { MonadMailboxUnavailableError } = jest.requireActual(
+    '@frank/cashweb/relay/monad-mailbox-client',
+  )
+
+  async function recoveryRecord(
+    bob: MonadIdentity,
+    lifecycle: string,
+    byte: string,
+    options: { wrongDestination?: boolean } = {},
+  ) {
+    const payloadHash = getBytes(`0x${byte.repeat(32)}`)
+    const child = (index: number) =>
+      deriveMonadStampChildPublic({
+        payloadHash,
+        recipientPublicKey: new Uint8Array(bob.compressedPubKey),
+        paymentIndex: index,
+      })
+    const raw = async (index: number, to: string) =>
+      getBytes(
+        await new Wallet(ALICE_PRIVATE_KEY_HEX).signTransaction({
+          type: 2,
+          chainId: 10143,
+          nonce: index,
+          to,
+          value: 100n + BigInt(index),
+          gasLimit: 60_000n,
+          maxFeePerGas: 2n,
+          maxPriorityFeePerGas: 1n,
+        }),
+      )
+    return {
+      payloadHashHex: byte.repeat(32),
+      obligationIdHex: 'cd'.repeat(32),
+      canonicalMessage: {
+        stampPayments: [
+          {
+            childIndex: 0,
+            rawTx: await raw(
+              0,
+              options.wrongDestination
+                ? '0x000000000000000000000000000000000000dEaD'
+                : child(0).address,
+            ),
+          },
+          // Child 1 is not yet confirmed: it must never be journaled.
+          { childIndex: 1, rawTx: await raw(1, child(1).address) },
+        ],
+        encryptedPayload: new Uint8Array([1]),
+        payloadHash,
+      },
+      confirmedChildren: [0],
+      lifecycle,
+    }
+  }
+
+  function walletWithJournal() {
+    const bob = MonadIdentity.fromPrivateKeyHex(BOB_PRIVATE_KEY_HEX)
+    const wallet = makeWallet(bob)
+    const journal = new InMemoryStampPaymentJournal()
+    wallet.stampPaymentJournal = journal
+    return { bob, wallet, journal }
+  }
+
+  it('imports confirmed children of a terminal recovery into the journal, then acks it', async () => {
+    const chain = createMonadChain(TEST_CONFIG)
+    const { bob, wallet, journal } = walletWithJournal()
+    mockedFetchMonadMessagesSince.mockResolvedValueOnce([])
+    const record = await recoveryRecord(bob, 'terminal:expired', 'ab')
+    mockedFetchRecoveries.mockResolvedValueOnce({ records: [record] })
+
+    await expect(
+      chain.directMessages.fetchSince({ wallet, sinceMs: 0 }),
+    ).resolves.toEqual([])
+
+    expect(journal.getAll()).toEqual([
+      expect.objectContaining({
+        payloadHashHex: 'ab'.repeat(32),
+        childIndex: 0,
+        status: 'discovered',
+        valueWei: '100',
+      }),
+    ])
+    expect(mockedAckRecovery).toHaveBeenCalledTimes(1)
+    expect(mockedAckRecovery).toHaveBeenCalledWith(
+      expect.objectContaining({
+        recipient: bob.address.raw,
+        payloadHashHex: 'ab'.repeat(32),
+        obligationIdHex: 'cd'.repeat(32),
+      }),
+    )
+  })
+
+  it('imports but does not ack an obligation that is still active (pending/fully_confirmed/delivered)', async () => {
+    const chain = createMonadChain(TEST_CONFIG)
+    const { bob, wallet, journal } = walletWithJournal()
+    mockedFetchMonadMessagesSince.mockResolvedValueOnce([])
+    mockedFetchRecoveries.mockResolvedValueOnce({
+      records: [
+        await recoveryRecord(bob, 'pending', 'ab'),
+        await recoveryRecord(bob, 'fully_confirmed', 'ac'),
+      ],
+    })
+    await chain.directMessages.fetchSince({ wallet, sinceMs: 0 })
+    expect(journal.getAll()).toHaveLength(2)
+    expect(mockedAckRecovery).not.toHaveBeenCalled()
+  })
+
+  it('does not ack a record it could not import (wrong destination) and still handles the next one', async () => {
+    const chain = createMonadChain(TEST_CONFIG)
+    const { bob, wallet, journal } = walletWithJournal()
+    mockedFetchMonadMessagesSince.mockResolvedValueOnce([])
+    mockedFetchRecoveries.mockResolvedValueOnce({
+      records: [
+        await recoveryRecord(bob, 'terminal:expired', 'ab', {
+          wrongDestination: true,
+        }),
+        await recoveryRecord(bob, 'terminal:expired', 'ac'),
+      ],
+    })
+    await chain.directMessages.fetchSince({ wallet, sinceMs: 0 })
+    expect(journal.getAll().map(r => r.payloadHashHex)).toEqual([
+      'ac'.repeat(32),
+    ])
+    expect(mockedAckRecovery).toHaveBeenCalledTimes(1)
+    expect(mockedAckRecovery).toHaveBeenCalledWith(
+      expect.objectContaining({ payloadHashHex: 'ac'.repeat(32) }),
+    )
+  })
+
+  it('never fetches or acks recoveries without a durable journal (an ack asserts durable import)', async () => {
+    const chain = createMonadChain(TEST_CONFIG)
+    const bob = MonadIdentity.fromPrivateKeyHex(BOB_PRIVATE_KEY_HEX)
+    mockedFetchMonadMessagesSince.mockResolvedValueOnce([])
+    await chain.directMessages.fetchSince({
+      wallet: makeWallet(bob),
+      sinceMs: 0,
+    })
+    expect(mockedFetchRecoveries).not.toHaveBeenCalled()
+    expect(mockedAckRecovery).not.toHaveBeenCalled()
+  })
+
+  it('a recovery/ack failure does not lose the inbox result', async () => {
+    const chain = createMonadChain(TEST_CONFIG)
+    const { bob, wallet } = walletWithJournal()
+    mockedFetchMonadMessagesSince.mockResolvedValue([])
+    mockedFetchRecoveries.mockRejectedValueOnce(new Error('relay down'))
+    await expect(
+      chain.directMessages.fetchSince({ wallet, sinceMs: 0 }),
+    ).resolves.toEqual([])
+
+    mockedFetchRecoveries.mockResolvedValueOnce({
+      records: [await recoveryRecord(bob, 'terminal:expired', 'ab')],
+    })
+    mockedAckRecovery.mockRejectedValueOnce(new Error('ack failed'))
+    await expect(
+      chain.directMessages.fetchSince({ wallet, sinceMs: 0 }),
+    ).resolves.toEqual([])
+  })
+
+  it('propagates a missing mailbox (404) instead of reporting an empty inbox, and skips recovery', async () => {
+    const chain = createMonadChain(TEST_CONFIG)
+    const { wallet } = walletWithJournal()
+    mockedFetchMonadMessagesSince.mockRejectedValueOnce(
+      new MonadMailboxUnavailableError('HTTP 404', 404),
+    )
+    await expect(
+      chain.directMessages.fetchSince({ wallet, sinceMs: 0 }),
+    ).rejects.toBeInstanceOf(MonadMailboxUnavailableError)
+    expect(mockedFetchRecoveries).not.toHaveBeenCalled()
   })
 })
 

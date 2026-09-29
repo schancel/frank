@@ -35,7 +35,7 @@ import { readFileSync } from 'fs'
 import { resolve } from 'path'
 import { Transaction, hexlify } from 'ethers'
 
-import { fetchMonadIdentityPubKey } from '@frank/wallet/monad-identity'
+import { fetchMonadIdentityPubKey, mailboxAuthFor } from '@frank/wallet/monad-identity'
 import {
   parseEnvelope,
   sameMonadEnvelopeAddress,
@@ -183,7 +183,7 @@ async function main() {
     let replyFound = false
     while (Date.now() < deadline) {
       const stored = await fetchMonadMessagesSince({
-        relayBaseUrl,
+        ...mailboxAuthFor(identity, relayBaseUrl),
         sinceMs: since,
       })
       let maxSeenTimestamp = since - 1

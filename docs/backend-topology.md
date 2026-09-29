@@ -103,10 +103,12 @@ encrypted application-level message type. In particular, encrypted self-sent mes
 the first implementation of cross-device checkpoints, as in Stamp; the journal transports and
 orders them without turning checkpoint contents into relay-visible protocol fields.
 
-The current `GET /message/monad?since=...` implementation is a global feed. Every client downloads
-every retained encrypted message and filters using the envelope's plaintext routing fields. That
-must be replaced by a recipient-scoped journal. A scoped-but-unauthenticated address query is only
-a migration aid, not the final privacy boundary: normal mailbox reads must authenticate control of
+The former `GET /message/monad?since=...` global feed (every client downloaded every retained
+encrypted message and filtered on the envelope's plaintext routing fields) was removed in PR #197.
+Clients now read a recipient-scoped inbox (`POST /message/monad/auth/:recipient` challenge, identity
+signature, `GET /message/monad/inbox/:recipient`; client: `packages/cashweb/relay/monad-mailbox-client.ts`),
+which is still a polled inbox, not yet the ordered journal described above. A scoped-but-unauthenticated
+address query would have been only a migration aid, not the final privacy boundary: normal mailbox reads must authenticate control of
 the destination identity without signing the message contents or creating transferable authorship
 evidence.
 

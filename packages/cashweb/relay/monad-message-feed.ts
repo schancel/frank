@@ -1,21 +1,20 @@
 /**
- * `GET /message/monad?since=<timestamp>` client (ticket #37's message-discovery route) --
- * ticket #9's bot needs this to poll for new messages without already knowing their
- * `payload_hash` out of band, which `MonadStampClient` (`./monad-stamp-client.ts`, ticket #13)
- * never needed since it only ever fetches a message it just submitted itself. No TS client for
- * this route existed yet: `monad_message_pb.js`/`.d.ts`'s own doc comment on
- * `StoredMonadMessages` said as much ("Not yet mirrored ... since the app doesn't consume this
- * endpoint yet -- regenerate those when it does") -- this ticket is that "when it does", so
- * `generate_protobufs.sh` was re-run to add the `StoredMonadMessages` binding this file decodes.
+ * Recipient inbox poll for Monad direct messages (ticket #37's discovery feed, migrated to the
+ * authenticated mailbox in PR #197).
  *
- * See `../../../backend/cashweb/cashweb-registry/src/http/monad_message.rs`'s module docs (the
- * "Message discovery" section) for why this endpoint can't filter by recipient server-side, and
- * `./monad-message-envelope.ts` for how this ticket works around that client-side.
+ * The old `GET /message/monad?since=<t>` global feed no longer exists. The relay now serves only
+ * the caller's own inbox, and only against a per-request identity-key signature -- see
+ * `./monad-mailbox-client.ts` for the exact wire contract (challenge, preimage, headers, cursors,
+ * retry/error semantics). This module keeps the historical entry point and return shape
+ * (`StoredMonadMessageProto[]`, ordered by `(timestamp, payload_hash)` ascending, `since` bound
+ * inclusive) so `MonadChain.directMessages.fetchSince` and the bots keep working; what changed is
+ * that the caller must now say *whose* inbox to read and provide the signing callback.
  */
-import axios from 'axios'
-
-import __pb_monad_message_pb from './monad_message_pb'
-const { StoredMonadMessages } = __pb_monad_message_pb
+import {
+  MailboxAuthParams,
+  MonadMailboxError,
+  fetchMonadMailboxInbox,
+} from './monad-mailbox-client'
 // Ticket #53 (package split): the one back-edge from @frank/cashweb to @frank/wallet in this
 // codebase -- type-only (erased at compile time, no runtime coupling) since this type is really
 // `MonadStampClient`'s own decoded-message shape (`../../wallet/monad-stamp-client.ts`), not
@@ -23,37 +22,26 @@ const { StoredMonadMessages } = __pb_monad_message_pb
 // purely for this type.
 import type { StoredMonadMessageProto } from '@frank/wallet/monad-stamp-client'
 
-/** `GET /message/monad?since=<sinceMs>`: every `StoredMonadMessage` the relay has stored at or
- * after `sinceMs` (milliseconds since the Unix epoch), ordered by `timestamp` ascending (the
- * server's own contract -- see that route's doc comment). */
-export async function fetchMonadMessagesSince(params: {
-  relayBaseUrl: string
-  sinceMs: number
-}): Promise<StoredMonadMessageProto[]> {
-  const response = await axios({
-    method: 'get',
-    url: `${params.relayBaseUrl.replace(/\/+$/, '')}/message/monad`,
-    params: { since: params.sinceMs },
-    responseType: 'arraybuffer',
-  })
-  const decoded = StoredMonadMessages.deserializeBinary(
-    new Uint8Array(response.data),
-  )
-  return decoded.getMessagesList().map(stored => {
-    const nested = stored.getMessage()
-    return {
-      message: nested
-        ? {
-            stampPayments: nested.getStampPaymentsList().map(payment => ({
-              childIndex: payment.getChildIndex(),
-              rawTx: payment.getRawTx_asU8(),
-            })),
-            encryptedPayload: nested.getEncryptedPayload_asU8(),
-            payloadHash: nested.getPayloadHash_asU8(),
-          }
-        : undefined,
-      timestamp: stored.getTimestamp(),
-      networkTag: stored.getNetworkTag_asU8(),
-    }
-  })
+/**
+ * Every message the relay has delivered to `params.recipient` at or after `sinceMs` (milliseconds
+ * since the Unix epoch), ordered by `(timestamp, payload_hash)` ascending, de-duplicated by
+ * payload hash.
+ *
+ * Throws {@link MonadMailboxError} subclasses on failure -- notably
+ * `MonadMailboxUnavailableError` when the relay has no mailbox (never an empty result). If a
+ * page after the first fails, the valid prefix is returned and `onTruncated` (if given) is told
+ * why; the next poll continues from the newest returned timestamp.
+ */
+export async function fetchMonadMessagesSince(
+  params: MailboxAuthParams & {
+    sinceMs: number
+    /** Rows per page, 1..100 (default 100, the relay maximum). */
+    pageLimit?: number
+    onTruncated?: (reason: MonadMailboxError) => void
+  },
+): Promise<StoredMonadMessageProto[]> {
+  const { onTruncated, ...rest } = params
+  const result = await fetchMonadMailboxInbox(rest)
+  if (result.truncatedBy !== undefined) onTruncated?.(result.truncatedBy)
+  return result.messages
 }

@@ -56,6 +56,7 @@ import { fetchMonadMessagesSince } from '@frank/cashweb/relay/monad-message-feed
 import {
   fetchMonadIdentityPubKey,
   MonadIdentity,
+  mailboxAuthFor,
 } from '@frank/wallet/monad-identity'
 import { deserializeMessageItems } from '@frank/wallet/chain/monad-chain'
 import { BlackjackMoveItem, Message } from '@frank/cashweb/types/messages'
@@ -598,7 +599,7 @@ async function main() {
   let lastActivityAt = Date.now()
 
   console.log(
-    `\nPolling ${relayBaseUrl}/message/monad?since=<t> every ${pollIntervalMs}ms for messages addressed to ${identity.displayAddress} ...`,
+    `\nPolling ${relayBaseUrl}/message/monad/inbox/<me> (signed mailbox read, since=<t>) every ${pollIntervalMs}ms for messages addressed to ${identity.displayAddress} ...`,
   )
 
   while (handsResolved < maxHands) {
@@ -608,7 +609,7 @@ async function main() {
     }
 
     const stored = await fetchMonadMessagesSince({
-      relayBaseUrl,
+      ...mailboxAuthFor(identity, relayBaseUrl),
       sinceMs: since,
     })
     let maxSeenTimestamp = since - 1

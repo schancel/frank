@@ -40,7 +40,11 @@
  * this would need "have no Monad equivalent to port -- not a gap, a simplification"), so `send()`
  * throws a clear error if asked to send one rather than silently dropping it.
  *
- * `fetchSince()` pages `monad-message-feed.ts`'s `fetchMonadMessagesSince`, parses every stored
+ * `fetchSince()` reads the wallet's own authenticated mailbox (`monad-message-feed.ts`'s
+ * `fetchMonadMessagesSince`, which signs a relay challenge with the identity key; the relay serves
+ * only rows addressed to this identity and a relay without the mailbox is a thrown
+ * `MonadMailboxUnavailableError`, never an empty inbox), then imports/acks confirmed-prefix
+ * recovery obligations (`syncMailboxRecoveries` below), parses every stored
  * message's `encrypted_payload` as a `MonadMessageEnvelope` (`parseEnvelope` -- silently skipping
  * anything that doesn't parse as one, e.g. pre-#9 demo messages with no envelope at all, exactly
  * the behavior that function's own doc comment describes), keeps only envelopes addressed to the
@@ -106,7 +110,11 @@ import { SubAccountLeaseManager } from '../monad-account-lease'
 import { MonadHttpClient } from '../monad-http'
 import { MonadAccountTxSigner } from '../monad-account-tx'
 import { MonadWalletHandle } from '../monad-wallet-handle'
-import { MonadIdentity, fetchMonadProfile } from '../monad-identity'
+import {
+  MonadIdentity,
+  fetchMonadProfile,
+  mailboxAuthFor,
+} from '../monad-identity'
 import {
   MonadStampClient,
   quoteMonadStampPaymentGasReserve,
@@ -115,6 +123,11 @@ import {
 } from '../monad-stamp-client'
 import { deriveMonadStampChildPrivate } from '../monad-stamp-stealth'
 import { fetchMonadMessagesSince } from '@frank/cashweb/relay/monad-message-feed'
+import {
+  MailboxAuthParams,
+  ackMonadMailboxRecovery,
+  fetchMonadMailboxRecoveries,
+} from '@frank/cashweb/relay/monad-mailbox-client'
 import {
   buildEnvelope,
   decryptEnvelope,
@@ -244,6 +257,66 @@ function toChainAddress(raw: string): ChainAddress {
 
 function bareHex(bytes: Uint8Array): string {
   return hexlify(bytes).slice(2)
+}
+
+/**
+ * Imports the recipient-owned payments of relay recovery obligations into the wallet's stamp
+ * payment journal (status `discovered`, so the ordinary sweep path can spend them) and then, only
+ * once every confirmed child of an obligation is journalled, acknowledges terminal obligations so
+ * the relay can retire them. Obligations that are not terminal (`pending`, `fully_confirmed`,
+ * `delivered`) are never acked -- the relay answers 409 for them. Without a journal nothing is
+ * imported and nothing is acked, because an ack asserts the facts were durably imported.
+ *
+ * This is best-effort relative to the inbox read (which already succeeded when this runs): a
+ * relay/network failure here is retried on the next poll rather than failing message delivery,
+ * and one malformed record is skipped without acking it.
+ */
+async function syncMailboxRecoveries(
+  wallet: MonadChainWalletHandle,
+  mailbox: MailboxAuthParams,
+): Promise<void> {
+  const journal = wallet.stampPaymentJournal
+  if (journal === undefined) return
+  let records
+  try {
+    records = (await fetchMonadMailboxRecoveries(mailbox)).records
+  } catch {
+    return
+  }
+  for (const record of records) {
+    try {
+      const confirmed = new Set(record.confirmedChildren)
+      const recovered = recoverMonadStampPayments({
+        message: {
+          ...record.canonicalMessage,
+          stampPayments: record.canonicalMessage.stampPayments.filter(payment =>
+            confirmed.has(payment.childIndex),
+          ),
+        },
+        recipientPrivateKey: getBytes(wallet.identity.toPrivateKeyHex()),
+      })
+      for (const payment of recovered) {
+        if (journal.get(record.payloadHashHex, payment.childIndex)) continue
+        await journal.put({
+          payloadHashHex: record.payloadHashHex,
+          childIndex: payment.childIndex,
+          txHash: payment.txHash,
+          address: payment.address,
+          valueWei: payment.valueWei.toString(),
+          status: 'discovered',
+        })
+      }
+      if (record.lifecycle.startsWith('terminal:')) {
+        await ackMonadMailboxRecovery({
+          ...mailbox,
+          payloadHashHex: record.payloadHashHex,
+          obligationIdHex: record.obligationIdHex,
+        })
+      }
+    } catch {
+      // Leave the obligation unacknowledged; the next poll retries it.
+    }
+  }
 }
 
 /** JSON-serializes `items` for use as a direct message's plaintext -- only the item kinds that
@@ -421,10 +494,12 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
 
     async fetchSince(params): Promise<DirectMessageReceived[]> {
       const wallet = asMonadWallet(params.wallet)
+      const mailbox = mailboxAuthFor(wallet.identity, wallet.relayBaseUrl)
       const stored = await fetchMonadMessagesSince({
-        relayBaseUrl: wallet.relayBaseUrl,
+        ...mailbox,
         sinceMs: params.sinceMs,
       })
+      await syncMailboxRecoveries(wallet, mailbox)
 
       const myAddress = wallet.identity.address.raw.toLowerCase()
       const received: DirectMessageReceived[] = []

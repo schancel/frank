@@ -12,7 +12,7 @@ journal-fact = {
   0: timestamp,
   1: uuid-16, ; stable fact_id and equal-timestamp tiebreaker
   2: uint .le 65535, ; fact kind
-  3: bstr .size (0..8388608), ; kind-specific canonical CBOR or opaque bytes
+  3: bstr .size (0..8388608), ; opaque in version 1: retained exactly, never interpreted (README section 6)
   * uint => frank-value,
 }
 

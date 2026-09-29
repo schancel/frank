@@ -222,9 +222,12 @@ counters and MUST NOT reset them. Implementations MUST fail without partially
 returning a typed object when any limit is exceeded.
 
 Rationale for the limits: 8 MiB bounds a single frame that a phone can buffer
-while leaving room for chunked media beyond R2's 1 MiB message. Depth 32 covers
-the deepest fixtures (about ten nested type-16 levels at three depth each) with
-headroom. Containers 16,384 and items 131,072 (keys counted) let a worst-case
+while leaving room for chunked media beyond R2's 1 MiB message. Depth 32 permits
+a type-16 root with nine further nested type-16 levels and a text leaf (ten
+container levels at three depth each, with no headroom), and only seven type-16
+levels plus a leaf under a type-1 message, whose own nesting uses the first
+nine levels; deeper structures are split into separately framed objects.
+Containers 16,384 and items 131,072 (keys counted) let a large
 R4 checkpoint of 4,096 minimal facts (13 items each) plus 4,096 minimal
 sections (7 items each), about 82,000 items, fit under one counter. Map
 entries 256 and array elements 8,192 exceed every allocated schema bound by a
@@ -426,7 +429,7 @@ opaque section value is retained as exact bytes and is never opened in version
 the job of a later schema. Version 1 allocates no journal-fact `kind`
 values: every fact is retained exactly, none is interpreted or rejected for its
 kind, and `tombstone-fact-payload` is unbound until the checkpoint migration
-(#134) allocates a kind for it. Facts are in canonical byte order (S6), which is
+(#134) allocates a kind for it. Facts are in S6 order (numeric time, then `fact_id`), which is
 not a causal or merge order. Checkpoint authorization, chunk linkage for R4
 exports, and tombstone replay semantics are owned by #134. The proof fixture contains an unknown section and an unknown nested
 message item whose exact bytes survive every round trip.
@@ -634,7 +637,7 @@ category, and an implementation MUST NOT continue to report a later failure.
       items per array, the 524,288-byte ciphertext, 32 relay bindings, 16
       signatures, 4,096 journal facts, and 4,096 opaque sections. Every other
       CDDL bound, including a lower bound such as `[1*64]` given no items and
-      `[1*16 key-transition]`, `[1*8 account-ref]`, is `schema`;
+      the upper bounds of `[1*16 key-transition]` and `[1*8 account-ref]`, is `schema`;
    2. the type's CDDL structure and range rules, including network-tag,
       ASCII-identifier, and endpoint-ASCII syntax (S1, C6, S4), and C12 unknown
       keys: `schema`. A CDDL cardinality or `.size` bound that merely restates an
@@ -670,8 +673,9 @@ category, and an implementation MUST NOT continue to report a later failure.
    destination be key type 1, and T3a.5 index contiguity: `semantic`. No signature or digest is
    verified here.
 10. **Cryptographic and external checks**, `full` only, in this order. A root
-    other than type 1 or type 2 runs no stage 10 check, and its context fields
-    MUST be null:
+    other than type 1 or type 2 runs no stage 10 check. For every root other than
+    type 1, `payment_policy` and `decrypted_frame_hex` MUST be null, and for every
+    root other than type 2, `prior_directory_statement_frame_hex` MUST be null:
     1. Decrypted content: the supplied decrypted frame is an embedded child of
        the type-5 payload sharing its counters and not charged against
        `route_byte_limit`, but its length is checked against `MAX_FRAME_BYTES`
@@ -784,16 +788,16 @@ multiple rules, the validation order in section 9 selects the first category;
 implementations MUST NOT continue merely to report a later failure. Passes A
 and B in section 9 define the order within CBOR validation.
 
-| Failure                                                                                                                                                                                                                                                                                                                                                                   | Category        |
-| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------- |
-| Frame or route length over a limit; any byte/depth/container/item limit; R2 through R4 type-specific limits, including a CDDL bound that restates them                                                                                                                                                                                                                    | `resource`      |
-| Short header, bad magic, declared-length mismatch, concatenated frame, bytes outside the declared body                                                                                                                                                                                                                                                                    | `frame`         |
-| Unknown frame version or uninterpretable type/schema without permitted retention; unallocated key type, algorithm, encryption suite, or algorithm/key-type/length pairing                                                                                                                                                                                                 | `unsupported`   |
-| Truncated/invalid CBOR syntax, invalid UTF-8, reserved additional information, or extra CBOR item in body/payload                                                                                                                                                                                                                                                         | `malformed`     |
-| Non-minimal integer/length, indefinite value, duplicate/out-of-order map key, or another alternate encoding of an allowed value                                                                                                                                                                                                                                           | `noncanonical`  |
-| Forbidden CBOR class (float, tag, forbidden simple value; a stray break code is `malformed`; non-uint map key), envelope/CDDL type mismatch, undeclared key (C12), missing/extra required key, scalar range violation, network-tag/ASCII-identifier/endpoint syntax violation, wrong key length for an allocated key type, or `min_reader_version` above `schema_version` | `schema`        |
-| Wrong `type_id` in a required-type framed field; list order/uniqueness, revision or network versus the prior statement, transition count/linkage, missing subject-signed entry, unregistered prior authority, cross-field or network equality, key shape, contiguity, decrypted frame not type 6, type-6 network mismatch, or S3 overflow/sum below minimum               | `semantic`      |
-| Digest, hash, or signature mismatch; ciphertext not equal to the suite-65535 decrypted bytes; T3a scalar/point failure; wrong derived destination; transaction observation or commitment mismatch                                                                                                                                                                         | `cryptographic` |
+| Failure                                                                                                                                                                                                                                                                                                                                                                              | Category        |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------- |
+| Frame or route length over a limit; any byte/depth/container/item limit; R2 through R4 type-specific limits, including a CDDL bound that restates them                                                                                                                                                                                                                               | `resource`      |
+| Short header, bad magic, declared-length mismatch, concatenated frame, bytes outside the declared body                                                                                                                                                                                                                                                                               | `frame`         |
+| Unknown frame version or uninterpretable type/schema without permitted retention; unallocated key type, algorithm, encryption suite, or algorithm/key-type/length pairing                                                                                                                                                                                                            | `unsupported`   |
+| Truncated/invalid CBOR syntax, invalid UTF-8, reserved additional information, or extra CBOR item in body/payload                                                                                                                                                                                                                                                                    | `malformed`     |
+| Non-minimal integer/length, indefinite value, duplicate/out-of-order map key, or another alternate encoding of an allowed value                                                                                                                                                                                                                                                      | `noncanonical`  |
+| Forbidden CBOR class (float, tag, forbidden simple value; a stray break code is `malformed`; non-uint map key), envelope/CDDL type mismatch, undeclared key (C12), missing/extra required key, scalar range violation, network-tag/ASCII-identifier/endpoint syntax violation, wrong key length for an allocated key type, or `min_reader_version` above `schema_version`            | `schema`        |
+| Wrong `type_id` in a required-type framed field; list order/uniqueness, revision or network versus the prior statement, transition count/linkage, missing subject-signed entry, unregistered prior authority, cross-field or network equality, key shape, contiguity, decrypted frame not type 6, type-6 network mismatch, or S3 overflow, zero observed value, or sum below minimum | `semantic`      |
+| Digest, hash, or signature mismatch; ciphertext not equal to the suite-65535 decrypted bytes; T3a scalar/point failure; wrong derived destination; transaction observation or commitment mismatch                                                                                                                                                                                    | `cryptographic` |
 
 Vector case IDs MUST be unique. `paired_case`, when present, MUST name a
 different existing case, be reciprocal, and indicate two cases whose
@@ -814,10 +818,9 @@ whose frame version byte is `01` (`frame` retention is valid only for an
 unsupported version). It MUST also reject: an accept case whose `type_id` or
 `schema_version` differs from its frame's envelope; a `payment_commitments_hex`
 whose length differs from the frame's payment-member count; a non-null
-`payment_policy` or `decrypted_frame_hex` where the frame's type does not use
-it; a `retain` case whose root type is known, `min_reader_version` does not
-exceed `reader_version`, and frame version is `01`; a `retain` under `frame`
-that is not for an unsupported version; and any rule ID that is not a numbered
+`payment_policy` or `decrypted_frame_hex` for a root other than type 1, or a
+non-null `prior_directory_statement_frame_hex` for a root other than type 2; a `retain` case whose root type is known, `min_reader_version` does not
+exceed `reader_version`, and frame version is `01`; and any rule ID that is not a numbered
 rule in this README. Every reject vector for a rule SHOULD have an accept twin
 or a `paired_case`, and each limit rule SHOULD have an at-limit accept and a
 one-over reject.

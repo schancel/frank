@@ -820,7 +820,21 @@ impl<'a> DbMonadOutbox<'a> {
                 return Ok(MonadOutboxClaim::Conflict)
             }
         };
-        validate_claim(&payload_hash, message, &canonical_message, &policy, limits)?;
+        // The predecessor already durably admitted this exact set. A later operator decrease is
+        // admission policy for new sets, while the stable codec bound still limits adoption.
+        let admitted_member_limit = if adopted_legacy {
+            MAX_MEMBERS_HARD
+        } else {
+            limits.max_members
+        };
+        validate_claim(
+            &payload_hash,
+            message,
+            &canonical_message,
+            &policy,
+            limits,
+            admitted_member_limit,
+        )?;
         if self.active_count_up_to(limits.max_active_claims)? >= limits.max_active_claims {
             return Ok(if adopted_legacy {
                 MonadOutboxClaim::AtCapacityExactLegacy
@@ -2303,6 +2317,7 @@ fn validate_claim(
     canonical: &[u8],
     policy: &MonadOutboxPolicy,
     limits: &MonadOutboxLimits,
+    admitted_member_limit: usize,
 ) -> Result<()> {
     policy.validate_recipient_authority()?;
     if canonical.len() > limits.max_canonical_bytes {
@@ -2312,10 +2327,10 @@ fn validate_claim(
         }
         .into());
     }
-    if message.stamp_payments.is_empty() || message.stamp_payments.len() > limits.max_members {
+    if message.stamp_payments.is_empty() || message.stamp_payments.len() > admitted_member_limit {
         return Err(InvalidMemberCount {
             actual: message.stamp_payments.len(),
-            maximum: limits.max_members,
+            maximum: admitted_member_limit,
         }
         .into());
     }
@@ -2948,7 +2963,9 @@ mod tests {
 
         let tempdir = tempdir::TempDir::new("monad-outbox-adopt")?;
         let db = Db::open(tempdir.path().join("db.rocksdb"))?;
-        let request = message(&[b"legacy exact raw"]);
+        let request = message(&[b"legacy exact raw zero", b"legacy exact raw one"]);
+        let mut lowered_limits = MonadOutboxLimits::default();
+        lowered_limits.max_members = 1;
         let legacy = MonadMessageAttemptPolicy {
             recipient_pubkey: policy().recipient_pubkey,
             min_value_wei: 77,
@@ -2965,7 +2982,7 @@ mod tests {
                 &request,
                 &policy(),
                 100,
-                &MonadOutboxLimits::default(),
+                &lowered_limits,
             )?,
             MonadOutboxClaim::New
         );
@@ -3009,6 +3026,38 @@ mod tests {
             db.monad_messages()
                 .get_attempt(&conflicting_owner.payload_hash, &conflicting_owner)?,
             MonadMessageAttemptClaim::ExistingExact(legacy)
+        );
+
+        let oversized_raw_txs = vec![b"oversized legacy raw".as_slice(); MAX_MEMBERS_HARD + 1];
+        let oversized = message_with_seed(b"oversized legacy", &oversized_raw_txs);
+        let oversized_policy = MonadMessageAttemptPolicy {
+            recipient_pubkey: policy().recipient_pubkey,
+            min_value_wei: 77,
+            network_tag: Some(b"legacy-net".to_vec()),
+        };
+        assert_eq!(
+            db.monad_messages().claim_attempt(
+                &oversized.payload_hash,
+                &oversized,
+                &oversized_policy,
+            )?,
+            MonadMessageAttemptClaim::New
+        );
+        let error = db
+            .monad_outbox()
+            .claim(
+                &oversized.payload_hash,
+                &oversized,
+                &policy(),
+                101,
+                &lowered_limits,
+            )
+            .expect_err("legacy adoption must still enforce the stable hard member cap");
+        assert!(format!("{error:#}").contains(&format!("1..={MAX_MEMBERS_HARD}")));
+        assert_eq!(
+            db.monad_messages()
+                .get_attempt(&oversized.payload_hash, &oversized)?,
+            MonadMessageAttemptClaim::ExistingExact(oversized_policy)
         );
         Ok(())
     }
@@ -3617,10 +3666,25 @@ mod tests {
         let no_prefix = message_with_seed(b"v4 stale no prefix", &[b"no-prefix-raw"]);
         let with_prefix =
             message_with_seed(b"v4 retained prefix", &[b"prefix-zero", b"prefix-one"]);
+        let preexisting_history = message_with_seed(b"v4 preexisting history", &[b"history-raw"]);
         let limits = MonadOutboxLimits::default();
         {
             let db = Db::open(&path)?;
             let store = db.monad_outbox();
+            store.claim(
+                &preexisting_history.payload_hash,
+                &preexisting_history,
+                &policy(),
+                80,
+                &limits,
+            )?;
+            store.confirm_observed_member(&preexisting_history.payload_hash, 0, 10, 7, 81)?;
+            assert!(store.mark_fully_confirmed(&preexisting_history.payload_hash, 82)?);
+            store.finalize_delivery_unchecked_for_test(
+                &preexisting_history.payload_hash,
+                83,
+                &limits,
+            )?;
             store.claim(&no_prefix.payload_hash, &no_prefix, &policy(), 100, &limits)?;
             store.terminal_observed_member(
                 &no_prefix.payload_hash,
@@ -3653,35 +3717,69 @@ mod tests {
                 112,
                 &limits,
             )?;
+            db.rocksdb()
+                .delete_cf(store.cf_history, history_key(102, &no_prefix_hash))?;
             assert!(db.get(store.cf_meta, b"outbox-lifecycle-v3")?.is_some());
             db.rocksdb()
                 .delete_cf(store.cf_meta, b"outbox-terminal-recovery-v4")?;
             db.rocksdb()
                 .delete_cf(store.cf_meta, b"outbox-terminal-recovery-v4-cursor")?;
+            assert!(db
+                .get(store.cf_meta, b"outbox-terminal-recovery-v4")?
+                .is_none());
+            assert_eq!(
+                db.rocksdb()
+                    .iterator_cf(store.cf_history, IteratorMode::Start)
+                    .count(),
+                1,
+                "the deployed v3 fixture retains real history before the v4 migration"
+            );
+            let preexisting_history_hash: [u8; 32] = preexisting_history
+                .payload_hash
+                .as_slice()
+                .try_into()
+                .unwrap();
+            assert!(db
+                .get(store.cf_history, history_key(83, &preexisting_history_hash))?
+                .is_some());
+            assert!(store.get(&no_prefix_hash)?.is_some());
+            assert!(db
+                .get(
+                    store.cf_recipient,
+                    recipient_key(&policy().recipient, &no_prefix_hash),
+                )?
+                .is_some());
         }
 
-        let mut zero_history = limits;
-        zero_history.max_history_records = 0;
-        zero_history.max_history_bytes = 0;
-        let db = Db::open_with_monad_outbox_limits(&path, &zero_history)?;
+        let mut migration_limits = limits;
+        migration_limits.max_history_age = Duration::from_secs(u64::MAX);
+        let db = Db::open_with_monad_outbox_limits(&path, &migration_limits)?;
         let store = db.monad_outbox();
         assert!(db
             .get(store.cf_meta, b"outbox-terminal-recovery-v4")?
             .is_some());
         let no_prefix_hash: [u8; 32] = no_prefix.payload_hash.as_slice().try_into().unwrap();
-        assert!(store.get(&no_prefix_hash)?.is_none());
+        assert!(store.get(&no_prefix_hash)?.is_some());
         assert!(db
             .get(
                 store.cf_recipient,
                 recipient_key(&policy().recipient, &no_prefix_hash),
             )?
             .is_none());
+        let preexisting_history_hash: [u8; 32] = preexisting_history
+            .payload_hash
+            .as_slice()
+            .try_into()
+            .unwrap();
+        assert!(db
+            .get(store.cf_history, history_key(83, &preexisting_history_hash),)?
+            .is_some());
         assert_eq!(
             db.rocksdb()
                 .iterator_cf(store.cf_history, IteratorMode::Start)
                 .count(),
-            0,
-            "zero history bounds are applied during the deployed v4 upgrade"
+            2,
+            "v4 adds the deployed no-prefix terminal row without replacing retained history"
         );
         let recoveries = store.confirmed_prefixes_for_recipient(&policy().recipient, 10)?;
         assert_eq!(recoveries.len(), 1);
@@ -3690,6 +3788,52 @@ mod tests {
             with_prefix.payload_hash
         );
         assert_eq!(recoveries[0].confirmed_prefix.len(), 1);
+        let quota_candidate = message_with_seed(b"v4 quota candidate", &[b"candidate-raw"]);
+        let quota_overflow = message_with_seed(b"v4 quota overflow", &[b"overflow-raw"]);
+        let mut recovery_limits = migration_limits.clone();
+        recovery_limits.max_recovery_records = 2;
+        recovery_limits.max_recovery_records_per_recipient = 2;
+        assert_eq!(
+            store.claim(
+                &quota_candidate.payload_hash,
+                &quota_candidate,
+                &policy(),
+                120,
+                &recovery_limits,
+            )?,
+            MonadOutboxClaim::New,
+            "migrated nonrecoverable history must not consume recovery quota"
+        );
+        assert_eq!(
+            store.claim(
+                &quota_overflow.payload_hash,
+                &quota_overflow,
+                &policy(),
+                121,
+                &recovery_limits,
+            )?,
+            MonadOutboxClaim::AtCapacity,
+            "the independent recovery quota still applies to active obligations"
+        );
+        let mut zero_history = migration_limits;
+        zero_history.max_history_records = 0;
+        zero_history.max_history_bytes = 0;
+        store.gc_history(1_000, &zero_history)?;
+        assert!(store.get(&no_prefix_hash)?.is_none());
+        assert_eq!(
+            db.rocksdb()
+                .iterator_cf(store.cf_history, IteratorMode::Start)
+                .count(),
+            0,
+            "configured zero-history GC removes the migrated terminal row"
+        );
+        assert_eq!(
+            store
+                .confirmed_prefixes_for_recipient(&policy().recipient, 10)?
+                .len(),
+            1,
+            "history GC cannot remove the confirmed-prefix obligation"
+        );
         Ok(())
     }
 

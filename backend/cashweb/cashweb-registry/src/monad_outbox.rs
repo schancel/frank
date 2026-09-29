@@ -5,9 +5,11 @@
 //! an already-confirmed prefix without ever treating a competing nonce winner as confirmed.
 //!
 //! ```compile_fail
-//! use cashweb_registry::monad_outbox::{
-//!     reconcile_monad_outbox, reconcile_monad_outbox_with_permits,
-//! };
+//! use cashweb_registry::monad_outbox::reconcile_monad_outbox;
+//! ```
+//!
+//! ```compile_fail
+//! use cashweb_registry::monad_outbox::reconcile_monad_outbox_with_permits;
 //! ```
 
 use std::{sync::Arc, time::Duration};

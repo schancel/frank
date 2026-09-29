@@ -13,13 +13,16 @@
 //! identity cannot exhaust another identity's authority. Inbox pages use `(timestamp,
 //! payload_hash)` ordering and recovery pages use `payload_hash` ordering. Their authenticated
 //! cursor is strict-forward, returned in `x-frank-mailbox-next-cursor`, and must be supplied in
-//! the next signed query. The old unauthenticated exact/global GET routes are deliberately not
-//! installed.
+//! the next signed query. The signature binds the opaque cursor token as length-prefixed UTF-8
+//! exactly as returned; a client never decodes the relay-authenticated cursor position. The old
+//! unauthenticated exact/global GET routes are deliberately not installed.
 //!
 //! ```compile_fail
-//! use cashweb_registry::http::monad_message::{
-//!     handle_get_monad_message, handle_list_monad_messages,
-//! };
+//! use cashweb_registry::http::monad_message::handle_get_monad_message;
+//! ```
+//!
+//! ```compile_fail
+//! use cashweb_registry::http::monad_message::handle_list_monad_messages;
 //! ```
 //!
 //! ## Why a separate route, and a separate message type, instead of extending `PUT /message`
@@ -87,7 +90,7 @@ const MAX_PRIVATE_RECOVERY_SCAN: usize = 512;
 // inspected RocksDB work is independently capped at the full requested response-byte ceiling.
 const PRIVATE_RECOVERY_CANONICAL_BUDGET_DIVISOR: usize = 2;
 const PRIVATE_RECOVERY_WORK_BUDGET_DIVISOR: usize = 1;
-const MAILBOX_AUTH_DOMAIN: &[u8] = b"frank:mailbox-http-auth:v1\0";
+const MAILBOX_AUTH_DOMAIN: &str = "frank:mailbox-http-auth:v2";
 const MAILBOX_EPOCH_HEADER: &str = "x-frank-mailbox-epoch";
 const MAILBOX_NONCE_HEADER: &str = "x-frank-mailbox-nonce";
 const MAILBOX_EXPIRY_HEADER: &str = "x-frank-mailbox-expires-at-ms";
@@ -102,8 +105,8 @@ use crate::{
     monad_evm_tx::{decode_signed_transaction, EvmTxError},
     monad_http::{Address, Hash32, JsonRpcTransport},
     monad_mailbox::{
-        MailboxChallenge, MailboxCursor, MailboxRequestBinding, MailboxResource,
-        MAX_USED_CHALLENGES_PER_RECIPIENT,
+        MailboxChallenge, MailboxCursor, MailboxCursorBinding, MailboxRequestBinding,
+        MailboxResource, MAX_USED_CHALLENGES_PER_RECIPIENT,
     },
     monad_outbox::{
         reconcile_monad_outbox_with_permits, MonadOutboxPermitPool, MonadOutboxReconcileOutcome,
@@ -1655,7 +1658,8 @@ fn mailbox_auth_preimage(
     network_tag: &[u8],
 ) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(224 + network_tag.len());
-    bytes.extend_from_slice(MAILBOX_AUTH_DOMAIN);
+    bytes.extend_from_slice(MAILBOX_AUTH_DOMAIN.as_bytes());
+    bytes.push(0);
     bytes.extend_from_slice(&challenge.epoch);
     bytes.extend_from_slice(&challenge.nonce);
     bytes.extend_from_slice(&challenge.expires_at_ms.to_be_bytes());
@@ -1680,9 +1684,13 @@ fn private_binding(
         .as_enabled()
         .ok_or(PrivateMailboxError::Unauthorized)?;
     let cursor = cursor
-        .map(|cursor| {
+        .map(|token| {
             runtime
-                .decode_cursor(recipient, resource, cursor)
+                .decode_cursor(recipient, resource, token)
+                .map(|position| MailboxCursorBinding {
+                    position,
+                    token: token.to_string(),
+                })
                 .ok_or(PrivateMailboxError::Unauthorized)
         })
         .transpose()?;
@@ -1835,7 +1843,7 @@ pub(crate) async fn handle_issue_mailbox_challenge(
         nonce: hex::encode(challenge.nonce),
         expires_at_ms: challenge.expires_at_ms,
         token: hex::encode(challenge.token),
-        signing_domain: "frank:mailbox-http-auth:v1",
+        signing_domain: MAILBOX_AUTH_DOMAIN,
         resource: match resource {
             MailboxResource::Inbox => "inbox",
             MailboxResource::Recovery => "recovery",
@@ -1876,7 +1884,7 @@ pub(crate) async fn handle_get_private_monad_messages(
         .try_acquire_private_read()
         .ok_or(PrivateMailboxError::AtCapacity)?;
     authenticate_private_recipient(authentication, &server, &binding)?;
-    let cursor = match binding.cursor {
+    let cursor = match binding.cursor.as_ref().map(|cursor| cursor.position) {
         Some(MailboxCursor::Inbox {
             timestamp,
             payload_hash,
@@ -1940,7 +1948,7 @@ pub(crate) async fn handle_get_private_monad_recovery(
         .try_acquire_private_read()
         .ok_or(PrivateMailboxError::AtCapacity)?;
     authenticate_private_recipient(authentication, &server, &binding)?;
-    let cursor = match binding.cursor {
+    let cursor = match binding.cursor.as_ref().map(|cursor| cursor.position) {
         Some(MailboxCursor::Recovery { payload_hash }) => Some(payload_hash),
         Some(MailboxCursor::Inbox { .. }) => return Err(PrivateMailboxError::Unauthorized),
         None => None,
@@ -2205,7 +2213,10 @@ mod tests {
     use std::{
         collections::{HashMap, VecDeque},
         fmt,
-        sync::{Arc, Mutex},
+        sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc, Mutex,
+        },
     };
 
     use async_trait::async_trait;
@@ -2539,10 +2550,43 @@ mod tests {
     }
 
     fn valid_signed_message(ciphertext_byte: u8, signer_byte: u8) -> proto::MonadStampedMessage {
+        valid_signed_message_with_members(ciphertext_byte, &[signer_byte])
+    }
+
+    fn valid_signed_message_with_members(
+        ciphertext_byte: u8,
+        signer_bytes: &[u8],
+    ) -> proto::MonadStampedMessage {
         let mut envelope: Value =
             serde_json::from_slice(&valid_envelope(recipient_address(), "MONT")).unwrap();
         envelope["ciphertext"] = serde_json::json!(format!("{ciphertext_byte:02x}"));
-        signed_message_for_envelope(serde_json::to_vec(&envelope).unwrap(), signer_byte, 41_454)
+        let encrypted_payload = serde_json::to_vec(&envelope).unwrap();
+        let payload_hash = Sha256::digest(encrypted_payload.clone().into());
+        let ecc = EccSecp256k1::default();
+        let stamp_payments = signer_bytes
+            .iter()
+            .enumerate()
+            .map(|(child_index, signer_byte)| {
+                let sender = ecc.seckey_from_array([*signer_byte; 32]).unwrap();
+                let (raw_tx, _) = signed_eip1559_tx(
+                    &sender,
+                    41_454,
+                    0,
+                    stamp_destination_at(&payload_hash, child_index as u32),
+                    10_000,
+                    &commitment_calldata_bytes(&payload_hash, child_index as u32),
+                );
+                proto::MonadStampPayment {
+                    child_index: child_index as u32,
+                    raw_tx,
+                }
+            })
+            .collect();
+        proto::MonadStampedMessage {
+            encrypted_payload,
+            payload_hash: payload_hash.as_slice().to_vec(),
+            stamp_payments,
+        }
     }
 
     fn signed_message_for_envelope(
@@ -2668,6 +2712,81 @@ mod tests {
         headers.insert(
             MAILBOX_TOKEN_HEADER,
             hex::encode(challenge.token).parse().unwrap(),
+        );
+        headers.insert(
+            MAILBOX_SIGNATURE_HEADER,
+            hex::encode(signature).parse().unwrap(),
+        );
+        headers
+    }
+
+    fn client_mailbox_auth_preimage(
+        challenge: &Value,
+        recipient: Address,
+        network_tag: &[u8],
+    ) -> Vec<u8> {
+        let signing_domain = challenge["signing_domain"].as_str().unwrap();
+        let resource = challenge["resource"].as_str().unwrap();
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(signing_domain.as_bytes());
+        bytes.push(0);
+        bytes.extend_from_slice(&hex::decode(challenge["epoch"].as_str().unwrap()).unwrap());
+        bytes.extend_from_slice(&hex::decode(challenge["nonce"].as_str().unwrap()).unwrap());
+        bytes.extend_from_slice(&challenge["expires_at_ms"].as_i64().unwrap().to_be_bytes());
+        bytes.extend_from_slice(&hex::decode(challenge["token"].as_str().unwrap()).unwrap());
+        bytes.extend_from_slice(b"GET\0/message/monad/");
+        match resource {
+            "inbox" => {
+                bytes.extend_from_slice(b"inbox/");
+                bytes.push(1);
+            }
+            "recovery" => {
+                bytes.extend_from_slice(b"recovery/");
+                bytes.push(2);
+            }
+            other => panic!("unexpected public mailbox resource {other}"),
+        }
+        bytes.extend_from_slice(&recipient.0);
+        bytes.extend_from_slice(&challenge["since"].as_i64().unwrap().to_be_bytes());
+        if let Some(cursor) = challenge["cursor"].as_str() {
+            bytes.push(1);
+            bytes.extend_from_slice(&(cursor.len() as u32).to_be_bytes());
+            bytes.extend_from_slice(cursor.as_bytes());
+        } else {
+            bytes.push(0);
+        }
+        bytes.extend_from_slice(&challenge["limit"].as_u64().unwrap().to_be_bytes());
+        bytes.extend_from_slice(&challenge["max_bytes"].as_u64().unwrap().to_be_bytes());
+        bytes.extend_from_slice(&(network_tag.len() as u32).to_be_bytes());
+        bytes.extend_from_slice(network_tag);
+        bytes
+    }
+
+    fn signed_public_challenge_headers(challenge: &Value, preimage: &[u8]) -> HeaderMap {
+        let digest = Sha256::digest(preimage.into());
+        let signature =
+            EccSecp256k1::default().sign(&recipient_seckey(), digest.byte_array().clone());
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            MAILBOX_EPOCH_HEADER,
+            challenge["epoch"].as_str().unwrap().parse().unwrap(),
+        );
+        headers.insert(
+            MAILBOX_NONCE_HEADER,
+            challenge["nonce"].as_str().unwrap().parse().unwrap(),
+        );
+        headers.insert(
+            MAILBOX_EXPIRY_HEADER,
+            challenge["expires_at_ms"]
+                .as_i64()
+                .unwrap()
+                .to_string()
+                .parse()
+                .unwrap(),
+        );
+        headers.insert(
+            MAILBOX_TOKEN_HEADER,
+            challenge["token"].as_str().unwrap().parse().unwrap(),
         );
         headers.insert(
             MAILBOX_SIGNATURE_HEADER,
@@ -4207,6 +4326,204 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn production_router_adopts_legacy_owner_after_member_limit_is_lowered() {
+        let message = valid_signed_message_with_members(0x75, &[0x46, 0x47]);
+        let (_tempdir, registry) = test_registry();
+        let db_path = _tempdir.path().join("db.rocksdb");
+        let recipient_pubkey = EccSecp256k1::default().derive_pubkey(&recipient_seckey());
+        let legacy_policy = MonadMessageAttemptPolicy {
+            recipient_pubkey: recipient_pubkey.as_slice().to_vec(),
+            min_value_wei: 20_000,
+            network_tag: Some(b"MONT".to_vec()),
+        };
+        assert!(matches!(
+            registry
+                .claim_monad_message_attempt(&message.payload_hash, &message, &legacy_policy)
+                .unwrap(),
+            MonadMessageAttemptClaim::New
+        ));
+        drop(registry);
+
+        let mut config = crate::monad_outbox::MonadOutboxReconcileConfig::default();
+        config.limits.max_members = 1;
+        let registry = Registry::new(
+            Db::open_with_monad_outbox_limits(&db_path, &config.limits).unwrap(),
+            Arc::new(UnusedChainAdapter),
+            Net::Regtest,
+        );
+        assert!(matches!(
+            registry
+                .get_monad_message_attempt(&message.payload_hash, &message)
+                .unwrap(),
+            MonadMessageAttemptClaim::ExistingExact(_)
+        ));
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let rpc_url: url::Url = format!("http://{}", listener.local_addr().unwrap())
+            .parse()
+            .unwrap();
+        let mut server = test_server(registry);
+        let registry = Arc::clone(&server.registry);
+        let decoded = Arc::new(
+            message
+                .stamp_payments
+                .iter()
+                .map(|payment| decode_signed_transaction(&payment.raw_tx).unwrap())
+                .map(|tx| (tx.tx_hash.to_hex(), tx))
+                .collect::<HashMap<_, _>>(),
+        );
+        let rpc_calls = Arc::new(AtomicUsize::new(0));
+        let rpc = axum::Router::new().route(
+            "/",
+            axum::routing::post({
+                let decoded = Arc::clone(&decoded);
+                let registry = Arc::clone(&registry);
+                let message = message.clone();
+                let legacy_policy = legacy_policy.clone();
+                let rpc_calls = Arc::clone(&rpc_calls);
+                move |axum::Json(request): axum::Json<Value>| {
+                    let decoded = Arc::clone(&decoded);
+                    let registry = Arc::clone(&registry);
+                    let message = message.clone();
+                    let legacy_policy = legacy_policy.clone();
+                    let rpc_calls = Arc::clone(&rpc_calls);
+                    async move {
+                        rpc_calls.fetch_add(1, Ordering::SeqCst);
+                        assert!(matches!(
+                            registry
+                                .get_monad_message_attempt(&message.payload_hash, &message)
+                                .unwrap(),
+                            MonadMessageAttemptClaim::Missing
+                        ));
+                        let record = registry
+                            .monad_outbox_record(&message.payload_hash)
+                            .unwrap()
+                            .expect("canonical ownership is durable before the first RPC");
+                        let policy = record
+                            .policy
+                            .expect("active adopted ownership retains its frozen policy");
+                        assert_eq!(policy.recipient_pubkey, legacy_policy.recipient_pubkey);
+                        assert_eq!(policy.min_value_wei, legacy_policy.min_value_wei);
+                        assert_eq!(policy.network_tag, b"MONT");
+                        let method = request["method"].as_str().unwrap();
+                        let tx = match method {
+                            "eth_sendRawTransaction" => {
+                                let raw = hex::decode(
+                                    request["params"][0]
+                                        .as_str()
+                                        .unwrap()
+                                        .trim_start_matches("0x"),
+                                )
+                                .unwrap();
+                                decode_signed_transaction(&raw).unwrap()
+                            }
+                            "eth_getTransactionReceipt" | "eth_getTransactionByHash" => decoded
+                                .get(request["params"][0].as_str().unwrap())
+                                .unwrap()
+                                .clone(),
+                            other => panic!("unexpected RPC method {other}"),
+                        };
+                        let result = match method {
+                            "eth_sendRawTransaction" => Value::String(tx.tx_hash.to_hex()),
+                            "eth_getTransactionReceipt" => serde_json::json!({
+                                "transactionHash": tx.tx_hash.to_hex(),
+                                "blockHash": hex_hash(0x22),
+                                "blockNumber": "0x2a",
+                                "from": tx.sender.to_hex(),
+                                "to": tx.destination.unwrap().to_hex(),
+                                "contractAddress": null,
+                                "gasUsed": "0x5208",
+                                "status": "0x1",
+                                "logs": [],
+                            }),
+                            "eth_getTransactionByHash" => serde_json::json!({
+                                "hash": tx.tx_hash.to_hex(),
+                                "to": tx.destination.unwrap().to_hex(),
+                                "value": format!("0x{:x}", tx.value_wei),
+                                "input": format!("0x{}", hex::encode(&tx.input)),
+                                "from": tx.sender.to_hex(),
+                            }),
+                            _ => unreachable!(),
+                        };
+                        axum::Json(serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "id": request["id"],
+                            "result": result,
+                        }))
+                    }
+                }
+            }),
+        );
+        let rpc_task = tokio::spawn(
+            axum::Server::from_tcp(listener)
+                .unwrap()
+                .serve(rpc.into_make_service()),
+        );
+        server.monad_mailbox = crate::monad_mailbox::MonadMailboxRuntime::enabled(
+            HttpTransport::new(rpc_url),
+            Arc::new(config.clone()),
+            99_999,
+            b"DIFFERENT".to_vec(),
+        );
+
+        let response = server
+            .into_router()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("PUT")
+                    .uri("/message/monad")
+                    .header("content-type", "application/x-protobuf")
+                    .body(axum::body::Body::from(message.encode_to_vec()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = hyper::body::to_bytes(response.into_body()).await.unwrap();
+        let stored = proto::StoredMonadMessage::decode(body).unwrap();
+        assert_eq!(stored.message, Some(message.clone()));
+        assert_eq!(stored.network_tag, b"MONT");
+        assert_eq!(rpc_calls.load(Ordering::SeqCst), 4);
+        assert!(matches!(
+            registry
+                .get_monad_message_attempt(&message.payload_hash, &message)
+                .unwrap(),
+            MonadMessageAttemptClaim::Missing
+        ));
+        assert_eq!(
+            registry.get_monad_message(&message.payload_hash).unwrap(),
+            Some(stored)
+        );
+        rpc_task.abort();
+
+        let (_new_tempdir, new_registry) = test_registry();
+        let new_message = valid_signed_message_with_members(0x76, &[0x48, 0x49]);
+        let transport = MockTransport::default();
+        let permits = MonadOutboxPermitPool::new(config.max_concurrency);
+        assert!(admit_monad_message(
+            &transport,
+            &new_registry,
+            &config,
+            &permits,
+            10_000,
+            b"MONT",
+            new_message.clone(),
+        )
+        .await
+        .is_err());
+        assert!(transport.calls().is_empty());
+        assert!(new_registry
+            .monad_outbox_record(&new_message.payload_hash)
+            .unwrap()
+            .is_none());
+        assert!(new_registry
+            .get_monad_message(&new_message.payload_hash)
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
     async fn canonical_admission_covers_new_exact_conflict_and_capacity_without_early_rpc() {
         let (_tempdir, registry) = test_registry();
         let message = valid_signed_message(0x44, 0x41);
@@ -4509,6 +4826,92 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn public_challenge_fields_sign_opaque_cursor_and_reject_equivalent_substitution() {
+        let (_tempdir, registry) = test_registry();
+        let mut server = test_server(registry);
+        server.monad_mailbox = crate::monad_mailbox::MonadMailboxRuntime::enabled(
+            HttpTransport::new("http://127.0.0.1:1".parse().unwrap()),
+            Arc::new(crate::monad_outbox::MonadOutboxReconcileConfig::default()),
+            1,
+            b"MONT".to_vec(),
+        );
+        let recipient = recipient_address();
+        let runtime = server.monad_mailbox.as_enabled().unwrap();
+        let position = MailboxCursor::Recovery {
+            payload_hash: [0xab; 32],
+        };
+        let cursor = runtime.encode_cursor(recipient, position);
+
+        let Json(challenge) = handle_issue_mailbox_challenge(
+            Path(recipient.to_hex()),
+            Query(PrivateChallengeQuery {
+                resource: "recovery".to_string(),
+                since: None,
+                cursor: Some(cursor.clone()),
+                limit: Some(1),
+                max_bytes: Some(1024),
+            }),
+            Extension(server.clone()),
+        )
+        .await
+        .unwrap();
+        let challenge = serde_json::to_value(challenge).unwrap();
+        let preimage = client_mailbox_auth_preimage(&challenge, recipient, b"MONT");
+        let headers = signed_public_challenge_headers(&challenge, &preimage);
+        let response = handle_get_private_monad_recovery(
+            Path(recipient.to_hex()),
+            Query(PrivateRecoveryQuery {
+                cursor: Some(cursor.clone()),
+                limit: Some(1),
+                max_bytes: Some(1024),
+            }),
+            headers,
+            Extension(server.clone()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let Json(challenge) = handle_issue_mailbox_challenge(
+            Path(recipient.to_hex()),
+            Query(PrivateChallengeQuery {
+                resource: "recovery".to_string(),
+                since: None,
+                cursor: Some(cursor.clone()),
+                limit: Some(1),
+                max_bytes: Some(1024),
+            }),
+            Extension(server.clone()),
+        )
+        .await
+        .unwrap();
+        let challenge = serde_json::to_value(challenge).unwrap();
+        let preimage = client_mailbox_auth_preimage(&challenge, recipient, b"MONT");
+        let headers = signed_public_challenge_headers(&challenge, &preimage);
+        let substituted = cursor.to_ascii_uppercase();
+        assert_ne!(substituted, cursor);
+        assert_eq!(
+            runtime.decode_cursor(recipient, MailboxResource::Recovery, &substituted),
+            Some(position),
+            "the alternate token spelling decodes to the same private position"
+        );
+        assert!(matches!(
+            handle_get_private_monad_recovery(
+                Path(recipient.to_hex()),
+                Query(PrivateRecoveryQuery {
+                    cursor: Some(substituted),
+                    limit: Some(1),
+                    max_bytes: Some(1024),
+                }),
+                headers,
+                Extension(server),
+            )
+            .await,
+            Err(PrivateMailboxError::Unauthorized)
+        ));
+    }
+
+    #[tokio::test]
     async fn private_auth_verifies_signature_and_rejects_replay_and_cross_recipient() {
         let (_tempdir, registry) = test_registry();
         let mut server = test_server(registry);
@@ -4740,7 +5143,10 @@ mod tests {
             }
         );
         let second_binding = MailboxRequestBinding {
-            cursor: Some(cursor),
+            cursor: Some(MailboxCursorBinding {
+                position: cursor,
+                token: first_header.clone(),
+            }),
             ..first_binding
         };
         let mut second_request = axum::http::Request::builder()

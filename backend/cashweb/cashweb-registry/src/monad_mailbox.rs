@@ -86,13 +86,20 @@ impl MailboxCursor {
     }
 }
 
+/// One opaque cursor token paired with the decoded position used only by the server-side scan.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MailboxCursorBinding {
+    pub(crate) position: MailboxCursor,
+    pub(crate) token: String,
+}
+
 /// Canonical future request facts authenticated by both server MAC and recipient signature.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct MailboxRequestBinding {
     pub(crate) resource: MailboxResource,
     pub(crate) recipient: Address,
     pub(crate) since: i64,
-    pub(crate) cursor: Option<MailboxCursor>,
+    pub(crate) cursor: Option<MailboxCursorBinding>,
     pub(crate) limit: usize,
     pub(crate) max_bytes: usize,
 }
@@ -107,10 +114,12 @@ impl MailboxRequestBinding {
         bytes.push(self.resource.tag());
         bytes.extend_from_slice(&self.recipient.0);
         bytes.extend_from_slice(&self.since.to_be_bytes());
-        match self.cursor {
+        match self.cursor.as_ref() {
             Some(cursor) => {
+                debug_assert_eq!(cursor.position.resource(), self.resource);
                 bytes.push(1);
-                cursor.append_position(bytes);
+                bytes.extend_from_slice(&(cursor.token.len() as u32).to_be_bytes());
+                bytes.extend_from_slice(cursor.token.as_bytes());
             }
             None => bytes.push(0),
         }

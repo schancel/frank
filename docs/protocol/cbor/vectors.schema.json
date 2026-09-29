@@ -98,6 +98,20 @@
             "pattern": "^[0-9a-f]{64}$"
           }
         },
+        "stamp_shared_point_hex": {
+          "type": "string",
+          "pattern": "^0[23][0-9a-f]{64}$"
+        },
+        "stamp_child_public_keys_hex": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^0[23][0-9a-f]{64}$"
+          }
+        },
         "error_category": {
           "enum": [
             "frame",
@@ -315,7 +329,9 @@
               "content_hash_hex": false,
               "content_digest_hex": false,
               "payload_digest_hex": false,
-              "payment_commitments_hex": false
+              "payment_commitments_hex": false,
+              "stamp_shared_point_hex": false,
+              "stamp_child_public_keys_hex": false
             }
           }
         },
@@ -335,7 +351,9 @@
               "content_hash_hex": false,
               "content_digest_hex": false,
               "payload_digest_hex": false,
-              "payment_commitments_hex": false
+              "payment_commitments_hex": false,
+              "stamp_shared_point_hex": false,
+              "stamp_child_public_keys_hex": false
             }
           }
         },
@@ -363,7 +381,9 @@
             "required": [
               "content_digest_hex",
               "payload_digest_hex",
-              "payment_commitments_hex"
+              "payment_commitments_hex",
+              "stamp_shared_point_hex",
+              "stamp_child_public_keys_hex"
             ],
             "properties": {
               "validation_context": {

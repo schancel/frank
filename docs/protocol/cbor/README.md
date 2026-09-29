@@ -95,19 +95,19 @@ unknown object. Successful validation does not authorize reconstruction.
 
 E5. Type identifiers are never reused. Version 1 reserves:
 
-|    Type ID | Name                                       | Schema                                     |
-| ---------: | ------------------------------------------ | ------------------------------------------ |
-|          1 | Recipient-specific direct-message delivery | [direct-message.cddl](direct-message.cddl) |
-|          2 | Signed directory attestation               | [directory.cddl](directory.cddl)           |
-|          3 | Mailbox checkpoint                         | [checkpoint.cddl](checkpoint.cddl)         |
-|          4 | Directory statement signed by type 2       | [directory.cddl](directory.cddl)           |
-|          5 | Recipient-encrypted payload                | [direct-message.cddl](direct-message.cddl) |
-|          6 | Decrypted message content                  | [direct-message.cddl](direct-message.cddl) |
-|          7 | Key-transition statement                   | [directory.cddl](directory.cddl)           |
-|          8 | Plaintext message-content revision         | [direct-message.cddl](direct-message.cddl) |
-|         16 | Container message item                     | [direct-message.cddl](direct-message.cddl) |
-|         17 | UTF-8 text message item                    | [direct-message.cddl](direct-message.cddl) |
-| 0xffff0001 | Proof-only unknown future message item     | Opaque fixture payload                     |
+|    Type ID | Name                                        | Schema                                     |
+| ---------: | ------------------------------------------- | ------------------------------------------ |
+|          1 | Recipient-specific direct-message delivery  | [direct-message.cddl](direct-message.cddl) |
+|          2 | Signed directory attestation                | [directory.cddl](directory.cddl)           |
+|          3 | Mailbox checkpoint                          | [checkpoint.cddl](checkpoint.cddl)         |
+|          4 | Directory statement signed by type 2        | [directory.cddl](directory.cddl)           |
+|          5 | Recipient-encrypted payload, with stamp E/X | [direct-message.cddl](direct-message.cddl) |
+|          6 | Decrypted message content                   | [direct-message.cddl](direct-message.cddl) |
+|          7 | Key-transition statement                    | [directory.cddl](directory.cddl)           |
+|          8 | Plaintext message-content revision          | [direct-message.cddl](direct-message.cddl) |
+|         16 | Container message item                      | [direct-message.cddl](direct-message.cddl) |
+|         17 | UTF-8 text message item                     | [direct-message.cddl](direct-message.cddl) |
+| 0xffff0001 | Proof-only unknown future message item      | Opaque fixture payload                     |
 
 The CDDL rule for each type's payload is: 1 `direct-message-delivery`; 2
 `directory-attestation`; 3 `mailbox-checkpoint`; 4 `directory-statement`; 5
@@ -296,8 +296,8 @@ and failure rules. The codec does not infer a suite from nonce length.
 
 S3. Payment members are ordered by numeric `child_index`, then bytewise
 `transaction_id`. Child indices and transaction identifiers MUST each be
-independently unique. Child indices are non-hardened BIP32 indices in
-`0..2147483647`. Amounts need not be equal. Independently verified values are
+independently unique. Child indices are `uint31` values in
+`0..2147483647` (a range kept from the #60 design; no BIP32 derivation is involved, T3a). Amounts need not be equal. Independently verified values are
 added with checked unsigned 256-bit arithmetic; overflow rejects. Their sum
 MUST be greater than or equal to the applicable minimum. Each encoded amount
 MUST exactly equal the independently observed value in its verified chain
@@ -332,9 +332,12 @@ the stable tiebreaker and MUST be independently unique within a checkpoint.
 S7. Opaque checkpoint sections are ordered by numeric `(section_type,
 schema_version)` and MUST have independently unique `section_type` values.
 
-S8. A type-1 delivery's network (field 0) and destination account (field 1)
-MUST equal the opened type-5 payload's network (field 0) and recipient account
-(field 2); this is a stage 9 `semantic` check. For `full`, the decrypted type-6
+S8. A type-1 delivery's network (field 0) MUST equal the opened type-5
+payload's network (field 0); this is a stage 9 `semantic` check. Its
+destination account (field 1) is the stamp key `P'` of S9, which is a payment
+key and is not compared with the type-5 recipient account (field 2); that
+field stays the routing recipient identity (in fallback mode the two are
+normally the same key, but no codec rule requires it). For `full`, the decrypted type-6
 frame's network (field 0) MUST equal the type-5 network (`semantic`), and its
 digest (field 3) MUST equal the T1a digest of its opened type-8 frame (field 2)
 (`cryptographic`); these are steps 10.2 and 10.3 of section 9. A framed field
@@ -345,13 +348,22 @@ such a field
 is never an open field. Message-item array
 order is authored semantic order, not a set to be resorted.
 
-S9. The type-1 destination account MUST be key type 1 (otherwise `semantic`). For each payment, the T3 digest, destination account
-key, and child index derive, by T3a, the exact child public key and chain
-address. Payment field 3 MUST equal that canonical address,
-the independently observed transaction destination MUST equal field 3, and
-payment field 3 values MUST be independently unique, a stage 9 `semantic` list
-check like S3's index and transaction-ID uniqueness. Value and commitment checks
-from S3 and T4 remain separately required.
+S9. The type-1 destination account (field 1) is the recipient stamp key `P'`
+that the sender actually used, and MUST be key type 1 (otherwise `semantic`).
+`P'` is either the recipient's published stamp key (directory-statement field
+8, S10a) or, when the recipient's statement carries no field 8, the identity
+key (the statement subject); the derivation is the same in both cases, only
+the exposure differs (T3a). Whether `P'` is the recipient's current stamp key
+or identity key, or an acceptable earlier one after a rotation, is judged by
+the consumer against its directory record and is outside this codec; only
+what `P'` derives is specified here. For each payment, the type-5 fields `E`
+(6), `X` (7) and proof (8) verify by T3b, and `X`, `P'` and the child index
+derive, by T3a, the exact child public key and chain address. Payment field 3
+MUST equal that canonical address, the independently observed transaction
+destination MUST equal field 3, and payment field 3 values MUST be
+independently unique, a stage 9 `semantic` list check like S3's index and
+transaction-ID uniqueness. Value and commitment checks from S3 and T4 remain
+separately required.
 
 S10. The validation context's prior statement is the last accepted type-4
 statement. A non-bootstrap statement's revision MUST be greater than the prior
@@ -372,6 +384,32 @@ relay-binding field 3 are timestamps with no validation here, because the
 context has no clock), recovery-authority precedence or timelocks, and
 transition replay across a reset verifier are policy owned by the directory
 migration (#133), not decided by this codec specification.
+
+S10a. Directory-statement field 8, `stamp_key`, is optional. When present it
+MUST be key type 1 and MUST NOT equal the subject (field 1), since omitting the
+field already means "use the identity key"; either violation is `semantic` in
+the type-4 statement's own stage 9. It is covered by the subject's signature
+because it lies inside the signed type-4 frame, and it changes only in a new
+statement revision. Each statement carries its own field 8 or none: nothing is
+inherited from the prior statement, and a statement that omits the field
+returns the subject to fallback mode. A revision that changes only field 8 (adds,
+rotates, or removes the stamp key) with an unchanged subject is a same-subject
+update under S10: revision strictly greater, field 5 absent, no key transition,
+because a stamp key confers no authority over the directory. A change of
+subject, by contrast, needs the S10 transition, and the successor statement
+states its own field 8 (a stamp key does not survive a subject change).
+
+The stamp secret `d'` behind `P'` MUST be derived hardened from the wallet's
+existing seed, with no new stored secret, and a sender MUST NOT be able to
+derive `P'` from the identity key: `P'` must not be computable from the public
+identity key or from any value a sender, relay, or mailbox holds. Non-normative
+note: the proposed reserved wallet path is `m/44'/60'/2'/0/{rotation index}`
+(account index `2'` is unclaimed; `0'` is the burner pool and change, `1'` the
+identity), where a rotation increments the rotation index and publishes the new
+`P'` in a new statement revision. A wallet keeps retired stamp secrets for as
+long as it accepts stamps to them. Fixing the path, the rotation rule, and the
+grace period for stamps sent to a rotated-out key belongs to the wallet
+follow-ups under #132 and the directory migration (#133).
 
 ## 6. Fixture schemas and identity boundaries
 
@@ -400,6 +438,18 @@ Direct-message stamps are payments to recipient-derived addresses. They are not
 burns. A payment member commits to this recipient-specific encrypted-payload
 frame and its distinct child index, so an existing transaction cannot authorize
 a different payload.
+
+Stamp destinations (decided on #198, superseding the #60 derivation): the
+sender picks a fresh scalar `e` and puts `E = e*G`, `X = e*P'` and a
+Chaum-Pedersen (DLEQ) proof that both use the same `e` in the type-5 frame, so
+the T3 digest and T4 commitment cover them. Child `i` is `t_i*P'` with `t_i`
+hashed from `X`. The relay verifies the proof and derives every child from
+public points, so it checks that each payment lands on a recipient-controlled
+address with no interaction; the recipient computes `X = d'*E` and spends with
+`t_i*d'`. No scalar is delivered, so a sender cannot burn funds by withholding
+one. The construction is multiplicative rather than additive, and uses no BIP32,
+chain code, or HMAC. A cryptographic review of the DLEQ construction is
+required before any implementation ships it.
 
 ### Directory attestations
 
@@ -530,52 +580,85 @@ signer MUST exactly equal `prior_authority`, and that authority MUST be the
 currently registered key or a separately registered offline recovery authority.
 `context` is empty.
 
-T3. The recipient payload digest used as the stamp stealth root is SHA-256 of
-the common transcript with domain `frank/recipient-payload/v1`, where `frame`
-is the complete type-5 recipient-encrypted-payload frame, its network argument
-is that frame's field 0 (T5), and context is empty.
-The accepted #60 derivation then adds this digest as a secp256k1 scalar to the
-recipient public key and derives the non-hardened BIP32 path
-`m/44/145/child_index/0`; this codec does not redesign that math. As in #60,
-zero or a value greater than or equal to the secp256k1 group order rejects
-rather than reducing modulo the order; a sender constructs fresh encrypted
-payload bytes instead.
+T3. The recipient payload digest is SHA-256 of the common transcript with
+domain `frank/recipient-payload/v1`, where `frame` is the complete type-5
+recipient-encrypted-payload frame, its network argument is that frame's field 0
+(T5), and context is empty. It is the payload identity that T4 commits to. It no
+longer enters the derivation of stamp keys; because the frame includes `E`, `X`
+and the proof, the digest and every T4 commitment cover them, so a payment
+authorizes exactly one stamp derivation for one payload.
 
-T3a. The #60 derivation referenced by S9 is byte-exact:
+T3a. Stamp destination derivation, byte-exact. `n` is the secp256k1 group order,
+`G` its generator, and all points are 33-byte compressed SEC1 encodings in
+every hash input. `P'` is the type-1 field 1 key (S9), `E` the type-5 field 6,
+and `X` the type-5 field 7.
 
-1. Interpret the 32-byte T3 digest as an unsigned big-endian integer `h`.
-   Require `1 <= h < n`, where `n` is the secp256k1 group order.
-2. Parse the destination account's 33-byte compressed SEC1 key as point `P`.
-   The stamp root public point is `P + h*G`; reject infinity. The root chain
-   code is the exact 32-byte T3 digest.
-3. Starting from that public point and chain code, apply non-hardened BIP32
-   public CKD to the numeric path `m/44/145/child_index/0`. At each component
-   `i`, compute `I = HMAC-SHA512(chain_code,
-compressed_parent_point || u32be(i))`; interpret `I[0..32]` as unsigned
-   big-endian `IL`, require `1 <= IL < n`, set the child point to
-   `parent_point + IL*G` (reject infinity), and set the next chain code to
-   `I[32..64]`.
-4. Serialize the final child point uncompressed, remove its `04` prefix, hash
-   the remaining 64 bytes with Keccak-256, and use the final 20 bytes as the EVM
+1. Sender: pick a fresh uniformly random `e` in `1..n-1`, set `E = e*G` and
+   `X = e*P'`, and produce the T3b proof. Fresh `e` per type-5 frame is a MUST;
+   reusing `e` across payloads links them and repeats every child address.
+2. For child index `i` (a `uint31`), compute `t_i` as SHA-256 of the ASCII
+   string `frank/stamp-child/v1` followed by the 33-byte `X` and `u32be(i)`,
+   read as an unsigned big-endian integer. Require `1 <= t_i < n`; there is no
+   modular reduction and no skipping to another index, as with the #60 digest
+   check before it.
+3. The child public point is `t_i*P'`; reject infinity (unreachable for valid
+   inputs). Serialize it uncompressed, remove the `04` prefix, hash the
+   remaining 64 bytes with Keccak-256, and use the final 20 bytes as the EVM
    destination address.
-5. Every child index MUST be a non-hardened `uint31` (`< 2^31`); the CDDL
-   range makes a violation a `schema` error at stage 8.2. A payment set's
-   sorted child indices MUST be exactly contiguous `0..member_count-1`; a
-   violation is `semantic`.
-6. Any of `h` out of range, an unparseable destination point, infinity, or an
-   invalid `IL` rejects the delivery as `cryptographic`; implementations do not
-   skip to another index.
+4. A payment set's sorted child indices MUST be exactly contiguous
+   `0..member_count-1`; a violation is `semantic` (stage 9).
+5. Recipient: with stamp secret `d'` (`P' = d'*G`), compute `X = d'*E` (this
+   MUST equal the frame's field 7), then the spend scalar for child `i` is
+   `t_i*d' mod n` (reject zero, which cannot occur for `1 <= t_i < n` and
+   `d' != 0`), and its public point is `t_i*P'`.
+6. A `P'` that is not a valid non-infinity curve point, `t_i` out of range, or
+   a derived address that differs from payment field 3 rejects the delivery as
+   `cryptographic` (stage 10); an implementation does not skip to another index.
 
-The recipient reconstructs the same spend key by setting the root private
-scalar to `(recipient_private + h) mod n` (reject zero) and applying the same
-non-hardened CKD components and rejection rules. This key-recovery rule does
-not make the relay capable of deriving recipient private keys. Because every
-offset is derivable from the type-5 frame, which the sender, relays, and
-mailbox holders have, disclosure of any stamp child private key to one of them
-reveals the recipient's registered identity key; as accepted on #60, child
-private keys are identity-grade secrets, used transiently and never made
-relay-visible. A separate stamp key is a change to #60's accepted derivation
-and is not made here.
+Exposure. If `P'` is a published stamp key (S10a), any leaked child private key
+`k_i = t_i*d' mod n` reveals `d' = k_i * t_i^-1 mod n`, because every holder of
+the frame can compute `t_i`. That discloses the stamp key `d'` and the stamp
+funds of every payment made to `P'`, and nothing else: `d'` is derived so that
+it does not reveal the identity key (S10a), so directory signatures, key
+transitions, and mailbox authority are unaffected. If the statement carries no
+field 8 and the identity key is `P'` (fallback mode), the same leak reveals the
+identity key itself; that is the weaker exposure of fallback mode, kept only
+until the recipient publishes a stamp key. A relay or mailbox holding the frame
+can already compute every child public key from `P'` and `X`, but not any
+private key. Whoever knows `e` (the sender) cannot spend, since spending needs
+`d'`.
+
+T3b. The stamp DLEQ proof (Chaum-Pedersen over secp256k1, made non-interactive
+by Fiat-Shamir with SHA-256) shows that `E` and `X` use the same secret `e`
+without revealing it, that is `E = e*G` and `X = e*P'`. It is the 64-byte
+type-5 field 8: `c || s`, each a 32-byte big-endian scalar.
+
+- Encoding rules (all `schema`, stage 8.2): fields 6 and 7 are exactly 33 bytes
+  whose first byte is `02` or `03`, whose x coordinate is below the field prime
+  `p`, and which lie on the curve (the point at infinity has no compressed
+  encoding, so an all-zero or `00`-prefixed value is invalid); field 8 is exactly
+  64 bytes with `c` and `s` each in `1..n-1`. Non-canonical scalars (`0`, or `n`
+  and above) are never reduced.
+- Challenge: `c = SHA-256( u16be(19) || ascii("frank/stamp-dleq/v1") || G || P' ||
+E || X || R1 || R2 )` read as a big-endian integer, where `R1` and `R2` are
+  defined below and every point is compressed (33 bytes, so the concatenation
+  is unambiguous).
+- Proving (sender): choose a nonce `k` in `1..n-1` that is uniformly random or
+  derived with a domain-separated deterministic construction, and never reused
+  for a different statement; set `R1 = k*G`, `R2 = k*P'`, compute `c` as above,
+  and `s = k + c*e mod n`. If `c` is not in `1..n-1` or `s = 0` (probability
+  about 2^-128), choose a new `k`.
+- Verifying (relay and recipient): parse `P'`, `E`, `X` (T3a step 6 covers an
+  invalid `P'`), reject infinity, parse `c` and `s` under the encoding rules,
+  set `R1 = s*G - c*E` and `R2 = s*P' - c*X`, reject if either is infinity,
+  recompute the challenge and compare it with the encoded `c` as 32 bytes.
+  Any failure, including a well-formed `X` that is not `e*P'` for the `e` behind
+  `E`, is `cryptographic`.
+
+This binds `G`, `P'`, `E` and `X` by including them in the hash, so a proof
+cannot be replayed for another recipient key or another point pair. It is not a
+signature over the frame or the network; the frame binding is T3 and T4. The
+construction needs cryptographic review before implementation.
 
 T4. Each payment member's on-chain commitment is
 `SHA256(ascii("frank:dm-stamp-payment:v1") || T3_digest ||
@@ -584,8 +667,10 @@ transaction commitment field and field 4 of that payment member. The field's
 chain-specific layout (for Monad, calldata of a lokad identifier, a version
 byte, and the 32-byte commitment) belongs to the chain adapter defined by the
 Monad direct-message migration (#132), not to the codec. A missing or
-different value rejects. Changing the payload frame, network, versions, or
-child index therefore prevents transaction reuse for another message. Relay
+different value rejects. Changing the payload frame (including `E`, `X` and the proof), network, versions, or
+child index therefore prevents transaction reuse for another message. T4 is
+otherwise unchanged by #198: `T3_digest` is the T3 digest of the whole type-5
+frame. Relay
 delivery fees use a separate domain and are not part of this transcript.
 
 T5. Protocol signatures and commitments MUST bind the network tag passed to
@@ -594,6 +679,30 @@ the transcript and MUST confirm it equals the frame's typed network field.
 T6. A one-byte change anywhere in a bound frame changes the transcript. The
 golden-vector proof MUST demonstrate changed hashes and failed verification;
 canonical encoding alone is not authentication.
+
+T3c. Worked example of T3a and T3b, generated by an independent reference
+implementation that also checked sender-side and recipient-side derivation for
+several indices, rejected tampered proofs, and compared with `@noble/curves`.
+The values are inputs for the vector corpus, not production keys; `d'` and `e`
+are derived from the SHA-256 of fixed ASCII strings and `k` likewise.
+
+```text
+d' (recipient stamp secret) 1a57e32fda8d40f4cac284d87c5517018b9686966999baf04e380e71071cfd54
+P' = d'*G                   03f7fc9b839b4c4c8ff821777ecc410b461d6ca6b36e931ddbfadda8b37a55ae33
+e  (sender scalar)          dc99a5298a2008c5d8980f5f2524335a6810606642ad01c8653b053663a86d85
+E  = e*G                    022f88fd8059bf1bfda332a2ff01f4667efdc1d8526562ecbd6bcac57ace81b6c3
+X  = e*P' = d'*E            02d066aa56e65e5cba4051500237a51ae9fd16c2c3476904d47d667f9fe1fca3e9
+k  (proof nonce)            4f2909e50ad360ce11d43bed7b031cde2b6e3fb32b5bfe8df1a7afd95aa61781
+c                           9473ceb812fea011a971b7f5d83631b64a5f93e2337ad1e89b81bebb97e91ee0
+s                           110336562b4576717c738dbc4d7107fe7decc47f2cf60f0e792e2d0ead0f35d7
+proof = c || s              (the 64 bytes above, concatenated)
+t_0                         cd536d0093e01555b6bbbca0b5f933058e58f4405d53899ca3ccb1def8f21e47
+child_0 public = t_0*P'     03687fb6849e9ecbf4bca3358a45b75b9b699a2f16907899aa4da24cbc6cb80f0c
+child_0 EVM address         0x52afae38250f125ebcaab8a37e13a06bdaf24860
+t_1                         85d95214c6183bdfb66f36c943d1f7a6287153c97a5f0a77f50683ce4e6203f9
+child_1 EVM address         0x37eea4c52264754c3a706384e365fefb63a0ed2c
+spend scalar for child_0    t_0*d' mod n  (its public point equals child_0)
+```
 
 ## 9. Validation order
 
@@ -641,7 +750,9 @@ category, and an implementation MUST NOT continue to report a later failure.
       the upper bounds of `[1*16 key-transition]` and `[1*8 account-ref]`, is `schema`;
    2. the type's CDDL structure and range rules, including network-tag,
       ASCII-identifier, and endpoint-ASCII syntax (S1, C6, S4), and C12 unknown
-      keys: `schema`. A CDDL cardinality or `.size` bound that merely restates an
+      keys, plus the T3b encodings of type-5 fields 6 through 8 (a wrong length,
+      a point that is not a valid compressed curve point, or a proof scalar
+      outside `1..n-1`): `schema`. A CDDL cardinality or `.size` bound that merely restates an
       R2 through R4 limit is `resource`, checked in 8.1, not `schema`;
    3. allocated-identifier checks (S2b, S2c; every encryption suite other than
       65535 is unallocated in version 1): `unsupported`;
@@ -671,7 +782,8 @@ category, and an implementation MUST NOT continue to report a later failure.
    type-4 child's. The checks are ordering, uniqueness, cross-field, network,
    and S10, the presence of an entry signed by the statement subject,
    selection of the prior authority (S4a, T2a), the S9 requirement that the
-   destination be key type 1, and T3a.5 index contiguity: `semantic`. No signature or digest is
+   destination be key type 1, the S10a requirement that a statement's stamp key be key type 1
+   and differ from its subject (in the type-4 statement's own stage 9), and T3a.4 index contiguity: `semantic`. No signature or digest is
    verified here.
 10. **Cryptographic and external checks**, `full` only, in this order. A root
     other than type 1 or type 2 runs no stage 10 check. For every root other than
@@ -685,8 +797,10 @@ category, and an implementation MUST NOT continue to report a later failure.
        field, otherwise `cryptographic`.
     2. S8's type-6 network equality: `semantic`.
     3. S8's T1a digest equality: `cryptographic`.
-    4. The type-1 field 3 T3 digest, T3a derivation, S9 destination equality:
-       `cryptographic`.
+    4. The type-1 field 3 T3 digest, then in order: `P'` parses as a valid
+       curve point, the T3b DLEQ proof verifies (this includes `X` not equal to
+       `e*P'`), the T3a `t_i` range for each member, and S9 destination
+       equality: `cryptographic`.
     5. Payment observations: each member's transaction ID MUST have an
        observation whose destination, value, and commitment equal the encoded
        member, otherwise `cryptographic`; an observation with no member is
@@ -767,11 +881,27 @@ acceptance or rejection a pure function of the manifest case.
 
 The positive `full` type-1 direct-message case MUST also record
 `content_digest_hex`, `payload_digest_hex`, and every
-`payment_commitments_hex` value. Implementations compare those outputs with T1a,
-T3, T4, the encoded payment member, and the simulated verifier-visible
+`payment_commitments_hex` value, plus `stamp_shared_point_hex` (`X`) and
+`stamp_child_public_keys_hex` (one 33-byte compressed child key per payment
+member, in the same order). Implementations compare those outputs with T1a,
+T3, T3a, T4, the encoded payment member, and the simulated verifier-visible
 transaction commitment. `payment_commitments_hex` position `i` corresponds
 exactly to payment member position `i` after the S3 sort; it is not independently
 sorted.
+
+The corpus for #198 MUST include, for T3a and T3b: a DLEQ accept with a
+published stamp key; the fallback accept where the statement has no field 8 and
+`P'` is the identity key; a rotated-stamp-key pair (a type-4 statement revision
+that changes only field 8 and is accepted as a same-subject update by S10a, and
+a delivery to the earlier key, which the codec accepts because binding `P'` to
+the directory is outside it); and rejects, each with an accept twin or
+`paired_case`, for a one-byte change to the proof (`cryptographic`), a wrong or
+substituted `X` and a wrong `E` (`cryptographic`), a wrong `P'` (`cryptographic`),
+a missing field 6, 7 or 8 (`schema`), a wrong-length field, an off-curve or
+`00`-prefixed `E` or `X` and a proof scalar of zero or at least `n` (all
+`schema`), a stamp key of key type other than 1 or equal to the subject
+(`semantic`), and a payment address computed by the retired BIP32 derivation
+(`cryptographic`).
 
 `paired_case` relationships are reciprocal: both named cases MUST exist, name
 each other, and carry the same `pair_relation`. `one_byte_mutation` requires
@@ -789,16 +919,16 @@ multiple rules, the validation order in section 9 selects the first category;
 implementations MUST NOT continue merely to report a later failure. Passes A
 and B in section 9 define the order within CBOR validation.
 
-| Failure                                                                                                                                                                                                                                                                                                                                                                              | Category        |
-| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------- |
-| Frame or route length over a limit; any byte/depth/container/item limit; R2 through R4 type-specific limits, including a CDDL bound that restates them                                                                                                                                                                                                                               | `resource`      |
-| Short header, bad magic, declared-length mismatch, concatenated frame, bytes outside the declared body                                                                                                                                                                                                                                                                               | `frame`         |
-| Unknown frame version or uninterpretable type/schema without permitted retention; unallocated key type, algorithm, encryption suite, or algorithm/key-type/length pairing                                                                                                                                                                                                            | `unsupported`   |
-| Truncated/invalid CBOR syntax, invalid UTF-8, reserved additional information, or extra CBOR item in body/payload                                                                                                                                                                                                                                                                    | `malformed`     |
-| Non-minimal integer/length, indefinite value, duplicate/out-of-order map key, or another alternate encoding of an allowed value                                                                                                                                                                                                                                                      | `noncanonical`  |
-| Forbidden CBOR class (float, tag, forbidden simple value; a stray break code is `malformed`; non-uint map key), envelope/CDDL type mismatch, undeclared key (C12), missing/extra required key, scalar range violation, network-tag/ASCII-identifier/endpoint syntax violation, wrong key length for an allocated key type, or `min_reader_version` above `schema_version`            | `schema`        |
-| Wrong `type_id` in a required-type framed field; list order/uniqueness, revision or network versus the prior statement, transition count/linkage, missing subject-signed entry, unregistered prior authority, cross-field or network equality, key shape, contiguity, decrypted frame not type 6, type-6 network mismatch, or S3 overflow, zero observed value, or sum below minimum | `semantic`      |
-| Digest, hash, or signature mismatch; ciphertext not equal to the suite-65535 decrypted bytes; T3a scalar/point failure; wrong derived destination; transaction observation or commitment mismatch                                                                                                                                                                                    | `cryptographic` |
+| Failure                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | Category        |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------- |
+| Frame or route length over a limit; any byte/depth/container/item limit; R2 through R4 type-specific limits, including a CDDL bound that restates them                                                                                                                                                                                                                                                                                                                   | `resource`      |
+| Short header, bad magic, declared-length mismatch, concatenated frame, bytes outside the declared body                                                                                                                                                                                                                                                                                                                                                                   | `frame`         |
+| Unknown frame version or uninterpretable type/schema without permitted retention; unallocated key type, algorithm, encryption suite, or algorithm/key-type/length pairing                                                                                                                                                                                                                                                                                                | `unsupported`   |
+| Truncated/invalid CBOR syntax, invalid UTF-8, reserved additional information, or extra CBOR item in body/payload                                                                                                                                                                                                                                                                                                                                                        | `malformed`     |
+| Non-minimal integer/length, indefinite value, duplicate/out-of-order map key, or another alternate encoding of an allowed value                                                                                                                                                                                                                                                                                                                                          | `noncanonical`  |
+| Forbidden CBOR class (float, tag, forbidden simple value; a stray break code is `malformed`; non-uint map key), envelope/CDDL type mismatch, undeclared key (C12), missing/extra required key, scalar range violation, network-tag/ASCII-identifier/endpoint syntax violation, wrong key length for an allocated key type, a type-5 stamp field with the wrong length or an invalid point or proof-scalar encoding (T3b), or `min_reader_version` above `schema_version` | `schema`        |
+| Wrong `type_id` in a required-type framed field; list order/uniqueness, revision or network versus the prior statement, transition count/linkage, missing subject-signed entry, unregistered prior authority, cross-field or network equality, key shape (including S10a's stamp-key type and subject inequality), contiguity, decrypted frame not type 6, type-6 network mismatch, or S3 overflow, zero observed value, or sum below minimum                            | `semantic`      |
+| Digest, hash, or signature mismatch; ciphertext not equal to the suite-65535 decrypted bytes; invalid `P'` point, failed T3b DLEQ proof, T3a `t_i` range failure; wrong derived destination; transaction observation or commitment mismatch                                                                                                                                                                                                                              | `cryptographic` |
 
 Vector case IDs MUST be unique. `paired_case`, when present, MUST name a
 different existing case, be reciprocal, and indicate two cases whose
@@ -830,6 +960,8 @@ Some properties are outside what a decode manifest can assert and are verified
 by each codec's own unit tests: writer-side canonical encoding (C1, C2, C11)
 beyond `cross_language_roundtrip` pairs; the C7 `bigint` surface; R1's
 no-partial-result guarantee; the section 9 no-side-effects rule; T3a branches
-that need a digest with `h = 0`, `h >= n`, or an invalid `IL`, which no
-producible input reaches; and retention of unknown children and of the original
+that need `t_i = 0` or `t_i >= n`, which no producible input reaches; a property
+test that a leaked child private key with a published stamp key does not yield
+the identity key (it yields only `d'`), and that with the identity key as `P'`
+it yields that key, as stated in T3a; and retention of unknown children and of the original
 frame after a V6.3 projection, which a future manifest field may assert.

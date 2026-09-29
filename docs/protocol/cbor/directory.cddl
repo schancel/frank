@@ -16,6 +16,7 @@ directory-statement = {
   ? 5: [1*16 key-transition],
   ? 6: timestamp, ; expiry, if present
   ? 7: [1*8 account-ref], ; offline recovery authorities
+  ? 8: account-ref, ; stamp key P': key type 1, not equal to field 1 (README S10a, T3a)
   * uint => frank-value,
 }
 

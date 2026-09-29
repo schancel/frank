@@ -4,7 +4,7 @@
 
 direct-message-delivery = {
   0: network-tag,
-  1: account-ref, ; destination account/payment root identity
+  1: account-ref, ; stamp key P' actually used: key type 1 (README S9, T3a); its binding to the directory is outside the codec
   2: framed-object, ; recipient-specific encrypted-payload frame
   3: digest-32, ; T3 digest of the exact field-2 frame
   4: [1*64 payment-member], ; two or more preferred, one permitted
@@ -12,12 +12,19 @@ direct-message-delivery = {
 }
 
 payment-member = {
-  0: uint .le 2147483647, ; non-hardened BIP32 stamp child index
+  0: uint .le 2147483647, ; stamp child index i (README T3a); a uint31, not a BIP32 path component
   1: bstr .size (1..128), ; chain transaction identifier
   2: evm-quantity-256, ; verified value, fixed-width big-endian
   3: bstr .size (1..128), ; derived destination/address bytes
   4: digest-32, ; exact T4 commitment verified in the transaction
 }
+
+; 33-byte compressed SEC1 secp256k1 point. README T3b makes any encoding that
+; is not a valid, non-infinity curve point a `schema` error at stage 8.2.
+stamp-point = bstr .size 33
+
+; Two 32-byte big-endian scalars, c then s, each in 1..n-1 (README T3b).
+dleq-proof = bstr .size 64
 
 encrypted-message-content = {
   0: network-tag,
@@ -34,6 +41,9 @@ recipient-encrypted-payload = {
   3: uint .le 65535, ; exact encryption-suite identifier
   4: bstr .size (1..64), ; suite-defined nonce
   5: bstr .size (1..524288), ; ciphertext of a complete type-6 frame
+  6: stamp-point, ; E = e*G, fresh per payload (README T3a)
+  7: stamp-point, ; X = e*P' (README T3a)
+  8: dleq-proof, ; c || s, Chaum-Pedersen proof that E and X share e (README T3b)
   * uint => frank-value,
 }
 

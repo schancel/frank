@@ -59,6 +59,12 @@
               :address="address"
               @sendFollowUp="handleSendFollowUp"
             />
+            <chat-message-raffle
+              v-else-if="item.type == 'raffle'"
+              :item="item"
+              :address="address"
+              @sendFollowUp="handleSendFollowUp"
+            />
             <!-- Previously silently unrendered (no branch existed at all for this or any other
             unhandled type) -- a real preview string instead, via the same registry `chats.ts` now
             uses for the sidebar/notifications, so this can never silently go blank again as new
@@ -100,6 +106,7 @@ import ChatMessageImage from './ChatMessageImage.vue'
 import ChatMessageStealth from './ChatMessageStealth.vue'
 import ChatMessageBlackjack from './ChatMessageBlackjack.vue'
 import ChatMessageDigitalGoods from './ChatMessageDigitalGoods.vue'
+import ChatMessageRaffle from './ChatMessageRaffle.vue'
 import ChatMessageSuffix from './ChatMessageSuffix.vue'
 import DeleteMessageDialog from '../../dialogs/DeleteMessageDialog.vue'
 import TransactionDialog from '../../dialogs/TransactionDialog.vue'
@@ -109,6 +116,7 @@ import { getMessageItemPreview } from '@frank/wallet/message-item-plugins'
 import '@frank/wallet/message-item-plugins/built-in'
 import '@frank/wallet/message-item-plugins/blackjack'
 import '@frank/wallet/message-item-plugins/digital-goods'
+import '@frank/wallet/message-item-plugins/raffle'
 import { Message, MessageItem } from '@frank/cashweb/types/messages'
 import { useMonadWallet } from '../../../utils/clients'
 import { errorNotify } from '../../../utils/notifications'
@@ -122,6 +130,7 @@ export default defineComponent({
     ChatMessageText,
     ChatMessageBlackjack,
     ChatMessageDigitalGoods,
+    ChatMessageRaffle,
     ChatMessageImage,
     ChatMessageStealth,
     ChatMessageSuffix,
@@ -182,7 +191,10 @@ export default defineComponent({
     // as this conversation's natural next turn, without needing its own parallel send pipeline
     // (stamp-prep status, error handling, disabled-while-sending -- all free-text sends already
     // get this via Chat.vue's own sendMessage, this reuses it rather than duplicating it).
-    handleSendFollowUp(payload: { items: MessageItem[]; stampValueWei?: bigint }) {
+    handleSendFollowUp(payload: {
+      items: MessageItem[]
+      stampValueWei?: bigint
+    }) {
       this.$emit('sendFollowUp', payload)
     },
     swipeRight() {
@@ -243,7 +255,9 @@ export default defineComponent({
       // precedence (large always wins over small, never nets out to a no-op when a message somehow
       // has both).
       const wantsLarge = this.message.items.some(item =>
-        getMessageItemRenderer(item.type)?.wantsLargeBubble?.(item, { textLen }),
+        getMessageItemRenderer(item.type)?.wantsLargeBubble?.(item, {
+          textLen,
+        }),
       )
       const wantsSmall = this.message.items.some(item =>
         getMessageItemRenderer(item.type)?.wantsSmallBubble?.(item),

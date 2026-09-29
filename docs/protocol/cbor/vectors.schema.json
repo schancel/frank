@@ -80,7 +80,7 @@
           "if": { "properties": { "expectation": { "const": "accept" } } },
           "then": {
             "required": ["type_id", "schema_version", "content_hash_hex"],
-            "not": { "required": ["error_category"] }
+            "properties": { "error_category": false }
           }
         },
         {
@@ -103,6 +103,7 @@
             ],
             "properties": {
               "validation_context": {
+                "type": "object",
                 "required": ["payment_policy", "decrypted_frame_hex"]
               }
             }
@@ -119,6 +120,7 @@
           "then": {
             "properties": {
               "validation_context": {
+                "type": "object",
                 "required": ["prior_directory_statement_frame_hex"]
               }
             }

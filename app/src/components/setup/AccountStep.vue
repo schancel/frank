@@ -153,6 +153,7 @@ export default defineComponent({
       },
       generateMnemonic() {
         rawSeed.value = generateMnemonic()
+        emitAccountData()
       },
       newAccount() {
         action.value = 'new'

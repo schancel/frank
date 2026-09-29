@@ -8,13 +8,16 @@ import { generateMnemonic } from 'bip39'
 import AccountStep from './AccountStep.vue'
 import enUs from '../../i18n/en-us'
 import frFr from '../../i18n/fr-fr'
+import { commitValidatedSetupSeed } from '../../utils/setup-account'
 
 jest.mock('quasar', () => ({
   copyToClipboard: jest.fn(() => Promise.resolve()),
 }))
 jest.mock('bip39', () => ({
   ...jest.requireActual('bip39'),
-  generateMnemonic: jest.fn(() => 'fresh recovery phrase'),
+  generateMnemonic: jest.fn(
+    () => 'test test test test test test test test test test test junk',
+  ),
 }))
 jest.mock('../../utils/notifications', () => ({
   seedCopiedNotify: jest.fn(),
@@ -35,6 +38,18 @@ const QBtnStub = defineComponent({
     '<button :aria-label="ariaLabel" :data-icon="icon" @click="$emit(\'click\')">{{ label }}</button>',
 })
 
+const QInputStub = defineComponent({
+  inheritAttrs: false,
+  props: {
+    label: { type: String, default: '' },
+    modelValue: { type: String, default: '' },
+    readonly: { type: Boolean, default: false },
+  },
+  emits: ['update:modelValue'],
+  template:
+    '<textarea :aria-label="label" :readonly="readonly" :value="modelValue" @input="$emit(\'update:modelValue\', $event.target.value)" />',
+})
+
 const messages: Record<string, string> = {
   'accountStep.newAccount': 'New Account',
   'accountStep.importAccount': 'Import Account',
@@ -53,7 +68,7 @@ function mountStep(seed = 'eagerly generated unrelated seed') {
       },
       stubs: {
         QBtn: QBtnStub,
-        QInput: true,
+        QInput: QInputStub,
         QSpace: true,
       },
     },
@@ -65,12 +80,13 @@ describe('AccountStep import flow', () => {
     const wrapper = mountStep()
     const vm = wrapper.vm as unknown as {
       importAccount(): void
-      seed: string
     }
 
     vm.importAccount()
-    vm.seed = 'not a recovery phrase'
     await nextTick()
+    await wrapper
+      .find('textarea[aria-label="profile.seedEntry"]')
+      .setValue('not a recovery phrase')
 
     expect(wrapper.emitted('update:account-data')?.at(-1)?.[0]).toEqual({
       name: '',
@@ -83,12 +99,13 @@ describe('AccountStep import flow', () => {
     const wrapper = mountStep()
     const vm = wrapper.vm as unknown as {
       importAccount(): void
-      seed: string
     }
 
     vm.importAccount()
-    vm.seed = `  ${VALID_MNEMONIC.toUpperCase()}  `
     await nextTick()
+    await wrapper
+      .find('textarea[aria-label="profile.seedEntry"]')
+      .setValue(`  ${VALID_MNEMONIC.toUpperCase()}  `)
 
     expect(wrapper.emitted('update:account-data')?.at(-1)?.[0]).toEqual({
       name: '',
@@ -99,6 +116,10 @@ describe('AccountStep import flow', () => {
 })
 
 describe('AccountStep recovery phrase controls', () => {
+  beforeEach(() => {
+    jest.clearAllMocks()
+  })
+
   it.each([enUs, frFr])('ships distinct localized names', locale => {
     expect(locale.accountStep.copyRecoveryPhrase).toBeTruthy()
     expect(locale.accountStep.refreshRecoveryPhrase).toBeTruthy()
@@ -132,6 +153,46 @@ describe('AccountStep recovery phrase controls', () => {
 
     await refresh.trigger('click')
     expect(generateMnemonic).toHaveBeenCalledTimes(1)
-    expect(wrapper.vm.rawSeed).toBe('fresh recovery phrase')
+    expect(wrapper.vm.rawSeed).toBe(VALID_MNEMONIC)
+  })
+
+  it('makes the refreshed phrase the parent and wallet identity authority', async () => {
+    const wrapper = mountStep(
+      'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',
+    )
+    const vm = wrapper.vm as unknown as {
+      newAccount(): void
+      generateMnemonic(): void
+      copySeed(): void
+      name: string
+      rawSeed: string
+    }
+
+    vm.newAccount()
+    vm.name = 'Alice'
+    vm.generateMnemonic()
+    await nextTick()
+
+    const emitted = wrapper.emitted('update:account-data')?.at(-1)?.[0]
+    expect(emitted).toEqual({
+      name: 'Alice',
+      seed: VALID_MNEMONIC,
+      valid: true,
+    })
+    expect(vm.rawSeed).toBe(VALID_MNEMONIC)
+    expect(
+      wrapper.find('textarea[aria-label="profile.seedEntry"]').element.value,
+    ).toBe(VALID_MNEMONIC)
+
+    vm.copySeed()
+    expect(copyToClipboard).toHaveBeenLastCalledWith(VALID_MNEMONIC)
+
+    const persistSeed = jest.fn()
+    const committed = commitValidatedSetupSeed(
+      (emitted as { seed: string }).seed,
+      persistSeed,
+    )
+    expect(persistSeed).toHaveBeenCalledWith(VALID_MNEMONIC)
+    expect(committed).toBe(VALID_MNEMONIC)
   })
 })

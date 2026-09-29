@@ -3,6 +3,7 @@ import { PrivateKey, crypto as bitcoreCrypto } from "bitcore-lib-xpi";
 import { IDENTITY_KEY_NETWORK_NAME } from "../legacy-wallet/lotus-identity";
 import {
   LegacyMonadMessageEnvelopeV1,
+  MAX_MONAD_ENVELOPE_PLAINTEXT_BYTES,
   MonadMessageEnvelopeV2,
   buildEnvelope,
   decryptEnvelope,
@@ -146,6 +147,112 @@ describe("Monad message envelope v2", () => {
         senderPubKey: alicePubKey,
       })
     ).toBe("deniable transcript");
+  });
+
+  it("draws fresh salt and nonce entropy for every sequential envelope", () => {
+    const entropy = [
+      Buffer.alloc(32, 0x01),
+      Buffer.alloc(12, 0x02),
+      Buffer.alloc(32, 0x03),
+      Buffer.alloc(12, 0x04),
+    ];
+    const random = jest
+      .spyOn(bitcoreCrypto.Random, "getRandomBuffer")
+      .mockImplementation((size: number) => {
+        const next = entropy.shift();
+        if (next === undefined || next.length !== size) {
+          throw new Error(`unexpected random byte request: ${size}`);
+        }
+        return next;
+      });
+    const build = (): MonadMessageEnvelopeV2 => {
+      const envelope = parseEnvelope(
+        buildEnvelope({
+          fromAddress: aliceAddress,
+          fromPrivateKey: alicePrivateKey,
+          toAddress: bobAddress,
+          toPubKey: bobPubKey,
+          plaintext: "fresh entropy",
+          networkTag: "MONT",
+        })
+      );
+      if (envelope?.v !== 2) throw new Error("expected v2 envelope");
+      return envelope;
+    };
+
+    const first = build();
+    const second = build();
+    expect(random.mock.calls.map(([size]) => size)).toEqual([32, 12, 32, 12]);
+    expect(first.salt).not.toBe(second.salt);
+    expect(first.nonce).not.toBe(second.nonce);
+  });
+
+  it.each([
+    "0xde709f2102306220921060314715629080e2fb77",
+    "0x52908400098527886E0F7030069857D2E4169EE7",
+    "0x5AEDA56215b167893e80B4fE645BA6d5Bab767DE",
+  ])(
+    "accepts the same canonical EVM address vector as the relay: %s",
+    (address) => {
+      const envelope = { ...buildFixedV2(), from: address };
+      expect(parseEnvelope(Buffer.from(JSON.stringify(envelope)))).toEqual(
+        envelope
+      );
+      expect(
+        parseEnvelope(
+          buildEnvelope({
+            fromAddress: address,
+            fromPrivateKey: alicePrivateKey,
+            toAddress: bobAddress,
+            toPubKey: bobPubKey,
+            plaintext: "canonical address",
+            networkTag: "MONT",
+          })
+        )?.from
+      ).toBe(address);
+    }
+  );
+
+  it("rejects an invalid EIP-55 checksum in parsing and building", () => {
+    const invalid = "0x5AEDA56215b167893e80B4fE645BA6d5Bab767De";
+    const envelope = { ...buildFixedV2(), from: invalid };
+    expect(
+      parseEnvelope(Buffer.from(JSON.stringify(envelope)))
+    ).toBeUndefined();
+    expect(() =>
+      buildEnvelope({
+        fromAddress: invalid,
+        fromPrivateKey: alicePrivateKey,
+        toAddress: bobAddress,
+        toPubKey: bobPubKey,
+        plaintext: "bad checksum",
+        networkTag: "MONT",
+      })
+    ).toThrow("addresses");
+  });
+
+  it("keeps maximum builder output below the relay body cap with framing headroom", () => {
+    useFixedEntropy();
+    const bytes = buildEnvelope({
+      fromAddress: aliceAddress,
+      fromPrivateKey: alicePrivateKey,
+      toAddress: bobAddress,
+      toPubKey: bobPubKey,
+      plaintext: "a".repeat(MAX_MONAD_ENVELOPE_PLAINTEXT_BYTES),
+      networkTag: "MONT",
+    });
+    expect(bytes.length).toBeLessThanOrEqual(2 * 1024 * 1024 - 128 * 1024);
+    expect(parseEnvelope(bytes)?.v).toBe(2);
+    expect(() =>
+      buildEnvelope({
+        fromAddress: aliceAddress,
+        fromPrivateKey: alicePrivateKey,
+        toAddress: bobAddress,
+        toPubKey: bobPubKey,
+        plaintext: "a".repeat(MAX_MONAD_ENVELOPE_PLAINTEXT_BYTES + 1),
+        networkTag: "MONT",
+      })
+    ).toThrow(`${MAX_MONAD_ENVELOPE_PLAINTEXT_BYTES}`);
   });
 
   it.each([

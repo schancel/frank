@@ -129,7 +129,12 @@ use crate::{
 
 const MAX_STAMP_PAYMENTS: usize = 64;
 const MAX_MONAD_MESSAGE_BODY_BYTES: usize = 2 * 1024 * 1024;
-const MAX_ENVELOPE_CIPHERTEXT_BYTES: usize = 1024 * 1024;
+const MIN_ENVELOPE_BODY_HEADROOM_BYTES: usize = 128 * 1024;
+const MAX_ENVELOPE_JSON_OVERHEAD_BYTES: usize = 1024;
+const MAX_ENVELOPE_CIPHERTEXT_BYTES: usize = (MAX_MONAD_MESSAGE_BODY_BYTES
+    - MIN_ENVELOPE_BODY_HEADROOM_BYTES
+    - MAX_ENVELOPE_JSON_OVERHEAD_BYTES)
+    / 2;
 const MAX_ENVELOPE_NETWORK_TAG_BYTES: usize = 32;
 const ENVELOPE_HKDF_SALT_BYTES: usize = 32;
 const ENVELOPE_GCM_NONCE_BYTES: usize = 12;
@@ -438,9 +443,11 @@ fn parse_canonical_address(name: &str, value: &str) -> Result<Address, ProcessMo
     Ok(address)
 }
 
-/// Fully validate the current authenticated envelope before transaction decoding, RPC, attempt
-/// claims, or storage. The relay cannot verify AEAD authenticity, but it rejects malformed,
-/// legacy, and unsupported shapes and reuses the validated `to` address for payment routing.
+/// Fully validate a new authenticated envelope before transaction decoding, RPC, attempt claims,
+/// or storage. The relay cannot verify AEAD authenticity, but it rejects malformed, legacy, and
+/// unsupported shapes and reuses the validated `to` address for payment routing. Exact retries of
+/// records already in storage are returned before this validator so historical envelopes remain
+/// retrievable after admission policy changes.
 fn validate_envelope(
     encrypted_payload: &[u8],
     expected_network_tag: &[u8],
@@ -529,10 +536,10 @@ pub async fn process_monad_message<T: JsonRpcTransport + Clone>(
             actual: actual_hash,
         });
     }
-    let envelope = validate_envelope(&request.encrypted_payload, network_tag)?;
-    let recipient = envelope.recipient;
     // Completed exact retries are immutable historical facts. Return them before consulting
-    // mutable current relay policy (minimum value, profile rotation, network configuration).
+    // mutable current relay policy (envelope version, minimum value, profile rotation, network
+    // configuration). The hash was still checked above, and exact request equality prevents a
+    // caller from rebinding the stored payload to another payment set.
     if let Some(existing) = registry
         .get_monad_message(declared_hash.as_slice())
         .map_err(ProcessMonadMessageError::Infrastructure)?
@@ -542,6 +549,8 @@ pub async fn process_monad_message<T: JsonRpcTransport + Clone>(
         }
         return Err(ProcessMonadMessageError::ConflictingPaymentSet);
     }
+    let envelope = validate_envelope(&request.encrypted_payload, network_tag)?;
+    let recipient = envelope.recipient;
 
     if request.stamp_payments.is_empty() {
         return Err(ProcessMonadMessageError::MissingStampPayments);
@@ -1396,6 +1405,147 @@ mod tests {
                 raw_tx,
             }],
         }
+    }
+
+    fn persist_message(
+        registry: &Registry,
+        message: proto::MonadStampedMessage,
+        network_tag: &[u8],
+    ) -> proto::StoredMonadMessage {
+        let payload_hash = message.payload_hash.clone();
+        registry
+            .put_monad_message(
+                &payload_hash,
+                recipient_address(),
+                proto::StoredMonadMessage {
+                    message: Some(message),
+                    timestamp: 123,
+                    network_tag: Vec::new(),
+                },
+                network_tag,
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn canonical_address_vectors_match_envelope_builders() {
+        for address in [
+            "0xde709f2102306220921060314715629080e2fb77",
+            "0x52908400098527886E0F7030069857D2E4169EE7",
+            "0x5AEDA56215b167893e80B4fE645BA6d5Bab767DE",
+        ] {
+            parse_canonical_address("from", address).unwrap();
+        }
+        assert!(
+            parse_canonical_address("from", "0x5AEDA56215b167893e80B4fE645BA6d5Bab767De").is_err()
+        );
+    }
+
+    #[test]
+    fn envelope_ciphertext_boundary_preserves_request_framing_headroom() {
+        assert_eq!(MAX_ENVELOPE_CIPHERTEXT_BYTES, 982_528);
+        let base: Value =
+            serde_json::from_slice(&valid_envelope(recipient_address(), "MONT")).unwrap();
+        let at_limit = envelope_with_field(
+            &base,
+            "ciphertext",
+            serde_json::json!("00".repeat(MAX_ENVELOPE_CIPHERTEXT_BYTES)),
+        );
+        assert!(at_limit.len() <= MAX_MONAD_MESSAGE_BODY_BYTES - MIN_ENVELOPE_BODY_HEADROOM_BYTES);
+        validate_envelope(&at_limit, b"MONT").unwrap();
+
+        let over_limit = envelope_with_field(
+            &base,
+            "ciphertext",
+            serde_json::json!("00".repeat(MAX_ENVELOPE_CIPHERTEXT_BYTES + 1)),
+        );
+        assert!(matches!(
+            validate_envelope(&over_limit, b"MONT"),
+            Err(ProcessMonadMessageError::InvalidEnvelope(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn stored_v2_exact_retry_precedes_current_network_validation() {
+        let (_tempdir, registry) = test_registry();
+        let message = make_message(vec![0xc0], valid_envelope(recipient_address(), "MONT"));
+        let stored = persist_message(&registry, message.clone(), b"MONT");
+        let before_index = registry
+            .list_monad_messages_for_recipient_since(recipient_address(), 0)
+            .unwrap();
+        let transport = MockTransport::default();
+
+        let retried = process_monad_message(
+            &transport,
+            &registry,
+            10_000,
+            fast_poll(),
+            b"MON1",
+            message.clone(),
+        )
+        .await
+        .expect("an exact stored retry is independent of current network policy");
+
+        assert_eq!(retried, stored);
+        assert!(transport.calls().is_empty());
+        assert_eq!(
+            registry
+                .get_monad_message_attempt(&message.payload_hash, &message)
+                .unwrap(),
+            MonadMessageAttemptClaim::Missing
+        );
+        assert_eq!(
+            registry
+                .list_monad_messages_for_recipient_since(recipient_address(), 0)
+                .unwrap(),
+            before_index
+        );
+    }
+
+    #[tokio::test]
+    async fn stored_legacy_v1_exact_retry_precedes_current_envelope_validation() {
+        let (_tempdir, registry) = test_registry();
+        let legacy_envelope = serde_json::to_vec(&serde_json::json!({
+            "v": 1,
+            "networkTag": "MONT",
+            "from": Address([0x11; 20]).to_hex(),
+            "to": recipient_address().to_hex(),
+            "salt": "00".repeat(16),
+            "ciphertext": "11".repeat(16),
+        }))
+        .unwrap();
+        let message = make_message(vec![0xc0], legacy_envelope);
+        let stored = persist_message(&registry, message.clone(), b"MONT");
+        let before_index = registry
+            .list_monad_messages_for_recipient_since(recipient_address(), 0)
+            .unwrap();
+        let transport = MockTransport::default();
+
+        let retried = process_monad_message(
+            &transport,
+            &registry,
+            10_000,
+            fast_poll(),
+            b"MON1",
+            message.clone(),
+        )
+        .await
+        .expect("an exact stored legacy retry remains readable");
+
+        assert_eq!(retried, stored);
+        assert!(transport.calls().is_empty());
+        assert_eq!(
+            registry
+                .get_monad_message_attempt(&message.payload_hash, &message)
+                .unwrap(),
+            MonadMessageAttemptClaim::Missing
+        );
+        assert_eq!(
+            registry
+                .list_monad_messages_for_recipient_since(recipient_address(), 0)
+                .unwrap(),
+            before_index
+        );
     }
 
     #[tokio::test]

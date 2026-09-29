@@ -213,6 +213,7 @@ impl<'a> DbMonadMessages<'a> {
         }
     }
 
+    #[cfg(test)]
     fn encoded_attempt(
         message: &proto::MonadStampedMessage,
         policy: &MonadMessageAttemptPolicy,
@@ -282,6 +283,7 @@ impl<'a> DbMonadMessages<'a> {
         }
     }
 
+    #[cfg(test)]
     /// Persist the exact raw payment set and its bounded policy snapshot before its first
     /// broadcast. The encrypted payload itself is represented only by the message digest, avoiding
     /// attacker-controlled disk amplification.
@@ -318,6 +320,7 @@ impl<'a> DbMonadMessages<'a> {
         }
     }
 
+    #[cfg(test)]
     /// Release a claim after the first transaction was definitively rejected by the RPC before
     /// any member of the set verified. Timeout/accepted ambiguity deliberately does not call this.
     pub(crate) fn delete_attempt(&self, payload_hash: &[u8]) -> Result<()> {
@@ -453,6 +456,7 @@ impl<'a> DbMonadMessages<'a> {
         Ok(true)
     }
 
+    #[cfg(test)]
     /// Store a [`proto::StoredMonadMessage`], keyed by its inner message's `payload_hash`, and
     /// index it by `message.timestamp` (ticket #37's `list_since`).
     ///
@@ -576,6 +580,7 @@ impl<'a> DbMonadMessages<'a> {
         Ok(messages)
     }
 
+    #[cfg(test)]
     /// List a strict-forward page from one recipient journal.
     ///
     /// Keys are ordered by `(timestamp, payload_hash)`. A supplied authenticated cursor need not
@@ -684,6 +689,7 @@ impl<'a> DbMonadMessages<'a> {
     }
 }
 
+#[cfg(test)]
 fn prost_varint_len(mut value: u64) -> usize {
     let mut len = 1;
     while value >= 0x80 {

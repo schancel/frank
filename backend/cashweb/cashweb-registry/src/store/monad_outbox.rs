@@ -1615,6 +1615,7 @@ impl<'a> DbMonadOutbox<'a> {
             .transpose()
     }
 
+    #[cfg(test)]
     /// Return canonical raw bytes only after the member's index/hash reference verifies.
     pub(crate) fn referenced_raw_tx(
         &self,
@@ -1696,6 +1697,7 @@ impl<'a> DbMonadOutbox<'a> {
         }))
     }
 
+    #[cfg(test)]
     /// Enumerate at most `limit` nonterminal claims. The active index prevents a full DB scan.
     pub(crate) fn list_active(&self, limit: usize) -> Result<Vec<[u8; 32]>> {
         self.list_active_after(None, limit)
@@ -1939,7 +1941,7 @@ impl<'a> DbMonadOutbox<'a> {
                 continue;
             }
             let payload_hash = checked_payload_hash(&key)?;
-            let mut record = self.get(&payload_hash)?.ok_or_else(|| {
+            let record = self.get(&payload_hash)?.ok_or_else(|| {
                 CorruptRecord("active lease references missing outbox".to_string())
             })?;
             let encoded_record_len = encode_record(&record).len();

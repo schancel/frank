@@ -549,6 +549,7 @@ impl Registry {
             .claim_attempt(payload_hash, message, policy)
     }
 
+    #[cfg(test)]
     pub(crate) fn get_monad_message_attempt(
         &self,
         payload_hash: &[u8],
@@ -590,6 +591,7 @@ impl Registry {
             .classify_ownership(&message.payload_hash, message)
     }
 
+    #[cfg(test)]
     /// Read one canonical outbox record.
     pub(crate) fn monad_outbox_record(
         &self,

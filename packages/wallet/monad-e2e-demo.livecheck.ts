@@ -27,7 +27,9 @@
  *   Alchemy endpoint, polls for its receipt, verifies the payment commitment/value, and only then
  *   stores the message -- so a 2xx response here means a real stamp payment is confirmed on live
  *   Monad testnet.
- * - `GET /message/monad/:payload_hash` (right after) proves the stored message is retrievable --
+ * - A signed read of the recipient's own mailbox (`POST /message/monad/auth/:me` challenge, then
+ *   `GET /message/monad/inbox/:me`, right after) proves the stored message is retrievable by its
+ *   recipient (the unauthenticated `GET /message/monad/:payload_hash` was removed in PR #197) --
  *   see this file's tail comment for what this does and does NOT prove about "delivery".
  *
  * ## Content encryption is out of scope here
@@ -72,7 +74,12 @@ import { MonadChangePool } from './monad-change-pool'
 import { MonadSubAccountPool } from './monad-account-pool'
 import { SubAccountLeaseManager } from './monad-account-lease'
 import { MonadStampClient } from './monad-stamp-client'
-import { MonadIdentity, registerMonadIdentity } from './monad-identity'
+import {
+  MonadIdentity,
+  mailboxAuthFor,
+  registerMonadIdentity,
+} from './monad-identity'
+import { fetchMonadMessagesSince } from '@frank/cashweb/relay/monad-message-feed'
 
 function requiredEnv(name: string): string {
   const value = process.env[name]
@@ -209,13 +216,22 @@ async function main() {
     )} (now 'spent', never reused)`,
   )
 
-  // --- 4. Prove GET /message/monad/:payload_hash round-trips the same thing. ---
+  // --- 4. Prove the recipient can read the same message from its authenticated mailbox. ---
   console.log(
-    '\n== Fetching the message back via GET /message/monad/:payload_hash ==',
+    '\n== Reading the message back from the recipient mailbox (signed GET /message/monad/inbox/:me) ==',
   )
-  const fetched = await stampClient.fetchStoredMessage(result.payloadHashHex)
+  const inbox = await fetchMonadMessagesSince({
+    ...mailboxAuthFor(recipientIdentity, relayBaseUrl),
+    sinceMs: 0,
+  })
+  const fetched = inbox.find(
+    stored =>
+      stored.message !== undefined &&
+      Buffer.from(stored.message.payloadHash).toString('hex') ===
+        result.payloadHashHex,
+  )
   if (!fetched)
-    throw new Error('expected the just-stored message to be fetchable')
+    throw new Error('expected the just-stored message in the recipient inbox')
   const fetchedText = new TextDecoder().decode(
     fetched.message?.encryptedPayload,
   )

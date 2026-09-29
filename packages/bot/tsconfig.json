@@ -18,5 +18,5 @@
     "**/*",
     "../bitcore-lib-xpi/types.d.ts"
   ],
-  "exclude": ["node_modules"]
+  "exclude": ["node_modules", "**/*.jest.spec.ts", "**/*.jest.test.ts"]
 }

@@ -219,6 +219,7 @@ Start a local relay exactly as in ticket #8's runbook
 set -a; source ../../.env; set +a   # needs QWEN_API_KEY, QWEN_OPENAI_COMPATIBLE_ENDPOINT too
 export E2E_DEMO_RELAY_URL=http://127.0.0.1:8098
 export E2E_DEMO_MAIN_WALLET_JSON=/absolute/path/to/chain-wallet.json
+export QWEN_BOT_WALLET_STATE_DIR=/absolute/path/to/durable/qwen-bot-wallet
 export QWEN_BOT_MAX_REPLIES=2   # must be >= however many turns the sender script will send
 yarn bot
 ```
@@ -235,9 +236,20 @@ its identity persists at `QWEN_BOT_IDENTITY_JSON`, default `/tmp/qwen-bot-identi
 set -a; source ../../.env; set +a
 export E2E_DEMO_RELAY_URL=http://127.0.0.1:8098
 export E2E_DEMO_MAIN_WALLET_JSON=/absolute/path/to/chain-wallet.json
+export QWEN_SENDER_WALLET_STATE_DIR=/absolute/path/to/durable/qwen-sender-wallet
 export QWEN_BOT_MESSAGES='["Hi, who are you?","Follow-up: prove you paid to reply."]'
 yarn send-demo
 ```
+
+The bot's `QWEN_BOT_STATE_DIR` remains the independent Level database for Qwen conversation
+history, polling cursors, and message/profile idempotency. Spending state lives under
+`QWEN_BOT_WALLET_STATE_DIR` (default `/tmp/qwen-bot-wallet-state`) and the sender demo uses
+`QWEN_SENDER_WALLET_STATE_DIR` (default `/tmp/qwen-bot-sender-wallet-state`). Each wallet state
+root contains one private HD-seed record plus separate Level databases for the sub-account pool,
+change pool, pending stamp attempts, and received-payment recovery. Keep those directories stable
+across restarts, private to the operator, and backed up together; deleting or swapping one while it
+may own funded/pending accounts can strand funds. Startup replays a retained exact stamp attempt
+before permitting any new funding or send, and refuses to start if replay remains unresolved.
 
 `yarn ui-verify` (`monad-ui-verify.livecheck.ts`) exercises the same flow through the real app's
 own `ActiveChain` seam (`@frank/wallet/chain`) instead of the bot's own hand-rolled calls -- see

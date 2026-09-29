@@ -61,12 +61,28 @@
  * near-simultaneous transactions from a single account, funding happens in small
  * (`DEFAULT_TOPUP_BUFFER_SIZE = 5`) top-ups spread out one send at a time.
  */
-import { readFileSync, existsSync, writeFileSync } from 'fs'
+import {
+  closeSync,
+  existsSync,
+  fsyncSync,
+  linkSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  unlinkSync,
+  writeFileSync,
+} from 'fs'
+import { randomBytes } from 'crypto'
+import { join } from 'path'
+import { tmpdir } from 'os'
 
 import { JsonRpcProvider, Provider } from 'ethers'
 
 import { MonadHttpClient } from '@frank/wallet/monad-http'
-import { MonadAccountTxSigner } from '@frank/wallet/monad-account-tx'
+import {
+  MonadAccountTxSigner,
+  MonadTxSubmitter,
+} from '@frank/wallet/monad-account-tx'
 import { MonadHdKeyring } from '@frank/wallet/monad-hd-keyring'
 import { MonadChangeKeyring } from '@frank/wallet/monad-change-keyring'
 import { MonadChangePool } from '@frank/wallet/monad-change-pool'
@@ -77,11 +93,23 @@ import {
 } from '@frank/wallet/monad-account-pool'
 import { SubAccountLeaseManager } from '@frank/wallet/monad-account-lease'
 import {
+  MonadStampPendingAttemptError,
+  MonadStampRecoveredAttemptError,
   MonadStampClient,
   StampMonadMessageResult,
   quoteMonadStampPaymentGasReserve,
 } from '@frank/wallet/monad-stamp-client'
-import { MonadIdentity, registerMonadIdentity } from '@frank/wallet/monad-identity'
+import { LevelSubAccountPoolStore } from '@frank/wallet/storage/level-sub-account-pool-store'
+import { LevelChangePoolStore } from '@frank/wallet/storage/level-change-pool-store'
+import {
+  LevelStampAttemptJournal,
+  StampAttemptJournal,
+} from '@frank/wallet/storage/stamp-attempt-journal'
+import { LevelStampPaymentJournal } from '@frank/wallet/storage/stamp-payment-journal'
+import {
+  MonadIdentity,
+  registerMonadIdentity,
+} from '@frank/wallet/monad-identity'
 import { buildEnvelope } from '@frank/cashweb/relay/monad-message-envelope'
 import { serializeMessageItems } from '@frank/wallet/chain/monad-chain'
 import { MessageItem } from '@frank/cashweb/types/messages'
@@ -167,6 +195,93 @@ export interface FundedStampSetup {
    * `sendDirectMessageText`) instead of pre-funding a large fixed batch up front -- see this
    * file's header, "Lazy per-send funding", for why. */
   pool: MonadSubAccountPool
+  changePool: MonadChangePool
+  stampAttemptJournal: LevelStampAttemptJournal
+  stampPaymentJournal: LevelStampPaymentJournal
+  /** Flushes and closes every Level store owned by this setup. Safe to call more than once. */
+  close(): Promise<void>
+}
+
+const openWalletStateRoots = new Set<string>()
+
+interface PersistedHdSeed {
+  version: 1
+  mnemonic: string
+}
+
+function readPersistedHdSeed(path: string): string {
+  const parsed = JSON.parse(
+    readFileSync(path, 'utf8'),
+  ) as Partial<PersistedHdSeed>
+  if (parsed.version !== 1 || typeof parsed.mnemonic !== 'string') {
+    throw new Error(`Invalid persisted HD seed record at ${path}`)
+  }
+  // Parsing through the keyring rejects corrupt/invalid BIP-39 data before any account can be
+  // selected. Never replace an unreadable record with fresh ephemeral signing state.
+  MonadHdKeyring.fromMnemonic(parsed.mnemonic)
+  return parsed.mnemonic
+}
+
+/** Atomically publishes one mnemonic record. A concurrent first start either wins the hard-link
+ * creation or loads the winner; a crash can leave only an ignored temp file, never a torn final
+ * seed record. The secret itself is deliberately never returned in logs or setup metadata. */
+function loadOrCreateHdSeed(stateRoot: string): string {
+  mkdirSync(stateRoot, { recursive: true, mode: 0o700 })
+  const seedPath = join(stateRoot, 'hd-seed.json')
+  if (existsSync(seedPath)) return readPersistedHdSeed(seedPath)
+
+  const mnemonic = MonadHdKeyring.generate().mnemonic
+  const tempPath = join(
+    stateRoot,
+    `.hd-seed-${process.pid}-${randomBytes(8).toString('hex')}.tmp`,
+  )
+  const fd = openSync(tempPath, 'wx', 0o600)
+  try {
+    writeFileSync(
+      fd,
+      JSON.stringify({ version: 1, mnemonic } satisfies PersistedHdSeed),
+    )
+    fsyncSync(fd)
+  } finally {
+    closeSync(fd)
+  }
+
+  try {
+    linkSync(tempPath, seedPath)
+    const stateRootFd = openSync(stateRoot, 'r')
+    try {
+      fsyncSync(stateRootFd)
+    } finally {
+      closeSync(stateRootFd)
+    }
+    return mnemonic
+  } catch (err) {
+    if (
+      err === null ||
+      typeof err !== 'object' ||
+      !('code' in err) ||
+      err.code !== 'EEXIST'
+    ) {
+      throw err
+    }
+    return readPersistedHdSeed(seedPath)
+  } finally {
+    unlinkSync(tempPath)
+  }
+}
+
+async function closeStores(
+  stores: Array<{ Close(): Promise<void> }>,
+): Promise<void> {
+  let firstError: unknown
+  for (const store of stores.slice().reverse()) {
+    try {
+      await store.Close()
+    } catch (err) {
+      firstError ??= err
+    }
+  }
+  if (firstError !== undefined) throw firstError
 }
 
 /** Waits (polling `getStatus`) for `txHash` to reach a terminal state, throwing if it fails or
@@ -251,8 +366,9 @@ export async function fundPoolWithRetry(params: {
 }
 
 /**
- * Derives a fresh HD sub-account pool (ticket #14) and wires up a `MonadStampClient` ready to send
- * Stamp-over-Monad messages, against the main funded testnet wallet at `mainWalletJsonPath`.
+ * Loads or atomically creates a durable HD seed and Level-backed sub-account/change pools and
+ * stamp journals, then wires up a `MonadStampClient` against the main funded testnet wallet at
+ * `mainWalletJsonPath`. Callers own the returned setup and must close it.
  *
  * **Lazy per-send funding (direct user feedback, 2026-09-28):** this used to eagerly pre-fund
  * `poolSize` sub-accounts all at once via `fundPoolWithRetry`, sized to `maxReplies + maxGreetings`
@@ -275,12 +391,19 @@ export async function setUpFundedStampClient(params: {
   rpcUrl: string
   relayBaseUrl: string
   mainWalletJsonPath: string
+  /** Stable root for the HD seed and wallet journals. Bot entry points always set this explicitly. */
+  stateRoot?: string
   poolSize?: number
   stampValueWei: bigint
   label: string
+  /** Deterministic no-network test seams; production callers omit both. */
+  provider?: JsonRpcProvider
+  httpClient?: MonadTxSubmitter
 }): Promise<FundedStampSetup> {
-  const provider = new JsonRpcProvider(params.rpcUrl)
-  const httpClient = new MonadHttpClient({ rpcUrl: params.rpcUrl })
+  const ownsProvider = params.provider === undefined
+  const provider = params.provider ?? new JsonRpcProvider(params.rpcUrl)
+  const httpClient =
+    params.httpClient ?? new MonadHttpClient({ rpcUrl: params.rpcUrl })
 
   const mainWallet = JSON.parse(
     readFileSync(params.mainWalletJsonPath, 'utf8'),
@@ -292,58 +415,139 @@ export async function setUpFundedStampClient(params: {
   })
   console.log(`[${params.label}] main funding account: ${mainWallet.address}`)
 
-  const { keyring, mnemonic } = MonadHdKeyring.generate()
-  const pool = new MonadSubAccountPool({ keyring })
-  const changePool = new MonadChangePool({
-    keyring: MonadChangeKeyring.fromMnemonic(mnemonic),
-  })
+  const stateRoot =
+    params.stateRoot ?? join(tmpdir(), 'frank-funded-stamp-state', params.label)
+  if (openWalletStateRoots.has(stateRoot)) {
+    if (ownsProvider) provider.destroy()
+    throw new Error(`Wallet state root is already open: ${stateRoot}`)
+  }
+  openWalletStateRoots.add(stateRoot)
+  const subAccountStore = new LevelSubAccountPoolStore(stateRoot)
+  const changeStore = new LevelChangePoolStore(stateRoot)
+  const stampPaymentJournal = new LevelStampPaymentJournal(stateRoot)
+  const stampAttemptJournal = new LevelStampAttemptJournal(stateRoot)
+  const ownedStores: Array<{ Close(): Promise<void> }> = []
+  let closed = false
 
-  if (params.poolSize) {
-    pool.ensureSize(params.poolSize)
-
-    const feeData = await provider.getFeeData()
-    const fallbackMaxFeePerGas = BigInt(250000000000) // 250 gwei -- only if the node can't report feeData at all
-    const maxFeePerGas = feeData.maxFeePerGas ?? fallbackMaxFeePerGas
-    const estimatedBurnGasLimit = BigInt(23000)
-    const gasReserve =
-      (maxFeePerGas * estimatedBurnGasLimit * BigInt(11)) / BigInt(10)
-    console.log(
-      `[${params.label}] maxFeePerGas=${maxFeePerGas} wei; funding each sub-account with stampValue=${params.stampValueWei} + gasReserve=${gasReserve} wei`,
-    )
-
-    const funded = await fundPoolWithRetry({
-      pool,
-      mainAccountSigner,
-      stampValueWei: params.stampValueWei,
-      gasReserve,
-      label: params.label,
-    })
-    for (const f of funded) {
-      console.log(
-        `[${params.label}] funded ${f.address} (sub-account ${f.index}) with ${f.fundedValue} wei, tx ${f.txHash}`,
-      )
-      await waitForConfirmation(
-        mainAccountSigner,
-        f.txHash,
-        `${params.label} funding tx (sub-account ${f.index})`,
-      )
-      console.log(
-        `[${params.label}] funding tx for sub-account ${f.index} confirmed on-chain`,
-      )
+  const close = async (): Promise<void> => {
+    if (closed) return
+    closed = true
+    try {
+      await closeStores(ownedStores)
+    } finally {
+      openWalletStateRoots.delete(stateRoot)
+      if (ownsProvider) provider.destroy()
     }
   }
 
-  const leaseManager = new SubAccountLeaseManager(pool)
-  const stampClient = new MonadStampClient({
-    pool,
-    leaseManager,
-    provider,
-    httpClient,
-    changePool,
-    relayBaseUrl: params.relayBaseUrl,
-  })
+  try {
+    const mnemonic = loadOrCreateHdSeed(stateRoot)
+    for (const store of [
+      subAccountStore,
+      changeStore,
+      stampPaymentJournal,
+      stampAttemptJournal,
+    ]) {
+      ownedStores.push(store)
+      await store.Open()
+    }
 
-  return { provider, stampClient, mainAccountSigner, pool }
+    const pool = new MonadSubAccountPool({
+      keyring: MonadHdKeyring.fromMnemonic(mnemonic),
+      store: subAccountStore,
+    })
+    const pendingLeaseIndices = new Set(
+      stampAttemptJournal.getAll().flatMap(attempt => attempt.leaseIndices),
+    )
+    for (const record of pool.records()) {
+      if (
+        record.status === 'in-use' &&
+        !pendingLeaseIndices.has(record.index)
+      ) {
+        // A crash after lease persistence but before the exact raw set journaled cannot have
+        // reached the relay. Retire conservatively so an uncertain signed nonce is never reused.
+        pool.setStatus(record.index, 'retired')
+      }
+    }
+    await pool.flush()
+    const changePool = new MonadChangePool({
+      keyring: MonadChangeKeyring.fromMnemonic(mnemonic),
+      store: changeStore,
+    })
+
+    const leaseManager = new SubAccountLeaseManager(pool)
+    const stampClient = new MonadStampClient({
+      pool,
+      leaseManager,
+      provider,
+      httpClient,
+      changePool,
+      stampPaymentJournal,
+      stampAttemptJournal,
+      relayBaseUrl: params.relayBaseUrl,
+    })
+    await stampClient.resumePendingAttempts()
+    const pendingPayloadHashes = stampAttemptJournal
+      .getAll()
+      .map(attempt => attempt.payloadHashHex)
+    if (pendingPayloadHashes.length > 0) {
+      throw new MonadStampPendingAttemptError(pendingPayloadHashes)
+    }
+
+    // Recovery is complete and no exact set remains retained, so funding new inventory is safe.
+    if (params.poolSize) {
+      pool.ensureSize(params.poolSize)
+
+      const feeData = await provider.getFeeData()
+      const fallbackMaxFeePerGas = BigInt(250000000000) // 250 gwei -- only if the node can't report feeData at all
+      const maxFeePerGas = feeData.maxFeePerGas ?? fallbackMaxFeePerGas
+      const estimatedBurnGasLimit = BigInt(23000)
+      const gasReserve =
+        (maxFeePerGas * estimatedBurnGasLimit * BigInt(11)) / BigInt(10)
+      console.log(
+        `[${params.label}] maxFeePerGas=${maxFeePerGas} wei; funding each sub-account with stampValue=${params.stampValueWei} + gasReserve=${gasReserve} wei`,
+      )
+
+      const funded = await fundPoolWithRetry({
+        pool,
+        mainAccountSigner,
+        stampValueWei: params.stampValueWei,
+        gasReserve,
+        label: params.label,
+      })
+      for (const f of funded) {
+        console.log(
+          `[${params.label}] funded ${f.address} (sub-account ${f.index}) with ${f.fundedValue} wei, tx ${f.txHash}`,
+        )
+        await waitForConfirmation(
+          mainAccountSigner,
+          f.txHash,
+          `${params.label} funding tx (sub-account ${f.index})`,
+        )
+        console.log(
+          `[${params.label}] funding tx for sub-account ${f.index} confirmed on-chain`,
+        )
+      }
+    }
+
+    return {
+      provider,
+      stampClient,
+      mainAccountSigner,
+      pool,
+      changePool,
+      stampAttemptJournal,
+      stampPaymentJournal,
+      close,
+    }
+  } catch (err) {
+    try {
+      await close()
+    } catch {
+      // Preserve the startup/reconciliation failure that made the setup unusable.
+    }
+    throw err
+  }
 }
 
 /**
@@ -366,6 +570,8 @@ export async function setUpFundedStampClient(params: {
  */
 export async function sendDirectMessageItems(params: {
   stampClient: MonadStampClient
+  /** Persistent journal owned by the setup. When present, recovery gates funding a new send. */
+  stampAttemptJournal?: StampAttemptJournal
   pool: MonadSubAccountPool
   mainAccountSigner: MonadAccountTxSigner
   provider: Provider
@@ -376,6 +582,19 @@ export async function sendDirectMessageItems(params: {
   stampValueWei: bigint
   networkTag: string
 }): Promise<StampMonadMessageResult> {
+  if (params.stampAttemptJournal !== undefined) {
+    const recovered = await params.stampClient.resumePendingAttempts()
+    if (recovered.length > 0) {
+      throw new MonadStampRecoveredAttemptError(recovered)
+    }
+    const pending = params.stampAttemptJournal
+      .getAll()
+      .map(attempt => attempt.payloadHashHex)
+    if (pending.length > 0) {
+      throw new MonadStampPendingAttemptError(pending)
+    }
+  }
+
   const gasReserveWei = await quoteMonadStampPaymentGasReserve({
     signer: params.mainAccountSigner,
     recipientPublicKey: params.toPubKey,
@@ -404,6 +623,7 @@ export async function sendDirectMessageItems(params: {
 
 export async function sendDirectMessageText(params: {
   stampClient: MonadStampClient
+  stampAttemptJournal?: StampAttemptJournal
   pool: MonadSubAccountPool
   mainAccountSigner: MonadAccountTxSigner
   provider: Provider

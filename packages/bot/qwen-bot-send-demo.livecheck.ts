@@ -74,6 +74,8 @@ function extractText(plaintext: string): string {
   return plaintext
 }
 
+let closeFundedSetup: (() => Promise<void>) | undefined
+
 async function main() {
   const relayBaseUrl = process.env.E2E_DEMO_RELAY_URL ?? 'http://127.0.0.1:8098'
   const rpcUrl = requiredEnv('MONAD_TESTNET_HTTP_RPC_URL')
@@ -91,6 +93,11 @@ async function main() {
     process.cwd(),
     process.env.E2E_DEMO_MAIN_WALLET_JSON ??
       '../frank-worktrees/spike-demo/spike/data/chain-wallet.json',
+  )
+  const walletStateDirPath = resolve(
+    process.cwd(),
+    process.env.QWEN_SENDER_WALLET_STATE_DIR ??
+      '/tmp/qwen-bot-sender-wallet-state',
   )
   const handoffJsonPath = resolve(
     process.cwd(),
@@ -133,14 +140,22 @@ async function main() {
   }
 
   // No `poolSize` -- funded lazily, per send (see `setUpFundedStampClient`'s doc comment).
-  const { stampClient, mainAccountSigner, provider, pool } =
-    await setUpFundedStampClient({
-      rpcUrl,
-      relayBaseUrl,
-      mainWalletJsonPath,
-      stampValueWei,
-      label: 'sender',
-    })
+  const fundedSetup = await setUpFundedStampClient({
+    rpcUrl,
+    relayBaseUrl,
+    mainWalletJsonPath,
+    stateRoot: walletStateDirPath,
+    stampValueWei,
+    label: 'sender',
+  })
+  const {
+    stampClient,
+    stampAttemptJournal,
+    mainAccountSigner,
+    provider,
+    pool,
+  } = fundedSetup
+  closeFundedSetup = fundedSetup.close
 
   const transcript: Array<{ sentTx: string; replyTx: string; reply: string }> =
     []
@@ -158,6 +173,7 @@ async function main() {
     // destinations from the bot's registered public key.
     const sent = await sendDirectMessageText({
       stampClient,
+      stampAttemptJournal,
       pool,
       mainAccountSigner,
       provider,
@@ -239,7 +255,9 @@ async function main() {
   })
 }
 
-main().catch(err => {
-  console.error('\nQWEN BOT SEND DEMO FAILED:', err)
-  process.exit(1)
-})
+main()
+  .finally(() => closeFundedSetup?.())
+  .catch(err => {
+    console.error('\nQWEN BOT SEND DEMO FAILED:', err)
+    process.exit(1)
+  })

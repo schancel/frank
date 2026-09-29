@@ -30,6 +30,7 @@ const GAME_PREFIX = 'game:'
 const PROCESSED_PREFIX = 'processed:'
 const WAGER_CLAIM_PREFIX = 'wager-claim:'
 const QUARANTINED_GAME_PREFIX = 'quarantined-game:'
+const QUARANTINED_CLAIM_PREFIX = 'quarantined-wager-claim:'
 
 export const MAX_BLACKJACK_GAME_ID_BYTES = 128
 
@@ -56,7 +57,28 @@ export function normalizeBlackjackGameId(gameId: unknown): string {
       `blackjack gameId must be at most ${MAX_BLACKJACK_GAME_ID_BYTES} bytes`,
     )
   }
+  if (!isWellFormedUnicode(gameId)) {
+    throw new InvalidBlackjackGameIdError(
+      'blackjack gameId must contain only well-formed Unicode',
+    )
+  }
   return gameId
+}
+
+function isWellFormedUnicode(value: string): boolean {
+  for (let i = 0; i < value.length; i++) {
+    const codeUnit = value.charCodeAt(i)
+    if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
+      const next = value.charCodeAt(i + 1)
+      if (i + 1 >= value.length || next < 0xdc00 || next > 0xdfff) {
+        return false
+      }
+      i += 1
+    } else if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) {
+      return false
+    }
+  }
+  return true
 }
 
 function hashServerSeed(serverSeed: string): string {
@@ -145,7 +167,7 @@ export class BlackjackBotStateStore {
       const quarantinedGames: Array<{
         key: string
         value: string
-        wagerTxHash?: string
+        wagerTxHash: string
       }> = []
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       for await (const [key, value] of this.db.iterator({}) as any) {
@@ -191,28 +213,48 @@ export class BlackjackBotStateStore {
               })
             }
           } catch {
+            if (!wagerTxHash) {
+              throw new Error(
+                'cannot safely quarantine malformed blackjack game row without a canonical wager hash; raw row preserved',
+              )
+            }
             quarantinedGames.push({ key, value, wagerTxHash })
           }
         } else if (key.startsWith(PROCESSED_PREFIX)) {
           this.processedPayloadHashes.add(key.slice(PROCESSED_PREFIX.length))
         } else if (key.startsWith(WAGER_CLAIM_PREFIX)) {
-          const wagerTxHash = key.slice(WAGER_CLAIM_PREFIX.length)
-          if (normalizeWagerTxHash(wagerTxHash) !== wagerTxHash) {
-            throw new Error(`non-canonical wager claim key: ${key}`)
-          }
-          const parsed = JSON.parse(value)
+          const wagerTxHashRaw = key.slice(WAGER_CLAIM_PREFIX.length)
+          let wagerTxHash: string
           try {
+            wagerTxHash = normalizeWagerTxHash(wagerTxHashRaw)
+            if (wagerTxHash !== wagerTxHashRaw) throw new Error()
+          } catch {
+            throw new Error(
+              'cannot safely quarantine malformed blackjack wager claim without a canonical wager hash; raw row preserved',
+            )
+          }
+          try {
+            const parsed = JSON.parse(value)
             this.wagerClaims.set(
               wagerTxHash,
               normalizeBlackjackGameId(parsed.gameId),
             )
           } catch {
             this.wagerClaims.set(wagerTxHash, null)
-            repairWrites.push({
-              type: 'put',
-              key,
-              value: JSON.stringify({ quarantined: true }),
-            })
+            repairWrites.push(
+              {
+                type: 'put',
+                key:
+                  QUARANTINED_CLAIM_PREFIX +
+                  createHash('sha256').update(key).digest('hex'),
+                value,
+              },
+              {
+                type: 'put',
+                key,
+                value: JSON.stringify({ quarantined: true }),
+              },
+            )
           }
         }
       }
@@ -243,10 +285,7 @@ export class BlackjackBotStateStore {
             value: quarantined.value,
           },
         )
-        if (
-          quarantined.wagerTxHash &&
-          !this.wagerClaims.has(quarantined.wagerTxHash)
-        ) {
+        if (!this.wagerClaims.has(quarantined.wagerTxHash)) {
           this.wagerClaims.set(quarantined.wagerTxHash, null)
           repairWrites.push({
             type: 'put',

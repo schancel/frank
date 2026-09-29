@@ -204,6 +204,8 @@ describe('BlackjackBotStateStore wager authority', () => {
     ['object', {}],
     ['empty', ''],
     ['oversized', 'x'.repeat(MAX_BLACKJACK_GAME_ID_BYTES + 1)],
+    ['lone high surrogate', '\ud800'],
+    ['lone low surrogate', '\udc00'],
   ])(
     'rejects a %s gameId without consuming the wager or commitment',
     async (_label, invalidGameId) => {
@@ -224,6 +226,25 @@ describe('BlackjackBotStateStore wager authority', () => {
       })
     },
   )
+
+  it('keeps replacement-character and well-formed Unicode gameIds lossless across restart', async () => {
+    const store = await openStore()
+    await seedStore(store)
+    const gameId = '牌局-😀-\ufffd-é'
+    expect(Buffer.from('\ud800')).toEqual(Buffer.from('\ufffd'))
+
+    await expect(claim(store, gameId)).resolves.toEqual({ ok: true })
+    expect(store.getGame(gameId)).toBeDefined()
+    await expect(
+      claim(store, '\ud800', OTHER_WAGER_HASH),
+    ).rejects.toThrow('well-formed Unicode')
+    await store.Close()
+    stores = []
+
+    const restarted = await openStore()
+    expect(restarted.getGame(gameId)).toBeDefined()
+    expect(() => restarted.getGame('\ud800')).toThrow('well-formed Unicode')
+  })
 
   it('quarantines an invalid persisted gameId without blocking valid state on later opens', async () => {
     const raw = level(join(directory, 'blackjack-bot-state'))
@@ -265,6 +286,93 @@ describe('BlackjackBotStateStore wager authority', () => {
 
     const restarted = await openStore()
     expect(restarted.getGame('valid-game')).toBeDefined()
+    await expect(claim(restarted, 'still-consumed')).resolves.toEqual({
+      ok: false,
+      reason: 'wager_claimed',
+    })
+  })
+
+  it.each([
+    [
+      'game row without a canonical wager hash',
+      'game:broken-game',
+      '{"wagerTxHash":"not-a-hash"',
+    ],
+    [
+      'claim row without a canonical wager hash',
+      'wager-claim:not-a-hash',
+      '{"gameId":"broken-game"}',
+    ],
+  ])(
+    'fails closed and preserves a malformed %s byte-for-byte across reopen',
+    async (_label, key, rawValue) => {
+      const raw = level(join(directory, 'blackjack-bot-state'))
+      await raw.put(key, rawValue)
+      await raw.close()
+
+      const first = new BlackjackBotStateStore(directory)
+      await expect(first.Open()).rejects.toThrow('cannot safely quarantine')
+
+      const evidence = level(join(directory, 'blackjack-bot-state'))
+      const recovered = await evidence.get(key)
+      expect(Buffer.from(recovered)).toEqual(Buffer.from(rawValue))
+      await evidence.close()
+
+      const second = new BlackjackBotStateStore(directory)
+      await expect(second.Open()).rejects.toThrow('cannot safely quarantine')
+      const recoveredAgain = level(join(directory, 'blackjack-bot-state'))
+      expect(Buffer.from(await recoveredAgain.get(key))).toEqual(
+        Buffer.from(rawValue),
+      )
+      await recoveredAgain.close()
+    },
+  )
+
+  it('quarantines malformed claim metadata when its canonical wager hash remains durable', async () => {
+    const wagerTxHash = normalizeWagerTxHash(WAGER_HASH)
+    const claimKey = `wager-claim:${wagerTxHash}`
+    const quarantineKey = `quarantined-wager-claim:${createHash('sha256')
+      .update(claimKey)
+      .digest('hex')}`
+    const raw = level(join(directory, 'blackjack-bot-state'))
+    await raw.batch([
+      {
+        type: 'put',
+        key: '__pending_server_seed__',
+        value: JSON.stringify('committed-seed'),
+      },
+      {
+        type: 'put',
+        key: '__pending_server_seed_hash__',
+        value: JSON.stringify(hashSeed('committed-seed')),
+      },
+      {
+        type: 'put',
+        key: claimKey,
+        value: 'not-json',
+      },
+    ])
+    await raw.close()
+
+    const store = await openStore()
+    await expect(claim(store, 'replacement-game')).resolves.toEqual({
+      ok: false,
+      reason: 'wager_claimed',
+    })
+    await store.Close()
+    stores = []
+
+    const evidence = level(join(directory, 'blackjack-bot-state'))
+    expect(JSON.parse(await evidence.get(claimKey))).toEqual({
+      quarantined: true,
+    })
+    expect(await evidence.get(quarantineKey)).toBe('not-json')
+    await evidence.close()
+    const restarted = await openStore()
+    await expect(claim(restarted, 'still-consumed')).resolves.toEqual({
+      ok: false,
+      reason: 'wager_claimed',
+    })
   })
 
   it('fails closed on a torn pending commitment and can reopen after repair', async () => {

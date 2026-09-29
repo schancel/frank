@@ -212,6 +212,8 @@ describe('blackjack move authorization', () => {
     ['object', {}],
     ['empty', ''],
     ['oversized', 'x'.repeat(MAX_BLACKJACK_GAME_ID_BYTES + 1)],
+    ['lone high surrogate', '\ud800'],
+    ['lone low surrogate', '\udc00'],
   ])(
     'rejects a %s gameId before wager hydration',
     async (_label, invalidGameId) => {

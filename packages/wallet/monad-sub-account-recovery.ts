@@ -22,22 +22,32 @@ export async function recoverNextSubAccountIndex(params: {
   keyring: MonadHdKeyring
   provider: Provider
   maxIndex?: number
+  /** First allocatable index. Restored roots reserve index 0, so they search from 1. */
+  minimumIndex?: number
 }): Promise<number> {
   const maxIndex = params.maxIndex ?? DEFAULT_MAX_SUB_ACCOUNT_INDEX_SEARCH
+  const minimumIndex = params.minimumIndex ?? 0
   if (!Number.isSafeInteger(maxIndex) || maxIndex < 1) {
     throw new Error(`maxIndex must be a positive safe integer, got ${maxIndex}`)
+  }
+  if (
+    !Number.isSafeInteger(minimumIndex) ||
+    minimumIndex < 0 ||
+    minimumIndex >= maxIndex
+  ) {
+    throw new Error(`minimumIndex must be within the bounded search range`)
   }
   const usedAt = (index: number): Promise<boolean> =>
     isSubAccountIndexUsed(
       params.provider,
       params.keyring.deriveSubAccount(index).address
     )
-  if (!(await usedAt(0))) return 0
-  let lo = 0
-  let hi = 1
+  if (!(await usedAt(minimumIndex))) return minimumIndex
+  let lo = minimumIndex
+  let hi = minimumIndex + 1
   while (await usedAt(hi)) {
     lo = hi
-    hi *= 2
+    hi = minimumIndex + (hi - minimumIndex) * 2
     if (hi > maxIndex) {
       throw new Error(
         `recoverNextSubAccountIndex: every index up to ${maxIndex} appears used`

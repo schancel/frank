@@ -8,6 +8,7 @@ import {
   buildMonadStampCalldata,
   computeMonadStampPaymentCommitment,
   decodeMonadStampedMessage,
+  assertMonadStampPaymentCount,
 } from '../monad-stamp-client'
 import { deriveMonadStampChildPublic } from '../monad-stamp-stealth'
 import type { StampAttemptJournal } from './stamp-attempt-journal'
@@ -142,6 +143,9 @@ export function validateMonadWalletState(params: {
       throw new Error(`Duplicate stamp attempt ${attempt.payloadHashHex}`)
     }
     attemptKeys.add(attemptHash)
+    if (attempt.recipientPublicKeyHex === undefined) {
+      throw new Error('Stamp-attempt recipient public key is unresolved')
+    }
     const recipientPublicKey = getBytes(attempt.recipientPublicKeyHex)
     if (recipientPublicKey.length !== 33) {
       throw new Error('Invalid stamp-attempt recipient public key')
@@ -149,6 +153,7 @@ export function validateMonadWalletState(params: {
     const message = decodeMonadStampedMessage(
       Uint8Array.from(attempt.messageBytes)
     )
+    assertMonadStampPaymentCount(message.stampPayments.length)
     const payloadHash = getBytes(sha256(message.encryptedPayload))
     if (
       normalizedHash(hexlify(message.payloadHash)) !== attemptHash ||
@@ -214,11 +219,17 @@ export function validateMonadWalletState(params: {
   const pending = params.changePool.pendingIntent()
   if (pending !== undefined) {
     const source = records.get(pending.sourceBurnIndex)
+    const highestChangeIndex = params.changePool
+      .records()
+      .reduce((highest, record) => Math.max(highest, record.index), -1)
     if (
       source === undefined ||
       getAddress(source.address) !== getAddress(pending.sourceBurnAddress) ||
       getAddress(pending.address) !==
         params.changeKeyring.deriveChangeAccount(pending.index).address ||
+      pending.index !== params.changePool.nextUnusedIndex() ||
+      pending.index <= highestChangeIndex ||
+      params.changePool.getRecord(pending.index) !== undefined ||
       params.changePool.getBySourceBurnIndex(pending.sourceBurnIndex) !==
         undefined
     ) {

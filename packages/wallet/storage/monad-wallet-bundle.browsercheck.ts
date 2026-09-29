@@ -8,7 +8,10 @@ import { LevelSubAccountPoolStore } from './level-sub-account-pool-store'
 import { openMonadWalletBundle } from './monad-wallet-bundle'
 import { LevelStampAttemptJournal } from './stamp-attempt-journal'
 import { LevelStampPaymentJournal } from './stamp-payment-journal'
-import { WALLET_COMPONENT_NAMES } from './wallet-root-guard'
+import {
+  WALLET_COMPONENT_NAMES,
+  canonicalWalletStorageLocation,
+} from './wallet-root-guard'
 
 const MNEMONIC = 'test test test test test test test test test test test junk'
 const WRONG_MNEMONIC =
@@ -20,10 +23,11 @@ function assert(condition: unknown, message: string): asserts condition {
 
 async function deleteRoot(location: string): Promise<void> {
   const idb = (globalThis as any).indexedDB
+  const canonical = canonicalWalletStorageLocation(location)
   for (const component of WALLET_COMPONENT_NAMES) {
     await new Promise<void>((resolve, reject) => {
       const request = idb.deleteDatabase(
-        `level-js-${join(location, component)}`
+        `level-js-${join(canonical, component)}`
       )
       request.onsuccess = () => resolve()
       request.onerror = () => reject(request.error)
@@ -76,6 +80,7 @@ export async function runMonadWalletBundleBrowserCheck(): Promise<void> {
   report('MONAD_WALLET_BROWSERCHECK_IDB_READY')
   const migratedRoot = `${prefix}-migrate`
   const concurrentRoot = `${prefix}-concurrent`
+  const aliasRoot = `${prefix}-alias`
   const wrongRoot = `${prefix}-wrong`
   const crashRoots: string[] = []
   try {
@@ -189,9 +194,36 @@ export async function runMonadWalletBundleBrowserCheck(): Promise<void> {
     })
     assert(successor.pool.nextUnusedIndex() === 1, 'successor lost high-water')
     await successor.close()
+
+    const aliasContenders = await Promise.allSettled([
+      openMonadWalletBundle({
+        location: aliasRoot,
+        createSeedIfEmpty: true,
+      }),
+      openMonadWalletBundle({
+        location: `./${aliasRoot}`,
+        createSeedIfEmpty: true,
+      }),
+    ])
+    const aliasWinners = aliasContenders.filter(
+      (result) => result.status === 'fulfilled'
+    )
+    assert(aliasWinners.length === 1, 'browser alias had multiple owners')
+    const aliasWinner = aliasWinners[0]
+    assert(aliasWinner.status === 'fulfilled', 'browser alias had no owner')
+    aliasWinner.value.pool.deriveNextUnfunded()
+    await aliasWinner.value.pool.flush()
+    await aliasWinner.value.close()
+    const aliasSuccessor = await openMonadWalletBundle({
+      location: `./${aliasRoot}`,
+      createSeedIfEmpty: true,
+    })
+    assert(aliasSuccessor.pool.nextUnusedIndex() === 1, 'alias split storage')
+    await aliasSuccessor.close()
   } finally {
     await deleteRoot(migratedRoot)
     await deleteRoot(concurrentRoot)
+    await deleteRoot(aliasRoot)
     await deleteRoot(wrongRoot)
     for (const root of crashRoots) await deleteRoot(root)
   }

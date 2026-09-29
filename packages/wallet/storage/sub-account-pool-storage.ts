@@ -123,7 +123,10 @@ export type SubAccountRecord = SubAccountRecordBase &
 export interface SubAccountPoolStore {
   getByIndex(index: number): SubAccountRecord | undefined
   put(record: SubAccountRecord): void
+  putMany(records: readonly SubAccountRecord[]): void
   getAll(): SubAccountRecord[]
+  /** At most `limit` rows strictly after `afterIndex`, without materializing full history. */
+  scanRecords(afterIndex: number, limit: number): SubAccountRecord[]
   /** Persistent allocation high-water mark. It never moves backward when rows are compacted. */
   getNextIndex(): number
   setNextIndex(index: number): void
@@ -142,10 +145,12 @@ export class InMemorySubAccountPoolStore implements SubAccountPoolStore {
     number,
     TerminalSubAccountCheckpoint
   >()
+  private sortedRecordIndices: number[] = []
   private nextIndex = 0
 
   getByIndex(index: number): SubAccountRecord | undefined {
-    return this.recordsByIndex.get(index)
+    const record = this.recordsByIndex.get(index)
+    return record === undefined ? undefined : cloneSubAccountRecord(record)
   }
 
   put(record: SubAccountRecord): void {
@@ -154,14 +159,52 @@ export class InMemorySubAccountPoolStore implements SubAccountPoolStore {
         `Cannot recreate compacted sub-account index ${record.index}`
       )
     }
-    this.recordsByIndex.set(record.index, { ...record })
+    if (!this.recordsByIndex.has(record.index))
+      this.insertSortedIndex(record.index)
+    this.recordsByIndex.set(record.index, cloneSubAccountRecord(record))
     this.nextIndex = Math.max(this.nextIndex, record.index + 1)
   }
 
-  getAll(): SubAccountRecord[] {
-    return Array.from(this.recordsByIndex.values()).sort(
-      (a, b) => a.index - b.index
+  putMany(records: readonly SubAccountRecord[]): void {
+    const stagedRecords = new Map(this.recordsByIndex)
+    let stagedNext = this.nextIndex
+    for (const record of records) {
+      if (this.checkpointsByIndex.has(record.index)) {
+        throw new Error(
+          `Cannot recreate compacted sub-account index ${record.index}`
+        )
+      }
+      stagedRecords.set(record.index, cloneSubAccountRecord(record))
+      stagedNext = Math.max(stagedNext, record.index + 1)
+    }
+    this.recordsByIndex.clear()
+    for (const [index, record] of stagedRecords) {
+      this.recordsByIndex.set(index, record)
+    }
+    this.sortedRecordIndices = Array.from(stagedRecords.keys()).sort(
+      (left, right) => left - right
     )
+    this.nextIndex = stagedNext
+  }
+
+  getAll(): SubAccountRecord[] {
+    return Array.from(this.recordsByIndex.values())
+      .sort((a, b) => a.index - b.index)
+      .map(cloneSubAccountRecord)
+  }
+
+  scanRecords(afterIndex: number, limit: number): SubAccountRecord[] {
+    const start = this.sortedRecordIndices.findIndex(
+      (index) => index > afterIndex
+    )
+    if (start < 0) return []
+    return this.sortedRecordIndices
+      .slice(start, start + limit)
+      .map((index) =>
+        cloneSubAccountRecord(
+          this.recordsByIndex.get(index) as SubAccountRecord
+        )
+      )
   }
 
   getNextIndex(): number {
@@ -181,6 +224,9 @@ export class InMemorySubAccountPoolStore implements SubAccountPoolStore {
   replaceWithCheckpoint(checkpoint: TerminalSubAccountCheckpoint): void {
     this.checkpointsByIndex.set(checkpoint.index, cloneCheckpoint(checkpoint))
     this.recordsByIndex.delete(checkpoint.index)
+    this.sortedRecordIndices = this.sortedRecordIndices.filter(
+      (index) => index !== checkpoint.index
+    )
   }
 
   getCheckpoints(): TerminalSubAccountCheckpoint[] {
@@ -193,8 +239,21 @@ export class InMemorySubAccountPoolStore implements SubAccountPoolStore {
 
   async clear(): Promise<void> {
     this.recordsByIndex.clear()
+    this.sortedRecordIndices = []
     this.checkpointsByIndex.clear()
     this.nextIndex = 0
+  }
+
+  private insertSortedIndex(index: number): void {
+    const last = this.sortedRecordIndices[this.sortedRecordIndices.length - 1]
+    if (last === undefined || last < index) {
+      this.sortedRecordIndices.push(index)
+      return
+    }
+    const position = this.sortedRecordIndices.findIndex(
+      (existing) => existing > index
+    )
+    this.sortedRecordIndices.splice(position, 0, index)
   }
 }
 
@@ -210,4 +269,10 @@ export function cloneCheckpoint(
   checkpoint: TerminalSubAccountCheckpoint
 ): TerminalSubAccountCheckpoint {
   return JSON.parse(JSON.stringify(checkpoint)) as TerminalSubAccountCheckpoint
+}
+
+export function cloneSubAccountRecord(
+  record: SubAccountRecord
+): SubAccountRecord {
+  return JSON.parse(JSON.stringify(record)) as SubAccountRecord
 }

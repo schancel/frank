@@ -1,6 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import level, { type LevelDB } from 'level'
 import { join } from 'path'
+import { validateWalletComponentBeforeOpen } from './wallet-root-guard'
 
 const WALLET_BINDING_KEY = '__wallet_binding__'
 
@@ -46,7 +47,8 @@ export class InMemoryStampPaymentJournal implements StampPaymentJournal {
     payloadHashHex: string,
     childIndex: number
   ): StampPaymentRecoveryRecord | undefined {
-    return this.records.get(key(payloadHashHex, childIndex))
+    const record = this.records.get(key(payloadHashHex, childIndex))
+    return record === undefined ? undefined : { ...record }
   }
 
   async put(record: StampPaymentRecoveryRecord): Promise<void> {
@@ -56,7 +58,7 @@ export class InMemoryStampPaymentJournal implements StampPaymentJournal {
   }
 
   getAll(): StampPaymentRecoveryRecord[] {
-    return Array.from(this.records.values())
+    return Array.from(this.records.values()).map((record) => ({ ...record }))
   }
 }
 
@@ -66,16 +68,21 @@ export class LevelStampPaymentJournal implements StampPaymentJournal {
   private readonly records = new Map<string, StampPaymentRecoveryRecord>()
   private readonly expectedBindingId?: string
   private readonly allowUnboundForMigration: boolean
+  private readonly assertMutationAllowed: () => void
+  private readonly rootLocation: string
   private loadedBindingId?: string
 
   constructor(
     location: string,
     expectedBindingId?: string,
-    allowUnboundForMigration = false
+    allowUnboundForMigration = false,
+    assertMutationAllowed: () => void = () => undefined
   ) {
     this.dbLocation = join(location, 'stamp-payment-journal')
     this.expectedBindingId = expectedBindingId
     this.allowUnboundForMigration = allowUnboundForMigration
+    this.assertMutationAllowed = assertMutationAllowed
+    this.rootLocation = location
   }
 
   private get db(): LevelDB {
@@ -84,6 +91,12 @@ export class LevelStampPaymentJournal implements StampPaymentJournal {
   }
 
   async Open(): Promise<void> {
+    this.assertMutationAllowed()
+    validateWalletComponentBeforeOpen(
+      this.rootLocation,
+      'stamp-payment-journal',
+      false
+    )
     this.openedDb = level(this.dbLocation)
     await (this.openedDb as any).open()
     let storedBindingId: string | undefined
@@ -121,6 +134,7 @@ export class LevelStampPaymentJournal implements StampPaymentJournal {
 
   async Bind(): Promise<void> {
     if (this.expectedBindingId === undefined) return
+    this.assertMutationAllowed()
     await this.db.put(WALLET_BINDING_KEY, this.expectedBindingId)
   }
 
@@ -132,16 +146,18 @@ export class LevelStampPaymentJournal implements StampPaymentJournal {
     payloadHashHex: string,
     childIndex: number
   ): StampPaymentRecoveryRecord | undefined {
-    return this.records.get(key(payloadHashHex, childIndex))
+    const record = this.records.get(key(payloadHashHex, childIndex))
+    return record === undefined ? undefined : { ...record }
   }
 
   async put(record: StampPaymentRecoveryRecord): Promise<void> {
+    this.assertMutationAllowed()
     const recordKey = key(record.payloadHashHex, record.childIndex)
     await this.db.put(recordKey, JSON.stringify(record))
     this.records.set(recordKey, { ...record })
   }
 
   getAll(): StampPaymentRecoveryRecord[] {
-    return Array.from(this.records.values())
+    return Array.from(this.records.values()).map((record) => ({ ...record }))
   }
 }

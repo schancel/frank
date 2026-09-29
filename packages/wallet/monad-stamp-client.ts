@@ -556,8 +556,16 @@ export class MonadStampRecoveredAttemptError extends MonadStampError {
   }
 }
 
-const MAX_STAMP_PAYMENTS = 64
+export const MAX_STAMP_PAYMENTS = 64
 export const MAX_MONAD_STAMPED_MESSAGE_BYTES = 2 * 1024 * 1024
+
+export function assertMonadStampPaymentCount(count: number): void {
+  if (!Number.isSafeInteger(count) || count < 1 || count > MAX_STAMP_PAYMENTS) {
+    throw new Error(
+      `Monad stamped messages require 1..${MAX_STAMP_PAYMENTS} payments`
+    )
+  }
+}
 
 function exactSetRetained(responseData: unknown): boolean | undefined {
   let parsed = responseData
@@ -748,7 +756,10 @@ export class MonadStampClient {
     const stored = decodeStoredMonadMessage(new Uint8Array(response.data))
     if (
       stored.message === undefined ||
-      !bytesEqual(encodeMonadStampedMessage(stored.message), encoded)
+      !bytesEqual(
+        encodeMonadStampedMessage(stored.message),
+        encodeMonadStampedMessage(message)
+      )
     ) {
       // A 2xx only proves that an HTTP peer answered. It does not prove that the relay retained
       // this exact payment set. Treat a missing/different nested message like a lost response so
@@ -771,6 +782,20 @@ export class MonadStampClient {
   async submitStampedMessage(
     params: StampMonadMessageParams
   ): Promise<StampMonadMessageResult> {
+    if (params.encryptedPayload.length === 0) {
+      throw new Error('encryptedPayload must not be empty')
+    }
+    if (params.encryptedPayload.length > MAX_MONAD_STAMPED_MESSAGE_BYTES) {
+      throw new Error(
+        `encryptedPayload exceeds the ${MAX_MONAD_STAMPED_MESSAGE_BYTES}-byte message limit`
+      )
+    }
+    if (params.recipientPublicKey.length !== 33) {
+      throw new Error('recipientPublicKey must be a compressed 33-byte key')
+    }
+    if (params.stampValueWei <= BigInt(0)) {
+      throw new Error('stampValueWei must be positive')
+    }
     await this.reconcilePendingOrThrow()
     this.activeSubmissions++
     try {
@@ -783,14 +808,6 @@ export class MonadStampClient {
   private async submitStampedMessageAfterPreflight(
     params: StampMonadMessageParams
   ): Promise<StampMonadMessageResult> {
-    if (params.encryptedPayload.length === 0) {
-      throw new Error('encryptedPayload must not be empty')
-    }
-    if (params.encryptedPayload.length > MAX_MONAD_STAMPED_MESSAGE_BYTES) {
-      throw new Error(
-        `encryptedPayload exceeds the ${MAX_MONAD_STAMPED_MESSAGE_BYTES}-byte message limit`
-      )
-    }
     const payloadHash = computeMonadStampCommitment(params.encryptedPayload)
     // Quote with an all-nonzero commitment. The RPC therefore applies the active network's
     // worst-case calldata schedule (including EIP-7623) without this client hardcoding gas-table
@@ -881,11 +898,7 @@ export class MonadStampClient {
       accounts: quotes,
       maxTransactions: MAX_STAMP_PAYMENTS,
     })
-    if (selected.length > MAX_STAMP_PAYMENTS) {
-      throw new Error(
-        `Stamp payment requires ${selected.length} accounts; relay maximum is ${MAX_STAMP_PAYMENTS}`
-      )
-    }
+    assertMonadStampPaymentCount(selected.length)
     const quoteByIndex = new Map(quotes.map((quote) => [quote.index, quote]))
     const handles: AccountLeaseHandle[] = []
     const signedTxs: SignedMonadTx[] = []
@@ -1177,7 +1190,10 @@ export class MonadStampClient {
           }
         }
         await this.pool.flush()
-        await this.putStampedMessage(message)
+        await this.putStampedMessage(
+          message,
+          Uint8Array.from(attempt.messageBytes)
+        )
         for (const index of attempt.leaseIndices) {
           const record = this.pool.getRecord(index)
           if (record !== undefined && record.status !== 'spent') {

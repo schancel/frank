@@ -32,6 +32,11 @@ import { WalletHandle } from './active-chain'
 import { deriveMonadStampChildPublic } from '../monad-stamp-stealth'
 import { InMemoryStampPaymentJournal } from '../storage/stamp-payment-journal'
 
+jest.mock('../storage/monad-wallet-bundle', () => {
+  const actual = jest.requireActual('../storage/monad-wallet-bundle')
+  return { ...actual, assertMonadWalletBundleProvenance: jest.fn() }
+})
+
 jest.mock('../monad-stamp-client', () => {
   const actual = jest.requireActual('../monad-stamp-client')
   return {

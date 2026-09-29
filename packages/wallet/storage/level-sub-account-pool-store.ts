@@ -5,10 +5,12 @@ import { join } from 'path'
 import {
   assertSubAccountIndex,
   cloneCheckpoint,
+  cloneSubAccountRecord,
   SubAccountPoolStore,
   SubAccountRecord,
   TerminalSubAccountCheckpoint,
 } from './sub-account-pool-storage'
+import { validateWalletComponentBeforeOpen } from './wallet-root-guard'
 
 const NEXT_INDEX_KEY = '__next_index__'
 const CHECKPOINT_PREFIX = '__terminal_checkpoint__:'
@@ -28,22 +30,28 @@ export class LevelSubAccountPoolStore implements SubAccountPoolStore {
   private readonly dbLocation: string
   private openedDb?: LevelDB
   private cache: Map<number, SubAccountRecord>
+  private sortedRecordIndices: number[] = []
   private checkpoints = new Map<number, TerminalSubAccountCheckpoint>()
   private nextIndex = 0
   private pendingWrites: Promise<unknown>[] = []
   private readonly expectedBindingId?: string
   private readonly allowUnboundForMigration: boolean
+  private readonly assertMutationAllowed: () => void
+  private readonly rootLocation: string
   private loadedBindingId?: string
 
   constructor(
     location: string,
     expectedBindingId?: string,
-    allowUnboundForMigration = false
+    allowUnboundForMigration = false,
+    assertMutationAllowed: () => void = () => undefined
   ) {
     this.dbLocation = join(location, 'sub-account-pool')
     this.cache = new Map<number, SubAccountRecord>()
     this.expectedBindingId = expectedBindingId
     this.allowUnboundForMigration = allowUnboundForMigration
+    this.assertMutationAllowed = assertMutationAllowed
+    this.rootLocation = location
   }
 
   private get db() {
@@ -56,6 +64,12 @@ export class LevelSubAccountPoolStore implements SubAccountPoolStore {
   /** Opens the underlying `level` database and populates the in-memory cache from it. Must be
    * called (and awaited) before using the store — same lifecycle as `LevelUtxoStore.Open()`. */
   async Open(): Promise<void> {
+    this.assertMutationAllowed()
+    validateWalletComponentBeforeOpen(
+      this.rootLocation,
+      'sub-account-pool',
+      false
+    )
     this.openedDb = level(this.dbLocation)
     await (this.openedDb as any).open()
     await this.loadData()
@@ -104,6 +118,7 @@ export class LevelSubAccountPoolStore implements SubAccountPoolStore {
         throw new Error(`Sub-account ${record.index} also has a checkpoint`)
       }
       this.cache.set(record.index, record)
+      this.sortedRecordIndices.push(record.index)
       this.nextIndex = Math.max(this.nextIndex, record.index + 1)
       void key // key is the stringified index; the parsed record's own `index` field is used.
     }
@@ -112,6 +127,7 @@ export class LevelSubAccountPoolStore implements SubAccountPoolStore {
         throw new Error(`Sub-account ${index} also has a checkpoint`)
       }
     }
+    this.sortedRecordIndices.sort((left, right) => left - right)
     if (this.expectedBindingId !== undefined) {
       if (
         storedBindingId !== undefined &&
@@ -132,6 +148,7 @@ export class LevelSubAccountPoolStore implements SubAccountPoolStore {
 
   async Bind(): Promise<void> {
     if (this.expectedBindingId === undefined) return
+    this.assertMutationAllowed()
     await (this.db as any).batch([
       { type: 'put', key: WALLET_BINDING_KEY, value: this.expectedBindingId },
       {
@@ -143,24 +160,72 @@ export class LevelSubAccountPoolStore implements SubAccountPoolStore {
   }
 
   getByIndex(index: number): SubAccountRecord | undefined {
-    return this.cache.get(index)
+    const record = this.cache.get(index)
+    return record === undefined ? undefined : cloneSubAccountRecord(record)
   }
 
   put(record: SubAccountRecord): void {
-    if (this.checkpoints.has(record.index)) {
-      throw new Error(
-        `Cannot recreate compacted sub-account index ${record.index}`
-      )
+    this.putMany([record])
+  }
+
+  putMany(records: readonly SubAccountRecord[]): void {
+    this.assertMutationAllowed()
+    const staged = records.map(cloneSubAccountRecord)
+    let nextIndex = this.nextIndex
+    const writes: Array<{ type: 'put'; key: string; value: string }> = []
+    for (const record of staged) {
+      if (this.checkpoints.has(record.index)) {
+        throw new Error(
+          `Cannot recreate compacted sub-account index ${record.index}`
+        )
+      }
+      nextIndex = Math.max(nextIndex, record.index + 1)
+      writes.push({
+        type: 'put',
+        key: String(record.index),
+        value: JSON.stringify(record),
+      })
     }
-    this.cache.set(record.index, { ...record })
-    this.pendingWrites.push(
-      this.db.put(String(record.index), JSON.stringify(record))
-    )
-    if (record.index + 1 > this.nextIndex) this.setNextIndex(record.index + 1)
+    if (nextIndex !== this.nextIndex) {
+      writes.push({
+        type: 'put',
+        key: NEXT_INDEX_KEY,
+        value: JSON.stringify(nextIndex),
+      })
+    }
+    this.pendingWrites.push((this.db as any).batch(writes))
+    for (const record of staged) {
+      if (!this.cache.has(record.index)) {
+        const position = this.sortedRecordIndices.findIndex(
+          (index) => index > record.index
+        )
+        if (position < 0) this.sortedRecordIndices.push(record.index)
+        else this.sortedRecordIndices.splice(position, 0, record.index)
+      }
+      this.cache.set(record.index, record)
+    }
+    this.nextIndex = nextIndex
   }
 
   getAll(): SubAccountRecord[] {
-    return Array.from(this.cache.values()).sort((a, b) => a.index - b.index)
+    return Array.from(this.cache.values())
+      .sort((a, b) => a.index - b.index)
+      .map(cloneSubAccountRecord)
+  }
+
+  scanRecords(afterIndex: number, limit: number): SubAccountRecord[] {
+    if (!Number.isSafeInteger(limit) || limit < 0) {
+      throw new Error('Sub-account scan limit must be non-negative')
+    }
+    const start = this.sortedRecordIndices.findIndex(
+      (index) => index > afterIndex
+    )
+    if (start < 0) return []
+    return this.sortedRecordIndices
+      .slice(start, start + limit)
+      .map((index) =>
+        cloneSubAccountRecord(this.cache.get(index) as SubAccountRecord)
+      )
   }
 
   getNextIndex(): number {
@@ -168,6 +233,7 @@ export class LevelSubAccountPoolStore implements SubAccountPoolStore {
   }
 
   setNextIndex(index: number): void {
+    this.assertMutationAllowed()
     assertSubAccountIndex(index, 'Next sub-account index')
     if (index < this.nextIndex) {
       throw new Error(
@@ -179,8 +245,12 @@ export class LevelSubAccountPoolStore implements SubAccountPoolStore {
   }
 
   replaceWithCheckpoint(checkpoint: TerminalSubAccountCheckpoint): void {
+    this.assertMutationAllowed()
     this.checkpoints.set(checkpoint.index, cloneCheckpoint(checkpoint))
     this.cache.delete(checkpoint.index)
+    this.sortedRecordIndices = this.sortedRecordIndices.filter(
+      (index) => index !== checkpoint.index
+    )
     this.pendingWrites.push(
       (this.db as any).batch([
         {
@@ -209,8 +279,10 @@ export class LevelSubAccountPoolStore implements SubAccountPoolStore {
    * This will delete everything in the store! Don't call it by accident!
    */
   async clear(): Promise<void> {
+    this.assertMutationAllowed()
     await this.flush()
     this.cache = new Map<number, SubAccountRecord>()
+    this.sortedRecordIndices = []
     this.checkpoints = new Map<number, TerminalSubAccountCheckpoint>()
     this.nextIndex = 0
     await this.db.clear()

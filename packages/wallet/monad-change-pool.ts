@@ -262,10 +262,7 @@ export class MonadChangePool {
     if (priorRecord !== undefined) {
       const staleIntent = this.store.getPendingIntent()
       if (staleIntent?.sourceBurnIndex === params.burnIndex) {
-        this.store.setNextIndex(
-          Math.max(this.store.getNextIndex(), priorRecord.index + 1)
-        )
-        this.store.clearPendingIntent()
+        this.store.finalizePendingIntent(staleIntent, priorRecord)
         await this.store.flush()
       }
       return {
@@ -336,6 +333,7 @@ export class MonadChangePool {
       txHash: signedTx.txHash,
       createdAt: Date.now(),
     }
+    this.assertPendingAllocation(intent)
     this.store.setPendingIntent(intent)
     await this.store.flush()
     await params.burnAccountSigner.submit(signedTx)
@@ -365,14 +363,28 @@ export class MonadChangePool {
       txHash: intent.txHash,
       createdAt: intent.createdAt,
     }
-    this.store.putRecord(record)
-    this.store.setNextIndex(intent.index + 1)
-    this.store.clearPendingIntent()
+    this.store.finalizePendingIntent(intent, record)
     await this.store.flush()
     return {
       swept: true,
       record,
       sweptValueWei: BigInt(record.sweptValueWei),
+    }
+  }
+
+  private assertPendingAllocation(intent: ChangeSweepIntent): void {
+    const highestRecord = this.store
+      .getAll()
+      .reduce((highest, record) => Math.max(highest, record.index), -1)
+    if (
+      intent.index !== this.store.getNextIndex() ||
+      intent.index <= highestRecord ||
+      this.store.getRecord(intent.index) !== undefined ||
+      this.store.getBySourceBurnIndex(intent.sourceBurnIndex) !== undefined
+    ) {
+      throw new Error(
+        'Pending change must use the vacant next index above all durable records'
+      )
     }
   }
 }

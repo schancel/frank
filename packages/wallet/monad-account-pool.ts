@@ -130,6 +130,7 @@ export class MonadSubAccountPool {
   private preparationQueue: Promise<void> = Promise.resolve()
   private readonly requireStampReconciliationPreflight: boolean
   private stampPreparationAuthorized = false
+  private compactionCursor = -1
 
   constructor(params: {
     keyring: MonadHdKeyring
@@ -184,6 +185,11 @@ export class MonadSubAccountPool {
     return this.store.getAll()
   }
 
+  /** Wallet-recovery boundary: applies a fully prevalidated set in one component-store batch. */
+  applyPrevalidatedRecoveryRecords(records: readonly SubAccountRecord[]): void {
+    this.store.putMany(records)
+  }
+
   getRecord(index: number): SubAccountRecord | undefined {
     return this.store.getByIndex(index)
   }
@@ -219,6 +225,13 @@ export class MonadSubAccountPool {
     }
     this.store.put(record)
     return record
+  }
+
+  stageJournaledInUse(index: number): SubAccountRecord {
+    const existing = this.store.getByIndex(index)
+    if (existing !== undefined) return existing
+    const derived = this.keyring.deriveSubAccount(index)
+    return { index, address: derived.address, status: 'in-use' }
   }
 
   restoreTerminalEvidence(record: SubAccountRecord): void {
@@ -307,6 +320,7 @@ export class MonadSubAccountPool {
   async compactTerminalAccounts(params: {
     limit: number
     referencedIndices?: ReadonlySet<number>
+    isReferenced?: (index: number) => boolean
     now?: () => number
   }): Promise<number> {
     if (!Number.isSafeInteger(params.limit) || params.limit < 0) {
@@ -316,12 +330,18 @@ export class MonadSubAccountPool {
     // otherwise an older in-flight put could race the deletion and resurrect a terminal row.
     await this.store.flush()
     const referenced = params.referencedIndices ?? new Set<number>()
+    let records = this.store.scanRecords(this.compactionCursor, params.limit)
+    if (records.length === 0 && this.compactionCursor >= 0) {
+      this.compactionCursor = -1
+      records = this.store.scanRecords(this.compactionCursor, params.limit)
+    }
     let compacted = 0
-    for (const record of this.store.getAll()) {
-      if (compacted >= params.limit) break
+    for (const record of records) {
+      this.compactionCursor = record.index
       if (
         (record.status !== 'spent' && record.status !== 'retired') ||
-        referenced.has(record.index)
+        referenced.has(record.index) ||
+        params.isReferenced?.(record.index) === true
       ) {
         continue
       }

@@ -1,6 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import level, { type LevelDB } from 'level'
 import { join } from 'path'
+import { validateWalletComponentBeforeOpen } from './wallet-root-guard'
 
 const WALLET_BINDING_KEY = '__wallet_binding__'
 
@@ -10,17 +11,27 @@ export interface OutgoingStampAttempt {
   leaseIndices: number[]
   /** Compressed recipient public key needed to validate every journaled one-time destination
    * without trusting the relay or performing network I/O during restart. */
-  recipientPublicKeyHex: string
+  recipientPublicKeyHex?: string
 }
 
 export interface StampAttemptJournal {
   put(attempt: OutgoingStampAttempt): Promise<void>
   delete(payloadHashHex: string): Promise<void>
   getAll(): OutgoingStampAttempt[]
+  referencesLeaseIndex(index: number): boolean
+}
+
+function cloneAttempt(attempt: OutgoingStampAttempt): OutgoingStampAttempt {
+  return {
+    ...attempt,
+    messageBytes: [...attempt.messageBytes],
+    leaseIndices: [...attempt.leaseIndices],
+  }
 }
 
 export class InMemoryStampAttemptJournal implements StampAttemptJournal {
   private readonly attempts = new Map<string, OutgoingStampAttempt>()
+  private readonly leaseReferenceCounts = new Map<number, number>()
   async put(attempt: OutgoingStampAttempt): Promise<void> {
     const prior = this.attempts.get(attempt.payloadHashHex)
     if (
@@ -31,13 +42,29 @@ export class InMemoryStampAttemptJournal implements StampAttemptJournal {
         'Cannot replace a stamp attempt with different exact bytes'
       )
     }
-    this.attempts.set(attempt.payloadHashHex, { ...attempt })
+    this.attempts.set(attempt.payloadHashHex, cloneAttempt(attempt))
+    if (prior === undefined) this.addLeaseReferences(attempt, 1)
   }
   async delete(payloadHashHex: string): Promise<void> {
+    const prior = this.attempts.get(payloadHashHex)
     this.attempts.delete(payloadHashHex)
+    if (prior !== undefined) this.addLeaseReferences(prior, -1)
   }
   getAll(): OutgoingStampAttempt[] {
-    return Array.from(this.attempts.values())
+    return Array.from(this.attempts.values()).map(cloneAttempt)
+  }
+  referencesLeaseIndex(index: number): boolean {
+    return this.leaseReferenceCounts.has(index)
+  }
+  private addLeaseReferences(
+    attempt: OutgoingStampAttempt,
+    delta: 1 | -1
+  ): void {
+    for (const index of attempt.leaseIndices) {
+      const next = (this.leaseReferenceCounts.get(index) ?? 0) + delta
+      if (next === 0) this.leaseReferenceCounts.delete(index)
+      else this.leaseReferenceCounts.set(index, next)
+    }
   }
 }
 
@@ -45,24 +72,36 @@ export class LevelStampAttemptJournal implements StampAttemptJournal {
   private readonly dbLocation: string
   private openedDb?: LevelDB
   private readonly attempts = new Map<string, OutgoingStampAttempt>()
+  private readonly leaseReferenceCounts = new Map<number, number>()
   private readonly expectedBindingId?: string
   private readonly allowUnboundForMigration: boolean
+  private readonly assertMutationAllowed: () => void
+  private readonly rootLocation: string
   private loadedBindingId?: string
 
   constructor(
     location: string,
     expectedBindingId?: string,
-    allowUnboundForMigration = false
+    allowUnboundForMigration = false,
+    assertMutationAllowed: () => void = () => undefined
   ) {
     this.dbLocation = join(location, 'outgoing-stamp-attempts')
     this.expectedBindingId = expectedBindingId
     this.allowUnboundForMigration = allowUnboundForMigration
+    this.assertMutationAllowed = assertMutationAllowed
+    this.rootLocation = location
   }
   private get db(): LevelDB {
     if (this.openedDb === undefined) throw new Error('No db opened')
     return this.openedDb
   }
   async Open(): Promise<void> {
+    this.assertMutationAllowed()
+    validateWalletComponentBeforeOpen(
+      this.rootLocation,
+      'outgoing-stamp-attempts',
+      false
+    )
     this.openedDb = level(this.dbLocation)
     await (this.openedDb as any).open()
     let storedBindingId: string | undefined
@@ -76,6 +115,7 @@ export class LevelStampAttemptJournal implements StampAttemptJournal {
         throw new Error('Stamp-attempt key does not match its payload hash')
       }
       this.attempts.set(attempt.payloadHashHex, attempt)
+      this.addLeaseReferences(attempt, 1)
     }
     if (this.expectedBindingId !== undefined) {
       if (
@@ -95,14 +135,28 @@ export class LevelStampAttemptJournal implements StampAttemptJournal {
   bindingId(): string | undefined {
     return this.loadedBindingId
   }
-  async Bind(): Promise<void> {
+  async Bind(
+    resolvedAttempts: readonly OutgoingStampAttempt[] = []
+  ): Promise<void> {
     if (this.expectedBindingId === undefined) return
-    await this.db.put(WALLET_BINDING_KEY, this.expectedBindingId)
+    this.assertMutationAllowed()
+    await (this.db as any).batch([
+      { type: 'put', key: WALLET_BINDING_KEY, value: this.expectedBindingId },
+      ...resolvedAttempts.map((attempt) => ({
+        type: 'put' as const,
+        key: attempt.payloadHashHex,
+        value: JSON.stringify(attempt),
+      })),
+    ])
+    for (const attempt of resolvedAttempts) {
+      this.attempts.set(attempt.payloadHashHex, cloneAttempt(attempt))
+    }
   }
   async Close(): Promise<void> {
     await this.db.close()
   }
   async put(attempt: OutgoingStampAttempt): Promise<void> {
+    this.assertMutationAllowed()
     const prior = this.attempts.get(attempt.payloadHashHex)
     if (
       prior !== undefined &&
@@ -113,13 +167,30 @@ export class LevelStampAttemptJournal implements StampAttemptJournal {
       )
     }
     await this.db.put(attempt.payloadHashHex, JSON.stringify(attempt))
-    this.attempts.set(attempt.payloadHashHex, { ...attempt })
+    this.attempts.set(attempt.payloadHashHex, cloneAttempt(attempt))
+    if (prior === undefined) this.addLeaseReferences(attempt, 1)
   }
   async delete(payloadHashHex: string): Promise<void> {
+    this.assertMutationAllowed()
+    const prior = this.attempts.get(payloadHashHex)
     await this.db.del(payloadHashHex)
     this.attempts.delete(payloadHashHex)
+    if (prior !== undefined) this.addLeaseReferences(prior, -1)
   }
   getAll(): OutgoingStampAttempt[] {
-    return Array.from(this.attempts.values())
+    return Array.from(this.attempts.values()).map(cloneAttempt)
+  }
+  referencesLeaseIndex(index: number): boolean {
+    return this.leaseReferenceCounts.has(index)
+  }
+  private addLeaseReferences(
+    attempt: OutgoingStampAttempt,
+    delta: 1 | -1
+  ): void {
+    for (const index of attempt.leaseIndices) {
+      const next = (this.leaseReferenceCounts.get(index) ?? 0) + delta
+      if (next === 0) this.leaseReferenceCounts.delete(index)
+      else this.leaseReferenceCounts.set(index, next)
+    }
   }
 }

@@ -248,6 +248,13 @@ describe('MonadSubAccountPool', () => {
           referencedIndices: new Set([0]),
           now: () => 123,
         })
+      ).resolves.toBe(0)
+      await expect(
+        pool.compactTerminalAccounts({
+          limit: 1,
+          referencedIndices: new Set([0]),
+          now: () => 123,
+        })
       ).resolves.toBe(1)
 
       expect(pool.getRecord(0)).toBeDefined()
@@ -262,6 +269,38 @@ describe('MonadSubAccountPool', () => {
         }),
       ])
       expect(pool.nextUnusedIndex()).toBe(3)
+    })
+
+    it('inspects only the requested cursor window with 100k durable rows', async () => {
+      const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC)
+      const store = new InMemorySubAccountPoolStore()
+      const terminal = {
+        funding: { rawTx: '0xfund', txHash: '0xfunding', valueWei: '2' },
+        spend: { rawTx: '0xspend', txHash: '0xspending', valueWei: '1' },
+        recovery: { kind: 'none' as const, valueWei: '0' as const },
+      }
+      store.put({
+        index: 0,
+        address: keyring.deriveSubAccount(0).address,
+        status: 'spent',
+        lifecycle: terminal,
+      })
+      for (let index = 1; index < 100_000; index++) {
+        store.put({
+          index,
+          address: `0x${index.toString(16).padStart(40, '0')}`,
+          status: 'unfunded',
+        })
+      }
+      const scan = jest.spyOn(store, 'scanRecords')
+      const all = jest.spyOn(store, 'getAll')
+      const pool = new MonadSubAccountPool({ keyring, store })
+
+      await expect(
+        pool.compactTerminalAccounts({ limit: 1, now: () => 1 })
+      ).resolves.toBe(1)
+      expect(scan).toHaveBeenCalledWith(-1, 1)
+      expect(all).not.toHaveBeenCalled()
     })
   })
 

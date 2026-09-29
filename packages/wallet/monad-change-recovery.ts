@@ -53,7 +53,7 @@ export const DEFAULT_MAX_CHANGE_INDEX_SEARCH = 2 ** 20
  * specific index without running a full recovery search). */
 export async function isChangeIndexUsed(
   provider: Provider,
-  address: string,
+  address: string
 ): Promise<boolean> {
   const [nonce, balance] = await Promise.all([
     provider.getTransactionCount(address),
@@ -70,6 +70,8 @@ export interface RecoverNextChangeIndexParams {
   provider: Provider
   /** Safety cap on the exponential search -- see `DEFAULT_MAX_CHANGE_INDEX_SEARCH`. */
   maxIndex?: number
+  /** First allocatable index. Restored roots reserve index 0, so they search from 1. */
+  minimumIndex?: number
 }
 
 /**
@@ -90,32 +92,40 @@ export interface RecoverNextChangeIndexParams {
  * enormous change-account history.
  */
 export async function recoverNextChangeIndex(
-  params: RecoverNextChangeIndexParams,
+  params: RecoverNextChangeIndexParams
 ): Promise<number> {
   const { keyring, provider } = params
   const maxIndex = params.maxIndex ?? DEFAULT_MAX_CHANGE_INDEX_SEARCH
+  const minimumIndex = params.minimumIndex ?? 0
   if (!Number.isInteger(maxIndex) || maxIndex < 1) {
     throw new Error(`maxIndex must be a positive integer, got ${maxIndex}`)
+  }
+  if (
+    !Number.isSafeInteger(minimumIndex) ||
+    minimumIndex < 0 ||
+    minimumIndex >= maxIndex
+  ) {
+    throw new Error('minimumIndex must be within the bounded search range')
   }
 
   const usedAt = (index: number): Promise<boolean> =>
     isChangeIndexUsed(provider, keyring.deriveChangeAccount(index).address)
 
-  if (!(await usedAt(0))) return 0
+  if (!(await usedAt(minimumIndex))) return minimumIndex
 
   // Exponential probe: find some hi that's unused, doubling from 1. `lo` always stays a known-used
   // index (starts at 0, which we've just confirmed is used).
-  let lo = 0
-  let hi = 1
+  let lo = minimumIndex
+  let hi = minimumIndex + 1
   while (await usedAt(hi)) {
     lo = hi
-    hi *= 2
+    hi = minimumIndex + (hi - minimumIndex) * 2
     if (hi > maxIndex) {
       throw new Error(
         `recoverNextChangeIndex: every index up to maxIndex=${maxIndex} appears used -- this is ` +
           'almost certainly a misconfigured provider/keyring (wrong network or wrong root secret) ' +
           'rather than a genuinely enormous change-account history. Pass a larger maxIndex only if ' +
-          'you are certain that many change indices are legitimately used.',
+          'you are certain that many change indices are legitimately used.'
       )
     }
   }

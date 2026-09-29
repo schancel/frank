@@ -983,6 +983,64 @@ describe('MonadStampClient.submitStampedMessage', () => {
     expect(stampAttemptJournal.getAll()).toEqual([])
   })
 
+  it('replays journaled protobuf bytes exactly when they contain an unknown field', async () => {
+    const originalJournal = new InMemoryStampAttemptJournal()
+    const { client, pool } = makeClient({
+      stampAttemptJournal: originalJournal,
+    })
+    mockedAxios.mockRejectedValueOnce({
+      isAxiosError: true,
+      response: { status: 400, data: { exact_set_retained: true } },
+    })
+    await expect(
+      client.submitStampedMessage({
+        encryptedPayload: new TextEncoder().encode('forward-compatible bytes'),
+        recipientPublicKey: RECIPIENT_PUBLIC_KEY,
+        stampValueWei: 10_000n,
+        overrides: FEE_OVERRIDES,
+      })
+    ).rejects.toThrow(MonadStampPendingAttemptError)
+
+    const original = originalJournal.getAll()[0]
+    // Unknown protobuf field 99, varint value 1. Decoding may ignore it, but retry authority is
+    // the journaled wire record, so these bytes must still reach the relay unchanged.
+    const exactBytes = [...original.messageBytes, 0x98, 0x06, 0x01]
+    const upgradedJournal = new InMemoryStampAttemptJournal()
+    await upgradedJournal.put({ ...original, messageBytes: exactBytes })
+    mockedAxios.mockImplementationOnce(async (config) => {
+      expect(Array.from(new Uint8Array(config.data as Buffer))).toEqual(
+        exactBytes
+      )
+      const decoded = decodeMonadStampedMessage(
+        new Uint8Array(config.data as Buffer)
+      )
+      return {
+        data: storedMessageBytes(decoded),
+        status: 200,
+        statusText: 'OK',
+        headers: {},
+        config,
+      }
+    })
+    const resumed = makeClient({ pool, stampAttemptJournal: upgradedJournal })
+    await expect(resumed.client.resumePendingAttempts()).resolves.toHaveLength(
+      1
+    )
+  })
+
+  it('rejects zero-value stamp input before reconciliation or network access', async () => {
+    const { client } = makeClient()
+    await expect(
+      client.submitStampedMessage({
+        encryptedPayload: new Uint8Array([1]),
+        recipientPublicKey: RECIPIENT_PUBLIC_KEY,
+        stampValueWei: 0n,
+        overrides: FEE_OVERRIDES,
+      })
+    ).rejects.toThrow(/stampValueWei must be positive/i)
+    expect(mockedAxios).not.toHaveBeenCalled()
+  })
+
   it('rejects a split larger than the relay maximum before leasing or PUT', async () => {
     const pool = makePool(65)
     const provider = makeCapacityProvider(Array(65).fill(1n))

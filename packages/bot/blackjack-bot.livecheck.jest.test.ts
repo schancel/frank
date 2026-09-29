@@ -19,6 +19,7 @@ import {
 import {
   dealInitialCards,
   HydratedBlackjackMove,
+  parseBlackjackError,
   resolveOutcome,
 } from '@frank/wallet/message-item-plugins/blackjack/game'
 import {
@@ -38,6 +39,8 @@ import {
 import {
   handleMove,
   hydrateMoveWithValidatedGameId,
+  attemptRefund,
+  retryPendingRefunds,
 } from './blackjack-bot.livecheck'
 
 jest.mock('./qwen-bot-common', () => ({
@@ -53,14 +56,18 @@ const DEALER = `0x${'bb'.repeat(20)}`
 const PLAYER = `0x${'aa'.repeat(20)}`
 const ATTACKER = `0x${'cc'.repeat(20)}`
 const WAGER_HASH = `0x${'AB'.repeat(32)}`
+const DOUBLE_HASH = `0x${'CD'.repeat(32)}`
+const OTHER_HASH = `0x${'EF'.repeat(32)}`
 
 describe('blackjack move authorization', () => {
   let directory: string
   let state: BlackjackBotStateStore
   let mainAccountSigner: {
+    address: string
     buildAndSignTransfer: jest.Mock
     submit: jest.Mock
   }
+  let getBalance: jest.Mock
 
   beforeEach(async () => {
     jest.clearAllMocks()
@@ -68,7 +75,9 @@ describe('blackjack move authorization', () => {
     state = new BlackjackBotStateStore(directory)
     await state.Open()
     await state.setPendingCommitment('initial-seed', sha256Hex('initial-seed'))
+    getBalance = jest.fn(async () => 10n ** 30n)
     mainAccountSigner = {
+      address: `0x${'dd'.repeat(20)}`,
       buildAndSignTransfer: jest.fn(async () => 'signed-payout'),
       submit: jest.fn(async () => '0xpayout'),
     }
@@ -102,6 +111,7 @@ describe('blackjack move authorization', () => {
       senderAddress,
       senderPubKey: Buffer.alloc(33, 1),
       minWagerWei: 10n,
+      maxWagerWei: 1000n,
       state,
       identity: { displayAddress: DEALER } as never,
       networkTag: 'TEST',
@@ -109,7 +119,7 @@ describe('blackjack move authorization', () => {
       stampClient: {} as never,
       pool: {} as never,
       mainAccountSigner: mainAccountSigner as never,
-      provider: {} as never,
+      provider: { getBalance } as never,
     })
   }
 
@@ -181,6 +191,7 @@ describe('blackjack move authorization', () => {
         value: 100n,
       })),
       getTransactionReceipt: jest.fn(async () => ({ status: 1 })),
+      getBalance: jest.fn(async () => 10n ** 30n),
     }
     const moveHydrated = await hydrateMoveWithValidatedGameId(
       replayed,
@@ -448,4 +459,471 @@ describe('blackjack move authorization', () => {
       expect.objectContaining({ toAddress: getAddress(PLAYER) }),
     )
   })
+
+  // ---- seed search helpers ---------------------------------------------------------------
+  type Sim = { playerCards: number[]; outcome?: string; bust: boolean }
+  function findSeed(
+    prefix: string,
+    predicate: (deck: number[]) => boolean,
+  ): string {
+    for (let i = 0; i < 5000; i++) {
+      const candidate = `${prefix}-${i}`
+      if (predicate(deriveDeck(candidate, WAGER_HASH.toLowerCase(), 0))) return candidate
+    }
+    throw new Error('no seed found')
+  }
+  function simulateDouble(deck: number[]): Sim {
+    const initial = dealInitialCards(deck)
+    const playerCards = [...initial.playerCards, deck[4]]
+    const pv = handValue(playerCards)
+    if (pv.bust) return { playerCards, bust: true, outcome: 'dealer_win' }
+    let dealerCards = initial.dealerCards
+    let n = 5
+    while (handValue(dealerCards).total < 17) dealerCards = [...dealerCards, deck[n++]]
+    return { playerCards, bust: false, outcome: resolveOutcome(pv, handValue(dealerCards)) }
+  }
+  const notNatural = (deck: number[]) =>
+    !handValue(dealInitialCards(deck).playerCards).blackjack
+  async function seedAndBet(seed: string) {
+    await state.setPendingCommitment(seed, sha256Hex(seed))
+    await bet()
+    jest.clearAllMocks()
+  }
+  const validDouble = (overrides: Partial<HydratedBlackjackMove> = {}) =>
+    hydrated('double', {
+      doubleWagerTxHash: DOUBLE_HASH,
+      verifiedDoubleWager: { fromAddress: PLAYER, toAddress: DEALER, valueWei: 100n },
+      ...overrides,
+    })
+
+  // ---- double: rejection cases (each also refunds the verified transfer once) -------------
+  it('rejects a double whose second wager does not match, and refunds that transfer', async () => {
+    await bet()
+    const before = state.getGame('game-a')
+    jest.clearAllMocks()
+
+    await move(
+      'double',
+      validDouble({
+        verifiedDoubleWager: { fromAddress: PLAYER, toAddress: DEALER, valueWei: 50n },
+      }),
+    )
+
+    expect(state.getGame('game-a')).toEqual(before)
+    expect(sendDirectMessageItems).not.toHaveBeenCalled()
+    expect(mainAccountSigner.buildAndSignTransfer).toHaveBeenCalledTimes(1)
+    expect(mainAccountSigner.buildAndSignTransfer).toHaveBeenCalledWith(getAddress(PLAYER), 50n)
+    expect(sendDirectMessageText).toHaveBeenCalledTimes(1)
+  })
+
+  it('rejects a double after a NON-busting hit (dealtCount guard) and refunds it', async () => {
+    // A seed whose first hit does not bust, so only the dealtCount check can reject the double.
+    const seed = findSeed(
+      'hit-seed',
+      (deck) => notNatural(deck) && !handValue([...dealInitialCards(deck).playerCards, deck[4]]).bust,
+    )
+    await seedAndBet(seed)
+    await move('hit', hydrated('hit'))
+    const afterHit = state.getGame('game-a')
+    expect(afterHit).toMatchObject({ dealtCount: 5, revealed: false, doubled: false })
+    jest.clearAllMocks()
+    // The handler must reject on its own; the store's guard is only defense in depth.
+    const claimSpy = jest.spyOn(state, 'claimDoubleWagerAndUpdateGame')
+
+    await move('double', validDouble())
+    expect(claimSpy).not.toHaveBeenCalled()
+
+    expect(state.getGame('game-a')).toEqual(afterHit)
+    expect(state.getGame('game-a')?.doubled).toBe(false)
+    expect(sendDirectMessageItems).not.toHaveBeenCalled()
+    expect(mainAccountSigner.buildAndSignTransfer).toHaveBeenCalledTimes(1)
+    expect(state.getRefund(DOUBLE_HASH)?.status).toBe('sent')
+  })
+
+  it('rejects a second double-down on an already-doubled hand (doubled guard)', async () => {
+    // Force a doubled-but-unresolved record (crash between accepting and revealing).
+    await bet()
+    const rec = state.getGame('game-a')!
+    await state.claimDoubleWagerAndUpdateGame({
+      gameId: 'game-a',
+      doubleWagerTxHash: DOUBLE_HASH,
+      record: { ...rec, dealtCount: 5, doubled: true, doubleWagerWei: 100n },
+    })
+    const before = state.getGame('game-a')
+    jest.clearAllMocks()
+    const claimSpy = jest.spyOn(state, 'claimDoubleWagerAndUpdateGame')
+    // The `doubled` check runs before the dealtCount check, so pin it by message.
+    await move('double', validDouble({ doubleWagerTxHash: OTHER_HASH }))
+    expect(claimSpy).not.toHaveBeenCalled()
+    expect(sendDirectMessageText).toHaveBeenCalledWith(
+      expect.objectContaining({ text: expect.stringContaining('already been doubled') }),
+    )
+    expect(state.getGame('game-a')).toEqual(before)
+    expect(sendDirectMessageItems).not.toHaveBeenCalled()
+    expect(state.getRefund(OTHER_HASH)?.status).toBe('sent')
+  })
+
+  it('rejects a double from the wrong sender and does not refund it to a third party', async () => {
+    await bet()
+    const before = state.getGame('game-a')
+    jest.clearAllMocks()
+    await move(
+      'double',
+      validDouble({
+        verifiedDoubleWager: { fromAddress: ATTACKER, toAddress: DEALER, valueWei: 100n },
+      }),
+    )
+    expect(state.getGame('game-a')).toEqual(before)
+    expect(mainAccountSigner.buildAndSignTransfer).not.toHaveBeenCalled()
+    expect(sendDirectMessageText).toHaveBeenCalledTimes(1)
+    expect(state.getRefund(DOUBLE_HASH)).toBeUndefined()
+  })
+
+  it('rejects a double whose transfer paid someone other than the dealer (no refund)', async () => {
+    await bet()
+    const before = state.getGame('game-a')
+    jest.clearAllMocks()
+    await move(
+      'double',
+      validDouble({
+        verifiedDoubleWager: { fromAddress: PLAYER, toAddress: ATTACKER, valueWei: 100n },
+      }),
+    )
+    expect(state.getGame('game-a')).toEqual(before)
+    expect(mainAccountSigner.buildAndSignTransfer).not.toHaveBeenCalled()
+    expect(sendDirectMessageText).toHaveBeenCalledTimes(1)
+  })
+
+  it('rejects an unverified double transfer (no claim, no refund)', async () => {
+    await bet()
+    const before = state.getGame('game-a')
+    jest.clearAllMocks()
+    await move('double', validDouble({ verifiedDoubleWager: undefined }))
+    expect(sendDirectMessageText).toHaveBeenCalledWith(
+      expect.objectContaining({ text: expect.stringContaining('could not verify') }),
+    )
+    expect(state.getGame('game-a')).toEqual(before)
+    expect(mainAccountSigner.buildAndSignTransfer).not.toHaveBeenCalled()
+    expect(sendDirectMessageItems).not.toHaveBeenCalled()
+    expect(sendDirectMessageText).toHaveBeenCalledTimes(1)
+    expect(state.getRefund(DOUBLE_HASH)).toBeUndefined()
+  })
+
+  // ---- double: claim keyspace (blocking economic defect) ------------------------------------
+  it('rejects a double that reuses the game\'s OWN wager hash and never refunds it', async () => {
+    await bet()
+    const before = state.getGame('game-a')
+    jest.clearAllMocks()
+    const claimSpy = jest.spyOn(state, 'claimDoubleWagerAndUpdateGame')
+    await move('double', validDouble({ doubleWagerTxHash: WAGER_HASH }))
+    expect(claimSpy).not.toHaveBeenCalled()
+    expect(state.getGame('game-a')).toEqual(before)
+    expect(before?.doubled).toBe(false)
+    expect(sendDirectMessageItems).not.toHaveBeenCalled()
+    expect(mainAccountSigner.buildAndSignTransfer).not.toHaveBeenCalled()
+    expect(sendDirectMessageText).toHaveBeenCalledTimes(1)
+  })
+
+  it('claims a genuinely new double transfer, so a second game cannot reuse it', async () => {
+    const seed = findSeed('claim-seed', notNatural)
+    await seedAndBet(seed)
+    await move('double', validDouble())
+    expect(state.getGame('game-a')).toMatchObject({ doubled: true, revealed: true })
+
+    // Second game with its own stake tries to reuse the first game's double transfer.
+    let seed2 = ''
+    for (let i = 0; i < 5000 && !seed2; i++) {
+      const c = `second-seed-${i}`
+      if (notNatural(deriveDeck(c, OTHER_HASH.toLowerCase(), 0))) seed2 = c
+    }
+    await state.setPendingCommitment(seed2, sha256Hex(seed2))
+    await move(
+      'bet',
+      hydrated('bet', {
+        gameId: 'game-b',
+        wagerTxHash: OTHER_HASH,
+        verifiedWager: { fromAddress: PLAYER, toAddress: DEALER, valueWei: 100n },
+      }),
+    )
+    expect(state.getGame('game-b')).toMatchObject({ revealed: false, doubled: false })
+    jest.clearAllMocks()
+    await move('double', validDouble({ gameId: 'game-b' }))
+    expect(state.getGame('game-b')?.doubled).toBe(false)
+    expect(sendDirectMessageItems).not.toHaveBeenCalled()
+    expect(mainAccountSigner.buildAndSignTransfer).not.toHaveBeenCalled()
+  })
+
+  it('cannot reuse a double transfer hash as a later bet wager', async () => {
+    const seed = findSeed('claim-seed2', notNatural)
+    await seedAndBet(seed)
+    await move('double', validDouble())
+    jest.clearAllMocks()
+    await state.setPendingCommitment('third-seed', sha256Hex('third-seed'))
+    await move(
+      'bet',
+      hydrated('bet', {
+        gameId: 'game-c',
+        wagerTxHash: DOUBLE_HASH,
+        verifiedWager: { fromAddress: PLAYER, toAddress: DEALER, valueWei: 100n },
+      }),
+    )
+    expect(state.getGame('game-c')).toBeUndefined()
+    expect(mainAccountSigner.buildAndSignTransfer).not.toHaveBeenCalled()
+  })
+
+  it('refuses to reuse the same double hash after a restart', async () => {
+    const seed = findSeed('claim-seed3', notNatural)
+    await seedAndBet(seed)
+    await move('double', validDouble())
+    await state.Close()
+    state = new BlackjackBotStateStore(directory)
+    await state.Open()
+    await state.setPendingCommitment('another', sha256Hex('another'))
+    jest.clearAllMocks()
+    await move(
+      'bet',
+      hydrated('bet', {
+        gameId: 'game-d',
+        wagerTxHash: DOUBLE_HASH,
+        verifiedWager: { fromAddress: PLAYER, toAddress: DEALER, valueWei: 100n },
+      }),
+    )
+    expect(state.getGame('game-d')).toBeUndefined()
+  })
+
+  // ---- double: settlement -------------------------------------------------------------------
+  async function settleDouble(prefix: string, want: (sim: Sim) => boolean) {
+    const seed = findSeed(prefix, (deck) => notNatural(deck) && want(simulateDouble(deck)))
+    await seedAndBet(seed)
+    await move('double', validDouble())
+    expect(state.getGame('game-a')).toMatchObject({
+      doubled: true,
+      doubleWagerWei: 100n,
+      revealed: true,
+    })
+    expect(state.getGame('game-a')!.dealtCount).toBeGreaterThanOrEqual(5)
+  }
+
+  it('doubled win pays 2x the combined stake', async () => {
+    await settleDouble('dwin', (s) => s.outcome === 'player_win')
+    expect(mainAccountSigner.buildAndSignTransfer).toHaveBeenCalledWith(getAddress(PLAYER), 400n)
+    expect(mainAccountSigner.submit).toHaveBeenCalledWith('signed-payout')
+    expect(sendDirectMessageItems).toHaveBeenCalledWith(
+      expect.objectContaining({ items: [expect.objectContaining({ action: 'double' })] }),
+    )
+  })
+
+  it('doubled loss pays nothing', async () => {
+    await settleDouble('dloss', (s) => !s.bust && s.outcome === 'dealer_win')
+    expect(mainAccountSigner.buildAndSignTransfer).not.toHaveBeenCalled()
+    expect(sendDirectMessageItems).toHaveBeenCalledWith(
+      expect.objectContaining({ items: [expect.objectContaining({ outcome: 'dealer_win' })] }),
+    )
+  })
+
+  it('doubled push returns the combined stake', async () => {
+    await settleDouble('dpush', (s) => s.outcome === 'push')
+    expect(mainAccountSigner.buildAndSignTransfer).toHaveBeenCalledWith(getAddress(PLAYER), 200n)
+  })
+
+  it('doubled bust pays nothing and still reveals', async () => {
+    await settleDouble('dbust', (s) => s.bust)
+    expect(mainAccountSigner.buildAndSignTransfer).not.toHaveBeenCalled()
+    expect(sendDirectMessageItems).toHaveBeenCalledWith(
+      expect.objectContaining({
+        items: [expect.objectContaining({ action: 'reveal', outcome: 'dealer_win' })],
+      }),
+    )
+  })
+
+  // ---- hit/stand on a doubled record --------------------------------------------------------
+  async function crashedDoubledGame() {
+    const seed = findSeed('crash', notNatural)
+    await seedAndBet(seed)
+    const rec = state.getGame('game-a')!
+    await state.claimDoubleWagerAndUpdateGame({
+      gameId: 'game-a',
+      doubleWagerTxHash: DOUBLE_HASH,
+      record: { ...rec, dealtCount: 5, doubled: true, doubleWagerWei: 100n },
+    })
+    jest.clearAllMocks()
+    return state.getGame('game-a')
+  }
+
+  it('rejects hit on a doubled, unresolved hand', async () => {
+    const before = await crashedDoubledGame()
+    await move('hit', hydrated('hit'))
+    expect(state.getGame('game-a')).toEqual(before)
+    expect(sendDirectMessageItems).not.toHaveBeenCalled()
+    expect(sendDirectMessageText).toHaveBeenCalledTimes(1)
+  })
+
+  it('resolves (only) a doubled, unresolved hand on stand, on the combined stake', async () => {
+    await crashedDoubledGame()
+    await move('stand', hydrated('stand'))
+    expect(state.getGame('game-a')).toMatchObject({ doubled: true, revealed: true })
+    expect(sendDirectMessageItems).toHaveBeenCalledWith(
+      expect.objectContaining({ items: [expect.objectContaining({ action: 'reveal' })] }),
+    )
+  })
+
+  // ---- bet: limits, refunds, bankroll -------------------------------------------------------
+  it('refunds a below-minimum bet exactly once and never creates a game', async () => {
+    const wager = { fromAddress: PLAYER, toAddress: DEALER, valueWei: 5n }
+    await bet({ verifiedWager: wager })
+    expect(state.getGame('game-a')).toBeUndefined()
+    expect(mainAccountSigner.buildAndSignTransfer).toHaveBeenCalledTimes(1)
+    expect(mainAccountSigner.buildAndSignTransfer).toHaveBeenCalledWith(getAddress(PLAYER), 5n)
+    expect(mainAccountSigner.submit).toHaveBeenCalledTimes(1)
+
+    // Replaying the same rejected bet (even under a new gameId) never refunds again.
+    await bet({ verifiedWager: wager })
+    await bet({ gameId: 'game-z', verifiedWager: wager })
+    expect(mainAccountSigner.buildAndSignTransfer).toHaveBeenCalledTimes(1)
+    expect(mainAccountSigner.submit).toHaveBeenCalledTimes(1)
+  })
+
+  it('a refunded hash can never later back a game', async () => {
+    await bet({ verifiedWager: { fromAddress: PLAYER, toAddress: DEALER, valueWei: 5n } })
+    // Same hash, now claiming a valid amount (would be a free stake after the refund).
+    await bet({ verifiedWager: { fromAddress: PLAYER, toAddress: DEALER, valueWei: 100n } })
+    expect(state.getGame('game-a')).toBeUndefined()
+    expect(mainAccountSigner.submit).toHaveBeenCalledTimes(1)
+  })
+
+  it('refuses an above-maximum bet and refunds it', async () => {
+    await bet({ verifiedWager: { fromAddress: PLAYER, toAddress: DEALER, valueWei: 1001n } })
+    expect(state.getGame('game-a')).toBeUndefined()
+    expect(mainAccountSigner.buildAndSignTransfer).toHaveBeenCalledWith(getAddress(PLAYER), 1001n)
+  })
+
+  it('does not refund a transfer that was not from the authenticated player', async () => {
+    await bet({ verifiedWager: { fromAddress: ATTACKER, toAddress: DEALER, valueWei: 5n } })
+    expect(mainAccountSigner.buildAndSignTransfer).not.toHaveBeenCalled()
+  })
+
+  it('leaves a pending refund (no crash, no double refund) when the bankroll cannot sign', async () => {
+    mainAccountSigner.buildAndSignTransfer.mockRejectedValueOnce(new Error('insufficient funds'))
+    await bet({ verifiedWager: { fromAddress: PLAYER, toAddress: DEALER, valueWei: 5n } })
+    expect(state.getRefund(WAGER_HASH)).toMatchObject({ status: 'pending', amountWei: 5n })
+    expect(mainAccountSigner.submit).not.toHaveBeenCalled()
+
+    // Survives restart, and the retry pays exactly once.
+    await state.Close()
+    state = new BlackjackBotStateStore(directory)
+    await state.Open()
+    expect(state.getPendingRefunds()).toHaveLength(1)
+    await retryPendingRefunds(state, mainAccountSigner as never)
+    await retryPendingRefunds(state, mainAccountSigner as never)
+    expect(mainAccountSigner.submit).toHaveBeenCalledTimes(1)
+    expect(state.getRefund(WAGER_HASH)?.status).toBe('sent')
+  })
+
+  it('never retries a refund whose broadcast may have happened', async () => {
+    mainAccountSigner.submit.mockRejectedValueOnce(new Error('rpc timeout'))
+    await bet({ verifiedWager: { fromAddress: PLAYER, toAddress: DEALER, valueWei: 5n } })
+    expect(state.getRefund(WAGER_HASH)?.status).toBe('submitting')
+    await retryPendingRefunds(state, mainAccountSigner as never)
+    expect(mainAccountSigner.submit).toHaveBeenCalledTimes(1)
+  })
+
+  it('refuses a bet the bankroll cannot cover and refunds the stake', async () => {
+    getBalance.mockResolvedValue(249n) // worst case for 100 wei is 250
+    await bet()
+    expect(state.getGame('game-a')).toBeUndefined()
+    expect(mainAccountSigner.buildAndSignTransfer).toHaveBeenCalledWith(getAddress(PLAYER), 100n)
+    expect(sendDirectMessageItems).not.toHaveBeenCalled()
+  })
+
+  it('accepts a bet exactly at the bankroll limit, counting open games', async () => {
+    getBalance.mockResolvedValue(250n)
+    await bet()
+    expect(state.getGame('game-a')).toBeDefined()
+  })
+
+  it('refuses a double the bankroll cannot cover and refunds the double transfer', async () => {
+    const seed = findSeed('bank', notNatural)
+    await seedAndBet(seed)
+    getBalance.mockResolvedValue(399n) // doubled worst case is 400
+    const before = state.getGame('game-a')
+    await move('double', validDouble())
+    expect(state.getGame('game-a')).toEqual(before)
+    expect(mainAccountSigner.buildAndSignTransfer).toHaveBeenCalledWith(getAddress(PLAYER), 100n)
+    expect(state.getRefund(DOUBLE_HASH)?.status).toBe('sent')
+  })
+
+  // ---- round 2: refund authorization, bankroll accounting, tagged errors -----------------
+  it('tags every error reply with the game id (parseable, still readable)', async () => {
+    await move('deal', hydrated('deal', { gameId: 'weird "id" [game=x]' }))
+    const text = (sendDirectMessageText as jest.Mock).mock.calls[0][0].text as string
+    expect(text.startsWith('Blackjack: deal is a dealer-only action')).toBe(true)
+    expect(parseBlackjackError(text)).toEqual({
+      gameId: 'weird "id" [game=x]',
+      text: 'deal is a dealer-only action',
+    })
+  })
+
+  it('does not refund a double transfer sent by someone other than the authenticated player', async () => {
+    // No such game -> rejected through the pre-record path that still tries to refund.
+    await move(
+      'double',
+      validDouble({
+        gameId: 'nope',
+        verifiedDoubleWager: { fromAddress: ATTACKER, toAddress: DEALER, valueWei: 100n },
+      }),
+    )
+    expect(mainAccountSigner.buildAndSignTransfer).not.toHaveBeenCalled()
+    expect(state.getRefund(DOUBLE_HASH)).toBeUndefined()
+  })
+
+  it('does not refund a double transfer that did not pay this dealer', async () => {
+    await move(
+      'double',
+      validDouble({
+        gameId: 'nope',
+        verifiedDoubleWager: { fromAddress: PLAYER, toAddress: ATTACKER, valueWei: 100n },
+      }),
+    )
+    expect(mainAccountSigner.buildAndSignTransfer).not.toHaveBeenCalled()
+    expect(state.getRefund(DOUBLE_HASH)).toBeUndefined()
+  })
+
+  it('does refund a valid double transfer for a game that does not exist', async () => {
+    await move('double', validDouble({ gameId: 'nope' }))
+    expect(mainAccountSigner.buildAndSignTransfer).toHaveBeenCalledWith(getAddress(PLAYER), 100n)
+  })
+
+  it('accepts a double when the balance covers only its own game re-priced (excludeGameId)', async () => {
+    const seed = findSeed('excl', notNatural)
+    await seedAndBet(seed)
+    getBalance.mockResolvedValue(400n) // 2*(100+100); would need 650 if the game were double counted
+    await move('double', validDouble())
+    expect(state.getGame('game-a')?.doubled).toBe(true)
+  })
+
+  it('counts queued refunds against the bankroll', async () => {
+    await state.claimRefund({ txHash: OTHER_HASH, playerAddress: PLAYER, amountWei: 1000n })
+    getBalance.mockResolvedValue(1249n) // 1000 owed + 250 worst case = 1250
+    await bet()
+    expect(state.getGame('game-a')).toBeUndefined()
+    getBalance.mockResolvedValue(1250n)
+    await bet({ wagerTxHash: `0x${'12'.repeat(32)}` })
+    expect(state.getGame('game-a')).toBeDefined()
+  })
+
+  it.each(['sent', 'submitting'] as const)(
+    'attemptRefund never re-sends a %s refund',
+    async (status) => {
+      await state.claimRefund({ txHash: OTHER_HASH, playerAddress: PLAYER, amountWei: 7n })
+      await state.setRefundStatus(OTHER_HASH, status, status === 'sent' ? '0xdone' : undefined)
+      const result = await attemptRefund({
+        state,
+        txHash: OTHER_HASH,
+        mainAccountSigner: mainAccountSigner as never,
+      })
+      expect(result).toBe(status)
+      expect(mainAccountSigner.buildAndSignTransfer).not.toHaveBeenCalled()
+      expect(mainAccountSigner.submit).not.toHaveBeenCalled()
+    },
+  )
 })

@@ -4,7 +4,7 @@
 directory-attestation = {
   0: framed-object, ; type-4 directory-statement frame
   1: [1*16 signature-entry],
-  * uint => any,
+  * uint => frank-value,
 }
 
 directory-statement = {
@@ -15,7 +15,7 @@ directory-statement = {
   4: [1*32 relay-binding],
   ? 5: [1*16 key-transition],
   ? 6: timestamp, ; expiry, if present
-  * uint => any,
+  * uint => frank-value,
 }
 
 relay-binding = {
@@ -23,7 +23,7 @@ relay-binding = {
   1: tstr .size (1..2048), ; normalized endpoint
   2: account-ref, ; relay signing/payment identity
   3: timestamp, ; binding expiry
-  * uint => any,
+  * uint => frank-value,
 }
 
 key-transition = {
@@ -31,5 +31,5 @@ key-transition = {
   1: account-ref, ; new key
   2: uint .le 65535, ; authorization/signature algorithm
   3: bstr .size (1..512), ; signature by prior/offline authority
-  * uint => any,
+  * uint => frank-value,
 }

@@ -8,7 +8,7 @@ direct-message-delivery = {
   2: framed-object, ; recipient-specific encrypted-payload frame
   3: digest-32, ; SHA-256 of the exact field-2 frame
   4: [1*64 payment-member], ; two or more preferred, one permitted
-  * uint => any, ; additive fields retained only under README.md rules
+  * uint => frank-value, ; additive fields retained only under README.md rules
 }
 
 payment-member = {
@@ -23,17 +23,17 @@ encrypted-message-content = {
   1: uuid-16, ; stable logical message_id; encrypted in a real delivery
   2: digest-32, ; plaintext content_digest; encrypted in a real delivery
   3: [1*256 framed-object], ; message-item frames
-  * uint => any,
+  * uint => frank-value,
 }
 
 ; A known container item's payload. Child values are independently framed so
 ; unknown child kinds and their exact bytes survive recursive forwarding.
 container-message-item = {
   0: [1*256 framed-object],
-  * uint => any,
+  * uint => frank-value,
 }
 
 text-message-item = {
   0: tstr .size (0..262144),
-  * uint => any,
+  * uint => frank-value,
 }

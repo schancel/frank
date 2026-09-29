@@ -5,7 +5,7 @@ mailbox-checkpoint = {
   3: timestamp,
   4: [0*4096 journal-fact],
   ? 5: [0*4096 opaque-section],
-  * uint => any,
+  * uint => frank-value,
 }
 
 journal-fact = {
@@ -13,7 +13,7 @@ journal-fact = {
   1: uuid-16, ; stable fact_id and equal-timestamp tiebreaker
   2: uint .le 65535, ; fact kind
   3: bstr .size (0..8388608), ; kind-specific canonical CBOR or opaque bytes
-  * uint => any,
+  * uint => frank-value,
 }
 
 opaque-section = {
@@ -26,5 +26,5 @@ tombstone-fact-payload = {
   0: uint .le 65535, ; deleted object family
   1: bstr .size (1..256), ; stable logical object identifier
   ? 2: digest-32, ; exact deleted revision/content identity if known
-  * uint => any,
+  * uint => frank-value,
 }

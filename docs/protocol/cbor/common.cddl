@@ -23,6 +23,19 @@ account-ref = {
   1: bstr .size (1..128), ; key bytes, interpreted only by key_type
 }
 
+; The generic profile value. Protocol maps use unsigned integer keys even when
+; their schema is not yet known; all other CBOR major/simple types are excluded.
+frank-value =
+  uint /
+  nint /
+  bstr /
+  tstr /
+  [* frank-value] /
+  {* uint => frank-value} /
+  false /
+  true /
+  null
+
 ; A complete FRNK frame. CDDL sees bytes; README.md defines frame validation.
 framed-object = bstr .size (9..8388617)
 

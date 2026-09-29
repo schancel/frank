@@ -174,12 +174,12 @@ allocates key type 1 to 33-byte compressed SEC1 secp256k1 public keys, 2 to
 32-byte Ed25519 public keys, and 3 to 32-byte x-only secp256k1 public keys.
 
 S2a. Version 1 allocates signature algorithm 1 to strict-DER, low-S secp256k1
-ECDSA over the 32-byte transcript digest; 2 to BIP340 Schnorr over that digest,
-including BIP340's tagged challenge construction; and 16 to RFC 8032 Ed25519
-over the complete common transcript. Algorithm 3 is reserved for a future
-reviewed BCH-style Schnorr profile and MUST reject until that profile freezes
-its distinct challenge construction. Signatures from algorithms 2 and 3 are
-never interchangeable merely because both use secp256k1.
+ECDSA over the 32-byte SHA-256 transcript digest; 2 to BIP340 Schnorr over that
+digest, including BIP340's tagged challenge construction; and 16 to RFC 8032
+Ed25519 over the complete common transcript. Algorithm 3 is reserved for a
+future reviewed BCH-style Schnorr profile and MUST reject until that profile
+freezes its distinct challenge construction. Signatures from algorithms 2 and
+3 are never interchangeable merely because both use secp256k1.
 
 S3. Payment members are ordered by `(child_index, transaction_id)` and unique
 by both fields. Their amounts need not be equal. A payment set is valid only
@@ -278,12 +278,13 @@ u16be(len(domain)) || ascii(domain)
 T1. The content hash is SHA-256 of the common transcript with domain
 `frank/content-hash/v1` and empty context.
 
-T2. A directory signature signs SHA-256 of the common transcript with domain
+T2. A directory signature uses the common transcript with domain
 `frank/directory-signature/v1`, where `frame` is the complete type-4 directory
-statement frame. The algorithm identifier lives in the type-2 signature entry
-and selects its signing/verification rules. ECDSA encodings MUST name their
-exact profile; Schnorr identifiers distinguish BIP340 from BCH-style Schnorr
-and other incompatible challenge hashes.
+statement frame. Algorithms 1 and 2 sign its 32-byte SHA-256 digest; algorithm
+16 signs the transcript bytes directly as required by S2a. The algorithm
+identifier lives in the type-2 signature entry and selects its exact
+signing/verification rules. Schnorr identifiers distinguish BIP340 from
+BCH-style Schnorr and other incompatible challenge hashes.
 
 T3. A recipient stamp-child derivation digest is SHA-256 of the common
 transcript with domain `frank/stamp-payment-child/v1`, where `frame` is the

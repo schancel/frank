@@ -1,0 +1,257 @@
+import { mkdtempSync, rmSync } from 'fs'
+import { tmpdir } from 'os'
+import { join } from 'path'
+
+import { getAddress } from 'ethers'
+
+import { deriveDeck, handValue, sha256Hex } from '@frank/wallet/blackjack/deck'
+import {
+  dealInitialCards,
+  HydratedBlackjackMove,
+  resolveOutcome,
+} from '@frank/wallet/blackjack/game'
+import {
+  sendDirectMessageItems,
+  sendDirectMessageText,
+} from './qwen-bot-common'
+import { BlackjackBotStateStore } from './blackjack-bot-state'
+import { handleMove } from './blackjack-bot.livecheck'
+
+jest.mock('./qwen-bot-common', () => ({
+  loadOrCreateIdentity: jest.fn(),
+  registerAndLog: jest.fn(),
+  requiredEnv: jest.fn(),
+  sendDirectMessageItems: jest.fn(async () => undefined),
+  sendDirectMessageText: jest.fn(async () => undefined),
+  setUpFundedStampClient: jest.fn(),
+}))
+
+const DEALER = `0x${'bb'.repeat(20)}`
+const PLAYER = `0x${'aa'.repeat(20)}`
+const ATTACKER = `0x${'cc'.repeat(20)}`
+const WAGER_HASH = `0x${'AB'.repeat(32)}`
+
+describe('blackjack move authorization', () => {
+  let directory: string
+  let state: BlackjackBotStateStore
+  let mainAccountSigner: {
+    buildAndSignTransfer: jest.Mock
+    submit: jest.Mock
+  }
+
+  beforeEach(async () => {
+    jest.clearAllMocks()
+    directory = mkdtempSync(join(tmpdir(), 'blackjack-handler-'))
+    state = new BlackjackBotStateStore(directory)
+    await state.Open()
+    await state.setPendingCommitment('initial-seed', sha256Hex('initial-seed'))
+    mainAccountSigner = {
+      buildAndSignTransfer: jest.fn(async () => 'signed-payout'),
+      submit: jest.fn(async () => '0xpayout'),
+    }
+  })
+
+  afterEach(async () => {
+    await state.Close()
+    rmSync(directory, { recursive: true, force: true })
+  })
+
+  function hydrated(
+    action: HydratedBlackjackMove['action'],
+    overrides: Partial<HydratedBlackjackMove> = {},
+  ): HydratedBlackjackMove {
+    return {
+      gameId: 'game-a',
+      action,
+      senderAddress: PLAYER,
+      ...overrides,
+    }
+  }
+
+  async function move(
+    action: HydratedBlackjackMove['action'],
+    moveHydrated: HydratedBlackjackMove,
+    senderAddress = PLAYER,
+  ) {
+    await handleMove({
+      action,
+      hydrated: moveHydrated,
+      senderAddress,
+      senderPubKey: Buffer.alloc(33, 1),
+      minWagerWei: 10n,
+      state,
+      identity: { displayAddress: DEALER } as never,
+      networkTag: 'TEST',
+      stampValueWei: 1n,
+      stampClient: {} as never,
+      pool: {} as never,
+      mainAccountSigner: mainAccountSigner as never,
+      provider: {} as never,
+    })
+  }
+
+  async function bet(overrides: Partial<HydratedBlackjackMove> = {}) {
+    await move(
+      'bet',
+      hydrated('bet', {
+        wagerTxHash: WAGER_HASH,
+        verifiedWager: {
+          fromAddress: PLAYER,
+          toAddress: DEALER,
+          valueWei: 100n,
+        },
+        ...overrides,
+      }),
+    )
+  }
+
+  it('rejects a wager whose on-chain sender is not the authenticated player', async () => {
+    const pendingBefore = state.getPendingCommitment()
+    await bet({
+      verifiedWager: {
+        fromAddress: ATTACKER,
+        toAddress: DEALER,
+        valueWei: 100n,
+      },
+    })
+
+    expect(state.getGame('game-a')).toBeUndefined()
+    expect(state.getPendingCommitment()).toEqual(pendingBefore)
+    expect(sendDirectMessageItems).not.toHaveBeenCalled()
+    expect(mainAccountSigner.submit).not.toHaveBeenCalled()
+    expect(sendDirectMessageText).toHaveBeenCalledTimes(1)
+  })
+
+  it('rejects replaying one wager under a different game and player', async () => {
+    await bet()
+    const pendingAfterFirstBet = state.getPendingCommitment()
+    jest.clearAllMocks()
+
+    await move(
+      'bet',
+      hydrated('bet', {
+        gameId: 'game-b',
+        senderAddress: ATTACKER,
+        wagerTxHash: WAGER_HASH.toLowerCase(),
+        verifiedWager: {
+          fromAddress: ATTACKER,
+          toAddress: DEALER,
+          valueWei: 500n,
+        },
+      }),
+      ATTACKER,
+    )
+
+    expect(state.getGame('game-b')).toBeUndefined()
+    expect(state.getPendingCommitment()).toEqual(pendingAfterFirstBet)
+    expect(sendDirectMessageItems).not.toHaveBeenCalled()
+    expect(mainAccountSigner.submit).not.toHaveBeenCalled()
+    expect(sendDirectMessageText).toHaveBeenCalledTimes(1)
+  })
+
+  it.each(['hit', 'stand'] as const)(
+    'rejects a non-owner %s without changing game or payout state',
+    async (action) => {
+      await bet()
+      const before = state.getGame('game-a')
+      jest.clearAllMocks()
+
+      await move(action, hydrated(action), ATTACKER)
+
+      expect(state.getGame('game-a')).toEqual(before)
+      expect(sendDirectMessageItems).not.toHaveBeenCalled()
+      expect(mainAccountSigner.submit).not.toHaveBeenCalled()
+      expect(sendDirectMessageText).toHaveBeenCalledTimes(1)
+    },
+  )
+
+  it.each(['deal', 'reveal'] as const)(
+    'rejects the bot-only %s action from a client without state mutation',
+    async (action) => {
+      await bet()
+      const before = state.getGame('game-a')
+      jest.clearAllMocks()
+
+      await move(action, hydrated(action))
+
+      expect(state.getGame('game-a')).toEqual(before)
+      expect(sendDirectMessageItems).not.toHaveBeenCalled()
+      expect(mainAccountSigner.submit).not.toHaveBeenCalled()
+      expect(sendDirectMessageText).toHaveBeenCalledTimes(1)
+    },
+  )
+
+  it('normalizes authority once and deals from the pre-wager commitment', async () => {
+    await bet({
+      wagerTxHash: `0x${WAGER_HASH.slice(2).toUpperCase()}`,
+      verifiedWager: {
+        fromAddress: getAddress(PLAYER),
+        toAddress: getAddress(DEALER),
+        valueWei: 100n,
+      },
+    })
+
+    const record = state.getGame('game-a')
+    expect(record).toMatchObject({
+      playerAddress: getAddress(PLAYER),
+      wagerTxHash: WAGER_HASH.toLowerCase(),
+      serverSeed: 'initial-seed',
+      serverSeedHash: sha256Hex('initial-seed'),
+      wagerWei: 100n,
+    })
+    const expectedInitial = dealInitialCards(
+      deriveDeck('initial-seed', WAGER_HASH.toLowerCase(), 0),
+    )
+    expect(sendDirectMessageItems).toHaveBeenCalledWith(
+      expect.objectContaining({
+        toAddress: getAddress(PLAYER),
+        items: [
+          expect.objectContaining({
+            action: 'deal',
+            playerCards: expectedInitial.playerCards,
+            dealerUpCard: expectedInitial.dealerCards[0],
+            serverSeedHash: sha256Hex('initial-seed'),
+          }),
+        ],
+      }),
+    )
+    expect(state.getPendingCommitment()?.serverSeed).not.toBe('initial-seed')
+  })
+
+  it('pays only the persisted original authority and wager amount', async () => {
+    let winningSeed = ''
+    for (let i = 0; i < 1000; i++) {
+      const candidate = `winning-seed-${i}`
+      const deck = deriveDeck(candidate, WAGER_HASH.toLowerCase(), 0)
+      const initial = dealInitialCards(deck)
+      let dealerCards = initial.dealerCards
+      let dealtCount = 4
+      while (handValue(dealerCards).total < 17) {
+        dealerCards = [...dealerCards, deck[dealtCount++]]
+      }
+      const outcome = resolveOutcome(
+        handValue(initial.playerCards),
+        handValue(dealerCards),
+      )
+      if (outcome === 'player_win') {
+        winningSeed = candidate
+        break
+      }
+    }
+    expect(winningSeed).not.toBe('')
+    await state.setPendingCommitment(winningSeed, sha256Hex(winningSeed))
+    await bet()
+    jest.clearAllMocks()
+
+    await move('stand', hydrated('stand'), `0x${PLAYER.slice(2).toUpperCase()}`)
+
+    expect(mainAccountSigner.buildAndSignTransfer).toHaveBeenCalledWith(
+      getAddress(PLAYER),
+      200n,
+    )
+    expect(mainAccountSigner.submit).toHaveBeenCalledWith('signed-payout')
+    expect(sendDirectMessageItems).toHaveBeenCalledWith(
+      expect.objectContaining({ toAddress: getAddress(PLAYER) }),
+    )
+  })
+})

@@ -404,6 +404,7 @@ export class MonadTopicVoteClient {
       // `releaseLease` has no "never attempted" outcome to say so precisely. Same documented
       // trade-off as `monad-stamp-client.ts`.
       this.leaseManager.releaseLease(handle, 'failed')
+      await this.leaseManager.flush()
       throw err
     }
 
@@ -412,9 +413,18 @@ export class MonadTopicVoteClient {
       rawBurnTx: getBytes(signedTx.rawTx),
     }
 
+    // The relay may broadcast immediately, so retain the exact signed economic effect first.
+    this.pool.recordSpendTransaction(handle.index, {
+      rawTx: signedTx.rawTx,
+      txHash: signedTx.txHash,
+      valueWei: signedTx.value.toString(),
+    })
+    await this.pool.flush()
+
     try {
       const stored = await this.putTopicVote(vote)
       this.leaseManager.releaseLease(handle, 'confirmed')
+      await this.leaseManager.flush()
       return {
         stored,
         targetPayloadHashHex,
@@ -424,6 +434,7 @@ export class MonadTopicVoteClient {
     } catch (err) {
       if (axios.isAxiosError(err) && err.response) {
         this.leaseManager.releaseLease(handle, 'failed')
+        await this.leaseManager.flush()
         throw new MonadTopicVoteRejectedError(
           `Relay rejected the Monad topic vote (HTTP ${err.response.status})`,
           err.response.status,
@@ -437,6 +448,7 @@ export class MonadTopicVoteClient {
       // disambiguation (ticket #33, not yet built) — retire and surface the ambiguity rather than
       // guessing either way.
       this.leaseManager.releaseLease(handle, 'stuck')
+      await this.leaseManager.flush()
       throw new MonadTopicVoteAbandonedError(
         'Monad topic vote submission abandoned: no response from the relay, and no read-back ' +
           `route is available in this ticket's scope to confirm whether ${targetPayloadHashHex}'s ` +

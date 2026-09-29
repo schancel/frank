@@ -9,7 +9,10 @@
  * `JsonRpcProvider._perform`, so the signed raw tx and its calldata are real, decodable bytes --
  * same technique `monad-stamp-client.jest.test.ts` uses.
  */
-import { JsonRpcProvider, Transaction, getBytes, sha256 } from 'ethers'
+import { mkdtempSync, rmSync } from 'fs'
+import { tmpdir } from 'os'
+import { join } from 'path'
+import { JsonRpcProvider, Transaction, Wallet, getBytes, sha256 } from 'ethers'
 import axios from 'axios'
 
 import { MonadHdKeyring } from './monad-hd-keyring'
@@ -34,6 +37,7 @@ import {
   decodeMonadTopicPost,
   decodeStoredMonadTopicPost,
 } from './monad-topic-post-client'
+import { openMonadWalletBundle } from './storage/monad-wallet-bundle'
 
 jest.mock('axios')
 const mockedAxios = axios as jest.Mocked<typeof axios>
@@ -105,6 +109,46 @@ function makeClient(overrides?: { pool?: MonadSubAccountPool }) {
     relayBaseUrl: 'https://relay.example.com/',
   })
   return { client, pool, leaseManager, provider, httpClient }
+}
+
+async function fundPersistentPool(pool: MonadSubAccountPool): Promise<void> {
+  const fundingWallet = new Wallet(`0x${'66'.repeat(32)}`)
+  const signer = {
+    address: fundingWallet.address,
+    buildAndSignTransfer: async (to: string, value: bigint) => {
+      const rawTx = await fundingWallet.signTransaction({
+        to,
+        value,
+        nonce: 0,
+        gasLimit: 21_000n,
+        gasPrice: 1n,
+        chainId: CHAIN_ID,
+      })
+      const parsed = Transaction.from(rawTx)
+      return {
+        rawTx,
+        txHash: parsed.hash as string,
+        from: fundingWallet.address,
+        to,
+        value,
+        data: '0x',
+        nonce: 0,
+        gasLimit: 21_000n,
+        maxFeePerGas: undefined,
+        maxPriorityFeePerGas: undefined,
+        gasPrice: 1n,
+        chainId: BigInt(CHAIN_ID),
+      }
+    },
+    submit: async (signed: { txHash: string }) => signed.txHash,
+    getStatus: async () => 'confirmed' as const,
+  }
+  await pool.topUpPool({
+    mainAccountSigner: signer as never,
+    burnValue: 100_000n,
+    gasReserve: 0n,
+    bufferSize: 1,
+  })
 }
 
 /** Encode a `MonadTopicPostProto` via the real generated `MonadTopicPost` binding -- used both to
@@ -266,6 +310,122 @@ describe('MonadTopicPostClient.submitTopicPost', () => {
       (e: unknown) => (e as { isAxiosError?: boolean })?.isAxiosError === true,
     )
   })
+
+  it.each(['direct', 'fallback'] as const)(
+    'persists exact spend authority across reopen for a %s confirmation',
+    async confirmation => {
+      const parent = mkdtempSync(join(tmpdir(), 'monad-topic-post-durable-'))
+      const location = join(parent, 'wallet')
+      try {
+        const bundle = await openMonadWalletBundle({
+          location,
+          seed: { mnemonic: TEST_MNEMONIC },
+          mode: 'create',
+        })
+        await fundPersistentPool(bundle.pool)
+        const row = bundle.pool.getRecord(0)
+        if (row === undefined) throw new Error('missing funded topic row')
+        const client = new MonadTopicPostClient({
+          pool: bundle.pool,
+          leaseManager: bundle.leaseManager,
+          provider: makeChainProvider(),
+          httpClient: makeMockHttpClient(),
+          relayBaseUrl: 'https://relay.example.com/',
+        })
+        let exactRawTx = ''
+        let calls = 0
+        ;(mockedAxios as unknown as jest.Mock).mockImplementation(
+          async (config: any) => {
+            calls++
+            if (config.method === 'put') {
+              const sent = decodeMonadTopicPost(
+                new Uint8Array(config.data as Buffer),
+              )
+              exactRawTx = hexOf(sent.rawBurnTx)
+              expect(
+                bundle.pool.getRecord(row.index)?.lifecycle?.spend?.rawTx
+              ).toBe(exactRawTx)
+              if (confirmation === 'fallback' && calls === 1) {
+                throw Object.assign(new Error('socket hang up'), {
+                  isAxiosError: true,
+                  response: undefined,
+                })
+              }
+              return {
+                data: storedTopicPostBytes(sent),
+                status: 200,
+                statusText: 'OK',
+                headers: {},
+                config,
+              }
+            }
+            const checkpoint = bundle.pool.getRecord(row.index)?.lifecycle
+              ?.spend
+            if (checkpoint === undefined) {
+              throw new Error('missing spend checkpoint')
+            }
+            exactRawTx = checkpoint.rawTx
+            const payload = buildTopicPostPayload({
+              topic: 'durable',
+              entries: ENTRIES,
+              parentPostHash: new Uint8Array(0),
+              timestampMs: 1_700_000_000_000,
+            })
+            const sent: MonadTopicPostProto = {
+              topic: 'durable',
+              parentPostHash: new Uint8Array(0),
+              rawBurnTx: getBytes(exactRawTx),
+              encryptedPayload: payload,
+              payloadHash: computeTopicPostCommitment(payload),
+            }
+            return {
+              data: topicPostViewBytes(sent, 5_000),
+              status: 200,
+              statusText: 'OK',
+              headers: {},
+              config,
+            }
+          }
+        )
+
+        const result = await client.submitTopicPost({
+          topic: 'durable',
+          entries: ENTRIES,
+          direction: 'up',
+          burnAddress: BURN_ADDRESS,
+          voteWeightWei: 5_000n,
+          overrides: FEE_OVERRIDES,
+          timestampMs: 1_700_000_000_000,
+          abandonPoll: {
+            intervalMs: 0,
+            maxAttempts: 1,
+            sleep: async () => undefined,
+          },
+        })
+        const expectedHash = Transaction.from(exactRawTx).hash
+        expect(result.txHash).toBe(expectedHash)
+        await bundle.close()
+
+        const reopened = await openMonadWalletBundle({
+          location,
+          seed: { mnemonic: TEST_MNEMONIC },
+        })
+        expect(reopened.pool.getRecord(row.index)).toMatchObject({
+          status: 'spent',
+          lifecycle: {
+            spend: {
+              rawTx: exactRawTx,
+              txHash: expectedHash,
+              valueWei: '5000',
+            },
+          },
+        })
+        await reopened.close()
+      } finally {
+        rmSync(parent, { recursive: true, force: true })
+      }
+    },
+  )
 
   it('PUTs the assembled MonadTopicPost and releases the lease as confirmed on 2xx', async () => {
     const { client, pool } = makeClient()

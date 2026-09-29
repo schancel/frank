@@ -553,6 +553,7 @@ export class MonadTopicPostClient {
       // this file's header, "Lease release policy", for why this deliberately still retires rather
       // than guessing.
       this.leaseManager.releaseLease(handle, 'failed')
+      await this.leaseManager.flush()
       throw err
     }
 
@@ -564,9 +565,18 @@ export class MonadTopicPostClient {
       payloadHash,
     }
 
+    // The relay may broadcast immediately, so retain the exact signed economic effect first.
+    this.pool.recordSpendTransaction(handle.index, {
+      rawTx: signedTx.rawTx,
+      txHash: signedTx.txHash,
+      valueWei: signedTx.value.toString(),
+    })
+    await this.pool.flush()
+
     try {
       const stored = await this.putTopicPost(post)
       this.leaseManager.releaseLease(handle, 'confirmed')
+      await this.leaseManager.flush()
       return {
         stored,
         payloadHashHex,
@@ -576,6 +586,7 @@ export class MonadTopicPostClient {
     } catch (err) {
       if (axios.isAxiosError(err) && err.response) {
         this.leaseManager.releaseLease(handle, 'failed')
+        await this.leaseManager.flush()
         throw new MonadTopicPostRejectedError(
           `Relay rejected the Monad topic post (HTTP ${err.response.status})`,
           err.response.status,
@@ -591,6 +602,7 @@ export class MonadTopicPostClient {
       )
       if (stored !== undefined) {
         this.leaseManager.releaseLease(handle, 'confirmed')
+        await this.leaseManager.flush()
         return {
           stored,
           payloadHashHex,
@@ -600,6 +612,7 @@ export class MonadTopicPostClient {
       }
 
       this.leaseManager.releaseLease(handle, 'stuck')
+      await this.leaseManager.flush()
       throw new MonadTopicPostAbandonedError(
         'Monad topic post submission abandoned: no response from the relay, and ' +
           `GET /message/monad/topics/${payloadHashHex} never found a stored post`,

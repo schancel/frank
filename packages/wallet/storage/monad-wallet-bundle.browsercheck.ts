@@ -54,6 +54,33 @@ async function deleteRoot(location: string): Promise<void> {
   })
 }
 
+async function readBrowserCreationIntent(location: string): Promise<{
+  persistedSeed?: { mnemonic: string; passphrase: string }
+}> {
+  const idb = (globalThis as any).indexedDB
+  const databaseName = `frank-monad-wallet-creation:${canonicalWalletStorageLocation(
+    location
+  )}`
+  const database = await new Promise<any>((resolve, reject) => {
+    const request = idb.open(databaseName)
+    request.onsuccess = () => resolve(request.result)
+    request.onerror = () => reject(request.error)
+  })
+  try {
+    const encoded = await new Promise<string>((resolve, reject) => {
+      const transaction = database.transaction('creation-intent', 'readonly')
+      const request = transaction.objectStore('creation-intent').get('intent')
+      request.onsuccess = () => resolve(request.result)
+      request.onerror = () => reject(request.error)
+    })
+    return JSON.parse(encoded) as {
+      persistedSeed?: { mnemonic: string; passphrase: string }
+    }
+  } finally {
+    database.close()
+  }
+}
+
 async function createLegacyRoot(
   location: string,
   withRecord = true
@@ -249,6 +276,7 @@ export async function runMonadWalletBundleBrowserCheck(): Promise<void> {
   const callerSeedRoot = `${prefix}-caller-seed`
   const invalidModeRoot = `${prefix}-invalid-mode`
   const callerCreationCrashRoots: string[] = []
+  const generatedCreationCrashRoots: string[] = []
   const crashRoots: string[] = []
   try {
     await createLegacyRoot(migratedRoot)
@@ -365,6 +393,52 @@ export async function runMonadWalletBundleBrowserCheck(): Promise<void> {
         ),
         `browser creation intent survived successful resume after ${phase}`
       )
+    }
+
+    for (const phase of [
+      'creation-intent',
+      'validated',
+      'marker',
+      'sub-account-pool',
+      'change-pool',
+      'outgoing-stamp-attempts',
+      'stamp-payment-journal',
+      'manifest',
+    ] as const) {
+      const creationCrashRoot = `${prefix}-generated-crash-${phase}`
+      generatedCreationCrashRoots.push(creationCrashRoot)
+      let crashed = false
+      try {
+        await openMonadWalletBundle({
+          location: creationCrashRoot,
+          createSeedIfEmpty: true,
+          onMigrationPhase: async (current) => {
+            if (current === phase) throw new Error(`generated crash ${phase}`)
+          },
+        })
+      } catch {
+        crashed = true
+      }
+      assert(crashed, `generated browser creation did not crash at ${phase}`)
+      const retained = await readBrowserCreationIntent(creationCrashRoot)
+      assert(
+        retained.persistedSeed !== undefined,
+        `generated browser seed was not retained after ${phase}`
+      )
+      const expectedAddress = MonadHdKeyring.fromMnemonic(
+        retained.persistedSeed.mnemonic,
+        retained.persistedSeed.passphrase
+      ).deriveSubAccount(0).address
+      const resumed = await openMonadWalletBundle({
+        location: creationCrashRoot,
+        createSeedIfEmpty: true,
+      })
+      assert(
+        resumed.pool.deriveNextUnfunded().address === expectedAddress,
+        `generated browser seed changed after ${phase}`
+      )
+      await resumed.pool.flush()
+      await resumed.close()
     }
 
     const callerSeedContenders = await Promise.allSettled([
@@ -635,6 +709,7 @@ export async function runMonadWalletBundleBrowserCheck(): Promise<void> {
     await deleteRoot(callerSeedRoot)
     await deleteRoot(invalidModeRoot)
     for (const root of callerCreationCrashRoots) await deleteRoot(root)
+    for (const root of generatedCreationCrashRoots) await deleteRoot(root)
     for (const root of crashRoots) await deleteRoot(root)
   }
 }

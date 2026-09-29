@@ -433,6 +433,7 @@ describe('Monad wallet persistence bundle', () => {
     'intent-published',
     'before-root-publish',
     'root-published',
+    'intent-linked',
   ] as const)(
     'resumes exact first-use creation after a %s publication crash',
     async (phase) => {
@@ -514,6 +515,41 @@ describe('Monad wallet persistence bundle', () => {
       mode: 'create',
     })
     await resumed.close()
+  })
+
+  it('rejects an empty replacement root after the original inode was bound', async () => {
+    rmSync(root, { recursive: true, force: true })
+    await expect(
+      openMonadWalletBundle({
+        location: root,
+        seed: { mnemonic: FIRST_MNEMONIC },
+        mode: 'create',
+        onNodeCreationPublishPhase: (phase) => {
+          if (phase === 'root-published') throw new Error('bound root crash')
+        },
+      })
+    ).rejects.toThrow('bound root crash')
+    const original = lstatSync(root)
+    const displaced = `${root}-bound-original`
+    rmSync(displaced, { recursive: true, force: true })
+    renameSync(root, displaced)
+    mkdirSync(root, { mode: 0o700 })
+    const replacement = lstatSync(root)
+    expect(replacement.ino).not.toBe(original.ino)
+
+    try {
+      await expect(
+        openMonadWalletBundle({
+          location: root,
+          seed: { mnemonic: FIRST_MNEMONIC },
+          mode: 'create',
+        })
+      ).rejects.toThrow(/identity does not match creation claim/i)
+      expect(readdirSync(root)).toEqual([])
+      expect(lstatSync(root).ino).toBe(replacement.ino)
+    } finally {
+      rmSync(displaced, { recursive: true, force: true })
+    }
   })
 
   it.each([
@@ -599,7 +635,61 @@ describe('Monad wallet persistence bundle', () => {
     await expect(creator).rejects.toThrow(/appeared before atomic/i)
     expect(readFileSync(sentinel)).toEqual(before)
     expect(readdirSync(root)).toEqual(['competitor-owned'])
-    expect(creationStages(root)).toEqual([])
+    expect(creationStages(root)).toHaveLength(1)
+
+    await expect(
+      openMonadWalletBundle({
+        location: root,
+        seed: { mnemonic: FIRST_MNEMONIC },
+        mode: 'create',
+      })
+    ).rejects.toThrow(/missing Node root|not bound to the durable creation claim/i)
+    expect(readFileSync(sentinel)).toEqual(before)
+    expect(readdirSync(root)).toEqual(['competitor-owned'])
+  })
+
+  it('never adopts an empty competing root after a creation claim is staged', async () => {
+    rmSync(root, { recursive: true, force: true })
+    let entered!: () => void
+    let resume!: () => void
+    const atBarrier = new Promise<void>((resolve) => {
+      entered = resolve
+    })
+    const barrier = new Promise<void>((resolve) => {
+      resume = resolve
+    })
+    const creator = openMonadWalletBundle({
+      location: root,
+      seed: { mnemonic: FIRST_MNEMONIC },
+      mode: 'create',
+      onNodeCreationPublishPhase: async (phase) => {
+        if (phase === 'before-root-publish') {
+          entered()
+          await barrier
+        }
+      },
+    })
+    await atBarrier
+    mkdirSync(root, { mode: 0o700 })
+    const competitorIdentity = lstatSync(root)
+    resume()
+
+    await expect(creator).rejects.toThrow(/appeared before atomic/i)
+    expect(readdirSync(root)).toEqual([])
+    expect(lstatSync(root).dev).toBe(competitorIdentity.dev)
+    expect(lstatSync(root).ino).toBe(competitorIdentity.ino)
+    expect(creationStages(root)).toHaveLength(1)
+
+    await expect(
+      openMonadWalletBundle({
+        location: root,
+        seed: { mnemonic: FIRST_MNEMONIC },
+        mode: 'create',
+      })
+    ).rejects.toThrow(/not bound to the durable creation claim/i)
+    expect(readdirSync(root)).toEqual([])
+    expect(lstatSync(root).dev).toBe(competitorIdentity.dev)
+    expect(lstatSync(root).ino).toBe(competitorIdentity.ino)
   })
 
   it.each([
@@ -760,6 +850,143 @@ describe('Monad wallet persistence bundle', () => {
     await resumed.close()
     expect(existsSync(join(root, '.frank-wallet-creation.json'))).toBe(false)
   })
+
+  it.each([
+    'staged',
+    'temp-written',
+    'temp-synced',
+    'intent-published',
+    'before-root-publish',
+    'root-published',
+    'intent-linked',
+  ] as const)(
+    'recovers the original generated seed after a %s publication crash',
+    async (phase) => {
+      rmSync(root, { recursive: true, force: true })
+      await expect(
+        openMonadWalletBundle({
+          location: root,
+          createSeedIfEmpty: true,
+          onNodeCreationPublishPhase: (current) => {
+            if (current === phase) throw new Error(`generated:${phase}`)
+          },
+        })
+      ).rejects.toThrow(`generated:${phase}`)
+
+      const [stage] = creationStages(root)
+      expect(stage).toBeDefined()
+      const finalIntent = join(stage, '.frank-wallet-creation.json')
+      const temporaryIntent = `${finalIntent}.tmp`
+      const retained = JSON.parse(
+        readFileSync(
+          existsSync(finalIntent) ? finalIntent : temporaryIntent,
+          'utf8'
+        )
+      ) as { persistedSeed: { mnemonic: string; passphrase: string } }
+      const originalAddress = MonadHdKeyring.fromMnemonic(
+        retained.persistedSeed.mnemonic,
+        retained.persistedSeed.passphrase
+      ).deriveSubAccount(0).address
+      const generate = jest.spyOn(MonadHdKeyring, 'generate')
+      try {
+        const resumed = await openMonadWalletBundle({
+          location: root,
+          createSeedIfEmpty: true,
+        })
+        expect(generate).not.toHaveBeenCalled()
+        expect(resumed.pool.deriveNextUnfunded().address).toBe(originalAddress)
+        await resumed.pool.flush()
+        await resumed.close()
+      } finally {
+        generate.mockRestore()
+      }
+      expect(creationStages(root)).toEqual([])
+    }
+  )
+
+  it.each(['wrong-mode', 'corrupt', 'multiple'] as const)(
+    'fails closed on a %s abandoned generated creation claim before generating again',
+    async (variant) => {
+      rmSync(root, { recursive: true, force: true })
+      await expect(
+        openMonadWalletBundle({
+          location: root,
+          createSeedIfEmpty: true,
+          onNodeCreationPublishPhase: (phase) => {
+            if (phase === 'intent-published') throw new Error('retain generated')
+          },
+        })
+      ).rejects.toThrow('retain generated')
+      const [stage] = creationStages(root)
+      const intentPath = join(stage, '.frank-wallet-creation.json')
+      const retained = readFileSync(intentPath, 'utf8')
+      if (variant === 'wrong-mode') {
+        const parsed = JSON.parse(retained) as Record<string, unknown>
+        parsed.kind = 'caller-supplied'
+        delete parsed.persistedSeed
+        writeFileSync(intentPath, JSON.stringify(parsed), { mode: 0o600 })
+      } else if (variant === 'corrupt') {
+        writeFileSync(intentPath, '{', { mode: 0o600 })
+      } else {
+        const duplicate = mkdtempSync(
+          join(dirname(root), `.${basename(root)}.frank-wallet-create.`)
+        )
+        chmodSync(duplicate, 0o700)
+        writeFileSync(
+          join(duplicate, '.frank-wallet-creation.json'),
+          retained,
+          { mode: 0o600 }
+        )
+      }
+
+      const generate = jest.spyOn(MonadHdKeyring, 'generate')
+      try {
+        await expect(
+          openMonadWalletBundle({ location: root, createSeedIfEmpty: true })
+        ).rejects.toThrow(/intent|multiple|mode|authentication|JSON/i)
+        expect(generate).not.toHaveBeenCalled()
+      } finally {
+        generate.mockRestore()
+      }
+      expect(existsSync(root)).toBe(false)
+    }
+  )
+
+  it.each([
+    ['final FIFO', '.frank-wallet-creation.json', false],
+    ['temporary FIFO', '.frank-wallet-creation.json.tmp', false],
+    ['final symlink to FIFO', '.frank-wallet-creation.json', true],
+    ['temporary symlink to FIFO', '.frank-wallet-creation.json.tmp', true],
+  ] as const)(
+    'rejects an abandoned %s without blocking or creating the root',
+    async (_description, fileName, useSymlink) => {
+      rmSync(root, { recursive: true, force: true })
+      const stage = mkdtempSync(
+        join(dirname(root), `.${basename(root)}.frank-wallet-create.`)
+      )
+      chmodSync(stage, 0o700)
+      const fifo = join(dirname(root), `.${basename(root)}.attacker-fifo`)
+      rmSync(fifo, { force: true })
+      expect(spawnSync('mkfifo', [fifo]).status).toBe(0)
+      chmodSync(fifo, 0o600)
+      const stagedPath = join(stage, fileName)
+      if (useSymlink) symlinkSync(fifo, stagedPath)
+      else renameSync(fifo, stagedPath)
+
+      try {
+        await expect(
+          openMonadWalletBundle({
+            location: root,
+            seed: { mnemonic: FIRST_MNEMONIC },
+            mode: 'create',
+          })
+        ).rejects.toThrow(/regular file|invalid size/i)
+        expect(existsSync(root)).toBe(false)
+      } finally {
+        rmSync(fifo, { force: true })
+      }
+    }
+  )
 
   it('rejects unbound counters plus unrelated payment evidence for every seed without binding', async () => {
     await createLegacyRoot(root, false)

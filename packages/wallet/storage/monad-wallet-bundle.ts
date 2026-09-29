@@ -52,6 +52,7 @@ import {
   nodeWalletRootIsPrivateEmpty,
   prepareSecureWalletRootWithProvenance,
   publishNodeWalletRootWithIntent,
+  readPrivateNodeCreationFile,
   validateWalletComponentBeforeOpen,
 } from './wallet-root-guard'
 
@@ -168,6 +169,7 @@ type OpenMonadWalletBundleTestHooks = {
       | 'intent-published'
       | 'before-root-publish'
       | 'root-published'
+      | 'intent-linked'
   ) => void | Promise<void>
 }
 
@@ -301,28 +303,12 @@ async function readWalletCreationIntent(
   location: string
 ): Promise<WalletCreationIntent | undefined> {
   if (!isBrowserWalletStorage()) {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const fs = require('fs') as typeof import('fs')
     const intentPath = join(location, NODE_CREATION_INTENT_FILE)
-    let stat: import('fs').Stats
-    try {
-      stat = fs.lstatSync(intentPath)
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined
-      throw error
-    }
-    if (
-      stat.isSymbolicLink() ||
-      !stat.isFile() ||
-      stat.nlink !== 1 ||
-      stat.uid !== process.getuid?.() ||
-      (stat.mode & 0o777) !== 0o600
-    ) {
-      throw new Error(
-        'Wallet creation intent must be an owner-only regular file'
-      )
-    }
-    return parseCreationIntent(fs.readFileSync(intentPath, 'utf8'))
+    const encoded = readPrivateNodeCreationFile(
+      intentPath,
+      'Wallet creation intent'
+    )
+    return encoded === undefined ? undefined : parseCreationIntent(encoded)
   }
 
   const indexedDb = (globalThis as any).indexedDB
@@ -463,6 +449,28 @@ function seedFingerprint(
       .address.toLowerCase(),
   })
   return keccak256(toUtf8Bytes(intent))
+}
+
+function authenticateGeneratedCreationIntent(
+  encoded: string
+): WalletCreationIntent {
+  const intent = parseCreationIntent(encoded)
+  if (intent.kind !== 'generated' || intent.persistedSeed === undefined) {
+    throw new Error('Abandoned wallet creation intent has the wrong mode')
+  }
+  const seed = parseSeed(JSON.stringify(intent.persistedSeed))
+  const subKeyring = MonadHdKeyring.fromMnemonic(
+    seed.mnemonic,
+    seed.passphrase
+  )
+  const changeKeyring = MonadChangeKeyring.fromMnemonic(
+    seed.mnemonic,
+    seed.passphrase
+  )
+  if (seedFingerprint(subKeyring, changeKeyring) !== intent.seedFingerprint) {
+    throw new Error('Abandoned wallet creation intent failed authentication')
+  }
+  return intent
 }
 
 function newBindingId(): string {
@@ -1570,41 +1578,66 @@ export async function openMonadWalletBundle(
         'Cannot restore a Monad wallet from a missing Node root; restore the state backup or explicitly create a new wallet'
       )
     }
-    const creationSeed: PersistedSeed =
-      runtimeParams.seed === undefined
-        ? {
-            version: 1,
-            mnemonic: MonadHdKeyring.generate().mnemonic,
-            passphrase: '',
-          }
-        : {
-            version: 1,
-            mnemonic: runtimeParams.seed.mnemonic,
-            passphrase: runtimeParams.seed.passphrase ?? '',
-          }
-    const creationSubKeyring = MonadHdKeyring.fromMnemonic(
-      creationSeed.mnemonic,
-      creationSeed.passphrase
-    )
-    const creationChangeKeyring = MonadChangeKeyring.fromMnemonic(
-      creationSeed.mnemonic,
-      creationSeed.passphrase
-    )
-    const creationIntent: WalletCreationIntent = {
-      version: 1,
-      kind: runtimeParams.seed === undefined ? 'generated' : 'caller-supplied',
-      bindingId: newBindingId(),
-      seedFingerprint: seedFingerprint(
-        creationSubKeyring,
-        creationChangeKeyring
-      ),
-      ...(runtimeParams.seed === undefined
-        ? { persistedSeed: creationSeed }
-        : {}),
+    const callerIntent = (): string => {
+      if (runtimeParams.seed === undefined) {
+        throw new Error('Caller seed is unavailable')
+      }
+      const creationSeed: PersistedSeed = {
+        version: 1,
+        mnemonic: runtimeParams.seed.mnemonic,
+        passphrase: runtimeParams.seed.passphrase ?? '',
+      }
+      const creationSubKeyring = MonadHdKeyring.fromMnemonic(
+        creationSeed.mnemonic,
+        creationSeed.passphrase
+      )
+      const creationChangeKeyring = MonadChangeKeyring.fromMnemonic(
+        creationSeed.mnemonic,
+        creationSeed.passphrase
+      )
+      return JSON.stringify({
+        version: 1,
+        kind: 'caller-supplied',
+        bindingId: newBindingId(),
+        seedFingerprint: seedFingerprint(
+          creationSubKeyring,
+          creationChangeKeyring
+        ),
+      } satisfies WalletCreationIntent)
+    }
+    const generatedIntentSource = {
+      create: (): string => {
+        const creationSeed: PersistedSeed = {
+          version: 1,
+          mnemonic: MonadHdKeyring.generate().mnemonic,
+          passphrase: '',
+        }
+        const creationSubKeyring = MonadHdKeyring.fromMnemonic(
+          creationSeed.mnemonic,
+          creationSeed.passphrase
+        )
+        const creationChangeKeyring = MonadChangeKeyring.fromMnemonic(
+          creationSeed.mnemonic,
+          creationSeed.passphrase
+        )
+        return JSON.stringify({
+          version: 1,
+          kind: 'generated',
+          bindingId: newBindingId(),
+          seedFingerprint: seedFingerprint(
+            creationSubKeyring,
+            creationChangeKeyring
+          ),
+          persistedSeed: creationSeed,
+        } satisfies WalletCreationIntent)
+      },
+      validateRetained: (encoded: string): void => {
+        authenticateGeneratedCreationIntent(encoded)
+      },
     }
     await publishNodeWalletRootWithIntent(
       params.location,
-      JSON.stringify(creationIntent),
+      runtimeParams.seed === undefined ? generatedIntentSource : callerIntent(),
       params.onNodeCreationPublishPhase
     )
     nodeCreationPublished = true

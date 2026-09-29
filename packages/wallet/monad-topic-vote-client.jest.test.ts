@@ -9,7 +9,10 @@
  * `monad-account-tx.jest.test.ts` use), so the signed raw tx and its calldata are real, decodable
  * bytes, not placeholders.
  */
-import { JsonRpcProvider, Transaction, getBytes } from 'ethers'
+import { mkdtempSync, rmSync } from 'fs'
+import { tmpdir } from 'os'
+import { join } from 'path'
+import { JsonRpcProvider, Transaction, Wallet, getBytes } from 'ethers'
 import axios from 'axios'
 
 import { MonadHdKeyring } from './monad-hd-keyring'
@@ -28,6 +31,7 @@ import {
   decodeStoredMonadTopicVoteEntry,
   encodeMonadTopicVote,
 } from './monad-topic-vote-client'
+import { openMonadWalletBundle } from './storage/monad-wallet-bundle'
 
 jest.mock('axios')
 const mockedAxios = axios as jest.Mocked<typeof axios>
@@ -111,6 +115,46 @@ function makeClient(overrides?: { pool?: MonadSubAccountPool }) {
     relayBaseUrl: 'https://relay.example.com/',
   })
   return { client, pool, leaseManager, provider, httpClient }
+}
+
+async function fundPersistentPool(pool: MonadSubAccountPool): Promise<void> {
+  const fundingWallet = new Wallet(`0x${'66'.repeat(32)}`)
+  const signer = {
+    address: fundingWallet.address,
+    buildAndSignTransfer: async (to: string, value: bigint) => {
+      const rawTx = await fundingWallet.signTransaction({
+        to,
+        value,
+        nonce: 0,
+        gasLimit: 21_000n,
+        gasPrice: 1n,
+        chainId: CHAIN_ID,
+      })
+      const parsed = Transaction.from(rawTx)
+      return {
+        rawTx,
+        txHash: parsed.hash as string,
+        from: fundingWallet.address,
+        to,
+        value,
+        data: '0x',
+        nonce: 0,
+        gasLimit: 21_000n,
+        maxFeePerGas: undefined,
+        maxPriorityFeePerGas: undefined,
+        gasPrice: 1n,
+        chainId: BigInt(CHAIN_ID),
+      }
+    },
+    submit: async (signed: { txHash: string }) => signed.txHash,
+    getStatus: async () => 'confirmed' as const,
+  }
+  await pool.topUpPool({
+    mainAccountSigner: signer as never,
+    burnValue: 100_000n,
+    gasReserve: 0n,
+    bufferSize: 1,
+  })
 }
 
 describe('calldata construction', () => {
@@ -203,6 +247,83 @@ describe('MonadTopicVoteClient.castVote', () => {
     mockedAxios.isAxiosError.mockImplementation(
       (e: unknown) => (e as { isAxiosError?: boolean })?.isAxiosError === true,
     )
+  })
+
+  it('persists exact confirmed spend authority across a real bundle reopen', async () => {
+    const parent = mkdtempSync(join(tmpdir(), 'monad-topic-vote-durable-'))
+    const location = join(parent, 'wallet')
+    try {
+      const bundle = await openMonadWalletBundle({
+        location,
+        seed: { mnemonic: TEST_MNEMONIC },
+        mode: 'create',
+      })
+      await fundPersistentPool(bundle.pool)
+      const row = bundle.pool.getRecord(0)
+      if (row === undefined) throw new Error('missing funded topic row')
+      const client = new MonadTopicVoteClient({
+        pool: bundle.pool,
+        leaseManager: bundle.leaseManager,
+        provider: makeChainProvider(),
+        httpClient: makeMockHttpClient(),
+        relayBaseUrl: 'https://relay.example.com/',
+      })
+      let exactRawTx = ''
+      ;(mockedAxios as unknown as jest.Mock).mockImplementationOnce(
+        async (config: any) => {
+          const sent = decodeMonadTopicVote(
+            new Uint8Array(config.data as Buffer),
+          )
+          exactRawTx = hexOf(sent.rawBurnTx)
+          expect(
+            bundle.pool.getRecord(row.index)?.lifecycle?.spend?.rawTx
+          ).toBe(exactRawTx)
+          const stored: StoredMonadTopicVoteEntryProto = {
+            targetPayloadHash: sent.targetPayloadHash,
+            senderAddress: getBytes('0x' + '11'.repeat(20)),
+            txHash: getBytes('0x' + '22'.repeat(32)),
+            timestamp: 1_700_000_000_000,
+            weight: 10_000,
+          }
+          return {
+            data: storedVoteEntryBytes(stored),
+            status: 200,
+            statusText: 'OK',
+            headers: {},
+            config,
+          }
+        }
+      )
+
+      const result = await client.castVote({
+        targetPayloadHash: TARGET_PAYLOAD_HASH,
+        direction: 'up',
+        burnAddress: BURN_ADDRESS,
+        voteWeightWei: 10_000n,
+        overrides: FEE_OVERRIDES,
+      })
+      const expectedHash = Transaction.from(exactRawTx).hash
+      expect(result.txHash).toBe(expectedHash)
+      await bundle.close()
+
+      const reopened = await openMonadWalletBundle({
+        location,
+        seed: { mnemonic: TEST_MNEMONIC },
+      })
+      expect(reopened.pool.getRecord(row.index)).toMatchObject({
+        status: 'spent',
+        lifecycle: {
+          spend: {
+            rawTx: exactRawTx,
+            txHash: expectedHash,
+            valueWei: '10000',
+          },
+        },
+      })
+      await reopened.close()
+    } finally {
+      rmSync(parent, { recursive: true, force: true })
+    }
   })
 
   it('signs the exact vote weight as the tx value -- not merely a minimum', async () => {

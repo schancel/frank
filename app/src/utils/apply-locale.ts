@@ -14,11 +14,11 @@ export interface QuasarLangTarget {
   lang: { set: (pack: unknown) => void }
 }
 
-export async function applyLocale(params: {
+export function applyLocale(params: {
   $q: QuasarLangTarget
   setI18nLocale: (locale: string) => void
   locale: string
-}): Promise<void> {
+}): void {
   params.setI18nLocale(params.locale)
   params.$q.lang.set(quasarLangPackForLocale(params.locale))
 }

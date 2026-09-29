@@ -14,17 +14,13 @@ const store: { chats: Record<string, { messages: any[] }> } = reactive({
 }) as any
 
 jest.mock('../../../stores/chats', () => ({ useChatStore: () => store }))
+// A fresh provider per test: successful verifications are cached per provider object.
+let mockProvider: {
+  getTransaction: jest.Mock
+  getTransactionReceipt: jest.Mock
+}
 jest.mock('../../../utils/clients', () => ({
-  useMonadWallet: () => ({
-    provider: {
-      getTransaction: jest.fn(async () => ({
-        from: '0xPlayer',
-        to: '0xDealer',
-        value: 100n,
-      })),
-      getTransactionReceipt: jest.fn(async () => ({ status: 1 })),
-    },
-  }),
+  useMonadWallet: () => ({ provider: mockProvider }),
 }))
 jest.mock('../../../composables/useActiveWallet', () => ({
   useActiveWallet: jest.fn(),
@@ -118,6 +114,18 @@ async function mountItem(messages: any[], index: number) {
 const buttons = (w: any) => w.findAll('button').map((b: any) => b.text())
 
 describe('ChatMessageBlackjack double lockout', () => {
+  beforeEach(() => {
+    mockProvider = {
+      getTransaction: jest.fn(async () => ({
+        from: '0xPlayer',
+        to: '0xDealer',
+        value: 100n,
+      })),
+      getTransactionReceipt: jest.fn(async () => ({ status: 1 })),
+    }
+    for (const k of Object.keys(store.chats)) delete store.chats[k]
+  })
+
   it('shows hit/stand and the dealer error on the double item once the error for this game arrives', async () => {
     const w = await mountItem([bet(), deal(), dbl(), err('g1')], 2)
     expect(buttons(w)).toEqual(['Hit', 'Stand'])
@@ -176,6 +184,8 @@ describe('ChatMessageBlackjack double lockout', () => {
   it('a card followed by a stale error does not unlock', async () => {
     const w = await mountItem([bet(), deal(), dbl(), card(), err('g1')], 3)
     expect(buttons(w)).toEqual([])
+    expect(w.find('[role="status"]').text()).toBe('')
+    expect(w.text()).not.toContain('already been doubled')
   })
 
   it('reload: a fresh mount over the same history shows the unlocked hand', async () => {
@@ -195,5 +205,39 @@ describe('ChatMessageBlackjack double lockout', () => {
       'Stand',
       expect.stringMatching(/^Double down/),
     ])
+  })
+
+  it('a stale load resolving after a newer one does not overwrite it', async () => {
+    let releaseStale!: () => void
+    const gate = new Promise<void>(r => (releaseStale = r))
+    mockProvider.getTransaction = jest
+      .fn()
+      .mockImplementationOnce(async () => {
+        await gate
+        return { from: '0xPlayer', to: '0xDealer', value: 100n }
+      })
+      .mockImplementation(async () => ({
+        from: '0xPlayer',
+        to: '0xDealer',
+        value: 500n,
+      }))
+    store.chats[DEALER] = { messages: [bet(), deal()] }
+    const item = (store.chats[DEALER].messages[1] as any).items[0]
+    const w = mount(ChatMessageBlackjack, {
+      props: { item, address: DEALER },
+      global: {
+        components: quasarStubs,
+        directives: { ripple: {} },
+        mocks: { $q: {} },
+      },
+    })
+    await flushPromises() // load 1 is parked on the gate
+    store.chats[DEALER].messages.push(msg(false, { type: 'text', text: 'hi' }))
+    await flushPromises() // load 2 completes with the fresh 500n value
+    expect(buttons(w)[2]).toContain('5e-16')
+    releaseStale()
+    await flushPromises() // stale load 1 finishes last
+    expect(buttons(w)[2]).toContain('5e-16')
+    expect(buttons(w)[2]).not.toContain('1e-16')
   })
 })

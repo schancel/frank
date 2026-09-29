@@ -296,7 +296,10 @@ export default defineComponent({
         this.isLatest = lastRaw === this.item
         this.dealerError = dealerError
       } catch (err) {
-        errorNotify(err instanceof Error ? err : new Error(String(err)))
+        // A superseded load's failure is irrelevant: the newer load owns the display.
+        if (seq === this.loadSeq) {
+          errorNotify(err instanceof Error ? err : new Error(String(err)))
+        }
       } finally {
         if (seq === this.loadSeq) this.loading = false
       }

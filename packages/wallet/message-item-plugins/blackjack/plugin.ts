@@ -23,7 +23,41 @@ import { registerMessageItemPlugin } from '../index'
  * doesn't exist, isn't confirmed yet, or the lookup itself fails (treated the same as "not
  * verified yet," never as "verified for zero" -- a caller must not treat a lookup failure as proof
  * the wager doesn't exist). */
+/** Successful verifications only, per provider, keyed by lowercase tx hash, oldest evicted past
+ * the bound. A confirmed receipt with status 1 is treated as final for display and for the bot's
+ * checks; a deep reorg that drops it after the fact is not handled (same limit the uncached
+ * lookup had between two checks). Failures/unverified results are never cached, so a transient
+ * RPC error cannot stick, and a cached success is never lost to a later transient failure. */
+const VERIFIED_CACHE_MAX = 256
+const verifiedCaches = new WeakMap<
+  Provider,
+  Map<string, NonNullable<HydratedBlackjackMove['verifiedWager']>>
+>()
+
 async function verifyWagerTransaction(
+  provider: Provider,
+  wagerTxHash: string,
+): Promise<HydratedBlackjackMove['verifiedWager']> {
+  let cache = verifiedCaches.get(provider)
+  if (!cache) {
+    cache = new Map()
+    verifiedCaches.set(provider, cache)
+  }
+  const key = wagerTxHash.toLowerCase()
+  const cached = cache.get(key)
+  if (cached) return cached
+  const result = await lookupWagerTransaction(provider, wagerTxHash)
+  if (result) {
+    // Never overwrite an entry a concurrent lookup already stored.
+    if (!cache.has(key)) cache.set(key, result)
+    if (cache.size > VERIFIED_CACHE_MAX) {
+      cache.delete(cache.keys().next().value as string)
+    }
+  }
+  return result
+}
+
+async function lookupWagerTransaction(
   provider: Provider,
   wagerTxHash: string,
 ): Promise<HydratedBlackjackMove['verifiedWager']> {

@@ -811,6 +811,28 @@ impl Registry {
         )
     }
 
+    /// Complete an owned replay whose send the node definitively rejected.
+    pub(crate) fn complete_rejected_monad_outbox_member(
+        &self,
+        payload_hash: &[u8],
+        child_index: u32,
+        lease: crate::store::monad_outbox::MonadOutboxLease,
+        was_exposed: bool,
+        detail: &str,
+        now_ms: i64,
+        limits: &crate::store::monad_outbox::MonadOutboxLimits,
+    ) -> Result<crate::store::monad_outbox::MonadOutboxTransition> {
+        self.db.monad_outbox().complete_rejected_member(
+            payload_hash,
+            child_index,
+            lease,
+            was_exposed,
+            detail,
+            now_ms,
+            limits,
+        )
+    }
+
     /// Persist exact transaction-body visibility without a receipt as possible exposure.
     pub(crate) fn complete_submitted_monad_outbox_member(
         &self,

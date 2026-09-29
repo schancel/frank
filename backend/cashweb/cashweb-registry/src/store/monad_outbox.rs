@@ -451,6 +451,17 @@ pub struct MonadOutboxMember {
     pub last_error: String,
 }
 
+/// How a pending-member completion changes the durable exposure flag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExposureUpdate {
+    /// Leave the flag as it is (ambiguous lookups, nothing learned about acceptance).
+    Keep,
+    /// The node accepted or shows the exact transaction.
+    Set,
+    /// The node definitively rejected this attempt's send and it was not exposed before.
+    ClearRejected,
+}
+
 /// Result of atomically claiming a canonical request and all child references.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MonadOutboxClaim {
@@ -2187,12 +2198,14 @@ impl<'a> DbMonadOutbox<'a> {
             self.gc_history(now_ms, limits)?;
             return Ok(MonadOutboxReplayStart::Terminal(terminal));
         }
-        // Charging the attempt is durable before the send so a crash cannot grant free replays,
-        // but the attempt is NOT recipient-recoverable exposure: `exposed` is set only after the
-        // node accepts the transaction or an exact-hash lookup shows it (see
-        // `complete_submitted_member`). A rejected or unreachable send therefore never creates a
-        // recovery obligation, so unfunded signed payments cannot pin recovery quota.
+        // The attempt is charged durably before the send so a crash cannot grant free replays.
+        // The same batch marks the member as possibly exposed (and writes the recipient index):
+        // once the send starts, a timeout, transport error, lost response, crash or cancellation
+        // leaves it unknown whether the node accepted the transaction, and a later mine must stay
+        // recoverable. Only a DEFINITIVE node rejection clears the marker again
+        // (`complete_rejected_member`), so unfunded payments still never pin recovery quota.
         member.attempts += 1;
+        member.exposed = true;
         member.updated_at_ms = now_ms;
         member.last_error.clear();
         let mut batch = rocksdb::WriteBatch::default();
@@ -2201,6 +2214,13 @@ impl<'a> DbMonadOutbox<'a> {
             member_key(&payload_hash, child_index),
             encode_member(&member),
         );
+        if child_index == 0 {
+            batch.put_cf(
+                self.cf_recipient,
+                recipient_key(&active_policy(&record)?.recipient, &payload_hash),
+                [],
+            );
+        }
         self.db.write_batch(batch)?;
         Ok(MonadOutboxReplayStart::Started(member))
     }
@@ -2361,7 +2381,35 @@ impl<'a> DbMonadOutbox<'a> {
             detail,
             now_ms,
             limits,
-            false,
+            ExposureUpdate::Keep,
+        )
+    }
+
+    /// Complete a replay whose send the node DEFINITIVELY rejected (it states it did not accept
+    /// the transaction). Clears the in-flight exposure marker set by `begin_replay_attempt`
+    /// unless the member was already exposed before this attempt (`was_exposed`).
+    pub(crate) fn complete_rejected_member(
+        &self,
+        payload_hash: &[u8],
+        child_index: u32,
+        lease: MonadOutboxLease,
+        was_exposed: bool,
+        detail: &str,
+        now_ms: i64,
+        limits: &MonadOutboxLimits,
+    ) -> Result<MonadOutboxTransition> {
+        self.complete_pending_member_inner(
+            payload_hash,
+            child_index,
+            lease,
+            detail,
+            now_ms,
+            limits,
+            if was_exposed {
+                ExposureUpdate::Keep
+            } else {
+                ExposureUpdate::ClearRejected
+            },
         )
     }
 
@@ -2383,7 +2431,7 @@ impl<'a> DbMonadOutbox<'a> {
             detail,
             now_ms,
             limits,
-            true,
+            ExposureUpdate::Set,
         )
     }
 
@@ -2395,7 +2443,7 @@ impl<'a> DbMonadOutbox<'a> {
         detail: &str,
         now_ms: i64,
         limits: &MonadOutboxLimits,
-        exposed: bool,
+        exposure: ExposureUpdate,
     ) -> Result<MonadOutboxTransition> {
         validate_limits(limits)?;
         let payload_hash = checked_payload_hash(payload_hash)?;
@@ -2415,15 +2463,15 @@ impl<'a> DbMonadOutbox<'a> {
             return Ok(MonadOutboxTransition::Stale);
         }
         let detail = bounded_text(detail, limits.max_last_error_bytes);
-        member.exposed |= exposed;
+        match exposure {
+            ExposureUpdate::Keep => {}
+            ExposureUpdate::Set => member.exposed = true,
+            ExposureUpdate::ClearRejected => member.exposed = false,
+        }
         // The exact lookup already ran without confirming this child, so claim age may be applied
         // here too. Otherwise a member that stays visible-but-unmined or behind an ambiguous RPC
         // never reaches `begin_replay_attempt` and would remain Pending forever.
         if now_ms > claim_expiry_ms(&record, child_index > 0, limits) {
-            // The lookup was ambiguous, so a send that was attempted earlier may have reached
-            // the chain: keep it recoverable (bounded by the unconfirmed-recovery TTL) rather
-            // than releasing evidence we could not disprove.
-            member.exposed |= member.attempts > 0;
             let mut record = record;
             self.write_terminal_locked(
                 &payload_hash,
@@ -2452,12 +2500,13 @@ impl<'a> DbMonadOutbox<'a> {
             member_key(&payload_hash, child_index),
             encode_member(&member),
         );
-        if child_index == 0 && member.exposed {
-            batch.put_cf(
-                self.cf_recipient,
-                recipient_key(&active_policy(&record)?.recipient, &payload_hash),
-                [],
-            );
+        if child_index == 0 {
+            let key = recipient_key(&active_policy(&record)?.recipient, &payload_hash);
+            if member.exposed {
+                batch.put_cf(self.cf_recipient, key, []);
+            } else {
+                batch.delete_cf(self.cf_recipient, key);
+            }
         }
         self.db.write_batch(batch)?;
         Ok(MonadOutboxTransition::Applied)
@@ -7569,13 +7618,14 @@ mod tests {
         let lease = lease_at(&store, &unfunded.payload_hash, 0, 2, &limits);
         assert!(matches!(
             store.begin_replay_attempt(&unfunded.payload_hash, 0, lease, 3, &limits)?,
-            MonadOutboxReplayStart::Started(member) if !member.exposed && member.attempts == 1
+            MonadOutboxReplayStart::Started(member) if member.exposed && member.attempts == 1
         ));
-        // The send is rejected (unfunded): nothing durable claims the bytes were exposed.
-        store.complete_pending_member(
+        // The send is definitively rejected (unfunded): the in-flight marker is cleared again.
+        store.complete_rejected_member(
             &unfunded.payload_hash,
             0,
             lease,
+            false,
             "insufficient funds",
             4,
             &limits,
@@ -7655,7 +7705,7 @@ mod tests {
     }
 
     #[test]
-    fn exposure_is_recorded_only_by_submitted_completion() -> Result<()> {
+    fn exposure_is_in_flight_marked_and_cleared_only_by_definitive_rejection() -> Result<()> {
         let tempdir = tempdir::TempDir::new("monad-outbox-exposure-flag")?;
         let db = Db::open(tempdir.path().join("db.rocksdb"))?;
         let store = db.monad_outbox();
@@ -7666,9 +7716,27 @@ mod tests {
         store.claim(&request.payload_hash, &request, &policy(), 1, &limits)?;
         let lease = lease_at(&store, &request.payload_hash, 0, 2, &limits);
         store.begin_replay_attempt(&request.payload_hash, 0, lease, 3, &limits)?;
+        // In flight: acceptance is unknown, so exposure is already recorded.
+        assert!(store.get_member(&request.payload_hash, 0)?.unwrap().exposed);
+        // An ambiguous completion (no definitive rejection) keeps it.
+        store.complete_pending_member(&request.payload_hash, 0, lease, "lost", 4, &limits)?;
+        assert!(store.get_member(&request.payload_hash, 0)?.unwrap().exposed);
+        // A definitive rejection clears it - unless it was exposed before this attempt.
+        let lease = lease_at(&store, &request.payload_hash, 0, 4, &limits);
+        store.complete_rejected_member(&request.payload_hash, 0, lease, true, "x", 4, &limits)?;
+        assert!(store.get_member(&request.payload_hash, 0)?.unwrap().exposed);
+        store.complete_rejected_member(&request.payload_hash, 0, lease, false, "x", 4, &limits)?;
         assert!(!store.get_member(&request.payload_hash, 0)?.unwrap().exposed);
-        store.complete_pending_member(&request.payload_hash, 0, lease, "rejected", 4, &limits)?;
-        assert!(!store.get_member(&request.payload_hash, 0)?.unwrap().exposed);
+        assert!(store
+            .db
+            .get(
+                store.cf_recipient,
+                recipient_key(
+                    &policy().recipient,
+                    &checked_payload_hash(&request.payload_hash)?
+                )
+            )?
+            .is_none());
         let lease = lease_at(&store, &request.payload_hash, 0, 5, &limits);
         store.complete_submitted_member(&request.payload_hash, 0, lease, "accepted", 6, &limits)?;
         let member = store.get_member(&request.payload_hash, 0)?.unwrap();
@@ -7689,6 +7757,48 @@ mod tests {
                 )
             )?
             .is_some());
+        Ok(())
+    }
+
+    /// An attempt whose outcome is unknown (crash, timeout, cancellation: no completion ever
+    /// runs) must stay recoverable when the claim later expires or exhausts, because the node may
+    /// have accepted the transaction and it can still be mined.
+    #[test]
+    fn unresolved_send_attempt_is_retained_at_expiry_and_exhaustion() -> Result<()> {
+        for exhaust in [false, true] {
+            let tempdir = tempdir::TempDir::new("monad-outbox-ambiguous-send")?;
+            let db = Db::open(tempdir.path().join("db.rocksdb"))?;
+            let store = db.monad_outbox();
+            let mut limits = one_slot_limits();
+            limits.max_unconfirmed_claim_age = if exhaust {
+                Duration::from_secs(1_000_000)
+            } else {
+                Duration::from_millis(1_000)
+            };
+            limits.max_member_attempts = if exhaust { 1 } else { 32 };
+            let request = message_with_seed(&[exhaust as u8], &[b"raw"]);
+            store.claim(&request.payload_hash, &request, &policy(), 1, &limits)?;
+            let lease = lease_at(&store, &request.payload_hash, 0, 2, &limits);
+            store.begin_replay_attempt(&request.payload_hash, 0, lease, 3, &limits)?;
+            // No completion: the process died (or the future was dropped) mid-send.
+            let lease = lease_at(&store, &request.payload_hash, 0, 200_000, &limits);
+            let expected = if exhaust {
+                MonadOutboxTerminal::AttemptsExhausted
+            } else {
+                MonadOutboxTerminal::Expired
+            };
+            assert_eq!(
+                store.begin_replay_attempt(&request.payload_hash, 0, lease, 200_001, &limits)?,
+                MonadOutboxReplayStart::Terminal(expected)
+            );
+            assert_eq!(
+                store
+                    .confirmed_prefixes_for_recipient(&policy().recipient, 10)?
+                    .len(),
+                1,
+                "exhaust={exhaust}: an unresolved send stays recoverable"
+            );
+        }
         Ok(())
     }
 

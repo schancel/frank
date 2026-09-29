@@ -25,7 +25,10 @@ use tracing_subscriber::fmt;
 
 #[derive(Error, Debug)]
 pub enum CashwebdExeError {
-    #[error("No configuration file provided. Specify like this: cargo run -- <config path>")]
+    #[error(
+        "No configuration provided. Specify a path, or '-' to read configuration from stdin: \
+         cargo run -- <config path|->"
+    )]
     NoConfigFile,
 
     #[error("Opening configuration file {0} failed")]
@@ -40,6 +43,21 @@ pub enum CashwebdExeError {
 
 use self::CashwebdExeError::*;
 
+fn read_conf_contents(conf_path: &str, stdin: &mut impl Read) -> Result<String> {
+    let mut conf_contents = String::new();
+    if conf_path == "-" {
+        stdin
+            .read_to_string(&mut conf_contents)
+            .wrap_err("Failed to read configuration from stdin")?;
+    } else {
+        let mut file = std::fs::File::open(conf_path)
+            .wrap_err_with(|| OpenConfigFail(conf_path.to_owned()))?;
+        file.read_to_string(&mut conf_contents)
+            .wrap_err_with(|| ReadConfigFail(conf_path.to_owned()))?;
+    }
+    Ok(conf_contents)
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let format = fmt::format()
@@ -51,11 +69,7 @@ async fn main() -> Result<()> {
     bitcoinsuite_error::install()?;
 
     let conf_path = std::env::args().nth(1).ok_or(NoConfigFile)?;
-    let mut file =
-        std::fs::File::open(&conf_path).wrap_err_with(|| OpenConfigFail(conf_path.clone()))?;
-    let mut conf_contents = String::new();
-    file.read_to_string(&mut conf_contents)
-        .wrap_err_with(|| ReadConfigFail(conf_path.clone()))?;
+    let conf_contents = read_conf_contents(&conf_path, &mut std::io::stdin().lock())?;
     let conf = parse_conf(&conf_contents).wrap_err_with(|| InvalidConfigFail(conf_path.clone()))?;
     // Validate the mailbox lifecycle before opening the database or binding a socket. The same
     // typed mode is the serialized seam the HTTP owner will use to omit admission when disabled.
@@ -193,4 +207,34 @@ async fn main() -> Result<()> {
     server_result?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::{Cursor, Error, ErrorKind, Read};
+
+    use super::read_conf_contents;
+
+    #[test]
+    fn reads_configuration_from_stdin_for_dash_path() {
+        let mut stdin = Cursor::new(b"host = \"127.0.0.1:8098\"\n");
+        let contents = read_conf_contents("-", &mut stdin).expect("stdin config should be read");
+        assert_eq!(contents, "host = \"127.0.0.1:8098\"\n");
+    }
+
+    #[test]
+    fn reports_stdin_read_failure_without_falling_back_to_a_named_file() {
+        struct FailingReader;
+        impl Read for FailingReader {
+            fn read(&mut self, _buffer: &mut [u8]) -> std::io::Result<usize> {
+                Err(Error::new(ErrorKind::Other, "sentinel stdin failure"))
+            }
+        }
+
+        let error = read_conf_contents("-", &mut FailingReader)
+            .expect_err("stdin failure must stop configuration loading");
+        assert!(error
+            .to_string()
+            .contains("Failed to read configuration from stdin"));
+    }
 }

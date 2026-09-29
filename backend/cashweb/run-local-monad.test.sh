@@ -1,0 +1,115 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+repo_root="$(cd -- "$script_dir/../.." && pwd -P)"
+fixture_root="$(mktemp -d "${TMPDIR:-/tmp}/frank-run-local-monad-test.XXXXXX")"
+
+cleanup() {
+    find "$fixture_root" -depth -delete
+}
+trap cleanup EXIT HUP INT TERM
+
+mkdir -p \
+    "$fixture_root/.agents/scripts" \
+    "$fixture_root/backend/cashweb" \
+    "$fixture_root/bin" \
+    "$fixture_root/tmp"
+cp "$script_dir/run-local-monad.sh" "$fixture_root/backend/cashweb/"
+cp "$script_dir/cashwebd.local.toml" "$fixture_root/backend/cashweb/"
+
+cat >"$fixture_root/.agents/scripts/with-cargo-slot" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+exec "$@"
+EOF
+
+cat >"$fixture_root/bin/fake-cargo" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$@" >"$FRANK_LAUNCHER_ARGS"
+cat >"$FRANK_LAUNCHER_CONFIG"
+if [[ "${FRANK_LAUNCHER_MODE:-}" == "block" ]]; then
+    trap 'exit 143' TERM
+    while :; do
+        sleep 1
+    done
+fi
+EOF
+chmod +x \
+    "$fixture_root/.agents/scripts/with-cargo-slot" \
+    "$fixture_root/backend/cashweb/run-local-monad.sh" \
+    "$fixture_root/bin/fake-cargo"
+
+launcher="$fixture_root/backend/cashweb/run-local-monad.sh"
+args_file="$fixture_root/args"
+config_file="$fixture_root/config"
+dummy_rpc_url="https://rpc.invalid.example/v2/test-only"
+
+if env -u MONAD_TESTNET_HTTP_RPC_URL \
+    CARGO="$fixture_root/bin/fake-cargo" \
+    "$launcher" >"$fixture_root/missing.out" 2>"$fixture_root/missing.err"; then
+    echo "missing RPC URL unexpectedly succeeded" >&2
+    exit 1
+else
+    status=$?
+    [[ "$status" -eq 64 ]]
+fi
+
+if MONAD_TESTNET_HTTP_RPC_URL="file:///not-an-rpc" \
+    CARGO="$fixture_root/bin/fake-cargo" \
+    "$launcher" >"$fixture_root/invalid.out" 2>"$fixture_root/invalid.err"; then
+    echo "invalid RPC URL unexpectedly succeeded" >&2
+    exit 1
+else
+    status=$?
+    [[ "$status" -eq 64 ]]
+fi
+
+(
+    cd /
+    TMPDIR="$fixture_root/tmp" \
+        MONAD_TESTNET_HTTP_RPC_URL="$dummy_rpc_url" \
+        CARGO="$fixture_root/bin/fake-cargo" \
+        FRANK_LAUNCHER_ARGS="$args_file" \
+        FRANK_LAUNCHER_CONFIG="$config_file" \
+        "$launcher"
+)
+
+diff -u <(printf '%s\n' run -p cashwebd-exe -- -) "$args_file"
+[[ "$(grep -c '^\[registry\.monad_mailbox\]$' "$config_file")" -eq 1 ]]
+[[ "$(grep -c '^enabled = true$' "$config_file")" -eq 1 ]]
+[[ "$(grep -Fxc "rpc_url = \"$dummy_rpc_url\"" "$config_file")" -eq 1 ]]
+[[ -z "$(find "$fixture_root/tmp" -type f -print -quit)" ]]
+
+cp "$repo_root/.env.example" "$fixture_root/.env"
+printf '\nCARGO=%q\nFRANK_LAUNCHER_ARGS=%q\nFRANK_LAUNCHER_CONFIG=%q\n' \
+    "$fixture_root/bin/fake-cargo" "$args_file" "$config_file" >>"$fixture_root/.env"
+env -u MONAD_TESTNET_HTTP_RPC_URL "$launcher"
+grep -Fq 'rpc_url = "https://monad-testnet.g.alchemy.com/v2/<your-alchemy-key>"' "$config_file"
+
+rm -f -- "$config_file"
+TMPDIR="$fixture_root/tmp" \
+    MONAD_TESTNET_HTTP_RPC_URL="$dummy_rpc_url" \
+    CARGO="$fixture_root/bin/fake-cargo" \
+    FRANK_LAUNCHER_ARGS="$args_file" \
+    FRANK_LAUNCHER_CONFIG="$config_file" \
+    FRANK_LAUNCHER_MODE=block \
+    "$launcher" &
+launcher_pid=$!
+for _ in {1..100}; do
+    [[ -s "$config_file" ]] && break
+    sleep 0.01
+done
+[[ -s "$config_file" ]]
+kill -TERM "$launcher_pid"
+if wait "$launcher_pid"; then
+    echo "TERM unexpectedly produced a successful launcher exit" >&2
+    exit 1
+else
+    status=$?
+    [[ "$status" -eq 143 ]]
+fi
+[[ -z "$(find "$fixture_root/tmp" -type f -print -quit)" ]]
+
+echo "run-local-monad tests passed"

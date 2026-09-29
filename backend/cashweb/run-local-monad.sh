@@ -34,15 +34,29 @@ case "$rpc_url" in
         ;;
 esac
 
-umask 077
-runtime_config="$(mktemp "${TMPDIR:-/tmp}/frank-cashwebd-monad.XXXXXX")"
-chmod 0600 "$runtime_config"
-cleanup() {
-    rm -f -- "$runtime_config"
-}
-trap cleanup EXIT HUP INT TERM
+if ! awk '
+    /^\[registry\.monad_mailbox\]$/ {
+        sections += 1
+        in_monad_mailbox = 1
+        next
+    }
+    in_monad_mailbox && /^\[/ { in_monad_mailbox = 0 }
+    in_monad_mailbox && /^enabled[[:space:]]*=[[:space:]]*false[[:space:]]*$/ {
+        disabled += 1
+    }
+    END { exit !(sections == 1 && disabled == 1) }
+' "$base_config"; then
+    echo "run-local-monad: expected exactly one explicitly disabled Monad mailbox in $base_config" >&2
+    exit 70
+fi
 
-MONAD_TESTNET_HTTP_RPC_URL="$rpc_url" awk '
+# Process substitution feeds the generated configuration to the daemon through standard input.
+# The private RPC URL therefore never gains a filesystem directory entry, even if this launcher
+# or the server is killed without an opportunity to clean up. Redirecting the pipe onto fd 0 (as
+# opposed to passing its `/dev/fd/*` path) preserves it through the Cargo-slot and Cargo exec chain.
+cd -- "$script_dir"
+exec "$repo_root/.agents/scripts/with-cargo-slot" \
+    "$cargo_command" run -p cashwebd-exe -- - < <(MONAD_TESTNET_HTTP_RPC_URL="$rpc_url" awk '
     /^\[registry\.monad_mailbox\]$/ {
         in_monad_mailbox = 1
         print
@@ -55,17 +69,4 @@ MONAD_TESTNET_HTTP_RPC_URL="$rpc_url" awk '
         next
     }
     { print }
-' "$base_config" >"$runtime_config"
-
-if ! MONAD_TESTNET_HTTP_RPC_URL="$rpc_url" awk '
-    $0 == "enabled = true" { enabled += 1 }
-    $0 == "rpc_url = \"" ENVIRON["MONAD_TESTNET_HTTP_RPC_URL"] "\"" { rpc += 1 }
-    END { exit !(enabled == 1 && rpc == 1) }
-' "$runtime_config"; then
-    echo "run-local-monad: could not enable exactly one Monad mailbox in the runtime config" >&2
-    exit 70
-fi
-
-cd -- "$script_dir"
-"$repo_root/.agents/scripts/with-cargo-slot" \
-    "$cargo_command" run -p cashwebd-exe -- "$runtime_config"
+' "$base_config")

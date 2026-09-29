@@ -47,7 +47,10 @@ export const MAX_MONAD_ENVELOPE_PLAINTEXT_BYTES = Math.floor(
     MAX_ENVELOPE_JSON_OVERHEAD_BYTES) /
     2
 );
-const MAX_CIPHERTEXT_BYTES = MAX_MONAD_ENVELOPE_PLAINTEXT_BYTES;
+const MAX_V2_CIPHERTEXT_BYTES = MAX_MONAD_ENVELOPE_PLAINTEXT_BYTES;
+// V1 has no write path. Preserve its historical 1 MiB read ceiling so already-stored records do
+// not become unreadable when the stricter request-framing limit is applied to new v2 envelopes.
+const MAX_LEGACY_READ_CIPHERTEXT_BYTES = MAX_RELAY_BODY_BYTES / 2;
 const MAX_NETWORK_TAG_BYTES = 32;
 const HKDF_INFO = Buffer.from(
   "frank:monad-dm-envelope:v2:identity-ecdh:aes-256-gcm",
@@ -246,7 +249,7 @@ function isMonadMessageEnvelopeV2(
     isLowerHexBytes(value.nonce, { exactBytes: GCM_NONCE_BYTES }) &&
     isLowerHexBytes(value.ciphertext, {
       minBytes: 1,
-      maxBytes: MAX_CIPHERTEXT_BYTES,
+      maxBytes: MAX_V2_CIPHERTEXT_BYTES,
     }) &&
     isLowerHexBytes(value.tag, { exactBytes: GCM_TAG_BYTES })
   );
@@ -264,7 +267,7 @@ function isLegacyMonadMessageEnvelopeV1(
     isLowerHexBytes(value.salt, { exactBytes: 16 }) &&
     isLowerHexBytes(value.ciphertext, {
       minBytes: 16,
-      maxBytes: MAX_CIPHERTEXT_BYTES,
+      maxBytes: MAX_LEGACY_READ_CIPHERTEXT_BYTES,
     }) &&
     value.ciphertext.length % 32 === 0
   );
@@ -320,9 +323,9 @@ export function buildEnvelope(params: {
     throw new Error("Monad envelope networkTag must be 1..32 UTF-8 bytes");
   }
   const plaintext = Buffer.from(params.plaintext, "utf8");
-  if (plaintext.length === 0 || plaintext.length > MAX_CIPHERTEXT_BYTES) {
+  if (plaintext.length === 0 || plaintext.length > MAX_V2_CIPHERTEXT_BYTES) {
     throw new Error(
-      `Monad envelope plaintext must be 1..${MAX_CIPHERTEXT_BYTES} UTF-8 bytes`
+      `Monad envelope plaintext must be 1..${MAX_V2_CIPHERTEXT_BYTES} UTF-8 bytes`
     );
   }
 

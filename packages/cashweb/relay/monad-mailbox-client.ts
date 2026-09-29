@@ -36,7 +36,10 @@
  * - 400 `invalid_mailbox_cursor`: cursor older than `since` -> {@link MonadMailboxStaleCursorError}.
  * - 400 `invalid_mailbox_limit`, 413 `mailbox_record_exceeds_page_budget`: caller/protocol errors.
  * - 409 `recovery_obligation_is_active`: ack refused while the obligation is still active.
- * - 429 (Retry-After) and 503 (`mailbox_auth_retryable` at read capacity), plus network failures:
+ * - 429 `mailbox_challenge_capacity` (recipient already holds 8 unexpired consumed challenges;
+ *   `Retry-After: 60`): {@link MonadMailboxChallengeCapacityError}, not retried in-call because
+ *   capacity only returns when challenges expire. Replay/expiry remain 401.
+ * - Other 429 (Retry-After) and 503 (`mailbox_auth_retryable` at read capacity), plus network failures:
  *   retried with bounded exponential backoff (honouring Retry-After), then
  *   {@link MonadMailboxRetryableError}.
  *
@@ -164,6 +167,16 @@ export class MonadMailboxRecordTooLargeError extends MonadMailboxError {}
 export class MonadMailboxRecoveryActiveError extends MonadMailboxError {}
 /** Still failing after the retry budget; safe to try again later. */
 export class MonadMailboxRetryableError extends MonadMailboxError {}
+/** 429 `mailbox_challenge_capacity`: the recipient already has the relay's maximum number of
+ * unexpired consumed challenges (8). Capacity only returns when they expire, so this is NOT
+ * retried inside a call; `retryAfterMs` is the relay's `Retry-After` (60 s). */
+export class MonadMailboxChallengeCapacityError extends MonadMailboxRetryableError {
+  readonly retryAfterMs: number
+  constructor(message: string, retryAfterMs: number) {
+    super(message, 429, 'mailbox_challenge_capacity')
+    this.retryAfterMs = retryAfterMs
+  }
+}
 /** The relay's challenge did not echo the request we made, or is malformed. */
 export class MonadMailboxProtocolError extends MonadMailboxError {}
 
@@ -439,6 +452,15 @@ async function withRetries(
         )
       }
       continue
+    }
+    if (
+      response.status === 429 &&
+      errorCode(response) === 'mailbox_challenge_capacity'
+    ) {
+      throw new MonadMailboxChallengeCapacityError(
+        `${what}: HTTP 429 mailbox_challenge_capacity: too many unexpired authenticated requests for this recipient; retry after the relay's Retry-After`,
+        retryAfterMs(response) ?? 60_000,
+      )
     }
     if (isRetryableStatus(response.status)) {
       if (!(await backoff.wait(retryAfterMs(response)))) {
@@ -853,7 +875,8 @@ export async function fetchMonadMailboxRecoveries(
 
 /** Retire one terminal recovery obligation after the caller has durably imported it:
  * `POST /message/monad/recovery/:recipient/:payload_hash/:obligation_id/ack` (204; idempotent,
- * an already-absent obligation also answers 204). An obligation that is still active answers 409
+ * an already-absent, stale-id or other-recipient obligation ALSO answers 204 -- no existence
+ * oracle -- so a 204 is NOT proof that the obligation existed or was retired). An obligation that is still active answers 409
  * -> {@link MonadMailboxRecoveryActiveError}. */
 export async function ackMonadMailboxRecovery(
   params: MailboxAuthParams & {

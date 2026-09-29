@@ -1099,10 +1099,21 @@ describe('MonadStampClient: PR #197 durable mailbox PUT semantics', () => {
   it('a 503 with exact_set_retained=false (nothing claimed) is a safe rejection after the budget', async () => {
     const stampAttemptJournal = new InMemoryStampAttemptJournal()
     const { client, pool } = makeClient({ stampAttemptJournal })
+    // Capacity (per-recipient cap of 32 unconfirmed claims / global outbox bound) is a 503 with
+    // exact_set_retained=false and its own detail: nothing was claimed, so say so.
     mockedAxios.mockImplementation(async () => {
-      throw relayError(503, { ...retryable, exact_set_retained: false })
+      throw relayError(503, {
+        ...retryable,
+        detail: 'the durable stamp outbox is temporarily at capacity',
+        exact_set_retained: false,
+      })
     })
-    await expect(send(client)).rejects.toThrow(MonadStampRejectedError)
+    const capacityError = await send(client).catch(e => e)
+    expect(capacityError).toBeInstanceOf(MonadStampRejectedError)
+    expect(capacityError.message).toMatch(
+      /before retaining its payment set.*at capacity/,
+    )
+    expect(mockedAxios).toHaveBeenCalledTimes(3) // still retried the same bytes first
     expect(stampAttemptJournal.getAll()).toHaveLength(0)
     expect(pool.records().filter(r => r.status === 'retired')).toHaveLength(2)
   })

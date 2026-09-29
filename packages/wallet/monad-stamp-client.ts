@@ -509,8 +509,15 @@ export class MonadStampRejectedError extends MonadStampError {
 
 function relayRejectionDetail(detail: unknown): string | undefined {
   if (typeof detail === 'string') return detail
-  const error = relayErrorBody(detail)?.error
-  return typeof error === 'string' ? error : undefined
+  const body = relayErrorBody(detail)
+  const error = typeof body?.error === 'string' ? body.error : undefined
+  // The relay's human-readable `detail` distinguishes, e.g., the per-recipient/global unconfirmed
+  // claim cap ("...outbox is temporarily at capacity", 503 with exact_set_retained=false: nothing
+  // was claimed) from "the exact set is pending" (503 with exact_set_retained=true).
+  const text = typeof body?.detail === 'string' ? body.detail : undefined
+  return error !== undefined && text !== undefined
+    ? `${error}: ${text}`
+    : error ?? text
 }
 
 /** Thrown when the outcome stayed unresolved through the whole idempotent-retry budget (network

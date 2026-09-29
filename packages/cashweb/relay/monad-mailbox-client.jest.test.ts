@@ -17,6 +17,7 @@ import {
   MailboxChallenge,
   MailboxAuthParams,
   MonadMailboxAuthError,
+  MonadMailboxChallengeCapacityError,
   MonadMailboxProtocolError,
   MonadMailboxRecordTooLargeError,
   MonadMailboxRecoveryActiveError,
@@ -360,11 +361,17 @@ describe('fetchMonadMailboxInbox / fetchMonadMessagesSince', () => {
       pageLimit: 1,
     })
     expect(truncated.messages).toHaveLength(8) // the 9th challenge use is refused
-    expect(truncated.truncatedBy).toBeInstanceOf(MonadMailboxAuthError)
+    expect(truncated.truncatedBy).toBeInstanceOf(
+      MonadMailboxChallengeCapacityError,
+    )
     // Now the recipient has exhausted its nonce budget: a first-page failure must throw.
-    await expect(
-      fetchMonadMailboxInbox({ ...f.auth, sinceMs: 0 }),
-    ).rejects.toBeInstanceOf(MonadMailboxAuthError)
+    const capacity = await fetchMonadMailboxInbox({
+      ...f.auth,
+      sinceMs: 0,
+    }).catch(e => e)
+    expect(capacity).toBeInstanceOf(MonadMailboxChallengeCapacityError)
+    expect(capacity).toMatchObject({ status: 429, retryAfterMs: 60_000 })
+    expect(f.sleeps).toEqual([]) // capacity only returns on expiry: not retried in-call
     // The feed wrapper reports truncation to the caller.
     const g = makeFixture()
     for (let i = 0; i < 12; i++)
@@ -638,7 +645,7 @@ describe('recovery listing and ack', () => {
     expect(f.relay.hasRecovery(Buffer.alloc(32, 2))).toBe(true)
   })
 
-  it('validates ack identifiers locally and rejects an ack for another recipient', async () => {
+  it('validates ack identifiers locally; an ack for another recipient is a silent 204 that retires nothing', async () => {
     const f = makeFixture()
     await expect(
       ackMonadMailboxRecovery({
@@ -653,6 +660,7 @@ describe('recovery listing and ack', () => {
       other.privateKey.toPublicKey().toBuffer(),
     )
     recoveryFixture(f, 'terminal:expired', 5) // owned by f, not `other`
+    // 204 is NOT proof the obligation existed or was retired (no existence oracle).
     await expect(
       ackMonadMailboxRecovery({
         ...other.auth,
@@ -660,7 +668,16 @@ describe('recovery listing and ack', () => {
         payloadHashHex: '05'.repeat(32),
         obligationIdHex: '15'.repeat(32),
       }),
-    ).rejects.toBeInstanceOf(MonadMailboxAuthError)
+    ).resolves.toBeUndefined()
+    expect(f.relay.hasRecovery(Buffer.alloc(32, 5))).toBe(true)
+    // A stale obligation id for the owner is also a plain 204 and leaves the row alone.
+    await expect(
+      ackMonadMailboxRecovery({
+        ...f.auth,
+        payloadHashHex: '05'.repeat(32),
+        obligationIdHex: 'ee'.repeat(32),
+      }),
+    ).resolves.toBeUndefined()
     expect(f.relay.hasRecovery(Buffer.alloc(32, 5))).toBe(true)
   })
 })

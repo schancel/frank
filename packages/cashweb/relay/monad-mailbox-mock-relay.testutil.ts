@@ -460,12 +460,16 @@ export class MockMailboxRelay {
     const recipient = '0x' + b.recipient.toString('hex')
     const bucket = this.used.get(recipient) ?? new Map<string, number>()
     for (const [n, e] of bucket) if (e < this.now()) bucket.delete(n)
-    if (
-      bucket.has(nonce.toString('hex')) ||
-      bucket.size >= MAX_USED_CHALLENGES
-    ) {
+    if (bucket.has(nonce.toString('hex'))) {
       this.used.set(recipient, bucket)
-      throw unauthorized()
+      throw unauthorized() // replay stays an ordinary auth failure
+    }
+    if (bucket.size >= MAX_USED_CHALLENGES) {
+      this.used.set(recipient, bucket)
+      throw new HttpFail({
+        ...json(429, { error: 'mailbox_challenge_capacity' }),
+        headers: { 'content-type': 'application/json', 'retry-after': '60' },
+      })
     }
     bucket.set(nonce.toString('hex'), expires)
     this.used.set(recipient, bucket)
@@ -609,9 +613,11 @@ export class MockMailboxRelay {
         r.payloadHash.toString('hex') === payloadHashHex &&
         r.obligationId.toString('hex') === obligationHex,
     )
+    // No existence oracle: absent, stale-id and other-recipient obligations all answer 204.
     if (index < 0) return { status: 204, headers: {}, data: new Uint8Array() }
     const record = this.recoveries[index]
-    if (record.recipient !== recipient) throw unauthorized()
+    if (record.recipient !== recipient)
+      return { status: 204, headers: {}, data: new Uint8Array() }
     if (!record.lifecycle.startsWith('terminal:')) {
       throw new HttpFail(json(409, { error: 'recovery_obligation_is_active' }))
     }

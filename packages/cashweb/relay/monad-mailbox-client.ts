@@ -36,17 +36,16 @@
  * - 400 `invalid_mailbox_cursor`: cursor older than `since` -> {@link MonadMailboxStaleCursorError}.
  * - 400 `invalid_mailbox_limit`, 413 `mailbox_record_exceeds_page_budget`: caller/protocol errors.
  * - 409 `recovery_obligation_is_active`: ack refused while the obligation is still active.
- * - 429 `mailbox_challenge_capacity` (recipient already holds 8 unexpired consumed challenges;
+ * - 429 `mailbox_challenge_capacity` (recipient already holds the relay's maximum of 30 unexpired consumed challenges;
  *   `Retry-After: 60`): {@link MonadMailboxChallengeCapacityError}, not retried in-call because
  *   capacity only returns when challenges expire. Replay/expiry remain 401.
  * - Other 429 (Retry-After) and 503 (`mailbox_auth_retryable` at read capacity), plus network failures:
  *   retried with bounded exponential backoff (honouring Retry-After), then
  *   {@link MonadMailboxRetryableError}.
  *
- * The relay keeps a bounded number of unexpired consumed challenges per recipient (8 in #197 as
- * first merged; the follow-up this client assumes raises it to 30 per 60 s), so more than ~8
- * authenticated pages inside 60 s can be refused; {@link fetchMonadMailboxInbox} therefore asks for
- * 100 rows per page (the maximum) and a caller that gets a truncated result simply polls again.
+ * The relay keeps at most 30 unexpired consumed challenges per recipient (60 s TTL), so more than
+ * 30 authenticated requests inside 60 s are refused; {@link fetchMonadMailboxInbox} therefore asks
+ * for 100 rows per page (the maximum) and a caller that gets a truncated result simply polls again.
  */
 import axios from 'axios'
 import { crypto as bitcoreCrypto } from 'bitcore-lib-xpi'

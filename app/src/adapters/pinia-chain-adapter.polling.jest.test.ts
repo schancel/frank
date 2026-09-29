@@ -77,6 +77,25 @@ const count = (relay: MockMailboxRelay, route: string, status?: number) =>
     l => l.route === route && (status === undefined || l.status === status),
   ).length
 
+/** Advance 1 s at a time for `seconds`, returning the second at which each new challenge request
+ * (= one poll attempt) was first observed. */
+async function pollTimeline(
+  relay: MockMailboxRelay,
+  seconds: number,
+): Promise<number[]> {
+  const times: number[] = []
+  let seen = count(relay, 'challenge')
+  for (let t = 1; t <= seconds; t++) {
+    await jest.advanceTimersByTimeAsync(1000)
+    const n = count(relay, 'challenge')
+    if (n !== seen) {
+      times.push(t)
+      seen = n
+    }
+  }
+  return times
+}
+
 describe('direct-message polling vs the relay challenge cap', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
@@ -178,9 +197,41 @@ describe('direct-message polling vs the relay challenge cap', () => {
     expect(timeline.length).toBeLessThanOrEqual(8)
     const gaps = timeline.slice(1).map((t, i) => t - timeline[i])
     expect(gaps[1]).toBeGreaterThan(gaps[0])
+    // The ladder actually reaches the 60 s cap (and no further).
+    expect(gaps.some(g => g >= 59 && g <= 61)).toBe(true)
     expect(Math.max(...gaps)).toBeLessThanOrEqual(
       MAX_MAILBOX_UNAVAILABLE_BACKOFF_MS / 1000 + 1,
     )
+  })
+
+  it('the 404 backoff ladder restarts after a success (404, 404, success, 404 -> 14 s again)', async () => {
+    const { relay, wallet } = setup({ maxUsedChallenges: 30 })
+    relay.inject('challenge', { status: 404 }, { status: 404 })
+    const polling = startDirectMessagePolling({ wallet })
+    // Attempts: 0 (404) -> +14 -> 14 (404) -> +28 -> 42 (success) -> 7 s cadence.
+    const first = await pollTimeline(relay, 60)
+    expect(first.slice(0, 3)).toEqual([14, 42, 49])
+    relay.inject('challenge', { status: 404 })
+    const second = await pollTimeline(relay, 40)
+    // Next poll fails with 404 (ladder was reset by the success), so the following gap is 14 s,
+    // not the 56 s a non-reset counter would give.
+    const fail = second.findIndex((t, i) => i > 0 && t - second[i - 1] > 8)
+    expect(second[fail] - second[fail - 1]).toBe(14)
+    polling.stop()
+  })
+
+  it('an unknown error (500) backs off modestly and is logged once, resetting on success', async () => {
+    const { relay, wallet } = setup({ maxUsedChallenges: 30 })
+    const errorSpy = jest
+      .spyOn(console, 'error')
+      .mockImplementation(() => undefined)
+    relay.inject('challenge', { status: 500 }, { status: 500 }, { status: 500 })
+    const polling = startDirectMessagePolling({ wallet })
+    const times = await pollTimeline(relay, 80)
+    // Attempts at 0 (fail, 7 s), 7 (fail, 14 s), 21 (fail, 28 s), 49 (success), then 56...
+    expect(times.slice(0, 5)).toEqual([7, 21, 49, 56, 63])
+    expect(errorSpy).toHaveBeenCalledTimes(1) // identical consecutive errors log once
+    polling.stop()
   })
 
   it('stop() prevents any further request', async () => {

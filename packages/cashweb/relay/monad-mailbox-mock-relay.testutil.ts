@@ -3,7 +3,7 @@
  * (`backend/cashweb/cashweb-registry/src/http/monad_message.rs` + `monad_mailbox.rs`) closely
  * enough to catch client mistakes: it issues HMAC-bound challenges, verifies the recipient's
  * ECDSA signature over its OWN independently built preimage (not the client's), consumes nonces
- * (cap 8 per recipient, 60 s TTL), authenticates opaque HMAC cursors, enforces limit/byte budgets,
+ * (cap 30 per recipient by default, 60 s TTL), authenticates opaque HMAC cursors, enforces limit/byte budgets,
  * strict-forward `(timestamp, payload_hash)` paging, stale-cursor rejection, recovery paging and
  * acks, the 404 "mailbox disabled" behaviour, and read-capacity 503s.
  *
@@ -463,7 +463,7 @@ export class MockMailboxRelay {
       valid = false
     }
     if (!(key !== undefined && valid)) throw unauthorized()
-    // Consume the nonce (single use, per-recipient cap of 8 unexpired).
+    // Consume the nonce (single use, per-recipient cap of `maxUsedChallenges` unexpired).
     const recipient = '0x' + b.recipient.toString('hex')
     const bucket = this.used.get(recipient) ?? new Map<string, number>()
     for (const [n, e] of bucket) if (e < this.now()) bucket.delete(n)

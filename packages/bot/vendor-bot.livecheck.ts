@@ -40,7 +40,10 @@ import {
   tryDecryptEnvelope,
 } from '@frank/cashweb/relay/monad-message-envelope'
 import { fetchMonadMessagesSince } from '@frank/cashweb/relay/monad-message-feed'
-import { fetchMonadIdentityPubKey, mailboxAuthFor } from '@frank/wallet/monad-identity'
+import {
+  fetchMonadIdentityPubKey,
+  mailboxAuthFor,
+} from '@frank/wallet/monad-identity'
 import { deserializeMessageItems } from '@frank/wallet/chain/monad-chain'
 import { DigitalGoodsItem, Message, MessageItem } from '@frank/cashweb/types/messages'
 import {

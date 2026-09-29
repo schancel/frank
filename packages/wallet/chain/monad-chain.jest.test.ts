@@ -25,6 +25,7 @@ import {
   MonadChainConfig,
   MonadChainWalletHandle,
   MAILBOX_RECOVERY_SYNC_INTERVAL_MS,
+  MAILBOX_RECOVERY_SYNC_WAIT_MS,
   createMonadChain,
   deserializeMessageItems,
   serializeMessageItems,
@@ -1289,6 +1290,29 @@ describe('createMonadChain: directMessages.fetchSince mailbox behaviour', () => 
       expect(mockedFetchRecoveries).toHaveBeenCalledTimes(2)
     } finally {
       nowSpy.mockRestore()
+    }
+  })
+
+  it('a hung recovery read delays message delivery by at most the bound (recovery runs after the messages are ready)', async () => {
+    jest.useFakeTimers({
+      doNotFake: ['setImmediate', 'nextTick', 'queueMicrotask'],
+    })
+    try {
+      const chain = createMonadChain(TEST_CONFIG)
+      const { wallet } = walletWithJournal()
+      mockedFetchMonadMessagesSince.mockResolvedValueOnce([])
+      mockedFetchRecoveries.mockReturnValueOnce(new Promise(() => undefined))
+      let done = false
+      void chain.directMessages
+        .fetchSince({ wallet, sinceMs: 0 })
+        .then(() => (done = true))
+      await jest.advanceTimersByTimeAsync(MAILBOX_RECOVERY_SYNC_WAIT_MS - 1)
+      expect(mockedFetchRecoveries).toHaveBeenCalledTimes(1)
+      expect(done).toBe(false)
+      await jest.advanceTimersByTimeAsync(2)
+      expect(done).toBe(true)
+    } finally {
+      jest.useRealTimers()
     }
   })
 

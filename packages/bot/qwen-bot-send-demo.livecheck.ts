@@ -35,7 +35,10 @@ import { readFileSync } from 'fs'
 import { resolve } from 'path'
 import { Transaction, hexlify } from 'ethers'
 
-import { fetchMonadIdentityPubKey, mailboxAuthFor } from '@frank/wallet/monad-identity'
+import {
+  fetchMonadIdentityPubKey,
+  mailboxAuthFor,
+} from '@frank/wallet/monad-identity'
 import {
   parseEnvelope,
   sameMonadEnvelopeAddress,

@@ -213,6 +213,33 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
       expect(digests).toHaveLength(3)
     })
 
+    it('stop() during an in-flight poll delivers nothing and never reschedules (wallet switch)', async () => {
+      const chats = useChatStore()
+      const receiveMessagesSpy = jest.spyOn(chats, 'receiveMessages')
+      jest.spyOn(activeChain, 'fetchProfile').mockResolvedValue({
+        address: { raw: SENDER_ADDRESS },
+        pubKey: PUB_KEY_BYTES,
+      })
+      let release: (records: DirectMessageReceived[]) => void = () => undefined
+      const fetchSinceSpy = jest
+        .spyOn(activeChain.directMessages, 'fetchSince')
+        .mockImplementation(
+          () =>
+            new Promise<DirectMessageReceived[]>(resolve => {
+              release = resolve
+            }),
+        )
+
+      const polling = startDirectMessagePolling({ wallet, intervalMs: 10 })
+      await waitUntil(() => fetchSinceSpy.mock.calls.length === 1)
+      polling.stop() // the old wallet is switched away while its request is still in flight
+      release([makeRecord({ payloadDigest: 'old-wallet-msg' })])
+      await wait(80) // several intervals: any reschedule would show up as a second call
+
+      expect(receiveMessagesSpy).not.toHaveBeenCalled()
+      expect(fetchSinceSpy).toHaveBeenCalledTimes(1)
+    })
+
     it('advances beyond a valid record returned after an earlier poison record was filtered', async () => {
       const chats = useChatStore()
       const receiveMessagesSpy = jest.spyOn(chats, 'receiveMessages')

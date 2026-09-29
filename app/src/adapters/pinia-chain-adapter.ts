@@ -117,6 +117,8 @@ export function startDirectMessagePolling({
   let stopped = false
   let timer: ReturnType<typeof setTimeout> | undefined
   let unavailableFailures = 0
+  let otherFailures = 0
+  let lastErrorKey: string | undefined
 
   // Polls are chained (next one is scheduled when this one settles), never overlapping, so the
   // delay can adapt to what the relay just told us.
@@ -136,7 +138,12 @@ export function startDirectMessagePolling({
             reason,
           ),
       })
+      // stop() cannot cancel an in-flight request; a stopped poller (e.g. the wallet was
+      // switched) must never deliver its messages into the shared chat store.
+      if (stopped) return
       unavailableFailures = 0
+      otherFailures = 0
+      lastErrorKey = undefined
       if (received.length === 0) {
         return
       }
@@ -146,6 +153,7 @@ export function startDirectMessagePolling({
       let cursorBlocked = false
       for (const record of received) {
         const wrapper = await toReceivedMessageWrapper(record)
+        if (stopped) return
         if (wrapper !== undefined) {
           wrappers.push(wrapper)
           // The relay's `since` bound is inclusive. Only advance through the contiguous prefix
@@ -158,6 +166,7 @@ export function startDirectMessagePolling({
         }
       }
 
+      if (stopped) return
       if (wrappers.length > 0) {
         await chats.receiveMessages(wrappers)
         sinceMs = nextSinceMs
@@ -183,7 +192,22 @@ export function startDirectMessagePolling({
           err,
         )
       } else {
-        console.error('direct-message polling failed', err)
+        // Unknown failure (401, network, ...): modest capped backoff, and log once per distinct
+        // consecutive error rather than every poll.
+        otherFailures += 1
+        if (otherFailures > 1) {
+          steady = false
+          nextDelayMs = Math.min(
+            MAX_MAILBOX_UNAVAILABLE_BACKOFF_MS,
+            intervalMs * 2 ** (otherFailures - 1),
+          )
+        }
+        const key =
+          err instanceof Error ? `${err.name}: ${err.message}` : String(err)
+        if (key !== lastErrorKey) {
+          lastErrorKey = key
+          console.error('direct-message polling failed', err)
+        }
       }
     } finally {
       // Steady state keeps a fixed cadence (interval measured start to start); relay-requested

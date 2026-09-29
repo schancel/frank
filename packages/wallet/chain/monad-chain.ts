@@ -280,6 +280,23 @@ function bareHex(bytes: Uint8Array): string {
  * Best-effort relative to the inbox read (which already succeeded when this runs): a relay/network
  * failure here is retried on the next poll rather than failing message delivery.
  */
+/** Longest `fetchSince` waits for the recovery sync before returning the messages. */
+export const MAILBOX_RECOVERY_SYNC_WAIT_MS = 5_000
+
+async function boundedSync(sync: Promise<void>): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    await Promise.race([
+      sync,
+      new Promise<void>(resolve => {
+        timer = setTimeout(resolve, MAILBOX_RECOVERY_SYNC_WAIT_MS)
+      }),
+    ])
+  } finally {
+    if (timer !== undefined) clearTimeout(timer)
+  }
+}
+
 /** Recovery obligations change rarely, but each read spends one of the relay's per-recipient
  * authenticated-request slots (a challenge is consumed per signed read). Polling inbox + recovery
  * every few seconds exhausts that budget, so recovery is synced at most this often per wallet. */
@@ -533,8 +550,6 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
         sinceMs: params.sinceMs,
         onTruncated: params.onTruncated,
       })
-      await syncMailboxRecoveries(wallet, mailbox)
-
       const myAddress = wallet.identity.address.raw.toLowerCase()
       const received: DirectMessageReceived[] = []
 
@@ -616,6 +631,9 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
           receivedTime: record.timestamp,
         })
       }
+      // Recovery is housekeeping: run it only after the messages are ready and never let a slow
+      // recovery read/ack delay their delivery (the sync keeps running in the background).
+      await boundedSync(syncMailboxRecoveries(wallet, mailbox))
       return received
     },
 

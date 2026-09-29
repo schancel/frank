@@ -37,6 +37,7 @@ import {
 } from './monad-mailbox-client'
 import { fetchMonadMessagesSince } from './monad-message-feed'
 import {
+  DEFAULT_MOCK_MAX_USED_CHALLENGES,
   MockMailboxRelay,
   MockStoredMessage,
 } from './monad-mailbox-mock-relay.testutil'
@@ -356,7 +357,7 @@ describe('fetchMonadMailboxInbox / fetchMonadMessagesSince', () => {
     expect(restarted.log.filter(l => l.route === 'challenge')).toHaveLength(1) // not retried
   })
 
-  it('a later-page failure returns a complete-timestamp prefix (relay caps 8 unexpired challenges), first-page failure throws', async () => {
+  it('a later-page failure returns a complete-timestamp prefix (relay caps unexpired challenges; modelled at 8 here), first-page failure throws', async () => {
     const f = makeFixture({ maxUsedChallenges: 8 })
     for (let i = 0; i < 12; i++)
       f.relay.addMessage(message(f.address, 100 + i, i))
@@ -482,6 +483,19 @@ describe('fetchMonadMailboxInbox / fetchMonadMessagesSince', () => {
     await expect(
       fetchMonadMailboxInbox({ ...g.auth, sinceMs: 0, pageLimit: 1 }),
     ).rejects.toBeInstanceOf(MonadMailboxProtocolError)
+  })
+})
+
+describe('mock relay contract pin', () => {
+  it('models the relay cap of 30 consumed challenges per recipient per 60 s', async () => {
+    expect(DEFAULT_MOCK_MAX_USED_CHALLENGES).toBe(30)
+    const f = makeFixture()
+    for (let i = 0; i < 30; i++) {
+      await fetchMonadMailboxInboxPage({ ...f.auth, sinceMs: 0 })
+    }
+    await expect(
+      fetchMonadMailboxInboxPage({ ...f.auth, sinceMs: 0 }),
+    ).rejects.toBeInstanceOf(MonadMailboxChallengeCapacityError)
   })
 })
 

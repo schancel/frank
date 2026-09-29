@@ -291,7 +291,8 @@ S9. The type-1 destination account MUST be key type 1 (otherwise `semantic`). Fo
 key, and child index derive, by T3a, the exact child public key and chain
 address. Payment field 3 MUST equal that canonical address,
 the independently observed transaction destination MUST equal field 3, and
-payment destinations MUST be independently unique. Value and commitment checks
+payment field 3 values MUST be independently unique, a stage 9 `semantic` list
+check like S3's index and transaction-ID uniqueness. Value and commitment checks
 from S3 and T4 remain separately required.
 
 S10. The validation context's prior statement is the last accepted type-4
@@ -481,9 +482,10 @@ compressed_parent_point || u32be(i))`; interpret `I[0..32]` as unsigned
 4. Serialize the final child point uncompressed, remove its `04` prefix, hash
    the remaining 64 bytes with Keccak-256, and use the final 20 bytes as the EVM
    destination address.
-5. Every child index MUST be a non-hardened `uint31` (`< 2^31`). A payment
-   set's sorted child indices MUST be exactly contiguous
-   `0..member_count-1`; a violation is `semantic`.
+5. Every child index MUST be a non-hardened `uint31` (`< 2^31`); the CDDL
+   range makes a violation a `schema` error at stage 8.2. A payment set's
+   sorted child indices MUST be exactly contiguous `0..member_count-1`; a
+   violation is `semantic`.
 6. Any of `h` out of range, an unparseable destination point, infinity, or an
    invalid `IL` rejects the delivery as `cryptographic`; implementations do not
    skip to another index.
@@ -529,7 +531,10 @@ category, and an implementation MUST NOT continue to report a later failure.
    `min_reader_version <= schema_version`: `schema`.
 7. **Payload CBOR and V6 decision.** The payload's single item passes A then B
    below. Byte strings are not opened as child frames at this stage. Then V6
-   selects the outcome: an unknown root `type_id` or a `min_reader_version` above
+   selects the outcome. A type is known exactly when the context's
+   `supported_schemas` lists it, so a supported-schema list that omits a type
+   makes that type unknown to the reader, and a required-type child (8.4) of an
+   unlisted type is `unsupported`. An unknown root `type_id` or a `min_reader_version` above
    the reader's version is retained when `opaque_retention_allowed` is true and
    otherwise `unsupported`; either outcome ends the operation, so `generic`
    can yield them. A known type continues to stage 8, with the exact supported
@@ -551,8 +556,11 @@ category, and an implementation MUST NOT continue to report a later failure.
       as framed objects (never opaque sections). Each child is an embedded
       frame with the root operation's shared counters (R1), not charged against
       `route_byte_limit`, and runs as follows:
-      - In an open field (a message item), the child runs stages 2 through 9
-        with V6 applied to it. An unknown type or unknown frame version is
+      - In an open field (a message item), a child of an assigned type other than
+        16 or 17 (types 1 through 8) is `semantic`, checked after its stage 6
+        like a required-type mismatch. Otherwise the child runs stages 2
+        through 9 with V6 applied to it. Children open depth-first in array
+        order, and the first failure wins. An unknown type or unknown frame version is
         retained as exact bytes whatever `opaque_retention_allowed` says and is
         not a failure; that flag governs only the root frame (V6.1).
       - In a required-type field (S8) and for the decrypted frame (10.1), the
@@ -591,12 +599,16 @@ category, and an implementation MUST NOT continue to report a later failure.
 
 Passes A and B of the CBOR stages. Pass A is a streaming syntax pass that
 proceeds in byte order and fails at the first item that violates a resource
-counter (`resource`) or is malformed (`malformed`). Only if pass A consumes the
-entire item does pass B run, in byte order, failing at the first item that is
-non-minimal, indefinite, an out-of-order or duplicate key (`noncanonical`), or
-of a forbidden class, including a non-uint map key (C1a) (`schema`). When one
-item violates both, `noncanonical` wins. So `{"b":1,"a":2}` fails at its first
-key as `schema`, not as an ordering error.
+counter (`resource`) or is malformed (`malformed`). A declared length or count
+is checked against the limits when its header is read, before its content is
+examined, so an oversize declared length is `resource` even if the input is also
+truncated. Extra data after the single item (C9) is `malformed` and belongs to
+pass A. Only if pass A succeeds does pass B run, in byte order, failing at the
+first violation. Within one item, a non-minimal or indefinite encoding or a
+duplicate or out-of-order key is `noncanonical` and is reported before a
+forbidden class, including a non-uint map key (C1a), which is `schema`. So
+`78 05 61` (truncated, with a non-minimal header) is `malformed`, and
+`{"b":1,"a":2}` fails at its first key as `schema`, not as an ordering error.
 
 No stage may consume funds, mark a payment used, advance a mailbox cursor, or
 persist an interpreted record before every applicable later stage succeeds.

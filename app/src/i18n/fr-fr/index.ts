@@ -96,11 +96,15 @@ export default {
   accountStep: {
     newAccount: 'Nouveau compte',
     importAccount: 'Importer un compte',
+    copyRecoveryPhrase: 'Copier la phrase de récupération',
+    refreshRecoveryPhrase: 'Générer une nouvelle phrase de récupération',
   },
   newContactDialog: {
     newContact: 'Nouveau contact',
     enterBitcoinCashAddress: 'Entrez une adresse Lotus...',
+    loading: 'Recherche du contact',
     notFound: 'Non trouvé',
+    found: 'Contact trouvé : {name}',
   },
   newTopicDialog: {
     newTopic: 'Créer un nouveau topic',

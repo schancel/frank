@@ -337,7 +337,7 @@ export const useTopicStore = defineStore('topics', {
     },
   },
   storage: {
-    save(storage, _mutation, state): void {
+    save(storage, _mutation, state): Promise<void> {
       const reduceState = (): ReducedState => {
         const topics: ReducedTopicData[] = Object.values(state.topics).map(
           topic => ({
@@ -351,7 +351,7 @@ export const useTopicStore = defineStore('topics', {
         }
       }
       const reducedState = reduceState()
-      storage.put('topics', JSON.stringify(reducedState))
+      return storage.put('topics', JSON.stringify(reducedState))
     },
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
     async restore(storage): Promise<Partial<State>> {

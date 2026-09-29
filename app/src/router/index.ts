@@ -39,7 +39,8 @@ import { monadModeEnabled } from 'src/utils/runtime-mode'
 // `MONAD_SKIP_LEGACY_SETUP_GATE=false`) to restore the strict gate.
 const skipLegacySetupGate = monadModeEnabled()
 
-const unprotectedRoutes = ['/setup', '/forum', '/changelog']
+const unprotectedRoutes = ['/setup', '/changelog']
+const walletRequiredRoutes = ['/forum', '/new-post']
 // Was '/forum/new-post' -- routes.ts declares this child route's path with a leading slash
 // (`/new-post`), which Vue Router treats as absolute (top-level), not relative to its `forum`
 // parent. The real route (confirmed against every actual `:to` link in the app -- ForumDrawer.vue,
@@ -94,6 +95,14 @@ export default () => {
       to.params.address,
       profileStore.profile.name,
     )
+    const walletRequired = walletRequiredRoutes.some(
+      path => to.path === path || to.path.startsWith(`${path}/`),
+    )
+    if (walletRequired && !walletStore.seedPhrase) {
+      console.log('nav to setup!')
+      return '/setup'
+    }
+
     if (
       profileStore.profile.name ||
       (skipLegacySetupGate && !!walletStore.seedPhrase) ||

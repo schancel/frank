@@ -97,7 +97,9 @@
         <q-item clickable>
           <q-item-section @click="openReceive">
             <q-item-label>{{ $t('chatList.balance') }}</q-item-label>
-            <q-item-label caption>{{ formattedBalance }}</q-item-label>
+            <q-item-label caption role="status" aria-live="polite">{{
+              formattedBalance
+            }}</q-item-label>
           </q-item-section>
           <q-item-section
             v-if="legacyRelayEnabled && !relayConnected"
@@ -114,7 +116,14 @@
 </template>
 
 <script lang="ts">
-import { computed, defineComponent, onMounted, ref, watch } from 'vue'
+import {
+  computed,
+  defineComponent,
+  onMounted,
+  onUnmounted,
+  ref,
+  watch,
+} from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
 
@@ -176,19 +185,71 @@ export default defineComponent({
       await forum.refreshMessages({ wallet, topic: name })
     }
 
-    onMounted(async () => {
+    // Real user report: sent MON to their own address from an external wallet and the sidebar
+    // balance never updated. Root cause was that this only ever fetched once, in `onMounted` --
+    // nothing re-ran it afterwards, so any balance change (an external transfer in, a stamp
+    // payment out, ...) never showed up without a full app reload. Poll instead, same lifecycle-
+    // scoped `setInterval`-with-cleanup shape as `Chat.vue`'s own `window.addEventListener(
+    // 'resize', ...)` / `beforeUnmount` pair.
+    // Skips a poll tick while a fetch is still pending, and a monotonic request id makes sure a
+    // superseded (older) response can never overwrite a newer balance. `force` is only used by
+    // the visibility refresh, which deliberately supersedes a possibly hung request.
+    let balanceRequestId = 0
+    let balancePending = false
+    async function refreshBalance(force = false) {
+      if (balancePending && !force) return
+      const requestId = ++balanceRequestId
+      balancePending = true
       try {
         const wallet = await useActiveWallet()
-        balance.value = await activeChain.nativeTransfers.getBalance({ wallet })
-      } catch {
-        // The setup route may render the drawer before a seed exists.
+        const next = await activeChain.nativeTransfers.getBalance({ wallet })
+        if (requestId === balanceRequestId) balance.value = next
+      } catch (err) {
+        // The setup route may render the drawer before a seed exists; log and keep polling.
+        console.error('balance refresh failed', err)
+      } finally {
+        if (requestId === balanceRequestId) balancePending = false
       }
+    }
+    const balancePollMs = 15000
+    let balancePollHandle: ReturnType<typeof setInterval> | undefined
+
+    // Poll only while the page is visible; refresh right away when it becomes visible again.
+    function startBalancePoll() {
+      stopBalancePoll()
+      balancePollHandle = setInterval(
+        () => void refreshBalance(),
+        balancePollMs,
+      )
+    }
+    function stopBalancePoll() {
+      clearInterval(balancePollHandle)
+      balancePollHandle = undefined
+    }
+    function onVisibilityChange() {
+      if (document.hidden) {
+        stopBalancePoll()
+      } else {
+        void refreshBalance(true)
+        startBalancePoll()
+      }
+    }
+
+    onMounted(() => {
+      void refreshBalance()
+      if (!document.hidden) startBalancePoll()
+      document.addEventListener('visibilitychange', onVisibilityChange)
       // Fire-and-forget, same convention as `ForumLayout.vue`'s own identical call --
       // `refreshDiscoveredTopics` already fails soft and never throws (`stores/topics.ts`).
       // Called here too (not just there) so this list is populated even if the user never opens
       // the Forum page itself first -- the whole point is to make forums discoverable *before*
       // you already know one exists.
       topicStore.refreshDiscoveredTopics()
+    })
+
+    onUnmounted(() => {
+      stopBalancePoll()
+      document.removeEventListener('visibilitychange', onVisibilityChange)
     })
 
     // Drives the left rail's active-tab highlight (`q-tabs v-model="tab"`). A plain, freely

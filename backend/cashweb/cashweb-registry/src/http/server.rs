@@ -4,8 +4,9 @@ use crate::{
     http::curated_defaults::{handle_get_curated_default_contacts, CuratedDefaultContact},
     http::error::HttpRegistryError,
     http::monad_message::{
-        handle_get_private_monad_messages, handle_get_private_monad_recovery,
-        handle_issue_mailbox_challenge, handle_put_monad_message,
+        handle_ack_private_monad_recovery, handle_get_private_monad_messages,
+        handle_get_private_monad_recovery, handle_issue_mailbox_challenge,
+        handle_put_monad_message,
     },
     http::monad_profile::{
         fetch_profile_or_not_found, handle_get_monad_profile, handle_list_monad_profiles,
@@ -225,6 +226,10 @@ impl RegistryServer {
                 .route(
                     "/message/monad/recovery/:recipient",
                     routing::get(handle_get_private_monad_recovery),
+                )
+                .route(
+                    "/message/monad/recovery/:recipient/:payload_hash/ack",
+                    routing::post(handle_ack_private_monad_recovery),
                 )
         } else {
             router.route(

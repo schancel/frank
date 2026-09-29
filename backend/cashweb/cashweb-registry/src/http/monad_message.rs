@@ -116,9 +116,10 @@ use crate::{
     monad_stamp_verify::parse_commitment_calldata,
     proto,
     registry::Registry,
-    store::monad_messages::{MonadMessageAttemptClaim, RecipientMessageCursor},
+    store::monad_messages::RecipientMessageCursor,
     store::monad_outbox::{
-        MonadOutboxClaim, MonadOutboxLifecycle, MonadOutboxPolicy, MonadOutboxTerminal,
+        MonadMessageOwnership, MonadOutboxClaim, MonadOutboxLifecycle, MonadOutboxPolicy,
+        MonadOutboxTerminal, MonadRecoveryAck,
     },
 };
 
@@ -127,7 +128,7 @@ use crate::{
     monad_http::HttpTransport,
     monad_stamp_relay::{broadcast_and_verify_stamp, PollConfig},
     monad_stamp_verify::ExpectedStampTransaction,
-    store::monad_messages::MonadMessageAttemptPolicy,
+    store::monad_messages::{MonadMessageAttemptClaim, MonadMessageAttemptPolicy},
     store::monad_outbox::MonadOutboxLeaseAcquire,
 };
 
@@ -208,7 +209,12 @@ pub enum ProcessMonadMessageError {
     /// A direct message must carry at least one payment transaction.
     MissingStampPayments,
     /// Payment-set cardinality is bounded before any transaction cryptography or RPC work.
-    TooManyStampPayments(usize),
+    TooManyStampPayments {
+        /// Submitted payment count.
+        actual: usize,
+        /// Applicable fixed wire or current new-admission ceiling.
+        maximum: usize,
+    },
     /// This payload hash is already bound to a different canonical raw payment set.
     ConflictingPaymentSet,
     /// Another request for this payload hash is already being reconciled.
@@ -311,9 +317,9 @@ impl fmt::Display for ProcessMonadMessageError {
             ProcessMonadMessageError::MissingStampPayments => {
                 write!(f, "a direct message requires at least one stamp payment")
             }
-            ProcessMonadMessageError::TooManyStampPayments(actual) => write!(
+            ProcessMonadMessageError::TooManyStampPayments { actual, maximum } => write!(
                 f,
-                "a direct message may contain at most {MAX_STAMP_PAYMENTS} stamp payments, got {actual}"
+                "a direct message may contain at most {maximum} stamp payments, got {actual}"
             ),
             ProcessMonadMessageError::ConflictingPaymentSet => write!(
                 f,
@@ -336,7 +342,10 @@ impl fmt::Display for ProcessMonadMessageError {
                 "the exact legacy stamp owner is retained while the durable outbox is at capacity"
             ),
             ProcessMonadMessageError::OutboxPending => {
-                write!(f, "the exact stamp-payment set is pending durable reconciliation")
+                write!(
+                    f,
+                    "the exact stamp-payment set is pending durable reconciliation"
+                )
             }
             ProcessMonadMessageError::OutboxUnavailable => {
                 write!(f, "the durable stamp outbox is temporarily unavailable")
@@ -397,7 +406,10 @@ impl fmt::Display for ProcessMonadMessageError {
                 write!(f, "Monad stamp rejected: {outcome:?}")
             }
             ProcessMonadMessageError::RejectedWithoutRetainedSet(outcome) => {
-                write!(f, "Monad stamp rejected before retaining its payment set: {outcome:?}")
+                write!(
+                    f,
+                    "Monad stamp rejected before retaining its payment set: {outcome:?}"
+                )
             }
             ProcessMonadMessageError::Infrastructure(err) => {
                 write!(f, "infrastructure failure: {err}")
@@ -590,9 +602,10 @@ fn validate_payment_set(
         return Err(ProcessMonadMessageError::MissingStampPayments);
     }
     if request.stamp_payments.len() > MAX_STAMP_PAYMENTS {
-        return Err(ProcessMonadMessageError::TooManyStampPayments(
-            request.stamp_payments.len(),
-        ));
+        return Err(ProcessMonadMessageError::TooManyStampPayments {
+            actual: request.stamp_payments.len(),
+            maximum: MAX_STAMP_PAYMENTS,
+        });
     }
     let mut child_indices = HashSet::new();
     let mut funding_accounts = HashSet::new();
@@ -700,12 +713,14 @@ fn reread_delivered_owner(
     request: &proto::MonadStampedMessage,
 ) -> Result<proto::StoredMonadMessage, ProcessMonadMessageError> {
     match registry
-        .get_monad_message(&request.payload_hash)
+        .classify_monad_message_ownership(request)
         .map_err(ProcessMonadMessageError::Infrastructure)?
     {
-        Some(stored) if stored.message.as_ref() == Some(request) => Ok(stored),
-        Some(_) => Err(ProcessMonadMessageError::ConflictingPaymentSet),
-        None => Err(ProcessMonadMessageError::OutboxUnavailable),
+        MonadMessageOwnership::DeliveredExact(stored) => Ok(stored),
+        MonadMessageOwnership::Conflict => Err(ProcessMonadMessageError::ConflictingPaymentSet),
+        MonadMessageOwnership::Missing
+        | MonadMessageOwnership::OutboxExact(_)
+        | MonadMessageOwnership::LegacyExact(_) => Err(ProcessMonadMessageError::OutboxUnavailable),
     }
 }
 
@@ -713,23 +728,13 @@ fn exact_owner_retained(
     registry: &Registry,
     request: &proto::MonadStampedMessage,
 ) -> Result<bool, ProcessMonadMessageError> {
-    if let Some(stored) = registry
-        .get_monad_message(&request.payload_hash)
-        .map_err(ProcessMonadMessageError::Infrastructure)?
-    {
-        return Ok(stored.message.as_ref() == Some(request));
-    }
-    if let Some(record) = registry
-        .monad_outbox_record(&request.payload_hash)
-        .map_err(ProcessMonadMessageError::Infrastructure)?
-    {
-        return Ok(record.canonical_message.as_deref() == Some(request.encode_to_vec().as_slice()));
-    }
     Ok(matches!(
         registry
-            .get_monad_message_attempt(&request.payload_hash, request)
+            .classify_monad_message_ownership(request)
             .map_err(ProcessMonadMessageError::Infrastructure)?,
-        MonadMessageAttemptClaim::ExistingExact(_)
+        MonadMessageOwnership::DeliveredExact(_)
+            | MonadMessageOwnership::OutboxExact(_)
+            | MonadMessageOwnership::LegacyExact(_)
     ))
 }
 
@@ -749,24 +754,12 @@ fn classify_after_reconcile_error(
     request: &proto::MonadStampedMessage,
     original: Report,
 ) -> Result<proto::StoredMonadMessage, ProcessMonadMessageError> {
-    if let Some(stored) = registry
-        .get_monad_message(&request.payload_hash)
+    match registry
+        .classify_monad_message_ownership(request)
         .map_err(ProcessMonadMessageError::Infrastructure)?
     {
-        return if stored.message.as_ref() == Some(request) {
-            Ok(stored)
-        } else {
-            Err(ProcessMonadMessageError::ConflictingPaymentSet)
-        };
-    }
-    if let Some(record) = registry
-        .monad_outbox_record(&request.payload_hash)
-        .map_err(ProcessMonadMessageError::Infrastructure)?
-    {
-        if record.canonical_message.as_deref() != Some(request.encode_to_vec().as_slice()) {
-            return Err(ProcessMonadMessageError::ConflictingPaymentSet);
-        }
-        return Err(match record.lifecycle {
+        MonadMessageOwnership::DeliveredExact(stored) => Ok(stored),
+        MonadMessageOwnership::OutboxExact(record) => Err(match record.lifecycle {
             MonadOutboxLifecycle::Terminal(terminal) => ProcessMonadMessageError::OutboxTerminal {
                 terminal,
                 retained: true,
@@ -775,17 +768,10 @@ fn classify_after_reconcile_error(
                 ProcessMonadMessageError::OutboxPending
             }
             MonadOutboxLifecycle::Delivered => ProcessMonadMessageError::Infrastructure(original),
-        });
-    }
-    match registry
-        .get_monad_message_attempt(&request.payload_hash, request)
-        .map_err(ProcessMonadMessageError::Infrastructure)?
-    {
-        MonadMessageAttemptClaim::ExistingExact(_) => Err(ProcessMonadMessageError::OutboxPending),
-        MonadMessageAttemptClaim::Conflict => Err(ProcessMonadMessageError::ConflictingPaymentSet),
-        MonadMessageAttemptClaim::Missing | MonadMessageAttemptClaim::New => {
-            Err(ProcessMonadMessageError::OutboxUnavailable)
-        }
+        }),
+        MonadMessageOwnership::LegacyExact(_) => Err(ProcessMonadMessageError::OutboxPending),
+        MonadMessageOwnership::Conflict => Err(ProcessMonadMessageError::ConflictingPaymentSet),
+        MonadMessageOwnership::Missing => Err(ProcessMonadMessageError::OutboxUnavailable),
     }
 }
 
@@ -809,25 +795,16 @@ async fn admit_monad_message<T: JsonRpcTransport + Clone>(
             actual: actual_hash,
         });
     }
-    if let Some(existing) = registry
-        .get_monad_message(declared_hash.as_slice())
-        .map_err(ProcessMonadMessageError::Infrastructure)?
-    {
-        return if existing.message.as_ref() == Some(&request) {
-            Ok(existing)
-        } else {
-            Err(ProcessMonadMessageError::ConflictingPaymentSet)
-        };
+    let ownership = registry
+        .classify_monad_message_ownership(&request)
+        .map_err(ProcessMonadMessageError::Infrastructure)?;
+    if let MonadMessageOwnership::DeliveredExact(existing) = &ownership {
+        return Ok(existing.clone());
     }
-
-    let canonical = request.encode_to_vec();
-    if let Some(existing) = registry
-        .monad_outbox_record(declared_hash.as_slice())
-        .map_err(ProcessMonadMessageError::Infrastructure)?
-    {
-        if existing.canonical_message.as_deref() != Some(canonical.as_slice()) {
-            return Err(ProcessMonadMessageError::ConflictingPaymentSet);
-        }
+    if matches!(&ownership, MonadMessageOwnership::Conflict) {
+        return Err(ProcessMonadMessageError::ConflictingPaymentSet);
+    }
+    if matches!(&ownership, MonadMessageOwnership::OutboxExact(_)) {
         #[cfg(test)]
         {
             let hook_key: [u8; 32] = declared_hash.as_slice().try_into().expect("SHA256 length");
@@ -860,12 +837,17 @@ async fn admit_monad_message<T: JsonRpcTransport + Clone>(
             Ok(MonadOutboxReconcileOutcome::Missing) => reread_delivered_owner(registry, &request),
         };
     }
-
-    let policy = match registry
-        .get_monad_message_attempt(declared_hash.as_slice(), &request)
-        .map_err(ProcessMonadMessageError::Infrastructure)?
+    if matches!(&ownership, MonadMessageOwnership::Missing)
+        && request.stamp_payments.len() > config.limits.max_members
     {
-        MonadMessageAttemptClaim::ExistingExact(legacy) => {
+        return Err(ProcessMonadMessageError::TooManyStampPayments {
+            actual: request.stamp_payments.len(),
+            maximum: config.limits.max_members,
+        });
+    }
+
+    let policy = match ownership {
+        MonadMessageOwnership::LegacyExact(legacy) => {
             let routing = routing_from_claimed_envelope(&request.encrypted_payload)?;
             MonadOutboxPolicy::new(
                 routing.recipient,
@@ -878,10 +860,7 @@ async fn admit_monad_message<T: JsonRpcTransport + Clone>(
             )
             .map_err(|err| ProcessMonadMessageError::InvalidEnvelope(err.to_string()))?
         }
-        MonadMessageAttemptClaim::Conflict => {
-            return Err(ProcessMonadMessageError::ConflictingPaymentSet)
-        }
-        MonadMessageAttemptClaim::Missing => {
+        MonadMessageOwnership::Missing => {
             let recipient = validate_envelope(&request.encrypted_payload, network_tag)?.recipient;
             let profile = registry
                 .get_monad_profile(recipient)
@@ -897,7 +876,9 @@ async fn admit_monad_message<T: JsonRpcTransport + Clone>(
             )
             .map_err(|err| ProcessMonadMessageError::InvalidEnvelope(err.to_string()))?
         }
-        MonadMessageAttemptClaim::New => unreachable!("lookup cannot create an attempt"),
+        MonadMessageOwnership::Conflict
+        | MonadMessageOwnership::DeliveredExact(_)
+        | MonadMessageOwnership::OutboxExact(_) => unreachable!("handled above"),
     };
     let payload_hash: [u8; 32] = request.payload_hash.as_slice().try_into().expect("checked");
     validate_payment_set(&request, payload_hash, &policy, config.expected_chain_id)?;
@@ -991,9 +972,10 @@ pub async fn process_monad_message<T: JsonRpcTransport + Clone>(
         return Err(ProcessMonadMessageError::MissingStampPayments);
     }
     if request.stamp_payments.len() > MAX_STAMP_PAYMENTS {
-        return Err(ProcessMonadMessageError::TooManyStampPayments(
-            request.stamp_payments.len(),
-        ));
+        return Err(ProcessMonadMessageError::TooManyStampPayments {
+            actual: request.stamp_payments.len(),
+            maximum: MAX_STAMP_PAYMENTS,
+        });
     }
 
     let payload_hash: [u8; 32] = request
@@ -1443,52 +1425,21 @@ pub async fn handle_put_monad_message(
         if Sha256::digest(message.encrypted_payload.clone().into()).as_slice() != payload_hash {
             return Err(PutMonadMessageError::NoncanonicalProtobuf { retained: false });
         }
-        if let Some(stored) = server
-            .registry
-            .get_monad_message(&payload_hash)
-            .map_err(|err| {
-                PutMonadMessageError::Process(ProcessMonadMessageError::Infrastructure(err))
-            })?
-        {
-            return if stored.message.as_ref() == Some(&message) {
-                Err(PutMonadMessageError::NoncanonicalProtobuf { retained: true })
-            } else {
-                Err(PutMonadMessageError::Process(
-                    ProcessMonadMessageError::ConflictingPaymentSet,
-                ))
-            };
-        }
-        if let Some(record) = server
-            .registry
-            .monad_outbox_record(&payload_hash)
-            .map_err(|err| {
-                PutMonadMessageError::Process(ProcessMonadMessageError::Infrastructure(err))
-            })?
-        {
-            let owned = crate::store::monad_outbox::DbMonadOutbox::canonical_message(&record)
-                .map_err(|err| {
-                    PutMonadMessageError::Process(ProcessMonadMessageError::Infrastructure(err))
-                })?;
-            if owned != message {
-                return Err(PutMonadMessageError::Process(
-                    ProcessMonadMessageError::ConflictingPaymentSet,
-                ));
-            }
-            return Err(PutMonadMessageError::NoncanonicalProtobuf { retained: true });
-        }
         return match server
             .registry
-            .get_monad_message_attempt(&payload_hash, &message)
+            .classify_monad_message_ownership(&message)
             .map_err(|err| {
                 PutMonadMessageError::Process(ProcessMonadMessageError::Infrastructure(err))
             })? {
-            MonadMessageAttemptClaim::ExistingExact(_) => {
+            MonadMessageOwnership::DeliveredExact(_)
+            | MonadMessageOwnership::OutboxExact(_)
+            | MonadMessageOwnership::LegacyExact(_) => {
                 Err(PutMonadMessageError::NoncanonicalProtobuf { retained: true })
             }
-            MonadMessageAttemptClaim::Conflict => Err(PutMonadMessageError::Process(
+            MonadMessageOwnership::Conflict => Err(PutMonadMessageError::Process(
                 ProcessMonadMessageError::ConflictingPaymentSet,
             )),
-            MonadMessageAttemptClaim::Missing | MonadMessageAttemptClaim::New => {
+            MonadMessageOwnership::Missing => {
                 Err(PutMonadMessageError::NoncanonicalProtobuf { retained: false })
             }
         };
@@ -1523,6 +1474,8 @@ pub(crate) struct MailboxChallengeBody {
     cursor: Option<String>,
     limit: usize,
     max_bytes: usize,
+    network_tag: String,
+    recovery_payload_hash: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1575,6 +1528,7 @@ pub(crate) struct PrivateChallengeQuery {
     cursor: Option<String>,
     limit: Option<usize>,
     max_bytes: Option<usize>,
+    recovery_payload_hash: Option<String>,
 }
 
 #[derive(Debug)]
@@ -1585,6 +1539,7 @@ pub(crate) enum PrivateMailboxError {
     StaleCursor,
     RecordTooLarge,
     AtCapacity,
+    RecoveryActive,
     Infrastructure(Report),
 }
 
@@ -1614,6 +1569,11 @@ impl IntoResponse for PrivateMailboxError {
             Self::AtCapacity => (
                 StatusCode::SERVICE_UNAVAILABLE,
                 Json(serde_json::json!({"error": "mailbox_auth_retryable"})),
+            )
+                .into_response(),
+            Self::RecoveryActive => (
+                StatusCode::CONFLICT,
+                Json(serde_json::json!({"error": "recovery_obligation_is_active"})),
             )
                 .into_response(),
             Self::Infrastructure(err) => {
@@ -1652,6 +1612,16 @@ fn parse_private_recipient(value: &str) -> Result<Address, PrivateMailboxError> 
     Address::from_hex(value).map_err(|_| PrivateMailboxError::InvalidRecipient)
 }
 
+fn parse_recovery_payload_hash(value: &str) -> Result<[u8; 32], PrivateMailboxError> {
+    if value.len() != 64 {
+        return Err(PrivateMailboxError::InvalidLimit);
+    }
+    let mut payload_hash = [0; 32];
+    hex::decode_to_slice(value, &mut payload_hash)
+        .map_err(|_| PrivateMailboxError::InvalidLimit)?;
+    Ok(payload_hash)
+}
+
 fn mailbox_auth_preimage(
     challenge: MailboxChallenge,
     binding: &MailboxRequestBinding,
@@ -1678,6 +1648,7 @@ fn private_binding(
     cursor: Option<&str>,
     limit: usize,
     max_bytes: usize,
+    recovery_payload_hash: Option<[u8; 32]>,
 ) -> Result<MailboxRequestBinding, PrivateMailboxError> {
     let runtime = server
         .monad_mailbox
@@ -1701,6 +1672,7 @@ fn private_binding(
         cursor,
         limit,
         max_bytes,
+        recovery_payload_hash,
     })
 }
 
@@ -1817,13 +1789,44 @@ pub(crate) async fn handle_issue_mailbox_challenge(
 ) -> Result<Json<MailboxChallengeBody>, PrivateMailboxError> {
     let recipient = parse_private_recipient(&recipient)?;
     let requested_since = private_since(params.since)?;
-    let (resource, default_limit, since) = match params.resource.as_str() {
-        "inbox" => (MailboxResource::Inbox, 50, requested_since),
-        "recovery" if requested_since == 0 => (MailboxResource::Recovery, 20, 0),
+    let (resource, default_limit, since, recovery_payload_hash) = match params.resource.as_str() {
+        "inbox" if params.recovery_payload_hash.is_none() => {
+            (MailboxResource::Inbox, 50, requested_since, None)
+        }
+        "recovery" if requested_since == 0 && params.recovery_payload_hash.is_none() => {
+            (MailboxResource::Recovery, 20, 0, None)
+        }
+        "recovery_ack"
+            if requested_since == 0
+                && params.cursor.is_none()
+                && params.limit.is_none()
+                && params.max_bytes.is_none() =>
+        {
+            let payload_hash = params
+                .recovery_payload_hash
+                .as_deref()
+                .and_then(|value| {
+                    let mut decoded = [0; 32];
+                    (value.len() == 64)
+                        .then(|| hex::decode_to_slice(value, &mut decoded).ok())
+                        .flatten()
+                        .map(|()| decoded)
+                })
+                .ok_or(PrivateMailboxError::InvalidLimit)?;
+            (MailboxResource::RecoveryAck, 1, 0, Some(payload_hash))
+        }
         _ => return Err(PrivateMailboxError::InvalidLimit),
     };
-    let limit = private_limit(params.limit, default_limit)?;
-    let max_bytes = private_max_bytes(params.max_bytes)?;
+    let limit = if resource == MailboxResource::RecoveryAck {
+        1
+    } else {
+        private_limit(params.limit, default_limit)?
+    };
+    let max_bytes = if resource == MailboxResource::RecoveryAck {
+        0
+    } else {
+        private_max_bytes(params.max_bytes)?
+    };
     let binding = private_binding(
         &server,
         recipient,
@@ -1832,6 +1835,7 @@ pub(crate) async fn handle_issue_mailbox_challenge(
         params.cursor.as_deref(),
         limit,
         max_bytes,
+        recovery_payload_hash,
     )?;
     let runtime = server
         .monad_mailbox
@@ -1847,11 +1851,14 @@ pub(crate) async fn handle_issue_mailbox_challenge(
         resource: match resource {
             MailboxResource::Inbox => "inbox",
             MailboxResource::Recovery => "recovery",
+            MailboxResource::RecoveryAck => "recovery_ack",
         },
         since,
         cursor: params.cursor,
         limit,
         max_bytes,
+        network_tag: hex::encode(runtime.network_tag()),
+        recovery_payload_hash: recovery_payload_hash.map(hex::encode),
     }))
 }
 
@@ -1874,6 +1881,7 @@ pub(crate) async fn handle_get_private_monad_messages(
         params.cursor.as_deref(),
         limit,
         max_bytes,
+        None,
     )?;
     let authentication = parse_private_authentication(&headers, &server, &binding)?;
     let runtime = server
@@ -1938,6 +1946,7 @@ pub(crate) async fn handle_get_private_monad_recovery(
         params.cursor.as_deref(),
         limit,
         max_bytes,
+        None,
     )?;
     let authentication = parse_private_authentication(&headers, &server, &binding)?;
     let runtime = server
@@ -2044,6 +2053,46 @@ pub(crate) async fn handle_get_private_monad_recovery(
         );
     }
     Ok(response)
+}
+
+/// Retire one exact terminal recovery obligation after the recipient has durably imported it.
+pub(crate) async fn handle_ack_private_monad_recovery(
+    Path((recipient, payload_hash)): Path<(String, String)>,
+    headers: HeaderMap,
+    Extension(server): Extension<RegistryServer>,
+) -> Result<Response, PrivateMailboxError> {
+    let recipient = parse_private_recipient(&recipient)?;
+    let payload_hash = parse_recovery_payload_hash(&payload_hash)?;
+    let binding = private_binding(
+        &server,
+        recipient,
+        MailboxResource::RecoveryAck,
+        0,
+        None,
+        1,
+        0,
+        Some(payload_hash),
+    )?;
+    let authentication = parse_private_authentication(&headers, &server, &binding)?;
+    let runtime = server
+        .monad_mailbox
+        .as_enabled()
+        .ok_or(PrivateMailboxError::Unauthorized)?;
+    let _read_permit = runtime
+        .try_acquire_private_read()
+        .ok_or(PrivateMailboxError::AtCapacity)?;
+    authenticate_private_recipient(authentication, &server, &binding)?;
+    match server
+        .registry
+        .acknowledge_monad_outbox_recovery(recipient, &payload_hash)
+        .map_err(PrivateMailboxError::Infrastructure)?
+    {
+        MonadRecoveryAck::Acknowledged | MonadRecoveryAck::Absent => {
+            Ok(StatusCode::NO_CONTENT.into_response())
+        }
+        MonadRecoveryAck::Active => Err(PrivateMailboxError::RecoveryActive),
+        MonadRecoveryAck::WrongRecipient => Err(PrivateMailboxError::Unauthorized),
+    }
 }
 
 fn recovery_json_size(
@@ -2720,11 +2769,7 @@ mod tests {
         headers
     }
 
-    fn client_mailbox_auth_preimage(
-        challenge: &Value,
-        recipient: Address,
-        network_tag: &[u8],
-    ) -> Vec<u8> {
+    fn client_mailbox_auth_preimage(challenge: &Value, recipient: Address) -> Vec<u8> {
         let signing_domain = challenge["signing_domain"].as_str().unwrap();
         let resource = challenge["resource"].as_str().unwrap();
         let mut bytes = Vec::new();
@@ -2734,15 +2779,21 @@ mod tests {
         bytes.extend_from_slice(&hex::decode(challenge["nonce"].as_str().unwrap()).unwrap());
         bytes.extend_from_slice(&challenge["expires_at_ms"].as_i64().unwrap().to_be_bytes());
         bytes.extend_from_slice(&hex::decode(challenge["token"].as_str().unwrap()).unwrap());
-        bytes.extend_from_slice(b"GET\0/message/monad/");
         match resource {
             "inbox" => {
+                bytes.extend_from_slice(b"GET\0/message/monad/");
                 bytes.extend_from_slice(b"inbox/");
                 bytes.push(1);
             }
             "recovery" => {
+                bytes.extend_from_slice(b"GET\0/message/monad/");
                 bytes.extend_from_slice(b"recovery/");
                 bytes.push(2);
+            }
+            "recovery_ack" => {
+                bytes.extend_from_slice(b"POST\0/message/monad/");
+                bytes.extend_from_slice(b"recovery-ack/");
+                bytes.push(3);
             }
             other => panic!("unexpected public mailbox resource {other}"),
         }
@@ -2757,8 +2808,14 @@ mod tests {
         }
         bytes.extend_from_slice(&challenge["limit"].as_u64().unwrap().to_be_bytes());
         bytes.extend_from_slice(&challenge["max_bytes"].as_u64().unwrap().to_be_bytes());
+        if resource == "recovery_ack" {
+            bytes.extend_from_slice(
+                &hex::decode(challenge["recovery_payload_hash"].as_str().unwrap()).unwrap(),
+            );
+        }
+        let network_tag = hex::decode(challenge["network_tag"].as_str().unwrap()).unwrap();
         bytes.extend_from_slice(&(network_tag.len() as u32).to_be_bytes());
-        bytes.extend_from_slice(network_tag);
+        bytes.extend_from_slice(&network_tag);
         bytes
     }
 
@@ -3749,6 +3806,22 @@ mod tests {
                 "POST",
                 "/message/monad/auth/0x0000000000000000000000000000000000000000",
             ),
+            (
+                "GET",
+                "/message/monad/inbox/0x0000000000000000000000000000000000000000",
+            ),
+            (
+                "GET",
+                "/message/monad/recovery/0x0000000000000000000000000000000000000000",
+            ),
+            (
+                "POST",
+                concat!(
+                    "/message/monad/recovery/",
+                    "0x0000000000000000000000000000000000000000/",
+                    "0000000000000000000000000000000000000000000000000000000000000000/ack"
+                ),
+            ),
         ] {
             let response = router
                 .clone()
@@ -4501,17 +4574,22 @@ mod tests {
         let new_message = valid_signed_message_with_members(0x76, &[0x48, 0x49]);
         let transport = MockTransport::default();
         let permits = MonadOutboxPermitPool::new(config.max_concurrency);
-        assert!(admit_monad_message(
-            &transport,
-            &new_registry,
-            &config,
-            &permits,
-            10_000,
-            b"MONT",
-            new_message.clone(),
-        )
-        .await
-        .is_err());
+        assert!(matches!(
+            admit_monad_message(
+                &transport,
+                &new_registry,
+                &config,
+                &permits,
+                10_000,
+                b"MONT",
+                new_message.clone(),
+            )
+            .await,
+            Err(ProcessMonadMessageError::TooManyStampPayments {
+                actual: 2,
+                maximum: 1
+            })
+        ));
         assert!(transport.calls().is_empty());
         assert!(new_registry
             .monad_outbox_record(&new_message.payload_hash)
@@ -4562,8 +4640,8 @@ mod tests {
             &registry,
             &config,
             &permits,
-            10_000,
-            b"MONT",
+            99_999,
+            b"DIFFERENT",
             message.clone(),
         )
         .await
@@ -4766,6 +4844,7 @@ mod tests {
             cursor: None,
             limit: 1,
             max_bytes: 1024,
+            recovery_payload_hash: None,
         };
         let mut headers = signed_private_headers(&server, &binding);
         headers.insert(
@@ -4850,13 +4929,14 @@ mod tests {
                 cursor: Some(cursor.clone()),
                 limit: Some(1),
                 max_bytes: Some(1024),
+                recovery_payload_hash: None,
             }),
             Extension(server.clone()),
         )
         .await
         .unwrap();
         let challenge = serde_json::to_value(challenge).unwrap();
-        let preimage = client_mailbox_auth_preimage(&challenge, recipient, b"MONT");
+        let preimage = client_mailbox_auth_preimage(&challenge, recipient);
         let headers = signed_public_challenge_headers(&challenge, &preimage);
         let response = handle_get_private_monad_recovery(
             Path(recipient.to_hex()),
@@ -4880,13 +4960,14 @@ mod tests {
                 cursor: Some(cursor.clone()),
                 limit: Some(1),
                 max_bytes: Some(1024),
+                recovery_payload_hash: None,
             }),
             Extension(server.clone()),
         )
         .await
         .unwrap();
         let challenge = serde_json::to_value(challenge).unwrap();
-        let preimage = client_mailbox_auth_preimage(&challenge, recipient, b"MONT");
+        let preimage = client_mailbox_auth_preimage(&challenge, recipient);
         let headers = signed_public_challenge_headers(&challenge, &preimage);
         let substituted = cursor.to_ascii_uppercase();
         assert_ne!(substituted, cursor);
@@ -4912,6 +4993,298 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn challenge_exposes_empty_runtime_network_tag_for_client_only_preimage() {
+        let (_tempdir, registry) = test_registry();
+        let mut server = test_server(registry);
+        server.monad_mailbox = crate::monad_mailbox::MonadMailboxRuntime::enabled(
+            HttpTransport::new("http://127.0.0.1:1".parse().unwrap()),
+            Arc::new(crate::monad_outbox::MonadOutboxReconcileConfig::default()),
+            1,
+            Vec::new(),
+        );
+        let recipient = recipient_address();
+        let Json(challenge) = handle_issue_mailbox_challenge(
+            Path(recipient.to_hex()),
+            Query(PrivateChallengeQuery {
+                resource: "inbox".to_string(),
+                since: Some(0),
+                cursor: None,
+                limit: Some(1),
+                max_bytes: Some(1024),
+                recovery_payload_hash: None,
+            }),
+            Extension(server.clone()),
+        )
+        .await
+        .unwrap();
+        let challenge = serde_json::to_value(challenge).unwrap();
+        assert_eq!(challenge["network_tag"], "");
+        let headers = signed_public_challenge_headers(
+            &challenge,
+            &client_mailbox_auth_preimage(&challenge, recipient),
+        );
+        let response = handle_get_private_monad_messages(
+            Path(recipient.to_hex()),
+            Query(PrivateInboxQuery {
+                since: Some(0),
+                cursor: None,
+                limit: Some(1),
+                max_bytes: Some(1024),
+            }),
+            headers,
+            Extension(server),
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[test]
+    fn registry_server_debug_redacts_mailbox_hmac_secret() {
+        let secret = [0xa5; 32];
+        let (_tempdir, registry) = test_registry();
+        let mut server = test_server(registry);
+        server.monad_mailbox =
+            crate::monad_mailbox::MonadMailboxRuntime::enabled_with_auth_secret_for_test(
+                HttpTransport::new("http://127.0.0.1:1".parse().unwrap()),
+                Arc::new(crate::monad_outbox::MonadOutboxReconcileConfig::default()),
+                1,
+                b"MONT".to_vec(),
+                secret,
+            );
+        let formatted = format!("{server:?}");
+        assert!(formatted.contains("<redacted>"));
+        assert!(!formatted.contains(&format!("{secret:?}")));
+        assert!(!formatted.contains(&hex::encode(secret)));
+    }
+
+    #[tokio::test]
+    async fn recipient_ack_is_payload_bound_idempotent_and_releases_only_terminal_quota() {
+        let (_tempdir, registry) = test_registry();
+        let mut config = crate::monad_outbox::MonadOutboxReconcileConfig::default();
+        config.limits.max_recovery_records = 2;
+        config.limits.max_recovery_records_per_recipient = 2;
+        let policy = test_outbox_policy();
+        let terminal = valid_signed_message_with_members(0x91, &[0x71, 0x72]);
+        assert_eq!(
+            registry
+                .claim_monad_outbox(&terminal, &policy, 1, &config.limits)
+                .unwrap(),
+            MonadOutboxClaim::New
+        );
+        let first_lease = match registry
+            .acquire_monad_outbox_reconcile_lease(&terminal.payload_hash, 0, 2, &config.limits)
+            .unwrap()
+        {
+            MonadOutboxLeaseAcquire::Acquired { lease, .. } => lease,
+            other => panic!("expected first acknowledgement lease, got {other:?}"),
+        };
+        registry
+            .complete_confirmed_monad_outbox_member(
+                &terminal.payload_hash,
+                0,
+                first_lease,
+                10_000,
+                7,
+                3,
+            )
+            .unwrap();
+        let second_lease = match registry
+            .acquire_monad_outbox_reconcile_lease(&terminal.payload_hash, 1, 4, &config.limits)
+            .unwrap()
+        {
+            MonadOutboxLeaseAcquire::Acquired { lease, .. } => lease,
+            other => panic!("expected terminal acknowledgement lease, got {other:?}"),
+        };
+        registry
+            .complete_terminal_monad_outbox_member(
+                &terminal.payload_hash,
+                1,
+                second_lease,
+                MonadOutboxTerminal::StaleNonce,
+                "terminal prefix",
+                5,
+                &config.limits,
+            )
+            .unwrap();
+
+        let blocked = valid_signed_message(0x92, 0x73);
+        let active = valid_signed_message(0x93, 0x74);
+        assert_eq!(
+            registry
+                .claim_monad_outbox(&active, &policy, 7, &config.limits)
+                .unwrap(),
+            MonadOutboxClaim::New
+        );
+        assert_eq!(
+            registry
+                .claim_monad_outbox(&blocked, &policy, 6, &config.limits)
+                .unwrap(),
+            MonadOutboxClaim::AtCapacity
+        );
+
+        let mut server = test_server(registry);
+        server.monad_mailbox = crate::monad_mailbox::MonadMailboxRuntime::enabled(
+            HttpTransport::new("http://127.0.0.1:1".parse().unwrap()),
+            Arc::new(config.clone()),
+            10_000,
+            vec![0, 0xff, 0x80],
+        );
+        let recipient = recipient_address();
+        let issue = |payload_hash: &[u8]| PrivateChallengeQuery {
+            resource: "recovery_ack".to_string(),
+            since: None,
+            cursor: None,
+            limit: None,
+            max_bytes: None,
+            recovery_payload_hash: Some(hex::encode(payload_hash)),
+        };
+
+        let Json(challenge) = handle_issue_mailbox_challenge(
+            Path(recipient.to_hex()),
+            Query(issue(&terminal.payload_hash)),
+            Extension(server.clone()),
+        )
+        .await
+        .unwrap();
+        let challenge = serde_json::to_value(challenge).unwrap();
+        assert_eq!(challenge["network_tag"], "00ff80");
+        let headers = signed_public_challenge_headers(
+            &challenge,
+            &client_mailbox_auth_preimage(&challenge, recipient),
+        );
+        assert!(matches!(
+            handle_ack_private_monad_recovery(
+                Path((recipient.to_hex(), hex::encode(&active.payload_hash))),
+                headers,
+                Extension(server.clone()),
+            )
+            .await,
+            Err(PrivateMailboxError::Unauthorized)
+        ));
+        assert!(server
+            .registry
+            .monad_outbox_record(&terminal.payload_hash)
+            .unwrap()
+            .is_some());
+
+        let wrong_recipient = Address([9; 20]);
+        let Json(wrong_challenge) = handle_issue_mailbox_challenge(
+            Path(wrong_recipient.to_hex()),
+            Query(issue(&terminal.payload_hash)),
+            Extension(server.clone()),
+        )
+        .await
+        .unwrap();
+        let wrong_challenge = serde_json::to_value(wrong_challenge).unwrap();
+        let wrong_headers = signed_public_challenge_headers(
+            &wrong_challenge,
+            &client_mailbox_auth_preimage(&wrong_challenge, wrong_recipient),
+        );
+        assert!(matches!(
+            handle_ack_private_monad_recovery(
+                Path((
+                    wrong_recipient.to_hex(),
+                    hex::encode(&terminal.payload_hash)
+                )),
+                wrong_headers,
+                Extension(server.clone()),
+            )
+            .await,
+            Err(PrivateMailboxError::Unauthorized)
+        ));
+        assert!(server
+            .registry
+            .monad_outbox_record(&terminal.payload_hash)
+            .unwrap()
+            .is_some());
+
+        let Json(active_challenge) = handle_issue_mailbox_challenge(
+            Path(recipient.to_hex()),
+            Query(issue(&active.payload_hash)),
+            Extension(server.clone()),
+        )
+        .await
+        .unwrap();
+        let active_challenge = serde_json::to_value(active_challenge).unwrap();
+        let active_headers = signed_public_challenge_headers(
+            &active_challenge,
+            &client_mailbox_auth_preimage(&active_challenge, recipient),
+        );
+        assert!(matches!(
+            handle_ack_private_monad_recovery(
+                Path((recipient.to_hex(), hex::encode(&active.payload_hash))),
+                active_headers,
+                Extension(server.clone()),
+            )
+            .await,
+            Err(PrivateMailboxError::RecoveryActive)
+        ));
+
+        let Json(challenge) = handle_issue_mailbox_challenge(
+            Path(recipient.to_hex()),
+            Query(issue(&terminal.payload_hash)),
+            Extension(server.clone()),
+        )
+        .await
+        .unwrap();
+        let challenge = serde_json::to_value(challenge).unwrap();
+        let headers = signed_public_challenge_headers(
+            &challenge,
+            &client_mailbox_auth_preimage(&challenge, recipient),
+        );
+        assert_eq!(
+            handle_ack_private_monad_recovery(
+                Path((recipient.to_hex(), hex::encode(&terminal.payload_hash))),
+                headers,
+                Extension(server.clone()),
+            )
+            .await
+            .unwrap()
+            .status(),
+            StatusCode::NO_CONTENT
+        );
+        assert!(server
+            .registry
+            .monad_outbox_record(&terminal.payload_hash)
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            server
+                .registry
+                .claim_monad_outbox(&blocked, &policy, 8, &config.limits)
+                .unwrap(),
+            MonadOutboxClaim::New,
+            "acknowledgement must release the exact durable reservation"
+        );
+
+        let Json(retry_challenge) = handle_issue_mailbox_challenge(
+            Path(recipient.to_hex()),
+            Query(issue(&terminal.payload_hash)),
+            Extension(server.clone()),
+        )
+        .await
+        .unwrap();
+        let retry_challenge = serde_json::to_value(retry_challenge).unwrap();
+        let retry_headers = signed_public_challenge_headers(
+            &retry_challenge,
+            &client_mailbox_auth_preimage(&retry_challenge, recipient),
+        );
+        assert_eq!(
+            handle_ack_private_monad_recovery(
+                Path((recipient.to_hex(), hex::encode(&terminal.payload_hash))),
+                retry_headers,
+                Extension(server),
+            )
+            .await
+            .unwrap()
+            .status(),
+            StatusCode::NO_CONTENT,
+            "a response-lost retry is idempotent"
+        );
+    }
+
+    #[tokio::test]
     async fn private_auth_verifies_signature_and_rejects_replay_and_cross_recipient() {
         let (_tempdir, registry) = test_registry();
         let mut server = test_server(registry);
@@ -4930,6 +5303,7 @@ mod tests {
             cursor: None,
             limit: 10,
             max_bytes: 1024,
+            recovery_payload_hash: None,
         };
         let challenge = runtime.issue_challenge(&binding, now_ms());
         let digest = Sha256::digest(mailbox_auth_preimage(challenge, &binding, b"MONT").into());
@@ -5014,6 +5388,7 @@ mod tests {
             cursor: None,
             limit: 1,
             max_bytes: 1024,
+            recovery_payload_hash: None,
         };
         for header in [MAILBOX_EPOCH_HEADER, MAILBOX_SIGNATURE_HEADER] {
             let mut headers = signed_private_headers(&server, &binding);
@@ -5034,6 +5409,7 @@ mod tests {
                 Some(&"aa".repeat(4096)),
                 1,
                 1024,
+                None,
             ),
             Err(PrivateMailboxError::Unauthorized)
         ));
@@ -5090,6 +5466,7 @@ mod tests {
             cursor: None,
             limit: 1,
             max_bytes: 64 * 1024,
+            recovery_payload_hash: None,
         };
         let mut first_request = axum::http::Request::builder()
             .method("GET")
@@ -5223,6 +5600,7 @@ mod tests {
             cursor: None,
             limit: 1,
             max_bytes: 64 * 1024,
+            recovery_payload_hash: None,
         };
         let headers = signed_private_headers(&server, &binding);
         let error = handle_get_private_monad_recovery(

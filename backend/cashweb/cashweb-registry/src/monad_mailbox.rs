@@ -1,6 +1,6 @@
 //! Process-owned configuration and authorization state for durable Monad direct messages.
 
-use std::sync::Arc;
+use std::{fmt, sync::Arc};
 
 use hmac::{Hmac, Mac};
 use rand::RngCore;
@@ -36,6 +36,8 @@ pub(crate) enum MailboxResource {
     Inbox,
     /// Incomplete confirmed-prefix recovery ordered by `payload_hash`.
     Recovery,
+    /// Recipient acknowledgement of one exact terminal recovery obligation.
+    RecoveryAck,
 }
 
 impl MailboxResource {
@@ -43,6 +45,7 @@ impl MailboxResource {
         match self {
             Self::Inbox => 1,
             Self::Recovery => 2,
+            Self::RecoveryAck => 3,
         }
     }
 }
@@ -102,15 +105,20 @@ pub(crate) struct MailboxRequestBinding {
     pub(crate) cursor: Option<MailboxCursorBinding>,
     pub(crate) limit: usize,
     pub(crate) max_bytes: usize,
+    /// Exact terminal recovery payload being acknowledged, absent on read requests.
+    pub(crate) recovery_payload_hash: Option<[u8; 32]>,
 }
 
 impl MailboxRequestBinding {
     pub(crate) fn append_canonical(&self, bytes: &mut Vec<u8>) {
-        bytes.extend_from_slice(b"GET\0/message/monad/");
-        bytes.extend_from_slice(match self.resource {
-            MailboxResource::Inbox => b"inbox/",
-            MailboxResource::Recovery => b"recovery/",
-        });
+        let (method, path): (&[u8], &[u8]) = match self.resource {
+            MailboxResource::Inbox => (b"GET", b"inbox/"),
+            MailboxResource::Recovery => (b"GET", b"recovery/"),
+            MailboxResource::RecoveryAck => (b"POST", b"recovery-ack/"),
+        };
+        bytes.extend_from_slice(method);
+        bytes.extend_from_slice(b"\0/message/monad/");
+        bytes.extend_from_slice(path);
         bytes.push(self.resource.tag());
         bytes.extend_from_slice(&self.recipient.0);
         bytes.extend_from_slice(&self.since.to_be_bytes());
@@ -125,6 +133,13 @@ impl MailboxRequestBinding {
         }
         bytes.extend_from_slice(&(self.limit as u64).to_be_bytes());
         bytes.extend_from_slice(&(self.max_bytes as u64).to_be_bytes());
+        if self.resource == MailboxResource::RecoveryAck {
+            bytes.extend_from_slice(
+                &self
+                    .recovery_payload_hash
+                    .expect("recovery acknowledgement binding requires a payload hash"),
+            );
+        }
     }
 }
 
@@ -153,10 +168,18 @@ pub struct MailboxChallenge {
     pub token: [u8; 32],
 }
 
-#[derive(Debug)]
 struct MailboxAuthState {
     epoch: [u8; 32],
     secret: [u8; 32],
+}
+
+impl fmt::Debug for MailboxAuthState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MailboxAuthState")
+            .field("epoch", &self.epoch)
+            .field("secret", &"<redacted>")
+            .finish()
+    }
 }
 
 impl MailboxAuthState {
@@ -240,6 +263,7 @@ impl MailboxAuthState {
         let position_len = match resource {
             MailboxResource::Inbox => 8 + 32,
             MailboxResource::Recovery => 32,
+            MailboxResource::RecoveryAck => return None,
         };
         let unsigned_len = 2 + 20 + position_len;
         let decoded_len = unsigned_len + 32;
@@ -268,6 +292,7 @@ impl MailboxAuthState {
                 payload_hash,
             },
             MailboxResource::Recovery => MailboxCursor::Recovery { payload_hash },
+            MailboxResource::RecoveryAck => return None,
         })
     }
 }
@@ -289,6 +314,29 @@ impl MonadMailboxRuntime {
             min_value_wei,
             network_tag,
             auth: MailboxAuthState::new(),
+        }))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn enabled_with_auth_secret_for_test(
+        transport: HttpTransport,
+        reconcile: Arc<MonadOutboxReconcileConfig>,
+        min_value_wei: u128,
+        network_tag: Vec<u8>,
+        secret: [u8; 32],
+    ) -> Self {
+        let max_concurrency = reconcile.max_concurrency.max(1);
+        Self::Enabled(Arc::new(EnabledMonadMailboxRuntime {
+            transport,
+            reconcile,
+            outbox_permits: MonadOutboxPermitPool::new(max_concurrency),
+            private_read_permits: Arc::new(Semaphore::new(max_concurrency)),
+            min_value_wei,
+            network_tag,
+            auth: MailboxAuthState {
+                epoch: [0x51; 32],
+                secret,
+            },
         }))
     }
 
@@ -395,6 +443,7 @@ mod tests {
             cursor: None,
             limit: 10,
             max_bytes: 1024,
+            recovery_payload_hash: None,
         }
     }
 
@@ -422,6 +471,22 @@ mod tests {
             let challenge = enabled.issue_challenge(&request, 0);
             assert!(enabled.verify_challenge(&request, challenge, 0));
         }
+    }
+
+    #[test]
+    fn debug_redacts_mailbox_hmac_secret() {
+        let secret = [0xa5; 32];
+        let runtime = MonadMailboxRuntime::enabled_with_auth_secret_for_test(
+            HttpTransport::new("http://127.0.0.1:1".parse().unwrap()),
+            Arc::new(MonadOutboxReconcileConfig::default()),
+            1,
+            b"MONT".to_vec(),
+            secret,
+        );
+        let formatted = format!("{runtime:?}");
+        assert!(formatted.contains("<redacted>"));
+        assert!(!formatted.contains(&format!("{secret:?}")));
+        assert!(!formatted.contains(&hex::encode(secret)));
     }
 
     #[test]

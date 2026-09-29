@@ -580,6 +580,16 @@ impl Registry {
             .claim(&message.payload_hash, message, policy, now_ms, limits)
     }
 
+    /// Coherently classify all durable owner forms for one candidate request.
+    pub(crate) fn classify_monad_message_ownership(
+        &self,
+        message: &proto::MonadStampedMessage,
+    ) -> Result<crate::store::monad_outbox::MonadMessageOwnership> {
+        self.db
+            .monad_outbox()
+            .classify_ownership(&message.payload_hash, message)
+    }
+
     /// Read one canonical outbox record.
     pub(crate) fn monad_outbox_record(
         &self,
@@ -642,19 +652,12 @@ impl Registry {
         self.db.monad_outbox().get_member(payload_hash, child_index)
     }
 
-    /// Recover canonical raw bytes through an index/hash-checked child reference.
-    pub(crate) fn monad_outbox_referenced_raw_tx(
+    /// Load one immutable canonical/member snapshot for a complete reconciliation pass.
+    pub(crate) fn monad_outbox_reconciliation_snapshot(
         &self,
         payload_hash: &[u8],
-        child_index: u32,
-    ) -> Result<(
-        crate::store::monad_outbox::MonadOutboxRecord,
-        crate::store::monad_outbox::MonadOutboxMember,
-        Vec<u8>,
-    )> {
-        self.db
-            .monad_outbox()
-            .referenced_raw_tx(payload_hash, child_index)
+    ) -> Result<Option<crate::store::monad_outbox::MonadOutboxSnapshot>> {
+        self.db.monad_outbox().reconciliation_snapshot(payload_hash)
     }
 
     /// Enumerate the bounded set of claims which need startup reconciliation.
@@ -666,9 +669,28 @@ impl Registry {
         self.db.monad_outbox().list_active_after(after, limit)
     }
 
-    /// Supersede durable member leases left by the prior process before readiness.
-    pub(crate) fn supersede_monad_outbox_startup_leases(&self, now_ms: i64) -> Result<()> {
-        self.db.monad_outbox().supersede_startup_leases(now_ms)
+    /// Validate one bounded page of durable chain authority before startup mutation.
+    pub(crate) fn bind_monad_outbox_chain_page(
+        &self,
+        expected_chain_id: u64,
+        max_rows: usize,
+        max_bytes: usize,
+    ) -> Result<crate::store::monad_outbox::ChainBindingProgress> {
+        self.db
+            .monad_outbox()
+            .bind_chain_page(expected_chain_id, max_rows, max_bytes)
+    }
+
+    /// Supersede one bounded page of durable leases left by the prior process.
+    pub(crate) fn supersede_monad_outbox_startup_leases_page(
+        &self,
+        now_ms: i64,
+        max_claims: usize,
+        max_bytes: usize,
+    ) -> Result<crate::store::monad_outbox::StartupLeasePage> {
+        self.db
+            .monad_outbox()
+            .supersede_startup_leases_page(now_ms, max_claims, max_bytes)
     }
 
     /// Enforce configured compact-history bounds independently of new claim transitions.
@@ -862,6 +884,17 @@ impl Registry {
                 max_canonical_bytes,
                 max_inspected_bytes,
             )
+    }
+
+    /// Atomically retire one recipient-authenticated terminal recovery obligation.
+    pub(crate) fn acknowledge_monad_outbox_recovery(
+        &self,
+        recipient: Address,
+        payload_hash: &[u8],
+    ) -> Result<crate::store::monad_outbox::MonadRecoveryAck> {
+        self.db
+            .monad_outbox()
+            .acknowledge_terminal_recovery(&recipient, payload_hash)
     }
 
     /// Fully verify and write a Monad-native profile registration (ticket #45) -- the Monad

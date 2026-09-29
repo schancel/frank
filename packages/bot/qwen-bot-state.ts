@@ -22,6 +22,8 @@ import { mkdirSync } from 'fs'
 import level, { LevelDB } from 'level'
 import { join } from 'path'
 
+import { canonicalMonadEnvelopeAddress } from '@frank/cashweb/relay/monad-message-envelope'
+
 import { QwenChatMessage } from './qwen-client'
 
 const SINCE_KEY = '__since__'
@@ -71,14 +73,22 @@ export class QwenBotStateStore {
       } else if (key === SINCE_PROFILES_KEY) {
         this.sinceProfiles = JSON.parse(value)
       } else if (key.startsWith(GREETED_PREFIX)) {
-        this.greetedAddresses.add(key.slice(GREETED_PREFIX.length))
+        this.greetedAddresses.add(
+          canonicalMonadEnvelopeAddress(key.slice(GREETED_PREFIX.length)),
+        )
       } else if (key.startsWith(PROCESSED_PREFIX)) {
         this.processedPayloadHashes.add(key.slice(PROCESSED_PREFIX.length))
       } else if (key.startsWith(CONVERSATION_PREFIX)) {
-        this.conversations.set(
+        const address = canonicalMonadEnvelopeAddress(
           key.slice(CONVERSATION_PREFIX.length),
-          JSON.parse(value),
         )
+        // Prefer an already-canonical durable record if a legacy database contains multiple
+        // casing variants. They are one EVM identity, but concatenating histories could replay
+        // turns; a later write replaces the selected history under the canonical key.
+        const canonicalKey = CONVERSATION_PREFIX + address
+        if (!this.conversations.has(address) || key === canonicalKey) {
+          this.conversations.set(address, JSON.parse(value))
+        }
       }
     }
   }
@@ -114,12 +124,13 @@ export class QwenBotStateStore {
   }
 
   hasGreeted(address: string): boolean {
-    return this.greetedAddresses.has(address)
+    return this.greetedAddresses.has(canonicalMonadEnvelopeAddress(address))
   }
 
   addGreeted(address: string): void {
-    this.greetedAddresses.add(address)
-    this.pendingWrites.push(this.db.put(GREETED_PREFIX + address, '1'))
+    const canonicalAddress = canonicalMonadEnvelopeAddress(address)
+    this.greetedAddresses.add(canonicalAddress)
+    this.pendingWrites.push(this.db.put(GREETED_PREFIX + canonicalAddress, '1'))
   }
 
   hasProcessed(payloadHashHex: string): boolean {
@@ -128,20 +139,24 @@ export class QwenBotStateStore {
 
   addProcessed(payloadHashHex: string): void {
     this.processedPayloadHashes.add(payloadHashHex)
-    this.pendingWrites.push(
-      this.db.put(PROCESSED_PREFIX + payloadHashHex, '1'),
-    )
+    this.pendingWrites.push(this.db.put(PROCESSED_PREFIX + payloadHashHex, '1'))
   }
 
   getConversation(address: string): QwenChatMessage[] | undefined {
-    const history = this.conversations.get(address)
+    const history = this.conversations.get(
+      canonicalMonadEnvelopeAddress(address),
+    )
     return history ? [...history] : undefined
   }
 
   setConversation(address: string, history: QwenChatMessage[]): void {
-    this.conversations.set(address, [...history])
+    const canonicalAddress = canonicalMonadEnvelopeAddress(address)
+    this.conversations.set(canonicalAddress, [...history])
     this.pendingWrites.push(
-      this.db.put(CONVERSATION_PREFIX + address, JSON.stringify(history)),
+      this.db.put(
+        CONVERSATION_PREFIX + canonicalAddress,
+        JSON.stringify(history),
+      ),
     )
   }
 }

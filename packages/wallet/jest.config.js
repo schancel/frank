@@ -10,6 +10,8 @@ module.exports = {
   // Substitute the Node-safe stub (`vite-env.node.ts`) for tests only; Vite and `tsx` both
   // resolve the real file normally, unaffected by this (Jest-only) config.
   moduleNameMapper: {
+    '^@frank/cashweb/(.*)$': '<rootDir>/../cashweb/$1',
+    '^@frank/wallet/(.*)$': '<rootDir>/$1',
     '^\\./vite-env$': '<rootDir>/chain/vite-env.node.ts',
   },
   transform: {

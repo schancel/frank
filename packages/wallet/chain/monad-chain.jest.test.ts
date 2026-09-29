@@ -493,6 +493,57 @@ describe('createMonadChain: directMessages.send', () => {
 })
 
 describe('createMonadChain: directMessages.fetchSince', () => {
+  it('rejects authenticated malformed plaintext per record and returns the following message', async () => {
+    const chain = createMonadChain(TEST_CONFIG)
+    const alice = MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX)
+    const bob = MonadIdentity.fromPrivateKeyHex(BOB_PRIVATE_KEY_HEX)
+    const wallet = makeWallet(bob)
+    const { buildEnvelope } = jest.requireActual(
+      '@frank/cashweb/relay/monad-message-envelope',
+    )
+    const envelope = (plaintext: string): Uint8Array =>
+      buildEnvelope({
+        fromAddress: alice.address.raw,
+        fromPrivateKey: alice.toBitcorePrivateKey(),
+        toAddress: bob.address.raw,
+        toPubKey: bob.compressedPubKey,
+        plaintext,
+        networkTag: TEST_CONFIG.networkTag,
+      })
+    const record = (
+      plaintext: string,
+      payloadByte: string,
+      timestamp: number,
+    ): StoredMonadMessageProto => ({
+      message: {
+        stampPayments: [],
+        encryptedPayload: envelope(plaintext),
+        payloadHash: getBytes(`0x${payloadByte.repeat(32)}`),
+      },
+      timestamp,
+      networkTag: new Uint8Array(0),
+    })
+    const validItems: MessageItem[] = [{ type: 'text', text: 'after poison' }]
+    mockedFetchMonadMessagesSince.mockResolvedValueOnce([
+      record('{authenticated but not message items', 'aa', 100),
+      record(serializeMessageItems(validItems), 'bb', 200),
+    ])
+    mockedFetchMonadProfile.mockResolvedValue({
+      address: alice.address,
+      pubKey: new Uint8Array(alice.compressedPubKey),
+    })
+
+    await expect(
+      chain.directMessages.fetchSince({ wallet, sinceMs: 0 }),
+    ).resolves.toEqual([
+      expect.objectContaining({
+        items: validItems,
+        payloadDigest: 'bb'.repeat(32),
+        receivedTime: 200,
+      }),
+    ])
+  })
+
   it('decrypts envelopes addressed to the wallet and skips everything else', async () => {
     const chain = createMonadChain(TEST_CONFIG)
     const alice = MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX)

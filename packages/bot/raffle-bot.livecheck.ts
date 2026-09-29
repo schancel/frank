@@ -51,6 +51,7 @@ import { resolve } from 'path'
 import { Provider, Transaction, hexlify } from 'ethers'
 
 import {
+  canonicalMonadEnvelopeAddress,
   parseEnvelope,
   sameMonadEnvelopeAddress,
   tryDecryptEnvelope,
@@ -69,7 +70,11 @@ import {
 import '@frank/wallet/message-item-plugins/built-in'
 import '@frank/wallet/message-item-plugins/raffle'
 import { HydratedRaffleItem } from '@frank/wallet/message-item-plugins/raffle'
-import { combineEntrantEntropy, pickWinnerIndex, sha256Hex } from '@frank/wallet/raffle/draw'
+import {
+  combineEntrantEntropy,
+  pickWinnerIndex,
+  sha256Hex,
+} from '@frank/wallet/raffle/draw'
 import { MonadHttpClient } from '@frank/wallet/monad-http'
 import { MonadAccountTxSigner } from '@frank/wallet/monad-account-tx'
 import {
@@ -80,7 +85,12 @@ import {
   setUpFundedStampClient,
   waitForConfirmation,
 } from './qwen-bot-common'
-import { RaffleBotStateStore, RaffleEntrant, RaffleRoundRecord } from './raffle-bot-state'
+import {
+  hasRaffleEntrant,
+  RaffleBotStateStore,
+  RaffleEntrant,
+  RaffleRoundRecord,
+} from './raffle-bot-state'
 
 function sleep(ms: number): Promise<void> {
   return new Promise(r => setTimeout(r, ms))
@@ -129,14 +139,20 @@ async function ensureIdentityFunded(params: {
     shortfall,
   )
   const txHash = await params.mainAccountSigner.submit(signedTx)
-  await waitForConfirmation(params.mainAccountSigner, txHash, `${params.label} identity funding`)
+  await waitForConfirmation(
+    params.mainAccountSigner,
+    txHash,
+    `${params.label} identity funding`,
+  )
 }
 
 async function main() {
   const relayBaseUrl = process.env.E2E_DEMO_RELAY_URL ?? 'http://127.0.0.1:8098'
   const rpcUrl = requiredEnv('MONAD_TESTNET_HTTP_RPC_URL')
   const networkTag = requiredEnv('FRANK_NETWORK_TAG')
-  const minimumStampValueWei = BigInt(requiredEnv('CASHWEB_STAMP_MIN_BURN_VALUE_WEI'))
+  const minimumStampValueWei = BigInt(
+    requiredEnv('CASHWEB_STAMP_MIN_BURN_VALUE_WEI'),
+  )
   const entryPriceWei = BigInt(
     process.env.RAFFLE_BOT_ENTRY_PRICE_WEI ?? '20000000000000000', // 0.02 MON
   )
@@ -168,9 +184,13 @@ async function main() {
   )
   const pollIntervalMs = Number(process.env.RAFFLE_BOT_POLL_INTERVAL_MS ?? 4000)
   const maxRounds = Number(process.env.RAFFLE_BOT_MAX_ROUNDS ?? 1000)
-  const idleTimeoutMs = Number(process.env.RAFFLE_BOT_IDLE_TIMEOUT_MS ?? 10 * 60 * 1000)
+  const idleTimeoutMs = Number(
+    process.env.RAFFLE_BOT_IDLE_TIMEOUT_MS ?? 10 * 60 * 1000,
+  )
 
-  console.log('== Raffle bot: provably-fair, winner-takes-the-pot raffle over stamped Frank DMs ==')
+  console.log(
+    '== Raffle bot: provably-fair, winner-takes-the-pot raffle over stamped Frank DMs ==',
+  )
   console.log(`Relay:        ${relayBaseUrl}`)
   console.log(`Entry price:  ${entryPriceWei} wei`)
   console.log(`Round size:   ${maxEntries} entrants`)
@@ -179,13 +199,14 @@ async function main() {
   await registerAndLog({ relayBaseUrl, identity, label: 'raffle-bot' })
   console.log(`Raffle bot identity address: ${identity.displayAddress}`)
 
-  const { stampClient, mainAccountSigner, provider, pool } = await setUpFundedStampClient({
-    rpcUrl,
-    relayBaseUrl,
-    mainWalletJsonPath,
-    stampValueWei: replyStampValueWei,
-    label: 'raffle-bot',
-  })
+  const { stampClient, mainAccountSigner, provider, pool } =
+    await setUpFundedStampClient({
+      rpcUrl,
+      relayBaseUrl,
+      mainWalletJsonPath,
+      stampValueWei: replyStampValueWei,
+      label: 'raffle-bot',
+    })
 
   // This bot's own signer over its own identity's private key -- used *only* to pay a round's
   // winner, from the balance entrants themselves just paid into this same address. See this file's
@@ -220,7 +241,9 @@ async function main() {
   // its first entry -- pick up a restart's in-progress round, or open the very first one.
   if (!state.getPendingCommitment() || !state.getCurrentRound()) {
     const round = openFreshRound()
-    console.log(`[raffle-bot] opened round ${round.raffleId} (commitment ${round.serverSeedHash})`)
+    console.log(
+      `[raffle-bot] opened round ${round.raffleId} (commitment ${round.serverSeedHash})`,
+    )
   } else {
     const round = state.getCurrentRound() as RaffleRoundRecord
     console.log(
@@ -243,30 +266,38 @@ async function main() {
       break
     }
 
-    const stored = await fetchMonadMessagesSince({ relayBaseUrl, sinceMs: since })
+    const stored = await fetchMonadMessagesSince({
+      relayBaseUrl,
+      sinceMs: since,
+    })
     let maxSeenTimestamp = since - 1
 
     for (const message of stored) {
       maxSeenTimestamp = Math.max(maxSeenTimestamp, message.timestamp)
       if (!message.message) continue
 
-      const payloadHashHex = Buffer.from(message.message.payloadHash).toString('hex')
+      const payloadHashHex = Buffer.from(message.message.payloadHash).toString(
+        'hex',
+      )
       if (state.hasProcessed(payloadHashHex)) continue
       state.addProcessed(payloadHashHex)
 
       const envelope = parseEnvelope(message.message.encryptedPayload)
       if (!envelope) continue
-      if (!sameMonadEnvelopeAddress(envelope.to, identity.displayAddress)) continue
-      if (sameMonadEnvelopeAddress(envelope.from, identity.displayAddress)) continue
+      if (!sameMonadEnvelopeAddress(envelope.to, identity.displayAddress))
+        continue
+      if (sameMonadEnvelopeAddress(envelope.from, identity.displayAddress))
+        continue
 
-      let senderPubKey = senderPubKeyCache.get(envelope.from)
+      const senderKey = canonicalMonadEnvelopeAddress(envelope.from)
+      let senderPubKey = senderPubKeyCache.get(senderKey)
       if (!senderPubKey) {
         senderPubKey = await fetchMonadIdentityPubKey({
           relayBaseUrl,
           address: envelope.from,
         })
         if (!senderPubKey) continue
-        senderPubKeyCache.set(envelope.from, senderPubKey)
+        senderPubKeyCache.set(senderKey, senderPubKey)
       }
 
       const rawPlaintext = tryDecryptEnvelope({
@@ -288,7 +319,8 @@ async function main() {
         continue
       }
       const request = items.find(
-        (item): item is RaffleItem => item.type === 'raffle' && item.action === 'enter',
+        (item): item is RaffleItem =>
+          item.type === 'raffle' && item.action === 'enter',
       )
 
       lastActivityAt = Date.now()
@@ -331,7 +363,7 @@ async function main() {
 
       console.log(`\n[raffle-bot] entry request from ${envelope.from}`)
 
-      if (round.entrants.some(entrant => entrant.address === envelope.from)) {
+      if (hasRaffleEntrant(round, envelope.from)) {
         await sendReply([
           {
             type: 'raffle',
@@ -353,7 +385,10 @@ async function main() {
         index: items.indexOf(request),
         provider,
       }
-      const hydrated = (await plugin.hydrate(request, context)) as HydratedRaffleItem
+      const hydrated = (await plugin.hydrate(
+        request,
+        context,
+      )) as HydratedRaffleItem
 
       if ((hydrated.paidWei ?? 0n) < BigInt(round.entryPriceWei)) {
         console.log(
@@ -364,16 +399,26 @@ async function main() {
             type: 'raffle',
             raffleId: round.raffleId,
             action: 'error',
-            message: `Payment ${hydrated.paidWei ?? 0n} wei is below this round's entry price of ${round.entryPriceWei} wei`,
+            message: `Payment ${
+              hydrated.paidWei ?? 0n
+            } wei is below this round's entry price of ${
+              round.entryPriceWei
+            } wei`,
           },
         ])
         continue
       }
 
       const { txHash } = entryPayment(message.message)
-      const entrant: RaffleEntrant = { address: envelope.from, txHash }
+      const entrant: RaffleEntrant = {
+        address: canonicalMonadEnvelopeAddress(envelope.from),
+        txHash,
+      }
       const updatedEntrants = [...round.entrants, entrant]
-      const updatedRound: RaffleRoundRecord = { ...round, entrants: updatedEntrants }
+      const updatedRound: RaffleRoundRecord = {
+        ...round,
+        entrants: updatedEntrants,
+      }
       state.setCurrentRound(updatedRound)
 
       console.log(
@@ -411,18 +456,23 @@ async function main() {
         entrantAddresses.length,
       )
       const winnerAddress = entrantAddresses[winnerIndex]
-      const potWei = BigInt(round.entryPriceWei) * BigInt(updatedEntrants.length)
+      const potWei =
+        BigInt(round.entryPriceWei) * BigInt(updatedEntrants.length)
 
       console.log(
         `[raffle-bot] drawing round ${round.raffleId}: winner=${winnerAddress} pot=${potWei} wei`,
       )
 
       for (const e of updatedEntrants) {
-        let toPubKey = senderPubKeyCache.get(e.address)
+        const entrantKey = canonicalMonadEnvelopeAddress(e.address)
+        let toPubKey = senderPubKeyCache.get(entrantKey)
         if (!toPubKey) {
-          toPubKey = await fetchMonadIdentityPubKey({ relayBaseUrl, address: e.address })
+          toPubKey = await fetchMonadIdentityPubKey({
+            relayBaseUrl,
+            address: e.address,
+          })
           if (!toPubKey) continue
-          senderPubKeyCache.set(e.address, toPubKey)
+          senderPubKeyCache.set(entrantKey, toPubKey)
         }
         await sendDirectMessageItems({
           stampClient,
@@ -456,7 +506,8 @@ async function main() {
       const feeData = await provider.getFeeData()
       const fallbackMaxFeePerGas = BigInt(250000000000)
       const maxFeePerGas = feeData.maxFeePerGas ?? fallbackMaxFeePerGas
-      const gasBufferWei = (maxFeePerGas * BigInt(21000) * BigInt(11)) / BigInt(10)
+      const gasBufferWei =
+        (maxFeePerGas * BigInt(21000) * BigInt(11)) / BigInt(10)
       await ensureIdentityFunded({
         identityAddress: identity.displayAddress,
         mainAccountSigner,
@@ -465,8 +516,13 @@ async function main() {
         label: 'raffle-bot',
       })
 
-      console.log(`[raffle-bot] paying out ${potWei} wei to ${winnerAddress} ...`)
-      const payoutTx = await identitySigner.buildAndSignTransfer(winnerAddress, potWei)
+      console.log(
+        `[raffle-bot] paying out ${potWei} wei to ${winnerAddress} ...`,
+      )
+      const payoutTx = await identitySigner.buildAndSignTransfer(
+        winnerAddress,
+        potWei,
+      )
       const payoutTxHash = await identitySigner.submit(payoutTx)
       console.log(`[raffle-bot] payout tx sent: ${payoutTxHash}`)
 
@@ -484,7 +540,9 @@ async function main() {
   }
 
   await state.Close()
-  console.log(`\nDone. Drew ${roundsDrawn} round${roundsDrawn === 1 ? '' : 's'}.`)
+  console.log(
+    `\nDone. Drew ${roundsDrawn} round${roundsDrawn === 1 ? '' : 's'}.`,
+  )
 }
 
 main().catch(err => {

@@ -97,16 +97,17 @@ full reasoning). Fixing that for real means adding a wire-format field (`recipie
 sketched in that file's doc comment) — a deliberate proto change left for review, not made
 unilaterally by this stretch ticket, since #16/#19/#27/#30/#37 all build on that proto.
 
-Instead, this ticket puts a small **plaintext JSON envelope** around the actually-encrypted
-payload: `{ v: 1, from: <sender's Frank address>, to: <recipient's Frank address>, salt: <hex>, ciphertext: <hex AES-256-CBC> }`. A poller does an **exact-match filter on `to`**, not "attempt
-decryption and see if it parses" (this ticket's other suggested option) — that heuristic is
-genuinely ambiguous with bare AES-CBC (no AEAD tag), since a wrong key can still produce
-PKCS7-padding bytes that happen to validate. Only `ciphertext` is a confidentiality boundary;
-`from`/`to` are deliberately left legible so the relay's existing "poll and filter client-side"
-model (`DbTopics`'s Lotus-side precedent) can work exactly, cheaply, and unambiguously. Critically,
-`from`/`to` are **real, independently-verifiable Frank identity addresses** — a reader always
-resolves the sender's pubkey via a live `GET /metadata/:from`, never trusting a pubkey the envelope
-itself could assert. Full reasoning and code: `monad-message-envelope.ts`'s header comment.
+Instead, messages use the version-2 envelope documented in `monad-message-envelope.ts`: ECDH plus
+HKDF-SHA256 derives an AES-256-GCM key, and the version, Frank network tag, sender, and recipient
+are authenticated as associated data. `from`/`to` remain relay-visible routing hints, while the
+ciphertext and GCM tag provide confidentiality and tamper detection without adding a public sender
+signature; either conversation participant can still construct an indistinguishable transcript.
+Pollers compare EVM identities case-independently and persist canonical lower-case identity keys,
+so checksum spelling is never a second bot user or raffle entrant. Readers always resolve the
+sender's public key through the trust-anchored profile registry rather than accepting one from the
+envelope. Version 1 AES-CBC envelopes remain parse/decrypt-only compatibility for records already
+stored (including historical upper-case address spellings); no builder or new relay admission path
+emits or accepts v1.
 
 ## Qwen API notes (confirmed live)
 
@@ -254,7 +255,7 @@ address with a small amount of real testnet MON, sent directly via `MonadAccount
 buildAndSignTransfer` on the main funded wallet -- see `qwen-bot.livecheck.ts`'s own header comment
 (point 5) for why that primitive was used instead of `fanOutFundSubAccounts`
 (`@frank/wallet/monad-account-pool.ts`), which this ticket's own text originally suggested but
-which is actually scoped to funding the bot's *own* derived sub-account pool, not arbitrary
+which is actually scoped to funding the bot's _own_ derived sub-account pool, not arbitrary
 third-party addresses.
 
 Configuration (env vars, all optional):

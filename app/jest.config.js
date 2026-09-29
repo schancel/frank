@@ -48,6 +48,10 @@ module.exports = {
   // See https://github.com/vuejs/vue-jest/issues/188#issuecomment-620750728
   moduleFileExtensions: ['vue', 'js', 'jsx', 'json', 'ts', 'tsx'],
   moduleNameMapper: {
+    // Resolve workspace packages from this checkout. Worktrees intentionally share the root
+    // node_modules directory, whose workspace symlinks otherwise point at another checkout.
+    '^@frank/cashweb/(.*)$': '<rootDir>/../packages/cashweb/$1',
+    '^@frank/wallet/(.*)$': '<rootDir>/../packages/wallet/$1',
     // Use Quasar's CommonJS server entry in Jest. The older
     // `quasar.cjs.prod.js` filename disappeared in Quasar 2.33.
     '^quasar$': 'quasar/dist/quasar.server.prod.cjs',

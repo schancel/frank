@@ -369,6 +369,15 @@ struct ValidatedMonadMessageEnvelope {
     recipient: Address,
 }
 
+/// The only routing information needed when resuming a durable exact attempt. The attempt digest
+/// proves these are the same payload bytes that passed the admission policy which created the
+/// claim, so this parser deliberately does not re-apply today's v2 policy to historical v1 bytes.
+#[derive(Deserialize)]
+struct ClaimedMonadMessageEnvelope {
+    v: u64,
+    to: String,
+}
+
 const PAYMENT_COMMITMENT_DOMAIN: &[u8] = b"frank:dm-stamp-payment:v1";
 
 fn payment_commitment(payload_hash: &[u8; 32], child_index: u32) -> Sha256 {
@@ -494,6 +503,22 @@ fn validate_envelope(
     Ok(ValidatedMonadMessageEnvelope { recipient })
 }
 
+fn recipient_from_claimed_envelope(
+    encrypted_payload: &[u8],
+) -> Result<Address, ProcessMonadMessageError> {
+    let envelope: ClaimedMonadMessageEnvelope = serde_json::from_slice(encrypted_payload)
+        .map_err(|err| ProcessMonadMessageError::InvalidEnvelope(err.to_string()))?;
+    if envelope.v != 1 && envelope.v != 2 {
+        return Err(ProcessMonadMessageError::InvalidEnvelope(format!(
+            "unsupported claimed version {}",
+            envelope.v
+        )));
+    }
+    Address::from_hex(&envelope.to).map_err(|err| {
+        ProcessMonadMessageError::InvalidEnvelope(format!("invalid claimed to address: {err}"))
+    })
+}
+
 /// Decode, verify, broadcast-and-confirm, and (on success) store a [`proto::MonadStampedMessage`].
 ///
 /// Mirrors `Registry::put_message`'s Lotus flow (decode -> verify stamp -> store) at a high level,
@@ -549,9 +574,6 @@ pub async fn process_monad_message<T: JsonRpcTransport + Clone>(
         }
         return Err(ProcessMonadMessageError::ConflictingPaymentSet);
     }
-    let envelope = validate_envelope(&request.encrypted_payload, network_tag)?;
-    let recipient = envelope.recipient;
-
     if request.stamp_payments.is_empty() {
         return Err(ProcessMonadMessageError::MissingStampPayments);
     }
@@ -571,11 +593,6 @@ pub async fn process_monad_message<T: JsonRpcTransport + Clone>(
     // concurrent requests from broadcasting different sets before either one becomes visible.
     let registry_id = registry as *const Registry as usize;
     let _payment_set_guard = try_lock_payment_set(registry_id, payload_hash).await?;
-    let _relay_slot = PAYMENT_RELAY_SLOTS
-        .get_or_init(|| Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_PAYMENT_RELAYS)))
-        .clone()
-        .try_acquire_owned()
-        .map_err(|_| ProcessMonadMessageError::RelayBusy)?;
     if let Some(existing) = registry
         .get_monad_message(declared_hash.as_slice())
         .map_err(ProcessMonadMessageError::Infrastructure)?
@@ -588,25 +605,40 @@ pub async fn process_monad_message<T: JsonRpcTransport + Clone>(
     let existing_attempt = registry
         .get_monad_message_attempt(declared_hash.as_slice(), &request)
         .map_err(ProcessMonadMessageError::Infrastructure)?;
-    let policy = match &existing_attempt {
-        MonadMessageAttemptClaim::ExistingExact(policy) => policy.clone(),
+    let (policy, recipient) = match &existing_attempt {
+        MonadMessageAttemptClaim::ExistingExact(policy) => (
+            policy.clone(),
+            recipient_from_claimed_envelope(&request.encrypted_payload)?,
+        ),
         MonadMessageAttemptClaim::Conflict => {
             return Err(ProcessMonadMessageError::ConflictingPaymentSet)
         }
         MonadMessageAttemptClaim::Missing => {
+            // Only a genuinely new payload is subject to today's admission policy. In particular,
+            // do not strand a pre-upgrade v1 attempt after one of its exact payments was already
+            // broadcast: its durable claim freezes the policy and owns these exact bytes.
+            let recipient = validate_envelope(&request.encrypted_payload, network_tag)?.recipient;
             let recipient_profile = registry
                 .get_monad_profile(recipient)
                 .map_err(ProcessMonadMessageError::Infrastructure)?
                 .ok_or(ProcessMonadMessageError::RecipientProfileNotFound(
                     recipient,
                 ))?;
-            MonadMessageAttemptPolicy {
-                recipient_pubkey: recipient_profile.pubkey,
-                min_value_wei,
-            }
+            (
+                MonadMessageAttemptPolicy {
+                    recipient_pubkey: recipient_profile.pubkey,
+                    min_value_wei,
+                },
+                recipient,
+            )
         }
         MonadMessageAttemptClaim::New => unreachable!("lookup cannot create an attempt"),
     };
+    let _relay_slot = PAYMENT_RELAY_SLOTS
+        .get_or_init(|| Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_PAYMENT_RELAYS)))
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| ProcessMonadMessageError::RelayBusy)?;
 
     let mut child_indices = HashSet::new();
     let mut funding_accounts = HashSet::new();
@@ -872,6 +904,17 @@ pub enum PutMonadMessageError {
     Process(ProcessMonadMessageError),
 }
 
+fn exact_set_retained(err: &ProcessMonadMessageError) -> Option<bool> {
+    match err {
+        ProcessMonadMessageError::Rejected(_) | ProcessMonadMessageError::RelayTimedOut => {
+            Some(true)
+        }
+        ProcessMonadMessageError::RejectedWithoutRetainedSet(_) => Some(false),
+        ProcessMonadMessageError::PaymentSetBusy | ProcessMonadMessageError::RelayBusy => None,
+        _ => Some(false),
+    }
+}
+
 impl IntoResponse for PutMonadMessageError {
     fn into_response(self) -> Response {
         match self {
@@ -905,14 +948,7 @@ impl IntoResponse for PutMonadMessageError {
                 Json(MonadMessageErrorBody {
                     error: "invalid_monad_message",
                     detail: err.to_string(),
-                    exact_set_retained: match err {
-                        ProcessMonadMessageError::Rejected(_)
-                        | ProcessMonadMessageError::RelayTimedOut => Some(true),
-                        ProcessMonadMessageError::RejectedWithoutRetainedSet(_) => Some(false),
-                        ProcessMonadMessageError::PaymentSetBusy
-                        | ProcessMonadMessageError::RelayBusy => None,
-                        _ => Some(false),
-                    },
+                    exact_set_retained: exact_set_retained(&err),
                 }),
             )
                 .into_response(),
@@ -1785,6 +1821,92 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn unfinished_legacy_v1_exact_retry_resumes_and_completes_atomically() {
+        let (_tempdir, registry) = test_registry();
+        let uppercase = |address: Address| {
+            let hex = address.to_hex();
+            format!("0x{}", hex[2..].to_ascii_uppercase())
+        };
+        let encrypted_payload = serde_json::to_vec(&serde_json::json!({
+            "v": 1,
+            "networkTag": "MONT",
+            "from": uppercase(Address([0xab; 20])),
+            "to": uppercase(recipient_address()),
+            "salt": "00".repeat(16),
+            "ciphertext": "11".repeat(16),
+        }))
+        .unwrap();
+        let commitment = Sha256::digest(encrypted_payload.clone().into());
+        let destination = stamp_destination(&commitment);
+        let sender = EccSecp256k1::default()
+            .seckey_from_array([0x7c; 32])
+            .unwrap();
+        let (raw_tx, _) = signed_eip1559_tx(
+            &sender,
+            41454,
+            0,
+            destination,
+            10_000,
+            &commitment_calldata_bytes(&commitment, 0),
+        );
+        let message = make_message(raw_tx, encrypted_payload);
+        let recipient_pubkey = EccSecp256k1::default().derive_pubkey(&recipient_seckey());
+        let policy = MonadMessageAttemptPolicy {
+            recipient_pubkey: recipient_pubkey.as_slice().to_vec(),
+            min_value_wei: 10_000,
+        };
+        assert_eq!(
+            registry
+                .claim_monad_message_attempt(&message.payload_hash, &message, &policy)
+                .unwrap(),
+            MonadMessageAttemptClaim::New
+        );
+
+        let to = hex_addr(destination);
+        let transport = MockTransport::default();
+        transport.set("eth_getTransactionReceipt", receipt_json(&to, "0x1"));
+        transport.set(
+            "eth_getTransactionByHash",
+            tx_json(&to, 10_000, &commitment_calldata(&commitment, 0)),
+        );
+
+        let stored = process_monad_message(
+            &transport,
+            &registry,
+            20_000,
+            fast_poll(),
+            b"MON1",
+            message.clone(),
+        )
+        .await
+        .expect("a durable exact v1 attempt resumes under its frozen policy");
+
+        assert_eq!(stored.message, Some(message.clone()));
+        assert_eq!(
+            transport
+                .calls()
+                .iter()
+                .filter(|method| method.as_str() == "eth_sendRawTransaction")
+                .count(),
+            1,
+            "the exact payment is broadcast only once during this resume"
+        );
+        assert_eq!(
+            registry
+                .get_monad_message_attempt(&message.payload_hash, &message)
+                .unwrap(),
+            MonadMessageAttemptClaim::Missing,
+            "the successful inbox write deletes its claim in the same database batch"
+        );
+        assert_eq!(
+            registry
+                .list_monad_messages_for_recipient_since(recipient_address(), 0)
+                .unwrap(),
+            vec![stored]
+        );
+    }
+
+    #[tokio::test]
     async fn first_insufficient_funds_rejection_releases_exact_set_claim() {
         let (_tempdir, registry) = test_registry();
         let encrypted_payload = valid_envelope(recipient_address(), "MONT");
@@ -2086,6 +2208,11 @@ mod tests {
             assert!(
                 matches!(err, ProcessMonadMessageError::InvalidEnvelope(_)),
                 "{case}: {err}"
+            );
+            assert_eq!(
+                exact_set_retained(&err),
+                Some(false),
+                "{case}: a request rejected before any claim must report that no set is retained"
             );
             assert_eq!(
                 transport.calls(),

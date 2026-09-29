@@ -257,6 +257,20 @@ impl<'a> DbMonadMessages<'a> {
         message: &proto::StoredMonadMessage,
     ) -> Result<()> {
         let mut batch = rocksdb::WriteBatch::default();
+        self.append_put_to_batch(&mut batch, payload_hash, recipient, message)?;
+        self.db.write_batch(batch)?;
+        Ok(())
+    }
+
+    /// Append inbox storage to a caller-owned atomic batch. The outbox uses this to make the
+    /// all-confirmed -> delivered transition indivisible from recipient-visible storage.
+    pub(crate) fn append_put_to_batch(
+        &self,
+        batch: &mut rocksdb::WriteBatch,
+        payload_hash: &[u8],
+        recipient: &Address,
+        message: &proto::StoredMonadMessage,
+    ) -> Result<()> {
         if let Some(existing) = self.get(payload_hash)? {
             batch.delete_cf(
                 self.cf_monad_messages_by_time,
@@ -286,7 +300,6 @@ impl<'a> DbMonadMessages<'a> {
             payload_hash,
         );
         batch.delete_cf(self.cf_monad_message_attempts, payload_hash);
-        self.db.write_batch(batch)?;
         Ok(())
     }
 

@@ -1,6 +1,6 @@
 //! Module for `Db` and `DbError`.
 
-use std::{fmt::Debug, path::Path};
+use std::{fmt::Debug, path::Path, sync::Mutex};
 
 use bitcoinsuite_error::{ErrorMeta, Result, WrapErr};
 use rocksdb::ColumnFamilyDescriptor;
@@ -8,6 +8,7 @@ use thiserror::Error;
 
 use crate::store::metadata::DbMetadata;
 use crate::store::monad_messages::DbMonadMessages;
+use crate::store::monad_outbox::{DbMonadOutbox, MonadOutboxLimits};
 use crate::store::monad_profiles::DbMonadProfiles;
 use crate::store::monad_topics::{DbMonadTopicPosts, DbMonadTopicVotes};
 use crate::store::topics::DbTopics;
@@ -38,6 +39,20 @@ pub(crate) const CF_MONAD_MESSAGES_BY_RECIPIENT_TIME: &str = "monad_messages_by_
 /// Canonical in-progress direct-message payment sets, keyed by payload hash. Persisting the exact
 /// set makes crash/retry resume the original raw transactions instead of accepting a second set.
 pub(crate) const CF_MONAD_MESSAGE_ATTEMPTS: &str = "monad_message_attempts";
+/// Versioned canonical direct-message relay records keyed by payload hash. Unlike the legacy
+/// digest-only attempt CF, each value owns the exact canonical request bytes needed for recovery.
+pub(crate) const CF_MONAD_OUTBOX_V1: &str = "monad_outbox_v1";
+/// Per-payment recovery state keyed by `payload_hash ++ child_index.to_be_bytes()`.
+pub(crate) const CF_MONAD_OUTBOX_MEMBERS_V1: &str = "monad_outbox_members_v1";
+/// Bounded set of claims which still need reconciliation, keyed by payload hash.
+pub(crate) const CF_MONAD_OUTBOX_ACTIVE_V1: &str = "monad_outbox_active_v1";
+/// Recipient-private recovery index keyed by `recipient_address ++ payload_hash`.
+pub(crate) const CF_MONAD_OUTBOX_RECIPIENT_V1: &str = "monad_outbox_recipient_v1";
+/// Time-ordered bounded history index for compact delivered tombstones and terminal claims that
+/// have no confirmed-prefix recovery obligation. Values store the total retained record bytes.
+pub(crate) const CF_MONAD_OUTBOX_HISTORY_V2: &str = "monad_outbox_history_v2";
+/// Small schema/migration markers for additive outbox upgrades.
+pub(crate) const CF_MONAD_OUTBOX_META_V2: &str = "monad_outbox_meta_v2";
 /// Ticket #30: stores [`crate::proto::StoredMonadTopicPost`], keyed by `payload_hash`. Parallel
 /// to `CF_MONAD_MESSAGES` -- see `crate::store::monad_topics`'s module docs.
 pub(crate) const CF_MONAD_TOPIC_POSTS: &str = "monad_topic_posts";
@@ -91,6 +106,9 @@ pub(crate) type CF = rocksdb::ColumnFamily;
 /// Owns the underlying rocksdb::DB instance.
 pub struct Db {
     db: rocksdb::DB,
+    /// Serializes read-check-batch outbox mutations inside this process. RocksDB batches are
+    /// atomic, but the active-claim bound also needs its preceding count to be serialized.
+    monad_outbox_lock: Mutex<()>,
 }
 
 /// Errors indicating something went wrong with the database itself.
@@ -113,14 +131,28 @@ impl Db {
     /// Opens the database under the specified path.
     /// Creates the database file and necessary column families if necessary.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
+        Self::open_with_monad_outbox_limits(path, &MonadOutboxLimits::default())
+    }
+
+    /// Open with the exact runtime outbox retention policy. Production startup uses this path so
+    /// migration cannot delete history under temporary defaults before readiness applies config.
+    pub fn open_with_monad_outbox_limits(
+        path: impl AsRef<Path>,
+        limits: &MonadOutboxLimits,
+    ) -> Result<Self> {
+        limits.validate()?;
         let mut cfs = Vec::new();
         DbMetadata::add_cfs(&mut cfs);
         DbTopics::add_cfs(&mut cfs);
         DbMonadMessages::add_cfs(&mut cfs);
+        DbMonadOutbox::add_cfs(&mut cfs);
         DbMonadTopicPosts::add_cfs(&mut cfs);
         DbMonadTopicVotes::add_cfs(&mut cfs);
         DbMonadProfiles::add_cfs(&mut cfs);
-        Self::open_with_cfs(path, cfs)
+        let db = Self::open_with_cfs(path, cfs)?;
+        db.monad_outbox()
+            .migrate_legacy_delivered_ownership(limits)?;
+        Ok(db)
     }
 
     /// Returns `DbMetadata`, allowing access to registry metadata.
@@ -136,6 +168,11 @@ impl Db {
     /// Returns `DbMonadMessages`, allowing access to stored Monad-stamped messages (ticket #27).
     pub fn monad_messages(&self) -> DbMonadMessages<'_> {
         DbMonadMessages::new(self)
+    }
+
+    /// Returns the durable Monad payment outbox facade.
+    pub fn monad_outbox(&self) -> DbMonadOutbox<'_> {
+        DbMonadOutbox::new(self)
     }
 
     /// Returns `DbMonadProfiles`, allowing access to stored Monad-native profile registrations
@@ -163,7 +200,10 @@ impl Db {
         db_options.create_if_missing(true);
         db_options.create_missing_column_families(true);
         let db = rocksdb::DB::open_cf_descriptors(&db_options, path, cfs).wrap_err(RocksDb)?;
-        Ok(Db { db })
+        Ok(Db {
+            db,
+            monad_outbox_lock: Mutex::new(()),
+        })
     }
 
     pub(crate) fn cf(&self, name: &str) -> Result<&CF> {
@@ -199,6 +239,12 @@ impl Db {
         self.db.write(write_batch)?;
         Ok(())
     }
+
+    pub(crate) fn lock_monad_outbox(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.monad_outbox_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
 }
 
 impl Debug for Db {
@@ -219,6 +265,16 @@ mod tests {
         let tempdir = tempdir::TempDir::new("cashweb-registry-store--db-debug")?;
         let db = Db::open(tempdir.path().join("db.rocksdb"))?;
         assert_eq!(format!("{:?}", db), "Db { .. }");
+        Ok(())
+    }
+
+    #[test]
+    fn existing_database_reopens_with_additive_outbox_column_families() -> Result<()> {
+        let tempdir = tempdir::TempDir::new("cashweb-registry-store--db-additive-cfs")?;
+        let path = tempdir.path().join("db.rocksdb");
+        drop(rocksdb::DB::open_default(&path)?);
+        let db = Db::open(&path)?;
+        assert!(db.monad_outbox().list_active(1)?.is_empty());
         Ok(())
     }
 }

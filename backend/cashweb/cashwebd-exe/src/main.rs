@@ -2,13 +2,15 @@ use std::{io::Read, sync::Arc, time::Duration};
 
 use bitcoinsuite_bitcoind::rpc_client::BitcoindRpcClient;
 use bitcoinsuite_error::{Result, WrapErr};
-use cashweb_config::parse_conf;
+use cashweb_config::{parse_conf, MonadMailboxMode};
 use cashweb_registry::{
     disabled_chain_adapter::DisabledChainAdapter,
     http::{
         curated_defaults::build_curated_defaults, pop_protection::PopGate, server::RegistryServer,
     },
     lotus_adapter::LotusAdapter,
+    monad_http::HttpTransport,
+    monad_outbox::{start_monad_outbox_worker, MonadOutboxReconcileConfig, MonadOutboxWorker},
     p2p::{
         peer::Peer,
         peers::{InitialMetadataDownloadParams, Peers},
@@ -55,6 +57,15 @@ async fn main() -> Result<()> {
     file.read_to_string(&mut conf_contents)
         .wrap_err_with(|| ReadConfigFail(conf_path.clone()))?;
     let conf = parse_conf(&conf_contents).wrap_err_with(|| InvalidConfigFail(conf_path.clone()))?;
+    // Validate the mailbox lifecycle before opening the database or binding a socket. The same
+    // typed mode is the serialized seam the HTTP owner will use to omit admission when disabled.
+    let mailbox_mode = conf
+        .registry
+        .monad_mailbox
+        .mode()
+        .wrap_err("Invalid registry.monad_mailbox configuration")?;
+    let outbox_config = MonadOutboxReconcileConfig::default();
+    outbox_config.validate()?;
 
     if let Some(parent) = conf
         .registry
@@ -69,7 +80,7 @@ async fn main() -> Result<()> {
             )
         })?;
     }
-    let db = Db::open(&conf.registry.db_path)?;
+    let db = Db::open_with_monad_outbox_limits(&conf.registry.db_path, &outbox_config.limits)?;
     let chain_adapter = match conf.bitcoin_rpc.clone() {
         Some(bitcoin_rpc) => {
             let bitcoind = BitcoindRpcClient::new(bitcoin_rpc);
@@ -86,6 +97,23 @@ async fn main() -> Result<()> {
     };
 
     let registry = Arc::new(Registry::new(db, chain_adapter, conf.registry.net));
+    let outbox_worker: Option<MonadOutboxWorker> = match mailbox_mode {
+        MonadMailboxMode::Disabled => {
+            tracing::event!(
+                tracing::Level::WARN,
+                "Monad mailbox is explicitly disabled; omit admission and retain durable rows as readable"
+            );
+            None
+        }
+        MonadMailboxMode::Enabled { rpc_url } => Some(
+            start_monad_outbox_worker(
+                HttpTransport::new(rpc_url),
+                Arc::clone(&registry),
+                outbox_config,
+            )
+            .await?,
+        ),
+    };
     let our_peers = conf
         .registry
         .peers
@@ -156,9 +184,13 @@ async fn main() -> Result<()> {
 
     let router = server.into_router();
     info!("Listening on {}", conf.host);
-    axum::Server::bind(&conf.host)
+    let server_result = axum::Server::bind(&conf.host)
         .serve(router.into_make_service())
-        .await?;
+        .await;
+    if let Some(worker) = outbox_worker {
+        worker.shutdown().await;
+    }
+    server_result?;
 
     Ok(())
 }

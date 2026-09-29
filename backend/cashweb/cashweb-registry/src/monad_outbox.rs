@@ -514,15 +514,6 @@ async fn check_exact<T: JsonRpcTransport + Clone>(
         }
         Err(err) => return ExactCheck::Infrastructure(err.to_string()),
     };
-    match receipt.status {
-        Some(1) => {}
-        Some(0) => return ExactCheck::Invalid("exact transaction reverted".to_string()),
-        status => {
-            return ExactCheck::Infrastructure(format!(
-                "exact receipt returned missing or unknown status {status:?}"
-            ))
-        }
-    }
     if receipt.from != canonical.sender
         || receipt.to != canonical.destination
         || transaction.from != canonical.sender
@@ -533,6 +524,15 @@ async fn check_exact<T: JsonRpcTransport + Clone>(
         return ExactCheck::Infrastructure(
             "RPC transaction/receipt body does not match canonical signed transaction".to_string(),
         );
+    }
+    match receipt.status {
+        Some(1) => {}
+        Some(0) => return ExactCheck::Invalid("exact transaction reverted".to_string()),
+        status => {
+            return ExactCheck::Infrastructure(format!(
+                "exact receipt returned missing or unknown status {status:?}"
+            ))
+        }
     }
     ExactCheck::Confirmed {
         value_wei: canonical.value_wei,
@@ -1397,6 +1397,44 @@ mod tests {
                 .state,
             MonadOutboxMemberState::Terminal(MonadOutboxTerminal::VerificationFailed)
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn contradictory_reverted_receipt_body_stays_pending_then_delivers() -> Result<()> {
+        let tempdir = tempdir::TempDir::new("monad-outbox-contradictory-revert")?;
+        let registry = registry(&tempdir.path().join("db.rocksdb"));
+        let (request, policy, transport) = fixture(&[SendBehavior::Accept], &[true]);
+        let canonical = decode_signed_transaction(&request.stamp_payments[0].raw_tx)?;
+        {
+            let mut specs = transport.specs.lock().unwrap();
+            let spec = specs.get_mut(&canonical.tx_hash).unwrap();
+            spec.receipt_status = Some(0);
+            spec.transaction_value_wei = canonical.value_wei + 1;
+        }
+        let config = fast_config();
+        registry.claim_monad_outbox(&request, &policy, now_ms(), &config.limits)?;
+        assert_eq!(
+            reconcile_monad_outbox(&transport, &registry, &request.payload_hash, &config).await?,
+            MonadOutboxReconcileOutcome::Pending
+        );
+        assert_eq!(
+            registry
+                .monad_outbox_member(&request.payload_hash, 0)?
+                .unwrap()
+                .state,
+            MonadOutboxMemberState::Pending
+        );
+        {
+            let mut specs = transport.specs.lock().unwrap();
+            let spec = specs.get_mut(&canonical.tx_hash).unwrap();
+            spec.receipt_status = Some(1);
+            spec.transaction_value_wei = canonical.value_wei;
+        }
+        assert!(matches!(
+            reconcile_monad_outbox(&transport, &registry, &request.payload_hash, &config).await?,
+            MonadOutboxReconcileOutcome::Delivered(_)
+        ));
         Ok(())
     }
 

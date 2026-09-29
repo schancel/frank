@@ -156,17 +156,16 @@ Set `MONAD_TESTNET_HTTP_RPC_URL` in `.env`. The remaining example values are sui
 Start the persistent Monad development server:
 
 ```bash
-cd backend/cashweb
-set -a
-source ../../.env
-set +a
-cargo run -p cashwebd-exe -- cashwebd.local.toml
+backend/cashweb/run-local-monad.sh
 ```
 
 The default local config stores profiles, messages, and topics in
 `backend/cashweb/data/registry.rocksdb`, which is gitignored and survives server restarts. It
 deliberately omits `[bitcoin_rpc]`: legacy Lotus routes fail closed, while the Monad routes do not
-require a running Lotus daemon.
+require a running Lotus daemon. The launcher reads `MONAD_TESTNET_HTTP_RPC_URL` from `.env`, enables
+the Monad mailbox in a mode-`0600` temporary config, runs Cargo through the repository's shared
+cache/slot wrapper, and removes that temporary file on exit. The checked-in config remains
+secret-free and explicitly disabled when invoked directly.
 
 For an isolated throwaway run, use the explicitly ephemeral test/demo server instead:
 

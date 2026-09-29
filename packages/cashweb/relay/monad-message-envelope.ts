@@ -33,7 +33,21 @@ const LEGACY_ENVELOPE_VERSION = 1 as const;
 const HKDF_SALT_BYTES = 32;
 const GCM_NONCE_BYTES = 12;
 const GCM_TAG_BYTES = 16;
-const MAX_CIPHERTEXT_BYTES = 1024 * 1024;
+const MAX_RELAY_BODY_BYTES = 2 * 1024 * 1024;
+const MIN_RELAY_FRAMING_HEADROOM_BYTES = 128 * 1024;
+const MAX_ENVELOPE_JSON_OVERHEAD_BYTES = 1024;
+/**
+ * Exact v2 plaintext/ciphertext bound. Hex encoding doubles ciphertext size; reserving 1 KiB for
+ * the JSON fields and 128 KiB for protobuf/hash/payment framing ensures every builder output fits
+ * the relay's 2 MiB request cap with useful framing headroom.
+ */
+export const MAX_MONAD_ENVELOPE_PLAINTEXT_BYTES = Math.floor(
+  (MAX_RELAY_BODY_BYTES -
+    MIN_RELAY_FRAMING_HEADROOM_BYTES -
+    MAX_ENVELOPE_JSON_OVERHEAD_BYTES) /
+    2
+);
+const MAX_CIPHERTEXT_BYTES = MAX_MONAD_ENVELOPE_PLAINTEXT_BYTES;
 const MAX_NETWORK_TAG_BYTES = 32;
 const HKDF_INFO = Buffer.from(
   "frank:monad-dm-envelope:v2:identity-ecdh:aes-256-gcm",
@@ -77,10 +91,123 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+const KECCAK_MASK_64 = (BigInt(1) << BigInt(64)) - BigInt(1);
+const KECCAK_RATE_BYTES = 136;
+const KECCAK_ROTATIONS = [
+  0, 1, 62, 28, 27, 36, 44, 6, 55, 20, 3, 10, 43, 25, 39, 41, 45, 15, 21, 8, 18,
+  2, 61, 56, 14,
+];
+const KECCAK_ROUND_CONSTANTS = [
+  "0000000000000001",
+  "0000000000008082",
+  "800000000000808a",
+  "8000000080008000",
+  "000000000000808b",
+  "0000000080000001",
+  "8000000080008081",
+  "8000000000008009",
+  "000000000000008a",
+  "0000000000000088",
+  "0000000080008009",
+  "000000008000000a",
+  "000000008000808b",
+  "800000000000008b",
+  "8000000000008089",
+  "8000000000008003",
+  "8000000000008002",
+  "8000000000000080",
+  "000000000000800a",
+  "800000008000000a",
+  "8000000080008081",
+  "8000000000008080",
+  "0000000080000001",
+  "8000000080008008",
+].map((value) => BigInt(`0x${value}`));
+
+function rotateLane(value: bigint, bits: number): bigint {
+  if (bits === 0) return value;
+  const shift = BigInt(bits);
+  return ((value << shift) | (value >> (BigInt(64) - shift))) & KECCAK_MASK_64;
+}
+
+/** Minimal Keccak-256 used only for EIP-55 address checksum validation. */
+function keccak256(bytes: Uint8Array): Uint8Array {
+  const paddedLength =
+    Math.ceil((bytes.length + 1) / KECCAK_RATE_BYTES) * KECCAK_RATE_BYTES;
+  const padded = new Uint8Array(paddedLength);
+  padded.set(bytes);
+  // Ethereum uses legacy Keccak's 0x01 domain suffix, not FIPS SHA3's 0x06.
+  padded[bytes.length] = 0x01;
+  padded[padded.length - 1] |= 0x80;
+
+  const state = Array<bigint>(25).fill(BigInt(0));
+  for (let block = 0; block < padded.length; block += KECCAK_RATE_BYTES) {
+    for (let lane = 0; lane < KECCAK_RATE_BYTES / 8; lane++) {
+      let word = BigInt(0);
+      for (let byte = 0; byte < 8; byte++) {
+        word |= BigInt(padded[block + lane * 8 + byte]) << BigInt(byte * 8);
+      }
+      state[lane] ^= word;
+    }
+
+    for (const roundConstant of KECCAK_ROUND_CONSTANTS) {
+      const columns = Array<bigint>(5).fill(BigInt(0));
+      for (let x = 0; x < 5; x++) {
+        for (let y = 0; y < 5; y++) columns[x] ^= state[x + 5 * y];
+      }
+      const deltas = columns.map(
+        (_column, x) =>
+          columns[(x + 4) % 5] ^ rotateLane(columns[(x + 1) % 5], 1)
+      );
+      for (let x = 0; x < 5; x++) {
+        for (let y = 0; y < 5; y++) state[x + 5 * y] ^= deltas[x];
+      }
+
+      const rotated = Array<bigint>(25).fill(BigInt(0));
+      for (let x = 0; x < 5; x++) {
+        for (let y = 0; y < 5; y++) {
+          rotated[y + 5 * ((2 * x + 3 * y) % 5)] = rotateLane(
+            state[x + 5 * y],
+            KECCAK_ROTATIONS[x + 5 * y]
+          );
+        }
+      }
+      for (let x = 0; x < 5; x++) {
+        for (let y = 0; y < 5; y++) {
+          state[x + 5 * y] =
+            rotated[x + 5 * y] ^
+            (~rotated[((x + 1) % 5) + 5 * y] &
+              KECCAK_MASK_64 &
+              rotated[((x + 2) % 5) + 5 * y]);
+        }
+      }
+      state[0] ^= roundConstant;
+    }
+  }
+
+  const digest = new Uint8Array(32);
+  for (let index = 0; index < digest.length; index++) {
+    digest[index] = Number(
+      (state[Math.floor(index / 8)] >> BigInt((index % 8) * 8)) & BigInt(0xff)
+    );
+  }
+  return digest;
+}
+
 function isAddress(value: unknown): value is string {
-  // EVM's canonical lower-case and EIP-55 forms share this exact syntax. The relay additionally
-  // verifies mixed-case EIP-55 checksums before admitting a new v2 envelope.
-  return typeof value === "string" && /^0x[0-9a-fA-F]{40}$/.test(value);
+  if (typeof value !== "string" || !/^0x[0-9a-fA-F]{40}$/.test(value)) {
+    return false;
+  }
+  const body = value.slice(2);
+  const lower = body.toLowerCase();
+  if (body === lower) return true;
+  const checksum = keccak256(textEncoder.encode(lower));
+  return [...body].every((character, index) => {
+    if (/\d/.test(character)) return true;
+    const byte = checksum[Math.floor(index / 2)];
+    const nibble = index % 2 === 0 ? byte >> 4 : byte & 0x0f;
+    return (character === character.toUpperCase()) === nibble >= 8;
+  });
 }
 
 function isNetworkTag(value: unknown): value is string {
@@ -213,14 +340,14 @@ export function buildEnvelope(params: {
   });
   const cipher = forge.cipher.createCipher(
     "AES-GCM",
-    forge.util.createBuffer(key)
+    forge.util.createBuffer(key.toString("binary"))
   );
   cipher.start({
-    iv: forge.util.createBuffer(nonce),
+    iv: forge.util.createBuffer(nonce.toString("binary")),
     additionalData: associatedData(core).toString("binary"),
     tagLength: GCM_TAG_BYTES * 8,
   });
-  cipher.update(forge.util.createBuffer(plaintext));
+  cipher.update(forge.util.createBuffer(plaintext.toString("binary")));
   if (!cipher.finish()) throw new Error("AES-GCM encryption failed");
   const envelope: MonadMessageEnvelopeV2 = {
     v: CURRENT_ENVELOPE_VERSION,
@@ -266,16 +393,20 @@ export function decryptEnvelopeV2(params: {
   });
   const decipher = forge.cipher.createDecipher(
     "AES-GCM",
-    forge.util.createBuffer(key)
+    forge.util.createBuffer(key.toString("binary"))
   );
   decipher.start({
-    iv: forge.util.createBuffer(nonce),
+    iv: forge.util.createBuffer(nonce.toString("binary")),
     additionalData: associatedData(params.envelope).toString("binary"),
     tagLength: GCM_TAG_BYTES * 8,
-    tag: forge.util.createBuffer(Buffer.from(params.envelope.tag, "hex")),
+    tag: forge.util.createBuffer(
+      Buffer.from(params.envelope.tag, "hex").toString("binary")
+    ),
   });
   decipher.update(
-    forge.util.createBuffer(Buffer.from(params.envelope.ciphertext, "hex"))
+    forge.util.createBuffer(
+      Buffer.from(params.envelope.ciphertext, "hex").toString("binary")
+    )
   );
   if (!decipher.finish())
     throw new Error("Monad envelope authentication failed");

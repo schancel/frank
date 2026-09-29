@@ -32,6 +32,19 @@
           }}
         </div>
       </template>
+      <div
+        v-if="state.availableActions.includes('bet')"
+        class="row items-center q-gutter-xs q-mt-sm"
+      >
+        <q-input
+          v-model="betAmountDisplay"
+          dense
+          outlined
+          suffix="MON"
+          style="width: 120px"
+          :disable="sending"
+        />
+      </div>
       <div v-if="state.availableActions.length" class="q-gutter-sm q-mt-sm">
         <q-btn
           v-for="action in state.availableActions"
@@ -74,13 +87,11 @@ import { useMonadWallet } from '../../../utils/clients'
 import { useActiveWallet } from '../../../composables/useActiveWallet'
 import { errorNotify } from '../../../utils/notifications'
 
-// Fixed for v1 -- a real "choose your bet size" input is a natural fast-follow, not built yet
-// (see this component's own PR/commit notes). Comfortably above the relay's stamp minimum so a
-// bot dealer never rejects it as "below the table minimum."
-const DEFAULT_WAGER_WEI = 100000000000000000n // 0.1 MON
+// The bet-size input's starting value -- comfortably above the relay's stamp minimum so a bot
+// dealer never rejects a first-try default as "below the table minimum."
+const DEFAULT_BET_AMOUNT_DISPLAY = '0.1'
 
-const ACTION_LABELS: Record<BlackjackAction, string> = {
-  bet: 'Deal me in (0.1 MON)',
+const ACTION_LABELS: Partial<Record<BlackjackAction, string>> = {
   hit: 'Hit',
   stand: 'Stand',
   deal: 'Deal',
@@ -105,6 +116,7 @@ export default defineComponent({
       loading: true,
       sending: false,
       state: null as BlackjackGameState | null,
+      betAmountDisplay: DEFAULT_BET_AMOUNT_DISPLAY,
     }
   },
   computed: {
@@ -147,7 +159,14 @@ export default defineComponent({
       return cards.length ? cards.map(cardLabel).join(' ') : '—'
     },
     actionLabel(action: BlackjackAction): string {
-      return ACTION_LABELS[action]
+      if (action === 'bet') return `Deal me in (${this.betAmountDisplay} MON)`
+      if (action === 'double') {
+        const wagerWei = this.state?.verifiedWagerWei
+        return wagerWei !== undefined
+          ? `Double down (${activeChain.toDisplayAmount(wagerWei)} MON)`
+          : 'Double down'
+      }
+      return ACTION_LABELS[action] ?? action
     },
     async loadState() {
       this.loading = true
@@ -195,11 +214,18 @@ export default defineComponent({
       this.sending = true
       try {
         if (action === 'bet') {
+          let wagerWei: bigint
+          try {
+            wagerWei = activeChain.fromDisplayAmount(this.betAmountDisplay)
+          } catch {
+            errorNotify(new Error('Enter a valid MON amount to bet'))
+            return
+          }
           const wallet = await useActiveWallet()
           const result = await activeChain.nativeTransfers.send({
             wallet,
             recipient: { raw: this.address },
-            value: DEFAULT_WAGER_WEI,
+            value: wagerWei,
           })
           const gameId = `bj-${Date.now()}-${Math.random()
             .toString(36)
@@ -211,6 +237,33 @@ export default defineComponent({
                 gameId,
                 action: 'bet',
                 wagerTxHash: result.txHash,
+              },
+            ],
+          })
+          return
+        }
+
+        if (action === 'double') {
+          const wagerWei = this.state?.verifiedWagerWei
+          if (wagerWei === undefined) {
+            errorNotify(
+              new Error('Cannot double down: original wager not verified yet'),
+            )
+            return
+          }
+          const wallet = await useActiveWallet()
+          const result = await activeChain.nativeTransfers.send({
+            wallet,
+            recipient: { raw: this.address },
+            value: wagerWei,
+          })
+          this.$emit('sendFollowUp', {
+            items: [
+              {
+                type: 'blackjack-move',
+                gameId: this.item.gameId,
+                action: 'double',
+                doubleWagerTxHash: result.txHash,
               },
             ],
           })

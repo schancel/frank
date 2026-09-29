@@ -31,6 +31,8 @@ function gameRecord(
     playerAddress: PLAYER,
     dealtCount: 4,
     revealed: false,
+    doubled: false,
+    doubleWagerWei: undefined,
   }
 }
 
@@ -176,6 +178,11 @@ describe('BlackjackBotStateStore wager authority', () => {
       JSON.stringify({
         ...gameRecord(),
         authority: undefined,
+        // A truly pre-authority legacy row also predates double-down -- both keys are absent, not
+        // merely false/null, same as `authority` above (JSON.stringify drops an `undefined` key
+        // entirely, which is the point: this must round-trip as `LEGACY_GAME_KEYS`, not
+        // `PRE_DOUBLE_GAME_KEYS`).
+        doubled: undefined,
         wagerWei: '100',
       }),
     )
@@ -210,6 +217,9 @@ describe('BlackjackBotStateStore wager authority', () => {
         value: JSON.stringify({
           ...gameRecord(wagerTxHash),
           authority: 'legacy-unverified',
+          // Pre-double "current schema" row -- has `authority` but predates double-down, so this
+          // must round-trip as `PRE_DOUBLE_GAME_KEYS`, not pick up a stray `doubled` key.
+          doubled: undefined,
           wagerWei: '100',
           revealed: false,
         }),
@@ -300,15 +310,24 @@ describe('BlackjackBotStateStore wager authority', () => {
       {
         type: 'put',
         key: 'game:valid-game',
+        // `doubleWagerWei: null` explicitly (matching `serializeGameRecord`'s own real
+        // serialization) rather than leaving it `undefined` -- JSON.stringify drops an `undefined`
+        // property entirely, which would make this row miss `CURRENT_GAME_KEYS` by one key and
+        // wrongly quarantine a row this test needs to hydrate cleanly.
         value: JSON.stringify({
           ...gameRecord(normalizeWagerTxHash(OTHER_WAGER_HASH)),
           wagerWei: '100',
+          doubleWagerWei: null,
         }),
       },
       {
         type: 'put',
         key: 'game:',
-        value: JSON.stringify({ ...gameRecord(), wagerWei: '100' }),
+        value: JSON.stringify({
+          ...gameRecord(),
+          wagerWei: '100',
+          doubleWagerWei: null,
+        }),
       },
     ])
     await raw.close()

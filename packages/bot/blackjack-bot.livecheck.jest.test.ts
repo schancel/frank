@@ -448,4 +448,143 @@ describe('blackjack move authorization', () => {
       expect.objectContaining({ toAddress: getAddress(PLAYER) }),
     )
   })
+
+  it('rejects a double-down whose second wager does not exactly match the original', async () => {
+    await bet()
+    const before = state.getGame('game-a')
+    jest.clearAllMocks()
+
+    await move(
+      'double',
+      hydrated('double', {
+        verifiedDoubleWager: {
+          fromAddress: PLAYER,
+          toAddress: DEALER,
+          valueWei: 50n, // original wager was 100n -- must match exactly, not just meet the minimum
+        },
+      }),
+    )
+
+    expect(state.getGame('game-a')).toEqual(before)
+    expect(sendDirectMessageItems).not.toHaveBeenCalled()
+    expect(mainAccountSigner.submit).not.toHaveBeenCalled()
+    expect(sendDirectMessageText).toHaveBeenCalledTimes(1)
+  })
+
+  it('rejects a double-down once a hit has already been taken', async () => {
+    await bet()
+    await move('hit', hydrated('hit'))
+    const before = state.getGame('game-a')
+    jest.clearAllMocks()
+
+    await move(
+      'double',
+      hydrated('double', {
+        verifiedDoubleWager: {
+          fromAddress: PLAYER,
+          toAddress: DEALER,
+          valueWei: 100n,
+        },
+      }),
+    )
+
+    expect(state.getGame('game-a')).toEqual(before)
+    expect(sendDirectMessageItems).not.toHaveBeenCalled()
+    expect(mainAccountSigner.submit).not.toHaveBeenCalled()
+    expect(sendDirectMessageText).toHaveBeenCalledTimes(1)
+  })
+
+  it('rejects a second double-down on an already-doubled hand', async () => {
+    await bet()
+    await move(
+      'double',
+      hydrated('double', {
+        verifiedDoubleWager: {
+          fromAddress: PLAYER,
+          toAddress: DEALER,
+          valueWei: 100n,
+        },
+      }),
+    )
+    const before = state.getGame('game-a')
+    jest.clearAllMocks()
+
+    await move(
+      'double',
+      hydrated('double', {
+        verifiedDoubleWager: {
+          fromAddress: PLAYER,
+          toAddress: DEALER,
+          valueWei: 100n,
+        },
+      }),
+    )
+
+    expect(state.getGame('game-a')).toEqual(before)
+    expect(sendDirectMessageItems).not.toHaveBeenCalled()
+    expect(mainAccountSigner.submit).not.toHaveBeenCalled()
+    expect(sendDirectMessageText).toHaveBeenCalledTimes(1)
+  })
+
+  it('doubles the wager, deals exactly one more card, and pays out on the combined stake', async () => {
+    // Find a seed where doubling down (exactly one more card, then an immediate dealer-turn
+    // resolution) wins -- the same brute-force approach "pays only the persisted original
+    // authority and wager amount" uses above, just for a 3-card hand instead of a 2-card stand.
+    let winningSeed = ''
+    for (let i = 0; i < 1000; i++) {
+      const candidate = `double-seed-${i}`
+      const deck = deriveDeck(candidate, WAGER_HASH.toLowerCase(), 0)
+      const initial = dealInitialCards(deck)
+      const playerCards = [...initial.playerCards, deck[4]]
+      const playerValue = handValue(playerCards)
+      if (playerValue.bust) continue
+      let dealerCards = initial.dealerCards
+      let dealtCount = 5
+      while (handValue(dealerCards).total < 17) {
+        dealerCards = [...dealerCards, deck[dealtCount++]]
+      }
+      const outcome = resolveOutcome(playerValue, handValue(dealerCards))
+      if (outcome === 'player_win') {
+        winningSeed = candidate
+        break
+      }
+    }
+    expect(winningSeed).not.toBe('')
+    await state.setPendingCommitment(winningSeed, sha256Hex(winningSeed))
+    await bet()
+    jest.clearAllMocks()
+
+    await move(
+      'double',
+      hydrated('double', {
+        verifiedDoubleWager: {
+          fromAddress: PLAYER,
+          toAddress: DEALER,
+          valueWei: 100n,
+        },
+      }),
+    )
+
+    // `dealtCount` isn't pinned to exactly 5 here -- resolveAndReveal's own dealer draws (to 17+)
+    // advance it further from wherever the double-down's single extra card left it.
+    expect(state.getGame('game-a')).toMatchObject({
+      doubled: true,
+      doubleWagerWei: 100n,
+      revealed: true,
+    })
+    expect(state.getGame('game-a')?.dealtCount).toBeGreaterThanOrEqual(5)
+    // 2x on the combined 200 wei stake (both the original and the double-down wager), not 2x the
+    // original 100 wei alone -- see `resolveAndReveal`'s `effectiveWagerWei`.
+    expect(mainAccountSigner.buildAndSignTransfer).toHaveBeenCalledWith(
+      getAddress(PLAYER),
+      400n,
+    )
+    expect(mainAccountSigner.submit).toHaveBeenCalledWith('signed-payout')
+    expect(sendDirectMessageItems).toHaveBeenCalledWith(
+      expect.objectContaining({
+        toAddress: getAddress(PLAYER),
+        items: [expect.objectContaining({ action: 'double' })],
+      }),
+    )
+  })
 })

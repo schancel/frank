@@ -52,7 +52,7 @@ describe('reduceBlackjackState', () => {
       }),
     )
     expect(state.phase).toBe('player_turn')
-    expect(state.availableActions).toEqual(['hit', 'stand'])
+    expect(state.availableActions).toEqual(['hit', 'stand', 'double'])
 
     state = reduceBlackjackState(state, move({ action: 'stand' }))
     expect(state.phase).toBe('dealer_turn')
@@ -81,7 +81,7 @@ describe('reduceBlackjackState', () => {
       state,
       move({ action: 'deal', playerCards: [10, 9], dealerUpCard: 0 }), // 10+10=20, not blackjack
     )
-    expect(state.availableActions).toEqual(['hit', 'stand'])
+    expect(state.availableActions).toEqual(['hit', 'stand', 'double'])
 
     // King(12) + Queen(11) + 5(rank 4) = bust
     state = reduceBlackjackState(state, move({ action: 'hit', playerCards: [12, 11, 4] }))
@@ -111,6 +111,74 @@ describe('reduceBlackjackState', () => {
       move({ action: 'hit', playerCards: [1, 2, 3] }),
     )
     expect(afterBadHit).toBe(betState)
+  })
+
+  it('offers double as a third option on the freshly-dealt hand', () => {
+    const betState = reduceBlackjackState(undefined, move({ action: 'bet' }))
+    const dealtState = reduceBlackjackState(
+      betState,
+      move({ action: 'deal', playerCards: [9, 10], dealerUpCard: 0 }), // 10+10=20, not blackjack
+    )
+    expect(dealtState.availableActions).toEqual(['hit', 'stand', 'double'])
+  })
+
+  it('folds a double-down through both its own request and the dealer broadcast without losing the verified transfer', () => {
+    const dealtState = reduceBlackjackState(
+      reduceBlackjackState(undefined, move({ action: 'bet' })),
+      move({ action: 'deal', playerCards: [9, 10], dealerUpCard: 0 }), // 10+10=20
+    )
+
+    // The player's own outgoing request: carries the verified second transfer, no cards yet.
+    const requested = reduceBlackjackState(
+      dealtState,
+      move({
+        action: 'double',
+        verifiedDoubleWager: {
+          fromAddress: PLAYER_ADDRESS,
+          toAddress: '0xBotAddress',
+          valueWei: 10000000000000000n,
+        },
+      }),
+    )
+    expect(requested.phase).toBe('dealer_turn')
+    expect(requested.doubled).toBe(true)
+    expect(requested.availableActions).toEqual([])
+    expect(requested.verifiedDoubleWagerWei).toBe(10000000000000000n)
+
+    // The dealer's broadcast of the resulting card: carries the new hand, no transfer of its own
+    // -- must not clobber the already-verified wager with `undefined`.
+    const dealt = reduceBlackjackState(
+      requested,
+      move({ action: 'double', playerCards: [9, 10, 1] }), // +2 = 22, bust
+    )
+    expect(dealt.playerCards).toEqual([9, 10, 1])
+    expect(dealt.doubled).toBe(true)
+    expect(dealt.verifiedDoubleWagerWei).toBe(10000000000000000n)
+    expect(dealt.outcome).toBe('dealer_win')
+    expect(dealt.phase).toBe('dealer_turn')
+  })
+
+  it('ignores a double-down after a hit has already been taken', () => {
+    const dealtState = reduceBlackjackState(
+      reduceBlackjackState(undefined, move({ action: 'bet' })),
+      move({ action: 'deal', playerCards: [9, 10], dealerUpCard: 0 }),
+    )
+    const afterHit = reduceBlackjackState(
+      dealtState,
+      move({ action: 'hit', playerCards: [9, 10, 0] }),
+    )
+    const afterBadDouble = reduceBlackjackState(
+      afterHit,
+      move({
+        action: 'double',
+        verifiedDoubleWager: {
+          fromAddress: PLAYER_ADDRESS,
+          toAddress: '0xBotAddress',
+          valueWei: 10000000000000000n,
+        },
+      }),
+    )
+    expect(afterBadDouble).toBe(afterHit)
   })
 })
 

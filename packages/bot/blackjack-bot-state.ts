@@ -146,6 +146,17 @@ export interface BlackjackGameRecord {
    * always `deck[dealtCount]`. */
   dealtCount: number
   revealed: boolean
+  /** Set once a `double` move is accepted for this game -- mirrors `BlackjackGameState.doubled`
+   * (`@frank/wallet/message-item-plugins/blackjack/game.ts`). Drives `resolveAndReveal`'s payout math, which doubles
+   * the effective wager whenever this is true. Always present (never omitted) so the exact-keys
+   * persisted schema stays a single shape going forward -- see `hydratePersistedGameRecord`'s
+   * `PRE_DOUBLE_GAME_KEYS` migration path for rows written before this field existed. */
+  doubled: boolean
+  /** The on-chain-verified second wager a double-down required (see `hydrate()`'s
+   * `verifiedDoubleWager` in `@frank/wallet/message-item-plugins/blackjack/plugin.ts`) -- never a self-reported figure,
+   * same trust rule as `wagerWei`. Only ever set together with `doubled: true`, in the same
+   * `setGame` transition. */
+  doubleWagerWei?: bigint
 }
 
 export class BlackjackBotStateStore {
@@ -511,7 +522,10 @@ export class BlackjackBotStateStore {
       }
       if (
         record.dealtCount < existing.dealtCount ||
-        (existing.revealed && !record.revealed)
+        (existing.revealed && !record.revealed) ||
+        (existing.doubled && !record.doubled) ||
+        (existing.doubleWagerWei !== undefined &&
+          existing.doubleWagerWei !== record.doubleWagerWei)
       ) {
         throw new Error('cannot move blackjack game state backwards')
       }
@@ -631,6 +645,8 @@ export class BlackjackBotStateStore {
 const CURRENT_GAME_KEYS = [
   'authority',
   'dealtCount',
+  'doubled',
+  'doubleWagerWei',
   'playerAddress',
   'revealed',
   'serverSeed',
@@ -639,15 +655,22 @@ const CURRENT_GAME_KEYS = [
   'wagerWei',
 ] as const
 
-const LEGACY_GAME_KEYS = CURRENT_GAME_KEYS.filter((key) => key !== 'authority')
+// Rows written before double-down existed have every current key except the two new ones. Kept as
+// its own named variant (rather than folded into "invalid") so those rows keep loading as
+// `doubled: false` instead of getting quarantined the first time this ships.
+const PRE_DOUBLE_GAME_KEYS = CURRENT_GAME_KEYS.filter(
+  (key) => key !== 'doubled' && key !== 'doubleWagerWei',
+)
+const LEGACY_GAME_KEYS = PRE_DOUBLE_GAME_KEYS.filter((key) => key !== 'authority')
 
 function hydratePersistedGameRecord(
   parsed: Record<string, unknown>,
   gameId: string,
 ): BlackjackGameRecord {
   const isCurrent = hasExactKeys(parsed, CURRENT_GAME_KEYS)
+  const isPreDouble = hasExactKeys(parsed, PRE_DOUBLE_GAME_KEYS)
   const isLegacy = hasExactKeys(parsed, LEGACY_GAME_KEYS)
-  if (!isCurrent && !isLegacy) {
+  if (!isCurrent && !isPreDouble && !isLegacy) {
     throw new Error(`game ${gameId} has an invalid persisted schema`)
   }
   const authority = isLegacy ? 'legacy-unverified' : parsed.authority
@@ -675,6 +698,27 @@ function hydratePersistedGameRecord(
     throw new Error(`game ${gameId} has invalid wager amount`)
   }
   const wagerWei = BigInt(parsed.wagerWei)
+  let doubled = false
+  let doubleWagerWei: bigint | undefined
+  if (isCurrent) {
+    if (typeof parsed.doubled !== 'boolean') {
+      throw new Error(`game ${gameId} has invalid doubled flag`)
+    }
+    doubled = parsed.doubled
+    if (parsed.doubleWagerWei !== null) {
+      if (
+        typeof parsed.doubleWagerWei !== 'string' ||
+        parsed.doubleWagerWei.length > MAX_WAGER_WEI.toString().length ||
+        !/^(0|[1-9][0-9]*)$/.test(parsed.doubleWagerWei)
+      ) {
+        throw new Error(`game ${gameId} has invalid double wager amount`)
+      }
+      doubleWagerWei = BigInt(parsed.doubleWagerWei)
+    }
+    if (doubleWagerWei !== undefined && !doubled) {
+      throw new Error(`game ${gameId} has a double wager without being doubled`)
+    }
+  }
   const record: BlackjackGameRecord = {
     authority,
     serverSeed: parsed.serverSeed,
@@ -684,6 +728,8 @@ function hydratePersistedGameRecord(
     playerAddress: parsed.playerAddress,
     dealtCount: parsed.dealtCount,
     revealed: authority === 'legacy-unverified' ? true : parsed.revealed,
+    doubled,
+    doubleWagerWei,
   }
   validateRuntimeGameRecord(record, gameId)
   return record
@@ -733,6 +779,21 @@ function validateRuntimeGameRecord(
   }
   if (record.authority === 'legacy-unverified' && !record.revealed) {
     throw new Error(`game ${gameId} legacy authority must remain revealed`)
+  }
+  if (typeof record.doubled !== 'boolean') {
+    throw new Error(`game ${gameId} has invalid doubled flag`)
+  }
+  if (record.doubleWagerWei !== undefined) {
+    if (
+      typeof record.doubleWagerWei !== 'bigint' ||
+      record.doubleWagerWei < 0n ||
+      record.doubleWagerWei > MAX_WAGER_WEI
+    ) {
+      throw new Error(`game ${gameId} has invalid double wager amount`)
+    }
+    if (!record.doubled) {
+      throw new Error(`game ${gameId} has a double wager without being doubled`)
+    }
   }
 }
 
@@ -849,9 +910,15 @@ function sha256Bytes(value: Buffer): string {
 }
 
 function serializeGameRecord(record: BlackjackGameRecord): string {
-  // JSON.stringify can't serialize a bigint directly -- stringify wagerWei explicitly rather
-  // than letting it throw.
-  return JSON.stringify({ ...record, wagerWei: record.wagerWei.toString() })
+  // JSON.stringify can't serialize a bigint directly -- stringify wagerWei/doubleWagerWei
+  // explicitly rather than letting it throw (and let JSON.stringify drop an `undefined` property,
+  // which JSON has no representation for -- but `null` is deliberately kept, not dropped, so a
+  // round trip through `hydratePersistedGameRecord`'s `isCurrent` branch always sees the key).
+  return JSON.stringify({
+    ...record,
+    wagerWei: record.wagerWei.toString(),
+    doubleWagerWei: record.doubleWagerWei !== undefined ? record.doubleWagerWei.toString() : null,
+  })
 }
 
 function freezeGameRecord(record: BlackjackGameRecord): BlackjackGameRecord {

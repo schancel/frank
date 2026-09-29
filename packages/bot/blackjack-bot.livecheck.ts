@@ -160,6 +160,14 @@ async function resolveAndReveal(params: {
   const deck = deriveDeck(record.serverSeed, record.wagerTxHash, 0)
   const playerCards = playerCardsSoFar(deck, record.dealtCount)
   const playerValue = handValue(playerCards)
+  // A double-down puts a second, independently-verified transfer of the same size into the pot --
+  // never just a client-side-doubled number (see `BlackjackGameRecord.doubleWagerWei`'s own
+  // header) -- so the payout base is the sum of the two real transfers actually received, not
+  // `wagerWei * 2`.
+  const effectiveWagerWei =
+    record.doubled && record.doubleWagerWei !== undefined
+      ? record.wagerWei + record.doubleWagerWei
+      : record.wagerWei
 
   let dealerCards = dealInitialCards(deck).dealerCards
   let dealtCount = record.dealtCount
@@ -207,7 +215,7 @@ async function resolveAndReveal(params: {
   const multiplier = payoutMultiplier(outcome)
   if (multiplier > 0) {
     const payoutWei =
-      (BigInt(Math.round(multiplier * 1000)) * record.wagerWei) / 1000n
+      (BigInt(Math.round(multiplier * 1000)) * effectiveWagerWei) / 1000n
     console.log(
       `[blackjack-bot] paying out ${payoutWei} wei (${multiplier}x) to ${record.playerAddress} ...`,
     )
@@ -361,6 +369,8 @@ export async function handleMove(params: {
       playerAddress: wagerSenderAddress,
       dealtCount: 4,
       revealed: false,
+      doubled: false,
+      doubleWagerWei: undefined,
     }
     const claim = await state.claimWagerAndCreateGame({
       gameId,
@@ -482,6 +492,100 @@ export async function handleMove(params: {
         state,
       })
     }
+    return
+  }
+
+  if (action === 'double') {
+    if (record.doubled) {
+      await sendError('this hand has already been doubled')
+      return
+    }
+    // `record.dealtCount` only reads 4 (2 player + 2 dealer, per the dealing-order convention)
+    // before any `hit` has consumed a card -- exactly "the untouched two-card hand," the same
+    // eligibility window `reduceBlackjackState`'s `'double'` case enforces client-side.
+    if (record.dealtCount !== 4) {
+      await sendError(
+        'double down is only allowed immediately after the deal, before any hit',
+      )
+      return
+    }
+    const doubleWager = hydrated.verifiedDoubleWager
+    if (!doubleWager) {
+      await sendError(
+        'could not verify your double-down wager transaction on-chain (unconfirmed, or the hash was wrong)',
+      )
+      return
+    }
+    let doubleWagerSenderAddress: string
+    let doubleWagerRecipientAddress: string
+    try {
+      doubleWagerSenderAddress = normalizePlayerAddress(doubleWager.fromAddress)
+      doubleWagerRecipientAddress = normalizePlayerAddress(doubleWager.toAddress)
+    } catch {
+      await sendError(
+        'double-down wager transaction carried an invalid Monad address',
+      )
+      return
+    }
+    if (doubleWagerSenderAddress !== authenticatedPlayerAddress) {
+      await sendError(
+        'your authenticated identity did not send this double-down wager transaction',
+      )
+      return
+    }
+    if (doubleWagerRecipientAddress !== dealerAddress) {
+      await sendError('your double-down wager transaction did not pay this dealer')
+      return
+    }
+    // Doubling means exactly doubling -- the second transfer must match the original wager
+    // exactly, not merely meet the table minimum, so the payout math's `wagerWei + doubleWagerWei`
+    // is always precisely 2x what the player actually put at risk.
+    if (doubleWager.valueWei !== record.wagerWei) {
+      await sendError(
+        `double-down wager must match your original wager exactly (${record.wagerWei} wei)`,
+      )
+      return
+    }
+
+    const deck = deriveDeck(record.serverSeed, record.wagerTxHash, 0)
+    const newDealtCount = record.dealtCount + 1
+    const playerCards = playerCardsSoFar(deck, newDealtCount)
+    const updatedRecord: BlackjackGameRecord = {
+      ...record,
+      dealtCount: newDealtCount,
+      doubled: true,
+      doubleWagerWei: doubleWager.valueWei,
+    }
+    await state.setGame(gameId, updatedRecord)
+
+    await sendDirectMessageItems({
+      stampClient,
+      pool,
+      mainAccountSigner,
+      provider,
+      fromIdentity: identity,
+      toAddress: record.playerAddress,
+      toPubKey: senderPubKey,
+      items: [{ type: 'blackjack-move', gameId, action: 'double', playerCards }],
+      stampValueWei,
+      networkTag,
+    })
+
+    // Doubling is always exactly one more card then an automatic stand -- win, lose, or bust, the
+    // hand is over, unlike an ordinary `hit` which only forces a reveal on a bust.
+    await resolveAndReveal({
+      gameId,
+      record: updatedRecord,
+      identity,
+      senderPubKey,
+      networkTag,
+      stampValueWei,
+      stampClient,
+      pool,
+      mainAccountSigner,
+      provider,
+      state,
+    })
     return
   }
 

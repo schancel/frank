@@ -19,7 +19,13 @@
  */
 import { Card, deriveDeck, handValue, sha256Hex } from './deck'
 
-export type BlackjackAction = 'bet' | 'deal' | 'hit' | 'stand' | 'reveal'
+export type BlackjackAction =
+  | 'bet'
+  | 'deal'
+  | 'hit'
+  | 'stand'
+  | 'double'
+  | 'reveal'
 export type BlackjackOutcome =
   | 'player_win'
   | 'dealer_win'
@@ -41,6 +47,13 @@ export interface BlackjackGameState {
   /** Only ever set from `hydrate()`'s on-chain verification, never from a self-reported field --
    * see the message-item plugin (`./plugin.ts`) for how it's produced. */
   verifiedWagerWei?: bigint
+  /** Set once a `double` move is accepted -- payout math (bot-side) doubles the effective wager
+   * for this hand. Never inferred from `playerCards.length` alone (a 3-card hand can also happen
+   * from an ordinary `hit`), always from an explicit `double` move having been folded in. */
+  doubled?: boolean
+  /** Only present once `doubled` is true, and only ever from `hydrate()`'s own verification of the
+   * *second* wager transfer -- same trust rule as `verifiedWagerWei`. */
+  verifiedDoubleWagerWei?: bigint
   serverSeedHash?: string
   serverSeed?: string
   playerCards: Card[]
@@ -66,6 +79,13 @@ export interface HydratedBlackjackMove {
   /** Only present for `bet` -- the on-chain-verified wager, or `undefined` if verification failed
    * (unconfirmed, wrong sender, wrong recipient, ...). Never derived from a self-reported field. */
   verifiedWager?: {
+    fromAddress: string
+    toAddress: string
+    valueWei: bigint
+  }
+  /** Only present for `double` -- same trust rule as `verifiedWager`, for the *second* transfer a
+   * double-down needs (see `BlackjackMoveItem.doubleWagerTxHash`'s own header). */
+  verifiedDoubleWager?: {
     fromAddress: string
     toAddress: string
     valueWei: bigint
@@ -118,7 +138,10 @@ export function reduceBlackjackState(
         playerCards,
         dealerUpCard: hydrated.dealerUpCard,
         phase: value.blackjack ? 'dealer_turn' : 'player_turn',
-        availableActions: value.blackjack ? [] : ['hit', 'stand'],
+        // 'double' only ever offered here, on the freshly-dealt two-card hand -- never after a
+        // 'hit' (see that case below, which never re-adds it to its own availableActions), and
+        // never on a natural (already resolved, no actions at all).
+        availableActions: value.blackjack ? [] : ['hit', 'stand', 'double'],
       }
     }
     case 'hit': {
@@ -136,6 +159,42 @@ export function reduceBlackjackState(
         phase: value.bust ? 'dealer_turn' : 'player_turn',
         outcome: value.bust ? 'dealer_win' : undefined,
         availableActions: value.bust ? [] : ['hit', 'stand'],
+      }
+    }
+    case 'double': {
+      // Reached twice per hand, same as 'hit' is reached twice -- once from the player's own
+      // outgoing request (phase still 'player_turn', carries the verified second transfer, no
+      // `playerCards` yet) and once from the dealer's broadcast of the resulting card (phase
+      // already moved to 'dealer_turn' by the first fold, since doubling is always exactly one
+      // more card then an automatic stand -- never another decision point). `doubled` already
+      // being true is what keeps that second fold eligible despite the phase having moved on;
+      // once the broadcast card actually lands (`playerCards.length` grows past 2), a third,
+      // replayed 'double' is correctly rejected by the length check below, same as every other
+      // case here guards against a message that doesn't belong to this point in the hand.
+      const awaitingBroadcastCard = prev?.doubled === true && prev.phase === 'dealer_turn'
+      if (
+        !prev ||
+        prev.playerCards.length !== 2 ||
+        !(prev.phase === 'player_turn' || awaitingBroadcastCard)
+      ) {
+        return prev ?? emptyState(hydrated)
+      }
+      const playerCards = hydrated.playerCards ?? prev.playerCards
+      const value = handValue(playerCards)
+      return {
+        ...prev,
+        playerCards,
+        doubled: true,
+        // 'double' is folded twice per hand -- once from the player's own outgoing request
+        // (carries the verified transfer, no `playerCards` yet) and once from the dealer's
+        // broadcast of the resulting card (carries `playerCards`, no transfer). Falling back to
+        // `prev`'s already-verified value keeps the second fold from clobbering it with
+        // `undefined`.
+        verifiedDoubleWagerWei:
+          hydrated.verifiedDoubleWager?.valueWei ?? prev.verifiedDoubleWagerWei,
+        phase: 'dealer_turn',
+        outcome: value.bust ? 'dealer_win' : undefined,
+        availableActions: [],
       }
     }
     case 'stand': {

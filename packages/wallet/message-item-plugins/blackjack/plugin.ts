@@ -49,6 +49,10 @@ registerMessageItemPlugin<BlackjackMoveItem, HydratedBlackjackMove, BlackjackGam
       raw.action === 'bet' && raw.wagerTxHash
         ? await verifyWagerTransaction(context.provider, raw.wagerTxHash)
         : undefined
+    const verifiedDoubleWager =
+      raw.action === 'double' && raw.doubleWagerTxHash
+        ? await verifyWagerTransaction(context.provider, raw.doubleWagerTxHash)
+        : undefined
     return {
       gameId: raw.gameId,
       action: raw.action,
@@ -60,6 +64,7 @@ registerMessageItemPlugin<BlackjackMoveItem, HydratedBlackjackMove, BlackjackGam
       serverSeed: raw.serverSeed,
       outcome: raw.outcome,
       verifiedWager,
+      verifiedDoubleWager,
       senderAddress: context.message.senderAddress,
     }
   },
@@ -71,6 +76,8 @@ registerMessageItemPlugin<BlackjackMoveItem, HydratedBlackjackMove, BlackjackGam
         return 'Blackjack hand dealt'
       case 'hit':
         return 'Hit'
+      case 'double':
+        return 'Doubled down'
       case 'stand':
         return 'Stood'
       case 'reveal':

@@ -400,11 +400,13 @@ S10a. The stamp key. Directory-statement field 8, `stamp_key`, is optional.
    recipient's current stamp key, field 8 of the recipient's current statement;
    (b) the recipient's identity key (that statement's field 1, when key type 1),
    only when no statement carrying field 8 has been seen for that subject (the
-   downgrade pin, item 4); or (c) the immediately previous stamp key, the stamp
-   key in force before the current one. Any other `P'` (a key the sender
+   downgrade pin, item 4); or (c) the previous stamp key (item 5). Any other `P'` (a key the sender
    chose, the identity key once a field 8 has been seen, a key two or more
    rotations old) is a `cryptographic` reject at stage 10.4, a check distinct
-   from the point, DLEQ and destination checks there. The input is the
+   from the point, DLEQ and destination checks there. Decision #207 calls this
+   a "distinct reject category"; this specification deliberately keeps the
+   category set unchanged and makes it a distinct check, isolated by
+   construction in the vectors (everything else in the case is valid). The input is the
    validation context's `recipient_directory_state` (section 10). The rule
    runs in `full` only: a `typed` case never evaluates it, so `typed` accepts
    a frame whose `P'` is not the recipient's key. It is stage 10, not stage 9,
@@ -415,22 +417,45 @@ S10a. The stamp key. Directory-statement field 8, `stamp_key`, is optional.
 4. Downgrade pin and fallback. A subject never seen with a field 8 is in
    fallback mode: `P'` is the identity key, with the weaker exposure stated in
    T3a. The pin is sticky and per subject: once the consumer has accepted any
-   statement carrying field 8 for it, 3(b) stays closed, so a stale or replayed
-   statement without field 8, or a later revision that drops it, does not
-   re-enable the identity key. A sender working from such a statement pays a
-   key the consumer rejects (item 5). The pin does not stop a rollback for a
-   consumer that has never seen a field 8 (a new or reset verifier handed an
-   old statement); that downgrade, and statement freshness in general, stay
-   with #133.
-5. Rotation. A rotation publishes the new `P'` in a new revision (item 2), and
-   the consumer accepts the current and the immediately previous stamp key
-   (3(c)). A sender whose statement is one rotation stale still delivers. A
-   sender whose statement is two or more rotations stale, or predates the first
-   field 8, pays on chain to a child of a key the consumer rejects: the payment
-   is not accepted as a stamp and the sender cannot recover it (a stranded-funds
-   risk; only a recipient still holding the retired secret can move it). The
-   grace window and how a sender learns of a rotation are owned by #132 and
-   #133; the previous-key rule is the interim.
+   statement carrying field 8 for it, 3(b) stays closed, so a replayed
+   statement without field 8 (S10 rejects a lower revision) or a later
+   revision that drops it does not re-enable the identity key. A sender
+   working from a statement that predates the field 8 pays a key the consumer
+   rejects (item 5). The pin and the previous key (item 5) are consumer state
+   and MUST be persisted. A restart that loses them, or a new or reset
+   verifier handed an old statement, re-enables fallback: an accepted gap, as
+   is statement freshness in general, owned by #133. A transition to a new
+   subject (S10) starts a fresh pin (not seen) and a null previous key for
+   that subject.
+5. Rotation and the previous key. The consumer tracks, per subject, the
+   current stamp key and the previous stamp key, and each accepted statement
+   updates them exactly so: if it carries a field 8 equal to the current stamp
+   key, nothing changes (previous does not become the same key, so previous
+   never equals current); otherwise previous becomes the old current stamp key
+   (null when there was none) and current becomes the statement's field 8
+   (undefined when it has none). Consequences: the first rotation out of
+   fallback leaves previous null, since the identity key is never a "previous
+   stamp key". A revision that drops field 8 leaves current undefined; with
+   `stamp_key_seen` true the identity fallback stays closed and the old key is
+   accepted as previous for exactly that one revision. Once a further
+   statement also lacks field 8, previous is null and the subject receives no
+   stamped delivery until a statement republishes field 8. A sender whose
+   statement is one rotation stale still delivers. A sender whose statement is
+   two or more rotations stale, or predates the first field 8, pays on chain
+   to a child of a key the consumer rejects: the payment is not accepted as a
+   stamp and the sender cannot recover it (a stranded-funds risk; only a
+   recipient still holding the retired secret can move it). The staleness can
+   also run forward: a sender holding the newest statement while the relay has
+   not yet seen it is rejected by item 3, and the recipient can still spend on
+   chain, so that is a delivery reject, not a loss.
+   Decision (#211): the grace is the immediately previous stamp key only, and
+   a rotation done because a stamp secret leaked MUST be followed by a second
+   rotation to close the window. Until then a holder of the leaked secret can
+   build valid frames with `P'` equal to the previous key, pay its own stamps
+   into children of it and sweep them back, and sweep honest senders' late
+   stamps. Bounding the grace by time (needs a clock) and by a revision count
+   were rejected for now; changing this is a text change to this paragraph and
+   its vectors. How a sender learns of a rotation is owned by #132 and #133.
 6. Key types 2 and 3. `P'` MUST be key type 1 (S9), so an identity key of key
    type 2 or 3 cannot use fallback. Such a subject MUST publish field 8 to
    receive stamped deliveries; without it no `P'` satisfies item 3.
@@ -655,7 +680,8 @@ utf8(network)`, so every variable-length input carries its length.
    frame, set `E = e*G` and `X = e*P'`, and produce the T3b proof. A fresh `e`
    is a MUST: a repeated `e` repeats `E`, `X` and every child address, and
    links the payloads. A relay SHOULD flag a repeated `E` for the same `P'` as
-   a linking warning. `E` MUST NOT double as an encryption ephemeral of the
+   a linking warning; anyone who sees a frame can copy its `E`, so the warning
+   MUST NOT attribute anything to the sender. `E` MUST NOT double as an encryption ephemeral of the
    payload's suite, and `X` MUST NOT be used as a key of any kind; it only
    feeds `t_i`.
 2. For child index `i` (a `uint31`), `t_i` is SHA-256 of `u16be(20) ||
@@ -710,11 +736,11 @@ u16be(len(network)) || utf8(network) || G || P' || E || X || R1 || R2 )` read
   prefix style as T3a step 2), and `R1` and `R2` are defined below. Points are
   compressed (fixed 33 bytes), so the concatenation is unambiguous.
 - Proving (sender): choose the nonce `k` in `1..n-1` either uniformly at random
-  or as `k = SHA-256( u16be(25) || ascii("frank/stamp-dleq-nonce/v1") || e ||
-P' || E || X )` (`e` as 32 bytes), taking a fresh random `k` in the 2^-128
+  or as `k = SHA-256( u16be(25) || ascii("frank/stamp-dleq-nonce/v1") ||
+u16be(len(network)) || utf8(network) || e || P' || E || X )` (`e` as 32 bytes), taking a fresh random `k` in the 2^-128
   case that value is out of range. `k` is sender-private and not on the wire.
-  The deterministic form is safe only because `e` is fresh per frame (T3a step
-  1). The same `k` under two different challenges reveals `e` (`e = (s1 - s2) /
+  The network is in the hash so that one `e` on two networks cannot reuse `k`
+  under two challenges, but `e` must still be fresh per frame (T3a step 1). The same `k` under two different challenges reveals `e` (`e = (s1 - s2) /
 (c1 - c2) mod n`), and a predictable or biased `k` leaks it; a constant, a
   counter, or a hash without `e` is therefore not allowed. `e` discloses nothing about
   `d'` (`E` and `X` are public), but whoever learns it can mint valid proofs for
@@ -776,9 +802,9 @@ P' = d'*G                   03f7fc9b839b4c4c8ff821777ecc410b461d6ca6b36e931ddbfa
 e  (sender scalar)          dc99a5298a2008c5d8980f5f2524335a6810606642ad01c8653b053663a86d85
 E  = e*G                    022f88fd8059bf1bfda332a2ff01f4667efdc1d8526562ecbd6bcac57ace81b6c3
 X  = e*P' = d'*E            02d066aa56e65e5cba4051500237a51ae9fd16c2c3476904d47d667f9fe1fca3e9
-k  (proof nonce)            b79b5de5d6ca57ef9fc97d8e7aaaeec8bbbfd8c0668e5d5086ecd6222dfddfa6
-c                           54076e3f673eb1c716008519fc82c29124ede8b9fd6baa00367b53f0c675a5eb
-s                           c899e5021aa978b646268fb3ce4c70867bbb94d86d44b9df28e188df0a3fd364
+k  (proof nonce)            488a39bee567858c457d6b53bcd01e5cc30cd0ff115fac29dae896d93ef9c9ef
+c                           bf8f2ddfeb72fb808d95507bf325ca2e09ea762fd874aef4422a74b7b82e327d
+s                           a6708a4fa9553e426718e3cf8ed714d75546b0458f8a4ef1820c30dce4b0163a
 proof = c || s              (the 64 bytes above, concatenated)
 t_0                         5f35332e2497524346eedbfbef92fb2691e4958a60a1c81181575d5a8aa9fb9d
 child_0 public = t_0*P'     026d5b5608b352c2eeb78127d118e3ed07f0616e4d69f03e2265ed68f14d44d756
@@ -949,8 +975,8 @@ every full case, including rejections and frames whose type is not yet known,
 additionally carries `payment_policy`, `decrypted_frame_hex` and
 `recipient_directory_state`; each is `null` when it does not apply. A
 `full` case whose frame is type 1 MUST have non-null `payment_policy` and
-`decrypted_frame_hex` (and `recipient_directory_state`, except in the
-no-directory-entry vector); a type-2 frame MAY have a null prior statement only for
+`decrypted_frame_hex` (and `recipient_directory_state`, unless it is the
+no-entry reject defined below); a type-2 frame MAY have a null prior statement only for
 bootstrap. For type 1, `payment_policy` provides the 32-byte minimum and
 authoritative chain observations keyed by independently unique transaction ID;
 the encoded payment assertions must match those observations. The
@@ -971,9 +997,14 @@ it: an object with `current_statement_frame_hex` (the exact last accepted type-4
 frame for the recipient), `stamp_key_seen` (a statement carrying field 8 has
 been accepted for that subject, the current one included), and
 `previous_stamp_key_hex` (the 33-byte compressed stamp key in force before the
-current one, or null). It is null only when the case has no directory entry for
-the recipient, which S10a.3 rejects, and for every root other than type 1. The
-codec does not check that field 8 of the recipient statement is a curve point,
+current one, or null), maintained as S10a.5 defines; a non-null previous key
+needs `stamp_key_seen` true, and the current statement may lack field 8. It is
+null for every root other than type 1 and non-null for every other full case,
+except that for a type-1 case null means no directory entry: such a full case
+MUST be a `reject` with `error_category` `cryptographic` and `rules` including
+`S10a`, which S10a.3 fails closed and the checker enforces. The state is the
+recipient's by construction: type 1 has no recipient identity field (S8), so
+the case, not the frame, names whose statement it is. The codec does not check that field 8 of the recipient statement is a curve point,
 so a case may make that key `P'` to test the S10a.3 and T3a.6 checks apart.
 
 The positive `full` type-1 direct-message case MUST also record
@@ -989,37 +1020,50 @@ sorted.
 The corpus for #198 MUST include the vectors below. Each names its operation,
 the section 9 stage, and its category.
 
-| Vector                                                                                                                               | Operation | Stage | Category        |
-| ------------------------------------------------------------------------------------------------------------------------------------ | --------- | ----- | --------------- |
-| Accept: `P'` equals the current field 8 (`stamp_key_seen` true), DLEQ, digest and observations valid                                 | `full`    | 10    | accept          |
-| Accept: fallback, statement without field 8, `stamp_key_seen` false, `P'` the identity key                                           | `full`    | 10    | accept          |
-| Accept: `P'` equals `previous_stamp_key_hex` (one-rotation grace)                                                                    | `full`    | 10    | accept          |
-| Accept: type-2 statement that changes only field 8 with a greater revision and no field 5 (rotation), plus a delivery to the new key | `typed`   | 9     | accept          |
-| Accept: a delivery whose `P'` is not the recipient's key (the binding is not evaluated)                                              | `typed`   | 9     | accept          |
-| Missing type-5 field 6, 7 or 8 (three vectors)                                                                                       | `typed`   | 8.2   | `schema`        |
-| Wrong length for each of type-5 fields 6, 7 and 8 (three vectors)                                                                    | `typed`   | 8.2   | `schema`        |
-| Field 6 and field 7 each: `x >= p` (an on-curve `x0` plus `p`), prefix `04`, prefix `05`, all-zero or `00` prefix, off curve         | `typed`   | 8.2   | `schema`        |
-| Proof scalar: `c = 0`, `c >= n`, `s = 0`, `s >= n` (four separate vectors, `c` and `s` never combined)                               | `typed`   | 8.2   | `schema`        |
-| Type-1 field 1 with key type 1 and a 32-byte value                                                                                   | `typed`   | 8.2   | `schema`        |
-| Type-1 field 1 with an unallocated key type                                                                                          | `typed`   | 8.3   | `unsupported`   |
-| Type-1 field 1 with an allocated key type other than 1 (type 2 or 3, correct length; S9)                                             | `typed`   | 9     | `semantic`      |
-| Type-4 field 8 with an allocated key type other than 1 (type 2 or 3, correct length; S10a.1), and field 8 equal to the subject       | `typed`   | 9     | `semantic`      |
-| Payment child indices not contiguous from 0 (a gap, or starting at 1), and duplicate payment field 3 destinations                    | `typed`   | 9     | `semantic`      |
-| Same-subject update (S10a.2) that changes only field 8 with a non-increasing revision, and one with a key transition present         | `typed`   | 9     | `semantic`      |
-| `P'` off curve, with the recipient state's field 8 equal to it (T3a.6 fails, the binding passes)                                     | `full`    | 10.4  | `cryptographic` |
-| Foreign `P'`: the sender's own key, frame and proof otherwise consistent                                                             | `full`    | 10.4  | `cryptographic` |
-| `P'` equals the identity key while field 8 exists, and the same after a stale statement without field 8 (`stamp_key_seen` true)      | `full`    | 10.4  | `cryptographic` |
-| `P'` two rotations old, and a null `recipient_directory_state` (no directory entry)                                                  | `full`    | 10.4  | `cryptographic` |
-| One-byte proof change; wrong or substituted `X`; wrong `E`; `(E, X, proof)` copied from another network                              | `full`    | 10.4  | `cryptographic` |
-| Payment address from the retired BIP32 derivation, and from `t_i` computed without the network                                       | `full`    | 10.4  | `cryptographic` |
+| Vector                                                                                                                                                                                               | Operation | Stage | Category        |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- | ----- | --------------- |
+| Accept: `P'` equals the current field 8 (`stamp_key_seen` true), DLEQ, digest and observations valid                                                                                                 | `full`    | 10    | accept          |
+| Accept: fallback, statement without field 8, `stamp_key_seen` false, `P'` the identity key                                                                                                           | `full`    | 10    | accept          |
+| Accept: `P'` equals `previous_stamp_key_hex` (one-rotation grace)                                                                                                                                    | `full`    | 10    | accept          |
+| Accept: type-2 statement that changes only field 8 with a greater revision and no field 5 (rotation), plus a delivery to the new key                                                                 | `typed`   | 9     | accept          |
+| Accept: a delivery whose `P'` is not the recipient's key (the binding is not evaluated)                                                                                                              | `typed`   | 9     | accept          |
+| Missing type-5 field 6, 7 or 8 (three vectors)                                                                                                                                                       | `typed`   | 8.2   | `schema`        |
+| Wrong length for each of type-5 fields 6, 7 and 8 (three vectors)                                                                                                                                    | `typed`   | 8.2   | `schema`        |
+| Field 6 and field 7 each: `x >= p` (an on-curve `x0` plus `p`), prefix `04`, prefix `05`, all-zero or `00` prefix, off curve                                                                         | `typed`   | 8.2   | `schema`        |
+| Proof scalar: `c = 0`, `c >= n`, `s = 0`, `s >= n` (four separate vectors, `c` and `s` never combined)                                                                                               | `typed`   | 8.2   | `schema`        |
+| Type-1 field 1 with key type 1 and a 32-byte value                                                                                                                                                   | `typed`   | 8.2   | `schema`        |
+| Type-1 field 1 with an unallocated key type                                                                                                                                                          | `typed`   | 8.3   | `unsupported`   |
+| Type-1 field 1 with an allocated key type other than 1 (type 2 or 3, correct length; S9)                                                                                                             | `typed`   | 9     | `semantic`      |
+| Type-4 field 8 with an allocated key type other than 1 (type 2 or 3, correct length; S10a.1), and field 8 equal to the subject                                                                       | `typed`   | 9     | `semantic`      |
+| Payment child indices not contiguous from 0 (a gap, or starting at 1), and duplicate payment field 3 destinations                                                                                    | `typed`   | 9     | `semantic`      |
+| Same-subject update (S10a.2) that changes only field 8 with a non-increasing revision, and one with a key transition present                                                                         | `typed`   | 9     | `semantic`      |
+| `P'` off curve, with the recipient state's field 8 equal to it (T3a.6 fails, the binding passes)                                                                                                     | `full`    | 10.4  | `cryptographic` |
+| Foreign `P'`: the sender's own key, frame and proof otherwise consistent                                                                                                                             | `full`    | 10.4  | `cryptographic` |
+| `P'` equals the identity key while field 8 exists, right after the first rotation out of fallback (previous null), and after a later revision that drops field 8 (`stamp_key_seen` true, no current) | `full`    | 10.4  | `cryptographic` |
+| Accept: `P'` equals `previous_stamp_key_hex` after a revision that dropped field 8 (no current key, one revision only)                                                                               | `full`    | 10    | accept          |
+| `P'` equals the former key after a second statement without field 8 (previous null, `stamp_key_seen` true)                                                                                           | `full`    | 10.4  | `cryptographic` |
+| Identity key of key type 2 or 3 with no field 8 (S10a.6), any type-1 `P'`                                                                                                                            | `full`    | 10.4  | `cryptographic` |
+| Proof `c = 1`, `s = e` with `E = e*G` and `X = e*P'` (R1 and R2 are infinity; distinguishes a crash from a reject)                                                                                   | `full`    | 10.4  | `cryptographic` |
+| `P'` two rotations old, and a null `recipient_directory_state` (no directory entry)                                                                                                                  | `full`    | 10.4  | `cryptographic` |
+| One-byte proof change; wrong or substituted `X`; wrong `E`; `(E, X, proof)` copied from another network                                                                                              | `full`    | 10.4  | `cryptographic` |
+| Payment address from the retired BIP32 derivation, and from `t_i` computed without the network                                                                                                       | `full`    | 10.4  | `cryptographic` |
 
 Every `cryptographic` reject vector of this family MUST recompute the T3
 digest, the T4 commitments, and the derived addresses from the values it
 presents, with observations that match them, so that exactly one check fails
-and the category is not an accident of an earlier mismatch. Such a vector
-therefore differs from its accept twin in more than one byte and is not a
-`one_byte_mutation` pair; only a deliberate digest-mismatch vector is. Each of
-these rejects has an accept twin or a `paired_case`, and the manifest records
+and the category is not an accident of an earlier mismatch. The off-curve `P'`
+vector cannot: no `X = e*P'` or child address exists for it. It holds constant
+the network, the recipient state (whose field 8 is that same key, so the S10a.3
+binding passes), the payment members and matching observations, and the T3
+digest and T4 commitments recomputed over the presented frame; `E`, `X`, the
+proof and the destinations are arbitrary well-formed values, and the check
+order (T3a.6 before the DLEQ and destination checks) means they are never
+reached. Such a vector differs from an accept case in more than one byte and
+is not a `one_byte_mutation` pair; only a deliberate digest-mismatch vector
+is. Each of these rejects SHOULD have an accept twin: where one exists it is
+recorded with `paired_case` and `pair_relation` `derivation_variant`,
+otherwise the `description` names the accept case that shares its inputs (a
+case has one `paired_case`, so a twin cannot be shared). The manifest records
 its rules (`T3a`, `T3b`, `S9`, `S10a`).
 
 `paired_case` relationships are reciprocal: both named cases MUST exist, name
@@ -1027,7 +1071,11 @@ each other, and carry the same `pair_relation`. `one_byte_mutation` requires
 equal-length `frame_hex` values differing at exactly one byte and demonstrates
 T6. `insertion_order_equivalent` relates independently constructed values whose
 canonical frames must be identical. `cross_language_roundtrip` relates the
-TypeScript- and Rust-origin copies of the same frame. `opaque_retention` relates
+TypeScript- and Rust-origin copies of the same frame. `derivation_variant` relates one `full` type-1 accept case and one `full`
+type-1 reject case built from the same recipient, network and payments that
+differ in the single fault the reject's `description` names; the checker
+verifies one accept, one reject, and equal operation and `type_id`.
+`opaque_retention` relates
 an input and retained output whose bytes must be identical. A `retain` case's
 `retained_frame_hex` MUST equal its `frame_hex` byte for byte.
 
@@ -1071,10 +1119,12 @@ or `stamp_child_public_keys_hex` whose length differs from the frame's
 payment-member count; a `stamp_shared_point_hex` that differs from type-5 field
 7; a `stamp_child_public_keys_hex` entry that is not the T3a child key derived
 from `X`, `P'`, the network and its member's index; a full type-1 accept case
-with a null `recipient_directory_state`, or one whose `stamp_key_seen` is false
-while its current statement carries field 8, or whose `previous_stamp_key_hex`
-equals the current stamp key; a non-null
-`payment_policy` or `decrypted_frame_hex` for a root other than type 1, or a
+with a null `recipient_directory_state`; a full type-1 case with a null state
+that is not a `cryptographic` reject citing `S10a`; a state whose
+`stamp_key_seen` is false while its current statement carries field 8, or whose
+`previous_stamp_key_hex` is non-null while `stamp_key_seen` is false or equals
+the current stamp key; a non-null `payment_policy`, `decrypted_frame_hex` or
+`recipient_directory_state` for a root other than type 1, or a
 non-null `prior_directory_statement_frame_hex` for a root other than type 2; a `retain` case whose root type is known, `min_reader_version` does not
 exceed `reader_version`, and frame version is `01`; and any rule ID that is not a numbered
 rule in this README. Every reject vector for a rule SHOULD have an accept twin
@@ -1085,9 +1135,10 @@ Some properties are outside what a decode manifest can assert and are verified
 by each codec's own unit tests: writer-side canonical encoding (C1, C2, C11)
 beyond `cross_language_roundtrip` pairs; the C7 `bigint` surface; R1's
 no-partial-result guarantee; the section 9 no-side-effects rule; T3a branches
-that need `t_i = 0` or `t_i >= n`, which no producible input reaches; infinity
-checks on `R1`, `R2` and the child point, which no producible input reaches
-either; the sender MUSTs (a fresh `e` per frame, the T3b nonce rules, `E` not
+that need `t_i = 0` or `t_i >= n`, which no producible input reaches, and the
+infinity check on the child point, likewise unreachable (an infinity `R1` or
+`R2` is reachable with `c = 1`, `s = e`, and the vector above distinguishes
+only a crash from a reject); the sender MUSTs (a fresh `e` per frame, the T3b nonce rules, `E` not
 an encryption ephemeral, `X` not a key); the recipient side (`X = d'*E` and the
 spend scalar `t_i*d' mod n`); pinning the T3c constants, so that an encoding
 change to a hash input (domain, network, point, index) is caught (a reference

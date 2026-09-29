@@ -133,7 +133,8 @@
             "one_byte_mutation",
             "insertion_order_equivalent",
             "cross_language_roundtrip",
-            "opaque_retention"
+            "opaque_retention",
+            "derivation_variant"
           ]
         }
       },

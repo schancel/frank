@@ -32,13 +32,47 @@
           }}
         </div>
       </template>
-      <div v-if="state.availableActions.length" class="q-gutter-sm q-mt-sm">
+      <div
+        v-if="actionState && actionState.availableActions.includes('bet')"
+        class="row items-center q-gutter-xs q-mt-sm"
+      >
+        <q-input
+          v-model="betAmountDisplay"
+          dense
+          outlined
+          label="Bet amount"
+          suffix="MON"
+          type="text"
+          inputmode="decimal"
+          autocomplete="off"
+          :input-attrs="{ 'aria-label': 'Bet amount in MON' }"
+          ref="betInput"
+          :hint="betLimitsHint"
+          :error="!!betError"
+          :error-message="betError"
+          style="width: 160px"
+          :disable="sending"
+          @keyup.enter="onAction('bet')"
+        />
+      </div>
+      <div
+        role="status"
+        aria-live="polite"
+        class="text-caption q-mt-xs"
+        :class="visibleError ? 'text-negative' : ''"
+      >
+        {{ visibleError }}
+      </div>
+      <div
+        v-if="actionState && actionState.availableActions.length"
+        class="q-gutter-sm q-mt-sm"
+      >
         <q-btn
-          v-for="action in state.availableActions"
+          v-for="action in actionState.availableActions"
           :key="action"
           :label="actionLabel(action)"
           :loading="sending"
-          :disable="sending"
+          :disable="sending || (action === 'bet' && !!betError)"
           dense
           color="primary"
           @click="onAction(action)"
@@ -58,8 +92,12 @@ import {
   handValue,
 } from '@frank/wallet/message-item-plugins/blackjack/deck'
 import {
+  applyDoubleRejection,
+  BLACKJACK_DEFAULT_MAX_WAGER_WEI,
+  BLACKJACK_DEFAULT_MIN_WAGER_WEI,
   BlackjackAction,
   BlackjackGameState,
+  parseBlackjackError,
   verifyRevealedHand,
 } from '@frank/wallet/message-item-plugins/blackjack/game'
 import {
@@ -73,14 +111,13 @@ import { useChatStore } from '../../../stores/chats'
 import { useMonadWallet } from '../../../utils/clients'
 import { useActiveWallet } from '../../../composables/useActiveWallet'
 import { errorNotify } from '../../../utils/notifications'
+import { parseBetInput } from '../../../utils/blackjack-bet'
 
-// Fixed for v1 -- a real "choose your bet size" input is a natural fast-follow, not built yet
-// (see this component's own PR/commit notes). Comfortably above the relay's stamp minimum so a
-// bot dealer never rejects it as "below the table minimum."
-const DEFAULT_WAGER_WEI = 100000000000000000n // 0.1 MON
+// The bet-size input's starting value -- comfortably above the relay's stamp minimum so a bot
+// dealer never rejects a first-try default as "below the table minimum."
+const DEFAULT_BET_AMOUNT_DISPLAY = '0.1'
 
-const ACTION_LABELS: Record<BlackjackAction, string> = {
-  bet: 'Deal me in (0.1 MON)',
+const ACTION_LABELS: Partial<Record<BlackjackAction, string>> = {
   hit: 'Hit',
   stand: 'Stand',
   deal: 'Deal',
@@ -104,10 +141,44 @@ export default defineComponent({
     return {
       loading: true,
       sending: false,
+      // The hand as of THIS item (what an older message shows, read-only).
       state: null as BlackjackGameState | null,
+      // The authoritative hand after folding every message of the game; only the latest item of
+      // the game offers actions, so an old bubble can never send a stale move.
+      liveState: null as BlackjackGameState | null,
+      isLatest: false,
+      // The dealer's rejection for THIS game while a double was pending (from the fold).
+      dealerError: '',
+      loadSeq: 0,
+      betAmountDisplay: DEFAULT_BET_AMOUNT_DISPLAY,
+      // Inline (aria-live) message: send failures such as insufficient funds, and the dealer's
+      // own rejection text. Kept alongside, not instead of, the toast.
+      actionError: '',
     }
   },
   computed: {
+    actionState(): BlackjackGameState | null {
+      return this.isLatest ? this.liveState : null
+    },
+    visibleError(): string {
+      return this.isLatest ? this.actionError || this.dealerError : ''
+    },
+    betLimitsHint(): string {
+      return `${activeChain.toDisplayAmount(
+        BLACKJACK_DEFAULT_MIN_WAGER_WEI,
+      )} to ${activeChain.toDisplayAmount(BLACKJACK_DEFAULT_MAX_WAGER_WEI)} MON`
+    },
+    // Changes whenever a message arrives in this chat, so the fold is redone with the latest.
+    chatMessageCount(): number {
+      return useChatStore().chats[this.address]?.messages?.length ?? 0
+    },
+    betError(): string {
+      const parsed = parseBetInput(
+        display => activeChain.fromDisplayAmount(display),
+        this.betAmountDisplay,
+      )
+      return parsed.ok ? '' : parsed.error
+    },
     playerValue() {
       return handValue(this.state?.playerCards ?? [])
     },
@@ -140,6 +211,9 @@ export default defineComponent({
         void this.loadState()
       },
     },
+    'chatMessageCount'() {
+      void this.loadState()
+    },
   },
   methods: {
     cardLabel,
@@ -147,10 +221,19 @@ export default defineComponent({
       return cards.length ? cards.map(cardLabel).join(' ') : '—'
     },
     actionLabel(action: BlackjackAction): string {
-      return ACTION_LABELS[action]
+      if (action === 'bet') return `Deal me in (${this.betAmountDisplay} MON)`
+      if (action === 'double') {
+        const wagerWei = this.liveState?.verifiedWagerWei
+        return wagerWei !== undefined
+          ? `Double down (${activeChain.toDisplayAmount(wagerWei)} MON)`
+          : 'Double down'
+      }
+      return ACTION_LABELS[action] ?? action
     },
     async loadState() {
-      this.loading = true
+      const seq = ++this.loadSeq
+      // Only the first load shows the placeholder; later recomputes keep the hand on screen.
+      if (!this.state) this.loading = true
       try {
         const chats = useChatStore()
         const wallet = useMonadWallet() as unknown as {
@@ -163,10 +246,31 @@ export default defineComponent({
           throw new Error('blackjack-move plugin not registered')
         }
 
+        // Fold EVERY message of this game (not just up to this item): the actions and errors on
+        // screen must reflect the latest messages, and this item only decides what it displays.
         let folded: BlackjackGameState | undefined
-        outer: for (const message of messages) {
+        let atItem: BlackjackGameState | undefined
+        let lastRaw: unknown
+        let dealerError = ''
+        for (const message of messages) {
           for (let index = 0; index < message.items.length; index++) {
             const raw = message.items[index]
+            // The dealer answers a rejected request with a plain text message carrying a game
+            // token. Only an error naming THIS game, arriving while our optimistic double is
+            // still pending, unlocks (hit/stand only). Silence (an old bot with no double
+            // branch) cannot be detected here, so the UI stays locked then.
+            if (raw.type === 'text' && !message.outbound) {
+              const parsed = parseBlackjackError(raw.text)
+              if (
+                parsed &&
+                parsed.gameId === this.item.gameId &&
+                folded?.doublePending
+              ) {
+                dealerError = parsed.text
+                folded = applyDoubleRejection(folded)
+              }
+              continue
+            }
             if (
               raw.type !== 'blackjack-move' ||
               raw.gameId !== this.item.gameId
@@ -180,26 +284,53 @@ export default defineComponent({
             }
             const hydrated = await plugin.hydrate(raw, context)
             folded = plugin.reduceState(folded, hydrated, context)
-            if (raw === this.item) break outer
+            lastRaw = raw
+            // The dealer's card for an accepted double supersedes an earlier assumed rejection.
+            if (raw.action === 'double' && raw.playerCards) dealerError = ''
+            if (raw === this.item) atItem = folded
           }
         }
-        this.state = folded ?? null
+        if (seq !== this.loadSeq) return // a newer load superseded this one
+        this.state = atItem ?? folded ?? null
+        this.liveState = folded ?? null
+        this.isLatest = lastRaw === this.item
+        this.dealerError = dealerError
       } catch (err) {
-        errorNotify(err instanceof Error ? err : new Error(String(err)))
+        // A superseded load's failure is irrelevant: the newer load owns the display.
+        if (seq === this.loadSeq) {
+          errorNotify(err instanceof Error ? err : new Error(String(err)))
+        }
       } finally {
-        this.loading = false
+        if (seq === this.loadSeq) this.loading = false
       }
+    },
+    focusBetInput() {
+      const input = this.$refs.betInput as { focus?: () => void } | undefined
+      void this.$nextTick(() => input?.focus?.())
     },
     async onAction(action: BlackjackAction) {
       if (this.sending) return
       this.sending = true
+      this.actionError = ''
       try {
         if (action === 'bet') {
+          // Validate BEFORE any value leaves the wallet: the dealer refunds a rejected stake but a
+          // refund is a second transfer, so never send one we know will be refused.
+          const parsed = parseBetInput(
+            display => activeChain.fromDisplayAmount(display),
+            this.betAmountDisplay,
+          )
+          if (!parsed.ok) {
+            this.actionError = parsed.error
+            this.focusBetInput()
+            return
+          }
+          const wagerWei = parsed.wei
           const wallet = await useActiveWallet()
           const result = await activeChain.nativeTransfers.send({
             wallet,
             recipient: { raw: this.address },
-            value: DEFAULT_WAGER_WEI,
+            value: wagerWei,
           })
           const gameId = `bj-${Date.now()}-${Math.random()
             .toString(36)
@@ -217,11 +348,43 @@ export default defineComponent({
           return
         }
 
+        if (action === 'double') {
+          const wagerWei = this.liveState?.verifiedWagerWei
+          if (wagerWei === undefined) {
+            this.actionError =
+              'Cannot double down: original wager not verified yet'
+            return
+          }
+          const wallet = await useActiveWallet()
+          const result = await activeChain.nativeTransfers.send({
+            wallet,
+            recipient: { raw: this.address },
+            value: wagerWei,
+          })
+          this.$emit('sendFollowUp', {
+            items: [
+              {
+                type: 'blackjack-move',
+                gameId: this.item.gameId,
+                action: 'double',
+                doubleWagerTxHash: result.txHash,
+              },
+            ],
+          })
+          return
+        }
+
         this.$emit('sendFollowUp', {
           items: [{ type: 'blackjack-move', gameId: this.item.gameId, action }],
         })
       } catch (err) {
-        errorNotify(err instanceof Error ? err : new Error(String(err)))
+        const error = err instanceof Error ? err : new Error(String(err))
+        // Announced inline (aria-live) as well as toasted, e.g. "insufficient funds".
+        this.actionError = /insufficient/i.test(error.message)
+          ? `Insufficient funds: ${error.message}`
+          : error.message
+        errorNotify(error)
+        if (action === 'bet') this.focusBetInput()
       } finally {
         this.sending = false
       }

@@ -49,6 +49,16 @@ export class InvalidBlackjackGameIdError extends Error {
   }
 }
 
+/** A refund of a verified-but-rejected stake. `pending` = nothing was broadcast (safe to retry),
+ * `submitting` = a signed transfer may have reached the network (never retried automatically, to
+ * make a double refund impossible), `sent` = done. */
+export interface RefundRecord {
+  status: 'pending' | 'submitting' | 'sent'
+  playerAddress: string
+  amountWei: bigint
+  refundTxHash?: string
+}
+
 export interface ServerSeedCommitment {
   serverSeed: string
   serverSeedHash: string
@@ -146,6 +156,17 @@ export interface BlackjackGameRecord {
    * always `deck[dealtCount]`. */
   dealtCount: number
   revealed: boolean
+  /** Set once a `double` move is accepted for this game -- mirrors `BlackjackGameState.doubled`
+   * (`@frank/wallet/message-item-plugins/blackjack/game.ts`). Drives `resolveAndReveal`'s payout math, which doubles
+   * the effective wager whenever this is true. Always present (never omitted) so the exact-keys
+   * persisted schema stays a single shape going forward -- see `hydratePersistedGameRecord`'s
+   * `PRE_DOUBLE_GAME_KEYS` migration path for rows written before this field existed. */
+  doubled: boolean
+  /** The on-chain-verified second wager a double-down required (see `hydrate()`'s
+   * `verifiedDoubleWager` in `@frank/wallet/message-item-plugins/blackjack/plugin.ts`) -- never a self-reported figure,
+   * same trust rule as `wagerWei`. Only ever set together with `doubled: true`, in the same
+   * `setGame` transition. */
+  doubleWagerWei?: bigint
 }
 
 export class BlackjackBotStateStore {
@@ -155,6 +176,7 @@ export class BlackjackBotStateStore {
   private pendingServerSeedHash?: string
   private games = new Map<string, BlackjackGameRecord>()
   private wagerClaims = new Map<string, string | null>()
+  private refunds = new Map<string, RefundRecord>()
   private processedPayloadHashes = new Set<string>()
   private pendingWrites: Promise<unknown>[] = []
   private mutationQueue: Promise<void> = Promise.resolve()
@@ -285,6 +307,13 @@ export class BlackjackBotStateStore {
             continue
           }
           try {
+            const refund = tryParseRefundClaim(valueBytes)
+            if (refund) {
+              // A refunded transfer consumed its hash: it can never back a game afterwards.
+              this.wagerClaims.set(wagerTxHash, null)
+              this.refunds.set(wagerTxHash, refund)
+              continue
+            }
             this.wagerClaims.set(
               wagerTxHash,
               hydratePersistedClaim(valueBytes, `wager claim ${wagerTxHash}`),
@@ -432,6 +461,7 @@ export class BlackjackBotStateStore {
     this.pendingServerSeedHash = undefined
     this.games.clear()
     this.wagerClaims.clear()
+    this.refunds.clear()
     this.processedPayloadHashes.clear()
   }
 
@@ -511,7 +541,10 @@ export class BlackjackBotStateStore {
       }
       if (
         record.dealtCount < existing.dealtCount ||
-        (existing.revealed && !record.revealed)
+        (existing.revealed && !record.revealed) ||
+        (existing.doubled && !record.doubled) ||
+        (existing.doubleWagerWei !== undefined &&
+          existing.doubleWagerWei !== record.doubleWagerWei)
       ) {
         throw new Error('cannot move blackjack game state backwards')
       }
@@ -613,6 +646,134 @@ export class BlackjackBotStateStore {
     })
   }
 
+
+  /**
+   * Claims a double-down transfer hash in the SAME global keyspace as wager hashes and marks the
+   * game doubled in one atomic batch. A hash already claimed by any game (including this game's
+   * own original wager), or by a refund, is refused, so one real transfer can back exactly one
+   * stake ever.
+   */
+  async claimDoubleWagerAndUpdateGame(params: {
+    gameId: string
+    doubleWagerTxHash: string
+    record: BlackjackGameRecord
+  }): Promise<
+    { ok: true } | { ok: false; reason: 'wager_claimed' | 'game_state_changed' }
+  > {
+    const gameId = normalizeBlackjackGameId(params.gameId)
+    const doubleWagerTxHash = normalizeWagerTxHash(params.doubleWagerTxHash)
+    validateRuntimeGameRecord(params.record, gameId)
+    return this.serializeMutation(async () => {
+      const existing = this.games.get(gameId)
+      const record = params.record
+      if (
+        !existing ||
+        existing.authority !== 'verified-wager-sender' ||
+        existing.revealed ||
+        existing.doubled ||
+        existing.dealtCount !== MIN_DEALT_COUNT ||
+        !record.doubled ||
+        record.doubleWagerWei === undefined ||
+        existing.serverSeed !== record.serverSeed ||
+        existing.wagerTxHash !== record.wagerTxHash ||
+        existing.wagerWei !== record.wagerWei ||
+        existing.playerAddress !== record.playerAddress ||
+        record.dealtCount !== existing.dealtCount + 1
+      ) {
+        return { ok: false as const, reason: 'game_state_changed' as const }
+      }
+      if (this.wagerClaims.has(doubleWagerTxHash)) {
+        return { ok: false as const, reason: 'wager_claimed' as const }
+      }
+      await (this.db as any).batch([
+        rawPut(
+          WAGER_CLAIM_PREFIX + doubleWagerTxHash,
+          JSON.stringify({ gameId }),
+        ),
+        rawPut(GAME_PREFIX + gameId, serializeGameRecord(record)),
+      ])
+      this.wagerClaims.set(doubleWagerTxHash, gameId)
+      this.games.set(gameId, freezeGameRecord(record))
+      return { ok: true as const }
+    })
+  }
+
+  /** Sum of the worst-case payouts owed on unresolved games (2.5x an undoubled stake, 2x a
+   * doubled one), optionally excluding one game, plus pending refunds. Used for the bankroll check. */
+  openExposureWei(excludeGameId?: string): bigint {
+    let total = 0n
+    for (const [gameId, game] of this.games) {
+      if (gameId === excludeGameId) continue
+      if (game.authority !== 'verified-wager-sender' || game.revealed) continue
+      total += game.doubled
+        ? 2n * (game.wagerWei + (game.doubleWagerWei ?? 0n))
+        : (2500n * game.wagerWei) / 1000n
+    }
+    // Queued refunds are debts against the same balance.
+    for (const refund of this.refunds.values()) {
+      if (refund.status === 'pending') total += refund.amountWei
+    }
+    return total
+  }
+
+  getRefund(txHash: string): RefundRecord | undefined {
+    return this.refunds.get(normalizeWagerTxHash(txHash))
+  }
+
+  getPendingRefunds(): Array<[string, RefundRecord]> {
+    return [...this.refunds].filter(([, r]) => r.status === 'pending')
+  }
+
+  /** Consumes `txHash` in the global claim keyspace and records a pending refund, atomically.
+   * Fails (no refund owed) if the hash is already claimed by a game or an earlier refund. */
+  async claimRefund(params: {
+    txHash: string
+    playerAddress: string
+    amountWei: bigint
+  }): Promise<{ ok: true } | { ok: false; reason: 'already_claimed' }> {
+    const txHash = normalizeWagerTxHash(params.txHash)
+    const playerAddress = normalizePlayerAddress(params.playerAddress)
+    if (params.amountWei <= 0n || params.amountWei > MAX_WAGER_WEI) {
+      throw new Error('refund amount must be positive')
+    }
+    return this.serializeMutation(async () => {
+      if (this.wagerClaims.has(txHash)) {
+        return { ok: false as const, reason: 'already_claimed' as const }
+      }
+      const record: RefundRecord = {
+        status: 'pending',
+        playerAddress,
+        amountWei: params.amountWei,
+      }
+      await this.db.put(
+        encodeUtf8(WAGER_CLAIM_PREFIX + txHash) as never,
+        encodeUtf8(serializeRefund(record)) as never,
+      )
+      this.wagerClaims.set(txHash, null)
+      this.refunds.set(txHash, record)
+      return { ok: true as const }
+    })
+  }
+
+  async setRefundStatus(
+    txHash: string,
+    status: RefundRecord['status'],
+    refundTxHash?: string,
+  ): Promise<void> {
+    const hash = normalizeWagerTxHash(txHash)
+    await this.serializeMutation(async () => {
+      const existing = this.refunds.get(hash)
+      if (!existing) throw new Error('no refund claim for this transaction')
+      if (existing.status === 'sent') return
+      const record: RefundRecord = { ...existing, status, refundTxHash }
+      await this.db.put(
+        encodeUtf8(WAGER_CLAIM_PREFIX + hash) as never,
+        encodeUtf8(serializeRefund(record)) as never,
+      )
+      this.refunds.set(hash, record)
+    })
+  }
+
   hasProcessed(payloadHashHex: string): boolean {
     return this.processedPayloadHashes.has(payloadHashHex)
   }
@@ -631,6 +792,8 @@ export class BlackjackBotStateStore {
 const CURRENT_GAME_KEYS = [
   'authority',
   'dealtCount',
+  'doubled',
+  'doubleWagerWei',
   'playerAddress',
   'revealed',
   'serverSeed',
@@ -639,15 +802,22 @@ const CURRENT_GAME_KEYS = [
   'wagerWei',
 ] as const
 
-const LEGACY_GAME_KEYS = CURRENT_GAME_KEYS.filter((key) => key !== 'authority')
+// Rows written before double-down existed have every current key except the two new ones. Kept as
+// its own named variant (rather than folded into "invalid") so those rows keep loading as
+// `doubled: false` instead of getting quarantined the first time this ships.
+const PRE_DOUBLE_GAME_KEYS = CURRENT_GAME_KEYS.filter(
+  (key) => key !== 'doubled' && key !== 'doubleWagerWei',
+)
+const LEGACY_GAME_KEYS = PRE_DOUBLE_GAME_KEYS.filter((key) => key !== 'authority')
 
 function hydratePersistedGameRecord(
   parsed: Record<string, unknown>,
   gameId: string,
 ): BlackjackGameRecord {
   const isCurrent = hasExactKeys(parsed, CURRENT_GAME_KEYS)
+  const isPreDouble = hasExactKeys(parsed, PRE_DOUBLE_GAME_KEYS)
   const isLegacy = hasExactKeys(parsed, LEGACY_GAME_KEYS)
-  if (!isCurrent && !isLegacy) {
+  if (!isCurrent && !isPreDouble && !isLegacy) {
     throw new Error(`game ${gameId} has an invalid persisted schema`)
   }
   const authority = isLegacy ? 'legacy-unverified' : parsed.authority
@@ -675,6 +845,27 @@ function hydratePersistedGameRecord(
     throw new Error(`game ${gameId} has invalid wager amount`)
   }
   const wagerWei = BigInt(parsed.wagerWei)
+  let doubled = false
+  let doubleWagerWei: bigint | undefined
+  if (isCurrent) {
+    if (typeof parsed.doubled !== 'boolean') {
+      throw new Error(`game ${gameId} has invalid doubled flag`)
+    }
+    doubled = parsed.doubled
+    if (parsed.doubleWagerWei !== null) {
+      if (
+        typeof parsed.doubleWagerWei !== 'string' ||
+        parsed.doubleWagerWei.length > MAX_WAGER_WEI.toString().length ||
+        !/^(0|[1-9][0-9]*)$/.test(parsed.doubleWagerWei)
+      ) {
+        throw new Error(`game ${gameId} has invalid double wager amount`)
+      }
+      doubleWagerWei = BigInt(parsed.doubleWagerWei)
+    }
+    if (doubleWagerWei !== undefined && !doubled) {
+      throw new Error(`game ${gameId} has a double wager without being doubled`)
+    }
+  }
   const record: BlackjackGameRecord = {
     authority,
     serverSeed: parsed.serverSeed,
@@ -684,6 +875,8 @@ function hydratePersistedGameRecord(
     playerAddress: parsed.playerAddress,
     dealtCount: parsed.dealtCount,
     revealed: authority === 'legacy-unverified' ? true : parsed.revealed,
+    doubled,
+    doubleWagerWei,
   }
   validateRuntimeGameRecord(record, gameId)
   return record
@@ -733,6 +926,55 @@ function validateRuntimeGameRecord(
   }
   if (record.authority === 'legacy-unverified' && !record.revealed) {
     throw new Error(`game ${gameId} legacy authority must remain revealed`)
+  }
+  if (typeof record.doubled !== 'boolean') {
+    throw new Error(`game ${gameId} has invalid doubled flag`)
+  }
+  if (record.doubleWagerWei !== undefined) {
+    if (
+      typeof record.doubleWagerWei !== 'bigint' ||
+      record.doubleWagerWei < 0n ||
+      record.doubleWagerWei > MAX_WAGER_WEI
+    ) {
+      throw new Error(`game ${gameId} has invalid double wager amount`)
+    }
+    if (!record.doubled) {
+      throw new Error(`game ${gameId} has a double wager without being doubled`)
+    }
+  }
+}
+
+function serializeRefund(record: RefundRecord): string {
+  return JSON.stringify({
+    refund: {
+      status: record.status,
+      playerAddress: record.playerAddress,
+      amountWei: record.amountWei.toString(),
+      refundTxHash: record.refundTxHash ?? null,
+    },
+  })
+}
+
+function tryParseRefundClaim(value: Buffer): RefundRecord | undefined {
+  const parsed = parseJsonObject(decodeUtf8Strict(value, 'claim value'), 'claim')
+  if (!hasExactKeys(parsed, ['refund'])) return undefined
+  const r = parsed.refund
+  if (
+    !isPlainObject(r) ||
+    !hasExactKeys(r, ['status', 'playerAddress', 'amountWei', 'refundTxHash']) ||
+    (r.status !== 'pending' && r.status !== 'submitting' && r.status !== 'sent') ||
+    typeof r.playerAddress !== 'string' ||
+    typeof r.amountWei !== 'string' ||
+    !/^[1-9][0-9]*$/.test(r.amountWei) ||
+    (r.refundTxHash !== null && typeof r.refundTxHash !== 'string')
+  ) {
+    throw new Error('refund claim has an invalid schema')
+  }
+  return {
+    status: r.status,
+    playerAddress: normalizePlayerAddress(r.playerAddress),
+    amountWei: BigInt(r.amountWei),
+    refundTxHash: r.refundTxHash ?? undefined,
   }
 }
 
@@ -849,9 +1091,15 @@ function sha256Bytes(value: Buffer): string {
 }
 
 function serializeGameRecord(record: BlackjackGameRecord): string {
-  // JSON.stringify can't serialize a bigint directly -- stringify wagerWei explicitly rather
-  // than letting it throw.
-  return JSON.stringify({ ...record, wagerWei: record.wagerWei.toString() })
+  // JSON.stringify can't serialize a bigint directly -- stringify wagerWei/doubleWagerWei
+  // explicitly rather than letting it throw (and let JSON.stringify drop an `undefined` property,
+  // which JSON has no representation for -- but `null` is deliberately kept, not dropped, so a
+  // round trip through `hydratePersistedGameRecord`'s `isCurrent` branch always sees the key).
+  return JSON.stringify({
+    ...record,
+    wagerWei: record.wagerWei.toString(),
+    doubleWagerWei: record.doubleWagerWei !== undefined ? record.doubleWagerWei.toString() : null,
+  })
 }
 
 function freezeGameRecord(record: BlackjackGameRecord): BlackjackGameRecord {

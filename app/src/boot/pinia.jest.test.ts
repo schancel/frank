@@ -1,11 +1,35 @@
 /** @jest-environment jsdom */
 
+jest.mock('@frank/wallet/chain', () => ({
+  activeChain: {
+    name: 'test',
+    parseAddress: jest.fn(),
+    formatAddress: jest.fn(),
+    topics: {},
+    directMessages: {},
+  },
+}))
+jest.mock('../adapters/level-message-store', () => ({
+  store: Promise.resolve({}),
+}))
+jest.mock('../adapters/level-utxo-store', () => ({
+  store: Promise.resolve({}),
+}))
+
 import { createApp, nextTick } from 'vue'
 import { createPinia, defineStore } from 'pinia'
+import type { Pinia } from 'pinia'
 import type { LevelDB } from 'level'
 
 import { createStoragePlugin, StoreMetadata } from './pinia'
+import { useAppearanceStore } from '../stores/appearance'
+import { useChatStore } from '../stores/chats'
+import { useContactStore } from '../stores/contacts'
+import { useForumStore } from '../stores/forum'
 import { useProfileStore } from '../stores/my-profile'
+import { useRelayClientStore } from '../stores/relay-client'
+import { useTopicStore } from '../stores/topics'
+import { useWalletStore } from '../stores/wallet'
 
 interface Deferred {
   promise: Promise<void>
@@ -57,6 +81,48 @@ function persistentStore(save: () => Promise<void>) {
 }
 
 describe('Pinia persistence barrier', () => {
+  it.each([
+    ['appearance', useAppearanceStore],
+    ['chats', useChatStore],
+    ['contacts', useContactStore],
+    ['forum', useForumStore],
+    ['profile', useProfileStore],
+    ['relay client', useRelayClientStore],
+    ['topics', useTopicStore],
+    ['wallet', useWalletStore],
+  ])('tracks the real %s store write promise', async (_name, useStore) => {
+    const writes: Deferred[] = []
+    const storage = {
+      get: jest.fn().mockRejectedValue(new Error('not found')),
+      put: jest.fn(() => {
+        const write = deferred()
+        writes.push(write)
+        return write.promise
+      }),
+    } as unknown as LevelDB
+    const { pinia } = installPinia(storage)
+    const store = useStore(pinia as Pinia)
+    await store.restored
+
+    writes.forEach(write => write.resolve())
+    await store.flushPersistence()
+    writes.splice(0)
+
+    store.$patch({})
+    const barrier = store.flushPersistence()
+    await nextTick()
+    expect(writes).toHaveLength(1)
+
+    let settled = false
+    const observedBarrier = barrier.then(() => {
+      settled = true
+    })
+    await Promise.resolve()
+    expect(settled).toBe(false)
+    writes[0].resolve()
+    await observedBarrier
+  })
+
   it('tracks the real profile store LevelDB write', async () => {
     const writes: Deferred[] = []
     const storage = {
@@ -137,12 +203,41 @@ describe('Pinia persistence barrier', () => {
     await store.flushPersistence()
 
     store.setValue(1)
-    const barrier = store.flushPersistence()
     await nextTick()
     write.reject(new Error('disk unavailable'))
+    // No consumer has called the barrier yet. The plugin itself must attach a
+    // rejection handler synchronously while retaining the error for callers.
+    await new Promise(resolve => window.setTimeout(resolve, 0))
 
-    await expect(barrier).rejects.toThrow('disk unavailable')
     await expect(store.flushPersistence()).rejects.toThrow('disk unavailable')
+  })
+
+  it('coalesces same-tick mutations and waits for the final-state write', async () => {
+    const write = deferred()
+    const save = jest
+      .fn<Promise<void>, []>()
+      .mockResolvedValueOnce()
+      .mockReturnValueOnce(write.promise)
+    const store = persistentStore(save)
+    await store.restored
+    await store.flushPersistence()
+    save.mockClear()
+
+    store.setValue(1)
+    store.setValue(2)
+    const barrier = store.flushPersistence()
+    await nextTick()
+
+    expect(save).toHaveBeenCalledTimes(1)
+    let settled = false
+    const observedBarrier = barrier.then(() => {
+      settled = true
+    })
+    await Promise.resolve()
+    expect(settled).toBe(false)
+
+    write.resolve()
+    await observedBarrier
   })
 
   it('resolves immediately for stores without persistence', async () => {

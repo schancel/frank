@@ -570,7 +570,8 @@ The recipient reconstructs the same spend key by setting the root private
 scalar to `(recipient_private + h) mod n` (reject zero) and applying the same
 non-hardened CKD components and rejection rules. This key-recovery rule does
 not make the relay capable of deriving recipient private keys. Because every
-offset is derivable from public data, disclosure of any stamp child private key
+offset is derivable from the type-5 frame, which the sender, relays, and
+mailbox holders have, disclosure of any stamp child private key to one of them
 reveals the recipient's registered identity key; as accepted on #60, child
 private keys are identity-grade secrets, used transiently and never made
 relay-visible. A separate stamp key is a change to #60's accepted derivation

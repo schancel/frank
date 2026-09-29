@@ -360,3 +360,44 @@ describe('frame encoder', () => {
     void type5Frame
   })
 })
+
+describe('input aliasing', () => {
+  it('copies a Node Buffer input: later mutation cannot change returned or retained bytes', () => {
+    const original = Uint8Array.from(WORKED_TEXT_HI)
+    const buf = Buffer.from(WORKED_TEXT_HI)
+    const r = validateFrame(buf, defaultContext())
+    if (r.kind !== 'parsed') throw new Error('parsed expected')
+    buf.fill(0)
+    expect(Array.from(r.frame)).toEqual(Array.from(original))
+    expect(Array.from(r.payloadBytes)).toEqual(
+      Array.from(original.subarray(-5)),
+    )
+
+    const unknown = unknownItem(1)
+    const item = Buffer.from(unknown)
+    const kept = validateFrame(
+      item,
+      defaultContext({ opaqueRetentionAllowed: true }),
+    )
+    if (kept.kind !== 'retained') throw new Error('retained expected')
+    item.fill(0xff)
+    expect(Array.from(kept.frame)).toEqual(Array.from(unknown))
+
+    const child = Buffer.from(
+      fr(
+        8,
+        M([
+          [0, 'frank'],
+          [1, [unknown]],
+        ]),
+      ),
+    )
+    const parent = validateFrame(child, defaultContext())
+    child.fill(0)
+    if (parent.kind !== 'parsed' || parent.typed?.type !== 8)
+      throw new Error('type 8 expected')
+    const c0 = parent.typed.items[0]
+    if (c0.kind !== 'retained') throw new Error('retained child expected')
+    expect(Array.from(c0.frame)).toEqual(Array.from(unknown))
+  })
+})

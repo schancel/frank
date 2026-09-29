@@ -2329,3 +2329,774 @@ rej(
   ['S7'],
   NOP,
 )
+
+// ---------------------------------------------------------------------------------------------
+// Round 2: single-fault boundary vectors (non-minimal widths, UTF-8 kinds, CDDL bounds, depth
+// accounting of every required-child path)
+// ---------------------------------------------------------------------------------------------
+
+const zeros = (n: number): string => '00'.repeat(n)
+
+// Non-minimal integer and length arguments, at each width boundary.
+rej(
+  'r2-nonminimal-int-23-as-1byte',
+  'Value 23 written as 18 17 (fits the initial byte).',
+  P('a1 00 1817'),
+  'noncanonical',
+  '7',
+  ['C2'],
+  g,
+)
+acc(
+  'r2-minimal-int-24',
+  'Value 24 as 18 18: the smallest value needing one argument byte.',
+  P('a1 00 1818'),
+  ['C2'],
+  g,
+)
+rej(
+  'r2-nonminimal-int-255-as-2byte',
+  'Value 255 written as 19 00 ff (fits one argument byte).',
+  P('a1 00 1900ff'),
+  'noncanonical',
+  '7',
+  ['C2'],
+  g,
+)
+acc(
+  'r2-minimal-int-256',
+  'Value 256 as 19 01 00: the smallest value needing two argument bytes.',
+  P('a1 00 190100'),
+  ['C2'],
+  g,
+)
+rej(
+  'r2-nonminimal-int-65535-as-4byte',
+  'Value 65535 written as 1a 00 00 ff ff.',
+  P('a1 00 1a0000ffff'),
+  'noncanonical',
+  '7',
+  ['C2'],
+  g,
+)
+acc(
+  'r2-minimal-int-65536',
+  'Value 65536 as 1a 00 01 00 00.',
+  P('a1 00 1a00010000'),
+  ['C2'],
+  g,
+)
+rej(
+  'r2-nonminimal-int-u32max-as-8byte',
+  'Value 2^32-1 written as 1b 00 00 00 00 ff ff ff ff.',
+  P('a1 00 1b00000000ffffffff'),
+  'noncanonical',
+  '7',
+  ['C2'],
+  g,
+)
+acc(
+  'r2-minimal-int-2pow32',
+  'Value 2^32 as 1b 00 00 00 01 00 00 00 00.',
+  P('a1 00 1b0000000100000000'),
+  ['C2'],
+  g,
+)
+rej(
+  'r2-nonminimal-bytes-length-1',
+  'One-byte byte string with length written as 58 01.',
+  P('a1 00 580100'),
+  'noncanonical',
+  '7',
+  ['C2'],
+  g,
+)
+rej(
+  'r2-nonminimal-bytes-length-23',
+  '23-byte byte string with length written as 58 17.',
+  P(`a1 00 5817${zeros(23)}`),
+  'noncanonical',
+  '7',
+  ['C2'],
+  g,
+)
+acc(
+  'r2-minimal-bytes-length-24',
+  '24-byte byte string with length 58 18.',
+  P(`a1 00 5818${zeros(24)}`),
+  ['C2'],
+  g,
+)
+rej(
+  'r2-nonminimal-array-count-16bit',
+  'Array of 1 element with count written as 99 00 01.',
+  P('a1 00 99000100'),
+  'noncanonical',
+  '7',
+  ['C2'],
+  g,
+)
+
+// Invalid UTF-8, one fault each.
+rej(
+  'r2-utf8-overlong-e0',
+  'Overlong three-byte encoding e0 80 80.',
+  P('a1 00 63 e08080'),
+  'malformed',
+  '7',
+  ['C6'],
+  g,
+)
+rej(
+  'r2-utf8-overlong-f0',
+  'Overlong four-byte encoding f0 80 80 80.',
+  P('a1 00 64 f0808080'),
+  'malformed',
+  '7',
+  ['C6'],
+  g,
+)
+rej(
+  'r2-utf8-lead-f5',
+  'Invalid lead byte f5 followed by three continuation bytes.',
+  P('a1 00 64 f5808080'),
+  'malformed',
+  '7',
+  ['C6'],
+  g,
+)
+rej(
+  'r2-utf8-lead-f6',
+  'Invalid lead byte f6 followed by three continuation bytes.',
+  P('a1 00 64 f6808080'),
+  'malformed',
+  '7',
+  ['C6'],
+  g,
+)
+rej(
+  'r2-utf8-lead-f7',
+  'Invalid lead byte f7 followed by three continuation bytes.',
+  P('a1 00 64 f7808080'),
+  'malformed',
+  '7',
+  ['C6'],
+  g,
+)
+rej(
+  'r2-utf8-truncated-sequence',
+  'A three-byte sequence cut off at the end of the string (e2 82).',
+  P('a1 00 62 e282'),
+  'malformed',
+  '7',
+  ['C6'],
+  g,
+)
+rej(
+  'r2-utf8-bad-continuation-3byte-last',
+  'Three-byte form with a bad last continuation byte (e2 82 28).',
+  P('a1 00 63 e28228'),
+  'malformed',
+  '7',
+  ['C6'],
+  g,
+)
+rej(
+  'r2-utf8-bad-continuation-3byte-first',
+  'Three-byte form with a bad first continuation byte (e2 28 ac).',
+  P('a1 00 63 e228ac'),
+  'malformed',
+  '7',
+  ['C6'],
+  g,
+)
+rej(
+  'r2-utf8-bad-continuation-4byte-last',
+  'Four-byte form with a bad last continuation byte (f0 9f 98 28).',
+  P('a1 00 64 f09f9828'),
+  'malformed',
+  '7',
+  ['C6'],
+  g,
+)
+rej(
+  'r2-utf8-bad-continuation-4byte-middle',
+  'Four-byte form with a bad third byte (f0 9f 28 80).',
+  P('a1 00 64 f09f2880'),
+  'malformed',
+  '7',
+  ['C6'],
+  g,
+)
+acc(
+  'r2-utf8-max-scalar',
+  'U+10FFFF (f4 8f bf bf) is well-formed.',
+  P('a1 00 64 f48fbfbf'),
+  ['C6'],
+  g,
+)
+
+// Indefinite map entry counting.
+const indefMap = (n: number): Uint8Array => {
+  const parts: number[] = [0xbf]
+  for (let k = 0; k < n; k++) {
+    if (k < 24) parts.push(k)
+    else if (k < 256) parts.push(0x18, k)
+    else parts.push(0x19, k >> 8, k & 255)
+    parts.push(0)
+  }
+  parts.push(0xff)
+  return Uint8Array.from(parts)
+}
+rej(
+  'r2-indefinite-map-257-entries',
+  'An indefinite map reaching 257 entries counts them as it reads: resource.',
+  framePayload(indefMap(257)),
+  'resource',
+  '7',
+  ['R1', 'C3'],
+  g,
+)
+rej(
+  'r2-indefinite-map-256-entries',
+  'An indefinite map with exactly 256 entries stays within the entry limit and is then noncanonical.',
+  framePayload(indefMap(256)),
+  'noncanonical',
+  '7',
+  ['R1', 'C3'],
+  g,
+)
+
+// Endpoint syntax (S4), one character class at a time.
+const withEndpoint = (e: string) =>
+  fr(4, statementPayload({ relays: [relay(1, e)] }))
+const ENDP = { ...TS, prior: null as Uint8Array | null }
+for (const [name, e] of [
+  ['double-quote', 'https://a"b/'],
+  ['caret', 'https://a^b/'],
+  ['backtick', 'https://a`b/'],
+  ['open-brace', 'https://a{b/'],
+  ['pipe', 'https://a|b/'],
+  ['close-brace', 'https://a}b/'],
+  ['less-than', 'https://a<b/'],
+  ['greater-than', 'https://a>b/'],
+  ['digit-first-scheme', '1http://relay.example/'],
+  ['empty-scheme', ':relay.example/'],
+  ['control-character', 'https://a\u0001b/'],
+  ['non-ascii', 'https://\u00e9.example/'],
+] as const) {
+  rej(
+    `r2-endpoint-${name}`,
+    `Endpoint ${name}: violates S4.`,
+    withEndpoint(e),
+    'schema',
+    '8.2',
+    ['S4'],
+    ENDP,
+  )
+}
+acc(
+  'r2-endpoint-allowed-punctuation',
+  'Endpoint using allowed punctuation (! # ; = ? [ ] _ ~ + . -).',
+  withEndpoint('a+b.c-d://x!#;=?[]_~'),
+  ['S4'],
+  { prior: null },
+)
+acc(
+  'r2-endpoint-2048-bytes',
+  'Endpoint of exactly 2,048 bytes.',
+  withEndpoint(`https://${'a'.repeat(2040)}`),
+  ['S4'],
+  { prior: null },
+)
+rej(
+  'r2-endpoint-2049-bytes',
+  'Endpoint of 2,049 bytes.',
+  withEndpoint(`https://${'a'.repeat(2041)}`),
+  'schema',
+  '8.2',
+  ['S4'],
+  ENDP,
+)
+acc(
+  'r2-relay-id-16-bytes',
+  'relay_id of 16 bytes.',
+  fr(4, statementPayload({ relays: [withField(relay(1), 0, bytesOf(16, 1))] })),
+  ['S4'],
+  { prior: null },
+)
+rej(
+  'r2-relay-id-15-bytes',
+  'relay_id of 15 bytes.',
+  fr(4, statementPayload({ relays: [withField(relay(1), 0, bytesOf(15, 1))] })),
+  'schema',
+  '8.2',
+  ['S4'],
+  ENDP,
+)
+acc(
+  'r2-relay-id-64-bytes',
+  'relay_id of 64 bytes.',
+  fr(4, statementPayload({ relays: [withField(relay(1), 0, bytesOf(64, 1))] })),
+  ['S4'],
+  { prior: null },
+)
+rej(
+  'r2-relay-id-65-bytes',
+  'relay_id of 65 bytes.',
+  fr(4, statementPayload({ relays: [withField(relay(1), 0, bytesOf(65, 1))] })),
+  'schema',
+  '8.2',
+  ['S4'],
+  ENDP,
+)
+rej(
+  'r2-transitions-17-entries',
+  'Seventeen key-transition entries: the [1*16] bound is a schema error, not resource.',
+  fr(
+    4,
+    statementPayload({
+      transitions: Array.from({ length: 17 }, () => transition(t7())),
+    }),
+  ),
+  'schema',
+  '8.2',
+  ['S5'],
+  ENDP,
+)
+
+// Network tag (S1).
+const net5 = (n: string) => fr(5, type5Payload({ net: n }))
+acc(
+  'r2-network-64-chars',
+  'A 64-character network tag.',
+  net5('a'.repeat(64)),
+  ['S1'],
+)
+rej(
+  'r2-network-65-chars',
+  'A 65-character network tag.',
+  net5('a'.repeat(65)),
+  'schema',
+  '8.2',
+  ['S1'],
+  TS,
+)
+rej(
+  'r2-network-uppercase-later',
+  'Uppercase letter after the first character.',
+  net5('aBc'),
+  'schema',
+  '8.2',
+  ['S1'],
+  TS,
+)
+acc(
+  'r2-network-punctuation',
+  'Network tag using . _ - after the first character.',
+  net5('a.b_c-d'),
+  ['S1'],
+)
+rej(
+  'r2-network-space',
+  'Network tag containing a space.',
+  net5('a b'),
+  'schema',
+  '8.2',
+  ['S1'],
+  TS,
+)
+
+// Key types and lengths (S2).
+const acctK = (type: number, n: number) =>
+  M([
+    [0, type],
+    [1, bytesOf(n, 3)],
+  ])
+acc(
+  'r2-key-type-3-32-bytes',
+  'Key type 3 with a 32-byte key (allocated, correct length).',
+  fr(5, new Map([...type5Payload(), [1, acctK(3, 32)]])),
+  ['S2'],
+)
+rej(
+  'r2-key-type-3-33-bytes',
+  'Key type 3 with a 33-byte key.',
+  fr(5, new Map([...type5Payload(), [1, acctK(3, 33)]])),
+  'schema',
+  '8.2',
+  ['S2'],
+  TS,
+)
+rej(
+  'r2-key-type-2-33-bytes',
+  'Key type 2 with a 33-byte key.',
+  fr(5, new Map([...type5Payload(), [1, acctK(2, 33)]])),
+  'schema',
+  '8.2',
+  ['S2'],
+  TS,
+)
+rej(
+  'r2-key-type-1-32-bytes',
+  'Key type 1 with a 32-byte key.',
+  fr(5, new Map([...type5Payload(), [1, acctK(1, 32)]])),
+  'schema',
+  '8.2',
+  ['S2'],
+  TS,
+)
+rej(
+  'r2-key-bytes-128-unallocated-type',
+  '128 key bytes pass the CDDL bound; the unallocated type is then unsupported.',
+  fr(5, new Map([...type5Payload(), [1, acctK(9, 128)]])),
+  'unsupported',
+  '8.3',
+  ['S2'],
+  TS,
+)
+rej(
+  'r2-key-bytes-129',
+  '129 key bytes exceed the account-ref bound.',
+  fr(5, new Map([...type5Payload(), [1, acctK(9, 129)]])),
+  'schema',
+  '8.2',
+  ['S2'],
+  TS,
+)
+rej(
+  'r2-key-bytes-empty',
+  'An empty key.',
+  fr(5, new Map([...type5Payload(), [1, acctK(9, 0)]])),
+  'schema',
+  '8.2',
+  ['S2'],
+  TS,
+)
+rej(
+  'r2-key-type-65536',
+  'key_type 65536 exceeds uint .le 65535.',
+  fr(5, new Map([...type5Payload(), [1, acctK(65536, 33)]])),
+  'schema',
+  '8.2',
+  ['S2'],
+  TS,
+)
+
+// Fixed-size byte fields.
+const t5 = (k: number, v: Encodable) =>
+  fr(5, new Map([...type5Payload(), [k, v]]))
+acc('r2-nonce-64-bytes', 'A 64-byte nonce.', t5(4, bytesOf(64, 1)), ['S2c'])
+rej(
+  'r2-nonce-65-bytes',
+  'A 65-byte nonce.',
+  t5(4, bytesOf(65, 1)),
+  'schema',
+  '8.2',
+  ['S2c'],
+  TS,
+)
+rej(
+  'r2-nonce-empty',
+  'An empty nonce.',
+  t5(4, new Uint8Array(0)),
+  'schema',
+  '8.2',
+  ['S2c'],
+  TS,
+)
+rej(
+  'r2-ciphertext-empty',
+  'An empty ciphertext.',
+  t5(5, new Uint8Array(0)),
+  'schema',
+  '8.2',
+  ['S2c'],
+  TS,
+)
+const dlv = (k: number, v: Encodable) =>
+  fr(1, withField(deliveryPayload(), k, v))
+rej(
+  'r2-digest-31-bytes',
+  'type-1 payload digest of 31 bytes.',
+  dlv(3, bytesOf(31, 1)),
+  'schema',
+  '8.2',
+  ['T3'],
+  TS,
+)
+rej(
+  'r2-digest-33-bytes',
+  'type-1 payload digest of 33 bytes.',
+  dlv(3, bytesOf(33, 1)),
+  'schema',
+  '8.2',
+  ['T3'],
+  TS,
+)
+const t6 = (id: Uint8Array, digest: Uint8Array) =>
+  fr(
+    6,
+    M([
+      [0, NET],
+      [1, id],
+      [2, rev8Frame()],
+      [3, digest],
+    ]),
+  )
+acc(
+  'r2-uuid-16-bytes',
+  'message_id of 16 bytes.',
+  t6(bytesOf(16, 7), bytesOf(32, 1)),
+  ['T1a'],
+)
+rej(
+  'r2-uuid-15-bytes',
+  'message_id of 15 bytes.',
+  t6(bytesOf(15, 7), bytesOf(32, 1)),
+  'schema',
+  '8.2',
+  ['T1a'],
+  TS,
+)
+rej(
+  'r2-uuid-17-bytes',
+  'message_id of 17 bytes.',
+  t6(bytesOf(17, 7), bytesOf(32, 1)),
+  'schema',
+  '8.2',
+  ['T1a'],
+  TS,
+)
+rej(
+  'r2-content-digest-31-bytes',
+  'type-6 content digest of 31 bytes.',
+  t6(bytesOf(16, 7), bytesOf(31, 1)),
+  'schema',
+  '8.2',
+  ['T1a'],
+  TS,
+)
+rej(
+  'r2-content-digest-33-bytes',
+  'type-6 content digest of 33 bytes.',
+  t6(bytesOf(16, 7), bytesOf(33, 1)),
+  'schema',
+  '8.2',
+  ['T1a'],
+  TS,
+)
+const dmPay = (k: number, v: Encodable) =>
+  deliveryFrame({
+    payloadFrame: pf,
+    payments: [withField(payment(t3, { index: 0 }), k, v)],
+  })
+rej(
+  'r2-payment-value-31-bytes',
+  'Payment value of 31 bytes (C8 fixed width).',
+  dmPay(2, bytesOf(31, 1)),
+  'schema',
+  '8.2',
+  ['C8', 'S3'],
+  TS,
+)
+rej(
+  'r2-payment-value-33-bytes',
+  'Payment value of 33 bytes.',
+  dmPay(2, bytesOf(33, 1)),
+  'schema',
+  '8.2',
+  ['C8', 'S3'],
+  TS,
+)
+rej(
+  'r2-payment-commitment-31-bytes',
+  'Payment commitment of 31 bytes.',
+  dmPay(4, bytesOf(31, 1)),
+  'schema',
+  '8.2',
+  ['T4'],
+  TS,
+)
+rej(
+  'r2-payment-commitment-33-bytes',
+  'Payment commitment of 33 bytes.',
+  dmPay(4, bytesOf(33, 1)),
+  'schema',
+  '8.2',
+  ['T4'],
+  TS,
+)
+rej(
+  'r2-payment-txid-empty',
+  'Empty transaction id.',
+  dmPay(1, new Uint8Array(0)),
+  'schema',
+  '8.2',
+  ['S3'],
+  TS,
+)
+rej(
+  'r2-payment-txid-129-bytes',
+  'Transaction id of 129 bytes.',
+  dmPay(1, bytesOf(129, 1)),
+  'schema',
+  '8.2',
+  ['S3'],
+  TS,
+)
+rej(
+  'r2-payment-address-129-bytes',
+  'Payment address of 129 bytes.',
+  dmPay(3, bytesOf(129, 1)),
+  'schema',
+  '8.2',
+  ['S9'],
+  TS,
+)
+const sigWith = (n: number) =>
+  attestationFrame(statementFrame(), [
+    new Map([...sig(acct2(1)), [2, bytesOf(n, 1)]]),
+  ])
+rej(
+  'r2-signature-513-bytes',
+  'A 513-byte signature exceeds the entry bound.',
+  sigWith(513),
+  'schema',
+  '8.2',
+  ['S2b'],
+  NOP,
+)
+rej(
+  'r2-signature-512-bytes-wrong-length',
+  '512 bytes pass the CDDL bound; algorithm 16 then needs exactly 64.',
+  sigWith(512),
+  'unsupported',
+  '8.3',
+  ['S2b'],
+  NOP,
+)
+rej(
+  'r2-signature-empty',
+  'An empty signature.',
+  sigWith(0),
+  'schema',
+  '8.2',
+  ['S2b'],
+  NOP,
+)
+
+// Depth accounting of every required-child path. Each child is a schema-2 frame whose unknown
+// field 9 nests arrays: the child's payload map sits at depth D, so `32 - D` array levels fit.
+// (Any change to the depth offset used when opening that child flips exactly one of each pair.)
+const nestedArrays = (levels: number): Encodable => {
+  let v: Encodable = []
+  for (let i = 1; i < levels; i++) v = [v]
+  return v
+}
+const deep = (payload: Fields, levels: number) =>
+  new Map([...payload, [9, nestedArrays(levels)]])
+type Fields = Map<number, Encodable>
+const child2 = (type: number, payload: Fields, levels: number) =>
+  fr(type, deep(payload, levels), 2, 1)
+const pair = (
+  id: string,
+  what: string,
+  max: number,
+  build: (levels: number) => Uint8Array,
+  o: Opts,
+) => {
+  acc(
+    `r2-depth-${id}-at-limit`,
+    `${what}: ${max} nested levels reach depth 32 exactly.`,
+    build(max),
+    ['R1'],
+    o,
+  )
+  rej(
+    `r2-depth-${id}-one-over`,
+    `${what}: ${max + 1} nested levels reach depth 33.`,
+    build(max + 1),
+    'resource',
+    '7',
+    ['R1'],
+    { ...o, source: 'typescript' },
+  )
+}
+// Root envelope depth 1, payload map 2: a child in a byte string of the payload map has its
+// envelope at depth 3 and its payload map at depth 4, leaving 28 levels.
+pair(
+  't1-child-t5',
+  'type-1 to type-5 child',
+  28,
+  n => deliveryFrame({ payloadFrame: child2(5, type5Payload(), n) }),
+  {},
+)
+pair(
+  't2-child-t4',
+  'type-2 to type-4 child',
+  28,
+  n => attestationFrame(child2(4, statementPayload(), n), [sig(acct2(1))]),
+  { prior: null },
+)
+pair(
+  't6-child-t8',
+  'type-6 to type-8 child',
+  28,
+  n =>
+    fr(
+      6,
+      M([
+        [0, NET],
+        [1, bytesOf(16, 7)],
+        [2, child2(8, revision8([textItem()]), n)],
+        [3, bytesOf(32, 1)],
+      ]),
+    ),
+  {},
+)
+// type-4 key-transition entry: payload map 2, transitions array 3, entry map 4, child envelope 5,
+// child payload map 6, leaving 26 levels.
+pair(
+  't4-transition-t7',
+  'type-4 key-transition child',
+  26,
+  n =>
+    fr(
+      4,
+      statementPayload({
+        transitions: [
+          transition(
+            child2(
+              7,
+              M([
+                [0, NET],
+                [1, acct2(1)],
+                [2, acct2(1)],
+                [3, 6n],
+                [4, acct2(2)],
+              ]),
+              n,
+            ),
+          ),
+        ],
+      }),
+    ),
+  { prior: null },
+)
+// message-item array: payload map 2, items array 3, child envelope 4, child payload map 5,
+// leaving 27 levels.
+pair(
+  't8-item-t17',
+  'type-8 message item',
+  27,
+  n => fr(8, revision8([child2(17, M([[0, 'x']]), n)])),
+  {},
+)
+pair(
+  't16-item-t17',
+  'type-16 message item',
+  27,
+  n => fr(16, M([[0, [child2(17, M([[0, 'x']]), n)]]])),
+  {},
+)

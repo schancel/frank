@@ -61,7 +61,10 @@ TypeScript-aware bundler or transformer. `yarn build:browser` produces an IIFE b
   (no Node globals), then loads it in headless Chrome. It needs a system Chrome/Chromium
   (`FRANK_CHROME` overrides the path); without one the Chrome step exits 3 (not verified).
 - `yarn crosscheck` runs `scripts/crosscheck.py`, an independent Python implementation of
-  stages 1-7 and T1 over the manifest. It needs Python 3 with `jsonschema`.
+  stages 1-7 of the root frame and T1 over the manifest. It needs Python 3 with `jsonschema`.
+  It reports how many cases it evaluates (root-frame stages 1-7 category, retention, or a
+  typed accept's T1 hash) and how many it does NOT evaluate (typed cases rejected at stages
+  8-9 or inside an opened child, which it does not implement).
 
 ## Corpus
 
@@ -80,14 +83,25 @@ in `fixtures/cases.ts` and is asserted by the tests, not stored in the manifest.
 writer/reader whose output for a reference struct equals `@mysten/bcs` 2.1.2, pinned in
 `fixtures/bcs-reference-v1.hex`; the library is not a dependency) and `fixtures/bcs.ts`
 (fixture encodings). Regenerate with `FRANK_UPDATE_BCS_RESULT=1 yarn test`. Recorded results:
-no signed integer type exists in BCS; a field appended to the top-level struct was rejected by
+the BCS specification defines two's-complement signed integers but the library
+@mysten/bcs 2.1.2 has no i64 constructor (the mini writer carries i64 as the equal u64 bytes); a field appended to the top-level struct was rejected by
 a strict v1 reader and ignored (6 trailing bytes) by a lenient one; a field added to a struct
 inside a vector made the v1 reader fail with `read past the end`; a new enum variant made it
 fail with `unknown enum variant 3`; a future message-item type needed an explicit opaque
-variant; with a length-prefixed extension blob present from v1 the v1 reader accepted the v2
-bytes.
+variant; with a length-prefixed extension blob present from v1 in a reduced five-field statement struct (not the
+fixtures) the v1 reader accepted the v2 bytes.
 
 ## Known limits
+
+- Only the four cases of the two pairs (`worked-type17-*`, `insertion-order-*`) use
+  `paired_case`, and all four are accepts: 0 of the manifest's rejects are paired (the README
+  section 10 SHOULD for reject vectors). Limit rules have at-limit accepts and one-over
+  rejects by naming convention (`limit-*`, `r2-depth-*`), not by `paired_case`.
+- Vectors deliberately not added (each needs more than a single-fault construction, or the
+  spec leaves the stage or category open): an accept twin for 17 key-transition entries
+  (16 valid transitions need a full S10 update); non-minimal 64-bit values inside key
+  position at every width; 128-bit or bignum encodings (forbidden tags, covered by one
+  vector); stage 10 vectors.
 
 - Firefox and Safari were not run; only headless Chrome and a bare `vm` context.
 - CI does not cover `packages/**`; run the commands above locally.

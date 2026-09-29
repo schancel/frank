@@ -519,7 +519,8 @@ export function validateFrame(
   for (const s of ctx.supportedSchemas) supported.set(s.typeId, s.schemaVersion)
   const sh: Shared = { ctx, supported, counters: newCounters(), itemsOpened: 0 }
   return processFrame(
-    bytes.slice(),
+    // A real copy: `slice()` on some Uint8Array subclasses returns a view of the caller's memory.
+    new Uint8Array(bytes),
     { kind: 'root' },
     0,
     sh,

@@ -1,7 +1,8 @@
 // A minimal BCS (Binary Canonical Serialization) writer and reader, enough to encode the Frank
 // fixtures for the #131 falsification check. Its output for the reference struct is pinned to
 // what @mysten/bcs 2.1.2 produced (fixtures/bcs-reference-v1.hex); the library itself is not a
-// dependency. BCS has no signed integers, no field tags and no lengths for structs/enums.
+// dependency. BCS has no field tags and no lengths for structs/enums; the spec defines signed integers as
+// two-complement little-endian, but this writer only needs the unsigned form (i64 is carried as u64).
 import { utf8Decode, utf8Encode } from '../src/utf8'
 
 export class BcsWriter {

@@ -178,8 +178,8 @@ describe('BCS falsification check (#131)', () => {
       encodedFixtureSizes: sizes,
       sizeCaveat:
         'The type-5 ciphertext field carries the type-6 frame verbatim in both encodings (suite 65535), and BCS drops the four-byte-per-field key/map framing; sizes are informational only.',
-      noSignedIntegers:
-        'BCS defines no i64; timestamps.seconds (i64) had to be carried as a two-complement u64 by convention. @mysten/bcs 2.1.2 exposes no i64 constructor.',
+      libraryI64:
+        'The BCS specification (github.com/diem/bcs) defines signed 8/16/32/64/128-bit integers as two-complement little-endian. The library @mysten/bcs 2.1.2 exposes no i64 constructor; the mini writer here carries timestamps.seconds (i64) as the equivalent two-complement u64 bytes.',
       e1_additive_field_appended_to_top_level_struct: {
         strictV1Reader: attempt(() =>
           readStatementV1(topAppended, { strict: true }),
@@ -221,10 +221,10 @@ describe('BCS falsification check (#131)', () => {
           }),
         ),
         interpretation:
-          'Additive evolution works in BCS only when every extensible struct carries a length-prefixed extension blob from the start, which is the opaque-wrapper pattern the CBOR profile gets from integer-keyed maps.',
+          'Tested on a reduced statement struct (five fields including a relay vector), not on the fixtures: with an empty length-prefixed extension blob after each relay from v1 on, the v1 reader accepted the v2 bytes.',
       },
       scope:
-        "Outcomes above were produced by running the experiments with the mini BCS reader/writer on these fixtures only. Interpretations are the author's reading of those outcomes, not a general claim about every BCS schema discipline.",
+        "Outcomes above were produced by running the experiments with the mini BCS reader/writer: sizes and E4 on the fixtures, E1-E3 and E5 on a reduced statement struct or item enum. Interpretations are the author's reading of those outcomes, not a general claim about every BCS schema discipline.",
     }
 
     const serialized = JSON.stringify(result, null, 2) + '\n'

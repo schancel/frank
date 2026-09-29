@@ -255,7 +255,7 @@ def main():
     manifest = json.load(open(os.path.join(ROOT, 'vectors', 'manifest.json')))
     jsonschema.Draft202012Validator(schema).validate(manifest)
     print('manifest conforms to vectors.schema.json (jsonschema %s)' % version('jsonschema'))
-    problems, hashes, agreed = [], 0, 0
+    problems, hashes, agreed, skipped = [], 0, 0, 0
     for c in manifest['cases']:
         ctx = c['validation_context']
         f = bytes.fromhex(c['frame_hex'])
@@ -295,8 +295,12 @@ def main():
                     hashes += 1
                     agreed += 1
             else:
-                agreed += 1
-    print('cases: %d, agreeing: %d, T1 hashes matched: %d' % (len(manifest['cases']), agreed, hashes))
+                skipped += 1  # typed reject/retain decided at stage 8-9 or in a child: not evaluated
+    total = len(manifest['cases'])
+    print('cases: %d; evaluated: %d (%d agree, %d disagree); NOT evaluated: %d '
+          '(typed cases that pass stages 1-7 here and are rejected at stage 8-9 or in a child, '
+          'which this script does not implement); T1 hashes matched: %d'
+          % (total, agreed + len(problems), agreed, len(problems), skipped, hashes))
     for p in problems:
         print('DISAGREEMENT', p)
     return 1 if problems else 0

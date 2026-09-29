@@ -12,7 +12,8 @@ import type {
 import { BcsWriter } from './mini-bcs'
 
 const acct = (w: BcsWriter, a: AccountRef) => w.u16(a.keyType).bytes(a.keyBytes)
-// BCS defines no signed integer; i64 is carried as its two's-complement u64.
+// The BCS spec defines i64 as two's-complement little-endian; the mini writer has no i64, so it
+// writes the identical u64 bytes.
 const ts = (w: BcsWriter, t: Timestamp) => w.u64(t.seconds).u32(t.nanoseconds)
 
 function child(w: BcsWriter, c: ChildFrame): void {

@@ -1301,6 +1301,7 @@ mod tests {
             // No curated defaults needed by this route's tests (ticket #49, merged after this
             // helper was originally written).
             curated_defaults: Arc::new(vec![]),
+            monad_mailbox: crate::monad_mailbox::MonadMailboxRuntime::Disabled,
         }
     }
 

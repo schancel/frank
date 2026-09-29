@@ -538,8 +538,6 @@ impl<'a> DbMonadOutbox<'a> {
         let payload_hash = checked_payload_hash(payload_hash)?;
         let canonical_message = message.encode_to_vec();
         validate_limits(limits)?;
-        validate_claim(&payload_hash, message, &canonical_message, policy, limits)?;
-
         let _guard = self.db.lock_monad_outbox();
         if let Some(existing) = self.get(&payload_hash)? {
             let exact = match existing.canonical_message.as_deref() {
@@ -583,6 +581,31 @@ impl<'a> DbMonadOutbox<'a> {
                 MonadOutboxClaim::Conflict
             });
         }
+        let (policy, adopted_legacy) = match self
+            .db
+            .monad_messages()
+            .get_attempt(&payload_hash, message)?
+        {
+            crate::store::monad_messages::MonadMessageAttemptClaim::Missing => {
+                (policy.clone(), false)
+            }
+            crate::store::monad_messages::MonadMessageAttemptClaim::ExistingExact(legacy) => (
+                MonadOutboxPolicy {
+                    recipient: policy.recipient,
+                    recipient_pubkey: legacy.recipient_pubkey,
+                    min_value_wei: legacy.min_value_wei,
+                    network_tag: legacy
+                        .network_tag
+                        .unwrap_or_else(|| policy.network_tag.clone()),
+                },
+                true,
+            ),
+            crate::store::monad_messages::MonadMessageAttemptClaim::Conflict
+            | crate::store::monad_messages::MonadMessageAttemptClaim::New => {
+                return Ok(MonadOutboxClaim::Conflict)
+            }
+        };
+        validate_claim(&payload_hash, message, &canonical_message, &policy, limits)?;
         if self.active_count_up_to(limits.max_active_claims)? >= limits.max_active_claims {
             return Ok(MonadOutboxClaim::AtCapacity);
         }
@@ -621,6 +644,11 @@ impl<'a> DbMonadOutbox<'a> {
                 member_key(&payload_hash, payment.child_index),
                 encode_member(&member),
             );
+        }
+        if adopted_legacy {
+            self.db
+                .monad_messages()
+                .append_delete_attempt_to_batch(&mut batch, &payload_hash);
         }
         self.db.write_batch(batch)?;
         Ok(MonadOutboxClaim::New)
@@ -2147,6 +2175,77 @@ mod tests {
                 &MonadOutboxLimits::default(),
             )?,
             MonadOutboxClaim::Conflict
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn exact_legacy_attempt_is_atomically_adopted_and_mismatch_is_preserved() -> Result<()> {
+        use crate::store::monad_messages::{MonadMessageAttemptClaim, MonadMessageAttemptPolicy};
+
+        let tempdir = tempdir::TempDir::new("monad-outbox-adopt")?;
+        let db = Db::open(tempdir.path().join("db.rocksdb"))?;
+        let request = message(&[b"legacy exact raw"]);
+        let legacy = MonadMessageAttemptPolicy {
+            recipient_pubkey: vec![3; 33],
+            min_value_wei: 77,
+            network_tag: Some(b"legacy-net".to_vec()),
+        };
+        assert_eq!(
+            db.monad_messages()
+                .claim_attempt(&request.payload_hash, &request, &legacy)?,
+            MonadMessageAttemptClaim::New
+        );
+        assert_eq!(
+            db.monad_outbox().claim(
+                &request.payload_hash,
+                &request,
+                &policy(),
+                100,
+                &MonadOutboxLimits::default(),
+            )?,
+            MonadOutboxClaim::New
+        );
+        let adopted = db.monad_outbox().get(&request.payload_hash)?.unwrap();
+        let adopted_policy = adopted.policy.unwrap();
+        assert_eq!(adopted_policy.recipient, policy().recipient);
+        assert_eq!(
+            adopted_policy.recipient_pubkey,
+            legacy.recipient_pubkey.clone()
+        );
+        assert_eq!(adopted_policy.min_value_wei, legacy.min_value_wei);
+        assert_eq!(
+            adopted_policy.network_tag,
+            legacy.network_tag.clone().unwrap()
+        );
+        assert_eq!(
+            db.monad_messages()
+                .get_attempt(&request.payload_hash, &request)?,
+            MonadMessageAttemptClaim::Missing
+        );
+
+        let conflicting_owner = message_with_seed(b"second payload", &[b"owner raw"]);
+        db.monad_messages().claim_attempt(
+            &conflicting_owner.payload_hash,
+            &conflicting_owner,
+            &legacy,
+        )?;
+        let mut mismatch = conflicting_owner.clone();
+        mismatch.stamp_payments[0].raw_tx.push(1);
+        assert_eq!(
+            db.monad_outbox().claim(
+                &mismatch.payload_hash,
+                &mismatch,
+                &policy(),
+                100,
+                &MonadOutboxLimits::default(),
+            )?,
+            MonadOutboxClaim::Conflict
+        );
+        assert_eq!(
+            db.monad_messages()
+                .get_attempt(&conflicting_owner.payload_hash, &conflicting_owner)?,
+            MonadMessageAttemptClaim::ExistingExact(legacy)
         );
         Ok(())
     }

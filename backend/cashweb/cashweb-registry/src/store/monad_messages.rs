@@ -213,6 +213,13 @@ impl<'a> DbMonadMessages<'a> {
         message: &proto::MonadStampedMessage,
         policy: &MonadMessageAttemptPolicy,
     ) -> Result<MonadMessageAttemptClaim> {
+        let _guard = self.db.lock_monad_outbox();
+        // The canonical outbox/inbox is the sole owner once present. This shares the outbox
+        // mutex so a legacy caller cannot create a second digest-only owner during migration.
+        if self.db.monad_outbox().get(payload_hash)?.is_some() || self.get(payload_hash)?.is_some()
+        {
+            return Ok(MonadMessageAttemptClaim::Conflict);
+        }
         match self.get_attempt(payload_hash, message)? {
             MonadMessageAttemptClaim::Missing => {
                 if policy.recipient_pubkey.len() > u8::MAX as usize
@@ -236,9 +243,18 @@ impl<'a> DbMonadMessages<'a> {
     /// Release a claim after the first transaction was definitively rejected by the RPC before
     /// any member of the set verified. Timeout/accepted ambiguity deliberately does not call this.
     pub fn delete_attempt(&self, payload_hash: &[u8]) -> Result<()> {
+        let _guard = self.db.lock_monad_outbox();
         let mut batch = rocksdb::WriteBatch::default();
-        batch.delete_cf(self.cf_monad_message_attempts, payload_hash);
+        self.append_delete_attempt_to_batch(&mut batch, payload_hash);
         self.db.write_batch(batch)
+    }
+
+    pub(crate) fn append_delete_attempt_to_batch(
+        &self,
+        batch: &mut rocksdb::WriteBatch,
+        payload_hash: &[u8],
+    ) {
+        batch.delete_cf(self.cf_monad_message_attempts, payload_hash);
     }
 
     /// Store a [`proto::StoredMonadMessage`], keyed by its inner message's `payload_hash`, and
@@ -359,6 +375,43 @@ impl<'a> DbMonadMessages<'a> {
                 break;
             }
             messages.push(self.get_existing(&payload_hash)?);
+        }
+        Ok(messages)
+    }
+
+    /// List a bounded page from one recipient-owned journal.
+    pub fn list_for_recipient_since_capped(
+        &self,
+        recipient: &Address,
+        since: i64,
+        after: Option<[u8; 32]>,
+        limit: usize,
+    ) -> Result<Vec<proto::StoredMonadMessage>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let start_key = by_recipient_time_key(
+            recipient,
+            since,
+            after.as_ref().map(<[u8; 32]>::as_slice).unwrap_or(&[]),
+        );
+        let iter = self.db.rocksdb().iterator_cf(
+            self.cf_monad_messages_by_recipient_time,
+            IteratorMode::From(&start_key, Direction::Forward),
+        );
+        let mut messages = Vec::with_capacity(limit);
+        for item in iter {
+            let (key, payload_hash) = item?;
+            if !key.starts_with(&recipient.0) {
+                break;
+            }
+            if after.is_some() && key.as_ref() == start_key.as_slice() {
+                continue;
+            }
+            messages.push(self.get_existing(&payload_hash)?);
+            if messages.len() == limit {
+                break;
+            }
         }
         Ok(messages)
     }

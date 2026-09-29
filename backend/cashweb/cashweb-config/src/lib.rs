@@ -66,6 +66,9 @@ pub struct MonadMailboxConf {
     pub enabled: bool,
     /// Monad JSON-RPC endpoint. Required exactly when `enabled` is true.
     pub rpc_url: Option<url::Url>,
+    /// Aggregate direct-message stamp minimum, as a decimal string because TOML has no `u128`.
+    /// Required exactly when the mailbox is enabled.
+    pub min_value_wei: Option<String>,
 }
 
 /// Validated mailbox mode consumed once, before database open or socket readiness.
@@ -77,6 +80,8 @@ pub enum MonadMailboxMode {
     Enabled {
         /// Validated Monad JSON-RPC endpoint.
         rpc_url: url::Url,
+        /// Validated aggregate direct-message stamp minimum.
+        min_value_wei: u128,
     },
 }
 
@@ -87,6 +92,8 @@ pub enum MonadMailboxConfigError {
     MissingRpcUrl,
     /// The endpoint is not a hosted HTTP(S) URL.
     InvalidRpcUrl,
+    /// Enabled mode omitted or malformed its aggregate stamp minimum.
+    InvalidMinValueWei,
 }
 
 impl fmt::Display for MonadMailboxConfigError {
@@ -97,6 +104,9 @@ impl fmt::Display for MonadMailboxConfigError {
             ),
             Self::InvalidRpcUrl => f.write_str(
                 "registry.monad_mailbox.rpc_url must be a hosted http(s) URL when the mailbox is enabled",
+            ),
+            Self::InvalidMinValueWei => f.write_str(
+                "registry.monad_mailbox.min_value_wei must be a decimal u128 when the mailbox is enabled",
             ),
         }
     }
@@ -117,7 +127,16 @@ impl MonadMailboxConf {
         if !matches!(rpc_url.scheme(), "http" | "https") || rpc_url.host_str().is_none() {
             return Err(MonadMailboxConfigError::InvalidRpcUrl);
         }
-        Ok(MonadMailboxMode::Enabled { rpc_url })
+        let min_value_wei = self
+            .min_value_wei
+            .as_deref()
+            .ok_or(MonadMailboxConfigError::InvalidMinValueWei)?
+            .parse()
+            .map_err(|_| MonadMailboxConfigError::InvalidMinValueWei)?;
+        Ok(MonadMailboxMode::Enabled {
+            rpc_url,
+            min_value_wei,
+        })
     }
 }
 
@@ -299,6 +318,7 @@ mod tests {
                     monad_mailbox: MonadMailboxConf {
                         enabled: false,
                         rpc_url: None,
+                        min_value_wei: None,
                     },
                     curated_defaults: vec![],
                 },
@@ -370,6 +390,7 @@ mod tests {
                     monad_mailbox: MonadMailboxConf {
                         enabled: false,
                         rpc_url: None,
+                        min_value_wei: None,
                     },
                     curated_defaults: vec![],
                 },
@@ -473,6 +494,7 @@ mod tests {
             MonadMailboxConf {
                 enabled: false,
                 rpc_url: None,
+                min_value_wei: None,
             }
             .mode()
             .unwrap(),
@@ -481,6 +503,7 @@ mod tests {
         assert!(MonadMailboxConf {
             enabled: true,
             rpc_url: None,
+            min_value_wei: Some("1".to_string()),
         }
         .mode()
         .is_err());
@@ -489,10 +512,14 @@ mod tests {
             MonadMailboxConf {
                 enabled: true,
                 rpc_url: Some(rpc_url.clone()),
+                min_value_wei: Some("1000".to_string()),
             }
             .mode()
             .unwrap(),
-            MonadMailboxMode::Enabled { rpc_url }
+            MonadMailboxMode::Enabled {
+                rpc_url,
+                min_value_wei: 1000,
+            }
         );
         let missing: MonadMailboxConf = toml::from_str("enabled = true").unwrap();
         assert!(missing.mode().is_err());
@@ -509,6 +536,7 @@ mod tests {
                 MonadMailboxConf {
                     enabled: true,
                     rpc_url: Some(rejected.parse().unwrap()),
+                    min_value_wei: Some("1".to_string()),
                 }
                 .mode(),
                 Err(MonadMailboxConfigError::InvalidRpcUrl)

@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use bitcoinsuite_core::{lotus_txid, Hashed, LotusAddress, Net, Sha256d};
+use bitcoinsuite_core::{ecc::Ecc, lotus_txid, Bytes, Hashed, LotusAddress, Net, Sha256d};
 use bitcoinsuite_ecc_secp256k1::EccSecp256k1;
 use bitcoinsuite_error::{ErrorMeta, Result};
 use cashweb_payload::{
@@ -461,6 +461,7 @@ impl Registry {
     /// through, rather than trusting each caller to have already set the field correctly --
     /// returns the tagged record actually persisted, so the caller's own response (or further use
     /// of the value) reflects exactly what's now in the database.
+    #[cfg(test)]
     pub(crate) fn put_monad_message(
         &self,
         payload_hash: &[u8],
@@ -487,6 +488,7 @@ impl Registry {
     }
 
     /// Reserve a payload hash for one exact signed payment set before broadcasting any member.
+    #[cfg(test)]
     pub(crate) fn claim_monad_message_attempt(
         &self,
         payload_hash: &[u8],
@@ -508,6 +510,7 @@ impl Registry {
 
     /// Release an exact-set claim only when the relay knows no member was accepted. Ambiguous or
     /// partially verified attempts must remain bound to their original signed bytes.
+    #[cfg(test)]
     pub(crate) fn delete_monad_message_attempt(&self, payload_hash: &[u8]) -> Result<()> {
         self.db.monad_messages().delete_attempt(payload_hash)
     }
@@ -788,6 +791,33 @@ impl Registry {
         self.db.monad_profiles().get(&address)
     }
 
+    /// Verify a mailbox request digest with the recipient's already-registered profile key.
+    /// Missing/malformed profiles and bad signatures intentionally collapse to `false`.
+    pub(crate) fn verify_monad_recipient_signature(
+        &self,
+        recipient: Address,
+        digest: [u8; 32],
+        signature: &[u8],
+    ) -> Result<bool> {
+        let profile = self.db.monad_profiles().get(&recipient)?;
+        let registered = profile.is_some();
+        let candidate = profile.map(|profile| profile.pubkey).unwrap_or_else(|| {
+            let secret = self
+                .ecc
+                .seckey_from_array([1; 32])
+                .expect("fixed non-zero secp256k1 key");
+            self.ecc.derive_pubkey(&secret).as_slice().to_vec()
+        });
+        let Ok(pubkey_bytes) = candidate.as_slice().try_into() else {
+            return Ok(false);
+        };
+        let Ok(pubkey) = self.ecc.pubkey_from_array(pubkey_bytes) else {
+            return Ok(false);
+        };
+        let sig: Bytes = signature.into();
+        Ok(registered && self.ecc.verify(&pubkey, digest.into(), &sig).is_ok())
+    }
+
     /// List every `(address, SignedPayload)` registered with the profile's own `timestamp >=
     /// since` (ticket #75), ordered by `timestamp` ascending -- see
     /// `crate::store::monad_profiles`'s module docs for the by-time index this reads, and
@@ -834,6 +864,19 @@ impl Registry {
         self.db
             .monad_messages()
             .list_for_recipient_since(&recipient, since)
+    }
+
+    /// Return one bounded recipient-private inbox page.
+    pub fn list_monad_messages_for_recipient_since_capped(
+        &self,
+        recipient: Address,
+        since: i64,
+        after: Option<[u8; 32]>,
+        limit: usize,
+    ) -> Result<Vec<proto::StoredMonadMessage>> {
+        self.db
+            .monad_messages()
+            .list_for_recipient_since_capped(&recipient, since, after, limit)
     }
 
     /// Store a [`proto::StoredMonadTopicPost`] (ticket #30), once its initial vote's burn has

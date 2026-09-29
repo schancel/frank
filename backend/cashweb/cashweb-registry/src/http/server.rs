@@ -4,7 +4,8 @@ use crate::{
     http::curated_defaults::{handle_get_curated_default_contacts, CuratedDefaultContact},
     http::error::HttpRegistryError,
     http::monad_message::{
-        handle_get_monad_message, handle_list_monad_messages, handle_put_monad_message,
+        handle_get_private_monad_messages, handle_get_private_monad_recovery,
+        handle_issue_mailbox_challenge, handle_put_monad_message,
     },
     http::monad_profile::{
         fetch_profile_or_not_found, handle_get_monad_profile, handle_list_monad_profiles,
@@ -16,6 +17,7 @@ use crate::{
     },
     http::pop_protection::{self, MonadReceiptVerifier, PopChallenge, PopGate, PopGateConfigError},
     monad_http::{Address as MonadAddress, HttpTransport},
+    monad_mailbox::MonadMailboxRuntime,
     p2p::{peers::Peers, relay_info::RelayInfo},
     proto::{self},
     registry::Registry,
@@ -78,6 +80,8 @@ pub struct RegistryServer {
     /// `None`/disabled state since there's no disabled state here (an empty `Vec` already means
     /// "no curated defaults", no separate on/off flag needed).
     pub curated_defaults: Arc<Vec<CuratedDefaultContact>>,
+    /// Validated direct-message mailbox lifecycle. Disabled mode has no admission route.
+    pub monad_mailbox: MonadMailboxRuntime,
 }
 
 /// Relevant parts of an HTTP request to put new address metadata.
@@ -156,7 +160,8 @@ async fn log_request<B>(
 impl RegistryServer {
     /// Turn this registry server into a [`Router`].
     pub fn into_router(self) -> Router {
-        Router::new()
+        let mailbox_enabled = self.monad_mailbox.as_enabled().is_some();
+        let router = Router::new()
             .route("/metadata", routing::get(handle_get_metadata_range))
             .route(
                 "/metadata/:addr",
@@ -200,23 +205,34 @@ impl RegistryServer {
             .route("/messages/:topic", routing::get(handle_get_messages))
             .route("/messages", routing::get(handle_get_all_messages))
             .route("/message", routing::put(handle_put_message))
-            .route("/message/:payload_hash", routing::get(handle_get_message))
-            // Monad-native stamped message path (ticket #27), additive alongside the Lotus
-            // `/message` route above -- see `crate::http::monad_message`'s module docs for why
-            // this is a separate route/message shape rather than an extension of
-            // `handle_put_message`/`SignedPayload`.
-            // `GET /message/monad?since=<timestamp>` (ticket #37): message discovery, listing
-            // messages by store time rather than requiring an exact `payload_hash` -- see
-            // `crate::http::monad_message`'s module docs for the full rationale (including the
-            // recipient-addressing gap this endpoint doesn't attempt to paper over).
-            .route(
+            .route("/message/:payload_hash", routing::get(handle_get_message));
+        // Private mailbox rows are never exposed by the legacy unauthenticated GET routes.
+        // Authenticated recipient reads are installed separately once their challenge is proven.
+        let router = if mailbox_enabled {
+            router
+                .route(
+                    "/message/monad",
+                    routing::put(handle_put_monad_message).get(|| async { StatusCode::NOT_FOUND }),
+                )
+                .route(
+                    "/message/monad/auth/:recipient",
+                    routing::post(handle_issue_mailbox_challenge),
+                )
+                .route(
+                    "/message/monad/inbox/:recipient",
+                    routing::get(handle_get_private_monad_messages),
+                )
+                .route(
+                    "/message/monad/recovery/:recipient",
+                    routing::get(handle_get_private_monad_recovery),
+                )
+        } else {
+            router.route(
                 "/message/monad",
-                routing::put(handle_put_monad_message).get(handle_list_monad_messages),
+                routing::any(|| async { StatusCode::NOT_FOUND }),
             )
-            .route(
-                "/message/monad/:payload_hash",
-                routing::get(handle_get_monad_message),
-            )
+        };
+        router
             // Monad topic post + burn-weighted vote path (ticket #30), additive alongside
             // the plain Monad-message route above -- see `crate::http::monad_topics`'s module docs.
             // Static segments ("topics", "topics/vote") take priority over the `:payload_hash`
@@ -258,7 +274,13 @@ impl RegistryServer {
                         Method::HEAD,
                         Method::OPTIONS,
                     ])
-                    .allow_headers([header::CONTENT_TYPE])
+                    .allow_headers([
+                        header::CONTENT_TYPE,
+                        header::HeaderName::from_static("x-frank-mailbox-epoch"),
+                        header::HeaderName::from_static("x-frank-mailbox-nonce"),
+                        header::HeaderName::from_static("x-frank-mailbox-expires-at-ms"),
+                        header::HeaderName::from_static("x-frank-mailbox-signature"),
+                    ])
                     // allow requests from any origin
                     .allow_origin(Any),
             )

@@ -735,6 +735,18 @@ pub async fn start_monad_outbox_worker<T>(
 where
     T: JsonRpcTransport + Clone + Send + Sync + 'static,
 {
+    start_monad_outbox_worker_shared(transport, registry, Arc::new(config)).await
+}
+
+/// Start the worker with the same immutable config identity owned by HTTP admission.
+pub async fn start_monad_outbox_worker_shared<T>(
+    transport: T,
+    registry: Arc<Registry>,
+    config: Arc<MonadOutboxReconcileConfig>,
+) -> Result<MonadOutboxWorker>
+where
+    T: JsonRpcTransport + Clone + Send + Sync + 'static,
+{
     config.validate()?;
     registry.gc_monad_outbox_history(now_ms(), &config.limits)?;
     // Readiness is intentionally after this bounded initial scan. Each exact RPC, claim, active

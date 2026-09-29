@@ -19,6 +19,25 @@
  */
 import { Card, deriveDeck, handValue, sha256Hex } from './deck'
 
+/** Table limits. The client cannot query the dealer, and the bot advertises none in any message,
+ * so these documented constants are the shared default (the bot's `BLACKJACK_BOT_MIN_WAGER_WEI` /
+ * `BLACKJACK_BOT_MAX_WAGER_WEI` default to them). A dealer configured differently may still
+ * reject a bet the UI allows; the bot then refunds the verified stake. */
+export const BLACKJACK_DEFAULT_MIN_WAGER_WEI = 10n ** 16n // 0.01 MON
+export const BLACKJACK_DEFAULT_MAX_WAGER_WEI = 10n ** 18n // 1 MON
+
+/** Returns an error message if `wei` is not an acceptable bet at the default table limits. */
+export function validateBetWei(
+  wei: bigint,
+  minWei: bigint = BLACKJACK_DEFAULT_MIN_WAGER_WEI,
+  maxWei: bigint = BLACKJACK_DEFAULT_MAX_WAGER_WEI,
+): string | undefined {
+  if (typeof wei !== 'bigint' || wei <= 0n) return 'Bet must be greater than zero'
+  if (wei < minWei) return 'Bet is below the table minimum'
+  if (wei > maxWei) return 'Bet is above the table maximum'
+  return undefined
+}
+
 export type BlackjackAction =
   | 'bet'
   | 'deal'
@@ -51,6 +70,10 @@ export interface BlackjackGameState {
    * for this hand. Never inferred from `playerCards.length` alone (a 3-card hand can also happen
    * from an ordinary `hit`), always from an explicit `double` move having been folded in. */
   doubled?: boolean
+  /** True while the player's own `double` request has been folded but the dealer's broadcast card
+   * has not (the optimistic window). Only a bot error reply can end it early -- see
+   * `applyDoubleRejection`. */
+  doublePending?: boolean
   /** Only present once `doubled` is true, and only ever from `hydrate()`'s own verification of the
    * *second* wager transfer -- same trust rule as `verifiedWagerWei`. */
   verifiedDoubleWagerWei?: bigint
@@ -70,6 +93,9 @@ export interface HydratedBlackjackMove {
   gameId: string
   action: BlackjackAction
   wagerTxHash?: string
+  /** Only present for `double`: the hash `verifiedDoubleWager` was looked up by. The bot claims it
+   * in the same global keyspace as wager hashes so one transfer can back exactly one stake. */
+  doubleWagerTxHash?: string
   serverSeedHash?: string
   playerCards?: Card[]
   dealerUpCard?: Card
@@ -185,6 +211,8 @@ export function reduceBlackjackState(
         ...prev,
         playerCards,
         doubled: true,
+        // Pending until the dealer's broadcast card (which carries `playerCards`) lands.
+        doublePending: hydrated.playerCards === undefined,
         // 'double' is folded twice per hand -- once from the player's own outgoing request
         // (carries the verified transfer, no `playerCards` yet) and once from the dealer's
         // broadcast of the resulting card (carries `playerCards`, no transfer). Falling back to
@@ -214,6 +242,33 @@ export function reduceBlackjackState(
         availableActions: ['bet'],
       }
     }
+  }
+}
+
+/**
+ * Undoes the optimistic double lockout when the dealer answered the player's `double` request
+ * with an error reply instead of a card. Only acts on the exact optimistic window (doubled, still
+ * two cards, no broadcast card, dealer_turn); anything else is returned unchanged, so a stray
+ * error can never rewind an authoritative state. Hit/stand are re-offered (not double: a second
+ * double needs a fresh transfer). If the dealer did in fact accept and its card broadcast arrives
+ * later, the 'double' fold is eligible again from player_turn and re-locks to the real state.
+ * Design limit: with no reply at all (old bot) the reducer cannot know, so the UI stays locked.
+ */
+export function applyDoubleRejection(state: BlackjackGameState): BlackjackGameState {
+  if (
+    !state.doublePending ||
+    state.phase !== 'dealer_turn' ||
+    state.playerCards.length !== 2
+  ) {
+    return state
+  }
+  return {
+    ...state,
+    phase: 'player_turn',
+    doubled: false,
+    doublePending: false,
+    verifiedDoubleWagerWei: undefined,
+    availableActions: ['hit', 'stand'],
   }
 }
 

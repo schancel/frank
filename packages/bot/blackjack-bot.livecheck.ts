@@ -26,6 +26,18 @@
  * total returned), an ordinary win pays 2x, a push returns the original wager, and a loss simply
  * leaves the wager with the bot (no separate escrow step needed at all).
  *
+ * ## Rejections, refunds and bankroll
+ *
+ * A verified transfer (from the authenticated player, to this dealer) that the bot rejects -- bet
+ * below/above the table limits, a bet or double refused for bankroll, an ineligible double -- is
+ * refunded to the sender from the same payout account, once: the tx hash is claimed in the global
+ * wager-claim keyspace (`claimRefund`) before anything is sent, so a replay can never refund it
+ * twice and a refunded hash can never later back a game. A hash already claimed (e.g. the game's
+ * own stake) is never refunded. Refunds that could not be signed (bankroll empty) stay `pending`
+ * and are retried each poll; once a signed transfer may have been broadcast the record is
+ * `submitting` and is never retried automatically. Bets/doubles are refused (and refunded) when
+ * the payout account's balance cannot cover all open games' worst-case payouts plus the new one.
+ *
  * ## Usage
  *
  *   cd packages/bot
@@ -38,6 +50,7 @@
  *   BLACKJACK_BOT_IDENTITY_JSON     -- default /tmp/blackjack-bot-identity.json
  *   BLACKJACK_BOT_STATE_DIR         -- default /tmp/blackjack-bot-state
  *   BLACKJACK_BOT_MIN_WAGER_WEI     -- default 0.01 MON
+ *   BLACKJACK_BOT_MAX_WAGER_WEI     -- default 1 MON (the client UI's documented default limits)
  *   BLACKJACK_BOT_MAX_HANDS         -- how many hands to resolve before exiting (default 1000)
  *   BLACKJACK_BOT_POLL_INTERVAL_MS  -- default 4000
  *   BLACKJACK_BOT_IDLE_TIMEOUT_MS   -- default 10 minutes
@@ -67,6 +80,7 @@ import '@frank/wallet/message-item-plugins/built-in'
 import '@frank/wallet/message-item-plugins/blackjack/plugin'
 import { Card, deriveDeck, handValue, sha256Hex } from '@frank/wallet/message-item-plugins/blackjack/deck'
 import {
+  BLACKJACK_DEFAULT_MAX_WAGER_WEI,
   BlackjackOutcome,
   dealInitialCards,
   HydratedBlackjackMove,
@@ -230,12 +244,87 @@ async function resolveAndReveal(params: {
   }
 }
 
+/** Attempts (at most once per broadcast) the refund recorded by `state.claimRefund`. `pending`
+ * means nothing was ever broadcast, so a failed signing/balance error stays retryable; once a
+ * signed transfer might have reached the network the record moves to `submitting` and is never
+ * retried automatically, so a replay or retry can never refund twice. */
+export async function attemptRefund(params: {
+  state: BlackjackBotStateStore
+  txHash: string
+  mainAccountSigner: MonadAccountTxSigner
+}): Promise<'sent' | 'pending' | 'submitting' | 'none'> {
+  const { state, txHash, mainAccountSigner } = params
+  const refund = state.getRefund(txHash)
+  if (!refund) return 'none'
+  if (refund.status !== 'pending') return refund.status
+  let signedTx
+  try {
+    signedTx = await mainAccountSigner.buildAndSignTransfer(
+      refund.playerAddress,
+      refund.amountWei,
+    )
+  } catch (err) {
+    console.error(
+      `[blackjack-bot] refund of ${refund.amountWei} wei for ${txHash} left pending (could not sign/fund):`,
+      err,
+    )
+    return 'pending'
+  }
+  await state.setRefundStatus(txHash, 'submitting')
+  try {
+    const refundTxHash = await mainAccountSigner.submit(signedTx)
+    await state.setRefundStatus(txHash, 'sent', refundTxHash)
+    console.log(`[blackjack-bot] refunded ${refund.amountWei} wei for ${txHash}: ${refundTxHash}`)
+    return 'sent'
+  } catch (err) {
+    console.error(
+      `[blackjack-bot] refund for ${txHash} may or may not have been broadcast; NOT retrying automatically (needs manual review):`,
+      err,
+    )
+    return 'submitting'
+  }
+}
+
+/** Retries refunds that never reached the point of broadcasting (e.g. bankroll was empty). */
+export async function retryPendingRefunds(
+  state: BlackjackBotStateStore,
+  mainAccountSigner: MonadAccountTxSigner,
+): Promise<void> {
+  for (const [txHash] of state.getPendingRefunds()) {
+    await attemptRefund({ state, txHash, mainAccountSigner })
+  }
+}
+
+/** Fail-closed bankroll check: the payout account must cover every unresolved game's worst-case
+ * payout plus this one's. */
+async function canCoverWorstCase(params: {
+  provider: Provider
+  mainAccountSigner: MonadAccountTxSigner
+  state: BlackjackBotStateStore
+  worstCaseWei: bigint
+  excludeGameId?: string
+}): Promise<boolean> {
+  try {
+    const balance = await params.provider.getBalance(
+      params.mainAccountSigner.address,
+    )
+    return (
+      balance >=
+      params.state.openExposureWei(params.excludeGameId) + params.worstCaseWei
+    )
+  } catch (err) {
+    console.error('[blackjack-bot] could not read the dealer balance; refusing:', err)
+    return false
+  }
+}
+
 export async function handleMove(params: {
   action: BlackjackMoveItem['action']
   hydrated: HydratedBlackjackMove
   senderAddress: string
   senderPubKey: Buffer
   minWagerWei: bigint
+  maxWagerWei?: bigint
   state: BlackjackBotStateStore
   identity: MonadIdentity
   networkTag: string
@@ -251,6 +340,7 @@ export async function handleMove(params: {
     senderAddress,
     senderPubKey,
     minWagerWei,
+    maxWagerWei = BLACKJACK_DEFAULT_MAX_WAGER_WEI,
     state,
     identity,
     networkTag,
@@ -308,11 +398,40 @@ export async function handleMove(params: {
     return
   }
 
-  if (action === 'bet') {
-    if (state.getGame(gameId)) {
-      await sendError('this gameId already has a hand in progress')
-      return
+  /** Refunds a verified transfer (sender == authenticated player, recipient == this dealer) that
+   * we are about to reject, claimed by hash so it can happen at most once. Never refunds a hash
+   * that is already claimed (e.g. this game's own stake). Returns text to append to the error. */
+  async function refundRejected(
+    txHash: string | undefined,
+    transfer: HydratedBlackjackMove['verifiedWager'],
+  ): Promise<string> {
+    if (!txHash || !transfer) return ''
+    let hash: string
+    try {
+      hash = normalizeWagerTxHash(txHash)
+      if (
+        normalizePlayerAddress(transfer.fromAddress) !== authenticatedPlayerAddress ||
+        normalizePlayerAddress(transfer.toAddress) !== dealerAddress ||
+        transfer.valueWei <= 0n
+      ) {
+        return ''
+      }
+    } catch {
+      return ''
     }
+    const claim = await state.claimRefund({
+      txHash: hash,
+      playerAddress: authenticatedPlayerAddress,
+      amountWei: transfer.valueWei,
+    })
+    if (!claim.ok) return ''
+    const status = await attemptRefund({ state, txHash: hash, mainAccountSigner })
+    return status === 'sent'
+      ? ' Your transfer has been refunded.'
+      : ' Your transfer is queued for refund.'
+  }
+
+  if (action === 'bet') {
     const wager = hydrated.verifiedWager
     if (!wager) {
       await sendError(
@@ -343,15 +462,40 @@ export async function handleMove(params: {
       await sendError('your wager transaction did not pay this dealer')
       return
     }
+    // From here the transfer is a real payment to us: any rejection must refund it.
+    async function rejectBet(text: string) {
+      await sendError(text + (await refundRejected(wagerTxHash, wager)))
+    }
+    if (state.getGame(gameId)) {
+      await rejectBet('this gameId already has a hand in progress')
+      return
+    }
     if (wager.valueWei < minWagerWei) {
-      await sendError(
+      await rejectBet(
         `wager ${wager.valueWei} wei is below the table minimum of ${minWagerWei} wei`,
       )
       return
     }
+    if (wager.valueWei > maxWagerWei) {
+      await rejectBet(
+        `wager ${wager.valueWei} wei is above the table maximum of ${maxWagerWei} wei`,
+      )
+      return
+    }
+    if (
+      !(await canCoverWorstCase({
+        provider,
+        mainAccountSigner,
+        state,
+        worstCaseWei: (2500n * wager.valueWei) / 1000n,
+      }))
+    ) {
+      await rejectBet('the dealer bankroll cannot cover this bet right now')
+      return
+    }
     const commitment = state.getPendingCommitment()
     if (!commitment) {
-      await sendError('dealer has no pending seed commitment ready -- try again shortly')
+      await rejectBet('dealer has no pending seed commitment ready -- try again shortly')
       return
     }
     // Prepare a fresh commitment for the *next* hand. The state store atomically installs it with
@@ -384,13 +528,14 @@ export async function handleMove(params: {
     })
     if (!claim.ok) {
       if (claim.reason === 'game_exists') {
-        await sendError('this gameId already has a hand in progress')
+        await rejectBet('this gameId already has a hand in progress')
       } else if (claim.reason === 'wager_claimed') {
+        // Already backing a game (or already refunded): never refund it again.
         await sendError(
           'this wager transaction has already authorized a blackjack game',
         )
       } else {
-        await sendError(
+        await rejectBet(
           'dealer commitment changed while accepting the wager -- try again',
         )
       }
@@ -442,23 +587,41 @@ export async function handleMove(params: {
     return
   }
 
+  // A `double` carries a second real transfer. Every rejection of it below refunds that transfer
+  // (once, claim-guarded) unless it is already claimed -- notably this game's own original stake.
+  async function rejectDouble(text: string) {
+    await sendError(
+      text +
+        (await refundRejected(
+          hydrated.doubleWagerTxHash,
+          hydrated.verifiedDoubleWager,
+        )),
+    )
+  }
+  const rejectMove = action === 'double' ? rejectDouble : sendError
+
   const record = state.getGame(gameId)
   if (
     !record ||
     record.revealed ||
     record.authority !== 'verified-wager-sender'
   ) {
-    await sendError('no in-progress hand found for this gameId')
+    await rejectMove('no in-progress hand found for this gameId')
     return
   }
   if (record.playerAddress !== authenticatedPlayerAddress) {
-    await sendError(
+    await rejectMove(
       'only the player who funded this wager can act on this game',
     )
     return
   }
 
   if (action === 'hit') {
+    // A doubled hand gets exactly one card and can only resolve.
+    if (record.doubled) {
+      await sendError('this hand has been doubled and can only be resolved')
+      return
+    }
     const deck = deriveDeck(record.serverSeed, record.wagerTxHash, 0)
     const newDealtCount = record.dealtCount + 1
     const playerCards = playerCardsSoFar(deck, newDealtCount)
@@ -496,19 +659,6 @@ export async function handleMove(params: {
   }
 
   if (action === 'double') {
-    if (record.doubled) {
-      await sendError('this hand has already been doubled')
-      return
-    }
-    // `record.dealtCount` only reads 4 (2 player + 2 dealer, per the dealing-order convention)
-    // before any `hit` has consumed a card -- exactly "the untouched two-card hand," the same
-    // eligibility window `reduceBlackjackState`'s `'double'` case enforces client-side.
-    if (record.dealtCount !== 4) {
-      await sendError(
-        'double down is only allowed immediately after the deal, before any hit',
-      )
-      return
-    }
     const doubleWager = hydrated.verifiedDoubleWager
     if (!doubleWager) {
       await sendError(
@@ -518,12 +668,14 @@ export async function handleMove(params: {
     }
     let doubleWagerSenderAddress: string
     let doubleWagerRecipientAddress: string
+    let doubleWagerTxHash: string
     try {
       doubleWagerSenderAddress = normalizePlayerAddress(doubleWager.fromAddress)
       doubleWagerRecipientAddress = normalizePlayerAddress(doubleWager.toAddress)
+      doubleWagerTxHash = normalizeWagerTxHash(hydrated.doubleWagerTxHash ?? '')
     } catch {
       await sendError(
-        'double-down wager transaction carried an invalid Monad address',
+        'double-down wager transaction carried an invalid hash or Monad address',
       )
       return
     }
@@ -537,13 +689,46 @@ export async function handleMove(params: {
       await sendError('your double-down wager transaction did not pay this dealer')
       return
     }
+    // The double transfer must be a NEW transfer: the game's own original wager can never double
+    // as its own double-down stake (it is also claimed, so no refund is issued for it).
+    if (doubleWagerTxHash === record.wagerTxHash) {
+      await rejectDouble(
+        'your double-down must be a new transfer, not the original wager transaction',
+      )
+      return
+    }
+    if (record.doubled) {
+      await rejectDouble('this hand has already been doubled')
+      return
+    }
+    // `record.dealtCount` only reads 4 (2 player + 2 dealer, per the dealing-order convention)
+    // before any `hit` has consumed a card -- exactly "the untouched two-card hand," the same
+    // eligibility window `reduceBlackjackState`'s `'double'` case enforces client-side.
+    if (record.dealtCount !== 4) {
+      await rejectDouble(
+        'double down is only allowed immediately after the deal, before any hit',
+      )
+      return
+    }
     // Doubling means exactly doubling -- the second transfer must match the original wager
     // exactly, not merely meet the table minimum, so the payout math's `wagerWei + doubleWagerWei`
     // is always precisely 2x what the player actually put at risk.
     if (doubleWager.valueWei !== record.wagerWei) {
-      await sendError(
+      await rejectDouble(
         `double-down wager must match your original wager exactly (${record.wagerWei} wei)`,
       )
+      return
+    }
+    if (
+      !(await canCoverWorstCase({
+        provider,
+        mainAccountSigner,
+        state,
+        worstCaseWei: 2n * (record.wagerWei + doubleWager.valueWei),
+        excludeGameId: gameId,
+      }))
+    ) {
+      await rejectDouble('the dealer bankroll cannot cover this double-down right now')
       return
     }
 
@@ -556,7 +741,23 @@ export async function handleMove(params: {
       doubled: true,
       doubleWagerWei: doubleWager.valueWei,
     }
-    await state.setGame(gameId, updatedRecord)
+    // Claims the double transfer hash (same global keyspace as wager hashes) atomically with
+    // marking the hand doubled.
+    const claim = await state.claimDoubleWagerAndUpdateGame({
+      gameId,
+      doubleWagerTxHash,
+      record: updatedRecord,
+    })
+    if (!claim.ok) {
+      if (claim.reason === 'wager_claimed') {
+        await sendError(
+          'this transaction has already been used as a stake and cannot be used again',
+        )
+      } else {
+        await rejectDouble('this hand can no longer be doubled')
+      }
+      return
+    }
 
     await sendDirectMessageItems({
       stampClient,
@@ -590,6 +791,9 @@ export async function handleMove(params: {
   }
 
   if (action === 'stand') {
+    // Standing on a doubled record (only reachable if the process died between accepting the
+    // double and revealing) resolves it on the combined stake -- the only thing a doubled hand can
+    // do besides being rejected here for `hit`.
     await resolveAndReveal({
       gameId,
       record,
@@ -639,6 +843,10 @@ async function main() {
   const minWagerWei = BigInt(
     process.env.BLACKJACK_BOT_MIN_WAGER_WEI ?? '10000000000000000',
   )
+  const maxWagerWei = BigInt(
+    process.env.BLACKJACK_BOT_MAX_WAGER_WEI ??
+      BLACKJACK_DEFAULT_MAX_WAGER_WEI.toString(),
+  )
 
   const identityJsonPath = resolve(
     process.cwd(),
@@ -664,6 +872,7 @@ async function main() {
   console.log('== Blackjack bot: provably-fair, stamped-DM-driven blackjack over Monad testnet ==')
   console.log(`Relay:      ${relayBaseUrl}`)
   console.log(`Min wager:  ${minWagerWei} wei`)
+  console.log(`Max wager:  ${maxWagerWei} wei`)
   console.log(`Max hands:  ${maxHands}`)
 
   const identity = loadOrCreateIdentity(identityJsonPath, 'blackjack-bot')
@@ -710,6 +919,8 @@ async function main() {
       console.log(`\nNo activity within ${idleTimeoutMs}ms -- exiting.`)
       break
     }
+
+    await retryPendingRefunds(state, mainAccountSigner)
 
     const stored = await fetchMonadMessagesSince({
       relayBaseUrl,
@@ -814,6 +1025,7 @@ async function main() {
           senderAddress: envelope.from,
           senderPubKey,
           minWagerWei,
+          maxWagerWei,
           state,
           identity,
           networkTag,

@@ -1,6 +1,8 @@
 import { deriveDeck, handValue, sha256Hex } from './deck'
 import {
+  applyDoubleRejection,
   BlackjackGameState,
+  validateBetWei,
   HydratedBlackjackMove,
   reduceBlackjackState,
   resolveOutcome,
@@ -179,6 +181,71 @@ describe('reduceBlackjackState', () => {
       }),
     )
     expect(afterBadDouble).toBe(afterHit)
+  })
+})
+
+describe('double lockout recovery', () => {
+  const dealt = () =>
+    reduceBlackjackState(
+      reduceBlackjackState(undefined, move({ action: 'bet' })),
+      move({ action: 'deal', playerCards: [9, 10], dealerUpCard: 0 }),
+    )
+  const requestDouble = (s: BlackjackGameState) =>
+    reduceBlackjackState(
+      s,
+      move({
+        action: 'double',
+        verifiedDoubleWager: { fromAddress: PLAYER_ADDRESS, toAddress: '0xBot', valueWei: 5n },
+      }),
+    )
+
+  it('an error reply unlocks the optimistic double, offering only hit/stand', () => {
+    const requested = requestDouble(dealt())
+    expect(requested.doublePending).toBe(true)
+    expect(requested.availableActions).toEqual([])
+    const recovered = applyDoubleRejection(requested)
+    expect(recovered.phase).toBe('player_turn')
+    expect(recovered.doubled).toBe(false)
+    expect(recovered.doublePending).toBe(false)
+    expect(recovered.verifiedDoubleWagerWei).toBeUndefined()
+    expect(recovered.availableActions).toEqual(['hit', 'stand'])
+  })
+
+  it('a late authoritative broadcast re-locks to the real state after a rejection was assumed', () => {
+    const recovered = applyDoubleRejection(requestDouble(dealt()))
+    const broadcast = reduceBlackjackState(
+      recovered,
+      move({ action: 'double', playerCards: [9, 10, 3] }),
+    )
+    expect(broadcast.doubled).toBe(true)
+    expect(broadcast.doublePending).toBe(false)
+    expect(broadcast.playerCards).toEqual([9, 10, 3])
+    expect(broadcast.availableActions).toEqual([])
+  })
+
+  it('never rewinds a state the dealer already answered', () => {
+    const answered = reduceBlackjackState(
+      requestDouble(dealt()),
+      move({ action: 'double', playerCards: [9, 10, 3] }),
+    )
+    expect(applyDoubleRejection(answered)).toBe(answered)
+    const fresh = dealt()
+    expect(applyDoubleRejection(fresh)).toBe(fresh)
+  })
+})
+
+describe('validateBetWei', () => {
+  it.each([
+    [0n, /greater than zero/],
+    [-1n, /greater than zero/],
+    [10n ** 16n - 1n, /minimum/],
+    [10n ** 18n + 1n, /maximum/],
+  ])('rejects %s', (wei, msg) => {
+    expect(validateBetWei(wei)).toMatch(msg)
+  })
+  it('accepts the inclusive bounds', () => {
+    expect(validateBetWei(10n ** 16n)).toBeUndefined()
+    expect(validateBetWei(10n ** 18n)).toBeUndefined()
   })
 })
 

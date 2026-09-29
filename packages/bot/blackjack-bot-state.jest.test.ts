@@ -3,6 +3,9 @@ import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import level from 'level'
+import { getAddress } from 'ethers'
+
+import { sha256Hex } from '@frank/wallet/message-item-plugins/blackjack/deck'
 
 import {
   BlackjackBotStateStore,
@@ -858,5 +861,70 @@ describe('BlackjackBotStateStore wager authority', () => {
     expect(() => normalizeWagerTxHash('0x1234')).toThrow(
       'wager transaction hash must be 32 bytes',
     )
+  })
+})
+
+describe('claimDoubleWagerAndUpdateGame', () => {
+  const H1 = `0x${'11'.repeat(32)}`
+  const H2 = `0x${'22'.repeat(32)}`
+  const D1 = `0x${'33'.repeat(32)}`
+  const player = getAddress(`0x${'aa'.repeat(20)}`)
+  let dir: string
+  let store: BlackjackBotStateStore
+  const rec = (over: Partial<BlackjackGameRecord> = {}): BlackjackGameRecord => ({
+    authority: 'verified-wager-sender',
+    serverSeed: 'seed',
+    serverSeedHash: sha256Hex('seed'),
+    wagerTxHash: H1,
+    wagerWei: 100n,
+    playerAddress: player,
+    dealtCount: 4,
+    revealed: false,
+    doubled: false,
+    doubleWagerWei: undefined,
+    ...over,
+  })
+  const next = { serverSeed: 'n', serverSeedHash: sha256Hex('n') }
+  const doubled = (): BlackjackGameRecord =>
+    rec({ dealtCount: 5, doubled: true, doubleWagerWei: 100n })
+
+  beforeEach(async () => {
+    dir = mkdtempSync(join(tmpdir(), 'bj-claim-'))
+    store = new BlackjackBotStateStore(dir)
+    await store.Open()
+    await store.setPendingCommitment('seed', sha256Hex('seed'))
+    await store.claimWagerAndCreateGame({
+      gameId: 'g',
+      wagerTxHash: H1,
+      record: rec(),
+      expectedCommitment: { serverSeed: 'seed', serverSeedHash: sha256Hex('seed') },
+      nextCommitment: next,
+    })
+  })
+  afterEach(async () => {
+    await store.Close()
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('claims the hash and doubles the game atomically, once, surviving restart', async () => {
+    expect(await store.claimDoubleWagerAndUpdateGame({ gameId: 'g', doubleWagerTxHash: D1, record: doubled() })).toEqual({ ok: true })
+    expect(store.getGame('g')?.doubled).toBe(true)
+    expect(await store.claimDoubleWagerAndUpdateGame({ gameId: 'g', doubleWagerTxHash: H2, record: doubled() })).toEqual({ ok: false, reason: 'game_state_changed' })
+    await store.Close()
+    store = new BlackjackBotStateStore(dir)
+    await store.Open()
+    expect(store.getGame('g')?.doubled).toBe(true)
+    // the claimed hash cannot be refunded or reused after restart
+    expect((await store.claimRefund({ txHash: D1, playerAddress: player, amountWei: 1n })).ok).toBe(false)
+  })
+
+  it('refuses a hash that is already claimed (the original wager) without changing the game', async () => {
+    expect(await store.claimDoubleWagerAndUpdateGame({ gameId: 'g', doubleWagerTxHash: H1, record: doubled() })).toEqual({ ok: false, reason: 'wager_claimed' })
+    expect(store.getGame('g')?.doubled).toBe(false)
+  })
+
+  it('refuses when the game has already taken a card', async () => {
+    await store.setGame('g', rec({ dealtCount: 5 }))
+    expect(await store.claimDoubleWagerAndUpdateGame({ gameId: 'g', doubleWagerTxHash: D1, record: rec({ dealtCount: 6, doubled: true, doubleWagerWei: 100n }) })).toEqual({ ok: false, reason: 'game_state_changed' })
   })
 })

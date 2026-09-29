@@ -57,6 +57,7 @@ registerMessageItemPlugin<BlackjackMoveItem, HydratedBlackjackMove, BlackjackGam
       gameId: raw.gameId,
       action: raw.action,
       wagerTxHash: raw.wagerTxHash,
+      doubleWagerTxHash: raw.doubleWagerTxHash,
       serverSeedHash: raw.serverSeedHash,
       playerCards: raw.playerCards,
       dealerUpCard: raw.dealerUpCard,

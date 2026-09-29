@@ -84,8 +84,8 @@
 </template>
 
 <script lang="ts">
-import { useI18n } from 'vue-i18n'
 import { localeOptions } from 'src/i18n'
+import { applyLocale } from 'src/utils/apply-locale'
 
 import { defineComponent, ref } from 'vue'
 import { QInput } from 'quasar'
@@ -97,22 +97,23 @@ const msToMinutes = 60000
 
 export default defineComponent({
   setup() {
-    const { locale, fallbackLocale } = useI18n({ useScope: 'global' })
-
     const appearanceStore = useAppearanceStore()
     const contactStore = useContactStore()
     const { updateInterval: storeUpdateInterval } = storeToRefs(contactStore)
-    const { darkMode: storeDarkMode } = storeToRefs(appearanceStore)
+    const { darkMode: storeDarkMode, locale: storeLocale } =
+      storeToRefs(appearanceStore)
 
     return {
       darkMode: ref(storeDarkMode.value),
       updateInterval: ref(storeUpdateInterval.value / msToMinutes),
+      // A local draft, not bound to vue-i18n's own global locale -- ticket #156: selecting an
+      // option must never affect the app until Save, the same as darkMode/updateInterval above.
+      locale: ref(storeLocale.value),
       contactRefreshInterval: ref<QInput | null>(null),
       storeDarkMode,
       storeUpdateInterval,
-      locale,
+      storeLocale,
       localeOptions,
-      lang: fallbackLocale,
     }
   },
   data() {
@@ -125,25 +126,24 @@ export default defineComponent({
       this.storeDarkMode = this.darkMode
       this.$q.dark.set(this.darkMode)
       this.storeUpdateInterval = this.updateInterval * msToMinutes
+      this.storeLocale = this.locale
+      void applyLocale({
+        $q: this.$q,
+        setI18nLocale: value => {
+          this.$i18n.locale = value
+        },
+        locale: this.locale,
+      })
       window.history.length > 1 ? this.$router.go(-1) : this.$router.push('/')
     },
     cancel() {
+      // Discard the draft -- it was never applied anywhere, so there's nothing else to undo.
+      this.locale = this.storeLocale
       window.history.length > 1 ? this.$router.go(-1) : this.$router.push('/')
     },
   },
   mounted() {
     this.contactRefreshInterval?.focus()
-  },
-  watch: {
-    lang(lang) {
-      console.log('## language set to:', lang)
-      this.$i18n.locale = lang.value
-
-      import(`quasar/lang/${lang.value}`).then(language => {
-        console.log('## language set to:', lang, 'language=', language)
-        this.$q.lang.set(language.default)
-      })
-    },
   },
 })
 </script>

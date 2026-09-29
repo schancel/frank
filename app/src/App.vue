@@ -24,6 +24,7 @@ import { RegistryHandler } from '@frank/cashweb/registry'
 import { fetchCuratedDefaultContacts } from '@frank/wallet/monad-identity'
 import { loadMonadChainConfigFromEnv } from '@frank/wallet/chain/monad-chain'
 import { errorNotify } from 'src/utils/notifications'
+import { applyLocale } from 'src/utils/apply-locale'
 import { useRelayClientStore } from 'src/stores/relay-client'
 import { useAppearanceStore } from 'src/stores/appearance'
 import { useProfileStore } from 'src/stores/my-profile'
@@ -45,7 +46,7 @@ export default defineComponent({
     const relayClient = useRelayClientStore()
     const contacts = useContactStore()
     const appearanceStore = useAppearanceStore()
-    const { darkMode } = storeToRefs(appearanceStore)
+    const { darkMode, locale } = storeToRefs(appearanceStore)
     const myProfile = useProfileStore()
 
     const {
@@ -79,6 +80,7 @@ export default defineComponent({
       relayToken: () => relayClient.token,
       contactClicked,
       darkMode,
+      locale,
       lastReceived,
       totalUnread,
       getRelayData: myProfile,
@@ -232,6 +234,16 @@ export default defineComponent({
   },
   created() {
     this.$q.dark.set(this.darkMode)
+    // Restores the persisted locale (ticket #156) -- `appearanceStore.restored` is already
+    // awaited by boot/setup-apis.ts before the app ever mounts, so `this.locale` here is already
+    // the real saved value, not the store's just-initialized default.
+    void applyLocale({
+      $q: this.$q,
+      setI18nLocale: value => {
+        this.$i18n.locale = value
+      },
+      locale: this.locale,
+    })
     this.setupConnections()
   },
   updated() {

@@ -2,7 +2,7 @@ use std::{io::Read, sync::Arc, time::Duration};
 
 use bitcoinsuite_bitcoind::rpc_client::BitcoindRpcClient;
 use bitcoinsuite_error::{Result, WrapErr};
-use cashweb_config::{parse_conf, MonadMailboxMode};
+use cashweb_config::{parse_conf, CashwebdConf, MonadMailboxMode};
 use cashweb_registry::{
     disabled_chain_adapter::DisabledChainAdapter,
     http::{
@@ -25,7 +25,10 @@ use tracing_subscriber::fmt;
 
 #[derive(Error, Debug)]
 pub enum CashwebdExeError {
-    #[error("No configuration file provided. Specify like this: cargo run -- <config path>")]
+    #[error(
+        "No configuration provided. Specify a path, or '-' to read configuration from stdin: \
+         cashwebd-exe [--check-config] <config path|->"
+    )]
     NoConfigFile,
 
     #[error("Opening configuration file {0} failed")]
@@ -40,6 +43,38 @@ pub enum CashwebdExeError {
 
 use self::CashwebdExeError::*;
 
+fn read_conf_contents(conf_path: &str, stdin: &mut impl Read) -> Result<String> {
+    let mut conf_contents = String::new();
+    if conf_path == "-" {
+        stdin
+            .read_to_string(&mut conf_contents)
+            .wrap_err("Failed to read configuration from stdin")?;
+    } else {
+        let mut file = std::fs::File::open(conf_path)
+            .wrap_err_with(|| OpenConfigFail(conf_path.to_owned()))?;
+        file.read_to_string(&mut conf_contents)
+            .wrap_err_with(|| ReadConfigFail(conf_path.to_owned()))?;
+    }
+    Ok(conf_contents)
+}
+
+fn read_and_validate_conf(
+    conf_path: &str,
+    stdin: &mut impl Read,
+) -> Result<(CashwebdConf, MonadMailboxMode)> {
+    let conf_contents = read_conf_contents(conf_path, stdin)?;
+    let conf =
+        parse_conf(&conf_contents).wrap_err_with(|| InvalidConfigFail(conf_path.to_owned()))?;
+    // Validate the mailbox lifecycle before opening the database or binding a socket. The same
+    // typed mode is the serialized seam the HTTP owner will use to omit admission when disabled.
+    let mailbox_mode = conf
+        .registry
+        .monad_mailbox
+        .mode()
+        .wrap_err("Invalid registry.monad_mailbox configuration")?;
+    Ok((conf, mailbox_mode))
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let format = fmt::format()
@@ -50,20 +85,17 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt().event_format(format).init();
     bitcoinsuite_error::install()?;
 
-    let conf_path = std::env::args().nth(1).ok_or(NoConfigFile)?;
-    let mut file =
-        std::fs::File::open(&conf_path).wrap_err_with(|| OpenConfigFail(conf_path.clone()))?;
-    let mut conf_contents = String::new();
-    file.read_to_string(&mut conf_contents)
-        .wrap_err_with(|| ReadConfigFail(conf_path.clone()))?;
-    let conf = parse_conf(&conf_contents).wrap_err_with(|| InvalidConfigFail(conf_path.clone()))?;
-    // Validate the mailbox lifecycle before opening the database or binding a socket. The same
-    // typed mode is the serialized seam the HTTP owner will use to omit admission when disabled.
-    let mailbox_mode = conf
-        .registry
-        .monad_mailbox
-        .mode()
-        .wrap_err("Invalid registry.monad_mailbox configuration")?;
+    let mut args = std::env::args().skip(1);
+    let first_arg = args.next().ok_or(NoConfigFile)?;
+    let (check_only, conf_path) = if first_arg == "--check-config" {
+        (true, args.next().ok_or(NoConfigFile)?)
+    } else {
+        (false, first_arg)
+    };
+    let (conf, mailbox_mode) = read_and_validate_conf(&conf_path, &mut std::io::stdin().lock())?;
+    if check_only {
+        return Ok(());
+    }
     let outbox_config = MonadOutboxReconcileConfig::default();
     outbox_config.validate()?;
 
@@ -193,4 +225,50 @@ async fn main() -> Result<()> {
     server_result?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::{Cursor, Error, ErrorKind, Read};
+
+    use super::{read_and_validate_conf, read_conf_contents};
+
+    #[test]
+    fn reads_configuration_from_stdin_for_dash_path() {
+        let mut stdin = Cursor::new(b"host = \"127.0.0.1:8098\"\n");
+        let contents = read_conf_contents("-", &mut stdin).expect("stdin config should be read");
+        assert_eq!(contents, "host = \"127.0.0.1:8098\"\n");
+    }
+
+    #[test]
+    fn reports_stdin_read_failure_without_falling_back_to_a_named_file() {
+        struct FailingReader;
+        impl Read for FailingReader {
+            fn read(&mut self, _buffer: &mut [u8]) -> std::io::Result<usize> {
+                Err(Error::new(ErrorKind::Other, "sentinel stdin failure"))
+            }
+        }
+
+        let error = read_conf_contents("-", &mut FailingReader)
+            .expect_err("stdin failure must stop configuration loading");
+        assert!(error
+            .to_string()
+            .contains("Failed to read configuration from stdin"));
+    }
+
+    #[test]
+    fn check_config_path_uses_the_production_parser_and_mailbox_validation() {
+        let mut valid = Cursor::new(include_bytes!("../../cashwebd.local.toml"));
+        read_and_validate_conf("-", &mut valid).expect("checked-in local config should validate");
+
+        let invalid = include_str!("../../cashwebd.local.toml").replace(
+            "[registry.monad_mailbox]\nenabled = false",
+            "[registry.monad_mailbox]\nenabled = true",
+        );
+        let error = read_and_validate_conf("-", &mut Cursor::new(invalid))
+            .expect_err("enabled mailbox without its RPC URL must fail validation");
+        assert!(error
+            .to_string()
+            .contains("Invalid registry.monad_mailbox configuration"));
+    }
 }

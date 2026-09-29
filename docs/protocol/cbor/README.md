@@ -100,8 +100,9 @@ implementations.
 
 C1a. Every map key at every depth, including inside an unknown-type or opaque
 payload, MUST be an unsigned integer. A text, negative-integer, byte-string,
-or other key class is a `schema` error detected at stage 7 as part of the
-restricted profile, so text-key ordering is never needed.
+or other key class is a `schema` error detected in whichever stage decodes
+the item, as part of the
+restricted profile (pass B, section 9), so text-key ordering is never needed.
 
 C2. Integers and lengths MUST use their shortest preferred encoding. A value
 that fits in the additional-information field or a smaller integer argument
@@ -148,14 +149,14 @@ wildcards describe fields that an older reader may encounter only when V6.3
 processes a newer compatible schema; they do not permit undeclared fields to be
 smuggled into schema version 1. Maps whose CDDL has no wildcard (`payment-member`,
 `account-ref`, `timestamp`, `signature-entry`, and the common envelope) are
-closed: an undeclared key is a `schema` error at every schema version, so
+closed (and likewise `opaque-section`): an undeclared key is a `schema` error at every schema version, so
 extending one requires a new type or a raised `min_reader_version`.
 
 ## 4. Resource limits
 
 The limits below are part of version 1, not recommendations. A narrower route
-or object limit MAY reject earlier but MUST NOT accept an object exceeding the
-global limits.
+or object limit applies only at stage 1 (`route_byte_limit`) and MUST NOT
+accept an object exceeding the global limits.
 
 | Constant                |                                 Value | Applies to                                              |
 | ----------------------- | ------------------------------------: | ------------------------------------------------------- |
@@ -270,12 +271,9 @@ schema_version)` and MUST have independently unique `section_type` values.
 
 S8. A type-1 delivery's network and destination account MUST equal the opened
 type-5 payload's network and recipient account; this is a stage 9 `semantic`
-check. The remaining checks need the externally supplied decrypted type-6 frame
-and therefore run only for `full`, at the start of stage 10 in this order: the
-decrypted frame opens as type 6; type 6's network equals type 5's network
-(`semantic`); type 6's T1a digest equals its opened type-8 revision frame
-(`cryptographic`). Payment and signature verification follow. Message-item
-array order is authored semantic order, not a set to be resorted.
+check. The checks that need the externally supplied decrypted type-6 frame run
+only for `full`, as steps 10.1 through 10.3 of section 9. Message-item array
+order is authored semantic order, not a set to be resorted.
 
 S9. The type-1 destination account MUST be key type 1 with a 33-byte key
 (otherwise `semantic`). For each payment, the T3 digest, destination account
@@ -376,6 +374,8 @@ V6. After generic validation, a reader applies this mandatory decision:
 1. Unknown `type_id`, unsupported frame version, or
    `min_reader_version > reader_version`: opaque retention only where the
    containing contract permits it; otherwise reject as unsupported.
+   For the root frame this is `opaque_retention_allowed`; unknown children of
+   open schema fields are retained as stage 8.4 states.
 2. Known type and `schema_version <= highest_supported_schema`: interpret the
    exact supported schema, retaining the original frame alongside the typed
    projection.
@@ -498,28 +498,71 @@ canonical encoding alone is not authentication.
 
 ## 9. Validation order
 
-A version-1 implementation validates in this order:
+A version-1 implementation runs the stages below in order, and within a stage
+runs the listed checks in order. The first failing check determines the
+category, and an implementation MUST NOT continue to report a later failure.
 
-1. Caller-supplied route/object byte limit (`route_byte_limit` in the
-   validation context).
-2. Minimum header length and magic.
-3. Frame version.
-4. Declared length, global length, and exact input exhaustion.
-5. Restricted-CBOR syntax, canonicality, and global resource counters for the
-   envelope.
-6. Exact common-envelope keys and scalar ranges.
-7. Restricted-CBOR syntax, canonicality, and shared resource counters for the
-   payload's single CBOR item. This stage does not interpret byte strings as
-   child frames.
-8. Known-type schema and per-type resource limits, followed by recursive
-   opening of only those byte-string fields that the selected schema declares
-   as framed objects. Opened children inherit the root operation's shared
-   counters. The externally supplied decrypted type-6 frame is not a structural
-   child of encrypted type 5 and is opened only at stage 10 for `full`.
-9. Semantic ordering, uniqueness, and cross-field and network checks that
-   need only the root frame and its structurally opened children.
-10. For `full` only: the decrypted-content checks in S8, then digest, payment,
-    signature, and other cryptographic verification.
+1. **Root limits.** The frame length exceeds `route_byte_limit` or
+   `MAX_FRAME_BYTES`: `resource`. No implementation limit other than
+   `route_byte_limit` applies here.
+2. **Header.** Fewer than nine bytes or bad magic: `frame`.
+3. **Version.** An unsupported frame version is `unsupported`. Where the
+   containing contract permits retention (F2), the outcome is instead a
+   retained frame: the length field is not interpreted, later stages do not run,
+   and every byte is kept.
+4. **Length.** Declared length differs from the remaining bytes, including
+   truncation, concatenation, and trailing bytes: `frame`.
+5. **Envelope CBOR.** The CBOR passes A then B below.
+6. **Envelope.** Exact envelope keys, types, and scalar ranges, and
+   `min_reader_version <= schema_version`: `schema`.
+7. **Payload CBOR.** The payload's single item passes A then B below. Byte
+   strings are not opened as child frames at this stage.
+8. **Typed structure**, for a known type and supported schema only (V6), in
+   this order:
+   1. type-specific limits of R2 through R4, counting the fields they name
+      before typed conversion: `resource`;
+   2. the type's CDDL structure and range rules, including network-tag,
+      ASCII-identifier, and endpoint-ASCII syntax (S1, C6, S4), and C12 unknown
+      keys: `schema`. A CDDL cardinality or `.size` bound that merely restates an
+      R2 through R4 limit is `resource`, checked in 8.1, not `schema`;
+   3. allocated-identifier checks (S2b, S2c; every encryption suite other than
+      65535 is unallocated in version 1): `unsupported`;
+   4. recursive opening of only the byte-string fields that the schema declares
+      as framed objects. Each child runs stages 2 through 9 as an embedded
+      frame with the root operation's shared counters (R1) and is not charged
+      against `route_byte_limit`. Where the schema declares a field open (a
+      message item or opaque section), a child with an unknown type or unknown
+      frame version is retained as exact bytes whatever `opaque_retention_allowed`
+      says, and is not a failure; that flag governs only the root frame (V6.1).
+9. **Semantics** needing only the root frame, its opened children, and, for a
+   type-2 case, the context's prior statement (a `typed` or `full` case always
+   supplies it): ordering, uniqueness, cross-field, network, and S10 checks,
+   the presence of an entry signed by the statement subject, and selection of
+   the prior authority (S4a, T2a): `semantic`. No signature or digest is
+   verified here.
+10. **Cryptographic and external checks**, `full` only, in this order:
+    1. Decrypted content: the supplied decrypted frame runs stages 2 through 9
+       as an embedded child of the type-5 payload with the same shared counters,
+       not charged against `route_byte_limit`. It MUST be type 6, otherwise
+       `semantic`. For suite 65535 its bytes MUST equal the ciphertext field,
+       otherwise `cryptographic`.
+    2. S8's type-6 network equality: `semantic`.
+    3. S8's T1a digest equality: `cryptographic`.
+    4. The type-1 field 3 T3 digest, T3a derivation, S9 destination equality:
+       `cryptographic`.
+    5. Payment observations: destination, value, and commitment equal the
+       encoded member: `cryptographic`. Then the S3 checked sum, where overflow
+       or a sum below the minimum is `semantic`.
+    6. Signatures and transition authorizations: `cryptographic`.
+
+Passes A and B of the CBOR stages. Pass A is a streaming syntax pass that
+proceeds in byte order and fails at the first item that violates a resource
+counter (`resource`) or is malformed (`malformed`). Only if pass A consumes the
+entire item does pass B run, in byte order, failing at the first item that is
+non-minimal, indefinite, an out-of-order or duplicate key (`noncanonical`), or
+of a forbidden class, including a non-uint map key (C1a) (`schema`). When one
+item violates both, `noncanonical` wins. So `{"b":1,"a":2}` fails at its first
+key as `schema`, not as an ordering error.
 
 No stage may consume funds, mark a payment used, advance a mailbox cursor, or
 persist an interpreted record before every applicable later stage succeeds.
@@ -551,9 +594,10 @@ The operation bounds the categories a case may expect: `frame` allows `frame`,
 than `frame`. The supported-schema list is sorted by
 numeric type ID and has independently unique type IDs.
 
-Every full case, including rejections and frames whose type is not yet known,
-carries `payment_policy`, `decrypted_frame_hex`, and
-`prior_directory_statement_frame_hex`, each `null` when it does not apply. A
+Every `typed` or `full` case carries `prior_directory_statement_frame_hex`, and
+every full case, including rejections and frames whose type is not yet known,
+additionally carries `payment_policy` and `decrypted_frame_hex`; each is `null`
+when it does not apply. A
 case whose frame is type 1 MUST have non-null `payment_policy` and
 `decrypted_frame_hex`; a type-2 frame MAY have a null prior statement only for
 bootstrap. For type 1, `payment_policy` provides the 32-byte minimum and
@@ -590,21 +634,19 @@ Stable error categories are: `frame`, `unsupported`, `resource`, `malformed`,
 `noncanonical`, `schema`, `semantic`, and `cryptographic`. Public APIs may give
 more detail but MUST preserve this cross-language category. When bytes violate
 multiple rules, the validation order in section 9 selects the first category;
-implementations MUST NOT continue merely to report a later failure. Within CBOR
-validation, malformed syntax precedes canonicality, resource counters fail at
-the first item that exceeds the shared budget, and typed schema checks follow a
-fully valid canonical item.
+implementations MUST NOT continue merely to report a later failure. Passes A
+and B in section 9 define the order within CBOR validation.
 
-| Failure                                                                                                                                                                                                                    | Category        |
-| -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------- |
-| Too many root bytes; any byte/depth/container/item/type-specific limit                                                                                                                                                     | `resource`      |
-| Short header, bad magic, declared-length mismatch, concatenated frame, bytes outside the declared body                                                                                                                     | `frame`         |
-| Unknown frame version; uninterpretable type/schema; unallocated algorithm, suite, or algorithm/key pairing                                                                                                                 | `unsupported`   |
-| Truncated/invalid CBOR syntax, invalid UTF-8, reserved additional information, or extra CBOR item in body/payload                                                                                                          | `malformed`     |
-| Non-minimal integer/length, indefinite value, duplicate/out-of-order map key, or another alternate encoding of an allowed value                                                                                            | `noncanonical`  |
-| Canonical but forbidden CBOR class (float, tag, forbidden simple value, non-uint map key), envelope/CDDL type mismatch, `min_reader_version` above `schema_version`, missing/extra required key, or scalar range violation | `schema`        |
-| Semantic list order/uniqueness, revision, transition count, endpoint ASCII, cross-field, key shape, contiguity, or network-equality failure                                                                                | `semantic`      |
-| Digest/hash/signature mismatch, T3a scalar/point failure, wrong derived payment destination, transaction observation mismatch, or commitment mismatch                                                                      | `cryptographic` |
+| Failure                                                                                                                                                                                                                                                                                                    | Category        |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------- |
+| Frame or route length over a limit; any byte/depth/container/item limit; R2 through R4 type-specific limits, including a CDDL bound that restates them                                                                                                                                                     | `resource`      |
+| Short header, bad magic, declared-length mismatch, concatenated frame, bytes outside the declared body                                                                                                                                                                                                     | `frame`         |
+| Unknown frame version or uninterpretable type/schema without permitted retention; unallocated algorithm, encryption suite, or algorithm/key-type/length pairing                                                                                                                                            | `unsupported`   |
+| Truncated/invalid CBOR syntax, invalid UTF-8, reserved additional information, or extra CBOR item in body/payload                                                                                                                                                                                          | `malformed`     |
+| Non-minimal integer/length, indefinite value, duplicate/out-of-order map key, or another alternate encoding of an allowed value                                                                                                                                                                            | `noncanonical`  |
+| Forbidden CBOR class (float, tag, forbidden simple value, non-uint map key), envelope/CDDL type mismatch, undeclared key (C12), missing/extra required key, scalar range violation, network-tag/ASCII-identifier/endpoint syntax violation, or `min_reader_version` above `schema_version`                 | `schema`        |
+| List order/uniqueness, revision or network versus the prior statement, transition count/linkage, missing subject-signed entry, unregistered prior authority, cross-field or network equality, key shape, contiguity, decrypted frame not type 6, type-6 network mismatch, or S3 overflow/sum below minimum | `semantic`      |
+| Digest, hash, or signature mismatch; ciphertext not equal to the suite-65535 decrypted bytes; T3a scalar/point failure; wrong derived destination; transaction observation or commitment mismatch                                                                                                          | `cryptographic` |
 
 Vector case IDs MUST be unique. `paired_case`, when present, MUST name a
 different existing case, be reciprocal, and indicate two cases whose

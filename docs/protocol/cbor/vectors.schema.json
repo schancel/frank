@@ -220,7 +220,7 @@
               "validation_context": {
                 "properties": {
                   "operation": {
-                    "const": "full"
+                    "enum": ["typed", "full"]
                   }
                 },
                 "required": ["operation"]
@@ -231,11 +231,7 @@
           "then": {
             "properties": {
               "validation_context": {
-                "required": [
-                  "payment_policy",
-                  "decrypted_frame_hex",
-                  "prior_directory_statement_frame_hex"
-                ]
+                "required": ["prior_directory_statement_frame_hex"]
               }
             }
           }
@@ -458,6 +454,28 @@
           },
           "then": {
             "required": ["paired_case"]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "validation_context": {
+                "properties": {
+                  "operation": {
+                    "const": "full"
+                  }
+                },
+                "required": ["operation"]
+              }
+            },
+            "required": ["validation_context"]
+          },
+          "then": {
+            "properties": {
+              "validation_context": {
+                "required": ["payment_policy", "decrypted_frame_hex"]
+              }
+            }
           }
         }
       ]

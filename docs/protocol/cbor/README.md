@@ -108,8 +108,7 @@ restricted profile (pass B, section 9), so text-key ordering is never needed.
 
 C2. Integers and lengths MUST use their shortest preferred encoding. A value
 that fits in the additional-information field or a smaller integer argument
-MUST NOT use a larger representation. This minimality rule, and the
-`noncanonical` category, apply only to the argument of an integer and to the
+MUST NOT use a larger representation. This minimality rule applies only to the argument of an integer and to the
 length or count of a string, array, or map. Tag numbers and float widths are
 not examined: any tag or float is the forbidden class (`schema`) whatever its
 width. A two-byte simple value `f8 xx` with `xx < 32` is `malformed` (RFC 8949
@@ -186,8 +185,12 @@ every decoded map, array, and scalar in the envelope, opened payload, and every
 recursively opened child frame. Logical depth starts at zero for the root
 envelope; entering a map or array adds one, and the payload item is nested
 inside the envelope map, so its first array or map is at depth 2 and a payload
-may nest at most 31 levels; opening an embedded frame adds
-one before counting that child's envelope depth. A child parser inherits these
+may nest at most 31 levels. An embedded frame's envelope map is one level
+deeper than the container holding its byte string, and depth returns to that
+container's value when the child finishes. For example, a type-16 child's
+envelope map is at depth 4 when its parent's is at depth 1, because the parent's
+payload map is 2 and its items array is 3, so each further level of type-16
+nesting adds 3. A child parser inherits these
 counters and MUST NOT reset them. Implementations MUST fail without partially
 returning a typed object when any limit is exceeded.
 
@@ -551,9 +554,11 @@ category, and an implementation MUST NOT continue to report a later failure.
    1. type-specific limits: the root frame length against R2's 1 MiB for type 1
       and R3's 256 KiB for type 2 (type 3 uses the global limit), and the counts
       named by R2 through R4 read from the decoded fields before typed
-      conversion: `resource`. R2's 256-item total across the opened graph is
-      charged when 8.4 begins opening each child, before that child's stage 2, failing
-      at the first item over;
+      conversion: `resource`. R2's 256-item total counts every child opened
+      from a message-item array, whether its type is known, unknown, or retained,
+      and never a required-type child (type 5, 6, or 8). It is charged when 8.4
+      begins opening each such child, before that child's stage 2, failing at the
+      first item over;
    2. the type's CDDL structure and range rules, including network-tag,
       ASCII-identifier, and endpoint-ASCII syntax (S1, C6, S4), and C12 unknown
       keys: `schema`. A CDDL cardinality or `.size` bound that merely restates an
@@ -654,7 +659,7 @@ Every `typed` or `full` case carries `prior_directory_statement_frame_hex`, and
 every full case, including rejections and frames whose type is not yet known,
 additionally carries `payment_policy` and `decrypted_frame_hex`; each is `null`
 when it does not apply. A
-case whose frame is type 1 MUST have non-null `payment_policy` and
+`full` case whose frame is type 1 MUST have non-null `payment_policy` and
 `decrypted_frame_hex`; a type-2 frame MAY have a null prior statement only for
 bootstrap. For type 1, `payment_policy` provides the 32-byte minimum and
 authoritative chain observations keyed by independently unique transaction ID;

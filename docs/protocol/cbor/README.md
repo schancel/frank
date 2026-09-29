@@ -282,7 +282,8 @@ digest (field 3) MUST equal the T1a digest of its opened type-8 frame (field 2)
 (`cryptographic`); these are steps 10.2 and 10.3 of section 9. A framed field
 whose schema requires a specific type (type-1 field 2 is type 5, type-2 field 0
 is type 4, a key-transition's field 0 is type 7, type-6 field 2 is type 8) MUST
-carry that `type_id`, otherwise `semantic` at the parent's stage 9; such a field
+carry that `type_id`, otherwise `semantic`, reported at stage 8.4 of the parent as section 9 orders it;
+such a field
 is never an open field. Message-item array
 order is authored semantic order, not a set to be resorted.
 
@@ -559,7 +560,7 @@ category, and an implementation MUST NOT continue to report a later failure.
         required type, otherwise `semantic` (an unknown type is `semantic`
         too), then stages 7 through 9. V6.1 retention never applies; an unknown
         frame version at stage 3 or a `min_reader_version` above the reader's
-        is `unsupported`.
+        is `unsupported`, the latter at the child's stage 7 V6 decision.
 9. **Semantics** needing only the root frame, its opened children, and, for a
    type-2 case, the context's prior statement (a `typed` or `full` case always
    supplies it). A child's own stage 9 covers only checks needing neither its
@@ -575,8 +576,9 @@ category, and an implementation MUST NOT continue to report a later failure.
     1. Decrypted content: the supplied decrypted frame is an embedded child of
        the type-5 payload sharing its counters and not charged against
        `route_byte_limit`, but its length is checked against `MAX_FRAME_BYTES`
-       (`resource`). It runs as a required-type child (8.4) of type 6. For suite 65535 its bytes
-       MUST equal the ciphertext field, otherwise `cryptographic`.
+       (`resource`). It runs as a required-type child (8.4) of type 6. Only after the child
+       passes stage 9, for suite 65535, its bytes MUST equal the ciphertext
+       field, otherwise `cryptographic`.
     2. S8's type-6 network equality: `semantic`.
     3. S8's T1a digest equality: `cryptographic`.
     4. The type-1 field 3 T3 digest, T3a derivation, S9 destination equality:

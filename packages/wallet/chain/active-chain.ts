@@ -148,7 +148,7 @@ export interface RecoveredStampPaymentInfo {
   txHash: string
   address: ChainAddress
   valueWei: bigint
-  status: 'discovered' | 'sweep-pending' | 'swept'
+  status: 'discovered' | 'sweep-pending' | 'sweep-failed' | 'swept'
   sweepTxHash?: string
 }
 
@@ -160,6 +160,8 @@ export type RecoveredStampPaymentSweepResult =
       balanceWei?: bigint
       dustThresholdWei?: bigint
       txHash?: string
+      valueWei?: bigint
+      destinationAddress?: string
     }
 
 export interface DirectMessageClient {
@@ -243,6 +245,16 @@ export interface ActiveChain {
   formatAddress(addr: ChainAddress): string
   parseAddress(input: string): ChainAddress | undefined
   createWallet(seed: HDSeed): Promise<WalletHandle>
+  /** Imports an existing Monad seed by exhaustively scanning both HD branches to caller-supplied
+   * inclusive caps before creating any local state. Distinct from fresh `createWallet`. */
+  restoreWallet(
+    seed: HDSeed,
+    options: {
+      senderIndexCap: number
+      changeIndexCap: number
+      scanBatchSize?: number
+    }
+  ): Promise<WalletHandle>
   nativeTransfers: NativeTransferClient
   /** Look up an identity's registered profile/pubkey. Returns `undefined` if nothing is
    * registered under `addr` yet. `opts.relayBaseUrl`, when given, looks the address up against
@@ -251,7 +263,7 @@ export interface ActiveChain {
    * talks to). */
   fetchProfile(
     addr: ChainAddress,
-    opts?: { relayBaseUrl?: string },
+    opts?: { relayBaseUrl?: string }
   ): Promise<ProfileInfo | undefined>
   directMessages: DirectMessageClient
   topics: TopicBroadcastClient
@@ -283,7 +295,7 @@ export interface AddressWithOptionalRelay {
  * issue #78's own comment thread for why the actual entry point (`AddContact.vue` or a new
  * dialog) is a separate, not-yet-decided UX question. */
 export function parseAddressWithOptionalRelay(
-  input: string,
+  input: string
 ): AddressWithOptionalRelay {
   const at = input.lastIndexOf('@')
   if (at === -1) {

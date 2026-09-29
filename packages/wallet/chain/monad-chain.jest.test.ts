@@ -12,10 +12,19 @@
  * crypto with no network dependency, and exercising them for real is a stronger check that
  * `directMessages.send`/`fetchSince` actually encrypt/decrypt, not merely pass a plaintext through.
  */
-import { Wallet, getBytes, hexlify } from 'ethers'
+import { mkdtempSync, rmSync } from 'fs'
+import { tmpdir } from 'os'
+import { join } from 'path'
+import { JsonRpcProvider, Transaction, Wallet, getBytes, hexlify } from 'ethers'
 
 import { MonadIdentity } from '../monad-identity'
-import { StoredMonadMessageProto } from '../monad-stamp-client'
+import {
+  buildMonadStampCalldata,
+  computeMonadStampCommitment,
+  computeMonadStampPaymentCommitment,
+  StoredMonadMessageProto,
+  encodeMonadStampedMessage,
+} from '../monad-stamp-client'
 import { MonadTopicPostProto } from '../monad-topic-post-client'
 import { buildTopicPostPayload } from '../monad-topic-post-client'
 import { MessageItem, TextItem } from '@frank/cashweb/types/messages'
@@ -25,12 +34,27 @@ import {
   MonadChainWalletHandle,
   createMonadChain,
   deserializeMessageItems,
+  resolveLegacyAttemptRecipientFromEnvelope,
   serializeMessageItems,
   viewToForumMessage,
 } from './monad-chain'
 import { WalletHandle } from './active-chain'
-import { deriveMonadStampChildPublic } from '../monad-stamp-stealth'
-import { InMemoryStampPaymentJournal } from '../storage/stamp-payment-journal'
+import {
+  deriveMonadStampChildPrivate,
+  deriveMonadStampChildPublic,
+} from '../monad-stamp-stealth'
+import {
+  InMemoryStampPaymentJournal,
+  LevelStampPaymentJournal,
+} from '../storage/stamp-payment-journal'
+import { buildEnvelope } from '@frank/cashweb/relay/monad-message-envelope'
+import { MonadRpcError } from '../monad-http'
+import { openMonadWalletBundle } from '../storage/monad-wallet-bundle'
+
+jest.mock('../storage/monad-wallet-bundle', () => {
+  const actual = jest.requireActual('../storage/monad-wallet-bundle')
+  return { ...actual, assertMonadWalletBundleProvenance: jest.fn() }
+})
 
 jest.mock('../monad-stamp-client', () => {
   const actual = jest.requireActual('../monad-stamp-client')
@@ -39,6 +63,7 @@ jest.mock('../monad-stamp-client', () => {
     MonadStampClient: jest.fn().mockImplementation(() => ({
       submitStampedMessage: jest.fn(),
       resumePendingAttempts: jest.fn().mockResolvedValue([]),
+      reconcileOrThrow: jest.fn().mockResolvedValue(undefined),
     })),
     quoteMonadStampPaymentGasReserve: jest.fn().mockResolvedValue(100n),
   }
@@ -124,7 +149,7 @@ const BOB_PRIVATE_KEY_HEX = '0x' + '22'.repeat(31) + '2b'
 const EVE_PRIVATE_KEY_HEX = '0x' + '33'.repeat(31) + '3c'
 
 function makeWallet(identity: MonadIdentity): MonadChainWalletHandle {
-  return {
+  const wallet = {
     identity,
     // These are never dereferenced by real logic in this test file: every client that would
     // actually use them (`MonadStampClient`/`MonadTopicPostClient`/`MonadTopicVoteClient`) is
@@ -139,6 +164,41 @@ function makeWallet(identity: MonadIdentity): MonadChainWalletHandle {
     provider: {} as MonadChainWalletHandle['provider'],
     httpClient: {} as MonadChainWalletHandle['httpClient'],
     relayBaseUrl: 'http://relay.test',
+  } as MonadChainWalletHandle
+  wallet.walletState = {
+    durability: 'persistent',
+    assertOpen: jest.fn(),
+    runOperation: jest.fn(<T>(operation: () => Promise<T>) => operation()),
+  } as MonadChainWalletHandle['walletState']
+  return wallet
+}
+
+async function signedChildSweep(params: {
+  identity: MonadIdentity
+  payloadDigest: string
+  childIndex: number
+  destination: string
+  valueWei: bigint
+  nonce?: number
+}) {
+  const child = deriveMonadStampChildPrivate({
+    payloadHash: getBytes(`0x${params.payloadDigest}`),
+    recipientPrivateKey: getBytes(params.identity.toPrivateKeyHex()),
+    paymentIndex: params.childIndex,
+  })
+  const rawTx = await new Wallet(hexlify(child.privateKey)).signTransaction({
+    to: params.destination,
+    value: params.valueWei,
+    nonce: params.nonce ?? 0,
+    gasLimit: 21_000n,
+    gasPrice: 1n,
+    chainId: 1,
+  })
+  return {
+    to: params.destination,
+    value: params.valueWei,
+    rawTx,
+    txHash: Transaction.from(rawTx).hash as string,
   }
 }
 
@@ -153,7 +213,7 @@ describe('createMonadChain: basic chain properties', () => {
     expect(chain.name).toBe('monad')
     expect(chain.unit).toBe('MON')
     expect(chain.defaultTopicVoteValue).toBe(
-      TEST_CONFIG.defaultTopicVoteValueWei,
+      TEST_CONFIG.defaultTopicVoteValueWei
     )
   })
 
@@ -170,13 +230,50 @@ describe('createMonadChain: basic chain properties', () => {
 
   it('parseAddress checksums a valid address and normalizes case', () => {
     const parsed = chain.parseAddress(
-      '0x000000000000000000000000000000000000dead',
+      '0x000000000000000000000000000000000000dead'
     )
     expect(parsed?.raw).toBe('0x000000000000000000000000000000000000dEaD')
   })
 
   it('parseAddress returns undefined for garbage input', () => {
     expect(chain.parseAddress('not-an-address')).toBeUndefined()
+  })
+})
+
+describe('legacy attempt recipient authority', () => {
+  it('resolves only the profile key bound to the retained envelope recipient', async () => {
+    const alice = MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX)
+    const bob = MonadIdentity.fromPrivateKeyHex(BOB_PRIVATE_KEY_HEX)
+    const envelope = buildEnvelope({
+      fromAddress: alice.address.raw,
+      fromPrivateKey: alice.toBitcorePrivateKey(),
+      toAddress: bob.address.raw,
+      toPubKey: bob.compressedPubKey,
+      plaintext: 'legacy',
+      networkTag: TEST_CONFIG.networkTag,
+    })
+    const messageBytes = encodeMonadStampedMessage({
+      stampPayments: [],
+      encryptedPayload: envelope,
+      payloadHash: getBytes(`0x${'ab'.repeat(32)}`),
+    })
+    mockedFetchMonadProfile.mockResolvedValueOnce({
+      address: bob.address,
+      pubKey: new Uint8Array(bob.compressedPubKey),
+    })
+    await expect(
+      resolveLegacyAttemptRecipientFromEnvelope({
+        relayBaseUrl: TEST_CONFIG.relayBaseUrl,
+        messageBytes,
+      })
+    ).resolves.toEqual(new Uint8Array(bob.compressedPubKey))
+
+    await expect(
+      resolveLegacyAttemptRecipientFromEnvelope({
+        relayBaseUrl: TEST_CONFIG.relayBaseUrl,
+        messageBytes,
+      })
+    ).rejects.toThrow(/does not match/i)
   })
 })
 
@@ -207,8 +304,42 @@ describe('createMonadChain: createWallet', () => {
     const wallet = (await chain.createWallet(seed)) as MonadChainWalletHandle
     const records = wallet.pool.ensureSize(0)
     expect(records).toHaveLength(TEST_CONFIG.subAccountPoolSize)
-    expect(records.every(record => record.status === 'unfunded')).toBe(true)
+    expect(records.every((record) => record.status === 'unfunded')).toBe(true)
     expect(MonadAccountTxSigner).not.toHaveBeenCalled()
+  })
+
+  it('exposes a distinct provider-only seed restore API', async () => {
+    const parent = mkdtempSync(join(tmpdir(), 'monad-chain-seed-restore-'))
+    const getTransactionCount = jest
+      .spyOn(JsonRpcProvider.prototype, 'getTransactionCount')
+      .mockResolvedValue(0)
+    const getBalance = jest
+      .spyOn(JsonRpcProvider.prototype, 'getBalance')
+      .mockResolvedValue(0n)
+    try {
+      const restoredChain = createMonadChain({
+        ...TEST_CONFIG,
+        walletStorageLocation: join(parent, 'wallet'),
+      })
+      const wallet = (await restoredChain.restoreWallet(seed, {
+        senderIndexCap: 3,
+        changeIndexCap: 3,
+        scanBatchSize: 2,
+      })) as MonadChainWalletHandle
+      expect(wallet.walletState?.durability).toBe('persistent')
+      expect(wallet.pool.records()).toHaveLength(TEST_CONFIG.subAccountPoolSize)
+      expect(
+        wallet.pool.records().every((record) => record.status === 'unfunded')
+      ).toBe(true)
+      expect(wallet.changePool?.nextUnusedIndex()).toBe(0)
+      expect(getTransactionCount).toHaveBeenCalledTimes(8)
+      expect(getBalance).toHaveBeenCalledTimes(8)
+      await wallet.walletState?.close()
+    } finally {
+      getTransactionCount.mockRestore()
+      getBalance.mockRestore()
+      rmSync(parent, { recursive: true, force: true })
+    }
   })
 })
 
@@ -232,7 +363,7 @@ describe('createMonadChain: fetchProfile', () => {
     const chain = createMonadChain(TEST_CONFIG)
     mockedFetchMonadProfile.mockResolvedValueOnce(undefined)
     expect(
-      await chain.fetchProfile({ raw: '0x' + '00'.repeat(20) }),
+      await chain.fetchProfile({ raw: '0x' + '00'.repeat(20) })
     ).toBeUndefined()
   })
 
@@ -263,7 +394,7 @@ describe('createMonadChain: nativeTransfers', () => {
     wallet.provider = { getBalance } as MonadChainWalletHandle['provider']
 
     await expect(chain.nativeTransfers.getBalance({ wallet })).resolves.toBe(
-      123n,
+      123n
     )
     expect(getBalance).toHaveBeenCalledWith(identity.address.raw)
   })
@@ -273,7 +404,7 @@ describe('createMonadChain: nativeTransfers', () => {
     const identity = MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX)
     const wallet = makeWallet(identity)
     const recipient = chain.parseAddress(
-      '0x000000000000000000000000000000000000dead',
+      '0x000000000000000000000000000000000000dead'
     )
     expect(recipient).toBeDefined()
 
@@ -290,7 +421,7 @@ describe('createMonadChain: nativeTransfers', () => {
         wallet,
         recipient: recipient!,
         value: 1_500_000_000_000_000_000n,
-      }),
+      })
     ).resolves.toEqual({ txHash: '0xbroadcast' })
 
     expect(MonadAccountTxSigner).toHaveBeenCalledWith({
@@ -300,9 +431,10 @@ describe('createMonadChain: nativeTransfers', () => {
     })
     expect(buildAndSignTransfer).toHaveBeenCalledWith(
       recipient!.raw,
-      1_500_000_000_000_000_000n,
+      1_500_000_000_000_000_000n
     )
     expect(submit).toHaveBeenCalledWith(signed)
+    expect(wallet.walletState?.runOperation).toHaveBeenCalledTimes(1)
   })
 
   it('rejects zero-value transfers before constructing a signer', async () => {
@@ -314,7 +446,7 @@ describe('createMonadChain: nativeTransfers', () => {
         wallet: makeWallet(identity),
         recipient: identity.address,
         value: 0n,
-      }),
+      })
     ).rejects.toThrow('Transfer value must be greater than zero')
     expect(MonadAccountTxSigner).not.toHaveBeenCalled()
   })
@@ -332,16 +464,175 @@ describe('serializeMessageItems / deserializeMessageItems', () => {
 
   it('rejects stealth items -- no Monad UTXO-payment equivalent exists', () => {
     expect(() =>
-      serializeMessageItems([{ type: 'stealth', amount: 1000 }]),
+      serializeMessageItems([{ type: 'stealth', amount: 1000 }])
     ).toThrow(/stealth/)
   })
 
   it('rejects p2pkh items for the same reason', () => {
     expect(() =>
-      serializeMessageItems([
-        { type: 'p2pkh', address: '0xabc', amount: 1000 },
-      ]),
+      serializeMessageItems([{ type: 'p2pkh', address: '0xabc', amount: 1000 }])
     ).toThrow(/p2pkh/)
+  })
+
+  it.each([
+    ['text value', { type: 'text', text: 1 }],
+    ['reply digest', { type: 'reply', payloadDigest: 'not-a-digest' }],
+    ['image value', { type: 'image', image: {} }],
+    ['numeric type', { type: 1 }],
+    ['boolean type', { type: true }],
+    ['null type', { type: null }],
+    ['blackjack game', { type: 'blackjack-move', gameId: 1, action: 'bet' }],
+    [
+      'blackjack action array',
+      { type: 'blackjack-move', gameId: 'g', action: ['bet'] },
+    ],
+    [
+      'blackjack action boolean',
+      { type: 'blackjack-move', gameId: 'g', action: true },
+    ],
+    [
+      'blackjack action null',
+      { type: 'blackjack-move', gameId: 'g', action: null },
+    ],
+    [
+      'blackjack optional string',
+      {
+        type: 'blackjack-move',
+        gameId: 'g',
+        action: 'bet',
+        wagerTxHash: 1,
+      },
+    ],
+    [
+      'blackjack cards',
+      {
+        type: 'blackjack-move',
+        gameId: 'g',
+        action: 'deal',
+        playerCards: [52],
+      },
+    ],
+    [
+      'blackjack up card',
+      {
+        type: 'blackjack-move',
+        gameId: 'g',
+        action: 'deal',
+        dealerUpCard: '1',
+      },
+    ],
+    [
+      'blackjack outcome array',
+      {
+        type: 'blackjack-move',
+        gameId: 'g',
+        action: 'reveal',
+        outcome: ['push'],
+      },
+    ],
+    [
+      'blackjack outcome number',
+      {
+        type: 'blackjack-move',
+        gameId: 'g',
+        action: 'reveal',
+        outcome: 1,
+      },
+    ],
+    [
+      'blackjack outcome boolean',
+      {
+        type: 'blackjack-move',
+        gameId: 'g',
+        action: 'reveal',
+        outcome: true,
+      },
+    ],
+    [
+      'blackjack outcome null',
+      {
+        type: 'blackjack-move',
+        gameId: 'g',
+        action: 'reveal',
+        outcome: null,
+      },
+    ],
+    [
+      'digital action array',
+      { type: 'digital-goods', action: ['request'], itemId: 'one' },
+    ],
+    [
+      'digital action number',
+      { type: 'digital-goods', action: 1, itemId: 'one' },
+    ],
+    [
+      'digital action boolean',
+      { type: 'digital-goods', action: true, itemId: 'one' },
+    ],
+    [
+      'digital action null',
+      { type: 'digital-goods', action: null, itemId: 'one' },
+    ],
+    [
+      'digital optional value',
+      { type: 'digital-goods', action: 'request', itemId: 1 },
+    ],
+    [
+      'digital catalog',
+      {
+        type: 'digital-goods',
+        action: 'catalog',
+        catalog: [{ itemId: 'one', description: 'one', priceWei: -1 }],
+      },
+    ],
+  ])('rejects malformed supported %s items', (_description, item) => {
+    expect(() => deserializeMessageItems(JSON.stringify([item]))).toThrow(
+      /direct-message/i
+    )
+  })
+
+  it.each([
+    ['type', { type: 'text' }, 'text'],
+    [
+      'blackjack action',
+      { type: 'blackjack-move', gameId: 'g', action: 'bet' },
+      'bet',
+    ],
+    [
+      'blackjack outcome',
+      {
+        type: 'blackjack-move',
+        gameId: 'g',
+        action: 'reveal',
+        outcome: 'push',
+      },
+      'push',
+    ],
+    [
+      'digital action',
+      { type: 'digital-goods', action: 'request', itemId: 'one' },
+      'request',
+    ],
+  ])('rejects a coercive object in the %s field', (_label, item, allowed) => {
+    const field =
+      _label === 'type'
+        ? 'type'
+        : _label === 'blackjack outcome'
+        ? 'outcome'
+        : 'action'
+    const coercive = {
+      toString: () => allowed,
+      valueOf: () => allowed,
+    }
+    const parsed = [{ ...item, [field]: coercive }]
+    const parse = jest.spyOn(JSON, 'parse').mockReturnValueOnce(parsed)
+    try {
+      expect(() => deserializeMessageItems('coercive')).toThrow(
+        /direct-message/i
+      )
+    } finally {
+      parse.mockRestore()
+    }
   })
 })
 
@@ -365,6 +656,7 @@ describe('createMonadChain: directMessages.send', () => {
     })
     ;(MonadStampClient as jest.Mock).mockImplementation(() => ({
       submitStampedMessage,
+      reconcileOrThrow: jest.fn().mockResolvedValue(undefined),
     }))
 
     const items: MessageItem[] = [{ type: 'text', text: 'hi bob' } as TextItem]
@@ -388,24 +680,31 @@ describe('createMonadChain: directMessages.send', () => {
       relayBaseUrl: wallet.relayBaseUrl,
       address: bob.address,
     })
-    expect(MonadStampClient).toHaveBeenCalledWith(wallet)
+    expect(MonadStampClient).toHaveBeenCalledWith(
+      expect.objectContaining({
+        walletState: wallet.walletState,
+        provider: wallet.provider,
+        httpClient: wallet.httpClient,
+        relayBaseUrl: wallet.relayBaseUrl,
+      })
+    )
     expect(wallet.pool.prepareStampInventory).toHaveBeenCalledWith(
       expect.objectContaining({
         stampValueWei: requestedStampValue,
         onProgress: onPreparationProgress,
-      }),
+      })
     )
     expect(submitStampedMessage).toHaveBeenCalledTimes(1)
     const call = submitStampedMessage.mock.calls[0][0]
     // Ticket #57: a DM's stamp pays the recipient -- it must NOT be the fixed
     // `stampBurnAddress` (that's `topics.post`/`vote`'s job, no single recipient there).
     expect(call.recipientPublicKey).toEqual(
-      new Uint8Array(bob.compressedPubKey),
+      new Uint8Array(bob.compressedPubKey)
     )
     expect(call.stampValueWei).toBe(requestedStampValue)
     // The envelope is real, encrypted JSON -- not the plaintext items themselves.
     const envelopeJson = JSON.parse(
-      new TextDecoder().decode(call.encryptedPayload),
+      new TextDecoder().decode(call.encryptedPayload)
     )
     expect(envelopeJson.from).toBe(alice.address.raw)
     expect(envelopeJson.to).toBe(bob.address.raw)
@@ -424,8 +723,75 @@ describe('createMonadChain: directMessages.send', () => {
         wallet: makeWallet(alice),
         recipient: bob.address,
         items: [{ type: 'text', text: 'hi' }],
-      }),
+      })
     ).rejects.toThrow(/No registered profile/)
+  })
+
+  it('rejects a profile key not bound to the requested recipient before funding or signing', async () => {
+    const chain = createMonadChain(TEST_CONFIG)
+    const alice = MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX)
+    const bob = MonadIdentity.fromPrivateKeyHex(BOB_PRIVATE_KEY_HEX)
+    const eve = MonadIdentity.fromPrivateKeyHex(EVE_PRIVATE_KEY_HEX)
+    const wallet = makeWallet(alice)
+    mockedFetchMonadProfile.mockResolvedValueOnce({
+      address: bob.address,
+      pubKey: new Uint8Array(eve.compressedPubKey),
+    })
+
+    await expect(
+      chain.directMessages.send({
+        wallet,
+        recipient: bob.address,
+        items: [{ type: 'text', text: 'must not fund' }],
+      })
+    ).rejects.toThrow(/profile key does not match recipient/i)
+
+    expect(wallet.pool.prepareStampInventory).not.toHaveBeenCalled()
+    expect(MonadAccountTxSigner).not.toHaveBeenCalled()
+  })
+
+  it('rejects an uncompressed recipient key before funding or signing', async () => {
+    const chain = createMonadChain(TEST_CONFIG)
+    const alice = MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX)
+    const bob = MonadIdentity.fromPrivateKeyHex(BOB_PRIVATE_KEY_HEX)
+    const wallet = makeWallet(alice)
+    mockedFetchMonadProfile.mockResolvedValueOnce({
+      address: bob.address,
+      pubKey: getBytes(new Wallet(BOB_PRIVATE_KEY_HEX).signingKey.publicKey),
+    })
+
+    await expect(
+      chain.directMessages.send({
+        wallet,
+        recipient: bob.address,
+        items: [{ type: 'text', text: 'must not fund' }],
+      })
+    ).rejects.toThrow(/compressed 33-byte/i)
+    expect(wallet.pool.prepareStampInventory).not.toHaveBeenCalled()
+    expect(MonadAccountTxSigner).not.toHaveBeenCalled()
+  })
+
+  it('runs the client-owned reconciliation preflight before profile lookup or inventory preparation', async () => {
+    const chain = createMonadChain(TEST_CONFIG)
+    const alice = MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX)
+    const bob = MonadIdentity.fromPrivateKeyHex(BOB_PRIVATE_KEY_HEX)
+    const wallet = makeWallet(alice)
+    const failure = new Error('retained exact set')
+    ;(MonadStampClient as jest.Mock).mockImplementation(() => ({
+      reconcileOrThrow: jest.fn().mockRejectedValue(failure),
+      submitStampedMessage: jest.fn(),
+    }))
+
+    await expect(
+      chain.directMessages.send({
+        wallet,
+        recipient: bob.address,
+        items: [{ type: 'text', text: 'must wait' }],
+      })
+    ).rejects.toBe(failure)
+
+    expect(mockedFetchMonadProfile).not.toHaveBeenCalled()
+    expect(wallet.pool.prepareStampInventory).not.toHaveBeenCalled()
   })
 
   it('serializes concurrent sends through preparation, payment, and relay submission', async () => {
@@ -439,7 +805,7 @@ describe('createMonadChain: directMessages.send', () => {
     })
 
     let finishFirst!: (value: unknown) => void
-    const firstPending = new Promise(resolve => {
+    const firstPending = new Promise((resolve) => {
       finishFirst = resolve
     })
     const submitStampedMessage = jest
@@ -448,6 +814,7 @@ describe('createMonadChain: directMessages.send', () => {
       .mockResolvedValueOnce({ payloadHashHex: 'second' })
     ;(MonadStampClient as jest.Mock).mockImplementation(() => ({
       submitStampedMessage,
+      reconcileOrThrow: jest.fn().mockResolvedValue(undefined),
     }))
 
     const first = chain.directMessages.send({
@@ -455,23 +822,23 @@ describe('createMonadChain: directMessages.send', () => {
       recipient: bob.address,
       items: [{ type: 'text', text: 'first' }],
     })
-    await new Promise(resolve => setImmediate(resolve))
+    await new Promise((resolve) => setImmediate(resolve))
     const second = chain.directMessages.send({
       wallet,
       recipient: bob.address,
       items: [{ type: 'text', text: 'second' }],
     })
-    await new Promise(resolve => setImmediate(resolve))
+    await new Promise((resolve) => setImmediate(resolve))
 
     expect(submitStampedMessage).toHaveBeenCalledTimes(1)
     expect(mockedFetchMonadProfile).toHaveBeenCalledTimes(1)
 
     finishFirst({ payloadHashHex: 'first' })
     await expect(first).resolves.toEqual(
-      expect.objectContaining({ payloadDigest: 'first' }),
+      expect.objectContaining({ payloadDigest: 'first' })
     )
     await expect(second).resolves.toEqual(
-      expect.objectContaining({ payloadDigest: 'second' }),
+      expect.objectContaining({ payloadDigest: 'second' })
     )
     expect(submitStampedMessage).toHaveBeenCalledTimes(2)
   })
@@ -486,23 +853,228 @@ describe('createMonadChain: directMessages.send', () => {
         wallet: makeWallet(alice),
         recipient: bob.address,
         items: [{ type: 'stealth', amount: 1 }],
-      }),
+      })
     ).rejects.toThrow(/stealth/)
     expect(mockedFetchMonadProfile).not.toHaveBeenCalled()
   })
 })
 
 describe('createMonadChain: directMessages.fetchSince', () => {
-  it('rejects authenticated malformed plaintext per record and returns the following message', async () => {
+  it('enforces the shared 1..64 payment bound before processing a feed row', async () => {
+    const chain = createMonadChain(TEST_CONFIG)
+    const wallet = makeWallet(
+      MonadIdentity.fromPrivateKeyHex(BOB_PRIVATE_KEY_HEX)
+    )
+    const recordWithCount = (count: number): StoredMonadMessageProto => ({
+      message: {
+        stampPayments: Array.from({ length: count }, (_, childIndex) => ({
+          childIndex,
+          rawTx: new Uint8Array([1]),
+        })),
+        encryptedPayload: new Uint8Array([1]),
+        payloadHash: getBytes(`0x${'ab'.repeat(32)}`),
+      },
+      timestamp: 1,
+      networkTag: new Uint8Array(),
+    })
+    for (const count of [0, 65]) {
+      mockedFetchMonadMessagesSince.mockResolvedValueOnce([
+        recordWithCount(count),
+      ])
+      await expect(
+        chain.directMessages.fetchSince({ wallet, sinceMs: 0 })
+      ).resolves.toEqual([])
+    }
+    mockedFetchMonadMessagesSince.mockResolvedValueOnce([recordWithCount(64)])
+    await expect(
+      chain.directMessages.fetchSince({ wallet, sinceMs: 0 })
+    ).resolves.toEqual([])
+  })
+  it('rejects bad payload hashes and calldata before journaling incoming payments', async () => {
     const chain = createMonadChain(TEST_CONFIG)
     const alice = MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX)
     const bob = MonadIdentity.fromPrivateKeyHex(BOB_PRIVATE_KEY_HEX)
     const wallet = makeWallet(bob)
-    const { buildEnvelope } = jest.requireActual(
-      '@frank/cashweb/relay/monad-message-envelope',
+    const journal = new InMemoryStampPaymentJournal()
+    wallet.stampPaymentJournal = journal
+    const envelope = buildEnvelope({
+      fromAddress: alice.address.raw,
+      fromPrivateKey: alice.toBitcorePrivateKey(),
+      toAddress: bob.address.raw,
+      toPubKey: bob.compressedPubKey,
+      plaintext: serializeMessageItems([{ type: 'text', text: 'poison' }]),
+      networkTag: TEST_CONFIG.networkTag,
+    })
+    const payloadHash = computeMonadStampCommitment(envelope)
+    const destination = deriveMonadStampChildPublic({
+      payloadHash,
+      recipientPublicKey: new Uint8Array(bob.compressedPubKey),
+      paymentIndex: 0,
+    }).address
+    const sign = (data: string) =>
+      new Wallet(ALICE_PRIVATE_KEY_HEX).signTransaction({
+        to: destination,
+        value: 1n,
+        data,
+        nonce: 0,
+        gasLimit: 50_000n,
+        gasPrice: 1n,
+        chainId: 1,
+      })
+    const record = async (hash: Uint8Array, data: string) => ({
+      message: {
+        stampPayments: [{ childIndex: 0, rawTx: getBytes(await sign(data)) }],
+        encryptedPayload: envelope,
+        payloadHash: hash,
+      },
+      timestamp: 1,
+      networkTag: new Uint8Array(),
+    })
+
+    mockedFetchMonadMessagesSince.mockResolvedValueOnce([
+      await record(getBytes(`0x${'ff'.repeat(32)}`), '0x'),
+    ])
+    await expect(
+      chain.directMessages.fetchSince({ wallet, sinceMs: 0 })
+    ).resolves.toEqual([])
+    expect(journal.getAll()).toEqual([])
+
+    mockedFetchMonadMessagesSince.mockResolvedValueOnce([
+      await record(payloadHash, '0x1234'),
+    ])
+    await expect(
+      chain.directMessages.fetchSince({ wallet, sinceMs: 0 })
+    ).resolves.toEqual([])
+    expect(journal.getAll()).toEqual([])
+
+    const validData = buildMonadStampCalldata(
+      computeMonadStampPaymentCommitment(payloadHash, 0)
     )
-    const envelope = (plaintext: string): Uint8Array =>
-      buildEnvelope({
+    mockedFetchMonadMessagesSince.mockResolvedValueOnce([
+      await record(payloadHash, '0x1234'),
+      await record(payloadHash, validData),
+    ])
+    mockedFetchMonadProfile.mockResolvedValueOnce({
+      address: alice.address,
+      pubKey: new Uint8Array(alice.compressedPubKey),
+    })
+    await expect(
+      chain.directMessages.fetchSince({ wallet, sinceMs: 0 })
+    ).resolves.toHaveLength(1)
+    expect(journal.getAll()).toHaveLength(1)
+
+    for (const pubKey of [
+      getBytes(new Wallet(ALICE_PRIVATE_KEY_HEX).signingKey.publicKey),
+      new Uint8Array(
+        MonadIdentity.fromPrivateKeyHex(EVE_PRIVATE_KEY_HEX).compressedPubKey
+      ),
+    ]) {
+      mockedFetchMonadMessagesSince.mockResolvedValueOnce([
+        await record(payloadHash, validData),
+      ])
+      mockedFetchMonadProfile.mockResolvedValueOnce({
+        address: alice.address,
+        pubKey,
+      })
+      await expect(
+        chain.directMessages.fetchSince({ wallet, sinceMs: 0 })
+      ).resolves.toEqual([])
+      expect(journal.getAll()).toHaveLength(1)
+    }
+  })
+  it('isolates a paid envelope with malformed addresses before journaling or profile lookup', async () => {
+    const chain = createMonadChain(TEST_CONFIG)
+    const alice = MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX)
+    const bob = MonadIdentity.fromPrivateKeyHex(BOB_PRIVATE_KEY_HEX)
+    const wallet = makeWallet(bob)
+    const journal = new InMemoryStampPaymentJournal()
+    wallet.stampPaymentJournal = journal
+
+    const validEnvelope = buildEnvelope({
+      fromAddress: alice.address.raw,
+      fromPrivateKey: alice.toBitcorePrivateKey(),
+      toAddress: bob.address.raw,
+      toPubKey: bob.compressedPubKey,
+      plaintext: serializeMessageItems([{ type: 'text', text: 'valid' }]),
+      networkTag: TEST_CONFIG.networkTag,
+    })
+    const malformedObject = JSON.parse(
+      new TextDecoder().decode(validEnvelope)
+    ) as Record<string, unknown>
+    malformedObject.from = 'not-an-evm-address'
+    const malformedEnvelope = new TextEncoder().encode(
+      JSON.stringify(malformedObject)
+    )
+    const makeRecord = async (
+      envelope: Uint8Array,
+      nonce: number
+    ): Promise<StoredMonadMessageProto> => {
+      const payloadHash = computeMonadStampCommitment(envelope)
+      const destination = deriveMonadStampChildPublic({
+        payloadHash,
+        recipientPublicKey: new Uint8Array(bob.compressedPubKey),
+        paymentIndex: 0,
+      }).address
+      const rawTx = await new Wallet(ALICE_PRIVATE_KEY_HEX).signTransaction({
+        to: destination,
+        value: 1n,
+        data: buildMonadStampCalldata(
+          computeMonadStampPaymentCommitment(payloadHash, 0)
+        ),
+        nonce,
+        gasLimit: 50_000n,
+        gasPrice: 1n,
+        chainId: 1,
+      })
+      return {
+        message: {
+          stampPayments: [{ childIndex: 0, rawTx: getBytes(rawTx) }],
+          encryptedPayload: envelope,
+          payloadHash,
+        },
+        timestamp: nonce + 1,
+        networkTag: new Uint8Array(),
+      }
+    }
+    mockedFetchMonadMessagesSince.mockResolvedValueOnce([
+      await makeRecord(malformedEnvelope, 0),
+      await makeRecord(validEnvelope, 1),
+    ])
+    mockedFetchMonadProfile.mockResolvedValueOnce({
+      address: alice.address,
+      pubKey: new Uint8Array(alice.compressedPubKey),
+    })
+
+    await expect(
+      chain.directMessages.fetchSince({ wallet, sinceMs: 0 })
+    ).resolves.toHaveLength(1)
+    expect(mockedFetchMonadProfile).toHaveBeenCalledTimes(1)
+    expect(mockedFetchMonadProfile).toHaveBeenCalledWith(
+      expect.objectContaining({ address: alice.address })
+    )
+    expect(journal.getAll()).toHaveLength(1)
+    expect(journal.getAll()[0].payloadHashHex).toBe(
+      hexlify(computeMonadStampCommitment(validEnvelope)).slice(2)
+    )
+  })
+  it('durably journals only rows whose profile, decryption, and items fully validate', async () => {
+    const location = mkdtempSync(join(tmpdir(), 'monad-incoming-preflight-'))
+    const chain = createMonadChain(TEST_CONFIG)
+    const alice = MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX)
+    const bob = MonadIdentity.fromPrivateKeyHex(BOB_PRIVATE_KEY_HEX)
+    const eve = MonadIdentity.fromPrivateKeyHex(EVE_PRIVATE_KEY_HEX)
+    const wallet = makeWallet(bob)
+    const journal = new LevelStampPaymentJournal(location)
+    await journal.Open()
+    wallet.stampPaymentJournal = journal
+    let journalClosed = false
+
+    const paidRecord = async (
+      plaintext: string,
+      nonce: number,
+      corruptCiphertext = false
+    ): Promise<StoredMonadMessageProto> => {
+      let encryptedPayload = buildEnvelope({
         fromAddress: alice.address.raw,
         fromPrivateKey: alice.toBitcorePrivateKey(),
         toAddress: bob.address.raw,
@@ -510,38 +1082,160 @@ describe('createMonadChain: directMessages.fetchSince', () => {
         plaintext,
         networkTag: TEST_CONFIG.networkTag,
       })
-    const record = (
-      plaintext: string,
-      payloadByte: string,
-      timestamp: number,
-    ): StoredMonadMessageProto => ({
-      message: {
-        stampPayments: [],
-        encryptedPayload: envelope(plaintext),
-        payloadHash: getBytes(`0x${payloadByte.repeat(32)}`),
-      },
-      timestamp,
-      networkTag: new Uint8Array(0),
-    })
-    const validItems: MessageItem[] = [{ type: 'text', text: 'after poison' }]
-    mockedFetchMonadMessagesSince.mockResolvedValueOnce([
-      record('{authenticated but not message items', 'aa', 100),
-      record(serializeMessageItems(validItems), 'bb', 200),
-    ])
-    mockedFetchMonadProfile.mockResolvedValue({
-      address: alice.address,
-      pubKey: new Uint8Array(alice.compressedPubKey),
-    })
+      if (corruptCiphertext) {
+        const parsed = JSON.parse(
+          new TextDecoder().decode(encryptedPayload)
+        ) as Record<string, unknown>
+        parsed.ciphertext = '00'
+        encryptedPayload = new TextEncoder().encode(JSON.stringify(parsed))
+      }
+      const payloadHash = computeMonadStampCommitment(encryptedPayload)
+      const child = deriveMonadStampChildPublic({
+        payloadHash,
+        recipientPublicKey: new Uint8Array(bob.compressedPubKey),
+        paymentIndex: 0,
+      })
+      const rawTx = await new Wallet(ALICE_PRIVATE_KEY_HEX).signTransaction({
+        to: child.address,
+        value: 1n,
+        data: buildMonadStampCalldata(
+          computeMonadStampPaymentCommitment(payloadHash, 0)
+        ),
+        nonce,
+        gasLimit: 50_000n,
+        gasPrice: 1n,
+        chainId: 1,
+      })
+      return {
+        message: {
+          stampPayments: [{ childIndex: 0, rawTx: getBytes(rawTx) }],
+          encryptedPayload,
+          payloadHash,
+        },
+        timestamp: nonce + 1,
+        networkTag: new Uint8Array(),
+      }
+    }
 
-    await expect(
-      chain.directMessages.fetchSince({ wallet, sinceMs: 0 }),
-    ).resolves.toEqual([
-      expect.objectContaining({
-        items: validItems,
-        payloadDigest: 'bb'.repeat(32),
-        receivedTime: 200,
-      }),
-    ])
+    try {
+      const validProfile = {
+        address: alice.address,
+        pubKey: new Uint8Array(alice.compressedPubKey),
+      }
+      const cases = [
+        {
+          record: await paidRecord(
+            serializeMessageItems([{ type: 'text', text: 'missing' }]),
+            10
+          ),
+          profile: undefined,
+        },
+        {
+          record: await paidRecord(
+            serializeMessageItems([{ type: 'text', text: 'wrong key' }]),
+            11
+          ),
+          profile: {
+            address: alice.address,
+            pubKey: new Uint8Array(eve.compressedPubKey),
+          },
+        },
+        {
+          record: await paidRecord(
+            serializeMessageItems([{ type: 'text', text: 'bad cipher' }]),
+            12,
+            true
+          ),
+          profile: validProfile,
+        },
+        {
+          record: await paidRecord(
+            JSON.stringify([{ type: 'not-supported', value: 'poison' }]),
+            13
+          ),
+          profile: validProfile,
+        },
+        {
+          record: await paidRecord(
+            JSON.stringify([
+              { type: 'blackjack-move', gameId: 'array', action: ['bet'] },
+            ]),
+            14
+          ),
+          profile: validProfile,
+        },
+        {
+          record: await paidRecord(
+            JSON.stringify([
+              { type: 'blackjack-move', gameId: 'number', action: 1 },
+            ]),
+            15
+          ),
+          profile: validProfile,
+        },
+        {
+          record: await paidRecord(
+            JSON.stringify([
+              { type: 'blackjack-move', gameId: 'object', action: {} },
+            ]),
+            16
+          ),
+          profile: validProfile,
+        },
+        {
+          record: await paidRecord(
+            JSON.stringify([
+              {
+                type: 'blackjack-move',
+                gameId: 'outcome',
+                action: 'reveal',
+                outcome: ['push'],
+              },
+            ]),
+            17
+          ),
+          profile: validProfile,
+        },
+        {
+          record: await paidRecord(
+            JSON.stringify([
+              { type: 'digital-goods', action: ['request'], itemId: 'one' },
+            ]),
+            18
+          ),
+          profile: validProfile,
+        },
+      ]
+      for (const candidate of cases) {
+        mockedFetchMonadMessagesSince.mockResolvedValueOnce([candidate.record])
+        mockedFetchMonadProfile.mockResolvedValueOnce(candidate.profile)
+        await expect(
+          chain.directMessages.fetchSince({ wallet, sinceMs: 0 })
+        ).resolves.toEqual([])
+        expect(journal.getAll()).toEqual([])
+      }
+
+      const valid = await paidRecord(
+        serializeMessageItems([{ type: 'text', text: 'valid' }]),
+        19
+      )
+      mockedFetchMonadMessagesSince.mockResolvedValueOnce([valid])
+      mockedFetchMonadProfile.mockResolvedValueOnce(validProfile)
+      await expect(
+        chain.directMessages.fetchSince({ wallet, sinceMs: 0 })
+      ).resolves.toHaveLength(1)
+      expect(journal.getAll()).toHaveLength(1)
+      await journal.Close()
+      journalClosed = true
+
+      const reopened = new LevelStampPaymentJournal(location)
+      await reopened.Open()
+      expect(reopened.getAll()).toHaveLength(1)
+      await reopened.Close()
+    } finally {
+      if (!journalClosed) await journal.Close().catch(() => undefined)
+      rmSync(location, { recursive: true, force: true })
+    }
   })
 
   it('decrypts envelopes addressed to the wallet and skips everything else', async () => {
@@ -558,7 +1252,7 @@ describe('createMonadChain: directMessages.fetchSince', () => {
 
     // Build a real envelope from Alice to Bob, exactly the way `directMessages.send` would.
     const { buildEnvelope } = jest.requireActual(
-      '@frank/cashweb/relay/monad-message-envelope',
+      '@frank/cashweb/relay/monad-message-envelope'
     )
     const items: MessageItem[] = [{ type: 'text', text: 'hi bob' }]
     const envelopeBytes: Uint8Array = buildEnvelope({
@@ -570,20 +1264,24 @@ describe('createMonadChain: directMessages.fetchSince', () => {
       networkTag: TEST_CONFIG.networkTag,
     })
 
-    const payloadHash = getBytes('0x' + 'ab'.repeat(32))
+    const payloadHash = computeMonadStampCommitment(envelopeBytes)
+    const payloadHashHex = hexlify(payloadHash).slice(2)
     const stampDestination = deriveMonadStampChildPublic({
       payloadHash,
       recipientPublicKey: new Uint8Array(bob.compressedPubKey),
       paymentIndex: 0,
     })
     const rawStampPayment = await new Wallet(
-      ALICE_PRIVATE_KEY_HEX,
+      ALICE_PRIVATE_KEY_HEX
     ).signTransaction({
       type: 2,
       chainId: 10143,
       nonce: 0,
       to: stampDestination.address,
       value: 123n,
+      data: buildMonadStampCalldata(
+        computeMonadStampPaymentCommitment(payloadHash, 0)
+      ),
       gasLimit: 60_000n,
       maxFeePerGas: 2n,
       maxPriorityFeePerGas: 1n,
@@ -599,9 +1297,9 @@ describe('createMonadChain: directMessages.fetchSince', () => {
     }
     const notAnEnvelope: StoredMonadMessageProto = {
       message: {
-        stampPayments: [],
+        stampPayments: [{ childIndex: 0, rawTx: getBytes(rawStampPayment) }],
         encryptedPayload: new TextEncoder().encode(
-          JSON.stringify({ hello: 'world' }),
+          JSON.stringify({ hello: 'world' })
         ),
         payloadHash: getBytes('0x' + 'cd'.repeat(32)),
       },
@@ -631,30 +1329,95 @@ describe('createMonadChain: directMessages.fetchSince', () => {
     expect(received[0].senderAddress.raw).toBe(alice.address.raw)
     expect(received[0].recipientAddress.raw).toBe(bob.address.raw)
     expect(received[0].items).toEqual(items)
-    expect(received[0].payloadDigest).toBe('ab'.repeat(32))
+    expect(received[0].payloadDigest).toBe(payloadHashHex)
     expect(received[0].stampValueWei).toBe(123n)
     expect(received[0].receivedTime).toBe(1_700_000_000_000)
-    expect(stampPaymentJournal.get('ab'.repeat(32), 0)).toMatchObject({
-      payloadHashHex: 'ab'.repeat(32),
+    expect(stampPaymentJournal.get(payloadHashHex, 0)).toMatchObject({
+      payloadHashHex,
       childIndex: 0,
       address: stampDestination.address,
       valueWei: '123',
       status: 'discovered',
     })
-    expect(stampPaymentJournal.get('ab'.repeat(32), 0)).not.toHaveProperty(
-      'privateKey',
+    expect(stampPaymentJournal.get(payloadHashHex, 0)).not.toHaveProperty(
+      'privateKey'
     )
     await expect(
-      chain.directMessages.listRecoveredStampPayments({ wallet }),
+      chain.directMessages.listRecoveredStampPayments({ wallet })
     ).resolves.toEqual([
       expect.objectContaining({
-        payloadDigest: 'ab'.repeat(32),
+        payloadDigest: payloadHashHex,
         childIndex: 0,
         address: { raw: stampDestination.address },
         valueWei: 123n,
         status: 'discovered',
       }),
     ])
+
+    const discovered = stampPaymentJournal.get(payloadHashHex, 0)!
+    const retainedSweep = await signedChildSweep({
+      identity: bob,
+      payloadDigest: payloadHashHex,
+      childIndex: 0,
+      destination: alice.address.raw,
+      valueWei: 1n,
+    })
+    await stampPaymentJournal.put({
+      ...discovered,
+      status: 'sweep-pending',
+      sweepTxHash: retainedSweep.txHash,
+      sweepRawTx: retainedSweep.rawTx,
+      sweepValueWei: '1',
+      sweepDestinationAddress: alice.address.raw,
+    })
+    mockedFetchMonadMessagesSince.mockResolvedValueOnce([addressedToBob])
+    mockedFetchMonadProfile.mockResolvedValueOnce({
+      address: alice.address,
+      pubKey: new Uint8Array(alice.compressedPubKey),
+    })
+    await chain.directMessages.fetchSince({ wallet, sinceMs: 0 })
+    expect(stampPaymentJournal.get(payloadHashHex, 0)?.status).toBe(
+      'sweep-pending'
+    )
+
+    const conflictingRaw = await new Wallet(
+      ALICE_PRIVATE_KEY_HEX
+    ).signTransaction({
+      type: 2,
+      chainId: 10143,
+      nonce: 1,
+      to: stampDestination.address,
+      value: 124n,
+      data: buildMonadStampCalldata(
+        computeMonadStampPaymentCommitment(payloadHash, 0)
+      ),
+      gasLimit: 60_000n,
+      maxFeePerGas: 2n,
+      maxPriorityFeePerGas: 1n,
+    })
+    mockedFetchMonadMessagesSince.mockResolvedValueOnce([
+      {
+        ...addressedToBob,
+        message: {
+          ...addressedToBob.message!,
+          stampPayments: [{ childIndex: 0, rawTx: getBytes(conflictingRaw) }],
+        },
+      },
+    ])
+    await expect(
+      chain.directMessages.fetchSince({ wallet, sinceMs: 0 })
+    ).rejects.toThrow(/conflicting stamp-payment recovery authority/i)
+    expect(stampPaymentJournal.get(payloadHashHex, 0)?.status).toBe(
+      'sweep-pending'
+    )
+
+    mockedFetchMonadMessagesSince.mockResolvedValueOnce([addressedToBob])
+    mockedFetchMonadProfile.mockRejectedValueOnce(
+      new Error('sender profile transport failed')
+    )
+    await expect(
+      chain.directMessages.fetchSince({ wallet, sinceMs: 0 })
+    ).rejects.toThrow(/transport failed/i)
   })
 
   it('skips envelopes addressed to someone else', async () => {
@@ -664,7 +1427,7 @@ describe('createMonadChain: directMessages.fetchSince', () => {
     const eve = MonadIdentity.fromPrivateKeyHex(EVE_PRIVATE_KEY_HEX)
 
     const { buildEnvelope } = jest.requireActual(
-      '@frank/cashweb/relay/monad-message-envelope',
+      '@frank/cashweb/relay/monad-message-envelope'
     )
     const envelopeBytes: Uint8Array = buildEnvelope({
       fromAddress: alice.address.raw,
@@ -678,7 +1441,17 @@ describe('createMonadChain: directMessages.fetchSince', () => {
     mockedFetchMonadMessagesSince.mockResolvedValueOnce([
       {
         message: {
-          stampPayments: [],
+          stampPayments: [
+            {
+              childIndex: 0,
+              rawTx: getBytes(
+                await new Wallet(ALICE_PRIVATE_KEY_HEX).signTransaction({
+                  to: eve.address.raw,
+                  value: 1n,
+                })
+              ),
+            },
+          ],
           encryptedPayload: envelopeBytes,
           payloadHash: getBytes('0x' + 'ef'.repeat(32)),
         },
@@ -713,6 +1486,9 @@ describe('createMonadChain: directMessages.fetchSince', () => {
       payloadHashHex: payloadDigest,
       childIndex: 0,
       txHash: `0x${'12'.repeat(32)}`,
+      rawTx: `0x01`,
+      recipientPublicKeyHex: hexlify(bob.compressedPubKey),
+      envelopeRecipientAddress: bob.address.raw,
       address: child.address,
       valueWei: '10000',
       status: 'discovered',
@@ -721,13 +1497,14 @@ describe('createMonadChain: directMessages.fetchSince', () => {
       getBalance: jest.fn().mockResolvedValue(100_000n),
       getFeeData: jest.fn().mockResolvedValue({ maxFeePerGas: 1n }),
     } as unknown as MonadChainWalletHandle['provider']
-    const sweepTxHash = `0x${'34'.repeat(32)}`
-    const signedSweep = {
-      to: eve.address.raw,
-      value: 58_000n,
-      txHash: sweepTxHash,
-      rawTx: '0xsigned',
-    }
+    const signedSweep = await signedChildSweep({
+      identity: bob,
+      payloadDigest,
+      childIndex: 0,
+      destination: eve.address.raw,
+      valueWei: 58_000n,
+    })
+    const sweepTxHash = signedSweep.txHash
     MonadAccountTxSigner.mockImplementationOnce(() => ({
       address: child.address,
       buildAndSignTransfer: jest.fn().mockResolvedValue(signedSweep),
@@ -741,7 +1518,7 @@ describe('createMonadChain: directMessages.fetchSince', () => {
         payloadDigest,
         childIndex: 0,
         destination: eve.address,
-      }),
+      })
     ).resolves.toEqual({
       swept: false,
       reason: 'pending',
@@ -752,7 +1529,7 @@ describe('createMonadChain: directMessages.fetchSince', () => {
     expect(journal.get(payloadDigest, 0)).toMatchObject({
       status: 'sweep-pending',
       sweepTxHash,
-      sweepRawTx: '0xsigned',
+      sweepRawTx: signedSweep.rawTx,
     })
 
     MonadAccountTxSigner.mockImplementationOnce(() => ({
@@ -766,7 +1543,7 @@ describe('createMonadChain: directMessages.fetchSince', () => {
         payloadDigest,
         childIndex: 0,
         destination: eve.address,
-      }),
+      })
     ).resolves.toEqual({
       swept: true,
       txHash: sweepTxHash,
@@ -777,6 +1554,307 @@ describe('createMonadChain: directMessages.fetchSince', () => {
       sweepTxHash,
     })
   })
+
+  it('serializes concurrent sweeps across handles at the journal boundary', async () => {
+    const chain = createMonadChain(TEST_CONFIG)
+    const bob = MonadIdentity.fromPrivateKeyHex(BOB_PRIVATE_KEY_HEX)
+    const eve = MonadIdentity.fromPrivateKeyHex(EVE_PRIVATE_KEY_HEX)
+    const alice = MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX)
+    const wallet = makeWallet(bob)
+    const journal = new InMemoryStampPaymentJournal()
+    wallet.stampPaymentJournal = journal
+    const payloadDigest = 'cd'.repeat(32)
+    const child = deriveMonadStampChildPublic({
+      payloadHash: getBytes(`0x${payloadDigest}`),
+      recipientPublicKey: new Uint8Array(bob.compressedPubKey),
+      paymentIndex: 0,
+    })
+    await journal.put({
+      payloadHashHex: payloadDigest,
+      childIndex: 0,
+      txHash: `0x${'12'.repeat(32)}`,
+      rawTx: '0x01',
+      recipientPublicKeyHex: hexlify(bob.compressedPubKey),
+      envelopeRecipientAddress: bob.address.raw,
+      address: child.address,
+      valueWei: '10000',
+      status: 'discovered',
+    })
+    wallet.provider = {
+      getBalance: jest.fn().mockResolvedValue(100_000n),
+      getFeeData: jest.fn().mockResolvedValue({ maxFeePerGas: 1n }),
+    } as unknown as MonadChainWalletHandle['provider']
+    const signed = await signedChildSweep({
+      identity: bob,
+      payloadDigest,
+      childIndex: 0,
+      destination: eve.address.raw,
+      valueWei: 58_000n,
+    })
+    const buildAndSignTransfer = jest.fn().mockResolvedValue(signed)
+    const submit = jest.fn().mockResolvedValue(signed.txHash)
+    const submitRaw = jest.fn().mockResolvedValue(signed.txHash)
+    MonadAccountTxSigner.mockImplementationOnce(() => ({
+      address: child.address,
+      buildAndSignTransfer,
+      submit,
+      getStatus: jest.fn().mockResolvedValue('pending'),
+    }))
+    MonadAccountTxSigner.mockImplementationOnce(() => ({
+      address: child.address,
+      getStatus: jest.fn().mockResolvedValue('pending'),
+      submitRaw,
+    }))
+
+    const otherHandle = { ...wallet } as MonadChainWalletHandle
+
+    const first = chain.directMessages.sweepRecoveredStampPayment({
+      wallet,
+      payloadDigest,
+      childIndex: 0,
+      destination: eve.address,
+    })
+    const second = chain.directMessages.sweepRecoveredStampPayment({
+      wallet: otherHandle,
+      payloadDigest,
+      childIndex: 0,
+      destination: alice.address,
+    })
+    await expect(first).resolves.toMatchObject({
+      swept: false,
+      txHash: signed.txHash,
+      destinationAddress: eve.address.raw,
+    })
+    await expect(second).resolves.toMatchObject({
+      swept: false,
+      txHash: signed.txHash,
+    })
+    expect(buildAndSignTransfer).toHaveBeenCalledTimes(1)
+    expect(submit).toHaveBeenCalledTimes(1)
+    expect(submitRaw).toHaveBeenCalledWith(signed.rawTx, signed.txHash)
+    expect(journal.get(payloadDigest, 0)).toMatchObject({
+      status: 'sweep-pending',
+      sweepRawTx: signed.rawTx,
+      sweepDestinationAddress: eve.address.raw,
+    })
+  })
+
+  it('tombstones a mined failed sweep and signs a fresh next-nonce intent without replaying it', async () => {
+    const chain = createMonadChain(TEST_CONFIG)
+    const bob = MonadIdentity.fromPrivateKeyHex(BOB_PRIVATE_KEY_HEX)
+    const eve = MonadIdentity.fromPrivateKeyHex(EVE_PRIVATE_KEY_HEX)
+    const alice = MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX)
+    const wallet = makeWallet(bob)
+    const journal = new InMemoryStampPaymentJournal()
+    wallet.stampPaymentJournal = journal
+    const payloadDigest = 'de'.repeat(32)
+    const child = deriveMonadStampChildPrivate({
+      payloadHash: getBytes(`0x${payloadDigest}`),
+      recipientPrivateKey: getBytes(bob.toPrivateKeyHex()),
+      paymentIndex: 0,
+    })
+    const childWallet = new Wallet(hexlify(child.privateKey))
+    const oldRawTx = await childWallet.signTransaction({
+      to: eve.address.raw,
+      value: 58_000n,
+      nonce: 0,
+      gasLimit: 21_000n,
+      gasPrice: 1n,
+      chainId: 1,
+    })
+    const oldTxHash = Transaction.from(oldRawTx).hash as string
+    await journal.put({
+      payloadHashHex: payloadDigest,
+      childIndex: 0,
+      txHash: `0x${'12'.repeat(32)}`,
+      rawTx: '0x01',
+      recipientPublicKeyHex: hexlify(bob.compressedPubKey),
+      envelopeRecipientAddress: bob.address.raw,
+      address: child.address,
+      valueWei: '10000',
+      status: 'sweep-pending',
+      sweepTxHash: oldTxHash,
+      sweepRawTx: oldRawTx,
+      sweepValueWei: '58000',
+      sweepDestinationAddress: eve.address.raw,
+    })
+    wallet.provider = {
+      getBalance: jest.fn().mockResolvedValue(100_000n),
+      getFeeData: jest.fn().mockResolvedValue({ maxFeePerGas: 1n }),
+    } as unknown as MonadChainWalletHandle['provider']
+    const newRawTx = await childWallet.signTransaction({
+      to: alice.address.raw,
+      value: 58_000n,
+      nonce: 1,
+      gasLimit: 21_000n,
+      gasPrice: 1n,
+      chainId: 1,
+    })
+    const newTxHash = Transaction.from(newRawTx).hash as string
+    const submitRaw = jest.fn()
+    MonadAccountTxSigner.mockImplementationOnce(() => ({
+      address: child.address,
+      getStatus: jest
+        .fn()
+        .mockResolvedValueOnce('failed')
+        .mockResolvedValueOnce('pending'),
+      submitRaw,
+      buildAndSignTransfer: jest.fn().mockResolvedValue({
+        to: alice.address.raw,
+        value: 58_000n,
+        txHash: newTxHash,
+        rawTx: newRawTx,
+        nonce: 1,
+      }),
+      submit: jest.fn().mockResolvedValue(newTxHash),
+    }))
+
+    await expect(
+      chain.directMessages.sweepRecoveredStampPayment({
+        wallet,
+        payloadDigest,
+        childIndex: 0,
+        destination: alice.address,
+      })
+    ).resolves.toMatchObject({
+      swept: false,
+      reason: 'pending',
+      txHash: newTxHash,
+    })
+    expect(submitRaw).not.toHaveBeenCalled()
+    const recovered = journal.get(payloadDigest, 0)!
+    expect(recovered).toMatchObject({
+      status: 'sweep-pending',
+      sweepTxHash: newTxHash,
+      sweepRawTx: newRawTx,
+      failedSweeps: [
+        {
+          txHash: oldTxHash,
+          rawTx: oldRawTx,
+          valueWei: '58000',
+          destinationAddress: eve.address.raw,
+        },
+      ],
+    })
+    expect(Transaction.from(recovered.failedSweeps![0].rawTx).nonce).toBe(0)
+    expect(Transaction.from(recovered.sweepRawTx!).nonce).toBe(1)
+  })
+
+  it.each([
+    ['already-known', 'confirmed'],
+    ['already-known', 'pending'],
+    ['already-known', 'failed'],
+    ['nonce-too-low', 'confirmed'],
+    ['nonce-too-low', 'pending'],
+    ['nonce-too-low', 'failed'],
+  ] as const)(
+    'requeries the exact hash after %s and honors only its %s receipt',
+    async (rpcKind, exactStatus) => {
+      const chain = createMonadChain(TEST_CONFIG)
+      const bob = MonadIdentity.fromPrivateKeyHex(BOB_PRIVATE_KEY_HEX)
+      const eve = MonadIdentity.fromPrivateKeyHex(EVE_PRIVATE_KEY_HEX)
+      const alice = MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX)
+      const wallet = makeWallet(bob)
+      const journal = new InMemoryStampPaymentJournal()
+      wallet.stampPaymentJournal = journal
+      const payloadDigest = 'ef'.repeat(32)
+      const child = deriveMonadStampChildPrivate({
+        payloadHash: getBytes(`0x${payloadDigest}`),
+        recipientPrivateKey: getBytes(bob.toPrivateKeyHex()),
+        paymentIndex: 0,
+      })
+      const childWallet = new Wallet(hexlify(child.privateKey))
+      const oldRawTx = await childWallet.signTransaction({
+        to: eve.address.raw,
+        value: 58_000n,
+        nonce: 0,
+        gasLimit: 21_000n,
+        gasPrice: 1n,
+        chainId: 1,
+      })
+      const oldTxHash = Transaction.from(oldRawTx).hash as string
+      await journal.put({
+        payloadHashHex: payloadDigest,
+        childIndex: 0,
+        txHash: `0x${'12'.repeat(32)}`,
+        rawTx: '0x01',
+        recipientPublicKeyHex: hexlify(bob.compressedPubKey),
+        envelopeRecipientAddress: bob.address.raw,
+        address: child.address,
+        valueWei: '10000',
+        status: 'sweep-pending',
+        sweepTxHash: oldTxHash,
+        sweepRawTx: oldRawTx,
+        sweepValueWei: '58000',
+        sweepDestinationAddress: eve.address.raw,
+      })
+      wallet.provider = {
+        getBalance: jest.fn().mockResolvedValue(100_000n),
+        getFeeData: jest.fn().mockResolvedValue({ maxFeePerGas: 1n }),
+      } as unknown as MonadChainWalletHandle['provider']
+      const freshRawTx = await childWallet.signTransaction({
+        to: alice.address.raw,
+        value: 58_000n,
+        nonce: 1,
+        gasLimit: 21_000n,
+        gasPrice: 1n,
+        chainId: 1,
+      })
+      const freshTxHash = Transaction.from(freshRawTx).hash as string
+      const getStatus = jest
+        .fn()
+        .mockResolvedValueOnce('pending')
+        .mockResolvedValueOnce(exactStatus)
+      if (exactStatus === 'failed') getStatus.mockResolvedValueOnce('pending')
+      const buildAndSignTransfer = jest.fn().mockResolvedValue({
+        to: alice.address.raw,
+        value: 58_000n,
+        txHash: freshTxHash,
+        rawTx: freshRawTx,
+        nonce: 1,
+      })
+      MonadAccountTxSigner.mockImplementationOnce(() => ({
+        address: child.address,
+        getStatus,
+        submitRaw: jest
+          .fn()
+          .mockRejectedValue(
+            new MonadRpcError(rpcKind, rpcKind, new Error(rpcKind))
+          ),
+        buildAndSignTransfer,
+        submit: jest.fn().mockResolvedValue(freshTxHash),
+      }))
+
+      const result = await chain.directMessages.sweepRecoveredStampPayment({
+        wallet,
+        payloadDigest,
+        childIndex: 0,
+        destination: alice.address,
+      })
+      if (exactStatus === 'confirmed') {
+        expect(result).toMatchObject({ swept: true, txHash: oldTxHash })
+        expect(journal.get(payloadDigest, 0)?.status).toBe('swept')
+      } else if (exactStatus === 'pending') {
+        expect(result).toMatchObject({
+          swept: false,
+          reason: 'pending',
+          txHash: oldTxHash,
+        })
+        expect(buildAndSignTransfer).not.toHaveBeenCalled()
+        expect(journal.get(payloadDigest, 0)?.sweepTxHash).toBe(oldTxHash)
+      } else {
+        expect(result).toMatchObject({
+          swept: false,
+          reason: 'pending',
+          txHash: freshTxHash,
+        })
+        expect(buildAndSignTransfer).toHaveBeenCalledTimes(1)
+        expect(journal.get(payloadDigest, 0)?.failedSweeps).toEqual([
+          expect.objectContaining({ txHash: oldTxHash, rawTx: oldRawTx }),
+        ])
+      }
+    }
+  )
 })
 
 describe('createMonadChain: topics.post', () => {
@@ -813,6 +1891,7 @@ describe('createMonadChain: topics.post', () => {
     expect(call.voteWeightWei).toBe(5_000n)
     expect(call.burnAddress).toBe(TEST_CONFIG.stampBurnAddress)
     expect(hexlify(call.parentPostHash)).toBe('0x' + 'aa'.repeat(32))
+    expect(wallet.walletState?.runOperation).toHaveBeenCalledTimes(1)
   })
 })
 
@@ -846,7 +1925,205 @@ describe('createMonadChain: topics.vote', () => {
     expect(call.direction).toBe('down')
     expect(call.voteWeightWei).toBe(7_000n)
     expect(call.burnAddress).toBe(TEST_CONFIG.stampBurnAddress)
+    expect(wallet.walletState?.runOperation).toHaveBeenCalledTimes(1)
   })
+})
+
+describe('createMonadChain: economic operation lifecycle', () => {
+  it('drains an admitted direct-message send through terminal persistence before close', async () => {
+    const parent = mkdtempSync(join(tmpdir(), 'monad-chain-dm-gate-'))
+    const storagePrefix = join(parent, 'wallet')
+    const seed = {
+      mnemonic: 'test test test test test test test test test test test junk',
+    }
+    const chain = createMonadChain({
+      ...TEST_CONFIG,
+      walletStorageLocation: storagePrefix,
+    })
+    const wallet = (await chain.createWallet(seed)) as MonadChainWalletHandle
+    if (wallet.walletState === undefined) {
+      throw new Error('persistent wallet state was not created')
+    }
+    const bob = MonadIdentity.fromPrivateKeyHex(BOB_PRIVATE_KEY_HEX)
+    mockedFetchMonadProfile.mockResolvedValue({
+      address: bob.address,
+      pubKey: new Uint8Array(bob.compressedPubKey),
+    })
+    jest.spyOn(wallet.pool, 'prepareStampInventory').mockResolvedValue({
+      fundingTxHashes: ['0xfunded'],
+      selectedAccountCount: 1,
+    })
+    let entered!: () => void
+    let resume!: () => void
+    const relayStarted = new Promise<void>((resolve) => {
+      entered = resolve
+    })
+    const relayBarrier = new Promise<void>((resolve) => {
+      resume = resolve
+    })
+    const submitStampedMessage = jest.fn(async () => {
+      entered()
+      await relayBarrier
+      const record = wallet.pool.getRecord(0)
+      if (record === undefined) throw new Error('missing funded row')
+      wallet.pool.restoreTerminalEvidence({ ...record, status: 'retired' })
+      await wallet.pool.flush()
+      return { payloadHashHex: 'ab'.repeat(32) }
+    })
+    ;(MonadStampClient as jest.Mock).mockImplementation(() => ({
+      reconcileOrThrow: jest.fn().mockResolvedValue(undefined),
+      submitStampedMessage,
+    }))
+
+    const send = chain.directMessages.send({
+      wallet,
+      recipient: bob.address,
+      items: [{ type: 'text', text: 'drain me' }],
+    })
+    await relayStarted
+    let closed = false
+    const closing = wallet.walletState.close().then(() => {
+      closed = true
+    })
+    await expect(
+      chain.directMessages.send({
+        wallet,
+        recipient: bob.address,
+        items: [{ type: 'text', text: 'too late' }],
+      })
+    ).rejects.toThrow(/closing or closed/i)
+    expect(closed).toBe(false)
+
+    resume()
+    await expect(send).resolves.toEqual(
+      expect.objectContaining({ payloadDigest: 'ab'.repeat(32) })
+    )
+    await closing
+    expect(closed).toBe(true)
+    expect(submitStampedMessage).toHaveBeenCalledTimes(1)
+
+    const location = `${storagePrefix}-${wallet.identity.address.raw.toLowerCase()}`
+    const successor = await openMonadWalletBundle({ location, seed })
+    expect(successor.pool.getRecord(0)?.status).toBe('retired')
+    await successor.close()
+    rmSync(parent, { recursive: true, force: true })
+  })
+
+  it.each(['post', 'vote'] as const)(
+    'drains a paused topic %s before close and persists its terminal write',
+    async (kind) => {
+      const parent = mkdtempSync(join(tmpdir(), 'monad-chain-topic-gate-'))
+      const storagePrefix = join(parent, 'wallet')
+      const seed = {
+        mnemonic: 'test test test test test test test test test test test junk',
+      }
+      const chain = createMonadChain({
+        ...TEST_CONFIG,
+        walletStorageLocation: storagePrefix,
+      })
+      const wallet = (await chain.createWallet(seed)) as MonadChainWalletHandle
+      if (wallet.walletState === undefined) {
+        throw new Error('persistent wallet state was not created')
+      }
+      const location = `${storagePrefix}-${wallet.identity.address.raw.toLowerCase()}`
+      let entered!: () => void
+      let resume!: () => void
+      const putStarted = new Promise<void>((resolve) => {
+        entered = resolve
+      })
+      const pausedPut = new Promise<void>((resolve) => {
+        resume = resolve
+      })
+      const completeTerminalWrite = async () => {
+        entered()
+        await pausedPut
+        const record = wallet.pool.getRecord(0)
+        if (record === undefined) throw new Error('missing topic funding row')
+        wallet.pool.restoreTerminalEvidence({ ...record, status: 'retired' })
+        await wallet.pool.flush()
+      }
+      const submitTopicPost = jest.fn(async () => {
+        await completeTerminalWrite()
+        return {
+          stored: {},
+          payloadHashHex: 'feedface',
+          txHash: '0xtx',
+          leaseIndex: 0,
+        }
+      })
+      const castVote = jest.fn(async () => {
+        await completeTerminalWrite()
+        return {
+          stored: {},
+          targetPayloadHashHex: 'aa'.repeat(32),
+          txHash: '0xtx',
+          leaseIndex: 0,
+        }
+      })
+      ;(MonadTopicPostClient as jest.Mock).mockImplementation(() => ({
+        submitTopicPost,
+      }))
+      ;(MonadTopicVoteClient as jest.Mock).mockImplementation(() => ({
+        castVote,
+      }))
+
+      const operation =
+        kind === 'post'
+          ? chain.topics.post({
+              wallet,
+              topic: 'gated',
+              entries: [{ kind: 'post', message: 'paused relay put' }],
+              direction: 'up',
+              voteWeightWei: 1n,
+            })
+          : chain.topics.vote({
+              wallet,
+              payloadDigest: 'bb'.repeat(32),
+              direction: 'down',
+              voteWeightWei: 1n,
+            })
+      await putStarted
+      let closed = false
+      const closing = wallet.walletState.close().then(() => {
+        closed = true
+      })
+
+      const newOperation =
+        kind === 'post'
+          ? chain.topics.post({
+              wallet,
+              topic: 'rejected',
+              entries: [{ kind: 'post', message: 'after closing' }],
+              direction: 'up',
+              voteWeightWei: 1n,
+            })
+          : chain.topics.vote({
+              wallet,
+              payloadDigest: 'cc'.repeat(32),
+              direction: 'up',
+              voteWeightWei: 1n,
+            })
+      await expect(newOperation).rejects.toThrow(/closing or closed/i)
+      await expect(openMonadWalletBundle({ location, seed })).rejects.toThrow(
+        /already open/i
+      )
+      expect(closed).toBe(false)
+
+      resume()
+      await operation
+      await closing
+      expect(closed).toBe(true)
+      expect(
+        kind === 'post' ? submitTopicPost : castVote
+      ).toHaveBeenCalledTimes(1)
+
+      const successor = await openMonadWalletBundle({ location, seed })
+      expect(successor.pool.getRecord(0)?.status).toBe('retired')
+      await successor.close()
+      rmSync(parent, { recursive: true, force: true })
+    },
+    20_000
+  )
 })
 
 function makeTopicPostProto(payloadHashByte: number): MonadTopicPostProto {
@@ -893,7 +2170,7 @@ describe('createMonadChain: topics.fetchByTopic / fetchOne / viewToForumMessage'
 
   it('viewToForumMessage returns undefined for a view with no stored post', () => {
     expect(
-      viewToForumMessage({ post: undefined, voteWeight: 0 }),
+      viewToForumMessage({ post: undefined, voteWeight: 0 })
     ).toBeUndefined()
   })
 
@@ -985,7 +2262,7 @@ describe('asMonadWallet guard (exercised indirectly via directMessages/topics)',
     const bareWallet: WalletHandle = { identity: alice }
 
     await expect(
-      chain.directMessages.fetchSince({ wallet: bareWallet, sinceMs: 0 }),
+      chain.directMessages.fetchSince({ wallet: bareWallet, sinceMs: 0 })
     ).rejects.toThrow(/MonadChainWalletHandle/)
   })
 })

@@ -30,8 +30,7 @@
  * logic. Left as a documented follow-up (the issue comment also references two still-unclaimed
  * Monad Foundation "Mera" bounties, non-blocking here).
  */
-import * as bip39 from 'bip39'
-import { HDNodeWallet, Mnemonic } from 'ethers'
+import { HDNodeWallet, Mnemonic, randomBytes, wordlists } from 'ethers'
 
 /** BIP-44 path prefix for Monad (coin type 60, same as Ethereum) sub-accounts. `{index}` is
  * appended per-derivation. Matches the path ticket #14 and `PLAN.md`'s M5 both specify verbatim. */
@@ -42,7 +41,7 @@ const DERIVATION_PATH_PREFIX = "m/44'/60'/0'/0"
 export function subAccountPath(index: number): string {
   if (!Number.isInteger(index) || index < 0) {
     throw new Error(
-      `Sub-account index must be a non-negative integer, got ${index}`,
+      `Sub-account index must be a non-negative integer, got ${index}`
     )
   }
   return `${DERIVATION_PATH_PREFIX}/${index}`
@@ -76,7 +75,11 @@ export class MonadHdKeyring {
    * production-grade secret storage is an explicit non-goal of this ticket (see `PLAN.md`), and
    * this module never writes the mnemonic or any derived private key to disk itself. */
   static generate(): { keyring: MonadHdKeyring; mnemonic: string } {
-    const mnemonic = bip39.generateMnemonic()
+    const mnemonic = Mnemonic.fromEntropy(
+      randomBytes(16),
+      '',
+      wordlists.en
+    ).phrase
     return { keyring: MonadHdKeyring.fromMnemonic(mnemonic), mnemonic }
   }
 
@@ -84,7 +87,7 @@ export class MonadHdKeyring {
    * after loading it back from wherever the caller chose to store it. `passphrase` is the optional
    * BIP-39 25th-word passphrase (defaults to none). */
   static fromMnemonic(mnemonic: string, passphrase = ''): MonadHdKeyring {
-    if (!bip39.validateMnemonic(mnemonic)) {
+    if (!Mnemonic.isValidMnemonic(mnemonic, wordlists.en)) {
       throw new Error('Invalid BIP-39 mnemonic')
     }
     const seed = Mnemonic.fromPhrase(mnemonic, passphrase).computeSeed()

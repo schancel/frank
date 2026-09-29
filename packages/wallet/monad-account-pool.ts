@@ -57,7 +57,7 @@
  * Likewise out of scope (ticket #34 non-goal): sweeping/reclaiming any leftover balance sitting on a
  * `'retired'` (failed/stuck) account — not attempted here.
  */
-import { Provider } from 'ethers'
+import { Provider, Transaction, getAddress } from 'ethers'
 
 import { MonadHdKeyring } from './monad-hd-keyring'
 import {
@@ -68,16 +68,23 @@ import {
 } from './monad-account-tx'
 import {
   InMemorySubAccountPoolStore,
+  assertSubAccountStatusTransition,
   SubAccountPoolStore,
+  SubAccountRecoveryDisposition,
   SubAccountRecord,
   SubAccountStatus,
+  SubAccountTransactionCheckpoint,
+  TerminalSubAccountCheckpoint,
 } from './storage/sub-account-pool-storage'
+import type { MonadWalletOperationAdmission } from './storage/monad-wallet-bundle'
 import { selectStampAccounts } from './monad-stamp-account-selection'
 
 export type {
   SubAccountPoolStore,
+  SubAccountRecoveryDisposition,
   SubAccountRecord,
   SubAccountStatus,
+  TerminalSubAccountCheckpoint,
 } from './storage/sub-account-pool-storage'
 
 /** Default target number of pre-funded, unused (`'available'`) sub-accounts `topUpPool()` tries to
@@ -123,13 +130,36 @@ export class MonadSubAccountPool {
   private lastSelectedIndex = -1
   /** Serializes main-account funding so concurrent Sends cannot sign the same pending nonce. */
   private preparationQueue: Promise<void> = Promise.resolve()
+  private readonly requireStampReconciliationPreflight: boolean
+  private stampPreparationAuthorized = false
+  private compactionCursor = -1
+  private walletOperationGate?: <T>(
+    operation: (admission: MonadWalletOperationAdmission) => Promise<T>,
+    admission?: MonadWalletOperationAdmission
+  ) => Promise<T>
 
   constructor(params: {
     keyring: MonadHdKeyring
     store?: SubAccountPoolStore
+    requireStampReconciliationPreflight?: boolean
   }) {
     this.keyring = params.keyring
     this.store = params.store ?? new InMemorySubAccountPoolStore()
+    this.requireStampReconciliationPreflight =
+      params.requireStampReconciliationPreflight ?? false
+  }
+
+  /** Bundle-owned lifecycle gate. Persistence factories attach this before exposing the pool. */
+  attachWalletOperationGate(
+    gate: <T>(
+      operation: (admission: MonadWalletOperationAdmission) => Promise<T>,
+      admission?: MonadWalletOperationAdmission
+    ) => Promise<T>
+  ): void {
+    if (this.walletOperationGate !== undefined) {
+      throw new Error('Sub-account pool already has a wallet operation gate')
+    }
+    this.walletOperationGate = gate
   }
 
   /**
@@ -152,20 +182,19 @@ export class MonadSubAccountPool {
 
   private ensureSizeWithStatus(
     size: number,
-    initialStatus: 'available' | 'unfunded',
+    initialStatus: 'available' | 'unfunded'
   ): SubAccountRecord[] {
     if (!Number.isInteger(size) || size < 0) {
       throw new Error(`Pool size must be a non-negative integer, got ${size}`)
     }
-    for (let index = 0; index < size; index++) {
-      if (this.store.getByIndex(index) === undefined) {
-        const derived = this.keyring.deriveSubAccount(index)
-        this.store.put({
-          index: derived.index,
-          address: derived.address,
-          status: initialStatus,
-        })
-      }
+    while (this.store.getAll().length < size) {
+      const index = this.store.getNextIndex()
+      const derived = this.keyring.deriveSubAccount(index)
+      this.store.put({
+        index: derived.index,
+        address: derived.address,
+        status: initialStatus,
+      })
     }
     return this.store.getAll()
   }
@@ -175,8 +204,66 @@ export class MonadSubAccountPool {
     return this.store.getAll()
   }
 
+  /** Wallet-recovery boundary: applies a fully prevalidated set in one component-store batch. */
+  applyPrevalidatedRecoveryRecords(records: readonly SubAccountRecord[]): void {
+    this.store.putMany(records)
+  }
+
   getRecord(index: number): SubAccountRecord | undefined {
     return this.store.getByIndex(index)
+  }
+
+  /** Persistent derivation high-water mark; unlike scanning history, this remains O(1) after
+   * compaction and for long-lived wallets. */
+  nextUnusedIndex(): number {
+    return this.store.getNextIndex()
+  }
+
+  deriveNextUnfunded(): SubAccountRecord {
+    const index = this.nextFreshIndex()
+    const derived = this.keyring.deriveSubAccount(index)
+    const record: SubAccountRecord = {
+      index,
+      address: derived.address,
+      status: 'unfunded',
+    }
+    this.store.put(record)
+    return record
+  }
+
+  /** Reconstructs a locally-missing reservation only from an exact durable attempt whose signed
+   * sender has already been validated against this derived index. */
+  restoreJournaledInUse(index: number): SubAccountRecord {
+    const existing = this.store.getByIndex(index)
+    if (existing !== undefined) return existing
+    const derived = this.keyring.deriveSubAccount(index)
+    const record: SubAccountRecord = {
+      index,
+      address: derived.address,
+      status: 'in-use',
+    }
+    this.store.put(record)
+    return record
+  }
+
+  stageJournaledInUse(index: number): SubAccountRecord {
+    const existing = this.store.getByIndex(index)
+    if (existing !== undefined) return existing
+    const derived = this.keyring.deriveSubAccount(index)
+    return { index, address: derived.address, status: 'in-use' }
+  }
+
+  restoreTerminalEvidence(record: SubAccountRecord): void {
+    if (record.status !== 'spent' && record.status !== 'retired') {
+      throw new Error('Recovered sender evidence must be terminal')
+    }
+    if (
+      getAddress(record.address) !==
+      this.keyring.deriveSubAccount(record.index).address
+    ) {
+      throw new Error('Recovered sender evidence belongs to a different seed')
+    }
+    this.store.put(record)
   }
 
   /** Directly persists a status transition for sub-account `index` — the mechanism ticket #18's
@@ -193,10 +280,112 @@ export class MonadSubAccountPool {
     if (status === 'funding') {
       throw new Error('Use a durable funding attempt to enter funding state')
     }
+    assertSubAccountStatusTransition(existing.status, status)
     const { fundingAttempt: _fundingAttempt, ...base } = existing
     const updated: SubAccountRecord = { ...base, status }
     this.store.put(updated)
     return updated
+  }
+
+  /** Retains confirmed funding bytes/value after the transient funding attempt is resolved. */
+  recordFundingTransaction(
+    index: number,
+    transaction: SubAccountTransactionCheckpoint
+  ): void {
+    const existing = this.store.getByIndex(index)
+    if (existing === undefined) {
+      throw new Error(`No sub-account at index ${index} in the pool`)
+    }
+    this.store.put({
+      ...existing,
+      lifecycle: { ...existing.lifecycle, funding: { ...transaction } },
+    })
+  }
+
+  /** Retains the exact signed spend before it can become terminal/recoverable state. */
+  recordSpendTransaction(
+    index: number,
+    transaction: SubAccountTransactionCheckpoint
+  ): void {
+    const existing = this.store.getByIndex(index)
+    if (existing === undefined) {
+      throw new Error(`No sub-account at index ${index} in the pool`)
+    }
+    this.store.put({
+      ...existing,
+      lifecycle: { ...existing.lifecycle, spend: { ...transaction } },
+    })
+  }
+
+  recordRecoveryDisposition(
+    index: number,
+    recovery: SubAccountRecoveryDisposition
+  ): void {
+    const existing = this.store.getByIndex(index)
+    if (existing === undefined) {
+      throw new Error(`No sub-account at index ${index} in the pool`)
+    }
+    this.store.put({
+      ...existing,
+      lifecycle: { ...existing.lifecycle, recovery: { ...recovery } },
+    })
+  }
+
+  terminalCheckpoints(): TerminalSubAccountCheckpoint[] {
+    return this.store.getCheckpoints()
+  }
+
+  /** Bounded compaction. A mutable row is replaced only when its complete recovery checkpoint is
+   * available and no live attempt/recovery object still refers to the funding index. */
+  async compactTerminalAccounts(params: {
+    limit: number
+    referencedIndices?: ReadonlySet<number>
+    isReferenced?: (index: number) => boolean
+    now?: () => number
+  }): Promise<number> {
+    if (!Number.isSafeInteger(params.limit) || params.limit < 0) {
+      throw new Error(`Compaction limit must be a non-negative safe integer`)
+    }
+    // Settle all earlier row/high-water writes before issuing atomic row->checkpoint batches;
+    // otherwise an older in-flight put could race the deletion and resurrect a terminal row.
+    await this.store.flush()
+    const referenced = params.referencedIndices ?? new Set<number>()
+    let records = this.store.scanRecords(this.compactionCursor, params.limit)
+    if (records.length === 0 && this.compactionCursor >= 0) {
+      this.compactionCursor = -1
+      records = this.store.scanRecords(this.compactionCursor, params.limit)
+    }
+    let compacted = 0
+    for (const record of records) {
+      this.compactionCursor = record.index
+      if (
+        (record.status !== 'spent' && record.status !== 'retired') ||
+        referenced.has(record.index) ||
+        params.isReferenced?.(record.index) === true
+      ) {
+        continue
+      }
+      const { funding, spend, recovery } = record.lifecycle ?? {}
+      if (
+        funding === undefined ||
+        spend === undefined ||
+        recovery === undefined
+      ) {
+        continue
+      }
+      this.store.replaceWithCheckpoint({
+        version: 1,
+        index: record.index,
+        address: record.address,
+        status: record.status,
+        denominationWei: spend.valueWei,
+        lifecycle: { funding, spend, recovery },
+        compactedAt: (params.now ?? Date.now)(),
+      })
+      compacted++
+    }
+    await this.store.flush()
+    return compacted
   }
 
   /** Waits until all pool mutations made so far have reached persistent storage. */
@@ -210,7 +399,28 @@ export class MonadSubAccountPool {
    * never imposed later as an artificial split of a message payment. One account remains a valid
    * fallback when the value is too small or already-available inventory dictates it.
    */
-  async prepareStampInventory(params: {
+  async prepareStampInventory(
+    params: {
+      mainAccountSigner: MonadAccountTxSigner
+      provider: Provider
+      stampValueWei: bigint
+      gasReserveWei: bigint
+      fundingOverrides?: MonadTxOverrides
+      onProgress?: (progress: StampInventoryPreparationProgress) => void
+      receipt?: FundingReceiptOptions
+    },
+    admission?: MonadWalletOperationAdmission
+  ): Promise<StampInventoryPreparationResult> {
+    if (this.walletOperationGate !== undefined) {
+      return this.walletOperationGate(
+        () => this.prepareStampInventoryAdmitted(params),
+        admission
+      )
+    }
+    return this.prepareStampInventoryAdmitted(params)
+  }
+
+  private async prepareStampInventoryAdmitted(params: {
     mainAccountSigner: MonadAccountTxSigner
     provider: Provider
     stampValueWei: bigint
@@ -219,14 +429,28 @@ export class MonadSubAccountPool {
     onProgress?: (progress: StampInventoryPreparationProgress) => void
     receipt?: FundingReceiptOptions
   }): Promise<StampInventoryPreparationResult> {
+    if (
+      this.requireStampReconciliationPreflight &&
+      !this.stampPreparationAuthorized
+    ) {
+      throw new Error(
+        'Stamp attempt reconciliation is required before preparing inventory'
+      )
+    }
+    this.stampPreparationAuthorized = false
     const run = this.preparationQueue.then(() =>
-      this.prepareStampInventoryExclusive(params),
+      this.prepareStampInventoryExclusive(params)
     )
     this.preparationQueue = run.then(
       () => undefined,
-      () => undefined,
+      () => undefined
     )
     return run
+  }
+
+  /** Called only after the owning stamp client has reconciled its durable attempt journal. */
+  authorizeStampInventoryPreparation(): void {
+    this.stampPreparationAuthorized = true
   }
 
   private async prepareStampInventoryExclusive(params: {
@@ -241,12 +465,12 @@ export class MonadSubAccountPool {
     const zero = BigInt(0)
     if (params.stampValueWei <= zero) {
       throw new Error(
-        `stampValueWei must be positive, got ${params.stampValueWei}`,
+        `stampValueWei must be positive, got ${params.stampValueWei}`
       )
     }
     if (params.gasReserveWei < zero) {
       throw new Error(
-        `gasReserveWei must be non-negative, got ${params.gasReserveWei}`,
+        `gasReserveWei must be non-negative, got ${params.gasReserveWei}`
       )
     }
     params.onProgress?.({ stage: 'checking' })
@@ -257,7 +481,7 @@ export class MonadSubAccountPool {
         const txHash = await this.finishFundingAttempt(
           record,
           params.mainAccountSigner,
-          params.receipt,
+          params.receipt
         )
         fundingTxHashes.push(txHash)
       } else if (record.status === 'available') {
@@ -267,7 +491,7 @@ export class MonadSubAccountPool {
         const balance = await params.provider.getBalance(record.address)
         const transactionCount = await params.provider.getTransactionCount(
           record.address,
-          'pending',
+          'pending'
         )
         if (transactionCount > 0 || balance <= params.gasReserveWei) {
           this.store.put({ ...record, status: 'retired' })
@@ -278,7 +502,7 @@ export class MonadSubAccountPool {
 
     let accounts = await this.fundedCapacities(
       params.provider,
-      params.gasReserveWei,
+      params.gasReserveWei
     )
     let selection = this.selectFundedCapacity(params.stampValueWei, accounts)
     if (
@@ -297,7 +521,7 @@ export class MonadSubAccountPool {
       firstCapacity > zero ? firstCapacity : BigInt(1)
     const existingCapacity = accounts.reduce(
       (total, account) => total + account.capacityWei,
-      zero,
+      zero
     )
     let capacities =
       existingCapacity > zero
@@ -309,27 +533,19 @@ export class MonadSubAccountPool {
         : [
             preferredFirstCapacity,
             params.stampValueWei - preferredFirstCapacity,
-          ].filter(capacity => capacity > zero)
+          ].filter((capacity) => capacity > zero)
 
     const unfunded = this.store
       .getAll()
-      .filter(record => record.status === 'unfunded')
+      .filter((record) => record.status === 'unfunded')
     while (unfunded.length < capacities.length) {
-      const index = this.nextFreshIndex()
-      const derived = this.keyring.deriveSubAccount(index)
-      const record: SubAccountRecord = {
-        index,
-        address: derived.address,
-        status: 'unfunded',
-      }
-      this.store.put(record)
-      unfunded.push(record)
+      unfunded.push(this.deriveNextUnfunded())
     }
     await this.store.flush()
 
     const availableMainBalance = await params.provider.getBalance(
       params.mainAccountSigner.address,
-      'pending',
+      'pending'
     )
     let requiredMainBalance = await this.requiredFundingBalance({
       capacities,
@@ -366,7 +582,7 @@ export class MonadSubAccountPool {
     if (requiredMainBalance > availableMainBalance) {
       throw new Error(
         'Insufficient main account balance to prepare stamp accounts: ' +
-          `need up to ${requiredMainBalance} wei, have ${availableMainBalance} wei`,
+          `need up to ${requiredMainBalance} wei, have ${availableMainBalance} wei`
       )
     }
 
@@ -379,7 +595,7 @@ export class MonadSubAccountPool {
         mainAccountSigner: params.mainAccountSigner,
         overrides: params.fundingOverrides,
         receipt: params.receipt,
-        onSigned: signedTx =>
+        onSigned: (signedTx) =>
           params.onProgress?.({
             stage: 'funding',
             completed: offset,
@@ -400,12 +616,12 @@ export class MonadSubAccountPool {
 
     accounts = await this.fundedCapacities(
       params.provider,
-      params.gasReserveWei,
+      params.gasReserveWei
     )
     selection = this.selectFundedCapacity(params.stampValueWei, accounts)
     if (selection.length === 0) {
       throw new Error(
-        'Receipt-confirmed stamp accounts do not have enough current fee-adjusted capacity',
+        'Receipt-confirmed stamp accounts do not have enough current fee-adjusted capacity'
       )
     }
     params.onProgress?.({ stage: 'ready', fundingTxHashes })
@@ -450,7 +666,7 @@ export class MonadSubAccountPool {
 
   private async fundedCapacities(
     provider: Provider,
-    gasReserveWei: bigint,
+    gasReserveWei: bigint
   ): Promise<Array<{ index: number; address: string; capacityWei: bigint }>> {
     const accounts = []
     for (const record of this.store.getAll()) {
@@ -468,7 +684,7 @@ export class MonadSubAccountPool {
 
   private selectFundedCapacity(
     stampValueWei: bigint,
-    accounts: Array<{ index: number; address: string; capacityWei: bigint }>,
+    accounts: Array<{ index: number; address: string; capacityWei: bigint }>
   ) {
     try {
       return selectStampAccounts({ amountWei: stampValueWei, accounts })
@@ -481,12 +697,12 @@ export class MonadSubAccountPool {
     record: SubAccountRecord,
     signer: MonadAccountTxSigner,
     options?: FundingReceiptOptions,
-    resubmit = true,
+    resubmit = true
   ): Promise<string> {
     const attempt = record.fundingAttempt
     if (record.status !== 'funding' || attempt === undefined) {
       throw new Error(
-        `Sub-account ${record.index} has no durable funding attempt`,
+        `Sub-account ${record.index} has no durable funding attempt`
       )
     }
     let status = await signer.getStatus(attempt.txHash)
@@ -505,7 +721,7 @@ export class MonadSubAccountPool {
     const intervalMs = options?.intervalMs ?? 250
     const sleep =
       options?.sleep ??
-      ((ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms)))
+      ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)))
     for (
       let attemptNumber = 0;
       status === 'pending' && attemptNumber < maxAttempts;
@@ -524,9 +740,27 @@ export class MonadSubAccountPool {
       throw new Error(`Funding transaction ${attempt.txHash} failed`)
     }
     const { fundingAttempt: _fundingAttempt, ...base } = record
-    this.store.put({ ...base, status: 'available' })
+    const fundingValueWei = this.signedTransactionValue(attempt.rawTx)
+    this.store.put({
+      ...base,
+      status: 'available',
+      lifecycle: {
+        ...base.lifecycle,
+        funding: {
+          rawTx: attempt.rawTx,
+          txHash: attempt.txHash,
+          valueWei: fundingValueWei,
+        },
+      },
+    })
     await this.store.flush()
     return attempt.txHash
+  }
+
+  private signedTransactionValue(rawTx: string): string {
+    // Kept local to avoid a second durable representation supplied by callers; ethers decodes the
+    // exact signed bytes already retained for crash recovery.
+    return Transaction.from(rawTx).value.toString()
   }
 
   private async fundAccount(params: {
@@ -542,7 +776,7 @@ export class MonadSubAccountPool {
     const signedTx = await params.mainAccountSigner.buildAndSignTransfer(
       params.target.address,
       fundedValue,
-      params.overrides,
+      params.overrides
     )
     this.store.put({
       ...params.target,
@@ -557,7 +791,7 @@ export class MonadSubAccountPool {
       this.store.getByIndex(params.target.index) as SubAccountRecord,
       params.mainAccountSigner,
       params.receipt,
-      false,
+      false
     )
     return {
       index: params.target.index,
@@ -574,7 +808,7 @@ export class MonadSubAccountPool {
    * to catch accidentally signing for an index the pool was never sized to include. */
   getSigner(
     index: number,
-    params: { provider: Provider; httpClient: MonadTxSubmitter },
+    params: { provider: Provider; httpClient: MonadTxSubmitter }
   ): MonadAccountTxSigner {
     if (this.store.getByIndex(index) === undefined) {
       throw new Error(`No sub-account at index ${index} in the pool`)
@@ -633,7 +867,7 @@ export class MonadSubAccountPool {
     const statuses = params.statuses ?? ['available']
     const targets = this.store
       .getAll()
-      .filter(record => statuses.includes(record.status))
+      .filter((record) => statuses.includes(record.status))
     return fanOutFundSubAccounts({
       mainAccountSigner: params.mainAccountSigner,
       targets,
@@ -648,9 +882,7 @@ export class MonadSubAccountPool {
    * growth mechanism (`topUpPool`) derives from here rather than from any fixed `ensureSize()`
    * bound, so the pool can keep extending indefinitely as accounts get spent. */
   private nextFreshIndex(): number {
-    const all = this.store.getAll()
-    if (all.length === 0) return 0
-    return Math.max(...all.map(record => record.index)) + 1
+    return this.store.getNextIndex()
   }
 
   /**
@@ -679,7 +911,7 @@ export class MonadSubAccountPool {
     const bufferSize = params.bufferSize ?? DEFAULT_TOPUP_BUFFER_SIZE
     if (!Number.isInteger(bufferSize) || bufferSize < 0) {
       throw new Error(
-        `bufferSize must be a non-negative integer, got ${bufferSize}`,
+        `bufferSize must be a non-negative integer, got ${bufferSize}`
       )
     }
     if (params.burnValue < BigInt(0)) {
@@ -693,31 +925,23 @@ export class MonadSubAccountPool {
         await this.finishFundingAttempt(
           record,
           params.mainAccountSigner,
-          params.receipt,
+          params.receipt
         )
       }
     }
 
     const currentlyAvailable = this.store
       .getAll()
-      .filter(record => record.status === 'available').length
+      .filter((record) => record.status === 'available').length
     const deficit = bufferSize - currentlyAvailable
     if (deficit <= 0) return []
 
     const targets = this.store
       .getAll()
-      .filter(record => record.status === 'unfunded')
+      .filter((record) => record.status === 'unfunded')
       .slice(0, deficit)
     while (targets.length < deficit) {
-      const index = this.nextFreshIndex()
-      const derived = this.keyring.deriveSubAccount(index)
-      const target: SubAccountRecord = {
-        index,
-        address: derived.address,
-        status: 'unfunded',
-      }
-      this.store.put(target)
-      targets.push(target)
+      targets.push(this.deriveNextUnfunded())
     }
     await this.store.flush()
 
@@ -731,7 +955,7 @@ export class MonadSubAccountPool {
           mainAccountSigner: params.mainAccountSigner,
           overrides: params.overrides,
           receipt: params.receipt,
-        }),
+        })
       )
     }
     return results
@@ -798,7 +1022,7 @@ export async function fanOutFundSubAccounts(params: {
     const signedTx = await params.mainAccountSigner.buildAndSignTransfer(
       target.address,
       fundedValue,
-      params.overrides,
+      params.overrides
     )
     const txHash = await params.mainAccountSigner.submit(signedTx)
     const result: FanOutFundingResult = {

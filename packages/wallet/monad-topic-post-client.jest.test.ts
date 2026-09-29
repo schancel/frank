@@ -9,7 +9,10 @@
  * `JsonRpcProvider._perform`, so the signed raw tx and its calldata are real, decodable bytes --
  * same technique `monad-stamp-client.jest.test.ts` uses.
  */
-import { JsonRpcProvider, Transaction, getBytes, sha256 } from 'ethers'
+import { mkdtempSync, rmSync } from 'fs'
+import { tmpdir } from 'os'
+import { join } from 'path'
+import { JsonRpcProvider, Transaction, Wallet, getBytes, sha256 } from 'ethers'
 import axios from 'axios'
 
 import { MonadHdKeyring } from './monad-hd-keyring'
@@ -34,6 +37,7 @@ import {
   decodeMonadTopicPost,
   decodeStoredMonadTopicPost,
 } from './monad-topic-post-client'
+import { openMonadWalletBundle } from './storage/monad-wallet-bundle'
 
 jest.mock('axios')
 const mockedAxios = axios as jest.Mocked<typeof axios>
@@ -64,7 +68,7 @@ function makePool(size = 2): MonadSubAccountPool {
 }
 
 function makeStubProvider(
-  perform: (req: { method: string }) => Promise<unknown>,
+  perform: (req: { method: string }) => Promise<unknown>
 ) {
   const provider = new JsonRpcProvider('http://127.0.0.1:1', CHAIN_ID, {
     staticNetwork: true,
@@ -84,7 +88,7 @@ function makeMockHttpClient(): jest.Mocked<MonadTxSubmitter> {
 
 function makeChainProvider() {
   let nonce = 0
-  return makeStubProvider(async req => {
+  return makeStubProvider(async (req) => {
     if (req.method === 'getTransactionCount')
       return `0x${(nonce++).toString(16)}`
     if (req.method === 'estimateGas') return '0x5208'
@@ -105,6 +109,46 @@ function makeClient(overrides?: { pool?: MonadSubAccountPool }) {
     relayBaseUrl: 'https://relay.example.com/',
   })
   return { client, pool, leaseManager, provider, httpClient }
+}
+
+async function fundPersistentPool(pool: MonadSubAccountPool): Promise<void> {
+  const fundingWallet = new Wallet(`0x${'66'.repeat(32)}`)
+  const signer = {
+    address: fundingWallet.address,
+    buildAndSignTransfer: async (to: string, value: bigint) => {
+      const rawTx = await fundingWallet.signTransaction({
+        to,
+        value,
+        nonce: 0,
+        gasLimit: 21_000n,
+        gasPrice: 1n,
+        chainId: CHAIN_ID,
+      })
+      const parsed = Transaction.from(rawTx)
+      return {
+        rawTx,
+        txHash: parsed.hash as string,
+        from: fundingWallet.address,
+        to,
+        value,
+        data: '0x',
+        nonce: 0,
+        gasLimit: 21_000n,
+        maxFeePerGas: undefined,
+        maxPriorityFeePerGas: undefined,
+        gasPrice: 1n,
+        chainId: BigInt(CHAIN_ID),
+      }
+    },
+    submit: async (signed: { txHash: string }) => signed.txHash,
+    getStatus: async () => 'confirmed' as const,
+  }
+  await pool.topUpPool({
+    mainAccountSigner: signer as never,
+    burnValue: 100_000n,
+    gasReserve: 0n,
+    bufferSize: 1,
+  })
 }
 
 /** Encode a `MonadTopicPostProto` via the real generated `MonadTopicPost` binding -- used both to
@@ -132,11 +176,22 @@ function storedTopicPostBytes(post: MonadTopicPostProto): Uint8Array {
   return pb.serializeBinary()
 }
 
+function matchingStoredTopicPostBytes(post: MonadTopicPostProto): Uint8Array {
+  const transaction = Transaction.from(hexOf(post.rawBurnTx))
+  const pb = new StoredMonadTopicPost()
+  pb.setPost(encodeTopicPostPb(post))
+  pb.setSenderAddress(getBytes(transaction.from as string))
+  pb.setTxHash(getBytes(transaction.hash as string))
+  pb.setTimestamp(1_700_000_000_000)
+  pb.setNetworkTag(new TextEncoder().encode('MONT'))
+  return pb.serializeBinary()
+}
+
 /** Builds `GET /message/monad/topics/:payload_hash`'s `MonadTopicPostView` response bytes. */
 function topicPostViewBytes(post: MonadTopicPostProto, voteWeight: number) {
   const view = new MonadTopicPostView()
   view.setPost(
-    StoredMonadTopicPost.deserializeBinary(storedTopicPostBytes(post)),
+    StoredMonadTopicPost.deserializeBinary(storedTopicPostBytes(post))
   )
   view.setVoteWeight(voteWeight)
   return view.serializeBinary()
@@ -203,7 +258,7 @@ describe('calldata / commitment construction', () => {
 
   it('rejects a commitment that is not exactly 32 bytes', () => {
     expect(() => buildTopicVoteCalldata('up', new Uint8Array(31))).toThrow(
-      /32 bytes/,
+      /32 bytes/
     )
   })
 
@@ -234,7 +289,7 @@ describe('protobuf encode/decode round trip', () => {
       payloadHash: new Uint8Array(32).fill(0x42),
     }
     const decoded = decodeMonadTopicPost(
-      encodeTopicPostPb(post).serializeBinary(),
+      encodeTopicPostPb(post).serializeBinary()
     )
     expect(decoded).toEqual(post)
   })
@@ -263,8 +318,281 @@ describe('MonadTopicPostClient.submitTopicPost', () => {
     // returning `undefined` -- give it a real implementation so `submitTopicPost`'s
     // `axios.isAxiosError(err)` branches work the same way they would against the real library.
     mockedAxios.isAxiosError.mockImplementation(
-      (e: unknown) => (e as { isAxiosError?: boolean })?.isAxiosError === true,
+      (e: unknown) => (e as { isAxiosError?: boolean })?.isAxiosError === true
     )
+  })
+
+  it.each(['direct', 'fallback'] as const)(
+    'persists exact spend authority across reopen for a %s confirmation',
+    async (confirmation) => {
+      const parent = mkdtempSync(join(tmpdir(), 'monad-topic-post-durable-'))
+      const location = join(parent, 'wallet')
+      try {
+        const bundle = await openMonadWalletBundle({
+          location,
+          seed: { mnemonic: TEST_MNEMONIC },
+          mode: 'create',
+        })
+        await fundPersistentPool(bundle.pool)
+        const row = bundle.pool.getRecord(0)
+        if (row === undefined) throw new Error('missing funded topic row')
+        const client = new MonadTopicPostClient({
+          pool: bundle.pool,
+          leaseManager: bundle.leaseManager,
+          provider: makeChainProvider(),
+          httpClient: makeMockHttpClient(),
+          relayBaseUrl: 'https://relay.example.com/',
+        })
+        let exactRawTx = ''
+        let calls = 0
+        ;(mockedAxios as unknown as jest.Mock).mockImplementation(
+          async (config: any) => {
+            calls++
+            if (config.method === 'put') {
+              const sent = decodeMonadTopicPost(
+                new Uint8Array(config.data as Buffer)
+              )
+              exactRawTx = hexOf(sent.rawBurnTx)
+              expect(
+                bundle.pool.getRecord(row.index)?.lifecycle?.spend?.rawTx
+              ).toBe(exactRawTx)
+              if (confirmation === 'fallback' && calls === 1) {
+                throw Object.assign(new Error('socket hang up'), {
+                  isAxiosError: true,
+                  response: undefined,
+                })
+              }
+              return {
+                data: storedTopicPostBytes(sent),
+                status: 200,
+                statusText: 'OK',
+                headers: {},
+                config,
+              }
+            }
+            const checkpoint = bundle.pool.getRecord(row.index)?.lifecycle
+              ?.spend
+            if (checkpoint === undefined) {
+              throw new Error('missing spend checkpoint')
+            }
+            exactRawTx = checkpoint.rawTx
+            const payload = buildTopicPostPayload({
+              topic: 'durable',
+              entries: ENTRIES,
+              parentPostHash: new Uint8Array(0),
+              timestampMs: 1_700_000_000_000,
+            })
+            const sent: MonadTopicPostProto = {
+              topic: 'durable',
+              parentPostHash: new Uint8Array(0),
+              rawBurnTx: getBytes(exactRawTx),
+              encryptedPayload: payload,
+              payloadHash: computeTopicPostCommitment(payload),
+            }
+            return {
+              data: topicPostViewBytes(sent, 5_000),
+              status: 200,
+              statusText: 'OK',
+              headers: {},
+              config,
+            }
+          }
+        )
+
+        const result = await client.submitTopicPost({
+          topic: 'durable',
+          entries: ENTRIES,
+          direction: 'up',
+          burnAddress: BURN_ADDRESS,
+          voteWeightWei: 5_000n,
+          overrides: FEE_OVERRIDES,
+          timestampMs: 1_700_000_000_000,
+          abandonPoll: {
+            intervalMs: 0,
+            maxAttempts: 1,
+            sleep: async () => undefined,
+          },
+        })
+        const expectedHash = Transaction.from(exactRawTx).hash
+        expect(result.txHash).toBe(expectedHash)
+        await bundle.close()
+
+        const reopened = await openMonadWalletBundle({
+          location,
+          seed: { mnemonic: TEST_MNEMONIC },
+        })
+        expect(reopened.pool.getRecord(row.index)).toMatchObject({
+          status: 'spent',
+          lifecycle: {
+            spend: {
+              rawTx: exactRawTx,
+              txHash: expectedHash,
+              valueWei: '5000',
+            },
+          },
+        })
+        await reopened.close()
+      } finally {
+        rmSync(parent, { recursive: true, force: true })
+      }
+    }
+  )
+
+  it.each(['relay-stored', 'relay-not-stored'] as const)(
+    'replays the exact durable post after a lost response (%s)',
+    async () => {
+      const parent = mkdtempSync(join(tmpdir(), 'monad-topic-post-replay-'))
+      const location = join(parent, 'wallet')
+      let first: Awaited<ReturnType<typeof openMonadWalletBundle>> | undefined
+      let reopened:
+        | Awaited<ReturnType<typeof openMonadWalletBundle>>
+        | undefined
+      try {
+        first = await openMonadWalletBundle({
+          location,
+          seed: { mnemonic: TEST_MNEMONIC },
+          mode: 'create',
+        })
+        await fundPersistentPool(first.pool)
+        const provider = makeChainProvider()
+        const httpClient = makeMockHttpClient()
+        const handle = {
+          pool: first.pool,
+          leaseManager: first.leaseManager,
+          provider,
+          httpClient,
+          changePool: first.changePool,
+          stampPaymentJournal: first.stampPaymentJournal,
+          stampAttemptJournal: first.stampAttemptJournal,
+          topicOperationJournal: first.topicOperationJournal,
+          walletState: first,
+          relayBaseUrl: 'https://relay.example.com/',
+        }
+        let exactRequest: Uint8Array | undefined
+        mockedAxios.mockImplementation(async (config) => {
+          if (config.method === 'put') {
+            expect(first?.topicOperationJournal.getAll()).toHaveLength(1)
+            exactRequest = new Uint8Array(config.data as Buffer)
+            throw Object.assign(new Error('lost response'), {
+              isAxiosError: true,
+              response: undefined,
+            })
+          }
+          throw new Error('unexpected topic readback')
+        })
+        await expect(
+          new MonadTopicPostClient(handle).submitTopicPost({
+            topic: 'replay',
+            entries: ENTRIES,
+            direction: 'up',
+            burnAddress: BURN_ADDRESS,
+            voteWeightWei: 5_000n,
+            overrides: FEE_OVERRIDES,
+            timestampMs: 1_700_000_000_000,
+            abandonPoll: { maxAttempts: 0, intervalMs: 0 },
+          })
+        ).rejects.toThrow(MonadTopicPostAbandonedError)
+        expect(first.topicOperationJournal.getAll()).toHaveLength(1)
+        expect(first.pool.getRecord(0)?.status).toBe('in-use')
+        const staged = first.pool.getRecord(0)!
+        const { spend: _spend, ...retainedLifecycle } = staged.lifecycle ?? {}
+        first.pool.applyPrevalidatedRecoveryRecords([
+          { ...staged, lifecycle: retainedLifecycle },
+        ])
+        await first.pool.flush()
+        expect(first.pool.getRecord(0)?.lifecycle?.spend).toBeUndefined()
+        await first.close()
+        first = undefined
+
+        reopened = await openMonadWalletBundle({
+          location,
+          seed: { mnemonic: TEST_MNEMONIC },
+        })
+        const replayed: Uint8Array[] = []
+        mockedAxios.mockImplementation(async (config) => {
+          expect(reopened?.pool.getRecord(0)?.lifecycle?.spend).toBeDefined()
+          const bytes = new Uint8Array(config.data as Buffer)
+          replayed.push(bytes)
+          const post = decodeMonadTopicPost(bytes)
+          return {
+            data: matchingStoredTopicPostBytes(post),
+            status: 200,
+            statusText: 'OK',
+            headers: {},
+            config,
+          }
+        })
+        await new MonadTopicPostClient({
+          ...handle,
+          pool: reopened.pool,
+          leaseManager: reopened.leaseManager,
+          changePool: reopened.changePool,
+          stampPaymentJournal: reopened.stampPaymentJournal,
+          stampAttemptJournal: reopened.stampAttemptJournal,
+          topicOperationJournal: reopened.topicOperationJournal,
+          walletState: reopened,
+        }).resumePendingOperations()
+        expect(replayed).toHaveLength(1)
+        expect(replayed[0]).toEqual(exactRequest)
+        expect(reopened.topicOperationJournal.getAll()).toEqual([])
+        expect(reopened.pool.getRecord(0)?.status).toBe('spent')
+      } finally {
+        await first?.close().catch(() => undefined)
+        await reopened?.close().catch(() => undefined)
+        rmSync(parent, { recursive: true, force: true })
+      }
+    }
+  )
+
+  it('retains durable authority when a valid 2xx post response is mismatched', async () => {
+    const parent = mkdtempSync(join(tmpdir(), 'monad-topic-post-mismatch-'))
+    const location = join(parent, 'wallet')
+    const bundle = await openMonadWalletBundle({
+      location,
+      seed: { mnemonic: TEST_MNEMONIC },
+      mode: 'create',
+    })
+    try {
+      await fundPersistentPool(bundle.pool)
+      const provider = makeChainProvider()
+      const httpClient = makeMockHttpClient()
+      mockedAxios.mockImplementationOnce(async (config) => {
+        const post = decodeMonadTopicPost(new Uint8Array(config.data as Buffer))
+        return {
+          data: storedTopicPostBytes(post),
+          status: 200,
+          statusText: 'OK',
+          headers: {},
+          config,
+        }
+      })
+      await expect(
+        new MonadTopicPostClient({
+          pool: bundle.pool,
+          leaseManager: bundle.leaseManager,
+          provider,
+          httpClient,
+          changePool: bundle.changePool,
+          stampPaymentJournal: bundle.stampPaymentJournal,
+          stampAttemptJournal: bundle.stampAttemptJournal,
+          topicOperationJournal: bundle.topicOperationJournal,
+          walletState: bundle,
+          relayBaseUrl: 'https://relay.example.com/',
+        }).submitTopicPost({
+          topic: 'mismatch',
+          entries: ENTRIES,
+          direction: 'up',
+          burnAddress: BURN_ADDRESS,
+          voteWeightWei: 5_000n,
+          overrides: FEE_OVERRIDES,
+        })
+      ).rejects.toThrow(MonadTopicPostAbandonedError)
+      expect(bundle.topicOperationJournal.getAll()).toHaveLength(1)
+      expect(bundle.pool.getRecord(0)?.status).toBe('in-use')
+    } finally {
+      await bundle.close()
+      rmSync(parent, { recursive: true, force: true })
+    }
   })
 
   it('PUTs the assembled MonadTopicPost and releases the lease as confirmed on 2xx', async () => {
@@ -277,14 +605,14 @@ describe('MonadTopicPostClient.submitTopicPost', () => {
     })
     const expectedCommitment = computeTopicPostCommitment(expectedPayload)
 
-    mockedAxios.mockImplementationOnce(async config => {
+    mockedAxios.mockImplementationOnce(async (config) => {
       expect(config.method).toBe('put')
       expect(config.url).toBe('https://relay.example.com/message/monad/topics')
       expect(config.headers).toEqual({
         'Content-Type': 'application/x-protobuf',
       })
       const sentPost = decodeMonadTopicPost(
-        new Uint8Array(config.data as Buffer),
+        new Uint8Array(config.data as Buffer)
       )
       expect(sentPost.topic).toBe('general')
       expect(sentPost.payloadHash).toEqual(expectedCommitment)
@@ -295,7 +623,7 @@ describe('MonadTopicPostClient.submitTopicPost', () => {
       const parsed = Transaction.from(hexOf(sentPost.rawBurnTx))
       const calldataBytes = getBytes(parsed.data)
       expect(calldataBytes.slice(0, 4)).toEqual(
-        new Uint8Array([0x54, 0x50, 0x49, 0x43]),
+        new Uint8Array([0x54, 0x50, 0x49, 0x43])
       )
       expect(calldataBytes[4]).toBe(0x01)
       expect(calldataBytes[5]).toBe(0x01) // up
@@ -323,7 +651,7 @@ describe('MonadTopicPostClient.submitTopicPost', () => {
 
     expect(result.stored.post?.topic).toBe('general')
     expect(result.payloadHashHex).toBe(
-      Buffer.from(expectedCommitment).toString('hex'),
+      Buffer.from(expectedCommitment).toString('hex')
     )
     // Ticket #34: a confirmed release retires the account as 'spent' -- never back to 'available'.
     expect(pool.getRecord(result.leaseIndex)?.status).toBe('spent')
@@ -331,9 +659,9 @@ describe('MonadTopicPostClient.submitTopicPost', () => {
 
   it('builds down-vote calldata for an initial down-vote post', async () => {
     const { client } = makeClient()
-    mockedAxios.mockImplementationOnce(async config => {
+    mockedAxios.mockImplementationOnce(async (config) => {
       const sentPost = decodeMonadTopicPost(
-        new Uint8Array(config.data as Buffer),
+        new Uint8Array(config.data as Buffer)
       )
       const parsed = Transaction.from(hexOf(sentPost.rawBurnTx))
       const calldataBytes = getBytes(parsed.data)
@@ -375,10 +703,10 @@ describe('MonadTopicPostClient.submitTopicPost', () => {
         burnAddress: BURN_ADDRESS,
         voteWeightWei: 5_000n,
         overrides: FEE_OVERRIDES,
-      }),
+      })
     ).rejects.toThrow(MonadTopicPostRejectedError)
 
-    const retired = pool.records().filter(r => r.status === 'retired')
+    const retired = pool.records().filter((r) => r.status === 'retired')
     expect(retired).toHaveLength(1)
   })
 
@@ -387,7 +715,7 @@ describe('MonadTopicPostClient.submitTopicPost', () => {
 
     let putCalls = 0
     let getCalls = 0
-    mockedAxios.mockImplementation(async config => {
+    mockedAxios.mockImplementation(async (config) => {
       if (config.method === 'put') {
         putCalls++
         const networkErr = Object.assign(new Error('socket hang up'), {
@@ -458,10 +786,10 @@ describe('MonadTopicPostClient.submitTopicPost', () => {
           intervalMs: 0,
           sleep: async () => undefined,
         },
-      }),
+      })
     ).rejects.toThrow(MonadTopicPostAbandonedError)
 
-    const retired = pool.records().filter(r => r.status === 'retired')
+    const retired = pool.records().filter((r) => r.status === 'retired')
     expect(retired).toHaveLength(1)
   })
 
@@ -475,8 +803,8 @@ describe('MonadTopicPostClient.submitTopicPost', () => {
         burnAddress: BURN_ADDRESS,
         voteWeightWei: 5_000n,
         overrides: FEE_OVERRIDES,
-      }),
+      })
     ).rejects.toThrow(/entries must not be empty/)
-    expect(pool.records().every(r => r.status === 'available')).toBe(true)
+    expect(pool.records().every((r) => r.status === 'available')).toBe(true)
   })
 })

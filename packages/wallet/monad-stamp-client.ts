@@ -87,11 +87,9 @@
  *     needlessly fragile; retiring is the conservative, "never silently reuse" choice this
  *     codebase's lease module already documents as its default).
  *   - **No HTTP response at all** (network/timeout failure — genuinely unknown whether the relay
- *     ever received/broadcast/stored the message before the connection dropped): falls back to
- *     polling `GET /message/monad/:payload_hash` (`pollForStoredMessage`) a bounded number of times.
- *     Found → `'confirmed'`. Still not found after the poll budget is exhausted → `'stuck'` (the
- *     documented abandonment path this ticket calls for), and `MonadStampAbandonedError` is thrown
- *     so the caller knows the outcome is unresolved (not confirmed-failed, just abandoned).
+ *     received the message): retries the already-journaled PUT bytes exactly. A success proves the
+ *     retained set; an authoritative `retained:false` rejection terminalizes it; exhaustion keeps
+ *     the attempt unresolved and throws `MonadStampAbandonedError`.
  *   - **Building/signing a payment itself throws** (before any network call to the relay at all —
  *     e.g. a bad address, or a transient RPC failure while `MonadAccountTxSigner` reads
  *     gas/fee/nonce from the chain): also released as `'failed'`. No transaction was ever broadcast
@@ -104,8 +102,11 @@
  */
 import {
   Provider,
+  SigningKey,
   Transaction,
+  computeAddress,
   concat,
+  getAddress,
   getBytes,
   hexlify,
   sha256,
@@ -129,7 +130,17 @@ import {
   MonadTxSubmitter,
   SignedMonadTx,
 } from './monad-account-tx'
-import { MonadWalletHandle } from './monad-wallet-handle'
+import {
+  type MonadStampWalletHandle,
+  type MonadWalletHandle,
+  isMonadStampWalletHandle,
+  unsafeCreateMonadStampWalletHandleForTests,
+} from './monad-wallet-handle'
+import type {
+  OutgoingStampAttempt,
+  StampAttemptJournal,
+} from './storage/stamp-attempt-journal'
+import type { MonadWalletOperationAdmission } from './storage/monad-wallet-bundle'
 import { selectStampAccounts } from './monad-stamp-account-selection'
 import {
   deriveMonadStampChildPrivate,
@@ -173,12 +184,15 @@ export interface MonadStampedMessageProto {
 }
 
 /**
- * `StoredMonadMessage` from `monad_message.proto` — what both `PUT /message/monad`'s success
- * response and `GET /message/monad/:payload_hash` return. The old sender/hash assertions are
+ * `StoredMonadMessage` from `monad_message.proto` — the successful `PUT /message/monad` response.
+ * The old sender/hash assertions are
  * reserved at fields 2 and 3; `timestamp = 4`, `network_tag = 5`.
  */
 export interface StoredMonadMessageProto {
   message: MonadStampedMessageProto | undefined
+  /** Exact nested wire bytes as retained by the relay. Unknown protobuf fields are authoritative
+   * for retry identity and must not be erased by decode/re-encode comparison. */
+  messageBytes?: Uint8Array
   /** Milliseconds since the Unix epoch. Decoded via `jspb.BinaryReader.readInt64`, which returns a
    * plain JS `number` (not `bigint`) — safe here since a millisecond timestamp is far below
    * `Number.MAX_SAFE_INTEGER` for a very long time yet. */
@@ -195,18 +209,18 @@ export interface StoredMonadMessageProto {
 /** Encode a {@link MonadStampedMessageProto} to protobuf wire-format bytes, via the generated
  * `MonadStampedMessage` class. */
 export function encodeMonadStampedMessage(
-  msg: MonadStampedMessageProto,
+  msg: MonadStampedMessageProto
 ): Uint8Array {
   const pb = new MonadStampedMessage()
   pb.setEncryptedPayload(msg.encryptedPayload)
   pb.setPayloadHash(msg.payloadHash)
   pb.setStampPaymentsList(
-    msg.stampPayments.map(payment => {
+    msg.stampPayments.map((payment) => {
       const paymentPb = new MonadStampPayment()
       paymentPb.setChildIndex(payment.childIndex)
       paymentPb.setRawTx(payment.rawTx)
       return paymentPb
-    }),
+    })
   )
   return pb.serializeBinary()
 }
@@ -214,11 +228,11 @@ export function encodeMonadStampedMessage(
 /** Decode protobuf wire-format bytes into a {@link MonadStampedMessageProto}. Round-trips with
  * {@link encodeMonadStampedMessage}. */
 export function decodeMonadStampedMessage(
-  bytes: Uint8Array,
+  bytes: Uint8Array
 ): MonadStampedMessageProto {
   const pb = MonadStampedMessage.deserializeBinary(bytes)
   return {
-    stampPayments: pb.getStampPaymentsList().map(payment => ({
+    stampPayments: pb.getStampPaymentsList().map((payment) => ({
       childIndex: payment.getChildIndex(),
       rawTx: payment.getRawTx_asU8(),
     })),
@@ -228,16 +242,16 @@ export function decodeMonadStampedMessage(
 }
 
 /** Decode protobuf wire-format bytes into a {@link StoredMonadMessageProto} — what the relay
- * returns from both `PUT /message/monad` and `GET /message/monad/:payload_hash`. */
+ * returns from a successful `PUT /message/monad`. */
 export function decodeStoredMonadMessage(
-  bytes: Uint8Array,
+  bytes: Uint8Array
 ): StoredMonadMessageProto {
   const pb = StoredMonadMessage.deserializeBinary(bytes)
   const nested = pb.getMessage()
   return {
     message: nested
       ? {
-          stampPayments: nested.getStampPaymentsList().map(payment => ({
+          stampPayments: nested.getStampPaymentsList().map((payment) => ({
             childIndex: payment.getChildIndex(),
             rawTx: payment.getRawTx_asU8(),
           })),
@@ -245,9 +259,87 @@ export function decodeStoredMonadMessage(
           payloadHash: nested.getPayloadHash_asU8(),
         }
       : undefined,
+    messageBytes: extractLengthDelimitedField(bytes, 1),
     timestamp: pb.getTimestamp(),
     networkTag: pb.getNetworkTag_asU8(),
   }
+}
+
+function extractLengthDelimitedField(
+  bytes: Uint8Array,
+  wantedField: number
+): Uint8Array | undefined {
+  let offset = 0
+  let found: Uint8Array | undefined
+  const readVarint = (): bigint => {
+    let value = BigInt(0)
+    let shift = BigInt(0)
+    for (let count = 0; count < 10 && offset < bytes.length; count++) {
+      const byte = bytes[offset++]
+      // A protobuf uint64 may use all ten bytes, but its tenth byte can carry only bit zero.
+      if (count === 9 && (byte & 0xfe) !== 0) {
+        throw new Error('Invalid protobuf varint in stored Monad message')
+      }
+      value |= BigInt(byte & 0x7f) << shift
+      if ((byte & 0x80) === 0) return value
+      shift += BigInt(7)
+    }
+    throw new Error('Invalid protobuf varint in stored Monad message')
+  }
+  const scanFields = (endGroupField?: bigint): void => {
+    while (offset < bytes.length) {
+      const tag = readVarint()
+      const field = tag >> BigInt(3)
+      const wireType = Number(tag & BigInt(7))
+      if (field < BigInt(1) || field > BigInt(0x1fffffff)) {
+        throw new Error('Invalid protobuf field tag')
+      }
+      if (wireType === 4) {
+        if (endGroupField === undefined || field !== endGroupField) {
+          throw new Error(
+            'Mismatched protobuf end group in stored Monad message'
+          )
+        }
+        return
+      }
+      if (wireType === 0) {
+        readVarint()
+      } else if (wireType === 1) {
+        offset += 8
+      } else if (wireType === 2) {
+        const encodedLength = readVarint()
+        if (encodedLength > BigInt(Number.MAX_SAFE_INTEGER)) {
+          throw new Error('Invalid protobuf length in stored Monad message')
+        }
+        const length = Number(encodedLength)
+        const end = offset + length
+        if (!Number.isSafeInteger(length) || end > bytes.length) {
+          throw new Error('Invalid protobuf length in stored Monad message')
+        }
+        // A same-numbered field nested in an unknown group is not the top-level stored message.
+        if (endGroupField === undefined && field === BigInt(wantedField)) {
+          found = bytes.slice(offset, end)
+        }
+        offset = end
+      } else if (wireType === 3) {
+        scanFields(field)
+      } else if (wireType === 5) {
+        offset += 4
+      } else {
+        throw new Error(
+          'Unsupported protobuf wire type in stored Monad message'
+        )
+      }
+      if (offset > bytes.length) {
+        throw new Error('Truncated protobuf stored Monad message')
+      }
+    }
+    if (endGroupField !== undefined) {
+      throw new Error('Truncated protobuf group in stored Monad message')
+    }
+  }
+  scanFields()
+  return found
 }
 
 /** Spendable recipient-side view of one verified stamp-payment child. This is intentionally
@@ -258,6 +350,9 @@ export interface RecoveredMonadStampPayment {
   address: string
   privateKey: Uint8Array
   txHash: string
+  rawTx: string
+  recipientPublicKeyHex: string
+  envelopeRecipientAddress: string
   valueWei: bigint
 }
 
@@ -270,7 +365,7 @@ export type MonadStampPaymentSweepOutcome =
     }
   | {
       swept: false
-      reason: 'below-dust-threshold' | 'pending'
+      reason: 'below-dust-threshold' | 'pending' | 'failed'
       balanceWei?: bigint
       dustThresholdWei?: bigint
       txHash?: string
@@ -284,12 +379,37 @@ export type MonadStampPaymentSweepOutcome =
 export function recoverMonadStampPayments(params: {
   message: MonadStampedMessageProto
   recipientPrivateKey: Uint8Array
+  envelopeRecipientAddress?: string
 }): RecoveredMonadStampPayment[] {
+  assertMonadStampPaymentCount(params.message.stampPayments.length)
+  if (
+    hexlify(computeMonadStampCommitment(params.message.encryptedPayload)) !==
+    hexlify(params.message.payloadHash)
+  ) {
+    throw new Error(
+      'Stamp-payment payload hash does not match encrypted payload'
+    )
+  }
+  const recipientPublicKeyHex = SigningKey.computePublicKey(
+    hexlify(params.recipientPrivateKey),
+    true
+  )
+  const derivedRecipientAddress = computeAddress(recipientPublicKeyHex)
+  if (
+    params.envelopeRecipientAddress !== undefined &&
+    getAddress(params.envelopeRecipientAddress) !==
+      getAddress(derivedRecipientAddress)
+  ) {
+    throw new Error('Retained envelope recipient does not match its key')
+  }
   const seenChildren = new Set<number>()
-  return params.message.stampPayments.map(payment => {
+  return params.message.stampPayments.map((payment, paymentIndex) => {
+    if (payment.childIndex !== paymentIndex) {
+      throw new Error('Stamp-payment children are not in canonical order')
+    }
     if (seenChildren.has(payment.childIndex)) {
       throw new Error(
-        `Duplicate stamp-payment child index ${payment.childIndex}`,
+        `Duplicate stamp-payment child index ${payment.childIndex}`
       )
     }
     seenChildren.add(payment.childIndex)
@@ -299,16 +419,35 @@ export function recoverMonadStampPayments(params: {
       paymentIndex: payment.childIndex,
     })
     const tx = Transaction.from(hexlify(payment.rawTx))
+    if (hexlify(payment.rawTx) !== tx.serialized) {
+      throw new Error(
+        `Stamp payment child ${payment.childIndex} raw transaction is not its canonical signed serialization`
+      )
+    }
     if (tx.to?.toLowerCase() !== child.address.toLowerCase()) {
       throw new Error(
         `Stamp payment child ${payment.childIndex} pays ${
           tx.to ?? 'no address'
-        }, expected ${child.address}`,
+        }, expected ${child.address}`
       )
     }
     if (tx.hash === null) {
       throw new Error(
-        `Stamp payment child ${payment.childIndex} is not a signed transaction`,
+        `Stamp payment child ${payment.childIndex} is not a signed transaction`
+      )
+    }
+    if (tx.value <= BigInt(0)) {
+      throw new Error(`Stamp payment child ${payment.childIndex} has no value`)
+    }
+    const expectedCalldata = buildMonadStampCalldata(
+      computeMonadStampPaymentCommitment(
+        params.message.payloadHash,
+        payment.childIndex
+      )
+    )
+    if (tx.data.toLowerCase() !== expectedCalldata.toLowerCase()) {
+      throw new Error(
+        `Stamp payment child ${payment.childIndex} has invalid commitment calldata`
       )
     }
     return {
@@ -316,6 +455,10 @@ export function recoverMonadStampPayments(params: {
       address: child.address,
       privateKey: child.privateKey,
       txHash: tx.hash,
+      rawTx: hexlify(payment.rawTx),
+      recipientPublicKeyHex,
+      envelopeRecipientAddress:
+        params.envelopeRecipientAddress ?? derivedRecipientAddress,
       valueWei: tx.value,
     }
   })
@@ -344,7 +487,7 @@ export async function sweepRecoveredMonadStampPayment(params: {
     })
   if (signer.address.toLowerCase() !== params.payment.address.toLowerCase()) {
     throw new Error(
-      `Recovered stamp-payment key resolves to ${signer.address}, expected ${params.payment.address}`,
+      `Recovered stamp-payment key resolves to ${signer.address}, expected ${params.payment.address}`
     )
   }
 
@@ -364,13 +507,19 @@ export async function sweepRecoveredMonadStampPayment(params: {
   const signed = await signer.buildAndSignTransfer(
     params.destinationAddress,
     valueWei,
-    params.overrides,
+    params.overrides
   )
   await params.onSigned?.(signed)
   const txHash = await signer.submit(signed)
   const status = await signer.getStatus(txHash)
   if (status === 'failed') {
-    throw new Error(`Recipient stamp-payment sweep ${txHash} failed on-chain`)
+    return {
+      swept: false,
+      reason: 'failed',
+      txHash,
+      valueWei,
+      destinationAddress: signed.to,
+    }
   }
   if (status === 'pending') {
     return {
@@ -393,7 +542,7 @@ export async function sweepRecoveredMonadStampPayment(params: {
  * on-chain commitments are derived from this hash by {@link computeMonadStampPaymentCommitment}.
  * Returns the raw 32-byte hash, not hex. */
 export function computeMonadStampCommitment(
-  encryptedPayload: Uint8Array,
+  encryptedPayload: Uint8Array
 ): Uint8Array {
   return getBytes(sha256(encryptedPayload))
 }
@@ -404,7 +553,7 @@ export function computeMonadStampCommitment(
 export function buildMonadStampCalldata(commitment: Uint8Array): string {
   if (commitment.length !== 32) {
     throw new Error(
-      `Monad stamp commitment must be exactly 32 bytes, got ${commitment.length}`,
+      `Monad stamp commitment must be exactly 32 bytes, got ${commitment.length}`
     )
   }
   return concat([
@@ -433,7 +582,7 @@ export async function quoteMonadStampPaymentGasReserve(params: {
     destination,
     BigInt(1),
     buildMonadStampCalldata(worstCaseCommitment),
-    params.overrides,
+    params.overrides
   )
   const feePerGas = probe.maxFeePerGas ?? probe.gasPrice
   if (feePerGas === undefined) {
@@ -448,11 +597,11 @@ export async function quoteMonadStampPaymentGasReserve(params: {
  * a passive chain observer from grouping every split solely because it repeats the payload hash. */
 export function computeMonadStampPaymentCommitment(
   payloadHash: Uint8Array,
-  childIndex: number,
+  childIndex: number
 ): Uint8Array {
   if (payloadHash.length !== 32) {
     throw new Error(
-      `Monad stamp payload hash must be exactly 32 bytes, got ${payloadHash.length}`,
+      `Monad stamp payload hash must be exactly 32 bytes, got ${payloadHash.length}`
     )
   }
   if (
@@ -461,7 +610,7 @@ export function computeMonadStampPaymentCommitment(
     childIndex > 0xffffffff
   ) {
     throw new Error(
-      `Stamp payment child index must be a uint32, got ${childIndex}`,
+      `Stamp payment child index must be a uint32, got ${childIndex}`
     )
   }
   const indexBytes = Uint8Array.from([
@@ -471,7 +620,7 @@ export function computeMonadStampPaymentCommitment(
     childIndex & 0xff,
   ])
   return getBytes(
-    sha256(concat([PAYMENT_COMMITMENT_DOMAIN, payloadHash, indexBytes])),
+    sha256(concat([PAYMENT_COMMITMENT_DOMAIN, payloadHash, indexBytes]))
   )
 }
 
@@ -513,10 +662,9 @@ function relayRejectionDetail(detail: unknown): string | undefined {
   return undefined
 }
 
-/** Thrown when a network-level failure left the outcome genuinely unknown, and polling
- * `GET /message/monad/:payload_hash` never turned up a stored message within the configured
- * budget (see this file's header, "Lease release policy"). The lease has already been released as
- * `'stuck'` (retired) by the time this is thrown. */
+/** Thrown when exact retries of journaled bytes cannot establish an authoritative outcome within
+ * the configured budget (see this file's header, "Lease release policy"). The attempt and lease
+ * remain durable and unavailable for replacement. */
 export class MonadStampAbandonedError extends MonadStampError {
   readonly payloadHashHex: string
 
@@ -533,7 +681,21 @@ export class MonadStampPendingAttemptError extends MonadStampError {
 
   constructor(payloadHashes: string[]) {
     super(
-      `Cannot create another stamp payment while ${payloadHashes.length} prior attempt(s) remain pending`,
+      `Cannot create another stamp payment while ${payloadHashes.length} prior attempt(s) remain pending`
+    )
+    this.payloadHashes = payloadHashes
+  }
+}
+
+/** Exact journaled bytes were rejected under a relay protobuf canonicality policy that cannot
+ * prove no payment was broadcast. The retained attempt requires an explicit authority audit or
+ * reset proof and must never be silently replaced. */
+export class MonadStampAuthorityAuditRequiredError extends MonadStampError {
+  readonly payloadHashes: string[]
+
+  constructor(payloadHashes: string[]) {
+    super(
+      `Cannot replace ${payloadHashes.length} stamp attempt(s) rejected as noncanonical protobuf without authority audit/reset proof`
     )
     this.payloadHashes = payloadHashes
   }
@@ -550,10 +712,25 @@ export class MonadStampRecoveredAttemptError extends MonadStampError {
   }
 }
 
-const MAX_STAMP_PAYMENTS = 64
+export const MAX_STAMP_PAYMENTS = 64
 export const MAX_MONAD_STAMPED_MESSAGE_BYTES = 2 * 1024 * 1024
 
+export function assertMonadStampPaymentCount(count: number): void {
+  if (!Number.isSafeInteger(count) || count < 1 || count > MAX_STAMP_PAYMENTS) {
+    throw new Error(
+      `Monad stamped messages require 1..${MAX_STAMP_PAYMENTS} payments`
+    )
+  }
+}
+
 function exactSetRetained(responseData: unknown): boolean | undefined {
+  const parsed = parseRelayResponse(responseData)
+  if (typeof parsed !== 'object' || parsed === null) return undefined
+  const value = (parsed as Record<string, unknown>).exact_set_retained
+  return typeof value === 'boolean' ? value : undefined
+}
+
+function parseRelayResponse(responseData: unknown): unknown {
   let parsed = responseData
   if (responseData instanceof ArrayBuffer || ArrayBuffer.isView(responseData)) {
     try {
@@ -563,28 +740,38 @@ function exactSetRetained(responseData: unknown): boolean | undefined {
           : new Uint8Array(
               responseData.buffer,
               responseData.byteOffset,
-              responseData.byteLength,
+              responseData.byteLength
             )
       parsed = JSON.parse(new TextDecoder().decode(bytes))
     } catch {
       return undefined
     }
   }
-  if (typeof parsed !== 'object' || parsed === null) return undefined
-  const value = (parsed as Record<string, unknown>).exact_set_retained
-  return typeof value === 'boolean' ? value : undefined
+  return parsed
+}
+
+function isNoncanonicalProtobufRejection(responseData: unknown): boolean {
+  const parsed = parseRelayResponse(responseData)
+  if (typeof parsed !== 'object' || parsed === null) return false
+  const detail = (parsed as Record<string, unknown>).error
+  if (typeof detail !== 'string') return false
+  const normalized = detail.trim().toLowerCase()
+  return [
+    'noncanonical_protobuf',
+    'noncanonical protobuf',
+    'non-canonical protobuf',
+  ].includes(normalized)
 }
 
 function defaultSleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms))
+  return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-/** Options for the `GET /message/monad/:payload_hash` fallback poll used when a `PUT` attempt fails
- * with no HTTP response at all (see this file's header, "Lease release policy"). */
+/** Options for exact `PUT /message/monad` retries after an ambiguous transport failure. */
 export interface AbandonPollOptions {
-  /** Delay between poll attempts, in ms. Default 2000. */
+  /** Delay between retry attempts, in ms. Default 2000. */
   intervalMs?: number
-  /** Number of `GET` attempts before giving up. Default 5. */
+  /** Number of exact `PUT` retries before giving up. Default 5. */
   maxAttempts?: number
   /** Injectable in place of the real `setTimeout`-based delay, for deterministic tests. */
   sleep?: (ms: number) => Promise<void>
@@ -605,17 +792,17 @@ export interface StampMonadMessageParams {
    * failing immediately when the pool is fully leased. Omit for the default immediate-reject
    * behavior (`SubAccountLeaseManager.acquireLease`). */
   waitForLease?: AcquireLeaseWhenAvailableOptions
-  /** Overrides the default fallback poll used only when a `PUT` attempt fails with no HTTP response
+  /** Overrides the default exact retry used only when a `PUT` attempt fails with no HTTP response
    * at all (see this file's header, "Lease release policy"). */
   abandonPoll?: AbandonPollOptions
 }
 
 /** Outcome of a successful `submitStampedMessage` call — all payment transactions confirmed and the
- * relay stored the message (see this file's header: a 2xx `PUT /message/monad` response, or a
- * found `GET` after the network-failure fallback poll, are the only two ways to reach this). */
+ * relay stored the message (see this file's header: only a correlated 2xx response to the exact
+ * journaled `PUT /message/monad` bytes can reach this). */
 export interface StampMonadMessageResult {
   stored: StoredMonadMessageProto
-  /** Bare (no `0x`) hex of `h_m` — also `GET /message/monad/:payload_hash`'s path segment. */
+  /** Bare (no `0x`) hex of `h_m`. */
   payloadHashHex: string
   txHashes: string[]
   leaseIndices: number[]
@@ -627,7 +814,7 @@ export interface StampMonadMessageResult {
 
 /**
  * Ties together sub-account leasing (#14/#18), payment construction (#11), and the live
- * `PUT /message/monad` / `GET /message/monad/:payload_hash` HTTP surface (#27) into one call:
+ * `PUT /message/monad` HTTP surface (#27) into one call:
  * "stamp this encrypted payload onto Monad and hand it to the relay." See this file's header for
  * the full commitment/calldata/protobuf/lease-release design.
  */
@@ -637,68 +824,62 @@ export class MonadStampClient {
   private readonly provider: Provider
   private readonly httpClient: MonadTxSubmitter
   private readonly changePool: MonadChangePool | undefined
-  private readonly attemptJournal: MonadWalletHandle['stampAttemptJournal']
+  private readonly attemptJournal: StampAttemptJournal
+  private readonly walletState: MonadStampWalletHandle['walletState']
+  private activeSubmissions = 0
   /** Base URL of the `cashweb-registry` relay, e.g. `https://relay.example.com` — no trailing
    * slash. `/message/monad` (`PUT`) and `/message/monad/:payload_hash` (`GET`) are appended to it. */
   private readonly relayBaseUrl: string
 
-  constructor(params: MonadWalletHandle) {
-    this.pool = params.pool
-    this.leaseManager = params.leaseManager
+  constructor(params: MonadStampWalletHandle) {
+    if (!isMonadStampWalletHandle(params)) {
+      throw new Error(
+        'MonadStampClient requires a factory-produced complete wallet handle'
+      )
+    }
+    const walletState = params.walletState
+    walletState.assertOpen()
+    this.pool = walletState.pool
+    this.leaseManager = walletState.leaseManager
     this.provider = params.provider
     this.httpClient = params.httpClient
-    this.changePool = params.changePool
-    this.attemptJournal = params.stampAttemptJournal
+    this.changePool = walletState.changePool
+    this.walletState = walletState
+    this.attemptJournal = walletState.stampAttemptJournal
     this.relayBaseUrl = params.relayBaseUrl.replace(/\/+$/, '')
   }
 
-  /** Fetch a previously-stored message by its bare-hex `payload_hash` via
-   * `GET /message/monad/:payload_hash`. Returns `undefined` on a `404` (not yet stored/found) — any
-   * other non-2xx response, or a network-level failure, propagates as a thrown error. */
-  async fetchStoredMessage(
-    payloadHashHex: string,
-  ): Promise<StoredMonadMessageProto | undefined> {
-    try {
-      const response = await axios({
-        method: 'get',
-        url: `${this.relayBaseUrl}/message/monad/${payloadHashHex}`,
-        responseType: 'arraybuffer',
-      })
-      return decodeStoredMonadMessage(new Uint8Array(response.data))
-    } catch (err) {
-      if (axios.isAxiosError(err) && err.response?.status === 404) {
-        return undefined
-      }
-      throw err
+  private async compactTerminalAccounts(
+    admission: MonadWalletOperationAdmission
+  ): Promise<void> {
+    const compact = this.walletState.compactTerminalAccounts
+    if (typeof compact === 'function') {
+      await compact.call(this.walletState, 8, admission)
     }
   }
 
-  private async pollForStoredMessage(
-    payloadHashHex: string,
-    expectedMessage: MonadStampedMessageProto,
-    options?: AbandonPollOptions,
+  static unsafeCreateForTests(params: MonadWalletHandle): MonadStampClient {
+    return new MonadStampClient(
+      unsafeCreateMonadStampWalletHandleForTests(params)
+    )
+  }
+
+  private async retryExactPut(
+    message: MonadStampedMessageProto,
+    expectedMessageBytes: Uint8Array,
+    options?: AbandonPollOptions
   ): Promise<StoredMonadMessageProto | undefined> {
     const intervalMs = options?.intervalMs ?? 2000
     const maxAttempts = options?.maxAttempts ?? 5
     const sleep = options?.sleep ?? defaultSleep
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       if (attempt > 0) await sleep(intervalMs)
-      // A single poll attempt failing (another network hiccup, a transient 5xx, ...) is not itself
-      // proof of abandonment -- only exhausting the whole poll budget without ever finding the
-      // message is. Swallow per-attempt errors here and let the loop keep trying; the overall
-      // "genuinely unknown" -> `'stuck'` outcome is decided by the caller once every attempt in the
-      // budget has been spent.
-      const stored = await this.fetchStoredMessage(payloadHashHex).catch(
-        () => undefined,
-      )
-      if (
-        stored?.message !== undefined &&
-        bytesEqual(
-          encodeMonadStampedMessage(stored.message),
-          encodeMonadStampedMessage(expectedMessage),
-        )
-      ) {
-        return stored
+      try {
+        return await this.putStampedMessage(message, expectedMessageBytes)
+      } catch (error) {
+        if (axios.isAxiosError(error) && error.response !== undefined) {
+          throw error
+        }
       }
     }
     return undefined
@@ -706,7 +887,7 @@ export class MonadStampClient {
 
   private async putStampedMessage(
     message: MonadStampedMessageProto,
-    encoded = encodeMonadStampedMessage(message),
+    encoded = encodeMonadStampedMessage(message)
   ): Promise<StoredMonadMessageProto> {
     const response = await axios({
       method: 'put',
@@ -727,13 +908,14 @@ export class MonadStampClient {
     const stored = decodeStoredMonadMessage(new Uint8Array(response.data))
     if (
       stored.message === undefined ||
-      !bytesEqual(encodeMonadStampedMessage(stored.message), encoded)
+      stored.messageBytes === undefined ||
+      !bytesEqual(stored.messageBytes, encoded)
     ) {
       // A 2xx only proves that an HTTP peer answered. It does not prove that the relay retained
       // this exact payment set. Treat a missing/different nested message like a lost response so
       // the caller keeps its journal and reservations until the exact read side confirms it.
       throw new Error(
-        'Relay returned success without the exact submitted Monad-stamped message',
+        'Relay returned success without the exact submitted Monad-stamped message'
       )
     }
     return stored
@@ -749,37 +931,51 @@ export class MonadStampClient {
    */
   async submitStampedMessage(
     params: StampMonadMessageParams,
+    admission?: MonadWalletOperationAdmission
+  ): Promise<StampMonadMessageResult> {
+    return this.walletState.runOperation(
+      (admitted) => this.submitStampedMessageAdmitted(params, admitted),
+      admission
+    )
+  }
+
+  private async submitStampedMessageAdmitted(
+    params: StampMonadMessageParams,
+    admission: MonadWalletOperationAdmission
   ): Promise<StampMonadMessageResult> {
     if (params.encryptedPayload.length === 0) {
       throw new Error('encryptedPayload must not be empty')
     }
     if (params.encryptedPayload.length > MAX_MONAD_STAMPED_MESSAGE_BYTES) {
       throw new Error(
-        `encryptedPayload exceeds the ${MAX_MONAD_STAMPED_MESSAGE_BYTES}-byte message limit`,
+        `encryptedPayload exceeds the ${MAX_MONAD_STAMPED_MESSAGE_BYTES}-byte message limit`
       )
     }
-    if (
-      this.attemptJournal !== undefined &&
-      this.attemptJournal.getAll().length > 0
-    ) {
-      const recovered = await this.resumePendingAttempts()
-      if (recovered.length > 0) {
-        throw new MonadStampRecoveredAttemptError(recovered)
-      }
-      const stillPending = this.attemptJournal
-        .getAll()
-        .map(attempt => attempt.payloadHashHex)
-      if (stillPending.length > 0) {
-        throw new MonadStampPendingAttemptError(stillPending)
-      }
+    if (params.recipientPublicKey.length !== 33) {
+      throw new Error('recipientPublicKey must be a compressed 33-byte key')
     }
+    if (params.stampValueWei <= BigInt(0)) {
+      throw new Error('stampValueWei must be positive')
+    }
+    await this.reconcilePendingOrThrow(admission)
+    this.activeSubmissions++
+    try {
+      return await this.submitStampedMessageAfterPreflight(params, admission)
+    } finally {
+      this.activeSubmissions--
+    }
+  }
 
+  private async submitStampedMessageAfterPreflight(
+    params: StampMonadMessageParams,
+    admission: MonadWalletOperationAdmission
+  ): Promise<StampMonadMessageResult> {
     const payloadHash = computeMonadStampCommitment(params.encryptedPayload)
     // Quote with an all-nonzero commitment. The RPC therefore applies the active network's
     // worst-case calldata schedule (including EIP-7623) without this client hardcoding gas-table
     // arithmetic that could become stale after another repricing.
     const quoteCalldata = buildMonadStampCalldata(
-      new Uint8Array(STAMP_COMMITMENT_LENGTH).fill(0xff),
+      new Uint8Array(STAMP_COMMITMENT_LENGTH).fill(0xff)
     )
     const payloadHashHex = toBareHex(payloadHash)
     const quoteDestination = deriveMonadStampChildPublic({
@@ -790,7 +986,7 @@ export class MonadStampClient {
 
     let availableRecords = this.pool
       .records()
-      .filter(candidate => candidate.status === 'available')
+      .filter((candidate) => candidate.status === 'available')
     if (availableRecords.length === 0 && params.waitForLease !== undefined) {
       const sleep = params.waitForLease.sleep ?? defaultSleep
       const now = params.waitForLease.now ?? Date.now
@@ -800,12 +996,12 @@ export class MonadStampClient {
         await sleep(pollIntervalMs)
         availableRecords = this.pool
           .records()
-          .filter(candidate => candidate.status === 'available')
+          .filter((candidate) => candidate.status === 'available')
       }
     }
     if (availableRecords.length === 0) {
       throw new NoAvailableSubAccountError(
-        'No available sub-account to quote for a stamp payment',
+        'No available sub-account to quote for a stamp payment'
       )
     }
 
@@ -830,7 +1026,7 @@ export class MonadStampClient {
         quoteDestination,
         BigInt(1),
         quoteCalldata,
-        params.overrides,
+        params.overrides
       )
       const feePerGas = probe.maxFeePerGas ?? probe.gasPrice
       if (feePerGas === undefined) {
@@ -864,12 +1060,8 @@ export class MonadStampClient {
       accounts: quotes,
       maxTransactions: MAX_STAMP_PAYMENTS,
     })
-    if (selected.length > MAX_STAMP_PAYMENTS) {
-      throw new Error(
-        `Stamp payment requires ${selected.length} accounts; relay maximum is ${MAX_STAMP_PAYMENTS}`,
-      )
-    }
-    const quoteByIndex = new Map(quotes.map(quote => [quote.index, quote]))
+    assertMonadStampPaymentCount(selected.length)
+    const quoteByIndex = new Map(quotes.map((quote) => [quote.index, quote]))
     const handles: AccountLeaseHandle[] = []
     const signedTxs: SignedMonadTx[] = []
     try {
@@ -900,9 +1092,9 @@ export class MonadStampClient {
           destination.address,
           selection.paymentValueWei,
           buildMonadStampCalldata(
-            computeMonadStampPaymentCommitment(payloadHash, paymentIndex),
+            computeMonadStampPaymentCommitment(payloadHash, paymentIndex)
           ),
-          quote.resolvedOverrides,
+          quote.resolvedOverrides
         )
         const feePerGas = signedTx.maxFeePerGas ?? signedTx.gasPrice
         if (
@@ -910,7 +1102,7 @@ export class MonadStampClient {
           signedTx.value + signedTx.gasLimit * feePerGas > quote.balanceWei
         ) {
           throw new Error(
-            `Final stamp payment at funding index ${selection.index} exceeds its quoted account capacity`,
+            `Final stamp payment at funding index ${selection.index} exceeds its quoted account capacity`
           )
         }
         signedTxs.push(signedTx)
@@ -938,15 +1130,18 @@ export class MonadStampClient {
       }
       await this.pool.flush()
       throw new Error(
-        `Encoded Monad stamped message is ${encodedMessage.byteLength} bytes; maximum is ${MAX_MONAD_STAMPED_MESSAGE_BYTES}`,
+        `Encoded Monad stamped message is ${encodedMessage.byteLength} bytes; maximum is ${MAX_MONAD_STAMPED_MESSAGE_BYTES}`
       )
     }
+    const journaledAttempt: OutgoingStampAttempt = {
+      payloadHashHex,
+      messageBytes: Array.from(encodedMessage),
+      leaseIndices: handles.map((handle) => handle.index),
+      recipientPublicKeyHex: hexlify(params.recipientPublicKey),
+      authorityState: 'pending',
+    }
     try {
-      await this.attemptJournal?.put({
-        payloadHashHex,
-        messageBytes: Array.from(encodedMessage),
-        leaseIndices: handles.map(handle => handle.index),
-      })
+      await this.attemptJournal.put(journaledAttempt)
     } catch (err) {
       for (const handle of handles) {
         this.leaseManager.releaseLease(handle, 'failed')
@@ -954,8 +1149,17 @@ export class MonadStampClient {
       await this.pool.flush()
       throw err
     }
+    for (const [offset, handle] of handles.entries()) {
+      const signedTx = signedTxs[offset]
+      this.pool.recordSpendTransaction(handle.index, {
+        rawTx: signedTx.rawTx,
+        txHash: signedTx.txHash,
+        valueWei: signedTx.value.toString(),
+      })
+    }
+    await this.pool.flush()
     const releaseAll = async (
-      outcome: 'confirmed' | 'failed' | 'stuck',
+      outcome: 'confirmed' | 'failed' | 'stuck'
     ): Promise<Array<ChangeSweepOutcome | undefined>> => {
       const sweeps: Array<ChangeSweepOutcome | undefined> = []
       for (const handle of handles) {
@@ -974,9 +1178,29 @@ export class MonadStampClient {
                   changePool: this.changePool,
                   burnAccountSigner: signer,
                   provider: this.provider,
+                  admission,
                 },
         })
         sweeps.push(released.sweep)
+        if (released.sweep?.swept === true) {
+          this.pool.recordRecoveryDisposition(handle.index, {
+            kind: 'change',
+            changeIndex: released.sweep.record.index,
+            address: released.sweep.record.address,
+            txHash: released.sweep.record.txHash,
+            valueWei: released.sweep.record.sweptValueWei,
+          })
+          await this.pool.flush()
+        } else if (released.sweep?.reason === 'below-dust-threshold') {
+          this.pool.recordRecoveryDisposition(handle.index, {
+            kind: 'dust',
+            valueWei: (released.sweep.balanceWei ?? BigInt(0)).toString(),
+            thresholdWei: (
+              released.sweep.dustThresholdWei ?? BigInt(0)
+            ).toString(),
+          })
+          await this.pool.flush()
+        }
         if (
           released.sweep?.swept === false &&
           released.sweep.reason !== 'below-dust-threshold'
@@ -992,96 +1216,198 @@ export class MonadStampClient {
       const changeSweeps = await releaseAll('confirmed')
       if (
         changeSweeps.some(
-          sweep =>
-            sweep?.swept === false && sweep.reason !== 'below-dust-threshold',
+          (sweep) =>
+            sweep?.swept === false && sweep.reason !== 'below-dust-threshold'
         )
       ) {
         throw new MonadStampPendingAttemptError([payloadHashHex])
       }
-      await this.attemptJournal?.delete(payloadHashHex)
+      await this.attemptJournal.delete(payloadHashHex)
+      await this.compactTerminalAccounts(admission)
       return {
         stored,
         payloadHashHex,
-        txHashes: signedTxs.map(signedTx => signedTx.txHash),
-        leaseIndices: handles.map(handle => handle.index),
+        txHashes: signedTxs.map((signedTx) => signedTx.txHash),
+        leaseIndices: handles.map((handle) => handle.index),
         changeSweeps,
       }
     } catch (err) {
       if (err instanceof MonadStampPendingAttemptError) throw err
       if (axios.isAxiosError(err) && err.response) {
+        if (
+          isNoncanonicalProtobufRejection(err.response.data) &&
+          exactSetRetained(err.response.data) !== false
+        ) {
+          await this.attemptJournal.put({
+            ...journaledAttempt,
+            authorityState: 'incompatible-protobuf',
+            authorityReason: 'noncanonical_protobuf',
+          })
+          throw new MonadStampAuthorityAuditRequiredError([payloadHashHex])
+        }
         if (exactSetRetained(err.response.data) === false) {
           await releaseAll('failed')
-          await this.attemptJournal?.delete(payloadHashHex)
+          await this.attemptJournal.delete(payloadHashHex)
+          await this.compactTerminalAccounts(admission)
           const detail = relayRejectionDetail(err.response.data)
           throw new MonadStampRejectedError(
-            `Relay rejected the Monad-stamped message before retaining its payment set (HTTP ${err.response.status})${
-              detail ? `: ${detail}` : ''
-            }`,
+            `Relay rejected the Monad-stamped message before retaining its payment set (HTTP ${
+              err.response.status
+            })${detail ? `: ${detail}` : ''}`,
             err.response.status,
-            err.response.data,
+            err.response.data
           )
         }
-        if (this.attemptJournal !== undefined) {
-          // The relay may have accepted a prefix of this exact payment set before returning an
-          // error. Keep the journal and reservations intact so reconciliation can replay only the
-          // already-authorized bytes; presenting this as a terminal rejection could prompt a
-          // caller to create a second salted payment and pay twice.
-          throw new MonadStampPendingAttemptError([payloadHashHex])
-        }
-        await releaseAll('failed')
-        const detail = relayRejectionDetail(err.response.data)
-        throw new MonadStampRejectedError(
-          `Relay rejected the Monad-stamped message (HTTP ${err.response.status})${
-            detail ? `: ${detail}` : ''
-          }`,
-          err.response.status,
-          err.response.data,
-        )
+        // The relay may have accepted a prefix of this exact payment set before returning an
+        // error. Keep the journal and reservations intact so reconciliation can replay only the
+        // already-authorized bytes; presenting this as a terminal rejection could prompt a
+        // caller to create a second salted payment and pay twice.
+        throw new MonadStampPendingAttemptError([payloadHashHex])
       }
 
-      // A missing HTTP response or a semantically invalid 2xx is genuinely ambiguous: the relay
-      // may still have received/broadcast/stored the exact message. Poll the read side before
-      // giving up, and require byte-for-byte equality there too.
-      const stored = await this.pollForStoredMessage(
-        payloadHashHex,
-        message,
-        params.abandonPoll,
-      )
+      // A missing response is ambiguous. Replay only the already-journaled exact bytes; the relay
+      // owns semantic deduplication and returns authoritative retained status on any rejection.
+      let stored: StoredMonadMessageProto | undefined
+      try {
+        stored = await this.retryExactPut(
+          message,
+          encodedMessage,
+          params.abandonPoll
+        )
+      } catch (retryError) {
+        if (axios.isAxiosError(retryError) && retryError.response) {
+          if (
+            isNoncanonicalProtobufRejection(retryError.response.data) &&
+            exactSetRetained(retryError.response.data) !== false
+          ) {
+            await this.attemptJournal.put({
+              ...journaledAttempt,
+              authorityState: 'incompatible-protobuf',
+              authorityReason: 'noncanonical_protobuf',
+            })
+            throw new MonadStampAuthorityAuditRequiredError([payloadHashHex])
+          }
+          if (exactSetRetained(retryError.response.data) === false) {
+            await releaseAll('failed')
+            await this.attemptJournal.delete(payloadHashHex)
+            await this.compactTerminalAccounts(admission)
+            throw new MonadStampRejectedError(
+              'Relay authoritatively rejected the exact retried payment set',
+              retryError.response.status,
+              retryError.response.data
+            )
+          }
+        }
+        throw retryError
+      }
       if (stored !== undefined) {
         const changeSweeps = await releaseAll('confirmed')
         if (
           changeSweeps.some(
-            sweep =>
-              sweep?.swept === false && sweep.reason !== 'below-dust-threshold',
+            (sweep) =>
+              sweep?.swept === false && sweep.reason !== 'below-dust-threshold'
           )
         ) {
           throw new MonadStampPendingAttemptError([payloadHashHex])
         }
-        await this.attemptJournal?.delete(payloadHashHex)
+        await this.attemptJournal.delete(payloadHashHex)
+        await this.compactTerminalAccounts(admission)
         return {
           stored,
           payloadHashHex,
-          txHashes: signedTxs.map(signedTx => signedTx.txHash),
-          leaseIndices: handles.map(handle => handle.index),
+          txHashes: signedTxs.map((signedTx) => signedTx.txHash),
+          leaseIndices: handles.map((handle) => handle.index),
           changeSweeps,
         }
       }
 
-      await releaseAll('stuck')
       throw new MonadStampAbandonedError(
-        'Monad stamp submission abandoned: no response from the relay, and ' +
-          `GET /message/monad/${payloadHashHex} never found a stored message`,
-        payloadHashHex,
+        'Monad stamp submission abandoned after bounded exact-byte PUT retries returned no authoritative response',
+        payloadHashHex
       )
+    }
+  }
+
+  /** Single wallet-owned preflight for every operation that may fund or sign a new stamp. */
+  async reconcileOrThrow(
+    admission?: MonadWalletOperationAdmission
+  ): Promise<void> {
+    return this.walletState.runOperation(
+      (admitted) => this.reconcileOrThrowAdmitted(admitted, true),
+      admission
+    )
+  }
+
+  /** Startup consumes successfully recovered prior work without presenting it as a failure of the
+   * newly opened wallet. Interactive preflight retains the notification error. */
+  async reconcileStartupOrThrow(
+    admission?: MonadWalletOperationAdmission
+  ): Promise<void> {
+    return this.walletState.runOperation(
+      (admitted) => this.reconcileOrThrowAdmitted(admitted, false),
+      admission
+    )
+  }
+
+  private async reconcileOrThrowAdmitted(
+    admission: MonadWalletOperationAdmission,
+    notifyRecovered: boolean
+  ): Promise<void> {
+    if (this.activeSubmissions > 0) {
+      throw new MonadStampPendingAttemptError(
+        this.attemptJournal.getAll().map((attempt) => attempt.payloadHashHex)
+      )
+    }
+    await this.reconcilePendingOrThrow(admission, notifyRecovered)
+    this.pool.authorizeStampInventoryPreparation()
+  }
+
+  private async reconcilePendingOrThrow(
+    admission: MonadWalletOperationAdmission,
+    notifyRecovered = true
+  ): Promise<void> {
+    await this.walletState.reconcileRestoreState(admission)
+    this.walletState?.assertNoOrphanedLeases()
+    if (this.activeSubmissions > 0) return
+    const attempts = this.attemptJournal.getAll()
+    const incompatible = attempts
+      .filter((attempt) => attempt.authorityState === 'incompatible-protobuf')
+      .map((attempt) => attempt.payloadHashHex)
+    if (incompatible.length > 0) {
+      throw new MonadStampAuthorityAuditRequiredError(incompatible)
+    }
+    if (attempts.length === 0) return
+    const recovered = await this.resumePendingAttemptsAdmitted(admission)
+    if (notifyRecovered && recovered.length > 0) {
+      throw new MonadStampRecoveredAttemptError(recovered)
+    }
+    const stillPending = this.attemptJournal
+      .getAll()
+      .map((attempt) => attempt.payloadHashHex)
+    if (stillPending.length > 0) {
+      throw new MonadStampPendingAttemptError(stillPending)
     }
   }
 
   /** Replay crash-surviving attempts byte-for-byte. Exact-set relay binding makes this safe when
    * only a prefix of the transactions landed before the previous process stopped. */
-  async resumePendingAttempts(): Promise<string[]> {
-    if (this.attemptJournal === undefined) return []
+  async resumePendingAttempts(
+    admission?: MonadWalletOperationAdmission
+  ): Promise<string[]> {
+    return this.walletState.runOperation(
+      (admitted) => this.resumePendingAttemptsAdmitted(admitted),
+      admission
+    )
+  }
+
+  private async resumePendingAttemptsAdmitted(
+    admission: MonadWalletOperationAdmission
+  ): Promise<string[]> {
+    await this.walletState?.repairAttemptSpendLifecycles(admission)
+    this.walletState?.assertSemanticallyValid()
     const completed: string[] = []
     for (const attempt of this.attemptJournal.getAll()) {
+      if (attempt.authorityState === 'incompatible-protobuf') continue
       // The journal write and pool-status writes live in separate LevelDBs. A hard crash can make
       // the durable raw set visible before one of the earlier `in-use` status writes. Reassert the
       // reservation before any network await so the wallet can never return an apparently
@@ -1093,9 +1419,31 @@ export class MonadStampClient {
       await this.pool.flush()
       try {
         const message = decodeMonadStampedMessage(
-          Uint8Array.from(attempt.messageBytes),
+          Uint8Array.from(attempt.messageBytes)
         )
-        await this.putStampedMessage(message)
+        for (const [offset, index] of attempt.leaseIndices.entries()) {
+          const record = this.pool.getRecord(index)
+          const payment = message.stampPayments[offset]
+          if (record === undefined || payment === undefined) continue
+          if (record.lifecycle?.spend === undefined) {
+            const transaction = Transaction.from(hexlify(payment.rawTx))
+            if (transaction.hash === null) {
+              throw new Error(
+                `Journaled stamp payment for sub-account ${index} is unsigned`
+              )
+            }
+            this.pool.recordSpendTransaction(index, {
+              rawTx: hexlify(payment.rawTx),
+              txHash: transaction.hash,
+              valueWei: transaction.value.toString(),
+            })
+          }
+        }
+        await this.pool.flush()
+        await this.putStampedMessage(
+          message,
+          Uint8Array.from(attempt.messageBytes)
+        )
         for (const index of attempt.leaseIndices) {
           const record = this.pool.getRecord(index)
           if (record !== undefined && record.status !== 'spent') {
@@ -1107,20 +1455,54 @@ export class MonadStampClient {
               provider: this.provider,
               httpClient: this.httpClient,
             })
-            const sweep = await this.changePool.sweepToChange({
-              burnIndex: index,
-              burnAddress: record.address,
-              burnAccountSigner: signer,
-              provider: this.provider,
-            })
+            const sweep = await this.changePool.sweepToChange(
+              {
+                burnIndex: index,
+                burnAddress: record.address,
+                burnAccountSigner: signer,
+                provider: this.provider,
+              },
+              admission
+            )
+            if (sweep.swept) {
+              this.pool.recordRecoveryDisposition(index, {
+                kind: 'change',
+                changeIndex: sweep.record.index,
+                address: sweep.record.address,
+                txHash: sweep.record.txHash,
+                valueWei: sweep.record.sweptValueWei,
+              })
+              await this.pool.flush()
+            } else if (sweep.reason === 'below-dust-threshold') {
+              this.pool.recordRecoveryDisposition(index, {
+                kind: 'dust',
+                valueWei: (sweep.balanceWei ?? BigInt(0)).toString(),
+                thresholdWei: (sweep.dustThresholdWei ?? BigInt(0)).toString(),
+              })
+              await this.pool.flush()
+            }
             if (!sweep.swept && sweep.reason === 'sweep-pending') {
               throw new MonadStampPendingAttemptError([attempt.payloadHashHex])
             }
           }
         }
         await this.attemptJournal.delete(attempt.payloadHashHex)
+        await this.compactTerminalAccounts(admission)
         completed.push(attempt.payloadHashHex)
       } catch (err) {
+        if (
+          axios.isAxiosError(err) &&
+          err.response &&
+          isNoncanonicalProtobufRejection(err.response.data) &&
+          exactSetRetained(err.response.data) !== false
+        ) {
+          await this.attemptJournal.put({
+            ...attempt,
+            authorityState: 'incompatible-protobuf',
+            authorityReason: 'noncanonical_protobuf',
+          })
+          continue
+        }
         if (
           axios.isAxiosError(err) &&
           err.response &&
@@ -1134,6 +1516,7 @@ export class MonadStampClient {
           }
           await this.pool.flush()
           await this.attemptJournal.delete(attempt.payloadHashHex)
+          await this.compactTerminalAccounts(admission)
         }
         // Otherwise retain the raw set and keep its accounts unavailable for a later retry.
       }

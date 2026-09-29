@@ -55,12 +55,55 @@ export interface SubAccountFundingAttempt {
   txHash: string
 }
 
+export interface SubAccountTransactionCheckpoint {
+  rawTx: string
+  txHash: string
+  valueWei: string
+}
+
+export type SubAccountRecoveryDisposition =
+  | {
+      kind: 'change'
+      changeIndex: number
+      address: string
+      txHash: string
+      valueWei: string
+    }
+  | { kind: 'dust'; valueWei: string; thresholdWei: string }
+  | { kind: 'none'; valueWei: '0' }
+
+export interface SubAccountLifecycle {
+  funding?: SubAccountTransactionCheckpoint
+  spend?: SubAccountTransactionCheckpoint
+  recovery?: SubAccountRecoveryDisposition
+  /** Explicit migration marker for a base-era terminal row that predates retained transaction
+   * bytes. It remains terminal/non-reusable without fabricating authority that never existed. */
+  legacyTerminal?: { version: 1; reason: 'base-era-terminal' }
+}
+
+/** Durable replacement for a compacted terminal account row. It deliberately retains the
+ * transactions and residual disposition needed to audit/recover the account without retaining
+ * the mutable pool row forever. */
+export interface TerminalSubAccountCheckpoint {
+  version: 1
+  index: number
+  address: string
+  status: 'spent' | 'retired'
+  /** Selected payment denomination, separate from funding gas headroom. */
+  denominationWei: string
+  lifecycle: Required<
+    Pick<SubAccountLifecycle, 'funding' | 'spend' | 'recovery'>
+  >
+  compactedAt: number
+}
+
 /** Persisted state for one HD-derived sub-account. Never carries a private key — see file header.
  */
 interface SubAccountRecordBase {
   /** BIP-44 index (`m/44'/60'/0'/0/{index}`); the durable identity of this sub-account. */
   index: number
   address: string
+  lifecycle?: SubAccountLifecycle
 }
 
 /** `fundingAttempt` is required exactly while funding, so persisted code cannot create a funding
@@ -74,6 +117,54 @@ export type SubAccountRecord = SubAccountRecordBase &
       }
   )
 
+/** Shared structural lifecycle boundary for loaded and live sub-account state. */
+export function assertSubAccountLifecycleMatrix(
+  record: SubAccountRecord
+): void {
+  const { funding, spend, recovery, legacyTerminal } = record.lifecycle ?? {}
+  const isLegacyTerminal =
+    legacyTerminal?.version === 1 &&
+    legacyTerminal.reason === 'base-era-terminal'
+  if (
+    ((record.status === 'unfunded' || record.status === 'funding') &&
+      (funding !== undefined ||
+        spend !== undefined ||
+        recovery !== undefined ||
+        legacyTerminal !== undefined)) ||
+    (record.status === 'available' &&
+      (spend !== undefined ||
+        recovery !== undefined ||
+        legacyTerminal !== undefined)) ||
+    (record.status === 'in-use' &&
+      (recovery !== undefined || legacyTerminal !== undefined)) ||
+    (record.status === 'spent' && spend === undefined && !isLegacyTerminal) ||
+    (spend !== undefined && legacyTerminal !== undefined) ||
+    (recovery !== undefined && spend === undefined)
+  ) {
+    throw new Error(
+      `Sub-account ${record.index} status/lifecycle combination is invalid`
+    )
+  }
+}
+
+export function assertSubAccountStatusTransition(
+  prior: SubAccountStatus,
+  next: SubAccountStatus
+): void {
+  if (prior === next) return
+  const allowed: Record<SubAccountStatus, readonly SubAccountStatus[]> = {
+    unfunded: ['funding'],
+    funding: ['available', 'retired'],
+    available: ['in-use', 'retired'],
+    'in-use': ['spent', 'retired'],
+    spent: [],
+    retired: [],
+  }
+  if (!allowed[prior].includes(next)) {
+    throw new Error(`Sub-account lifecycle cannot move ${prior} -> ${next}`)
+  }
+}
+
 /**
  * Persistence boundary for `MonadSubAccountPool`'s state. Concrete implementations: an in-memory
  * one (`InMemorySubAccountPoolStore`, below — used in tests and as a lightweight default) and a
@@ -83,7 +174,15 @@ export type SubAccountRecord = SubAccountRecordBase &
 export interface SubAccountPoolStore {
   getByIndex(index: number): SubAccountRecord | undefined
   put(record: SubAccountRecord): void
+  putMany(records: readonly SubAccountRecord[]): void
   getAll(): SubAccountRecord[]
+  /** At most `limit` rows strictly after `afterIndex`, without materializing full history. */
+  scanRecords(afterIndex: number, limit: number): SubAccountRecord[]
+  /** Persistent allocation high-water mark. It never moves backward when rows are compacted. */
+  getNextIndex(): number
+  setNextIndex(index: number): void
+  replaceWithCheckpoint(checkpoint: TerminalSubAccountCheckpoint): void
+  getCheckpoints(): TerminalSubAccountCheckpoint[]
   /** Waits until every preceding mutation is durable. In-memory stores resolve immediately. */
   flush(): Promise<void>
   clear(): Promise<void>
@@ -93,24 +192,148 @@ export interface SubAccountPoolStore {
  * tests, and as a default before a persisted store is wired up. */
 export class InMemorySubAccountPoolStore implements SubAccountPoolStore {
   private readonly recordsByIndex = new Map<number, SubAccountRecord>()
+  private readonly checkpointsByIndex = new Map<
+    number,
+    TerminalSubAccountCheckpoint
+  >()
+  private sortedRecordIndices: number[] = []
+  private nextIndex = 0
 
   getByIndex(index: number): SubAccountRecord | undefined {
-    return this.recordsByIndex.get(index)
+    const record = this.recordsByIndex.get(index)
+    return record === undefined ? undefined : cloneSubAccountRecord(record)
   }
 
   put(record: SubAccountRecord): void {
-    this.recordsByIndex.set(record.index, { ...record })
+    if (this.checkpointsByIndex.has(record.index)) {
+      throw new Error(
+        `Cannot recreate compacted sub-account index ${record.index}`
+      )
+    }
+    if (!this.recordsByIndex.has(record.index))
+      this.insertSortedIndex(record.index)
+    this.recordsByIndex.set(record.index, cloneSubAccountRecord(record))
+    this.nextIndex = Math.max(this.nextIndex, record.index + 1)
+  }
+
+  putMany(records: readonly SubAccountRecord[]): void {
+    const stagedRecords = new Map(this.recordsByIndex)
+    let stagedNext = this.nextIndex
+    for (const record of records) {
+      if (this.checkpointsByIndex.has(record.index)) {
+        throw new Error(
+          `Cannot recreate compacted sub-account index ${record.index}`
+        )
+      }
+      stagedRecords.set(record.index, cloneSubAccountRecord(record))
+      stagedNext = Math.max(stagedNext, record.index + 1)
+    }
+    this.recordsByIndex.clear()
+    for (const [index, record] of stagedRecords) {
+      this.recordsByIndex.set(index, record)
+    }
+    this.sortedRecordIndices = Array.from(stagedRecords.keys()).sort(
+      (left, right) => left - right
+    )
+    this.nextIndex = stagedNext
   }
 
   getAll(): SubAccountRecord[] {
-    return Array.from(this.recordsByIndex.values()).sort(
-      (a, b) => a.index - b.index,
+    return Array.from(this.recordsByIndex.values())
+      .sort((a, b) => a.index - b.index)
+      .map(cloneSubAccountRecord)
+  }
+
+  scanRecords(afterIndex: number, limit: number): SubAccountRecord[] {
+    const start = lowerBoundAfter(this.sortedRecordIndices, afterIndex)
+    if (start === this.sortedRecordIndices.length) return []
+    return this.sortedRecordIndices
+      .slice(start, start + limit)
+      .map((index) =>
+        cloneSubAccountRecord(
+          this.recordsByIndex.get(index) as SubAccountRecord
+        )
+      )
+  }
+
+  getNextIndex(): number {
+    return this.nextIndex
+  }
+
+  setNextIndex(index: number): void {
+    assertSubAccountIndex(index, 'Next sub-account index')
+    if (index < this.nextIndex) {
+      throw new Error(
+        'Sub-account allocation high-water mark cannot move backward'
+      )
+    }
+    this.nextIndex = index
+  }
+
+  replaceWithCheckpoint(checkpoint: TerminalSubAccountCheckpoint): void {
+    this.checkpointsByIndex.set(checkpoint.index, cloneCheckpoint(checkpoint))
+    this.recordsByIndex.delete(checkpoint.index)
+    this.sortedRecordIndices = this.sortedRecordIndices.filter(
+      (index) => index !== checkpoint.index
     )
+  }
+
+  getCheckpoints(): TerminalSubAccountCheckpoint[] {
+    return Array.from(this.checkpointsByIndex.values())
+      .sort((a, b) => a.index - b.index)
+      .map(cloneCheckpoint)
   }
 
   async flush(): Promise<void> {}
 
   async clear(): Promise<void> {
     this.recordsByIndex.clear()
+    this.sortedRecordIndices = []
+    this.checkpointsByIndex.clear()
+    this.nextIndex = 0
   }
+
+  private insertSortedIndex(index: number): void {
+    const last = this.sortedRecordIndices[this.sortedRecordIndices.length - 1]
+    if (last === undefined || last < index) {
+      this.sortedRecordIndices.push(index)
+      return
+    }
+    const position = lowerBoundAfter(this.sortedRecordIndices, index)
+    this.sortedRecordIndices.splice(position, 0, index)
+  }
+}
+
+export function lowerBoundAfter(
+  indices: readonly number[],
+  value: number
+): number {
+  let low = 0
+  let high = indices.length
+  while (low < high) {
+    const middle = low + Math.floor((high - low) / 2)
+    if (indices[middle] <= value) low = middle + 1
+    else high = middle
+  }
+  return low
+}
+
+export function assertSubAccountIndex(index: number, label: string): void {
+  if (!Number.isSafeInteger(index) || index < 0) {
+    throw new Error(
+      `${label} must be a non-negative safe integer, got ${index}`
+    )
+  }
+}
+
+export function cloneCheckpoint(
+  checkpoint: TerminalSubAccountCheckpoint
+): TerminalSubAccountCheckpoint {
+  return JSON.parse(JSON.stringify(checkpoint)) as TerminalSubAccountCheckpoint
+}
+
+export function cloneSubAccountRecord(
+  record: SubAccountRecord
+): SubAccountRecord {
+  return JSON.parse(JSON.stringify(record)) as SubAccountRecord
 }

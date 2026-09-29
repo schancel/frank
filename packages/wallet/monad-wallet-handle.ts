@@ -17,6 +17,11 @@ import { MonadTxSubmitter } from './monad-account-tx'
 import { MonadChangePool } from './monad-change-pool'
 import type { StampPaymentJournal } from './storage/stamp-payment-journal'
 import type { StampAttemptJournal } from './storage/stamp-attempt-journal'
+import type { TopicOperationJournal } from './storage/topic-operation-journal'
+import {
+  assertMonadWalletBundleProvenance,
+  type MonadWalletPersistenceBundle,
+} from './storage/monad-wallet-bundle'
 
 export interface MonadWalletHandle {
   pool: MonadSubAccountPool
@@ -31,7 +36,108 @@ export interface MonadWalletHandle {
   stampPaymentJournal?: StampPaymentJournal
   /** Durable exact raw payment sets awaiting a definitive relay success. */
   stampAttemptJournal?: StampAttemptJournal
+  /** Exact byte authority for crash-replayable topic posts and votes. */
+  topicOperationJournal?: TopicOperationJournal
+  /** Complete wallet-owned persistence authority. Production stamp composition supplies this so
+   * pools and journals cannot be assembled from unrelated roots. */
+  walletState?: MonadWalletPersistenceBundle
   /** Base URL of the `cashweb-registry` relay, e.g. `https://relay.example.com` -- each client
    * trims its own trailing slash, so this may or may not have one. */
   relayBaseUrl: string
+}
+
+const COMPLETE_STAMP_WALLET = Symbol('complete-stamp-wallet')
+const factoryProducedStampHandles = new WeakSet<object>()
+
+/** Opaque stamped-send authority. Component references are deliberately absent: the client must
+ * derive every persistence dependency from the one branded bundle. */
+export interface MonadStampWalletHandle {
+  readonly [COMPLETE_STAMP_WALLET]: true
+  readonly walletState: MonadWalletPersistenceBundle
+  readonly provider: Provider
+  readonly httpClient: MonadTxSubmitter
+  readonly relayBaseUrl: string
+}
+
+export function createMonadStampWalletHandle(params: {
+  walletState: MonadWalletPersistenceBundle
+  provider: Provider
+  httpClient: MonadTxSubmitter
+  relayBaseUrl: string
+}): MonadStampWalletHandle {
+  if (params.walletState.durability !== 'persistent') {
+    throw new Error(
+      'Production Monad stamped sends require a durable complete wallet bundle'
+    )
+  }
+  assertMonadWalletBundleProvenance(params.walletState)
+  params.walletState.assertOpen()
+  const handle: MonadStampWalletHandle = Object.freeze({
+    ...params,
+    [COMPLETE_STAMP_WALLET]: true as const,
+  })
+  factoryProducedStampHandles.add(handle)
+  return handle
+}
+
+/** Explicitly unsafe composition seam for isolated unit tests only. Production code must use
+ * `createMonadStampWalletHandle`, which rejects ephemeral or separately threaded components. */
+export function unsafeCreateMonadStampWalletHandleForTests(
+  params: MonadWalletHandle
+): MonadStampWalletHandle {
+  if (params.stampAttemptJournal === undefined) {
+    throw new Error(
+      'Monad stamped sends require a crash-safe stamp-attempt journal'
+    )
+  }
+  const walletState =
+    params.walletState ??
+    ({
+      durability: 'test-only-ephemeral',
+      pool: params.pool,
+      leaseManager: params.leaseManager,
+      changePool: params.changePool,
+      stampAttemptJournal: params.stampAttemptJournal,
+      stampPaymentJournal: params.stampPaymentJournal,
+      topicOperationJournal: params.topicOperationJournal,
+      assertOpen: () => undefined,
+      runOperation: <T>(operation: () => Promise<T>): Promise<T> => operation(),
+      assertNoOrphanedLeases: () => undefined,
+      assertSemanticallyValid: () => undefined,
+      repairAttemptSpendLifecycles: async () => undefined,
+      reconcileRestoreState: async () => undefined,
+    } as unknown as MonadWalletPersistenceBundle)
+  if (
+    walletState.pool !== params.pool ||
+    walletState.leaseManager !== params.leaseManager ||
+    walletState.changePool !== params.changePool ||
+    walletState.stampAttemptJournal !== params.stampAttemptJournal ||
+    walletState.stampPaymentJournal !== params.stampPaymentJournal ||
+    (params.topicOperationJournal !== undefined &&
+      walletState.topicOperationJournal !== params.topicOperationJournal)
+  ) {
+    throw new Error(
+      'Monad wallet components do not belong to one persistence bundle'
+    )
+  }
+  const handle: MonadStampWalletHandle = Object.freeze({
+    [COMPLETE_STAMP_WALLET]: true as const,
+    walletState,
+    provider: params.provider,
+    httpClient: params.httpClient,
+    relayBaseUrl: params.relayBaseUrl,
+  })
+  factoryProducedStampHandles.add(handle)
+  return handle
+}
+
+export function isMonadStampWalletHandle(
+  value: unknown
+): value is MonadStampWalletHandle {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    factoryProducedStampHandles.has(value as object) &&
+    (value as Partial<MonadStampWalletHandle>)[COMPLETE_STAMP_WALLET] === true
+  )
 }

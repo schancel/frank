@@ -40,6 +40,19 @@ pub(crate) fn recipient_signature_work() -> usize {
 
 /// Cashweb [`Registry`] stores [`SignedPayload`]s containing [`proto::AddressMetadata`] for
 /// addresses.
+///
+/// Raw mailbox stores are intentionally inaccessible outside this crate; inbox publication must
+/// pass through the validated atomic outbox finalizer.
+///
+/// ```compile_fail
+/// # let db: cashweb_registry::store::db::Db = todo!();
+/// let _ = db.monad_messages();
+/// ```
+///
+/// ```compile_fail
+/// # let db: cashweb_registry::store::db::Db = todo!();
+/// let _ = db.monad_outbox();
+/// ```
 #[derive(Debug)]
 pub struct Registry {
     /// Database storing the address metadata in RocksDB.
@@ -773,11 +786,12 @@ impl Registry {
         &self,
         payload_hash: &[u8],
         now_ms: i64,
+        expected_chain_id: u64,
         limits: &crate::store::monad_outbox::MonadOutboxLimits,
     ) -> Result<proto::StoredMonadMessage> {
         self.db
             .monad_outbox()
-            .finalize_delivery(payload_hash, now_ms, limits)
+            .finalize_delivery(payload_hash, now_ms, expected_chain_id, limits)
     }
 
     /// Recipient-private recovery view for retained, incomplete confirmed prefixes. This method
@@ -807,6 +821,7 @@ impl Registry {
         limit: usize,
         scan_limit: usize,
         max_canonical_bytes: usize,
+        max_inspected_bytes: usize,
     ) -> Result<crate::store::monad_outbox::ConfirmedPrefixRecoveryPage> {
         self.db
             .monad_outbox()
@@ -816,6 +831,7 @@ impl Registry {
                 limit,
                 scan_limit,
                 max_canonical_bytes,
+                max_inspected_bytes,
             )
     }
 

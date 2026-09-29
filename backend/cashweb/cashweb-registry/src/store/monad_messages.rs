@@ -125,7 +125,7 @@ pub struct RecipientMessagePage {
 }
 
 /// Allows access to stored Monad-stamped messages.
-pub struct DbMonadMessages<'a> {
+pub(crate) struct DbMonadMessages<'a> {
     db: &'a Db,
     cf_monad_messages: &'a CF,
     cf_monad_messages_by_time: &'a CF,
@@ -198,7 +198,7 @@ use self::DbMonadMessagesError::*;
 
 impl<'a> DbMonadMessages<'a> {
     /// Create a new [`DbMonadMessages`] instance.
-    pub fn new(db: &'a Db) -> Self {
+    pub(crate) fn new(db: &'a Db) -> Self {
         let cf_monad_messages = db.cf(CF_MONAD_MESSAGES).unwrap();
         let cf_monad_messages_by_time = db.cf(CF_MONAD_MESSAGES_BY_TIME).unwrap();
         let cf_monad_messages_by_recipient_time =
@@ -236,7 +236,7 @@ impl<'a> DbMonadMessages<'a> {
     }
 
     /// Inspect a durable exact-set claim without creating one.
-    pub fn get_attempt(
+    pub(crate) fn get_attempt(
         &self,
         payload_hash: &[u8],
         message: &proto::MonadStampedMessage,
@@ -285,7 +285,7 @@ impl<'a> DbMonadMessages<'a> {
     /// Persist the exact raw payment set and its bounded policy snapshot before its first
     /// broadcast. The encrypted payload itself is represented only by the message digest, avoiding
     /// attacker-controlled disk amplification.
-    pub fn claim_attempt(
+    pub(crate) fn claim_attempt(
         &self,
         payload_hash: &[u8],
         message: &proto::MonadStampedMessage,
@@ -320,7 +320,7 @@ impl<'a> DbMonadMessages<'a> {
 
     /// Release a claim after the first transaction was definitively rejected by the RPC before
     /// any member of the set verified. Timeout/accepted ambiguity deliberately does not call this.
-    pub fn delete_attempt(&self, payload_hash: &[u8]) -> Result<()> {
+    pub(crate) fn delete_attempt(&self, payload_hash: &[u8]) -> Result<()> {
         let _guard = self.db.lock_monad_outbox();
         let mut batch = rocksdb::WriteBatch::default();
         self.append_delete_attempt_to_batch(&mut batch, payload_hash);
@@ -341,7 +341,7 @@ impl<'a> DbMonadMessages<'a> {
     /// scoped only to this recipient and runtime epoch, so unrelated authenticated principals
     /// cannot make the recipient fail closed. Expiry-index cleanup is bounded per call; exact
     /// records remain authoritative even when their cleanup entry has not yet been visited.
-    pub fn consume_mailbox_challenge(
+    pub(crate) fn consume_mailbox_challenge(
         &self,
         epoch: [u8; 32],
         recipient: Address,
@@ -462,7 +462,7 @@ impl<'a> DbMonadMessages<'a> {
     /// message already existed under this `payload_hash`, its old by-time index entry is removed
     /// first (in the same batch) so a retry with a different `timestamp` doesn't leave a stale,
     /// orphaned index row behind.
-    pub fn put(
+    pub(crate) fn put(
         &self,
         payload_hash: &[u8],
         recipient: &Address,
@@ -516,7 +516,7 @@ impl<'a> DbMonadMessages<'a> {
     }
 
     /// Retrieve a [`proto::StoredMonadMessage`] by its `payload_hash`. [`None`] if not found.
-    pub fn get(&self, payload_hash: &[u8]) -> Result<Option<proto::StoredMonadMessage>> {
+    pub(crate) fn get(&self, payload_hash: &[u8]) -> Result<Option<proto::StoredMonadMessage>> {
         let serialized = match self.db.get(self.cf_monad_messages, payload_hash)? {
             Some(serialized) => serialized,
             None => return Ok(None),
@@ -528,7 +528,7 @@ impl<'a> DbMonadMessages<'a> {
 
     /// Retrieve a [`proto::StoredMonadMessage`] by its `payload_hash`, erroring with
     /// [`DbMonadMessagesError::NotFound`] if it doesn't exist.
-    pub fn get_existing(&self, payload_hash: &[u8]) -> Result<proto::StoredMonadMessage> {
+    pub(crate) fn get_existing(&self, payload_hash: &[u8]) -> Result<proto::StoredMonadMessage> {
         self.get(payload_hash)?
             .ok_or_else(|| NotFound(hex::encode(payload_hash)).into())
     }
@@ -538,7 +538,7 @@ impl<'a> DbMonadMessages<'a> {
     /// discover newly-stored messages by polling with an advancing cursor, without already
     /// knowing their `payload_hash` out of band -- see this module's docs for why this can't
     /// additionally filter by intended recipient.
-    pub fn list_since(&self, since: i64) -> Result<Vec<proto::StoredMonadMessage>> {
+    pub(crate) fn list_since(&self, since: i64) -> Result<Vec<proto::StoredMonadMessage>> {
         let start_key = by_time_key(since, &[]);
         let iter = self.db.rocksdb().iterator_cf(
             self.cf_monad_messages_by_time,
@@ -554,7 +554,7 @@ impl<'a> DbMonadMessages<'a> {
     /// List one recipient's messages with `timestamp >= since`, ordered by timestamp ascending.
     /// This is the storage boundary for the future authenticated mailbox sync route; the legacy
     /// global list remains available until that route and its client migration land together.
-    pub fn list_for_recipient_since(
+    pub(crate) fn list_for_recipient_since(
         &self,
         recipient: &Address,
         since: i64,
@@ -581,7 +581,7 @@ impl<'a> DbMonadMessages<'a> {
     /// still exist, but must not precede `since`. At most `limit + 1` index rows and
     /// `limit` primary records are examined. The byte budget is the exact protobuf response size;
     /// a record is either returned whole or rejected as too large.
-    pub fn list_for_recipient_since_capped(
+    pub(crate) fn list_for_recipient_since_capped(
         &self,
         recipient: &Address,
         since: i64,

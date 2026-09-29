@@ -77,6 +77,10 @@ const MAX_PRIVATE_MAILBOX_PAGE: usize = 100;
 const MAX_PRIVATE_MAILBOX_RESPONSE_BYTES: usize = MAX_MONAD_MESSAGE_BODY_BYTES * 2 + 16 * 1024;
 const DEFAULT_PRIVATE_MAILBOX_RESPONSE_BYTES: usize = MAX_PRIVATE_MAILBOX_RESPONSE_BYTES;
 const MAX_PRIVATE_RECOVERY_SCAN: usize = 512;
+// Recovery JSON hex encoding needs at most two response bytes per canonical protobuf byte, while
+// inspected RocksDB work is independently capped at the full requested response-byte ceiling.
+const PRIVATE_RECOVERY_CANONICAL_BUDGET_DIVISOR: usize = 2;
+const PRIVATE_RECOVERY_WORK_BUDGET_DIVISOR: usize = 1;
 const MAILBOX_AUTH_DOMAIN: &[u8] = b"frank:mailbox-http-auth:v1\0";
 const MAILBOX_EPOCH_HEADER: &str = "x-frank-mailbox-epoch";
 const MAILBOX_NONCE_HEADER: &str = "x-frank-mailbox-nonce";
@@ -1942,16 +1946,21 @@ pub(crate) async fn handle_get_private_monad_recovery(
             cursor,
             limit,
             MAX_PRIVATE_RECOVERY_SCAN,
-            max_bytes / 2,
+            max_bytes / PRIVATE_RECOVERY_CANONICAL_BUDGET_DIVISOR,
+            max_bytes / PRIVATE_RECOVERY_WORK_BUDGET_DIVISOR,
         )
         .map_err(map_private_store_error)?;
     debug_assert!(page.scanned <= MAX_PRIVATE_RECOVERY_SCAN);
-    debug_assert!(page.canonical_bytes <= max_bytes / 2);
+    debug_assert!(page.canonical_bytes <= max_bytes / PRIVATE_RECOVERY_CANONICAL_BUDGET_DIVISOR);
     // The work meter includes one bounded record/member lookahead used to discover overflow, so
     // it may exceed the half-budget while the omitted row remains reachable from the cursor.
     for recovery in &page.recoveries {
-        crate::monad_outbox::validate_monad_recovery_record(recovery, runtime.expected_chain_id())
-            .map_err(PrivateMailboxError::Infrastructure)?;
+        crate::monad_outbox::validate_monad_recovery_record(
+            recovery,
+            runtime.expected_chain_id(),
+            runtime.reconcile().limits.max_members,
+        )
+        .map_err(PrivateMailboxError::Infrastructure)?;
     }
     let recoveries = page
         .recoveries
@@ -4311,7 +4320,7 @@ mod tests {
                 hash,
                 Box::new(move || {
                     registry_for_hook
-                        .finalize_monad_outbox(&hash, 5, &limits_for_hook)
+                        .finalize_monad_outbox(&hash, 5, 41_454, &limits_for_hook)
                         .unwrap();
                     registry_for_hook
                         .gc_monad_outbox_history(6, &limits_for_hook)
@@ -4648,9 +4657,12 @@ mod tests {
         assert!(server
             .registry
             .mark_monad_outbox_fully_confirmed(&messages[0].payload_hash, 4)?);
-        server
-            .registry
-            .finalize_monad_outbox(&messages[0].payload_hash, 5, &config.limits)?;
+        server.registry.finalize_monad_outbox(
+            &messages[0].payload_hash,
+            5,
+            config.expected_chain_id,
+            &config.limits,
+        )?;
         let cursor = server
             .monad_mailbox
             .as_enabled()

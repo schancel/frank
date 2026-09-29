@@ -48,19 +48,32 @@ import { useChatStore } from '../../stores/chats'
 
 import { openChat, openPage } from '../../utils/routes'
 import { useRouter } from 'vue-router'
+import { useQuasar } from 'quasar'
+import { isNarrowWidth } from '../../utils/layout'
 import { activeChain } from '@frank/wallet/chain'
 
 export default defineComponent({
-  setup() {
+  emits: ['closeDrawer'],
+  setup(props, { emit }) {
     const chatStore = useChatStore()
     const { getSortedChatOrder } = storeToRefs(chatStore)
 
     const router = useRouter()
+    const $q = useQuasar()
     return {
       getSortedChatOrder,
       openPage,
       setActiveChat(address: string) {
         openChat(router, address)
+        // Direct user feedback (2026-09-29, ticket #123): on a narrow/mobile viewport the
+        // drawer this list lives in is an overlay covering the whole chat -- selecting a chat
+        // used to leave that overlay open on top of the chat it just navigated to, so the chat
+        // was unusable until the user separately dismissed the drawer. Same shared threshold
+        // as MainLayout.vue's drawer (`utils/layout`). Desktop (>800px) never emits this: the
+        // sidebar is meant to stay open there.
+        if (isNarrowWidth($q.screen.width)) {
+          emit('closeDrawer')
+        }
       },
       formatAmount(amount?: number) {
         if (!amount) {

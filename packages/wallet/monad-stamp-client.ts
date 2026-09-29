@@ -724,7 +724,19 @@ export class MonadStampClient {
       headers: { 'Content-Type': 'application/x-protobuf' },
       responseType: 'arraybuffer',
     })
-    return decodeStoredMonadMessage(new Uint8Array(response.data))
+    const stored = decodeStoredMonadMessage(new Uint8Array(response.data))
+    if (
+      stored.message === undefined ||
+      !bytesEqual(encodeMonadStampedMessage(stored.message), encoded)
+    ) {
+      // A 2xx only proves that an HTTP peer answered. It does not prove that the relay retained
+      // this exact payment set. Treat a missing/different nested message like a lost response so
+      // the caller keeps its journal and reservations until the exact read side confirms it.
+      throw new Error(
+        'Relay returned success without the exact submitted Monad-stamped message',
+      )
+    }
+    return stored
   }
 
   /**
@@ -1027,8 +1039,9 @@ export class MonadStampClient {
         )
       }
 
-      // No HTTP response at all: genuinely unknown whether the relay received/broadcast/stored the
-      // message before the connection dropped. Fall back to polling the read side before giving up.
+      // A missing HTTP response or a semantically invalid 2xx is genuinely ambiguous: the relay
+      // may still have received/broadcast/stored the exact message. Poll the read side before
+      // giving up, and require byte-for-byte equality there too.
       const stored = await this.pollForStoredMessage(
         payloadHashHex,
         message,

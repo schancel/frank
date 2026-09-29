@@ -1947,7 +1947,8 @@ pub(crate) async fn handle_get_private_monad_recovery(
         .map_err(map_private_store_error)?;
     debug_assert!(page.scanned <= MAX_PRIVATE_RECOVERY_SCAN);
     debug_assert!(page.canonical_bytes <= max_bytes / 2);
-    debug_assert!(page.inspected_bytes <= max_bytes / 2);
+    // The work meter includes one bounded record/member lookahead used to discover overflow, so
+    // it may exceed the half-budget while the omitted row remains reachable from the cursor.
     for recovery in &page.recoveries {
         crate::monad_outbox::validate_monad_recovery_record(recovery, runtime.expected_chain_id())
             .map_err(PrivateMailboxError::Infrastructure)?;

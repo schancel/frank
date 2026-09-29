@@ -519,6 +519,8 @@ fn validate_persisted_record(
         )
     })?;
     let key: [u8; 32] = payload_hash.try_into().expect("validated payload hash");
+    let require_fully_confirmed = record.lifecycle == MonadOutboxLifecycle::FullyConfirmed;
+    let mut confirmed_total = 0u128;
     for payment in &message.stamp_payments {
         let (loaded_record, member, raw_tx) =
             registry.monad_outbox_referenced_raw_tx(payload_hash, payment.child_index)?;
@@ -538,11 +540,30 @@ fn validate_persisted_record(
         if decoded.value_wei == 0 {
             bail!("persisted payment has zero signed value");
         }
-        if let MonadOutboxMemberState::Confirmed { value_wei, .. } = member.state {
-            if value_wei != decoded.value_wei {
-                bail!("persisted confirmation value differs from signed transaction value");
+        match member.state {
+            MonadOutboxMemberState::Confirmed { value_wei, .. } => {
+                if value_wei != decoded.value_wei {
+                    bail!("persisted confirmation value differs from signed transaction value");
+                }
+                if require_fully_confirmed {
+                    confirmed_total =
+                        confirmed_total
+                            .checked_add(decoded.value_wei)
+                            .ok_or_else(|| {
+                                crate::store::monad_outbox::DbMonadOutboxError::CorruptRecord(
+                                    "fully-confirmed signed value sum overflowed".to_string(),
+                                )
+                            })?;
+                }
             }
+            _ if require_fully_confirmed => {
+                bail!("fully-confirmed claim contains a non-confirmed member")
+            }
+            _ => {}
         }
+    }
+    if require_fully_confirmed && confirmed_total < policy.min_value_wei {
+        bail!("fully-confirmed signed value total is below the frozen minimum");
     }
     Ok(message)
 }
@@ -564,6 +585,8 @@ pub(crate) fn validate_monad_recovery_record(
     {
         bail!("recovery snapshot member count differs from canonical request");
     }
+    let require_fully_confirmed = recovery.lifecycle == MonadOutboxLifecycle::FullyConfirmed;
+    let mut confirmed_total = 0u128;
     for (payment, member) in recovery.message.stamp_payments.iter().zip(
         recovery
             .confirmed_prefix
@@ -588,11 +611,30 @@ pub(crate) fn validate_monad_recovery_record(
         if decoded.value_wei == 0 {
             bail!("recovery payment has zero signed value");
         }
-        if let MonadOutboxMemberState::Confirmed { value_wei, .. } = member.state {
-            if value_wei != decoded.value_wei {
-                bail!("recovery confirmation value differs from signed transaction value");
+        match member.state {
+            MonadOutboxMemberState::Confirmed { value_wei, .. } => {
+                if value_wei != decoded.value_wei {
+                    bail!("recovery confirmation value differs from signed transaction value");
+                }
+                if require_fully_confirmed {
+                    confirmed_total =
+                        confirmed_total
+                            .checked_add(decoded.value_wei)
+                            .ok_or_else(|| {
+                                crate::store::monad_outbox::DbMonadOutboxError::CorruptRecord(
+                                    "fully-confirmed recovery value sum overflowed".to_string(),
+                                )
+                            })?;
+                }
             }
+            _ if require_fully_confirmed => {
+                bail!("fully-confirmed recovery contains a non-confirmed member")
+            }
+            _ => {}
         }
+    }
+    if require_fully_confirmed && confirmed_total < recovery.policy.min_value_wei {
+        bail!("fully-confirmed recovery total is below the frozen minimum");
     }
     Ok(())
 }
@@ -2244,6 +2286,113 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn fully_confirmed_authority_requires_every_member_and_frozen_minimum() -> Result<()> {
+        let tempdir = tempdir::TempDir::new("monad-outbox-fully-confirmed-authority")?;
+        let config = fast_config();
+
+        let partial_registry = registry(&tempdir.path().join("partial.rocksdb"));
+        let (partial, partial_policy, partial_transport) =
+            fixture(&[SendBehavior::Accept, SendBehavior::Accept], &[true, true]);
+        partial_registry.claim_monad_outbox(&partial, &partial_policy, now_ms(), &config.limits)?;
+        let lease = match partial_registry.acquire_monad_outbox_reconcile_lease(
+            &partial.payload_hash,
+            0,
+            now_ms(),
+            &config.limits,
+        )? {
+            MonadOutboxLeaseAcquire::Acquired { lease, .. } => lease,
+            other => panic!("expected partial corruption fixture lease, got {other:?}"),
+        };
+        partial_registry.complete_confirmed_monad_outbox_member(
+            &partial.payload_hash,
+            0,
+            lease,
+            10,
+            7,
+            now_ms(),
+        )?;
+        partial_registry.replace_monad_outbox_lifecycle_for_test(
+            &partial.payload_hash,
+            MonadOutboxLifecycle::FullyConfirmed,
+        )?;
+        assert!(partial_registry
+            .finalize_monad_outbox(&partial.payload_hash, now_ms(), &config.limits)
+            .is_err());
+        let partial_recovery = partial_registry
+            .confirmed_monad_outbox_prefixes(partial_policy.recipient, 1)?
+            .pop()
+            .expect("partial confirmed prefix must remain recoverable");
+        assert!(
+            validate_monad_recovery_record(&partial_recovery, config.expected_chain_id).is_err()
+        );
+        assert_eq!(
+            reconcile_monad_outbox(
+                &partial_transport,
+                &partial_registry,
+                &partial.payload_hash,
+                &config,
+            )
+            .await?,
+            MonadOutboxReconcileOutcome::Terminal(MonadOutboxTerminal::CorruptReference)
+        );
+        assert!(partial_transport.calls().is_empty());
+        assert!(partial_registry
+            .get_monad_message(&partial.payload_hash)?
+            .is_none());
+
+        let minimum_registry = registry(&tempdir.path().join("minimum.rocksdb"));
+        let (minimum, minimum_policy, minimum_transport) =
+            fixture(&[SendBehavior::Accept], &[true]);
+        minimum_registry.claim_monad_outbox(&minimum, &minimum_policy, now_ms(), &config.limits)?;
+        let lease = match minimum_registry.acquire_monad_outbox_reconcile_lease(
+            &minimum.payload_hash,
+            0,
+            now_ms(),
+            &config.limits,
+        )? {
+            MonadOutboxLeaseAcquire::Acquired { lease, .. } => lease,
+            other => panic!("expected minimum corruption fixture lease, got {other:?}"),
+        };
+        minimum_registry.complete_confirmed_monad_outbox_member(
+            &minimum.payload_hash,
+            0,
+            lease,
+            10,
+            7,
+            now_ms(),
+        )?;
+        assert!(
+            minimum_registry.mark_monad_outbox_fully_confirmed(&minimum.payload_hash, now_ms())?
+        );
+        minimum_registry.replace_monad_outbox_minimum_for_test(&minimum.payload_hash, 11)?;
+        assert!(minimum_registry
+            .finalize_monad_outbox(&minimum.payload_hash, now_ms(), &config.limits)
+            .is_err());
+        let minimum_recovery = minimum_registry
+            .confirmed_monad_outbox_prefixes(minimum_policy.recipient, 1)?
+            .pop()
+            .expect("fully confirmed row must remain recoverable before publication");
+        assert!(
+            validate_monad_recovery_record(&minimum_recovery, config.expected_chain_id).is_err()
+        );
+        assert_eq!(
+            reconcile_monad_outbox(
+                &minimum_transport,
+                &minimum_registry,
+                &minimum.payload_hash,
+                &config,
+            )
+            .await?,
+            MonadOutboxReconcileOutcome::Terminal(MonadOutboxTerminal::CorruptReference)
+        );
+        assert!(minimum_transport.calls().is_empty());
+        assert!(minimum_registry
+            .get_monad_message(&minimum.payload_hash)?
+            .is_none());
+        Ok(())
+    }
+
     #[test]
     fn recovery_page_validates_large_short_prefix_with_one_metered_read_and_decode_per_row(
     ) -> Result<()> {
@@ -2299,11 +2448,14 @@ mod tests {
         assert_eq!(page.recoveries.len(), 1);
         assert!(page.canonical_bytes <= exact_budget);
         assert_eq!(page.inspected_bytes, exact_budget);
-        assert_eq!(recovery_page_work_counts(), (65, 65, exact_budget));
+        assert_eq!(
+            recovery_page_work_counts(),
+            (65, exact_budget, 65, exact_budget)
+        );
         validate_monad_recovery_record(&page.recoveries[0], 41_454)?;
         assert_eq!(
             recovery_page_work_counts(),
-            (65, 65, exact_budget),
+            (65, exact_budget, 65, exact_budget),
             "in-memory economic validation performs no second DB read or decode"
         );
 

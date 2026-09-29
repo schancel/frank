@@ -50,34 +50,40 @@ thread_local! {
 
 #[cfg(test)]
 thread_local! {
-    static RECOVERY_PAGE_WORK: std::cell::Cell<(usize, usize, usize)> =
-        const { std::cell::Cell::new((0, 0, 0)) };
+    static RECOVERY_PAGE_WORK: std::cell::Cell<(usize, usize, usize, usize)> =
+        const { std::cell::Cell::new((0, 0, 0, 0)) };
 }
 
 #[cfg(test)]
 pub(crate) fn reset_recovery_page_work_counts() {
-    RECOVERY_PAGE_WORK.set((0, 0, 0));
+    RECOVERY_PAGE_WORK.set((0, 0, 0, 0));
 }
 
 #[cfg(test)]
-pub(crate) fn recovery_page_work_counts() -> (usize, usize, usize) {
+pub(crate) fn recovery_page_work_counts() -> (usize, usize, usize, usize) {
     RECOVERY_PAGE_WORK.get()
 }
 
 #[cfg(test)]
-fn note_recovery_page_read() {
-    let (reads, decodes, bytes) = RECOVERY_PAGE_WORK.get();
-    RECOVERY_PAGE_WORK.set((reads.saturating_add(1), decodes, bytes));
+fn note_recovery_page_read(bytes: usize) {
+    let (reads, read_bytes, decodes, decoded_bytes) = RECOVERY_PAGE_WORK.get();
+    RECOVERY_PAGE_WORK.set((
+        reads.saturating_add(1),
+        read_bytes.saturating_add(bytes),
+        decodes,
+        decoded_bytes,
+    ));
 }
 
 #[cfg(not(test))]
-fn note_recovery_page_read() {}
+fn note_recovery_page_read(_bytes: usize) {}
 
 #[cfg(test)]
 fn note_recovery_page_decode(bytes: usize) {
-    let (reads, decodes, decoded_bytes) = RECOVERY_PAGE_WORK.get();
+    let (reads, read_bytes, decodes, decoded_bytes) = RECOVERY_PAGE_WORK.get();
     RECOVERY_PAGE_WORK.set((
         reads,
+        read_bytes,
         decodes.saturating_add(1),
         decoded_bytes.saturating_add(bytes),
     ));
@@ -370,7 +376,8 @@ pub struct ConfirmedPrefixRecoveryPage {
     pub scanned: usize,
     /// Aggregate canonical protobuf bytes materialized for returned records.
     pub canonical_bytes: usize,
-    /// Encoded outbox/member bytes inspected, including filtered rows.
+    /// Encoded outbox/member bytes physically fetched, including filtered rows and at most one
+    /// bounded lookahead value that exceeded the requested work budget.
     pub inspected_bytes: usize,
 }
 
@@ -799,6 +806,39 @@ impl<'a> DbMonadOutbox<'a> {
             .get(&payload_hash)?
             .ok_or_else(|| CorruptRecord("test outbox row is missing".to_string()))?;
         record.canonical_message = Some(message.encode_to_vec());
+        self.db
+            .put(self.cf_outbox, &payload_hash, encode_record(&record))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn replace_lifecycle_for_test(
+        &self,
+        payload_hash: &[u8],
+        lifecycle: MonadOutboxLifecycle,
+    ) -> Result<()> {
+        let payload_hash = checked_payload_hash(payload_hash)?;
+        let _guard = self.db.lock_monad_outbox();
+        let mut record = self
+            .get(&payload_hash)?
+            .ok_or_else(|| CorruptRecord("test outbox row is missing".to_string()))?;
+        record.lifecycle = lifecycle;
+        self.db
+            .put(self.cf_outbox, &payload_hash, encode_record(&record))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn replace_minimum_for_test(
+        &self,
+        payload_hash: &[u8],
+        min_value_wei: u128,
+    ) -> Result<()> {
+        let payload_hash = checked_payload_hash(payload_hash)?;
+        let _guard = self.db.lock_monad_outbox();
+        let mut record = self
+            .get(&payload_hash)?
+            .ok_or_else(|| CorruptRecord("test outbox row is missing".to_string()))?;
+        active_policy(&record)?;
+        record.policy.as_mut().expect("checked above").min_value_wei = min_value_wei;
         self.db
             .put(self.cf_outbox, &payload_hash, encode_record(&record))
     }
@@ -1514,6 +1554,27 @@ impl<'a> DbMonadOutbox<'a> {
         }
         let message = Self::canonical_message(&record)?;
         let policy = active_policy(&record)?.clone();
+        let mut confirmed_total = 0u128;
+        for payment in &message.stamp_payments {
+            let member = self
+                .get_member(&payload_hash, payment.child_index)?
+                .ok_or_else(|| CorruptRecord("fully-confirmed child row missing".to_string()))?;
+            let MonadOutboxMemberState::Confirmed { value_wei, .. } = member.state else {
+                return Err(CorruptRecord(
+                    "fully-confirmed claim contains a non-confirmed member".to_string(),
+                )
+                .into());
+            };
+            confirmed_total = confirmed_total
+                .checked_add(value_wei)
+                .ok_or_else(|| CorruptRecord("fully-confirmed value sum overflowed".to_string()))?;
+        }
+        if confirmed_total < policy.min_value_wei {
+            return Err(CorruptRecord(
+                "fully-confirmed value total is below the frozen minimum".to_string(),
+            )
+            .into());
+        }
         let child_indices = message
             .stamp_payments
             .iter()
@@ -1620,14 +1681,15 @@ impl<'a> DbMonadOutbox<'a> {
             let payload_hash = checked_payload_hash(&key[20..])?;
             let previous_cursor = last_scanned;
             let row_work_start = inspected_bytes;
-            note_recovery_page_read();
             let encoded_record = self.db.get(self.cf_outbox, payload_hash)?.ok_or_else(|| {
                 CorruptRecord("recipient index references missing outbox".to_string())
             })?;
-            if inspected_bytes.saturating_add(encoded_record.len()) > max_canonical_bytes {
-                if inspected_bytes == 0 && recoveries.is_empty() {
+            note_recovery_page_read(encoded_record.len());
+            inspected_bytes = inspected_bytes.saturating_add(encoded_record.len());
+            if inspected_bytes > max_canonical_bytes {
+                if row_work_start == 0 && recoveries.is_empty() {
                     return Err(RecoveryRecordExceedsPageBudget {
-                        required: encoded_record.len(),
+                        required: inspected_bytes,
                         maximum: max_canonical_bytes,
                     }
                     .into());
@@ -1635,7 +1697,6 @@ impl<'a> DbMonadOutbox<'a> {
                 has_more = true;
                 break;
             }
-            inspected_bytes = inspected_bytes.saturating_add(encoded_record.len());
             scanned += 1;
             last_scanned = Some(payload_hash);
             note_recovery_page_decode(encoded_record.len());
@@ -1654,7 +1715,6 @@ impl<'a> DbMonadOutbox<'a> {
             let mut remaining_members = Vec::new();
             let mut prefix_open = true;
             for payment in &message.stamp_payments {
-                note_recovery_page_read();
                 let encoded_member = self
                     .db
                     .get(
@@ -1662,10 +1722,12 @@ impl<'a> DbMonadOutbox<'a> {
                         member_key(&payload_hash, payment.child_index),
                     )?
                     .ok_or_else(|| CorruptRecord("recovery member missing".to_string()))?;
-                if inspected_bytes.saturating_add(encoded_member.len()) > max_canonical_bytes {
+                note_recovery_page_read(encoded_member.len());
+                inspected_bytes = inspected_bytes.saturating_add(encoded_member.len());
+                if inspected_bytes > max_canonical_bytes {
                     if row_work_start == 0 && recoveries.is_empty() {
                         return Err(RecoveryRecordExceedsPageBudget {
-                            required: inspected_bytes.saturating_add(encoded_member.len()),
+                            required: inspected_bytes,
                             maximum: max_canonical_bytes,
                         }
                         .into());
@@ -1674,7 +1736,6 @@ impl<'a> DbMonadOutbox<'a> {
                     last_scanned = previous_cursor;
                     break 'rows;
                 }
-                inspected_bytes = inspected_bytes.saturating_add(encoded_member.len());
                 note_recovery_page_decode(encoded_member.len());
                 let member = decode_member(payment.child_index, &encoded_member)?;
                 if prefix_open && matches!(member.state, MonadOutboxMemberState::Confirmed { .. }) {
@@ -1772,12 +1833,9 @@ impl<'a> DbMonadOutbox<'a> {
             if record.canonical_message.is_none() {
                 continue;
             }
-            let retained = usize::try_from(self.recovery_reserved_claim_bytes_locked(
-                &payload_hash,
-                &record,
-                encoded_record.len(),
-            )?)
-            .unwrap_or(usize::MAX);
+            let retained =
+                usize::try_from(self.recovery_reserved_claim_bytes_locked(&payload_hash, &record)?)
+                    .unwrap_or(usize::MAX);
             global_records = global_records.saturating_add(1);
             global_bytes = global_bytes.saturating_add(retained);
             if policy.recipient == *recipient {
@@ -1799,9 +1857,12 @@ impl<'a> DbMonadOutbox<'a> {
         &self,
         payload_hash: &[u8; 32],
         record: &MonadOutboxRecord,
-        encoded_record_len: usize,
     ) -> Result<u64> {
-        let mut total = encoded_record_len
+        // Legacy v1/v2 rows are shorter than the normalized v3 encoding produced by their next
+        // transition. Reserve from the decoded v3 shape so reopening an old row cannot admit
+        // bytes that a later lease/error write grows beyond the configured ceiling.
+        let mut total = encode_record(record)
+            .len()
             .saturating_sub(record.last_error.len())
             .saturating_add(MAX_LAST_ERROR_BYTES_HARD) as u64;
         let message = Self::canonical_message(record)?;
@@ -2520,6 +2581,76 @@ mod tests {
         }
     }
 
+    fn put_legacy_active_record(
+        db: &Db,
+        request: &proto::MonadStampedMessage,
+        policy: &MonadOutboxPolicy,
+        version: u8,
+    ) -> Result<[u8; 32]> {
+        let payload_hash: [u8; 32] = request.payload_hash.as_slice().try_into().unwrap();
+        let diagnostic = "x".repeat(MAX_LAST_ERROR_BYTES_HARD);
+        let mut record = if version == RECORD_VERSION_V1 {
+            let mut record = vec![RECORD_VERSION_V1, 0, 0];
+            record.extend_from_slice(&100i64.to_be_bytes());
+            record.extend_from_slice(&101i64.to_be_bytes());
+            record.extend_from_slice(&3u32.to_be_bytes());
+            record.extend_from_slice(&policy.min_value_wei.to_be_bytes());
+            record.extend_from_slice(&policy.recipient.0);
+            put_bytes(&mut record, &policy.recipient_pubkey);
+            put_bytes(&mut record, &policy.network_tag);
+            put_bytes(&mut record, diagnostic.as_bytes());
+            put_bytes(&mut record, &request.encode_to_vec());
+            record
+        } else {
+            let mut record = vec![RECORD_VERSION_V2, 0, 0, 0];
+            record.extend_from_slice(&100i64.to_be_bytes());
+            record.extend_from_slice(&101i64.to_be_bytes());
+            record.extend_from_slice(&3u32.to_be_bytes());
+            put_bytes(&mut record, diagnostic.as_bytes());
+            record.extend_from_slice(&policy.min_value_wei.to_be_bytes());
+            record.extend_from_slice(&policy.recipient.0);
+            put_bytes(&mut record, &policy.recipient_pubkey);
+            put_bytes(&mut record, &policy.network_tag);
+            put_bytes(&mut record, &request.encode_to_vec());
+            record
+        };
+        db.put(
+            db.monad_outbox().cf_outbox,
+            payload_hash,
+            std::mem::take(&mut record),
+        )?;
+
+        for payment in &request.stamp_payments {
+            let mut member = vec![version, 0, 0];
+            member.extend_from_slice(&Hash32(Keccak256::digest(&payment.raw_tx).into()).0);
+            member.extend_from_slice(&2u32.to_be_bytes());
+            member.extend_from_slice(&101i64.to_be_bytes());
+            member.extend_from_slice(&0u128.to_be_bytes());
+            member.extend_from_slice(&0u64.to_be_bytes());
+            if version == RECORD_VERSION_V2 {
+                member.extend_from_slice(&4u64.to_be_bytes());
+                member.extend_from_slice(&0i64.to_be_bytes());
+            }
+            put_bytes(&mut member, diagnostic.as_bytes());
+            db.put(
+                db.monad_outbox().cf_members,
+                member_key(&payload_hash, payment.child_index),
+                member,
+            )?;
+        }
+        db.put(
+            db.monad_outbox().cf_active,
+            payload_hash,
+            100i64.to_be_bytes(),
+        )?;
+        db.put(
+            db.monad_outbox().cf_recipient,
+            recipient_key(&policy.recipient, &payload_hash),
+            [],
+        )?;
+        Ok(payload_hash)
+    }
+
     fn put_legacy_v1_delivered_record(
         db: &Db,
         request: &proto::MonadStampedMessage,
@@ -2714,11 +2845,7 @@ mod tests {
             let record = store.get(&hash)?.unwrap();
             let actual =
                 store.retained_claim_bytes_locked(&hash, &record, encode_record(&record).len())?;
-            let reserved = store.recovery_reserved_claim_bytes_locked(
-                &hash,
-                &record,
-                encode_record(&record).len(),
-            )?;
+            let reserved = store.recovery_reserved_claim_bytes_locked(&hash, &record)?;
             assert_eq!(
                 reserved,
                 actual + 3 * MAX_LAST_ERROR_BYTES_HARD as u64,
@@ -2865,11 +2992,7 @@ mod tests {
         let hash: [u8; 32] = request.payload_hash.as_slice().try_into().unwrap();
         let record = store.get(&hash)?.unwrap();
         assert_eq!(
-            store.recovery_reserved_claim_bytes_locked(
-                &hash,
-                &record,
-                encode_record(&record).len(),
-            )? as usize,
+            store.recovery_reserved_claim_bytes_locked(&hash, &record)? as usize,
             reservation
         );
         assert_eq!(
@@ -3421,6 +3544,88 @@ mod tests {
             usize::MAX,
         )?;
         assert_eq!(after_deleted.recoveries[0].payload_hash, recovered[1]);
+        Ok(())
+    }
+
+    #[test]
+    fn recovery_budget_charges_record_and_member_lookahead_without_skipping_row() -> Result<()> {
+        let tempdir = tempdir::TempDir::new("monad-outbox-recovery-lookahead")?;
+        let db = Db::open(tempdir.path().join("db.rocksdb"))?;
+        let store = db.monad_outbox();
+        let limits = MonadOutboxLimits::default();
+        let first = message_with_seed(b"lookahead-small", &[b"small-member"]);
+        let second = (0u32..)
+            .map(|suffix| {
+                message_with_seed(
+                    &suffix.to_be_bytes(),
+                    &[b"large-zero", b"large-one", b"large-two"],
+                )
+            })
+            .find(|candidate| candidate.payload_hash > first.payload_hash)
+            .expect("a lexicographically later recovery fixture must exist");
+        let requests = vec![first, second];
+        for request in &requests {
+            store.claim(&request.payload_hash, request, &policy(), 1, &limits)?;
+            store.confirm_observed_member(&request.payload_hash, 0, 10, 7, 2)?;
+        }
+        let first_hash: [u8; 32] = requests[0].payload_hash.as_slice().try_into().unwrap();
+        let second_hash: [u8; 32] = requests[1].payload_hash.as_slice().try_into().unwrap();
+        let encoded_len = |cf: &CF, key: Vec<u8>| -> Result<usize> {
+            Ok(db
+                .get(cf, key)?
+                .expect("recovery lookahead fixture row must exist")
+                .len())
+        };
+        let first_record = encoded_len(store.cf_outbox, first_hash.to_vec())?;
+        let first_member = encoded_len(store.cf_members, member_key(&first_hash, 0).to_vec())?;
+        let first_work = first_record + first_member;
+        let second_record = encoded_len(store.cf_outbox, second_hash.to_vec())?;
+        let second_member0 = encoded_len(store.cf_members, member_key(&second_hash, 0).to_vec())?;
+        let second_member1 = encoded_len(store.cf_members, member_key(&second_hash, 1).to_vec())?;
+
+        reset_recovery_page_work_counts();
+        let record_overflow = store.confirmed_prefixes_for_recipient_page(
+            &policy().recipient,
+            None,
+            2,
+            2,
+            first_work + second_record - 1,
+        )?;
+        assert_eq!(record_overflow.recoveries.len(), 1);
+        assert_eq!(record_overflow.next_cursor, Some(first_hash));
+        assert_eq!(record_overflow.inspected_bytes, first_work + second_record);
+        assert_eq!(
+            recovery_page_work_counts(),
+            (3, first_work + second_record, 2, first_work),
+            "the overflowing second record is charged as read but not decoded"
+        );
+
+        reset_recovery_page_work_counts();
+        let member_overflow = store.confirmed_prefixes_for_recipient_page(
+            &policy().recipient,
+            None,
+            2,
+            2,
+            first_work + second_record + second_member0 + second_member1 - 1,
+        )?;
+        let charged = first_work + second_record + second_member0 + second_member1;
+        assert_eq!(member_overflow.recoveries.len(), 1);
+        assert_eq!(member_overflow.next_cursor, Some(first_hash));
+        assert_eq!(member_overflow.inspected_bytes, charged);
+        assert_eq!(
+            recovery_page_work_counts(),
+            (5, charged, 4, charged - second_member1),
+            "the overflowing later member is charged as read but not decoded"
+        );
+        let resumed = store.confirmed_prefixes_for_recipient_page(
+            &policy().recipient,
+            member_overflow.next_cursor,
+            1,
+            1,
+            usize::MAX,
+        )?;
+        assert_eq!(resumed.recoveries.len(), 1);
+        assert_eq!(resumed.recoveries[0].payload_hash, second_hash);
         Ok(())
     }
 
@@ -3977,6 +4182,101 @@ mod tests {
             encode_member(&member),
         )?;
         assert!(store.referenced_raw_tx(&payload_hash, 0).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_active_quota_reserves_normalized_v3_growth_at_exact_boundaries() -> Result<()> {
+        for version in [RECORD_VERSION_V1, RECORD_VERSION_V2] {
+            for per_recipient in [false, true] {
+                let tempdir = tempdir::TempDir::new("monad-outbox-legacy-active-quota")?;
+                let path = tempdir.path().join("db.rocksdb");
+                let legacy =
+                    message_with_seed(&[version, per_recipient as u8, 0], &[b"legacy-active-raw"]);
+                let candidate =
+                    message_with_seed(&[version, per_recipient as u8, 1], &[b"new-active-raw"]);
+                {
+                    let db = Db::open(&path)?;
+                    put_legacy_active_record(&db, &legacy, &policy(), version)?;
+                }
+                let db = Db::open(&path)?;
+                let store = db.monad_outbox();
+                let legacy_hash: [u8; 32] = legacy.payload_hash.as_slice().try_into().unwrap();
+                let stored_len = db
+                    .get(store.cf_outbox, legacy_hash)?
+                    .expect("legacy quota fixture row must exist")
+                    .len();
+                let legacy_record = store.get(&legacy_hash)?.unwrap();
+                let normalized_len = encode_record(&legacy_record).len();
+                assert_eq!(
+                    normalized_len - stored_len,
+                    if version == RECORD_VERSION_V1 { 29 } else { 28 },
+                    "legacy retry-policy fields must be included in reserved v3 growth"
+                );
+                let legacy_reserved = store
+                    .recovery_reserved_claim_bytes_locked(&legacy_hash, &legacy_record)?
+                    as usize;
+
+                let measure_dir = tempdir::TempDir::new("monad-outbox-new-reservation")?;
+                let measure_db = Db::open(measure_dir.path().join("db.rocksdb"))?;
+                let measure_store = measure_db.monad_outbox();
+                measure_store.claim(
+                    &candidate.payload_hash,
+                    &candidate,
+                    &policy(),
+                    102,
+                    &MonadOutboxLimits::default(),
+                )?;
+                let candidate_hash: [u8; 32] =
+                    candidate.payload_hash.as_slice().try_into().unwrap();
+                let candidate_record = measure_store.get(&candidate_hash)?.unwrap();
+                let candidate_reserved = measure_store
+                    .recovery_reserved_claim_bytes_locked(&candidate_hash, &candidate_record)?
+                    as usize;
+
+                let exact = legacy_reserved + candidate_reserved;
+                let mut limits = MonadOutboxLimits::default();
+                if per_recipient {
+                    limits.max_recovery_bytes = usize::MAX;
+                    limits.max_recovery_bytes_per_recipient = exact - 1;
+                } else {
+                    limits.max_recovery_bytes = exact - 1;
+                    limits.max_recovery_bytes_per_recipient = usize::MAX;
+                }
+                assert_eq!(
+                    store.claim(&candidate.payload_hash, &candidate, &policy(), 102, &limits)?,
+                    MonadOutboxClaim::AtCapacity,
+                    "one byte below the normalized exact boundary must reject"
+                );
+                if per_recipient {
+                    limits.max_recovery_bytes_per_recipient = exact;
+                } else {
+                    limits.max_recovery_bytes = exact;
+                }
+                assert_eq!(
+                    store.claim(&candidate.payload_hash, &candidate, &policy(), 102, &limits)?,
+                    MonadOutboxClaim::New,
+                    "the normalized exact boundary must admit"
+                );
+
+                let lease = match store.acquire_reconcile_lease(&legacy_hash, 0, 103, &limits)? {
+                    MonadOutboxLeaseAcquire::Acquired { lease, .. } => lease,
+                    other => panic!("expected legacy quota fixture lease, got {other:?}"),
+                };
+                let detail = "y".repeat(MAX_LAST_ERROR_BYTES_HARD);
+                assert_eq!(
+                    store.complete_pending_member(&legacy_hash, 0, lease, &detail, 104, &limits,)?,
+                    MonadOutboxTransition::Applied
+                );
+                let transitioned = store.get(&legacy_hash)?.unwrap();
+                assert_eq!(
+                    store.recovery_reserved_claim_bytes_locked(&legacy_hash, &transitioned)?
+                        as usize,
+                    legacy_reserved,
+                    "lease/error normalization must stay inside the reopening reservation"
+                );
+            }
+        }
         Ok(())
     }
 

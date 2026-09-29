@@ -568,6 +568,28 @@ impl Registry {
             .replace_canonical_for_test(payload_hash, message)
     }
 
+    #[cfg(test)]
+    pub(crate) fn replace_monad_outbox_lifecycle_for_test(
+        &self,
+        payload_hash: &[u8],
+        lifecycle: crate::store::monad_outbox::MonadOutboxLifecycle,
+    ) -> Result<()> {
+        self.db
+            .monad_outbox()
+            .replace_lifecycle_for_test(payload_hash, lifecycle)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn replace_monad_outbox_minimum_for_test(
+        &self,
+        payload_hash: &[u8],
+        min_value_wei: u128,
+    ) -> Result<()> {
+        self.db
+            .monad_outbox()
+            .replace_minimum_for_test(payload_hash, min_value_wei)
+    }
+
     /// Read one hash-only child state in focused recovery tests.
     #[cfg(test)]
     pub(crate) fn monad_outbox_member(

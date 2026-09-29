@@ -42,7 +42,14 @@ function challenge(T: Point, R: Point): bigint {
   return hashToScalar(taggedHash(POK_TAG, pointBytes(T), pointBytes(R)))
 }
 
-/** Prove knowledge of `t` such that `T = t*G`. Caller must ensure this holds. */
+/**
+ * Prove knowledge of `t` such that `T = t*G`. Caller must ensure this holds.
+ *
+ * Side-channel note: `t` and the proof nonce `r` (from `sampleNonce`) are both secret here. This
+ * function has no branches keyed on either; `G.multiply(r)` relies on @noble/curves' constant-time
+ * `Point.multiply`, and `modAdd`/`modMul` rely on curve.ts's branchless `mod()`. See curve.ts's
+ * header comment for the full reasoning.
+ */
 export function pokProve(t: bigint, T: Point): PokProof {
   const r = sampleNonce(POK_TAG, pointBytes(T), scalarBytes(t))
   const R = G.multiply(r)
@@ -51,7 +58,12 @@ export function pokProve(t: bigint, T: Point): PokProof {
   return { R, z }
 }
 
-/** Verify a proof of knowledge of the discrete log of `T`. */
+/**
+ * Verify a proof of knowledge of the discrete log of `T`.
+ *
+ * Side-channel note: every input here is public (`T` and the proof), so the branching below is
+ * ordinary branching on public data -- see curve.ts's header comment.
+ */
 export function pokVerify(T: Point, proof: PokProof): boolean {
   try {
     const { R, z } = proof

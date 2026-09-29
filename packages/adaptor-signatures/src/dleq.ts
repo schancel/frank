@@ -32,6 +32,12 @@ function challenge(X: Point, Y: Point, Z: Point, A_G: Point, A_Y: Point): bigint
 /**
  * Prove that `x` is the discrete log of both `X` (base `G`) and `Z` (base `Y`).
  * Caller must ensure `X === x*G` and `Z === x*Y` -- this function does not check that itself.
+ *
+ * Side-channel note: `x` (the witness) and `a` (the proof nonce, from `sampleNonce`) are both
+ * secret here. This function itself has no branches at all keyed on either. `G.multiply(a)` /
+ * `Y.multiply(a)` rely on @noble/curves' `Point.multiply` being constant-time with scalar
+ * blinding; `modAdd`/`modMul` rely on curve.ts's branchless `mod()`. See curve.ts's header comment
+ * for the full reasoning and what's out of scope.
  */
 export function dleqProve(x: bigint, X: Point, Y: Point, Z: Point): DleqProof {
   // Matches the spec's `sample_nonce(tag || X || Y || Z || x)`, folding the witness and
@@ -45,7 +51,13 @@ export function dleqProve(x: bigint, X: Point, Y: Point, Z: Point): DleqProof {
   return { b, c }
 }
 
-/** Verify a DLEQ proof that some (unknown) `x` satisfies `X = x*G` and `Z = x*Y`. */
+/**
+ * Verify a DLEQ proof that some (unknown) `x` satisfies `X = x*G` and `Z = x*Y`.
+ *
+ * Side-channel note: every input here is public (the proof and the three statement points), so
+ * the early returns and try/catch below are ordinary branching on public data, not a side-channel
+ * concern -- see curve.ts's header comment.
+ */
 export function dleqVerify(X: Point, Y: Point, Z: Point, proof: DleqProof): boolean {
   try {
     const { b, c } = proof

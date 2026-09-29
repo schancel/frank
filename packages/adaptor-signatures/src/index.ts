@@ -14,4 +14,8 @@ export {
   decryptSignature,
   recoverTweak,
   verifyStandardEcdsaSignature,
+  encodeAdaptorSignature,
+  decodeAdaptorSignature,
+  encodeEcdsaSignature,
+  decodeEcdsaSignature,
 } from './ecdsa-adaptor'

@@ -1,7 +1,7 @@
 {
   "name": "@frank/adaptor-signatures",
   "version": "0.0.1",
-  "description": "Research prototype: ECDSA adaptor signatures (\"scriptless scripts\") over secp256k1. Standalone crypto primitive, not wired into any wallet/message code -- see README-less commit message / PR description for context (ticket: research/ecdsa-adaptor-sigs branch). Implements the DLEQ-based ECDSA adaptor signature construction from the discreetlogcontracts/dlcspecs ECDSA-adaptor.md spec (Fournier + Aumayr et al.), plus an added Schnorr proof-of-knowledge of the tweak secret so the construction is sound outside the DLC-only context that spec restricts itself to.",
+  "description": "ECDSA adaptor signatures (\"scriptless scripts\") over secp256k1. Standalone crypto primitive, not yet wired into any wallet/message code -- see README.md for the full writeup: spec/paper citations, dlcspecs test-vector conformance status, the side-channel hardening pass, the nonce-generation design decision, and the two planned Frank integration points (blackjack-bot payout, DEX/atomic-swap settlement). Implements the DLEQ-based ECDSA adaptor signature construction from the discreetlogcontracts/dlcspecs ECDSA-adaptor.md spec (Fournier + Aumayr et al.), plus an added Schnorr proof-of-knowledge of the tweak secret so the construction is sound outside the DLC-only context that spec restricts itself to. NOT externally security-reviewed -- see README.md's security-status section before using this with real funds.",
   "license": "MIT",
   "private": true,
   "main": "src/index.ts",

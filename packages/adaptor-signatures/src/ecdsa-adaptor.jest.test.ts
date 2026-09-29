@@ -8,6 +8,10 @@ import {
   decryptSignature,
   recoverTweak,
   verifyStandardEcdsaSignature,
+  encodeAdaptorSignature,
+  decodeAdaptorSignature,
+  encodeEcdsaSignature,
+  decodeEcdsaSignature,
 } from './ecdsa-adaptor'
 import { G, randomScalar } from './curve'
 
@@ -133,6 +137,37 @@ describe('ECDSA adaptor signatures: full round trip', () => {
     // A signature with an unrelated r cannot correspond to this adaptor signature at all.
     const bogusSig = { r: (adaptorSig.R.x + 1n) % (1n << 256n), s: randomScalar() }
     expect(() => recoverTweak(bob.T, adaptorSig, bogusSig)).toThrow()
+  })
+
+  it('round-trips an AdaptorSignature and an EcdsaSignature through wire encode/decode', () => {
+    const alice = generateKeypair()
+    const bob = generateTweak()
+    const messageHash = digest('encode/decode round trip')
+
+    const adaptorSig = encryptedSign(alice.privateKey, bob.T, messageHash)
+    const encoded = encodeAdaptorSignature(adaptorSig)
+    expect(encoded.length).toBe(162)
+    const decoded = decodeAdaptorSignature(encoded)
+    expect(decoded.R.equals(adaptorSig.R)).toBe(true)
+    expect(decoded.Ra.equals(adaptorSig.Ra)).toBe(true)
+    expect(decoded.sa).toBe(adaptorSig.sa)
+    expect(decoded.proof.b).toBe(adaptorSig.proof.b)
+    expect(decoded.proof.c).toBe(adaptorSig.proof.c)
+    // Decoded copy must still verify and decrypt/extract identically to the original.
+    expect(verifyEncryptedSignature(alice.publicKey, bob.T, messageHash, decoded)).toBe(true)
+
+    const completed = decryptSignature(adaptorSig, bob.t)
+    const encodedSig = encodeEcdsaSignature(completed)
+    expect(encodedSig.length).toBe(64)
+    const decodedSig = decodeEcdsaSignature(encodedSig)
+    expect(decodedSig).toEqual(completed)
+  })
+
+  it('rejects malformed wire input rather than silently coercing it', () => {
+    expect(() => decodeAdaptorSignature(new Uint8Array(161))).toThrow()
+    expect(() => decodeAdaptorSignature(new Uint8Array(163))).toThrow()
+    expect(() => decodeEcdsaSignature(new Uint8Array(63))).toThrow()
+    expect(() => decodeEcdsaSignature(new Uint8Array(65))).toThrow()
   })
 
   it('rejects an unverified/forged T that has no valid proof of knowledge', () => {

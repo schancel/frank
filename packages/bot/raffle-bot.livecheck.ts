@@ -175,17 +175,81 @@ export function evaluateLeaveRequest(params: {
 export interface RefundDeps {
   state: RaffleBotStateStore
   identityAddress: string
-  provider: Pick<Provider, 'getBalance' | 'getFeeData'>
+  provider: Pick<Provider, 'getBalance' | 'getFeeData' | 'getTransactionCount'>
   signer: {
     buildAndSignTransfer(
       to: string,
       value: bigint,
-    ): Promise<{ rawTx: string; txHash: string }>
+    ): Promise<{ rawTx: string; txHash: string; nonce: number }>
     submitRaw(rawTx: string, expectedTxHash: string): Promise<string>
     getStatus(txHash: string): Promise<'pending' | 'confirmed' | 'failed'>
   }
   /** Tops the identity's gas reserve up to `neededWei` (see `ensureIdentityFunded`). */
   ensureFunded(neededWei: bigint): Promise<void>
+}
+
+/** Sum of every refund still owed or in flight (record not yet cleared, i.e. not yet CONFIRMED).
+ * These wei are already spoken for: a `latest` balance may still include an unmined refund, so
+ * the draw payout's balance check subtracts this (`raffle-bot.livecheck.ts` draw path). */
+export function reservedRefundWei(
+  state: RaffleBotStateStore,
+  excludePayloadHash?: string,
+): bigint {
+  return state
+    .getPendingRefunds()
+    .filter(r => r.payloadHash !== excludePayloadHash)
+    .reduce((sum, r) => sum + BigInt(r.amountWei), 0n)
+}
+
+/** What the draw payout can actually spend: the `latest` balance minus every refund not yet
+ * confirmed (an unmined refund's wei is still in `latest` but will leave first). */
+export function drawSpendableWei(
+  latestBalanceWei: bigint,
+  state: RaffleBotStateStore,
+): bigint {
+  return latestBalanceWei - reservedRefundWei(state)
+}
+
+/** Resolves a refund that already has a journaled signed tx. Never signs anything new.
+ *  - receipt success  -> clear the record (only now: mempool acceptance is not payment).
+ *  - receipt failed, or its nonce is below the account's confirmed nonce with no receipt -> the
+ *    tx can never mine (its nonce was consumed by another tx or it reverted), so the journal is
+ *    discarded (record kept, tx fields removed) and the caller re-signs fresh. Exactly one refund
+ *    can still land: the old tx is provably dead. The confirmed nonce is read BEFORE the receipt
+ *    so a tx mined in between shows up as a receipt, never as a false "dead".
+ *  - otherwise re-broadcast the SAME bytes (idempotent by hash) and keep the record. */
+async function resolveJournaled(
+  refund: PendingRefund,
+  deps: RefundDeps,
+): Promise<'confirmed' | 'submitted' | 'discarded'> {
+  const { state, signer } = deps
+  const txHash = refund.txHash as string
+  const confirmedNonce = await deps.provider.getTransactionCount(
+    deps.identityAddress,
+    'latest',
+  )
+  const status = await signer.getStatus(txHash)
+  if (status === 'confirmed') {
+    state.clearPendingRefund(refund.payloadHash)
+    await state.flush()
+    return 'confirmed'
+  }
+  if (
+    status === 'failed' ||
+    (refund.nonce !== undefined && refund.nonce < confirmedNonce)
+  ) {
+    state.clearPendingRefundTx(refund.payloadHash)
+    await state.flush()
+    return 'discarded'
+  }
+  try {
+    await signer.submitRaw(refund.rawTx as string, txHash)
+  } catch (err) {
+    // Re-broadcasting a tx the node already has is fine; anything else (e.g. nonce too low)
+    // propagates and is re-evaluated by the next sweep, which sees the consumed nonce.
+    if (!/already known|known transaction/i.test(String(err))) throw err
+  }
+  return 'submitted'
 }
 
 /** Pays one journaled refund. Exact ordering (the whole point of the journal):
@@ -194,75 +258,80 @@ export interface RefundDeps {
  *     `PendingRefund` record durable in ONE atomic batch (`commitLeave`) + flush. Crash before
  *     that: nothing changed, the leave is replayed from the start (the entrant is still entered).
  *     Crash after: the entrant is removed AND a refund record exists -- never one without the other.
- *  2. Fail-closed balance check. If the identity cannot cover the refund we return
- *     'insufficient-balance' and the record stays (unsigned, nothing ever submitted); it is retried
- *     on the next startup.
- *  3. Sign the transfer, journal `{txHash, rawTx}` on the record and FLUSH -- strictly before
- *     submitting. Crash before this flush: nothing was submitted, so the retry signs afresh.
- *  4. Submit the journaled raw tx. Crash after the submit but before step 5: the record has a
- *     txHash, so the retry checks the chain first (confirmed -> just clear; else re-broadcast the
- *     SAME signed bytes, which the network dedupes by hash / nonce) and can never send a second,
- *     differently-signed refund.
- *  5. Only after the submit returned, clear the record and flush.
+ *  2. Fail-closed balance check (balance must cover this refund + the current round's pot + other
+ *     owed refunds). If not, 'insufficient-balance': the record stays (unsigned, nothing ever
+ *     submitted) and the periodic sweep retries with backoff.
+ *  3. Nonce serialization: before signing, every OTHER journaled refund is resolved first
+ *     (`resolveJournaled`), so a new refund is never signed with a pending nonce an unsubmitted
+ *     journaled tx is about to use. The draw payout does the same sweep before it signs.
+ *     Once a tx is in the mempool, the next signing uses the following pending nonce, no clash.
+ *  4. Sign, journal `{txHash, rawTx, nonce}` and FLUSH strictly before submitting.
+ *  5. Submit. Returns 'submitted'; the record is NOT cleared here.
+ *  6. The record is cleared only when a sweep sees a receipt with success (`resolveJournaled`).
+ *     A dropped/replaced tx therefore never loses the refund: it either gets rebroadcast, or its
+ *     nonce is seen consumed without our receipt and it is re-signed (one refund total).
  *
- * Failure modes left open: a journaled tx whose nonce was consumed by a different transaction
- * before it was mined will never confirm (status stays pending / submit errors) and the record
- * stays for an operator; a tx that fails on-chain likewise stays. Both fail closed (no second
- * refund is ever auto-signed for a record that has a journaled tx). */
+ * Left for an operator: nothing automatic; a permanently failing RPC just keeps retrying. */
 export async function executeRefund(
   refund: PendingRefund,
   deps: RefundDeps,
-): Promise<'sent' | 'insufficient-balance'> {
+): Promise<'confirmed' | 'submitted' | 'insufficient-balance' | 'deferred'> {
   const { state, signer } = deps
-  let { txHash, rawTx } = refund
-  if (!rawTx || !txHash) {
-    const balanceWei = await deps.provider.getBalance(deps.identityAddress)
-    const amountWei = BigInt(refund.amountWei)
-    if (balanceWei < amountWei) return 'insufficient-balance'
-    const gasBufferWei = await computeGasBufferWei(deps.provider)
-    await deps.ensureFunded(balanceWei + gasBufferWei)
-    const signed = await signer.buildAndSignTransfer(
-      refund.recipient,
-      amountWei,
-    )
-    state.setPendingRefundTx(refund.payloadHash, signed.txHash, signed.rawTx)
-    await state.flush()
-    txHash = signed.txHash
-    rawTx = signed.rawTx
-  } else {
-    const status = await signer.getStatus(txHash)
-    if (status === 'confirmed') {
-      state.clearPendingRefund(refund.payloadHash)
-      await state.flush()
-      return 'sent'
-    }
-    if (status === 'failed') {
-      throw new Error(`journaled refund ${txHash} failed on-chain`)
+  if (refund.rawTx && refund.txHash) {
+    const resolved = await resolveJournaled(refund, deps)
+    if (resolved !== 'discarded') return resolved
+  }
+  for (const other of state.getPendingRefunds()) {
+    if (other.payloadHash === refund.payloadHash || !other.rawTx) continue
+    try {
+      await resolveJournaled(other, deps)
+    } catch {
+      return 'deferred'
     }
   }
+  const balanceWei = await deps.provider.getBalance(deps.identityAddress)
+  const amountWei = BigInt(refund.amountWei)
+  const round = state.getCurrentRound()
+  const potWei = round
+    ? BigInt(round.entryPriceWei) * BigInt(round.entrants.length)
+    : 0n
+  if (
+    balanceWei <
+    amountWei + potWei + reservedRefundWei(state, refund.payloadHash)
+  ) {
+    return 'insufficient-balance'
+  }
+  const gasBufferWei = await computeGasBufferWei(deps.provider)
+  await deps.ensureFunded(balanceWei + gasBufferWei)
+  const signed = await signer.buildAndSignTransfer(refund.recipient, amountWei)
+  state.setPendingRefundTx(
+    refund.payloadHash,
+    signed.txHash,
+    signed.rawTx,
+    signed.nonce,
+  )
+  await state.flush()
   try {
-    await signer.submitRaw(rawTx, txHash)
+    await signer.submitRaw(signed.rawTx, signed.txHash)
   } catch (err) {
-    // Re-broadcasting a tx the node already has is success, not failure.
     if (!/already known|known transaction/i.test(String(err))) throw err
   }
-  state.clearPendingRefund(refund.payloadHash)
-  await state.flush()
-  return 'sent'
+  return 'submitted'
 }
 
-/** Startup recovery: attempts each pending refund exactly once. A refund that still cannot be
- * paid stays journaled for the next startup. Sends no reply (no sender key at hand). */
+/** One attempt at every pending refund. Used at startup, before every draw, and by the periodic
+ * sweeper. Sends no reply (no sender key at hand). `errored` lists refunds whose attempt threw. */
 export async function retryPendingRefunds(
   deps: RefundDeps,
   log: (msg: string) => void = console.log,
-): Promise<{ sent: string[]; stillPending: string[] }> {
-  const sent: string[] = []
+): Promise<{ confirmed: string[]; stillPending: string[]; errored: string[] }> {
+  const confirmed: string[] = []
   const stillPending: string[] = []
+  const errored: string[] = []
   for (const refund of deps.state.getPendingRefunds()) {
     try {
       const result = await executeRefund(refund, deps)
-      if (result === 'sent') sent.push(refund.payloadHash)
+      if (result === 'confirmed') confirmed.push(refund.payloadHash)
       else stillPending.push(refund.payloadHash)
     } catch (err) {
       log(
@@ -271,9 +340,46 @@ export async function retryPendingRefunds(
         } still unpaid: ${String(err)}`,
       )
       stillPending.push(refund.payloadHash)
+      errored.push(refund.payloadHash)
     }
   }
-  return { sent, stillPending }
+  return { confirmed, stillPending, errored }
+}
+
+/** Bounded periodic retry for the poll loop: at most one sweep in flight, exponential backoff
+ * (baseMs doubling up to maxMs) while anything is still pending, reset once nothing is. */
+export function createRefundSweeper(
+  deps: RefundDeps,
+  opts: { now?: () => number; baseMs?: number; maxMs?: number } = {},
+): { tick(): Promise<void> } {
+  const now = opts.now ?? Date.now
+  const baseMs = opts.baseMs ?? 10_000
+  const maxMs = opts.maxMs ?? 5 * 60_000
+  let delayMs = baseMs
+  let nextAt = 0
+  let running = false
+  return {
+    async tick() {
+      if (running || now() < nextAt) return
+      if (deps.state.getPendingRefunds().length === 0) {
+        delayMs = baseMs
+        return
+      }
+      running = true
+      try {
+        const r = await retryPendingRefunds(deps)
+        if (r.stillPending.length > 0) {
+          nextAt = now() + delayMs
+          delayMs = Math.min(delayMs * 2, maxMs)
+        } else {
+          delayMs = baseMs
+          nextAt = 0
+        }
+      } finally {
+        running = false
+      }
+    },
+  }
 }
 
 /** The whole `leave` handler (decision, state mutation, refund, reply), extracted from the poll
@@ -315,7 +421,7 @@ export async function handleLeaveRequest(
   state.commitLeave(evaluation.updatedRound, refund, payloadHashHex)
   await state.flush()
 
-  let result: 'sent' | 'insufficient-balance' | 'error' = 'error'
+  let result: Awaited<ReturnType<typeof executeRefund>> | 'error' = 'error'
   try {
     result = await executeRefund(refund, params)
   } catch (err) {
@@ -323,14 +429,14 @@ export async function handleLeaveRequest(
       `[raffle-bot] refund for ${refund.recipient} failed: ${String(err)}`,
     )
   }
-  if (result !== 'sent') {
+  if (result !== 'submitted' && result !== 'confirmed') {
     await sendReply([
       {
         type: 'raffle',
         raffleId: round.raffleId,
         action: 'error',
         message:
-          'Left the round, but the refund could not be sent right now -- it is recorded and will be retried.',
+          'Left the round, but the refund could not be sent right now -- it is recorded and retried automatically.',
       },
     ])
     return 'refund-pending'
@@ -623,13 +729,15 @@ async function main() {
         label: 'raffle-bot',
       }),
   }
-  // Pay any refund a previous run journaled but did not finish (each attempted once per start).
+  // Resolve any refund a previous run journaled but did not finish, then keep sweeping (bounded,
+  // with backoff) from inside the poll loop so a transient failure never waits for a restart.
   const retried = await retryPendingRefunds(refundDeps)
-  if (retried.sent.length + retried.stillPending.length > 0) {
+  if (retried.confirmed.length + retried.stillPending.length > 0) {
     console.log(
-      `[raffle-bot] pending refunds: ${retried.sent.length} paid, ${retried.stillPending.length} still pending`,
+      `[raffle-bot] pending refunds: ${retried.confirmed.length} confirmed, ${retried.stillPending.length} still pending`,
     )
   }
+  const refundSweeper = createRefundSweeper(refundDeps)
 
   const senderPubKeyCache = new Map<string, Buffer>()
   let since = Date.now()
@@ -646,6 +754,9 @@ async function main() {
       break
     }
 
+    await refundSweeper.tick().catch(err => {
+      console.error(`[raffle-bot] refund sweep failed: ${String(err)}`)
+    })
     const stored = await fetchMonadMessagesSince({
       relayBaseUrl,
       sinceMs: since,
@@ -864,6 +975,18 @@ async function main() {
         )
         continue
       }
+      // Resolve journaled refunds BEFORE the seed-revealing DMs: (1) it settles confirmed ones so
+      // their amounts are not double-counted below, and (2) every journaled refund tx is either in
+      // the mempool or discarded, so the payout's pending nonce cannot collide with one. If a
+      // journaled refund cannot be rebroadcast, refuse to draw now (nothing revealed yet).
+      const settled = await retryPendingRefunds(refundDeps)
+      if (settled.errored.length > 0) {
+        throw new Error(
+          `[raffle-bot] refusing to draw round ${
+            round.raffleId
+          }: refund(s) ${settled.errored.join(',')} could not be resolved`,
+        )
+      }
       const entrantAddresses = updatedEntrants.map(e => e.address)
       const entryTxHashes = updatedEntrants.map(e => e.txHash)
       const winnerIndex = pickWinnerIndex(
@@ -922,10 +1045,13 @@ async function main() {
       // its own. If it doesn't, something upstream is broken -- refuse the draw rather than
       // silently letting `ensureIdentityFunded` below paper over the gap with mainAccountSigner
       // funds (exactly the bug this file used to have).
+      // `latest` still counts an unmined refund's wei, which the payout cannot spend; subtract
+      // every refund not yet confirmed so the payout cannot fail mempool admission after the
+      // seed was revealed.
       const identityBalanceWei = await provider.getBalance(
         identity.displayAddress,
       )
-      if (identityBalanceWei < potWei) {
+      if (drawSpendableWei(identityBalanceWei, state) < potWei) {
         throw new Error(
           `[raffle-bot] refusing to draw round ${round.raffleId}: identity balance ${identityBalanceWei} wei is below the ${potWei} wei pot it should already hold from this round's swept entries`,
         )

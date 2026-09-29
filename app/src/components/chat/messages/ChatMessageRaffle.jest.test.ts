@@ -72,6 +72,6 @@ describe('ChatMessageRaffle leave button', () => {
     const left = mountItem({ ...joined, action: 'left' })
     expect(left.find('[aria-live="polite"]').exists()).toBe(true)
     const err = mountItem({ ...joined, action: 'error', message: 'nope' })
-    expect(err.find('[aria-live="assertive"]').text()).toBe('nope')
+    expect(err.find('[role="alert"]').text()).toBe('nope')
   })
 })

@@ -76,7 +76,6 @@
       v-else-if="item.action === 'error'"
       class="text-caption text-negative"
       role="alert"
-      aria-live="assertive"
     >
       {{ item.message }}
     </div>
@@ -212,19 +211,15 @@ export default defineComponent({
         this.leaving = false
         this.leaveGuardTimer = null
       }, LEAVE_GUARD_MS)
-      try {
-        // No stamp-value override -- a leave carries no payment of its own (the bot refunds the
-        // original entry from its own balance), same pattern as blackjack's hit/stand rather than
-        // its bet.
-        this.$emit('sendFollowUp', {
-          items: [
-            { type: 'raffle', raffleId: this.item.raffleId, action: 'leave' },
-          ],
-        })
-      } catch (err) {
-        errorNotify(err instanceof Error ? err : new Error(String(err)))
-        this.leaving = false
-      }
+      // No stamp-value override -- a leave carries no payment of its own (the bot refunds the
+      // original entry from its own balance), same pattern as blackjack's hit/stand rather than
+      // its bet. (`$emit` does not throw to the emitter -- Vue routes listener errors to its own
+      // handler -- so there is deliberately no try/catch here that could orphan the timer.)
+      this.$emit('sendFollowUp', {
+        items: [
+          { type: 'raffle', raffleId: this.item.raffleId, action: 'leave' },
+        ],
+      })
     },
   },
 })

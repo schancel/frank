@@ -5,7 +5,10 @@ import { join } from 'path'
 import {
   evaluateLeaveRequest,
   handleLeaveRequest,
+  createRefundSweeper,
+  drawSpendableWei,
   RefundDeps,
+  reservedRefundWei,
   retryPendingRefunds,
 } from './raffle-bot.livecheck'
 import { RaffleBotStateStore, RaffleRoundRecord } from './raffle-bot-state'
@@ -72,6 +75,9 @@ describe('leave handling', () => {
   let balance: bigint
   let statuses: Record<string, 'pending' | 'confirmed' | 'failed'>
   let crashOnSubmit: boolean
+  let submitError: Error | undefined
+  let confirmedNonce: number
+  let nextNonce: number
 
   function deps(): RefundDeps {
     return {
@@ -80,6 +86,7 @@ describe('leave handling', () => {
       provider: {
         getBalance: async () => balance,
         getFeeData: async () => ({ maxFeePerGas: 1n } as never),
+        getTransactionCount: async () => confirmedNonce,
       },
       signer: {
         buildAndSignTransfer: async (to, value) => {
@@ -87,13 +94,14 @@ describe('leave handling', () => {
           expect(store.dirty).toBe(false)
           signed.push({ to, value })
           const n = signed.length
-          return { rawTx: `0xraw${n}`, txHash: `0xtx${n}` }
+          return { rawTx: `0xraw${n}`, txHash: `0xtx${n}`, nonce: nextNonce++ }
         },
         submitRaw: async (rawTx, hash) => {
           // Money moves here: state must already be durable.
           expect(store.dirty).toBe(false)
           events.push('submit')
           if (crashOnSubmit) throw new Error('crash after submit')
+          if (submitError) throw submitError
           submitted.push({ rawTx, hash })
           return hash
         },
@@ -131,6 +139,9 @@ describe('leave handling', () => {
     balance = 10_000n
     statuses = {}
     crashOnSubmit = false
+    submitError = undefined
+    confirmedNonce = 0
+    nextNonce = 0
   })
   afterEach(async () => {
     await store.Close().catch(() => undefined)
@@ -142,6 +153,10 @@ describe('leave handling', () => {
     store.setCurrentRound(round)
     const res = await leave(round, B, 'p1')
     expect(res).toBe('refunded')
+    // Mempool acceptance is not payment: the record stays until a receipt is seen.
+    expect(store.getPendingRefunds()).toHaveLength(1)
+    statuses['0xtx1'] = 'confirmed'
+    await retryPendingRefunds(deps(), () => undefined)
     expect(signed).toEqual([{ to: B, value: 1000n }])
     expect(submitted).toEqual([{ rawTx: '0xraw1', hash: '0xtx1' }])
     expect(events.indexOf('flush')).toBeLessThan(events.indexOf('submit'))
@@ -181,11 +196,13 @@ describe('leave handling', () => {
     expect(store.getPendingRefunds()).toHaveLength(1)
     expect(store.getCurrentRound()?.entrants).toHaveLength(1)
     const first = await retryPendingRefunds(deps(), () => undefined)
-    expect(first.sent).toEqual(['p1'])
+    expect(first.stillPending).toEqual(['p1'])
     expect(submitted).toHaveLength(1)
     expect(signed).toEqual([{ to: B, value: 1000n }])
+    statuses['0xtx1'] = 'confirmed'
     const second = await retryPendingRefunds(deps(), () => undefined)
-    expect(second.sent).toEqual([])
+    expect(second.confirmed).toEqual(['p1'])
+    expect(store.getPendingRefunds()).toEqual([])
     expect(submitted).toHaveLength(1)
   })
 
@@ -203,7 +220,7 @@ describe('leave handling', () => {
     expect(store.getPendingRefunds()[0].txHash).toBe('0xtx1')
     statuses['0xtx1'] = 'confirmed'
     const r = await retryPendingRefunds(deps(), () => undefined)
-    expect(r.sent).toEqual(['p1'])
+    expect(r.confirmed).toEqual(['p1'])
     expect(signed).toHaveLength(1) // no second signature
     expect(submitted).toEqual([]) // confirmed: nothing to rebroadcast
     expect(store.getPendingRefunds()).toEqual([])
@@ -261,6 +278,123 @@ describe('leave handling', () => {
     expect(res).toBe('rejected')
     expect(signed).toEqual([])
     expect(store.getCurrentRound()?.entrants).toHaveLength(2)
+  })
+
+  it('A: journaled refund whose nonce was consumed is discarded and re-signed once', async () => {
+    const round = makeRound([A, B])
+    store.setCurrentRound(round)
+    submitError = new Error('transient rpc failure')
+    expect(await leave(round, B, 'p1')).toBe('refund-pending')
+    expect(store.getPendingRefunds()[0].nonce).toBe(0)
+    submitError = undefined
+    confirmedNonce = 1 // another tx (draw payout / other refund) consumed nonce 0
+    const r = await retryPendingRefunds(deps(), () => undefined)
+    expect(r.stillPending).toEqual(['p1'])
+    expect(signed).toHaveLength(2) // re-signed fresh, exactly once more
+    expect(store.getPendingRefunds()[0].txHash).toBe('0xtx2')
+    expect(submitted).toEqual([{ rawTx: '0xraw2', hash: '0xtx2' }])
+    // and the first tx is never rebroadcast
+    await retryPendingRefunds(deps(), () => undefined)
+    expect(signed).toHaveLength(2)
+  })
+
+  it('A: journaled refund that failed on-chain is re-signed', async () => {
+    const round = makeRound([A, B])
+    store.setCurrentRound(round)
+    await leave(round, B, 'p1')
+    statuses['0xtx1'] = 'failed'
+    await retryPendingRefunds(deps(), () => undefined)
+    expect(signed).toHaveLength(2)
+    expect(store.getPendingRefunds()[0].txHash).toBe('0xtx2')
+  })
+
+  it('A: a mined-late journaled tx is confirmed, never re-signed (count read before receipt)', async () => {
+    const round = makeRound([A, B])
+    store.setCurrentRound(round)
+    await leave(round, B, 'p1')
+    confirmedNonce = 1
+    statuses['0xtx1'] = 'confirmed'
+    const r = await retryPendingRefunds(deps(), () => undefined)
+    expect(r.confirmed).toEqual(['p1'])
+    expect(signed).toHaveLength(1)
+  })
+
+  it('A: a new refund does not get signed while an earlier journaled one cannot be rebroadcast', async () => {
+    let round = makeRound([A, B, C], { maxEntries: 5 })
+    store.setCurrentRound(round)
+    submitError = new Error('rpc down')
+    await leave(round, B, 'p1')
+    round = store.getCurrentRound() as RaffleRoundRecord
+    await leave(round, C, 'p2')
+    expect(signed).toHaveLength(1) // p2 deferred, nonce 0 not double-allocated
+    expect(
+      store.getPendingRefunds().find(r => r.payloadHash === 'p2')?.rawTx,
+    ).toBeUndefined()
+  })
+
+  it('B: record survives mempool acceptance; a dropped tx (nonce never consumed) is rebroadcast', async () => {
+    const round = makeRound([A, B])
+    store.setCurrentRound(round)
+    await leave(round, B, 'p1')
+    expect(store.getPendingRefunds()).toHaveLength(1)
+    await retryPendingRefunds(deps(), () => undefined) // still no receipt
+    expect(submitted.map(x => x.hash)).toEqual(['0xtx1', '0xtx1'])
+    expect(store.getPendingRefunds()).toHaveLength(1)
+    expect(signed).toHaveLength(1)
+  })
+
+  it('C: sweeper retries within the poll loop with backoff, one at a time', async () => {
+    const round = makeRound([A, B])
+    store.setCurrentRound(round)
+    submitError = new Error('transient')
+    await leave(round, B, 'p1')
+    submitError = undefined
+    let t = 1_000
+    const sweeper = createRefundSweeper(deps(), {
+      now: () => t,
+      baseMs: 100,
+      maxMs: 400,
+    })
+    await sweeper.tick() // sweep 1 (rebroadcast)
+    expect(submitted).toHaveLength(1)
+    await sweeper.tick() // within backoff: no-op
+    expect(submitted).toHaveLength(1)
+    t += 100
+    await sweeper.tick() // sweep 2
+    expect(submitted).toHaveLength(2)
+    t += 100 // backoff doubled to 200 -> still too early
+    await sweeper.tick()
+    expect(submitted).toHaveLength(2)
+    t += 100
+    statuses['0xtx1'] = 'confirmed'
+    await sweeper.tick()
+    expect(store.getPendingRefunds()).toEqual([])
+  })
+
+  it('D: reservedRefundWei counts every unconfirmed refund so a draw cannot spend it', async () => {
+    const round = makeRound([A, B])
+    store.setCurrentRound(round)
+    await leave(round, B, 'p1') // submitted, unmined
+    expect(reservedRefundWei(store)).toBe(1000n)
+    // Round refills to 3 entrants (pot 3000) while the refund is unmined; latest balance 3500
+    // still includes the refund's 1000, spendable = 2500 < pot -> draw check must refuse.
+    const latest = 3500n
+    expect(drawSpendableWei(latest, store)).toBe(2500n)
+    expect(drawSpendableWei(latest, store) < 3000n).toBe(true)
+    statuses['0xtx1'] = 'confirmed'
+    await retryPendingRefunds(deps(), () => undefined)
+    expect(reservedRefundWei(store)).toBe(0n)
+  })
+
+  it('E: unsigned refund retry requires the balance to still cover the current round pot', async () => {
+    const round = makeRound([A, B])
+    store.setCurrentRound(round)
+    balance = 999n
+    await leave(round, B, 'p1')
+    balance = 1500n // covers refund (1000) but not refund + pot of 1 entrant (1000)
+    const r = await retryPendingRefunds(deps(), () => undefined)
+    expect(r.stillPending).toEqual(['p1'])
+    expect(signed).toHaveLength(0)
   })
 
   it('loads a round persisted without leavers (backward compatible)', async () => {

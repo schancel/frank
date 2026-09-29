@@ -62,6 +62,8 @@ export interface PendingRefund {
    * before it is first submitted. Absent means nothing was ever submitted. */
   txHash?: string
   rawTx?: string
+  /** Account nonce the journaled tx was signed with (used to detect it can never mine). */
+  nonce?: number
 }
 
 export class RaffleEntrantIdentityCollisionError extends Error {
@@ -258,10 +260,31 @@ export class RaffleBotStateStore {
   }
 
   /** Journals the signed refund tx (hash + raw bytes) before it is first submitted. */
-  setPendingRefundTx(payloadHash: string, txHash: string, rawTx: string): void {
+  setPendingRefundTx(
+    payloadHash: string,
+    txHash: string,
+    rawTx: string,
+    nonce: number,
+  ): void {
     const existing = this.pendingRefunds.get(payloadHash)
     if (!existing) throw new Error(`No pending refund ${payloadHash}`)
-    const updated = { ...existing, txHash, rawTx }
+    const updated = { ...existing, txHash, rawTx, nonce }
+    this.pendingRefunds.set(payloadHash, updated)
+    this.pendingWrites.push(
+      this.db.put(REFUND_PREFIX + payloadHash, JSON.stringify(updated)),
+    )
+  }
+
+  /** Drops a journaled tx that can never mine, keeping the refund record so it is re-signed. */
+  clearPendingRefundTx(payloadHash: string): void {
+    const existing = this.pendingRefunds.get(payloadHash)
+    if (!existing) return
+    const updated: PendingRefund = {
+      payloadHash: existing.payloadHash,
+      recipient: existing.recipient,
+      amountWei: existing.amountWei,
+      raffleId: existing.raffleId,
+    }
     this.pendingRefunds.set(payloadHash, updated)
     this.pendingWrites.push(
       this.db.put(REFUND_PREFIX + payloadHash, JSON.stringify(updated)),

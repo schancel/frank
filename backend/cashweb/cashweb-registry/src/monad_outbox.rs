@@ -11,6 +11,7 @@ use bitcoinsuite_error::{bail, Result, WrapErr};
 use cashweb_payload::verify::BROADCAST_MESSAGE_LOKAD_ID;
 use futures::{stream, StreamExt};
 use prost::Message;
+use sha3::{Digest, Keccak256};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::{
@@ -21,8 +22,8 @@ use crate::{
     proto,
     registry::Registry,
     store::monad_outbox::{
-        MonadOutboxLeaseAcquire, MonadOutboxLifecycle, MonadOutboxLimits, MonadOutboxMemberState,
-        MonadOutboxReplayStart, MonadOutboxTerminal, MonadOutboxTransition,
+        ConfirmedPrefixRecovery, MonadOutboxLeaseAcquire, MonadOutboxLifecycle, MonadOutboxLimits,
+        MonadOutboxMemberState, MonadOutboxReplayStart, MonadOutboxTerminal, MonadOutboxTransition,
     },
 };
 
@@ -546,18 +547,54 @@ fn validate_persisted_record(
     Ok(message)
 }
 
-/// Validate one private recovery row against its canonical owner and every member reference.
+/// Validate one already-metered private recovery snapshot without any further database reads.
 pub(crate) fn validate_monad_recovery_record(
-    registry: &Registry,
-    payload_hash: &[u8],
+    recovery: &ConfirmedPrefixRecovery,
     expected_chain_id: u64,
 ) -> Result<()> {
-    let record = registry.monad_outbox_record(payload_hash)?.ok_or_else(|| {
-        crate::store::monad_outbox::DbMonadOutboxError::CorruptRecord(
-            "recovery row references missing outbox".to_string(),
-        )
-    })?;
-    validate_persisted_record(registry, &record, payload_hash, expected_chain_id).map(|_| ())
+    if recovery.message.encode_to_vec() != recovery.canonical_message {
+        bail!("recovery canonical request uses a noncanonical protobuf encoding");
+    }
+    validate_persisted_message(&recovery.message, &recovery.payload_hash, expected_chain_id)?;
+    if recovery
+        .confirmed_prefix
+        .len()
+        .saturating_add(recovery.remaining_members.len())
+        != recovery.message.stamp_payments.len()
+    {
+        bail!("recovery snapshot member count differs from canonical request");
+    }
+    for (payment, member) in recovery.message.stamp_payments.iter().zip(
+        recovery
+            .confirmed_prefix
+            .iter()
+            .chain(&recovery.remaining_members),
+    ) {
+        if member.child_index != payment.child_index
+            || member.tx_hash != Hash32(Keccak256::digest(&payment.raw_tx).into())
+        {
+            bail!("recovery member index/hash reference mismatch");
+        }
+        let decoded = decode_signed_transaction(&payment.raw_tx)
+            .wrap_err("decoding recovery signed payment")?;
+        let expected_destination = derive_monad_stamp_child_public(
+            recovery.payload_hash,
+            &recovery.policy.recipient_pubkey,
+            payment.child_index,
+        )?;
+        if decoded.destination != Some(crate::monad_http::Address(expected_destination.address)) {
+            bail!("recovery payment destination differs from frozen recipient derivation");
+        }
+        if decoded.value_wei == 0 {
+            bail!("recovery payment has zero signed value");
+        }
+        if let MonadOutboxMemberState::Confirmed { value_wei, .. } = member.state {
+            if value_wei != decoded.value_wei {
+                bail!("recovery confirmation value differs from signed transaction value");
+            }
+        }
+    }
+    Ok(())
 }
 
 fn validate_persisted_message(
@@ -1118,7 +1155,10 @@ mod tests {
         monad_http::Address,
         store::{
             db::Db,
-            monad_outbox::{MonadOutboxClaim, MonadOutboxPolicy},
+            monad_outbox::{
+                recovery_page_work_counts, reset_recovery_page_work_counts, MonadOutboxClaim,
+                MonadOutboxPolicy,
+            },
         },
     };
 
@@ -2201,6 +2241,81 @@ mod tests {
         );
         assert!(transport.calls().is_empty());
         assert!(registry.get_monad_message(&request.payload_hash)?.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn recovery_page_validates_large_short_prefix_with_one_metered_read_and_decode_per_row(
+    ) -> Result<()> {
+        let tempdir = tempdir::TempDir::new("monad-outbox-large-recovery-page")?;
+        let registry = registry(&tempdir.path().join("db.rocksdb"));
+        let seed = vec![0x42; 1_800_000];
+        let behaviors = vec![SendBehavior::RpcFailure; 64];
+        let confirmed = vec![false; 64];
+        let (request, policy, _) = fixture_with_seed(&seed, &behaviors, &confirmed);
+        assert!(request.encoded_len() > 1_700_000);
+        assert!(request.encoded_len() < 2 * 1024 * 1024);
+        let limits = MonadOutboxLimits::default();
+        assert!(matches!(
+            registry.claim_monad_outbox(&request, &policy, 1, &limits)?,
+            MonadOutboxClaim::New
+        ));
+        registry.complete_confirmed_monad_outbox_member(
+            &request.payload_hash,
+            0,
+            match registry.acquire_monad_outbox_reconcile_lease(
+                &request.payload_hash,
+                0,
+                2,
+                &limits,
+            )? {
+                MonadOutboxLeaseAcquire::Acquired { lease, .. } => lease,
+                other => panic!("expected large recovery fixture lease, got {other:?}"),
+            },
+            10,
+            7,
+            3,
+        )?;
+
+        let measured = registry.confirmed_monad_outbox_prefixes_page(
+            policy.recipient,
+            None,
+            1,
+            1,
+            usize::MAX,
+        )?;
+        assert_eq!(measured.recoveries.len(), 1);
+        assert_eq!(measured.recoveries[0].confirmed_prefix.len(), 1);
+        let exact_budget = measured.inspected_bytes;
+
+        reset_recovery_page_work_counts();
+        let page = registry.confirmed_monad_outbox_prefixes_page(
+            policy.recipient,
+            None,
+            1,
+            1,
+            exact_budget,
+        )?;
+        assert_eq!(page.recoveries.len(), 1);
+        assert!(page.canonical_bytes <= exact_budget);
+        assert_eq!(page.inspected_bytes, exact_budget);
+        assert_eq!(recovery_page_work_counts(), (65, 65, exact_budget));
+        validate_monad_recovery_record(&page.recoveries[0], 41_454)?;
+        assert_eq!(
+            recovery_page_work_counts(),
+            (65, 65, exact_budget),
+            "in-memory economic validation performs no second DB read or decode"
+        );
+
+        let error = registry
+            .confirmed_monad_outbox_prefixes_page(policy.recipient, None, 1, 1, exact_budget - 1)
+            .unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<crate::store::monad_outbox::DbMonadOutboxError>(),
+            Some(
+                crate::store::monad_outbox::DbMonadOutboxError::RecoveryRecordExceedsPageBudget { .. }
+            )
+        ));
         Ok(())
     }
 

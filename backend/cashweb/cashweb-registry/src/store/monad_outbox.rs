@@ -49,6 +49,44 @@ thread_local! {
 }
 
 #[cfg(test)]
+thread_local! {
+    static RECOVERY_PAGE_WORK: std::cell::Cell<(usize, usize, usize)> =
+        const { std::cell::Cell::new((0, 0, 0)) };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_recovery_page_work_counts() {
+    RECOVERY_PAGE_WORK.set((0, 0, 0));
+}
+
+#[cfg(test)]
+pub(crate) fn recovery_page_work_counts() -> (usize, usize, usize) {
+    RECOVERY_PAGE_WORK.get()
+}
+
+#[cfg(test)]
+fn note_recovery_page_read() {
+    let (reads, decodes, bytes) = RECOVERY_PAGE_WORK.get();
+    RECOVERY_PAGE_WORK.set((reads.saturating_add(1), decodes, bytes));
+}
+
+#[cfg(not(test))]
+fn note_recovery_page_read() {}
+
+#[cfg(test)]
+fn note_recovery_page_decode(bytes: usize) {
+    let (reads, decodes, decoded_bytes) = RECOVERY_PAGE_WORK.get();
+    RECOVERY_PAGE_WORK.set((
+        reads,
+        decodes.saturating_add(1),
+        decoded_bytes.saturating_add(bytes),
+    ));
+}
+
+#[cfg(not(test))]
+fn note_recovery_page_decode(_bytes: usize) {}
+
+#[cfg(test)]
 fn migration_failpoint_after_batch_before_gc() -> bool {
     MIGRATION_FAIL_AFTER_BATCH_BEFORE_GC.replace(false)
 }
@@ -313,6 +351,12 @@ pub struct ConfirmedPrefixRecovery {
     pub confirmed_prefix: Vec<MonadOutboxMember>,
     /// Aggregate state, including a terminal losing-transaction outcome when applicable.
     pub lifecycle: MonadOutboxLifecycle,
+    /// Exact canonical bytes used to decode `message`, retained for in-memory integrity checks.
+    pub(crate) canonical_message: Vec<u8>,
+    /// Frozen recipient/economic policy used by in-memory recovery validation.
+    pub(crate) policy: MonadOutboxPolicy,
+    /// Members after the contiguous confirmed prefix, loaded once for full validation.
+    pub(crate) remaining_members: Vec<MonadOutboxMember>,
 }
 
 /// One scan-bounded page of recipient recovery facts in payload-hash order.
@@ -690,12 +734,20 @@ impl<'a> DbMonadOutbox<'a> {
                 (payment.child_index, encode_member(&member))
             })
             .collect::<Vec<_>>();
-        let reservation_bytes = encoded_record.len().saturating_add(
-            members
-                .iter()
-                .map(|(_, encoded)| encoded.len())
-                .sum::<usize>(),
-        );
+        let reservation_bytes = encoded_record
+            .len()
+            .saturating_add(
+                members
+                    .iter()
+                    .map(|(_, encoded)| encoded.len())
+                    .sum::<usize>(),
+            )
+            .saturating_add(
+                members
+                    .len()
+                    .saturating_add(1)
+                    .saturating_mul(MAX_LAST_ERROR_BYTES_HARD),
+            );
         if !self.recovery_reservation_available_locked(
             &policy.recipient,
             reservation_bytes,
@@ -1568,6 +1620,7 @@ impl<'a> DbMonadOutbox<'a> {
             let payload_hash = checked_payload_hash(&key[20..])?;
             let previous_cursor = last_scanned;
             let row_work_start = inspected_bytes;
+            note_recovery_page_read();
             let encoded_record = self.db.get(self.cf_outbox, payload_hash)?.ok_or_else(|| {
                 CorruptRecord("recipient index references missing outbox".to_string())
             })?;
@@ -1585,13 +1638,23 @@ impl<'a> DbMonadOutbox<'a> {
             inspected_bytes = inspected_bytes.saturating_add(encoded_record.len());
             scanned += 1;
             last_scanned = Some(payload_hash);
+            note_recovery_page_decode(encoded_record.len());
             let record = decode_record(&encoded_record)?;
             if matches!(record.lifecycle, MonadOutboxLifecycle::Delivered) {
                 continue;
             }
+            if record.policy.as_ref().map(|policy| policy.recipient) != Some(*recipient) {
+                return Err(CorruptRecord(
+                    "recipient recovery index differs from frozen policy".to_string(),
+                )
+                .into());
+            }
             let message = Self::canonical_message(&record)?;
             let mut confirmed_prefix = Vec::new();
+            let mut remaining_members = Vec::new();
+            let mut prefix_open = true;
             for payment in &message.stamp_payments {
+                note_recovery_page_read();
                 let encoded_member = self
                     .db
                     .get(
@@ -1612,11 +1675,13 @@ impl<'a> DbMonadOutbox<'a> {
                     break 'rows;
                 }
                 inspected_bytes = inspected_bytes.saturating_add(encoded_member.len());
+                note_recovery_page_decode(encoded_member.len());
                 let member = decode_member(payment.child_index, &encoded_member)?;
-                if matches!(member.state, MonadOutboxMemberState::Confirmed { .. }) {
+                if prefix_open && matches!(member.state, MonadOutboxMemberState::Confirmed { .. }) {
                     confirmed_prefix.push(member);
                 } else {
-                    break;
+                    prefix_open = false;
+                    remaining_members.push(member);
                 }
             }
             if !confirmed_prefix.is_empty() {
@@ -1636,11 +1701,20 @@ impl<'a> DbMonadOutbox<'a> {
                     break;
                 }
                 canonical_bytes += message_bytes;
+                let canonical_message = record.canonical_message.ok_or_else(|| {
+                    CorruptRecord("recovery row has no canonical owner".to_string())
+                })?;
+                let policy = record.policy.ok_or_else(|| {
+                    CorruptRecord("recovery row has no frozen policy".to_string())
+                })?;
                 recoveries.push(ConfirmedPrefixRecovery {
                     payload_hash,
                     message,
                     confirmed_prefix,
                     lifecycle: record.lifecycle,
+                    canonical_message,
+                    policy,
+                    remaining_members,
                 });
             }
         }
@@ -1698,7 +1772,7 @@ impl<'a> DbMonadOutbox<'a> {
             if record.canonical_message.is_none() {
                 continue;
             }
-            let retained = usize::try_from(self.retained_claim_bytes_locked(
+            let retained = usize::try_from(self.recovery_reserved_claim_bytes_locked(
                 &payload_hash,
                 &record,
                 encoded_record.len(),
@@ -1719,6 +1793,35 @@ impl<'a> DbMonadOutbox<'a> {
             }
         }
         Ok(true)
+    }
+
+    fn recovery_reserved_claim_bytes_locked(
+        &self,
+        payload_hash: &[u8; 32],
+        record: &MonadOutboxRecord,
+        encoded_record_len: usize,
+    ) -> Result<u64> {
+        let mut total = encoded_record_len
+            .saturating_sub(record.last_error.len())
+            .saturating_add(MAX_LAST_ERROR_BYTES_HARD) as u64;
+        let message = Self::canonical_message(record)?;
+        for payment in message.stamp_payments {
+            let member = self
+                .get_member(payload_hash, payment.child_index)?
+                .ok_or_else(|| {
+                    CorruptRecord(format!(
+                        "recovery reservation child {} is missing",
+                        payment.child_index
+                    ))
+                })?;
+            let encoded_len = encode_member(&member).len();
+            total = total.saturating_add(
+                encoded_len
+                    .saturating_sub(member.last_error.len())
+                    .saturating_add(MAX_LAST_ERROR_BYTES_HARD) as u64,
+            );
+        }
+        Ok(total)
     }
 
     fn has_recovery_facts_locked(
@@ -2590,6 +2693,192 @@ mod tests {
             store.claim(&first.payload_hash, &first, &policy(), 4, &limits)?,
             MonadOutboxClaim::ExistingExact(_)
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn recovery_byte_quota_reserves_max_diagnostic_growth_and_survives_reopen() -> Result<()> {
+        let request = message_with_seed(b"quota-growth-a", &[b"raw-zero", b"raw-one"]);
+        let reservation = {
+            let tempdir = tempdir::TempDir::new("monad-outbox-quota-measure")?;
+            let db = Db::open(tempdir.path().join("db.rocksdb"))?;
+            let store = db.monad_outbox();
+            store.claim(
+                &request.payload_hash,
+                &request,
+                &policy(),
+                1,
+                &MonadOutboxLimits::default(),
+            )?;
+            let hash: [u8; 32] = request.payload_hash.as_slice().try_into().unwrap();
+            let record = store.get(&hash)?.unwrap();
+            let actual =
+                store.retained_claim_bytes_locked(&hash, &record, encode_record(&record).len())?;
+            let reserved = store.recovery_reserved_claim_bytes_locked(
+                &hash,
+                &record,
+                encode_record(&record).len(),
+            )?;
+            assert_eq!(
+                reserved,
+                actual + 3 * MAX_LAST_ERROR_BYTES_HARD as u64,
+                "record plus two members reserve their complete diagnostic growth"
+            );
+            reserved as usize
+        };
+
+        let second = message_with_seed(b"quota-growth-b", &[b"raw-zero", b"raw-one"]);
+        let third = message_with_seed(b"quota-growth-c", &[b"raw-zero", b"raw-one"]);
+        let tempdir = tempdir::TempDir::new("monad-outbox-global-quota-growth")?;
+        let db = Db::open(tempdir.path().join("db.rocksdb"))?;
+        let store = db.monad_outbox();
+        let mut limits = MonadOutboxLimits::default();
+        limits.max_recovery_bytes = reservation * 2;
+        limits.max_recovery_bytes_per_recipient = usize::MAX;
+        let mut other = policy();
+        other.recipient = Address([0x99; 20]);
+        assert_eq!(
+            store.claim(&request.payload_hash, &request, &policy(), 1, &limits)?,
+            MonadOutboxClaim::New
+        );
+        assert_eq!(
+            store.claim(&second.payload_hash, &second, &other, 2, &limits)?,
+            MonadOutboxClaim::New,
+            "the exact global byte boundary is admissible"
+        );
+        other.recipient = Address([0x98; 20]);
+        assert_eq!(
+            store.claim(&third.payload_hash, &third, &other, 3, &limits)?,
+            MonadOutboxClaim::AtCapacity,
+            "one byte-reserved claim beyond the global boundary is rejected"
+        );
+
+        let tempdir = tempdir::TempDir::new("monad-outbox-recipient-quota-growth")?;
+        let path = tempdir.path().join("db.rocksdb");
+        {
+            let db = Db::open(&path)?;
+            let store = db.monad_outbox();
+            let mut limits = MonadOutboxLimits::default();
+            limits.max_last_error_bytes = MAX_LAST_ERROR_BYTES_HARD;
+            limits.max_recovery_bytes = usize::MAX;
+            limits.max_recovery_bytes_per_recipient = reservation * 2;
+            assert_eq!(
+                store.claim(&request.payload_hash, &request, &policy(), 1, &limits)?,
+                MonadOutboxClaim::New
+            );
+            assert_eq!(
+                store.claim(&second.payload_hash, &second, &policy(), 2, &limits)?,
+                MonadOutboxClaim::New,
+                "the exact per-recipient byte boundary is admissible"
+            );
+            assert_eq!(
+                store.claim(&third.payload_hash, &third, &policy(), 3, &limits)?,
+                MonadOutboxClaim::AtCapacity
+            );
+
+            let lease = match store.acquire_reconcile_lease(&request.payload_hash, 0, 4, &limits)? {
+                MonadOutboxLeaseAcquire::Acquired { lease, .. } => lease,
+                other => panic!("expected quota fixture lease, got {other:?}"),
+            };
+            let detail = "x".repeat(MAX_LAST_ERROR_BYTES_HARD * 2);
+            assert_eq!(
+                store.complete_pending_member(
+                    &request.payload_hash,
+                    0,
+                    lease,
+                    &detail,
+                    5,
+                    &limits,
+                )?,
+                MonadOutboxTransition::Applied
+            );
+            assert_eq!(
+                store.get(&request.payload_hash)?.unwrap().last_error.len(),
+                MAX_LAST_ERROR_BYTES_HARD
+            );
+            assert_eq!(
+                store
+                    .get_member(&request.payload_hash, 0)?
+                    .unwrap()
+                    .last_error
+                    .len(),
+                MAX_LAST_ERROR_BYTES_HARD
+            );
+            store.confirm_observed_member(&request.payload_hash, 0, 10, 7, 6)?;
+            assert_eq!(
+                store.terminal_observed_member(
+                    &request.payload_hash,
+                    1,
+                    MonadOutboxTerminal::StaleNonce,
+                    &detail,
+                    7,
+                    &limits,
+                )?,
+                MonadOutboxTransition::Applied
+            );
+            assert_eq!(
+                store.get(&request.payload_hash)?.unwrap().last_error.len(),
+                MAX_LAST_ERROR_BYTES_HARD
+            );
+            assert_eq!(
+                store
+                    .get_member(&request.payload_hash, 1)?
+                    .unwrap()
+                    .last_error
+                    .len(),
+                MAX_LAST_ERROR_BYTES_HARD
+            );
+            let hash: [u8; 32] = request.payload_hash.as_slice().try_into().unwrap();
+            let mut record = store.get(&hash)?.unwrap();
+            record.last_error = "x".repeat(MAX_LAST_ERROR_BYTES_HARD);
+            let fully_grown = request.stamp_payments.iter().try_fold(
+                encode_record(&record).len(),
+                |total, payment| -> Result<usize> {
+                    let mut member = store
+                        .get_member(&hash, payment.child_index)?
+                        .expect("quota fixture member must exist");
+                    member.last_error = "x".repeat(MAX_LAST_ERROR_BYTES_HARD);
+                    Ok(total.saturating_add(encode_member(&member).len()))
+                },
+            )?;
+            assert_eq!(
+                fully_grown, reservation,
+                "the admission reservation is the exact fully-grown encoded footprint"
+            );
+            let mut lowered = limits.clone();
+            lowered.max_recovery_bytes = 0;
+            lowered.max_recovery_bytes_per_recipient = 0;
+            assert_eq!(
+                store.claim(&third.payload_hash, &third, &policy(), 8, &lowered)?,
+                MonadOutboxClaim::AtCapacity
+            );
+            assert_eq!(
+                store
+                    .confirmed_prefixes_for_recipient(&policy().recipient, 10)?
+                    .len(),
+                1,
+                "quota lowering never hides an existing recovery obligation"
+            );
+        }
+        let db = Db::open(&path)?;
+        let store = db.monad_outbox();
+        let hash: [u8; 32] = request.payload_hash.as_slice().try_into().unwrap();
+        let record = store.get(&hash)?.unwrap();
+        assert_eq!(
+            store.recovery_reserved_claim_bytes_locked(
+                &hash,
+                &record,
+                encode_record(&record).len(),
+            )? as usize,
+            reservation
+        );
+        assert_eq!(
+            store
+                .confirmed_prefixes_for_recipient(&policy().recipient, 10)?
+                .len(),
+            1,
+            "reopen preserves accounting and readability"
+        );
         Ok(())
     }
 

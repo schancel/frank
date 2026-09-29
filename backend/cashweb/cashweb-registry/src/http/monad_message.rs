@@ -1949,12 +1949,8 @@ pub(crate) async fn handle_get_private_monad_recovery(
     debug_assert!(page.canonical_bytes <= max_bytes / 2);
     debug_assert!(page.inspected_bytes <= max_bytes / 2);
     for recovery in &page.recoveries {
-        crate::monad_outbox::validate_monad_recovery_record(
-            &server.registry,
-            &recovery.payload_hash,
-            runtime.expected_chain_id(),
-        )
-        .map_err(PrivateMailboxError::Infrastructure)?;
+        crate::monad_outbox::validate_monad_recovery_record(recovery, runtime.expected_chain_id())
+            .map_err(PrivateMailboxError::Infrastructure)?;
     }
     let recoveries = page
         .recoveries

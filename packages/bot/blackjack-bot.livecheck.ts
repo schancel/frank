@@ -151,6 +151,11 @@ async function resolveAndReveal(params: {
     provider,
     state,
   } = params
+  if (record.authority !== 'verified-wager-sender') {
+    throw new Error(
+      'cannot resolve or pay a blackjack game without verified wager authority',
+    )
+  }
   const deck = deriveDeck(record.serverSeed, record.wagerTxHash, 0)
   const playerCards = playerCardsSoFar(deck, record.dealtCount)
   const playerValue = handValue(playerCards)
@@ -427,7 +432,11 @@ export async function handleMove(params: {
   }
 
   const record = state.getGame(gameId)
-  if (!record || record.revealed) {
+  if (
+    !record ||
+    record.revealed ||
+    record.authority !== 'verified-wager-sender'
+  ) {
     await sendError('no in-progress hand found for this gameId')
     return
   }

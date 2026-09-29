@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
+import level from 'level'
 
 import { getAddress } from 'ethers'
 
@@ -276,6 +277,79 @@ describe('blackjack move authorization', () => {
       expect(sendDirectMessageText).toHaveBeenCalledTimes(1)
     },
   )
+
+  it('keeps legacy authority inert across restart for hit, stand, and payout', async () => {
+    const wagerTxHash = WAGER_HASH.toLowerCase()
+    await state.Close()
+    const raw = level(join(directory, 'blackjack-bot-state'))
+    await raw.batch([
+      {
+        type: 'put',
+        key: 'game:game-a',
+        value: JSON.stringify({
+          authority: 'legacy-unverified',
+          serverSeed: 'initial-seed',
+          serverSeedHash: sha256Hex('initial-seed'),
+          wagerTxHash,
+          wagerWei: '100',
+          playerAddress: getAddress(PLAYER),
+          dealtCount: 4,
+          revealed: false,
+        }),
+      },
+      {
+        type: 'put',
+        key: `wager-claim:${wagerTxHash}`,
+        value: JSON.stringify({ gameId: 'game-a' }),
+      },
+    ])
+    await raw.close()
+
+    state = new BlackjackBotStateStore(directory)
+    await state.Open()
+    expect(state.getGame('game-a')).toMatchObject({
+      authority: 'legacy-unverified',
+      revealed: true,
+    })
+    await state.Close()
+    state = new BlackjackBotStateStore(directory)
+    await state.Open()
+    const before = state.getGame('game-a')
+    jest.clearAllMocks()
+
+    await move('hit', hydrated('hit'))
+    await move('stand', hydrated('stand'))
+
+    expect(state.getGame('game-a')).toEqual(before)
+    expect(sendDirectMessageItems).not.toHaveBeenCalled()
+    expect(mainAccountSigner.buildAndSignTransfer).not.toHaveBeenCalled()
+    expect(mainAccountSigner.submit).not.toHaveBeenCalled()
+    expect(sendDirectMessageText).toHaveBeenCalledTimes(2)
+  })
+
+  it('rejects even an impossible active legacy record before hit or stand', async () => {
+    const impossibleLegacyRecord = {
+      authority: 'legacy-unverified' as const,
+      serverSeed: 'initial-seed',
+      serverSeedHash: sha256Hex('initial-seed'),
+      wagerTxHash: WAGER_HASH.toLowerCase(),
+      wagerWei: 100n,
+      playerAddress: getAddress(PLAYER),
+      dealtCount: 4,
+      revealed: false,
+    }
+    jest.spyOn(state, 'getGame').mockReturnValue(impossibleLegacyRecord)
+    const setGame = jest.spyOn(state, 'setGame')
+
+    await move('hit', hydrated('hit'))
+    await move('stand', hydrated('stand'))
+
+    expect(setGame).not.toHaveBeenCalled()
+    expect(sendDirectMessageItems).not.toHaveBeenCalled()
+    expect(mainAccountSigner.buildAndSignTransfer).not.toHaveBeenCalled()
+    expect(mainAccountSigner.submit).not.toHaveBeenCalled()
+    expect(sendDirectMessageText).toHaveBeenCalledTimes(2)
+  })
 
   it.each(['deal', 'reveal'] as const)(
     'rejects the bot-only %s action from a client without state mutation',

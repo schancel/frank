@@ -192,13 +192,19 @@ export class BlackjackBotStateStore {
         value: Buffer
         wagerTxHash: string
       }> = []
-      const persistedKeys = new Set<string>()
+      const noncanonicalClaims: Array<{
+        key: Buffer
+        value: Buffer
+        wagerTxHash: string
+        claimedGameId?: string | null
+      }> = []
+      const persistedValues = new Map<string, Buffer>()
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       for await (const [rawKey, rawValue] of this.db.iterator({}) as any) {
         const keyBytes = asBuffer(rawKey)
         const valueBytes = asBuffer(rawValue)
         const key = decodeUtf8Strict(keyBytes, 'blackjack state key')
-        persistedKeys.add(key)
+        persistedValues.set(key, Buffer.from(valueBytes))
         if (key === PENDING_SEED_KEY) {
           const parsed = JSON.parse(
             decodeUtf8Strict(valueBytes, 'pending server seed'),
@@ -254,27 +260,35 @@ export class BlackjackBotStateStore {
           let wagerTxHash: string
           try {
             wagerTxHash = normalizeWagerTxHash(wagerTxHashRaw)
-            if (wagerTxHash !== wagerTxHashRaw) throw new Error()
           } catch {
             throw new Error(
               'cannot safely quarantine malformed blackjack wager claim without a canonical wager hash; raw row preserved',
             )
           }
-          try {
-            const parsed = parseJsonObject(
-              decodeUtf8Strict(valueBytes, `wager claim ${wagerTxHash} value`),
-              `wager claim ${wagerTxHash}`,
-            )
-            if (hasExactKeys(parsed, ['quarantined'])) {
-              if (parsed.quarantined !== true) throw new Error()
-              this.wagerClaims.set(wagerTxHash, null)
-            } else {
-              if (!hasExactKeys(parsed, ['gameId'])) throw new Error()
-              this.wagerClaims.set(
-                wagerTxHash,
-                normalizeBlackjackGameId(parsed.gameId),
+          if (wagerTxHash !== wagerTxHashRaw) {
+            let claimedGameId: string | null | undefined
+            try {
+              claimedGameId = hydratePersistedClaim(
+                valueBytes,
+                `noncanonical wager claim ${wagerTxHashRaw}`,
               )
+            } catch {
+              // The raw value is retained as evidence below. Its key is sufficient to consume the
+              // canonical wager hash, but malformed metadata must never become game authority.
             }
+            noncanonicalClaims.push({
+              key: keyBytes,
+              value: valueBytes,
+              wagerTxHash,
+              claimedGameId,
+            })
+            continue
+          }
+          try {
+            this.wagerClaims.set(
+              wagerTxHash,
+              hydratePersistedClaim(valueBytes, `wager claim ${wagerTxHash}`),
+            )
           } catch {
             this.wagerClaims.set(wagerTxHash, null)
             malformedClaims.push({
@@ -304,11 +318,14 @@ export class BlackjackBotStateStore {
       for (const quarantined of quarantinedGames) {
         const evidenceKey =
           QUARANTINED_GAME_PREFIX + sha256Bytes(quarantined.key)
+        retainExactEvidence(
+          evidenceKey,
+          quarantined.value,
+          persistedValues,
+          repairWrites,
+          'blackjack game',
+        )
         repairWrites.push(rawDel(quarantined.key))
-        if (!persistedKeys.has(evidenceKey)) {
-          repairWrites.push(rawPut(evidenceKey, quarantined.value))
-          persistedKeys.add(evidenceKey)
-        }
         if (!this.wagerClaims.has(quarantined.wagerTxHash)) {
           this.wagerClaims.set(quarantined.wagerTxHash, null)
           repairWrites.push(
@@ -323,13 +340,48 @@ export class BlackjackBotStateStore {
       for (const malformed of malformedClaims) {
         const evidenceKey =
           QUARANTINED_CLAIM_PREFIX + sha256Bytes(malformed.key)
-        if (!persistedKeys.has(evidenceKey)) {
-          repairWrites.push(rawPut(evidenceKey, malformed.value))
-          persistedKeys.add(evidenceKey)
-        }
+        retainExactEvidence(
+          evidenceKey,
+          malformed.value,
+          persistedValues,
+          repairWrites,
+          'blackjack wager claim',
+        )
         repairWrites.push(
           rawPut(malformed.key, JSON.stringify({ quarantined: true })),
         )
+      }
+
+      for (const noncanonical of noncanonicalClaims) {
+        const existingClaim = this.wagerClaims.get(noncanonical.wagerTxHash)
+        if (
+          typeof existingClaim === 'string' &&
+          typeof noncanonical.claimedGameId === 'string' &&
+          existingClaim !== noncanonical.claimedGameId
+        ) {
+          throw new Error(
+            `wager ${noncanonical.wagerTxHash} is claimed by both ${existingClaim} and ${noncanonical.claimedGameId}`,
+          )
+        }
+        const evidenceKey =
+          QUARANTINED_CLAIM_PREFIX + sha256Bytes(noncanonical.key)
+        retainExactEvidence(
+          evidenceKey,
+          noncanonical.value,
+          persistedValues,
+          repairWrites,
+          'noncanonical blackjack wager claim',
+        )
+        repairWrites.push(rawDel(noncanonical.key))
+        if (!this.wagerClaims.has(noncanonical.wagerTxHash)) {
+          this.wagerClaims.set(noncanonical.wagerTxHash, null)
+          repairWrites.push(
+            rawPut(
+              WAGER_CLAIM_PREFIX + noncanonical.wagerTxHash,
+              JSON.stringify({ quarantined: true }),
+            ),
+          )
+        }
       }
 
       // Pre-authority-fix game records did not have separate global claim keys. Backfill the claim
@@ -631,7 +683,7 @@ function hydratePersistedGameRecord(
     wagerWei,
     playerAddress: parsed.playerAddress,
     dealtCount: parsed.dealtCount,
-    revealed: isLegacy ? true : parsed.revealed,
+    revealed: authority === 'legacy-unverified' ? true : parsed.revealed,
   }
   validateRuntimeGameRecord(record, gameId)
   return record
@@ -679,6 +731,24 @@ function validateRuntimeGameRecord(
   if (typeof record.revealed !== 'boolean') {
     throw new Error(`game ${gameId} has invalid revealed state`)
   }
+  if (record.authority === 'legacy-unverified' && !record.revealed) {
+    throw new Error(`game ${gameId} legacy authority must remain revealed`)
+  }
+}
+
+function hydratePersistedClaim(value: Buffer, label: string): string | null {
+  const parsed = parseJsonObject(
+    decodeUtf8Strict(value, `${label} value`),
+    label,
+  )
+  if (hasExactKeys(parsed, ['quarantined'])) {
+    if (parsed.quarantined !== true) throw new Error(`${label} is invalid`)
+    return null
+  }
+  if (!hasExactKeys(parsed, ['gameId'])) {
+    throw new Error(`${label} has an invalid schema`)
+  }
+  return normalizeBlackjackGameId(parsed.gameId)
 }
 
 function parseJsonObject(
@@ -752,6 +822,26 @@ function rawPut(
 
 function rawDel(key: string | Buffer): RawBatchOperation {
   return { type: 'del', key: typeof key === 'string' ? encodeUtf8(key) : key }
+}
+
+function retainExactEvidence(
+  evidenceKey: string,
+  sourceValue: Buffer,
+  persistedValues: Map<string, Buffer>,
+  repairWrites: RawBatchOperation[],
+  label: string,
+): void {
+  const existingEvidence = persistedValues.get(evidenceKey)
+  if (existingEvidence) {
+    if (!existingEvidence.equals(sourceValue)) {
+      throw new Error(
+        `${label} evidence collision; source and existing evidence preserved`,
+      )
+    }
+    return
+  }
+  repairWrites.push(rawPut(evidenceKey, sourceValue))
+  persistedValues.set(evidenceKey, Buffer.from(sourceValue))
 }
 
 function sha256Bytes(value: Buffer): string {

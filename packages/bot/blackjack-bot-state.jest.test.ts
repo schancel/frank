@@ -200,6 +200,44 @@ describe('BlackjackBotStateStore wager authority', () => {
     })
   })
 
+  it('keeps current-schema legacy authority permanently revealed across opens', async () => {
+    const wagerTxHash = normalizeWagerTxHash(WAGER_HASH)
+    const raw = level(join(directory, 'blackjack-bot-state'))
+    await raw.batch([
+      {
+        type: 'put',
+        key: 'game:legacy-game',
+        value: JSON.stringify({
+          ...gameRecord(wagerTxHash),
+          authority: 'legacy-unverified',
+          wagerWei: '100',
+          revealed: false,
+        }),
+      },
+      {
+        type: 'put',
+        key: `wager-claim:${wagerTxHash}`,
+        value: JSON.stringify({ gameId: 'legacy-game' }),
+      },
+    ])
+    await raw.close()
+
+    for (let reopen = 0; reopen < 2; reopen += 1) {
+      const store = await openStore()
+      const record = store.getGame('legacy-game')!
+      expect(record).toMatchObject({
+        authority: 'legacy-unverified',
+        revealed: true,
+      })
+      await expect(
+        store.setGame('legacy-game', { ...record, revealed: false }),
+      ).rejects.toThrow('legacy')
+      expect(store.getGame('legacy-game')).toEqual(record)
+      await store.Close()
+      stores = []
+    }
+  })
+
   it.each([
     ['object', {}],
     ['empty', ''],
@@ -457,6 +495,116 @@ describe('BlackjackBotStateStore wager authority', () => {
       JSON.parse((await evidence.get(claimKey as never)).toString('utf8')),
     ).toEqual({ quarantined: true })
     await evidence.close()
+  })
+
+  it.each([
+    [
+      'game',
+      'game:collision-game',
+      JSON.stringify({
+        ...gameRecord(),
+        wagerWei: '100',
+        revealed: 'false',
+      }),
+      'quarantined-game:',
+    ],
+    [
+      'claim',
+      `wager-claim:${normalizeWagerTxHash(WAGER_HASH)}`,
+      'not-json',
+      'quarantined-wager-claim:',
+    ],
+  ])(
+    'fails closed without deleting a %s source whose evidence key has different bytes',
+    async (_label, sourceKey, sourceValue, evidencePrefix) => {
+      const evidenceKey = `${evidencePrefix}${createHash('sha256')
+        .update(sourceKey)
+        .digest('hex')}`
+      const existingEvidence = 'different-existing-evidence'
+      const raw = level(join(directory, 'blackjack-bot-state'))
+      await raw.batch([
+        { type: 'put', key: sourceKey, value: sourceValue },
+        { type: 'put', key: evidenceKey, value: existingEvidence },
+      ])
+      await raw.close()
+
+      for (let reopen = 0; reopen < 2; reopen += 1) {
+        const store = new BlackjackBotStateStore(directory)
+        await expect(store.Open()).rejects.toThrow('evidence collision')
+        const evidence = level(join(directory, 'blackjack-bot-state'))
+        expect(await evidence.get(sourceKey)).toBe(sourceValue)
+        expect(await evidence.get(evidenceKey)).toBe(existingEvidence)
+        await evidence.close()
+      }
+    },
+  )
+
+  it('atomically migrates an uppercase wager claim to a canonical consumed tombstone', async () => {
+    const canonicalHash = normalizeWagerTxHash(WAGER_HASH)
+    const uppercaseHash = `0x${canonicalHash.slice(2).toUpperCase()}`
+    const uppercaseKey = `wager-claim:${uppercaseHash}`
+    const canonicalKey = `wager-claim:${canonicalHash}`
+    const sourceValue = JSON.stringify({ gameId: 'old-game' })
+    const evidenceKey = `quarantined-wager-claim:${createHash('sha256')
+      .update(uppercaseKey)
+      .digest('hex')}`
+    const raw = level(join(directory, 'blackjack-bot-state'))
+    await raw.put(uppercaseKey, sourceValue)
+    await raw.close()
+
+    for (let reopen = 0; reopen < 2; reopen += 1) {
+      const store = await openStore()
+      await expect(claim(store, `replacement-${reopen}`)).resolves.toEqual({
+        ok: false,
+        reason: 'wager_claimed',
+      })
+      await store.Close()
+      stores = []
+    }
+
+    const evidence = level(join(directory, 'blackjack-bot-state'))
+    await expect(evidence.get(uppercaseKey)).rejects.toMatchObject({
+      notFound: true,
+    })
+    expect(await evidence.get(evidenceKey)).toBe(sourceValue)
+    expect(JSON.parse(await evidence.get(canonicalKey))).toEqual({
+      quarantined: true,
+    })
+    await evidence.close()
+  })
+
+  it('fails closed on conflicting canonical and uppercase active claims', async () => {
+    const canonicalHash = normalizeWagerTxHash(WAGER_HASH)
+    const uppercaseHash = `0x${canonicalHash.slice(2).toUpperCase()}`
+    const uppercaseKey = `wager-claim:${uppercaseHash}`
+    const canonicalKey = `wager-claim:${canonicalHash}`
+    const raw = level(join(directory, 'blackjack-bot-state'))
+    await raw.batch([
+      {
+        type: 'put',
+        key: canonicalKey,
+        value: JSON.stringify({ gameId: 'canonical-game' }),
+      },
+      {
+        type: 'put',
+        key: uppercaseKey,
+        value: JSON.stringify({ gameId: 'different-game' }),
+      },
+    ])
+    await raw.close()
+
+    for (let reopen = 0; reopen < 2; reopen += 1) {
+      const store = new BlackjackBotStateStore(directory)
+      await expect(store.Open()).rejects.toThrow('claimed by both')
+      const evidence = level(join(directory, 'blackjack-bot-state'))
+      expect(JSON.parse(await evidence.get(canonicalKey))).toEqual({
+        gameId: 'canonical-game',
+      })
+      expect(JSON.parse(await evidence.get(uppercaseKey))).toEqual({
+        gameId: 'different-game',
+      })
+      await evidence.close()
+    }
   })
 
   it('accepts only exact active-claim and quarantine-tombstone schemas', async () => {

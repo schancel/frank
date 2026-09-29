@@ -18,6 +18,7 @@
       round
       size="md"
       icon="arrow_downward"
+      :aria-label="$t('a11y.scrollToLatest')"
       @mousedown.prevent="buttonScrollBottom"
       color="accent"
     />

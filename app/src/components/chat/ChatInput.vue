@@ -1,7 +1,14 @@
 <template>
   <div class="row">
     <q-toolbar class="q-px-sm">
-      <q-btn dense flat icon="unfold_more" :disable="disable">
+      <q-btn
+        dense
+        flat
+        icon="unfold_more"
+        :aria-label="$t('a11y.attachmentOptions')"
+        aria-haspopup="menu"
+        :disable="disable"
+      >
         <q-menu>
           <q-list style="min-width: 100px">
             <q-item clickable v-close-popup @click="sendFileClicked">
@@ -58,7 +65,8 @@
         flat
         round
         icon="local_post_office"
-        aria-label="Stamp payment"
+        :aria-label="$t('a11y.stampPayment')"
+        aria-haspopup="menu"
         :disable="disable"
       >
         <q-tooltip>{{ stampLabel }}</q-tooltip>
@@ -94,6 +102,7 @@
         flat
         icon="send"
         class="q-btn"
+        :aria-label="$t('a11y.sendMessage')"
         :disable="disable"
         @mousedown.prevent="sendMessage"
       />

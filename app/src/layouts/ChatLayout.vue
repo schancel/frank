@@ -17,6 +17,7 @@
             flat
             dense
             icon="arrow_back"
+            :aria-label="$t('a11y.closeInfo')"
             @click="infoOpen = false"
           />
           <q-toolbar-title class="h6">{{
@@ -32,6 +33,7 @@
             flat
             dense
             icon="close"
+            :aria-label="$t('a11y.exitSelectMode')"
             @click="selectMode = false"
           />
           <q-toolbar-title class="h6">{{
@@ -45,6 +47,8 @@
             dense
             @click="() => $emit('toggleMyDrawerOpen')"
             icon="menu"
+            :aria-label="$t('a11y.openNavigation')"
+            :aria-expanded="myDrawerOpen"
           />
           <q-avatar rounded :style="contactColorStyle">
             <img :src="profileAvatar(contactProfile?.avatar, address)" />
@@ -53,8 +57,21 @@
             contactProfile.name
           }}</q-toolbar-title>
           <q-space />
-          <q-btn class="q-px-sm" flat dense icon="more_vert">
-            <q-menu anchor="bottom right" self="top right">
+          <q-btn
+            class="q-px-sm"
+            flat
+            dense
+            icon="more_vert"
+            :aria-label="$t('a11y.chatMenu')"
+            aria-haspopup="menu"
+            :aria-expanded="chatMenuOpen"
+          >
+            <q-menu
+              anchor="bottom right"
+              self="top right"
+              @show="chatMenuOpen = true"
+              @hide="chatMenuOpen = false"
+            >
               <q-list style="min-width: 180px">
                 <q-item clickable v-close-popup @click="infoOpen = true">
                   <q-item-section avatar><q-icon name="info" /></q-item-section>
@@ -150,6 +167,7 @@ import ChatInfoView from '../components/panels/ChatInfoView.vue'
 import ClearHistoryDialog from '../components/dialogs/ClearHistoryDialog.vue'
 import DeleteChatDialog from '../components/dialogs/DeleteChatDialog.vue'
 import SendFileDialog from '../components/dialogs/SendFileDialog.vue'
+import { useMyDrawerOpen } from '../composables/useMyDrawerOpen'
 import { useContactStore } from 'src/stores/contacts'
 import { pubKeyToColor } from 'src/utils/formatting'
 import { profileAvatar } from 'src/utils/avatar'
@@ -176,6 +194,7 @@ export default defineComponent({
     const contactStore = useContactStore()
 
     return {
+      myDrawerOpen: useMyDrawerOpen(),
       getContact: contactStore.getContact,
       setNotify: contactStore.setNotify,
       getNotify: contactStore.getNotify,
@@ -189,6 +208,7 @@ export default defineComponent({
       // Full-pane Info swap, not a side drawer -- see this file's template header comment above
       // `router-view`/`chat-info-view` for why.
       infoOpen: false,
+      chatMenuOpen: false,
       // See this file's `provide()` and ChatMessageSuffixButtons.vue's own header -- gates
       // per-message delete behind an explicit mode instead of it being an always-hoverable action.
       selectMode: false,

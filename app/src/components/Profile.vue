@@ -62,6 +62,7 @@
                     round
                     dense
                     icon="add_a_photo"
+                    :aria-label="$t('a11y.choosePhoto')"
                     @click="$refs.filePicker.$el.click()"
                   />
                 </q-toolbar>
@@ -71,12 +72,14 @@
                     <q-btn
                       flat
                       icon="navigate_before"
+                      :aria-label="$t('a11y.previousAvatar')"
                       color="black"
                       @click="cycleAvatarLeft"
                     />
                     <q-btn
                       flat
                       icon="navigate_next"
+                      :aria-label="$t('a11y.nextAvatar')"
                       color="black"
                       @click="cycleAvatarRight"
                     />

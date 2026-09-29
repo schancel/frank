@@ -15,7 +15,13 @@
       v-model="innerMessage"
       :placeholder="$t('chatInput.placeHolder')"
     />
-    <q-btn dense flat icon="send" @mousedown.prevent="sendMessage" />
+    <q-btn
+      dense
+      flat
+      icon="send"
+      :aria-label="$t('a11y.sendMessage')"
+      @mousedown.prevent="sendMessage"
+    />
   </q-toolbar>
 </template>
 

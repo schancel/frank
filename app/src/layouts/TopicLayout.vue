@@ -17,6 +17,8 @@
           dense
           @click="toggleSettingsDrawerOpen"
           icon="menu"
+          :aria-label="$t('a11y.openNavigation')"
+          :aria-expanded="myDrawerOpen"
         />
         <q-toolbar-title class="h6">{{ topic }}</q-toolbar-title>
         <q-space />
@@ -26,6 +28,8 @@
           dense
           @click="toggleTopicDrawer"
           icon="settings"
+          :aria-label="$t('a11y.topicSettings')"
+          :aria-expanded="showTopicDrawer"
         />
       </q-toolbar>
     </q-header>
@@ -44,6 +48,8 @@
 
 <script lang="ts">
 import { defineComponent, ref } from 'vue'
+
+import { useMyDrawerOpen } from '../composables/useMyDrawerOpen'
 import { RouteLocationNormalized, useRouter } from 'vue-router'
 
 import TopicInput from 'src/components/topic/TopicInput.vue'
@@ -76,6 +82,7 @@ export default defineComponent({
     }
     assert(typeof topic === 'string', 'Topic param should be string')
     return {
+      myDrawerOpen: useMyDrawerOpen(),
       topic: ref(topic),
       putMessage: topicsStore.putMessage,
       showTopicDrawer,

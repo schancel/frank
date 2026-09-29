@@ -5,7 +5,13 @@
       <q-item-label>{{ topic }}</q-item-label>
     </q-item-section>
     <q-space />
-    <q-btn dense flat icon="delete_forever" @click="deleteTopic" />
+    <q-btn
+      dense
+      flat
+      icon="delete_forever"
+      :aria-label="$t('a11y.deleteTopic', { topic })"
+      @click="deleteTopic"
+    />
   </q-item>
 </template>
 

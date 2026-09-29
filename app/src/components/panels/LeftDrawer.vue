@@ -127,7 +127,13 @@
             clickable
             @click="relayConnectOpen = true"
           >
-            <q-btn icon="email" flat round color="red" />
+            <q-btn
+              icon="email"
+              flat
+              round
+              color="red"
+              :aria-label="$t('a11y.connectRelay')"
+            />
           </q-item-section>
         </q-item>
       </q-list>

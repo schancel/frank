@@ -21,9 +21,10 @@
 </template>
 
 <script lang="ts">
-import { defineComponent } from 'vue'
+import { computed, defineComponent } from 'vue'
 import type { NavigationFailure, RouteLocationNormalized } from 'vue-router'
 
+import { MY_DRAWER_OPEN_KEY } from '../composables/useMyDrawerOpen'
 import { DRAWER_BREAKPOINT, isNarrowWidth } from '../utils/layout'
 
 import LeftDrawer from '../components/panels/LeftDrawer.vue'
@@ -64,6 +65,7 @@ export default defineComponent({
   },
   provide() {
     return {
+      [MY_DRAWER_OPEN_KEY]: computed(() => this.myDrawerOpen),
       markRailNavigation: () => {
         this.railNavigation = true
       },

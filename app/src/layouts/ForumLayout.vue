@@ -12,19 +12,30 @@
           dense
           @click="toggleSettingsDrawerOpen"
           icon="menu"
+          :aria-label="$t('a11y.openNavigation')"
+          :aria-expanded="myDrawerOpen"
         />
         <q-toolbar-title class="h6">Forum</q-toolbar-title>
         <q-space />
         <q-btn
           icon="refresh"
+          :aria-label="$t('a11y.forumRefresh')"
           flat
           class="q-mx-none q-pa-sm"
           @click="refreshContent"
         />
-        <q-btn flat icon="post_add" class="q-mx-none q-pa-sm" to="/new-post" />
+        <q-btn
+          flat
+          icon="post_add"
+          class="q-mx-none q-pa-sm"
+          to="/new-post"
+          :aria-label="$t('a11y.newPost')"
+        />
         <q-btn
           icon="settings"
           flat
+          :aria-label="$t('a11y.forumSettings')"
+          :aria-expanded="showForumDrawer"
           class="q-mx-none q-pa-sm"
           @click="showForumDrawer = !showForumDrawer"
         />
@@ -46,6 +57,8 @@
 
 <script lang="ts">
 import { defineComponent } from 'vue'
+
+import { useMyDrawerOpen } from '../composables/useMyDrawerOpen'
 import { storeToRefs } from 'pinia'
 
 import { useForumStore } from 'src/stores/forum'
@@ -66,6 +79,7 @@ export default defineComponent({
     const { topics, selectedTopic } = storeToRefs(forumStore)
 
     return {
+      myDrawerOpen: useMyDrawerOpen(),
       refreshMessages: forumStore.refreshMessages,
       setSelectedTopic: forumStore.setSelectedTopic,
       // Ticket #72: `refreshDiscoveredTopics` merges relay-discovered topics into `useTopicStore`

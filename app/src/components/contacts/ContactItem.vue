@@ -42,7 +42,13 @@
         </q-item-label>
       </q-item-section>
       <q-item-section side @click="deleteContact(address)">
-        <q-btn flat round icon="delete" color="red" />
+        <q-btn
+          flat
+          round
+          icon="delete"
+          color="red"
+          :aria-label="$t('a11y.deleteContact', { name: contact.profile.name })"
+        />
       </q-item-section>
     </q-item>
   </div>

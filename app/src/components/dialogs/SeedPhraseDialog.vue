@@ -18,6 +18,7 @@
       <q-btn
         flat
         icon="file_copy"
+        :aria-label="$t('accountStep.copyRecoveryPhrase')"
         size="sm"
         color="primary"
         @click="copySeed"

@@ -17,13 +17,25 @@
       <q-space />
       <span class="q-pa-none q-mt-xs text-center">{{ message.topic }}</span>
       <q-card-section class="q-pa-none q-mt-xs text-center">
-        <q-btn flat icon="arrow_drop_up" padding="0" @click="addVotes(1)" />
+        <q-btn
+          flat
+          icon="arrow_drop_up"
+          padding="0"
+          :aria-label="$t('a11y.voteUp')"
+          @click="addVotes(1)"
+        />
       </q-card-section>
       <q-card-section class="q-pa-none q-mt-xs text-center"
         >{{ formttedAmount }} XPI</q-card-section
       >
       <q-card-section class="q-pa-none q-mt-xs text-center">
-        <q-btn flat icon="arrow_drop_down" padding="0" @click="addVotes(-1)" />
+        <q-btn
+          flat
+          icon="arrow_drop_down"
+          padding="0"
+          :aria-label="$t('a11y.voteDown')"
+          @click="addVotes(-1)"
+        />
       </q-card-section>
       <span class="q-pa-none q-mt-xs text-center">
         {{ timestamp }}

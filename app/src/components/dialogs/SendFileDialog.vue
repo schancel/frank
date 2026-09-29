@@ -9,6 +9,7 @@
         flat
         round
         icon="attach_file"
+        :aria-label="$t('a11y.chooseFile')"
         color="primary"
         @click="$refs.filePicker.$el.click()"
       />

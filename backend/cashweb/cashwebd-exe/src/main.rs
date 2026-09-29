@@ -9,6 +9,8 @@ use cashweb_registry::{
         curated_defaults::build_curated_defaults, pop_protection::PopGate, server::RegistryServer,
     },
     lotus_adapter::LotusAdapter,
+    monad_http::HttpTransport,
+    monad_outbox::{start_monad_outbox_worker, MonadOutboxReconcileConfig, MonadOutboxWorker},
     p2p::{
         peer::Peer,
         peers::{InitialMetadataDownloadParams, Peers},
@@ -86,6 +88,45 @@ async fn main() -> Result<()> {
     };
 
     let registry = Arc::new(Registry::new(db, chain_adapter, conf.registry.net));
+    let outbox_worker: Option<MonadOutboxWorker> = match std::env::var(
+        "CASHWEB_MONAD_OUTBOX_RECONCILIATION_ENABLED",
+    )
+    .ok()
+    .as_deref()
+    {
+        Some("0" | "false" | "off") => {
+            tracing::event!(
+                tracing::Level::WARN,
+                "Monad outbox startup reconciliation is explicitly disabled; durable records remain readable"
+            );
+            None
+        }
+        _ => match std::env::var("MONAD_TESTNET_HTTP_RPC_URL") {
+            Ok(value) => match value.parse() {
+                Ok(rpc_url) => Some(start_monad_outbox_worker(
+                    HttpTransport::new(rpc_url),
+                    Arc::clone(&registry),
+                    MonadOutboxReconcileConfig::default(),
+                )),
+                Err(err) => {
+                    tracing::event!(
+                        tracing::Level::ERROR,
+                        error = %err,
+                        "Monad outbox startup reconciliation is unavailable: MONAD_TESTNET_HTTP_RPC_URL is invalid"
+                    );
+                    None
+                }
+            },
+            Err(err) => {
+                tracing::event!(
+                    tracing::Level::ERROR,
+                    error = %err,
+                    "Monad outbox startup reconciliation is unavailable: MONAD_TESTNET_HTTP_RPC_URL is unset"
+                );
+                None
+            }
+        },
+    };
     let our_peers = conf
         .registry
         .peers
@@ -156,9 +197,13 @@ async fn main() -> Result<()> {
 
     let router = server.into_router();
     info!("Listening on {}", conf.host);
-    axum::Server::bind(&conf.host)
+    let server_result = axum::Server::bind(&conf.host)
         .serve(router.into_make_service())
-        .await?;
+        .await;
+    if let Some(worker) = outbox_worker {
+        worker.shutdown().await;
+    }
+    server_result?;
 
     Ok(())
 }

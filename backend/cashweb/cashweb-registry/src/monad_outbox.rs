@@ -484,6 +484,7 @@ where
             )?;
             return Ok(MonadOutboxReconcileOutcome::Pending);
         }
+        let was_exposed = leased_member.exposed;
         match registry.begin_monad_outbox_replay_attempt(
             payload_hash,
             payment.child_index,
@@ -534,10 +535,11 @@ where
                 }
             }
             MemberOutcome::Pending(detail) => {
-                registry.complete_pending_monad_outbox_member(
+                registry.complete_rejected_monad_outbox_member(
                     payload_hash,
                     payment.child_index,
                     lease,
+                    was_exposed,
                     &detail,
                     now_ms(),
                     &config.limits,
@@ -950,7 +952,7 @@ enum MemberOutcome {
         value_wei: u128,
         block_number: u64,
     },
-    /// Still unresolved and the node never accepted or showed the exact signed bytes.
+    /// The node definitively did not accept the send (or a follow-up proved it never landed).
     Pending(String),
     /// Still unresolved, but the node accepted the transaction or an exact-hash lookup shows it.
     /// Only this outcome makes the member recipient-recoverable exposure.
@@ -1099,11 +1101,13 @@ async fn replay_member<T: JsonRpcTransport + Clone>(
     config: &MonadOutboxReconcileConfig,
 ) -> MemberOutcome {
     let client = MonadHttpClient::with_transport(transport.clone());
-    let send =
-        match tokio::time::timeout(config.rpc_timeout, client.send_raw_transaction(raw_tx)).await {
-            Ok(send) => send,
-            Err(_) => return MemberOutcome::Pending("broadcast RPC deadline elapsed".to_string()),
-        };
+    let send = match tokio::time::timeout(config.rpc_timeout, client.send_raw_transaction(raw_tx))
+        .await
+    {
+        Ok(send) => send,
+        // The request may have reached the node: ambiguous, so exposure stays recorded.
+        Err(_) => return MemberOutcome::Submitted("broadcast RPC deadline elapsed".to_string()),
+    };
     let (nonce_too_low, accepted) = match send {
         // The node reported a different hash than the canonical transaction. It nevertheless
         // took a submission for these bytes, so treat the exact transaction as possibly exposed.
@@ -1115,8 +1119,15 @@ async fn replay_member<T: JsonRpcTransport + Clone>(
         }
         Ok(_) | Err(MonadRpcError::AlreadyKnown { .. }) => (false, true),
         Err(MonadRpcError::NonceTooLow { .. }) => (true, false),
-        // Every other send error means the node did not accept the transaction.
-        Err(err) => return MemberOutcome::Pending(err.to_string()),
+        // Only a node-stated rejection means the transaction was not accepted.
+        Err(
+            err @ (MonadRpcError::InsufficientFunds { .. }
+            | MonadRpcError::ReplacementUnderpriced { .. }
+            | MonadRpcError::Rpc { .. }),
+        ) => return MemberOutcome::Pending(err.to_string()),
+        // Transport errors, HTTP failures and unparsable responses do not tell us whether the
+        // node accepted the transaction: ambiguous.
+        Err(err) => return MemberOutcome::Submitted(err.to_string()),
     };
 
     match poll_exact(transport, tx_hash, canonical, expected, config).await {
@@ -1464,6 +1475,8 @@ mod tests {
         AcceptNeverMined,
         /// The broadcast RPC never answers.
         Hang,
+        /// The node's reply is unparsable, so acceptance is unknown.
+        UnparsableReply,
     }
 
     #[derive(Debug, Clone)]
@@ -1653,6 +1666,10 @@ mod tests {
                     let spec = specs.get_mut(&hash).expect("known raw tx");
                     match spec.send {
                         SendBehavior::Hang => unreachable!("handled above"),
+                        SendBehavior::UnparsableReply => Err(MonadRpcError::InvalidResponse {
+                            method: method.to_string(),
+                            reason: "garbled".to_string(),
+                        }),
                         SendBehavior::AcceptNeverMined => Ok(Value::String(hash.to_hex())),
                         SendBehavior::Accept => {
                             if spec.submission_hash_override.is_none() {
@@ -3585,6 +3602,89 @@ mod tests {
             "exactly one attempt is charged to the member"
         );
         assert!(member.exposed, "the accepted send is recorded as exposure");
+        Ok(())
+    }
+
+    /// Reviewer repro: the broadcast hangs past the RPC timeout (ambiguous: the node may have
+    /// accepted it), the claim ages out, and the transaction mines later. The recipient must be
+    /// able to recover it, while a definitively rejected send must not be retained.
+    #[tokio::test]
+    async fn ambiguous_broadcast_timeout_stays_recoverable_after_expiry_and_later_mining(
+    ) -> Result<()> {
+        let tempdir = tempdir::TempDir::new("monad-outbox-hang-recover")?;
+        let registry = registry(&tempdir.path().join("db.rocksdb"));
+        let (request, policy, transport) = fixture(&[SendBehavior::Hang], &[false]);
+        let hash = Hash32(Keccak256::digest(&request.stamp_payments[0].raw_tx).into());
+        let mut config = fast_config();
+        config.rpc_timeout = Duration::from_millis(50);
+        config.limits.max_unconfirmed_claim_age = Duration::from_millis(1_500);
+        registry.claim_monad_outbox(&request, &policy, now_ms(), &config.limits)?;
+        assert_eq!(
+            reconcile_monad_outbox(&transport, &registry, &request.payload_hash, &config).await?,
+            MonadOutboxReconcileOutcome::Pending
+        );
+        let member = registry
+            .monad_outbox_member(&request.payload_hash, 0)?
+            .unwrap();
+        assert_eq!((member.attempts, member.exposed), (1, true));
+        tokio::time::sleep(Duration::from_millis(1_600)).await;
+        assert_eq!(
+            reconcile_monad_outbox(&transport, &registry, &request.payload_hash, &config).await?,
+            MonadOutboxReconcileOutcome::Terminal(MonadOutboxTerminal::Expired)
+        );
+        transport.set_confirmed(hash, true);
+        assert_eq!(
+            registry
+                .confirmed_monad_outbox_prefixes(policy.recipient, 10)?
+                .len(),
+            1,
+            "the recipient can still recover a payment whose broadcast outcome was unknown"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn unparsable_send_reply_is_ambiguous_but_node_rejection_is_not() -> Result<()> {
+        for (behavior, expect_exposed) in [
+            (SendBehavior::UnparsableReply, true),
+            (SendBehavior::InsufficientFunds, false),
+            (SendBehavior::RpcFailure, false),
+        ] {
+            let tempdir = tempdir::TempDir::new("monad-outbox-send-classification")?;
+            let registry = registry(&tempdir.path().join("db.rocksdb"));
+            let (request, policy, transport) = fixture(&[behavior], &[false]);
+            let config = fast_config();
+            registry.claim_monad_outbox(&request, &policy, now_ms(), &config.limits)?;
+            reconcile_monad_outbox(&transport, &registry, &request.payload_hash, &config).await?;
+            let member = registry
+                .monad_outbox_member(&request.payload_hash, 0)?
+                .unwrap();
+            assert_eq!(member.attempts, 1);
+            assert_eq!(member.exposed, expect_exposed, "{behavior:?}");
+        }
+        Ok(())
+    }
+
+    /// Dropping the in-flight reconciliation (claim deadline / whole-scan cancellation) after the
+    /// attempt was charged leaves the ambiguity durably recorded.
+    #[tokio::test]
+    async fn cancelled_in_flight_send_is_recorded_as_exposed() -> Result<()> {
+        let tempdir = tempdir::TempDir::new("monad-outbox-cancel-exposed")?;
+        let registry = registry(&tempdir.path().join("db.rocksdb"));
+        let (request, policy, transport) = fixture(&[SendBehavior::Hang], &[false]);
+        let mut config = fast_config();
+        config.rpc_timeout = Duration::from_secs(30);
+        config.claim_timeout = Duration::from_millis(100);
+        registry.claim_monad_outbox(&request, &policy, now_ms(), &config.limits)?;
+        assert!(
+            reconcile_monad_outbox(&transport, &registry, &request.payload_hash, &config)
+                .await
+                .is_err()
+        );
+        let member = registry
+            .monad_outbox_member(&request.payload_hash, 0)?
+            .unwrap();
+        assert_eq!((member.attempts, member.exposed), (1, true));
         Ok(())
     }
 

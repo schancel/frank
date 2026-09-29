@@ -4984,6 +4984,7 @@ mod tests {
         let server = enabled_test_server(registry);
         let recipient = recipient_address();
         let binding = inbox_binding(recipient);
+        assert_eq!(MAX_USED_CHALLENGES_PER_RECIPIENT, 30);
         let mut replayable = None;
         for _ in 0..MAX_USED_CHALLENGES_PER_RECIPIENT {
             let headers = signed_private_headers(&server, &binding);

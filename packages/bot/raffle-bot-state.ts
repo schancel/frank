@@ -31,6 +31,7 @@ const PENDING_SEED_KEY = '__pending_server_seed__'
 const PENDING_SEED_HASH_KEY = '__pending_server_seed_hash__'
 const ROUND_KEY = '__current_round__'
 const PROCESSED_PREFIX = 'processed:'
+const REFUND_PREFIX = 'pendingrefund:'
 
 export interface RaffleEntrant {
   address: string
@@ -43,6 +44,24 @@ export interface RaffleRoundRecord {
   maxEntries: number
   serverSeedHash: string
   entrants: RaffleEntrant[]
+  /** Canonical addresses that already used their one leave this round (ticket #209: at most one
+   * leave per address per round). Optional so rounds persisted before this field existed load
+   * unchanged (treated as `[]`). */
+  leavers?: string[]
+}
+
+/** A refund owed to someone who left a round, journaled durably so a crash can never lose it or
+ * double-pay it. See `executeRefund` in `raffle-bot.livecheck.ts` for the exact ordering. */
+export interface PendingRefund {
+  /** Payload hash of the `leave` message; the idempotency key. */
+  payloadHash: string
+  recipient: string
+  amountWei: string
+  raffleId: string
+  /** Set (together with `rawTx`) once the refund transfer has been signed and journaled, strictly
+   * before it is first submitted. Absent means nothing was ever submitted. */
+  txHash?: string
+  rawTx?: string
 }
 
 export class RaffleEntrantIdentityCollisionError extends Error {
@@ -68,7 +87,18 @@ function canonicalizePersistedRound(
     identities.add(address)
     return { ...entrant, address }
   })
-  return { ...round, entrants }
+  const canonical: RaffleRoundRecord = { ...round, entrants }
+  if (round.leavers !== undefined) {
+    canonical.leavers = round.leavers.map(a => canonicalMonadEnvelopeAddress(a))
+  }
+  return canonical
+}
+
+export function hasRaffleLeft(
+  round: RaffleRoundRecord,
+  address: string,
+): boolean {
+  return (round.leavers ?? []).some(a => sameMonadEnvelopeAddress(a, address))
 }
 
 export function hasRaffleEntrant(
@@ -104,6 +134,7 @@ export class RaffleBotStateStore {
   private pendingServerSeedHash?: string
   private currentRound?: RaffleRoundRecord
   private processedPayloadHashes = new Set<string>()
+  private pendingRefunds = new Map<string, PendingRefund>()
   private pendingWrites: Promise<unknown>[] = []
 
   constructor(location: string) {
@@ -132,6 +163,9 @@ export class RaffleBotStateStore {
         const round = JSON.parse(value) as RaffleRoundRecord
         migratedRound = canonicalizePersistedRound(round)
         this.currentRound = migratedRound
+      } else if (key.startsWith(REFUND_PREFIX)) {
+        const refund = JSON.parse(value) as PendingRefund
+        this.pendingRefunds.set(refund.payloadHash, refund)
       } else if (key.startsWith(PROCESSED_PREFIX)) {
         this.processedPayloadHashes.add(key.slice(PROCESSED_PREFIX.length))
       }
@@ -192,5 +226,50 @@ export class RaffleBotStateStore {
   addProcessed(payloadHashHex: string): void {
     this.processedPayloadHashes.add(payloadHashHex)
     this.pendingWrites.push(this.db.put(PROCESSED_PREFIX + payloadHashHex, '1'))
+  }
+
+  getPendingRefunds(): PendingRefund[] {
+    return [...this.pendingRefunds.values()]
+  }
+
+  /** Atomically (one level batch) persists the round without the leaver, the pending-refund
+   * record, and the processed marker. Atomicity matters: a crash must never leave the entrant
+   * removed without a refund record, nor a refund record while the entrant is still entered. */
+  commitLeave(
+    round: RaffleRoundRecord,
+    refund: PendingRefund,
+    payloadHashHex: string,
+  ): void {
+    const canonicalRound = canonicalizePersistedRound(round)
+    this.currentRound = canonicalRound
+    this.pendingRefunds.set(refund.payloadHash, refund)
+    this.processedPayloadHashes.add(payloadHashHex)
+    this.pendingWrites.push(
+      this.db.batch([
+        {
+          type: 'put',
+          key: REFUND_PREFIX + refund.payloadHash,
+          value: JSON.stringify(refund),
+        },
+        { type: 'put', key: ROUND_KEY, value: JSON.stringify(canonicalRound) },
+        { type: 'put', key: PROCESSED_PREFIX + payloadHashHex, value: '1' },
+      ]),
+    )
+  }
+
+  /** Journals the signed refund tx (hash + raw bytes) before it is first submitted. */
+  setPendingRefundTx(payloadHash: string, txHash: string, rawTx: string): void {
+    const existing = this.pendingRefunds.get(payloadHash)
+    if (!existing) throw new Error(`No pending refund ${payloadHash}`)
+    const updated = { ...existing, txHash, rawTx }
+    this.pendingRefunds.set(payloadHash, updated)
+    this.pendingWrites.push(
+      this.db.put(REFUND_PREFIX + payloadHash, JSON.stringify(updated)),
+    )
+  }
+
+  clearPendingRefund(payloadHash: string): void {
+    this.pendingRefunds.delete(payloadHash)
+    this.pendingWrites.push(this.db.del(REFUND_PREFIX + payloadHash))
   }
 }

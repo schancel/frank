@@ -1,6 +1,9 @@
 import { RecoveredMonadStampPayment } from '@frank/wallet/monad-stamp-client'
 
-import { evaluateLeaveRequest, summarizeRecoveredPayments } from './raffle-bot.livecheck'
+import {
+  evaluateLeaveRequest,
+  summarizeRecoveredPayments,
+} from './raffle-bot.livecheck'
 import { RaffleRoundRecord } from './raffle-bot-state'
 
 /**
@@ -65,9 +68,7 @@ describe('summarizeRecoveredPayments', () => {
   it('reduces to the single-payment case unchanged', () => {
     const only = fakePayment(0, 20_000_000_000_000_000n, '0xdeadbeef')
 
-    const { totalValueWei, combinedTxHash } = summarizeRecoveredPayments([
-      only,
-    ])
+    const { totalValueWei, combinedTxHash } = summarizeRecoveredPayments([only])
 
     expect(totalValueWei).toBe(only.valueWei)
     expect(combinedTxHash).toBe(only.txHash)
@@ -108,7 +109,10 @@ describe('evaluateLeaveRequest', () => {
     expect(result).toEqual({
       ok: true,
       refundWei: 20000000000000000n,
-      updatedRound: round([{ address: PLAYER_A, txHash: '0xa' }]),
+      updatedRound: {
+        ...round([{ address: PLAYER_A, txHash: '0xa' }]),
+        leavers: [PLAYER_B],
+      },
     })
   })
 

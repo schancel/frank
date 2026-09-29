@@ -99,6 +99,8 @@ import {
 } from './qwen-bot-common'
 import {
   hasRaffleEntrant,
+  hasRaffleLeft,
+  PendingRefund,
   RaffleBotStateStore,
   RaffleEntrant,
   RaffleRoundRecord,
@@ -117,13 +119,14 @@ function generateRaffleId(): string {
   return randomBytes(16).toString('hex')
 }
 
-/** Pure decision for a `leave` request -- no I/O, exported and unit-tested
- * (`raffle-bot-state.jest.test.ts`) separately from the network-calling refund below, the same
- * split `summarizeRecoveredPayments` uses for `enter`. Requires `raffleId` to match the *current*
- * round explicitly (not just relying on the entrant lookup below to fail) so a `leave` that arrives
- * late, after the round it names has already drawn and rotated, is rejected on its own terms --
- * a stale `leave` for an old round must never be mistaken for a request to leave whatever new
- * round the same address might legitimately be entered in by the time it's processed. */
+/** Pure decision for a `leave` request -- no I/O. Rejects, in order: a `raffleId` that is not the
+ * *current* round (a stale leave for a round that already drew and rotated must never be read as
+ * "leave whatever round I'm in now"); a round that is already full (`entrants.length >=
+ * maxEntries`), because a full round is being or has been drawn -- the draw DMs reveal the seed,
+ * and a round can stay persisted as full if the draw path throws or crashes after those DMs, so a
+ * loser who has seen the seed must not be refunded from the shared balance the winner is paid
+ * from; a second leave by the same address in the same round (ticket #209: churn bound of one
+ * leave per address per round); and an address that is not entered. */
 export function evaluateLeaveRequest(params: {
   round: RaffleRoundRecord
   raffleId: string
@@ -138,14 +141,212 @@ export function evaluateLeaveRequest(params: {
       reason: 'that round has already closed -- nothing to leave',
     }
   }
+  if (round.entrants.length >= round.maxEntries) {
+    return {
+      ok: false,
+      reason:
+        'this round is full and is being drawn -- it can no longer be left',
+    }
+  }
+  if (hasRaffleLeft(round, requesterAddress)) {
+    return {
+      ok: false,
+      reason:
+        'you already left this round -- only one leave per address per round is allowed',
+    }
+  }
   if (!hasRaffleEntrant(round, requesterAddress)) {
     return { ok: false, reason: 'you are not entered in the current round' }
   }
+  const removed = removeRaffleEntrant(round, requesterAddress)
   return {
     ok: true,
-    updatedRound: removeRaffleEntrant(round, requesterAddress),
+    updatedRound: {
+      ...removed,
+      leavers: [
+        ...(round.leavers ?? []),
+        canonicalMonadEnvelopeAddress(requesterAddress),
+      ],
+    },
     refundWei: BigInt(round.entryPriceWei),
   }
+}
+
+export interface RefundDeps {
+  state: RaffleBotStateStore
+  identityAddress: string
+  provider: Pick<Provider, 'getBalance' | 'getFeeData'>
+  signer: {
+    buildAndSignTransfer(
+      to: string,
+      value: bigint,
+    ): Promise<{ rawTx: string; txHash: string }>
+    submitRaw(rawTx: string, expectedTxHash: string): Promise<string>
+    getStatus(txHash: string): Promise<'pending' | 'confirmed' | 'failed'>
+  }
+  /** Tops the identity's gas reserve up to `neededWei` (see `ensureIdentityFunded`). */
+  ensureFunded(neededWei: bigint): Promise<void>
+}
+
+/** Pays one journaled refund. Exact ordering (the whole point of the journal):
+ *
+ *  1. The caller has already made the entrant's removal, the processed marker and this
+ *     `PendingRefund` record durable in ONE atomic batch (`commitLeave`) + flush. Crash before
+ *     that: nothing changed, the leave is replayed from the start (the entrant is still entered).
+ *     Crash after: the entrant is removed AND a refund record exists -- never one without the other.
+ *  2. Fail-closed balance check. If the identity cannot cover the refund we return
+ *     'insufficient-balance' and the record stays (unsigned, nothing ever submitted); it is retried
+ *     on the next startup.
+ *  3. Sign the transfer, journal `{txHash, rawTx}` on the record and FLUSH -- strictly before
+ *     submitting. Crash before this flush: nothing was submitted, so the retry signs afresh.
+ *  4. Submit the journaled raw tx. Crash after the submit but before step 5: the record has a
+ *     txHash, so the retry checks the chain first (confirmed -> just clear; else re-broadcast the
+ *     SAME signed bytes, which the network dedupes by hash / nonce) and can never send a second,
+ *     differently-signed refund.
+ *  5. Only after the submit returned, clear the record and flush.
+ *
+ * Failure modes left open: a journaled tx whose nonce was consumed by a different transaction
+ * before it was mined will never confirm (status stays pending / submit errors) and the record
+ * stays for an operator; a tx that fails on-chain likewise stays. Both fail closed (no second
+ * refund is ever auto-signed for a record that has a journaled tx). */
+export async function executeRefund(
+  refund: PendingRefund,
+  deps: RefundDeps,
+): Promise<'sent' | 'insufficient-balance'> {
+  const { state, signer } = deps
+  let { txHash, rawTx } = refund
+  if (!rawTx || !txHash) {
+    const balanceWei = await deps.provider.getBalance(deps.identityAddress)
+    const amountWei = BigInt(refund.amountWei)
+    if (balanceWei < amountWei) return 'insufficient-balance'
+    const gasBufferWei = await computeGasBufferWei(deps.provider)
+    await deps.ensureFunded(balanceWei + gasBufferWei)
+    const signed = await signer.buildAndSignTransfer(
+      refund.recipient,
+      amountWei,
+    )
+    state.setPendingRefundTx(refund.payloadHash, signed.txHash, signed.rawTx)
+    await state.flush()
+    txHash = signed.txHash
+    rawTx = signed.rawTx
+  } else {
+    const status = await signer.getStatus(txHash)
+    if (status === 'confirmed') {
+      state.clearPendingRefund(refund.payloadHash)
+      await state.flush()
+      return 'sent'
+    }
+    if (status === 'failed') {
+      throw new Error(`journaled refund ${txHash} failed on-chain`)
+    }
+  }
+  try {
+    await signer.submitRaw(rawTx, txHash)
+  } catch (err) {
+    // Re-broadcasting a tx the node already has is success, not failure.
+    if (!/already known|known transaction/i.test(String(err))) throw err
+  }
+  state.clearPendingRefund(refund.payloadHash)
+  await state.flush()
+  return 'sent'
+}
+
+/** Startup recovery: attempts each pending refund exactly once. A refund that still cannot be
+ * paid stays journaled for the next startup. Sends no reply (no sender key at hand). */
+export async function retryPendingRefunds(
+  deps: RefundDeps,
+  log: (msg: string) => void = console.log,
+): Promise<{ sent: string[]; stillPending: string[] }> {
+  const sent: string[] = []
+  const stillPending: string[] = []
+  for (const refund of deps.state.getPendingRefunds()) {
+    try {
+      const result = await executeRefund(refund, deps)
+      if (result === 'sent') sent.push(refund.payloadHash)
+      else stillPending.push(refund.payloadHash)
+    } catch (err) {
+      log(
+        `[raffle-bot] pending refund ${
+          refund.payloadHash
+        } still unpaid: ${String(err)}`,
+      )
+      stillPending.push(refund.payloadHash)
+    }
+  }
+  return { sent, stillPending }
+}
+
+/** The whole `leave` handler (decision, state mutation, refund, reply), extracted from the poll
+ * loop so it is testable with fakes. */
+export async function handleLeaveRequest(
+  params: RefundDeps & {
+    round: RaffleRoundRecord
+    raffleId: string
+    requesterAddress: string
+    payloadHashHex: string
+    sendReply(items: RaffleItem[]): Promise<unknown>
+  },
+): Promise<'rejected' | 'refunded' | 'refund-pending'> {
+  const { state, round, payloadHashHex, sendReply } = params
+  const evaluation = evaluateLeaveRequest({
+    round,
+    raffleId: params.raffleId,
+    requesterAddress: params.requesterAddress,
+  })
+  if (!evaluation.ok) {
+    await sendReply([
+      {
+        type: 'raffle',
+        raffleId: round.raffleId,
+        action: 'error',
+        message: evaluation.reason,
+      },
+    ])
+    state.addProcessed(payloadHashHex)
+    return 'rejected'
+  }
+  const refund: PendingRefund = {
+    payloadHash: payloadHashHex,
+    recipient: canonicalMonadEnvelopeAddress(params.requesterAddress),
+    amountWei: evaluation.refundWei.toString(),
+    raffleId: round.raffleId,
+  }
+  // Durable BEFORE any money moves -- see `executeRefund`'s ordering comment.
+  state.commitLeave(evaluation.updatedRound, refund, payloadHashHex)
+  await state.flush()
+
+  let result: 'sent' | 'insufficient-balance' | 'error' = 'error'
+  try {
+    result = await executeRefund(refund, params)
+  } catch (err) {
+    console.error(
+      `[raffle-bot] refund for ${refund.recipient} failed: ${String(err)}`,
+    )
+  }
+  if (result !== 'sent') {
+    await sendReply([
+      {
+        type: 'raffle',
+        raffleId: round.raffleId,
+        action: 'error',
+        message:
+          'Left the round, but the refund could not be sent right now -- it is recorded and will be retried.',
+      },
+    ])
+    return 'refund-pending'
+  }
+  await sendReply([
+    {
+      type: 'raffle',
+      raffleId: round.raffleId,
+      action: 'left',
+      entryPriceWei: round.entryPriceWei,
+      maxEntries: round.maxEntries,
+      entryCount: evaluation.updatedRound.entrants.length,
+      serverSeedHash: round.serverSeedHash,
+    },
+  ])
+  return 'refunded'
 }
 
 /** Pure, deterministic part of `recoverAndSweepEntryPayment` below -- exported and unit-tested
@@ -156,7 +357,11 @@ export function evaluateLeaveRequest(params: {
  * in any order -- always agree on both figures. */
 export function summarizeRecoveredPayments(
   recovered: RecoveredMonadStampPayment[],
-): { ordered: RecoveredMonadStampPayment[]; totalValueWei: bigint; combinedTxHash: string } {
+): {
+  ordered: RecoveredMonadStampPayment[]
+  totalValueWei: bigint
+  combinedTxHash: string
+} {
   const ordered = [...recovered].sort((a, b) => a.childIndex - b.childIndex)
   const totalValueWei = ordered.reduce((sum, p) => sum + p.valueWei, 0n)
   const combinedTxHash = combineEntrantEntropy(ordered.map(p => p.txHash))
@@ -194,7 +399,9 @@ async function recoverAndSweepEntryPayment(params: {
   } catch (err) {
     return {
       ok: false,
-      reason: `payment verification failed: ${err instanceof Error ? err.message : String(err)}`,
+      reason: `payment verification failed: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
     }
   }
   if (recovered.length === 0) {
@@ -243,7 +450,9 @@ async function recoverAndSweepEntryPayment(params: {
     } catch (err) {
       return {
         ok: false,
-        reason: `sweep for child ${payment.childIndex} did not confirm: ${err instanceof Error ? err.message : String(err)}`,
+        reason: `sweep for child ${payment.childIndex} did not confirm: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
       }
     }
   }
@@ -283,7 +492,9 @@ async function ensureIdentityFunded(params: {
 /** A flat, single-transfer gas reserve -- shared by the draw payout and the leave refund below,
  * the only two places this bot ever sends its own identity's funds out. Never scaled to a round's
  * pot size (see this file's header, "Why this bot can't be drained"). */
-async function computeGasBufferWei(provider: Provider): Promise<bigint> {
+async function computeGasBufferWei(
+  provider: Pick<Provider, 'getFeeData'>,
+): Promise<bigint> {
   const feeData = await provider.getFeeData()
   const fallbackMaxFeePerGas = BigInt(250000000000)
   const maxFeePerGas = feeData.maxFeePerGas ?? fallbackMaxFeePerGas
@@ -395,6 +606,28 @@ async function main() {
     const round = state.getCurrentRound() as RaffleRoundRecord
     console.log(
       `[raffle-bot] resumed round ${round.raffleId} (${round.entrants.length}/${round.maxEntries} entered)`,
+    )
+  }
+
+  const refundDeps: RefundDeps = {
+    state,
+    identityAddress: identity.displayAddress,
+    provider,
+    signer: identitySigner,
+    ensureFunded: neededWei =>
+      ensureIdentityFunded({
+        identityAddress: identity.displayAddress,
+        mainAccountSigner,
+        provider,
+        neededWei,
+        label: 'raffle-bot',
+      }),
+  }
+  // Pay any refund a previous run journaled but did not finish (each attempted once per start).
+  const retried = await retryPendingRefunds(refundDeps)
+  if (retried.sent.length + retried.stillPending.length > 0) {
+    console.log(
+      `[raffle-bot] pending refunds: ${retried.sent.length} paid, ${retried.stillPending.length} still pending`,
     )
   }
 
@@ -513,84 +746,14 @@ async function main() {
 
       if (leaveRequest) {
         console.log(`\n[raffle-bot] leave request from ${envelope.from}`)
-        const evaluation = evaluateLeaveRequest({
+        await handleLeaveRequest({
+          ...refundDeps,
           round,
           raffleId: leaveRequest.raffleId,
           requesterAddress: envelope.from,
+          payloadHashHex,
+          sendReply,
         })
-        if (!evaluation.ok) {
-          await sendReply([
-            {
-              type: 'raffle',
-              raffleId: round.raffleId,
-              action: 'error',
-              message: evaluation.reason,
-            },
-          ])
-          markProcessed()
-          continue
-        }
-        // Durably remove the entrant before attempting the refund transfer -- mirrors the `enter`
-        // path's own "credit first, mark processed" ordering above: once this is persisted, a
-        // restart must never re-evaluate the same leave request against a round that no longer
-        // has this entrant in it (see `evaluateLeaveRequest`'s own "not entered" rejection, which
-        // is what a naive retry would now hit). The refund below carries the same accepted,
-        // non-atomic-with-payout risk the draw payout already has (see its own comment below) --
-        // not solved here, matching this codebase's existing bar for this class of problem.
-        state.setCurrentRound(evaluation.updatedRound)
-        markProcessed()
-
-        console.log(
-          `[raffle-bot] ${envelope.from} left round ${round.raffleId} (${evaluation.updatedRound.entrants.length}/${round.maxEntries}), refunding ${evaluation.refundWei} wei`,
-        )
-
-        const identityBalanceWei = await provider.getBalance(
-          identity.displayAddress,
-        )
-        if (identityBalanceWei < evaluation.refundWei) {
-          // Should be unreachable -- this entrant's own payment was already swept into the
-          // identity's balance on `enter` (this file's header, "Why this bot can't be drained")
-          // -- but fail closed rather than silently shorting the refund if it ever isn't.
-          console.error(
-            `[raffle-bot] cannot refund ${envelope.from}: identity balance ${identityBalanceWei} wei is below the ${evaluation.refundWei} wei owed`,
-          )
-          await sendReply([
-            {
-              type: 'raffle',
-              raffleId: round.raffleId,
-              action: 'error',
-              message:
-                'Left the round, but the refund could not be sent right now -- please contact support.',
-            },
-          ])
-          continue
-        }
-        const gasBufferWei = await computeGasBufferWei(provider)
-        await ensureIdentityFunded({
-          identityAddress: identity.displayAddress,
-          mainAccountSigner,
-          provider,
-          neededWei: identityBalanceWei + gasBufferWei,
-          label: 'raffle-bot',
-        })
-        const refundTx = await identitySigner.buildAndSignTransfer(
-          envelope.from,
-          evaluation.refundWei,
-        )
-        const refundTxHash = await identitySigner.submit(refundTx)
-        console.log(`[raffle-bot] refund tx sent: ${refundTxHash}`)
-
-        await sendReply([
-          {
-            type: 'raffle',
-            raffleId: round.raffleId,
-            action: 'left',
-            entryPriceWei: round.entryPriceWei,
-            maxEntries: round.maxEntries,
-            entryCount: evaluation.updatedRound.entrants.length,
-            serverSeedHash: round.serverSeedHash,
-          },
-        ])
         continue
       }
 

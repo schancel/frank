@@ -81,8 +81,9 @@ import {
   fetchMonadProfilesSince,
 } from '@frank/wallet/monad-identity'
 import {
-  decryptEnvelope,
   parseEnvelope,
+  sameMonadEnvelopeAddress,
+  tryDecryptEnvelope,
 } from '@frank/cashweb/relay/monad-message-envelope'
 import { fetchMonadMessagesSince } from '@frank/cashweb/relay/monad-message-feed'
 import { deserializeMessageItems } from '@frank/wallet/chain/monad-chain'
@@ -393,8 +394,8 @@ async function main() {
 
       const envelope = parseEnvelope(message.message.encryptedPayload)
       if (!envelope) continue // not our envelope convention -- e.g. #8's plain-JSON demo blob
-      if (envelope.to !== identity.displayAddress) continue // not addressed to us
-      if (envelope.from === identity.displayAddress) continue // our own outgoing message
+      if (!sameMonadEnvelopeAddress(envelope.to, identity.displayAddress)) continue
+      if (sameMonadEnvelopeAddress(envelope.from, identity.displayAddress)) continue
 
       lastActivityAt = Date.now()
       const paymentHashes = message.message.stampPayments.map(
@@ -421,11 +422,17 @@ async function main() {
         senderPubKeyCache.set(envelope.from, senderPubKey)
       }
 
-      const rawPlaintext = decryptEnvelope({
+      const rawPlaintext = tryDecryptEnvelope({
         envelope,
         myPrivateKey: identity.toBitcorePrivateKey(),
         senderPubKey,
       })
+      if (rawPlaintext === undefined) {
+        console.warn(
+          `[bot] rejected unauthenticated or undecryptable message ${payloadHashHex}`,
+        )
+        continue
+      }
       const plaintext = extractText(rawPlaintext)
       console.log(`[bot] decrypted: "${plaintext}"`)
 

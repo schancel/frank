@@ -19,6 +19,6 @@
     "lib": ["es2020"],
     "types": ["node"]
   },
-  "include": ["**/*", "../bitcore-lib-xpi/types.d.ts"],
+  "include": ["**/*", "../bitcore-lib-xpi/types.d.ts", "../wallet/level.d.ts"],
   "exclude": ["node_modules", "**/*.jest.spec.ts", "**/*.jest.test.ts"]
 }

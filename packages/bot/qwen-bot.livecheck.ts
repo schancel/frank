@@ -69,6 +69,8 @@
  *                                  processed-message idempotency sets, and per-user Qwen
  *                                  conversation history is kept (default /tmp/qwen-bot-state).
  *                                  Survives restarts -- delete this directory to start clean.
+ *   QWEN_BOT_WALLET_STATE_DIR   -- durable HD seed, sender/change pools, and exact stamp journals
+ *                                  (default /tmp/qwen-bot-wallet-state).
  */
 import { writeFileSync } from 'fs'
 import { resolve } from 'path'
@@ -135,6 +137,9 @@ const SYSTEM_PROMPT =
     'and your replies are delivered back the same way. Keep replies short (2-4 sentences) since ' +
     'each one costs a real transaction.'
 
+let closeFundedSetup: (() => Promise<void>) | undefined
+let closeBotState: (() => Promise<void>) | undefined
+
 async function main() {
   const relayBaseUrl = process.env.E2E_DEMO_RELAY_URL ?? 'http://127.0.0.1:8098'
   const rpcUrl = requiredEnv('MONAD_TESTNET_HTTP_RPC_URL')
@@ -177,6 +182,10 @@ async function main() {
   const stateDirPath = resolve(
     process.cwd(),
     process.env.QWEN_BOT_STATE_DIR ?? '/tmp/qwen-bot-state',
+  )
+  const walletStateDirPath = resolve(
+    process.cwd(),
+    process.env.QWEN_BOT_WALLET_STATE_DIR ?? '/tmp/qwen-bot-wallet-state',
   )
   const pollIntervalMs = Number(process.env.QWEN_BOT_POLL_INTERVAL_MS ?? 4000)
   const maxReplies = Number(process.env.QWEN_BOT_MAX_REPLIES ?? 1)
@@ -226,14 +235,16 @@ async function main() {
   // tonight's nonce-contention pain: a fixed pool sized to `maxReplies + maxGreetings` meant a big
   // burst of near-simultaneous funding transactions from one account before the bot ever reached
   // its polling loop.
-  const { stampClient, mainAccountSigner, provider, pool } =
-    await setUpFundedStampClient({
-      rpcUrl,
-      relayBaseUrl,
-      mainWalletJsonPath,
-      stampValueWei,
-      label: 'bot',
-    })
+  const fundedSetup = await setUpFundedStampClient({
+    rpcUrl,
+    relayBaseUrl,
+    mainWalletJsonPath,
+    stateRoot: walletStateDirPath,
+    stampValueWei,
+    label: 'bot',
+  })
+  const { stampClient, mainAccountSigner, provider, pool } = fundedSetup
+  closeFundedSetup = fundedSetup.close
 
   const qwen = new QwenClient({
     apiKey: qwenApiKey,
@@ -246,6 +257,7 @@ async function main() {
 
   const state = new QwenBotStateStore(stateDirPath)
   await state.Open()
+  closeBotState = () => state.Close()
   console.log(`[bot] persisted state loaded from ${stateDirPath}`)
 
   // A process restart must not replay every retained message and pay for duplicate replies.
@@ -496,7 +508,6 @@ async function main() {
     await sleep(pollIntervalMs)
   }
 
-  await state.Close()
   console.log(
     `\nDone. Sent ${repliesSent} real Qwen-generated repl${
       repliesSent === 1 ? 'y' : 'ies'
@@ -506,7 +517,15 @@ async function main() {
   )
 }
 
-main().catch(err => {
-  console.error('\nQWEN BOT FAILED:', err)
-  process.exit(1)
-})
+main()
+  .finally(async () => {
+    try {
+      await closeBotState?.()
+    } finally {
+      await closeFundedSetup?.()
+    }
+  })
+  .catch(err => {
+    console.error('\nQWEN BOT FAILED:', err)
+    process.exit(1)
+  })

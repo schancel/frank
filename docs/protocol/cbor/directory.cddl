@@ -21,7 +21,7 @@ directory-statement = {
 
 relay-binding = {
   0: bstr .size (16..64), ; relay_id, derived by its registered algorithm
-  1: tstr .size (1..2048), ; exact opaque ASCII URI; no codec normalization
+  1: tstr .size (1..2048), ; exact opaque URI: README S4 characters and scheme; no codec normalization
   2: account-ref, ; relay signing/payment identity
   3: timestamp, ; binding expiry
   * uint => frank-value,
@@ -39,7 +39,7 @@ key-transition-statement = {
   0: network-tag,
   1: account-ref, ; directory subject
   2: account-ref, ; prior registered or offline recovery authority
-  3: uint .ge 1 .le 18446744073709551615, ; revision
+  3: 1..18446744073709551615, ; revision
   4: account-ref, ; new key
   * uint => frank-value,
 }

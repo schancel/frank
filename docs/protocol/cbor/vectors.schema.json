@@ -311,7 +311,11 @@
           "then": {
             "required": ["error_category"],
             "properties": {
-              "retained_frame_hex": false
+              "retained_frame_hex": false,
+              "content_hash_hex": false,
+              "content_digest_hex": false,
+              "payload_digest_hex": false,
+              "payment_commitments_hex": false
             }
           }
         },
@@ -407,32 +411,6 @@
                     "type": "string"
                   }
                 }
-              }
-            }
-          }
-        },
-        {
-          "if": {
-            "properties": {
-              "type_id": {
-                "const": 2
-              },
-              "validation_context": {
-                "properties": {
-                  "operation": {
-                    "const": "full"
-                  }
-                },
-                "required": ["operation"]
-              }
-            },
-            "required": ["type_id", "validation_context"]
-          },
-          "then": {
-            "properties": {
-              "validation_context": {
-                "type": "object",
-                "required": ["prior_directory_statement_frame_hex"]
               }
             }
           }
@@ -572,7 +550,6 @@
         },
         "observations": {
           "type": "array",
-          "minItems": 1,
           "maxItems": 64,
           "items": {
             "$ref": "#/$defs/payment-observation"

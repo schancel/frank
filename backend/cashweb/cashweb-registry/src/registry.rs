@@ -678,7 +678,7 @@ impl Registry {
         detail: &str,
         now_ms: i64,
         limits: &crate::store::monad_outbox::MonadOutboxLimits,
-    ) -> Result<()> {
+    ) -> Result<crate::store::monad_outbox::MonadOutboxTransition> {
         self.db
             .monad_outbox()
             .terminal_claim(payload_hash, terminal, detail, now_ms, limits)

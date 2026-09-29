@@ -17,9 +17,9 @@
       <q-btn
         flat
         :label="$t('deleteChatDialog.delete')"
-        color="primary"
+        color="negative"
         v-close-popup
-        @click="deleteChat(address)"
+        @click="onDelete"
       />
     </q-card-actions>
   </q-card>
@@ -44,6 +44,15 @@ export default defineComponent({
     name: {
       type: String,
       default: () => '',
+    },
+  },
+  // ChatInfoView.vue listens for this to navigate away -- once this chat is deleted, staying on
+  // its now-dangling Info view (or its now-gone chat route) isn't a valid state to sit in.
+  emits: ['deleted'],
+  methods: {
+    async onDelete() {
+      await this.deleteChat(this.address)
+      this.$emit('deleted')
     },
   },
 })

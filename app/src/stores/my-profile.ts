@@ -20,8 +20,8 @@ export const useProfileStore = defineStore('myProfile', {
     },
   },
   storage: {
-    save(storage, _mutation, state): void {
-      storage.put('myProfile', JSON.stringify(state))
+    save(storage, _mutation, state): Promise<void> {
+      return storage.put('myProfile', JSON.stringify(state))
     },
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
     async restore(storage): Promise<Partial<State>> {

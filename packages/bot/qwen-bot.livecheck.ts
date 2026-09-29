@@ -81,8 +81,10 @@ import {
   fetchMonadProfilesSince,
 } from '@frank/wallet/monad-identity'
 import {
-  decryptEnvelope,
+  canonicalMonadEnvelopeAddress,
   parseEnvelope,
+  sameMonadEnvelopeAddress,
+  tryDecryptEnvelope,
 } from '@frank/cashweb/relay/monad-message-envelope'
 import { fetchMonadMessagesSince } from '@frank/cashweb/relay/monad-message-feed'
 import { deserializeMessageItems } from '@frank/wallet/chain/monad-chain'
@@ -341,7 +343,9 @@ async function main() {
             networkTag,
           })
           console.log(
-            `[bot] greeting sent -- payload_hash=${greeting.payloadHashHex} stamp txs=${greeting.txHashes.join(',')}`,
+            `[bot] greeting sent -- payload_hash=${
+              greeting.payloadHashHex
+            } stamp txs=${greeting.txHashes.join(',')}`,
           )
         } catch (err) {
           console.error(`[bot] failed to greet ${profile.address}:`, err)
@@ -393,8 +397,10 @@ async function main() {
 
       const envelope = parseEnvelope(message.message.encryptedPayload)
       if (!envelope) continue // not our envelope convention -- e.g. #8's plain-JSON demo blob
-      if (envelope.to !== identity.displayAddress) continue // not addressed to us
-      if (envelope.from === identity.displayAddress) continue // our own outgoing message
+      if (!sameMonadEnvelopeAddress(envelope.to, identity.displayAddress))
+        continue
+      if (sameMonadEnvelopeAddress(envelope.from, identity.displayAddress))
+        continue
 
       lastActivityAt = Date.now()
       const paymentHashes = message.message.stampPayments.map(
@@ -406,7 +412,8 @@ async function main() {
         } (stamp txs ${paymentHashes.join(',')})`,
       )
 
-      let senderPubKey = senderPubKeyCache.get(envelope.from)
+      const senderKey = canonicalMonadEnvelopeAddress(envelope.from)
+      let senderPubKey = senderPubKeyCache.get(senderKey)
       if (!senderPubKey) {
         senderPubKey = await fetchMonadIdentityPubKey({
           relayBaseUrl,
@@ -418,14 +425,20 @@ async function main() {
           )
           continue
         }
-        senderPubKeyCache.set(envelope.from, senderPubKey)
+        senderPubKeyCache.set(senderKey, senderPubKey)
       }
 
-      const rawPlaintext = decryptEnvelope({
+      const rawPlaintext = tryDecryptEnvelope({
         envelope,
         myPrivateKey: identity.toBitcorePrivateKey(),
         senderPubKey,
       })
+      if (rawPlaintext === undefined) {
+        console.warn(
+          `[bot] rejected unauthenticated or undecryptable message ${payloadHashHex}`,
+        )
+        continue
+      }
       const plaintext = extractText(rawPlaintext)
       console.log(`[bot] decrypted: "${plaintext}"`)
 

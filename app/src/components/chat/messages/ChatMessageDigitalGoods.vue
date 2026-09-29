@@ -23,7 +23,10 @@
     <div v-else-if="item.action === 'request'" class="text-caption">
       Requested: {{ item.itemId }}
     </div>
-    <div v-else-if="item.action === 'fulfill'" class="text-caption text-weight-bold">
+    <div
+      v-else-if="item.action === 'fulfill'"
+      class="text-caption text-weight-bold"
+    >
       Here's your purchase ({{ item.itemId }}):
     </div>
     <div v-else-if="item.action === 'error'" class="text-caption text-negative">
@@ -60,7 +63,9 @@ export default defineComponent({
   },
   methods: {
     displayPrice(priceWei: string): string {
-      return `${activeChain.toDisplayAmount(BigInt(priceWei))} ${activeChain.unit}`
+      return `${activeChain.toDisplayAmount(BigInt(priceWei))} ${
+        activeChain.unit
+      }`
     },
     async onBuy(entry: { itemId: string; priceWei: string }) {
       if (this.buyingItemId) return

@@ -7,6 +7,14 @@ export default {
     donationMessage:
       "Merci de participer à notre vision du futur des communications. Merci de considérer contribuer en envoyant une donation en BCH à l'adresse suivante : bitcoincash:qq7vt04md0pt6fk5szhcx4cgsfuzmppy5u4hxshr4a",
   },
+  chatLayout: {
+    info: 'Infos',
+    infoTitle: 'Infos',
+    mute: 'Muet',
+    unmute: 'Réactiver le son',
+    selectMessages: 'Sélectionner des messages',
+    selectMessagesTitle: 'Sélectionner des messages',
+  },
   chatInput: {
     giveLotusSecretly: 'Donner des lotus secrêtement',
     attachImage: 'Attacher une image',
@@ -26,6 +34,9 @@ export default {
     stampPrice: 'Prix du timbre',
     sendLotus: 'Envoyer des Lotus',
     notifications: 'Notifications',
+    clearHistory: 'Effacer l’historique',
+    deleteChat: 'Supprimer la discussion',
+    unknownContact: 'Inconnu',
   },
   sendLotusDialog: {
     sendLotusTo: 'Envoyer des Lotus à',
@@ -85,6 +96,8 @@ export default {
   accountStep: {
     newAccount: 'Nouveau compte',
     importAccount: 'Importer un compte',
+    copyRecoveryPhrase: 'Copier la phrase de récupération',
+    refreshRecoveryPhrase: 'Générer une nouvelle phrase de récupération',
   },
   newContactDialog: {
     newContact: 'Nouveau contact',

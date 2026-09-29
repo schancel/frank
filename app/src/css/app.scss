@@ -6,6 +6,11 @@
   --q-on-primary-color-text: white;
 }
 
+body {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
 .q-header {
   color: var(--q-on-primary-color-text);
 }
@@ -17,4 +22,30 @@
 
 .bg-on-secondary {
   background: var(--q-color-background);
+}
+
+// `q-chat-message`'s `bg-color`/`text-color` props only ever accept a color *name*, turned into a
+// `text-<name>` class applied via Quasar's own currentColor trick (`.q-message-text { background:
+// currentColor }` -- see QChatMessage.sass). These four give ChatMessage.vue's `bgColor()`/
+// `textColor()` computed properties named hooks into the CSS custom properties above (which flip
+// per light/dark mode) instead of a fixed Quasar palette swatch. Bubble background and bubble text
+// need separate names (both would otherwise collide on the same "message-sent" class name and end
+// up fighting over the `color` property).
+.text-message-sent {
+  color: var(--q-message-color-sent) !important;
+}
+.text-message-received {
+  color: var(--q-message-color) !important;
+}
+.text-message-sent-text {
+  color: var(--q-message-text-sent) !important;
+}
+.text-message-received-text {
+  color: var(--q-message-text-received) !important;
+}
+
+// Chat.vue's message-list surface -- see dark-mode.scss/light-mode.scss's `--q-chat-background`
+// for what this actually renders (a soft gradient wash, not a tiled pattern image).
+.chat-page-background {
+  background: var(--q-chat-background);
 }

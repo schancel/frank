@@ -4,18 +4,32 @@
     <template v-else-if="state">
       <div class="text-caption text-weight-bold">
         Your hand: {{ cardLabels(state.playerCards) }}
-        <span v-if="state.playerCards.length">({{ playerValue.total }}{{ playerValue.soft ? ' soft' : '' }})</span>
+        <span v-if="state.playerCards.length"
+          >({{ playerValue.total }}{{ playerValue.soft ? ' soft' : '' }})</span
+        >
       </div>
       <div v-if="state.dealerUpCard !== undefined" class="text-caption">
         Dealer shows: {{ cardLabel(state.dealerUpCard) }}
       </div>
       <template v-if="state.phase === 'resolved'">
         <div class="text-caption">
-          Dealer's hand: {{ cardLabels(state.dealerCards) }} ({{ dealerValue.total }})
+          Dealer's hand: {{ cardLabels(state.dealerCards) }} ({{
+            dealerValue.total
+          }})
         </div>
-        <div class="text-caption text-weight-bold q-mt-xs">{{ outcomeText }}</div>
-        <div v-if="verification" class="text-caption" :class="verification.valid ? 'text-positive' : 'text-negative'">
-          {{ verification.valid ? '✓ Verified fair' : `⚠ Verification failed: ${verification.reason}` }}
+        <div class="text-caption text-weight-bold q-mt-xs">
+          {{ outcomeText }}
+        </div>
+        <div
+          v-if="verification"
+          class="text-caption"
+          :class="verification.valid ? 'text-positive' : 'text-negative'"
+        >
+          {{
+            verification.valid
+              ? '✓ Verified fair'
+              : `⚠ Verification failed: ${verification.reason}`
+          }}
         </div>
       </template>
       <div v-if="state.availableActions.length" class="q-gutter-sm q-mt-sm">
@@ -39,18 +53,21 @@ import { defineComponent, PropType } from 'vue'
 
 import { BlackjackMoveItem } from '@frank/cashweb/types/messages'
 import { activeChain } from '@frank/wallet/chain'
-import { cardLabel, handValue } from '@frank/wallet/blackjack/deck'
+import {
+  cardLabel,
+  handValue,
+} from '@frank/wallet/message-item-plugins/blackjack/deck'
 import {
   BlackjackAction,
   BlackjackGameState,
   verifyRevealedHand,
-} from '@frank/wallet/blackjack/game'
+} from '@frank/wallet/message-item-plugins/blackjack/game'
 import {
   getMessageItemPlugin,
   MessageItemContext,
 } from '@frank/wallet/message-item-plugins'
 import '@frank/wallet/message-item-plugins/built-in'
-import '@frank/wallet/message-item-plugins/blackjack'
+import '@frank/wallet/message-item-plugins/blackjack/plugin'
 
 import { useChatStore } from '../../../stores/chats'
 import { useMonadWallet } from '../../../utils/clients'
@@ -150,10 +167,17 @@ export default defineComponent({
         outer: for (const message of messages) {
           for (let index = 0; index < message.items.length; index++) {
             const raw = message.items[index]
-            if (raw.type !== 'blackjack-move' || raw.gameId !== this.item.gameId) {
+            if (
+              raw.type !== 'blackjack-move' ||
+              raw.gameId !== this.item.gameId
+            ) {
               continue
             }
-            const context: MessageItemContext = { message, index, provider: wallet.provider }
+            const context: MessageItemContext = {
+              message,
+              index,
+              provider: wallet.provider,
+            }
             const hydrated = await plugin.hydrate(raw, context)
             folded = plugin.reduceState(folded, hydrated, context)
             if (raw === this.item) break outer
@@ -177,7 +201,9 @@ export default defineComponent({
             recipient: { raw: this.address },
             value: DEFAULT_WAGER_WEI,
           })
-          const gameId = `bj-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+          const gameId = `bj-${Date.now()}-${Math.random()
+            .toString(36)
+            .slice(2, 8)}`
           this.$emit('sendFollowUp', {
             items: [
               {
@@ -192,9 +218,7 @@ export default defineComponent({
         }
 
         this.$emit('sendFollowUp', {
-          items: [
-            { type: 'blackjack-move', gameId: this.item.gameId, action },
-          ],
+          items: [{ type: 'blackjack-move', gameId: this.item.gameId, action }],
         })
       } catch (err) {
         errorNotify(err instanceof Error ? err : new Error(String(err)))

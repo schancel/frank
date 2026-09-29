@@ -29,7 +29,7 @@ export interface ImageItem {
 }
 
 /**
- * One move in a provably-fair blackjack hand against a bot dealer (see `@frank/wallet/blackjack`
+ * One move in a provably-fair blackjack hand against a bot dealer (see `@frank/wallet/message-item-plugins/blackjack`
  * for the shared shuffle/hand-value logic and the message-item plugin that hydrates/verifies and
  * threads these into game state). Deliberately carries no self-reported amount field for `bet` --
  * the wager is a separate, independently-verified on-chain transfer referenced by `wagerTxHash`,
@@ -42,11 +42,11 @@ export interface BlackjackMoveItem {
   gameId: string
   action: 'bet' | 'deal' | 'hit' | 'stand' | 'reveal'
   /** `bet` only: the tx hash of the separate plain value transfer that *is* the wager. Also
-   * doubles as the shuffle's client-seed entropy (see `@frank/wallet/blackjack`'s header) -- no
+   * doubles as the shuffle's client-seed entropy (see `@frank/wallet/message-item-plugins/blackjack`'s header) -- no
    * extra round trip needed to collect one. */
   wagerTxHash?: string
   /** `deal` only: the bot's commitment to its shuffle seed, generated and hashed *before* this
-   * specific bet was ever seen (see `@frank/wallet/blackjack/deck.ts`'s header for why that
+   * specific bet was ever seen (see `@frank/wallet/message-item-plugins/blackjack/deck.ts`'s header for why that
    * ordering is the entire fairness property this scheme relies on). */
   serverSeedHash?: string
   /** `deal`/`hit`: the player's full hand so far (always the complete cumulative hand, not a diff
@@ -86,6 +86,58 @@ export interface DigitalGoodsItem {
   message?: string
 }
 
+/**
+ * N-entrant, winner-takes-the-pot raffle against a bot (ticket TBD, "raffle bot demo"). Modeled
+ * after `DigitalGoodsItem` for payment (a flat `entryPriceWei`, paid as that same message's own
+ * relay-verified stamp -- no self-reported amount field, same reasoning as that type's own header)
+ * and after `BlackjackMoveItem` for fairness (a `serverSeedHash` commitment published *before* the
+ * round can know who its entrants will be, revealed at `draw` so anyone can independently replay
+ * the winner selection -- see `@frank/wallet/message-item-plugins/raffle/draw.ts`).
+ *
+ * Deliberately winner-takes-100%-of-the-pot, no house cut and no bot-funded bonus on top: the only
+ * money a `draw` ever pays out is `potWei`, which is arithmetically `entryPriceWei * entrants.length`
+ * -- exactly what this round's entrants already paid in, nothing more. That's what makes a raffle
+ * structurally undrainable in a way a bot that pays out from its own funds (e.g. a trivia bot
+ * rewarding correct answers) is not: the payout can never exceed the collected pot because it *is*
+ * the collected pot.
+ */
+export interface RaffleItem {
+  type: 'raffle'
+  raffleId: string
+  action: 'announce' | 'enter' | 'joined' | 'draw' | 'error'
+  /** `announce`/`joined`/`draw`: the flat price every entrant pays -- fixed for a round, verified
+   * the same way `DigitalGoodsItem.priceWei` is (this message's own stamp value), never trusted
+   * from a self-reported field on the wire. */
+  entryPriceWei?: string
+  /** `announce`/`joined`: how many entries this round takes before it closes and draws. */
+  maxEntries?: number
+  /** `announce`/`joined`: how many entries have been accepted so far, including this one for
+   * `joined`. */
+  entryCount?: number
+  /** `announce`/`joined`: the bot's commitment to this round's draw seed -- generated and hashed
+   * *before* this round accepted its first entry (see `@frank/wallet/message-item-plugins/raffle/draw.ts`'s header for
+   * why that ordering is the entire fairness property this relies on). Same for every entrant in a
+   * round. */
+  serverSeedHash?: string
+  /** `draw` only: the winning entrant's address. */
+  winnerAddress?: string
+  /** `draw` only: the actual draw secret, published in plaintext so anyone can independently
+   * recompute `pickWinnerIndex` and confirm both the hash committed to earlier and the announced
+   * winner were exactly what a fair, undoctored draw would have produced. */
+  serverSeed?: string
+  /** `draw` only: every entrant's address, in the order they joined -- needed (with
+   * `entryTxHashes`) to independently replay the draw. */
+  entrants?: string[]
+  /** `draw` only: every entrant's own entry-payment transaction hash, same order as `entrants` --
+   * this is what gets combined into the draw's client-seed entropy (see
+   * `@frank/wallet/message-item-plugins/raffle/draw.ts`'s `combineEntrantEntropy`). */
+  entryTxHashes?: string[]
+  /** `draw` only: the total paid to the winner -- always `entryPriceWei * entrants.length`. */
+  potWei?: string
+  /** `error` only: e.g. "payment below this round's entry price," "already entered this round." */
+  message?: string
+}
+
 export type MessageItem =
   | StealthItem
   | P2PKHSendItem
@@ -94,6 +146,7 @@ export type MessageItem =
   | ImageItem
   | BlackjackMoveItem
   | DigitalGoodsItem
+  | RaffleItem
 
 export interface Message {
   outbound: boolean

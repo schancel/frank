@@ -7,7 +7,7 @@
     unreachable_pub
 )]
 
-use std::{net::SocketAddr, path::PathBuf};
+use std::{error::Error, fmt, net::SocketAddr, path::PathBuf};
 
 use bitcoinsuite_bitcoind::rpc_client::BitcoindRpcClientConf;
 use bitcoinsuite_core::Net;
@@ -44,11 +44,81 @@ pub struct RegistryConf {
     pub imd: InitialMetadataDownloadConf,
     /// POP (proof-of-payment) protection config for the metadata-put endpoint (ticket #4).
     pub pop: PopConf,
+    /// Durable Monad mailbox admission/reconciliation lifecycle. This is required so disabled is
+    /// an explicit operator choice rather than an accidental missing RPC environment variable.
+    pub monad_mailbox: MonadMailboxConf,
     /// Operator-curated default contacts advertised to fresh clients (ticket #49). Empty by
     /// default -- unlike `PopConf` this is display-only config with no security implications, so
     /// (unlike `pop`) it's safe to default to "none" rather than requiring an explicit value.
     #[serde(default)]
     pub curated_defaults: Vec<CuratedContactConf>,
+}
+
+/// Typed durable Monad mailbox configuration.
+///
+/// Disabling the mailbox is the supported rollback and preserves durable rows for the current
+/// binary. Operators requiring binary downgrade must snapshot before upgrading because older
+/// binaries cannot read newer versioned outbox rows.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+pub struct MonadMailboxConf {
+    /// Whether admission and reconciliation are enabled. A disabled deployment must omit the
+    /// admission route and does not start a worker; durable rows remain readable.
+    pub enabled: bool,
+    /// Monad JSON-RPC endpoint. Required exactly when `enabled` is true.
+    pub rpc_url: Option<url::Url>,
+}
+
+/// Validated mailbox mode consumed once, before database open or socket readiness.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum MonadMailboxMode {
+    /// No worker; the HTTP owner must omit the admission route.
+    Disabled,
+    /// Worker and admission use the same validated endpoint.
+    Enabled {
+        /// Validated Monad JSON-RPC endpoint.
+        rpc_url: url::Url,
+    },
+}
+
+/// Invalid enabled mailbox RPC configuration.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum MonadMailboxConfigError {
+    /// Enabled mode omitted its mandatory endpoint.
+    MissingRpcUrl,
+    /// The endpoint is not a hosted HTTP(S) URL.
+    InvalidRpcUrl,
+}
+
+impl fmt::Display for MonadMailboxConfigError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MissingRpcUrl => f.write_str(
+                "registry.monad_mailbox.rpc_url is required when the mailbox is enabled",
+            ),
+            Self::InvalidRpcUrl => f.write_str(
+                "registry.monad_mailbox.rpc_url must be a hosted http(s) URL when the mailbox is enabled",
+            ),
+        }
+    }
+}
+
+impl Error for MonadMailboxConfigError {}
+
+impl MonadMailboxConf {
+    /// Validate the enabled/endpoint relationship before any service becomes ready.
+    pub fn mode(&self) -> std::result::Result<MonadMailboxMode, MonadMailboxConfigError> {
+        if !self.enabled {
+            return Ok(MonadMailboxMode::Disabled);
+        }
+        let rpc_url = self
+            .rpc_url
+            .clone()
+            .ok_or(MonadMailboxConfigError::MissingRpcUrl)?;
+        if !matches!(rpc_url.scheme(), "http" | "https") || rpc_url.host_str().is_none() {
+            return Err(MonadMailboxConfigError::InvalidRpcUrl);
+        }
+        Ok(MonadMailboxMode::Enabled { rpc_url })
+    }
 }
 
 /// One operator-curated default contact (ticket #49) -- see `RegistryConf::curated_defaults`.
@@ -162,8 +232,8 @@ mod tests {
     use bitcoinsuite_error::Result;
 
     use crate::{
-        parse_conf, CashwebdConf, CuratedContactConf, InitialMetadataDownloadConf, PopConf,
-        RegistryConf,
+        parse_conf, CashwebdConf, CuratedContactConf, InitialMetadataDownloadConf,
+        MonadMailboxConf, MonadMailboxConfigError, MonadMailboxMode, PopConf, RegistryConf,
     };
 
     #[test]
@@ -184,6 +254,9 @@ mod tests {
                 db_path = "/test/path"
                 net = "mainnet"
                 peers = ["https://example.com", "http://123.45.67.89"]
+
+                [registry.monad_mailbox]
+                enabled = false
 
                 [registry.pop]
                 enabled = true
@@ -223,6 +296,10 @@ mod tests {
                         payment_recipient: "0x0000000000000000000000000000000000000abc".to_string(),
                         min_value_wei: "1000000000000000000".to_string(),
                     },
+                    monad_mailbox: MonadMailboxConf {
+                        enabled: false,
+                        rpc_url: None,
+                    },
                     curated_defaults: vec![],
                 },
                 bitcoin_rpc: Some(BitcoindRpcClientConf {
@@ -248,6 +325,9 @@ mod tests {
                 peers = ["https://example.com", "http://123.45.67.89"]
                 [registry.imd]
                 num_sampled_peers = 2
+
+                [registry.monad_mailbox]
+                enabled = false
 
                 [registry.pop]
                 enabled = true
@@ -287,6 +367,10 @@ mod tests {
                         payment_recipient: "0x0000000000000000000000000000000000000abc".to_string(),
                         min_value_wei: "1000000000000000000".to_string(),
                     },
+                    monad_mailbox: MonadMailboxConf {
+                        enabled: false,
+                        rpc_url: None,
+                    },
                     curated_defaults: vec![],
                 },
                 bitcoin_rpc: Some(BitcoindRpcClientConf {
@@ -310,6 +394,9 @@ mod tests {
                 db_path = "data/registry.rocksdb"
                 net = "mainnet"
                 peers = []
+
+                [registry.monad_mailbox]
+                enabled = false
 
                 [registry.pop]
                 enabled = false
@@ -339,6 +426,9 @@ mod tests {
                 db_path = "/test/path"
                 net = "mainnet"
                 peers = ["https://example.com", "http://123.45.67.89"]
+
+                [registry.monad_mailbox]
+                enabled = false
 
                 [registry.pop]
                 enabled = true
@@ -375,5 +465,54 @@ mod tests {
             ]
         );
         Ok(())
+    }
+
+    #[test]
+    fn mailbox_mode_requires_rpc_exactly_when_enabled() {
+        assert_eq!(
+            MonadMailboxConf {
+                enabled: false,
+                rpc_url: None,
+            }
+            .mode()
+            .unwrap(),
+            MonadMailboxMode::Disabled
+        );
+        assert!(MonadMailboxConf {
+            enabled: true,
+            rpc_url: None,
+        }
+        .mode()
+        .is_err());
+        let rpc_url: url::Url = "https://rpc.example".parse().unwrap();
+        assert_eq!(
+            MonadMailboxConf {
+                enabled: true,
+                rpc_url: Some(rpc_url.clone()),
+            }
+            .mode()
+            .unwrap(),
+            MonadMailboxMode::Enabled { rpc_url }
+        );
+        let missing: MonadMailboxConf = toml::from_str("enabled = true").unwrap();
+        assert!(missing.mode().is_err());
+        assert!(toml::from_str::<MonadMailboxConf>(
+            "enabled = true\nrpc_url = 'this is not a URL'"
+        )
+        .is_err());
+        for rejected in [
+            "file:///tmp/rpc",
+            "ftp://rpc.example/path",
+            "data:text/plain,rpc",
+        ] {
+            assert_eq!(
+                MonadMailboxConf {
+                    enabled: true,
+                    rpc_url: Some(rejected.parse().unwrap()),
+                }
+                .mode(),
+                Err(MonadMailboxConfigError::InvalidRpcUrl)
+            );
+        }
     }
 }

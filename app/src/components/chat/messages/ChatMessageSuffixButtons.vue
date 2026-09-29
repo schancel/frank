@@ -9,6 +9,21 @@
       @click="$emit('resendClick')"
     />
   </div>
+  <!-- Select mode (see this file's script header): a message has exactly one action while
+  selecting -- delete -- shown plainly rather than behind a hover/tap reveal, since select mode
+  itself is already the explicit "I'm here to delete things" gesture. -->
+  <div v-else-if="status === 'confirmed' && selectMode">
+    <q-btn
+      icon="delete"
+      dense
+      flat
+      padding="xs"
+      class="q-btn"
+      color="negative"
+      aria-label="delete message"
+      @click.stop="buttonClicked('delete')"
+    />
+  </div>
   <div
     v-else-if="status === 'confirmed'"
     @mouseover="mouseoverCheckMobile()"
@@ -31,7 +46,6 @@
         flat
         padding="xs"
         class="q-btn"
-        :color="button === 'delete' ? 'negative' : undefined"
         :aria-label="`${button} message`"
         @click.stop="buttonClicked(button)"
         v-show="mouseOver || showMenu"
@@ -41,20 +55,23 @@
 </template>
 
 <script lang="ts">
-import { defineComponent, ref } from 'vue'
+import { defineComponent, inject, ref, type Ref } from 'vue'
 import { useQuasar } from 'quasar'
 
-// The overflow trigger occupies the right edge of the row. Keep Delete at the opposite edge so
-// expanding the row can never replace the dots with a destructive target under the pointer.
-const ButtonNames = ['delete', 'reply', 'forward', 'info'] as const
-const ButtonEvents = ButtonNames.map(
+// Direct user feedback (2026-09-28): delete used to sit in this same always-there hover row
+// alongside reply/forward/info, one destructive click away during ordinary browsing. It's now
+// exclusive to "select mode" (`chatSelectMode`, provided by ChatLayout.vue and toggled from its
+// overflow menu -- see that file) -- everyday hover only ever offers reply/forward/info, and
+// delete only ever appears once the user has explicitly opted into a delete-focused view.
+const ButtonNames = ['reply', 'forward', 'info'] as const
+const AllButtonEvents = ['delete', 'reply', 'forward', 'info'].map(
   buttonName => `${buttonName}Click` as const,
 )
-type ButtonType = (typeof ButtonNames)[number]
+type ButtonType = (typeof ButtonNames)[number] | 'delete'
 
 export default defineComponent({
   name: 'ChatMessageSuffixButtons',
-  emits: [...ButtonEvents, 'resendClick'],
+  emits: [...AllButtonEvents, 'resendClick'],
   props: {
     status: {
       type: String,
@@ -65,9 +82,13 @@ export default defineComponent({
     const showMenu = ref(false)
     const mouseOver = ref(false)
     const $q = useQuasar()
+    // Falls back to "never in select mode" for any usage outside ChatLayout.vue's provide (e.g. a
+    // future test harness) rather than throwing on a missing injection.
+    const selectMode = inject<Ref<boolean>>('chatSelectMode', ref(false))
     return {
       mouseOver,
       showMenu,
+      selectMode,
       buttonNames: ButtonNames,
       mouseoverCheckMobile() {
         // only set mouseover if not on mobile

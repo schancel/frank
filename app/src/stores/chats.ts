@@ -13,6 +13,18 @@ import {
   tallyMessageItemsValue,
 } from '@frank/wallet/message-item-plugins'
 import '@frank/wallet/message-item-plugins/built-in'
+// Sidebar/notification previews (`getMessageItemPreview` above) need every registered type's
+// plugin loaded here too, not just `built-in` -- found live (CDP-driven testing while building the
+// raffle bot, 2026-09-28): a chat list item for a bot conversation can render before that bot's own
+// `ChatMessage.vue` (the only other place these side-effect imports lived) ever mounts, e.g. the
+// very first incoming message from a bot type the user hasn't opened a chat with yet. Before this
+// fix, `getMessageItemPreview` threw "No message item plugin registered," which crashed the whole
+// app (an uncaught error mid-render-effect left Vue's tree inconsistent, cascading into unrelated
+// component updates). Pre-existing gap for blackjack/digital-goods, closed here for all three while
+// fixing it for `raffle`.
+import '@frank/wallet/message-item-plugins/blackjack/plugin'
+import '@frank/wallet/message-item-plugins/digital-goods/plugin'
+import '@frank/wallet/message-item-plugins/raffle/plugin'
 import type {
   DirectMessagePreparationProgress,
   DirectMessageSendResult,
@@ -824,7 +836,7 @@ export const useChatStore = defineStore('chats', {
     },
   },
   storage: {
-    save(storage, _mutation, state): void {
+    save(storage, _mutation, state): Promise<void> {
       const chats = {
         activeChatAddr: pathOr(undefined, ['activeChatAddr'], state),
         // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -838,7 +850,7 @@ export const useChatStore = defineStore('chats', {
         messages: {},
         lastReceived: state.lastReceived ?? 0,
       }
-      storage.put('chats', JSON.stringify(chats))
+      return storage.put('chats', JSON.stringify(chats))
     },
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
     async restore(storage, metadata): Promise<Partial<State>> {

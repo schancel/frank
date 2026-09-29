@@ -8,18 +8,33 @@
 // Your own variables (that are declared here) and Quasar's own
 // ones will be available out of the box in your .vue/.scss/.sass files
 
-// It's highly recommended to change the default colors
-// to match your app's branding.
-// Tip: Use the "Theme Builder" on Quasar's documentation website.
+// Visual redesign (2026-09-28): the previous palette was Quasar's own generic purple example
+// value, never actually designed against. First pass landed on an indigo-violet (#6c5ce7) close
+// enough to Discord's own "blurple" (#5865f2) to read as derivative -- shifted toward true
+// purple/orchid (less blue, more red in the mix) to stay recognizably distinct from it while
+// keeping the mint accent for positive/unread/CTA moments. $dark/$light here are Quasar's own
+// dark-page/light-page tokens (used by a handful of built-in components), not this app's own
+// message-bubble or background colors -- those live in dark-mode.scss/light-mode.scss as CSS
+// custom properties, since they need to flip per `body.body--dark`/`body.body--light`, which a
+// compile-time Sass variable can't do.
+$primary: #9d5cff;
+$secondary: #7c3aed;
+$accent: #00d9a3;
 
-$primary: #6f2dbd;
-$secondary: #6f2dbd;
-$accent: #9c27b0;
+$dark: #121218;
+$light: #f7f7fb;
 
-$dark: #28004d;
-$light: #f3e6ff;
+$positive: #00d9a3;
+$negative: #ff5c5c;
+$info: #4fb8ff;
+$warning: #ffb84f;
 
-$positive: #b8d0eb;
-$negative: #ff3333;
-$info: #b9faf8;
-$warning: #ffb366;
+$typography-font-family: 'Inter', '-apple-system', 'Helvetica Neue', Helvetica,
+  Arial, sans-serif;
+
+// Default 4px read as "unstyled Bootstrap-era Material," not a deliberate choice -- rounder
+// shapes (cards, buttons, inputs) and a proper bubble radius (with one squared-off corner handled
+// by Quasar's own QChatMessage.sass, giving the tail look) read as more current across every
+// reference messenger (Telegram/WhatsApp/Signal) this pass is drawing from.
+$generic-border-radius: 12px;
+$chat-message-border-radius: 18px;

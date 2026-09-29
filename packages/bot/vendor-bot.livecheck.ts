@@ -13,7 +13,7 @@
  * verified as a real on-chain payment before ever storing the message. There is nothing left for
  * this bot to go verify externally (contrast `blackjack-bot.livecheck.ts`'s wager, a *separate*
  * transfer the relay knows nothing about) -- `hydrate()` in
- * `@frank/wallet/message-item-plugins/digital-goods.ts` just reads that already-trustworthy field.
+ * `@frank/wallet/message-item-plugins/digital-goods/plugin.ts` just reads that already-trustworthy field.
  *
  * ## Usage
  *
@@ -35,8 +35,9 @@ import { resolve } from 'path'
 import { Transaction, hexlify } from 'ethers'
 
 import {
-  decryptEnvelope,
   parseEnvelope,
+  sameMonadEnvelopeAddress,
+  tryDecryptEnvelope,
 } from '@frank/cashweb/relay/monad-message-envelope'
 import { fetchMonadMessagesSince } from '@frank/cashweb/relay/monad-message-feed'
 import { fetchMonadIdentityPubKey } from '@frank/wallet/monad-identity'
@@ -47,8 +48,8 @@ import {
   MessageItemContext,
 } from '@frank/wallet/message-item-plugins'
 import '@frank/wallet/message-item-plugins/built-in'
-import '@frank/wallet/message-item-plugins/digital-goods'
-import { HydratedDigitalGoods } from '@frank/wallet/message-item-plugins/digital-goods'
+import '@frank/wallet/message-item-plugins/digital-goods/plugin'
+import { HydratedDigitalGoods } from '@frank/wallet/message-item-plugins/digital-goods/plugin'
 import {
   loadOrCreateIdentity,
   registerAndLog,
@@ -188,8 +189,8 @@ async function main() {
 
       const envelope = parseEnvelope(message.message.encryptedPayload)
       if (!envelope) continue
-      if (envelope.to !== identity.displayAddress) continue
-      if (envelope.from === identity.displayAddress) continue
+      if (!sameMonadEnvelopeAddress(envelope.to, identity.displayAddress)) continue
+      if (sameMonadEnvelopeAddress(envelope.from, identity.displayAddress)) continue
 
       let senderPubKey = senderPubKeyCache.get(envelope.from)
       if (!senderPubKey) {
@@ -201,11 +202,17 @@ async function main() {
         senderPubKeyCache.set(envelope.from, senderPubKey)
       }
 
-      const rawPlaintext = decryptEnvelope({
+      const rawPlaintext = tryDecryptEnvelope({
         envelope,
         myPrivateKey: identity.toBitcorePrivateKey(),
         senderPubKey,
       })
+      if (rawPlaintext === undefined) {
+        console.warn(
+          `[vendor-bot] rejected unauthenticated or undecryptable message ${payloadHashHex}`,
+        )
+        continue
+      }
 
       let items
       try {

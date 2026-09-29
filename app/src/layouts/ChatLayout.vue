@@ -1,13 +1,5 @@
 <template>
   <div>
-    <q-drawer v-model="contactDrawerOpen" side="right" :breakpoint="800">
-      <right-drawer
-        v-if="address"
-        :address="address"
-        :contact="getContact(address)"
-      />
-    </q-drawer>
-
     <!-- Send file dialog -->
     <!-- TODO: Move this up.  We don't need a copy of this dialog for each address (likely) -->
     <q-dialog v-model="sendFileOpen">
@@ -16,39 +8,147 @@
 
     <q-header>
       <q-toolbar class="q-pl-sm">
-        <q-btn
-          class="q-px-sm"
-          flat
-          dense
-          @click="() => $emit('toggleMyDrawerOpen')"
-          icon="menu"
-        />
-        <q-avatar rounded :style="contactColorStyle">
-          <img :src="profileAvatar(contactProfile?.avatar, address)" />
-        </q-avatar>
-        <q-toolbar-title class="h6" :style="contactNameColorStyle">{{
-          contactProfile.name
-        }}</q-toolbar-title>
-        <q-space />
-        <q-btn
-          class="q-px-sm"
-          flat
-          dense
-          @click="contactDrawerOpen = !contactDrawerOpen"
-          icon="manage_accounts"
-        />
+        <!-- Info is a full-pane swap (see `infoOpen` below), not a side drawer, so its own
+        toolbar row is just a back arrow -- there's nothing else from the chat toolbar (avatar/
+        name/overflow menu) that still applies once the chat itself isn't showing. -->
+        <template v-if="infoOpen">
+          <q-btn
+            class="q-px-sm"
+            flat
+            dense
+            icon="arrow_back"
+            @click="infoOpen = false"
+          />
+          <q-toolbar-title class="h6">{{
+            $t('chatLayout.infoTitle')
+          }}</q-toolbar-title>
+        </template>
+        <!-- Select mode (see `chatSelectMode`'s `provide` below, and
+        ChatMessageSuffixButtons.vue's own header) -- delete is only ever available here, never as
+        an always-hoverable action on an ordinary message bubble. -->
+        <template v-else-if="selectMode">
+          <q-btn
+            class="q-px-sm"
+            flat
+            dense
+            icon="close"
+            @click="selectMode = false"
+          />
+          <q-toolbar-title class="h6">{{
+            $t('chatLayout.selectMessagesTitle')
+          }}</q-toolbar-title>
+        </template>
+        <template v-else>
+          <q-btn
+            class="q-px-sm"
+            flat
+            dense
+            @click="() => $emit('toggleMyDrawerOpen')"
+            icon="menu"
+          />
+          <q-avatar rounded :style="contactColorStyle">
+            <img :src="profileAvatar(contactProfile?.avatar, address)" />
+          </q-avatar>
+          <q-toolbar-title class="h6" :style="contactNameColorStyle">{{
+            contactProfile.name
+          }}</q-toolbar-title>
+          <q-space />
+          <q-btn class="q-px-sm" flat dense icon="more_vert">
+            <q-menu anchor="bottom right" self="top right">
+              <q-list style="min-width: 180px">
+                <q-item clickable v-close-popup @click="infoOpen = true">
+                  <q-item-section avatar><q-icon name="info" /></q-item-section>
+                  <q-item-section>{{ $t('chatLayout.info') }}</q-item-section>
+                </q-item>
+                <q-item
+                  clickable
+                  v-close-popup
+                  @click="notifications = !notifications"
+                >
+                  <q-item-section avatar
+                    ><q-icon
+                      :name="
+                        notifications ? 'notifications' : 'notifications_off'
+                      "
+                  /></q-item-section>
+                  <q-item-section>{{
+                    notifications
+                      ? $t('chatLayout.mute')
+                      : $t('chatLayout.unmute')
+                  }}</q-item-section>
+                </q-item>
+                <q-item clickable v-close-popup @click="selectMode = true">
+                  <q-item-section avatar
+                    ><q-icon name="checklist"
+                  /></q-item-section>
+                  <q-item-section>{{
+                    $t('chatLayout.selectMessages')
+                  }}</q-item-section>
+                </q-item>
+                <q-separator />
+                <q-item
+                  clickable
+                  v-close-popup
+                  @click="confirmClearOpen = true"
+                >
+                  <q-item-section avatar
+                    ><q-icon name="clear_all"
+                  /></q-item-section>
+                  <q-item-section>{{
+                    $t('chatRightDrawer.clearHistory')
+                  }}</q-item-section>
+                </q-item>
+                <q-item
+                  clickable
+                  v-close-popup
+                  @click="confirmDeleteOpen = true"
+                >
+                  <q-item-section avatar
+                    ><q-icon name="delete" color="negative"
+                  /></q-item-section>
+                  <q-item-section class="text-negative">{{
+                    $t('chatRightDrawer.deleteChat')
+                  }}</q-item-section>
+                </q-item>
+              </q-list>
+            </q-menu>
+          </q-btn>
+        </template>
       </q-toolbar>
     </q-header>
 
-    <router-view @sendFileClicked="toSendFileDialog" />
+    <q-dialog v-model="confirmClearOpen">
+      <clear-history-dialog :address="address" :name="contactProfile.name" />
+    </q-dialog>
+    <q-dialog v-model="confirmDeleteOpen">
+      <delete-chat-dialog
+        :address="address"
+        :name="contactProfile.name"
+        @deleted="onChatDeleted"
+      />
+    </q-dialog>
+
+    <!-- Full-pane swap, not a side-by-side layout -- direct user feedback: Info deserves the same
+    amount of room a chat gets, and on a narrow/mobile viewport there's no room for both panes at
+    once anyway, so a single view stack (never two panes fighting for space) is the one layout
+    that already works at every width. -->
+    <router-view v-if="!infoOpen" @sendFileClicked="toSendFileDialog" />
+    <chat-info-view
+      v-else
+      :address="address"
+      :contact="getContact(address)"
+      @deleted="onChatDeleted"
+    />
   </div>
 </template>
 
 <script lang="ts">
-import { defineComponent } from 'vue'
+import { computed, defineComponent } from 'vue'
 import { RouteLocationNormalized } from 'vue-router'
 
-import RightDrawer from '../components/panels/ChatRightDrawer.vue'
+import ChatInfoView from '../components/panels/ChatInfoView.vue'
+import ClearHistoryDialog from '../components/dialogs/ClearHistoryDialog.vue'
+import DeleteChatDialog from '../components/dialogs/DeleteChatDialog.vue'
 import SendFileDialog from '../components/dialogs/SendFileDialog.vue'
 import { useContactStore } from 'src/stores/contacts'
 import { pubKeyToColor } from 'src/utils/formatting'
@@ -57,14 +157,28 @@ import { profileAvatar } from 'src/utils/avatar'
 export default defineComponent({
   emits: ['toggleMyDrawerOpen'],
   components: {
-    RightDrawer,
+    ChatInfoView,
+    ClearHistoryDialog,
+    DeleteChatDialog,
     SendFileDialog,
+  },
+  // `chatSelectMode`: read by ChatMessageSuffixButtons.vue (several component layers below,
+  // reached through `<router-view>`'s Chat.vue/ChatMessage.vue/ChatMessageSuffix.vue -- provide/
+  // inject skips having to thread a prop through all of them just for this one flag). A computed
+  // wrapper (not the raw `ref`) since Options API's `data()` properties aren't refs themselves;
+  // this keeps the injected value reactive to changes made via `this.selectMode = ...`.
+  provide() {
+    return {
+      chatSelectMode: computed(() => this.selectMode),
+    }
   },
   setup() {
     const contactStore = useContactStore()
 
     return {
       getContact: contactStore.getContact,
+      setNotify: contactStore.setNotify,
+      getNotify: contactStore.getNotify,
       profileAvatar,
     }
   },
@@ -72,7 +186,14 @@ export default defineComponent({
     return {
       sendFileOpen: false as boolean,
       address: this.$route.params.address as string,
-      contactDrawerOpen: false,
+      // Full-pane Info swap, not a side drawer -- see this file's template header comment above
+      // `router-view`/`chat-info-view` for why.
+      infoOpen: false,
+      // See this file's `provide()` and ChatMessageSuffixButtons.vue's own header -- gates
+      // per-message delete behind an explicit mode instead of it being an always-hoverable action.
+      selectMode: false,
+      confirmClearOpen: false,
+      confirmDeleteOpen: false,
       image: null as unknown | null,
     }
   },
@@ -82,6 +203,11 @@ export default defineComponent({
     next: () => void,
   ) {
     this.address = to.params.address as string
+    // Switching chats while Info/select mode is active would otherwise leave the *previous*
+    // chat's state showing under the new address -- always land back on a plain chat view for a
+    // freshly-navigated-to address.
+    this.infoOpen = false
+    this.selectMode = false
     next()
   },
   methods: {
@@ -89,10 +215,25 @@ export default defineComponent({
       this.image = args
       this.sendFileOpen = true
     },
+    // DeleteChatDialog (opened either from the overflow menu or from within the full-pane Info
+    // view) emits this once the chat is actually gone -- neither the chat route nor an Info view
+    // for it is a valid place to keep sitting.
+    onChatDeleted() {
+      this.infoOpen = false
+      this.$router.push('/forum')
+    },
   },
   computed: {
     contactProfile() {
       return this.getContact(this.address)?.profile
+    },
+    notifications: {
+      get(): boolean {
+        return this.getNotify(this.address) ?? false
+      },
+      set(value: boolean) {
+        this.setNotify({ address: this.address, value })
+      },
     },
     // Ticket #50: a spoofing/impersonation cue -- a colored ring around the contact's avatar,
     // derived from their public key. Same name/avatar with a suddenly-different ring color is

@@ -1,11 +1,33 @@
 /** @jest-environment jsdom */
 
 import { mount, VueWrapper } from '@vue/test-utils'
-import { defineComponent, h } from 'vue'
+import { createApp, defineComponent, h } from 'vue'
+import type { Pinia } from 'pinia'
 import type { Router } from 'vue-router'
 
-const mockProfileStore = { profile: { name: '' } }
-const mockWalletStore: { seedPhrase?: string } = {}
+type PersistedState = Record<string, string>
+
+class MemoryLevel {
+  private readonly values: Map<string, string>
+
+  constructor(initialValues: PersistedState) {
+    this.values = new Map(Object.entries(initialValues))
+  }
+
+  async get(key: string): Promise<string> {
+    const value = this.values.get(key)
+    if (value === undefined) {
+      throw new Error(`Key not found: ${key}`)
+    }
+    return value
+  }
+
+  async put(key: string, value: string): Promise<void> {
+    this.values.set(key, value)
+  }
+}
+
+let mockStorage: MemoryLevel
 const mockSetActiveChat = jest.fn()
 const mockForumLayoutSetup = jest.fn()
 const mockSetupPageSetup = jest.fn()
@@ -25,14 +47,12 @@ const nestedDevtoolsApiPath = require
 jest.doMock(nestedDevtoolsApiPath, () => ({
   setupDevtoolsPlugin: jest.fn(),
 }))
+jest.mock('level', () => jest.fn(() => mockStorage))
+jest.mock('../adapters/level-utxo-store', () => ({
+  store: Promise.resolve({}),
+}))
 jest.mock('src/utils/runtime-mode', () => ({
   monadModeEnabled: () => true,
-}))
-jest.mock('src/stores/my-profile', () => ({
-  useProfileStore: () => mockProfileStore,
-}))
-jest.mock('src/stores/wallet', () => ({
-  useWalletStore: () => mockWalletStore,
 }))
 jest.mock('src/stores/contacts', () => ({
   useContactStore: () => ({ fetchAndAddContact: jest.fn() }),
@@ -85,9 +105,15 @@ jest.mock('pages/Setup.vue', () =>
 
 let RouterView: typeof import('vue-router').RouterView
 let createAppRouter: typeof import('./index').default
+let installPinia: typeof import('../boot/pinia').default
+let useProfileStore: typeof import('../stores/my-profile').useProfileStore
+let useWalletStore: typeof import('../stores/wallet').useWalletStore
 
 beforeAll(async () => {
   RouterView = (await import('vue-router')).RouterView
+  installPinia = (await import('../boot/pinia')).default
+  useProfileStore = (await import('../stores/my-profile')).useProfileStore
+  useWalletStore = (await import('../stores/wallet')).useWalletStore
   createAppRouter = (await import('./index')).default
 })
 
@@ -96,10 +122,38 @@ const AppRoot = defineComponent({
   setup: () => () => h(RouterView),
 })
 
-async function renderRoute(path: string): Promise<{
+async function renderRoute(
+  path: string,
+  persistedState: {
+    seedPhrase?: string
+    profileName?: string
+  } = {},
+): Promise<{
   router: Router
   wrapper: VueWrapper
 }> {
+  mockStorage = new MemoryLevel({
+    wallet: JSON.stringify({
+      xPrivKey: null,
+      seedPhrase: persistedState.seedPhrase ?? null,
+      utxos: {},
+      feePerByte: 2,
+      balance: 0,
+    }),
+    myProfile: JSON.stringify({
+      profile: { name: persistedState.profileName ?? '' },
+      inbox: {},
+    }),
+  })
+
+  const persistenceApp = createApp(AppRoot)
+  await installPinia({ app: persistenceApp } as never)
+  const pinia = persistenceApp.config.globalProperties.$pinia as Pinia
+  const walletStore = useWalletStore(pinia)
+  await walletStore.restored
+  const profileStore = useProfileStore(pinia)
+  await profileStore.restored
+
   const router = createAppRouter()
   await router.push(path)
   await router.isReady()
@@ -110,8 +164,6 @@ async function renderRoute(path: string): Promise<{
 
 describe('wallet onboarding router boundary', () => {
   beforeEach(() => {
-    mockProfileStore.profile.name = ''
-    mockWalletStore.seedPhrase = undefined
     mockForumLayoutSetup.mockClear()
     mockSetupPageSetup.mockClear()
     mockSetActiveChat.mockClear()
@@ -142,9 +194,9 @@ describe('wallet onboarding router boundary', () => {
   })
 
   it('does not let stale profile state open Forum without a wallet', async () => {
-    mockProfileStore.profile.name = 'stale profile'
-
-    const { router, wrapper } = await renderRoute('/forum')
+    const { router, wrapper } = await renderRoute('/forum', {
+      profileName: 'stale profile',
+    })
 
     expect(router.currentRoute.value.fullPath).toBe('/setup')
     expect(mockForumLayoutSetup).not.toHaveBeenCalled()
@@ -153,9 +205,9 @@ describe('wallet onboarding router boundary', () => {
   })
 
   it('keeps Forum reachable for a configured wallet', async () => {
-    mockWalletStore.seedPhrase = 'configured wallet seed'
-
-    const { router, wrapper } = await renderRoute('/forum')
+    const { router, wrapper } = await renderRoute('/forum', {
+      seedPhrase: 'configured wallet seed',
+    })
 
     expect(router.currentRoute.value.fullPath).toBe('/forum')
     expect(wrapper.get('[data-test="forum"]').exists()).toBe(true)

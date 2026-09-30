@@ -26,21 +26,27 @@ describe('runtime constraints', () => {
   test('the package is ESM, side-effect free, and split by entry', () => {
     expect(pkg.type).toBe('module')
     expect(pkg.sideEffects).toBe(false)
-    expect(pkg).not.toHaveProperty('dependencies')
+    expect(pkg.dependencies).toEqual({ '@noble/hashes': '1.8.0' })
     expect(Object.keys(pkg.exports).sort()).toEqual([
       '.',
+      './base32',
+      './base58',
+      './base58check',
       './bch',
       './btc',
+      './convert-bits',
+      './encoding-error',
       './integer',
+      './reader',
       './script-num',
+      './varint',
       './xec',
       './xpi',
     ])
-    expect(runtime.allowed).toEqual([])
+    expect(runtime.allowed).toEqual(['@noble/hashes'])
     expect(runtime.optional).toEqual([])
     expect(runtime.planned).toEqual([
       '@noble/curves',
-      '@noble/hashes',
       '@scure/base',
       '@scure/bip32',
       '@scure/bip39',
@@ -54,6 +60,13 @@ describe('runtime constraints', () => {
       'xpi',
       'script-num',
       'integer',
+      'base58',
+      'base58check',
+      'varint',
+      'reader',
+      'convert-bits',
+      'base32',
+      'encoding-error',
     ])
   })
 

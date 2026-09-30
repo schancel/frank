@@ -36,7 +36,38 @@
     "./script-num": {
       "types": "./dist/script-num.d.ts",
       "import": "./dist/script-num.js"
+    },
+    "./base58": {
+      "types": "./dist/base58.d.ts",
+      "import": "./dist/base58.js"
+    },
+    "./base58check": {
+      "types": "./dist/base58check.d.ts",
+      "import": "./dist/base58check.js"
+    },
+    "./varint": {
+      "types": "./dist/varint.d.ts",
+      "import": "./dist/varint.js"
+    },
+    "./reader": {
+      "types": "./dist/reader.d.ts",
+      "import": "./dist/reader.js"
+    },
+    "./convert-bits": {
+      "types": "./dist/convert-bits.d.ts",
+      "import": "./dist/convert-bits.js"
+    },
+    "./base32": {
+      "types": "./dist/base32.d.ts",
+      "import": "./dist/base32.js"
+    },
+    "./encoding-error": {
+      "types": "./dist/encoding-error.d.ts",
+      "import": "./dist/encoding-error.js"
     }
+  },
+  "dependencies": {
+    "@noble/hashes": "1.8.0"
   },
   "scripts": {
     "test": "jest",

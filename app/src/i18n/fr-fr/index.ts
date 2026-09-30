@@ -146,23 +146,6 @@ export default {
     confirm: 'Confirmer maintenant',
     dismiss: 'Plus tard',
   },
-  seedConfirm: {
-    unavailable:
-      'La confirmation est indisponible car cet appareil n’a pas de générateur de nombres aléatoires sécurisé. Revenez en arrière et réessayez, ou utilisez un autre navigateur.',
-    stepTitle: 'Confirmer la phrase',
-    title: 'Confirmez votre phrase de récupération',
-    instructions:
-      'Saisissez les mots demandés de la phrase de récupération que vous avez notée. Votre compte n’est créé que lorsqu’ils correspondent.',
-    wordLabel: 'Mot n° {n}',
-    check: 'Vérifier mes réponses',
-    error:
-      'Un ou plusieurs mots ne correspondent pas à votre phrase de récupération. Vérifiez votre copie et réessayez.',
-    success:
-      'Phrase de récupération confirmée. Vous pouvez terminer la configuration.',
-    showPhrase: 'Afficher à nouveau ma phrase de récupération',
-    hidePhrase: 'Masquer ma phrase de récupération',
-    phraseLabel: 'Votre phrase de récupération, dans l’ordre',
-  },
   newContactDialog: {
     newContact: 'Nouveau contact',
     enterBitcoinCashAddress: 'Entrez une adresse Lotus...',

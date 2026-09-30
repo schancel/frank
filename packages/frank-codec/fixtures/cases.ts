@@ -3796,3 +3796,63 @@ acc(
   ['V6.1', 'S8'],
   TP,
 )
+
+// R6 in the manifest, so the limits are interop vectors and not only per-codec unit tests.
+const R6_BODY = 524_288
+const bigPost = topicPostFrame({ body: new Uint8Array(R6_BODY) })
+acc(
+  'topic-post-body-at-limit',
+  'A type-9 post with a 524,288-byte body: exactly at the R6 body limit.',
+  bigPost,
+  ['R6'],
+  TP,
+)
+tpRej(
+  'topic-post-body-over-limit',
+  'A type-9 post with a 524,289-byte body: one over R6, a resource error at stage 8.1 before any other field check.',
+  topicPostFrame({ body: new Uint8Array(R6_BODY + 1) }),
+  'resource',
+  '8.1',
+  ['R6'],
+)
+tpRej(
+  'topic-submission-frame-over-1mib',
+  'A type-10 submission of a maximal post with an unknown padding field, making the frame exceed 1 MiB: resource at stage 8.1 (R6).',
+  fr(
+    10,
+    new Map([
+      ...topicSubmissionPayload({ post: bigPost }),
+      [9, new Uint8Array(1_048_576 - bigPost.length)],
+    ]),
+  ),
+  'resource',
+  '8.1',
+  ['R6'],
+)
+const votePadded = (pad: number, schema = 1): Uint8Array =>
+  fr(11, new Map([...topicVotePayload(), [9, new Uint8Array(pad)]]), schema, 1)
+let votePad = 65_536 - votePadded(0, 2).length
+votePad -= votePadded(votePad, 2).length - 65_536
+acc(
+  'topic-vote-frame-at-64kib',
+  'A type-11 vote at schema 2 whose unknown padding field makes the frame exactly 65,536 bytes: at the R6 limit.',
+  votePadded(votePad, 2),
+  ['R6', 'V6.3'],
+  TP,
+)
+tpRej(
+  'topic-vote-frame-over-64kib',
+  'The same vote one byte larger, 65,537 bytes: resource at stage 8.1 (R6).',
+  votePadded(votePad + 1, 2),
+  'resource',
+  '8.1',
+  ['R6'],
+)
+tpRej(
+  'topic-vote-frame-over-64kib-schema-1',
+  'A type-11 vote at schema 1 with a 65,536-byte padding field: over R6 (resource at 8.1) even though the undeclared field is also a schema error later.',
+  votePadded(65_536),
+  'resource',
+  '8.1',
+  ['R6', 'C12'],
+)

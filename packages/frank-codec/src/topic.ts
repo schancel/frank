@@ -1,0 +1,163 @@
+// Writers for the topic events of docs/protocol/cbor (README section 6 "Topic events", T7, T8):
+// a type-9 post, the type-10 submission that wraps it with its burn transaction, and the type-11
+// vote. Every writer validates what it produced with the same typed validation a reader runs, so
+// an invalid input throws a `FrankCodecError` instead of yielding a frame a relay would reject.
+//
+// The order a wallet follows is fixed by T7: the burn must commit to the post it pays for, and
+// the post cannot contain that burn, so the post is encoded and hashed first, the burn is signed
+// for the resulting commitment, and only then is the submission written.
+//
+//   const post = encodeTopicPost({ network, topic, body })
+//   const { commitment } = topicBurnCommitment(post)
+//   const calldata = topicBurnCalldata('up', commitment)      // sign a burn tx carrying this
+//   const submission = encodeTopicPostSubmission(post, rawSignedTx)
+import type { Encodable } from './cbor'
+import { encodeFrame } from './frame'
+import { contentHash, topicVoteCommitment } from './hash'
+import {
+  TYPE_TOPIC_POST,
+  TYPE_TOPIC_POST_SUBMISSION,
+  TYPE_TOPIC_VOTE_SUBMISSION,
+} from './constants'
+import { defaultContext, validateFrame } from './validate'
+import type { ParsedFrame } from './types'
+
+/** The direction of a burn-weighted vote. Read from the burn's calldata by a relay (T8). */
+export type TopicVoteDirection = 'up' | 'down'
+
+const TOPIC_LOKAD_ID = Uint8Array.of(0x54, 0x50, 0x49, 0x43) // "TPIC"
+/** Calldata version byte of the Frank-CBOR topic path (README T8). The protobuf path uses `01`. */
+export const TOPIC_CBOR_CALLDATA_VERSION = 0x02
+const DIRECTION_BYTE: Record<TopicVoteDirection, number> = {
+  up: 0x01,
+  down: 0x00,
+}
+/** `"TPIC" || 02 || direction || commitment`: 4 + 1 + 1 + 32 bytes. */
+export const TOPIC_CBOR_CALLDATA_LENGTH = 38
+
+export interface TopicPostFields {
+  network: string
+  /** Exact UTF-8, 1 through 512 bytes; never normalized (S12). */
+  topic: string
+  /** The T1 hash of the parent post's type-9 frame. Omit for a top-level post. */
+  parentHash?: Uint8Array
+  /** Opaque in version 1, 1 through 524,288 bytes. */
+  body: Uint8Array
+}
+
+function validated(frame: Uint8Array, typeId: number): ParsedFrame {
+  const r = validateFrame(frame, defaultContext({ operation: 'typed' }))
+  if (r.kind !== 'parsed' || r.typeId !== typeId)
+    throw new Error(
+      `internal: a writer produced a frame that is not type ${typeId}`,
+    )
+  return r
+}
+
+/** Encodes a type-9 topic post. Throws `FrankCodecError` if a field violates its bound. */
+export function encodeTopicPost(fields: TopicPostFields): Uint8Array {
+  const payload = new Map<number, Encodable>([
+    [0, fields.network],
+    [1, fields.topic],
+    [3, fields.body],
+  ])
+  if (fields.parentHash !== undefined) payload.set(2, fields.parentHash)
+  const frame = encodeFrame(
+    { typeId: TYPE_TOPIC_POST, schemaVersion: 1, minReaderVersion: 1 },
+    payload,
+  )
+  validated(frame, TYPE_TOPIC_POST)
+  return frame
+}
+
+/** The identity of a post: the T1 content hash of its complete type-9 frame (S12). */
+export function topicPostHash(postFrame: Uint8Array): Uint8Array {
+  return contentHash(validated(postFrame, TYPE_TOPIC_POST))
+}
+
+/**
+ * The T7 commitment the burn for `postFrame` must carry, with the post's network and hash. A
+ * post's own burn is a vote on that post, so a later vote for it commits with
+ * `topicVoteCommitment(network, hash)` and gets the same value.
+ */
+export function topicBurnCommitment(postFrame: Uint8Array): {
+  network: string
+  hash: Uint8Array
+  commitment: Uint8Array
+} {
+  const post = validated(postFrame, TYPE_TOPIC_POST)
+  const typed = post.typed
+  if (typed?.type !== 9) throw new Error('internal: not a topic post')
+  const hash = contentHash(post)
+  return {
+    network: typed.network,
+    hash,
+    commitment: topicVoteCommitment(typed.network, hash),
+  }
+}
+
+/**
+ * The calldata a burn transaction must carry for a Frank-CBOR topic event (T8):
+ * `"TPIC" || 02 || direction || commitment`. The direction and the burned value are the vote's,
+ * read from the signed transaction by the relay; the frames never repeat them.
+ */
+export function topicBurnCalldata(
+  direction: TopicVoteDirection,
+  commitment: Uint8Array,
+): Uint8Array {
+  if (commitment.length !== 32)
+    throw new RangeError('the topic burn commitment must be 32 bytes')
+  const out = new Uint8Array(TOPIC_CBOR_CALLDATA_LENGTH)
+  out.set(TOPIC_LOKAD_ID, 0)
+  out[4] = TOPIC_CBOR_CALLDATA_VERSION
+  out[5] = DIRECTION_BYTE[direction]
+  out.set(commitment, 6)
+  return out
+}
+
+/**
+ * Encodes a type-10 submission: the exact `postFrame` plus the signed burn transaction. The
+ * network is the post's, so S11 holds by construction.
+ */
+export function encodeTopicPostSubmission(
+  postFrame: Uint8Array,
+  burnTx: Uint8Array,
+): Uint8Array {
+  const { network } = topicBurnCommitment(postFrame)
+  const frame = encodeFrame(
+    {
+      typeId: TYPE_TOPIC_POST_SUBMISSION,
+      schemaVersion: 1,
+      minReaderVersion: 1,
+    },
+    new Map<number, Encodable>([
+      [0, network],
+      [1, postFrame],
+      [2, burnTx],
+    ]),
+  )
+  validated(frame, TYPE_TOPIC_POST_SUBMISSION)
+  return frame
+}
+
+/** Encodes a type-11 vote on the post whose T1 hash is `targetHash`. */
+export function encodeTopicVote(
+  network: string,
+  targetHash: Uint8Array,
+  burnTx: Uint8Array,
+): Uint8Array {
+  const frame = encodeFrame(
+    {
+      typeId: TYPE_TOPIC_VOTE_SUBMISSION,
+      schemaVersion: 1,
+      minReaderVersion: 1,
+    },
+    new Map<number, Encodable>([
+      [0, network],
+      [1, targetHash],
+      [2, burnTx],
+    ]),
+  )
+  validated(frame, TYPE_TOPIC_VOTE_SUBMISSION)
+  return frame
+}

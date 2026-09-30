@@ -48,6 +48,11 @@ Entry point `src/index.ts`.
   `category`, `stage`, `pass`, `location`. A bad context throws `FrankContextError`.
 - `contentHash`, `messageContentDigest`, `recipientPayloadDigest`, `paymentCommitment`,
   `topicVoteCommitment`, `commonTranscript`, `toHex`, `fromHex`.
+- Topic-event writers (README T7, T8): `encodeTopicPost`, `topicPostHash`, `topicBurnCommitment`,
+  `topicBurnCalldata` (`"TPIC" || 02 || direction || commitment`), `encodeTopicPostSubmission`,
+  and `encodeTopicVote`. Each validates what it wrote with the reader's typed validation, and the
+  order is fixed by T7: encode the post, derive its commitment, sign the burn for it, then wrap.
+  Nothing calls them yet; wiring them into the wallet's topic clients is a later ticket.
 
 Returned frames are views of one private copy of the input; do not mutate them.
 

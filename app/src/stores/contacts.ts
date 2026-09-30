@@ -54,6 +54,27 @@ export const pendingRelayData = {
   lastUpdateTime: 0,
 }
 
+/** `0x1234…abcd`: what a resolved-but-unnamed contact is shown as (#317), instead of leaving the
+ * "Loading..." placeholder up forever once its profile is known to exist. */
+export function shortAddressLabel(address: string): string {
+  return address.length > 12
+    ? `${address.slice(0, 6)}\u2026${address.slice(-4)}`
+    : address
+}
+
+/** Zero-width, bidi-control and other invisible format characters. */
+// Deliberately lists combining/variation characters: they are invisible by themselves.
+/* eslint-disable no-misleading-character-class */
+const INVISIBLE_CHARS =
+  /[\u00AD\u034F\u061C\u115F\u1160\u17B4\u17B5\u180B-\u180E\u200B-\u200F\u202A-\u202E\u2060-\u206F\u3164\uFE00-\uFE0F\uFEFF\uFFA0]/g
+/* eslint-enable no-misleading-character-class */
+
+/** True for a name with nothing visible: empty, whitespace, or only zero-width/bidi controls.
+ * Used only to decide whether to show a fallback; the stored name is never rewritten. */
+export function isBlankName(name: string | null | undefined): boolean {
+  return !name || name.replace(INVISIBLE_CHARS, '').trim() === ''
+}
+
 type Profile = {
   name: string | null
   bio: string | null
@@ -74,6 +95,9 @@ export type ContactState = {
 export interface State {
   contacts: Record<string, ContactState | undefined>
   updateInterval: number
+  /** Canonical addresses of contacts the user deleted: curated defaults are not re-added for
+   * them on later launches. */
+  dismissedDefaults: string[]
 }
 
 /**
@@ -88,6 +112,7 @@ function freshContactsState(): State {
   return {
     contacts: {},
     updateInterval: defaultUpdateInterval,
+    dismissedDefaults: [],
   }
 }
 
@@ -109,6 +134,7 @@ type RestorableContactState = {
 export type RestorableState = {
   contacts: Record<string, RestorableContactState>
   updateInterval: number
+  dismissedDefaults?: string[]
 }
 
 export async function rehydrateContacts(
@@ -143,6 +169,7 @@ export async function rehydrateContacts(
   return {
     ...contactState,
     contacts: contacts,
+    dismissedDefaults: contactState.dismissedDefaults ?? [],
   }
 }
 
@@ -303,6 +330,9 @@ export const useContactStore = defineStore('contacts', {
 
       await chats.deleteChat(address)
       delete this.contacts[apiAddress]
+      if (!this.dismissedDefaults.includes(apiAddress)) {
+        this.dismissedDefaults.push(apiAddress)
+      }
     },
     /** Resolve a signed Monad profile through the active-chain seam. */
     async fetchAndAddContact({
@@ -337,7 +367,9 @@ export const useContactStore = defineStore('contacts', {
             relayURL: null,
             profile: {
               ...defaultRelayData.profile,
-              name: profileInfo.name ?? '',
+              name: isBlankName(profileInfo.name)
+                ? shortAddressLabel(displayAddress)
+                : (profileInfo.name as string),
               bio: profileInfo.bio ?? '',
               avatar: profileInfo.avatar ?? '',
               pubKey: markRaw(
@@ -354,11 +386,30 @@ export const useContactStore = defineStore('contacts', {
         })
       }
     },
-    addDefaultContact({ address, name }: { address: string; name: string }) {
-      if (this.isContact(address)) {
+    /** Adds a relay-curated default contact. Never opens a chat (a first run shows the list, and
+     * a returning user is not switched by a newly added default), never re-adds one the user
+     * deleted, never adds the user themself, and ignores an unparseable address. */
+    async addDefaultContact({
+      address,
+      name,
+    }: {
+      address: string
+      name: string
+    }) {
+      let apiAddress: string
+      try {
+        apiAddress = toChainDisplayAddress(address)
+      } catch {
+        console.error(
+          `ignoring curated default with invalid address ${address}`,
+        )
         return
       }
-      console.log('adding default contact', address)
+      if (this.isContact(apiAddress)) return
+      if (this.dismissedDefaults.includes(apiAddress)) return
+      if (await isOwnAddress(apiAddress)) return
+      // The await above can interleave with another add of the same address.
+      if (this.isContact(apiAddress)) return
       const contact = {
         ...pendingRelayData,
         profile: {
@@ -369,9 +420,7 @@ export const useContactStore = defineStore('contacts', {
           pubKey: null,
         },
       }
-      this.addContact({ address: address, contact })
-      const chats = useChatStore()
-      chats.activeChatAddr = address
+      this.addContact({ address: apiAddress, contact })
     },
     async refreshContacts() {
       for (const address of Object.keys(this.contacts)) {
@@ -407,7 +456,14 @@ export const useContactStore = defineStore('contacts', {
           address,
           profile: {
             ...oldContactInfo.profile,
-            name: profileInfo.name ?? oldContactInfo.profile.name,
+            // A registered profile without a display name must not keep the "Loading..."
+            // placeholder (#317); a name the user already has for this contact is kept.
+            name: !isBlankName(profileInfo.name)
+              ? (profileInfo.name as string)
+              : !isBlankName(oldContactInfo.profile.name) &&
+                oldContactInfo.profile.name !== pendingRelayData.profile.name
+              ? oldContactInfo.profile.name
+              : shortAddressLabel(toChainDisplayAddress(address)),
             bio: profileInfo.bio ?? oldContactInfo.profile.bio,
             avatar: profileInfo.avatar ?? oldContactInfo.profile.avatar,
             pubKey: markRaw(

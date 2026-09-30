@@ -89,8 +89,9 @@ import {
   tryDecryptEnvelope,
 } from '@frank/cashweb/relay/monad-message-envelope'
 import { fetchMonadMessagesSince } from '@frank/cashweb/relay/monad-message-feed'
-import { deserializeMessageItems } from '@frank/wallet/chain/monad-chain'
 import { QwenClient } from './qwen-client'
+import { botLoopGuardFromEnv } from './bot-loop-guard'
+import { extractPromptText } from './qwen-prompt'
 import {
   loadOrCreateIdentity,
   registerAndLog,
@@ -98,35 +99,11 @@ import {
   sendDirectMessageText,
   setUpFundedStampClient,
 } from './qwen-bot-common'
+import { botProfileFields } from './bot-directory'
 import { QwenBotStateStore } from './qwen-bot-state'
 
 function sleep(ms: number): Promise<void> {
   return new Promise(r => setTimeout(r, ms))
-}
-
-/** Extracts plain text from a decrypted envelope's plaintext, whichever wire shape it's in.
- * Found tonight (autonomous overnight session, 2026-09-27), the hard way: the *real* Frank UI's
- * `MonadChain.directMessages` (`../chain/monad-chain.ts`, ticket #42) always wraps a message's
- * plaintext as `serializeMessageItems`'s JSON-array-of-`MessageItem` shape -- this bot originally
- * sent/expected a bare plaintext string instead (fine when bot and sender were both this same
- * ticket's own scripts, broken once a real `ActiveChain` wallet is on the other end:
- * `deserializeMessageItems` on a bare string throws `SyntaxError`, confirmed live). Tries the real
- * UI's shape first, falls back to treating `plaintext` as a bare string only if that parse fails,
- * so this bot still works talking to itself (or to the old bare-string convention) either way. */
-function extractText(plaintext: string): string {
-  try {
-    const items = deserializeMessageItems(plaintext)
-    const text = items
-      .filter(
-        (item): item is { type: 'text'; text: string } => item.type === 'text',
-      )
-      .map(item => item.text)
-      .join('\n')
-    if (text) return text
-  } catch {
-    // Not a MessageItem[] JSON array -- fall through to the bare-string convention below.
-  }
-  return plaintext
 }
 
 const SYSTEM_PROMPT =
@@ -213,7 +190,12 @@ async function main() {
   )
 
   const identity = loadOrCreateIdentity(identityJsonPath, 'bot')
-  await registerAndLog({ relayBaseUrl, identity, label: 'bot' })
+  await registerAndLog({
+    relayBaseUrl,
+    identity,
+    label: 'bot',
+    profile: botProfileFields('qwen'),
+  })
   writeFileSync(
     handoffJsonPath,
     JSON.stringify({ address: identity.displayAddress }, null, 2),
@@ -236,6 +218,13 @@ async function main() {
       stampValueWei,
       label: 'bot',
     })
+
+  // #311: never greet/reply to other bots, and cap replies per peer per window (see
+  // bot-loop-guard.ts for the env knobs).
+  const guard = botLoopGuardFromEnv({
+    selfAddress: identity.displayAddress,
+    relayBaseUrl,
+  })
 
   const qwen = new QwenClient({
     apiKey: qwenApiKey,
@@ -313,11 +302,18 @@ async function main() {
           registeredAt,
         )
 
-        if (
-          profile.address.toLowerCase() ===
-          identity.displayAddress.toLowerCase()
-        ) {
-          continue // never greet/fund ourselves
+        // Never greet/fund ourselves, a denylisted address, or another bot (#311): the greeting
+        // budget and the funding wallet are for human users. Not marked greeted -- it was never
+        // greeted -- and it does not count against `maxGreetings`.
+        const skipReason = guard.profileBlockReason(
+          profile.address,
+          profile.signedPayload,
+        )
+        if (skipReason) {
+          console.log(
+            `[bot] not greeting ${profile.address} (${skipReason})`,
+          )
+          continue
         }
         if (state.hasGreeted(profile.address)) continue // idempotency guard, persisted
         if (greetingsSent >= maxGreetings) break
@@ -353,18 +349,22 @@ async function main() {
           console.error(`[bot] failed to greet ${profile.address}:`, err)
         }
 
-        try {
-          console.log(
-            `[bot] funding ${profile.address} with ${fundValueWei} wei from the main wallet (${mainAccountSigner.address}) ...`,
-          )
-          const signedFundTx = await mainAccountSigner.buildAndSignTransfer(
-            profile.address,
-            fundValueWei,
-          )
-          const fundTxHash = await mainAccountSigner.submit(signedFundTx)
-          console.log(`[bot] funding tx sent: ${fundTxHash}`)
-        } catch (err) {
-          console.error(`[bot] failed to fund ${profile.address}:`, err)
+        // `QWEN_BOT_FUND_VALUE_WEI=0` turns funding off (e.g. when the standalone faucet, #316,
+        // does it), keeping the greeting.
+        if (fundValueWei > 0n) {
+          try {
+            console.log(
+              `[bot] funding ${profile.address} with ${fundValueWei} wei from the main wallet (${mainAccountSigner.address}) ...`,
+            )
+            const signedFundTx = await mainAccountSigner.buildAndSignTransfer(
+              profile.address,
+              fundValueWei,
+            )
+            const fundTxHash = await mainAccountSigner.submit(signedFundTx)
+            console.log(`[bot] funding tx sent: ${fundTxHash}`)
+          } catch (err) {
+            console.error(`[bot] failed to fund ${profile.address}:`, err)
+          }
         }
 
         // Counted once per newly-greeted address regardless of whether the greeting DM and/or the
@@ -430,6 +430,14 @@ async function main() {
         senderPubKeyCache.set(senderKey, senderPubKey)
       }
 
+      const blockReason = await guard.peerBlockReason(envelope.from)
+      if (blockReason) {
+        console.log(
+          `[bot] ignoring message ${payloadHashHex} from ${envelope.from} (${blockReason})`,
+        )
+        continue
+      }
+
       const rawPlaintext = tryDecryptEnvelope({
         envelope,
         myPrivateKey: identity.toBitcorePrivateKey(),
@@ -441,7 +449,19 @@ async function main() {
         )
         continue
       }
-      const plaintext = extractText(rawPlaintext)
+      const plaintext = extractPromptText(rawPlaintext)
+      if (plaintext === undefined) {
+        console.log(
+          `[bot] message ${payloadHashHex} has no text item -- not a prompt, skipping`,
+        )
+        continue
+      }
+      if (!guard.reserveReply(envelope.from)) {
+        console.log(
+          `[bot] reply budget for ${envelope.from} exhausted this window -- skipping message ${payloadHashHex}`,
+        )
+        continue
+      }
       console.log(`[bot] decrypted: "${plaintext}"`)
 
       const history = state.getConversation(envelope.from) ?? [

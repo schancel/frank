@@ -109,6 +109,10 @@ export default {
     watchingWallet: 'Surveillance du wallet...', //?
     searchingExistingMetaData: 'Recherche des métadonnées dans le registre...',
     errorContactRegistry: 'Impossible de se connecter au registre',
+    storedSeedMismatch:
+      'La phrase de récupération de cet appareil ne peut pas être remplacée depuis cet écran.',
+    replaceNotAcknowledged:
+      'Ce compte ne peut pas être remplacé sans confirmer le remplacement.',
     accountSetupNext: 'Suivant',
     depositStepNext: 'Suivant',
   },
@@ -117,6 +121,48 @@ export default {
     importAccount: 'Importer un compte',
     copyRecoveryPhrase: 'Copier la phrase de récupération',
     refreshRecoveryPhrase: 'Générer une nouvelle phrase de récupération',
+    resumeNotice:
+      'Une phrase de récupération est déjà enregistrée sur cet appareil, mais ce compte n’a pas encore de nom. Votre phrase ne sera pas modifiée. Confirmez-la et choisissez un nom pour terminer.',
+  },
+  seedConfirm: {
+    unavailable:
+      'La confirmation est indisponible car cet appareil n’a pas de générateur de nombres aléatoires sécurisé. Revenez en arrière et réessayez, ou utilisez un autre navigateur.',
+    stepTitle: 'Confirmer la phrase',
+    title: 'Confirmez votre phrase de récupération',
+    instructions:
+      'Saisissez les mots demandés de la phrase de récupération que vous avez notée. Votre compte n’est créé que lorsqu’ils correspondent.',
+    wordLabel: 'Mot n° {n}',
+    check: 'Vérifier mes réponses',
+    error:
+      'Un ou plusieurs mots ne correspondent pas à votre phrase de récupération. Vérifiez votre copie et réessayez.',
+    success:
+      'Phrase de récupération confirmée. Vous pouvez terminer la configuration.',
+    showPhrase: 'Afficher à nouveau ma phrase de récupération',
+    hidePhrase: 'Masquer ma phrase de récupération',
+    phraseLabel: 'Votre phrase de récupération, dans l’ordre',
+  },
+  backupReminder: {
+    regionLabel: 'Rappel de sauvegarde de la phrase de récupération',
+    message:
+      'Vous n’avez pas encore confirmé votre phrase de récupération. Confirmez que vous l’avez sauvegardée pour toujours pouvoir récupérer votre compte.',
+    confirm: 'Confirmer maintenant',
+    dismiss: 'Plus tard',
+  },
+  replaceGuard: {
+    title: 'Vous avez déjà un compte sur cet appareil',
+    intro:
+      'Recommencer la configuration le remplacerait. Votre phrase de récupération est le seul moyen de récupérer ce compte et ses fonds.',
+    confirmed: 'Votre phrase de récupération actuelle est confirmée.',
+    cancel: 'Annuler et revenir à mon compte',
+    confirmCurrent: 'Confirmer ma phrase de récupération actuelle',
+    replaceToggle: 'Remplacer ce compte',
+    warning:
+      'Remplacer ce compte supprimera de cet appareil votre phrase de récupération, votre nom et votre profil actuels. Si vous n’avez pas sauvegardé la phrase, le compte et ses fonds pourraient être irrécupérables.',
+    typeLabel: 'Saisissez {word} pour continuer',
+    word: 'REMPLACER',
+    mismatch:
+      'Cela ne correspond pas. Saisissez exactement le mot pour continuer.',
+    replace: 'Remplacer ce compte',
   },
   newContactDialog: {
     newContact: 'Nouveau contact',
@@ -146,10 +192,14 @@ export default {
     wipeAndSave: 'Consolidation du portefeuille',
     changeLog: 'Changelog',
     showSeed: 'Montrer la phrase de passe',
+    confirmSeed: 'Confirmer la phrase de récupération',
+    panelLabel: 'Paramètres',
   },
   receiveBitcoinDialog: {
     walletStatus: 'Etat du wallet',
     balanceUnavailable: 'Solde indisponible. Nouvelle tentative.',
+    noFundsHint:
+      "Votre solde est de 0. Cette application utilise des MON de testnet, sans valeur réelle. Le faucet de démonstration alimente automatiquement les nouveaux profils ; si rien n'arrive après une minute, demandez à l'opérateur de la démo d'envoyer des MON de testnet à l'adresse ci-dessous.",
     addressCopied: 'Adresse copiée dans le presse papier',
   },
   sendAddressDialog: {

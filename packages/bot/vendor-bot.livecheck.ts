@@ -60,7 +60,9 @@ import {
   sendDirectMessageItems,
   setUpFundedStampClient,
 } from './qwen-bot-common'
+import { botProfileFields } from './bot-directory'
 import { VendorBotStateStore } from './vendor-bot-state'
+import { botLoopGuardFromEnv } from './bot-loop-guard'
 
 function sleep(ms: number): Promise<void> {
   return new Promise(r => setTimeout(r, ms))
@@ -148,7 +150,12 @@ async function main() {
   console.log(`Catalog: ${CATALOG.map(i => `${i.itemId} (${i.priceWei} wei)`).join(', ')}`)
 
   const identity = loadOrCreateIdentity(identityJsonPath, 'vendor-bot')
-  await registerAndLog({ relayBaseUrl, identity, label: 'vendor-bot' })
+  await registerAndLog({
+    relayBaseUrl,
+    identity,
+    label: 'vendor-bot',
+    profile: botProfileFields('vendor'),
+  })
   console.log(`Vendor bot identity address: ${identity.displayAddress}`)
 
   const { stampClient, mainAccountSigner, provider, pool } =
@@ -159,6 +166,12 @@ async function main() {
       stampValueWei: replyStampValueWei,
       label: 'vendor-bot',
     })
+
+  // #311: the catalog goes to humans only, at most a bounded number of times per window.
+  const guard = botLoopGuardFromEnv({
+    selfAddress: identity.displayAddress,
+    relayBaseUrl,
+  })
 
   const state = new VendorBotStateStore(stateDirPath)
   await state.Open()
@@ -252,7 +265,21 @@ async function main() {
 
       if (!request) {
         // Any other message from a new-to-us buyer gets the catalog -- the "ad" half of "bot-driven
-        // ads / 1-click purchase."
+        // ads / 1-click purchase." Never to another bot, and rate-limited per sender: a bot that
+        // answers this catalog with its own auto-reply would otherwise ping-pong (#311).
+        const blockReason = await guard.peerBlockReason(envelope.from)
+        if (blockReason) {
+          console.log(
+            `[vendor-bot] not sending catalog to ${envelope.from} (${blockReason})`,
+          )
+          continue
+        }
+        if (!guard.reserveReply(envelope.from)) {
+          console.log(
+            `[vendor-bot] catalog budget for ${envelope.from} exhausted this window -- not replying`,
+          )
+          continue
+        }
         console.log(`\n[vendor-bot] sending catalog to ${envelope.from}`)
         await sendReply([{ type: 'digital-goods', action: 'catalog', catalog: catalogWirePayload() }])
         continue

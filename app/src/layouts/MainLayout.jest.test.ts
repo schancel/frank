@@ -114,16 +114,30 @@ function translate(key: string, params: Record<string, unknown> = {}): string {
 function createFakeRouter() {
   type Hook = (to: unknown, from: unknown, failure?: unknown) => void
   const hooks: Hook[] = []
+  const errorHandlers: Array<(err: unknown) => void> = []
   const router = {
     currentRoute: { value: { path: '/' } },
     afterEach: (fn: Hook) => {
       hooks.push(fn)
       return () => hooks.splice(hooks.indexOf(fn), 1)
     },
+    onError: (fn: (err: unknown) => void) => {
+      errorHandlers.push(fn)
+      return () => errorHandlers.splice(errorHandlers.indexOf(fn), 1)
+    },
+    // Like a throwing beforeEach guard: afterEach hooks are skipped, onError handlers run and
+    // the navigation promise rejects.
+    guardThrowsOnce: false,
     push: jest.fn(async (path: string) => navigate(path)),
     replace: jest.fn(async (path: string) => navigate(path)),
   }
   function navigate(path: string) {
+    if (router.guardThrowsOnce) {
+      router.guardThrowsOnce = false
+      const error = new Error('guard failed')
+      errorHandlers.slice().forEach(fn => fn(error))
+      throw error
+    }
     // Like vue-router: a navigation to the current path is a "duplicated" failure, and
     // afterEach hooks still run with it.
     const failure =
@@ -159,15 +173,17 @@ quasarStubs.QTooltip = passthrough('span', { 'data-testid': 'tooltip' })
 quasarStubs.QBtn = passthrough('button')
 quasarStubs.QDialog = passthrough('div', { 'data-testid': 'dialog' })
 
-async function mountLayout(width: number) {
+async function mountLayout(width: number, attachTo?: HTMLElement) {
   const $q = { screen: { width } }
   const router = createFakeRouter()
   mockRouterRef.current = router
   const wrapper = mount(MainLayout, {
+    attachTo,
     global: {
       // Hand the components a $q carrying just the screen width under test.
       directives: { ripple: {} },
       components: { ...quasarStubs, QLayout: LayoutStub, QDrawer: DrawerStub },
+      config: { errorHandler: () => undefined }, // the rejected push of a throwing guard
       provide: { _q_: $q },
       stubs: { RouterView: true },
       mocks: {
@@ -285,6 +301,11 @@ describe('MainLayout closes the mobile overlay on navigation', () => {
 })
 
 describe('LeftDrawer icon rail accessible names', () => {
+  // Reset shared state in afterEach so a failing assertion cannot leak it into later tests.
+  afterEach(() => {
+    mockUnread.value = 3
+  })
+
   it('gives every icon-only tab an aria-label and a tooltip', async () => {
     const { wrapper } = await mountLayout(1024)
     const labels = tabs(wrapper).map(t => t.attributes('aria-label'))
@@ -308,6 +329,86 @@ describe('LeftDrawer icon rail accessible names', () => {
     mockUnread.value = 0
     const none = await mountLayout(1024)
     expect(tabs(none.wrapper)[1].attributes('aria-label')).toBe('Contacts')
-    mockUnread.value = 3
+  })
+})
+
+describe('MainLayout rail-navigation marker', () => {
+  it('is cleared when a router guard throws, so the next navigation still closes the overlay', async () => {
+    const { wrapper, router } = await mountLayout(390)
+    await openDrawer(wrapper)
+    router.guardThrowsOnce = true // e.g. redirectIfNoProfile throwing on the forum tab's push
+    await tabs(wrapper)[2].trigger('click')
+    await flushPromises()
+    expect(open(wrapper)).toBe('true') // nothing navigated
+    await byText(wrapper, 'Profile')[0].trigger('click')
+    await flushPromises()
+    expect(open(wrapper)).toBe('false')
+  })
+})
+
+describe('MainLayout focus after the overlay closes', () => {
+  let host: HTMLElement
+  beforeEach(() => {
+    host = document.createElement('div')
+    document.body.appendChild(host)
+  })
+  afterEach(() => {
+    document.body.innerHTML = ''
+  })
+
+  it('moves focus to the main content region when the opener is gone', async () => {
+    const main = document.createElement('div')
+    main.className = 'q-page-container'
+    document.body.appendChild(main)
+    const { wrapper } = await mountLayout(390, host)
+    await openDrawer(wrapper) // nothing focused: no opener to restore
+    await byText(wrapper, 'Profile')[0].trigger('click')
+    await flushPromises()
+    expect(open(wrapper)).toBe('false')
+    expect(document.activeElement).toBe(main)
+    expect(main.getAttribute('tabindex')).toBe('-1')
+    wrapper.unmount()
+  })
+
+  it('returns focus to the control that opened the drawer when it is still in the page', async () => {
+    const main = document.createElement('div')
+    main.setAttribute('role', 'main')
+    document.body.appendChild(main)
+    const menuButton = document.createElement('button')
+    document.body.appendChild(menuButton)
+    const { wrapper } = await mountLayout(390, host)
+    menuButton.focus()
+    await openDrawer(wrapper)
+    // Focus moves into the drawer while it is open, then the pick closes it.
+    const item = byText(wrapper, 'Profile')[0].element as HTMLElement
+    item.setAttribute('tabindex', '0')
+    item.focus()
+    expect(document.activeElement).toBe(item)
+    await byText(wrapper, 'Profile')[0].trigger('click')
+    await flushPromises()
+    expect(document.activeElement).toBe(menuButton)
+    wrapper.unmount()
+  })
+
+  it('does not steal focus when switching rail tabs (the overlay stays open)', async () => {
+    const main = document.createElement('div')
+    main.setAttribute('role', 'main')
+    document.body.appendChild(main)
+    const { wrapper } = await mountLayout(390, host)
+    await openDrawer(wrapper)
+    await tabs(wrapper)[2].trigger('click')
+    await flushPromises()
+    expect(document.activeElement).not.toBe(main)
+  })
+
+  it('leaves focus alone on desktop, where the drawer never closes', async () => {
+    const main = document.createElement('div')
+    main.setAttribute('role', 'main')
+    document.body.appendChild(main)
+    const { wrapper } = await mountLayout(1024, host)
+    await byText(wrapper, 'Profile')[0].trigger('click')
+    await flushPromises()
+    expect(document.activeElement).not.toBe(main)
+    wrapper.unmount()
   })
 })

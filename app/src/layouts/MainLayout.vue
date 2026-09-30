@@ -53,6 +53,9 @@ export default defineComponent({
     return {
       railNavigation: false,
       removeAfterEach: undefined as (() => void) | undefined,
+      removeOnError: undefined as (() => void) | undefined,
+      // Control that had focus when the overlay was opened (the page header's menu button).
+      drawerOpener: null as HTMLElement | null,
       trueSplitterRatio: compactCutoff,
       // See `drawerBreakpoint`'s own comment above for why this can't just be `true`.
       myDrawerOpen: !isNarrowWidth(this.$q.screen.width),
@@ -88,21 +91,53 @@ export default defineComponent({
         if (failure || railTab) return
         if (isNarrowWidth(this.$q.screen.width)) {
           this.myDrawerOpen = false
+          this.restoreFocusAfterOverlay()
         }
       },
     )
+    // A guard that throws (e.g. redirectIfNoProfile) skips afterEach entirely and routes to
+    // onError instead, so the marker would otherwise survive and keep the overlay open for the
+    // *next* navigation.
+    this.removeOnError = this.$router.onError(() => {
+      this.railNavigation = false
+    })
   },
   beforeUnmount() {
     this.removeAfterEach?.()
+    this.removeOnError?.()
   },
   methods: {
     toggleContactDrawerOpen() {
       this.contactDrawerOpen = !this.contactDrawerOpen
     },
+    // Closing the overlay unmounts/hides the control that had focus, which drops focus to <body>
+    // (keyboard and screen-reader users lose their place). Hand it back to the control that
+    // opened the drawer if it survived the navigation, else to the main content region.
+    async restoreFocusAfterOverlay() {
+      await this.$nextTick()
+      const opener = this.drawerOpener
+      this.drawerOpener = null
+      const target =
+        opener?.isConnected && opener !== document.body
+          ? opener
+          : document.querySelector<HTMLElement>(
+              '[role="main"], main, .q-page-container',
+            )
+      if (!target) return
+      if (
+        !target.matches('a[href], button, input, select, textarea, [tabindex]')
+      ) {
+        target.setAttribute('tabindex', '-1')
+      }
+      target.focus({ preventScroll: true })
+    },
     toggleMyDrawerOpen() {
       if (this.compact) {
         this.compact = false
         this.trueSplitterRatio = compactCutoff
+      }
+      if (!this.myDrawerOpen && document.activeElement instanceof HTMLElement) {
+        this.drawerOpener = document.activeElement
       }
       this.myDrawerOpen = !this.myDrawerOpen
     },
@@ -133,3 +168,11 @@ export default defineComponent({
   },
 })
 </script>
+
+<style lang="scss">
+// The main region is only a programmatic focus target (restoreFocusAfterOverlay); it must not
+// draw a focus ring around the whole page.
+.q-page-container[tabindex='-1']:focus {
+  outline: none;
+}
+</style>

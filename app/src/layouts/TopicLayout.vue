@@ -3,7 +3,7 @@
     <q-drawer
       v-model="showTopicDrawer"
       side="right"
-      :breakpoint="800"
+      :breakpoint="drawerBreakpoint"
       show-if-above
     >
       <topic-drawer :topic="topic" />
@@ -52,12 +52,14 @@ import TopicDrawer from 'src/components/topic/TopicDrawer.vue'
 import { useTopicStore } from 'src/stores/topics'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
 import { errorNotify } from 'src/utils/notifications'
+import { DRAWER_BREAKPOINT } from 'src/utils/layout'
 import assert from 'assert'
 
 export default defineComponent({
   data() {
     return {
       message: '',
+      drawerBreakpoint: DRAWER_BREAKPOINT,
     }
   },
   props: {},

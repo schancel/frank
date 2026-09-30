@@ -99,6 +99,7 @@ import {
   sendDirectMessageText,
   setUpFundedStampClient,
 } from './qwen-bot-common'
+import { botProfileFields } from './bot-directory'
 import {
   BlackjackBotStateStore,
   BlackjackGameRecord,
@@ -878,7 +879,12 @@ async function main() {
   console.log(`Max hands:  ${maxHands}`)
 
   const identity = loadOrCreateIdentity(identityJsonPath, 'blackjack-bot')
-  await registerAndLog({ relayBaseUrl, identity, label: 'blackjack-bot' })
+  await registerAndLog({
+    relayBaseUrl,
+    identity,
+    label: 'blackjack-bot',
+    profile: botProfileFields('blackjack'),
+  })
   console.log(`Blackjack bot identity address: ${identity.displayAddress}`)
 
   // No poolSize -- lazily funded per-send, same as qwen-bot.livecheck.ts (see

@@ -54,6 +54,14 @@ export const pendingRelayData = {
   lastUpdateTime: 0,
 }
 
+/** `0x1234…abcd`: what a resolved-but-unnamed contact is shown as (#317), instead of leaving the
+ * "Loading..." placeholder up forever once its profile is known to exist. */
+export function shortAddressLabel(address: string): string {
+  return address.length > 12
+    ? `${address.slice(0, 6)}\u2026${address.slice(-4)}`
+    : address
+}
+
 type Profile = {
   name: string | null
   bio: string | null
@@ -407,7 +415,14 @@ export const useContactStore = defineStore('contacts', {
           address,
           profile: {
             ...oldContactInfo.profile,
-            name: profileInfo.name ?? oldContactInfo.profile.name,
+            // A registered profile without a display name must not keep the "Loading..."
+            // placeholder (#317); a name the user already has for this contact is kept.
+            name:
+              profileInfo.name ??
+              (oldContactInfo.profile.name &&
+              oldContactInfo.profile.name !== pendingRelayData.profile.name
+                ? oldContactInfo.profile.name
+                : shortAddressLabel(toChainDisplayAddress(address))),
             bio: profileInfo.bio ?? oldContactInfo.profile.bio,
             avatar: profileInfo.avatar ?? oldContactInfo.profile.avatar,
             pubKey: markRaw(

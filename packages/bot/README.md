@@ -305,6 +305,27 @@ Limits: the marker is self-asserted; the budget is in memory (a restart resets i
 address (a sybil gets the budget per address, each still paying a stamp). Blackjack only answers
 `blackjack-move` items and is unchanged apart from registering the marker.
 
+## Bot profiles and curated defaults (#317)
+
+Every bot registers a public profile on startup (`bot-directory.ts`): name (`Blackjack Dealer`,
+`Raffle`, `Picture Shop`, `Qwen`), bio, a small generated identicon avatar (no third-party
+artwork) and the `bot` marker. Registration is idempotent: it fetches the relay's copy first and
+only PUTs when a field differs (a re-PUT would bump the registration timestamp and look like a new
+signup to the greeter/faucet), so a bot registered before this change upgrades once.
+
+To make the bots appear in a new user's Contacts, list them in the relay's curated defaults
+(`GET /metadata/monad/curated-defaults`, the mechanism the app already reads):
+
+    cd packages/bot
+    yarn -s curated-defaults          # prints [[registry.curated_defaults]] TOML, address + name only
+    # append the output to the relay config (see backend/docker/cashwebd.toml), restart the relay
+
+Addresses come from each bot's own identity file (`*_BOT_IDENTITY_JSON`, created if missing, same
+paths the bots use), so they are per machine/network and nothing is hard-coded. Run it before
+starting the relay and the bots so both see the same identities (the launcher, #312, should call
+it). The app shows the curated name immediately, then refreshes name/bio/avatar from the profile;
+a registered profile with no display name is labelled with a short address, never "Loading...".
+
 ## Non-goals (per the ticket)
 
 Production hardening, multi-user bot support, prompt/persona design polish, and a full

@@ -142,6 +142,49 @@ describe('stores/contacts.ts (ticket #42)', () => {
       expect(contact.profile.name).toBe('Bob')
     })
 
+    it('replaces the Loading... placeholder once a profile exists, even without a display name (#317)', async () => {
+      const contacts = useContactStore()
+      contacts.setUpdateInterval(0)
+      contacts.addLoadingContact({
+        address: ADDRESS,
+        pubKey: undefined as never,
+      })
+      expect(contacts.getContactProfile(ADDRESS).name).toBe('Loading...')
+      jest.spyOn(activeChain, 'fetchProfile').mockResolvedValue({
+        address: { raw: ADDRESS },
+        pubKey: PUB_KEY_BYTES,
+      })
+
+      await contacts.refresh(ADDRESS)
+
+      expect(contacts.getContactProfile(ADDRESS).name).toBe('0x3e3e\u20263E3e')
+    })
+
+    it('shows a curated default bot immediately, then its registered name, bio and avatar (#317)', async () => {
+      const contacts = useContactStore()
+      contacts.setUpdateInterval(0)
+      contacts.addDefaultContact({ address: ADDRESS, name: 'Picture Shop' })
+      // Before any profile lookup: the curated name, never the placeholder.
+      expect(contacts.getContactProfile(ADDRESS).name).toBe('Picture Shop')
+      jest.spyOn(activeChain, 'fetchProfile').mockResolvedValue({
+        address: { raw: ADDRESS },
+        pubKey: PUB_KEY_BYTES,
+        name: 'Picture Shop',
+        bio: 'Automated store',
+        avatar: 'data:image/png;base64,AQID',
+        bot: true,
+      })
+
+      await contacts.refreshContacts()
+
+      const profile = contacts.getContactProfile(ADDRESS)
+      expect(profile).toMatchObject({
+        name: 'Picture Shop',
+        bio: 'Automated store',
+        avatar: 'data:image/png;base64,AQID',
+      })
+    })
+
     it('logs and does not throw when activeChain.fetchProfile finds nothing', async () => {
       const contacts = useContactStore()
       contacts.setUpdateInterval(0)

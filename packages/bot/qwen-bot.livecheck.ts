@@ -99,6 +99,7 @@ import {
   sendDirectMessageText,
   setUpFundedStampClient,
 } from './qwen-bot-common'
+import { botProfileFields } from './bot-directory'
 import { QwenBotStateStore } from './qwen-bot-state'
 
 function sleep(ms: number): Promise<void> {
@@ -189,7 +190,12 @@ async function main() {
   )
 
   const identity = loadOrCreateIdentity(identityJsonPath, 'bot')
-  await registerAndLog({ relayBaseUrl, identity, label: 'bot' })
+  await registerAndLog({
+    relayBaseUrl,
+    identity,
+    label: 'bot',
+    profile: botProfileFields('qwen'),
+  })
   writeFileSync(
     handoffJsonPath,
     JSON.stringify({ address: identity.displayAddress }, null, 2),

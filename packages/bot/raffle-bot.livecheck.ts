@@ -98,6 +98,7 @@ import {
   setUpFundedStampClient,
   waitForConfirmation,
 } from './qwen-bot-common'
+import { botProfileFields } from './bot-directory'
 import { botLoopGuardFromEnv } from './bot-loop-guard'
 import {
   hasRaffleEntrant,
@@ -300,7 +301,12 @@ async function main() {
   console.log(`Round size:   ${maxEntries} entrants`)
 
   const identity = loadOrCreateIdentity(identityJsonPath, 'raffle-bot')
-  await registerAndLog({ relayBaseUrl, identity, label: 'raffle-bot' })
+  await registerAndLog({
+    relayBaseUrl,
+    identity,
+    label: 'raffle-bot',
+    profile: botProfileFields('raffle'),
+  })
   // #311: round-status replies go to humans only, at most a bounded number per peer per window.
   const guard = botLoopGuardFromEnv({
     selfAddress: identity.displayAddress,

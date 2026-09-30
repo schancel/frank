@@ -63,6 +63,10 @@ function makeRecord(
   }
 }
 
+// Generous ceiling only: with fake timers nothing waits on wall-clock time, but cold module
+// transforms under CPU load can exceed the 1 s default from jest.setup.ts (ticket #285).
+jest.setTimeout(30_000)
+
 describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
   beforeEach(async () => {
     setActivePinia(createPinia())
@@ -118,17 +122,52 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
       },
     }
 
-    // Real timers with a tiny intervalMs, rather than fake timers: this repo's fake-timer +
-    // async-microtask interplay (jest 29 modern fake timers + Pinia + the mocked leveldb promise)
-    // proved unreliable in practice (polls never observed as run), so this favors a few tens of
-    // milliseconds of real wall-clock time for a much more robust test.
-    const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
-    // Condition-based wait: a fixed sleep is flaky when the machine is busy (full jest run).
-    const waitUntil = async (condition: () => boolean, timeoutMs = 3000) => {
-      const deadline = Date.now() + timeoutMs
-      while (!condition() && Date.now() < deadline) await wait(5)
-      await wait(5)
+    // Fake timers drive the poll loop's chained `setTimeout`s and `Date.now()` (ticket #285), so no
+    // test depends on wall-clock time. `nextTick`/`setImmediate`/`queueMicrotask` are deliberately
+    // left real: this repo's jest.setup.ts swaps in the `promise` polyfill for `global.Promise`, and
+    // it schedules its callbacks through them, so faking them stalls every awaited mock. `settle()`
+    // yields to real `setImmediate` several times, which lets each poll's whole promise chain
+    // (fetchSince -> profile lookup -> receiveMessages) run to its next `await` or to completion.
+    const realSetImmediate = setImmediate
+    const settle = async () => {
+      for (let i = 0; i < 25; i++)
+        await new Promise<void>(resolve => realSetImmediate(resolve))
     }
+    // Let pending work finish, advance logical time by `ms`, and let everything that became runnable finish.
+    const advance = async (ms: number) => {
+      // Settle first so a timer that a just-finished poll is about to schedule already exists.
+      await settle()
+      jest.advanceTimersByTime(ms)
+      await settle()
+    }
+    // Condition wait in logical time: advance one interval at a time, up to a fixed number of
+    // steps (not a wall-clock ceiling), so a slow machine can never make it time out early.
+    const advanceUntil = async (
+      condition: () => boolean,
+      stepMs = 20,
+      maxSteps = 200,
+    ) => {
+      await settle()
+      for (let i = 0; i < maxSteps && !condition(); i++) await advance(stepMs)
+      expect(condition()).toBe(true)
+    }
+    // Every poller a test starts is stopped afterwards, so a failing test cannot leak a live loop
+    // into the next one.
+    const pollers: { stop: () => void }[] = []
+    const startPolling = (intervalMs: number) => {
+      const polling = startDirectMessagePolling({ wallet, intervalMs })
+      pollers.push(polling)
+      return polling
+    }
+    beforeEach(() => {
+      jest.useFakeTimers({
+        doNotFake: ['nextTick', 'setImmediate', 'queueMicrotask'],
+      })
+    })
+    afterEach(() => {
+      pollers.splice(0).forEach(polling => polling.stop())
+      jest.useRealTimers()
+    })
 
     it('feeds fetchSince results into chats.receiveMessages and advances sinceMs', async () => {
       const chats = useChatStore()
@@ -142,10 +181,10 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
         .mockResolvedValueOnce([makeRecord()])
         .mockResolvedValue([])
 
-      const polling = startDirectMessagePolling({ wallet, intervalMs: 20 })
+      const polling = startPolling(20)
 
       // Initial immediate poll.
-      await wait(10)
+      await settle()
       expect(receiveMessagesSpy).toHaveBeenCalledTimes(1)
       expect(fetchSinceSpy).toHaveBeenNthCalledWith(1, {
         wallet,
@@ -154,7 +193,7 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
       })
 
       // The relay bound is inclusive, so advance one millisecond past the received record.
-      await wait(30)
+      await advance(30)
       expect(fetchSinceSpy.mock.calls.length).toBeGreaterThanOrEqual(2)
       expect(fetchSinceSpy).toHaveBeenNthCalledWith(2, {
         wallet,
@@ -166,7 +205,7 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
 
       polling.stop()
       const callsAtStop = fetchSinceSpy.mock.calls.length
-      await wait(60)
+      await advance(60)
       expect(fetchSinceSpy.mock.calls.length).toBe(callsAtStop)
     })
 
@@ -200,8 +239,8 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
           return rows.filter(r => r.receivedTime >= sinceMs)
         })
 
-      const polling = startDirectMessagePolling({ wallet, intervalMs: 20 })
-      await waitUntil(() => receiveMessagesSpy.mock.calls.length >= 2)
+      const polling = startPolling(20)
+      await advanceUntil(() => receiveMessagesSpy.mock.calls.length >= 2)
       polling.stop()
 
       expect(warnSpy).toHaveBeenCalled()
@@ -230,11 +269,11 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
             }),
         )
 
-      const polling = startDirectMessagePolling({ wallet, intervalMs: 10 })
-      await waitUntil(() => fetchSinceSpy.mock.calls.length === 1)
+      const polling = startPolling(10)
+      await advanceUntil(() => fetchSinceSpy.mock.calls.length === 1, 10)
       polling.stop() // the old wallet is switched away while its request is still in flight
       release([makeRecord({ payloadDigest: 'old-wallet-msg' })])
-      await wait(80) // several intervals: any reschedule would show up as a second call
+      await advance(80) // several intervals: any reschedule would show up as a second call
 
       expect(receiveMessagesSpy).not.toHaveBeenCalled()
       expect(fetchSinceSpy).toHaveBeenCalledTimes(1)
@@ -259,9 +298,9 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
         ])
         .mockResolvedValue([])
 
-      const polling = startDirectMessagePolling({ wallet, intervalMs: 20 })
+      const polling = startPolling(20)
       try {
-        await waitUntil(() => fetchSinceSpy.mock.calls.length >= 2)
+        await advanceUntil(() => fetchSinceSpy.mock.calls.length >= 2)
         expect(receiveMessagesSpy).toHaveBeenCalledWith([
           expect.objectContaining({ index: 'valid-after-poison' }),
         ])
@@ -286,14 +325,14 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
         .mockRejectedValueOnce(new Error('relay unreachable'))
         .mockResolvedValue([])
 
-      const polling = startDirectMessagePolling({ wallet, intervalMs: 20 })
+      const polling = startPolling(20)
 
-      await wait(10)
+      await settle()
       expect(consoleErrorSpy).toHaveBeenCalled()
       expect(receiveMessagesSpy).not.toHaveBeenCalled()
 
       // The failed poll doesn't stop the loop -- a later poll still runs.
-      await wait(30)
+      await advance(30)
       expect(fetchSinceSpy.mock.calls.length).toBeGreaterThanOrEqual(2)
 
       polling.stop()
@@ -317,9 +356,9 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
         .mockResolvedValueOnce([makeRecord()])
         .mockResolvedValue([])
 
-      const polling = startDirectMessagePolling({ wallet, intervalMs: 20 })
+      const polling = startPolling(20)
       try {
-        await waitUntil(() => fetchSinceSpy.mock.calls.length >= 2)
+        await advanceUntil(() => fetchSinceSpy.mock.calls.length >= 2)
         expect(consoleErrorSpy).toHaveBeenCalled()
         expect(receiveMessagesSpy).toHaveBeenCalledTimes(1)
         expect(fetchSinceSpy).toHaveBeenNthCalledWith(2, {
@@ -353,9 +392,9 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
         ])
         .mockResolvedValue([])
 
-      const polling = startDirectMessagePolling({ wallet, intervalMs: 20 })
+      const polling = startPolling(20)
       try {
-        await waitUntil(() => fetchSinceSpy.mock.calls.length >= 2)
+        await advanceUntil(() => fetchSinceSpy.mock.calls.length >= 2)
         expect(consoleErrorSpy).toHaveBeenCalled()
         expect(receiveMessagesSpy).toHaveBeenCalledWith([
           expect.objectContaining({ index: 'later' }),

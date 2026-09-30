@@ -1,9 +1,11 @@
 import type { ChainDescriptor, MessageMagic } from './types.js'
 import { UNPINNED_POLICY, btcLikeVersions, chain } from './shared.js'
 
-const UNPINNED_XPI_MESSAGE: MessageMagic = Object.freeze({
-  status: 'unpinned',
-  reason: 'lotusd message magic was not quoted.',
+const XPI_MESSAGE: MessageMagic = Object.freeze({
+  status: 'pinned',
+  text: 'Bitcoin Signed Message:\n',
+  source:
+    'LotusiaStewardship/lotusd src/util/message.cpp MESSAGE_MAGIC (master, read 2026-09-30)',
 })
 
 const UNPINNED_XPI_UNIT = Object.freeze({
@@ -27,6 +29,7 @@ const XPI_HEADER = Object.freeze({
 
 const XPI_SOURCES = [
   'LotusiaStewardship/lotusd src/chainparams.cpp (master, read 2026-09-29)',
+  'LotusiaStewardship/lotusd src/util/message.cpp MESSAGE_MAGIC',
   'SLIP-0044 coin type 10605',
 ] as const
 
@@ -43,7 +46,7 @@ export const XPI_MAINNET: ChainDescriptor = chain({
   p2pPort: 10605,
   registeredSlip44: 10605,
   alsoDocumentsSlip44: [],
-  messageMagic: UNPINNED_XPI_MESSAGE,
+  messageMagic: XPI_MESSAGE,
   displayUnit: UNPINNED_XPI_UNIT,
   sighash: UNPINNED_XPI_SIGHASH,
   dust: UNPINNED_POLICY,
@@ -62,7 +65,7 @@ export const XPI_TESTNET: ChainDescriptor = chain({
   p2pPort: 11605,
   registeredSlip44: 1,
   alsoDocumentsSlip44: [],
-  messageMagic: UNPINNED_XPI_MESSAGE,
+  messageMagic: XPI_MESSAGE,
   displayUnit: UNPINNED_XPI_UNIT,
   sighash: UNPINNED_XPI_SIGHASH,
   dust: UNPINNED_POLICY,
@@ -81,7 +84,7 @@ export const XPI_REGTEST: ChainDescriptor = chain({
   p2pPort: 12605,
   registeredSlip44: 1,
   alsoDocumentsSlip44: [],
-  messageMagic: UNPINNED_XPI_MESSAGE,
+  messageMagic: XPI_MESSAGE,
   displayUnit: UNPINNED_XPI_UNIT,
   sighash: UNPINNED_XPI_SIGHASH,
   dust: UNPINNED_POLICY,

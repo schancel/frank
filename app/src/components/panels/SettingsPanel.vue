@@ -1,5 +1,12 @@
 <template>
-  <div class="full-width column col">
+  <div
+    ref="panelRoot"
+    role="region"
+    :aria-label="$t('SettingPanel.panelLabel')"
+    class="full-width column col"
+    tabindex="-1"
+    data-test="settings-panel"
+  >
     <contact-card
       :address="myAddress"
       :name="profile.name"
@@ -7,6 +14,9 @@
       :avatar="profile.avatar"
       :acceptance-price="inbox.acceptancePrice"
     />
+
+    <!-- Dismissible reminder for completed accounts whose phrase was never confirmed (#284) -->
+    <backup-reminder @confirm="seedConfirmOpen = true" />
 
     <!-- Contact book dialog -->
     <q-dialog v-model="contactBookOpen">
@@ -23,6 +33,11 @@
     <!-- Seed phrase dialog -->
     <q-dialog v-model="seedPhraseOpen">
       <seed-phrase-dialog />
+    </q-dialog>
+
+    <!-- Confirm the stored recovery phrase (#284) -->
+    <q-dialog v-model="seedConfirmOpen" @hide="onSeedConfirmHide">
+      <seed-confirm-dialog @confirmed="onSeedConfirmed" />
     </q-dialog>
 
     <div class="flex-break" />
@@ -114,15 +129,31 @@
           </q-item-section>
           <q-item-section>{{ $t('SettingPanel.showSeed') }}</q-item-section>
         </q-item>
+        <q-item
+          v-if="backupUnconfirmed"
+          clickable
+          v-ripple
+          data-test="confirm-seed-item"
+          @click="seedConfirmOpen = true"
+        >
+          <q-item-section avatar>
+            <q-icon name="fact_check" />
+          </q-item-section>
+          <q-item-section>{{ $t('SettingPanel.confirmSeed') }}</q-item-section>
+        </q-item>
       </q-list>
     </q-scroll-area>
   </div>
 </template>
 
 <script lang="ts">
-import { defineComponent, onMounted, ref } from 'vue'
+import { computed, defineComponent, nextTick, onMounted, ref } from 'vue'
 
 import SeedPhraseDialog from '../dialogs/SeedPhraseDialog.vue'
+import SeedConfirmDialog from '../dialogs/SeedConfirmDialog.vue'
+import BackupReminder from './BackupReminder.vue'
+import { useWalletStore } from 'src/stores/wallet'
+import { needsBackupConfirmation } from '../../utils/account-state'
 import ContactCard from './ContactCard.vue'
 import ContactBookDialog from '../dialogs/ContactBookDialog.vue'
 import { openChat, openPage } from '../../utils/routes'
@@ -137,6 +168,17 @@ export default defineComponent({
     const myProfile = useProfileStore()
     const { profile, inbox } = storeToRefs(myProfile)
     const seedPhraseOpen = ref(false)
+    const seedConfirmOpen = ref(false)
+    const panelRoot = ref<HTMLElement | null>(null)
+    let justConfirmed = false
+    const wallet = useWalletStore()
+    const backupUnconfirmed = computed(() =>
+      needsBackupConfirmation({
+        seedPhrase: wallet.seedPhrase,
+        name: profile.value?.name,
+        seedConfirmedAt: wallet.seedConfirmedAt,
+      }),
+    )
     const myAddress = ref('')
     onMounted(async () => {
       try {
@@ -150,6 +192,21 @@ export default defineComponent({
       profile,
       inbox,
       seedPhraseOpen,
+      seedConfirmOpen,
+      panelRoot,
+      backupUnconfirmed,
+      // The phrase is confirmed: close the dialog. The banner and Settings item that opened it
+      // disappear with the marker, so once the dialog is gone put focus on the panel itself
+      // rather than on a removed control.
+      onSeedConfirmed() {
+        justConfirmed = true
+        seedConfirmOpen.value = false
+      },
+      onSeedConfirmHide() {
+        if (!justConfirmed) return
+        justConfirmed = false
+        void nextTick(() => panelRoot.value?.focus())
+      },
       myAddress,
     }
   },
@@ -157,6 +214,8 @@ export default defineComponent({
     ContactCard,
     ContactBookDialog,
     SeedPhraseDialog,
+    SeedConfirmDialog,
+    BackupReminder,
   },
   data() {
     return {

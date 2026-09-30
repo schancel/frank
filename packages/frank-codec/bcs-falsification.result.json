@@ -3,11 +3,11 @@
   "library": "@mysten/bcs 2.1.2 (reference bytes only; not a dependency)",
   "encodedFixtureSizes": {
     "directMessage": {
-      "cborFrameBytes": 852,
+      "cborFrameBytes": 991,
       "bcsBytes": 768
     },
     "directory": {
-      "cborFrameBytes": 434,
+      "cborFrameBytes": 474,
       "bcsBytes": 363
     },
     "checkpoint": {

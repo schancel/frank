@@ -178,7 +178,7 @@ export default defineComponent({
       this.selectLocalAvatar(defaultAvatars[this.defaultAvatarIndex])
     },
     nameRule(val: string): true | string {
-      return profileNameRule(val, this.$t('profile.pleaseType'))
+      return profileNameRule(val, (key, params) => this.$t(key, params ?? {}))
     },
     cycleAvatarRight() {
       this.defaultAvatarIndex =

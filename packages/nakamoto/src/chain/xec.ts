@@ -39,7 +39,7 @@ export const XEC_MAINNET: ChainDescriptor = chain({
   messageMagic: UNPINNED_XEC_MESSAGE,
   displayUnit: UNPINNED_XEC_UNIT,
   sighash: FORKID_ZERO(
-    'Bitcoin ABC src/kernel/chainparams.cpp keeps the Bitcoin Cash network magic. No new fork id is in that file. The sighash ticket must quote SignatureHash before treating fork id 0 as eCash consensus.',
+    'Bitcoin-ABC/bitcoin-abc src/script/interpreter.cpp SignatureHash (master, read 2026-09-30) writes ss << amount and ss << sigHashType when hasForkId() is set. Type 0x41 has fork value 0 (sigHash >> 8). This function does not insert a SIGHASH_UTXOS hash.',
   ),
   dust: UNPINNED_POLICY,
   relayFeePerKb: UNPINNED_POLICY,

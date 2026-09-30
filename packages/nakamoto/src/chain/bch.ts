@@ -32,7 +32,7 @@ export const BCH_MAINNET: ChainDescriptor = chain({
   messageMagic: UNPINNED_BCH_MESSAGE,
   displayUnit: COIN_100_000_000,
   sighash: FORKID_ZERO(
-    'Bitcoin Cash sighash uses FORKID. Fork id 0 is what the sighash ticket must cite from Bitcoin Cash Node; this descriptor records 0 and does not implement the hash.',
+    'bitcoin-cash-node/bitcoin-cash-node src/script/interpreter.cpp SignatureHash (master, read 2026-09-30) writes the spent amount and then sigHashType. Type 0x41 keeps the high 24 bits clear, which is fork id 0. SIGHASH_UTXOS (0x20) inserts the spent-output hash only when SCRIPT_ENABLE_TOKENS is set.',
   ),
   dust: UNPINNED_POLICY,
   relayFeePerKb: UNPINNED_POLICY,

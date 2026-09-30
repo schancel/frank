@@ -34,6 +34,7 @@ export type SighashFamily =
       readonly forkId: 0
       readonly source: string
     }
+  | { readonly kind: 'lotus'; readonly source: string }
   | { readonly kind: 'unpinned'; readonly reason: string }
 
 export type HeaderShape =

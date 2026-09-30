@@ -87,7 +87,11 @@ describe('chain descriptors', () => {
       kind: 'not-bitcoin-80',
       genesisSizeBytes: 379,
     })
-    expect(XPI_MAINNET.sighash.kind).toBe('unpinned')
+    expect(XPI_MAINNET.sighash.kind).toBe('lotus')
+    if (XPI_MAINNET.sighash.kind === 'lotus') {
+      expect(XPI_MAINNET.sighash.source).toContain('SignatureHashLotus')
+      expect(XPI_MAINNET.sighash.source).toContain('not used for XPI')
+    }
     for (const item of [XPI_MAINNET, XPI_TESTNET, XPI_REGTEST]) {
       expect(item.cashaddrPrefix).not.toBe('bitcoincash')
       expect(item.cashaddrPrefix).not.toBe('ecash')

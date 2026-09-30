@@ -12,10 +12,10 @@ const UNPINNED_XPI_UNIT = Object.freeze({
     'lotus-sdk documents 6 decimal places. lotusd was not quoted for the display scale, so this descriptor does not pick 1e6 or 1e8.',
 })
 
-const UNPINNED_XPI_SIGHASH = Object.freeze({
-  kind: 'unpinned' as const,
-  reason:
-    'SIGHASH_LOTUS was not found in the lotusd chainparams read. Forkid-0 is not assumed.',
+const XPI_SIGHASH = Object.freeze({
+  kind: 'lotus' as const,
+  source:
+    'LotusiaStewardship/lotusd src/script/interpreter.cpp SignatureHashLotus (master, read 2026-09-30). SignatureHash dispatches here when hasLotus(), which is (sigHash & 0x60) == 0x60. The BIP143 fork-id path is hasForkId() and is not used for XPI.',
 })
 
 const XPI_HEADER = Object.freeze({
@@ -45,7 +45,7 @@ export const XPI_MAINNET: ChainDescriptor = chain({
   alsoDocumentsSlip44: [],
   messageMagic: UNPINNED_XPI_MESSAGE,
   displayUnit: UNPINNED_XPI_UNIT,
-  sighash: UNPINNED_XPI_SIGHASH,
+  sighash: XPI_SIGHASH,
   dust: UNPINNED_POLICY,
   relayFeePerKb: UNPINNED_POLICY,
   header: XPI_HEADER,
@@ -64,7 +64,7 @@ export const XPI_TESTNET: ChainDescriptor = chain({
   alsoDocumentsSlip44: [],
   messageMagic: UNPINNED_XPI_MESSAGE,
   displayUnit: UNPINNED_XPI_UNIT,
-  sighash: UNPINNED_XPI_SIGHASH,
+  sighash: XPI_SIGHASH,
   dust: UNPINNED_POLICY,
   relayFeePerKb: UNPINNED_POLICY,
   header: XPI_HEADER,
@@ -83,7 +83,7 @@ export const XPI_REGTEST: ChainDescriptor = chain({
   alsoDocumentsSlip44: [],
   messageMagic: UNPINNED_XPI_MESSAGE,
   displayUnit: UNPINNED_XPI_UNIT,
-  sighash: UNPINNED_XPI_SIGHASH,
+  sighash: XPI_SIGHASH,
   dust: UNPINNED_POLICY,
   relayFeePerKb: UNPINNED_POLICY,
   header: XPI_HEADER,

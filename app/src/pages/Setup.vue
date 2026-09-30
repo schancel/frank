@@ -98,6 +98,7 @@ import { persistSetupAndReload } from '../utils/setup-persistence'
 import {
   commitValidatedSetupName,
   commitValidatedSetupSeed,
+  initialSetupSeed,
 } from '../utils/setup-account'
 
 import AccountStep from '../components/setup/AccountStep.vue'
@@ -127,9 +128,6 @@ export default defineComponent({
     const myProfile = useProfileStore()
     const contacts = useContactStore()
     const { updateInterval } = storeToRefs(contacts)
-    if (!wallet.seedPhrase) {
-      wallet.setSeedPhrase(generateMnemonic())
-    }
 
     return {
       setRelayToken: relayClient.setToken,
@@ -157,7 +155,8 @@ export default defineComponent({
         name: '',
         valid: false,
         nameRequired: false,
-        seed: wallet.seedPhrase,
+        // In-memory draft only: persisted by commitValidatedSetupSeed() on completion (#267).
+        seed: initialSetupSeed(wallet.seedPhrase, generateMnemonic),
       },
       relayData: defaultRelayData,
       relayUrl: defaultRelayUrl,

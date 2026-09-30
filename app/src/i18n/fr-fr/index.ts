@@ -32,6 +32,7 @@ export default {
   chatList: {
     noContactMessage: 'Add contacts from the drawer above...', //----
     balance: 'Crédit',
+    balanceStale: '(dernière valeur connue)',
     directMessages: 'Messages privés',
   },
   chatMessage: {
@@ -112,6 +113,8 @@ export default {
     loading: 'Recherche du contact',
     notFound: 'Non trouvé',
     found: 'Contact trouvé : {name}',
+    ownAddress:
+      "Il s'agit de votre propre adresse. Vous ne pouvez pas vous ajouter comme contact.",
   },
   newTopicDialog: {
     newTopic: 'Créer un nouveau topic',

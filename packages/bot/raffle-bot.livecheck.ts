@@ -63,7 +63,7 @@
 import { randomBytes } from 'crypto'
 import { resolve } from 'path'
 
-import { getBytes, Provider } from 'ethers'
+import { getBytes, Provider, Transaction } from 'ethers'
 
 import {
   canonicalMonadEnvelopeAddress,
@@ -86,6 +86,7 @@ import {
 import { formatMon } from '@frank/wallet/monad-amount'
 import { MonadHttpClient } from '@frank/wallet/monad-http'
 import { MonadAccountTxSigner } from '@frank/wallet/monad-account-tx'
+import { estimateDustThresholdWei } from '@frank/wallet/monad-change-pool'
 import {
   MonadStampedMessageProto,
   RecoveredMonadStampPayment,
@@ -114,7 +115,9 @@ import {
   createRaffleSettler,
   RAFFLE_DEFAULT_ENTRY_PRICE_WEI,
   RAFFLE_DEFAULT_MAX_ENTRIES,
+  RAFFLE_DEFAULT_MAX_TOPUP_PER_DAY_WEI,
   RAFFLE_DEFAULT_MAX_TOPUP_WEI,
+  raffleTick,
 } from './raffle-settlement'
 
 function sleep(ms: number): Promise<void> {
@@ -266,10 +269,14 @@ async function main() {
   )
   const stateDirPath = botStateDir('raffle', 'RAFFLE_BOT_STATE_DIR')
   const pollIntervalMs = Number(process.env.RAFFLE_BOT_POLL_INTERVAL_MS ?? 4000)
-  // Operator top-up allowed to cover swept-entry gas + payout gas at draw time (see
-  // raffle-settlement.ts); a larger shortfall holds the draw instead.
-  const maxTopUpWei = BigInt(
+  // Operator top-ups allowed to cover swept-entry gas + payout gas at draw time, per round and per
+  // trailing day (see raffle-settlement.ts); beyond either the draw is held instead.
+  const maxTopUpPerRoundWei = BigInt(
     process.env.RAFFLE_BOT_MAX_TOPUP_WEI ?? RAFFLE_DEFAULT_MAX_TOPUP_WEI,
+  )
+  const maxTopUpPerDayWei = BigInt(
+    process.env.RAFFLE_BOT_MAX_TOPUP_PER_DAY_WEI ??
+      RAFFLE_DEFAULT_MAX_TOPUP_PER_DAY_WEI,
   )
   const maxRounds = Number(process.env.RAFFLE_BOT_MAX_ROUNDS ?? 1000)
   const idleTimeoutMs = Number(
@@ -358,9 +365,31 @@ async function main() {
 
   const settleDraws = createRaffleSettler({
     state,
-    maxTopUpWei,
+    maxTopUpPerRoundWei,
+    maxTopUpPerDayWei,
     ports: {
-      getBalanceWei: () => provider.getBalance(identity.displayAddress),
+      getBalanceWei: () =>
+        provider.getBalance(identity.displayAddress, 'latest'),
+      operatorBalanceWei: () =>
+        provider.getBalance(mainAccountSigner.address, 'latest'),
+      sweepDustWei: () => estimateDustThresholdWei(provider),
+      repricePayout: async previousRawTx => {
+        const prev = Transaction.from(previousRawTx)
+        // Same nonce, to, value and gas limit; fees x2 (well above the 10% replacement minimum).
+        const tx = await identitySigner.buildAndSignTransfer(
+          prev.to as string,
+          prev.value,
+          {
+            nonce: prev.nonce,
+            gasLimit: prev.gasLimit,
+            maxFeePerGas: (prev.maxFeePerGas ?? prev.gasPrice ?? 0n) * 2n,
+            maxPriorityFeePerGas: (prev.maxPriorityFeePerGas ?? 0n) * 2n,
+          },
+        )
+        return { rawTx: tx.rawTx, txHash: tx.txHash }
+      },
+      isTxKnown: async txHash => (await provider.getTransaction(txHash)) !== null,
+      error: message => console.error(message),
       payoutGasReserveWei: async () => {
         const feeData = await provider.getFeeData()
         const maxFeePerGas = feeData.maxFeePerGas ?? BigInt(250000000000)
@@ -450,14 +479,22 @@ async function main() {
   )
 
   while (roundsDrawn < maxRounds || state.getDraws().length > 0) {
-    if (Date.now() - lastActivityAt > idleTimeoutMs) {
+    // Retry held/unfinished draws every tick (owner funded the wallet, tx confirmed, DM failed).
+    // The idle exit never fires while a draw is unsettled: nothing else would pay the winner.
+    const tick = await raffleTick({
+      state,
+      openDrawIfFull,
+      settle: settleDraws,
+      nowMs: Date.now(),
+      lastActivityAtMs: lastActivityAt,
+      idleTimeoutMs,
+    })
+    if (tick.exit) {
       console.log(`\nNo activity within ${idleTimeoutMs}ms -- exiting.`)
       break
     }
-
-    // Retry held/unfinished draws every tick (owner funded the wallet, tx confirmed, DM failed).
-    if (await openDrawIfFull()) roundsDrawn++
-    await settleDraws()
+    lastActivityAt = tick.lastActivityAtMs
+    roundsDrawn += tick.drawsOpened
 
     const stored = await fetchMonadMessagesSince({
       ...mailboxAuthFor(identity, relayBaseUrl),

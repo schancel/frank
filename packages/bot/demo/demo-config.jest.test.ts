@@ -12,6 +12,7 @@ import { childEnv } from './supervisor'
 import {
   RAFFLE_DEFAULT_ENTRY_PRICE_WEI,
   RAFFLE_DEFAULT_MAX_ENTRIES,
+  RAFFLE_DEFAULT_MAX_TOPUP_PER_DAY_WEI,
   RAFFLE_DEFAULT_MAX_TOPUP_WEI,
 } from '../raffle-settlement'
 
@@ -252,6 +253,7 @@ describe('raffle defaults stay consistent between the launcher and the bot (#363
   it('documents the bot\'s own entry price and top-up limit, and passes no price override by default', () => {
     expect(documented('RAFFLE_BOT_ENTRY_PRICE_WEI')).toBe(RAFFLE_DEFAULT_ENTRY_PRICE_WEI)
     expect(documented('RAFFLE_BOT_MAX_TOPUP_WEI')).toBe(RAFFLE_DEFAULT_MAX_TOPUP_WEI)
+    expect(documented('RAFFLE_BOT_MAX_TOPUP_PER_DAY_WEI')).toBe(RAFFLE_DEFAULT_MAX_TOPUP_PER_DAY_WEI)
     const raffle = FAKE().bots.find(b => b.name === 'raffle')!
     expect(raffle.env.RAFFLE_BOT_ENTRY_PRICE_WEI).toBeUndefined()
   })

@@ -162,7 +162,13 @@ export const DEMO_VARS: readonly DemoVar[] = [
     scope: 'raffle',
     default: '50000000000000000',
     description:
-      'Largest operator (stamp wallet) top-up the raffle accepts at draw time to cover swept-entry gas and payout gas; a bigger shortfall holds the draw and logs it (0.05 MON).',
+      'Most the stamp wallet may top up the raffle identity per round to cover swept-entry gas and payout gas; beyond it the draw is held and logged (0.05 MON).',
+  },
+  {
+    name: 'RAFFLE_BOT_MAX_TOPUP_PER_DAY_WEI',
+    scope: 'raffle',
+    default: '250000000000000000',
+    description: 'Most the stamp wallet may top up the raffle identity per trailing 24 hours (0.25 MON).',
   },
   {
     name: 'RAFFLE_BOT_MAX_ENTRIES',
@@ -227,6 +233,7 @@ const PASSTHROUGH = [
   'FRANK_DM_DEFAULT_STAMP_VALUE_WEI',
   'RAFFLE_BOT_ENTRY_PRICE_WEI',
   'RAFFLE_BOT_MAX_TOPUP_WEI',
+  'RAFFLE_BOT_MAX_TOPUP_PER_DAY_WEI',
   'BLACKJACK_BOT_MIN_WAGER_WEI',
   'BLACKJACK_BOT_MAX_WAGER_WEI',
   'VENDOR_BOT_CATALOG_DIR',

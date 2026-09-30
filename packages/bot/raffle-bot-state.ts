@@ -33,6 +33,8 @@ const PENDING_SEED_HASH_KEY = '__pending_server_seed_hash__'
 const ROUND_KEY = '__current_round__'
 const PROCESSED_PREFIX = 'processed:'
 const DRAW_PREFIX = 'draw:'
+const TOPUP_LEDGER_KEY = '__topup_ledger__'
+const DAY_MS = 24 * 60 * 60 * 1000
 
 /** A full round that has been drawn and is being settled (#363). It is written, together with the
  * fresh next round and commitment, BEFORE anything is broadcast or announced, so a crash at any
@@ -51,9 +53,23 @@ export interface RaffleDrawRecord {
    * revealed to entrants only once `phase` is `paid`). */
   drawItem: RaffleItem & { winnerAddress: string; potWei: string }
   phase: 'awaiting-funds' | 'signed' | 'paid'
-  payout?: { rawTx: string; txHash: string }
+  /** The latest signed payout. `previousTxHashes` are earlier fee-bumped attempts at the SAME
+   * nonce (at most one of them can ever mine); all are checked when reconciling. */
+  payout?: {
+    rawTx: string
+    txHash: string
+    signedAtMs: number
+    previousTxHashes: string[]
+  }
   announcedTo: string[]
+  /** Cumulative operator top-up spent on this round (capped per round, persisted so a restart
+   * cannot top up again beyond the cap). */
+  topUpWei?: string
 }
+
+/** LevelDB write option for records whose loss could lose signed bytes that were already
+ * broadcast, or forget a top-up: fsync before the promise resolves. */
+const SYNC = { sync: true }
 
 export interface RaffleEntrant {
   address: string
@@ -111,6 +127,7 @@ export class RaffleBotStateStore {
   private currentRound?: RaffleRoundRecord
   private processedPayloadHashes = new Set<string>()
   private draws = new Map<string, RaffleDrawRecord>()
+  private topUps: Array<{ atMs: number; wei: string }> = []
   private pendingWrites: Promise<unknown>[] = []
 
   constructor(location: string) {
@@ -139,6 +156,8 @@ export class RaffleBotStateStore {
         const round = JSON.parse(value) as RaffleRoundRecord
         migratedRound = canonicalizePersistedRound(round)
         this.currentRound = migratedRound
+      } else if (key === TOPUP_LEDGER_KEY) {
+        this.topUps = JSON.parse(value)
       } else if (key.startsWith(DRAW_PREFIX)) {
         const draw = JSON.parse(value) as RaffleDrawRecord
         this.draws.set(draw.raffleId, draw)
@@ -230,7 +249,7 @@ export class RaffleBotStateStore {
         PENDING_SEED_HASH_KEY,
         JSON.stringify(params.nextCommitment.serverSeedHash),
       )
-      .write()
+      .write(SYNC)
     this.draws.set(draw.raffleId, draw)
     this.currentRound = params.nextRound
     this.pendingServerSeed = params.nextCommitment.serverSeed
@@ -240,12 +259,26 @@ export class RaffleBotStateStore {
 
   /** Durably replaces a draw record (awaited, so callers can rely on it before their next step). */
   async putDraw(draw: RaffleDrawRecord): Promise<void> {
-    await this.db.put(DRAW_PREFIX + draw.raffleId, JSON.stringify(draw))
+    await this.db.put(DRAW_PREFIX + draw.raffleId, JSON.stringify(draw), SYNC)
     this.draws.set(draw.raffleId, draw)
   }
 
   async removeDraw(raffleId: string): Promise<void> {
-    await this.db.del(DRAW_PREFIX + raffleId)
+    await this.db.del(DRAW_PREFIX + raffleId, SYNC)
     this.draws.delete(raffleId)
+  }
+
+  /** Operator top-ups made in the trailing 24 hours (persisted; drives the per-day ceiling). */
+  topUpTotalSince(nowMs: number): bigint {
+    return this.topUps
+      .filter(t => t.atMs > nowMs - DAY_MS)
+      .reduce((sum, t) => sum + BigInt(t.wei), 0n)
+  }
+
+  async recordTopUp(nowMs: number, wei: bigint): Promise<void> {
+    const kept = this.topUps.filter(t => t.atMs > nowMs - 2 * DAY_MS)
+    kept.push({ atMs: nowMs, wei: wei.toString() })
+    await this.db.put(TOPUP_LEDGER_KEY, JSON.stringify(kept), SYNC)
+    this.topUps = kept
   }
 }

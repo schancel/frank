@@ -20,23 +20,55 @@ absent RPC URL or wallet file) each print one line, never a stack trace.
 ### Raffle draw and payout (#363)
 
 A raffle entry reaches the raffle identity net of the gas of the sweep that moves it there, so the
-identity alone is always a little short of the gross pot (`entry price x entrants`). The draw
-therefore works in this order, each step durable before the next: record the draw (and open the
-next round with a fresh commitment) in one atomic write; make sure the identity holds pot plus
-payout gas, topping up only that bounded shortfall (`RAFFLE_BOT_MAX_TOPUP_WEI`) from the stamp
-wallet; sign the payout once and persist the exact bytes; broadcast (a restart re-broadcasts the
-same bytes, never a new payment) and confirm by hash; only then send the draw message that reveals
-the seed. So the launcher does not need to pre-fund the raffle identity, and a winner is never
-announced before the payout is confirmed.
+identity alone is always a little short of the gross pot (`entry price x entrants`). Every entry is
+first verified to carry at least the entry price in on-chain stamp payments to the bot's derived
+addresses (`recoverAndSweepEntryPayment`), so the pot is backed by verified payments. The draw then
+works in this order, each step durable (fsynced) before the next: record the draw (and open the next
+round with a fresh commitment) in one atomic write; make sure the identity holds pot plus payout
+gas, topping up only that shortfall from the stamp wallet; sign the payout once and persist the exact
+bytes; broadcast (a restart re-broadcasts the same bytes, never a new payment) and confirm by hash;
+only then send the draw message that reveals the seed. The launcher therefore does not need to
+pre-fund the raffle identity, and a winner is never announced before the payout is confirmed.
+(Entry-credit writes keep the ordinary, non-fsynced level writes; the entry's funds are already
+swept and confirmed on-chain before it is credited.)
 
-If the pot cannot be funded (stamp wallet empty, or a shortfall above the top-up limit) the bot does
-not exit and does not refund: it logs `HELD ... Winner NOT announced or paid` once per change, keeps
-accepting entries for the next round, and pays the held round automatically once the stamp wallet is
-funded. Held rounds are paid oldest first. Refunds and leaving a round are a separate design (#218)
-and are not implemented here.
+**Operator top-up limits.** The stamp wallet may top up the identity only while all hold: the gap is
+no more than the plausible sweep-gas dust for the round size (2 x entrants x sweep gas + 2 x payout
+gas; a larger gap means an entry paid less than the price, so the round is held and logged with no
+operator money moved); the round's cumulative top-ups stay within `RAFFLE_BOT_MAX_TOPUP_WEI`
+(per round, persisted); and the trailing 24 hours stay within `RAFFLE_BOT_MAX_TOPUP_PER_DAY_WEI`
+(default 5x the per-round limit, persisted). A failed top-up attempt still counts against the limits.
+
+**Held rounds.** If the pot cannot be funded (stamp wallet empty, a limit reached, or a suspected
+under-paying entry) the bot does not exit and does not refund: it logs `HELD ... Winner NOT
+announced or paid` once per change, keeps accepting entries for the next round, and pays the held
+round automatically once the cause is fixed. Entrants of a held round see nothing until the payout is
+confirmed (no draw message, no refund); operators must watch `raffle.log` for `HELD`. Refunds and
+leaving a round are a separate design (#218) and are not implemented here. Payouts are strictly
+sequential (oldest round first); a held or unconfirmed payout delays later payouts, never their
+announcements.
+
+**Announcements** are independent of payouts. A failing draw message never delays any payout: it is
+retried per recipient with backoff (5 s doubling to 5 min), and recipients already told are recorded
+so nothing is resent.
+
+**Idle exit.** `RAFFLE_BOT_IDLE_TIMEOUT_MS` only ends the process when no draw is unsettled; a held
+or unconfirmed round keeps it running, and settlement progress counts as activity.
+
+**Stuck payout.** If a signed payout is still unconfirmed after 10 minutes the bot logs
+`STUCK payout <tx hash>` at error level once a minute (typical causes: the fee cap fell below the
+network base fee, or the identity lacks gas). Operator steps: fund the raffle identity address (shown
+at startup) if it is short of gas, and watch the log; the same signed bytes keep being re-broadcast.
+If the node does not know the transaction at all for 15 minutes (receipt missing and
+`eth_getTransactionByHash` empty), the bot re-signs the SAME nonce, recipient and value with 2x fees
+(at most 3 times); one nonce can mine only once, so at most one of the attempts is ever paid, and
+every attempt is reconciled by hash. A transaction the node still knows is never replaced
+automatically: wait for it, or replace it by hand.
 
 The launcher keeps the bot's default entry price and overrides only the round size (3 instead of the
 bot's default 5) so a demo round fills quickly; both defaults live in `raffle-settlement.ts`.
+`yarn demo:smoke` does not yet fill a raffle round (it needs the relay binary and real stamped
+entries); this is tracked as remaining work on #363.
 
 The launcher sets every bot's state directory explicitly, under `<state dir>/bots/<bot>/state`
 (and identities under `<state dir>/bots/<bot>/identity.json`). Bots started on their own with
@@ -85,7 +117,8 @@ to skip the Cargo build.
 | `QWEN_MODEL` | qwen | qwen3.8-max | Model name for live mode. |
 | `QWEN_BOT_MODE` | qwen | live if QWEN_API_KEY, else stub | Force "stub" or "live". "live" without a key is an error, never a silent stub. |
 | `RAFFLE_BOT_ENTRY_PRICE_WEI` | raffle | 20000000000000000 | Raffle entry price (0.02 MON). |
-| `RAFFLE_BOT_MAX_TOPUP_WEI` | raffle | 50000000000000000 | Largest operator (stamp wallet) top-up the raffle accepts at draw time to cover swept-entry gas and payout gas; a bigger shortfall holds the draw and logs it (0.05 MON). |
+| `RAFFLE_BOT_MAX_TOPUP_WEI` | raffle | 50000000000000000 | Most the stamp wallet may top up the raffle identity per round to cover swept-entry gas and payout gas; beyond it the draw is held and logged (0.05 MON). |
+| `RAFFLE_BOT_MAX_TOPUP_PER_DAY_WEI` | raffle | 250000000000000000 | Most the stamp wallet may top up the raffle identity per trailing 24 hours (0.25 MON). |
 | `RAFFLE_BOT_MAX_ENTRIES` | raffle | 3 | Entrants per round; demo default is small so a round fills quickly. |
 | `BLACKJACK_BOT_MIN_WAGER_WEI` | blackjack | bot default (0.01 MON) | Table minimum. |
 | `BLACKJACK_BOT_MAX_WAGER_WEI` | blackjack | bot default (1 MON) | Table maximum. |

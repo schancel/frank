@@ -13,7 +13,6 @@
       class="q-mt-sm"
       dense
       outlined
-      autofocus
       type="text"
       inputmode="decimal"
       autocomplete="off"
@@ -26,8 +25,16 @@
       :disable="locked"
     />
     <div class="text-caption text-grey-7 q-mt-sm">
-      {{ $t('blackjackBet.notice') }}
+      {{ $t('blackjackBet.notice', recipient) }}
     </div>
+    <q-checkbox
+      v-model="confirmed"
+      class="q-mt-sm"
+      dense
+      data-testid="blackjack-bet-confirm"
+      :label="$t('blackjackBet.confirm', { ...recipient, amount: amountText })"
+      :disable="locked || !!unsentBlock"
+    />
     <!-- Always present so screen readers hear the pending / sent / failed transitions. -->
     <div
       role="status"
@@ -44,9 +51,9 @@
       dense
       color="primary"
       data-testid="blackjack-bet-submit"
-      :label="$t('blackjackBet.submit', { amount: amountDisplay.trim() })"
+      :label="$t('blackjackBet.submit', { ...recipient, amount: amountText })"
       :loading="pending"
-      :disable="locked || !!betError"
+      :disable="locked || !!betError || !!unsentBlock || !confirmed"
     />
   </form>
 </template>
@@ -58,11 +65,15 @@ import { MessageItem } from '@frank/cashweb/types/messages'
 import { activeChain } from '@frank/wallet/chain'
 
 import { useBalance } from '../../composables/useBalance'
+import { useUnsentWagersStore } from '../../stores/unsent-wagers'
 import {
   BetErrorCode,
+  betFundsRequired,
+  BET_MESSAGE_FEE_RESERVE_WEI,
   betLimitsDisplay,
   parseBetInput,
   sendBlackjackWager,
+  shortAddress,
 } from '../../utils/blackjack-bet'
 import { errorNotify } from '../../utils/notifications'
 
@@ -97,6 +108,13 @@ export default defineComponent({
   name: 'BlackjackBetPicker',
   props: {
     address: { type: String, required: true },
+    /** The chat's display name, shown next to the address so the recipient is unmistakable. */
+    dealerName: { type: String, default: '' },
+    /** The stamp the bet message will pay; defaults to the chain's default stamp. */
+    stampWei: {
+      type: null as unknown as PropType<bigint | null>,
+      default: null,
+    },
     /** Sends the follow-up items through the chat's own send pipeline. */
     submit: {
       type: Function as PropType<
@@ -117,12 +135,28 @@ export default defineComponent({
       amountDisplay: DEFAULT_BET_AMOUNT_DISPLAY,
       pending: false,
       sent: false,
+      confirmed: false,
       actionError: '',
     }
   },
   computed: {
     locked(): boolean {
       return this.pending || this.busy
+    },
+    recipient(): { name: string; address: string } {
+      return {
+        name: this.dealerName || shortAddress(this.address),
+        address: shortAddress(this.address),
+      }
+    },
+    amountText(): string {
+      return this.amountDisplay.trim()
+    },
+    /** A previous wager to this dealer was paid but its bet message is still undelivered. */
+    unsentBlock(): string {
+      return useUnsentWagersStore().forDealer(this.address).length
+        ? this.$t('blackjackBet.errorUnsent')
+        : ''
     },
     limitsHint(): string {
       return this.$t('blackjackBet.limits', betLimitsDisplay())
@@ -135,10 +169,21 @@ export default defineComponent({
       if (!parsed.ok) {
         return this.$t(ERROR_KEYS[parsed.code], betLimitsDisplay())
       }
-      // An unknown (not yet loaded) balance never blocks: the transfer itself refuses when the
-      // wallet cannot cover the bet plus fees.
-      if (this.balance !== null && parsed.wei > this.balance) {
-        return this.$t('blackjackBet.errorBalance')
+      // The wager is only half the cost: the bet MESSAGE needs its stamp and fees too, and a
+      // wager paid with no funds left to send the message is stranded. An unknown balance blocks
+      // (fail closed) rather than guessing.
+      if (this.balance === null)
+        return this.$t('blackjackBet.errorBalanceUnknown')
+      const stampWei = this.stampWei ?? activeChain.defaultStampValue
+      const needed = betFundsRequired(parsed.wei, stampWei)
+      if (needed > this.balance) {
+        return this.$t('blackjackBet.errorBalance', {
+          needed: activeChain.toDisplayAmount(needed),
+          rest: activeChain.toDisplayAmount(
+            stampWei + BET_MESSAGE_FEE_RESERVE_WEI,
+          ),
+          balance: activeChain.toDisplayAmount(this.balance),
+        })
       }
       return ''
     },
@@ -156,6 +201,7 @@ export default defineComponent({
     amountDisplay() {
       this.sent = false
       this.actionError = ''
+      this.confirmed = false
     },
   },
   methods: {
@@ -169,27 +215,63 @@ export default defineComponent({
         display => activeChain.fromDisplayAmount(display),
         this.amountDisplay,
       )
-      if (!parsed.ok || this.betError) {
+      if (!parsed.ok || this.betError || this.unsentBlock || !this.confirmed) {
         this.focusInput()
         return
       }
       this.pending = true
       this.sent = false
+      this.confirmed = false
       this.actionError = ''
       const submit = this.submit
       const address = this.address
+      const unsent = useUnsentWagersStore()
+      let betItem: Awaited<ReturnType<typeof sendBlackjackWager>>
       try {
-        const betItem = await sendBlackjackWager(this.address, parsed.wei)
-        await submit({ items: [betItem], address })
-        this.sent = true
-        this.$emit('placed')
+        betItem = await sendBlackjackWager(address, parsed.wei)
       } catch (err) {
+        // Nothing was paid: a plain failure the player can retry.
         const error = err instanceof Error ? err : new Error(String(err))
         this.actionError = /insufficient/i.test(error.message)
           ? this.$t('blackjackBet.errorFunds', { message: error.message })
           : this.$t('blackjackBet.errorSend', { message: error.message })
         errorNotify(error)
         this.focusInput()
+        this.pending = false
+        return
+      }
+      // The wager is PAID. From here every failure must leave a durable, retryable record: the
+      // dealer only acts on messages it receives, so an unrecorded wager would be stranded.
+      const hash = betItem.wagerTxHash as string
+      let saveFailed = false
+      try {
+        await unsent.restored
+        unsent.add({
+          gameId: betItem.gameId,
+          wagerTxHash: hash,
+          dealerAddress: address,
+          amountWei: parsed.wei.toString(),
+          createdAt: Date.now(),
+        })
+        unsent.setInFlight(hash, true)
+        await unsent.flushPersistence()
+      } catch {
+        saveFailed = true
+      }
+      try {
+        await submit({ items: [betItem], address })
+        unsent.remove(hash)
+        this.sent = true
+        this.$emit('placed')
+      } catch (err) {
+        const error = err instanceof Error ? err : new Error(String(err))
+        unsent.setInFlight(hash, false)
+        this.actionError = this.$t('blackjackBet.notDelivered', {
+          message: `${error.message}${
+            saveFailed ? ` (wager transaction ${hash}, not saved locally)` : ''
+          }`,
+        })
+        errorNotify(error)
       } finally {
         this.pending = false
       }

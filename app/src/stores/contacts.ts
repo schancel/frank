@@ -59,6 +59,9 @@ type Profile = {
   bio: string | null
   avatar: string | null
   pubKey: PublicKey | null
+  /** The signed profile carried the self-declared bot marker (#311). `undefined` = not looked up
+   * yet; only an explicit `true` counts (used to gate bot-only UI such as the blackjack button). */
+  isBot?: boolean
 }
 
 export type ContactState = {
@@ -100,6 +103,7 @@ type RestorableContactState = {
     bio: string | null
     avatar: string | null
     pubKey: Uint8Array | null
+    isBot?: boolean
   }
   inbox: {
     acceptancePrice?: number
@@ -246,6 +250,7 @@ export const useContactStore = defineStore('contacts', {
           name: contact.profile?.name ?? null,
           bio: contact.profile?.bio ?? null,
           avatar: contact.profile?.avatar ?? null,
+          isBot: contact.profile?.isBot,
           pubKey: contact.profile?.pubKey
             ? markRaw(contact.profile?.pubKey)
             : null,
@@ -340,6 +345,7 @@ export const useContactStore = defineStore('contacts', {
               name: profileInfo.name ?? '',
               bio: profileInfo.bio ?? '',
               avatar: profileInfo.avatar ?? '',
+              isBot: profileInfo.bot === true,
               pubKey: markRaw(
                 PublicKey.fromBuffer(Buffer.from(profileInfo.pubKey)),
               ),
@@ -352,6 +358,12 @@ export const useContactStore = defineStore('contacts', {
           address: displayAddress,
           contact,
         })
+        // A contact added without a looked-up profile (deep link / route navigation) has no bot
+        // marker yet; resolve it now (`setActiveChat`'s own refresh ran before this contact
+        // existed), so bot-only UI such as the blackjack button can appear.
+        if (contact.profile?.isBot === undefined) {
+          void this.refresh(address)
+        }
       }
     },
     addDefaultContact({ address, name }: { address: string; name: string }) {
@@ -387,7 +399,9 @@ export const useContactStore = defineStore('contacts', {
         lastUpdateTime &&
         moment(lastUpdateTime).add(updateInterval, 'milliseconds').isBefore(now)
       const noPicture = oldContactInfo.profile && !oldContactInfo.profile.avatar
-      if (!expired && !noPicture) {
+      const botUnknown =
+        oldContactInfo.profile && oldContactInfo.profile.isBot === undefined
+      if (!expired && !noPicture && !botUnknown) {
         // Short circuit if we already updated this contact recently.
         console.log('skipping contact update, checked recently')
         return
@@ -410,6 +424,7 @@ export const useContactStore = defineStore('contacts', {
             name: profileInfo.name ?? oldContactInfo.profile.name,
             bio: profileInfo.bio ?? oldContactInfo.profile.bio,
             avatar: profileInfo.avatar ?? oldContactInfo.profile.avatar,
+            isBot: profileInfo.bot === true,
             pubKey: markRaw(
               PublicKey.fromBuffer(Buffer.from(profileInfo.pubKey)),
             ),

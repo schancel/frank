@@ -29,18 +29,34 @@ export default {
     amountAria: 'Bet amount in MON',
     limits: 'Table limits: {min} to {max} MON',
     notice:
-      'Your bet is a real transfer to this chat. Only use it with a blackjack dealer.',
-    submit: 'Deal me in ({amount} MON)',
+      'Your bet is a real transfer of MON to {name} ({address}). Only use it with a blackjack dealer.',
+    confirm: 'I understand {amount} MON will be sent to {name} ({address})',
+    confirmRequired: 'Tick the box to confirm the transfer.',
+    submit: 'Deal me in with {name} {address} ({amount} MON)',
     sending: 'Sending your bet…',
     sent: 'Bet sent. Waiting for the dealer to deal.',
+    notDelivered:
+      'Wager paid, bet not delivered: {message} Use Retry in the chat to send the bet again.',
     errorFormat: 'Enter a bet as a plain decimal number',
     errorInvalid: 'Enter a valid MON amount to bet',
     errorZero: 'Bet must be greater than zero',
     errorMin: 'Bet is below the table minimum ({min} MON)',
     errorMax: 'Bet is above the table maximum ({max} MON)',
-    errorBalance: 'Bet is more than your balance',
+    errorBalanceUnknown:
+      'Your balance is not loaded yet. Try again in a moment.',
+    errorBalance:
+      'Not enough balance: this bet needs {needed} MON (bet plus about {rest} MON for the message stamp and fees), you have {balance} MON.',
+    errorUnsent:
+      'Finish the unsent wager in the chat before starting a new bet.',
     errorFunds: 'Insufficient funds: {message}',
     errorSend: 'Could not place the bet: {message}',
+    unsentTitle: 'Wager paid, bet not delivered',
+    unsentBody:
+      'Your {amount} MON wager to {name} ({address}) was paid, but the bet message did not reach the dealer.',
+    unsentTx: 'Transaction: {hash}',
+    unsentRetry: 'Retry sending the bet',
+    unsentRetrying: 'Sending the bet…',
+    unsentFailed: 'Still not delivered: {message}',
   },
   leftDrawer: {
     settings: 'Settings',

@@ -54,7 +54,7 @@
       />
       <q-space />
       <q-btn
-        v-if="address"
+        v-if="address && blackjackEnabled"
         dense
         flat
         round
@@ -72,6 +72,8 @@
         >
           <blackjack-bet-picker
             :address="address"
+            :dealer-name="peerName"
+            :stamp-wei="stampWei"
             :submit="submitFollowUp"
             :busy="disable"
             @placed="blackjackMenuOpen = false"
@@ -159,6 +161,17 @@ export default defineComponent({
       type: String,
       default: '',
     },
+    // Stopgap gate (until #217 capability signalling): only chats whose peer profile carries the
+    // self-declared bot marker offer the blackjack control. A non-dealer bot still shows it, which
+    // is why the picker names the recipient and requires an explicit confirmation.
+    blackjackEnabled: {
+      type: Boolean,
+      default: false,
+    },
+    peerName: {
+      type: String,
+      default: '',
+    },
     submitFollowUp: {
       type: Function as PropType<
         (payload: { items: MessageItem[]; address: string }) => Promise<void>
@@ -214,6 +227,13 @@ export default defineComponent({
     },
   },
   computed: {
+    stampWei(): bigint {
+      try {
+        return activeChain.fromDisplayAmount(this.stampAmount)
+      } catch {
+        return activeChain.defaultStampValue
+      }
+    },
     chainUnit() {
       return activeChain.unit
     },

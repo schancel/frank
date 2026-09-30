@@ -84,17 +84,45 @@ export async function sendBlackjackWager(
 }
 
 /**
- * Delivers a `bet` move whose wager transfer is already paid, via the chat's send pipeline. That
- * pipeline silently drops a call made while another send is in flight, which would strand the
- * wager, so wait for it to go idle first; and never deliver the move to a different chat than the
- * one the wager went to (the player may navigate away while the transfer confirms).
+ * Conservative allowance for what sending the bet MESSAGE costs beyond the wager itself: the
+ * stamp's own funding transfers and gas (a message spends its stamp value plus the fee reserves of
+ * the sub-accounts that pay it; ~0.013 MON of funding was observed on the local chain on top of a
+ * 0.01 MON stamp). The wallet does not expose a synchronous estimate, so this is a fixed margin.
+ * A wager paid with no funds left for the message is stranded (the dealer only acts on messages it
+ * receives), so the picker requires `bet + stamp + this` up front.
+ */
+export const BET_MESSAGE_FEE_RESERVE_WEI = 5n * 10n ** 16n // 0.05 MON
+
+/** Total balance a bet needs: the wager, the message stamp, and the fee reserve. */
+export function betFundsRequired(betWei: bigint, stampWei: bigint): bigint {
+  return betWei + stampWei + BET_MESSAGE_FEE_RESERVE_WEI
+}
+
+/** `0x12ab...9f`-style abbreviation for showing a recipient next to its name. */
+export function shortAddress(address: string): string {
+  return address.length > 12
+    ? `${address.slice(0, 6)}...${address.slice(-4)}`
+    : address
+}
+
+export const BET_DELIVERY_TIMEOUT_MS = 30_000
+
+/**
+ * Delivers a `bet` move whose wager transfer is already paid, via the chat's send pipeline, and
+ * reports the REAL outcome: resolves only if `send` resolved true; throws otherwise. That pipeline
+ * silently drops a call made while another send is in flight, which would strand the wager, so
+ * wait for it to go idle first (bounded by `timeoutMs`, so a stuck send cannot freeze the caller);
+ * and never deliver the move to a different chat than the one the wager went to (the player may
+ * navigate away while the transfer confirms). Every throw means "not delivered": the caller keeps
+ * the unsent-wager record.
  */
 export async function deliverBetWhenReady(opts: {
   betAddress: string
   currentAddress: () => string
   isBusy: () => boolean
-  send: () => Promise<void>
+  send: () => Promise<boolean>
   pollMs?: number
+  timeoutMs?: number
 }): Promise<void> {
   const check = () => {
     if (opts.currentAddress() !== opts.betAddress) {
@@ -104,9 +132,15 @@ export async function deliverBetWhenReady(opts: {
     }
   }
   check()
+  const deadline = Date.now() + (opts.timeoutMs ?? BET_DELIVERY_TIMEOUT_MS)
   while (opts.isBusy()) {
+    if (Date.now() >= deadline) {
+      throw new Error('The chat is still busy sending another message.')
+    }
     await new Promise(resolve => setTimeout(resolve, opts.pollMs ?? 100))
     check()
   }
-  await opts.send()
+  if (!(await opts.send())) {
+    throw new Error('The bet message could not be sent.')
+  }
 }

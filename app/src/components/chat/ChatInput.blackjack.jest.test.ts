@@ -24,9 +24,18 @@ const slotted = (tag: string) =>
     },
   })
 const Picker = defineComponent({
-  props: ['address', 'submit', 'busy'],
-  setup: props => () =>
-    h('div', { 'data-testid': 'picker', 'data-address': props.address }),
+  props: ['address', 'submit', 'busy', 'dealerName', 'stampWei'],
+  emits: ['pendingChange', 'placed'],
+  setup:
+    (props, { emit }) =>
+    () =>
+      h('div', {
+        'data-testid': 'picker',
+        'data-address': props.address,
+        'data-name': props.dealerName,
+        'data-busy': String(props.busy),
+        'onClick': () => emit('pendingChange', true),
+      }),
 })
 
 function mountInput(props: Record<string, unknown>) {
@@ -59,18 +68,43 @@ function mountInput(props: Record<string, unknown>) {
 }
 
 describe('ChatInput blackjack entry point (ticket #310)', () => {
-  it('offers a labelled Play blackjack control in a chat, wired to the counterpart address', () => {
-    const w = mountInput({ address: '0xDealer' })
+  it('offers a labelled Play blackjack control for a bot peer, wired to its address and name', () => {
+    const submit = jest.fn()
+    const w = mountInput({
+      address: '0xDealer',
+      blackjackEnabled: true,
+      peerName: 'Dealer',
+      submitFollowUp: submit,
+    })
     const btn = w.find('[data-testid="blackjack-menu-button"]')
     expect(btn.exists()).toBe(true)
     expect(btn.attributes('aria-label')).toBe('Play blackjack')
-    expect(w.find('[data-testid="picker"]').attributes('data-address')).toBe(
-      '0xDealer',
-    )
+    const picker = w.find('[data-testid="picker"]')
+    expect(picker.attributes('data-address')).toBe('0xDealer')
+    expect(picker.attributes('data-name')).toBe('Dealer')
   })
 
-  it('offers nothing when there is no chat address', () => {
-    const w = mountInput({})
-    expect(w.find('[data-testid="blackjack-menu-button"]').exists()).toBe(false)
+  it('hides the control for a peer without the bot marker (default) and with no address', () => {
+    expect(
+      mountInput({ address: '0xPerson' })
+        .find('[data-testid="blackjack-menu-button"]')
+        .exists(),
+    ).toBe(false)
+    expect(
+      mountInput({ blackjackEnabled: true })
+        .find('[data-testid="blackjack-menu-button"]')
+        .exists(),
+    ).toBe(false)
+  })
+
+  it('keeps the menu open (persistent) only while a bet is pending', async () => {
+    const w = mountInput({ address: '0xDealer', blackjackEnabled: true })
+    const persistent = () =>
+      w
+        .find('[data-testid="blackjack-menu-button"] div')
+        .attributes('persistent')
+    expect(['false', undefined]).toContain(persistent())
+    await w.find('[data-testid="picker"]').trigger('click') // picker reports pending
+    expect(['', 'true']).toContain(persistent())
   })
 })

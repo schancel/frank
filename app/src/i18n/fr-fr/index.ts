@@ -29,18 +29,35 @@ export default {
     amountAria: 'Montant de la mise en MON',
     limits: 'Limites de la table : {min} à {max} MON',
     notice:
-      'Votre mise est un vrai transfert vers cette conversation. À utiliser uniquement avec un croupier de blackjack.',
-    submit: 'Distribuez-moi ({amount} MON)',
+      'Votre mise est un vrai transfert de MON vers {name} ({address}). À utiliser uniquement avec un croupier de blackjack.',
+    confirm:
+      'Je comprends que {amount} MON seront envoyés à {name} ({address})',
+    confirmRequired: 'Cochez la case pour confirmer le transfert.',
+    submit: 'Distribuez-moi avec {name} {address} ({amount} MON)',
     sending: 'Envoi de votre mise…',
     sent: 'Mise envoyée. En attente de la distribution.',
+    notDelivered:
+      'Mise payée, pari non livré : {message} Utilisez Réessayer dans la conversation pour renvoyer le pari.',
     errorFormat: 'Saisissez la mise sous forme de nombre décimal simple',
     errorInvalid: 'Saisissez un montant valide en MON',
     errorZero: 'La mise doit être supérieure à zéro',
     errorMin: 'La mise est inférieure au minimum de la table ({min} MON)',
     errorMax: 'La mise dépasse le maximum de la table ({max} MON)',
-    errorBalance: 'La mise dépasse votre solde',
+    errorBalanceUnknown:
+      "Votre solde n'est pas encore chargé. Réessayez dans un instant.",
+    errorBalance:
+      'Solde insuffisant : ce pari nécessite {needed} MON (la mise plus environ {rest} MON pour le timbre du message et les frais), vous avez {balance} MON.',
+    errorUnsent:
+      "Terminez la mise non envoyée dans la conversation avant d'en commencer une autre.",
     errorFunds: 'Fonds insuffisants : {message}',
     errorSend: 'Impossible de placer la mise : {message}',
+    unsentTitle: 'Mise payée, pari non livré',
+    unsentBody:
+      "Votre mise de {amount} MON vers {name} ({address}) a été payée, mais le message de pari n'est pas parvenu au croupier.",
+    unsentTx: 'Transaction : {hash}',
+    unsentRetry: "Réessayer d'envoyer le pari",
+    unsentRetrying: 'Envoi du pari…',
+    unsentFailed: 'Toujours pas livré : {message}',
   },
   leftDrawer: {
     settings: 'Paramètres',

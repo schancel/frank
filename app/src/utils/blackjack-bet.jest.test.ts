@@ -1,9 +1,12 @@
 import { parseEther } from 'ethers'
 
 import {
+  BET_MESSAGE_FEE_RESERVE_WEI,
+  betFundsRequired,
   deliverBetWhenReady,
   parseBetInput,
   sendBlackjackWager,
+  shortAddress,
 } from './blackjack-bet'
 
 const mockSend = jest.fn()
@@ -94,7 +97,7 @@ describe('sendBlackjackWager', () => {
 describe('deliverBetWhenReady', () => {
   it('waits for the chat to go idle, then sends once', async () => {
     let busy = true
-    const send = jest.fn().mockResolvedValue(undefined)
+    const send = jest.fn().mockResolvedValue(true)
     const p = deliverBetWhenReady({
       betAddress: 'a',
       currentAddress: () => 'a',
@@ -139,5 +142,45 @@ describe('deliverBetWhenReady', () => {
       }),
     ).rejects.toThrow(/chat changed/)
     expect(send).not.toHaveBeenCalled()
+  })
+
+  it('throws (not delivered) when the send pipeline reports failure', async () => {
+    await expect(
+      deliverBetWhenReady({
+        betAddress: 'a',
+        currentAddress: () => 'a',
+        isBusy: () => false,
+        send: async () => false,
+      }),
+    ).rejects.toThrow(/could not be sent/)
+  })
+
+  it('gives up waiting for a stuck busy chat after the timeout, without sending', async () => {
+    const send = jest.fn()
+    await expect(
+      deliverBetWhenReady({
+        betAddress: 'a',
+        currentAddress: () => 'a',
+        isBusy: () => true,
+        send,
+        pollMs: 1,
+        timeoutMs: 20,
+      }),
+    ).rejects.toThrow(/still busy/)
+    expect(send).not.toHaveBeenCalled()
+  })
+})
+
+describe('bet funds and address helpers', () => {
+  it('requires wager + stamp + fee reserve', () => {
+    expect(betFundsRequired(10n ** 17n, 10n ** 16n)).toBe(
+      10n ** 17n + 10n ** 16n + BET_MESSAGE_FEE_RESERVE_WEI,
+    )
+  })
+  it('abbreviates an address', () => {
+    expect(shortAddress('0x1234567890abcdef1234567890abcdef1234abcd')).toBe(
+      '0x1234...abcd',
+    )
+    expect(shortAddress('0xabc')).toBe('0xabc')
   })
 })

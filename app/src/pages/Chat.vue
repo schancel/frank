@@ -72,6 +72,11 @@
           </div>
         </div>
       </div>
+      <blackjack-unsent-wagers
+        :address="address"
+        :name="peerName"
+        :submit="sendFollowUpWhenIdle"
+      />
       <!-- Message box -->
       <chat-input
         @sendFileClicked="toSendFileDialog"
@@ -81,6 +86,8 @@
         v-model:stamp-amount="stampAmount"
         :disable="sendingMessage"
         :address="address"
+        :blackjack-enabled="peerIsBot"
+        :peer-name="peerName"
         :submit-follow-up="sendFollowUpWhenIdle"
         @sendMessage="sendMessage"
       />
@@ -94,6 +101,7 @@ import { defineComponent, ref } from 'vue'
 import ChatMessageComponent from '../components/chat/messages/ChatMessage.vue'
 import ChatBannerStack from '../components/chat/ChatBannerStack.vue'
 import ChatInput from '../components/chat/ChatInput.vue'
+import BlackjackUnsentWagers from '../components/chat/BlackjackUnsentWagers.vue'
 import ChatMessageReply from '../components/chat/messages/ChatMessageReply.vue'
 
 import { errorNotify, insufficientStampNotify } from '../utils/notifications'
@@ -121,6 +129,7 @@ export default defineComponent({
     ChatMessageComponent,
     ChatMessageReply,
     ChatInput,
+    BlackjackUnsentWagers,
     ChatBannerStack,
   },
   beforeRouteUpdate(
@@ -390,9 +399,9 @@ export default defineComponent({
     }: {
       items: MessageItem[]
       stampValueWei?: bigint
-    }) {
+    }): Promise<boolean> {
       if (this.sendingMessage) {
-        return
+        return false
       }
       const stampValue =
         stampValueWei ?? activeChain.fromDisplayAmount(this.stampAmount)
@@ -424,7 +433,7 @@ export default defineComponent({
         })
       } catch (err) {
         errorNotify(err instanceof Error ? err : new Error(String(err)))
-        return
+        return false
       } finally {
         this.stampPreparationStatus = null
         this.sendingMessage = false
@@ -432,6 +441,7 @@ export default defineComponent({
       if (!this.bottom) {
         this.$nextTick(this.buttonScrollBottom)
       }
+      return true
     },
     // For value-bearing follow-ups whose payment is already on its way (the first blackjack bet:
     // its wager transfer takes seconds): `sendFollowUpItems` drops a call made while another send
@@ -465,6 +475,13 @@ export default defineComponent({
     },
   },
   computed: {
+    // Self-declared bot marker on the peer's signed profile (#311); only an explicit true counts.
+    peerIsBot(): boolean {
+      return this.getContactVuex(this.address)?.profile?.isBot === true
+    },
+    peerName(): string {
+      return this.getContactVuex(this.address)?.profile?.name ?? ''
+    },
     messages(): ChatMessage[] {
       const activeChat = this.chats[this.address]
       return activeChat ? activeChat.messages : []

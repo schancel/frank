@@ -147,6 +147,7 @@ export function loadOrCreateIdentity(
   writeFileSync(
     identityJsonPath,
     JSON.stringify({ privateKeyHex: identity.toPrivateKeyHex() }, null, 2),
+    { mode: 0o600 }, // a private key: owner-only
   )
   console.log(
     `[${label}] generated fresh identity ${identity.displayAddress} (saved to ${identityJsonPath})`,

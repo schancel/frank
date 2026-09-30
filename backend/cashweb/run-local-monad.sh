@@ -5,7 +5,10 @@ script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 repo_root="$(cd -- "$script_dir/../.." && pwd -P)"
 base_config="$script_dir/cashwebd.local.toml"
 
-if [[ -f "$repo_root/.env" ]]; then
+# The demo launcher (packages/bot/demo) is the one reader of the user's `.env` and passes exactly
+# the variables it needs, so it sets FRANK_RUN_LOCAL_SKIP_DOTENV=1: a `.env` value must not
+# override what it passed (for example the fake-chain RPC URL).
+if [[ -f "$repo_root/.env" && "${FRANK_RUN_LOCAL_SKIP_DOTENV:-}" != "1" ]]; then
     set -a
     # shellcheck disable=SC1091 -- the repository-local environment is intentionally runtime-only.
     source "$repo_root/.env"
@@ -82,6 +85,26 @@ if ! awk '
 fi
 
 cd -- "$script_dir"
+# Optional overrides used by the demo launcher; unset they change nothing.
+#   CASHWEBD_BIN            use this prebuilt daemon instead of building with Cargo
+#   FRANK_RELAY_LISTEN      host:port to listen on (also sets the advertised url), e.g. 127.0.0.1:18098
+#   FRANK_RELAY_DB_PATH     RocksDB directory (default data/registry.rocksdb under backend/cashweb)
+#   FRANK_RELAY_EXTRA_TOML  file of extra TOML appended to the config (curated defaults)
+if [[ -n "${FRANK_RELAY_LISTEN:-}" && ! "${FRANK_RELAY_LISTEN}" =~ ^[0-9.]+:[0-9]+$ ]]; then
+    echo "run-local-monad: FRANK_RELAY_LISTEN must look like 127.0.0.1:8098" >&2
+    exit 64
+fi
+case "${FRANK_RELAY_DB_PATH:-}" in
+    *[![:print:]]* | *'"'* | *'\'*)
+        echo "run-local-monad: FRANK_RELAY_DB_PATH contains unsupported characters" >&2
+        exit 64
+        ;;
+esac
+if [[ -n "${FRANK_RELAY_EXTRA_TOML:-}" && ! -f "${FRANK_RELAY_EXTRA_TOML}" ]]; then
+    echo "run-local-monad: FRANK_RELAY_EXTRA_TOML is not a file: ${FRANK_RELAY_EXTRA_TOML}" >&2
+    exit 64
+fi
+
 artifact_parser='
     my $record = decode_json($_);
     if (($record->{reason} // "") eq "compiler-message") {
@@ -102,12 +125,16 @@ artifact_parser='
         print $artifact;
     }
 '
+if [[ -n "${CASHWEBD_BIN:-}" ]]; then
+    cashwebd="$CASHWEBD_BIN"
+else
 cashwebd="$("$repo_root/.agents/scripts/with-cargo-slot" bash -c '
     set -euo pipefail
     "$1" build -p cashwebd-exe --bin cashwebd-exe \
         --message-format=json-render-diagnostics |
         perl -MJSON::PP=decode_json -ne "$2"
 ' run-local-monad-build "$cargo_command" "$artifact_parser")"
+fi
 if [[ ! -x "$cashwebd" ]]; then
     echo "run-local-monad: built daemon is not executable: $cashwebd" >&2
     exit 70
@@ -144,6 +171,23 @@ rpc_origin="$(printf '%s' "$rpc_url" | sed -E 's#^([a-z]+://[^/?\#]*).*#\1#')"
     echo "  min_value_wei:          $min_value_wei"
     echo "  expected_chain_id:      $expected_chain_id"
 } >&2
+
+if [[ -n "${FRANK_RELAY_LISTEN:-}" ]]; then
+    runtime_config="$(printf '%s\n' "$runtime_config" | awk '
+        /^host = / { print "host = \"" ENVIRON["FRANK_RELAY_LISTEN"] "\""; next }
+        /^url = / { print "url = \"http://" ENVIRON["FRANK_RELAY_LISTEN"] "\""; next }
+        { print }
+    ')"
+fi
+if [[ -n "${FRANK_RELAY_DB_PATH:-}" ]]; then
+    runtime_config="$(printf '%s\n' "$runtime_config" | awk '
+        /^db_path = / { print "db_path = \"" ENVIRON["FRANK_RELAY_DB_PATH"] "\""; next }
+        { print }
+    ')"
+fi
+if [[ -n "${FRANK_RELAY_EXTRA_TOML:-}" ]]; then
+    runtime_config="$runtime_config"$'\n'"$(cat -- "$FRANK_RELAY_EXTRA_TOML")"
+fi
 
 # Validate the exact generated text through the production parser before starting the daemon, with
 # the same environment the daemon will see. The Cargo slot covers compilation only, so the

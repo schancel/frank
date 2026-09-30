@@ -133,6 +133,19 @@ frank/
 
 The UI talks through an `ActiveChain` boundary rather than importing chain-specific clients directly. The current runtime selects Monad; [#59](https://github.com/schancel/frank/issues/59) tracks a unified multichain event stream and chain-as-data wire design.
 
+## Run the whole demo with one command
+
+```bash
+yarn install --frozen-lockfile
+yarn demo --fake-chain      # relay + blackjack, raffle, picture shop, Qwen (stub) and faucet, no keys or funds
+yarn demo                   # the same against Monad testnet, from your own .env (never committed)
+```
+
+It creates the bot identities, starts the relay and the bots, waits until they are ready, prints
+their addresses and the command to start the app, and shuts everything down on Ctrl-C. Every
+variable it reads is documented in the table in [`packages/bot/README.md`](packages/bot/README.md#one-command-demo-yarn-demo);
+`yarn demo:smoke` checks that each bot answers.
+
 ## Run the local testnet demo
 
 ### Requirements

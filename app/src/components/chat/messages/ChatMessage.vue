@@ -80,10 +80,12 @@
             :stamp="shortTimestamp"
             :amount="stampAmount"
             :outbound="message.outbound"
+            :failure-reason="message.delivery?.failureReason ?? ''"
             @infoClick="transactionDialog = true"
             @deleteClick="deleteDialog = true"
             @replyClick="replyClicked({ address, payloadDigest })"
             @resendClick="resend()"
+            @discardClick="confirmDiscard()"
           />
         </template>
       </q-chat-message>
@@ -150,6 +152,7 @@ export default defineComponent({
       deleteMessage: chats.deleteMessage,
       getStampAmount: chats.getStampAmount,
       sendDirectMessage: chats.sendMessage,
+      retryOutgoing: chats.retryOutgoing,
       getMessageItemPreview,
     }
   },
@@ -203,20 +206,33 @@ export default defineComponent({
         payloadDigest: this.payloadDigest,
       })
     },
-    async resend() {
-      await this.deleteMessage({
-        address: this.address,
-        payloadDigest: this.payloadDigest,
-      })
-
+    /** Manual Retry of a failed message. For a Monad message this never deletes it first: the
+     * store asks the wallet whether the earlier payment is still live and re-sends the same bytes
+     * if so (see `stores/chats.ts`, `sendMessage`); a new payment happens only if the earlier one
+     * can no longer be delivered. */
+    async resend(confirmed = false) {
       if (this.message.stampValueWei !== undefined) {
         try {
-          await this.sendDirectMessage({
+          const outcome = await this.retryOutgoing({
             wallet: useMonadWallet(),
             address: this.address,
-            items: this.message.items,
-            stampValue: this.message.stampValueWei,
+            payloadDigest: this.payloadDigest,
+            confirmed,
           })
+          if (outcome.state === 'needs-confirmation') {
+            this.$q
+              .dialog({
+                title: this.$t('outgoing.sendAgainTitle'),
+                message:
+                  outcome.reason === 'recovered'
+                    ? this.$t('outgoing.sendAgainRecovered')
+                    : this.$t('outgoing.sendAgainUnverified'),
+                ok: { label: this.$t('outgoing.sendAgain') },
+                cancel: true,
+                persistent: true,
+              })
+              .onOk(() => void this.resend(true))
+          }
         } catch (error) {
           errorNotify(error instanceof Error ? error : new Error(String(error)))
         }
@@ -224,12 +240,32 @@ export default defineComponent({
       }
 
       // Compatibility path for legacy Lotus messages.
+      await this.deleteMessage({
+        address: this.address,
+        payloadDigest: this.payloadDigest,
+      })
       const stampAmount = this.getStampAmount(this.address)
       return this.$relayClient.sendMessageImpl({
         address: this.address,
         items: this.message.items,
         stampAmount,
       })
+    },
+    confirmDiscard() {
+      this.$q
+        .dialog({
+          title: this.$t('outgoing.discardConfirmTitle'),
+          message: this.$t('outgoing.discardConfirmMessage'),
+          ok: { label: this.$t('outgoing.discard'), color: 'negative' },
+          cancel: true,
+          persistent: true,
+        })
+        .onOk(() => {
+          void this.deleteMessage({
+            address: this.address,
+            payloadDigest: this.payloadDigest,
+          })
+        })
     },
     replyClicked(args: { address: string; payloadDigest: string }) {
       this.$emit('replyClicked', args)
@@ -285,7 +321,8 @@ export default defineComponent({
           })
         }
         case 'pending':
-          return 'sending...'
+          return this.$t('outgoing.sending')
+        case 'payment-pending':
         case 'error':
           return ''
       }

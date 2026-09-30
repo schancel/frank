@@ -154,19 +154,20 @@ describe('stores/chats.ts (ticket #42)', () => {
           preparationTxHashes: [],
         })
 
-      const result = await chats.sendMessage({
+      const outcome = await chats.sendMessage({
         wallet,
         address: RECIPIENT_ADDRESS,
         items: [{ type: 'text', text: 'hello' }],
         onPreparationProgress,
       })
 
-      expect(result.payloadDigest).toBe('deadbeef')
+      expect(outcome).toEqual({ state: 'sent', payloadDigest: 'deadbeef' })
       expect(sendSpy).toHaveBeenCalledWith({
         wallet,
         recipient: { raw: RECIPIENT_ADDRESS },
         items: [{ type: 'text', text: 'hello' }],
         onPreparationProgress,
+        onAttemptCreated: expect.any(Function),
       })
 
       const chat = chats.chats[RECIPIENT_ADDRESS]
@@ -225,7 +226,7 @@ describe('stores/chats.ts (ticket #42)', () => {
       expect(sendSpy).not.toHaveBeenCalled()
     })
 
-    it('propagates a send failure and marks the optimistic message as failed', async () => {
+    it('keeps a failed send in the conversation, marked failed, instead of throwing (#269)', async () => {
       const chats = useChatStore()
       const wallet = makeWallet(SENDER_ADDRESS)
       jest
@@ -238,7 +239,7 @@ describe('stores/chats.ts (ticket #42)', () => {
           address: RECIPIENT_ADDRESS,
           items: [{ type: 'text', text: 'hi' }],
         }),
-      ).rejects.toThrow('no registered profile')
+      ).resolves.toEqual({ state: 'failed', reason: 'error' })
 
       const messages = chats.chats[RECIPIENT_ADDRESS]?.messages ?? []
       expect(messages).toHaveLength(1)
@@ -248,7 +249,15 @@ describe('stores/chats.ts (ticket #42)', () => {
           items: [{ type: 'text', text: 'hi' }],
         }),
       )
-      expect(mockMessageStore.saveMessage).not.toHaveBeenCalled()
+      // The failed message and its text are stored durably (the full reload proof is in
+      // chats.outgoing.jest.test.ts).
+      expect(mockMessageStore.saveMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          outbound: true,
+          message: expect.objectContaining({ status: 'error' }),
+        }),
+        { advanceCursor: false },
+      )
     })
 
     it('does not make a delivered message look retryable when local persistence fails', async () => {
@@ -259,9 +268,12 @@ describe('stores/chats.ts (ticket #42)', () => {
         stampValueWei: 321n,
         preparationTxHashes: [],
       })
-      mockMessageStore.saveMessage.mockRejectedValueOnce(
-        new Error('local storage unavailable'),
-      )
+      mockMessageStore.saveMessage.mockImplementation(async wrapper => {
+        // Only the confirmed record's write fails; the earlier pending writes are best effort.
+        if (wrapper.index === 'delivered-digest') {
+          throw new Error('local storage unavailable')
+        }
+      })
 
       await expect(
         chats.sendMessage({

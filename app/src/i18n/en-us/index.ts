@@ -36,6 +36,32 @@ export default {
     balanceStale: '(last known)',
     directMessages: 'Direct Messages',
   },
+  outgoing: {
+    sending: 'Sending…',
+    paymentPending:
+      'Payment pending, will retry. You will not be charged again.',
+    failed: 'Failed to send',
+    reasonUnreachable: "Can't reach the server.",
+    reasonUnavailable: 'This relay does not offer messaging.',
+    reasonRejected: 'The relay rejected it.',
+    reasonInterrupted: 'It was interrupted before it was sent.',
+    reasonUnverified: 'Delivery could not be confirmed.',
+    reasonRecovered: 'An earlier message was delivered meanwhile.',
+    reasonError: 'Something went wrong.',
+    retry: 'Retry',
+    retryHint:
+      'Retry re-sends the same payment while it is still valid. A new payment is made only if it is not.',
+    discard: 'Discard',
+    discardConfirmTitle: 'Discard message?',
+    discardConfirmMessage:
+      'This removes it from your conversation. If its payment is still pending it may still be delivered.',
+    sendAgainTitle: 'Send again?',
+    sendAgainUnverified:
+      'We could not confirm whether the first payment was delivered. Sending again may charge you a second time.',
+    sendAgainRecovered:
+      'An earlier pending message was delivered while this one was being sent. Send this one again as a new message?',
+    sendAgain: 'Send again',
+  },
   chatMessage: {
     noPayloadFound: 'Unable to find message payload',
   },

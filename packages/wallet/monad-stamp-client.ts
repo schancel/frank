@@ -665,6 +665,46 @@ export interface PutRetryOptions {
   sleep?: (ms: number) => Promise<void>
 }
 
+/**
+ * What this process last learned about one outgoing attempt (identified by its bare-hex payload
+ * hash), as answered by {@link MonadStampClient.attemptStatus}. Ticket #269/#270: a caller that
+ * kept a message after a failed send must be able to ask "is the earlier payment still live?"
+ * *before* it ever builds new payment transactions, because a second payment for the same message
+ * while the first can still land is a double payment.
+ *
+ * - `live`: the exact signed set is still in the attempt journal. It will be re-`PUT` byte for byte
+ *   by {@link MonadStampClient.resumePendingAttempts}; re-sending is free and idempotent. Never
+ *   build a new payment for this message.
+ * - `delivered`: an idempotent re-`PUT` was answered 200 (the relay durably delivered it).
+ * - `dead`: the relay ended the set (409/422 terminal, or it never retained it) or the relay has
+ *   no mailbox; nothing can land for it any more, and a new payment is the only way forward.
+ * - `unknown`: not in the journal and no recorded outcome (for example the outcome was resolved
+ *   by a previous process). It may or may not have been delivered; callers must not silently pay
+ *   again.
+ */
+export type MonadStampAttemptStatus = 'live' | 'delivered' | 'dead' | 'unknown'
+
+/** Outcomes resolved in this process, per attempt journal (shared by every client instance built
+ * over the same journal, e.g. the per-send client and the wallet-load resume). In memory only. */
+const resolvedAttemptOutcomes = new WeakMap<
+  object,
+  Map<string, 'delivered' | 'dead'>
+>()
+
+function recordAttemptOutcome(
+  journal: object | undefined,
+  payloadHashHex: string,
+  outcome: 'delivered' | 'dead',
+): void {
+  if (journal === undefined) return
+  let outcomes = resolvedAttemptOutcomes.get(journal)
+  if (outcomes === undefined) {
+    outcomes = new Map()
+    resolvedAttemptOutcomes.set(journal, outcomes)
+  }
+  outcomes.set(payloadHashHex, outcome)
+}
+
 /** Params for `MonadStampClient.submitStampedMessage`. */
 export interface StampMonadMessageParams {
   /** The message payload, already encrypted for its recipient(s) — this module is opaque to its
@@ -683,6 +723,12 @@ export interface StampMonadMessageParams {
   /** Overrides the default idempotent re-`PUT` backoff (see this file's header, "Lease release
    * policy"). */
   putRetry?: PutRetryOptions
+  /** Called (and awaited) once the exact signed payment set is durably journaled and before any
+   * byte of it is sent to the relay, with the attempt's bare-hex payload hash. A caller that owns
+   * a user-visible message records this hash so it can later ask {@link
+   * MonadStampClient.attemptStatus} about exactly this attempt. A throwing callback is ignored:
+   * it must never abort a payment that is already journaled. */
+  onAttemptJournaled?: (payloadHashHex: string) => void | Promise<void>
 }
 
 /** Outcome of a successful `submitStampedMessage` call — the relay durably delivered the message
@@ -1011,6 +1057,11 @@ export class MonadStampClient {
       await this.pool.flush()
       throw err
     }
+    try {
+      await params.onAttemptJournaled?.(payloadHashHex)
+    } catch (callbackError) {
+      console.warn('onAttemptJournaled failed; continuing', callbackError)
+    }
     const releaseAll = async (
       outcome: 'confirmed' | 'failed' | 'stuck',
     ): Promise<Array<ChangeSweepOutcome | undefined>> => {
@@ -1060,6 +1111,7 @@ export class MonadStampClient {
           // No mailbox routes: the relay never saw or admitted these bytes.
           await releaseAll('failed')
           await this.attemptJournal?.delete(payloadHashHex)
+          recordAttemptOutcome(this.attemptJournal, payloadHashHex, 'dead')
           throw new MonadMailboxUnavailableError(
             'PUT /message/monad: HTTP 404: the relay has no Monad mailbox (disabled or too old); the message was not sent',
             404,
@@ -1070,6 +1122,7 @@ export class MonadStampClient {
           // The exact set is dead at the relay: never re-send it, never reuse its accounts.
           await releaseAll(retained === false ? 'failed' : 'stuck')
           await this.attemptJournal?.delete(payloadHashHex)
+          recordAttemptOutcome(this.attemptJournal, payloadHashHex, 'dead')
           throw new MonadStampTerminalError(
             `Relay ended this Monad-stamped payment set (HTTP ${status} ${terminal})${
               detail ? `: ${detail}` : ''
@@ -1083,6 +1136,7 @@ export class MonadStampClient {
         if (retained === false) {
           await releaseAll('failed')
           await this.attemptJournal?.delete(payloadHashHex)
+          recordAttemptOutcome(this.attemptJournal, payloadHashHex, 'dead')
           throw new MonadStampRejectedError(
             `Relay rejected the Monad-stamped message before retaining its payment set (HTTP ${status})${
               detail ? `: ${detail}` : ''
@@ -1137,6 +1191,7 @@ export class MonadStampClient {
       throw new MonadStampPendingAttemptError([payloadHashHex])
     }
     await this.attemptJournal?.delete(payloadHashHex)
+    recordAttemptOutcome(this.attemptJournal, payloadHashHex, 'delivered')
     return {
       stored,
       payloadHashHex,
@@ -1144,6 +1199,25 @@ export class MonadStampClient {
       leaseIndices: handles.map(handle => handle.index),
       changeSweeps,
     }
+  }
+
+  /** Answers, without any network call or payment, whether the attempt with this bare-hex payload
+   * hash is still recoverable. See {@link MonadStampAttemptStatus}. A caller deciding whether a
+   * retry may build *new* payments must get `dead` here (or explicit user confirmation for
+   * `unknown`) first: `live` means re-send the same bytes via {@link resumePendingAttempts}. */
+  attemptStatus(payloadHashHex: string): MonadStampAttemptStatus {
+    if (
+      this.attemptJournal
+        ?.getAll()
+        .some(attempt => attempt.payloadHashHex === payloadHashHex)
+    ) {
+      return 'live'
+    }
+    const outcome =
+      this.attemptJournal === undefined
+        ? undefined
+        : resolvedAttemptOutcomes.get(this.attemptJournal)?.get(payloadHashHex)
+    return outcome ?? 'unknown'
   }
 
   /** Replay crash-surviving attempts byte-for-byte. Exact-set relay binding makes this safe when
@@ -1189,6 +1263,11 @@ export class MonadStampClient {
           }
         }
         await this.attemptJournal.delete(attempt.payloadHashHex)
+        recordAttemptOutcome(
+          this.attemptJournal,
+          attempt.payloadHashHex,
+          'delivered',
+        )
         completed.push(attempt.payloadHashHex)
       } catch (err) {
         if (
@@ -1205,6 +1284,11 @@ export class MonadStampClient {
           }
           await this.pool.flush()
           await this.attemptJournal.delete(attempt.payloadHashHex)
+          recordAttemptOutcome(
+            this.attemptJournal,
+            attempt.payloadHashHex,
+            'dead',
+          )
         }
         // Otherwise retain the raw set and keep its accounts unavailable for a later retry.
       }

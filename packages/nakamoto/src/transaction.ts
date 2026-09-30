@@ -56,7 +56,10 @@ export interface TxInput {
   readonly prevout: OutPoint
   readonly scriptSig: Uint8Array
   readonly sequence: number
-  /** Present only on a BIP144 witness transaction. Omitted for legacy bytes. */
+  /**
+   * BIP144 stack. Omitted on legacy bytes. An empty stack is not a witness
+   * and is serialized without the marker.
+   */
   readonly witness?: readonly Uint8Array[]
 }
 
@@ -109,6 +112,7 @@ export interface TxFailure {
     | 'tx-trailing'
     | 'tx-witness-flag'
     | 'tx-witness-rejected'
+    | 'tx-witness-superfluous'
     | 'tx-range'
     | 'sighash-algorithm'
     | 'sighash-index'
@@ -134,6 +138,7 @@ export function isTxError(value: unknown): value is TxFailure {
     code === 'tx-trailing' ||
     code === 'tx-witness-flag' ||
     code === 'tx-witness-rejected' ||
+    code === 'tx-witness-superfluous' ||
     code === 'tx-range' ||
     code === 'sighash-algorithm' ||
     code === 'sighash-index' ||
@@ -210,8 +215,12 @@ function outputBytes(output: TxOutput | SpentOutput): Uint8Array | null {
   return writer.finish()
 }
 
+function witnessHasItem(witness: readonly Uint8Array[] | undefined): boolean {
+  return (witness?.length ?? 0) > 0
+}
+
 function hasWitness(tx: Transaction): boolean {
-  return tx.inputs.some(input => input.witness !== undefined)
+  return tx.inputs.some(input => witnessHasItem(input.witness))
 }
 
 function fitsCount(count: bigint, byteLength: number): boolean {
@@ -346,20 +355,34 @@ export function parseTransaction(
   if (!vin.ok) return vin
   let witness = false
   let inputCount = vin.value
+  let legacyEmpty = false
   if (chain.family === 'btc' && vin.value === 0) {
     const flag = reader.readUInt8()
     if (!flag.ok) return fail('tx-truncated')
-    if (flag.value !== 1) return fail('tx-witness-flag')
-    witness = true
-    const real = readCount(reader, raw.length)
-    if (!real.ok) return real
-    inputCount = real.value
+    if (flag.value === 1) {
+      witness = true
+      const real = readCount(reader, raw.length)
+      if (!real.ok) return real
+      inputCount = real.value
+    } else if (flag.value === 0) {
+      // Core reads this byte as flags 0 and leaves the output vector empty.
+      legacyEmpty = true
+    } else {
+      return fail('tx-witness-flag')
+    }
   }
-  const inputs = readInputs(reader, inputCount)
+  const inputs: TxResult<TxInput[]> = legacyEmpty
+    ? { ok: true, value: [] }
+    : readInputs(reader, inputCount)
   if (!inputs.ok) return inputs
-  const vout = readCount(reader, raw.length)
-  if (!vout.ok) return vout
-  const outputs = readOutputs(reader, vout.value)
+  let outputs: TxResult<TxOutput[]>
+  if (legacyEmpty) {
+    outputs = { ok: true, value: [] }
+  } else {
+    const vout = readCount(reader, raw.length)
+    if (!vout.ok) return vout
+    outputs = readOutputs(reader, vout.value)
+  }
   if (!outputs.ok) return outputs
   const txInputs = witness
     ? readWitness(reader, inputs.value, raw.length)
@@ -368,6 +391,9 @@ export function parseTransaction(
   const locktime = reader.readUInt32LE()
   if (!locktime.ok) return fail('tx-truncated')
   if (!reader.finished()) return fail('tx-trailing')
+  if (witness && !txInputs.value.some(input => witnessHasItem(input.witness))) {
+    return fail('tx-witness-superfluous')
+  }
   return {
     ok: true,
     value: {
@@ -376,6 +402,26 @@ export function parseTransaction(
       outputs: outputs.value,
       locktime: locktime.value,
     },
+  }
+}
+
+function readLeUnsigned(
+  script: Uint8Array,
+  offset: number,
+  width: number,
+): number {
+  let value = 0
+  let scale = 1
+  for (let byte = 0; byte < width; byte += 1) {
+    value += (script[offset + byte] ?? 0) * scale
+    scale *= 256
+  }
+  return value
+}
+
+function appendRange(out: number[], script: Uint8Array, from: number): void {
+  for (let rest = from; rest < script.length; rest += 1) {
+    out.push(script[rest] ?? 0)
   }
 }
 
@@ -393,23 +439,23 @@ function withoutCodeSeparators(script: Uint8Array): Uint8Array {
     if (opcode > 0 && opcode < 0x4c) {
       data = opcode
     } else if (opcode === 0x4c || opcode === 0x4d || opcode === 0x4e) {
-      header = opcode === 0x4c ? 2 : opcode === 0x4d ? 3 : 5
+      const width = opcode === 0x4c ? 1 : opcode === 0x4d ? 2 : 4
+      header = width + 1
       if (index + header > script.length) {
-        for (let rest = index; rest < script.length; rest += 1) {
-          out.push(script[rest] ?? 0)
-        }
+        appendRange(out, script, index)
         break
       }
-      for (let byte = 0; byte < header - 1; byte += 1) {
-        data |= (script[index + 1 + byte] ?? 0) << (8 * byte)
-      }
+      // GetOp's PUSHDATA4 length is unsigned. `<< 24` is a signed int32.
+      data = readLeUnsigned(script, index + 1, width)
     }
     const end = index + header + data
-    const limit = end > script.length ? script.length : end
-    for (let cursor = index; cursor < limit; cursor += 1) {
+    if (end > script.length) {
+      appendRange(out, script, index)
+      break
+    }
+    for (let cursor = index; cursor < end; cursor += 1) {
       out.push(script[cursor] ?? 0)
     }
-    if (end > script.length) break
     index = end
   }
   return Uint8Array.from(out)

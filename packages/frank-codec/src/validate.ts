@@ -17,6 +17,9 @@ import {
   TYPE_MESSAGE_CONTENT_REVISION,
   TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
   TYPE_TEXT_MESSAGE_ITEM,
+  TYPE_TOPIC_POST,
+  TYPE_TOPIC_POST_SUBMISSION,
+  TYPE_TOPIC_VOTE_SUBMISSION,
   U32_MAX,
 } from './constants'
 import {
@@ -78,6 +81,9 @@ export const KNOWN_TYPES: readonly number[] = [
   TYPE_ENCRYPTED_MESSAGE_CONTENT,
   TYPE_KEY_TRANSITION_STATEMENT,
   TYPE_MESSAGE_CONTENT_REVISION,
+  TYPE_TOPIC_POST,
+  TYPE_TOPIC_POST_SUBMISSION,
+  TYPE_TOPIC_VOTE_SUBMISSION,
   TYPE_CONTAINER_MESSAGE_ITEM,
   TYPE_TEXT_MESSAGE_ITEM,
 ]
@@ -236,7 +242,7 @@ function processFrame(
       location,
     )
   }
-  if (mode.kind === 'open' && env.typeId >= 1 && env.typeId <= 8) {
+  if (mode.kind === 'open' && env.typeId >= 1 && env.typeId <= 11) {
     throw fail(
       'semantic',
       '8.4',
@@ -445,6 +451,17 @@ function openChildren(
           envDepth + 1,
           sh,
           `${P}.2`,
+        ),
+      }
+    case 10:
+      return {
+        ...d,
+        postFrame: required(
+          d.postFrame,
+          TYPE_TOPIC_POST,
+          envDepth + 1,
+          sh,
+          `${P}.1`,
         ),
       }
     case 8:

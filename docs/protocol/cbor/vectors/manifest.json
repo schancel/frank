@@ -19049,6 +19049,3823 @@
       "rules": [
         "F2"
       ]
+    },
+    {
+      "id": "fixture-topic-post-typed",
+      "description": "Fixture 4: a top-level type-9 topic post (no parent, 64-byte opaque body).",
+      "source": "typescript",
+      "frame_hex": "46524e4b0100000066a400090101020103585ca3006a6672616e6b2d74657374016a6672616e6b2e64656d6f0358400e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3",
+      "validation_context": {
+        "operation": "typed",
+        "route_byte_limit": 8388617,
+        "reader_version": 1,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 1
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 9,
+            "schema_version": 1
+          },
+          {
+            "type_id": 10,
+            "schema_version": 1
+          },
+          {
+            "type_id": 11,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null
+      },
+      "expectation": "accept",
+      "rules": [
+        "S12",
+        "T1"
+      ],
+      "type_id": 9,
+      "schema_version": 1,
+      "content_hash_hex": "a58e4709ec532fdce334923ef1228fb109f6d11270b1a8a6005853fff9ea7d4d",
+      "paired_case": "topic-post-one-byte-mutation",
+      "pair_relation": "one_byte_mutation"
+    },
+    {
+      "id": "topic-post-one-byte-mutation",
+      "description": "The topic post with its last body byte changed: still valid, a different T1 content hash and therefore a different T7 commitment (T6, T7).",
+      "source": "typescript",
+      "frame_hex": "46524e4b0100000066a400090101020103585ca3006a6672616e6b2d74657374016a6672616e6b2e64656d6f0358400e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c2",
+      "validation_context": {
+        "operation": "typed",
+        "route_byte_limit": 8388617,
+        "reader_version": 1,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 1
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 9,
+            "schema_version": 1
+          },
+          {
+            "type_id": 10,
+            "schema_version": 1
+          },
+          {
+            "type_id": 11,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null
+      },
+      "expectation": "accept",
+      "rules": [
+        "T6",
+        "T7"
+      ],
+      "type_id": 9,
+      "schema_version": 1,
+      "content_hash_hex": "7576346158fbad2771b7f987be5063a3827ba8cee234bf95f6c2e4183de3296e",
+      "paired_case": "fixture-topic-post-typed",
+      "pair_relation": "one_byte_mutation"
+    },
+    {
+      "id": "topic-post-with-parent",
+      "description": "A reply: field 2 holds the 32-byte T1 hash of the parent type-9 frame.",
+      "source": "typescript",
+      "frame_hex": "46524e4b010000008fa4000901010201035885a4006a6672616e6b2d7465737401706672616e6b2e64656d6f2e7265706c79025820a58e4709ec532fdce334923ef1228fb109f6d11270b1a8a6005853fff9ea7d4d0358400e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3",
+      "validation_context": {
+        "operation": "typed",
+        "route_byte_limit": 8388617,
+        "reader_version": 1,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 1
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 9,
+            "schema_version": 1
+          },
+          {
+            "type_id": 10,
+            "schema_version": 1
+          },
+          {
+            "type_id": 11,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null
+      },
+      "expectation": "accept",
+      "rules": [
+        "S12"
+      ],
+      "type_id": 9,
+      "schema_version": 1,
+      "content_hash_hex": "c22d23dc6a02380a964b43db1d333559e3b3e7ae8bb5aeddafd95200d3edf0b5"
+    },
+    {
+      "id": "topic-post-topic-at-limit",
+      "description": "A 512-byte topic (the CDDL upper bound; multi-byte UTF-8 counts bytes, not characters).",
+      "source": "typescript",
+      "frame_hex": "46524e4b010000025fa400090101020103590254a3006a6672616e6b2d7465737401790200616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161c3a90358400e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3",
+      "validation_context": {
+        "operation": "typed",
+        "route_byte_limit": 8388617,
+        "reader_version": 1,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 1
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 9,
+            "schema_version": 1
+          },
+          {
+            "type_id": 10,
+            "schema_version": 1
+          },
+          {
+            "type_id": 11,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null
+      },
+      "expectation": "accept",
+      "rules": [
+        "R6",
+        "S12"
+      ],
+      "type_id": 9,
+      "schema_version": 1,
+      "content_hash_hex": "45afa36e9e1df9de84f3f52ebe04ac9ba6cd74bb394528b02d7a7a6a32b232ec"
+    },
+    {
+      "id": "topic-post-topic-not-normalized",
+      "description": "A topic with a decomposed combining mark, an uppercase letter, and a dot-separated empty segment: accepted exactly as written (no normalization, S12).",
+      "source": "typescript",
+      "frame_hex": "46524e4b0100000065a400090101020103585ba3006a6672616e6b2d74657374016943616665cc812e2e780358400e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3",
+      "validation_context": {
+        "operation": "typed",
+        "route_byte_limit": 8388617,
+        "reader_version": 1,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 1
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 9,
+            "schema_version": 1
+          },
+          {
+            "type_id": 10,
+            "schema_version": 1
+          },
+          {
+            "type_id": 11,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null
+      },
+      "expectation": "accept",
+      "rules": [
+        "S12"
+      ],
+      "type_id": 9,
+      "schema_version": 1,
+      "content_hash_hex": "8fa31af6343a7eaee2daec49d2d4a7f9041997d34b3906b4474bfb08f03018e7"
+    },
+    {
+      "id": "topic-post-newer-schema-extra-field",
+      "description": "A type-9 post at schema 2 (min_reader 1) with an undeclared field 9: read through the schema-1 projection and the field retained (V6.3).",
+      "source": "typescript",
+      "frame_hex": "46524e4b010000006ea4000901020201035864a4006a6672616e6b2d74657374016a6672616e6b2e64656d6f0358400e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c30966667574757265",
+      "validation_context": {
+        "operation": "typed",
+        "route_byte_limit": 8388617,
+        "reader_version": 1,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 1
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 9,
+            "schema_version": 1
+          },
+          {
+            "type_id": 10,
+            "schema_version": 1
+          },
+          {
+            "type_id": 11,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null
+      },
+      "expectation": "accept",
+      "rules": [
+        "V6.3",
+        "C12"
+      ],
+      "type_id": 9,
+      "schema_version": 2,
+      "content_hash_hex": "5a32b7b47a8d27d1ce7e8856f924d15785492e19ea0333a06bc3685c56cd5641"
+    },
+    {
+      "id": "topic-post-retained-by-a-reader-without-topics",
+      "description": "A reader that predates type 9 retains a topic post as exact bytes where its containing contract permits it (E3, V6.1).",
+      "source": "handcrafted",
+      "frame_hex": "46524e4b0100000066a400090101020103585ca3006a6672616e6b2d74657374016a6672616e6b2e64656d6f0358400e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3",
+      "validation_context": {
+        "operation": "typed",
+        "route_byte_limit": 8388617,
+        "reader_version": 1,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 1
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": true,
+        "prior_directory_statement_frame_hex": null
+      },
+      "expectation": "retain",
+      "rules": [
+        "E3",
+        "V6.1"
+      ],
+      "retained_frame_hex": "46524e4b0100000066a400090101020103585ca3006a6672616e6b2d74657374016a6672616e6b2e64656d6f0358400e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3"
+    },
+    {
+      "id": "fixture-topic-post-submission-typed",
+      "description": "Fixture 5: a type-10 submission that opens the type-9 post and carries its burn transaction (filler bytes: the codec never opens the transaction).",
+      "source": "typescript",
+      "frame_hex": "46524e4b01000000faa4000a010102010358f0a3006a6672616e6b2d7465737401586f46524e4b0100000066a400090101020103585ca3006a6672616e6b2d74657374016a6672616e6b2e64656d6f0358400e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c302586e808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f",
+      "validation_context": {
+        "operation": "typed",
+        "route_byte_limit": 8388617,
+        "reader_version": 1,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 1
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 9,
+            "schema_version": 1
+          },
+          {
+            "type_id": 10,
+            "schema_version": 1
+          },
+          {
+            "type_id": 11,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null
+      },
+      "expectation": "accept",
+      "rules": [
+        "S8",
+        "S11",
+        "T1",
+        "T7"
+      ],
+      "type_id": 10,
+      "schema_version": 1,
+      "content_hash_hex": "09d259ca6aca5ee0039633bba30e8cf1ae3f9c4e5534c5eca81c7d07a009ee58"
+    },
+    {
+      "id": "topic-post-submission-of-reply",
+      "description": "A type-10 submission whose opened post is a reply.",
+      "source": "typescript",
+      "frame_hex": "46524e4b0100000124a4000a0101020103590119a3006a6672616e6b2d7465737401589846524e4b010000008fa4000901010201035885a4006a6672616e6b2d7465737401706672616e6b2e64656d6f2e7265706c79025820a58e4709ec532fdce334923ef1228fb109f6d11270b1a8a6005853fff9ea7d4d0358400e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c302586e808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f",
+      "validation_context": {
+        "operation": "typed",
+        "route_byte_limit": 8388617,
+        "reader_version": 1,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 1
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 9,
+            "schema_version": 1
+          },
+          {
+            "type_id": 10,
+            "schema_version": 1
+          },
+          {
+            "type_id": 11,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null
+      },
+      "expectation": "accept",
+      "rules": [
+        "S8",
+        "S11"
+      ],
+      "type_id": 10,
+      "schema_version": 1,
+      "content_hash_hex": "417bc498807e9b2829a55adf5d98fb2ac4c45091fa1a9c06e4feef7501e0b681"
+    },
+    {
+      "id": "fixture-topic-vote-typed",
+      "description": "Fixture 6: a type-11 vote naming the T1 hash of the fixture post, with its burn transaction (filler bytes). The direction and the weight are the transaction's (T8).",
+      "source": "typescript",
+      "frame_hex": "46524e4b01000000aba4000b010102010358a1a3006a6672616e6b2d74657374015820a58e4709ec532fdce334923ef1228fb109f6d11270b1a8a6005853fff9ea7d4d02586ea5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e4954",
+      "validation_context": {
+        "operation": "typed",
+        "route_byte_limit": 8388617,
+        "reader_version": 1,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 1
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 9,
+            "schema_version": 1
+          },
+          {
+            "type_id": 10,
+            "schema_version": 1
+          },
+          {
+            "type_id": 11,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null
+      },
+      "expectation": "accept",
+      "rules": [
+        "S12",
+        "T1",
+        "T7"
+      ],
+      "type_id": 11,
+      "schema_version": 1,
+      "content_hash_hex": "a51c59373bfc313fedaa676e7f1cfc230c9e9a16901de84454b7ccbf27f3f274"
+    },
+    {
+      "id": "topic-vote-newer-schema-extra-field",
+      "description": "A type-11 vote at schema 2 with an undeclared field 9: retained through the schema-1 projection (V6.3).",
+      "source": "typescript",
+      "frame_hex": "46524e4b01000000ada4000b010202010358a3a4006a6672616e6b2d74657374015820f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c4702586ea5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49540901",
+      "validation_context": {
+        "operation": "typed",
+        "route_byte_limit": 8388617,
+        "reader_version": 1,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 1
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 9,
+            "schema_version": 1
+          },
+          {
+            "type_id": 10,
+            "schema_version": 1
+          },
+          {
+            "type_id": 11,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null
+      },
+      "expectation": "accept",
+      "rules": [
+        "V6.3",
+        "C12"
+      ],
+      "type_id": 11,
+      "schema_version": 2,
+      "content_hash_hex": "a77c80fcf7373b62a70365747d4fa716609afd26da448687f2e221793dd43ae7"
+    },
+    {
+      "id": "topic-post-missing-topic",
+      "description": "A type-9 post without its topic (field 1).",
+      "source": "typescript",
+      "frame_hex": "46524e4b010000005aa4000901010201035850a2006a6672616e6b2d746573740358400e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3",
+      "validation_context": {
+        "operation": "typed",
+        "route_byte_limit": 8388617,
+        "reader_version": 1,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 1
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 9,
+            "schema_version": 1
+          },
+          {
+            "type_id": 10,
+            "schema_version": 1
+          },
+          {
+            "type_id": 11,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null
+      },
+      "expectation": "reject",
+      "rules": [
+        "C12"
+      ],
+      "error_category": "schema",
+      "error_stage": "8.2"
+    },
+    {
+      "id": "topic-post-missing-body",
+      "description": "A type-9 post without its body (field 3).",
+      "source": "typescript",
+      "frame_hex": "46524e4b0100000023a4000901010201035819a2006a6672616e6b2d74657374016a6672616e6b2e64656d6f",
+      "validation_context": {
+        "operation": "typed",
+        "route_byte_limit": 8388617,
+        "reader_version": 1,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 1
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 9,
+            "schema_version": 1
+          },
+          {
+            "type_id": 10,
+            "schema_version": 1
+          },
+          {
+            "type_id": 11,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null
+      },
+      "expectation": "reject",
+      "rules": [
+        "C12"
+      ],
+      "error_category": "schema",
+      "error_stage": "8.2"
+    },
+    {
+      "id": "topic-post-empty-topic",
+      "description": "A type-9 post with an empty topic: the CDDL lower bound is 1 byte.",
+      "source": "typescript",
+      "frame_hex": "46524e4b010000005ca4000901010201035852a3006a6672616e6b2d7465737401600358400e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3",
+      "validation_context": {
+        "operation": "typed",
+        "route_byte_limit": 8388617,
+        "reader_version": 1,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 1
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 9,
+            "schema_version": 1
+          },
+          {
+            "type_id": 10,
+            "schema_version": 1
+          },
+          {
+            "type_id": 11,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null
+      },
+      "expectation": "reject",
+      "rules": [
+        "S12"
+      ],
+      "error_category": "schema",
+      "error_stage": "8.2"
+    },
+    {
+      "id": "topic-post-topic-over-limit",
+      "description": "A 513-byte topic, one over the CDDL upper bound.",
+      "source": "typescript",
+      "frame_hex": "46524e4b0100000260a400090101020103590255a3006a6672616e6b2d74657374017902016161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161610358400e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3",
+      "validation_context": {
+        "operation": "typed",
+        "route_byte_limit": 8388617,
+        "reader_version": 1,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 1
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 9,
+            "schema_version": 1
+          },
+          {
+            "type_id": 10,
+            "schema_version": 1
+          },
+          {
+            "type_id": 11,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null
+      },
+      "expectation": "reject",
+      "rules": [
+        "S12"
+      ],
+      "error_category": "schema",
+      "error_stage": "8.2"
+    },
+    {
+      "id": "topic-post-topic-multibyte-over-limit",
+      "description": "A topic of 257 two-byte characters: 514 UTF-8 bytes, over the bound although only 257 characters long.",
+      "source": "typescript",
+      "frame_hex": "46524e4b0100000261a400090101020103590256a3006a6672616e6b2d7465737401790202c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a90358400e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3",
+      "validation_context": {
+        "operation": "typed",
+        "route_byte_limit": 8388617,
+        "reader_version": 1,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 1
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 9,
+            "schema_version": 1
+          },
+          {
+            "type_id": 10,
+            "schema_version": 1
+          },
+          {
+            "type_id": 11,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null
+      },
+      "expectation": "reject",
+      "rules": [
+        "S12"
+      ],
+      "error_category": "schema",
+      "error_stage": "8.2"
+    },
+    {
+      "id": "topic-post-topic-not-text",
+      "description": "A type-9 post whose topic is a byte string.",
+      "source": "typescript",
+      "frame_hex": "46524e4b0100000060a4000901010201035856a3006a6672616e6b2d7465737401442a35404b0358400e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3",
+      "validation_context": {
+        "operation": "typed",
+        "route_byte_limit": 8388617,
+        "reader_version": 1,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 1
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 9,
+            "schema_version": 1
+          },
+          {
+            "type_id": 10,
+            "schema_version": 1
+          },
+          {
+            "type_id": 11,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null
+      },
+      "expectation": "reject",
+      "rules": [
+        "S12"
+      ],
+      "error_category": "schema",
+      "error_stage": "8.2"
+    },
+    {
+      "id": "topic-post-topic-invalid-utf8",
+      "description": "A type-9 payload whose topic holds the invalid UTF-8 bytes c3 28.",
+      "source": "typescript",
+      "frame_hex": "46524e4b010000001da40009010102010354a3006a6672616e6b2d746573740162c3280341aa",
+      "validation_context": {
+        "operation": "typed",
+        "route_byte_limit": 8388617,
+        "reader_version": 1,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 1
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 9,
+            "schema_version": 1
+          },
+          {
+            "type_id": 10,
+            "schema_version": 1
+          },
+          {
+            "type_id": 11,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null
+      },
+      "expectation": "reject",
+      "rules": [
+        "C6"
+      ],
+      "error_category": "malformed",
+      "error_stage": "7"
+    },
+    {
+      "id": "topic-post-parent-null",
+      "description": "A type-9 post whose optional parent (field 2) is encoded as null: an absent key is the only encoding of a top-level post (S12).",
+      "source": "typescript",
+      "frame_hex": "46524e4b0100000068a400090101020103585ea4006a6672616e6b2d74657374016a6672616e6b2e64656d6f02f60358400e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3",
+      "validation_context": {
+        "operation": "typed",
+        "route_byte_limit": 8388617,
+        "reader_version": 1,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 1
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 9,
+            "schema_version": 1
+          },
+          {
+            "type_id": 10,
+            "schema_version": 1
+          },
+          {
+            "type_id": 11,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null
+      },
+      "expectation": "reject",
+      "rules": [
+        "S12"
+      ],
+      "error_category": "schema",
+      "error_stage": "8.2"
+    },
+    {
+      "id": "topic-post-parent-31-bytes",
+      "description": "A type-9 post with a 31-byte parent hash.",
+      "source": "typescript",
+      "frame_hex": "46524e4b0100000088a400090101020103587ea4006a6672616e6b2d74657374016a6672616e6b2e64656d6f02581fbec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd080358400e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3",
+      "validation_context": {
+        "operation": "typed",
+        "route_byte_limit": 8388617,
+        "reader_version": 1,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 1
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 9,
+            "schema_version": 1
+          },
+          {
+            "type_id": 10,
+            "schema_version": 1
+          },
+          {
+            "type_id": 11,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null
+      },
+      "expectation": "reject",
+      "rules": [
+        "S12"
+      ],
+      "error_category": "schema",
+      "error_stage": "8.2"
+    },
+    {
+      "id": "topic-post-parent-33-bytes",
+      "description": "A type-9 post with a 33-byte parent hash.",
+      "source": "typescript",
+      "frame_hex": "46524e4b010000008aa4000901010201035880a4006a6672616e6b2d74657374016a6672616e6b2e64656d6f025821bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e0358400e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3",
+      "validation_context": {
+        "operation": "typed",
+        "route_byte_limit": 8388617,
+        "reader_version": 1,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 1
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 9,
+            "schema_version": 1
+          },
+          {
+            "type_id": 10,
+            "schema_version": 1
+          },
+          {
+            "type_id": 11,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null
+      },
+      "expectation": "reject",
+      "rules": [
+        "S12"
+      ],
+      "error_category": "schema",
+      "error_stage": "8.2"
+    },
+    {
+      "id": "topic-post-empty-body",
+      "description": "A type-9 post with an empty body: the CDDL lower bound is 1 byte.",
+      "source": "typescript",
+      "frame_hex": "46524e4b0100000025a400090101020103581ba3006a6672616e6b2d74657374016a6672616e6b2e64656d6f0340",
+      "validation_context": {
+        "operation": "typed",
+        "route_byte_limit": 8388617,
+        "reader_version": 1,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 1
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 9,
+            "schema_version": 1
+          },
+          {
+            "type_id": 10,
+            "schema_version": 1
+          },
+          {
+            "type_id": 11,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null
+      },
+      "expectation": "reject",
+      "rules": [
+        "R6"
+      ],
+      "error_category": "schema",
+      "error_stage": "8.2"
+    },
+    {
+      "id": "topic-post-body-not-bytes",
+      "description": "A type-9 post whose body is text.",
+      "source": "typescript",
+      "frame_hex": "46524e4b010000002aa4000901010201035820a3006a6672616e6b2d74657374016a6672616e6b2e64656d6f036568656c6c6f",
+      "validation_context": {
+        "operation": "typed",
+        "route_byte_limit": 8388617,
+        "reader_version": 1,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 1
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 9,
+            "schema_version": 1
+          },
+          {
+            "type_id": 10,
+            "schema_version": 1
+          },
+          {
+            "type_id": 11,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null
+      },
+      "expectation": "reject",
+      "rules": [
+        "C12"
+      ],
+      "error_category": "schema",
+      "error_stage": "8.2"
+    },
+    {
+      "id": "topic-post-undeclared-field",
+      "description": "A type-9 post at schema 1 with an undeclared field 4: an exact supported schema is closed (C12).",
+      "source": "typescript",
+      "frame_hex": "46524e4b0100000068a400090101020103585ea4006a6672616e6b2d74657374016a6672616e6b2e64656d6f0358400e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c30401",
+      "validation_context": {
+        "operation": "typed",
+        "route_byte_limit": 8388617,
+        "reader_version": 1,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 1
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 9,
+            "schema_version": 1
+          },
+          {
+            "type_id": 10,
+            "schema_version": 1
+          },
+          {
+            "type_id": 11,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null
+      },
+      "expectation": "reject",
+      "rules": [
+        "C12"
+      ],
+      "error_category": "schema",
+      "error_stage": "8.2"
+    },
+    {
+      "id": "topic-post-carries-burn-field",
+      "description": "A type-9 post that smuggles a burn transaction at field 4: the burn belongs to the type-10 wrapper (S12).",
+      "source": "typescript",
+      "frame_hex": "46524e4b01000000d7a40009010102010358cda4006a6672616e6b2d74657374016a6672616e6b2e64656d6f0358400e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c304586e808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f",
+      "validation_context": {
+        "operation": "typed",
+        "route_byte_limit": 8388617,
+        "reader_version": 1,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 1
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 9,
+            "schema_version": 1
+          },
+          {
+            "type_id": 10,
+            "schema_version": 1
+          },
+          {
+            "type_id": 11,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null
+      },
+      "expectation": "reject",
+      "rules": [
+        "C12",
+        "S12"
+      ],
+      "error_category": "schema",
+      "error_stage": "8.2"
+    },
+    {
+      "id": "topic-post-network-uppercase",
+      "description": "A type-9 post with an uppercase network tag.",
+      "source": "typescript",
+      "frame_hex": "46524e4b0100000066a400090101020103585ca3006a4672616e6b2d54657374016a6672616e6b2e64656d6f0358400e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3",
+      "validation_context": {
+        "operation": "typed",
+        "route_byte_limit": 8388617,
+        "reader_version": 1,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 1
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 9,
+            "schema_version": 1
+          },
+          {
+            "type_id": 10,
+            "schema_version": 1
+          },
+          {
+            "type_id": 11,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null
+      },
+      "expectation": "reject",
+      "rules": [
+        "S1"
+      ],
+      "error_category": "schema",
+      "error_stage": "8.2"
+    },
+    {
+      "id": "topic-post-network-missing",
+      "description": "A type-9 post without a network tag.",
+      "source": "typescript",
+      "frame_hex": "46524e4b010000005aa4000901010201035850a2016a6672616e6b2e64656d6f0358400e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3",
+      "validation_context": {
+        "operation": "typed",
+        "route_byte_limit": 8388617,
+        "reader_version": 1,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 1
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 9,
+            "schema_version": 1
+          },
+          {
+            "type_id": 10,
+            "schema_version": 1
+          },
+          {
+            "type_id": 11,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null
+      },
+      "expectation": "reject",
+      "rules": [
+        "S1"
+      ],
+      "error_category": "schema",
+      "error_stage": "8.2"
+    },
+    {
+      "id": "topic-submission-post-is-text-item",
+      "description": "A type-10 submission whose field 1 is a type-17 frame instead of type 9.",
+      "source": "typescript",
+      "frame_hex": "46524e4b01000000a5a4000a0101020103589ba3006a6672616e6b2d7465737401581a46524e4b0100000011a40011010102010348a1006568656c6c6f02586e808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f",
+      "validation_context": {
+        "operation": "typed",
+        "route_byte_limit": 8388617,
+        "reader_version": 1,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 1
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 9,
+            "schema_version": 1
+          },
+          {
+            "type_id": 10,
+            "schema_version": 1
+          },
+          {
+            "type_id": 11,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null
+      },
+      "expectation": "reject",
+      "rules": [
+        "S8"
+      ],
+      "error_category": "semantic",
+      "error_stage": "8.4"
+    },
+    {
+      "id": "topic-submission-post-is-vote",
+      "description": "A type-10 submission whose field 1 is a type-11 vote frame.",
+      "source": "typescript",
+      "frame_hex": "46524e4b0100000140a4000a0101020103590135a3006a6672616e6b2d746573740158b446524e4b01000000aba4000b010102010358a1a3006a6672616e6b2d74657374015820f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c4702586ea5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e495402586e808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f",
+      "validation_context": {
+        "operation": "typed",
+        "route_byte_limit": 8388617,
+        "reader_version": 1,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 1
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 9,
+            "schema_version": 1
+          },
+          {
+            "type_id": 10,
+            "schema_version": 1
+          },
+          {
+            "type_id": 11,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null
+      },
+      "expectation": "reject",
+      "rules": [
+        "S8"
+      ],
+      "error_category": "semantic",
+      "error_stage": "8.4"
+    },
+    {
+      "id": "topic-submission-post-is-submission",
+      "description": "A type-10 submission that opens another type-10 submission: a submission is never nested.",
+      "source": "typescript",
+      "frame_hex": "46524e4b0100000190a4000a0101020103590185a3006a6672616e6b2d746573740159010346524e4b01000000faa4000a010102010358f0a3006a6672616e6b2d7465737401586f46524e4b0100000066a400090101020103585ca3006a6672616e6b2d74657374016a6672616e6b2e64656d6f0358400e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c302586e808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f02586e808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f",
+      "validation_context": {
+        "operation": "typed",
+        "route_byte_limit": 8388617,
+        "reader_version": 1,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 1
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 9,
+            "schema_version": 1
+          },
+          {
+            "type_id": 10,
+            "schema_version": 1
+          },
+          {
+            "type_id": 11,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null
+      },
+      "expectation": "reject",
+      "rules": [
+        "S8"
+      ],
+      "error_category": "semantic",
+      "error_stage": "8.4"
+    },
+    {
+      "id": "topic-submission-post-is-unknown-type",
+      "description": "A type-10 submission whose field 1 is an unknown frame: a required-type field never retains (S8).",
+      "source": "typescript",
+      "frame_hex": "46524e4b01000000b1a4000a010102010358a7a3006a6672616e6b2d7465737401582646524e4b010000001da4001affff0001010102010350a1006d667574757265206974656d203102586e808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f",
+      "validation_context": {
+        "operation": "typed",
+        "route_byte_limit": 8388617,
+        "reader_version": 1,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 1
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 9,
+            "schema_version": 1
+          },
+          {
+            "type_id": 10,
+            "schema_version": 1
+          },
+          {
+            "type_id": 11,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null
+      },
+      "expectation": "reject",
+      "rules": [
+        "S8",
+        "V6.1"
+      ],
+      "error_category": "semantic",
+      "error_stage": "8.4"
+    },
+    {
+      "id": "topic-submission-post-unsupported-frame-version",
+      "description": "A type-10 submission whose embedded post has frame version 2.",
+      "source": "typescript",
+      "frame_hex": "46524e4b0100000094a4000a0101020103588aa3006a6672616e6b2d74657374014a46524e4b0200000001a002586e808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f",
+      "validation_context": {
+        "operation": "typed",
+        "route_byte_limit": 8388617,
+        "reader_version": 1,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 1
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 9,
+            "schema_version": 1
+          },
+          {
+            "type_id": 10,
+            "schema_version": 1
+          },
+          {
+            "type_id": 11,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null
+      },
+      "expectation": "reject",
+      "rules": [
+        "F2"
+      ],
+      "error_category": "unsupported",
+      "error_stage": "3"
+    },
+    {
+      "id": "topic-submission-post-invalid-inside",
+      "description": "A type-10 submission whose embedded post lacks its topic: the child fails at its own stage 8.2.",
+      "source": "typescript",
+      "frame_hex": "46524e4b01000000eea4000a010102010358e4a3006a6672616e6b2d7465737401586346524e4b010000005aa4000901010201035850a2006a6672616e6b2d746573740358400e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c302586e808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f",
+      "validation_context": {
+        "operation": "typed",
+        "route_byte_limit": 8388617,
+        "reader_version": 1,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 1
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 9,
+            "schema_version": 1
+          },
+          {
+            "type_id": 10,
+            "schema_version": 1
+          },
+          {
+            "type_id": 11,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null
+      },
+      "expectation": "reject",
+      "rules": [
+        "C12",
+        "S8"
+      ],
+      "error_category": "schema",
+      "error_stage": "8.2"
+    },
+    {
+      "id": "topic-submission-post-truncated",
+      "description": "A type-10 submission whose embedded post is shorter than its header declares.",
+      "source": "typescript",
+      "frame_hex": "46524e4b010000009ea4000a01010201035894a3006a6672616e6b2d74657374015446524e4b0100000066a400090101020103585ca302586e808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f",
+      "validation_context": {
+        "operation": "typed",
+        "route_byte_limit": 8388617,
+        "reader_version": 1,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 1
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 9,
+            "schema_version": 1
+          },
+          {
+            "type_id": 10,
+            "schema_version": 1
+          },
+          {
+            "type_id": 11,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null
+      },
+      "expectation": "reject",
+      "rules": [
+        "F3"
+      ],
+      "error_category": "frame",
+      "error_stage": "4"
+    },
+    {
+      "id": "topic-submission-network-differs",
+      "description": "A type-10 submission whose network differs from the opened type-9 network (S11).",
+      "source": "typescript",
+      "frame_hex": "46524e4b01000000f9a4000a010102010358efa300696f746865722d6e657401586f46524e4b0100000066a400090101020103585ca3006a6672616e6b2d74657374016a6672616e6b2e64656d6f0358400e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c302586e808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f",
+      "validation_context": {
+        "operation": "typed",
+        "route_byte_limit": 8388617,
+        "reader_version": 1,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 1
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 9,
+            "schema_version": 1
+          },
+          {
+            "type_id": 10,
+            "schema_version": 1
+          },
+          {
+            "type_id": 11,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null
+      },
+      "expectation": "reject",
+      "rules": [
+        "S11"
+      ],
+      "error_category": "semantic",
+      "error_stage": "9"
+    },
+    {
+      "id": "topic-submission-missing-burn",
+      "description": "A type-10 submission without a burn transaction.",
+      "source": "typescript",
+      "frame_hex": "46524e4b0100000089a4000a0101020103587fa2006a6672616e6b2d7465737401586f46524e4b0100000066a400090101020103585ca3006a6672616e6b2d74657374016a6672616e6b2e64656d6f0358400e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3",
+      "validation_context": {
+        "operation": "typed",
+        "route_byte_limit": 8388617,
+        "reader_version": 1,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 1
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 9,
+            "schema_version": 1
+          },
+          {
+            "type_id": 10,
+            "schema_version": 1
+          },
+          {
+            "type_id": 11,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null
+      },
+      "expectation": "reject",
+      "rules": [
+        "T8"
+      ],
+      "error_category": "schema",
+      "error_stage": "8.2"
+    },
+    {
+      "id": "topic-submission-empty-burn",
+      "description": "A type-10 submission with an empty burn transaction.",
+      "source": "typescript",
+      "frame_hex": "46524e4b010000008ba4000a01010201035881a3006a6672616e6b2d7465737401586f46524e4b0100000066a400090101020103585ca3006a6672616e6b2d74657374016a6672616e6b2e64656d6f0358400e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c30240",
+      "validation_context": {
+        "operation": "typed",
+        "route_byte_limit": 8388617,
+        "reader_version": 1,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 1
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 9,
+            "schema_version": 1
+          },
+          {
+            "type_id": 10,
+            "schema_version": 1
+          },
+          {
+            "type_id": 11,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null
+      },
+      "expectation": "reject",
+      "rules": [
+        "T8"
+      ],
+      "error_category": "schema",
+      "error_stage": "8.2"
+    },
+    {
+      "id": "topic-submission-burn-over-limit",
+      "description": "A type-10 submission with a 16,385-byte burn transaction, one over the CDDL bound.",
+      "source": "typescript",
+      "frame_hex": "46524e4b010000408fa4000a0101020103594084a3006a6672616e6b2d7465737401586f46524e4b0100000066a400090101020103585ca3006a6672616e6b2d74657374016a6672616e6b2e64656d6f0358400e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c302594001808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a7580",
+      "validation_context": {
+        "operation": "typed",
+        "route_byte_limit": 8388617,
+        "reader_version": 1,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 1
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 9,
+            "schema_version": 1
+          },
+          {
+            "type_id": 10,
+            "schema_version": 1
+          },
+          {
+            "type_id": 11,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null
+      },
+      "expectation": "reject",
+      "rules": [
+        "T8"
+      ],
+      "error_category": "schema",
+      "error_stage": "8.2"
+    },
+    {
+      "id": "topic-submission-burn-at-limit",
+      "description": "A type-10 submission with a 16,384-byte burn transaction: at the CDDL bound.",
+      "source": "typescript",
+      "frame_hex": "46524e4b010000408ea4000a0101020103594083a3006a6672616e6b2d7465737401586f46524e4b0100000066a400090101020103585ca3006a6672616e6b2d74657374016a6672616e6b2e64656d6f0358400e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c302594000808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49545f6a75",
+      "validation_context": {
+        "operation": "typed",
+        "route_byte_limit": 8388617,
+        "reader_version": 1,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 1
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 9,
+            "schema_version": 1
+          },
+          {
+            "type_id": 10,
+            "schema_version": 1
+          },
+          {
+            "type_id": 11,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null
+      },
+      "expectation": "accept",
+      "rules": [
+        "T8"
+      ],
+      "type_id": 10,
+      "schema_version": 1,
+      "content_hash_hex": "12700f45560052daeda6b535beba419ee029c76087d3326f421ff0def6c86464"
+    },
+    {
+      "id": "topic-submission-carries-direction",
+      "description": "A type-10 submission that adds a vote direction at field 3: the direction is read from the transaction, so the schema has none (T8, C12).",
+      "source": "typescript",
+      "frame_hex": "46524e4b01000000fca4000a010102010358f2a4006a6672616e6b2d7465737401586f46524e4b0100000066a400090101020103585ca3006a6672616e6b2d74657374016a6672616e6b2e64656d6f0358400e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c302586e808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f0301",
+      "validation_context": {
+        "operation": "typed",
+        "route_byte_limit": 8388617,
+        "reader_version": 1,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 1
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 9,
+            "schema_version": 1
+          },
+          {
+            "type_id": 10,
+            "schema_version": 1
+          },
+          {
+            "type_id": 11,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null
+      },
+      "expectation": "reject",
+      "rules": [
+        "T8",
+        "C12"
+      ],
+      "error_category": "schema",
+      "error_stage": "8.2"
+    },
+    {
+      "id": "topic-submission-burn-not-bytes",
+      "description": "A type-10 submission whose burn transaction is text.",
+      "source": "typescript",
+      "frame_hex": "46524e4b010000008da4000a01010201035883a3006a6672616e6b2d7465737401586f46524e4b0100000066a400090101020103585ca3006a6672616e6b2d74657374016a6672616e6b2e64656d6f0358400e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c302627478",
+      "validation_context": {
+        "operation": "typed",
+        "route_byte_limit": 8388617,
+        "reader_version": 1,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 1
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 9,
+            "schema_version": 1
+          },
+          {
+            "type_id": 10,
+            "schema_version": 1
+          },
+          {
+            "type_id": 11,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null
+      },
+      "expectation": "reject",
+      "rules": [
+        "T8"
+      ],
+      "error_category": "schema",
+      "error_stage": "8.2"
+    },
+    {
+      "id": "topic-vote-target-31-bytes",
+      "description": "A type-11 vote with a 31-byte target hash.",
+      "source": "typescript",
+      "frame_hex": "46524e4b01000000aaa4000b010102010358a0a3006a6672616e6b2d7465737401581f4f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e9902586ea5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e4954",
+      "validation_context": {
+        "operation": "typed",
+        "route_byte_limit": 8388617,
+        "reader_version": 1,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 1
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 9,
+            "schema_version": 1
+          },
+          {
+            "type_id": 10,
+            "schema_version": 1
+          },
+          {
+            "type_id": 11,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null
+      },
+      "expectation": "reject",
+      "rules": [
+        "S12"
+      ],
+      "error_category": "schema",
+      "error_stage": "8.2"
+    },
+    {
+      "id": "topic-vote-target-33-bytes",
+      "description": "A type-11 vote with a 33-byte target hash.",
+      "source": "typescript",
+      "frame_hex": "46524e4b01000000aca4000b010102010358a2a3006a6672616e6b2d746573740158214f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4af02586ea5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e4954",
+      "validation_context": {
+        "operation": "typed",
+        "route_byte_limit": 8388617,
+        "reader_version": 1,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 1
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 9,
+            "schema_version": 1
+          },
+          {
+            "type_id": 10,
+            "schema_version": 1
+          },
+          {
+            "type_id": 11,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null
+      },
+      "expectation": "reject",
+      "rules": [
+        "S12"
+      ],
+      "error_category": "schema",
+      "error_stage": "8.2"
+    },
+    {
+      "id": "topic-vote-target-not-bytes",
+      "description": "A type-11 vote whose target is text.",
+      "source": "typescript",
+      "frame_hex": "46524e4b010000008da4000b01010201035883a3006a6672616e6b2d74657374016361626302586ea5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e4954",
+      "validation_context": {
+        "operation": "typed",
+        "route_byte_limit": 8388617,
+        "reader_version": 1,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 1
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 9,
+            "schema_version": 1
+          },
+          {
+            "type_id": 10,
+            "schema_version": 1
+          },
+          {
+            "type_id": 11,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null
+      },
+      "expectation": "reject",
+      "rules": [
+        "S12"
+      ],
+      "error_category": "schema",
+      "error_stage": "8.2"
+    },
+    {
+      "id": "topic-vote-missing-burn",
+      "description": "A type-11 vote without a burn transaction.",
+      "source": "typescript",
+      "frame_hex": "46524e4b010000003aa4000b01010201035830a2006a6672616e6b2d74657374015820f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47",
+      "validation_context": {
+        "operation": "typed",
+        "route_byte_limit": 8388617,
+        "reader_version": 1,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 1
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 9,
+            "schema_version": 1
+          },
+          {
+            "type_id": 10,
+            "schema_version": 1
+          },
+          {
+            "type_id": 11,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null
+      },
+      "expectation": "reject",
+      "rules": [
+        "T8"
+      ],
+      "error_category": "schema",
+      "error_stage": "8.2"
+    },
+    {
+      "id": "topic-vote-empty-burn",
+      "description": "A type-11 vote with an empty burn transaction.",
+      "source": "typescript",
+      "frame_hex": "46524e4b010000003ca4000b01010201035832a3006a6672616e6b2d74657374015820f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c470240",
+      "validation_context": {
+        "operation": "typed",
+        "route_byte_limit": 8388617,
+        "reader_version": 1,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 1
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 9,
+            "schema_version": 1
+          },
+          {
+            "type_id": 10,
+            "schema_version": 1
+          },
+          {
+            "type_id": 11,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null
+      },
+      "expectation": "reject",
+      "rules": [
+        "T8"
+      ],
+      "error_category": "schema",
+      "error_stage": "8.2"
+    },
+    {
+      "id": "topic-vote-carries-direction",
+      "description": "A type-11 vote that adds a direction at field 3: the direction and the weight are the transaction's (T8, C12).",
+      "source": "typescript",
+      "frame_hex": "46524e4b01000000ada4000b010102010358a3a4006a6672616e6b2d74657374015820f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c4702586ea5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e49540301",
+      "validation_context": {
+        "operation": "typed",
+        "route_byte_limit": 8388617,
+        "reader_version": 1,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 1
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 9,
+            "schema_version": 1
+          },
+          {
+            "type_id": 10,
+            "schema_version": 1
+          },
+          {
+            "type_id": 11,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null
+      },
+      "expectation": "reject",
+      "rules": [
+        "T8",
+        "C12"
+      ],
+      "error_category": "schema",
+      "error_stage": "8.2"
+    },
+    {
+      "id": "topic-vote-network-invalid",
+      "description": "A type-11 vote with an invalid network tag.",
+      "source": "typescript",
+      "frame_hex": "46524e4b01000000a5a4000b0101020103589ba300642d626164015820f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c4702586ea5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e4954",
+      "validation_context": {
+        "operation": "typed",
+        "route_byte_limit": 8388617,
+        "reader_version": 1,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 1
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 9,
+            "schema_version": 1
+          },
+          {
+            "type_id": 10,
+            "schema_version": 1
+          },
+          {
+            "type_id": 11,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null
+      },
+      "expectation": "reject",
+      "rules": [
+        "S1"
+      ],
+      "error_category": "schema",
+      "error_stage": "8.2"
+    },
+    {
+      "id": "topic-post-as-message-item",
+      "description": "A type-8 revision whose item is a type-9 topic post: an assigned type is not an open-field type.",
+      "source": "typescript",
+      "frame_hex": "46524e4b0100000085a400080101020103587ba200656672616e6b0181586f46524e4b0100000066a400090101020103585ca3006a6672616e6b2d74657374016a6672616e6b2e64656d6f0358400e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3",
+      "validation_context": {
+        "operation": "typed",
+        "route_byte_limit": 8388617,
+        "reader_version": 1,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 1
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 9,
+            "schema_version": 1
+          },
+          {
+            "type_id": 10,
+            "schema_version": 1
+          },
+          {
+            "type_id": 11,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null
+      },
+      "expectation": "reject",
+      "rules": [
+        "S8"
+      ],
+      "error_category": "semantic",
+      "error_stage": "8.4"
+    },
+    {
+      "id": "topic-submission-as-message-item",
+      "description": "A type-16 container holding a type-10 submission.",
+      "source": "typescript",
+      "frame_hex": "46524e4b0100000114a400100101020103590109a1008159010346524e4b01000000faa4000a010102010358f0a3006a6672616e6b2d7465737401586f46524e4b0100000066a400090101020103585ca3006a6672616e6b2d74657374016a6672616e6b2e64656d6f0358400e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c302586e808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f",
+      "validation_context": {
+        "operation": "typed",
+        "route_byte_limit": 8388617,
+        "reader_version": 1,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 1
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 9,
+            "schema_version": 1
+          },
+          {
+            "type_id": 10,
+            "schema_version": 1
+          },
+          {
+            "type_id": 11,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null
+      },
+      "expectation": "reject",
+      "rules": [
+        "S8"
+      ],
+      "error_category": "semantic",
+      "error_stage": "8.4"
+    },
+    {
+      "id": "topic-vote-as-message-item",
+      "description": "A type-8 revision whose item is a type-11 vote.",
+      "source": "typescript",
+      "frame_hex": "46524e4b01000000caa40008010102010358c0a200656672616e6b018158b446524e4b01000000aba4000b010102010358a1a3006a6672616e6b2d74657374015820f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c4702586ea5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e4954",
+      "validation_context": {
+        "operation": "typed",
+        "route_byte_limit": 8388617,
+        "reader_version": 1,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 1
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 9,
+            "schema_version": 1
+          },
+          {
+            "type_id": 10,
+            "schema_version": 1
+          },
+          {
+            "type_id": 11,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null
+      },
+      "expectation": "reject",
+      "rules": [
+        "S8"
+      ],
+      "error_category": "semantic",
+      "error_stage": "8.4"
+    },
+    {
+      "id": "unassigned-type-12-remains-an-open-item",
+      "description": "A type-8 revision whose item has the still-unassigned type 12: retained as an unknown child (V6.1), so the assigned range ends at 11.",
+      "source": "typescript",
+      "frame_hex": "46524e4b010000002aa4000801010201035820a200656672616e6b01815546524e4b010000000ca4000c010102010343a10001",
+      "validation_context": {
+        "operation": "typed",
+        "route_byte_limit": 8388617,
+        "reader_version": 1,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 1
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 9,
+            "schema_version": 1
+          },
+          {
+            "type_id": 10,
+            "schema_version": 1
+          },
+          {
+            "type_id": 11,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null
+      },
+      "expectation": "accept",
+      "rules": [
+        "V6.1",
+        "S8"
+      ],
+      "type_id": 8,
+      "schema_version": 1,
+      "content_hash_hex": "27fd927eba7aeff1c0958a2c8cf761e85ea98e78870fa0acf83fc74d640cbf80"
     }
   ]
 }

@@ -257,6 +257,63 @@ export const deliveryFrame = (
 export { recipientPayloadDigest }
 
 // ---------------------------------------------------------------------------------------------
+// Topic events (types 9, 10, 11)
+// ---------------------------------------------------------------------------------------------
+
+export function topicPostPayload(
+  o: Partial<{
+    net: string
+    topic: string
+    parent: Uint8Array | null
+    body: Uint8Array
+  }> = {},
+): Fields {
+  const m = M([
+    [0, o.net ?? NET],
+    [1, o.topic ?? 'frank.demo'],
+    [3, o.body ?? bytesOf(64, 21)],
+  ])
+  if (o.parent !== null && o.parent !== undefined) m.set(2, o.parent)
+  return m
+}
+
+export const topicPostFrame = (
+  o?: Parameters<typeof topicPostPayload>[0],
+): Uint8Array => fr(9, topicPostPayload(o))
+
+/** Filler for the raw signed chain transaction: the codec never opens it (README T8). */
+export const burnTx = (seed = 31, length = 110): Uint8Array =>
+  bytesOf(length, seed)
+
+export function topicSubmissionPayload(
+  o: Partial<{ net: string; post: Uint8Array; burnTx: Uint8Array }> = {},
+): Fields {
+  return M([
+    [0, o.net ?? NET],
+    [1, o.post ?? topicPostFrame()],
+    [2, o.burnTx ?? burnTx()],
+  ])
+}
+
+export const topicSubmissionFrame = (
+  o?: Parameters<typeof topicSubmissionPayload>[0],
+): Uint8Array => fr(10, topicSubmissionPayload(o))
+
+export function topicVotePayload(
+  o: Partial<{ net: string; target: Uint8Array; burnTx: Uint8Array }> = {},
+): Fields {
+  return M([
+    [0, o.net ?? NET],
+    [1, o.target ?? bytesOf(32, 41)],
+    [2, o.burnTx ?? burnTx(32)],
+  ])
+}
+
+export const topicVoteFrame = (
+  o?: Parameters<typeof topicVotePayload>[0],
+): Uint8Array => fr(11, topicVotePayload(o))
+
+// ---------------------------------------------------------------------------------------------
 // Directory (types 2, 4, 7)
 // ---------------------------------------------------------------------------------------------
 

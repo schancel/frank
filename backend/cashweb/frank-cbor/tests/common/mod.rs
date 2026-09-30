@@ -3,9 +3,9 @@
 
 use frank_cbor::{
     cbor_map, content_hash, decode_canonical, encode_canonical, encode_frame,
-    message_content_digest, payment_commitment, recipient_payload_digest, CborValue,
-    EnvelopeFields, FramePayload, Operation, ParsedFrame, PriorStatement, SupportedSchema,
-    ValidationContext, KNOWN_TYPES, MAX_FRAME_BYTES,
+    message_content_digest, payment_commitment, recipient_payload_digest, validate_frame,
+    CborValue, EnvelopeFields, FramePayload, Operation, ParsedFrame, PriorStatement,
+    SupportedSchema, ValidationContext, ValidationResult, KNOWN_TYPES, MAX_FRAME_BYTES,
 };
 
 pub const NET: &str = "frank-test";
@@ -147,6 +147,50 @@ pub fn direct_message_frame() -> Vec<u8> {
     )
 }
 
+/// Fixture 4: a top-level type-9 topic post.
+pub fn topic_post_frame() -> Vec<u8> {
+    fr(
+        9,
+        &cbor_map(vec![
+            (0, CborValue::Text(NET.to_string())),
+            (1, CborValue::Text("frank.demo".to_string())),
+            (3, CborValue::Bytes(bytes_of(64, 21))),
+        ]),
+    )
+}
+
+/// Fixture 5: a type-10 submission wrapping [`topic_post_frame`].
+pub fn topic_post_submission_frame() -> Vec<u8> {
+    fr(
+        10,
+        &cbor_map(vec![
+            (0, CborValue::Text(NET.to_string())),
+            (1, CborValue::Bytes(topic_post_frame())),
+            (2, CborValue::Bytes(bytes_of(110, 31))),
+        ]),
+    )
+}
+
+/// The T1 content hash of [`topic_post_frame`].
+pub fn topic_post_hash() -> Vec<u8> {
+    match validate_frame(&topic_post_frame(), &topic_context()).expect("topic post") {
+        ValidationResult::Parsed(parsed) => content_hash(&parsed).expect("t1").to_vec(),
+        _ => panic!("topic post was not parsed"),
+    }
+}
+
+/// Fixture 6: a type-11 vote naming [`topic_post_hash`].
+pub fn topic_vote_frame() -> Vec<u8> {
+    fr(
+        11,
+        &cbor_map(vec![
+            (0, CborValue::Text(NET.to_string())),
+            (1, CborValue::Bytes(topic_post_hash())),
+            (2, CborValue::Bytes(bytes_of(110, 32))),
+        ]),
+    )
+}
+
 fn relay(i: u32) -> CborValue {
     let mut id = bytes_of(16, i);
     id[0] = u8::try_from(i).expect("relay index");
@@ -239,14 +283,15 @@ pub fn checkpoint_frame() -> Vec<u8> {
     )
 }
 
-pub fn typed_context() -> ValidationContext {
+/// Topic-event types (README E5, types 9 through 11), assigned by #136.
+pub const TOPIC_TYPES: [u32; 3] = [9, 10, 11];
+
+fn context_for(types: impl Iterator<Item = u32>) -> ValidationContext {
     ValidationContext {
         operation: Operation::Typed,
         route_byte_limit: MAX_FRAME_BYTES as u64,
         reader_version: 1,
-        supported_schemas: KNOWN_TYPES
-            .iter()
-            .copied()
+        supported_schemas: types
             .map(|type_id| SupportedSchema {
                 type_id,
                 schema_version: 1,
@@ -255,6 +300,21 @@ pub fn typed_context() -> ValidationContext {
         opaque_retention_allowed: false,
         prior: PriorStatement::None,
     }
+}
+
+/// The reader of the corpus written before #136: every version-1 type except the topic events.
+pub fn typed_context() -> ValidationContext {
+    context_for(
+        KNOWN_TYPES
+            .iter()
+            .copied()
+            .filter(|type_id| !TOPIC_TYPES.contains(type_id)),
+    )
+}
+
+/// A reader that lists every known type, topic events included.
+pub fn topic_context() -> ValidationContext {
+    context_for(KNOWN_TYPES.iter().copied())
 }
 
 pub fn context_from_json(value: &serde_json::Value) -> ValidationContext {

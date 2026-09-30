@@ -139,6 +139,38 @@ export interface KeyTransitionStatement {
   unknownFields: UnknownFields
 }
 
+export interface TopicPost {
+  type: 9
+  network: string
+  /** Exact UTF-8, never normalized (S12). */
+  topic: string
+  /** T1 hash of the parent type-9 frame; absent for a top-level post. */
+  parentHash?: Uint8Array
+  /** Opaque in version 1. */
+  body: Uint8Array
+  unknownFields: UnknownFields
+}
+
+export interface TopicPostSubmission<F> {
+  type: 10
+  network: string
+  /** The type-9 topic-post frame. */
+  postFrame: F
+  /** Raw signed chain transaction that burns for the post (T7, T8). */
+  burnTx: Uint8Array
+  unknownFields: UnknownFields
+}
+
+export interface TopicVoteSubmission {
+  type: 11
+  network: string
+  /** T1 hash of the target type-9 frame. */
+  targetHash: Uint8Array
+  /** Raw signed chain transaction that burns for the vote (T7, T8). */
+  burnTx: Uint8Array
+  unknownFields: UnknownFields
+}
+
 export interface MessageContentRevision<C> {
   type: 8
   items: C[]
@@ -165,6 +197,9 @@ export type TypedPayload<F, C> =
   | RecipientEncryptedPayload
   | EncryptedMessageContent<F>
   | KeyTransitionStatement
+  | TopicPost
+  | TopicPostSubmission<F>
+  | TopicVoteSubmission
   | MessageContentRevision<C>
   | ContainerMessageItem<C>
   | TextMessageItem

@@ -1,4 +1,4 @@
-; The four .cddl files are one schema: concatenate them (common.cddl first)
+; The five .cddl files are one schema: concatenate them (common.cddl first)
 ; before compiling, because CDDL has no import. The `* uint => frank-value`
 ; wildcards describe how a reader sees a newer compatible schema (README V6.3
 ; and C12); at an exactly supported schema version an undeclared key is a

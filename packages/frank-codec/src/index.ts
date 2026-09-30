@@ -29,5 +29,6 @@ export {
   paymentCommitment,
   recipientPayloadDigest,
   toHex,
+  topicVoteCommitment,
 } from './hash'
 export { compareAccounts, compareBytes } from './semantic'

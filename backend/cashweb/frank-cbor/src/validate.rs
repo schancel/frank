@@ -10,7 +10,7 @@ use crate::error::{CodecError, ContextError, Error, ErrorCategory, ErrorStage};
 use crate::limits::{
     is_known_type, FRAME_HEADER_BYTES, FRAME_MAGIC, FRAME_VERSION, KNOWN_TYPES, MAX_FRAME_BYTES,
     MAX_MESSAGE_ITEMS_TOTAL, TYPE_DIRECTORY_STATEMENT, TYPE_KEY_TRANSITION_STATEMENT,
-    TYPE_MESSAGE_REVISION, TYPE_RECIPIENT_PAYLOAD,
+    TYPE_MESSAGE_REVISION, TYPE_RECIPIENT_PAYLOAD, TYPE_TOPIC_POST,
 };
 use crate::model::{
     ChildFrame, FrameOnly, JournalFact, KeyTransition, OpaqueSection, ParsedFrame, PaymentMember,
@@ -308,7 +308,7 @@ fn process_frame(
             ));
         }
     }
-    if matches!(mode, Mode::Open) && (1..=8).contains(&env.type_id) {
+    if matches!(mode, Mode::Open) && (1..=11).contains(&env.type_id) {
         return Err(fail(
             ErrorCategory::Semantic,
             ErrorStage::S84,
@@ -696,6 +696,47 @@ fn open_children(
             prior_authority,
             revision,
             new_key,
+            unknown,
+        }),
+        Draft::TopicPost {
+            network,
+            topic,
+            parent_hash,
+            body,
+            unknown,
+        } => Ok(TypedPayload::TopicPost {
+            network,
+            topic,
+            parent_hash,
+            body,
+            unknown,
+        }),
+        Draft::TopicPostSubmission {
+            network,
+            post_frame,
+            burn_tx,
+            unknown,
+        } => Ok(TypedPayload::TopicPostSubmission {
+            network,
+            post_frame: open_required(
+                post_frame,
+                TYPE_TOPIC_POST,
+                env_depth + 1,
+                shared,
+                &format!("{path}.1"),
+            )?,
+            burn_tx,
+            unknown,
+        }),
+        Draft::TopicVoteSubmission {
+            network,
+            target_hash,
+            burn_tx,
+            unknown,
+        } => Ok(TypedPayload::TopicVoteSubmission {
+            network,
+            target_hash,
+            burn_tx,
             unknown,
         }),
         Draft::Revision { items, unknown } => Ok(TypedPayload::MessageRevision {

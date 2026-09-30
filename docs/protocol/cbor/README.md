@@ -1,7 +1,8 @@
 # Frank deterministic CBOR, version 1
 
-Status: normative for the codec proof in issues #131 and #182. Production
-protocols do not use this format until their separate migration tickets land.
+Status: normative for the codec proof in issues #131 and #182 and for the
+topic-event schemas of issue #136. Production protocols do not use this format
+until their separate migration tickets land.
 
 The words MUST, MUST NOT, SHOULD, and MAY are normative as described by RFC 2119. Numbered rules are stable references for implementations and test
 vectors.
@@ -53,7 +54,7 @@ check; the empty envelope is then truncated CBOR at stage 5 of section 9
 
 F4. The stage 1 limits (`route_byte_limit` and `MAX_FRAME_BYTES`) MUST be
 checked before allocating or decoding the body. The type-specific frame limits
-of R2 and R3 apply at stage 8.1 of section 9 instead, so a malformed or
+of R2, R3, and R6 apply at stage 8.1 of section 9 instead, so a malformed or
 unknown-type frame never reports them.
 
 F5. Failure of magic, version, length, CBOR, schema, or semantic validation
@@ -108,6 +109,9 @@ E5. Type identifiers are never reused. Version 1 reserves:
 |          6 | Decrypted message content                  | [direct-message.cddl](direct-message.cddl) |
 |          7 | Key-transition statement                   | [directory.cddl](directory.cddl)           |
 |          8 | Plaintext message-content revision         | [direct-message.cddl](direct-message.cddl) |
+|          9 | Topic post                                 | [topic.cddl](topic.cddl)                   |
+|         10 | Topic post submission (post plus its burn) | [topic.cddl](topic.cddl)                   |
+|         11 | Topic vote submission                      | [topic.cddl](topic.cddl)                   |
 |         16 | Container message item                     | [direct-message.cddl](direct-message.cddl) |
 |         17 | UTF-8 text message item                    | [direct-message.cddl](direct-message.cddl) |
 | 0xffff0001 | Proof-only unknown future message item     | Opaque fixture payload                     |
@@ -115,8 +119,8 @@ E5. Type identifiers are never reused. Version 1 reserves:
 The CDDL rule for each type's payload is: 1 `direct-message-delivery`; 2
 `directory-attestation`; 3 `mailbox-checkpoint`; 4 `directory-statement`; 5
 `recipient-encrypted-payload`; 6 `encrypted-message-content`; 7
-`key-transition-statement`; 8 `message-content-revision`; 16
-`container-message-item`; 17 `text-message-item`.
+`key-transition-statement`; 8 `message-content-revision`; 9 `topic-post`; 10 `topic-post-submission`; 11
+`topic-vote-submission`; 16 `container-message-item`; 17 `text-message-item`.
 
 Unassigned identifiers remain reserved and MUST NOT be emitted. The proof-only
 identifier MUST NOT appear in a production writer; it remains permanently
@@ -276,6 +280,15 @@ R5. Lengths and aggregate counters MUST be checked using arithmetic that cannot
 wrap. A limit error is distinct from malformed, non-canonical, unsupported, and
 schema errors as defined by the vector manifest.
 
+R6. The topic-event frame limits are 1 MiB (1,048,576 bytes) for a type-9 post
+and for a type-10 post submission, 64 KiB (65,536 bytes) for a type-11 vote
+submission, and 512 KiB (524,288 bytes) in one type-9 body. The body bound is
+`resource` at stage 8.1, like the type-5 ciphertext. The 1 MiB limit is
+deliberately the direct-message limit (R2): a post is public content that a
+phone can buffer, and larger media is chunked or referenced. Topic text
+(1 through 512 bytes) and burn transactions (1 through 16,384 bytes) are plain
+CDDL bounds, so exceeding them is `schema`.
+
 ## 5. Semantic ordering and uniqueness
 
 S1. Network tags are lowercase ASCII identifiers matching
@@ -366,7 +379,8 @@ frame's network (field 0) MUST equal the type-5 network (`semantic`), and its
 digest (field 3) MUST equal the T1a digest of its opened type-8 frame (field 2)
 (`cryptographic`); these are steps 10.2 and 10.3 of section 9. A framed field
 whose schema requires a specific type (type-1 field 2 is type 5, type-2 field 0
-is type 4, a key-transition's field 0 is type 7, type-6 field 2 is type 8) MUST
+is type 4, a key-transition's field 0 is type 7, type-6 field 2 is type 8,
+type-10 field 1 is type 9) MUST
 carry that `type_id`, otherwise `semantic`, reported at stage 8.4 of the parent as section 9 orders it;
 such a field
 is never an open field. Message-item array
@@ -402,9 +416,26 @@ context has no clock), recovery-authority precedence or timelocks, and
 transition replay across a reset verifier are policy owned by the directory
 migration (#133), not decided by this codec specification.
 
+S11. A type-10 post submission's network (field 0) MUST equal the opened
+type-9 payload's network (field 0): a stage 9 `semantic` check. A type-11 vote
+submission has no opened child, so its network is bound only by T7 and T8.
+
+S12. Topic identity and structure. The identity of a post is the T1 content
+hash of its complete type-9 frame. Field 2 of a type 9 (the parent post) and
+field 1 of a type 11 (the target post) each hold such a hash. A top-level post
+omits field 2; a `null` value is a `schema` error, so every post has exactly one
+canonical encoding. The codec cannot check that a parent or target exists, and
+a post cannot name itself (its hash would depend on its own bytes). The topic
+is exact UTF-8 text: no case folding, trimming, segment splitting, or Unicode
+normalization is applied, so a consumer that wants any of those states its
+policy explicitly (as S4 does for endpoints). The body is an opaque byte string
+in this version; the topic in a type-9 frame is authoritative for routing, and a
+body that repeats a topic or parent is not cross-checked by the codec.
+
 ## 6. Fixture schemas and identity boundaries
 
-The CDDL files describe the three proof families required by #131. CDDL cannot
+The CDDL files describe the three proof families required by #131 and, in
+[topic.cddl](topic.cddl), the topic events of #136. CDDL cannot
 express framing, canonical byte order, regexes, aggregate limits, cross-field
 equality, or cryptographic validation; the numbered prose rules remain
 normative.
@@ -465,6 +496,26 @@ kind, and `tombstone-fact-payload` is unbound until the checkpoint migration
 not a causal or merge order. Checkpoint authorization, chunk linkage for R4
 exports, and tombstone replay semantics are owned by #134. The proof fixture contains an unknown section and an unknown nested
 message item whose exact bytes survive every round trip.
+
+### Topic events
+
+Type 9 is a public post: a network, a topic, an optional parent post hash, and
+an opaque body. It carries no burn, author, or vote. Type 10 wraps the exact
+type-9 frame together with the raw signed transaction that burns for it, and
+type 11 carries a raw signed burn for an existing post together with that post's
+hash. The wrapper exists because a burn commits to the identity of the post
+(T7), and a frame cannot contain a commitment to itself; this is the same
+reason a directory signature lives in type 2 outside the type-4 statement. The
+author, the vote direction, and the vote weight are properties of the verified
+chain transaction (T8). Neither wrapper repeats them, so there is one source of
+truth and nothing for a relay to reconcile.
+
+A post is public content, so the body is not encrypted. Its payload is opaque in
+this version: the forum payload migration (#113) will define what a body holds.
+The protobuf path keeps working unchanged until that migration's explicit
+cutover; the two encodings never share an identity (V5), because a CBOR post is
+identified by its T1 hash and a protobuf post by the SHA-256 of its payload. A
+protobuf object is never transcoded into a type 9, 10, or 11, or the reverse.
 
 ## 7. Evolution and retention
 
@@ -530,11 +581,11 @@ T1. The content hash is SHA-256 of the common transcript with domain
 `frank/content-hash/v1` and empty context. Its network argument is mandatory and
 is selected without caller discretion:
 
-|             Type | T1 network source                               |
-| ---------------: | ----------------------------------------------- |
-| 1, 3, 4, 5, 6, 7 | The validated payload's field 0                 |
-|                2 | The opened type-4 statement's validated field 0 |
-|        8, 16, 17 | The literal `frank`                             |
+|                        Type | T1 network source                               |
+| --------------------------: | ----------------------------------------------- |
+| 1, 3, 4, 5, 6, 7, 9, 10, 11 | The validated payload's field 0                 |
+|                           2 | The opened type-4 statement's validated field 0 |
+|                   8, 16, 17 | The literal `frank`                             |
 
 Content hashes are undefined for an unknown type. A pure opaque forwarder
 therefore retains unknown bytes but does not invent a verified content hash.
@@ -631,6 +682,32 @@ T6. A one-byte change anywhere in a bound frame changes the transcript. The
 golden-vector proof MUST demonstrate changed hashes and failed verification;
 canonical encoding alone is not authentication.
 
+T7. The topic burn commitment is `SHA256(ascii("frank:topic-vote:v1") ||
+u16be(len(network)) || utf8(network) || target_hash)`, where `network` is field
+0 of the type-10 or type-11 frame and `target_hash` is 32 bytes: for a type 11,
+its field 1; for a type 10, the T1 content hash of the opened type-9 frame
+(field 1). A post's own burn is therefore a vote on that post, and one function
+serves both. A commitment binds the network (T5) and the exact target, so a
+burn transaction cannot pay for a post or vote on another network, on another
+post, or on a post whose frame differs by one byte (T6).
+
+T8. A consumer that accepts a type-10 or type-11 event MUST derive the T7
+commitment itself and MUST NOT accept one supplied by the client. It MUST verify
+against the chain that the transaction carries exactly that commitment. The
+vote direction, the burned value (the vote's weight), and the sender are the
+verified transaction's, never an encoded assertion; the schemas carry none. A
+burn transaction's consumption key is its chain transaction identifier, so the
+same burn counts at most once whether it arrives as a type 10, a type 11, or a
+legacy protobuf object. For Monad the calldata layout is
+`"TPIC" || 0x02 || direction || commitment`, with direction byte `01` for an
+up-vote and `00` for a down-vote. The layout of the legacy protobuf path
+(`0x01`, commitment equal to the protobuf `payload_hash`) is a different
+format: a consumer MUST NOT accept `0x01` calldata for a CBOR event or `0x02`
+calldata for a protobuf object, so a burn made for one encoding cannot be
+replayed into the other. Everything else about the chain adapter (the burn
+address, chain identifier, confirmation depth, and value handling) belongs to
+the relay migration and is not decided by this codec specification.
+
 ## 9. Validation order
 
 A version-1 implementation runs the stages below in order, and within a stage
@@ -669,19 +746,20 @@ category, and an implementation MUST NOT continue to report a later failure.
    projection ignoring wildcard fields (V6.3).
 8. **Typed structure**, for a known type only, in this order:
    1. type-specific limits: the root frame length against R2's 1 MiB for type 1
-      and R3's 256 KiB for type 2 (type 3 uses the global limit), and the counts
-      named by R2 through R4 read from the decoded fields before typed
+      and R3's 256 KiB for type 2 (type 3 uses the global limit; R6 gives 1 MiB
+      for types 9 and 10 and 64 KiB for type 11), and the counts
+      named by R2 through R4 and R6 read from the decoded fields before typed
       conversion: `resource`. R2's cumulative 256-item total is not an 8.1 check; it is
       charged in 8.4. The CDDL bounds that restate these limits, and so are
       `resource` when exceeded, are exactly: 64 payment members, 256 message
-      items per array, the 524,288-byte ciphertext, 32 relay bindings, 16
+      items per array, the 524,288-byte ciphertext, the 524,288-byte topic body, 32 relay bindings, 16
       signatures, 4,096 journal facts, and 4,096 opaque sections. Every other
       CDDL bound, including a lower bound such as `[1*64]` given no items and
       the upper bounds of `[1*16 key-transition]` and `[1*8 account-ref]`, is `schema`;
    2. the type's CDDL structure and range rules, including network-tag,
       ASCII-identifier, and endpoint-ASCII syntax (S1, C6, S4), and C12 unknown
       keys: `schema`. A CDDL cardinality or `.size` bound that merely restates an
-      R2 through R4 limit is `resource`, checked in 8.1, not `schema`;
+      R2 through R4 or R6 limit is `resource`, checked in 8.1, not `schema`;
    3. allocated-identifier checks (S2b, S2c; every encryption suite other than
       65535 is unallocated in version 1): `unsupported`;
    4. recursive opening of only the byte-string fields that the schema declares
@@ -691,11 +769,11 @@ category, and an implementation MUST NOT continue to report a later failure.
       - Before opening each child of a message-item array (an open field), charge
         it against R2's 256-item total for the whole operation. Every such child
         counts, whether its type is known, unknown, or retained, and a
-        required-type child (type 5, 6, or 8) never does. The first child over
+        required-type child (type 5, 6, 8, or 9) never does. The first child over
         256 fails `resource` before that child's stage 2. The rule applies to any
         root and is labelled stage 8.4.
       - In an open field (a message item), a child of an assigned type other than
-        16 or 17 (types 1 through 8) is `semantic`, checked after its stage 6
+        16 or 17 (types 1 through 11) is `semantic`, checked after its stage 6
         like a required-type mismatch. Otherwise the child runs stages 2
         through 9 with V6 applied to it. Children open depth-first in array
         order, and the first failure wins. An unknown type, an unknown frame version, or a
@@ -717,7 +795,8 @@ category, and an implementation MUST NOT continue to report a later failure.
    type-4 child's. The checks are ordering, uniqueness, cross-field, network,
    and S10, the presence of an entry signed by the statement subject,
    selection of the prior authority (S4a, T2a), the S9 requirement that the
-   destination be key type 1, and T3a.5 index contiguity: `semantic`. No signature or digest is
+   destination be key type 1, T3a.5 index contiguity, and S11's network equality
+   between a type-10 submission and its opened type-9 post: `semantic`. No signature or digest is
    verified here.
 10. **Cryptographic and external checks**, `full` only, in this order. A root
     other than type 1 or type 2 runs no stage 10 check. For every root other than
@@ -780,7 +859,10 @@ normative rules. The generated index is `vectors/manifest.json`. Rust encodings
 of the three proof fixtures (direct message, directory attestation, mailbox
 checkpoint) are committed separately in `vectors/rust-origin.json` so the
 TypeScript codec can re-encode them; that file is not produced by the
-TypeScript fixture builders. A `reject` case names its stable error category and
+TypeScript fixture builders. The pure hashes of the topic events (T1 of a
+type-9 frame and the T7 commitment for a type-10 and a type-11 frame, each with
+a one-byte mutation) are pinned in `vectors/topic-commitments.json`, which both
+codecs recompute; a manifest has no field for a hash that is not a content hash. A `reject` case names its stable error category and
 MAY name the stage that determined it (`error_stage`, below). An
 `accept` case run through `typed` or `full` additionally names the type/schema and
 expected content hash. A `retain` case names the exact retained frame bytes and

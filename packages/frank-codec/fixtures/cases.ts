@@ -3,7 +3,8 @@
 // stage, which the manifest schema has no field for.
 import { Encodable, encodeCanonical } from '../src/cbor'
 import { ErrorCategory, ErrorStage } from '../src/errors'
-import { SupportedSchema } from '../src/validate'
+import { contentHash } from '../src/hash'
+import { KNOWN_TYPES, SupportedSchema, validateFrame } from '../src/validate'
 import {
   M,
   NET,
@@ -14,6 +15,7 @@ import {
   acct2,
   attestationFrame,
   body,
+  burnTx,
   bytesOf,
   checkpointFrame,
   checkpointPayload,
@@ -35,6 +37,12 @@ import {
   statementFrame,
   statementPayload,
   textItem,
+  topicPostFrame,
+  topicPostPayload,
+  topicSubmissionFrame,
+  topicSubmissionPayload,
+  topicVoteFrame,
+  topicVotePayload,
   transition,
   ts,
   transitionStatement,
@@ -3312,4 +3320,479 @@ acc(
   hi,
   ['F2'],
   { ...fo, retention: true },
+)
+
+// ---------------------------------------------------------------------------------------------
+// Topic events (types 9, 10, 11; README section 6, S11, S12, R6, T7, T8)
+//
+// Every case above runs against the reader that predates these types, so the corpus written
+// before #136 is unchanged byte for byte. The cases below run against a reader that lists them.
+// ---------------------------------------------------------------------------------------------
+
+const TOPIC_TYPES = new Set([9, 10, 11])
+const WITH_TOPICS: SupportedSchema[] = KNOWN_TYPES.map(typeId => ({
+  typeId,
+  schemaVersion: 1,
+}))
+/** The reader of every case above: the version-1 types allocated before #136. */
+export const PRE_TOPIC_SCHEMAS: SupportedSchema[] = WITH_TOPICS.filter(
+  s => !TOPIC_TYPES.has(s.typeId),
+)
+const TP = { ...TS, supported: WITH_TOPICS }
+
+const topicHash = (frame: Uint8Array): Uint8Array => {
+  const r = validateFrame(frame, { ...defaultTopicContext() })
+  if (r.kind !== 'parsed') throw new Error('topic fixture was not parsed')
+  return contentHash(r)
+}
+function defaultTopicContext() {
+  return {
+    operation: 'typed' as const,
+    routeByteLimit: 8_388_617,
+    readerVersion: 1,
+    supportedSchemas: WITH_TOPICS,
+    opaqueRetentionAllowed: false,
+    priorDirectoryStatementFrame: null,
+  }
+}
+
+const post = topicPostFrame()
+const postMutated = post.slice()
+postMutated[postMutated.length - 1] ^= 0x01
+const TOPIC_PARENT = topicHash(post)
+const replyPost = topicPostFrame({
+  parent: TOPIC_PARENT,
+  topic: 'frank.demo.reply',
+})
+
+acc(
+  'fixture-topic-post-typed',
+  'Fixture 4: a top-level type-9 topic post (no parent, 64-byte opaque body).',
+  post,
+  ['S12', 'T1'],
+  {
+    ...TP,
+    paired: 'topic-post-one-byte-mutation',
+    relation: 'one_byte_mutation',
+  },
+)
+acc(
+  'topic-post-one-byte-mutation',
+  'The topic post with its last body byte changed: still valid, a different T1 content hash and therefore a different T7 commitment (T6, T7).',
+  postMutated,
+  ['T6', 'T7'],
+  { ...TP, paired: 'fixture-topic-post-typed', relation: 'one_byte_mutation' },
+)
+acc(
+  'topic-post-with-parent',
+  'A reply: field 2 holds the 32-byte T1 hash of the parent type-9 frame.',
+  replyPost,
+  ['S12'],
+  TP,
+)
+acc(
+  'topic-post-topic-at-limit',
+  'A 512-byte topic (the CDDL upper bound; multi-byte UTF-8 counts bytes, not characters).',
+  topicPostFrame({ topic: 'a'.repeat(510) + 'é' }),
+  ['R6', 'S12'],
+  TP,
+)
+acc(
+  'topic-post-topic-not-normalized',
+  'A topic with a decomposed combining mark, an uppercase letter, and a dot-separated empty segment: accepted exactly as written (no normalization, S12).',
+  topicPostFrame({ topic: 'Cafe\u0301..x' }),
+  ['S12'],
+  TP,
+)
+acc(
+  'topic-post-newer-schema-extra-field',
+  'A type-9 post at schema 2 (min_reader 1) with an undeclared field 9: read through the schema-1 projection and the field retained (V6.3).',
+  fr(9, new Map([...topicPostPayload(), [9, 'future']]), 2, 1),
+  ['V6.3', 'C12'],
+  TP,
+)
+ret(
+  'topic-post-retained-by-a-reader-without-topics',
+  'A reader that predates type 9 retains a topic post as exact bytes where its containing contract permits it (E3, V6.1).',
+  post,
+  ['E3', 'V6.1'],
+  { supported: PRE_TOPIC_SCHEMAS },
+)
+
+acc(
+  'fixture-topic-post-submission-typed',
+  'Fixture 5: a type-10 submission that opens the type-9 post and carries its burn transaction (filler bytes: the codec never opens the transaction).',
+  topicSubmissionFrame(),
+  ['S8', 'S11', 'T1', 'T7'],
+  TP,
+)
+acc(
+  'topic-post-submission-of-reply',
+  'A type-10 submission whose opened post is a reply.',
+  topicSubmissionFrame({ post: replyPost }),
+  ['S8', 'S11'],
+  TP,
+)
+acc(
+  'fixture-topic-vote-typed',
+  "Fixture 6: a type-11 vote naming the T1 hash of the fixture post, with its burn transaction (filler bytes). The direction and the weight are the transaction's (T8).",
+  topicVoteFrame({ target: TOPIC_PARENT }),
+  ['S12', 'T1', 'T7'],
+  TP,
+)
+acc(
+  'topic-vote-newer-schema-extra-field',
+  'A type-11 vote at schema 2 with an undeclared field 9: retained through the schema-1 projection (V6.3).',
+  fr(11, new Map([...topicVotePayload(), [9, 1]]), 2, 1),
+  ['V6.3', 'C12'],
+  TP,
+)
+
+// Type 9 structure.
+const tpRej = (
+  id: string,
+  description: string,
+  frame: Uint8Array,
+  category: ErrorCategory,
+  stage: ErrorStage,
+  rules: string[],
+  o: Opts = {},
+) => rej(id, description, frame, category, stage, rules, { ...TP, ...o })
+const p9 = (mutate: (m: Map<number, Encodable>) => void): Uint8Array => {
+  const m = topicPostPayload()
+  mutate(m)
+  return fr(9, m)
+}
+tpRej(
+  'topic-post-missing-topic',
+  'A type-9 post without its topic (field 1).',
+  p9(m => m.delete(1)),
+  'schema',
+  '8.2',
+  ['C12'],
+)
+tpRej(
+  'topic-post-missing-body',
+  'A type-9 post without its body (field 3).',
+  p9(m => m.delete(3)),
+  'schema',
+  '8.2',
+  ['C12'],
+)
+tpRej(
+  'topic-post-empty-topic',
+  'A type-9 post with an empty topic: the CDDL lower bound is 1 byte.',
+  p9(m => m.set(1, '')),
+  'schema',
+  '8.2',
+  ['S12'],
+)
+tpRej(
+  'topic-post-topic-over-limit',
+  'A 513-byte topic, one over the CDDL upper bound.',
+  p9(m => m.set(1, 'a'.repeat(513))),
+  'schema',
+  '8.2',
+  ['S12'],
+)
+tpRej(
+  'topic-post-topic-multibyte-over-limit',
+  'A topic of 257 two-byte characters: 514 UTF-8 bytes, over the bound although only 257 characters long.',
+  p9(m => m.set(1, 'é'.repeat(257))),
+  'schema',
+  '8.2',
+  ['S12'],
+)
+tpRej(
+  'topic-post-topic-not-text',
+  'A type-9 post whose topic is a byte string.',
+  p9(m => m.set(1, bytesOf(4, 1))),
+  'schema',
+  '8.2',
+  ['S12'],
+)
+rej(
+  'topic-post-topic-invalid-utf8',
+  'A type-9 payload whose topic holds the invalid UTF-8 bytes c3 28.',
+  framePayload('a3 00 6a 6672616e6b2d74657374 01 62 c328 03 41 aa', 9),
+  'malformed',
+  '7',
+  ['C6'],
+  TP,
+)
+tpRej(
+  'topic-post-parent-null',
+  'A type-9 post whose optional parent (field 2) is encoded as null: an absent key is the only encoding of a top-level post (S12).',
+  p9(m => m.set(2, null)),
+  'schema',
+  '8.2',
+  ['S12'],
+)
+tpRej(
+  'topic-post-parent-31-bytes',
+  'A type-9 post with a 31-byte parent hash.',
+  p9(m => m.set(2, bytesOf(31, 5))),
+  'schema',
+  '8.2',
+  ['S12'],
+)
+tpRej(
+  'topic-post-parent-33-bytes',
+  'A type-9 post with a 33-byte parent hash.',
+  p9(m => m.set(2, bytesOf(33, 5))),
+  'schema',
+  '8.2',
+  ['S12'],
+)
+tpRej(
+  'topic-post-empty-body',
+  'A type-9 post with an empty body: the CDDL lower bound is 1 byte.',
+  p9(m => m.set(3, new Uint8Array(0))),
+  'schema',
+  '8.2',
+  ['R6'],
+)
+tpRej(
+  'topic-post-body-not-bytes',
+  'A type-9 post whose body is text.',
+  p9(m => m.set(3, 'hello')),
+  'schema',
+  '8.2',
+  ['C12'],
+)
+tpRej(
+  'topic-post-undeclared-field',
+  'A type-9 post at schema 1 with an undeclared field 4: an exact supported schema is closed (C12).',
+  p9(m => m.set(4, 1)),
+  'schema',
+  '8.2',
+  ['C12'],
+)
+tpRej(
+  'topic-post-carries-burn-field',
+  'A type-9 post that smuggles a burn transaction at field 4: the burn belongs to the type-10 wrapper (S12).',
+  p9(m => m.set(4, burnTx())),
+  'schema',
+  '8.2',
+  ['C12', 'S12'],
+)
+tpRej(
+  'topic-post-network-uppercase',
+  'A type-9 post with an uppercase network tag.',
+  p9(m => m.set(0, 'Frank-Test')),
+  'schema',
+  '8.2',
+  ['S1'],
+)
+tpRej(
+  'topic-post-network-missing',
+  'A type-9 post without a network tag.',
+  p9(m => m.delete(0)),
+  'schema',
+  '8.2',
+  ['S1'],
+)
+
+// Type 10 structure and semantics.
+tpRej(
+  'topic-submission-post-is-text-item',
+  'A type-10 submission whose field 1 is a type-17 frame instead of type 9.',
+  topicSubmissionFrame({ post: textItem() }),
+  'semantic',
+  '8.4',
+  ['S8'],
+)
+tpRej(
+  'topic-submission-post-is-vote',
+  'A type-10 submission whose field 1 is a type-11 vote frame.',
+  topicSubmissionFrame({ post: topicVoteFrame() }),
+  'semantic',
+  '8.4',
+  ['S8'],
+)
+tpRej(
+  'topic-submission-post-is-submission',
+  'A type-10 submission that opens another type-10 submission: a submission is never nested.',
+  topicSubmissionFrame({ post: topicSubmissionFrame() }),
+  'semantic',
+  '8.4',
+  ['S8'],
+)
+tpRej(
+  'topic-submission-post-is-unknown-type',
+  'A type-10 submission whose field 1 is an unknown frame: a required-type field never retains (S8).',
+  topicSubmissionFrame({ post: unknownItem() }),
+  'semantic',
+  '8.4',
+  ['S8', 'V6.1'],
+)
+tpRej(
+  'topic-submission-post-unsupported-frame-version',
+  'A type-10 submission whose embedded post has frame version 2.',
+  topicSubmissionFrame({ post: body('a0', 2) }),
+  'unsupported',
+  '3',
+  ['F2'],
+)
+tpRej(
+  'topic-submission-post-invalid-inside',
+  'A type-10 submission whose embedded post lacks its topic: the child fails at its own stage 8.2.',
+  topicSubmissionFrame({ post: p9(m => m.delete(1)) }),
+  'schema',
+  '8.2',
+  ['C12', 'S8'],
+)
+tpRej(
+  'topic-submission-post-truncated',
+  'A type-10 submission whose embedded post is shorter than its header declares.',
+  topicSubmissionFrame({ post: topicPostFrame().slice(0, 20) }),
+  'frame',
+  '4',
+  ['F3'],
+)
+tpRej(
+  'topic-submission-network-differs',
+  'A type-10 submission whose network differs from the opened type-9 network (S11).',
+  topicSubmissionFrame({ net: 'other-net' }),
+  'semantic',
+  '9',
+  ['S11'],
+)
+tpRej(
+  'topic-submission-missing-burn',
+  'A type-10 submission without a burn transaction.',
+  fr(10, new Map([...topicSubmissionPayload()].filter(([k]) => k !== 2))),
+  'schema',
+  '8.2',
+  ['T8'],
+)
+tpRej(
+  'topic-submission-empty-burn',
+  'A type-10 submission with an empty burn transaction.',
+  topicSubmissionFrame({ burnTx: new Uint8Array(0) }),
+  'schema',
+  '8.2',
+  ['T8'],
+)
+tpRej(
+  'topic-submission-burn-over-limit',
+  'A type-10 submission with a 16,385-byte burn transaction, one over the CDDL bound.',
+  topicSubmissionFrame({ burnTx: burnTx(31, 16_385) }),
+  'schema',
+  '8.2',
+  ['T8'],
+)
+acc(
+  'topic-submission-burn-at-limit',
+  'A type-10 submission with a 16,384-byte burn transaction: at the CDDL bound.',
+  topicSubmissionFrame({ burnTx: burnTx(31, 16_384) }),
+  ['T8'],
+  TP,
+)
+tpRej(
+  'topic-submission-carries-direction',
+  'A type-10 submission that adds a vote direction at field 3: the direction is read from the transaction, so the schema has none (T8, C12).',
+  fr(10, new Map([...topicSubmissionPayload(), [3, 1]])),
+  'schema',
+  '8.2',
+  ['T8', 'C12'],
+)
+tpRej(
+  'topic-submission-burn-not-bytes',
+  'A type-10 submission whose burn transaction is text.',
+  fr(10, new Map([...topicSubmissionPayload(), [2, 'tx']])),
+  'schema',
+  '8.2',
+  ['T8'],
+)
+
+// Type 11 structure.
+tpRej(
+  'topic-vote-target-31-bytes',
+  'A type-11 vote with a 31-byte target hash.',
+  topicVoteFrame({ target: bytesOf(31, 2) }),
+  'schema',
+  '8.2',
+  ['S12'],
+)
+tpRej(
+  'topic-vote-target-33-bytes',
+  'A type-11 vote with a 33-byte target hash.',
+  topicVoteFrame({ target: bytesOf(33, 2) }),
+  'schema',
+  '8.2',
+  ['S12'],
+)
+tpRej(
+  'topic-vote-target-not-bytes',
+  'A type-11 vote whose target is text.',
+  fr(11, new Map([...topicVotePayload(), [1, 'abc']])),
+  'schema',
+  '8.2',
+  ['S12'],
+)
+tpRej(
+  'topic-vote-missing-burn',
+  'A type-11 vote without a burn transaction.',
+  fr(11, new Map([...topicVotePayload()].filter(([k]) => k !== 2))),
+  'schema',
+  '8.2',
+  ['T8'],
+)
+tpRej(
+  'topic-vote-empty-burn',
+  'A type-11 vote with an empty burn transaction.',
+  topicVoteFrame({ burnTx: new Uint8Array(0) }),
+  'schema',
+  '8.2',
+  ['T8'],
+)
+tpRej(
+  'topic-vote-carries-direction',
+  "A type-11 vote that adds a direction at field 3: the direction and the weight are the transaction's (T8, C12).",
+  fr(11, new Map([...topicVotePayload(), [3, 1]])),
+  'schema',
+  '8.2',
+  ['T8', 'C12'],
+)
+tpRej(
+  'topic-vote-network-invalid',
+  'A type-11 vote with an invalid network tag.',
+  topicVoteFrame({ net: '-bad' }),
+  'schema',
+  '8.2',
+  ['S1'],
+)
+
+// Message items: the assigned topic types are not message-item types (S8).
+tpRej(
+  'topic-post-as-message-item',
+  'A type-8 revision whose item is a type-9 topic post: an assigned type is not an open-field type.',
+  fr(8, revision8([post])),
+  'semantic',
+  '8.4',
+  ['S8'],
+)
+tpRej(
+  'topic-submission-as-message-item',
+  'A type-16 container holding a type-10 submission.',
+  fr(16, M([[0, [topicSubmissionFrame()]]])),
+  'semantic',
+  '8.4',
+  ['S8'],
+)
+tpRej(
+  'topic-vote-as-message-item',
+  'A type-8 revision whose item is a type-11 vote.',
+  fr(8, revision8([topicVoteFrame()])),
+  'semantic',
+  '8.4',
+  ['S8'],
+)
+acc(
+  'unassigned-type-12-remains-an-open-item',
+  'A type-8 revision whose item has the still-unassigned type 12: retained as an unknown child (V6.1), so the assigned range ends at 11.',
+  fr(8, revision8([fr(12, M([[0, 1]]))])),
+  ['V6.1', 'S8'],
+  TP,
 )

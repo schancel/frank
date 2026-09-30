@@ -517,6 +517,61 @@ describe('createMonadChain: directMessages.send', () => {
   })
 })
 
+describe('createMonadChain: directMessages.reconcileAttempts (#269/#270)', () => {
+  it('passes onAttemptCreated through to the stamp client as onAttemptJournaled', async () => {
+    const chain = createMonadChain(TEST_CONFIG)
+    const alice = MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX)
+    const bob = MonadIdentity.fromPrivateKeyHex(BOB_PRIVATE_KEY_HEX)
+    mockedFetchMonadProfile.mockResolvedValueOnce({
+      address: bob.address,
+      pubKey: new Uint8Array(bob.compressedPubKey),
+    })
+    const submitStampedMessage = jest.fn().mockResolvedValue({
+      stored: {} as StoredMonadMessageProto,
+      payloadHashHex: 'deadbeef',
+      txHashes: [],
+      leaseIndices: [],
+    })
+    ;(MonadStampClient as jest.Mock).mockImplementation(() => ({
+      submitStampedMessage,
+    }))
+    const onAttemptCreated = jest.fn()
+    await chain.directMessages.send({
+      wallet: makeWallet(alice),
+      recipient: bob.address,
+      items: [{ type: 'text', text: 'x' } as TextItem],
+      onAttemptCreated,
+    })
+    expect(submitStampedMessage.mock.calls[0][0].onAttemptJournaled).toBe(
+      onAttemptCreated,
+    )
+  })
+
+  it('re-sends the live attempts (never signs a payment) and reports each requested digest', async () => {
+    const chain = createMonadChain(TEST_CONFIG)
+    const alice = MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX)
+    const resumePendingAttempts = jest.fn().mockResolvedValue([])
+    const submitStampedMessage = jest.fn()
+    const statuses: Record<string, string> = {
+      live1: 'live',
+      done: 'delivered',
+    }
+    ;(MonadStampClient as jest.Mock).mockImplementation(() => ({
+      resumePendingAttempts,
+      submitStampedMessage,
+      attemptStatus: (digest: string) => statuses[digest] ?? 'unknown',
+    }))
+    await expect(
+      chain.directMessages.reconcileAttempts({
+        wallet: makeWallet(alice),
+        payloadDigests: ['live1', 'done', 'other'],
+      }),
+    ).resolves.toEqual({ live1: 'live', done: 'delivered', other: 'unknown' })
+    expect(resumePendingAttempts).toHaveBeenCalledWith({ maxAttempts: 1 })
+    expect(submitStampedMessage).not.toHaveBeenCalled()
+  })
+})
+
 describe('createMonadChain: directMessages.fetchSince', () => {
   it('rejects authenticated malformed plaintext per record and returns the following message', async () => {
     const chain = createMonadChain(TEST_CONFIG)

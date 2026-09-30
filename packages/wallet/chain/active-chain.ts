@@ -162,6 +162,16 @@ export type RecoveredStampPaymentSweepResult =
       txHash?: string
     }
 
+/** What the sender's client knows about one earlier outgoing attempt (ticket #269/#270); see
+ * `MonadStampAttemptStatus` in `../monad-stamp-client.ts` for the exact meaning. `dead` means it
+ * can never land, so a new payment is the only way to send; anything else means "do not pay
+ * again without the user's explicit say-so". */
+export type DirectMessageAttemptStatus =
+  | 'live'
+  | 'delivered'
+  | 'dead'
+  | 'unknown'
+
 export interface DirectMessageClient {
   send(params: {
     wallet: WalletHandle
@@ -170,7 +180,20 @@ export interface DirectMessageClient {
     /** Raw native-chain value attached as the mandatory stamp payment. */
     stampValue?: bigint
     onPreparationProgress?: (progress: DirectMessagePreparationProgress) => void
+    /** Called once this send's exact payment set is durably journaled, before it is submitted to
+     * the relay, with its `payloadDigest` (the eventual `DirectMessageSendResult.payloadDigest`).
+     * Lets the caller tie its own pending message to the attempt for `reconcileAttempts`. */
+    onAttemptCreated?: (payloadDigest: string) => void | Promise<void>
   }): Promise<DirectMessageSendResult>
+  /** Re-sends the SAME exact bytes of every still-live earlier attempt (idempotent and free: the
+   * relay answers 200 for an already-delivered set, and 503 while it is pending), then reports
+   * what is now known about each requested `payloadDigest`. Never builds or signs a payment. */
+  reconcileAttempts(params: {
+    wallet: WalletHandle
+    payloadDigests: string[]
+    /** Idempotent re-PUT budget per live attempt; defaults to a single try (callers back off). */
+    maxPutAttempts?: number
+  }): Promise<Record<string, DirectMessageAttemptStatus>>
   /** Returns messages at or after `sinceMs`, ordered by time. If a later inbox page could not be
    * fetched, the result is cut back to a prefix ending on a complete timestamp group and
    * `onTruncated` is called: advancing `sinceMs` to `lastReceivedTime + 1` is then safe and the

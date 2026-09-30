@@ -452,6 +452,24 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
     MonadChainWalletHandle,
     Promise<void>
   >()
+  /** Serializes work that touches the wallet's stamp accounts/journal (sends and reconciles) so a
+   * reconcile can never run against a half-built payment set. */
+  const runWalletExclusive = <T>(
+    wallet: MonadChainWalletHandle,
+    work: () => Promise<T>,
+  ): Promise<T> => {
+    const run = (directMessageSendQueues.get(wallet) ?? Promise.resolve()).then(
+      work,
+    )
+    directMessageSendQueues.set(
+      wallet,
+      run.then(
+        () => undefined,
+        () => undefined,
+      ),
+    )
+    return run
+  }
   const sendDirectMessageExclusive = async (
     params: Parameters<DirectMessageClient['send']>[0],
     wallet: MonadChainWalletHandle,
@@ -503,6 +521,7 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
       // `post`/`vote` below, where there's no single recipient to pay.
       recipientPublicKey: recipientProfile.pubKey,
       stampValueWei: params.stampValue ?? config.defaultStampValueWei,
+      onAttemptJournaled: params.onAttemptCreated,
     })
 
     const stampPayments =
@@ -529,17 +548,26 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
   const directMessages: DirectMessageClient = {
     async send(params): Promise<DirectMessageSendResult> {
       const wallet = asMonadWallet(params.wallet)
-      const run = (
-        directMessageSendQueues.get(wallet) ?? Promise.resolve()
-      ).then(() => sendDirectMessageExclusive(params, wallet))
-      directMessageSendQueues.set(
-        wallet,
-        run.then(
-          () => undefined,
-          () => undefined,
-        ),
+      return runWalletExclusive(wallet, () =>
+        sendDirectMessageExclusive(params, wallet),
       )
-      return run
+    },
+
+    async reconcileAttempts(params) {
+      const wallet = asMonadWallet(params.wallet)
+      return runWalletExclusive(wallet, async () => {
+        const client = new MonadStampClient(wallet)
+        // Replays every journaled set byte for byte; this never signs or funds anything.
+        await client.resumePendingAttempts({
+          maxAttempts: params.maxPutAttempts ?? 1,
+        })
+        return Object.fromEntries(
+          params.payloadDigests.map(digest => [
+            digest,
+            client.attemptStatus(digest),
+          ]),
+        )
+      })
     },
 
     async fetchSince(params): Promise<DirectMessageReceived[]> {

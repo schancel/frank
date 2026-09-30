@@ -41,3 +41,17 @@ export function commitValidatedSetupName(
   persistName(committedName)
   return committedName
 }
+
+/**
+ * Seed offered to the New Account step. An already-stored seed is returned
+ * untouched (never regenerated or overwritten); otherwise a fresh draft is
+ * generated in memory only. Nothing here writes to the wallet store: a seed is
+ * persisted solely by commitValidatedSetupSeed() when the user finishes the
+ * account step, so merely visiting /setup cannot create a real account.
+ */
+export function initialSetupSeed(
+  storedSeed: string | null | undefined,
+  generate: () => string,
+): string {
+  return storedSeed || generate()
+}

@@ -45,6 +45,7 @@ describe('runtime constraints', () => {
       './keys',
       './reader',
       './script-num',
+      './sign',
       './transaction',
       './varint',
       './xec',
@@ -80,6 +81,7 @@ describe('runtime constraints', () => {
       'address',
       'keys',
       'hd',
+      'sign',
       'transaction',
     ])
   })

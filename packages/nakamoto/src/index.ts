@@ -2,7 +2,7 @@
 // Per-chain entries: ./btc ./bch ./xec ./xpi.
 // Feature entries: ./integer ./script-num ./base58 ./base58check ./varint
 // ./reader ./convert-bits ./base32 ./encoding-error ./constructors
-// ./bech32 ./cashaddr ./address ./keys ./hd ./transaction.
+// ./bech32 ./cashaddr ./address ./keys ./hd ./transaction ./sign.
 
 export const PACKAGE_NAME = '@frank/nakamoto'
 
@@ -193,3 +193,17 @@ export type {
   TxOutput,
   TxResult,
 } from './transaction.js'
+
+export { isSignError, signAll, signInput } from './sign.js'
+export type {
+  InputSigner,
+  InputStatus,
+  SignAssignment,
+  SignCode,
+  SignFailure,
+  SignOptions,
+  SignResult,
+  SignedInput,
+  SignedOutput,
+  SignedTransaction,
+} from './sign.js'

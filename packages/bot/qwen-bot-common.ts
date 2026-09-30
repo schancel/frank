@@ -104,6 +104,25 @@ function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
 
+/** Loads an already-persisted identity and NEVER creates one: for read-only tooling (e.g.
+ * `print-curated-defaults.ts`) that must not leave key files behind. */
+export function loadExistingIdentity(
+  identityJsonPath: string,
+  label: string,
+): MonadIdentity {
+  if (!existsSync(identityJsonPath)) {
+    throw new Error(
+      `[${label}] no identity file at ${identityJsonPath} (start that bot once to create it)`,
+    )
+  }
+  const saved = JSON.parse(readFileSync(identityJsonPath, 'utf8')) as {
+    privateKeyHex: string
+  }
+  const identity = MonadIdentity.fromPrivateKeyHex(saved.privateKeyHex)
+  console.log(`[${label}] loaded existing identity ${identity.displayAddress}`)
+  return identity
+}
+
 /** Loads a `MonadIdentity` persisted (as `{ privateKeyHex }`) at `identityJsonPath`, or generates
  * and persists a fresh one if the file doesn't exist yet -- so re-running either script keeps
  * addressing the same identity (needed for the bot: the sender script has to know a stable
@@ -122,14 +141,7 @@ export function loadOrCreateIdentity(
   label: string,
 ): MonadIdentity {
   if (existsSync(identityJsonPath)) {
-    const saved = JSON.parse(readFileSync(identityJsonPath, 'utf8')) as {
-      privateKeyHex: string
-    }
-    const identity = MonadIdentity.fromPrivateKeyHex(saved.privateKeyHex)
-    console.log(
-      `[${label}] loaded existing identity ${identity.displayAddress}`,
-    )
-    return identity
+    return loadExistingIdentity(identityJsonPath, label)
   }
   const identity = MonadIdentity.generate()
   writeFileSync(

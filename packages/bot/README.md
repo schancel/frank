@@ -320,11 +320,13 @@ To make the bots appear in a new user's Contacts, list them in the relay's curat
     yarn -s curated-defaults          # prints [[registry.curated_defaults]] TOML, address + name only
     # append the output to the relay config (see backend/docker/cashwebd.toml), restart the relay
 
-Addresses come from each bot's own identity file (`*_BOT_IDENTITY_JSON`, created if missing, same
-paths the bots use), so they are per machine/network and nothing is hard-coded. Run it before
-starting the relay and the bots so both see the same identities (the launcher, #312, should call
-it). The app shows the curated name immediately, then refreshes name/bio/avatar from the profile;
-a registered profile with no display name is labelled with a short address, never "Loading...".
+Addresses come from each bot's own identity file (`*_BOT_IDENTITY_JSON`, same paths the bots use),
+so they are per machine/network and nothing is hard-coded. The script is read-only: it never
+creates an identity file, and if any are missing it prints every missing path and exits 1 (start
+those bots once, or pass `--create-missing` to create them explicitly; the launcher, #312, should). The app shows the curated name immediately, then refreshes name/bio/avatar from the profile;
+a registered profile whose display name is empty, whitespace or only invisible characters is
+labelled with a short address, never "Loading...". No chat is opened automatically, and a default
+the user deleted is not added back on later launches.
 
 ## Non-goals (per the ticket)
 

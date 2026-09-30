@@ -128,7 +128,7 @@ export default defineComponent({
         })
           .then(async contacts => {
             for (const contact of contacts) {
-              this.addDefaultContact(contact)
+              await this.addDefaultContact(contact)
             }
             await this.refreshContacts()
           })
@@ -160,7 +160,7 @@ export default defineComponent({
       })
         .then(async contacts => {
           for (const contact of contacts) {
-            this.addDefaultContact(contact)
+            await this.addDefaultContact(contact)
           }
           await this.refreshContacts()
         })

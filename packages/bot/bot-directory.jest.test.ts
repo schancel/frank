@@ -14,9 +14,18 @@ import {
 } from './bot-directory'
 import {
   botCuratedEntries,
+  collectCuratedEntries,
   renderCuratedDefaultsToml,
 } from './print-curated-defaults'
-import { profileMatches, registerAndLog } from './qwen-bot-common'
+import {
+  loadExistingIdentity,
+  loadOrCreateIdentity,
+  profileMatches,
+  registerAndLog,
+} from './qwen-bot-common'
+import { existsSync, mkdtempSync, readdirSync, rmSync } from 'fs'
+import { tmpdir } from 'os'
+import { join } from 'path'
 
 jest.mock('@frank/wallet/monad-identity', () => ({
   ...jest.requireActual('@frank/wallet/monad-identity'),
@@ -176,5 +185,50 @@ describe('curated defaults for the relay config (#317)', () => {
       '[[registry.curated_defaults]]\naddress = "0xabc"\nname = "Picture Shop"\n\n' +
         '[[registry.curated_defaults]]\naddress = "0xdef"\nname = "A \\"quoted\\" \\\\ name"\n',
     )
+  })
+})
+
+describe('curated defaults are read-only (#317)', () => {
+  let dir: string
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'frank-curated-'))
+    jest.spyOn(console, 'log').mockImplementation(() => undefined)
+  })
+  afterEach(() => rmSync(dir, { recursive: true, force: true }))
+
+  const env = () => ({
+    BLACKJACK_BOT_IDENTITY_JSON: join(dir, 'bj.json'),
+    RAFFLE_BOT_IDENTITY_JSON: join(dir, 'raffle.json'),
+    VENDOR_BOT_IDENTITY_JSON: join(dir, 'vendor.json'),
+    QWEN_BOT_IDENTITY_JSON: join(dir, 'qwen.json'),
+  })
+
+  it('reports every missing identity at once and creates no file', () => {
+    const { entries, errors } = collectCuratedEntries(
+      env(),
+      loadExistingIdentity,
+    )
+    expect(entries).toEqual([])
+    expect(errors).toHaveLength(4)
+    expect(errors[0]).toContain('no identity file')
+    expect(errors[0]).toContain('start that bot once')
+    expect(readdirSync(dir)).toEqual([])
+    expect(() => botCuratedEntries(env(), loadExistingIdentity)).toThrow(
+      /no identity file/,
+    )
+    expect(readdirSync(dir)).toEqual([])
+  })
+
+  it('prints existing identities unchanged, and only the opt-in loader creates files', () => {
+    loadOrCreateIdentity(join(dir, 'bj.json'), 'x')
+    expect(existsSync(join(dir, 'bj.json'))).toBe(true)
+    const partial = collectCuratedEntries(env(), loadExistingIdentity)
+    expect(partial.entries.map(e => e.name)).toEqual(['Blackjack Dealer'])
+    expect(partial.errors).toHaveLength(3)
+    const created = collectCuratedEntries(env(), loadOrCreateIdentity)
+    expect(created.errors).toEqual([])
+    expect(created.entries).toHaveLength(4)
+    const again = collectCuratedEntries(env(), loadExistingIdentity)
+    expect(again.entries).toEqual(created.entries)
   })
 })

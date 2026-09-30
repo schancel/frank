@@ -1,6 +1,6 @@
 // Minimal secp256k1 for public keys and BIP32 child points.
 // Issue 238 owns the backend interface. This file is the pure-JS fallback.
-// It does not sign. ECDSA, Schnorr, and ECDH stay on issue 249.
+// It does not sign. ECDSA, Schnorr, ECDH, and BIP-374 live in curve.ts.
 // Not a package dependency. p = 2^256 - 2^32 - 977. a = 0, b = 7.
 
 import { bigintToBytes, bytesToBigint } from './integer.js'

@@ -8,10 +8,11 @@ import {
   chain,
 } from './shared.js'
 
-const UNPINNED_XEC_MESSAGE: MessageMagic = Object.freeze({
-  status: 'unpinned',
-  reason:
-    'A wallet string "eCash Signed Message:\\n" was seen in Trezor coininfo. Bitcoin ABC was not quoted, so the descriptor does not offer a magic.',
+const XEC_MESSAGE: MessageMagic = Object.freeze({
+  status: 'pinned',
+  text: 'eCash Signed Message:\n',
+  source:
+    'trezor/trezor-firmware core/src/apps/common/coininfo.py Ecash signed_message_header (main, read 2026-09-30). Bitcoin ABC was not quoted.',
 })
 
 const UNPINNED_XEC_UNIT = Object.freeze({
@@ -37,7 +38,7 @@ export const XEC_MAINNET: ChainDescriptor = chain({
   p2pPort: 8333,
   registeredSlip44: 899,
   alsoDocumentsSlip44: [145, 1899],
-  messageMagic: UNPINNED_XEC_MESSAGE,
+  messageMagic: XEC_MESSAGE,
   displayUnit: UNPINNED_XEC_UNIT,
   sighash: FORKID_ZERO(
     'Bitcoin-ABC/bitcoin-abc src/script/interpreter.cpp SignatureHash (master, read 2026-09-30) writes ss << amount and ss << sigHashType when hasForkId() is set. Type 0x41 has fork value 0 (sigHash >> 8). This function does not insert a SIGHASH_UTXOS hash.',
@@ -59,7 +60,7 @@ export const XEC_TESTNET: ChainDescriptor = chain({
   p2pPort: 18333,
   registeredSlip44: 1,
   alsoDocumentsSlip44: [145, 1899],
-  messageMagic: UNPINNED_XEC_MESSAGE,
+  messageMagic: XEC_MESSAGE,
   displayUnit: UNPINNED_XEC_UNIT,
   sighash: XEC_MAINNET.sighash,
   dust: UNPINNED_POLICY,
@@ -79,7 +80,7 @@ export const XEC_REGTEST: ChainDescriptor = chain({
   p2pPort: 18444,
   registeredSlip44: 1,
   alsoDocumentsSlip44: [145, 1899],
-  messageMagic: UNPINNED_XEC_MESSAGE,
+  messageMagic: XEC_MESSAGE,
   displayUnit: UNPINNED_XEC_UNIT,
   sighash: XEC_MAINNET.sighash,
   dust: UNPINNED_POLICY,

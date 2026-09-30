@@ -54,8 +54,9 @@ import { commitValidatedSetupSeed } from '../utils/setup-account'
 const STORED = 'test test test test test test test test test test test junk'
 
 const Passthrough = defineComponent({ template: '<div><slot /></div>' })
+const SlotStub = Passthrough
 
-async function mountSetup() {
+async function mountSetup(extraStubs: Record<string, unknown> = {}) {
   const wallet = useWalletStore()
   const setSeed = jest.fn()
   wallet.$onAction(({ name }) => {
@@ -76,8 +77,18 @@ async function mountSetup() {
             'q-step',
             'q-stepper-navigation',
             'q-banner',
-          ].map(name => [name, true]),
+          ]
+            .filter(
+              name =>
+                !(
+                  name.replace(/(^|-)(\w)/g, (_m, _d, c: string) =>
+                    c.toUpperCase(),
+                  ) in extraStubs
+                ),
+            )
+            .map(name => [name, true]),
         ),
+        ...extraStubs,
       },
       mocks: {
         $t: (k: string) => k,
@@ -151,8 +162,8 @@ describe('Setup page mounted (#267)', () => {
     onSeedConfirmed: () => void
     next: () => Promise<void>
   }
-  async function newAccountVm() {
-    const ctx = await mountSetup()
+  async function newAccountVm(extraStubs: Record<string, unknown> = {}) {
+    const ctx = await mountSetup(extraStubs)
     const vm = ctx.wrapper.vm as unknown as Vm
     vm.step = 2
     vm.accountData.name = 'Alice'
@@ -306,7 +317,12 @@ describe('Setup page mounted (#267)', () => {
 
   it('with no secure RNG, step 3 shows an accessible error, commits nothing, and Back still works', async () => {
     const original = Object.getOwnPropertyDescriptor(globalThis, 'crypto')
-    const { wallet, setSeed, wrapper, vm } = await newAccountVm()
+    const { wallet, setSeed, wrapper, vm } = await newAccountVm({
+      QPageContainer: SlotStub,
+      QPage: SlotStub,
+      QStepper: SlotStub,
+      QStep: SlotStub,
+    })
     Object.defineProperty(globalThis, 'crypto', {
       value: undefined,
       configurable: true,
@@ -320,6 +336,8 @@ describe('Setup page mounted (#267)', () => {
         challenge: unknown
       }
       expect(v.challengeError).toBe(true)
+      const alert = wrapper.get('[role="alert"]')
+      expect(alert.text()).toBe('seedConfirm.unavailable')
       expect(v.challenge).toBeNull()
       await vm.next()
       expect(setSeed).not.toHaveBeenCalled()

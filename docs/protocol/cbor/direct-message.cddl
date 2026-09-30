@@ -4,7 +4,7 @@
 
 direct-message-delivery = {
   0: network-tag,
-  1: account-ref, ; destination account/payment root identity
+  1: account-ref, ; stamp key P' the sender used, key type 1 (README S9); directory binding is S10a.3
   2: framed-object, ; recipient-specific encrypted-payload frame
   3: digest-32, ; T3 digest of the exact field-2 frame
   4: [1*64 payment-member], ; two or more preferred, one permitted
@@ -12,12 +12,18 @@ direct-message-delivery = {
 }
 
 payment-member = {
-  0: uint .le 2147483647, ; non-hardened BIP32 stamp child index
+  0: uint .le 2147483647, ; stamp child index i (README T3a, S3)
   1: bstr .size (1..128), ; chain transaction identifier
   2: evm-quantity-256, ; verified value, fixed-width big-endian
   3: bstr .size (1..128), ; derived destination/address bytes
   4: digest-32, ; exact T4 commitment verified in the transaction
 }
+
+; 33-byte compressed SEC1 secp256k1 point; encoding rules are README T3b.
+stamp-point = bstr .size 33
+
+; c || s (README T3b).
+dleq-proof = bstr .size 64
 
 encrypted-message-content = {
   0: network-tag,
@@ -34,6 +40,9 @@ recipient-encrypted-payload = {
   3: uint .le 65535, ; exact encryption-suite identifier
   4: bstr .size (1..64), ; suite-defined nonce
   5: bstr .size (1..524288), ; ciphertext of a complete type-6 frame
+  6: stamp-point, ; E (README T3a)
+  7: stamp-point, ; X (README T3a)
+  8: dleq-proof, ; DLEQ proof (README T3b)
   * uint => frank-value,
 }
 

@@ -1013,7 +1013,8 @@
       "rules": [
         "F4"
       ],
-      "error_category": "resource"
+      "error_category": "resource",
+      "error_stage": "1"
     },
     {
       "id": "frame-empty",
@@ -1072,7 +1073,8 @@
       "rules": [
         "F1"
       ],
-      "error_category": "frame"
+      "error_category": "frame",
+      "error_stage": "2"
     },
     {
       "id": "frame-short-header",
@@ -1131,7 +1133,8 @@
       "rules": [
         "F1"
       ],
-      "error_category": "frame"
+      "error_category": "frame",
+      "error_stage": "2"
     },
     {
       "id": "frame-bad-magic",
@@ -1190,7 +1193,8 @@
       "rules": [
         "F1"
       ],
-      "error_category": "frame"
+      "error_category": "frame",
+      "error_stage": "2"
     },
     {
       "id": "frame-version-2-rejected",
@@ -1249,7 +1253,8 @@
       "rules": [
         "F2"
       ],
-      "error_category": "unsupported"
+      "error_category": "unsupported",
+      "error_stage": "3"
     },
     {
       "id": "frame-version-2-retained",
@@ -1368,7 +1373,8 @@
       "rules": [
         "F2"
       ],
-      "error_category": "unsupported"
+      "error_category": "unsupported",
+      "error_stage": "3"
     },
     {
       "id": "frame-length-too-long",
@@ -1427,7 +1433,8 @@
       "rules": [
         "F3"
       ],
-      "error_category": "frame"
+      "error_category": "frame",
+      "error_stage": "4"
     },
     {
       "id": "frame-length-too-short",
@@ -1486,7 +1493,8 @@
       "rules": [
         "F3"
       ],
-      "error_category": "frame"
+      "error_category": "frame",
+      "error_stage": "4"
     },
     {
       "id": "frame-truncated",
@@ -1545,7 +1553,8 @@
       "rules": [
         "F3"
       ],
-      "error_category": "frame"
+      "error_category": "frame",
+      "error_stage": "4"
     },
     {
       "id": "frame-concatenated",
@@ -1604,7 +1613,8 @@
       "rules": [
         "F3"
       ],
-      "error_category": "frame"
+      "error_category": "frame",
+      "error_stage": "4"
     },
     {
       "id": "frame-trailing-byte",
@@ -1663,7 +1673,8 @@
       "rules": [
         "F3"
       ],
-      "error_category": "frame"
+      "error_category": "frame",
+      "error_stage": "4"
     },
     {
       "id": "frame-zero-length-with-body",
@@ -1722,7 +1733,8 @@
       "rules": [
         "F3"
       ],
-      "error_category": "frame"
+      "error_category": "frame",
+      "error_stage": "4"
     },
     {
       "id": "frame-zero-length-body",
@@ -1782,7 +1794,8 @@
         "F3",
         "C9"
       ],
-      "error_category": "malformed"
+      "error_category": "malformed",
+      "error_stage": "5"
     },
     {
       "id": "env-pass-a-truncated",
@@ -1841,7 +1854,8 @@
       "rules": [
         "C10"
       ],
-      "error_category": "malformed"
+      "error_category": "malformed",
+      "error_stage": "5"
     },
     {
       "id": "env-stray-break",
@@ -1900,7 +1914,8 @@
       "rules": [
         "C5"
       ],
-      "error_category": "malformed"
+      "error_category": "malformed",
+      "error_stage": "5"
     },
     {
       "id": "env-reserved-additional-info",
@@ -1959,7 +1974,8 @@
       "rules": [
         "C5"
       ],
-      "error_category": "malformed"
+      "error_category": "malformed",
+      "error_stage": "5"
     },
     {
       "id": "env-trailing-item",
@@ -2018,7 +2034,8 @@
       "rules": [
         "C9"
       ],
-      "error_category": "malformed"
+      "error_category": "malformed",
+      "error_stage": "5"
     },
     {
       "id": "env-nonminimal-type-id",
@@ -2077,7 +2094,8 @@
       "rules": [
         "C2"
       ],
-      "error_category": "noncanonical"
+      "error_category": "noncanonical",
+      "error_stage": "5"
     },
     {
       "id": "env-nonminimal-map-count",
@@ -2136,7 +2154,8 @@
       "rules": [
         "C2"
       ],
-      "error_category": "noncanonical"
+      "error_category": "noncanonical",
+      "error_stage": "5"
     },
     {
       "id": "env-indefinite-map",
@@ -2196,7 +2215,8 @@
         "C3",
         "C5"
       ],
-      "error_category": "noncanonical"
+      "error_category": "noncanonical",
+      "error_stage": "5"
     },
     {
       "id": "env-duplicate-key",
@@ -2255,7 +2275,8 @@
       "rules": [
         "C4"
       ],
-      "error_category": "noncanonical"
+      "error_category": "noncanonical",
+      "error_stage": "5"
     },
     {
       "id": "env-unsorted-keys",
@@ -2315,7 +2336,8 @@
         "C1",
         "C4"
       ],
-      "error_category": "noncanonical"
+      "error_category": "noncanonical",
+      "error_stage": "5"
     },
     {
       "id": "env-float",
@@ -2374,7 +2396,8 @@
       "rules": [
         "C5"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "5"
     },
     {
       "id": "env-tag",
@@ -2433,7 +2456,8 @@
       "rules": [
         "C5"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "5"
     },
     {
       "id": "env-text-key",
@@ -2492,7 +2516,8 @@
       "rules": [
         "C1a"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "5"
     },
     {
       "id": "env-byte-declared-oversize",
@@ -2552,7 +2577,8 @@
         "R1",
         "R5"
       ],
-      "error_category": "resource"
+      "error_category": "resource",
+      "error_stage": "5"
     },
     {
       "id": "env-not-a-map",
@@ -2611,7 +2637,8 @@
       "rules": [
         "E1"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "6"
     },
     {
       "id": "env-missing-key",
@@ -2670,7 +2697,8 @@
       "rules": [
         "E1"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "6"
     },
     {
       "id": "env-extra-key",
@@ -2729,7 +2757,8 @@
       "rules": [
         "E1"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "6"
     },
     {
       "id": "env-type-id-out-of-range",
@@ -2788,7 +2817,8 @@
       "rules": [
         "E1"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "6"
     },
     {
       "id": "env-schema-version-zero",
@@ -2847,7 +2877,8 @@
       "rules": [
         "E1"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "6"
     },
     {
       "id": "env-min-reader-above-schema",
@@ -2906,7 +2937,8 @@
       "rules": [
         "E2"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "6"
     },
     {
       "id": "env-payload-not-bytes",
@@ -2965,7 +2997,8 @@
       "rules": [
         "E1"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "6"
     },
     {
       "id": "payload-empty",
@@ -3024,7 +3057,8 @@
       "rules": [
         "C9"
       ],
-      "error_category": "malformed"
+      "error_category": "malformed",
+      "error_stage": "7"
     },
     {
       "id": "payload-pass-a-truncated",
@@ -3083,7 +3117,8 @@
       "rules": [
         "C10"
       ],
-      "error_category": "malformed"
+      "error_category": "malformed",
+      "error_stage": "7"
     },
     {
       "id": "payload-truncated-text",
@@ -3142,7 +3177,8 @@
       "rules": [
         "C9"
       ],
-      "error_category": "malformed"
+      "error_category": "malformed",
+      "error_stage": "7"
     },
     {
       "id": "payload-trailing-item",
@@ -3201,7 +3237,8 @@
       "rules": [
         "C9"
       ],
-      "error_category": "malformed"
+      "error_category": "malformed",
+      "error_stage": "7"
     },
     {
       "id": "payload-stray-break",
@@ -3260,7 +3297,8 @@
       "rules": [
         "C5"
       ],
-      "error_category": "malformed"
+      "error_category": "malformed",
+      "error_stage": "7"
     },
     {
       "id": "payload-invalid-utf8-continuation",
@@ -3319,7 +3357,8 @@
       "rules": [
         "C6"
       ],
-      "error_category": "malformed"
+      "error_category": "malformed",
+      "error_stage": "7"
     },
     {
       "id": "payload-invalid-utf8-overlong",
@@ -3378,7 +3417,8 @@
       "rules": [
         "C6"
       ],
-      "error_category": "malformed"
+      "error_category": "malformed",
+      "error_stage": "7"
     },
     {
       "id": "payload-invalid-utf8-surrogate",
@@ -3437,7 +3477,8 @@
       "rules": [
         "C6"
       ],
-      "error_category": "malformed"
+      "error_category": "malformed",
+      "error_stage": "7"
     },
     {
       "id": "payload-invalid-utf8-above-max",
@@ -3496,7 +3537,8 @@
       "rules": [
         "C6"
       ],
-      "error_category": "malformed"
+      "error_category": "malformed",
+      "error_stage": "7"
     },
     {
       "id": "payload-simple-below-32",
@@ -3555,7 +3597,8 @@
       "rules": [
         "C2"
       ],
-      "error_category": "malformed"
+      "error_category": "malformed",
+      "error_stage": "7"
     },
     {
       "id": "payload-nonminimal-int",
@@ -3614,7 +3657,8 @@
       "rules": [
         "C2"
       ],
-      "error_category": "noncanonical"
+      "error_category": "noncanonical",
+      "error_stage": "7"
     },
     {
       "id": "payload-nonminimal-text-length",
@@ -3673,7 +3717,8 @@
       "rules": [
         "C2"
       ],
-      "error_category": "noncanonical"
+      "error_category": "noncanonical",
+      "error_stage": "7"
     },
     {
       "id": "payload-nonminimal-map-count",
@@ -3732,7 +3777,8 @@
       "rules": [
         "C2"
       ],
-      "error_category": "noncanonical"
+      "error_category": "noncanonical",
+      "error_stage": "7"
     },
     {
       "id": "payload-nonminimal-key",
@@ -3791,7 +3837,8 @@
       "rules": [
         "C2"
       ],
-      "error_category": "noncanonical"
+      "error_category": "noncanonical",
+      "error_stage": "7"
     },
     {
       "id": "payload-nonminimal-negative",
@@ -3850,7 +3897,8 @@
       "rules": [
         "C2"
       ],
-      "error_category": "noncanonical"
+      "error_category": "noncanonical",
+      "error_stage": "7"
     },
     {
       "id": "payload-indefinite-array",
@@ -3909,7 +3957,8 @@
       "rules": [
         "C3"
       ],
-      "error_category": "noncanonical"
+      "error_category": "noncanonical",
+      "error_stage": "7"
     },
     {
       "id": "payload-indefinite-map",
@@ -3968,7 +4017,8 @@
       "rules": [
         "C3"
       ],
-      "error_category": "noncanonical"
+      "error_category": "noncanonical",
+      "error_stage": "7"
     },
     {
       "id": "payload-indefinite-text",
@@ -4027,7 +4077,8 @@
       "rules": [
         "C3"
       ],
-      "error_category": "noncanonical"
+      "error_category": "noncanonical",
+      "error_stage": "7"
     },
     {
       "id": "payload-indefinite-bytes",
@@ -4086,7 +4137,8 @@
       "rules": [
         "C3"
       ],
-      "error_category": "noncanonical"
+      "error_category": "noncanonical",
+      "error_stage": "7"
     },
     {
       "id": "payload-duplicate-key",
@@ -4145,7 +4197,8 @@
       "rules": [
         "C4"
       ],
-      "error_category": "noncanonical"
+      "error_category": "noncanonical",
+      "error_stage": "7"
     },
     {
       "id": "payload-unsorted-keys",
@@ -4205,7 +4258,8 @@
         "C1",
         "C4"
       ],
-      "error_category": "noncanonical"
+      "error_category": "noncanonical",
+      "error_stage": "7"
     },
     {
       "id": "payload-half-float",
@@ -4264,7 +4318,8 @@
       "rules": [
         "C5"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "7"
     },
     {
       "id": "payload-single-float",
@@ -4323,7 +4378,8 @@
       "rules": [
         "C5"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "7"
     },
     {
       "id": "payload-double-float",
@@ -4382,7 +4438,8 @@
       "rules": [
         "C5"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "7"
     },
     {
       "id": "payload-tag",
@@ -4441,7 +4498,8 @@
       "rules": [
         "C5"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "7"
     },
     {
       "id": "payload-bignum-tag",
@@ -4501,7 +4559,8 @@
         "C5",
         "C8"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "7"
     },
     {
       "id": "payload-undefined",
@@ -4560,7 +4619,8 @@
       "rules": [
         "C5"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "7"
     },
     {
       "id": "payload-simple-16",
@@ -4619,7 +4679,8 @@
       "rules": [
         "C5"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "7"
     },
     {
       "id": "payload-simple-32",
@@ -4679,7 +4740,8 @@
         "C2",
         "C5"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "7"
     },
     {
       "id": "payload-text-keys-unsorted",
@@ -4739,7 +4801,8 @@
         "C1a",
         "C10"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "7"
     },
     {
       "id": "payload-negative-key",
@@ -4798,7 +4861,8 @@
       "rules": [
         "C1a"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "7"
     },
     {
       "id": "payload-bytes-key",
@@ -4857,7 +4921,8 @@
       "rules": [
         "C1a"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "7"
     },
     {
       "id": "payload-array-key",
@@ -4916,7 +4981,8 @@
       "rules": [
         "C1a"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "7"
     },
     {
       "id": "payload-noncanonical-before-schema",
@@ -4977,7 +5043,8 @@
         "C2",
         "C10"
       ],
-      "error_category": "noncanonical"
+      "error_category": "noncanonical",
+      "error_stage": "7"
     },
     {
       "id": "unknown-type-text-key-not-retained",
@@ -5037,7 +5104,8 @@
         "C1a",
         "E3"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "7"
     },
     {
       "id": "unknown-type-noncanonical-not-retained",
@@ -5097,7 +5165,8 @@
         "C2",
         "E3"
       ],
-      "error_category": "noncanonical"
+      "error_category": "noncanonical",
+      "error_stage": "7"
     },
     {
       "id": "limit-depth-31-payload",
@@ -5216,7 +5285,8 @@
       "rules": [
         "R1"
       ],
-      "error_category": "resource"
+      "error_category": "resource",
+      "error_stage": "7"
     },
     {
       "id": "limit-array-8192-elements",
@@ -5335,7 +5405,8 @@
       "rules": [
         "R1"
       ],
-      "error_category": "resource"
+      "error_category": "resource",
+      "error_stage": "7"
     },
     {
       "id": "limit-map-256-entries",
@@ -5454,7 +5525,8 @@
       "rules": [
         "R1"
       ],
-      "error_category": "resource"
+      "error_category": "resource",
+      "error_stage": "7"
     },
     {
       "id": "limit-containers-16384",
@@ -5573,7 +5645,8 @@
       "rules": [
         "R1"
       ],
-      "error_category": "resource"
+      "error_category": "resource",
+      "error_stage": "7"
     },
     {
       "id": "limit-byte-string-declared-oversize",
@@ -5633,7 +5706,8 @@
         "R1",
         "R5"
       ],
-      "error_category": "resource"
+      "error_category": "resource",
+      "error_stage": "7"
     },
     {
       "id": "limit-text-declared-oversize",
@@ -5693,7 +5767,8 @@
         "R1",
         "R5"
       ],
-      "error_category": "resource"
+      "error_category": "resource",
+      "error_stage": "7"
     },
     {
       "id": "limit-indefinite-array-8193-elements",
@@ -5753,7 +5828,8 @@
         "R1",
         "C3"
       ],
-      "error_category": "resource"
+      "error_category": "resource",
+      "error_stage": "7"
     },
     {
       "id": "v6-unknown-type-unsupported",
@@ -5814,7 +5890,8 @@
         "E3",
         "V6.1"
       ],
-      "error_category": "unsupported"
+      "error_category": "unsupported",
+      "error_stage": "7"
     },
     {
       "id": "v6-min-reader-above-reader-unsupported",
@@ -5875,7 +5952,8 @@
         "E2",
         "V6.1"
       ],
-      "error_category": "unsupported"
+      "error_category": "unsupported",
+      "error_stage": "7"
     },
     {
       "id": "v6-min-reader-above-reader-retained",
@@ -6060,7 +6138,8 @@
         "C12",
         "V6.2"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "8.2"
     },
     {
       "id": "v6-newer-schema-closed-map-extra-key",
@@ -6120,7 +6199,8 @@
       "rules": [
         "C12"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "8.2"
     },
     {
       "id": "v6-newer-schema-missing-required",
@@ -6180,7 +6260,8 @@
       "rules": [
         "V6.3"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "8.2"
     },
     {
       "id": "v6-supported-list-omits-type",
@@ -6205,7 +6286,8 @@
         "V6.1",
         "E3"
       ],
-      "error_category": "unsupported"
+      "error_category": "unsupported",
+      "error_stage": "7"
     },
     {
       "id": "v6-required-child-unlisted-type",
@@ -6242,7 +6324,8 @@
         "V6.1",
         "S8"
       ],
-      "error_category": "unsupported"
+      "error_category": "unsupported",
+      "error_stage": "7"
     },
     {
       "id": "limit-type1-64-payments",
@@ -6364,7 +6447,8 @@
       "rules": [
         "R2"
       ],
-      "error_category": "resource"
+      "error_category": "resource",
+      "error_stage": "8.1"
     },
     {
       "id": "limit-type8-256-items",
@@ -6486,7 +6570,8 @@
       "rules": [
         "R2"
       ],
-      "error_category": "resource"
+      "error_category": "resource",
+      "error_stage": "8.1"
     },
     {
       "id": "limit-type8-total-256",
@@ -6608,7 +6693,8 @@
       "rules": [
         "R2"
       ],
-      "error_category": "resource"
+      "error_category": "resource",
+      "error_stage": "8.4"
     },
     {
       "id": "limit-type16-257-items",
@@ -6668,7 +6754,8 @@
       "rules": [
         "R2"
       ],
-      "error_category": "resource"
+      "error_category": "resource",
+      "error_stage": "8.1"
     },
     {
       "id": "limit-type16-depth-10-levels",
@@ -6790,7 +6877,8 @@
       "rules": [
         "R1"
       ],
-      "error_category": "resource"
+      "error_category": "resource",
+      "error_stage": "7"
     },
     {
       "id": "limit-type4-32-relays",
@@ -6912,7 +7000,8 @@
       "rules": [
         "R3"
       ],
-      "error_category": "resource"
+      "error_category": "resource",
+      "error_stage": "8.1"
     },
     {
       "id": "limit-type2-16-signatures",
@@ -7034,7 +7123,8 @@
       "rules": [
         "R3"
       ],
-      "error_category": "resource"
+      "error_category": "resource",
+      "error_stage": "8.1"
     },
     {
       "id": "limit-type3-4097-facts",
@@ -7094,7 +7184,8 @@
       "rules": [
         "R4"
       ],
-      "error_category": "resource"
+      "error_category": "resource",
+      "error_stage": "8.1"
     },
     {
       "id": "limit-type3-4097-sections",
@@ -7154,7 +7245,8 @@
       "rules": [
         "R4"
       ],
-      "error_category": "resource"
+      "error_category": "resource",
+      "error_stage": "8.1"
     },
     {
       "id": "t17-text-wrong-type",
@@ -7214,7 +7306,8 @@
       "rules": [
         "E3"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "8.2"
     },
     {
       "id": "t17-missing-field",
@@ -7274,7 +7367,8 @@
       "rules": [
         "E3"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "8.2"
     },
     {
       "id": "t17-payload-not-a-map",
@@ -7334,7 +7428,8 @@
       "rules": [
         "E3"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "8.2"
     },
     {
       "id": "t17-undeclared-key-exact-schema",
@@ -7394,7 +7489,8 @@
       "rules": [
         "C12"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "8.2"
     },
     {
       "id": "t5-network-uppercase",
@@ -7454,7 +7550,8 @@
       "rules": [
         "S1"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "8.2"
     },
     {
       "id": "t5-network-empty",
@@ -7514,7 +7611,8 @@
       "rules": [
         "S1"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "8.2"
     },
     {
       "id": "t5-network-leading-hyphen",
@@ -7574,7 +7672,8 @@
       "rules": [
         "S1"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "8.2"
     },
     {
       "id": "t1-key-length-wrong",
@@ -7634,7 +7733,8 @@
       "rules": [
         "S2"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "8.2"
     },
     {
       "id": "t1-payments-empty",
@@ -7695,7 +7795,8 @@
         "R2",
         "S3"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "8.2"
     },
     {
       "id": "t1-account-ref-extra-key",
@@ -7755,7 +7856,8 @@
       "rules": [
         "C12"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "8.2"
     },
     {
       "id": "t1-child-index-hardened",
@@ -7816,7 +7918,8 @@
         "S3",
         "T3a"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "8.2"
     },
     {
       "id": "t4-endpoint-space",
@@ -7876,7 +7979,8 @@
       "rules": [
         "S4"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "8.2"
     },
     {
       "id": "t4-endpoint-no-scheme",
@@ -7936,7 +8040,8 @@
       "rules": [
         "S4"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "8.2"
     },
     {
       "id": "t4-endpoint-backslash",
@@ -7996,7 +8101,8 @@
       "rules": [
         "S4"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "8.2"
     },
     {
       "id": "t4-authorities-9",
@@ -8056,7 +8162,8 @@
       "rules": [
         "S4a"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "8.2"
     },
     {
       "id": "t4-nanoseconds-out-of-range",
@@ -8116,7 +8223,8 @@
       "rules": [
         "C7"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "8.2"
     },
     {
       "id": "t4-revision-negative",
@@ -8176,7 +8284,8 @@
       "rules": [
         "C7"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "8.2"
     },
     {
       "id": "t4-revision-as-bignum-tag",
@@ -8237,7 +8346,8 @@
         "C7",
         "C8"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "7"
     },
     {
       "id": "t8-domain-not-frank",
@@ -8297,7 +8407,8 @@
       "rules": [
         "T1a"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "8.2"
     },
     {
       "id": "t3-fact-id-wrong-length",
@@ -8357,7 +8468,8 @@
       "rules": [
         "S6"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "8.2"
     },
     {
       "id": "t3-section-closed-map",
@@ -8418,7 +8530,8 @@
         "C12",
         "S7"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "8.2"
     },
     {
       "id": "t5-suite-unallocated",
@@ -8478,7 +8591,8 @@
       "rules": [
         "S2c"
       ],
-      "error_category": "unsupported"
+      "error_category": "unsupported",
+      "error_stage": "8.3"
     },
     {
       "id": "t1-key-type-unallocated",
@@ -8538,7 +8652,8 @@
       "rules": [
         "S2"
       ],
-      "error_category": "unsupported"
+      "error_category": "unsupported",
+      "error_stage": "8.3"
     },
     {
       "id": "t2-algorithm-key-type-mismatch",
@@ -8599,7 +8714,8 @@
         "S2a",
         "S2b"
       ],
-      "error_category": "unsupported"
+      "error_category": "unsupported",
+      "error_stage": "8.3"
     },
     {
       "id": "t2-algorithm-unallocated",
@@ -8659,7 +8775,8 @@
       "rules": [
         "S2a"
       ],
-      "error_category": "unsupported"
+      "error_category": "unsupported",
+      "error_stage": "8.3"
     },
     {
       "id": "t2-ed25519-signature-63-bytes",
@@ -8719,7 +8836,8 @@
       "rules": [
         "S2b"
       ],
-      "error_category": "unsupported"
+      "error_category": "unsupported",
+      "error_stage": "8.3"
     },
     {
       "id": "t1-payload-frame-wrong-type",
@@ -8779,7 +8897,8 @@
       "rules": [
         "S8"
       ],
-      "error_category": "semantic"
+      "error_category": "semantic",
+      "error_stage": "8.4"
     },
     {
       "id": "t1-payload-frame-unknown-type",
@@ -8840,7 +8959,8 @@
         "S8",
         "V6.1"
       ],
-      "error_category": "semantic"
+      "error_category": "semantic",
+      "error_stage": "8.4"
     },
     {
       "id": "t1-payload-frame-version-2",
@@ -8901,7 +9021,8 @@
         "F2",
         "S8"
       ],
-      "error_category": "unsupported"
+      "error_category": "unsupported",
+      "error_stage": "3"
     },
     {
       "id": "t1-payload-frame-min-reader-above",
@@ -8962,7 +9083,8 @@
         "V6.1",
         "S8"
       ],
-      "error_category": "unsupported"
+      "error_category": "unsupported",
+      "error_stage": "7"
     },
     {
       "id": "t1-payload-frame-bad-magic",
@@ -9023,7 +9145,8 @@
         "F1",
         "S8"
       ],
-      "error_category": "frame"
+      "error_category": "frame",
+      "error_stage": "2"
     },
     {
       "id": "t1-payload-frame-length-mismatch",
@@ -9084,7 +9207,8 @@
         "F3",
         "S8"
       ],
-      "error_category": "frame"
+      "error_category": "frame",
+      "error_stage": "4"
     },
     {
       "id": "t1-payload-frame-bad-cbor",
@@ -9145,7 +9269,8 @@
         "C10",
         "S8"
       ],
-      "error_category": "malformed"
+      "error_category": "malformed",
+      "error_stage": "5"
     },
     {
       "id": "t1-payload-frame-noncanonical-payload",
@@ -9206,7 +9331,8 @@
         "C2",
         "S8"
       ],
-      "error_category": "noncanonical"
+      "error_category": "noncanonical",
+      "error_stage": "7"
     },
     {
       "id": "t2-statement-frame-wrong-type",
@@ -9266,7 +9392,8 @@
       "rules": [
         "S8"
       ],
-      "error_category": "semantic"
+      "error_category": "semantic",
+      "error_stage": "8.4"
     },
     {
       "id": "t6-revision-frame-wrong-type",
@@ -9326,7 +9453,8 @@
       "rules": [
         "S8"
       ],
-      "error_category": "semantic"
+      "error_category": "semantic",
+      "error_stage": "8.4"
     },
     {
       "id": "t4-transition-frame-wrong-type",
@@ -9386,7 +9514,8 @@
       "rules": [
         "S8"
       ],
-      "error_category": "semantic"
+      "error_category": "semantic",
+      "error_stage": "8.4"
     },
     {
       "id": "t8-item-assigned-type",
@@ -9446,7 +9575,8 @@
       "rules": [
         "S8"
       ],
-      "error_category": "semantic"
+      "error_category": "semantic",
+      "error_stage": "8.4"
     },
     {
       "id": "t16-item-assigned-type",
@@ -9506,7 +9636,8 @@
       "rules": [
         "S8"
       ],
-      "error_category": "semantic"
+      "error_category": "semantic",
+      "error_stage": "8.4"
     },
     {
       "id": "t8-item-bad-magic",
@@ -9566,7 +9697,8 @@
       "rules": [
         "F1"
       ],
-      "error_category": "frame"
+      "error_category": "frame",
+      "error_stage": "2"
     },
     {
       "id": "t8-item-noncanonical-payload",
@@ -9627,7 +9759,8 @@
         "C2",
         "V6.1"
       ],
-      "error_category": "noncanonical"
+      "error_category": "noncanonical",
+      "error_stage": "7"
     },
     {
       "id": "t8-item-text-key-in-unknown",
@@ -9688,7 +9821,8 @@
         "C1a",
         "V6.1"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "7"
     },
     {
       "id": "t8-unknown-item-retained",
@@ -9998,7 +10132,8 @@
       "rules": [
         "S8"
       ],
-      "error_category": "semantic"
+      "error_category": "semantic",
+      "error_stage": "9"
     },
     {
       "id": "sem-t1-recipient-differs",
@@ -10058,7 +10193,8 @@
       "rules": [
         "S8"
       ],
-      "error_category": "semantic"
+      "error_category": "semantic",
+      "error_stage": "9"
     },
     {
       "id": "sem-t1-destination-not-key-type-1",
@@ -10118,7 +10254,8 @@
       "rules": [
         "S9"
       ],
-      "error_category": "semantic"
+      "error_category": "semantic",
+      "error_stage": "9"
     },
     {
       "id": "sem-t1-payments-unsorted",
@@ -10178,7 +10315,8 @@
       "rules": [
         "S3"
       ],
-      "error_category": "semantic"
+      "error_category": "semantic",
+      "error_stage": "9"
     },
     {
       "id": "sem-t1-duplicate-child-index",
@@ -10238,7 +10376,8 @@
       "rules": [
         "S3"
       ],
-      "error_category": "semantic"
+      "error_category": "semantic",
+      "error_stage": "9"
     },
     {
       "id": "sem-t1-duplicate-transaction-id",
@@ -10298,7 +10437,8 @@
       "rules": [
         "S3"
       ],
-      "error_category": "semantic"
+      "error_category": "semantic",
+      "error_stage": "9"
     },
     {
       "id": "sem-t1-index-gap",
@@ -10359,7 +10499,8 @@
         "T3a",
         "S9"
       ],
-      "error_category": "semantic"
+      "error_category": "semantic",
+      "error_stage": "9"
     },
     {
       "id": "sem-t1-indices-start-at-one",
@@ -10420,7 +10561,8 @@
         "T3a",
         "S9"
       ],
-      "error_category": "semantic"
+      "error_category": "semantic",
+      "error_stage": "9"
     },
     {
       "id": "sem-t1-duplicate-address",
@@ -10480,7 +10622,8 @@
       "rules": [
         "S9"
       ],
-      "error_category": "semantic"
+      "error_category": "semantic",
+      "error_stage": "9"
     },
     {
       "id": "sem-t4-relays-unsorted",
@@ -10540,7 +10683,8 @@
       "rules": [
         "S4"
       ],
-      "error_category": "semantic"
+      "error_category": "semantic",
+      "error_stage": "9"
     },
     {
       "id": "sem-t4-relay-id-duplicate",
@@ -10600,7 +10744,8 @@
       "rules": [
         "S4"
       ],
-      "error_category": "semantic"
+      "error_category": "semantic",
+      "error_stage": "9"
     },
     {
       "id": "sem-t4-recovery-authorities-unsorted",
@@ -10660,7 +10805,8 @@
       "rules": [
         "S4a"
       ],
-      "error_category": "semantic"
+      "error_category": "semantic",
+      "error_stage": "9"
     },
     {
       "id": "sem-t4-recovery-authorities-duplicate",
@@ -10720,7 +10866,8 @@
       "rules": [
         "S4a"
       ],
-      "error_category": "semantic"
+      "error_category": "semantic",
+      "error_stage": "9"
     },
     {
       "id": "sem-t4-transitions-descending-revision",
@@ -10780,7 +10927,8 @@
       "rules": [
         "S5"
       ],
-      "error_category": "semantic"
+      "error_category": "semantic",
+      "error_stage": "9"
     },
     {
       "id": "sem-t4-transitions-same-revision",
@@ -10840,7 +10988,8 @@
       "rules": [
         "S5"
       ],
-      "error_category": "semantic"
+      "error_category": "semantic",
+      "error_stage": "9"
     },
     {
       "id": "sem-t2-signatures-unsorted",
@@ -10900,7 +11049,8 @@
       "rules": [
         "S4"
       ],
-      "error_category": "semantic"
+      "error_category": "semantic",
+      "error_stage": "9"
     },
     {
       "id": "sem-t2-signature-duplicate",
@@ -10960,7 +11110,8 @@
       "rules": [
         "S4"
       ],
-      "error_category": "semantic"
+      "error_category": "semantic",
+      "error_stage": "9"
     },
     {
       "id": "sem-t2-no-subject-signature",
@@ -11020,7 +11171,8 @@
       "rules": [
         "S10"
       ],
-      "error_category": "semantic"
+      "error_category": "semantic",
+      "error_stage": "9"
     },
     {
       "id": "sem-t2-bootstrap-with-transition",
@@ -11080,7 +11232,8 @@
       "rules": [
         "S10"
       ],
-      "error_category": "semantic"
+      "error_category": "semantic",
+      "error_stage": "9"
     },
     {
       "id": "sem-s10-revision-equal",
@@ -11140,7 +11293,8 @@
       "rules": [
         "S10"
       ],
-      "error_category": "semantic"
+      "error_category": "semantic",
+      "error_stage": "9"
     },
     {
       "id": "sem-s10-revision-lower",
@@ -11200,7 +11354,8 @@
       "rules": [
         "S10"
       ],
-      "error_category": "semantic"
+      "error_category": "semantic",
+      "error_stage": "9"
     },
     {
       "id": "sem-s10-network-differs",
@@ -11260,7 +11415,8 @@
       "rules": [
         "S10"
       ],
-      "error_category": "semantic"
+      "error_category": "semantic",
+      "error_stage": "9"
     },
     {
       "id": "sem-s10-unchanged-subject-accepted",
@@ -11382,7 +11538,8 @@
       "rules": [
         "S10"
       ],
-      "error_category": "semantic"
+      "error_category": "semantic",
+      "error_stage": "9"
     },
     {
       "id": "sem-s10-subject-change-without-transition",
@@ -11442,7 +11599,8 @@
       "rules": [
         "S10"
       ],
-      "error_category": "semantic"
+      "error_category": "semantic",
+      "error_stage": "9"
     },
     {
       "id": "sem-s10-two-transitions",
@@ -11502,7 +11660,8 @@
       "rules": [
         "S10"
       ],
-      "error_category": "semantic"
+      "error_category": "semantic",
+      "error_stage": "9"
     },
     {
       "id": "sem-s10-transition-new-key-differs",
@@ -11562,7 +11721,8 @@
       "rules": [
         "S10"
       ],
-      "error_category": "semantic"
+      "error_category": "semantic",
+      "error_stage": "9"
     },
     {
       "id": "sem-s10-transition-subject-differs",
@@ -11622,7 +11782,8 @@
       "rules": [
         "S10"
       ],
-      "error_category": "semantic"
+      "error_category": "semantic",
+      "error_stage": "9"
     },
     {
       "id": "sem-s10-transition-revision-differs",
@@ -11682,7 +11843,8 @@
       "rules": [
         "S10"
       ],
-      "error_category": "semantic"
+      "error_category": "semantic",
+      "error_stage": "9"
     },
     {
       "id": "sem-s10-transition-network-differs",
@@ -11742,7 +11904,8 @@
       "rules": [
         "S10"
       ],
-      "error_category": "semantic"
+      "error_category": "semantic",
+      "error_stage": "9"
     },
     {
       "id": "sem-s10-prior-authority-unregistered",
@@ -11803,7 +11966,8 @@
         "S4a",
         "S10"
       ],
-      "error_category": "semantic"
+      "error_category": "semantic",
+      "error_stage": "9"
     },
     {
       "id": "sem-s10-recovery-authority-introduced-by-update",
@@ -11863,7 +12027,8 @@
       "rules": [
         "S4a"
       ],
-      "error_category": "semantic"
+      "error_category": "semantic",
+      "error_stage": "9"
     },
     {
       "id": "sem-s10-transition-signer-differs",
@@ -11924,7 +12089,8 @@
         "T2a",
         "S10"
       ],
-      "error_category": "semantic"
+      "error_category": "semantic",
+      "error_stage": "9"
     },
     {
       "id": "sem-t3-facts-unsorted",
@@ -11984,7 +12150,8 @@
       "rules": [
         "S6"
       ],
-      "error_category": "semantic"
+      "error_category": "semantic",
+      "error_stage": "9"
     },
     {
       "id": "sem-t3-facts-same-time-unsorted-ids",
@@ -12044,7 +12211,8 @@
       "rules": [
         "S6"
       ],
-      "error_category": "semantic"
+      "error_category": "semantic",
+      "error_stage": "9"
     },
     {
       "id": "sem-t3-fact-id-duplicate",
@@ -12104,7 +12272,8 @@
       "rules": [
         "S6"
       ],
-      "error_category": "semantic"
+      "error_category": "semantic",
+      "error_stage": "9"
     },
     {
       "id": "sem-t3-sections-unsorted",
@@ -12164,7 +12333,8 @@
       "rules": [
         "S7"
       ],
-      "error_category": "semantic"
+      "error_category": "semantic",
+      "error_stage": "9"
     },
     {
       "id": "sem-t3-section-type-duplicate",
@@ -12224,7 +12394,8 @@
       "rules": [
         "S7"
       ],
-      "error_category": "semantic"
+      "error_category": "semantic",
+      "error_stage": "9"
     },
     {
       "id": "r2-nonminimal-int-23-as-1byte",
@@ -12283,7 +12454,8 @@
       "rules": [
         "C2"
       ],
-      "error_category": "noncanonical"
+      "error_category": "noncanonical",
+      "error_stage": "7"
     },
     {
       "id": "r2-minimal-int-24",
@@ -12402,7 +12574,8 @@
       "rules": [
         "C2"
       ],
-      "error_category": "noncanonical"
+      "error_category": "noncanonical",
+      "error_stage": "7"
     },
     {
       "id": "r2-minimal-int-256",
@@ -12521,7 +12694,8 @@
       "rules": [
         "C2"
       ],
-      "error_category": "noncanonical"
+      "error_category": "noncanonical",
+      "error_stage": "7"
     },
     {
       "id": "r2-minimal-int-65536",
@@ -12640,7 +12814,8 @@
       "rules": [
         "C2"
       ],
-      "error_category": "noncanonical"
+      "error_category": "noncanonical",
+      "error_stage": "7"
     },
     {
       "id": "r2-minimal-int-2pow32",
@@ -12759,7 +12934,8 @@
       "rules": [
         "C2"
       ],
-      "error_category": "noncanonical"
+      "error_category": "noncanonical",
+      "error_stage": "7"
     },
     {
       "id": "r2-nonminimal-bytes-length-23",
@@ -12818,7 +12994,8 @@
       "rules": [
         "C2"
       ],
-      "error_category": "noncanonical"
+      "error_category": "noncanonical",
+      "error_stage": "7"
     },
     {
       "id": "r2-minimal-bytes-length-24",
@@ -12937,7 +13114,8 @@
       "rules": [
         "C2"
       ],
-      "error_category": "noncanonical"
+      "error_category": "noncanonical",
+      "error_stage": "7"
     },
     {
       "id": "r2-utf8-overlong-e0",
@@ -12996,7 +13174,8 @@
       "rules": [
         "C6"
       ],
-      "error_category": "malformed"
+      "error_category": "malformed",
+      "error_stage": "7"
     },
     {
       "id": "r2-utf8-overlong-f0",
@@ -13055,7 +13234,8 @@
       "rules": [
         "C6"
       ],
-      "error_category": "malformed"
+      "error_category": "malformed",
+      "error_stage": "7"
     },
     {
       "id": "r2-utf8-lead-f5",
@@ -13114,7 +13294,8 @@
       "rules": [
         "C6"
       ],
-      "error_category": "malformed"
+      "error_category": "malformed",
+      "error_stage": "7"
     },
     {
       "id": "r2-utf8-lead-f6",
@@ -13173,7 +13354,8 @@
       "rules": [
         "C6"
       ],
-      "error_category": "malformed"
+      "error_category": "malformed",
+      "error_stage": "7"
     },
     {
       "id": "r2-utf8-lead-f7",
@@ -13232,7 +13414,8 @@
       "rules": [
         "C6"
       ],
-      "error_category": "malformed"
+      "error_category": "malformed",
+      "error_stage": "7"
     },
     {
       "id": "r2-utf8-truncated-sequence",
@@ -13291,7 +13474,8 @@
       "rules": [
         "C6"
       ],
-      "error_category": "malformed"
+      "error_category": "malformed",
+      "error_stage": "7"
     },
     {
       "id": "r2-utf8-bad-continuation-3byte-last",
@@ -13350,7 +13534,8 @@
       "rules": [
         "C6"
       ],
-      "error_category": "malformed"
+      "error_category": "malformed",
+      "error_stage": "7"
     },
     {
       "id": "r2-utf8-bad-continuation-3byte-first",
@@ -13409,7 +13594,8 @@
       "rules": [
         "C6"
       ],
-      "error_category": "malformed"
+      "error_category": "malformed",
+      "error_stage": "7"
     },
     {
       "id": "r2-utf8-bad-continuation-4byte-last",
@@ -13468,7 +13654,8 @@
       "rules": [
         "C6"
       ],
-      "error_category": "malformed"
+      "error_category": "malformed",
+      "error_stage": "7"
     },
     {
       "id": "r2-utf8-bad-continuation-4byte-middle",
@@ -13527,7 +13714,8 @@
       "rules": [
         "C6"
       ],
-      "error_category": "malformed"
+      "error_category": "malformed",
+      "error_stage": "7"
     },
     {
       "id": "r2-utf8-max-scalar",
@@ -13647,7 +13835,8 @@
         "R1",
         "C3"
       ],
-      "error_category": "resource"
+      "error_category": "resource",
+      "error_stage": "7"
     },
     {
       "id": "r2-indefinite-map-256-entries",
@@ -13707,7 +13896,8 @@
         "R1",
         "C3"
       ],
-      "error_category": "noncanonical"
+      "error_category": "noncanonical",
+      "error_stage": "7"
     },
     {
       "id": "r2-endpoint-double-quote",
@@ -13767,7 +13957,8 @@
       "rules": [
         "S4"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "8.2"
     },
     {
       "id": "r2-endpoint-caret",
@@ -13827,7 +14018,8 @@
       "rules": [
         "S4"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "8.2"
     },
     {
       "id": "r2-endpoint-backtick",
@@ -13887,7 +14079,8 @@
       "rules": [
         "S4"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "8.2"
     },
     {
       "id": "r2-endpoint-open-brace",
@@ -13947,7 +14140,8 @@
       "rules": [
         "S4"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "8.2"
     },
     {
       "id": "r2-endpoint-pipe",
@@ -14007,7 +14201,8 @@
       "rules": [
         "S4"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "8.2"
     },
     {
       "id": "r2-endpoint-close-brace",
@@ -14067,7 +14262,8 @@
       "rules": [
         "S4"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "8.2"
     },
     {
       "id": "r2-endpoint-less-than",
@@ -14127,7 +14323,8 @@
       "rules": [
         "S4"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "8.2"
     },
     {
       "id": "r2-endpoint-greater-than",
@@ -14187,7 +14384,8 @@
       "rules": [
         "S4"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "8.2"
     },
     {
       "id": "r2-endpoint-digit-first-scheme",
@@ -14247,7 +14445,8 @@
       "rules": [
         "S4"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "8.2"
     },
     {
       "id": "r2-endpoint-empty-scheme",
@@ -14307,7 +14506,8 @@
       "rules": [
         "S4"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "8.2"
     },
     {
       "id": "r2-endpoint-control-character",
@@ -14367,7 +14567,8 @@
       "rules": [
         "S4"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "8.2"
     },
     {
       "id": "r2-endpoint-non-ascii",
@@ -14427,7 +14628,8 @@
       "rules": [
         "S4"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "8.2"
     },
     {
       "id": "r2-endpoint-allowed-punctuation",
@@ -14611,7 +14813,8 @@
       "rules": [
         "S4"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "8.2"
     },
     {
       "id": "r2-relay-id-16-bytes",
@@ -14733,7 +14936,8 @@
       "rules": [
         "S4"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "8.2"
     },
     {
       "id": "r2-relay-id-64-bytes",
@@ -14855,7 +15059,8 @@
       "rules": [
         "S4"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "8.2"
     },
     {
       "id": "r2-transitions-17-entries",
@@ -14915,7 +15120,8 @@
       "rules": [
         "S5"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "8.2"
     },
     {
       "id": "r2-network-64-chars",
@@ -15037,7 +15243,8 @@
       "rules": [
         "S1"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "8.2"
     },
     {
       "id": "r2-network-uppercase-later",
@@ -15097,7 +15304,8 @@
       "rules": [
         "S1"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "8.2"
     },
     {
       "id": "r2-network-punctuation",
@@ -15219,7 +15427,8 @@
       "rules": [
         "S1"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "8.2"
     },
     {
       "id": "r2-key-type-3-32-bytes",
@@ -15341,7 +15550,8 @@
       "rules": [
         "S2"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "8.2"
     },
     {
       "id": "r2-key-type-2-33-bytes",
@@ -15401,7 +15611,8 @@
       "rules": [
         "S2"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "8.2"
     },
     {
       "id": "r2-key-type-1-32-bytes",
@@ -15461,7 +15672,8 @@
       "rules": [
         "S2"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "8.2"
     },
     {
       "id": "r2-key-bytes-128-unallocated-type",
@@ -15521,7 +15733,8 @@
       "rules": [
         "S2"
       ],
-      "error_category": "unsupported"
+      "error_category": "unsupported",
+      "error_stage": "8.3"
     },
     {
       "id": "r2-key-bytes-129",
@@ -15581,7 +15794,8 @@
       "rules": [
         "S2"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "8.2"
     },
     {
       "id": "r2-key-bytes-empty",
@@ -15641,7 +15855,8 @@
       "rules": [
         "S2"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "8.2"
     },
     {
       "id": "r2-key-type-65536",
@@ -15701,7 +15916,8 @@
       "rules": [
         "S2"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "8.2"
     },
     {
       "id": "r2-nonce-64-bytes",
@@ -15823,7 +16039,8 @@
       "rules": [
         "S2c"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "8.2"
     },
     {
       "id": "r2-nonce-empty",
@@ -15883,7 +16100,8 @@
       "rules": [
         "S2c"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "8.2"
     },
     {
       "id": "r2-ciphertext-empty",
@@ -15943,7 +16161,8 @@
       "rules": [
         "S2c"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "8.2"
     },
     {
       "id": "r2-digest-31-bytes",
@@ -16003,7 +16222,8 @@
       "rules": [
         "T3"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "8.2"
     },
     {
       "id": "r2-digest-33-bytes",
@@ -16063,7 +16283,8 @@
       "rules": [
         "T3"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "8.2"
     },
     {
       "id": "r2-uuid-16-bytes",
@@ -16185,7 +16406,8 @@
       "rules": [
         "T1a"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "8.2"
     },
     {
       "id": "r2-uuid-17-bytes",
@@ -16245,7 +16467,8 @@
       "rules": [
         "T1a"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "8.2"
     },
     {
       "id": "r2-content-digest-31-bytes",
@@ -16305,7 +16528,8 @@
       "rules": [
         "T1a"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "8.2"
     },
     {
       "id": "r2-content-digest-33-bytes",
@@ -16365,7 +16589,8 @@
       "rules": [
         "T1a"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "8.2"
     },
     {
       "id": "r2-payment-value-31-bytes",
@@ -16426,7 +16651,8 @@
         "C8",
         "S3"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "8.2"
     },
     {
       "id": "r2-payment-value-33-bytes",
@@ -16487,7 +16713,8 @@
         "C8",
         "S3"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "8.2"
     },
     {
       "id": "r2-payment-commitment-31-bytes",
@@ -16547,7 +16774,8 @@
       "rules": [
         "T4"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "8.2"
     },
     {
       "id": "r2-payment-commitment-33-bytes",
@@ -16607,7 +16835,8 @@
       "rules": [
         "T4"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "8.2"
     },
     {
       "id": "r2-payment-txid-empty",
@@ -16667,7 +16896,8 @@
       "rules": [
         "S3"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "8.2"
     },
     {
       "id": "r2-payment-txid-129-bytes",
@@ -16727,7 +16957,8 @@
       "rules": [
         "S3"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "8.2"
     },
     {
       "id": "r2-payment-address-129-bytes",
@@ -16787,7 +17018,8 @@
       "rules": [
         "S9"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "8.2"
     },
     {
       "id": "r2-signature-513-bytes",
@@ -16847,7 +17079,8 @@
       "rules": [
         "S2b"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "8.2"
     },
     {
       "id": "r2-signature-512-bytes-wrong-length",
@@ -16907,7 +17140,8 @@
       "rules": [
         "S2b"
       ],
-      "error_category": "unsupported"
+      "error_category": "unsupported",
+      "error_stage": "8.3"
     },
     {
       "id": "r2-signature-empty",
@@ -16967,7 +17201,8 @@
       "rules": [
         "S2b"
       ],
-      "error_category": "schema"
+      "error_category": "schema",
+      "error_stage": "8.2"
     },
     {
       "id": "r2-depth-t1-child-t5-at-limit",
@@ -17089,7 +17324,8 @@
       "rules": [
         "R1"
       ],
-      "error_category": "resource"
+      "error_category": "resource",
+      "error_stage": "7"
     },
     {
       "id": "r2-depth-t2-child-t4-at-limit",
@@ -17211,7 +17447,8 @@
       "rules": [
         "R1"
       ],
-      "error_category": "resource"
+      "error_category": "resource",
+      "error_stage": "7"
     },
     {
       "id": "r2-depth-t6-child-t8-at-limit",
@@ -17333,7 +17570,8 @@
       "rules": [
         "R1"
       ],
-      "error_category": "resource"
+      "error_category": "resource",
+      "error_stage": "7"
     },
     {
       "id": "r2-depth-t4-transition-t7-at-limit",
@@ -17455,7 +17693,8 @@
       "rules": [
         "R1"
       ],
-      "error_category": "resource"
+      "error_category": "resource",
+      "error_stage": "7"
     },
     {
       "id": "r2-depth-t8-item-t17-at-limit",
@@ -17577,7 +17816,8 @@
       "rules": [
         "R1"
       ],
-      "error_category": "resource"
+      "error_category": "resource",
+      "error_stage": "7"
     },
     {
       "id": "r2-depth-t16-item-t17-at-limit",
@@ -17699,7 +17939,1116 @@
       "rules": [
         "R1"
       ],
-      "error_category": "resource"
+      "error_category": "resource",
+      "error_stage": "7"
+    },
+    {
+      "id": "payload-indefinite-text-truncated",
+      "description": "A truncated indefinite text string is malformed (pass A), not noncanonical: pass A scans the chunks before pass B calls the indefinite start noncanonical.",
+      "source": "handcrafted",
+      "frame_hex": "46524e4b010000000ea40011010102010345a1007f6168",
+      "validation_context": {
+        "operation": "generic",
+        "route_byte_limit": 8388617,
+        "reader_version": 1,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 1
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false
+      },
+      "expectation": "reject",
+      "rules": [
+        "C3",
+        "C5",
+        "C10"
+      ],
+      "error_category": "malformed",
+      "error_stage": "7"
+    },
+    {
+      "id": "payload-indefinite-bytes-chunk-wrong-major",
+      "description": "An indefinite byte string holding a text chunk is malformed (pass A).",
+      "source": "handcrafted",
+      "frame_hex": "46524e4b010000000fa40011010102010346a1005f6168ff",
+      "validation_context": {
+        "operation": "generic",
+        "route_byte_limit": 8388617,
+        "reader_version": 1,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 1
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false
+      },
+      "expectation": "reject",
+      "rules": [
+        "C3",
+        "C5",
+        "C10"
+      ],
+      "error_category": "malformed",
+      "error_stage": "7"
+    },
+    {
+      "id": "payload-indefinite-string-nested-chunk",
+      "description": "An indefinite byte string whose chunk is itself indefinite is malformed (pass A).",
+      "source": "handcrafted",
+      "frame_hex": "46524e4b0100000011a40011010102010348a1005f5f4101ffff",
+      "validation_context": {
+        "operation": "generic",
+        "route_byte_limit": 8388617,
+        "reader_version": 1,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 1
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false
+      },
+      "expectation": "reject",
+      "rules": [
+        "C3",
+        "C5",
+        "C10"
+      ],
+      "error_category": "malformed",
+      "error_stage": "7"
+    },
+    {
+      "id": "t4-timestamp-seconds-i64-min",
+      "description": "Timestamp seconds -2^63, the i64 minimum: accepted (C7).",
+      "source": "typescript",
+      "frame_hex": "46524e4b0100000119a40004010102010359010ea5006a6672616e6b2d7465737401a200020158200135404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f020503a2003b7fffffffffffffff01000482a400500135404b56616c77828d98a3aeb9c4cf01781c68747470733a2f2f72656c6179312e6578616d706c652f6672616e6b02a20001015821020e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d586303a2001a6b49d2000100a40050025a65707b86919ca7b2bdc8d3dee9f401781c68747470733a2f2f72656c6179322e6578616d706c652f6672616e6b02a2000101582102333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d8803a2001a6b49d2000100",
+      "validation_context": {
+        "operation": "typed",
+        "route_byte_limit": 8388617,
+        "reader_version": 1,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 1
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null
+      },
+      "expectation": "accept",
+      "rules": [
+        "C7"
+      ],
+      "type_id": 4,
+      "schema_version": 1,
+      "content_hash_hex": "204a19941aefa0cdb8c945242bea09c2f856d8568e2417878a9ebc8c8750f4ca"
+    },
+    {
+      "id": "t4-timestamp-seconds-below-i64-min",
+      "description": "Timestamp seconds -2^63-1: a negative integer that still fits a CBOR head but not an i64, a schema error at 8.2 (C7).",
+      "source": "handcrafted",
+      "frame_hex": "46524e4b0100000119a40004010102010359010ea5006a6672616e6b2d7465737401a200020158200135404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f020503a2003b800000000000000001000482a400500135404b56616c77828d98a3aeb9c4cf01781c68747470733a2f2f72656c6179312e6578616d706c652f6672616e6b02a20001015821020e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d586303a2001a6b49d2000100a40050025a65707b86919ca7b2bdc8d3dee9f401781c68747470733a2f2f72656c6179322e6578616d706c652f6672616e6b02a2000101582102333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d8803a2001a6b49d2000100",
+      "validation_context": {
+        "operation": "typed",
+        "route_byte_limit": 8388617,
+        "reader_version": 1,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 1
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null
+      },
+      "expectation": "reject",
+      "rules": [
+        "C7"
+      ],
+      "error_category": "schema",
+      "error_stage": "8.2"
+    },
+    {
+      "id": "t1-payload-frame-8-bytes",
+      "description": "A required child of 8 bytes violates the framed-object size bound: schema at the parent stage 8.2, never the child stage 2 frame error.",
+      "source": "typescript",
+      "frame_hex": "46524e4b0100000173a400010101020103590168a5006a6672616e6b2d7465737401a2000101582102747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9024846524e4b010000010358203e8b0be344a2877c1b7f62a6238593d6deef8ae53a6ed0cb9eafafc0503a3fec0482a5000001582079848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ce0258200000000000000000000000000000000000000000000000000000000000000f0103543f4a55606b76818c97a2adb8c3ced9e4effa05100458205c82aa60337c866cbdd8308b2029055449d5f9531884d61fb17cedb0302ea0f1a500010158209ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f30258200000000000000000000000000000000000000000000000000000000000000f020354646f7a85909ba6b1bcc7d2dde8f3fe09141f2a350458205b794e4ed79e4452134d1a13eeee04b015eaa37f4e73751dae5d18f3c6df0338",
+      "validation_context": {
+        "operation": "typed",
+        "route_byte_limit": 8388617,
+        "reader_version": 1,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 1
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null
+      },
+      "expectation": "reject",
+      "rules": [
+        "F3",
+        "S8"
+      ],
+      "error_category": "schema",
+      "error_stage": "8.2"
+    },
+    {
+      "id": "t1-payload-frame-9-bytes-empty-body",
+      "description": "A required child of exactly 9 bytes (valid header, declared length 0) passes the size bound; its empty body is truncated CBOR at the child stage 5.",
+      "source": "typescript",
+      "frame_hex": "46524e4b0100000174a400010101020103590169a5006a6672616e6b2d7465737401a2000101582102747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9024946524e4b010000000003582073c9502307fcc05bfd17f001308b3164fe4931d284c4930d8b5cdbca7a14b22f0482a5000001582079848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ce0258200000000000000000000000000000000000000000000000000000000000000f0103543f4a55606b76818c97a2adb8c3ced9e4effa0510045820ce2c7d729c22a67737e8aea0f008832c537b1f6f512be131d448cc2aa515451ea500010158209ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f30258200000000000000000000000000000000000000000000000000000000000000f020354646f7a85909ba6b1bcc7d2dde8f3fe09141f2a3504582073ae892ab2c780cea7df59a538642fadb82fa4f9105c9cdcd24c4c348d6166fd",
+      "validation_context": {
+        "operation": "typed",
+        "route_byte_limit": 8388617,
+        "reader_version": 1,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 1
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null
+      },
+      "expectation": "reject",
+      "rules": [
+        "F3",
+        "S8"
+      ],
+      "error_category": "malformed",
+      "error_stage": "5"
+    },
+    {
+      "id": "t4-transition-algorithm-key-type-mismatch",
+      "description": "A key-transition entry with algorithm 1 and an Ed25519 (key type 2) signer: unsupported at 8.3, as for a type-2 signature entry (S2b).",
+      "source": "typescript",
+      "frame_hex": "46524e4b0100000222a400040101020103590217a6006a6672616e6b2d7465737401a200020158200135404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f020503a2001a6553f100011a075bcd150482a400500135404b56616c77828d98a3aeb9c4cf01781c68747470733a2f2f72656c6179312e6578616d706c652f6672616e6b02a20001015821020e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d586303a2001a6b49d2000100a40050025a65707b86919ca7b2bdc8d3dee9f401781c68747470733a2f2f72656c6179322e6578616d706c652f6672616e6b02a2000101582102333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d8803a2001a6b49d20001000581a400589746524e4b010000008ea4000701010201035884a5006a6672616e6b2d7465737401a200020158200135404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f02a200020158200135404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f030604a20002015820025a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4010102a200020158200135404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f035840525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07",
+      "validation_context": {
+        "operation": "typed",
+        "route_byte_limit": 8388617,
+        "reader_version": 1,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 1
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null
+      },
+      "expectation": "reject",
+      "rules": [
+        "S2a",
+        "S2b"
+      ],
+      "error_category": "unsupported",
+      "error_stage": "8.3"
+    },
+    {
+      "id": "t4-transition-signature-length-mismatch",
+      "description": "A key-transition entry with algorithm 16 and a 63-byte signature: unsupported at 8.3 (S2b).",
+      "source": "typescript",
+      "frame_hex": "46524e4b0100000221a400040101020103590216a6006a6672616e6b2d7465737401a200020158200135404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f020503a2001a6553f100011a075bcd150482a400500135404b56616c77828d98a3aeb9c4cf01781c68747470733a2f2f72656c6179312e6578616d706c652f6672616e6b02a20001015821020e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d586303a2001a6b49d2000100a40050025a65707b86919ca7b2bdc8d3dee9f401781c68747470733a2f2f72656c6179322e6578616d706c652f6672616e6b02a2000101582102333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d8803a2001a6b49d20001000581a400589746524e4b010000008ea4000701010201035884a5006a6672616e6b2d7465737401a200020158200135404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f02a200020158200135404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f030604a20002015820025a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4011002a200020158200135404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f03583f525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc",
+      "validation_context": {
+        "operation": "typed",
+        "route_byte_limit": 8388617,
+        "reader_version": 1,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 1
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null
+      },
+      "expectation": "reject",
+      "rules": [
+        "S2b"
+      ],
+      "error_category": "unsupported",
+      "error_stage": "8.3"
+    },
+    {
+      "id": "t4-transition-algorithm-unallocated",
+      "description": "A key-transition entry with unallocated algorithm 99: unsupported at 8.3 (S2a).",
+      "source": "typescript",
+      "frame_hex": "46524e4b0100000223a400040101020103590218a6006a6672616e6b2d7465737401a200020158200135404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f020503a2001a6553f100011a075bcd150482a400500135404b56616c77828d98a3aeb9c4cf01781c68747470733a2f2f72656c6179312e6578616d706c652f6672616e6b02a20001015821020e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d586303a2001a6b49d2000100a40050025a65707b86919ca7b2bdc8d3dee9f401781c68747470733a2f2f72656c6179322e6578616d706c652f6672616e6b02a2000101582102333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d8803a2001a6b49d20001000581a400589746524e4b010000008ea4000701010201035884a5006a6672616e6b2d7465737401a200020158200135404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f02a200020158200135404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f030604a20002015820025a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a401186302a200020158200135404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f035840525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07",
+      "validation_context": {
+        "operation": "typed",
+        "route_byte_limit": 8388617,
+        "reader_version": 1,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 1
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null
+      },
+      "expectation": "reject",
+      "rules": [
+        "S2a",
+        "S2b"
+      ],
+      "error_category": "unsupported",
+      "error_stage": "8.3"
+    },
+    {
+      "id": "v6-nested-wildcard-journal-fact-schema2-accept",
+      "description": "Type 3 at schema 2 (min_reader 1): a journal fact, a map nested in the payload, carries an undeclared key 9; the frame is read as a newer compatible schema, so the wildcard is open (C12, V6.3).",
+      "source": "typescript",
+      "frame_hex": "46524e4b01000000d1a40003010202010358c7a6006a6672616e6b2d7465737401a2000101582102bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd0813025026313c47525d68737e89949faab5c0cb03a2001a6553f2f401050481a500a2001a6553f164010001502a35404b56616c77828d98a3aeb9c4cf0207034a2a35404b56616c77828d09070582a300010101024c747f8a95a0abb6c1ccd7e2eda3001a7fff0001010902582646524e4b010000001da4001affff0001010102010350a1006d667574757265206974656d2033",
+      "validation_context": {
+        "operation": "typed",
+        "route_byte_limit": 8388617,
+        "reader_version": 1,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 1
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null
+      },
+      "expectation": "accept",
+      "rules": [
+        "C12",
+        "V6.3"
+      ],
+      "type_id": 3,
+      "schema_version": 2,
+      "content_hash_hex": "0209c02087d936294df2963cb1d3e9e04d80aee52196f9c5dd8e47b808a48b92"
+    },
+    {
+      "id": "v6-nested-wildcard-journal-fact-schema1-reject",
+      "description": "The same nested key at exact schema 1 is a schema error at 8.2 (C12).",
+      "source": "typescript",
+      "frame_hex": "46524e4b01000000d1a40003010102010358c7a6006a6672616e6b2d7465737401a2000101582102bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd0813025026313c47525d68737e89949faab5c0cb03a2001a6553f2f401050481a500a2001a6553f164010001502a35404b56616c77828d98a3aeb9c4cf0207034a2a35404b56616c77828d09070582a300010101024c747f8a95a0abb6c1ccd7e2eda3001a7fff0001010902582646524e4b010000001da4001affff0001010102010350a1006d667574757265206974656d2033",
+      "validation_context": {
+        "operation": "typed",
+        "route_byte_limit": 8388617,
+        "reader_version": 1,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 1
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null
+      },
+      "expectation": "reject",
+      "rules": [
+        "C12"
+      ],
+      "error_category": "schema",
+      "error_stage": "8.2"
+    },
+    {
+      "id": "v6-nested-closed-map-schema2-reject",
+      "description": "Type 3 at schema 2: an opaque-section map (no wildcard) with an undeclared key stays closed at every schema version (C12).",
+      "source": "typescript",
+      "frame_hex": "46524e4b01000000e7a40003010202010358dda6006a6672616e6b2d7465737401a2000101582102bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd0813025026313c47525d68737e89949faab5c0cb03a2001a6553f2f401050482a400a2001a6553f164010001502a35404b56616c77828d98a3aeb9c4cf0207034a2a35404b56616c77828da400a2001a6553f164010901504f5a65707b86919ca7b2bdc8d3dee9f4020703582646524e4b010000001da4001affff0001010102010350a1006d667574757265206974656d20320581a400010101024c747f8a95a0abb6c1ccd7e2ed0901",
+      "validation_context": {
+        "operation": "typed",
+        "route_byte_limit": 8388617,
+        "reader_version": 1,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 1
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null
+      },
+      "expectation": "reject",
+      "rules": [
+        "C12"
+      ],
+      "error_category": "schema",
+      "error_stage": "8.2"
+    },
+    {
+      "id": "v6-parent-newer-schema-does-not-open-child-wildcard",
+      "description": "A type-2 root at schema 2 (V6.3) wrapping a type-4 child at exact schema 1 whose relay binding has an undeclared key: the child frame decides, so its wildcard is closed (schema at the child stage 8.2, C12).",
+      "source": "typescript",
+      "frame_hex": "46524e4b01000001a3a400020102020103590198a20059012446524e4b010000011ba400040101020103590110a5006a6672616e6b2d7465737401a200020158200135404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f020503a2001a6553f100011a075bcd150482a500500135404b56616c77828d98a3aeb9c4cf01781c68747470733a2f2f72656c6179312e6578616d706c652f6672616e6b02a20001015821020e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d586303a2001a6b49d20001000901a40050025a65707b86919ca7b2bdc8d3dee9f401781c68747470733a2f2f72656c6179322e6578616d706c652f6672616e6b02a2000101582102333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d8803a2001a6b49d20001000181a3001001a200020158200135404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f0258402a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4df",
+      "validation_context": {
+        "operation": "typed",
+        "route_byte_limit": 8388617,
+        "reader_version": 1,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 1
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null
+      },
+      "expectation": "reject",
+      "rules": [
+        "C12",
+        "V6.3"
+      ],
+      "error_category": "schema",
+      "error_stage": "8.2"
+    },
+    {
+      "id": "sem-t4-root-with-transition-alone-accepted",
+      "description": "A type-4 root validated by itself is not checked against S10: it may carry a transition (field 5) that a type-2 bootstrap would reject. The transition (revision 6 against statement revision 5) is accepted only because the link check lives in S10, which runs only in a type-2 parent's stage 9.",
+      "source": "typescript",
+      "frame_hex": "46524e4b0100000222a400040101020103590217a6006a6672616e6b2d7465737401a200020158200135404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f020503a2001a6553f100011a075bcd150482a400500135404b56616c77828d98a3aeb9c4cf01781c68747470733a2f2f72656c6179312e6578616d706c652f6672616e6b02a20001015821020e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d586303a2001a6b49d2000100a40050025a65707b86919ca7b2bdc8d3dee9f401781c68747470733a2f2f72656c6179322e6578616d706c652f6672616e6b02a2000101582102333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d8803a2001a6b49d20001000581a400589746524e4b010000008ea4000701010201035884a5006a6672616e6b2d7465737401a200020158200135404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f02a200020158200135404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f030604a20002015820025a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4011002a200020158200135404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f035840525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07",
+      "validation_context": {
+        "operation": "typed",
+        "route_byte_limit": 8388617,
+        "reader_version": 1,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 1
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null
+      },
+      "expectation": "accept",
+      "rules": [
+        "S10"
+      ],
+      "type_id": 4,
+      "schema_version": 1,
+      "content_hash_hex": "9ab36cf32e6cc1cebbc77c21939bcd2b5cc3b1196ec4509420afbd7df7e4e62d"
+    },
+    {
+      "id": "limit-type16-root-total-256",
+      "description": "Type-16 root holding one container of 255 texts: 256 opened items in all.",
+      "source": "typescript",
+      "frame_hex": "46524e4b0100001712a400100101020103591707a1008159170146524e4b01000016f8a4001001010201035916eda10098ff5646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a1006178",
+      "validation_context": {
+        "operation": "typed",
+        "route_byte_limit": 8388617,
+        "reader_version": 1,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 1
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null
+      },
+      "expectation": "accept",
+      "rules": [
+        "R2"
+      ],
+      "type_id": 16,
+      "schema_version": 1,
+      "content_hash_hex": "23ac4e14ec27ed72c8bf399fedf18fb93a049882fd8faee351320dd9ab60eb7f"
+    },
+    {
+      "id": "limit-type16-root-total-257",
+      "description": "Type-16 root holding one container of 256 texts: the 257th opened item exceeds the total (charged at 8.4).",
+      "source": "typescript",
+      "frame_hex": "46524e4b010000172aa40010010102010359171fa1008159171946524e4b0100001710a400100101020103591705a1009901005646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a10061785646524e4b010000000da40011010102010344a1006178",
+      "validation_context": {
+        "operation": "typed",
+        "route_byte_limit": 8388617,
+        "reader_version": 1,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 1
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null
+      },
+      "expectation": "reject",
+      "rules": [
+        "R2"
+      ],
+      "error_category": "resource",
+      "error_stage": "8.4"
+    },
+    {
+      "id": "frame-only-version1-accepts-with-retention-allowed",
+      "description": "A version-1 frame under the frame operation is accepted even where opaque retention is allowed: the flag never turns an interpretable frame into a retain.",
+      "source": "typescript",
+      "frame_hex": "46524e4b010000000ea40011010102010345a100626869",
+      "validation_context": {
+        "operation": "frame",
+        "route_byte_limit": 8388617,
+        "reader_version": 1,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 1
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": true
+      },
+      "expectation": "accept",
+      "rules": [
+        "F2"
+      ]
     }
   ]
 }

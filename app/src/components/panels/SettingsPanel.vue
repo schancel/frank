@@ -1,6 +1,8 @@
 <template>
   <div
     ref="panelRoot"
+    role="region"
+    :aria-label="$t('SettingPanel.panelLabel')"
     class="full-width column col"
     tabindex="-1"
     data-test="settings-panel"

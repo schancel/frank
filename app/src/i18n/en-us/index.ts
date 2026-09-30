@@ -36,6 +36,14 @@ export default {
     balanceStale: '(last known)',
     directMessages: 'Direct Messages',
   },
+  mailboxStatus: {
+    unavailable:
+      'Messaging service unavailable: this relay does not offer messaging, so you will not receive messages.',
+    unreachable:
+      "Can't reach the server. You may not be receiving messages; retrying.",
+    rateLimited: 'The server asked us to slow down. Retrying shortly.',
+    unauthorized: 'The server rejected your messaging login. Retrying.',
+  },
   chatMessage: {
     noPayloadFound: 'Unable to find message payload',
   },
@@ -132,6 +140,22 @@ export default {
     confirm: 'Confirm now',
     dismiss: 'Later',
   },
+  seedConfirm: {
+    unavailable:
+      'Confirmation is unavailable because this device has no secure random number generator. Go back and try again, or use another browser.',
+    stepTitle: 'Confirm phrase',
+    title: 'Confirm your recovery phrase',
+    instructions:
+      'Enter the requested words from the recovery phrase you wrote down. Your account is only created once they match.',
+    wordLabel: 'Word #{n}',
+    check: 'Check my answers',
+    error:
+      'One or more words do not match your recovery phrase. Check your copy and try again.',
+    success: 'Recovery phrase confirmed. You can finish setup.',
+    showPhrase: 'Show my recovery phrase again',
+    hidePhrase: 'Hide my recovery phrase',
+    phraseLabel: 'Your recovery phrase, in order',
+  },
   replaceGuard: {
     title: 'You already have an account on this device',
     intro:
@@ -179,6 +203,7 @@ export default {
     changeLog: 'Changelog',
     showSeed: 'Show Seed',
     confirmSeed: 'Confirm Recovery Phrase',
+    panelLabel: 'Settings',
   },
   receiveBitcoinDialog: {
     walletStatus: 'Wallet Status',

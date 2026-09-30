@@ -267,8 +267,8 @@ def main():
             kind, info, failure = None, None, e
         exp, cat = c['expectation'], c.get('error_category')
         if failure is not None:
-            if exp != 'reject' or cat != failure.cat:
-                problems.append('%s: python fails %s@%d, manifest expects %s %s' % (c['id'], failure.cat, failure.stage, exp, cat))
+            if exp != 'reject' or cat != failure.cat or c.get('error_stage') != str(failure.stage):
+                problems.append('%s: python fails %s@%d, manifest expects %s %s@%s' % (c['id'], failure.cat, failure.stage, exp, cat, c.get('error_stage')))
             else:
                 agreed += 1
             continue

@@ -12,10 +12,9 @@
 
 # Ticket #9: a Qwen 3.8 Max agent with its own on-chain Frank identity
 
-This is the runbook and bounty write-up for issue #9 (stretch): a headless client that bridges
+This is the runbook for issue #9 (stretch): a headless client that bridges
 real conversation turns between a human/script and **Qwen 3.8 Max** (Alibaba Cloud), speaking only
-over **Frank**, a burn-to-speak messaging protocol on **Monad testnet**. Written for the Alibaba
-Cloud "Best Builds with Qwen" bounty (Trust, Identity & AI track).
+over **Frank**, a burn-to-speak messaging protocol on **Monad testnet**.
 
 Everything described here is real and was run live against Monad testnet and Alibaba Cloud's Qwen
 API while implementing this ticket — see "Live proof from this ticket's own run" below for the
@@ -172,8 +171,7 @@ implementing this ticket (not mocked, not replayed):
 
 **Turn 1**
 
-> Sender: "Hi! I'm a script talking to you over Frank on Monad testnet, for the Alibaba Cloud Best
-> Builds with Qwen bounty demo. Please tell me: what model are you, who built you, and in one
+> Sender: "Hi! I'm a script talking to you over Frank on Monad testnet, as a demo. Please tell me: what model are you, who built you, and in one
 > sentence why is a burn-to-speak protocol like Frank a good fit for an AI agent's identity?"
 
 - Sender's stamped message burn tx: `0xd7a281fd2ffc0f4c7d10ad7933f6d5b9a45bfefad1e509f5f2ab622c2592877c`
@@ -206,7 +204,7 @@ Alchemy's Monad testnet RPC, for all four burns above): every one landed with `s
 
 Note on turn 2's answer: this is Qwen correctly declining to fabricate a parameter count and
 correctly reasoning about what "proof of payment" actually means here (the on-chain burn, not the
-text) — exactly the kind of grounded, identity-aware response this bounty's track is about.
+text) — exactly the kind of grounded, identity-aware response the demo is meant to show.
 
 ## Usage (from `packages/bot/`)
 

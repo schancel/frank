@@ -9,7 +9,10 @@ import {
   betFundsRequired,
   betMessageCostWei,
   DEFAULT_BLACKJACK_TABLE,
+  CURATED_BLACKJACK_DEALER_NAME,
+  DEFAULT_BET_WEI,
   defaultBetDisplay,
+  peerOffersDealerTable,
   deliverBetWhenReady,
   latestDealerTable,
   parseBetInput,
@@ -451,13 +454,44 @@ describe('table limits from the dealer welcome (#395)', () => {
     )
   })
 
-  it('starts at 0.1 MON, moved into a table that does not include it', () => {
+  it('starts at 0.1 MON, never above it, and still clamps down to a lower maximum', () => {
+    expect(DEFAULT_BET_WEI).toBe(10n ** 17n)
     expect(defaultBetDisplay()).toBe('0.1')
+    // An advertised minimum above 0.1 must not become the pre-fill (#422).
     expect(
       defaultBetDisplay({ minWei: 5n * 10n ** 17n, maxWei: 10n ** 18n }),
-    ).toBe('0.5')
+    ).toBe('0.1')
+    expect(
+      defaultBetDisplay({ minWei: 10n ** 39n, maxWei: 10n ** 40n - 1n }),
+    ).toBe('0.1')
     expect(
       defaultBetDisplay({ minWei: 10n ** 15n, maxWei: 5n * 10n ** 16n }),
     ).toBe('0.05')
+  })
+
+  it('offers a table only for the curated dealer bot, not any bot and not a copied name alone', () => {
+    expect(CURATED_BLACKJACK_DEALER_NAME).toBe('Blackjack Dealer')
+    expect(
+      peerOffersDealerTable({
+        isBot: true,
+        name: 'Blackjack Dealer',
+      }),
+    ).toBe(true)
+    expect(
+      peerOffersDealerTable({
+        isBot: true,
+        name: '  Blackjack Dealer  ',
+      }),
+    ).toBe(true)
+    expect(
+      peerOffersDealerTable({ isBot: false, name: 'Blackjack Dealer' }),
+    ).toBe(false)
+    expect(
+      peerOffersDealerTable({ isBot: undefined, name: 'Blackjack Dealer' }),
+    ).toBe(false)
+    expect(peerOffersDealerTable({ isBot: true, name: 'Qwen' })).toBe(false)
+    expect(peerOffersDealerTable({ isBot: true, name: '' })).toBe(false)
+    expect(peerOffersDealerTable(undefined)).toBe(false)
+    expect(peerOffersDealerTable(null)).toBe(false)
   })
 })

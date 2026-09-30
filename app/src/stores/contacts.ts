@@ -81,8 +81,8 @@ type Profile = {
   avatar: string | null
   pubKey: PublicKey | null
   /** The signed profile carried the self-declared bot marker (#311). `undefined` = not looked up
-   * yet; only an explicit `true` counts. No UI gates on it since #395 removed the blackjack toolbar
-   * button; it stays as the profile's bot marker (capability signalling, #217). */
+   * yet; only an explicit `true` counts. The blackjack bet control also requires the curated
+   * dealer name (#422). A copied name plus this flag is still not a verified dealer key (#217). */
   isBot?: boolean
 }
 

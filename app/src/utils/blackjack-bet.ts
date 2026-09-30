@@ -108,18 +108,33 @@ export function parseBetInput(
   return { ok: false, code, error }
 }
 
-/** The bet input's starting value: 0.1 MON (comfortably above the relay's stamp minimum), moved
- * into the table's limits when the dealer's table does not include it. */
+/** 0.1 MON. The bet box never starts above this (#422): a welcome's minimum is untrusted text. */
+export const DEFAULT_BET_WEI = 10n ** 17n
+
+/** Display name of the curated blackjack dealer (`packages/bot/bot-directory.ts`, key `blackjack`).
+ * Addresses are per machine, so the client cannot hard-code one. */
+export const CURATED_BLACKJACK_DEALER_NAME = 'Blackjack Dealer'
+
+/** True only for the curated dealer: the signed profile says it is a bot AND its name is the
+ * curated dealer's. `isBot` alone is not enough (every demo bot sets it). A missing lookup
+ * (`undefined`) does not count. A stranger can still copy both fields; that residual stays on
+ * the capability-signalling ticket (#217). */
+export function peerOffersDealerTable(
+  profile: { isBot?: boolean; name?: string | null } | null | undefined,
+): boolean {
+  return (
+    profile?.isBot === true &&
+    (profile.name ?? '').trim() === CURATED_BLACKJACK_DEALER_NAME
+  )
+}
+
+/** The bet input's starting value: 0.1 MON. Never higher, so an advertised minimum is only a
+ * hint in the limits line, not the amount in the box. A table maximum below 0.1 still clamps
+ * the start downward so it begins inside the table. */
 export function defaultBetDisplay(
   table: Pick<BlackjackTable, 'minWei' | 'maxWei'> = DEFAULT_BLACKJACK_TABLE,
 ): string {
-  const preferred = 10n ** 17n
-  const wei =
-    preferred < table.minWei
-      ? table.minWei
-      : preferred > table.maxWei
-      ? table.maxWei
-      : preferred
+  const wei = DEFAULT_BET_WEI > table.maxWei ? table.maxWei : DEFAULT_BET_WEI
   return activeChain.toDisplayAmount(wei)
 }
 

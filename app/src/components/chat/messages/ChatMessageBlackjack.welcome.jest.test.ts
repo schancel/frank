@@ -32,9 +32,12 @@ const store: { chats: Record<string, { messages: any[] }> } = reactive({
 const balance = ref<bigint | null>(5n * 10n ** 18n)
 
 jest.mock('../../../stores/chats', () => ({ useChatStore: () => store }))
+const mockContact = {
+  profile: { name: 'Blackjack Dealer', isBot: true as boolean },
+}
 jest.mock('../../../stores/contacts', () => ({
   useContactStore: () => ({
-    getContact: () => ({ profile: { name: 'Blackjack Dealer' } }),
+    getContact: () => mockContact,
   }),
 }))
 jest.mock('../../../composables/useBalance', () => ({
@@ -307,6 +310,7 @@ beforeEach(() => {
   balance.value = 5n * 10n ** 18n
   storageData = {}
   store.chats = {}
+  mockContact.profile = { name: 'Blackjack Dealer', isBot: true }
   mockProvider = {
     getTransaction: jest.fn(async () => ({
       from: PLAYER,
@@ -581,6 +585,48 @@ describe('the dealer welcome bubble', () => {
     expect(control(wrapper).exists()).toBe(false)
   })
 
+  it('a non-bot peer welcome shows the text and no bet control (#422)', async () => {
+    mockContact.profile = { name: 'Blackjack Dealer', isBot: false }
+    const { wrapper } = await mountBubble([welcome()], 0)
+    expect(
+      wrapper.find('[data-testid="blackjack-welcome-title"]').exists(),
+    ).toBe(true)
+    expect(wrapper.find('[data-testid="blackjack-welcome-bet"]').exists()).toBe(
+      false,
+    )
+    expect(control(wrapper).exists()).toBe(false)
+  })
+
+  it('another bot, or a dealer name that is not marked a bot, gets no bet control (#422)', async () => {
+    mockContact.profile = { name: 'Qwen', isBot: true }
+    const qwen = await mountBubble([welcome()], 0)
+    expect(
+      qwen.wrapper.find('[data-testid="blackjack-welcome-bet"]').exists(),
+    ).toBe(false)
+    mockContact.profile = { name: 'Blackjack Dealer', isBot: false }
+    const named = await mountBubble([welcome()], 0)
+    expect(
+      named.wrapper.find('[data-testid="blackjack-welcome-bet"]').exists(),
+    ).toBe(false)
+  })
+
+  it('an absurd advertised minimum is a limits hint, not the pre-filled bet (#422)', async () => {
+    const huge = '9'.repeat(40)
+    const { wrapper } = await mountBubble(
+      [welcome({ minWagerWei: huge, maxWagerWei: huge })],
+      0,
+    )
+    expect(control(wrapper).exists()).toBe(true)
+    expect(amount(wrapper).element).toHaveProperty('value', '0.1')
+    expect(
+      wrapper.find('[data-testid="blackjack-welcome-limits"]').text(),
+    ).toContain('MON')
+    expect(amount(wrapper).element).not.toHaveProperty(
+      'value',
+      expect.stringMatching(/^9/),
+    )
+  })
+
   it('renders in French with no untranslated keys', async () => {
     const { wrapper } = await mountBubble([welcome()], 0, { messages: frFR })
     expect(wrapper.find('[data-testid="blackjack-welcome-title"]').text()).toBe(
@@ -606,6 +652,15 @@ describe('Play again after a resolved hand', () => {
     expect(wrapper.text()).not.toContain('Deal me in (')
     expect(wrapper.findAll('button').map(b => b.text())).not.toContain(
       'Deal me in (0.1 MON)',
+    )
+  })
+
+  it('a non-dealer peer gets no play-again control (#422)', async () => {
+    mockContact.profile = { name: 'Alice', isBot: false }
+    const hand = resolvedHand()
+    const { wrapper } = await mountBubble(hand, hand.length - 1)
+    expect(wrapper.find('[data-testid="blackjack-play-again"]').exists()).toBe(
+      false,
     )
   })
 

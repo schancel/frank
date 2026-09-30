@@ -293,6 +293,9 @@ export default defineComponent({
       // broadcast response or a killed app can never leave a paid wager without a record.
       let hash = ''
       let betItem: BlackjackMoveItem | undefined
+      // Set only after THIS attempt's record exists, so a pre-broadcast failure drops that
+      // record and never some other chat's in-flight wager (#422 F2).
+      let attemptHash: string | undefined
       try {
         betItem = await sendBlackjackWager(address, parsed.wei, {
           onSigned: async info => {
@@ -307,6 +310,7 @@ export default defineComponent({
               state: 'signed',
             })
             unsent.setInFlight(info.txHash, true)
+            attemptHash = info.txHash
             // A failed flush rejects here, which aborts the broadcast: nothing is paid.
             await unsent.flushPersistence()
           },
@@ -319,11 +323,7 @@ export default defineComponent({
           hash = err.txHash
         } else {
           // Nothing was broadcast (signing, funds, or the record could not be saved first).
-          const stale = unsent.wagers.find(
-            w =>
-              w.state === 'signed' && unsent.inFlight.includes(w.wagerTxHash),
-          )
-          if (stale) unsent.remove(stale.wagerTxHash)
+          if (attemptHash) unsent.remove(attemptHash)
           fail(err, 'blackjackBet.errorSend')
           this.focusInput()
           this.pending = false

@@ -339,9 +339,21 @@ faucet looks the receipt up by hash: mined settles the record, otherwise it wait
 If a record stays stuck (further funding is paused while any transfer is unsettled):
 
     yarn faucet --list-stuck          # signed / failed / skipped records with tx hashes
-    yarn faucet --clear <address>     # after confirming on an explorer that the tx never landed
+    yarn faucet --clear <address>     # DANGEROUS: lets the address be paid again
 
-`--clear` refuses records that were submitted/confirmed. It needs only `FAUCET_STATE_DIR`.
+`--clear` is guarded because the record is the only thing preventing a second payment. It never
+clears `submitted`/`confirmed` records; if `MONAD_TESTNET_HTTP_RPC_URL` is set it asks the node and
+refuses any tx that is mined or in the mempool (or if the node cannot be asked). A `signed` record
+may already have been broadcast (a timeout after the node accepted the tx looks identical), so it
+additionally needs `--force --confirm-tx <txHash>` typed exactly, and prints a loud warning. These
+admin commands run before any other env validation and need only `FAUCET_STATE_DIR`.
+
+A `submitted` transfer whose confirmation was never seen is re-checked by hash (after 5 min, at
+most every 5 min): a receipt settles it; a tx the node no longer knows is marked `failed` so it
+shows in `--list-stuck`. It is never re-funded automatically.
+
+Skipping a profile after repeated failures ignores transient errors (timeouts, 5xx, rate limits):
+malformed-address errors count 3 times; unclassified errors need 10 failures spread over 10 minutes.
 
 Abuse limits (demo level): registration is free, so a sybil can mint addresses and collect the
 amount per address until the daily cap (loss bounded to `maxPerDay * amount`, wallet floor kept by

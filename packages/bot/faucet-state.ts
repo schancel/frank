@@ -115,6 +115,13 @@ export class FaucetStateStore {
     )
   }
 
+  /** Transfers the node accepted but whose confirmation was never seen. */
+  submittedRecords(): Array<[string, FundRecord]> {
+    return [...this.records].filter(
+      ([, record]) => record.state === 'submitted',
+    )
+  }
+
   /** Addresses whose transaction is signed but not yet known-accepted, for replay. */
   signedRecords(): Array<[string, FundRecord]> {
     return [...this.records].filter(([, record]) => record.state === 'signed')

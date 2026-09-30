@@ -14,7 +14,12 @@ import {
   faucetAdmin,
   faucetSettingsFromEnv,
   keyFilePermissionWarning,
+  classifyProfileError,
+  faucetStateDirFromEnv,
   MAX_PROFILE_FAILURES,
+  MAX_UNCLASSIFIED_FAILURES,
+  RECHECK_SUBMITTED_AFTER_MS,
+  UNCLASSIFIED_FAILURE_SPREAD_MS,
   stateDirWarning,
   Faucet,
   FaucetConfig,
@@ -367,6 +372,239 @@ describe('Faucet', () => {
     expect(store.get(ALICE)?.state).toBe('confirmed')
   })
 
+  describe('--clear guardrails (a signed record may have been broadcast)', () => {
+    /** submitRaw times out AFTER the node accepted the tx: the record stays `signed`. */
+    async function timedOutAfterBroadcast() {
+      const onNode: string[] = []
+      const faucet = makeFaucet({
+        submitRaw: async tx => {
+          onNode.push(tx.txHash)
+          throw new Error('timeout after broadcast')
+        },
+      })
+      await faucet.pollOnce([profile(ALICE, 10)], 0)
+      expect(store.get(ALICE)?.state).toBe('signed')
+      return { onNode, hash: store.get(ALICE)!.txHash }
+    }
+
+    it('refuses to clear a signed record without --force, so the address is not paid twice', async () => {
+      const { hash } = await timedOutAfterBroadcast()
+      const out = await faucetAdmin(store, ['--clear', ALICE])
+      expect(out![0]).toMatch(/refusing.*may already have been broadcast/)
+      expect(out!.join(' ')).toContain(`--force --confirm-tx ${hash}`)
+      expect(store.get(ALICE)?.state).toBe('signed')
+      signCount = 0
+      await makeFaucet().pollOnce([profile(ALICE, 10)], 0)
+      expect(signCount).toBe(0) // still blocked: no second transfer
+    })
+
+    it('needs the exact typed tx hash even with --force', async () => {
+      const { hash } = await timedOutAfterBroadcast()
+      for (const args of [
+        ['--clear', ALICE, '--force'],
+        ['--clear', ALICE, '--force', '--confirm-tx', '0xdeadbeef'],
+        ['--clear', ALICE, '--confirm-tx', hash],
+      ]) {
+        expect((await faucetAdmin(store, args))![0]).toContain('refusing')
+        expect(store.get(ALICE)).toBeDefined()
+      }
+    })
+
+    it.each(['confirmed', 'pending'] as const)(
+      'refuses even a forced clear when the node reports the tx %s',
+      async seen => {
+        const { hash } = await timedOutAfterBroadcast()
+        const out = await faucetAdmin(
+          store,
+          ['--clear', ALICE, '--force', '--confirm-tx', hash],
+          async () => seen,
+        )
+        expect(out![0]).toContain('refusing')
+        expect(out![0]).toContain(hash)
+        expect(store.get(ALICE)?.state).toBe('signed')
+      },
+    )
+
+    it('refuses when the node cannot be asked', async () => {
+      const { hash } = await timedOutAfterBroadcast()
+      const out = await faucetAdmin(
+        store,
+        ['--clear', ALICE, '--force', '--confirm-tx', hash],
+        async () => {
+          throw new Error('rpc down')
+        },
+      )
+      expect(out![0]).toContain('could not ask the node')
+      expect(store.get(ALICE)).toBeDefined()
+    })
+
+    it('clears with --force + typed hash when the node has never seen the tx, with a loud warning', async () => {
+      const { hash } = await timedOutAfterBroadcast()
+      const out = await faucetAdmin(
+        store,
+        [
+          '--clear',
+          ALICE,
+          '--force',
+          '--confirm-tx',
+          hash.toUpperCase().replace('0X', '0x'),
+        ],
+        async () => 'unknown',
+      )
+      expect(out![0]).toMatch(/WARNING.*twice/)
+      expect(store.get(ALICE)).toBeUndefined()
+    })
+
+    it('a failed record whose tx the node still has is not cleared', async () => {
+      await store.put(ALICE, {
+        state: 'failed',
+        amountWei: '50',
+        at: now,
+        txHash: '0xabc',
+        rawTx: '0xraw',
+      })
+      expect(
+        (await faucetAdmin(
+          store,
+          ['--clear', ALICE],
+          async () => 'pending',
+        ))![0],
+      ).toContain('refusing')
+      expect(
+        (await faucetAdmin(
+          store,
+          ['--clear', ALICE],
+          async () => 'unknown',
+        ))![0],
+      ).toContain('cleared')
+    })
+  })
+
+  describe('recheckSubmitted (dropped transfers)', () => {
+    async function submittedButUnconfirmed(lookup: FaucetDeps['getTxStatus']) {
+      const calls: string[] = []
+      const faucet = makeFaucet({
+        waitForConfirmation: async () => {
+          throw new Error('did not confirm')
+        },
+        getTxStatus: async hash => {
+          calls.push(hash)
+          return lookup(hash)
+        },
+      })
+      await faucet.pollOnce([profile(ALICE, 10)], 0)
+      expect(store.get(ALICE)?.state).toBe('submitted')
+      return { faucet, calls }
+    }
+
+    it('does nothing before the recheck delay, then marks a dropped tx failed (visible, never re-funded)', async () => {
+      const { faucet, calls } = await submittedButUnconfirmed(
+        async () => 'unknown',
+      )
+      expect(await faucet.recheckSubmitted()).toBe(0)
+      expect(calls).toHaveLength(0)
+      now += RECHECK_SUBMITTED_AFTER_MS + 1
+      expect(await faucet.recheckSubmitted()).toBe(1)
+      expect(store.get(ALICE)?.state).toBe('failed')
+      expect((await faucetAdmin(store, ['--list-stuck']))![0]).toContain(
+        'state=failed',
+      )
+      signCount = 0
+      await faucet.pollOnce([profile(ALICE, 10)], 0)
+      expect(signCount).toBe(0) // fail-safe: no automatic re-funding
+    })
+
+    it('settles on a receipt and leaves a mempool tx alone, asking at most once per interval', async () => {
+      let status: 'confirmed' | 'pending' = 'pending'
+      const { faucet, calls } = await submittedButUnconfirmed(
+        async () => status,
+      )
+      now += RECHECK_SUBMITTED_AFTER_MS + 1
+      await faucet.recheckSubmitted()
+      await faucet.recheckSubmitted()
+      expect(calls).toHaveLength(1)
+      expect(store.get(ALICE)?.state).toBe('submitted')
+      status = 'confirmed'
+      now += RECHECK_SUBMITTED_AFTER_MS + 1
+      await faucet.recheckSubmitted()
+      expect(store.get(ALICE)?.state).toBe('confirmed')
+    })
+
+    it('an unreachable node changes nothing', async () => {
+      const { faucet } = await submittedButUnconfirmed(async () => {
+        throw new Error('rpc down')
+      })
+      now += RECHECK_SUBMITTED_AFTER_MS + 1
+      expect(await faucet.recheckSubmitted()).toBe(0)
+      expect(store.get(ALICE)?.state).toBe('submitted')
+    })
+  })
+
+  describe('transient errors never skip a legitimate profile', () => {
+    function flaky(message: string) {
+      return makeFaucet({
+        getBalance: async address => {
+          if (address === ALICE) throw new Error(message)
+          return balances.get(address) ?? 0n
+        },
+      })
+    }
+
+    it('classifies errors', () => {
+      expect(classifyProfileError(new Error('request timeout'))).toBe(
+        'transient',
+      )
+      expect(classifyProfileError(new Error('503 Service Unavailable'))).toBe(
+        'transient',
+      )
+      expect(
+        classifyProfileError(
+          Object.assign(new Error('x'), { code: 'NETWORK_ERROR' }),
+        ),
+      ).toBe('transient')
+      expect(
+        classifyProfileError(new Error('invalid address (argument="address")')),
+      ).toBe('malformed')
+      expect(classifyProfileError(new Error('something odd'))).toBe(
+        'unclassified',
+      )
+    })
+
+    it('many consecutive timeouts do not skip the profile', async () => {
+      const faucet = flaky('request timeout')
+      for (let i = 0; i < MAX_UNCLASSIFIED_FAILURES + 5; i++) {
+        now += UNCLASSIFIED_FAILURE_SPREAD_MS // plenty of time spread: still never skipped
+        expect((await faucet.pollOnce([profile(ALICE, 10)], 0)).stopped).toBe(
+          'error',
+        )
+      }
+      expect(store.get(ALICE)).toBeUndefined()
+    })
+
+    it('unclassified errors need many failures spread over time', async () => {
+      const faucet = flaky('something odd')
+      for (let i = 0; i < MAX_UNCLASSIFIED_FAILURES + 2; i++) {
+        await faucet.pollOnce([profile(ALICE, 10)], 0)
+      }
+      expect(store.get(ALICE)).toBeUndefined() // count reached, but not spread in time
+      now += UNCLASSIFIED_FAILURE_SPREAD_MS + 1
+      await faucet.pollOnce([profile(ALICE, 10)], 0)
+      expect(store.get(ALICE)?.state).toBe('skipped')
+    })
+  })
+
+  it('the state dir for admin commands does not depend on other FAUCET_* values', () => {
+    expect(
+      faucetStateDirFromEnv(
+        { FAUCET_POLL_INTERVAL_MS: 'nope', FAUCET_STATE_DIR: '/s' },
+        '/h',
+      ),
+    ).toBe('/s')
+    expect(faucetStateDirFromEnv({ FAUCET_MAX_PER_DAY: '-1' }, '/h')).toBe(
+      '/h/.frank-faucet',
+    )
+  })
+
   it('operator can list and clear a stuck record, but not a paid one', async () => {
     await makeFaucet().pollOnce([profile(BOB, 20)], 0)
     await makeFaucet({
@@ -381,9 +619,20 @@ describe('Faucet', () => {
       'refusing',
     )
     expect(store.get(BOB)).toBeDefined()
+    // a signed record may have been broadcast: needs --force and the typed tx hash
     expect((await faucetAdmin(store, ['--clear', ALICE]))![0]).toContain(
-      'cleared',
+      'refusing',
     )
+    const hash = store.get(ALICE)!.txHash
+    const forced = await faucetAdmin(store, [
+      '--clear',
+      ALICE,
+      '--force',
+      '--confirm-tx',
+      hash,
+    ])
+    expect(forced![0]).toContain('WARNING')
+    expect(forced![0]).toContain(hash)
     expect(store.get(ALICE)).toBeUndefined()
     expect(await faucetAdmin(store, ['--list-stuck'])).toEqual([
       'no stuck records',

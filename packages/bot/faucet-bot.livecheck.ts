@@ -15,8 +15,10 @@
  *   export FRANK_NETWORK_TAG=MONT
  *   yarn faucet
  *   yarn faucet --list-stuck          # unsettled/failed/skipped records (needs only FAUCET_STATE_DIR)
- *   yarn faucet --clear <address>    # allow re-funding a stuck address; only after checking on an
- *                                    # explorer that its transaction never landed
+ *   yarn faucet --clear <address>    # allow re-funding a stuck address. DANGEROUS: refuses paid records
+ *                                    # and, if MONAD_TESTNET_HTTP_RPC_URL is set, any tx the node knows.
+ *                                    # A `signed` record (maybe broadcast) also needs
+ *                                    # --force --confirm-tx <txHash>
  *
  * Env vars (all optional except the three above):
  *   E2E_DEMO_RELAY_URL             relay base URL (default http://127.0.0.1:8098)
@@ -40,6 +42,8 @@
  */
 import { statSync } from 'fs'
 import { homedir, tmpdir } from 'os'
+
+import { JsonRpcProvider } from 'ethers'
 import { resolve } from 'path'
 
 import { fetchMonadProfilesSince } from '@frank/wallet/monad-identity'
@@ -49,6 +53,8 @@ import {
   assertTestnet,
   Faucet,
   faucetAdmin,
+  faucetStateDirFromEnv,
+  TxLookup,
   faucetSettingsFromEnv,
   keyFilePermissionWarning,
   stateDirWarning,
@@ -64,20 +70,36 @@ function sleep(ms: number): Promise<void> {
   return new Promise(r => setTimeout(r, ms))
 }
 
-async function main() {
-  const settings = faucetSettingsFromEnv(process.env, homedir())
-  const { config, pollIntervalMs } = settings
-  const stateDirPath = resolve(process.cwd(), settings.stateDir)
-  const stateWarning = stateDirWarning(stateDirPath, [tmpdir(), '/tmp'])
-  if (stateWarning) console.warn(`[faucet] WARNING: ${stateWarning}`)
+/** Receipt if mined, else whether the node still knows the tx (mempool), else unknown. */
+async function lookupTx(
+  provider: JsonRpcProvider,
+  txHash: string,
+): Promise<TxLookup> {
+  const receipt = await provider.getTransactionReceipt(txHash)
+  if (receipt) return receipt.status === 1 ? 'confirmed' : 'failed'
+  return (await provider.getTransaction(txHash)) ? 'pending' : 'unknown'
+}
 
-  // Operator commands need only the durable state: no wallet, RPC or relay.
+async function main() {
+  // Operator commands run BEFORE any env validation: they need only the state dir (and, when
+  // MONAD_TESTNET_HTTP_RPC_URL is set, a read-only node lookup), so a bad FAUCET_* value must not
+  // block them.
   const adminArgs = process.argv.slice(2)
   if (adminArgs.includes('--list-stuck') || adminArgs.includes('--clear')) {
-    const adminStore = new FaucetStateStore(stateDirPath)
+    const adminStateDir = resolve(
+      process.cwd(),
+      faucetStateDirFromEnv(process.env, homedir()),
+    )
+    const adminRpc = process.env.MONAD_TESTNET_HTTP_RPC_URL
+    const adminProvider = adminRpc ? new JsonRpcProvider(adminRpc) : undefined
+    const adminStore = new FaucetStateStore(adminStateDir)
     await adminStore.Open()
     try {
-      for (const line of (await faucetAdmin(adminStore, adminArgs)) ?? []) {
+      for (const line of (await faucetAdmin(
+        adminStore,
+        adminArgs,
+        adminProvider && (hash => lookupTx(adminProvider, hash)),
+      )) ?? []) {
         console.log(line)
       }
     } finally {
@@ -85,6 +107,12 @@ async function main() {
     }
     return
   }
+
+  const settings = faucetSettingsFromEnv(process.env, homedir())
+  const { config, pollIntervalMs } = settings
+  const stateDirPath = resolve(process.cwd(), settings.stateDir)
+  const stateWarning = stateDirWarning(stateDirPath, [tmpdir(), '/tmp'])
+  if (stateWarning) console.warn(`[faucet] WARNING: ${stateWarning}`)
 
   const relayBaseUrl = process.env.E2E_DEMO_RELAY_URL ?? 'http://127.0.0.1:8098'
   const rpcUrl = requiredEnv('MONAD_TESTNET_HTTP_RPC_URL')
@@ -130,7 +158,7 @@ async function main() {
     submitRaw: async tx => {
       await mainAccountSigner.submitRaw(tx.rawTx, tx.txHash)
     },
-    getTxStatus: txHash => mainAccountSigner.getStatus(txHash),
+    getTxStatus: txHash => lookupTx(provider, txHash),
     waitForConfirmation: txHash =>
       waitForConfirmation(mainAccountSigner, txHash, 'faucet transfer'),
     getBalance: address => provider.getBalance(address),
@@ -142,6 +170,7 @@ async function main() {
   try {
     while (true) {
       await faucet.recoverSigned()
+      await faucet.recheckSubmitted()
       const profiles = await fetchMonadProfilesSince({
         relayBaseUrl,
         sinceMs: since,

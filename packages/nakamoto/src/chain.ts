@@ -94,10 +94,11 @@ const BTC_MESSAGE: MessageMagic = Object.freeze({
     'bitcoin/bitcoin src/common/signmessage.cpp MESSAGE_MAGIC (master, read 2026-09-29)',
 })
 
-const UNPINNED_BCH_MESSAGE: MessageMagic = Object.freeze({
-  status: 'unpinned',
-  reason:
-    'Bitcoin Cash Node src/util/message.cpp had no "Signed Message" string when read on 2026-09-29. Do not assume the Bitcoin string.',
+const BCH_MESSAGE: MessageMagic = Object.freeze({
+  status: 'pinned',
+  text: 'Bitcoin Signed Message:\n',
+  source:
+    'bitcoin-cash-node/bitcoin-cash-node src/validation.cpp strMessageMagic (master, read 2026-09-30)',
 })
 
 const UNPINNED_XEC_MESSAGE: MessageMagic = Object.freeze({
@@ -288,7 +289,7 @@ export const BCH_MAINNET: ChainDescriptor = chain({
   p2pPort: 8333,
   registeredSlip44: 145,
   alsoDocumentsSlip44: [],
-  messageMagic: UNPINNED_BCH_MESSAGE,
+  messageMagic: BCH_MESSAGE,
   displayUnit: COIN_100_000_000,
   sighash: FORKID_ZERO(
     'Bitcoin Cash sighash uses FORKID. Fork id 0 is what the sighash ticket must cite from Bitcoin Cash Node; this descriptor records 0 and does not implement the hash.',
@@ -309,7 +310,7 @@ export const BCH_TESTNET: ChainDescriptor = chain({
   p2pPort: 18333,
   registeredSlip44: 1,
   alsoDocumentsSlip44: [],
-  messageMagic: UNPINNED_BCH_MESSAGE,
+  messageMagic: BCH_MESSAGE,
   displayUnit: COIN_100_000_000,
   sighash: BCH_MAINNET.sighash,
   dust: UNPINNED_POLICY,
@@ -331,7 +332,7 @@ export const BCH_REGTEST: ChainDescriptor = chain({
   p2pPort: 18444,
   registeredSlip44: 1,
   alsoDocumentsSlip44: [],
-  messageMagic: UNPINNED_BCH_MESSAGE,
+  messageMagic: BCH_MESSAGE,
   displayUnit: COIN_100_000_000,
   sighash: BCH_MAINNET.sighash,
   dust: UNPINNED_POLICY,

@@ -3,6 +3,7 @@ import { MonadIdentity } from '@frank/wallet/monad-identity'
 import {
   commitValidatedSetupName,
   checkConfirmationAnswers,
+  wrongConfirmationIndexes,
   commitValidatedSetupSeed,
   cryptoRandomInt,
   ensureConfirmationChallenge,
@@ -214,5 +215,17 @@ describe('recovery phrase confirmation challenge', () => {
     expect(b.seed).toBe(seed)
     expect(b).not.toBe(a)
     expect(ensureConfirmationChallenge(b, seed)).toBe(b)
+  })
+})
+
+describe('wrongConfirmationIndexes', () => {
+  const seed = 'test test test test test test test test test test test junk'
+  it('lists only the wrong answers, normalized like checkConfirmationAnswers', () => {
+    const positions = [3, 7, 12]
+    expect(
+      wrongConfirmationIndexes(seed, positions, [' TEST ', 'x', 'junk']),
+    ).toEqual([1])
+    expect(wrongConfirmationIndexes(seed, positions, [])).toEqual([0, 1, 2])
+    expect(wrongConfirmationIndexes(seed, [99], ['test'])).toEqual([0])
   })
 })

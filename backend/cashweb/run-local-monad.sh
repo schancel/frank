@@ -13,12 +13,14 @@ if [[ -f "$repo_root/.env" ]]; then
 fi
 
 rpc_url="${MONAD_TESTNET_HTTP_RPC_URL:-}"
-# The enabled mailbox requires an explicit aggregate stamp minimum and the EVM chain ID that every
-# signed stamp payment must carry (see `MonadMailboxConf::mode()` in cashweb-config). Both come
-# from the environment with local-testnet defaults: the minimum reuses the client's documented
-# stamp value, and 10143 is Monad testnet's chain ID (mainnet is 143; see PLAN.md).
+# The mailbox is enabled in the checked-in config, which already carries the local-testnet minimum
+# and chain ID (10143; mainnet is 143). This launcher only overrides those two keys when the
+# environment asks for something else. The RPC URL and network tag are never in the config: the
+# daemon reads MONAD_TESTNET_HTTP_RPC_URL and FRANK_NETWORK_TAG from its environment, and refuses
+# to start without them (an unset tag would make the relay reject every direct message).
 min_value_wei="${CASHWEB_STAMP_MIN_BURN_VALUE_WEI:-1000000000000}"
 expected_chain_id="${MONAD_TESTNET_CHAIN_ID:-10143}"
+network_tag="${FRANK_NETWORK_TAG:-MONT}"
 cargo_command="${CARGO:-cargo}"
 if [[ -z "$rpc_url" ]]; then
     echo "run-local-monad: MONAD_TESTNET_HTTP_RPC_URL is required (set it in .env or the environment)" >&2
@@ -36,6 +38,13 @@ esac
 case "$rpc_url" in
     *[![:print:]]* | *'"'* | *'\'*)
         echo "run-local-monad: MONAD_TESTNET_HTTP_RPC_URL contains unsupported characters" >&2
+        exit 64
+        ;;
+esac
+
+case "$network_tag" in
+    '' | *[![:alnum:]]*)
+        echo "run-local-monad: FRANK_NETWORK_TAG must be alphanumeric (MONT = Monad testnet, MON1 = mainnet)" >&2
         exit 64
         ;;
 esac
@@ -60,12 +69,13 @@ if ! awk '
         next
     }
     in_monad_mailbox && /^\[/ { in_monad_mailbox = 0 }
-    in_monad_mailbox && /^enabled[[:space:]]*=[[:space:]]*false[[:space:]]*$/ {
-        disabled += 1
-    }
-    END { exit !(sections == 1 && disabled == 1) }
+    in_monad_mailbox && /^enabled[[:space:]]*=[[:space:]]*true[[:space:]]*$/ { enabled += 1 }
+    in_monad_mailbox && /^min_value_wei[[:space:]]*=/ { minimum += 1 }
+    in_monad_mailbox && /^expected_chain_id[[:space:]]*=/ { chain += 1 }
+    in_monad_mailbox && /^rpc_url[[:space:]]*=/ { rpc += 1 }
+    END { exit !(sections == 1 && enabled == 1 && minimum == 1 && chain == 1 && rpc == 0) }
 ' "$base_config"; then
-    echo "run-local-monad: expected exactly one explicitly disabled Monad mailbox in $base_config" >&2
+    echo "run-local-monad: expected exactly one enabled Monad mailbox (with min_value_wei, expected_chain_id and no rpc_url) in $base_config" >&2
     exit 70
 fi
 
@@ -101,28 +111,40 @@ if [[ ! -x "$cashwebd" ]]; then
     exit 70
 fi
 
-runtime_config="$(MONAD_TESTNET_HTTP_RPC_URL="$rpc_url" \
-    LAUNCHER_MIN_VALUE_WEI="$min_value_wei" \
+runtime_config="$(LAUNCHER_MIN_VALUE_WEI="$min_value_wei" \
     LAUNCHER_EXPECTED_CHAIN_ID="$expected_chain_id" awk '
-    /^\[registry\.monad_mailbox\]$/ {
-        in_monad_mailbox = 1
-        print
+    /^\[registry\.monad_mailbox\]$/ { in_monad_mailbox = 1 }
+    in_monad_mailbox && /^\[/ && !/^\[registry\.monad_mailbox\]$/ { in_monad_mailbox = 0 }
+    in_monad_mailbox && /^min_value_wei[[:space:]]*=/ {
+        print "min_value_wei = \"" ENVIRON["LAUNCHER_MIN_VALUE_WEI"] "\""
         next
     }
-    in_monad_mailbox && /^enabled[[:space:]]*=/ {
-        print "enabled = true"
-        print "rpc_url = \"" ENVIRON["MONAD_TESTNET_HTTP_RPC_URL"] "\""
-        print "min_value_wei = \"" ENVIRON["LAUNCHER_MIN_VALUE_WEI"] "\""
+    in_monad_mailbox && /^expected_chain_id[[:space:]]*=/ {
         print "expected_chain_id = " ENVIRON["LAUNCHER_EXPECTED_CHAIN_ID"]
-        in_monad_mailbox = 0
         next
     }
     { print }
 ' "$base_config")"
 
-# Validate the exact generated text through the production parser before starting the daemon. The
-# private RPC URL stays in shell memory and anonymous pipes: it is never a process argument, named
-# runtime file, or inherited environment value. The Cargo slot covers compilation only, so the
+# The daemon (not the config file) reads these two variables; export them explicitly so a value
+# taken from a shell default (the tag) reaches it as well as one sourced from `.env`.
+export MONAD_TESTNET_HTTP_RPC_URL="$rpc_url"
+export FRANK_NETWORK_TAG="$network_tag"
+
+# Effective, non-secret values for this run. The RPC URL is reported by scheme and host only: its
+# path commonly embeds the provider API key.
+rpc_origin="$(printf '%s' "$rpc_url" | sed -E 's#^([a-z]+://[^/?\#]*).*#\1#')"
+{
+    echo "run-local-monad: effective configuration"
+    echo "  config file:            $base_config (mailbox enabled)"
+    echo "  MONAD_TESTNET_HTTP_RPC_URL: set (origin $rpc_origin, path hidden)"
+    echo "  FRANK_NETWORK_TAG:      $network_tag"
+    echo "  min_value_wei:          $min_value_wei"
+    echo "  expected_chain_id:      $expected_chain_id"
+} >&2
+
+# Validate the exact generated text through the production parser before starting the daemon, with
+# the same environment the daemon will see. The Cargo slot covers compilation only, so the
 # long-lived relay cannot block builds in other worktrees.
 printf '%s\n' "$runtime_config" | "$cashwebd" --check-config -
 exec "$cashwebd" - < <(printf '%s\n' "$runtime_config")

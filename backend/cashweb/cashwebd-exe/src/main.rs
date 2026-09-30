@@ -42,6 +42,21 @@ pub enum CashwebdExeError {
 
     #[error("Invalid configuration file {0}")]
     InvalidConfigFail(String),
+
+    #[error(
+        "The Monad mailbox is enabled but no RPC URL is configured: set the \
+         MONAD_TESTNET_HTTP_RPC_URL environment variable (or registry.monad_mailbox.rpc_url)"
+    )]
+    MissingRpcUrlEnv,
+
+    #[error("Invalid registry.monad_mailbox configuration: MONAD_TESTNET_HTTP_RPC_URL is not a valid URL")]
+    InvalidRpcUrlEnv,
+
+    #[error(
+        "The Monad mailbox is enabled but FRANK_NETWORK_TAG is not set: the relay would reject \
+         every direct message. Set it to MONT (Monad testnet) or MON1 (Monad mainnet)"
+    )]
+    MissingNetworkTagEnv,
 }
 
 use self::CashwebdExeError::*;
@@ -61,13 +76,36 @@ fn read_conf_contents(conf_path: &str, stdin: &mut impl Read) -> Result<String> 
     Ok(conf_contents)
 }
 
+/// Environment variable that supplies the mailbox RPC URL when the configuration omits `rpc_url`.
+const RPC_URL_ENV: &str = "MONAD_TESTNET_HTTP_RPC_URL";
+/// Environment variable naming the network every stored/admitted message must carry.
+const NETWORK_TAG_ENV: &str = "FRANK_NETWORK_TAG";
+
 fn read_and_validate_conf(
     conf_path: &str,
     stdin: &mut impl Read,
 ) -> Result<(CashwebdConf, MonadMailboxMode)> {
+    read_and_validate_conf_with_env(conf_path, stdin, |name| std::env::var(name).ok())
+}
+
+/// Same as [`read_and_validate_conf`] with an injectable environment, so the fail-fast rules are
+/// unit-testable without mutating the process environment.
+fn read_and_validate_conf_with_env(
+    conf_path: &str,
+    stdin: &mut impl Read,
+    env: impl Fn(&str) -> Option<String>,
+) -> Result<(CashwebdConf, MonadMailboxMode)> {
     let conf_contents = read_conf_contents(conf_path, stdin)?;
-    let conf =
+    let mut conf =
         parse_conf(&conf_contents).wrap_err_with(|| InvalidConfigFail(conf_path.to_owned()))?;
+    // The shipped configs enable the mailbox without a URL because the endpoint is secret-bearing:
+    // an explicit `rpc_url` wins, otherwise it comes from the environment.
+    let mailbox = &mut conf.registry.monad_mailbox;
+    if mailbox.enabled && mailbox.rpc_url.is_none() {
+        let raw = env(RPC_URL_ENV).filter(|value| !value.trim().is_empty());
+        let raw = raw.ok_or(MissingRpcUrlEnv)?;
+        mailbox.rpc_url = Some(raw.trim().parse().map_err(|_| InvalidRpcUrlEnv)?);
+    }
     // Validate the mailbox lifecycle before opening the database or binding a socket. The same
     // typed mode is the serialized seam the HTTP owner will use to omit admission when disabled.
     let mailbox_mode = conf
@@ -75,6 +113,13 @@ fn read_and_validate_conf(
         .monad_mailbox
         .mode()
         .wrap_err("Invalid registry.monad_mailbox configuration")?;
+    // An enabled mailbox admits only envelopes carrying the relay's network tag; an unset tag would
+    // silently reject every direct message, so refuse to start instead.
+    if matches!(mailbox_mode, MonadMailboxMode::Enabled { .. })
+        && env(NETWORK_TAG_ENV).is_none_or(|tag| tag.is_empty())
+    {
+        return Err(MissingNetworkTagEnv.into());
+    }
     Ok((conf, mailbox_mode))
 }
 
@@ -282,7 +327,9 @@ async fn shutdown_signal() {
 mod tests {
     use std::io::{Cursor, Error, ErrorKind, Read};
 
-    use super::{read_and_validate_conf, read_conf_contents};
+    use cashweb_config::MonadMailboxMode;
+
+    use super::{read_and_validate_conf_with_env, read_conf_contents};
 
     #[test]
     fn reads_configuration_from_stdin_for_dash_path() {
@@ -307,19 +354,101 @@ mod tests {
             .contains("Failed to read configuration from stdin"));
     }
 
-    #[test]
-    fn check_config_path_uses_the_production_parser_and_mailbox_validation() {
-        let mut valid = Cursor::new(include_bytes!("../../cashwebd.local.toml"));
-        read_and_validate_conf("-", &mut valid).expect("checked-in local config should validate");
+    fn env<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
+        move |name| {
+            pairs
+                .iter()
+                .find(|(key, _)| *key == name)
+                .map(|(_, value)| (*value).to_owned())
+        }
+    }
 
-        let invalid = include_str!("../../cashwebd.local.toml").replace(
-            "[registry.monad_mailbox]\nenabled = false",
-            "[registry.monad_mailbox]\nenabled = true",
+    const LOCAL: &str = include_str!("../../cashwebd.local.toml");
+    const DOCKER: &str = include_str!("../../../docker/cashwebd.toml");
+    const FULL_ENV: &[(&str, &str)] = &[
+        ("MONAD_TESTNET_HTTP_RPC_URL", "http://127.0.0.1:1"),
+        ("FRANK_NETWORK_TAG", "MONT"),
+    ];
+
+    #[test]
+    fn shipped_configs_validate_with_the_required_environment() {
+        for (name, config) in [("local", LOCAL), ("docker", DOCKER)] {
+            let (conf, mode) =
+                read_and_validate_conf_with_env("-", &mut Cursor::new(config), env(FULL_ENV))
+                    .unwrap_or_else(|err| panic!("{name}: {err:?}"));
+            assert!(conf.registry.monad_mailbox.enabled, "{name}");
+            assert!(matches!(mode, MonadMailboxMode::Enabled { .. }), "{name}");
+        }
+    }
+
+    #[test]
+    fn enabled_mailbox_fails_fast_without_rpc_url_or_network_tag() {
+        let cases: [(&str, &[(&str, &str)], &str); 5] = [
+            (
+                "no rpc",
+                &[("FRANK_NETWORK_TAG", "MONT")],
+                "MONAD_TESTNET_HTTP_RPC_URL",
+            ),
+            (
+                "blank rpc",
+                &[
+                    ("MONAD_TESTNET_HTTP_RPC_URL", "  "),
+                    ("FRANK_NETWORK_TAG", "MONT"),
+                ],
+                "MONAD_TESTNET_HTTP_RPC_URL",
+            ),
+            (
+                "bad scheme",
+                &[
+                    ("MONAD_TESTNET_HTTP_RPC_URL", "file:///x"),
+                    ("FRANK_NETWORK_TAG", "MONT"),
+                ],
+                "Invalid registry.monad_mailbox configuration",
+            ),
+            (
+                "no tag",
+                &[("MONAD_TESTNET_HTTP_RPC_URL", "http://127.0.0.1:1")],
+                "FRANK_NETWORK_TAG",
+            ),
+            (
+                "empty tag",
+                &[
+                    ("MONAD_TESTNET_HTTP_RPC_URL", "http://127.0.0.1:1"),
+                    ("FRANK_NETWORK_TAG", ""),
+                ],
+                "FRANK_NETWORK_TAG",
+            ),
+        ];
+        for (name, config) in [("local", LOCAL), ("docker", DOCKER)] {
+            for (case, vars, needle) in cases {
+                let error =
+                    read_and_validate_conf_with_env("-", &mut Cursor::new(config), env(vars))
+                        .expect_err("must fail fast");
+                let text = format!("{error:?}");
+                assert!(text.contains(needle), "{name}/{case}: {text}");
+            }
+        }
+    }
+
+    #[test]
+    fn disabled_mailbox_needs_no_environment() {
+        let disabled = LOCAL.replace("enabled = true", "enabled = false");
+        read_and_validate_conf_with_env("-", &mut Cursor::new(disabled), env(&[]))
+            .expect("a disabled mailbox must not require the RPC URL or tag");
+    }
+
+    #[test]
+    fn explicit_rpc_url_in_config_overrides_the_environment() {
+        let explicit = LOCAL.replace(
+            "enabled = true\n",
+            "enabled = true\nrpc_url = \"https://rpc.example\"\n",
         );
-        let error = read_and_validate_conf("-", &mut Cursor::new(invalid))
-            .expect_err("enabled mailbox without its RPC URL must fail validation");
-        assert!(error
-            .to_string()
-            .contains("Invalid registry.monad_mailbox configuration"));
+        let (_, mode) = read_and_validate_conf_with_env(
+            "-",
+            &mut Cursor::new(explicit),
+            env(&[("FRANK_NETWORK_TAG", "MONT")]),
+        )
+        .expect("explicit rpc_url needs no RPC environment variable");
+        assert!(matches!(mode, MonadMailboxMode::Enabled { .. }));
     }
 }

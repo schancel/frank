@@ -176,6 +176,13 @@ function nextPendingMessageId(timestamp: number): string {
 /** Outgoing sends currently being worked on in this process, by local message key. */
 const inflightOutgoing = new Set<string>()
 
+// Incoming message indexes whose notification is being decided right now. The `index in
+// this.messages` check only sees a message once it is stored, which happens after several awaits
+// (persisting it, loading an unknown contact), so two overlapping receiveMessages calls for the
+// same message would both pass it and both notify. An index is claimed synchronously, before the
+// first await, and released once the call has stored it (or failed, so a retry can still notify).
+const notifyingIncoming = new Set<string>()
+
 export type OutgoingOutcome =
   /** Delivered; the local copy is now keyed by its real payload hash. */
   | { state: 'sent'; payloadDigest: string }
@@ -1220,9 +1227,34 @@ export const useChatStore = defineStore('chats', {
       this.activeChatAddr = displayAddress
     },
     async receiveMessages(messageWrappers: ReceivedMessageWrapper[]) {
+      const toNotify = new Set<string>()
+      for (const { index } of messageWrappers) {
+        if (!(index in this.messages) && !notifyingIncoming.has(index)) {
+          toNotify.add(index)
+          notifyingIncoming.add(index)
+        }
+      }
+      try {
+        await this.storeReceivedMessages(messageWrappers, toNotify)
+      } finally {
+        for (const index of toNotify) {
+          notifyingIncoming.delete(index)
+        }
+      }
+    },
+    async storeReceivedMessages(
+      messageWrappers: ReceivedMessageWrapper[],
+      toNotify: Set<string>,
+    ) {
       console.log('receiving messages')
       const messageStore = await store
       for (const wrapper of messageWrappers) {
+        // An index this call did not claim belongs to an overlapping receive.
+        // Do not persist it: if the claimer fails before storing, a later poll
+        // must still be able to notify.
+        if (!toNotify.has(wrapper.index) && !(wrapper.index in this.messages)) {
+          continue
+        }
         const persisted: MessageWrapper = {
           message: { ...wrapper.message },
           index: wrapper.index,
@@ -1242,7 +1274,7 @@ export const useChatStore = defineStore('chats', {
           message: newMsg,
           stampValue,
         } = messageWrapper
-        if (index in this.messages) {
+        if (index in this.messages || !toNotify.has(index)) {
           continue
         }
         // Check whether contact exists
@@ -1306,6 +1338,7 @@ export const useChatStore = defineStore('chats', {
             body,
             contact.profile.avatar ?? '',
             async () => (this.activeChatAddr = copartyAddress),
+            index,
           )
         }
       }
@@ -1329,6 +1362,9 @@ export const useChatStore = defineStore('chats', {
         )
         assert(copartyAddress !== undefined, 'address is not defined')
         assert(index !== undefined, 'index is not defined')
+        if (!toNotify.has(index) && !(index in this.messages)) {
+          continue
+        }
         const displayAddress = toChainDisplayAddress(copartyAddress)
 
         const message = { payloadDigest: index, ...newMsg }

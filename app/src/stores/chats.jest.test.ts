@@ -477,6 +477,131 @@ describe('stores/chats.ts (ticket #42)', () => {
 
       expect(desktopNotify).toHaveBeenCalledTimes(1)
     })
+
+    function notifyingContact() {
+      useContactStore().addContact({
+        address: RECIPIENT_ADDRESS,
+        contact: {
+          notify: true,
+          profile: { name: 'Bob', bio: '', avatar: '', pubKey: null },
+        },
+      })
+      jest.spyOn(document, 'hasFocus').mockReturnValue(false)
+    }
+
+    it('notifies once when two overlapping polls deliver the same message from an unknown contact (#412)', async () => {
+      const chats = useChatStore()
+      jest.spyOn(document, 'hasFocus').mockReturnValue(false)
+      // Loading an unknown contact awaits, which is the window between the "already have it?"
+      // check and the message being stored.
+      jest
+        .spyOn(useContactStore(), 'refresh')
+        .mockImplementation(
+          () => new Promise(resolve => setTimeout(resolve, 5)),
+        )
+      const wrapper = makeWrapper()
+
+      await Promise.all([
+        chats.receiveMessages([wrapper]),
+        chats.receiveMessages([{ ...wrapper }]),
+      ])
+
+      expect(desktopNotify).toHaveBeenCalledTimes(1)
+    })
+
+    it('notifies once when two overlapping polls deliver the same message from a known contact (#412)', async () => {
+      const chats = useChatStore()
+      notifyingContact()
+      const wrapper = makeWrapper()
+
+      await Promise.all([
+        chats.receiveMessages([wrapper]),
+        chats.receiveMessages([{ ...wrapper }]),
+      ])
+
+      expect(desktopNotify).toHaveBeenCalledTimes(1)
+    })
+
+    it('tags the notification with the message index so the browser collapses repeats (#412)', async () => {
+      const chats = useChatStore()
+      notifyingContact()
+
+      await chats.receiveMessages([makeWrapper({ index: 'digest-tag' })])
+
+      expect(desktopNotify).toHaveBeenCalledWith(
+        'Bob',
+        'hi there',
+        '',
+        expect.any(Function),
+        'digest-tag',
+      )
+    })
+
+    it('stores a message once when two overlapping polls deliver it (#412)', async () => {
+      const chats = useChatStore()
+      jest.spyOn(document, 'hasFocus').mockReturnValue(false)
+      jest
+        .spyOn(useContactStore(), 'refresh')
+        .mockImplementation(
+          () => new Promise(resolve => setTimeout(resolve, 5)),
+        )
+      const wrapper = makeWrapper()
+
+      await Promise.all([
+        chats.receiveMessages([wrapper]),
+        chats.receiveMessages([{ ...wrapper }]),
+      ])
+
+      expect(chats.chats[RECIPIENT_ADDRESS]?.messages).toHaveLength(1)
+      expect(chats.chats[RECIPIENT_ADDRESS]?.totalUnreadMessages).toBe(1)
+      expect(chats.chats[RECIPIENT_ADDRESS]?.totalValue).toBe(5000)
+    })
+
+    it('still notifies different messages that overlap (#412)', async () => {
+      const chats = useChatStore()
+      notifyingContact()
+
+      await Promise.all([
+        chats.receiveMessages([makeWrapper({ index: 'digest-a' })]),
+        chats.receiveMessages([makeWrapper({ index: 'digest-b' })]),
+      ])
+
+      expect(desktopNotify).toHaveBeenCalledTimes(2)
+    })
+
+    it('does not let an overlapping poll store a message whose claimer failed, so a retry can still notify (#412)', async () => {
+      const chats = useChatStore()
+      notifyingContact()
+      mockMessageStore.saveMessage
+        .mockRejectedValueOnce(new Error('disk'))
+        .mockResolvedValue(undefined)
+      const wrapper = makeWrapper()
+
+      await Promise.allSettled([
+        chats.receiveMessages([wrapper]),
+        chats.receiveMessages([{ ...wrapper }]),
+      ])
+
+      expect(chats.chats[RECIPIENT_ADDRESS]?.messages ?? []).toHaveLength(0)
+      expect(desktopNotify).not.toHaveBeenCalled()
+
+      await chats.receiveMessages([wrapper])
+      expect(desktopNotify).toHaveBeenCalledTimes(1)
+      expect(chats.chats[RECIPIENT_ADDRESS]?.messages).toHaveLength(1)
+    })
+
+    it('lets a retry notify when the first attempt failed before storing (#412)', async () => {
+      const chats = useChatStore()
+      notifyingContact()
+      mockMessageStore.saveMessage.mockRejectedValueOnce(new Error('disk'))
+      const wrapper = makeWrapper()
+
+      await expect(chats.receiveMessages([wrapper])).rejects.toThrow('disk')
+      await chats.receiveMessages([wrapper])
+
+      expect(desktopNotify).toHaveBeenCalledTimes(1)
+      expect(chats.chats[RECIPIENT_ADDRESS]?.messages).toHaveLength(1)
+    })
   })
 
   it('deletes a message durably before removing it from the chat', async () => {

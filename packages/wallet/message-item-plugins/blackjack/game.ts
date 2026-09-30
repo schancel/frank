@@ -41,6 +41,38 @@ export function validateBetWei(
 /** The dealer's rejection text. Keeps the readable "Blackjack: <text>" prefix (old clients show it
  * as is) and appends a parseable, JSON-quoted gameId token so a client can tell WHICH game an
  * error is about. */
+/** What the dealer sends back for a resolved hand, in wei: 2.5x the effective wager on a natural,
+ * 2x on a win, the wager on a push, nothing on a loss. Mirrors the dealer bot's own
+ * `payoutMultiplier` (`packages/bot/blackjack-bot.livecheck.ts`). The effective wager only counts
+ * transfers verified on chain (`verifiedWagerWei`, plus `verifiedDoubleWagerWei` for a double);
+ * `undefined` when the outcome is not final or the wager is not verified. */
+export function blackjackPayoutWei(
+  state: Pick<
+    BlackjackGameState,
+    'phase' | 'outcome' | 'verifiedWagerWei' | 'verifiedDoubleWagerWei' | 'doubled'
+  >,
+): bigint | undefined {
+  if (state.phase !== 'resolved' || state.verifiedWagerWei === undefined) {
+    return undefined
+  }
+  const wager =
+    state.doubled && state.verifiedDoubleWagerWei !== undefined
+      ? state.verifiedWagerWei + state.verifiedDoubleWagerWei
+      : state.verifiedWagerWei
+  switch (state.outcome) {
+    case 'player_blackjack':
+      return (wager * 5n) / 2n
+    case 'player_win':
+      return wager * 2n
+    case 'push':
+      return wager
+    case 'dealer_win':
+      return 0n
+    default:
+      return undefined
+  }
+}
+
 export function formatBlackjackError(gameId: string, text: string): string {
   return `Blackjack: ${text} [game=${JSON.stringify(gameId)}]`
 }

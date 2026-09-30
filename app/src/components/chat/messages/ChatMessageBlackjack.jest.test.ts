@@ -5,6 +5,7 @@ import * as quasar from 'quasar'
 import { defineComponent, h, reactive } from 'vue'
 
 import { formatBlackjackError } from '@frank/wallet/message-item-plugins/blackjack/game'
+import enUS from '../../../i18n/en-us'
 import ChatMessageBlackjack from './ChatMessageBlackjack.vue'
 
 const DEALER = '0xDealer'
@@ -97,6 +98,12 @@ const card = (g = 'g1') =>
 const err = (g: string, text = 'this hand has already been doubled') =>
   msg(false, { type: 'text', text: formatBlackjackError(g, text) })
 
+// Every mounted bubble keeps watching the shared store, so unmount them between tests.
+const mounted: Array<{ unmount: () => void }> = []
+afterEach(() => {
+  for (const w of mounted.splice(0)) w.unmount()
+})
+
 async function mountItem(messages: any[], index: number) {
   store.chats[DEALER] = { messages }
   const item = (store.chats[DEALER].messages[index] as any).items[0]
@@ -108,6 +115,7 @@ async function mountItem(messages: any[], index: number) {
       mocks: { $q: {} },
     },
   })
+  mounted.push(wrapper)
   await flushPromises()
   return wrapper
 }
@@ -231,6 +239,7 @@ describe('ChatMessageBlackjack double lockout', () => {
         mocks: { $q: {} },
       },
     })
+    mounted.push(w)
     await flushPromises() // load 1 is parked on the gate
     store.chats[DEALER].messages.push(msg(false, { type: 'text', text: 'hi' }))
     await flushPromises() // load 2 completes with the fresh 500n value
@@ -239,5 +248,104 @@ describe('ChatMessageBlackjack double lockout', () => {
     await flushPromises() // stale load 1 finishes last
     expect(buttons(w)[2]).toContain('5e-16')
     expect(buttons(w)[2]).not.toContain('1e-16')
+  })
+})
+
+describe('ChatMessageBlackjack bet and payout lines (ticket #368)', () => {
+  // The real en-us messages, {name} placeholders substituted.
+  const $t = (key: string, params: Record<string, unknown> = {}) => {
+    const value = key
+      .split('.')
+      .reduce<any>((o, k) => o?.[k], enUS as Record<string, unknown>)
+    return typeof value === 'string'
+      ? value.replace(/\{(\w+)\}/g, (_, k: string) => String(params[k]))
+      : key
+  }
+  const TENTH = 100_000_000_000_000_000n // 0.1 MON
+
+  async function mountWithT(messages: any[], index: number) {
+    store.chats[DEALER] = { messages }
+    const item = (store.chats[DEALER].messages[index] as any).items[0]
+    const wrapper = mount(ChatMessageBlackjack, {
+      props: { item, address: DEALER },
+      global: {
+        components: quasarStubs,
+        directives: { ripple: {} },
+        mocks: { $q: {}, $t },
+      },
+    })
+    mounted.push(wrapper)
+    for (let i = 0; i < 50 && wrapper.text().includes('Loading'); i++) {
+      await new Promise(resolve => setTimeout(resolve, 20))
+      await flushPromises()
+    }
+    return wrapper
+  }
+  const stand = () =>
+    msg(true, { type: 'blackjack-move', gameId: 'g1', action: 'stand' })
+  const reveal = (outcome: string) =>
+    msg(false, {
+      type: 'blackjack-move',
+      gameId: 'g1',
+      action: 'reveal',
+      dealerCards: [5, 6],
+      serverSeed: 'x',
+      outcome,
+    })
+
+  beforeEach(() => {
+    mockProvider = {
+      getTransaction: jest.fn(async () => ({
+        from: PLAYER,
+        to: DEALER,
+        value: TENTH,
+      })),
+      getTransactionReceipt: jest.fn(async () => ({ status: 1 })),
+    }
+    for (const k of Object.keys(store.chats)) delete store.chats[k]
+  })
+
+  it('the opening bet bubble names the verified bet instead of "Your hand: -"', async () => {
+    const w = await mountWithT([bet()], 0)
+    expect(w.text()).toContain('Your bet: 0.1 MON')
+    expect(w.text()).toContain('Waiting for the dealer to deal.')
+    expect(w.text()).not.toContain('Your hand')
+  })
+
+  it('an unverifiable wager is not put in the bubble: it says only "Your bet"', async () => {
+    mockProvider.getTransaction = jest.fn(async () => null)
+    const w = await mountWithT([bet()], 0)
+    expect(w.text()).toContain('Your bet')
+    expect(w.text()).not.toContain('MON')
+  })
+
+  it('once dealt, the bubble shows the hand again', async () => {
+    const w = await mountWithT([bet(), deal()], 1)
+    expect(w.text()).toContain('Your hand:')
+    expect(w.text()).not.toContain('Your bet:')
+  })
+
+  it.each([
+    ['player_win', 'You win!', '0.2'],
+    ['player_blackjack', 'Blackjack! You win 3:2.', '0.25'],
+    ['push', 'Push', '0.1'],
+  ])(
+    'a resolved %s shows what the dealer sends back',
+    async (outcome, text, amount) => {
+      const w = await mountWithT([bet(), deal(), stand(), reveal(outcome)], 3)
+      expect(w.text()).toContain(text)
+      expect(w.find('[data-testid="blackjack-payout"]').text()).toContain(
+        `${amount} MON`,
+      )
+    },
+  )
+
+  it('a loss shows no payout line', async () => {
+    const w = await mountWithT(
+      [bet(), deal(), stand(), reveal('dealer_win')],
+      3,
+    )
+    expect(w.text()).toContain('Dealer wins.')
+    expect(w.find('[data-testid="blackjack-payout"]').exists()).toBe(false)
   })
 })

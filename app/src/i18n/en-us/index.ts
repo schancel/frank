@@ -43,6 +43,9 @@ export default {
   digitalGoods: {
     catalog: 'Catalog',
     buy: 'Buy',
+    confirmPrompt: 'Pay {price} to {name} ({address}) for "{item}"?',
+    confirmBuy: 'Confirm and pay {price}',
+    cancel: 'Cancel',
     priceUnavailable: 'price unavailable',
     hiddenOne: '{count} more item not shown',
     hiddenMany: '{count} more items not shown',
@@ -68,6 +71,13 @@ export default {
       'Does not show: that the listed entrants are real on-chain payments, or that no entries were left out.',
     explainerCountUnverified:
       'The round did not announce its size, so the number of entrants is not checked.',
+  },
+  blackjackHand: {
+    bet: 'Your bet: {amount} MON',
+    betUnverified: 'Your bet',
+    betWaiting: 'Waiting for the dealer to deal.',
+    payout:
+      'The dealer sends you {amount} MON (your wager back plus any winnings).',
   },
   blackjackBet: {
     menuLabel: 'Play blackjack',

@@ -2,7 +2,16 @@
   <div class="blackjack-move q-pa-sm" style="min-width: 220px">
     <div v-if="loading" class="text-caption">Loading hand...</div>
     <template v-else-if="state">
-      <div class="text-caption text-weight-bold">
+      <template v-if="state.phase === 'awaiting_deal'">
+        <div
+          class="text-caption text-weight-bold"
+          data-testid="blackjack-bet-line"
+        >
+          {{ betLine }}
+        </div>
+        <div class="text-caption">{{ $t('blackjackHand.betWaiting') }}</div>
+      </template>
+      <div v-else class="text-caption text-weight-bold">
         Your hand: {{ cardLabels(state.playerCards) }}
         <span v-if="state.playerCards.length"
           >({{ playerValue.total }}{{ playerValue.soft ? ' soft' : '' }})</span
@@ -19,6 +28,13 @@
         </div>
         <div class="text-caption text-weight-bold q-mt-xs">
           {{ outcomeText }}
+        </div>
+        <div
+          v-if="payoutText"
+          class="text-caption"
+          data-testid="blackjack-payout"
+        >
+          {{ payoutText }}
         </div>
         <div
           v-if="verification"
@@ -93,6 +109,7 @@ import {
 } from '@frank/wallet/message-item-plugins/blackjack/deck'
 import {
   applyDoubleRejection,
+  blackjackPayoutWei,
   BLACKJACK_DEFAULT_MAX_WAGER_WEI,
   BLACKJACK_DEFAULT_MIN_WAGER_WEI,
   BlackjackAction,
@@ -184,6 +201,23 @@ export default defineComponent({
     },
     dealerValue() {
       return handValue(this.state?.dealerCards ?? [])
+    },
+    betLine(): string {
+      const wager = this.state?.verifiedWagerWei
+      return wager !== undefined
+        ? this.$t('blackjackHand.bet', {
+            amount: activeChain.toDisplayAmount(wager),
+          })
+        : this.$t('blackjackHand.betUnverified')
+    },
+    // What the dealer sends back for a win or a push (a loss sends nothing, said by the outcome).
+    payoutText(): string {
+      const payout = this.state ? blackjackPayoutWei(this.state) : undefined
+      return payout
+        ? this.$t('blackjackHand.payout', {
+            amount: activeChain.toDisplayAmount(payout),
+          })
+        : ''
     },
     outcomeText(): string {
       switch (this.state?.outcome) {

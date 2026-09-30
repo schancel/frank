@@ -228,3 +228,55 @@ export function startDirectMessagePolling({
     },
   }
 }
+
+/** How often the background reconciliation looks at messages whose payment is pending, and the
+ * longest pause it backs off to while they stay pending. */
+export const OUTGOING_RECONCILE_INTERVAL_MS = 15_000
+export const MAX_OUTGOING_RECONCILE_INTERVAL_MS = 120_000
+
+export interface OutgoingReconciliation {
+  stop: () => void
+}
+
+/**
+ * Keeps settling outgoing messages whose stamp payment is still pending (#270). Every tick asks
+ * the wallet to re-send the SAME exact bytes of each live payment attempt (free and idempotent,
+ * never a new payment; see `stores/chats.ts`, `sendMessage`), and flips a message to sent when it
+ * finally delivers, so the sender's copy follows reality without any user action. While something
+ * stays pending the pause doubles up to {@link MAX_OUTGOING_RECONCILE_INTERVAL_MS}; with nothing
+ * pending each tick is a cheap local check.
+ */
+export function startOutgoingReconciliation({
+  wallet,
+  intervalMs = OUTGOING_RECONCILE_INTERVAL_MS,
+  maxIntervalMs = MAX_OUTGOING_RECONCILE_INTERVAL_MS,
+}: {
+  wallet: WalletHandle
+  intervalMs?: number
+  maxIntervalMs?: number
+}): OutgoingReconciliation {
+  const chats = useChatStore()
+  let stopped = false
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let delayMs = intervalMs
+
+  const tick = async () => {
+    let pending = 0
+    try {
+      pending = (await chats.reconcileOutgoing({ wallet })).pending
+    } catch (err) {
+      console.warn('outgoing message reconciliation failed', err)
+      pending = 1
+    }
+    delayMs = pending > 0 ? Math.min(maxIntervalMs, delayMs * 2) : intervalMs
+    if (!stopped) timer = setTimeout(() => void tick(), delayMs)
+  }
+  void tick()
+
+  return {
+    stop: () => {
+      stopped = true
+      if (timer !== undefined) clearTimeout(timer)
+    },
+  }
+}

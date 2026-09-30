@@ -26,15 +26,26 @@ import '@frank/wallet/message-item-plugins/blackjack/plugin'
 import '@frank/wallet/message-item-plugins/digital-goods/plugin'
 import '@frank/wallet/message-item-plugins/raffle/plugin'
 import type {
+  DirectMessageAttemptStatus,
   DirectMessagePreparationProgress,
   DirectMessageSendResult,
   WalletHandle,
 } from '@frank/wallet/chain'
 import { Utxo } from '@frank/cashweb/types/utxo'
+import {
+  MonadStampAbandonedError,
+  MonadStampPendingAttemptError,
+  MonadStampRecoveredAttemptError,
+  MonadStampRejectedError,
+  MonadStampTerminalError,
+} from '@frank/wallet/monad-stamp-client'
+import { MonadMailboxUnavailableError } from '@frank/cashweb/relay/monad-mailbox-client'
 import type {
   Message,
   MessageWrapper,
   MessageItem,
+  OutgoingDelivery,
+  OutgoingFailureReason,
   TextItem,
   ImageItem,
   StealthItem,
@@ -62,6 +73,8 @@ export type ChatMessage = {
   }>
   senderAddress: string
   payloadDigest: string
+  /** Outgoing messages that are not yet confirmed (#269/#270); see `Message.delivery`. */
+  delivery?: OutgoingDelivery
 }
 
 /**
@@ -152,9 +165,69 @@ function freshChatsState(): State {
 
 let pendingMessageSequence = 0
 
+/** Local key of an outgoing message until its payload hash is known. Persisted (#269), so it must
+ * stay unique across reloads, where the in-memory sequence restarts. */
 function nextPendingMessageId(timestamp: number): string {
   pendingMessageSequence += 1
-  return `pending:${timestamp}:${pendingMessageSequence}`
+  const nonce = Math.random().toString(36).slice(2, 8)
+  return `pending:${timestamp}:${pendingMessageSequence}:${nonce}`
+}
+
+/** Outgoing sends currently being worked on in this process, by local message key. */
+const inflightOutgoing = new Set<string>()
+
+export type OutgoingOutcome =
+  /** Delivered; the local copy is now keyed by its real payload hash. */
+  | { state: 'sent'; payloadDigest: string }
+  /** Payment not yet confirmed. The same payment is re-sent automatically; nothing new is paid. */
+  | { state: 'payment-pending' }
+  /** Failed; kept in the conversation with a manual Retry and Discard. */
+  | { state: 'failed'; reason: OutgoingFailureReason }
+  /** A retry could pay a second time; the caller must ask the user, then retry with
+   * `confirmed: true`. */
+  | { state: 'needs-confirmation'; reason: OutgoingFailureReason }
+  /** This message is already being worked on, or no longer exists. */
+  | { state: 'busy' }
+
+function errorDetail(error: unknown): string {
+  return (error instanceof Error ? error.message : String(error)).slice(0, 300)
+}
+
+function isNoResponseError(error: unknown): boolean {
+  const candidate = error as { isAxiosError?: boolean; response?: unknown }
+  return (
+    (candidate?.isAxiosError === true && candidate.response === undefined) ||
+    (error instanceof Error && error.name === 'MonadMailboxRetryableError')
+  )
+}
+
+/** Maps a failed send to the reason class shown to the user, and says whether the message must
+ * keep its payment attempt (so a later retry asks the wallet about it instead of paying again). */
+function classifySendFailure(
+  error: unknown,
+  ownDigest: string | undefined,
+): { reason: OutgoingFailureReason; keepDigest?: string } {
+  if (error instanceof MonadStampRecoveredAttemptError) {
+    return { reason: 'recovered' }
+  }
+  if (error instanceof MonadStampAbandonedError) {
+    // The exact set may still be owned by the relay but is no longer resumable here.
+    return { reason: 'unverified', keepDigest: error.payloadHashHex }
+  }
+  if (
+    error instanceof MonadStampTerminalError ||
+    error instanceof MonadStampRejectedError
+  ) {
+    return { reason: 'rejected' }
+  }
+  if (error instanceof MonadMailboxUnavailableError) {
+    return { reason: 'unavailable' }
+  }
+  return {
+    reason: isNoResponseError(error) ? 'unreachable' : 'error',
+    // Any failure after the payment set was journaled leaves that set on the message.
+    keepDigest: ownDigest,
+  }
 }
 
 export type RestorableState = {
@@ -199,11 +272,41 @@ export async function rehydateChat(chatState: RestorableState): Promise<State> {
   )
 
   // Todo, this rehydrate stuff is common to receiveMessage
+  const wrappers: MessageWrapper[] = []
   for await (const messageWrapper of messageIterator) {
-    if (!messageWrapper.message) {
+    if (messageWrapper.message) wrappers.push(messageWrapper)
+  }
+  // A message that was delivered after being re-keyed from its local id to its payload hash can
+  // leave its old local record behind if the app stopped between the two writes. The confirmed
+  // record wins (reconcile by payload hash: never show it twice); drop the leftover.
+  const confirmedDigests = new Set(
+    wrappers
+      .filter(({ message }) => message.status === 'confirmed')
+      .map(({ index }) => index),
+  )
+  for (const messageWrapper of wrappers) {
+    const { index, message: newMsg, copartyAddress } = messageWrapper
+    const leftoverOf = newMsg.delivery?.attemptDigest
+    if (
+      newMsg.status !== 'confirmed' &&
+      leftoverOf !== undefined &&
+      index !== leftoverOf &&
+      confirmedDigests.has(leftoverOf)
+    ) {
+      void localStore.deleteMessage(index).catch(err => console.warn(err))
       continue
     }
-    const { index, message: newMsg, copartyAddress } = messageWrapper
+    if (newMsg.outbound && newMsg.status === 'pending') {
+      // A send that was in flight when the app stopped is no longer running. With a recorded
+      // payment attempt it is recoverable (the same bytes are re-sent); without one nothing was
+      // paid, so it is an ordinary failed message the user can retry.
+      if (newMsg.delivery?.attemptDigest !== undefined) {
+        newMsg.status = 'payment-pending'
+      } else {
+        newMsg.status = 'error'
+        newMsg.delivery = { ...newMsg.delivery, failureReason: 'interrupted' }
+      }
+    }
     assert(newMsg.outbound !== undefined, 'outbound is not defined')
     assert(newMsg.status !== undefined, 'status is not defined')
     assert(newMsg.receivedTime !== undefined, 'receivedTime is not defined')
@@ -431,6 +534,7 @@ export const useChatStore = defineStore('chats', {
       status = 'pending',
       previousHash = null,
       timestamp = Date.now(),
+      delivery,
     }: {
       address: string
       senderAddress: string
@@ -448,6 +552,7 @@ export const useChatStore = defineStore('chats', {
       status: string
       previousHash: string | null
       timestamp?: number
+      delivery?: OutgoingDelivery
     }) {
       const displayAddress = toChainDisplayAddress(address)
       const newMsg = {
@@ -461,6 +566,7 @@ export const useChatStore = defineStore('chats', {
         stampPayments,
         senderAddress,
         messageHash: payloadDigest,
+        delivery,
       }
       assert(newMsg.outbound !== undefined, 'outbound is not defined')
       assert(newMsg.status !== undefined, 'status is not defined')
@@ -511,7 +617,24 @@ export const useChatStore = defineStore('chats', {
         address: displayAddress,
       }
     },
-    /** Sends a direct message while keeping an optimistic local outbox entry visible. */
+    /**
+     * Sends a direct message like iMessage does (#269/#270): the message appears in the
+     * conversation at once and is stored durably with its text; if the send fails it stays
+     * visible, marked failed with the reason, and the user can Retry or Discard it, also after a
+     * reload. A failure is therefore reported through the returned outcome and the message's
+     * `status`, not by throwing. Only precondition errors (an invalid recipient) and a failure to
+     * store an already delivered message throw.
+     *
+     * ## Never pay twice for one message
+     *
+     * Once a message's exact signed payment set exists, its payload hash is recorded on the
+     * message (`delivery.attemptDigest`) before the set is first submitted. Every later attempt
+     * for that message (automatic or manual) first asks the wallet what became of that set
+     * (`directMessages.reconcileAttempts`): while it is `live` the identical bytes are re-sent,
+     * which is free and idempotent; only when it is `dead` (the relay ended it for good) is a
+     * *new* payment built, and only by an explicit manual Retry. If its fate is `unknown`, the user
+     * must confirm first.
+     */
     async sendMessage({
       wallet,
       address,
@@ -526,7 +649,7 @@ export const useChatStore = defineStore('chats', {
       onPreparationProgress?: (
         progress: DirectMessagePreparationProgress,
       ) => void
-    }): Promise<DirectMessageSendResult> {
+    }): Promise<OutgoingOutcome> {
       const recipient = activeChain.parseAddress(address)
       assert(recipient, `Invalid recipient address: ${address}`)
       const displayAddress = toChainDisplayAddress(address)
@@ -554,74 +677,423 @@ export const useChatStore = defineStore('chats', {
         status: 'pending',
         previousHash: null,
         timestamp,
+        delivery: {},
       })
+      // Durable before anything can go wrong: the typed text must survive a reload (#269).
+      await this.saveOutgoing(displayAddress, pendingMessageId)
+      return this.runOutgoing({
+        wallet,
+        address: displayAddress,
+        id: pendingMessageId,
+        manual: false,
+        onPreparationProgress,
+      })
+    },
+    /** Manual Retry of a failed outgoing message (`status: 'error'`). See `sendMessage` for the
+     * no-double-payment rule this follows. */
+    async retryOutgoing({
+      wallet,
+      address,
+      payloadDigest,
+      confirmed = false,
+      onPreparationProgress,
+    }: {
+      wallet: WalletHandle
+      address: string
+      /** The message's key in the store (`ChatMessage.payloadDigest`). */
+      payloadDigest: string
+      /** The user accepted that this retry may pay a second time. */
+      confirmed?: boolean
+      onPreparationProgress?: (
+        progress: DirectMessagePreparationProgress,
+      ) => void
+    }): Promise<OutgoingOutcome> {
+      const message = this.messages[payloadDigest]
+      if (!message || !message.outbound || message.status !== 'error') {
+        return { state: 'busy' }
+      }
+      return this.runOutgoing({
+        wallet,
+        address: toChainDisplayAddress(address),
+        id: payloadDigest,
+        manual: true,
+        confirmed,
+        onPreparationProgress,
+      })
+    },
+    /** Best-effort durable write of one outgoing message's current state. */
+    async saveOutgoing(address: string, id: string) {
+      const message = this.messages[id]
+      if (!message) return
+      // `payloadDigest`/`messageHash` are in-memory bookkeeping, not part of the stored record.
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      const { payloadDigest, messageHash, ...persistable } =
+        message as Message & {
+          payloadDigest?: string
+          messageHash?: string
+        }
+      try {
+        await (
+          await store
+        ).saveMessage(
+          {
+            message: persistable,
+            index: id,
+            outbound: true,
+            senderAddress: message.senderAddress,
+            copartyAddress: address,
+          },
+          { advanceCursor: false },
+        )
+      } catch (err) {
+        console.warn('could not persist outgoing message state', err)
+      }
+    },
+    /** Updates an unconfirmed outgoing message's status and delivery details, and persists it. */
+    async setOutgoingState(
+      address: string,
+      id: string,
+      status: 'pending' | 'payment-pending' | 'error',
+      delivery: OutgoingDelivery,
+    ) {
+      const message = this.messages[id]
+      if (!message) return
+      message.status = status
+      message.delivery = delivery
+      await this.saveOutgoing(address, id)
+    },
+    /** The exact payment set of this message was delivered: re-key the local copy by its payload
+     * hash (unless already so), persist it, and drop the local-id record. The UI is reconciled
+     * before storage, because delivery is irreversible: a storage failure must not make a
+     * delivered message look retryable. */
+    async confirmOutgoing({
+      address,
+      id,
+      payloadDigest,
+      stampValueWei,
+      stampPayments,
+    }: {
+      address: string
+      id: string
+      payloadDigest: string
+      stampValueWei?: bigint
+      stampPayments?: DirectMessageSendResult['stampPayments']
+    }) {
+      const message = this.messages[id]
+      if (!message) return
+      const { items, senderAddress, serverTime } = message
+      const value = stampValueWei ?? message.stampValueWei
+      const payments = stampPayments ?? message.stampPayments
+      this.sendMessageLocal({
+        address,
+        senderAddress,
+        index: payloadDigest,
+        items,
+        outpoints: [],
+        stampValueWei: value,
+        stampPayments: payments,
+        status: 'confirmed',
+        previousHash: id,
+        timestamp: serverTime,
+      })
+      const messageStore = await store
+      await messageStore.saveMessage(
+        {
+          message: {
+            outbound: true,
+            status: 'confirmed',
+            items,
+            serverTime,
+            receivedTime: serverTime,
+            outpoints: [],
+            stampValueWei: value,
+            stampPayments: payments,
+            senderAddress,
+          },
+          index: payloadDigest,
+          outbound: true,
+          senderAddress,
+          copartyAddress: address,
+        },
+        { advanceCursor: false },
+      )
+      if (id !== payloadDigest) {
+        try {
+          await messageStore.deleteMessage(id)
+        } catch (err) {
+          // Harmless: the confirmed record wins when the store is next loaded.
+          console.warn('could not remove the local outgoing record', err)
+        }
+      }
+    },
+    /** Applies what the wallet knows about a message's earlier payment attempt. */
+    async applyAttemptStatus({
+      address,
+      id,
+      status,
+    }: {
+      address: string
+      id: string
+      status: DirectMessageAttemptStatus
+    }): Promise<'sent' | 'live' | 'dead' | 'unknown'> {
+      const message = this.messages[id]
+      const digest = message?.delivery?.attemptDigest
+      if (!message || digest === undefined) return 'dead'
+      if (status === 'delivered') {
+        await this.confirmOutgoing({ address, id, payloadDigest: digest })
+        return 'sent'
+      }
+      if (status === 'live' && message.status !== 'payment-pending') {
+        await this.setOutgoingState(address, id, 'payment-pending', {
+          attemptDigest: digest,
+        })
+      }
+      return status
+    },
+    async runOutgoing({
+      wallet,
+      address,
+      id,
+      manual,
+      confirmed = false,
+      onPreparationProgress,
+    }: {
+      wallet: WalletHandle
+      address: string
+      id: string
+      manual: boolean
+      confirmed?: boolean
+      onPreparationProgress?: (
+        progress: DirectMessagePreparationProgress,
+      ) => void
+    }): Promise<OutgoingOutcome> {
+      if (inflightOutgoing.has(id) || !this.messages[id]) {
+        return { state: 'busy' }
+      }
+      inflightOutgoing.add(id)
+      let recoveredOthers = false
+      try {
+        const outcome = await this.runOutgoingExclusive({
+          wallet,
+          address,
+          id,
+          manual,
+          confirmed,
+          onPreparationProgress,
+        })
+        recoveredOthers =
+          outcome.state === 'failed' && outcome.reason === 'recovered'
+        return outcome
+      } finally {
+        inflightOutgoing.delete(id)
+        // Another attempt was just recovered: settle its message now instead of at the next tick.
+        if (recoveredOthers) void this.reconcileOutgoing({ wallet })
+      }
+    },
+    async runOutgoingExclusive({
+      wallet,
+      address,
+      id,
+      manual,
+      confirmed,
+      onPreparationProgress,
+    }: {
+      wallet: WalletHandle
+      address: string
+      id: string
+      manual: boolean
+      confirmed: boolean
+      onPreparationProgress?: (
+        progress: DirectMessagePreparationProgress,
+      ) => void
+    }): Promise<OutgoingOutcome> {
+      const message = this.messages[id]
+      assert(message, 'outgoing message vanished')
+      const recipient = activeChain.parseAddress(address)
+      assert(recipient, `Invalid recipient address: ${address}`)
+      const previous = message.delivery
+      const digest = previous?.attemptDigest
 
+      // 1. An earlier payment attempt exists: ask what became of it BEFORE anything else.
+      if (digest !== undefined) {
+        let statuses: Record<string, DirectMessageAttemptStatus>
+        try {
+          statuses = await activeChain.directMessages.reconcileAttempts({
+            wallet,
+            payloadDigests: [digest],
+            maxPutAttempts: manual ? 3 : 1,
+          })
+        } catch (error) {
+          // Cannot tell. Keep the attempt on the message; never guess in favour of a new payment.
+          console.warn('could not reconcile the earlier payment attempt', error)
+          if (manual) {
+            await this.setOutgoingState(address, id, 'error', {
+              attemptDigest: digest,
+              failureReason: 'error',
+              detail: errorDetail(error),
+            })
+            return { state: 'failed', reason: 'error' }
+          }
+          return { state: 'payment-pending' }
+        }
+        const status = statuses[digest] ?? 'unknown'
+        const applied = await this.applyAttemptStatus({ address, id, status })
+        if (applied === 'sent') return { state: 'sent', payloadDigest: digest }
+        if (applied === 'live') return { state: 'payment-pending' }
+        if (applied === 'unknown') {
+          if (!manual || !confirmed) {
+            await this.setOutgoingState(address, id, 'error', {
+              attemptDigest: digest,
+              failureReason: 'unverified',
+            })
+            return manual
+              ? { state: 'needs-confirmation', reason: 'unverified' }
+              : { state: 'failed', reason: 'unverified' }
+          }
+        } else if (!manual) {
+          // The old payment can never land. Building a new one is the user's decision (Retry).
+          await this.setOutgoingState(address, id, 'error', {
+            failureReason: 'rejected',
+            detail: previous?.detail,
+          })
+          return { state: 'failed', reason: 'rejected' }
+        }
+        // Manual retry of a dead (or user-confirmed unknown) attempt: fall through, new payment.
+      } else if (
+        manual &&
+        previous?.failureReason === 'recovered' &&
+        !confirmed
+      ) {
+        return { state: 'needs-confirmation', reason: 'recovered' }
+      }
+
+      // 2. Build and send a new payment set.
+      await this.setOutgoingState(address, id, 'pending', {})
+      let ownDigest: string | undefined
       let result: DirectMessageSendResult
       try {
         result = await activeChain.directMessages.send({
           wallet,
           recipient,
-          items,
-          ...(stampValue === undefined ? {} : { stampValue }),
+          items: message.items,
+          ...(message.stampValueWei === undefined
+            ? {}
+            : { stampValue: message.stampValueWei }),
           ...(onPreparationProgress === undefined
             ? {}
             : { onPreparationProgress }),
+          onAttemptCreated: async attemptDigest => {
+            ownDigest = attemptDigest
+            await this.setOutgoingState(address, id, 'pending', {
+              attemptDigest,
+            })
+          },
         })
       } catch (error) {
-        this.sendMessageLocal({
-          address: displayAddress,
-          senderAddress: wallet.identity.displayAddress,
-          index: pendingMessageId,
-          items,
-          outpoints: [],
-          stampValueWei: stampValue,
-          status: 'error',
-          previousHash: null,
-          timestamp,
+        if (error instanceof MonadStampPendingAttemptError) {
+          // Own payment set journaled but not yet confirmed: keep it, keep re-sending the same
+          // bytes. Without an own set, an earlier attempt is still pending and this message has
+          // not been paid for yet; it is sent once that clears.
+          await this.setOutgoingState(
+            address,
+            id,
+            'payment-pending',
+            ownDigest === undefined ? {} : { attemptDigest: ownDigest },
+          )
+          return { state: 'payment-pending' }
+        }
+        const failure = classifySendFailure(error, ownDigest)
+        await this.setOutgoingState(address, id, 'error', {
+          ...(failure.keepDigest === undefined
+            ? {}
+            : { attemptDigest: failure.keepDigest }),
+          failureReason: failure.reason,
+          detail: errorDetail(error),
         })
-        throw error
+        return { state: 'failed', reason: failure.reason }
       }
 
-      const persistedMessage: Message = {
-        outbound: true,
-        status: 'confirmed',
-        items,
-        serverTime: timestamp,
-        receivedTime: timestamp,
-        outpoints: [],
+      await this.confirmOutgoing({
+        address,
+        id,
+        payloadDigest: result.payloadDigest,
         stampValueWei: result.stampValueWei,
         stampPayments: result.stampPayments,
-        senderAddress: wallet.identity.displayAddress,
-      }
-      // Reconcile the UI before local persistence. Delivery is already irreversible at this point;
-      // if Level storage fails, leaving the bubble pending/error would invite a duplicate retry and
-      // another payment for a message the relay already accepted.
-      this.sendMessageLocal({
-        address: displayAddress,
-        senderAddress: wallet.identity.displayAddress,
-        index: result.payloadDigest,
-        items,
-        outpoints: [],
-        stampValueWei: result.stampValueWei,
-        stampPayments: result.stampPayments,
-        status: 'confirmed',
-        previousHash: pendingMessageId,
-        timestamp,
       })
-
-      const messageStore = await store
-      await messageStore.saveMessage(
-        {
-          message: persistedMessage,
-          index: result.payloadDigest,
-          outbound: true,
-          senderAddress: wallet.identity.displayAddress,
-          copartyAddress: displayAddress,
-        },
-        { advanceCursor: false },
-      )
-
-      return result
+      return { state: 'sent', payloadDigest: result.payloadDigest }
+    },
+    /**
+     * Background settling of messages whose payment is pending: re-sends the SAME bytes of each
+     * live attempt (through `reconcileAttempts`, never building a payment) and flips a message to
+     * sent when it finally delivers. Messages that were only waiting behind another pending
+     * attempt (no payment of their own yet) are sent now. Returns how many are still pending.
+     * Call it on a backoff timer (see `startOutgoingReconciliation`).
+     */
+    async reconcileOutgoing({
+      wallet,
+    }: {
+      wallet: WalletHandle
+    }): Promise<{ pending: number }> {
+      const waiting: Array<{ address: string; id: string; digest?: string }> =
+        []
+      for (const [address, chat] of Object.entries(this.chats)) {
+        for (const message of chat?.messages ?? []) {
+          if (
+            message.outbound &&
+            message.status === 'payment-pending' &&
+            !inflightOutgoing.has(message.payloadDigest)
+          ) {
+            waiting.push({
+              address,
+              id: message.payloadDigest,
+              digest: message.delivery?.attemptDigest,
+            })
+          }
+        }
+      }
+      const withAttempt = waiting.filter(entry => entry.digest !== undefined)
+      if (withAttempt.length > 0) {
+        try {
+          const statuses = await activeChain.directMessages.reconcileAttempts({
+            wallet,
+            payloadDigests: withAttempt.map(entry => entry.digest as string),
+            maxPutAttempts: 1,
+          })
+          for (const entry of withAttempt) {
+            const applied = await this.applyAttemptStatus({
+              address: entry.address,
+              id: entry.id,
+              status: statuses[entry.digest as string] ?? 'unknown',
+            })
+            if (applied === 'dead' || applied === 'unknown') {
+              await this.setOutgoingState(entry.address, entry.id, 'error', {
+                ...(applied === 'unknown'
+                  ? { attemptDigest: entry.digest }
+                  : {}),
+                failureReason: applied === 'dead' ? 'rejected' : 'unverified',
+              })
+            }
+          }
+        } catch (error) {
+          console.warn('could not reconcile pending payment attempts', error)
+        }
+      }
+      for (const entry of waiting.filter(entry => entry.digest === undefined)) {
+        await this.runOutgoing({
+          wallet,
+          address: entry.address,
+          id: entry.id,
+          manual: false,
+        })
+      }
+      let pending = 0
+      for (const chat of Object.values(this.chats)) {
+        pending +=
+          chat?.messages.filter(
+            message => message.outbound && message.status === 'payment-pending',
+          ).length ?? 0
+      }
+      return { pending }
     },
     async clearChat(address: string) {
       const displayAddress = toChainDisplayAddress(address)

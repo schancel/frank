@@ -29,9 +29,10 @@
  * assumption about where stamp value lands. The only thing `mainAccountSigner` ever funds here is
  * a small, flat, round-count-independent gas reserve on the identity address (see
  * `ensureIdentityFunded`) -- ordinary bot-operation overhead, never payout money -- and the payout
- * path re-asserts the identity's balance actually covers the pot immediately before paying out, so
- * a bug here fails closed (refuses to draw) rather than silently drawing the shortfall from that
- * shared wallet.
+ * path re-asserts the identity's balance actually covers the pot immediately before paying out.
+ * NOTE (#363): swept entries arrive net of sweep gas, so the identity is always short of the gross
+ * pot by that gas; `raffle-settlement.ts` covers only that bounded shortfall (plus payout gas) from
+ * the operator wallet, and HOLDS the draw (never announces, never exits) when it cannot.
  *
  * ## Fairness scheme
  *
@@ -55,6 +56,7 @@
  *   RAFFLE_BOT_ENTRY_PRICE_WEI   -- default 0.02 MON
  *   RAFFLE_BOT_MAX_ENTRIES       -- entrants per round, default 5
  *   RAFFLE_BOT_MAX_ROUNDS        -- how many rounds to draw before exiting (default 1000)
+ *   RAFFLE_BOT_MAX_TOPUP_WEI     -- largest operator top-up to cover sweep+payout gas, default 0.05 MON
  *   RAFFLE_BOT_POLL_INTERVAL_MS  -- default 4000
  *   RAFFLE_BOT_IDLE_TIMEOUT_MS   -- default 10 minutes
  */
@@ -78,7 +80,6 @@ import {
 import { deserializeMessageItems } from '@frank/wallet/chain/monad-chain'
 import { RaffleItem } from '@frank/cashweb/types/messages'
 import {
-  buildRaffleDrawItem,
   combineEntrantEntropy,
   sha256Hex,
 } from '@frank/wallet/message-item-plugins/raffle/draw'
@@ -108,6 +109,13 @@ import {
   RaffleEntrant,
   RaffleRoundRecord,
 } from './raffle-bot-state'
+import {
+  beginDrawIfFull,
+  createRaffleSettler,
+  RAFFLE_DEFAULT_ENTRY_PRICE_WEI,
+  RAFFLE_DEFAULT_MAX_ENTRIES,
+  RAFFLE_DEFAULT_MAX_TOPUP_WEI,
+} from './raffle-settlement'
 
 function sleep(ms: number): Promise<void> {
   return new Promise(r => setTimeout(r, ms))
@@ -224,35 +232,6 @@ export async function recoverAndSweepEntryPayment(params: {
   return { ok: true, totalValueWei, combinedTxHash }
 }
 
-/** Tops up `identitySigner`'s own on-chain balance from `mainAccountSigner` if it's short of
- * `neededWei` -- a small, flat, per-payout operational gas cost, never scaled to a round's pot size
- * (see this file's header, "Why this bot can't be drained"). Only ever moves enough to cover the
- * shortfall, never a fixed lump sum, so repeated calls don't compound. */
-async function ensureIdentityFunded(params: {
-  identityAddress: string
-  mainAccountSigner: MonadAccountTxSigner
-  provider: Provider
-  neededWei: bigint
-  label: string
-}): Promise<void> {
-  const balance = await params.provider.getBalance(params.identityAddress)
-  if (balance >= params.neededWei) return
-  const shortfall = params.neededWei - balance
-  console.log(
-    `[${params.label}] topping up identity gas reserve by ${shortfall} wei from the main funded wallet`,
-  )
-  const signedTx = await params.mainAccountSigner.buildAndSignTransfer(
-    params.identityAddress,
-    shortfall,
-  )
-  const txHash = await params.mainAccountSigner.submit(signedTx)
-  await waitForConfirmation(
-    params.mainAccountSigner,
-    txHash,
-    `${params.label} identity funding`,
-  )
-}
-
 async function main() {
   const relayBaseUrl = process.env.E2E_DEMO_RELAY_URL ?? 'http://127.0.0.1:8098'
   const rpcUrl = requiredEnv('MONAD_TESTNET_HTTP_RPC_URL')
@@ -261,14 +240,14 @@ async function main() {
     requiredEnv('CASHWEB_STAMP_MIN_BURN_VALUE_WEI'),
   )
   const entryPriceWei = BigInt(
-    process.env.RAFFLE_BOT_ENTRY_PRICE_WEI ?? '20000000000000000', // 0.02 MON
+    process.env.RAFFLE_BOT_ENTRY_PRICE_WEI ?? RAFFLE_DEFAULT_ENTRY_PRICE_WEI,
   )
   if (entryPriceWei < minimumStampValueWei) {
     throw new Error(
       `Raffle bot entry price ${entryPriceWei} wei is below the relay minimum ${minimumStampValueWei}`,
     )
   }
-  const maxEntries = Number(process.env.RAFFLE_BOT_MAX_ENTRIES ?? 5)
+  const maxEntries = Number(process.env.RAFFLE_BOT_MAX_ENTRIES ?? RAFFLE_DEFAULT_MAX_ENTRIES)
   if (maxEntries < 2) {
     throw new Error('RAFFLE_BOT_MAX_ENTRIES must be at least 2')
   }
@@ -287,6 +266,11 @@ async function main() {
   )
   const stateDirPath = botStateDir('raffle', 'RAFFLE_BOT_STATE_DIR')
   const pollIntervalMs = Number(process.env.RAFFLE_BOT_POLL_INTERVAL_MS ?? 4000)
+  // Operator top-up allowed to cover swept-entry gas + payout gas at draw time (see
+  // raffle-settlement.ts); a larger shortfall holds the draw instead.
+  const maxTopUpWei = BigInt(
+    process.env.RAFFLE_BOT_MAX_TOPUP_WEI ?? RAFFLE_DEFAULT_MAX_TOPUP_WEI,
+  )
   const maxRounds = Number(process.env.RAFFLE_BOT_MAX_ROUNDS ?? 1000)
   const idleTimeoutMs = Number(
     process.env.RAFFLE_BOT_IDLE_TIMEOUT_MS ?? 10 * 60 * 1000,
@@ -336,6 +320,7 @@ async function main() {
   // keys from this, never anyone else's.
   const recipientPrivateKey = getBytes(identity.toPrivateKeyHex())
 
+  let roundsDrawn = 0
   const state = new RaffleBotStateStore(stateDirPath)
   await state.Open()
   console.log(`[raffle-bot] persisted state loaded from ${stateDirPath}`)
@@ -370,19 +355,109 @@ async function main() {
   }
 
   const senderPubKeyCache = new Map<string, Buffer>()
+
+  const settleDraws = createRaffleSettler({
+    state,
+    maxTopUpWei,
+    ports: {
+      getBalanceWei: () => provider.getBalance(identity.displayAddress),
+      payoutGasReserveWei: async () => {
+        const feeData = await provider.getFeeData()
+        const maxFeePerGas = feeData.maxFeePerGas ?? BigInt(250000000000)
+        return (maxFeePerGas * BigInt(21000) * BigInt(11)) / BigInt(10)
+      },
+      topUpIdentity: async shortfallWei => {
+        console.log(
+          `[raffle-bot] topping up identity by ${shortfallWei} wei from the operator (stamp) wallet to cover swept-entry gas and payout gas`,
+        )
+        const signedTx = await mainAccountSigner.buildAndSignTransfer(
+          identity.displayAddress,
+          shortfallWei,
+        )
+        const txHash = await mainAccountSigner.submit(signedTx)
+        await waitForConfirmation(
+          mainAccountSigner,
+          txHash,
+          'raffle-bot identity funding',
+        )
+      },
+      signPayout: async (to, valueWei) => {
+        const tx = await identitySigner.buildAndSignTransfer(to, valueWei)
+        return { rawTx: tx.rawTx, txHash: tx.txHash }
+      },
+      broadcast: async (rawTx, txHash) => {
+        await identitySigner.submitRaw(rawTx, txHash)
+      },
+      getStatus: txHash => identitySigner.getStatus(txHash),
+      announce: async (entrantAddress, drawItem) => {
+        const entrantKey = canonicalMonadEnvelopeAddress(entrantAddress)
+        let toPubKey = senderPubKeyCache.get(entrantKey)
+        if (!toPubKey) {
+          toPubKey = await fetchMonadIdentityPubKey({
+            relayBaseUrl,
+            address: entrantAddress,
+          })
+          if (!toPubKey) {
+            console.warn(
+              `[raffle-bot] no public key for ${entrantAddress}; cannot deliver the draw message`,
+            )
+            return
+          }
+          senderPubKeyCache.set(entrantKey, toPubKey)
+        }
+        await sendDirectMessageItems({
+          stampClient,
+          pool,
+          mainAccountSigner,
+          provider,
+          fromIdentity: identity,
+          toAddress: entrantAddress,
+          toPubKey,
+          items: [drawItem],
+          stampValueWei: replyStampValueWei,
+          networkTag,
+        })
+      },
+      log: message => console.log(message),
+      warn: message => console.warn(message),
+    },
+  })
+  const openDrawIfFull = async (): Promise<boolean> => {
+    try {
+      return await beginDrawIfFull({
+        state,
+        newServerSeed: generateServerSeed,
+        newRaffleId: generateRaffleId,
+        entryPriceWei: entryPriceWei.toString(),
+        maxEntries,
+        log: message => console.log(message),
+      })
+    } catch (err) {
+      // Not fatal: the full round stays persisted and is retried next tick / on restart.
+      console.error('[raffle-bot] could not record the draw; will retry:', err)
+      return false
+    }
+  }
+  // Restart resume: a persisted full round (crash before its draw was recorded) is drawn now, and
+  // any recorded-but-unsettled draw continues from its durable phase.
+  if (await openDrawIfFull()) roundsDrawn++
+  await settleDraws()
   let since = Date.now()
-  let roundsDrawn = 0
   let lastActivityAt = Date.now()
 
   console.log(
     `\nPolling ${relayBaseUrl}/message/monad/inbox/<me> (signed mailbox read, since=<t>) every ${pollIntervalMs}ms for messages addressed to ${identity.displayAddress} ...`,
   )
 
-  while (roundsDrawn < maxRounds) {
+  while (roundsDrawn < maxRounds || state.getDraws().length > 0) {
     if (Date.now() - lastActivityAt > idleTimeoutMs) {
       console.log(`\nNo activity within ${idleTimeoutMs}ms -- exiting.`)
       break
     }
+
+    // Retry held/unfinished draws every tick (owner funded the wallet, tx confirmed, DM failed).
+    if (await openDrawIfFull()) roundsDrawn++
+    await settleDraws()
 
     const stored = await fetchMonadMessagesSince({
       ...mailboxAuthFor(identity, relayBaseUrl),
@@ -587,103 +662,11 @@ async function main() {
 
       if (updatedEntrants.length < round.maxEntries) continue
 
-      // Round is full -- draw, reveal, and pay out, then immediately rotate to a fresh round with
-      // a brand new commitment (generated *before* it can have any entrants).
-      const commitment = state.getPendingCommitment()
-      if (!commitment || commitment.serverSeedHash !== round.serverSeedHash) {
-        console.error(
-          `[raffle-bot] internal error: no matching pending commitment for round ${round.raffleId} -- refusing to draw`,
-        )
-        continue
-      }
-      const entrantAddresses = updatedEntrants.map(e => e.address)
-      const entryTxHashes = updatedEntrants.map(e => e.txHash)
-      // One builder decides the winner and pot and carries the commitment hash (#318), so what
-      // is announced is exactly what is paid out.
-      const drawItem = buildRaffleDrawItem({
-        raffleId: round.raffleId,
-        entryPriceWei: round.entryPriceWei,
-        serverSeed: commitment.serverSeed,
-        entrants: entrantAddresses,
-        entryTxHashes,
-      })
-      const winnerAddress = drawItem.winnerAddress
-      const potWei = BigInt(drawItem.potWei)
-
-      console.log(
-        `[raffle-bot] drawing round ${round.raffleId}: winner=${winnerAddress} pot=${potWei} wei`,
-      )
-
-      for (const e of updatedEntrants) {
-        const entrantKey = canonicalMonadEnvelopeAddress(e.address)
-        let toPubKey = senderPubKeyCache.get(entrantKey)
-        if (!toPubKey) {
-          toPubKey = await fetchMonadIdentityPubKey({
-            relayBaseUrl,
-            address: e.address,
-          })
-          if (!toPubKey) continue
-          senderPubKeyCache.set(entrantKey, toPubKey)
-        }
-        await sendDirectMessageItems({
-          stampClient,
-          pool,
-          mainAccountSigner,
-          provider,
-          fromIdentity: identity,
-          toAddress: e.address,
-          toPubKey,
-          items: [drawItem],
-          stampValueWei: replyStampValueWei,
-          networkTag,
-        })
-      }
-
-      // Fail closed (ticket #121 acceptance criteria): every entrant's payment was already swept
-      // into this identity's balance before they were ever credited into `round.entrants` above,
-      // so by the time a round can reach `maxEntries` its balance must already cover the pot on
-      // its own. If it doesn't, something upstream is broken -- refuse the draw rather than
-      // silently letting `ensureIdentityFunded` below paper over the gap with mainAccountSigner
-      // funds (exactly the bug this file used to have).
-      const identityBalanceWei = await provider.getBalance(
-        identity.displayAddress,
-      )
-      if (identityBalanceWei < potWei) {
-        throw new Error(
-          `[raffle-bot] refusing to draw round ${round.raffleId}: identity balance ${identityBalanceWei} wei is below the ${potWei} wei pot it should already hold from this round's swept entries`,
-        )
-      }
-
-      // See this file's header, "Why this bot can't be drained" -- this only ever tops up a flat
-      // gas buffer *on top of* the pot already confirmed above, never the payout amount itself.
-      const feeData = await provider.getFeeData()
-      const fallbackMaxFeePerGas = BigInt(250000000000)
-      const maxFeePerGas = feeData.maxFeePerGas ?? fallbackMaxFeePerGas
-      const gasBufferWei =
-        (maxFeePerGas * BigInt(21000) * BigInt(11)) / BigInt(10)
-      await ensureIdentityFunded({
-        identityAddress: identity.displayAddress,
-        mainAccountSigner,
-        provider,
-        neededWei: identityBalanceWei + gasBufferWei,
-        label: 'raffle-bot',
-      })
-
-      console.log(
-        `[raffle-bot] paying out ${potWei} wei to ${winnerAddress} ...`,
-      )
-      const payoutTx = await identitySigner.buildAndSignTransfer(
-        winnerAddress,
-        potWei,
-      )
-      const payoutTxHash = await identitySigner.submit(payoutTx)
-      console.log(`[raffle-bot] payout tx sent: ${payoutTxHash}`)
-
-      roundsDrawn++
-      const nextRound = openFreshRound()
-      console.log(
-        `[raffle-bot] opened round ${nextRound.raffleId} (commitment ${nextRound.serverSeedHash})`,
-      )
+      // Round is full. Order (see raffle-settlement.ts): record the draw + rotate to a fresh
+      // commitment atomically, verify/fund the pot, persist then broadcast the payout, reconcile
+      // by hash, and only then announce (reveal the seed). Nothing here may throw the process.
+      if (await openDrawIfFull()) roundsDrawn++
+      await settleDraws()
       if (roundsDrawn >= maxRounds) break
     }
 

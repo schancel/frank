@@ -17,6 +17,27 @@ cap). It prints every bot address and the command to start the app, then waits. 
 `<state dir>/logs/`. Missing prerequisites (Node, `bash`, `cargo` or `CASHWEBD_BIN`, a busy port, an
 absent RPC URL or wallet file) each print one line, never a stack trace.
 
+### Raffle draw and payout (#363)
+
+A raffle entry reaches the raffle identity net of the gas of the sweep that moves it there, so the
+identity alone is always a little short of the gross pot (`entry price x entrants`). The draw
+therefore works in this order, each step durable before the next: record the draw (and open the
+next round with a fresh commitment) in one atomic write; make sure the identity holds pot plus
+payout gas, topping up only that bounded shortfall (`RAFFLE_BOT_MAX_TOPUP_WEI`) from the stamp
+wallet; sign the payout once and persist the exact bytes; broadcast (a restart re-broadcasts the
+same bytes, never a new payment) and confirm by hash; only then send the draw message that reveals
+the seed. So the launcher does not need to pre-fund the raffle identity, and a winner is never
+announced before the payout is confirmed.
+
+If the pot cannot be funded (stamp wallet empty, or a shortfall above the top-up limit) the bot does
+not exit and does not refund: it logs `HELD ... Winner NOT announced or paid` once per change, keeps
+accepting entries for the next round, and pays the held round automatically once the stamp wallet is
+funded. Held rounds are paid oldest first. Refunds and leaving a round are a separate design (#218)
+and are not implemented here.
+
+The launcher keeps the bot's default entry price and overrides only the round size (3 instead of the
+bot's default 5) so a demo round fills quickly; both defaults live in `raffle-settlement.ts`.
+
 The launcher sets every bot's state directory explicitly, under `<state dir>/bots/<bot>/state`
 (and identities under `<state dir>/bots/<bot>/identity.json`). Bots started on their own with
 `yarn bot`, `yarn blackjack`, ... default to `~/.frank-bots/<bot>` (`$XDG_STATE_HOME/frank-bots/<bot>`
@@ -64,6 +85,7 @@ to skip the Cargo build.
 | `QWEN_MODEL` | qwen | qwen3.8-max | Model name for live mode. |
 | `QWEN_BOT_MODE` | qwen | live if QWEN_API_KEY, else stub | Force "stub" or "live". "live" without a key is an error, never a silent stub. |
 | `RAFFLE_BOT_ENTRY_PRICE_WEI` | raffle | 20000000000000000 | Raffle entry price (0.02 MON). |
+| `RAFFLE_BOT_MAX_TOPUP_WEI` | raffle | 50000000000000000 | Largest operator (stamp wallet) top-up the raffle accepts at draw time to cover swept-entry gas and payout gas; a bigger shortfall holds the draw and logs it (0.05 MON). |
 | `RAFFLE_BOT_MAX_ENTRIES` | raffle | 3 | Entrants per round; demo default is small so a round fills quickly. |
 | `BLACKJACK_BOT_MIN_WAGER_WEI` | blackjack | bot default (0.01 MON) | Table minimum. |
 | `BLACKJACK_BOT_MAX_WAGER_WEI` | blackjack | bot default (1 MON) | Table maximum. |

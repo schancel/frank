@@ -158,6 +158,13 @@ export const DEMO_VARS: readonly DemoVar[] = [
     description: 'Raffle entry price (0.02 MON).',
   },
   {
+    name: 'RAFFLE_BOT_MAX_TOPUP_WEI',
+    scope: 'raffle',
+    default: '50000000000000000',
+    description:
+      'Largest operator (stamp wallet) top-up the raffle accepts at draw time to cover swept-entry gas and payout gas; a bigger shortfall holds the draw and logs it (0.05 MON).',
+  },
+  {
     name: 'RAFFLE_BOT_MAX_ENTRIES',
     scope: 'raffle',
     default: '3',
@@ -219,6 +226,7 @@ export const DEMO_VAR_NAMES: ReadonlySet<string> = new Set(DEMO_VARS.map(v => v.
 const PASSTHROUGH = [
   'FRANK_DM_DEFAULT_STAMP_VALUE_WEI',
   'RAFFLE_BOT_ENTRY_PRICE_WEI',
+  'RAFFLE_BOT_MAX_TOPUP_WEI',
   'BLACKJACK_BOT_MIN_WAGER_WEI',
   'BLACKJACK_BOT_MAX_WAGER_WEI',
   'VENDOR_BOT_CATALOG_DIR',

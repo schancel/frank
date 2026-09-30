@@ -22,6 +22,7 @@ import { mkdirSync } from 'fs'
 import level, { LevelDB } from 'level'
 import { join } from 'path'
 
+import { RaffleItem } from '@frank/cashweb/types/messages'
 import {
   canonicalMonadEnvelopeAddress,
   sameMonadEnvelopeAddress,
@@ -31,6 +32,28 @@ const PENDING_SEED_KEY = '__pending_server_seed__'
 const PENDING_SEED_HASH_KEY = '__pending_server_seed_hash__'
 const ROUND_KEY = '__current_round__'
 const PROCESSED_PREFIX = 'processed:'
+const DRAW_PREFIX = 'draw:'
+
+/** A full round that has been drawn and is being settled (#363). It is written, together with the
+ * fresh next round and commitment, BEFORE anything is broadcast or announced, so a crash at any
+ * later step resumes from this record and never loses the round.
+ *
+ * - `awaiting-funds`: no payout tx exists yet (the pot is not yet available, or funding is being
+ *   retried). Safe to re-evaluate any number of times.
+ * - `signed`: `payout` holds the exact signed bytes, persisted before the first broadcast. Every
+ *   retry re-broadcasts THESE bytes (same nonce, same hash), so it can never pay twice.
+ * - `paid`: the payout tx is confirmed by hash; the draw may now be announced (the seed revealed).
+ *   `announcedTo` records who already received it so a restart does not re-send. */
+export interface RaffleDrawRecord {
+  seq: number
+  raffleId: string
+  /** The exact `draw` item that will be announced (carries the seed only in this record; it is
+   * revealed to entrants only once `phase` is `paid`). */
+  drawItem: RaffleItem & { winnerAddress: string; potWei: string }
+  phase: 'awaiting-funds' | 'signed' | 'paid'
+  payout?: { rawTx: string; txHash: string }
+  announcedTo: string[]
+}
 
 export interface RaffleEntrant {
   address: string
@@ -87,6 +110,7 @@ export class RaffleBotStateStore {
   private pendingServerSeedHash?: string
   private currentRound?: RaffleRoundRecord
   private processedPayloadHashes = new Set<string>()
+  private draws = new Map<string, RaffleDrawRecord>()
   private pendingWrites: Promise<unknown>[] = []
 
   constructor(location: string) {
@@ -115,6 +139,9 @@ export class RaffleBotStateStore {
         const round = JSON.parse(value) as RaffleRoundRecord
         migratedRound = canonicalizePersistedRound(round)
         this.currentRound = migratedRound
+      } else if (key.startsWith(DRAW_PREFIX)) {
+        const draw = JSON.parse(value) as RaffleDrawRecord
+        this.draws.set(draw.raffleId, draw)
       } else if (key.startsWith(PROCESSED_PREFIX)) {
         this.processedPayloadHashes.add(key.slice(PROCESSED_PREFIX.length))
       }
@@ -175,5 +202,50 @@ export class RaffleBotStateStore {
   addProcessed(payloadHashHex: string): void {
     this.processedPayloadHashes.add(payloadHashHex)
     this.pendingWrites.push(this.db.put(PROCESSED_PREFIX + payloadHashHex, '1'))
+  }
+
+  /** Unsettled draws, oldest first. Settled in this order so payouts from the identity keep a
+   * single, sequential nonce. */
+  getDraws(): RaffleDrawRecord[] {
+    return [...this.draws.values()].sort((a, b) => a.seq - b.seq)
+  }
+
+  /** Atomically (one batch, awaited): records the draw, rotates to `nextRound`, and installs the
+   * fresh commitment. After this resolves the full round can never be lost or drawn again, and new
+   * entries go to a round with a new commitment made before it had any entrants. */
+  async beginDraw(params: {
+    draw: Omit<RaffleDrawRecord, 'seq'>
+    nextRound: RaffleRoundRecord
+    nextCommitment: { serverSeed: string; serverSeedHash: string }
+  }): Promise<RaffleDrawRecord> {
+    await this.flush()
+    const seq = Math.max(0, ...[...this.draws.values()].map(d => d.seq)) + 1
+    const draw: RaffleDrawRecord = { ...params.draw, seq }
+    await this.db
+      .batch()
+      .put(DRAW_PREFIX + draw.raffleId, JSON.stringify(draw))
+      .put(ROUND_KEY, JSON.stringify(params.nextRound))
+      .put(PENDING_SEED_KEY, JSON.stringify(params.nextCommitment.serverSeed))
+      .put(
+        PENDING_SEED_HASH_KEY,
+        JSON.stringify(params.nextCommitment.serverSeedHash),
+      )
+      .write()
+    this.draws.set(draw.raffleId, draw)
+    this.currentRound = params.nextRound
+    this.pendingServerSeed = params.nextCommitment.serverSeed
+    this.pendingServerSeedHash = params.nextCommitment.serverSeedHash
+    return draw
+  }
+
+  /** Durably replaces a draw record (awaited, so callers can rely on it before their next step). */
+  async putDraw(draw: RaffleDrawRecord): Promise<void> {
+    await this.db.put(DRAW_PREFIX + draw.raffleId, JSON.stringify(draw))
+    this.draws.set(draw.raffleId, draw)
+  }
+
+  async removeDraw(raffleId: string): Promise<void> {
+    await this.db.del(DRAW_PREFIX + raffleId)
+    this.draws.delete(raffleId)
   }
 }

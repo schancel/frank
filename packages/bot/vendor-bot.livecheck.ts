@@ -27,7 +27,7 @@
  *   VENDOR_BOT_CATALOG_DIR       -- directory with manifest.json + image files (default: the
  *                                   bundled demo-catalog/); see vendor-catalog.ts
  *   VENDOR_BOT_IDENTITY_JSON     -- default /tmp/vendor-bot-identity.json
- *   VENDOR_BOT_STATE_DIR         -- default /tmp/vendor-bot-state
+ *   VENDOR_BOT_STATE_DIR         -- default ~/.frank-bots/vendor (or $XDG_STATE_HOME/frank-bots/vendor)
  *   VENDOR_BOT_MAX_SALES         -- how many fulfilled purchases before exiting (default 1000)
  *   VENDOR_BOT_POLL_INTERVAL_MS  -- default 4000
  *   VENDOR_BOT_IDLE_TIMEOUT_MS   -- default 10 minutes
@@ -64,6 +64,7 @@ import {
 } from './qwen-bot-common'
 import { botProfileFields } from './bot-directory'
 import { VendorBotStateStore } from './vendor-bot-state'
+import { botStateDir } from './bot-state-dir'
 import { paymentBelowPriceMessage } from './vendor-messages'
 import { botLoopGuardFromEnv } from './bot-loop-guard'
 import {
@@ -112,10 +113,7 @@ async function main() {
     process.env.E2E_DEMO_MAIN_WALLET_JSON ??
       '../frank-worktrees/spike-demo/spike/data/chain-wallet.json',
   )
-  const stateDirPath = resolve(
-    process.cwd(),
-    process.env.VENDOR_BOT_STATE_DIR ?? '/tmp/vendor-bot-state',
-  )
+  const stateDirPath = botStateDir('vendor', 'VENDOR_BOT_STATE_DIR')
   const pollIntervalMs = Number(process.env.VENDOR_BOT_POLL_INTERVAL_MS ?? 4000)
   const maxSales = Number(process.env.VENDOR_BOT_MAX_SALES ?? 1000)
   const idleTimeoutMs = Number(
@@ -136,13 +134,14 @@ async function main() {
   })
   console.log(`Vendor bot identity address: ${identity.displayAddress}`)
 
-  const { stampClient, mainAccountSigner, provider, pool } =
+  const { stampClient, mainAccountSigner, provider, pool, closePool } =
     await setUpFundedStampClient({
       rpcUrl,
       relayBaseUrl,
       mainWalletJsonPath,
       stampValueWei: replyStampValueWei,
       label: 'vendor-bot',
+      stateDir: stateDirPath,
     })
 
   // #311: the catalog goes to humans only, at most a bounded number of times per window.
@@ -314,6 +313,7 @@ async function main() {
   }
 
   await state.Close()
+  await closePool()
   console.log(`\nDone. Completed ${salesCompleted} sale${salesCompleted === 1 ? '' : 's'}.`)
 }
 

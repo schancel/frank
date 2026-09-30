@@ -487,6 +487,37 @@ the user deleted is not added back on later launches.
 Production hardening, multi-user bot support, prompt/persona design polish, and a full
 recipient-addressing fix to the wire format (ticket #37's noted follow-up).
 
+## Stamp pool seed (#313)
+
+Every stamp payment a bot sends comes from a single-use sub-account derived from an HD seed. The
+seed used to be regenerated on each start, stranding whatever was left on those accounts. Now each
+bot keeps it in its own state directory (`QWEN_BOT_STATE_DIR`, `BLACKJACK_BOT_STATE_DIR`,
+`RAFFLE_BOT_STATE_DIR`, `VENDOR_BOT_STATE_DIR`). The default is per-user and persistent:
+`~/.frank-bots/<bot>` (`$XDG_STATE_HOME/frank-bots/<bot>` when set). It used to be
+`/tmp/<bot>-bot-state`; nothing is moved for you, so if that old directory exists and the new one
+does not, the bot prints a notice naming both paths (move it, or point the variable at it). A state
+directory under the system temp dir gets a warning at startup (a tmp cleaner would delete the seed).
+The directory and the seed file must be owned by the bot's user and not writable by group/others,
+or the bot refuses to start (another local user could otherwise plant a seed they know). The
+directory's `stamp-pool-meta.json` marker records that pool records exist: a seed whose
+`sub-account-pool/` or `change-pool/` directory has gone missing (or a marker that cannot be read)
+is refused instead of restarting at index 0, which would reuse spent sub-accounts. If you accept
+address reuse (or restored the seed without its records), delete `stamp-pool-meta.json` to
+override. A relative `XDG_STATE_HOME` is ignored, and a state directory that cannot be resolved to
+an absolute path (unset `HOME`, relative `*_BOT_STATE_DIR`) is a startup error.
+
+- `stamp-pool-seed.json` -- the BIP-39 mnemonic, created on first start with mode `0600` (directory
+  `0700`), loaded on every later start. It is never logged. It is a wallet secret: **never commit
+  it**, and back it up if the bot holds real funds. A missing file means a new seed is created; an
+  unreadable or invalid file is a startup error (the bot will not silently start a new pool and
+  strand the old one).
+- `sub-account-pool/`, `change-pool/` -- the pool's records (index, address, status; no keys), so a
+  restart continues after the last spent sub-account instead of reusing one.
+
+Recovering leftover funds: import the mnemonic into any BIP-44 wallet; sub-accounts are
+`m/44'/60'/0'/0/<i>` and change accounts `m/44'/60'/0'/1/<i>`. Bots created before this change
+simply gain a seed file on their next start; their identity and other state are untouched.
+
 ## Picture shop catalog (`vendor-bot.livecheck.ts`, #315)
 
 The vendor bot sells pictures from a directory, not from code. `VENDOR_BOT_CATALOG_DIR` (default:

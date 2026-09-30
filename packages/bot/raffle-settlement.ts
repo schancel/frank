@@ -63,9 +63,11 @@ import {
 export const RAFFLE_DEFAULT_ENTRY_PRICE_WEI = '20000000000000000' // 0.02 MON
 export const RAFFLE_DEFAULT_MAX_ENTRIES = 5
 export const RAFFLE_DEFAULT_MAX_TOPUP_WEI = '50000000000000000' // 0.05 MON, per round
-/** An entry paid in more on-chain payments than this is not credited (each payment loses one sweep
- * gas, so an entry split into many small payments would inflate the plausible-dust slack). */
-export const RAFFLE_MAX_PAYMENTS_PER_ENTRY = 3
+/** An entry paid in more on-chain payments than this is swept but NOT credited (recorded as
+ * unclaimed and refunded by the operator). Each payment loses one sweep gas and the plausible-dust
+ * slack counts payments, so this is a griefing bound, not a rule for honest users (a wallet with
+ * many small unused accounts can legitimately need several payments). */
+export const RAFFLE_MAX_PAYMENTS_PER_ENTRY = 6
 export const RAFFLE_DEFAULT_MAX_TOPUP_PER_DAY_WEI = '250000000000000000' // 5x per round
 
 const MINUTE_MS = 60_000

@@ -83,11 +83,28 @@ A raffle entry reaches the raffle identity net of the gas of the sweep that move
 identity alone is always a little short of the gross pot (`entry price x entrants`). What is enforced
 before an entry is credited (`recoverAndSweepEntryPayment`): the entry's on-chain stamp payments to
 the bot's derived addresses, re-derived and checked against the message, total at least the entry
-price; the entry is paid in at most 3 on-chain payments (a more fragmented entry is not credited and
-nothing is swept, because each payment loses one sweep gas and the hold threshold below scales with
-the payment count, so many small payments would widen it); and the amount actually swept into the identity, plus one sweep-gas tolerance per payment, is
-at least the entry price. An entry failing either check is not credited and its swept funds stay in
-the identity (logged and answered with an error). The draw then
+price; and the amount actually swept into the identity, plus one sweep-gas tolerance per payment, is
+at least the entry price. The entry may be paid in up to 6 on-chain payments; that cap is a griefing
+bound (each payment loses one sweep gas and the hold threshold below scales with the payment count,
+so many tiny payments would widen it), not a rule for honest users, whose wallets can legitimately
+need several payments.
+
+**Uncredited entries and refunds.** An entry that fails those checks (more than 6 payments, or less
+swept than the price) is NOT credited to a round, but its payments are first swept into the raffle
+identity, so the money is operator-controlled, never stranded at the derived addresses. The bot
+records it (entrant, payment hashes, swept amount, reason, time) in a persisted `unclaimed` list, logs
+`UNCLAIMED ...` at warn level, and tells the entrant by direct message that the entry was not counted,
+with the payment count and hashes, and that the operator will refund it. To refund: stop the raffle
+bot (it holds the state database), then in `packages/bot` with `MONAD_TESTNET_HTTP_RPC_URL`,
+`RAFFLE_BOT_IDENTITY_JSON` and `RAFFLE_BOT_STATE_DIR` set, run `yarn raffle:refund --list` and then
+`yarn raffle:refund <id>`. The refund pays the recorded swept amount back once: the signed bytes are
+persisted before broadcast, a re-run re-broadcasts the same bytes and reconciles by hash, and a
+refunded record is never paid again. It is refused while a raffle draw is unsettled (refunds and
+payouts share the identity's nonce and balance, #218), and if the identity holds less than the
+amount. Restart the bot afterwards. (A crash between the sweep and the record being written would
+leave the money in the identity without a record; the log line and the on-chain sweeps still show it.)
+
+The draw then
 works in this order, each step durable (fsynced) before the next: record the draw (and open the next
 round with a fresh commitment) in one atomic write; make sure the identity holds pot plus payout
 gas, topping up only that shortfall from the stamp wallet; sign the payout once and persist the exact
@@ -100,7 +117,7 @@ swept and confirmed on-chain before it is credited.)
 **Operator top-up limits.** The stamp wallet may top up the identity only while all hold: the gap is
 no more than the plausible sweep-gas dust for the round's payments (1.3 x (payments x sweep gas +
 payout gas), the payment count recorded per entrant at credit time, so multi-payment entries raise
-the threshold, up to the cap of 3 each; the 30% margin covers fee drift between the sweeps and the draw, and entrants of earlier
+the threshold, up to the cap of 6 each; the 30% margin covers fee drift between the sweeps and the draw, and entrants of earlier
 rounds paid without a top-up (at most one round's payments, reset by any top-up) are carried into
 the count; a larger gap means an entry paid less than
 the price, so the round is held and logged with no operator money moved); the round's cumulative top-ups stay within `RAFFLE_BOT_MAX_TOPUP_WEI`

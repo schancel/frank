@@ -168,6 +168,8 @@ describe('judgeRaffleFill (#363)', () => {
         entrants: E,
         draws: draws(),
         raffleAddress: RAFFLE,
+        entryPriceWei: 20n,
+        maxEntries: 3,
         txs: [pay],
       }).ok,
     ).toBe(true)
@@ -183,9 +185,20 @@ describe('judgeRaffleFill (#363)', () => {
         entrants: E,
         draws: draws(),
         raffleAddress: RAFFLE,
+        entryPriceWei: 20n,
+        maxEntries: 3,
         txs,
       }).ok,
     ).toBe(false)
+  })
+  it('fails on a wrong pot, a wrong round size, or a payment to a non-winner entrant', () => {
+    const base = { entrants: E, raffleAddress: RAFFLE, entryPriceWei: 20n, maxEntries: 3 }
+    expect(judgeRaffleFill({ ...base, draws: draws(), txs: [pay], entryPriceWei: 25n }).ok).toBe(false) // pot 60 != 75
+    expect(judgeRaffleFill({ ...base, draws: draws(), txs: [pay], maxEntries: 4 }).ok).toBe(false)
+    const extra = { from: RAFFLE, to: '0xcc', valueWei: '1' }
+    expect(judgeRaffleFill({ ...base, draws: draws(), txs: [pay, extra] }).ok).toBe(false)
+    // Payments to non-entrants (e.g. a top-up recipient) are not this check's business.
+    expect(judgeRaffleFill({ ...base, draws: draws(), txs: [pay, { from: RAFFLE, to: '0xdd', valueWei: '9' }] }).ok).toBe(true)
   })
   it('fails when an entrant got no draw or the winner is not an entrant', () => {
     const partial = draws()
@@ -195,6 +208,8 @@ describe('judgeRaffleFill (#363)', () => {
         entrants: E,
         draws: partial,
         raffleAddress: RAFFLE,
+        entryPriceWei: 20n,
+        maxEntries: 3,
         txs: [pay],
       }).ok,
     ).toBe(false)
@@ -203,6 +218,8 @@ describe('judgeRaffleFill (#363)', () => {
         entrants: E,
         draws: draws('0xzz'),
         raffleAddress: RAFFLE,
+        entryPriceWei: 20n,
+        maxEntries: 3,
         txs: [{ ...pay, to: '0xzz' }],
       }).ok,
     ).toBe(false)

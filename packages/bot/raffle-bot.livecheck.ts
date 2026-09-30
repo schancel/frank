@@ -176,7 +176,15 @@ export async function recoverAndSweepEntryPayment(params: {
       combinedTxHash: string
       paymentCount: number
     }
-  | { ok: false; reason: string; totalValueWei?: bigint }
+  | {
+      ok: false
+      reason: string
+      totalValueWei?: bigint
+      /** Present once anything was swept into the identity: what to record as unclaimed. */
+      sweptWei?: bigint
+      paymentHashes?: string[]
+      paymentCount?: number
+    }
 > {
   let recovered
   try {
@@ -196,17 +204,6 @@ export async function recoverAndSweepEntryPayment(params: {
   const { ordered, totalValueWei, combinedTxHash } =
     summarizeRecoveredPayments(recovered)
 
-  // Each payment loses one sweep gas on the way in, and the draw's plausible-dust slack scales with
-  // the payment count, so an entry split into many payments is refused BEFORE any sweep (its funds
-  // stay untouched at the child addresses).
-  if (ordered.length > RAFFLE_MAX_PAYMENTS_PER_ENTRY) {
-    return {
-      ok: false,
-      reason: `entry is split into ${ordered.length} payments; at most ${RAFFLE_MAX_PAYMENTS_PER_ENTRY} are accepted (nothing was swept)`,
-      totalValueWei,
-    }
-  }
-
   if (totalValueWei < params.minTotalValueWei) {
     return {
       ok: false,
@@ -216,6 +213,17 @@ export async function recoverAndSweepEntryPayment(params: {
   }
 
   let sweptWei = 0n
+  const paymentHashes = ordered.map(p => p.txHash)
+  // Every rejection after this point may already hold entrant money in the identity: report it so
+  // the caller records an `unclaimed` entry the operator can refund exactly once.
+  const fail = (reason: string) => ({
+    ok: false as const,
+    reason,
+    totalValueWei,
+    sweptWei,
+    paymentHashes,
+    paymentCount: ordered.length,
+  })
   for (const payment of ordered) {
     const outcome = await sweepRecoveredMonadStampPayment({
       payment,
@@ -228,19 +236,17 @@ export async function recoverAndSweepEntryPayment(params: {
       continue
     }
     if (outcome.reason === 'below-dust-threshold') {
-      return {
-        ok: false,
-        reason: `entry payment (child ${payment.childIndex}) is below the dust threshold to sweep`,
-      }
+      return fail(
+        `entry payment (child ${payment.childIndex}) is below the dust threshold to sweep`,
+      )
     }
     // 'pending': a sweep tx was already submitted for this child key. Wait for it rather than
     // re-invoking the sweep (re-invoking would race the same child key's own nonce against its
     // still-in-flight transaction).
     if (!outcome.txHash) {
-      return {
-        ok: false,
-        reason: `sweep for child ${payment.childIndex} is pending with no tx hash to await`,
-      }
+      return fail(
+        `sweep for child ${payment.childIndex} is pending with no tx hash to await`,
+      )
     }
     try {
       await waitForConfirmation(
@@ -250,10 +256,9 @@ export async function recoverAndSweepEntryPayment(params: {
       )
       sweptWei += outcome.valueWei ?? 0n
     } catch (err) {
-      return {
-        ok: false,
-        reason: `sweep for child ${payment.childIndex} did not confirm: ${err instanceof Error ? err.message : String(err)}`,
-      }
+      return fail(
+        `sweep for child ${payment.childIndex} did not confirm: ${err instanceof Error ? err.message : String(err)}`,
+      )
     }
   }
 
@@ -263,12 +268,19 @@ export async function recoverAndSweepEntryPayment(params: {
   const dustTolerance =
     params.dustToleranceWei ?? (await estimateDustThresholdWei(params.provider))
   const toleratedWei = dustTolerance * BigInt(ordered.length)
+  // Each payment loses one sweep gas on the way in and the draw's plausible-dust slack scales with
+  // the payment count, so an entry in more than the cap is NOT credited; its funds were swept into
+  // the identity above (operator-controlled) and are recorded for refund, never left at the
+  // children. The cap is a griefing bound, not a rule for honest users.
+  if (ordered.length > RAFFLE_MAX_PAYMENTS_PER_ENTRY) {
+    return fail(
+      `entry is split into ${ordered.length} payments; at most ${RAFFLE_MAX_PAYMENTS_PER_ENTRY} are counted`,
+    )
+  }
   if (sweptWei + toleratedWei < params.minTotalValueWei) {
-    return {
-      ok: false,
-      reason: `only ${formatMon(sweptWei)} reached the raffle identity (plus up to ${formatMon(toleratedWei)} of sweep gas), below the required ${formatMon(params.minTotalValueWei)}`,
-      totalValueWei,
-    }
+    return fail(
+      `only ${formatMon(sweptWei)} reached the raffle identity (plus up to ${formatMon(toleratedWei)} of sweep gas), below the required ${formatMon(params.minTotalValueWei)}`,
+    )
   }
 
   return {
@@ -659,12 +671,29 @@ async function main() {
       })
       if (!swept.ok) {
         console.log(`[raffle-bot] rejecting -- ${swept.reason}`)
+        let note = ''
+        if (swept.sweptWei !== undefined && swept.sweptWei > 0n) {
+          // Money already reached the identity: record it so the operator can refund it once.
+          const entrantAddress = canonicalMonadEnvelopeAddress(envelope.from)
+          await state.putUnclaimed({
+            id: `${entrantAddress}:${sha256Hex((swept.paymentHashes ?? []).join(',')).slice(0, 16)}`,
+            entrant: entrantAddress,
+            paymentHashes: swept.paymentHashes ?? [],
+            sweptWei: swept.sweptWei.toString(),
+            reason: swept.reason,
+            atMs: Date.now(),
+          })
+          console.warn(
+            `[raffle-bot] UNCLAIMED ${formatMon(swept.sweptWei)} from ${entrantAddress} (${swept.paymentCount} payments) swept but not credited; refund with 'yarn raffle:refund --list'. Reason: ${swept.reason}`,
+          )
+          note = ` Your ${swept.paymentCount} payment(s) (${(swept.paymentHashes ?? []).join(', ')}) were received but the entry was not counted; the operator will refund ${formatMon(swept.sweptWei)}.`
+        }
         await sendReply([
           {
             type: 'raffle',
             raffleId: round.raffleId,
             action: 'error',
-            message: `Entry rejected: ${swept.reason}`,
+            message: `Entry rejected: ${swept.reason}.${note}`,
           },
         ])
         markProcessed()

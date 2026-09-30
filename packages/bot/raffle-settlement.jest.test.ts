@@ -1107,6 +1107,8 @@ describe('raffle draw settlement (#363)', () => {
         settle: settlerFor(state, l),
         pollOnce: async () => {
           iterations++
+          if (iterations > 40)
+            throw new Error('runaway loop: draws opened past maxRounds')
           if (iterations === 1) {
             // another round fills while the first is held
             state.setCurrentRound({

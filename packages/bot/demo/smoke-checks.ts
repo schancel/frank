@@ -298,6 +298,8 @@ export function judgeRaffleFill(params: {
   draws: Map<string, RaffleItem>
   raffleAddress: string
   txs: Array<{ from: string; to: string | null; valueWei: string }>
+  entryPriceWei: bigint
+  maxEntries: number
 }): SmokeCheck {
   const name = 'raffle-round'
   const { entrants, draws, raffleAddress, txs } = params
@@ -326,11 +328,36 @@ export function judgeRaffleFill(params: {
   if (!entrants.some(e => e.toLowerCase() === winner.toLowerCase())) {
     return { name, ok: false, detail: 'the announced winner is not an entrant' }
   }
-  const payouts = txs.filter(
-    t =>
-      t.from.toLowerCase() === raffleAddress.toLowerCase() &&
-      t.to?.toLowerCase() === winner.toLowerCase(),
+  if (entrants.length !== params.maxEntries) {
+    return {
+      name,
+      ok: false,
+      detail: `expected ${params.maxEntries} entrants, got ${entrants.length}`,
+    }
+  }
+  const expectedPot = params.entryPriceWei * BigInt(entrants.length)
+  if (pot !== expectedPot.toString()) {
+    return {
+      name,
+      ok: false,
+      detail: `the draw states a pot of ${pot} wei, expected ${expectedPot} (${entrants.length} x ${params.entryPriceWei})`,
+    }
+  }
+  // Everything the raffle identity sent to an entrant: exactly one payment, to the winner.
+  const isEntrant = (a: string | null) =>
+    a !== null && entrants.some(e => e.toLowerCase() === a.toLowerCase())
+  const toEntrants = txs.filter(
+    t => t.from.toLowerCase() === raffleAddress.toLowerCase() && isEntrant(t.to),
   )
+  const others = toEntrants.filter(t => t.to?.toLowerCase() !== winner.toLowerCase())
+  if (others.length > 0) {
+    return {
+      name,
+      ok: false,
+      detail: `the raffle also paid ${others.length} non-winner entrant(s)`,
+    }
+  }
+  const payouts = toEntrants
   if (payouts.length !== 1 || payouts[0].valueWei !== pot) {
     return {
       name,
@@ -427,6 +454,8 @@ async function checkRaffleFill(
       draws,
       raffleAddress,
       txs: handle.fakeRpc?.transactions() ?? [],
+      entryPriceWei: price,
+      maxEntries,
     })
   } catch (err) {
     return {

@@ -33,6 +33,7 @@ const PENDING_SEED_HASH_KEY = '__pending_server_seed_hash__'
 const ROUND_KEY = '__current_round__'
 const PROCESSED_PREFIX = 'processed:'
 const DRAW_PREFIX = 'draw:'
+const UNCLAIMED_PREFIX = 'unclaimed:'
 const TOPUP_LEDGER_KEY = '__topup_ledger__'
 const CARRIED_DUST_KEY = '__carried_dust_payments__'
 const DAY_MS = 24 * 60 * 60 * 1000
@@ -79,6 +80,20 @@ export interface RaffleDrawRecord {
   /** Cumulative operator top-up spent on this round (capped per round, persisted so a restart
    * cannot top up again beyond the cap). */
   topUpWei?: string
+}
+
+/** Entrant money that reached the raffle identity but was NOT credited to a round (an entry over
+ * the payment cap, or one that swept less than the price). Recorded so the operator can refund it
+ * exactly once (`raffle-refund.ts`); the refund's signed bytes are persisted before broadcast. */
+export interface RaffleUnclaimedRecord {
+  id: string
+  entrant: string
+  paymentHashes: string[]
+  sweptWei: string
+  reason: string
+  atMs: number
+  refund?: { rawTx: string; txHash: string; signedAtMs: number }
+  refundedTxHash?: string
 }
 
 /** LevelDB write option for records whose loss could lose signed bytes that were already
@@ -146,6 +161,7 @@ export class RaffleBotStateStore {
   private draws = new Map<string, RaffleDrawRecord>()
   private topUps: Array<{ atMs: number; wei: string }> = []
   private carriedDustPayments = 0
+  private unclaimed = new Map<string, RaffleUnclaimedRecord>()
   private pendingWrites: Promise<unknown>[] = []
 
   constructor(location: string) {
@@ -174,6 +190,9 @@ export class RaffleBotStateStore {
         const round = JSON.parse(value) as RaffleRoundRecord
         migratedRound = canonicalizePersistedRound(round)
         this.currentRound = migratedRound
+      } else if (key.startsWith(UNCLAIMED_PREFIX)) {
+        const rec = JSON.parse(value) as RaffleUnclaimedRecord
+        this.unclaimed.set(rec.id, rec)
       } else if (key === CARRIED_DUST_KEY) {
         this.carriedDustPayments = JSON.parse(value)
       } else if (key === TOPUP_LEDGER_KEY) {
@@ -328,5 +347,15 @@ export class RaffleBotStateStore {
   async setCarriedDustPayments(n: number): Promise<void> {
     await this.db.put(CARRIED_DUST_KEY, JSON.stringify(n), SYNC)
     this.carriedDustPayments = n
+  }
+
+  getUnclaimed(): RaffleUnclaimedRecord[] {
+    return [...this.unclaimed.values()].sort((a, b) => a.atMs - b.atMs)
+  }
+
+  /** Durable (fsynced) insert-or-replace of an unclaimed-funds record. */
+  async putUnclaimed(rec: RaffleUnclaimedRecord): Promise<void> {
+    await this.db.put(UNCLAIMED_PREFIX + rec.id, JSON.stringify(rec), SYNC)
+    this.unclaimed.set(rec.id, rec)
   }
 }

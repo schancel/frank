@@ -86,7 +86,7 @@
         flat
         round
         icon="local_post_office"
-        aria-label="Stamp payment"
+        :aria-label="$t('chatInput.stampPayment')"
         :disable="disable"
       >
         <q-tooltip>{{ stampLabel }}</q-tooltip>
@@ -99,7 +99,7 @@
               type="number"
               :min="minimumStampAmount"
               :suffix="chainUnit"
-              label="Stamp payment"
+              :label="$t('chatInput.stampPayment')"
             />
             <q-slider
               v-model="stampMultiplier"
@@ -109,10 +109,14 @@
               :step="1"
               label
               label-always
-              :label-value="`${stampMultiplier}× default`"
+              :label-value="
+                $t('chatInput.stampMultiplierValue', {
+                  multiplier: stampMultiplier,
+                })
+              "
             />
             <div class="text-caption text-grey-7">
-              Quick selection from 1× to 100× the default stamp
+              {{ $t('chatInput.stampQuickSelection') }}
             </div>
           </div>
         </q-menu>

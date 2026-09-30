@@ -4,8 +4,15 @@
 export default {
   agree: 'Agree',
   chat: {
+    stampPreparationChecking: 'Checking private stamp accounts…',
+    stampPreparationFunding:
+      'Preparing private stamp accounts ({completed}/{total} on-chain transactions; up to {feeReserve} {unit} fee reserve each)…',
+    stampPreparationReady: 'Private stamp accounts ready; sending message…',
     donationMessage:
       'Thank you for participating in our vision of the future of online communications. Please consider donating to our efforts by sending real BCH to bitcoincash:qq7vt04md0pt6fk5szhcx4cgsfuzmppy5u4hxshr4a',
+  },
+  forum: {
+    noPosts: 'No posts yet.',
   },
   chatLayout: {
     info: 'Info',
@@ -21,6 +28,9 @@ export default {
     placeHolder: 'Write a message...',
     emojiPickerTitle: 'Select an emoji',
     stampPrice: 'Stamp Price',
+    stampPayment: 'Stamp payment',
+    stampQuickSelection: 'Quick selection from 1× to 100× the default stamp',
+    stampMultiplierValue: '{multiplier}× default',
   },
   raffleDraw: {
     verified: 'Draw matches the seed commitment',
@@ -97,6 +107,7 @@ export default {
     loadError: 'Saved wager records could not be read: {message}',
   },
   leftDrawer: {
+    noForums: 'No forums discovered yet.',
     settings: 'Settings',
     contacts: 'Contacts',
     forum: 'Forum',
@@ -106,6 +117,8 @@ export default {
   },
   chatList: {
     noContactMessage: 'Add contacts from the drawer above...',
+    youPrefix: 'You: {text}',
+    themPrefix: 'Them: {text}',
     balance: 'Balance',
     balanceStale: '(last known)',
     directMessages: 'Direct Messages',
@@ -120,6 +133,12 @@ export default {
   },
   chatMessage: {
     noPayloadFound: 'Unable to find message payload',
+    failedToSend: 'Failed to send',
+    showActions: 'Show message actions',
+    replyMessage: 'Reply to message',
+    forwardMessage: 'Forward message',
+    infoMessage: 'Message info',
+    deleteMessage: 'Delete message',
   },
   chatRightDrawer: {
     stampPrice: 'Stamp Price',
@@ -356,6 +375,9 @@ export default {
   },
   transactionDialog: {
     backingTransactions: 'Backing Transactions',
+    totalStampPayment: 'Total stamp payment',
+    stampPaymentN: 'Stamp payment {n}',
+    sentTo: 'To {address}',
     txId: 'Transaction ID',
     txType: 'Type',
     txAddress: 'Address',

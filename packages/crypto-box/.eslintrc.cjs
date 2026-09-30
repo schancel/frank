@@ -11,7 +11,7 @@ module.exports = {
   overrides: [
     {
       files: ['src/**/*.ts'],
-      env: { browser: false, node: false },
+      env: { es2020: true, browser: false, node: false },
       rules: {
         'no-restricted-globals': [
           'error',
@@ -32,9 +32,15 @@ module.exports = {
       env: { jest: true, node: true },
     },
     {
-      files: ['*.js'],
+      files: ['*.js', '*.cjs'],
+      parserOptions: { sourceType: 'script' },
       env: { node: true },
       rules: { '@typescript-eslint/no-var-requires': 'off' },
+    },
+    {
+      files: ['scripts/**/*.mjs'],
+      parserOptions: { sourceType: 'module', ecmaVersion: 2022 },
+      env: { node: true, es2022: true },
     },
   ],
 }

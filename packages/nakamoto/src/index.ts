@@ -1,6 +1,5 @@
 // @frank/nakamoto public surface. Browser-safe: no Node built-ins.
-// Chain types, keys, and sighash land in later tickets. This entry stays free of
-// the old library; tests may import it as a dev-only oracle.
+// Per-chain entries: ./btc ./bch ./xec ./xpi. Feature entries: ./integer ./script-num.
 
 export const PACKAGE_NAME = '@frank/nakamoto'
 
@@ -20,7 +19,8 @@ export {
   XPI_TESTNET,
   addressVersionBytes,
   getChain,
-} from './chain'
+  isUnknownChainError,
+} from './chain/index.js'
 export type {
   ChainDescriptor,
   ChainFamily,
@@ -31,4 +31,19 @@ export type {
   PolicyAmount,
   SighashFamily,
   UnknownChainError,
-} from './chain'
+} from './chain/types.js'
+
+export { bigintToBytes, bytesToBigint, isIntegerError, mod } from './integer.js'
+export type { IntegerError, IntegerResult } from './integer.js'
+
+export {
+  decodeScriptNum,
+  encodeScriptNum,
+  isMinimalScriptNum,
+  isScriptNumError,
+} from './script-num.js'
+export type {
+  ScriptNumDecodeOptions,
+  ScriptNumError,
+  ScriptNumResult,
+} from './script-num.js'

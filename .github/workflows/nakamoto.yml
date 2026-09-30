@@ -1,0 +1,32 @@
+name: nakamoto
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "packages/nakamoto/**"
+      - "packages/crypto-box/**"
+      - ".github/workflows/nakamoto.yml"
+      - "yarn.lock"
+  pull_request:
+    paths:
+      - "packages/nakamoto/**"
+      - "packages/crypto-box/**"
+      - ".github/workflows/nakamoto.yml"
+      - "yarn.lock"
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - uses: actions/setup-node@v2
+        with:
+          node-version: "26"
+      - run: yarn install --ignore-engines --frozen-lockfile
+      - name: nakamoto
+        working-directory: packages/nakamoto
+        run: yarn test && yarn typecheck && yarn lint && yarn format && yarn check:shared && yarn check:deps && yarn check:bundle
+      - name: crypto-box
+        working-directory: packages/crypto-box
+        run: yarn test && yarn typecheck && yarn lint && yarn format && yarn check:shared && yarn check:deps && yarn check:bundle

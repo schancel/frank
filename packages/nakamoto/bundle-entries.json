@@ -1,0 +1,53 @@
+{
+  "globalName": "FrankNakamoto",
+  "tokens": {
+    "btc-magic": 4190024921,
+    "xpi-port": 10605,
+    "xpi-magic": 3974623219
+  },
+  "entries": [
+    {
+      "name": "root",
+      "entry": "src/index.ts",
+      "require": ["btc-magic", "xpi-port"]
+    },
+    {
+      "name": "btc",
+      "entry": "src/btc.ts",
+      "require": ["btc-magic"],
+      "forbid": ["xpi-port", "xpi-magic"],
+      "absentExports": ["BCH_MAINNET", "XPI_MAINNET", "getChain"]
+    },
+    {
+      "name": "bch",
+      "entry": "src/bch.ts",
+      "forbid": ["btc-magic", "xpi-port", "xpi-magic"],
+      "absentExports": ["BTC_MAINNET", "XPI_MAINNET", "getChain"]
+    },
+    {
+      "name": "xec",
+      "entry": "src/xec.ts",
+      "forbid": ["btc-magic", "xpi-port", "xpi-magic"],
+      "absentExports": ["BTC_MAINNET", "BCH_MAINNET", "getChain"]
+    },
+    {
+      "name": "xpi",
+      "entry": "src/xpi.ts",
+      "require": ["xpi-port", "xpi-magic"],
+      "forbid": ["btc-magic"],
+      "absentExports": ["BTC_MAINNET", "BCH_MAINNET", "getChain"]
+    },
+    {
+      "name": "script-num",
+      "entry": "src/script-num.ts",
+      "forbid": ["btc-magic", "xpi-port"],
+      "absentExports": ["BTC_MAINNET", "BCH_MAINNET"]
+    },
+    {
+      "name": "integer",
+      "entry": "src/integer.ts",
+      "forbid": ["btc-magic", "xpi-port"],
+      "absentExports": ["BTC_MAINNET", "encodeScriptNum"]
+    }
+  ]
+}

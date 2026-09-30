@@ -1,5 +1,11 @@
 import { sha256Hex } from '../blackjack/deck'
-import { combineEntrantEntropy, pickWinnerIndex, verifyRaffleDraw } from './draw'
+import {
+  buildRaffleDrawItem,
+  combineEntrantEntropy,
+  pickWinnerIndex,
+  verifyRaffleDraw,
+  verifyRaffleDrawAgainstThread,
+} from './draw'
 
 describe('pickWinnerIndex', () => {
   it('is deterministic for the same inputs', () => {
@@ -95,5 +101,85 @@ describe('verifyRaffleDraw', () => {
       winnerAddress,
     })
     expect(result.valid).toBe(false)
+  })
+})
+
+describe('buildRaffleDrawItem and verifyRaffleDrawAgainstThread', () => {
+  const SEED = 'round-secret'
+  const HASH = sha256Hex(SEED)
+  const ENTRANTS = ['0xa1', '0xb2', '0xc3']
+  const TXS = ['0xt1', '0xt2', '0xt3']
+  const announce = { type: 'raffle', raffleId: 'r1', action: 'announce', serverSeedHash: HASH } as const
+  const draw = () =>
+    buildRaffleDrawItem({
+      raffleId: 'r1',
+      entryPriceWei: '20',
+      serverSeed: SEED,
+      entrants: ENTRANTS,
+      entryTxHashes: TXS,
+    })
+
+  it('the built draw carries the commitment hash, the winner and the pot', () => {
+    const item = draw()
+    expect(item.serverSeedHash).toBe(HASH)
+    expect(item.potWei).toBe('60')
+    expect(ENTRANTS).toContain(item.winnerAddress)
+  })
+
+  it('verifies against a commitment announced earlier in the thread', () => {
+    expect(verifyRaffleDrawAgainstThread(draw(), [announce])).toEqual({ valid: true })
+    // A `joined` reply carries the same commitment and is enough too.
+    expect(
+      verifyRaffleDrawAgainstThread(draw(), [{ ...announce, action: 'joined' }]),
+    ).toEqual({ valid: true })
+  })
+
+  it('makes no claim without a prior commitment (a hash arriving with the draw proves nothing)', () => {
+    expect(verifyRaffleDrawAgainstThread(draw(), [])).toBeNull()
+    expect(
+      verifyRaffleDrawAgainstThread(draw(), [{ ...announce, raffleId: 'other' }]),
+    ).toBeNull()
+  })
+
+  it('only announce/joined items count as a commitment, not another draw or an enter', () => {
+    expect(
+      verifyRaffleDrawAgainstThread(draw(), [
+        { ...announce, action: 'draw' },
+        { ...announce, action: 'enter' },
+      ]),
+    ).toBeNull()
+  })
+
+  it('fails when the revealed seed does not open the earlier commitment', () => {
+    const lied = { ...draw(), serverSeed: 'a-different-seed', serverSeedHash: sha256Hex('a-different-seed') }
+    const result = verifyRaffleDrawAgainstThread(lied, [announce])
+    expect(result?.valid).toBe(false)
+  })
+
+  it('fails when the draw names a different commitment than the announced one', () => {
+    const result = verifyRaffleDrawAgainstThread(
+      { ...draw(), serverSeedHash: 'x' },
+      [announce],
+    )
+    expect(result).toEqual({
+      valid: false,
+      reason: 'the draw names a different commitment than the one announced',
+    })
+  })
+
+  it('fails when the announced winner is not what the draw computes', () => {
+    const item = draw()
+    const other = ENTRANTS.find(e => e !== item.winnerAddress)!
+    const result = verifyRaffleDrawAgainstThread({ ...item, winnerAddress: other }, [announce])
+    expect(result?.valid).toBe(false)
+  })
+
+  it('fails on conflicting commitments for one round', () => {
+    const result = verifyRaffleDrawAgainstThread(draw(), [
+      announce,
+      { ...announce, serverSeedHash: 'other-hash' },
+    ])
+    expect(result?.valid).toBe(false)
+    expect(result?.reason).toMatch(/conflicting/)
   })
 })

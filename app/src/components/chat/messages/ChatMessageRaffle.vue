@@ -53,12 +53,13 @@
 </template>
 
 <script lang="ts">
-import { defineComponent, PropType } from 'vue'
+import { defineComponent, PropType, toRaw } from 'vue'
 
 import { RaffleItem } from '@frank/cashweb/types/messages'
 import { activeChain } from '@frank/wallet/chain'
-import { verifyRaffleDraw } from '@frank/wallet/message-item-plugins/raffle/draw'
+import { verifyRaffleDrawAgainstThread } from '@frank/wallet/message-item-plugins/raffle/draw'
 
+import { useChatStore } from '../../../stores/chats'
 import { useActiveWallet } from '../../../composables/useActiveWallet'
 import { errorNotify } from '../../../utils/notifications'
 
@@ -107,30 +108,20 @@ export default defineComponent({
       if (this.didIWin === true) return 'text-positive'
       return ''
     },
+    // Verified against the seed commitment this round announced EARLIER in this chat (the
+    // announce/joined item), like blackjack folds the deal's hash: a hash that only arrives with
+    // the draw would prove nothing. No commitment seen means no claim either way.
     verification() {
-      const {
-        winnerAddress,
-        serverSeed,
-        serverSeedHash,
-        entrants,
-        entryTxHashes,
-      } = this.item
-      if (
-        !winnerAddress ||
-        !serverSeed ||
-        !serverSeedHash ||
-        !entrants ||
-        !entryTxHashes
-      ) {
-        return null
+      if (this.item.action !== 'draw') return null
+      const prior: RaffleItem[] = []
+      const messages = useChatStore().chats[this.address]?.messages ?? []
+      outer: for (const message of messages) {
+        for (const raw of message.items) {
+          if (toRaw(raw) === toRaw(this.item)) break outer
+          if (raw.type === 'raffle' && !message.outbound) prior.push(raw)
+        }
       }
-      return verifyRaffleDraw({
-        serverSeed,
-        serverSeedHash,
-        entrants,
-        entryTxHashes,
-        winnerAddress,
-      })
+      return verifyRaffleDrawAgainstThread(this.item, prior)
     },
   },
   methods: {

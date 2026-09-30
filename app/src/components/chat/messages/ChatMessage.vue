@@ -28,7 +28,7 @@
         v-touch-swipe.touch.right="swipeRight"
       >
         <!-- Wrap a div around the template to keep all items within 1 QChatMessasge -->
-        <div>
+        <div data-testid="chat-message-body" class="chat-message-body">
           <template v-for="(item, subIndex) in message.items" :key="subIndex">
             <chat-message-reply
               v-if="item.type == 'reply'"
@@ -74,8 +74,27 @@
               {{ getMessageItemPreview(item) }}
             </span>
           </template>
+          <!-- Time and stamp amount share the last text line (#391). Error and
+               payment-pending stay in the stamp slot, which is its own row. -->
+          <chat-message-suffix
+            v-if="usesInlineFooter"
+            ref="suffix"
+            inline
+            :status="message.status"
+            :stamp="shortTimestamp"
+            :stamp-datetime="stampDatetime"
+            :amount="stampAmount"
+            :outbound="message.outbound"
+            :failure-reason="message.delivery?.failureReason ?? ''"
+            :payment-state="paymentState"
+            @infoClick="transactionDialog = true"
+            @deleteClick="deleteDialog = true"
+            @replyClick="replyClicked({ address, payloadDigest })"
+            @resendClick="resend()"
+            @discardClick="confirmDiscard()"
+          />
         </div>
-        <template #stamp>
+        <template v-if="!usesInlineFooter" #stamp>
           <chat-message-suffix
             ref="suffix"
             :status="message.status"
@@ -374,6 +393,19 @@ export default defineComponent({
           return ''
       }
       return 'N/A'
+    },
+    usesInlineFooter(): boolean {
+      // Confirmed and the fresh-send line are one cluster on the last text
+      // line. Failed and payment-pending keep the row under the text.
+      return (
+        this.message.status === 'confirmed' || this.message.status === 'pending'
+      )
+    },
+    stampDatetime(): string {
+      const timestamp = this.message.serverTime
+      if (timestamp === undefined || timestamp === null) return ''
+      const parsed = new Date(timestamp)
+      return Number.isNaN(parsed.getTime()) ? '' : parsed.toISOString()
     },
     stampAmount() {
       if (this.message.stampValueWei !== undefined) {

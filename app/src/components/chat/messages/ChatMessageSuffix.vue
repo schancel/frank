@@ -1,9 +1,13 @@
 <template>
   <div
     class="outgoing-focus-target"
+    :class="{
+      'chat-message-inline-meta': inline,
+      'chat-message-inline-meta--sent': inline && outbound,
+    }"
     tabindex="-1"
     ref="focusTarget"
-    data-testid="outgoing-focus-target"
+    :data-testid="inline ? 'outgoing-meta' : 'outgoing-focus-target'"
   >
     <!-- Programmatic focus lands on this suffix when Retry unmounts (#429). The live region
     below stays clipped and is not a keyboard target. One persistent polite live region per
@@ -16,8 +20,33 @@
       data-testid="outgoing-announcement"
       >{{ announced }}</span
     >
+    <!-- Last line of the bubble (#391): one row of time and amount, floated
+         to the end of the text. No break between them, and no second row. -->
+    <template v-if="inline">
+      <span
+        v-if="status === 'pending' && outbound"
+        data-testid="outgoing-sending"
+        class="q-mr-xs"
+        >{{ $t('outgoing.sending') }}</span
+      >
+      <time
+        v-if="stamp"
+        data-testid="outgoing-stamp"
+        :datetime="stampDatetime || undefined"
+        >{{ stamp }}</time
+      >
+      <span data-testid="outgoing-amount">{{ amount }}</span>
+      <chat-message-suffix-buttons
+        v-if="status === 'confirmed'"
+        :status="status"
+        @replyClick="$emit('replyClick')"
+        @forwardClick="$emit('forwardClick')"
+        @infoClick="$emit('infoClick')"
+        @deleteClick="$emit('deleteClick')"
+      />
+    </template>
     <div
-      v-if="status === 'error'"
+      v-else-if="status === 'error'"
       :class="['row', 'items-center', suffixPlacement]"
       data-testid="outgoing-failed"
     >
@@ -115,6 +144,18 @@ export default defineComponent({
     stamp: {
       type: String,
       required: true,
+    },
+    /** Machine-readable instant for the visible stamp. Empty when there is none. */
+    stampDatetime: {
+      type: String,
+      required: false,
+      default: '',
+    },
+    /** Confirmed and pending sit on the last text line. Other states keep a row. */
+    inline: {
+      type: Boolean,
+      required: false,
+      default: false,
     },
     amount: {
       type: String,

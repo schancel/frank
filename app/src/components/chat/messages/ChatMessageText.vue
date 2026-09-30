@@ -1,5 +1,5 @@
 <template>
-  <span v-html="markedMessage" />
+  <span class="chat-message-text" v-html="markedMessage" />
 </template>
 
 <script lang="ts">

@@ -111,6 +111,8 @@ export default {
     errorContactRegistry: 'Impossible de se connecter au registre',
     storedSeedMismatch:
       'La phrase de récupération de cet appareil ne peut pas être remplacée depuis cet écran.',
+    replaceNotAcknowledged:
+      'Ce compte ne peut pas être remplacé sans confirmer le remplacement.',
     accountSetupNext: 'Suivant',
     depositStepNext: 'Suivant',
   },
@@ -145,6 +147,22 @@ export default {
       'Vous n’avez pas encore confirmé votre phrase de récupération. Confirmez que vous l’avez sauvegardée pour toujours pouvoir récupérer votre compte.',
     confirm: 'Confirmer maintenant',
     dismiss: 'Plus tard',
+  },
+  replaceGuard: {
+    title: 'Vous avez déjà un compte sur cet appareil',
+    intro:
+      'Recommencer la configuration le remplacerait. Votre phrase de récupération est le seul moyen de récupérer ce compte et ses fonds.',
+    confirmed: 'Votre phrase de récupération actuelle est confirmée.',
+    cancel: 'Annuler et revenir à mon compte',
+    confirmCurrent: 'Confirmer ma phrase de récupération actuelle',
+    replaceToggle: 'Remplacer ce compte',
+    warning:
+      'Remplacer ce compte supprimera de cet appareil votre phrase de récupération, votre nom et votre profil actuels. Si vous n’avez pas sauvegardé la phrase, le compte et ses fonds pourraient être irrécupérables.',
+    typeLabel: 'Saisissez {word} pour continuer',
+    word: 'REMPLACER',
+    mismatch:
+      'Cela ne correspond pas. Saisissez exactement le mot pour continuer.',
+    replace: 'Remplacer ce compte',
   },
   newContactDialog: {
     newContact: 'Nouveau contact',

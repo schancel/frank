@@ -31,6 +31,7 @@ jest.mock('src/stores/appearance', () => ({
 }))
 let mockProfileName: string | undefined
 const mockSetRelayData = jest.fn()
+const mockRouterPush = jest.fn()
 jest.mock('src/stores/my-profile', () => ({
   useProfileStore: () => ({
     profile: { name: mockProfileName },
@@ -46,6 +47,7 @@ jest.mock('../utils/setup-account', () => {
 })
 
 import Setup from './Setup.vue'
+import ReplaceAccountGuard from '../components/setup/ReplaceAccountGuard.vue'
 import { useWalletStore } from 'src/stores/wallet'
 import { commitValidatedSetupSeed } from '../utils/setup-account'
 
@@ -62,14 +64,14 @@ async function mountSetup(extraStubs: Record<string, unknown> = {}) {
   const wrapper = shallowMount(Setup, {
     global: {
       stubs: {
+        QPageContainer: SlotStub,
+        QPage: SlotStub,
         ...Object.fromEntries(
           [
             'q-header',
             'q-toolbar',
             'q-toolbar-title',
             'q-btn',
-            'q-page-container',
-            'q-page',
             'q-stepper',
             'q-step',
             'q-stepper-navigation',
@@ -90,6 +92,7 @@ async function mountSetup(extraStubs: Record<string, unknown> = {}) {
       mocks: {
         $t: (k: string) => k,
         $q: { loading: { show: jest.fn(), hide: jest.fn() } },
+        $router: { push: mockRouterPush },
       },
     },
   })
@@ -481,6 +484,112 @@ describe('Setup page mounted (#267)', () => {
     it('a fresh device (no seed) is not resume mode', async () => {
       const { wrapper } = await mountSetup()
       expect((wrapper.vm as unknown as { resume: boolean }).resume).toBe(false)
+    })
+  })
+
+  describe('replacing an existing account (#304)', () => {
+    const OTHER =
+      'legal winner thank year wave sausage worth useful legal winner thank yellow'
+    type GuardVm = Vm & {
+      guardActive: boolean
+      existingAccount: boolean
+      replaceAcknowledged: boolean
+      acknowledgeReplace: () => void
+    }
+    async function existingVm(confirmedAt: number | null = null) {
+      mockProfileName = 'Alice'
+      setActivePinia(createPinia())
+      const w = useWalletStore()
+      w.seedPhrase = STORED
+      w.seedConfirmedAt = confirmedAt
+      const ctx = await mountSetup()
+      const vm = ctx.wrapper.vm as unknown as GuardVm
+      vm.persistSetupAndReload = jest.fn(() => Promise.resolve())
+      vm.avatar = 'data:avatar'
+      return { ...ctx, vm }
+    }
+
+    it.each([
+      ['fresh (no seed)', undefined, null, null, false],
+      ['resume (seed, no name)', undefined, STORED, null, false],
+      ['completed, unconfirmed', 'Alice', STORED, null, true],
+      ['confirmed', 'Alice', STORED, 5, true],
+    ])('guard for %s: %s', async (_l, name, seed, at, expected) => {
+      mockProfileName = name
+      setActivePinia(createPinia())
+      const w = useWalletStore()
+      w.seedPhrase = seed
+      w.seedConfirmedAt = at
+      const { wrapper } = await mountSetup()
+      expect((wrapper.vm as unknown as GuardVm).guardActive).toBe(expected)
+      expect(wrapper.findComponent(ReplaceAccountGuard).exists()).toBe(expected)
+    })
+
+    it('an existing account cannot be replaced by an import without acknowledgement', async () => {
+      const { wallet, setSeed, vm } = await existingVm()
+      vm.step = 2
+      vm.accountData = {
+        seed: OTHER,
+        name: '',
+        nameRequired: false,
+        valid: true,
+      } as typeof vm.accountData
+
+      await expect(vm.next()).rejects.toThrow()
+
+      expect(setSeed).not.toHaveBeenCalled()
+      expect(mockSetRelayData).not.toHaveBeenCalled()
+      expect(vm.persistSetupAndReload).not.toHaveBeenCalled()
+      expect(wallet.seedPhrase).toBe(STORED)
+    })
+
+    it('nor can New Account (even with the same phrase) overwrite the profile unacknowledged', async () => {
+      const { wallet, setSeed, vm } = await existingVm()
+      vm.step = 2
+      vm.accountData.name = 'Mallory'
+      vm.accountData.nameRequired = true
+      ;(vm.accountData as { valid?: boolean }).valid = true
+      await vm.next()
+      await nextTick()
+      vm.onSeedConfirmed()
+      await expect(vm.next()).rejects.toThrow()
+      expect(setSeed).not.toHaveBeenCalled()
+      expect(mockSetRelayData).not.toHaveBeenCalled()
+      expect(wallet.seedPhrase).toBe(STORED)
+    })
+
+    it('acknowledging starts from a FRESH phrase, not the stored one, and then import works', async () => {
+      const { wallet, setSeed, vm } = await existingVm(5)
+      vm.acknowledgeReplace()
+      await nextTick()
+      expect(vm.guardActive).toBe(false)
+      expect(vm.accountData.seed).not.toBe(STORED)
+      expect(vm.accountData.seed.split(' ')).toHaveLength(12)
+      // Nothing was written by acknowledging alone.
+      expect(setSeed).not.toHaveBeenCalled()
+      expect(wallet.seedPhrase).toBe(STORED)
+
+      vm.step = 2
+      vm.accountData = {
+        seed: OTHER,
+        name: '',
+        nameRequired: false,
+        valid: true,
+      } as typeof vm.accountData
+      await vm.next()
+
+      expect(wallet.seedPhrase).toBe(OTHER)
+      // Marker follows the NEW phrase (import => confirmed), not the old one.
+      expect(wallet.seedConfirmedAt).toEqual(expect.any(Number))
+      expect(wallet.seedConfirmedAt).not.toBe(5)
+    })
+
+    it('cancel returns to the app and changes nothing', async () => {
+      const { wallet, setSeed, wrapper } = await existingVm()
+      wrapper.findComponent(ReplaceAccountGuard).vm.$emit('cancel')
+      expect(mockRouterPush).toHaveBeenCalledWith('/')
+      expect(setSeed).not.toHaveBeenCalled()
+      expect(wallet.seedPhrase).toBe(STORED)
     })
   })
 })

@@ -104,6 +104,8 @@ export default {
     errorContactRegistry: 'Unable to contact registry',
     storedSeedMismatch:
       'The recovery phrase on this device cannot be replaced from this screen.',
+    replaceNotAcknowledged:
+      'This account cannot be replaced without confirming the replacement.',
     accountSetupNext: 'Next',
     depositStepNext: 'Next',
   },
@@ -137,6 +139,21 @@ export default {
       'You have not confirmed your recovery phrase yet. Confirm you saved it so you can always recover your account.',
     confirm: 'Confirm now',
     dismiss: 'Later',
+  },
+  replaceGuard: {
+    title: 'You already have an account on this device',
+    intro:
+      'Setting up again would replace it. Your recovery phrase is the only way to get this account and its funds back.',
+    confirmed: 'Your current recovery phrase is confirmed.',
+    cancel: 'Cancel and go back to my account',
+    confirmCurrent: 'Confirm my current recovery phrase',
+    replaceToggle: 'Replace this account',
+    warning:
+      'Replacing this account will remove your current recovery phrase, name and profile from this device. If you have not backed the phrase up, the account and any funds may be unrecoverable.',
+    typeLabel: 'Type {word} to continue',
+    word: 'REPLACE',
+    mismatch: 'That does not match. Type the word exactly to continue.',
+    replace: 'Replace this account',
   },
   newContactDialog: {
     newContact: 'New Contact',

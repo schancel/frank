@@ -158,6 +158,13 @@ function hash160(bytes: Uint8Array): Uint8Array {
   return new Uint8Array(ripemd160(sha256(bytes)))
 }
 
+function sha256d(bytes: Uint8Array): Uint8Array {
+  return new Uint8Array(sha256(sha256(bytes)))
+}
+
+/** lotusd ScriptExecutionData::DEFAULT_CODESEP_POS. Plain templates have no separator. */
+const LOTUS_CODESEP_NONE = 0xffffffff
+
 function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
   if (left.length !== right.length) return false
   for (let index = 0; index < left.length; index += 1) {
@@ -417,10 +424,18 @@ function hashOptions(
       : { commitUtxos: options.commitUtxos }),
   }
   if (template.kind === 'p2tr') return shared
-  return {
+  const plain = {
     ...shared,
     scriptCode: template.scriptCode,
     amount: coin.value,
+  }
+  // lotusd VerifyScript always builds ScriptExecutionData for a plain script,
+  // so SignatureHashLotus sets ext_flag. Omitting it signs a digest nodes reject.
+  if (options.algorithm !== 'lotus') return plain
+  return {
+    ...plain,
+    executedScriptHash: sha256d(template.scriptCode),
+    codeSeparatorPosition: LOTUS_CODESEP_NONE,
   }
 }
 

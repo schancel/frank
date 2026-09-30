@@ -89,6 +89,10 @@
       "types": "./dist/hd.d.ts",
       "import": "./dist/hd.js"
     },
+    "./sign": {
+      "types": "./dist/sign.d.ts",
+      "import": "./dist/sign.js"
+    },
     "./transaction": {
       "types": "./dist/transaction.d.ts",
       "import": "./dist/transaction.js"

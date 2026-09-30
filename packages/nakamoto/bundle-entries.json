@@ -128,6 +128,12 @@
       "absentExports": ["BTC_MAINNET", "encodeBase58"]
     },
     {
+      "name": "sign",
+      "entry": "src/sign.ts",
+      "forbid": ["btc-magic", "xpi-port", "xpi-magic"],
+      "absentExports": ["BTC_MAINNET", "BCH_MAINNET", "encodeBase58"]
+    },
+    {
       "name": "transaction",
       "entry": "src/transaction.ts",
       "forbid": ["btc-magic", "xpi-port", "xpi-magic"],

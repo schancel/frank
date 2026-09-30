@@ -5,6 +5,9 @@
  * (where the time normally is) must not both say "Sending…". The stamp shows
  * the time or nothing. The live region announces the state once.
  */
+import { readFileSync } from 'fs'
+import { join } from 'path'
+
 import { mount, VueWrapper } from '@vue/test-utils'
 
 import ChatMessage from './ChatMessage.vue'
@@ -62,9 +65,43 @@ function translate(messages: unknown) {
   }
 }
 
+const statusKeys = [
+  'outgoing.sending',
+  'outgoing.paymentPending',
+  'outgoing.paymentQueued',
+  'outgoing.paymentChecking',
+  'chatMessage.failedToSend',
+]
+
+/** Apply the shipped `.q-sr-only` rule. A missing or non-hiding rule leaves the live region visible. */
+function installProductionSrOnly(): void {
+  const css = readFileSync(join(process.cwd(), 'src/css/app.scss'), 'utf8')
+  const block = css.match(/\.q-sr-only\s*\{[^}]*\}/)?.[0] ?? ''
+  const style = document.createElement('style')
+  style.setAttribute('data-testid', 'sr-only-rule')
+  style.textContent = block
+  document.head.appendChild(style)
+}
+
+function isVisuallyHidden(node: Element): boolean {
+  const style = window.getComputedStyle(node)
+  return (
+    style.position === 'absolute' &&
+    style.width === '1px' &&
+    style.height === '1px' &&
+    style.overflow === 'hidden'
+  )
+}
+
 function visibleText(wrapper: VueWrapper): string {
+  const liveNodes = [wrapper.element, ...wrapper.element.querySelectorAll('*')]
   const root = wrapper.element.cloneNode(true) as HTMLElement
-  root.querySelectorAll('.q-sr-only').forEach(node => node.remove())
+  const cloneNodes = [root, ...root.querySelectorAll('*')]
+  liveNodes.forEach((node, index) => {
+    if (node !== wrapper.element && isVisuallyHidden(node)) {
+      cloneNodes[index].remove()
+    }
+  })
   return (root.textContent ?? '').replace(/\s+/g, ' ').trim()
 }
 
@@ -80,18 +117,11 @@ function countOf(haystack: string, needle: string): number {
   return count
 }
 
-/** The stamp/amount line. Status words belong in the status line, not here. */
-function stampLine(wrapper: VueWrapper): string {
-  const lines: string[] = []
-  wrapper.element.querySelectorAll('div').forEach(node => {
-    if (
-      node.querySelector('div, span') === null &&
-      (node.textContent ?? '').includes('MON')
-    ) {
-      lines.push((node.textContent ?? '').replace(/\s+/g, ' ').trim())
-    }
-  })
-  return lines.join(' | ')
+function footerRows(wrapper: VueWrapper): Element[] {
+  const suffix = wrapper.getComponent({ name: 'ChatMessageSuffix' }).element
+  return [...suffix.children].filter(element =>
+    element.classList.contains('row'),
+  )
 }
 
 const quiet = { template: '<i />' }
@@ -159,6 +189,12 @@ const states: Array<{
     phrase: 'outgoing.paymentPending',
   },
   {
+    name: 'payment checking',
+    status: 'payment-pending',
+    delivery: { attemptDigest: 'abc' },
+    phrase: 'outgoing.paymentChecking',
+  },
+  {
     name: 'failed',
     status: 'error',
     delivery: { failureReason: 'unavailable' },
@@ -167,6 +203,10 @@ const states: Array<{
 ]
 
 describe('outgoing bubble shows one status (#393)', () => {
+  beforeAll(() => {
+    installProductionSrOnly()
+  })
+
   it.each([
     ['en-us', enUS],
     ['fr-fr', frFR],
@@ -179,13 +219,27 @@ describe('outgoing bubble shows one status (#393)', () => {
         const wrapper = mountOutgoing(state.status, messages, state.delivery)
         await wrapper.vm.$nextTick()
         const shown = visibleText(wrapper)
-        const stamp = stampLine(wrapper)
-        expect(`${state.name} stamp [${stamp}]`).not.toContain(phrase)
         expect([state.name, countOf(shown, phrase)]).toEqual([state.name, 1])
+        expect(footerRows(wrapper)).toHaveLength(1)
+        const stamp = wrapper.find('[data-testid="outgoing-stamp"]')
+        if (stamp.exists()) {
+          for (const key of statusKeys) {
+            expect(stamp.text()).not.toContain(t(key))
+          }
+        }
+        if (state.status === 'pending') {
+          const meta = wrapper.get('[data-testid="outgoing-meta"]')
+          expect(meta.findAll('br')).toHaveLength(0)
+          expect(meta.get('[data-testid="outgoing-sending"]').text()).toBe(
+            phrase,
+          )
+          expect(stamp.exists()).toBe(false)
+        }
         const regions = wrapper.findAll('[role="status"]')
         expect(regions).toHaveLength(1)
         expect(regions[0].classes()).toContain('q-sr-only')
         expect(regions[0].attributes('aria-live')).toBe('polite')
+        expect(isVisuallyHidden(regions[0].element)).toBe(true)
         wrapper.unmount()
       }
     },
@@ -204,17 +258,18 @@ describe('outgoing bubble shows one status (#393)', () => {
     const sent = mountOutgoing('confirmed', enUS)
     await sent.vm.$nextTick()
     const shown = visibleText(sent)
-    for (const key of [
-      'outgoing.sending',
-      'outgoing.paymentPending',
-      'outgoing.paymentQueued',
-      'outgoing.paymentChecking',
-      'chatMessage.failedToSend',
-    ]) {
+    for (const key of statusKeys) {
       expect(shown).not.toContain(t(key))
-      expect(stampLine(sent)).not.toContain(t(key))
+      expect(sent.get('[data-testid="outgoing-stamp"]').text()).not.toContain(
+        t(key),
+      )
     }
-    expect(stampLine(sent)).toContain('MON')
+    expect(sent.get('[data-testid="outgoing-amount"]').text()).toContain('MON')
+    expect(
+      sent.get('[data-testid="outgoing-meta"]').findAll('br'),
+    ).toHaveLength(1)
+    expect(sent.find('[data-testid="outgoing-sending"]').exists()).toBe(false)
+    expect(footerRows(sent)).toHaveLength(1)
     expect(sent.get('[data-testid="outgoing-announcement"]').text()).toBe('')
     expect(sent.findAll('[role="status"]')).toHaveLength(1)
     sending.unmount()

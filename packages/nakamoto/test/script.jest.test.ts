@@ -470,6 +470,20 @@ describe('per-chain script eras', () => {
     ).toBe('script-locktime')
   })
 
+  test('PUSHDATA4 length is an unsigned integer', () => {
+    const truncated = Uint8Array.of(0x4e, 0x00, 0x00, 0x00, 0x80)
+    expect(codes(evaluateScript(truncated, ctx(BTC_MAINNET)))).toBe(
+      'script-encoding',
+    )
+    const loose = withRules(BTC_MAINNET, { minimalData: false })
+    expect(codes(evaluateScript(truncated, ctx(loose)))).toBe('script-encoding')
+    const pushed = Uint8Array.of(0x4e, 0x01, 0x00, 0x00, 0x00, 0x61)
+    expectStack(evaluateScript(pushed, ctx(loose)), ['61'])
+    expect(codes(evaluateScript(pushed, ctx(BTC_MAINNET)))).toBe(
+      'script-minimal-data',
+    )
+  })
+
   test('unbalanced IF and OP_RETURN fail', () => {
     expect(codes(evaluateScript(scriptOf('5163'), ctx(BTC_MAINNET)))).toBe(
       'script-unbalanced',

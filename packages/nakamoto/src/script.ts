@@ -408,8 +408,10 @@ function readOp(script: Uint8Array, pc: number): Op | null {
     const width = opcode === OP_PUSHDATA1 ? 1 : opcode === OP_PUSHDATA2 ? 2 : 4
     if (pc + 1 + width > script.length) return null
     let length = 0
+    let scale = 1
     for (let byte = 0; byte < width; byte += 1) {
-      length |= (script[pc + 1 + byte] ?? 0) << (8 * byte)
+      length += (script[pc + 1 + byte] ?? 0) * scale
+      scale *= 256
     }
     const start = pc + 1 + width
     if (start + length > script.length) return null

@@ -89,7 +89,7 @@ const currentUid = (): number | undefined =>
 /** Makes `dir` exist as a private directory owned by this user. A directory that already exists
  * must already be ours and not group/world-writable; one we create is tightened to 0700 (mkdir's
  * mode is subject to the umask). Returns whether it already existed. */
-function ensurePrivateDir(dir: string): boolean {
+export function ensurePrivateDir(dir: string): boolean {
   let existed = true
   try {
     const stat = lstatSync(dir)

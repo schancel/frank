@@ -228,8 +228,23 @@ Start a local relay exactly as in ticket #8's runbook
 set -a; source ../../.env; set +a   # needs QWEN_API_KEY, QWEN_OPENAI_COMPATIBLE_ENDPOINT too
 export E2E_DEMO_RELAY_URL=http://127.0.0.1:8098
 export E2E_DEMO_MAIN_WALLET_JSON=/absolute/path/to/chain-wallet.json
-export QWEN_BOT_MAX_REPLIES=2   # must be >= however many turns the sender script will send
-yarn bot
+yarn bot   # keeps running; set QWEN_BOT_MAX_REPLIES=<n> to exit after n replies
+```
+
+### Reply mode: live or stub (`QWEN_BOT_MODE`)
+
+- `QWEN_BOT_MODE=live` (default): real Qwen replies. `QWEN_API_KEY` and
+  `QWEN_OPENAI_COMPATIBLE_ENDPOINT` are required; if one is missing the bot exits at startup with a
+  message naming it. It never falls back to the stub by itself.
+- `QWEN_BOT_MODE=stub`: no API key, no network call to any model. Replies are deterministic and
+  every one starts with `[STUB -- no model, offline canned reply]`, the startup banner and the
+  logs say `STUB mode`. Use it for offline demos, smoke tests and CI.
+- `QWEN_BOT_MAX_REPLIES` (default unset = keep running; `1` = exit after one reply) and
+  `QWEN_BOT_IDLE_TIMEOUT_MS` (default: never when unlimited, 10 minutes when a reply cap is set;
+  `0` = never).
+
+```sh
+QWEN_BOT_MODE=stub yarn bot   # still needs the relay/RPC/wallet env, but no Qwen key
 ```
 
 By default the bot only replies to messages received after that process began starting. This

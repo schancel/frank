@@ -36,6 +36,7 @@ import {
   statementPayload,
   textItem,
   transition,
+  ts,
   transitionStatement,
   type5Frame,
   type5Payload,
@@ -3099,4 +3100,216 @@ pair(
   27,
   n => fr(16, M([[0, [child2(17, M([[0, 'x']]), n)]]])),
   {},
+)
+
+// ---------------------------------------------------------------------------------------------
+// Spec clarifications (#182): each vector below pins a reading that the README states explicitly
+// after the codec-implementation ambiguity review.
+// ---------------------------------------------------------------------------------------------
+
+// Pass A scans an indefinite string before pass B reports it (C5, section 9 passes A and B).
+rej(
+  'payload-indefinite-text-truncated',
+  'A truncated indefinite text string is malformed (pass A), not noncanonical: pass A scans the chunks before pass B calls the indefinite start noncanonical.',
+  P('a1 00 7f 61 68'),
+  'malformed',
+  '7',
+  ['C3', 'C5', 'C10'],
+  g,
+)
+rej(
+  'payload-indefinite-bytes-chunk-wrong-major',
+  'An indefinite byte string holding a text chunk is malformed (pass A).',
+  P('a1 00 5f 61 68 ff'),
+  'malformed',
+  '7',
+  ['C3', 'C5', 'C10'],
+  g,
+)
+rej(
+  'payload-indefinite-string-nested-chunk',
+  'An indefinite byte string whose chunk is itself indefinite is malformed (pass A).',
+  P('a1 00 5f 5f 41 01 ff ff'),
+  'malformed',
+  '7',
+  ['C3', 'C5', 'C10'],
+  g,
+)
+
+// C7: the u64 bound is unreachable for unsigned values; the i64 lower bound is reachable.
+const seconds = (n: bigint) => ts(n, 0)
+acc(
+  't4-timestamp-seconds-i64-min',
+  'Timestamp seconds -2^63, the i64 minimum: accepted (C7).',
+  fr(4, withField(statementPayload(), 3, seconds(-9223372036854775808n))),
+  ['C7'],
+  { prior: null },
+)
+rej(
+  't4-timestamp-seconds-below-i64-min',
+  'Timestamp seconds -2^63-1: a negative integer that still fits a CBOR head but not an i64, a schema error at 8.2 (C7).',
+  framePayload(
+    patchBytes(
+      encodeCanonical(
+        withField(statementPayload(), 3, seconds(-9223372036854775808n)),
+      ),
+      hex('3b7fffffffffffffff'),
+      hex('3b8000000000000000'),
+    ),
+    4,
+  ),
+  'schema',
+  '8.2',
+  ['C7'],
+  { prior: null },
+)
+
+// framed-object `.size (9..)`: a short embedded child is a parent schema error (8.2).
+rej(
+  't1-payload-frame-8-bytes',
+  'A required child of 8 bytes violates the framed-object size bound: schema at the parent stage 8.2, never the child stage 2 frame error.',
+  deliveryFrame({ payloadFrame: type5Frame().slice(0, 8) }),
+  'schema',
+  '8.2',
+  ['F3', 'S8'],
+  TS,
+)
+rej(
+  't1-payload-frame-9-bytes-empty-body',
+  'A required child of exactly 9 bytes (valid header, declared length 0) passes the size bound; its empty body is truncated CBOR at the child stage 5.',
+  deliveryFrame({ payloadFrame: body('') }),
+  'malformed',
+  '5',
+  ['F3', 'S8'],
+  TS,
+)
+
+// S2b for key-transition entries (type 4 fields 1-3), at stage 8.3.
+const transitionWith = (field: number, value: Encodable) =>
+  fr(
+    4,
+    statementPayload({
+      transitions: [withField(transition(transitionStatement()), field, value)],
+    }),
+  )
+rej(
+  't4-transition-algorithm-key-type-mismatch',
+  'A key-transition entry with algorithm 1 and an Ed25519 (key type 2) signer: unsupported at 8.3, as for a type-2 signature entry (S2b).',
+  transitionWith(1, 1),
+  'unsupported',
+  '8.3',
+  ['S2a', 'S2b'],
+  { ...TS, prior: null },
+)
+rej(
+  't4-transition-signature-length-mismatch',
+  'A key-transition entry with algorithm 16 and a 63-byte signature: unsupported at 8.3 (S2b).',
+  transitionWith(3, bytesOf(63, 9)),
+  'unsupported',
+  '8.3',
+  ['S2b'],
+  { ...TS, prior: null },
+)
+rej(
+  't4-transition-algorithm-unallocated',
+  'A key-transition entry with unallocated algorithm 99: unsupported at 8.3 (S2a).',
+  transitionWith(1, 99),
+  'unsupported',
+  '8.3',
+  ['S2a', 'S2b'],
+  { ...TS, prior: null },
+)
+
+// C12 / V6.3: the frame containing a map decides whether its wildcard is open.
+const factExtra = withField(fact(1_700_000_100, 0, 1, bytesOf(10, 1)), 9, 7)
+acc(
+  'v6-nested-wildcard-journal-fact-schema2-accept',
+  'Type 3 at schema 2 (min_reader 1): a journal fact, a map nested in the payload, carries an undeclared key 9; the frame is read as a newer compatible schema, so the wildcard is open (C12, V6.3).',
+  fr(3, checkpointPayload({ facts: [factExtra] }), 2, 1),
+  ['C12', 'V6.3'],
+)
+rej(
+  'v6-nested-wildcard-journal-fact-schema1-reject',
+  'The same nested key at exact schema 1 is a schema error at 8.2 (C12).',
+  fr(3, checkpointPayload({ facts: [factExtra] }), 1, 1),
+  'schema',
+  '8.2',
+  ['C12'],
+  TS,
+)
+rej(
+  'v6-nested-closed-map-schema2-reject',
+  'Type 3 at schema 2: an opaque-section map (no wildcard) with an undeclared key stays closed at every schema version (C12).',
+  fr(
+    3,
+    checkpointPayload({
+      sections: [withField(section(1, 1, bytesOf(12, 3)), 9, 1)],
+    }),
+    2,
+    1,
+  ),
+  'schema',
+  '8.2',
+  ['C12'],
+  TS,
+)
+rej(
+  'v6-parent-newer-schema-does-not-open-child-wildcard',
+  'A type-2 root at schema 2 (V6.3) wrapping a type-4 child at exact schema 1 whose relay binding has an undeclared key: the child frame decides, so its wildcard is closed (schema at the child stage 8.2, C12).',
+  fr(
+    2,
+    M([
+      [
+        0,
+        fr(
+          4,
+          statementPayload({
+            relays: [withField(relay(1), 9, 1), relay(2)],
+          }),
+        ),
+      ],
+      [1, [sig(acct2(1))]],
+    ]),
+    2,
+    1,
+  ),
+  'schema',
+  '8.2',
+  ['C12', 'V6.3'],
+  { ...TS, prior: null },
+)
+
+// S10 is a type-2 parent check: a type-4 root alone has no prior statement.
+acc(
+  'sem-t4-root-with-transition-alone-accepted',
+  'A type-4 root validated by itself is not checked against S10: it may carry a transition (field 5) that a type-2 bootstrap would reject.',
+  fr(4, statementPayload({ transitions: [transition(transitionStatement())] })),
+  ['S10'],
+  { prior: null },
+)
+
+// R2 applies to any root, not only type 1 (charged at 8.4).
+acc(
+  'limit-type16-root-total-256',
+  'Type-16 root holding one container of 255 texts: 256 opened items in all.',
+  fr(16, M([[0, [containerItem(items(255))]]])),
+  ['R2'],
+)
+rej(
+  'limit-type16-root-total-257',
+  'Type-16 root holding one container of 256 texts: the 257th opened item exceeds the total (charged at 8.4).',
+  fr(16, M([[0, [containerItem(items(256))]]])),
+  'resource',
+  '8.4',
+  ['R2'],
+  TS,
+)
+
+// The retention flag only permits retention (F2, section 10).
+acc(
+  'frame-only-version1-accepts-with-retention-allowed',
+  'A version-1 frame under the frame operation is accepted even where opaque retention is allowed: the flag never turns an interpretable frame into a retain.',
+  hi,
+  ['F2'],
+  { ...fo, retention: true },
 )

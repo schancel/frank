@@ -42,6 +42,8 @@ frank-value =
   null
 
 ; A complete FRNK frame. CDDL sees bytes; README.md defines frame validation.
+; A bstr outside this size bound is a stage 8.2 `schema` error in the parent, so a
+; child shorter than nine bytes never reaches the child's own stage 2 (README section 9).
 framed-object = bstr .size (9..8388617)
 
 signature-entry = {

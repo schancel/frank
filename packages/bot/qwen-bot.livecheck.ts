@@ -68,7 +68,7 @@
  * State persistence (direct user feedback, 2026-09-28 -- see `qwen-bot-state.ts`'s own header):
  *   QWEN_BOT_STATE_DIR          -- where the `level` DB of polling cursors, greeted-addresses/
  *                                  processed-message idempotency sets, and per-user Qwen
- *                                  conversation history is kept (default /tmp/qwen-bot-state).
+ *                                  conversation history is kept (default ~/.frank-bots/qwen, or $XDG_STATE_HOME/frank-bots/qwen).
  *                                  Survives restarts -- delete this directory to start clean.
  */
 import { writeFileSync } from 'fs'
@@ -89,6 +89,7 @@ import {
   tryDecryptEnvelope,
 } from '@frank/cashweb/relay/monad-message-envelope'
 import { fetchMonadMessagesSince } from '@frank/cashweb/relay/monad-message-feed'
+import { botStateDir } from './bot-state-dir'
 import {
   createQwenReplyGenerator,
   qwenBotConfigFromEnv,
@@ -155,10 +156,7 @@ async function main() {
   // Persists polling cursors, the greeted-addresses/processed-message idempotency sets, and each
   // user's Qwen conversation history across restarts -- see qwen-bot-state.ts's own header for
   // the concrete user-visible bug this fixes.
-  const stateDirPath = resolve(
-    process.cwd(),
-    process.env.QWEN_BOT_STATE_DIR ?? '/tmp/qwen-bot-state',
-  )
+  const stateDirPath = botStateDir('qwen', 'QWEN_BOT_STATE_DIR')
   const pollIntervalMs = Number(process.env.QWEN_BOT_POLL_INTERVAL_MS ?? 4000)
   // Keep running by default; QWEN_BOT_MAX_REPLIES=<n> is the explicit exit-after-n flag.
   const { maxReplies, idleTimeoutMs } = botConfig
@@ -213,13 +211,14 @@ async function main() {
   // tonight's nonce-contention pain: a fixed pool sized to `maxReplies + maxGreetings` meant a big
   // burst of near-simultaneous funding transactions from one account before the bot ever reached
   // its polling loop.
-  const { stampClient, mainAccountSigner, provider, pool } =
+  const { stampClient, mainAccountSigner, provider, pool, closePool } =
     await setUpFundedStampClient({
       rpcUrl,
       relayBaseUrl,
       mainWalletJsonPath,
       stampValueWei,
       label: 'bot',
+      stateDir: stateDirPath,
     })
 
   // #311: never greet/reply to other bots, and cap replies per peer per window (see
@@ -524,6 +523,7 @@ async function main() {
   }
 
   await state.Close()
+  await closePool()
   console.log(
     `\nDone. Sent ${repliesSent} ${replyGenerator.mode === 'stub' ? 'STUB (canned)' : 'real Qwen-generated'} repl${
       repliesSent === 1 ? 'y' : 'ies'

@@ -252,4 +252,37 @@ describe('ChatMessageRaffle draw verification', () => {
     })
     expect(shifted.text()).toContain('Verification failed')
   })
+
+  it.each([
+    ['numeric entrants', { entrants: [1, 2, 3] }],
+    ['string entrants', { entrants: 'abc' }],
+    ['numeric tx hashes', { entryTxHashes: [1, 2, 3, 4, 5] }],
+  ])(
+    'renders (no throw) a failure state for malformed peer data: %s',
+    async (_n, over) => {
+      const w = await renderDraw([fromBot(announce())], {
+        ...botDraw(),
+        ...over,
+      })
+      expect(w.text()).toContain('Verification failed')
+      expect(w.text()).not.toContain(VERIFIED)
+    },
+  )
+
+  it('a junk potWei renders as ? instead of throwing', async () => {
+    const w = await renderDraw([fromBot(announce())], {
+      ...botDraw(),
+      potWei: 'junk',
+    })
+    expect(w.text()).toContain('Pot: ?')
+  })
+
+  it('says the entrant count is unchecked when the announce carried no round size', async () => {
+    const { maxEntries: _m, ...noSize } = announce()
+    const w = await renderDraw([fromBot(noSize)], botDraw())
+    expect(w.text()).toContain(VERIFIED)
+    expect(w.text()).toContain(enUS.raffleDraw.explainerCountUnverified)
+    const sized = await renderDraw([fromBot(announce())], botDraw())
+    expect(sized.text()).not.toContain(enUS.raffleDraw.explainerCountUnverified)
+  })
 })

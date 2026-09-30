@@ -46,6 +46,12 @@
           <summary>{{ $t('raffleDraw.explainerToggle') }}</summary>
           <p class="q-mb-none">{{ $t('raffleDraw.explainerShows') }}</p>
           <p class="q-mb-none">{{ $t('raffleDraw.explainerNotShown') }}</p>
+          <p
+            v-if="verification.valid && !verification.countVerified"
+            class="q-mb-none"
+          >
+            {{ $t('raffleDraw.explainerCountUnverified') }}
+          </p>
         </details>
       </div>
     </template>
@@ -132,15 +138,25 @@ export default defineComponent({
         .flatMap(m =>
           m.items.filter((i): i is RaffleItem => i.type === 'raffle'),
         )
-      return verifyRaffleDrawAgainstThread(this.item, prior)
+      try {
+        return verifyRaffleDrawAgainstThread(this.item, prior)
+      } catch {
+        return { valid: false, reason: 'the draw could not be verified' }
+      }
     },
   },
   methods: {
+    // Peer data: never throw while rendering.
     displayPrice(weiString?: string): string {
       if (!weiString) return '0'
-      return `${activeChain.toDisplayAmount(BigInt(weiString))} ${
-        activeChain.unit
-      }`
+      try {
+        if (!/^\d{1,40}$/.test(String(weiString))) return '?'
+        return `${activeChain.toDisplayAmount(BigInt(weiString))} ${
+          activeChain.unit
+        }`
+      } catch {
+        return '?'
+      }
     },
     shortAddress(addr?: string): string {
       if (!addr) return '?'

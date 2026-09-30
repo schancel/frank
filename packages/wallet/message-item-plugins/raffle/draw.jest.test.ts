@@ -140,6 +140,7 @@ describe('buildRaffleDrawItem and verifyRaffleDrawAgainstThread', () => {
   it('verifies against a commitment announced earlier in the thread', () => {
     expect(verifyRaffleDrawAgainstThread(draw(), [announce])).toEqual({
       valid: true,
+      countVerified: false,
     })
   })
 
@@ -199,6 +200,7 @@ describe('buildRaffleDrawItem and verifyRaffleDrawAgainstThread', () => {
     it('accepts a full, well-formed round of the announced size', () => {
       expect(verifyRaffleDrawAgainstThread(draw(), [sized])).toEqual({
         valid: true,
+        countVerified: true,
       })
     })
 
@@ -233,6 +235,56 @@ describe('buildRaffleDrawItem and verifyRaffleDrawAgainstThread', () => {
       expect(bad({ entryPriceWei: 'abc' })?.reason).toMatch(/not a number/)
     })
 
+    it.each([
+      ['numeric entrants', { entrants: [1, 2, 3] }],
+      ['string entrants', { entrants: 'abc' }],
+      ['numeric tx hashes', { entryTxHashes: [1, 2, 3] }],
+      ['object tx hashes', { entryTxHashes: {} }],
+      ['numeric pot', { potWei: 60 }],
+      ['numeric price', { entryPriceWei: 20 }],
+      ['numeric seed', { serverSeed: 5 }],
+      ['object winner', { winnerAddress: {} }],
+      ['numeric named hash', { serverSeedHash: 7 }],
+    ])('never throws on malformed peer data (%s): a failed verification', (_n, over) => {
+      const result = verifyRaffleDrawAgainstThread({ ...draw(), ...over } as never, [sized])
+      expect(result).toEqual({ valid: false, reason: 'the draw is malformed' })
+    })
+
+    it('never throws on a malformed announce either', () => {
+      const junk = { ...announce, maxEntries: 'x', entryPriceWei: {} } as never
+      expect(() => verifyRaffleDrawAgainstThread(draw(), [junk, null as never])).not.toThrow()
+    })
+
+    it('binds the draw to the announced price: same price, pot = price * entrants', () => {
+      const priced = { ...sized, entryPriceWei: '20' }
+      expect(verifyRaffleDrawAgainstThread(draw(), [priced])).toMatchObject({ valid: true })
+      expect(
+        verifyRaffleDrawAgainstThread({ ...draw(), entryPriceWei: '1', potWei: '3' }, [priced])
+          ?.reason,
+      ).toMatch(/different entry price/)
+      const { potWei: _p, ...noPot } = draw()
+      expect(verifyRaffleDrawAgainstThread(noPot, [priced])?.reason).toMatch(
+        /does not state the pot/,
+      )
+      expect(verifyRaffleDrawAgainstThread({ ...draw(), potWei: '61' }, [priced])?.reason).toMatch(
+        /pot is not the entry price/,
+      )
+      expect(
+        verifyRaffleDrawAgainstThread(draw(), [priced, { ...priced, entryPriceWei: '21' }])?.reason,
+      ).toMatch(/conflicting prices/)
+    })
+
+    it('reports that the entrant count is unverified when the announce has no size', () => {
+      expect(verifyRaffleDrawAgainstThread(draw(), [sized])).toEqual({
+        valid: true,
+        countVerified: true,
+      })
+      expect(verifyRaffleDrawAgainstThread(draw(), [announce])).toEqual({
+        valid: true,
+        countVerified: false,
+      })
+    })
+
     it('rejects conflicting announced sizes', () => {
       expect(
         verifyRaffleDrawAgainstThread(draw(), [sized, { ...sized, maxEntries: 4 }])?.reason,
@@ -256,6 +308,11 @@ describe('winner derivation known answers', () => {
         (txs as string[]).length,
       ),
     ).toBe(expected)
+  })
+
+  it('keys the HMAC with the UTF-8 bytes of the seed (non-ASCII seed; Latin-1 would give index 2)', () => {
+    // Python: hmac.new('beta-é'.encode('utf-8'), '0xt1:0xt2:0xt3'.encode(), sha256) -> 0 mod 3.
+    expect(pickWinnerIndex('beta-é', combineEntrantEntropy(['0xt1', '0xt2', '0xt3']), 3)).toBe(0)
   })
 
   it('the built draw names the vector winner (0xb2 for the five-entrant vector)', () => {

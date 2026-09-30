@@ -30,6 +30,8 @@ export default {
       "Montre : l'opérateur n'a pas changé la graine après s'y être engagé, et le gagnant découle des participants listés et de cette graine.",
     explainerNotShown:
       "Ne montre pas : que les participants listés sont de vrais paiements on-chain, ni qu'aucune participation n'a été écartée.",
+    explainerCountUnverified:
+      "Le tirage n'a pas annoncé sa taille : le nombre de participants n'est pas vérifié.",
   },
   blackjackBet: {
     menuLabel: 'Jouer au blackjack',

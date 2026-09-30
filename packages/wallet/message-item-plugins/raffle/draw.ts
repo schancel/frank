@@ -45,8 +45,9 @@ export function pickWinnerIndex(
     throw new Error('pickWinnerIndex requires at least one entrant')
   }
   const hmac = forge.hmac.create()
-  hmac.start('sha256', serverSeed)
-  hmac.update(combinedEntropy)
+  // UTF-8 bytes, as any other HMAC implementation would key it (forge takes binary strings).
+  hmac.start('sha256', forge.util.encodeUtf8(serverSeed))
+  hmac.update(forge.util.encodeUtf8(combinedEntropy))
   const digest = hmac.digest().toHex()
   // First 8 hex chars = 32 bits, same truncation deck.ts's own stream uses -- plenty for an
   // unbiased-enough draw at this stakes level.
@@ -139,6 +140,7 @@ function drawShapeProblem(
   entrants: string[],
   entryTxHashes: string[],
   expectedEntries: number | undefined,
+  announcedPrice: string | undefined,
 ): string | undefined {
   if (entrants.length === 0 || entrants.length !== entryTxHashes.length) {
     return 'entrants and entryTxHashes must be the same non-empty length'
@@ -151,6 +153,13 @@ function drawShapeProblem(
   }
   if (expectedEntries !== undefined && entrants.length !== expectedEntries) {
     return `the draw lists ${entrants.length} entrants but the round announced ${expectedEntries}`
+  }
+  if (announcedPrice !== undefined) {
+    // The price the round announced up front binds the draw: same price, pot = price * entrants.
+    if (draw.entryPriceWei !== announcedPrice) {
+      return 'the draw names a different entry price than the round announced'
+    }
+    if (draw.potWei === undefined) return 'the draw does not state the pot'
   }
   if (draw.entryPriceWei !== undefined && draw.potWei !== undefined) {
     try {
@@ -182,40 +191,63 @@ function drawShapeProblem(
 export function verifyRaffleDrawAgainstThread(
   draw: RaffleItem,
   priorItems: RaffleItem[],
-): { valid: boolean; reason?: string } | null {
+): { valid: boolean; reason?: string; countVerified?: boolean } | null {
   const { winnerAddress, serverSeed, entrants, entryTxHashes } = draw
   if (!winnerAddress || !serverSeed || !entrants || !entryTxHashes) return null
-  const announces = priorItems.filter(
-    item => item.raffleId === draw.raffleId && item.action === 'announce' && item.serverSeedHash,
-  )
-  const committed = new Set(announces.map(item => item.serverSeedHash as string))
-  if (committed.size === 0) return null
-  if (committed.size > 1) {
-    return {
-      valid: false,
-      reason: 'the round announced conflicting seed commitments',
+  // Peer data: wrong types are a failed verification, never an exception into the caller.
+  const isStrings = (v: unknown): v is string[] =>
+    Array.isArray(v) && v.every(x => typeof x === 'string')
+  if (
+    typeof winnerAddress !== 'string' ||
+    typeof serverSeed !== 'string' ||
+    !isStrings(entrants) ||
+    !isStrings(entryTxHashes) ||
+    (draw.entryPriceWei !== undefined && typeof draw.entryPriceWei !== 'string') ||
+    (draw.potWei !== undefined && typeof draw.potWei !== 'string') ||
+    (draw.serverSeedHash !== undefined && typeof draw.serverSeedHash !== 'string')
+  ) {
+    return { valid: false, reason: 'the draw is malformed' }
+  }
+  try {
+    const announces = priorItems.filter(
+      item =>
+        item.raffleId === draw.raffleId &&
+        item.action === 'announce' &&
+        typeof item.serverSeedHash === 'string' &&
+        item.serverSeedHash,
+    )
+    const committed = new Set(announces.map(item => item.serverSeedHash as string))
+    if (committed.size === 0) return null
+    if (committed.size > 1) {
+      return { valid: false, reason: 'the round announced conflicting seed commitments' }
     }
-  }
-  const [serverSeedHash] = committed
-  if (draw.serverSeedHash !== undefined && draw.serverSeedHash !== serverSeedHash) {
-    return {
-      valid: false,
-      reason: 'the draw names a different commitment than the one announced',
+    const [serverSeedHash] = committed
+    if (draw.serverSeedHash !== undefined && draw.serverSeedHash !== serverSeedHash) {
+      return {
+        valid: false,
+        reason: 'the draw names a different commitment than the one announced',
+      }
     }
+    const sizes = new Set(
+      announces.map(item => item.maxEntries).filter((n): n is number => typeof n === 'number'),
+    )
+    if (sizes.size > 1) return { valid: false, reason: 'the round announced conflicting sizes' }
+    const prices = new Set(
+      announces.map(item => item.entryPriceWei).filter((p): p is string => typeof p === 'string'),
+    )
+    if (prices.size > 1) return { valid: false, reason: 'the round announced conflicting prices' }
+    const problem = drawShapeProblem(draw, entrants, entryTxHashes, [...sizes][0], [...prices][0])
+    if (problem) return { valid: false, reason: problem }
+    const result = verifyRaffleDraw({
+      serverSeed,
+      serverSeedHash,
+      entrants,
+      entryTxHashes,
+      winnerAddress,
+    })
+    // Without an announced round size the entrant count itself is not checked.
+    return result.valid ? { ...result, countVerified: sizes.size === 1 } : result
+  } catch {
+    return { valid: false, reason: 'the draw could not be verified' }
   }
-  const sizes = new Set(
-    announces.map(item => item.maxEntries).filter((n): n is number => n !== undefined),
-  )
-  if (sizes.size > 1) {
-    return { valid: false, reason: 'the round announced conflicting sizes' }
-  }
-  const problem = drawShapeProblem(draw, entrants, entryTxHashes, [...sizes][0])
-  if (problem) return { valid: false, reason: problem }
-  return verifyRaffleDraw({
-    serverSeed,
-    serverSeedHash,
-    entrants,
-    entryTxHashes,
-    winnerAddress,
-  })
 }

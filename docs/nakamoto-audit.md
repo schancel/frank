@@ -447,7 +447,7 @@ Native `blocked-by` edges are on the issues. A sentence here is not that edge. D
 | [Scaffold @frank/nakamoto and @frank/crypto-box](https://github.com/schancel/frank/issues/236) | Empty strict packages | nothing |
 | [Replace the hand-written bitcore types with branded constructors](https://github.com/schancel/frank/issues/237) | Compile-time misuse tests | scaffold |
 | [Add a crypto backend interface and differential tests](https://github.com/schancel/frank/issues/238) | Node, WASM, and pure-JS backends | scaffold |
-| [Port encoding, buffer, and error leaves](https://github.com/schancel/frank/issues/239) | base58, varint, reader/writer, typed errors | scaffold |
+| [Port encoding, buffer, and error leaves](https://github.com/schancel/frank/issues/239) | base58, varint, reader/writer, typed errors; SHA-256d from `@noble/hashes` 1.8.0 | scaffold, runtime |
 | [Add explicit chain descriptors](https://github.com/schancel/frank/issues/240) | BTC, BCH, XEC, XPI, no default chain | scaffold |
 | [Runtime constraints and a justified dependency list](https://github.com/schancel/frank/issues/264) | bigint, Uint8Array, per-chain entries, empty install list | scaffold, chains |
 | [Destination and per-chain address codecs](https://github.com/schancel/frank/issues/243) | Destination vs encoding | chains, leaves |
@@ -481,19 +481,24 @@ The handoff issue tracks Done, Open PRs, Decisions, Blocked, and New tickets. Ri
 
 `packages/nakamoto/runtime-deps.json` and `packages/crypto-box/runtime-deps.json` are the lists the dependency check compares to `package.json`. Yarn 1 does not record a workspace package's own dependency map as a lockfile key, so those files are the install lists. `dependencies` must equal `allowed`. `optionalDependencies` must equal `optional`. A name in `planned` or `plannedOptional` must not be installed yet. Direct `bn.js`, `elliptic`, `bs58`, `buffer-compare`, `inherits`, `lodash`, `node-forge`, and `buffer` fail the check even if they are copied into `allowed`.
 
-Both `allowed` lists are empty. None of the packages below are installed. Moving a name into `allowed` or `optional` means editing this section in the same change, for the version that is actually installed. The recommendation in section 6 is the intended set. It is not permission to install early.
+`@frank/crypto-box` `allowed` is empty. `@frank/nakamoto` `allowed` is `@noble/hashes` at `1.8.0`, installed for the base58check SHA-256d checksum. The other packages below are not installed. Moving another name into `allowed` or `optional` means editing this section in the same change, for the version that is actually installed. The recommendation in section 6 is the intended set. It is not permission to install early.
 
-Integer math in the new packages is native `bigint`. Script-number encode and decode, and fixed-width unsigned big-endian conversion, live in `@frank/nakamoto` (`src/script-num.ts`, `src/integer.ts`). They are checked against the little-endian script-number vectors and against `bitcore-lib-xpi` from a test only. The leaves ticket imports those modules instead of writing a second codec.
+Integer math in the new packages is native `bigint`. Script-number encode and decode, and fixed-width unsigned big-endian conversion, live in `@frank/nakamoto` (`src/script-num.ts`, `src/integer.ts`). They are checked against the little-endian script-number vectors and against `bitcore-lib-xpi` from a test only. Encoding leaves import `src/integer.ts`. They do not carry a second script-number codec.
 
-Shared source uses `Uint8Array`. It does not import Node built-ins. A Node accelerator, when one exists, lives under `src/backend/node/` and is not imported by shared code. That directory does not exist yet. `sideEffects` is false. The exports map is ESM, with types. CJS is not emitted. Chain entries are `btc`, `bch`, `xec`, and `xpi`. Feature entries are `integer` and `script-num`. Bundling the BCH entry does not include the BTC mainnet magic or the XPI port. Checks across a package boundary use a `code` field.
+Shared source uses `Uint8Array`. It does not import Node built-ins. A Node accelerator, when one exists, lives under `src/backend/node/` and is not imported by shared code. That directory does not exist yet. `sideEffects` is false. The exports map is ESM, with types. CJS is not emitted. Chain entries are `btc`, `bch`, `xec`, and `xpi`. Feature entries are `integer`, `script-num`, `base58`, `base58check`, `varint`, `reader`, `convert-bits`, `base32`, and `encoding-error`. Bundling the BCH entry does not include the BTC mainnet magic or the XPI port. Checks across a package boundary use a `code` field.
+
+`@frank/nakamoto` allowed:
+
+| Package | Role | What was checked |
+| --- | --- | --- |
+| `@noble/hashes` | SHA-256d for the base58check checksum | MIT. Installed `1.8.0`, exact, not a range. README, read 2026-09-29: Cure53, January 2022, version 1.0.0, scope everything except blake3, sha3-addons, sha1, and argon2. SHA-256 is inside that scope. Changes after 1.0.0, including 1.8.0, are not in that report. The import is `@noble/hashes/sha256.js`. RIPEMD-160 and HMAC stay unused until the hash-backend ticket. |
 
 `@frank/nakamoto` planned:
 
 | Package | Role | What was checked |
 | --- | --- | --- |
 | `@noble/curves` | secp256k1 fallback and projective addition | MIT. Survey install 1.9.1. The README on main, read 2026-09-29, lists Trail of Bits, August 2026, version 2.3.0, scope everything; Cure53, September 2024, version 1.6.0, scope ed25519, ed448, BLS, bn254, and hash-to-curve, not secp256k1; Kudelski, September 2023, starknet-related abstract modules; Trail of Bits, February 2023, version 0.7.3, scope included secp256k1. 1.9.1 is not the 2.3.0 release. AI-assisted self-audits are not an audit. The README also says the current major changes signing defaults (`prehash`, low-S, signature format). The backend ticket pins a version and names which report covers it. |
-| `@noble/hashes` | SHA-256, RIPEMD-160, HMAC fallback | MIT. Survey install 1.8.0. README, read 2026-09-29: Cure53, January 2022, version 1.0.0, scope everything except blake3, sha3-addons, sha1, and argon2. SHA-256, RIPEMD-160, and HMAC are inside that scope. Changes after 1.0.0 are not in that report. |
-| `@scure/base` | base58, bech32, bech32m | MIT. Survey install 1.2.5. The codec ticket cites an audit of the version it adds. |
+| `@scure/base` | base58, bech32, bech32m | MIT. Survey install 1.2.5. Encoding leaves implement Bitcoin base58 and the cashaddr/bech32 charset in-tree, so this package is not installed. A later ticket that adds it cites an audit of that version. |
 | `@scure/bip32` | HD derivation | MIT on npm 2.4.0, viewed 2026-09-29. Not in the benchmark tree and not microbenchmarked. The HD ticket cites an audit and re-checks the license of the version it adds. |
 | `@scure/bip39` | mnemonics | MIT on npm 2.4.0, viewed 2026-09-29. Same rule as `@scure/bip32`. |
 
@@ -514,6 +519,6 @@ Shared source uses `Uint8Array`. It does not import Node built-ins. A Node accel
 Not runtime dependencies:
 
 - `esbuild` `~0.28.0` (locked at 0.28.2, MIT) builds the browser bundle check. `@frank/frank-codec` already uses that range. The install downloads a platform binary. Consumers do not depend on it.
-- `bitcore-lib-xpi` is a devDependency of `@frank/nakamoto` so tests can compare script-number bytes. Shared source does not import it.
+- `bitcore-lib-xpi` is a devDependency of `@frank/nakamoto` so tests can compare script-number, base58, base58check, and varint bytes. Shared source does not import it.
 
 The workflow `.github/workflows/nakamoto.yml` runs the package tests, the shared-import check, the dependency-list check, and a browser esbuild with no polyfills, then loads the emitted ESM in Node. The size of each entry is printed.

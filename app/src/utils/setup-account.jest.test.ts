@@ -3,6 +3,7 @@ import { MonadIdentity } from '@frank/wallet/monad-identity'
 import {
   commitValidatedSetupName,
   commitValidatedSetupSeed,
+  initialSetupSeed,
 } from './setup-account'
 
 const VALID_MNEMONIC =
@@ -69,5 +70,31 @@ describe('setup name commitment fails closed', () => {
 
   it('only an explicit false skips validation', () => {
     expect(commitValidatedSetupName('', false, jest.fn())).toBe('Frank User')
+  })
+})
+
+describe('setup draft seed (#267)', () => {
+  it('generates an in-memory draft for a fresh profile', () => {
+    const generate = jest.fn(() => VALID_MNEMONIC)
+    expect(initialSetupSeed(null, generate)).toBe(VALID_MNEMONIC)
+    expect(generate).toHaveBeenCalledTimes(1)
+  })
+
+  it('returns an existing stored seed untouched without generating', () => {
+    const generate = jest.fn(() => VALID_MNEMONIC)
+    expect(initialSetupSeed('existing stored seed', generate)).toBe(
+      'existing stored seed',
+    )
+    expect(generate).not.toHaveBeenCalled()
+  })
+
+  it('completing setup persists exactly once, and import replaces the draft', () => {
+    const persistSeed = jest.fn()
+    const draft = initialSetupSeed(null, () => 'draft seed')
+    expect(persistSeed).not.toHaveBeenCalled()
+    commitValidatedSetupSeed(VALID_MNEMONIC, persistSeed)
+    expect(draft).toBe('draft seed')
+    expect(persistSeed).toHaveBeenCalledTimes(1)
+    expect(persistSeed).toHaveBeenCalledWith(VALID_MNEMONIC)
   })
 })

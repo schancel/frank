@@ -2,6 +2,15 @@ import { readFileSync } from 'fs'
 import { join } from 'path'
 
 import {
+  BET_MESSAGE_FEE_RESERVE_WEI,
+  BLACKJACK_DEFAULT_MIN_WAGER_WEI,
+} from '@frank/wallet/message-item-plugins/blackjack/game'
+
+import { MAX_AMOUNT_WEI } from '../faucet-core'
+import {
+  DEMO_DEFAULT_BURN_ADDRESS,
+  DEMO_FAKE_FAUCET_AMOUNT_WEI,
+  DEMO_REAL_FAUCET_AMOUNT_WEI,
   DEMO_VARS,
   DemoConfigError,
   NEVER_IDLE_MS,
@@ -107,7 +116,7 @@ describe('resolveDemoConfig', () => {
     expect(env('blackjack').BLACKJACK_BOT_IDLE_TIMEOUT_MS).toBe(NEVER_IDLE_MS)
     expect(env('raffle').RAFFLE_BOT_IDLE_TIMEOUT_MS).toBe(NEVER_IDLE_MS)
     expect(env('vendor').VENDOR_BOT_IDLE_TIMEOUT_MS).toBe(NEVER_IDLE_MS)
-    expect(env('raffle').RAFFLE_BOT_MAX_ENTRIES).toBe('3')
+    expect(env('raffle').RAFFLE_BOT_MAX_ENTRIES).toBe('5')
     expect(env('qwen')).not.toHaveProperty('QWEN_BOT_MAX_REPLIES')
     expect(env('qwen').QWEN_BOT_FUND_VALUE_WEI).toBe('0')
     expect(env('faucet').FAUCET_MAX_PER_RUN).toBe('1000')
@@ -220,6 +229,84 @@ describe('resolveDemoConfig', () => {
         expect(c.bots.find(b => b.name === name)!.env.E2E_DEMO_MAIN_WALLET_JSON).toBe(main)
       }
     })
+  })
+})
+
+describe('burn address (#364)', () => {
+  const dEaD = '0x000000000000000000000000000000000000dEaD'
+
+  it('defaults to the well-known burn address and reaches every bot (the relay gets it in demo.ts)', () => {
+    const c = FAKE()
+    expect(DEMO_DEFAULT_BURN_ADDRESS).toBe(dEaD)
+    expect(c.stampBurnAddress).toBe(dEaD)
+    for (const bot of c.bots) expect(bot.env.MONAD_STAMP_BURN_ADDRESS).toBe(dEaD)
+  })
+
+  it('can be overridden, and only by a valid 20-byte address', () => {
+    const other = '0x1111111111111111111111111111111111111111'
+    const c = FAKE({ MONAD_STAMP_BURN_ADDRESS: other })
+    expect(c.stampBurnAddress).toBe(other)
+    for (const bot of c.bots) expect(bot.env.MONAD_STAMP_BURN_ADDRESS).toBe(other)
+    for (const bad of ['0xdead', 'dEaD', '0x' + 'g'.repeat(40)]) {
+      expect(problemsOf(() => FAKE({ MONAD_STAMP_BURN_ADDRESS: bad }))[0]).toMatch(
+        /MONAD_STAMP_BURN_ADDRESS must be 0x/,
+      )
+    }
+  })
+})
+
+describe('faucet amount (#362)', () => {
+  const faucetEnv = (c: ReturnType<typeof FAKE>) => c.bots.find(b => b.name === 'faucet')!.env
+
+  it('covers a minimum-bet blackjack hand with margin on the fake chain, within the faucet ceiling', () => {
+    const c = FAKE()
+    const amount = BigInt(faucetEnv(c).FAUCET_AMOUNT_WEI)
+    expect(amount).toBe(BigInt(DEMO_FAKE_FAUCET_AMOUNT_WEI))
+    const defaultStamp = BigInt(
+      DEMO_VARS.find(v => v.name === 'FRANK_DM_DEFAULT_STAMP_VALUE_WEI')!.default,
+    )
+    const cheapestHand =
+      BLACKJACK_DEFAULT_MIN_WAGER_WEI + defaultStamp + BET_MESSAGE_FEE_RESERVE_WEI
+    expect(amount).toBeGreaterThanOrEqual(cheapestHand)
+    // A raffle entry (0.02) and a shop purchase (0.1) besides, and the ceiling still holds.
+    expect(amount).toBeGreaterThanOrEqual(cheapestHand + 2n * 10n ** 16n + 10n ** 17n)
+    expect(amount).toBeLessThanOrEqual(MAX_AMOUNT_WEI)
+    expect(c.faucetAmountWei).toBe(amount.toString())
+  })
+
+  it('keeps the small default on a real network, and an explicit value wins on both', () => {
+    expect(faucetEnv(REAL()).FAUCET_AMOUNT_WEI).toBe(DEMO_REAL_FAUCET_AMOUNT_WEI)
+    expect(DEMO_REAL_FAUCET_AMOUNT_WEI).toBe('50000000000000000')
+    expect(faucetEnv(REAL({ FAUCET_AMOUNT_WEI: '123' })).FAUCET_AMOUNT_WEI).toBe('123')
+    expect(faucetEnv(FAKE({ FAUCET_AMOUNT_WEI: '123' })).FAUCET_AMOUNT_WEI).toBe('123')
+  })
+
+  it('never exceeds the faucet hard ceiling', () => {
+    expect(
+      problemsOf(() => FAKE({ FAUCET_AMOUNT_WEI: (MAX_AMOUNT_WEI + 1n).toString() }))[0],
+    ).toMatch(/hard ceiling/)
+    expect(FAKE({ FAUCET_AMOUNT_WEI: MAX_AMOUNT_WEI.toString() }).faucetAmountWei).toBe(
+      MAX_AMOUNT_WEI.toString(),
+    )
+  })
+})
+
+describe('fake chain state (#361 follow-up)', () => {
+  it('keeps the ledger and the faucet records together, so they can only reset together', () => {
+    const c = FAKE()
+    const dir = join(HOME, '.frank-demo', 'fake-chain')
+    expect(c.fakeChainLedger).toBe(join(dir, 'ledger.json'))
+    expect(c.bots.find(b => b.name === 'faucet')!.env.FAUCET_STATE_DIR).toBe(
+      join(dir, 'faucet-state'),
+    )
+  })
+
+  it('a real network has no ledger and keeps the faucet state under bots/', () => {
+    const c = REAL()
+    expect(c.fakeChainLedger).toBeUndefined()
+    expect(c.bots.find(b => b.name === 'faucet')!.env.FAUCET_STATE_DIR).toBe(
+      join(HOME, '.frank-demo', 'bots', 'faucet', 'state'),
+    )
   })
 })
 

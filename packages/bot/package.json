@@ -11,8 +11,8 @@
     "vendor": "tsx vendor-bot.livecheck.ts",
     "faucet": "tsx faucet-bot.livecheck.ts",
     "curated-defaults": "tsx print-curated-defaults.ts",
-    "demo": "tsx demo/demo.ts",
-    "demo:smoke": "tsx demo/smoke.ts",
+    "demo": "node --import tsx demo/demo.ts",
+    "demo:smoke": "node --import tsx demo/smoke.ts",
     "send-demo": "tsx qwen-bot-send-demo.livecheck.ts",
     "ui-verify": "tsx monad-ui-verify.livecheck.ts",
     "test": "jest"

@@ -54,6 +54,15 @@ case "$network_tag" in
         ;;
 esac
 
+# The topic (forum) routes read MONAD_STAMP_BURN_ADDRESS at request time and answer HTTP 500 without
+# it, while direct messages keep working: a silent half-broken relay. Warn loudly at startup, and
+# reject a malformed value outright.
+burn_address="${MONAD_STAMP_BURN_ADDRESS:-}"
+if [[ -n "$burn_address" && ! "$burn_address" =~ ^0x[0-9a-fA-F]{40}$ ]]; then
+    echo "run-local-monad: MONAD_STAMP_BURN_ADDRESS must be 0x followed by 40 hex characters" >&2
+    exit 64
+fi
+
 case "$min_value_wei" in
     '' | *[!0-9]*)
         echo "run-local-monad: CASHWEB_STAMP_MIN_BURN_VALUE_WEI must be a decimal integer" >&2
@@ -170,6 +179,10 @@ rpc_origin="$(printf '%s' "$rpc_url" | sed -E 's#^([a-z]+://[^/?\#]*).*#\1#')"
     echo "  FRANK_NETWORK_TAG:      $network_tag"
     echo "  min_value_wei:          $min_value_wei"
     echo "  expected_chain_id:      $expected_chain_id"
+    echo "  MONAD_STAMP_BURN_ADDRESS: ${burn_address:-NOT SET}"
+    if [[ -z "$burn_address" ]]; then
+        echo "run-local-monad: WARNING: MONAD_STAMP_BURN_ADDRESS is not set: every forum topic post and vote will fail with HTTP 500 (direct messages still work). Set it (see .env.example)." >&2
+    fi
 } >&2
 
 if [[ -n "${FRANK_RELAY_LISTEN:-}" ]]; then

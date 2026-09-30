@@ -64,6 +64,7 @@ import {
 } from './qwen-bot-common'
 import { botProfileFields } from './bot-directory'
 import { VendorBotStateStore } from './vendor-bot-state'
+import { paymentBelowPriceMessage } from './vendor-messages'
 import { botLoopGuardFromEnv } from './bot-loop-guard'
 import {
   buildFulfillItems,
@@ -290,7 +291,7 @@ async function main() {
           {
             type: 'digital-goods',
             action: 'error',
-            message: `Payment ${hydrated.paidWei ?? 0n} wei is below ${item.itemId}'s price of ${item.priceWei} wei`,
+            message: paymentBelowPriceMessage(hydrated.paidWei ?? 0n, item),
           },
         ])
         continue

@@ -324,7 +324,9 @@ and failure rules. The codec does not infer a suite from nonce length.
 
 S3. Payment members are ordered by numeric `child_index`, then bytewise
 `transaction_id`. Child indices and transaction identifiers MUST each be
-independently unique. Child indices are `uint31` values in
+independently unique. Because T3a.4 also requires the child indices to be exactly contiguous
+`0..member_count-1` and unique, the `transaction_id` tie-break can never decide
+an order; a verifier still checks both rules, and every violation is `semantic`. Child indices are `uint31` values in
 `0..2147483647` (a range kept from the #60 design; no BIP32 derivation is involved, T3a). Amounts need not be equal. Independently verified values are
 added with checked unsigned 256-bit arithmetic; overflow rejects. Their sum
 MUST be greater than or equal to the applicable minimum. Each encoded amount
@@ -528,6 +530,15 @@ accepts stamps to them (item 5).
 
 Open questions for S10a (recorded, not decided here):
 
+- DLEQ encoding: the primitive (a Chaum-Pedersen equality proof over
+  secp256k1) is standard, and BIP-374 specifies it with test vectors and an
+  optional message input that could carry the network binding. T3b instead
+  uses a bespoke encoding (its own domain-separation strings, challenge layout,
+  deterministic nonce derivation, and the network folded into the hash). This
+  is an open question for the cryptographer: adopting BIP-374 verbatim would
+  narrow the review to how Frank uses the proof. Details of BIP-374 here are
+  from memory and must be checked against the BIP text before any change. Not
+  decided; the T3b encoding in this document is what the vectors pin.
 - Cryptographer review is still required for the DLEQ construction (T3b), the
   stamp-child derivation (T3a) and the mandatory separate key, before any
   implementation ships.
@@ -792,6 +803,32 @@ itself; the protocol permits that and it SHOULD NOT be done.
 A relay or mailbox holding the frame can already compute every child public key
 from `P'`, `X` and the network, but not any private key. Whoever knows `e` (the
 sender) cannot spend, since spending needs `d'`.
+
+Precision and data minimization (decided on #198). Recovering `d'` from a
+leaked child key needs both the child private key `k_i` and that message's `X`:
+`t_i = H(domain || network || X || i)`, so `k_i` alone reveals nothing, and `X`
+is held by the sender, the relay and the recipient but never appears on chain.
+The realistic adversary is therefore a compromised or logging relay combined
+with a wallet-side key leak. To keep that combination unlikely:
+
+- A relay SHOULD discard `X` once the stamp payments of the frame have settled
+  or the message has expired. This retention rule applies to `X`, not to `E`:
+  `E` is public and stays in the message, and the recipient (any device holding
+  the seed) re-derives `X = d'*E` on demand, so restoring a second device from
+  the seed and the mailbox messages needs no stored `X`. The relay keeps `E` and
+  the proof and cannot re-derive `X` without `d'`.
+- A wallet SHOULD NOT persist child private keys. It SHOULD derive `t_i*d'` just
+  in time from the seed, sign with deterministic nonces, wipe the value, and
+  SHOULD sweep confirmed stamp outputs promptly.
+- A wallet SHOULD NOT retain `X` longer than its payment journal needs.
+
+Considered and not adopted: hash-chain tweaks (whoever holds the frame can
+derive every `t_i` anyway); using the identity key as the scan key with `P'`
+only as spend key (it moves identity-key use into the scanning loop and mixes
+signing and ECDH on one key); a separate non-spending scan key (a second
+published key); and binding the proof, the tweaks or `X` to a relay key or
+relay receipts (small gain against relay-migration and retry complexity; the
+proof stays relay-independent).
 
 T3b. The stamp DLEQ proof (Chaum-Pedersen over secp256k1, made non-interactive
 by Fiat-Shamir with SHA-256) shows that `E` and `X` use the same secret `e`
@@ -1117,8 +1154,8 @@ frame for the recipient), and
 `previous_stamp_key_hex` (the 33-byte compressed stamp key in force before the
 current one, or null), maintained as S10a.5 defines; the current statement may be schema 1 (no
 stamp key), in which case the previous key is null. It is
-null for every root other than type 1 and non-null for every other full case,
-except that for a type-1 case null means no directory entry: such a full case
+null for every root other than type 1 (a non-type-1 full case carries null), and
+for a type-1 full case it is non-null except that null means no directory entry: such a full case
 MUST be a `reject` with `error_category` `cryptographic` and `rules` including
 `S10a`, which S10a.4 fails closed and the checker enforces. The state is the
 recipient's by construction: type 1 has no recipient identity field (S8), so
@@ -1153,7 +1190,7 @@ the section 9 stage, and its category.
 | Type-1 field 1 with an allocated key type other than 1 (type 2 or 3, correct length; S9)                                                                                                                                               | `typed`   | 9     | `semantic`      |
 | Type-4 field 8 with an allocated key type other than 1 (type 2 or 3, correct length; S10a.1)                                                                                                                                           | `typed`   | 9     | `semantic`      |
 | Type-4 schema 2 without field 8, and type-4 schema 1 with a field 8 (S10a.1, C12), two vectors                                                                                                                                         | `typed`   | 8.2   | `schema`        |
-| Type-2 attestation of a schema-2 statement opened by a context with `reader_version` 1 (V6.1, required-type child)                                                                                                                     | `typed`   | 8.4   | `unsupported`   |
+| Type-2 attestation of a schema-2 statement opened by a context with `reader_version` 1 (V6.1, required-type child)                                                                                                                     | `typed`   | 7     | `unsupported`   |
 | Payment child indices not contiguous from 0 (a gap, or starting at 1), and duplicate payment field 3 destinations                                                                                                                      | `typed`   | 9     | `semantic`      |
 | Same-subject update (S10a.3) that changes only field 8 with a non-increasing revision, and one with a key transition present; a same-subject statement whose `schema_version` is lower than the prior statement's (S10a.2)             | `typed`   | 9     | `semantic`      |
 | `P'` off curve, with the recipient state's field 8 equal to it (T3a.6 fails, the binding passes)                                                                                                                                       | `full`    | 10.4  | `cryptographic` |

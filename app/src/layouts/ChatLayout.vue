@@ -49,7 +49,7 @@
           <q-avatar rounded :style="contactColorStyle">
             <img :src="profileAvatar(contactProfile?.avatar, address)" />
           </q-avatar>
-          <q-toolbar-title class="h6" :style="contactNameColorStyle">{{
+          <q-toolbar-title class="h6" :style="contactNameCueStyle">{{
             contactProfile.name
           }}</q-toolbar-title>
           <q-space />
@@ -251,12 +251,22 @@ export default defineComponent({
     // now also applied to the name text itself (kept alongside the ring, not instead of it, so
     // there are two independent places a key change is visible). Same `pubKeyToColor` call, same
     // "no pubkey yet" -> no color fallback as `contactColorStyle` above.
-    contactNameColorStyle() {
+    // The name text itself stays the header's own readable on-primary color: an arbitrary
+    // pubkey-derived hsl() text color on the purple bar measured ~1.9:1 (light teal), far under
+    // the 4.5:1 minimum, and no hue at all can reach it on that background. The cue is a
+    // pubkey-colored underline instead (decoration, not text, so no text-contrast requirement)
+    // and the avatar ring above.
+    contactNameCueStyle() {
       const pubKey = this.contactProfile?.pubKey
       if (!pubKey) {
         return {}
       }
-      return { color: pubKeyToColor(pubKey.toBuffer()) }
+      return {
+        textDecoration: 'underline',
+        textDecorationColor: pubKeyToColor(pubKey.toBuffer()),
+        textDecorationThickness: '2px',
+        textUnderlineOffset: '4px',
+      }
     },
   },
 })

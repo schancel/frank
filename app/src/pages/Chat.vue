@@ -10,7 +10,9 @@
             @scroll="scrollHandler"
             class="q-px-none absolute full-width full-height column"
           >
-            <div class="row q-px-lg">
+            <!-- q-py-md: breathing room above the first bubble (it used to touch the header) and
+            below the last one; inside the scroll content, so scroll-to-bottom still reaches it. -->
+            <div class="chat-message-list row q-px-lg q-py-md">
               <template
                 v-for="(msg, index) in chunkedMessages"
                 :key="msg.payloadDigest"

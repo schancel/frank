@@ -21,6 +21,7 @@
     "build-android-debug": "quasar build  -m capacitor -T android -d",
     "zipalign-android": "zipalign -v -p 4 ./dist/capacitor/android/apk/release/app-release-unsigned.apk ./dist/capacitor/android/apk/release/app-release-unsigned-aligned.apk",
     "build-android-release": "yarn build-android && yarn zipalign-android && apksigner sign --ks release.keystore.jks --out ./dist/capacitor/android/apk/release/app-release.apk ./dist/capacitor/android/apk/release/app-release-unsigned-aligned.apk",
+    "test:browser": "node test/browser/chat-layout.mjs",
     "test:unit": "jest --updateSnapshot",
     "test:unit:ci": "jest --ci",
     "test:unit:coverage": "jest --coverage",
@@ -59,6 +60,7 @@
     "worker-loader": "^3.0.8"
   },
   "devDependencies": {
+    "playwright-core": "1.55.0",
     "sass": "^1.105.0",
     "rollup-plugin-polyfill-node": "^0.13.0",
     "@rollup/plugin-inject": "^5.0.5",

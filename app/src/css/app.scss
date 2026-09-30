@@ -11,7 +11,12 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
-.q-header {
+// White header text on the primary (#9d5cff) bar is only 3.9:1 -- under the 4.5:1 WCAG AA minimum
+// for normal-size text (the title is 20px/500, not "large"). The secondary purple (#7c3aed) is the
+// existing theme token that clears it (5.7:1), so every header uses it. `!important` because
+// QHeader hard-codes `bg-primary` (itself `!important`); the doubled selector wins on specificity.
+.q-header.q-header {
+  background: var(--q-secondary) !important;
   color: var(--q-on-primary-color-text);
 }
 

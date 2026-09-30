@@ -34,6 +34,12 @@ pub(crate) const MAX_DIRECTORY_ATTESTATION_FRAME_BYTES: usize = 262_144;
 pub(crate) const MAX_MESSAGE_ITEMS_TOTAL: u32 = 256;
 /// Message items in one array.
 pub(crate) const MAX_MESSAGE_ITEMS_PER_ARRAY: usize = 256;
+/// R6 topic post and post-submission frame limit.
+pub(crate) const MAX_TOPIC_FRAME_BYTES: usize = 1_048_576;
+/// R6 topic vote-submission frame limit.
+pub(crate) const MAX_TOPIC_VOTE_FRAME_BYTES: usize = 65_536;
+/// R6 topic post body.
+pub(crate) const MAX_TOPIC_BODY_BYTES: usize = 524_288;
 /// Payment members in one delivery.
 pub(crate) const MAX_PAYMENT_MEMBERS: usize = 64;
 /// Ciphertext bytes in one recipient payload.
@@ -60,11 +66,14 @@ pub(crate) const TYPE_RECIPIENT_PAYLOAD: u32 = 5;
 pub(crate) const TYPE_ENCRYPTED_CONTENT: u32 = 6;
 pub(crate) const TYPE_KEY_TRANSITION_STATEMENT: u32 = 7;
 pub(crate) const TYPE_MESSAGE_REVISION: u32 = 8;
+pub(crate) const TYPE_TOPIC_POST: u32 = 9;
+pub(crate) const TYPE_TOPIC_POST_SUBMISSION: u32 = 10;
+pub(crate) const TYPE_TOPIC_VOTE_SUBMISSION: u32 = 11;
 pub(crate) const TYPE_CONTAINER_ITEM: u32 = 16;
 pub(crate) const TYPE_TEXT_ITEM: u32 = 17;
 
 /// Types with a version-1 schema in this codec (E5). `0xffff0001` is not included.
-pub const KNOWN_TYPES: [u32; 10] = [
+pub const KNOWN_TYPES: [u32; 13] = [
     TYPE_DIRECT_MESSAGE,
     TYPE_DIRECTORY_ATTESTATION,
     TYPE_MAILBOX_CHECKPOINT,
@@ -73,6 +82,9 @@ pub const KNOWN_TYPES: [u32; 10] = [
     TYPE_ENCRYPTED_CONTENT,
     TYPE_KEY_TRANSITION_STATEMENT,
     TYPE_MESSAGE_REVISION,
+    TYPE_TOPIC_POST,
+    TYPE_TOPIC_POST_SUBMISSION,
+    TYPE_TOPIC_VOTE_SUBMISSION,
     TYPE_CONTAINER_ITEM,
     TYPE_TEXT_ITEM,
 ];

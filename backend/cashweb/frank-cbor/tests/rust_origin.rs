@@ -6,7 +6,8 @@ use frank_cbor::{validate_frame, ValidationResult};
 
 use common::{
     checkpoint_frame, content_hash_hex, direct_message_frame, directory_attestation_frame,
-    repo_path, typed_context,
+    repo_path, topic_context, topic_post_frame, topic_post_submission_frame, topic_vote_frame,
+    typed_context,
 };
 
 #[test]
@@ -25,8 +26,16 @@ fn rust_fixtures_match_the_typescript_bytes_and_the_committed_file() {
     expect_same("fixture-direct-message-typed", &direct);
     expect_same("fixture-directory-attestation-typed", &directory);
     expect_same("fixture-checkpoint-typed", &checkpoint);
+    let topic = [
+        topic_post_frame(),
+        topic_post_submission_frame(),
+        topic_vote_frame(),
+    ];
+    expect_same("fixture-topic-post-typed", &topic[0]);
+    expect_same("fixture-topic-post-submission-typed", &topic[1]);
+    expect_same("fixture-topic-vote-typed", &topic[2]);
 
-    let document = document(&direct, &directory, &checkpoint);
+    let document = document(&direct, &directory, &checkpoint, &topic);
     let serialized = serde_json::to_string_pretty(&document).unwrap() + "\n";
     let path = repo_path("../../../docs/protocol/cbor/vectors/rust-origin.json");
     if std::env::var("FRANK_UPDATE_RUST_VECTORS").ok().as_deref() == Some("1") {
@@ -41,7 +50,12 @@ fn rust_fixtures_match_the_typescript_bytes_and_the_committed_file() {
     assert_eq!(committed, serialized);
 }
 
-fn document(direct: &[u8], directory: &[u8], checkpoint: &[u8]) -> serde_json::Value {
+fn document(
+    direct: &[u8],
+    directory: &[u8],
+    checkpoint: &[u8],
+    topic: &[Vec<u8>; 3],
+) -> serde_json::Value {
     serde_json::json!({
         "format": "frank-cbor-v1-vectors",
         "cases": [
@@ -63,16 +77,48 @@ fn document(direct: &[u8], directory: &[u8], checkpoint: &[u8]) -> serde_json::V
                 checkpoint,
                 &["S6", "S7"],
             ),
+            topic_case(
+                "rust-fixture-topic-post",
+                "Rust encoding of the type-9 topic post fixture.",
+                &topic[0],
+                &["S12", "T1"],
+            ),
+            topic_case(
+                "rust-fixture-topic-post-submission",
+                "Rust encoding of the type-10 topic post submission fixture.",
+                &topic[1],
+                &["S8", "S11", "T7"],
+            ),
+            topic_case(
+                "rust-fixture-topic-vote",
+                "Rust encoding of the type-11 topic vote fixture.",
+                &topic[2],
+                &["S12", "T7"],
+            ),
         ]
     })
 }
 
 fn case(id: &str, description: &str, frame: &[u8], rules: &[&str]) -> serde_json::Value {
-    let result = validate_frame(frame, &typed_context()).expect(id);
+    case_in(id, description, frame, rules, typed_context())
+}
+
+/// A case validated by a reader that lists the topic-event types.
+fn topic_case(id: &str, description: &str, frame: &[u8], rules: &[&str]) -> serde_json::Value {
+    case_in(id, description, frame, rules, topic_context())
+}
+
+fn case_in(
+    id: &str,
+    description: &str,
+    frame: &[u8],
+    rules: &[&str],
+    ctx: frank_cbor::ValidationContext,
+) -> serde_json::Value {
+    let result = validate_frame(frame, &ctx).expect(id);
     let ValidationResult::Parsed(parsed_frame) = &result else {
         panic!("{id} was not parsed");
     };
-    let ctx = typed_context();
     let schemas: Vec<serde_json::Value> = ctx
         .supported_schemas
         .iter()

@@ -203,6 +203,16 @@ export function checkSemantics(
       }
       return
     }
+    case 10: {
+      const child = typedOf(typed.postFrame, 9)
+      if (typed.network !== child.network) {
+        throw semantic(
+          'submission network differs from the type-9 network (S11)',
+          `${P}.0`,
+        )
+      }
+      return
+    }
     case 4: {
       requireOrdered(
         typed.relays,

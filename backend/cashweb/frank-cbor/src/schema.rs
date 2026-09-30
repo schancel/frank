@@ -6,8 +6,10 @@ use crate::limits::{
     ENCRYPTION_SUITE_PROOF, MAX_CIPHERTEXT_BYTES, MAX_DIRECTORY_ATTESTATION_FRAME_BYTES,
     MAX_DIRECT_MESSAGE_FRAME_BYTES, MAX_FRAME_BYTES, MAX_JOURNAL_FACTS,
     MAX_MESSAGE_ITEMS_PER_ARRAY, MAX_OPAQUE_SECTIONS, MAX_PAYMENT_MEMBERS, MAX_RELAY_BINDINGS,
-    MAX_SIGNATURES, TYPE_CONTAINER_ITEM, TYPE_DIRECTORY_ATTESTATION, TYPE_DIRECTORY_STATEMENT,
-    TYPE_DIRECT_MESSAGE, TYPE_MAILBOX_CHECKPOINT, TYPE_MESSAGE_REVISION, TYPE_RECIPIENT_PAYLOAD,
+    MAX_SIGNATURES, MAX_TOPIC_BODY_BYTES, MAX_TOPIC_FRAME_BYTES, MAX_TOPIC_VOTE_FRAME_BYTES,
+    TYPE_CONTAINER_ITEM, TYPE_DIRECTORY_ATTESTATION, TYPE_DIRECTORY_STATEMENT, TYPE_DIRECT_MESSAGE,
+    TYPE_MAILBOX_CHECKPOINT, TYPE_MESSAGE_REVISION, TYPE_RECIPIENT_PAYLOAD, TYPE_TOPIC_POST,
+    TYPE_TOPIC_POST_SUBMISSION, TYPE_TOPIC_VOTE_SUBMISSION,
 };
 use crate::model::{AccountRef, Timestamp};
 
@@ -237,6 +239,12 @@ pub(crate) fn check_root_frame_limit(type_id: u32, frame_length: usize) -> bool 
     if type_id == TYPE_DIRECTORY_ATTESTATION {
         return frame_length <= MAX_DIRECTORY_ATTESTATION_FRAME_BYTES;
     }
+    if type_id == TYPE_TOPIC_POST || type_id == TYPE_TOPIC_POST_SUBMISSION {
+        return frame_length <= MAX_TOPIC_FRAME_BYTES;
+    }
+    if type_id == TYPE_TOPIC_VOTE_SUBMISSION {
+        return frame_length <= MAX_TOPIC_VOTE_FRAME_BYTES;
+    }
     frame_length <= MAX_FRAME_BYTES
 }
 
@@ -292,6 +300,13 @@ pub(crate) fn check_type_limits(type_id: u32, payload: &CborValue) -> Result<(),
             if let Some(CborValue::Bytes(bytes)) = map_field(payload, 5) {
                 if bytes.len() > MAX_CIPHERTEXT_BYTES {
                     return Err(over("ciphertext"));
+                }
+            }
+        }
+        TYPE_TOPIC_POST => {
+            if let Some(CborValue::Bytes(bytes)) = map_field(payload, 3) {
+                if bytes.len() > MAX_TOPIC_BODY_BYTES {
+                    return Err(over("topic body"));
                 }
             }
         }
@@ -414,6 +429,25 @@ pub(crate) enum Draft {
         prior_authority: AccountRef,
         revision: u64,
         new_key: AccountRef,
+        unknown: Vec<(u64, CborValue)>,
+    },
+    TopicPost {
+        network: String,
+        topic: String,
+        parent_hash: Option<Vec<u8>>,
+        body: Vec<u8>,
+        unknown: Vec<(u64, CborValue)>,
+    },
+    TopicPostSubmission {
+        network: String,
+        post_frame: Vec<u8>,
+        burn_tx: Vec<u8>,
+        unknown: Vec<(u64, CborValue)>,
+    },
+    TopicVoteSubmission {
+        network: String,
+        target_hash: Vec<u8>,
+        burn_tx: Vec<u8>,
         unknown: Vec<(u64, CborValue)>,
     },
     Revision {
@@ -640,6 +674,39 @@ pub(crate) fn parse_draft(
                 unknown: map.unknown,
             })
         }
+        TYPE_TOPIC_POST => {
+            let map = fields(Some(payload), path, &[0, 1, 3], &[2], true, allow)?;
+            let parent_hash = if map.has(2) {
+                Some(bstr(map.get(2), &format!("{path}.2"), 32, 32)?)
+            } else {
+                None
+            };
+            Ok(Draft::TopicPost {
+                network: network_tag(map.get(0), &format!("{path}.0"))?,
+                topic: tstr(map.get(1), &format!("{path}.1"), 1, 512)?,
+                parent_hash,
+                body: bstr(map.get(3), &format!("{path}.3"), 1, MAX_TOPIC_BODY_BYTES)?,
+                unknown: map.unknown,
+            })
+        }
+        TYPE_TOPIC_POST_SUBMISSION => {
+            let map = fields(Some(payload), path, &[0, 1, 2], &[], true, allow)?;
+            Ok(Draft::TopicPostSubmission {
+                network: network_tag(map.get(0), &format!("{path}.0"))?,
+                post_frame: framed(map.get(1), &format!("{path}.1"))?,
+                burn_tx: bstr(map.get(2), &format!("{path}.2"), 1, 16_384)?,
+                unknown: map.unknown,
+            })
+        }
+        TYPE_TOPIC_VOTE_SUBMISSION => {
+            let map = fields(Some(payload), path, &[0, 1, 2], &[], true, allow)?;
+            Ok(Draft::TopicVoteSubmission {
+                network: network_tag(map.get(0), &format!("{path}.0"))?,
+                target_hash: bstr(map.get(1), &format!("{path}.1"), 32, 32)?,
+                burn_tx: bstr(map.get(2), &format!("{path}.2"), 1, 16_384)?,
+                unknown: map.unknown,
+            })
+        }
         TYPE_MESSAGE_REVISION => {
             let map = fields(Some(payload), path, &[0, 1], &[], true, allow)?;
             if map.get(0) != Some(&CborValue::Text("frank".to_string())) {
@@ -805,6 +872,9 @@ pub(crate) fn check_allocated(draft: &Draft) -> Result<(), CodecError> {
             Ok(())
         }
         Draft::Encrypted { .. }
+        | Draft::TopicPost { .. }
+        | Draft::TopicPostSubmission { .. }
+        | Draft::TopicVoteSubmission { .. }
         | Draft::Revision { .. }
         | Draft::Container { .. }
         | Draft::Text { .. } => Ok(()),

@@ -24,7 +24,7 @@ import jsonschema
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..', 'docs', 'protocol', 'cbor'))
 MAX_FRAME, MAX_DEPTH, MAX_CONT, MAX_ITEMS = 8388617, 32, 16384, 131072
 MAX_MAP, MAX_ARR, MAX_BSTR, MAX_TSTR = 256, 8192, 8388608, 262144
-KNOWN = {1, 2, 3, 4, 5, 6, 7, 8, 16, 17}
+KNOWN = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 16, 17}
 
 
 class Fail(Exception):
@@ -250,6 +250,38 @@ def t1(frame, info):
     return hashlib.sha256(transcript('frank/content-hash/v1', net, frame)).hexdigest()
 
 
+def check_topic_commitments():
+    """Recomputes T1 (type 9) and T7 (types 10, 11) from the frame bytes alone."""
+    doc = json.load(open(os.path.join(ROOT, 'vectors', 'topic-commitments.json')))
+    ctx = {'operation': 'typed', 'route_byte_limit': MAX_FRAME, 'reader_version': 1,
+           'opaque_retention_allowed': False,
+           'supported_schemas': [{'type_id': t, 'schema_version': 1} for t in (9, 10, 11)]}
+    bad, n = [], 0
+    for c in doc['cases']:
+        f = bytes.fromhex(c['frame_hex'])
+        kind, info = frame_stages(f, ctx, Counters())
+        payload = info['payload']
+        if info['type'] == 9:
+            got = {'t1_hex': t1(f, info)}
+        else:
+            if info['type'] == 10:
+                inner = bytes(payload[1])
+                target = hashlib.sha256(transcript(
+                    'frank/content-hash/v1', payload[0], inner)).digest()
+            else:
+                target = bytes(payload[1])
+            pre = (b'frank:topic-vote:v1' + struct.pack('>H', len(payload[0].encode()))
+                   + payload[0].encode() + target)
+            got = {'target_hash_hex': target.hex(), 't7_preimage_hex': pre.hex(),
+                   't7_hex': hashlib.sha256(pre).hexdigest()}
+        for k, v in got.items():
+            n += 1
+            if c[k] != v:
+                bad.append('%s: %s differs' % (c['id'], k))
+    print('topic-commitments.json: %d values recomputed independently, %d differ' % (n, len(bad)))
+    return bad
+
+
 def main():
     schema = json.load(open(os.path.join(ROOT, 'vectors.schema.json')))
     manifest = json.load(open(os.path.join(ROOT, 'vectors', 'manifest.json')))
@@ -303,7 +335,10 @@ def main():
           % (total, agreed + len(problems), agreed, len(problems), skipped, hashes))
     for p in problems:
         print('DISAGREEMENT', p)
-    return 1 if problems else 0
+    topic_problems = check_topic_commitments()
+    for p in topic_problems:
+        print('DISAGREEMENT', p)
+    return 1 if problems or topic_problems else 0
 
 
 if __name__ == '__main__':

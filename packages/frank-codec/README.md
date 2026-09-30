@@ -2,7 +2,7 @@
 
 Browser-safe TypeScript reference codec for Frank deterministic CBOR, version 1. The
 normative specification is `docs/protocol/cbor/` (README, `*.cddl`, `vectors.schema.json`).
-This is the prototype package for issues #131 and #183. No production message, profile,
+This is the prototype package for issues #131 and #183; issue #136 adds the topic-event types. No production message, profile,
 mailbox, topic or payment path uses it. Rollback is deleting this package and
 `docs/protocol/cbor/vectors/`.
 
@@ -18,7 +18,10 @@ Implemented (against the spec as merged on main):
   (recursive child opening with shared R1 counters, required-type and open-field children),
   and the stage 9 semantic checks that need no cryptography (S3-S10 ordering, uniqueness,
   linkage, contiguity).
-- T1 content hash, T1a digest, and the pure hashes T3 and T4.
+- T1 content hash, T1a digest, and the pure hashes T3, T4, and T7 (`topicVoteCommitment`).
+- Topic events: type 9 (post), type 10 (post plus its burn transaction), and type 11 (vote),
+  with the R6 limits and the S11 network equality. The burn transaction is opaque bytes here;
+  verifying it against the chain (T8) belongs to the relay, not to this codec.
 - Retention: exact original frame bytes at every level, unknown types/frame versions/fields.
 - Reciprocal check of Rust-originated proof fixtures in
   `docs/protocol/cbor/vectors/rust-origin.json` (`test/rust-origin.jest.test.ts`).
@@ -44,7 +47,7 @@ Entry point `src/index.ts`.
   `exact` or `newer-schema`) or a `RetainedFrame`. Failures throw `FrankCodecError` with
   `category`, `stage`, `pass`, `location`. A bad context throws `FrankContextError`.
 - `contentHash`, `messageContentDigest`, `recipientPayloadDigest`, `paymentCommitment`,
-  `commonTranscript`, `toHex`, `fromHex`.
+  `topicVoteCommitment`, `commonTranscript`, `toHex`, `fromHex`.
 
 Returned frames are views of one private copy of the input; do not mutate them.
 
@@ -63,7 +66,8 @@ TypeScript-aware bundler or transformer. `yarn build:browser` produces an IIFE b
   (no Node globals), then loads it in headless Chrome. It needs a system Chrome/Chromium
   (`FRANK_CHROME` overrides the path); without one the Chrome step exits 3 (not verified).
 - `yarn crosscheck` runs `scripts/crosscheck.py`, an independent Python implementation of
-  stages 1-7 of the root frame and T1 over the manifest. It needs Python 3 with `jsonschema`.
+  stages 1-7 of the root frame and T1 over the manifest, and T1/T7 over
+  `vectors/topic-commitments.json`. It needs Python 3 with `jsonschema`.
   It reports how many cases it evaluates (root-frame stages 1-7 category, retention, or a
   typed accept's T1 hash) and how many it does NOT evaluate (typed cases rejected at stages
   8-9 or inside an opened child, which it does not implement).
@@ -72,7 +76,12 @@ TypeScript-aware bundler or transformer. `yarn build:browser` produces an IIFE b
 
 `docs/protocol/cbor/vectors/manifest.json` conforms to `vectors.schema.json`. It is generated
 from `fixtures/` (`builders.ts`, `cases.ts`, `manifest.ts`) and a Jest test fails when it is
-stale. Regenerate with `FRANK_UPDATE_VECTORS=1 yarn test`. `fixtures/checker.ts` enforces the
+stale. Regenerate with `FRANK_UPDATE_VECTORS=1 yarn test`, which also rewrites
+`docs/protocol/cbor/vectors/topic-commitments.json` (the T1 and T7 hashes of the topic events,
+recomputed by the Rust codec and by `scripts/crosscheck.py`). Cases without their own
+`supported` list run against the reader that predates the topic types, so the corpus written
+before #136 is unchanged byte for byte; `test/topic.jest.test.ts` proves those cases behave the
+same when the topic types are listed. `fixtures/checker.ts` enforces the
 README section 10 manifest-validity rules that JSON Schema cannot express.
 
 Each reject case carries the optional `error_stage` (README section 10; other runners SHOULD compare it, category-only runners stay conformant), which `fixtures/cases.ts`

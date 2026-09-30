@@ -26,3 +26,13 @@ describe('leftDrawer i18n parity', () => {
     }
   })
 })
+
+describe('seedConfirm i18n parity', () => {
+  const en = flatten((enUS as Record<string, unknown>).seedConfirm).sort()
+  const fr = flatten((frFR as Record<string, unknown>).seedConfirm).sort()
+
+  it('is non-empty and has the same keys in en-us and fr-fr', () => {
+    expect(en.length).toBeGreaterThan(0)
+    expect(fr).toEqual(en)
+  })
+})

@@ -6,6 +6,7 @@
   "private": true,
   "scripts": {
     "bot": "tsx qwen-bot.livecheck.ts",
+    "faucet": "tsx faucet-bot.livecheck.ts",
     "send-demo": "tsx qwen-bot-send-demo.livecheck.ts",
     "ui-verify": "tsx monad-ui-verify.livecheck.ts",
     "test": "jest"

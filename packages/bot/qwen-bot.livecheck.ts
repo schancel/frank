@@ -343,18 +343,22 @@ async function main() {
           console.error(`[bot] failed to greet ${profile.address}:`, err)
         }
 
-        try {
-          console.log(
-            `[bot] funding ${profile.address} with ${fundValueWei} wei from the main wallet (${mainAccountSigner.address}) ...`,
-          )
-          const signedFundTx = await mainAccountSigner.buildAndSignTransfer(
-            profile.address,
-            fundValueWei,
-          )
-          const fundTxHash = await mainAccountSigner.submit(signedFundTx)
-          console.log(`[bot] funding tx sent: ${fundTxHash}`)
-        } catch (err) {
-          console.error(`[bot] failed to fund ${profile.address}:`, err)
+        // `QWEN_BOT_FUND_VALUE_WEI=0` turns funding off (e.g. when the standalone faucet, #316,
+        // does it), keeping the greeting.
+        if (fundValueWei > 0n) {
+          try {
+            console.log(
+              `[bot] funding ${profile.address} with ${fundValueWei} wei from the main wallet (${mainAccountSigner.address}) ...`,
+            )
+            const signedFundTx = await mainAccountSigner.buildAndSignTransfer(
+              profile.address,
+              fundValueWei,
+            )
+            const fundTxHash = await mainAccountSigner.submit(signedFundTx)
+            console.log(`[bot] funding tx sent: ${fundTxHash}`)
+          } catch (err) {
+            console.error(`[bot] failed to fund ${profile.address}:`, err)
+          }
         }
 
         // Counted once per newly-greeted address regardless of whether the greeting DM and/or the

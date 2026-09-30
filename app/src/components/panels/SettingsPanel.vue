@@ -8,6 +8,9 @@
       :acceptance-price="inbox.acceptancePrice"
     />
 
+    <!-- Dismissible reminder for completed accounts whose phrase was never confirmed (#284) -->
+    <backup-reminder @confirm="seedConfirmOpen = true" />
+
     <!-- Contact book dialog -->
     <q-dialog v-model="contactBookOpen">
       <contact-book-dialog
@@ -23,6 +26,11 @@
     <!-- Seed phrase dialog -->
     <q-dialog v-model="seedPhraseOpen">
       <seed-phrase-dialog />
+    </q-dialog>
+
+    <!-- Confirm the stored recovery phrase (#284) -->
+    <q-dialog v-model="seedConfirmOpen">
+      <seed-confirm-dialog />
     </q-dialog>
 
     <div class="flex-break" />
@@ -114,15 +122,31 @@
           </q-item-section>
           <q-item-section>{{ $t('SettingPanel.showSeed') }}</q-item-section>
         </q-item>
+        <q-item
+          v-if="backupUnconfirmed"
+          clickable
+          v-ripple
+          data-test="confirm-seed-item"
+          @click="seedConfirmOpen = true"
+        >
+          <q-item-section avatar>
+            <q-icon name="fact_check" />
+          </q-item-section>
+          <q-item-section>{{ $t('SettingPanel.confirmSeed') }}</q-item-section>
+        </q-item>
       </q-list>
     </q-scroll-area>
   </div>
 </template>
 
 <script lang="ts">
-import { defineComponent, onMounted, ref } from 'vue'
+import { computed, defineComponent, onMounted, ref } from 'vue'
 
 import SeedPhraseDialog from '../dialogs/SeedPhraseDialog.vue'
+import SeedConfirmDialog from '../dialogs/SeedConfirmDialog.vue'
+import BackupReminder from './BackupReminder.vue'
+import { useWalletStore } from 'src/stores/wallet'
+import { needsBackupConfirmation } from '../../utils/account-state'
 import ContactCard from './ContactCard.vue'
 import ContactBookDialog from '../dialogs/ContactBookDialog.vue'
 import { openChat, openPage } from '../../utils/routes'
@@ -137,6 +161,15 @@ export default defineComponent({
     const myProfile = useProfileStore()
     const { profile, inbox } = storeToRefs(myProfile)
     const seedPhraseOpen = ref(false)
+    const seedConfirmOpen = ref(false)
+    const wallet = useWalletStore()
+    const backupUnconfirmed = computed(() =>
+      needsBackupConfirmation({
+        seedPhrase: wallet.seedPhrase,
+        name: profile.value?.name,
+        seedConfirmedAt: wallet.seedConfirmedAt,
+      }),
+    )
     const myAddress = ref('')
     onMounted(async () => {
       try {
@@ -150,6 +183,8 @@ export default defineComponent({
       profile,
       inbox,
       seedPhraseOpen,
+      seedConfirmOpen,
+      backupUnconfirmed,
       myAddress,
     }
   },
@@ -157,6 +192,8 @@ export default defineComponent({
     ContactCard,
     ContactBookDialog,
     SeedPhraseDialog,
+    SeedConfirmDialog,
+    BackupReminder,
   },
   data() {
     return {

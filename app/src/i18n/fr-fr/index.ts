@@ -329,8 +329,9 @@ export default {
       'Saisissez les mots demandés de la phrase de récupération que vous avez notée. Votre compte n’est créé que lorsqu’ils correspondent.',
     wordLabel: 'Mot n° {n}',
     check: 'Vérifier mes réponses',
-    error:
-      'Un ou plusieurs mots ne correspondent pas à votre phrase de récupération. Vérifiez votre copie et réessayez.',
+    wordError: 'Le mot n° {n} ne correspond pas',
+    recheck:
+      'Certains mots ne correspondent pas à votre phrase de récupération. Vérifiez les mots n° : {positions}.',
     success:
       'Phrase de récupération confirmée. Vous pouvez terminer la configuration.',
     showPhrase: 'Afficher à nouveau ma phrase de récupération',

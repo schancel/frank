@@ -119,20 +119,35 @@ export function ensureConfirmationChallenge(
   }
 }
 
+/**
+ * Indexes (into `positions`/`answers`) of the answers that do not match the phrase's word at that
+ * position, after the same trim + lowercase normalization as always. Returns indexes only, never
+ * the words, so callers cannot leak the right answer.
+ */
+export function wrongConfirmationIndexes(
+  seed: string,
+  positions: number[],
+  answers: string[],
+): number[] {
+  const words = normalizeSetupMnemonic(seed).split(/\s+/)
+  const wrong: number[] = []
+  positions.forEach((position, i) => {
+    const expected = words[position - 1]
+    if (!expected || expected !== (answers[i] ?? '').trim().toLowerCase())
+      wrong.push(i)
+  })
+  return wrong
+}
+
 /** True only if every requested position was answered with exactly the phrase's word. */
 export function checkConfirmationAnswers(
   seed: string,
   positions: number[],
   answers: string[],
 ): boolean {
-  const words = normalizeSetupMnemonic(seed).split(/\s+/)
   return (
     positions.length > 0 &&
     positions.length === answers.length &&
-    positions.every(
-      (position, i) =>
-        !!words[position - 1] &&
-        words[position - 1] === answers[i].trim().toLowerCase(),
-    )
+    wrongConfirmationIndexes(seed, positions, answers).length === 0
   )
 }

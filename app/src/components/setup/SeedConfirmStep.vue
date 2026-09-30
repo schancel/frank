@@ -37,27 +37,32 @@
           :id="inputId(i)"
           :ref="el => setInputRef(el, i)"
           v-model="answers[i]"
+          @input="clearError(i)"
           class="seed-confirm__input"
           type="text"
           autocomplete="off"
           autocapitalize="none"
           autocorrect="off"
           spellcheck="false"
-          :aria-invalid="failed ? 'true' : 'false'"
-          :aria-describedby="failed ? errorId : undefined"
+          :aria-invalid="wrong[i] ? 'true' : 'false'"
+          :aria-describedby="wrong[i] ? fieldErrorId(i) : undefined"
         />
+        <div v-if="wrong[i]" :id="fieldErrorId(i)" class="text-negative">
+          {{ $t('seedConfirm.wordError', { n: position }) }}
+        </div>
       </div>
 
       <!-- Polite live region: present in the DOM before it has content so screen readers
            announce the text when it appears. -->
       <div
-        :id="errorId"
         class="text-negative"
         role="status"
         aria-live="polite"
         aria-atomic="true"
       >
-        <template v-if="failed">{{ $t('seedConfirm.error') }}</template>
+        <template v-if="wrongPositions.length">{{
+          $t('seedConfirm.recheck', { positions: wrongPositions.join(', ') })
+        }}</template>
       </div>
 
       <div class="row q-gutter-sm">
@@ -104,6 +109,7 @@ import { computed, defineComponent, nextTick, PropType, ref, watch } from 'vue'
 import {
   checkConfirmationAnswers,
   normalizeSetupMnemonic,
+  wrongConfirmationIndexes,
 } from '../../utils/setup-account'
 
 let instanceCounter = 0
@@ -121,7 +127,11 @@ export default defineComponent({
   setup(props, { emit }) {
     const uid = ++instanceCounter
     const answers = ref<string[]>(props.positions.map(() => ''))
-    const failed = ref(false)
+    // Per-field error flags, index-aligned with `positions`.
+    const wrong = ref<boolean[]>(props.positions.map(() => false))
+    const wrongPositions = computed(() =>
+      props.positions.filter((_, i) => wrong.value[i]),
+    )
     const showPhrase = ref(false)
     const inputs: Array<HTMLInputElement | null> = []
     const heading = ref<HTMLElement | null>(null)
@@ -138,7 +148,7 @@ export default defineComponent({
       () => [props.seed, props.positions.join(',')],
       () => {
         answers.value = props.positions.map(() => '')
-        failed.value = false
+        wrong.value = props.positions.map(() => false)
         showPhrase.value = false
       },
     )
@@ -149,14 +159,15 @@ export default defineComponent({
 
     return {
       answers,
-      failed,
+      wrong,
+      wrongPositions,
       showPhrase,
       words,
       heading,
       phrase,
       success,
       headingId: `seed-confirm-heading-${uid}`,
-      errorId: `seed-confirm-error-${uid}`,
+      fieldErrorId: (i: number) => `seed-confirm-error-${uid}-${i}`,
       phraseId: `seed-confirm-phrase-${uid}`,
       inputId: (i: number) => `seed-confirm-word-${uid}-${i}`,
       setInputRef(el: unknown, i: number) {
@@ -166,15 +177,26 @@ export default defineComponent({
         if (
           checkConfirmationAnswers(props.seed, props.positions, answers.value)
         ) {
-          failed.value = false
+          wrong.value = props.positions.map(() => false)
           // Do not keep the typed words around once they are no longer needed.
           answers.value = props.positions.map(() => '')
           emit('confirmed')
           void nextTick(() => success.value?.focus?.())
           return
         }
-        failed.value = true
-        void nextTick(() => inputs[0]?.focus())
+        const bad = wrongConfirmationIndexes(
+          props.seed,
+          props.positions,
+          answers.value,
+        )
+        wrong.value = props.positions.map((_, i) => bad.includes(i))
+        // Focus the first wrong field (fall back to the first field if the challenge itself is
+        // unusable, so the user is never left without focus).
+        void nextTick(() => inputs[bad[0] ?? 0]?.focus())
+      },
+      clearError(i: number) {
+        if (wrong.value[i])
+          wrong.value = wrong.value.map((w, j) => j !== i && w)
       },
       togglePhrase() {
         showPhrase.value = !showPhrase.value

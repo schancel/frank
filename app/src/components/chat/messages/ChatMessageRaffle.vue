@@ -34,16 +34,19 @@
       <div class="text-caption">
         Winner: {{ shortAddress(item.winnerAddress) }}
       </div>
-      <div
-        v-if="verification"
-        class="text-caption"
-        :class="verification.valid ? 'text-positive' : 'text-negative'"
-      >
-        {{
-          verification.valid
-            ? '✓ Verified fair'
-            : `⚠ Verification failed: ${verification.reason}`
-        }}
+      <div v-if="verification" role="status" class="text-caption">
+        <div :class="verification.valid ? 'text-positive' : 'text-negative'">
+          {{
+            verification.valid
+              ? `✓ ${$t('raffleDraw.verified')}`
+              : `⚠ ${$t('raffleDraw.failed', { reason: verification.reason })}`
+          }}
+        </div>
+        <details class="raffle-explainer">
+          <summary>{{ $t('raffleDraw.explainerToggle') }}</summary>
+          <p class="q-mb-none">{{ $t('raffleDraw.explainerShows') }}</p>
+          <p class="q-mb-none">{{ $t('raffleDraw.explainerNotShown') }}</p>
+        </details>
       </div>
     </template>
     <div v-else-if="item.action === 'error'" class="text-caption text-negative">
@@ -108,19 +111,27 @@ export default defineComponent({
       if (this.didIWin === true) return 'text-positive'
       return ''
     },
-    // Verified against the seed commitment this round announced EARLIER in this chat (the
-    // announce/joined item), like blackjack folds the deal's hash: a hash that only arrives with
-    // the draw would prove nothing. No commitment seen means no claim either way.
+    // Checked against the seed commitment this round announced EARLIER, in an inbound `announce`
+    // from the SAME sender as the draw (a joined reply comes after the entrant paid, so it does
+    // not count). Not found in the chat, or an outbound/other-sender item: no claim either way.
+    // A pass only shows the seed was not changed after the commitment and the winner follows
+    // from the listed entrants; see wallet raffle/draw.ts for what it does not prove.
     verification() {
       if (this.item.action !== 'draw') return null
-      const prior: RaffleItem[] = []
       const messages = useChatStore().chats[this.address]?.messages ?? []
-      outer: for (const message of messages) {
-        for (const raw of message.items) {
-          if (toRaw(raw) === toRaw(this.item)) break outer
-          if (raw.type === 'raffle' && !message.outbound) prior.push(raw)
-        }
-      }
+      const me = toRaw(this.item)
+      const at = messages.findIndex(m => m.items.some(i => toRaw(i) === me))
+      if (at === -1 || messages[at].outbound) return null
+      const sender = (messages[at].senderAddress ?? '').toLowerCase()
+      if (!sender) return null
+      const prior = messages
+        .slice(0, at)
+        .filter(
+          m => !m.outbound && (m.senderAddress ?? '').toLowerCase() === sender,
+        )
+        .flatMap(m =>
+          m.items.filter((i): i is RaffleItem => i.type === 'raffle'),
+        )
       return verifyRaffleDrawAgainstThread(this.item, prior)
     },
   },

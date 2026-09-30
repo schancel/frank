@@ -65,7 +65,13 @@ describe('verifyRaffleDraw', () => {
 
   it('accepts a correctly-announced draw', () => {
     expect(
-      verifyRaffleDraw({ serverSeed, serverSeedHash, entrants, entryTxHashes, winnerAddress }),
+      verifyRaffleDraw({
+        serverSeed,
+        serverSeedHash,
+        entrants,
+        entryTxHashes,
+        winnerAddress,
+      }),
     ).toEqual({ valid: true })
   })
 
@@ -109,7 +115,12 @@ describe('buildRaffleDrawItem and verifyRaffleDrawAgainstThread', () => {
   const HASH = sha256Hex(SEED)
   const ENTRANTS = ['0xa1', '0xb2', '0xc3']
   const TXS = ['0xt1', '0xt2', '0xt3']
-  const announce = { type: 'raffle', raffleId: 'r1', action: 'announce', serverSeedHash: HASH } as const
+  const announce = {
+    type: 'raffle',
+    raffleId: 'r1',
+    action: 'announce',
+    serverSeedHash: HASH,
+  } as const
   const draw = () =>
     buildRaffleDrawItem({
       raffleId: 'r1',
@@ -127,23 +138,20 @@ describe('buildRaffleDrawItem and verifyRaffleDrawAgainstThread', () => {
   })
 
   it('verifies against a commitment announced earlier in the thread', () => {
-    expect(verifyRaffleDrawAgainstThread(draw(), [announce])).toEqual({ valid: true })
-    // A `joined` reply carries the same commitment and is enough too.
-    expect(
-      verifyRaffleDrawAgainstThread(draw(), [{ ...announce, action: 'joined' }]),
-    ).toEqual({ valid: true })
+    expect(verifyRaffleDrawAgainstThread(draw(), [announce])).toEqual({
+      valid: true,
+    })
   })
 
   it('makes no claim without a prior commitment (a hash arriving with the draw proves nothing)', () => {
     expect(verifyRaffleDrawAgainstThread(draw(), [])).toBeNull()
-    expect(
-      verifyRaffleDrawAgainstThread(draw(), [{ ...announce, raffleId: 'other' }]),
-    ).toBeNull()
+    expect(verifyRaffleDrawAgainstThread(draw(), [{ ...announce, raffleId: 'other' }])).toBeNull()
   })
 
-  it('only announce/joined items count as a commitment, not another draw or an enter', () => {
+  it('only the pre-entry announce counts as a commitment: not joined (sent after the entrant paid), draw or enter', () => {
     expect(
       verifyRaffleDrawAgainstThread(draw(), [
+        { ...announce, action: 'joined' },
         { ...announce, action: 'draw' },
         { ...announce, action: 'enter' },
       ]),
@@ -151,16 +159,17 @@ describe('buildRaffleDrawItem and verifyRaffleDrawAgainstThread', () => {
   })
 
   it('fails when the revealed seed does not open the earlier commitment', () => {
-    const lied = { ...draw(), serverSeed: 'a-different-seed', serverSeedHash: sha256Hex('a-different-seed') }
+    const lied = {
+      ...draw(),
+      serverSeed: 'a-different-seed',
+      serverSeedHash: sha256Hex('a-different-seed'),
+    }
     const result = verifyRaffleDrawAgainstThread(lied, [announce])
     expect(result?.valid).toBe(false)
   })
 
   it('fails when the draw names a different commitment than the announced one', () => {
-    const result = verifyRaffleDrawAgainstThread(
-      { ...draw(), serverSeedHash: 'x' },
-      [announce],
-    )
+    const result = verifyRaffleDrawAgainstThread({ ...draw(), serverSeedHash: 'x' }, [announce])
     expect(result).toEqual({
       valid: false,
       reason: 'the draw names a different commitment than the one announced',
@@ -181,5 +190,82 @@ describe('buildRaffleDrawItem and verifyRaffleDrawAgainstThread', () => {
     ])
     expect(result?.valid).toBe(false)
     expect(result?.reason).toMatch(/conflicting/)
+  })
+
+  describe('draw shape', () => {
+    const sized = { ...announce, maxEntries: 3 }
+    const bad = (over: object) => verifyRaffleDrawAgainstThread({ ...draw(), ...over }, [sized])
+
+    it('accepts a full, well-formed round of the announced size', () => {
+      expect(verifyRaffleDrawAgainstThread(draw(), [sized])).toEqual({
+        valid: true,
+      })
+    })
+
+    it('rejects a duplicated entrant address (case-insensitively) or entry payment', () => {
+      expect(bad({ entrants: ['0xa1', '0xA1', '0xc3'] })?.reason).toMatch(
+        /same entrant more than once/,
+      )
+      expect(bad({ entryTxHashes: ['0xt1', '0xT1', '0xt3'] })?.reason).toMatch(
+        /same entry payment more than once/,
+      )
+    })
+
+    it('rejects a count that differs from the announced round size', () => {
+      expect(
+        verifyRaffleDrawAgainstThread(
+          {
+            ...draw(),
+            entrants: ENTRANTS.slice(0, 2),
+            entryTxHashes: TXS.slice(0, 2),
+          },
+          [sized],
+        )?.reason,
+      ).toMatch(/2 entrants but the round announced 3/)
+      expect(verifyRaffleDrawAgainstThread(draw(), [{ ...announce, maxEntries: 2 }])?.valid).toBe(
+        false,
+      )
+    })
+
+    it('rejects entrants/tx-hash length mismatch and a pot that is not price times entrants', () => {
+      expect(bad({ entryTxHashes: TXS.slice(0, 2) })?.valid).toBe(false)
+      expect(bad({ potWei: '61' })?.reason).toMatch(/pot is not the entry price/)
+      expect(bad({ entryPriceWei: 'abc' })?.reason).toMatch(/not a number/)
+    })
+
+    it('rejects conflicting announced sizes', () => {
+      expect(
+        verifyRaffleDrawAgainstThread(draw(), [sized, { ...sized, maxEntries: 4 }])?.reason,
+      ).toMatch(/conflicting sizes/)
+    })
+  })
+})
+
+// Known-answer vectors, computed independently (Python: HMAC-SHA256 keyed by the seed over the
+// tx hashes joined with ':', first 8 hex chars as an integer, modulo the entrant count). They pin
+// the winner derivation so a change shared by the builder and the verifier cannot pass unnoticed.
+describe('winner derivation known answers', () => {
+  it.each([
+    ['seed-committed-before-any-entry', ['0xtx0', '0xtx1', '0xtx2', '0xtx3', '0xtx4'], 1],
+    ['round-secret', ['0xt1', '0xt2', '0xt3'], 2],
+  ])('%s -> index %i', (seed, txs, expected) => {
+    expect(
+      pickWinnerIndex(
+        seed as string,
+        combineEntrantEntropy(txs as string[]),
+        (txs as string[]).length,
+      ),
+    ).toBe(expected)
+  })
+
+  it('the built draw names the vector winner (0xb2 for the five-entrant vector)', () => {
+    const item = buildRaffleDrawItem({
+      raffleId: 'r1',
+      entryPriceWei: '20',
+      serverSeed: 'seed-committed-before-any-entry',
+      entrants: ['0xa1', '0xb2', '0xc3', '0xd4', '0xe5'],
+      entryTxHashes: ['0xtx0', '0xtx1', '0xtx2', '0xtx3', '0xtx4'],
+    })
+    expect(item.winnerAddress).toBe('0xb2')
   })
 })

@@ -15,6 +15,13 @@
  * would shift the result). This isn't addressed here -- each grind attempt costs a real, separate
  * on-chain entry payment, which is a real (if not airtight) economic deterrent at this stakes level,
  * not a free retry.
+ *
+ * Operator-side limitation (what a matching draw does NOT prove): the operator knows the seed
+ * from the moment it commits, before any entry exists. It can therefore choose its own (sybil)
+ * entry transactions, or decide which received entries count and which are dropped, until the
+ * outcome favours it, and the draw would still verify: verification only shows that the seed was
+ * not changed after the commitment and that the winner follows from the LISTED entrants and seed.
+ * It says nothing about whether the listed entrants are real on-chain payments or complete.
  */
 import * as forge from 'node-forge'
 
@@ -68,7 +75,10 @@ export function verifyRaffleDraw(params: {
 }): { valid: boolean; reason?: string } {
   const { serverSeed, serverSeedHash, entrants, entryTxHashes, winnerAddress } = params
   if (sha256Hex(serverSeed) !== serverSeedHash) {
-    return { valid: false, reason: 'serverSeed does not match the committed hash' }
+    return {
+      valid: false,
+      reason: 'serverSeed does not match the committed hash',
+    }
   }
   if (entrants.length === 0 || entrants.length !== entryTxHashes.length) {
     return {
@@ -82,7 +92,10 @@ export function verifyRaffleDraw(params: {
     entrants.length,
   )
   if (entrants[winnerIndex] !== winnerAddress) {
-    return { valid: false, reason: 'recomputed winner does not match the announced winner' }
+    return {
+      valid: false,
+      reason: 'recomputed winner does not match the announced winner',
+    }
   }
   return { valid: true }
 }
@@ -119,30 +132,63 @@ export function buildRaffleDrawItem(params: {
   }
 }
 
-/** Verifies a `draw` against the seed commitment the bot published *before* the round filled: the
- * `serverSeedHash` on an earlier `announce`/`joined` item of the same round in the same thread
- * (`priorItems`, oldest first, only items that arrived before the draw). A hash that arrives with
- * the draw itself proves nothing, since the bot could pick the seed after seeing the entries.
+/** Structural checks on a draw before its winner is recomputed. `expectedEntries` is the round
+ * size announced up front (a draw happens when the round is full), when known. */
+function drawShapeProblem(
+  draw: RaffleItem,
+  entrants: string[],
+  entryTxHashes: string[],
+  expectedEntries: number | undefined,
+): string | undefined {
+  if (entrants.length === 0 || entrants.length !== entryTxHashes.length) {
+    return 'entrants and entryTxHashes must be the same non-empty length'
+  }
+  if (new Set(entrants.map(e => e.toLowerCase())).size !== entrants.length) {
+    return 'the draw lists the same entrant more than once'
+  }
+  if (new Set(entryTxHashes.map(h => h.toLowerCase())).size !== entryTxHashes.length) {
+    return 'the draw lists the same entry payment more than once'
+  }
+  if (expectedEntries !== undefined && entrants.length !== expectedEntries) {
+    return `the draw lists ${entrants.length} entrants but the round announced ${expectedEntries}`
+  }
+  if (draw.entryPriceWei !== undefined && draw.potWei !== undefined) {
+    try {
+      if (BigInt(draw.entryPriceWei) * BigInt(entrants.length) !== BigInt(draw.potWei)) {
+        return 'the pot is not the entry price times the number of entrants'
+      }
+    } catch {
+      return 'the entry price or pot is not a number'
+    }
+  }
+  return undefined
+}
+
+/** Verifies a `draw` against the seed commitment the bot published *before* the round opened for
+ * entries: the `serverSeedHash` on an earlier `announce` item of the same round (`priorItems`,
+ * oldest first, only items that arrived before the draw from the same sender; the caller
+ * enforces that). Only `announce` counts: a `joined` reply is sent after the entrant's own
+ * payment, so it is not a pre-entry commitment. A hash that arrives with the draw proves
+ * nothing, since the operator could pick the seed after seeing the entries.
  *
- * Returns `null` when there is nothing to verify against (a partial draw, or no commitment seen):
- * callers show no "verified" claim then. Conflicting commitments for one round, or a draw that
- * names a different hash than the one announced, are failures. */
+ * Returns `null` when there is nothing to verify against (a partial draw, or no commitment
+ * seen): callers show no claim then. Conflicting commitments for one round, a draw naming a
+ * different hash, duplicate entrants or payments, or a count that differs from the announced
+ * round size are failures.
+ *
+ * A pass proves ONLY that the seed was not changed after the commitment and that the winner
+ * follows from the listed entrants and seed. It does not prove the entrants are real on-chain
+ * payments or that no entry was dropped (see this file's header). */
 export function verifyRaffleDrawAgainstThread(
   draw: RaffleItem,
   priorItems: RaffleItem[],
 ): { valid: boolean; reason?: string } | null {
   const { winnerAddress, serverSeed, entrants, entryTxHashes } = draw
   if (!winnerAddress || !serverSeed || !entrants || !entryTxHashes) return null
-  const committed = new Set(
-    priorItems
-      .filter(
-        item =>
-          item.raffleId === draw.raffleId &&
-          (item.action === 'announce' || item.action === 'joined') &&
-          item.serverSeedHash,
-      )
-      .map(item => item.serverSeedHash as string),
+  const announces = priorItems.filter(
+    item => item.raffleId === draw.raffleId && item.action === 'announce' && item.serverSeedHash,
   )
+  const committed = new Set(announces.map(item => item.serverSeedHash as string))
   if (committed.size === 0) return null
   if (committed.size > 1) {
     return {
@@ -157,6 +203,14 @@ export function verifyRaffleDrawAgainstThread(
       reason: 'the draw names a different commitment than the one announced',
     }
   }
+  const sizes = new Set(
+    announces.map(item => item.maxEntries).filter((n): n is number => n !== undefined),
+  )
+  if (sizes.size > 1) {
+    return { valid: false, reason: 'the round announced conflicting sizes' }
+  }
+  const problem = drawShapeProblem(draw, entrants, entryTxHashes, [...sizes][0])
+  if (problem) return { valid: false, reason: problem }
   return verifyRaffleDraw({
     serverSeed,
     serverSeedHash,

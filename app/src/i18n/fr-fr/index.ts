@@ -22,6 +22,15 @@ export default {
     emojiPickerTitle: 'Choisir un emoji',
     stampPrice: 'Prix du timbre',
   },
+  raffleDraw: {
+    verified: "Le tirage correspond à l'engagement de la graine",
+    failed: 'Échec de la vérification : {reason}',
+    explainerToggle: 'Que montre ceci ?',
+    explainerShows:
+      "Montre : l'opérateur n'a pas changé la graine après s'y être engagé, et le gagnant découle des participants listés et de cette graine.",
+    explainerNotShown:
+      "Ne montre pas : que les participants listés sont de vrais paiements on-chain, ni qu'aucune participation n'a été écartée.",
+  },
   blackjackBet: {
     menuLabel: 'Jouer au blackjack',
     title: 'Commencer une main de blackjack',

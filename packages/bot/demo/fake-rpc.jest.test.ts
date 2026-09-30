@@ -1,3 +1,7 @@
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs'
+import { networkInterfaces, tmpdir } from 'os'
+import { join } from 'path'
+
 import { Transaction, Wallet } from 'ethers'
 
 import { FakeRpc, startFakeRpc } from './fake-rpc'
@@ -75,5 +79,130 @@ describe('fake chain RPC', () => {
     const { raw } = await transfer(poor, rich.address, 10n ** 18n, 0)
     await rpc(fake, 'eth_sendRawTransaction', [raw])
     expect((await rpc(fake, 'eth_getBalance', [poor.address])).result).toBe('0x0')
+  })
+})
+
+describe('fake chain CORS (#361)', () => {
+  let fake: FakeRpc
+  beforeEach(async () => {
+    fake = await startFakeRpc({ port: 0 })
+  })
+  afterEach(() => fake.close())
+
+  it('answers a browser preflight with 204 and the CORS headers', async () => {
+    const res = await fetch(fake.url, {
+      method: 'OPTIONS',
+      headers: {
+        'origin': 'http://localhost:8080',
+        'access-control-request-method': 'POST',
+        'access-control-request-headers': 'content-type',
+      },
+    })
+    expect(res.status).toBe(204)
+    expect(res.headers.get('access-control-allow-origin')).toBe('*')
+    expect(res.headers.get('access-control-allow-methods')).toMatch(/POST/)
+    expect(res.headers.get('access-control-allow-headers')).toMatch(/content-type/)
+    expect(await res.text()).toBe('')
+  })
+
+  it('adds the header to every response: a JSON-RPC POST, a parse error and /_ctl', async () => {
+    const post = await fetch(fake.url, {
+      method: 'POST',
+      headers: { 'origin': 'http://localhost:8080', 'content-type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_chainId', params: [] }),
+    })
+    expect(post.headers.get('access-control-allow-origin')).toBe('*')
+    expect((await post.json()).result).toBe('0x279f')
+    const bad = await fetch(fake.url, { method: 'POST', body: 'not json' })
+    expect(bad.headers.get('access-control-allow-origin')).toBe('*')
+    const ctl = await fetch(`${fake.url}/_ctl`)
+    expect(ctl.headers.get('access-control-allow-origin')).toBe('*')
+  })
+
+  it('does not echo arbitrary requested headers (only header-name characters)', async () => {
+    const res = await fetch(fake.url, {
+      method: 'OPTIONS',
+      headers: { 'access-control-request-headers': 'x-ok, content-type' },
+    })
+    expect(res.headers.get('access-control-allow-headers')).toBe('x-ok, content-type')
+  })
+})
+
+describe('fake chain persistence', () => {
+  const rich = Wallet.createRandom()
+  const poor = Wallet.createRandom()
+  let dir: string
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'fake-ledger-'))
+  })
+  afterEach(() => rmSync(dir, { recursive: true, force: true }))
+
+  async function call(fake: FakeRpc, method: string, params: unknown[] = []) {
+    const res = await fetch(fake.url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+    })
+    return (await res.json()) as { result?: any }
+  }
+
+  it('a restarted chain keeps balances, nonces and transactions', async () => {
+    const stateFile = join(dir, 'fake-chain', 'ledger.json')
+    const first = await startFakeRpc({ port: 0, funded: [rich.address], stateFile })
+    const raw = await rich.signTransaction({
+      type: 2,
+      chainId: 10143,
+      nonce: 0,
+      to: poor.address,
+      value: 7n * 10n ** 17n,
+      gasLimit: 21000,
+      maxFeePerGas: 50n * 10n ** 9n,
+      maxPriorityFeePerGas: 10n ** 9n,
+    })
+    const hash = Transaction.from(raw).hash as string
+    await call(first, 'eth_sendRawTransaction', [raw])
+    const richBalance = (await call(first, 'eth_getBalance', [rich.address])).result
+    await first.close()
+    expect(statSync(stateFile).mode & 0o077).toBe(0)
+
+    const second = await startFakeRpc({ port: 0, funded: [rich.address], stateFile })
+    try {
+      expect(second.restoredTransactions).toBe(1)
+      expect(BigInt((await call(second, 'eth_getBalance', [poor.address])).result)).toBe(
+        7n * 10n ** 17n,
+      )
+      // The funded address is NOT refilled on restart: it keeps what it had after spending.
+      expect((await call(second, 'eth_getBalance', [rich.address])).result).toBe(richBalance)
+      expect((await call(second, 'eth_getTransactionCount', [rich.address])).result).toBe('0x1')
+      expect((await call(second, 'eth_getTransactionReceipt', [hash])).result.status).toBe('0x1')
+    } finally {
+      await second.close()
+    }
+  })
+
+  it('refuses a corrupt ledger instead of silently starting an empty chain', async () => {
+    const stateFile = join(dir, 'ledger.json')
+    writeFileSync(stateFile, '{ not json')
+    await expect(startFakeRpc({ port: 0, stateFile })).rejects.toThrow(/cannot be read/)
+    expect(readFileSync(stateFile, 'utf8')).toBe('{ not json')
+  })
+})
+
+describe('fake chain bind address', () => {
+  it('listens on 127.0.0.1 only by default, so nothing off this machine can reach it', async () => {
+    const fake = await startFakeRpc({ port: 0 })
+    try {
+      expect(fake.host).toBe('127.0.0.1')
+      expect(fake.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/)
+      // Where the machine has a non-loopback address, the fake chain must refuse connections there.
+      const external = Object.values(networkInterfaces())
+        .flat()
+        .find(i => i && i.family === 'IPv4' && !i.internal)
+      if (external) {
+        await expect(fetch(`http://${external.address}:${fake.port}/`)).rejects.toThrow()
+      }
+    } finally {
+      await fake.close()
+    }
   })
 })

@@ -10,6 +10,12 @@
 import { homedir } from 'os'
 import { join, resolve } from 'path'
 
+import { MAX_AMOUNT_WEI } from '../faucet-core'
+import {
+  BET_MESSAGE_FEE_RESERVE_WEI,
+  BLACKJACK_DEFAULT_MIN_WAGER_WEI,
+} from '@frank/wallet/message-item-plugins/blackjack/game'
+
 export interface DemoVar {
   name: string
   /** Where it applies: launcher, relay, chain, wallet, or a bot. */
@@ -19,6 +25,27 @@ export interface DemoVar {
   description: string
   /** A secret: never printed. */
   secret?: boolean
+}
+
+/** The demo's stamp/vote burn address: a well-known burn address (all zeros then `dEaD`), so it is
+ * obviously not anyone's wallet. The SAME value is given to the relay (the topic routes refuse to
+ * work without it, #364), every bot, and printed in the app command; a different value must be
+ * given to all three. */
+export const DEMO_DEFAULT_BURN_ADDRESS = '0x000000000000000000000000000000000000dEaD'
+/** Default `FAUCET_AMOUNT_WEI` on a real network: small, the faucet spends real testnet funds. */
+export const DEMO_REAL_FAUCET_AMOUNT_WEI = '50000000000000000' // 0.05 MON
+/** Default `FAUCET_AMOUNT_WEI` with `--fake-chain` (#362): the faucet ceiling, 1 MON. It covers the
+ * cheapest blackjack hand (table minimum + default stamp + the app's fee reserve = 0.07 MON), a
+ * raffle entry, a shop purchase and several DMs with a wide margin. Fake funds cost nothing; the
+ * per-address and daily caps still bind. */
+export const DEMO_FAKE_FAUCET_AMOUNT_WEI = '1000000000000000000' // 1 MON
+/** The raffle round size the demo uses (the bot's own default is unchanged). */
+export const DEMO_RAFFLE_MAX_ENTRIES = '5'
+/** Least a funded profile needs for one minimum-bet blackjack hand: the table minimum, the default
+ * message stamp and the app's fee reserve (`BET_MESSAGE_FEE_RESERVE_WEI`, shared with the app's
+ * bet picker). */
+export function minBlackjackFundsWei(stampWei: bigint = 10n ** 16n): bigint {
+  return BLACKJACK_DEFAULT_MIN_WAGER_WEI + stampWei + BET_MESSAGE_FEE_RESERVE_WEI
 }
 
 export const DEMO_VARS: readonly DemoVar[] = [
@@ -92,6 +119,13 @@ export const DEMO_VARS: readonly DemoVar[] = [
     description: 'Network tag the relay and bots stamp messages with (MONT = Monad testnet).',
   },
   {
+    name: 'MONAD_STAMP_BURN_ADDRESS',
+    scope: 'relay, bots, app',
+    default: DEMO_DEFAULT_BURN_ADDRESS,
+    description:
+      'Burn address of stamps and topic votes (0x + 40 hex). Passed to the relay (without it every forum post and vote fails with HTTP 500), to the bots, and printed in the app command as QCLI_MONAD_STAMP_BURN_ADDRESS: all three must agree. The default is the well-known 0x...dEaD burn address.',
+  },
+  {
     name: 'CASHWEB_STAMP_MIN_BURN_VALUE_WEI',
     scope: 'relay',
     default: '1000000000000',
@@ -160,8 +194,9 @@ export const DEMO_VARS: readonly DemoVar[] = [
   {
     name: 'RAFFLE_BOT_MAX_ENTRIES',
     scope: 'raffle',
-    default: '3',
-    description: 'Entrants per round; demo default is small so a round fills quickly.',
+    default: DEMO_RAFFLE_MAX_ENTRIES,
+    description:
+      "Entrants per round. The demo default is 5 (the bot's own default is unchanged); use a smaller number for a quick round.",
   },
   {
     name: 'BLACKJACK_BOT_MIN_WAGER_WEI',
@@ -184,8 +219,9 @@ export const DEMO_VARS: readonly DemoVar[] = [
   {
     name: 'FAUCET_AMOUNT_WEI',
     scope: 'faucet',
-    default: '50000000000000000',
-    description: 'Testnet MON sent to each new profile (0.05 MON).',
+    default: `${DEMO_REAL_FAUCET_AMOUNT_WEI} (0.05 MON); ${DEMO_FAKE_FAUCET_AMOUNT_WEI} (1 MON) with --fake-chain`,
+    description:
+      'MON sent to each new profile. The 0.05 MON real-network default is small on purpose and is NOT enough for a blackjack hand (0.07 MON minimum: 0.01 bet + 0.01 stamp + 0.05 fee reserve); raise it (ceiling 1 MON) if you want players to be able to play. With --fake-chain the default is 1 MON. FAUCET_MAX_PER_DAY and the per-address rule still apply.',
   },
   {
     name: 'FAUCET_MAX_PER_DAY',
@@ -222,7 +258,6 @@ const PASSTHROUGH = [
   'BLACKJACK_BOT_MIN_WAGER_WEI',
   'BLACKJACK_BOT_MAX_WAGER_WEI',
   'VENDOR_BOT_CATALOG_DIR',
-  'FAUCET_AMOUNT_WEI',
   'FAUCET_MAX_PER_DAY',
   'FAUCET_MIN_RESERVE_WEI',
   'FRANK_BOT_PEER_DENYLIST',
@@ -236,6 +271,9 @@ export const TOOLCHAIN_VARS = [
   'RUSTUP_HOME',
   'RUSTUP_TOOLCHAIN',
 ] as const
+
+/** The Quasar dev server's port (`devServer.port` in app/quasar.config.js). */
+export const APP_DEV_PORT = 8080
 
 /** A duration far longer than any demo, in place of the bots' 10-minute idle exit. */
 export const NEVER_IDLE_MS = String(30 * 24 * 60 * 60 * 1000)
@@ -265,6 +303,14 @@ export interface DemoConfig {
   rpcUrl: string
   networkTag: string
   minStampWei: string
+  /** Burn address given to the relay, the bots and the app command (#364). */
+  stampBurnAddress: string
+  /** Wei the faucet sends each new profile (undefined when there is no faucet). */
+  faucetAmountWei?: string
+  /** Fake chain only: the JSON ledger that persists the chain across launcher restarts. */
+  fakeChainLedger?: string
+  /** Port the app's dev server serves on (fixed by app/quasar.config.js). */
+  appPort: number
   mainWalletJson: string
   cashwebdBin?: string
   /** Toolchain variables for the relay build (only those that are set). */
@@ -343,6 +389,13 @@ export function resolveDemoConfig(params: {
     problems,
   )
 
+  const stampBurnAddress = merged.MONAD_STAMP_BURN_ADDRESS || DEMO_DEFAULT_BURN_ADDRESS
+  if (!/^0x[0-9a-fA-F]{40}$/.test(stampBurnAddress)) {
+    problems.push(
+      `MONAD_STAMP_BURN_ADDRESS must be 0x followed by 40 hex characters, got "${stampBurnAddress}"`,
+    )
+  }
+
   let rpcUrl = merged.MONAD_TESTNET_HTTP_RPC_URL ?? ''
   let mainWalletJson = merged.E2E_DEMO_MAIN_WALLET_JSON
     ? resolve(cwd, merged.E2E_DEMO_MAIN_WALLET_JSON)
@@ -389,7 +442,19 @@ export function resolveDemoConfig(params: {
     }
   }
 
-  const raffleMax = merged.RAFFLE_BOT_MAX_ENTRIES ?? '3'
+  const faucetAmountWei = wei(
+    'FAUCET_AMOUNT_WEI',
+    merged.FAUCET_AMOUNT_WEI,
+    fakeChain ? DEMO_FAKE_FAUCET_AMOUNT_WEI : DEMO_REAL_FAUCET_AMOUNT_WEI,
+    problems,
+  )
+  if (/^[0-9]+$/.test(faucetAmountWei) && BigInt(faucetAmountWei) > MAX_AMOUNT_WEI) {
+    problems.push(
+      `FAUCET_AMOUNT_WEI ${faucetAmountWei} exceeds the faucet's hard ceiling of ${MAX_AMOUNT_WEI} wei (1 MON)`,
+    )
+  }
+
+  const raffleMax = merged.RAFFLE_BOT_MAX_ENTRIES ?? DEMO_RAFFLE_MAX_ENTRIES
   if (!/^\d+$/.test(raffleMax) || Number(raffleMax) < 2) {
     problems.push(`RAFFLE_BOT_MAX_ENTRIES must be an integer >= 2, got "${raffleMax}"`)
   }
@@ -424,6 +489,7 @@ export function resolveDemoConfig(params: {
     MONAD_TESTNET_HTTP_RPC_URL: rpcUrl,
     FRANK_NETWORK_TAG: networkTag,
     CASHWEB_STAMP_MIN_BURN_VALUE_WEI: minStampWei,
+    MONAD_STAMP_BURN_ADDRESS: stampBurnAddress,
   }
   // The stamp wallet goes ONLY to the bots that pay stamps or payouts from it. Every bot but the
   // faucet does: each sends replies through stamp sub-accounts funded from it
@@ -434,6 +500,11 @@ export function resolveDemoConfig(params: {
     const value = merged[name]
     if (value) common[name] = value
   }
+
+  // Everything that belongs to the fake chain lives together, so deleting `<state dir>/fake-chain`
+  // resets the chain AND the faucet's memory of whom it funded (they must never disagree: a
+  // faucet that remembers a funding the chain has forgotten leaves profiles at 0 MON).
+  const fakeChainDir = join(stateDir, 'fake-chain')
 
   const idPath = (bot: string) => join(stateDir, 'bots', bot, 'identity.json')
   const stateOf = (bot: string) => join(stateDir, 'bots', bot, 'state')
@@ -512,7 +583,10 @@ export function resolveDemoConfig(params: {
             env: {
               ...common,
               E2E_DEMO_MAIN_WALLET_JSON: faucetWallet,
-              FAUCET_STATE_DIR: join(stateDir, 'bots', 'faucet', 'state'),
+              FAUCET_STATE_DIR: fakeChain
+                ? join(fakeChainDir, 'faucet-state')
+                : join(stateDir, 'bots', 'faucet', 'state'),
+              FAUCET_AMOUNT_WEI: faucetAmountWei,
               FAUCET_MAX_PER_RUN: '1000',
             },
           },
@@ -529,6 +603,10 @@ export function resolveDemoConfig(params: {
     rpcUrl,
     networkTag,
     minStampWei,
+    stampBurnAddress,
+    faucetAmountWei: noFaucet ? undefined : faucetAmountWei,
+    fakeChainLedger: fakeChain ? join(fakeChainDir, 'ledger.json') : undefined,
+    appPort: APP_DEV_PORT,
     mainWalletJson,
     cashwebdBin: merged.CASHWEBD_BIN || undefined,
     toolchainEnv: Object.fromEntries(

@@ -30,6 +30,7 @@ import { useAppearanceStore } from 'src/stores/appearance'
 import { useProfileStore } from 'src/stores/my-profile'
 import { useContactStore } from 'src/stores/contacts'
 import { useChatStore } from 'src/stores/chats'
+import { usePersistentStorageStore } from 'src/stores/persistent-storage'
 import { openChat } from 'src/utils/routes'
 
 import ContactBookDialog from 'src/components/dialogs/ContactBookDialog.vue'
@@ -261,6 +262,9 @@ export default defineComponent({
   },
   mounted() {
     document.addEventListener('keydown', this.shortcutKeyListener)
+    // Ticket #370: a returning user's stored seed should survive browser storage cleanup. Fails
+    // soft (never throws) and does nothing without an account.
+    void usePersistentStorageStore().ensureForAccount()
   },
 })
 </script>

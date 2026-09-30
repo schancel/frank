@@ -1,6 +1,7 @@
 import { BlackjackMoveItem } from '@frank/cashweb/types/messages'
 import { activeChain } from '@frank/wallet/chain'
 import {
+  BET_MESSAGE_FEE_RESERVE_WEI,
   BLACKJACK_DEFAULT_MAX_WAGER_WEI,
   parseBlackjackError,
   BLACKJACK_DEFAULT_MIN_WAGER_WEI,
@@ -195,15 +196,8 @@ export function dealerReplyFor(
   return reply
 }
 
-/**
- * Conservative allowance for what sending the bet MESSAGE costs beyond the wager itself: the
- * stamp's own funding transfers and gas (a message spends its stamp value plus the fee reserves of
- * the sub-accounts that pay it; ~0.013 MON of funding was observed on the local chain on top of a
- * 0.01 MON stamp). The wallet does not expose a synchronous estimate, so this is a fixed margin.
- * A wager paid with no funds left for the message is stranded (the dealer only acts on messages it
- * receives), so the picker requires `bet + stamp + this` up front.
- */
-export const BET_MESSAGE_FEE_RESERVE_WEI = 5n * 10n ** 16n // 0.05 MON
+/** Re-exported from the wallet package (the demo launcher checks its faucet amount against it). */
+export { BET_MESSAGE_FEE_RESERVE_WEI }
 
 /** Total balance a bet needs: the wager, the message stamp, and the fee reserve. */
 export function betFundsRequired(betWei: bigint, stampWei: bigint): bigint {

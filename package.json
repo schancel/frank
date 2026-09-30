@@ -17,6 +17,7 @@
     "yarn": ">= 1.21.1"
   },
   "scripts": {
-    "demo": "yarn --cwd packages/bot demo"
+    "demo": "node --import tsx packages/bot/demo/demo.ts",
+    "demo:smoke": "node --import tsx packages/bot/demo/smoke.ts"
   }
 }

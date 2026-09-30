@@ -79,6 +79,23 @@ export default {
     payout:
       'Le croupier vous envoie {amount} MON (votre mise plus les gains éventuels).',
   },
+  persistentStorage: {
+    tab: 'Stockage',
+    heading: 'Stockage persistant',
+    granted: 'Stockage persistant : accordé',
+    notGranted: 'Stockage persistant : non accordé',
+    unsupported: 'Stockage persistant : indisponible',
+    unknown: 'Stockage persistant : vérification…',
+    explainGranted:
+      'Votre navigateur a accepté de conserver les données de cette application sauf si vous les effacez vous-même. Votre phrase de récupération reste la seule sauvegarde si vous perdez cet appareil.',
+    explainNotGranted:
+      'Votre navigateur peut supprimer les données de cette application, dont votre phrase de récupération enregistrée, lorsqu’il manque d’espace ou, dans Safari, après 7 jours sans visite sauf si l’application est ajoutée à l’écran d’accueil. Votre phrase de récupération est la seule sauvegarde.',
+    explainUnsupported:
+      'Le stockage persistant est indisponible (cette page n’est pas un contexte sécurisé ou le navigateur ne le prend pas en charge) : le navigateur peut supprimer les données de cette application (Safari le fait après 7 jours sans visite sauf si l’application est ajoutée à l’écran d’accueil). Votre phrase de récupération est la seule sauvegarde.',
+    request: 'Demander au navigateur de conserver mes données',
+    confirmSeed: 'Confirmer ma phrase de récupération',
+    seedConfirmed: 'Votre phrase de récupération est confirmée.',
+  },
   blackjackBet: {
     menuLabel: 'Jouer au blackjack',
     title: 'Commencer une main de blackjack',
@@ -224,7 +241,7 @@ export default {
     settings: 'Paramètres',
     back: 'Retour',
     seedWarning:
-      'Ne perdez jamais votre phrase de passe car vous ne seriez plus en mesure de récupérer ce compte.',
+      'Notez votre phrase de récupération et gardez-la en lieu sûr. Si vous la perdez, personne ne pourra récupérer votre compte.',
     searchingRelay: 'Recherche des relais...',
     networkErrorRelayDied: 'Erreur réseau: Le serveur relais ne réponds plus.',
     networkErrorRelayUnexpected:
@@ -354,6 +371,9 @@ export default {
     notFound: 'Non trouvé',
   },
   settings: {
+    title: 'Paramètres',
+    back: 'Retour',
+    openMenu: 'Ouvrir le menu',
     appearance: 'Apparence',
     networking: 'Réseau',
     contactRefreshInterval:
@@ -367,11 +387,11 @@ export default {
   },
   profile: {
     name: 'Pseudonyme',
-    seedEntry: 'Phrase de passe',
+    seedEntry: 'Phrase de récupération',
     importSeed: 'Rappel des mémoires perdues', //? Recover past memories
-    invalidSeed: 'Phrase de passe invalide...',
+    invalidSeed: 'Ce n’est pas une phrase de récupération valide.',
     nameHint: 'Identifiant tel que vu par vos correspondants',
-    enterSeed: 'Entrez votre phrase de passe...',
+    enterSeed: 'Entrez votre phrase de récupération...',
     nameBlank:
       'Saisissez un nom : il ne peut pas être vide ni ne contenir que des espaces.',
     nameTooLong: 'Le nom est trop long : {max} caractères au maximum.',

@@ -36,11 +36,13 @@ import { PublicKey } from 'bitcore-lib-xpi'
 import { activeChain } from '@frank/wallet/chain'
 import type { DirectMessageReceived, WalletHandle } from '@frank/wallet/chain'
 import {
+  MonadMailboxAuthError,
   MonadMailboxChallengeCapacityError,
   MonadMailboxUnavailableError,
 } from '@frank/cashweb/relay/monad-mailbox-client'
 import type { ReceivedMessageWrapper } from '@frank/cashweb/types/user-interface'
 import { useChatStore } from '../stores/chats'
+import { useMailboxStatusStore } from '../stores/mailbox-status'
 
 /** Default direct-message poll interval, in milliseconds -- within issue #42's suggested 5-10s
  * range. Configurable via `MONAD_DM_POLL_INTERVAL_MS` (see `src/boot/monad-direct-messages.ts`). */
@@ -113,6 +115,7 @@ export function startDirectMessagePolling({
   intervalMs?: number
 }): DirectMessagePolling {
   const chats = useChatStore()
+  const mailboxStatus = useMailboxStatusStore()
   let sinceMs = chats.getLastReceived ?? 0
   let stopped = false
   let timer: ReturnType<typeof setTimeout> | undefined
@@ -144,6 +147,7 @@ export function startDirectMessagePolling({
       unavailableFailures = 0
       otherFailures = 0
       lastErrorKey = undefined
+      mailboxStatus.setOk()
       if (received.length === 0) {
         return
       }
@@ -177,6 +181,7 @@ export function startDirectMessagePolling({
         // the outage. Wait as long as the relay asked, but keep the loop alive.
         steady = false
         nextDelayMs = Math.max(intervalMs, err.retryAfterMs)
+        mailboxStatus.setProblem('rate-limited', nextDelayMs)
         console.warn(
           `direct-message polling rate limited; retrying in ${nextDelayMs} ms`,
         )
@@ -187,6 +192,7 @@ export function startDirectMessagePolling({
           MAX_MAILBOX_UNAVAILABLE_BACKOFF_MS,
           intervalMs * 2 ** unavailableFailures,
         )
+        mailboxStatus.setProblem('unavailable', nextDelayMs)
         console.error(
           `relay has no direct-message mailbox; retrying in ${nextDelayMs} ms`,
           err,
@@ -200,6 +206,16 @@ export function startDirectMessagePolling({
           nextDelayMs = Math.min(
             MAX_MAILBOX_UNAVAILABLE_BACKOFF_MS,
             intervalMs * 2 ** (otherFailures - 1),
+          )
+        }
+        // A single failed poll is routine (a dropped connection); only a repeat is shown, so the
+        // status does not flicker on every blip. It clears on the next successful poll.
+        if (otherFailures > 1) {
+          mailboxStatus.setProblem(
+            err instanceof MonadMailboxAuthError
+              ? 'unauthorized'
+              : 'unreachable',
+            nextDelayMs,
           )
         }
         const key =
@@ -224,6 +240,8 @@ export function startDirectMessagePolling({
   return {
     stop: () => {
       stopped = true
+      // A stopped poller (e.g. the wallet was switched) must not leave its last problem on screen.
+      mailboxStatus.setOk()
       if (timer !== undefined) clearTimeout(timer)
     },
   }

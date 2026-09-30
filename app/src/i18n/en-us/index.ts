@@ -61,6 +61,13 @@ export default {
     sendAgainRecovered:
       'An earlier pending message was delivered while this one was being sent. Send this one again as a new message?',
     sendAgain: 'Send again',
+  mailboxStatus: {
+    unavailable:
+      'Messaging service unavailable: this relay does not offer messaging, so you will not receive messages.',
+    unreachable:
+      "Can't reach the server. You may not be receiving messages; retrying.",
+    rateLimited: 'The server asked us to slow down. Retrying shortly.',
+    unauthorized: 'The server rejected your messaging login. Retrying.',
   },
   chatMessage: {
     noPayloadFound: 'Unable to find message payload',

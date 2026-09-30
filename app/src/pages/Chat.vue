@@ -27,6 +27,7 @@
             </template>
           </div>
         </q-scroll-area>
+        <mailbox-status-banner />
         <!-- Anchored to the top (not the footer) so it never grows/shrinks the footer and pushes
         an in-flight message out from under the input box while sending. -->
         <div
@@ -95,6 +96,7 @@
 import { defineComponent, ref } from 'vue'
 
 import ChatMessageComponent from '../components/chat/messages/ChatMessage.vue'
+import MailboxStatusBanner from '../components/chat/MailboxStatusBanner.vue'
 import ChatInput from '../components/chat/ChatInput.vue'
 import ChatMessageReply from '../components/chat/messages/ChatMessageReply.vue'
 
@@ -121,6 +123,7 @@ export default defineComponent({
     ChatMessageComponent,
     ChatMessageReply,
     ChatInput,
+    MailboxStatusBanner,
   },
   beforeRouteUpdate(
     to: RouteLocationNormalized,

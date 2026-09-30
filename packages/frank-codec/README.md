@@ -22,6 +22,12 @@ Implemented (against the spec as merged on main):
 - Topic events: type 9 (post), type 10 (post plus its burn transaction), and type 11 (vote),
   with the R6 limits and the S11 network equality. The burn transaction is opaque bytes here;
   verifying it against the chain (T8) belongs to the relay, not to this codec.
+- The stamp fields of #198 through stage 9: type-5 fields 6-8 (`E`, `X`, the DLEQ proof) with the
+  T3b encoding rules (33-byte compressed point on the curve, `x < p`, prefix 02/03; proof
+  scalars `c` and `s` each in `1..n-1`), the type-4 schema-2 stamp key (field 8, required from
+  schema 2, undefined in schema 1, key type 1, S10a.1), the same-subject schema order (S10a.2),
+  and the S8/S9 rule that the delivery destination is the stamp key `P'` and is not compared with
+  the type-5 recipient. `defaultContext()` is reader version 2 with type 4 at schema 2.
 - Retention: exact original frame bytes at every level, unknown types/frame versions/fields.
 - Reciprocal check of Rust-originated proof fixtures in
   `docs/protocol/cbor/vectors/rust-origin.json` (`test/rust-origin.jest.test.ts`).
@@ -31,9 +37,10 @@ Not implemented:
 
 - Stage 10 (`full` operation): no signature or payment verification, no decrypted-frame
   opening, no `cryptographic` category.
-- T3a stealth derivation and DLEQ.
-- Type-5 fields 6-8 and directory-statement field 8, pending the stamp-key spec PR #200.
-  Type 5 and type 4 are typed only for fields defined on main.
+- T3a stamp destination derivation and the T3b DLEQ proof (verify or prove), keccak, the S10a.4
+  binding of `P'` to a directory state, and every other `cryptographic` check. Type-5 fields 6-8
+  are checked for encoding only; a well-formed but wrong proof is accepted at `typed`.
+- The stage-10 vectors of the #198 list (README section 10). The typed ones are in the manifest.
 
 ## API
 

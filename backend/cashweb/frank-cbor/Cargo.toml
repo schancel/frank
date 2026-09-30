@@ -7,6 +7,8 @@ license = "MIT"
 publish = false
 
 [dependencies]
+# Point parsing for the type-5 stamp fields (README T3b). Already the workspace curve library.
+secp256k1-abc = { git = "https://github.com/raipay/secp256k1-abc" }
 sha2 = "=0.10.5"
 thiserror = "=1.0.35"
 

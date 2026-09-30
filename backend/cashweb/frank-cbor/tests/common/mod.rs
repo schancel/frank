@@ -39,12 +39,38 @@ pub fn ts(seconds: i64, nanos: u32) -> CborValue {
     ])
 }
 
+/// README T3c worked example (network `monad`): `P'`, `E`, `X` and the DLEQ proof `c || s`. Real
+/// curve points and a real proof, so a type-5 frame built from them passes the T3b encoding
+/// rules. The fixtures use another network tag, so the proof is not verifiable there; only the
+/// encoding is claimed at `typed`.
+pub const T3C_STAMP_KEY: &str =
+    "03f7fc9b839b4c4c8ff821777ecc410b461d6ca6b36e931ddbfadda8b37a55ae33";
+pub const T3C_EPHEMERAL: &str =
+    "022f88fd8059bf1bfda332a2ff01f4667efdc1d8526562ecbd6bcac57ace81b6c3";
+pub const T3C_SHARED: &str = "02d066aa56e65e5cba4051500237a51ae9fd16c2c3476904d47d667f9fe1fca3e9";
+pub const T3C_PROOF: &str = concat!(
+    "bf8f2ddfeb72fb808d95507bf325ca2e09ea762fd874aef4422a74b7b82e327d",
+    "a6708a4fa9553e426718e3cf8ed714d75546b0458f8a4ef1820c30dce4b0163a"
+);
+
+/// A key-type-1 account holding the given hex key.
+pub fn stamp_account(key_hex: &str) -> CborValue {
+    cbor_map(vec![
+        (0, int(1)),
+        (1, CborValue::Bytes(hex::decode(key_hex).expect("key hex"))),
+    ])
+}
+
+/// A frame around `payload`. Type 4 is written at `schema_version` 2 with `min_reader_version` 2,
+/// because its stamp key (field 8) is required from schema 2 (README S10a.1); every other type is
+/// version 1.
 pub fn fr(type_id: u32, payload: &CborValue) -> Vec<u8> {
+    let version = if type_id == 4 { 2 } else { 1 };
     encode_frame(
         EnvelopeFields {
             type_id,
-            schema_version: 1,
-            min_reader_version: 1,
+            schema_version: version,
+            min_reader_version: version,
         },
         FramePayload::Value(payload),
     )
@@ -102,20 +128,25 @@ fn type6_frame(revision: &[u8]) -> Vec<u8> {
     )
 }
 
-fn type5_frame() -> Vec<u8> {
+/// The nine fields of the fixture type-5 payload, in key order.
+pub fn type5_fields() -> Vec<(u64, CborValue)> {
     let revision = revision_frame();
     let encrypted = type6_frame(&revision);
-    fr(
-        5,
-        &cbor_map(vec![
-            (0, CborValue::Text(NET.to_string())),
-            (1, acct2(9)),
-            (2, acct1(3)),
-            (3, int(65_535)),
-            (4, CborValue::Bytes(bytes_of(24, 4))),
-            (5, CborValue::Bytes(encrypted)),
-        ]),
-    )
+    vec![
+        (0, CborValue::Text(NET.to_string())),
+        (1, acct2(9)),
+        (2, acct1(3)),
+        (3, int(65_535)),
+        (4, CborValue::Bytes(bytes_of(24, 4))),
+        (5, CborValue::Bytes(encrypted)),
+        (6, CborValue::Bytes(hex::decode(T3C_EPHEMERAL).unwrap())),
+        (7, CborValue::Bytes(hex::decode(T3C_SHARED).unwrap())),
+        (8, CborValue::Bytes(hex::decode(T3C_PROOF).unwrap())),
+    ]
+}
+
+fn type5_frame() -> Vec<u8> {
+    fr(5, &cbor_map(type5_fields()))
 }
 
 fn payment(t3: &[u8], index: u32) -> CborValue {
@@ -139,7 +170,7 @@ pub fn direct_message_frame() -> Vec<u8> {
         1,
         &cbor_map(vec![
             (0, CborValue::Text(NET.to_string())),
-            (1, acct1(3)),
+            (1, stamp_account(T3C_STAMP_KEY)),
             (2, CborValue::Bytes(payload_frame)),
             (3, CborValue::Bytes(t3.to_vec())),
             (4, CborValue::Array(vec![payment(&t3, 0), payment(&t3, 1)])),
@@ -215,6 +246,7 @@ fn directory_statement_frame() -> Vec<u8> {
             (3, ts(1_700_000_000, 123_456_789)),
             (4, CborValue::Array(vec![relay(1), relay(2)])),
             (6, ts(1_900_000_000, 999_999_999)),
+            (8, stamp_account(T3C_STAMP_KEY)),
         ]),
     )
 }
@@ -290,11 +322,12 @@ fn context_for(types: impl Iterator<Item = u32>) -> ValidationContext {
     ValidationContext {
         operation: Operation::Typed,
         route_byte_limit: MAX_FRAME_BYTES as u64,
-        reader_version: 1,
+        // Reader version 2 reads type 4 at schema 2 (the stamp key); every other type is at 1.
+        reader_version: 2,
         supported_schemas: types
             .map(|type_id| SupportedSchema {
                 type_id,
-                schema_version: 1,
+                schema_version: if type_id == 4 { 2 } else { 1 },
             })
             .collect(),
         opaque_retention_allowed: false,

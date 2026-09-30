@@ -29,7 +29,7 @@ export function contextOf(c: CaseDef): ValidationContext {
   return defaultContext({
     operation: c.op,
     routeByteLimit: c.routeByteLimit ?? 8_388_617,
-    readerVersion: c.readerVersion ?? 1,
+    readerVersion: c.readerVersion ?? 2,
     supportedSchemas: c.supported ?? PRE_TOPIC_SCHEMAS,
     opaqueRetentionAllowed: c.retention ?? false,
     priorDirectoryStatementFrame: c.prior === undefined ? null : c.prior,

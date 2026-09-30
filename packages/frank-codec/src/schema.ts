@@ -33,6 +33,7 @@ import {
   U64_MAX,
 } from './constants'
 import { ErrorCategory, ErrorStage, FrankCodecError } from './errors'
+import { isCompressedPoint, isProofEncoding } from './point'
 import type {
   AccountRef,
   DraftPayload,
@@ -210,6 +211,21 @@ function account(v: FrankValue | undefined, path: string): AccountRef {
   return { keyType, keyBytes }
 }
 
+/** A type-5 stamp point (T3b encoding rules): 33 compressed bytes on the curve. */
+function point(v: FrankValue | undefined, path: string): Uint8Array {
+  const b = bstr(v, path, 33, 33)
+  if (!isCompressedPoint(b))
+    throw bad(path, 'not a valid compressed secp256k1 point (T3b)')
+  return b
+}
+
+/** The type-5 DLEQ proof `c || s` (T3b encoding rules): 64 bytes, both scalars in 1..n-1. */
+function proof(v: FrankValue | undefined, path: string): Uint8Array {
+  const b = bstr(v, path, 64, 64)
+  if (!isProofEncoding(b)) throw bad(path, 'proof scalar outside 1..n-1 (T3b)')
+  return b
+}
+
 function timestamp(v: FrankValue | undefined, path: string): Timestamp {
   const m = fields(v, path, [0, 1], [], false, false)
   const seconds = m.get(0)
@@ -381,6 +397,10 @@ export function parseDraft(
   typeId: number,
   payload: FrankValue,
   allow: boolean,
+  schema: { envelope: number; effective: number } = {
+    envelope: 1,
+    effective: 1,
+  },
 ): DraftPayload {
   const P = 'root/payload'
   switch (typeId) {
@@ -430,7 +450,17 @@ export function parseDraft(
       return cp
     }
     case TYPE_DIRECTORY_STATEMENT: {
-      const m = fields(payload, P, [0, 1, 2, 3, 4], [5, 6, 7], true, allow)
+      // Field 8 (the stamp key) is required in schema 2 and undefined in schema 1, where C12
+      // makes it a schema error (S10a.1). `effective` is the exact version, or the reader's
+      // highest supported schema when a newer frame is read through V6.3.
+      const m = fields(
+        payload,
+        P,
+        schema.effective >= 2 ? [0, 1, 2, 3, 4, 8] : [0, 1, 2, 3, 4],
+        [5, 6, 7],
+        true,
+        allow,
+      )
       const st: DraftPayload = {
         type: 4,
         network: networkTag(m.get(0), `${P}.0`),
@@ -440,8 +470,10 @@ export function parseDraft(
         relays: asList(m.get(4), `${P}.4`, 1, MAX_RELAY_BINDINGS).map((e, i) =>
           relayBinding(e, `${P}.4[${i}]`, allow),
         ),
+        schemaVersion: schema.envelope,
         unknownFields: m.unknown,
       }
+      if (m.has(8)) st.stampKey = account(m.get(8), `${P}.8`)
       if (m.has(5)) {
         st.keyTransitions = asList(m.get(5), `${P}.5`, 1, 16).map((e, i) =>
           keyTransition(e, `${P}.5[${i}]`, allow),
@@ -456,7 +488,7 @@ export function parseDraft(
       return st
     }
     case TYPE_RECIPIENT_ENCRYPTED_PAYLOAD: {
-      const m = fields(payload, P, [0, 1, 2, 3, 4, 5], [], true, allow)
+      const m = fields(payload, P, [0, 1, 2, 3, 4, 5, 6, 7, 8], [], true, allow)
       return {
         type: 5,
         network: networkTag(m.get(0), `${P}.0`),
@@ -465,6 +497,9 @@ export function parseDraft(
         suite: u32ish(m.get(3), `${P}.3`, 0, 65535),
         nonce: bstr(m.get(4), `${P}.4`, 1, 64),
         ciphertext: bstr(m.get(5), `${P}.5`, 1, MAX_CIPHERTEXT_BYTES),
+        ephemeralPoint: point(m.get(6), `${P}.6`),
+        sharedPoint: point(m.get(7), `${P}.7`),
+        dleqProof: proof(m.get(8), `${P}.8`),
         unknownFields: m.unknown,
       }
     }
@@ -632,6 +667,7 @@ export function checkAllocated(d: DraftPayload): void {
     case 4:
       checkKeyType(d.subject, `${P}.1`)
       d.relays.forEach((r, i) => checkKeyType(r.identity, `${P}.4[${i}].2`))
+      if (d.stampKey) checkKeyType(d.stampKey, `${P}.8`)
       d.keyTransitions?.forEach((t, i) => {
         checkKeyType(t.signer, `${P}.5[${i}].2`)
         checkSignatureShape(t.algorithm, t.signer, t.signature, `${P}.5[${i}]`)

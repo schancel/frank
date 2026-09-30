@@ -94,8 +94,13 @@ export function defaultContext(
   return {
     operation: 'typed',
     routeByteLimit: MAX_FRAME_BYTES,
-    readerVersion: 1,
-    supportedSchemas: KNOWN_TYPES.map(typeId => ({ typeId, schemaVersion: 1 })),
+    // Reader version 2 reads type 4 at schema 2 (the stamp key, README S10a.1); every other
+    // type stays at schema 1.
+    readerVersion: 2,
+    supportedSchemas: KNOWN_TYPES.map(typeId => ({
+      typeId,
+      schemaVersion: typeId === TYPE_DIRECTORY_STATEMENT ? 2 : 1,
+    })),
     opaqueRetentionAllowed: false,
     priorDirectoryStatementFrame: null,
     ...overrides,
@@ -305,7 +310,10 @@ function processFrame(
   const draft = relocating(location, () => {
     checkTypeLimits(env.typeId, payload)
     // Stage 8.2 and 8.3: structure, then allocated identifiers.
-    const d = parseDraft(env.typeId, payload, projection === 'newer-schema')
+    const d = parseDraft(env.typeId, payload, projection === 'newer-schema', {
+      envelope: env.schemaVersion,
+      effective: Math.min(env.schemaVersion, highest),
+    })
     checkAllocated(d)
     return d
   })

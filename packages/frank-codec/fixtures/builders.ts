@@ -52,11 +52,16 @@ export const ts = (seconds: bigint | number, nanos: number): Fields =>
     [1, nanos],
   ])
 
+/**
+ * A frame around `payload`. Type 4 is written at `schema_version` 2 with `min_reader_version` 2
+ * by default, because its stamp key (field 8) is required from schema 2 (README S10a.1); every
+ * other type is version 1.
+ */
 export const fr = (
   typeId: number,
   payload: Encodable,
-  schema = 1,
-  minReader = 1,
+  schema = typeId === 4 ? 2 : 1,
+  minReader = typeId === 4 ? 2 : 1,
 ): Uint8Array =>
   encodeFrame(
     { typeId, schemaVersion: schema, minReaderVersion: minReader },
@@ -185,8 +190,44 @@ export function type6Frame(rev8 = rev8Frame()): Uint8Array {
   )
 }
 
+/**
+ * README T3c worked example (network `monad`): `P'`, `E`, `X` and the DLEQ proof `c || s`.
+ * Real curve points and a real proof, so a type-5 frame built from them passes the T3b encoding
+ * rules. The typed fixtures use a different network tag, so the proof is not verifiable there;
+ * stage 10 is a later step and typed frames never claim it.
+ */
+export const T3C = {
+  stampKey: hex(
+    '03f7fc9b839b4c4c8ff821777ecc410b461d6ca6b36e931ddbfadda8b37a55ae33',
+  ),
+  ephemeral: hex(
+    '022f88fd8059bf1bfda332a2ff01f4667efdc1d8526562ecbd6bcac57ace81b6c3',
+  ),
+  shared: hex(
+    '02d066aa56e65e5cba4051500237a51ae9fd16c2c3476904d47d667f9fe1fca3e9',
+  ),
+  proof: hex(
+    'bf8f2ddfeb72fb808d95507bf325ca2e09ea762fd874aef4422a74b7b82e327d' +
+      'a6708a4fa9553e426718e3cf8ed714d75546b0458f8a4ef1820c30dce4b0163a',
+  ),
+} as const
+
+/** A key-type-1 account holding `key` (default: the T3c stamp key `P'`). */
+export const stampAccount = (key: Uint8Array = T3C.stampKey): Fields =>
+  M([
+    [0, 1],
+    [1, key],
+  ])
+
 export function type5Payload(
-  o: Partial<{ net: string; recipient: Fields; suite: number }> = {},
+  o: Partial<{
+    net: string
+    recipient: Fields
+    suite: number
+    e: Encodable
+    x: Encodable
+    proof: Encodable
+  }> = {},
 ): Fields {
   return M([
     [0, o.net ?? NET],
@@ -196,6 +237,9 @@ export function type5Payload(
     [4, bytesOf(24, 4)],
     // Proof suite 65535: the ciphertext is exactly the decrypted type-6 frame (README S2c).
     [5, type6Frame()],
+    [6, o.e ?? T3C.ephemeral],
+    [7, o.x ?? T3C.shared],
+    [8, o.proof ?? T3C.proof],
   ])
 }
 
@@ -243,7 +287,7 @@ export function deliveryPayload(
       : o.payments ?? [payment(t3, { index: 0 }), payment(t3, { index: 1 })]
   return M([
     [0, o.net ?? NET],
-    [1, o.destination ?? acct1(3)],
+    [1, o.destination ?? stampAccount()],
     [2, pf],
     [3, t3],
     [4, payments],
@@ -340,6 +384,7 @@ export function statementPayload(
     transitions: Fields[]
     expiry: Fields
     authorities: Fields[]
+    stampKey: Fields | null
   }> = {},
 ): Fields {
   const m = M([
@@ -352,6 +397,8 @@ export function statementPayload(
   if (o.transitions) m.set(5, o.transitions)
   if (o.expiry) m.set(6, o.expiry)
   if (o.authorities) m.set(7, o.authorities)
+  // Schema 2 requires the stamp key; `stampKey: null` builds the field-less schema-1 layout.
+  if (o.stampKey !== null) m.set(8, o.stampKey ?? stampAccount())
   return m
 }
 

@@ -61,6 +61,7 @@ export default {
     sendAgainRecovered:
       'An earlier pending message was delivered while this one was being sent. Send this one again as a new message?',
     sendAgain: 'Send again',
+  },
   mailboxStatus: {
     unavailable:
       'Messaging service unavailable: this relay does not offer messaging, so you will not receive messages.',

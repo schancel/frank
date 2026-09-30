@@ -61,6 +61,7 @@ export default {
     sendAgainRecovered:
       "Un message en attente précédent a été remis pendant l'envoi de celui-ci. Le renvoyer comme nouveau message ?",
     sendAgain: 'Renvoyer',
+  },
   mailboxStatus: {
     unavailable:
       'Service de messagerie indisponible : ce relais ne propose pas la messagerie, vous ne recevrez donc pas de messages.',

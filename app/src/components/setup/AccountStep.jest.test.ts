@@ -297,7 +297,7 @@ describe('AccountStep recovery phrase controls', () => {
       (emitted as { seed: string }).seed,
       persistSeed,
     )
-    expect(persistSeed).toHaveBeenCalledWith(VALID_MNEMONIC)
+    expect(persistSeed).toHaveBeenCalledWith(VALID_MNEMONIC, null)
     expect(committed).toBe(VALID_MNEMONIC)
   })
 })

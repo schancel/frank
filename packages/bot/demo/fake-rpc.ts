@@ -10,8 +10,20 @@
  * Never point anything holding real value at it.
  *
  * Control/inspection: `GET /_ctl` returns every transaction seen, `[{hash, from, to, valueWei}]`.
+ *
+ * CORS (#361): every response carries `Access-Control-Allow-Origin: *` and OPTIONS preflights get a
+ * 204, so a browser app on another origin (the Quasar dev server) can reach it. `*` is safe HERE
+ * only because this server holds nothing real and binds 127.0.0.1; this module is never used for a
+ * real RPC and nothing in it may be copied into one.
+ *
+ * Persistence (#361 follow-up): with `stateFile` the ledger (balances, nonces, accepted raw
+ * transactions) is written after every accepted transaction and reloaded on the next start, so a
+ * restarted demo keeps every profile's balance and the bots' nonces. A file that cannot be parsed
+ * is refused (never silently replaced by an empty chain).
  */
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs'
 import { createServer, IncomingMessage, Server, ServerResponse } from 'http'
+import { dirname } from 'path'
 
 import { Transaction } from 'ethers'
 
@@ -33,8 +45,52 @@ export interface FakeChainTx {
 export interface FakeRpc {
   url: string
   port: number
+  /** Transactions restored from the state file at start (0 for a fresh chain). */
+  restoredTransactions: number
   transactions(): FakeChainTx[]
   close(): Promise<void>
+}
+
+const CORS_METHODS = 'POST, GET, OPTIONS'
+const CORS_DEFAULT_HEADERS = 'content-type'
+
+/** The CORS headers for a response to `req` (a preflight's requested headers are echoed back). */
+export function corsHeaders(req: Pick<IncomingMessage, 'headers'>): Record<string, string> {
+  const requested = req.headers['access-control-request-headers']
+  return {
+    'access-control-allow-origin': '*',
+    'access-control-allow-methods': CORS_METHODS,
+    'access-control-allow-headers':
+      typeof requested === 'string' && /^[\w\-, ]+$/.test(requested)
+        ? requested
+        : CORS_DEFAULT_HEADERS,
+    'access-control-max-age': '600',
+  }
+}
+
+interface LedgerFile {
+  version: 1
+  balances: Record<string, string>
+  nonces: Record<string, number>
+  /** Raw signed transactions, in acceptance order. */
+  transactions: string[]
+}
+
+function loadLedger(path: string): LedgerFile | undefined {
+  if (!existsSync(path)) return undefined
+  try {
+    const json = JSON.parse(readFileSync(path, 'utf8')) as LedgerFile
+    if (json.version !== 1 || !json.balances || !json.nonces || !Array.isArray(json.transactions)) {
+      throw new Error('unexpected format')
+    }
+    return json
+  } catch (err) {
+    throw new Error(
+      `the fake-chain ledger ${path} cannot be read (${
+        err instanceof Error ? err.message : String(err)
+      }); delete it (and the faucet state next to it) to start a fresh fake chain`,
+    )
+  }
 }
 
 class RpcError extends Error {
@@ -48,12 +104,42 @@ export async function startFakeRpc(params: {
   host?: string
   /** Addresses that start with a large balance (the demo's main wallet). */
   funded?: string[]
+  /** JSON file the ledger is persisted to (created 0600, parent directory created). */
+  stateFile?: string
 }): Promise<FakeRpc> {
   const txs = new Map<string, Transaction>()
   const nonces = new Map<string, number>()
-  const balances = new Map<string, bigint>(
-    (params.funded ?? []).map(a => [a.toLowerCase(), FUNDED_BALANCE_WEI]),
-  )
+  const balances = new Map<string, bigint>()
+  const saved = params.stateFile ? loadLedger(params.stateFile) : undefined
+  let restored = 0
+  if (saved) {
+    for (const [a, v] of Object.entries(saved.balances)) balances.set(a, BigInt(v))
+    for (const [a, n] of Object.entries(saved.nonces)) nonces.set(a, n)
+    for (const raw of saved.transactions) {
+      const tx = Transaction.from(raw)
+      txs.set(tx.hash as string, tx)
+      restored += 1
+    }
+  }
+  // A funded address that is new to a restored ledger still starts funded; a known one keeps
+  // whatever it has spent since.
+  for (const a of params.funded ?? []) {
+    if (!balances.has(a.toLowerCase())) balances.set(a.toLowerCase(), FUNDED_BALANCE_WEI)
+  }
+  function persist(): void {
+    if (!params.stateFile) return
+    const ledger: LedgerFile = {
+      version: 1,
+      balances: Object.fromEntries([...balances].map(([a, v]) => [a, v.toString()])),
+      nonces: Object.fromEntries(nonces),
+      transactions: [...txs.values()].map(t => t.serialized),
+    }
+    mkdirSync(dirname(params.stateFile), { recursive: true, mode: 0o700 })
+    const tmp = `${params.stateFile}.tmp`
+    writeFileSync(tmp, JSON.stringify(ledger), { mode: 0o600 })
+    chmodSync(tmp, 0o600)
+    renameSync(tmp, params.stateFile)
+  }
   const balanceOf = (a: string) => balances.get(a.toLowerCase()) ?? 0n
   const debit = (a: string, amount: bigint) => {
     const cur = balanceOf(a)
@@ -119,6 +205,7 @@ export async function startFakeRpc(params: {
           nonces.set(from, Math.max(nonces.get(from) ?? 0, tx.nonce + 1))
           debit(from, tx.value + tx.gasLimit * (tx.maxFeePerGas ?? tx.gasPrice ?? 0n))
           if (tx.to) balances.set(tx.to.toLowerCase(), balanceOf(tx.to) + tx.value)
+          persist()
         }
         return hash
       }
@@ -185,6 +272,12 @@ export async function startFakeRpc(params: {
   }
 
   function onRequest(req: IncomingMessage, res: ServerResponse) {
+    for (const [name, value] of Object.entries(corsHeaders(req))) res.setHeader(name, value)
+    if (req.method === 'OPTIONS') {
+      res.statusCode = 204
+      res.end()
+      return
+    }
     if (req.method === 'GET' && req.url === '/_ctl') {
       const list: FakeChainTx[] = [...txs.values()].map(t => ({
         hash: t.hash as string,
@@ -222,6 +315,7 @@ export async function startFakeRpc(params: {
   return {
     url: `http://${host}:${port}`,
     port,
+    restoredTransactions: restored,
     transactions: () =>
       [...txs.values()].map(t => ({
         hash: t.hash as string,

@@ -17,7 +17,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync
 import { createServer } from 'net'
 import { dirname, join, resolve } from 'path'
 
-import { Wallet } from 'ethers'
+import { formatEther, Wallet } from 'ethers'
 
 import { fetchMonadProfilesSince } from '@frank/wallet/monad-identity'
 
@@ -25,7 +25,13 @@ import { loadOrCreateIdentity } from '../qwen-bot-common'
 import { ensurePrivateDir } from '../stamp-pool-seed'
 import { collectCuratedEntries, renderCuratedDefaultsToml } from '../print-curated-defaults'
 import { BOT_PROFILES } from '../bot-directory'
-import { DemoBot, DemoConfig, DemoConfigError, resolveDemoConfig } from './demo-config'
+import {
+  DemoBot,
+  DemoConfig,
+  DemoConfigError,
+  minBlackjackFundsWei,
+  resolveDemoConfig,
+} from './demo-config'
 import { EnvFileError, readEnvFile } from './env-file'
 import { startFakeRpc, FakeRpc } from './fake-rpc'
 import {
@@ -77,6 +83,13 @@ export interface StartOptions {
   pollMs?: number
   /** Called instead of `process.exit` on a second signal during shutdown (tests). */
   forceExit?: (code: number) => void
+  /**
+   * Stop the stack when this launcher's parent process goes away. Set when a package-manager
+   * wrapper (`yarn demo`) started it: `kill -INT <yarn pid>` kills yarn without forwarding the
+   * signal, which would leave the stack running with no terminal to stop it. It is the same as a
+   * SIGHUP (terminal closed). Nothing is killed because of it beyond this launcher's own children.
+   */
+  watchParent?: { pid: number; current?: () => number; intervalMs?: number }
 }
 
 const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms))
@@ -337,11 +350,26 @@ export async function startDemo(
     lock?.release()
   }
   const signals = Object.keys(signalCodes) as NodeJS.Signals[]
+  let parentTimer: NodeJS.Timeout | undefined
+  const watch = options.watchParent
+  if (watch) {
+    const currentParent = watch.current ?? (() => process.ppid)
+    parentTimer = setInterval(() => {
+      if (currentParent() === watch.pid) return
+      clearInterval(parentTimer)
+      print(
+        `\n[demo] the process that started this launcher (pid ${watch.pid}, e.g. yarn) is gone: stopping like a closed terminal`,
+      )
+      onSignal('SIGHUP')
+    }, watch.intervalMs ?? 1000)
+    parentTimer.unref()
+  }
   for (const sig of signals) process.on(sig, onSignal)
   process.on('uncaughtException', onFatal)
   process.on('unhandledRejection', onFatal)
   process.on('exit', onExit)
   function removeGuards(): void {
+    if (parentTimer) clearInterval(parentTimer)
     for (const sig of signals) process.off(sig, onSignal)
     process.off('uncaughtException', onFatal)
     process.off('unhandledRejection', onFatal)
@@ -394,8 +422,21 @@ export async function startDemo(
         // Only the address is read, to fund it on the fake chain; the key never leaves the file.
         funded.push((JSON.parse(readFileSync(path, 'utf8')) as { address: string }).address)
       }
-      fakeRpc = await startFakeRpc({ port: config.fakeRpcPort, funded })
+      fakeRpc = await startFakeRpc({
+        port: config.fakeRpcPort,
+        funded,
+        stateFile: config.fakeChainLedger,
+      })
       print(`[demo] fake chain RPC on ${fakeRpc.url} (no real funds, no keys)`)
+      print(
+        fakeRpc.restoredTransactions > 0
+          ? `[demo] fake chain restored from ${config.fakeChainLedger} (${
+              fakeRpc.restoredTransactions
+            } transactions): balances and the faucet's records survive restarts; delete ${dirname(
+              config.fakeChainLedger as string,
+            )} to start a fresh chain`
+          : `[demo] fake chain starts empty; it is saved to ${config.fakeChainLedger} and reloaded on the next start`,
+      )
     }
 
     // Identities first: the relay's curated defaults are config, so they must exist before it starts.
@@ -435,6 +476,8 @@ export async function startDemo(
         MONAD_TESTNET_HTTP_RPC_URL: config.rpcUrl,
         FRANK_NETWORK_TAG: config.networkTag,
         CASHWEB_STAMP_MIN_BURN_VALUE_WEI: config.minStampWei,
+        // The relay's topic routes (forum posts and votes) answer HTTP 500 without it (#364).
+        MONAD_STAMP_BURN_ADDRESS: config.stampBurnAddress,
         FRANK_RELAY_LISTEN: `127.0.0.1:${config.relayPort}`,
         FRANK_RELAY_DB_PATH: relayDb,
         FRANK_RELAY_EXTRA_TOML: curatedPath,
@@ -537,19 +580,41 @@ export async function startDemo(
   }
 }
 
+/** The exact shell command that starts the app so its browser can reach this stack. */
+export function appCommand(config: DemoConfig, relayUrl: string): string[] {
+  const rpcForApp = config.fakeChain ? config.rpcUrl : '<your MONAD_TESTNET_HTTP_RPC_URL>'
+  return [
+    `cd app && QCLI_MONAD_TESTNET_HTTP_RPC_URL=${rpcForApp} QCLI_MONAD_RELAY_BASE_URL=${relayUrl} \\`,
+    `  QCLI_MONAD_STAMP_BURN_ADDRESS=${config.stampBurnAddress} QCLI_CASHWEB_STAMP_MIN_BURN_VALUE_WEI=${config.minStampWei} \\`,
+    '  yarn dev:browser',
+  ]
+}
+
 export function printSummary(handle: DemoHandle, print: (line: string) => void): void {
   const { config } = handle
-  const rpcForApp = config.fakeChain ? config.rpcUrl : '<your MONAD_TESTNET_HTTP_RPC_URL>'
+  const appUrl = `http://localhost:${config.appPort}`
   print('')
-  print('Frank demo is running.')
+  print(`Frank demo is running (launcher pid ${process.pid}).`)
   print(`  Relay:   ${handle.relayUrl}`)
   print(
     `  Chain:   ${
       config.fakeChain
-        ? `FAKE chain at ${config.rpcUrl} (no real funds)`
+        ? `FAKE chain at ${config.rpcUrl} (no real funds; saved in ${config.fakeChainLedger}, so balances survive a restart)`
         : 'Monad testnet (RPC URL hidden)'
     }`,
   )
+  print(`  Burn:    ${config.stampBurnAddress} (relay, bots and the app command below all use it)`)
+  if (config.faucetAmountWei) {
+    const needed = minBlackjackFundsWei()
+    print(
+      `  Faucet:  ${formatEther(config.faucetAmountWei)} MON per new profile` +
+        (BigInt(config.faucetAmountWei) < needed
+          ? `  WARNING: less than the ${formatEther(
+              needed,
+            )} MON one minimum-bet blackjack hand needs; raise FAUCET_AMOUNT_WEI (max 1 MON)`
+          : ''),
+    )
+  }
   print(`  State:   ${config.stateDir}   Logs: ${handle.logDir}`)
   print('  Bots:')
   for (const bot of config.bots) {
@@ -561,16 +626,19 @@ export function printSummary(handle: DemoHandle, print: (line: string) => void):
       ? '  Qwen:    STUB mode (offline canned replies; set QWEN_API_KEY for a real model)'
       : '  Qwen:    live model',
   )
-  print('  App (in another terminal):')
+  print(`  App URL: ${appUrl}  (the app dev server's port is fixed in app/quasar.config.js)`)
+  print('  Start the app in another terminal, from the repo root, with exactly this:')
+  for (const line of appCommand(config, handle.relayUrl)) print(`    ${line}`)
   print(
-    `    cd app && QCLI_MONAD_TESTNET_HTTP_RPC_URL=${rpcForApp} QCLI_MONAD_RELAY_BASE_URL=${handle.relayUrl} \\`,
-  )
-  print(
-    `      QCLI_MONAD_STAMP_BURN_ADDRESS=0x000000000000000000000000000000000000dEaD QCLI_CASHWEB_STAMP_MIN_BURN_VALUE_WEI=${config.minStampWei} yarn dev:browser`,
+    config.fakeChain
+      ? '  The fake chain and the relay accept requests from any origin, so the browser reaches them directly.'
+      : '  The relay accepts requests from any origin; your RPC provider must allow the app origin.',
   )
   const bad = handle.unhealthy()
   if (bad.length > 0) print(`  UNHEALTHY: ${bad.join(', ')} exited (see the logs above)`)
-  print('Press Ctrl-C to stop everything.')
+  print(
+    `Press Ctrl-C to stop everything (or kill -INT ${process.pid}; also stops if the yarn process that started it is killed).`,
+  )
 }
 
 export async function main(
@@ -589,7 +657,12 @@ export async function main(
       // `yarn demo` runs inside packages/bot; relative paths mean relative to where the user typed it.
       cwd: env.INIT_CWD ?? process.cwd(),
     })
-    const handle = await startDemo(config, { print, env })
+    const handle = await startDemo(config, {
+      print,
+      env,
+      // Started by `yarn demo`: stop the stack if yarn is killed without forwarding the signal.
+      watchParent: env.npm_lifecycle_event ? { pid: process.ppid } : undefined,
+    })
     printSummary(handle, print)
     const code = await handle.done
     print('[demo] stopped.')

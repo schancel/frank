@@ -16,8 +16,10 @@ import { join } from 'path'
 
 import { DemoBot, DemoConfig, DemoConfigError, resolveDemoConfig } from './demo-config'
 import {
+  appCommand,
   DemoAborted,
   DemoHandle,
+  printSummary,
   prepareStateDir,
   redact,
   redactLines,
@@ -107,6 +109,9 @@ process.stdin.on('end', () => {
   }
   if (args[0] === '--check-config') process.exit(0)
   fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid))
+  fs.writeFileSync(${JSON.stringify(
+    pidFile + '.env',
+  )}, process.env.MONAD_STAMP_BURN_ADDRESS || 'unset')
   if (${kind === 'stubborn'}) process.on('SIGTERM', () => {})
   if (${kind === 'http'}) {
     const [host, port] = /host = "([^"]+)"/.exec(input)[1].split(':')
@@ -373,6 +378,43 @@ process.stdin.on('end', () => {
       return { handle: await startDemo(c, opts), c }
     }
 
+    it('the relay is started with the burn address the bots and the app command use (#364)', async () => {
+      const { handle, c } = await running()
+      expect(readFileSync(pidFile + '.env', 'utf8')).toBe(c.stampBurnAddress)
+      expect(c.stampBurnAddress).toBe('0x000000000000000000000000000000000000dEaD')
+      await handle.stop()
+      await handle.done
+    }, 30000)
+
+    it('a custom burn address reaches the relay too', async () => {
+      const other = '0x2222222222222222222222222222222222222222'
+      const bot = fakeBot('worker', "console.log('READY'); setInterval(() => {}, 1000)")
+      const c = await config({ CASHWEBD_BIN: relayStub('http'), MONAD_STAMP_BURN_ADDRESS: other }, [
+        bot,
+      ])
+      const handle = await startDemo(c, opts)
+      expect(readFileSync(pidFile + '.env', 'utf8')).toBe(other)
+      await handle.stop()
+      await handle.done
+    }, 30000)
+
+    it('the summary states the app URL and the exact app command with the relay, chain and burn address', async () => {
+      const { handle, c } = await running()
+      const lines: string[] = []
+      printSummary(handle, l => lines.push(l))
+      const text = lines.join('\n')
+      expect(text).toContain('App URL: http://localhost:8080')
+      expect(text).toContain(`QCLI_MONAD_TESTNET_HTTP_RPC_URL=http://127.0.0.1:${c.fakeRpcPort}`)
+      expect(text).toContain(`QCLI_MONAD_RELAY_BASE_URL=http://127.0.0.1:${c.relayPort}`)
+      expect(text).toContain(`QCLI_MONAD_STAMP_BURN_ADDRESS=${c.stampBurnAddress}`)
+      expect(text).toContain(`QCLI_CASHWEB_STAMP_MIN_BURN_VALUE_WEI=${c.minStampWei}`)
+      expect(text).toContain('yarn dev:browser')
+      expect(text).toContain(`launcher pid ${process.pid}`)
+      expect(appCommand(c, handle.relayUrl)).toHaveLength(3)
+      await handle.stop()
+      await handle.done
+    }, 30000)
+
     it('after startup, the relay dying stops everything, prints a banner and exits non-zero', async () => {
       const { handle } = await running()
       process.kill(Number(readFileSync(pidFile, 'utf8')), 'SIGKILL')
@@ -401,6 +443,24 @@ process.stdin.on('end', () => {
       await handle.stop()
       expect(await handle.done).toBe(0)
       expect(existsSync(stateFile)).toBe(false)
+    }, 30000)
+
+    it('stops like a closed terminal when the process that started it (yarn) goes away', async () => {
+      const bot = fakeBot('worker', "console.log('READY'); setInterval(() => {}, 1000)")
+      const c = await config({ CASHWEBD_BIN: relayStub('http') }, [bot])
+      let parent = 4242
+      const handle = await startDemo(c, {
+        ...opts,
+        watchParent: { pid: 4242, current: () => parent, intervalMs: 50 },
+      })
+      const relayPid = Number(readFileSync(pidFile, 'utf8'))
+      expect(await Promise.race([handle.done, sleep(300).then(() => 'still-running')])).toBe(
+        'still-running',
+      )
+      parent = 1 // reparented to init: the wrapper died
+      expect(await handle.done).toBe(0)
+      expect(output.join('\n')).toMatch(/is gone: stopping like a closed terminal/)
+      await waitFor(() => !alive(relayPid), 5000)
     }, 30000)
 
     it('stop() is idempotent and a Ctrl-C style signal after startup exits 0', async () => {
@@ -455,6 +515,61 @@ process.stdin.on('end', () => {
       expect(await portFree(rpcPort)).toBe(true)
       expect(await portFree(relayPort)).toBe(true)
     }
+
+    it('kill -INT on the wrapper that started it (yarn exits without forwarding) still stops the stack', async () => {
+      const relayPort = await freePort()
+      const rpcPort = await freePort()
+      const envFile = join(dir, 'dummy.env')
+      writeFileSync(envFile, 'FRANK_NETWORK_TAG=MONT\n')
+      const cliPidFile = join(dir, 'cli.pid')
+      const wrapper = join(dir, 'wrapper.js')
+      // Stands in for `yarn`: starts the launcher, dies on SIGINT WITHOUT forwarding it.
+      writeFileSync(
+        wrapper,
+        `const { spawn } = require('child_process')
+const child = spawn(process.execPath, ['--import', 'tsx', ${JSON.stringify(
+          join(__dirname, 'demo.ts'),
+        )}, '--fake-chain'], { stdio: 'ignore', cwd: ${JSON.stringify(join(__dirname, '..'))} })
+require('fs').writeFileSync(${JSON.stringify(cliPidFile)}, String(child.pid))
+process.on('SIGINT', () => process.exit(0))
+setInterval(() => {}, 1000)
+`,
+      )
+      const w = spawn(process.execPath, [wrapper], {
+        env: {
+          PATH: process.env.PATH,
+          HOME: dir,
+          npm_lifecycle_event: 'demo', // set by yarn for every script it runs
+          CASHWEBD_BIN: relayStub('hang'),
+          FRANK_DEMO_ENV_FILE: envFile,
+          FRANK_DEMO_STATE_DIR: join(dir, 'cli-state'),
+          FRANK_DEMO_RELAY_PORT: String(relayPort),
+          FRANK_DEMO_FAKE_RPC_PORT: String(rpcPort),
+        },
+        stdio: 'ignore',
+      })
+      await waitFor(() => existsSync(pidFile) && existsSync(cliPidFile), 30000)
+      const relayPid = Number(readFileSync(pidFile, 'utf8'))
+      const cliPid = Number(readFileSync(cliPidFile, 'utf8'))
+      try {
+        const exited = new Promise<void>(r => w.on('close', () => r()))
+        w.kill('SIGINT')
+        await exited
+        expect(alive(cliPid)).toBe(true) // yarn is gone; the launcher was not signalled
+        await waitFor(() => !alive(cliPid), 10000) // it notices and stops
+        await waitFor(() => !alive(relayPid), 5000)
+        expect(await portFree(rpcPort)).toBe(true)
+        expect(await portFree(relayPort)).toBe(true)
+      } finally {
+        for (const pid of [cliPid, relayPid]) {
+          try {
+            process.kill(pid, 'SIGKILL')
+          } catch {
+            /* gone */
+          }
+        }
+      }
+    }, 60000)
 
     it('Ctrl-C (SIGINT) during "starting the relay" leaves no relay process or port', async () => {
       await runCli('SIGINT', 130)

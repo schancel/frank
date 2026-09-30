@@ -1249,6 +1249,12 @@ export const useChatStore = defineStore('chats', {
       console.log('receiving messages')
       const messageStore = await store
       for (const wrapper of messageWrappers) {
+        // An index this call did not claim belongs to an overlapping receive.
+        // Do not persist it: if the claimer fails before storing, a later poll
+        // must still be able to notify.
+        if (!toNotify.has(wrapper.index) && !(wrapper.index in this.messages)) {
+          continue
+        }
         const persisted: MessageWrapper = {
           message: { ...wrapper.message },
           index: wrapper.index,
@@ -1356,6 +1362,9 @@ export const useChatStore = defineStore('chats', {
         )
         assert(copartyAddress !== undefined, 'address is not defined')
         assert(index !== undefined, 'index is not defined')
+        if (!toNotify.has(index) && !(index in this.messages)) {
+          continue
+        }
         const displayAddress = toChainDisplayAddress(copartyAddress)
 
         const message = { payloadDigest: index, ...newMsg }

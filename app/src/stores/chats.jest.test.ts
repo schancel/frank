@@ -569,6 +569,27 @@ describe('stores/chats.ts (ticket #42)', () => {
       expect(desktopNotify).toHaveBeenCalledTimes(2)
     })
 
+    it('does not let an overlapping poll store a message whose claimer failed, so a retry can still notify (#412)', async () => {
+      const chats = useChatStore()
+      notifyingContact()
+      mockMessageStore.saveMessage
+        .mockRejectedValueOnce(new Error('disk'))
+        .mockResolvedValue(undefined)
+      const wrapper = makeWrapper()
+
+      await Promise.allSettled([
+        chats.receiveMessages([wrapper]),
+        chats.receiveMessages([{ ...wrapper }]),
+      ])
+
+      expect(chats.chats[RECIPIENT_ADDRESS]?.messages ?? []).toHaveLength(0)
+      expect(desktopNotify).not.toHaveBeenCalled()
+
+      await chats.receiveMessages([wrapper])
+      expect(desktopNotify).toHaveBeenCalledTimes(1)
+      expect(chats.chats[RECIPIENT_ADDRESS]?.messages).toHaveLength(1)
+    })
+
     it('lets a retry notify when the first attempt failed before storing (#412)', async () => {
       const chats = useChatStore()
       notifyingContact()

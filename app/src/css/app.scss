@@ -64,3 +64,9 @@ body {
   border: 0;
   clip-path: inset(50%);
 }
+
+// Retry moves focus here instead of the clipped live region (#429).
+.outgoing-focus-target:focus {
+  outline: 2px solid var(--q-primary);
+  outline-offset: 2px;
+}

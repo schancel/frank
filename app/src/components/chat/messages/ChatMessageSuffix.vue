@@ -1,14 +1,18 @@
 <template>
-  <div>
-    <!-- One persistent polite live region per message: it exists before its text changes, so a
-    state change is announced once, and a message that merely renders (e.g. after a reload)
-    is not announced. -->
+  <div
+    class="outgoing-focus-target"
+    tabindex="-1"
+    ref="focusTarget"
+    data-testid="outgoing-focus-target"
+  >
+    <!-- Programmatic focus lands on this suffix when Retry unmounts (#429). The live region
+    below stays clipped and is not a keyboard target. One persistent polite live region per
+    message: it exists before its text changes, so a state change is announced once, and a
+    message that merely renders (e.g. after a reload) is not announced. -->
     <span
       class="q-sr-only"
       role="status"
       aria-live="polite"
-      tabindex="-1"
-      ref="statusRegion"
       data-testid="outgoing-announcement"
       >{{ announced }}</span
     >
@@ -157,10 +161,10 @@ export default defineComponent({
     },
   },
   methods: {
-    /** Moves keyboard focus to this message's status text, e.g. when the button that was focused
-     * (Retry) is about to disappear. */
+    /** Moves keyboard focus to this message's visible suffix, e.g. when the button that was
+     * focused (Retry) is about to disappear. The live region stays clipped and is not focused. */
     focusStatus() {
-      ;(this.$refs.statusRegion as HTMLElement | undefined)?.focus()
+      ;(this.$refs.focusTarget as HTMLElement | undefined)?.focus()
     },
   },
   emits: [

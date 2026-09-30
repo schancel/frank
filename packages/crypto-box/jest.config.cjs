@@ -5,6 +5,9 @@ module.exports = {
   moduleFileExtensions: ['js', 'json', 'ts'],
   moduleNameMapper: {
     '^(\\.{1,2}/.*)\\.js$': '$1',
+    '^@frank/nakamoto/curve$': '<rootDir>/../nakamoto/src/curve.ts',
+    '^@frank/nakamoto/constructors$':
+      '<rootDir>/../nakamoto/src/constructors.ts',
   },
   transform: {
     '^.+\\.(ts|js)$': [

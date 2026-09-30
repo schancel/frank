@@ -334,9 +334,9 @@ export default defineComponent({
           })
         }
         case 'pending':
-          return this.$t('outgoing.sending')
         case 'payment-pending':
         case 'error':
+          // The stamp is the time. Status text lives in ChatMessageSuffix once (#393).
           return ''
       }
       return 'N/A'

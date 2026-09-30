@@ -49,34 +49,45 @@
       <div class="col-auto q-pa-xs">
         <q-icon name="schedule" />{{ paymentText }}
       </div>
+      <!-- Stamp is the time, never a second copy of the status (#393). -->
+      <div v-if="stamp" class="col-auto q-pa-xs">{{ stamp }}</div>
     </div>
-    <div v-else :class="['row', 'items-center', suffixPlacement]">
-      <!-- Button placement for sent mssages -->
-      <div v-if="outbound" :class="buttonPlacement">
-        <chat-message-suffix-buttons
-          :status="status"
-          @replyClick="$emit('replyClick')"
-          @forwardClick="$emit('forwardClick')"
-          @infoClick="$emit('infoClick')"
-          @deleteClick="$emit('deleteClick')"
-        />
+    <template v-else>
+      <div
+        v-if="status === 'pending' && outbound"
+        :class="['row', 'items-center', suffixPlacement]"
+        data-testid="outgoing-sending"
+      >
+        <div class="col-auto q-pa-xs">{{ $t('outgoing.sending') }}</div>
       </div>
-      <div class="col-auto q-pa-xs">
-        {{ stamp }}
-        <br />
-        {{ amount }}
+      <div :class="['row', 'items-center', suffixPlacement]">
+        <!-- Button placement for sent mssages -->
+        <div v-if="outbound" :class="buttonPlacement">
+          <chat-message-suffix-buttons
+            :status="status"
+            @replyClick="$emit('replyClick')"
+            @forwardClick="$emit('forwardClick')"
+            @infoClick="$emit('infoClick')"
+            @deleteClick="$emit('deleteClick')"
+          />
+        </div>
+        <div class="col-auto q-pa-xs">
+          {{ stamp }}
+          <br />
+          {{ amount }}
+        </div>
+        <!-- Button placement for received mssages -->
+        <div v-if="!outbound" :class="buttonPlacement">
+          <chat-message-suffix-buttons
+            :status="status"
+            @replyClick="$emit('replyClick')"
+            @forwardClick="$emit('forwardClick')"
+            @infoClick="$emit('infoClick')"
+            @deleteClick="$emit('deleteClick')"
+          />
+        </div>
       </div>
-      <!-- Button placement for received mssages -->
-      <div v-if="!outbound" :class="buttonPlacement">
-        <chat-message-suffix-buttons
-          :status="status"
-          @replyClick="$emit('replyClick')"
-          @forwardClick="$emit('forwardClick')"
-          @infoClick="$emit('infoClick')"
-          @deleteClick="$emit('deleteClick')"
-        />
-      </div>
-    </div>
+    </template>
   </div>
 </template>
 

@@ -422,3 +422,21 @@ validated once at startup and a bad one is a one-line error naming the item: unk
 bad prices, files outside the directory, non-image bytes, and any image (or the whole catalog
 message) that would not fit the relay's 2 MiB request cap. To change the bundled art, edit and run
 `yarn tsx scripts/generate-demo-pictures.ts`; to sell your own, point the variable at your directory.
+## Stamp pool seed (#313)
+
+Every stamp payment a bot sends comes from a single-use sub-account derived from an HD seed. The
+seed used to be regenerated on each start, stranding whatever was left on those accounts. Now each
+bot keeps it in its own state directory (`QWEN_BOT_STATE_DIR`, `BLACKJACK_BOT_STATE_DIR`,
+`RAFFLE_BOT_STATE_DIR`, `VENDOR_BOT_STATE_DIR`):
+
+- `stamp-pool-seed.json` -- the BIP-39 mnemonic, created on first start with mode `0600` (directory
+  `0700`), loaded on every later start. It is never logged. It is a wallet secret: **never commit
+  it**, and back it up if the bot holds real funds. A missing file means a new seed is created; an
+  unreadable or invalid file is a startup error (the bot will not silently start a new pool and
+  strand the old one).
+- `sub-account-pool/`, `change-pool/` -- the pool's records (index, address, status; no keys), so a
+  restart continues after the last spent sub-account instead of reusing one.
+
+Recovering leftover funds: import the mnemonic into any BIP-44 wallet; sub-accounts are
+`m/44'/60'/0'/0/<i>` and change accounts `m/44'/60'/0'/1/<i>`. Bots created before this change
+simply gain a seed file on their next start; their identity and other state are untouched.

@@ -14,7 +14,7 @@
       </q-avatar>
     </q-item-section>
     <q-item-section v-show="!compact">
-      <q-item-label>{{ contact.name }}</q-item-label>
+      <q-item-label lines="1">{{ contact.name }}</q-item-label>
       <q-item-label caption lines="2">{{ latestMessageBody }}</q-item-label>
     </q-item-section>
     <q-item-section v-show="!compact" side>

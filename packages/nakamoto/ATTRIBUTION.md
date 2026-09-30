@@ -19,3 +19,5 @@ Public names in this package do not use "bitcore". That name appears in this fil
 - Copyright (c) 2017 Pieter Wuille
 
 Base58check appends the first four bytes of SHA-256d, which is the Bitcoin checksum. The alphabet and the compact-size rules follow Bitcoin Core. SHA-256d is `@noble/hashes` 1.8.0, not a copy of the old hash wrapper.
+
+`src/bech32.ts` implements the BIP173 and BIP350 checksums. `src/cashaddr.ts` implements the polymod in Bitcoin Cash Node `src/cashaddr.cpp`, which matches Bitcoin ABC `src/cashaddr.cpp`. Both are new code over those specifications, not a copy of the old `lib/address.js` routine. XPI address strings are not produced here.

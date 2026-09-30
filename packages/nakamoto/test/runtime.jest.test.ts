@@ -29,11 +29,14 @@ describe('runtime constraints', () => {
     expect(pkg.dependencies).toEqual({ '@noble/hashes': '1.8.0' })
     expect(Object.keys(pkg.exports).sort()).toEqual([
       '.',
+      './address',
       './base32',
       './base58',
       './base58check',
       './bch',
+      './bech32',
       './btc',
+      './cashaddr',
       './constructors',
       './convert-bits',
       './encoding-error',
@@ -69,6 +72,9 @@ describe('runtime constraints', () => {
       'base32',
       'encoding-error',
       'constructors',
+      'bech32',
+      'cashaddr',
+      'address',
     ])
   })
 

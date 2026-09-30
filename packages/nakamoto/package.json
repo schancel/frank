@@ -68,6 +68,18 @@
     "./constructors": {
       "types": "./dist/constructors.d.ts",
       "import": "./dist/constructors.js"
+    },
+    "./bech32": {
+      "types": "./dist/bech32.d.ts",
+      "import": "./dist/bech32.js"
+    },
+    "./cashaddr": {
+      "types": "./dist/cashaddr.d.ts",
+      "import": "./dist/cashaddr.js"
+    },
+    "./address": {
+      "types": "./dist/address.d.ts",
+      "import": "./dist/address.js"
     }
   },
   "dependencies": {

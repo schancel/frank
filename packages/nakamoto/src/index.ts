@@ -1,7 +1,8 @@
 // @frank/nakamoto public surface. Browser-safe: no Node built-ins.
 // Per-chain entries: ./btc ./bch ./xec ./xpi.
 // Feature entries: ./integer ./script-num ./base58 ./base58check ./varint
-// ./reader ./convert-bits ./base32 ./encoding-error ./constructors.
+// ./reader ./convert-bits ./base32 ./encoding-error ./constructors
+// ./bech32 ./cashaddr ./address.
 
 export const PACKAGE_NAME = '@frank/nakamoto'
 
@@ -88,3 +89,25 @@ export type {
   XAddressPayload,
   XOnlyPublicKey,
 } from './constructors.js'
+
+export {
+  addressesFor,
+  convertAddress,
+  decodeAddress,
+  encodeAddress,
+  isAddressError,
+  lockingScript,
+  sameDestination,
+} from './address.js'
+export type {
+  AddressEncoding,
+  AddressError,
+  AddressForm,
+  AddressListing,
+  AddressResult,
+  DecodedAddress,
+  Destination,
+  ScriptHash,
+  TaprootCommitment,
+  WitnessScriptHash,
+} from './address.js'

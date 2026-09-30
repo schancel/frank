@@ -96,6 +96,24 @@
       "entry": "src/constructors.ts",
       "forbid": ["btc-magic", "xpi-port", "xpi-magic"],
       "absentExports": ["BTC_MAINNET", "encodeBase58"]
+    },
+    {
+      "name": "bech32",
+      "entry": "src/bech32.ts",
+      "forbid": ["btc-magic", "xpi-port", "xpi-magic"],
+      "absentExports": ["BTC_MAINNET", "encodeBase58"]
+    },
+    {
+      "name": "cashaddr",
+      "entry": "src/cashaddr.ts",
+      "forbid": ["btc-magic", "xpi-port", "xpi-magic"],
+      "absentExports": ["BTC_MAINNET", "encodeBase58"]
+    },
+    {
+      "name": "address",
+      "entry": "src/address.ts",
+      "require": ["btc-magic", "xpi-port", "xpi-magic"],
+      "absentExports": ["encodeBase58"]
     }
   ]
 }

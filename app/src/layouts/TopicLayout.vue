@@ -37,7 +37,11 @@
     </q-page-container>
 
     <q-footer bordered v-show="$status.setup">
-      <topic-input @send-message="sendMessage" v-model:message="message" />
+      <topic-input
+        @send-message="sendMessage"
+        v-model:message="message"
+        :disable="sendingMessage"
+      />
     </q-footer>
   </div>
 </template>
@@ -62,6 +66,7 @@ export default defineComponent({
   data() {
     return {
       message: '',
+      sendingMessage: false,
       drawerBreakpoint: DRAWER_BREAKPOINT,
     }
   },
@@ -99,14 +104,18 @@ export default defineComponent({
   },
   methods: {
     async sendMessage(message: string) {
-      if (!message) {
+      if (this.sendingMessage || !message) {
         // Don't send blank messages
         return
       }
 
+      const submittedMessage = message
+      this.sendingMessage = true
+      if (this.message === submittedMessage) this.message = ''
+
       const entry = {
         kind: 'post' as const,
-        message: message,
+        message: submittedMessage,
       }
 
       console.log('posting message', entry)
@@ -127,11 +136,16 @@ export default defineComponent({
         // A burn that landed but could not be read back clears the draft (resending would burn
         // again) and says so; any other failure keeps the draft for a retry.
         notifyBurnFailure(err, key => this.$t(key))
-        if (err instanceof BurnRefreshError) this.message = ''
+        if (!(err instanceof BurnRefreshError)) {
+          // Restore a post that never landed without overwriting a new draft typed in flight.
+          this.message = this.message
+            ? `${submittedMessage}\n${this.message}`
+            : submittedMessage
+        }
         return
+      } finally {
+        this.sendingMessage = false
       }
-
-      this.message = ''
     },
     toggleSettingsDrawerOpen() {
       this.$emit('toggleMyDrawerOpen')

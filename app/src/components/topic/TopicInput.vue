@@ -8,14 +8,19 @@
       autogrow
       @paste="dp($event)"
       @drop.prevent="dp($event)"
-      @blur.capture="focusInput($event)"
       @keydown.enter.exact.prevent
       @keydown.enter.exact="sendMessage"
       @mousedown.self.stop
       v-model="innerMessage"
       :placeholder="$t('chatInput.placeHolder')"
     />
-    <q-btn dense flat icon="send" @mousedown.prevent="sendMessage" />
+    <q-btn
+      dense
+      flat
+      icon="send"
+      :disable="disable"
+      @mousedown.prevent="sendMessage"
+    />
   </q-toolbar>
 </template>
 
@@ -37,11 +42,20 @@ export default defineComponent({
       type: String,
       default: () => '',
     },
+    // A post is in flight. The textarea deliberately remains enabled so focus and newly typed
+    // text survive; only actions that would start another operation are blocked.
+    disable: {
+      type: Boolean,
+      default: false,
+    },
   },
   emits: ['update:message', 'sendMessage'],
   methods: {
     // ChatInput drop/paste handler
     async dp(e: ClipboardEvent | DragEvent) {
+      if (this.disable) {
+        return
+      }
       const items =
         'clipboardData' in e ? e.clipboardData?.items : e.dataTransfer?.items
       if (!items) {
@@ -51,19 +65,10 @@ export default defineComponent({
       const blob = await processInput(items)
       console.log(blob)
     },
-    focusInput(e: FocusEvent) {
-      if (e.type === 'blur') {
-        const relatedTarget = e.relatedTarget as Element
-        // Prevent the focus if the target isn't related
-        if (!relatedTarget || relatedTarget.localName === 'input') {
-          return
-          // allow focus change to other inputs (e.g. RightPanel)
-        }
-      }
-      const inputBox = this.$refs.inputBox as HTMLElement
-      inputBox.focus()
-    },
     sendMessage() {
+      if (this.disable) {
+        return
+      }
       this.$emit('sendMessage', this.innerMessage)
     },
   },

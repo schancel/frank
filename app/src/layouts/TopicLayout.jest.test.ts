@@ -3,7 +3,7 @@
 // not be read back must clear the draft (resending would burn again); a failure before the burn
 // keeps it for a retry.
 
-import { shallowMount } from '@vue/test-utils'
+import { flushPromises, shallowMount } from '@vue/test-utils'
 
 import TopicLayout from './TopicLayout.vue'
 import { BurnRefreshError } from 'src/utils/burn-refresh-error'
@@ -61,6 +61,70 @@ const draft = (w: ReturnType<typeof mountLayout>) =>
 beforeEach(() => jest.clearAllMocks())
 
 describe('TopicLayout sendMessage', () => {
+  it('allows only one post in flight and exposes the busy state to TopicInput', async () => {
+    let finish!: () => void
+    mockPutMessage.mockImplementationOnce(
+      () => new Promise<void>(resolve => (finish = resolve)),
+    )
+    const wrapper = mountLayout()
+    const vm = wrapper.vm as unknown as {
+      sendMessage(m: string): Promise<void>
+      sendingMessage: boolean
+    }
+
+    const first = vm.sendMessage('my draft')
+    await flushPromises()
+    expect(vm.sendingMessage).toBe(true)
+    expect(draft(wrapper)).toBe('')
+
+    await vm.sendMessage('duplicate')
+    expect(mockPutMessage).toHaveBeenCalledTimes(1)
+
+    finish()
+    await first
+    expect(vm.sendingMessage).toBe(false)
+  })
+
+  it('does not erase text edited while the submitted post is in flight', async () => {
+    let finish!: () => void
+    mockPutMessage.mockImplementationOnce(
+      () => new Promise<void>(resolve => (finish = resolve)),
+    )
+    const wrapper = mountLayout()
+    const vm = wrapper.vm as unknown as {
+      message: string
+      sendMessage(m: string): Promise<void>
+    }
+
+    const post = vm.sendMessage('my draft')
+    await flushPromises()
+    vm.message = 'newly typed text'
+    finish()
+    await post
+
+    expect(vm.message).toBe('newly typed text')
+  })
+
+  it('restores a failed post without overwriting text entered in flight', async () => {
+    let fail!: (error: Error) => void
+    mockPutMessage.mockImplementationOnce(
+      () => new Promise<void>((_resolve, reject) => (fail = reject)),
+    )
+    const wrapper = mountLayout()
+    const vm = wrapper.vm as unknown as {
+      message: string
+      sendMessage(m: string): Promise<void>
+    }
+
+    const post = vm.sendMessage('my draft')
+    await flushPromises()
+    vm.message = 'next draft'
+    fail(new Error('Nothing was sent'))
+    await post
+
+    expect(vm.message).toBe('my draft\nnext draft')
+  })
+
   it('burn landed but read-back failed: info notice, no error toast, draft cleared', async () => {
     mockPutMessage.mockRejectedValueOnce(
       new BurnRefreshError('post', new Error('read failed')),

@@ -10,7 +10,7 @@
       />
     </div>
     <div class="col-auto">
-      <q-icon name="error" color="red" />Failed to send
+      <q-icon name="error" color="red" />{{ $t('chatMessage.failedToSend') }}
     </div>
     <div v-if="!outbound" :class="buttonPlacement">
       <chat-message-suffix-buttons

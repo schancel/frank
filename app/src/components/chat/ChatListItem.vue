@@ -61,11 +61,10 @@ export default defineComponent({
         .split(' ')
         .map(word => word.slice(0, 15))
         .join(' ')
-      if (info.outbound) {
-        return 'You: ' + slicedText
-      } else {
-        return 'Them: ' + slicedText
-      }
+      return this.$t(
+        info.outbound ? 'chatList.youPrefix' : 'chatList.themPrefix',
+        { text: slicedText },
+      )
     },
     contact() {
       return this.getContactProfile(this.chatAddress)

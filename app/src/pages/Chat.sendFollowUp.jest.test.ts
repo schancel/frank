@@ -45,6 +45,9 @@ function fakeThis(over: Record<string, unknown> = {}) {
     bottom: true,
     stampAmount: '0.01',
     stampPreparationStatus: null,
+    $t: (key: string) => key,
+    showStampPreparation: (p: unknown) =>
+      methods.showStampPreparation.call(self, p),
     sendDirectMessage: jest.fn().mockResolvedValue(undefined),
     $nextTick: jest.fn(),
     buttonScrollBottom: jest.fn(),

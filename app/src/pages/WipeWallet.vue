@@ -29,6 +29,7 @@
 </template>
 
 <script lang="ts">
+import { navigateBack } from 'src/utils/navigate-back'
 import { defineComponent } from 'vue'
 
 import { useChatStore } from 'src/stores/chats'
@@ -62,7 +63,7 @@ export default defineComponent({
         })
     },
     cancel() {
-      window.history.length > 1 ? this.$router.go(-1) : this.$router.push('/')
+      navigateBack(this.$router)
     },
   },
 })

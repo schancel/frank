@@ -2,9 +2,15 @@ import assert from 'assert'
 import { defineStore } from 'pinia'
 import { indexBy, uniq } from 'ramda'
 
-import { activeChain, WalletHandle } from '@frank/wallet/chain'
+import {
+  activeChain,
+  DirectMessagePreparationProgress,
+  WalletHandle,
+} from '@frank/wallet/chain'
 
 import { ForumMessage, ForumMessageEntry } from '@frank/cashweb/types/forum'
+import { refreshAfterBurn } from 'src/utils/burn-refresh-error'
+import { DEFAULT_TOPIC_NAMES } from 'src/stores/default-topics'
 import { SortMode } from 'src/utils/sorting'
 
 export type MessageWithReplies = ForumMessage & {
@@ -156,20 +162,59 @@ export const useForumStore = defineStore('forum', {
     pushNewTopic(topic: string) {
       this.topics.push(topic)
     },
-    async refreshMessages({ wallet }: { topic: string; wallet: WalletHandle }) {
+    /**
+     * Topic names one refresh asks the relay for (ticket #365). The relay only serves posts for an
+     * exact topic name, so "all topics" means: the default topics, every topic the relay has
+     * discovered, and any topic we already hold posts for. A non-empty `selected` narrows this to
+     * that topic plus the known topics it prefixes (matching `Forum.vue`'s prefix filter).
+     */
+    async topicsToFetch(selected: string): Promise<string[]> {
+      const discovered = await activeChain.topics.discoverTopics()
+      const known = [
+        ...DEFAULT_TOPIC_NAMES,
+        ...discovered.map(entry => entry.topic),
+        ...this.topics,
+      ]
+      const wanted = selected
+        ? [selected, ...known.filter(name => name.startsWith(selected))]
+        : known
+      return uniq(wanted.filter(name => name !== ''))
+    },
+    async refreshMessages({
+      wallet,
+      topic,
+    }: {
+      topic: string
+      wallet: WalletHandle
+    }) {
       console.log('fetching messages')
       const from = Date.now() - this.duration
-      console.log(from)
-      // Empty topic == "all topics", matching the old `getBroadcastMessages('', from)` behavior.
-      const entries = await activeChain.topics.fetchByTopic({
-        wallet,
-        topic: '',
-        sinceMs: from,
-      })
-      this.hasFetchedOnce = true
-      if (!entries) {
-        return
+      const names = await this.topicsToFetch(topic)
+      const results = await Promise.allSettled(
+        names.map(name =>
+          activeChain.topics.fetchByTopic({
+            wallet,
+            topic: name,
+            sinceMs: from,
+          }),
+        ),
+      )
+      const failures = results.filter(
+        (result): result is PromiseRejectedResult =>
+          result.status === 'rejected',
+      )
+      // One bad topic must not hide the others, but if nothing could be read the caller should see
+      // the failure exactly as before.
+      if (failures.length === results.length) {
+        throw failures[0].reason
       }
+      for (const failure of failures) {
+        console.error('forum: topic fetch failed', failure.reason)
+      }
+      this.hasFetchedOnce = true
+      const entries = results.flatMap(result =>
+        result.status === 'fulfilled' ? result.value ?? [] : [],
+      )
       this.setEntries(entries)
     },
     async putMessage({
@@ -178,12 +223,16 @@ export const useForumStore = defineStore('forum', {
       satoshis,
       topic,
       parentDigest,
+      onPreparationProgress,
     }: {
       wallet: WalletHandle
       entry: ForumMessageEntry
       satoshis: number
       topic: string
       parentDigest?: string
+      onPreparationProgress?: (
+        progress: DirectMessagePreparationProgress,
+      ) => void
     }) {
       // See `stores/topics.ts`'s `putMessage` for the signed-number -> direction/magnitude
       // mapping rationale (same Lotus `RegistryHandler.createBroadcast`/`addOfferings`
@@ -196,8 +245,9 @@ export const useForumStore = defineStore('forum', {
         direction: satoshis >= 0 ? 'up' : 'down',
         voteWeightWei: BigInt(Math.abs(satoshis)),
         parentDigest,
+        onPreparationProgress,
       })
-      this.fetchMessage({ payloadDigest })
+      await refreshAfterBurn('post', () => this.fetchMessage({ payloadDigest }))
     },
     async fetchMessage({ payloadDigest }: { payloadDigest: string }) {
       // Note: `ActiveChain.topics.fetchOne` takes no `wallet` -- reading a public topic post
@@ -228,7 +278,7 @@ export const useForumStore = defineStore('forum', {
         direction: satoshis >= 0 ? 'up' : 'down',
         voteWeightWei: BigInt(Math.abs(satoshis)),
       })
-      await this.fetchMessage({ payloadDigest })
+      await refreshAfterBurn('vote', () => this.fetchMessage({ payloadDigest }))
     },
   },
   storage: {

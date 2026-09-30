@@ -1,0 +1,131 @@
+/**
+ * Durable state for the standalone faucet (#316): one record per funded address plus the profile
+ * polling cursor, `level`-backed like the other bot state stores.
+ *
+ * Unlike the other bots' batched `pendingWrites`, every write here is awaited before the caller
+ * proceeds: a funding record MUST be on disk before the transaction is broadcast, otherwise a crash
+ * between broadcast and persist would fund the same address twice on restart. Records are never
+ * deleted; a record in any state blocks re-funding that address (fail-safe against double spends).
+ */
+import { mkdirSync } from 'fs'
+// @ts-ignore -- `level` v7 ships no types (same as the other bot state stores)
+import level, { LevelDB } from 'level'
+import { join } from 'path'
+
+import { canonicalMonadEnvelopeAddress } from '@frank/cashweb/relay/monad-message-envelope'
+
+const SINCE_PROFILES_KEY = '__since_profiles__'
+const FUND_PREFIX = 'fund:'
+
+/** signed: the exact signed transaction is persisted, broadcast not yet confirmed to have been
+ * accepted (a crash or RPC error here leaves the record so the exact bytes can be replayed).
+ * submitted: the node accepted it. confirmed: a successful receipt was seen. */
+export type FundState =
+  | 'signed'
+  | 'submitted'
+  | 'confirmed'
+  /** Mined but reverted: the address was not funded. Blocks re-funding until cleared. */
+  | 'failed'
+  /** Skipped after repeated per-address failures; nothing was sent. */
+  | 'skipped'
+
+export interface FundRecord {
+  state: FundState
+  amountWei: string
+  /** ms since epoch when the record was created; drives the rolling daily cap. */
+  at: number
+  txHash: string
+  rawTx: string
+  /** When the transfer was last (re)broadcast and accepted; the recheck delay counts from here. */
+  broadcastAt?: number
+}
+
+export class FaucetStateStore {
+  private readonly dbLocation: string
+  private openedDb?: LevelDB
+  private sinceProfiles?: number
+  private readonly records = new Map<string, FundRecord>()
+
+  constructor(location: string) {
+    this.dbLocation = join(location, 'faucet-state')
+  }
+
+  private get db(): LevelDB {
+    if (!this.openedDb) throw new Error('No db opened')
+    return this.openedDb
+  }
+
+  async Open(): Promise<void> {
+    mkdirSync(this.dbLocation, { recursive: true })
+    this.openedDb = level(this.dbLocation)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    for await (const [key, value] of this.db.iterator({}) as any) {
+      if (key === SINCE_PROFILES_KEY) {
+        this.sinceProfiles = JSON.parse(value)
+      } else if (key.startsWith(FUND_PREFIX)) {
+        this.records.set(
+          canonicalMonadEnvelopeAddress(key.slice(FUND_PREFIX.length)),
+          JSON.parse(value),
+        )
+      }
+    }
+  }
+
+  async Close(): Promise<void> {
+    await this.db.close()
+  }
+
+  getSinceProfiles(): number | undefined {
+    return this.sinceProfiles
+  }
+
+  async setSinceProfiles(value: number): Promise<void> {
+    await this.db.put(SINCE_PROFILES_KEY, JSON.stringify(value))
+    this.sinceProfiles = value
+  }
+
+  get(address: string): FundRecord | undefined {
+    return this.records.get(canonicalMonadEnvelopeAddress(address))
+  }
+
+  async put(address: string, record: FundRecord): Promise<void> {
+    const key = canonicalMonadEnvelopeAddress(address)
+    await this.db.put(FUND_PREFIX + key, JSON.stringify(record))
+    this.records.set(key, record)
+  }
+
+  async delete(address: string): Promise<void> {
+    const key = canonicalMonadEnvelopeAddress(address)
+    await this.db.del(FUND_PREFIX + key)
+    this.records.delete(key)
+  }
+
+  /** Transfers created at or after `sinceMs` (a signed-but-unconfirmed transfer still spends the
+   * budget; a skipped profile sent nothing and does not). */
+  countSince(sinceMs: number): number {
+    let count = 0
+    for (const record of this.records.values()) {
+      if (record.at >= sinceMs && record.state !== 'skipped') count++
+    }
+    return count
+  }
+
+  /** Records an operator may need to look at: not settled and not paid. */
+  unsettledRecords(): Array<[string, FundRecord]> {
+    return [...this.records].filter(([, record]) =>
+      ['signed', 'failed', 'skipped'].includes(record.state),
+    )
+  }
+
+  /** Transfers the node accepted but whose confirmation was never seen. */
+  submittedRecords(): Array<[string, FundRecord]> {
+    return [...this.records].filter(
+      ([, record]) => record.state === 'submitted',
+    )
+  }
+
+  /** Addresses whose transaction is signed but not yet known-accepted, for replay. */
+  signedRecords(): Array<[string, FundRecord]> {
+    return [...this.records].filter(([, record]) => record.state === 'signed')
+  }
+}

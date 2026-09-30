@@ -1192,6 +1192,226 @@ describe('MonadStampClient: PR #197 durable mailbox PUT semantics', () => {
     expect(pool.records().filter(r => r.status === 'retired')).toHaveLength(2)
   })
 
+  describe('attempt liveness for message-level retry (#269/#270)', () => {
+    async function pendingAttempt() {
+      const stampAttemptJournal = new InMemoryStampAttemptJournal()
+      const { client, pool } = makeClient({ stampAttemptJournal })
+      let journaled: string | undefined
+      let axiosCallsWhenJournaled = -1
+      mockedAxios.mockImplementation(async () => {
+        throw relayError(503, retryable)
+      })
+      await expect(
+        client.submitStampedMessage({
+          encryptedPayload: new TextEncoder().encode('liveness'),
+          recipientPublicKey: RECIPIENT_PUBLIC_KEY,
+          stampValueWei: 10_000n,
+          overrides: FEE_OVERRIDES,
+          putRetry: { maxAttempts: 2, intervalMs: 0, sleep: async () => {} },
+          onAttemptJournaled: hash => {
+            journaled = hash
+            axiosCallsWhenJournaled = mockedAxios.mock.calls.length
+          },
+        }),
+      ).rejects.toThrow(MonadStampPendingAttemptError)
+      return {
+        client,
+        pool,
+        stampAttemptJournal,
+        journaled,
+        axiosCallsWhenJournaled,
+      }
+    }
+
+    describe('onAttemptJournaled is a durability gate', () => {
+      const okPut = async (config: { data?: unknown }) => ({
+        data: storedMessageBytes(
+          decodeMonadStampedMessage(new Uint8Array(config.data as Buffer)),
+        ),
+        status: 200,
+        statusText: 'OK',
+        headers: {},
+        config,
+      })
+      const submit = (
+        client: MonadStampClient,
+        onAttemptJournaled: (hash: string) => Promise<void>,
+      ) =>
+        client.submitStampedMessage({
+          encryptedPayload: new TextEncoder().encode('gate'),
+          recipientPublicKey: RECIPIENT_PUBLIC_KEY,
+          stampValueWei: 10_000n,
+          overrides: FEE_OVERRIDES,
+          putRetry: { maxAttempts: 1 },
+          onAttemptJournaled,
+        })
+
+      it('issues no PUT until a slow async callback has resolved', async () => {
+        const stampAttemptJournal = new InMemoryStampAttemptJournal()
+        const { client } = makeClient({ stampAttemptJournal })
+        mockedAxios.mockImplementation(okPut as never)
+        let release: () => void = () => undefined
+        const sending = submit(
+          client,
+          () => new Promise<void>(resolve => (release = resolve)),
+        )
+        await new Promise(resolve => setTimeout(resolve, 50))
+        expect(release).not.toBe(undefined)
+        expect(stampAttemptJournal.getAll()).toHaveLength(1)
+        expect(mockedAxios).not.toHaveBeenCalled()
+        release()
+        await sending
+        expect(mockedAxios).toHaveBeenCalledTimes(1)
+      })
+
+      it('a rejecting callback sends nothing, rolls the attempt back and leaves no payment that could land', async () => {
+        const stampAttemptJournal = new InMemoryStampAttemptJournal()
+        const { client, pool } = makeClient({ stampAttemptJournal })
+        mockedAxios.mockImplementation(okPut as never)
+        let hash = ''
+        const failure = new Error('cannot record the attempt durably')
+        await expect(
+          submit(client, async h => {
+            hash = h
+            await new Promise(resolve => setTimeout(resolve, 20))
+            throw failure
+          }),
+        ).rejects.toBe(failure)
+        expect(mockedAxios).not.toHaveBeenCalled()
+        expect(stampAttemptJournal.getAll()).toHaveLength(0)
+        expect(pool.records().filter(r => r.status === 'in-use')).toHaveLength(
+          0,
+        )
+        expect(pool.records().filter(r => r.status === 'retired')).toHaveLength(
+          2,
+        )
+        expect(client.attemptStatus(hash)).toBe('dead')
+        // Nothing to resume: a later resume cannot pay or send it.
+        await client.resumePendingAttempts()
+        expect(mockedAxios).not.toHaveBeenCalled()
+      })
+
+      it('if the journal entry cannot be deleted, it is KEPT with its reservations, nothing is sent, and the callback error propagates (no dead record)', async () => {
+        const stampAttemptJournal = new InMemoryStampAttemptJournal()
+        stampAttemptJournal.delete = jest
+          .fn()
+          .mockRejectedValue(new Error('journal delete failed'))
+        const { client, pool } = makeClient({ stampAttemptJournal })
+        mockedAxios.mockImplementation(okPut as never)
+        let hash = ''
+        const failure = new Error('cannot record the attempt durably')
+        await expect(
+          submit(client, async h => {
+            hash = h
+            throw failure
+          }),
+        ).rejects.toBe(failure)
+        expect(mockedAxios).not.toHaveBeenCalled()
+        expect(stampAttemptJournal.getAll()).toHaveLength(1)
+        expect(pool.records().filter(r => r.status === 'in-use')).toHaveLength(
+          2,
+        )
+        expect(client.attemptStatus(hash)).toBe('live') // not 'dead': resume can still re-send it
+      })
+
+      it('the dead outcome is recorded even if flushing the retired reservations fails, and the callback error still wins', async () => {
+        const stampAttemptJournal = new InMemoryStampAttemptJournal()
+        const { client, pool } = makeClient({ stampAttemptJournal })
+        mockedAxios.mockImplementation(okPut as never)
+        const realFlush = pool.flush.bind(pool)
+        let armed = false
+        jest.spyOn(pool, 'flush').mockImplementation(async () => {
+          if (armed) throw new Error('flush failed')
+          return realFlush()
+        })
+        let hash = ''
+        const failure = new Error('cannot record the attempt durably')
+        await expect(
+          submit(client, async h => {
+            hash = h
+            armed = true
+            throw failure
+          }),
+        ).rejects.toBe(failure)
+        expect(mockedAxios).not.toHaveBeenCalled()
+        expect(stampAttemptJournal.getAll()).toHaveLength(0)
+        expect(client.attemptStatus(hash)).toBe('dead')
+      })
+
+      it('recordedAttempts lists journaled and resolved attempts', async () => {
+        const stampAttemptJournal = new InMemoryStampAttemptJournal()
+        const { client } = makeClient({ stampAttemptJournal })
+        mockedAxios.mockImplementation(okPut as never)
+        const result = await send(client)
+        expect(client.recordedAttempts()).toEqual([
+          { payloadHashHex: result.payloadHashHex, status: 'delivered' },
+        ])
+      })
+    })
+
+    it('reports the journaled hash before any byte reaches the relay, and the attempt as live while pending', async () => {
+      const { client, journaled, axiosCallsWhenJournaled } =
+        await pendingAttempt()
+      expect(journaled).toMatch(/^[0-9a-f]{64}$/)
+      expect(axiosCallsWhenJournaled).toBe(0)
+      expect(client.attemptStatus(journaled as string)).toBe('live')
+    })
+
+    it('stays live (never dead) while the relay keeps answering 503, and then reports delivered', async () => {
+      const { client, journaled } = await pendingAttempt()
+      mockedAxios.mockReset()
+      mockedAxios.mockImplementation(async () => {
+        throw relayError(503, retryable)
+      })
+      await client.resumePendingAttempts({ maxAttempts: 1 })
+      expect(client.attemptStatus(journaled as string)).toBe('live')
+
+      mockedAxios.mockReset()
+      mockedAxios.mockImplementationOnce(async config => ({
+        data: storedMessageBytes(
+          decodeMonadStampedMessage(new Uint8Array(config.data as Buffer)),
+        ),
+        status: 200,
+        statusText: 'OK',
+        headers: {},
+        config,
+      }))
+      await client.resumePendingAttempts({ maxAttempts: 1 })
+      expect(client.attemptStatus(journaled as string)).toBe('delivered')
+    })
+
+    it('reports dead once the relay declares the exact set terminal', async () => {
+      const { client, journaled } = await pendingAttempt()
+      mockedAxios.mockReset()
+      mockedAxios.mockImplementation(async () => {
+        throw relayError(422, {
+          error: 'mailbox_terminal',
+          detail: 'stale nonce',
+          exact_set_retained: true,
+        })
+      })
+      await client.resumePendingAttempts({ maxAttempts: 1 })
+      expect(client.attemptStatus(journaled as string)).toBe('dead')
+    })
+
+    it('reports unknown for a hash it never journaled, and delivered/dead for a direct outcome', async () => {
+      const stampAttemptJournal = new InMemoryStampAttemptJournal()
+      const { client } = makeClient({ stampAttemptJournal })
+      expect(client.attemptStatus('ab'.repeat(32))).toBe('unknown')
+      mockedAxios.mockImplementation(async config => ({
+        data: storedMessageBytes(
+          decodeMonadStampedMessage(new Uint8Array(config.data as Buffer)),
+        ),
+        status: 200,
+        statusText: 'OK',
+        headers: {},
+        config,
+      }))
+      const result = await send(client)
+      expect(client.attemptStatus(result.payloadHashHex)).toBe('delivered')
+    })
+  })
+
   it('never issues a GET (the sender-side read route no longer exists)', async () => {
     const { client } = makeClient()
     mockedAxios.mockImplementation(async config => ({

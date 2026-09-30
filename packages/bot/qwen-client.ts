@@ -1,7 +1,6 @@
 /**
  * Minimal client for Qwen 3.8 Max's OpenAI-compatible chat-completions endpoint (Alibaba Cloud
- * Model Studio), for ticket #9's headless bot demo (targeting the "Best Builds with Qwen"
- * bounty).
+ * Model Studio), for ticket #9's headless bot demo.
  *
  * **Must pass `stream: true` and `enable_thinking: true`** -- confirmed live (this ticket's own
  * scoping): a plain, non-streaming request to this endpoint is rejected, but a streaming request

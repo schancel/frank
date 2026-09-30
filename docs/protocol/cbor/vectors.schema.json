@@ -98,6 +98,20 @@
             "pattern": "^[0-9a-f]{64}$"
           }
         },
+        "stamp_shared_point_hex": {
+          "type": "string",
+          "pattern": "^0[23][0-9a-f]{64}$"
+        },
+        "stamp_child_public_keys_hex": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^0[23][0-9a-f]{64}$"
+          }
+        },
         "error_category": {
           "enum": [
             "frame",
@@ -110,6 +124,29 @@
             "cryptographic"
           ]
         },
+        "error_stage": {
+          "description": "Optional section 9 stage label of the failing check. A runner that reports stages SHOULD compare it; a runner that reports only categories stays conformant and MUST compare error_category. Beyond the operation's last stage (frame 4, generic 7, typed 9) is invalid.",
+          "enum": [
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6",
+            "7",
+            "8.1",
+            "8.2",
+            "8.3",
+            "8.4",
+            "9",
+            "10.1",
+            "10.2",
+            "10.3",
+            "10.4",
+            "10.5",
+            "10.6"
+          ]
+        },
         "paired_case": {
           "type": "string",
           "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"
@@ -119,7 +156,8 @@
             "one_byte_mutation",
             "insertion_order_equivalent",
             "cross_language_roundtrip",
-            "opaque_retention"
+            "opaque_retention",
+            "derivation_variant"
           ]
         }
       },
@@ -279,6 +317,7 @@
             "required": ["type_id", "schema_version", "content_hash_hex"],
             "properties": {
               "error_category": false,
+              "error_stage": false,
               "retained_frame_hex": false
             }
           }
@@ -295,6 +334,7 @@
           "then": {
             "properties": {
               "error_category": false,
+              "error_stage": false,
               "retained_frame_hex": false
             }
           }
@@ -315,7 +355,9 @@
               "content_hash_hex": false,
               "content_digest_hex": false,
               "payload_digest_hex": false,
-              "payment_commitments_hex": false
+              "payment_commitments_hex": false,
+              "stamp_shared_point_hex": false,
+              "stamp_child_public_keys_hex": false
             }
           }
         },
@@ -332,10 +374,13 @@
             "required": ["retained_frame_hex"],
             "properties": {
               "error_category": false,
+              "error_stage": false,
               "content_hash_hex": false,
               "content_digest_hex": false,
               "payload_digest_hex": false,
-              "payment_commitments_hex": false
+              "payment_commitments_hex": false,
+              "stamp_shared_point_hex": false,
+              "stamp_child_public_keys_hex": false
             }
           }
         },
@@ -363,18 +408,27 @@
             "required": [
               "content_digest_hex",
               "payload_digest_hex",
-              "payment_commitments_hex"
+              "payment_commitments_hex",
+              "stamp_shared_point_hex",
+              "stamp_child_public_keys_hex"
             ],
             "properties": {
               "validation_context": {
                 "type": "object",
-                "required": ["payment_policy", "decrypted_frame_hex"],
+                "required": [
+                  "payment_policy",
+                  "decrypted_frame_hex",
+                  "recipient_directory_state"
+                ],
                 "properties": {
                   "payment_policy": {
                     "type": "object"
                   },
                   "decrypted_frame_hex": {
                     "type": "string"
+                  },
+                  "recipient_directory_state": {
+                    "type": "object"
                   }
                 }
               }
@@ -402,7 +456,11 @@
             "properties": {
               "validation_context": {
                 "type": "object",
-                "required": ["payment_policy", "decrypted_frame_hex"],
+                "required": [
+                  "payment_policy",
+                  "decrypted_frame_hex",
+                  "recipient_directory_state"
+                ],
                 "properties": {
                   "payment_policy": {
                     "type": "object"
@@ -448,7 +506,11 @@
           "then": {
             "properties": {
               "validation_context": {
-                "required": ["payment_policy", "decrypted_frame_hex"]
+                "required": [
+                  "payment_policy",
+                  "decrypted_frame_hex",
+                  "recipient_directory_state"
+                ]
               }
             }
           }
@@ -536,6 +598,16 @@
           "type": "integer",
           "minimum": 1,
           "maximum": 8388617
+        },
+        "recipient_directory_state": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/recipient-directory-state"
+            }
+          ]
         }
       }
     },
@@ -582,6 +654,30 @@
         "commitment_hex": {
           "type": "string",
           "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "recipient-directory-state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["current_statement_frame_hex", "previous_stamp_key_hex"],
+      "properties": {
+        "current_statement_frame_hex": {
+          "type": "string",
+          "pattern": "^(?:[0-9a-f]{2})*$",
+          "minLength": 2,
+          "maxLength": 16777236
+        },
+        "previous_stamp_key_hex": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "pattern": "^0[23][0-9a-f]{64}$"
+            }
+          ]
         }
       }
     }

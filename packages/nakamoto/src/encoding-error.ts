@@ -81,6 +81,18 @@ export interface Base32InvalidType {
   readonly code: 'base32-invalid-type'
 }
 
+export interface WrongLength {
+  readonly code: 'wrong-length'
+  readonly min: number
+  readonly max: number
+  readonly actual: number
+}
+
+export interface BadPrefix {
+  readonly code: 'bad-prefix'
+  readonly actual: number
+}
+
 export type EncodingError =
   | BytesExpected
   | Base58InvalidChar
@@ -98,6 +110,8 @@ export type EncodingError =
   | Base32InvalidValue
   | Base32InvalidChar
   | Base32InvalidType
+  | WrongLength
+  | BadPrefix
 
 export type EncodingResult<T> =
   | { readonly ok: true; readonly value: T }
@@ -120,6 +134,8 @@ const CODES: ReadonlySet<string> = new Set([
   'base32-invalid-value',
   'base32-invalid-char',
   'base32-invalid-type',
+  'wrong-length',
+  'bad-prefix',
 ])
 
 export function isEncodingError(value: unknown): value is EncodingError {

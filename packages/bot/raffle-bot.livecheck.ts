@@ -98,6 +98,7 @@ import {
   setUpFundedStampClient,
   waitForConfirmation,
 } from './qwen-bot-common'
+import { botLoopGuardFromEnv } from './bot-loop-guard'
 import {
   hasRaffleEntrant,
   RaffleBotStateStore,
@@ -300,6 +301,11 @@ async function main() {
 
   const identity = loadOrCreateIdentity(identityJsonPath, 'raffle-bot')
   await registerAndLog({ relayBaseUrl, identity, label: 'raffle-bot' })
+  // #311: round-status replies go to humans only, at most a bounded number per peer per window.
+  const guard = botLoopGuardFromEnv({
+    selfAddress: identity.displayAddress,
+    relayBaseUrl,
+  })
   console.log(`Raffle bot identity address: ${identity.displayAddress}`)
 
   const { stampClient, mainAccountSigner, provider, pool } =
@@ -467,7 +473,18 @@ async function main() {
       const round = state.getCurrentRound() as RaffleRoundRecord
 
       if (!request) {
-        // Any other message from a would-be entrant gets the current round's status.
+        // Any other message from a would-be entrant gets the current round's status -- except from
+        // another bot, and only within the per-peer budget (#311, ping-pong prevention).
+        const blockReason = await guard.peerBlockReason(envelope.from)
+        if (blockReason || !guard.reserveReply(envelope.from)) {
+          console.log(
+            `[raffle-bot] not sending round status to ${envelope.from} (${
+              blockReason ?? 'reply budget exhausted this window'
+            })`,
+          )
+          markProcessed()
+          continue
+        }
         console.log(`\n[raffle-bot] sending round status to ${envelope.from}`)
         await sendReply([
           {

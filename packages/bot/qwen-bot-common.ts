@@ -144,10 +144,14 @@ export async function registerAndLog(params: {
   relayBaseUrl: string
   identity: MonadIdentity
   label: string
+  /** Registers the self-declared bot marker (#311) so other bots skip this account. Defaults to
+   * true -- every caller in this package except the human-simulating send demo is a bot. */
+  bot?: boolean
 }): Promise<void> {
   await registerMonadIdentity({
     relayBaseUrl: params.relayBaseUrl,
     identity: params.identity,
+    profile: { bot: params.bot ?? true },
   })
   console.log(
     `[${params.label}] registered identity ${params.identity.displayAddress} (PUT /metadata, no payment -- POP disabled)`,

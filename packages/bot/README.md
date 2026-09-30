@@ -285,6 +285,26 @@ layer for this manually-run demo script, matching its existing standard.
 or live relay was available in that sandbox. Verified via `yarn jest`/`tsc --noEmit`/code review
 only; see the ticket's PR description for the exact commands run.
 
+## Bot loop guard (#311)
+
+Bots that answer any inbound message (vendor catalog, raffle round status, Qwen chat) would
+otherwise reply to each other forever, each reply paying a stamp. Every bot now registers a
+self-declared `bot` profile entry (`registerAndLog`, an ordinary open-ended `Entry` kind: no
+proto/backend change) and shares `bot-loop-guard.ts`:
+
+- never greet/fund, chat with, or send catalog/status to another bot: a peer is a bot if its
+  profile carries the marker or its address is in `FRANK_BOT_PEER_DENYLIST` (comma-separated;
+  for bots registered before the marker existed or third-party bots). A failed profile lookup
+  fails closed.
+- hard per-peer reply budget per sliding window: `FRANK_BOT_MAX_REPLIES_PER_PEER` (default 20,
+  `0` = never reply) per `FRANK_BOT_REPLY_WINDOW_MS` (default 1 hour). Applies to Qwen replies
+  and the vendor/raffle unsolicited replies; paid fulfilment and game moves are never dropped.
+- Qwen only treats `text` items as prompts; structured items are ignored, never quoted to the model.
+
+Limits: the marker is self-asserted; the budget is in memory (a restart resets it) and per
+address (a sybil gets the budget per address, each still paying a stamp). Blackjack only answers
+`blackjack-move` items and is unchanged apart from registering the marker.
+
 ## Non-goals (per the ticket)
 
 Production hardening, multi-user bot support, prompt/persona design polish, and a full

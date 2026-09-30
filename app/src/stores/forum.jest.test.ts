@@ -98,6 +98,52 @@ describe('useForumStore: putMessage preparation progress (ticket #273)', () => {
   })
 })
 
+describe('useForumStore: read-back failure after a landed burn (review F3)', () => {
+  it('a vote whose burn was sent but whose read-back throws rejects with BurnRefreshError, after exactly one burn', async () => {
+    const store = useForumStore()
+    mockedVote.mockResolvedValueOnce(undefined)
+    mockedFetchOne.mockRejectedValueOnce(new Error('relay read failed'))
+
+    await expect(
+      store.addOffering({
+        wallet: testWallet,
+        payloadDigest: 'deadbeef',
+        satoshis: 250,
+      }),
+    ).rejects.toMatchObject({ name: 'BurnRefreshError', kind: 'vote' })
+    expect(mockedVote).toHaveBeenCalledTimes(1)
+  })
+
+  it('a post whose burn was sent but whose read-back throws rejects with BurnRefreshError', async () => {
+    const store = useForumStore()
+    mockedPost.mockResolvedValueOnce({ payloadDigest: 'deadbeef' })
+    mockedFetchOne.mockRejectedValueOnce(new Error('relay read failed'))
+
+    await expect(
+      store.putMessage({
+        wallet: testWallet,
+        entry: { kind: 'post', message: 'hello' },
+        satoshis: 10_000_000,
+        topic: 'stamp',
+      }),
+    ).rejects.toMatchObject({ name: 'BurnRefreshError', kind: 'post' })
+    expect(mockedPost).toHaveBeenCalledTimes(1)
+  })
+
+  it('a failed burn is NOT wrapped: it stays the original error', async () => {
+    const store = useForumStore()
+    mockedVote.mockRejectedValueOnce(new Error('Nothing was sent'))
+    await expect(
+      store.addOffering({
+        wallet: testWallet,
+        payloadDigest: 'deadbeef',
+        satoshis: 250,
+      }),
+    ).rejects.toThrow('Nothing was sent')
+    expect(mockedFetchOne).not.toHaveBeenCalled()
+  })
+})
+
 describe('useForumStore: addOffering', () => {
   it('maps a positive signed vote number to direction "up"', async () => {
     const store = useForumStore()

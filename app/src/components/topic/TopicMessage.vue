@@ -60,7 +60,7 @@ import { useContactStore } from 'src/stores/contacts'
 import { ForumMessage } from '@frank/cashweb/types/forum'
 import { useTopicStore } from 'src/stores/topics'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
-import { errorNotify } from 'src/utils/notifications'
+import { notifyBurnFailure } from 'src/utils/burn-refresh-error'
 
 export default defineComponent({
   setup(props) {
@@ -132,7 +132,7 @@ export default defineComponent({
               topic,
             })
           } catch (err) {
-            errorNotify(err instanceof Error ? err : new Error(String(err)))
+            notifyBurnFailure(err, key => this.$t(key))
           }
         })()
       }, 1_000)

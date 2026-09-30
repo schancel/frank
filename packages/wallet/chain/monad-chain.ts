@@ -107,7 +107,10 @@ import { MonadHdKeyring } from '../monad-hd-keyring'
 import { MonadChangeKeyring } from '../monad-change-keyring'
 import { MonadChangePool } from '../monad-change-pool'
 import { MonadSubAccountPool } from '../monad-account-pool'
-import { SubAccountLeaseManager } from '../monad-account-lease'
+import {
+  BurnNotSentError,
+  SubAccountLeaseManager,
+} from '../monad-account-lease'
 import { MonadHttpClient } from '../monad-http'
 import { MonadAccountTxSigner } from '../monad-account-tx'
 import { MonadWalletHandle } from '../monad-wallet-handle'
@@ -459,6 +462,16 @@ export class TopicBurnPreparationError extends Error {
       ;(this as { cause?: unknown }).cause = options.cause
     }
   }
+}
+
+/** A burn that failed while being built/signed (RPC hiccup after the account was funded) sent
+ * nothing and left the funded account available: report it with the same "nothing sent, safe to
+ * retry" message as a failed preparation. Every other error passes through untouched. */
+function asNothingSent(err: unknown): never {
+  if (err instanceof BurnNotSentError) {
+    throw new TopicBurnPreparationError(err.message, { cause: err })
+  }
+  throw err
 }
 
 /** Pure factory: builds an `ActiveChain` from an explicit `MonadChainConfig`. See this file's
@@ -877,17 +890,19 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
           params.voteWeightWei,
           params.onPreparationProgress,
         )
-        const result = await client.submitTopicPost({
-          topic: params.topic,
-          entries: params.entries,
-          parentPostHash: params.parentDigest
-            ? getBytes(`0x${params.parentDigest}`)
-            : undefined,
-          direction: params.direction,
-          burnAddress: config.stampBurnAddress,
-          voteWeightWei: params.voteWeightWei,
-          leaseIndex,
-        })
+        const result = await client
+          .submitTopicPost({
+            topic: params.topic,
+            entries: params.entries,
+            parentPostHash: params.parentDigest
+              ? getBytes(`0x${params.parentDigest}`)
+              : undefined,
+            direction: params.direction,
+            burnAddress: config.stampBurnAddress,
+            voteWeightWei: params.voteWeightWei,
+            leaseIndex,
+          })
+          .catch(asNothingSent)
         return { payloadDigest: result.payloadHashHex }
       })
     },
@@ -901,13 +916,15 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
           params.voteWeightWei,
           params.onPreparationProgress,
         )
-        await client.castVote({
-          targetPayloadHash: getBytes(`0x${params.payloadDigest}`),
-          direction: params.direction,
-          burnAddress: config.stampBurnAddress,
-          voteWeightWei: params.voteWeightWei,
-          leaseIndex,
-        })
+        await client
+          .castVote({
+            targetPayloadHash: getBytes(`0x${params.payloadDigest}`),
+            direction: params.direction,
+            burnAddress: config.stampBurnAddress,
+            voteWeightWei: params.voteWeightWei,
+            leaseIndex,
+          })
+          .catch(asNothingSent)
       })
     },
 

@@ -116,6 +116,7 @@ import { MonadSubAccountPool } from './monad-account-pool'
 import {
   AccountLeaseHandle,
   AcquireLeaseWhenAvailableOptions,
+  BurnNotSentError,
   SubAccountLeaseManager,
   acquireLeaseWhenAvailable,
 } from './monad-account-lease'
@@ -585,11 +586,13 @@ export class MonadTopicPostClient {
         params.overrides,
       )
     } catch (err) {
-      // No transaction was ever broadcast, so the sub-account's nonce isn't actually at risk -- see
-      // this file's header, "Lease release policy", for why this deliberately still retires rather
-      // than guessing.
-      this.leaseManager.releaseLease(handle, 'failed')
-      throw err
+      // Nothing was signed, broadcast or sent to the relay, so the account still holds its funds
+      // and an untouched nonce: hand it back so a retry reuses it instead of funding another.
+      this.leaseManager.releaseLease(handle, 'unused')
+      throw new BurnNotSentError(
+        err instanceof Error ? err.message : String(err),
+        err,
+      )
     }
 
     const post: MonadTopicPostProto = {

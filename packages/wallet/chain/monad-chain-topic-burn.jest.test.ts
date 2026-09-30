@@ -62,6 +62,8 @@ interface FakeChain {
   /** Every raw transaction handed to the RPC (funding transfers), in order. */
   rpcSubmissions: Transaction[]
   setRpcDown(down: boolean): void
+  /** Fail the nonce read of any sub-account (the first RPC call of signing its burn). */
+  setSigningDown(down: boolean): void
   mainAddress: string
 }
 
@@ -71,6 +73,7 @@ function makeFakeChain(mainBalance = 10n ** 18n): FakeChain {
   const nonces = new Map<string, number>()
   const rpcSubmissions: Transaction[] = []
   let rpcDown = false
+  let signingDown = false
   const mainAddress = identity.address.raw
   balances.set(mainAddress.toLowerCase(), mainBalance)
 
@@ -86,7 +89,12 @@ function makeFakeChain(mainBalance = 10n ** 18n): FakeChain {
   p.getBalance = async (address: string) =>
     guard(() => balances.get(address.toLowerCase()) ?? 0n)
   p.getTransactionCount = async (address: string) =>
-    guard(() => nonces.get(address.toLowerCase()) ?? 0)
+    guard(() => {
+      if (signingDown && address.toLowerCase() !== mainAddress.toLowerCase()) {
+        throw new Error('RPC dropped while signing (test)')
+      }
+      return nonces.get(address.toLowerCase()) ?? 0
+    })
   p.estimateGas = async () => guard(() => GAS_LIMIT)
   p.getFeeData = async () =>
     guard(() => ({
@@ -140,6 +148,9 @@ function makeFakeChain(mainBalance = 10n ** 18n): FakeChain {
     rpcSubmissions,
     setRpcDown: down => {
       rpcDown = down
+    },
+    setSigningDown: down => {
+      signingDown = down
     },
     mainAddress,
   }
@@ -355,6 +366,50 @@ describe('topics.post on a fresh wallet (no funded sub-accounts)', () => {
     expect(fake.pool.records().every(r => r.status === 'unfunded')).toBe(true)
   })
 
+  it('serializes a concurrent post, vote and post onto three distinct accounts and nonces', async () => {
+    const chain = createMonadChain(CONFIG)
+    const fake = makeFakeChain()
+    const puts = fakeRelay()
+    // A scheduling gap between "account prepared" and "account leased" (the pool's own queue has
+    // already released by then): only the wallet-level serialization keeps a concurrent operation
+    // from preparing, finding that account still available, and leasing it too.
+    const prepare = fake.pool.prepareBurnAccount.bind(fake.pool)
+    fake.pool.prepareBurnAccount = async params => {
+      const prepared = await prepare(params)
+      await new Promise(resolve => setTimeout(resolve, 5))
+      return prepared
+    }
+
+    await Promise.all([
+      chain.topics.post({
+        wallet: fake.wallet,
+        topic: 'help',
+        entries: [ENTRY],
+        direction: 'up',
+        voteWeightWei: WEIGHT,
+      }),
+      chain.topics.vote({
+        wallet: fake.wallet,
+        payloadDigest: 'ab'.repeat(32),
+        direction: 'up',
+        voteWeightWei: WEIGHT,
+      }),
+      chain.topics.post({
+        wallet: fake.wallet,
+        topic: 'help',
+        entries: [{ ...ENTRY, title: 'second' }],
+        direction: 'up',
+        voteWeightWei: WEIGHT,
+      }),
+    ])
+    expect(puts).toHaveLength(3)
+    expect(fake.rpcSubmissions).toHaveLength(3)
+    expect(fake.pool.records().filter(r => r.status === 'spent')).toHaveLength(
+      3,
+    )
+    expect(fake.rpcSubmissions.map(tx => tx.nonce)).toEqual([0, 1, 2])
+  })
+
   it('serializes concurrent posts so each burn uses its own prepared account', async () => {
     const chain = createMonadChain(CONFIG)
     const fake = makeFakeChain()
@@ -384,4 +439,54 @@ describe('topics.post on a fresh wallet (no funded sub-accounts)', () => {
     )
     expect(new Set(senders).size).toBe(2)
   })
+})
+
+describe('RPC failing between funding and signing (#273 review F1)', () => {
+  const post = (chain: ReturnType<typeof createMonadChain>, fake: FakeChain) =>
+    chain.topics.post({
+      wallet: fake.wallet,
+      topic: 'help',
+      entries: [ENTRY],
+      direction: 'up',
+      voteWeightWei: WEIGHT,
+    })
+  const vote = (chain: ReturnType<typeof createMonadChain>, fake: FakeChain) =>
+    chain.topics.vote({
+      wallet: fake.wallet,
+      payloadDigest: 'ab'.repeat(32),
+      direction: 'up',
+      voteWeightWei: WEIGHT,
+    })
+
+  it.each([
+    ['post', post],
+    ['vote', vote],
+  ])(
+    '%s: the funded account is kept, nothing is sent, and the retry funds nothing more',
+    async (_name, act) => {
+      const chain = createMonadChain(CONFIG)
+      const fake = makeFakeChain()
+      const puts = fakeRelay()
+
+      fake.setSigningDown(true)
+      const failure = await act(chain, fake).catch((e: unknown) => e)
+      expect(failure).toBeInstanceOf(TopicBurnPreparationError)
+      expect((failure as Error).message).toMatch(
+        /RPC dropped while signing.*Nothing was sent.*safe to try again/s,
+      )
+      expect(puts).toHaveLength(0)
+      // Funded once, and that account is still available (not retired, not leased).
+      expect(fake.rpcSubmissions).toHaveLength(1)
+      const statuses = fake.pool.records().map(r => r.status)
+      expect(statuses.filter(s => s === 'available')).toHaveLength(1)
+      expect(statuses).not.toContain('retired')
+      expect(statuses).not.toContain('in-use')
+
+      fake.setSigningDown(false)
+      await act(chain, fake)
+      expect(puts).toHaveLength(1)
+      // Still one funding transaction across the failure and the retry.
+      expect(fake.rpcSubmissions).toHaveLength(1)
+    },
+  )
 })

@@ -88,7 +88,18 @@ export interface AccountLeaseHandle {
  * None of the three ever returns the account to `'available'` (see this file's header, "Correction
  * (ticket #34)") — `'failed'`/`'stuck'` additionally satisfy the ticket's "never guess the next
  * nonce" requirement by not silently reusing a possibly-desynced nonce. */
-export type LeaseOutcome = 'confirmed' | 'failed' | 'stuck'
+export type LeaseOutcome = 'confirmed' | 'failed' | 'stuck' | 'unused'
+
+/** Thrown by a burn client when building/signing the burn failed, so nothing was signed, broadcast
+ * or handed to the relay and the leased account was returned to `'available'` untouched (#273). */
+export class BurnNotSentError extends Error {
+  readonly cause: unknown
+  constructor(reason: string, cause: unknown) {
+    super(reason)
+    this.name = 'BurnNotSentError'
+    this.cause = cause
+  }
+}
 
 /** Structural subset of `MonadAccountTxSigner` (#11) that `awaitLeaseSettlement` needs — expressed
  * as an interface (rather than importing the class type) so tests can supply a plain mock, the
@@ -196,8 +207,14 @@ export class SubAccountLeaseManager {
       )
     }
     this.liveLeases.delete(handle.index)
+    // `'unused'`: nothing was signed or sent, so the account still holds its funds and its nonce
+    // is untouched; the only outcome that returns an account to `'available'`.
     const nextStatus: SubAccountStatus =
-      outcome === 'confirmed' ? 'spent' : 'retired'
+      outcome === 'confirmed'
+        ? 'spent'
+        : outcome === 'unused'
+        ? 'available'
+        : 'retired'
     return this.pool.setStatus(handle.index, nextStatus)
   }
 }

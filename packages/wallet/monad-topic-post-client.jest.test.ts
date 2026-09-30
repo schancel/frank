@@ -14,7 +14,7 @@ import axios from 'axios'
 
 import { MonadHdKeyring } from './monad-hd-keyring'
 import { MonadSubAccountPool } from './monad-account-pool'
-import { SubAccountLeaseManager } from './monad-account-lease'
+import { BurnNotSentError, SubAccountLeaseManager } from './monad-account-lease'
 import { MonadTxSubmitter } from './monad-account-tx'
 import {
   MonadTopicPost,
@@ -357,6 +357,25 @@ describe('MonadTopicPostClient.submitTopicPost', () => {
     expect(result.leaseIndex).toBe(2)
     expect(pool.getRecord(2)?.status).toBe('spent')
     expect(pool.getRecord(0)?.status).toBe('available')
+  })
+
+  it('returns the untouched account to available and throws BurnNotSentError when signing throws (#273)', async () => {
+    const { client, pool } = makeClient()
+
+    await expect(
+      client.submitTopicPost({
+        topic: 'general',
+        entries: ENTRIES,
+        direction: 'up',
+        burnAddress: 'not-an-address',
+        voteWeightWei: 5_000n,
+        overrides: FEE_OVERRIDES,
+      }),
+    ).rejects.toBeInstanceOf(BurnNotSentError)
+
+    expect(mockedAxios).not.toHaveBeenCalled()
+    expect(pool.records().filter(r => r.status === 'retired')).toHaveLength(0)
+    expect(pool.records().filter(r => r.status === 'in-use')).toHaveLength(0)
   })
 
   it('builds down-vote calldata for an initial down-vote post', async () => {

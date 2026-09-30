@@ -110,7 +110,7 @@ import AMessageReplies from './ForumMessageReplies.vue'
 import { MessageWithReplies, useForumStore } from 'src/stores/forum'
 import { useContactStore } from 'src/stores/contacts'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
-import { errorNotify } from 'src/utils/notifications'
+import { notifyBurnFailure } from 'src/utils/burn-refresh-error'
 import { activeChain } from '@frank/wallet/chain'
 import { formatSafeRawAmount, rawToSafeNumber } from 'src/utils/chain-amount'
 
@@ -211,7 +211,7 @@ export default defineComponent({
               satoshis,
             })
           } catch (err) {
-            errorNotify(err instanceof Error ? err : new Error(String(err)))
+            notifyBurnFailure(err, key => this.$t(key))
           }
         })()
       }, 1_000)

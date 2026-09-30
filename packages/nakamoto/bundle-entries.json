@@ -144,6 +144,12 @@
       "entry": "src/script.ts",
       "forbid": ["btc-magic", "xpi-port", "xpi-magic"],
       "absentExports": ["BTC_MAINNET", "BCH_MAINNET", "encodeBase58"]
+    },
+    {
+      "name": "block",
+      "entry": "src/block.ts",
+      "forbid": ["btc-magic", "xpi-port", "xpi-magic"],
+      "absentExports": ["BTC_MAINNET", "BCH_MAINNET", "encodeBase58"]
     }
   ]
 }

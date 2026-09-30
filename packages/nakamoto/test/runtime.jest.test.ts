@@ -35,6 +35,7 @@ describe('runtime constraints', () => {
       './base58check',
       './bch',
       './bech32',
+      './block',
       './btc',
       './cashaddr',
       './constructors',
@@ -85,6 +86,7 @@ describe('runtime constraints', () => {
       'sign',
       'transaction',
       'script',
+      'block',
     ])
   })
 

@@ -71,6 +71,44 @@
           @keyup.enter="onAction('bet')"
         />
       </div>
+      <!-- Ticket #366: a paid move nobody answered. Only a plain hit/stand can be re-sent, and only
+      behind an explicit consent: a resend is a second paid message, and a repeated hit could be
+      played twice once the dealer returns. A wager (bet/double) is never re-sent. -->
+      <div
+        v-if="dealerSilent"
+        role="status"
+        aria-live="polite"
+        class="dealer-silent text-caption q-mt-sm q-pa-xs text-negative"
+        data-testid="dealer-silent"
+      >
+        <div class="text-weight-bold">
+          {{ $t('blackjackDealer.silentTitle') }}
+        </div>
+        <div>{{ $t('blackjackDealer.silentBody') }}</div>
+        <div>{{ $t('blackjackDealer.silentWait') }}</div>
+        <div>{{ $t('blackjackDealer.silentRefund') }}</div>
+        <template v-if="resendAction">
+          <q-checkbox
+            v-model="resendConfirmed"
+            dense
+            data-testid="dealer-resend-confirm"
+            :label="
+              $t('blackjackDealer.resendConfirm', {
+                action: actionLabel(resendAction).toLowerCase(),
+              })
+            "
+          />
+          <q-btn
+            dense
+            color="primary"
+            data-testid="dealer-resend"
+            :label="$t('blackjackDealer.resend')"
+            :disable="!resendConfirmed || sending"
+            @click="onResend"
+          />
+        </template>
+        <div v-else>{{ $t('blackjackDealer.silentNoResend') }}</div>
+      </div>
       <div
         role="status"
         aria-live="polite"
@@ -88,7 +126,7 @@
           :key="action"
           :label="actionLabel(action)"
           :loading="sending"
-          :disable="sending || (action === 'bet' && !!betError)"
+          :disable="sending || dealerSilent || (action === 'bet' && !!betError)"
           dense
           color="primary"
           @click="onAction(action)"
@@ -134,6 +172,10 @@ import { parseBetInput, sendBlackjackWager } from '../../../utils/blackjack-bet'
 // dealer never rejects a first-try default as "below the table minimum."
 const DEFAULT_BET_AMOUNT_DISPLAY = '0.1'
 
+// How long a paid move may go unanswered before the bubble says so (ticket #366). Comfortably above
+// a bot's normal poll + reply time so a slow-but-alive dealer never triggers it.
+const DEALER_ANSWER_TIMEOUT_MS = 45_000
+
 const ACTION_LABELS: Partial<Record<BlackjackAction, string>> = {
   hit: 'Hit',
   stand: 'Stand',
@@ -167,6 +209,12 @@ export default defineComponent({
       // The dealer's rejection for THIS game while a double was pending (from the fold).
       dealerError: '',
       loadSeq: 0,
+      // Derived from the persisted send time of the last move, so it survives a reload.
+      dealerSilent: false,
+      // The unanswered move's action, and the player's explicit consent to pay for it again.
+      unansweredAction: undefined as BlackjackAction | undefined,
+      resendConfirmed: false,
+      dealerTimer: undefined as ReturnType<typeof setTimeout> | undefined,
       betAmountDisplay: DEFAULT_BET_AMOUNT_DISPLAY,
       // Inline (aria-live) message: send failures such as insufficient funds, and the dealer's
       // own rejection text. Kept alongside, not instead of, the toast.
@@ -179,6 +227,14 @@ export default defineComponent({
     },
     visibleError(): string {
       return this.isLatest ? this.actionError || this.dealerError : ''
+    },
+    // Only a plain hit/stand can be re-sent: a bet or double carries a wager transfer that would be
+    // paid a second time.
+    resendAction(): 'hit' | 'stand' | undefined {
+      const action = this.unansweredAction
+      return this.dealerSilent && (action === 'hit' || action === 'stand')
+        ? action
+        : undefined
     },
     betLimitsHint(): string {
       return `${activeChain.toDisplayAmount(
@@ -253,6 +309,9 @@ export default defineComponent({
       void this.loadState()
     },
   },
+  beforeUnmount() {
+    clearTimeout(this.dealerTimer)
+  },
   methods: {
     cardLabel,
     cardLabels(cards: number[]): string {
@@ -289,6 +348,7 @@ export default defineComponent({
         let folded: BlackjackGameState | undefined
         let atItem: BlackjackGameState | undefined
         let lastRaw: unknown
+        let lastMessage: (typeof messages)[number] | undefined
         let dealerError = ''
         for (const message of messages) {
           for (let index = 0; index < message.items.length; index++) {
@@ -323,6 +383,7 @@ export default defineComponent({
             const hydrated = await plugin.hydrate(raw, context)
             folded = plugin.reduceState(folded, hydrated, context)
             lastRaw = raw
+            lastMessage = message
             // The dealer's card for an accepted double supersedes an earlier assumed rejection.
             if (raw.action === 'double' && raw.playerCards) dealerError = ''
             if (raw === this.item) atItem = folded
@@ -333,6 +394,15 @@ export default defineComponent({
         this.liveState = folded ?? null
         this.isLatest = lastRaw === this.item
         this.dealerError = dealerError
+        const awaiting =
+          this.isLatest &&
+          lastMessage?.outbound === true &&
+          lastMessage.status !== 'pending' &&
+          lastMessage.status !== 'error'
+        this.unansweredAction = awaiting
+          ? (lastRaw as BlackjackMoveItem).action
+          : undefined
+        this.armDealerTimer(awaiting ? lastMessage?.serverTime ?? 0 : 0)
       } catch (err) {
         // A superseded load's failure is irrelevant: the newer load owns the display.
         if (seq === this.loadSeq) {
@@ -341,6 +411,30 @@ export default defineComponent({
       } finally {
         if (seq === this.loadSeq) this.loading = false
       }
+    },
+    // Flips `dealerSilent` once DEALER_ANSWER_TIMEOUT_MS has passed since the unanswered move was
+    // sent; a reply (or any state where nothing awaits the dealer) clears it again.
+    armDealerTimer(sentAt: number) {
+      clearTimeout(this.dealerTimer)
+      this.dealerTimer = undefined
+      if (!sentAt) {
+        this.dealerSilent = false
+        return
+      }
+      const remaining = sentAt + DEALER_ANSWER_TIMEOUT_MS - Date.now()
+      this.dealerSilent = remaining <= 0
+      if (remaining > 0) {
+        this.dealerTimer = setTimeout(() => {
+          this.dealerSilent = true
+        }, remaining)
+      }
+    },
+    onResend() {
+      const action = this.resendAction
+      if (!action || !this.resendConfirmed || this.sending) return
+      // One consent buys one resend.
+      this.resendConfirmed = false
+      void this.onAction(action)
     },
     focusBetInput() {
       const input = this.$refs.betInput as { focus?: () => void } | undefined

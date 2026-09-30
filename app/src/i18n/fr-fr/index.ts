@@ -73,6 +73,19 @@ export default {
     explainerCountUnverified:
       "Le tirage n'a pas annoncé sa taille : le nombre de participants n'est pas vérifié.",
   },
+  blackjackDealer: {
+    silentTitle: "Le croupier n'a pas répondu",
+    silentBody:
+      "Votre coup a été envoyé et payé, mais aucune réponse n'est revenue. Le croupier est peut-être hors ligne, et un coup envoyé pendant qu'il était hors ligne peut ne jamais être vu.",
+    silentWait: 'Attendez que le croupier soit de retour avant de réessayer.',
+    silentNoResend:
+      'Cette mise ne peut pas être renvoyée depuis ici : elle serait payée deux fois.',
+    silentRefund:
+      "Votre mise n'est pas remboursée automatiquement (seule une mise refusée par le croupier l'est). Si le croupier reste hors ligne, contactez la personne qui l'exploite.",
+    resendConfirm:
+      "Renvoyer mon coup ({action}). Je comprends qu'il est payé de nouveau et que, si le premier arrive aussi, il peut être joué deux fois.",
+    resend: 'Renvoyer mon coup',
+  },
   blackjackHand: {
     bet: 'Votre mise : {amount} MON',
     betUnverified: 'Votre mise',

@@ -404,12 +404,14 @@ export default defineComponent({
        * on the click (a purchase) can hold its own in-flight guard until then. */
       settled?: (sent: boolean) => void
     }): Promise<boolean> {
-      const sent = await this.sendFollowUpItemsUnsettled({
-        items,
-        stampValueWei,
-      })
-      settled?.(sent)
-      return sent
+      let sent = false
+      try {
+        sent = await this.sendFollowUpItemsUnsettled({ items, stampValueWei })
+        return sent
+      } finally {
+        // Exactly once, even if the send throws (a throw counts as not sent).
+        settled?.(sent)
+      }
     },
     async sendFollowUpItemsUnsettled({
       items,

@@ -107,6 +107,18 @@ describe('Chat.vue sendFollowUpItems settled callback (#368)', () => {
     expect(settled).toHaveBeenCalledWith(expected)
   })
 
+  it('calls settled(false) exactly once, and still rejects, when the send itself throws', async () => {
+    const boom = new Error('unexpected')
+    const self = fakeThis()
+    self.sendFollowUpItemsUnsettled = jest.fn().mockRejectedValue(boom)
+    const settled = jest.fn()
+    await expect(
+      methods.sendFollowUpItems.call(self, { items, settled }),
+    ).rejects.toBe(boom)
+    expect(settled).toHaveBeenCalledTimes(1)
+    expect(settled).toHaveBeenCalledWith(false)
+  })
+
   it('does not report a purchase as settled while its send is still in flight', async () => {
     let finish!: () => void
     const self = fakeThis({

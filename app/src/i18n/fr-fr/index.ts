@@ -74,14 +74,14 @@ export default {
     heading: 'Stockage persistant',
     granted: 'Stockage persistant : accordé',
     notGranted: 'Stockage persistant : non accordé',
-    unsupported: 'Stockage persistant : non pris en charge par ce navigateur',
+    unsupported: 'Stockage persistant : indisponible',
     unknown: 'Stockage persistant : vérification…',
     explainGranted:
       'Votre navigateur a accepté de conserver les données de cette application sauf si vous les effacez vous-même. Votre phrase de récupération reste la seule sauvegarde si vous perdez cet appareil.',
     explainNotGranted:
       'Votre navigateur peut supprimer les données de cette application, dont votre phrase de récupération enregistrée, lorsqu’il manque d’espace ou, dans Safari, après 7 jours sans visite sauf si l’application est ajoutée à l’écran d’accueil. Votre phrase de récupération est la seule sauvegarde.',
     explainUnsupported:
-      'Ce navigateur ne peut pas être invité à conserver les données de cette application et peut donc les supprimer (Safari le fait après 7 jours sans visite sauf si l’application est ajoutée à l’écran d’accueil). Votre phrase de récupération est la seule sauvegarde.',
+      'Le stockage persistant est indisponible (cette page n’est pas un contexte sécurisé ou le navigateur ne le prend pas en charge) : le navigateur peut supprimer les données de cette application (Safari le fait après 7 jours sans visite sauf si l’application est ajoutée à l’écran d’accueil). Votre phrase de récupération est la seule sauvegarde.',
     request: 'Demander au navigateur de conserver mes données',
     confirmSeed: 'Confirmer ma phrase de récupération',
     seedConfirmed: 'Votre phrase de récupération est confirmée.',

@@ -20,7 +20,10 @@ describe('persistent storage store (ticket #370)', () => {
     setActivePinia(createPinia())
     walletState.seedPhrase = 'a seed'
   })
-  afterEach(() => setManager(undefined))
+  afterEach(() => {
+    setManager(undefined)
+    localStorage.clear()
+  })
 
   it('starts unknown', () => {
     expect(usePersistentStorageStore().status).toBe('unknown')
@@ -35,6 +38,73 @@ describe('persistent storage store (ticket #370)', () => {
 
     expect(persist).toHaveBeenCalledTimes(1)
     expect(store.status).toBe('granted')
+  })
+
+  it('a dismissed or denied request is not repeated on the next launches for a week', async () => {
+    const persist = jest.fn(async () => false)
+    setManager({ persisted: async () => false, persist })
+    const now = jest.spyOn(Date, 'now')
+    now.mockReturnValue(1_000_000)
+    await usePersistentStorageStore().ensureForAccount()
+    expect(persist).toHaveBeenCalledTimes(1)
+
+    setActivePinia(createPinia())
+    now.mockReturnValue(1_000_000 + 6 * 24 * 3600 * 1000)
+    await usePersistentStorageStore().ensureForAccount()
+    expect(persist).toHaveBeenCalledTimes(1)
+
+    setActivePinia(createPinia())
+    now.mockReturnValue(1_000_000 + 7 * 24 * 3600 * 1000)
+    await usePersistentStorageStore().ensureForAccount()
+    expect(persist).toHaveBeenCalledTimes(2)
+    now.mockRestore()
+  })
+
+  it('a prompt that never answers still counts as asked', async () => {
+    const persist = jest.fn(() => new Promise<boolean>(() => undefined))
+    setManager({ persisted: async () => false, persist })
+    void usePersistentStorageStore().ensureForAccount()
+    await new Promise(r => setTimeout(r, 10))
+    setActivePinia(createPinia())
+    void usePersistentStorageStore().ensureForAccount()
+    await new Promise(r => setTimeout(r, 10))
+    expect(persist).toHaveBeenCalledTimes(1)
+  })
+
+  it('Settings retry ignores the weekly limit', async () => {
+    const persist = jest.fn(async () => false)
+    setManager({ persisted: async () => false, persist })
+    const store = usePersistentStorageStore()
+    await store.ensureForAccount()
+    await store.request()
+    expect(persist).toHaveBeenCalledTimes(2)
+  })
+
+  it('unusable localStorage never blocks or throws on launch', async () => {
+    const persist = jest.fn(async () => true)
+    setManager({ persisted: async () => false, persist })
+    const spy = jest
+      .spyOn(Storage.prototype, 'getItem')
+      .mockImplementation(() => {
+        throw new Error('denied')
+      })
+    await expect(
+      usePersistentStorageStore().ensureForAccount(),
+    ).resolves.toBeUndefined()
+    expect(persist).toHaveBeenCalledTimes(1)
+    spy.mockRestore()
+  })
+
+  it('a launch never rejects even when the browser call throws', async () => {
+    setManager({
+      persisted: async () => false,
+      persist: async () => {
+        throw new Error('SecurityError')
+      },
+    })
+    const store = usePersistentStorageStore()
+    await expect(store.ensureForAccount()).resolves.toBeUndefined()
+    expect(store.status).toBe('not-granted')
   })
 
   it('returning user, denied: surfaces not-granted', async () => {

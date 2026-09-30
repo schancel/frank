@@ -16,6 +16,35 @@ export type PersistentStorageStatus =
   // Not asked yet, or the browser has not answered (a permission prompt is still open).
   | 'unknown'
 
+// A launch asks at most once per week: Firefox answers persist() with a permission prompt, so a
+// dismissed prompt must not come back on every launch. The time is kept in localStorage.
+export const PERSIST_RETRY_MS = 7 * 24 * 60 * 60 * 1000
+const LAST_REQUEST_KEY = 'frank.persistentStorage.lastRequestAt'
+
+export function lastPersistRequestAt(): number | undefined {
+  try {
+    const raw = localStorage.getItem(LAST_REQUEST_KEY)
+    const at = raw === null ? NaN : Number(raw)
+    return Number.isFinite(at) ? at : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function recordPersistRequest(): void {
+  try {
+    localStorage.setItem(LAST_REQUEST_KEY, String(Date.now()))
+  } catch {
+    // Storage unavailable: worst case we ask again next launch.
+  }
+}
+
+/** True when a launch may ask again: never asked, or the last ask was over a week ago. */
+export function mayRequestOnLaunch(now = Date.now()): boolean {
+  const last = lastPersistRequestAt()
+  return last === undefined || now - last >= PERSIST_RETRY_MS || last > now
+}
+
 type Manager = Partial<Pick<StorageManager, 'persist' | 'persisted'>>
 
 function currentManager(): Manager | undefined {
@@ -46,6 +75,8 @@ export async function requestPersistentStorage(
     ) {
       return 'granted'
     }
+    // Recorded before asking: a prompt that is dismissed or never answered still counts.
+    recordPersistRequest()
     return (await manager.persist()) ? 'granted' : 'not-granted'
   } catch {
     return 'not-granted'

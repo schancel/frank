@@ -3,6 +3,7 @@ import { defineStore } from 'pinia'
 import {
   PersistentStorageStatus,
   queryPersistentStorage,
+  mayRequestOnLaunch,
   requestPersistentStorage,
 } from 'src/utils/persistent-storage'
 import { useWalletStore } from 'src/stores/wallet'
@@ -20,11 +21,14 @@ export const usePersistentStorageStore = defineStore('persistentStorage', {
     async request() {
       this.status = await requestPersistentStorage()
     },
-    /** Returning-user launch: when an account exists and persistence is not granted yet, ask. */
+    /** Returning-user launch: when an account exists and persistence is not granted yet, ask, but
+     * at most once a week (see `mayRequestOnLaunch`). Never rejects. */
     async ensureForAccount() {
       if (!useWalletStore().seedPhrase) return
       await this.refresh()
-      if (this.status === 'not-granted') await this.request()
+      if (this.status === 'not-granted' && mayRequestOnLaunch()) {
+        await this.request()
+      }
     },
   },
 })

@@ -13,7 +13,9 @@ const mockWallet = jest.requireActual('vue').reactive({
 })
 jest.mock('src/stores/wallet', () => ({ useWalletStore: () => mockWallet }))
 jest.mock('../dialogs/SeedConfirmDialog.vue', () => ({
-  template: '<div data-test="seed-confirm-dialog" />',
+  emits: ['confirmed'],
+  template:
+    '<button data-test="seed-confirm-dialog" @click="$emit(\'confirmed\')" />',
 }))
 
 const $t = (key: string) =>
@@ -32,6 +34,12 @@ const QBtn = defineComponent({
 })
 const QDialog = defineComponent({
   props: { modelValue: Boolean },
+  emits: ['hide'],
+  watch: {
+    modelValue(open: boolean) {
+      if (!open) this.$emit('hide')
+    },
+  },
   setup(props, { slots }) {
     return () =>
       props.modelValue
@@ -111,7 +119,7 @@ describe('Settings > Storage (ticket #370)', () => {
     setManager(undefined)
     const w = await render()
     expect(w.find('[data-test="persistent-storage-status"]').text()).toBe(
-      'Persistent storage: not supported by this browser',
+      'Persistent storage: unavailable',
     )
     expect(
       w.find('[data-test="persistent-storage-explanation"]').text(),
@@ -130,6 +138,49 @@ describe('Settings > Storage (ticket #370)', () => {
 
     await button.trigger('click')
     expect(w.find('[data-test="seed-confirm-dialog"]').exists()).toBe(true)
+  })
+
+  it('after confirming in the dialog, focus lands on the panel, not on the removed button', async () => {
+    setManager({ persisted: async () => false, persist: async () => false })
+    const w = await render({ confirmedAt: null })
+    w.unmount()
+    setActivePinia(createPinia())
+    mockWallet.seedPhrase = 'a seed phrase'
+    mockWallet.seedConfirmedAt = null
+    const attached = mount(PersistentStoragePanel, {
+      attachTo: document.body,
+      global: { mocks: { $t }, stubs: { QBtn, QDialog } },
+    })
+    await flushPromises()
+    await attached
+      .find('[data-test="persistent-storage-confirm-seed"]')
+      .trigger('click')
+    mockWallet.seedConfirmedAt = Date.now() // the dialog's confirmation writes the marker
+    await attached.find('[data-test="seed-confirm-dialog"]').trigger('click')
+    await flushPromises()
+
+    expect(document.activeElement).toBe(
+      attached.find('[data-test="persistent-storage"]').element,
+    )
+    attached.unmount()
+  })
+
+  it('closing the dialog without confirming does not move focus', async () => {
+    setManager({ persisted: async () => false, persist: async () => false })
+    const w = mount(PersistentStoragePanel, {
+      attachTo: document.body,
+      global: { mocks: { $t }, stubs: { QBtn, QDialog } },
+    })
+    mockWallet.seedPhrase = 'x'
+    mockWallet.seedConfirmedAt = null
+    await flushPromises()
+    const before = document.activeElement
+    ;(w.vm as unknown as { seedConfirmOpen: boolean }).seedConfirmOpen = true
+    await flushPromises()
+    ;(w.vm as unknown as { seedConfirmOpen: boolean }).seedConfirmOpen = false
+    await flushPromises()
+    expect(document.activeElement).toBe(before)
+    w.unmount()
   })
 
   it('a confirmed phrase shows a confirmation instead of the shortcut', async () => {

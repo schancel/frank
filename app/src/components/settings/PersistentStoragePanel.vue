@@ -1,5 +1,10 @@
 <template>
-  <div class="persistent-storage q-gutter-y-sm" data-test="persistent-storage">
+  <div
+    ref="panelRoot"
+    class="persistent-storage q-gutter-y-sm"
+    tabindex="-1"
+    data-test="persistent-storage"
+  >
     <h2 class="text-subtitle1 q-ma-none">
       {{ $t('persistentStorage.heading') }}
     </h2>
@@ -41,14 +46,14 @@
       @click="seedConfirmOpen = true"
     />
 
-    <q-dialog v-model="seedConfirmOpen">
-      <seed-confirm-dialog @confirmed="seedConfirmOpen = false" />
+    <q-dialog v-model="seedConfirmOpen" @hide="onSeedConfirmHide">
+      <seed-confirm-dialog @confirmed="onSeedConfirmed" />
     </q-dialog>
   </div>
 </template>
 
 <script lang="ts">
-import { computed, defineComponent, onMounted, ref } from 'vue'
+import { computed, defineComponent, nextTick, onMounted, ref } from 'vue'
 import { storeToRefs } from 'pinia'
 
 import { usePersistentStorageStore } from 'src/stores/persistent-storage'
@@ -66,12 +71,27 @@ export default defineComponent({
     const wallet = useWalletStore()
     const { status } = storeToRefs(storage)
     const seedConfirmOpen = ref(false)
+    const panelRoot = ref<HTMLElement | null>(null)
+    let justConfirmed = false
     onMounted(() => {
       void storage.refresh()
     })
     return {
       status,
       seedConfirmOpen,
+      panelRoot,
+      // The Confirm button is replaced by the confirmed text once the phrase is confirmed, so
+      // after the dialog closes put focus on the panel rather than on a removed control (same
+      // approach as SettingsPanel.vue).
+      onSeedConfirmed() {
+        justConfirmed = true
+        seedConfirmOpen.value = false
+      },
+      onSeedConfirmHide() {
+        if (!justConfirmed) return
+        justConfirmed = false
+        void nextTick(() => panelRoot.value?.focus())
+      },
       hasSeed: computed(() => !!wallet.seedPhrase),
       seedConfirmed: computed(
         () => !!wallet.seedPhrase && wallet.seedConfirmedAt != null,

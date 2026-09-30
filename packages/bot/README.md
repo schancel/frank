@@ -396,7 +396,15 @@ recipient-addressing fix to the wire format (ticket #37's noted follow-up).
 Every stamp payment a bot sends comes from a single-use sub-account derived from an HD seed. The
 seed used to be regenerated on each start, stranding whatever was left on those accounts. Now each
 bot keeps it in its own state directory (`QWEN_BOT_STATE_DIR`, `BLACKJACK_BOT_STATE_DIR`,
-`RAFFLE_BOT_STATE_DIR`, `VENDOR_BOT_STATE_DIR`):
+`RAFFLE_BOT_STATE_DIR`, `VENDOR_BOT_STATE_DIR`). The default is per-user and persistent:
+`~/.frank-bots/<bot>` (`$XDG_STATE_HOME/frank-bots/<bot>` when set). It used to be
+`/tmp/<bot>-bot-state`; nothing is moved for you, so if that old directory exists and the new one
+does not, the bot prints a notice naming both paths (move it, or point the variable at it). A state
+directory under the system temp dir gets a warning at startup (a tmp cleaner would delete the seed).
+The directory and the seed file must be owned by the bot's user and not writable by group/others,
+or the bot refuses to start (another local user could otherwise plant a seed they know). The
+directory's `stamp-pool-meta.json` marker records that pool records exist: a seed whose
+`sub-account-pool/` directory has gone missing is refused instead of restarting at index 0.
 
 - `stamp-pool-seed.json` -- the BIP-39 mnemonic, created on first start with mode `0600` (directory
   `0700`), loaded on every later start. It is never logged. It is a wallet secret: **never commit

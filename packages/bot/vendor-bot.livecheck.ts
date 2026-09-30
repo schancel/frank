@@ -25,7 +25,7 @@
  *
  * Env vars:
  *   VENDOR_BOT_IDENTITY_JSON     -- default /tmp/vendor-bot-identity.json
- *   VENDOR_BOT_STATE_DIR         -- default /tmp/vendor-bot-state
+ *   VENDOR_BOT_STATE_DIR         -- default ~/.frank-bots/vendor (or $XDG_STATE_HOME/frank-bots/vendor)
  *   VENDOR_BOT_MAX_SALES         -- how many fulfilled purchases before exiting (default 1000)
  *   VENDOR_BOT_POLL_INTERVAL_MS  -- default 4000
  *   VENDOR_BOT_IDLE_TIMEOUT_MS   -- default 10 minutes
@@ -62,6 +62,7 @@ import {
 } from './qwen-bot-common'
 import { botProfileFields } from './bot-directory'
 import { VendorBotStateStore } from './vendor-bot-state'
+import { botStateDir } from './bot-state-dir'
 import { botLoopGuardFromEnv } from './bot-loop-guard'
 
 function sleep(ms: number): Promise<void> {
@@ -135,10 +136,7 @@ async function main() {
     process.env.E2E_DEMO_MAIN_WALLET_JSON ??
       '../frank-worktrees/spike-demo/spike/data/chain-wallet.json',
   )
-  const stateDirPath = resolve(
-    process.cwd(),
-    process.env.VENDOR_BOT_STATE_DIR ?? '/tmp/vendor-bot-state',
-  )
+  const stateDirPath = botStateDir('vendor', 'VENDOR_BOT_STATE_DIR')
   const pollIntervalMs = Number(process.env.VENDOR_BOT_POLL_INTERVAL_MS ?? 4000)
   const maxSales = Number(process.env.VENDOR_BOT_MAX_SALES ?? 1000)
   const idleTimeoutMs = Number(

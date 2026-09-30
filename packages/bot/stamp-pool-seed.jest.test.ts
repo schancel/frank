@@ -1,5 +1,8 @@
 import {
   chmodSync,
+  existsSync,
+  readdirSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
@@ -25,8 +28,10 @@ jest.mock('ethers', () => {
 
 import { setUpFundedStampClient } from './qwen-bot-common'
 import {
+  assertOwnedAndPrivate,
   loadOrCreatePoolMnemonic,
   openPersistentStampPool,
+  POOL_META_FILE,
   POOL_SEED_FILE,
 } from './stamp-pool-seed'
 
@@ -171,5 +176,112 @@ describe('stamp pool seed persistence (#313)', () => {
     const first = await addr(state)
     expect(await addr(state)).toBe(first)
     expect(await addr()).not.toBe(await addr()) // in-memory: fresh every time
+  })
+})
+
+describe('stamp pool seed hardening (#313 review)', () => {
+  let dir: string
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'pool-seed-hard-'))
+    for (const m of ['log', 'warn', 'error'] as const) jest.spyOn(console, m).mockImplementation(() => {})
+  })
+  afterEach(() => {
+    jest.restoreAllMocks()
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  describe('owner and mode checks', () => {
+    it('refuses a file or directory owned by another user, and one writable by group or others', () => {
+      const ok = { uid: 1000, mode: 0o100600 }
+      expect(() => assertOwnedAndPrivate(ok, 1000, '/x', 'file')).not.toThrow()
+      expect(() => assertOwnedAndPrivate({ ...ok, uid: 0 }, 1000, '/x', 'file')).toThrow(/owned by another user/)
+      expect(() => assertOwnedAndPrivate({ ...ok, uid: 4242 }, 1000, '/x', 'directory')).toThrow(/directory \/x is owned by another user/)
+      expect(() => assertOwnedAndPrivate({ ...ok, mode: 0o100620 }, 1000, '/x', 'file')).toThrow(/writable by group or others/)
+      expect(() => assertOwnedAndPrivate({ ...ok, mode: 0o040777 }, 1000, '/x', 'directory')).toThrow(/writable by group or others/)
+      // Readable by others is tightened elsewhere, not refused; no uids (Windows): owner check skipped.
+      expect(() => assertOwnedAndPrivate({ uid: 1, mode: 0o100644 }, undefined, '/x', 'file')).not.toThrow()
+    })
+
+    it('refuses a pre-existing state directory that belongs to someone else, planted seed and all', () => {
+      const mnemonic = loadOrCreatePoolMnemonic(dir, 'test') // a "planted" but valid seed
+      jest.spyOn(process, 'getuid').mockReturnValue((process.getuid?.() ?? 0) + 1)
+      let message = ''
+      try {
+        loadOrCreatePoolMnemonic(dir, 'test')
+      } catch (err) {
+        message = (err as Error).message
+      }
+      expect(message).toMatch(/owned by another user/)
+      expect(message).not.toContain(mnemonic)
+    })
+
+    it('refuses a pre-existing group/world-writable state directory', () => {
+      chmodSync(dir, 0o777)
+      expect(() => loadOrCreatePoolMnemonic(dir, 'test')).toThrow(/writable by group or others/)
+      expect(existsSync(join(dir, POOL_SEED_FILE))).toBe(false)
+    })
+
+    it('refuses a state directory that is a symlink', () => {
+      const real = join(dir, 'real')
+      mkdirSync(real, { mode: 0o700 })
+      symlinkSync(real, join(dir, 'link'))
+      expect(() => loadOrCreatePoolMnemonic(join(dir, 'link'), 'test')).toThrow(/not a directory/)
+    })
+
+    it('tightens a directory it creates to 0700 even under a permissive umask', () => {
+      const old = process.umask(0)
+      try {
+        const state = join(dir, 'fresh')
+        loadOrCreatePoolMnemonic(state, 'test')
+        expect(statSync(state).mode & 0o777).toBe(0o700)
+      } finally {
+        process.umask(old)
+      }
+    })
+  })
+
+  describe('records marker', () => {
+    it('refuses a surviving seed whose records directory vanished after records existed', async () => {
+      const first = await openPersistentStampPool(dir, 'test')
+      first.pool.ensureSize(1)
+      await first.close()
+      expect(existsSync(join(dir, POOL_META_FILE))).toBe(true)
+      expect(readFileSync(join(dir, POOL_META_FILE), 'utf8')).not.toMatch(/mnemonic|abandon/)
+      rmSync(join(dir, 'sub-account-pool'), { recursive: true })
+      await expect(openPersistentStampPool(dir, 'test')).rejects.toThrow(/records directory .* is missing/)
+    })
+
+    it('a fresh directory, or one whose marker was deliberately deleted, starts normally', async () => {
+      const first = await openPersistentStampPool(dir, 'test')
+      await first.close()
+      rmSync(join(dir, 'sub-account-pool'), { recursive: true })
+      rmSync(join(dir, POOL_META_FILE))
+      const again = await openPersistentStampPool(dir, 'test')
+      await again.close()
+    })
+
+    it('a seed created but never opened as a pool (no marker) is not refused', async () => {
+      loadOrCreatePoolMnemonic(dir, 'test')
+      const pool = await openPersistentStampPool(dir, 'test')
+      await pool.close()
+    })
+  })
+
+  describe('durable creation', () => {
+    it('removes orphaned temp files that hold a mnemonic, and leaves other files alone', () => {
+      const orphan = join(dir, `${POOL_SEED_FILE}.999.111.tmp`)
+      writeFileSync(orphan, '{"version":1,"mnemonic":"leaked"}', { mode: 0o600 })
+      writeFileSync(join(dir, 'identity.json'), '{}')
+      loadOrCreatePoolMnemonic(dir, 'test')
+      expect(existsSync(orphan)).toBe(false)
+      expect(readdirSync(dir).sort()).toEqual(['identity.json', POOL_SEED_FILE])
+    })
+
+    it('fsyncs the directory as well as the file when it creates the seed', () => {
+      const fs = require('fs')
+      const spy = jest.spyOn(fs, 'fsyncSync')
+      loadOrCreatePoolMnemonic(dir, 'test')
+      expect(spy.mock.calls.length).toBeGreaterThanOrEqual(2)
+    })
   })
 })

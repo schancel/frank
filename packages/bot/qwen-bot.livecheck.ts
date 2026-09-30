@@ -68,7 +68,7 @@
  * State persistence (direct user feedback, 2026-09-28 -- see `qwen-bot-state.ts`'s own header):
  *   QWEN_BOT_STATE_DIR          -- where the `level` DB of polling cursors, greeted-addresses/
  *                                  processed-message idempotency sets, and per-user Qwen
- *                                  conversation history is kept (default /tmp/qwen-bot-state).
+ *                                  conversation history is kept (default ~/.frank-bots/qwen, or $XDG_STATE_HOME/frank-bots/qwen).
  *                                  Survives restarts -- delete this directory to start clean.
  */
 import { writeFileSync } from 'fs'
@@ -90,6 +90,7 @@ import {
 } from '@frank/cashweb/relay/monad-message-envelope'
 import { fetchMonadMessagesSince } from '@frank/cashweb/relay/monad-message-feed'
 import { QwenClient } from './qwen-client'
+import { botStateDir } from './bot-state-dir'
 import { botLoopGuardFromEnv } from './bot-loop-guard'
 import { extractPromptText } from './qwen-prompt'
 import {
@@ -153,10 +154,7 @@ async function main() {
   // Persists polling cursors, the greeted-addresses/processed-message idempotency sets, and each
   // user's Qwen conversation history across restarts -- see qwen-bot-state.ts's own header for
   // the concrete user-visible bug this fixes.
-  const stateDirPath = resolve(
-    process.cwd(),
-    process.env.QWEN_BOT_STATE_DIR ?? '/tmp/qwen-bot-state',
-  )
+  const stateDirPath = botStateDir('qwen', 'QWEN_BOT_STATE_DIR')
   const pollIntervalMs = Number(process.env.QWEN_BOT_POLL_INTERVAL_MS ?? 4000)
   const maxReplies = Number(process.env.QWEN_BOT_MAX_REPLIES ?? 1)
   const idleTimeoutMs = Number(

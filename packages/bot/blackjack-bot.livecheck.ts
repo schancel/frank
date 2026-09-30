@@ -48,7 +48,7 @@
  *
  * Env vars (mirroring qwen-bot.livecheck.ts's own naming where the concept is the same):
  *   BLACKJACK_BOT_IDENTITY_JSON     -- default /tmp/blackjack-bot-identity.json
- *   BLACKJACK_BOT_STATE_DIR         -- default /tmp/blackjack-bot-state
+ *   BLACKJACK_BOT_STATE_DIR         -- default ~/.frank-bots/blackjack (or $XDG_STATE_HOME/frank-bots/blackjack)
  *   BLACKJACK_BOT_MIN_WAGER_WEI     -- default 0.01 MON
  *   BLACKJACK_BOT_MAX_WAGER_WEI     -- default 1 MON (the client UI's documented default limits)
  *   BLACKJACK_BOT_MAX_HANDS         -- how many hands to resolve before exiting (default 1000)
@@ -99,6 +99,7 @@ import {
   sendDirectMessageText,
   setUpFundedStampClient,
 } from './qwen-bot-common'
+import { botStateDir } from './bot-state-dir'
 import { botProfileFields } from './bot-directory'
 import {
   BlackjackBotStateStore,
@@ -860,10 +861,7 @@ async function main() {
     process.env.E2E_DEMO_MAIN_WALLET_JSON ??
       '../frank-worktrees/spike-demo/spike/data/chain-wallet.json',
   )
-  const stateDirPath = resolve(
-    process.cwd(),
-    process.env.BLACKJACK_BOT_STATE_DIR ?? '/tmp/blackjack-bot-state',
-  )
+  const stateDirPath = botStateDir('blackjack', 'BLACKJACK_BOT_STATE_DIR')
   const pollIntervalMs = Number(
     process.env.BLACKJACK_BOT_POLL_INTERVAL_MS ?? 4000,
   )

@@ -51,7 +51,7 @@
  *
  * Env vars:
  *   RAFFLE_BOT_IDENTITY_JSON     -- default /tmp/raffle-bot-identity.json
- *   RAFFLE_BOT_STATE_DIR         -- default /tmp/raffle-bot-state
+ *   RAFFLE_BOT_STATE_DIR         -- default ~/.frank-bots/raffle (or $XDG_STATE_HOME/frank-bots/raffle)
  *   RAFFLE_BOT_ENTRY_PRICE_WEI   -- default 0.02 MON
  *   RAFFLE_BOT_MAX_ENTRIES       -- entrants per round, default 5
  *   RAFFLE_BOT_MAX_ROUNDS        -- how many rounds to draw before exiting (default 1000)
@@ -99,6 +99,7 @@ import {
   waitForConfirmation,
 } from './qwen-bot-common'
 import { botProfileFields } from './bot-directory'
+import { botStateDir } from './bot-state-dir'
 import { botLoopGuardFromEnv } from './bot-loop-guard'
 import {
   hasRaffleEntrant,
@@ -283,10 +284,7 @@ async function main() {
     process.env.E2E_DEMO_MAIN_WALLET_JSON ??
       '../frank-worktrees/spike-demo/spike/data/chain-wallet.json',
   )
-  const stateDirPath = resolve(
-    process.cwd(),
-    process.env.RAFFLE_BOT_STATE_DIR ?? '/tmp/raffle-bot-state',
-  )
+  const stateDirPath = botStateDir('raffle', 'RAFFLE_BOT_STATE_DIR')
   const pollIntervalMs = Number(process.env.RAFFLE_BOT_POLL_INTERVAL_MS ?? 4000)
   const maxRounds = Number(process.env.RAFFLE_BOT_MAX_ROUNDS ?? 1000)
   const idleTimeoutMs = Number(

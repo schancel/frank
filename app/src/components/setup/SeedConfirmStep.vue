@@ -38,7 +38,6 @@
           :ref="el => setInputRef(el, i)"
           v-model="answers[i]"
           class="seed-confirm__input"
-          style="width: 100%; padding: 8px"
           type="text"
           autocomplete="off"
           autocapitalize="none"
@@ -62,22 +61,28 @@
       </div>
 
       <div class="row q-gutter-sm">
-        <button type="submit" class="seed-confirm__check">
-          {{ $t('seedConfirm.check') }}
-        </button>
-        <button
+        <q-btn
+          type="submit"
+          color="primary"
+          no-caps
+          class="seed-confirm__check"
+          :label="$t('seedConfirm.check')"
+        />
+        <q-btn
           type="button"
+          outline
+          color="primary"
+          no-caps
           class="seed-confirm__toggle"
           :aria-expanded="showPhrase ? 'true' : 'false'"
           :aria-controls="phraseId"
-          @click="togglePhrase"
-        >
-          {{
+          :label="
             showPhrase
               ? $t('seedConfirm.hidePhrase')
               : $t('seedConfirm.showPhrase')
-          }}
-        </button>
+          "
+          @click="togglePhrase"
+        />
       </div>
     </template>
 
@@ -181,6 +186,24 @@ export default defineComponent({
 </script>
 
 <style scoped>
+/* Match the Quasar controls around it instead of the browser's default text box. */
+.seed-confirm__input {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 10px 12px;
+  font: inherit;
+  color: inherit;
+  background: transparent;
+  border: 1px solid rgba(128, 128, 128, 0.6);
+  border-radius: 4px;
+}
+.seed-confirm__input:focus {
+  outline: 2px solid var(--q-primary);
+  outline-offset: 1px;
+}
+.seed-confirm__input[aria-invalid='true'] {
+  border-color: var(--q-negative);
+}
 .seed-confirm__phrase {
   columns: 2;
   padding-left: 2em;

@@ -107,6 +107,8 @@ export default {
     loading: 'Looking up contact',
     notFound: 'Not Found',
     found: 'Contact found: {name}',
+    ownAddress:
+      "This is your own address. You can't add yourself as a contact.",
   },
   newTopicDialog: {
     newTopic: 'Add Topic',

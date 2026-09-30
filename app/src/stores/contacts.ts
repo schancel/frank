@@ -12,6 +12,7 @@ import {
 import { activeChain } from '@frank/wallet/chain'
 import moment from 'moment'
 import { toChainDisplayAddress } from '../utils/chain-address'
+import { isOwnAddress } from '../utils/own-address'
 import { mapObjIndexed } from 'ramda'
 import assert from 'assert'
 import { STORE_SCHEMA_VERSION } from 'src/boot/pinia'
@@ -315,6 +316,10 @@ export const useContactStore = defineStore('contacts', {
         return
       }
       const displayAddress = toChainDisplayAddress(address)
+      // Deep links / route navigation land here: never store the user as their own contact.
+      if (await isOwnAddress(address)) {
+        return
+      }
 
       if (!contact) {
         const chainAddress = activeChain.parseAddress(address)

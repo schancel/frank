@@ -11,7 +11,7 @@ Scope of the replacement, decided here and tracked as tickets:
 
 BitPay's MIT license and copyright notices stay with anything derived from bitcore-lib. New public names do not use "bitcore" except in attribution.
 
-`docs/protocol/cbor/README.md` is not in this tree. Suite identifiers S2b/S2c and the reserved suite `65535` are taken from the task statement, not from a file that can be cited here. The encryption-suite ticket treats that as an open spec gap.
+`docs/protocol/cbor/README.md` is in this tree. S2b defines the version-1 signature algorithm, key-type, and length pairings. S2c reserves encryption-suite identifier `65535` for opaque proof-vector ciphertext and says a production writer MUST NOT emit it. Production suites are allocated only with their nonce, key-agreement, authentication/deniability, and failure rules; version 1 allocates no production encryption suite. The codec does not infer a suite from nonce length. The encryption-suite ticket cites that file and does not invent a production suite id.
 
 ## 1. What the old package is
 

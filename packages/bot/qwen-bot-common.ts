@@ -307,6 +307,28 @@ export async function fundPoolWithRetry(params: {
   return funded
 }
 
+/** Loads the operator-supplied main wallet (`{address, privateKey}` JSON at `mainWalletJsonPath`)
+ * as a transfer signer. The key is only ever passed to the signer, never logged. Shared by the
+ * stamp-funded bots and the faucet (#316), which needs no stamp pool. */
+export function loadMainAccountSigner(params: {
+  rpcUrl: string
+  mainWalletJsonPath: string
+  httpClient?: MonadHttpClient
+}): { provider: JsonRpcProvider; mainAccountSigner: MonadAccountTxSigner } {
+  const provider = new JsonRpcProvider(params.rpcUrl)
+  const httpClient =
+    params.httpClient ?? new MonadHttpClient({ rpcUrl: params.rpcUrl })
+  const mainWallet = JSON.parse(
+    readFileSync(params.mainWalletJsonPath, 'utf8'),
+  ) as { address: string; privateKey: string }
+  const mainAccountSigner = new MonadAccountTxSigner({
+    privateKey: mainWallet.privateKey,
+    provider,
+    httpClient,
+  })
+  return { provider, mainAccountSigner }
+}
+
 /**
  * Derives a fresh HD sub-account pool (ticket #14) and wires up a `MonadStampClient` ready to send
  * Stamp-over-Monad messages, against the main funded testnet wallet at `mainWalletJsonPath`.
@@ -336,18 +358,15 @@ export async function setUpFundedStampClient(params: {
   stampValueWei: bigint
   label: string
 }): Promise<FundedStampSetup> {
-  const provider = new JsonRpcProvider(params.rpcUrl)
   const httpClient = new MonadHttpClient({ rpcUrl: params.rpcUrl })
-
-  const mainWallet = JSON.parse(
-    readFileSync(params.mainWalletJsonPath, 'utf8'),
-  ) as { address: string; privateKey: string }
-  const mainAccountSigner = new MonadAccountTxSigner({
-    privateKey: mainWallet.privateKey,
-    provider,
+  const { provider, mainAccountSigner } = loadMainAccountSigner({
+    rpcUrl: params.rpcUrl,
+    mainWalletJsonPath: params.mainWalletJsonPath,
     httpClient,
   })
-  console.log(`[${params.label}] main funding account: ${mainWallet.address}`)
+  console.log(
+    `[${params.label}] main funding account: ${mainAccountSigner.address}`,
+  )
 
   const { keyring, mnemonic } = MonadHdKeyring.generate()
   const pool = new MonadSubAccountPool({ keyring })

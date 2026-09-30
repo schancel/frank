@@ -198,6 +198,8 @@ export default {
   receiveBitcoinDialog: {
     walletStatus: 'Etat du wallet',
     balanceUnavailable: 'Solde indisponible. Nouvelle tentative.',
+    noFundsHint:
+      "Votre solde est de 0. Cette application utilise des MON de testnet, sans valeur réelle. Le faucet de démonstration alimente automatiquement les nouveaux profils ; si rien n'arrive après une minute, demandez à l'opérateur de la démo d'envoyer des MON de testnet à l'adresse ci-dessous.",
     addressCopied: 'Adresse copiée dans le presse papier',
   },
   sendAddressDialog: {

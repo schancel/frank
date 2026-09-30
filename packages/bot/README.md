@@ -305,6 +305,64 @@ Limits: the marker is self-asserted; the budget is in memory (a restart resets i
 address (a sybil gets the budget per address, each still paying a stamp). Blackjack only answers
 `blackjack-move` items and is unchanged apart from registering the marker.
 
+## Standalone testnet faucet (#316)
+
+`yarn faucet` (`faucet-bot.livecheck.ts`, logic in `faucet-core.ts`) funds each newly registered
+profile once with testnet MON. It needs no LLM key, no stamp pool and no identity: only
+`MONAD_TESTNET_HTTP_RPC_URL`, `FRANK_NETWORK_TAG=MONT` and `E2E_DEMO_MAIN_WALLET_JSON`
+(`{address, privateKey}` of a wallet holding testnet MON only). See the file header for every knob
+(`FAUCET_AMOUNT_WEI` default 0.05 MON, hard ceiling 1 MON; `FAUCET_MAX_PER_RUN` 10;
+`FAUCET_MAX_PER_DAY` 20 (max 1000); `FAUCET_MIN_RESERVE_WEI` 0.1 MON (minimum 0.01 MON);
+`FAUCET_POLL_INTERVAL_MS` 4000 (min 1000); `FAUCET_STATE_DIR` default `~/.frank-faucet`, warns if under a
+tmp dir). Invalid values fail startup with the variable name; nothing becomes NaN.
+
+- once per address, durable: the exact signed transaction is persisted before broadcast; any
+  record (signed/submitted/confirmed) blocks re-funding, across restarts and address casing. A
+  crash mid-broadcast replays the same bytes on restart; it never re-signs.
+- skips itself, `FRANK_BOT_PEER_DENYLIST`, self-declared bots (#311) and addresses that already
+  hold at least the amount. Stops (without consuming the profile, so it is retried) at the per-run
+  cap, the rolling 24h cap, or when the wallet would fall under the reserve.
+- testnet only: refuses to start unless `FRANK_NETWORK_TAG=MONT` and the RPC reports chain id 10143.
+- Do not also let Qwen fund: set `QWEN_BOT_FUND_VALUE_WEI=0` on the Qwen bot (it still greets).
+
+- one wallet, one faucet: use a wallet dedicated to it. Do not share it with the Qwen bot's funding
+  (`QWEN_BOT_FUND_VALUE_WEI=0`) or run a second faucet on a different state dir: concurrent senders
+  reuse nonces and one kills the other's transfer. The faucet itself will not sign a new transfer
+  while an earlier one is unsettled, and handles profiles one at a time.
+- the wallet JSON holds a private key: `chmod 600` it (the faucet warns if group/others can read it).
+- a profile that keeps failing (e.g. malformed address) is skipped and recorded after 3
+  consecutive failures while the RPC is healthy, so it cannot block everyone behind it; an RPC
+  outage never counts against a profile.
+
+Stuck transfers. If the node rejects the exact-bytes replay (`already known`, `nonce too low`) the
+faucet looks the receipt up by hash: mined settles the record, otherwise it waits and logs once.
+If a record stays stuck (further funding is paused while any transfer is unsettled):
+
+    yarn faucet --list-stuck          # signed / failed / skipped records with tx hashes
+    yarn faucet --clear <address>     # DANGEROUS: lets the address be paid again
+
+`--clear` is guarded because the record is the only thing preventing a second payment. It never
+clears `submitted`/`confirmed` records; if `MONAD_TESTNET_HTTP_RPC_URL` is set it asks the node and
+refuses any tx that is mined or in the mempool (or if the node cannot be asked). A `signed` record
+may already have been broadcast (a timeout after the node accepted the tx looks identical), so it
+additionally needs `--force --confirm-tx <txHash>` typed exactly, and prints a loud warning. A
+`failed` record with a tx hash needs the same when no node lookup is available (a `failed` set
+because the node did not know the tx may still land later). These
+admin commands run before any other env validation and need only `FAUCET_STATE_DIR`.
+
+A `submitted` transfer whose confirmation was never seen is re-checked by hash (5 min after its
+(re)broadcast, at most every 5 min): a receipt settles it; a tx the node no longer knows is marked `failed` so it
+shows in `--list-stuck`. It is never re-funded automatically.
+
+Profiles with a malformed address (not `0x` + 40 hex, e.g. `abc`, `foo.eth`) are skipped up front,
+without any RPC call, so they never stall the cursor. Skipping a profile after repeated failures ignores transient errors (timeouts, 5xx, rate limits):
+malformed-address errors count 3 times; unclassified errors need 10 failures spread over 10 minutes.
+
+Abuse limits (demo level): registration is free, so a sybil can mint addresses and collect the
+amount per address until the daily cap (loss bounded to `maxPerDay * amount`, wallet floor kept by
+the reserve). No captcha, no proof of humanity, no per-IP limit. The app's Receive page shows the
+user's address and explains the faucet when the balance is a real zero.
+
 ## Bot profiles and curated defaults (#317)
 
 Every bot registers a public profile on startup (`bot-directory.ts`): name (`Blackjack Dealer`,

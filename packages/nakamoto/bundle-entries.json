@@ -114,6 +114,18 @@
       "entry": "src/address.ts",
       "require": ["btc-magic", "xpi-port", "xpi-magic"],
       "absentExports": ["encodeBase58"]
+    },
+    {
+      "name": "keys",
+      "entry": "src/keys.ts",
+      "forbid": ["btc-magic", "xpi-port", "xpi-magic"],
+      "absentExports": ["BTC_MAINNET", "encodeBase58"]
+    },
+    {
+      "name": "hd",
+      "entry": "src/hd.ts",
+      "forbid": ["btc-magic", "xpi-port", "xpi-magic"],
+      "absentExports": ["BTC_MAINNET", "encodeBase58"]
     }
   ]
 }

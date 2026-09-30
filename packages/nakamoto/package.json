@@ -80,6 +80,14 @@
     "./address": {
       "types": "./dist/address.d.ts",
       "import": "./dist/address.js"
+    },
+    "./keys": {
+      "types": "./dist/keys.d.ts",
+      "import": "./dist/keys.js"
+    },
+    "./hd": {
+      "types": "./dist/hd.d.ts",
+      "import": "./dist/hd.js"
     }
   },
   "dependencies": {

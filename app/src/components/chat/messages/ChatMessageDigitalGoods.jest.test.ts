@@ -4,6 +4,7 @@ import { mount } from '@vue/test-utils'
 import * as quasar from 'quasar'
 import { defineComponent, h } from 'vue'
 
+import enUS from '../../../i18n/en-us'
 import { png } from '../../../utils/image-data-uri.fixtures'
 import ChatMessageDigitalGoods from './ChatMessageDigitalGoods.vue'
 
@@ -31,6 +32,16 @@ const quasarStubs: Record<string, any> = Object.fromEntries(
 )
 quasarStubs.QBtn = passthrough('button')
 
+// Minimal $t over the real en-us messages: {name} placeholders are substituted.
+const $t = (key: string, params: Record<string, unknown> = {}) => {
+  const value = key
+    .split('.')
+    .reduce<any>((o, k) => o?.[k], enUS as Record<string, unknown>)
+  return typeof value === 'string'
+    ? value.replace(/\{(\w+)\}/g, (_, k: string) => String(params[k]))
+    : key
+}
+
 const THUMB = png(96, 64)
 
 function render(catalog: any[]) {
@@ -39,7 +50,7 @@ function render(catalog: any[]) {
       address: '0xVendor',
       item: { type: 'digital-goods', action: 'catalog', catalog },
     },
-    global: { stubs: quasarStubs },
+    global: { stubs: quasarStubs, mocks: { $t } },
   })
 }
 
@@ -116,7 +127,7 @@ describe('ChatMessageDigitalGoods catalog thumbnails', () => {
         address: '0x',
         item: { type: 'digital-goods', action: 'catalog', catalog: 'x' } as any,
       },
-      global: { stubs: quasarStubs },
+      global: { stubs: quasarStubs, mocks: { $t } },
     })
     expect(w.findAll('button')).toHaveLength(0)
   })

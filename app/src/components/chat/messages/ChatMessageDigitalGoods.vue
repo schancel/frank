@@ -1,7 +1,9 @@
 <template>
   <div class="digital-goods q-pa-sm" style="min-width: 220px">
     <template v-if="item.action === 'catalog'">
-      <div class="text-caption text-weight-bold q-mb-xs">Catalog</div>
+      <div class="text-caption text-weight-bold q-mb-xs">
+        {{ $t('digitalGoods.catalog') }}
+      </div>
       <div
         v-for="entry in shownEntries"
         :key="entry.itemId"
@@ -20,7 +22,7 @@
           {{ entry.description }} -- {{ displayPrice(entry.priceWei) }}
         </div>
         <q-btn
-          label="Buy"
+          :label="$t('digitalGoods.buy')"
           dense
           color="primary"
           :loading="buyingItemId === entry.itemId"
@@ -29,17 +31,24 @@
         />
       </div>
       <div v-if="hiddenCount > 0" class="text-caption text-grey">
-        {{ hiddenCount }} more item{{ hiddenCount === 1 ? '' : 's' }} not shown
+        {{
+          $t(
+            hiddenCount === 1
+              ? 'digitalGoods.hiddenOne'
+              : 'digitalGoods.hiddenMany',
+            { count: hiddenCount },
+          )
+        }}
       </div>
     </template>
     <div v-else-if="item.action === 'request'" class="text-caption">
-      Requested: {{ item.itemId }}
+      {{ $t('digitalGoods.requested', { itemId: item.itemId }) }}
     </div>
     <div
       v-else-if="item.action === 'fulfill'"
       class="text-caption text-weight-bold"
     >
-      Here's your purchase ({{ item.itemId }}):
+      {{ $t('digitalGoods.fulfilled', { itemId: item.itemId }) }}
     </div>
     <div v-else-if="item.action === 'error'" class="text-caption text-negative">
       {{ item.message }}
@@ -103,12 +112,13 @@ export default defineComponent({
     // The price comes from an untrusted peer: never throw while rendering.
     displayPrice(priceWei: string): string {
       try {
-        if (!/^\d{1,40}$/.test(String(priceWei))) return 'price unavailable'
+        if (!/^\d{1,40}$/.test(String(priceWei)))
+          return this.$t('digitalGoods.priceUnavailable')
         return `${activeChain.toDisplayAmount(BigInt(priceWei))} ${
           activeChain.unit
         }`
       } catch {
-        return 'price unavailable'
+        return this.$t('digitalGoods.priceUnavailable')
       }
     },
     async onBuy(entry: { itemId: string; priceWei: string }) {

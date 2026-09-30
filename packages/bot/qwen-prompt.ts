@@ -1,4 +1,4 @@
-import { deserializeMessageItems } from "@frank/wallet/chain/monad-chain";
+import { deserializeMessageItems } from '@frank/wallet/chain/monad-chain'
 
 /** Extracts the user's prompt from a decrypted envelope plaintext, or `undefined` when the
  * message carries nothing a human typed.
@@ -9,18 +9,18 @@ import { deserializeMessageItems } from "@frank/wallet/chain/monad-chain";
  * was quoted back and answered, feeding the bot ping-pong (#311). A payload that is not a JSON
  * array at all is the legacy bare-string convention and is used as-is. */
 export function extractPromptText(plaintext: string): string | undefined {
-  let items;
+  let items
   try {
-    items = deserializeMessageItems(plaintext);
+    items = deserializeMessageItems(plaintext)
   } catch {
-    return plaintext;
+    return plaintext
   }
   const text = items
     .filter(
-      (item): item is { type: "text"; text: string } =>
-        item?.type === "text" && typeof item.text === "string"
+      (item): item is { type: 'text'; text: string } =>
+        item?.type === 'text' && typeof item.text === 'string',
     )
-    .map((item) => item.text)
-    .join("\n");
-  return text || undefined;
+    .map(item => item.text)
+    .join('\n')
+  return text || undefined
 }

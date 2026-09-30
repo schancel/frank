@@ -11,7 +11,7 @@
  */
 import { existsSync } from 'fs'
 import { homedir, tmpdir } from 'os'
-import { join, resolve, sep } from 'path'
+import { isAbsolute, join, resolve, sep } from 'path'
 
 export type StateDirBot = 'qwen' | 'blackjack' | 'raffle' | 'vendor'
 
@@ -20,8 +20,17 @@ export function defaultBotStateDir(
   env: Record<string, string | undefined>,
   home: string,
 ): string {
-  const base = env.XDG_STATE_HOME ? join(env.XDG_STATE_HOME, 'frank-bots') : join(home, '.frank-bots')
-  return join(base, bot)
+  // Per the XDG spec a relative XDG_STATE_HOME is ignored. Anything relative would otherwise resolve
+  // against the cwd, and a different cwd would silently start a new seed.
+  const xdg = env.XDG_STATE_HOME
+  if (xdg && isAbsolute(xdg)) return join(xdg, 'frank-bots', bot)
+  if (!home || !isAbsolute(home)) {
+    throw new Error(
+      `Cannot determine a persistent state directory for the ${bot} bot: HOME is unset or not absolute. ` +
+        'Set HOME, XDG_STATE_HOME, or the bot\'s *_BOT_STATE_DIR variable to an absolute path.',
+    )
+  }
+  return join(home, '.frank-bots', bot)
 }
 
 export function legacyBotStateDir(bot: StateDirBot): string {
@@ -43,6 +52,11 @@ export function planBotStateDir(params: {
   exists: (path: string) => boolean
 }): { dir: string; notices: string[] } {
   const explicit = params.env[params.envVar]
+  if (explicit && !isAbsolute(explicit)) {
+    throw new Error(
+      `${params.envVar} must be an absolute path (got "${explicit}"): a relative path would resolve against the current directory and a different one would silently start a new seed.`,
+    )
+  }
   const dir = resolve(explicit || defaultBotStateDir(params.bot, params.env, params.home))
   const notices: string[] = []
   if (isUnderTmp(dir, params.tmpDirs)) {
@@ -54,7 +68,8 @@ export function planBotStateDir(params: {
   if (!explicit && params.exists(legacy) && !params.exists(dir)) {
     notices.push(
       `NOTICE: the default state directory moved from ${legacy} to ${dir}. Your existing state (including the stamp pool seed) is still in ${legacy} and is NOT used or moved automatically. ` +
-        `Move it (mv ${legacy} ${dir}) or keep using it by setting ${params.envVar}=${legacy}.`,
+        `/tmp is shared: inspect ${legacy} first (who owns it, what is in it). Only if it is yours, copy the seed file (${legacy}/stamp-pool-seed.json) into ${dir}, ` +
+        `along with its sub-account-pool and change-pool directories if you want to avoid reusing spent sub-accounts. Or keep using it by setting ${params.envVar}=${legacy}.`,
     )
   }
   return { dir, notices }
@@ -66,7 +81,7 @@ export function botStateDir(bot: StateDirBot, envVar: string): string {
     envVar,
     env: process.env,
     home: homedir(),
-    tmpDirs: [tmpdir(), '/tmp'],
+    tmpDirs: [tmpdir(), '/tmp', '/var/tmp', '/private/tmp', '/private/var/tmp'],
     exists: existsSync,
   })
   for (const line of plan.notices) console.warn(`[${bot}] ${line}`)

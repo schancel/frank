@@ -48,6 +48,7 @@ import { LevelSubAccountPoolStore } from '@frank/wallet/storage/level-sub-accoun
 export const POOL_SEED_FILE = 'stamp-pool-seed.json'
 export const POOL_META_FILE = 'stamp-pool-meta.json'
 const SUB_ACCOUNT_RECORDS_DIR = 'sub-account-pool'
+const CHANGE_RECORDS_DIR = 'change-pool'
 const MAX_SEED_FILE_BYTES = 4096
 
 function seedError(path: string, why: string): Error {
@@ -114,12 +115,17 @@ function fsyncDir(dir: string): void {
 }
 
 /** Removes leftovers of an interrupted seed write (they hold the mnemonic). */
-function removeOrphanTemps(dir: string): void {
+// Exactly what loadOrCreatePoolMnemonic names its temp file: <seed file>.<pid>.<ms>.tmp
+const ORPHAN_TEMP = /^stamp-pool-seed\.json\.\d+\.\d+\.tmp$/
+/** A temp file younger than this may belong to a concurrent first start still writing it. */
+export const ORPHAN_MIN_AGE_MS = 5 * 60 * 1000
+
+export function removeOrphanTemps(dir: string, now: number = Date.now()): void {
   for (const name of readdirSync(dir)) {
-    if (name.startsWith(`${POOL_SEED_FILE}.`) && name.endsWith('.tmp')) {
-      const path = join(dir, name)
-      if (lstatSync(path).isFile()) unlinkSync(path)
-    }
+    if (!ORPHAN_TEMP.test(name)) continue
+    const path = join(dir, name)
+    const stat = lstatSync(path)
+    if (stat.isFile() && now - stat.mtimeMs > ORPHAN_MIN_AGE_MS) unlinkSync(path)
   }
 }
 
@@ -203,14 +209,15 @@ interface PoolMeta {
   recordsCreated: true
 }
 
-function readMeta(stateDir: string): PoolMeta | undefined {
+/** `corrupt` counts as "records existed": failing open on an unreadable marker would defeat it. */
+function markerState(stateDir: string): 'absent' | 'valid' | 'corrupt' {
   const path = join(stateDir, POOL_META_FILE)
-  if (!existsSync(path)) return undefined
+  if (!existsSync(path)) return 'absent'
   try {
     const parsed = JSON.parse(readFileSync(path, 'utf8')) as Partial<PoolMeta>
-    return parsed.version === 1 && parsed.recordsCreated === true ? (parsed as PoolMeta) : undefined
+    return parsed.version === 1 && parsed.recordsCreated === true ? 'valid' : 'corrupt'
   } catch {
-    return undefined
+    return 'corrupt'
   }
 }
 
@@ -236,13 +243,17 @@ export async function openPersistentStampPool(
   label: string,
 ): Promise<StampPool> {
   const mnemonic = loadOrCreatePoolMnemonic(stateDir, label)
-  const recordsDir = join(stateDir, SUB_ACCOUNT_RECORDS_DIR)
-  if (readMeta(stateDir) && !existsSync(recordsDir)) {
-    throw new Error(
-      `Stamp pool records directory ${recordsDir} is missing, but ${join(stateDir, POOL_META_FILE)} says it existed. ` +
-        'Refusing to continue: restarting the pool at index 0 would reuse spent sub-accounts. ' +
-        'Restore the directory from a backup, or (only if you accept address reuse) delete the marker file.',
-    )
+  if (markerState(stateDir) !== 'absent') {
+    for (const name of [SUB_ACCOUNT_RECORDS_DIR, CHANGE_RECORDS_DIR]) {
+      const recordsDir = join(stateDir, name)
+      if (!existsSync(recordsDir)) {
+        throw new Error(
+          `Stamp pool records directory ${recordsDir} is missing, but ${join(stateDir, POOL_META_FILE)} says pool records existed. ` +
+            'Refusing to continue: restarting the pool at index 0 would reuse spent sub-accounts. ' +
+            'Restore the directory from a backup, or (only if you accept address reuse) delete the marker file.',
+        )
+      }
+    }
   }
   const poolStore = new LevelSubAccountPoolStore(stateDir)
   const changeStore = new LevelChangePoolStore(stateDir)

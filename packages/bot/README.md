@@ -404,7 +404,11 @@ directory under the system temp dir gets a warning at startup (a tmp cleaner wou
 The directory and the seed file must be owned by the bot's user and not writable by group/others,
 or the bot refuses to start (another local user could otherwise plant a seed they know). The
 directory's `stamp-pool-meta.json` marker records that pool records exist: a seed whose
-`sub-account-pool/` directory has gone missing is refused instead of restarting at index 0.
+`sub-account-pool/` or `change-pool/` directory has gone missing (or a marker that cannot be read)
+is refused instead of restarting at index 0, which would reuse spent sub-accounts. If you accept
+address reuse (or restored the seed without its records), delete `stamp-pool-meta.json` to
+override. A relative `XDG_STATE_HOME` is ignored, and a state directory that cannot be resolved to
+an absolute path (unset `HOME`, relative `*_BOT_STATE_DIR`) is a startup error.
 
 - `stamp-pool-seed.json` -- the BIP-39 mnemonic, created on first start with mode `0600` (directory
   `0700`), loaded on every later start. It is never logged. It is a wallet secret: **never commit

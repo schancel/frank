@@ -1,7 +1,7 @@
 import {
   chmodSync,
   existsSync,
-  readdirSync,
+  utimesSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -251,6 +251,23 @@ describe('stamp pool seed hardening (#313 review)', () => {
       await expect(openPersistentStampPool(dir, 'test')).rejects.toThrow(/records directory .* is missing/)
     })
 
+    it('a corrupt or unreadable marker counts as "records existed" (fails closed)', async () => {
+      const first = await openPersistentStampPool(dir, 'test')
+      await first.close()
+      writeFileSync(join(dir, POOL_META_FILE), '{not json')
+      rmSync(join(dir, 'sub-account-pool'), { recursive: true })
+      await expect(openPersistentStampPool(dir, 'test')).rejects.toThrow(/records directory .* is missing/)
+      writeFileSync(join(dir, POOL_META_FILE), JSON.stringify({ version: 2 }))
+      await expect(openPersistentStampPool(dir, 'test')).rejects.toThrow(/records directory .* is missing/)
+    })
+
+    it('also guards the change-pool records directory', async () => {
+      const first = await openPersistentStampPool(dir, 'test')
+      await first.close()
+      rmSync(join(dir, 'change-pool'), { recursive: true })
+      await expect(openPersistentStampPool(dir, 'test')).rejects.toThrow(/change-pool is missing/)
+    })
+
     it('a fresh directory, or one whose marker was deliberately deleted, starts normally', async () => {
       const first = await openPersistentStampPool(dir, 'test')
       await first.close()
@@ -268,13 +285,28 @@ describe('stamp pool seed hardening (#313 review)', () => {
   })
 
   describe('durable creation', () => {
-    it('removes orphaned temp files that hold a mnemonic, and leaves other files alone', () => {
-      const orphan = join(dir, `${POOL_SEED_FILE}.999.111.tmp`)
-      writeFileSync(orphan, '{"version":1,"mnemonic":"leaked"}', { mode: 0o600 })
+    it('removes only OLD orphaned seed temp files; decoys and young temps stay', () => {
+      const old = join(dir, `${POOL_SEED_FILE}.999.111.tmp`)
+      const young = join(dir, `${POOL_SEED_FILE}.998.222.tmp`)
+      const decoys = [
+        `${POOL_SEED_FILE}.tmp`,
+        `${POOL_SEED_FILE}.backup.tmp`,
+        `${POOL_SEED_FILE}.123.tmp`,
+        `${POOL_SEED_FILE}.1.2.3.tmp`,
+        `x${POOL_SEED_FILE}.1.2.tmp`,
+        `${POOL_SEED_FILE}.1.2.tmp.bak`,
+      ]
+      for (const f of [old, young, ...decoys.map(d => join(dir, d))]) {
+        writeFileSync(f, '{"version":1,"mnemonic":"x"}', { mode: 0o600 })
+      }
+      const longAgo = new Date(Date.now() - 10 * 60 * 1000)
+      for (const f of [old, ...decoys.map(d => join(dir, d))]) utimesSync(f, longAgo, longAgo)
       writeFileSync(join(dir, 'identity.json'), '{}')
       loadOrCreatePoolMnemonic(dir, 'test')
-      expect(existsSync(orphan)).toBe(false)
-      expect(readdirSync(dir).sort()).toEqual(['identity.json', POOL_SEED_FILE])
+      expect(existsSync(old)).toBe(false)
+      expect(existsSync(young)).toBe(true) // may be a concurrent first start's in-flight write
+      for (const d of decoys) expect(existsSync(join(dir, d))).toBe(true)
+      expect(existsSync(join(dir, 'identity.json'))).toBe(true)
     })
 
     it('fsyncs the directory as well as the file when it creates the seed', () => {

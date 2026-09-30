@@ -269,10 +269,14 @@ export default defineComponent({
     isWelcome(): boolean {
       return this.item.action === 'welcome'
     },
-    // A welcome or "play again" box moves real MON. Only the curated dealer may offer one (#422).
+    // A welcome or "play again" box moves real MON. Only the relay-curated dealer may offer one
+    // (#422, #425). The signed name is not enough.
     dealerOffersTable(): boolean {
+      const contacts = useContactStore()
       return peerOffersDealerTable(
-        useContactStore().getContact(this.address)?.profile,
+        contacts.getContact(this.address)?.profile,
+        this.address,
+        contacts.curatedDefaults,
       )
     },
     // The move buttons of the live hand. A bet is not one of them: it is the bet control's job.

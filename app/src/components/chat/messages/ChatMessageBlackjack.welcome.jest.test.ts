@@ -34,11 +34,18 @@ const balance = ref<bigint | null>(5n * 10n ** 18n)
 jest.mock('../../../stores/chats', () => ({ useChatStore: () => store }))
 const mockContact = {
   profile: { name: 'Blackjack Dealer', isBot: true as boolean },
+  curatedDefaults: [
+    {
+      address: '0x1234567890abcdef1234567890abcdef1234abcd',
+      name: 'Blackjack Dealer',
+    },
+  ],
+  getContact() {
+    return this
+  },
 }
 jest.mock('../../../stores/contacts', () => ({
-  useContactStore: () => ({
-    getContact: () => mockContact,
-  }),
+  useContactStore: () => mockContact,
 }))
 jest.mock('../../../composables/useBalance', () => ({
   useBalance: () => ({ balance }),
@@ -74,6 +81,7 @@ jest.mock('@frank/wallet/chain', () => ({
       if (frac.length > 18) throw new Error('too many decimals')
       return BigInt((whole || '0') + frac.padEnd(18, '0'))
     },
+    parseAddress: (address: string) => ({ raw: address }),
     formatAddress: (a: { raw: string }) => a.raw,
     nativeTransfers: {
       send: (args: unknown) => mockSend(args),
@@ -311,6 +319,7 @@ beforeEach(() => {
   storageData = {}
   store.chats = {}
   mockContact.profile = { name: 'Blackjack Dealer', isBot: true }
+  mockContact.curatedDefaults = [{ address: DEALER, name: 'Blackjack Dealer' }]
   mockProvider = {
     getTransaction: jest.fn(async () => ({
       from: PLAYER,
@@ -583,6 +592,29 @@ describe('the dealer welcome bubble', () => {
     ]
     const { wrapper } = await mountBubble(messages, 0)
     expect(control(wrapper).exists()).toBe(false)
+  })
+
+  it('a copied dealer name and bot marker with no curated provenance shows no bet control (#425)', async () => {
+    mockContact.profile = { name: 'Blackjack Dealer', isBot: true }
+    mockContact.curatedDefaults = []
+    const { wrapper } = await mountBubble([welcome()], 0)
+    expect(
+      wrapper.find('[data-testid="blackjack-welcome-title"]').exists(),
+    ).toBe(true)
+    expect(wrapper.find('[data-testid="blackjack-welcome-bet"]').exists()).toBe(
+      false,
+    )
+  })
+
+  it('two curated blackjack dealers fail closed (#425)', async () => {
+    mockContact.curatedDefaults = [
+      { address: DEALER, name: 'Blackjack Dealer' },
+      { address: `0x${'11'.repeat(20)}`, name: 'Blackjack Dealer' },
+    ]
+    const { wrapper } = await mountBubble([welcome()], 0)
+    expect(wrapper.find('[data-testid="blackjack-welcome-bet"]').exists()).toBe(
+      false,
+    )
   })
 
   it('a non-bot peer welcome shows the text and no bet control (#422)', async () => {

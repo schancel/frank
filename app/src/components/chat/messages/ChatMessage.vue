@@ -76,6 +76,7 @@
         </div>
         <template #stamp>
           <chat-message-suffix
+            ref="suffix"
             :status="message.status"
             :stamp="shortTimestamp"
             :amount="stampAmount"
@@ -212,6 +213,10 @@ export default defineComponent({
      * if so (see `stores/chats.ts`, `sendMessage`); a new payment happens only if the earlier one
      * can no longer be delivered. */
     async resend(confirmed = false) {
+      // The Retry button unmounts as soon as the state changes; keep focus on this message.
+      ;(
+        this.$refs.suffix as { focusStatus?: () => void } | undefined
+      )?.focusStatus?.()
       if (this.message.stampValueWei !== undefined) {
         try {
           const outcome = await this.retryOutgoing({

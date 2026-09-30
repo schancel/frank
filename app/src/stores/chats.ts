@@ -728,7 +728,12 @@ export const useChatStore = defineStore('chats', {
       { strict = false }: { strict?: boolean } = {},
     ) {
       const message = this.messages[id]
-      if (!message) return
+      if (!message) {
+        // Strict callers are attributing a payment to this message: a vanished record means the
+        // attribution cannot be durable, so that is a failure (the wallet rolls the attempt back).
+        if (strict) throw new Error(`outgoing message ${id} no longer exists`)
+        return
+      }
       // `payloadDigest`/`messageHash` are in-memory bookkeeping, not part of the stored record.
       // eslint-disable-next-line @typescript-eslint/no-unused-vars
       const { payloadDigest, messageHash, ...withLive } = message as Message & {
@@ -770,7 +775,12 @@ export const useChatStore = defineStore('chats', {
       options: { strict?: boolean } = {},
     ) {
       const message = this.messages[id]
-      if (!message) return
+      if (!message) {
+        if (options.strict) {
+          throw new Error(`outgoing message ${id} no longer exists`)
+        }
+        return
+      }
       message.status = status
       message.delivery = delivery
       await this.saveOutgoing(address, id, options)

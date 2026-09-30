@@ -273,7 +273,22 @@ export function startOutgoingReconciliation({
     return ids
   }
 
+  // Invariant: at most ONE timer exists, and only `schedule` arms it (clearing any previous one).
+  const schedule = (ms: number) => {
+    if (timer !== undefined) clearTimeout(timer)
+    timer = undefined
+    if (!stopped) timer = setTimeout(() => void tick(), ms)
+  }
+
+  let ticking = false
+  let resetRequested = false
+  // What is pending now is not "new": seed before the first tick so a reload with a pending
+  // message does not look like a fresh arrival.
+  knownPending = pendingIds()
+
   const tick = async () => {
+    ticking = true
+    resetRequested = false
     let pending = 0
     try {
       pending = (await chats.reconcileOutgoing({ wallet })).pending
@@ -281,9 +296,13 @@ export function startOutgoingReconciliation({
       console.warn('outgoing message reconciliation failed', err)
       pending = 1
     }
+    ticking = false
     knownPending = pendingIds()
-    delayMs = pending > 0 ? Math.min(maxIntervalMs, delayMs * 2) : intervalMs
-    if (!stopped) timer = setTimeout(() => void tick(), delayMs)
+    delayMs =
+      pending > 0 && !resetRequested
+        ? Math.min(maxIntervalMs, delayMs * 2)
+        : intervalMs
+    schedule(delayMs)
   }
   void tick()
 
@@ -297,8 +316,9 @@ export function startOutgoingReconciliation({
       knownPending = now
       if (!isNew || stopped) return
       delayMs = intervalMs
-      if (timer !== undefined) clearTimeout(timer)
-      timer = setTimeout(() => void tick(), intervalMs)
+      // Mid-tick, the tick itself re-arms at the base interval; never start a second chain.
+      if (ticking) resetRequested = true
+      else schedule(intervalMs)
     })
   })
 
@@ -307,6 +327,7 @@ export function startOutgoingReconciliation({
       stopped = true
       unsubscribe()
       if (timer !== undefined) clearTimeout(timer)
+      timer = undefined
     },
   }
 }

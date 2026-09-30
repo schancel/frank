@@ -7,8 +7,10 @@
       class="q-sr-only"
       role="status"
       aria-live="polite"
+      tabindex="-1"
+      ref="statusRegion"
       data-testid="outgoing-announcement"
-      >{{ announcement }}</span
+      >{{ announced }}</span
     >
     <div
       v-if="status === 'error'"
@@ -117,6 +119,31 @@ export default defineComponent({
       type: String,
       required: false,
       default: '',
+    },
+  },
+  data() {
+    return { announced: '' }
+  },
+  mounted() {
+    // Render the region empty, then fill it: many screen readers ignore text that is already in
+    // a region when it is inserted. Only a fresh send (status 'pending') announces on mount; a
+    // message that merely renders (e.g. after a reload) stays silent until its state changes.
+    if (this.status === 'pending') {
+      void this.$nextTick(() => {
+        this.announced = this.announcement
+      })
+    }
+  },
+  watch: {
+    announcement(text: string) {
+      this.announced = text
+    },
+  },
+  methods: {
+    /** Moves keyboard focus to this message's status text, e.g. when the button that was focused
+     * (Retry) is about to disappear. */
+    focusStatus() {
+      ;(this.$refs.statusRegion as HTMLElement | undefined)?.focus()
     },
   },
   emits: [

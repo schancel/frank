@@ -76,19 +76,54 @@ describe('ChatMessageSuffix outgoing states (#269, #270)', () => {
     expect(queued.text()).not.toContain('charged')
   })
 
-  it('has one persistent polite live region that announces each state change', async () => {
+  it('a fresh send is announced: the region is inserted empty, then filled', async () => {
     const wrapper = mountSuffix({ status: 'pending' })
     const region = () => wrapper.get('[data-testid="outgoing-announcement"]')
     expect(region().attributes('aria-live')).toBe('polite')
+    expect(region().text()).toBe('') // inserted empty
+    await wrapper.vm.$nextTick()
     expect(region().text()).toBe('Sending…')
+  })
+
+  it('a message that merely renders after a reload is silent until its state changes', async () => {
+    const wrapper = mountSuffix({
+      status: 'error',
+      failureReason: 'unreachable',
+    })
+    const region = () => wrapper.get('[data-testid="outgoing-announcement"]')
+    await wrapper.vm.$nextTick()
+    expect(region().text()).toBe('')
     const element = region().element
-    await wrapper.setProps({ status: 'error', failureReason: 'unreachable' })
-    // The same element, now with new text: this is what a screen reader announces.
-    expect(region().element).toBe(element)
+    await wrapper.setProps({ status: 'pending' })
+    expect(region().element).toBe(element) // same persistent region
+    expect(region().text()).toBe('Sending…')
+    await wrapper.setProps({ status: 'error', failureReason: 'unavailable' })
     expect(region().text()).toContain('Failed to send')
     expect(wrapper.findAll('[role="status"]')).toHaveLength(1)
     await wrapper.setProps({ status: 'confirmed' })
     expect(region().text()).toBe('')
+  })
+
+  it('focusStatus moves focus to the status text (used when Retry unmounts)', async () => {
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const wrapper = mount(ChatMessageSuffix, {
+      attachTo: host,
+      props: { stamp: '', amount: '', outbound: true, status: 'error' },
+      global: {
+        mocks: { $t: translator(enUS) },
+        stubs: {
+          QIcon: { template: '<i />' },
+          QBtn: { template: '<button><slot /></button>' },
+        },
+      },
+    })
+    ;(wrapper.vm as unknown as { focusStatus: () => void }).focusStatus()
+    expect(document.activeElement).toBe(
+      wrapper.get('[data-testid="outgoing-announcement"]').element,
+    )
+    wrapper.unmount()
+    host.remove()
   })
 
   it('a confirmed message shows neither state', () => {

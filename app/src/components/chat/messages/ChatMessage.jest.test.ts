@@ -54,6 +54,8 @@ const t = (key: string) =>
       enUS,
     ) as string
 
+const focusStatus = jest.fn()
+
 function mountFailed() {
   const dialogs: Array<{ message: string; onOk: () => void }> = []
   const wrapper = shallowMount(ChatMessage, {
@@ -75,6 +77,12 @@ function mountFailed() {
       },
     },
     global: {
+      stubs: {
+        QChatMessage: {
+          template: '<div><slot /><slot name="stamp" /></div>',
+        },
+        ChatMessageSuffix: { template: '<i />', methods: { focusStatus } },
+      },
       mocks: {
         $t: t,
         $q: {
@@ -105,6 +113,17 @@ describe('ChatMessage Retry and Discard', () => {
       }),
     )
     expect(deleteMessage).not.toHaveBeenCalled()
+  })
+
+  it('moves focus to the message status before the Retry button unmounts', async () => {
+    let focusedBeforeRetry = false
+    retryOutgoing.mockImplementation(async () => {
+      focusedBeforeRetry = focusStatus.mock.calls.length > 0
+      return { state: 'payment-pending' }
+    })
+    const { wrapper } = mountFailed()
+    await (wrapper.vm as unknown as { resend: () => Promise<void> }).resend()
+    expect(focusedBeforeRetry).toBe(true)
   })
 
   it('asks before a retry that could pay a second time, and retries only once confirmed', async () => {

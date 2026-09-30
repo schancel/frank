@@ -744,4 +744,97 @@ describe('outgoing direct messages (#269, #270)', () => {
       expect(message.delivery).toBeUndefined()
     })
   })
+
+  describe('the in-memory live flag', () => {
+    async function pendingLive() {
+      sendJournalsThenPending()
+      const chats = useChatStore()
+      await chats.sendMessage({ wallet, address: PEER, items: TEXT })
+      expect(only(chats)[0].delivery?.live).toBe(true)
+      return chats
+    }
+
+    it.each([
+      ['dead', 'rejected'],
+      ['unknown', 'unverified'],
+    ] as const)(
+      'is cleared when the attempt turns out %s (the delivery record is replaced, not merged)',
+      async (status, reason) => {
+        const chats = await pendingLive()
+        reconcileReturns({ [HASH]: status })
+        await chats.reconcileOutgoing({ wallet })
+        expect(only(chats)[0].status).toBe('error')
+        expect(only(chats)[0].delivery?.failureReason).toBe(reason)
+        expect(only(chats)[0].delivery?.live).toBeUndefined()
+      },
+    )
+
+    it('is cleared when a later send fails', async () => {
+      const chats = await pendingLive()
+      const id = only(chats)[0].payloadDigest
+      // Manual retry path: an error state that had been live must not keep the flag.
+      only(chats)[0].status = 'error'
+      reconcileReturns({ [HASH]: 'dead' })
+      jest
+        .spyOn(activeChain.directMessages, 'send')
+        .mockRejectedValue(new Error('boom'))
+      await chats.retryOutgoing({ wallet, address: PEER, payloadDigest: id })
+      expect(only(chats)[0].delivery?.live).toBeUndefined()
+    })
+
+    it('after a reload the text starts as checking (not live); a reconcile that says live moves it to live, once', async () => {
+      await pendingLive()
+      const restored = await reload()
+      expect(only(restored)[0].status).toBe('payment-pending')
+      expect(only(restored)[0].delivery).toEqual({ attemptDigest: HASH })
+      expect(only(restored)[0].delivery?.live).toBeUndefined() // "Checking payment status"
+
+      const store = (await messageStorePromise) as unknown as {
+        saveMessage: jest.Mock
+      }
+      reconcileReturns({ [HASH]: 'live' }, { [HASH]: 'live' })
+      store.saveMessage.mockClear()
+      await restored.reconcileOutgoing({ wallet })
+      expect(only(restored)[0].delivery?.live).toBe(true) // "will not be charged again"
+      const writesAfterFirst = store.saveMessage.mock.calls.length
+      expect(writesAfterFirst).toBeGreaterThan(0)
+      // Already live: a further reconcile must not rewrite the record every tick.
+      await restored.reconcileOutgoing({ wallet })
+      expect(store.saveMessage.mock.calls.length).toBe(writesAfterFirst)
+      // And the flag itself is never persisted.
+      const stored = deserializeMessageWrapper(
+        (await durable()).get(only(restored)[0].payloadDigest) as string,
+      )
+      expect(stored.message.delivery).toEqual({ attemptDigest: HASH })
+    })
+  })
+
+  describe('strict attribution writes', () => {
+    it('a record that vanished mid-send makes the attribution fail, so the wallet rolls the attempt back', async () => {
+      let callbackError: unknown
+      jest
+        .spyOn(activeChain.directMessages, 'send')
+        .mockImplementation(async (params: SendParams) => {
+          // The user discards the message while it is still being prepared.
+          const chats = useChatStore()
+          await chats.deleteMessage({
+            address: PEER,
+            payloadDigest: only(chats)[0].payloadDigest,
+          })
+          try {
+            await params.onAttemptCreated?.(HASH)
+          } catch (error) {
+            callbackError = error
+            throw error
+          }
+          return okResult(HASH)
+        })
+      await useChatStore().sendMessage({ wallet, address: PEER, items: TEXT })
+      expect(callbackError).toEqual(
+        expect.objectContaining({
+          message: expect.stringContaining('no longer exists'),
+        }),
+      )
+    })
+  })
 })

@@ -138,4 +138,108 @@ describe('startOutgoingReconciliation (#270)', () => {
     expect(reconcile.mock.calls.length).toBeGreaterThan(callsBefore)
     polling.stop()
   })
+
+  describe('one timer chain only', () => {
+    it('after a reload with one pending message and one tick, exactly one timer is scheduled', async () => {
+      const { chats } = await pendingMessage()
+      // As after a reload: the attempt is recorded but not yet confirmed live this session.
+      const message = chats.chats[PEER]?.messages[0]
+      if (message?.delivery) delete message.delivery.live
+      jest
+        .spyOn(activeChain.directMessages, 'reconcileAttempts')
+        .mockResolvedValue({ [HASH]: 'live' })
+      const polling = startOutgoingReconciliation({ wallet })
+      await jest.advanceTimersByTimeAsync(0)
+      // The tick's own setOutgoingState(live: true) must not look like a new arrival.
+      expect(jest.getTimerCount()).toBe(1)
+      polling.stop()
+    })
+
+    it('a message that becomes pending mid-tick still leaves exactly one timer', async () => {
+      const { chats } = await pendingMessage()
+      let release: (v: Record<string, 'live'>) => void = () => undefined
+      jest
+        .spyOn(activeChain.directMessages, 'reconcileAttempts')
+        .mockReturnValue(
+          new Promise(resolve => {
+            release = resolve
+          }),
+        )
+      const polling = startOutgoingReconciliation({ wallet })
+      await jest.advanceTimersByTimeAsync(0) // tick is now waiting on the wallet
+      const HASH2 = 'cd'.repeat(32)
+      jest
+        .spyOn(activeChain.directMessages, 'send')
+        .mockImplementation(async params => {
+          await params.onAttemptCreated?.(HASH2)
+          throw new MonadStampPendingAttemptError([HASH2])
+        })
+      await chats.sendMessage({
+        wallet,
+        address: PEER,
+        items: [{ type: 'text', text: 'second' }],
+      })
+      release({ [HASH]: 'live' })
+      await jest.advanceTimersByTimeAsync(0)
+      expect(jest.getTimerCount()).toBe(1)
+      polling.stop()
+    })
+
+    it('after stop() no timer remains, including one armed mid-tick', async () => {
+      await pendingMessage()
+      let release: (v: Record<string, 'live'>) => void = () => undefined
+      jest
+        .spyOn(activeChain.directMessages, 'reconcileAttempts')
+        .mockReturnValue(
+          new Promise(resolve => {
+            release = resolve
+          }),
+        )
+      const polling = startOutgoingReconciliation({ wallet })
+      await jest.advanceTimersByTimeAsync(0)
+      polling.stop()
+      release({ [HASH]: 'live' })
+      await jest.advanceTimersByTimeAsync(0)
+      expect(jest.getTimerCount()).toBe(0)
+    })
+
+    it('a new pending message resets the ladder: the next gap is the base interval doubled, not the old cap', async () => {
+      const { chats } = await pendingMessage()
+      const reconcile = jest
+        .spyOn(activeChain.directMessages, 'reconcileAttempts')
+        .mockResolvedValue({ [HASH]: 'live' })
+      const polling = startOutgoingReconciliation({ wallet })
+      await jest.advanceTimersByTimeAsync(0)
+      await jest.advanceTimersByTimeAsync(
+        2 * OUTGOING_RECONCILE_INTERVAL_MS +
+          4 * OUTGOING_RECONCILE_INTERVAL_MS +
+          MAX_OUTGOING_RECONCILE_INTERVAL_MS,
+      )
+      const HASH2 = 'cd'.repeat(32)
+      jest
+        .spyOn(activeChain.directMessages, 'send')
+        .mockImplementation(async params => {
+          await params.onAttemptCreated?.(HASH2)
+          throw new MonadStampPendingAttemptError([HASH2])
+        })
+      reconcile.mockResolvedValue({ [HASH]: 'live', [HASH2]: 'live' })
+      await chats.sendMessage({
+        wallet,
+        address: PEER,
+        items: [{ type: 'text', text: 'second' }],
+      })
+      const before = reconcile.mock.calls.length
+      await jest.advanceTimersByTimeAsync(OUTGOING_RECONCILE_INTERVAL_MS)
+      expect(reconcile.mock.calls.length).toBe(before + 1) // base interval
+      // Next gap is 2 x base (30 s); with the reset lost it would be the 120 s cap.
+      await jest.advanceTimersByTimeAsync(
+        2 * OUTGOING_RECONCILE_INTERVAL_MS - 1,
+      )
+      expect(reconcile.mock.calls.length).toBe(before + 1)
+      await jest.advanceTimersByTimeAsync(1)
+      expect(reconcile.mock.calls.length).toBe(before + 2)
+      expect(jest.getTimerCount()).toBe(1)
+      polling.stop()
+    })
+  })
 })

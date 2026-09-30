@@ -1291,6 +1291,53 @@ describe('MonadStampClient: PR #197 durable mailbox PUT semantics', () => {
         expect(mockedAxios).not.toHaveBeenCalled()
       })
 
+      it('if the journal entry cannot be deleted, it is KEPT with its reservations, nothing is sent, and the callback error propagates (no dead record)', async () => {
+        const stampAttemptJournal = new InMemoryStampAttemptJournal()
+        stampAttemptJournal.delete = jest
+          .fn()
+          .mockRejectedValue(new Error('journal delete failed'))
+        const { client, pool } = makeClient({ stampAttemptJournal })
+        mockedAxios.mockImplementation(okPut as never)
+        let hash = ''
+        const failure = new Error('cannot record the attempt durably')
+        await expect(
+          submit(client, async h => {
+            hash = h
+            throw failure
+          }),
+        ).rejects.toBe(failure)
+        expect(mockedAxios).not.toHaveBeenCalled()
+        expect(stampAttemptJournal.getAll()).toHaveLength(1)
+        expect(pool.records().filter(r => r.status === 'in-use')).toHaveLength(
+          2,
+        )
+        expect(client.attemptStatus(hash)).toBe('live') // not 'dead': resume can still re-send it
+      })
+
+      it('the dead outcome is recorded even if flushing the retired reservations fails, and the callback error still wins', async () => {
+        const stampAttemptJournal = new InMemoryStampAttemptJournal()
+        const { client, pool } = makeClient({ stampAttemptJournal })
+        mockedAxios.mockImplementation(okPut as never)
+        const realFlush = pool.flush.bind(pool)
+        let armed = false
+        jest.spyOn(pool, 'flush').mockImplementation(async () => {
+          if (armed) throw new Error('flush failed')
+          return realFlush()
+        })
+        let hash = ''
+        const failure = new Error('cannot record the attempt durably')
+        await expect(
+          submit(client, async h => {
+            hash = h
+            armed = true
+            throw failure
+          }),
+        ).rejects.toBe(failure)
+        expect(mockedAxios).not.toHaveBeenCalled()
+        expect(stampAttemptJournal.getAll()).toHaveLength(0)
+        expect(client.attemptStatus(hash)).toBe('dead')
+      })
+
       it('recordedAttempts lists journaled and resolved attempts', async () => {
         const stampAttemptJournal = new InMemoryStampAttemptJournal()
         const { client } = makeClient({ stampAttemptJournal })

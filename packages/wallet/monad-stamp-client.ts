@@ -1073,11 +1073,22 @@ export class MonadStampClient {
         // resume can still re-send it byte for byte. The caller sees the original error.
         throw callbackError
       }
+      // Record first: the journal entry is already gone, so this is the truth even if the
+      // reservation bookkeeping below fails.
+      recordAttemptOutcome(this.attemptJournal, payloadHashHex, 'dead')
       for (const handle of handles) {
         this.leaseManager.releaseLease(handle, 'failed')
       }
-      await this.pool.flush()
-      recordAttemptOutcome(this.attemptJournal, payloadHashHex, 'dead')
+      try {
+        await this.pool.flush()
+      } catch (flushError) {
+        // Startup recovery retires unjournaled reservations; the caller must see the original
+        // failure, not this one.
+        console.warn(
+          'could not persist the rolled-back reservations',
+          flushError,
+        )
+      }
       throw callbackError
     }
     const releaseAll = async (

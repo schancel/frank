@@ -27,8 +27,7 @@
  * `deriveSubAccount(index)`) so that swapping the root-secret source to Mera's PRF output later is
  * a drop-in: a follow-up ticket only needs a new constructor path that accepts Mera's derived seed
  * bytes instead of a mnemonic phrase, with zero changes to the pool, fan-out funding, or selection
- * logic. Left as a documented follow-up (the issue comment also references two still-unclaimed
- * Monad Foundation "Mera" bounties, non-blocking here).
+ * logic. Left as a documented follow-up.
  */
 import * as bip39 from 'bip39'
 import { HDNodeWallet, Mnemonic } from 'ethers'

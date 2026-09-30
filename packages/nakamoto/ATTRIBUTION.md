@@ -12,4 +12,10 @@ BitPay's MIT license and the other copyright notices in `LICENSE` cover those de
 
 Public names in this package do not use "bitcore". That name appears in this file and in dev-only tests that compare bytes against the old package. The old package's API, global network, and error strings are not part of this library.
 
-This scaffold does not yet copy algorithm code. The license is included now so later ports do not land without it.
+`src/convert-bits.ts` and `src/base32.ts` are derived from the cashaddr bit converter and 5-bit charset. Those files keep their copyright notices:
+
+- Copyright (c) 2018 Matias Alejo Garcia
+- Copyright (c) 2017 Emilio Almansi
+- Copyright (c) 2017 Pieter Wuille
+
+Base58check appends the first four bytes of SHA-256d, which is the Bitcoin checksum. The alphabet and the compact-size rules follow Bitcoin Core. SHA-256d is `@noble/hashes` 1.8.0, not a copy of the old hash wrapper.

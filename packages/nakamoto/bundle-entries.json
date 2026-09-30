@@ -48,6 +48,48 @@
       "entry": "src/integer.ts",
       "forbid": ["btc-magic", "xpi-port"],
       "absentExports": ["BTC_MAINNET", "encodeScriptNum"]
+    },
+    {
+      "name": "base58",
+      "entry": "src/base58.ts",
+      "forbid": ["btc-magic", "xpi-port"],
+      "absentExports": ["BTC_MAINNET", "encodeBase58Check"]
+    },
+    {
+      "name": "base58check",
+      "entry": "src/base58check.ts",
+      "forbid": ["btc-magic", "xpi-port"],
+      "absentExports": ["BTC_MAINNET", "encodeScriptNum"]
+    },
+    {
+      "name": "varint",
+      "entry": "src/varint.ts",
+      "forbid": ["btc-magic", "xpi-port"],
+      "absentExports": ["BTC_MAINNET", "encodeBase58"]
+    },
+    {
+      "name": "reader",
+      "entry": "src/reader.ts",
+      "forbid": ["btc-magic", "xpi-port"],
+      "absentExports": ["BTC_MAINNET", "encodeBase58"]
+    },
+    {
+      "name": "convert-bits",
+      "entry": "src/convert-bits.ts",
+      "forbid": ["btc-magic", "xpi-port"],
+      "absentExports": ["BTC_MAINNET", "encodeBase58"]
+    },
+    {
+      "name": "base32",
+      "entry": "src/base32.ts",
+      "forbid": ["btc-magic", "xpi-port"],
+      "absentExports": ["BTC_MAINNET", "encodeBase58"]
+    },
+    {
+      "name": "encoding-error",
+      "entry": "src/encoding-error.ts",
+      "forbid": ["btc-magic", "xpi-port"],
+      "absentExports": ["BTC_MAINNET", "encodeBase58"]
     }
   ]
 }

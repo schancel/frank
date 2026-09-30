@@ -1,5 +1,7 @@
 // @frank/nakamoto public surface. Browser-safe: no Node built-ins.
-// Per-chain entries: ./btc ./bch ./xec ./xpi. Feature entries: ./integer ./script-num.
+// Per-chain entries: ./btc ./bch ./xec ./xpi.
+// Feature entries: ./integer ./script-num ./base58 ./base58check ./varint
+// ./reader ./convert-bits ./base32 ./encoding-error.
 
 export const PACKAGE_NAME = '@frank/nakamoto'
 
@@ -47,3 +49,12 @@ export type {
   ScriptNumError,
   ScriptNumResult,
 } from './script-num.js'
+
+export { BASE58_ALPHABET, decodeBase58, encodeBase58 } from './base58.js'
+export { decodeBase58Check, encodeBase58Check } from './base58check.js'
+export { decodeVarint, encodeVarint } from './varint.js'
+export { ByteReader, ByteWriter } from './reader.js'
+export { convertBits } from './convert-bits.js'
+export { CASHADDR_CHARSET, decodeBase32, encodeBase32 } from './base32.js'
+export { EncodingException, isEncodingError } from './encoding-error.js'
+export type { EncodingError, EncodingResult } from './encoding-error.js'

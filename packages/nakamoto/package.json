@@ -1,0 +1,23 @@
+{
+  "name": "@frank/nakamoto",
+  "version": "0.0.1",
+  "description": "Typed chain library for BTC, BCH, XEC, and XPI. Consensus bytes follow the chains. The public API does not follow bitcore-lib.",
+  "license": "MIT",
+  "private": true,
+  "sideEffects": false,
+  "main": "src/index.ts",
+  "scripts": {
+    "test": "jest",
+    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.jest.json",
+    "lint": "eslint . --ext .ts,.js",
+    "format": "prettier --config ../../app/.prettierrc.json --check \"src/**/*.ts\" \"test/**/*.ts\" package.json tsconfig.json tsconfig.jest.json jest.config.js .eslintrc.js ATTRIBUTION.md"
+  },
+  "devDependencies": {
+    "@types/jest": "^29",
+    "@types/node": "^16.11.11",
+    "bitcore-lib-xpi": "*",
+    "jest": "^29",
+    "ts-jest": "^29",
+    "typescript": "^5.9.3"
+  }
+}

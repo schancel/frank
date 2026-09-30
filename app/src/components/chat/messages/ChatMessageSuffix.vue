@@ -49,8 +49,16 @@
       <div class="col-auto q-pa-xs">
         <q-icon name="schedule" />{{ paymentText }}
       </div>
+      <!-- A passed stamp is the time, never a second copy of the status (#393). -->
+      <div v-if="stamp" class="col-auto q-pa-xs" data-testid="outgoing-stamp">
+        {{ stamp }}
+      </div>
     </div>
-    <div v-else :class="['row', 'items-center', suffixPlacement]">
+    <div
+      v-else
+      :class="['row', 'items-center', suffixPlacement]"
+      data-testid="outgoing-footer"
+    >
       <!-- Button placement for sent mssages -->
       <div v-if="outbound" :class="buttonPlacement">
         <chat-message-suffix-buttons
@@ -61,10 +69,19 @@
           @deleteClick="$emit('deleteClick')"
         />
       </div>
-      <div class="col-auto q-pa-xs">
-        {{ stamp }}
-        <br />
-        {{ amount }}
+      <!-- One cluster. A break exists only when a nonempty time stamp precedes the amount. -->
+      <div class="col-auto q-pa-xs" data-testid="outgoing-meta">
+        <span
+          v-if="status === 'pending' && outbound"
+          data-testid="outgoing-sending"
+          class="q-mr-xs"
+          >{{ $t('outgoing.sending') }}</span
+        >
+        <template v-if="stamp">
+          <span data-testid="outgoing-stamp">{{ stamp }}</span>
+          <br />
+        </template>
+        <span data-testid="outgoing-amount">{{ amount }}</span>
       </div>
       <!-- Button placement for received mssages -->
       <div v-if="!outbound" :class="buttonPlacement">

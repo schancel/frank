@@ -151,12 +151,21 @@ describe('base58check', () => {
     if (!full.ok) throw new Error(full.error.code)
     const short = full.value.slice(0, -1)
     const decoded = decodeBase58Check(encodeBase58(short))
-    expect(decoded.ok).toBe(false)
-    if (!decoded.ok) {
-      expect(['base58check-too-short', 'base58check-checksum']).toContain(
-        decoded.error.code,
-      )
-    }
+    expect(decoded).toEqual({
+      ok: false,
+      error: { code: 'base58check-checksum' },
+    })
+  })
+
+  test('a checksum over a short payload still round-trips', () => {
+    expect(decodeBase58Check(encodeBase58Check(new Uint8Array()))).toEqual({
+      ok: true,
+      value: new Uint8Array(),
+    })
+    expect(decodeBase58Check(encodeBase58Check(Uint8Array.of(0)))).toEqual({
+      ok: true,
+      value: Uint8Array.of(0),
+    })
   })
 
   test('a flipped checksum byte is rejected', () => {
@@ -214,8 +223,14 @@ describe('varint', () => {
   test('widths match the old writer vectors', () => {
     const cases: ReadonlyArray<readonly [bigint, number, string]> = [
       [1n, 1, '01'],
+      [252n, 1, 'fc'],
+      [253n, 3, 'fdfd00'],
       [1000n, 3, 'fde803'],
+      [65535n, 3, 'fdffff'],
+      [65536n, 5, 'fe00000100'],
       [1n << 17n, 5, 'fe00000200'],
+      [(1n << 32n) - 1n, 5, 'feffffffff'],
+      [1n << 32n, 9, 'ff0000000001000000'],
       [1n << 33n, 9, 'ff0000000002000000'],
     ]
     for (const [value, length, encoded] of cases) {
@@ -278,6 +293,23 @@ describe('varint', () => {
       ok: false,
       error: { code: 'varint-non-minimal' },
     })
+    expect(
+      decodeVarint(
+        Uint8Array.of(0xff, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00),
+      ),
+    ).toEqual({
+      ok: false,
+      error: { code: 'varint-non-minimal' },
+    })
+    const notABigint = encodeVarint(1.5 as never)
+    expect(notABigint).toEqual({
+      ok: false,
+      error: { code: 'varint-out-of-range' },
+    })
+    expect(encodeVarint(1000 as never)).toEqual({
+      ok: false,
+      error: { code: 'varint-out-of-range' },
+    })
     const negative = encodeVarint(-1n)
     expect(negative).toEqual({
       ok: false,
@@ -305,6 +337,16 @@ describe('reader and writer', () => {
     )
     expect(hex(new ByteWriter().writeUInt64LE(1n).finish())).toBe(
       '0100000000000000',
+    )
+    expect(hex(new ByteWriter().writeUInt32LE(0x01020304).finish())).toBe(
+      '04030201',
+    )
+    expect(hex(new ByteWriter().writeUInt32BE(0x01020304).finish())).toBe(
+      '01020304',
+    )
+    expect(hex(new ByteWriter().writeUInt16LE(0x0102).finish())).toBe('0201')
+    expect(hex(new ByteWriter().writeUInt64LE((1n << 53n) + 1n).finish())).toBe(
+      '0100000000002000',
     )
     const one = new old.crypto.BN(1)
     expect(
@@ -344,6 +386,10 @@ describe('reader and writer', () => {
     expect(new ByteReader(fromHex('0001')).readUInt16BE()).toEqual({
       ok: true,
       value: 1,
+    })
+    expect(new ByteReader(fromHex('04030201')).readUInt32LE()).toEqual({
+      ok: true,
+      value: 0x01020304,
     })
     expect(new ByteReader(fromHex('0100')).readUInt16LE()).toEqual({
       ok: true,
@@ -436,14 +482,30 @@ describe('reader and writer', () => {
   })
 
   test('a short read is a typed truncation, including a varint length', () => {
-    expect(new ByteReader(Uint8Array.of(1)).read(2)).toEqual({
+    const shortRead = new ByteReader(Uint8Array.of(1))
+    expect(shortRead.read(2)).toEqual({
       ok: false,
       error: { code: 'reader-truncated', needed: 2, available: 1 },
     })
-    expect(new ByteReader(fromHex('0a00')).readBytesPrefixed()).toEqual({
+    expect(shortRead.position).toBe(0)
+    const shortPrefixed = new ByteReader(Uint8Array.of(0x02, 0xaa))
+    expect(shortPrefixed.readBytesPrefixed()).toEqual({
       ok: false,
-      error: { code: 'reader-truncated', needed: 10, available: 1 },
+      error: { code: 'reader-truncated', needed: 2, available: 1 },
     })
+    expect(shortPrefixed.position).toBe(0)
+    expect(shortPrefixed.readUInt8()).toEqual({ ok: true, value: 0x02 })
+    const huge = new ByteReader(fromHex('ff0100000000002000'))
+    expect(huge.readBytesPrefixed()).toEqual({
+      ok: false,
+      error: {
+        code: 'reader-truncated',
+        needed: Number.MAX_SAFE_INTEGER,
+        available: 0,
+        length: (1n << 53n) + 1n,
+      },
+    })
+    expect(huge.position).toBe(0)
     const script = fromHex(
       '73010000003766404f00000000b305434f00000000f203' +
         '0000f1030000001027000048ee00000064000000004653656520626974636f696' +
@@ -467,6 +529,12 @@ describe('reader and writer', () => {
   test('an integer that does not fit the width throws a typed error', () => {
     expect(() => new ByteWriter().writeUInt8(256)).toThrow(EncodingException)
     expect(() => new ByteWriter().writeUInt64LE(-1n)).toThrow(EncodingException)
+    expect(() => new ByteWriter().writeUInt64LE(1 as never)).toThrow(
+      EncodingException,
+    )
+    expect(() => new ByteWriter().writeVarint(1.9 as never)).toThrow(
+      EncodingException,
+    )
     expect(() => new ByteWriter().writeVarint(1n << 64n)).toThrow(
       EncodingException,
     )
@@ -496,6 +564,15 @@ describe('convertBits', () => {
     expect(convertBits([1], 16, 10, true)).toEqual({
       ok: false,
       error: { code: 'convert-bits-padding' },
+    })
+    expect(convertBits([0], 8, 5, true)).toEqual({ ok: true, value: [0] })
+    expect(convertBits([0], 5, 8, true)).toEqual({
+      ok: false,
+      error: { code: 'convert-bits-padding' },
+    })
+    expect(convertBits([31, 31, 31, 31, 31, 31, 31, 31], 5, 31)).toEqual({
+      ok: true,
+      value: [2147483647, 2143289344],
     })
   })
 })

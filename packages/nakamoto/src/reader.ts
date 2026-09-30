@@ -126,22 +126,23 @@ export class ByteReader {
     return { ok: true, value: decoded.value.value }
   }
 
-  /** Varint length, then that many bytes. A short buffer does not allocate. */
+  /** Varint length, then that many bytes. A short buffer does not allocate or move. */
   readBytesPrefixed(): EncodingResult<Uint8Array> {
+    const start = this.offset
     const length = this.readVarint()
     if (!length.ok) return length
-    const available = BigInt(this.data.length - this.offset)
-    if (length.value > available) {
-      const needed =
-        length.value > BigInt(Number.MAX_SAFE_INTEGER)
-          ? Number.MAX_SAFE_INTEGER
-          : Number(length.value)
+    const available = this.data.length - this.offset
+    if (length.value > BigInt(available)) {
+      this.offset = start
+      const exact = length.value
+      const saturated = exact > BigInt(Number.MAX_SAFE_INTEGER)
       return {
         ok: false,
         error: {
           code: 'reader-truncated',
-          needed,
-          available: this.data.length - this.offset,
+          needed: saturated ? Number.MAX_SAFE_INTEGER : Number(exact),
+          available,
+          ...(saturated ? { length: exact } : {}),
         },
       }
     }
@@ -200,14 +201,14 @@ export class ByteWriter {
   }
 
   writeUInt64BE(value: bigint): this {
-    if (value < 0n || value > UINT64_MAX) {
+    if (typeof value !== 'bigint' || value < 0n || value > UINT64_MAX) {
       throw new EncodingException({ code: 'integer-out-of-range' })
     }
     return this.push(encodeUnsignedBE(value, 8))
   }
 
   writeUInt64LE(value: bigint): this {
-    if (value < 0n || value > UINT64_MAX) {
+    if (typeof value !== 'bigint' || value < 0n || value > UINT64_MAX) {
       throw new EncodingException({ code: 'integer-out-of-range' })
     }
     return this.push(encodeUnsignedLE(value, 8))

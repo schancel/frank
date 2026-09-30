@@ -13,7 +13,7 @@ import type { EncodingResult } from './encoding-error.js'
 const UINT64_MAX = (1n << 64n) - 1n
 
 export function encodeVarint(value: bigint): EncodingResult<Uint8Array> {
-  if (value < 0n || value > UINT64_MAX) {
+  if (typeof value !== 'bigint' || value < 0n || value > UINT64_MAX) {
     return { ok: false, error: { code: 'varint-out-of-range' } }
   }
   if (value < 0xfdn) {

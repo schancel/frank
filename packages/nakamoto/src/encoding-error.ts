@@ -42,6 +42,8 @@ export interface ReaderTruncated {
   readonly code: 'reader-truncated'
   readonly needed: number
   readonly available: number
+  /** Set when `needed` is saturated because the declared length is not a safe integer. */
+  readonly length?: bigint
 }
 
 export interface IntegerWidth {

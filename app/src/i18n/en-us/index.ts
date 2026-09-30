@@ -111,6 +111,22 @@ export default {
     copyRecoveryPhrase: 'Copy recovery phrase',
     refreshRecoveryPhrase: 'Generate a new recovery phrase',
   },
+  seedConfirm: {
+    unavailable:
+      'Confirmation is unavailable because this device has no secure random number generator. Go back and try again, or use another browser.',
+    stepTitle: 'Confirm phrase',
+    title: 'Confirm your recovery phrase',
+    instructions:
+      'Enter the requested words from the recovery phrase you wrote down. Your account is only created once they match.',
+    wordLabel: 'Word #{n}',
+    check: 'Check my answers',
+    error:
+      'One or more words do not match your recovery phrase. Check your copy and try again.',
+    success: 'Recovery phrase confirmed. You can finish setup.',
+    showPhrase: 'Show my recovery phrase again',
+    hidePhrase: 'Hide my recovery phrase',
+    phraseLabel: 'Your recovery phrase, in order',
+  },
   newContactDialog: {
     newContact: 'New Contact',
     enterBitcoinCashAddress: 'Enter address (0x...)',

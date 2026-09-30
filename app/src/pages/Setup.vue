@@ -41,10 +41,33 @@
             <account-step v-model:account-data="accountData" />
           </q-step>
           <q-step
+            v-if="isNewAccount"
             :name="3"
+            :title="$t('seedConfirm.stepTitle')"
+            icon="fact_check"
+            :done="step > 3"
+          >
+            <div
+              v-if="challengeError"
+              role="alert"
+              class="text-negative"
+              data-test="challenge-error"
+            >
+              {{ $t('seedConfirm.unavailable') }}
+            </div>
+            <seed-confirm-step
+              v-else-if="challenge"
+              :seed="challenge.seed"
+              :positions="challenge.positions"
+              :confirmed="isSeedConfirmed"
+              @confirmed="onSeedConfirmed"
+            />
+          </q-step>
+          <q-step
+            :name="4"
             :title="$t('setup.deposit')"
             icon="attach_money"
-            :done="step > 3"
+            :done="step > 4"
           >
             <deposit-step />
           </q-step>
@@ -98,12 +121,16 @@ import { persistSetupAndReload } from '../utils/setup-persistence'
 import {
   commitValidatedSetupName,
   commitValidatedSetupSeed,
+  ensureConfirmationChallenge,
   initialSetupSeed,
+  normalizeSetupMnemonic,
+  type SeedConfirmationChallenge,
 } from '../utils/setup-account'
 
 import AccountStep from '../components/setup/AccountStep.vue'
 import DepositStep from '../components/setup/DepositStep.vue'
 import EulaStep from '../components/setup/EULAStep.vue'
+import SeedConfirmStep from '../components/setup/SeedConfirmStep.vue'
 
 import { useRelayClientStore } from 'src/stores/relay-client'
 import { useWalletStore } from 'src/stores/wallet'
@@ -118,6 +145,7 @@ export default defineComponent({
     AccountStep,
     DepositStep,
     EulaStep,
+    SeedConfirmStep,
   },
   setup() {
     const relayClient = useRelayClientStore()
@@ -141,7 +169,8 @@ export default defineComponent({
         persistSetupAndReload(wallet, myProfile, window.location, errorNotify),
       resetWallet: wallet.reset,
       setXPrivKey: wallet.setXPrivKey,
-      setSeedPhrase: wallet.setSeedPhrase,
+      setSeedPhrase: (seed: string, confirmedAt: number | null = null) =>
+        wallet.setSeedPhrase(seed, confirmedAt),
       balance: balance,
     }
   },
@@ -158,6 +187,13 @@ export default defineComponent({
         // In-memory draft only: persisted by commitValidatedSetupSeed() on completion (#267).
         seed: initialSetupSeed(wallet.seedPhrase, generateMnemonic),
       },
+      // Confirmation challenge for the New Account phrase (positions asked for), bound to the
+      // phrase it was drawn for; in memory only.
+      challenge: null as SeedConfirmationChallenge | null,
+      // The (normalized) phrase the user has proven they hold. Never persisted by itself: the
+      // durable seedConfirmedAt marker is written only together with the seed at commit.
+      confirmedSeed: null as string | null,
+      challengeError: false,
       relayData: defaultRelayData,
       relayUrl: defaultRelayUrl,
       avatar: '',
@@ -170,7 +206,61 @@ export default defineComponent({
     }
   },
   emits: ['setupCompleted', 'toggleMyDrawerOpen'],
+  watch: {
+    // Positions are drawn on entering the confirmation step and are reused while the phrase
+    // is unchanged; going back and changing the phrase draws new ones.
+    step(step: number) {
+      if (step === 3) this.prepareChallenge()
+    },
+  },
   methods: {
+    prepareChallenge() {
+      try {
+        this.challenge = ensureConfirmationChallenge(
+          this.challenge,
+          this.accountData.seed,
+        )
+        this.challengeError = false
+      } catch {
+        // No secure random source: never fall back to a weaker one. Show a message instead of an
+        // empty step; Back still works and re-entering the step tries again.
+        this.challenge = null
+        this.challengeError = true
+      }
+    },
+    onSeedConfirmed() {
+      if (this.challenge) this.confirmedSeed = this.challenge.seed
+    },
+    /**
+     * Persist the seed and name, then reload. `confirmedAt` is the durable proof-of-backup
+     * marker stored atomically with the seed.
+     */
+    async completeAccountStep(confirmedAt: number) {
+      if (!this.avatar) {
+        this.avatar = await this.selectRandomAvatar()
+      }
+      this.accountData.seed = commitValidatedSetupSeed(
+        this.accountData.seed,
+        (seed, at) => this.setSeedPhrase(seed, at),
+        confirmedAt,
+      )
+      this.accountData.name = commitValidatedSetupName(
+        this.accountData.name,
+        this.accountData.nameRequired,
+        name =>
+          this.setRelayData({
+            profile: {
+              name,
+              bio: '',
+              avatar: this.avatar,
+            },
+            inbox: defaultRelayData.inbox,
+          }),
+      )
+      // The next boot initializes the Monad identity from these stores, so
+      // neither write may be left in flight when the page reloads.
+      await this.persistSetupAndReload()
+    },
     selectRandomAvatar(): Promise<string> {
       const avatarName =
         defaultAvatars[Math.floor(Math.random() * defaultAvatars.length)]
@@ -480,31 +570,27 @@ export default defineComponent({
           // with the relay -- this is a pragmatic bridge to a working signup, not the real Monad-
           // native onboarding UI #47 still wants designed (no seed-backup reminder screen, no
           // display name wired to a Monad profile yet, "Deposit" step now unreachable dead UI).
-          if (!this.avatar) {
-            this.avatar = await this.selectRandomAvatar()
+          // Only an explicit, valid New or Import choice may proceed. In the initial (no choice
+          // yet) state accountData.valid is false, so the never-shown generated draft can
+          // neither be committed nor stamped as confirmed.
+          if (!this.accountData.valid) break
+          if (this.isNewAccount) {
+            // New Account: the phrase is NOT committed here. The user must first confirm it
+            // on the next step.
+            this.step = 3
+            break
           }
-          this.accountData.seed = commitValidatedSetupSeed(
-            this.accountData.seed,
-            seed => this.setSeedPhrase(seed),
-          )
-          this.accountData.name = commitValidatedSetupName(
-            this.accountData.name,
-            this.accountData.nameRequired,
-            name =>
-              this.setRelayData({
-                profile: {
-                  name,
-                  bio: '',
-                  avatar: this.avatar,
-                },
-                inbox: defaultRelayData.inbox,
-              }),
-          )
-          // The next boot initializes the Monad identity from these stores, so
-          // neither write may be left in flight when the page reloads.
-          await this.persistSetupAndReload()
+          // Import (explicit: valid and nameRequired === false): the user already holds this
+          // phrase, so it counts as confirmed.
+          await this.completeAccountStep(Date.now())
           break
         case 3:
+          // Second, independent guard: never commit a New Account phrase unless the user
+          // confirmed exactly this phrase (forwardEnabled is only the UI half).
+          if (!this.isSeedConfirmed) break
+          await this.completeAccountStep(Date.now())
+          break
+        case 4:
           this.setupSettings()
             .then(() => this.$router.push('/'))
             .catch(err => errorNotify(err))
@@ -528,9 +614,20 @@ export default defineComponent({
       switch (this.step) {
         case 2:
           return this.isWalletValid
+        case 3:
+          return this.isSeedConfirmed
         default:
           return true
       }
+    },
+    isNewAccount(): boolean {
+      return this.accountData.nameRequired !== false
+    },
+    isSeedConfirmed(): boolean {
+      return (
+        this.confirmedSeed !== null &&
+        this.confirmedSeed === normalizeSetupMnemonic(this.accountData.seed)
+      )
     },
     isWalletValid(): boolean {
       return this.accountData.valid
@@ -555,6 +652,8 @@ export default defineComponent({
         case 2:
           return this.$t('setup.accountSetupNext')
         case 3:
+          return this.$t('setup.finish')
+        case 4:
           return this.$t('setup.depositStepNext')
         default:
           return 'Unknown'

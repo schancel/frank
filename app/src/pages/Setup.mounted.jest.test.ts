@@ -129,26 +129,202 @@ describe('Setup page mounted (#267)', () => {
     expect(vm.accountData.seed).toBe(STORED)
   })
 
-  it('commits the seed exactly once, at the final account step', async () => {
-    const { wallet, setSeed, wrapper } = await mountSetup()
-    const vm = wrapper.vm as unknown as {
-      accountData: { seed: string; name: string; nameRequired: boolean }
-      step: number
-      persistSetupAndReload: () => Promise<void>
-      next: () => Promise<void>
-    }
-    const draft = vm.accountData.seed
+  type Vm = {
+    accountData: { seed: string; name: string; nameRequired: boolean }
+    step: number
+    avatar: string
+    challenge: { seed: string; positions: number[] } | null
+    isSeedConfirmed: boolean
+    persistSetupAndReload: () => Promise<void>
+    onSeedConfirmed: () => void
+    next: () => Promise<void>
+  }
+  async function newAccountVm() {
+    const ctx = await mountSetup()
+    const vm = ctx.wrapper.vm as unknown as Vm
     vm.step = 2
     vm.accountData.name = 'Alice'
     vm.accountData.nameRequired = true
+    ;(vm.accountData as { valid?: boolean }).valid = true
     vm.persistSetupAndReload = jest.fn(() => Promise.resolve())
-    ;(vm as unknown as { avatar: string }).avatar = 'data:avatar'
+    vm.avatar = 'data:avatar'
+    await nextTick()
+    return { ...ctx, vm }
+  }
+
+  it('New Account: Next on the account step does NOT commit; it opens the confirmation step', async () => {
+    const { wallet, setSeed, vm } = await newAccountVm()
+
+    await vm.next()
+    await nextTick()
+
+    expect(vm.step).toBe(3)
+    expect(commitValidatedSetupSeed).not.toHaveBeenCalled()
+    expect(setSeed).not.toHaveBeenCalled()
+    expect(wallet.seedPhrase).toBeNull()
+    expect(vm.persistSetupAndReload).not.toHaveBeenCalled()
+  })
+
+  it('New Account: cannot reach the commit without a confirmation', async () => {
+    const { wallet, setSeed, vm } = await newAccountVm()
+    await vm.next()
+    await nextTick()
+
+    await vm.next()
+    await vm.next()
+
+    expect(commitValidatedSetupSeed).not.toHaveBeenCalled()
+    expect(setSeed).not.toHaveBeenCalled()
+    expect(wallet.seedPhrase).toBeNull()
+    expect(wallet.seedConfirmedAt).toBeNull()
+    expect(vm.persistSetupAndReload).not.toHaveBeenCalled()
+  })
+
+  it('New Account: after confirmation the seed is committed once, with the marker', async () => {
+    const { wallet, setSeed, vm } = await newAccountVm()
+    const draft = vm.accountData.seed
+    await vm.next()
+    await nextTick()
+    vm.onSeedConfirmed()
+    const before = Date.now()
 
     await vm.next()
 
     expect(commitValidatedSetupSeed).toHaveBeenCalledTimes(1)
     expect(setSeed).toHaveBeenCalledTimes(1)
     expect(wallet.seedPhrase).toBe(draft)
+    expect(wallet.seedConfirmedAt).toBeGreaterThanOrEqual(before)
+    expect(vm.persistSetupAndReload).toHaveBeenCalledTimes(1)
+  })
+
+  it('a confirmation does not carry over to a different phrase', async () => {
+    const { wallet, setSeed, vm } = await newAccountVm()
+    await vm.next()
+    await nextTick()
+    vm.onSeedConfirmed()
+    expect(vm.isSeedConfirmed).toBe(true)
+
+    // User goes back and refreshes the phrase.
+    vm.step = 2
+    vm.accountData.seed = STORED
+    await nextTick()
+    expect(vm.isSeedConfirmed).toBe(false)
+    vm.step = 3
+    await vm.next()
+
+    expect(setSeed).not.toHaveBeenCalled()
+    expect(wallet.seedPhrase).toBeNull()
+  })
+
+  it('challenge positions are stable across re-renders and regenerated for a new phrase', async () => {
+    const { wrapper, vm } = await newAccountVm()
+    vm.step = 3
+    await nextTick()
+    const first = vm.challenge
+    expect(first?.positions).toHaveLength(3)
+    expect(new Set(first?.positions).size).toBe(3)
+
+    await wrapper.vm.$forceUpdate()
+    await nextTick()
+    vm.step = 2
+    await nextTick()
+    vm.step = 3
+    await nextTick()
+    expect(vm.challenge).toBe(first)
+
+    vm.step = 2
+    vm.accountData.seed = STORED
+    await nextTick()
+    vm.step = 3
+    await nextTick()
+    expect(vm.challenge).not.toBe(first)
+    expect(vm.challenge?.seed).toBe(STORED)
+  })
+
+  it('no choice made yet: next() at step 2 commits nothing and stamps no marker', async () => {
+    const { wallet, setSeed, wrapper } = await mountSetup()
+    const vm = wrapper.vm as unknown as Vm
+    vm.step = 2
+    vm.persistSetupAndReload = jest.fn(() => Promise.resolve())
+    vm.avatar = 'data:avatar'
+    // Initial state: neither New nor Import chosen (valid false, nameRequired false).
+    await vm.next()
+
+    expect(vm.step).toBe(2)
+    expect(commitValidatedSetupSeed).not.toHaveBeenCalled()
+    expect(setSeed).not.toHaveBeenCalled()
+    expect(wallet.seedPhrase).toBeNull()
+    expect(wallet.seedConfirmedAt).toBeNull()
+    expect(vm.persistSetupAndReload).not.toHaveBeenCalled()
+  })
+
+  it('an invalid import cannot be committed or stamped', async () => {
+    const { wallet, setSeed, wrapper } = await mountSetup()
+    const vm = wrapper.vm as unknown as Vm
+    vm.step = 2
+    vm.accountData = {
+      seed: 'not a phrase',
+      name: '',
+      nameRequired: false,
+      valid: false,
+    } as typeof vm.accountData
+    await vm.next()
+    expect(setSeed).not.toHaveBeenCalled()
+    expect(wallet.seedConfirmedAt).toBeNull()
+  })
+
+  it('the confirmation matches the phrase only after normalization, never a different phrase', async () => {
+    const { vm } = await newAccountVm()
+    await vm.next()
+    await nextTick()
+    vm.onSeedConfirmed()
+    expect(vm.isSeedConfirmed).toBe(true)
+    vm.accountData.seed = `  ${vm.accountData.seed.toUpperCase()} `
+    expect(vm.isSeedConfirmed).toBe(true)
+    vm.accountData.seed = STORED
+    expect(vm.isSeedConfirmed).toBe(false)
+    // A phrase change followed by a fresh challenge does not inherit the old confirmation.
+    vm.step = 2
+    await nextTick()
+    vm.step = 3
+    await nextTick()
+    expect(vm.challenge?.seed).toBe(STORED)
+    expect(vm.isSeedConfirmed).toBe(false)
+  })
+
+  it('with no secure RNG, step 3 shows an accessible error, commits nothing, and Back still works', async () => {
+    const original = Object.getOwnPropertyDescriptor(globalThis, 'crypto')
+    const { wallet, setSeed, wrapper, vm } = await newAccountVm()
+    Object.defineProperty(globalThis, 'crypto', {
+      value: undefined,
+      configurable: true,
+    })
+    try {
+      await vm.next()
+      await nextTick()
+      expect(vm.step).toBe(3)
+      const v = vm as unknown as {
+        challengeError: boolean
+        challenge: unknown
+      }
+      expect(v.challengeError).toBe(true)
+      expect(v.challenge).toBeNull()
+      await vm.next()
+      expect(setSeed).not.toHaveBeenCalled()
+      expect(wallet.seedPhrase).toBeNull()
+
+      // Back works, and the step retries once a secure RNG exists again.
+      vm.step = 2
+      await nextTick()
+      if (original) Object.defineProperty(globalThis, 'crypto', original)
+      vm.step = 3
+      await nextTick()
+      expect(v.challengeError).toBe(false)
+      expect(v.challenge).not.toBeNull()
+      void wrapper
+    } finally {
+      if (original) Object.defineProperty(globalThis, 'crypto', original)
+    }
   })
 
   it('import replaces the draft: the imported phrase is what is stored', async () => {
@@ -160,7 +336,12 @@ describe('Setup page mounted (#267)', () => {
       avatar: string
     }
     vm.step = 2
-    vm.accountData = { seed: STORED, name: '', nameRequired: false }
+    vm.accountData = {
+      seed: STORED,
+      name: '',
+      nameRequired: false,
+      valid: true,
+    } as typeof vm.accountData
     vm.avatar = 'data:avatar'
     ;(
       vm as unknown as { persistSetupAndReload: unknown }
@@ -170,5 +351,18 @@ describe('Setup page mounted (#267)', () => {
 
     expect(setSeed).toHaveBeenCalledTimes(1)
     expect(wallet.seedPhrase).toBe(STORED)
+    // Import needs no confirmation step and is marked confirmed at import.
+    expect(wallet.seedConfirmedAt).toEqual(expect.any(Number))
+    expect(vm.step).toBe(2)
+  })
+
+  it('an existing stored seed and its (absent) marker are untouched by opening /setup', async () => {
+    setActivePinia(createPinia())
+    useWalletStore().seedPhrase = STORED
+    const { wallet, setSeed } = await mountSetup()
+
+    expect(setSeed).not.toHaveBeenCalled()
+    expect(wallet.seedPhrase).toBe(STORED)
+    expect(wallet.seedConfirmedAt).toBeNull()
   })
 })

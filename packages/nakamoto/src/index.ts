@@ -2,7 +2,7 @@
 // Per-chain entries: ./btc ./bch ./xec ./xpi.
 // Feature entries: ./integer ./script-num ./base58 ./base58check ./varint
 // ./reader ./convert-bits ./base32 ./encoding-error ./constructors
-// ./bech32 ./cashaddr ./address ./keys ./hd.
+// ./bech32 ./cashaddr ./address ./keys ./hd ./transaction.
 
 export const PACKAGE_NAME = '@frank/nakamoto'
 
@@ -167,3 +167,29 @@ export type {
   HdSeedLength,
   HdVersion,
 } from './hd.js'
+
+export {
+  SIGHASH_ALL,
+  SIGHASH_ANYONECANPAY,
+  SIGHASH_DEFAULT,
+  SIGHASH_FORKID,
+  SIGHASH_LOTUS,
+  SIGHASH_NONE,
+  SIGHASH_SINGLE,
+  SIGHASH_UTXOS,
+  isTxError,
+  parseTransaction,
+  serializeTransaction,
+  sighash,
+} from './transaction.js'
+export type {
+  OutPoint,
+  SighashAlgorithm,
+  SighashOptions,
+  SpentOutput,
+  Transaction,
+  TxFailure,
+  TxInput,
+  TxOutput,
+  TxResult,
+} from './transaction.js'

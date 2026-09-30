@@ -88,6 +88,10 @@
     "./hd": {
       "types": "./dist/hd.d.ts",
       "import": "./dist/hd.js"
+    },
+    "./transaction": {
+      "types": "./dist/transaction.d.ts",
+      "import": "./dist/transaction.js"
     }
   },
   "dependencies": {

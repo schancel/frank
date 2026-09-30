@@ -53,8 +53,7 @@ import { commitValidatedSetupSeed } from '../utils/setup-account'
 
 const STORED = 'test test test test test test test test test test test junk'
 
-const Passthrough = defineComponent({ template: '<div><slot /></div>' })
-const SlotStub = Passthrough
+const SlotStub = defineComponent({ template: '<div><slot /></div>' })
 
 async function mountSetup(extraStubs: Record<string, unknown> = {}) {
   const wallet = useWalletStore()
@@ -65,8 +64,8 @@ async function mountSetup(extraStubs: Record<string, unknown> = {}) {
   const wrapper = shallowMount(Setup, {
     global: {
       stubs: {
-        QPageContainer: Passthrough,
-        QPage: Passthrough,
+        QPageContainer: SlotStub,
+        QPage: SlotStub,
         ...Object.fromEntries(
           [
             'q-header',

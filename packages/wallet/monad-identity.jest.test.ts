@@ -116,6 +116,47 @@ describe('registerMonadIdentity', () => {
     mockedAxios.mockClear()
   })
 
+  it('sets no forbidden header name in a browser context, where the browser sends its own Origin (ticket #278)', async () => {
+    const globals = globalThis as { XMLHttpRequest?: unknown }
+    globals.XMLHttpRequest = class {}
+    try {
+      mockedAxios.mockResolvedValueOnce({
+        status: 200,
+        data: new Uint8Array(0),
+        statusText: 'OK',
+        headers: {},
+        config: {},
+      })
+      await registerMonadIdentity({
+        relayBaseUrl: RELAY_BASE_URL,
+        identity: MonadIdentity.fromSeed(SEED),
+      })
+      const names = Object.keys(
+        mockedAxios.mock.calls[0][0].headers as Record<string, string>,
+      ).map(name => name.toLowerCase())
+      expect(names).toEqual(['content-type'])
+    } finally {
+      delete globals.XMLHttpRequest
+    }
+  })
+
+  it('still sends the Origin header the relay requires when there is no browser (bots, Node)', async () => {
+    mockedAxios.mockResolvedValueOnce({
+      status: 200,
+      data: new Uint8Array(0),
+      statusText: 'OK',
+      headers: {},
+      config: {},
+    })
+    await registerMonadIdentity({
+      relayBaseUrl: RELAY_BASE_URL,
+      identity: MonadIdentity.fromSeed(SEED),
+    })
+    expect(mockedAxios.mock.calls[0][0].headers).toMatchObject({
+      Origin: 'http://frank.local',
+    })
+  })
+
   it("PUTs a signed AddressMetadata to /metadata/:addr with the identity's Monad address", async () => {
     const identity = MonadIdentity.fromSeed(SEED)
     mockedAxios.mockResolvedValueOnce({
@@ -366,9 +407,13 @@ describe('bot profile marker (#311)', () => {
     ).toEqual(['display_name', 'bot'])
 
     expect(
-      isBotProfileSignedPayload((await registeredPayload({ name: 'Al' })).signedPayload),
+      isBotProfileSignedPayload(
+        (await registeredPayload({ name: 'Al' })).signedPayload,
+      ),
     ).toBe(false)
-    expect(isBotProfileSignedPayload((await registeredPayload()).signedPayload)).toBe(false)
+    expect(
+      isBotProfileSignedPayload((await registeredPayload()).signedPayload),
+    ).toBe(false)
   })
 
   it('fetchMonadProfile surfaces the marker as `bot`', async () => {

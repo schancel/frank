@@ -304,7 +304,13 @@ export default {
     invalidSeed: 'Phrase de passe invalide...',
     nameHint: 'Identifiant tel que vu par vos correspondants',
     enterSeed: 'Entrez votre phrase de passe...',
-    pleaseType: "Soyez plus créatif, s'il vous plait",
+    nameBlank:
+      'Saisissez un nom : il ne peut pas être vide ni ne contenir que des espaces.',
+    nameTooLong: 'Le nom est trop long : {max} caractères au maximum.',
+    nameForbiddenCharacters:
+      'Le nom contient des caractères non autorisés. Supprimez les retours à la ligne et autres caractères de contrôle.',
+    nameInvalidUnicode:
+      'Le nom contient un caractère invalide. Supprimez-le ou collez du texte brut.',
     bio: 'Biographie',
     bioHint: 'Courte biographie telle que vue par vos correspondants',
     uploadAvatar: 'Télécharger un avatar',
@@ -334,8 +340,6 @@ export default {
       "L'image de votre avatar est trop volumineuse, choisissez en une plus petite.",
     unableContactRelay: 'Impossible de contacter le serveur-relai.',
     pushingProfile: 'Envoi du nouveau profil..',
-    invalidName:
-      'Saisissez un nom public : 1 à 128 caractères, sans caractères de contrôle.',
     profile: 'Profil',
   },
   wipeWallet: {

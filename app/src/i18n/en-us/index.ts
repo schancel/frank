@@ -204,7 +204,7 @@ export default {
     settings: 'Settings',
     back: 'Back',
     seedWarning:
-      "Do not forget your character's secret name, you will never be able to remember them again.",
+      'Write down your recovery phrase and keep it safe. If you lose it, nobody can recover your account.',
     searchingRelay: 'Searching for existing relay data...',
     networkErrorRelayDied: 'Network Error: Relay server connection died. ',
     networkErrorRelayUnexpected: 'Network error: Relay errored unexpectedly.',
@@ -334,6 +334,9 @@ export default {
     notFound: 'Not Found',
   },
   settings: {
+    title: 'Settings',
+    back: 'Back',
+    openMenu: 'Open the menu',
     appearance: 'Appearance',
     networking: 'Networking',
     contactRefreshInterval: 'Contact Refresh Interval (minutes)',
@@ -345,11 +348,11 @@ export default {
   },
   profile: {
     name: "Character's Public Name",
-    seedEntry: "Character's Secret Name",
+    seedEntry: 'Recovery phrase',
     importSeed: 'Recover past memories',
-    invalidSeed: 'Unknown secret name...',
+    invalidSeed: 'That is not a valid recovery phrase.',
     nameHint: 'Name displayed to others',
-    enterSeed: "Enter your character's secret name...",
+    enterSeed: 'Enter your recovery phrase...',
     nameBlank: 'Enter a name: it cannot be empty or only spaces.',
     nameTooLong: 'The name is too long: use at most {max} characters.',
     nameForbiddenCharacters:

@@ -18,7 +18,7 @@ cat >"$work/stub-cashwebd" <<'STUB'
 #!/usr/bin/env bash
 if [[ "$1" == "--check-config" ]]; then cat >"$STUB_OUT/check.toml"; exit 0; fi
 cat >"$STUB_OUT/run.toml"
-echo "rpc=$MONAD_TESTNET_HTTP_RPC_URL tag=$FRANK_NETWORK_TAG" >"$STUB_OUT/env.txt"
+echo "rpc=$MONAD_TESTNET_HTTP_RPC_URL tag=$FRANK_NETWORK_TAG burn=${MONAD_STAMP_BURN_ADDRESS:-unset}" >"$STUB_OUT/env.txt"
 STUB
 chmod +x "$work/stub-cashwebd"
 
@@ -63,5 +63,24 @@ for bad in "FRANK_RELAY_LISTEN=not-a-port" "FRANK_RELAY_DB_PATH=a\"b" "FRANK_REL
     fi
     grep -q '^run-local-monad: FRANK_RELAY_' "$work/err.txt" || fail "no clear message for $bad"
 done
+
+# 5. MONAD_STAMP_BURN_ADDRESS (#364): reaches the daemon and is reported; missing it is a loud
+# warning (the topic routes answer HTTP 500 without it); a malformed value is rejected.
+burn=0x000000000000000000000000000000000000dEaD
+rm -f "$work/out/"*
+run MONAD_TESTNET_HTTP_RPC_URL=http://127.0.0.1:9 CASHWEBD_BIN="$work/stub-cashwebd" \
+    MONAD_STAMP_BURN_ADDRESS="$burn"
+grep -q "burn=$burn" "$work/out/env.txt" || fail "burn address not passed to the daemon"
+grep -q "MONAD_STAMP_BURN_ADDRESS: $burn" "$work/err.txt" || fail "burn address not reported"
+grep -q WARNING "$work/err.txt" && fail "warned although the burn address is set"
+rm -f "$work/out/"*
+run MONAD_TESTNET_HTTP_RPC_URL=http://127.0.0.1:9 CASHWEBD_BIN="$work/stub-cashwebd"
+grep -q 'burn=unset' "$work/out/env.txt" || fail "unexpected burn address"
+grep -q 'WARNING: MONAD_STAMP_BURN_ADDRESS is not set' "$work/err.txt" || fail "no warning without a burn address"
+if run MONAD_TESTNET_HTTP_RPC_URL=http://127.0.0.1:9 CASHWEBD_BIN="$work/stub-cashwebd" \
+    MONAD_STAMP_BURN_ADDRESS=0xnothex; then
+    fail "malformed burn address accepted"
+fi
+grep -q '^run-local-monad: MONAD_STAMP_BURN_ADDRESS must be' "$work/err.txt" || fail "no clear message for a bad burn address"
 
 echo "run-local-monad overrides: ok"

@@ -1,4 +1,27 @@
 <template>
+  <q-header>
+    <q-toolbar class="q-pl-sm">
+      <q-btn
+        flat
+        dense
+        class="q-px-sm"
+        icon="arrow_back"
+        :aria-label="$t('settings.back')"
+        data-test="settings-back"
+        @click="cancel"
+      />
+      <q-toolbar-title class="h6">{{ $t('settings.title') }}</q-toolbar-title>
+      <q-btn
+        flat
+        dense
+        class="q-px-sm"
+        icon="menu"
+        :aria-label="$t('settings.openMenu')"
+        data-test="settings-menu"
+        @click="$emit('toggleMyDrawerOpen')"
+      />
+    </q-toolbar>
+  </q-header>
   <q-page-container>
     <q-page class="q-ma-none q-pa-sm">
       <q-card>
@@ -97,6 +120,7 @@ import { storeToRefs } from 'pinia'
 const msToMinutes = 60000
 
 export default defineComponent({
+  emits: ['toggleMyDrawerOpen'],
   setup() {
     const appearanceStore = useAppearanceStore()
     const contactStore = useContactStore()

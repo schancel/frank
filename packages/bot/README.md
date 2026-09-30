@@ -7,15 +7,75 @@ yarn demo --fake-chain      # no keys, no funds, no network: a built-in fake Mon
 yarn demo                   # against Monad testnet, using your .env (below)
 ```
 
+Run either from the repo root (or packages/bot). `yarn demo` runs `node --import tsx
+packages/bot/demo/demo.ts` directly, with no second `yarn`/`tsx` process in between. Stop it with
+Ctrl-C, `kill -INT <pid>` or `kill -TERM <pid>` using the launcher pid it prints (that is the
+`node` process). Killing the top-level `yarn` process (`kill -INT <yarn pid>`: yarn exits without
+forwarding SIGINT) also stops the stack: a launcher started by yarn notices that yarn is gone
+within a second and shuts down like a closed terminal. If you script it, prefer
+`node --import tsx packages/bot/demo/demo.ts` and signal that pid.
+
+How the parent check works: when yarn started the launcher, the launcher polls its parent pid once
+a second. Nothing changes while yarn is alive, so `nohup yarn demo &` keeps working (yarn stays the
+parent). The launcher stops only when the yarn process that started it dies, and it then stops
+only its own children. If an ancestor terminal is closed, the usual SIGHUP handling applies. A
+launcher started directly with `node` does no parent polling.
+
+**State dir modes**: a state dir belongs to one mode. The launcher writes a small non-secret marker
+`<state dir>/demo-mode.json` (`{mode: "fake-chain" | "real", chainId, createdAt}`) once the
+prerequisite checks have passed (a start that fails on a missing wallet or a busy port claims
+nothing, so a first failed `yarn demo` does not poison the dir for `--fake-chain`) and refuses to start when the requested mode or chain id differs ("this state dir was created for
+the fake chain; ... use a new FRANK_DEMO_STATE_DIR, or delete <state dir>"), because bot
+identities, stamp-pool records and faucet records made against the fake chain mean nothing on a
+real network. A state dir from before the marker that holds a fake-chain wallet is refused for a
+real run too.
+
 What it does, in order: starts the fake chain (with `--fake-chain`), creates any missing bot
 identity (under one state directory, default `~/.frank-demo`), prints and applies the relay's
 curated-default contact lines, starts the local relay through `backend/cashweb/run-local-monad.sh`
 (the first run builds it with Cargo; or set `CASHWEBD_BIN` to a prebuilt `cashwebd-exe`), then the
 blackjack dealer, raffle, picture shop, Qwen (offline **stub** mode unless `QWEN_API_KEY` is set)
-and the testnet faucet with demo-friendly limits (no idle exit, 3-entrant raffle rounds, no reply
-cap). It prints every bot address and the command to start the app, then waits. Logs are in
+and the testnet faucet with demo-friendly limits (no idle exit, 5-entrant raffle rounds, no reply
+cap). It prints every bot address, the app URL and the exact command to start the app, then waits. Logs are in
 `<state dir>/logs/`. Missing prerequisites (Node, `bash`, `cargo` or `CASHWEBD_BIN`, a busy port, an
 absent RPC URL or wallet file) each print one line, never a stack trace.
+
+**The app** (started by you, in another terminal, from the repo root) must be given the relay, the
+chain and the burn address. The launcher prints the exact command; with `--fake-chain` it is
+
+```sh
+cd app && QCLI_MONAD_TESTNET_HTTP_RPC_URL=http://127.0.0.1:8545 QCLI_MONAD_RELAY_BASE_URL=http://127.0.0.1:8098 \
+  QCLI_MONAD_STAMP_BURN_ADDRESS=0x000000000000000000000000000000000000dEaD QCLI_CASHWEB_STAMP_MIN_BURN_VALUE_WEI=1000000000000 \
+  yarn dev:browser
+```
+
+(ports follow `FRANK_DEMO_RELAY_PORT` / `FRANK_DEMO_FAKE_RPC_PORT`) and the app is at
+**http://localhost:8080**, the fixed dev-server port from `app/quasar.config.js`. The relay and the
+fake chain send `Access-Control-Allow-Origin: *` and answer preflights, so the browser reaches them
+directly. The fake chain does this with `*` only because it is a local fake bound to 127.0.0.1;
+nothing here adds CORS to a real RPC (on a real network your RPC provider must allow the origin).
+
+**Burn address**: the relay's forum routes (topic posts and votes) return HTTP 500 without
+`MONAD_STAMP_BURN_ADDRESS`. The launcher passes one value (default the well-known
+`0x...dEaD` burn address, override with `MONAD_STAMP_BURN_ADDRESS`) to the relay, every bot and the
+app command above, so the three always agree. `run-local-monad.sh` also warns loudly at start when
+it is missing.
+
+**Faucet amount**: with `--fake-chain` the faucet sends 1 MON per new profile (the faucet's hard
+ceiling): the cheapest blackjack hand needs 0.07 MON (0.01 table minimum + 0.01 default stamp + the
+app's 0.05 MON fee reserve), and a raffle entry (0.02) and a shop picture (0.05-0.1) come on top.
+On a real network the default stays a small 0.05 MON, which is NOT enough for a hand: set
+`FAUCET_AMOUNT_WEI` (up to 1 MON) if you want players to play, and the summary warns when it is too
+low. `FAUCET_MAX_PER_DAY`, the one-funding-per-address rule and the testnet-only guards are unchanged.
+
+**Restarting**: the fake chain is saved to `<state dir>/fake-chain/ledger.json` after every
+transaction and reloaded on the next start, so balances, nonces and profiles survive a restart. The
+fake-chain faucet's records live next to it (`<state dir>/fake-chain/faucet-state`), so the chain
+and the faucet's memory can only reset together: delete `<state dir>/fake-chain` (or the whole
+state dir) for a fresh chain. A ledger that cannot be parsed is refused, not replaced.
+
+**Raffle rounds**: the demo uses 5 entrants per round (`RAFFLE_BOT_MAX_ENTRIES`; the bot's own
+default is unchanged). Set it to a smaller number for a quicker round.
 
 ### Raffle draw and payout (#363)
 
@@ -76,8 +136,8 @@ rejected (for example insufficient funds) the earlier attempts' bytes are broadc
 automatically: wait for it, or replace it by hand.
 
 The launcher keeps the bot's default entry price and sets the round size from the
-`RAFFLE_BOT_MAX_ENTRIES` row above; the bot's own default is 5 (`raffle-settlement.ts`). `yarn demo:smoke` does not yet fill a raffle round (it needs the relay binary and real stamped
-entries); this is tracked as remaining work on #363.
+`RAFFLE_BOT_MAX_ENTRIES` row above (the demo runs 5 entrants); the bot's own default is also 5
+(`raffle-settlement.ts`).
 
 The launcher sets every bot's state directory explicitly, under `<state dir>/bots/<bot>/state`
 (and identities under `<state dir>/bots/<bot>/identity.json`). Bots started on their own with
@@ -95,8 +155,13 @@ never by the launcher, and RPC URLs and keys are never printed.
 
 **Smoke test**: `yarn demo:smoke` starts the stack against the fake chain in a temporary state
 directory with a dummy env file (never your real `.env`), plays a new user against each bot and
-checks that the Qwen stub, picture shop, raffle and dealer answer and the faucet funds the new
-profile (exit 0 only if all pass; logs are kept on failure). Use `CASHWEBD_BIN=... yarn demo:smoke`
+checks that the Qwen stub, picture shop, raffle and dealer answer, the faucet funds the new
+profile, a forum topic can be posted through the relay (a real burn transaction plus the relay's
+topic route: it fails if the relay answers non-2xx) and the fake chain and the relay answer a
+cross-origin browser request (exit 0 only if all pass; logs are kept on failure). The forum check
+compares the title and message read back with what was posted. CORS on the relay comes from its own
+layer (`cashweb-registry` `http/server.rs`), which the smoke checks on the preflight and on real
+PUT and GET responses of the topics route. Use `CASHWEBD_BIN=... yarn demo:smoke`
 to skip the Cargo build.
 
 #### Variables
@@ -116,6 +181,7 @@ to skip the Cargo build.
 | `RUSTUP_TOOLCHAIN` | relay build | unset | See CARGO. |
 | `MONAD_TESTNET_HTTP_RPC_URL` | chain | required unless fake chain | Monad TESTNET JSON-RPC URL (chain id 10143). May embed an API key. Secret: never printed. |
 | `FRANK_NETWORK_TAG` | chain | MONT | Network tag the relay and bots stamp messages with (MONT = Monad testnet). |
+| `MONAD_STAMP_BURN_ADDRESS` | relay, bots, app | 0x000000000000000000000000000000000000dEaD | Burn address of stamps and topic votes (0x + 40 hex). Passed to the relay (without it every forum post and vote fails with HTTP 500), to the bots, and printed in the app command as QCLI_MONAD_STAMP_BURN_ADDRESS: all three must agree. The default is the well-known 0x...dEaD burn address. |
 | `CASHWEB_STAMP_MIN_BURN_VALUE_WEI` | relay | 1000000000000 | Minimum wei a message stamp must pay (0.000001 MON). |
 | `FRANK_DM_DEFAULT_STAMP_VALUE_WEI` | bots | 10000000000000000 | Default stamp value bots pay per message (0.01 MON). |
 | `E2E_DEMO_MAIN_WALLET_JSON` | wallet | required unless fake chain | Not allowed with --fake-chain (a throwaway wallet is generated). Path of a JSON file {"address","privateKey"} of a funded TESTNET wallet that pays for bot stamps and payouts. Read by the bots, never by the launcher. chmod 600. Secret: never printed. |
@@ -128,11 +194,11 @@ to skip the Cargo build.
 | `RAFFLE_BOT_ENTRY_PRICE_WEI` | raffle | 20000000000000000 | Raffle entry price (0.02 MON). |
 | `RAFFLE_BOT_MAX_TOPUP_WEI` | raffle | 50000000000000000 | Most the stamp wallet may top up the raffle identity per round to cover swept-entry gas and payout gas; beyond it the draw is held and logged (0.05 MON). |
 | `RAFFLE_BOT_MAX_TOPUP_PER_DAY_WEI` | raffle | 250000000000000000 | Most the stamp wallet may top up the raffle identity per trailing 24 hours (0.25 MON). |
-| `RAFFLE_BOT_MAX_ENTRIES` | raffle | 3 | Entrants per round; demo default is small so a round fills quickly. |
+| `RAFFLE_BOT_MAX_ENTRIES` | raffle | 5 | Entrants per round. The demo default is 5 (the bot's own default is unchanged); use a smaller number for a quick round. |
 | `BLACKJACK_BOT_MIN_WAGER_WEI` | blackjack | bot default (0.01 MON) | Table minimum. |
 | `BLACKJACK_BOT_MAX_WAGER_WEI` | blackjack | bot default (1 MON) | Table maximum. |
 | `VENDOR_BOT_CATALOG_DIR` | picture shop | bundled demo-catalog/ | Directory with manifest.json and image files the shop sells. |
-| `FAUCET_AMOUNT_WEI` | faucet | 50000000000000000 | Testnet MON sent to each new profile (0.05 MON). |
+| `FAUCET_AMOUNT_WEI` | faucet | 50000000000000000 (0.05 MON); 1000000000000000000 (1 MON) with --fake-chain | MON sent to each new profile. The 0.05 MON real-network default is small on purpose and is NOT enough for a blackjack hand (0.07 MON minimum: 0.01 bet + 0.01 stamp + 0.05 fee reserve); raise it (ceiling 1 MON) if you want players to be able to play. With --fake-chain the default is 1 MON. FAUCET_MAX_PER_DAY and the per-address rule still apply. |
 | `FAUCET_MAX_PER_DAY` | faucet | 20 | New addresses funded per rolling 24 hours. |
 | `FAUCET_MIN_RESERVE_WEI` | faucet | 100000000000000000 | The faucet wallet keeps at least this balance. |
 | `FRANK_BOT_PEER_DENYLIST` | bots | empty | Comma-separated addresses no bot engages. |
@@ -161,7 +227,7 @@ summary is marked UNHEALTHY. If the relay dies the launcher stops everything and
 The blackjack smoke check only proves the dealer answers a bare `deal` with its tagged error; it
 does not play a hand.
 
-The fake chain is a ledger, not a chain: it accepts any well-formed transaction and mines it
+The fake chain binds 127.0.0.1 only (a test asserts it), so nothing off this machine can reach it. It is a ledger, not a chain: it accepts any well-formed transaction and mines it
 instantly, so it demonstrates flows, not consensus. Never point anything of value at it.
 
 

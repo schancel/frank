@@ -26,6 +26,17 @@ import { Card, deriveDeck, handValue, sha256Hex } from './deck'
 export const BLACKJACK_DEFAULT_MIN_WAGER_WEI = 10n ** 16n // 0.01 MON
 export const BLACKJACK_DEFAULT_MAX_WAGER_WEI = 10n ** 18n // 1 MON
 
+/**
+ * Conservative allowance for what sending the bet MESSAGE costs beyond the wager itself: the
+ * stamp's own funding transfers and gas (a message spends its stamp value plus the fee reserves of
+ * the sub-accounts that pay it; ~0.013 MON of funding was observed on the local chain on top of a
+ * 0.01 MON stamp). The wallet does not expose a synchronous estimate, so this is a fixed margin.
+ * A wager paid with no funds left for the message is stranded (the dealer only acts on messages it
+ * receives), so the bet picker requires `bet + stamp + this` up front. Lives here (not in the app)
+ * so the demo launcher can check its faucet amount against the same constant.
+ */
+export const BET_MESSAGE_FEE_RESERVE_WEI = 5n * 10n ** 16n // 0.05 MON
+
 /** Returns an error message if `wei` is not an acceptable bet at the default table limits. */
 export function validateBetWei(
   wei: bigint,

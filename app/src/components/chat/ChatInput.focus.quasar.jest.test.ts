@@ -23,11 +23,6 @@ jest.mock('@frank/wallet/chain', () => ({
   },
 }))
 jest.mock('../../utils/chat', () => ({ processInput: jest.fn() }))
-// The bet picker pulls in the wallet stores (and a LevelDB); it is irrelevant to focus handling.
-jest.mock('./BlackjackBetPicker.vue', () => ({
-  __esModule: true,
-  default: { render: () => null },
-}))
 
 const translate = (k: string) =>
   k

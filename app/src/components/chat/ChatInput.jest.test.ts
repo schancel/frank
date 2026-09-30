@@ -1,7 +1,7 @@
 /** @jest-environment jsdom */
 // ChatInput after #395: the compose bar has NO blackjack control (the toolbar "Play blackjack"
 // button and its bot-marker gating are gone; the dealer's bubble carries the bet control now), and
-// its `@blur.capture` refocus handler still lets an input inside a bubble be typed into.
+// the compose box no longer steals focus back (#405), so controls inside a bubble stay usable.
 import { mount } from '@vue/test-utils'
 import { defineComponent, h, ref } from 'vue'
 
@@ -96,7 +96,7 @@ describe('ChatInput has no blackjack control (#395)', () => {
   })
 })
 
-describe('compose focus handler vs controls inside a chat bubble (#395)', () => {
+describe('compose box next to controls inside a chat bubble (#395)', () => {
   // A sibling "bubble" with an amount input and a button, next to the real compose bar.
   function mountPage() {
     const onBet = jest.fn()
@@ -144,7 +144,7 @@ describe('compose focus handler vs controls inside a chat bubble (#395)', () => 
     expect(document.activeElement).toBe(amount)
   })
 
-  it('clicking a bubble button works with the compose box empty AND focused (the click is delivered even though compose takes focus back)', async () => {
+  it('clicking a bubble button works with the compose box empty AND focused', async () => {
     const { onBet, compose } = mountPage()
     const bet = document.getElementById('bubble-bet') as HTMLButtonElement
 
@@ -153,22 +153,20 @@ describe('compose focus handler vs controls inside a chat bubble (#395)', () => 
     bet.click()
     expect(onBet).toHaveBeenCalledTimes(1)
 
-    // Compose focused: pressing the button blurs compose with relatedTarget = the button (jsdom
-    // does not set relatedTarget itself, so the event is dispatched the way a browser does), the
-    // handler takes focus back, and the click still lands.
-    const box = compose()
-    box.focus()
-    box.dispatchEvent(new FocusEvent('blur', { relatedTarget: bet }))
-    expect(document.activeElement).toBe(box)
+    // Compose focused: pressing the button moves focus to it and the click lands; compose does
+    // not take focus back.
+    compose().focus()
+    bet.focus()
     bet.click()
     expect(onBet).toHaveBeenCalledTimes(2)
+    expect(document.activeElement).toBe(bet)
   })
 
   it('a checkbox inside the bubble can be toggled with the compose box focused', () => {
     const { compose } = mountPage()
     const box = document.getElementById('bubble-confirm') as HTMLInputElement
     compose().focus()
-    box.focus() // an input: the handler lets focus go there
+    box.focus()
     expect(document.activeElement).toBe(box)
     box.click()
     expect(box.checked).toBe(true)

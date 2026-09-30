@@ -47,7 +47,7 @@
         filled
         rows="2"
         lazy-rules
-        :rules="[val => isSeedValid || $t('profile.invalidSeed')]"
+        :rules="[val => !val || isSeedValid || $t('profile.invalidSeed')]"
         :placeholder="$t('profile.enterSeed')"
       />
       <q-btn

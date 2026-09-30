@@ -1,18 +1,27 @@
 /** @jest-environment jsdom */
 
 import { mount } from '@vue/test-utils'
-import { nextTick } from 'vue'
+import { defineComponent, h, nextTick } from 'vue'
 
 import SeedConfirmStep from './SeedConfirmStep.vue'
 
 const SEED = 'test test test test test test test test test test test junk'
+// Quasar renders nothing under the SSR build Jest aliases to, so stand in for QBtn with the native
+// button it renders (same `type` default, attributes passed through to the button).
+const QBtn = defineComponent({
+  name: 'QBtn',
+  props: { label: String, type: { type: String, default: 'button' } },
+  setup(props, { attrs }) {
+    return () => h('button', { ...attrs, type: props.type }, props.label)
+  },
+})
 const t = (k: string, p?: { n?: number }) => (p ? `${k}:${p.n}` : k)
 
 function mountStep(props: Record<string, unknown> = {}) {
   return mount(SeedConfirmStep, {
     attachTo: document.body,
     props: { seed: SEED, positions: [3, 7, 12], ...props },
-    global: { mocks: { $t: t } },
+    global: { mocks: { $t: t }, components: { QBtn } },
   })
 }
 const inputs = (w: ReturnType<typeof mountStep>) =>
@@ -90,6 +99,18 @@ describe('SeedConfirmStep', () => {
 
     await toggle.trigger('click')
     expect(w.find('ol').exists()).toBe(false)
+  })
+
+  it('the two actions are Quasar buttons, matching the rest of setup (ticket #369)', () => {
+    const w = mountStep()
+    const buttons = w.findAllComponents({ name: 'QBtn' })
+    expect(buttons.map(b => b.props('label'))).toEqual([
+      'seedConfirm.check',
+      'seedConfirm.showPhrase',
+    ])
+    // Primary action submits the form; the toggle never does.
+    expect(buttons.map(b => b.props('type'))).toEqual(['submit', 'button'])
+    expect(w.findAll('button[type="submit"]')).toHaveLength(1)
   })
 
   it('is keyboard operable: controls are native inputs/buttons in a submitting form', () => {

@@ -49,7 +49,7 @@ export function insufficientStampNotify() {
 }
 
 export function seedCopiedNotify() {
-  infoNotify('Your secret name has been saved to your clipboard.')
+  infoNotify('Your recovery phrase has been copied to your clipboard.')
 }
 
 export function sentTransactionNotify(txId?: string) {

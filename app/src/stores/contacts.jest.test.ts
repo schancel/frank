@@ -24,6 +24,19 @@ jest.mock('../utils/notifications', () => ({
   desktopNotify: jest.fn(),
 }))
 
+const mockOwnCanonical = jest.fn()
+jest.mock('../utils/own-address', () => {
+  // Real comparison logic over a mocked identity, so spellings are canonicalized.
+  const { activeChain: chain } = jest.requireActual('@frank/wallet/chain')
+  return {
+    isOwnAddress: async (address: string) => {
+      const own = await mockOwnCanonical()
+      const parsed = chain.parseAddress(address.trim())
+      return own !== null && !!parsed && chain.formatAddress(parsed) === own
+    },
+  }
+})
+
 import { useContactStore } from './contacts'
 import type { ContactState } from './contacts'
 import { activeChain } from '@frank/wallet/chain'
@@ -40,6 +53,8 @@ describe('stores/contacts.ts (ticket #42)', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     jest.restoreAllMocks()
+    mockOwnCanonical.mockReset()
+    mockOwnCanonical.mockResolvedValue(null)
   })
 
   describe('fetchAndAddContact', () => {
@@ -75,6 +90,20 @@ describe('stores/contacts.ts (ticket #42)', () => {
 
       expect(contacts.isContact(ADDRESS)).toBe(false)
     })
+
+    it.each([ADDRESS, ADDRESS_LOWERCASE])(
+      'refuses to add the current identity as its own contact (%s)',
+      async spelling => {
+        const contacts = useContactStore()
+        mockOwnCanonical.mockResolvedValue(ADDRESS)
+        const fetchProfileSpy = jest.spyOn(activeChain, 'fetchProfile')
+
+        await contacts.fetchAndAddContact({ address: spelling, contact: {} })
+
+        expect(contacts.isContact(ADDRESS)).toBe(false)
+        expect(fetchProfileSpy).not.toHaveBeenCalled()
+      },
+    )
 
     it('is a no-op when the address is already a contact', async () => {
       const contacts = useContactStore()

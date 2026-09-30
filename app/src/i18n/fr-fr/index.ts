@@ -112,6 +112,8 @@ export default {
     loading: 'Recherche du contact',
     notFound: 'Non trouvé',
     found: 'Contact trouvé : {name}',
+    ownAddress:
+      "Il s'agit de votre propre adresse. Vous ne pouvez pas vous ajouter comme contact.",
   },
   newTopicDialog: {
     newTopic: 'Créer un nouveau topic',

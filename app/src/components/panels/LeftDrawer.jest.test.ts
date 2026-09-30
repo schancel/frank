@@ -189,4 +189,63 @@ describe('LeftDrawer balance polling', () => {
     add.mockRestore()
     remove.mockRestore()
   })
+
+  describe('unknown balance (#272)', () => {
+    const balanceRegion = (w: ReturnType<typeof mountDrawer>) =>
+      w.get('[data-testid="drawer-balance"]')
+
+    it('shows a dash with accessible text, not 0, before the first fetch', async () => {
+      mockGetBalance.mockReturnValue(new Promise(() => undefined))
+      const wrapper = mountDrawer()
+      await advance(0)
+      const region = balanceRegion(wrapper)
+      expect(region.text()).toBe('\u2014')
+      expect(region.text()).not.toContain('0')
+      expect(region.attributes('aria-label')).toBe(
+        'receiveBitcoinDialog.balanceUnavailable',
+      )
+      expect(region.attributes('aria-live')).toBe('polite')
+      wrapper.unmount()
+    })
+
+    it('shows a dash when the very first fetch fails', async () => {
+      jest.spyOn(console, 'error').mockImplementation(() => undefined)
+      mockGetBalance.mockRejectedValue(new Error('rpc down'))
+      const wrapper = mountDrawer()
+      await advance(0)
+      expect(balanceRegion(wrapper).text()).toBe('\u2014')
+      wrapper.unmount()
+    })
+
+    it('shows a genuine zero as 0', async () => {
+      mockGetBalance.mockResolvedValue(0n)
+      const wrapper = mountDrawer()
+      await advance(0)
+      const region = balanceRegion(wrapper)
+      expect(region.text()).toBe('0 MON')
+      expect(region.attributes('aria-label')).toBeUndefined()
+      wrapper.unmount()
+    })
+
+    it('keeps the last-known value marked stale after a later failure, then recovers', async () => {
+      jest.spyOn(console, 'error').mockImplementation(() => undefined)
+      jest.spyOn(Math, 'random').mockReturnValue(0)
+      mockGetBalance.mockResolvedValueOnce(5n)
+      mockGetBalance.mockRejectedValueOnce(new Error('rpc down'))
+      const wrapper = mountDrawer()
+      try {
+        await advance(0)
+        expect(balanceRegion(wrapper).text()).toBe('5 MON')
+        await advance(15000)
+        expect(balanceRegion(wrapper).text()).toBe(
+          '5 MON chatList.balanceStale',
+        )
+        mockGetBalance.mockResolvedValue(7n)
+        await advance(30000)
+        expect(balanceRegion(wrapper).text()).toBe('7 MON')
+      } finally {
+        wrapper.unmount()
+      }
+    })
+  })
 })

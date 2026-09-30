@@ -48,6 +48,15 @@ pub enum TopicVoteRelayOutcome {
     },
     /// `eth_sendRawTransaction` itself failed.
     BroadcastFailed(MonadRpcError),
+    /// The node accepted the transaction under a different hash from the one the caller computed
+    /// from the signed bytes, so nothing it reports would be about that transaction. Detected
+    /// before any polling.
+    NodeHashMismatch {
+        /// The hash the caller computed.
+        signed: Hash32,
+        /// The hash the node reported.
+        returned: Hash32,
+    },
     /// The tx broadcast without error, but never confirmed within the configured polling budget.
     ConfirmationTimedOut {
         /// Hash of the broadcast (still-unconfirmed) transaction.
@@ -92,18 +101,21 @@ where
         raw_tx,
         expected,
         TopicCalldataVersion::Protobuf,
+        None,
         poll,
     )
     .await
 }
 
 /// [`broadcast_and_verify_topic_vote`] for either encoding (see
-/// [`crate::monad_topic_verify::verify_topic_burn_versioned`]).
+/// [`crate::monad_topic_verify::verify_topic_burn_versioned`]). With `signed_hash`, the hash the
+/// node returns from `eth_sendRawTransaction` must equal it before anything is polled.
 pub async fn broadcast_and_verify_topic_burn<T>(
     transport: &T,
     raw_tx: &[u8],
     expected: &ExpectedTopicBurn,
     version: TopicCalldataVersion,
+    signed_hash: Option<Hash32>,
     poll: PollConfig,
 ) -> Result<TopicVoteRelayOutcome>
 where
@@ -115,6 +127,15 @@ where
         Ok(submitted) => submitted.tx_hash,
         Err(err) => return Ok(TopicVoteRelayOutcome::BroadcastFailed(err)),
     };
+
+    if let Some(signed) = signed_hash {
+        if signed != tx_hash {
+            return Ok(TopicVoteRelayOutcome::NodeHashMismatch {
+                signed,
+                returned: tx_hash,
+            });
+        }
+    }
 
     let max_attempts = poll.max_attempts.max(1);
     for attempt in 0..max_attempts {

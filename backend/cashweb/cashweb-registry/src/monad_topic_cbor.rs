@@ -37,7 +37,9 @@ use frank_cbor::{
 use thiserror::Error;
 
 use crate::{
-    monad_evm_tx::{decode_signed_transaction, DecodedSignedTransaction, EvmTxError},
+    monad_evm_tx::{
+        decode_signed_transaction, has_no_trailing_bytes, DecodedSignedTransaction, EvmTxError,
+    },
     monad_http::{Address, Hash32, JsonRpcTransport},
     monad_stamp_relay::PollConfig,
     monad_topic_relay::{broadcast_and_verify_topic_burn, TopicVoteRelayOutcome},
@@ -297,6 +299,13 @@ pub enum TopicBurnError {
     /// The raw transaction did not decode or its signature did not recover a sender.
     #[error("the burn transaction cannot be decoded: {0}")]
     Undecodable(EvmTxError),
+    /// Bytes follow the RLP transaction. A node would hash them, so the transaction's hash would
+    /// not be the one that was checked.
+    #[error("the burn transaction has trailing bytes after its RLP encoding")]
+    TrailingBytes,
+    /// A type-10 post's own burn must be an up-vote (README T8).
+    #[error("a post's own burn must be an up-vote (direction 01)")]
+    PostBurnNotUp,
     /// The transaction was signed for another chain.
     #[error("the burn transaction is for chain {actual:?}, expected {expected}")]
     WrongChainId {
@@ -354,6 +363,11 @@ pub fn check_topic_burn_before_broadcast(
     event: &TopicEvent,
     policy: &TopicBurnPolicy,
 ) -> Result<CheckedTopicBurn, TopicBurnError> {
+    if !has_no_trailing_bytes(event.burn_tx()) {
+        // An empty or unsupported first byte falls through to the decoder's precise error.
+        decode_signed_transaction(event.burn_tx()).map_err(TopicBurnError::Undecodable)?;
+        return Err(TopicBurnError::TrailingBytes);
+    }
     let decoded =
         decode_signed_transaction(event.burn_tx()).map_err(TopicBurnError::Undecodable)?;
     if decoded.chain_id != Some(policy.expected_chain_id) {
@@ -375,6 +389,9 @@ pub fn check_topic_burn_before_broadcast(
             .map_err(TopicBurnError::Calldata)?;
     if commitment.as_slice() != event.commitment().as_slice() {
         return Err(TopicBurnError::WrongCommitment);
+    }
+    if matches!(event, TopicEvent::Post(_)) && direction != VoteDirection::Up {
+        return Err(TopicBurnError::PostBurnNotUp);
     }
     Ok(CheckedTopicBurn { decoded, direction })
 }
@@ -415,6 +432,7 @@ pub async fn broadcast_and_verify_topic_event<T: JsonRpcTransport + Clone>(
         event.burn_tx(),
         &expected,
         TopicCalldataVersion::Cbor,
+        Some(checked.decoded.tx_hash),
         poll,
     )
     .await
@@ -442,6 +460,9 @@ pub async fn broadcast_and_verify_topic_event<T: JsonRpcTransport + Clone>(
                 value_wei,
                 direction,
             })
+        }
+        TopicVoteRelayOutcome::NodeHashMismatch { signed, returned } => {
+            Err(TopicBurnError::TxHashMismatch { signed, returned })
         }
         other => Err(TopicBurnError::Rejected(other)),
     }
@@ -847,13 +868,97 @@ mod tests {
         assert_eq!(checked.decoded.sender, sender);
         assert_eq!(checked.decoded.value_wei, 25_000);
         assert_eq!(checked.direction, VoteDirection::Up);
-        let (down, _) = cbor_burn(&fixture_post_event(&[1]).commitment, 0x00);
-        let down = event_with_burn(|_| down.clone());
+        // A vote may go either way.
+        let target = fixture_post_event(&[1]).post_hash;
+        let vote_commitment = topic_vote_commitment(NET, &target).unwrap();
+        let (down, _) = cbor_burn(&vote_commitment, 0x00);
+        let down = parse_topic_event(&vote_frame(NET, &target, &down), NET).unwrap();
         assert_eq!(
             check_topic_burn_before_broadcast(&down, &policy())
                 .unwrap()
                 .direction,
             VoteDirection::Down
+        );
+    }
+
+    #[test]
+    fn a_posts_own_burn_must_be_an_up_vote() {
+        let commitment = fixture_post_event(&[1]).commitment;
+        let (down, _) = cbor_burn(&commitment, 0x00);
+        let error =
+            check_topic_burn_before_broadcast(&event_with_burn(|_| down.clone()), &policy())
+                .unwrap_err();
+        assert!(matches!(error, TopicBurnError::PostBurnNotUp), "{error:?}");
+    }
+
+    #[test]
+    fn trailing_bytes_after_the_transaction_are_rejected_before_broadcast() {
+        let commitment = fixture_post_event(&[1]).commitment;
+        for make in [
+            cbor_burn(&commitment, 1).0,
+            // A legacy-encoded transaction too.
+            signed_unprotected_legacy_tx(
+                &secret(7),
+                0,
+                BURN,
+                25_000,
+                &calldata(0x02, 1, &commitment),
+            ),
+        ] {
+            let mut padded = make.clone();
+            padded.push(0x00);
+            let error =
+                check_topic_burn_before_broadcast(&event_with_burn(|_| padded.clone()), &policy())
+                    .unwrap_err();
+            // The unprotected legacy tx is refused for its chain identity first; the EIP-1559 one
+            // is refused for its trailing byte.
+            assert!(
+                matches!(
+                    error,
+                    TopicBurnError::TrailingBytes
+                        | TopicBurnError::Undecodable(_)
+                        | TopicBurnError::WrongChainId { .. }
+                ),
+                "{error:?}"
+            );
+            assert!(has_no_trailing_bytes(&make));
+            assert!(!has_no_trailing_bytes(&padded));
+        }
+        // Whatever follows, a transaction is never accepted with bytes after its RLP list. Some
+        // suffixes make the item count wrong (`Undecodable`); a truncated item header does not,
+        // and only the exact-length check catches it.
+        for suffix in [&[1u8, 2, 3][..], &[0x00], &[0xb9], &[0xf8]] {
+            let (eip, _) = cbor_burn(&commitment, 1);
+            let mut padded = eip;
+            padded.extend_from_slice(suffix);
+            assert!(!has_no_trailing_bytes(&padded), "{suffix:?}");
+            assert!(
+                matches!(
+                    check_topic_burn_before_broadcast(
+                        &event_with_burn(|_| padded.clone()),
+                        &policy()
+                    ),
+                    Err(TopicBurnError::TrailingBytes | TopicBurnError::Undecodable(_))
+                ),
+                "{suffix:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn extra_calldata_bytes_are_rejected() {
+        let error = check(|commitment| {
+            let mut input = calldata(0x02, 0x01, commitment);
+            input.push(0xff);
+            burn(CHAIN_ID, BURN, 1, &input).0
+        })
+        .unwrap_err();
+        assert!(
+            matches!(
+                error,
+                TopicBurnError::Calldata(TopicCalldataError::InvalidCommitmentLength { .. })
+            ),
+            "{error:?}"
         );
     }
 
@@ -1077,9 +1182,20 @@ mod tests {
         (event_with_burn(|_| raw.clone()), decoded)
     }
 
+    fn signed_vote_event(direction: u8) -> (TopicEvent, DecodedSignedTransaction) {
+        let target = fixture_post_event(&[1]).post_hash;
+        let commitment = topic_vote_commitment(NET, &target).unwrap();
+        let (raw, _) = cbor_burn(&commitment, direction);
+        let decoded = decode_signed_transaction(&raw).unwrap();
+        (
+            parse_topic_event(&vote_frame(NET, &target, &raw), NET).unwrap(),
+            decoded,
+        )
+    }
+
     #[tokio::test]
     async fn a_checked_burn_is_broadcast_confirmed_and_bound_to_the_signed_bytes() {
-        let (event, decoded) = signed_event(0x00);
+        let (event, decoded) = signed_vote_event(0x00);
         let transport = chain(&decoded.tx_hash, &BURN, 25_000, &decoded.input);
         let verified = broadcast_and_verify_topic_event(&transport, &event, &policy(), fast_poll())
             .await
@@ -1106,6 +1222,30 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
+        // Reported before any polling: nothing about the wrong transaction is ever fetched.
+        assert_eq!(transport.count("eth_getTransactionReceipt"), 0);
+    }
+
+    #[tokio::test]
+    async fn a_reverted_burn_is_a_rejection_in_the_cbor_path() {
+        let (event, decoded) = signed_event(0x01);
+        let transport = chain(&decoded.tx_hash, &BURN, 25_000, &decoded.input);
+        let mut receipt = transport.responses.lock().unwrap()["eth_getTransactionReceipt"].clone();
+        receipt["status"] = Value::String("0x0".to_string());
+        transport.set("eth_getTransactionReceipt", receipt);
+        let error = broadcast_and_verify_topic_event(&transport, &event, &policy(), fast_poll())
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(
+                error,
+                TopicBurnError::Rejected(TopicVoteRelayOutcome::VerificationFailed {
+                    outcome: crate::monad_topic_verify::TopicVoteBurnVerification::TxFailed,
+                    ..
+                })
+            ),
+            "{error:?}"
+        );
     }
 
     #[tokio::test]

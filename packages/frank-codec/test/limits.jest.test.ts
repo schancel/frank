@@ -84,6 +84,60 @@ describe('global limits', () => {
     ).toBe('resource@7')
   })
 
+  it('charges each tag head as an item (R1): more than 131,072 tags is resource, not schema', () => {
+    // 9 envelope items + N tag heads + 1 wrapped uint. At the limit every tag is still a forbidden
+    // class (schema, pass B); one more item is resource in pass A.
+    const tags = (n: number): Uint8Array =>
+      concatBytes(new Uint8Array(n).fill(0xc1), Uint8Array.of(0x00))
+    const atLimit = 131_072 - 9 - 1
+    expect(outcome(framePayload(tags(atLimit), 0xffff0001), generic)).toBe(
+      'schema@7',
+    )
+    expect(outcome(framePayload(tags(atLimit + 1), 0xffff0001), generic)).toBe(
+      'resource@7',
+    )
+  })
+
+  it('does not count indefinite-string chunks as items but caps their aggregate length', () => {
+    const chunked = (chunk: number, n: number, extra = 0): Uint8Array => {
+      const head = Uint8Array.of(
+        0x7a,
+        (chunk >>> 24) & 255,
+        (chunk >>> 16) & 255,
+        (chunk >>> 8) & 255,
+        chunk & 255,
+      )
+      const parts: Uint8Array[] = [Uint8Array.of(0x7f)]
+      for (let i = 0; i < n; i++)
+        parts.push(head, new Uint8Array(chunk).fill(0x61))
+      if (extra)
+        parts.push(
+          Uint8Array.of(0x60 + extra),
+          new Uint8Array(extra).fill(0x61),
+        )
+      parts.push(Uint8Array.of(0xff))
+      return concatBytes(...parts)
+    }
+    // 140,000 one-byte chunks would exceed MAX_ITEMS if chunks were items.
+    const many = new Uint8Array(140_000 * 2 + 2)
+    many[0] = 0x7f
+    for (let i = 0; i < 140_000; i++) {
+      many[1 + 2 * i] = 0x61
+      many[2 + 2 * i] = 0x61
+    }
+    many[many.length - 1] = 0xff
+    expect(outcome(framePayload(many, 0xffff0001), generic)).toBe(
+      'noncanonical@7',
+    )
+    // Four 64 KiB chunks total exactly 262,144 bytes; one more byte exceeds the text limit.
+    expect(outcome(framePayload(chunked(65_536, 4), 0xffff0001), generic)).toBe(
+      'noncanonical@7',
+    )
+    expect(
+      outcome(framePayload(chunked(65_536, 4, 1), 0xffff0001), generic),
+    ).toBe('resource@7')
+  })
+
   it('counts map keys as items (R1): 256-entry maps cost 513 items each', () => {
     const map256 = (): Uint8Array => {
       const parts: number[] = [0xb9, 1, 0]
@@ -159,7 +213,7 @@ describe('type-specific limits (R2-R4)', () => {
           ...statementPayload(),
           [9, new Uint8Array(pad)],
         ]),
-        2,
+        3,
         1,
       )
     const att = (pad: number) => attestationFrame(stmt(pad), [sig(acct2(1))])

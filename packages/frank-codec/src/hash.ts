@@ -80,7 +80,10 @@ export function contentHashNetwork(p: ParsedFrame): string {
     case 4:
     case 5:
     case 6:
-    case 7: {
+    case 7:
+    case 9:
+    case 10:
+    case 11: {
       const t = p.typed
       if (t && 'network' in t) return t.network
       throw new Error(
@@ -127,6 +130,23 @@ export function paymentCommitment(
       t3Digest,
       u32be(childIndex),
     ]),
+  )
+}
+
+/**
+ * T7: `SHA256("frank:topic-vote:v1" || u16be(len(network)) || utf8(network) || target_hash)`.
+ * `targetHash` is the T1 hash of the type-9 frame the burn pays for: a type-11 frame's field 1,
+ * or the content hash of the frame a type 10 opens.
+ */
+export function topicVoteCommitment(
+  network: string,
+  targetHash: Uint8Array,
+): Uint8Array {
+  if (targetHash.length !== 32)
+    throw new RangeError('the topic target hash must be 32 bytes')
+  const n = utf8Encode(network)
+  return sha256(
+    concat([utf8Encode('frank:topic-vote:v1'), u16be(n.length), n, targetHash]),
   )
 }
 

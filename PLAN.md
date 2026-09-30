@@ -6,8 +6,7 @@ indexing and transaction submission, with no self-hosted chain infrastructure.
 
 **Timeline update:** submissions aren't due for a week or two, not hours as
 originally assumed. This relaxes the earlier "cut every corner" bias — the
-"if time allows, non-blocking" hedges on things like Mera (see the bounty
-section below) and fixing the jest/test-infra gaps several tickets have
+"if time allows, non-blocking" hedges on things like Mera and fixing the jest/test-infra gaps several tickets have
 flagged should be treated as real, do-it-properly work now, not stretch
 goals. The demo spike (`spike/demo` branch) remains throwaway and should be
 fully superseded by the tracked ticket pipeline rather than kept as a crutch.
@@ -403,47 +402,6 @@ M2 unblocks everything else and should be prioritized immediately after.
 - ERC-20/token-denominated payments or burns (native MON only, see
   constraint 8).
 
-## Hackathon bounty/track strategy
-
-**Track (corrected — one track only, already selected by the user):
-Social, Attention & Culture**, not Trust/Identity/AI as earlier PLAN.md
-text wrongly guessed. Confirmed rule: a submission enters exactly one main
-track, but sponsor bounties are independent of track tags — a Social/
-Culture submission can still win a bounty tagged to a different track.
-
-- **Already targeting**: "Best Builds with Qwen 3.8 Max" (ticket #9, the
-  headless LLM bot demo, blocked on #8) — still viable despite its card
-  being tagged to a different track, per the rule above.
-- **Also pursuing**: "Best Projects using Alchemy" ($1,000 credits) —
-  already qualifies via tickets #12/#15/#17/#20, no new work, just submit.
-- **Worth pursuing if time allows, non-blocking**: Mera ("Best Mera-Powered
-  UX on Monad" + "One Passkey, Many Keys", $2,500 each). Mera's WebAuthn
-  PRF-derived keys use the identical `m/44'/60'/0'/0/i` path already
-  specified for ticket #14's HD sub-account pool — genuine architectural
-  fit (no seed phrase, no extension, no custody backend), not just a
-  bounty checkbox. See the option documented on issue #14; fall back to a
-  plain stored mnemonic if there isn't time.
-- **Secondary, skippable**: Envio (HyperSync/HyperRPC could replace direct
-  Alchemy log/receipt polling and sidestep the 10-block `eth_getLogs`
-  limit ticket #17 found) — real but not on the critical path, since
-  Stamp verification uses `eth_getTransactionReceipt` on a known hash, not
-  broad log scans.
-- **Skip**: Cleanverse (bank-verified KYC identity is in tension with
-  Frank's unlinkable-multi-account privacy goal), Dynamic/Privy (don't
-  stack three competing wallet-auth SDKs against Mera), Aurora Intents,
-  Kuru, Agora, Perpl (all trading/payments-specific, Frank is a messaging
-  protocol), Chainlink CRE (no orchestration need), Nansen (analytics
-  product, wrong fit), Kimi (redundant with the already-committed Qwen
-  bounty). Tencent Hunyuan (targets Social/Culture, our actual track) is
-  no longer an automatic skip on track grounds, but is not currently
-  pursued — would mean a second, competing LLM integration alongside Qwen.
-- **Track fit note**: Social, Attention & Culture ("open social graphs,
-  competitive feed algorithms, community governance... cultural
-  participation translate into real ownership") is a better narrative fit
-  for cashweb's topic broadcast + burn-weighted voting feature than
-  for plain 1:1 messaging. That feature is back in scope as a follow-on —
-  see the new milestone below.
-
 ### M8 (follow-on, blocked on M6) — Monad topic broadcast + burn-weighted voting
 Re-admits the feature originally scoped out as a hackathon non-goal, now
 relevant to the Social/Attention/Culture track narrative: topics, posts,
@@ -457,7 +415,7 @@ on M6, pursue whichever has clearer remaining time.
 **Validated, not speculative:** the original Stamp UI used a group-chat-like
 model; user feedback on that version consistently preferred a Reddit-style
 forum instead. M8 is that UI preference realized on Monad, not just a
-bounty-fit add-on. Server side shipped in #30 (merged, then renamed —
+a demo-only add-on. Server side shipped in #30 (merged, then renamed —
 see below); client side (#31/#32: post, vote — merged and also renamed;
 #33: tally/read — next).
 
@@ -472,8 +430,7 @@ choice (`stores/forum.ts`'s threaded/sorted view vs. `stores/topics.ts`'s
 flat feed, both consuming the same always-voted messages). Tickets #30/
 #31/#32/#40 baked "forum" into backend types, modules, and routes anyway
 (`MonadForumPost`, `http/forum.rs`, `ForumGateConfig`, `/message/monad/
-forum`, ...), copying the product framing ("let's build a forum for the
-bounty") into code that should have stayed a general topic-broadcast
+forum`, ...), copying the product framing ("let's build a forum") into code that should have stayed a general topic-broadcast
 primitive. Renamed the whole surface once caught, while it was still
 small: `MonadForumPost`/`MonadForumVote` → `MonadTopicPost`/
 `MonadTopicVote` (and every derived type), `http/forum.rs` →

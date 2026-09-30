@@ -387,6 +387,7 @@ dependencies = [
  "cashweb-http-utils",
  "cashweb-payload",
  "cashweb-pop-token",
+ "frank-cbor",
  "futures",
  "hex",
  "hex-literal",
@@ -616,6 +617,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a9c384f161156f5260c24a097c56119f9be8c798586aecc13afbcbe7b7e26bf8"
 dependencies = [
  "percent-encoding",
+]
+
+[[package]]
+name = "frank-cbor"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "secp256k1-abc",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror",
 ]
 
 [[package]]

@@ -49,7 +49,7 @@ export function insufficientStampNotify() {
 }
 
 export function seedCopiedNotify() {
-  infoNotify('Your secret name has been saved to your clipboard.')
+  infoNotify('Your recovery phrase has been copied to your clipboard.')
 }
 
 export function sentTransactionNotify(txId?: string) {
@@ -76,10 +76,14 @@ export function desktopNotify(
   body: string,
   icon: string,
   callback: () => void,
+  // One per message (its index): the browser replaces a notification that has the same tag, so the
+  // same message never shows twice on a device even when two tabs or windows each notify for it.
+  tag?: string,
 ) {
   const notify = new Notification(title, {
     body,
     icon,
+    ...(tag === undefined ? {} : { tag }),
   })
 
   notify.onclick = () => {

@@ -89,7 +89,8 @@ module.exports = {
     ],
     // @vue/vue3-jest (Vue 3 + jest 29 compatible) replaces the old Vue2-era 'vue-jest'
     // package, which this app (Vue 3 / Quasar 2) was never actually compatible with.
-    '.*\\.vue$': '@vue/vue3-jest',
+    // Wraps @vue/vue3-jest, only adding an `import.meta.url` rewrite (see the file).
+    '.*\\.vue$': '<rootDir>/test/jest/vue-import-meta-transform.js',
     '.+\\.(css|styl|less|sass|scss|svg|png|jpg|ttf|woff|woff2)$':
       'jest-transform-stub',
   },

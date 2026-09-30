@@ -29,7 +29,7 @@ jest.mock('@frank/wallet/chain', () => ({
   },
 }))
 // One stable promise, like the real memoized-per-seed useActiveWallet (useBalance keys on it).
-const mockWallet = Promise.resolve({})
+let mockWallet = Promise.resolve({})
 jest.mock('src/composables/useActiveWallet', () => ({
   useActiveWallet: jest.fn(() => mockWallet),
 }))
@@ -188,5 +188,90 @@ describe('LeftDrawer balance polling', () => {
     expect(jest.getTimerCount()).toBe(0)
     add.mockRestore()
     remove.mockRestore()
+  })
+
+  describe('unknown balance (#272)', () => {
+    const balanceRegion = (w: ReturnType<typeof mountDrawer>) =>
+      w.get('[data-testid="drawer-balance"]')
+
+    it('shows a dash with accessible text, not 0, before the first fetch', async () => {
+      mockGetBalance.mockReturnValue(new Promise(() => undefined))
+      const wrapper = mountDrawer()
+      try {
+        await advance(0)
+        const region = balanceRegion(wrapper)
+        expect(region.text()).toBe('\u2014')
+        expect(region.text()).not.toContain('0')
+        expect(region.attributes('aria-label')).toBe(
+          'receiveBitcoinDialog.balanceUnavailable',
+        )
+        expect(region.attributes('aria-live')).toBe('polite')
+      } finally {
+        wrapper.unmount()
+      }
+    })
+
+    it('shows a dash when the very first fetch fails', async () => {
+      jest.spyOn(console, 'error').mockImplementation(() => undefined)
+      mockGetBalance.mockRejectedValue(new Error('rpc down'))
+      const wrapper = mountDrawer()
+      try {
+        await advance(0)
+        expect(balanceRegion(wrapper).text()).toBe('\u2014')
+      } finally {
+        wrapper.unmount()
+      }
+    })
+
+    it('shows a genuine zero as 0', async () => {
+      mockGetBalance.mockResolvedValue(0n)
+      const wrapper = mountDrawer()
+      try {
+        await advance(0)
+        const region = balanceRegion(wrapper)
+        expect(region.text()).toBe('0 MON')
+        expect(region.attributes('aria-label')).toBeUndefined()
+      } finally {
+        wrapper.unmount()
+      }
+    })
+
+    it('keeps the last-known value marked stale after a later failure, then recovers', async () => {
+      jest.spyOn(console, 'error').mockImplementation(() => undefined)
+      jest.spyOn(Math, 'random').mockReturnValue(0)
+      mockGetBalance.mockResolvedValueOnce(5n)
+      mockGetBalance.mockRejectedValueOnce(new Error('rpc down'))
+      const wrapper = mountDrawer()
+      try {
+        await advance(0)
+        expect(balanceRegion(wrapper).text()).toBe('5 MON')
+        await advance(15000)
+        expect(balanceRegion(wrapper).text()).toBe(
+          '5 MON chatList.balanceStale',
+        )
+        mockGetBalance.mockResolvedValue(7n)
+        await advance(30000)
+        expect(balanceRegion(wrapper).text()).toBe('7 MON')
+      } finally {
+        wrapper.unmount()
+      }
+    })
+
+    it('never shows the old wallet balance for a newly active wallet', async () => {
+      mockGetBalance.mockResolvedValueOnce(5n)
+      const wrapper = mountDrawer()
+      const original = mockWallet
+      try {
+        await advance(0)
+        expect(balanceRegion(wrapper).text()).toBe('5 MON')
+        mockWallet = Promise.resolve({}) // new identity
+        mockGetBalance.mockReturnValue(new Promise(() => undefined))
+        await advance(15000)
+        expect(balanceRegion(wrapper).text()).toBe('\u2014')
+      } finally {
+        mockWallet = original
+        wrapper.unmount()
+      }
+    })
   })
 })

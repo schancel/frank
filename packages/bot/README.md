@@ -17,6 +17,11 @@ cap). It prints every bot address and the command to start the app, then waits. 
 `<state dir>/logs/`. Missing prerequisites (Node, `bash`, `cargo` or `CASHWEBD_BIN`, a busy port, an
 absent RPC URL or wallet file) each print one line, never a stack trace.
 
+The launcher sets every bot's state directory explicitly, under `<state dir>/bots/<bot>/state`
+(and identities under `<state dir>/bots/<bot>/identity.json`). Bots started on their own with
+`yarn bot`, `yarn blackjack`, ... default to `~/.frank-bots/<bot>` (`$XDG_STATE_HOME/frank-bots/<bot>`
+when set) instead of `/tmp`; see "Stamp pool seed".
+
 Per-bot commands also exist: `yarn bot` (Qwen), `yarn blackjack`, `yarn raffle`, `yarn vendor`,
 `yarn faucet`.
 

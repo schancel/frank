@@ -81,7 +81,13 @@ import {
   StampMonadMessageResult,
   quoteMonadStampPaymentGasReserve,
 } from '@frank/wallet/monad-stamp-client'
-import { MonadIdentity, registerMonadIdentity } from '@frank/wallet/monad-identity'
+import {
+  fetchMonadProfile,
+  MonadIdentity,
+  MonadProfileFields,
+  registerMonadIdentity,
+} from '@frank/wallet/monad-identity'
+import type { ProfileInfo } from '@frank/wallet/chain/active-chain'
 import { buildEnvelope } from '@frank/cashweb/relay/monad-message-envelope'
 import { serializeMessageItems } from '@frank/wallet/chain/monad-chain'
 import { MessageItem } from '@frank/cashweb/types/messages'
@@ -96,6 +102,25 @@ export function requiredEnv(name: string): string {
 
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+/** Loads an already-persisted identity and NEVER creates one: for read-only tooling (e.g.
+ * `print-curated-defaults.ts`) that must not leave key files behind. */
+export function loadExistingIdentity(
+  identityJsonPath: string,
+  label: string,
+): MonadIdentity {
+  if (!existsSync(identityJsonPath)) {
+    throw new Error(
+      `[${label}] no identity file at ${identityJsonPath} (start that bot once to create it)`,
+    )
+  }
+  const saved = JSON.parse(readFileSync(identityJsonPath, 'utf8')) as {
+    privateKeyHex: string
+  }
+  const identity = MonadIdentity.fromPrivateKeyHex(saved.privateKeyHex)
+  console.log(`[${label}] loaded existing identity ${identity.displayAddress}`)
+  return identity
 }
 
 /** Loads a `MonadIdentity` persisted (as `{ privateKeyHex }`) at `identityJsonPath`, or generates
@@ -116,14 +141,7 @@ export function loadOrCreateIdentity(
   label: string,
 ): MonadIdentity {
   if (existsSync(identityJsonPath)) {
-    const saved = JSON.parse(readFileSync(identityJsonPath, 'utf8')) as {
-      privateKeyHex: string
-    }
-    const identity = MonadIdentity.fromPrivateKeyHex(saved.privateKeyHex)
-    console.log(
-      `[${label}] loaded existing identity ${identity.displayAddress}`,
-    )
-    return identity
+    return loadExistingIdentity(identityJsonPath, label)
   }
   const identity = MonadIdentity.generate()
   writeFileSync(
@@ -144,13 +162,52 @@ export async function registerAndLog(params: {
   relayBaseUrl: string
   identity: MonadIdentity
   label: string
+  /** Registers the self-declared bot marker (#311) so other bots skip this account. Defaults to
+   * true -- every caller in this package except the human-simulating send demo is a bot. */
+  bot?: boolean
+  /** Public name/bio/avatar (#317), e.g. `botProfileFields('vendor')`. */
+  profile?: MonadProfileFields
 }): Promise<void> {
+  const wanted: MonadProfileFields = {
+    ...params.profile,
+    bot: params.bot ?? true,
+  }
+  // Idempotent (#317): every re-PUT bumps the profile's registration timestamp, which shows up as
+  // a "new registration" to anything watching the profile feed. Skip it when the relay already
+  // holds exactly this profile.
+  const existing = await fetchMonadProfile({
+    relayBaseUrl: params.relayBaseUrl,
+    address: params.identity.address,
+  })
+  if (existing && profileMatches(existing, wanted)) {
+    console.log(
+      `[${params.label}] profile for ${params.identity.displayAddress} already registered and unchanged`,
+    )
+    return
+  }
   await registerMonadIdentity({
     relayBaseUrl: params.relayBaseUrl,
     identity: params.identity,
+    profile: wanted,
   })
   console.log(
-    `[${params.label}] registered identity ${params.identity.displayAddress} (PUT /metadata, no payment -- POP disabled)`,
+    `[${params.label}] registered identity ${params.identity.displayAddress} as "${
+      wanted.name ?? ''
+    }" (PUT /metadata, no payment -- POP disabled)`,
+  )
+}
+
+/** Whether the relay's stored profile already carries exactly the fields `wanted` would sign.
+ * An unset wanted field must be absent remotely too, so removing a field re-registers. */
+export function profileMatches(
+  existing: ProfileInfo,
+  wanted: MonadProfileFields,
+): boolean {
+  return (
+    (existing.name ?? '') === (wanted.name ?? '') &&
+    (existing.bio ?? '') === (wanted.bio ?? '') &&
+    (existing.avatar ?? '') === (wanted.avatar ?? '') &&
+    (existing.bot ?? false) === (wanted.bot ?? false)
   )
 }
 
@@ -250,6 +307,28 @@ export async function fundPoolWithRetry(params: {
   return funded
 }
 
+/** Loads the operator-supplied main wallet (`{address, privateKey}` JSON at `mainWalletJsonPath`)
+ * as a transfer signer. The key is only ever passed to the signer, never logged. Shared by the
+ * stamp-funded bots and the faucet (#316), which needs no stamp pool. */
+export function loadMainAccountSigner(params: {
+  rpcUrl: string
+  mainWalletJsonPath: string
+  httpClient?: MonadHttpClient
+}): { provider: JsonRpcProvider; mainAccountSigner: MonadAccountTxSigner } {
+  const provider = new JsonRpcProvider(params.rpcUrl)
+  const httpClient =
+    params.httpClient ?? new MonadHttpClient({ rpcUrl: params.rpcUrl })
+  const mainWallet = JSON.parse(
+    readFileSync(params.mainWalletJsonPath, 'utf8'),
+  ) as { address: string; privateKey: string }
+  const mainAccountSigner = new MonadAccountTxSigner({
+    privateKey: mainWallet.privateKey,
+    provider,
+    httpClient,
+  })
+  return { provider, mainAccountSigner }
+}
+
 /**
  * Derives a fresh HD sub-account pool (ticket #14) and wires up a `MonadStampClient` ready to send
  * Stamp-over-Monad messages, against the main funded testnet wallet at `mainWalletJsonPath`.
@@ -279,18 +358,15 @@ export async function setUpFundedStampClient(params: {
   stampValueWei: bigint
   label: string
 }): Promise<FundedStampSetup> {
-  const provider = new JsonRpcProvider(params.rpcUrl)
   const httpClient = new MonadHttpClient({ rpcUrl: params.rpcUrl })
-
-  const mainWallet = JSON.parse(
-    readFileSync(params.mainWalletJsonPath, 'utf8'),
-  ) as { address: string; privateKey: string }
-  const mainAccountSigner = new MonadAccountTxSigner({
-    privateKey: mainWallet.privateKey,
-    provider,
+  const { provider, mainAccountSigner } = loadMainAccountSigner({
+    rpcUrl: params.rpcUrl,
+    mainWalletJsonPath: params.mainWalletJsonPath,
     httpClient,
   })
-  console.log(`[${params.label}] main funding account: ${mainWallet.address}`)
+  console.log(
+    `[${params.label}] main funding account: ${mainAccountSigner.address}`,
+  )
 
   const { keyring, mnemonic } = MonadHdKeyring.generate()
   const pool = new MonadSubAccountPool({ keyring })

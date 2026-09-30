@@ -298,21 +298,32 @@ function associatedData(envelope: {
   );
 }
 
-function deriveV2Key(params: {
+/**
+ * Derives the AES-256-GCM key for each ECDH point encoding, canonical first (see
+ * {@link PayloadConstructor.constructSharedPointEncodings}). The IKM is the 33-byte compressed
+ * shared point with x zero-padded to 32 bytes; the envelope version is unchanged because that is
+ * the encoding every working v2 pair already used. Writers use only the first key; readers try the
+ * rest when the authentication tag rejects it.
+ */
+function deriveV2Keys(params: {
   privateKey: PrivateKey;
   publicKey: PublicKey;
   salt: Buffer;
-}): Buffer {
-  const ecdhPoint = payloadConstructor
-    .constructMergedKey(params.privateKey, params.publicKey)
-    .toBuffer();
-  // RFC 5869 extract + the first (and only) expand block. SHA-256 emits the requested 32 bytes
-  // in one block: PRK = HMAC(salt, IKM), OKM = HMAC(PRK, info || 0x01).
-  const pseudorandomKey = bitcoreCrypto.Hash.sha256hmac(ecdhPoint, params.salt);
-  return bitcoreCrypto.Hash.sha256hmac(
-    Buffer.concat([HKDF_INFO, Buffer.from([1])]),
-    pseudorandomKey
-  );
+}): Buffer[] {
+  return payloadConstructor
+    .constructSharedPointEncodings(params.privateKey, params.publicKey)
+    .map((ecdhPoint) => {
+      // RFC 5869 extract + the first (and only) expand block. SHA-256 emits the requested 32
+      // bytes in one block: PRK = HMAC(salt, IKM), OKM = HMAC(PRK, info || 0x01).
+      const pseudorandomKey = bitcoreCrypto.Hash.sha256hmac(
+        ecdhPoint,
+        params.salt
+      );
+      return bitcoreCrypto.Hash.sha256hmac(
+        Buffer.concat([HKDF_INFO, Buffer.from([1])]),
+        pseudorandomKey
+      );
+    });
 }
 
 /** Builds a v2 encrypted envelope for `MonadStampedMessage.encrypted_payload`. */
@@ -345,7 +356,7 @@ export function buildEnvelope(params: {
     from: params.fromAddress,
     to: params.toAddress,
   };
-  const key = deriveV2Key({
+  const [key] = deriveV2Keys({
     privateKey: params.fromPrivateKey,
     publicKey: PublicKey.fromBuffer(params.toPubKey),
     salt,
@@ -398,50 +409,62 @@ export function decryptEnvelopeV2(params: {
 }): string {
   const salt = Buffer.from(params.envelope.salt, "hex");
   const nonce = Buffer.from(params.envelope.nonce, "hex");
-  const key = deriveV2Key({
+  const ciphertext = Buffer.from(params.envelope.ciphertext, "hex");
+  const tag = Buffer.from(params.envelope.tag, "hex");
+  // Canonical key first. Only a GCM tag rejection moves on to the pre-#309 trimmed-x key, so an
+  // envelope that authenticates under either key is never re-attempted or partially trusted.
+  const keys = deriveV2Keys({
     privateKey: params.myPrivateKey,
     publicKey: PublicKey.fromBuffer(params.senderPubKey),
     salt,
   });
-  const decipher = forge.cipher.createDecipher(
-    "AES-GCM",
-    forge.util.createBuffer(key.toString("binary"))
-  );
-  decipher.start({
-    iv: forge.util.createBuffer(nonce.toString("binary")),
-    additionalData: associatedData(params.envelope).toString("binary"),
-    tagLength: GCM_TAG_BYTES * 8,
-    tag: forge.util.createBuffer(
-      Buffer.from(params.envelope.tag, "hex").toString("binary")
-    ),
-  });
-  decipher.update(
-    forge.util.createBuffer(
-      Buffer.from(params.envelope.ciphertext, "hex").toString("binary")
-    )
-  );
-  if (!decipher.finish())
-    throw new Error("Monad envelope authentication failed");
-  const plaintext = Buffer.from(decipher.output.toHex(), "hex");
-  return textDecoder.decode(plaintext);
+  for (const key of keys) {
+    const decipher = forge.cipher.createDecipher(
+      "AES-GCM",
+      forge.util.createBuffer(key.toString("binary"))
+    );
+    decipher.start({
+      iv: forge.util.createBuffer(nonce.toString("binary")),
+      additionalData: associatedData(params.envelope).toString("binary"),
+      tagLength: GCM_TAG_BYTES * 8,
+      tag: forge.util.createBuffer(tag.toString("binary")),
+    });
+    decipher.update(forge.util.createBuffer(ciphertext.toString("binary")));
+    if (decipher.finish()) {
+      return textDecoder.decode(Buffer.from(decipher.output.toHex(), "hex"));
+    }
+  }
+  throw new Error("Monad envelope authentication failed");
 }
 
-/** Decrypts an already-stored legacy v1 record. There is deliberately no v1 builder. */
+/**
+ * Decrypts an already-stored legacy v1 record. There is deliberately no v1 builder. V1 has no
+ * authentication tag, so the pre-#309 trimmed-x key is tried only when the canonical key's output
+ * is not valid UTF-8 (the historical read contract); a wrong key yields garbage that fails that
+ * check with overwhelming probability, but this is a heuristic rather than a proof.
+ */
 export function decryptLegacyEnvelopeV1(params: {
   envelope: LegacyMonadMessageEnvelopeV1;
   myPrivateKey: PrivateKey;
   senderPubKey: Buffer;
 }): string {
-  const sharedKey = payloadConstructor.constructSharedKey(
+  const sharedKeys = payloadConstructor.constructSharedKeys(
     params.myPrivateKey,
     PublicKey.fromBuffer(params.senderPubKey),
     Buffer.from(params.envelope.salt, "hex")
   );
-  const plaintext = payloadConstructor.decrypt(
-    sharedKey,
-    Buffer.from(params.envelope.ciphertext, "hex")
-  );
-  return textDecoder.decode(plaintext);
+  const ciphertext = Buffer.from(params.envelope.ciphertext, "hex");
+  let failure: unknown;
+  for (const sharedKey of sharedKeys) {
+    try {
+      return textDecoder.decode(
+        payloadConstructor.decrypt(sharedKey, ciphertext)
+      );
+    } catch (error) {
+      failure = error;
+    }
+  }
+  throw failure;
 }
 
 /** Decrypts a parsed stored envelope, dispatching v1 only to its named read-only path. */

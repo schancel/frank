@@ -205,6 +205,34 @@ export interface MonadProfileFields {
   name?: string
   bio?: string
   avatar?: string
+  /** Marks the profile as an automated account (#311). Signed as an ordinary profile `Entry`
+   * with kind {@link MONAD_PROFILE_BOT_KIND} -- `Entry.kind` is an open string and the registry
+   * ignores kinds it does not know, so this needs no proto or backend change. It is
+   * self-asserted, which is enough for cooperating bots (see `packages/bot/bot-loop-guard.ts`,
+   * which also supports an operator address denylist for bots that do not set it). */
+  bot?: boolean
+}
+
+/** `Entry.kind` of the self-declared "this account is a bot" profile marker (#311). */
+export const MONAD_PROFILE_BOT_KIND = 'bot'
+
+/** Whether a decoded profile `SignedPayload` carries the {@link MONAD_PROFILE_BOT_KIND} marker.
+ * Unparseable payloads are not bots (callers that must fail closed handle lookup errors
+ * themselves). */
+export function isBotProfileSignedPayload(
+  signedPayload: InstanceType<typeof SignedPayload>,
+): boolean {
+  try {
+    return AddressMetadata.deserializeBinary(signedPayload.getPayload_asU8())
+      .getEntriesList()
+      .some(
+        entry =>
+          entry.getKind() === MONAD_PROFILE_BOT_KIND &&
+          new TextDecoder().decode(entry.getBody_asU8()) === '1',
+      )
+  } catch {
+    return false
+  }
 }
 
 function profileEntries(profile: MonadProfileFields = {}) {
@@ -226,6 +254,7 @@ function profileEntries(profile: MonadProfileFields = {}) {
       : requireValidProfileDisplayName(profile.name)
   addTextEntry('display_name', displayName)
   addTextEntry('bio', profile.bio)
+  if (profile.bot) addTextEntry(MONAD_PROFILE_BOT_KIND, '1')
 
   if (profile.avatar) {
     const match = /^data:([^;,]+);base64,(.+)$/.exec(profile.avatar)
@@ -348,6 +377,8 @@ export async function fetchMonadProfile(params: {
         result.name = new TextDecoder().decode(entry.getBody_asU8())
       } else if (kind === 'bio') {
         result.bio = new TextDecoder().decode(entry.getBody_asU8())
+      } else if (kind === MONAD_PROFILE_BOT_KIND) {
+        result.bot = new TextDecoder().decode(entry.getBody_asU8()) === '1'
       } else if (kind === 'avatar') {
         const contentType =
           entry

@@ -285,6 +285,107 @@ layer for this manually-run demo script, matching its existing standard.
 or live relay was available in that sandbox. Verified via `yarn jest`/`tsc --noEmit`/code review
 only; see the ticket's PR description for the exact commands run.
 
+## Bot loop guard (#311)
+
+Bots that answer any inbound message (vendor catalog, raffle round status, Qwen chat) would
+otherwise reply to each other forever, each reply paying a stamp. Every bot now registers a
+self-declared `bot` profile entry (`registerAndLog`, an ordinary open-ended `Entry` kind: no
+proto/backend change) and shares `bot-loop-guard.ts`:
+
+- never greet/fund, chat with, or send catalog/status to another bot: a peer is a bot if its
+  profile carries the marker or its address is in `FRANK_BOT_PEER_DENYLIST` (comma-separated;
+  for bots registered before the marker existed or third-party bots). A failed profile lookup
+  fails closed.
+- hard per-peer reply budget per sliding window: `FRANK_BOT_MAX_REPLIES_PER_PEER` (default 20,
+  `0` = never reply) per `FRANK_BOT_REPLY_WINDOW_MS` (default 1 hour). Applies to Qwen replies
+  and the vendor/raffle unsolicited replies; paid fulfilment and game moves are never dropped.
+- Qwen only treats `text` items as prompts; structured items are ignored, never quoted to the model.
+
+Limits: the marker is self-asserted; the budget is in memory (a restart resets it) and per
+address (a sybil gets the budget per address, each still paying a stamp). Blackjack only answers
+`blackjack-move` items and is unchanged apart from registering the marker.
+
+## Standalone testnet faucet (#316)
+
+`yarn faucet` (`faucet-bot.livecheck.ts`, logic in `faucet-core.ts`) funds each newly registered
+profile once with testnet MON. It needs no LLM key, no stamp pool and no identity: only
+`MONAD_TESTNET_HTTP_RPC_URL`, `FRANK_NETWORK_TAG=MONT` and `E2E_DEMO_MAIN_WALLET_JSON`
+(`{address, privateKey}` of a wallet holding testnet MON only). See the file header for every knob
+(`FAUCET_AMOUNT_WEI` default 0.05 MON, hard ceiling 1 MON; `FAUCET_MAX_PER_RUN` 10;
+`FAUCET_MAX_PER_DAY` 20 (max 1000); `FAUCET_MIN_RESERVE_WEI` 0.1 MON (minimum 0.01 MON);
+`FAUCET_POLL_INTERVAL_MS` 4000 (min 1000); `FAUCET_STATE_DIR` default `~/.frank-faucet`, warns if under a
+tmp dir). Invalid values fail startup with the variable name; nothing becomes NaN.
+
+- once per address, durable: the exact signed transaction is persisted before broadcast; any
+  record (signed/submitted/confirmed) blocks re-funding, across restarts and address casing. A
+  crash mid-broadcast replays the same bytes on restart; it never re-signs.
+- skips itself, `FRANK_BOT_PEER_DENYLIST`, self-declared bots (#311) and addresses that already
+  hold at least the amount. Stops (without consuming the profile, so it is retried) at the per-run
+  cap, the rolling 24h cap, or when the wallet would fall under the reserve.
+- testnet only: refuses to start unless `FRANK_NETWORK_TAG=MONT` and the RPC reports chain id 10143.
+- Do not also let Qwen fund: set `QWEN_BOT_FUND_VALUE_WEI=0` on the Qwen bot (it still greets).
+
+- one wallet, one faucet: use a wallet dedicated to it. Do not share it with the Qwen bot's funding
+  (`QWEN_BOT_FUND_VALUE_WEI=0`) or run a second faucet on a different state dir: concurrent senders
+  reuse nonces and one kills the other's transfer. The faucet itself will not sign a new transfer
+  while an earlier one is unsettled, and handles profiles one at a time.
+- the wallet JSON holds a private key: `chmod 600` it (the faucet warns if group/others can read it).
+- a profile that keeps failing (e.g. malformed address) is skipped and recorded after 3
+  consecutive failures while the RPC is healthy, so it cannot block everyone behind it; an RPC
+  outage never counts against a profile.
+
+Stuck transfers. If the node rejects the exact-bytes replay (`already known`, `nonce too low`) the
+faucet looks the receipt up by hash: mined settles the record, otherwise it waits and logs once.
+If a record stays stuck (further funding is paused while any transfer is unsettled):
+
+    yarn faucet --list-stuck          # signed / failed / skipped records with tx hashes
+    yarn faucet --clear <address>     # DANGEROUS: lets the address be paid again
+
+`--clear` is guarded because the record is the only thing preventing a second payment. It never
+clears `submitted`/`confirmed` records; if `MONAD_TESTNET_HTTP_RPC_URL` is set it asks the node and
+refuses any tx that is mined or in the mempool (or if the node cannot be asked). A `signed` record
+may already have been broadcast (a timeout after the node accepted the tx looks identical), so it
+additionally needs `--force --confirm-tx <txHash>` typed exactly, and prints a loud warning. A
+`failed` record with a tx hash needs the same when no node lookup is available (a `failed` set
+because the node did not know the tx may still land later). These
+admin commands run before any other env validation and need only `FAUCET_STATE_DIR`.
+
+A `submitted` transfer whose confirmation was never seen is re-checked by hash (5 min after its
+(re)broadcast, at most every 5 min): a receipt settles it; a tx the node no longer knows is marked `failed` so it
+shows in `--list-stuck`. It is never re-funded automatically.
+
+Profiles with a malformed address (not `0x` + 40 hex, e.g. `abc`, `foo.eth`) are skipped up front,
+without any RPC call, so they never stall the cursor. Skipping a profile after repeated failures ignores transient errors (timeouts, 5xx, rate limits):
+malformed-address errors count 3 times; unclassified errors need 10 failures spread over 10 minutes.
+
+Abuse limits (demo level): registration is free, so a sybil can mint addresses and collect the
+amount per address until the daily cap (loss bounded to `maxPerDay * amount`, wallet floor kept by
+the reserve). No captcha, no proof of humanity, no per-IP limit. The app's Receive page shows the
+user's address and explains the faucet when the balance is a real zero.
+
+## Bot profiles and curated defaults (#317)
+
+Every bot registers a public profile on startup (`bot-directory.ts`): name (`Blackjack Dealer`,
+`Raffle`, `Picture Shop`, `Qwen`), bio, a small generated identicon avatar (no third-party
+artwork) and the `bot` marker. Registration is idempotent: it fetches the relay's copy first and
+only PUTs when a field differs (a re-PUT would bump the registration timestamp and look like a new
+signup to the greeter/faucet), so a bot registered before this change upgrades once.
+
+To make the bots appear in a new user's Contacts, list them in the relay's curated defaults
+(`GET /metadata/monad/curated-defaults`, the mechanism the app already reads):
+
+    cd packages/bot
+    yarn -s curated-defaults          # prints [[registry.curated_defaults]] TOML, address + name only
+    # append the output to the relay config (see backend/docker/cashwebd.toml), restart the relay
+
+Addresses come from each bot's own identity file (`*_BOT_IDENTITY_JSON`, same paths the bots use),
+so they are per machine/network and nothing is hard-coded. The script is read-only: it never
+creates an identity file, and if any are missing it prints every missing path and exits 1 (start
+those bots once, or pass `--create-missing` to create them explicitly; the launcher, #312, should). The app shows the curated name immediately, then refreshes name/bio/avatar from the profile;
+a registered profile whose display name is empty, whitespace or only invisible characters is
+labelled with a short address, never "Loading...". No chat is opened automatically, and a default
+the user deleted is not added back on later launches.
+
 ## Non-goals (per the ticket)
 
 Production hardening, multi-user bot support, prompt/persona design polish, and a full

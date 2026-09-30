@@ -34,6 +34,8 @@ export const BALANCE_BACKOFF_MAX_MS = 5 * 60 * 1000
 const balance = ref<bigint | null>(null)
 const hasError = ref(false)
 const loaded = computed(() => balance.value !== null)
+// True only for a real, loaded zero (never for "not loaded yet" or a failed fetch).
+const isEmpty = computed(() => balance.value === 0n)
 const formattedBalance = computed(
   () =>
     `${activeChain.toDisplayAmount(balance.value ?? 0n)} ${activeChain.unit}`,
@@ -177,6 +179,7 @@ export function useBalance() {
   return {
     formattedBalance,
     loaded,
+    isEmpty,
     hasError,
     refresh: () => fetchBalance(true),
   }

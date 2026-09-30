@@ -29,7 +29,7 @@
         </q-avatar>
       </q-item-section>
       <q-item-section @click="contactClick(address, contact)">
-        <q-item-label>{{ contact.profile.name }}</q-item-label>
+        <q-item-label lines="1">{{ contact.profile.name }}</q-item-label>
         <q-item-label lines="1" caption>
           <span class="text-weight-bold">{{ $t('contactItem.address') }}:</span>
           {{ address }}

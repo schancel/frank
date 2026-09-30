@@ -25,7 +25,7 @@
         />
       </div>
       <div class="col-auto">
-        <q-icon name="error" color="red" />{{ $t('outgoing.failed') }}
+        <q-icon name="error" color="red" />{{ $t('chatMessage.failedToSend') }}
         <span v-if="failureText" data-testid="outgoing-failure-reason">
           {{ failureText }}
         </span>
@@ -168,7 +168,9 @@ export default defineComponent({
       }
       if (this.status === 'payment-pending') return this.paymentText
       if (this.status === 'error') {
-        return `${this.$t('outgoing.failed')} ${this.failureText}`.trim()
+        return `${this.$t('chatMessage.failedToSend')} ${
+          this.failureText
+        }`.trim()
       }
       return ''
     },

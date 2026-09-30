@@ -964,6 +964,98 @@ describe('createMonadChain: directMessages.fetchSince', () => {
   })
 })
 
+describe('createMonadChain: one per-wallet queue for every account-spending operation', () => {
+  it('a slow direct-message send blocks reconcile, the unattributed check and a topic burn until it settles, then they run one at a time in order', async () => {
+    const chain = createMonadChain(TEST_CONFIG)
+    const alice = MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX)
+    const bob = MonadIdentity.fromPrivateKeyHex(BOB_PRIVATE_KEY_HEX)
+    const wallet = makeWallet(alice)
+    mockedFetchMonadProfile.mockResolvedValue({
+      address: bob.address,
+      pubKey: new Uint8Array(bob.compressedPubKey),
+    })
+    const events: string[] = []
+    let running = 0
+    let maxRunning = 0
+    const track = async <T>(name: string, work: () => Promise<T>) => {
+      running += 1
+      maxRunning = Math.max(maxRunning, running)
+      events.push(`start:${name}`)
+      try {
+        return await work()
+      } finally {
+        events.push(`end:${name}`)
+        running -= 1
+      }
+    }
+    let finishSend!: (value: unknown) => void
+    const sendPending = new Promise(resolve => {
+      finishSend = resolve
+    })
+    ;(MonadStampClient as jest.Mock).mockImplementation(() => ({
+      submitStampedMessage: () => track('dm-send', () => sendPending),
+      resumePendingAttempts: () =>
+        track('resume', async () => {
+          await new Promise(resolve => setImmediate(resolve))
+          return []
+        }),
+      attemptStatus: () => 'unknown',
+      recordedAttempts: () => [],
+    }))
+    ;(MonadTopicPostClient as jest.Mock).mockImplementation(() => ({
+      submitTopicPost: () =>
+        track('topic-post', async () => ({
+          stored: {},
+          payloadHashHex: 'feed',
+          txHash: '0xt',
+          leaseIndex: 0,
+        })),
+    }))
+    ;(wallet.pool.prepareBurnAccount as jest.Mock).mockImplementation(() =>
+      track('burn-prepare', async () => ({ index: 4, fundingTxHashes: [] })),
+    )
+
+    const send = chain.directMessages.send({
+      wallet,
+      recipient: bob.address,
+      items: [{ type: 'text', text: 'x' }],
+    })
+    await new Promise(resolve => setImmediate(resolve))
+    const others = [
+      chain.directMessages.reconcileAttempts({
+        wallet,
+        payloadDigests: ['a'],
+      }),
+      chain.directMessages.unattributedAttempts({
+        wallet,
+        knownDigests: [],
+      }),
+      chain.topics.post({
+        wallet,
+        topic: 'general',
+        entries: [{ kind: 'post', message: 'hi' }],
+        direction: 'up',
+        voteWeightWei: 5_000n,
+      }),
+    ]
+    await new Promise(resolve => setImmediate(resolve))
+    // Only the first send has started; nothing else touched the wallet's accounts meanwhile.
+    expect(events).toEqual(['start:dm-send'])
+
+    finishSend({ payloadHashHex: 'first' })
+    await send
+    await Promise.all(others)
+    expect(maxRunning).toBe(1) // never two account-touching operations at once
+    expect(events.filter(e => e.startsWith('start:'))).toEqual([
+      'start:dm-send',
+      'start:resume',
+      'start:resume',
+      'start:burn-prepare',
+      'start:topic-post',
+    ])
+  })
+})
+
 describe('createMonadChain: topics.post', () => {
   it('submits a topic post via MonadTopicPostClient and returns its payloadDigest', async () => {
     const chain = createMonadChain(TEST_CONFIG)

@@ -137,7 +137,7 @@ describe('ChatMessageSuffix outgoing states (#269, #270)', () => {
       { status: 'error', failureReason: 'unreachable' },
       frFR,
     )
-    expect(failed.text()).toContain("Échec de l'envoi")
+    expect(failed.text()).toContain('Échec de l’envoi')
     expect(failed.text()).toContain('Impossible de joindre le serveur.')
     const pending = mountSuffix(
       { status: 'payment-pending', paymentState: 'live' },

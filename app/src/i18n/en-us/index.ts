@@ -197,7 +197,6 @@ export default {
     paymentQueued:
       'Waiting for an earlier message to finish. This one will be sent after it.',
     paymentChecking: 'Checking payment status…',
-    failed: 'Failed to send',
     reasonUnreachable: "Can't reach the server.",
     reasonUnavailable: 'This relay does not offer messaging.',
     reasonRejected: 'The relay rejected it.',

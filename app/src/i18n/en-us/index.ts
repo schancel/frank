@@ -69,6 +69,19 @@ export default {
     explainerCountUnverified:
       'The round did not announce its size, so the number of entrants is not checked.',
   },
+  blackjackDealer: {
+    silentTitle: 'The dealer has not answered',
+    silentBody:
+      'Your move was sent and paid for, but no reply has come back. The dealer may be offline, and a move sent while it was offline may never be seen.',
+    silentWait: 'Wait for the dealer to come back before trying again.',
+    silentNoResend:
+      'This wager cannot be re-sent from here: it would be paid twice.',
+    silentRefund:
+      'Your wager is not refunded automatically (only a bet the dealer rejects is). If the dealer stays offline, contact whoever runs it.',
+    resendConfirm:
+      'Send my {action} again. I understand it is paid again and, if the first one also arrives, it may be played twice.',
+    resend: 'Send my move again',
+  },
   blackjackBet: {
     menuLabel: 'Play blackjack',
     title: 'Start a blackjack hand',

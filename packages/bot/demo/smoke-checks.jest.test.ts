@@ -3,7 +3,15 @@ import { MessageItem } from '@frank/cashweb/types/messages'
 import { STUB_REPLY_PREFIX } from '../qwen-reply'
 import { createServer, Server } from 'http'
 
-import { classifyReply, checkCors } from './smoke-checks'
+import { buildTopicPostPayload } from '@frank/wallet/monad-topic-post-client'
+
+import {
+  checkCors,
+  classifyReply,
+  POSTED_MESSAGE,
+  POSTED_TITLE,
+  verifyReadBackPost,
+} from './smoke-checks'
 import { startFakeRpc } from './fake-rpc'
 import { DemoHandle } from './demo'
 
@@ -116,5 +124,25 @@ describe('checkCors (#361)', () => {
     } finally {
       await fake.close()
     }
+  })
+})
+
+describe('verifyReadBackPost (#364)', () => {
+  const payload = (title: string, message: string) =>
+    buildTopicPostPayload({ topic: 'news', entries: [{ kind: 'post', title, message }] })
+
+  it('passes only when the title and the message read back are the ones posted', () => {
+    expect(verifyReadBackPost(payload(POSTED_TITLE, POSTED_MESSAGE), 'abcdef0123456789').ok).toBe(
+      true,
+    )
+  })
+
+  it('fails on a different title, a different message, no entries, or no post at all', () => {
+    expect(verifyReadBackPost(payload('Other', POSTED_MESSAGE), 'ab').detail).toMatch(/different/)
+    expect(verifyReadBackPost(payload(POSTED_TITLE, 'other'), 'ab').ok).toBe(false)
+    expect(
+      verifyReadBackPost(buildTopicPostPayload({ topic: 'news', entries: [] }), 'ab').detail,
+    ).toMatch(/no entries/)
+    expect(verifyReadBackPost(undefined, 'ab').detail).toMatch(/does not return it/)
   })
 })

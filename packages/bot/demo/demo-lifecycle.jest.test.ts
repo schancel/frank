@@ -488,6 +488,36 @@ process.stdin.on('end', () => {
     }, 30000)
   })
 
+  describe('a failed start does not claim the state dir (first-run trap)', () => {
+    it('a real-network start that fails its prerequisites leaves no marker, so --fake-chain still works', async () => {
+      const real = await config(
+        {
+          MONAD_TESTNET_HTTP_RPC_URL: 'http://127.0.0.1:9',
+          E2E_DEMO_MAIN_WALLET_JSON: join(dir, 'missing-wallet.json'),
+          FRANK_DEMO_NO_FAUCET: '1',
+          CASHWEBD_BIN: relayStub('http'),
+        },
+        [],
+        false,
+      )
+      const err = await startDemo(real, opts).then(
+        () => undefined,
+        e => e,
+      )
+      expect(err).toBeInstanceOf(DemoConfigError)
+      expect((err as DemoConfigError).message).toMatch(/E2E_DEMO_MAIN_WALLET_JSON does not exist/)
+      expect(existsSync(join(real.stateDir, 'demo-mode.json'))).toBe(false)
+
+      const fake = await config({ CASHWEBD_BIN: relayStub('http') }, [])
+      const handle = await startDemo(fake, opts)
+      expect(JSON.parse(readFileSync(join(fake.stateDir, 'demo-mode.json'), 'utf8')).mode).toBe(
+        'fake-chain',
+      )
+      await handle.stop()
+      await handle.done
+    }, 30000)
+  })
+
   describe('the real CLI (separate process)', () => {
     async function runCli(
       signal: NodeJS.Signals,

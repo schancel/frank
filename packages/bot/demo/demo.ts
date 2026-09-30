@@ -32,7 +32,7 @@ import {
   minBlackjackFundsWei,
   resolveDemoConfig,
 } from './demo-config'
-import { checkDemoMode } from './demo-mode'
+import { checkDemoMode, writeDemoMode } from './demo-mode'
 import { EnvFileError, readEnvFile } from './env-file'
 import { startFakeRpc, FakeRpc } from './fake-rpc'
 import {
@@ -403,6 +403,8 @@ export async function startDemo(
         problems.some(p => p.includes('is in use')) ? [...problems, ...staleLines] : problems,
       )
     }
+    // Only now is the run real enough to claim the directory for this mode.
+    writeDemoMode(config.stateDir, config.fakeChain ? 'fake-chain' : 'real')
     prepareStateDir(logDir)
 
     if (config.fakeChain) {

@@ -22,8 +22,9 @@ only its own children. If an ancestor terminal is closed, the usual SIGHUP handl
 launcher started directly with `node` does no parent polling.
 
 **State dir modes**: a state dir belongs to one mode. The launcher writes a small non-secret marker
-`<state dir>/demo-mode.json` (`{mode: "fake-chain" | "real", chainId, createdAt}`) at first start
-and refuses to start when the requested mode or chain id differs ("this state dir was created for
+`<state dir>/demo-mode.json` (`{mode: "fake-chain" | "real", chainId, createdAt}`) once the
+prerequisite checks have passed (a start that fails on a missing wallet or a busy port claims
+nothing, so a first failed `yarn demo` does not poison the dir for `--fake-chain`) and refuses to start when the requested mode or chain id differs ("this state dir was created for
 the fake chain; ... use a new FRANK_DEMO_STATE_DIR, or delete <state dir>"), because bot
 identities, stamp-pool records and faucet records made against the fake chain mean nothing on a
 real network. A state dir from before the marker that holds a fake-chain wallet is refused for a

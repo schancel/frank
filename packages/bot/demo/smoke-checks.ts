@@ -96,8 +96,8 @@ const PROMPTS: Record<string, MessageItem[]> = {
   blackjack: [{ type: 'blackjack-move', gameId: 'smoke-game', action: 'deal' }],
 }
 
-const POSTED_TITLE = 'Demo smoke'
-const POSTED_MESSAGE = 'posted by the smoke test'
+export const POSTED_TITLE = 'Demo smoke'
+export const POSTED_MESSAGE = 'posted by the smoke test'
 
 /** The origin of the app's dev server (what a browser sends as `Origin`). */
 const APP_ORIGIN = 'http://localhost:8080'
@@ -200,6 +200,41 @@ export async function checkCors(handle: DemoHandle): Promise<SmokeCheck> {
     : { name: 'cors', ok: false, detail: failures.join('; ') }
 }
 
+/** Checks the payload the relay returned for the posted topic: present, and the SAME title and
+ * message that were posted (not merely "some post"). Pure, unit-tested. */
+export function verifyReadBackPost(
+  payload: Uint8Array | undefined,
+  payloadHashHex: string,
+): SmokeCheck {
+  if (!payload) {
+    return {
+      name: 'topic-post',
+      ok: false,
+      detail: 'the relay accepted the post but does not return it',
+    }
+  }
+  const entry = BroadcastMessage.deserializeBinary(payload).getEntriesList()[0]
+  if (!entry) {
+    return { name: 'topic-post', ok: false, detail: 'the relay returned a post with no entries' }
+  }
+  const read = BroadcastForumPostPayload.deserializeBinary(entry.getPayload_asU8())
+  if (read.getTitle() !== POSTED_TITLE || read.getMessage() !== POSTED_MESSAGE) {
+    return {
+      name: 'topic-post',
+      ok: false,
+      detail: `the relay returned a different post: title "${read.getTitle()}", message "${read.getMessage()}"`,
+    }
+  }
+  return {
+    name: 'topic-post',
+    ok: true,
+    detail: `posted to "news" and read back the same title and message (payload ${payloadHashHex.slice(
+      0,
+      12,
+    )}...)`,
+  }
+}
+
 /** Posts a forum topic through the relay's real route (a burn transaction to the demo burn address
  * plus `PUT /message/monad/topics`) and reads it back (#364). A relay configured without the burn
  * address answers HTTP 500 here. */
@@ -240,31 +275,7 @@ export async function checkTopicPost(
       leaseIndex: prepared.index,
     })
     const view = await client.fetchStoredTopicPostView(result.payloadHashHex)
-    const payload = view?.post?.post?.encryptedPayload
-    if (!payload) {
-      return {
-        name: 'topic-post',
-        ok: false,
-        detail: 'the relay accepted the post but does not return it',
-      }
-    }
-    const entry = BroadcastMessage.deserializeBinary(payload).getEntriesList()[0]
-    const read = BroadcastForumPostPayload.deserializeBinary(entry.getPayload_asU8())
-    if (read.getTitle() !== POSTED_TITLE || read.getMessage() !== POSTED_MESSAGE) {
-      return {
-        name: 'topic-post',
-        ok: false,
-        detail: `the relay returned a different post: title "${read.getTitle()}", message "${read.getMessage()}"`,
-      }
-    }
-    return {
-      name: 'topic-post',
-      ok: true,
-      detail: `posted to "news" and read back the same title and message (payload ${result.payloadHashHex.slice(
-        0,
-        12,
-      )}...)`,
-    }
+    return verifyReadBackPost(view?.post?.post?.encryptedPayload, result.payloadHashHex)
   } catch (err) {
     const status = (err as { status?: number }).status
     return {

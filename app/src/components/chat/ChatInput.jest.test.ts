@@ -182,3 +182,19 @@ describe('compose box next to controls inside a chat bubble (#395)', () => {
     expect(document.activeElement).toBe(el)
   })
 })
+
+describe('stable chat-level focus target (#429)', () => {
+  afterEach(() => {
+    document.body.innerHTML = ''
+  })
+
+  it('exposes the real compose input as its public focus target', () => {
+    const wrapper = mount(ChatInput, {
+      attachTo: document.body,
+      global: globalOptions,
+    })
+    ;(wrapper.vm as unknown as { focus: () => void }).focus()
+    expect(document.activeElement).toBe(wrapper.find('input').element)
+    wrapper.unmount()
+  })
+})

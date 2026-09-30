@@ -25,6 +25,7 @@
                   :chat-width="chatWidth"
                   :payload-digest="msg.payloadDigest"
                   :ref="msg.payloadDigest"
+                  :focus-after-retry="focusComposerAfterRetry"
                   @replyClicked="({ payloadDigest }) => setReply(payloadDigest)"
                   @replyDivClick="scrollToMessage"
                   @sendFollowUp="sendFollowUpItems"
@@ -205,6 +206,11 @@ export default defineComponent({
     })
   },
   methods: {
+    focusComposerAfterRetry() {
+      void this.$nextTick(() => {
+        ;(this.$refs.chatInput as { focus?: () => void } | undefined)?.focus?.()
+      })
+    },
     toSendFileDialog(args: unknown) {
       this.$emit('sendFileClicked', args)
     },

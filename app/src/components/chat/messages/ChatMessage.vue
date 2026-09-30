@@ -187,6 +187,13 @@ export default defineComponent({
       required: false,
       default: () => -1,
     },
+    /** Stable parent callback: a successful retry may unmount this keyed component before its
+     * awaited action returns, so a component event is no longer deliverable at that point. */
+    focusAfterRetry: {
+      type: Function as PropType<() => void>,
+      required: false,
+      default: undefined,
+    },
   },
   methods: {
     handleReplyDivClick(args: string) {
@@ -240,6 +247,10 @@ export default defineComponent({
                 persistent: true,
               })
               .onOk(() => void this.resend(true))
+          } else if (outcome.state === 'sent') {
+            // The store rekeys this bubble from its optimistic id to the final payload digest.
+            // Ask the stable Chat parent to take focus after this component unmounts.
+            this.focusAfterRetry?.()
           }
         } catch (error) {
           errorNotify(error instanceof Error ? error : new Error(String(error)))
@@ -253,11 +264,15 @@ export default defineComponent({
         payloadDigest: this.payloadDigest,
       })
       const stampAmount = this.getStampAmount(this.address)
-      return this.$relayClient.sendMessageImpl({
+      const outcome = await this.$relayClient.sendMessageImpl({
         address: this.address,
         items: this.message.items,
         stampAmount,
       })
+      // Legacy retry deletes this keyed bubble before sending its replacement, so the parent is
+      // the only stable owner that can perform the post-success focus handoff.
+      this.focusAfterRetry?.()
+      return outcome
     },
     confirmDiscard() {
       this.$q
@@ -371,3 +386,4 @@ export default defineComponent({
   },
 })
 </script>
+this.focusAfterRetry?.()

@@ -136,6 +136,10 @@ export default defineComponent({
     'sendFileClicked',
   ],
   methods: {
+    /** Public focus target for chat-level focus handoffs. */
+    focus() {
+      ;(this.$refs.inputBox as { focus?: () => void } | undefined)?.focus?.()
+    },
     // ChatInput drop/paste handler
     async dp(e: ClipboardEvent | DragEvent) {
       // The text box stays editable during a send (#396), so the attachment path must be gated

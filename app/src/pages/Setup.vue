@@ -17,7 +17,14 @@
 
     <q-page-container>
       <q-page class="q-ma-none q-pa-sm">
+        <replace-account-guard
+          v-if="guardActive"
+          :confirmed="existingConfirmed"
+          @cancel="$router.push('/')"
+          @acknowledge="acknowledgeReplace"
+        />
         <q-stepper
+          v-else
           v-model="step"
           ref="stepper"
           color="primary"
@@ -38,7 +45,7 @@
             icon="vpn_key"
             :done="step > 2"
           >
-            <account-step v-model:account-data="accountData" />
+            <account-step v-model:account-data="accountData" :resume="resume" />
           </q-step>
           <q-step
             v-if="isNewAccount"
@@ -118,6 +125,7 @@ import {
 } from '../utils/constants'
 import { errorNotify } from '../utils/notifications'
 import { persistSetupAndReload } from '../utils/setup-persistence'
+import { classifyAccount } from '../utils/account-state'
 import {
   commitValidatedSetupName,
   commitValidatedSetupSeed,
@@ -131,6 +139,7 @@ import AccountStep from '../components/setup/AccountStep.vue'
 import DepositStep from '../components/setup/DepositStep.vue'
 import EulaStep from '../components/setup/EULAStep.vue'
 import SeedConfirmStep from '../components/setup/SeedConfirmStep.vue'
+import ReplaceAccountGuard from '../components/setup/ReplaceAccountGuard.vue'
 
 import { useRelayClientStore } from 'src/stores/relay-client'
 import { useWalletStore } from 'src/stores/wallet'
@@ -146,6 +155,7 @@ export default defineComponent({
     DepositStep,
     EulaStep,
     SeedConfirmStep,
+    ReplaceAccountGuard,
   },
   setup() {
     const relayClient = useRelayClientStore()
@@ -177,8 +187,27 @@ export default defineComponent({
   data() {
     const wallet = useWalletStore()
     const contacts = useContactStore()
+    const storedSeed = wallet.seedPhrase
+    // #284 resume mode: a stored seed with no display name (the old #267 bug). The stored phrase
+    // is confirmed and named in place; it is never regenerated, replaced or imported over.
+    const accountState = classifyAccount({
+      seedPhrase: storedSeed,
+      name: useProfileStore().profile?.name,
+      seedConfirmedAt: wallet.seedConfirmedAt,
+    })
+    const resume = accountState === 'needs-recovery'
+    // #304: a finished account (seed and name) already lives on this device. Replacing it
+    // needs an explicit, typed acknowledgement; until then the onboarding steps are not shown
+    // and nothing can be committed.
+    const existingAccount =
+      accountState === 'completed-unconfirmed' || accountState === 'confirmed'
 
     return {
+      resume,
+      existingAccount,
+      existingConfirmed: accountState === 'confirmed',
+      replaceAcknowledged: false,
+      storedSeed: resume ? storedSeed : null,
       step: 1,
       accountData: {
         name: '',
@@ -228,6 +257,13 @@ export default defineComponent({
         this.challengeError = true
       }
     },
+    acknowledgeReplace() {
+      this.replaceAcknowledged = true
+      // The default draft is the STORED phrase; a replacement must start from a fresh one
+      // (or an import), never silently keep the old one under a new profile.
+      this.accountData.seed = generateMnemonic()
+      this.step = 1
+    },
     onSeedConfirmed() {
       if (this.challenge) this.confirmedSeed = this.challenge.seed
     },
@@ -236,6 +272,23 @@ export default defineComponent({
      * marker stored atomically with the seed.
      */
     async completeAccountStep(confirmedAt: number) {
+      if (this.existingAccount && !this.replaceAcknowledged) {
+        // Independent of the UI: an existing account is never replaced, and its profile never
+        // overwritten, without the typed acknowledgement.
+        const error = new Error(this.$t('setup.replaceNotAcknowledged'))
+        errorNotify(error)
+        throw error
+      }
+      if (
+        this.resume &&
+        normalizeSetupMnemonic(this.accountData.seed) !==
+          normalizeSetupMnemonic(this.storedSeed ?? '')
+      ) {
+        // Belt and braces: resume mode may only ever re-store the SAME phrase it found.
+        const error = new Error(this.$t('setup.storedSeedMismatch'))
+        errorNotify(error)
+        throw error
+      }
       if (!this.avatar) {
         this.avatar = await this.selectRandomAvatar()
       }
@@ -619,6 +672,9 @@ export default defineComponent({
         default:
           return true
       }
+    },
+    guardActive(): boolean {
+      return this.existingAccount && !this.replaceAcknowledged
     },
     isNewAccount(): boolean {
       return this.accountData.nameRequired !== false

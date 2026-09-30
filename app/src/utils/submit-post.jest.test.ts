@@ -47,3 +47,40 @@ describe('submitPost', () => {
     expect(navigateBack).not.toHaveBeenCalled()
   })
 })
+
+describe('submitPost with a burn that landed but could not be read back', () => {
+  it('shows only the refresh notice (not "created"), leaves the form, and shows no error', async () => {
+    const { BurnRefreshError } = await import('./burn-refresh-error')
+    const submit = jest
+      .fn()
+      .mockRejectedValue(new BurnRefreshError('post', new Error('x')))
+    const errorNotify = jest.fn()
+    const infoNotify = jest.fn()
+    const navigateBack = jest.fn()
+
+    await submitPost({
+      submit,
+      errorNotify,
+      infoNotify,
+      navigateBack,
+      messages: { created: 'CREATED', refreshFailed: 'REFRESH_FAILED' },
+    })
+
+    expect(infoNotify).toHaveBeenCalledTimes(1)
+    expect(infoNotify).toHaveBeenCalledWith('REFRESH_FAILED')
+    expect(errorNotify).not.toHaveBeenCalled()
+    expect(navigateBack).toHaveBeenCalledTimes(1)
+  })
+
+  it('uses the localized created text when given', async () => {
+    const infoNotify = jest.fn()
+    await submitPost({
+      submit: jest.fn().mockResolvedValue(undefined),
+      errorNotify: jest.fn(),
+      infoNotify,
+      navigateBack: jest.fn(),
+      messages: { created: 'CREATED', refreshFailed: 'R' },
+    })
+    expect(infoNotify).toHaveBeenCalledWith('CREATED')
+  })
+})

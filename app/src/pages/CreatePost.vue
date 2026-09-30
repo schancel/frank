@@ -68,8 +68,23 @@
         </q-card-section>
       </q-card-section>
       <q-card-actions align="right">
+        <div
+          v-if="preparationStatus"
+          class="text-caption q-mr-sm"
+          role="status"
+          data-test="post-status"
+        >
+          {{ preparationStatus }}
+        </div>
         <q-btn @click="back" label="back" color="negative" class="q-ma-sm" />
-        <q-btn type="submit" label="Post" color="primary" class="q-ma-sm" />
+        <q-btn
+          type="submit"
+          label="Post"
+          color="primary"
+          class="q-ma-sm"
+          :disable="posting"
+          :loading="posting"
+        />
       </q-card-actions>
     </q-form>
   </q-card>
@@ -98,6 +113,7 @@ import { displayToSafeRawAmount } from 'src/utils/chain-amount'
 import AMessage from '../components/forum/ForumMessage.vue'
 import { errorNotify, infoNotify } from 'src/utils/notifications'
 import { submitPost } from 'src/utils/submit-post'
+import { stampPreparationStatus } from 'src/utils/stamp-preparation-status'
 
 export default defineComponent({
   setup() {
@@ -127,6 +143,8 @@ export default defineComponent({
       message: '',
       parentDigest,
       chainUnit: activeChain.unit,
+      posting: false,
+      preparationStatus: null as string | null,
     }
   },
   beforeRouteUpdate(to, from, next) {
@@ -177,6 +195,10 @@ export default defineComponent({
         console.error('entry is null in CreatePost.vue post handler')
         return
       }
+      // A second submit while the first is still preparing/funding would queue a second burn.
+      if (this.posting) return
+      this.posting = true
+      this.preparationStatus = this.$t('stampPreparation.posting')
 
       await submitPost({
         submit: async () => {
@@ -190,11 +212,28 @@ export default defineComponent({
             ),
             topic: this.topic,
             parentDigest: this.parentDigest,
+            onPreparationProgress: progress => {
+              this.preparationStatus = stampPreparationStatus(
+                progress,
+                (key, params) => this.$t(key, params ?? {}),
+                {
+                  format: raw => activeChain.toDisplayAmount(raw),
+                  unit: activeChain.unit,
+                },
+              )
+            },
           })
         },
         errorNotify,
         infoNotify,
         navigateBack: this.back,
+        messages: {
+          created: this.$t('stampPreparation.postCreated'),
+          refreshFailed: this.$t('stampPreparation.postedRefreshFailed'),
+        },
+      }).finally(() => {
+        this.posting = false
+        this.preparationStatus = null
       })
     },
     back() {

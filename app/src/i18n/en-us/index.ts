@@ -11,6 +11,14 @@ export default {
     donationMessage:
       'Thank you for participating in our vision of the future of online communications. Please consider donating to our efforts by sending real BCH to bitcoincash:qq7vt04md0pt6fk5szhcx4cgsfuzmppy5u4hxshr4a',
   },
+  stampPreparation: {
+    posting: 'Posting…',
+    postCreated: 'Post created!',
+    postedRefreshFailed:
+      'Your post was published, but refreshing failed. Reload to see it. Do not post it again.',
+    votedRefreshFailed:
+      'Your vote was sent, but refreshing failed. Reload to see it. Do not vote again.',
+  },
   forum: {
     noPosts: 'No posts yet.',
   },

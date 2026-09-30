@@ -14,6 +14,14 @@ export default {
     donationMessage:
       "Merci de participer à notre vision du futur des communications. Merci de considérer contribuer en envoyant une donation en BCH à l'adresse suivante : bitcoincash:qq7vt04md0pt6fk5szhcx4cgsfuzmppy5u4hxshr4a",
   },
+  stampPreparation: {
+    posting: 'Publication en cours…',
+    postCreated: 'Message publié !',
+    postedRefreshFailed:
+      'Votre message a été publié, mais l’actualisation a échoué. Rechargez pour le voir. Ne le publiez pas à nouveau.',
+    votedRefreshFailed:
+      'Votre vote a été envoyé, mais l’actualisation a échoué. Rechargez pour le voir. Ne votez pas à nouveau.',
+  },
   chatLayout: {
     info: 'Infos',
     infoTitle: 'Infos',

@@ -89,6 +89,7 @@ import {
   ActiveChain,
   ChainAddress,
   DirectMessageClient,
+  DirectMessagePreparationProgress,
   DirectMessageReceived,
   DirectMessageSendResult,
   ProfileInfo,
@@ -106,7 +107,10 @@ import { MonadHdKeyring } from '../monad-hd-keyring'
 import { MonadChangeKeyring } from '../monad-change-keyring'
 import { MonadChangePool } from '../monad-change-pool'
 import { MonadSubAccountPool } from '../monad-account-pool'
-import { SubAccountLeaseManager } from '../monad-account-lease'
+import {
+  BurnNotSentError,
+  SubAccountLeaseManager,
+} from '../monad-account-lease'
 import { MonadHttpClient } from '../monad-http'
 import { MonadAccountTxSigner } from '../monad-account-tx'
 import { MonadWalletHandle } from '../monad-wallet-handle'
@@ -136,6 +140,7 @@ import {
 import {
   MonadTopicPostClient,
   MonadTopicPostViewProto,
+  quoteMonadTopicBurnGasReserve,
 } from '../monad-topic-post-client'
 import { MonadTopicVoteClient } from '../monad-topic-vote-client'
 import {
@@ -443,15 +448,102 @@ export function viewToForumMessage(
   }
 }
 
+/** Preparing the account that will burn a topic post/vote failed before anything was posted. The
+ * pool's funding is record-before-broadcast, so retrying resumes an already-sent funding
+ * transaction instead of sending another; the message says so because the caller shows it as is. */
+export class TopicBurnPreparationError extends Error {
+  constructor(
+    reason: string,
+    options?: { cause?: unknown; stage?: 'preparing' | 'signing' },
+  ) {
+    super(
+      options?.stage === 'signing'
+        ? `Could not build the burn (${reason}). Nothing was sent, and the funded account is kept. ` +
+            'It is safe to try again.'
+        : `Could not prepare an account to burn from (${reason}). Nothing was sent. ` +
+            'It is safe to try again: a funding transaction that was already sent is reused, not repeated.',
+    )
+    this.name = 'TopicBurnPreparationError'
+    if (options?.cause !== undefined) {
+      ;(this as { cause?: unknown }).cause = options.cause
+    }
+  }
+}
+
+/** A burn that failed while being built/signed (RPC hiccup after the account was funded) sent
+ * nothing and left the funded account available: report it with the same "nothing sent, safe to
+ * retry" message as a failed preparation. Every other error passes through untouched. */
+function asNothingSent(err: unknown): never {
+  if (err instanceof BurnNotSentError) {
+    throw new TopicBurnPreparationError(err.message, {
+      cause: err,
+      stage: 'signing',
+    })
+  }
+  throw err
+}
+
 /** Pure factory: builds an `ActiveChain` from an explicit `MonadChainConfig`. See this file's
  * header, "Configuration", for why config is a param here (unlike the `MonadChain` singleton
  * below, which reads it from env). */
 export function createMonadChain(config: MonadChainConfig): ActiveChain {
   const walletsByIdentity = new Map<string, Promise<MonadChainWalletHandle>>()
-  const directMessageSendQueues = new WeakMap<
-    MonadChainWalletHandle,
-    Promise<void>
-  >()
+  // One queue per wallet for everything that prepares and spends sub-accounts (direct messages,
+  // topic posts, votes): a burn account prepared for a topic post must not be picked up by a
+  // concurrent stamp selection between preparation and lease.
+  const walletSendQueues = new WeakMap<MonadChainWalletHandle, Promise<void>>()
+  const runWalletExclusive = <T>(
+    wallet: MonadChainWalletHandle,
+    task: () => Promise<T>,
+  ): Promise<T> => {
+    const run = (walletSendQueues.get(wallet) ?? Promise.resolve()).then(task)
+    walletSendQueues.set(
+      wallet,
+      run.then(
+        () => undefined,
+        () => undefined,
+      ),
+    )
+    return run
+  }
+  /** Funds (or reuses) one sub-account able to burn `voteWeightWei` in a single transaction and
+   * returns its pool index for the caller to lease. See `MonadSubAccountPool.prepareBurnAccount`. */
+  const prepareTopicBurnAccount = async (
+    wallet: MonadChainWalletHandle,
+    voteWeightWei: bigint,
+    onProgress:
+      | ((progress: DirectMessagePreparationProgress) => void)
+      | undefined,
+  ): Promise<number> => {
+    const mainAccountSigner = new MonadAccountTxSigner({
+      privateKey: wallet.identity.toPrivateKeyHex(),
+      provider: wallet.provider,
+      httpClient: wallet.httpClient,
+    })
+    try {
+      onProgress?.({ stage: 'checking' })
+      const gasReserveWei = await quoteMonadTopicBurnGasReserve({
+        signer: mainAccountSigner,
+        burnAddress: config.stampBurnAddress,
+      })
+      const preparation = await wallet.pool.prepareBurnAccount({
+        mainAccountSigner,
+        provider: wallet.provider,
+        burnValueWei: voteWeightWei,
+        gasReserveWei,
+        onProgress,
+      })
+      return preparation.index
+    } catch (err) {
+      const reason =
+        typeof (err as { shortMessage?: unknown })?.shortMessage === 'string'
+          ? (err as { shortMessage: string }).shortMessage
+          : err instanceof Error
+          ? err.message
+          : String(err)
+      throw new TopicBurnPreparationError(reason, { cause: err })
+    }
+  }
   const sendDirectMessageExclusive = async (
     params: Parameters<DirectMessageClient['send']>[0],
     wallet: MonadChainWalletHandle,
@@ -529,17 +621,9 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
   const directMessages: DirectMessageClient = {
     async send(params): Promise<DirectMessageSendResult> {
       const wallet = asMonadWallet(params.wallet)
-      const run = (
-        directMessageSendQueues.get(wallet) ?? Promise.resolve()
-      ).then(() => sendDirectMessageExclusive(params, wallet))
-      directMessageSendQueues.set(
-        wallet,
-        run.then(
-          () => undefined,
-          () => undefined,
-        ),
+      return runWalletExclusive(wallet, () =>
+        sendDirectMessageExclusive(params, wallet),
       )
-      return run
     },
 
     async fetchSince(params): Promise<DirectMessageReceived[]> {
@@ -809,27 +893,47 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
     async post(params): Promise<{ payloadDigest: string }> {
       const wallet = asMonadWallet(params.wallet)
       const client = new MonadTopicPostClient(wallet)
-      const result = await client.submitTopicPost({
-        topic: params.topic,
-        entries: params.entries,
-        parentPostHash: params.parentDigest
-          ? getBytes(`0x${params.parentDigest}`)
-          : undefined,
-        direction: params.direction,
-        burnAddress: config.stampBurnAddress,
-        voteWeightWei: params.voteWeightWei,
+      return runWalletExclusive(wallet, async () => {
+        const leaseIndex = await prepareTopicBurnAccount(
+          wallet,
+          params.voteWeightWei,
+          params.onPreparationProgress,
+        )
+        const result = await client
+          .submitTopicPost({
+            topic: params.topic,
+            entries: params.entries,
+            parentPostHash: params.parentDigest
+              ? getBytes(`0x${params.parentDigest}`)
+              : undefined,
+            direction: params.direction,
+            burnAddress: config.stampBurnAddress,
+            voteWeightWei: params.voteWeightWei,
+            leaseIndex,
+          })
+          .catch(asNothingSent)
+        return { payloadDigest: result.payloadHashHex }
       })
-      return { payloadDigest: result.payloadHashHex }
     },
 
     async vote(params): Promise<void> {
       const wallet = asMonadWallet(params.wallet)
       const client = new MonadTopicVoteClient(wallet)
-      await client.castVote({
-        targetPayloadHash: getBytes(`0x${params.payloadDigest}`),
-        direction: params.direction,
-        burnAddress: config.stampBurnAddress,
-        voteWeightWei: params.voteWeightWei,
+      await runWalletExclusive(wallet, async () => {
+        const leaseIndex = await prepareTopicBurnAccount(
+          wallet,
+          params.voteWeightWei,
+          params.onPreparationProgress,
+        )
+        await client
+          .castVote({
+            targetPayloadHash: getBytes(`0x${params.payloadDigest}`),
+            direction: params.direction,
+            burnAddress: config.stampBurnAddress,
+            voteWeightWei: params.voteWeightWei,
+            leaseIndex,
+          })
+          .catch(asNothingSent)
       })
     },
 

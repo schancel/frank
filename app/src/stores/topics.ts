@@ -1,4 +1,5 @@
 import assert from 'assert'
+import { refreshAfterBurn } from 'src/utils/burn-refresh-error'
 import { defineStore } from 'pinia'
 
 import { activeChain, WalletHandle } from '@frank/wallet/chain'
@@ -272,7 +273,9 @@ export const useTopicStore = defineStore('topics', {
         voteWeightWei: BigInt(Math.abs(satoshis)),
         parentDigest,
       })
-      this.fetchMessage({ topic, payloadDigest })
+      await refreshAfterBurn('post', () =>
+        this.fetchMessage({ topic, payloadDigest }),
+      )
     },
     async fetchMessage({
       payloadDigest,
@@ -333,7 +336,9 @@ export const useTopicStore = defineStore('topics', {
         direction: satoshis >= 0 ? 'up' : 'down',
         voteWeightWei: BigInt(Math.abs(satoshis)),
       })
-      await this.fetchMessage({ topic, payloadDigest })
+      await refreshAfterBurn('vote', () =>
+        this.fetchMessage({ topic, payloadDigest }),
+      )
     },
   },
   storage: {

@@ -33,6 +33,7 @@ describe.each([
   'replaceGuard',
   'accountStep',
   'SettingPanel',
+  'stampPreparation',
   'raffleDraw',
   'digitalGoods',
   'chatImage',

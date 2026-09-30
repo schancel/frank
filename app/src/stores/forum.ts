@@ -2,9 +2,14 @@ import assert from 'assert'
 import { defineStore } from 'pinia'
 import { indexBy, uniq } from 'ramda'
 
-import { activeChain, WalletHandle } from '@frank/wallet/chain'
+import {
+  activeChain,
+  DirectMessagePreparationProgress,
+  WalletHandle,
+} from '@frank/wallet/chain'
 
 import { ForumMessage, ForumMessageEntry } from '@frank/cashweb/types/forum'
+import { refreshAfterBurn } from 'src/utils/burn-refresh-error'
 import { SortMode } from 'src/utils/sorting'
 
 export type MessageWithReplies = ForumMessage & {
@@ -178,12 +183,16 @@ export const useForumStore = defineStore('forum', {
       satoshis,
       topic,
       parentDigest,
+      onPreparationProgress,
     }: {
       wallet: WalletHandle
       entry: ForumMessageEntry
       satoshis: number
       topic: string
       parentDigest?: string
+      onPreparationProgress?: (
+        progress: DirectMessagePreparationProgress,
+      ) => void
     }) {
       // See `stores/topics.ts`'s `putMessage` for the signed-number -> direction/magnitude
       // mapping rationale (same Lotus `RegistryHandler.createBroadcast`/`addOfferings`
@@ -196,8 +205,9 @@ export const useForumStore = defineStore('forum', {
         direction: satoshis >= 0 ? 'up' : 'down',
         voteWeightWei: BigInt(Math.abs(satoshis)),
         parentDigest,
+        onPreparationProgress,
       })
-      this.fetchMessage({ payloadDigest })
+      await refreshAfterBurn('post', () => this.fetchMessage({ payloadDigest }))
     },
     async fetchMessage({ payloadDigest }: { payloadDigest: string }) {
       // Note: `ActiveChain.topics.fetchOne` takes no `wallet` -- reading a public topic post
@@ -228,7 +238,7 @@ export const useForumStore = defineStore('forum', {
         direction: satoshis >= 0 ? 'up' : 'down',
         voteWeightWei: BigInt(Math.abs(satoshis)),
       })
-      await this.fetchMessage({ payloadDigest })
+      await refreshAfterBurn('vote', () => this.fetchMessage({ payloadDigest }))
     },
   },
   storage: {

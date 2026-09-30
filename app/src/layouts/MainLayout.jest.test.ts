@@ -217,6 +217,7 @@ interface LayoutVm {
   myDrawerOpen: boolean
   drawerOpener: HTMLElement | null
   toggleMyDrawerOpen(): void
+  restoreFocusAfterOverlay(opener: HTMLElement | null): Promise<void>
 }
 const layoutVm = (w: VueWrapper) => w.vm as unknown as LayoutVm
 
@@ -580,5 +581,34 @@ describe('MainLayout focus restoration guards', () => {
     expect(menu.isConnected).toBe(false)
     expect(document.activeElement).toBe(main)
     wrapper.unmount()
+  })
+
+  it('runs no deferred restore after unmount (timer cleared, nothing pending)', async () => {
+    const { wrapper, router } = await mountLayout(390, host)
+    router.push.mockImplementation(() => new Promise(() => undefined)) // never settles
+    await openDrawer(wrapper)
+    jest.useFakeTimers({ doNotFake: ['nextTick', 'queueMicrotask'] })
+    try {
+      const focus = jest.spyOn(main, 'focus')
+      await wrapper.find('[data-testid="chat-item"]').trigger('click')
+      expect(open(wrapper)).toBe('false')
+      expect(jest.getTimerCount()).toBe(1) // the 1.5s fallback
+      wrapper.unmount()
+      expect(jest.getTimerCount()).toBe(0)
+      jest.advanceTimersByTime(2000)
+      for (let i = 0; i < 10; i++) await Promise.resolve()
+      expect(focus).not.toHaveBeenCalled()
+    } finally {
+      jest.useRealTimers()
+    }
+  })
+
+  it('does not move focus when the layout unmounts while a restore is in flight', async () => {
+    const focus = jest.spyOn(main, 'focus')
+    const { wrapper } = await mountLayout(390, host)
+    const restore = layoutVm(wrapper).restoreFocusAfterOverlay(null)
+    wrapper.unmount() // between the close and the restore tick
+    await restore
+    expect(focus).not.toHaveBeenCalled()
   })
 })

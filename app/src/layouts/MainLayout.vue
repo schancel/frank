@@ -64,6 +64,8 @@ export default defineComponent({
         | ReturnType<typeof setTimeout>
         | undefined,
       ownedClose: false,
+      // Set in beforeUnmount: a restore still in flight must not touch a dead layout's page.
+      disposed: false,
       trueSplitterRatio: compactCutoff,
       // See `drawerBreakpoint`'s own comment above for why this can't just be `true`.
       myDrawerOpen: !isNarrowWidth(this.$q.screen.width),
@@ -115,6 +117,7 @@ export default defineComponent({
     })
   },
   beforeUnmount() {
+    this.disposed = true
     this.removeAfterEach?.()
     this.removeOnError?.()
     clearTimeout(this.pendingRestoreTimer)
@@ -173,6 +176,7 @@ export default defineComponent({
     },
     async restoreFocusAfterOverlay(opener: HTMLElement | null) {
       await this.$nextTick()
+      if (this.disposed) return
       // Only repair focus the close lost or trapped; never move focus the user put elsewhere
       // (e.g. typing in the composer when a resize hid the drawer).
       const active = document.activeElement

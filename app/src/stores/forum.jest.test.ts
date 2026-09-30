@@ -20,6 +20,7 @@ jest.mock('@frank/wallet/chain', () => ({
       vote: jest.fn(),
       fetchByTopic: jest.fn(),
       fetchOne: jest.fn(),
+      discoverTopics: jest.fn(),
     },
   },
 }))
@@ -31,6 +32,7 @@ const mockedPost = activeChain.topics.post as jest.Mock
 const mockedVote = activeChain.topics.vote as jest.Mock
 const mockedFetchByTopic = activeChain.topics.fetchByTopic as jest.Mock
 const mockedFetchOne = activeChain.topics.fetchOne as jest.Mock
+const mockedDiscoverTopics = activeChain.topics.discoverTopics as jest.Mock
 
 const testWallet = {
   identity: { address: { raw: '0xabc' }, displayAddress: '0xabc' },
@@ -51,6 +53,7 @@ function makeMessage(overrides: Partial<ForumMessage> = {}): ForumMessage {
 beforeEach(() => {
   setActivePinia(createPinia())
   jest.clearAllMocks()
+  mockedDiscoverTopics.mockResolvedValue([])
 })
 
 describe('useForumStore: putMessage', () => {
@@ -210,24 +213,108 @@ describe('useForumStore: addOffering', () => {
 })
 
 describe('useForumStore: refreshMessages', () => {
-  it('fetches all topics (empty topic filter) through activeChain.topics.fetchByTopic', async () => {
+  // One refresh now issues one request per topic; script only the `stamp` topic's successive
+  // responses, everything else is empty.
+  const stampResponses = (...batches: (ForumMessage[] | undefined)[]) => {
+    const queue = [...batches]
+    mockedFetchByTopic.mockImplementation(async ({ topic }) =>
+      topic === 'stamp' ? queue.shift() : [],
+    )
+  }
+  const requestedTopics = () =>
+    mockedFetchByTopic.mock.calls.map(([params]) => params.topic)
+
+  it('never requests an empty topic: a fresh user queries the default topics', async () => {
     const store = useForumStore()
     const message = makeMessage()
-    mockedFetchByTopic.mockResolvedValueOnce([message])
-
-    await store.refreshMessages({ wallet: testWallet, topic: 'ignored' })
-
-    expect(mockedFetchByTopic).toHaveBeenCalledWith(
-      expect.objectContaining({ wallet: testWallet, topic: '' }),
+    mockedFetchByTopic.mockImplementation(async ({ topic }) =>
+      topic === 'stamp' ? [message] : [],
     )
+
+    await store.refreshMessages({ wallet: testWallet, topic: '' })
+
+    expect(requestedTopics()).toEqual(
+      expect.arrayContaining(['stamp', 'news', 'trading', 'memes', 'help']),
+    )
+    expect(requestedTopics()).not.toContain('')
     expect(store.getMessage('deadbeef')).toBeTruthy()
+  })
+
+  it('also queries relay-discovered topics and merges other users posts', async () => {
+    const store = useForumStore()
+    mockedDiscoverTopics.mockResolvedValue([
+      { topic: 'custom-room', postCount: 1, lastActivityMs: 1 },
+      { topic: '', postCount: 1, lastActivityMs: 1 },
+    ])
+    mockedFetchByTopic.mockImplementation(async ({ topic }) =>
+      topic === 'custom-room'
+        ? [makeMessage({ topic: 'custom-room', payloadDigest: 'other-user' })]
+        : topic === 'news'
+        ? [makeMessage({ topic: 'news', payloadDigest: 'alice-news' })]
+        : [],
+    )
+
+    await store.refreshMessages({ wallet: testWallet, topic: '' })
+
+    expect(requestedTopics()).toContain('custom-room')
+    expect(requestedTopics()).not.toContain('')
+    expect(store.messages.map(m => m.payloadDigest).sort()).toEqual([
+      'alice-news',
+      'other-user',
+    ])
+  })
+
+  it('a selected topic is requested by name, plus known topics it prefixes', async () => {
+    const store = useForumStore()
+    mockedDiscoverTopics.mockResolvedValue([
+      { topic: 'news-eu', postCount: 1, lastActivityMs: 1 },
+    ])
+    mockedFetchByTopic.mockResolvedValue([])
+
+    await store.refreshMessages({ wallet: testWallet, topic: 'news' })
+
+    expect(requestedTopics().sort()).toEqual(['news', 'news-eu'])
+  })
+
+  it('a selected topic unknown to the relay is still requested by name', async () => {
+    const store = useForumStore()
+    mockedFetchByTopic.mockResolvedValue([])
+
+    await store.refreshMessages({ wallet: testWallet, topic: 'brand-new' })
+
+    expect(requestedTopics()).toEqual(['brand-new'])
+  })
+
+  it('one failing topic does not hide posts from the others', async () => {
+    const store = useForumStore()
+    const consoleError = jest.spyOn(console, 'error').mockImplementation()
+    mockedFetchByTopic.mockImplementation(async ({ topic }) => {
+      if (topic === 'stamp') throw new Error('relay hiccup')
+      return topic === 'news' ? [makeMessage({ topic: 'news' })] : []
+    })
+
+    await store.refreshMessages({ wallet: testWallet, topic: '' })
+
+    expect(store.getMessage('deadbeef')).toBeTruthy()
+    expect(store.hasFetchedOnce).toBe(true)
+    consoleError.mockRestore()
+  })
+
+  it('rejects when every topic fetch fails, without marking the feed as loaded', async () => {
+    const store = useForumStore()
+    mockedFetchByTopic.mockRejectedValue(new Error('relay down'))
+
+    await expect(
+      store.refreshMessages({ wallet: testWallet, topic: '' }),
+    ).rejects.toThrow('relay down')
+    expect(store.hasFetchedOnce).toBe(false)
   })
 
   it('does nothing if fetchByTopic returns no entries', async () => {
     const store = useForumStore()
     mockedFetchByTopic.mockResolvedValueOnce(undefined)
 
-    await store.refreshMessages({ wallet: testWallet, topic: 'ignored' })
+    await store.refreshMessages({ wallet: testWallet, topic: '' })
 
     expect(store.messages).toHaveLength(0)
   })
@@ -242,15 +329,12 @@ describe('useForumStore: refreshMessages', () => {
       entries: [{ kind: 'post', message: 'different content' }],
       timestamp: new Date('2030-01-01T00:00:00.000Z'),
     })
-    mockedFetchByTopic
-      .mockResolvedValueOnce([initial])
-      .mockResolvedValueOnce([updated])
-      .mockResolvedValueOnce([updated])
+    stampResponses([initial], [updated], [updated])
 
-    await store.refreshMessages({ wallet: testWallet, topic: 'ignored' })
+    await store.refreshMessages({ wallet: testWallet, topic: '' })
     const canonicalMessage = store.messages[0]
-    await store.refreshMessages({ wallet: testWallet, topic: 'ignored' })
-    await store.refreshMessages({ wallet: testWallet, topic: 'ignored' })
+    await store.refreshMessages({ wallet: testWallet, topic: '' })
+    await store.refreshMessages({ wallet: testWallet, topic: '' })
 
     expect(store.messages).toHaveLength(1)
     expect(store.messages[0]).toBe(canonicalMessage)
@@ -277,11 +361,12 @@ describe('useForumStore: refreshMessages', () => {
       satoshis: 20,
       timestamp,
     })
-    mockedFetchByTopic
-      .mockResolvedValueOnce([refreshed, comparison])
-      .mockResolvedValueOnce([{ ...refreshed, satoshis: 25 }, comparison])
+    stampResponses(
+      [refreshed, comparison],
+      [{ ...refreshed, satoshis: 25 }, comparison],
+    )
 
-    await store.refreshMessages({ wallet: testWallet, topic: 'ignored' })
+    await store.refreshMessages({ wallet: testWallet, topic: '' })
     expect(sortPostsByMode(store.messages, 'hot')[0].payloadDigest).toBe(
       'comparison',
     )
@@ -292,7 +377,7 @@ describe('useForumStore: refreshMessages', () => {
       expect.objectContaining({ payloadDigest: 'comparison' }),
     ])
 
-    await store.refreshMessages({ wallet: testWallet, topic: 'ignored' })
+    await store.refreshMessages({ wallet: testWallet, topic: '' })
 
     expect(sortPostsByMode(store.messages, 'hot')[0].payloadDigest).toBe(
       'deadbeef',

@@ -231,7 +231,7 @@ export default {
     settings: 'Paramètres',
     back: 'Retour',
     seedWarning:
-      'Ne perdez jamais votre phrase de passe car vous ne seriez plus en mesure de récupérer ce compte.',
+      'Notez votre phrase de récupération et gardez-la en lieu sûr. Si vous la perdez, personne ne pourra récupérer votre compte.',
     searchingRelay: 'Recherche des relais...',
     networkErrorRelayDied: 'Erreur réseau: Le serveur relais ne réponds plus.',
     networkErrorRelayUnexpected:
@@ -361,6 +361,9 @@ export default {
     notFound: 'Non trouvé',
   },
   settings: {
+    title: 'Paramètres',
+    back: 'Retour',
+    openMenu: 'Ouvrir le menu',
     appearance: 'Apparence',
     networking: 'Réseau',
     contactRefreshInterval:
@@ -374,11 +377,11 @@ export default {
   },
   profile: {
     name: 'Pseudonyme',
-    seedEntry: 'Phrase de passe',
+    seedEntry: 'Phrase de récupération',
     importSeed: 'Rappel des mémoires perdues', //? Recover past memories
-    invalidSeed: 'Phrase de passe invalide...',
+    invalidSeed: 'Ce n’est pas une phrase de récupération valide.',
     nameHint: 'Identifiant tel que vu par vos correspondants',
-    enterSeed: 'Entrez votre phrase de passe...',
+    enterSeed: 'Entrez votre phrase de récupération...',
     nameBlank:
       'Saisissez un nom : il ne peut pas être vide ni ne contenir que des espaces.',
     nameTooLong: 'Le nom est trop long : {max} caractères au maximum.',

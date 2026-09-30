@@ -126,13 +126,13 @@ export interface CuratedDefaultEntry {
  * Zero curated dealers, or more than one, fails closed. An empty list (no fetch yet, or a failed
  * fetch) fails closed. */
 export function peerOffersDealerTable(
-  profile: { isBot?: boolean; name?: string | null } | null | undefined,
+  profile: { isBot?: boolean; signedName?: string | null } | null | undefined,
   address?: string | null,
   curated?: readonly CuratedDefaultEntry[] | null,
 ): boolean {
   if (
     profile?.isBot !== true ||
-    (profile.name ?? '').trim() !== CURATED_BLACKJACK_DEALER_NAME
+    (profile.signedName ?? '').trim() !== CURATED_BLACKJACK_DEALER_NAME
   ) {
     return false
   }

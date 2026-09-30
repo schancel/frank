@@ -33,7 +33,11 @@ const balance = ref<bigint | null>(5n * 10n ** 18n)
 
 jest.mock('../../../stores/chats', () => ({ useChatStore: () => store }))
 const mockContact = {
-  profile: { name: 'Blackjack Dealer', isBot: true as boolean },
+  profile: {
+    name: 'Blackjack Dealer',
+    signedName: 'Blackjack Dealer' as string | null | undefined,
+    isBot: true as boolean,
+  },
   curatedDefaults: [
     {
       address: '0x1234567890abcdef1234567890abcdef1234abcd',
@@ -318,7 +322,11 @@ beforeEach(() => {
   balance.value = 5n * 10n ** 18n
   storageData = {}
   store.chats = {}
-  mockContact.profile = { name: 'Blackjack Dealer', isBot: true }
+  mockContact.profile = {
+    name: 'Blackjack Dealer',
+    signedName: 'Blackjack Dealer',
+    isBot: true,
+  }
   mockContact.curatedDefaults = [{ address: DEALER, name: 'Blackjack Dealer' }]
   mockProvider = {
     getTransaction: jest.fn(async () => ({
@@ -595,9 +603,29 @@ describe('the dealer welcome bubble', () => {
   })
 
   it('a copied dealer name and bot marker with no curated provenance shows no bet control (#425)', async () => {
-    mockContact.profile = { name: 'Blackjack Dealer', isBot: true }
+    mockContact.profile = {
+      name: 'Blackjack Dealer',
+      signedName: 'Blackjack Dealer',
+      isBot: true,
+    }
     mockContact.curatedDefaults = []
     const { wrapper } = await mountBubble([welcome()], 0)
+    expect(
+      wrapper.find('[data-testid="blackjack-welcome-title"]').exists(),
+    ).toBe(true)
+    expect(wrapper.find('[data-testid="blackjack-welcome-bet"]').exists()).toBe(
+      false,
+    )
+  })
+
+  it('a curated fallback label with a blank signed name shows no bet control (#422)', async () => {
+    mockContact.profile = {
+      name: 'Blackjack Dealer',
+      signedName: '',
+      isBot: true,
+    }
+    const { wrapper } = await mountBubble([welcome()], 0)
+
     expect(
       wrapper.find('[data-testid="blackjack-welcome-title"]').exists(),
     ).toBe(true)
@@ -618,7 +646,11 @@ describe('the dealer welcome bubble', () => {
   })
 
   it('a non-bot peer welcome shows the text and no bet control (#422)', async () => {
-    mockContact.profile = { name: 'Blackjack Dealer', isBot: false }
+    mockContact.profile = {
+      name: 'Blackjack Dealer',
+      signedName: 'Blackjack Dealer',
+      isBot: false,
+    }
     const { wrapper } = await mountBubble([welcome()], 0)
     expect(
       wrapper.find('[data-testid="blackjack-welcome-title"]').exists(),
@@ -630,12 +662,16 @@ describe('the dealer welcome bubble', () => {
   })
 
   it('another bot, or a dealer name that is not marked a bot, gets no bet control (#422)', async () => {
-    mockContact.profile = { name: 'Qwen', isBot: true }
+    mockContact.profile = { name: 'Qwen', signedName: 'Qwen', isBot: true }
     const qwen = await mountBubble([welcome()], 0)
     expect(
       qwen.wrapper.find('[data-testid="blackjack-welcome-bet"]').exists(),
     ).toBe(false)
-    mockContact.profile = { name: 'Blackjack Dealer', isBot: false }
+    mockContact.profile = {
+      name: 'Blackjack Dealer',
+      signedName: 'Blackjack Dealer',
+      isBot: false,
+    }
     const named = await mountBubble([welcome()], 0)
     expect(
       named.wrapper.find('[data-testid="blackjack-welcome-bet"]').exists(),
@@ -688,7 +724,7 @@ describe('Play again after a resolved hand', () => {
   })
 
   it('a non-dealer peer gets no play-again control (#422)', async () => {
-    mockContact.profile = { name: 'Alice', isBot: false }
+    mockContact.profile = { name: 'Alice', signedName: 'Alice', isBot: false }
     const hand = resolvedHand()
     const { wrapper } = await mountBubble(hand, hand.length - 1)
     expect(wrapper.find('[data-testid="blackjack-play-again"]').exists()).toBe(

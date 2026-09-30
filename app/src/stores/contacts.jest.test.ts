@@ -39,6 +39,7 @@ import {
 } from './contacts'
 import type { ContactState } from './contacts'
 import { activeChain } from '@frank/wallet/chain'
+import { peerOffersDealerTable } from '../utils/blackjack-bet'
 
 import { toChainDisplayAddress as toDisplay } from '../utils/chain-address'
 
@@ -59,6 +60,30 @@ describe('stores/contacts.ts (ticket #42)', () => {
   })
 
   describe('fetchAndAddContact', () => {
+    it('does not manufacture signed-name evidence from a presentation name', () => {
+      const contacts = useContactStore()
+      contacts.addContact({
+        address: ADDRESS,
+        contact: {
+          profile: {
+            name: 'Blackjack Dealer',
+            bio: '',
+            avatar: '',
+            pubKey: null,
+            isBot: true,
+          },
+        },
+      })
+
+      const profile = contacts.getContactProfile(ADDRESS)
+      expect(profile.signedName).toBeUndefined()
+      expect(
+        peerOffersDealerTable(profile, ADDRESS, [
+          { address: ADDRESS, name: 'Blackjack Dealer' },
+        ]),
+      ).toBe(false)
+    })
+
     it('resolves a profile via activeChain.fetchProfile and stores it under the canonical address', async () => {
       const contacts = useContactStore()
       const fetchProfileSpy = jest
@@ -244,10 +269,45 @@ describe('stores/contacts.ts (ticket #42)', () => {
       const profile = contacts.getContactProfile(ADDRESS)
       expect(profile).toMatchObject({
         name: 'Picture Shop',
+        signedName: 'Picture Shop',
         bio: 'Automated store',
         avatar: 'data:image/png;base64,AQID',
       })
     })
+
+    it.each([
+      ['omitted', undefined],
+      ['empty', ''],
+      ['whitespace', '   '],
+    ])(
+      'keeps the curated label for presentation but not as an %s signed dealer name (#422)',
+      async (_label, signedName) => {
+        const contacts = useContactStore()
+        contacts.setUpdateInterval(0)
+        await contacts.addDefaultContact({
+          address: ADDRESS,
+          name: 'Blackjack Dealer',
+        })
+        contacts.replaceCuratedDefaults([
+          { address: ADDRESS, name: 'Blackjack Dealer' },
+        ])
+        jest.spyOn(activeChain, 'fetchProfile').mockResolvedValue({
+          address: { raw: ADDRESS },
+          pubKey: PUB_KEY_BYTES,
+          name: signedName,
+          bot: true,
+        })
+
+        await contacts.refresh(ADDRESS)
+
+        const profile = contacts.getContactProfile(ADDRESS)
+        expect(profile.name).toBe('Blackjack Dealer')
+        expect(profile.signedName).toBe(signedName ?? null)
+        expect(
+          peerOffersDealerTable(profile, ADDRESS, contacts.curatedDefaults),
+        ).toBe(false)
+      },
+    )
 
     it.each([
       ['empty', ''],
@@ -410,6 +470,35 @@ describe('stores/contacts.ts (ticket #42)', () => {
       expect(restored.curatedDefaults).toEqual([])
       contacts.clearCuratedDefaults()
       expect(contacts.curatedDefaults).toEqual([])
+    })
+
+    it('rehydrates signed-name evidence separately from a presentation label (#422)', async () => {
+      const restored = await rehydrateContacts({
+        contacts: {
+          [ADDRESS]: {
+            lastUpdateTime: 1,
+            notify: true,
+            relayURL: null,
+            profile: {
+              name: 'Blackjack Dealer',
+              signedName: '',
+              bio: '',
+              avatar: '',
+              pubKey: null,
+              isBot: true,
+            },
+            inbox: {},
+          },
+        },
+        updateInterval: 1,
+      })
+
+      expect(restored.contacts[ADDRESS]?.profile).toMatchObject({
+        name: 'Blackjack Dealer',
+        signedName: '',
+        isBot: true,
+      })
+      expect(restored.curatedDefaults).toEqual([])
     })
 
     it('rehydrates an old persisted state that has no dismissed list', async () => {

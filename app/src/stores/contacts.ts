@@ -77,6 +77,9 @@ export function isBlankName(name: string | null | undefined): boolean {
 
 type Profile = {
   name: string | null
+  /** Name carried by the last signed profile lookup. Kept separate from `name`, which may be a
+   * relay-curated, address, or user-facing fallback label. */
+  signedName?: string | null
   bio: string | null
   avatar: string | null
   pubKey: PublicKey | null
@@ -144,6 +147,7 @@ type RestorableContactState = {
   relayURL: string | null
   profile: {
     name: string | null
+    signedName?: string | null
     bio: string | null
     avatar: string | null
     pubKey: Uint8Array | null
@@ -296,6 +300,7 @@ export const useContactStore = defineStore('contacts', {
         ...contact,
         profile: {
           name: contact.profile?.name ?? null,
+          signedName: contact.profile?.signedName,
           bio: contact.profile?.bio ?? null,
           avatar: contact.profile?.avatar ?? null,
           isBot: contact.profile?.isBot,
@@ -396,6 +401,7 @@ export const useContactStore = defineStore('contacts', {
               name: isBlankName(profileInfo.name)
                 ? shortAddressLabel(displayAddress)
                 : (profileInfo.name as string),
+              signedName: profileInfo.name ?? null,
               bio: profileInfo.bio ?? '',
               avatar: profileInfo.avatar ?? '',
               isBot: profileInfo.bot === true,
@@ -518,6 +524,7 @@ export const useContactStore = defineStore('contacts', {
                 oldContactInfo.profile.name !== pendingRelayData.profile.name
               ? oldContactInfo.profile.name
               : shortAddressLabel(toChainDisplayAddress(address)),
+            signedName: profileInfo.name ?? null,
             bio: profileInfo.bio ?? oldContactInfo.profile.bio,
             avatar: profileInfo.avatar ?? oldContactInfo.profile.avatar,
             isBot: profileInfo.bot === true,

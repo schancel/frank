@@ -47,9 +47,9 @@ jest.mock('../utils/markdown', () => ({ renderMarkdown: () => '' }))
 
 const messages: Record<string, string> = {
   'stampPreparation.posting': 'POSTING',
-  'stampPreparation.checking': 'CHECKING',
-  'stampPreparation.funding': 'FUNDING {completed}/{total} {feeReserve}',
-  'stampPreparation.ready': 'READY',
+  'chat.stampPreparationChecking': 'CHECKING',
+  'chat.stampPreparationFunding': 'FUNDING {completed}/{total} {feeReserve}',
+  'chat.stampPreparationReady': 'READY',
   'stampPreparation.postedRefreshFailed': 'POSTED_REFRESH_FAILED',
 }
 const $t = (key: string, params: Record<string, unknown> = {}) =>

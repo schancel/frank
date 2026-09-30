@@ -35,8 +35,7 @@
         lazy-rules
         style="width: 100%"
         :rules="[
-          val =>
-            validateProfileDisplayName(val).valid || $t('profile.pleaseType'),
+          val => profileNameRule(val, (key, params) => $t(key, params ?? {})),
         ]"
         @blur="commitName"
       />
@@ -81,6 +80,7 @@ import { generateMnemonic, validateMnemonic } from 'bip39'
 import { seedCopiedNotify } from '../../utils/notifications'
 import { normalizeSetupMnemonic } from '../../utils/setup-account'
 import { validateProfileDisplayName } from '@frank/wallet/profile-display-name'
+import { profileNameRule } from 'src/utils/profile-name'
 
 interface AccountData {
   name: string
@@ -167,7 +167,7 @@ export default defineComponent({
       rawSeed,
       isSeedValid,
       isValid,
-      validateProfileDisplayName,
+      profileNameRule,
       seed,
       name,
       commitName() {

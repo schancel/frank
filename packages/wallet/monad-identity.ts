@@ -90,6 +90,7 @@ import { PrivateKey, crypto as bitcoreCrypto } from 'bitcore-lib-xpi'
 import axios from 'axios'
 
 import type { MailboxAuthParams } from '@frank/cashweb/relay/monad-mailbox-client'
+import { relayOriginHeader } from '@frank/cashweb/relay/origin-header'
 
 import __pb_registry_metadata_pb from '@frank/cashweb/registry/metadata_pb'
 const { AddressMetadata, Entry, Header, ListMonadProfilesResponse } =
@@ -298,7 +299,8 @@ function buildSignedAddressMetadata(
  * `registerIdentity` exactly, just Monad-addressed. See this file's header for the live backend
  * gap (`LotusAddress`-only address parsing) this inherits until the server grows a Monad-native
  * path. Requires an `Origin` header -- `RelayInfo::parse_from_headers` fails the whole request
- * with `MissingOrigin` otherwise. */
+ * with `MissingOrigin` otherwise. A browser sends its own; only non-browser callers set one (see
+ * `relayOriginHeader`). */
 export async function registerMonadIdentity(params: {
   relayBaseUrl: string
   identity: MonadIdentity
@@ -313,7 +315,7 @@ export async function registerMonadIdentity(params: {
     data: body,
     headers: {
       'Content-Type': 'application/x-protobuf',
-      'Origin': 'http://frank.local',
+      ...relayOriginHeader('http://frank.local'),
     },
   })
 }

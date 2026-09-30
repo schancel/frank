@@ -12,14 +12,14 @@ export function stampPreparationStatus(
   t: Translate,
   fee: { format: (raw: bigint) => string; unit: string },
 ): string {
-  if (progress.stage === 'checking') return t('stampPreparation.checking')
+  if (progress.stage === 'checking') return t('chat.stampPreparationChecking')
   if (progress.stage === 'funding') {
-    return t('stampPreparation.funding', {
+    return t('chat.stampPreparationFunding', {
       completed: progress.completed,
       total: progress.total,
       feeReserve: fee.format(progress.feeReserveWei),
       unit: fee.unit,
     })
   }
-  return t('stampPreparation.ready')
+  return t('chat.stampPreparationReady')
 }

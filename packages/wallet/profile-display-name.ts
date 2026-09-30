@@ -5,9 +5,20 @@ const UNICODE_WHITESPACE = /^\p{White_Space}$/u
 const FORBIDDEN_DISPLAY_NAME_CHARACTER =
   /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/u
 
+/** Why a display name was refused, so a UI can say what to fix (ticket #268). `blank` covers the
+ * empty and whitespace-only cases; `invalid-unicode` is an unpaired UTF-16 surrogate; the first
+ * failing check in that order (then `forbidden-character`, then `too-long`) is the one reported. */
+export type ProfileDisplayNameFailure =
+  | 'blank'
+  | 'invalid-unicode'
+  | 'forbidden-character'
+  | 'too-long'
+
 export interface ProfileDisplayNameValidation {
   normalized: string
   valid: boolean
+  /** Present exactly when `valid` is false. */
+  reason?: ProfileDisplayNameFailure
 }
 
 function measureUnicode(input: string): {
@@ -56,15 +67,20 @@ export function validateProfileDisplayName(
   const normalized = trimUnicodeWhitespace(input)
   const { scalarCount, utf8ByteCount, validUnicode } =
     measureUnicode(normalized)
-  return {
-    normalized,
-    valid:
-      normalized.length > 0 &&
-      validUnicode &&
-      !FORBIDDEN_DISPLAY_NAME_CHARACTER.test(normalized) &&
-      scalarCount <= PROFILE_DISPLAY_NAME_MAX_SCALARS &&
-      utf8ByteCount <= PROFILE_DISPLAY_NAME_MAX_UTF8_BYTES,
+  let reason: ProfileDisplayNameFailure | undefined
+  if (normalized.length === 0) reason = 'blank'
+  else if (!validUnicode) reason = 'invalid-unicode'
+  else if (FORBIDDEN_DISPLAY_NAME_CHARACTER.test(normalized)) {
+    reason = 'forbidden-character'
+  } else if (
+    scalarCount > PROFILE_DISPLAY_NAME_MAX_SCALARS ||
+    utf8ByteCount > PROFILE_DISPLAY_NAME_MAX_UTF8_BYTES
+  ) {
+    reason = 'too-long'
   }
+  return reason === undefined
+    ? { normalized, valid: true }
+    : { normalized, valid: false, reason }
 }
 
 /** Return the canonical signed/displayed value, or refuse input outside Decision #189. */

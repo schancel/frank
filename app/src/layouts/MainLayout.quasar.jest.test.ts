@@ -258,6 +258,118 @@ describe('LeftDrawer rail with real Quasar QDrawer/QTabs/QTab', () => {
     wrapper.unmount()
   })
 
+  describe('focus and containment while the overlay is open (#277)', () => {
+    // Stand-ins for what the routed page contributes to the layout: a header with the opener and
+    // the main content, as direct children of the q-layout.
+    function addPageChrome(wrapper: any) {
+      const header = document.createElement('header')
+      const opener = document.createElement('button')
+      opener.textContent = 'menu'
+      header.appendChild(opener)
+      const main = document.createElement('div')
+      main.className = 'q-page-container'
+      main.innerHTML = '<button>page control</button>'
+      wrapper.element.append(header, main)
+      return { header, main, opener }
+    }
+    const inDrawer = (el: Element | null) => !!el?.closest('.q-drawer')
+
+    it('moves focus into the drawer on open, to the selected rail tab', async () => {
+      const { wrapper } = await mountReal(390)
+      const { opener } = addPageChrome(wrapper)
+      opener.focus()
+      ;(wrapper.vm as any).toggleMyDrawerOpen()
+      await flushPromises()
+      expect(drawerIsOverlayOpen()).toBe(true)
+      expect(inDrawer(document.activeElement)).toBe(true)
+      expect(document.activeElement?.getAttribute('role')).toBe('tab')
+      expect(document.activeElement?.getAttribute('aria-selected')).toBe('true')
+      wrapper.unmount()
+    })
+
+    it('makes the page behind the overlay inert, but not the drawer or its backdrop', async () => {
+      const { wrapper } = await mountReal(390)
+      const { header, main } = addPageChrome(wrapper)
+      ;(wrapper.vm as any).toggleMyDrawerOpen()
+      await flushPromises()
+      expect(header.hasAttribute('inert')).toBe(true)
+      expect(main.hasAttribute('inert')).toBe(true)
+      expect(document.querySelector('.q-drawer')!.closest('[inert]')).toBeNull()
+      expect(
+        document.querySelector('.q-drawer__backdrop')!.closest('[inert]'),
+      ).toBeNull()
+      wrapper.unmount()
+    })
+
+    it('Escape pressed on the focused rail tab closes the overlay and returns focus to the opener', async () => {
+      const { wrapper } = await mountReal(390)
+      const { header, opener } = addPageChrome(wrapper)
+      opener.focus()
+      ;(wrapper.vm as any).toggleMyDrawerOpen()
+      await flushPromises()
+      const tab = document.activeElement as HTMLElement
+      expect(tab.getAttribute('role')).toBe('tab')
+      // A real browser does not run Quasar's window-level Escape handling with a tab focused, so
+      // only the keydown on the focused element itself is dispatched here.
+      tab.dispatchEvent(
+        new KeyboardEvent('keydown', {
+          key: 'Escape',
+          keyCode: 27,
+          bubbles: true,
+        }),
+      )
+      await flushPromises()
+      expect(drawerIsOverlayOpen()).toBe(false)
+      expect(header.hasAttribute('inert')).toBe(false)
+      expect(document.activeElement).toBe(opener)
+      wrapper.unmount()
+    })
+
+    it('closing returns focus to the opener and makes the page interactive again', async () => {
+      const { wrapper } = await mountReal(390)
+      const { header, main, opener } = addPageChrome(wrapper)
+      opener.focus()
+      ;(wrapper.vm as any).toggleMyDrawerOpen()
+      await flushPromises()
+      expect(inDrawer(document.activeElement)).toBe(true)
+      for (const type of ['keydown', 'keyup']) {
+        window.dispatchEvent(
+          new KeyboardEvent(type, { key: 'Escape', keyCode: 27 }),
+        )
+      }
+      await flushPromises()
+      expect(drawerIsOverlayOpen()).toBe(false)
+      expect(header.hasAttribute('inert')).toBe(false)
+      expect(main.hasAttribute('inert')).toBe(false)
+      expect(document.activeElement).toBe(opener)
+      wrapper.unmount()
+    })
+
+    it('does not touch focus or the page when the drawer is a permanent side panel (wide screen)', async () => {
+      const { wrapper } = await mountReal(1280)
+      const { header, main, opener } = addPageChrome(wrapper)
+      opener.focus()
+      ;(wrapper.vm as any).myDrawerOpen = false
+      ;(wrapper.vm as any).myDrawerOpen = true
+      await flushPromises()
+      expect(header.hasAttribute('inert')).toBe(false)
+      expect(main.hasAttribute('inert')).toBe(false)
+      expect(document.activeElement).toBe(opener)
+      wrapper.unmount()
+    })
+
+    it('leaves nothing inert behind when the layout unmounts with the overlay open', async () => {
+      const { wrapper } = await mountReal(390)
+      const { header } = addPageChrome(wrapper)
+      ;(wrapper.vm as any).toggleMyDrawerOpen()
+      await flushPromises()
+      expect(header.hasAttribute('inert')).toBe(true)
+      const detached = header
+      wrapper.unmount()
+      expect(detached.hasAttribute('inert')).toBe(false)
+    })
+  })
+
   describe('other ways the overlay closes', () => {
     async function openFrom(wrapper: any, button: HTMLElement) {
       button.focus()
@@ -291,6 +403,22 @@ describe('LeftDrawer rail with real Quasar QDrawer/QTabs/QTab', () => {
       const { wrapper } = await mountReal(390)
       const button = addButton()
       await openFrom(wrapper, button)
+      document.querySelector<HTMLElement>('.q-drawer__backdrop')!.click()
+      await flushPromises()
+      expect(drawerIsOverlayOpen()).toBe(false)
+      expect(document.activeElement).toBe(button)
+      wrapper.unmount()
+    })
+
+    it('restores focus to the opener after a backdrop click that left focus on the layout root', async () => {
+      const { wrapper } = await mountReal(390)
+      const button = addButton()
+      await openFrom(wrapper, button)
+      // What a browser does on mousedown over the backdrop: focus the nearest focusable ancestor.
+      const layout = wrapper.element as HTMLElement
+      layout.setAttribute('tabindex', '-1')
+      layout.focus()
+      expect(document.activeElement).toBe(layout)
       document.querySelector<HTMLElement>('.q-drawer__backdrop')!.click()
       await flushPromises()
       expect(drawerIsOverlayOpen()).toBe(false)

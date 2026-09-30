@@ -71,6 +71,7 @@
 </template>
 
 <script lang="ts">
+import { navigateBack } from 'src/utils/navigate-back'
 import { computed, defineComponent, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
@@ -111,7 +112,7 @@ export default defineComponent({
       isEmpty,
       hasError,
       close() {
-        window.history.length > 1 ? router.go(-1) : router.push('/')
+        navigateBack(router)
       },
       async copyAddress() {
         if (!displayAddress.value) return

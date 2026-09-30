@@ -2,16 +2,19 @@
 // so you can safely delete all default props below
 
 export default {
+  forum: {
+    noPosts: 'Aucun message pour le moment.',
+  },
   agree: "D'accord",
   chat: {
+    stampPreparationChecking: 'Vérification des comptes de timbre privés…',
+    stampPreparationFunding:
+      'Préparation des comptes de timbre privés ({completed}/{total} transactions on-chain ; jusqu’à {feeReserve} {unit} de réserve de frais chacune)…',
+    stampPreparationReady: 'Comptes de timbre privés prêts ; envoi du message…',
     donationMessage:
       "Merci de participer à notre vision du futur des communications. Merci de considérer contribuer en envoyant une donation en BCH à l'adresse suivante : bitcoincash:qq7vt04md0pt6fk5szhcx4cgsfuzmppy5u4hxshr4a",
   },
   stampPreparation: {
-    checking: 'Vérification des comptes de timbre privés…',
-    funding:
-      'Préparation d’un compte de timbre privé ({completed}/{total} transactions on-chain ; jusqu’à {feeReserve} {unit} de réserve de frais chacune)…',
-    ready: 'Compte de timbre privé prêt ; envoi en cours…',
     posting: 'Publication en cours…',
     postCreated: 'Message publié !',
     postedRefreshFailed:
@@ -33,6 +36,20 @@ export default {
     placeHolder: 'Ecrire un message...',
     emojiPickerTitle: 'Choisir un emoji',
     stampPrice: 'Prix du timbre',
+    stampPayment: 'Paiement du timbre',
+    stampQuickSelection: 'Sélection rapide de 1× à 100× le timbre par défaut',
+    stampMultiplierValue: '{multiplier}× le défaut',
+  },
+  raffleDraw: {
+    verified: "Le tirage correspond à l'engagement de la graine",
+    failed: 'Échec de la vérification : {reason}',
+    explainerToggle: 'Que montre ceci ?',
+    explainerShows:
+      "Montre : l'opérateur n'a pas changé la graine après s'y être engagé, et le gagnant découle des participants listés et de cette graine.",
+    explainerNotShown:
+      "Ne montre pas : que les participants listés sont de vrais paiements on-chain, ni qu'aucune participation n'a été écartée.",
+    explainerCountUnverified:
+      "Le tirage n'a pas annoncé sa taille : le nombre de participants n'est pas vérifié.",
   },
   blackjackBet: {
     menuLabel: 'Jouer au blackjack',
@@ -102,6 +119,7 @@ export default {
       'Les enregistrements de mises sauvegardés sont illisibles : {message}',
   },
   leftDrawer: {
+    noForums: 'Aucun forum découvert pour le moment.',
     settings: 'Paramètres',
     contacts: 'Contacts',
     forum: 'Forum',
@@ -110,8 +128,10 @@ export default {
     contactsUnreadOther: 'Contacts, {count} messages non lus',
   },
   chatList: {
-    noContactMessage: 'Add contacts from the drawer above...', //----
-    balance: 'Crédit',
+    noContactMessage: 'Ajoutez des contacts depuis le tiroir ci-dessus...',
+    youPrefix: 'Vous : {text}',
+    themPrefix: 'Contact : {text}',
+    balance: 'Solde',
     balanceStale: '(dernière valeur connue)',
     directMessages: 'Messages privés',
   },
@@ -127,6 +147,12 @@ export default {
   },
   chatMessage: {
     noPayloadFound: 'Impossible de trouver les données pour ce message',
+    failedToSend: 'Échec de l’envoi',
+    showActions: 'Afficher les actions du message',
+    replyMessage: 'Répondre au message',
+    forwardMessage: 'Transférer le message',
+    infoMessage: 'Informations sur le message',
+    deleteMessage: 'Supprimer le message',
   },
   chatRightDrawer: {
     stampPrice: 'Prix du timbre',
@@ -269,12 +295,13 @@ export default {
     profile: 'Profil',
     settings: 'Configuration',
     wipeAndSave: 'Consolidation du portefeuille',
-    changeLog: 'Changelog',
+    changeLog: 'Journal des modifications',
     showSeed: 'Montrer la phrase de passe',
     confirmSeed: 'Confirmer la phrase de récupération',
     panelLabel: 'Paramètres',
   },
   receiveBitcoinDialog: {
+    close: 'Fermer',
     walletStatus: 'Etat du wallet',
     balanceUnavailable: 'Solde indisponible. Nouvelle tentative.',
     noFundsHint:
@@ -289,6 +316,7 @@ export default {
     send: 'Envoyer',
   },
   contactBookDialog: {
+    close: 'Fermer',
     contacts: 'Contacts',
     search: 'Recherche...',
   },
@@ -316,14 +344,20 @@ export default {
     invalidSeed: 'Phrase de passe invalide...',
     nameHint: 'Identifiant tel que vu par vos correspondants',
     enterSeed: 'Entrez votre phrase de passe...',
-    pleaseType: "Soyez plus créatif, s'il vous plait",
+    nameBlank:
+      'Saisissez un nom : il ne peut pas être vide ni ne contenir que des espaces.',
+    nameTooLong: 'Le nom est trop long : {max} caractères au maximum.',
+    nameForbiddenCharacters:
+      'Le nom contient des caractères non autorisés. Supprimez les retours à la ligne et autres caractères de contrôle.',
+    nameInvalidUnicode:
+      'Le nom contient un caractère invalide. Supprimez-le ou collez du texte brut.',
     bio: 'Biographie',
     bioHint: 'Courte biographie telle que vue par vos correspondants',
     uploadAvatar: 'Télécharger un avatar',
   },
   clearHistoryDialog: {
     cancel: 'Annuler',
-    clear: 'Clear',
+    clear: 'Effacer',
     message:
       "Êtes-vous sûr de vouloir effacer tout l'historique des discussions avec",
   },
@@ -339,6 +373,9 @@ export default {
     message: 'Etes vous sûr de vouloir effacer ce message ?',
   },
 
+  imageDialog: {
+    close: 'Fermer',
+  },
   profileDialog: {
     cancel: 'Annuler',
     update: 'Mettre à jour',
@@ -346,8 +383,6 @@ export default {
       "L'image de votre avatar est trop volumineuse, choisissez en une plus petite.",
     unableContactRelay: 'Impossible de contacter le serveur-relai.',
     pushingProfile: 'Envoi du nouveau profil..',
-    invalidName:
-      'Saisissez un nom public : 1 à 128 caractères, sans caractères de contrôle.',
     profile: 'Profil',
   },
   wipeWallet: {
@@ -360,11 +395,15 @@ export default {
     spinnerText: 'Effacer tous les messages',
   },
   seedPhraseDialog: {
+    close: 'Fermer',
     seedPhrase: 'Phrase de passe',
   },
   transactionDialog: {
     backingTransactions: 'Transactions',
-    txId: 'Transaction ID',
+    totalStampPayment: 'Paiement total du timbre',
+    stampPaymentN: 'Paiement du timbre {n}',
+    sentTo: 'À {address}',
+    txId: 'ID de la transaction',
     txType: 'Type',
     txAddress: 'Adresse',
     txAmount: 'Montant',

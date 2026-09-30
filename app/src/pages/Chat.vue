@@ -337,29 +337,13 @@ export default defineComponent({
       // session, 2026-09-27) by actually clicking Send in a real browser and finding the message
       // never left the input box.
       try {
-        this.stampPreparationStatus = 'Checking private stamp accounts…'
+        this.stampPreparationStatus = this.$t('chat.stampPreparationChecking')
         await this.sendDirectMessage({
           wallet: useMonadWallet(),
           address: this.address,
           items: [{ type: 'text', text: submittedMessage }],
           stampValue,
-          onPreparationProgress: (
-            progress: DirectMessagePreparationProgress,
-          ) => {
-            if (progress.stage === 'checking') {
-              this.stampPreparationStatus = 'Checking private stamp accounts…'
-            } else if (progress.stage === 'funding') {
-              const feeReserve = activeChain.toDisplayAmount(
-                progress.feeReserveWei,
-              )
-              this.stampPreparationStatus =
-                `Preparing private stamp accounts (${progress.completed}/${progress.total} on-chain transactions; ` +
-                `up to ${feeReserve} ${activeChain.unit} fee reserve each)…`
-            } else {
-              this.stampPreparationStatus =
-                'Private stamp accounts ready; sending message…'
-            }
-          },
+          onPreparationProgress: this.showStampPreparation,
         })
       } catch (err) {
         if (err instanceof MonadStampRecoveredAttemptError) {
@@ -379,6 +363,22 @@ export default defineComponent({
       // After message send, scroll to bottom if not already there
       if (!this.bottom) {
         this.$nextTick(this.buttonScrollBottom)
+      }
+    },
+    // Shows the preparation stage of a send (checking / funding / ready) in the composer status
+    // line, translated -- one place for every way a send can prepare its stamp accounts.
+    showStampPreparation(progress: DirectMessagePreparationProgress) {
+      if (progress.stage === 'checking') {
+        this.stampPreparationStatus = this.$t('chat.stampPreparationChecking')
+      } else if (progress.stage === 'funding') {
+        this.stampPreparationStatus = this.$t('chat.stampPreparationFunding', {
+          completed: progress.completed,
+          total: progress.total,
+          feeReserve: activeChain.toDisplayAmount(progress.feeReserveWei),
+          unit: activeChain.unit,
+        })
+      } else {
+        this.stampPreparationStatus = this.$t('chat.stampPreparationReady')
       }
     },
     // Handles a plugin renderer's `sendFollowUp` emit (see ChatMessage.vue's own relay of it --
@@ -407,29 +407,13 @@ export default defineComponent({
         stampValueWei ?? activeChain.fromDisplayAmount(this.stampAmount)
       this.sendingMessage = true
       try {
-        this.stampPreparationStatus = 'Checking private stamp accounts…'
+        this.stampPreparationStatus = this.$t('chat.stampPreparationChecking')
         await this.sendDirectMessage({
           wallet: useMonadWallet(),
           address: this.address,
           items,
           stampValue,
-          onPreparationProgress: (
-            progress: DirectMessagePreparationProgress,
-          ) => {
-            if (progress.stage === 'checking') {
-              this.stampPreparationStatus = 'Checking private stamp accounts…'
-            } else if (progress.stage === 'funding') {
-              const feeReserve = activeChain.toDisplayAmount(
-                progress.feeReserveWei,
-              )
-              this.stampPreparationStatus =
-                `Preparing private stamp accounts (${progress.completed}/${progress.total} on-chain transactions; ` +
-                `up to ${feeReserve} ${activeChain.unit} fee reserve each)…`
-            } else {
-              this.stampPreparationStatus =
-                'Private stamp accounts ready; sending message…'
-            }
-          },
+          onPreparationProgress: this.showStampPreparation,
         })
       } catch (err) {
         errorNotify(err instanceof Error ? err : new Error(String(err)))

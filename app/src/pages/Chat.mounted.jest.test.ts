@@ -111,6 +111,7 @@ async function mountChat(profile: { isBot?: boolean } | undefined) {
       mocks: {
         $route: { params: { address: DEALER } },
         $q: { dark: { isActive: false } },
+        $t: (key: string) => key,
       },
     },
   })

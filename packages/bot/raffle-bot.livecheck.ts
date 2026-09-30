@@ -51,7 +51,7 @@
  *
  * Env vars:
  *   RAFFLE_BOT_IDENTITY_JSON     -- default /tmp/raffle-bot-identity.json
- *   RAFFLE_BOT_STATE_DIR         -- default /tmp/raffle-bot-state
+ *   RAFFLE_BOT_STATE_DIR         -- default ~/.frank-bots/raffle (or $XDG_STATE_HOME/frank-bots/raffle)
  *   RAFFLE_BOT_ENTRY_PRICE_WEI   -- default 0.02 MON
  *   RAFFLE_BOT_MAX_ENTRIES       -- entrants per round, default 5
  *   RAFFLE_BOT_MAX_ROUNDS        -- how many rounds to draw before exiting (default 1000)
@@ -78,10 +78,11 @@ import {
 import { deserializeMessageItems } from '@frank/wallet/chain/monad-chain'
 import { RaffleItem } from '@frank/cashweb/types/messages'
 import {
+  buildRaffleDrawItem,
   combineEntrantEntropy,
-  pickWinnerIndex,
   sha256Hex,
 } from '@frank/wallet/message-item-plugins/raffle/draw'
+import { formatMon } from '@frank/wallet/monad-amount'
 import { MonadHttpClient } from '@frank/wallet/monad-http'
 import { MonadAccountTxSigner } from '@frank/wallet/monad-account-tx'
 import {
@@ -99,6 +100,7 @@ import {
   waitForConfirmation,
 } from './qwen-bot-common'
 import { botProfileFields } from './bot-directory'
+import { botStateDir } from './bot-state-dir'
 import { botLoopGuardFromEnv } from './bot-loop-guard'
 import {
   hasRaffleEntrant,
@@ -143,7 +145,7 @@ export function summarizeRecoveredPayments(
  * expected failure mode (a payment too small to sweep, one that never confirms) -- ticket #121's
  * acceptance criteria: missing/partial/ambiguous payments must fail closed, not silently accept a
  * short entry or leave funds unaccounted for. */
-async function recoverAndSweepEntryPayment(params: {
+export async function recoverAndSweepEntryPayment(params: {
   message: MonadStampedMessageProto
   recipientPrivateKey: Uint8Array
   minTotalValueWei: bigint
@@ -177,7 +179,7 @@ async function recoverAndSweepEntryPayment(params: {
   if (totalValueWei < params.minTotalValueWei) {
     return {
       ok: false,
-      reason: `payment ${totalValueWei} wei is below the required ${params.minTotalValueWei} wei`,
+      reason: `payment ${formatMon(totalValueWei)} is below the required ${formatMon(params.minTotalValueWei)}`,
       totalValueWei,
     }
   }
@@ -283,10 +285,7 @@ async function main() {
     process.env.E2E_DEMO_MAIN_WALLET_JSON ??
       '../frank-worktrees/spike-demo/spike/data/chain-wallet.json',
   )
-  const stateDirPath = resolve(
-    process.cwd(),
-    process.env.RAFFLE_BOT_STATE_DIR ?? '/tmp/raffle-bot-state',
-  )
+  const stateDirPath = botStateDir('raffle', 'RAFFLE_BOT_STATE_DIR')
   const pollIntervalMs = Number(process.env.RAFFLE_BOT_POLL_INTERVAL_MS ?? 4000)
   const maxRounds = Number(process.env.RAFFLE_BOT_MAX_ROUNDS ?? 1000)
   const idleTimeoutMs = Number(
@@ -314,13 +313,14 @@ async function main() {
   })
   console.log(`Raffle bot identity address: ${identity.displayAddress}`)
 
-  const { stampClient, mainAccountSigner, provider, pool } =
+  const { stampClient, mainAccountSigner, provider, pool, closePool } =
     await setUpFundedStampClient({
       rpcUrl,
       relayBaseUrl,
       mainWalletJsonPath,
       stampValueWei: replyStampValueWei,
       label: 'raffle-bot',
+      stateDir: stateDirPath,
     })
 
   // This bot's own signer over its own identity's private key -- used *only* to pay a round's
@@ -598,14 +598,17 @@ async function main() {
       }
       const entrantAddresses = updatedEntrants.map(e => e.address)
       const entryTxHashes = updatedEntrants.map(e => e.txHash)
-      const winnerIndex = pickWinnerIndex(
-        commitment.serverSeed,
-        combineEntrantEntropy(entryTxHashes),
-        entrantAddresses.length,
-      )
-      const winnerAddress = entrantAddresses[winnerIndex]
-      const potWei =
-        BigInt(round.entryPriceWei) * BigInt(updatedEntrants.length)
+      // One builder decides the winner and pot and carries the commitment hash (#318), so what
+      // is announced is exactly what is paid out.
+      const drawItem = buildRaffleDrawItem({
+        raffleId: round.raffleId,
+        entryPriceWei: round.entryPriceWei,
+        serverSeed: commitment.serverSeed,
+        entrants: entrantAddresses,
+        entryTxHashes,
+      })
+      const winnerAddress = drawItem.winnerAddress
+      const potWei = BigInt(drawItem.potWei)
 
       console.log(
         `[raffle-bot] drawing round ${round.raffleId}: winner=${winnerAddress} pot=${potWei} wei`,
@@ -630,19 +633,7 @@ async function main() {
           fromIdentity: identity,
           toAddress: e.address,
           toPubKey,
-          items: [
-            {
-              type: 'raffle',
-              raffleId: round.raffleId,
-              action: 'draw',
-              entryPriceWei: round.entryPriceWei,
-              winnerAddress,
-              serverSeed: commitment.serverSeed,
-              entrants: entrantAddresses,
-              entryTxHashes,
-              potWei: potWei.toString(),
-            },
-          ],
+          items: [drawItem],
           stampValueWei: replyStampValueWei,
           networkTag,
         })
@@ -702,6 +693,7 @@ async function main() {
   }
 
   await state.Close()
+  await closePool()
   console.log(
     `\nDone. Drew ${roundsDrawn} round${roundsDrawn === 1 ? '' : 's'}.`,
   )

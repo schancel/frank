@@ -88,6 +88,7 @@ import {
   registerMonadIdentity,
 } from '@frank/wallet/monad-identity'
 import type { ProfileInfo } from '@frank/wallet/chain/active-chain'
+import { openPersistentStampPool } from './stamp-pool-seed'
 import { buildEnvelope } from '@frank/cashweb/relay/monad-message-envelope'
 import { serializeMessageItems } from '@frank/wallet/chain/monad-chain'
 import { MessageItem } from '@frank/cashweb/types/messages'
@@ -224,6 +225,8 @@ export interface FundedStampSetup {
    * `sendDirectMessageText`) instead of pre-funding a large fixed batch up front -- see this
    * file's header, "Lazy per-send funding", for why. */
   pool: MonadSubAccountPool
+  /** Flushes and closes the persisted pool records (a no-op without `stateDir`). Call at shutdown. */
+  closePool(): Promise<void>
 }
 
 /** Waits (polling `getStatus`) for `txHash` to reach a terminal state, throwing if it fails or
@@ -357,6 +360,10 @@ export async function setUpFundedStampClient(params: {
   poolSize?: number
   stampValueWei: bigint
   label: string
+  /** The bot's state directory (#313). When set, the pool's seed and records persist there, so a
+   * restart reuses the same sub-accounts and leftover funds stay recoverable. Without it the pool
+   * is a throwaway in-memory one (only the human-simulating tools do that). */
+  stateDir?: string
 }): Promise<FundedStampSetup> {
   const httpClient = new MonadHttpClient({ rpcUrl: params.rpcUrl })
   const { provider, mainAccountSigner } = loadMainAccountSigner({
@@ -368,11 +375,21 @@ export async function setUpFundedStampClient(params: {
     `[${params.label}] main funding account: ${mainAccountSigner.address}`,
   )
 
-  const { keyring, mnemonic } = MonadHdKeyring.generate()
-  const pool = new MonadSubAccountPool({ keyring })
-  const changePool = new MonadChangePool({
-    keyring: MonadChangeKeyring.fromMnemonic(mnemonic),
-  })
+  let pool: MonadSubAccountPool
+  let changePool: MonadChangePool
+  let closePool: () => Promise<void> = async () => {}
+  if (params.stateDir) {
+    ;({ pool, changePool, close: closePool } = await openPersistentStampPool(
+      params.stateDir,
+      params.label,
+    ))
+  } else {
+    const { keyring, mnemonic } = MonadHdKeyring.generate()
+    pool = new MonadSubAccountPool({ keyring })
+    changePool = new MonadChangePool({
+      keyring: MonadChangeKeyring.fromMnemonic(mnemonic),
+    })
+  }
 
   if (params.poolSize) {
     pool.ensureSize(params.poolSize)
@@ -419,7 +436,7 @@ export async function setUpFundedStampClient(params: {
     relayBaseUrl: params.relayBaseUrl,
   })
 
-  return { provider, stampClient, mainAccountSigner, pool }
+  return { provider, stampClient, mainAccountSigner, pool, closePool }
 }
 
 /**

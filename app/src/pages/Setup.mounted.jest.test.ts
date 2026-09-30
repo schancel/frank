@@ -385,6 +385,7 @@ describe('Setup page mounted (#267)', () => {
       vm.step = 2
       vm.accountData.name = 'Alice'
       vm.accountData.nameRequired = true
+      ;(vm.accountData as { valid?: boolean }).valid = true
       await nextTick()
       return { ...ctx, vm }
     }

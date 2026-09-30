@@ -10,6 +10,7 @@ import { useContactStore } from 'src/stores/contacts'
 import { useProfileStore } from 'src/stores/my-profile'
 import { useChatStore } from 'src/stores/chats'
 import { useWalletStore } from 'src/stores/wallet'
+import { setupGatePasses } from 'src/utils/account-state'
 
 // Found live tonight (autonomous overnight session, 2026-09-27), by actually driving a real
 // browser: this guard's `profileStore.profile.name` check can never become true through the
@@ -108,7 +109,11 @@ export default () => {
     // Accounts with a seed and a name are unchanged; seed-without-name is sent to /setup,
     // which resumes with the STORED phrase and never regenerates it.
     if (
-      profileStore.profile.name ||
+      setupGatePasses({
+        seedPhrase: walletStore.seedPhrase,
+        name: profileStore.profile.name,
+        seedConfirmedAt: walletStore.seedConfirmedAt,
+      }) ||
       (unprotectedRoutes.some(path => to.fullPath.startsWith(path)) &&
         !protectedRoutes.some(path => to.fullPath.startsWith(path)))
     ) {

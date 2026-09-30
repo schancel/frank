@@ -2,6 +2,7 @@ import {
   classifyAccount,
   isSetupComplete,
   needsBackupConfirmation,
+  setupGatePasses,
 } from './account-state'
 
 const SEED = 'test test test test test test test test test test test junk'
@@ -58,5 +59,21 @@ describe('account state (#284)', () => {
         isSetupComplete({ seedPhrase: SEED, name: 'Alice', seedConfirmedAt }),
       ).toBe(true)
     }
+  })
+
+  it.each(cases)(
+    'router gate agrees with the state table: $label',
+    ({ facts, state }) => {
+      // Seed-only (needs-recovery) never passes; every named account passes.
+      expect(setupGatePasses(facts)).toBe(
+        state === 'completed-unconfirmed' || state === 'confirmed',
+      )
+    },
+  )
+
+  it('a name without a seed passes the router gate but is not "complete" (walletRequired routes redirect it)', () => {
+    const facts = { seedPhrase: null, name: 'Alice', seedConfirmedAt: null }
+    expect(setupGatePasses(facts)).toBe(true)
+    expect(isSetupComplete(facts)).toBe(false)
   })
 })

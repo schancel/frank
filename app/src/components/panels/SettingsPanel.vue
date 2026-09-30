@@ -1,5 +1,10 @@
 <template>
-  <div class="full-width column col">
+  <div
+    ref="panelRoot"
+    class="full-width column col"
+    tabindex="-1"
+    data-test="settings-panel"
+  >
     <contact-card
       :address="myAddress"
       :name="profile.name"
@@ -29,8 +34,8 @@
     </q-dialog>
 
     <!-- Confirm the stored recovery phrase (#284) -->
-    <q-dialog v-model="seedConfirmOpen">
-      <seed-confirm-dialog />
+    <q-dialog v-model="seedConfirmOpen" @hide="onSeedConfirmHide">
+      <seed-confirm-dialog @confirmed="onSeedConfirmed" />
     </q-dialog>
 
     <div class="flex-break" />
@@ -140,7 +145,7 @@
 </template>
 
 <script lang="ts">
-import { computed, defineComponent, onMounted, ref } from 'vue'
+import { computed, defineComponent, nextTick, onMounted, ref } from 'vue'
 
 import SeedPhraseDialog from '../dialogs/SeedPhraseDialog.vue'
 import SeedConfirmDialog from '../dialogs/SeedConfirmDialog.vue'
@@ -162,6 +167,8 @@ export default defineComponent({
     const { profile, inbox } = storeToRefs(myProfile)
     const seedPhraseOpen = ref(false)
     const seedConfirmOpen = ref(false)
+    const panelRoot = ref<HTMLElement | null>(null)
+    let justConfirmed = false
     const wallet = useWalletStore()
     const backupUnconfirmed = computed(() =>
       needsBackupConfirmation({
@@ -184,7 +191,20 @@ export default defineComponent({
       inbox,
       seedPhraseOpen,
       seedConfirmOpen,
+      panelRoot,
       backupUnconfirmed,
+      // The phrase is confirmed: close the dialog. The banner and Settings item that opened it
+      // disappear with the marker, so once the dialog is gone put focus on the panel itself
+      // rather than on a removed control.
+      onSeedConfirmed() {
+        justConfirmed = true
+        seedConfirmOpen.value = false
+      },
+      onSeedConfirmHide() {
+        if (!justConfirmed) return
+        justConfirmed = false
+        void nextTick(() => panelRoot.value?.focus())
+      },
       myAddress,
     }
   },

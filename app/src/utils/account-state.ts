@@ -42,3 +42,14 @@ export function isSetupComplete(facts: StoredAccountFacts): boolean {
 export function needsBackupConfirmation(facts: StoredAccountFacts): boolean {
   return classifyAccount(facts) === 'completed-unconfirmed'
 }
+
+/**
+ * The onboarding gate used by the router: may this account leave /setup for the app?
+ * A display name is sufficient (legacy accounts whose name predates the stored seed keep working;
+ * routes that need a wallet independently require a seed). A stored seed WITHOUT a name never
+ * passes (#284). `isSetupComplete` is stricter (seed and name) and drives `status.setup`; the
+ * two differ only for a name with no seed, which the router's walletRequiredRoutes redirect.
+ */
+export function setupGatePasses(facts: StoredAccountFacts): boolean {
+  return !!facts.name
+}

@@ -1,6 +1,6 @@
 /**
  * Ticket #9: a headless Frank client that bridges real conversation turns to Qwen 3.8 Max
- * (Alibaba Cloud), targeting the "Best Builds with Qwen" bounty (Trust, Identity & AI track).
+ * (Alibaba Cloud).
  * Builds entirely on `app`'s existing TS `cashweb`/`relay`/`wallet` library code (no UI) -- this
  * file is only the runnable entry point, same `.livecheck.ts` convention ticket #8's
  * `monad-e2e-demo.livecheck.ts` established (hits the real network, so excluded from `jest`'s
@@ -113,7 +113,7 @@ function sleep(ms: number): Promise<void> {
 const SYSTEM_PROMPT =
   process.env.QWEN_BOT_SYSTEM_PROMPT ??
   'You are a helpful assistant reachable only over Frank, a pay-to-speak messaging protocol ' +
-    'on the Monad blockchain (ticket #9, "Best Builds with Qwen" bounty demo). Every message ' +
+    'on the Monad blockchain (ticket #9 demo). Every message ' +
     'you receive was paid for with a real, tiny MON payment from disposable funding accounts, ' +
     'and your replies are delivered back the same way. Keep replies short (2-4 sentences) since ' +
     'each one costs a real transaction.'

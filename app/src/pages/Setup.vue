@@ -38,7 +38,7 @@
             icon="vpn_key"
             :done="step > 2"
           >
-            <account-step v-model:account-data="accountData" />
+            <account-step v-model:account-data="accountData" :resume="resume" />
           </q-step>
           <q-step
             v-if="isNewAccount"
@@ -118,6 +118,7 @@ import {
 } from '../utils/constants'
 import { errorNotify } from '../utils/notifications'
 import { persistSetupAndReload } from '../utils/setup-persistence'
+import { classifyAccount } from '../utils/account-state'
 import {
   commitValidatedSetupName,
   commitValidatedSetupSeed,
@@ -177,8 +178,19 @@ export default defineComponent({
   data() {
     const wallet = useWalletStore()
     const contacts = useContactStore()
+    const storedSeed = wallet.seedPhrase
+    // #284 resume mode: a stored seed with no display name (the old #267 bug). The stored phrase
+    // is confirmed and named in place; it is never regenerated, replaced or imported over.
+    const resume =
+      classifyAccount({
+        seedPhrase: storedSeed,
+        name: useProfileStore().profile?.name,
+        seedConfirmedAt: wallet.seedConfirmedAt,
+      }) === 'needs-recovery'
 
     return {
+      resume,
+      storedSeed: resume ? storedSeed : null,
       step: 1,
       accountData: {
         name: '',
@@ -236,6 +248,16 @@ export default defineComponent({
      * marker stored atomically with the seed.
      */
     async completeAccountStep(confirmedAt: number) {
+      if (
+        this.resume &&
+        normalizeSetupMnemonic(this.accountData.seed) !==
+          normalizeSetupMnemonic(this.storedSeed ?? '')
+      ) {
+        // Belt and braces: resume mode may only ever re-store the SAME phrase it found.
+        const error = new Error(this.$t('setup.storedSeedMismatch'))
+        errorNotify(error)
+        throw error
+      }
       if (!this.avatar) {
         this.avatar = await this.selectRandomAvatar()
       }

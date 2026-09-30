@@ -69,6 +69,23 @@ export default {
     explainerCountUnverified:
       'The round did not announce its size, so the number of entrants is not checked.',
   },
+  persistentStorage: {
+    tab: 'Storage',
+    heading: 'Persistent storage',
+    granted: 'Persistent storage: granted',
+    notGranted: 'Persistent storage: not granted',
+    unsupported: 'Persistent storage: unavailable',
+    unknown: 'Persistent storage: checking…',
+    explainGranted:
+      'Your browser has agreed to keep this app’s data unless you clear it yourself. Your recovery phrase is still the only backup if you lose this device.',
+    explainNotGranted:
+      'Your browser may delete this app’s data, including your stored recovery phrase, when it is short on space or, in Safari, after 7 days without a visit unless the app is added to your Home Screen. Your recovery phrase is the only backup.',
+    explainUnsupported:
+      'Persistent storage is unavailable (this page is not a secure context or the browser does not support it), so the browser may delete this app’s data (Safari does after 7 days without a visit unless the app is added to your Home Screen). Your recovery phrase is the only backup.',
+    request: 'Ask the browser to keep my data',
+    confirmSeed: 'Confirm my recovery phrase',
+    seedConfirmed: 'Your recovery phrase is confirmed.',
+  },
   blackjackBet: {
     menuLabel: 'Play blackjack',
     title: 'Start a blackjack hand',

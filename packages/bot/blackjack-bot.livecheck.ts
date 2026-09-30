@@ -100,6 +100,7 @@ import {
   setUpFundedStampClient,
 } from './qwen-bot-common'
 import { botStateDir } from './bot-state-dir'
+import { formatMon } from '@frank/wallet/monad-amount'
 import { botProfileFields } from './bot-directory'
 import {
   BlackjackBotStateStore,
@@ -476,13 +477,13 @@ export async function handleMove(params: {
     }
     if (wager.valueWei < minWagerWei) {
       await rejectBet(
-        `wager ${wager.valueWei} wei is below the table minimum of ${minWagerWei} wei`,
+        `wager ${formatMon(wager.valueWei)} is below the table minimum of ${formatMon(minWagerWei)}`,
       )
       return
     }
     if (wager.valueWei > maxWagerWei) {
       await rejectBet(
-        `wager ${wager.valueWei} wei is above the table maximum of ${maxWagerWei} wei`,
+        `wager ${formatMon(wager.valueWei)} is above the table maximum of ${formatMon(maxWagerWei)}`,
       )
       return
     }
@@ -719,7 +720,7 @@ export async function handleMove(params: {
     // is always precisely 2x what the player actually put at risk.
     if (doubleWager.valueWei !== record.wagerWei) {
       await rejectDouble(
-        `double-down wager must match your original wager exactly (${record.wagerWei} wei)`,
+        `double-down wager must match your original wager exactly (${formatMon(record.wagerWei)})`,
       )
       return
     }

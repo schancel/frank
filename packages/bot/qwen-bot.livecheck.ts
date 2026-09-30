@@ -89,8 +89,11 @@ import {
   tryDecryptEnvelope,
 } from '@frank/cashweb/relay/monad-message-envelope'
 import { fetchMonadMessagesSince } from '@frank/cashweb/relay/monad-message-feed'
-import { QwenClient } from './qwen-client'
 import { botStateDir } from './bot-state-dir'
+import {
+  createQwenReplyGenerator,
+  qwenBotConfigFromEnv,
+} from './qwen-reply'
 import { botLoopGuardFromEnv } from './bot-loop-guard'
 import { extractPromptText } from './qwen-prompt'
 import {
@@ -116,6 +119,8 @@ const SYSTEM_PROMPT =
     'each one costs a real transaction.'
 
 async function main() {
+  // Validated first so a missing key fails immediately, naming the variable (#314).
+  const botConfig = qwenBotConfigFromEnv(process.env)
   const relayBaseUrl = process.env.E2E_DEMO_RELAY_URL ?? 'http://127.0.0.1:8098'
   const rpcUrl = requiredEnv('MONAD_TESTNET_HTTP_RPC_URL')
   const networkTag = requiredEnv('FRANK_NETWORK_TAG')
@@ -134,9 +139,6 @@ async function main() {
       `Qwen stamp default ${stampValueWei} is below the relay minimum ${minimumStampValueWei}`,
     )
   }
-  const qwenApiKey = requiredEnv('QWEN_API_KEY')
-  const qwenEndpoint = requiredEnv('QWEN_OPENAI_COMPATIBLE_ENDPOINT')
-  const qwenModel = process.env.QWEN_MODEL ?? 'qwen3.8-max'
 
   const identityJsonPath = resolve(
     process.cwd(),
@@ -156,10 +158,9 @@ async function main() {
   // the concrete user-visible bug this fixes.
   const stateDirPath = botStateDir('qwen', 'QWEN_BOT_STATE_DIR')
   const pollIntervalMs = Number(process.env.QWEN_BOT_POLL_INTERVAL_MS ?? 4000)
-  const maxReplies = Number(process.env.QWEN_BOT_MAX_REPLIES ?? 1)
-  const idleTimeoutMs = Number(
-    process.env.QWEN_BOT_IDLE_TIMEOUT_MS ?? 10 * 60 * 1000,
-  )
+  // Keep running by default; QWEN_BOT_MAX_REPLIES=<n> is the explicit exit-after-n flag.
+  const { maxReplies, idleTimeoutMs } = botConfig
+  const replyGenerator = createQwenReplyGenerator(botConfig)
 
   // Ticket #77: auto-greet/auto-fund newly-registered Monad profiles, alongside this script's
   // pre-existing Qwen-reply behavior. `QWEN_BOT_MAX_GREETINGS` caps how many strangers' addresses
@@ -181,8 +182,10 @@ async function main() {
 
   console.log('== Ticket #9: Qwen 3.8 Max bot over Frank (Monad testnet) ==')
   console.log(`Relay:        ${relayBaseUrl}`)
-  console.log(`Qwen model:   ${qwenModel} @ ${qwenEndpoint}`)
-  console.log(`Max replies:  ${maxReplies}`)
+  console.log(`Reply mode:   ${replyGenerator.describe()}`)
+  console.log(
+    `Max replies:  ${Number.isFinite(maxReplies) ? maxReplies : 'unlimited'}`,
+  )
   console.log(
     `Max greetings: ${maxGreetings} (funding each with ${fundValueWei} wei)`,
   )
@@ -223,12 +226,6 @@ async function main() {
   const guard = botLoopGuardFromEnv({
     selfAddress: identity.displayAddress,
     relayBaseUrl,
-  })
-
-  const qwen = new QwenClient({
-    apiKey: qwenApiKey,
-    endpoint: qwenEndpoint,
-    model: qwenModel,
   })
 
   // Not persisted, deliberately -- see qwen-bot-state.ts's header for why (cheaply re-fetchable).
@@ -274,7 +271,7 @@ async function main() {
   // no longer gated behind "has the Qwen-reply quota been reached", since it's now this script's
   // second, independent piece of demoed behavior (ticket #77).
   while (repliesSent < maxReplies || greetingsSent < maxGreetings) {
-    if (Date.now() - lastActivityAt > idleTimeoutMs) {
+    if (idleTimeoutMs > 0 && Date.now() - lastActivityAt > idleTimeoutMs) {
       console.log(
         `\nNo activity (messages or new profile registrations) within ${idleTimeoutMs}ms -- exiting.`,
       )
@@ -468,10 +465,18 @@ async function main() {
       ]
       history.push({ role: 'user', content: plaintext })
 
-      console.log('[bot] asking Qwen 3.8 Max ...')
-      const completion = await qwen.chat(history)
-      console.log(`[bot] Qwen reasoning: ${completion.reasoning.slice(0, 400)}`)
-      console.log(`[bot] Qwen reply: "${completion.content}"`)
+      console.log(
+        replyGenerator.mode === 'stub'
+          ? '[bot] STUB mode: generating a canned reply (no model call) ...'
+          : '[bot] asking Qwen 3.8 Max ...',
+      )
+      const completion = await replyGenerator.reply(history)
+      console.log(
+        `[bot] ${replyGenerator.mode === 'stub' ? 'STUB' : 'Qwen'} reasoning: ${completion.reasoning.slice(0, 400)}`,
+      )
+      console.log(
+        `[bot] ${replyGenerator.mode === 'stub' ? 'STUB' : 'Qwen'} reply: "${completion.content}"`,
+      )
 
       history.push({ role: 'assistant', content: completion.content })
       state.setConversation(envelope.from, history)
@@ -520,7 +525,7 @@ async function main() {
   await state.Close()
   await closePool()
   console.log(
-    `\nDone. Sent ${repliesSent} real Qwen-generated repl${
+    `\nDone. Sent ${repliesSent} ${replyGenerator.mode === 'stub' ? 'STUB (canned)' : 'real Qwen-generated'} repl${
       repliesSent === 1 ? 'y' : 'ies'
     } and greeted+funded ${greetingsSent} new profile registration${
       greetingsSent === 1 ? '' : 's'
@@ -529,6 +534,10 @@ async function main() {
 }
 
 main().catch(err => {
-  console.error('\nQWEN BOT FAILED:', err)
+  // Message only (no stack) for the operator-facing config errors; set QWEN_BOT_DEBUG=1 for the stack.
+  console.error(
+    '\nQWEN BOT FAILED:',
+    process.env.QWEN_BOT_DEBUG ? err : err instanceof Error ? err.message : err,
+  )
   process.exit(1)
 })

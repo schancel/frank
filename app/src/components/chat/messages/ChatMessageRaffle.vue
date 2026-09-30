@@ -34,16 +34,25 @@
       <div class="text-caption">
         Winner: {{ shortAddress(item.winnerAddress) }}
       </div>
-      <div
-        v-if="verification"
-        class="text-caption"
-        :class="verification.valid ? 'text-positive' : 'text-negative'"
-      >
-        {{
-          verification.valid
-            ? '✓ Verified fair'
-            : `⚠ Verification failed: ${verification.reason}`
-        }}
+      <div v-if="verification" role="status" class="text-caption">
+        <div :class="verification.valid ? 'text-positive' : 'text-negative'">
+          {{
+            verification.valid
+              ? `✓ ${$t('raffleDraw.verified')}`
+              : `⚠ ${$t('raffleDraw.failed', { reason: verification.reason })}`
+          }}
+        </div>
+        <details class="raffle-explainer">
+          <summary>{{ $t('raffleDraw.explainerToggle') }}</summary>
+          <p class="q-mb-none">{{ $t('raffleDraw.explainerShows') }}</p>
+          <p class="q-mb-none">{{ $t('raffleDraw.explainerNotShown') }}</p>
+          <p
+            v-if="verification.valid && !verification.countVerified"
+            class="q-mb-none"
+          >
+            {{ $t('raffleDraw.explainerCountUnverified') }}
+          </p>
+        </details>
       </div>
     </template>
     <div v-else-if="item.action === 'error'" class="text-caption text-negative">
@@ -53,12 +62,13 @@
 </template>
 
 <script lang="ts">
-import { defineComponent, PropType } from 'vue'
+import { defineComponent, PropType, toRaw } from 'vue'
 
 import { RaffleItem } from '@frank/cashweb/types/messages'
 import { activeChain } from '@frank/wallet/chain'
-import { verifyRaffleDraw } from '@frank/wallet/message-item-plugins/raffle/draw'
+import { verifyRaffleDrawAgainstThread } from '@frank/wallet/message-item-plugins/raffle/draw'
 
+import { useChatStore } from '../../../stores/chats'
 import { useActiveWallet } from '../../../composables/useActiveWallet'
 import { errorNotify } from '../../../utils/notifications'
 
@@ -107,38 +117,46 @@ export default defineComponent({
       if (this.didIWin === true) return 'text-positive'
       return ''
     },
+    // Checked against the seed commitment this round announced EARLIER, in an inbound `announce`
+    // from the SAME sender as the draw (a joined reply comes after the entrant paid, so it does
+    // not count). Not found in the chat, or an outbound/other-sender item: no claim either way.
+    // A pass only shows the seed was not changed after the commitment and the winner follows
+    // from the listed entrants; see wallet raffle/draw.ts for what it does not prove.
     verification() {
-      const {
-        winnerAddress,
-        serverSeed,
-        serverSeedHash,
-        entrants,
-        entryTxHashes,
-      } = this.item
-      if (
-        !winnerAddress ||
-        !serverSeed ||
-        !serverSeedHash ||
-        !entrants ||
-        !entryTxHashes
-      ) {
-        return null
+      if (this.item.action !== 'draw') return null
+      const messages = useChatStore().chats[this.address]?.messages ?? []
+      const me = toRaw(this.item)
+      const at = messages.findIndex(m => m.items.some(i => toRaw(i) === me))
+      if (at === -1 || messages[at].outbound) return null
+      const sender = (messages[at].senderAddress ?? '').toLowerCase()
+      if (!sender) return null
+      const prior = messages
+        .slice(0, at)
+        .filter(
+          m => !m.outbound && (m.senderAddress ?? '').toLowerCase() === sender,
+        )
+        .flatMap(m =>
+          m.items.filter((i): i is RaffleItem => i.type === 'raffle'),
+        )
+      try {
+        return verifyRaffleDrawAgainstThread(this.item, prior)
+      } catch {
+        return { valid: false, reason: 'the draw could not be verified' }
       }
-      return verifyRaffleDraw({
-        serverSeed,
-        serverSeedHash,
-        entrants,
-        entryTxHashes,
-        winnerAddress,
-      })
     },
   },
   methods: {
+    // Peer data: never throw while rendering.
     displayPrice(weiString?: string): string {
       if (!weiString) return '0'
-      return `${activeChain.toDisplayAmount(BigInt(weiString))} ${
-        activeChain.unit
-      }`
+      try {
+        if (!/^\d{1,40}$/.test(String(weiString))) return '?'
+        return `${activeChain.toDisplayAmount(BigInt(weiString))} ${
+          activeChain.unit
+        }`
+      } catch {
+        return '?'
+      }
     },
     shortAddress(addr?: string): string {
       if (!addr) return '?'

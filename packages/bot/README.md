@@ -228,8 +228,23 @@ Start a local relay exactly as in ticket #8's runbook
 set -a; source ../../.env; set +a   # needs QWEN_API_KEY, QWEN_OPENAI_COMPATIBLE_ENDPOINT too
 export E2E_DEMO_RELAY_URL=http://127.0.0.1:8098
 export E2E_DEMO_MAIN_WALLET_JSON=/absolute/path/to/chain-wallet.json
-export QWEN_BOT_MAX_REPLIES=2   # must be >= however many turns the sender script will send
-yarn bot
+yarn bot   # keeps running; set QWEN_BOT_MAX_REPLIES=<n> to exit after n replies
+```
+
+### Reply mode: live or stub (`QWEN_BOT_MODE`)
+
+- `QWEN_BOT_MODE=live` (default): real Qwen replies. `QWEN_API_KEY` and
+  `QWEN_OPENAI_COMPATIBLE_ENDPOINT` are required; if one is missing the bot exits at startup with a
+  message naming it. It never falls back to the stub by itself.
+- `QWEN_BOT_MODE=stub`: no API key, no network call to any model. Replies are deterministic and
+  every one starts with `[STUB -- no model, offline canned reply]`, the startup banner and the
+  logs say `STUB mode`. Use it for offline demos, smoke tests and CI.
+- `QWEN_BOT_MAX_REPLIES` (default unset = keep running; `1` = exit after one reply) and
+  `QWEN_BOT_IDLE_TIMEOUT_MS` (default: never when unlimited, 10 minutes when a reply cap is set;
+  `0` = never).
+
+```sh
+QWEN_BOT_MODE=stub yarn bot   # still needs the relay/RPC/wallet env, but no Qwen key
 ```
 
 By default the bot only replies to messages received after that process began starting. This
@@ -421,3 +436,20 @@ an absolute path (unset `HOME`, relative `*_BOT_STATE_DIR`) is a startup error.
 Recovering leftover funds: import the mnemonic into any BIP-44 wallet; sub-accounts are
 `m/44'/60'/0'/0/<i>` and change accounts `m/44'/60'/0'/1/<i>`. Bots created before this change
 simply gain a seed file on their next start; their identity and other state are untouched.
+
+## Picture shop catalog (`vendor-bot.livecheck.ts`, #315)
+
+The vendor bot sells pictures from a directory, not from code. `VENDOR_BOT_CATALOG_DIR` (default:
+the bundled `demo-catalog/`, three generated original pictures with thumbnails) must contain:
+
+```
+manifest.json   {"items": [{"itemId": "sunrise", "description": "...", "priceWei": "50000000000000000",
+                            "image": "sunrise.png", "thumbnail": "sunrise-thumb.png"}]}
+sunrise.png     png / jpg / gif / webp, paths relative to the directory
+```
+
+`thumbnail` is optional (shown next to the entry in the app's catalog; max 64 KiB). The catalog is
+validated once at startup and a bad one is a one-line error naming the item: unknown/duplicate ids,
+bad prices, files outside the directory, non-image bytes, and any image (or the whole catalog
+message) that would not fit the relay's 2 MiB request cap. To change the bundled art, edit and run
+`yarn tsx scripts/generate-demo-pictures.ts`; to sell your own, point the variable at your directory.

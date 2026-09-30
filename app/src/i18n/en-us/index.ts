@@ -305,7 +305,12 @@ export default {
     invalidSeed: 'Unknown secret name...',
     nameHint: 'Name displayed to others',
     enterSeed: "Enter your character's secret name...",
-    pleaseType: 'Please be more creative',
+    nameBlank: 'Enter a name: it cannot be empty or only spaces.',
+    nameTooLong: 'The name is too long: use at most {max} characters.',
+    nameForbiddenCharacters:
+      'The name contains characters that are not allowed. Remove line breaks and other control characters.',
+    nameInvalidUnicode:
+      'The name contains an invalid character. Delete it or paste plain text.',
     bio: 'Bio',
     bioHint: 'Short biolography displayed to others',
     uploadAvatar: 'Upload Avatar',
@@ -334,8 +339,6 @@ export default {
     avatarTooLarge: 'Profile avatar is too large, select a smaller image.',
     unableContactRelay: 'Unable to contact relay server.',
     pushingProfile: 'Pushing new Profile...',
-    invalidName:
-      'Enter a public name: 1-128 characters, no control characters.',
     profile: 'Profile',
   },
   wipeWallet: {

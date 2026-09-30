@@ -405,60 +405,79 @@ export function parseTransaction(
   }
 }
 
-function readLeUnsigned(
+/**
+ * GetOp cursor. A push that runs past the script fails and leaves `next` on
+ * the first unread byte. PUSHDATA4 length is unsigned; `<< 24` is a signed int32.
+ */
+function scriptOp(
   script: Uint8Array,
-  offset: number,
-  width: number,
-): number {
-  let value = 0
-  let scale = 1
-  for (let byte = 0; byte < width; byte += 1) {
-    value += (script[offset + byte] ?? 0) * scale
-    scale *= 256
+  pc: number,
+):
+  | { readonly ok: true; readonly opcode: number; readonly next: number }
+  | { readonly ok: false; readonly next: number } {
+  if (pc >= script.length) return { ok: false, next: pc }
+  const opcode = script[pc] ?? 0
+  let cursor = pc + 1
+  if (opcode <= 0x4e) {
+    let size = 0
+    if (opcode < 0x4c) {
+      size = opcode
+    } else if (opcode === 0x4c) {
+      if (script.length - cursor < 1) return { ok: false, next: cursor }
+      size = script[cursor] ?? 0
+      cursor += 1
+    } else if (opcode === 0x4d) {
+      if (script.length - cursor < 2) return { ok: false, next: cursor }
+      size = (script[cursor] ?? 0) + ((script[cursor + 1] ?? 0) << 8)
+      cursor += 2
+    } else {
+      if (script.length - cursor < 4) return { ok: false, next: cursor }
+      size =
+        (script[cursor] ?? 0) +
+        (script[cursor + 1] ?? 0) * 256 +
+        (script[cursor + 2] ?? 0) * 65536 +
+        (script[cursor + 3] ?? 0) * 16777216
+      cursor += 4
+    }
+    if (script.length - cursor < size) return { ok: false, next: cursor }
+    cursor += size
   }
-  return value
+  return { ok: true, opcode, next: cursor }
 }
 
-function appendRange(out: number[], script: Uint8Array, from: number): void {
-  for (let rest = from; rest < script.length; rest += 1) {
-    out.push(script[rest] ?? 0)
+/**
+ * Legacy scriptCode field, including its compact size. Matches Bitcoin Core
+ * SerializeScriptCode: separators are removed, and a failed GetOp does not
+ * contribute the unread tail. The size is the original length minus separators,
+ * which can be longer than the bytes that follow.
+ */
+function legacyScriptCode(script: Uint8Array): Uint8Array {
+  let cursor = 0
+  let separators = 0
+  while (cursor < script.length) {
+    const op = scriptOp(script, cursor)
+    if (!op.ok) break
+    if (op.opcode === OP_CODESEPARATOR) separators += 1
+    cursor = op.next
   }
-}
-
-function withoutCodeSeparators(script: Uint8Array): Uint8Array {
-  const out: number[] = []
-  let index = 0
-  while (index < script.length) {
-    const opcode = script[index] ?? 0
-    if (opcode === OP_CODESEPARATOR) {
-      index += 1
-      continue
-    }
-    let data = 0
-    let header = 1
-    if (opcode > 0 && opcode < 0x4c) {
-      data = opcode
-    } else if (opcode === 0x4c || opcode === 0x4d || opcode === 0x4e) {
-      const width = opcode === 0x4c ? 1 : opcode === 0x4d ? 2 : 4
-      header = width + 1
-      if (index + header > script.length) {
-        appendRange(out, script, index)
-        break
-      }
-      // GetOp's PUSHDATA4 length is unsigned. `<< 24` is a signed int32.
-      data = readLeUnsigned(script, index + 1, width)
-    }
-    const end = index + header + data
-    if (end > script.length) {
-      appendRange(out, script, index)
+  const writer = new ByteWriter()
+  writer.writeVarint(BigInt(script.length - separators))
+  cursor = 0
+  let begin = 0
+  while (cursor < script.length) {
+    const op = scriptOp(script, cursor)
+    if (!op.ok) {
+      cursor = op.next
       break
     }
-    for (let cursor = index; cursor < end; cursor += 1) {
-      out.push(script[cursor] ?? 0)
+    if (op.opcode === OP_CODESEPARATOR) {
+      if (op.next - 1 > begin) writer.write(script.subarray(begin, op.next - 1))
+      begin = op.next
     }
-    index = end
+    cursor = op.next
   }
-  return Uint8Array.from(out)
+  if (begin < cursor) writer.write(script.subarray(begin, cursor))
+  return writer.finish()
 }
 
 function baseType(hashType: number): number {
@@ -493,7 +512,7 @@ function sighashLegacy(
     if (!bug.ok) return fail('tx-range')
     return bug
   }
-  const script = withoutCodeSeparators(scriptCode)
+  const script = legacyScriptCode(scriptCode)
   const anyone = anyoneCanPay(hashType)
   const writer = new ByteWriter()
   if (!writeI32(writer, tx.version)) return fail('tx-range')
@@ -506,7 +525,7 @@ function sighashLegacy(
     const prevout = outPointBytes(input.prevout)
     if (prevout === null) return fail('tx-range')
     writer.write(prevout)
-    if (index === inputIndex) writeScript(writer, script)
+    if (index === inputIndex) writer.write(script)
     else writer.writeUInt8(0)
     const clear =
       index !== inputIndex && (base === SIGHASH_NONE || base === SIGHASH_SINGLE)

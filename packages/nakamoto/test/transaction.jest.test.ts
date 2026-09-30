@@ -233,11 +233,12 @@ const BARE_LEGACY =
 describe('sighash', () => {
   test('legacy-pushdata4-dos', () => {
     const tx = mustTx(fromHex(BARE_LEGACY))
-    const kept = digest(tx, 0, BTC_MAINNET, SIGHASH_ALL, 'legacy', {
+    // The trailing ab sits past GetOp's cursor, so it is not hashed.
+    const truncated = digest(tx, 0, BTC_MAINNET, SIGHASH_ALL, 'legacy', {
       scriptCode: fromHex('4effffffffab'),
     })
-    expect(kept).toBe(
-      '1a8170dde224df5a406b4178b20cdaab172ed64b39428bb78aa6839cbf4ea3ac',
+    expect(truncated).toBe(
+      'c4d9b92d6e2300769db07edecf9fa3b2beab7892fa1829e37912eb314257f5fc',
     )
     const pushed = digest(tx, 0, BTC_MAINNET, SIGHASH_ALL, 'legacy', {
       scriptCode: fromHex('4e00000080'),
@@ -255,6 +256,29 @@ describe('sighash', () => {
         scriptCode: fromHex('4e01000000ff'),
       }),
     ).toBe('c0605714b38195694e8056a689f2db24fe4ed3bfd1588f85809336c5f7ee6648')
+  })
+
+  test('legacy truncated push omits the unread tail', () => {
+    const tx = mustTx(fromHex(BARE_LEGACY))
+    // Bitcoin Core GetOp returns before an unread push payload.
+    // SerializeScriptCode hashes only through that cursor.
+    // bitcoin/bitcoin src/script/interpreter.cpp (master, read 2026-09-30).
+    const dropped = digest(tx, 0, BTC_MAINNET, SIGHASH_ALL, 'legacy', {
+      scriptCode: fromHex('02ff'),
+    })
+    expect(dropped).toBe(
+      'c812f137b51400c5180a5e94beef28a7b5fa9f18f94d5ab5140cc76c7c2ad51a',
+    )
+    expect(
+      digest(tx, 0, BTC_MAINNET, SIGHASH_ALL, 'legacy', {
+        scriptCode: fromHex('4e00000080ff'),
+      }),
+    ).toBe('229e8e5e585db3361ce312026c159536150810b663c31f040532af00c89f167e')
+    expect(
+      digest(tx, 0, BTC_MAINNET, SIGHASH_ALL, 'legacy', {
+        scriptCode: fromHex('ab02ff'),
+      }),
+    ).toBe(dropped)
   })
 
   test('Bitcoin Core legacy vectors match GetHex', () => {

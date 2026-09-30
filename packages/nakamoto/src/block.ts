@@ -4,8 +4,7 @@
 // Merkle pairing duplicates the last hash of an odd level, matching Bitcoin
 // Core ComputeMerkleRoot. Partial trees follow CPartialMerkleTree.
 
-import { sha256 } from '@noble/hashes/sha256.js'
-
+import { cryptoBackend } from './backend.js'
 import { concatBytes, copyBytes, encodeUnsignedLE } from './bytes.js'
 import type { ChainDescriptor } from './chain/types.js'
 import { internalHashFromBytes, type InternalHash } from './constructors.js'
@@ -96,12 +95,12 @@ function fail(
   return { ok: false, error: { code, ...extra } }
 }
 
-function hash256(bytes: Uint8Array): Uint8Array {
-  return new Uint8Array(sha256(sha256(bytes)))
+function hash256(bytes: Uint8Array) {
+  return new Uint8Array(cryptoBackend.sha256d(bytes))
 }
 
-function sha256Once(bytes: Uint8Array): Uint8Array {
-  return new Uint8Array(sha256(bytes))
+function sha256Once(bytes: Uint8Array) {
+  return new Uint8Array(cryptoBackend.sha256(bytes))
 }
 
 function brand(bytes: Uint8Array): InternalHash {

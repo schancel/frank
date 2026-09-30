@@ -1,12 +1,13 @@
 // Typed secp256k1: ECDSA (RFC 6979, low-S), BIP340 Schnorr, ECDH, tweaks,
-// message signatures, and BIP-374 DLEQ. The backend is @noble/curves
-// 1.9.1. Issue 238 owns swapping that backend. This file does not hash an
-// ECDH point unless the caller passes the hash. It does not multiply a
-// secret by an arbitrary scalar.
+// message signatures, and BIP-374 DLEQ. Sign, verify, ECDH, and point
+// addition go through src/backend. The installed backend is @noble/curves
+// 1.9.1. Recoverable message signatures still read the recovery bit from
+// that library. This file does not hash an ECDH point unless the caller
+// passes the hash. It does not multiply a secret by an arbitrary scalar.
 
 import { schnorr, secp256k1 } from '@noble/curves/secp256k1.js'
-import { sha256 } from '@noble/hashes/sha256.js'
 
+import { cryptoBackend, CryptoBackendError } from './backend.js'
 import { concatBytes, copyBytes, isPlainBytes } from './bytes.js'
 import type { ChainDescriptor } from './chain/types.js'
 import {
@@ -136,6 +137,24 @@ function fail<T>(error: CurveError): CurveResult<T> {
   return { ok: false, error }
 }
 
+function backendFailure(error: unknown): CurveError {
+  if (error instanceof CryptoBackendError) {
+    if (error.code === 'bad-length') {
+      return { code: 'bad-length', actual: error.actual ?? 0 }
+    }
+    if (
+      error.code === 'scalar-out-of-range' ||
+      error.code === 'point-invalid' ||
+      error.code === 'point-at-infinity' ||
+      error.code === 'high-s' ||
+      error.code === 'signature-invalid'
+    ) {
+      return { code: error.code }
+    }
+  }
+  return { code: 'signature-invalid' }
+}
+
 function lengthError(actual: number): BadLength {
   return { code: 'bad-length', actual }
 }
@@ -241,13 +260,11 @@ export function signEcdsa(
   if (digest.length !== 32) return fail(lengthError(digest.length))
   const secret = copyBytes(key.bytes)
   try {
-    const signature = secp256k1.sign(digest, secret, { lowS: true })
-    if (signature.hasHighS()) return fail({ code: 'high-s' })
-    const der = ecdsaSignatureFromBytes(signature.toDERRawBytes())
+    const der = ecdsaSignatureFromBytes(cryptoBackend.signEcdsa(secret, digest))
     if (!der.ok) return fail({ code: 'signature-invalid' })
     return { ok: true, value: der.value }
-  } catch {
-    return fail({ code: 'signature-invalid' })
+  } catch (error) {
+    return fail(backendFailure(error))
   } finally {
     secret.fill(0)
   }
@@ -263,21 +280,13 @@ export function verifyEcdsa(
   if (!isPlainBytes(digest) || digest.length !== 32) {
     return fail(lengthError(isPlainBytes(digest) ? digest.length : 0))
   }
-  const point = parsePoint(publicKey)
-  if (!point.ok) return point
-  let parsed: ReturnType<typeof secp256k1.Signature.fromDER>
   try {
-    parsed = secp256k1.Signature.fromDER(signature)
-    parsed.assertValidity()
-  } catch {
-    return fail({ code: 'signature-invalid' })
-  }
-  if (parsed.hasHighS()) return fail({ code: 'high-s' })
-  const encoded = compressed(point.value)
-  if (!encoded.ok) return encoded
-  return {
-    ok: true,
-    value: secp256k1.verify(parsed, digest, encoded.value, { lowS: true }),
+    return {
+      ok: true,
+      value: cryptoBackend.verifyEcdsa(signature, digest, publicKey),
+    }
+  } catch (error) {
+    return fail(backendFailure(error))
   }
 }
 
@@ -295,7 +304,7 @@ export function signSchnorr(
   }
   const secret = copyBytes(key.bytes)
   try {
-    const signature = schnorr.sign(message, secret, aux)
+    const signature = cryptoBackend.signSchnorr(secret, message, aux)
     const branded = schnorrSignatureFromBytes(signature)
     if (!branded.ok) return fail({ code: 'signature-invalid' })
     return { ok: true, value: branded.value }
@@ -321,7 +330,7 @@ export function verifySchnorr(
   try {
     return {
       ok: true,
-      value: schnorr.verify(signature, message, publicKey),
+      value: cryptoBackend.verifySchnorr(signature, message, publicKey),
     }
   } catch {
     return fail({ code: 'signature-invalid' })
@@ -335,17 +344,11 @@ export function ecdh(
 ): CurveResult<SharedPoint> {
   const scalar = privateScalar(key)
   if (!scalar.ok) return scalar
-  const point = parsePoint(publicKey)
-  if (!point.ok) return point
-  const encoded = compressed(point.value)
-  if (!encoded.ok) return encoded
   const secret = copyBytes(key.bytes)
   try {
-    const shared = secp256k1.getSharedSecret(secret, encoded.value, true)
-    if (shared.length !== 33) return fail({ code: 'point-invalid' })
-    return { ok: true, value: { point: shared } }
-  } catch {
-    return fail({ code: 'point-invalid' })
+    return { ok: true, value: { point: cryptoBackend.ecdh(secret, publicKey) } }
+  } catch (error) {
+    return fail(backendFailure(error))
   } finally {
     secret.fill(0)
   }
@@ -403,11 +406,11 @@ export function pointAdd(
   left: Uint8Array,
   right: Uint8Array,
 ): CurveResult<Uint8Array> {
-  const first = parsePoint(left)
-  if (!first.ok) return first
-  const second = parsePoint(right)
-  if (!second.ok) return second
-  return compressed(first.value.add(second.value))
+  try {
+    return { ok: true, value: cryptoBackend.pointAdd(left, right) }
+  } catch (error) {
+    return fail(backendFailure(error))
+  }
 }
 
 /** Public point times a scalar in [1, n). Not a secret-times-scalar helper. */
@@ -415,11 +418,14 @@ export function pointMultiply(
   publicPoint: Uint8Array,
   scalar: Uint8Array,
 ): CurveResult<Uint8Array> {
-  const point = parsePoint(publicPoint)
-  if (!point.ok) return point
-  const factor = scalar32(scalar)
-  if (!factor.ok) return factor
-  return compressed(point.value.multiply(factor.value))
+  try {
+    return {
+      ok: true,
+      value: cryptoBackend.pointMultiply(publicPoint, scalar),
+    }
+  } catch (error) {
+    return fail(backendFailure(error))
+  }
 }
 
 function dleqChallenge(
@@ -604,7 +610,7 @@ export function messageDigest(
     messageLength.value,
     message,
   ])
-  return { ok: true, value: sha256(sha256(framed)) }
+  return { ok: true, value: new Uint8Array(cryptoBackend.sha256d(framed)) }
 }
 
 function recoveryFromHeader(

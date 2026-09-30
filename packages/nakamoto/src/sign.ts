@@ -3,9 +3,7 @@
 // assignment and does not return a transaction (decision 328). Script-path,
 // annex, and lotus extension witnesses are unsupported, not silently dropped.
 
-import { ripemd160 } from '@noble/hashes/ripemd160.js'
-import { sha256 } from '@noble/hashes/sha256.js'
-
+import { cryptoBackend } from './backend.js'
 import { copyBytes, isPlainBytes } from './bytes.js'
 import type { ChainDescriptor } from './chain/types.js'
 import {
@@ -152,8 +150,8 @@ function fail(code: SignCode): SignResult<never> {
   return { ok: false, error: { code } }
 }
 
-function hash160(bytes: Uint8Array): Uint8Array {
-  return new Uint8Array(ripemd160(sha256(bytes)))
+function hash160(bytes: Uint8Array) {
+  return new Uint8Array(cryptoBackend.hash160(bytes))
 }
 
 function equalBytes(left: Uint8Array, right: Uint8Array): boolean {

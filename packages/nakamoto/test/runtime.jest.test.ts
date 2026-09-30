@@ -33,6 +33,7 @@ describe('runtime constraints', () => {
     expect(Object.keys(pkg.exports).sort()).toEqual([
       '.',
       './address',
+      './backend',
       './base32',
       './base58',
       './base58check',
@@ -91,6 +92,7 @@ describe('runtime constraints', () => {
       'script',
       'block',
       'curve',
+      'backend',
     ])
   })
 

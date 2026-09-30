@@ -4,8 +4,7 @@
 // build a string. Taproot output keys are encoded as given. This module does
 // not add the tweak on the curve; issue 249 owns that check.
 
-import { ripemd160 } from '@noble/hashes/ripemd160.js'
-import { sha256 } from '@noble/hashes/sha256.js'
+import { cryptoBackend } from './backend.js'
 import { decodeBech32, encodeBech32, type Bech32Spec } from './bech32.js'
 import { CASHADDR_CHARSET } from './base32.js'
 import { decodeBase58Check, encodeBase58Check } from './base58check.js'
@@ -243,8 +242,8 @@ function relay(error: { readonly code: string }): AddressResult<never> {
   return fail({ code: 'bad-checksum' })
 }
 
-function hash160(bytes: Uint8Array): Uint8Array {
-  return new Uint8Array(ripemd160(sha256(bytes)))
+function hash160(bytes: Uint8Array) {
+  return new Uint8Array(cryptoBackend.hash160(bytes))
 }
 
 function take(bytes: Uint8Array, length: number): AddressResult<Uint8Array> {

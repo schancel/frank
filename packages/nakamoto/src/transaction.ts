@@ -4,8 +4,7 @@
 // BCH inserts the Upgrade9 UTXO hash only when commitUtxos is set.
 // XPI uses SignatureHashLotus (lotusd interpreter.cpp). Fork id 0 is not that path.
 
-import { sha256 } from '@noble/hashes/sha256.js'
-
+import { cryptoBackend } from './backend.js'
 import { concatBytes, copyBytes, encodeUnsignedLE } from './bytes.js'
 import type { ChainDescriptor } from './chain/types.js'
 import { internalHashFromBytes, type InternalHash } from './constructors.js'
@@ -35,7 +34,7 @@ const NEGATIVE_ONE = Uint8Array.of(
   0xff,
 )
 const TAP_TAG = Uint8Array.of(84, 97, 112, 83, 105, 103, 104, 97, 115, 104)
-const TAP_TAG_HASH = new Uint8Array(sha256(TAP_TAG))
+const TAP_TAG_HASH = new Uint8Array(cryptoBackend.sha256(TAP_TAG))
 const INT64_MAX = (1n << 63n) - 1n
 const UINT64_MAX = (1n << 64n) - 1n
 const CODESEP_NONE = 0xffffffff
@@ -153,7 +152,7 @@ function fail(code: TxFailure['code']): TxResult<never> {
 }
 
 function hash256(bytes: Uint8Array) {
-  return new Uint8Array(sha256(sha256(bytes)))
+  return new Uint8Array(cryptoBackend.sha256d(bytes))
 }
 
 function u32Bits(value: number): number | null {
@@ -579,7 +578,7 @@ function sighashBip143(
 const TAP_TYPES = new Set([0x00, 0x01, 0x02, 0x03, 0x81, 0x82, 0x83])
 
 function shaConcat(parts: readonly Uint8Array[]) {
-  return new Uint8Array(sha256(concatBytes(parts)))
+  return new Uint8Array(cryptoBackend.sha256(concatBytes(parts)))
 }
 
 function sighashTaproot(
@@ -673,14 +672,14 @@ function sighashTaproot(
   if (annex !== null) {
     const annexBytes = new ByteWriter()
     writeScript(annexBytes, annex)
-    writer.write(new Uint8Array(sha256(annexBytes.finish())))
+    writer.write(new Uint8Array(cryptoBackend.sha256(annexBytes.finish())))
   }
   if (low === SIGHASH_SINGLE) {
     const output = tx.outputs[inputIndex]
     if (output === undefined) return fail('sighash-single')
     const encoded = outputBytes(output)
     if (encoded === null) return fail('tx-range')
-    writer.write(new Uint8Array(sha256(encoded)))
+    writer.write(new Uint8Array(cryptoBackend.sha256(encoded)))
   }
   if (extFlag === 1 && options.tapleafHash !== undefined) {
     writer.write(copyBytes(options.tapleafHash))
@@ -689,7 +688,7 @@ function sighashTaproot(
   }
   const message = writer.finish()
   const digest = new Uint8Array(
-    sha256(concatBytes([TAP_TAG_HASH, TAP_TAG_HASH, message])),
+    cryptoBackend.sha256(concatBytes([TAP_TAG_HASH, TAP_TAG_HASH, message])),
   )
   const branded = internalHashFromBytes(digest)
   if (!branded.ok) return fail('tx-range')

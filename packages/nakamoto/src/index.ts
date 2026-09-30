@@ -2,10 +2,18 @@
 // Per-chain entries: ./btc ./bch ./xec ./xpi.
 // Feature entries: ./integer ./script ./script-num ./base58 ./base58check
 // ./varint ./reader ./convert-bits ./base32 ./encoding-error ./constructors
-// ./bech32 ./cashaddr ./address ./keys ./hd ./transaction ./sign ./block
-// ./curve.
+// ./bech32 ./cashaddr ./address ./backend ./keys ./hd ./transaction ./sign
+// ./block ./curve.
 
 export const PACKAGE_NAME = '@frank/nakamoto'
+
+export {
+  CryptoBackendError,
+  cryptoBackend,
+  nobleBackend,
+  selectCryptoBackend,
+} from './backend.js'
+export type { BackendCode, CryptoBackend } from './backend.js'
 
 export {
   BCH_MAINNET,

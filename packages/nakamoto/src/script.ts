@@ -4,10 +4,9 @@
 // CashToken codepoints fail closed. ECDSA digest checks use the in-tree
 // curve; typed Schnorr stays on issue 249.
 
-import { ripemd160 } from '@noble/hashes/ripemd160.js'
 import { sha1 } from '@noble/hashes/sha1.js'
-import { sha256 } from '@noble/hashes/sha256.js'
 
+import { cryptoBackend } from './backend.js'
 import { isPlainBytes } from './bytes.js'
 import type { ChainDescriptor, ChainFamily } from './chain/types.js'
 import { bytesToBigint } from './integer.js'
@@ -1042,11 +1041,14 @@ function hashOp(stack: Uint8Array[], opcode: number): ScriptFailure | null {
   const top = stack.pop()
   if (top === undefined) return failure('script-invalid-stack', opcode)
   let hashed: Uint8Array
-  if (opcode === OP_RIPEMD160) hashed = ripemd160(top)
+  if (opcode === OP_RIPEMD160)
+    hashed = new Uint8Array(cryptoBackend.ripemd160(top))
   else if (opcode === OP_SHA1) hashed = sha1(top)
-  else if (opcode === OP_SHA256) hashed = sha256(top)
-  else if (opcode === OP_HASH160) hashed = ripemd160(sha256(top))
-  else hashed = sha256(sha256(top))
+  else if (opcode === OP_SHA256)
+    hashed = new Uint8Array(cryptoBackend.sha256(top))
+  else if (opcode === OP_HASH160)
+    hashed = new Uint8Array(cryptoBackend.hash160(top))
+  else hashed = new Uint8Array(cryptoBackend.sha256d(top))
   stack.push(hashed)
   return null
 }
@@ -1554,7 +1556,7 @@ function checkOne(
   if (point === null) return false
   let digest: Uint8Array
   if (dataSig) {
-    digest = sha256(message ?? new Uint8Array(0))
+    digest = new Uint8Array(cryptoBackend.sha256(message ?? new Uint8Array(0)))
   } else {
     if (
       parsed.hashType === null ||
@@ -1607,7 +1609,7 @@ function digestFor(
     spent: machine.context.spent,
     commitUtxos: false,
     executedScriptHash: extend
-      ? sha256(removeCodeSeparators(active))
+      ? new Uint8Array(cryptoBackend.sha256(removeCodeSeparators(active)))
       : undefined,
     codeSeparatorPosition:
       extend && machine.separated ? machine.codeSep : undefined,

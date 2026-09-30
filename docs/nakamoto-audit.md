@@ -449,6 +449,7 @@ Native `blocked-by` edges are on the issues. A sentence here is not that edge. D
 | [Add a crypto backend interface and differential tests](https://github.com/schancel/frank/issues/238) | Node, WASM, and pure-JS backends | scaffold |
 | [Port encoding, buffer, and error leaves](https://github.com/schancel/frank/issues/239) | base58, varint, reader/writer, typed errors | scaffold |
 | [Add explicit chain descriptors](https://github.com/schancel/frank/issues/240) | BTC, BCH, XEC, XPI, no default chain | scaffold |
+| [Runtime constraints and a justified dependency list](https://github.com/schancel/frank/issues/264) | bigint, Uint8Array, per-chain entries, empty install list | scaffold, chains |
 | [Destination and per-chain address codecs](https://github.com/schancel/frank/issues/243) | Destination vs encoding | chains, leaves |
 | [Keys, WIF, and HD derivation](https://github.com/schancel/frank/issues/244) | Keys and BIP32 | backend, chains |
 | [Per-chain sighash and transaction serialization](https://github.com/schancel/frank/issues/246) | Pure sighash | chains, leaves |
@@ -475,3 +476,44 @@ Decisions, not blockers:
 Finding, no code change: [Stamp funding accounts are linkable to the identity](https://github.com/schancel/frank/issues/256).
 
 The handoff issue tracks Done, Open PRs, Decisions, Blocked, and New tickets. Risky items stay at the top of that issue.
+
+## 11. Dependency budget
+
+`packages/nakamoto/runtime-deps.json` and `packages/crypto-box/runtime-deps.json` are the lists the dependency check compares to `package.json`. Yarn 1 does not record a workspace package's own dependency map as a lockfile key, so those files are the install lists. `dependencies` must equal `allowed`. `optionalDependencies` must equal `optional`. A name in `planned` or `plannedOptional` must not be installed yet. Direct `bn.js`, `elliptic`, `bs58`, `buffer-compare`, `inherits`, `lodash`, `node-forge`, and `buffer` fail the check even if they are copied into `allowed`.
+
+Both `allowed` lists are empty. None of the packages below are installed. Moving a name into `allowed` or `optional` means editing this section in the same change, for the version that is actually installed. The recommendation in section 6 is the intended set. It is not permission to install early.
+
+Integer math in the new packages is native `bigint`. Script-number encode and decode, and fixed-width unsigned big-endian conversion, live in `@frank/nakamoto` (`src/script-num.ts`, `src/integer.ts`). They are checked against the little-endian script-number vectors and against `bitcore-lib-xpi` from a test only. The leaves ticket imports those modules instead of writing a second codec.
+
+Shared source uses `Uint8Array`. It does not import Node built-ins. A Node accelerator, when one exists, lives under `src/backend/node/` and is not imported by shared code. That directory does not exist yet. `sideEffects` is false. The exports map is ESM, with types. CJS is not emitted. Chain entries are `btc`, `bch`, `xec`, and `xpi`. Feature entries are `integer` and `script-num`. Bundling the BCH entry does not include the BTC mainnet magic or the XPI port. Checks across a package boundary use a `code` field.
+
+`@frank/nakamoto` planned:
+
+| Package | Role | What was checked |
+| --- | --- | --- |
+| `@noble/curves` | secp256k1 fallback and projective addition | MIT. Survey install 1.9.1. The README on main, read 2026-09-29, lists Trail of Bits, August 2026, version 2.3.0, scope everything; Cure53, September 2024, version 1.6.0, scope ed25519, ed448, BLS, bn254, and hash-to-curve, not secp256k1; Kudelski, September 2023, starknet-related abstract modules; Trail of Bits, February 2023, version 0.7.3, scope included secp256k1. 1.9.1 is not the 2.3.0 release. AI-assisted self-audits are not an audit. The README also says the current major changes signing defaults (`prehash`, low-S, signature format). The backend ticket pins a version and names which report covers it. |
+| `@noble/hashes` | SHA-256, RIPEMD-160, HMAC fallback | MIT. Survey install 1.8.0. README, read 2026-09-29: Cure53, January 2022, version 1.0.0, scope everything except blake3, sha3-addons, sha1, and argon2. SHA-256, RIPEMD-160, and HMAC are inside that scope. Changes after 1.0.0 are not in that report. |
+| `@scure/base` | base58, bech32, bech32m | MIT. Survey install 1.2.5. The codec ticket cites an audit of the version it adds. |
+| `@scure/bip32` | HD derivation | MIT on npm 2.4.0, viewed 2026-09-29. Not in the benchmark tree and not microbenchmarked. The HD ticket cites an audit and re-checks the license of the version it adds. |
+| `@scure/bip39` | mnemonics | MIT on npm 2.4.0, viewed 2026-09-29. Same rule as `@scure/bip32`. |
+
+`@frank/nakamoto` planned optional accelerators. They stay optional, and the pure-JS package above still has to run:
+
+| Package | Role | What was checked |
+| --- | --- | --- |
+| `hash-wasm` | synchronous hash and HMAC | MIT. Survey install 4.12.0. Its install scripts were not inspected. Do not add it until there is no required native build, or the native step is optional and `@noble/hashes` still runs. |
+| `tiny-secp256k1` | WASM libsecp for sign, verify, Schnorr, and ECDH | MIT. Survey install 2.2.3. Same install-script rule. `@noble/curves` stays the fallback. |
+
+`@frank/crypto-box` planned:
+
+| Package | Role | What was checked |
+| --- | --- | --- |
+| `@noble/ciphers` | AES-GCM and ChaCha candidate | MIT. Survey install 1.3.0. Not timed. An audit report was not read. The suite ticket cites one, and runs known-answer tests, before adding it. |
+| `@frank/nakamoto` | one ECDH implementation shared with the chain library | Workspace package, MIT. Added when a suite needs it. |
+
+Not runtime dependencies:
+
+- `esbuild` `~0.28.0` (locked at 0.28.2, MIT) builds the browser bundle check. `@frank/frank-codec` already uses that range. The install downloads a platform binary. Consumers do not depend on it.
+- `bitcore-lib-xpi` is a devDependency of `@frank/nakamoto` so tests can compare script-number bytes. Shared source does not import it.
+
+The workflow `.github/workflows/nakamoto.yml` runs the package tests, the shared-import check, the dependency-list check, and a browser esbuild with no polyfills, then loads the emitted ESM in Node. The size of each entry is printed.

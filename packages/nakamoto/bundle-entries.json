@@ -90,6 +90,12 @@
       "entry": "src/encoding-error.ts",
       "forbid": ["btc-magic", "xpi-port"],
       "absentExports": ["BTC_MAINNET", "encodeBase58"]
+    },
+    {
+      "name": "constructors",
+      "entry": "src/constructors.ts",
+      "forbid": ["btc-magic", "xpi-port", "xpi-magic"],
+      "absentExports": ["BTC_MAINNET", "encodeBase58"]
     }
   ]
 }

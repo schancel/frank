@@ -64,6 +64,10 @@
     "./encoding-error": {
       "types": "./dist/encoding-error.d.ts",
       "import": "./dist/encoding-error.js"
+    },
+    "./constructors": {
+      "types": "./dist/constructors.d.ts",
+      "import": "./dist/constructors.js"
     }
   },
   "dependencies": {

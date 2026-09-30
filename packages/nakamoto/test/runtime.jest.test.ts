@@ -34,6 +34,7 @@ describe('runtime constraints', () => {
       './base58check',
       './bch',
       './btc',
+      './constructors',
       './convert-bits',
       './encoding-error',
       './integer',
@@ -67,6 +68,7 @@ describe('runtime constraints', () => {
       'convert-bits',
       'base32',
       'encoding-error',
+      'constructors',
     ])
   })
 

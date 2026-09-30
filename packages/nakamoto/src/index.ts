@@ -1,7 +1,7 @@
 // @frank/nakamoto public surface. Browser-safe: no Node built-ins.
 // Per-chain entries: ./btc ./bch ./xec ./xpi.
 // Feature entries: ./integer ./script-num ./base58 ./base58check ./varint
-// ./reader ./convert-bits ./base32 ./encoding-error.
+// ./reader ./convert-bits ./base32 ./encoding-error ./constructors.
 
 export const PACKAGE_NAME = '@frank/nakamoto'
 
@@ -58,3 +58,33 @@ export { convertBits } from './convert-bits.js'
 export { CASHADDR_CHARSET, decodeBase32, encodeBase32 } from './base32.js'
 export { EncodingException, isEncodingError } from './encoding-error.js'
 export type { EncodingError, EncodingResult } from './encoding-error.js'
+
+export {
+  compressedPublicKeyFromBytes,
+  displayTxidFromBytes,
+  displayTxidFromInternal,
+  ecdsaSignatureFromBytes,
+  internalHashFromBytes,
+  internalHashFromDisplay,
+  privateKeyFromBytes,
+  pubkeyHashFromBytes,
+  schnorrSignatureFromBytes,
+  sighashByte,
+  xAddressPayloadFromBytes,
+  xOnlyPublicKeyFromBytes,
+} from './constructors.js'
+export type {
+  CompressedPublicKey,
+  DisplayTxid,
+  EcdsaSignature,
+  ExplicitSign,
+  InternalHash,
+  PrivateKey,
+  PrivateKeyBytes,
+  PubkeyHash,
+  SchnorrSignature,
+  SighashByte,
+  SigningMethod,
+  XAddressPayload,
+  XOnlyPublicKey,
+} from './constructors.js'

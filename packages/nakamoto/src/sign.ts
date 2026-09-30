@@ -111,6 +111,8 @@ const SIGN_CODES: readonly SignCode[] = [
   'sign-partial',
 ]
 
+/** Body only. Consensus counts the appended sighash byte inside 73. */
+const ECDSA_BODY_MAX = 72
 const OP_DUP = 0x76
 const OP_HASH160 = 0xa9
 const OP_EQUALVERIFY = 0x88
@@ -393,7 +395,9 @@ function signatureBytes(
     return { ok: true, value: out }
   }
   const parsed = ecdsaSignatureFromBytes(raw)
-  if (!parsed.ok) return fail('sign-signature')
+  if (!parsed.ok || parsed.value.length > ECDSA_BODY_MAX) {
+    return fail('sign-signature')
+  }
   const out = new Uint8Array(parsed.value.length + 1)
   out.set(parsed.value, 0)
   out[parsed.value.length] = sighashType

@@ -373,6 +373,34 @@ describe('explicit signing', () => {
     expect(signed.ok ? null : signed).not.toHaveProperty('value')
   })
 
+  test('an ecdsa body longer than 72 bytes is not attached', () => {
+    const scripts = [p2pkh(hashA)]
+    const coins = spent(scripts)
+    const tooLong = new Uint8Array(73)
+    tooLong[0] = 0x30
+    const rejected = signInput(
+      transaction(scripts),
+      0,
+      recorder(pubA, tooLong),
+      options(BTC_MAINNET, 'legacy', SIGHASH_ALL, coins),
+    )
+    expect(rejected).toEqual({ ok: false, error: { code: 'sign-signature' } })
+    expect(rejected.ok ? null : rejected).not.toHaveProperty('value')
+
+    const body = new Uint8Array(72)
+    body[0] = 0x30
+    const accepted = signInput(
+      transaction(scripts),
+      0,
+      recorder(pubA, body),
+      options(BTC_MAINNET, 'legacy', SIGHASH_ALL, coins),
+    )
+    expect(accepted.ok).toBe(true)
+    if (!accepted.ok) return
+    expect(accepted.value.scriptSig[0]).toBe(73)
+    expect(accepted.value.scriptSig[73]).toBe(SIGHASH_ALL)
+  })
+
   test('two inputs and one key do not look like success', () => {
     const key = new old.PrivateKey({
       bn: '11'.repeat(32),

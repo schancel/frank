@@ -13,6 +13,7 @@ import {
   fromHex,
   toHex,
   topicBurnCalldata,
+  topicPostBurnCalldata,
   topicBurnCommitment,
   topicPostHash,
   topicVoteCommitment,
@@ -261,5 +262,117 @@ describe('topic writers', () => {
     const again = topicPostHash(topicPostFrame())
     hash.fill(0)
     expect(toHex(again)).not.toBe(toHex(hash))
+  })
+
+  it('report a lone surrogate in a vote network as a typed error', () => {
+    expect(
+      category(() => encodeTopicVote('ec\ud800', bytesOf(32, 1), burnTx())),
+    ).toBe('malformed@7')
+  })
+
+  it('throw FrankCodecError, never TypeError or RangeError, for untyped misuse', () => {
+    const notBytes: unknown[] = [
+      undefined,
+      null,
+      Symbol('x'),
+      1,
+      1n,
+      {},
+      [],
+      { valueOf: () => 'x' },
+      { length: 32 },
+      'x'.repeat(32),
+      Array.from({ length: 32 }, () => 0),
+      new Uint16Array(32),
+      new Uint8ClampedArray(32),
+      new Float64Array(4),
+      new ArrayBuffer(32),
+      new Proxy(new Uint8Array(32), {}),
+    ]
+    const notText: unknown[] = [
+      undefined,
+      null,
+      Symbol('x'),
+      1,
+      {},
+      ['a'],
+      { toString: () => 'a', valueOf: () => 'a' },
+      new String('a'),
+    ]
+    const post = topicPostFrame()
+    const good32 = bytesOf(32, 1)
+    const probes: Array<[string, () => unknown]> = []
+    for (const v of notBytes) {
+      probes.push(
+        ['calldata commitment', () => topicBurnCalldata('up', v as never)],
+        [
+          'post body',
+          () => encodeTopicPost({ network: NET, topic: 't', body: v as never }),
+        ],
+        [
+          'post parent',
+          () =>
+            encodeTopicPost({
+              network: NET,
+              topic: 't',
+              body,
+              parentHash: v as never,
+            }),
+        ],
+        ['post hash', () => topicPostHash(v as never)],
+        ['burn commitment', () => topicBurnCommitment(v as never)],
+        [
+          'submission post',
+          () => encodeTopicPostSubmission(v as never, burnTx()),
+        ],
+        ['submission burn', () => encodeTopicPostSubmission(post, v as never)],
+        ['vote target', () => encodeTopicVote(NET, v as never, burnTx())],
+        ['vote burn', () => encodeTopicVote(NET, good32, v as never)],
+      )
+    }
+    for (const v of notText) {
+      probes.push(
+        [
+          'post network',
+          () => encodeTopicPost({ network: v as never, topic: 't', body }),
+        ],
+        [
+          'post topic',
+          () => encodeTopicPost({ network: NET, topic: v as never, body }),
+        ],
+        ['vote network', () => encodeTopicVote(v as never, good32, burnTx())],
+        ['direction', () => topicBurnCalldata(v as never, good32)],
+      )
+    }
+    for (const bad of [undefined, null, 1, 'x', Symbol('f')]) {
+      probes.push(['fields', () => encodeTopicPost(bad as never)])
+    }
+    for (const [what, fn] of probes) {
+      let thrown: unknown
+      try {
+        fn()
+      } catch (e) {
+        thrown = e
+      }
+      // A Uint8Array-typed proxy or an undefined optional parent can be legitimate input; every
+      // other probe must be refused with the typed error.
+      if (what === 'post parent' && thrown === undefined) continue
+      expect([what, thrown instanceof FrankCodecError]).toEqual([what, true])
+    }
+  })
+
+  it('accept only a real 32-byte Uint8Array as a calldata commitment', () => {
+    expect(topicBurnCalldata('up', bytesOf(32, 1)).length).toBe(38)
+    expect(topicBurnCalldata('up', Buffer.alloc(32)).length).toBe(38)
+    expect(() => topicBurnCalldata('up', { length: 32 } as never)).toThrow(
+      FrankCodecError,
+    )
+  })
+
+  it('build a post burn calldata that is always an up-vote', () => {
+    const commitment = bytesOf(32, 5)
+    expect(toHex(topicPostBurnCalldata(commitment))).toBe(
+      toHex(topicBurnCalldata('up', commitment)),
+    )
   })
 })

@@ -51,6 +51,25 @@ function refuse(message: string, location: string): FrankCodecError {
   return new FrankCodecError('schema', '8.2', message, location)
 }
 
+/** True for a real `Uint8Array` (any realm), false for other typed arrays, proxies, and objects. */
+function isBytes(v: unknown): v is Uint8Array {
+  return (
+    ArrayBuffer.isView(v) &&
+    Object.prototype.toString.call(v) === '[object Uint8Array]'
+  )
+}
+
+function requireBytes(v: unknown, name: string): Uint8Array {
+  if (!isBytes(v)) throw refuse(`${name} must be a Uint8Array`, name)
+  return v
+}
+
+function requireText(v: unknown, name: string): string {
+  if (typeof v !== 'string') throw refuse(`${name} must be a string`, name)
+  requireWellFormed(v, name)
+  return v
+}
+
 /** A lone surrogate is not text: a reader reports invalid UTF-8 as `malformed` at stage 7. */
 function requireWellFormed(text: string, location: string): void {
   for (let i = 0; i < text.length; i++) {
@@ -84,14 +103,18 @@ function validated(frame: Uint8Array, typeId: number): ParsedFrame {
 
 /** Encodes a type-9 topic post. Throws `FrankCodecError` if a field violates its bound. */
 export function encodeTopicPost(fields: TopicPostFields): Uint8Array {
-  requireWellFormed(fields.network, 'root/payload.0')
-  requireWellFormed(fields.topic, 'root/payload.1')
+  if (fields === null || typeof fields !== 'object')
+    throw refuse('fields must be an object', 'fields')
+  const network = requireText(fields.network, 'network')
+  const topic = requireText(fields.topic, 'topic')
+  const body = requireBytes(fields.body, 'body')
   const payload = new Map<number, Encodable>([
-    [0, fields.network],
-    [1, fields.topic],
-    [3, fields.body],
+    [0, network],
+    [1, topic],
+    [3, body],
   ])
-  if (fields.parentHash !== undefined) payload.set(2, fields.parentHash)
+  if (fields.parentHash !== undefined)
+    payload.set(2, requireBytes(fields.parentHash, 'parentHash'))
   const frame = encodeFrame(
     { typeId: TYPE_TOPIC_POST, schemaVersion: 1, minReaderVersion: 1 },
     payload,
@@ -102,7 +125,9 @@ export function encodeTopicPost(fields: TopicPostFields): Uint8Array {
 
 /** The identity of a post: the T1 content hash of its complete type-9 frame (S12). */
 export function topicPostHash(postFrame: Uint8Array): Uint8Array {
-  return contentHash(validated(postFrame, TYPE_TOPIC_POST))
+  return contentHash(
+    validated(requireBytes(postFrame, 'postFrame'), TYPE_TOPIC_POST),
+  )
 }
 
 /**
@@ -115,7 +140,7 @@ export function topicBurnCommitment(postFrame: Uint8Array): {
   hash: Uint8Array
   commitment: Uint8Array
 } {
-  const post = validated(postFrame, TYPE_TOPIC_POST)
+  const post = validated(requireBytes(postFrame, 'postFrame'), TYPE_TOPIC_POST)
   const typed = post.typed
   if (typed?.type !== 9) throw new Error('internal: not a topic post')
   const hash = contentHash(post)
@@ -130,13 +155,19 @@ export function topicBurnCommitment(postFrame: Uint8Array): {
  * The calldata a burn transaction must carry for a Frank-CBOR topic event (T8):
  * `"TPIC" || 02 || direction || commitment`. The direction and the burned value are the vote's,
  * read from the signed transaction by the relay; the frames never repeat them.
+ * A vote may use either direction; a type-10 post's own burn MUST use `'up'` (T8), which
+ * `topicPostBurnCalldata` fixes.
  */
 export function topicBurnCalldata(
   direction: TopicVoteDirection,
   commitment: Uint8Array,
 ): Uint8Array {
-  if (!Object.prototype.hasOwnProperty.call(DIRECTION_BYTE, direction))
-    throw refuse(`unknown vote direction ${String(direction)}`, 'direction')
+  if (
+    typeof direction !== 'string' ||
+    !Object.prototype.hasOwnProperty.call(DIRECTION_BYTE, direction)
+  )
+    throw refuse('the vote direction must be "up" or "down"', 'direction')
+  requireBytes(commitment, 'commitment')
   if (commitment.length !== 32)
     throw refuse('the topic burn commitment must be 32 bytes', 'commitment')
   const out = new Uint8Array(TOPIC_CBOR_CALLDATA_LENGTH)
@@ -145,6 +176,15 @@ export function topicBurnCalldata(
   out[5] = DIRECTION_BYTE[direction]
   out.set(commitment, 6)
   return out
+}
+
+/**
+ * The calldata for a type-10 post's own burn: `topicBurnCalldata('up', commitment)`. A post's
+ * burn MUST be an up-vote (README T8) and a relay rejects a down-vote one; a vote on an existing
+ * post may use either direction through `topicBurnCalldata`.
+ */
+export function topicPostBurnCalldata(commitment: Uint8Array): Uint8Array {
+  return topicBurnCalldata('up', commitment)
 }
 
 /**
@@ -161,6 +201,7 @@ export function encodeTopicPostSubmission(
   burnTx: Uint8Array,
 ): Uint8Array {
   const { network } = topicBurnCommitment(postFrame)
+  requireBytes(burnTx, 'burnTx')
   const frame = encodeFrame(
     {
       typeId: TYPE_TOPIC_POST_SUBMISSION,
@@ -194,9 +235,9 @@ export function encodeTopicVote(
       minReaderVersion: 1,
     },
     new Map<number, Encodable>([
-      [0, network],
-      [1, targetHash],
-      [2, burnTx],
+      [0, requireText(network, 'network')],
+      [1, requireBytes(targetHash, 'targetHash')],
+      [2, requireBytes(burnTx, 'burnTx')],
     ]),
   )
   validated(frame, TYPE_TOPIC_VOTE_SUBMISSION)

@@ -41,5 +41,6 @@ export {
   encodeTopicVote,
   topicBurnCalldata,
   topicBurnCommitment,
+  topicPostBurnCalldata,
   topicPostHash,
 } from './topic'

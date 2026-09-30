@@ -49,14 +49,15 @@ Entry point `src/index.ts`.
 - `contentHash`, `messageContentDigest`, `recipientPayloadDigest`, `paymentCommitment`,
   `topicVoteCommitment`, `commonTranscript`, `toHex`, `fromHex`.
 - Topic-event writers (README T7, T8): `encodeTopicPost`, `topicPostHash`, `topicBurnCommitment`,
-  `topicBurnCalldata` (`"TPIC" || 02 || direction || commitment`), `encodeTopicPostSubmission`,
+  `topicBurnCalldata` (`"TPIC" || 02 || direction || commitment`), `topicPostBurnCalldata` (fixed to
+  `up`: a post's own burn MUST be an up-vote, T8), `encodeTopicPostSubmission`,
   and `encodeTopicVote`. Each validates what it wrote with the reader's typed validation, and the
   order is fixed by T7: encode the post, derive its commitment, sign the burn for it, then wrap.
   `encodeTopicPostSubmission` and `encodeTopicVote` take the signed burn transaction as opaque
   bytes: they do not check that its calldata carries the derived commitment (or, for a post, that
   the burn is an up-vote); the relay checks and rejects a mismatch before broadcasting. Writer
-  misuse (a lone surrogate, an unknown direction, a wrong-length commitment) throws
-  `FrankCodecError`.
+  misuse (a lone surrogate, an unknown direction, a wrong-length or non-`Uint8Array` commitment,
+  or any argument of the wrong JavaScript type) throws `FrankCodecError`.
   Nothing calls them yet; wiring them into the wallet's topic clients is a later ticket.
 
 Returned frames are views of one private copy of the input; do not mutate them.

@@ -90,8 +90,9 @@ export default defineComponent({
         // stay inside it.
         if (failure || railTab) return
         if (isNarrowWidth(this.$q.screen.width)) {
+          // Focus is restored by the myDrawerOpen watcher, shared with every other way the
+          // overlay can close (Escape, backdrop, swipe, @closeDrawer).
           this.myDrawerOpen = false
-          this.restoreFocusAfterOverlay()
         }
       },
     )
@@ -105,6 +106,21 @@ export default defineComponent({
   beforeUnmount() {
     this.removeAfterEach?.()
     this.removeOnError?.()
+  },
+  watch: {
+    // Any open/close, however triggered: refresh the opener on every open so a stale one is never
+    // restored, and hand focus back on every narrow-screen close.
+    myDrawerOpen(open: boolean, wasOpen: boolean) {
+      if (open) {
+        const active = document.activeElement
+        this.drawerOpener =
+          active instanceof HTMLElement && active !== document.body
+            ? active
+            : null
+      } else if (wasOpen && isNarrowWidth(this.$q.screen.width)) {
+        this.restoreFocusAfterOverlay()
+      }
+    },
   },
   methods: {
     toggleContactDrawerOpen() {
@@ -135,9 +151,6 @@ export default defineComponent({
       if (this.compact) {
         this.compact = false
         this.trueSplitterRatio = compactCutoff
-      }
-      if (!this.myDrawerOpen && document.activeElement instanceof HTMLElement) {
-        this.drawerOpener = document.activeElement
       }
       this.myDrawerOpen = !this.myDrawerOpen
     },

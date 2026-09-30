@@ -121,6 +121,7 @@ function createFakeRouter() {
       hooks.push(fn)
       return () => hooks.splice(hooks.indexOf(fn), 1)
     },
+    errorHandlers,
     onError: (fn: (err: unknown) => void) => {
       errorHandlers.push(fn)
       return () => errorHandlers.splice(errorHandlers.indexOf(fn), 1)
@@ -173,7 +174,11 @@ quasarStubs.QTooltip = passthrough('span', { 'data-testid': 'tooltip' })
 quasarStubs.QBtn = passthrough('button')
 quasarStubs.QDialog = passthrough('div', { 'data-testid': 'dialog' })
 
-async function mountLayout(width: number, attachTo?: HTMLElement) {
+async function mountLayout(
+  width: number,
+  attachTo?: HTMLElement,
+  setup = true,
+) {
   const $q = { screen: { width } }
   const router = createFakeRouter()
   mockRouterRef.current = router
@@ -190,7 +195,7 @@ async function mountLayout(width: number, attachTo?: HTMLElement) {
         $q,
         $router: router,
         $t: translate,
-        $status: { setup: true },
+        $status: { setup },
         $relay: { connected: true },
       },
     },
@@ -346,6 +351,25 @@ describe('MainLayout rail-navigation marker', () => {
   })
 })
 
+describe('MainLayout router hooks and signed-out rail', () => {
+  it('unregisters its afterEach and onError hooks on unmount', async () => {
+    const { wrapper, router } = await mountLayout(390)
+    expect(router.errorHandlers).toHaveLength(1)
+    wrapper.unmount()
+    expect(router.errorHandlers).toHaveLength(0)
+  })
+
+  it('renders no rail and no dangling tabpanel references when signed out', async () => {
+    const { wrapper } = await mountLayout(1024, undefined, false)
+    expect(tabs(wrapper)).toHaveLength(0)
+    const html = wrapper.html()
+    expect(html).not.toContain('aria-labelledby')
+    expect(html).not.toContain('tabpanel')
+    expect(html).not.toContain('rail-panel')
+    expect(html).not.toContain('rail-tab')
+  })
+})
+
 describe('MainLayout focus after the overlay closes', () => {
   let host: HTMLElement
   beforeEach(() => {
@@ -387,6 +411,32 @@ describe('MainLayout focus after the overlay closes', () => {
     await byText(wrapper, 'Profile')[0].trigger('click')
     await flushPromises()
     expect(document.activeElement).toBe(menuButton)
+    wrapper.unmount()
+  })
+
+  it('restores focus when the chat-select handler closes the overlay', async () => {
+    const main = document.createElement('div')
+    main.setAttribute('role', 'main')
+    document.body.appendChild(main)
+    const { wrapper } = await mountLayout(390, host)
+    await openDrawer(wrapper)
+    await wrapper.find('[data-testid="chat-item"]').trigger('click')
+    await flushPromises()
+    expect(open(wrapper)).toBe('false')
+    expect(document.activeElement).toBe(main)
+    wrapper.unmount()
+  })
+
+  it('restores focus once (not twice) when a navigation closes the overlay', async () => {
+    const main = document.createElement('div')
+    main.setAttribute('role', 'main')
+    document.body.appendChild(main)
+    const focus = jest.spyOn(main, 'focus')
+    const { wrapper } = await mountLayout(390, host)
+    await openDrawer(wrapper)
+    await byText(wrapper, 'Profile')[0].trigger('click')
+    await flushPromises()
+    expect(focus).toHaveBeenCalledTimes(1)
     wrapper.unmount()
   })
 

@@ -248,4 +248,74 @@ describe('LeftDrawer rail with real Quasar QDrawer/QTabs/QTab', () => {
     expect(document.activeElement).toBe(main)
     wrapper.unmount()
   })
+
+  describe('other ways the overlay closes', () => {
+    async function openFrom(wrapper: any, button: HTMLElement) {
+      button.focus()
+      wrapper.vm.toggleMyDrawerOpen()
+      await flushPromises()
+      expect(drawerIsOverlayOpen()).toBe(true)
+    }
+    function addButton() {
+      const b = document.createElement('button')
+      document.body.appendChild(b)
+      return b
+    }
+
+    it('restores focus to the opener after Escape', async () => {
+      const { wrapper } = await mountReal(390)
+      const button = addButton()
+      await openFrom(wrapper, button)
+      // Quasar's Escape handling is keydown then keyup on window.
+      for (const type of ['keydown', 'keyup']) {
+        window.dispatchEvent(
+          new KeyboardEvent(type, { key: 'Escape', keyCode: 27 }),
+        )
+      }
+      await flushPromises()
+      expect(drawerIsOverlayOpen()).toBe(false)
+      expect(document.activeElement).toBe(button)
+      wrapper.unmount()
+    })
+
+    it('restores focus to the opener after a backdrop click', async () => {
+      const { wrapper } = await mountReal(390)
+      const button = addButton()
+      await openFrom(wrapper, button)
+      document.querySelector<HTMLElement>('.q-drawer__backdrop')!.click()
+      await flushPromises()
+      expect(drawerIsOverlayOpen()).toBe(false)
+      expect(document.activeElement).toBe(button)
+      wrapper.unmount()
+    })
+
+    it('never restores a stale opener from an earlier open', async () => {
+      const { wrapper } = await mountReal(390)
+      const main = document.createElement('div')
+      main.className = 'q-page-container'
+      document.body.appendChild(main)
+      const stale = addButton()
+      await openFrom(wrapper, stale)
+      wrapper.vm.myDrawerOpen = false // closed by some path
+      await flushPromises()
+      expect(document.activeElement).toBe(stale)
+      // Reopened by a path other than toggleMyDrawerOpen, with nothing focused.
+      ;(document.activeElement as HTMLElement).blur()
+      wrapper.vm.myDrawerOpen = true
+      await flushPromises()
+      wrapper.vm.myDrawerOpen = false
+      await flushPromises()
+      expect(document.activeElement).toBe(main)
+      // Reopened with a different control focused, after the old one is gone.
+      stale.remove()
+      const fresh = addButton()
+      fresh.focus()
+      wrapper.vm.myDrawerOpen = true
+      await flushPromises()
+      wrapper.vm.myDrawerOpen = false
+      await flushPromises()
+      expect(document.activeElement).toBe(fresh)
+      wrapper.unmount()
+    })
+  })
 })

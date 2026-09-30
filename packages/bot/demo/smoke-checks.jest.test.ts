@@ -82,6 +82,26 @@ describe('checkCors (#361)', () => {
     }
   })
 
+  it('also fails when only the real responses lack the header (the preflight alone is not enough)', async () => {
+    const fake = await startFakeRpc({ port: 0 })
+    const server = createServer((req, res) => {
+      if (req.method === 'OPTIONS') res.setHeader('access-control-allow-origin', '*')
+      res.statusCode = req.method === 'OPTIONS' ? 204 : 400
+      res.end()
+    })
+    servers.push(server)
+    await new Promise<void>(r => server.listen(0, '127.0.0.1', () => r()))
+    const relay = `http://127.0.0.1:${(server.address() as { port: number }).port}`
+    try {
+      const result = await checkCors(handleOf(fake.url, relay))
+      expect(result.ok).toBe(false)
+      expect(result.detail).toMatch(/relay topics: PUT response has no access-control-allow-origin/)
+      expect(result.detail).toMatch(/relay topic read: GET response has no access-control/)
+    } finally {
+      await fake.close()
+    }
+  })
+
   it('fails, naming the endpoint, when a request with an Origin gets no allow-origin', async () => {
     const fake = await startFakeRpc({ port: 0 })
     try {

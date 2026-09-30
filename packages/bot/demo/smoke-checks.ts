@@ -19,12 +19,15 @@ import {
   MonadIdentity,
 } from '@frank/wallet/monad-identity'
 
+import __pb_broadcast_pb from '@frank/cashweb/registry/broadcast_pb'
 import { MonadHttpClient } from '@frank/wallet/monad-http'
 import { SubAccountLeaseManager } from '@frank/wallet/monad-account-lease'
 import {
   MonadTopicPostClient,
   quoteMonadTopicBurnGasReserve,
 } from '@frank/wallet/monad-topic-post-client'
+
+const { BroadcastMessage, ForumPost: BroadcastForumPostPayload } = __pb_broadcast_pb
 
 import { registerAndLog, sendDirectMessageItems, setUpFundedStampClient } from '../qwen-bot-common'
 import { STUB_REPLY_PREFIX } from '../qwen-reply'
@@ -93,6 +96,9 @@ const PROMPTS: Record<string, MessageItem[]> = {
   blackjack: [{ type: 'blackjack-move', gameId: 'smoke-game', action: 'deal' }],
 }
 
+const POSTED_TITLE = 'Demo smoke'
+const POSTED_MESSAGE = 'posted by the smoke test'
+
 /** The origin of the app's dev server (what a browser sends as `Origin`). */
 const APP_ORIGIN = 'http://localhost:8080'
 
@@ -122,7 +128,13 @@ function rawRequest(
  * carries `access-control-allow-origin`. Node's own fetch ignores CORS, so it is checked by hand
  * against each endpoint the app calls from the page. */
 export async function checkCors(handle: DemoHandle): Promise<SmokeCheck> {
-  const targets: Array<{ name: string; url: string; method: string; body?: string }> = [
+  const targets: Array<{
+    name: string
+    url: string
+    method: string
+    body?: string
+    contentType?: string
+  }> = [
     ...(handle.config.fakeChain
       ? [
           {
@@ -137,6 +149,16 @@ export async function checkCors(handle: DemoHandle): Promise<SmokeCheck> {
       name: 'relay topics',
       url: `${handle.relayUrl}/message/monad/topics`,
       method: 'PUT',
+      // A real (rejected) PUT: the relay's CORS layer must decorate actual responses, not only the
+      // preflight. The body is not a valid post, so any status is fine; only the header matters.
+      body: 'x',
+      contentType: 'application/x-protobuf',
+    },
+    {
+      name: 'relay topic read',
+      url: `${handle.relayUrl}/message/monad/topics/${'00'.repeat(32)}`,
+      method: 'GET',
+      body: '',
     },
   ]
   const failures: string[] = []
@@ -158,7 +180,7 @@ export async function checkCors(handle: DemoHandle): Promise<SmokeCheck> {
         const res = await rawRequest(
           t.url,
           t.method,
-          { 'origin': APP_ORIGIN, 'content-type': 'application/json' },
+          { 'origin': APP_ORIGIN, 'content-type': t.contentType ?? 'application/json' },
           t.body,
         )
         if (!res.headers['access-control-allow-origin']) {
@@ -211,24 +233,38 @@ export async function checkTopicPost(
     })
     const result = await client.submitTopicPost({
       topic: 'news',
-      entries: [{ kind: 'post', title: 'Demo smoke', message: 'posted by the smoke test' }],
+      entries: [{ kind: 'post', title: POSTED_TITLE, message: POSTED_MESSAGE }],
       direction: 'up',
       burnAddress: config.stampBurnAddress,
       voteWeightWei,
       leaseIndex: prepared.index,
     })
     const view = await client.fetchStoredTopicPostView(result.payloadHashHex)
-    return view?.post
-      ? {
-          name: 'topic-post',
-          ok: true,
-          detail: `posted to "news" (payload ${result.payloadHashHex.slice(0, 12)}...)`,
-        }
-      : {
-          name: 'topic-post',
-          ok: false,
-          detail: 'the relay accepted the post but does not return it',
-        }
+    const payload = view?.post?.post?.encryptedPayload
+    if (!payload) {
+      return {
+        name: 'topic-post',
+        ok: false,
+        detail: 'the relay accepted the post but does not return it',
+      }
+    }
+    const entry = BroadcastMessage.deserializeBinary(payload).getEntriesList()[0]
+    const read = BroadcastForumPostPayload.deserializeBinary(entry.getPayload_asU8())
+    if (read.getTitle() !== POSTED_TITLE || read.getMessage() !== POSTED_MESSAGE) {
+      return {
+        name: 'topic-post',
+        ok: false,
+        detail: `the relay returned a different post: title "${read.getTitle()}", message "${read.getMessage()}"`,
+      }
+    }
+    return {
+      name: 'topic-post',
+      ok: true,
+      detail: `posted to "news" and read back the same title and message (payload ${result.payloadHashHex.slice(
+        0,
+        12,
+      )}...)`,
+    }
   } catch (err) {
     const status = (err as { status?: number }).status
     return {

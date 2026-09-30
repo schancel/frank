@@ -472,6 +472,22 @@ process.stdin.on('end', () => {
     }, 30000)
   })
 
+  describe('state dir mode marker', () => {
+    it('refuses to start on a state dir made for the other mode, before starting anything', async () => {
+      const c = await config({ CASHWEBD_BIN: relayStub('http') })
+      mkdirSync(c.stateDir, { recursive: true, mode: 0o700 })
+      writeFileSync(join(c.stateDir, 'demo-mode.json'), '{"mode":"real","chainId":10143}')
+      const err = await startDemo(c, opts).then(
+        () => undefined,
+        e => e,
+      )
+      expect(err).toBeInstanceOf(DemoConfigError)
+      expect((err as DemoConfigError).message).toMatch(/created for a real network/)
+      expect(existsSync(pidFile)).toBe(false) // the relay was never started
+      expect(existsSync(join(c.stateDir, 'demo.lock'))).toBe(false)
+    }, 30000)
+  })
+
   describe('the real CLI (separate process)', () => {
     async function runCli(
       signal: NodeJS.Signals,

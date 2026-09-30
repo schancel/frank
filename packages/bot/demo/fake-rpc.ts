@@ -44,6 +44,8 @@ export interface FakeChainTx {
 
 export interface FakeRpc {
   url: string
+  /** The interface it listens on: 127.0.0.1 unless a test asks otherwise (never all interfaces). */
+  host: string
   port: number
   /** Transactions restored from the state file at start (0 for a fresh chain). */
   restoredTransactions: number
@@ -314,6 +316,7 @@ export async function startFakeRpc(params: {
   const port = typeof address === 'object' && address ? address.port : params.port
   return {
     url: `http://${host}:${port}`,
+    host,
     port,
     restoredTransactions: restored,
     transactions: () =>

@@ -15,6 +15,20 @@ forwarding SIGINT) also stops the stack: a launcher started by yarn notices that
 within a second and shuts down like a closed terminal. If you script it, prefer
 `node --import tsx packages/bot/demo/demo.ts` and signal that pid.
 
+How the parent check works: when yarn started the launcher, the launcher polls its parent pid once
+a second. Nothing changes while yarn is alive, so `nohup yarn demo &` keeps working (yarn stays the
+parent). The launcher stops only when the yarn process that started it dies, and it then stops
+only its own children. If an ancestor terminal is closed, the usual SIGHUP handling applies. A
+launcher started directly with `node` does no parent polling.
+
+**State dir modes**: a state dir belongs to one mode. The launcher writes a small non-secret marker
+`<state dir>/demo-mode.json` (`{mode: "fake-chain" | "real", chainId, createdAt}`) at first start
+and refuses to start when the requested mode or chain id differs ("this state dir was created for
+the fake chain; ... use a new FRANK_DEMO_STATE_DIR, or delete <state dir>"), because bot
+identities, stamp-pool records and faucet records made against the fake chain mean nothing on a
+real network. A state dir from before the marker that holds a fake-chain wallet is refused for a
+real run too.
+
 What it does, in order: starts the fake chain (with `--fake-chain`), creates any missing bot
 identity (under one state directory, default `~/.frank-demo`), prints and applies the relay's
 curated-default contact lines, starts the local relay through `backend/cashweb/run-local-monad.sh`
@@ -81,7 +95,10 @@ directory with a dummy env file (never your real `.env`), plays a new user again
 checks that the Qwen stub, picture shop, raffle and dealer answer, the faucet funds the new
 profile, a forum topic can be posted through the relay (a real burn transaction plus the relay's
 topic route: it fails if the relay answers non-2xx) and the fake chain and the relay answer a
-cross-origin browser request (exit 0 only if all pass; logs are kept on failure). Use `CASHWEBD_BIN=... yarn demo:smoke`
+cross-origin browser request (exit 0 only if all pass; logs are kept on failure). The forum check
+compares the title and message read back with what was posted. CORS on the relay comes from its own
+layer (`cashweb-registry` `http/server.rs`), which the smoke checks on the preflight and on real
+PUT and GET responses of the topics route. Use `CASHWEBD_BIN=... yarn demo:smoke`
 to skip the Cargo build.
 
 #### Variables
@@ -145,7 +162,7 @@ summary is marked UNHEALTHY. If the relay dies the launcher stops everything and
 The blackjack smoke check only proves the dealer answers a bare `deal` with its tagged error; it
 does not play a hand.
 
-The fake chain is a ledger, not a chain: it accepts any well-formed transaction and mines it
+The fake chain binds 127.0.0.1 only (a test asserts it), so nothing off this machine can reach it. It is a ledger, not a chain: it accepts any well-formed transaction and mines it
 instantly, so it demonstrates flows, not consensus. Never point anything of value at it.
 
 

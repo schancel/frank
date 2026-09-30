@@ -1,5 +1,5 @@
 import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs'
-import { tmpdir } from 'os'
+import { networkInterfaces, tmpdir } from 'os'
 import { join } from 'path'
 
 import { Transaction, Wallet } from 'ethers'
@@ -185,5 +185,24 @@ describe('fake chain persistence', () => {
     writeFileSync(stateFile, '{ not json')
     await expect(startFakeRpc({ port: 0, stateFile })).rejects.toThrow(/cannot be read/)
     expect(readFileSync(stateFile, 'utf8')).toBe('{ not json')
+  })
+})
+
+describe('fake chain bind address', () => {
+  it('listens on 127.0.0.1 only by default, so nothing off this machine can reach it', async () => {
+    const fake = await startFakeRpc({ port: 0 })
+    try {
+      expect(fake.host).toBe('127.0.0.1')
+      expect(fake.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/)
+      // Where the machine has a non-loopback address, the fake chain must refuse connections there.
+      const external = Object.values(networkInterfaces())
+        .flat()
+        .find(i => i && i.family === 'IPv4' && !i.internal)
+      if (external) {
+        await expect(fetch(`http://${external.address}:${fake.port}/`)).rejects.toThrow()
+      }
+    } finally {
+      await fake.close()
+    }
   })
 })

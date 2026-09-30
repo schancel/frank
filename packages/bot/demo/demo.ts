@@ -32,6 +32,7 @@ import {
   minBlackjackFundsWei,
   resolveDemoConfig,
 } from './demo-config'
+import { checkDemoMode } from './demo-mode'
 import { EnvFileError, readEnvFile } from './env-file'
 import { startFakeRpc, FakeRpc } from './fake-rpc'
 import {
@@ -391,6 +392,8 @@ export async function startDemo(
       if (err instanceof LockError) throw new DemoConfigError([err.message])
       throw err
     }
+    const modeProblem = checkDemoMode(config.stateDir, config.fakeChain ? 'fake-chain' : 'real')
+    if (modeProblem) throw new DemoConfigError([modeProblem])
     const stale = takeStaleRecord(config.stateDir)
     const staleLines = stale ? staleAdvice(stale) : []
     if (stale) for (const line of staleLines) print(`[demo] ${line}`)

@@ -99,6 +99,8 @@ export interface ProfileInfo {
   name?: string
   bio?: string
   avatar?: string
+  /** Self-declared automated account (#311); see `MonadProfileFields.bot`. */
+  bot?: boolean
 }
 
 export interface DirectMessageSendResult {

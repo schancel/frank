@@ -1,6 +1,7 @@
 import { deriveDeck, handValue, sha256Hex } from './deck'
 import {
   applyDoubleRejection,
+  blackjackPayoutWei,
   BlackjackGameState,
   formatBlackjackError,
   parseBlackjackError,
@@ -340,5 +341,60 @@ describe('verifyRevealedHand', () => {
     const result = verifyRevealedHand(state)
     expect(result.valid).toBe(false)
     expect(result.reason).toMatch(/player cards/)
+  })
+})
+
+describe('blackjackPayoutWei', () => {
+  const WAGER = 100_000_000_000_000_000n
+  const resolved = (
+    outcome: BlackjackGameState['outcome'],
+    extra: Partial<BlackjackGameState> = {},
+  ) => ({
+    phase: 'resolved' as const,
+    outcome,
+    verifiedWagerWei: WAGER,
+    ...extra,
+  })
+
+  it.each([
+    ['player_win', WAGER * 2n],
+    ['player_blackjack', (WAGER * 5n) / 2n],
+    ['push', WAGER],
+    ['dealer_win', 0n],
+  ] as const)('%s pays %s', (outcome, expected) => {
+    expect(blackjackPayoutWei(resolved(outcome))).toBe(expected)
+  })
+
+  it('a double pays on both verified transfers', () => {
+    expect(
+      blackjackPayoutWei(
+        resolved('player_win', { doubled: true, verifiedDoubleWagerWei: WAGER }),
+      ),
+    ).toBe(WAGER * 4n)
+  })
+
+  it('a double whose second transfer is not verified has no figure, not a too-small one', () => {
+    expect(
+      blackjackPayoutWei(resolved('player_win', { doubled: true })),
+    ).toBeUndefined()
+  })
+
+  it('formatBlackjackError keeps its own doc comment', () => {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const source = require('fs').readFileSync(require.resolve('./game'), 'utf8')
+    const at = source.indexOf('export function formatBlackjackError')
+    expect(source.slice(source.lastIndexOf('/**', at), at)).toContain(
+      "The dealer's rejection text",
+    )
+  })
+
+  it('has no figure until the hand is resolved with a verified wager', () => {
+    expect(
+      blackjackPayoutWei({ ...resolved('player_win'), phase: 'dealer_turn' }),
+    ).toBeUndefined()
+    expect(
+      blackjackPayoutWei({ ...resolved('player_win'), verifiedWagerWei: undefined }),
+    ).toBeUndefined()
+    expect(blackjackPayoutWei(resolved(undefined))).toBeUndefined()
   })
 })

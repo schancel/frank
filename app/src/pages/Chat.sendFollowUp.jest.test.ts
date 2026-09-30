@@ -53,6 +53,8 @@ function fakeThis(over: Record<string, unknown> = {}) {
     buttonScrollBottom: jest.fn(),
     ...over,
   }
+  self.sendFollowUpItemsUnsettled = (p: unknown) =>
+    methods.sendFollowUpItemsUnsettled.call(self, p)
   self.sendFollowUpItems = (p: unknown) =>
     methods.sendFollowUpItems.call(self, p)
   return self
@@ -85,6 +87,50 @@ describe('Chat.vue sendFollowUpItems outcome (#310)', () => {
       false,
     )
     expect(self.sendDirectMessage).not.toHaveBeenCalled()
+  })
+})
+
+describe('Chat.vue sendFollowUpItems settled callback (#368)', () => {
+  it.each([
+    ['sent', {}, true],
+    [
+      'failed',
+      { sendDirectMessage: jest.fn().mockRejectedValue(new Error('x')) },
+      false,
+    ],
+    ['dropped (busy)', { sendingMessage: true }, false],
+  ])('calls settled exactly once when %s', async (_n, over, expected) => {
+    const self = fakeThis(over)
+    const settled = jest.fn()
+    await methods.sendFollowUpItems.call(self, { items, settled })
+    expect(settled).toHaveBeenCalledTimes(1)
+    expect(settled).toHaveBeenCalledWith(expected)
+  })
+
+  it('calls settled(false) exactly once, and still rejects, when the send itself throws', async () => {
+    const boom = new Error('unexpected')
+    const self = fakeThis()
+    self.sendFollowUpItemsUnsettled = jest.fn().mockRejectedValue(boom)
+    const settled = jest.fn()
+    await expect(
+      methods.sendFollowUpItems.call(self, { items, settled }),
+    ).rejects.toBe(boom)
+    expect(settled).toHaveBeenCalledTimes(1)
+    expect(settled).toHaveBeenCalledWith(false)
+  })
+
+  it('does not report a purchase as settled while its send is still in flight', async () => {
+    let finish!: () => void
+    const self = fakeThis({
+      sendDirectMessage: jest.fn(() => new Promise<void>(r => (finish = r))),
+    })
+    const settled = jest.fn()
+    const pending = methods.sendFollowUpItems.call(self, { items, settled })
+    await Promise.resolve()
+    expect(settled).not.toHaveBeenCalled()
+    finish()
+    await pending
+    expect(settled).toHaveBeenCalledWith(true)
   })
 })
 

@@ -43,6 +43,10 @@ export default {
   digitalGoods: {
     catalog: 'Catalog',
     buy: 'Buy',
+    confirmPrompt: 'Pay {price} to {name} ({address}) for "{item}"?',
+    confirmBuy: 'Confirm and pay {price}',
+    cancel: 'Cancel',
+    confirmGroupLabel: 'Confirm purchase of {item}',
     priceUnavailable: 'price unavailable',
     hiddenOne: '{count} more item not shown',
     hiddenMany: '{count} more items not shown',
@@ -81,6 +85,30 @@ export default {
     resendConfirm:
       'Send my {action} again. I understand it is paid again and, if the first one also arrives, it may be played twice.',
     resend: 'Send my move again',
+  },
+  blackjackHand: {
+    bet: 'Your bet: {amount} MON',
+    betUnverified: 'Your bet',
+    betWaiting: 'Waiting for the dealer to deal.',
+    payout:
+      'Payout: {amount} MON (wager back plus any winnings), sent by the dealer after it reveals the hand.',
+  },
+  persistentStorage: {
+    tab: 'Storage',
+    heading: 'Persistent storage',
+    granted: 'Persistent storage: granted',
+    notGranted: 'Persistent storage: not granted',
+    unsupported: 'Persistent storage: unavailable',
+    unknown: 'Persistent storage: checking…',
+    explainGranted:
+      'Your browser has agreed to keep this app’s data unless you clear it yourself. Your recovery phrase is still the only backup if you lose this device.',
+    explainNotGranted:
+      'Your browser may delete this app’s data, including your stored recovery phrase, when it is short on space or, in Safari, after 7 days without a visit unless the app is added to your Home Screen. Your recovery phrase is the only backup.',
+    explainUnsupported:
+      'Persistent storage is unavailable (this page is not a secure context or the browser does not support it), so the browser may delete this app’s data (Safari does after 7 days without a visit unless the app is added to your Home Screen). Your recovery phrase is the only backup.',
+    request: 'Ask the browser to keep my data',
+    confirmSeed: 'Confirm my recovery phrase',
+    seedConfirmed: 'Your recovery phrase is confirmed.',
   },
   blackjackBet: {
     menuLabel: 'Play blackjack',
@@ -217,7 +245,7 @@ export default {
     settings: 'Settings',
     back: 'Back',
     seedWarning:
-      "Do not forget your character's secret name, you will never be able to remember them again.",
+      'Write down your recovery phrase and keep it safe. If you lose it, nobody can recover your account.',
     searchingRelay: 'Searching for existing relay data...',
     networkErrorRelayDied: 'Network Error: Relay server connection died. ',
     networkErrorRelayUnexpected: 'Network error: Relay errored unexpectedly.',
@@ -347,6 +375,9 @@ export default {
     notFound: 'Not Found',
   },
   settings: {
+    title: 'Settings',
+    back: 'Back',
+    openMenu: 'Open the menu',
     appearance: 'Appearance',
     networking: 'Networking',
     contactRefreshInterval: 'Contact Refresh Interval (minutes)',
@@ -358,11 +389,11 @@ export default {
   },
   profile: {
     name: "Character's Public Name",
-    seedEntry: "Character's Secret Name",
+    seedEntry: 'Recovery phrase',
     importSeed: 'Recover past memories',
-    invalidSeed: 'Unknown secret name...',
+    invalidSeed: 'That is not a valid recovery phrase.',
     nameHint: 'Name displayed to others',
-    enterSeed: "Enter your character's secret name...",
+    enterSeed: 'Enter your recovery phrase...',
     nameBlank: 'Enter a name: it cannot be empty or only spaces.',
     nameTooLong: 'The name is too long: use at most {max} characters.',
     nameForbiddenCharacters:

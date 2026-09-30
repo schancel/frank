@@ -34,7 +34,9 @@
           <span class="text-weight-bold">{{ $t('contactItem.address') }}:</span>
           {{ address }}
         </q-item-label>
-        <q-item-label caption>
+        <!-- Only when the contact actually advertises a price: a Monad contact has none, and the
+        label used to render with nothing after it (ticket #368). -->
+        <q-item-label v-if="hasInboxPrice" caption data-testid="inbox-price">
           <span class="text-weight-bold"
             >{{ $t('contactItem.inboxPrice') }}:</span
           >
@@ -79,6 +81,11 @@ export default defineComponent({
     }
   },
   computed: {
+    hasInboxPrice() {
+      const price = (this.contact as { inbox?: { acceptancePrice?: unknown } })
+        ?.inbox?.acceptancePrice
+      return typeof price === 'number' && Number.isFinite(price)
+    },
     // Ticket #50: same spoofing/impersonation cue as ChatLayout.vue's chat header -- see that
     // file's own comment for the full rationale.
     contactColorStyle() {

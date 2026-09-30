@@ -27,6 +27,9 @@ jest.mock('src/stores/contacts', () => ({
   useContactStore: () =>
     jest.requireActual('vue').reactive({ updateInterval: 60_000 }),
 }))
+jest.mock('src/components/settings/PersistentStoragePanel.vue', () => ({
+  template: '<div />',
+}))
 jest.mock('src/utils/apply-locale', () => ({
   applyLocale: jest.fn(() => Promise.resolve()),
 }))
@@ -98,4 +101,30 @@ describe('Settings Save/Cancel navigation (ticket #275)', () => {
       expect(await waitForPath(router, '/forum')).toBe('/forum')
     },
   )
+})
+
+describe('Settings header (ticket #369)', () => {
+  it('has a title and a labelled Back control that leaves Settings like Cancel does', async () => {
+    const router = await openDirectly('#/settings')
+    const wrapper = mountSettings(router)
+
+    expect(wrapper.find('q-toolbar-title').text()).toBe('settings.title')
+    const back = wrapper.find('[data-test="settings-back"]')
+    expect(back.attributes('aria-label')).toBe('settings.back')
+
+    await back.trigger('click')
+
+    expect(await waitForPath(router, '/')).toBe('/')
+  })
+
+  it('has a labelled menu control that asks the layout to toggle the drawer', async () => {
+    const router = await openDirectly('#/settings')
+    const wrapper = mountSettings(router)
+    const menu = wrapper.find('[data-test="settings-menu"]')
+    expect(menu.attributes('aria-label')).toBe('settings.openMenu')
+
+    await menu.trigger('click')
+
+    expect(wrapper.emitted('toggleMyDrawerOpen')).toHaveLength(1)
+  })
 })

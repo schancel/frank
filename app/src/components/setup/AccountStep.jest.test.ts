@@ -131,6 +131,28 @@ describe('AccountStep import flow', () => {
   })
 })
 
+describe('AccountStep import: error only once something is typed (ticket #369)', () => {
+  const seedError = (w: ReturnType<typeof mountStep>) =>
+    w.find('[data-error-for="profile.seedEntry"]')
+
+  it('shows no "invalid phrase" error on an empty box, then does for a wrong phrase', async () => {
+    const wrapper = mountStep()
+    ;(wrapper.vm as unknown as { importAccount(): void }).importAccount()
+    await nextTick()
+    expect(seedError(wrapper).exists()).toBe(false)
+
+    await wrapper
+      .find('textarea[aria-label="profile.seedEntry"]')
+      .setValue('not a recovery phrase')
+    expect(seedError(wrapper).text()).toBe('profile.invalidSeed')
+
+    await wrapper
+      .find('textarea[aria-label="profile.seedEntry"]')
+      .setValue(VALID_MNEMONIC)
+    expect(seedError(wrapper).exists()).toBe(false)
+  })
+})
+
 describe('AccountStep import account finalization', () => {
   it('lets an imported account (no name collected) commit with the historical default', async () => {
     const wrapper = mountStep()

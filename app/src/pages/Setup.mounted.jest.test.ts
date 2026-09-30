@@ -219,6 +219,59 @@ describe('Setup page mounted (#267)', () => {
     expect(vm.persistSetupAndReload).toHaveBeenCalledTimes(1)
   })
 
+  it('New Account: asks the browser for persistent storage after the commit, before the reload (ticket #370)', async () => {
+    const order: string[] = []
+    const persist = jest.fn(async () => {
+      order.push('persist')
+      return true
+    })
+    Object.defineProperty(navigator, 'storage', {
+      configurable: true,
+      value: { persisted: async () => false, persist },
+    })
+    try {
+      const { setSeed, vm } = await newAccountVm()
+      setSeed.mockImplementation(() => order.push('commit'))
+      vm.persistSetupAndReload = jest.fn(() => {
+        order.push('reload')
+        return Promise.resolve()
+      })
+      await vm.next()
+      await nextTick()
+      vm.onSeedConfirmed()
+
+      await vm.next()
+
+      expect(persist).toHaveBeenCalledTimes(1)
+      expect(order).toEqual(['commit', 'persist', 'reload'])
+    } finally {
+      Object.defineProperty(navigator, 'storage', {
+        configurable: true,
+        value: undefined,
+      })
+    }
+  })
+
+  it('New Account: a denied or unsupported persist() never blocks the signup', async () => {
+    Object.defineProperty(navigator, 'storage', {
+      configurable: true,
+      value: { persisted: async () => false, persist: async () => false },
+    })
+    try {
+      const { vm } = await newAccountVm()
+      await vm.next()
+      await nextTick()
+      vm.onSeedConfirmed()
+      await vm.next()
+      expect(vm.persistSetupAndReload).toHaveBeenCalledTimes(1)
+    } finally {
+      Object.defineProperty(navigator, 'storage', {
+        configurable: true,
+        value: undefined,
+      })
+    }
+  })
+
   it('a confirmation does not carry over to a different phrase', async () => {
     const { wallet, setSeed, vm } = await newAccountVm()
     await vm.next()

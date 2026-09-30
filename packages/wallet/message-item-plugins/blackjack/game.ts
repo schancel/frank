@@ -26,6 +26,17 @@ import { Card, deriveDeck, handValue, sha256Hex } from './deck'
 export const BLACKJACK_DEFAULT_MIN_WAGER_WEI = 10n ** 16n // 0.01 MON
 export const BLACKJACK_DEFAULT_MAX_WAGER_WEI = 10n ** 18n // 1 MON
 
+/**
+ * Conservative allowance for what sending the bet MESSAGE costs beyond the wager itself: the
+ * stamp's own funding transfers and gas (a message spends its stamp value plus the fee reserves of
+ * the sub-accounts that pay it; ~0.013 MON of funding was observed on the local chain on top of a
+ * 0.01 MON stamp). The wallet does not expose a synchronous estimate, so this is a fixed margin.
+ * A wager paid with no funds left for the message is stranded (the dealer only acts on messages it
+ * receives), so the bet picker requires `bet + stamp + this` up front. Lives here (not in the app)
+ * so the demo launcher can check its faucet amount against the same constant.
+ */
+export const BET_MESSAGE_FEE_RESERVE_WEI = 5n * 10n ** 16n // 0.05 MON
+
 /** Returns an error message if `wei` is not an acceptable bet at the default table limits. */
 export function validateBetWei(
   wei: bigint,
@@ -36,6 +47,40 @@ export function validateBetWei(
   if (wei < minWei) return 'Bet is below the table minimum'
   if (wei > maxWei) return 'Bet is above the table maximum'
   return undefined
+}
+
+/** What the dealer sends back for a resolved hand, in wei: 2.5x the effective wager on a natural,
+ * 2x on a win, the wager on a push, nothing on a loss. Mirrors the dealer bot's own
+ * `payoutMultiplier` (`packages/bot/blackjack-bot.livecheck.ts`). The effective wager only counts
+ * transfers verified on chain (`verifiedWagerWei`, plus `verifiedDoubleWagerWei` for a double);
+ * `undefined` when the outcome is not final, the wager is not verified, or a double is recorded
+ * without its verified second transfer (the amount is unknown, and a smaller figure would
+ * under-report what is owed). */
+export function blackjackPayoutWei(
+  state: Pick<
+    BlackjackGameState,
+    'phase' | 'outcome' | 'verifiedWagerWei' | 'verifiedDoubleWagerWei' | 'doubled'
+  >,
+): bigint | undefined {
+  if (state.phase !== 'resolved' || state.verifiedWagerWei === undefined) {
+    return undefined
+  }
+  if (state.doubled && state.verifiedDoubleWagerWei === undefined) return undefined
+  const wager = state.doubled
+    ? state.verifiedWagerWei + (state.verifiedDoubleWagerWei ?? 0n)
+    : state.verifiedWagerWei
+  switch (state.outcome) {
+    case 'player_blackjack':
+      return (wager * 5n) / 2n
+    case 'player_win':
+      return wager * 2n
+    case 'push':
+      return wager
+    case 'dealer_win':
+      return 0n
+    default:
+      return undefined
+  }
 }
 
 /** The dealer's rejection text. Keeps the readable "Blackjack: <text>" prefix (old clients show it

@@ -21,6 +21,7 @@
 import { computed, onMounted, onUnmounted, readonly, ref } from 'vue'
 import { activeChain, WalletHandle } from '@frank/wallet/chain'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
+import { isWalletNotReady } from 'src/composables/wallet-not-ready'
 
 /** Window event the capacitor-only boot file dispatches on native app pause/resume, so this
  * composable needs no Capacitor import (the SPA/Electron builds deliberately never load it). */
@@ -113,8 +114,13 @@ async function fetchBalance(force: boolean) {
     hasError.value = false
     failures = 0
   } catch (err) {
-    // The setup route may render the drawer before a seed exists; log and keep polling.
-    console.error('balance refresh failed', err)
+    // The setup route may render the drawer before a seed exists: not an error, keep polling.
+    // Anything else is a real failure worth an error-level log.
+    if (isWalletNotReady(err)) {
+      console.debug('balance refresh waiting for a wallet (no seed phrase yet)')
+    } else {
+      console.error('balance refresh failed', err)
+    }
     if (isCurrent()) {
       failures++
       hasError.value = true

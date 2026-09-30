@@ -2,7 +2,16 @@
   <div class="blackjack-move q-pa-sm" style="min-width: 220px">
     <div v-if="loading" class="text-caption">Loading hand...</div>
     <template v-else-if="state">
-      <div class="text-caption text-weight-bold">
+      <template v-if="state.phase === 'awaiting_deal'">
+        <div
+          class="text-caption text-weight-bold"
+          data-testid="blackjack-bet-line"
+        >
+          {{ betLine }}
+        </div>
+        <div class="text-caption">{{ $t('blackjackHand.betWaiting') }}</div>
+      </template>
+      <div v-else class="text-caption text-weight-bold">
         Your hand: {{ cardLabels(state.playerCards) }}
         <span v-if="state.playerCards.length"
           >({{ playerValue.total }}{{ playerValue.soft ? ' soft' : '' }})</span
@@ -19,6 +28,13 @@
         </div>
         <div class="text-caption text-weight-bold q-mt-xs">
           {{ outcomeText }}
+        </div>
+        <div
+          v-if="payoutText"
+          class="text-caption"
+          data-testid="blackjack-payout"
+        >
+          {{ payoutText }}
         </div>
         <div
           v-if="verification"
@@ -55,8 +71,9 @@
           @keyup.enter="onAction('bet')"
         />
       </div>
-      <!-- Ticket #366: a paid move nobody answered. Deliberately no resend button: a resend is a
-      second paid message, and a repeated hit could be played twice once the dealer returns. -->
+      <!-- Ticket #366: a paid move nobody answered. Only a plain hit/stand can be re-sent, and only
+      behind an explicit consent: a resend is a second paid message, and a repeated hit could be
+      played twice once the dealer returns. A wager (bet/double) is never re-sent. -->
       <div
         v-if="dealerSilent"
         role="status"
@@ -77,7 +94,7 @@
             data-testid="dealer-resend-confirm"
             :label="
               $t('blackjackDealer.resendConfirm', {
-                action: actionLabel(resendAction),
+                action: actionLabel(resendAction).toLowerCase(),
               })
             "
           />
@@ -130,6 +147,7 @@ import {
 } from '@frank/wallet/message-item-plugins/blackjack/deck'
 import {
   applyDoubleRejection,
+  blackjackPayoutWei,
   BLACKJACK_DEFAULT_MAX_WAGER_WEI,
   BLACKJACK_DEFAULT_MIN_WAGER_WEI,
   BlackjackAction,
@@ -239,6 +257,27 @@ export default defineComponent({
     },
     dealerValue() {
       return handValue(this.state?.dealerCards ?? [])
+    },
+    betLine(): string {
+      const wager = this.state?.verifiedWagerWei
+      return wager !== undefined
+        ? this.$t('blackjackHand.bet', {
+            amount: activeChain.toDisplayAmount(wager),
+          })
+        : this.$t('blackjackHand.betUnverified')
+    },
+    // What the dealer sends back for a win or a push (a loss sends nothing, said by the outcome).
+    // A promise, not a receipt: the dealer sends the reveal first and the payout transfer after
+    // it, and the chat has no record of that transfer. Never shown for a hand whose fairness
+    // check failed, since the figure would rest on data that did not verify.
+    payoutText(): string {
+      if (this.verification && !this.verification.valid) return ''
+      const payout = this.state ? blackjackPayoutWei(this.state) : undefined
+      return payout
+        ? this.$t('blackjackHand.payout', {
+            amount: activeChain.toDisplayAmount(payout),
+          })
+        : ''
     },
     outcomeText(): string {
       switch (this.state?.outcome) {

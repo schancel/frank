@@ -66,7 +66,10 @@ body {
 }
 
 // Retry moves focus here instead of the clipped live region (#429).
+// Quasar's .q-message-stamp is opacity .6, and --q-primary matches the sent
+// bubble, so that ring composites away. Black still clears 3:1 on both sent
+// bubbles after that composite.
 .outgoing-focus-target:focus {
-  outline: 2px solid var(--q-primary);
+  outline: 2px solid #000;
   outline-offset: 2px;
 }

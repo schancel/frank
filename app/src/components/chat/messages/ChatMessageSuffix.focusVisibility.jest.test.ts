@@ -46,6 +46,72 @@ function isVisuallyHidden(node: Element): boolean {
   )
 }
 
+function parseHex(hex: string): [number, number, number] {
+  const raw = hex.replace('#', '')
+  const full =
+    raw.length === 3
+      ? raw
+          .split('')
+          .map(channel => channel + channel)
+          .join('')
+      : raw
+  return [
+    parseInt(full.slice(0, 2), 16),
+    parseInt(full.slice(2, 4), 16),
+    parseInt(full.slice(4, 6), 16),
+  ]
+}
+
+function focusRingRgb(): [number, number, number] {
+  const css = readFileSync(join(process.cwd(), 'src/css/app.scss'), 'utf8')
+  const focus =
+    css.match(/\.outgoing-focus-target:focus\s*\{[^}]*\}/)?.[0] ?? ''
+  const color =
+    focus.match(/outline:\s*2px solid\s+([^;]+);/)?.[1]?.trim() ?? ''
+  if (color === 'black' || color === '#000' || color === '#000000') {
+    return [0, 0, 0]
+  }
+  if (color === 'var(--q-primary)') {
+    const variables = readFileSync(
+      join(process.cwd(), 'src/css/quasar.variables.scss'),
+      'utf8',
+    )
+    const primary = variables.match(/\$primary:\s*(#[0-9a-fA-F]{3,8})/)?.[1]
+    if (primary === undefined) throw new Error('missing $primary')
+    return parseHex(primary)
+  }
+  if (color.startsWith('#')) return parseHex(color)
+  throw new Error(`unresolved focus outline color: ${color}`)
+}
+
+function sentBubble(file: string): [number, number, number] {
+  const css = readFileSync(join(process.cwd(), 'src/css', file), 'utf8')
+  const hex = css.match(/--q-message-color-sent:\s*(#[0-9a-fA-F]{6})/)?.[1]
+  if (hex === undefined) throw new Error(`missing sent bubble in ${file}`)
+  return parseHex(hex)
+}
+
+function channel(value: number): number {
+  const unit = value / 255
+  return unit <= 0.04045 ? unit / 12.92 : ((unit + 0.055) / 1.055) ** 2.4
+}
+
+/** Quasar paints `.q-message-stamp` at opacity .6, and this ring is inside it. */
+function ringContrast(bubbleFile: string): number {
+  const fg = focusRingRgb()
+  const bg = sentBubble(bubbleFile)
+  const ring = fg.map(
+    (value, index) => 0.6 * value + 0.4 * bg[index],
+  ) as number[]
+  const lum = (rgb: number[]) =>
+    0.2126 * channel(rgb[0]) +
+    0.7152 * channel(rgb[1]) +
+    0.0722 * channel(rgb[2])
+  const hi = Math.max(lum(ring), lum(bg))
+  const lo = Math.min(lum(ring), lum(bg))
+  return (hi + 0.05) / (lo + 0.05)
+}
+
 function mountFailed() {
   const host = document.createElement('div')
   document.body.appendChild(host)
@@ -98,6 +164,8 @@ describe('Retry focus stays visible (#429)', () => {
     const outline = window.getComputedStyle(active as Element).outline
     expect(outline).toMatch(/2px solid/)
     expect(outline).not.toBe('none')
+    expect(ringContrast('light-mode.scss')).toBeGreaterThanOrEqual(3)
+    expect(ringContrast('dark-mode.scss')).toBeGreaterThanOrEqual(3)
 
     wrapper.unmount()
     host.remove()

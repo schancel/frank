@@ -23,10 +23,10 @@
 //! none of them (T8). Calldata of the protobuf path (version `0x01`) never verifies for a CBOR
 //! event, and the reverse, so a burn made for one encoding cannot be replayed into the other.
 //!
-//! The network tag is a parameter, not read from the environment. The relay's existing
+//! The network identifier is a parameter, not read from the environment. The relay's
 //! `FRANK_NETWORK_TAG` values (`"MONT"`, `"MON1"`) are not valid Frank-CBOR network tags (S1
-//! requires lowercase), so which CBOR tag a deployment uses is a configuration decision this
-//! module does not make.
+//! requires lowercase); [`crate::network_tag::cbor_network_identifier`] holds the one mapping
+//! (`monad-testnet`, `monad-mainnet`), and startup refuses a tag it does not map.
 
 use bitcoinsuite_core::{Hashed, Sha256};
 use bitcoinsuite_error::Report;

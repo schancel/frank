@@ -59,6 +59,12 @@ pub enum CashwebdExeError {
          (Monad testnet) or MON1 (Monad mainnet)"
     )]
     MissingNetworkTagEnv,
+
+    #[error(
+        "FRANK_NETWORK_TAG is set to a tag with no Frank-CBOR network identifier (known tags: \
+         MONT, MON1): refusing to start rather than guess a network"
+    )]
+    UnknownNetworkTagEnv,
 }
 
 use self::CashwebdExeError::*;
@@ -121,6 +127,13 @@ fn read_and_validate_conf_with_env(
         && !env(NETWORK_TAG_ENV).is_some_and(|tag| is_valid_network_tag(&tag))
     {
         return Err(MissingNetworkTagEnv.into());
+    }
+    // A tag that is set must be one the relay can map to a Frank-CBOR network identifier
+    // (`network_tag::CBOR_NETWORK_IDENTIFIERS`); an unset tag keeps its existing meaning.
+    if env(NETWORK_TAG_ENV).is_some_and(|tag| {
+        cashweb_registry::network_tag::cbor_network_identifier(tag.as_bytes()).is_none()
+    }) {
+        return Err(UnknownNetworkTagEnv.into());
     }
     Ok((conf, mailbox_mode))
 }
@@ -447,6 +460,38 @@ mod tests {
                 assert!(text.contains(needle), "{name}/{case}: {text}");
             }
         }
+    }
+
+    #[test]
+    fn a_well_formed_tag_with_no_cbor_identifier_is_refused_and_both_known_tags_pass() {
+        for config in [LOCAL, DOCKER] {
+            for tag in ["MONX", "mont", "TEST"] {
+                let vars = [
+                    ("MONAD_TESTNET_HTTP_RPC_URL", "http://127.0.0.1:1"),
+                    ("FRANK_NETWORK_TAG", tag),
+                ];
+                let error =
+                    read_and_validate_conf_with_env("-", &mut Cursor::new(config), env(&vars))
+                        .expect_err("an unmapped tag must fail startup");
+                assert!(format!("{error:?}").contains("no Frank-CBOR network identifier"));
+            }
+            for tag in ["MONT", "MON1"] {
+                let vars = [
+                    ("MONAD_TESTNET_HTTP_RPC_URL", "http://127.0.0.1:1"),
+                    ("FRANK_NETWORK_TAG", tag),
+                ];
+                read_and_validate_conf_with_env("-", &mut Cursor::new(config), env(&vars))
+                    .expect("known tags start");
+            }
+        }
+        // Also with the mailbox disabled: a set-but-unmapped tag still stamps topic records.
+        let disabled = LOCAL.replace("enabled = true", "enabled = false");
+        assert!(read_and_validate_conf_with_env(
+            "-",
+            &mut Cursor::new(disabled),
+            env(&[("FRANK_NETWORK_TAG", "MONX")])
+        )
+        .is_err());
     }
 
     #[test]

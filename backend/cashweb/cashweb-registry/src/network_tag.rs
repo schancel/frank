@@ -68,6 +68,23 @@ pub fn is_valid_network_tag(tag: &str) -> bool {
     !tag.is_empty() && tag.len() <= MAX_NETWORK_TAG_BYTES && tag.trim() == tag
 }
 
+/// The one place that maps the relay's `FRANK_NETWORK_TAG` wire values to the lowercase network
+/// identifier Frank-CBOR frames carry (`docs/protocol/cbor`, README S1: `[a-z0-9][a-z0-9._-]{0,63}`).
+/// Adding a network is adding a row here; the tag bytes themselves never change.
+pub const CBOR_NETWORK_IDENTIFIERS: &[(&[u8], &str)] = &[
+    (MONAD_TESTNET_NETWORK_TAG, "monad-testnet"),
+    (MONAD_MAINNET_NETWORK_TAG, "monad-mainnet"),
+];
+
+/// The Frank-CBOR network identifier for a relay network tag, or `None` for a tag with no mapping
+/// (which startup and `--check-config` refuse).
+pub fn cbor_network_identifier(tag: &[u8]) -> Option<&'static str> {
+    CBOR_NETWORK_IDENTIFIERS
+        .iter()
+        .find(|(known, _)| *known == tag)
+        .map(|(_, identifier)| *identifier)
+}
+
 /// Parse a raw `FRANK_NETWORK_TAG` env var value into the bytes stamped onto stored records: its
 /// literal UTF-8 encoding, since the wire field is `bytes` (not `string`) and this repo's tag
 /// constants are plain ASCII. `None` (unset) yields empty bytes -- see this module's docs for why
@@ -118,5 +135,25 @@ mod tests {
             parse_network_tag(Some("MON1".to_string())),
             MONAD_MAINNET_NETWORK_TAG.to_vec()
         );
+    }
+
+    #[test]
+    fn maps_known_tags_to_valid_lowercase_cbor_identifiers() {
+        assert_eq!(cbor_network_identifier(b"MONT"), Some("monad-testnet"));
+        assert_eq!(cbor_network_identifier(b"MON1"), Some("monad-mainnet"));
+        for (_, identifier) in CBOR_NETWORK_IDENTIFIERS {
+            let bytes = identifier.as_bytes();
+            assert!(bytes.len() <= 64 && bytes[0].is_ascii_alphanumeric());
+            assert!(bytes.iter().all(|c| c.is_ascii_lowercase()
+                || c.is_ascii_digit()
+                || matches!(c, b'.' | b'_' | b'-')));
+        }
+    }
+
+    #[test]
+    fn unknown_or_differently_cased_tags_have_no_identifier() {
+        for tag in [&b""[..], b"mont", b"MONX", b"MONT ", b"LTUS"] {
+            assert_eq!(cbor_network_identifier(tag), None);
+        }
     }
 }

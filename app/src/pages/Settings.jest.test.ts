@@ -27,6 +27,9 @@ jest.mock('src/stores/contacts', () => ({
   useContactStore: () =>
     jest.requireActual('vue').reactive({ updateInterval: 60_000 }),
 }))
+jest.mock('src/components/settings/PersistentStoragePanel.vue', () => ({
+  template: '<div />',
+}))
 jest.mock('src/utils/apply-locale', () => ({
   applyLocale: jest.fn(() => Promise.resolve()),
 }))

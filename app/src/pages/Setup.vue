@@ -126,6 +126,7 @@ import {
 import { errorNotify } from '../utils/notifications'
 import { persistSetupAndReload } from '../utils/setup-persistence'
 import { classifyAccount } from '../utils/account-state'
+import { requestPersistentStorageWithin } from '../utils/persistent-storage'
 import {
   commitValidatedSetupName,
   commitValidatedSetupSeed,
@@ -148,6 +149,9 @@ import { useAppearanceStore } from 'src/stores/appearance'
 import { useProfileStore } from 'src/stores/my-profile'
 import { defaultRelayData, useContactStore } from 'src/stores/contacts'
 import { storeToRefs } from 'pinia'
+
+// How long signup waits for the browser's answer to the persistent-storage request (ticket #370).
+const PERSIST_REQUEST_WAIT_MS = 3000
 
 export default defineComponent({
   components: {
@@ -310,6 +314,9 @@ export default defineComponent({
             inbox: defaultRelayData.inbox,
           }),
       )
+      // Ticket #370: ask the browser to keep the just-stored seed while we still hold the user's
+      // click. Never fails and never blocks signup for long (a permission prompt may stay open).
+      await requestPersistentStorageWithin(PERSIST_REQUEST_WAIT_MS)
       // The next boot initializes the Monad identity from these stores, so
       // neither write may be left in flight when the page reloads.
       await this.persistSetupAndReload()

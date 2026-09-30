@@ -15,6 +15,11 @@
                 icon="color_lens"
                 :label="$t('settings.appearance')"
               />
+              <q-tab
+                name="storage"
+                icon="save"
+                :label="$t('persistentStorage.tab')"
+              />
             </q-tabs>
           </template>
           <template #after>
@@ -61,6 +66,9 @@
                   />
                 </div>
               </q-tab-panel>
+              <q-tab-panel name="storage">
+                <persistent-storage-panel />
+              </q-tab-panel>
             </q-tab-panels>
           </template>
         </q-splitter>
@@ -94,9 +102,11 @@ import { QInput } from 'quasar'
 import { useAppearanceStore } from 'src/stores/appearance'
 import { useContactStore } from 'src/stores/contacts'
 import { storeToRefs } from 'pinia'
+import PersistentStoragePanel from 'src/components/settings/PersistentStoragePanel.vue'
 const msToMinutes = 60000
 
 export default defineComponent({
+  components: { PersistentStoragePanel },
   setup() {
     const appearanceStore = useAppearanceStore()
     const contactStore = useContactStore()

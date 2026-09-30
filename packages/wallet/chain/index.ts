@@ -6,10 +6,10 @@
  * `LotusChain`, once one is actually built for real -- see issue #41's "Non-goals"), never a
  * runtime branch anywhere else in the app.
  */
-import { MonadChain } from "./monad-chain";
-import { ActiveChain } from "./active-chain";
+import { MonadChain } from './monad-chain'
+import { ActiveChain } from './active-chain'
 
-export const activeChain: ActiveChain = MonadChain;
+export const activeChain: ActiveChain = MonadChain
 
 export type {
   ActiveChain,
@@ -25,4 +25,4 @@ export type {
   ProfileInfo,
   TopicBroadcastClient,
   WalletHandle,
-} from "./active-chain";
+} from './active-chain'

@@ -52,13 +52,43 @@ describe('ChatMessageSuffix outgoing states (#269, #270)', () => {
     expect(wrapper.emitted('discardClick')).toHaveLength(1)
   })
 
-  it('a pending payment is not shown as failed and has no Retry to click', () => {
-    const wrapper = mountSuffix({ status: 'payment-pending' })
-    expect(wrapper.text()).toContain('Payment pending, will retry')
-    expect(wrapper.text()).toContain('not be charged again')
-    expect(wrapper.text()).not.toContain('Failed to send')
-    expect(wrapper.find('[data-testid="outgoing-retry"]').exists()).toBe(false)
-    expect(wrapper.find('[role="status"]').exists()).toBe(true)
+  it('claims "not charged again" only when the payment is known live', () => {
+    const live = mountSuffix({
+      status: 'payment-pending',
+      paymentState: 'live',
+    })
+    expect(live.text()).toContain('Payment pending, will retry')
+    expect(live.text()).toContain('not be charged again')
+    expect(live.text()).not.toContain('Failed to send')
+    expect(live.find('[data-testid="outgoing-retry"]').exists()).toBe(false)
+
+    const checking = mountSuffix({ status: 'payment-pending' })
+    expect(checking.text()).toContain('Checking payment status')
+    expect(checking.text()).not.toContain('not be charged again')
+  })
+
+  it('a message queued behind another one makes no payment claim', () => {
+    const queued = mountSuffix({
+      status: 'payment-pending',
+      paymentState: 'queued',
+    })
+    expect(queued.text()).toContain('Waiting for an earlier message')
+    expect(queued.text()).not.toContain('charged')
+  })
+
+  it('has one persistent polite live region that announces each state change', async () => {
+    const wrapper = mountSuffix({ status: 'pending' })
+    const region = () => wrapper.get('[data-testid="outgoing-announcement"]')
+    expect(region().attributes('aria-live')).toBe('polite')
+    expect(region().text()).toBe('Sending…')
+    const element = region().element
+    await wrapper.setProps({ status: 'error', failureReason: 'unreachable' })
+    // The same element, now with new text: this is what a screen reader announces.
+    expect(region().element).toBe(element)
+    expect(region().text()).toContain('Failed to send')
+    expect(wrapper.findAll('[role="status"]')).toHaveLength(1)
+    await wrapper.setProps({ status: 'confirmed' })
+    expect(region().text()).toBe('')
   })
 
   it('a confirmed message shows neither state', () => {
@@ -74,7 +104,10 @@ describe('ChatMessageSuffix outgoing states (#269, #270)', () => {
     )
     expect(failed.text()).toContain("Échec de l'envoi")
     expect(failed.text()).toContain('Impossible de joindre le serveur.')
-    const pending = mountSuffix({ status: 'payment-pending' }, frFR)
+    const pending = mountSuffix(
+      { status: 'payment-pending', paymentState: 'live' },
+      frFR,
+    )
     expect(pending.text()).toContain('Paiement en attente')
   })
 })

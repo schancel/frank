@@ -259,6 +259,19 @@ export function startOutgoingReconciliation({
   let stopped = false
   let timer: ReturnType<typeof setTimeout> | undefined
   let delayMs = intervalMs
+  let knownPending = new Set<string>()
+
+  const pendingIds = () => {
+    const ids = new Set<string>()
+    for (const chat of Object.values(chats.chats)) {
+      for (const message of chat?.messages ?? []) {
+        if (message.outbound && message.status === 'payment-pending') {
+          ids.add(message.payloadDigest)
+        }
+      }
+    }
+    return ids
+  }
 
   const tick = async () => {
     let pending = 0
@@ -268,14 +281,31 @@ export function startOutgoingReconciliation({
       console.warn('outgoing message reconciliation failed', err)
       pending = 1
     }
+    knownPending = pendingIds()
     delayMs = pending > 0 ? Math.min(maxIntervalMs, delayMs * 2) : intervalMs
     if (!stopped) timer = setTimeout(() => void tick(), delayMs)
   }
   void tick()
 
+  // A message that newly becomes payment-pending must not wait out a long backoff earned by an
+  // older one: restart the ladder and look again after the base interval.
+  const unsubscribe = chats.$onAction(({ name, after }) => {
+    if (name !== 'setOutgoingState') return
+    after(() => {
+      const now = pendingIds()
+      const isNew = [...now].some(id => !knownPending.has(id))
+      knownPending = now
+      if (!isNew || stopped) return
+      delayMs = intervalMs
+      if (timer !== undefined) clearTimeout(timer)
+      timer = setTimeout(() => void tick(), intervalMs)
+    })
+  })
+
   return {
     stop: () => {
       stopped = true
+      unsubscribe()
       if (timer !== undefined) clearTimeout(timer)
     },
   }

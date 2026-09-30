@@ -722,16 +722,25 @@ export const useChatStore = defineStore('chats', {
       })
     },
     /** Best-effort durable write of one outgoing message's current state. */
-    async saveOutgoing(address: string, id: string) {
+    async saveOutgoing(
+      address: string,
+      id: string,
+      { strict = false }: { strict?: boolean } = {},
+    ) {
       const message = this.messages[id]
       if (!message) return
       // `payloadDigest`/`messageHash` are in-memory bookkeeping, not part of the stored record.
       // eslint-disable-next-line @typescript-eslint/no-unused-vars
-      const { payloadDigest, messageHash, ...persistable } =
-        message as Message & {
-          payloadDigest?: string
-          messageHash?: string
-        }
+      const { payloadDigest, messageHash, ...withLive } = message as Message & {
+        payloadDigest?: string
+        messageHash?: string
+      }
+      const persistable: Message = { ...withLive }
+      if (withLive.delivery !== undefined) {
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars
+        const { live, ...durableDelivery } = withLive.delivery
+        persistable.delivery = durableDelivery
+      }
       try {
         await (
           await store
@@ -746,6 +755,9 @@ export const useChatStore = defineStore('chats', {
           { advanceCursor: false },
         )
       } catch (err) {
+        // Best effort, except where the caller must know the write is durable (a payment attempt
+        // being attributed to this message): there the failure aborts the send.
+        if (strict) throw err
         console.warn('could not persist outgoing message state', err)
       }
     },
@@ -755,12 +767,13 @@ export const useChatStore = defineStore('chats', {
       id: string,
       status: 'pending' | 'payment-pending' | 'error',
       delivery: OutgoingDelivery,
+      options: { strict?: boolean } = {},
     ) {
       const message = this.messages[id]
       if (!message) return
       message.status = status
       message.delivery = delivery
-      await this.saveOutgoing(address, id)
+      await this.saveOutgoing(address, id, options)
     },
     /** The exact payment set of this message was delivered: re-key the local copy by its payload
      * hash (unless already so), persist it, and drop the local-id record. The UI is reconciled
@@ -843,9 +856,13 @@ export const useChatStore = defineStore('chats', {
         await this.confirmOutgoing({ address, id, payloadDigest: digest })
         return 'sent'
       }
-      if (status === 'live' && message.status !== 'payment-pending') {
+      if (
+        status === 'live' &&
+        (message.status !== 'payment-pending' || !message.delivery?.live)
+      ) {
         await this.setOutgoingState(address, id, 'payment-pending', {
           attemptDigest: digest,
+          live: true,
         })
       }
       return status
@@ -961,10 +978,38 @@ export const useChatStore = defineStore('chats', {
         // Manual retry of a dead (or user-confirmed unknown) attempt: fall through, new payment.
       } else if (
         manual &&
-        previous?.failureReason === 'recovered' &&
-        !confirmed
+        !confirmed &&
+        previous?.failureReason === 'recovered'
       ) {
         return { state: 'needs-confirmation', reason: 'recovered' }
+      } else if (
+        manual &&
+        !confirmed &&
+        previous?.failureReason === 'interrupted'
+      ) {
+        // No attempt is recorded on this message, but the app stopped mid-send: the wallet may
+        // hold (or already have resumed) a payment nobody points at. Do not pay again unless
+        // there is provably none, or the user says so.
+        const known = new Set<string>()
+        for (const [key, other] of Object.entries(this.messages)) {
+          if (other && !key.startsWith('pending:')) known.add(key)
+          const attempt = other?.delivery?.attemptDigest
+          if (attempt !== undefined) known.add(attempt)
+        }
+        let orphans: string[]
+        try {
+          orphans = await activeChain.directMessages.unattributedAttempts({
+            wallet,
+            knownDigests: [...known],
+          })
+        } catch (error) {
+          console.warn('could not check for an unattributed payment', error)
+          orphans = ['unchecked']
+        }
+        if (orphans.length > 0) {
+          // Leave the message 'interrupted': every unconfirmed Retry must hit this check again.
+          return { state: 'needs-confirmation', reason: 'unverified' }
+        }
       }
 
       // 2. Build and send a new payment set.
@@ -984,9 +1029,15 @@ export const useChatStore = defineStore('chats', {
             : { onPreparationProgress }),
           onAttemptCreated: async attemptDigest => {
             ownDigest = attemptDigest
-            await this.setOutgoingState(address, id, 'pending', {
-              attemptDigest,
-            })
+            // Strict: this write must be durable before the relay sees any byte of the set.
+            // If it fails, the wallet aborts the send and rolls the attempt back.
+            await this.setOutgoingState(
+              address,
+              id,
+              'pending',
+              { attemptDigest },
+              { strict: true },
+            )
           },
         })
       } catch (error) {
@@ -998,7 +1049,9 @@ export const useChatStore = defineStore('chats', {
             address,
             id,
             'payment-pending',
-            ownDigest === undefined ? {} : { attemptDigest: ownDigest },
+            ownDigest === undefined
+              ? {}
+              : { attemptDigest: ownDigest, live: true },
           )
           return { state: 'payment-pending' }
         }

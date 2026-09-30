@@ -572,6 +572,28 @@ describe('createMonadChain: directMessages.reconcileAttempts (#269/#270)', () =>
   })
 })
 
+describe('createMonadChain: directMessages.unattributedAttempts (#269)', () => {
+  it('resumes live attempts and returns recorded hashes no message points at', async () => {
+    const chain = createMonadChain(TEST_CONFIG)
+    const alice = MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX)
+    const resumePendingAttempts = jest.fn().mockResolvedValue([])
+    ;(MonadStampClient as jest.Mock).mockImplementation(() => ({
+      resumePendingAttempts,
+      recordedAttempts: () => [
+        { payloadHashHex: 'mine', status: 'delivered' },
+        { payloadHashHex: 'orphan', status: 'live' },
+      ],
+    }))
+    await expect(
+      chain.directMessages.unattributedAttempts({
+        wallet: makeWallet(alice),
+        knownDigests: ['mine'],
+      }),
+    ).resolves.toEqual(['orphan'])
+    expect(resumePendingAttempts).toHaveBeenCalledTimes(1)
+  })
+})
+
 describe('createMonadChain: directMessages.fetchSince', () => {
   it('rejects authenticated malformed plaintext per record and returns the following message', async () => {
     const chain = createMonadChain(TEST_CONFIG)

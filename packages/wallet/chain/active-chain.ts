@@ -194,6 +194,13 @@ export interface DirectMessageClient {
     /** Idempotent re-PUT budget per live attempt; defaults to a single try (callers back off). */
     maxPutAttempts?: number
   }): Promise<Record<string, DirectMessageAttemptStatus>>
+  /** Payload hashes of every attempt the wallet can still account for (live in its journal, or
+   * resolved in this process) that is not in `knownDigests`: payments no message points at.
+   * Re-sends live attempts first, so a just-resumed one is included. */
+  unattributedAttempts(params: {
+    wallet: WalletHandle
+    knownDigests: string[]
+  }): Promise<string[]>
   /** Returns messages at or after `sinceMs`, ordered by time. If a later inbox page could not be
    * fetched, the result is cut back to a prefix ending on a complete timestamp group and
    * `onTruncated` is called: advancing `sinceMs` to `lastReceivedTime + 1` is then safe and the

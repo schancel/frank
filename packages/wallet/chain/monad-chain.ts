@@ -553,6 +553,19 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
       )
     },
 
+    async unattributedAttempts(params) {
+      const wallet = asMonadWallet(params.wallet)
+      return runWalletExclusive(wallet, async () => {
+        const client = new MonadStampClient(wallet)
+        await client.resumePendingAttempts({ maxAttempts: 1 })
+        const known = new Set(params.knownDigests)
+        return client
+          .recordedAttempts()
+          .map(attempt => attempt.payloadHashHex)
+          .filter(hash => !known.has(hash))
+      })
+    },
+
     async reconcileAttempts(params) {
       const wallet = asMonadWallet(params.wallet)
       return runWalletExclusive(wallet, async () => {

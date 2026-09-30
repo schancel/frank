@@ -81,6 +81,7 @@
             :amount="stampAmount"
             :outbound="message.outbound"
             :failure-reason="message.delivery?.failureReason ?? ''"
+            :payment-state="paymentState"
             @infoClick="transactionDialog = true"
             @deleteClick="deleteDialog = true"
             @replyClick="replyClicked({ address, payloadDigest })"
@@ -272,6 +273,11 @@ export default defineComponent({
     },
   },
   computed: {
+    paymentState(): string {
+      const delivery = this.message.delivery
+      if (delivery?.attemptDigest === undefined) return 'queued'
+      return delivery.live === true ? 'live' : 'checking'
+    },
     bubbleSize() {
       // Default chatbubble size; assume small screen
       let base = 9

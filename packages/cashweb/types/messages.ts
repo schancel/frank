@@ -1,31 +1,31 @@
-import { Utxo } from './utxo'
+import { Utxo } from "./utxo";
 
 export interface ReplyItem {
-  type: 'reply'
-  payloadDigest: string
+  type: "reply";
+  payloadDigest: string;
 }
 
 export interface TextItem {
-  type: 'text'
-  text: string
+  type: "text";
+  text: string;
 }
 
 export interface P2PKHSendItem {
-  type: 'p2pkh'
-  address: string
-  amount: number
+  type: "p2pkh";
+  address: string;
+  amount: number;
 }
 
 export interface StealthItem {
-  type: 'stealth'
-  amount: number
-  txId?: string
-  outputIndex?: number
+  type: "stealth";
+  amount: number;
+  txId?: string;
+  outputIndex?: number;
 }
 
 export interface ImageItem {
-  type: 'image'
-  image: string
+  type: "image";
+  image: string;
 }
 
 /**
@@ -38,37 +38,37 @@ export interface ImageItem {
  * protocol level.
  */
 export interface BlackjackMoveItem {
-  type: 'blackjack-move'
-  gameId: string
-  action: 'bet' | 'deal' | 'hit' | 'stand' | 'double' | 'reveal'
+  type: "blackjack-move";
+  gameId: string;
+  action: "bet" | "deal" | "hit" | "stand" | "double" | "reveal";
   /** `bet` only: the tx hash of the separate plain value transfer that *is* the wager. Also
    * doubles as the shuffle's client-seed entropy (see `@frank/wallet/message-item-plugins/blackjack`'s header) -- no
    * extra round trip needed to collect one. */
-  wagerTxHash?: string
+  wagerTxHash?: string;
   /** `double` only: the tx hash of a *second* plain value transfer, matching the original wager --
    * a double-down doubles the bet in exchange for exactly one more card then an automatic stand,
    * and since the wager is never a self-reported field (see this type's own header), doubling it
    * needs a second independently-verified transfer, not just doubling a number client-side. */
-  doubleWagerTxHash?: string
+  doubleWagerTxHash?: string;
   /** `deal` only: the bot's commitment to its shuffle seed, generated and hashed *before* this
    * specific bet was ever seen (see `@frank/wallet/message-item-plugins/blackjack/deck.ts`'s header for why that
    * ordering is the entire fairness property this scheme relies on). */
-  serverSeedHash?: string
+  serverSeedHash?: string;
   /** `deal`/`hit`/`double`: the player's full hand so far (always the complete cumulative hand,
    * not a diff from the previous message -- simpler to verify, and each message stays
    * self-contained). */
-  playerCards?: number[]
+  playerCards?: number[];
   /** `deal` only: the dealer's single face-up card. */
-  dealerUpCard?: number
+  dealerUpCard?: number;
   /** `stand`/`reveal`: the dealer's full hand once play resolves. */
-  dealerCards?: number[]
+  dealerCards?: number[];
   /** `reveal` only: the actual shuffle secret, published in plaintext so the player can
    * independently recompute the whole deck (`deriveDeck`) and confirm both the hash committed to
    * at `deal` and every card dealt since were exactly what a fair, undoctored shuffle would have
    * produced. */
-  serverSeed?: string
+  serverSeed?: string;
   /** `reveal` only. */
-  outcome?: 'player_win' | 'dealer_win' | 'push' | 'player_blackjack'
+  outcome?: "player_win" | "dealer_win" | "push" | "player_blackjack";
 }
 
 /**
@@ -82,14 +82,14 @@ export interface BlackjackMoveItem {
  * stamp fee -- a catalog item's price is naturally bounded and fixed, so it can just *be* the stamp.
  */
 export interface DigitalGoodsItem {
-  type: 'digital-goods'
-  action: 'catalog' | 'request' | 'fulfill' | 'error'
+  type: "digital-goods";
+  action: "catalog" | "request" | "fulfill" | "error";
   /** `catalog` only: what the vendor currently has for sale. */
-  catalog?: Array<{ itemId: string; description: string; priceWei: string }>
+  catalog?: Array<{ itemId: string; description: string; priceWei: string }>;
   /** `request` only: which catalog item this message's own stamp payment is meant to buy. */
-  itemId?: string
+  itemId?: string;
   /** `error` only: e.g. "payment below this item's price," "unknown itemId." */
-  message?: string
+  message?: string;
 }
 
 /**
@@ -108,40 +108,40 @@ export interface DigitalGoodsItem {
  * the collected pot.
  */
 export interface RaffleItem {
-  type: 'raffle'
-  raffleId: string
-  action: 'announce' | 'enter' | 'joined' | 'draw' | 'error'
+  type: "raffle";
+  raffleId: string;
+  action: "announce" | "enter" | "joined" | "draw" | "error";
   /** `announce`/`joined`/`draw`: the flat price every entrant pays -- fixed for a round, verified
    * the same way `DigitalGoodsItem.priceWei` is (this message's own stamp value), never trusted
    * from a self-reported field on the wire. */
-  entryPriceWei?: string
+  entryPriceWei?: string;
   /** `announce`/`joined`: how many entries this round takes before it closes and draws. */
-  maxEntries?: number
+  maxEntries?: number;
   /** `announce`/`joined`: how many entries have been accepted so far, including this one for
    * `joined`. */
-  entryCount?: number
+  entryCount?: number;
   /** `announce`/`joined`: the bot's commitment to this round's draw seed -- generated and hashed
    * *before* this round accepted its first entry (see `@frank/wallet/message-item-plugins/raffle/draw.ts`'s header for
    * why that ordering is the entire fairness property this relies on). Same for every entrant in a
    * round. */
-  serverSeedHash?: string
+  serverSeedHash?: string;
   /** `draw` only: the winning entrant's address. */
-  winnerAddress?: string
+  winnerAddress?: string;
   /** `draw` only: the actual draw secret, published in plaintext so anyone can independently
    * recompute `pickWinnerIndex` and confirm both the hash committed to earlier and the announced
    * winner were exactly what a fair, undoctored draw would have produced. */
-  serverSeed?: string
+  serverSeed?: string;
   /** `draw` only: every entrant's address, in the order they joined -- needed (with
    * `entryTxHashes`) to independently replay the draw. */
-  entrants?: string[]
+  entrants?: string[];
   /** `draw` only: every entrant's own entry-payment transaction hash, same order as `entrants` --
    * this is what gets combined into the draw's client-seed entropy (see
    * `@frank/wallet/message-item-plugins/raffle/draw.ts`'s `combineEntrantEntropy`). */
-  entryTxHashes?: string[]
+  entryTxHashes?: string[];
   /** `draw` only: the total paid to the winner -- always `entryPriceWei * entrants.length`. */
-  potWei?: string
+  potWei?: string;
   /** `error` only: e.g. "payment below this round's entry price," "already entered this round." */
-  message?: string
+  message?: string;
 }
 
 export type MessageItem =
@@ -152,68 +152,72 @@ export type MessageItem =
   | ImageItem
   | BlackjackMoveItem
   | DigitalGoodsItem
-  | RaffleItem
+  | RaffleItem;
 
 /** Why an outgoing direct message is not (yet) delivered (tickets #269/#270). Persisted with the
  * message so the failure and its manual Retry survive a reload. */
 export type OutgoingFailureReason =
   /** The relay could not be reached or kept failing. Nothing was paid for; retry is safe. */
-  | 'unreachable'
+  | "unreachable"
   /** The relay has no messaging mailbox (404). Nothing was sent; retry is safe once it does. */
-  | 'unavailable'
+  | "unavailable"
   /** The relay refused the message for good (400/409/422...). The old payment can never land. */
-  | 'rejected'
+  | "rejected"
   /** The app stopped while this was sending and no payment attempt was recorded for it. */
-  | 'interrupted'
+  | "interrupted"
   /** A payment attempt exists but neither delivery nor death of it could be established. A retry
    * may pay a second time, so it needs the user's explicit confirmation. */
-  | 'unverified'
+  | "unverified"
   /** Another, earlier payment attempt completed while this one was being prepared, so this
    * draft may duplicate it. A retry needs the user's explicit confirmation. */
-  | 'recovered'
-  | 'error'
+  | "recovered"
+  | "error";
 
 /** Delivery bookkeeping for an outgoing (`outbound`) direct message that is not yet confirmed. */
 export interface OutgoingDelivery {
   /** Bare-hex payload hash of the exact signed payment set built for this message, recorded
    * before that set is first submitted. While this attempt is live, a retry re-sends the same
    * bytes and never builds a new payment. Absent until a payment set exists. */
-  attemptDigest?: string
+  attemptDigest?: string;
   /** Set on `status: 'error'`. */
-  failureReason?: OutgoingFailureReason
+  failureReason?: OutgoingFailureReason;
   /** Short technical detail for the failure (not localized). */
-  detail?: string
+  detail?: string;
+  /** In-memory only, never persisted: the wallet confirmed this session that the attempt is
+   * still live (so "you will not be charged again" is true). Absent after a reload until the
+   * first reconcile. */
+  live?: boolean;
 }
 
 export interface Message {
-  outbound: boolean
-  status: string
-  receivedTime: number
-  serverTime: number
-  items: Array<MessageItem>
-  outpoints: Array<Utxo>
-  senderAddress: string
+  outbound: boolean;
+  status: string;
+  receivedTime: number;
+  serverTime: number;
+  items: Array<MessageItem>;
+  outpoints: Array<Utxo>;
+  senderAddress: string;
   /** Wei paid across this message's stamp transactions, for chains (Monad, ticket #42) that have no
    * UTXO/`outpoints` equivalent -- see `stores/chats.ts`'s header for the decision to add this
    * additively alongside `outpoints` rather than replace it. Always `undefined` for Lotus-origin
    * messages (`outpoints` is authoritative for those). */
-  stampValueWei?: bigint
+  stampValueWei?: bigint;
   /** Transaction details backing a non-UTXO chain's stamp payment. */
   stampPayments?: Array<{
-    txHash: string
-    destinationAddress: string
-    valueWei: bigint
-  }>
+    txHash: string;
+    destinationAddress: string;
+    valueWei: bigint;
+  }>;
   /** Present only while an outgoing message is unconfirmed. `status` is then `'pending'`
    * (sending), `'payment-pending'` (payment not yet confirmed; retried automatically with the same
    * bytes) or `'error'` (failed; the user may Retry or Discard). */
-  delivery?: OutgoingDelivery
+  delivery?: OutgoingDelivery;
 }
 
 export interface MessageWrapper {
-  message: Message
-  index: string
-  outbound: boolean
-  senderAddress: string
-  copartyAddress: string
+  message: Message;
+  index: string;
+  outbound: boolean;
+  senderAddress: string;
+  copartyAddress: string;
 }

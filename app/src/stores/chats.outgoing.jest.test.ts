@@ -124,6 +124,31 @@ async function reload() {
   return chats
 }
 
+/** What the durable store holds after the app stopped mid-send with no attempt digest recorded
+ * (the digest write having failed): a pending outgoing record without `delivery.attemptDigest`. */
+async function seedInterrupted() {
+  const db = await durable()
+  db.set(
+    'pending:1:1:seed',
+    serializeMessageWrapper({
+      index: 'pending:1:1:seed',
+      outbound: true,
+      senderAddress: ME,
+      copartyAddress: PEER,
+      message: {
+        outbound: true,
+        status: 'pending',
+        receivedTime: 1,
+        serverTime: 1,
+        items: TEXT,
+        outpoints: [],
+        senderAddress: ME,
+        delivery: {},
+      },
+    }),
+  )
+}
+
 const only = (chats: ReturnType<typeof useChatStore>) =>
   chats.chats[PEER]?.messages ?? []
 
@@ -270,7 +295,7 @@ describe('outgoing direct messages (#269, #270)', () => {
       expect(only(chats)[0]).toEqual(
         expect.objectContaining({
           status: 'payment-pending',
-          delivery: { attemptDigest: HASH },
+          delivery: { attemptDigest: HASH, live: true },
         }),
       )
     })
@@ -340,6 +365,12 @@ describe('outgoing direct messages (#269, #270)', () => {
       const restored = await reload()
       expect(only(restored)).toHaveLength(1)
       expect(only(restored)[0].status).toBe('confirmed')
+      // And the durable store keeps the confirmed record and drops the leftover local one.
+      await new Promise(resolve => setImmediate(resolve))
+      expect([...db.keys()]).toEqual([HASH])
+      expect(
+        deserializeMessageWrapper(db.get(HASH) as string).message.status,
+      ).toBe('confirmed')
     })
 
     it('does not surface the message as Failed when sending is blocked behind an earlier pending attempt, and sends it once that clears', async () => {
@@ -506,14 +537,211 @@ describe('outgoing direct messages (#269, #270)', () => {
     })
   })
 
-  it('OutgoingOutcome covers every state the UI switches on', () => {
-    const states: OutgoingOutcome['state'][] = [
-      'sent',
-      'payment-pending',
-      'failed',
-      'needs-confirmation',
-      'busy',
-    ]
-    expect(states).toHaveLength(5)
+  describe('F1: an attempt that could not be recorded is never re-paid unconfirmed', () => {
+    /** The wallet journaled a payment set, and the durable write attributing it to the message
+     * fails (as it does when local storage is full or broken). */
+    async function failDigestWrites() {
+      const db = await durable()
+      const store = (await messageStorePromise) as unknown as {
+        saveMessage: jest.Mock
+      }
+      const original = store.saveMessage.getMockImplementation()
+      store.saveMessage.mockImplementation(
+        async (wrapper: MessageWrapper, options?: unknown) => {
+          if (wrapper.message.delivery?.attemptDigest !== undefined) {
+            throw new Error('disk full')
+          }
+          return original?.(wrapper, options)
+        },
+      )
+      return () => {
+        store.saveMessage.mockImplementation(original)
+        return db
+      }
+    }
+
+    it('layer (a): the send aborts before the relay when the digest write fails, and nothing is left to re-pay', async () => {
+      const restore = await failDigestWrites()
+      let reachedRelay = false
+      const send = jest
+        .spyOn(activeChain.directMessages, 'send')
+        .mockImplementation(async (params: SendParams) => {
+          // Like the wallet: a failing callback aborts the send before any PUT.
+          await params.onAttemptCreated?.(HASH)
+          reachedRelay = true
+          return okResult(HASH)
+        })
+      const chats = useChatStore()
+      const outcome = await chats.sendMessage({
+        wallet,
+        address: PEER,
+        items: TEXT,
+      })
+      expect(reachedRelay).toBe(false)
+      expect(outcome).toEqual(expect.objectContaining({ state: 'failed' }))
+      restore()
+      // After a rolled-back attempt the wallet knows it is dead: Retry may pay once, exactly once.
+      jest
+        .spyOn(activeChain.directMessages, 'reconcileAttempts')
+        .mockResolvedValue({ [HASH]: 'dead' })
+      send.mockResolvedValueOnce(okResult('56'.repeat(32)))
+      await expect(
+        chats.retryOutgoing({
+          wallet,
+          address: PEER,
+          payloadDigest: only(chats)[0].payloadDigest,
+        }),
+      ).resolves.toEqual({ state: 'sent', payloadDigest: '56'.repeat(32) })
+    })
+
+    it('layer (b), the reviewer repro: a fail-open wallet plus a lost digest write still cannot re-pay an interrupted message without confirmation', async () => {
+      // Fail-open wallet (the old behaviour) with a failing digest write: the payment set was
+      // journaled and may be submitted, yet the message was stored with no attempt digest and
+      // the app then stopped.
+      await seedInterrupted()
+      const send = jest.spyOn(activeChain.directMessages, 'send')
+
+      const restored = await reload()
+      const [message] = only(restored)
+      expect(message.status).toBe('error')
+      expect(message.delivery).toEqual(
+        expect.objectContaining({ failureReason: 'interrupted' }),
+      )
+      expect(message.delivery?.attemptDigest).toBeUndefined() // the digest was lost
+
+      // The wallet still accounts for a payment no message points at (journaled / resumed).
+      const unattributed = jest
+        .spyOn(activeChain.directMessages, 'unattributedAttempts')
+        .mockResolvedValue([HASH])
+      const reconcile = jest.spyOn(
+        activeChain.directMessages,
+        'reconcileAttempts',
+      )
+      await expect(
+        restored.retryOutgoing({
+          wallet,
+          address: PEER,
+          payloadDigest: message.payloadDigest,
+        }),
+      ).resolves.toEqual({ state: 'needs-confirmation', reason: 'unverified' })
+      expect(send).not.toHaveBeenCalled() // no second payment
+      expect(unattributed).toHaveBeenCalledWith(
+        expect.objectContaining({ wallet }),
+      )
+      // Asking again without confirming is still refused (the check repeats).
+      await expect(
+        restored.retryOutgoing({
+          wallet,
+          address: PEER,
+          payloadDigest: message.payloadDigest,
+        }),
+      ).resolves.toEqual({ state: 'needs-confirmation', reason: 'unverified' })
+      expect(send).not.toHaveBeenCalled()
+      expect(reconcile).not.toHaveBeenCalled()
+
+      send.mockResolvedValueOnce(okResult('78'.repeat(32)))
+      await expect(
+        restored.retryOutgoing({
+          wallet,
+          address: PEER,
+          payloadDigest: message.payloadDigest,
+          confirmed: true,
+        }),
+      ).resolves.toEqual({ state: 'sent', payloadDigest: '78'.repeat(32) })
+    })
+
+    it('an interrupted message with provably no unattributed payment retries without a prompt', async () => {
+      await seedInterrupted()
+      const restored = await reload()
+      jest
+        .spyOn(activeChain.directMessages, 'unattributedAttempts')
+        .mockResolvedValue([])
+      jest
+        .spyOn(activeChain.directMessages, 'send')
+        .mockResolvedValue(okResult('9a'.repeat(32)))
+      await expect(
+        restored.retryOutgoing({
+          wallet,
+          address: PEER,
+          payloadDigest: only(restored)[0].payloadDigest,
+        }),
+      ).resolves.toEqual({ state: 'sent', payloadDigest: '9a'.repeat(32) })
+    })
+
+    it('if the unattributed-payment check itself fails, it asks rather than pays', async () => {
+      await seedInterrupted()
+      const restored = await reload()
+      jest
+        .spyOn(activeChain.directMessages, 'unattributedAttempts')
+        .mockRejectedValue(new Error('journal unreadable'))
+      const send = jest.spyOn(activeChain.directMessages, 'send')
+      await expect(
+        restored.retryOutgoing({
+          wallet,
+          address: PEER,
+          payloadDigest: only(restored)[0].payloadDigest,
+        }),
+      ).resolves.toEqual({ state: 'needs-confirmation', reason: 'unverified' })
+      expect(send).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('rehydrating stored records', () => {
+    it('a persisted pending record WITH an attempt digest comes back payment-pending, keeping the digest', async () => {
+      const db = await durable()
+      db.set(
+        'pending:1:1:zz',
+        serializeMessageWrapper({
+          index: 'pending:1:1:zz',
+          outbound: true,
+          senderAddress: ME,
+          copartyAddress: PEER,
+          message: {
+            outbound: true,
+            status: 'pending',
+            receivedTime: 1,
+            serverTime: 1,
+            items: TEXT,
+            outpoints: [],
+            senderAddress: ME,
+            delivery: { attemptDigest: HASH },
+          },
+        }),
+      )
+      const [message] = only(await reload())
+      expect(message.status).toBe('payment-pending')
+      expect(message.delivery).toEqual({ attemptDigest: HASH })
+    })
+
+    it('an old-format record (no delivery field) still loads unchanged', async () => {
+      const db = await durable()
+      db.set(
+        'old',
+        JSON.stringify({
+          index: 'old',
+          outbound: true,
+          senderAddress: ME,
+          copartyAddress: PEER,
+          message: {
+            outbound: true,
+            status: 'confirmed',
+            receivedTime: 5,
+            serverTime: 5,
+            items: TEXT,
+            outpoints: [],
+            senderAddress: ME,
+          },
+        }),
+      )
+      const [message] = only(await reload())
+      expect(message).toEqual(
+        expect.objectContaining({
+          payloadDigest: 'old',
+          status: 'confirmed',
+          items: TEXT,
+        }),
+      )
+      expect(message.delivery).toBeUndefined()
+    })
   })
 })

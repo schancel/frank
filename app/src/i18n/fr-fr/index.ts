@@ -39,6 +39,9 @@ export default {
     sending: 'Envoi…',
     paymentPending:
       'Paiement en attente, nouvelle tentative automatique. Vous ne serez pas débité à nouveau.',
+    paymentQueued:
+      "En attente de la fin d'un message précédent. Celui-ci sera envoyé ensuite.",
+    paymentChecking: "Vérification de l'état du paiement…",
     failed: "Échec de l'envoi",
     reasonUnreachable: 'Impossible de joindre le serveur.',
     reasonUnavailable: 'Ce relais ne propose pas la messagerie.',

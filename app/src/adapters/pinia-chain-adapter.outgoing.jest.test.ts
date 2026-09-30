@@ -104,4 +104,38 @@ describe('startOutgoingReconciliation (#270)', () => {
     await jest.advanceTimersByTimeAsync(10 * MAX_OUTGOING_RECONCILE_INTERVAL_MS)
     expect(reconcile).toHaveBeenCalledTimes(1)
   })
+
+  it('a NEW pending message resets the backoff instead of waiting out the old one', async () => {
+    const { chats } = await pendingMessage()
+    const reconcile = jest
+      .spyOn(activeChain.directMessages, 'reconcileAttempts')
+      .mockResolvedValue({ [HASH]: 'live' })
+    const polling = startOutgoingReconciliation({ wallet })
+    await jest.advanceTimersByTimeAsync(0)
+    // Let the backoff climb to its 120 s cap.
+    await jest.advanceTimersByTimeAsync(
+      2 * OUTGOING_RECONCILE_INTERVAL_MS +
+        4 * OUTGOING_RECONCILE_INTERVAL_MS +
+        MAX_OUTGOING_RECONCILE_INTERVAL_MS,
+    )
+    const callsBefore = reconcile.mock.calls.length
+
+    // A second message becomes payment-pending with its own attempt.
+    const HASH2 = 'cd'.repeat(32)
+    jest
+      .spyOn(activeChain.directMessages, 'send')
+      .mockImplementation(async params => {
+        await params.onAttemptCreated?.(HASH2)
+        throw new MonadStampPendingAttemptError([HASH2])
+      })
+    reconcile.mockResolvedValue({ [HASH]: 'live', [HASH2]: 'live' })
+    await chats.sendMessage({
+      wallet,
+      address: PEER,
+      items: [{ type: 'text', text: 'second' }],
+    })
+    await jest.advanceTimersByTimeAsync(OUTGOING_RECONCILE_INTERVAL_MS)
+    expect(reconcile.mock.calls.length).toBeGreaterThan(callsBefore)
+    polling.stop()
+  })
 })

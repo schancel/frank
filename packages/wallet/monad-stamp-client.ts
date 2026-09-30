@@ -726,8 +726,10 @@ export interface StampMonadMessageParams {
   /** Called (and awaited) once the exact signed payment set is durably journaled and before any
    * byte of it is sent to the relay, with the attempt's bare-hex payload hash. A caller that owns
    * a user-visible message records this hash so it can later ask {@link
-   * MonadStampClient.attemptStatus} about exactly this attempt. A throwing callback is ignored:
-   * it must never abort a payment that is already journaled. */
+   * MonadStampClient.attemptStatus} about exactly this attempt. A throwing or rejecting
+   * callback aborts the send BEFORE any request to the relay and rolls the attempt back (journal
+   * entry deleted, reservations retired), so no payment can exist that the caller could not
+   * record. */
   onAttemptJournaled?: (payloadHashHex: string) => void | Promise<void>
 }
 
@@ -1060,7 +1062,23 @@ export class MonadStampClient {
     try {
       await params.onAttemptJournaled?.(payloadHashHex)
     } catch (callbackError) {
-      console.warn('onAttemptJournaled failed; continuing', callbackError)
+      // Fail closed. The caller could not durably attribute this attempt to its message, and a
+      // payment nobody can attribute is exactly what gets paid twice on the next Retry. Nothing
+      // has been sent to the relay yet (it broadcasts the signed set only on PUT), so roll the
+      // attempt back completely: drop the journal entry, then retire the reservations.
+      try {
+        await this.attemptJournal?.delete(payloadHashHex)
+      } catch {
+        // Journal entry could not be removed: keep it (and the reservations it protects) so that
+        // resume can still re-send it byte for byte. The caller sees the original error.
+        throw callbackError
+      }
+      for (const handle of handles) {
+        this.leaseManager.releaseLease(handle, 'failed')
+      }
+      await this.pool.flush()
+      recordAttemptOutcome(this.attemptJournal, payloadHashHex, 'dead')
+      throw callbackError
     }
     const releaseAll = async (
       outcome: 'confirmed' | 'failed' | 'stuck',
@@ -1218,6 +1236,26 @@ export class MonadStampClient {
         ? undefined
         : resolvedAttemptOutcomes.get(this.attemptJournal)?.get(payloadHashHex)
     return outcome ?? 'unknown'
+  }
+
+  /** Every attempt this process can still account for: those in the journal (`live`) and those
+   * whose outcome it resolved. Lets a caller notice an attempt no message of its own points at. */
+  recordedAttempts(): Array<{
+    payloadHashHex: string
+    status: MonadStampAttemptStatus
+  }> {
+    const hashes = new Set<string>(
+      this.attemptJournal?.getAll().map(attempt => attempt.payloadHashHex),
+    )
+    const outcomes =
+      this.attemptJournal === undefined
+        ? undefined
+        : resolvedAttemptOutcomes.get(this.attemptJournal)
+    for (const hash of outcomes?.keys() ?? []) hashes.add(hash)
+    return [...hashes].map(payloadHashHex => ({
+      payloadHashHex,
+      status: this.attemptStatus(payloadHashHex),
+    }))
   }
 
   /** Replay crash-surviving attempts byte-for-byte. Exact-set relay binding makes this safe when

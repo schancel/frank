@@ -40,7 +40,9 @@ describe('parseAddressWithOptionalRelay', () => {
   })
 
   it('splits on the last @, not the first, in case a host itself is unusual', () => {
-    expect(parseAddressWithOptionalRelay('0xabc@foo@relay.example.com')).toEqual({
+    expect(
+      parseAddressWithOptionalRelay('0xabc@foo@relay.example.com'),
+    ).toEqual({
       address: '0xabc@foo',
       relayBaseUrl: 'https://relay.example.com',
     })

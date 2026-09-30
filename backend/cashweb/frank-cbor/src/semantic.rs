@@ -12,6 +12,7 @@ pub(crate) struct PriorView {
     pub network: String,
     pub subject: AccountRef,
     pub revision: u64,
+    pub schema_version: u32,
     pub recovery: Vec<AccountRef>,
 }
 
@@ -145,10 +146,8 @@ pub(crate) fn check_semantics(
                 .map(|p| p.transaction_id.as_slice())
                 .collect();
             require_unique(&txids, "transaction id", &format!("{path}.4"))?;
-            let (child_network, child_recipient) = match opened(payload_frame) {
-                TypedPayload::RecipientPayload {
-                    network, recipient, ..
-                } => (network, recipient),
+            let child_network = match opened(payload_frame) {
+                TypedPayload::RecipientPayload { network, .. } => network,
                 _ => panic!("internal: expected an opened type-5 frame"),
             };
             if network != child_network {
@@ -157,12 +156,8 @@ pub(crate) fn check_semantics(
                     &format!("{path}.0"),
                 ));
             }
-            if !accounts_equal(destination, child_recipient) {
-                return Err(semantic(
-                    "destination differs from the type-5 recipient (S8)",
-                    &format!("{path}.1"),
-                ));
-            }
+            // The destination is the stamp key P' and is deliberately not compared with the
+            // type-5 recipient (S8): the routing identity and the payment key are independent.
             if destination.key_type != 1 {
                 return Err(semantic(
                     "destination account must be key type 1 (S9)",
@@ -181,6 +176,21 @@ pub(crate) fn check_semantics(
             }
             Ok(())
         }
+        TypedPayload::TopicPostSubmission {
+            network,
+            post_frame,
+            ..
+        } => match opened(post_frame) {
+            TypedPayload::TopicPost {
+                network: post_network,
+                ..
+            } if post_network == network => Ok(()),
+            TypedPayload::TopicPost { .. } => Err(semantic(
+                "submission network differs from the type-9 network (S11)",
+                &format!("{path}.0"),
+            )),
+            _ => panic!("internal: expected an opened type-9 frame"),
+        },
         TypedPayload::DirectoryAttestation {
             statement,
             signatures,
@@ -197,21 +207,24 @@ pub(crate) fn check_semantics(
                 &format!("{path}.1"),
                 true,
             )?;
-            let (st_network, st_subject, st_revision, transitions) = match opened(statement) {
-                TypedPayload::DirectoryStatement {
-                    network,
-                    subject,
-                    revision,
-                    key_transitions,
-                    ..
-                } => (
-                    network.as_str(),
-                    subject,
-                    *revision,
-                    key_transitions.as_deref(),
-                ),
-                _ => panic!("internal: expected an opened type-4 frame"),
-            };
+            let (st_network, st_subject, st_revision, st_schema, transitions) =
+                match opened(statement) {
+                    TypedPayload::DirectoryStatement {
+                        network,
+                        subject,
+                        revision,
+                        schema_version,
+                        key_transitions,
+                        ..
+                    } => (
+                        network.as_str(),
+                        subject,
+                        *revision,
+                        *schema_version,
+                        key_transitions.as_deref(),
+                    ),
+                    _ => panic!("internal: expected an opened type-4 frame"),
+                };
             if !signatures
                 .iter()
                 .any(|sig| accounts_equal(&sig.signer, st_subject))
@@ -222,7 +235,14 @@ pub(crate) fn check_semantics(
                 ));
             }
             let prior = prior_slot.expect("internal: type-2 semantics need the prior slot");
-            check_directory_update(st_network, st_subject, st_revision, transitions, prior)
+            check_directory_update(
+                st_network,
+                st_subject,
+                st_revision,
+                st_schema,
+                transitions,
+                prior,
+            )
         }
         TypedPayload::MailboxCheckpoint {
             facts, sections, ..
@@ -264,6 +284,7 @@ pub(crate) fn check_semantics(
             relays,
             key_transitions,
             recovery,
+            stamp_key,
             ..
         } => {
             require_ordered(
@@ -282,6 +303,16 @@ pub(crate) fn check_semantics(
                 .map(|relay| relay.relay_id.as_slice())
                 .collect();
             require_unique(&ids, "relay_id", &format!("{path}.4"))?;
+            // S10a.1: the stamp key is key type 1. Whether it is a curve point is not a
+            // statement check (a bad point makes every delivery to it fail at T3a.6, stage 10).
+            if let Some(key) = stamp_key {
+                if key.key_type != 1 {
+                    return Err(semantic(
+                        "stamp key must be key type 1 (S10a.1)",
+                        &format!("{path}.8"),
+                    ));
+                }
+            }
             if let Some(transitions) = key_transitions {
                 let parts: Vec<TransitionParts<'_>> = transitions
                     .iter()
@@ -326,6 +357,7 @@ fn check_directory_update(
     network: &str,
     subject: &AccountRef,
     revision: u64,
+    schema_version: u32,
     transitions: Option<&[KeyTransition]>,
     prior: Option<&PriorView>,
 ) -> Result<(), CodecError> {
@@ -352,6 +384,14 @@ fn check_directory_update(
         ));
     }
     let changed = !accounts_equal(subject, &prior.subject);
+    // S10a.2: a same-subject statement may not lower schema_version, so a stamp key, once
+    // published, cannot be dropped. A new subject starts fresh.
+    if !changed && schema_version < prior.schema_version {
+        return Err(semantic(
+            "a same-subject statement lowers schema_version (S10a.2)",
+            path,
+        ));
+    }
     if !changed {
         if transitions.is_some() {
             return Err(semantic(

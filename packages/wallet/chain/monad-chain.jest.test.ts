@@ -53,6 +53,7 @@ jest.mock('../monad-topic-post-client', () => {
     MonadTopicPostClient: jest.fn().mockImplementation(() => ({
       submitTopicPost: jest.fn(),
     })),
+    quoteMonadTopicBurnGasReserve: jest.fn().mockResolvedValue(100n),
   }
 })
 jest.mock('../monad-topic-vote-client', () => {
@@ -156,6 +157,10 @@ function makeWallet(identity: MonadIdentity): MonadChainWalletHandle {
       prepareStampInventory: jest.fn().mockResolvedValue({
         fundingTxHashes: [],
         selectedAccountCount: 2,
+      }),
+      prepareBurnAccount: jest.fn().mockResolvedValue({
+        index: 4,
+        fundingTxHashes: [],
       }),
     } as unknown as MonadChainWalletHandle['pool'],
     leaseManager: {} as MonadChainWalletHandle['leaseManager'],
@@ -328,6 +333,71 @@ describe('createMonadChain: nativeTransfers', () => {
       1_500_000_000_000_000_000n,
     )
     expect(submit).toHaveBeenCalledWith(signed)
+  })
+
+  it('awaits onSigned with the hash BEFORE broadcasting, and a failing onSigned broadcasts nothing', async () => {
+    const chain = createMonadChain(TEST_CONFIG)
+    const identity = MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX)
+    const wallet = makeWallet(identity)
+    const order: string[] = []
+    const buildAndSignTransfer = jest
+      .fn()
+      .mockResolvedValue({ txHash: '0xsigned' })
+    const submit = jest.fn(async () => {
+      order.push('submit')
+      return '0xsigned'
+    })
+    ;(MonadAccountTxSigner as jest.Mock).mockImplementation(() => ({
+      buildAndSignTransfer,
+      submit,
+    }))
+    await chain.nativeTransfers.send({
+      wallet,
+      recipient: identity.address,
+      value: 1n,
+      onSigned: async ({ txHash }) => {
+        await Promise.resolve()
+        order.push(`signed:${txHash}`)
+      },
+    })
+    expect(order).toEqual(['signed:0xsigned', 'submit'])
+
+    submit.mockClear()
+    await expect(
+      chain.nativeTransfers.send({
+        wallet,
+        recipient: identity.address,
+        value: 1n,
+        onSigned: async () => {
+          throw new Error('disk full')
+        },
+      }),
+    ).rejects.toThrow('disk full')
+    expect(submit).not.toHaveBeenCalled()
+  })
+
+  it('reports a transaction hash as confirmed / failed / pending / unknown from the node', async () => {
+    const chain = createMonadChain(TEST_CONFIG)
+    const wallet = makeWallet(
+      MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX),
+    )
+    const getTransactionReceipt = jest.fn()
+    const getTransaction = jest.fn()
+    wallet.provider = {
+      getTransactionReceipt,
+      getTransaction,
+    } as unknown as MonadChainWalletHandle['provider']
+    const status = () =>
+      chain.nativeTransfers.getTransactionStatus({ wallet, txHash: '0xh' })
+    getTransactionReceipt.mockResolvedValue({ status: 1 })
+    await expect(status()).resolves.toBe('confirmed')
+    getTransactionReceipt.mockResolvedValue({ status: 0 })
+    await expect(status()).resolves.toBe('failed')
+    getTransactionReceipt.mockResolvedValue(null)
+    getTransaction.mockResolvedValue({ hash: '0xh' })
+    await expect(status()).resolves.toBe('pending')
+    getTransaction.mockResolvedValue(null)
+    await expect(status()).resolves.toBe('unknown')
   })
 
   it('rejects zero-value transfers before constructing a signer', async () => {
@@ -851,6 +921,11 @@ describe('createMonadChain: topics.post', () => {
     expect(call.voteWeightWei).toBe(5_000n)
     expect(call.burnAddress).toBe(TEST_CONFIG.stampBurnAddress)
     expect(hexlify(call.parentPostHash)).toBe('0x' + 'aa'.repeat(32))
+    // #273: the burn account is prepared (funded) first and that exact account is leased.
+    expect(wallet.pool.prepareBurnAccount).toHaveBeenCalledWith(
+      expect.objectContaining({ burnValueWei: 5_000n, gasReserveWei: 100n }),
+    )
+    expect(call.leaseIndex).toBe(4)
   })
 })
 
@@ -884,6 +959,10 @@ describe('createMonadChain: topics.vote', () => {
     expect(call.direction).toBe('down')
     expect(call.voteWeightWei).toBe(7_000n)
     expect(call.burnAddress).toBe(TEST_CONFIG.stampBurnAddress)
+    expect(wallet.pool.prepareBurnAccount).toHaveBeenCalledWith(
+      expect.objectContaining({ burnValueWei: 7_000n }),
+    )
+    expect(call.leaseIndex).toBe(4)
   })
 })
 

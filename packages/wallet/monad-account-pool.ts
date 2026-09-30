@@ -101,6 +101,12 @@ export interface StampInventoryPreparationResult {
   selectedAccountCount: number
 }
 
+export interface BurnAccountPreparationResult {
+  /** Pool index of the receipt-confirmed account to lease for the burn. */
+  index: number
+  fundingTxHashes: string[]
+}
+
 export interface FundingReceiptOptions {
   intervalMs?: number
   maxAttempts?: number
@@ -251,30 +257,7 @@ export class MonadSubAccountPool {
     }
     params.onProgress?.({ stage: 'checking' })
 
-    const fundingTxHashes: string[] = []
-    for (const record of this.store.getAll()) {
-      if (record.status === 'funding') {
-        const txHash = await this.finishFundingAttempt(
-          record,
-          params.mainAccountSigner,
-          params.receipt,
-        )
-        fundingTxHashes.push(txHash)
-      } else if (record.status === 'available') {
-        // A legacy `available` record is ambiguous: it may be merely derived, or it may have been
-        // used before confirmed leases became terminal. Never re-fund that address. An empty one
-        // is retired; production-created `unfunded` records are the only refill targets.
-        const balance = await params.provider.getBalance(record.address)
-        const transactionCount = await params.provider.getTransactionCount(
-          record.address,
-          'pending',
-        )
-        if (transactionCount > 0 || balance <= params.gasReserveWei) {
-          this.store.put({ ...record, status: 'retired' })
-        }
-      }
-    }
-    await this.store.flush()
+    const fundingTxHashes = await this.reconcileBeforePreparation(params)
 
     let accounts = await this.fundedCapacities(
       params.provider,
@@ -410,6 +393,183 @@ export class MonadSubAccountPool {
     }
     params.onProgress?.({ stage: 'ready', fundingTxHashes })
     return { fundingTxHashes, selectedAccountCount: selection.length }
+  }
+
+  /**
+   * Shared first step of every preparation: finish any durable in-flight funding attempt (resuming
+   * the exact signed transaction, never signing a second one for the same child) and retire legacy
+   * `available` records that are empty or already used. Returns the hashes of resumed attempts.
+   */
+  private async reconcileBeforePreparation(params: {
+    mainAccountSigner: MonadAccountTxSigner
+    provider: Provider
+    gasReserveWei: bigint
+    receipt?: FundingReceiptOptions
+  }): Promise<string[]> {
+    const fundingTxHashes: string[] = []
+    for (const record of this.store.getAll()) {
+      if (record.status === 'funding') {
+        const txHash = await this.finishFundingAttempt(
+          record,
+          params.mainAccountSigner,
+          params.receipt,
+        )
+        fundingTxHashes.push(txHash)
+      } else if (record.status === 'available') {
+        // A legacy `available` record is ambiguous: it may be merely derived, or it may have been
+        // used before confirmed leases became terminal. Never re-fund that address. An empty one
+        // is retired; production-created `unfunded` records are the only refill targets.
+        const balance = await params.provider.getBalance(record.address)
+        const transactionCount = await params.provider.getTransactionCount(
+          record.address,
+          'pending',
+        )
+        if (transactionCount > 0 || balance <= params.gasReserveWei) {
+          this.store.put({ ...record, status: 'retired' })
+        }
+      }
+    }
+    await this.store.flush()
+    return fundingTxHashes
+  }
+
+  /**
+   * Prepares ONE receipt-confirmed sender account able to burn exactly `burnValueWei` in a single
+   * transaction (a topic post's initial vote, or a vote). Unlike a stamp payment, a topic burn has
+   * no recipient and is never split, so it needs one account whose capacity covers the whole value
+   * -- not the 3/8 + 5/8 inventory `prepareStampInventory` builds for direct messages (ticket
+   * #273: the topic path leased from a pool nothing had funded, so every post failed with
+   * "No available sub-account to lease").
+   *
+   * An existing `available` account is reused only when its capacity (balance minus the fee
+   * reserve) covers the burn without stranding much more than the fee-quote drift: a bigger
+   * account is DM inventory, and burning from it would retire the surplus. Otherwise exactly one
+   * `unfunded` account is funded with `burnValueWei + gasReserveWei` through the same
+   * record-before-broadcast, receipt-confirmed path as every other funding, so a retry after a
+   * failure resumes or reuses that account instead of funding a second one. The caller leases the
+   * returned index (`SubAccountLeaseManager.acquireForIndex`).
+   */
+  async prepareBurnAccount(params: {
+    mainAccountSigner: MonadAccountTxSigner
+    provider: Provider
+    burnValueWei: bigint
+    gasReserveWei: bigint
+    fundingOverrides?: MonadTxOverrides
+    onProgress?: (progress: StampInventoryPreparationProgress) => void
+    receipt?: FundingReceiptOptions
+  }): Promise<BurnAccountPreparationResult> {
+    const run = this.preparationQueue.then(() =>
+      this.prepareBurnAccountExclusive(params),
+    )
+    this.preparationQueue = run.then(
+      () => undefined,
+      () => undefined,
+    )
+    return run
+  }
+
+  private async prepareBurnAccountExclusive(params: {
+    mainAccountSigner: MonadAccountTxSigner
+    provider: Provider
+    burnValueWei: bigint
+    gasReserveWei: bigint
+    fundingOverrides?: MonadTxOverrides
+    onProgress?: (progress: StampInventoryPreparationProgress) => void
+    receipt?: FundingReceiptOptions
+  }): Promise<BurnAccountPreparationResult> {
+    const zero = BigInt(0)
+    if (params.burnValueWei <= zero) {
+      throw new Error(
+        `burnValueWei must be positive, got ${params.burnValueWei}`,
+      )
+    }
+    if (params.gasReserveWei < zero) {
+      throw new Error(
+        `gasReserveWei must be non-negative, got ${params.gasReserveWei}`,
+      )
+    }
+    params.onProgress?.({ stage: 'checking' })
+    const fundingTxHashes = await this.reconcileBeforePreparation(params)
+
+    const reusable = (
+      await this.fundedCapacities(params.provider, params.gasReserveWei)
+    )
+      .filter(
+        account =>
+          account.capacityWei >= params.burnValueWei &&
+          account.capacityWei <= params.burnValueWei + params.gasReserveWei,
+      )
+      .sort((a, b) =>
+        a.capacityWei === b.capacityWei
+          ? a.index - b.index
+          : a.capacityWei < b.capacityWei
+          ? -1
+          : 1,
+      )[0]
+    if (reusable !== undefined) {
+      params.onProgress?.({ stage: 'ready', fundingTxHashes })
+      return { index: reusable.index, fundingTxHashes }
+    }
+
+    let target = this.store
+      .getAll()
+      .find(record => record.status === 'unfunded')
+    if (target === undefined) {
+      const index = this.nextFreshIndex()
+      target = {
+        index,
+        address: this.keyring.deriveSubAccount(index).address,
+        status: 'unfunded',
+      }
+      this.store.put(target)
+      await this.store.flush()
+    }
+
+    const availableMainBalance = await params.provider.getBalance(
+      params.mainAccountSigner.address,
+      'pending',
+    )
+    const requiredMainBalance = await this.requiredFundingBalance({
+      capacities: [params.burnValueWei],
+      targets: [target],
+      fromAddress: params.mainAccountSigner.address,
+      gasReserveWei: params.gasReserveWei,
+      provider: params.provider,
+      overrides: params.fundingOverrides,
+    })
+    if (requiredMainBalance > availableMainBalance) {
+      throw new Error(
+        'Insufficient main account balance to prepare a burn account: ' +
+          `need up to ${requiredMainBalance} wei, have ${availableMainBalance} wei`,
+      )
+    }
+
+    const result = await this.fundAccount({
+      target,
+      paymentCapacityWei: params.burnValueWei,
+      gasReserveWei: params.gasReserveWei,
+      mainAccountSigner: params.mainAccountSigner,
+      overrides: params.fundingOverrides,
+      receipt: params.receipt,
+      onSigned: signedTx =>
+        params.onProgress?.({
+          stage: 'funding',
+          completed: 0,
+          total: 1,
+          feeReserveWei: params.gasReserveWei,
+          txHash: signedTx.txHash,
+        }),
+    })
+    fundingTxHashes.push(result.txHash)
+    params.onProgress?.({
+      stage: 'funding',
+      completed: 1,
+      total: 1,
+      feeReserveWei: params.gasReserveWei,
+      txHash: result.txHash,
+    })
+    params.onProgress?.({ stage: 'ready', fundingTxHashes })
+    return { index: result.index, fundingTxHashes }
   }
 
   private async requiredFundingBalance(params: {

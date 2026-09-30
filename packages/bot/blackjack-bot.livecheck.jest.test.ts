@@ -797,6 +797,79 @@ describe('blackjack move authorization', () => {
     expect(mainAccountSigner.buildAndSignTransfer).toHaveBeenCalledWith(getAddress(PLAYER), 1001n)
   })
 
+  // #319: every dealer error a player reads quotes MON, never raw wei.
+  const lastErrorText = () => {
+    const calls = (sendDirectMessageText as jest.Mock).mock.calls
+    return calls[calls.length - 1][0].text as string
+  }
+  const ETHER = 10n ** 18n
+
+  it('quotes a below-minimum bet in MON, not wei', async () => {
+    // The audit case: 0.0005 MON against a 0.01 MON minimum.
+    await handleMove({
+      action: 'bet',
+      hydrated: hydrated('bet', {
+        wagerTxHash: WAGER_HASH,
+        verifiedWager: { fromAddress: PLAYER, toAddress: DEALER, valueWei: ETHER / 2000n },
+      }),
+      senderAddress: PLAYER,
+      senderPubKey: Buffer.alloc(33, 1),
+      minWagerWei: ETHER / 100n,
+      maxWagerWei: ETHER,
+      state,
+      identity: { displayAddress: DEALER } as never,
+      networkTag: 'TEST',
+      stampValueWei: 1n,
+      stampClient: {} as never,
+      pool: {} as never,
+      mainAccountSigner: mainAccountSigner as never,
+      provider: { getBalance } as never,
+    })
+    const text = parseBlackjackError(lastErrorText())?.text ?? ''
+    expect(text).toContain('wager 0.0005 MON is below the table minimum of 0.01 MON')
+    expect(text).not.toMatch(/\bwei\b/)
+    expect(text).not.toMatch(/\d{9,}/)
+  })
+
+  it('quotes an above-maximum bet in MON, not wei', async () => {
+    await handleMove({
+      action: 'bet',
+      hydrated: hydrated('bet', {
+        wagerTxHash: WAGER_HASH,
+        verifiedWager: { fromAddress: PLAYER, toAddress: DEALER, valueWei: 2n * ETHER },
+      }),
+      senderAddress: PLAYER,
+      senderPubKey: Buffer.alloc(33, 1),
+      minWagerWei: ETHER / 100n,
+      maxWagerWei: ETHER,
+      state,
+      identity: { displayAddress: DEALER } as never,
+      networkTag: 'TEST',
+      stampValueWei: 1n,
+      stampClient: {} as never,
+      pool: {} as never,
+      mainAccountSigner: mainAccountSigner as never,
+      provider: { getBalance } as never,
+    })
+    const text = parseBlackjackError(lastErrorText())?.text ?? ''
+    expect(text).toContain('wager 2.0 MON is above the table maximum of 1.0 MON')
+    expect(text).not.toMatch(/\bwei\b/)
+  })
+
+  it('quotes the required double-down amount in MON, not wei', async () => {
+    await bet()
+    jest.clearAllMocks()
+    await move(
+      'double',
+      validDouble({
+        verifiedDoubleWager: { fromAddress: PLAYER, toAddress: DEALER, valueWei: 50n },
+      }),
+    )
+    const text = parseBlackjackError(lastErrorText())?.text ?? ''
+    expect(text).toContain('exactly (0.0000000000000001 MON)')
+    expect(text).not.toMatch(/\bwei\b/)
+  })
+
   it('does not refund a transfer that was not from the authenticated player', async () => {
     await bet({ verifiedWager: { fromAddress: ATTACKER, toAddress: DEALER, valueWei: 5n } })
     expect(mainAccountSigner.buildAndSignTransfer).not.toHaveBeenCalled()

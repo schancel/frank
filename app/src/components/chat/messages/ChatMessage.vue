@@ -57,6 +57,7 @@
               v-else-if="item.type == 'digital-goods'"
               :item="item"
               :address="address"
+              :recipient-name="name"
               @sendFollowUp="handleSendFollowUp"
             />
             <chat-message-raffle
@@ -194,6 +195,7 @@ export default defineComponent({
     handleSendFollowUp(payload: {
       items: MessageItem[]
       stampValueWei?: bigint
+      settled?: (sent: boolean) => void
     }) {
       this.$emit('sendFollowUp', payload)
     },

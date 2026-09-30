@@ -87,6 +87,24 @@ describe('Receive balance', () => {
     spy.mockRestore()
   })
 
+  it('explains where testnet funds come from only for a real zero balance (#316)', async () => {
+    mockGetBalance.mockRejectedValueOnce(new Error('rpc down'))
+    const spy = jest.spyOn(console, 'error').mockImplementation(() => undefined)
+    const wrapper = mountReceive()
+    const hint = '[data-testid="receive-no-funds-hint"]'
+    expect(wrapper.find(hint).exists()).toBe(false) // not loaded yet
+    await advance(0)
+    expect(wrapper.find(hint).exists()).toBe(false) // failed fetch is not a zero
+    mockGetBalance.mockResolvedValueOnce(0n)
+    await advance(30000)
+    expect(wrapper.get(hint).text()).toContain('testnet MON')
+    mockGetBalance.mockResolvedValue(5n)
+    await advance(30000)
+    expect(wrapper.find(hint).exists()).toBe(false) // funded
+    wrapper.unmount()
+    spy.mockRestore()
+  })
+
   it('exposes the balance as a labelled polite live region that does not re-announce', async () => {
     mockGetBalance.mockResolvedValue(3n)
     const wrapper = mountReceive()

@@ -18,12 +18,12 @@ describe('Setup persistence integration', () => {
     expect(source).toContain(
       'this.accountData.seed = commitValidatedSetupSeed(',
     )
-    expect(source).toContain('seed => this.setSeedPhrase(seed)')
+    expect(source).toContain('(seed, at) => this.setSeedPhrase(seed, at)')
     expect(source).toContain(
       'this.accountData.name = commitValidatedSetupName(',
     )
-    expect(source).toContain('name =>\n              this.setRelayData({')
-    expect(source).toContain('name,\n                  bio:')
+    expect(source).toContain('name =>\n          this.setRelayData({')
+    expect(source).toContain('name,\n              bio:')
     expect(source).not.toContain("name: this.accountData.name || 'Frank User'")
     expect(source).toContain('await this.persistSetupAndReload()')
     expect(

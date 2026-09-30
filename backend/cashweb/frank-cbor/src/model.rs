@@ -265,6 +265,10 @@ pub enum TypedPayload {
         expiry: Option<Timestamp>,
         /// Field 7, when present.
         recovery: Option<Vec<AccountRef>>,
+        /// The frame's envelope `schema_version`, kept for the S10a.2 same-subject order.
+        schema_version: u32,
+        /// Field 8, the stamp key `P'` (S10a.1): required in schema 2, undefined in schema 1.
+        stamp_key: Option<AccountRef>,
         /// V6.3 unknown fields.
         unknown: Vec<(u64, CborValue)>,
     },
@@ -282,6 +286,12 @@ pub enum TypedPayload {
         nonce: Vec<u8>,
         /// Field 5.
         ciphertext: Vec<u8>,
+        /// Field 6, `E = e*G`: a 33-byte compressed point (T3a, T3b encoding rules).
+        ephemeral_point: Vec<u8>,
+        /// Field 7, `X = e*P'`: a 33-byte compressed point (T3a).
+        shared_point: Vec<u8>,
+        /// Field 8, the DLEQ proof `c || s` (T3b); verified only at stage 10.
+        dleq_proof: Vec<u8>,
         /// V6.3 unknown fields.
         unknown: Vec<(u64, CborValue)>,
     },
@@ -310,6 +320,41 @@ pub enum TypedPayload {
         revision: u64,
         /// Field 4.
         new_key: AccountRef,
+        /// V6.3 unknown fields.
+        unknown: Vec<(u64, CborValue)>,
+    },
+    /// Type 9.
+    TopicPost {
+        /// Field 0.
+        network: String,
+        /// Field 1, exact UTF-8, not normalized.
+        topic: String,
+        /// Field 2, when present: T1 hash of the parent type-9 frame.
+        parent_hash: Option<Vec<u8>>,
+        /// Field 3, opaque.
+        body: Vec<u8>,
+        /// V6.3 unknown fields.
+        unknown: Vec<(u64, CborValue)>,
+    },
+    /// Type 10.
+    TopicPostSubmission {
+        /// Field 0.
+        network: String,
+        /// Field 1, opened as type 9.
+        post_frame: ParsedFrame,
+        /// Field 2, raw signed chain transaction.
+        burn_tx: Vec<u8>,
+        /// V6.3 unknown fields.
+        unknown: Vec<(u64, CborValue)>,
+    },
+    /// Type 11.
+    TopicVoteSubmission {
+        /// Field 0.
+        network: String,
+        /// Field 1: T1 hash of the target type-9 frame.
+        target_hash: Vec<u8>,
+        /// Field 2, raw signed chain transaction.
+        burn_tx: Vec<u8>,
         /// V6.3 unknown fields.
         unknown: Vec<(u64, CborValue)>,
     },

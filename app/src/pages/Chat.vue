@@ -1,40 +1,35 @@
 <template>
   <div>
     <q-page-container>
-      <q-page class="chat-page-background">
-        <q-scroll-area
-          ref="chatScroll"
-          @scroll="scrollHandler"
-          class="q-px-none absolute full-width full-height column"
-        >
-          <div class="row q-px-lg">
-            <template
-              v-for="(msg, index) in chunkedMessages"
-              :key="msg.payloadDigest"
-            >
-              <chat-message-component
-                :index="index"
-                :message="msg"
-                :address="address"
-                :name="getContact(msg.outbound).name ?? 'unknown'"
-                :chat-width="chatWidth"
-                :payload-digest="msg.payloadDigest"
-                :ref="msg.payloadDigest"
-                @replyClicked="({ payloadDigest }) => setReply(payloadDigest)"
-                @replyDivClick="scrollToMessage"
-                @sendFollowUp="sendFollowUpItems"
-              />
-            </template>
-          </div>
-        </q-scroll-area>
-        <!-- Anchored to the top (not the footer) so it never grows/shrinks the footer and pushes
-        an in-flight message out from under the input box while sending. -->
-        <div
-          v-if="stampPreparationStatus"
-          class="absolute-top full-width text-caption text-center bg-accent text-white q-py-xs"
-          role="status"
-        >
-          {{ stampPreparationStatus }}
+      <q-page class="chat-page-background column no-wrap">
+        <!-- Above the list in normal flow: the banners never cover messages or each other. -->
+        <chat-banner-stack :stamp-status="stampPreparationStatus" />
+        <div class="col relative-position">
+          <q-scroll-area
+            ref="chatScroll"
+            @scroll="scrollHandler"
+            class="q-px-none absolute full-width full-height column"
+          >
+            <div class="row q-px-lg">
+              <template
+                v-for="(msg, index) in chunkedMessages"
+                :key="msg.payloadDigest"
+              >
+                <chat-message-component
+                  :index="index"
+                  :message="msg"
+                  :address="address"
+                  :name="getContact(msg.outbound).name ?? 'unknown'"
+                  :chat-width="chatWidth"
+                  :payload-digest="msg.payloadDigest"
+                  :ref="msg.payloadDigest"
+                  @replyClicked="({ payloadDigest }) => setReply(payloadDigest)"
+                  @replyDivClick="scrollToMessage"
+                  @sendFollowUp="sendFollowUpItems"
+                />
+              </template>
+            </div>
+          </q-scroll-area>
         </div>
         <q-page-sticky
           position="bottom-right"
@@ -77,6 +72,11 @@
           </div>
         </div>
       </div>
+      <blackjack-unsent-wagers
+        :address="address"
+        :name="peerName"
+        :submit="sendFollowUpWhenIdle"
+      />
       <!-- Message box -->
       <chat-input
         @sendFileClicked="toSendFileDialog"
@@ -85,6 +85,10 @@
         v-model:message="message"
         v-model:stamp-amount="stampAmount"
         :disable="sendingMessage"
+        :address="address"
+        :blackjack-enabled="peerIsBot"
+        :peer-name="peerName"
+        :submit-follow-up="sendFollowUpWhenIdle"
         @sendMessage="sendMessage"
       />
     </q-footer>
@@ -95,11 +99,14 @@
 import { defineComponent, ref } from 'vue'
 
 import ChatMessageComponent from '../components/chat/messages/ChatMessage.vue'
+import ChatBannerStack from '../components/chat/ChatBannerStack.vue'
 import ChatInput from '../components/chat/ChatInput.vue'
+import BlackjackUnsentWagers from '../components/chat/BlackjackUnsentWagers.vue'
 import ChatMessageReply from '../components/chat/messages/ChatMessageReply.vue'
 
 import { errorNotify, insufficientStampNotify } from '../utils/notifications'
 import { defaultAcceptancePrice, defaultStampAmount } from '../utils/constants'
+import { deliverBetWhenReady } from '../utils/blackjack-bet'
 import { useMonadWallet } from '../utils/clients'
 import { MonadStampRecoveredAttemptError } from '@frank/wallet/monad-stamp-client'
 import {
@@ -122,6 +129,8 @@ export default defineComponent({
     ChatMessageComponent,
     ChatMessageReply,
     ChatInput,
+    BlackjackUnsentWagers,
+    ChatBannerStack,
   },
   beforeRouteUpdate(
     to: RouteLocationNormalized,
@@ -328,29 +337,13 @@ export default defineComponent({
       // session, 2026-09-27) by actually clicking Send in a real browser and finding the message
       // never left the input box.
       try {
-        this.stampPreparationStatus = 'Checking private stamp accounts…'
+        this.stampPreparationStatus = this.$t('chat.stampPreparationChecking')
         await this.sendDirectMessage({
           wallet: useMonadWallet(),
           address: this.address,
           items: [{ type: 'text', text: submittedMessage }],
           stampValue,
-          onPreparationProgress: (
-            progress: DirectMessagePreparationProgress,
-          ) => {
-            if (progress.stage === 'checking') {
-              this.stampPreparationStatus = 'Checking private stamp accounts…'
-            } else if (progress.stage === 'funding') {
-              const feeReserve = activeChain.toDisplayAmount(
-                progress.feeReserveWei,
-              )
-              this.stampPreparationStatus =
-                `Preparing private stamp accounts (${progress.completed}/${progress.total} on-chain transactions; ` +
-                `up to ${feeReserve} ${activeChain.unit} fee reserve each)…`
-            } else {
-              this.stampPreparationStatus =
-                'Private stamp accounts ready; sending message…'
-            }
-          },
+          onPreparationProgress: this.showStampPreparation,
         })
       } catch (err) {
         if (err instanceof MonadStampRecoveredAttemptError) {
@@ -372,6 +365,22 @@ export default defineComponent({
         this.$nextTick(this.buttonScrollBottom)
       }
     },
+    // Shows the preparation stage of a send (checking / funding / ready) in the composer status
+    // line, translated -- one place for every way a send can prepare its stamp accounts.
+    showStampPreparation(progress: DirectMessagePreparationProgress) {
+      if (progress.stage === 'checking') {
+        this.stampPreparationStatus = this.$t('chat.stampPreparationChecking')
+      } else if (progress.stage === 'funding') {
+        this.stampPreparationStatus = this.$t('chat.stampPreparationFunding', {
+          completed: progress.completed,
+          total: progress.total,
+          feeReserve: activeChain.toDisplayAmount(progress.feeReserveWei),
+          unit: activeChain.unit,
+        })
+      } else {
+        this.stampPreparationStatus = this.$t('chat.stampPreparationReady')
+      }
+    },
     // Handles a plugin renderer's `sendFollowUp` emit (see ChatMessage.vue's own relay of it --
     // e.g. blackjack's Hit/Stand buttons, or the vendor-bot catalog's own Buy buttons) by feeding
     // arbitrary items through the exact same prepare-and-send pipeline `sendMessage` uses for free
@@ -387,44 +396,48 @@ export default defineComponent({
     async sendFollowUpItems({
       items,
       stampValueWei,
+      settled,
     }: {
       items: MessageItem[]
       stampValueWei?: bigint
-    }) {
+      /** Called exactly once with whether the message was sent, so a renderer that spent money
+       * on the click (a purchase) can hold its own in-flight guard until then. */
+      settled?: (sent: boolean) => void
+    }): Promise<boolean> {
+      let sent = false
+      try {
+        sent = await this.sendFollowUpItemsUnsettled({ items, stampValueWei })
+        return sent
+      } finally {
+        // Exactly once, even if the send throws (a throw counts as not sent).
+        settled?.(sent)
+      }
+    },
+    async sendFollowUpItemsUnsettled({
+      items,
+      stampValueWei,
+    }: {
+      items: MessageItem[]
+      stampValueWei?: bigint
+    }): Promise<boolean> {
       if (this.sendingMessage) {
-        return
+        return false
       }
       const stampValue =
         stampValueWei ?? activeChain.fromDisplayAmount(this.stampAmount)
       this.sendingMessage = true
       try {
-        this.stampPreparationStatus = 'Checking private stamp accounts…'
+        this.stampPreparationStatus = this.$t('chat.stampPreparationChecking')
         await this.sendDirectMessage({
           wallet: useMonadWallet(),
           address: this.address,
           items,
           stampValue,
-          onPreparationProgress: (
-            progress: DirectMessagePreparationProgress,
-          ) => {
-            if (progress.stage === 'checking') {
-              this.stampPreparationStatus = 'Checking private stamp accounts…'
-            } else if (progress.stage === 'funding') {
-              const feeReserve = activeChain.toDisplayAmount(
-                progress.feeReserveWei,
-              )
-              this.stampPreparationStatus =
-                `Preparing private stamp accounts (${progress.completed}/${progress.total} on-chain transactions; ` +
-                `up to ${feeReserve} ${activeChain.unit} fee reserve each)…`
-            } else {
-              this.stampPreparationStatus =
-                'Private stamp accounts ready; sending message…'
-            }
-          },
+          onPreparationProgress: this.showStampPreparation,
         })
       } catch (err) {
         errorNotify(err instanceof Error ? err : new Error(String(err)))
-        return
+        return false
       } finally {
         this.stampPreparationStatus = null
         this.sendingMessage = false
@@ -432,6 +445,26 @@ export default defineComponent({
       if (!this.bottom) {
         this.$nextTick(this.buttonScrollBottom)
       }
+      return true
+    },
+    // For value-bearing follow-ups whose payment is already on its way (the first blackjack bet:
+    // its wager transfer takes seconds): `sendFollowUpItems` drops a call made while another send
+    // is in flight, which would strand the wager, so wait for the chat to go idle first.
+    async sendFollowUpWhenIdle(payload: {
+      items: MessageItem[]
+      stampValueWei?: bigint
+      address: string
+    }) {
+      await deliverBetWhenReady({
+        betAddress: payload.address,
+        currentAddress: () => this.address,
+        isBusy: () => this.sendingMessage,
+        send: () =>
+          this.sendFollowUpItems({
+            items: payload.items,
+            stampValueWei: payload.stampValueWei,
+          }),
+      })
     },
     getContact(outbound: boolean) {
       if (outbound) {
@@ -446,6 +479,13 @@ export default defineComponent({
     },
   },
   computed: {
+    // Self-declared bot marker on the peer's signed profile (#311); only an explicit true counts.
+    peerIsBot(): boolean {
+      return this.getContactVuex(this.address)?.profile?.isBot === true
+    },
+    peerName(): string {
+      return this.getContactVuex(this.address)?.profile?.name ?? ''
+    },
     messages(): ChatMessage[] {
       const activeChat = this.chats[this.address]
       return activeChat ? activeChat.messages : []

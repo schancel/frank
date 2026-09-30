@@ -104,6 +104,7 @@
 </template>
 
 <script lang="ts">
+import { navigateBack } from 'src/utils/navigate-back'
 import { defineComponent, markRaw, ref } from 'vue'
 import { QInput } from 'quasar'
 
@@ -269,6 +270,7 @@ export default defineComponent({
               name: profileInfo.name ?? '',
               bio: profileInfo.bio ?? '',
               avatar: profileInfo.avatar ?? '',
+              isBot: profileInfo.bot === true,
               pubKey: markRaw(PublicKey.fromBuffer(profileInfo.pubKey)),
             },
           },
@@ -288,7 +290,7 @@ export default defineComponent({
       openChat(this.$router, resolvedAddress)
     },
     cancel() {
-      window.history.length > 1 ? this.$router.go(-1) : this.$router.push('/')
+      navigateBack(this.$router)
     },
   },
   mounted() {

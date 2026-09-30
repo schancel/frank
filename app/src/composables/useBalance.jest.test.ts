@@ -3,6 +3,7 @@
 import { defineComponent, h, nextTick } from 'vue'
 import { mount as vtuMount } from '@vue/test-utils'
 
+import { walletNotReadyError } from './wallet-not-ready'
 import {
   APP_STATE_EVENT,
   BALANCE_BACKOFF_MAX_MS,
@@ -86,6 +87,46 @@ describe('useBalance', () => {
     errorSpy.mockRestore()
     jest.restoreAllMocks()
     jest.useRealTimers()
+  })
+
+  it('waits quietly (no error log) while no seed exists yet, then loads once it does', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const useActiveWallet = jest.requireMock('src/composables/useActiveWallet')
+      .useActiveWallet as jest.Mock
+    const debugSpy = jest
+      .spyOn(console, 'debug')
+      .mockImplementation(() => undefined)
+    useActiveWallet.mockImplementation(() => {
+      throw walletNotReadyError('no seed phrase set')
+    })
+    try {
+      const wrapper = mount(Consumer)
+      await advance(0)
+      expect(errorSpy).not.toHaveBeenCalled()
+      expect(debugSpy).toHaveBeenCalled()
+      expect(mockGetBalance).not.toHaveBeenCalled()
+
+      useActiveWallet.mockImplementation(
+        () => (mockWallets[mockSeed] ??= Promise.resolve({ seed: mockSeed })),
+      )
+      await refresh()
+      await advance(0)
+      expect(wrapper.text()).toBe('1 MON')
+    } finally {
+      useActiveWallet.mockImplementation(
+        () => (mockWallets[mockSeed] ??= Promise.resolve({ seed: mockSeed })),
+      )
+    }
+  })
+
+  it('still logs a real balance failure at error level', async () => {
+    mockGetBalance.mockRejectedValue(new Error('rpc down'))
+    mount(Consumer)
+    await advance(0)
+    expect(errorSpy).toHaveBeenCalledWith(
+      'balance refresh failed',
+      expect.any(Error),
+    )
   })
 
   it('runs a single shared loop for two consumers', async () => {

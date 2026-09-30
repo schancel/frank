@@ -2,7 +2,16 @@
   <div class="blackjack-move q-pa-sm" style="min-width: 220px">
     <div v-if="loading" class="text-caption">Loading hand...</div>
     <template v-else-if="state">
-      <div class="text-caption text-weight-bold">
+      <template v-if="state.phase === 'awaiting_deal'">
+        <div
+          class="text-caption text-weight-bold"
+          data-testid="blackjack-bet-line"
+        >
+          {{ betLine }}
+        </div>
+        <div class="text-caption">{{ $t('blackjackHand.betWaiting') }}</div>
+      </template>
+      <div v-else class="text-caption text-weight-bold">
         Your hand: {{ cardLabels(state.playerCards) }}
         <span v-if="state.playerCards.length"
           >({{ playerValue.total }}{{ playerValue.soft ? ' soft' : '' }})</span
@@ -19,6 +28,13 @@
         </div>
         <div class="text-caption text-weight-bold q-mt-xs">
           {{ outcomeText }}
+        </div>
+        <div
+          v-if="payoutText"
+          class="text-caption"
+          data-testid="blackjack-payout"
+        >
+          {{ payoutText }}
         </div>
         <div
           v-if="verification"
@@ -55,6 +71,44 @@
           @keyup.enter="onAction('bet')"
         />
       </div>
+      <!-- Ticket #366: a paid move nobody answered. Only a plain hit/stand can be re-sent, and only
+      behind an explicit consent: a resend is a second paid message, and a repeated hit could be
+      played twice once the dealer returns. A wager (bet/double) is never re-sent. -->
+      <div
+        v-if="dealerSilent"
+        role="status"
+        aria-live="polite"
+        class="dealer-silent text-caption q-mt-sm q-pa-xs text-negative"
+        data-testid="dealer-silent"
+      >
+        <div class="text-weight-bold">
+          {{ $t('blackjackDealer.silentTitle') }}
+        </div>
+        <div>{{ $t('blackjackDealer.silentBody') }}</div>
+        <div>{{ $t('blackjackDealer.silentWait') }}</div>
+        <div>{{ $t('blackjackDealer.silentRefund') }}</div>
+        <template v-if="resendAction">
+          <q-checkbox
+            v-model="resendConfirmed"
+            dense
+            data-testid="dealer-resend-confirm"
+            :label="
+              $t('blackjackDealer.resendConfirm', {
+                action: actionLabel(resendAction).toLowerCase(),
+              })
+            "
+          />
+          <q-btn
+            dense
+            color="primary"
+            data-testid="dealer-resend"
+            :label="$t('blackjackDealer.resend')"
+            :disable="!resendConfirmed || sending"
+            @click="onResend"
+          />
+        </template>
+        <div v-else>{{ $t('blackjackDealer.silentNoResend') }}</div>
+      </div>
       <div
         role="status"
         aria-live="polite"
@@ -72,7 +126,7 @@
           :key="action"
           :label="actionLabel(action)"
           :loading="sending"
-          :disable="sending || (action === 'bet' && !!betError)"
+          :disable="sending || dealerSilent || (action === 'bet' && !!betError)"
           dense
           color="primary"
           @click="onAction(action)"
@@ -93,6 +147,7 @@ import {
 } from '@frank/wallet/message-item-plugins/blackjack/deck'
 import {
   applyDoubleRejection,
+  blackjackPayoutWei,
   BLACKJACK_DEFAULT_MAX_WAGER_WEI,
   BLACKJACK_DEFAULT_MIN_WAGER_WEI,
   BlackjackAction,
@@ -111,11 +166,15 @@ import { useChatStore } from '../../../stores/chats'
 import { useMonadWallet } from '../../../utils/clients'
 import { useActiveWallet } from '../../../composables/useActiveWallet'
 import { errorNotify } from '../../../utils/notifications'
-import { parseBetInput } from '../../../utils/blackjack-bet'
+import { parseBetInput, sendBlackjackWager } from '../../../utils/blackjack-bet'
 
 // The bet-size input's starting value -- comfortably above the relay's stamp minimum so a bot
 // dealer never rejects a first-try default as "below the table minimum."
 const DEFAULT_BET_AMOUNT_DISPLAY = '0.1'
+
+// How long a paid move may go unanswered before the bubble says so (ticket #366). Comfortably above
+// a bot's normal poll + reply time so a slow-but-alive dealer never triggers it.
+const DEALER_ANSWER_TIMEOUT_MS = 45_000
 
 const ACTION_LABELS: Partial<Record<BlackjackAction, string>> = {
   hit: 'Hit',
@@ -150,6 +209,12 @@ export default defineComponent({
       // The dealer's rejection for THIS game while a double was pending (from the fold).
       dealerError: '',
       loadSeq: 0,
+      // Derived from the persisted send time of the last move, so it survives a reload.
+      dealerSilent: false,
+      // The unanswered move's action, and the player's explicit consent to pay for it again.
+      unansweredAction: undefined as BlackjackAction | undefined,
+      resendConfirmed: false,
+      dealerTimer: undefined as ReturnType<typeof setTimeout> | undefined,
       betAmountDisplay: DEFAULT_BET_AMOUNT_DISPLAY,
       // Inline (aria-live) message: send failures such as insufficient funds, and the dealer's
       // own rejection text. Kept alongside, not instead of, the toast.
@@ -162,6 +227,14 @@ export default defineComponent({
     },
     visibleError(): string {
       return this.isLatest ? this.actionError || this.dealerError : ''
+    },
+    // Only a plain hit/stand can be re-sent: a bet or double carries a wager transfer that would be
+    // paid a second time.
+    resendAction(): 'hit' | 'stand' | undefined {
+      const action = this.unansweredAction
+      return this.dealerSilent && (action === 'hit' || action === 'stand')
+        ? action
+        : undefined
     },
     betLimitsHint(): string {
       return `${activeChain.toDisplayAmount(
@@ -184,6 +257,27 @@ export default defineComponent({
     },
     dealerValue() {
       return handValue(this.state?.dealerCards ?? [])
+    },
+    betLine(): string {
+      const wager = this.state?.verifiedWagerWei
+      return wager !== undefined
+        ? this.$t('blackjackHand.bet', {
+            amount: activeChain.toDisplayAmount(wager),
+          })
+        : this.$t('blackjackHand.betUnverified')
+    },
+    // What the dealer sends back for a win or a push (a loss sends nothing, said by the outcome).
+    // A promise, not a receipt: the dealer sends the reveal first and the payout transfer after
+    // it, and the chat has no record of that transfer. Never shown for a hand whose fairness
+    // check failed, since the figure would rest on data that did not verify.
+    payoutText(): string {
+      if (this.verification && !this.verification.valid) return ''
+      const payout = this.state ? blackjackPayoutWei(this.state) : undefined
+      return payout
+        ? this.$t('blackjackHand.payout', {
+            amount: activeChain.toDisplayAmount(payout),
+          })
+        : ''
     },
     outcomeText(): string {
       switch (this.state?.outcome) {
@@ -214,6 +308,9 @@ export default defineComponent({
     'chatMessageCount'() {
       void this.loadState()
     },
+  },
+  beforeUnmount() {
+    clearTimeout(this.dealerTimer)
   },
   methods: {
     cardLabel,
@@ -251,6 +348,7 @@ export default defineComponent({
         let folded: BlackjackGameState | undefined
         let atItem: BlackjackGameState | undefined
         let lastRaw: unknown
+        let lastMessage: (typeof messages)[number] | undefined
         let dealerError = ''
         for (const message of messages) {
           for (let index = 0; index < message.items.length; index++) {
@@ -285,6 +383,7 @@ export default defineComponent({
             const hydrated = await plugin.hydrate(raw, context)
             folded = plugin.reduceState(folded, hydrated, context)
             lastRaw = raw
+            lastMessage = message
             // The dealer's card for an accepted double supersedes an earlier assumed rejection.
             if (raw.action === 'double' && raw.playerCards) dealerError = ''
             if (raw === this.item) atItem = folded
@@ -295,6 +394,15 @@ export default defineComponent({
         this.liveState = folded ?? null
         this.isLatest = lastRaw === this.item
         this.dealerError = dealerError
+        const awaiting =
+          this.isLatest &&
+          lastMessage?.outbound === true &&
+          lastMessage.status !== 'pending' &&
+          lastMessage.status !== 'error'
+        this.unansweredAction = awaiting
+          ? (lastRaw as BlackjackMoveItem).action
+          : undefined
+        this.armDealerTimer(awaiting ? lastMessage?.serverTime ?? 0 : 0)
       } catch (err) {
         // A superseded load's failure is irrelevant: the newer load owns the display.
         if (seq === this.loadSeq) {
@@ -303,6 +411,30 @@ export default defineComponent({
       } finally {
         if (seq === this.loadSeq) this.loading = false
       }
+    },
+    // Flips `dealerSilent` once DEALER_ANSWER_TIMEOUT_MS has passed since the unanswered move was
+    // sent; a reply (or any state where nothing awaits the dealer) clears it again.
+    armDealerTimer(sentAt: number) {
+      clearTimeout(this.dealerTimer)
+      this.dealerTimer = undefined
+      if (!sentAt) {
+        this.dealerSilent = false
+        return
+      }
+      const remaining = sentAt + DEALER_ANSWER_TIMEOUT_MS - Date.now()
+      this.dealerSilent = remaining <= 0
+      if (remaining > 0) {
+        this.dealerTimer = setTimeout(() => {
+          this.dealerSilent = true
+        }, remaining)
+      }
+    },
+    onResend() {
+      const action = this.resendAction
+      if (!action || !this.resendConfirmed || this.sending) return
+      // One consent buys one resend.
+      this.resendConfirmed = false
+      void this.onAction(action)
     },
     focusBetInput() {
       const input = this.$refs.betInput as { focus?: () => void } | undefined
@@ -325,26 +457,8 @@ export default defineComponent({
             this.focusBetInput()
             return
           }
-          const wagerWei = parsed.wei
-          const wallet = await useActiveWallet()
-          const result = await activeChain.nativeTransfers.send({
-            wallet,
-            recipient: { raw: this.address },
-            value: wagerWei,
-          })
-          const gameId = `bj-${Date.now()}-${Math.random()
-            .toString(36)
-            .slice(2, 8)}`
-          this.$emit('sendFollowUp', {
-            items: [
-              {
-                type: 'blackjack-move',
-                gameId,
-                action: 'bet',
-                wagerTxHash: result.txHash,
-              },
-            ],
-          })
+          const betItem = await sendBlackjackWager(this.address, parsed.wei)
+          this.$emit('sendFollowUp', { items: [betItem] })
           return
         }
 

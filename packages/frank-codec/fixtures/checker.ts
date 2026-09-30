@@ -90,6 +90,15 @@ export function checkManifest(m: Manifest, readme: string): string[] {
         'route_byte_limit below the frame length without a resource expectation',
       )
     }
+    if (c.error_stage !== undefined) {
+      // (A manifest with an error_stage past the operation's last stage is invalid, README section 10.)
+      // The operation selects the final stage (README section 10): frame 4, generic 7, typed 9.
+      const last = { frame: 4, generic: 7, typed: 9, full: 10 }[v.operation]
+      if (Number(c.error_stage.split('.')[0]) > last)
+        at(
+          `error_stage ${c.error_stage} is past the last stage of ${v.operation}`,
+        )
+    }
     // Envelope type/version of the frame, when readable.
     let envType: number | undefined
     let envSchema: number | undefined

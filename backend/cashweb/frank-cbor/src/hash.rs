@@ -1,4 +1,4 @@
-//! Pure transcripts T1, T1a, T3, and T4 (README section 8). No signature is verified.
+//! Pure transcripts T1, T1a, T3, T4, and T7 (README section 8). No signature is verified.
 
 use sha2::{Digest, Sha256};
 
@@ -58,6 +58,9 @@ fn network_field(typed: &TypedPayload) -> Option<&str> {
         | TypedPayload::MailboxCheckpoint { network, .. }
         | TypedPayload::DirectoryStatement { network, .. }
         | TypedPayload::RecipientPayload { network, .. }
+        | TypedPayload::TopicPost { network, .. }
+        | TypedPayload::TopicPostSubmission { network, .. }
+        | TypedPayload::TopicVoteSubmission { network, .. }
         | TypedPayload::EncryptedContent { network, .. }
         | TypedPayload::KeyTransitionStatement { network, .. } => Some(network),
         _ => None,
@@ -89,7 +92,7 @@ pub fn content_hash_network(frame: &ParsedFrame) -> Result<String, UsageError> {
                 )),
             }
         }
-        1 | 3 | 4 | 5 | 6 | 7 => {
+        1 | 3 | 4 | 5 | 6 | 7 | 9 | 10 | 11 => {
             let typed = frame.typed.as_deref().ok_or_else(|| {
                 usage(format!(
                     "T1 for a type-{} frame needs the stage 8 typed projection",
@@ -135,4 +138,20 @@ pub fn payment_commitment(t3_digest: &[u8], child_index: u32) -> [u8; 32] {
     buf.extend_from_slice(t3_digest);
     buf.extend_from_slice(&child_index.to_be_bytes());
     sha256(&buf)
+}
+
+/// T7: `SHA256("frank:topic-vote:v1" || u16be(len(network)) || utf8(network) || target_hash)`.
+///
+/// `target_hash` is the T1 hash of the type-9 frame the burn pays for: a type-11
+/// frame's field 1, or the content hash of the frame opened by a type 10.
+pub fn topic_vote_commitment(
+    network: &str,
+    target_hash: &[u8; 32],
+) -> Result<[u8; 32], UsageError> {
+    let mut buf = Vec::with_capacity(19 + 2 + network.len() + 32);
+    buf.extend_from_slice(b"frank:topic-vote:v1");
+    buf.extend_from_slice(&u16_be(network.len())?);
+    buf.extend_from_slice(network.as_bytes());
+    buf.extend_from_slice(target_hash);
+    Ok(sha256(&buf))
 }

@@ -618,6 +618,133 @@ describe('MonadSubAccountPool', () => {
     })
   })
 
+  describe('prepareBurnAccount (ticket #273: one funded account per topic burn)', () => {
+    const FUNDING = {
+      gasLimit: 21_000n,
+      maxFeePerGas: 1n,
+      maxPriorityFeePerGas: 1n,
+      chainId: BigInt(CHAIN_ID),
+    }
+
+    function setupBurn() {
+      const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC)
+      const store = new InMemorySubAccountPoolStore()
+      const pool = new MonadSubAccountPool({ keyring, store })
+      pool.ensureUnfundedSize(3)
+      const balances = new Map<string, bigint>()
+      let mainNonce = 0
+      const httpClient = makeMockHttpClient()
+      httpClient.submitRawTransaction.mockImplementation(async rawTx => {
+        const tx = Transaction.from(rawTx)
+        balances.set(
+          tx.to!.toLowerCase(),
+          (balances.get(tx.to!.toLowerCase()) ?? 0n) + tx.value,
+        )
+        return tx.hash
+      })
+      httpClient.getTransactionReceipt.mockImplementation(async txHash => ({
+        txHash,
+        blockNumber: 1,
+        blockHash: '0x' + '00'.repeat(32),
+        status: 'success',
+        gasUsed: 21_000n,
+        effectiveGasPrice: 1n,
+        logs: [],
+      }))
+      const mainWallet = Wallet.createRandom()
+      balances.set(mainWallet.address.toLowerCase(), 1_000_000n)
+      const provider = makeStubProvider(async request => {
+        const address = (
+          (request as unknown as { address?: string }).address ?? ''
+        ).toLowerCase()
+        if (request.method === 'getTransactionCount') {
+          return address === mainWallet.address.toLowerCase() ? mainNonce++ : 0
+        }
+        if (request.method === 'getBalance') return balances.get(address) ?? 0n
+        throw new Error(`unexpected _perform: ${request.method}`)
+      })
+      const mainAccountSigner = new MonadAccountTxSigner({
+        privateKey: mainWallet.privateKey,
+        provider,
+        httpClient,
+      })
+      const prepare = (burnValueWei = 1_000n) =>
+        pool.prepareBurnAccount({
+          mainAccountSigner,
+          provider,
+          burnValueWei,
+          gasReserveWei: 10n,
+          fundingOverrides: FUNDING,
+          receipt: { maxAttempts: 0 },
+        })
+      return { balances, httpClient, pool, prepare, store, mainAccountSigner }
+    }
+
+    it('funds exactly one account with burn value + fee reserve and reports progress', async () => {
+      const { httpClient, pool, prepare } = setupBurn()
+      const result = await prepare()
+
+      expect(httpClient.submitRawTransaction).toHaveBeenCalledTimes(1)
+      expect(
+        Transaction.from(httpClient.submitRawTransaction.mock.calls[0][0])
+          .value,
+      ).toBe(1_010n)
+      expect(pool.getRecord(result.index)?.status).toBe('available')
+      expect(result.fundingTxHashes).toHaveLength(1)
+    })
+
+    it('a second preparation for the same burn reuses the funded account instead of funding another', async () => {
+      const { httpClient, prepare } = setupBurn()
+      const first = await prepare()
+      const second = await prepare()
+
+      expect(second.index).toBe(first.index)
+      expect(httpClient.submitRawTransaction).toHaveBeenCalledTimes(1)
+    })
+
+    it('does not burn from a larger account (direct-message inventory): it funds a right-sized one', async () => {
+      const { balances, httpClient, pool, prepare } = setupBurn()
+      // A 5/8-of-a-stamp DM account, already receipt-confirmed and available.
+      const big = pool.getRecord(0)!
+      pool.setStatus(big.index, 'available')
+      balances.set(big.address.toLowerCase(), 10_000n)
+
+      const result = await prepare(1_000n)
+
+      expect(result.index).not.toBe(big.index)
+      expect(httpClient.submitRawTransaction).toHaveBeenCalledTimes(1)
+      expect(pool.getRecord(big.index)?.status).toBe('available')
+    })
+
+    it('does not burn from an account that cannot cover the burn: it funds a new one', async () => {
+      const { balances, httpClient, pool, prepare } = setupBurn()
+      const small = pool.getRecord(0)!
+      pool.setStatus(small.index, 'available')
+      // 400 wei of capacity (410 balance - 10 reserve) cannot burn 1_000.
+      balances.set(small.address.toLowerCase(), 410n)
+
+      const result = await prepare(1_000n)
+
+      expect(result.index).not.toBe(small.index)
+      expect(httpClient.submitRawTransaction).toHaveBeenCalledTimes(1)
+    })
+
+    it('rejects an unaffordable burn before signing or moving anything', async () => {
+      const { httpClient, pool, prepare } = setupBurn()
+
+      await expect(prepare(5_000_000n)).rejects.toThrow(
+        /Insufficient main account balance/,
+      )
+      expect(httpClient.submitRawTransaction).not.toHaveBeenCalled()
+      expect(pool.records().every(r => r.status === 'unfunded')).toBe(true)
+    })
+
+    it('rejects a non-positive burn value', async () => {
+      const { prepare } = setupBurn()
+      await expect(prepare(0n)).rejects.toThrow(/burnValueWei must be positive/)
+    })
+  })
+
   describe('topUpPool (ticket #34: indefinite growth + look-ahead funding buffer)', () => {
     async function makeSigner(nonceStart = 0) {
       const httpClient = makeMockHttpClient()

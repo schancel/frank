@@ -269,6 +269,7 @@ export default defineComponent({
               name: profileInfo.name ?? '',
               bio: profileInfo.bio ?? '',
               avatar: profileInfo.avatar ?? '',
+              isBot: profileInfo.bot === true,
               pubKey: markRaw(PublicKey.fromBuffer(profileInfo.pubKey)),
             },
           },

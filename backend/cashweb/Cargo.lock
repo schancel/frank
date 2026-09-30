@@ -387,6 +387,7 @@ dependencies = [
  "cashweb-http-utils",
  "cashweb-payload",
  "cashweb-pop-token",
+ "frank-cbor",
  "futures",
  "hex",
  "hex-literal",

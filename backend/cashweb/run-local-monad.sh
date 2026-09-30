@@ -17,7 +17,8 @@ rpc_url="${MONAD_TESTNET_HTTP_RPC_URL:-}"
 # and chain ID (10143; mainnet is 143). This launcher only overrides those two keys when the
 # environment asks for something else. The RPC URL and network tag are never in the config: the
 # daemon reads MONAD_TESTNET_HTTP_RPC_URL and FRANK_NETWORK_TAG from its environment, and refuses
-# to start without them (an unset tag would make the relay reject every direct message).
+# to start without them (an unset tag would make the relay reject every direct message, and a tag other than MONT or
+# MON1 has no Frank-CBOR network mapping).
 min_value_wei="${CASHWEB_STAMP_MIN_BURN_VALUE_WEI:-1000000000000}"
 expected_chain_id="${MONAD_TESTNET_CHAIN_ID:-10143}"
 network_tag="${FRANK_NETWORK_TAG:-MONT}"
@@ -43,8 +44,9 @@ case "$rpc_url" in
 esac
 
 case "$network_tag" in
-    '' | *[![:alnum:]]*)
-        echo "run-local-monad: FRANK_NETWORK_TAG must be alphanumeric (MONT = Monad testnet, MON1 = mainnet)" >&2
+    MONT | MON1) ;;
+    *)
+        echo "run-local-monad: FRANK_NETWORK_TAG must be MONT (Monad testnet) or MON1 (Monad mainnet); the relay maps only these to a Frank-CBOR network and refuses to start otherwise" >&2
         exit 64
         ;;
 esac

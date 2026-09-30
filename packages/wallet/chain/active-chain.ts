@@ -200,7 +200,19 @@ export interface NativeTransferClient {
     wallet: WalletHandle
     recipient: ChainAddress
     value: bigint
+    /** Called with the transaction hash after signing and BEFORE any byte is broadcast. It is
+     * awaited; if it rejects, nothing is broadcast and `send` rejects with that error. Lets a
+     * caller persist "this hash may be paid" durably first, so a lost broadcast response or a
+     * killed app can never leave a paid transfer with no record. */
+    onSigned?: (signed: { txHash: string }) => Promise<void>
   }): Promise<{ txHash: string }>
+  /** What the node says about a transaction hash: mined ok (`confirmed`), mined but reverted
+   * (`failed`), known but not mined (`pending`), or not known to the node (`unknown`; only
+   * meaningful as "not paid" after enough time has passed and the caller says so). */
+  getTransactionStatus(params: {
+    wallet: WalletHandle
+    txHash: string
+  }): Promise<'confirmed' | 'failed' | 'pending' | 'unknown'>
 }
 
 export interface TopicBroadcastClient {

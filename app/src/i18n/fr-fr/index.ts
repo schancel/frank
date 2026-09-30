@@ -22,6 +22,73 @@ export default {
     emojiPickerTitle: 'Choisir un emoji',
     stampPrice: 'Prix du timbre',
   },
+  blackjackBet: {
+    menuLabel: 'Jouer au blackjack',
+    title: 'Commencer une main de blackjack',
+    amountLabel: 'Montant de la mise',
+    amountAria: 'Montant de la mise en MON',
+    limits: 'Limites de la table : {min} à {max} MON',
+    notice:
+      'Votre mise est un vrai transfert de MON vers {name} ({address}). À utiliser uniquement avec un croupier de blackjack.',
+    confirm:
+      'Je comprends que {amount} MON seront envoyés à {name} ({address})',
+    confirmRequired: 'Cochez la case pour confirmer le transfert.',
+    submit: 'Distribuez-moi avec {name} {address} ({amount} MON)',
+    sending: 'Envoi de votre mise…',
+    sent: 'Mise envoyée. En attente de la distribution.',
+    notDelivered:
+      'Mise payée, pari non livré : {message} Utilisez Réessayer dans la conversation pour renvoyer le pari.',
+    errorFormat: 'Saisissez la mise sous forme de nombre décimal simple',
+    errorInvalid: 'Saisissez un montant valide en MON',
+    errorZero: 'La mise doit être supérieure à zéro',
+    errorMin: 'La mise est inférieure au minimum de la table ({min} MON)',
+    errorMax: 'La mise dépasse le maximum de la table ({max} MON)',
+    errorBalanceUnknown:
+      "Votre solde n'est pas encore chargé. Réessayez dans un instant.",
+    errorBalance:
+      'Solde insuffisant : ce pari nécessite {needed} MON (la mise plus environ {rest} MON pour le timbre du message et les frais), vous avez {balance} MON.',
+    errorUnsent:
+      "Terminez la mise non envoyée dans la conversation avant d'en commencer une autre.",
+    errorFunds: 'Fonds insuffisants : {message}',
+    errorSend: 'Impossible de placer la mise : {message}',
+    unsentTitle: 'Mise payée, pari non livré',
+    unsentBody:
+      "Votre mise de {amount} MON vers {name} ({address}) a été payée, mais le message de pari n'est pas parvenu au croupier.",
+    unsentTx: 'Transaction : {hash}',
+    unsentRetry: "Réessayer d'envoyer le pari",
+    unsentRetrying: 'Envoi du pari…',
+    unsentFailed: 'Toujours pas livré : {message}',
+    confirming:
+      'En attente de la confirmation de votre paiement par le réseau…',
+    errorPaymentFailed:
+      "La transaction de paiement a échoué sur le réseau : aucune mise n'a été placée.",
+    paymentPending:
+      'Votre paiement est encore en cours de confirmation. Il est conservé dans la conversation ; utilisez Vérifier le paiement.',
+    paymentUnknown:
+      "Le réseau n'a pas encore vu votre paiement. Il peut encore arriver : il est conservé dans la conversation ; utilisez Vérifier le paiement. Ne supposez pas que rien n'a été payé.",
+    unsentSigned: 'Paiement non confirmé',
+    unsentSignedBody:
+      "Une mise de {amount} MON vers {name} ({address}) a été envoyée, mais le réseau ne l'a pas encore confirmée.",
+    unsentDealerSilent: 'En attente du croupier',
+    unsentDealerSilentBody:
+      "Votre pari de {amount} MON vers {name} ({address}) a été livré, mais le croupier n'a pas répondu.",
+    unsentDealerUnconfirmed:
+      "Le croupier n'a pas encore pu vérifier votre paiement",
+    checkPayment: 'Vérifier le paiement',
+    checking: 'Vérification auprès du réseau…',
+    paymentStillPending: 'Le paiement est toujours en attente sur le réseau.',
+    paymentNotFound:
+      "Le réseau ne connaît pas (encore) ce paiement. Si vous êtes certain qu'il n'a jamais été envoyé, vous pouvez supprimer cet enregistrement.",
+    paymentFailedRemoved:
+      "La transaction de paiement a échoué sur le réseau ; rien n'a été payé. L'enregistrement a été supprimé.",
+    dismiss: 'Supprimer cet enregistrement',
+    dismissWarning:
+      "Si cette mise a réellement été payée, supprimer l'enregistrement peut faire perdre l'argent. Ne le faites que si vous êtes sûr qu'elle n'a pas été payée ou a été remboursée.",
+    dismissConfirm: 'Oui, le supprimer',
+    dismissCancel: 'Le garder',
+    loadError:
+      'Les enregistrements de mises sauvegardés sont illisibles : {message}',
+  },
   leftDrawer: {
     settings: 'Paramètres',
     contacts: 'Contacts',

@@ -775,7 +775,12 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
       return monadWallet.provider.getBalance(monadWallet.identity.address.raw)
     },
 
-    async send({ wallet, recipient, value }): Promise<{ txHash: string }> {
+    async send({
+      wallet,
+      recipient,
+      value,
+      onSigned,
+    }): Promise<{ txHash: string }> {
       if (value <= 0n) {
         throw new Error('Transfer value must be greater than zero')
       }
@@ -786,7 +791,17 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
         httpClient: monadWallet.httpClient,
       })
       const signed = await signer.buildAndSignTransfer(recipient.raw, value)
+      // Awaited before any broadcast: a failure here aborts with nothing sent.
+      await onSigned?.({ txHash: signed.txHash })
       return { txHash: await signer.submit(signed) }
+    },
+
+    async getTransactionStatus({ wallet, txHash }) {
+      const monadWallet = asMonadWallet(wallet)
+      const receipt = await monadWallet.provider.getTransactionReceipt(txHash)
+      if (receipt) return receipt.status === 0 ? 'failed' : 'confirmed'
+      const known = await monadWallet.provider.getTransaction(txHash)
+      return known ? 'pending' : 'unknown'
     },
   }
 

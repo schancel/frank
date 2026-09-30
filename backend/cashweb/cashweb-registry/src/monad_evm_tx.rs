@@ -353,6 +353,25 @@ pub fn recover_sender(raw_tx: &[u8]) -> Result<Address, EvmTxError> {
     recover_sender_and_chain_id(raw_tx).map(|(sender, _)| sender)
 }
 
+/// Whether `raw_tx` is exactly one RLP transaction with nothing after it.
+///
+/// The signature recovery and field decoding read the leading RLP item and ignore bytes after it,
+/// but a node hashes the whole submission, so a transaction with trailing bytes has a different
+/// hash from [`decode_signed_transaction`]'s (keccak256 of every byte). A caller that binds a
+/// confirmation to the signed hash must reject such input before broadcasting.
+pub fn has_no_trailing_bytes(raw_tx: &[u8]) -> bool {
+    let rlp = match raw_tx.first() {
+        Some(&EIP1559_TYPE) => Rlp::new(&raw_tx[1..]),
+        Some(&first) if first >= 0xc0 => Rlp::new(raw_tx),
+        _ => return false,
+    };
+    let consumed = rlp
+        .payload_info()
+        .map(|info| info.header_len + info.value_len);
+    let offset = usize::from(raw_tx[0] == EIP1559_TYPE);
+    consumed.is_ok_and(|len| offset + len == raw_tx.len())
+}
+
 /// Decode and authenticate all fields the relay can validate before it broadcasts anything.
 pub fn decode_signed_transaction(raw_tx: &[u8]) -> Result<DecodedSignedTransaction, EvmTxError> {
     let (sender, chain_id) = recover_sender_and_chain_id(raw_tx)?;

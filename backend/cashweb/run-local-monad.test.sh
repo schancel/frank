@@ -214,7 +214,7 @@ if MONAD_TESTNET_HTTP_RPC_URL="$dummy_rpc_url" FRANK_FAKE_CHECK_FAIL=1 \
 fi
 [[ ! -e "$args_file" ]] || exit 1
 
-for invalid_env in "CASHWEB_STAMP_MIN_BURN_VALUE_WEI=1e12" "MONAD_TESTNET_CHAIN_ID=0x279f" "FRANK_NETWORK_TAG=MO NT"; do
+for invalid_env in "CASHWEB_STAMP_MIN_BURN_VALUE_WEI=1e12" "MONAD_TESTNET_CHAIN_ID=0x279f" "FRANK_NETWORK_TAG=MO NT" "FRANK_NETWORK_TAG=MONX" "FRANK_NETWORK_TAG=mont"; do
     if env "$invalid_env" MONAD_TESTNET_HTTP_RPC_URL="$dummy_rpc_url" \
         CARGO="$fixture_root/bin/fake-cargo" \
         "$launcher" >"$fixture_root/invalid-env.out" 2>"$fixture_root/invalid-env.err"; then

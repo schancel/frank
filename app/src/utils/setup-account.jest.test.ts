@@ -180,4 +180,39 @@ describe('recovery phrase confirmation challenge', () => {
     commitValidatedSetupSeed(VALID_MNEMONIC, persistSeed)
     expect(persistSeed).toHaveBeenLastCalledWith(VALID_MNEMONIC, null)
   })
+
+  it('the default path never consults Math.random', () => {
+    const random = jest.spyOn(Math, 'random')
+    try {
+      pickConfirmationPositions(12)
+      ensureConfirmationChallenge(null, VALID_MNEMONIC)
+      expect(random).not.toHaveBeenCalled()
+    } finally {
+      random.mockRestore()
+    }
+  })
+
+  it('challenge creation fails closed (throws) without a CSPRNG and does not use Math.random', () => {
+    const original = Object.getOwnPropertyDescriptor(globalThis, 'crypto')
+    Object.defineProperty(globalThis, 'crypto', {
+      value: undefined,
+      configurable: true,
+    })
+    const random = jest.spyOn(Math, 'random')
+    try {
+      expect(() => ensureConfirmationChallenge(null, VALID_MNEMONIC)).toThrow()
+      expect(random).not.toHaveBeenCalled()
+    } finally {
+      random.mockRestore()
+      if (original) Object.defineProperty(globalThis, 'crypto', original)
+    }
+  })
+
+  it('a challenge for a previous phrase is never reused for another', () => {
+    const a = ensureConfirmationChallenge(null, VALID_MNEMONIC)
+    const b = ensureConfirmationChallenge(a, seed)
+    expect(b.seed).toBe(seed)
+    expect(b).not.toBe(a)
+    expect(ensureConfirmationChallenge(b, seed)).toBe(b)
+  })
 })

@@ -113,6 +113,8 @@ export default {
       'Une phrase de récupération est déjà enregistrée sur cet appareil, mais ce compte n’a pas encore de nom. Votre phrase ne sera pas modifiée. Confirmez-la et choisissez un nom pour terminer.',
   },
   seedConfirm: {
+    unavailable:
+      'La confirmation est indisponible car cet appareil n’a pas de générateur de nombres aléatoires sécurisé. Revenez en arrière et réessayez, ou utilisez un autre navigateur.',
     stepTitle: 'Confirmer la phrase',
     title: 'Confirmez votre phrase de récupération',
     instructions:

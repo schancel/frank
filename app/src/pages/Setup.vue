@@ -47,8 +47,16 @@
             icon="fact_check"
             :done="step > 3"
           >
+            <div
+              v-if="challengeError"
+              role="alert"
+              class="text-negative"
+              data-test="challenge-error"
+            >
+              {{ $t('seedConfirm.unavailable') }}
+            </div>
             <seed-confirm-step
-              v-if="challenge"
+              v-else-if="challenge"
               :seed="challenge.seed"
               :positions="challenge.positions"
               :confirmed="isSeedConfirmed"
@@ -197,6 +205,7 @@ export default defineComponent({
       // The (normalized) phrase the user has proven they hold. Never persisted by itself: the
       // durable seedConfirmedAt marker is written only together with the seed at commit.
       confirmedSeed: null as string | null,
+      challengeError: false,
       relayData: defaultRelayData,
       relayUrl: defaultRelayUrl,
       avatar: '',
@@ -218,10 +227,18 @@ export default defineComponent({
   },
   methods: {
     prepareChallenge() {
-      this.challenge = ensureConfirmationChallenge(
-        this.challenge,
-        this.accountData.seed,
-      )
+      try {
+        this.challenge = ensureConfirmationChallenge(
+          this.challenge,
+          this.accountData.seed,
+        )
+        this.challengeError = false
+      } catch {
+        // No secure random source: never fall back to a weaker one. Show a message instead of an
+        // empty step; Back still works and re-entering the step tries again.
+        this.challenge = null
+        this.challengeError = true
+      }
     },
     onSeedConfirmed() {
       if (this.challenge) this.confirmedSeed = this.challenge.seed
@@ -575,13 +592,18 @@ export default defineComponent({
           // with the relay -- this is a pragmatic bridge to a working signup, not the real Monad-
           // native onboarding UI #47 still wants designed (no seed-backup reminder screen, no
           // display name wired to a Monad profile yet, "Deposit" step now unreachable dead UI).
+          // Only an explicit, valid New or Import choice may proceed. In the initial (no choice
+          // yet) state accountData.valid is false, so the never-shown generated draft can
+          // neither be committed nor stamped as confirmed.
+          if (!this.accountData.valid) break
           if (this.isNewAccount) {
             // New Account: the phrase is NOT committed here. The user must first confirm it
             // on the next step.
             this.step = 3
             break
           }
-          // Import: the user already holds this phrase, so it counts as confirmed.
+          // Import (explicit: valid and nameRequired === false): the user already holds this
+          // phrase, so it counts as confirmed.
           await this.completeAccountStep(Date.now())
           break
         case 3:

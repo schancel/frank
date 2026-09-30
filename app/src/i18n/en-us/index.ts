@@ -108,6 +108,8 @@ export default {
       'A recovery phrase is already stored on this device, but this account has no name yet. Your phrase will not be changed. Confirm it and choose a name to finish.',
   },
   seedConfirm: {
+    unavailable:
+      'Confirmation is unavailable because this device has no secure random number generator. Go back and try again, or use another browser.',
     stepTitle: 'Confirm phrase',
     title: 'Confirm your recovery phrase',
     instructions:

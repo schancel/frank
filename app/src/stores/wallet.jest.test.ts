@@ -46,6 +46,21 @@ describe('wallet seed confirmation marker', () => {
     expect(w.seedConfirmedAt).toBeNull()
   })
 
+  it('a marker never comes back for a phrase it was not confirmed against', () => {
+    const w = useWalletStore()
+    w.setSeedPhrase(SEED, 42)
+    w.setSeedPhrase(OTHER)
+    w.setSeedPhrase(SEED)
+    expect(w.seedConfirmedAt).toBeNull()
+  })
+
+  it('an explicit marker for a new phrase replaces the old one', () => {
+    const w = useWalletStore()
+    w.setSeedPhrase(SEED, 42)
+    w.setSeedPhrase(OTHER, 99)
+    expect(w.seedConfirmedAt).toBe(99)
+  })
+
   it('persists the marker with the seed and restores it', async () => {
     const data: Record<string, string> = {}
     const storage = {

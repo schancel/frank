@@ -150,6 +150,7 @@ describe('Setup page mounted (#267)', () => {
     vm.step = 2
     vm.accountData.name = 'Alice'
     vm.accountData.nameRequired = true
+    ;(vm.accountData as { valid?: boolean }).valid = true
     vm.persistSetupAndReload = jest.fn(() => Promise.resolve())
     vm.avatar = 'data:avatar'
     await nextTick()
@@ -245,6 +246,92 @@ describe('Setup page mounted (#267)', () => {
     expect(vm.challenge?.seed).toBe(STORED)
   })
 
+  it('no choice made yet: next() at step 2 commits nothing and stamps no marker', async () => {
+    const { wallet, setSeed, wrapper } = await mountSetup()
+    const vm = wrapper.vm as unknown as Vm
+    vm.step = 2
+    vm.persistSetupAndReload = jest.fn(() => Promise.resolve())
+    vm.avatar = 'data:avatar'
+    // Initial state: neither New nor Import chosen (valid false, nameRequired false).
+    await vm.next()
+
+    expect(vm.step).toBe(2)
+    expect(commitValidatedSetupSeed).not.toHaveBeenCalled()
+    expect(setSeed).not.toHaveBeenCalled()
+    expect(wallet.seedPhrase).toBeNull()
+    expect(wallet.seedConfirmedAt).toBeNull()
+    expect(vm.persistSetupAndReload).not.toHaveBeenCalled()
+  })
+
+  it('an invalid import cannot be committed or stamped', async () => {
+    const { wallet, setSeed, wrapper } = await mountSetup()
+    const vm = wrapper.vm as unknown as Vm
+    vm.step = 2
+    vm.accountData = {
+      seed: 'not a phrase',
+      name: '',
+      nameRequired: false,
+      valid: false,
+    } as typeof vm.accountData
+    await vm.next()
+    expect(setSeed).not.toHaveBeenCalled()
+    expect(wallet.seedConfirmedAt).toBeNull()
+  })
+
+  it('the confirmation matches the phrase only after normalization, never a different phrase', async () => {
+    const { vm } = await newAccountVm()
+    await vm.next()
+    await nextTick()
+    vm.onSeedConfirmed()
+    expect(vm.isSeedConfirmed).toBe(true)
+    vm.accountData.seed = `  ${vm.accountData.seed.toUpperCase()} `
+    expect(vm.isSeedConfirmed).toBe(true)
+    vm.accountData.seed = STORED
+    expect(vm.isSeedConfirmed).toBe(false)
+    // A phrase change followed by a fresh challenge does not inherit the old confirmation.
+    vm.step = 2
+    await nextTick()
+    vm.step = 3
+    await nextTick()
+    expect(vm.challenge?.seed).toBe(STORED)
+    expect(vm.isSeedConfirmed).toBe(false)
+  })
+
+  it('with no secure RNG, step 3 shows an accessible error, commits nothing, and Back still works', async () => {
+    const original = Object.getOwnPropertyDescriptor(globalThis, 'crypto')
+    const { wallet, setSeed, wrapper, vm } = await newAccountVm()
+    Object.defineProperty(globalThis, 'crypto', {
+      value: undefined,
+      configurable: true,
+    })
+    try {
+      await vm.next()
+      await nextTick()
+      expect(vm.step).toBe(3)
+      const v = vm as unknown as {
+        challengeError: boolean
+        challenge: unknown
+      }
+      expect(v.challengeError).toBe(true)
+      expect(v.challenge).toBeNull()
+      await vm.next()
+      expect(setSeed).not.toHaveBeenCalled()
+      expect(wallet.seedPhrase).toBeNull()
+
+      // Back works, and the step retries once a secure RNG exists again.
+      vm.step = 2
+      await nextTick()
+      if (original) Object.defineProperty(globalThis, 'crypto', original)
+      vm.step = 3
+      await nextTick()
+      expect(v.challengeError).toBe(false)
+      expect(v.challenge).not.toBeNull()
+      void wrapper
+    } finally {
+      if (original) Object.defineProperty(globalThis, 'crypto', original)
+    }
+  })
+
   it('import replaces the draft: the imported phrase is what is stored', async () => {
     const { wallet, setSeed, wrapper } = await mountSetup()
     const vm = wrapper.vm as unknown as {
@@ -254,7 +341,12 @@ describe('Setup page mounted (#267)', () => {
       avatar: string
     }
     vm.step = 2
-    vm.accountData = { seed: STORED, name: '', nameRequired: false }
+    vm.accountData = {
+      seed: STORED,
+      name: '',
+      nameRequired: false,
+      valid: true,
+    } as typeof vm.accountData
     vm.avatar = 'data:avatar'
     ;(
       vm as unknown as { persistSetupAndReload: unknown }

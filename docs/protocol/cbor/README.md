@@ -811,16 +811,22 @@ is held by the sender, the relay and the recipient but never appears on chain.
 The realistic adversary is therefore a compromised or logging relay combined
 with a wallet-side key leak. To keep that combination unlikely:
 
-- A relay SHOULD discard `X` once the stamp payments of the frame have settled
-  or the message has expired. This retention rule applies to `X`, not to `E`:
-  `E` is public and stays in the message, and the recipient (any device holding
-  the seed) re-derives `X = d'*E` on demand, so restoring a second device from
-  the seed and the mailbox messages needs no stored `X`. The relay keeps `E` and
-  the proof and cannot re-derive `X` without `d'`.
+- `X` is required field 7 of the type-5 frame, so a relay holds it inside the
+  stored frame bytes, and a stored frame MUST NOT be edited (the digests and
+  the proof cover `X`). A relay SHOULD therefore delete the entire stored frame,
+  and any derived index or cache that holds `X`, once the stamp payments of the
+  frame have settled or the message has expired. This is a retention limit on
+  the whole record; it does not permit stripping `X` from a frame that is
+  kept. The rule is about `X`; `E` is public and the recipient (any device
+  holding the seed) re-derives `X = d'*E` on demand, so restoring a second
+  device from the seed and its mailbox messages needs no separately stored `X`.
 - A wallet SHOULD NOT persist child private keys. It SHOULD derive `t_i*d'` just
   in time from the seed, sign with deterministic nonces, wipe the value, and
   SHOULD sweep confirmed stamp outputs promptly.
-- A wallet SHOULD NOT retain `X` longer than its payment journal needs.
+- `X` sits in the mailbox message and in the wallet's payment journal or
+  caches. The wallet SHOULD NOT keep `X` in the journal or any cache longer than
+  the payment journal needs; this concerns those copies and never permits
+  modifying a frame.
 
 Considered and not adopted: hash-chain tweaks (whoever holds the frame can
 derive every `t_i` anyway); using the identity key as the scan key with `P'`

@@ -84,6 +84,9 @@ set -euo pipefail
 if [[ "${1:-}" == "--check-config" ]]; then
     [[ "${2:-}" == "-" ]]
     config="$(cat)"
+    # Record that the launcher itself ran the pre-flight check, and let a test make it fail.
+    [[ -z "${FRANK_LAUNCHER_CHECK_LOG:-}" ]] || echo "check-config" >>"$FRANK_LAUNCHER_CHECK_LOG"
+    [[ "${FRANK_FAKE_CHECK_FAIL:-}" != "1" ]] || exit 1
     grep -q '^\[registry\.monad_mailbox\]$' <<<"$config"
     grep -q '^enabled = true$' <<<"$config"
     # The complete generated document goes through the real production parser, with the same
@@ -149,10 +152,13 @@ fi
         CARGO="$fixture_root/bin/fake-cargo" \
         FRANK_LAUNCHER_ARGS="$args_file" \
         FRANK_LAUNCHER_CONFIG="$config_file" \
+        FRANK_LAUNCHER_CHECK_LOG="$fixture_root/check.log" \
         "$launcher" 2>"$fixture_root/effective.err"
 )
 
 diff -u <(printf '%s\n' -) "$args_file"
+# The launcher must run `--check-config` itself, before starting the daemon.
+[[ "$(cat "$fixture_root/check.log")" == "check-config" ]] || exit 1
 [[ "$(grep -c '^\[registry\.monad_mailbox\]$' "$config_file")" -eq 1 ]] || exit 1
 [[ "$(grep -c '^enabled = true$' "$config_file")" -eq 1 ]] || exit 1
 # The endpoint is secret-bearing: it reaches the daemon only through its environment, never the
@@ -195,6 +201,18 @@ grep -Fq 'FRANK_NETWORK_TAG' "$fixture_root/notag.err" || exit 1
 MONAD_TESTNET_HTTP_RPC_URL="$dummy_rpc_url" FRANK_NETWORK_TAG=MONT \
     "$FRANK_REAL_CASHWEBD" --check-config - <"$config_file"
 [[ -z "$(find "$fixture_root/tmp" -type f -print -quit)" ]] || exit 1
+
+# A failing pre-flight check must stop the launcher before the daemon is ever started.
+rm -f -- "$args_file" "$config_file"
+if MONAD_TESTNET_HTTP_RPC_URL="$dummy_rpc_url" FRANK_FAKE_CHECK_FAIL=1 \
+    CARGO="$fixture_root/bin/fake-cargo" \
+    FRANK_LAUNCHER_ARGS="$args_file" \
+    FRANK_LAUNCHER_CONFIG="$config_file" \
+    "$launcher" >/dev/null 2>&1; then
+    echo "launcher ignored a failing --check-config" >&2
+    exit 1
+fi
+[[ ! -e "$args_file" ]] || exit 1
 
 for invalid_env in "CASHWEB_STAMP_MIN_BURN_VALUE_WEI=1e12" "MONAD_TESTNET_CHAIN_ID=0x279f" "FRANK_NETWORK_TAG=MO NT"; do
     if env "$invalid_env" MONAD_TESTNET_HTTP_RPC_URL="$dummy_rpc_url" \

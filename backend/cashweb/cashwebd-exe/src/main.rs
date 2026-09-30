@@ -14,6 +14,7 @@ use cashweb_registry::{
     monad_outbox::{
         start_monad_outbox_worker_shared, MonadOutboxReconcileConfig, MonadOutboxWorker,
     },
+    network_tag::is_valid_network_tag,
     p2p::{
         peer::Peer,
         peers::{InitialMetadataDownloadParams, Peers},
@@ -53,8 +54,9 @@ pub enum CashwebdExeError {
     InvalidRpcUrlEnv,
 
     #[error(
-        "The Monad mailbox is enabled but FRANK_NETWORK_TAG is not set: the relay would reject \
-         every direct message. Set it to MONT (Monad testnet) or MON1 (Monad mainnet)"
+        "The Monad mailbox is enabled but FRANK_NETWORK_TAG is unset or invalid (1 to 32 bytes, no \
+         surrounding whitespace): the relay would reject every direct message. Set it to MONT \
+         (Monad testnet) or MON1 (Monad mainnet)"
     )]
     MissingNetworkTagEnv,
 }
@@ -116,7 +118,7 @@ fn read_and_validate_conf_with_env(
     // An enabled mailbox admits only envelopes carrying the relay's network tag; an unset tag would
     // silently reject every direct message, so refuse to start instead.
     if matches!(mailbox_mode, MonadMailboxMode::Enabled { .. })
-        && env(NETWORK_TAG_ENV).is_none_or(|tag| tag.is_empty())
+        && !env(NETWORK_TAG_ENV).is_some_and(|tag| is_valid_network_tag(&tag))
     {
         return Err(MissingNetworkTagEnv.into());
     }
@@ -383,7 +385,8 @@ mod tests {
 
     #[test]
     fn enabled_mailbox_fails_fast_without_rpc_url_or_network_tag() {
-        let cases: [(&str, &[(&str, &str)], &str); 5] = [
+        type Case<'a> = (&'a str, &'a [(&'a str, &'a str)], &'a str);
+        let cases: [Case; 7] = [
             (
                 "no rpc",
                 &[("FRANK_NETWORK_TAG", "MONT")],
@@ -408,6 +411,22 @@ mod tests {
             (
                 "no tag",
                 &[("MONAD_TESTNET_HTTP_RPC_URL", "http://127.0.0.1:1")],
+                "FRANK_NETWORK_TAG",
+            ),
+            (
+                "blank tag",
+                &[
+                    ("MONAD_TESTNET_HTTP_RPC_URL", "http://127.0.0.1:1"),
+                    ("FRANK_NETWORK_TAG", " "),
+                ],
+                "FRANK_NETWORK_TAG",
+            ),
+            (
+                "overlong tag",
+                &[
+                    ("MONAD_TESTNET_HTTP_RPC_URL", "http://127.0.0.1:1"),
+                    ("FRANK_NETWORK_TAG", "0123456789012345678901234567890123"),
+                ],
                 "FRANK_NETWORK_TAG",
             ),
             (

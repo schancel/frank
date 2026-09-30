@@ -82,6 +82,18 @@ fn shipped_configurations_are_enabled_and_need_the_rpc_url_and_network_tag() {
             "{name}: {}",
             String::from_utf8_lossy(&missing_url.stderr)
         );
+        let blank_tag = check_stdin_with_env(
+            config,
+            &[
+                ("MONAD_TESTNET_HTTP_RPC_URL", "http://127.0.0.1:1"),
+                ("FRANK_NETWORK_TAG", " "),
+            ],
+        );
+        assert!(!blank_tag.status.success(), "{name}: blank tag accepted");
+        assert!(
+            String::from_utf8_lossy(&blank_tag.stderr).contains("FRANK_NETWORK_TAG"),
+            "{name}"
+        );
         let missing_tag = check_stdin_with_env(
             config,
             &[("MONAD_TESTNET_HTTP_RPC_URL", "http://127.0.0.1:1")],

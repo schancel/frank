@@ -41,14 +41,13 @@
 //! mailbox runtime (`crate::monad_mailbox::MonadMailboxRuntime`), which admits only envelopes
 //! carrying that tag; the topic routes read it directly.
 //!
-//! Deliberately **optional** (unlike the burn-verification gate configs, which fail every request
-//! closed when misconfigured, since an unverified stamp must never be silently accepted): an unset
-//! `FRANK_NETWORK_TAG` simply means newly-stored records get an empty tag -- indistinguishable
-//! from records stored before this ticket shipped, which the acceptance criteria already require
-//! to decode fine. This is metadata for client-side mismatch detection, not a correctness gate, so
-//! failing every `PUT` closed just because an operator hasn't set this yet would be a worse
-//! default than "starts out untagged." (Judgment call -- the issue doesn't specify required vs.
-//! optional; see this ticket's handoff for the full reasoning.)
+//! **Required when the durable Monad mailbox is enabled** (the shipped default): the relay admits
+//! only envelopes whose `networkTag` equals this value, so an unset or invalid tag would reject
+//! every direct message. `cashwebd-exe` therefore refuses to start (and `--check-config` fails)
+//! unless [`is_valid_network_tag`] accepts it. With the mailbox disabled the variable stays
+//! optional: an unset value only means newly-stored topic records get an empty tag, the same as
+//! records stored before ticket #39, which must keep decoding. Topic routes are unaffected by
+//! the startup check.
 
 use std::sync::OnceLock;
 
@@ -58,10 +57,21 @@ pub const MONAD_TESTNET_NETWORK_TAG: &[u8; 4] = b"MONT";
 /// Monad mainnet (see `.env.example`'s `MONAD_MAINNET_HTTP_RPC_URL`).
 pub const MONAD_MAINNET_NETWORK_TAG: &[u8; 4] = b"MON1";
 
+/// Longest network tag, in UTF-8 bytes, that an envelope's `networkTag` may carry. Shared by the
+/// relay's envelope validation and the startup check so the two cannot drift.
+pub const MAX_NETWORK_TAG_BYTES: usize = 32;
+
+/// Whether `tag` is a usable network tag: 1..=[`MAX_NETWORK_TAG_BYTES`] bytes (the relay's shape
+/// rule for an envelope's `networkTag`) with no surrounding or blank whitespace, which no client
+/// would ever send and so would make the relay reject every direct message.
+pub fn is_valid_network_tag(tag: &str) -> bool {
+    !tag.is_empty() && tag.len() <= MAX_NETWORK_TAG_BYTES && tag.trim() == tag
+}
+
 /// Parse a raw `FRANK_NETWORK_TAG` env var value into the bytes stamped onto stored records: its
 /// literal UTF-8 encoding, since the wire field is `bytes` (not `string`) and this repo's tag
 /// constants are plain ASCII. `None` (unset) yields empty bytes -- see this module's docs for why
-/// that's a deliberate fail-open default rather than a misconfiguration error. Kept as a pure
+/// that is the fail-open default for topic records; an enabled mailbox is stricter (see the module docs and [`is_valid_network_tag`]). Kept as a pure
 /// function, separate from [`frank_network_tag`]'s process-wide caching, so it's directly
 /// unit-testable without touching real process environment state.
 fn parse_network_tag(raw: Option<String>) -> Vec<u8> {
@@ -80,6 +90,18 @@ pub fn frank_network_tag() -> &'static [u8] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn validity_matches_the_relay_shape_rule_and_rejects_blank_tags() {
+        assert!(is_valid_network_tag("MONT"));
+        assert!(is_valid_network_tag(&"x".repeat(MAX_NETWORK_TAG_BYTES)));
+        assert!(!is_valid_network_tag(
+            &"x".repeat(MAX_NETWORK_TAG_BYTES + 1)
+        ));
+        for bad in ["", " ", "\t", " MONT", "MONT ", "MONT\n"] {
+            assert!(!is_valid_network_tag(bad), "{bad:?}");
+        }
+    }
 
     #[test]
     fn empty_when_unset() {

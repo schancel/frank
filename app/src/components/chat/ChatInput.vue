@@ -198,6 +198,12 @@ export default defineComponent({
   methods: {
     // ChatInput drop/paste handler
     async dp(e: ClipboardEvent | DragEvent) {
+      // The text box stays editable during a send (#396), so the attachment path must be gated
+      // here: no file dialog while a send is in flight. (A drop's default, navigating to the
+      // file, is still prevented by the template's `.prevent`.)
+      if (this.disable) {
+        return
+      }
       const items =
         'clipboardData' in e ? e.clipboardData?.items : e.dataTransfer?.items
       if (!items) {

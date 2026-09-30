@@ -1,6 +1,8 @@
 /** @jest-environment jsdom */
 
-// Ticket #396: the FIRST character typed into the compose box was lost (Safari, macOS). Real
+// Ticket #396: the FIRST character typed into the compose box was lost (Safari, macOS).
+// Chromium reproduces the underlying loss (disabled textarea during a send); the Safari-specific
+// mechanism is reasoned, not observed. Real
 // Quasar components (QInput/QBtn/...) in an attached DOM, driving the focus/disable sequence the
 // browser produces. `import 'quasar'` resolves to the SSR build under this Jest config, so the UMD
 // build is loaded directly (same approach as MainLayout.quasar.jest.test.ts).
@@ -9,6 +11,7 @@ import { flushPromises, mount, VueWrapper } from '@vue/test-utils'
 import { defineComponent, h, nextTick, ref } from 'vue'
 
 import ChatInput from './ChatInput.vue'
+import { processInput } from '../../utils/chat'
 import enUS from '../../i18n/en-us'
 
 jest.mock('@frank/wallet/chain', () => ({
@@ -46,6 +49,7 @@ function loadQuasar() {
 }
 
 const mounted: VueWrapper[] = []
+beforeEach(() => jest.clearAllMocks())
 afterEach(() => {
   while (mounted.length) mounted.pop()?.unmount()
   document.body.innerHTML = ''
@@ -204,6 +208,54 @@ describe('ChatInput compose box focus and first character (#396)', () => {
     expect(w.emitted('sendMessage')).toEqual([['pending text']])
   })
 
+  it('ignores paste and drop of a file while a send is in flight, handles them otherwise', async () => {
+    ;(processInput as jest.Mock).mockResolvedValue({ blob: true })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const w = mount(ChatInput, {
+      attachTo: host,
+      props: { disable: true },
+      global: { plugins: [loadQuasar()], mocks: { $t: translate } },
+    })
+    mounted.push(w as unknown as VueWrapper)
+    const box = w.element.querySelector('textarea') as HTMLTextAreaElement
+    const fire = (type: 'paste' | 'drop') => {
+      const ev = new Event(type, { bubbles: true, cancelable: true })
+      const data = { items: [{ kind: 'file' }] }
+      Object.defineProperty(
+        ev,
+        type === 'paste' ? 'clipboardData' : 'dataTransfer',
+        { value: data },
+      )
+      box.dispatchEvent(ev)
+      return ev
+    }
+    const dropped = fire('drop')
+    fire('paste')
+    await flushPromises()
+    expect(processInput).not.toHaveBeenCalled()
+    expect(w.emitted('sendFileClicked')).toBeUndefined()
+    expect(dropped.defaultPrevented).toBe(true) // the browser must not navigate to the file
+    await w.setProps({ disable: false })
+    fire('paste')
+    await flushPromises()
+    expect(w.emitted('sendFileClicked')).toEqual([[{ blob: true }]])
+  })
+
+  it('keeps the attach and stamp buttons disabled during a send', () => {
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const w = mount(ChatInput, {
+      attachTo: host,
+      props: { disable: true },
+      global: { plugins: [loadQuasar()], mocks: { $t: translate } },
+    })
+    mounted.push(w as unknown as VueWrapper)
+    const buttons = Array.from(w.element.querySelectorAll('button'))
+    expect(buttons.length).toBeGreaterThanOrEqual(3)
+    expect(buttons.every(b => b.disabled)).toBe(true)
+  })
+
   it('Shift+Enter does not send', async () => {
     const c = mountCompose()
     c.box().focus()
@@ -273,7 +325,7 @@ describe('ChatInput compose box focus and first character (#396)', () => {
     expect(focusCalls).toEqual([button])
   })
 
-  it('does not pull focus back when a blur has no relatedTarget (Safari clicking a button)', async () => {
+  it('does not pull focus back when a blur has no relatedTarget (as Safari reports for a button click)', async () => {
     const c = mountCompose()
     const other = document.createElement('div')
     other.tabIndex = 0

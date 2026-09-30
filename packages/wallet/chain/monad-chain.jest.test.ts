@@ -330,6 +330,71 @@ describe('createMonadChain: nativeTransfers', () => {
     expect(submit).toHaveBeenCalledWith(signed)
   })
 
+  it('awaits onSigned with the hash BEFORE broadcasting, and a failing onSigned broadcasts nothing', async () => {
+    const chain = createMonadChain(TEST_CONFIG)
+    const identity = MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX)
+    const wallet = makeWallet(identity)
+    const order: string[] = []
+    const buildAndSignTransfer = jest
+      .fn()
+      .mockResolvedValue({ txHash: '0xsigned' })
+    const submit = jest.fn(async () => {
+      order.push('submit')
+      return '0xsigned'
+    })
+    ;(MonadAccountTxSigner as jest.Mock).mockImplementation(() => ({
+      buildAndSignTransfer,
+      submit,
+    }))
+    await chain.nativeTransfers.send({
+      wallet,
+      recipient: identity.address,
+      value: 1n,
+      onSigned: async ({ txHash }) => {
+        await Promise.resolve()
+        order.push(`signed:${txHash}`)
+      },
+    })
+    expect(order).toEqual(['signed:0xsigned', 'submit'])
+
+    submit.mockClear()
+    await expect(
+      chain.nativeTransfers.send({
+        wallet,
+        recipient: identity.address,
+        value: 1n,
+        onSigned: async () => {
+          throw new Error('disk full')
+        },
+      }),
+    ).rejects.toThrow('disk full')
+    expect(submit).not.toHaveBeenCalled()
+  })
+
+  it('reports a transaction hash as confirmed / failed / pending / unknown from the node', async () => {
+    const chain = createMonadChain(TEST_CONFIG)
+    const wallet = makeWallet(
+      MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX),
+    )
+    const getTransactionReceipt = jest.fn()
+    const getTransaction = jest.fn()
+    wallet.provider = {
+      getTransactionReceipt,
+      getTransaction,
+    } as unknown as MonadChainWalletHandle['provider']
+    const status = () =>
+      chain.nativeTransfers.getTransactionStatus({ wallet, txHash: '0xh' })
+    getTransactionReceipt.mockResolvedValue({ status: 1 })
+    await expect(status()).resolves.toBe('confirmed')
+    getTransactionReceipt.mockResolvedValue({ status: 0 })
+    await expect(status()).resolves.toBe('failed')
+    getTransactionReceipt.mockResolvedValue(null)
+    getTransaction.mockResolvedValue({ hash: '0xh' })
+    await expect(status()).resolves.toBe('pending')
+    getTransaction.mockResolvedValue(null)
+    await expect(status()).resolves.toBe('unknown')
+  })
+
   it('rejects zero-value transfers before constructing a signer', async () => {
     const chain = createMonadChain(TEST_CONFIG)
     const identity = MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX)

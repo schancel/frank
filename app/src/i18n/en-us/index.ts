@@ -22,6 +22,69 @@ export default {
     emojiPickerTitle: 'Select an emoji',
     stampPrice: 'Stamp Price',
   },
+  blackjackBet: {
+    menuLabel: 'Play blackjack',
+    title: 'Start a blackjack hand',
+    amountLabel: 'Bet amount',
+    amountAria: 'Bet amount in MON',
+    limits: 'Table limits: {min} to {max} MON',
+    notice:
+      'Your bet is a real transfer of MON to {name} ({address}). Only use it with a blackjack dealer.',
+    confirm: 'I understand {amount} MON will be sent to {name} ({address})',
+    confirmRequired: 'Tick the box to confirm the transfer.',
+    submit: 'Deal me in with {name} {address} ({amount} MON)',
+    sending: 'Sending your bet…',
+    sent: 'Bet sent. Waiting for the dealer to deal.',
+    notDelivered:
+      'Wager paid, bet not delivered: {message} Use Retry in the chat to send the bet again.',
+    errorFormat: 'Enter a bet as a plain decimal number',
+    errorInvalid: 'Enter a valid MON amount to bet',
+    errorZero: 'Bet must be greater than zero',
+    errorMin: 'Bet is below the table minimum ({min} MON)',
+    errorMax: 'Bet is above the table maximum ({max} MON)',
+    errorBalanceUnknown:
+      'Your balance is not loaded yet. Try again in a moment.',
+    errorBalance:
+      'Not enough balance: this bet needs {needed} MON (bet plus about {rest} MON for the message stamp and fees), you have {balance} MON.',
+    errorUnsent:
+      'Finish the unsent wager in the chat before starting a new bet.',
+    errorFunds: 'Insufficient funds: {message}',
+    errorSend: 'Could not place the bet: {message}',
+    unsentTitle: 'Wager paid, bet not delivered',
+    unsentBody:
+      'Your {amount} MON wager to {name} ({address}) was paid, but the bet message did not reach the dealer.',
+    unsentTx: 'Transaction: {hash}',
+    unsentRetry: 'Retry sending the bet',
+    unsentRetrying: 'Sending the bet…',
+    unsentFailed: 'Still not delivered: {message}',
+    confirming: 'Waiting for your payment to be confirmed on the network…',
+    errorPaymentFailed:
+      'The payment transaction failed on the network, so no wager was placed.',
+    paymentPending:
+      'Your payment is still confirming. It is saved in the chat; use Check payment there.',
+    paymentUnknown:
+      'The network has not shown your payment yet. It may still arrive, so it is saved in the chat; use Check payment there. Do not assume nothing was paid.',
+    unsentSigned: 'Payment not confirmed',
+    unsentSignedBody:
+      'A {amount} MON wager to {name} ({address}) was sent, but the network has not confirmed it yet.',
+    unsentDealerSilent: 'Waiting for the dealer',
+    unsentDealerSilentBody:
+      'Your bet for {amount} MON to {name} ({address}) was delivered but the dealer has not answered.',
+    unsentDealerUnconfirmed: 'The dealer could not verify your payment yet',
+    checkPayment: 'Check payment',
+    checking: 'Checking the network…',
+    paymentStillPending: 'The payment is still pending on the network.',
+    paymentNotFound:
+      'The network does not know this payment (yet). If you are sure it was never sent, you can discard this record.',
+    paymentFailedRemoved:
+      'The payment transaction failed on the network; nothing was paid. The record was removed.',
+    dismiss: 'Discard this record',
+    dismissWarning:
+      'If this wager was actually paid, discarding the record can lose the money. Discard only if you are sure it was not paid or was refunded.',
+    dismissConfirm: 'Yes, discard it',
+    dismissCancel: 'Keep it',
+    loadError: 'Saved wager records could not be read: {message}',
+  },
   leftDrawer: {
     settings: 'Settings',
     contacts: 'Contacts',

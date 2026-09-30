@@ -75,6 +75,59 @@ describe('stores/contacts.ts (ticket #42)', () => {
       expect(contact.profile.pubKey).not.toBeNull()
     })
 
+    it('records the bot marker of the signed profile (#310 gate); unmarked profiles are not bots', async () => {
+      const contacts = useContactStore()
+      const spy = jest.spyOn(activeChain, 'fetchProfile')
+      spy.mockResolvedValue({
+        address: { raw: ADDRESS },
+        pubKey: PUB_KEY_BYTES,
+        bot: true,
+      })
+      await contacts.fetchAndAddContact({
+        address: ADDRESS,
+        contact: undefined as unknown as Partial<ContactState>,
+      })
+      expect(contacts.getContact(ADDRESS).profile.isBot).toBe(true)
+
+      const other = '0x4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f'
+      spy.mockResolvedValue({ address: { raw: other }, pubKey: PUB_KEY_BYTES })
+      await contacts.fetchAndAddContact({
+        address: other,
+        contact: undefined as unknown as Partial<ContactState>,
+      })
+      expect(contacts.getContact(other).profile.isBot).toBe(false)
+    })
+
+    it('a contact added by route navigation (empty contact) is refreshed so its bot marker is resolved', async () => {
+      const contacts = useContactStore()
+      jest.spyOn(activeChain, 'fetchProfile').mockResolvedValue({
+        address: { raw: ADDRESS },
+        pubKey: PUB_KEY_BYTES,
+        bot: true,
+      })
+      await contacts.fetchAndAddContact({ address: ADDRESS, contact: {} })
+      await new Promise(r => setTimeout(r, 0))
+      expect(contacts.getContact(ADDRESS).profile.isBot).toBe(true)
+    })
+
+    it('refresh picks up the bot marker for a contact whose marker was never looked up', async () => {
+      const contacts = useContactStore()
+      contacts.addContact({
+        address: ADDRESS,
+        contact: {
+          lastUpdateTime: Date.now(),
+          profile: { name: 'Dealer', bio: '', avatar: 'x', pubKey: null },
+        },
+      })
+      jest.spyOn(activeChain, 'fetchProfile').mockResolvedValue({
+        address: { raw: ADDRESS },
+        pubKey: PUB_KEY_BYTES,
+        bot: true,
+      })
+      await contacts.refresh(ADDRESS)
+      expect(contacts.getContact(ADDRESS).profile.isBot).toBe(true)
+    })
+
     it('does not add a contact when activeChain.fetchProfile finds nothing registered', async () => {
       const contacts = useContactStore()
       jest.spyOn(activeChain, 'fetchProfile').mockResolvedValue(undefined)

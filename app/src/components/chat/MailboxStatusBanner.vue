@@ -1,7 +1,7 @@
 <template>
   <div
     v-if="message"
-    class="absolute-top full-width text-caption text-center bg-negative text-white q-py-xs q-px-sm"
+    class="full-width text-caption text-center bg-negative text-white q-py-xs q-px-sm"
     role="status"
     data-testid="mailbox-status"
   >

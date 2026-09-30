@@ -176,10 +176,14 @@ export function startDirectMessagePolling({
         sinceMs = nextSinceMs
       }
     } catch (err) {
+      // stop() cannot cancel an in-flight request: a poll that fails after stop() must not put a
+      // problem back on screen after stop() cleared it.
+      if (stopped) return
       if (err instanceof MonadMailboxChallengeCapacityError) {
         // The relay caps authenticated reads per recipient per minute; hammering only extends
         // the outage. Wait as long as the relay asked, but keep the loop alive.
         steady = false
+        otherFailures = 0
         nextDelayMs = Math.max(intervalMs, err.retryAfterMs)
         mailboxStatus.setProblem('rate-limited', nextDelayMs)
         console.warn(
@@ -188,6 +192,7 @@ export function startDirectMessagePolling({
       } else if (err instanceof MonadMailboxUnavailableError) {
         steady = false
         unavailableFailures += 1
+        otherFailures = 0
         nextDelayMs = Math.min(
           MAX_MAILBOX_UNAVAILABLE_BACKOFF_MS,
           intervalMs * 2 ** unavailableFailures,
@@ -209,8 +214,10 @@ export function startDirectMessagePolling({
           )
         }
         // A single failed poll is routine (a dropped connection); only a repeat is shown, so the
-        // status does not flicker on every blip. It clears on the next successful poll.
-        if (otherFailures > 1) {
+        // status does not flicker on every blip. But if a problem is already on screen (e.g. the
+        // relay just answered 404), replace it with what is true now instead of leaving it up.
+        // It clears on the next successful poll.
+        if (otherFailures > 1 || mailboxStatus.hasProblem) {
           mailboxStatus.setProblem(
             err instanceof MonadMailboxAuthError
               ? 'unauthorized'

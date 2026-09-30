@@ -64,4 +64,45 @@ describe('MailboxStatusBanner (ticket #271)', () => {
     await wrapper.vm.$nextTick()
     expect(wrapper.text()).toContain('Impossible de joindre le serveur')
   })
+  describe.each([
+    ['en-us', enUS],
+    ['fr-fr', frFR],
+  ] as const)('all problem states in %s', (_locale, messages) => {
+    const expected = {
+      'unavailable': messages.mailboxStatus.unavailable,
+      'unreachable': messages.mailboxStatus.unreachable,
+      'rate-limited': messages.mailboxStatus.rateLimited,
+      'unauthorized': messages.mailboxStatus.unauthorized,
+    } as const
+
+    it.each(Object.keys(expected) as Array<keyof typeof expected>)(
+      'renders the resolved text for %s',
+      async state => {
+        const wrapper = mountBanner(messages)
+        useMailboxStatusStore().setProblem(state, 1000)
+        await wrapper.vm.$nextTick()
+        const text = wrapper.get('[data-testid="mailbox-status"]').text()
+        expect(text).toBe(expected[state])
+        expect(text).not.toMatch(/^mailboxStatus\./) // an unresolved key would echo back
+        expect(text.length).toBeGreaterThan(10)
+      },
+    )
+
+    it('gives each state distinct text', () => {
+      expect(new Set(Object.values(expected)).size).toBe(4)
+    })
+  })
+
+  it('en-us and fr-fr texts are hard-pinned for the 401 state', async () => {
+    const en = mountBanner(enUS)
+    const fr = mountBanner(frFR)
+    useMailboxStatusStore().setProblem('unauthorized', 1000)
+    await en.vm.$nextTick()
+    expect(en.text()).toBe(
+      'The server rejected your messaging login. Retrying.',
+    )
+    expect(fr.text()).toBe(
+      'Le serveur a refusé votre connexion à la messagerie. Nouvelle tentative en cours.',
+    )
+  })
 })

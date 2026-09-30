@@ -301,5 +301,83 @@ describe('direct-message polling vs the relay challenge cap', () => {
       expect(status.state).toBe('ok')
       expect(relay).toBeDefined()
     })
+    it('a poll that fails after stop() does not put a problem back (in-flight race)', async () => {
+      const { relay, wallet } = setup({ enabled: false })
+      const status = useMailboxStatusStore()
+      const polling = startDirectMessagePolling({ wallet })
+      polling.stop() // the first poll is already in flight
+      expect(status.state).toBe('ok')
+      await jest.advanceTimersByTimeAsync(30_000)
+      expect(count(relay, 'challenge')).toBeGreaterThan(0)
+      expect(status.state).toBe('ok')
+      expect(status.retryInMs).toBeNull()
+    })
+
+    it('maps a 401 to unauthorized, only from the second consecutive failure', async () => {
+      const { relay, wallet } = setup({ maxUsedChallenges: 30 })
+      // A 401 is retried once with a fresh challenge, so each poll consumes two 401s.
+      relay.inject(
+        'inbox',
+        { status: 401 },
+        { status: 401 },
+        { status: 401 },
+        { status: 401 },
+      )
+      const status = useMailboxStatusStore()
+      const polling = startDirectMessagePolling({ wallet })
+      await jest.advanceTimersByTimeAsync(1000)
+      expect(status.state).toBe('ok') // first failure is not surfaced
+      await jest.advanceTimersByTimeAsync(7000)
+      expect(status.state).toBe('unauthorized')
+      await jest.advanceTimersByTimeAsync(20_000)
+      expect(status.state).toBe('ok')
+      polling.stop()
+    })
+
+    it('a 404 resets the consecutive-failure count and a later plain failure replaces the 404 state', async () => {
+      const { relay, wallet } = setup({ maxUsedChallenges: 30 })
+      relay.inject(
+        'challenge',
+        { status: 500 },
+        { status: 404 },
+        { status: 500 },
+      )
+      const status = useMailboxStatusStore()
+      const polling = startDirectMessagePolling({ wallet })
+      await jest.advanceTimersByTimeAsync(1000)
+      expect(status.state).toBe('ok') // plain failure #1: not surfaced
+      await jest.advanceTimersByTimeAsync(7000)
+      expect(status.state).toBe('unavailable') // 404
+      await jest.advanceTimersByTimeAsync(14_000)
+      // plain failure again: not "two consecutive" (the 404 intervened) so the backoff stays at
+      // the base interval, yet the stale "relay does not offer messaging" is replaced.
+      expect(status.state).toBe('unreachable')
+      expect(status.retryInMs).toBe(7000)
+      await jest.advanceTimersByTimeAsync(7000)
+      expect(status.state).toBe('ok')
+      polling.stop()
+    })
+
+    it('a 429 also resets the consecutive-failure count', async () => {
+      const { relay, wallet } = setup({ maxUsedChallenges: 30 })
+      relay.inject(
+        'challenge',
+        { status: 500 },
+        {
+          status: 429,
+          body: { error: 'mailbox_challenge_capacity' },
+          headers: { 'retry-after': '10' },
+        },
+        { status: 500 },
+      )
+      const status = useMailboxStatusStore()
+      const polling = startDirectMessagePolling({ wallet })
+      await jest.advanceTimersByTimeAsync(1000 + 7000 + 1000)
+      expect(status.state).toBe('rate-limited')
+      await jest.advanceTimersByTimeAsync(10_000)
+      expect(status.state).toBe('unreachable')
+      expect(status.retryInMs).toBe(7000)
+      polling.stop()
+    })
   })
 })

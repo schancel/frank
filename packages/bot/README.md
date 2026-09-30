@@ -405,3 +405,20 @@ the user deleted is not added back on later launches.
 
 Production hardening, multi-user bot support, prompt/persona design polish, and a full
 recipient-addressing fix to the wire format (ticket #37's noted follow-up).
+
+## Picture shop catalog (`vendor-bot.livecheck.ts`, #315)
+
+The vendor bot sells pictures from a directory, not from code. `VENDOR_BOT_CATALOG_DIR` (default:
+the bundled `demo-catalog/`, three generated original pictures with thumbnails) must contain:
+
+```
+manifest.json   {"items": [{"itemId": "sunrise", "description": "...", "priceWei": "50000000000000000",
+                            "image": "sunrise.png", "thumbnail": "sunrise-thumb.png"}]}
+sunrise.png     png / jpg / gif / webp, paths relative to the directory
+```
+
+`thumbnail` is optional (shown next to the entry in the app's catalog; max 64 KiB). The catalog is
+validated once at startup and a bad one is a one-line error naming the item: unknown/duplicate ids,
+bad prices, files outside the directory, non-image bytes, and any image (or the whole catalog
+message) that would not fit the relay's 2 MiB request cap. To change the bundled art, edit and run
+`yarn tsx scripts/generate-demo-pictures.ts`; to sell your own, point the variable at your directory.

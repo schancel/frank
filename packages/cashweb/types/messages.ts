@@ -85,7 +85,14 @@ export interface DigitalGoodsItem {
   type: 'digital-goods'
   action: 'catalog' | 'request' | 'fulfill' | 'error'
   /** `catalog` only: what the vendor currently has for sale. */
-  catalog?: Array<{ itemId: string; description: string; priceWei: string }>
+  catalog?: Array<{
+    itemId: string
+    description: string
+    priceWei: string
+    /** Optional small `data:image/...;base64,...` preview shown next to the entry. Clients render
+     * it only when it is such a data URI, never a remote URL (a URL would leak the viewer). */
+    thumbnail?: string
+  }>
   /** `request` only: which catalog item this message's own stamp payment is meant to buy. */
   itemId?: string
   /** `error` only: e.g. "payment below this item's price," "unknown itemId." */

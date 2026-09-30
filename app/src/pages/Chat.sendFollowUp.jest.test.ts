@@ -48,7 +48,9 @@ function fakeThis(over: Record<string, unknown> = {}) {
     $t: (key: string) => key,
     showStampPreparation: (p: unknown) =>
       methods.showStampPreparation.call(self, p),
-    sendDirectMessage: jest.fn().mockResolvedValue(undefined),
+    sendDirectMessage: jest
+      .fn()
+      .mockResolvedValue({ state: 'sent', payloadDigest: 'd' }),
     $nextTick: jest.fn(),
     buttonScrollBottom: jest.fn(),
     ...over,
@@ -122,7 +124,12 @@ describe('Chat.vue sendFollowUpItems settled callback (#368)', () => {
   it('does not report a purchase as settled while its send is still in flight', async () => {
     let finish!: () => void
     const self = fakeThis({
-      sendDirectMessage: jest.fn(() => new Promise<void>(r => (finish = r))),
+      sendDirectMessage: jest.fn(
+        () =>
+          new Promise<unknown>(
+            r => (finish = () => r({ state: 'sent', payloadDigest: 'd' })),
+          ),
+      ),
     })
     const settled = jest.fn()
     const pending = methods.sendFollowUpItems.call(self, { items, settled })
@@ -189,5 +196,47 @@ describe('Chat.vue peer bot gate (#310)', () => {
     expect(computed.peerIsBot.call(peer({ isBot: false }))).toBe(false)
     expect(computed.peerIsBot.call(peer({}))).toBe(false)
     expect(computed.peerIsBot.call(peer(undefined))).toBe(false)
+  })
+})
+
+describe('Chat.vue sendFollowUpItems vs the no-throw send outcome (#269/#270)', () => {
+  beforeEach(() => jest.mocked(errorNotify).mockReset())
+
+  it.each([
+    [{ state: 'sent', payloadDigest: 'd' }, true],
+    // Payment safely pending: the message is stored and delivers on its own.
+    [{ state: 'payment-pending' }, true],
+    // A failed send stays in the chat (Retry), but it was NOT sent: the bet keeps its unsent-wager
+    // record and a purchase does not look settled.
+    [{ state: 'failed', reason: 'unreachable' }, false],
+    [{ state: 'needs-confirmation', reason: 'unverified' }, false],
+    [{ state: 'busy' }, false],
+  ] as const)('outcome %j reports %s', async (outcome, expected) => {
+    const self = fakeThis({
+      sendDirectMessage: jest.fn().mockResolvedValue(outcome),
+    })
+    const settled = jest.fn()
+    await expect(
+      methods.sendFollowUpItems.call(self, { items, settled }),
+    ).resolves.toBe(expected)
+    expect(settled).toHaveBeenCalledTimes(1)
+    expect(settled).toHaveBeenCalledWith(expected)
+  })
+
+  it('a bet whose message failed is not delivered: deliverBetWhenReady throws so the wager record stays', async () => {
+    const { deliverBetWhenReady } = jest.requireActual('../utils/blackjack-bet')
+    const self = fakeThis({
+      sendDirectMessage: jest
+        .fn()
+        .mockResolvedValue({ state: 'failed', reason: 'unreachable' }),
+    })
+    await expect(
+      deliverBetWhenReady({
+        betAddress: '0xDealer',
+        currentAddress: () => '0xDealer',
+        isBusy: () => false,
+        send: () => methods.sendFollowUpItems.call(self, { items }),
+      }),
+    ).rejects.toThrow(/could not be sent/)
   })
 })

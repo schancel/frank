@@ -108,7 +108,6 @@ import { errorNotify, insufficientStampNotify } from '../utils/notifications'
 import { defaultAcceptancePrice, defaultStampAmount } from '../utils/constants'
 import { deliverBetWhenReady } from '../utils/blackjack-bet'
 import { useMonadWallet } from '../utils/clients'
-import { MonadStampRecoveredAttemptError } from '@frank/wallet/monad-stamp-client'
 import {
   activeChain,
   type DirectMessagePreparationProgress,
@@ -121,6 +120,7 @@ import { RouteLocationNormalized } from 'vue-router'
 import { useContactStore } from 'src/stores/contacts'
 import { useProfileStore } from 'src/stores/my-profile'
 import { ChatMessage, useChatStore } from 'src/stores/chats'
+import type { OutgoingOutcome } from 'src/stores/chats'
 
 const scrollDuration = 0
 
@@ -153,7 +153,6 @@ export default defineComponent({
       scrollDigest: null as string | null,
       chatWidth: 0,
       message: '',
-      recoveredDraftAwaitingConfirmation: null as string | null,
       stampPreparationStatus: null as string | null,
       sendingMessage: false,
     }
@@ -192,21 +191,6 @@ export default defineComponent({
     })
   },
   methods: {
-    confirmRecoveredDraft(message: string) {
-      this.$q
-        .dialog({
-          title: 'Previous message recovered',
-          message:
-            'A previously pending message was delivered. Send this draft as a separate new message?',
-          ok: { label: 'Send as new' },
-          cancel: true,
-          persistent: true,
-        })
-        .onOk(() => {
-          this.recoveredDraftAwaitingConfirmation = null
-          void this.sendMessage(message)
-        })
-    },
     toSendFileDialog(args: unknown) {
       this.$emit('sendFileClicked', args)
     },
@@ -309,10 +293,6 @@ export default defineComponent({
       if (this.sendingMessage) {
         return
       }
-      if (this.recoveredDraftAwaitingConfirmation === message) {
-        this.confirmRecoveredDraft(message)
-        return
-      }
       const stampValue = activeChain.fromDisplayAmount(this.stampAmount)
       const acceptancePrice =
         this.getAcceptancePrice(this.address) ?? defaultAcceptancePrice
@@ -346,14 +326,9 @@ export default defineComponent({
           onPreparationProgress: this.showStampPreparation,
         })
       } catch (err) {
-        if (err instanceof MonadStampRecoveredAttemptError) {
-          // Recovery completed an older, already-authorized exact payment set. The current draft
-          // may or may not describe that same message, so neither silently discard it nor send it
-          // on the next ordinary click. Require an explicit second authorization.
-          this.recoveredDraftAwaitingConfirmation = submittedMessage
-          this.confirmRecoveredDraft(submittedMessage)
-          return
-        }
+        // Send failures do not throw: the message stays in the conversation, marked failed with a
+        // Retry and Discard (#269/#270). Only a precondition failure (e.g. an invalid recipient)
+        // or a failure to store an already delivered message arrives here.
         errorNotify(err instanceof Error ? err : new Error(String(err)))
         return
       } finally {
@@ -426,9 +401,10 @@ export default defineComponent({
       const stampValue =
         stampValueWei ?? activeChain.fromDisplayAmount(this.stampAmount)
       this.sendingMessage = true
+      let outcome: OutgoingOutcome
       try {
         this.stampPreparationStatus = this.$t('chat.stampPreparationChecking')
-        await this.sendDirectMessage({
+        outcome = await this.sendDirectMessage({
           wallet: useMonadWallet(),
           address: this.address,
           items,
@@ -445,7 +421,11 @@ export default defineComponent({
       if (!this.bottom) {
         this.$nextTick(this.buttonScrollBottom)
       }
-      return true
+      // A failed send no longer throws (the message stays in the chat as failed, with Retry), so
+      // the caller's "was it sent" answer must come from the outcome: only a delivered message,
+      // or one whose payment is safely pending and will deliver on its own, counts. A failed one
+      // is "not sent", which keeps a bet's unsent-wager record and a purchase's guard honest.
+      return outcome.state === 'sent' || outcome.state === 'payment-pending'
     },
     // For value-bearing follow-ups whose payment is already on its way (the first blackjack bet:
     // its wager transfer takes seconds): `sendFollowUpItems` drops a call made while another send

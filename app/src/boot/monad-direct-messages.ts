@@ -27,7 +27,10 @@ import { useWalletStore } from '../stores/wallet'
 import { useProfileStore } from '../stores/my-profile'
 import { useChatStore } from '../stores/chats'
 import { useMonadWallet } from '../utils/clients'
-import { startDirectMessagePolling } from '../adapters/pinia-chain-adapter'
+import {
+  startDirectMessagePolling,
+  startOutgoingReconciliation,
+} from '../adapters/pinia-chain-adapter'
 import {
   MonadIdentity,
   registerMonadIdentity,
@@ -122,4 +125,6 @@ export default boot(async () => {
     wallet,
     intervalMs: DIRECT_MESSAGE_POLL_INTERVAL_MS,
   })
+  // Settles messages whose stamp payment was still pending (re-sends the same bytes; #270).
+  startOutgoingReconciliation({ wallet })
 })

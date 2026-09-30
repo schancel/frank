@@ -194,6 +194,34 @@ export default {
     balanceStale: '(dernière valeur connue)',
     directMessages: 'Messages privés',
   },
+  outgoing: {
+    sending: 'Envoi…',
+    paymentPending:
+      'Paiement en attente, nouvelle tentative automatique. Vous ne serez pas débité à nouveau.',
+    paymentQueued:
+      "En attente de la fin d'un message précédent. Celui-ci sera envoyé ensuite.",
+    paymentChecking: "Vérification de l'état du paiement…",
+    reasonUnreachable: 'Impossible de joindre le serveur.',
+    reasonUnavailable: 'Ce relais ne propose pas la messagerie.',
+    reasonRejected: 'Le relais a refusé le message.',
+    reasonInterrupted: "L'envoi a été interrompu avant son terme.",
+    reasonUnverified: "La remise n'a pas pu être confirmée.",
+    reasonRecovered: 'Un message précédent a été remis entre-temps.',
+    reasonError: "Une erreur s'est produite.",
+    retry: 'Réessayer',
+    retryHint:
+      "Réessayer renvoie le même paiement tant qu'il est valide. Un nouveau paiement n'est fait que s'il ne l'est plus.",
+    discard: 'Supprimer',
+    discardConfirmTitle: 'Supprimer le message ?',
+    discardConfirmMessage:
+      'Il sera retiré de votre conversation. Si son paiement est encore en attente, il pourrait tout de même être remis.',
+    sendAgainTitle: 'Renvoyer ?',
+    sendAgainUnverified:
+      "Nous n'avons pas pu confirmer si le premier paiement a été remis. Renvoyer pourrait vous débiter une seconde fois.",
+    sendAgainRecovered:
+      "Un message en attente précédent a été remis pendant l'envoi de celui-ci. Le renvoyer comme nouveau message ?",
+    sendAgain: 'Renvoyer',
+  },
   mailboxStatus: {
     unavailable:
       'Service de messagerie indisponible : ce relais ne propose pas la messagerie, vous ne recevrez donc pas de messages.',

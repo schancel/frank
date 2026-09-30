@@ -170,7 +170,9 @@ describe('Chat.vue blackjack wiring (mounted)', () => {
     await expect(submit({ items, address: DEALER })).rejects.toThrow(
       /could not be sent/,
     )
-    vm.sendDirectMessage = jest.fn().mockResolvedValue(undefined)
+    vm.sendDirectMessage = jest
+      .fn()
+      .mockResolvedValue({ state: 'sent', payloadDigest: 'd' })
     await expect(submit({ items, address: DEALER })).resolves.toBeUndefined()
     expect(vm.sendDirectMessage).toHaveBeenCalledTimes(1)
   })

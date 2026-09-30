@@ -253,3 +253,106 @@ export function startDirectMessagePolling({
     },
   }
 }
+
+/** How often the background reconciliation looks at messages whose payment is pending, and the
+ * longest pause it backs off to while they stay pending. */
+export const OUTGOING_RECONCILE_INTERVAL_MS = 15_000
+export const MAX_OUTGOING_RECONCILE_INTERVAL_MS = 120_000
+
+export interface OutgoingReconciliation {
+  stop: () => void
+}
+
+/**
+ * Keeps settling outgoing messages whose stamp payment is still pending (#270). Every tick asks
+ * the wallet to re-send the SAME exact bytes of each live payment attempt (free and idempotent,
+ * never a new payment; see `stores/chats.ts`, `sendMessage`), and flips a message to sent when it
+ * finally delivers, so the sender's copy follows reality without any user action. While something
+ * stays pending the pause doubles up to {@link MAX_OUTGOING_RECONCILE_INTERVAL_MS}; with nothing
+ * pending each tick is a cheap local check.
+ */
+export function startOutgoingReconciliation({
+  wallet,
+  intervalMs = OUTGOING_RECONCILE_INTERVAL_MS,
+  maxIntervalMs = MAX_OUTGOING_RECONCILE_INTERVAL_MS,
+}: {
+  wallet: WalletHandle
+  intervalMs?: number
+  maxIntervalMs?: number
+}): OutgoingReconciliation {
+  const chats = useChatStore()
+  let stopped = false
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let delayMs = intervalMs
+  let knownPending = new Set<string>()
+
+  const pendingIds = () => {
+    const ids = new Set<string>()
+    for (const chat of Object.values(chats.chats)) {
+      for (const message of chat?.messages ?? []) {
+        if (message.outbound && message.status === 'payment-pending') {
+          ids.add(message.payloadDigest)
+        }
+      }
+    }
+    return ids
+  }
+
+  // Invariant: at most ONE timer exists, and only `schedule` arms it (clearing any previous one).
+  const schedule = (ms: number) => {
+    if (timer !== undefined) clearTimeout(timer)
+    timer = undefined
+    if (!stopped) timer = setTimeout(() => void tick(), ms)
+  }
+
+  let ticking = false
+  let resetRequested = false
+  // What is pending now is not "new": seed before the first tick so a reload with a pending
+  // message does not look like a fresh arrival.
+  knownPending = pendingIds()
+
+  const tick = async () => {
+    ticking = true
+    resetRequested = false
+    let pending = 0
+    try {
+      pending = (await chats.reconcileOutgoing({ wallet })).pending
+    } catch (err) {
+      console.warn('outgoing message reconciliation failed', err)
+      pending = 1
+    }
+    ticking = false
+    knownPending = pendingIds()
+    delayMs =
+      pending > 0 && !resetRequested
+        ? Math.min(maxIntervalMs, delayMs * 2)
+        : intervalMs
+    schedule(delayMs)
+  }
+  void tick()
+
+  // A message that newly becomes payment-pending must not wait out a long backoff earned by an
+  // older one: restart the ladder and look again after the base interval.
+  const unsubscribe = chats.$onAction(({ name, after }) => {
+    if (name !== 'setOutgoingState') return
+    after(() => {
+      const now = pendingIds()
+      const isNew = [...now].some(id => !knownPending.has(id))
+      knownPending = now
+      if (!isNew || stopped) return
+      delayMs = intervalMs
+      // Mid-tick, the tick itself re-arms at the base interval; never start a second chain.
+      if (ticking) resetRequested = true
+      else schedule(intervalMs)
+    })
+  })
+
+  return {
+    stop: () => {
+      stopped = true
+      unsubscribe()
+      if (timer !== undefined) clearTimeout(timer)
+      timer = undefined
+    },
+  }
+}

@@ -595,6 +595,7 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
       // `post`/`vote` below, where there's no single recipient to pay.
       recipientPublicKey: recipientProfile.pubKey,
       stampValueWei: params.stampValue ?? config.defaultStampValueWei,
+      onAttemptJournaled: params.onAttemptCreated,
     })
 
     const stampPayments =
@@ -624,6 +625,36 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
       return runWalletExclusive(wallet, () =>
         sendDirectMessageExclusive(params, wallet),
       )
+    },
+
+    async unattributedAttempts(params) {
+      const wallet = asMonadWallet(params.wallet)
+      return runWalletExclusive(wallet, async () => {
+        const client = new MonadStampClient(wallet)
+        await client.resumePendingAttempts({ maxAttempts: 1 })
+        const known = new Set(params.knownDigests)
+        return client
+          .recordedAttempts()
+          .map(attempt => attempt.payloadHashHex)
+          .filter(hash => !known.has(hash))
+      })
+    },
+
+    async reconcileAttempts(params) {
+      const wallet = asMonadWallet(params.wallet)
+      return runWalletExclusive(wallet, async () => {
+        const client = new MonadStampClient(wallet)
+        // Replays every journaled set byte for byte; this never signs or funds anything.
+        await client.resumePendingAttempts({
+          maxAttempts: params.maxPutAttempts ?? 1,
+        })
+        return Object.fromEntries(
+          params.payloadDigests.map(digest => [
+            digest,
+            client.attemptStatus(digest),
+          ]),
+        )
+      })
     },
 
     async fetchSince(params): Promise<DirectMessageReceived[]> {

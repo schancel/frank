@@ -587,6 +587,83 @@ describe('createMonadChain: directMessages.send', () => {
   })
 })
 
+describe('createMonadChain: directMessages.reconcileAttempts (#269/#270)', () => {
+  it('passes onAttemptCreated through to the stamp client as onAttemptJournaled', async () => {
+    const chain = createMonadChain(TEST_CONFIG)
+    const alice = MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX)
+    const bob = MonadIdentity.fromPrivateKeyHex(BOB_PRIVATE_KEY_HEX)
+    mockedFetchMonadProfile.mockResolvedValueOnce({
+      address: bob.address,
+      pubKey: new Uint8Array(bob.compressedPubKey),
+    })
+    const submitStampedMessage = jest.fn().mockResolvedValue({
+      stored: {} as StoredMonadMessageProto,
+      payloadHashHex: 'deadbeef',
+      txHashes: [],
+      leaseIndices: [],
+    })
+    ;(MonadStampClient as jest.Mock).mockImplementation(() => ({
+      submitStampedMessage,
+    }))
+    const onAttemptCreated = jest.fn()
+    await chain.directMessages.send({
+      wallet: makeWallet(alice),
+      recipient: bob.address,
+      items: [{ type: 'text', text: 'x' } as TextItem],
+      onAttemptCreated,
+    })
+    expect(submitStampedMessage.mock.calls[0][0].onAttemptJournaled).toBe(
+      onAttemptCreated,
+    )
+  })
+
+  it('re-sends the live attempts (never signs a payment) and reports each requested digest', async () => {
+    const chain = createMonadChain(TEST_CONFIG)
+    const alice = MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX)
+    const resumePendingAttempts = jest.fn().mockResolvedValue([])
+    const submitStampedMessage = jest.fn()
+    const statuses: Record<string, string> = {
+      live1: 'live',
+      done: 'delivered',
+    }
+    ;(MonadStampClient as jest.Mock).mockImplementation(() => ({
+      resumePendingAttempts,
+      submitStampedMessage,
+      attemptStatus: (digest: string) => statuses[digest] ?? 'unknown',
+    }))
+    await expect(
+      chain.directMessages.reconcileAttempts({
+        wallet: makeWallet(alice),
+        payloadDigests: ['live1', 'done', 'other'],
+      }),
+    ).resolves.toEqual({ live1: 'live', done: 'delivered', other: 'unknown' })
+    expect(resumePendingAttempts).toHaveBeenCalledWith({ maxAttempts: 1 })
+    expect(submitStampedMessage).not.toHaveBeenCalled()
+  })
+})
+
+describe('createMonadChain: directMessages.unattributedAttempts (#269)', () => {
+  it('resumes live attempts and returns recorded hashes no message points at', async () => {
+    const chain = createMonadChain(TEST_CONFIG)
+    const alice = MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX)
+    const resumePendingAttempts = jest.fn().mockResolvedValue([])
+    ;(MonadStampClient as jest.Mock).mockImplementation(() => ({
+      resumePendingAttempts,
+      recordedAttempts: () => [
+        { payloadHashHex: 'mine', status: 'delivered' },
+        { payloadHashHex: 'orphan', status: 'live' },
+      ],
+    }))
+    await expect(
+      chain.directMessages.unattributedAttempts({
+        wallet: makeWallet(alice),
+        knownDigests: ['mine'],
+      }),
+    ).resolves.toEqual(['orphan'])
+    expect(resumePendingAttempts).toHaveBeenCalledTimes(1)
+  })
+})
+
 describe('createMonadChain: directMessages.fetchSince', () => {
   it('rejects authenticated malformed plaintext per record and returns the following message', async () => {
     const chain = createMonadChain(TEST_CONFIG)
@@ -884,6 +961,98 @@ describe('createMonadChain: directMessages.fetchSince', () => {
       status: 'swept',
       sweepTxHash,
     })
+  })
+})
+
+describe('createMonadChain: one per-wallet queue for every account-spending operation', () => {
+  it('a slow direct-message send blocks reconcile, the unattributed check and a topic burn until it settles, then they run one at a time in order', async () => {
+    const chain = createMonadChain(TEST_CONFIG)
+    const alice = MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX)
+    const bob = MonadIdentity.fromPrivateKeyHex(BOB_PRIVATE_KEY_HEX)
+    const wallet = makeWallet(alice)
+    mockedFetchMonadProfile.mockResolvedValue({
+      address: bob.address,
+      pubKey: new Uint8Array(bob.compressedPubKey),
+    })
+    const events: string[] = []
+    let running = 0
+    let maxRunning = 0
+    const track = async <T>(name: string, work: () => Promise<T>) => {
+      running += 1
+      maxRunning = Math.max(maxRunning, running)
+      events.push(`start:${name}`)
+      try {
+        return await work()
+      } finally {
+        events.push(`end:${name}`)
+        running -= 1
+      }
+    }
+    let finishSend!: (value: unknown) => void
+    const sendPending = new Promise(resolve => {
+      finishSend = resolve
+    })
+    ;(MonadStampClient as jest.Mock).mockImplementation(() => ({
+      submitStampedMessage: () => track('dm-send', () => sendPending),
+      resumePendingAttempts: () =>
+        track('resume', async () => {
+          await new Promise(resolve => setImmediate(resolve))
+          return []
+        }),
+      attemptStatus: () => 'unknown',
+      recordedAttempts: () => [],
+    }))
+    ;(MonadTopicPostClient as jest.Mock).mockImplementation(() => ({
+      submitTopicPost: () =>
+        track('topic-post', async () => ({
+          stored: {},
+          payloadHashHex: 'feed',
+          txHash: '0xt',
+          leaseIndex: 0,
+        })),
+    }))
+    ;(wallet.pool.prepareBurnAccount as jest.Mock).mockImplementation(() =>
+      track('burn-prepare', async () => ({ index: 4, fundingTxHashes: [] })),
+    )
+
+    const send = chain.directMessages.send({
+      wallet,
+      recipient: bob.address,
+      items: [{ type: 'text', text: 'x' }],
+    })
+    await new Promise(resolve => setImmediate(resolve))
+    const others = [
+      chain.directMessages.reconcileAttempts({
+        wallet,
+        payloadDigests: ['a'],
+      }),
+      chain.directMessages.unattributedAttempts({
+        wallet,
+        knownDigests: [],
+      }),
+      chain.topics.post({
+        wallet,
+        topic: 'general',
+        entries: [{ kind: 'post', message: 'hi' }],
+        direction: 'up',
+        voteWeightWei: 5_000n,
+      }),
+    ]
+    await new Promise(resolve => setImmediate(resolve))
+    // Only the first send has started; nothing else touched the wallet's accounts meanwhile.
+    expect(events).toEqual(['start:dm-send'])
+
+    finishSend({ payloadHashHex: 'first' })
+    await send
+    await Promise.all(others)
+    expect(maxRunning).toBe(1) // never two account-touching operations at once
+    expect(events.filter(e => e.startsWith('start:'))).toEqual([
+      'start:dm-send',
+      'start:resume',
+      'start:resume',
+      'start:burn-prepare',
+      'start:topic-post',
+    ])
   })
 })
 

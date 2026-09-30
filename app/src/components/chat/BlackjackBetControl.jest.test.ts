@@ -462,6 +462,27 @@ describe('BlackjackBetControl (ticket #310: first bet entry point)', () => {
     expect(mockSend).not.toHaveBeenCalled()
   })
 
+  it("a pre-broadcast failure does not drop another chat's in-flight wager (#422)", async () => {
+    const other = `0x${'cd'.repeat(32)}`
+    mockSend.mockRejectedValueOnce(new Error('insufficient funds for gas'))
+    const { wrapper, submit } = mountControl()
+    const unsent = useUnsentWagersStore()
+    unsent.add({
+      gameId: 'other-game',
+      wagerTxHash: other,
+      dealerAddress: '0x9999999999999999999999999999999999999999',
+      walletAddress: '0xAAAA00000000000000000000000000000000BBBB',
+      amountWei: '1',
+      createdAt: 1,
+      state: 'signed',
+    })
+    unsent.setInFlight(other, true)
+    await place(wrapper)
+    expect(submit).not.toHaveBeenCalled()
+    expect(unsent.wagers.map(wager => wager.wagerTxHash)).toEqual([other])
+    expect(unsent.inFlight).toEqual([other])
+  })
+
   it('announces an insufficient-funds failure with no record and no bet; a retry makes a fresh transfer', async () => {
     mockSend.mockRejectedValueOnce(new Error('insufficient funds for gas'))
     const { wrapper, submit } = mountControl()
@@ -668,19 +689,24 @@ describe('BlackjackBetControl table limits from the dealer welcome (#395)', () =
     expect(submit).toHaveBeenCalledTimes(1)
   })
 
-  it('starts at 0.1 MON, moved into the advertised limits when they do not include it', () => {
+  it('starts at 0.1 MON and does not pre-fill an advertised minimum above that', () => {
     const inside = mountControl({ table: TABLE }).wrapper
     expect(inside.find('input:not([type="checkbox"])').element).toHaveProperty(
       'value',
       '0.1',
     )
     const above = mountControl({
-      table: { minWei: 5n * 10n ** 17n, maxWei: 10n ** 18n, source: 'welcome' },
+      table: {
+        minWei: 10n ** 39n,
+        maxWei: 10n ** 40n - 1n,
+        source: 'welcome',
+      },
     }).wrapper
     expect(above.find('input:not([type="checkbox"])').element).toHaveProperty(
       'value',
-      '0.5',
+      '0.1',
     )
+    expect(above.text()).not.toContain(String(10n ** 39n))
   })
 
   it('a larger fee hint from the dealer raises the balance the bet needs', async () => {

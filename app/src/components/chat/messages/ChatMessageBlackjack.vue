@@ -16,7 +16,7 @@
         {{ welcomeRules }}
       </div>
       <blackjack-bet-control
-        v-if="isLatest && blackjackChat"
+        v-if="isLatest && blackjackChat && dealerOffersTable"
         class="q-mt-sm"
         data-testid="blackjack-welcome-bet"
         :address="address"
@@ -79,7 +79,8 @@
         v-if="
           actionState &&
           actionState.availableActions.includes('bet') &&
-          blackjackChat
+          blackjackChat &&
+          dealerOffersTable
         "
         class="q-mt-sm"
         data-testid="blackjack-play-again"
@@ -186,6 +187,7 @@ import {
   BlackjackTable,
   betLimitsDisplay,
   latestDealerTable,
+  peerOffersDealerTable,
 } from '../../../utils/blackjack-bet'
 import BlackjackBetControl from '../BlackjackBetControl.vue'
 import type { MessageItem } from '@frank/cashweb/types/messages'
@@ -266,6 +268,12 @@ export default defineComponent({
     },
     isWelcome(): boolean {
       return this.item.action === 'welcome'
+    },
+    // A welcome or "play again" box moves real MON. Only the curated dealer may offer one (#422).
+    dealerOffersTable(): boolean {
+      return peerOffersDealerTable(
+        useContactStore().getContact(this.address)?.profile,
+      )
     },
     // The move buttons of the live hand. A bet is not one of them: it is the bet control's job.
     moveActions(): BlackjackAction[] {

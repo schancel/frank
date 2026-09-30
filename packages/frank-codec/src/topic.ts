@@ -19,6 +19,7 @@ import {
   TYPE_TOPIC_POST_SUBMISSION,
   TYPE_TOPIC_VOTE_SUBMISSION,
 } from './constants'
+import { FrankCodecError } from './errors'
 import { defaultContext, validateFrame } from './validate'
 import type { ParsedFrame } from './types'
 
@@ -45,6 +46,33 @@ export interface TopicPostFields {
   body: Uint8Array
 }
 
+/** Writer-side misuse is reported as the same typed error a reader would raise. */
+function refuse(message: string, location: string): FrankCodecError {
+  return new FrankCodecError('schema', '8.2', message, location)
+}
+
+/** A lone surrogate is not text: a reader reports invalid UTF-8 as `malformed` at stage 7. */
+function requireWellFormed(text: string, location: string): void {
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i)
+    if (c >= 0xd800 && c <= 0xdbff) {
+      const next = i + 1 < text.length ? text.charCodeAt(i + 1) : 0
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        i++
+        continue
+      }
+    } else if (c < 0xdc00 || c > 0xdfff) {
+      continue
+    }
+    throw new FrankCodecError(
+      'malformed',
+      '7',
+      'text contains a lone surrogate (invalid UTF-8)',
+      location,
+    )
+  }
+}
+
 function validated(frame: Uint8Array, typeId: number): ParsedFrame {
   const r = validateFrame(frame, defaultContext({ operation: 'typed' }))
   if (r.kind !== 'parsed' || r.typeId !== typeId)
@@ -56,6 +84,8 @@ function validated(frame: Uint8Array, typeId: number): ParsedFrame {
 
 /** Encodes a type-9 topic post. Throws `FrankCodecError` if a field violates its bound. */
 export function encodeTopicPost(fields: TopicPostFields): Uint8Array {
+  requireWellFormed(fields.network, 'root/payload.0')
+  requireWellFormed(fields.topic, 'root/payload.1')
   const payload = new Map<number, Encodable>([
     [0, fields.network],
     [1, fields.topic],
@@ -105,8 +135,10 @@ export function topicBurnCalldata(
   direction: TopicVoteDirection,
   commitment: Uint8Array,
 ): Uint8Array {
+  if (!Object.prototype.hasOwnProperty.call(DIRECTION_BYTE, direction))
+    throw refuse(`unknown vote direction ${String(direction)}`, 'direction')
   if (commitment.length !== 32)
-    throw new RangeError('the topic burn commitment must be 32 bytes')
+    throw refuse('the topic burn commitment must be 32 bytes', 'commitment')
   const out = new Uint8Array(TOPIC_CBOR_CALLDATA_LENGTH)
   out.set(TOPIC_LOKAD_ID, 0)
   out[4] = TOPIC_CBOR_CALLDATA_VERSION
@@ -118,6 +150,11 @@ export function topicBurnCalldata(
 /**
  * Encodes a type-10 submission: the exact `postFrame` plus the signed burn transaction. The
  * network is the post's, so S11 holds by construction.
+ *
+ * `burnTx` is opaque here: this writer does not decode it or check that its calldata carries the
+ * post's T7 commitment, that it is up-vote (`01`), or that it is signed at all. A relay checks
+ * all of that and rejects a mismatch before broadcasting; build the calldata with
+ * `topicBurnCalldata` and sign the transaction for it first.
  */
 export function encodeTopicPostSubmission(
   postFrame: Uint8Array,
@@ -140,7 +177,11 @@ export function encodeTopicPostSubmission(
   return frame
 }
 
-/** Encodes a type-11 vote on the post whose T1 hash is `targetHash`. */
+/**
+ * Encodes a type-11 vote on the post whose T1 hash is `targetHash`. As with the submission,
+ * `burnTx` is opaque: the writer does not check that its calldata carries
+ * `topicVoteCommitment(network, targetHash)`.
+ */
 export function encodeTopicVote(
   network: string,
   targetHash: Uint8Array,

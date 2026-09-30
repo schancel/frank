@@ -36,6 +36,16 @@ export default {
     balanceStale: '(dernière valeur connue)',
     directMessages: 'Messages privés',
   },
+  mailboxStatus: {
+    unavailable:
+      'Service de messagerie indisponible : ce relais ne propose pas la messagerie, vous ne recevrez donc pas de messages.',
+    unreachable:
+      'Impossible de joindre le serveur. Vous ne recevez peut-être pas de messages ; nouvelle tentative en cours.',
+    rateLimited:
+      'Le serveur nous a demandé de ralentir. Nouvelle tentative sous peu.',
+    unauthorized:
+      'Le serveur a refusé votre connexion à la messagerie. Nouvelle tentative en cours.',
+  },
   chatMessage: {
     noPayloadFound: 'Impossible de trouver les données pour ce message',
   },

@@ -110,6 +110,29 @@
             "cryptographic"
           ]
         },
+        "error_stage": {
+          "description": "Optional section 9 stage label of the failing check. A runner that reports stages SHOULD compare it; a runner that reports only categories stays conformant and MUST compare error_category. Beyond the operation's last stage (frame 4, generic 7, typed 9) is invalid.",
+          "enum": [
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6",
+            "7",
+            "8.1",
+            "8.2",
+            "8.3",
+            "8.4",
+            "9",
+            "10.1",
+            "10.2",
+            "10.3",
+            "10.4",
+            "10.5",
+            "10.6"
+          ]
+        },
         "paired_case": {
           "type": "string",
           "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"
@@ -279,6 +302,7 @@
             "required": ["type_id", "schema_version", "content_hash_hex"],
             "properties": {
               "error_category": false,
+              "error_stage": false,
               "retained_frame_hex": false
             }
           }
@@ -295,6 +319,7 @@
           "then": {
             "properties": {
               "error_category": false,
+              "error_stage": false,
               "retained_frame_hex": false
             }
           }
@@ -332,6 +357,7 @@
             "required": ["retained_frame_hex"],
             "properties": {
               "error_category": false,
+              "error_stage": false,
               "content_hash_hex": false,
               "content_digest_hex": false,
               "payload_digest_hex": false,

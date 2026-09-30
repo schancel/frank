@@ -75,8 +75,8 @@ from `fixtures/` (`builders.ts`, `cases.ts`, `manifest.ts`) and a Jest test fail
 stale. Regenerate with `FRANK_UPDATE_VECTORS=1 yarn test`. `fixtures/checker.ts` enforces the
 README section 10 manifest-validity rules that JSON Schema cannot express.
 
-The manifest schema has no stage field, so the stage the README assigns to each reject lives
-in `fixtures/cases.ts` and is asserted by the tests, not stored in the manifest.
+Each reject case carries the optional `error_stage` (README section 10; other runners SHOULD compare it, category-only runners stay conformant), which `fixtures/cases.ts`
+declares, the Jest tests assert, and the browser and Python checks compare.
 
 ## BCS falsification check
 
@@ -114,48 +114,23 @@ fixtures) the v1 reader accepted the v2 bytes.
 - No `full`, `cryptographic` or `cross_language_roundtrip` vectors; the `opaque_retention`
   pair relation is unused.
 
-## Spec ambiguities and how this codec resolves them
+## Spec ambiguities
 
-1. **R1 counters, tags.** Unstated whether a tag head is an item. Each tag head is charged as
-   an item, so a chain of more than 131,072 tags is `resource`, not `schema`.
-2. **R1 / section 9 pass A, indefinite strings.** Unstated whether chunks are items and how the
-   string limit aggregates. Chunks are not items; the aggregate length is capped (`resource`).
-   C5 calls an indefinite start `noncanonical`, but pass A scans its contents first, so a
-   truncated indefinite string is `malformed`.
-3. **R2 / 8.1 / 8.4, 256-item total.** Written under type-1 limits, but 8.4 charges every child
-   opened from a message-item array. Applied to any root, labelled stage `8.4`.
-4. **V6.1 / 8.4, open-field child with `min_reader_version` above the reader.** 8.4 names only
-   unknown type and unknown frame version. Retained (reason `unsupported-min-reader`).
-5. **V6.1, unknown type vs `min_reader_version` above the reader.** Precedence only changes the
-   retention reason; `unknown-type` is reported first.
-6. **C7 / CDDL u64 bound.** A non-u64 unsigned value needs a bignum tag, a stage 7 `schema`
-   error (C5, C8), so `.le 18446744073709551615` never fails at 8.2 for unsigned values;
-   only negatives do.
-7. **`framed-object` size 9.. / stage 2.** A framed child shorter than nine bytes is a stage
-   8.2 `schema` error (CDDL size bound first), never a stage 2 `frame` error.
-8. **S3 / T3a.5, payment ordering.** With unique, exactly contiguous child indices the
-   `transaction_id` tie-break can never decide. Both checks are kept; all are `semantic`.
-9. **S2b, key-transition entries.** Text speaks of signatures generally. The
-   algorithm/key-type/length pairing (8.3 `unsupported`) is applied to type-4 key-transition
-   entries as well as type-2 signature entries.
-10. **C12 / V6.3, nested wildcard maps.** Which frame's `schema_version` opens nested wildcard
-    maps is unstated. The frame containing the map decides; closed maps stay closed.
-11. **Section 9 passes A/B, noncanonical vs class within one item.** A non-uint key with a
-    non-minimal head (`a1 78 01 61 01`) is reported `noncanonical` (head first), then class.
-12. **S10, type-4 root.** Bootstrap and revision checks need a prior statement, which only a
-    type-2 root has, so a type-4 root validated alone passes with field 5 present. The prior
-    must be "accepted by an earlier full validation"; here it is validated at `typed` only.
-13. **F2 / section 10, `frame` operation and retention.** Retention under `frame` applies only
-    to an unsupported version; `opaque_retention_allowed: true` with version 1 just succeeds.
-14. **Section 10, manifest stages.** The schema forbids extra properties and has no
-    `error_stage`, so stages cannot be checked from the manifest. Kept in `fixtures/cases.ts`;
-    an optional `error_stage` is suggested.
-15. **F3 / section 9 stage 4-5, zero-length body.** Declared length 0 with no body passes
-    stage 4 and fails stage 5 as truncated CBOR (`malformed`), derived from the stage order.
-16. **R1 rationale, type-1 depth claim.** "Seven type-16 levels plus a leaf under a type-1
-    message" goes through the decrypted frame (stage 10.1), so it is not checkable at
-    `typed`. The type-16 root claim (nine nested plus a leaf fits, one more is `resource`)
-    is tested.
-17. **S8 / section 6, type 5 at `typed`.** The ciphertext is not opened before stage 10.1, so the
-    recursive fixture is a standalone type 6/8 root; the direct-message item graph is only
-    reachable in `full`.
+The codec review of the merged spec found 17 places where the text was silent or
+contradictory. Sixteen are now stated in the normative README
+(`docs/protocol/cbor/README.md`), which is where to read them: tag heads and indefinite
+chunks under R1 and section 9 pass A; the R2 256-item total under R2 and stage 8.4; open-field
+retention under stage 8.4 and V6.1; the unreachable u64 bound under C7; the `framed-object`
+size bound under stage 8.2; the S2b pairing for key-transition entries; nested wildcard maps
+under C12; noncanonical-before-class under section 9 passes A and B; S10 for a type-4 root;
+the retention flag, `error_stage`, and the prior-statement rule under section 10; the
+zero-length body under F3; the R1 depth rationale and the type-5 boundary under section 6.
+Where a clarification changes observable behaviour it is pinned by a manifest vector, and the
+aggregate-size ones (more than 131,072 tags, an indefinite string of many chunks or over the
+text limit) by `test/limits.jest.test.ts`, which the manifest omits for size.
+
+One is still open because it sits in text that the stamp-key PR (#200) rewrites:
+
+- **S3 / T3a.5, payment ordering.** With unique, exactly contiguous child indices the
+  `transaction_id` tie-break can never decide. The codec keeps both checks; all are `semantic`.
+  To be stated in the spec once #200 settles S3 and T3a.5.

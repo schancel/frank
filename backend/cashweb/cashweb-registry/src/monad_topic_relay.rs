@@ -22,7 +22,8 @@ use crate::{
     monad_http::{Hash32, JsonRpcTransport, MonadHttpClient, MonadRpcError},
     monad_stamp_relay::PollConfig,
     monad_topic_verify::{
-        verify_topic_vote_burn, ExpectedTopicBurn, TopicVoteBurnVerification, VoteDirection,
+        verify_topic_burn_versioned, ExpectedTopicBurn, TopicCalldataVersion,
+        TopicVoteBurnVerification, VoteDirection,
     },
 };
 
@@ -52,7 +53,7 @@ pub enum TopicVoteRelayOutcome {
         /// Hash of the broadcast (still-unconfirmed) transaction.
         tx_hash: Hash32,
     },
-    /// The tx confirmed, but [`verify_topic_vote_burn`] didn't return `Verified` (wrong
+    /// The tx confirmed, but [`crate::monad_topic_verify::verify_topic_vote_burn`] didn't return `Verified` (wrong
     /// recipient, wrong/malformed commitment, or the tx itself reverted).
     VerificationFailed {
         /// Hash of the confirmed transaction that failed verification.
@@ -75,12 +76,34 @@ impl TopicVoteRelayOutcome {
 /// [`crate::monad_stamp_relay::broadcast_and_verify_stamp`]'s loop exactly (see this module's
 /// docs for why that function itself can't be called here).
 ///
-/// Returns `Err` only for infrastructure failures from [`verify_topic_vote_burn`] itself; every
+/// Returns `Err` only for infrastructure failures from [`crate::monad_topic_verify::verify_topic_vote_burn`] itself; every
 /// expected rejection reason is a distinct `Ok(TopicVoteRelayOutcome)` variant.
 pub async fn broadcast_and_verify_topic_vote<T>(
     transport: &T,
     raw_tx: &[u8],
     expected: &ExpectedTopicBurn,
+    poll: PollConfig,
+) -> Result<TopicVoteRelayOutcome>
+where
+    T: JsonRpcTransport + Clone,
+{
+    broadcast_and_verify_topic_burn(
+        transport,
+        raw_tx,
+        expected,
+        TopicCalldataVersion::Protobuf,
+        poll,
+    )
+    .await
+}
+
+/// [`broadcast_and_verify_topic_vote`] for either encoding (see
+/// [`crate::monad_topic_verify::verify_topic_burn_versioned`]).
+pub async fn broadcast_and_verify_topic_burn<T>(
+    transport: &T,
+    raw_tx: &[u8],
+    expected: &ExpectedTopicBurn,
+    version: TopicCalldataVersion,
     poll: PollConfig,
 ) -> Result<TopicVoteRelayOutcome>
 where
@@ -95,7 +118,7 @@ where
 
     let max_attempts = poll.max_attempts.max(1);
     for attempt in 0..max_attempts {
-        let outcome = verify_topic_vote_burn(transport, tx_hash, expected)
+        let outcome = verify_topic_burn_versioned(transport, tx_hash, expected, version)
             .await
             .wrap_err_with(|| {
                 format!("verifying Monad topic-vote burn {tx_hash} after broadcast")

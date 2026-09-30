@@ -1,3 +1,5 @@
+import enUS from 'src/i18n/en-us'
+import frFR from 'src/i18n/fr-fr'
 import {
   BurnRefreshError,
   notifyBurnFailure,
@@ -53,11 +55,7 @@ describe('notifyBurnFailure', () => {
 })
 
 describe('refresh-failed wording in the real catalogs (review F6)', () => {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const catalogs = {
-    'en-us': require('src/i18n/en-us').default,
-    'fr-fr': require('src/i18n/fr-fr').default,
-  }
+  const catalogs = { 'en-us': enUS, 'fr-fr': frFR }
   const RETRY_INVITATION =
     /\b(try again|retry|once more|réessay|de nouveau|à nouveau)\b/i
 
@@ -67,7 +65,7 @@ describe('refresh-failed wording in the real catalogs (review F6)', () => {
   ] as const)(
     '%s tells the user NOT to repeat, and never invites a retry',
     (locale, doNotRepeat) => {
-      const text = catalogs[locale].stampPreparation
+      const text = catalogs[locale].stampPreparation as Record<string, string>
       for (const key of ['postedRefreshFailed', 'votedRefreshFailed']) {
         const message: string = text[key]
         expect(message).toMatch(doNotRepeat)

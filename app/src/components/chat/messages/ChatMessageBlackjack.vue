@@ -211,7 +211,11 @@ export default defineComponent({
         : this.$t('blackjackHand.betUnverified')
     },
     // What the dealer sends back for a win or a push (a loss sends nothing, said by the outcome).
+    // A promise, not a receipt: the dealer sends the reveal first and the payout transfer after
+    // it, and the chat has no record of that transfer. Never shown for a hand whose fairness
+    // check failed, since the figure would rest on data that did not verify.
     payoutText(): string {
+      if (this.verification && !this.verification.valid) return ''
       const payout = this.state ? blackjackPayoutWei(this.state) : undefined
       return payout
         ? this.$t('blackjackHand.payout', {

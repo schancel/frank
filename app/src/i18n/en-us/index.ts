@@ -46,6 +46,7 @@ export default {
     confirmPrompt: 'Pay {price} to {name} ({address}) for "{item}"?',
     confirmBuy: 'Confirm and pay {price}',
     cancel: 'Cancel',
+    confirmGroupLabel: 'Confirm purchase of {item}',
     priceUnavailable: 'price unavailable',
     hiddenOne: '{count} more item not shown',
     hiddenMany: '{count} more items not shown',
@@ -77,7 +78,7 @@ export default {
     betUnverified: 'Your bet',
     betWaiting: 'Waiting for the dealer to deal.',
     payout:
-      'The dealer sends you {amount} MON (your wager back plus any winnings).',
+      'Payout: {amount} MON (wager back plus any winnings), sent by the dealer after it reveals the hand.',
   },
   persistentStorage: {
     tab: 'Storage',

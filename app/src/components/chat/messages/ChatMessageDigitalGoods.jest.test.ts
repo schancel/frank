@@ -1,6 +1,6 @@
 /** @jest-environment jsdom */
 
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 import * as quasar from 'quasar'
 import { defineComponent, h } from 'vue'
 
@@ -183,6 +183,7 @@ describe('ChatMessageDigitalGoods purchase confirmation (ticket #368)', () => {
         {
           items: [{ type: 'digital-goods', action: 'request', itemId: 'b' }],
           stampValueWei: 100000000000000000n,
+          settled: expect.any(Function),
         },
       ],
     ])
@@ -222,5 +223,69 @@ describe('ChatMessageDigitalGoods purchase confirmation (ticket #368)', () => {
     expect(w.find('[data-testid="goods-buy"]').attributes('disable')).toBe(
       'true',
     )
+  })
+
+  it('holds a real in-flight guard until the chat reports the purchase message sent', async () => {
+    const w = renderShop()
+    await buyButtons(w)[0].trigger('click')
+    await w.find('[data-testid="goods-confirm-buy"]').trigger('click')
+    await flushPromises()
+
+    // The purchase is still being sent: no Buy can start another one.
+    expect(buyButtons(w).map(b => b.attributes('disable'))).toEqual([
+      'true',
+      'true',
+    ])
+    ;(w.vm as any).onBuy(CATALOG[1])
+    await flushPromises()
+    expect(w.emitted('sendFollowUp')).toHaveLength(1)
+
+    const payload = (w.emitted('sendFollowUp') as any)[0][0]
+    payload.settled(true)
+    await flushPromises()
+    expect(buyButtons(w).map(b => b.attributes('disable'))).toEqual([
+      'false',
+      'false',
+    ])
+  })
+
+  it('frees the guard after a bounded wait if nothing ever reports back', async () => {
+    jest.useFakeTimers({
+      doNotFake: ['nextTick', 'queueMicrotask', 'setImmediate'],
+    })
+    try {
+      const w = renderShop()
+      await buyButtons(w)[0].trigger('click')
+      await w.find('[data-testid="goods-confirm-buy"]').trigger('click')
+      await flushPromises()
+      expect((w.vm as any).buyingItemId).toBe('a')
+      jest.advanceTimersByTime(120_000)
+      await flushPromises()
+      expect((w.vm as any).buyingItemId).toBeNull()
+    } finally {
+      jest.useRealTimers()
+    }
+  })
+
+  it('labels the confirmation and moves focus into it, then back to Buy on cancel', async () => {
+    const w = mount(ChatMessageDigitalGoods, {
+      attachTo: document.body,
+      props: {
+        address: VENDOR,
+        item: { type: 'digital-goods', action: 'catalog', catalog: CATALOG },
+      } as any,
+      global: { stubs: quasarStubs, mocks: { $t } },
+    })
+    await buyButtons(w)[0].trigger('click')
+    await flushPromises()
+    const group = w.find('[data-testid="goods-confirm"]')
+    expect(group.attributes('aria-label')).toBe('Confirm purchase of Sunset')
+    expect(group.attributes('role')).toBe('group')
+    expect(document.activeElement).toBe(group.element)
+
+    await w.find('[data-testid="goods-confirm-cancel"]').trigger('click')
+    await flushPromises()
+    expect(document.activeElement).toBe(buyButtons(w)[0].element)
+    w.unmount()
   })
 })

@@ -24,9 +24,10 @@
             dense
             color="primary"
             data-testid="goods-buy"
+            :data-item-id="entry.itemId"
             :loading="buyingItemId === entry.itemId"
             :disable="!!buyingItemId || !hasValidPrice(entry)"
-            @click="confirmingItemId = entry.itemId"
+            @click="openConfirm(entry.itemId)"
           />
         </div>
         <!-- Buying pays the vendor immediately (the price is the message stamp), so it always takes
@@ -35,6 +36,11 @@
           v-if="confirmingItemId === entry.itemId"
           class="q-mb-sm q-pa-xs"
           role="group"
+          tabindex="-1"
+          :aria-label="
+            $t('digitalGoods.confirmGroupLabel', { item: entry.description })
+          "
+          :data-item-id="entry.itemId"
           data-testid="goods-confirm"
         >
           <div class="text-caption">
@@ -67,7 +73,7 @@
               flat
               data-testid="goods-confirm-cancel"
               :disable="!!buyingItemId"
-              @click="confirmingItemId = null"
+              @click="cancelConfirm(entry.itemId)"
             />
           </div>
         </div>
@@ -111,6 +117,9 @@ import {
 } from '../../../utils/image-data-uri'
 import { shortAddress } from '../../../utils/short-address'
 import { errorNotify } from '../../../utils/notifications'
+
+// A purchase normally settles within a few seconds; this only frees the guard if nobody answers.
+const BUY_SETTLE_TIMEOUT_MS = 120_000
 
 export default defineComponent({
   name: 'ChatMessageDigitalGoods',
@@ -167,9 +176,33 @@ export default defineComponent({
     hasValidPrice(entry: { priceWei: string }): boolean {
       return /^\d{1,40}$/.test(String(entry.priceWei))
     },
+    // The control that had focus is removed when the confirmation opens/closes, so move focus to
+    // the new place explicitly instead of dropping it to the page.
+    focusFor(testid: string, itemId: string) {
+      void this.$nextTick(() => {
+        const nodes = (this.$el as HTMLElement).querySelectorAll<HTMLElement>(
+          `[data-testid="${testid}"]`,
+        )
+        for (const node of Array.from(nodes)) {
+          if (node.dataset.itemId === itemId) {
+            node.focus()
+            return
+          }
+        }
+      })
+    },
+    openConfirm(itemId: string) {
+      this.confirmingItemId = itemId
+      this.focusFor('goods-confirm', itemId)
+    },
+    cancelConfirm(itemId: string) {
+      this.confirmingItemId = null
+      this.focusFor('goods-buy', itemId)
+    },
     async confirmAndBuy(entry: { itemId: string; priceWei: string }) {
       // One confirmation buys one purchase: close it before anything is sent.
       this.confirmingItemId = null
+      this.focusFor('goods-buy', entry.itemId)
       await this.onBuy(entry)
     },
     // The price comes from an untrusted peer: never throw while rendering.
@@ -187,16 +220,33 @@ export default defineComponent({
     async onBuy(entry: { itemId: string; priceWei: string }) {
       if (this.buyingItemId) return
       this.buyingItemId = entry.itemId
+      let timer: ReturnType<typeof setTimeout> | undefined
       try {
-        this.$emit('sendFollowUp', {
-          items: [
-            { type: 'digital-goods', action: 'request', itemId: entry.itemId },
-          ],
-          stampValueWei: BigInt(entry.priceWei),
+        // Held until the chat reports the purchase message was sent (or not), so a second
+        // purchase cannot start while the first is still being paid for. The timeout only
+        // protects against a parent that never reports back.
+        await new Promise<void>((resolve, reject) => {
+          timer = setTimeout(resolve, BUY_SETTLE_TIMEOUT_MS)
+          try {
+            this.$emit('sendFollowUp', {
+              items: [
+                {
+                  type: 'digital-goods',
+                  action: 'request',
+                  itemId: entry.itemId,
+                },
+              ],
+              stampValueWei: BigInt(entry.priceWei),
+              settled: () => resolve(),
+            })
+          } catch (err) {
+            reject(err)
+          }
         })
       } catch (err) {
         errorNotify(err instanceof Error ? err : new Error(String(err)))
       } finally {
+        clearTimeout(timer)
         this.buyingItemId = null
       }
     },

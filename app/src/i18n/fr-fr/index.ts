@@ -46,6 +46,7 @@ export default {
     confirmPrompt: 'Payer {price} à {name} ({address}) pour « {item} » ?',
     confirmBuy: 'Confirmer et payer {price}',
     cancel: 'Annuler',
+    confirmGroupLabel: 'Confirmer l’achat de {item}',
     priceUnavailable: 'prix indisponible',
     hiddenOne: '{count} autre article non affiché',
     hiddenMany: '{count} autres articles non affichés',
@@ -77,7 +78,7 @@ export default {
     betUnverified: 'Votre mise',
     betWaiting: 'En attente de la distribution par le croupier.',
     payout:
-      'Le croupier vous envoie {amount} MON (votre mise plus les gains éventuels).',
+      'Gain : {amount} MON (mise remboursée plus gains éventuels), envoyé par le croupier après la révélation de la main.',
   },
   persistentStorage: {
     tab: 'Stockage',

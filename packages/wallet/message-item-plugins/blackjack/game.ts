@@ -49,14 +49,13 @@ export function validateBetWei(
   return undefined
 }
 
-/** The dealer's rejection text. Keeps the readable "Blackjack: <text>" prefix (old clients show it
- * as is) and appends a parseable, JSON-quoted gameId token so a client can tell WHICH game an
- * error is about. */
 /** What the dealer sends back for a resolved hand, in wei: 2.5x the effective wager on a natural,
  * 2x on a win, the wager on a push, nothing on a loss. Mirrors the dealer bot's own
  * `payoutMultiplier` (`packages/bot/blackjack-bot.livecheck.ts`). The effective wager only counts
  * transfers verified on chain (`verifiedWagerWei`, plus `verifiedDoubleWagerWei` for a double);
- * `undefined` when the outcome is not final or the wager is not verified. */
+ * `undefined` when the outcome is not final, the wager is not verified, or a double is recorded
+ * without its verified second transfer (the amount is unknown, and a smaller figure would
+ * under-report what is owed). */
 export function blackjackPayoutWei(
   state: Pick<
     BlackjackGameState,
@@ -66,10 +65,10 @@ export function blackjackPayoutWei(
   if (state.phase !== 'resolved' || state.verifiedWagerWei === undefined) {
     return undefined
   }
-  const wager =
-    state.doubled && state.verifiedDoubleWagerWei !== undefined
-      ? state.verifiedWagerWei + state.verifiedDoubleWagerWei
-      : state.verifiedWagerWei
+  if (state.doubled && state.verifiedDoubleWagerWei === undefined) return undefined
+  const wager = state.doubled
+    ? state.verifiedWagerWei + (state.verifiedDoubleWagerWei ?? 0n)
+    : state.verifiedWagerWei
   switch (state.outcome) {
     case 'player_blackjack':
       return (wager * 5n) / 2n
@@ -84,6 +83,9 @@ export function blackjackPayoutWei(
   }
 }
 
+/** The dealer's rejection text. Keeps the readable "Blackjack: <text>" prefix (old clients show it
+ * as is) and appends a parseable, JSON-quoted gameId token so a client can tell WHICH game an
+ * error is about. */
 export function formatBlackjackError(gameId: string, text: string): string {
   return `Blackjack: ${text} [game=${JSON.stringify(gameId)}]`
 }

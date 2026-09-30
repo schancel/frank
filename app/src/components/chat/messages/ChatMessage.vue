@@ -195,6 +195,7 @@ export default defineComponent({
     handleSendFollowUp(payload: {
       items: MessageItem[]
       stampValueWei?: bigint
+      settled?: (sent: boolean) => void
     }) {
       this.$emit('sendFollowUp', payload)
     },

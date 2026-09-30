@@ -373,9 +373,18 @@ describe('blackjackPayoutWei', () => {
     ).toBe(WAGER * 4n)
   })
 
-  it('a double whose second transfer is not verified is not counted', () => {
-    expect(blackjackPayoutWei(resolved('player_win', { doubled: true }))).toBe(
-      WAGER * 2n,
+  it('a double whose second transfer is not verified has no figure, not a too-small one', () => {
+    expect(
+      blackjackPayoutWei(resolved('player_win', { doubled: true })),
+    ).toBeUndefined()
+  })
+
+  it('formatBlackjackError keeps its own doc comment', () => {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const source = require('fs').readFileSync(require.resolve('./game'), 'utf8')
+    const at = source.indexOf('export function formatBlackjackError')
+    expect(source.slice(source.lastIndexOf('/**', at), at)).toContain(
+      "The dealer's rejection text",
     )
   })
 

@@ -5,6 +5,12 @@ import * as quasar from 'quasar'
 import { defineComponent, h, reactive } from 'vue'
 
 import { formatBlackjackError } from '@frank/wallet/message-item-plugins/blackjack/game'
+import {
+  deriveDeck,
+  handValue,
+  sha256Hex,
+} from '@frank/wallet/message-item-plugins/blackjack/deck'
+import { resolveOutcome } from '@frank/wallet/message-item-plugins/blackjack/game'
 import enUS from '../../../i18n/en-us'
 import ChatMessageBlackjack from './ChatMessageBlackjack.vue'
 
@@ -283,16 +289,6 @@ describe('ChatMessageBlackjack bet and payout lines (ticket #368)', () => {
   }
   const stand = () =>
     msg(true, { type: 'blackjack-move', gameId: 'g1', action: 'stand' })
-  const reveal = (outcome: string) =>
-    msg(false, {
-      type: 'blackjack-move',
-      gameId: 'g1',
-      action: 'reveal',
-      dealerCards: [5, 6],
-      serverSeed: 'x',
-      outcome,
-    })
-
   beforeEach(() => {
     mockProvider = {
       getTransaction: jest.fn(async () => ({
@@ -325,26 +321,77 @@ describe('ChatMessageBlackjack bet and payout lines (ticket #368)', () => {
     expect(w.text()).not.toContain('Your bet:')
   })
 
+  // A genuinely fair hand (the seed's commitment, deck and outcome all check out), so the
+  // fairness line passes; a stand right after the deal means no hits.
+  function honestHand(wanted: string) {
+    for (let i = 0; i < 5000; i++) {
+      const seed = `seed-${i}`
+      const deck = deriveDeck(seed, HASH, 0)
+      const player = [deck[0], deck[2]]
+      let dealer = [deck[1], deck[3]]
+      let next = 4
+      if (!handValue(player).blackjack) {
+        while (handValue(dealer).total < 17) dealer = [...dealer, deck[next++]]
+      }
+      const outcome = resolveOutcome(handValue(player), handValue(dealer))
+      if (outcome !== wanted || handValue(player).bust) continue
+      // (`verifyRevealedHand` always draws the dealer to 17 while the bot stops on a natural, so
+      // only naturals against a dealer already at 17+ can verify.)
+      if (handValue(player).blackjack && handValue(dealer).total < 17) continue
+      return {
+        dealMsg: msg(false, {
+          type: 'blackjack-move',
+          gameId: 'g1',
+          action: 'deal',
+          serverSeedHash: sha256Hex(seed),
+          playerCards: player,
+          dealerUpCard: deck[1],
+        }),
+        revealMsg: msg(false, {
+          type: 'blackjack-move',
+          gameId: 'g1',
+          action: 'reveal',
+          dealerCards: dealer,
+          serverSeed: seed,
+          outcome,
+        }),
+      }
+    }
+    throw new Error(`no seed found for ${wanted}`)
+  }
+
   it.each([
     ['player_win', 'You win!', '0.2'],
     ['player_blackjack', 'Blackjack! You win 3:2.', '0.25'],
     ['push', 'Push', '0.1'],
   ])(
-    'a resolved %s shows what the dealer sends back',
+    'a fair resolved %s shows the payout as a promise from the dealer',
     async (outcome, text, amount) => {
-      const w = await mountWithT([bet(), deal(), stand(), reveal(outcome)], 3)
+      const { dealMsg, revealMsg } = honestHand(outcome)
+      const w = await mountWithT([bet(), dealMsg, stand(), revealMsg], 3)
+      expect(w.text()).toContain('Verified fair')
       expect(w.text()).toContain(text)
-      expect(w.find('[data-testid="blackjack-payout"]').text()).toContain(
-        `${amount} MON`,
-      )
+      const line = w.find('[data-testid="blackjack-payout"]').text()
+      expect(line).toContain(`Payout: ${amount} MON`)
+      expect(line).toContain('sent by the dealer after it reveals the hand')
     },
   )
 
+  it('hides the payout when the fairness check failed', async () => {
+    // Same outcome claim as a win, but the revealed seed does not match the commitment.
+    const { dealMsg, revealMsg } = honestHand('player_win')
+    const forged = {
+      ...revealMsg,
+      items: [{ ...(revealMsg.items[0] as object), serverSeed: 'forged' }],
+    }
+    const w = await mountWithT([bet(), dealMsg, stand(), forged], 3)
+    expect(w.text()).toContain('Verification failed')
+    expect(w.find('[data-testid="blackjack-payout"]').exists()).toBe(false)
+  })
+
   it('a loss shows no payout line', async () => {
-    const w = await mountWithT(
-      [bet(), deal(), stand(), reveal('dealer_win')],
-      3,
-    )
+    const { dealMsg, revealMsg } = honestHand('dealer_win')
+    const w = await mountWithT([bet(), dealMsg, stand(), revealMsg], 3)
     expect(w.text()).toContain('Dealer wins.')
     expect(w.find('[data-testid="blackjack-payout"]').exists()).toBe(false)
   })

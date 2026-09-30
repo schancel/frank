@@ -36,6 +36,14 @@ export default {
     balanceStale: '(last known)',
     directMessages: 'Direct Messages',
   },
+  mailboxStatus: {
+    unavailable:
+      'Messaging service unavailable: this relay does not offer messaging, so you will not receive messages.',
+    unreachable:
+      "Can't reach the server. You may not be receiving messages; retrying.",
+    rateLimited: 'The server asked us to slow down. Retrying shortly.',
+    unauthorized: 'The server rejected your messaging login. Retrying.',
+  },
   chatMessage: {
     noPayloadFound: 'Unable to find message payload',
   },

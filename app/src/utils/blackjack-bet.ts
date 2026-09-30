@@ -11,6 +11,7 @@ import {
 } from '@frank/wallet/message-item-plugins/blackjack/game'
 
 import { useActiveWallet } from '../composables/useActiveWallet'
+import { toChainDisplayAddress } from './chain-address'
 import { shortAddress } from './short-address'
 
 /** Why a bet input was refused. The UI maps each code to its own translated text; `error` is the
@@ -115,17 +116,39 @@ export const DEFAULT_BET_WEI = 10n ** 17n
  * Addresses are per machine, so the client cannot hard-code one. */
 export const CURATED_BLACKJACK_DEALER_NAME = 'Blackjack Dealer'
 
-/** True only for the curated dealer: the signed profile says it is a bot AND its name is the
- * curated dealer's. `isBot` alone is not enough (every demo bot sets it). A missing lookup
- * (`undefined`) does not count. A stranger can still copy both fields; that residual stays on
- * the capability-signalling ticket (#217). */
+export interface CuratedDefaultEntry {
+  address: string
+  name: string
+}
+
+/** True only when this chat is the single relay-curated blackjack dealer AND the signed profile
+ * still says so. The name and bot marker are necessary and not sufficient: a peer can copy both.
+ * Zero curated dealers, or more than one, fails closed. An empty list (no fetch yet, or a failed
+ * fetch) fails closed. */
 export function peerOffersDealerTable(
   profile: { isBot?: boolean; name?: string | null } | null | undefined,
+  address?: string | null,
+  curated?: readonly CuratedDefaultEntry[] | null,
 ): boolean {
-  return (
-    profile?.isBot === true &&
-    (profile.name ?? '').trim() === CURATED_BLACKJACK_DEALER_NAME
+  if (
+    profile?.isBot !== true ||
+    (profile.name ?? '').trim() !== CURATED_BLACKJACK_DEALER_NAME
+  ) {
+    return false
+  }
+  if (!address || !curated) return false
+  const dealers = curated.filter(
+    entry => (entry.name ?? '').trim() === CURATED_BLACKJACK_DEALER_NAME,
   )
+  if (dealers.length !== 1) return false
+  try {
+    return (
+      toChainDisplayAddress(dealers[0].address) ===
+      toChainDisplayAddress(address)
+    )
+  } catch {
+    return false
+  }
 }
 
 /** The bet input's starting value: 0.1 MON. Never higher, so an advertised minimum is only a

@@ -30,6 +30,7 @@ jest.mock('../composables/useActiveWallet', () => ({
 jest.mock('@frank/wallet/chain', () => ({
   activeChain: {
     toDisplayAmount: (n: bigint) => formatEther(n),
+    parseAddress: (address: string) => ({ raw: address }),
     formatAddress: (a: { raw: string }) => a.raw,
     nativeTransfers: { send: (a: unknown) => mockSend(a) },
   },
@@ -469,29 +470,50 @@ describe('table limits from the dealer welcome (#395)', () => {
     ).toBe('0.05')
   })
 
-  it('offers a table only for the curated dealer bot, not any bot and not a copied name alone', () => {
+  it('offers a table only for the one relay-curated dealer, not a copied profile', () => {
+    const dealer = `0x${'ab'.repeat(20)}`
+    const curated = [{ address: dealer, name: 'Blackjack Dealer' }]
+    const profile = { isBot: true, name: 'Blackjack Dealer' }
     expect(CURATED_BLACKJACK_DEALER_NAME).toBe('Blackjack Dealer')
+    expect(peerOffersDealerTable(profile, dealer, curated)).toBe(true)
     expect(
-      peerOffersDealerTable({
-        isBot: true,
-        name: 'Blackjack Dealer',
-      }),
+      peerOffersDealerTable(
+        { isBot: true, name: '  Blackjack Dealer  ' },
+        dealer,
+        curated,
+      ),
     ).toBe(true)
+    // A copied profile is not provenance.
+    expect(peerOffersDealerTable(profile, dealer, [])).toBe(false)
+    expect(peerOffersDealerTable(profile, dealer)).toBe(false)
+    expect(peerOffersDealerTable(profile)).toBe(false)
     expect(
-      peerOffersDealerTable({
-        isBot: true,
-        name: '  Blackjack Dealer  ',
-      }),
-    ).toBe(true)
-    expect(
-      peerOffersDealerTable({ isBot: false, name: 'Blackjack Dealer' }),
+      peerOffersDealerTable(profile, `0x${'cd'.repeat(20)}`, curated),
     ).toBe(false)
     expect(
-      peerOffersDealerTable({ isBot: undefined, name: 'Blackjack Dealer' }),
+      peerOffersDealerTable(profile, dealer, [
+        ...curated,
+        { address: `0x${'11'.repeat(20)}`, name: 'Blackjack Dealer' },
+      ]),
     ).toBe(false)
-    expect(peerOffersDealerTable({ isBot: true, name: 'Qwen' })).toBe(false)
-    expect(peerOffersDealerTable({ isBot: true, name: '' })).toBe(false)
-    expect(peerOffersDealerTable(undefined)).toBe(false)
-    expect(peerOffersDealerTable(null)).toBe(false)
+    expect(
+      peerOffersDealerTable(
+        { isBot: false, name: 'Blackjack Dealer' },
+        dealer,
+        curated,
+      ),
+    ).toBe(false)
+    expect(
+      peerOffersDealerTable(
+        { isBot: undefined, name: 'Blackjack Dealer' },
+        dealer,
+        curated,
+      ),
+    ).toBe(false)
+    expect(
+      peerOffersDealerTable({ isBot: true, name: 'Qwen' }, dealer, curated),
+    ).toBe(false)
+    expect(peerOffersDealerTable(undefined, dealer, curated)).toBe(false)
+    expect(peerOffersDealerTable(null, dealer, curated)).toBe(false)
   })
 })

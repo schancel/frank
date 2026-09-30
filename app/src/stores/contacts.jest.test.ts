@@ -31,7 +31,12 @@ jest.mock('src/composables/useActiveWallet', () => ({
 }))
 
 import { useChatStore } from './chats'
-import { isBlankName, rehydrateContacts, useContactStore } from './contacts'
+import {
+  isBlankName,
+  omitSessionCuratedDefaults,
+  rehydrateContacts,
+  useContactStore,
+} from './contacts'
 import type { ContactState } from './contacts'
 import { activeChain } from '@frank/wallet/chain'
 
@@ -381,6 +386,30 @@ describe('stores/contacts.ts (ticket #42)', () => {
       expect(
         Object.values(relaunched.getContacts).map(c => c?.profile.name),
       ).toEqual(['Blackjack Dealer', 'Raffle', 'Qwen'])
+    })
+
+    it('keeps relay provenance only in this session and drops it on save/restore (#425)', async () => {
+      const contacts = useContactStore()
+      contacts.replaceCuratedDefaults([
+        { address: DEFAULTS[0].address, name: 'Blackjack Dealer' },
+        { address: 'not-an-address', name: 'Bad' },
+      ])
+      expect(contacts.curatedDefaults).toEqual([
+        { address: toDisplay(DEFAULTS[0].address), name: 'Blackjack Dealer' },
+      ])
+      const saved = omitSessionCuratedDefaults(contacts.$state)
+      expect(saved).not.toHaveProperty('curatedDefaults')
+      const restored = await rehydrateContacts(
+        JSON.parse(
+          JSON.stringify({
+            ...contacts.$state,
+            curatedDefaults: contacts.curatedDefaults,
+          }),
+        ),
+      )
+      expect(restored.curatedDefaults).toEqual([])
+      contacts.clearCuratedDefaults()
+      expect(contacts.curatedDefaults).toEqual([])
     })
 
     it('rehydrates an old persisted state that has no dismissed list', async () => {

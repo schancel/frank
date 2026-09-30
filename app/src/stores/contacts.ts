@@ -96,12 +96,20 @@ export type ContactState = {
   }
 }
 
+export interface CuratedDefaultProvenance {
+  address: string
+  name: string
+}
+
 export interface State {
   contacts: Record<string, ContactState | undefined>
   updateInterval: number
   /** Canonical addresses of contacts the user deleted: curated defaults are not re-added for
    * them on later launches. */
   dismissedDefaults: string[]
+  /** Relay curated defaults for this session only. Not persisted: a profile refresh cannot
+   * recreate it, and a failed fetch leaves it empty (#425). */
+  curatedDefaults: CuratedDefaultProvenance[]
 }
 
 /**
@@ -117,7 +125,17 @@ function freshContactsState(): State {
     contacts: {},
     updateInterval: defaultUpdateInterval,
     dismissedDefaults: [],
+    curatedDefaults: [],
   }
+}
+
+/** Drops session curated provenance before contacts are written. A later launch starts empty. */
+export function omitSessionCuratedDefaults<T extends object>(
+  state: T,
+): Omit<T, 'curatedDefaults'> {
+  const copy = { ...state } as T & { curatedDefaults?: unknown }
+  delete copy.curatedDefaults
+  return copy as Omit<T, 'curatedDefaults'>
 }
 
 type RestorableContactState = {
@@ -175,6 +193,8 @@ export async function rehydrateContacts(
     ...contactState,
     contacts: contacts,
     dismissedDefaults: contactState.dismissedDefaults ?? [],
+    // Never trust a saved blob for this. Only a completed fetch in this session sets it.
+    curatedDefaults: [],
   }
 }
 
@@ -435,6 +455,25 @@ export const useContactStore = defineStore('contacts', {
       }
       this.addContact({ address: apiAddress, contact })
     },
+    /** Replaces session provenance with one completed relay response. Invalid addresses are
+     * dropped. Does not persist. */
+    replaceCuratedDefaults(entries: { address: string; name: string }[]) {
+      const next: CuratedDefaultProvenance[] = []
+      for (const entry of entries) {
+        try {
+          next.push({
+            address: toChainDisplayAddress(entry.address),
+            name: entry.name,
+          })
+        } catch {
+          // Same as addDefaultContact: an unparseable address is not provenance.
+        }
+      }
+      this.curatedDefaults = next
+    },
+    clearCuratedDefaults() {
+      this.curatedDefaults = []
+    },
     async refreshContacts() {
       for (const address of Object.keys(this.contacts)) {
         await this.refresh(address)
@@ -495,7 +534,7 @@ export const useContactStore = defineStore('contacts', {
   },
   storage: {
     save(storage, _mutation, state): Promise<void> {
-      const reducedState = {
+      const reducedState = omitSessionCuratedDefaults({
         ...state,
         contacts: mapObjIndexed(contact => {
           assert(contact, 'Missing contact?? Logic error')
@@ -514,7 +553,7 @@ export const useContactStore = defineStore('contacts', {
             },
           }
         }, state.contacts),
-      }
+      })
       return storage.put(
         'contacts',
         JSON.stringify(reducedState, (k, v) => {

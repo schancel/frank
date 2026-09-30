@@ -3,6 +3,8 @@
 import { mount } from '@vue/test-utils'
 import { defineComponent, h, nextTick } from 'vue'
 
+import enUS from '../../i18n/en-us'
+import frFR from '../../i18n/fr-fr'
 import SeedConfirmStep from './SeedConfirmStep.vue'
 
 const SEED = 'test test test test test test test test test test test junk'
@@ -15,7 +17,8 @@ const QBtn = defineComponent({
     return () => h('button', { ...attrs, type: props.type }, props.label)
   },
 })
-const t = (k: string, p?: { n?: number }) => (p ? `${k}:${p.n}` : k)
+const t = (k: string, p?: { n?: number; positions?: string }) =>
+  p ? `${k}:${p.n ?? p.positions}` : k
 
 function mountStep(props: Record<string, unknown> = {}) {
   return mount(SeedConfirmStep, {
@@ -60,23 +63,102 @@ describe('SeedConfirmStep', () => {
     expect(w.emitted('confirmed')).toHaveLength(1)
   })
 
-  it('wrong answers block, show a polite live error, focus the first field, and allow retry', async () => {
+  // Distinct words so a wrong field is unambiguous: positions 3, 7, 12 are test, test, junk.
+  const live = (w: ReturnType<typeof mountStep>) =>
+    w.find('[aria-live="polite"]')
+  const invalid = (w: ReturnType<typeof mountStep>) =>
+    w.findAll('input').map(i => i.attributes('aria-invalid'))
+  const errorText = (w: ReturnType<typeof mountStep>, i: number) => {
+    const id = w.findAll('input')[i].attributes('aria-describedby')
+    return id ? (w.find(`#${id}`).text() as string) : undefined
+  }
+
+  it('one wrong of three marks only that field, names its position, focuses it', async () => {
     const w = mountStep()
     await answer(w, ['test', 'test', 'wrong'])
 
     expect(w.emitted('confirmed')).toBeUndefined()
-    const live = w.find('[aria-live="polite"]')
-    expect(live.text()).toBe('seedConfirm.error')
-    expect(live.attributes('role')).toBe('status')
-    expect(w.findAll('input')[0].attributes('aria-invalid')).toBe('true')
-    expect(w.findAll('input')[0].attributes('aria-describedby')).toBe(
-      live.attributes('id'),
-    )
-    expect(document.activeElement).toBe(inputs(w)[0])
+    expect(invalid(w)).toEqual(['false', 'false', 'true'])
+    expect(errorText(w, 2)).toBe('seedConfirm.wordError:12')
+    expect(w.findAll('input')[0].attributes('aria-describedby')).toBeUndefined()
+    expect(w.findAll('input')[1].attributes('aria-describedby')).toBeUndefined()
+    expect(document.activeElement).toBe(inputs(w)[2])
+    expect(live(w).attributes('role')).toBe('status')
+    expect(live(w).text()).toBe('seedConfirm.recheck:12')
+  })
 
-    await answer(w, ['test', 'test', 'junk'])
+  it('two wrong marks exactly those two; focus goes to the first of them', async () => {
+    const w = mountStep()
+    await answer(w, ['nope', 'test', 'nah'])
+
+    expect(invalid(w)).toEqual(['true', 'false', 'true'])
+    expect(errorText(w, 0)).toBe('seedConfirm.wordError:3')
+    expect(errorText(w, 2)).toBe('seedConfirm.wordError:12')
+    expect(document.activeElement).toBe(inputs(w)[0])
+    expect(live(w).text()).toBe('seedConfirm.recheck:3, 12')
+
+    await answer(w, ['test', 'nope', 'junk'])
+    expect(invalid(w)).toEqual(['false', 'true', 'false'])
+    expect(document.activeElement).toBe(inputs(w)[1])
+    expect(live(w).text()).toBe('seedConfirm.recheck:7')
+  })
+
+  it.each([
+    ['en-us', enUS, 'Word #12 does not match', 'word numbers: 12'],
+    ['fr-fr', frFR, 'Le mot n° 12 ne correspond pas', 'n° : 12'],
+  ])(
+    'renders the real %s messages with the position',
+    async (_l, msgs, one, all) => {
+      // Resolve the real catalog entry and fill its {param}s, as vue-i18n would.
+      const real = (k: string, p: Record<string, unknown> = {}) =>
+        k
+          .split('.')
+          .reduce((o: any, part) => o[part], msgs as any)
+          .replace(/\{(\w+)\}/g, (_m: string, name: string) => String(p[name]))
+      const w = mount(SeedConfirmStep, {
+        attachTo: document.body,
+        props: { seed: SEED, positions: [3, 7, 12] },
+        global: { mocks: { $t: real }, components: { QBtn } },
+      })
+      await answer(w, ['test', 'test', 'nope'])
+      expect(errorText(w, 2)).toBe(one)
+      expect(live(w).text()).toContain(all)
+      expect(w.html()).not.toContain('junk')
+    },
+  )
+
+  it('all right confirms with no error state', async () => {
+    const w = mountStep()
+    await answer(w, ['nope', 'test', 'junk'])
+    await answer(w, [' Test', 'TEST ', 'junk'])
     expect(w.emitted('confirmed')).toHaveLength(1)
-    expect(w.find('[aria-live="polite"]').text()).toBe('')
+    expect(invalid(w).every(v => v === 'false')).toBe(true)
+    expect(live(w).text()).toBe('')
+  })
+
+  it('editing a wrong field clears only its own error', async () => {
+    const w = mountStep()
+    await answer(w, ['nope', 'test', 'nah'])
+    await w.findAll('input')[0].setValue('t')
+
+    expect(invalid(w)).toEqual(['false', 'false', 'true'])
+    expect(errorText(w, 0)).toBeUndefined()
+    expect(errorText(w, 2)).toBe('seedConfirm.wordError:12')
+    expect(live(w).text()).toBe('seedConfirm.recheck:12')
+    await w.findAll('input')[2].setValue('j')
+    expect(live(w).text()).toBe('')
+  })
+
+  it('never puts a correct word in any text or attribute of an error state', async () => {
+    const seed =
+      'alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima'
+    const w = mountStep({ seed })
+    await answer(w, ['wrongone', 'wrongtwo', 'wrongthree'])
+    const html = w.html()
+    for (const word of ['charlie', 'golf', 'lima']) {
+      expect(html).not.toContain(word)
+    }
+    expect(invalid(w)).toEqual(['true', 'true', 'true'])
   })
 
   it('empty answers are wrong', async () => {
@@ -137,6 +219,7 @@ describe('SeedConfirmStep', () => {
 
     expect(inputs(w).map(i => i.value)).toEqual(['', '', ''])
     expect(w.find('[aria-live="polite"]').text()).toBe('')
+    expect(invalid(w)).toEqual(['false', 'false', 'false'])
     expect(w.find('ol').exists()).toBe(false)
   })
 

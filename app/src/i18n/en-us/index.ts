@@ -314,8 +314,9 @@ export default {
       'Enter the requested words from the recovery phrase you wrote down. Your account is only created once they match.',
     wordLabel: 'Word #{n}',
     check: 'Check my answers',
-    error:
-      'One or more words do not match your recovery phrase. Check your copy and try again.',
+    wordError: 'Word #{n} does not match',
+    recheck:
+      'Some words do not match your recovery phrase. Re-check these word numbers: {positions}.',
     success: 'Recovery phrase confirmed. You can finish setup.',
     showPhrase: 'Show my recovery phrase again',
     hidePhrase: 'Hide my recovery phrase',

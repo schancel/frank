@@ -315,13 +315,14 @@ async function main() {
   })
   console.log(`Raffle bot identity address: ${identity.displayAddress}`)
 
-  const { stampClient, mainAccountSigner, provider, pool } =
+  const { stampClient, mainAccountSigner, provider, pool, closePool } =
     await setUpFundedStampClient({
       rpcUrl,
       relayBaseUrl,
       mainWalletJsonPath,
       stampValueWei: replyStampValueWei,
       label: 'raffle-bot',
+      stateDir: stateDirPath,
     })
 
   // This bot's own signer over its own identity's private key -- used *only* to pay a round's
@@ -694,6 +695,7 @@ async function main() {
   }
 
   await state.Close()
+  await closePool()
   console.log(
     `\nDone. Drew ${roundsDrawn} round${roundsDrawn === 1 ? '' : 's'}.`,
   )

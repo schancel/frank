@@ -213,13 +213,14 @@ async function main() {
   // tonight's nonce-contention pain: a fixed pool sized to `maxReplies + maxGreetings` meant a big
   // burst of near-simultaneous funding transactions from one account before the bot ever reached
   // its polling loop.
-  const { stampClient, mainAccountSigner, provider, pool } =
+  const { stampClient, mainAccountSigner, provider, pool, closePool } =
     await setUpFundedStampClient({
       rpcUrl,
       relayBaseUrl,
       mainWalletJsonPath,
       stampValueWei,
       label: 'bot',
+      stateDir: stateDirPath,
     })
 
   // #311: never greet/reply to other bots, and cap replies per peer per window (see
@@ -524,6 +525,7 @@ async function main() {
   }
 
   await state.Close()
+  await closePool()
   console.log(
     `\nDone. Sent ${repliesSent} ${replyGenerator.mode === 'stub' ? 'STUB (canned)' : 'real Qwen-generated'} repl${
       repliesSent === 1 ? 'y' : 'ies'

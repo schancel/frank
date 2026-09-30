@@ -890,13 +890,14 @@ async function main() {
 
   // No poolSize -- lazily funded per-send, same as qwen-bot.livecheck.ts (see
   // setUpFundedStampClient's own header, "Lazy per-send funding").
-  const { stampClient, mainAccountSigner, provider, pool } =
+  const { stampClient, mainAccountSigner, provider, pool, closePool } =
     await setUpFundedStampClient({
       rpcUrl,
       relayBaseUrl,
       mainWalletJsonPath,
       stampValueWei,
       label: 'blackjack-bot',
+      stateDir: stateDirPath,
     })
 
   const rpcProvider = new JsonRpcProvider(rpcUrl)
@@ -1063,6 +1064,7 @@ async function main() {
   }
 
   await state.Close()
+  await closePool()
   console.log(`\nDone. Resolved ${handsResolved} hand${handsResolved === 1 ? '' : 's'}.`)
 }
 

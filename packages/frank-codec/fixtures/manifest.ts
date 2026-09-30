@@ -4,9 +4,8 @@ import {
   ValidationContext,
   defaultContext,
   validateFrame,
-  KNOWN_TYPES,
 } from '../src/validate'
-import { CASES, CaseDef } from './cases'
+import { CASES, CaseDef, PRE_TOPIC_SCHEMAS } from './cases'
 
 export interface ManifestCase {
   id: string
@@ -21,6 +20,7 @@ export interface ManifestCase {
   content_hash_hex?: string
   retained_frame_hex?: string
   error_category?: string
+  error_stage?: string
   paired_case?: string
   pair_relation?: string
 }
@@ -29,9 +29,8 @@ export function contextOf(c: CaseDef): ValidationContext {
   return defaultContext({
     operation: c.op,
     routeByteLimit: c.routeByteLimit ?? 8_388_617,
-    readerVersion: c.readerVersion ?? 1,
-    supportedSchemas:
-      c.supported ?? KNOWN_TYPES.map(typeId => ({ typeId, schemaVersion: 1 })),
+    readerVersion: c.readerVersion ?? 2,
+    supportedSchemas: c.supported ?? PRE_TOPIC_SCHEMAS,
     opaqueRetentionAllowed: c.retention ?? false,
     priorDirectoryStatementFrame: c.prior === undefined ? null : c.prior,
   })
@@ -62,7 +61,10 @@ export function manifestCase(c: CaseDef): ManifestCase {
     expectation: c.expect,
     rules: c.rules,
   }
-  if (c.expect === 'reject') out.error_category = c.category
+  if (c.expect === 'reject') {
+    out.error_category = c.category
+    out.error_stage = c.stage
+  }
   if (c.expect === 'retain') out.retained_frame_hex = toHex(c.frame)
   if (c.expect === 'accept') {
     const r = validateFrame(c.frame, ctx)

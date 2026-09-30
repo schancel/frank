@@ -30,6 +30,7 @@ import { useAppearanceStore } from 'src/stores/appearance'
 import { useProfileStore } from 'src/stores/my-profile'
 import { useContactStore } from 'src/stores/contacts'
 import { useChatStore } from 'src/stores/chats'
+import { usePersistentStorageStore } from 'src/stores/persistent-storage'
 import { openChat } from 'src/utils/routes'
 
 import ContactBookDialog from 'src/components/dialogs/ContactBookDialog.vue'
@@ -74,6 +75,8 @@ export default defineComponent({
     return {
       addDefaultContact: contacts.addDefaultContact,
       refreshContacts: contacts.refreshContacts,
+      replaceCuratedDefaults: contacts.replaceCuratedDefaults,
+      clearCuratedDefaults: contacts.clearCuratedDefaults,
       // FIXME: Some kind of race condition here where if this is computed,
       // it won't be set yet by the time the setupConnections function is called
       // after signing up or logging in.
@@ -121,18 +124,26 @@ export default defineComponent({
         }
       }
     },
+    loadCuratedDefaults() {
+      fetchCuratedDefaultContacts({
+        relayBaseUrl: loadMonadChainConfigFromEnv().relayBaseUrl,
+      })
+        .then(async contacts => {
+          this.replaceCuratedDefaults(contacts)
+          for (const contact of contacts) {
+            await this.addDefaultContact(contact)
+          }
+          await this.refreshContacts()
+        })
+        .catch(err => {
+          // A failed fetch must not keep an earlier list, and must not invent one.
+          this.clearCuratedDefaults()
+          console.error(err)
+        })
+    },
     setupConnections() {
       if (monadModeEnabled()) {
-        fetchCuratedDefaultContacts({
-          relayBaseUrl: loadMonadChainConfigFromEnv().relayBaseUrl,
-        })
-          .then(async contacts => {
-            for (const contact of contacts) {
-              this.addDefaultContact(contact)
-            }
-            await this.refreshContacts()
-          })
-          .catch(err => console.error(err))
+        this.loadCuratedDefaults()
         return
       }
       // Not currently setup. User needs to go through setup flow first
@@ -154,17 +165,9 @@ export default defineComponent({
         console.error(err)
       }
 
-      // Add relay-served default contacts (ticket #49)
-      fetchCuratedDefaultContacts({
-        relayBaseUrl: loadMonadChainConfigFromEnv().relayBaseUrl,
-      })
-        .then(async contacts => {
-          for (const contact of contacts) {
-            this.addDefaultContact(contact)
-          }
-          await this.refreshContacts()
-        })
-        .catch(err => console.error(err))
+      // Add relay-served default contacts (ticket #49) and remember which
+      // addresses the relay curated for this session (#425).
+      this.loadCuratedDefaults()
 
       // const lastReceived = this.lastReceived
       const t0 = performance.now()
@@ -261,6 +264,9 @@ export default defineComponent({
   },
   mounted() {
     document.addEventListener('keydown', this.shortcutKeyListener)
+    // Ticket #370: a returning user's stored seed should survive browser storage cleanup. Fails
+    // soft (never throws) and does nothing without an account.
+    void usePersistentStorageStore().ensureForAccount()
   },
 })
 </script>

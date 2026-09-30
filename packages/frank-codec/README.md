@@ -129,8 +129,8 @@ Where a clarification changes observable behaviour it is pinned by a manifest ve
 aggregate-size ones (more than 131,072 tags, an indefinite string of many chunks or over the
 text limit) by `test/limits.jest.test.ts`, which the manifest omits for size.
 
-One is still open because it sits in text that the stamp-key PR (#200) rewrites:
+One was waiting on the stamp-key PR (#200) and is now stated in the spec (S3):
 
-- **S3 / T3a.5, payment ordering.** With unique, exactly contiguous child indices the
-  `transaction_id` tie-break can never decide. The codec keeps both checks; all are `semantic`.
-  To be stated in the spec once #200 settles S3 and T3a.5.
+- **S3 / T3a.4, payment ordering.** T3a.4 requires the sorted child indices to be exactly
+  contiguous from 0 and S3 requires them unique, so the `transaction_id` tie-break can never
+  decide. The codec keeps both checks; all are `semantic`.

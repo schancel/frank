@@ -40,7 +40,9 @@ describe('runtime constraints', () => {
       './constructors',
       './convert-bits',
       './encoding-error',
+      './hd',
       './integer',
+      './keys',
       './reader',
       './script-num',
       './varint',
@@ -75,6 +77,8 @@ describe('runtime constraints', () => {
       'bech32',
       'cashaddr',
       'address',
+      'keys',
+      'hd',
     ])
   })
 

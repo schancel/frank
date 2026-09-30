@@ -2,7 +2,7 @@
 // Per-chain entries: ./btc ./bch ./xec ./xpi.
 // Feature entries: ./integer ./script-num ./base58 ./base58check ./varint
 // ./reader ./convert-bits ./base32 ./encoding-error ./constructors
-// ./bech32 ./cashaddr ./address.
+// ./bech32 ./cashaddr ./address ./keys ./hd.
 
 export const PACKAGE_NAME = '@frank/nakamoto'
 
@@ -111,3 +111,59 @@ export type {
   TaprootCommitment,
   WitnessScriptHash,
 } from './address.js'
+
+export {
+  isKeyError,
+  privateKeyFromHex,
+  privateKeyFromSecretBytes,
+  privateKeyFromWif,
+  privateKeyToWif,
+  publicFromPrivate,
+} from './keys.js'
+export type {
+  CompressionRequired,
+  DerivedPublicKey,
+  HexInvalid,
+  KeyError,
+  KeyFailure,
+  KeyResult,
+  PublicKeyInvalid,
+  ScalarOutOfRange,
+  UncompressedPublicKey,
+  WifCompressionFlag,
+  WifPayloadLength,
+  WifVersion,
+} from './keys.js'
+
+export {
+  deriveBip44Account,
+  deriveHdPath,
+  deriveHdPrivate,
+  deriveHdPublic,
+  deriveHdPublicPath,
+  hdChildScalar,
+  hdPrivateFromSeed,
+  hdPublicFromPrivate,
+  isHdError,
+  parseHdPrivate,
+  parseHdPublic,
+  serializeHdPrivate,
+  serializeHdPublic,
+} from './hd.js'
+export type {
+  CoinTypeRequired,
+  HdDepth,
+  HdError,
+  HdFailure,
+  HdHardenedPublic,
+  HdIndex,
+  HdInvalidChild,
+  HdKeyPrefix,
+  HdPath,
+  HdPayloadLength,
+  HdPrivateNode,
+  HdPublicNode,
+  HdResult,
+  HdSeedLength,
+  HdVersion,
+} from './hd.js'

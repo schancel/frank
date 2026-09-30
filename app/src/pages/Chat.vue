@@ -396,6 +396,24 @@ export default defineComponent({
     async sendFollowUpItems({
       items,
       stampValueWei,
+      settled,
+    }: {
+      items: MessageItem[]
+      stampValueWei?: bigint
+      /** Called exactly once with whether the message was sent, so a renderer that spent money
+       * on the click (a purchase) can hold its own in-flight guard until then. */
+      settled?: (sent: boolean) => void
+    }): Promise<boolean> {
+      const sent = await this.sendFollowUpItemsUnsettled({
+        items,
+        stampValueWei,
+      })
+      settled?.(sent)
+      return sent
+    },
+    async sendFollowUpItemsUnsettled({
+      items,
+      stampValueWei,
     }: {
       items: MessageItem[]
       stampValueWei?: bigint

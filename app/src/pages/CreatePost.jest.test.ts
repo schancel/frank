@@ -22,6 +22,9 @@ jest.mock('src/stores/forum', () => ({
       putMessage: (...args: unknown[]) => mockPutMessage(...args),
     }),
 }))
+jest.mock('src/stores/topics', () => ({
+  useTopicStore: () => ({ getTopics: ['stamp', 'news', 'help'] }),
+}))
 jest.mock('src/composables/useActiveWallet', () => ({
   useActiveWallet: async () => ({ identity: {} }),
 }))
@@ -155,5 +158,25 @@ describe('CreatePost outcomes', () => {
     expect(errorNotify).toHaveBeenCalledWith(failure)
     expect(router.push).not.toHaveBeenCalled()
     expect(router.go).not.toHaveBeenCalled()
+  })
+})
+
+describe('CreatePost topic options (ticket #368)', () => {
+  const optionsFor = (typed: string) => {
+    const { wrapper } = mountPage()
+    const vm = wrapper.vm as unknown as {
+      filterTopics(t: string, update: (fn: () => void) => void): void
+      topics: string[]
+    }
+    vm.filterTopics(typed, fn => fn())
+    return vm.topics
+  }
+
+  it('opens with the known topics (forum + default/discovered), not a single empty row', () => {
+    expect(optionsFor('')).toEqual(['help', 'stamp', 'news'])
+  })
+
+  it('narrows to matches once text is typed, offering the typed text first', () => {
+    expect(optionsFor('ne')).toEqual(['ne', 'news'])
   })
 })

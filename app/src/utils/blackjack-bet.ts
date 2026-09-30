@@ -9,6 +9,7 @@ import {
 } from '@frank/wallet/message-item-plugins/blackjack/game'
 
 import { useActiveWallet } from '../composables/useActiveWallet'
+import { shortAddress } from './short-address'
 
 /** Why a bet input was refused. The UI maps each code to its own translated text; `error` is the
  * English fallback (the shared table-limit wording from `validateBetWei`). */
@@ -203,12 +204,7 @@ export function betFundsRequired(betWei: bigint, stampWei: bigint): bigint {
   return betWei + stampWei + BET_MESSAGE_FEE_RESERVE_WEI
 }
 
-/** `0x12ab...9f`-style abbreviation for showing a recipient next to its name. */
-export function shortAddress(address: string): string {
-  return address.length > 12
-    ? `${address.slice(0, 6)}...${address.slice(-4)}`
-    : address
-}
+export { shortAddress }
 
 export const BET_DELIVERY_TIMEOUT_MS = 30_000
 export const BET_SEND_TIMEOUT_MS = 120_000

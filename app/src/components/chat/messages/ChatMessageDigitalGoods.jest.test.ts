@@ -1,6 +1,6 @@
 /** @jest-environment jsdom */
 
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 import * as quasar from 'quasar'
 import { defineComponent, h } from 'vue'
 
@@ -130,5 +130,162 @@ describe('ChatMessageDigitalGoods catalog thumbnails', () => {
       global: { stubs: quasarStubs, mocks: { $t } },
     })
     expect(w.findAll('button')).toHaveLength(0)
+  })
+})
+
+describe('ChatMessageDigitalGoods purchase confirmation (ticket #368)', () => {
+  const VENDOR = '0x1234567890abcdef1234567890abcdef1234abcd'
+  const CATALOG = [
+    { itemId: 'a', description: 'Sunset', priceWei: '50000000000000000' },
+    { itemId: 'b', description: 'Forest', priceWei: '100000000000000000' },
+  ]
+  function renderShop(extra: Record<string, unknown> = {}) {
+    return mount(ChatMessageDigitalGoods, {
+      props: {
+        address: VENDOR,
+        item: { type: 'digital-goods', action: 'catalog', catalog: CATALOG },
+        ...extra,
+      } as any,
+      global: { stubs: quasarStubs, mocks: { $t } },
+    })
+  }
+  const buyButtons = (w: any) => w.findAll('[data-testid="goods-buy"]')
+
+  it('one tap on Buy sends and pays nothing; it asks first, naming item, price and recipient', async () => {
+    const w = renderShop({ recipientName: 'Picture Shop' })
+    await buyButtons(w)[0].trigger('click')
+
+    expect(w.emitted('sendFollowUp')).toBeUndefined()
+    const prompt = w.find('[data-testid="goods-confirm"]').text()
+    expect(prompt).toContain('Sunset')
+    expect(prompt).toContain('0.05 MON')
+    expect(prompt).toContain('Picture Shop')
+    expect(prompt).toContain('0x1234...abcd')
+  })
+
+  it('falls back to the abbreviated address when the vendor has no name', async () => {
+    const w = renderShop()
+    await buyButtons(w)[0].trigger('click')
+    expect(w.find('[data-testid="goods-confirm"]').text()).toContain(
+      'Pay 0.05 MON to 0x1234...abcd (0x1234...abcd)',
+    )
+  })
+
+  it('confirming sends the request once, with the price as the stamp, and closes the prompt', async () => {
+    const w = renderShop()
+    await buyButtons(w)[1].trigger('click')
+    await w.find('[data-testid="goods-confirm-buy"]').trigger('click')
+    // The confirmation is gone after one use, so a second tap has nothing to press.
+    expect(w.find('[data-testid="goods-confirm-buy"]').exists()).toBe(false)
+
+    expect(w.emitted('sendFollowUp')).toEqual([
+      [
+        {
+          items: [{ type: 'digital-goods', action: 'request', itemId: 'b' }],
+          stampValueWei: 100000000000000000n,
+          settled: expect.any(Function),
+        },
+      ],
+    ])
+    expect(w.find('[data-testid="goods-confirm"]').exists()).toBe(false)
+  })
+
+  it('cancelling sends nothing and restores the Buy button', async () => {
+    const w = renderShop()
+    await buyButtons(w)[0].trigger('click')
+    await w.find('[data-testid="goods-confirm-cancel"]').trigger('click')
+    expect(w.emitted('sendFollowUp')).toBeUndefined()
+    expect(w.find('[data-testid="goods-confirm"]').exists()).toBe(false)
+    expect(buyButtons(w)).toHaveLength(2)
+  })
+
+  it('confirming one item never buys another', async () => {
+    const w = renderShop()
+    await buyButtons(w)[0].trigger('click')
+    await buyButtons(w)[0].trigger('click') // the remaining Buy is item b
+    expect(w.find('[data-testid="goods-confirm"]').text()).toContain('Forest')
+    await w.find('[data-testid="goods-confirm-buy"]').trigger('click')
+    expect((w.emitted('sendFollowUp') as any)[0][0].items[0].itemId).toBe('b')
+  })
+
+  it('cannot be bought when the untrusted price is unreadable', () => {
+    const w = mount(ChatMessageDigitalGoods, {
+      props: {
+        address: VENDOR,
+        item: {
+          type: 'digital-goods',
+          action: 'catalog',
+          catalog: [{ itemId: 'x', description: 'Odd', priceWei: '1.5' }],
+        },
+      } as any,
+      global: { stubs: quasarStubs, mocks: { $t } },
+    })
+    expect(w.find('[data-testid="goods-buy"]').attributes('disable')).toBe(
+      'true',
+    )
+  })
+
+  it('holds a real in-flight guard until the chat reports the purchase message sent', async () => {
+    const w = renderShop()
+    await buyButtons(w)[0].trigger('click')
+    await w.find('[data-testid="goods-confirm-buy"]').trigger('click')
+    await flushPromises()
+
+    // The purchase is still being sent: no Buy can start another one.
+    expect(buyButtons(w).map(b => b.attributes('disable'))).toEqual([
+      'true',
+      'true',
+    ])
+    ;(w.vm as any).onBuy(CATALOG[1])
+    await flushPromises()
+    expect(w.emitted('sendFollowUp')).toHaveLength(1)
+
+    const payload = (w.emitted('sendFollowUp') as any)[0][0]
+    payload.settled(true)
+    await flushPromises()
+    expect(buyButtons(w).map(b => b.attributes('disable'))).toEqual([
+      'false',
+      'false',
+    ])
+  })
+
+  it('frees the guard after a bounded wait if nothing ever reports back', async () => {
+    jest.useFakeTimers({
+      doNotFake: ['nextTick', 'queueMicrotask', 'setImmediate'],
+    })
+    try {
+      const w = renderShop()
+      await buyButtons(w)[0].trigger('click')
+      await w.find('[data-testid="goods-confirm-buy"]').trigger('click')
+      await flushPromises()
+      expect((w.vm as any).buyingItemId).toBe('a')
+      jest.advanceTimersByTime(120_000)
+      await flushPromises()
+      expect((w.vm as any).buyingItemId).toBeNull()
+    } finally {
+      jest.useRealTimers()
+    }
+  })
+
+  it('labels the confirmation and moves focus into it, then back to Buy on cancel', async () => {
+    const w = mount(ChatMessageDigitalGoods, {
+      attachTo: document.body,
+      props: {
+        address: VENDOR,
+        item: { type: 'digital-goods', action: 'catalog', catalog: CATALOG },
+      } as any,
+      global: { stubs: quasarStubs, mocks: { $t } },
+    })
+    await buyButtons(w)[0].trigger('click')
+    await flushPromises()
+    const group = w.find('[data-testid="goods-confirm"]')
+    expect(group.attributes('aria-label')).toBe('Confirm purchase of Sunset')
+    expect(group.attributes('role')).toBe('group')
+    expect(document.activeElement).toBe(group.element)
+
+    await w.find('[data-testid="goods-confirm-cancel"]').trigger('click')
+    await flushPromises()
+    expect(document.activeElement).toBe(buyButtons(w)[0].element)
+    w.unmount()
   })
 })

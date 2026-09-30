@@ -110,6 +110,8 @@ import { useActiveWallet } from 'src/composables/useActiveWallet'
 import { activeChain } from '@frank/wallet/chain'
 import { displayToSafeRawAmount } from 'src/utils/chain-amount'
 
+import { useTopicStore } from 'src/stores/topics'
+import { topicOptions } from 'src/utils/topic-options'
 import AMessage from '../components/forum/ForumMessage.vue'
 import { errorNotify, infoNotify } from 'src/utils/notifications'
 import { submitPost } from 'src/utils/submit-post'
@@ -120,6 +122,7 @@ export default defineComponent({
     const forum = useForumStore()
     const { topics, getMessage } = storeToRefs(forum)
     return {
+      topicStore: useTopicStore(),
       getMessage: getMessage,
       availableTopics: topics,
       pushNewTopic: forum.pushNewTopic,
@@ -152,6 +155,10 @@ export default defineComponent({
     next()
   },
   computed: {
+    // Topics seen in posts, plus the default and relay-discovered ones the topic store tracks.
+    knownTopics(): string[] {
+      return [...this.availableTopics, ...this.topicStore.getTopics]
+    },
     markedMessage() {
       const text: string = this.message
       return renderMarkdown(text, this.$q.dark.isActive)
@@ -160,12 +167,7 @@ export default defineComponent({
   methods: {
     filterTopics(inputTopic: string, update: (arg: () => void) => void) {
       update(() => {
-        this.topics = [
-          inputTopic,
-          ...this.availableTopics.filter(
-            (topic: string) => topic.indexOf(inputTopic) > -1,
-          ),
-        ]
+        this.topics = topicOptions(inputTopic, this.knownTopics)
       })
     },
     createValue(

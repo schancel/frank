@@ -43,6 +43,10 @@ export default {
   digitalGoods: {
     catalog: 'Catalogue',
     buy: 'Acheter',
+    confirmPrompt: 'Payer {price} à {name} ({address}) pour « {item} » ?',
+    confirmBuy: 'Confirmer et payer {price}',
+    cancel: 'Annuler',
+    confirmGroupLabel: 'Confirmer l’achat de {item}',
     priceUnavailable: 'prix indisponible',
     hiddenOne: '{count} autre article non affiché',
     hiddenMany: '{count} autres articles non affichés',
@@ -68,6 +72,13 @@ export default {
       "Ne montre pas : que les participants listés sont de vrais paiements on-chain, ni qu'aucune participation n'a été écartée.",
     explainerCountUnverified:
       "Le tirage n'a pas annoncé sa taille : le nombre de participants n'est pas vérifié.",
+  },
+  blackjackHand: {
+    bet: 'Votre mise : {amount} MON',
+    betUnverified: 'Votre mise',
+    betWaiting: 'En attente de la distribution par le croupier.',
+    payout:
+      'Gain : {amount} MON (mise remboursée plus gains éventuels), envoyé par le croupier après la révélation de la main.',
   },
   persistentStorage: {
     tab: 'Stockage',

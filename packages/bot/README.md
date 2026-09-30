@@ -305,6 +305,30 @@ Limits: the marker is self-asserted; the budget is in memory (a restart resets i
 address (a sybil gets the budget per address, each still paying a stamp). Blackjack only answers
 `blackjack-move` items and is unchanged apart from registering the marker.
 
+## Standalone testnet faucet (#316)
+
+`yarn faucet` (`faucet-bot.livecheck.ts`, logic in `faucet-core.ts`) funds each newly registered
+profile once with testnet MON. It needs no LLM key, no stamp pool and no identity: only
+`MONAD_TESTNET_HTTP_RPC_URL`, `FRANK_NETWORK_TAG=MONT` and `E2E_DEMO_MAIN_WALLET_JSON`
+(`{address, privateKey}` of a wallet holding testnet MON only). See the file header for every knob
+(`FAUCET_AMOUNT_WEI` default 0.05 MON, hard ceiling 1 MON; `FAUCET_MAX_PER_RUN` 10;
+`FAUCET_MAX_PER_DAY` 20; `FAUCET_MIN_RESERVE_WEI` 0.1 MON; `FAUCET_STATE_DIR`).
+
+- once per address, durable: the exact signed transaction is persisted before broadcast; any
+  record (signed/submitted/confirmed) blocks re-funding, across restarts and address casing. A
+  crash mid-broadcast replays the same bytes on restart; it never re-signs.
+- skips itself, `FRANK_BOT_PEER_DENYLIST`, self-declared bots (#311) and addresses that already
+  hold at least the amount. Stops (without consuming the profile, so it is retried) at the per-run
+  cap, the rolling 24h cap, or when the wallet would fall under the reserve.
+- testnet only: refuses to start unless `FRANK_NETWORK_TAG=MONT` and the RPC reports chain id 10143.
+- Do not also let Qwen fund: set `QWEN_BOT_FUND_VALUE_WEI=0` on the Qwen bot (it still greets).
+
+Abuse limits (demo level): registration is free, so a sybil can mint addresses and collect the
+amount per address until the daily cap (loss bounded to `maxPerDay * amount`, wallet floor kept by
+the reserve). No captcha, no proof of humanity, no per-IP limit. A transfer whose broadcast the node
+rejects is left for the operator (logged with its hash), never re-signed. The app's Receive page
+shows the user's address and explains the faucet when the balance is a real zero.
+
 ## Non-goals (per the ticket)
 
 Production hardening, multi-user bot support, prompt/persona design polish, and a full

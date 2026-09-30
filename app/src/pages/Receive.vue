@@ -24,6 +24,13 @@
           >
             {{ $t('receiveBitcoinDialog.balanceUnavailable') }}
           </div>
+          <div
+            v-if="isEmpty"
+            class="text-caption text-center q-mt-sm"
+            data-testid="receive-no-funds-hint"
+          >
+            {{ $t('receiveBitcoinDialog.noFundsHint') }}
+          </div>
         </q-card-section>
         <q-separator />
         <q-card-section>
@@ -77,7 +84,7 @@ export default defineComponent({
   setup() {
     const router = useRouter()
     // Shared with the drawer: one polling loop, so this page refreshes without a reload.
-    const { formattedBalance, loaded, hasError } = useBalance()
+    const { formattedBalance, loaded, isEmpty, hasError } = useBalance()
     // An em dash (not "0") until the first successful fetch: an unloaded or failed balance must
     // not look like a real zero.
     const balanceText = computed(() =>
@@ -101,6 +108,7 @@ export default defineComponent({
     return {
       displayAddress,
       balanceText,
+      isEmpty,
       hasError,
       close() {
         window.history.length > 1 ? router.go(-1) : router.push('/')

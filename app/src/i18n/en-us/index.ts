@@ -162,6 +162,8 @@ export default {
   receiveBitcoinDialog: {
     walletStatus: 'Wallet Status',
     balanceUnavailable: 'Balance unavailable. Retrying.',
+    noFundsHint:
+      'Your balance is 0. This app uses testnet MON, which has no real value. The demo faucet funds new profiles automatically; if nothing arrives after a minute, ask the demo operator to send testnet MON to the address below.',
     close: 'Close',
     addressCopied: 'Address copied to clipboard',
   },

@@ -496,7 +496,13 @@ export const useContactStore = defineStore('contacts', {
       const noPicture = oldContactInfo.profile && !oldContactInfo.profile.avatar
       const botUnknown =
         oldContactInfo.profile && oldContactInfo.profile.isBot === undefined
-      if (!expired && !noPicture && !botUnknown) {
+      // A profile saved before signed-name provenance has a fresh picture and bot flag, so the
+      // hourly skip would leave the wager gate closed. Unknown provenance must be fetched. A
+      // known blank signed name is not unknown and must not be refreshed just to fill it.
+      const signedNameUnknown =
+        oldContactInfo.profile &&
+        oldContactInfo.profile.signedName === undefined
+      if (!expired && !noPicture && !botUnknown && !signedNameUnknown) {
         // Short circuit if we already updated this contact recently.
         console.log('skipping contact update, checked recently')
         return

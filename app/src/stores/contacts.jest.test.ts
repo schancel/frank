@@ -309,6 +309,108 @@ describe('stores/contacts.ts (ticket #42)', () => {
       },
     )
 
+    it('loads signed-name provenance for a warm contact the hourly cache would skip (#422)', async () => {
+      const contacts = useContactStore()
+      contacts.addContact({
+        address: ADDRESS,
+        contact: {
+          lastUpdateTime: Date.now(),
+          profile: {
+            name: 'Blackjack Dealer',
+            bio: '',
+            avatar: 'data:image/png;base64,AQID',
+            pubKey: null,
+            isBot: true,
+          },
+        },
+      })
+      contacts.replaceCuratedDefaults([
+        { address: ADDRESS, name: 'Blackjack Dealer' },
+      ])
+      const fetchProfileSpy = jest
+        .spyOn(activeChain, 'fetchProfile')
+        .mockResolvedValue({
+          address: { raw: ADDRESS },
+          pubKey: PUB_KEY_BYTES,
+          name: 'Blackjack Dealer',
+          bot: true,
+          avatar: 'data:image/png;base64,AQID',
+        })
+
+      await contacts.refresh(ADDRESS)
+
+      expect(fetchProfileSpy).toHaveBeenCalled()
+      const profile = contacts.getContactProfile(ADDRESS)
+      expect(profile.signedName).toBe('Blackjack Dealer')
+      expect(
+        peerOffersDealerTable(profile, ADDRESS, contacts.curatedDefaults),
+      ).toBe(true)
+    })
+
+    it('a warm curated label still fails the wager gate when the signed name is blank (#422)', async () => {
+      const contacts = useContactStore()
+      contacts.addContact({
+        address: ADDRESS,
+        contact: {
+          lastUpdateTime: Date.now(),
+          profile: {
+            name: 'Blackjack Dealer',
+            bio: '',
+            avatar: 'data:image/png;base64,AQID',
+            pubKey: null,
+            isBot: true,
+          },
+        },
+      })
+      contacts.replaceCuratedDefaults([
+        { address: ADDRESS, name: 'Blackjack Dealer' },
+      ])
+      jest.spyOn(activeChain, 'fetchProfile').mockResolvedValue({
+        address: { raw: ADDRESS },
+        pubKey: PUB_KEY_BYTES,
+        name: '',
+        bot: true,
+        avatar: 'data:image/png;base64,AQID',
+      })
+
+      await contacts.refresh(ADDRESS)
+
+      const profile = contacts.getContactProfile(ADDRESS)
+      expect(profile.name).toBe('Blackjack Dealer')
+      expect(profile.signedName).toBe('')
+      expect(
+        peerOffersDealerTable(profile, ADDRESS, contacts.curatedDefaults),
+      ).toBe(false)
+    })
+
+    it('does not refetch a warm contact whose signed name is already known blank (#422)', async () => {
+      const contacts = useContactStore()
+      contacts.addContact({
+        address: ADDRESS,
+        contact: {
+          lastUpdateTime: Date.now(),
+          profile: {
+            name: 'Blackjack Dealer',
+            signedName: '',
+            bio: '',
+            avatar: 'data:image/png;base64,AQID',
+            pubKey: null,
+            isBot: true,
+          },
+        },
+      })
+      const fetchProfileSpy = jest.spyOn(activeChain, 'fetchProfile')
+
+      await contacts.refresh(ADDRESS)
+
+      expect(fetchProfileSpy).not.toHaveBeenCalled()
+      expect(
+        peerOffersDealerTable(contacts.getContactProfile(ADDRESS), ADDRESS, [
+          { address: ADDRESS, name: 'Blackjack Dealer' },
+        ]),
+      ).toBe(false)
+    })
+
     it.each([
       ['empty', ''],
       ['whitespace', '   \t '],

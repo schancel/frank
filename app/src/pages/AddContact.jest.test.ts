@@ -7,6 +7,7 @@ import { defineComponent, h, nextTick } from 'vue'
 import enUS from 'src/i18n/en-us'
 import frFR from 'src/i18n/fr-fr'
 import { activeChain } from '@frank/wallet/chain'
+import { peerOffersDealerTable } from 'src/utils/blackjack-bet'
 import { openChat } from 'src/utils/routes'
 import AddContact from './AddContact.vue'
 
@@ -35,6 +36,7 @@ type ChainAddress = { raw: string }
 type ProfileInfo = {
   address: ChainAddress
   name?: string
+  bot?: boolean
   pubKey: Uint8Array
 }
 type Deferred<T> = {
@@ -52,6 +54,7 @@ const ADDRESS_OWN = 'canonical:own'
 const parsedAddresses: Record<string, ChainAddress> = {
   a: { raw: ADDRESS_A },
   A: { raw: ADDRESS_A },
+  [ADDRESS_A]: { raw: ADDRESS_A },
   b: { raw: ADDRESS_B },
   c: { raw: ADDRESS_C },
   // Checksum, lowercase and padded spellings of the user's own address.
@@ -213,6 +216,53 @@ describe('AddContact latest lookup', () => {
     expect(mockOpenChat).toHaveBeenCalledTimes(1)
     expect(mockOpenChat).toHaveBeenCalledWith(mockRouter, ADDRESS_A)
   })
+
+  it('commits dealer signed-name provenance from the first validated fetch', async () => {
+    chain.fetchProfile.mockResolvedValue({
+      ...profile(ADDRESS_A, 'Blackjack Dealer'),
+      bot: true,
+    })
+
+    await typeAndFire(wrapper, 'a')
+    await addButton(wrapper).trigger('click')
+
+    expect(chain.fetchProfile).toHaveBeenCalledTimes(1)
+    const storedProfile = mockAddContactToStore.mock.calls[0][0].contact.profile
+    expect(storedProfile.signedName).toBe('Blackjack Dealer')
+    expect(
+      peerOffersDealerTable(storedProfile, ADDRESS_A, [
+        { address: ADDRESS_A, name: 'Blackjack Dealer' },
+      ]),
+    ).toBe(true)
+  })
+
+  it.each([
+    ['blank', ''],
+    ['missing', undefined],
+  ])(
+    'keeps a %s signed name fail-closed after the first validated fetch',
+    async (_description, name) => {
+      chain.fetchProfile.mockResolvedValue({
+        address: { raw: ADDRESS_A },
+        name,
+        bot: true,
+        pubKey: Uint8Array.from([2]),
+      })
+
+      await typeAndFire(wrapper, 'a')
+      await addButton(wrapper).trigger('click')
+
+      expect(chain.fetchProfile).toHaveBeenCalledTimes(1)
+      const storedProfile =
+        mockAddContactToStore.mock.calls[0][0].contact.profile
+      expect(storedProfile.signedName).toBe(name ?? null)
+      expect(
+        peerOffersDealerTable(storedProfile, ADDRESS_A, [
+          { address: ADDRESS_A, name: 'Blackjack Dealer' },
+        ]),
+      ).toBe(false)
+    },
+  )
 
   it('adds through the Enter key only when a lookup was accepted', async () => {
     chain.fetchProfile.mockResolvedValue(profile(ADDRESS_A, 'Alice'))

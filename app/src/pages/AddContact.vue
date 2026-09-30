@@ -268,6 +268,7 @@ export default defineComponent({
             profile: {
               ...defaultRelayData.profile,
               name: profileInfo.name ?? '',
+              signedName: profileInfo.name ?? null,
               bio: profileInfo.bio ?? '',
               avatar: profileInfo.avatar ?? '',
               isBot: profileInfo.bot === true,

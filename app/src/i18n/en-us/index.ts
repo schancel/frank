@@ -110,8 +110,13 @@ export default {
     confirmSeed: 'Confirm my recovery phrase',
     seedConfirmed: 'Your recovery phrase is confirmed.',
   },
+  blackjackWelcome: {
+    title: 'Blackjack table',
+  },
   blackjackBet: {
-    menuLabel: 'Play blackjack',
+    playAgainTitle: 'Play again',
+    faucetHint:
+      'Need MON to play? This app uses testnet MON, which has no real value. The demo faucet funds new profiles automatically; if nothing arrived, ask the demo operator to send you some.',
     title: 'Start a blackjack hand',
     amountLabel: 'Bet amount',
     amountAria: 'Bet amount in MON',
@@ -119,7 +124,6 @@ export default {
     notice:
       'Your bet is a real transfer of MON to {name} ({address}). Only use it with a blackjack dealer.',
     confirm: 'I understand {amount} MON will be sent to {name} ({address})',
-    confirmRequired: 'Tick the box to confirm the transfer.',
     submit: 'Deal me in with {name} {address} ({amount} MON)',
     sending: 'Sending your bet…',
     sent: 'Bet sent. Waiting for the dealer to deal.',

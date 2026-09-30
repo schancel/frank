@@ -11,13 +11,24 @@ import {
   tryDecryptEnvelope,
 } from '@frank/cashweb/relay/monad-message-envelope'
 import { fetchMonadMessagesSince } from '@frank/cashweb/relay/monad-message-feed'
-import { MessageItem, RaffleItem } from '@frank/cashweb/types/messages'
+import { BlackjackMoveItem, MessageItem, RaffleItem } from '@frank/cashweb/types/messages'
 import { deserializeMessageItems } from '@frank/wallet/chain/monad-chain'
 import {
   fetchMonadIdentityPubKey,
   mailboxAuthFor,
   MonadIdentity,
 } from '@frank/wallet/monad-identity'
+import { MonadAccountTxSigner } from '@frank/wallet/monad-account-tx'
+import {
+  BLACKJACK_DEFAULT_MAX_WAGER_WEI,
+  BLACKJACK_DEFAULT_MIN_WAGER_WEI,
+  BlackjackGameState,
+  parseBlackjackWelcome,
+  reduceBlackjackState,
+  verifyRevealedHand,
+} from '@frank/wallet/message-item-plugins/blackjack/game'
+import { handValue } from '@frank/wallet/message-item-plugins/blackjack/deck'
+import { Wallet } from 'ethers'
 
 import __pb_broadcast_pb from '@frank/cashweb/registry/broadcast_pb'
 import { MonadHttpClient } from '@frank/wallet/monad-http'
@@ -29,7 +40,12 @@ import {
 
 const { BroadcastMessage, ForumPost: BroadcastForumPostPayload } = __pb_broadcast_pb
 
-import { registerAndLog, sendDirectMessageItems, setUpFundedStampClient } from '../qwen-bot-common'
+import {
+  registerAndLog,
+  sendDirectMessageItems,
+  setUpFundedStampClient,
+  waitForConfirmation,
+} from '../qwen-bot-common'
 import { STUB_REPLY_PREFIX } from '../qwen-reply'
 import { DemoHandle } from './demo'
 
@@ -84,6 +100,91 @@ function describe(items: MessageItem[]): string {
       )
       .join(',') || 'nothing'
   )
+}
+
+/** What the dealer's welcome must be (#395): a valid `welcome` item whose limits are the dealer's
+ * own configured table, followed by the plain-text line older clients show (it must be LAST: an
+ * older client's chat-list preview reads the last item and cannot render an unknown action).
+ * Pure, unit-tested. */
+export function judgeWelcome(
+  items: MessageItem[],
+  expected: { minWei: bigint; maxWei: bigint },
+): SmokeCheck {
+  const name = 'blackjack-welcome'
+  const welcomeItem = items.find(
+    (i): i is BlackjackMoveItem => i.type === 'blackjack-move' && i.action === 'welcome',
+  )
+  if (!welcomeItem) return { name, ok: false, detail: `no welcome item, got ${describe(items)}` }
+  const table = parseBlackjackWelcome(welcomeItem)
+  if (!table) return { name, ok: false, detail: 'the welcome item is malformed' }
+  if (table.minWagerWei !== expected.minWei || table.maxWagerWei !== expected.maxWei) {
+    return {
+      name,
+      ok: false,
+      detail: `the welcome advertises ${table.minWagerWei}..${table.maxWagerWei} wei, the dealer is configured for ${expected.minWei}..${expected.maxWei}`,
+    }
+  }
+  if (items[items.length - 1]?.type !== 'text') {
+    return { name, ok: false, detail: 'the welcome is not followed by a text line (last item)' }
+  }
+  return {
+    name,
+    ok: true,
+    detail: `new profile welcomed with table limits ${table.minWagerWei}..${table.maxWagerWei} wei`,
+  }
+}
+
+/** Judges a played first hand from what the dealer sent (its `deal`, any `hit`s, its `reveal`) and
+ * what the player sent (`bet`, and `stand` if the hand was not over): the reveal must exist, and
+ * the revealed seed must reproduce the committed hash, every card and the outcome
+ * (`verifyRevealedHand`). Pure, unit-tested. */
+export function judgeFirstBet(params: {
+  gameId: string
+  wagerTxHash: string
+  wagerWei: bigint
+  playerAddress: string
+  /** The blackjack-move items of this game, in the order they were sent/received. */
+  moves: BlackjackMoveItem[]
+}): SmokeCheck {
+  const name = 'blackjack-first-bet'
+  let state: BlackjackGameState | undefined
+  for (const move of params.moves) {
+    if (move.gameId !== params.gameId || move.action === 'welcome') continue
+    state = reduceBlackjackState(state, {
+      gameId: move.gameId,
+      action: move.action,
+      wagerTxHash: move.wagerTxHash,
+      serverSeedHash: move.serverSeedHash,
+      playerCards: move.playerCards,
+      dealerUpCard: move.dealerUpCard,
+      dealerCards: move.dealerCards,
+      serverSeed: move.serverSeed,
+      outcome: move.outcome,
+      verifiedWager:
+        move.action === 'bet'
+          ? { fromAddress: params.playerAddress, toAddress: '', valueWei: params.wagerWei }
+          : undefined,
+      senderAddress: params.playerAddress,
+    })
+  }
+  if (!state || state.phase !== 'resolved') {
+    return {
+      name,
+      ok: false,
+      detail: `the hand did not resolve (phase ${state?.phase ?? 'none'}): ${params.moves
+        .map(m => m.action)
+        .join(',')}`,
+    }
+  }
+  const verdict = verifyRevealedHand(state)
+  if (!verdict.valid) {
+    return { name, ok: false, detail: `the reveal failed the fairness check: ${verdict.reason}` }
+  }
+  return {
+    name,
+    ok: true,
+    detail: `a wager of ${params.wagerWei} wei was dealt, played and revealed (${state.outcome}); fairness verified`,
+  }
 }
 
 const PROMPTS: Record<string, MessageItem[]> = {
@@ -466,12 +567,170 @@ async function checkRaffleFill(
   }
 }
 
+/** Every message the dealer has sent `human`, decoded (oldest first). Mailbox reads are
+ * idempotent, so callers re-read from the start of the run. */
+async function dealerMessages(
+  handle: DemoHandle,
+  human: MonadIdentity,
+  dealerAddress: string,
+  dealerKey: Buffer,
+  since: number,
+): Promise<MessageItem[][]> {
+  const stored = await fetchMonadMessagesSince({
+    ...mailboxAuthFor(human, handle.relayUrl),
+    sinceMs: since,
+  })
+  const messages: MessageItem[][] = []
+  for (const row of stored) {
+    if (!row.message) continue
+    const envelope = parseEnvelope(row.message.encryptedPayload)
+    if (
+      !envelope ||
+      !sameMonadEnvelopeAddress(envelope.to, human.displayAddress) ||
+      !sameMonadEnvelopeAddress(envelope.from, dealerAddress)
+    ) {
+      continue
+    }
+    const plaintext = tryDecryptEnvelope({
+      envelope,
+      myPrivateKey: human.toBitcorePrivateKey(),
+      senderPubKey: dealerKey,
+    })
+    if (plaintext === undefined) continue
+    messages.push(deserializeMessageItems(plaintext))
+  }
+  return messages
+}
+
+/** The dealer's opening message and a scripted first bet, end to end (#395): a NEW profile (funded
+ * by the faucet) must receive the welcome exactly once, and a real wager transfer from that
+ * profile, the `bet`, a `stand` and the dealer's `reveal` must resolve with a passing fairness
+ * check. The browser bet control is not exercised here; it sends exactly this sequence. */
+export async function checkBlackjackWelcomeAndFirstBet(
+  handle: DemoHandle,
+  params: {
+    human: MonadIdentity
+    humanPrivateKey: string
+    dealerKey: Buffer
+    startedAt: number
+    timeoutMs: number
+    ctx: Pick<
+      Awaited<ReturnType<typeof setUpFundedStampClient>>,
+      'stampClient' | 'pool' | 'provider' | 'mainAccountSigner'
+    >
+  },
+): Promise<SmokeCheck[]> {
+  const welcomeName = 'blackjack-welcome'
+  const betName = 'blackjack-first-bet'
+  const { human, dealerKey, startedAt, ctx } = params
+  const dealer = handle.addresses.blackjack
+  const env = handle.config.bots.find(b => b.name === 'blackjack')?.env ?? {}
+  const expected = {
+    minWei: BigInt(env.BLACKJACK_BOT_MIN_WAGER_WEI ?? BLACKJACK_DEFAULT_MIN_WAGER_WEI),
+    maxWei: BigInt(env.BLACKJACK_BOT_MAX_WAGER_WEI ?? BLACKJACK_DEFAULT_MAX_WAGER_WEI),
+  }
+  const read = () => dealerMessages(handle, human, dealer, dealerKey, startedAt)
+  const isWelcome = (items: MessageItem[]) =>
+    items.some(i => i.type === 'blackjack-move' && i.action === 'welcome')
+  try {
+    const deadline = Date.now() + params.timeoutMs
+    let welcomed: MessageItem[] | undefined
+    while (!welcomed && Date.now() < deadline) {
+      welcomed = (await read()).find(isWelcome)
+      if (!welcomed) await sleep(2000)
+    }
+    const welcomeCheck: SmokeCheck = welcomed
+      ? judgeWelcome(welcomed, expected)
+      : { name: welcomeName, ok: false, detail: `no welcome within ${params.timeoutMs}ms` }
+
+    // The scripted first bet: the same sequence the browser control sends.
+    const wagerWei = expected.minWei
+    const signer = new MonadAccountTxSigner({
+      privateKey: params.humanPrivateKey,
+      provider: ctx.provider,
+      httpClient: new MonadHttpClient({ rpcUrl: handle.config.rpcUrl }),
+    })
+    const wagerTxHash = await signer.submit(await signer.buildAndSignTransfer(dealer, wagerWei))
+    await waitForConfirmation(signer, wagerTxHash, 'blackjack wager')
+    const gameId = `bj-smoke-${Date.now()}`
+    const bet: BlackjackMoveItem = { type: 'blackjack-move', gameId, action: 'bet', wagerTxHash }
+    const send = (item: BlackjackMoveItem) =>
+      sendDirectMessageItems({
+        ...ctx,
+        fromIdentity: human,
+        toAddress: dealer,
+        toPubKey: dealerKey,
+        items: [item],
+        stampValueWei: BigInt(handle.config.minStampWei) * 10n,
+        networkTag: handle.config.networkTag,
+      })
+    await send(bet)
+
+    const gameMoves = async () =>
+      (await read())
+        .flat()
+        .filter((i): i is BlackjackMoveItem => i.type === 'blackjack-move' && i.gameId === gameId)
+    const dealerError = async () =>
+      (await read())
+        .flat()
+        .find(i => i.type === 'text' && i.text.includes(`[game=${JSON.stringify(gameId)}]`)) as
+        | { text: string }
+        | undefined
+    const waitFor = async (action: BlackjackMoveItem['action']) => {
+      const until = Date.now() + params.timeoutMs
+      while (Date.now() < until) {
+        const found = (await gameMoves()).find(m => m.action === action)
+        if (found) return found
+        const rejected = await dealerError()
+        if (rejected) throw new Error(`the dealer rejected the bet: ${rejected.text}`)
+        await sleep(2000)
+      }
+      throw new Error(`no ${action} from the dealer within ${params.timeoutMs}ms`)
+    }
+
+    const deal = await waitFor('deal')
+    const moves: BlackjackMoveItem[] = [bet, deal]
+    // A natural is revealed at once; otherwise stand and wait for the reveal.
+    if (!handValue(deal.playerCards ?? []).blackjack) {
+      const stand: BlackjackMoveItem = { type: 'blackjack-move', gameId, action: 'stand' }
+      await send(stand)
+      moves.push(stand)
+    }
+    const reveal = await waitFor('reveal')
+    moves.push(reveal)
+    const firstBet = judgeFirstBet({
+      gameId,
+      wagerTxHash,
+      wagerWei,
+      playerAddress: human.displayAddress,
+      moves,
+    })
+
+    // Greeted exactly once, however long the dealer has been polling.
+    const welcomes = (await read()).filter(isWelcome).length
+    if (welcomes !== 1 && welcomeCheck.ok) {
+      return [
+        { name: welcomeName, ok: false, detail: `the dealer sent ${welcomes} welcomes, expected 1` },
+        firstBet,
+      ]
+    }
+    return [welcomeCheck, firstBet]
+  } catch (err) {
+    return [
+      { name: welcomeName, ok: false, detail: 'not reached: ' + (err instanceof Error ? err.message : String(err)) },
+      { name: betName, ok: false, detail: err instanceof Error ? err.message : String(err) },
+    ]
+  }
+}
+
 export async function runSmokeChecks(
   handle: DemoHandle,
   options: { timeoutMs: number },
 ): Promise<SmokeCheck[]> {
   const { config, relayUrl } = handle
-  const human = MonadIdentity.generate()
+  // The wallet is kept so the scripted first bet can sign a real wager transfer as this profile.
+  const humanWallet = Wallet.createRandom()
+  const human = MonadIdentity.fromPrivateKeyHex(humanWallet.privateKey)
   const startedAt = Date.now()
   // A human profile (no bot marker), registered AFTER the bots started: the faucet funds it.
   await registerAndLog({ relayBaseUrl: relayUrl, identity: human, label: 'smoke-user', bot: false })
@@ -569,18 +828,35 @@ export async function runSmokeChecks(
 
     // The faucet has no chat: it must have sent the new profile a transfer on the fake chain.
     let funded = false
-    while (!funded && Date.now() < deadline) {
+    const fundingDeadline = Date.now() + options.timeoutMs
+    do {
       funded = (handle.fakeRpc?.transactions() ?? []).some(
         t => t.to?.toLowerCase() === human.displayAddress.toLowerCase() && BigInt(t.valueWei) > 0n,
       )
       if (!funded) await sleep(2000)
-    }
+    } while (!funded && Date.now() < fundingDeadline)
     const faucet: SmokeCheck = funded
       ? { name: 'faucet', ok: true, detail: 'funded the new profile' }
       : { name: 'faucet', ok: false, detail: 'no funding transfer to the new profile' }
+
+    // The dealer's welcome and a scripted first bet (needs the funding above).
+    const blackjackChecks: SmokeCheck[] = funded
+      ? await checkBlackjackWelcomeAndFirstBet(handle, {
+          human,
+          humanPrivateKey: humanWallet.privateKey,
+          dealerKey: botKeys.blackjack,
+          startedAt,
+          timeoutMs: options.timeoutMs,
+          ctx: { stampClient, pool, provider, mainAccountSigner },
+        })
+      : [
+          { name: 'blackjack-welcome', ok: false, detail: 'skipped: the new profile was never funded' },
+          { name: 'blackjack-first-bet', ok: false, detail: 'skipped: the new profile was never funded' },
+        ]
     return [
       ...Object.keys(PROMPTS).map(b => results.get(b) as SmokeCheck),
       faucet,
+      ...blackjackChecks,
       topicPost,
       cors,
       raffleCheck,

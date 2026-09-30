@@ -224,6 +224,19 @@ export const DEMO_VARS: readonly DemoVar[] = [
     description: 'Table maximum.',
   },
   {
+    name: 'BLACKJACK_BOT_MAX_GREETINGS',
+    scope: 'blackjack',
+    default: '5',
+    description:
+      'Welcome messages the dealer sends per run (each costs the dealer a stamp); 0 = never greet.',
+  },
+  {
+    name: 'BLACKJACK_BOT_MAX_GREETINGS_PER_DAY',
+    scope: 'blackjack',
+    default: '20',
+    description: 'Welcome messages per UTC day, kept across restarts.',
+  },
+  {
     name: 'VENDOR_BOT_CATALOG_DIR',
     scope: 'picture shop',
     default: 'bundled demo-catalog/',
@@ -272,6 +285,8 @@ const PASSTHROUGH = [
   'RAFFLE_BOT_MAX_TOPUP_PER_DAY_WEI',
   'BLACKJACK_BOT_MIN_WAGER_WEI',
   'BLACKJACK_BOT_MAX_WAGER_WEI',
+  'BLACKJACK_BOT_MAX_GREETINGS',
+  'BLACKJACK_BOT_MAX_GREETINGS_PER_DAY',
   'VENDOR_BOT_CATALOG_DIR',
   'FAUCET_MAX_PER_DAY',
   'FAUCET_MIN_RESERVE_WEI',

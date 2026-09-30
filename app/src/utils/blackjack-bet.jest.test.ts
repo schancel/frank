@@ -1,4 +1,4 @@
-import { parseEther } from 'ethers'
+import { formatEther, parseEther } from 'ethers'
 
 import { formatBlackjackError } from '@frank/wallet/message-item-plugins/blackjack/game'
 import {
@@ -7,7 +7,11 @@ import {
   dealerReplyFor,
   WagerBroadcastError,
   betFundsRequired,
+  betMessageCostWei,
+  DEFAULT_BLACKJACK_TABLE,
+  defaultBetDisplay,
   deliverBetWhenReady,
+  latestDealerTable,
   parseBetInput,
   sendBlackjackWager,
   shortAddress,
@@ -22,7 +26,7 @@ jest.mock('../composables/useActiveWallet', () => ({
 }))
 jest.mock('@frank/wallet/chain', () => ({
   activeChain: {
-    toDisplayAmount: (n: bigint) => n.toString(),
+    toDisplayAmount: (n: bigint) => formatEther(n),
     formatAddress: (a: { raw: string }) => a.raw,
     nativeTransfers: { send: (a: unknown) => mockSend(a) },
   },
@@ -351,5 +355,109 @@ describe('dealerReplyFor', () => {
         'g',
       ),
     ).toBe('accepted')
+  })
+})
+
+describe('table limits from the dealer welcome (#395)', () => {
+  const welcome = (over: Record<string, unknown> = {}) => ({
+    outbound: false,
+    items: [
+      {
+        type: 'blackjack-move',
+        gameId: 'welcome',
+        action: 'welcome',
+        minWagerWei: '50000000000000000',
+        maxWagerWei: '200000000000000000',
+        feeHintWei: '70000000000000000',
+        rules: 'house rules',
+        ...over,
+      },
+    ],
+  })
+
+  it('falls back to the documented 0.01 to 1 MON when the chat holds no welcome', () => {
+    expect(latestDealerTable([])).toBe(DEFAULT_BLACKJACK_TABLE)
+    expect(DEFAULT_BLACKJACK_TABLE).toMatchObject({
+      minWei: 10n ** 16n,
+      maxWei: 10n ** 18n,
+      source: 'default',
+    })
+    expect(
+      latestDealerTable([
+        { outbound: false, items: [{ type: 'text', text: 'hi' }] },
+      ]).source,
+    ).toBe('default')
+  })
+
+  it('reads limits, fee hint and rules from the welcome', () => {
+    expect(latestDealerTable([welcome()])).toEqual({
+      minWei: 5n * 10n ** 16n,
+      maxWei: 2n * 10n ** 17n,
+      feeHintWei: 7n * 10n ** 16n,
+      rules: 'house rules',
+      source: 'welcome',
+    })
+  })
+
+  it('the LATEST welcome wins', () => {
+    const table = latestDealerTable([
+      welcome(),
+      welcome({ minWagerWei: '1', maxWagerWei: '10' }),
+    ])
+    expect([table.minWei, table.maxWei]).toEqual([1n, 10n])
+  })
+
+  it('skips a malformed welcome (keeping the earlier one) and never trusts one we sent', () => {
+    const table = latestDealerTable([
+      welcome(),
+      welcome({ minWagerWei: 'x' }),
+      { ...welcome({ minWagerWei: '1', maxWagerWei: '2' }), outbound: true },
+    ])
+    expect([table.minWei, table.maxWei]).toEqual([
+      5n * 10n ** 16n,
+      2n * 10n ** 17n,
+    ])
+  })
+
+  it('parseBetInput validates against the table it is given', () => {
+    const table = { minWei: 5n * 10n ** 16n, maxWei: 2n * 10n ** 17n }
+    expect(parseBetInput(parseEther, '0.05', table)).toMatchObject({ ok: true })
+    expect(parseBetInput(parseEther, '0.2', table)).toMatchObject({ ok: true })
+    expect(parseBetInput(parseEther, '0.04', table)).toMatchObject({
+      ok: false,
+      code: 'min',
+    })
+    expect(parseBetInput(parseEther, '0.21', table)).toMatchObject({
+      ok: false,
+      code: 'max',
+    })
+    // With no table the documented fallback applies.
+    expect(parseBetInput(parseEther, '0.04')).toMatchObject({ ok: true })
+    expect(parseBetInput(parseEther, '1.01')).toMatchObject({
+      ok: false,
+      code: 'max',
+    })
+  })
+
+  it('the fee hint can only raise what a bet message is assumed to cost', () => {
+    const stamp = 10n ** 16n
+    expect(betMessageCostWei(stamp)).toBe(stamp + BET_MESSAGE_FEE_RESERVE_WEI)
+    expect(betMessageCostWei(stamp, 3n * 10n ** 17n)).toBe(3n * 10n ** 17n)
+    expect(betMessageCostWei(stamp, 1n)).toBe(
+      stamp + BET_MESSAGE_FEE_RESERVE_WEI,
+    )
+    expect(betFundsRequired(10n ** 17n, stamp, 3n * 10n ** 17n)).toBe(
+      4n * 10n ** 17n,
+    )
+  })
+
+  it('starts at 0.1 MON, moved into a table that does not include it', () => {
+    expect(defaultBetDisplay()).toBe('0.1')
+    expect(
+      defaultBetDisplay({ minWei: 5n * 10n ** 17n, maxWei: 10n ** 18n }),
+    ).toBe('0.5')
+    expect(
+      defaultBetDisplay({ minWei: 10n ** 15n, maxWei: 5n * 10n ** 16n }),
+    ).toBe('0.05')
   })
 })

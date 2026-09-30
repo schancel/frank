@@ -40,7 +40,7 @@ export interface ImageItem {
 export interface BlackjackMoveItem {
   type: 'blackjack-move'
   gameId: string
-  action: 'bet' | 'deal' | 'hit' | 'stand' | 'double' | 'reveal'
+  action: 'bet' | 'deal' | 'hit' | 'stand' | 'double' | 'reveal' | 'welcome'
   /** `bet` only: the tx hash of the separate plain value transfer that *is* the wager. Also
    * doubles as the shuffle's client-seed entropy (see `@frank/wallet/message-item-plugins/blackjack`'s header) -- no
    * extra round trip needed to collect one. */
@@ -69,6 +69,17 @@ export interface BlackjackMoveItem {
   serverSeed?: string
   /** `reveal` only. */
   outcome?: 'player_win' | 'dealer_win' | 'push' | 'player_blackjack'
+  /** `welcome` only (dealer to player, #395): the table's minimum wager, a decimal wei string.
+   * Untrusted advertising: the client parses it strictly (`parseBlackjackWelcome`) and the
+   * dealer enforces its own limits regardless. */
+  minWagerWei?: string
+  /** `welcome` only: the table's maximum wager, a decimal wei string. */
+  maxWagerWei?: string
+  /** `welcome` only: hint, in wei, of what sending a bet message costs beyond the wager (its stamp
+   * plus fees). A client that already assumes more keeps its own figure. */
+  feeHintWei?: string
+  /** `welcome` only: a short plain-text summary of the house rules. */
+  rules?: string
 }
 
 /**

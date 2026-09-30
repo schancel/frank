@@ -110,8 +110,13 @@ export default {
     confirmSeed: 'Confirmer ma phrase de récupération',
     seedConfirmed: 'Votre phrase de récupération est confirmée.',
   },
+  blackjackWelcome: {
+    title: 'Table de blackjack',
+  },
   blackjackBet: {
-    menuLabel: 'Jouer au blackjack',
+    playAgainTitle: 'Rejouer',
+    faucetHint:
+      'Il vous faut des MON pour jouer ? Cette application utilise des MON de testnet, sans valeur réelle. Le faucet de démonstration alimente automatiquement les nouveaux profils ; si rien n’est arrivé, demandez à l’opérateur de la démo de vous en envoyer.',
     title: 'Commencer une main de blackjack',
     amountLabel: 'Montant de la mise',
     amountAria: 'Montant de la mise en MON',
@@ -120,7 +125,6 @@ export default {
       'Votre mise est un vrai transfert de MON vers {name} ({address}). À utiliser uniquement avec un croupier de blackjack.',
     confirm:
       'Je comprends que {amount} MON seront envoyés à {name} ({address})',
-    confirmRequired: 'Cochez la case pour confirmer le transfert.',
     submit: 'Distribuez-moi avec {name} {address} ({amount} MON)',
     sending: 'Envoi de votre mise…',
     sent: 'Mise envoyée. En attente de la distribution.',

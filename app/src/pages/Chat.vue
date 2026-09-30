@@ -87,10 +87,6 @@
         v-model:message="message"
         v-model:stamp-amount="stampAmount"
         :disable="sendingMessage"
-        :address="address"
-        :blackjack-enabled="peerIsBot"
-        :peer-name="peerName"
-        :submit-follow-up="sendFollowUpWhenIdle"
         @sendMessage="sendMessage"
       />
     </q-footer>
@@ -105,6 +101,7 @@ import ChatBannerStack from '../components/chat/ChatBannerStack.vue'
 import ChatInput from '../components/chat/ChatInput.vue'
 import BlackjackUnsentWagers from '../components/chat/BlackjackUnsentWagers.vue'
 import ChatMessageReply from '../components/chat/messages/ChatMessageReply.vue'
+import type { BlackjackChatContext } from '../components/chat/messages/ChatMessageBlackjack.vue'
 
 import { errorNotify, insufficientStampNotify } from '../utils/notifications'
 import { defaultAcceptancePrice, defaultStampAmount } from '../utils/constants'
@@ -142,6 +139,21 @@ export default defineComponent({
     this.address = to.params.address as string
     this.messagesToShow = 30
     next()
+  },
+  // What the dealer's bubbles need to place a bet from inside a message (#395): the same awaited,
+  // idle-waiting delivery the unsent-wager banner retries with, and the stamp this chat will pay.
+  provide() {
+    const blackjackChat: BlackjackChatContext = {
+      submit: payload => this.sendFollowUpWhenIdle(payload),
+      stampWei: () => {
+        try {
+          return activeChain.fromDisplayAmount(this.stampAmount)
+        } catch {
+          return null
+        }
+      },
+    }
+    return { blackjackChat }
   },
   beforeUnmount() {
     window.removeEventListener('resize', this.resizeHandler)
@@ -461,10 +473,6 @@ export default defineComponent({
     },
   },
   computed: {
-    // Self-declared bot marker on the peer's signed profile (#311); only an explicit true counts.
-    peerIsBot(): boolean {
-      return this.getContactVuex(this.address)?.profile?.isBot === true
-    },
     peerName(): string {
       return this.getContactVuex(this.address)?.profile?.name ?? ''
     },

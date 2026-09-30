@@ -183,22 +183,6 @@ describe('Chat.vue sendFollowUpWhenIdle wiring (#310)', () => {
   })
 })
 
-describe('Chat.vue peer bot gate (#310)', () => {
-  const computed = (ChatPage as unknown as { computed: Record<string, any> })
-    .computed
-  const peer = (profile: Record<string, unknown> | undefined) => ({
-    address: '0xDealer',
-    getContactVuex: () => (profile ? { profile } : undefined),
-  })
-
-  it('is true only for an explicit bot marker; unknown/unmarked/missing profiles are not bots', () => {
-    expect(computed.peerIsBot.call(peer({ isBot: true }))).toBe(true)
-    expect(computed.peerIsBot.call(peer({ isBot: false }))).toBe(false)
-    expect(computed.peerIsBot.call(peer({}))).toBe(false)
-    expect(computed.peerIsBot.call(peer(undefined))).toBe(false)
-  })
-})
-
 describe('Chat.vue sendFollowUpItems vs the no-throw send outcome (#269/#270)', () => {
   beforeEach(() => jest.mocked(errorNotify).mockReset())
 

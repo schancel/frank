@@ -5,7 +5,7 @@ import { createApp, defineComponent, h, ref } from 'vue'
 import { createPinia, setActivePinia } from 'pinia'
 import type { LevelDB } from 'level'
 
-import BlackjackBetPicker from './BlackjackBetPicker.vue'
+import BlackjackBetControl from './BlackjackBetControl.vue'
 import enUS from '../../i18n/en-us'
 import frFR from '../../i18n/fr-fr'
 import { createStoragePlugin } from '../../boot/pinia'
@@ -136,7 +136,7 @@ const QBtn = defineComponent({
   },
 })
 
-type Wrapper = ReturnType<typeof mountPicker>['wrapper']
+type Wrapper = ReturnType<typeof mountControl>['wrapper']
 
 let storageData: Record<string, string>
 let failPut = false
@@ -166,22 +166,26 @@ function installPinia() {
   return pinia
 }
 
-function mountPicker(
+function mountControl(
   overrides: {
     submit?: jest.Mock
     busy?: boolean
     messages?: unknown
     pinia?: ReturnType<typeof createPinia>
+    table?: Record<string, unknown>
+    title?: string
   } = {},
 ) {
   const submit = overrides.submit ?? jest.fn().mockResolvedValue(undefined)
-  const wrapper = mount(BlackjackBetPicker, {
+  const wrapper = mount(BlackjackBetControl, {
     attachTo: document.body,
     props: {
       address: DEALER,
       dealerName: 'Blackjack Dealer',
       submit,
       busy: overrides.busy ?? false,
+      ...(overrides.table ? { table: overrides.table } : {}),
+      ...(overrides.title ? { title: overrides.title } : {}),
     },
     global: {
       plugins: [overrides.pinia ?? installPinia()],
@@ -215,7 +219,7 @@ async function place(w: Wrapper, amount?: string) {
   await flush()
 }
 
-describe('BlackjackBetPicker (ticket #310: first bet entry point)', () => {
+describe('BlackjackBetControl (ticket #310: first bet entry point)', () => {
   beforeEach(() => {
     balance.value = 5n * 10n ** 18n
     storageData = {}
@@ -239,7 +243,7 @@ describe('BlackjackBetPicker (ticket #310: first bet entry point)', () => {
   })
 
   it('is labelled, names the recipient, shows limits in MON (never wei), has a live region and no autofocus', () => {
-    const { wrapper } = mountPicker()
+    const { wrapper } = mountControl()
     expect(wrapper.find('label').text()).toBe('Bet amount')
     expect(
       wrapper.find('input:not([type="checkbox"])').attributes('aria-label'),
@@ -259,7 +263,7 @@ describe('BlackjackBetPicker (ticket #310: first bet entry point)', () => {
   })
 
   it('requires an explicit confirmation: Enter or a click before it sends nothing', async () => {
-    const { wrapper, submit } = mountPicker()
+    const { wrapper, submit } = mountControl()
     expect(button(wrapper).attributes('disabled')).toBeDefined()
     await wrapper.find('form').trigger('submit') // what Enter in the input does
     await button(wrapper).trigger('click')
@@ -274,7 +278,7 @@ describe('BlackjackBetPicker (ticket #310: first bet entry point)', () => {
   })
 
   it('changing the amount withdraws the confirmation', async () => {
-    const { wrapper } = mountPicker()
+    const { wrapper } = mountControl()
     await confirm(wrapper)
     await setAmount(wrapper, '0.2')
     expect(button(wrapper).attributes('disabled')).toBeDefined()
@@ -298,7 +302,7 @@ describe('BlackjackBetPicker (ticket #310: first bet entry point)', () => {
     const submit = jest.fn(async () => {
       recordedBeforeSend = useUnsentWagersStore().wagers.map(w => ({ ...w }))
     })
-    const { wrapper } = mountPicker({ submit, pinia })
+    const { wrapper } = mountControl({ submit, pinia })
     await place(wrapper, '0.25')
     expect(mockSend).toHaveBeenCalledTimes(1)
     expect(mockSend).toHaveBeenCalledWith({
@@ -340,7 +344,7 @@ describe('BlackjackBetPicker (ticket #310: first bet entry point)', () => {
   it('does not double-submit: repeated submits and clicks while pending send one transfer', async () => {
     let release!: (v: { txHash: string }) => void
     mockSend.mockReturnValue(new Promise(r => (release = r)))
-    const { wrapper, submit } = mountPicker()
+    const { wrapper, submit } = mountControl()
     await confirm(wrapper)
     const form = wrapper.find('form')
     void form.trigger('submit')
@@ -362,7 +366,7 @@ describe('BlackjackBetPicker (ticket #310: first bet entry point)', () => {
   it('stays locked while the message send itself is pending', async () => {
     let finish!: () => void
     const submit = jest.fn(() => new Promise<void>(r => (finish = r)))
-    const { wrapper } = mountPicker({ submit })
+    const { wrapper } = mountControl({ submit })
     await place(wrapper)
     expect(submit).toHaveBeenCalledTimes(1)
     // The record exists but is "in flight": no stranded-wager alarm during a normal send.
@@ -375,10 +379,10 @@ describe('BlackjackBetPicker (ticket #310: first bet entry point)', () => {
     expect(wrapper.emitted('placed')).toHaveLength(1)
   })
 
-  it('still delivers the bet message if the picker unmounts while the transfer confirms', async () => {
+  it('still delivers the bet message if the control unmounts while the transfer confirms', async () => {
     let release!: (v: { txHash: string }) => void
     mockSend.mockReturnValue(new Promise(r => (release = r)))
-    const { wrapper, submit } = mountPicker()
+    const { wrapper, submit } = mountControl()
     await confirm(wrapper)
     await wrapper.find('form').trigger('submit')
     wrapper.unmount()
@@ -400,7 +404,7 @@ describe('BlackjackBetPicker (ticket #310: first bet entry point)', () => {
   ])(
     'refuses %j before any value leaves the wallet',
     async (amount, message) => {
-      const { wrapper, submit } = mountPicker()
+      const { wrapper, submit } = mountControl()
       await setAmount(wrapper, amount)
       await confirm(wrapper)
       expect(wrapper.find('[role="alert"]').text()).toBe(message)
@@ -415,7 +419,7 @@ describe('BlackjackBetPicker (ticket #310: first bet entry point)', () => {
   it('requires balance >= bet + stamp + fee reserve (a bet just under the balance is refused)', async () => {
     // 0.1 bet + 0.01 default stamp + 0.05 reserve = 0.16 MON needed
     balance.value = 159999999999999999n
-    const { wrapper } = mountPicker()
+    const { wrapper } = mountControl()
     expect(wrapper.find('[role="alert"]').text()).toContain(
       'this bet needs 0.16 MON',
     )
@@ -431,7 +435,7 @@ describe('BlackjackBetPicker (ticket #310: first bet entry point)', () => {
   it('counts the stamp the player configured, not just the default', async () => {
     balance.value = 200000000000000000n // 0.2: enough with the 0.01 default stamp
     const pinia = installPinia()
-    const wrapper = mount(BlackjackBetPicker, {
+    const wrapper = mount(BlackjackBetControl, {
       props: {
         address: DEALER,
         dealerName: 'D',
@@ -449,7 +453,7 @@ describe('BlackjackBetPicker (ticket #310: first bet entry point)', () => {
 
   it('blocks with a clear message while the balance is unknown', async () => {
     balance.value = null
-    const { wrapper } = mountPicker()
+    const { wrapper } = mountControl()
     expect(wrapper.find('[role="alert"]').text()).toBe(
       'Your balance is not loaded yet. Try again in a moment.',
     )
@@ -460,7 +464,7 @@ describe('BlackjackBetPicker (ticket #310: first bet entry point)', () => {
 
   it('announces an insufficient-funds failure with no record and no bet; a retry makes a fresh transfer', async () => {
     mockSend.mockRejectedValueOnce(new Error('insufficient funds for gas'))
-    const { wrapper, submit } = mountPicker()
+    const { wrapper, submit } = mountControl()
     await place(wrapper)
     expect(status(wrapper)).toBe(
       'Insufficient funds: insufficient funds for gas',
@@ -479,7 +483,7 @@ describe('BlackjackBetPicker (ticket #310: first bet entry point)', () => {
 
   it('never says sent when delivery fails: the wager stays recorded as unsent and the menu is releasable', async () => {
     const submit = jest.fn().mockRejectedValue(new Error('relay down'))
-    const { wrapper } = mountPicker({ submit })
+    const { wrapper } = mountControl({ submit })
     await place(wrapper)
     expect(status(wrapper)).toContain(
       'Wager paid, bet not delivered: relay down',
@@ -495,7 +499,7 @@ describe('BlackjackBetPicker (ticket #310: first bet entry point)', () => {
 
   it('an unsent record blocks a NEW wager to that dealer (no second transfer without action on the record)', async () => {
     const submit = jest.fn().mockRejectedValue(new Error('relay down'))
-    const { wrapper } = mountPicker({ submit })
+    const { wrapper } = mountControl({ submit })
     await place(wrapper)
     await setAmount(wrapper, '0.2')
     await confirm(wrapper)
@@ -507,7 +511,7 @@ describe('BlackjackBetPicker (ticket #310: first bet entry point)', () => {
 
   it('F1: if the record cannot be saved, nothing is broadcast and it is safe to say nothing was paid', async () => {
     failPut = true
-    const { wrapper, submit } = mountPicker()
+    const { wrapper, submit } = mountControl()
     await place(wrapper)
     expect(broadcast).toEqual([])
     expect(submit).not.toHaveBeenCalled()
@@ -520,7 +524,7 @@ describe('BlackjackBetPicker (ticket #310: first bet entry point)', () => {
       await args.onSigned({ txHash: HASH })
       throw new Error('socket hang up') // node accepted it, the response never arrived
     })
-    const { wrapper, submit } = mountPicker()
+    const { wrapper, submit } = mountControl()
     await place(wrapper)
     expect(mockStatus).toHaveBeenCalledWith(
       expect.objectContaining({ txHash: HASH }),
@@ -541,7 +545,7 @@ describe('BlackjackBetPicker (ticket #310: first bet entry point)', () => {
         throw new Error('socket hang up')
       })
       mockStatus.mockResolvedValue(nodeSays)
-      const { wrapper, submit } = mountPicker()
+      const { wrapper, submit } = mountControl()
       await wrapper.setProps({ paymentTimeoutMs: 20, paymentPollMs: 1 })
       await place(wrapper)
       await new Promise(r => setTimeout(r, 80))
@@ -560,7 +564,7 @@ describe('BlackjackBetPicker (ticket #310: first bet entry point)', () => {
       confirmed ? 'confirmed' : 'pending',
     )
     const submit = jest.fn().mockResolvedValue(undefined)
-    const { wrapper } = mountPicker({ submit })
+    const { wrapper } = mountControl({ submit })
     await wrapper.setProps({ paymentTimeoutMs: 2000, paymentPollMs: 5 })
     await confirm(wrapper)
     await wrapper.find('form').trigger('submit')
@@ -575,7 +579,7 @@ describe('BlackjackBetPicker (ticket #310: first bet entry point)', () => {
 
   it('F2: a wager that failed on chain is removed and no bet is sent', async () => {
     mockStatus.mockResolvedValue('failed')
-    const { wrapper, submit } = mountPicker()
+    const { wrapper, submit } = mountControl()
     await place(wrapper)
     expect(submit).not.toHaveBeenCalled()
     expect(stored()).toEqual([])
@@ -583,7 +587,7 @@ describe('BlackjackBetPicker (ticket #310: first bet entry point)', () => {
   })
 
   it('does not start a transfer while the chat is busy sending', async () => {
-    const { wrapper, submit } = mountPicker({ busy: true })
+    const { wrapper, submit } = mountControl({ busy: true })
     expect(button(wrapper).attributes('disabled')).toBeDefined()
     await wrapper.find('form').trigger('submit')
     await flush()
@@ -592,7 +596,7 @@ describe('BlackjackBetPicker (ticket #310: first bet entry point)', () => {
   })
 
   it('renders in French with no untranslated keys', () => {
-    const { wrapper } = mountPicker({ messages: frFR })
+    const { wrapper } = mountControl({ messages: frFR })
     expect(wrapper.find('label').text()).toBe('Montant de la mise')
     expect(wrapper.find('.hint').text()).toBe(
       'Limites de la table : 0.01 à 1 MON',
@@ -601,5 +605,125 @@ describe('BlackjackBetPicker (ticket #310: first bet entry point)', () => {
     expect(button(wrapper).text()).toBe(
       'Distribuez-moi avec Blackjack Dealer 0x1234...abcd (0.1 MON)',
     )
+  })
+})
+
+describe('BlackjackBetControl table limits from the dealer welcome (#395)', () => {
+  const TABLE = {
+    minWei: 5n * 10n ** 16n, // 0.05
+    maxWei: 2n * 10n ** 17n, // 0.2
+    source: 'welcome',
+  }
+
+  beforeEach(() => {
+    balance.value = 5n * 10n ** 18n
+    storageData = {}
+    failPut = false
+    mockGetWallet.mockReset().mockResolvedValue({
+      wallet: true,
+      identity: {
+        address: { raw: '0xAAAA00000000000000000000000000000000BBBB' },
+      },
+    })
+    mockStatus.mockReset().mockResolvedValue('confirmed')
+    mockSend.mockReset().mockImplementation(async (args: any) => {
+      await args.onSigned?.({ txHash: HASH })
+      return { txHash: HASH }
+    })
+    mockErrorNotify.mockReset()
+    document.body.innerHTML = ''
+  })
+
+  it('shows the advertised limits, not the 0.01 to 1 MON fallback', () => {
+    const { wrapper } = mountControl({ table: TABLE })
+    expect(wrapper.find('.hint').text()).toBe('Table limits: 0.05 to 0.2 MON')
+  })
+
+  it('refuses a bet under the advertised minimum or over the advertised maximum before any value leaves the wallet', async () => {
+    const { wrapper, submit } = mountControl({ table: TABLE })
+    // 0.02 is valid under the fallback (0.01 to 1) but below this table's 0.05.
+    await setAmount(wrapper, '0.02')
+    expect(wrapper.find('[role="alert"]').text()).toBe(
+      'Bet is below the table minimum (0.05 MON)',
+    )
+    await confirm(wrapper)
+    await wrapper.find('form').trigger('submit')
+    await flush()
+    // 0.5 is valid under the fallback but above this table's 0.2.
+    await setAmount(wrapper, '0.5')
+    expect(wrapper.find('[role="alert"]').text()).toBe(
+      'Bet is above the table maximum (0.2 MON)',
+    )
+    await confirm(wrapper)
+    await wrapper.find('form').trigger('submit')
+    await flush()
+    expect(mockSend).not.toHaveBeenCalled()
+    expect(submit).not.toHaveBeenCalled()
+  })
+
+  it('accepts a bet inside the advertised limits', async () => {
+    const { wrapper, submit } = mountControl({ table: TABLE })
+    await place(wrapper, '0.2')
+    expect(mockSend).toHaveBeenCalledTimes(1)
+    expect(submit).toHaveBeenCalledTimes(1)
+  })
+
+  it('starts at 0.1 MON, moved into the advertised limits when they do not include it', () => {
+    const inside = mountControl({ table: TABLE }).wrapper
+    expect(inside.find('input:not([type="checkbox"])').element).toHaveProperty(
+      'value',
+      '0.1',
+    )
+    const above = mountControl({
+      table: { minWei: 5n * 10n ** 17n, maxWei: 10n ** 18n, source: 'welcome' },
+    }).wrapper
+    expect(above.find('input:not([type="checkbox"])').element).toHaveProperty(
+      'value',
+      '0.5',
+    )
+  })
+
+  it('a larger fee hint from the dealer raises the balance the bet needs', async () => {
+    // bet 0.1 + max(stamp 0.01 + reserve 0.05, hint 0.3) = 0.4
+    balance.value = 35n * 10n ** 16n
+    const { wrapper } = mountControl({
+      table: { ...TABLE, feeHintWei: 3n * 10n ** 17n },
+    })
+    expect(wrapper.find('[role="alert"]').text()).toContain('0.4')
+    balance.value = 4n * 10n ** 17n
+    await flush()
+    expect(wrapper.find('[role="alert"]').exists()).toBe(false)
+  })
+
+  it('a smaller fee hint never lowers the balance the bet needs', async () => {
+    // bet 0.1 + (stamp 0.01 + reserve 0.05) = 0.16; a 0.001 hint must not reduce it.
+    balance.value = 15n * 10n ** 16n
+    const { wrapper } = mountControl({
+      table: { ...TABLE, feeHintWei: 10n ** 15n },
+    })
+    expect(wrapper.find('[role="alert"]').exists()).toBe(true)
+  })
+
+  it('shows the faucet hint only when the balance is known and too low', async () => {
+    balance.value = 10n ** 16n
+    const low = mountControl({ table: TABLE }).wrapper
+    expect(low.find('[data-testid="blackjack-bet-faucet-hint"]').text()).toBe(
+      t(enUS, 'blackjackBet.faucetHint'),
+    )
+    balance.value = 5n * 10n ** 18n
+    const rich = mountControl({ table: TABLE }).wrapper
+    expect(
+      rich.find('[data-testid="blackjack-bet-faucet-hint"]').exists(),
+    ).toBe(false)
+    balance.value = null
+    const unknown = mountControl({ table: TABLE }).wrapper
+    expect(
+      unknown.find('[data-testid="blackjack-bet-faucet-hint"]').exists(),
+    ).toBe(false)
+  })
+
+  it('uses the heading it is given', () => {
+    const { wrapper } = mountControl({ table: TABLE, title: 'Play again' })
+    expect(wrapper.find('.text-subtitle2').text()).toBe('Play again')
   })
 })

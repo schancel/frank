@@ -1,6 +1,32 @@
 <template>
   <div class="blackjack-move q-pa-sm" style="min-width: 220px">
-    <div v-if="loading" class="text-caption">Loading hand...</div>
+    <!-- The dealer's opening message (#395): table limits, rules and the inline bet control. -->
+    <template v-if="isWelcome">
+      <div class="text-subtitle2" data-testid="blackjack-welcome-title">
+        {{ $t('blackjackWelcome.title') }}
+      </div>
+      <div class="text-caption" data-testid="blackjack-welcome-limits">
+        {{ $t('blackjackBet.limits', welcomeLimits) }}
+      </div>
+      <div
+        v-if="welcomeRules"
+        class="text-caption q-mt-xs"
+        data-testid="blackjack-welcome-rules"
+      >
+        {{ welcomeRules }}
+      </div>
+      <blackjack-bet-control
+        v-if="isLatest && blackjackChat"
+        class="q-mt-sm"
+        data-testid="blackjack-welcome-bet"
+        :address="address"
+        :dealer-name="dealerName"
+        :table="table"
+        :stamp-wei="chatStampWei"
+        :submit="blackjackChat.submit"
+      />
+    </template>
+    <div v-else-if="loading" class="text-caption">Loading hand...</div>
     <template v-else-if="state">
       <template v-if="state.phase === 'awaiting_deal'">
         <div
@@ -48,29 +74,22 @@
           }}
         </div>
       </template>
-      <div
-        v-if="actionState && actionState.availableActions.includes('bet')"
-        class="row items-center q-gutter-xs q-mt-sm"
-      >
-        <q-input
-          v-model="betAmountDisplay"
-          dense
-          outlined
-          label="Bet amount"
-          suffix="MON"
-          type="text"
-          inputmode="decimal"
-          autocomplete="off"
-          :input-attrs="{ 'aria-label': 'Bet amount in MON' }"
-          ref="betInput"
-          :hint="betLimitsHint"
-          :error="!!betError"
-          :error-message="betError"
-          style="width: 160px"
-          :disable="sending"
-          @keyup.enter="onAction('bet')"
-        />
-      </div>
+      <!-- Play again: the same durable, confirmed bet control as the welcome's. -->
+      <blackjack-bet-control
+        v-if="
+          actionState &&
+          actionState.availableActions.includes('bet') &&
+          blackjackChat
+        "
+        class="q-mt-sm"
+        data-testid="blackjack-play-again"
+        :title="$t('blackjackBet.playAgainTitle')"
+        :address="address"
+        :dealer-name="dealerName"
+        :table="table"
+        :stamp-wei="chatStampWei"
+        :submit="blackjackChat.submit"
+      />
       <!-- Ticket #366: a paid move nobody answered. Only a plain hit/stand can be re-sent, and only
       behind an explicit consent: a resend is a second paid message, and a repeated hit could be
       played twice once the dealer returns. A wager (bet/double) is never re-sent. -->
@@ -117,16 +136,13 @@
       >
         {{ visibleError }}
       </div>
-      <div
-        v-if="actionState && actionState.availableActions.length"
-        class="q-gutter-sm q-mt-sm"
-      >
+      <div v-if="moveActions.length" class="q-gutter-sm q-mt-sm">
         <q-btn
-          v-for="action in actionState.availableActions"
+          v-for="action in moveActions"
           :key="action"
           :label="actionLabel(action)"
           :loading="sending"
-          :disable="sending || dealerSilent || (action === 'bet' && !!betError)"
+          :disable="sending || dealerSilent"
           dense
           color="primary"
           @click="onAction(action)"
@@ -148,11 +164,10 @@ import {
 import {
   applyDoubleRejection,
   blackjackPayoutWei,
-  BLACKJACK_DEFAULT_MAX_WAGER_WEI,
-  BLACKJACK_DEFAULT_MIN_WAGER_WEI,
   BlackjackAction,
   BlackjackGameState,
   parseBlackjackError,
+  parseBlackjackWelcome,
   verifyRevealedHand,
 } from '@frank/wallet/message-item-plugins/blackjack/game'
 import {
@@ -163,14 +178,24 @@ import '@frank/wallet/message-item-plugins/built-in'
 import '@frank/wallet/message-item-plugins/blackjack/plugin'
 
 import { useChatStore } from '../../../stores/chats'
+import { useContactStore } from '../../../stores/contacts'
 import { useMonadWallet } from '../../../utils/clients'
 import { useActiveWallet } from '../../../composables/useActiveWallet'
 import { errorNotify } from '../../../utils/notifications'
-import { parseBetInput, sendBlackjackWager } from '../../../utils/blackjack-bet'
+import {
+  BlackjackTable,
+  betLimitsDisplay,
+  latestDealerTable,
+} from '../../../utils/blackjack-bet'
+import BlackjackBetControl from '../BlackjackBetControl.vue'
+import type { MessageItem } from '@frank/cashweb/types/messages'
 
-// The bet-size input's starting value -- comfortably above the relay's stamp minimum so a bot
-// dealer never rejects a first-try default as "below the table minimum."
-const DEFAULT_BET_AMOUNT_DISPLAY = '0.1'
+/** What a chat page offers its bubbles for placing a bet (`provide`d by `pages/Chat.vue`): the
+ * awaited, idle-waiting delivery of the bet message, and the stamp the chat will pay for it. */
+export interface BlackjackChatContext {
+  submit: (payload: { items: MessageItem[]; address: string }) => Promise<void>
+  stampWei: () => bigint | null
+}
 
 // How long a paid move may go unanswered before the bubble says so (ticket #366). Comfortably above
 // a bot's normal poll + reply time so a slow-but-alive dealer never triggers it.
@@ -185,6 +210,10 @@ const ACTION_LABELS: Partial<Record<BlackjackAction, string>> = {
 
 export default defineComponent({
   name: 'ChatMessageBlackjack',
+  components: { BlackjackBetControl },
+  inject: {
+    blackjackChat: { from: 'blackjackChat', default: null },
+  },
   props: {
     item: {
       type: Object as PropType<BlackjackMoveItem>,
@@ -215,7 +244,6 @@ export default defineComponent({
       unansweredAction: undefined as BlackjackAction | undefined,
       resendConfirmed: false,
       dealerTimer: undefined as ReturnType<typeof setTimeout> | undefined,
-      betAmountDisplay: DEFAULT_BET_AMOUNT_DISPLAY,
       // Inline (aria-live) message: send failures such as insufficient funds, and the dealer's
       // own rejection text. Kept alongside, not instead of, the toast.
       actionError: '',
@@ -236,21 +264,44 @@ export default defineComponent({
         ? action
         : undefined
     },
-    betLimitsHint(): string {
-      return `${activeChain.toDisplayAmount(
-        BLACKJACK_DEFAULT_MIN_WAGER_WEI,
-      )} to ${activeChain.toDisplayAmount(BLACKJACK_DEFAULT_MAX_WAGER_WEI)} MON`
+    isWelcome(): boolean {
+      return this.item.action === 'welcome'
+    },
+    // The move buttons of the live hand. A bet is not one of them: it is the bet control's job.
+    moveActions(): BlackjackAction[] {
+      return (this.actionState?.availableActions ?? []).filter(
+        action => action !== 'bet',
+      )
+    },
+    // The table the bet controls play at: the dealer's LATEST welcome in this chat (a newer welcome
+    // supersedes an older one), or the documented fallback. Recomputed as messages arrive.
+    table(): BlackjackTable {
+      return latestDealerTable(
+        useChatStore().chats[this.address]?.messages ?? [],
+      )
+    },
+    // This welcome bubble's own advertised limits (an older welcome still shows what it said);
+    // a malformed one shows the table in force.
+    welcomeLimits(): { min: string; max: string } {
+      const own = parseBlackjackWelcome(this.item)
+      return betLimitsDisplay(
+        own ? { minWei: own.minWagerWei, maxWei: own.maxWagerWei } : this.table,
+      )
+    },
+    welcomeRules(): string {
+      return parseBlackjackWelcome(this.item)?.rules ?? ''
+    },
+    dealerName(): string {
+      return useContactStore().getContact(this.address)?.profile?.name ?? ''
+    },
+    chatStampWei(): bigint | null {
+      return (
+        (this.blackjackChat as BlackjackChatContext | null)?.stampWei() ?? null
+      )
     },
     // Changes whenever a message arrives in this chat, so the fold is redone with the latest.
     chatMessageCount(): number {
       return useChatStore().chats[this.address]?.messages?.length ?? 0
-    },
-    betError(): string {
-      const parsed = parseBetInput(
-        display => activeChain.fromDisplayAmount(display),
-        this.betAmountDisplay,
-      )
-      return parsed.ok ? '' : parsed.error
     },
     playerValue() {
       return handValue(this.state?.playerCards ?? [])
@@ -318,7 +369,6 @@ export default defineComponent({
       return cards.length ? cards.map(cardLabel).join(' ') : '—'
     },
     actionLabel(action: BlackjackAction): string {
-      if (action === 'bet') return `Deal me in (${this.betAmountDisplay} MON)`
       if (action === 'double') {
         const wagerWei = this.liveState?.verifiedWagerWei
         return wagerWei !== undefined
@@ -338,6 +388,20 @@ export default defineComponent({
         }
         const chat = chats.chats[this.address]
         const messages = chat?.messages ?? []
+        // Only the newest blackjack item of the whole chat offers actions or a bet control: once a
+        // later hand (or message) exists, an older bubble is history and can never send a move.
+        let chatLastRaw: unknown
+        for (const message of messages) {
+          for (const raw of message.items) {
+            if (raw.type === 'blackjack-move') chatLastRaw = raw
+          }
+        }
+        if (this.isWelcome) {
+          // A welcome belongs to no hand: nothing to fold or verify.
+          this.isLatest = chatLastRaw === this.item
+          this.loading = false
+          return
+        }
         const plugin = getMessageItemPlugin('blackjack-move')
         if (!plugin?.reduceState) {
           throw new Error('blackjack-move plugin not registered')
@@ -392,7 +456,7 @@ export default defineComponent({
         if (seq !== this.loadSeq) return // a newer load superseded this one
         this.state = atItem ?? folded ?? null
         this.liveState = folded ?? null
-        this.isLatest = lastRaw === this.item
+        this.isLatest = chatLastRaw === this.item
         this.dealerError = dealerError
         const awaiting =
           this.isLatest &&
@@ -436,32 +500,11 @@ export default defineComponent({
       this.resendConfirmed = false
       void this.onAction(action)
     },
-    focusBetInput() {
-      const input = this.$refs.betInput as { focus?: () => void } | undefined
-      void this.$nextTick(() => input?.focus?.())
-    },
     async onAction(action: BlackjackAction) {
       if (this.sending) return
       this.sending = true
       this.actionError = ''
       try {
-        if (action === 'bet') {
-          // Validate BEFORE any value leaves the wallet: the dealer refunds a rejected stake but a
-          // refund is a second transfer, so never send one we know will be refused.
-          const parsed = parseBetInput(
-            display => activeChain.fromDisplayAmount(display),
-            this.betAmountDisplay,
-          )
-          if (!parsed.ok) {
-            this.actionError = parsed.error
-            this.focusBetInput()
-            return
-          }
-          const betItem = await sendBlackjackWager(this.address, parsed.wei)
-          this.$emit('sendFollowUp', { items: [betItem] })
-          return
-        }
-
         if (action === 'double') {
           const wagerWei = this.liveState?.verifiedWagerWei
           if (wagerWei === undefined) {
@@ -498,7 +541,6 @@ export default defineComponent({
           ? `Insufficient funds: ${error.message}`
           : error.message
         errorNotify(error)
-        if (action === 'bet') this.focusBetInput()
       } finally {
         this.sending = false
       }

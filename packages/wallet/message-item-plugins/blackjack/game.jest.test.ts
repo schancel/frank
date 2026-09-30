@@ -1,6 +1,11 @@
 import { deriveDeck, handValue, sha256Hex } from './deck'
 import {
   applyDoubleRejection,
+  BLACKJACK_RULES_SUMMARY,
+  BLACKJACK_WELCOME_GAME_ID,
+  BLACKJACK_WELCOME_RULES_MAX,
+  buildBlackjackWelcomeItem,
+  parseBlackjackWelcome,
   playOutDealer,
   blackjackPayoutWei,
   BlackjackGameState,
@@ -533,5 +538,89 @@ describe('dealing rules shared by the bot and the fairness check (#378)', () => 
     )
     expect(source).toContain('playOutDealer(')
     expect(source).not.toMatch(/while \(handValue\(dealerCards\)\.total < 17\)/)
+  })
+})
+
+describe('welcome item schema (#395)', () => {
+  const table = {
+    minWagerWei: 10n ** 16n,
+    maxWagerWei: 10n ** 18n,
+    feeHintWei: 6n * 10n ** 16n,
+    rules: BLACKJACK_RULES_SUMMARY,
+  }
+
+  it('builds a blackjack-move welcome item with decimal-string limits and parses it back', () => {
+    const item = buildBlackjackWelcomeItem(table)
+    expect(item).toEqual({
+      type: 'blackjack-move',
+      gameId: BLACKJACK_WELCOME_GAME_ID,
+      action: 'welcome',
+      minWagerWei: '10000000000000000',
+      maxWagerWei: '1000000000000000000',
+      feeHintWei: '60000000000000000',
+      rules: BLACKJACK_RULES_SUMMARY,
+    })
+    // Survives the JSON wire form exactly.
+    expect(parseBlackjackWelcome(JSON.parse(JSON.stringify(item)))).toEqual({
+      ...table,
+      rules: BLACKJACK_RULES_SUMMARY.slice(0, BLACKJACK_WELCOME_RULES_MAX),
+    })
+  })
+
+  it('leaves optional fields out and parses them as absent', () => {
+    const item = buildBlackjackWelcomeItem({
+      minWagerWei: 1n,
+      maxWagerWei: 2n,
+    })
+    expect(Object.keys(item).sort()).toEqual(
+      ['action', 'gameId', 'maxWagerWei', 'minWagerWei', 'type'].sort(),
+    )
+    expect(parseBlackjackWelcome(item)).toEqual({
+      minWagerWei: 1n,
+      maxWagerWei: 2n,
+      feeHintWei: undefined,
+      rules: undefined,
+    })
+  })
+
+  it.each([
+    ['not a welcome', { action: 'bet', minWagerWei: '1', maxWagerWei: '2' }],
+    ['a missing limit', { action: 'welcome', minWagerWei: '1' }],
+    ['a numeric (not string) limit', { action: 'welcome', minWagerWei: 1, maxWagerWei: 2 }],
+    ['a fractional limit', { action: 'welcome', minWagerWei: '1.5', maxWagerWei: '2' }],
+    ['a negative limit', { action: 'welcome', minWagerWei: '-1', maxWagerWei: '2' }],
+    ['a hex limit', { action: 'welcome', minWagerWei: '0x10', maxWagerWei: '0x20' }],
+    ['a zero minimum', { action: 'welcome', minWagerWei: '0', maxWagerWei: '2' }],
+    ['min above max', { action: 'welcome', minWagerWei: '3', maxWagerWei: '2' }],
+    [
+      'an absurdly long number',
+      { action: 'welcome', minWagerWei: '1', maxWagerWei: '9'.repeat(200) },
+    ],
+  ])('ignores the whole welcome for %s', (_name, item) => {
+    expect(parseBlackjackWelcome(item)).toBeUndefined()
+  })
+
+  it('drops a malformed optional field and bounds the rules text instead of trusting it', () => {
+    const parsed = parseBlackjackWelcome({
+      action: 'welcome',
+      minWagerWei: '1',
+      maxWagerWei: '2',
+      feeHintWei: 'lots',
+      rules: 'x'.repeat(5000),
+    })
+    expect(parsed?.feeHintWei).toBeUndefined()
+    expect(parsed?.rules).toHaveLength(BLACKJACK_WELCOME_RULES_MAX)
+  })
+
+  it('the reducer ignores a welcome and an unknown action, keeping a hand intact', () => {
+    const inHand = reduceBlackjackState(undefined, move({ action: 'bet' }))
+    const welcome = reduceBlackjackState(inHand, move({ action: 'welcome' }))
+    expect(welcome).toBe(inHand)
+    const unknown = reduceBlackjackState(
+      inHand,
+      move({ action: 'surrender' as never }),
+    )
+    expect(unknown).toBe(inHand)
+    expect(reduceBlackjackState(undefined, move({ action: 'welcome' })).availableActions).toEqual([])
   })
 })

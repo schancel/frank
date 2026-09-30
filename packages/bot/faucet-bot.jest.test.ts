@@ -540,6 +540,122 @@ describe('Faucet', () => {
     })
   })
 
+  describe('malformed addresses are skipped before any RPC call', () => {
+    const SHAPES = [
+      'abc',
+      '0x1234',
+      `0x${'zz'.repeat(20)}`,
+      'foo.eth',
+      `0x${'a1'.repeat(21)}`,
+      '',
+    ]
+
+    it.each(SHAPES)(
+      'skips %p without paying, signing or asking the node',
+      async shape => {
+        let rpcCalls = 0
+        const faucet = makeFaucet({
+          getBalance: async () => {
+            rpcCalls++
+            throw new Error(
+              'network does not support ENS (operation="getEnsAddress")',
+            )
+          },
+        })
+        const outcome = await faucet.handleProfile(
+          shape,
+          profile(shape, 10).signedPayload,
+        )
+        expect(outcome).toEqual({
+          status: 'skipped',
+          reason: 'invalid-address',
+        })
+        expect(rpcCalls).toBe(0)
+        expect(signCount).toBe(0)
+      },
+    )
+
+    it('a malformed profile in the middle does not block the valid profiles behind it', async () => {
+      const faucet = makeFaucet({
+        // like real ethers: getBalance on a non-address throws an ENS/"network" error
+        getBalance: async address => {
+          if (!/^0x[0-9a-fA-F]{40}$/.test(address)) {
+            throw new Error(
+              'network does not support ENS (operation="getEnsAddress", network="unknown")',
+            )
+          }
+          return balances.get(address) ?? 0n
+        },
+      })
+      const batch = [
+        profile(ALICE, 10),
+        profile('0x1234', 15),
+        profile('foo.eth', 16),
+        profile(BOB, 20),
+      ]
+      expect(await faucet.pollOnce(batch, 0)).toEqual({ cursor: 20 })
+      expect(store.get(ALICE)?.state).toBe('confirmed')
+      expect(store.get(BOB)?.state).toBe('confirmed')
+    })
+
+    it('an ENS-style "network" message is not classified as transient', () => {
+      expect(
+        classifyProfileError(
+          new Error('network does not support ENS (operation="getEnsAddress")'),
+        ),
+      ).toBe('unclassified')
+      expect(classifyProfileError(new Error('rpc down'))).toBe('unclassified')
+    })
+  })
+
+  it('measures the recheck delay from the (re)broadcast, not the original signing', async () => {
+    let failSubmit = true
+    const calls: string[] = []
+    const deps = {
+      submitRaw: async () => {
+        if (failSubmit) throw new Error('rpc down')
+      },
+      getTxStatus: async (hash: string) => {
+        calls.push(hash)
+        return 'unknown' as const
+      },
+    }
+    await makeFaucet(deps).pollOnce([profile(ALICE, 10)], 0)
+    expect(store.get(ALICE)?.state).toBe('signed')
+    now += 60 * 60 * 1000 // a long outage
+    failSubmit = false
+    const later = makeFaucet(deps)
+    expect(await later.recoverSigned()).toBe(1)
+    expect(store.get(ALICE)?.broadcastAt).toBe(now)
+    expect(await later.recheckSubmitted()).toBe(0) // not due: signed an hour ago, broadcast just now
+    expect(calls).toHaveLength(0)
+    now += RECHECK_SUBMITTED_AFTER_MS + 1
+    expect(await later.recheckSubmitted()).toBe(1)
+    expect(store.get(ALICE)?.state).toBe('failed')
+  })
+
+  it('a failed record with a tx hash needs --force --confirm-tx when no node lookup is available', async () => {
+    await store.put(ALICE, {
+      state: 'failed',
+      amountWei: '50',
+      at: now,
+      txHash: '0xabc',
+      rawTx: '0xraw',
+    })
+    const refused = await faucetAdmin(store, ['--clear', ALICE])
+    expect(refused![0]).toMatch(/refusing.*may still land/)
+    expect(store.get(ALICE)).toBeDefined()
+    const forced = await faucetAdmin(store, [
+      '--clear',
+      ALICE,
+      '--force',
+      '--confirm-tx',
+      '0xabc',
+    ])
+    expect(forced![0]).toMatch(/WARNING.*failed/)
+    expect(store.get(ALICE)).toBeUndefined()
+  })
+
   describe('transient errors never skip a legitimate profile', () => {
     function flaky(message: string) {
       return makeFaucet({

@@ -36,6 +36,8 @@ export interface FundRecord {
   at: number
   txHash: string
   rawTx: string
+  /** When the transfer was last (re)broadcast and accepted; the recheck delay counts from here. */
+  broadcastAt?: number
 }
 
 export class FaucetStateStore {

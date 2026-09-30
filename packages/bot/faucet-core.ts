@@ -47,10 +47,12 @@ export const UNCLASSIFIED_FAILURE_SPREAD_MS = 10 * 60 * 1000
 /** A `submitted` transfer without a receipt is re-checked after this long (and at most this often). */
 export const RECHECK_SUBMITTED_AFTER_MS = 5 * 60 * 1000
 
+export const EVM_ADDRESS = /^0x[0-9a-fA-F]{40}$/
+
 export type TxLookup = 'confirmed' | 'failed' | 'pending' | 'unknown'
 
 const TRANSIENT_ERROR =
-  /timeout|timed out|econn|enotfound|eai_again|network|socket|fetch failed|server[_ ]error|\b(429|502|503|504)\b|rate.?limit|too many requests|unavailable|rpc/i
+  /timeout|timed out|econn|enotfound|eai_again|network[_ ]error|socket|fetch failed|server[_ ]error|\b(429|502|503|504)\b|rate.?limit|too many requests|service unavailable/i
 const MALFORMED_ADDRESS_ERROR =
   /invalid (address|argument)|malformed|bad address|bad checksum|invalid checksum|INVALID_ARGUMENT/i
 
@@ -320,6 +322,11 @@ export class Faucet {
     address: string,
     signedPayload: SignedPayloadMsg,
   ): Promise<FaucetOutcome> {
+    // Validate before any RPC: with ethers, a malformed address ('abc', '0x1234', 'foo.eth') fails
+    // with errors that look transient, and would otherwise stall the cursor forever.
+    if (!EVM_ADDRESS.test(address)) {
+      return { status: 'skipped', reason: 'invalid-address' }
+    }
     const { store, guard, config } = this.deps
     const blocked = guard.profileBlockReason(address, signedPayload)
     if (blocked) return { status: 'skipped', reason: blocked }
@@ -368,7 +375,11 @@ export class Faucet {
       return { status: 'stop', reason: 'error', error }
     }
     const record = store.get(address)!
-    await store.put(address, { ...record, state: 'submitted' })
+    await store.put(address, {
+      ...record,
+      state: 'submitted',
+      broadcastAt: this.now(),
+    })
     try {
       await this.deps.waitForConfirmation(signed.txHash)
       await store.put(address, { ...store.get(address)!, state: 'confirmed' })
@@ -441,7 +452,11 @@ export class Faucet {
           rawTx: record.rawTx,
           txHash: record.txHash,
         })
-        await this.deps.store.put(address, { ...record, state: 'submitted' })
+        await this.deps.store.put(address, {
+          ...record,
+          state: 'submitted',
+          broadcastAt: this.now(),
+        })
         recovered++
         continue
       } catch (error) {
@@ -481,7 +496,10 @@ export class Faucet {
     let changed = 0
     const now = this.now()
     for (const [address, record] of this.deps.store.submittedRecords()) {
-      if (now - record.at < RECHECK_SUBMITTED_AFTER_MS) continue
+      // Measured from the (re)broadcast, not the original signing: after a long outage the node
+      // and indexers need time before the tx can be expected to show up.
+      if (now - (record.broadcastAt ?? record.at) < RECHECK_SUBMITTED_AFTER_MS)
+        continue
       const last = this.lastRechecked.get(record.txHash)
       if (last !== undefined && now - last < RECHECK_SUBMITTED_AFTER_MS)
         continue
@@ -595,7 +613,9 @@ export async function faucetAdmin(
         ]
       }
     }
-    if (record.state === 'signed') {
+    // A `failed` record with a hash but no node lookup may only mean "the node did not know the
+    // tx" (recheckSubmitted): it can still land, so it needs the same explicit confirmation.
+    if (record.state === 'signed' || (record.state === 'failed' && !lookup)) {
       const confirm = args[args.indexOf('--confirm-tx') + 1]
       const confirmed =
         args.includes('--force') &&
@@ -603,7 +623,7 @@ export async function faucetAdmin(
         confirm?.toLowerCase() === record.txHash.toLowerCase()
       if (!confirmed) {
         return [
-          `refusing to clear ${address}: state is signed, so tx ${record.txHash} may already have been broadcast (a timeout after the node accepted it looks identical). Clearing lets the address be paid a SECOND time.`,
+          `refusing to clear ${address}: state is ${record.state}, so tx ${record.txHash} may already have been broadcast or may still land (a timeout after the node accepted it looks identical). Clearing lets the address be paid a SECOND time.`,
           lookup
             ? 'The node does not know this tx right now.'
             : 'No RPC was consulted (set MONAD_TESTNET_HTTP_RPC_URL to check the node).',
@@ -612,8 +632,8 @@ export async function faucetAdmin(
       }
       await store.delete(address)
       return [
-        `WARNING: forced clear of a signed record; tx ${record.txHash} may still land and pay ${address} twice.`,
-        `cleared ${address} (was signed); it may be funded again`,
+        `WARNING: forced clear of a ${record.state} record; tx ${record.txHash} may still land and pay ${address} twice.`,
+        `cleared ${address} (was ${record.state}); it may be funded again`,
       ]
     }
   }

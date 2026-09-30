@@ -24,6 +24,8 @@
  *   yarn tsx vendor-bot.livecheck.ts
  *
  * Env vars:
+ *   VENDOR_BOT_CATALOG_DIR       -- directory with manifest.json + image files (default: the
+ *                                   bundled demo-catalog/); see vendor-catalog.ts
  *   VENDOR_BOT_IDENTITY_JSON     -- default /tmp/vendor-bot-identity.json
  *   VENDOR_BOT_STATE_DIR         -- default /tmp/vendor-bot-state
  *   VENDOR_BOT_MAX_SALES         -- how many fulfilled purchases before exiting (default 1000)
@@ -64,50 +66,24 @@ import { botProfileFields } from './bot-directory'
 import { VendorBotStateStore } from './vendor-bot-state'
 import { paymentBelowPriceMessage } from './vendor-messages'
 import { botLoopGuardFromEnv } from './bot-loop-guard'
+import {
+  buildFulfillItems,
+  catalogItem,
+  DEFAULT_CATALOG_DIR,
+  loadVendorCatalog,
+} from './vendor-catalog'
 
 function sleep(ms: number): Promise<void> {
   return new Promise(r => setTimeout(r, ms))
 }
 
-/**
- * Placeholder demo catalog -- three distinct, tiny solid-color PNGs standing in for real photos,
- * clearly labeled as such. The point of this demo is the *protocol* (catalog, stamp-verified
- * one-click purchase, fulfillment), not sourcing actual licensed photography for a hackathon demo.
- * Swap `image` for real (rights-cleared) content before using this for anything beyond that.
- */
-const CATALOG: Array<{ itemId: string; description: string; priceWei: bigint; image: string }> = [
-  {
-    itemId: 'booby-1',
-    description: 'Blue-footed booby, photo #1 (demo placeholder image)',
-    priceWei: 50000000000000000n, // 0.05 MON
-    image:
-      'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
-  },
-  {
-    itemId: 'booby-2',
-    description: 'Blue-footed booby, photo #2 (demo placeholder image)',
-    priceWei: 50000000000000000n,
-    image:
-      'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
-  },
-  {
-    itemId: 'booby-3',
-    description: 'Blue-footed booby, photo #3, rare pose (demo placeholder image)',
-    priceWei: 100000000000000000n, // 0.1 MON
-    image:
-      'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAAAAAA6fptVAAAACklEQVR4AWMAAgAABQABDQottAAAAABJRU5ErkJggg==',
-  },
-]
-
-function catalogWirePayload(): Array<{ itemId: string; description: string; priceWei: string }> {
-  return CATALOG.map(item => ({
-    itemId: item.itemId,
-    description: item.description,
-    priceWei: item.priceWei.toString(),
-  }))
-}
-
 async function main() {
+  // Validated first: a bad catalog fails at startup, before any sale (#315).
+  const catalogDir = resolve(
+    process.cwd(),
+    process.env.VENDOR_BOT_CATALOG_DIR || DEFAULT_CATALOG_DIR,
+  )
+  const CATALOG = loadVendorCatalog(catalogDir)
   const relayBaseUrl = process.env.E2E_DEMO_RELAY_URL ?? 'http://127.0.0.1:8098'
   const rpcUrl = requiredEnv('MONAD_TESTNET_HTTP_RPC_URL')
   const networkTag = requiredEnv('FRANK_NETWORK_TAG')
@@ -148,6 +124,7 @@ async function main() {
 
   console.log('== Vendor bot: flat-price digital goods over stamped Frank DMs (ticket #63) ==')
   console.log(`Relay:   ${relayBaseUrl}`)
+  console.log(`Catalog dir: ${catalogDir}`)
   console.log(`Catalog: ${CATALOG.map(i => `${i.itemId} (${i.priceWei} wei)`).join(', ')}`)
 
   const identity = loadOrCreateIdentity(identityJsonPath, 'vendor-bot')
@@ -282,7 +259,7 @@ async function main() {
           continue
         }
         console.log(`\n[vendor-bot] sending catalog to ${envelope.from}`)
-        await sendReply([{ type: 'digital-goods', action: 'catalog', catalog: catalogWirePayload() }])
+        await sendReply([catalogItem(CATALOG)])
         continue
       }
 
@@ -322,10 +299,7 @@ async function main() {
 
       console.log(`[vendor-bot] payment verified -- delivering ${item.itemId}`)
       await sendReply(
-        [
-          { type: 'digital-goods', action: 'fulfill', itemId: item.itemId },
-          { type: 'image', image: item.image },
-        ],
+        buildFulfillItems(item),
         // The buyer already paid the full price via their own request's stamp -- this delivery
         // message pays only the relay's bare minimum stamp, not a second copy of the price.
         minimumStampValueWei,
@@ -357,6 +331,9 @@ function sumStampPayments(message: {
 }
 
 main().catch(err => {
-  console.error('VENDOR BOT FAILED:', err)
+  console.error(
+    'VENDOR BOT FAILED:',
+    process.env.VENDOR_BOT_DEBUG ? err : err instanceof Error ? err.message : err,
+  )
   process.exit(1)
 })

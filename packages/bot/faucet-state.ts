@@ -19,7 +19,14 @@ const FUND_PREFIX = 'fund:'
 /** signed: the exact signed transaction is persisted, broadcast not yet confirmed to have been
  * accepted (a crash or RPC error here leaves the record so the exact bytes can be replayed).
  * submitted: the node accepted it. confirmed: a successful receipt was seen. */
-export type FundState = 'signed' | 'submitted' | 'confirmed'
+export type FundState =
+  | 'signed'
+  | 'submitted'
+  | 'confirmed'
+  /** Mined but reverted: the address was not funded. Blocks re-funding until cleared. */
+  | 'failed'
+  /** Skipped after repeated per-address failures; nothing was sent. */
+  | 'skipped'
 
 export interface FundRecord {
   state: FundState
@@ -84,14 +91,27 @@ export class FaucetStateStore {
     this.records.set(key, record)
   }
 
-  /** Records created at or after `sinceMs` (any state: a signed-but-unconfirmed transfer still
-   * spends the budget). */
+  async delete(address: string): Promise<void> {
+    const key = canonicalMonadEnvelopeAddress(address)
+    await this.db.del(FUND_PREFIX + key)
+    this.records.delete(key)
+  }
+
+  /** Transfers created at or after `sinceMs` (a signed-but-unconfirmed transfer still spends the
+   * budget; a skipped profile sent nothing and does not). */
   countSince(sinceMs: number): number {
     let count = 0
     for (const record of this.records.values()) {
-      if (record.at >= sinceMs) count++
+      if (record.at >= sinceMs && record.state !== 'skipped') count++
     }
     return count
+  }
+
+  /** Records an operator may need to look at: not settled and not paid. */
+  unsettledRecords(): Array<[string, FundRecord]> {
+    return [...this.records].filter(([, record]) =>
+      ['signed', 'failed', 'skipped'].includes(record.state),
+    )
   }
 
   /** Addresses whose transaction is signed but not yet known-accepted, for replay. */

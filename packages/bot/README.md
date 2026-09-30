@@ -312,7 +312,9 @@ profile once with testnet MON. It needs no LLM key, no stamp pool and no identit
 `MONAD_TESTNET_HTTP_RPC_URL`, `FRANK_NETWORK_TAG=MONT` and `E2E_DEMO_MAIN_WALLET_JSON`
 (`{address, privateKey}` of a wallet holding testnet MON only). See the file header for every knob
 (`FAUCET_AMOUNT_WEI` default 0.05 MON, hard ceiling 1 MON; `FAUCET_MAX_PER_RUN` 10;
-`FAUCET_MAX_PER_DAY` 20; `FAUCET_MIN_RESERVE_WEI` 0.1 MON; `FAUCET_STATE_DIR`).
+`FAUCET_MAX_PER_DAY` 20 (max 1000); `FAUCET_MIN_RESERVE_WEI` 0.1 MON (minimum 0.01 MON);
+`FAUCET_POLL_INTERVAL_MS` 4000 (min 1000); `FAUCET_STATE_DIR` default `~/.frank-faucet`, warns if under a
+tmp dir). Invalid values fail startup with the variable name; nothing becomes NaN.
 
 - once per address, durable: the exact signed transaction is persisted before broadcast; any
   record (signed/submitted/confirmed) blocks re-funding, across restarts and address casing. A
@@ -323,11 +325,28 @@ profile once with testnet MON. It needs no LLM key, no stamp pool and no identit
 - testnet only: refuses to start unless `FRANK_NETWORK_TAG=MONT` and the RPC reports chain id 10143.
 - Do not also let Qwen fund: set `QWEN_BOT_FUND_VALUE_WEI=0` on the Qwen bot (it still greets).
 
+- one wallet, one faucet: use a wallet dedicated to it. Do not share it with the Qwen bot's funding
+  (`QWEN_BOT_FUND_VALUE_WEI=0`) or run a second faucet on a different state dir: concurrent senders
+  reuse nonces and one kills the other's transfer. The faucet itself will not sign a new transfer
+  while an earlier one is unsettled, and handles profiles one at a time.
+- the wallet JSON holds a private key: `chmod 600` it (the faucet warns if group/others can read it).
+- a profile that keeps failing (e.g. malformed address) is skipped and recorded after 3
+  consecutive failures while the RPC is healthy, so it cannot block everyone behind it; an RPC
+  outage never counts against a profile.
+
+Stuck transfers. If the node rejects the exact-bytes replay (`already known`, `nonce too low`) the
+faucet looks the receipt up by hash: mined settles the record, otherwise it waits and logs once.
+If a record stays stuck (further funding is paused while any transfer is unsettled):
+
+    yarn faucet --list-stuck          # signed / failed / skipped records with tx hashes
+    yarn faucet --clear <address>     # after confirming on an explorer that the tx never landed
+
+`--clear` refuses records that were submitted/confirmed. It needs only `FAUCET_STATE_DIR`.
+
 Abuse limits (demo level): registration is free, so a sybil can mint addresses and collect the
 amount per address until the daily cap (loss bounded to `maxPerDay * amount`, wallet floor kept by
-the reserve). No captcha, no proof of humanity, no per-IP limit. A transfer whose broadcast the node
-rejects is left for the operator (logged with its hash), never re-signed. The app's Receive page
-shows the user's address and explains the faucet when the balance is a real zero.
+the reserve). No captcha, no proof of humanity, no per-IP limit. The app's Receive page shows the
+user's address and explains the faucet when the balance is a real zero.
 
 ## Non-goals (per the ticket)
 

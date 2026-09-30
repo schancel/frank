@@ -14,31 +14,44 @@
  *   export E2E_DEMO_MAIN_WALLET_JSON=/absolute/path/to/faucet-wallet.json   # {address, privateKey}
  *   export FRANK_NETWORK_TAG=MONT
  *   yarn faucet
+ *   yarn faucet --list-stuck          # unsettled/failed/skipped records (needs only FAUCET_STATE_DIR)
+ *   yarn faucet --clear <address>    # allow re-funding a stuck address; only after checking on an
+ *                                    # explorer that its transaction never landed
  *
  * Env vars (all optional except the three above):
  *   E2E_DEMO_RELAY_URL             relay base URL (default http://127.0.0.1:8098)
- *   FAUCET_STATE_DIR               durable state (default /tmp/faucet-state); delete to reset
+ *   FAUCET_STATE_DIR               durable state (default ~/.frank-faucet); warns if under a tmp dir
  *   FAUCET_AMOUNT_WEI              per address (default 0.05 MON; hard ceiling 1 MON)
  *   FAUCET_MAX_PER_RUN             new addresses funded per process run (default 10)
- *   FAUCET_MAX_PER_DAY             new addresses funded per rolling 24h, across runs (default 20)
- *   FAUCET_MIN_RESERVE_WEI         faucet wallet floor (default 0.1 MON)
- *   FAUCET_POLL_INTERVAL_MS        default 4000
+ *   FAUCET_MAX_PER_DAY             new addresses funded per rolling 24h, across runs (default 20, max 1000)
+ *   FAUCET_MIN_RESERVE_WEI         faucet wallet floor (default 0.1 MON, minimum 0.01 MON)
+ *   FAUCET_POLL_INTERVAL_MS        default 4000 (allowed 1000..3600000)
  *   FAUCET_PROFILE_SINCE_MS        first-run cursor override (default: now, i.e. only new signups)
  *   FRANK_BOT_PEER_DENYLIST        addresses never funded (shared with the other bots)
+ *
+ * The wallet must be dedicated to this faucet: do not share it with the Qwen bot's funding
+ * (`QWEN_BOT_FUND_VALUE_WEI=0`) or a second faucet on another state dir; concurrent senders reuse
+ * nonces and can kill each other's transfers. The wallet JSON holds a private key: `chmod 600` it
+ * (the faucet warns otherwise).
  *
  * Testnet only: the process refuses to start unless the RPC reports chain id 10143 and
  * `FRANK_NETWORK_TAG` is `MONT`. Private keys are read from the wallet JSON only to construct the
  * signer and are never logged. Do not point this at a real-value network.
  */
+import { statSync } from 'fs'
+import { homedir, tmpdir } from 'os'
 import { resolve } from 'path'
 
 import { fetchMonadProfilesSince } from '@frank/wallet/monad-identity'
 
 import { botLoopGuardFromEnv } from './bot-loop-guard'
 import {
+  assertTestnet,
   Faucet,
-  faucetConfigFromEnv,
-  MONAD_TESTNET_CHAIN_ID,
+  faucetAdmin,
+  faucetSettingsFromEnv,
+  keyFilePermissionWarning,
+  stateDirWarning,
 } from './faucet-core'
 import { FaucetStateStore } from './faucet-state'
 import {
@@ -52,35 +65,48 @@ function sleep(ms: number): Promise<void> {
 }
 
 async function main() {
+  const settings = faucetSettingsFromEnv(process.env, homedir())
+  const { config, pollIntervalMs } = settings
+  const stateDirPath = resolve(process.cwd(), settings.stateDir)
+  const stateWarning = stateDirWarning(stateDirPath, [tmpdir(), '/tmp'])
+  if (stateWarning) console.warn(`[faucet] WARNING: ${stateWarning}`)
+
+  // Operator commands need only the durable state: no wallet, RPC or relay.
+  const adminArgs = process.argv.slice(2)
+  if (adminArgs.includes('--list-stuck') || adminArgs.includes('--clear')) {
+    const adminStore = new FaucetStateStore(stateDirPath)
+    await adminStore.Open()
+    try {
+      for (const line of (await faucetAdmin(adminStore, adminArgs)) ?? []) {
+        console.log(line)
+      }
+    } finally {
+      await adminStore.Close()
+    }
+    return
+  }
+
   const relayBaseUrl = process.env.E2E_DEMO_RELAY_URL ?? 'http://127.0.0.1:8098'
   const rpcUrl = requiredEnv('MONAD_TESTNET_HTTP_RPC_URL')
   const networkTag = requiredEnv('FRANK_NETWORK_TAG')
-  if (networkTag !== 'MONT') {
-    throw new Error(
-      `Refusing to run: FRANK_NETWORK_TAG is "${networkTag}", the faucet is testnet-only (MONT)`,
-    )
-  }
-  const config = faucetConfigFromEnv(process.env)
   const mainWalletJsonPath = resolve(
     process.cwd(),
     requiredEnv('E2E_DEMO_MAIN_WALLET_JSON'),
   )
-  const stateDirPath = resolve(
-    process.cwd(),
-    process.env.FAUCET_STATE_DIR ?? '/tmp/faucet-state',
+  const keyWarning = keyFilePermissionWarning(
+    mainWalletJsonPath,
+    statSync(mainWalletJsonPath).mode,
   )
-  const pollIntervalMs = Number(process.env.FAUCET_POLL_INTERVAL_MS ?? 4000)
+  if (keyWarning) console.warn(`[faucet] WARNING: ${keyWarning}`)
 
   const { provider, mainAccountSigner } = loadMainAccountSigner({
     rpcUrl,
     mainWalletJsonPath,
   })
-  const chainId = (await provider.getNetwork()).chainId
-  if (chainId !== MONAD_TESTNET_CHAIN_ID) {
-    throw new Error(
-      `Refusing to run: RPC reports chain id ${chainId}, the faucet only runs on Monad testnet (${MONAD_TESTNET_CHAIN_ID})`,
-    )
-  }
+  assertTestnet({
+    networkTag,
+    chainId: (await provider.getNetwork()).chainId,
+  })
 
   console.log('== Testnet faucet (#316) ==')
   console.log(`Relay:        ${relayBaseUrl}`)
@@ -104,14 +130,13 @@ async function main() {
     submitRaw: async tx => {
       await mainAccountSigner.submitRaw(tx.rawTx, tx.txHash)
     },
+    getTxStatus: txHash => mainAccountSigner.getStatus(txHash),
     waitForConfirmation: txHash =>
       waitForConfirmation(mainAccountSigner, txHash, 'faucet transfer'),
     getBalance: address => provider.getBalance(address),
   })
 
-  let since =
-    store.getSinceProfiles() ??
-    Number(process.env.FAUCET_PROFILE_SINCE_MS ?? Date.now())
+  let since = store.getSinceProfiles() ?? settings.profileSinceMs ?? Date.now()
 
   let lastStopped: string | undefined
   try {

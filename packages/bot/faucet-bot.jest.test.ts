@@ -9,7 +9,13 @@ const { AddressMetadata, Entry } = __pb_registry_metadata_pb
 
 import { BotLoopGuard } from './bot-loop-guard'
 import {
+  assertTestnet,
   DAY_MS,
+  faucetAdmin,
+  faucetSettingsFromEnv,
+  keyFilePermissionWarning,
+  MAX_PROFILE_FAILURES,
+  stateDirWarning,
   Faucet,
   FaucetConfig,
   FaucetDeps,
@@ -46,6 +52,7 @@ describe('Faucet', () => {
   let sent: Array<{ to: string; rawTx: string }>
   let signCount: number
   let balances: Map<string, bigint>
+  let logs: string[]
 
   const config: FaucetConfig = {
     amountWei: AMOUNT,
@@ -73,6 +80,8 @@ describe('Faucet', () => {
         sent.push({ to: tx.txHash.replace('0xhash-', ''), rawTx: tx.rawTx })
       },
       waitForConfirmation: async () => undefined,
+      getTxStatus: async () => 'pending',
+      log: message => logs.push(message),
       getBalance: async address => balances.get(address) ?? 0n,
       ...overrides,
     })
@@ -85,6 +94,7 @@ describe('Faucet', () => {
     now = 1_000_000
     sent = []
     signCount = 0
+    logs = []
     balances = new Map([[FAUCET, 10_000n]])
   })
 
@@ -233,6 +243,153 @@ describe('Faucet', () => {
     await faucet.pollOnce([profile(ALICE, 10)], 0)
     expect(sent).toHaveLength(1)
   })
+
+  it('serializes concurrent handling of the same address in two casings: one transfer', async () => {
+    const faucet = makeFaucet({
+      // Yield inside the check so an unserialized implementation would interleave.
+      getBalance: async address => {
+        await new Promise(resolve => setTimeout(resolve, 5))
+        return balances.get(address) ?? 0n
+      },
+    })
+    const upper = `0x${ALICE.slice(2).toUpperCase()}`
+    const results = await Promise.all([
+      faucet.handleProfile(ALICE, profile(ALICE, 10).signedPayload),
+      faucet.handleProfile(upper, profile(upper, 10).signedPayload),
+    ])
+    expect(results.map(r => r.status).sort()).toEqual(['funded', 'skipped'])
+    expect(signCount).toBe(1)
+    expect(sent).toHaveLength(1)
+  })
+
+  it('does not sign a new transfer while an earlier one is still unsettled', async () => {
+    const faucet = makeFaucet({
+      submitRaw: async () => {
+        throw new Error('rpc down')
+      },
+    })
+    await faucet.pollOnce([profile(ALICE, 10)], 0)
+    expect(store.get(ALICE)?.state).toBe('signed')
+    signCount = 0
+    expect(await faucet.pollOnce([profile(BOB, 20)], 0)).toEqual({
+      cursor: 0,
+      stopped: 'unsettled',
+    })
+    expect(signCount).toBe(0)
+    expect(store.get(BOB)).toBeUndefined()
+  })
+
+  it('a rejected replay that was actually mined settles the record, quietly', async () => {
+    const rejecting = {
+      submitRaw: async () => {
+        throw new Error('already known')
+      },
+    }
+    const faucet = makeFaucet(rejecting)
+    await faucet.pollOnce([profile(ALICE, 10)], 0)
+    const mined = makeFaucet({
+      ...rejecting,
+      getTxStatus: async () => 'confirmed',
+    })
+    expect(await mined.recoverSigned()).toBe(1)
+    expect(store.get(ALICE)?.state).toBe('confirmed')
+    // and the next transfer is no longer blocked
+    await makeFaucet().pollOnce([profile(BOB, 20)], 0)
+    expect(store.get(BOB)?.state).toBe('confirmed')
+  })
+
+  it('a rejected replay with no receipt is logged once, not on every poll', async () => {
+    const faucet = makeFaucet({
+      submitRaw: async () => {
+        throw new Error('nonce too low')
+      },
+    })
+    await faucet.pollOnce([profile(ALICE, 10)], 0)
+    logs.length = 0
+    for (let i = 0; i < 5; i++) await faucet.recoverSigned()
+    expect(logs).toHaveLength(1)
+    expect(logs[0]).toContain('--clear')
+    expect(store.get(ALICE)?.state).toBe('signed')
+  })
+
+  it('a replay that was mined but reverted is marked failed and stops blocking others', async () => {
+    const rejecting = {
+      submitRaw: async () => {
+        throw new Error('nonce too low')
+      },
+    }
+    await makeFaucet(rejecting).pollOnce([profile(ALICE, 10)], 0)
+    await makeFaucet({
+      ...rejecting,
+      getTxStatus: async () => 'failed',
+    }).recoverSigned()
+    expect(store.get(ALICE)?.state).toBe('failed')
+    expect(store.signedRecords()).toHaveLength(0)
+  })
+
+  it('skips a profile that deterministically fails after N tries, records it, and moves on', async () => {
+    const bad = `0x${'e5'.repeat(20)}`
+    const faucet = makeFaucet({
+      getBalance: async address => {
+        if (address === bad) throw new Error('bad address')
+        return balances.get(address) ?? 0n
+      },
+    })
+    const batch = [profile(bad, 10), profile(ALICE, 20)]
+    for (let i = 1; i < MAX_PROFILE_FAILURES; i++) {
+      expect(await faucet.pollOnce(batch, 0)).toEqual({
+        cursor: 0,
+        stopped: 'error',
+      })
+    }
+    expect((await faucet.pollOnce(batch, 0)).cursor).toBe(20)
+    expect(store.get(bad)?.state).toBe('skipped')
+    expect(store.get(ALICE)?.state).toBe('confirmed')
+    expect(store.countSince(0)).toBe(1) // the skipped profile does not use the daily budget
+  })
+
+  it('does not blame a profile for an RPC outage', async () => {
+    let down = true
+    const faucet = makeFaucet({
+      getBalance: async address => {
+        if (down) throw new Error('rpc down')
+        return balances.get(address) ?? 0n
+      },
+    })
+    for (let i = 0; i < MAX_PROFILE_FAILURES + 2; i++) {
+      expect((await faucet.pollOnce([profile(ALICE, 10)], 0)).stopped).toBe(
+        'rpc-down',
+      )
+    }
+    expect(store.get(ALICE)).toBeUndefined()
+    down = false
+    await faucet.pollOnce([profile(ALICE, 10)], 0)
+    expect(store.get(ALICE)?.state).toBe('confirmed')
+  })
+
+  it('operator can list and clear a stuck record, but not a paid one', async () => {
+    await makeFaucet().pollOnce([profile(BOB, 20)], 0)
+    await makeFaucet({
+      submitRaw: async () => {
+        throw new Error('x')
+      },
+    }).pollOnce([profile(ALICE, 10)], 0)
+    expect((await faucetAdmin(store, ['--list-stuck']))![0]).toContain(
+      'state=signed',
+    )
+    expect((await faucetAdmin(store, ['--clear', BOB]))![0]).toContain(
+      'refusing',
+    )
+    expect(store.get(BOB)).toBeDefined()
+    expect((await faucetAdmin(store, ['--clear', ALICE]))![0]).toContain(
+      'cleared',
+    )
+    expect(store.get(ALICE)).toBeUndefined()
+    expect(await faucetAdmin(store, ['--list-stuck'])).toEqual([
+      'no stuck records',
+    ])
+    expect(await faucetAdmin(store, [])).toBeUndefined()
+  })
 })
 
 describe('faucetConfigFromEnv', () => {
@@ -256,5 +413,70 @@ describe('faucetConfigFromEnv', () => {
     expect(() => faucetConfigFromEnv({ FAUCET_AMOUNT_WEI: '0' })).toThrow()
     expect(() => faucetConfigFromEnv({ FAUCET_MAX_PER_DAY: '-1' })).toThrow()
     expect(() => faucetConfigFromEnv({ FAUCET_MAX_PER_RUN: 'ten' })).toThrow()
+  })
+})
+
+describe('faucetSettingsFromEnv', () => {
+  const settings = (env: Record<string, string>) =>
+    faucetSettingsFromEnv(env, '/home/u')
+
+  it('defaults to a persistent per-user state dir and sane limits', () => {
+    const result = settings({})
+    expect(result.stateDir).toBe('/home/u/.frank-faucet')
+    expect(result.pollIntervalMs).toBe(4000)
+    expect(result.profileSinceMs).toBeUndefined()
+    expect(settings({ FAUCET_STATE_DIR: '/var/lib/faucet' }).stateDir).toBe(
+      '/var/lib/faucet',
+    )
+  })
+
+  it.each([
+    ['FAUCET_POLL_INTERVAL_MS', 'abc'],
+    ['FAUCET_POLL_INTERVAL_MS', '0'],
+    ['FAUCET_POLL_INTERVAL_MS', '1'],
+    ['FAUCET_PROFILE_SINCE_MS', 'yesterday'],
+    ['FAUCET_PROFILE_SINCE_MS', '-5'],
+    ['FAUCET_MAX_PER_DAY', '0'],
+    ['FAUCET_MAX_PER_DAY', '100000'],
+    ['FAUCET_MAX_PER_RUN', '0'],
+    ['FAUCET_MIN_RESERVE_WEI', '0'],
+    ['FAUCET_MIN_RESERVE_WEI', '1'],
+    ['FAUCET_AMOUNT_WEI', '1.5'],
+  ])('refuses %s=%s at startup with a clear message', (name, value) => {
+    expect(() => settings({ [name]: value })).toThrow(new RegExp(name))
+  })
+
+  it('accepts a first-run cursor override', () => {
+    expect(settings({ FAUCET_PROFILE_SINCE_MS: '0' }).profileSinceMs).toBe(0)
+  })
+})
+
+describe('startup safety checks', () => {
+  it('assertTestnet requires both the MONT tag and chain id 10143', () => {
+    expect(() =>
+      assertTestnet({ networkTag: 'MONT', chainId: 10143n }),
+    ).not.toThrow()
+    expect(() =>
+      assertTestnet({ networkTag: 'MON1', chainId: 10143n }),
+    ).toThrow(/testnet-only/)
+    expect(() => assertTestnet({ networkTag: 'MONT', chainId: 143n })).toThrow(
+      /chain id 143/,
+    )
+    expect(() => assertTestnet({ networkTag: '', chainId: 10143n })).toThrow()
+  })
+
+  it('warns when the state dir is under a temporary directory only', () => {
+    const tmps = ['/tmp', '/var/folders/x/T']
+    expect(stateDirWarning('/tmp/faucet-state', tmps)).toMatch(/temporary/)
+    expect(stateDirWarning('/var/folders/x/T/a/b', tmps)).toMatch(/temporary/)
+    expect(stateDirWarning('/tmp', tmps)).toMatch(/temporary/)
+    expect(stateDirWarning('/home/u/.frank-faucet', tmps)).toBeUndefined()
+    expect(stateDirWarning('/tmpfoo/x', tmps)).toBeUndefined()
+  })
+
+  it('warns when the wallet file is group/world accessible', () => {
+    expect(keyFilePermissionWarning('/w.json', 0o100600)).toBeUndefined()
+    expect(keyFilePermissionWarning('/w.json', 0o100640)).toMatch(/chmod 600/)
+    expect(keyFilePermissionWarning('/w.json', 0o100604)).toMatch(/chmod 600/)
   })
 })

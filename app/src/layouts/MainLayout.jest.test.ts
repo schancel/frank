@@ -87,6 +87,7 @@ const DrawerStub = defineComponent({
         'div',
         {
           'data-testid': 'drawer',
+          'class': 'q-drawer',
           'data-open': String(props.modelValue),
           'data-breakpoint': String(props.breakpoint),
         },
@@ -129,7 +130,16 @@ function createFakeRouter() {
     // Like a throwing beforeEach guard: afterEach hooks are skipped, onError handlers run and
     // the navigation promise rejects.
     guardThrowsOnce: false,
-    push: jest.fn(async (path: string) => navigate(path)),
+    // Async navigation: resolve after a delay, running beforeCommit (the route/view swap) first.
+    delayMs: 0,
+    beforeCommit: undefined as (() => void) | undefined,
+    push: jest.fn(async (path: string) => {
+      if (router.delayMs) {
+        await new Promise(resolve => setTimeout(resolve, router.delayMs))
+        router.beforeCommit?.()
+      }
+      navigate(path)
+    }),
     replace: jest.fn(async (path: string) => navigate(path)),
   }
   function navigate(path: string) {
@@ -200,8 +210,15 @@ async function mountLayout(
       },
     },
   })
-  return { wrapper, router }
+  return { wrapper, router, $q }
 }
+
+interface LayoutVm {
+  myDrawerOpen: boolean
+  drawerOpener: HTMLElement | null
+  toggleMyDrawerOpen(): void
+}
+const layoutVm = (w: VueWrapper) => w.vm as unknown as LayoutVm
 
 const drawer = (w: VueWrapper) => w.find('[data-testid="drawer"]')
 
@@ -226,7 +243,7 @@ const byText = (w: VueWrapper, text: string) =>
   w.findAll('div').filter(d => d.text() === text)
 
 async function openDrawer(w: VueWrapper) {
-  ;(w.vm as any).toggleMyDrawerOpen()
+  layoutVm(w).toggleMyDrawerOpen()
   await flushPromises()
   expect(open(w)).toBe('true')
 }
@@ -459,6 +476,109 @@ describe('MainLayout focus after the overlay closes', () => {
     await byText(wrapper, 'Profile')[0].trigger('click')
     await flushPromises()
     expect(document.activeElement).not.toBe(main)
+    wrapper.unmount()
+  })
+})
+
+describe('MainLayout focus restoration guards', () => {
+  let host: HTMLElement
+  let main: HTMLElement
+  beforeEach(() => {
+    host = document.createElement('div')
+    document.body.appendChild(host)
+    main = document.createElement('div')
+    main.setAttribute('role', 'main')
+    document.body.appendChild(main)
+  })
+  afterEach(() => {
+    document.body.innerHTML = ''
+  })
+  const button = () => {
+    const b = document.createElement('button')
+    document.body.appendChild(b)
+    return b
+  }
+
+  it('does not restore focus (or keep an opener) for a desktop-width close', async () => {
+    const focus = jest.spyOn(main, 'focus')
+    const { wrapper } = await mountLayout(1024, host)
+    // Focus is on <body> (as after a hidden drawer item), so only the width check stops a move.
+    layoutVm(wrapper).myDrawerOpen = false
+    await flushPromises()
+    expect(focus).not.toHaveBeenCalled()
+    expect(layoutVm(wrapper).drawerOpener).toBeNull()
+    wrapper.unmount()
+  })
+
+  it('forgets an opener captured before the width changed, on a desktop-width close', async () => {
+    const { wrapper, $q } = await mountLayout(390, host)
+    button().focus()
+    layoutVm(wrapper).myDrawerOpen = true
+    await flushPromises()
+    expect(layoutVm(wrapper).drawerOpener).not.toBeNull()
+    $q.screen.width = 1024
+    layoutVm(wrapper).myDrawerOpen = false
+    await flushPromises()
+    expect(layoutVm(wrapper).drawerOpener).toBeNull()
+    wrapper.unmount()
+  })
+
+  it('does not capture an opener for an open at desktop width', async () => {
+    const { wrapper, $q } = await mountLayout(1024, host)
+    layoutVm(wrapper).myDrawerOpen = false
+    await flushPromises()
+    button().focus()
+    layoutVm(wrapper).myDrawerOpen = true
+    await flushPromises()
+    expect(layoutVm(wrapper).drawerOpener).toBeNull()
+    $q.screen.width = 390
+    wrapper.unmount()
+  })
+
+  it('keeps focus in an input when a resize to narrow hides the drawer', async () => {
+    const { wrapper, $q } = await mountLayout(1024, host)
+    const input = document.createElement('input')
+    document.body.appendChild(input)
+    input.focus()
+    $q.screen.width = 390
+    layoutVm(wrapper).myDrawerOpen = false // Quasar hides it on crossing the breakpoint
+    await flushPromises()
+    expect(document.activeElement).toBe(input)
+    wrapper.unmount()
+  })
+
+  it('restores the second close to the main region, not the first opener', async () => {
+    const { wrapper } = await mountLayout(390, host)
+    const first = button()
+    first.focus()
+    layoutVm(wrapper).myDrawerOpen = true
+    await flushPromises()
+    layoutVm(wrapper).myDrawerOpen = false
+    await flushPromises()
+    expect(document.activeElement).toBe(first)
+    first.blur()
+    layoutVm(wrapper).myDrawerOpen = true // nothing focusable to capture
+    await flushPromises()
+    layoutVm(wrapper).myDrawerOpen = false
+    await flushPromises()
+    expect(document.activeElement).toBe(main)
+    wrapper.unmount()
+  })
+
+  it('waits for an async navigation that swaps out the opener before restoring focus', async () => {
+    const { wrapper, router } = await mountLayout(390, host)
+    const menu = button()
+    router.delayMs = 30
+    router.beforeCommit = () => menu.remove() // the new page has its own header
+    menu.focus()
+    await openDrawer(wrapper)
+    await wrapper.find('[data-testid="chat-item"]').trigger('click')
+    await flushPromises()
+    expect(open(wrapper)).toBe('false')
+    await new Promise(resolve => setTimeout(resolve, 80))
+    await flushPromises()
+    expect(menu.isConnected).toBe(false)
+    expect(document.activeElement).toBe(main)
     wrapper.unmount()
   })
 })

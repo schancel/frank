@@ -18,7 +18,7 @@
  *   half deterministic, half random) so clients do not hammer an unhealthy RPC in lockstep. A
  *   success resets it. Failures are logged with `console.error`; there is no UI error state.
  */
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, readonly, ref } from 'vue'
 import { activeChain, WalletHandle } from '@frank/wallet/chain'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
 
@@ -175,6 +175,7 @@ export function useBalance() {
   onMounted(acquire)
   onUnmounted(release)
   return {
+    balance: readonly(balance),
     formattedBalance,
     loaded,
     hasError,

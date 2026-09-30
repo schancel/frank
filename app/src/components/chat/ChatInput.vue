@@ -54,6 +54,32 @@
       />
       <q-space />
       <q-btn
+        v-if="address"
+        dense
+        flat
+        round
+        icon="casino"
+        :aria-label="$t('blackjackBet.menuLabel')"
+        :disable="disable"
+        data-testid="blackjack-menu-button"
+      >
+        <q-tooltip>{{ $t('blackjackBet.menuLabel') }}</q-tooltip>
+        <q-menu
+          v-model="blackjackMenuOpen"
+          anchor="top middle"
+          self="bottom middle"
+          :persistent="blackjackBetPending"
+        >
+          <blackjack-bet-picker
+            :address="address"
+            :submit="submitFollowUp"
+            :busy="disable"
+            @placed="blackjackMenuOpen = false"
+            @pending-change="blackjackBetPending = $event"
+          />
+        </q-menu>
+      </q-btn>
+      <q-btn
         dense
         flat
         round
@@ -102,13 +128,16 @@
 </template>
 
 <script lang="ts">
-import { defineComponent } from 'vue'
+import { defineComponent, PropType } from 'vue'
+import { MessageItem } from '@frank/cashweb/types/messages'
+import BlackjackBetPicker from './BlackjackBetPicker.vue'
 import emoji from 'node-emoji'
 import { processInput } from '../../utils/chat'
 import { activeChain } from '@frank/wallet/chain'
 
 export default defineComponent({
   components: {
+    BlackjackBetPicker,
     // Picker
   },
   props: {
@@ -124,6 +153,21 @@ export default defineComponent({
       type: Boolean,
       default: false,
     },
+    // The chat's counterpart. Enables the "Play blackjack" bet picker, which sends the wager and
+    // the first `bet` move through `submitFollowUp` (Chat.vue's own send pipeline).
+    address: {
+      type: String,
+      default: '',
+    },
+    submitFollowUp: {
+      type: Function as PropType<
+        (payload: { items: MessageItem[]; address: string }) => Promise<void>
+      >,
+      default: () => Promise.resolve(),
+    },
+  },
+  data() {
+    return { blackjackMenuOpen: false, blackjackBetPending: false }
   },
   emits: [
     'update:message',

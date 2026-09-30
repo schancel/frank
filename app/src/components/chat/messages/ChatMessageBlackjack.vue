@@ -111,7 +111,7 @@ import { useChatStore } from '../../../stores/chats'
 import { useMonadWallet } from '../../../utils/clients'
 import { useActiveWallet } from '../../../composables/useActiveWallet'
 import { errorNotify } from '../../../utils/notifications'
-import { parseBetInput } from '../../../utils/blackjack-bet'
+import { parseBetInput, sendBlackjackWager } from '../../../utils/blackjack-bet'
 
 // The bet-size input's starting value -- comfortably above the relay's stamp minimum so a bot
 // dealer never rejects a first-try default as "below the table minimum."
@@ -325,26 +325,8 @@ export default defineComponent({
             this.focusBetInput()
             return
           }
-          const wagerWei = parsed.wei
-          const wallet = await useActiveWallet()
-          const result = await activeChain.nativeTransfers.send({
-            wallet,
-            recipient: { raw: this.address },
-            value: wagerWei,
-          })
-          const gameId = `bj-${Date.now()}-${Math.random()
-            .toString(36)
-            .slice(2, 8)}`
-          this.$emit('sendFollowUp', {
-            items: [
-              {
-                type: 'blackjack-move',
-                gameId,
-                action: 'bet',
-                wagerTxHash: result.txHash,
-              },
-            ],
-          })
+          const betItem = await sendBlackjackWager(this.address, parsed.wei)
+          this.$emit('sendFollowUp', { items: [betItem] })
           return
         }
 

@@ -80,6 +80,8 @@
         v-model:message="message"
         v-model:stamp-amount="stampAmount"
         :disable="sendingMessage"
+        :address="address"
+        :submit-follow-up="sendFollowUpWhenIdle"
         @sendMessage="sendMessage"
       />
     </q-footer>
@@ -96,6 +98,7 @@ import ChatMessageReply from '../components/chat/messages/ChatMessageReply.vue'
 
 import { errorNotify, insufficientStampNotify } from '../utils/notifications'
 import { defaultAcceptancePrice, defaultStampAmount } from '../utils/constants'
+import { deliverBetWhenReady } from '../utils/blackjack-bet'
 import { useMonadWallet } from '../utils/clients'
 import { MonadStampRecoveredAttemptError } from '@frank/wallet/monad-stamp-client'
 import {
@@ -429,6 +432,25 @@ export default defineComponent({
       if (!this.bottom) {
         this.$nextTick(this.buttonScrollBottom)
       }
+    },
+    // For value-bearing follow-ups whose payment is already on its way (the first blackjack bet:
+    // its wager transfer takes seconds): `sendFollowUpItems` drops a call made while another send
+    // is in flight, which would strand the wager, so wait for the chat to go idle first.
+    async sendFollowUpWhenIdle(payload: {
+      items: MessageItem[]
+      stampValueWei?: bigint
+      address: string
+    }) {
+      await deliverBetWhenReady({
+        betAddress: payload.address,
+        currentAddress: () => this.address,
+        isBusy: () => this.sendingMessage,
+        send: () =>
+          this.sendFollowUpItems({
+            items: payload.items,
+            stampValueWei: payload.stampValueWei,
+          }),
+      })
     },
     getContact(outbound: boolean) {
       if (outbound) {

@@ -1,6 +1,21 @@
 import { parseEther } from 'ethers'
 
-import { parseBetInput } from './blackjack-bet'
+import {
+  deliverBetWhenReady,
+  parseBetInput,
+  sendBlackjackWager,
+} from './blackjack-bet'
+
+const mockSend = jest.fn()
+jest.mock('../composables/useActiveWallet', () => ({
+  useActiveWallet: async () => ({ wallet: 1 }),
+}))
+jest.mock('@frank/wallet/chain', () => ({
+  activeChain: {
+    toDisplayAmount: (n: bigint) => n.toString(),
+    nativeTransfers: { send: (a: unknown) => mockSend(a) },
+  },
+}))
 
 describe('parseBetInput', () => {
   it.each(['0.01', '0.1', '1', '1.0', ' 0.5 ', '.5'])('accepts %s', v => {
@@ -33,5 +48,96 @@ describe('parseBetInput', () => {
   })
   it('rejects amounts with more than 18 decimals via the parser', () => {
     expect(parseBetInput(parseEther, '0.1234567890123456789').ok).toBe(false)
+  })
+})
+
+describe('parseBetInput error codes', () => {
+  it.each([
+    ['0', 'zero'],
+    ['0.009', 'min'],
+    ['1.01', 'max'],
+    ['abc', 'format'],
+    ['0.1234567890123456789', 'invalid'],
+  ])('%j -> %s', (v, code) => {
+    expect(parseBetInput(parseEther, v)).toMatchObject({ ok: false, code })
+  })
+})
+
+describe('sendBlackjackWager', () => {
+  beforeEach(() => mockSend.mockReset().mockResolvedValue({ txHash: '0xabc' }))
+
+  it('makes one transfer per call and returns a bet move naming it, with a fresh gameId each time', async () => {
+    const a = await sendBlackjackWager('0xDealer', 10n ** 17n)
+    const b = await sendBlackjackWager('0xDealer', 10n ** 17n)
+    expect(mockSend).toHaveBeenCalledTimes(2)
+    expect(mockSend).toHaveBeenCalledWith({
+      wallet: { wallet: 1 },
+      recipient: { raw: '0xDealer' },
+      value: 10n ** 17n,
+    })
+    expect(a).toMatchObject({
+      type: 'blackjack-move',
+      action: 'bet',
+      wagerTxHash: '0xabc',
+    })
+    expect(a.gameId).not.toBe(b.gameId)
+  })
+
+  it('propagates a transfer failure without producing a bet', async () => {
+    mockSend.mockRejectedValue(new Error('insufficient funds'))
+    await expect(sendBlackjackWager('0xDealer', 1n)).rejects.toThrow(
+      'insufficient funds',
+    )
+  })
+})
+
+describe('deliverBetWhenReady', () => {
+  it('waits for the chat to go idle, then sends once', async () => {
+    let busy = true
+    const send = jest.fn().mockResolvedValue(undefined)
+    const p = deliverBetWhenReady({
+      betAddress: 'a',
+      currentAddress: () => 'a',
+      isBusy: () => busy,
+      send,
+      pollMs: 1,
+    })
+    await new Promise(r => setTimeout(r, 10))
+    expect(send).not.toHaveBeenCalled()
+    busy = false
+    await p
+    expect(send).toHaveBeenCalledTimes(1)
+  })
+
+  it('refuses when the chat already changed, before sending', async () => {
+    const send = jest.fn()
+    await expect(
+      deliverBetWhenReady({
+        betAddress: 'a',
+        currentAddress: () => 'b',
+        isBusy: () => false,
+        send,
+      }),
+    ).rejects.toThrow(/chat changed/)
+    expect(send).not.toHaveBeenCalled()
+  })
+
+  it('never delivers to a different chat if it changes while waiting', async () => {
+    let current = 'a'
+    const send = jest.fn()
+    await expect(
+      deliverBetWhenReady({
+        betAddress: 'a',
+        currentAddress: () => current,
+        isBusy: () => {
+          const wasA = current === 'a'
+          current = 'b'
+          return wasA
+        },
+        send,
+        pollMs: 1,
+      }),
+    ).rejects.toThrow(/chat changed/)
+    expect(send).not.toHaveBeenCalled()
   })
 })

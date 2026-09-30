@@ -19,6 +19,9 @@
         </q-card-section>
         <div class="q-sr-only" role="status" aria-live="polite">
           <span v-if="lookupPending">{{ $t('newContactDialog.loading') }}</span>
+          <span v-else-if="isOwnAddress">{{
+            $t('newContactDialog.ownAddress')
+          }}</span>
           <span v-else-if="showNotFound">{{
             $t('newContactDialog.notFound')
           }}</span>
@@ -45,6 +48,18 @@
                 <q-item-label caption>
                   <q-skeleton type="text" aria-hidden="true" animation="none" />
                 </q-item-label>
+              </q-item-section>
+            </q-item>
+          </q-card-section>
+          <q-card-section class="q-py-none" v-else-if="isOwnAddress">
+            <q-item>
+              <q-item-section avatar>
+                <q-icon color="negative" name="error" size="xl" />
+              </q-item-section>
+              <q-item-section>
+                <q-item-label>{{
+                  $t('newContactDialog.ownAddress')
+                }}</q-item-label>
               </q-item-section>
             </q-item>
           </q-card-section>
@@ -89,6 +104,7 @@
 </template>
 
 <script lang="ts">
+import { navigateBack } from 'src/utils/navigate-back'
 import { defineComponent, markRaw, ref } from 'vue'
 import { QInput } from 'quasar'
 
@@ -100,6 +116,7 @@ import {
 import { activeChain } from '@frank/wallet/chain'
 import { PublicKey } from 'bitcore-lib-xpi'
 import { openChat } from 'src/utils/routes'
+import { getOwnCanonicalAddress } from 'src/utils/own-address'
 
 // Pastes (the usual way a complete address arrives) look up immediately; edits made while a
 // lookup is scheduled, in flight, or just fired wait this long so a burst yields one fetch.
@@ -121,6 +138,8 @@ export default defineComponent({
       // generation is still the latest, which is the single staleness mechanism.
       lookupGeneration: 0,
       lookupPending: false,
+      // True when the address the user typed is their own; set by the current lookup only.
+      isOwnAddress: false,
     }
   },
   setup() {
@@ -146,6 +165,7 @@ export default defineComponent({
     showNotFound(): boolean {
       return (
         !this.lookupPending &&
+        !this.isOwnAddress &&
         this.contact === null &&
         this.address.trim() !== ''
       )
@@ -159,6 +179,7 @@ export default defineComponent({
         Date.now() - this.lookupSchedule.lastFiredAt < LOOKUP_DEBOUNCE_MS
       this.cancelScheduledLookup()
       this.acceptedLookup = null
+      this.isOwnAddress = false
       this.lookupPending = false
       if (newAddress.trim() === '') {
         return
@@ -215,6 +236,18 @@ export default defineComponent({
       // `stores/contacts.ts`'s own `fetchAndAddContact` network-resolution branch, but kept
       // local here (not committed to the store) until the user actually clicks "Add".
       try {
+        // Compared on the canonical form, so every spelling the page accepts is caught. Own
+        // address is never fetched or accepted; a newer edit supersedes this via the generation.
+        if ((await getOwnCanonicalAddress()) === resolvedAddress) {
+          if (generation === this.lookupGeneration) {
+            this.lookupPending = false
+            this.isOwnAddress = true
+          }
+          return
+        }
+        if (generation !== this.lookupGeneration) {
+          return
+        }
         const profileInfo = await activeChain.fetchProfile(chainAddress)
         if (generation !== this.lookupGeneration) {
           return
@@ -235,8 +268,10 @@ export default defineComponent({
             profile: {
               ...defaultRelayData.profile,
               name: profileInfo.name ?? '',
+              signedName: profileInfo.name ?? null,
               bio: profileInfo.bio ?? '',
               avatar: profileInfo.avatar ?? '',
+              isBot: profileInfo.bot === true,
               pubKey: markRaw(PublicKey.fromBuffer(profileInfo.pubKey)),
             },
           },
@@ -256,7 +291,7 @@ export default defineComponent({
       openChat(this.$router, resolvedAddress)
     },
     cancel() {
-      window.history.length > 1 ? this.$router.go(-1) : this.$router.push('/')
+      navigateBack(this.$router)
     },
   },
   mounted() {

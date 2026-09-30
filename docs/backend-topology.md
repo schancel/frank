@@ -154,6 +154,43 @@ The process starts in this order:
 Shutdown stops accepting writes, drains or checkpoints local delivery jobs, stops federation, and
 then closes RocksDB.
 
+### Monad mailbox default (today's `cashwebd`)
+
+The durable Monad mailbox (`PUT /message/monad` and the authenticated inbox/recovery routes) is
+**enabled by default** in both shipped configs (`backend/cashweb/cashwebd.local.toml`,
+`backend/docker/cashwebd.toml`) via `[registry.monad_mailbox]`: `enabled = true`,
+`min_value_wei = "1000000000000"`, `expected_chain_id = 10143` (Monad testnet; mainnet is 143). A
+relay with the mailbox disabled answers 404 for every `/message/monad` route except the topic
+routes, so a disabled default would leave the app unable to send or receive direct messages.
+
+Two values are deliberately not in the files and must come from the environment:
+
+| Variable | Required | Meaning |
+| --- | --- | --- |
+| `MONAD_TESTNET_HTTP_RPC_URL` | yes | Monad JSON-RPC endpoint (secret-bearing; never commit it). An explicit `rpc_url` in the config overrides it. |
+| `FRANK_NETWORK_TAG` | yes | `MONT` (testnet) or `MON1` (mainnet). Envelopes must carry the relay's tag, so an unset tag would reject every DM. |
+
+`cashwebd-exe` refuses to start (and `--check-config` fails), naming the variable, when either is
+missing. `docker-compose.yml` defaults the tag to `MONT`; `run-local-monad.sh` does too.
+`MONAD_STAMP_BURN_ADDRESS` only affects the topic routes.
+
+A production operator must: set `MONAD_TESTNET_HTTP_RPC_URL` to their own provider endpoint; for a
+mainnet relay set `expected_chain_id = 143`, `FRANK_NETWORK_TAG=MON1` and an RPC URL for the same
+network; review `min_value_wei` for their spam-resistance policy; persist `/data`; and snapshot
+before upgrading (older binaries cannot read newer outbox rows). Disabling the mailbox
+(`enabled = false`) is the supported rollback. Outbox rate and capacity limits are live on every
+default deployment; known residual gaps are tracked in ticket #231.
+
+Copy-paste local recipe (from the repository root):
+
+```bash
+export MONAD_TESTNET_HTTP_RPC_URL="https://<your-monad-testnet-rpc>"   # your own endpoint
+export FRANK_NETWORK_TAG=MONT                                          # optional locally, default MONT
+export MONAD_TESTNET_CHAIN_ID=10143                                    # optional, default 10143
+export CASHWEB_STAMP_MIN_BURN_VALUE_WEI=1000000000000                  # optional, default shown
+backend/cashweb/run-local-monad.sh   # prints the effective non-secret values, then serves :8098
+```
+
 ## Existing-data migration
 
 The first implementation does not rename column families. It records a schema version and maps the

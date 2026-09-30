@@ -2,13 +2,14 @@ name: nakamoto
 
 on:
   push:
-    branches: [main]
+    branches: [main, issue-236]
     paths:
       - "packages/nakamoto/**"
       - "packages/crypto-box/**"
       - ".github/workflows/nakamoto.yml"
       - "yarn.lock"
   pull_request:
+    branches: [main]
     paths:
       - "packages/nakamoto/**"
       - "packages/crypto-box/**"
@@ -16,7 +17,7 @@ on:
       - "yarn.lock"
 
 jobs:
-  check:
+  test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v2

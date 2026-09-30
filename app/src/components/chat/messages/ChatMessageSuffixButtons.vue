@@ -6,7 +6,20 @@
       flat
       padding="xs"
       class="q-btn"
+      :aria-label="$t('outgoing.retry')"
+      data-testid="outgoing-retry"
       @click="$emit('resendClick')"
+    />
+    <q-btn
+      icon="delete"
+      dense
+      flat
+      padding="xs"
+      class="q-btn"
+      color="negative"
+      :aria-label="$t('outgoing.discard')"
+      data-testid="outgoing-discard"
+      @click="$emit('discardClick')"
     />
   </div>
   <!-- Select mode (see this file's script header): a message has exactly one action while
@@ -20,7 +33,7 @@
       padding="xs"
       class="q-btn"
       color="negative"
-      aria-label="delete message"
+      :aria-label="$t('chatMessage.deleteMessage')"
       @click.stop="buttonClicked('delete')"
     />
   </div>
@@ -35,7 +48,7 @@
       icon="more_vert"
       class="q-btn"
       padding="xs"
-      aria-label="Show message actions"
+      :aria-label="$t('chatMessage.showActions')"
       @click.stop="menuClicked"
       v-show="!showMenu && !mouseOver"
     />
@@ -46,7 +59,7 @@
         flat
         padding="xs"
         class="q-btn"
-        :aria-label="`${button} message`"
+        :aria-label="$t(`chatMessage.${button}Message`)"
         @click.stop="buttonClicked(button)"
         v-show="mouseOver || showMenu"
       />
@@ -71,7 +84,7 @@ type ButtonType = (typeof ButtonNames)[number] | 'delete'
 
 export default defineComponent({
   name: 'ChatMessageSuffixButtons',
-  emits: [...AllButtonEvents, 'resendClick'],
+  emits: [...AllButtonEvents, 'resendClick', 'discardClick'],
   props: {
     status: {
       type: String,

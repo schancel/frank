@@ -2,7 +2,7 @@
 
 Browser-safe TypeScript reference codec for Frank deterministic CBOR, version 1. The
 normative specification is `docs/protocol/cbor/` (README, `*.cddl`, `vectors.schema.json`).
-This is the prototype package for issues #131 and #183. No production message, profile,
+This is the prototype package for issues #131 and #183; issue #136 adds the topic-event types. No production message, profile,
 mailbox, topic or payment path uses it. Rollback is deleting this package and
 `docs/protocol/cbor/vectors/`.
 
@@ -18,17 +18,29 @@ Implemented (against the spec as merged on main):
   (recursive child opening with shared R1 counters, required-type and open-field children),
   and the stage 9 semantic checks that need no cryptography (S3-S10 ordering, uniqueness,
   linkage, contiguity).
-- T1 content hash, T1a digest, and the pure hashes T3 and T4.
+- T1 content hash, T1a digest, and the pure hashes T3, T4, and T7 (`topicVoteCommitment`).
+- Topic events: type 9 (post), type 10 (post plus its burn transaction), and type 11 (vote),
+  with the R6 limits and the S11 network equality. The burn transaction is opaque bytes here;
+  verifying it against the chain (T8) belongs to the relay, not to this codec.
+- The stamp fields of #198 through stage 9: type-5 fields 6-8 (`E`, `X`, the DLEQ proof) with the
+  T3b encoding rules (33-byte compressed point on the curve, `x < p`, prefix 02/03; proof
+  scalars `c` and `s` each in `1..n-1`), the type-4 schema-2 stamp key (field 8, required from
+  schema 2, undefined in schema 1, key type 1, S10a.1), the same-subject schema order (S10a.2),
+  and the S8/S9 rule that the delivery destination is the stamp key `P'` and is not compared with
+  the type-5 recipient. `defaultContext()` is reader version 2 with type 4 at schema 2.
 - Retention: exact original frame bytes at every level, unknown types/frame versions/fields.
+- Reciprocal check of Rust-originated proof fixtures in
+  `docs/protocol/cbor/vectors/rust-origin.json` (`test/rust-origin.jest.test.ts`).
+  The Rust codec itself is `backend/cashweb/frank-cbor` and is not imported here.
 
 Not implemented:
 
 - Stage 10 (`full` operation): no signature or payment verification, no decrypted-frame
   opening, no `cryptographic` category.
-- T3a stealth derivation and DLEQ.
-- Type-5 fields 6-8 and directory-statement field 8, pending the stamp-key spec PR #200.
-  Type 5 and type 4 are typed only for fields defined on main.
-- The Rust codec and cross-language vectors (#182).
+- T3a stamp destination derivation and the T3b DLEQ proof (verify or prove), keccak, the S10a.4
+  binding of `P'` to a directory state, and every other `cryptographic` check. Type-5 fields 6-8
+  are checked for encoding only; a well-formed but wrong proof is accepted at `typed`.
+- The stage-10 vectors of the #198 list (README section 10). The typed ones are in the manifest.
 
 ## API
 
@@ -42,7 +54,18 @@ Entry point `src/index.ts`.
   `exact` or `newer-schema`) or a `RetainedFrame`. Failures throw `FrankCodecError` with
   `category`, `stage`, `pass`, `location`. A bad context throws `FrankContextError`.
 - `contentHash`, `messageContentDigest`, `recipientPayloadDigest`, `paymentCommitment`,
-  `commonTranscript`, `toHex`, `fromHex`.
+  `topicVoteCommitment`, `commonTranscript`, `toHex`, `fromHex`.
+- Topic-event writers (README T7, T8): `encodeTopicPost`, `topicPostHash`, `topicBurnCommitment`,
+  `topicBurnCalldata` (`"TPIC" || 02 || direction || commitment`), `topicPostBurnCalldata` (fixed to
+  `up`: a post's own burn MUST be an up-vote, T8), `encodeTopicPostSubmission`,
+  and `encodeTopicVote`. Each validates what it wrote with the reader's typed validation, and the
+  order is fixed by T7: encode the post, derive its commitment, sign the burn for it, then wrap.
+  `encodeTopicPostSubmission` and `encodeTopicVote` take the signed burn transaction as opaque
+  bytes: they do not check that its calldata carries the derived commitment (or, for a post, that
+  the burn is an up-vote); the relay checks and rejects a mismatch before broadcasting. Writer
+  misuse (a lone surrogate, an unknown direction, a wrong-length or non-`Uint8Array` commitment,
+  or any argument of the wrong JavaScript type) throws `FrankCodecError`.
+  Nothing calls them yet; wiring them into the wallet's topic clients is a later ticket.
 
 Returned frames are views of one private copy of the input; do not mutate them.
 
@@ -61,7 +84,8 @@ TypeScript-aware bundler or transformer. `yarn build:browser` produces an IIFE b
   (no Node globals), then loads it in headless Chrome. It needs a system Chrome/Chromium
   (`FRANK_CHROME` overrides the path); without one the Chrome step exits 3 (not verified).
 - `yarn crosscheck` runs `scripts/crosscheck.py`, an independent Python implementation of
-  stages 1-7 of the root frame and T1 over the manifest. It needs Python 3 with `jsonschema`.
+  stages 1-7 of the root frame and T1 over the manifest, and T1/T7 over
+  `vectors/topic-commitments.json`. It needs Python 3 with `jsonschema`.
   It reports how many cases it evaluates (root-frame stages 1-7 category, retention, or a
   typed accept's T1 hash) and how many it does NOT evaluate (typed cases rejected at stages
   8-9 or inside an opened child, which it does not implement).
@@ -70,11 +94,16 @@ TypeScript-aware bundler or transformer. `yarn build:browser` produces an IIFE b
 
 `docs/protocol/cbor/vectors/manifest.json` conforms to `vectors.schema.json`. It is generated
 from `fixtures/` (`builders.ts`, `cases.ts`, `manifest.ts`) and a Jest test fails when it is
-stale. Regenerate with `FRANK_UPDATE_VECTORS=1 yarn test`. `fixtures/checker.ts` enforces the
+stale. Regenerate with `FRANK_UPDATE_VECTORS=1 yarn test`, which also rewrites
+`docs/protocol/cbor/vectors/topic-commitments.json` (the T1 and T7 hashes of the topic events,
+recomputed by the Rust codec and by `scripts/crosscheck.py`). Cases without their own
+`supported` list run against the reader that predates the topic types, so the corpus written
+before #136 is unchanged byte for byte; `test/topic.jest.test.ts` proves those cases behave the
+same when the topic types are listed. `fixtures/checker.ts` enforces the
 README section 10 manifest-validity rules that JSON Schema cannot express.
 
-The manifest schema has no stage field, so the stage the README assigns to each reject lives
-in `fixtures/cases.ts` and is asserted by the tests, not stored in the manifest.
+Each reject case carries the optional `error_stage` (README section 10; other runners SHOULD compare it, category-only runners stay conformant), which `fixtures/cases.ts`
+declares, the Jest tests assert, and the browser and Python checks compare.
 
 ## BCS falsification check
 
@@ -112,48 +141,23 @@ fixtures) the v1 reader accepted the v2 bytes.
 - No `full`, `cryptographic` or `cross_language_roundtrip` vectors; the `opaque_retention`
   pair relation is unused.
 
-## Spec ambiguities and how this codec resolves them
+## Spec ambiguities
 
-1. **R1 counters, tags.** Unstated whether a tag head is an item. Each tag head is charged as
-   an item, so a chain of more than 131,072 tags is `resource`, not `schema`.
-2. **R1 / section 9 pass A, indefinite strings.** Unstated whether chunks are items and how the
-   string limit aggregates. Chunks are not items; the aggregate length is capped (`resource`).
-   C5 calls an indefinite start `noncanonical`, but pass A scans its contents first, so a
-   truncated indefinite string is `malformed`.
-3. **R2 / 8.1 / 8.4, 256-item total.** Written under type-1 limits, but 8.4 charges every child
-   opened from a message-item array. Applied to any root, labelled stage `8.4`.
-4. **V6.1 / 8.4, open-field child with `min_reader_version` above the reader.** 8.4 names only
-   unknown type and unknown frame version. Retained (reason `unsupported-min-reader`).
-5. **V6.1, unknown type vs `min_reader_version` above the reader.** Precedence only changes the
-   retention reason; `unknown-type` is reported first.
-6. **C7 / CDDL u64 bound.** A non-u64 unsigned value needs a bignum tag, a stage 7 `schema`
-   error (C5, C8), so `.le 18446744073709551615` never fails at 8.2 for unsigned values;
-   only negatives do.
-7. **`framed-object` size 9.. / stage 2.** A framed child shorter than nine bytes is a stage
-   8.2 `schema` error (CDDL size bound first), never a stage 2 `frame` error.
-8. **S3 / T3a.5, payment ordering.** With unique, exactly contiguous child indices the
-   `transaction_id` tie-break can never decide. Both checks are kept; all are `semantic`.
-9. **S2b, key-transition entries.** Text speaks of signatures generally. The
-   algorithm/key-type/length pairing (8.3 `unsupported`) is applied to type-4 key-transition
-   entries as well as type-2 signature entries.
-10. **C12 / V6.3, nested wildcard maps.** Which frame's `schema_version` opens nested wildcard
-    maps is unstated. The frame containing the map decides; closed maps stay closed.
-11. **Section 9 passes A/B, noncanonical vs class within one item.** A non-uint key with a
-    non-minimal head (`a1 78 01 61 01`) is reported `noncanonical` (head first), then class.
-12. **S10, type-4 root.** Bootstrap and revision checks need a prior statement, which only a
-    type-2 root has, so a type-4 root validated alone passes with field 5 present. The prior
-    must be "accepted by an earlier full validation"; here it is validated at `typed` only.
-13. **F2 / section 10, `frame` operation and retention.** Retention under `frame` applies only
-    to an unsupported version; `opaque_retention_allowed: true` with version 1 just succeeds.
-14. **Section 10, manifest stages.** The schema forbids extra properties and has no
-    `error_stage`, so stages cannot be checked from the manifest. Kept in `fixtures/cases.ts`;
-    an optional `error_stage` is suggested.
-15. **F3 / section 9 stage 4-5, zero-length body.** Declared length 0 with no body passes
-    stage 4 and fails stage 5 as truncated CBOR (`malformed`), derived from the stage order.
-16. **R1 rationale, type-1 depth claim.** "Seven type-16 levels plus a leaf under a type-1
-    message" goes through the decrypted frame (stage 10.1), so it is not checkable at
-    `typed`. The type-16 root claim (nine nested plus a leaf fits, one more is `resource`)
-    is tested.
-17. **S8 / section 6, type 5 at `typed`.** The ciphertext is not opened before stage 10.1, so the
-    recursive fixture is a standalone type 6/8 root; the direct-message item graph is only
-    reachable in `full`.
+The codec review of the merged spec found 17 places where the text was silent or
+contradictory. Sixteen are now stated in the normative README
+(`docs/protocol/cbor/README.md`), which is where to read them: tag heads and indefinite
+chunks under R1 and section 9 pass A; the R2 256-item total under R2 and stage 8.4; open-field
+retention under stage 8.4 and V6.1; the unreachable u64 bound under C7; the `framed-object`
+size bound under stage 8.2; the S2b pairing for key-transition entries; nested wildcard maps
+under C12; noncanonical-before-class under section 9 passes A and B; S10 for a type-4 root;
+the retention flag, `error_stage`, and the prior-statement rule under section 10; the
+zero-length body under F3; the R1 depth rationale and the type-5 boundary under section 6.
+Where a clarification changes observable behaviour it is pinned by a manifest vector, and the
+aggregate-size ones (more than 131,072 tags, an indefinite string of many chunks or over the
+text limit) by `test/limits.jest.test.ts`, which the manifest omits for size.
+
+One was waiting on the stamp-key PR (#200) and is now stated in the spec (S3):
+
+- **S3 / T3a.4, payment ordering.** T3a.4 requires the sorted child indices to be exactly
+  contiguous from 0 and S3 requires them unique, so the `transaction_id` tie-break can never
+  decide. The codec keeps both checks; all are `semantic`.

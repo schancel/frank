@@ -22,6 +22,7 @@ import { mkdirSync } from 'fs'
 import level, { LevelDB } from 'level'
 import { join } from 'path'
 
+import { RaffleItem } from '@frank/cashweb/types/messages'
 import {
   canonicalMonadEnvelopeAddress,
   sameMonadEnvelopeAddress,
@@ -31,10 +32,80 @@ const PENDING_SEED_KEY = '__pending_server_seed__'
 const PENDING_SEED_HASH_KEY = '__pending_server_seed_hash__'
 const ROUND_KEY = '__current_round__'
 const PROCESSED_PREFIX = 'processed:'
+const DRAW_PREFIX = 'draw:'
+const UNCLAIMED_PREFIX = 'unclaimed:'
+const TOPUP_LEDGER_KEY = '__topup_ledger__'
+const CARRIED_DUST_KEY = '__carried_dust_payments__'
+const DAY_MS = 24 * 60 * 60 * 1000
+
+/** A full round that has been drawn and is being settled (#363). It is written, together with the
+ * fresh next round and commitment, BEFORE anything is broadcast or announced, so a crash at any
+ * later step resumes from this record and never loses the round.
+ *
+ * - `awaiting-funds`: no payout tx exists yet (the pot is not yet available, or funding is being
+ *   retried). Safe to re-evaluate any number of times.
+ * - `signed`: `payout` holds the exact signed bytes, persisted before the first broadcast. Every
+ *   retry re-broadcasts THESE bytes (same nonce, same hash), so it can never pay twice.
+ * - `paid`: the payout tx is confirmed by hash; the draw may now be announced (the seed revealed).
+ *   `announcedTo` records who already received it so a restart does not re-send. */
+export interface RaffleDrawRecord {
+  seq: number
+  raffleId: string
+  /** The exact `draw` item that will be announced (carries the seed only in this record; it is
+   * revealed to entrants only once `phase` is `paid`). */
+  drawItem: RaffleItem & { winnerAddress: string; potWei: string }
+  phase: 'awaiting-funds' | 'signed' | 'paid'
+  /** The latest signed payout. `previous` are earlier fee-bumped attempts at the SAME nonce (at
+   * most one of them can ever mine); all are reconciled by hash, and their bytes stay available to
+   * re-broadcast if the newest is rejected. */
+  payout?: {
+    rawTx: string
+    txHash: string
+    signedAtMs: number
+    /** When the newest replacement was signed (drives the next re-price wait). */
+    repricedAtMs?: number
+    previous: Array<{ rawTx: string; txHash: string }>
+  }
+  /** An operator top-up whose signed bytes were persisted before broadcast; checked by hash before
+   * any further top-up so a crash cannot cause a second one while the first sits unmined. */
+  pendingTopUp?: {
+    rawTx: string
+    txHash: string
+    amountWei: string
+    signedAtMs: number
+  }
+  announcedTo: string[]
+  /** Total sweep payments behind this round's entries (sum over entrants; absent: one each). */
+  paymentCount?: number
+  /** Cumulative operator top-up spent on this round (capped per round, persisted so a restart
+   * cannot top up again beyond the cap). */
+  topUpWei?: string
+}
+
+/** Entrant money that reached the raffle identity but was NOT credited to a round (an entry over
+ * the payment cap, or one that swept less than the price). Recorded so the operator can refund it
+ * exactly once (`raffle-refund.ts`); the refund's signed bytes are persisted before broadcast. */
+export interface RaffleUnclaimedRecord {
+  id: string
+  entrant: string
+  paymentHashes: string[]
+  sweptWei: string
+  reason: string
+  atMs: number
+  refund?: { rawTx: string; txHash: string; signedAtMs: number }
+  refundedTxHash?: string
+}
+
+/** LevelDB write option for records whose loss could lose signed bytes that were already
+ * broadcast, or forget a top-up: fsync before the promise resolves. */
+const SYNC = { sync: true }
 
 export interface RaffleEntrant {
   address: string
   txHash: string
+  /** On-chain stamp payments swept for this entry (each loses one sweep gas on the way in); drives
+   * the plausible-dust bound. Absent in older records: treated as 1. */
+  payments?: number
 }
 
 export interface RaffleRoundRecord {
@@ -87,6 +158,10 @@ export class RaffleBotStateStore {
   private pendingServerSeedHash?: string
   private currentRound?: RaffleRoundRecord
   private processedPayloadHashes = new Set<string>()
+  private draws = new Map<string, RaffleDrawRecord>()
+  private topUps: Array<{ atMs: number; wei: string }> = []
+  private carriedDustPayments = 0
+  private unclaimed = new Map<string, RaffleUnclaimedRecord>()
   private pendingWrites: Promise<unknown>[] = []
 
   constructor(location: string) {
@@ -115,6 +190,16 @@ export class RaffleBotStateStore {
         const round = JSON.parse(value) as RaffleRoundRecord
         migratedRound = canonicalizePersistedRound(round)
         this.currentRound = migratedRound
+      } else if (key.startsWith(UNCLAIMED_PREFIX)) {
+        const rec = JSON.parse(value) as RaffleUnclaimedRecord
+        this.unclaimed.set(rec.id, rec)
+      } else if (key === CARRIED_DUST_KEY) {
+        this.carriedDustPayments = JSON.parse(value)
+      } else if (key === TOPUP_LEDGER_KEY) {
+        this.topUps = JSON.parse(value)
+      } else if (key.startsWith(DRAW_PREFIX)) {
+        const draw = JSON.parse(value) as RaffleDrawRecord
+        this.draws.set(draw.raffleId, draw)
       } else if (key.startsWith(PROCESSED_PREFIX)) {
         this.processedPayloadHashes.add(key.slice(PROCESSED_PREFIX.length))
       }
@@ -175,5 +260,102 @@ export class RaffleBotStateStore {
   addProcessed(payloadHashHex: string): void {
     this.processedPayloadHashes.add(payloadHashHex)
     this.pendingWrites.push(this.db.put(PROCESSED_PREFIX + payloadHashHex, '1'))
+  }
+
+  /** Unsettled draws, oldest first. Settled in this order so payouts from the identity keep a
+   * single, sequential nonce. */
+  getDraws(): RaffleDrawRecord[] {
+    return [...this.draws.values()].sort((a, b) => a.seq - b.seq)
+  }
+
+  /** Atomically (one batch, awaited): records the draw, rotates to `nextRound`, and installs the
+   * fresh commitment. After this resolves the full round can never be lost or drawn again, and new
+   * entries go to a round with a new commitment made before it had any entrants. */
+  async beginDraw(params: {
+    draw: Omit<RaffleDrawRecord, 'seq'>
+    nextRound: RaffleRoundRecord
+    nextCommitment: { serverSeed: string; serverSeedHash: string }
+  }): Promise<RaffleDrawRecord> {
+    await this.flush()
+    const seq = Math.max(0, ...[...this.draws.values()].map(d => d.seq)) + 1
+    const draw: RaffleDrawRecord = { ...params.draw, seq }
+    await this.db
+      .batch()
+      .put(DRAW_PREFIX + draw.raffleId, JSON.stringify(draw))
+      .put(ROUND_KEY, JSON.stringify(params.nextRound))
+      .put(PENDING_SEED_KEY, JSON.stringify(params.nextCommitment.serverSeed))
+      .put(
+        PENDING_SEED_HASH_KEY,
+        JSON.stringify(params.nextCommitment.serverSeedHash),
+      )
+      .write(SYNC)
+    this.draws.set(draw.raffleId, draw)
+    this.currentRound = params.nextRound
+    this.pendingServerSeed = params.nextCommitment.serverSeed
+    this.pendingServerSeedHash = params.nextCommitment.serverSeedHash
+    return draw
+  }
+
+  /** Records a top-up spend on the draw and in the day ledger in ONE atomic, fsynced batch. */
+  async putDrawWithTopUp(
+    draw: RaffleDrawRecord,
+    nowMs: number,
+    wei: bigint,
+  ): Promise<void> {
+    const kept = this.topUps.filter(t => t.atMs > nowMs - 2 * DAY_MS)
+    kept.push({ atMs: nowMs, wei: wei.toString() })
+    await this.db
+      .batch()
+      .put(DRAW_PREFIX + draw.raffleId, JSON.stringify(draw))
+      .put(TOPUP_LEDGER_KEY, JSON.stringify(kept))
+      .write(SYNC)
+    this.draws.set(draw.raffleId, draw)
+    this.topUps = kept
+  }
+
+  /** Durably replaces a draw record (awaited, so callers can rely on it before their next step). */
+  async putDraw(draw: RaffleDrawRecord): Promise<void> {
+    await this.db.put(DRAW_PREFIX + draw.raffleId, JSON.stringify(draw), SYNC)
+    this.draws.set(draw.raffleId, draw)
+  }
+
+  async removeDraw(raffleId: string): Promise<void> {
+    await this.db.del(DRAW_PREFIX + raffleId, SYNC)
+    this.draws.delete(raffleId)
+  }
+
+  /** Operator top-ups made in the trailing 24 hours (persisted; drives the per-day ceiling). */
+  topUpTotalSince(nowMs: number): bigint {
+    return this.topUps
+      .filter(t => t.atMs > nowMs - DAY_MS)
+      .reduce((sum, t) => sum + BigInt(t.wei), 0n)
+  }
+
+  async recordTopUp(nowMs: number, wei: bigint): Promise<void> {
+    const kept = this.topUps.filter(t => t.atMs > nowMs - 2 * DAY_MS)
+    kept.push({ atMs: nowMs, wei: wei.toString() })
+    await this.db.put(TOPUP_LEDGER_KEY, JSON.stringify(kept), SYNC)
+    this.topUps = kept
+  }
+
+  /** Sweep payments of the last paid round(s) whose sweep-gas deficit was absorbed by the identity's other
+   * funds instead of an operator top-up: a later round's shortfall legitimately includes it. */
+  getCarriedDustPayments(): number {
+    return this.carriedDustPayments
+  }
+
+  async setCarriedDustPayments(n: number): Promise<void> {
+    await this.db.put(CARRIED_DUST_KEY, JSON.stringify(n), SYNC)
+    this.carriedDustPayments = n
+  }
+
+  getUnclaimed(): RaffleUnclaimedRecord[] {
+    return [...this.unclaimed.values()].sort((a, b) => a.atMs - b.atMs)
+  }
+
+  /** Durable (fsynced) insert-or-replace of an unclaimed-funds record. */
+  async putUnclaimed(rec: RaffleUnclaimedRecord): Promise<void> {
+    await this.db.put(UNCLAIMED_PREFIX + rec.id, JSON.stringify(rec), SYNC)
+    this.unclaimed.set(rec.id, rec)
   }
 }

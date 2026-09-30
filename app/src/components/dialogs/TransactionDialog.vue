@@ -7,16 +7,24 @@
     </q-card-section>
     <q-card-section>
       <div v-if="stampPayments.length" class="q-px-md q-pb-md">
-        <div class="text-caption text-grey-7">Total stamp payment</div>
+        <div class="text-caption text-grey-7">
+          {{ $t('transactionDialog.totalStampPayment') }}
+        </div>
         <div class="text-h6">{{ formattedTotal }}</div>
       </div>
       <q-list v-if="stampPayments.length" separator>
         <q-item v-for="(payment, idx) in stampPayments" :key="payment.txHash">
           <q-item-section>
-            <q-item-label overline>Stamp payment {{ idx + 1 }}</q-item-label>
+            <q-item-label overline>{{
+              $t('transactionDialog.stampPaymentN', { n: idx + 1 })
+            }}</q-item-label>
             <q-item-label>{{ formatValue(payment.valueWei) }}</q-item-label>
             <q-item-label caption lines="1">
-              To {{ payment.destinationAddress }}
+              {{
+                $t('transactionDialog.sentTo', {
+                  address: payment.destinationAddress,
+                })
+              }}
             </q-item-label>
             <q-item-label lines="1">
               <a

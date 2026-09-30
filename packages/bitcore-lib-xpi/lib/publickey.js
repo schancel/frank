@@ -328,12 +328,8 @@ PublicKey.prototype.toBuffer = PublicKey.prototype.toDER = function() {
   var x = this.point.getX();
   var y = this.point.getY();
 
-  var xbuf = x.toBuffer({
-    size: 32
-  });
-  var ybuf = y.toBuffer({
-    size: 32
-  });
+  var xbuf = Point.coordinateToBuffer(x);
+  var ybuf = Point.coordinateToBuffer(y);
 
   var prefix;
   if (!this.compressed) {

@@ -120,6 +120,7 @@ import { MonadSubAccountPool } from './monad-account-pool'
 import {
   AccountLeaseHandle,
   AcquireLeaseWhenAvailableOptions,
+  BurnNotSentError,
   SubAccountLeaseManager,
   acquireLeaseWhenAvailable,
 } from './monad-account-lease'
@@ -300,6 +301,9 @@ export interface CastTopicVoteParams {
    * failing immediately when the pool is fully leased. Omit for the default immediate-reject
    * behavior (`SubAccountLeaseManager.acquireLease`). */
   waitForLease?: AcquireLeaseWhenAvailableOptions
+  /** Lease exactly this (already funded, `'available'`) sub-account -- see
+   * `SubmitTopicPostParams.leaseIndex`. Takes precedence over `waitForLease`. */
+  leaseIndex?: number
 }
 
 /** Outcome of a successful `castVote` call — the burn tx confirmed on-chain and the relay recorded
@@ -381,9 +385,15 @@ export class MonadTopicVoteClient {
     )
     const targetPayloadHashHex = toBareHex(params.targetPayloadHash)
 
-    const handle: AccountLeaseHandle = params.waitForLease
-      ? await acquireLeaseWhenAvailable(this.leaseManager, params.waitForLease)
-      : this.leaseManager.acquireLease()
+    const handle: AccountLeaseHandle =
+      params.leaseIndex !== undefined
+        ? this.leaseManager.acquireForIndex(params.leaseIndex)
+        : params.waitForLease
+        ? await acquireLeaseWhenAvailable(
+            this.leaseManager,
+            params.waitForLease,
+          )
+        : this.leaseManager.acquireLease()
 
     let signedTx: SignedMonadTx
     try {
@@ -400,11 +410,13 @@ export class MonadTopicVoteClient {
         params.overrides,
       )
     } catch (err) {
-      // No transaction was ever broadcast, so the sub-account's nonce isn't actually at risk — but
-      // `releaseLease` has no "never attempted" outcome to say so precisely. Same documented
-      // trade-off as `monad-stamp-client.ts`.
-      this.leaseManager.releaseLease(handle, 'failed')
-      throw err
+      // Nothing was signed, broadcast or sent to the relay, so the account still holds its funds
+      // and an untouched nonce: hand it back so a retry reuses it instead of funding another.
+      this.leaseManager.releaseLease(handle, 'unused')
+      throw new BurnNotSentError(
+        err instanceof Error ? err.message : String(err),
+        err,
+      )
     }
 
     const vote: MonadTopicVoteProto = {
@@ -438,9 +450,9 @@ export class MonadTopicVoteClient {
       // guessing either way.
       this.leaseManager.releaseLease(handle, 'stuck')
       throw new MonadTopicVoteAbandonedError(
-        'Monad topic vote submission abandoned: no response from the relay, and no read-back ' +
-          `route is available in this ticket's scope to confirm whether ${targetPayloadHashHex}'s ` +
-          'vote landed',
+        'The relay did not respond, so it is unknown whether your vote was recorded. ' +
+          'Check the post before voting again: a retry could burn a second time. ' +
+          `(target ${targetPayloadHashHex})`,
         targetPayloadHashHex,
       )
     }

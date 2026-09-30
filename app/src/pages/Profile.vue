@@ -32,6 +32,7 @@
 </template>
 
 <script lang="ts">
+import { navigateBack } from 'src/utils/navigate-back'
 import { defineComponent } from 'vue'
 
 import { useProfileStore } from 'src/stores/my-profile'
@@ -43,6 +44,7 @@ import {
 } from '@frank/wallet/monad-identity'
 
 import { validateProfileDisplayName } from '@frank/wallet/profile-display-name'
+import { profileNameError } from '../utils/profile-name'
 import Profile from '../components/Profile.vue'
 import { errorNotify } from '../utils/notifications'
 
@@ -84,8 +86,11 @@ export default defineComponent({
     async updateRelayData() {
       // Validate before any network work so a bad name is reported as such, not as a relay failure.
       const name = validateProfileDisplayName(this.name ?? '')
-      if (!name.valid) {
-        errorNotify(new Error(this.$t('profileDialog.invalidName')))
+      const nameError = profileNameError(this.name ?? '', (key, params) =>
+        this.$t(key, params ?? {}),
+      )
+      if (nameError !== undefined) {
+        errorNotify(new Error(nameError))
         return
       }
       this.name = name.normalized
@@ -118,10 +123,10 @@ export default defineComponent({
       } finally {
         this.$q.loading.hide()
       }
-      window.history.length > 1 ? this.$router.go(-1) : this.$router.push('/')
+      navigateBack(this.$router)
     },
     cancel() {
-      window.history.length > 1 ? this.$router.go(-1) : this.$router.push('/')
+      navigateBack(this.$router)
     },
   },
   computed: {

@@ -42,6 +42,47 @@ describe('chain descriptors', () => {
     })
   })
 
+  test('XEC signed-message magic is the Bitcoin ABC string', () => {
+    for (const item of [
+      XEC_MAINNET,
+      getChain('xec', 'testnet'),
+      getChain('xec', 'regtest'),
+    ]) {
+      expect(item).toMatchObject({
+        messageMagic: {
+          status: 'pinned',
+          text: 'eCash Signed Message:\n',
+        },
+      })
+    }
+  })
+
+  test('XPI signed-message magic is the lotusd string', () => {
+    for (const item of [XPI_MAINNET, XPI_TESTNET, XPI_REGTEST]) {
+      expect(item).toMatchObject({
+        messageMagic: {
+          status: 'pinned',
+          text: 'Bitcoin Signed Message:\n',
+        },
+      })
+    }
+  })
+
+  test('BCH signed-message magic is the Bitcoin Cash Node string', () => {
+    for (const item of [
+      BCH_MAINNET,
+      getChain('bch', 'testnet'),
+      getChain('bch', 'regtest'),
+    ]) {
+      expect(item).toMatchObject({
+        messageMagic: {
+          status: 'pinned',
+          text: 'Bitcoin Signed Message:\n',
+        },
+      })
+    }
+  })
+
   test('BCH and XEC share P2P magic and differ by cashaddr prefix', () => {
     expect(BCH_MAINNET.p2pMagic).toBe(0xe3e1f3e8)
     expect(XEC_MAINNET.p2pMagic).toBe(BCH_MAINNET.p2pMagic)

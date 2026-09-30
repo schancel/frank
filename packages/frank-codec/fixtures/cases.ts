@@ -48,6 +48,8 @@ import {
   transitionStatement,
   type5Frame,
   type5Payload,
+  T3C,
+  stampAccount,
   type6Frame,
   unknownItem,
   patchBytes,
@@ -1139,14 +1141,14 @@ rej(
   'unsupported',
   '7',
   ['E2', 'V6.1'],
-  { source: 'typescript' },
+  { source: 'typescript', readerVersion: 1 },
 )
 ret(
   'v6-min-reader-above-reader-retained',
   'The same frame where the root may retain it opaquely.',
   fr(17, M([[0, 'x']]), 2, 2),
   ['E3', 'V6.1'],
-  { source: 'typescript' },
+  { source: 'typescript', readerVersion: 1 },
 )
 acc(
   'v6-newer-schema-extra-field',
@@ -1712,7 +1714,7 @@ rej(
   'unsupported',
   '7',
   ['V6.1', 'S8'],
-  TS,
+  { ...TS, readerVersion: 1 },
 )
 rej(
   't1-payload-frame-bad-magic',
@@ -1913,13 +1915,11 @@ rej(
   ['S8'],
   S,
 )
-rej(
-  'sem-t1-recipient-differs',
-  'Delivery destination differs from the type-5 recipient (S8).',
+acc(
+  'sem-t1-stamp-key-differs-from-recipient',
+  "Delivery destination (the stamp key P') differs from the type-5 recipient: accepted, because the routing identity and the payment key are independent (S8, S9; #198).",
   deliveryFrame({ destination: acct1(4) }),
-  'semantic',
-  '9',
-  ['S8'],
+  ['S8', 'S9'],
   S,
 )
 rej(
@@ -2995,8 +2995,8 @@ rej(
   NOP,
 )
 
-// Depth accounting of every required-child path. Each child is a schema-2 frame whose unknown
-// field 9 nests arrays: the child's payload map sits at depth D, so `32 - D` array levels fit.
+// Depth accounting of every required-child path. Each child is a frame one schema above its
+// reader's highest (type 4: schema 3, type 5 and 8: schema 2) whose unknown field 9 nests arrays: the child's payload map sits at depth D, so `32 - D` array levels fit.
 // (Any change to the depth offset used when opening that child flips exactly one of each pair.)
 const nestedArrays = (levels: number): Encodable => {
   let v: Encodable = []
@@ -3007,7 +3007,7 @@ const deep = (payload: Fields, levels: number) =>
   new Map([...payload, [9, nestedArrays(levels)]])
 type Fields = Map<number, Encodable>
 const child2 = (type: number, payload: Fields, levels: number) =>
-  fr(type, deep(payload, levels), 2, 1)
+  fr(type, deep(payload, levels), type === 4 ? 3 : 2, 1)
 const pair = (
   id: string,
   what: string,
@@ -3332,7 +3332,8 @@ acc(
 const TOPIC_TYPES = new Set([9, 10, 11])
 const WITH_TOPICS: SupportedSchema[] = KNOWN_TYPES.map(typeId => ({
   typeId,
-  schemaVersion: 1,
+  // Type 4 is read at schema 2 (the stamp key, #198); every other type is at schema 1.
+  schemaVersion: typeId === 4 ? 2 : 1,
 }))
 /** The reader of every case above: the version-1 types allocated before #136. */
 export const PRE_TOPIC_SCHEMAS: SupportedSchema[] = WITH_TOPICS.filter(
@@ -3855,4 +3856,384 @@ tpRej(
   'resource',
   '8.1',
   ['R6', 'C12'],
+)
+
+// ---------------------------------------------------------------------------------------------
+// Stamp key and stamp fields (#198; README T3a, T3b, S9, S10a). Stages 8.2 through 9 only: the
+// DLEQ proof, the binding of P' to a directory state and the destinations are stage 10 checks
+// (`full`), which this corpus does not carry yet.
+// ---------------------------------------------------------------------------------------------
+
+const SECP_P =
+  0xfffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2fn
+const SECP_N =
+  0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n
+const be32 = (v: bigint): Uint8Array => {
+  const out = new Uint8Array(32)
+  for (let i = 31, x = v; i >= 0; i--, x >>= 8n) out[i] = Number(x & 0xffn)
+  return out
+}
+const point33 = (prefix: number, x: Uint8Array): Uint8Array => {
+  const out = new Uint8Array(33)
+  out[0] = prefix
+  out.set(x, 1)
+  return out
+}
+const withPrefix = (b: Uint8Array, prefix: number): Uint8Array => {
+  const out = b.slice()
+  out[0] = prefix
+  return out
+}
+const cHalf = T3C.proof.slice(0, 32)
+const sHalf = T3C.proof.slice(32)
+const stampT5 = (o: Parameters<typeof type5Payload>[0]) =>
+  fr(5, type5Payload(o))
+const stampT5Without = (k: number) => {
+  const m = type5Payload()
+  m.delete(k)
+  return fr(5, m)
+}
+
+// The x coordinates below are all fixed by arithmetic: 1 has y^2 = 8, a square, so `p + 1` is a
+// non-canonical alias of an on-curve point; 5 has y^2 = 132, a non-square, so it is off curve.
+const STAMP_BAD_POINTS: Array<[string, string, Uint8Array]> = [
+  [
+    'x-at-or-above-p',
+    'x = p + 1 (the on-curve x = 1 plus p)',
+    point33(2, be32(SECP_P + 1n)),
+  ],
+  [
+    'prefix-04',
+    'prefix 04 (uncompressed marker on 33 bytes)',
+    withPrefix(T3C.ephemeral, 0x04),
+  ],
+  ['prefix-05', 'prefix 05', withPrefix(T3C.ephemeral, 0x05)],
+  [
+    'all-zero',
+    'all 33 bytes zero (no compressed encoding of infinity)',
+    new Uint8Array(33),
+  ],
+  [
+    'off-curve',
+    'prefix 02 with x = 5 (no point has this x)',
+    point33(2, be32(5n)),
+  ],
+]
+for (const [field, name] of [
+  [6, 'e'],
+  [7, 'x'],
+] as const) {
+  const label = field === 6 ? 'E' : 'X'
+  for (const [id, what, bad] of STAMP_BAD_POINTS) {
+    rej(
+      `stamp-t5-${name}-${id}`,
+      `Type-5 field ${field} (${label}): ${what}.`,
+      stampT5({ [name]: bad }),
+      'schema',
+      '8.2',
+      ['T3b'],
+      S,
+    )
+  }
+}
+for (const [field, label] of [
+  [6, 'E'],
+  [7, 'X'],
+  [8, 'proof'],
+] as const) {
+  rej(
+    `stamp-t5-missing-field-${field}`,
+    `Type-5 frame without field ${field} (${label}): a required key.`,
+    stampT5Without(field),
+    'schema',
+    '8.2',
+    ['T3a', 'T3b'],
+    S,
+  )
+}
+rej(
+  'stamp-t5-e-wrong-length',
+  'Type-5 field 6 (E) of 32 bytes.',
+  stampT5({ e: T3C.ephemeral.slice(0, 32) }),
+  'schema',
+  '8.2',
+  ['T3b'],
+  S,
+)
+rej(
+  'stamp-t5-x-wrong-length',
+  'Type-5 field 7 (X) of 34 bytes.',
+  stampT5({ x: concatBytes(T3C.shared, Uint8Array.of(0)) }),
+  'schema',
+  '8.2',
+  ['T3b'],
+  S,
+)
+rej(
+  'stamp-t5-proof-wrong-length',
+  'Type-5 field 8 (proof) of 63 bytes.',
+  stampT5({ proof: T3C.proof.slice(0, 63) }),
+  'schema',
+  '8.2',
+  ['T3b'],
+  S,
+)
+for (const [id, what, proof] of [
+  ['c-zero', 'c = 0', concatBytes(new Uint8Array(32), sHalf)],
+  ['c-at-n', 'c = n (not reduced)', concatBytes(be32(SECP_N), sHalf)],
+  ['s-zero', 's = 0', concatBytes(cHalf, new Uint8Array(32))],
+  ['s-at-n', 's = n (not reduced)', concatBytes(cHalf, be32(SECP_N))],
+] as const) {
+  rej(
+    `stamp-t5-proof-${id}`,
+    `Type-5 field 8: proof scalar ${what}; the other scalar is valid.`,
+    stampT5({ proof }),
+    'schema',
+    '8.2',
+    ['T3b'],
+    S,
+  )
+}
+acc(
+  'stamp-t5-point-x-1-accepted',
+  'Type-5 field 6 (E) with prefix 02 and x = 1, an on-curve point: the accept twin of the x = p + 1 alias.',
+  stampT5({ e: point33(2, be32(1n)) }),
+  ['T3b'],
+  S,
+)
+acc(
+  'stamp-t5-proof-scalars-at-n-minus-1-accepted',
+  'Type-5 field 8 with c = s = n - 1, the largest scalars the encoding admits (T3b).',
+  stampT5({ proof: concatBytes(be32(SECP_N - 1n), be32(SECP_N - 1n)) }),
+  ['T3b'],
+  S,
+)
+acc(
+  'stamp-t5-real-points-accepted',
+  'Type-5 frame carrying the README T3c values for E, X and the proof: the encoding rules pass (the proof itself is verified only at stage 10).',
+  stampT5({}),
+  ['T3a', 'T3b'],
+  S,
+)
+
+// Type 1: the destination is the stamp key P' (S9), independent of the routing recipient (S8).
+rej(
+  'stamp-t1-destination-32-byte-key-type-1',
+  'Type-1 field 1 of key type 1 with a 32-byte value: key type 1 needs 33 bytes (S2).',
+  deliveryFrame({
+    destination: M([
+      [0, 1],
+      [1, bytesOf(32, 3)],
+    ]),
+  }),
+  'schema',
+  '8.2',
+  ['S2', 'S9'],
+  S,
+)
+rej(
+  'stamp-t1-destination-unallocated-key-type',
+  'Type-1 field 1 with the unallocated key type 9.',
+  deliveryFrame({
+    destination: M([
+      [0, 9],
+      [1, bytesOf(33, 3)],
+    ]),
+  }),
+  'unsupported',
+  '8.3',
+  ['S2b', 'S9'],
+  S,
+)
+rej(
+  'stamp-t1-destination-key-type-3',
+  'Type-1 field 1 of the allocated key type 3 with a 32-byte value: S9 requires key type 1.',
+  deliveryFrame({
+    destination: M([
+      [0, 3],
+      [1, bytesOf(32, 3)],
+    ]),
+  }),
+  'semantic',
+  '9',
+  ['S9'],
+  S,
+)
+acc(
+  'stamp-t1-delivery-to-rotated-key',
+  "A delivery whose stamp key P' is the T3c E point standing for a rotated key: accepted at typed, where the binding to a directory state is not evaluated (S10a.4).",
+  deliveryFrame({ destination: stampAccount(T3C.ephemeral) }),
+  ['S9', 'S10a'],
+  S,
+)
+
+// Type 4: field 8 is required from schema 2 and undefined in schema 1 (S10a.1).
+const stmtSchema1 = (o: Parameters<typeof statementPayload>[0] = {}) =>
+  fr(4, statementPayload({ ...o, stampKey: null }), 1, 1)
+rej(
+  'stamp-t4-schema2-without-field-8',
+  'Type-4 statement at schema_version 2 without field 8: a required key is missing.',
+  fr(4, statementPayload({ stampKey: null })),
+  'schema',
+  '8.2',
+  ['S10a', 'V2'],
+  NOP,
+)
+rej(
+  'stamp-t4-schema1-with-field-8',
+  'Type-4 statement at schema_version 1 that carries field 8: undeclared in schema 1 (C12).',
+  fr(4, statementPayload(), 1, 1),
+  'schema',
+  '8.2',
+  ['S10a', 'C12'],
+  NOP,
+)
+acc(
+  'stamp-t4-schema1-accepted',
+  'Type-4 statement at schema_version 1 without field 8: still readable by a schema-2 reader, and carries no stamp key.',
+  stmtSchema1(),
+  ['S10a', 'V6.2'],
+  NOP,
+)
+for (const [type, seed] of [
+  [2, 5],
+  [3, 6],
+] as const) {
+  rej(
+    `stamp-t4-field-8-key-type-${type}`,
+    `Type-4 field 8 of the allocated key type ${type} with a 32-byte value: the stamp key must be key type 1.`,
+    fr(
+      4,
+      statementPayload({
+        stampKey: M([
+          [0, type],
+          [1, bytesOf(32, seed)],
+        ]),
+      }),
+    ),
+    'semantic',
+    '9',
+    ['S10a'],
+    NOP,
+  )
+}
+rej(
+  'stamp-t4-field-8-unallocated-key-type',
+  'Type-4 field 8 of the unallocated key type 9.',
+  fr(
+    4,
+    statementPayload({
+      stampKey: M([
+        [0, 9],
+        [1, bytesOf(33, 6)],
+      ]),
+    }),
+  ),
+  'unsupported',
+  '8.3',
+  ['S10a', 'S2b'],
+  NOP,
+)
+acc(
+  'stamp-t4-field-8-equals-subject-accepted',
+  'Type-4 field 8 equal to the subject key: not rejected (S10a.1 forbids nothing here; the identity key as stamp key only forfeits the blast-radius protection).',
+  fr(4, statementPayload({ subject: acct1(3), stampKey: acct1(3) })),
+  ['S10a'],
+  NOP,
+)
+// A reader whose highest type-4 schema is 1 reads a schema-2 statement through the schema-1
+// projection (V6.3): field 8 is neither required nor declared there.
+const TYPE4_AT_SCHEMA_1 = PRE_TOPIC_SCHEMAS.map(x =>
+  x.typeId === 4 ? { ...x, schemaVersion: 1 } : x,
+)
+acc(
+  'stamp-t4-schema2-projected-without-field-8',
+  'A schema-2 statement without field 8 read by a reader whose highest type-4 schema is 1: accepted through the schema-1 projection (V6.3), since field 8 is not part of that schema.',
+  fr(4, statementPayload({ stampKey: null }), 2, 2),
+  ['V6.3', 'S10a'],
+  { ...NOP, supported: TYPE4_AT_SCHEMA_1 },
+)
+acc(
+  'stamp-t4-schema2-projected-with-field-8',
+  'A schema-2 statement with field 8 read by a reader whose highest type-4 schema is 1: accepted, and field 8 is kept as an unknown field (V6.3).',
+  fr(4, statementPayload(), 2, 2),
+  ['V6.3', 'S10a'],
+  { ...NOP, supported: TYPE4_AT_SCHEMA_1 },
+)
+rej(
+  'stamp-t2-schema2-statement-for-reader-1',
+  'Type-2 attestation of a schema-2 statement (min_reader_version 2) opened by a reader with reader_version 1: unsupported as a required-type child, never read as a statement without a stamp key (V6.1).',
+  attestationFrame(statementFrame(), [sig(acct2(1))]),
+  'unsupported',
+  '7',
+  ['V6.1', 'S10a'],
+  { ...NOP, readerVersion: 1 },
+)
+
+// Same-subject updates (S10, S10a.2, S10a.3) against the schema-2 prior of `priorStmt`.
+const otherStampKey = stampAccount(T3C.ephemeral)
+acc(
+  'stamp-s10a-rotate-stamp-key-accepted',
+  'Same subject, greater revision, no transition, a new field 8: a stamp-key rotation (S10a.3).',
+  upd({ revision: 6n, subject: acct2(1), stampKey: otherStampKey }, acct2(1)),
+  ['S10', 'S10a'],
+  { prior: priorStmt },
+)
+acc(
+  'stamp-s10a-add-stamp-key-accepted',
+  'Same subject, greater revision: a schema-2 statement adds the stamp key to a schema-1 prior (migration, S10a.2, S10a.3).',
+  upd({ revision: 6n, subject: acct2(1) }, acct2(1)),
+  ['S10', 'S10a'],
+  { prior: stmtSchema1() },
+)
+rej(
+  'stamp-s10a-rotate-revision-not-increasing',
+  'A statement that changes only field 8 with a revision equal to the prior revision.',
+  upd({ revision: 5n, subject: acct2(1), stampKey: otherStampKey }, acct2(1)),
+  'semantic',
+  '9',
+  ['S10', 'S10a'],
+  P1,
+)
+rej(
+  'stamp-s10a-rotate-with-transition',
+  'A statement that changes field 8 and carries a key transition for an unchanged subject: a stamp key confers no authority over the directory (S10a.3).',
+  upd(
+    {
+      revision: 6n,
+      subject: acct2(1),
+      stampKey: otherStampKey,
+      transitions: [transition(t7())],
+    },
+    acct2(1),
+  ),
+  'semantic',
+  '9',
+  ['S10', 'S10a'],
+  P1,
+)
+rej(
+  'stamp-s10a-schema-downgrade',
+  'A same-subject schema-1 statement after a schema-2 prior: schema_version may not drop, so a published stamp key cannot be removed (S10a.2).',
+  attestationFrame(stmtSchema1({ revision: 6n, subject: acct2(1) }), [
+    sig(acct2(1)),
+  ]),
+  'semantic',
+  '9',
+  ['S10a'],
+  P1,
+)
+acc(
+  'stamp-s10a-new-subject-schema-1-accepted',
+  'A subject change (with its linked transition) to a schema-1 statement after a schema-2 prior: a new subject starts fresh, so the schema order does not apply (S10a.2).',
+  attestationFrame(
+    stmtSchema1({
+      subject: acct2(2),
+      revision: 6n,
+      transitions: [transition(t7())],
+    }),
+    [sig(acct2(2))],
+  ),
+  ['S10', 'S10a'],
+  { prior: priorStmt },
 )

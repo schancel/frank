@@ -10,7 +10,9 @@
 //!
 //! This crate is the Rust proof for the normative text in `docs/protocol/cbor/`.
 //! It implements section 9 stages 1-9 and the pure hashes T1, T1a, T3, T4, and T7.
-//! Stage 10 (`full`: signatures, payment observations, T3a derivation) is out of
+//! Type-5 fields 6-8 (`E`, `X`, the DLEQ proof) are checked for encoding only (T3b), and the
+//! type-4 stamp key (field 8, schema 2) for shape and schema order (S10a.1, S10a.2).
+//! Stage 10 (`full`: signatures, payment observations, T3a derivation, DLEQ) is out of
 //! scope, matching the TypeScript reference codec. Nothing here is wired into
 //! cashwebd or a stored record format.
 

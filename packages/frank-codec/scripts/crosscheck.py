@@ -7,8 +7,10 @@ It shares no code with packages/frank-codec/src. It checks:
   * for every case, stages 1-7 of the root frame (framing, both CBOR passes, envelope, V6
     retention): whenever this implementation fails there the manifest must expect that exact
     category, and for `frame`/`generic` cases an implementation success must be an accept;
-  * for every `typed` accept case, the T1 content hash.
-Stages 8 and 9 are NOT re-implemented here.
+  * for every `typed` accept case, the T1 content hash;
+  * the README T3b encoding rules for type-5 fields 6-8 and the type-4 field-8 presence rule
+    (stage 8.2), over the `stamp-t5-` and `stamp-t4-schema` vectors.
+The rest of stages 8 and 9 is NOT re-implemented here.
 
 Usage: python3 scripts/crosscheck.py            (exit 0 on agreement)
 """
@@ -282,6 +284,61 @@ def check_topic_commitments():
     return bad
 
 
+SECP_P = 2 ** 256 - 2 ** 32 - 977
+SECP_N = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141
+
+
+def point_ok(b):
+    """T3b: 33 bytes, prefix 02/03, x < p, and y^2 = x^3 + 7 has a root (p = 3 mod 4)."""
+    if not isinstance(b, bytes) or len(b) != 33 or b[0] not in (2, 3):
+        return False
+    x = int.from_bytes(b[1:], 'big')
+    if x >= SECP_P:
+        return False
+    rhs = (pow(x, 3, SECP_P) + 7) % SECP_P
+    return pow(rhs, (SECP_P - 1) // 2, SECP_P) == 1  # Euler's criterion, not the sqrt shortcut
+
+
+def proof_ok(b):
+    if not isinstance(b, bytes) or len(b) != 64:
+        return False
+    return all(1 <= int.from_bytes(b[i:i + 32], 'big') < SECP_N for i in (0, 32))
+
+
+def check_stamp_fields(manifest):
+    """Independent stage 8.2 verdict on the stamp vectors: the frame is well formed exactly when
+    the manifest says accept, and a rejected one is a `schema` error at stage 8.2."""
+    problems, n = [], 0
+    for c in manifest['cases']:
+        cid = c['id']
+        if not (cid.startswith('stamp-t5-') or cid.startswith('stamp-t4-schema')):
+            continue
+        try:
+            kind, info = frame_stages(bytes.fromhex(c['frame_hex']), c['validation_context'], Counters())
+        except Fail:
+            problems.append('%s: python could not reach stage 8' % cid)
+            continue
+        t, payload = info['type'], info['payload']
+        if t == 5:
+            ok = all(k in payload for k in (6, 7, 8)) and point_ok(payload[6]) and \
+                point_ok(payload[7]) and proof_ok(payload[8])
+        elif t == 4:
+            highest = {x['type_id']: x['schema_version'] for x in c['validation_context']['supported_schemas']}[4]
+            # V6.3: a newer frame is read through the reader's highest supported schema.
+            ok = (8 in payload) == (min(info['schema'], highest) >= 2) or \
+                (info['schema'] > highest and 8 in payload)
+        else:
+            problems.append('%s: unexpected root type %d' % (cid, t))
+            continue
+        want_ok = c['expectation'] == 'accept'
+        if ok != want_ok or (not ok and (c.get('error_category'), c.get('error_stage')) != ('schema', '8.2')):
+            problems.append('%s: python says %s, manifest expects %s %s@%s' % (
+                cid, 'well formed' if ok else 'malformed', c['expectation'], c.get('error_category'), c.get('error_stage')))
+        n += 1
+    print('stamp fields (T3b encoding, type-4 field 8): %d vectors checked independently' % n)
+    return problems
+
+
 def main():
     schema = json.load(open(os.path.join(ROOT, 'vectors.schema.json')))
     manifest = json.load(open(os.path.join(ROOT, 'vectors', 'manifest.json')))
@@ -335,7 +392,7 @@ def main():
           % (total, agreed + len(problems), agreed, len(problems), skipped, hashes))
     for p in problems:
         print('DISAGREEMENT', p)
-    topic_problems = check_topic_commitments()
+    topic_problems = check_topic_commitments() + check_stamp_fields(manifest)
     for p in topic_problems:
         print('DISAGREEMENT', p)
     return 1 if problems or topic_problems else 0

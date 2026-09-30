@@ -105,6 +105,10 @@ export interface DirectoryStatement<F> {
   keyTransitions?: KeyTransition<F>[]
   expiry?: Timestamp
   recoveryAuthorities?: AccountRef[]
+  /** The frame's envelope `schema_version`, kept for the S10a.2 same-subject schema order. */
+  schemaVersion: number
+  /** Field 8, the stamp key `P'` (S10a.1). Required in schema 2, undefined in schema 1. */
+  stampKey?: AccountRef
   unknownFields: UnknownFields
 }
 
@@ -116,6 +120,12 @@ export interface RecipientEncryptedPayload {
   suite: number
   nonce: Uint8Array
   ciphertext: Uint8Array
+  /** Field 6, `E = e*G`: a 33-byte compressed point (T3a, T3b encoding rules). */
+  ephemeralPoint: Uint8Array
+  /** Field 7, `X = e*P'`: a 33-byte compressed point (T3a). */
+  sharedPoint: Uint8Array
+  /** Field 8, the DLEQ proof `c || s` (T3b). Verified only at stage 10. */
+  dleqProof: Uint8Array
   unknownFields: UnknownFields
 }
 

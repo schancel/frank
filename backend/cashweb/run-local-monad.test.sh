@@ -86,11 +86,14 @@ if [[ "${1:-}" == "--check-config" ]]; then
     config="$(cat)"
     grep -q '^\[registry\.monad_mailbox\]$' <<<"$config"
     grep -q '^enabled = true$' <<<"$config"
-    # The complete generated document goes through the real production parser.
+    # The complete generated document goes through the real production parser, with the same
+    # environment the launcher hands the daemon.
     printf '%s\n' "$config" | "$FRANK_REAL_CASHWEBD" --check-config -
     exit 0
 fi
 printf '%s\n' "$@" >"$FRANK_LAUNCHER_ARGS"
+printf 'rpc=%s\ntag=%s\n' "${MONAD_TESTNET_HTTP_RPC_URL:-}" "${FRANK_NETWORK_TAG:-}" \
+    >"$FRANK_LAUNCHER_ARGS.env"
 cat >"$FRANK_LAUNCHER_CONFIG"
 if [[ "${FRANK_LAUNCHER_MODE:-}" == "block" ]]; then
     trap 'exit 143' TERM
@@ -146,29 +149,54 @@ fi
         CARGO="$fixture_root/bin/fake-cargo" \
         FRANK_LAUNCHER_ARGS="$args_file" \
         FRANK_LAUNCHER_CONFIG="$config_file" \
-        "$launcher"
+        "$launcher" 2>"$fixture_root/effective.err"
 )
 
 diff -u <(printf '%s\n' -) "$args_file"
 [[ "$(grep -c '^\[registry\.monad_mailbox\]$' "$config_file")" -eq 1 ]] || exit 1
 [[ "$(grep -c '^enabled = true$' "$config_file")" -eq 1 ]] || exit 1
-[[ "$(grep -Fxc "rpc_url = \"$dummy_rpc_url\"" "$config_file")" -eq 1 ]] || exit 1
+# The endpoint is secret-bearing: it reaches the daemon only through its environment, never the
+# generated config, and the network tag defaults to Monad testnet's MONT.
+[[ "$(grep -c '^rpc_url' "$config_file")" -eq 0 ]] || exit 1
+! grep -Fq "$dummy_rpc_url" "$config_file" || exit 1
+[[ "$(cat "$args_file.env")" == "$(printf 'rpc=%s\ntag=MONT' "$dummy_rpc_url")" ]] || exit 1
+# The effective values are printed, but the secret path of the URL is not.
+grep -Fq 'FRANK_NETWORK_TAG:      MONT' "$fixture_root/effective.err" || exit 1
+grep -Fq 'min_value_wei:          1000000000000' "$fixture_root/effective.err" || exit 1
+grep -Fq 'expected_chain_id:      10143' "$fixture_root/effective.err" || exit 1
+grep -Fq 'origin https://rpc.invalid.example' "$fixture_root/effective.err" || exit 1
+! grep -Fq 'test-only' "$fixture_root/effective.err" || exit 1
 # Enabled mode requires an explicit minimum and chain ID; local defaults are Monad testnet's.
 [[ "$(grep -Fxc 'min_value_wei = "1000000000000"' "$config_file")" -eq 1 ]] || exit 1
 [[ "$(grep -Fxc 'expected_chain_id = 10143' "$config_file")" -eq 1 ]] || exit 1
-# Guard against the harness silently weakening: the old launcher output (enabled + rpc_url only)
-# is rejected by the real parser.
-old_style="$(sed 's|^enabled = false$|enabled = true\nrpc_url = "https://rpc.invalid.example"|' \
-    "$script_dir/cashwebd.local.toml")"
-if printf '%s\n' "$old_style" | "$FRANK_REAL_CASHWEBD" --check-config - 2>/dev/null; then
+# Guard against the harness silently weakening: an enabled mailbox without its minimum/chain ID
+# is rejected by the real parser even with the RPC URL and tag supplied.
+old_style="$(sed '/^min_value_wei/d;/^expected_chain_id/d' "$script_dir/cashwebd.local.toml")"
+if printf '%s\n' "$old_style" |
+    MONAD_TESTNET_HTTP_RPC_URL="$dummy_rpc_url" FRANK_NETWORK_TAG=MONT \
+        "$FRANK_REAL_CASHWEBD" --check-config - 2>/dev/null; then
     echo "real parser unexpectedly accepted an enabled mailbox without minimum/chain ID" >&2
     exit 1
 fi
+# ... and the shipped config fails fast, naming the variable, when the RPC URL or tag is missing.
+if env -u MONAD_TESTNET_HTTP_RPC_URL FRANK_NETWORK_TAG=MONT \
+    "$FRANK_REAL_CASHWEBD" --check-config - <"$script_dir/cashwebd.local.toml" 2>"$fixture_root/norpc.err"; then
+    echo "shipped config unexpectedly validated without the RPC URL" >&2
+    exit 1
+fi
+grep -Fq 'MONAD_TESTNET_HTTP_RPC_URL' "$fixture_root/norpc.err" || exit 1
+if env -u FRANK_NETWORK_TAG MONAD_TESTNET_HTTP_RPC_URL="$dummy_rpc_url" \
+    "$FRANK_REAL_CASHWEBD" --check-config - <"$script_dir/cashwebd.local.toml" 2>"$fixture_root/notag.err"; then
+    echo "shipped config unexpectedly validated without the network tag" >&2
+    exit 1
+fi
+grep -Fq 'FRANK_NETWORK_TAG' "$fixture_root/notag.err" || exit 1
 # The real parser accepts exactly what the launcher generated.
-"$FRANK_REAL_CASHWEBD" --check-config - <"$config_file"
+MONAD_TESTNET_HTTP_RPC_URL="$dummy_rpc_url" FRANK_NETWORK_TAG=MONT \
+    "$FRANK_REAL_CASHWEBD" --check-config - <"$config_file"
 [[ -z "$(find "$fixture_root/tmp" -type f -print -quit)" ]] || exit 1
 
-for invalid_env in "CASHWEB_STAMP_MIN_BURN_VALUE_WEI=1e12" "MONAD_TESTNET_CHAIN_ID=0x279f"; do
+for invalid_env in "CASHWEB_STAMP_MIN_BURN_VALUE_WEI=1e12" "MONAD_TESTNET_CHAIN_ID=0x279f" "FRANK_NETWORK_TAG=MO NT"; do
     if env "$invalid_env" MONAD_TESTNET_HTTP_RPC_URL="$dummy_rpc_url" \
         CARGO="$fixture_root/bin/fake-cargo" \
         "$launcher" >"$fixture_root/invalid-env.out" 2>"$fixture_root/invalid-env.err"; then
@@ -221,7 +249,9 @@ cp "$repo_root/.env.example" "$fixture_root/.env"
 printf '\nCARGO=%q\nFRANK_LAUNCHER_ARGS=%q\nFRANK_LAUNCHER_CONFIG=%q\n' \
     "$fixture_root/bin/fake-cargo" "$args_file" "$config_file" >>"$fixture_root/.env"
 env -u MONAD_TESTNET_HTTP_RPC_URL "$launcher"
-grep -Fq 'rpc_url = "https://monad-testnet.g.alchemy.com/v2/<your-alchemy-key>"' "$config_file"
+grep -Fq 'expected_chain_id = 10143' "$config_file" || exit 1
+grep -Fxq 'tag=MONT' "$args_file.env" || exit 1
+grep -Fxq 'rpc=https://monad-testnet.g.alchemy.com/v2/<your-alchemy-key>' "$args_file.env" || exit 1
 
 rm -f -- "$config_file"
 TMPDIR="$fixture_root/tmp" \

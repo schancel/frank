@@ -20,6 +20,7 @@ import {
   DemoHandle,
   prepareStateDir,
   redact,
+  redactLines,
   startDemo,
   walletAddress,
   checkPrerequisites,
@@ -159,10 +160,10 @@ process.stdin.on('end', () => {
         'GET https://rpc.example.invalid/<redacted> failed',
       )
       expect(redact('apikey=abc123&other=1 and key=zzz', [])).toBe(
-        'apikey=<redacted>&other=1 and key=<redacted>',
+        'apikey=<redacted>&other=1 and key=zzz',
       )
       expect(redact('bearer sk-abcdefghijklmnop1234 ok', [])).toBe('bearer <redacted> ok')
-      expect(redact(`blob ${'A'.repeat(48)} end`, [])).toBe('blob <redacted> end')
+      expect(redact(`blob ${'A1'.repeat(24)} end`, [])).toBe('blob <redacted> end')
       expect(redact('http://127.0.0.1:8098 is up', [])).toBe('http://127.0.0.1:8098 is up')
     })
 
@@ -194,6 +195,68 @@ process.stdin.on('end', () => {
       ],
     ])('redacts %j', (input, expected) => {
       expect(redact(input, [])).toBe(expected)
+    })
+
+    const WORDS =
+      'abandon ability able about above absent absorb abstract absurd abuse access accident'
+    it.each([
+      ['DB_PASSWORD="a b c"', 'a b c'],
+      ["API_SECRET='a b c'", 'a b c'],
+      ['password: "x y"', 'x y'],
+      ["{'apiKey': 'abc123secret'}", 'abc123secret'],
+      ['the passphrase is correct horse battery staple', 'correct horse'],
+      ['AKIAIOSFODNN7EXAMPLE in the env', 'AKIAIOSFODNN7EXAMPLE'],
+      ['Cookie: session=abc123; other=xyz', 'abc123'],
+      ['Set-Cookie: sid=sekrit123; Path=/', 'sekrit123'],
+      ['fetch rpc.example.invalid/v2/CREDKEY1234567890 failed', 'CREDKEY1234567890'],
+      ['fetch rpc.example.invalid/CREDKEY1234567890abcdef failed', 'CREDKEY1234567890abcdef'],
+      ['authorization: bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.sig', 'eyJhbGci'],
+      ['sent BEARER eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0', 'eyJzdWI'],
+      ['token eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0 raw', 'eyJzdWI'],
+      [`wallet seed: ${WORDS}`, 'abandon ability'],
+      [`recovery: ${WORDS.split(' ').join(', ')}`, 'abandon, ability'],
+      [`${WORDS.split(' ').join('\n')}`, 'abandon\nability'],
+      [
+        `${WORDS.split(' ')
+          .map(w => w[0].toUpperCase() + w.slice(1))
+          .join(' ')}`,
+        'Abandon Ability',
+      ],
+      [`oops ${WORDS} ${WORDS}`, 'abandon ability'],
+      [`${'0123456789abcdef'.repeat(4)}`, '0123456789abcdef0123456789abcdef'],
+      ['x-api-key: hunter22', 'hunter22'],
+      ['client_secret=s3cr3tvalue', 's3cr3tvalue'],
+      ['PASSWORD=s3cr3t and more', 's3cr3t'],
+    ])('a hostile sample cannot leak: %j', (input, secret) => {
+      const out = redact(input as string, [])
+      expect(out).not.toContain(secret as string)
+      expect(out).toContain('<redacted>')
+    })
+
+    it('does not redact addresses, hashes, long paths or plain key=value diagnostics', () => {
+      for (const keep of [
+        `sent to 0x${'ab12'.repeat(10)}`,
+        `tx 0x${'cd34'.repeat(16)} confirmed`,
+        '    at Object.<anonymous> (/Users/someone/repos/frank/.worktrees/demo-launcher/packages/bot/demo/some-very-long-directory-name/index.ts:120:15)',
+        'mode=stub port=8098 retries=3 sort_key=abc monkey=banana keys=2 state=ready',
+        'listening on 127.0.0.1:8098, pid=4242',
+        'a fairly ordinary sentence of prose that has only eleven regular words here',
+      ]) {
+        expect(redact(keep, [])).toBe(keep)
+      }
+    })
+
+    it('redactLines finds a phrase that spans lines', () => {
+      const lines = [
+        '[start] 1',
+        ...WORDS.split(' ').slice(0, 6),
+        ...WORDS.split(' ').slice(6),
+        '[done] 2',
+      ]
+      const out = redactLines(lines, [])
+      expect(out.join('\n')).not.toContain('abandon')
+      expect(out[0]).toBe('[start] 1')
+      expect(out[out.length - 1]).toBe('[done] 2')
     })
 
     it('keeps useful diagnostics', () => {
@@ -508,11 +571,63 @@ process.stdin.on('end', () => {
     })
   })
 
+  describe('exit guard (pgid reuse)', () => {
+    it('never signals the group of a child whose leader has exited (its pgid may belong to someone else now)', async () => {
+      const { Supervisor } = await import('./supervisor')
+      const sup = new Supervisor({ PATH: process.env.PATH }, () => {})
+      // An unrelated process group standing in for "the pgid was reused by somebody else".
+      const bystander = spawn('sh', ['-c', 'sleep 60'], { detached: true, stdio: 'ignore' })
+      spawned.push(bystander)
+      await sleep(100)
+      const fake = {
+        name: 'gone',
+        proc: { pid: bystander.pid },
+        argv: [],
+        logPath: '',
+        tail: () => [],
+        exited: Promise.resolve('0'),
+        hasExited: () => true,
+      }
+      ;(sup as unknown as { children: unknown[] }).children.push(fake)
+      sup.killAllNow()
+      await sup.stopAll(300)
+      await sleep(400) // a killed child is only a zombie (still "alive") until node reaps it
+      expect(alive(bystander.pid as number)).toBe(true)
+    })
+
+    it("flips the exited flag on the leader's exit, not on the later stdio close", async () => {
+      const { Supervisor } = await import('./supervisor')
+      const sup = new Supervisor({ PATH: process.env.PATH }, () => {})
+      // The leader exits at once; a grandchild keeps stdout open, so 'close' comes much later.
+      const child = sup.start({
+        name: 'leader',
+        command: 'sh',
+        args: ['-c', 'sleep 3 & exit 0'],
+        cwd: dir,
+        env: {},
+        logPath: join(dir, 'l.log'),
+      })
+      await waitFor(() => child.hasExited(), 2000)
+      let closed = false
+      void child.exited.then(() => (closed = true))
+      expect(closed).toBe(false)
+      await sup.stopAll(200)
+    })
+  })
+
   describe('wallet address comparison', () => {
-    it('reads only the address, lower-cased', () => {
+    it('reads only the address, normalised (no 0x, lower-case, exactly 40 hex)', () => {
       const w = join(dir, 'w.json')
-      writeFileSync(w, JSON.stringify({ address: '0xAbC', privateKey: '0x11' }), { mode: 0o600 })
-      expect(walletAddress(w)).toBe('0xabc')
+      const hex = 'aBcDeF0123456789aBcDeF0123456789aBcDeF01'
+      writeFileSync(w, JSON.stringify({ address: `0x${hex}`, privateKey: '0x11' }), { mode: 0o600 })
+      expect(walletAddress(w)).toBe(hex.toLowerCase())
+      // keystore style: no 0x prefix at all
+      writeFileSync(w, JSON.stringify({ address: hex }))
+      expect(walletAddress(w)).toBe(hex.toLowerCase())
+      for (const bad of ['0xabc', 'zz'.repeat(20), '', 5, null, `0x${hex}00`]) {
+        writeFileSync(w, JSON.stringify({ address: bad }))
+        expect(walletAddress(w)).toBeUndefined()
+      }
       writeFileSync(w, '{"privateKey":"x"}')
       expect(walletAddress(w)).toBeUndefined()
       expect(walletAddress(join(dir, 'missing.json'))).toBeUndefined()
@@ -553,6 +668,16 @@ process.stdin.on('end', () => {
         const problems = await checkPrerequisites(await withBots(same))
         expect(problems.join('\n')).toMatch(/is the same wallet as the stamp wallet/)
       }
+      // the same wallet written keystore-style (no 0x, different case) is still the same wallet
+      const keystore = join(dir, 'keystore.json')
+      writeFileSync(keystore, JSON.stringify({ address: 'AB'.repeat(20) }), { mode: 0o600 })
+      expect((await checkPrerequisites(await withBots(keystore))).join('\n')).toMatch(
+        /is the same wallet/,
+      )
+      // an address that is not 40 hex fails closed
+      const junk = join(dir, 'junk.json')
+      writeFileSync(junk, JSON.stringify({ address: '0x1234' }), { mode: 0o600 })
+      expect((await checkPrerequisites(await withBots(junk))).join('\n')).toMatch(/valid "address"/)
       expect(await checkPrerequisites(await withBots(other))).toEqual([])
     })
   })

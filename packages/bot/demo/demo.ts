@@ -83,39 +83,69 @@ const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms))
 
 /** Scrubs a log line before it is echoed: the exact secrets, then anything that looks like a
  * credential (URL paths and queries, api-key parameters, key-shaped tokens, long opaque strings). */
-export function redact(line: string, secrets: string[]): string {
-  let out = secrets.reduce((acc, s) => (s ? acc.split(s).join('<redacted>') : acc), line)
+export function redact(text: string, secrets: string[]): string {
+  let out = secrets.reduce((acc, s) => (s ? acc.split(s).join('<redacted>') : acc), text)
   // Credentials embedded in a URL (any scheme), then URL paths and queries (http/https/ws/wss).
   out = out.replace(/\b([a-z][a-z0-9+.-]*:\/\/)[^/\s@"']+@/gi, '$1<redacted>@')
   out = out.replace(/\b((?:https?|wss?):\/\/[^/\s"'?#]+)[/?#][^\s"']*/gi, '$1/<redacted>')
-  // JSON fields: "apiKey": "...", "api_key":"...", "password": "..."
+  // Scheme-less provider URLs: host.tld/v2/KEY or host.tld/<long token>
+  out = out.replace(/\b((?:[a-z0-9-]+\.)+[a-z]{2,}(?::\d+)?)\/v\d+\/[^\s"']+/gi, '$1/<redacted>')
   out = out.replace(
-    /("(?:api[_-]?key|token|secret|password|passwd|authorization|private[_-]?key)"\s*:\s*")[^"]*"/gi,
-    '$1<redacted>"',
+    /\b((?:[a-z0-9-]+\.)+[a-z]{2,}(?::\d+)?)\/[A-Za-z0-9_-]{16,}[^\s"']*/gi,
+    '$1/<redacted>',
   )
-  // NAME_KEY=value style assignments whose name merely ends in a secret-ish suffix
+  // Cookies
+  out = out.replace(/\b((?:set-)?cookie)\s*:[^\r\n]*/gi, '$1: <redacted>')
+  // Authorization schemes, however short the token (a JWT after `bearer ` is one run of these)
+  out = out.replace(/\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]+/gi, '$1 <redacted>')
+  // "the passphrase is ...": redact the rest of the line
   out = out.replace(
-    /\b([A-Za-z0-9_]*(?:_KEY|_TOKEN|_SECRET|_PASSWORD|_PASSWD))=[^\s"']+/gi,
-    '$1=<redacted>',
+    /\b(passphrase|password|passwd|secret|token|mnemonic|seed phrase|recovery phrase)\s+(?:is|was)\s+[^\r\n]*/gi,
+    '$1 is <redacted>',
   )
-  out = out.replace(
-    /\b((?:api[_-]?)?key|token|secret|password|passwd)=[^&\s"']+/gi,
-    '$1=<redacted>',
+  // Credential-named keys (JSON, single-quoted JSON, env assignments, `password: x y`), with a
+  // double-quoted, single-quoted or bare value. Plain `key=value` diagnostics are left alone.
+  const NAMED =
+    '(?:(?:[a-z0-9]+[_.-])*(?:api|access|secret|private|client|auth)[_. -]?(?:key|token|secret)|token|secret|password|passwd|passphrase|pwd|credentials?)'
+  const ENV_SUFFIX = '[A-Za-z0-9_.-]*_(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|PASSPHRASE)'
+  const assignment = new RegExp(
+    `(["']?)\\b(${NAMED}|${ENV_SUFFIX})\\1(\\s*[:=]\\s*)("[^"]*"|'[^']*'|[^\\s,;&"'}\\]]+)`,
+    'gi',
   )
-  // `password: hunter2`, `api key: abc`
-  out = out.replace(/\b(password|passwd|secret|token|api[_ -]?key)\s*:\s*\S+/gi, '$1: <redacted>')
-  // Authorization schemes, however short the token
-  out = out.replace(/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+/g, '$1 <redacted>')
-  out = out.replace(/\b(?:sk|key|tok|pk)[-_][A-Za-z0-9_-]{12,}/g, '<redacted>')
-  out = out.replace(/\b[A-Za-z0-9+/_-]{40,}\b/g, '<redacted>')
-  // A recovery phrase: a run of exactly 12/15/18/21/24 lowercase words
-  out = out.replace(/(?:\b[a-z]{3,8}\b ?){12,}/g, run => {
-    const words = run.trim().split(/\s+/).length
-    return [12, 15, 18, 21, 24].includes(words)
-      ? '<redacted>' + (run.endsWith(' ') ? ' ' : '')
-      : run
+  out = out.replace(assignment, (m, q: string, name: string, sep: string, value: string) => {
+    if (
+      /^[a-z0-9_.-]*_(?:key|token|secret|password|passwd|passphrase)$/i.test(name) &&
+      !/^[a-z0-9_.-]*[A-Z]/.test(name) &&
+      !new RegExp(`^${NAMED}$`, 'i').test(name)
+    ) {
+      return m // a lower-case snake_case name ending in _key (sort_key=...) is not env-style
+    }
+    const quote = value[0] === '"' || value[0] === "'" ? value[0] : ''
+    return `${q}${name}${q}${sep}${quote}<redacted>${quote}`
   })
+  // A query parameter named key
+  out = out.replace(/([?&])key=[^&\s"']+/gi, '$1key=<redacted>')
+  // AWS access key ids, JWTs, key-shaped tokens
+  out = out.replace(/\b(?:AKIA|ASIA|AGPA|AIDA|AROA|ANPA|ANVA)[A-Z0-9]{16}\b/g, '<redacted>')
+  out = out.replace(/\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}(?:\.[A-Za-z0-9_-]*)?/g, '<redacted>')
+  out = out.replace(/\b(?:sk|key|tok|pk)[-_][A-Za-z0-9_-]{12,}/g, '<redacted>')
+  // Long opaque tokens (base64/hex, e.g. a bare private key), but never 0x-prefixed hex (addresses
+  // and hashes) and never a plain long path or word: it must mix letters and digits.
+  out = out.replace(/(?<![\w/.])[A-Za-z0-9+_-]{40,}(?![\w/])/g, tok =>
+    /^0x[0-9a-f]+$/i.test(tok) || !/[0-9]/.test(tok) || !/[A-Za-z]/.test(tok) ? tok : '<redacted>',
+  )
+  // A recovery phrase: a run of 12 or more words (3-8 letters, any case) separated by spaces,
+  // commas or newlines, whatever precedes it.
+  out = out.replace(
+    /(?<![A-Za-z<])(?:[A-Za-z]{3,8}[ \t,\r\n]+){11,}[A-Za-z]{3,8}(?![A-Za-z>])/g,
+    '<redacted>',
+  )
   return out
+}
+
+/** Redacts a block of log lines as one text (a phrase can span lines), keeping the line split. */
+export function redactLines(lines: string[], secrets: string[]): string[] {
+  return redact(lines.join('\n'), secrets).split('\n')
 }
 
 /** The state dir is private to this user: created (or pre-existing) it must be ours and not
@@ -133,11 +163,14 @@ async function portIsFree(port: number): Promise<boolean> {
   })
 }
 
-/** The `address` field of a wallet JSON file, lower-cased (never reads the key into anything). */
+/** The `address` field of a wallet JSON file, normalised (no 0x, lower-case, exactly 40 hex), or
+ * undefined if it is missing or not an address. Never touches the key. */
 export function walletAddress(path: string): string | undefined {
   try {
     const address = (JSON.parse(readFileSync(path, 'utf8')) as { address?: unknown }).address
-    return typeof address === 'string' && address ? address.toLowerCase() : undefined
+    if (typeof address !== 'string') return undefined
+    const hex = address.trim().replace(/^0x/i, '').toLowerCase()
+    return /^[0-9a-f]{40}$/.test(hex) ? hex : undefined
   } catch {
     return undefined
   }
@@ -182,7 +215,7 @@ export async function checkPrerequisites(config: DemoConfig): Promise<string[]> 
       const other = walletAddress(faucetPath)
       if (!main || !other) {
         problems.push(
-          'the stamp wallet and the faucet wallet files must each be JSON with an "address" field',
+          'the stamp wallet and the faucet wallet files must each be JSON with a valid "address" (40 hex characters, with or without 0x)',
         )
       } else if (main === other) {
         problems.push(
@@ -422,10 +455,7 @@ export async function startDemo(
       if (relay.hasExited()) {
         throw new DemoConfigError([
           `the relay exited during startup. Last output (${join(logDir, 'relay.log')}):`,
-          ...relay
-            .tail()
-            .slice(-15)
-            .map(l => `  ${redact(l, config.secrets)}`),
+          ...redactLines(relay.tail().slice(-15), config.secrets).map(l => `  ${l}`),
         ])
       }
       if (Date.now() > relayDeadline) {
@@ -482,10 +512,7 @@ export async function startDemo(
             logDir,
             `${name}.log`,
           )}):`,
-          ...(child
-            ?.tail()
-            .slice(-15)
-            .map(l => `  ${redact(l, config.secrets)}`) ?? []),
+          ...redactLines(child?.tail().slice(-15) ?? [], config.secrets).map(l => `  ${l}`),
         ])
       }
       await sleep(options.pollMs ?? 1000)

@@ -1,5 +1,13 @@
 import { spawn } from 'child_process'
-import { existsSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'fs'
+import {
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 
@@ -62,11 +70,83 @@ describe('run lock', () => {
   })
 
   it('a live pid whose start time cannot be checked is refused, with how to remove the lock', () => {
-    const deps: LockDeps = { isAlive: () => true, startTime: () => undefined, youngMs: 5000 }
+    const deps: LockDeps = {
+      isAlive: () => true,
+      startTime: () => undefined,
+      youngMs: 5000,
+      settleMs: 0,
+    }
     writeLock({ pid: 4242, startTime: 'x' })
     expect(() => acquireLock(dir, deps)).toThrow(
       new RegExp(`delete ${lockPath(dir).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`),
     )
+  })
+
+  it('a live launcher whose start time is "unknown" (ps failed for it) is never replaced', () => {
+    writeLock({ pid: process.ppid, startTime: 'unknown' })
+    expect(() => acquireLock(dir)).toThrow(/start time cannot be verified/)
+    expect(JSON.parse(readFileSync(lockPath(dir), 'utf8')).startTime).toBe('unknown')
+  })
+
+  it('a launcher whose own start time is unknown writes a lock that a second launcher then respects', () => {
+    const noPs: LockDeps = { isAlive, startTime: () => undefined, youngMs: 5000, settleMs: 0 }
+    const first = acquireLock(dir, noPs)
+    expect(JSON.parse(readFileSync(lockPath(dir), 'utf8')).startTime).toBe('unknown')
+    expect(() => acquireLock(dir)).toThrow(/cannot be verified/)
+    first.release()
+  })
+
+  describe('stale takeover is atomic (deterministic interleavings)', () => {
+    const stale = { pid: 2147483000, startTime: 'Mon Jan  1 00:00:00 2001' }
+    const deps = (hooks: LockDeps['hooks'] = {}): LockDeps => ({
+      isAlive,
+      startTime: processStartTime,
+      youngMs: 5000,
+      settleMs: 0,
+      hooks,
+    })
+
+    it("B read the dead lock, A then took it over: B backs off and A's lock survives (unlink+create would delete it)", () => {
+      writeLock(stale)
+      let aHeld: ReturnType<typeof acquireLock> | undefined
+      // Launcher B (this call) reads the stale lock; before B acts, launcher A completes its takeover.
+      expect(() =>
+        acquireLock(
+          dir,
+          deps({
+            afterReadStale: () => {
+              // simulate A: a different launcher pid that is alive, with its true start time
+              const start = processStartTime(process.ppid)
+              writeLock({ pid: process.ppid, startTime: start, token: 'A-token' })
+              aHeld = undefined
+            },
+          }),
+        ),
+      ).toThrow(/another demo launcher \(pid \d+ started/)
+      expect(JSON.parse(readFileSync(lockPath(dir), 'utf8')).token).toBe('A-token')
+      void aHeld
+    })
+
+    it('a takeover that is overwritten by a concurrent launcher during the settle window backs off', () => {
+      writeLock(stale)
+      expect(() =>
+        acquireLock(
+          dir,
+          deps({
+            duringSettle: () => writeLock({ pid: process.ppid, startTime: 'x', token: 'other' }),
+          }),
+        ),
+      ).toThrow(/lost the race/)
+      expect(JSON.parse(readFileSync(lockPath(dir), 'utf8')).token).toBe('other')
+    })
+
+    it('an uncontended takeover succeeds, leaves no temp files, and release removes only its own lock', () => {
+      writeLock(stale)
+      const held = acquireLock(dir, deps())
+      expect(readdirSync(dir).filter(f => f.endsWith('.tmp'))).toEqual([])
+      held.release()
+      expect(existsSync(lockPath(dir))).toBe(false)
+    })
   })
 
   it('an empty or garbled lock is trusted to be mid-creation only while young', () => {
@@ -126,6 +206,37 @@ describe('run record', () => {
     })
     expect(rec.children[0].startTime).toBeTruthy()
     expect(require('fs').statSync(join(dir, 'demo.pid')).mode & 0o777).toBe(0o600)
+  })
+
+  it('staleAdvice ignores implausible entries and strips control characters', () => {
+    const rec = {
+      launcher: { pid: 1, startTime: 'x' },
+      children: [
+        { name: 'init', pid: 1, pgid: 1, startTime: 'x', argv: [] },
+        { name: 'group-one', pid: 4242, pgid: 1, startTime: 'x', argv: [] },
+        { name: 'zero', pid: 0, pgid: 0, startTime: 'x', argv: [] },
+        { name: 'float', pid: 5.5, pgid: 5.5, startTime: 'x', argv: [] },
+        { name: 'me', pid: process.pid, pgid: process.pid, startTime: 'x', argv: [] },
+        { name: 'parent', pid: process.ppid, pgid: process.ppid, startTime: 'x', argv: [] },
+        { name: 'str', pid: '999', pgid: '999', startTime: 'x', argv: [] },
+        {
+          name: '\u001b]0;pwned\u0007evil\u001b[31m',
+          pid: 987654,
+          pgid: 987654,
+          startTime: 'ok\u001b[2J',
+          argv: ['a\u001bb', 'c\u0000d'],
+        },
+      ],
+    } as never
+    const out = staleAdvice(rec).join('\n')
+    expect(out).not.toMatch(/kill -TERM -- -1\b/)
+    expect(out).not.toContain(`-${process.pid}\n`)
+    expect(out).not.toContain(`kill -TERM -- -${process.ppid}`)
+    expect(out).toContain('kill -TERM -- -987654')
+    expect(out).toContain('7 implausible entries in the record ignored')
+    // eslint-disable-next-line no-control-regex
+    expect(out).not.toMatch(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/)
+    expect(out).toContain('evil')
   })
 
   it('takeStaleRecord returns and removes it, and tolerates garbage; advice never says to kill automatically', () => {

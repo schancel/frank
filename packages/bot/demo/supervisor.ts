@@ -102,6 +102,12 @@ export class Supervisor {
         exitedFlag = true
         resolve('error')
       })
+      // `exited` (the promise) resolves on 'close', when the stdio pipes have ended too. The flag
+      // used to guard signalling flips on 'exit': once the group leader is gone its pgid may be
+      // reused by an unrelated process, and killing -pgid would hit it.
+      proc.on('exit', () => {
+        exitedFlag = true
+      })
       proc.on('close', (code, signal) => {
         exitedFlag = true
         log.end()

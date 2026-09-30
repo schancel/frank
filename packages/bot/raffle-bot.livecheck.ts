@@ -78,8 +78,8 @@ import {
 import { deserializeMessageItems } from '@frank/wallet/chain/monad-chain'
 import { RaffleItem } from '@frank/cashweb/types/messages'
 import {
+  buildRaffleDrawItem,
   combineEntrantEntropy,
-  pickWinnerIndex,
   sha256Hex,
 } from '@frank/wallet/message-item-plugins/raffle/draw'
 import { formatMon } from '@frank/wallet/monad-amount'
@@ -599,14 +599,17 @@ async function main() {
       }
       const entrantAddresses = updatedEntrants.map(e => e.address)
       const entryTxHashes = updatedEntrants.map(e => e.txHash)
-      const winnerIndex = pickWinnerIndex(
-        commitment.serverSeed,
-        combineEntrantEntropy(entryTxHashes),
-        entrantAddresses.length,
-      )
-      const winnerAddress = entrantAddresses[winnerIndex]
-      const potWei =
-        BigInt(round.entryPriceWei) * BigInt(updatedEntrants.length)
+      // One builder decides the winner and pot and carries the commitment hash (#318), so what
+      // is announced is exactly what is paid out.
+      const drawItem = buildRaffleDrawItem({
+        raffleId: round.raffleId,
+        entryPriceWei: round.entryPriceWei,
+        serverSeed: commitment.serverSeed,
+        entrants: entrantAddresses,
+        entryTxHashes,
+      })
+      const winnerAddress = drawItem.winnerAddress
+      const potWei = BigInt(drawItem.potWei)
 
       console.log(
         `[raffle-bot] drawing round ${round.raffleId}: winner=${winnerAddress} pot=${potWei} wei`,
@@ -631,19 +634,7 @@ async function main() {
           fromIdentity: identity,
           toAddress: e.address,
           toPubKey,
-          items: [
-            {
-              type: 'raffle',
-              raffleId: round.raffleId,
-              action: 'draw',
-              entryPriceWei: round.entryPriceWei,
-              winnerAddress,
-              serverSeed: commitment.serverSeed,
-              entrants: entrantAddresses,
-              entryTxHashes,
-              potWei: potWei.toString(),
-            },
-          ],
+          items: [drawItem],
           stampValueWei: replyStampValueWei,
           networkTag,
         })

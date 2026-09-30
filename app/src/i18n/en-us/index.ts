@@ -22,6 +22,17 @@ export default {
     emojiPickerTitle: 'Select an emoji',
     stampPrice: 'Stamp Price',
   },
+  raffleDraw: {
+    verified: 'Draw matches the seed commitment',
+    failed: 'Verification failed: {reason}',
+    explainerToggle: 'What does this show?',
+    explainerShows:
+      'Shows: the operator did not change the seed after committing to it, and the winner follows from the listed entrants and that seed.',
+    explainerNotShown:
+      'Does not show: that the listed entrants are real on-chain payments, or that no entries were left out.',
+    explainerCountUnverified:
+      'The round did not announce its size, so the number of entrants is not checked.',
+  },
   blackjackBet: {
     menuLabel: 'Play blackjack',
     title: 'Start a blackjack hand',

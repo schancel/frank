@@ -26,6 +26,7 @@ export default {
     settings: 'Paramètres',
     contacts: 'Contacts',
     forum: 'Forum',
+    railLabel: 'Sections de la barre latérale',
     contactsUnreadOne: 'Contacts, {count} message non lu',
     contactsUnreadOther: 'Contacts, {count} messages non lus',
   },

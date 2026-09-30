@@ -1,7 +1,7 @@
 // @frank/nakamoto public surface. Browser-safe: no Node built-ins.
 // Per-chain entries: ./btc ./bch ./xec ./xpi.
-// Feature entries: ./integer ./script-num ./base58 ./base58check ./varint
-// ./reader ./convert-bits ./base32 ./encoding-error ./constructors
+// Feature entries: ./integer ./script ./script-num ./base58 ./base58check
+// ./varint ./reader ./convert-bits ./base32 ./encoding-error ./constructors
 // ./bech32 ./cashaddr ./address ./keys ./hd ./transaction ./sign.
 
 export const PACKAGE_NAME = '@frank/nakamoto'
@@ -32,6 +32,7 @@ export type {
   MessageMagic,
   NetworkKind,
   PolicyAmount,
+  ScriptRules,
   SighashFamily,
   UnknownChainError,
 } from './chain/types.js'
@@ -50,6 +51,14 @@ export type {
   ScriptNumError,
   ScriptNumResult,
 } from './script-num.js'
+
+export { evaluateScript, isScriptError, verifyScript } from './script.js'
+export type {
+  ScriptCode,
+  ScriptContext,
+  ScriptFailure,
+  ScriptResult,
+} from './script.js'
 
 export { BASE58_ALPHABET, decodeBase58, encodeBase58 } from './base58.js'
 export { decodeBase58Check, encodeBase58Check } from './base58check.js'

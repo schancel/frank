@@ -119,19 +119,168 @@ describe('transaction bytes', () => {
     expect(parsedBch.ok).toBe(false)
   })
 
-  test('trailing bytes and a zero witness flag are rejected', () => {
+  test('trailing bytes and a non-witness flag are rejected', () => {
     const extra = fromHex(`${BIP143_UNSIGNED}00`)
     expect(parseTransaction(extra, BTC_MAINNET).ok).toBe(false)
     expect(
-      parseTransaction(Uint8Array.of(1, 0, 0, 0, 0, 0), BTC_MAINNET),
+      parseTransaction(Uint8Array.of(1, 0, 0, 0, 0, 2), BTC_MAINNET),
     ).toEqual({
       ok: false,
       error: { code: 'tx-witness-flag' },
     })
   })
+
+  test('empty-witness-not-canonical', () => {
+    const txid = brand(new Uint8Array(32))
+    const input = {
+      prevout: { txid, vout: 0 },
+      scriptSig: new Uint8Array(),
+      sequence: 0xffffffff,
+    }
+    const output = { value: 0n, scriptPubKey: new Uint8Array() }
+    const emptyStack: readonly Uint8Array[] = []
+    const marked: Transaction = {
+      version: 1,
+      locktime: 0,
+      inputs: [{ ...input, witness: emptyStack }],
+      outputs: [output],
+    }
+    const legacy: Transaction = {
+      version: 1,
+      locktime: 0,
+      inputs: [input],
+      outputs: [output],
+    }
+    const encoded = serializeTransaction(marked, BTC_MAINNET)
+    const plain = serializeTransaction(legacy, BTC_MAINNET)
+    expect(encoded).toEqual(plain)
+    if (!plain.ok) throw new Error(plain.error.code)
+    expect(toHex(plain.value)).toBe(
+      '010000000100000000000000000000000000000000000000000000000000000000000000000000000000ffffffff0100000000000000000000000000',
+    )
+    expect(plain.value[4]).toBe(0x01)
+    expect(
+      parseTransaction(
+        fromHex(
+          '0100000000010100000000000000000000000000000000000000000000000000000000000000000000000000ffffffff010000000000000000000000000000',
+        ),
+        BTC_MAINNET,
+      ),
+    ).toEqual({
+      ok: false,
+      error: { code: 'tx-witness-superfluous' },
+    })
+    const pushed = serializeTransaction(
+      {
+        ...marked,
+        inputs: [{ ...input, witness: [new Uint8Array()] }],
+      },
+      BTC_MAINNET,
+    )
+    if (!pushed.ok) throw new Error(pushed.error.code)
+    expect(pushed.value[4]).toBe(0x00)
+    expect(pushed.value[5]).toBe(0x01)
+    const round = parseTransaction(pushed.value, BTC_MAINNET)
+    if (!round.ok) throw new Error(round.error.code)
+    expect(round.value.inputs[0]?.witness).toEqual([new Uint8Array()])
+    expect(serializeTransaction(marked, BCH_MAINNET)).toEqual(
+      serializeTransaction(legacy, BCH_MAINNET),
+    )
+  })
+
+  test('legacy-empty-vin', () => {
+    const bytes = fromHex('01000000000000000000')
+    const parsed = parseTransaction(bytes, BTC_MAINNET)
+    expect(parsed).toEqual({
+      ok: true,
+      value: { version: 1, inputs: [], outputs: [], locktime: 0 },
+    })
+    if (!parsed.ok) throw new Error(parsed.error.code)
+    const encoded = serializeTransaction(parsed.value, BTC_MAINNET)
+    if (!encoded.ok) throw new Error(encoded.error.code)
+    expect(toHex(encoded.value)).toBe('01000000000000000000')
+    expect(
+      parseTransaction(Uint8Array.of(1, 0, 0, 0, 0, 0), BTC_MAINNET),
+    ).toEqual({
+      ok: false,
+      error: { code: 'tx-truncated' },
+    })
+    expect(
+      parseTransaction(fromHex('010000000001000000000000'), BTC_MAINNET),
+    ).toEqual({
+      ok: false,
+      error: { code: 'tx-witness-superfluous' },
+    })
+    expect(
+      parseTransaction(
+        fromHex('01000000000100000000000000000000000000'),
+        BTC_MAINNET,
+      ),
+    ).toEqual({
+      ok: false,
+      error: { code: 'tx-trailing' },
+    })
+    expect(parseTransaction(bytes, BCH_MAINNET)).toEqual({
+      ok: true,
+      value: { version: 1, inputs: [], outputs: [], locktime: 0 },
+    })
+  })
 })
 
+const BARE_LEGACY =
+  '010000000100000000000000000000000000000000000000000000000000000000000000000000000000ffffffff0000000000'
+
 describe('sighash', () => {
+  test('legacy-pushdata4-dos', () => {
+    const tx = mustTx(fromHex(BARE_LEGACY))
+    // The trailing ab sits past GetOp's cursor, so it is not hashed.
+    const truncated = digest(tx, 0, BTC_MAINNET, SIGHASH_ALL, 'legacy', {
+      scriptCode: fromHex('4effffffffab'),
+    })
+    expect(truncated).toBe(
+      'c4d9b92d6e2300769db07edecf9fa3b2beab7892fa1829e37912eb314257f5fc',
+    )
+    const pushed = digest(tx, 0, BTC_MAINNET, SIGHASH_ALL, 'legacy', {
+      scriptCode: fromHex('4e00000080'),
+    })
+    expect(pushed).toBe(
+      '9ccadf2c9a41a8f1b426315e1d333a314d909138ddfab593f2f2c3e599996272',
+    )
+    expect(
+      digest(tx, 0, BTC_MAINNET, SIGHASH_ALL, 'legacy', {
+        scriptCode: fromHex('ab4e00000080'),
+      }),
+    ).toBe(pushed)
+    expect(
+      digest(tx, 0, BTC_MAINNET, SIGHASH_ALL, 'legacy', {
+        scriptCode: fromHex('4e01000000ff'),
+      }),
+    ).toBe('c0605714b38195694e8056a689f2db24fe4ed3bfd1588f85809336c5f7ee6648')
+  })
+
+  test('legacy truncated push omits the unread tail', () => {
+    const tx = mustTx(fromHex(BARE_LEGACY))
+    // Bitcoin Core GetOp returns before an unread push payload.
+    // SerializeScriptCode hashes only through that cursor.
+    // bitcoin/bitcoin src/script/interpreter.cpp (master, read 2026-09-30).
+    const dropped = digest(tx, 0, BTC_MAINNET, SIGHASH_ALL, 'legacy', {
+      scriptCode: fromHex('02ff'),
+    })
+    expect(dropped).toBe(
+      'c812f137b51400c5180a5e94beef28a7b5fa9f18f94d5ab5140cc76c7c2ad51a',
+    )
+    expect(
+      digest(tx, 0, BTC_MAINNET, SIGHASH_ALL, 'legacy', {
+        scriptCode: fromHex('4e00000080ff'),
+      }),
+    ).toBe('229e8e5e585db3361ce312026c159536150810b663c31f040532af00c89f167e')
+    expect(
+      digest(tx, 0, BTC_MAINNET, SIGHASH_ALL, 'legacy', {
+        scriptCode: fromHex('ab02ff'),
+      }),
+    ).toBe(dropped)
+  })
+
   test('Bitcoin Core legacy vectors match GetHex', () => {
     const rows = JSON.parse(
       readFileSync(

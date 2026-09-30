@@ -19,7 +19,9 @@
     </div>
   </template>
   <template v-else>
-    <div class="text-center text-grey q-pa-xl">No posts yet.</div>
+    <div class="text-center text-grey q-pa-xl">
+      {{ $t('forum.noPosts') }}
+    </div>
   </template>
 </template>
 

@@ -49,3 +49,27 @@ body {
 .chat-page-background {
   background: var(--q-chat-background);
 }
+
+// Quasar does not define this. The outgoing live region stays in the accessibility
+// tree and must not paint a second copy of the status (#393).
+.q-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+  clip-path: inset(50%);
+}
+
+// Retry moves focus here instead of the clipped live region (#429).
+// Quasar's .q-message-stamp is opacity .6, and --q-primary matches the sent
+// bubble, so that ring composites away. Black still clears 3:1 on both sent
+// bubbles after that composite.
+.outgoing-focus-target:focus {
+  outline: 2px solid #000;
+  outline-offset: 2px;
+}

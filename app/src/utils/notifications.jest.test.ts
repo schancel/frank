@@ -6,7 +6,7 @@ jest.mock('quasar', () => ({
   openURL,
 }))
 
-import { sentTransactionNotify } from './notifications'
+import { desktopNotify, sentTransactionNotify } from './notifications'
 
 describe('sentTransactionNotify', () => {
   beforeEach(() => {
@@ -32,5 +32,40 @@ describe('sentTransactionNotify', () => {
 
     expect(createNotification.mock.calls[0]?.[0].actions).toEqual([])
     expect(openURL).not.toHaveBeenCalled()
+  })
+})
+
+describe('desktopNotify', () => {
+  const constructed: Array<{ title: string; options: NotificationOptions }> = []
+  const original = (global as { Notification?: unknown }).Notification
+
+  beforeEach(() => {
+    constructed.length = 0
+    ;(global as { Notification?: unknown }).Notification = class {
+      onclick: (() => void) | null = null
+      constructor(title: string, options: NotificationOptions) {
+        constructed.push({ title, options })
+      }
+    }
+  })
+  afterEach(() => {
+    ;(global as { Notification?: unknown }).Notification = original
+  })
+
+  it('passes the tag so the browser replaces a repeat of the same message (#412)', () => {
+    desktopNotify('Qwen', 'hi', 'icon.png', () => undefined, 'digest-1')
+
+    expect(constructed).toEqual([
+      {
+        title: 'Qwen',
+        options: { body: 'hi', icon: 'icon.png', tag: 'digest-1' },
+      },
+    ])
+  })
+
+  it('omits the tag when none is given', () => {
+    desktopNotify('Qwen', 'hi', 'icon.png', () => undefined)
+
+    expect(constructed[0]?.options).not.toHaveProperty('tag')
   })
 })

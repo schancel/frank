@@ -98,6 +98,8 @@ describe('encryption suites', () => {
     expect(readme).toContain(
       'no forward secrecy against the recipient static key',
     )
+    expect(readme).toContain('does not decrypt recorded auth-mode mail')
+    expect(readme).not.toContain('lets an attacker open auth-mode traffic')
     expect(readme).toContain('no prekeys')
     expect(readme).toContain('no ratchet')
     expect(readme).toContain('0xFF00')

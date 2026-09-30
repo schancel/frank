@@ -29,7 +29,7 @@ Associated data binds the suite id, the sender public key, the recipient public 
 
 Authentication is only the AEAD under DH-derived keys, so it is deniable. The recipient, holding the recipient static key and the sender public key, can build a ciphertext that opens as that sender. A third party cannot treat the ciphertext as proof that the sender sent it.
 
-A stolen recipient static key is key-compromise impersonation: it decrypts recorded mail and can forge messages from any sender to that recipient. Compromise of the sender static key lets an attacker open auth-mode traffic that used that key and can seal new auth-mode messages as that sender.
+A stolen recipient static key is key-compromise impersonation: it decrypts recorded mail and can forge messages from any sender to that recipient. Compromise of the sender static key does not decrypt recorded auth-mode mail. The ephemeral share is not recoverable from that key. It does let an attacker seal new auth-mode messages as that sender.
 
 There is no forward secrecy against the recipient static key. v1 has no prekeys and no ratchet.
 

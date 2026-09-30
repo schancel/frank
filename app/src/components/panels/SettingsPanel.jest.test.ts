@@ -84,6 +84,9 @@ describe('SettingsPanel confirm dialog (#284)', () => {
 
     expect(vm.seedConfirmOpen).toBe(false)
     expect(w.findComponent(SeedConfirmDialog).exists()).toBe(false)
+    const root = w.get('[data-test="settings-panel"]')
+    expect(root.attributes('aria-label')).toBe('SettingPanel.panelLabel')
+    expect(root.attributes('role')).toBe('region')
     expect(document.activeElement).toBe(
       w.get('[data-test="settings-panel"]').element,
     )

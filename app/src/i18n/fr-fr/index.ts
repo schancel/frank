@@ -192,6 +192,7 @@ export default {
     changeLog: 'Changelog',
     showSeed: 'Montrer la phrase de passe',
     confirmSeed: 'Confirmer la phrase de récupération',
+    panelLabel: 'Paramètres',
   },
   receiveBitcoinDialog: {
     walletStatus: 'Etat du wallet',

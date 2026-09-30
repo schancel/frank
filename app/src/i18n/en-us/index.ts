@@ -186,6 +186,7 @@ export default {
     changeLog: 'Changelog',
     showSeed: 'Show Seed',
     confirmSeed: 'Confirm Recovery Phrase',
+    panelLabel: 'Settings',
   },
   receiveBitcoinDialog: {
     walletStatus: 'Wallet Status',

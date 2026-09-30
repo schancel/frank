@@ -36,7 +36,9 @@ describe('fake chain RPC', () => {
 
   it('reports Monad testnet and only funded addresses start with a balance', async () => {
     expect((await rpc(fake, 'eth_chainId')).result).toBe('0x279f')
-    expect(BigInt((await rpc(fake, 'eth_getBalance', [rich.address])).result)).toBeGreaterThanOrEqual(10n ** 24n)
+    expect(
+      BigInt((await rpc(fake, 'eth_getBalance', [rich.address])).result),
+    ).toBeGreaterThanOrEqual(10n ** 24n)
     expect((await rpc(fake, 'eth_getBalance', [poor.address])).result).toBe('0x0')
   })
 
@@ -44,7 +46,9 @@ describe('fake chain RPC', () => {
     const { raw, hash } = await transfer(rich, poor.address, 5n * 10n ** 16n, 0)
     expect((await rpc(fake, 'eth_sendRawTransaction', [raw])).result).toBe(hash)
     expect(BigInt((await rpc(fake, 'eth_getBalance', [poor.address])).result)).toBe(5n * 10n ** 16n)
-    expect((await rpc(fake, 'eth_getTransactionCount', [rich.address, 'pending'])).result).toBe('0x1')
+    expect((await rpc(fake, 'eth_getTransactionCount', [rich.address, 'pending'])).result).toBe(
+      '0x1',
+    )
     expect((await rpc(fake, 'eth_getTransactionReceipt', [hash])).result.status).toBe('0x1')
     expect((await rpc(fake, 'eth_getTransactionByHash', [hash])).result.blockNumber).not.toBeNull()
     expect(fake.transactions()).toEqual([
@@ -61,7 +65,9 @@ describe('fake chain RPC', () => {
   })
 
   it('an unknown transaction has no receipt, and an unknown method is a JSON-RPC error', async () => {
-    expect((await rpc(fake, 'eth_getTransactionReceipt', [`0x${'ab'.repeat(32)}`])).result).toBeNull()
+    expect(
+      (await rpc(fake, 'eth_getTransactionReceipt', [`0x${'ab'.repeat(32)}`])).result,
+    ).toBeNull()
     expect((await rpc(fake, 'eth_call')).error?.code).toBe(-32601)
   })
 

@@ -16,9 +16,16 @@ const FAKE = (env: Record<string, string> = {}, envFile: Record<string, string> 
 const REAL_ENV = {
   MONAD_TESTNET_HTTP_RPC_URL: 'https://rpc.example.invalid/v2/dummy-key',
   E2E_DEMO_MAIN_WALLET_JSON: 'wallet.json',
+  FRANK_DEMO_FAUCET_WALLET_JSON: 'faucet.json',
 }
 const REAL = (env: Record<string, string> = {}, envFile: Record<string, string> = {}) =>
-  resolveDemoConfig({ env: { ...REAL_ENV, ...env }, envFile, fakeChainFlag: false, home: HOME, cwd: '/work' })
+  resolveDemoConfig({
+    env: { ...REAL_ENV, ...env },
+    envFile,
+    fakeChainFlag: false,
+    home: HOME,
+    cwd: '/work',
+  })
 
 function problemsOf(fn: () => unknown): string[] {
   try {
@@ -49,16 +56,20 @@ describe('resolveDemoConfig', () => {
 
   it('every bot has a started-line, so a profile left from an earlier run is never mistaken for a running bot', () => {
     for (const bot of FAKE().bots) expect(bot.readyLine).toBeInstanceOf(RegExp)
-    expect(FAKE().bots.find(b => b.name === 'vendor')!.readyLine.test(
-      '\nPolling http://x/message/monad/inbox/<me> (signed mailbox read, since=<t>) every 4000ms ...',
-    )).toBe(true)
+    expect(
+      FAKE()
+        .bots.find(b => b.name === 'vendor')!
+        .readyLine.test(
+          '\nPolling http://x/message/monad/inbox/<me> (signed mailbox read, since=<t>) every 4000ms ...',
+        ),
+    ).toBe(true)
   })
 
   it('a real network needs an RPC URL and a wallet file, one clear line each', () => {
     const p = problemsOf(() =>
       resolveDemoConfig({ env: {}, envFile: {}, fakeChainFlag: false, home: HOME, cwd: '/work' }),
     )
-    expect(p).toHaveLength(2)
+    expect(p).toHaveLength(3)
     expect(p[0]).toMatch(/^MONAD_TESTNET_HTTP_RPC_URL is required/)
     expect(p[1]).toMatch(/^E2E_DEMO_MAIN_WALLET_JSON is required/)
     expect(p.join('\n')).toContain('--fake-chain')
@@ -72,7 +83,10 @@ describe('resolveDemoConfig', () => {
   })
 
   it('takes values from the env file, and the process environment wins', () => {
-    const c = REAL({ FRANK_DEMO_RELAY_PORT: '9001' }, { FRANK_DEMO_RELAY_PORT: '9002', RAFFLE_BOT_MAX_ENTRIES: '4' })
+    const c = REAL(
+      { FRANK_DEMO_RELAY_PORT: '9001' },
+      { FRANK_DEMO_RELAY_PORT: '9002', RAFFLE_BOT_MAX_ENTRIES: '4' },
+    )
     expect(c.relayPort).toBe(9001)
     expect(c.bots.find(b => b.name === 'raffle')?.env.RAFFLE_BOT_MAX_ENTRIES).toBe('4')
   })
@@ -108,7 +122,10 @@ describe('resolveDemoConfig', () => {
     })
 
     it('is live with a key (and needs the endpoint)', () => {
-      const c = FAKE({ QWEN_API_KEY: 'dummy-qwen-key', QWEN_OPENAI_COMPATIBLE_ENDPOINT: 'https://q.example.invalid/v1' })
+      const c = FAKE({
+        QWEN_API_KEY: 'dummy-qwen-key',
+        QWEN_OPENAI_COMPATIBLE_ENDPOINT: 'https://q.example.invalid/v1',
+      })
       expect(c.qwenMode).toBe('live')
       expect(c.bots.find(b => b.name === 'qwen')!.env.QWEN_API_KEY).toBe('dummy-qwen-key')
       expect(c.secrets).toContain('dummy-qwen-key')
@@ -130,7 +147,9 @@ describe('resolveDemoConfig', () => {
 
   it('validates ports, wei amounts and the raffle size', () => {
     expect(problemsOf(() => FAKE({ FRANK_DEMO_RELAY_PORT: '70000' }))[0]).toMatch(/port number/)
-    expect(problemsOf(() => FAKE({ CASHWEB_STAMP_MIN_BURN_VALUE_WEI: '1.5' }))[0]).toMatch(/positive integer/)
+    expect(problemsOf(() => FAKE({ CASHWEB_STAMP_MIN_BURN_VALUE_WEI: '1.5' }))[0]).toMatch(
+      /positive integer/,
+    )
     expect(problemsOf(() => FAKE({ RAFFLE_BOT_MAX_ENTRIES: '1' }))[0]).toMatch(/>= 2/)
   })
 
@@ -146,14 +165,61 @@ describe('resolveDemoConfig', () => {
     expect(FAKE().secrets).toEqual([])
   })
 
-  it('a real network defaults the faucet to the shared wallet; the fake chain gets its own', () => {
-    expect(REAL().bots.find(b => b.name === 'faucet')!.env.E2E_DEMO_MAIN_WALLET_JSON).toBe('/work/wallet.json')
-    expect(
-      REAL({ FRANK_DEMO_FAUCET_WALLET_JSON: 'faucet.json' }).bots.find(b => b.name === 'faucet')!.env
-        .E2E_DEMO_MAIN_WALLET_JSON,
-    ).toBe('/work/faucet.json')
-    const fake = FAKE()
-    expect(fake.bots.find(b => b.name === 'faucet')!.env.E2E_DEMO_MAIN_WALLET_JSON).not.toBe(fake.mainWalletJson)
+  describe('wallets (least privilege)', () => {
+    it('--fake-chain refuses a user-supplied wallet of either kind', () => {
+      expect(problemsOf(() => FAKE({ E2E_DEMO_MAIN_WALLET_JSON: 'real.json' }))[0]).toMatch(
+        /E2E_DEMO_MAIN_WALLET_JSON is set, but --fake-chain generates its own throwaway wallets/,
+      )
+      expect(problemsOf(() => FAKE({ FRANK_DEMO_FAUCET_WALLET_JSON: 'real.json' }))[0]).toMatch(
+        /FRANK_DEMO_FAUCET_WALLET_JSON is set, but --fake-chain/,
+      )
+      // also from the env file
+      expect(problemsOf(() => FAKE({}, { E2E_DEMO_MAIN_WALLET_JSON: 'real.json' }))).toHaveLength(1)
+    })
+
+    it('the fake chain uses generated wallets, separate for the faucet', () => {
+      const c = FAKE()
+      const faucet = c.bots.find(b => b.name === 'faucet')!.env.E2E_DEMO_MAIN_WALLET_JSON
+      expect(c.mainWalletJson).toBe(join(HOME, '.frank-demo', 'fake-chain-wallet.json'))
+      expect(faucet).toBe(join(HOME, '.frank-demo', 'fake-chain-faucet-wallet.json'))
+    })
+
+    it('a real network requires a SEPARATE faucet wallet, or an explicit opt-out', () => {
+      const { FRANK_DEMO_FAUCET_WALLET_JSON: _f, ...noFaucetWallet } = REAL_ENV
+      const bare = () =>
+        resolveDemoConfig({
+          env: noFaucetWallet,
+          envFile: {},
+          fakeChainFlag: false,
+          home: HOME,
+          cwd: '/work',
+        })
+      expect(problemsOf(bare)).toEqual([
+        'FRANK_DEMO_FAUCET_WALLET_JSON is required on a real network (a separate funded testnet wallet for the faucet), or set FRANK_DEMO_NO_FAUCET=1 to run without the faucet',
+      ])
+      expect(problemsOf(() => REAL({ FRANK_DEMO_FAUCET_WALLET_JSON: 'wallet.json' }))[0]).toMatch(
+        /must be a different file/,
+      )
+      const opted = resolveDemoConfig({
+        env: { ...noFaucetWallet, FRANK_DEMO_NO_FAUCET: '1' },
+        envFile: {},
+        fakeChainFlag: false,
+        home: HOME,
+        cwd: '/work',
+      })
+      expect(opted.bots.map(b => b.name)).toEqual(['blackjack', 'raffle', 'vendor', 'qwen'])
+    })
+
+    it('the stamp wallet goes only to the bots that pay from it; the faucet gets its own and never it', () => {
+      const c = REAL()
+      const main = '/work/wallet.json'
+      const faucet = c.bots.find(b => b.name === 'faucet')!
+      expect(faucet.env.E2E_DEMO_MAIN_WALLET_JSON).toBe('/work/faucet.json')
+      expect(Object.values(faucet.env)).not.toContain(main)
+      for (const name of ['blackjack', 'raffle', 'vendor', 'qwen']) {
+        expect(c.bots.find(b => b.name === name)!.env.E2E_DEMO_MAIN_WALLET_JSON).toBe(main)
+      }
+    })
   })
 })
 

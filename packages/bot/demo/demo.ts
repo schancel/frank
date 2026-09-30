@@ -19,6 +19,7 @@ import {
   mkdirSync,
   readFileSync,
   statSync,
+  unlinkSync,
   writeFileSync,
 } from 'fs'
 import { createServer } from 'net'
@@ -29,20 +30,13 @@ import { Wallet } from 'ethers'
 import { fetchMonadProfilesSince } from '@frank/wallet/monad-identity'
 
 import { loadOrCreateIdentity } from '../qwen-bot-common'
-import {
-  botCuratedEntries,
-  renderCuratedDefaultsToml,
-} from '../print-curated-defaults'
+import { ensurePrivateDir } from '../stamp-pool-seed'
+import { collectCuratedEntries, renderCuratedDefaultsToml } from '../print-curated-defaults'
 import { BOT_PROFILES } from '../bot-directory'
-import {
-  DemoBot,
-  DemoConfig,
-  DemoConfigError,
-  resolveDemoConfig,
-} from './demo-config'
+import { DemoBot, DemoConfig, DemoConfigError, resolveDemoConfig } from './demo-config'
 import { EnvFileError, readEnvFile } from './env-file'
 import { startFakeRpc, FakeRpc } from './fake-rpc'
-import { Supervisor } from './supervisor'
+import { SupervisedChild, Supervisor } from './supervisor'
 
 const BOT_DIR = resolve(__dirname, '..')
 const REPO_ROOT = resolve(BOT_DIR, '..', '..')
@@ -55,7 +49,20 @@ export interface DemoHandle {
   addresses: Record<string, string>
   fakeRpc?: FakeRpc
   logDir: string
+  /** Stops everything (idempotent, safe at any point). */
   stop(): Promise<void>
+  /** Resolves with the process exit code once the demo has stopped, for any reason (Ctrl-C, a
+   * signal, the relay dying, an unexpected error). */
+  done: Promise<number>
+  /** Names of children that exited unexpectedly (they are not restarted). */
+  unhealthy(): string[]
+}
+
+/** Thrown from startDemo when a stop was requested (a signal) before startup finished. */
+export class DemoAborted extends Error {
+  constructor(readonly exitCode: number) {
+    super('demo startup aborted')
+  }
 }
 
 export interface StartOptions {
@@ -65,12 +72,96 @@ export interface StartOptions {
   /** Seconds to wait for the relay (a cold Cargo build can take many minutes). */
   relayTimeoutS?: number
   botTimeoutS?: number
+  /** Readiness poll interval override (tests). */
+  pollMs?: number
 }
 
 const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms))
 
-function redact(line: string, secrets: string[]): string {
-  return secrets.reduce((acc, s) => (s ? acc.split(s).join('<redacted>') : acc), line)
+/** Scrubs a log line before it is echoed: the exact secrets, then anything that looks like a
+ * credential (URL paths and queries, api-key parameters, key-shaped tokens, long opaque strings). */
+export function redact(line: string, secrets: string[]): string {
+  let out = secrets.reduce((acc, s) => (s ? acc.split(s).join('<redacted>') : acc), line)
+  out = out.replace(/(https?:\/\/[^/\s"'?#]+)[/?#][^\s"']*/gi, '$1/<redacted>')
+  out = out.replace(/\b((?:api[_-]?)?key|token|secret|password)=[^&\s"']+/gi, '$1=<redacted>')
+  out = out.replace(/\b(?:sk|key|tok|pk)[-_][A-Za-z0-9_-]{12,}/g, '<redacted>')
+  out = out.replace(/\b[A-Za-z0-9+/_-]{40,}\b/g, '<redacted>')
+  return out
+}
+
+const STALE_MARKERS = /run-local-monad|livecheck|cashwebd|frank/
+
+function isAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+function commandOf(pid: number): string {
+  return spawnSync('ps', ['-o', 'command=', '-p', String(pid)], { encoding: 'utf8' }).stdout ?? ''
+}
+
+/** The state dir is private to this user: created (or pre-existing) it must be ours and not
+ * group/world-writable, and it is tightened to 0700. */
+export function prepareStateDir(dir: string): void {
+  ensurePrivateDir(dir)
+  chmodSync(dir, 0o700)
+}
+
+const pidFilePath = (stateDir: string) => join(stateDir, 'demo.pid')
+
+/** A previous launcher that was killed hard (SIGKILL, power loss) cannot clean up. Its pid file
+ * names its children: refuse if that launcher is still running, otherwise kill the leftover
+ * process groups (only those whose command still looks like ours, since pids get reused). Returns
+ * a message per action; throws when another demo is running on this state dir. */
+export function cleanupStaleRun(stateDir: string): string[] {
+  const path = pidFilePath(stateDir)
+  if (!existsSync(path)) return []
+  const notes: string[] = []
+  try {
+    const rec = JSON.parse(readFileSync(path, 'utf8')) as {
+      launcher?: number
+      children?: Array<{ name: string; pid: number }>
+    }
+    if (rec.launcher && rec.launcher !== process.pid && isAlive(rec.launcher)) {
+      throw new DemoConfigError([
+        `another demo is already running on ${stateDir} (launcher pid ${rec.launcher}); stop it first (Ctrl-C)`,
+      ])
+    }
+    for (const c of rec.children ?? []) {
+      if (
+        Number.isInteger(c.pid) &&
+        c.pid > 1 &&
+        isAlive(c.pid) &&
+        STALE_MARKERS.test(commandOf(c.pid))
+      ) {
+        try {
+          process.kill(-c.pid, 'SIGKILL')
+        } catch {
+          try {
+            process.kill(c.pid, 'SIGKILL')
+          } catch {
+            /* gone */
+          }
+        }
+        notes.push(
+          `stopped a leftover ${c.name} (pid ${c.pid}) from a previous run that was killed`,
+        )
+      }
+    }
+  } catch (err) {
+    if (err instanceof DemoConfigError) throw err
+    /* unreadable pid file: ignore it */
+  }
+  try {
+    unlinkSync(path)
+  } catch {
+    /* already gone */
+  }
+  return notes
 }
 
 async function portIsFree(port: number): Promise<boolean> {
@@ -85,7 +176,8 @@ async function portIsFree(port: number): Promise<boolean> {
 export async function checkPrerequisites(config: DemoConfig): Promise<string[]> {
   const problems: string[] = []
   const major = Number(process.versions.node.split('.')[0])
-  if (major < 20) problems.push(`Node.js 20 or newer is required (this is ${process.versions.node})`)
+  if (major < 20)
+    problems.push(`Node.js 20 or newer is required (this is ${process.versions.node})`)
   if (!existsSync(RELAY_SCRIPT)) {
     problems.push(`relay launcher not found at ${RELAY_SCRIPT} (run from a full checkout)`)
   }
@@ -94,7 +186,9 @@ export async function checkPrerequisites(config: DemoConfig): Promise<string[]> 
     if (!existsSync(config.cashwebdBin)) {
       problems.push(`CASHWEBD_BIN does not exist: ${config.cashwebdBin}`)
     }
-  } else if (spawnSync('cargo', ['--version'], { env: { ...process.env, ...config.toolchainEnv } }).error) {
+  } else if (
+    spawnSync('cargo', ['--version'], { env: { ...process.env, ...config.toolchainEnv } }).error
+  ) {
     problems.push(
       'the relay is built with Cargo, but `cargo` was not found: install Rust (rustup.rs) or set CASHWEBD_BIN to a prebuilt cashwebd-exe',
     )
@@ -109,18 +203,24 @@ export async function checkPrerequisites(config: DemoConfig): Promise<string[]> 
     }
   }
   if (!(await portIsFree(config.relayPort))) {
-    problems.push(`port ${config.relayPort} is in use; is another demo (or relay) running? Set FRANK_DEMO_RELAY_PORT to use another`)
+    problems.push(
+      `port ${config.relayPort} is in use; is another demo (or relay) running? Set FRANK_DEMO_RELAY_PORT to use another`,
+    )
   }
   if (config.fakeChain && !(await portIsFree(config.fakeRpcPort))) {
-    problems.push(`port ${config.fakeRpcPort} is in use; set FRANK_DEMO_FAKE_RPC_PORT to use another`)
+    problems.push(
+      `port ${config.fakeRpcPort} is in use; set FRANK_DEMO_FAKE_RPC_PORT to use another`,
+    )
   }
   return problems
 }
 
 // `fetch` is global in the Node versions this runs on; the package's older @types/node omits it.
-const fetchFn = (globalThis as unknown as {
-  fetch: (url: string) => Promise<{ ok: boolean }>
-}).fetch
+const fetchFn = (
+  globalThis as unknown as {
+    fetch: (url: string) => Promise<{ ok: boolean }>
+  }
+).fetch
 
 async function relayIsUp(relayUrl: string): Promise<boolean> {
   try {
@@ -140,25 +240,92 @@ function tsxArgs(script: string): string[] {
   return ['--import', 'tsx', script]
 }
 
-export async function startDemo(config: DemoConfig, options: StartOptions = {}): Promise<DemoHandle> {
+export async function startDemo(
+  config: DemoConfig,
+  options: StartOptions = {},
+): Promise<DemoHandle> {
   const print = options.print ?? ((line: string) => console.log(line))
   const baseEnv = options.env ?? process.env
-  const problems = await checkPrerequisites(config)
-  if (problems.length > 0) throw new DemoConfigError(problems)
 
-  const logDir = join(config.stateDir, 'logs')
-  mkdirSync(config.stateDir, { recursive: true, mode: 0o700 })
-  mkdirSync(logDir, { recursive: true, mode: 0o700 })
-  const supervisor = new Supervisor(baseEnv, print)
+  // Everything that can fail or be interrupted from here on goes through one stop(): signal
+  // handlers are installed BEFORE the first child is spawned, so an interrupt at any point kills
+  // every child process group instead of orphaning them.
+  const unhealthy: string[] = []
+  let started = false
+  let exitCode: number | undefined
   let fakeRpc: FakeRpc | undefined
   let stopped: Promise<void> | undefined
-  const stop = () =>
+  let resolveDone: (code: number) => void = () => {}
+  const done = new Promise<number>(r => (resolveDone = r))
+
+  const supervisor: Supervisor = new Supervisor(baseEnv, print, (child: SupervisedChild) => {
+    unhealthy.push(child.name)
+    print('')
+    print('!!!!!!!! DEMO UNHEALTHY !!!!!!!!')
+    print(`!! ${child.name} exited and is NOT restarted; see ${child.logPath}`)
+    print('!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!')
+    if (child.name === 'relay' && started) {
+      print('[demo] the relay is gone, so the demo is unusable: stopping everything')
+      requestStop(1)
+    }
+  })
+
+  const stop = (): Promise<void> =>
     (stopped ??= (async () => {
+      removeGuards()
       await supervisor.stopAll()
       await fakeRpc?.close()
+      try {
+        unlinkSync(pidFilePath(config.stateDir))
+      } catch {
+        /* never written or already gone */
+      }
+      resolveDone(exitCode ?? 0)
     })())
+  function requestStop(code: number): void {
+    if (exitCode === undefined) exitCode = code
+    void stop()
+  }
 
+  const signalCodes: Record<string, number> = { SIGINT: 130, SIGTERM: 143, SIGHUP: 129 }
+  const onSignal = (signal: NodeJS.Signals) => {
+    print(`\n[demo] received ${signal}, stopping ...`)
+    requestStop(started ? 0 : signalCodes[signal])
+  }
+  const onFatal = (err: unknown) => {
+    print(`[demo] unexpected error: ${err instanceof Error ? err.message : String(err)}`)
+    requestStop(1)
+  }
+  const onExit = () => supervisor.killAllNow() // last resort, synchronous
+  const signals = Object.keys(signalCodes) as NodeJS.Signals[]
+  for (const sig of signals) process.on(sig, onSignal)
+  process.on('uncaughtException', onFatal)
+  process.on('unhandledRejection', onFatal)
+  process.on('exit', onExit)
+  function removeGuards(): void {
+    for (const sig of signals) process.off(sig, onSignal)
+    process.off('uncaughtException', onFatal)
+    process.off('unhandledRejection', onFatal)
+    process.off('exit', onExit)
+  }
+  const abortIfStopping = () => {
+    if (supervisor.isStopping()) throw new DemoAborted(exitCode ?? 1)
+  }
+  const writePidFile = () =>
+    writeFileSync(
+      pidFilePath(config.stateDir),
+      JSON.stringify({ launcher: process.pid, children: supervisor.listPids() }),
+      { mode: 0o600 },
+    )
+
+  const logDir = join(config.stateDir, 'logs')
   try {
+    prepareStateDir(config.stateDir)
+    for (const note of cleanupStaleRun(config.stateDir)) print(`[demo] ${note}`)
+    const problems = await checkPrerequisites(config)
+    if (problems.length > 0) throw new DemoConfigError(problems)
+    prepareStateDir(logDir)
+
     if (config.fakeChain) {
       const walletPaths = new Set([
         config.mainWalletJson,
@@ -193,13 +360,20 @@ export async function startDemo(config: DemoConfig, options: StartOptions = {}):
       const spec = BOT_PROFILES.find(s => s.key === bot.name)
       if (spec) identityEnv[spec.identityEnv] = bot.identityJson
     }
-    const curatedToml = renderCuratedDefaultsToml(
-      botCuratedEntries(identityEnv, (path, label) => loadOrCreateIdentity(path, label)),
+    const curated = collectCuratedEntries(identityEnv, (path, label) =>
+      loadOrCreateIdentity(path, label),
     )
+    if (curated.errors.length > 0 && Object.keys(identityEnv).length > 0) {
+      throw new DemoConfigError(curated.errors)
+    }
+    const curatedToml = renderCuratedDefaultsToml(curated.entries)
     const curatedPath = join(config.stateDir, 'relay-curated.toml')
     writeFileSync(curatedPath, curatedToml, { mode: 0o600 })
-    print('[demo] curated default contacts for the relay config (already applied to this demo relay):')
+    print(
+      '[demo] curated default contacts for the relay config (already applied to this demo relay):',
+    )
     print(curatedToml.trimEnd())
+    abortIfStopping()
 
     const relayDb = join(config.stateDir, 'relay', 'registry.rocksdb')
     mkdirSync(dirname(relayDb), { recursive: true, mode: 0o700 })
@@ -221,6 +395,7 @@ export async function startDemo(config: DemoConfig, options: StartOptions = {}):
         ...config.toolchainEnv,
       },
     })
+    writePidFile()
     print(
       config.cashwebdBin
         ? '[demo] starting the relay ...'
@@ -228,17 +403,27 @@ export async function startDemo(config: DemoConfig, options: StartOptions = {}):
     )
     const relayDeadline = Date.now() + (options.relayTimeoutS ?? 1800) * 1000
     while (!(await relayIsUp(config.relayUrl))) {
+      abortIfStopping()
       if (relay.hasExited()) {
         throw new DemoConfigError([
           `the relay exited during startup. Last output (${join(logDir, 'relay.log')}):`,
-          ...relay.tail().slice(-15).map(l => `  ${redact(l, config.secrets)}`),
+          ...relay
+            .tail()
+            .slice(-15)
+            .map(l => `  ${redact(l, config.secrets)}`),
         ])
       }
       if (Date.now() > relayDeadline) {
-        throw new DemoConfigError([`the relay did not answer on ${config.relayUrl} in time; see ${join(logDir, 'relay.log')}`])
+        throw new DemoConfigError([
+          `the relay did not answer on ${config.relayUrl} in time; see ${join(
+            logDir,
+            'relay.log',
+          )}`,
+        ])
       }
-      await sleep(500)
+      await sleep(options.pollMs ?? 500)
     }
+    abortIfStopping()
     print(`[demo] relay is up at ${config.relayUrl}`)
 
     const readyLines = new Set<string>()
@@ -255,11 +440,13 @@ export async function startDemo(config: DemoConfig, options: StartOptions = {}):
           if (bot.readyLine.test(line)) readyLines.add(bot.name)
         },
       })
+      writePidFile()
     }
 
     const botDeadline = Date.now() + (options.botTimeoutS ?? 240) * 1000
     const waiting = new Set<DemoBot>(config.bots)
     while (waiting.size > 0) {
+      abortIfStopping()
       const registered = await registeredAddresses(config.relayUrl).catch(() => new Set<string>())
       for (const bot of [...waiting]) {
         const address = addresses[bot.name]?.toLowerCase()
@@ -271,21 +458,39 @@ export async function startDemo(config: DemoConfig, options: StartOptions = {}):
         }
       }
       if (waiting.size === 0) break
-      const dead = [...waiting].find(b => supervisor['children'].find(c => c.name === b.name)?.hasExited())
+      const dead = [...waiting].find(b => supervisor.get(b.name)?.hasExited())
       if (dead || Date.now() > botDeadline) {
         const name = (dead ?? [...waiting][0]).name
-        const child = supervisor['children'].find(c => c.name === name)
+        const child = supervisor.get(name)
         throw new DemoConfigError([
-          `${name} did not become ready${dead ? ' (it exited)' : ' in time'}. Last output (${join(logDir, `${name}.log`)}):`,
-          ...(child?.tail().slice(-15).map(l => `  ${redact(l, config.secrets)}`) ?? []),
+          `${name} did not become ready${dead ? ' (it exited)' : ' in time'}. Last output (${join(
+            logDir,
+            `${name}.log`,
+          )}):`,
+          ...(child
+            ?.tail()
+            .slice(-15)
+            .map(l => `  ${redact(l, config.secrets)}`) ?? []),
         ])
       }
-      await sleep(1000)
+      await sleep(options.pollMs ?? 1000)
     }
+    abortIfStopping()
 
-    return { config, relayUrl: config.relayUrl, addresses, fakeRpc, logDir, stop }
+    started = true
+    return {
+      config,
+      relayUrl: config.relayUrl,
+      addresses,
+      fakeRpc,
+      logDir,
+      stop,
+      done,
+      unhealthy: () => [...unhealthy],
+    }
   } catch (err) {
-    await stop()
+    requestStop(err instanceof DemoAborted ? err.exitCode : 1)
+    await done
     throw err
   }
 }
@@ -296,7 +501,13 @@ export function printSummary(handle: DemoHandle, print: (line: string) => void):
   print('')
   print('Frank demo is running.')
   print(`  Relay:   ${handle.relayUrl}`)
-  print(`  Chain:   ${config.fakeChain ? `FAKE chain at ${config.rpcUrl} (no real funds)` : 'Monad testnet (RPC URL hidden)'}`)
+  print(
+    `  Chain:   ${
+      config.fakeChain
+        ? `FAKE chain at ${config.rpcUrl} (no real funds)`
+        : 'Monad testnet (RPC URL hidden)'
+    }`,
+  )
   print(`  State:   ${config.stateDir}   Logs: ${handle.logDir}`)
   print('  Bots:')
   for (const bot of config.bots) {
@@ -315,10 +526,15 @@ export function printSummary(handle: DemoHandle, print: (line: string) => void):
   print(
     `      QCLI_MONAD_STAMP_BURN_ADDRESS=0x000000000000000000000000000000000000dEaD QCLI_CASHWEB_STAMP_MIN_BURN_VALUE_WEI=${config.minStampWei} yarn dev:browser`,
   )
+  const bad = handle.unhealthy()
+  if (bad.length > 0) print(`  UNHEALTHY: ${bad.join(', ')} exited (see the logs above)`)
   print('Press Ctrl-C to stop everything.')
 }
 
-export async function main(argv: string[], env: Record<string, string | undefined>): Promise<number> {
+export async function main(
+  argv: string[],
+  env: Record<string, string | undefined>,
+): Promise<number> {
   const print = (line: string) => console.log(line)
   try {
     const envFilePath = env.FRANK_DEMO_ENV_FILE
@@ -333,16 +549,11 @@ export async function main(argv: string[], env: Record<string, string | undefine
     })
     const handle = await startDemo(config, { print, env })
     printSummary(handle, print)
-    await new Promise<void>(resolveSignal => {
-      const onSignal = () => resolveSignal()
-      process.once('SIGINT', onSignal)
-      process.once('SIGTERM', onSignal)
-    })
-    print('\n[demo] stopping ...')
-    await handle.stop()
+    const code = await handle.done
     print('[demo] stopped.')
-    return 0
+    return code
   } catch (err) {
+    if (err instanceof DemoAborted) return err.exitCode
     if (err instanceof DemoConfigError || err instanceof EnvFileError) {
       console.error('Frank demo cannot start:')
       for (const line of err.message.split('\n')) console.error(`  ${line}`)

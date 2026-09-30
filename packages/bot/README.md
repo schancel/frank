@@ -56,8 +56,9 @@ to skip the Cargo build.
 | `FRANK_NETWORK_TAG` | chain | MONT | Network tag the relay and bots stamp messages with (MONT = Monad testnet). |
 | `CASHWEB_STAMP_MIN_BURN_VALUE_WEI` | relay | 1000000000000 | Minimum wei a message stamp must pay (0.000001 MON). |
 | `FRANK_DM_DEFAULT_STAMP_VALUE_WEI` | bots | 10000000000000000 | Default stamp value bots pay per message (0.01 MON). |
-| `E2E_DEMO_MAIN_WALLET_JSON` | wallet | required unless fake chain | Path of a JSON file {"address","privateKey"} of a funded TESTNET wallet that pays for bot stamps and payouts. Read by the bots, never by the launcher. chmod 600. Secret: never printed. |
-| `FRANK_DEMO_FAUCET_WALLET_JSON` | wallet | same as E2E_DEMO_MAIN_WALLET_JSON | Optional separate wallet file for the faucet. Recommended on a real network: two processes sending from one wallet reuse nonces. Secret: never printed. |
+| `E2E_DEMO_MAIN_WALLET_JSON` | wallet | required unless fake chain | Not allowed with --fake-chain (a throwaway wallet is generated). Path of a JSON file {"address","privateKey"} of a funded TESTNET wallet that pays for bot stamps and payouts. Read by the bots, never by the launcher. chmod 600. Secret: never printed. |
+| `FRANK_DEMO_FAUCET_WALLET_JSON` | wallet | required on a real network unless FRANK_DEMO_NO_FAUCET=1 | Path of a SEPARATE funded testnet wallet file for the faucet (it must differ from E2E_DEMO_MAIN_WALLET_JSON: two processes sending from one wallet reuse nonces, and the faucet should not hold the stamp wallet). Not allowed with --fake-chain. Secret: never printed. |
+| `FRANK_DEMO_NO_FAUCET` | faucet | 0 | Set to 1 to run without the faucet on a real network. |
 | `QWEN_API_KEY` | qwen | unset = stub mode | Set to run the Qwen bot against a real model (needs QWEN_OPENAI_COMPATIBLE_ENDPOINT). Unset: the bot runs in offline STUB mode and its replies say so. Secret: never printed. |
 | `QWEN_OPENAI_COMPATIBLE_ENDPOINT` | qwen | required with QWEN_API_KEY | OpenAI-compatible base URL of the model provider. |
 | `QWEN_MODEL` | qwen | qwen3.8-max | Model name for live mode. |
@@ -72,6 +73,17 @@ to skip the Cargo build.
 | `FAUCET_MIN_RESERVE_WEI` | faucet | 100000000000000000 | The faucet wallet keeps at least this balance. |
 | `FRANK_BOT_PEER_DENYLIST` | bots | empty | Comma-separated addresses no bot engages. |
 | `FRANK_BOT_MAX_REPLIES_PER_PEER` | bots | 20 | Per-peer reply budget per window. |
+
+Hard kills: Ctrl-C, SIGTERM, SIGHUP, a crash and the relay dying all stop every child process
+group. A `kill -9` of the launcher (or a power loss) cannot be handled; the launcher records its
+children in `<state dir>/demo.pid`, and the next `yarn demo` on the same state dir stops any
+leftovers of that run (and refuses to start while the previous launcher is still alive).
+
+A child that dies after startup is not restarted: a banner names it and its log, and the
+summary is marked UNHEALTHY. If the relay dies the launcher stops everything and exits non-zero.
+
+The blackjack smoke check only proves the dealer answers a bare `deal` with its tagged error; it
+does not play a hand.
 
 The fake chain is a ledger, not a chain: it accepts any well-formed transaction and mines it
 instantly, so it demonstrates flows, not consensus. Never point anything of value at it.

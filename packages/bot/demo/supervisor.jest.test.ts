@@ -86,7 +86,14 @@ describe('Supervisor', () => {
   it('does not report the exits it caused itself', async () => {
     const printed: string[] = []
     const sup = new Supervisor({ PATH: process.env.PATH }, l => printed.push(l))
-    sup.start({ name: 'z', command: 'sleep', args: ['30'], cwd: dir, env: {}, logPath: join(dir, 'z.log') })
+    sup.start({
+      name: 'z',
+      command: 'sleep',
+      args: ['30'],
+      cwd: dir,
+      env: {},
+      logPath: join(dir, 'z.log'),
+    })
     await sup.stopAll(1000)
     await sleep(50)
     expect(printed).toEqual([])

@@ -15,7 +15,10 @@ describe('demo launcher', () => {
   afterEach(() => jest.restoreAllMocks())
 
   it('prints one clear line per missing setting and exits 1, with no stack trace', async () => {
-    const code = await main([], { FRANK_DEMO_ENV_FILE: '/nonexistent/dummy.env', PATH: process.env.PATH })
+    const code = await main([], {
+      FRANK_DEMO_ENV_FILE: '/nonexistent/dummy.env',
+      PATH: process.env.PATH,
+    })
     expect(code).toBe(1)
     const out = errors.join('\n')
     expect(out).toContain('Frank demo cannot start:')
@@ -30,7 +33,10 @@ describe('demo launcher', () => {
     const { join } = await import('path')
     const dir = mkdtempSync(join(tmpdir(), 'demo-env-'))
     try {
-      writeFileSync(join(dir, 'dummy.env'), 'FRANK_NETWORK_TAG=MONT\nthis line has sekret-token-9 in it\n')
+      writeFileSync(
+        join(dir, 'dummy.env'),
+        'FRANK_NETWORK_TAG=MONT\nthis line has sekret-token-9 in it\n',
+      )
       const code = await main([], { FRANK_DEMO_ENV_FILE: join(dir, 'dummy.env') })
       expect(code).toBe(1)
       expect(errors.join('\n')).toContain('line 2 is not KEY=value')
@@ -72,7 +78,9 @@ describe('demo launcher', () => {
     process.env.PATH = '/nonexistent'
     try {
       const problems = await checkPrerequisites(config)
-      expect(problems.some(p => p.includes('`cargo` was not found') && p.includes('CASHWEBD_BIN'))).toBe(true)
+      expect(
+        problems.some(p => p.includes('`cargo` was not found') && p.includes('CASHWEBD_BIN')),
+      ).toBe(true)
     } finally {
       process.env.PATH = savedPath
     }

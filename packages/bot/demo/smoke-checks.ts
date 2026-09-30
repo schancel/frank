@@ -3,8 +3,6 @@
  * bot and the reply is verified by kind. `classifyReply` is pure (unit-tested); `runSmokeChecks`
  * drives the real relay and bots.
  */
-import { Transaction, hexlify } from 'ethers'
-
 import {
   parseEnvelope,
   sameMonadEnvelopeAddress,
@@ -19,11 +17,7 @@ import {
   MonadIdentity,
 } from '@frank/wallet/monad-identity'
 
-import {
-  registerAndLog,
-  sendDirectMessageItems,
-  setUpFundedStampClient,
-} from '../qwen-bot-common'
+import { registerAndLog, sendDirectMessageItems, setUpFundedStampClient } from '../qwen-bot-common'
 import { STUB_REPLY_PREFIX } from '../qwen-reply'
 import { DemoHandle } from './demo'
 
@@ -37,7 +31,10 @@ export interface SmokeCheck {
 export function classifyReply(bot: string, items: MessageItem[]): SmokeCheck {
   const text = items.find(i => i.type === 'text') as { text: string } | undefined
   const kind = (type: string, action?: string) =>
-    items.find(i => i.type === type && (action === undefined || (i as { action?: string }).action === action))
+    items.find(
+      i =>
+        i.type === type && (action === undefined || (i as { action?: string }).action === action),
+    )
   switch (bot) {
     case 'qwen':
       return text?.text.startsWith(STUB_REPLY_PREFIX)
@@ -65,7 +62,16 @@ export function classifyReply(bot: string, items: MessageItem[]): SmokeCheck {
 }
 
 function describe(items: MessageItem[]): string {
-  return items.map(i => `${i.type}${(i as { action?: string }).action ? `:${(i as { action?: string }).action}` : ''}`).join(',') || 'nothing'
+  return (
+    items
+      .map(
+        i =>
+          `${i.type}${
+            (i as { action?: string }).action ? `:${(i as { action?: string }).action}` : ''
+          }`,
+      )
+      .join(',') || 'nothing'
+  )
 }
 
 const PROMPTS: Record<string, MessageItem[]> = {
@@ -73,6 +79,8 @@ const PROMPTS: Record<string, MessageItem[]> = {
   vendor: [{ type: 'text', text: 'hello' }],
   raffle: [{ type: 'text', text: 'hello' }],
   // A bare "deal" needs no wager: the dealer answers it with a tagged error, proving it is live.
+  // This is ALL the blackjack smoke check proves: a full hand (wager transfer, bet, hit/stand,
+  // payout) is not played here, so the dealer's game logic is covered by its unit tests only.
   blackjack: [{ type: 'blackjack-move', gameId: 'smoke-game', action: 'deal' }],
 }
 
@@ -89,13 +97,14 @@ export async function runSmokeChecks(
   await registerAndLog({ relayBaseUrl: relayUrl, identity: human, label: 'smoke-user', bot: false })
 
   const stampValueWei = BigInt(config.minStampWei) * 10n
-  const { stampClient, mainAccountSigner, provider, pool, closePool } = await setUpFundedStampClient({
-    rpcUrl: config.rpcUrl,
-    relayBaseUrl: relayUrl,
-    mainWalletJsonPath: config.mainWalletJson,
-    stampValueWei,
-    label: 'smoke-user',
-  })
+  const { stampClient, mainAccountSigner, provider, pool, closePool } =
+    await setUpFundedStampClient({
+      rpcUrl: config.rpcUrl,
+      relayBaseUrl: relayUrl,
+      mainWalletJsonPath: config.mainWalletJson,
+      stampValueWei,
+      label: 'smoke-user',
+    })
 
   const botKeys: Record<string, Buffer> = {}
   try {
@@ -145,9 +154,6 @@ export async function runSmokeChecks(
           senderPubKey: botKeys[bot],
         })
         if (plaintext === undefined) continue
-        // The stamp payments are real transactions on the fake chain; touching them proves the
-        // reply carried a stamp the relay verified.
-        void row.message.stampPayments.map(p => Transaction.from(hexlify(p.rawTx)).hash)
         const verdict = classifyReply(bot, deserializeMessageItems(plaintext))
         lastDetail.set(bot, verdict)
         if (verdict.ok) results.set(bot, verdict)
@@ -159,7 +165,11 @@ export async function runSmokeChecks(
       if (!results.has(bot)) {
         results.set(
           bot,
-          lastDetail.get(bot) ?? { name: bot, ok: false, detail: `no reply within ${options.timeoutMs}ms` },
+          lastDetail.get(bot) ?? {
+            name: bot,
+            ok: false,
+            detail: `no reply within ${options.timeoutMs}ms`,
+          },
         )
       }
     }

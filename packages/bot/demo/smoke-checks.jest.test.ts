@@ -17,7 +17,11 @@ describe('classifyReply', () => {
       {
         type: 'digital-goods',
         action: 'catalog',
-        catalog: Array.from({ length: n }, (_, i) => ({ itemId: `i${i}`, description: 'd', priceWei: '1' })),
+        catalog: Array.from({ length: n }, (_, i) => ({
+          itemId: `i${i}`,
+          description: 'd',
+          priceWei: '1',
+        })),
       },
     ]
     expect(classifyReply('vendor', catalog(2)).ok).toBe(true)
@@ -26,8 +30,12 @@ describe('classifyReply', () => {
   })
 
   it('raffle must announce a round', () => {
-    expect(classifyReply('raffle', [{ type: 'raffle', raffleId: 'r', action: 'announce' }]).ok).toBe(true)
-    expect(classifyReply('raffle', [{ type: 'raffle', raffleId: 'r', action: 'draw' }]).ok).toBe(false)
+    expect(
+      classifyReply('raffle', [{ type: 'raffle', raffleId: 'r', action: 'announce' }]).ok,
+    ).toBe(true)
+    expect(classifyReply('raffle', [{ type: 'raffle', raffleId: 'r', action: 'draw' }]).ok).toBe(
+      false,
+    )
   })
 
   it('blackjack must return the tagged dealer error', () => {

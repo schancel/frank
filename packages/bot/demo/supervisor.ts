@@ -39,10 +39,40 @@ export class Supervisor {
   private readonly children: SupervisedChild[] = []
   private stopping = false
 
+  isStopping(): boolean {
+    return this.stopping
+  }
+
   constructor(
     private readonly baseEnv: Record<string, string | undefined>,
     private readonly print: (line: string) => void = line => console.log(line),
+    /** Called when a child exits while the supervisor is not stopping (never after stopAll). */
+    private readonly onUnexpectedExit: (child: SupervisedChild, status: string) => void = () => {},
   ) {}
+
+  get(name: string): SupervisedChild | undefined {
+    return this.children.find(c => c.name === name)
+  }
+
+  /** `{name, pid}` of every child started (the pid is also its process-group id). */
+  listPids(): Array<{ name: string; pid: number }> {
+    return this.children.flatMap(c =>
+      c.proc.pid === undefined ? [] : [{ name: c.name, pid: c.proc.pid }],
+    )
+  }
+
+  /** Synchronous, best-effort SIGKILL of every child's process group: for `process.on('exit')`,
+   * where nothing asynchronous can run. */
+  killAllNow(): void {
+    for (const c of this.children) {
+      if (c.hasExited() || c.proc.pid === undefined) continue
+      try {
+        process.kill(-c.proc.pid, 'SIGKILL')
+      } catch {
+        /* already gone */
+      }
+    }
+  }
 
   start(params: {
     name: string
@@ -107,6 +137,7 @@ export class Supervisor {
         this.print(
           `[demo] ${params.name} exited unexpectedly (${status}); last output in ${params.logPath}`,
         )
+        this.onUnexpectedExit(child, status)
       }
     })
     return child

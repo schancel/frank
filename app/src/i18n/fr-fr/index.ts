@@ -22,6 +22,13 @@ export default {
     emojiPickerTitle: 'Choisir un emoji',
     stampPrice: 'Prix du timbre',
   },
+  leftDrawer: {
+    settings: 'Paramètres',
+    contacts: 'Contacts',
+    forum: 'Forum',
+    contactsUnreadOne: 'Contacts, {count} message non lu',
+    contactsUnreadOther: 'Contacts, {count} messages non lus',
+  },
   chatList: {
     noContactMessage: 'Add contacts from the drawer above...', //----
     balance: 'Crédit',
@@ -102,7 +109,9 @@ export default {
   newContactDialog: {
     newContact: 'Nouveau contact',
     enterBitcoinCashAddress: 'Entrez une adresse Lotus...',
+    loading: 'Recherche du contact',
     notFound: 'Non trouvé',
+    found: 'Contact trouvé : {name}',
   },
   newTopicDialog: {
     newTopic: 'Créer un nouveau topic',
@@ -126,6 +135,7 @@ export default {
   },
   receiveBitcoinDialog: {
     walletStatus: 'Etat du wallet',
+    balanceUnavailable: 'Solde indisponible. Nouvelle tentative.',
     addressCopied: 'Adresse copiée dans le presse papier',
   },
   sendAddressDialog: {
@@ -193,6 +203,8 @@ export default {
       "L'image de votre avatar est trop volumineuse, choisissez en une plus petite.",
     unableContactRelay: 'Impossible de contacter le serveur-relai.',
     pushingProfile: 'Envoi du nouveau profil..',
+    invalidName:
+      'Saisissez un nom public : 1 à 128 caractères, sans caractères de contrôle.',
     profile: 'Profil',
   },
   wipeWallet: {

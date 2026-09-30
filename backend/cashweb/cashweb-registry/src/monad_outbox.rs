@@ -1117,14 +1117,13 @@ async fn replay_member<T: JsonRpcTransport + Clone>(
                 submitted.tx_hash, tx_hash
             ))
         }
-        Ok(_) | Err(MonadRpcError::AlreadyKnown { .. }) => (false, true),
+        Ok(_) => (false, true),
+        Err(err) if err.says_tx_already_held() => (false, true),
         Err(MonadRpcError::NonceTooLow { .. }) => (true, false),
-        // Only a node-stated rejection means the transaction was not accepted.
-        Err(
-            err @ (MonadRpcError::InsufficientFunds { .. }
-            | MonadRpcError::ReplacementUnderpriced { .. }
-            | MonadRpcError::Rpc { .. }),
-        ) => return MemberOutcome::Pending(err.to_string()),
+        // Only a node-stated (or gateway-refused) rejection proves it was not accepted.
+        Err(err) if err.definitively_rejected_send() => {
+            return MemberOutcome::Pending(err.to_string())
+        }
         // Transport errors, HTTP failures and unparsable responses do not tell us whether the
         // node accepted the transaction: ambiguous.
         Err(err) => return MemberOutcome::Submitted(err.to_string()),
@@ -3617,7 +3616,7 @@ mod tests {
         let hash = Hash32(Keccak256::digest(&request.stamp_payments[0].raw_tx).into());
         let mut config = fast_config();
         config.rpc_timeout = Duration::from_millis(50);
-        config.limits.max_unconfirmed_claim_age = Duration::from_millis(1_500);
+        config.limits.max_unconfirmed_claim_age = Duration::from_millis(3_000);
         registry.claim_monad_outbox(&request, &policy, now_ms(), &config.limits)?;
         assert_eq!(
             reconcile_monad_outbox(&transport, &registry, &request.payload_hash, &config).await?,
@@ -3627,7 +3626,7 @@ mod tests {
             .monad_outbox_member(&request.payload_hash, 0)?
             .unwrap();
         assert_eq!((member.attempts, member.exposed), (1, true));
-        tokio::time::sleep(Duration::from_millis(1_600)).await;
+        tokio::time::sleep(Duration::from_millis(3_100)).await;
         assert_eq!(
             reconcile_monad_outbox(&transport, &registry, &request.payload_hash, &config).await?,
             MonadOutboxReconcileOutcome::Terminal(MonadOutboxTerminal::Expired)
@@ -3648,7 +3647,9 @@ mod tests {
         for (behavior, expect_exposed) in [
             (SendBehavior::UnparsableReply, true),
             (SendBehavior::InsufficientFunds, false),
-            (SendBehavior::RpcFailure, false),
+            (SendBehavior::ReplacementUnderpriced, false),
+            // An unrecognised JSON-RPC error is ambiguous, not a definitive rejection.
+            (SendBehavior::RpcFailure, true),
         ] {
             let tempdir = tempdir::TempDir::new("monad-outbox-send-classification")?;
             let registry = registry(&tempdir.path().join("db.rocksdb"));
@@ -3662,6 +3663,67 @@ mod tests {
             assert_eq!(member.attempts, 1);
             assert_eq!(member.exposed, expect_exposed, "{behavior:?}");
         }
+        Ok(())
+    }
+
+    /// An ambiguous attempt followed by a definitive rejection stays exposed (the prior attempt may
+    /// have been accepted), so the claim is retained at expiry.
+    #[tokio::test]
+    async fn prior_ambiguous_attempt_survives_a_later_definitive_rejection() -> Result<()> {
+        let tempdir = tempdir::TempDir::new("monad-outbox-hang-then-reject")?;
+        let registry = registry(&tempdir.path().join("db.rocksdb"));
+        let (request, policy, transport) = fixture(&[SendBehavior::Hang], &[false]);
+        let hash = Hash32(Keccak256::digest(&request.stamp_payments[0].raw_tx).into());
+        let mut config = fast_config();
+        config.rpc_timeout = Duration::from_millis(50);
+        config.limits.max_unconfirmed_claim_age = Duration::from_millis(3_000);
+        registry.claim_monad_outbox(&request, &policy, now_ms(), &config.limits)?;
+        reconcile_monad_outbox(&transport, &registry, &request.payload_hash, &config).await?;
+        transport.set_send(hash, SendBehavior::InsufficientFunds);
+        reconcile_monad_outbox(&transport, &registry, &request.payload_hash, &config).await?;
+        let member = registry
+            .monad_outbox_member(&request.payload_hash, 0)?
+            .unwrap();
+        assert_eq!((member.attempts, member.exposed), (2, true));
+        tokio::time::sleep(Duration::from_millis(3_100)).await;
+        assert_eq!(
+            reconcile_monad_outbox(&transport, &registry, &request.payload_hash, &config).await?,
+            MonadOutboxReconcileOutcome::Terminal(MonadOutboxTerminal::Expired)
+        );
+        assert_eq!(
+            registry
+                .confirmed_monad_outbox_prefixes(policy.recipient, 10)?
+                .len(),
+            1
+        );
+        Ok(())
+    }
+
+    /// A nonce-too-low reply is verified by `prove_stale_nonce` (account nonce lookup) instead of
+    /// being reported pending immediately.
+    #[tokio::test]
+    async fn nonce_too_low_is_verified_through_the_account_nonce() -> Result<()> {
+        let tempdir = tempdir::TempDir::new("monad-outbox-nonce-low-proof")?;
+        let registry = registry(&tempdir.path().join("db.rocksdb"));
+        let (request, policy, transport) = fixture(&[SendBehavior::NonceTooLow], &[false]);
+        let config = fast_config();
+        registry.claim_monad_outbox(&request, &policy, now_ms(), &config.limits)?;
+        reconcile_monad_outbox(&transport, &registry, &request.payload_hash, &config).await?;
+        assert!(
+            transport
+                .calls()
+                .iter()
+                .any(|method| method == "eth_getTransactionCount"),
+            "calls: {:?}",
+            transport.calls()
+        );
+        let member = registry
+            .monad_outbox_member(&request.payload_hash, 0)?
+            .unwrap();
+        assert!(
+            !member.exposed,
+            "a nonce-too-low reply is not an acceptance"
+        );
         Ok(())
     }
 
@@ -3720,7 +3782,6 @@ mod tests {
         // the recipient's recovery slot reserved until an acknowledgement that never comes.
         for (seed, behavior) in [
             (b"unfunded".as_slice(), SendBehavior::InsufficientFunds),
-            (b"rpc outage".as_slice(), SendBehavior::RpcFailure),
             (
                 b"underpriced".as_slice(),
                 SendBehavior::ReplacementUnderpriced,

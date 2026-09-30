@@ -1,0 +1,333 @@
+// Stage 9: semantic checks that need no cryptography (README section 5, S3-S10, T3a.5).
+import { FrankCodecError } from './errors'
+import type {
+  AccountRef,
+  DirectoryStatement,
+  FinalPayload,
+  KeyTransitionStatement,
+  ParsedFrame,
+  Timestamp,
+} from './types'
+
+const semantic = (message: string, location = 'root'): FrankCodecError =>
+  new FrankCodecError('semantic', '9', message, location)
+
+/** S1a: unsigned byte-wise lexicographic comparison; a shorter equal prefix sorts first. */
+export function compareBytes(a: Uint8Array, b: Uint8Array): number {
+  const n = Math.min(a.length, b.length)
+  for (let i = 0; i < n; i++) {
+    if (a[i] !== b[i]) return a[i] < b[i] ? -1 : 1
+  }
+  return a.length === b.length ? 0 : a.length < b.length ? -1 : 1
+}
+
+function cmpNum(a: number | bigint, b: number | bigint): number {
+  return a < b ? -1 : a > b ? 1 : 0
+}
+
+/** S2: account references are ordered by (key_type, key_bytes). */
+export function compareAccounts(a: AccountRef, b: AccountRef): number {
+  return cmpNum(a.keyType, b.keyType) || compareBytes(a.keyBytes, b.keyBytes)
+}
+
+export function accountsEqual(a: AccountRef, b: AccountRef): boolean {
+  return compareAccounts(a, b) === 0
+}
+
+function compareTimestamps(a: Timestamp, b: Timestamp): number {
+  return cmpNum(a.seconds, b.seconds) || cmpNum(a.nanoseconds, b.nanoseconds)
+}
+
+/** Requires `items` ascending under `cmp`; `strict` also rejects equal neighbours. */
+function requireOrdered<T>(
+  items: readonly T[],
+  cmp: (a: T, b: T) => number,
+  what: string,
+  location: string,
+  strict: boolean,
+): void {
+  for (let i = 1; i < items.length; i++) {
+    const c = cmp(items[i - 1], items[i])
+    if (c > 0 || (strict && c === 0)) {
+      throw semantic(
+        `${what} not in ascending${
+          strict ? ' unique' : ''
+        } order at index ${i}`,
+        location,
+      )
+    }
+  }
+}
+
+function requireUnique(
+  keys: readonly Uint8Array[],
+  what: string,
+  location: string,
+): void {
+  const seen = new Set<string>()
+  for (const k of keys) {
+    let s = ''
+    for (let i = 0; i < k.length; i++)
+      s += (k[i] < 16 ? '0' : '') + k[i].toString(16)
+    if (seen.has(s)) throw semantic(`duplicate ${what}`, location)
+    seen.add(s)
+  }
+}
+
+function typedOf<T extends FinalPayload['type']>(
+  f: ParsedFrame,
+  type: T,
+): Extract<FinalPayload, { type: T }> {
+  const t = f.typed
+  if (!t || t.type !== type)
+    throw new Error(`internal: expected an opened type-${type} frame`)
+  return t as Extract<FinalPayload, { type: T }>
+}
+
+/**
+ * Runs the stage 9 checks of one frame after its children have finished. `prior` is the
+ * context's prior statement (type 2 only); `undefined` means the caller supplied none.
+ */
+export function checkSemantics(
+  typed: FinalPayload,
+  prior: DirectoryStatement<ParsedFrame> | null | undefined,
+): void {
+  const P = 'root/payload'
+  switch (typed.type) {
+    case 1: {
+      const child = typedOf(typed.payloadFrame, 5)
+      const pays = typed.payments
+      requireOrdered(
+        pays,
+        (a, b) =>
+          cmpNum(a.childIndex, b.childIndex) ||
+          compareBytes(a.transactionId, b.transactionId),
+        'payment members',
+        `${P}.4`,
+        false,
+      )
+      const seenIdx = new Set<number>()
+      for (const p of pays) {
+        if (seenIdx.has(p.childIndex))
+          throw semantic('duplicate child index', `${P}.4`)
+        seenIdx.add(p.childIndex)
+      }
+      requireUnique(
+        pays.map(p => p.transactionId),
+        'transaction id',
+        `${P}.4`,
+      )
+      if (typed.network !== child.network) {
+        throw semantic(
+          'delivery network differs from the type-5 network (S8)',
+          `${P}.0`,
+        )
+      }
+      if (!accountsEqual(typed.destination, child.recipient)) {
+        throw semantic(
+          'destination differs from the type-5 recipient (S8)',
+          `${P}.1`,
+        )
+      }
+      if (typed.destination.keyType !== 1) {
+        throw semantic('destination account must be key type 1 (S9)', `${P}.1`)
+      }
+      requireUnique(
+        pays.map(p => p.address),
+        'payment address',
+        `${P}.4`,
+      )
+      pays.forEach((p, i) => {
+        if (p.childIndex !== i) {
+          throw semantic(
+            'child indices must be exactly contiguous 0..n-1 (T3a.5)',
+            `${P}.4[${i}]`,
+          )
+        }
+      })
+      return
+    }
+    case 2: {
+      const st = typedOf(typed.statementFrame, 4)
+      requireOrdered(
+        typed.signatures,
+        (a, b) =>
+          cmpNum(a.algorithm, b.algorithm) ||
+          compareAccounts(a.signer, b.signer),
+        'signatures',
+        `${P}.1`,
+        true,
+      )
+      if (prior === undefined)
+        throw new Error('internal: type-2 semantics need the prior slot')
+      if (!typed.signatures.some(s => accountsEqual(s.signer, st.subject))) {
+        throw semantic(
+          'no signature entry is signed by the statement subject',
+          `${P}.1`,
+        )
+      }
+      checkDirectoryUpdate(st, prior)
+      return
+    }
+    case 3: {
+      requireOrdered(
+        typed.facts,
+        (a, b) =>
+          compareTimestamps(a.timestamp, b.timestamp) ||
+          compareBytes(a.factId, b.factId),
+        'journal facts',
+        `${P}.4`,
+        false,
+      )
+      requireUnique(
+        typed.facts.map(f => f.factId),
+        'fact_id',
+        `${P}.4`,
+      )
+      if (typed.sections) {
+        requireOrdered(
+          typed.sections,
+          (a, b) =>
+            cmpNum(a.sectionType, b.sectionType) ||
+            cmpNum(a.sectionSchemaVersion, b.sectionSchemaVersion),
+          'opaque sections',
+          `${P}.5`,
+          false,
+        )
+        const seen = new Set<number>()
+        for (const s of typed.sections) {
+          if (seen.has(s.sectionType))
+            throw semantic('duplicate section_type', `${P}.5`)
+          seen.add(s.sectionType)
+        }
+      }
+      return
+    }
+    case 4: {
+      requireOrdered(
+        typed.relays,
+        (a, b) =>
+          compareBytes(a.relayId, b.relayId) ||
+          // Endpoints are validated ASCII, so code-unit order equals UTF-8 byte order (S4).
+          (a.endpoint < b.endpoint ? -1 : a.endpoint > b.endpoint ? 1 : 0),
+        'relay bindings',
+        `${P}.4`,
+        false,
+      )
+      requireUnique(
+        typed.relays.map(r => r.relayId),
+        'relay_id',
+        `${P}.4`,
+      )
+      if (typed.keyTransitions) {
+        const stmts = typed.keyTransitions.map(t =>
+          typedOf(t.statementFrame, 7),
+        )
+        requireOrdered(
+          stmts,
+          (a, b) =>
+            cmpNum(a.revision, b.revision) ||
+            compareAccounts(a.newKey, b.newKey),
+          'key transitions',
+          `${P}.5`,
+          true,
+        )
+        // Two transitions with the same revision are invalid rather than tie-broken (S5).
+        for (let i = 1; i < stmts.length; i++) {
+          if (stmts[i - 1].revision === stmts[i].revision) {
+            throw semantic(
+              'two key transitions share a revision (S5)',
+              `${P}.5`,
+            )
+          }
+        }
+      }
+      if (typed.recoveryAuthorities) {
+        requireOrdered(
+          typed.recoveryAuthorities,
+          compareAccounts,
+          'recovery authorities',
+          `${P}.7`,
+          true,
+        )
+      }
+      return
+    }
+    default:
+  }
+}
+
+/** S10 and T2a prior-authority selection for a type-2 update. */
+function checkDirectoryUpdate(
+  st: DirectoryStatement<ParsedFrame>,
+  prior: DirectoryStatement<ParsedFrame> | null,
+): void {
+  const P = 'root/payload.0'
+  const transitions = st.keyTransitions
+  if (prior === null) {
+    if (transitions)
+      throw semantic(
+        'a bootstrap statement must not carry key transitions (S10)',
+        P,
+      )
+    return
+  }
+  if (st.revision <= prior.revision) {
+    throw semantic(
+      'statement revision does not exceed the prior revision (S10)',
+      P,
+    )
+  }
+  if (st.network !== prior.network) {
+    throw semantic('statement network differs from the prior network (S10)', P)
+  }
+  const changed = !accountsEqual(st.subject, prior.subject)
+  if (!changed) {
+    if (transitions)
+      throw semantic('key transitions with an unchanged subject (S10)', P)
+    return
+  }
+  if (!transitions || transitions.length !== 1) {
+    throw semantic(
+      'a changed subject needs exactly one key transition (S10)',
+      P,
+    )
+  }
+  const t = transitions[0]
+  const ts: KeyTransitionStatement = typedOf(t.statementFrame, 7)
+  if (ts.network !== st.network || ts.network !== prior.network) {
+    throw semantic(
+      'transition network differs from the statement networks (S10)',
+      P,
+    )
+  }
+  if (!accountsEqual(ts.subject, prior.subject)) {
+    throw semantic(
+      'transition subject differs from the previous subject (S10)',
+      P,
+    )
+  }
+  if (ts.revision !== st.revision || ts.revision <= prior.revision) {
+    throw semantic('transition revision does not link the statements (S10)', P)
+  }
+  if (!accountsEqual(ts.newKey, st.subject)) {
+    throw semantic('transition new_key differs from the new subject (S10)', P)
+  }
+  const registered =
+    accountsEqual(ts.priorAuthority, prior.subject) ||
+    (prior.recoveryAuthorities ?? []).some(a =>
+      accountsEqual(a, ts.priorAuthority),
+    )
+  if (!registered) {
+    throw semantic(
+      'prior authority is not registered in the last accepted statement (S4a)',
+      P,
+    )
+  }
+  if (!accountsEqual(t.signer, ts.priorAuthority)) {
+    throw semantic(
+      'transition signer differs from the statement prior_authority (T2a)',
+      P,
+    )
+  }
+}

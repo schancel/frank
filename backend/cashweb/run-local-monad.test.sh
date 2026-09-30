@@ -62,8 +62,8 @@ cp "$repo_root/.agents/scripts/with-cargo-slot" "$fixture_root/.agents/scripts/"
 cat >"$fixture_root/bin/fake-cargo" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-[[ "${1:-}" == "build" ]]
-[[ -n "${CARGO_TARGET_DIR:-}" ]]
+[[ "${1:-}" == "build" ]] || exit 1
+[[ -n "${CARGO_TARGET_DIR:-}" ]] || exit 1
 target_name="${CARGO_BUILD_TARGET:-}"
 if [[ -z "$target_name" ]]; then
     repo_root="$(git rev-parse --show-toplevel)"
@@ -150,12 +150,12 @@ fi
 )
 
 diff -u <(printf '%s\n' -) "$args_file"
-[[ "$(grep -c '^\[registry\.monad_mailbox\]$' "$config_file")" -eq 1 ]]
-[[ "$(grep -c '^enabled = true$' "$config_file")" -eq 1 ]]
-[[ "$(grep -Fxc "rpc_url = \"$dummy_rpc_url\"" "$config_file")" -eq 1 ]]
+[[ "$(grep -c '^\[registry\.monad_mailbox\]$' "$config_file")" -eq 1 ]] || exit 1
+[[ "$(grep -c '^enabled = true$' "$config_file")" -eq 1 ]] || exit 1
+[[ "$(grep -Fxc "rpc_url = \"$dummy_rpc_url\"" "$config_file")" -eq 1 ]] || exit 1
 # Enabled mode requires an explicit minimum and chain ID; local defaults are Monad testnet's.
-[[ "$(grep -Fxc 'min_value_wei = "1000000000000"' "$config_file")" -eq 1 ]]
-[[ "$(grep -Fxc 'expected_chain_id = 10143' "$config_file")" -eq 1 ]]
+[[ "$(grep -Fxc 'min_value_wei = "1000000000000"' "$config_file")" -eq 1 ]] || exit 1
+[[ "$(grep -Fxc 'expected_chain_id = 10143' "$config_file")" -eq 1 ]] || exit 1
 # Guard against the harness silently weakening: the old launcher output (enabled + rpc_url only)
 # is rejected by the real parser.
 old_style="$(sed 's|^enabled = false$|enabled = true\nrpc_url = "https://rpc.invalid.example"|' \
@@ -166,7 +166,7 @@ if printf '%s\n' "$old_style" | "$FRANK_REAL_CASHWEBD" --check-config - 2>/dev/n
 fi
 # The real parser accepts exactly what the launcher generated.
 "$FRANK_REAL_CASHWEBD" --check-config - <"$config_file"
-[[ -z "$(find "$fixture_root/tmp" -type f -print -quit)" ]]
+[[ -z "$(find "$fixture_root/tmp" -type f -print -quit)" ]] || exit 1
 
 for invalid_env in "CASHWEB_STAMP_MIN_BURN_VALUE_WEI=1e12" "MONAD_TESTNET_CHAIN_ID=0x279f"; do
     if env "$invalid_env" MONAD_TESTNET_HTTP_RPC_URL="$dummy_rpc_url" \
@@ -200,8 +200,8 @@ CARGO_BUILD_TARGET="$configured_target" \
     FRANK_LAUNCHER_CONFIG="$config_file" \
     "$launcher"
 [[ -n "$(find "$fixture_root/cache/cargo-target" \
-    -path "*/$configured_target/debug/cashwebd-exe" -type f -perm -u+x -print -quit)" ]]
-[[ -s "$config_file" ]]
+    -path "*/$configured_target/debug/cashwebd-exe" -type f -perm -u+x -print -quit)" ]] || exit 1
+[[ -s "$config_file" ]] || exit 1
 
 cat >"$fixture_root/.cargo/config.toml" <<EOF
 [build]
@@ -214,7 +214,7 @@ env -u CARGO_BUILD_TARGET \
     FRANK_LAUNCHER_ARGS="$args_file" \
     FRANK_LAUNCHER_CONFIG="$config_file" \
     "$launcher"
-[[ -s "$config_file" ]]
+[[ -s "$config_file" ]] || exit 1
 rm -f -- "$fixture_root/.cargo/config.toml"
 
 cp "$repo_root/.env.example" "$fixture_root/.env"
@@ -236,7 +236,7 @@ for _ in {1..100}; do
     [[ -s "$config_file" ]] && break
     sleep 0.01
 done
-[[ -s "$config_file" ]]
+[[ -s "$config_file" ]] || exit 1
 (
     cd "$fixture_root"
     FRANK_CARGO_SLOT_TIMEOUT_SECONDS=1 \
@@ -250,6 +250,6 @@ else
     status=$?
     [[ "$status" -eq 143 ]]
 fi
-[[ -z "$(find "$fixture_root/tmp" -type f -print -quit)" ]]
+[[ -z "$(find "$fixture_root/tmp" -type f -print -quit)" ]] || exit 1
 
 echo "run-local-monad tests passed"

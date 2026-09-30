@@ -42,6 +42,7 @@ import {
   registerMonadIdentity,
 } from '@frank/wallet/monad-identity'
 
+import { validateProfileDisplayName } from '@frank/wallet/profile-display-name'
 import Profile from '../components/Profile.vue'
 import { errorNotify } from '../utils/notifications'
 
@@ -81,6 +82,14 @@ export default defineComponent({
   },
   methods: {
     async updateRelayData() {
+      // Validate before any network work so a bad name is reported as such, not as a relay failure.
+      const name = validateProfileDisplayName(this.name ?? '')
+      if (!name.valid) {
+        errorNotify(new Error(this.$t('profileDialog.invalidName')))
+        return
+      }
+      this.name = name.normalized
+
       // Set profile
       this.$q.loading.show({
         delay: 100,

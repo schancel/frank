@@ -8162,6 +8162,21 @@ mod tests {
         Ok(())
     }
     #[test]
+    fn production_default_limits_are_pinned() {
+        let limits = MonadOutboxLimits::default();
+        assert_eq!(limits.max_unconfirmed_claims_per_recipient, 32);
+        assert_eq!(limits.max_recovery_records_per_recipient, 128);
+        assert_eq!(
+            limits.max_unconfirmed_claim_age,
+            Duration::from_secs(6 * 3600)
+        );
+        assert_eq!(
+            limits.max_unconfirmed_recovery_age,
+            Duration::from_secs(24 * 3600)
+        );
+    }
+
+    #[test]
     fn legacy_attempted_member_is_exposed_and_retained_until_it_ages_out() -> Result<()> {
         for version in [RECORD_VERSION_V1, RECORD_VERSION_V2] {
             let tempdir = tempdir::TempDir::new("monad-outbox-legacy-attempted")?;

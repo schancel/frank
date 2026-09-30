@@ -1,104 +1,143 @@
 <template>
-  <div class="column full-height">
+  <div class="row no-wrap full-height">
     <!-- Relay reconnect dialog -->
     <q-dialog v-if="legacyRelayEnabled" v-model="relayConnectOpen">
       <relay-connect-dialog />
     </q-dialog>
 
-    <q-tabs v-model="tab" v-if="$status.setup">
-      <q-tab v-if="$status.setup" name="settings" icon="settings" />
-      <!-- Navigates to the active (or most recently used) chat, so this tab actually shows
-      something different from "forum" in the main pane -- an earlier version of this fix
-      removed navigation entirely to stop it fighting with "forum" over `/`, but that also made
-      clicking it a visible no-op whenever you were already on /forum (same main content, same
-      chat-list underneath, nothing about the click was ever observable). openActiveOrRecentChat
-      navigates to a genuinely different, contacts-focused route instead of re-using `/`. -->
-      <q-tab name="contacts" icon="contacts" @click="openActiveOrRecentChat">
-        <q-badge
-          floating
-          color="secondary"
-          :label="totalUnread"
-          class="q-my-xs"
-          v-if="totalUnread !== 0"
-        />
-      </q-tab>
-
-      <!-- Per-owner decision (2026-09-27, following #61): the flat groupchat-style Topics list is
-      hidden in favor of the Forum's threaded view -- both still work (stores/topics.ts and
-      stores/forum.ts share the same activeChain.topics data), but only Forum is surfaced in nav
-      now. This tab navigates straight to /forum rather than switching local drawer content, since
-      Forum is a full page/route, not another sidebar-list mode like contacts/settings. -->
-      <q-tab name="forum" icon="forum" @click="$router.push('/forum')" />
-    </q-tabs>
-
-    <settings-panel v-if="$status.setup" v-show="tab == 'settings'" />
-    <div v-if="!$status.setup">
-      <q-separator />
-      <chat-list-link title="Login/Sign Up" route="/setup" icon="login" />
-    </div>
-
-    <chat-list v-show="tab == 'contacts'" v-bind="$attrs" :compact="false" />
-
-    <!-- Real user-reported gap (ticket #61's own follow-up comment admitted this was a stopgap:
-    "there's no forum-specific content this drawer could show instead"): clicking "forum" used to
-    just fall back to showing the same chat-list as "contacts" -- so the two tabs looked and
-    behaved identically in the sidebar, with nothing anywhere to actually browse different
-    topics/forums. This list surfaces the same relay-discovered topic data already wired up in
-    ForumDrawer.vue's own "Browse Topics" section, but here in the left rail, where a user
-    actually expects a per-tab list -- clicking a topic switches the Forum's selected topic and
-    navigates there if not already on /forum.
-
-    Wrapped exactly like ChatList.vue's own template (`full-width column col` +
-    `q-scroll-area class="q-px-none col"`) -- an earlier version of this was a bare `q-list` with
-    neither, which (a) looked visually inconsistent with the rest of this drawer (no scroll
-    handling, no consistent width/column behavior) and (b) didn't fill the remaining flex space,
-    so "Balance" below no longer stayed pinned to the bottom of the drawer the way it does for
-    every other tab -- it just sat directly under however many topics happened to be listed. -->
-    <div class="full-width column col" v-show="tab == 'forum'">
-      <q-scroll-area class="q-px-none col">
-        <q-list v-bind="$attrs">
-          <q-separator />
-          <q-item
-            v-for="name in discoveredTopicNames"
-            :key="name"
-            clickable
-            :active="name === selectedForumTopic"
-            active-class="active-chat-list-item"
-            @click="browseForumTopic(name)"
-          >
-            <q-item-section>{{ name }}</q-item-section>
-          </q-item>
-          <q-item v-if="discoveredTopicNames.length === 0">
-            <q-item-section class="text-grey"
-              >No forums discovered yet.</q-item-section
-            >
-          </q-item>
-        </q-list>
-      </q-scroll-area>
-    </div>
-
-    <q-list v-if="$status.setup">
-      <q-separator />
-      <q-item clickable>
-        <q-item-section @click="openReceive">
-          <q-item-label>{{ $t('chatList.balance') }}</q-item-label>
-          <q-item-label caption>{{ formattedBalance }}</q-item-label>
-        </q-item-section>
-        <q-item-section
-          v-if="legacyRelayEnabled && !relayConnected"
-          side
-          clickable
-          @click="relayConnectOpen = true"
+    <!-- Icon rail (ticket #123): a dedicated narrow column, not tabs laid out horizontally inside
+    the same drawer as the chat list -- matches Telegram/WhatsApp/Signal's own left-hand nav
+    strip. `q-tabs`' own `vertical` prop does the layout work; the tab names/click handlers below
+    are otherwise unchanged from before this split, so none of that established navigation
+    behavior (openActiveOrRecentChat, the /forum push, the unread badge) needed touching. -->
+    <div
+      class="column items-center icon-rail"
+      v-if="$status.setup"
+      data-testid="icon-rail"
+    >
+      <q-tabs v-model="tab" vertical class="col full-width">
+        <q-tab
+          name="settings"
+          icon="settings"
+          :aria-label="$t('leftDrawer.settings')"
         >
-          <q-btn icon="email" flat round color="red" />
-        </q-item-section>
-      </q-item>
-    </q-list>
+          <q-tooltip>{{ $t('leftDrawer.settings') }}</q-tooltip>
+        </q-tab>
+        <!-- Navigates to the active (or most recently used) chat, so this tab actually shows
+        something different from "forum" in the main pane -- an earlier version of this fix
+        removed navigation entirely to stop it fighting with "forum" over `/`, but that also made
+        clicking it a visible no-op whenever you were already on /forum (same main content, same
+        chat-list underneath, nothing about the click was ever observable). openActiveOrRecentChat
+        navigates to a genuinely different, contacts-focused route instead of re-using `/`. -->
+        <q-tab
+          name="contacts"
+          icon="contacts"
+          :aria-label="contactsLabel()"
+          @click="openActiveOrRecentChat"
+        >
+          <q-tooltip>{{ $t('leftDrawer.contacts') }}</q-tooltip>
+          <q-badge
+            floating
+            color="secondary"
+            :label="totalUnread"
+            aria-hidden="true"
+            class="q-my-xs"
+            v-if="totalUnread !== 0"
+          />
+        </q-tab>
+
+        <!-- Per-owner decision (2026-09-27, following #61): the flat groupchat-style Topics list
+        is hidden in favor of the Forum's threaded view -- both still work (stores/topics.ts and
+        stores/forum.ts share the same activeChain.topics data), but only Forum is surfaced in nav
+        now. This tab navigates straight to /forum rather than switching local drawer content,
+        since Forum is a full page/route, not another sidebar-list mode like contacts/settings. -->
+        <q-tab
+          name="forum"
+          icon="forum"
+          :aria-label="$t('leftDrawer.forum')"
+          @click="openForumTab"
+        >
+          <q-tooltip>{{ $t('leftDrawer.forum') }}</q-tooltip>
+        </q-tab>
+      </q-tabs>
+    </div>
+
+    <!-- List column: whatever the active rail icon selects (settings panel / chat list / forum
+    topics), plus the balance footer -- exactly the content this drawer showed before the icon
+    rail existed, just no longer sharing a column with the tab icons themselves. -->
+    <div class="column full-height col list-column">
+      <settings-panel v-if="$status.setup" v-show="tab == 'settings'" />
+      <div v-if="!$status.setup">
+        <q-separator />
+        <chat-list-link title="Login/Sign Up" route="/setup" icon="login" />
+      </div>
+
+      <chat-list v-show="tab == 'contacts'" v-bind="$attrs" :compact="false" />
+
+      <!-- Real user-reported gap (ticket #61's own follow-up comment admitted this was a stopgap:
+      "there's no forum-specific content this drawer could show instead"): clicking "forum" used
+      to just fall back to showing the same chat-list as "contacts" -- so the two tabs looked and
+      behaved identically in the sidebar, with nothing anywhere to actually browse different
+      topics/forums. This list surfaces the same relay-discovered topic data already wired up in
+      ForumDrawer.vue's own "Browse Topics" section, but here in the left rail, where a user
+      actually expects a per-tab list -- clicking a topic switches the Forum's selected topic and
+      navigates there if not already on /forum.
+
+      Wrapped exactly like ChatList.vue's own template (`full-width column col` +
+      `q-scroll-area class="q-px-none col"`) -- an earlier version of this was a bare `q-list` with
+      neither, which (a) looked visually inconsistent with the rest of this drawer (no scroll
+      handling, no consistent width/column behavior) and (b) didn't fill the remaining flex space,
+      so "Balance" below no longer stayed pinned to the bottom of the drawer the way it does for
+      every other tab -- it just sat directly under however many topics happened to be listed. -->
+      <div class="full-width column col" v-show="tab == 'forum'">
+        <q-scroll-area class="q-px-none col">
+          <q-list v-bind="$attrs">
+            <q-separator />
+            <q-item
+              v-for="name in discoveredTopicNames"
+              :key="name"
+              clickable
+              :active="name === selectedForumTopic"
+              active-class="active-chat-list-item"
+              @click="browseForumTopic(name)"
+            >
+              <q-item-section>{{ name }}</q-item-section>
+            </q-item>
+            <q-item v-if="discoveredTopicNames.length === 0">
+              <q-item-section class="text-grey"
+                >No forums discovered yet.</q-item-section
+              >
+            </q-item>
+          </q-list>
+        </q-scroll-area>
+      </div>
+
+      <q-list v-if="$status.setup">
+        <q-separator />
+        <q-item clickable>
+          <q-item-section @click="openReceive">
+            <q-item-label>{{ $t('chatList.balance') }}</q-item-label>
+            <q-item-label caption role="status" aria-live="polite">{{
+              formattedBalance
+            }}</q-item-label>
+          </q-item-section>
+          <q-item-section
+            v-if="legacyRelayEnabled && !relayConnected"
+            side
+            clickable
+            @click="relayConnectOpen = true"
+          >
+            <q-btn icon="email" flat round color="red" />
+          </q-item-section>
+        </q-item>
+      </q-list>
+    </div>
   </div>
 </template>
 
 <script lang="ts">
 import { computed, defineComponent, onMounted, ref, watch } from 'vue'
+import { inject } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
 
@@ -111,8 +150,8 @@ import { openChat, openPage } from '../../utils/routes'
 import { useChatStore } from 'src/stores/chats'
 import { useTopicStore } from 'src/stores/topics'
 import { useForumStore } from 'src/stores/forum'
-import { activeChain } from '@frank/wallet/chain'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
+import { useBalance } from 'src/composables/useBalance'
 import { legacyLotusModeEnabled } from 'src/utils/runtime-mode'
 
 const compactCutoff = 325
@@ -121,7 +160,6 @@ export default defineComponent({
   setup() {
     const chats = useChatStore()
     const { totalUnread } = storeToRefs(chats)
-    const balance = ref(0n)
     const route = useRoute()
     const router = useRouter()
 
@@ -132,10 +170,21 @@ export default defineComponent({
     // "settings"). A brand new user with zero conversations yet has nothing to navigate to --
     // the chat-list's own "Add contacts from the drawer above..." empty state already
     // communicates that, so doing nothing here is the correct, safe fallback.
+    // Rail-tab switches keep the mobile overlay open (the user is still browsing the drawer);
+    // only picking a destination closes it. MainLayout provides the marker its router hook honors.
+    const markRailNavigation = inject<() => void>(
+      'markRailNavigation',
+      () => undefined, // standalone (outside MainLayout): nothing to mark
+    )
+    function openForumTab() {
+      markRailNavigation()
+      return router.push('/forum')
+    }
     function openActiveOrRecentChat() {
       const address =
         chats.activeChatAddr ?? chats.getSortedChatOrder[0]?.address
       if (address) {
+        markRailNavigation()
         router.push(`/chat/${address}`)
       }
     }
@@ -160,13 +209,12 @@ export default defineComponent({
       await forum.refreshMessages({ wallet, topic: name })
     }
 
-    onMounted(async () => {
-      try {
-        const wallet = await useActiveWallet()
-        balance.value = await activeChain.nativeTransfers.getBalance({ wallet })
-      } catch {
-        // The setup route may render the drawer before a seed exists.
-      }
+    // Balance polling (real user report: an external transfer never showed up without a reload)
+    // now lives in the shared `useBalance` composable (ticket #213): one ref-counted loop with
+    // in-flight guard, visibility/app-resume handling and backoff, shared with the Receive page.
+    const { formattedBalance } = useBalance()
+
+    onMounted(() => {
       // Fire-and-forget, same convention as `ForumLayout.vue`'s own identical call --
       // `refreshDiscoveredTopics` already fails soft and never throws (`stores/topics.ts`).
       // Called here too (not just there) so this list is populated even if the user never opens
@@ -204,14 +252,12 @@ export default defineComponent({
     return {
       tab,
       openActiveOrRecentChat,
+      openForumTab,
       discoveredTopicNames,
       selectedForumTopic,
       browseForumTopic,
       totalUnread: totalUnread,
-      formattedBalance: computed(
-        () =>
-          `${activeChain.toDisplayAmount(balance.value)} ${activeChain.unit}`,
-      ),
+      formattedBalance,
       legacyRelayEnabled: legacyLotusModeEnabled(),
     }
   },
@@ -250,6 +296,16 @@ export default defineComponent({
     contactClicked(address: string) {
       openChat(this.$router, address)
     },
+    contactsLabel(): string {
+      const n = this.totalUnread
+      if (!n) return this.$t('leftDrawer.contacts')
+      return this.$t(
+        n === 1
+          ? 'leftDrawer.contactsUnreadOne'
+          : 'leftDrawer.contactsUnreadOther',
+        { count: n },
+      )
+    },
     openReceive() {
       openPage(this.$router, '/receive')
     },
@@ -272,5 +328,22 @@ export default defineComponent({
 .active-chat-list-item {
   background: var(--q-color-bg-active);
   color: #f0409b;
+}
+
+// Fixed-width icon-only nav column (ticket #123) -- 72px matches the reference apps (Telegram/
+// WhatsApp/Signal) this pass drew from. A faint background tint (not the same flat color as the
+// list column) is what actually reads as "two columns" rather than "one column with icons on
+// top" -- color alone from `body--dark`/`body--light`'s `--q-color-bg-active` was tried first and
+// wasn't enough contrast against the list column's own background to register as a separate rail
+// at a glance.
+.icon-rail {
+  width: 72px;
+  min-width: 72px;
+  background: var(--q-color-bg-active);
+}
+
+.list-column {
+  min-width: 0; // allow the flex child to shrink below its content's natural width, so long chat
+  // names/previews ellipsize instead of forcing the whole drawer wider than intended.
 }
 </style>

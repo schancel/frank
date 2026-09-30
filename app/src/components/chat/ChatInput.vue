@@ -54,34 +54,6 @@
       />
       <q-space />
       <q-btn
-        v-if="address && blackjackEnabled"
-        dense
-        flat
-        round
-        icon="casino"
-        :aria-label="$t('blackjackBet.menuLabel')"
-        :disable="disable"
-        data-testid="blackjack-menu-button"
-      >
-        <q-tooltip>{{ $t('blackjackBet.menuLabel') }}</q-tooltip>
-        <q-menu
-          v-model="blackjackMenuOpen"
-          anchor="top middle"
-          self="bottom middle"
-          :persistent="blackjackBetPending"
-        >
-          <blackjack-bet-picker
-            :address="address"
-            :dealer-name="peerName"
-            :stamp-wei="stampWei"
-            :submit="submitFollowUp"
-            :busy="disable"
-            @placed="blackjackMenuOpen = false"
-            @pending-change="blackjackBetPending = $event"
-          />
-        </q-menu>
-      </q-btn>
-      <q-btn
         dense
         flat
         round
@@ -134,18 +106,12 @@
 </template>
 
 <script lang="ts">
-import { defineComponent, PropType } from 'vue'
-import { MessageItem } from '@frank/cashweb/types/messages'
-import BlackjackBetPicker from './BlackjackBetPicker.vue'
+import { defineComponent } from 'vue'
 import emoji from 'node-emoji'
 import { processInput } from '../../utils/chat'
 import { activeChain } from '@frank/wallet/chain'
 
 export default defineComponent({
-  components: {
-    BlackjackBetPicker,
-    // Picker
-  },
   props: {
     message: {
       type: String,
@@ -159,32 +125,6 @@ export default defineComponent({
       type: Boolean,
       default: false,
     },
-    // The chat's counterpart. Enables the "Play blackjack" bet picker, which sends the wager and
-    // the first `bet` move through `submitFollowUp` (Chat.vue's own send pipeline).
-    address: {
-      type: String,
-      default: '',
-    },
-    // Stopgap gate (until #217 capability signalling): only chats whose peer profile carries the
-    // self-declared bot marker offer the blackjack control. A non-dealer bot still shows it, which
-    // is why the picker names the recipient and requires an explicit confirmation.
-    blackjackEnabled: {
-      type: Boolean,
-      default: false,
-    },
-    peerName: {
-      type: String,
-      default: '',
-    },
-    submitFollowUp: {
-      type: Function as PropType<
-        (payload: { items: MessageItem[]; address: string }) => Promise<void>
-      >,
-      default: () => Promise.resolve(),
-    },
-  },
-  data() {
-    return { blackjackMenuOpen: false, blackjackBetPending: false }
   },
   emits: [
     'update:message',
@@ -231,13 +171,6 @@ export default defineComponent({
     },
   },
   computed: {
-    stampWei(): bigint {
-      try {
-        return activeChain.fromDisplayAmount(this.stampAmount)
-      } catch {
-        return activeChain.defaultStampValue
-      }
-    },
     chainUnit() {
       return activeChain.unit
     },

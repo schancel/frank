@@ -1,7 +1,8 @@
 /** @jest-environment jsdom */
-// Mounted Chat.vue (#310, F3): the TEMPLATE wiring of the blackjack entry point. Children are
-// stubs that expose the props Chat.vue binds, so replacing `sendFollowUpWhenIdle` with
-// `sendFollowUpItems`, or the bot gate with `true`, fails here.
+// Mounted Chat.vue (#310, #395): the TEMPLATE wiring of blackjack. The dealer's bubbles place bets
+// through what Chat.vue `provide`s (the idle-waiting, chat-guarded delivery), so replacing
+// `sendFollowUpWhenIdle` with `sendFollowUpItems` fails here; and the compose bar has no blackjack
+// control in any chat (the toolbar "Play blackjack" button is gone).
 import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import * as quasar from 'quasar'
@@ -62,23 +63,40 @@ stubs.QScrollArea = defineComponent({
     return h('div', this.$slots.default?.())
   },
 })
+// Exposes the icon of every button so a casino (blackjack) button cannot hide.
+stubs.QBtn = defineComponent({
+  inheritAttrs: false,
+  props: ['icon'],
+  setup:
+    (props, { attrs, slots }) =>
+    () =>
+      h('button', { ...attrs, 'data-icon': props.icon }, slots.default?.()),
+})
 const InputStub = defineComponent({
-  props: [
-    'address',
-    'blackjackEnabled',
-    'peerName',
-    'submitFollowUp',
-    'disable',
-  ],
+  props: ['disable'],
   setup: () => () => h('div', { 'data-stub': 'chat-input' }),
 })
 const BannerStub = defineComponent({
   props: ['address', 'name', 'submit'],
   setup: () => () => h('div', { 'data-stub': 'unsent' }),
 })
+// Stands in for a chat bubble and captures what Chat.vue provides to the dealer's bubbles.
+let provided: any
+const Bubble = defineComponent({
+  inject: { blackjackChat: { from: 'blackjackChat', default: null } },
+  setup() {
+    return () => h('div', { 'data-stub': 'bubble' })
+  },
+  mounted() {
+    provided = (this as any).blackjackChat
+  },
+})
 const Blank = defineComponent({ setup: () => () => h('div') })
 
-async function mountChat(profile: { isBot?: boolean } | undefined) {
+async function mountChat(
+  profile: { isBot?: boolean } | undefined,
+  options: { realInput?: boolean } = {},
+) {
   const pinia = createPinia()
   setActivePinia(pinia)
   const contacts = useContactStore()
@@ -96,15 +114,19 @@ async function mountChat(profile: { isBot?: boolean } | undefined) {
       },
     })
   }
-  useChatStore().chats[DEALER] = { messages: [] } as never
+  useChatStore().chats[DEALER] = {
+    messages: [{ payloadDigest: 'd1', outbound: false, items, outpoints: [] }],
+  } as never
+  provided = undefined
   const wrapper = mount(ChatPage as never, {
     global: {
       plugins: [pinia],
       components: stubs,
+      directives: { 'close-popup': {}, 'touch-swipe': {} },
       stubs: {
-        ChatInput: InputStub,
+        ...(options.realInput ? {} : { ChatInput: InputStub }),
         BlackjackUnsentWagers: BannerStub,
-        ChatMessageComponent: Blank,
+        ChatMessageComponent: Bubble,
         ChatMessageReply: Blank,
         ChatBannerStack: Blank,
       },
@@ -124,30 +146,40 @@ async function mountChat(profile: { isBot?: boolean } | undefined) {
 }
 
 describe('Chat.vue blackjack wiring (mounted)', () => {
-  it('shows the blackjack control only for a peer whose profile carries the bot marker', async () => {
-    expect(
-      (await mountChat({ isBot: true })).input.props('blackjackEnabled'),
-    ).toBe(true)
-    expect(
-      (await mountChat({ isBot: false })).input.props('blackjackEnabled'),
-    ).toBe(false)
-    expect((await mountChat({})).input.props('blackjackEnabled')).toBe(false)
-    expect((await mountChat(undefined)).input.props('blackjackEnabled')).toBe(
-      false,
-    )
+  it.each([
+    ['a bot-marked dealer', { isBot: true }],
+    ['a plain profile', { isBot: false }],
+    ['a profile with no marker', {}],
+    ['a chat with no contact', undefined],
+  ])(
+    'the compose bar has no blackjack control for %s (toolbar button removed)',
+    async (_name, profile) => {
+      const { wrapper } = await mountChat(profile, { realInput: true })
+      expect(
+        wrapper.find('[data-testid="blackjack-menu-button"]').exists(),
+      ).toBe(false)
+      expect(wrapper.find('[data-icon="casino"]').exists()).toBe(false)
+      // The compose bar itself is still there.
+      expect(wrapper.find('[data-icon="send"]').exists()).toBe(true)
+    },
+  )
+
+  it('passes the compose bar no blackjack props', async () => {
+    const { input } = await mountChat({ isBot: true })
+    expect(Object.keys(input.props())).toEqual(['disable'])
+    expect(input.attributes()).not.toHaveProperty('address')
+    expect(input.attributes()).not.toHaveProperty('blackjack-enabled')
   })
 
-  it('binds the peer name and address to the input and the unsent banner', async () => {
-    const { input, banner } = await mountChat({ isBot: true })
-    expect(input.props('address')).toBe(DEALER)
-    expect(input.props('peerName')).toBe('Dealer')
+  it('binds the peer name and address to the unsent banner', async () => {
+    const { banner } = await mountChat({ isBot: true })
     expect(banner.props('address')).toBe(DEALER)
     expect(banner.props('name')).toBe('Dealer')
   })
 
   it.each([
-    ['ChatInput submit-follow-up', (c: any) => c.input.props('submitFollowUp')],
-    ['unsent banner submit', (c: any) => c.banner.props('submit')],
+    ['the banner submit', (c: any) => c.banner.props('submit')],
+    ['the bubbles submit', () => provided.submit],
   ])(
     '%s is the idle-waiting, chat-guarded delivery (not the raw send)',
     async (_name, pick) => {
@@ -160,13 +192,17 @@ describe('Chat.vue blackjack wiring (mounted)', () => {
     },
   )
 
+  it('provides the dealer bubbles the stamp this chat will pay', async () => {
+    await mountChat({ isBot: true })
+    expect(typeof provided.stampWei()).toBe('bigint')
+    expect(provided.stampWei()).toBeGreaterThan(0n)
+  })
+
   it('delivers through the real send pipeline for the right chat, and throws when it fails', async () => {
     const mounted = await mountChat({ isBot: true })
     const vm = mounted.wrapper.vm as any
     vm.sendDirectMessage = jest.fn().mockRejectedValue(new Error('relay down'))
-    const submit = mounted.input.props('submitFollowUp') as (
-      p: unknown,
-    ) => Promise<void>
+    const submit = provided.submit as (p: unknown) => Promise<void>
     await expect(submit({ items, address: DEALER })).rejects.toThrow(
       /could not be sent/,
     )

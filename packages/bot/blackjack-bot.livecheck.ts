@@ -54,6 +54,17 @@
  *   BLACKJACK_BOT_MAX_HANDS         -- how many hands to resolve before exiting (default 1000)
  *   BLACKJACK_BOT_POLL_INTERVAL_MS  -- default 4000
  *   BLACKJACK_BOT_IDLE_TIMEOUT_MS   -- default 10 minutes
+ *   BLACKJACK_BOT_MAX_GREETINGS     -- welcomes sent per run (default 5; 0 = never greet)
+ *   BLACKJACK_BOT_MAX_GREETINGS_PER_DAY -- welcomes per UTC day across restarts (default 20)
+ *   BLACKJACK_BOT_GREETING_MAX_AGE_MS   -- skip registrations older than this (default 24 h)
+ *   BLACKJACK_BOT_PROFILE_SINCE_MS  -- first-run start of the registration watch (default: now)
+ *
+ * ## Welcome greeting (#395)
+ *
+ * The dealer greets each NEW registration once with a `blackjack-move` `welcome` item (table limits
+ * from this bot's own config, fee hint, rules) plus a text line: see `blackjack-greeter.ts` for the
+ * once-per-address record, the per-run/per-day caps (each greeting costs a stamp), the funds
+ * check and the loop guard (never greets itself, the denylist or bot-marked profiles).
  */
 import { randomBytes } from 'crypto'
 import { resolve } from 'path'
@@ -68,9 +79,12 @@ import {
 import { fetchMonadMessagesSince } from '@frank/cashweb/relay/monad-message-feed'
 import {
   fetchMonadIdentityPubKey,
+  fetchMonadProfilesSince,
   MonadIdentity,
   mailboxAuthFor,
 } from '@frank/wallet/monad-identity'
+import __pb_registry_metadata_pb from '@frank/cashweb/registry/metadata_pb'
+const { AddressMetadata } = __pb_registry_metadata_pb
 import { deserializeMessageItems } from '@frank/wallet/chain/monad-chain'
 import { BlackjackMoveItem, Message } from '@frank/cashweb/types/messages'
 import {
@@ -100,6 +114,15 @@ import {
   setUpFundedStampClient,
 } from './qwen-bot-common'
 import { botStateDir } from './bot-state-dir'
+import { botLoopGuardFromEnv } from './bot-loop-guard'
+import {
+  BlackjackGreeter,
+  BlackjackGreetingStore,
+  GREETING_FEE_RESERVE_WEI,
+  greeterConfigFromEnv,
+  GreeterProfile,
+  welcomeItems,
+} from './blackjack-greeter'
 import { formatMon } from '@frank/wallet/monad-amount'
 import { botProfileFields } from './bot-directory'
 import {
@@ -579,7 +602,7 @@ export async function handleMove(params: {
     return
   }
 
-  if (action === 'deal' || action === 'reveal') {
+  if (action === 'deal' || action === 'reveal' || action === 'welcome') {
     await sendError(`${action} is a dealer-only action`)
     return
   }
@@ -910,6 +933,64 @@ async function main() {
   let handsResolved = 0
   let lastActivityAt = Date.now()
 
+  // The welcome greeting. Its own small durable store (never the game-authority store).
+  const greetingStore = new BlackjackGreetingStore(stateDirPath)
+  await greetingStore.Open()
+  const greeterConfig = greeterConfigFromEnv(process.env)
+  const profileWatchStart = Number(
+    process.env.BLACKJACK_BOT_PROFILE_SINCE_MS || Date.now(),
+  )
+  if (!Number.isFinite(profileWatchStart)) {
+    throw new Error('BLACKJACK_BOT_PROFILE_SINCE_MS must be a number of milliseconds')
+  }
+  const guard = botLoopGuardFromEnv({
+    selfAddress: identity.displayAddress,
+    relayBaseUrl,
+  })
+  const greeter = new BlackjackGreeter(
+    {
+      store: greetingStore,
+      guard,
+      startedAt: profileWatchStart,
+      async listProfiles(sinceMs): Promise<GreeterProfile[]> {
+        const profiles = await fetchMonadProfilesSince({ relayBaseUrl, sinceMs })
+        return profiles.map(profile => ({
+          address: profile.address,
+          signedPayload: profile.signedPayload,
+          registeredAt: AddressMetadata.deserializeBinary(
+            profile.signedPayload.getPayload_asU8(),
+          ).getTimestamp(),
+        }))
+      },
+      // A greeting must never eat what open hands may still owe, nor the stamp it pays.
+      async canAffordGreeting() {
+        const balance = await rpcProvider.getBalance(mainAccountSigner.address)
+        return (
+          balance >=
+          state.openExposureWei() + stampValueWei + GREETING_FEE_RESERVE_WEI
+        )
+      },
+      async sendWelcome(profile) {
+        await sendDirectMessageItems({
+          stampClient,
+          pool,
+          mainAccountSigner,
+          provider,
+          fromIdentity: identity,
+          toAddress: profile.address,
+          toPubKey: Buffer.from(profile.signedPayload.getPublicKey_asU8()),
+          items: welcomeItems({ minWagerWei, maxWagerWei, stampValueWei }),
+          stampValueWei,
+          networkTag,
+        })
+      },
+    },
+    greeterConfig,
+  )
+  console.log(
+    `Greetings:  up to ${greeterConfig.maxPerRun} per run, ${greeterConfig.maxPerDay} per day`,
+  )
+
   console.log(
     `\nPolling ${relayBaseUrl}/message/monad/inbox/<me> (signed mailbox read, since=<t>) every ${pollIntervalMs}ms for messages addressed to ${identity.displayAddress} ...`,
   )
@@ -921,6 +1002,8 @@ async function main() {
     }
 
     await retryPendingRefunds(state, mainAccountSigner)
+
+    if ((await greeter.poll()) > 0) lastActivityAt = Date.now()
 
     const stored = await fetchMonadMessagesSince({
       ...mailboxAuthFor(identity, relayBaseUrl),
@@ -1054,6 +1137,7 @@ async function main() {
   }
 
   await state.Close()
+  await greetingStore.Close()
   await closePool()
   console.log(`\nDone. Resolved ${handsResolved} hand${handsResolved === 1 ? '' : 's'}.`)
 }

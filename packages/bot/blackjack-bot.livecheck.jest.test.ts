@@ -936,6 +936,14 @@ describe('blackjack move authorization', () => {
     })
   })
 
+  it('treats a player-sent welcome as a dealer-only action (no game, no refund, no state)', async () => {
+    await move('welcome', hydrated('welcome', { gameId: 'welcome' }))
+    const text = (sendDirectMessageText as jest.Mock).mock.calls[0][0].text as string
+    expect(parseBlackjackError(text)?.text).toBe('welcome is a dealer-only action')
+    expect(state.getGame('welcome')).toBeUndefined()
+    expect(mainAccountSigner.buildAndSignTransfer).not.toHaveBeenCalled()
+  })
+
   it('does not refund a double transfer sent by someone other than the authenticated player', async () => {
     // No such game -> rejected through the pre-record path that still tries to refund.
     await move(

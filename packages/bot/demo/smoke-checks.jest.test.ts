@@ -5,10 +5,19 @@ import { createServer, Server } from 'http'
 
 import { buildTopicPostPayload } from '@frank/wallet/monad-topic-post-client'
 
+import { BlackjackMoveItem } from '@frank/cashweb/types/messages'
+import { deriveDeck, sha256Hex } from '@frank/wallet/message-item-plugins/blackjack/deck'
+import {
+  buildBlackjackWelcomeItem,
+  playOutDealer,
+} from '@frank/wallet/message-item-plugins/blackjack/game'
+
 import {
   checkCors,
   classifyReply,
+  judgeFirstBet,
   judgeRaffleFill,
+  judgeWelcome,
   POSTED_MESSAGE,
   POSTED_TITLE,
   verifyReadBackPost,
@@ -223,5 +232,91 @@ describe('judgeRaffleFill (#363)', () => {
         txs: [{ ...pay, to: '0xzz' }],
       }).ok,
     ).toBe(false)
+  })
+})
+
+describe('judgeWelcome (#395)', () => {
+  const expected = { minWei: 10n ** 16n, maxWei: 10n ** 18n }
+  const welcome = (over: Partial<BlackjackMoveItem> = {}): MessageItem[] => [
+    { ...buildBlackjackWelcomeItem({ minWagerWei: 10n ** 16n, maxWagerWei: 10n ** 18n }), ...over },
+    { type: 'text', text: 'Welcome to the blackjack table.' },
+  ]
+
+  it('accepts a valid welcome with the dealer limits, then a text line', () => {
+    expect(judgeWelcome(welcome(), expected).ok).toBe(true)
+  })
+
+  it('fails without a welcome item', () => {
+    expect(judgeWelcome(text('hi'), expected)).toMatchObject({ ok: false })
+  })
+
+  it('fails when the advertised limits differ from the dealer configuration', () => {
+    const verdict = judgeWelcome(welcome({ maxWagerWei: '20000000000000000' }), expected)
+    expect(verdict.ok).toBe(false)
+    expect(verdict.detail).toMatch(/configured for/)
+  })
+
+  it('fails a malformed welcome', () => {
+    expect(judgeWelcome(welcome({ minWagerWei: 'x' }), expected).detail).toMatch(/malformed/)
+  })
+
+  it('fails when the text line is not last (an older client preview would break)', () => {
+    const [w, t] = welcome()
+    expect(judgeWelcome([t, w], expected).ok).toBe(false)
+  })
+})
+
+describe('judgeFirstBet (#395)', () => {
+  const HASH = `0x${'ab'.repeat(32)}`
+  const PLAYER = `0x${'aa'.repeat(20)}`
+  const SEED = 'smoke-seed'
+  const deck = deriveDeck(SEED, HASH, 0)
+  const playerCards = [deck[0], deck[2]]
+  const played = playOutDealer(deck, playerCards, 4)
+  const bet: BlackjackMoveItem = {
+    type: 'blackjack-move',
+    gameId: 'g',
+    action: 'bet',
+    wagerTxHash: HASH,
+  }
+  const deal: BlackjackMoveItem = {
+    type: 'blackjack-move',
+    gameId: 'g',
+    action: 'deal',
+    serverSeedHash: sha256Hex(SEED),
+    playerCards,
+    dealerUpCard: deck[1],
+  }
+  const stand: BlackjackMoveItem = { type: 'blackjack-move', gameId: 'g', action: 'stand' }
+  const reveal = (over: Partial<BlackjackMoveItem> = {}): BlackjackMoveItem => ({
+    type: 'blackjack-move',
+    gameId: 'g',
+    action: 'reveal',
+    dealerCards: played.dealerCards,
+    serverSeed: SEED,
+    outcome: played.outcome,
+    ...over,
+  })
+  const judge = (moves: BlackjackMoveItem[]) =>
+    judgeFirstBet({ gameId: 'g', wagerTxHash: HASH, wagerWei: 10n ** 16n, playerAddress: PLAYER, moves })
+
+  it('accepts a resolved, fair hand', () => {
+    expect(judge([bet, deal, stand, reveal()])).toMatchObject({ ok: true })
+  })
+
+  it('fails when the hand never resolves', () => {
+    expect(judge([bet, deal, stand])).toMatchObject({ ok: false })
+    expect(judge([bet, deal, stand]).detail).toMatch(/did not resolve/)
+  })
+
+  it('fails a reveal whose seed does not match the commitment', () => {
+    const verdict = judge([bet, deal, stand, reveal({ serverSeed: 'other' })])
+    expect(verdict.ok).toBe(false)
+    expect(verdict.detail).toMatch(/fairness/)
+  })
+
+  it('fails a reveal with a tampered outcome', () => {
+    const wrong = played.outcome === 'dealer_win' ? 'player_win' : 'dealer_win'
+    expect(judge([bet, deal, stand, reveal({ outcome: wrong })]).ok).toBe(false)
   })
 })

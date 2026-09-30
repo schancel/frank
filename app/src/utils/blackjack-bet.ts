@@ -3,8 +3,10 @@ import { activeChain } from '@frank/wallet/chain'
 import {
   BET_MESSAGE_FEE_RESERVE_WEI,
   BLACKJACK_DEFAULT_MAX_WAGER_WEI,
-  parseBlackjackError,
   BLACKJACK_DEFAULT_MIN_WAGER_WEI,
+  BlackjackWelcome,
+  parseBlackjackError,
+  parseBlackjackWelcome,
   validateBetWei,
 } from '@frank/wallet/message-item-plugins/blackjack/game'
 
@@ -19,14 +21,67 @@ export type BetParse =
   | { ok: true; wei: bigint }
   | { ok: false; code: BetErrorCode; error: string }
 
+/** The table the bet controls play at: the dealer's advertised limits, or the documented fallback. */
+export interface BlackjackTable {
+  minWei: bigint
+  maxWei: bigint
+  /** The dealer's hint of what a bet message costs beyond the wager (see `betFundsRequired`). */
+  feeHintWei?: bigint
+  /** The dealer's house-rules summary (dealer text), when it sent one. */
+  rules?: string
+  /** `welcome`: from the latest dealer welcome in this chat; `default`: no welcome exists, so the
+   * shared documented fallback limits (0.01 to 1 MON) apply and the dealer may still refuse a bet
+   * it does not like (it then refunds the verified stake). */
+  source: 'welcome' | 'default'
+}
+
+export const DEFAULT_BLACKJACK_TABLE: BlackjackTable = {
+  minWei: BLACKJACK_DEFAULT_MIN_WAGER_WEI,
+  maxWei: BLACKJACK_DEFAULT_MAX_WAGER_WEI,
+  source: 'default',
+}
+
+function tableFromWelcome(welcome: BlackjackWelcome): BlackjackTable {
+  return {
+    minWei: welcome.minWagerWei,
+    maxWei: welcome.maxWagerWei,
+    feeHintWei: welcome.feeHintWei,
+    rules: welcome.rules,
+    source: 'welcome',
+  }
+}
+
+/**
+ * The table limits of a chat: the LATEST valid `welcome` the dealer sent us (a later one supersedes
+ * an earlier one, so limits the dealer changed are re-read), else the documented fallback. Only
+ * inbound messages count (nothing we sent can set the limits we bet at), and a malformed welcome
+ * is skipped rather than trusted.
+ */
+export function latestDealerTable(
+  messages: Array<{ outbound: boolean; items: Array<Record<string, any>> }>,
+): BlackjackTable {
+  let table = DEFAULT_BLACKJACK_TABLE
+  for (const message of messages) {
+    if (message.outbound) continue
+    for (const item of message.items) {
+      if (item.type !== 'blackjack-move' || item.action !== 'welcome') continue
+      const welcome = parseBlackjackWelcome(item)
+      if (welcome) table = tableFromWelcome(welcome)
+    }
+  }
+  return table
+}
+
 /**
  * Parses and validates the bet-size input BEFORE any value is sent on-chain (a transfer that the
  * dealer then rejects has to be refunded by the bot, so the client filters what it can). Rejects
- * empty, non-numeric, non-finite, zero, negative, below-minimum and above-maximum input.
+ * empty, non-numeric, non-finite, zero, negative, below-minimum and above-maximum input, against
+ * the table's own limits.
  */
 export function parseBetInput(
   fromDisplayAmount: (display: string) => bigint,
   display: string,
+  table: Pick<BlackjackTable, 'minWei' | 'maxWei'> = DEFAULT_BLACKJACK_TABLE,
 ): BetParse {
   const trimmed = display.trim()
   if (!/^-?(\d+(\.\d*)?|\.\d+)$/.test(trimmed)) {
@@ -46,18 +101,35 @@ export function parseBetInput(
       error: 'Enter a valid MON amount to bet',
     }
   }
-  const error = validateBetWei(wei)
+  const error = validateBetWei(wei, table.minWei, table.maxWei)
   if (!error) return { ok: true, wei }
   const code: BetErrorCode =
-    wei <= 0n ? 'zero' : wei < BLACKJACK_DEFAULT_MIN_WAGER_WEI ? 'min' : 'max'
+    wei <= 0n ? 'zero' : wei < table.minWei ? 'min' : 'max'
   return { ok: false, code, error }
 }
 
-/** The table limits the client can know (the dealer advertises none), in MON with decimals. */
-export function betLimitsDisplay(): { min: string; max: string } {
+/** The bet input's starting value: 0.1 MON (comfortably above the relay's stamp minimum), moved
+ * into the table's limits when the dealer's table does not include it. */
+export function defaultBetDisplay(
+  table: Pick<BlackjackTable, 'minWei' | 'maxWei'> = DEFAULT_BLACKJACK_TABLE,
+): string {
+  const preferred = 10n ** 17n
+  const wei =
+    preferred < table.minWei
+      ? table.minWei
+      : preferred > table.maxWei
+      ? table.maxWei
+      : preferred
+  return activeChain.toDisplayAmount(wei)
+}
+
+/** The table limits in MON with decimals, for display. */
+export function betLimitsDisplay(
+  table: Pick<BlackjackTable, 'minWei' | 'maxWei'> = DEFAULT_BLACKJACK_TABLE,
+): { min: string; max: string } {
   return {
-    min: activeChain.toDisplayAmount(BLACKJACK_DEFAULT_MIN_WAGER_WEI),
-    max: activeChain.toDisplayAmount(BLACKJACK_DEFAULT_MAX_WAGER_WEI),
+    min: activeChain.toDisplayAmount(table.minWei),
+    max: activeChain.toDisplayAmount(table.maxWei),
   }
 }
 
@@ -199,9 +271,23 @@ export function dealerReplyFor(
 /** Re-exported from the wallet package (the demo launcher checks its faucet amount against it). */
 export { BET_MESSAGE_FEE_RESERVE_WEI }
 
-/** Total balance a bet needs: the wager, the message stamp, and the fee reserve. */
-export function betFundsRequired(betWei: bigint, stampWei: bigint): bigint {
-  return betWei + stampWei + BET_MESSAGE_FEE_RESERVE_WEI
+/** What sending the bet message costs beyond the wager: the stamp plus the fee reserve, or the
+ * dealer's own hint if that is larger (a hint can only make the requirement stricter). */
+export function betMessageCostWei(
+  stampWei: bigint,
+  feeHintWei?: bigint,
+): bigint {
+  const own = stampWei + BET_MESSAGE_FEE_RESERVE_WEI
+  return feeHintWei !== undefined && feeHintWei > own ? feeHintWei : own
+}
+
+/** Total balance a bet needs: the wager plus the message stamp and fees (`betMessageCostWei`). */
+export function betFundsRequired(
+  betWei: bigint,
+  stampWei: bigint,
+  feeHintWei?: bigint,
+): bigint {
+  return betWei + betMessageCostWei(stampWei, feeHintWei)
 }
 
 export { shortAddress }

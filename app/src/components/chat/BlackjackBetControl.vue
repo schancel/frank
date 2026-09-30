@@ -1,12 +1,14 @@
 <template>
   <form
-    class="blackjack-bet-picker q-pa-md"
-    style="min-width: 280px"
+    class="blackjack-bet-control q-pa-sm"
+    style="min-width: 220px"
     :aria-busy="pending ? 'true' : 'false'"
     novalidate
     @submit.prevent="placeBet"
   >
-    <div class="text-subtitle2">{{ $t('blackjackBet.title') }}</div>
+    <div class="text-subtitle2">
+      {{ title || $t('blackjackBet.title') }}
+    </div>
     <q-input
       ref="betInput"
       v-model="amountDisplay"
@@ -45,6 +47,13 @@
     >
       {{ statusText }}
     </div>
+    <div
+      v-if="lowBalance"
+      class="text-caption q-mt-xs"
+      data-testid="blackjack-bet-faucet-hint"
+    >
+      {{ $t('blackjackBet.faucetHint') }}
+    </div>
     <q-btn
       class="q-mt-sm"
       type="submit"
@@ -70,11 +79,14 @@ import { getOwnCanonicalAddress } from '../../utils/own-address'
 import {
   awaitPayment,
   BetErrorCode,
+  BlackjackTable,
   betFundsRequired,
+  betMessageCostWei,
   checkWagerStatus,
+  DEFAULT_BLACKJACK_TABLE,
   WagerBroadcastError,
-  BET_MESSAGE_FEE_RESERVE_WEI,
   betLimitsDisplay,
+  defaultBetDisplay,
   parseBetInput,
   sendBlackjackWager,
   shortAddress,
@@ -89,29 +101,37 @@ const ERROR_KEYS: Record<BetErrorCode, string> = {
   max: 'blackjackBet.errorMax',
 }
 
-// Comfortably above the relay's stamp minimum and the table minimum, so a first-try default is
-// never rejected as "below the table minimum".
-const DEFAULT_BET_AMOUNT_DISPLAY = '0.1'
-
 /**
- * The first-bet entry point: lets a player with no hand in progress (a new player) pick a wager
- * and start a blackjack game with the dealer of this chat.
+ * The inline bet control shown inside the dealer's bubbles (#395): the welcome (a new player's first
+ * bet) and a resolved hand ("Play again"). It is the ONLY place a blackjack wager is paid from, so
+ * every bet gets the same safety:
  *
- * It sends the wager as the same plain, separately verified value transfer the in-bubble bet form
- * uses (`sendBlackjackWager`) followed by a `bet` move that names that transfer; the dealer bot and
- * `reduceBlackjackState` are unchanged. The table limits are the shared documented defaults (the
- * dealer advertises none, see `game.ts`).
+ * - an explicit confirmation naming the recipient and the amount, and a balance check of
+ *   bet + stamp + fee reserve (an unknown balance blocks);
+ * - the wager record is persisted BEFORE any byte is broadcast (the wallet's `onSigned` hook), then
+ *   a bounded wait for the receipt, then the bet message; the record stays until the dealer's reply
+ *   proves it (the chat's unsent-wager banner retries the SAME wager/gameId, never a new transfer);
+ * - `pending` is set synchronously before anything is awaited, so a double click, Enter-then-click
+ *   or a second submit while the transfer or the message is in flight is a no-op: one submit creates
+ *   exactly one transfer and one `bet` item. The parent's `submit` is awaited (not an emitted
+ *   event) so the bet message is still delivered if this component unmounts while the transfer is
+ *   confirming.
  *
- * Money safety: `pending` is set synchronously before anything is awaited, so a double click,
- * Enter-then-click or a second submit while the transfer or the message is in flight is a no-op;
- * one submit creates exactly one transfer and one `bet` item. The parent's `submit` is awaited
- * (not an emitted event) so the bet message is still delivered if this component unmounts while
- * the transfer is confirming.
+ * It sends the wager as a plain, separately verified value transfer (`sendBlackjackWager`) followed
+ * by a `bet` move that names it; the dealer bot and `reduceBlackjackState` are unchanged. The table
+ * limits come from the dealer's latest `welcome` (`table` prop), or the documented fallback.
  */
 export default defineComponent({
-  name: 'BlackjackBetPicker',
+  name: 'BlackjackBetControl',
   props: {
     address: { type: String, required: true },
+    /** Heading; defaults to "Start a blackjack hand". */
+    title: { type: String, default: '' },
+    /** The table limits and fee hint the bet is validated against (the dealer's latest welcome). */
+    table: {
+      type: Object as PropType<BlackjackTable>,
+      default: () => DEFAULT_BLACKJACK_TABLE,
+    },
     /** The chat's display name, shown next to the address so the recipient is unmistakable. */
     dealerName: { type: String, default: '' },
     /** The stamp the bet message will pay; defaults to the chain's default stamp. */
@@ -139,7 +159,7 @@ export default defineComponent({
   },
   data() {
     return {
-      amountDisplay: DEFAULT_BET_AMOUNT_DISPLAY,
+      amountDisplay: defaultBetDisplay(this.table),
       pending: false,
       phase: '' as '' | 'confirming',
       sent: false,
@@ -169,15 +189,30 @@ export default defineComponent({
         : ''
     },
     limitsHint(): string {
-      return this.$t('blackjackBet.limits', betLimitsDisplay())
+      return this.$t('blackjackBet.limits', betLimitsDisplay(this.table))
+    },
+    /** The balance is known and does not cover the bet plus the message costs. */
+    lowBalance(): boolean {
+      const parsed = parseBetInput(
+        display => activeChain.fromDisplayAmount(display),
+        this.amountDisplay,
+        this.table,
+      )
+      if (!parsed.ok || this.balance === null) return false
+      const stampWei = this.stampWei ?? activeChain.defaultStampValue
+      return (
+        betFundsRequired(parsed.wei, stampWei, this.table.feeHintWei) >
+        this.balance
+      )
     },
     betError(): string {
       const parsed = parseBetInput(
         display => activeChain.fromDisplayAmount(display),
         this.amountDisplay,
+        this.table,
       )
       if (!parsed.ok) {
-        return this.$t(ERROR_KEYS[parsed.code], betLimitsDisplay())
+        return this.$t(ERROR_KEYS[parsed.code], betLimitsDisplay(this.table))
       }
       // The wager is only half the cost: the bet MESSAGE needs its stamp and fees too, and a
       // wager paid with no funds left to send the message is stranded. An unknown balance blocks
@@ -185,12 +220,16 @@ export default defineComponent({
       if (this.balance === null)
         return this.$t('blackjackBet.errorBalanceUnknown')
       const stampWei = this.stampWei ?? activeChain.defaultStampValue
-      const needed = betFundsRequired(parsed.wei, stampWei)
+      const needed = betFundsRequired(
+        parsed.wei,
+        stampWei,
+        this.table.feeHintWei,
+      )
       if (needed > this.balance) {
         return this.$t('blackjackBet.errorBalance', {
           needed: activeChain.toDisplayAmount(needed),
           rest: activeChain.toDisplayAmount(
-            stampWei + BET_MESSAGE_FEE_RESERVE_WEI,
+            betMessageCostWei(stampWei, this.table.feeHintWei),
           ),
           balance: activeChain.toDisplayAmount(this.balance),
         })
@@ -228,6 +267,7 @@ export default defineComponent({
       const parsed = parseBetInput(
         display => activeChain.fromDisplayAmount(display),
         this.amountDisplay,
+        this.table,
       )
       if (!parsed.ok || this.betError || this.unsentBlock || !this.confirmed) {
         this.focusInput()

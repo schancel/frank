@@ -74,3 +74,55 @@ describe('blackjack hydrate verification cache', () => {
     expect(p.getTransaction).toHaveBeenCalledTimes(301)
   })
 })
+
+describe('blackjack welcome action (#395)', () => {
+  const welcomeItem = {
+    type: 'blackjack-move',
+    gameId: 'welcome',
+    action: 'welcome',
+    minWagerWei: '20000000000000000',
+    maxWagerWei: '500000000000000000',
+    feeHintWei: '60000000000000000',
+    rules: 'A natural pays 3:2.',
+  }
+
+  it('round-trips through the item serialization, hydrate and the preview', async () => {
+    const { deserializeMessageItems, serializeMessageItems } = await import(
+      '../../chain/monad-chain'
+    )
+    const items = deserializeMessageItems(
+      serializeMessageItems([welcomeItem as never, { type: 'text', text: 'hi' }]),
+    )
+    expect(items[0]).toEqual(welcomeItem)
+    const hydrated = await hydrate(provider(), items[0])
+    expect(hydrated.action).toBe('welcome')
+    expect(hydrated.welcome).toEqual({
+      minWagerWei: 20000000000000000n,
+      maxWagerWei: 500000000000000000n,
+      feeHintWei: 60000000000000000n,
+      rules: 'A natural pays 3:2.',
+    })
+    // A welcome never looks up a wager on chain.
+    expect(hydrated.verifiedWager).toBeUndefined()
+    expect(plugin().previewText(items[0] as never)).toBe('Blackjack table open')
+  })
+
+  it('tolerates an action it does not know: a string preview and no state', async () => {
+    const future = { type: 'blackjack-move', gameId: 'g', action: 'surrender' } as never
+    expect(plugin().previewText(future)).toBe('Blackjack')
+    const hydrated = await hydrate(provider(), future)
+    const state = plugin().reduceState!(undefined, hydrated, ctx(provider()))
+    expect(state.playerCards).toEqual([])
+    expect(state.availableActions).toEqual([])
+    // ...and never disturbs a hand in progress.
+    const inProgress = { ...state, phase: 'player_turn', availableActions: ['hit'] }
+    expect(plugin().reduceState!(inProgress, hydrated, ctx(provider()))).toBe(inProgress)
+  })
+
+  it('a welcome never creates or changes a hand', async () => {
+    const hydrated = await hydrate(provider(), welcomeItem)
+    const fresh = plugin().reduceState!(undefined, hydrated, ctx(provider()))
+    expect(fresh.availableActions).toEqual([])
+    expect(fresh.wagerTxHash).toBeUndefined()
+  })
+})

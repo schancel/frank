@@ -81,7 +81,8 @@ type Profile = {
   avatar: string | null
   pubKey: PublicKey | null
   /** The signed profile carried the self-declared bot marker (#311). `undefined` = not looked up
-   * yet; only an explicit `true` counts (used to gate bot-only UI such as the blackjack button). */
+   * yet; only an explicit `true` counts. No UI gates on it since #395 removed the blackjack toolbar
+   * button; it stays as the profile's bot marker (capability signalling, #217). */
   isBot?: boolean
 }
 
@@ -392,7 +393,7 @@ export const useContactStore = defineStore('contacts', {
         })
         // A contact added without a looked-up profile (deep link / route navigation) has no bot
         // marker yet; resolve it now (`setActiveChat`'s own refresh ran before this contact
-        // existed), so bot-only UI such as the blackjack button can appear.
+        // existed), so the bot marker is known for whatever needs it.
         if (contact.profile?.isBot === undefined) {
           void this.refresh(address)
         }

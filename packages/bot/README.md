@@ -218,6 +218,8 @@ to skip the Cargo build.
 | `RAFFLE_BOT_MAX_ENTRIES` | raffle | 5 | Entrants per round. The demo default is 5 (the bot's own default is unchanged); use a smaller number for a quick round. |
 | `BLACKJACK_BOT_MIN_WAGER_WEI` | blackjack | bot default (0.01 MON) | Table minimum. |
 | `BLACKJACK_BOT_MAX_WAGER_WEI` | blackjack | bot default (1 MON) | Table maximum. |
+| `BLACKJACK_BOT_MAX_GREETINGS` | blackjack | 5 | Welcome messages the dealer sends per run (each costs the dealer a stamp); 0 = never greet. |
+| `BLACKJACK_BOT_MAX_GREETINGS_PER_DAY` | blackjack | 20 | Welcome messages per UTC day, kept across restarts. |
 | `VENDOR_BOT_CATALOG_DIR` | picture shop | bundled demo-catalog/ | Directory with manifest.json and image files the shop sells. |
 | `FAUCET_AMOUNT_WEI` | faucet | 50000000000000000 (0.05 MON); 1000000000000000000 (1 MON) with --fake-chain | MON sent to each new profile. The 0.05 MON real-network default is small on purpose and is NOT enough for a blackjack hand (0.07 MON minimum: 0.01 bet + 0.01 stamp + 0.05 fee reserve); raise it (ceiling 1 MON) if you want players to be able to play. With --fake-chain the default is 1 MON. FAUCET_MAX_PER_DAY and the per-address rule still apply. |
 | `FAUCET_MAX_PER_DAY` | faucet | 20 | New addresses funded per rolling 24 hours. |
@@ -245,8 +247,11 @@ The faucet wallet must be a different wallet from the stamp wallet: the launcher
 A child that dies after startup is not restarted: a banner names it and its log, and the
 summary is marked UNHEALTHY. If the relay dies the launcher stops everything and exits non-zero.
 
-The blackjack smoke check only proves the dealer answers a bare `deal` with its tagged error; it
-does not play a hand.
+The blackjack smoke checks (#395): the dealer answers a bare `deal` with its tagged error; a new
+profile receives the dealer's `welcome` (limits equal to the dealer's own config, greeted exactly
+once); and a scripted first bet resolves end to end (a real wager transfer from the new profile, the
+`bet` message, the dealer's `deal`, a `stand`, and a `reveal` whose fairness check passes). The
+browser bet control itself is not exercised here (see the PR for the browser run).
 
 The fake chain binds 127.0.0.1 only (a test asserts it), so nothing off this machine can reach it. It is a ledger, not a chain: it accepts any well-formed transaction and mines it
 instantly, so it demonstrates flows, not consensus. Never point anything of value at it.
@@ -571,8 +576,25 @@ proto/backend change) and shares `bot-loop-guard.ts`:
 - Qwen only treats `text` items as prompts; structured items are ignored, never quoted to the model.
 
 Limits: the marker is self-asserted; the budget is in memory (a restart resets it) and per
-address (a sybil gets the budget per address, each still paying a stamp). Blackjack only answers
-`blackjack-move` items and is unchanged apart from registering the marker.
+address (a sybil gets the budget per address, each still paying a stamp). Blackjack answers only
+`blackjack-move` items; it also opens the chat with each new registration (below), skipping itself,
+the denylist and bot-marked profiles through the same guard.
+
+### Blackjack welcome greeting (#395)
+
+The dealer watches the new-registration feed like the Qwen greeter and sends each new profile ONE
+message: a `blackjack-move` item with the additive action `welcome` (min/max wager in wei taken from
+`BLACKJACK_BOT_MIN_WAGER_WEI` / `BLACKJACK_BOT_MAX_WAGER_WEI`, a fee hint, a rules summary) followed
+by a plain-text line. The app renders an inline bet control in that bubble (there is no compose-bar
+button). Each greeting costs the dealer a stamp, so: the once-per-address record is durable and
+written before the send (`blackjack-greeting-state` in `BLACKJACK_BOT_STATE_DIR`, a restart never
+re-greets), `BLACKJACK_BOT_MAX_GREETINGS` caps a run (default 5, 0 = off),
+`BLACKJACK_BOT_MAX_GREETINGS_PER_DAY` caps a UTC day (default 20), and both count a failed send. A
+registration held back by a cap or by short dealer funds is greeted later unless it is older than
+`BLACKJACK_BOT_GREETING_MAX_AGE_MS` (default 24 h). When the dealer balance cannot cover its open
+hands plus one greeting (stamp plus a 0.05 MON fee reserve) the greeting is skipped and logged; the
+bot never crashes on it. `BLACKJACK_BOT_PROFILE_SINCE_MS` overrides where a first run starts
+watching (default: now, so an old registry is not greeted). The cursor is persisted.
 
 ## Standalone testnet faucet (#316)
 

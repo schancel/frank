@@ -7,6 +7,15 @@
         :key="entry.itemId"
         class="row items-center q-gutter-sm q-mb-xs"
       >
+        <img
+          v-if="thumbnailSrc(entry.thumbnail)"
+          class="catalog-thumbnail"
+          :src="thumbnailSrc(entry.thumbnail)"
+          :alt="entry.description"
+          width="64"
+          height="48"
+          style="object-fit: cover; border-radius: 4px"
+        />
         <div class="col text-caption">
           {{ entry.description }} -- {{ displayPrice(entry.priceWei) }}
         </div>
@@ -62,6 +71,16 @@ export default defineComponent({
     }
   },
   methods: {
+    // Only an inline image data URI is ever rendered: a bot-supplied remote URL would make the
+    // viewer's client fetch it (leaking that they opened the chat), so anything else is ignored.
+    thumbnailSrc(thumbnail: string | undefined): string | undefined {
+      return typeof thumbnail === 'string' &&
+        /^data:image\/(png|jpeg|gif|webp);base64,[A-Za-z0-9+/=]+$/.test(
+          thumbnail,
+        )
+        ? thumbnail
+        : undefined
+    },
     displayPrice(priceWei: string): string {
       return `${activeChain.toDisplayAmount(BigInt(priceWei))} ${
         activeChain.unit

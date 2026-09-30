@@ -12,7 +12,15 @@
     <q-dialog v-model="imageDialog">
       <image-dialog :image="image" />
     </q-dialog>
-    <q-img class="q-mb-sm" width="100%" :src="image" @click="showImageDialog" />
+    <!-- Capped so a large delivered picture does not fill the whole chat column. -->
+    <q-img
+      class="q-mb-sm chat-image"
+      style="max-width: 320px; max-height: 320px"
+      width="100%"
+      fit="contain"
+      :src="image"
+      @click="showImageDialog"
+    />
   </template>
 </template>
 

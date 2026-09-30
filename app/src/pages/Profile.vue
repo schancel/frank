@@ -32,6 +32,7 @@
 </template>
 
 <script lang="ts">
+import { navigateBack } from 'src/utils/navigate-back'
 import { defineComponent } from 'vue'
 
 import { useProfileStore } from 'src/stores/my-profile'
@@ -118,10 +119,10 @@ export default defineComponent({
       } finally {
         this.$q.loading.hide()
       }
-      window.history.length > 1 ? this.$router.go(-1) : this.$router.push('/')
+      navigateBack(this.$router)
     },
     cancel() {
-      window.history.length > 1 ? this.$router.go(-1) : this.$router.push('/')
+      navigateBack(this.$router)
     },
   },
   computed: {

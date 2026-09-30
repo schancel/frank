@@ -473,12 +473,12 @@ describe('table limits from the dealer welcome (#395)', () => {
   it('offers a table only for the one relay-curated dealer, not a copied profile', () => {
     const dealer = `0x${'ab'.repeat(20)}`
     const curated = [{ address: dealer, name: 'Blackjack Dealer' }]
-    const profile = { isBot: true, name: 'Blackjack Dealer' }
+    const profile = { isBot: true, signedName: 'Blackjack Dealer' }
     expect(CURATED_BLACKJACK_DEALER_NAME).toBe('Blackjack Dealer')
     expect(peerOffersDealerTable(profile, dealer, curated)).toBe(true)
     expect(
       peerOffersDealerTable(
-        { isBot: true, name: '  Blackjack Dealer  ' },
+        { isBot: true, signedName: '  Blackjack Dealer  ' },
         dealer,
         curated,
       ),
@@ -498,22 +498,38 @@ describe('table limits from the dealer welcome (#395)', () => {
     ).toBe(false)
     expect(
       peerOffersDealerTable(
-        { isBot: false, name: 'Blackjack Dealer' },
+        { isBot: false, signedName: 'Blackjack Dealer' },
         dealer,
         curated,
       ),
     ).toBe(false)
     expect(
       peerOffersDealerTable(
-        { isBot: undefined, name: 'Blackjack Dealer' },
+        { isBot: undefined, signedName: 'Blackjack Dealer' },
         dealer,
         curated,
       ),
     ).toBe(false)
     expect(
-      peerOffersDealerTable({ isBot: true, name: 'Qwen' }, dealer, curated),
+      peerOffersDealerTable(
+        { isBot: true, signedName: 'Qwen' },
+        dealer,
+        curated,
+      ),
     ).toBe(false)
     expect(peerOffersDealerTable(undefined, dealer, curated)).toBe(false)
     expect(peerOffersDealerTable(null, dealer, curated)).toBe(false)
+  })
+
+  it('does not treat a relay fallback label as the signed dealer name (#422)', () => {
+    const dealer = `0x${'ab'.repeat(20)}`
+    const curated = [{ address: dealer, name: 'Blackjack Dealer' }]
+    const profile = {
+      isBot: true,
+      name: 'Blackjack Dealer',
+      signedName: '',
+    }
+
+    expect(peerOffersDealerTable(profile, dealer, curated)).toBe(false)
   })
 })

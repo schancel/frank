@@ -60,6 +60,18 @@ function mountInput(disabled = false) {
   }
 }
 
+function activateButtonFromKeyboard(button: HTMLButtonElement, key: string) {
+  button.focus()
+  button.dispatchEvent(
+    new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }),
+  )
+  if (key === 'Enter') button.click()
+  button.dispatchEvent(
+    new KeyboardEvent('keyup', { key, bubbles: true, cancelable: true }),
+  )
+  if (key === ' ') button.click()
+}
+
 describe('TopicInput focus and in-flight guards (#408)', () => {
   it('lets keyboard focus leave the textarea instead of trapping Tab/Shift+Tab', async () => {
     const input = mountInput()
@@ -88,6 +100,46 @@ describe('TopicInput focus and in-flight guards (#408)', () => {
 
     expect(document.activeElement).toBe(send)
     expect(focusCalls).toEqual([send])
+  })
+
+  it.each([
+    ['Enter', 'Enter'],
+    ['Space', ' '],
+  ])(
+    'sends exactly once when the button is activated with %s',
+    (_label, key) => {
+      const input = mountInput()
+
+      activateButtonFromKeyboard(input.send(), key)
+
+      expect(
+        input.wrapper.findComponent(TopicInput).emitted('sendMessage'),
+      ).toEqual([['topic reply']])
+    },
+  )
+
+  it('preserves textarea focus on pointer down and sends on click', () => {
+    const input = mountInput()
+    const box = input.box()
+    box.focus()
+
+    const down = new MouseEvent('mousedown', {
+      bubbles: true,
+      cancelable: true,
+    })
+    input.send().dispatchEvent(down)
+
+    expect(down.defaultPrevented).toBe(true)
+    expect(document.activeElement).toBe(box)
+    expect(
+      input.wrapper.findComponent(TopicInput).emitted('sendMessage'),
+    ).toBeUndefined()
+
+    input.send().click()
+
+    expect(
+      input.wrapper.findComponent(TopicInput).emitted('sendMessage'),
+    ).toEqual([['topic reply']])
   })
 
   it('keeps the textarea editable but blocks send, paste, and drop while busy', async () => {

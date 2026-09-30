@@ -19,7 +19,8 @@
       flat
       icon="send"
       :disable="disable"
-      @mousedown.prevent="sendMessage"
+      @mousedown.prevent
+      @click="sendMessage"
     />
   </q-toolbar>
 </template>

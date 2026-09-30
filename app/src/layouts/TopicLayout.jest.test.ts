@@ -28,6 +28,8 @@ jest.mock('src/utils/notifications', () => ({
   infoNotify: jest.fn(),
 }))
 jest.mock('src/components/topic/TopicInput.vue', () => ({
+  name: 'TopicInput',
+  props: ['message', 'disable'],
   template: '<div />',
 }))
 jest.mock('src/components/topic/TopicDrawer.vue', () => ({
@@ -76,6 +78,9 @@ describe('TopicLayout sendMessage', () => {
     await flushPromises()
     expect(vm.sendingMessage).toBe(true)
     expect(draft(wrapper)).toBe('')
+    expect(wrapper.findComponent({ name: 'TopicInput' }).props('disable')).toBe(
+      true,
+    )
 
     await vm.sendMessage('duplicate')
     expect(mockPutMessage).toHaveBeenCalledTimes(1)
@@ -136,6 +141,28 @@ describe('TopicLayout sendMessage', () => {
     expect(infoNotify).toHaveBeenCalledWith('POSTED_REFRESH_FAILED')
     expect(errorNotify).not.toHaveBeenCalled()
     expect(draft(wrapper)).toBe('')
+  })
+
+  it('burn refresh failure does not overwrite text entered in flight', async () => {
+    let fail!: (error: Error) => void
+    mockPutMessage.mockImplementationOnce(
+      () => new Promise<void>((_resolve, reject) => (fail = reject)),
+    )
+    const wrapper = mountLayout()
+    const vm = wrapper.vm as unknown as {
+      message: string
+      sendMessage(m: string): Promise<void>
+    }
+
+    const post = vm.sendMessage('my draft')
+    await flushPromises()
+    vm.message = 'next draft'
+    fail(new BurnRefreshError('post', new Error('read failed')))
+    await post
+
+    expect(vm.message).toBe('next draft')
+    expect(infoNotify).toHaveBeenCalledWith('POSTED_REFRESH_FAILED')
+    expect(errorNotify).not.toHaveBeenCalled()
   })
 
   it('failure before the burn: error toast, draft kept so it can be retried', async () => {

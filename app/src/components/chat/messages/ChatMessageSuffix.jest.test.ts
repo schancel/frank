@@ -104,7 +104,7 @@ describe('ChatMessageSuffix outgoing states (#269, #270)', () => {
     expect(region().text()).toBe('')
   })
 
-  it('focusStatus moves focus to the status text (used when Retry unmounts)', async () => {
+  it('focusStatus moves focus to the visible suffix (used when Retry unmounts)', async () => {
     const host = document.createElement('div')
     document.body.appendChild(host)
     const wrapper = mount(ChatMessageSuffix, {
@@ -120,6 +120,9 @@ describe('ChatMessageSuffix outgoing states (#269, #270)', () => {
     })
     ;(wrapper.vm as unknown as { focusStatus: () => void }).focusStatus()
     expect(document.activeElement).toBe(
+      wrapper.get('[data-testid="outgoing-focus-target"]').element,
+    )
+    expect(document.activeElement).not.toBe(
       wrapper.get('[data-testid="outgoing-announcement"]').element,
     )
     wrapper.unmount()

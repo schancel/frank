@@ -12,12 +12,14 @@ import { verifyRaffleDraw } from '@frank/wallet/message-item-plugins/raffle/draw
 import { JsonRpcProvider } from 'ethers'
 
 import { startFakeRpc } from './demo/fake-rpc'
+import { readFileSync } from 'fs'
 import { RaffleBotStateStore, RaffleRoundRecord } from './raffle-bot-state'
 import {
   beginDrawIfFull,
   createRaffleSettler,
   raffleTick,
   repriceSignedPayout,
+  runRaffleBot,
   runRaffleLoop,
   RaffleSettlementPorts,
 } from './raffle-settlement'
@@ -200,7 +202,10 @@ afterEach(async () => {
   rmSync(dir, { recursive: true, force: true })
 })
 
-function fullRound(state: RaffleBotStateStore): RaffleRoundRecord {
+function fullRound(
+  state: RaffleBotStateStore,
+  payments: number[] = [],
+): RaffleRoundRecord {
   const serverSeed = randomBytes(32).toString('hex')
   const round: RaffleRoundRecord = {
     raffleId: 'r1',
@@ -210,6 +215,7 @@ function fullRound(state: RaffleBotStateStore): RaffleRoundRecord {
     entrants: A.map((address, i) => ({
       address,
       txHash: '0x' + String(i + 1).repeat(64),
+      ...(payments[i] ? { payments: payments[i] } : {}),
     })),
   }
   state.setPendingCommitment(serverSeed, round.serverSeedHash)
@@ -974,6 +980,196 @@ describe('raffle draw settlement (#363)', () => {
       })
       expect(out.roundsDrawn).toBe(1)
       expect(l.announces).toHaveLength(3)
+    })
+  })
+
+  describe('payments per entry (F-A)', () => {
+    // 5 sweep payments behind 3 entrants: the real deficit is 5 x dust + payout gas.
+    const need = 3n * PRICE + GAS
+    const fivePayments = 5n * DUST + GAS
+    it('a multi-payment entry is funded (no false hold) while the same gap with one payment each holds', async () => {
+      const l = new FakeLedger()
+      l.identity = need - fivePayments
+      const s1 = await openStore()
+      fullRound(s1, [3, 1, 1])
+      await begin(s1)
+      expect(s1.getDraws()[0].paymentCount).toBe(5)
+      expect((await settlerFor(s1, l)())[0].status).toBe('done')
+
+      // The same gap when the entrants recorded one payment each is an under-paying entry.
+      const l2 = new FakeLedger()
+      l2.identity = need - fivePayments
+      await s1.Close()
+      dir = mkdtempSync(join(tmpdir(), 'raffle-settle-'))
+      const s2 = await openStore()
+      fullRound(s2)
+      await begin(s2)
+      expect((await settlerFor(s2, l2)())[0].status).toBe('held')
+      expect(l2.topUps).toBe(0)
+    })
+  })
+
+  describe('carried dust payments (F-B)', () => {
+    it('is bounded to one round, resets on a top-up, and survives a restart', async () => {
+      const big = new FakeLedger()
+      big.identity = 100n * PRICE
+      const s1 = await openStore()
+      fullRound(s1, [2, 1, 1])
+      await begin(s1)
+      await settlerFor(s1, big)() // paid from existing funds: no top-up
+      expect(s1.getCarriedDustPayments()).toBe(4)
+      // A second no-top-up round does NOT accumulate (bounded at one round's payments).
+      s1.setCurrentRound({
+        ...s1.getCurrentRound()!,
+        entrants: A.map((address, i) => ({
+          address,
+          txHash: '0x' + String(i + 5).repeat(64),
+        })),
+      })
+      await begin(s1)
+      await settlerFor(s1, big)()
+      expect(s1.getCarriedDustPayments()).toBe(3)
+      await s1.Close()
+      const s2 = await openStore()
+      expect(s2.getCarriedDustPayments()).toBe(3) // persisted
+      // A round that needed a top-up resets it.
+      const short = shortLedger()
+      s2.setCurrentRound({
+        ...s2.getCurrentRound()!,
+        entrants: A.map((address, i) => ({
+          address,
+          txHash: '0x' + String(i + 8).repeat(64),
+        })),
+      })
+      await begin(s2)
+      await settlerFor(s2, short)()
+      expect(short.topUps).toBe(1)
+      expect(s2.getCarriedDustPayments()).toBe(0)
+    })
+  })
+
+  describe('abandoned top-up (30 min) and top-up ledger atomicity', () => {
+    it('abandons a top-up the node never heard of, keeps its spend counted, and the caps still bind', async () => {
+      const l = shortLedger()
+      l.autoMineTopUp = false
+      l.lag = true // the node knows nothing about it
+      const state = await openStore()
+      fullRound(state)
+      await begin(state)
+      const shortfall = 3n * DUST + GAS
+      const settle = settlerFor(state, l, undefined, shortfall + shortfall / 2n)
+      await settle()
+      expect(state.getDraws()[0].pendingTopUp).toBeDefined()
+      const spent = state.getDraws()[0].topUpWei
+      expect(BigInt(spent!)).toBe(shortfall)
+      l.clock += 31 * 60_000
+      const r = await settle()
+      expect(l.warns.join('\n')).toMatch(/abandoning operator top-up/)
+      expect(state.getDraws()[0].pendingTopUp).toBeUndefined()
+      expect(state.getDraws()[0].topUpWei).toBe(spent) // still counted
+      expect(state.topUpTotalSince(l.clock)).toBe(shortfall)
+      // A second top-up would exceed the per-round cap: held.
+      expect(r[0].status).toBe('held')
+      expect(l.topSigned).toBe(1)
+    })
+
+    it('writes the draw spend and the day ledger in one batch (no separate ledger put)', async () => {
+      const l = shortLedger()
+      const state = await openStore()
+      const put = jest.spyOn((state as any).db, 'put')
+      fullRound(state)
+      await begin(state)
+      await state.flush()
+      put.mockClear()
+      await settlerFor(state, l)()
+      expect(put.mock.calls.some(c => c[0] === '__topup_ledger__')).toBe(false)
+      await state.Close()
+      const s2 = await openStore()
+      expect(s2.topUpTotalSince(l.clock)).toBeGreaterThan(0n)
+    })
+  })
+
+  describe('maxRounds and unsettled draws', () => {
+    it('does not open further draws past maxRounds while one is unsettled', async () => {
+      const l = shortLedger()
+      l.operator = 0n
+      const state = await openStore()
+      fullRound(state)
+      let opened = 0
+      let iterations = 0
+      await runRaffleLoop({
+        state,
+        openDrawIfFull: async () => {
+          const r = await begin(state)
+          if (r) opened++
+          return r
+        },
+        settle: settlerFor(state, l),
+        pollOnce: async () => {
+          iterations++
+          if (iterations === 1) {
+            // another round fills while the first is held
+            state.setCurrentRound({
+              ...state.getCurrentRound()!,
+              entrants: A.map((address, i) => ({
+                address,
+                txHash: '0x' + String(i + 4).repeat(64),
+              })),
+            })
+          }
+          if (iterations === 4) l.operator = 10n ** 18n
+        },
+        sleep: async () => {
+          l.clock += 60_000
+        },
+        now: () => l.clock,
+        idleTimeoutMs: 10 * 60_000,
+        maxRounds: 1,
+      })
+      expect(opened).toBe(1)
+      expect(state.getCurrentRound()!.entrants).toHaveLength(3) // left full, not drawn
+    })
+  })
+
+  describe('runRaffleBot (what main() calls)', () => {
+    it('opens, settles and loops through the real settler with fake ports', async () => {
+      const l = shortLedger()
+      const state = await openStore()
+      fullRound(state)
+      const out = await runRaffleBot({
+        state,
+        ports: makePorts(l),
+        maxTopUpPerRoundWei: CAP,
+        maxTopUpPerDayWei: CAP * 5n,
+        round: {
+          entryPriceWei: PRICE.toString(),
+          maxEntries: 3,
+          newServerSeed: () => randomBytes(32).toString('hex'),
+          newRaffleId: () => randomBytes(4).toString('hex'),
+        },
+        pollOnce: async () => {},
+        sleep: async () => {
+          l.clock += 60 * 60_000
+        },
+        now: () => l.clock,
+        idleTimeoutMs: 10 * 60_000,
+        maxRounds: 1,
+      })
+      expect(out.roundsDrawn).toBe(1)
+      expect(l.announces).toHaveLength(3)
+    })
+
+    it('main() goes through runRaffleBot and does not re-implement the loop or the settler', () => {
+      const src = readFileSync(
+        join(__dirname, 'raffle-bot.livecheck.ts'),
+        'utf8',
+      )
+      expect(src).toMatch(/await runRaffleBot\(/)
+      // The credited entrant records how many payments backed it (the hold threshold uses it).
+      expect(src).toMatch(/payments: swept\.paymentCount/)
+      expect(src).not.toMatch(
+        /(createRaffleSettler|beginDrawIfFull|raffleTick|runRaffleLoop)\(/,
+      )
     })
   })
 

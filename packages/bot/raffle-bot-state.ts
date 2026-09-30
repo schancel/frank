@@ -34,7 +34,7 @@ const ROUND_KEY = '__current_round__'
 const PROCESSED_PREFIX = 'processed:'
 const DRAW_PREFIX = 'draw:'
 const TOPUP_LEDGER_KEY = '__topup_ledger__'
-const CARRIED_DUST_KEY = '__carried_dust_entrants__'
+const CARRIED_DUST_KEY = '__carried_dust_payments__'
 const DAY_MS = 24 * 60 * 60 * 1000
 
 /** A full round that has been drawn and is being settled (#363). It is written, together with the
@@ -74,6 +74,8 @@ export interface RaffleDrawRecord {
     signedAtMs: number
   }
   announcedTo: string[]
+  /** Total sweep payments behind this round's entries (sum over entrants; absent: one each). */
+  paymentCount?: number
   /** Cumulative operator top-up spent on this round (capped per round, persisted so a restart
    * cannot top up again beyond the cap). */
   topUpWei?: string
@@ -86,6 +88,9 @@ const SYNC = { sync: true }
 export interface RaffleEntrant {
   address: string
   txHash: string
+  /** On-chain stamp payments swept for this entry (each loses one sweep gas on the way in); drives
+   * the plausible-dust bound. Absent in older records: treated as 1. */
+  payments?: number
 }
 
 export interface RaffleRoundRecord {
@@ -140,7 +145,7 @@ export class RaffleBotStateStore {
   private processedPayloadHashes = new Set<string>()
   private draws = new Map<string, RaffleDrawRecord>()
   private topUps: Array<{ atMs: number; wei: string }> = []
-  private carriedDustEntrants = 0
+  private carriedDustPayments = 0
   private pendingWrites: Promise<unknown>[] = []
 
   constructor(location: string) {
@@ -170,7 +175,7 @@ export class RaffleBotStateStore {
         migratedRound = canonicalizePersistedRound(round)
         this.currentRound = migratedRound
       } else if (key === CARRIED_DUST_KEY) {
-        this.carriedDustEntrants = JSON.parse(value)
+        this.carriedDustPayments = JSON.parse(value)
       } else if (key === TOPUP_LEDGER_KEY) {
         this.topUps = JSON.parse(value)
       } else if (key.startsWith(DRAW_PREFIX)) {
@@ -272,6 +277,23 @@ export class RaffleBotStateStore {
     return draw
   }
 
+  /** Records a top-up spend on the draw and in the day ledger in ONE atomic, fsynced batch. */
+  async putDrawWithTopUp(
+    draw: RaffleDrawRecord,
+    nowMs: number,
+    wei: bigint,
+  ): Promise<void> {
+    const kept = this.topUps.filter(t => t.atMs > nowMs - 2 * DAY_MS)
+    kept.push({ atMs: nowMs, wei: wei.toString() })
+    await this.db
+      .batch()
+      .put(DRAW_PREFIX + draw.raffleId, JSON.stringify(draw))
+      .put(TOPUP_LEDGER_KEY, JSON.stringify(kept))
+      .write(SYNC)
+    this.draws.set(draw.raffleId, draw)
+    this.topUps = kept
+  }
+
   /** Durably replaces a draw record (awaited, so callers can rely on it before their next step). */
   async putDraw(draw: RaffleDrawRecord): Promise<void> {
     await this.db.put(DRAW_PREFIX + draw.raffleId, JSON.stringify(draw), SYNC)
@@ -297,14 +319,14 @@ export class RaffleBotStateStore {
     this.topUps = kept
   }
 
-  /** Entrants of already-paid rounds whose sweep-gas deficit was absorbed by the identity's other
+  /** Sweep payments of the last paid round(s) whose sweep-gas deficit was absorbed by the identity's other
    * funds instead of an operator top-up: a later round's shortfall legitimately includes it. */
-  getCarriedDustEntrants(): number {
-    return this.carriedDustEntrants
+  getCarriedDustPayments(): number {
+    return this.carriedDustPayments
   }
 
-  async setCarriedDustEntrants(n: number): Promise<void> {
+  async setCarriedDustPayments(n: number): Promise<void> {
     await this.db.put(CARRIED_DUST_KEY, JSON.stringify(n), SYNC)
-    this.carriedDustEntrants = n
+    this.carriedDustPayments = n
   }
 }

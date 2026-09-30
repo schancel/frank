@@ -111,14 +111,14 @@ import {
   RaffleRoundRecord,
 } from './raffle-bot-state'
 import {
-  beginDrawIfFull,
-  createRaffleSettler,
   RAFFLE_DEFAULT_ENTRY_PRICE_WEI,
   RAFFLE_DEFAULT_MAX_ENTRIES,
   RAFFLE_DEFAULT_MAX_TOPUP_PER_DAY_WEI,
   RAFFLE_DEFAULT_MAX_TOPUP_WEI,
   repriceSignedPayout,
-  runRaffleLoop,
+  RAFFLE_MAX_PAYMENTS_PER_ENTRY,
+  RaffleSettlementPorts,
+  runRaffleBot,
 } from './raffle-settlement'
 
 function sleep(ms: number): Promise<void> {
@@ -170,7 +170,12 @@ export async function recoverAndSweepEntryPayment(params: {
    * (default: the current dust threshold estimate, the amount each sweep leaves behind). */
   dustToleranceWei?: bigint
 }): Promise<
-  | { ok: true; totalValueWei: bigint; combinedTxHash: string }
+  | {
+      ok: true
+      totalValueWei: bigint
+      combinedTxHash: string
+      paymentCount: number
+    }
   | { ok: false; reason: string; totalValueWei?: bigint }
 > {
   let recovered
@@ -190,6 +195,17 @@ export async function recoverAndSweepEntryPayment(params: {
   }
   const { ordered, totalValueWei, combinedTxHash } =
     summarizeRecoveredPayments(recovered)
+
+  // Each payment loses one sweep gas on the way in, and the draw's plausible-dust slack scales with
+  // the payment count, so an entry split into many payments is refused BEFORE any sweep (its funds
+  // stay untouched at the child addresses).
+  if (ordered.length > RAFFLE_MAX_PAYMENTS_PER_ENTRY) {
+    return {
+      ok: false,
+      reason: `entry is split into ${ordered.length} payments; at most ${RAFFLE_MAX_PAYMENTS_PER_ENTRY} are accepted (nothing was swept)`,
+      totalValueWei,
+    }
+  }
 
   if (totalValueWei < params.minTotalValueWei) {
     return {
@@ -255,7 +271,12 @@ export async function recoverAndSweepEntryPayment(params: {
     }
   }
 
-  return { ok: true, totalValueWei, combinedTxHash }
+  return {
+    ok: true,
+    totalValueWei,
+    combinedTxHash,
+    paymentCount: ordered.length,
+  }
 }
 
 async function main() {
@@ -385,107 +406,87 @@ async function main() {
 
   const senderPubKeyCache = new Map<string, Buffer>()
 
-  const settleDraws = createRaffleSettler({
-    state,
-    maxTopUpPerRoundWei,
-    maxTopUpPerDayWei,
-    ports: {
-      getBalanceWei: () =>
-        provider.getBalance(identity.displayAddress, 'latest'),
-      operatorBalanceWei: () =>
-        provider.getBalance(mainAccountSigner.address, 'latest'),
-      sweepDustWei: () => estimateDustThresholdWei(provider),
-      repricePayout: (previousRawTx, gasBudgetWei) =>
-        repriceSignedPayout({
-          previousRawTx,
-          gasBudgetWei,
-          sign: async (to, value, overrides) => {
-            const tx = await identitySigner.buildAndSignTransfer(
-              to,
-              value,
-              overrides,
-            )
-            return { rawTx: tx.rawTx, txHash: tx.txHash }
-          },
-        }),
-      isTxKnown: async txHash => (await provider.getTransaction(txHash)) !== null,
-      error: message => console.error(message),
-      payoutGasReserveWei: async () => {
-        const feeData = await provider.getFeeData()
-        const maxFeePerGas = feeData.maxFeePerGas ?? BigInt(250000000000)
-        return (maxFeePerGas * BigInt(21000) * BigInt(11)) / BigInt(10)
-      },
-      signTopUp: async amountWei => {
-        console.log(
-          `[raffle-bot] topping up identity by ${amountWei} wei from the operator (stamp) wallet to cover swept-entry gas and payout gas`,
-        )
-        const tx = await mainAccountSigner.buildAndSignTransfer(
-          identity.displayAddress,
-          amountWei,
-        )
-        return { rawTx: tx.rawTx, txHash: tx.txHash }
-      },
-      broadcastTopUp: async (rawTx, txHash) => {
-        await mainAccountSigner.submitRaw(rawTx, txHash)
-      },
-      getTopUpStatus: txHash => mainAccountSigner.getStatus(txHash),
-      signPayout: async (to, valueWei) => {
-        const tx = await identitySigner.buildAndSignTransfer(to, valueWei)
-        return { rawTx: tx.rawTx, txHash: tx.txHash }
-      },
-      broadcast: async (rawTx, txHash) => {
-        await identitySigner.submitRaw(rawTx, txHash)
-      },
-      getStatus: txHash => identitySigner.getStatus(txHash),
-      announce: async (entrantAddress, drawItem) => {
-        const entrantKey = canonicalMonadEnvelopeAddress(entrantAddress)
-        let toPubKey = senderPubKeyCache.get(entrantKey)
-        if (!toPubKey) {
-          toPubKey = await fetchMonadIdentityPubKey({
-            relayBaseUrl,
-            address: entrantAddress,
-          })
-          if (!toPubKey) {
-            console.warn(
-              `[raffle-bot] no public key for ${entrantAddress}; cannot deliver the draw message`,
-            )
-            return
-          }
-          senderPubKeyCache.set(entrantKey, toPubKey)
-        }
-        await sendDirectMessageItems({
-          stampClient,
-          pool,
-          mainAccountSigner,
-          provider,
-          fromIdentity: identity,
-          toAddress: entrantAddress,
-          toPubKey,
-          items: [drawItem],
-          stampValueWei: replyStampValueWei,
-          networkTag,
-        })
-      },
-      log: message => console.log(message),
-      warn: message => console.warn(message),
+  const ports: RaffleSettlementPorts = {
+    getBalanceWei: () =>
+      provider.getBalance(identity.displayAddress, 'latest'),
+    operatorBalanceWei: () =>
+      provider.getBalance(mainAccountSigner.address, 'latest'),
+    sweepDustWei: () => estimateDustThresholdWei(provider),
+    repricePayout: (previousRawTx, gasBudgetWei) =>
+      repriceSignedPayout({
+        previousRawTx,
+        gasBudgetWei,
+        sign: async (to, value, overrides) => {
+          const tx = await identitySigner.buildAndSignTransfer(
+            to,
+            value,
+            overrides,
+          )
+          return { rawTx: tx.rawTx, txHash: tx.txHash }
+        },
+      }),
+    isTxKnown: async txHash => (await provider.getTransaction(txHash)) !== null,
+    error: message => console.error(message),
+    payoutGasReserveWei: async () => {
+      const feeData = await provider.getFeeData()
+      const maxFeePerGas = feeData.maxFeePerGas ?? BigInt(250000000000)
+      return (maxFeePerGas * BigInt(21000) * BigInt(11)) / BigInt(10)
     },
-  })
-  const openDrawIfFull = async (): Promise<boolean> => {
-    try {
-      return await beginDrawIfFull({
-        state,
-        newServerSeed: generateServerSeed,
-        newRaffleId: generateRaffleId,
-        entryPriceWei: entryPriceWei.toString(),
-        maxEntries,
-        log: message => console.log(message),
+    signTopUp: async amountWei => {
+      console.log(
+        `[raffle-bot] topping up identity by ${amountWei} wei from the operator (stamp) wallet to cover swept-entry gas and payout gas`,
+      )
+      const tx = await mainAccountSigner.buildAndSignTransfer(
+        identity.displayAddress,
+        amountWei,
+      )
+      return { rawTx: tx.rawTx, txHash: tx.txHash }
+    },
+    broadcastTopUp: async (rawTx, txHash) => {
+      await mainAccountSigner.submitRaw(rawTx, txHash)
+    },
+    getTopUpStatus: txHash => mainAccountSigner.getStatus(txHash),
+    signPayout: async (to, valueWei) => {
+      const tx = await identitySigner.buildAndSignTransfer(to, valueWei)
+      return { rawTx: tx.rawTx, txHash: tx.txHash }
+    },
+    broadcast: async (rawTx, txHash) => {
+      await identitySigner.submitRaw(rawTx, txHash)
+    },
+    getStatus: txHash => identitySigner.getStatus(txHash),
+    announce: async (entrantAddress, drawItem) => {
+      const entrantKey = canonicalMonadEnvelopeAddress(entrantAddress)
+      let toPubKey = senderPubKeyCache.get(entrantKey)
+      if (!toPubKey) {
+        toPubKey = await fetchMonadIdentityPubKey({
+          relayBaseUrl,
+          address: entrantAddress,
+        })
+        if (!toPubKey) {
+          console.warn(
+            `[raffle-bot] no public key for ${entrantAddress}; cannot deliver the draw message`,
+          )
+          return
+        }
+        senderPubKeyCache.set(entrantKey, toPubKey)
+      }
+      await sendDirectMessageItems({
+        stampClient,
+        pool,
+        mainAccountSigner,
+        provider,
+        fromIdentity: identity,
+        toAddress: entrantAddress,
+        toPubKey,
+        items: [drawItem],
+        stampValueWei: replyStampValueWei,
+        networkTag,
       })
-    } catch (err) {
-      // Not fatal: the full round stays persisted and is retried next tick / on restart.
-      console.error('[raffle-bot] could not record the draw; will retry:', err)
-      return false
-    }
+    },
+    log: message => console.log(message),
+    warn: message => console.warn(message),
   }
+
   let since = Date.now()
 
   console.log(
@@ -497,8 +498,8 @@ async function main() {
   // idle-exits while a draw is unsettled.
   const pollOnce = async (ctx: {
     markActivity(): void
-    drawOpened(): void
     roundsDrawn(): number
+    drawAndSettle(): Promise<void>
   }) => {
     const stored = await fetchMonadMessagesSince({
       ...mailboxAuthFor(identity, relayBaseUrl),
@@ -673,6 +674,7 @@ async function main() {
       const entrant: RaffleEntrant = {
         address: canonicalMonadEnvelopeAddress(envelope.from),
         txHash: swept.combinedTxHash,
+        payments: swept.paymentCount,
       }
       const updatedEntrants = [...round.entrants, entrant]
       const updatedRound: RaffleRoundRecord = {
@@ -706,8 +708,7 @@ async function main() {
       // Round is full. Order (see raffle-settlement.ts): record the draw + rotate to a fresh
       // commitment atomically, verify/fund the pot, persist then broadcast the payout, reconcile
       // by hash, and only then announce (reveal the seed). Nothing here may throw the process.
-      if (await openDrawIfFull()) ctx.drawOpened()
-      await settleDraws()
+      await ctx.drawAndSettle()
       if (ctx.roundsDrawn() >= maxRounds) break
     }
 
@@ -715,10 +716,17 @@ async function main() {
     await state.flush()
   }
 
-  const { roundsDrawn } = await runRaffleLoop({
+  const { roundsDrawn } = await runRaffleBot({
     state,
-    openDrawIfFull,
-    settle: settleDraws,
+    ports,
+    maxTopUpPerRoundWei,
+    maxTopUpPerDayWei,
+    round: {
+      entryPriceWei: entryPriceWei.toString(),
+      maxEntries,
+      newServerSeed: generateServerSeed,
+      newRaffleId: generateRaffleId,
+    },
     pollOnce,
     sleep: () => sleep(pollIntervalMs),
     now: Date.now,

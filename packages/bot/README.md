@@ -83,7 +83,9 @@ A raffle entry reaches the raffle identity net of the gas of the sweep that move
 identity alone is always a little short of the gross pot (`entry price x entrants`). What is enforced
 before an entry is credited (`recoverAndSweepEntryPayment`): the entry's on-chain stamp payments to
 the bot's derived addresses, re-derived and checked against the message, total at least the entry
-price; and the amount actually swept into the identity, plus one sweep-gas tolerance per payment, is
+price; the entry is paid in at most 3 on-chain payments (a more fragmented entry is not credited and
+nothing is swept, because each payment loses one sweep gas and the hold threshold below scales with
+the payment count, so many small payments would widen it); and the amount actually swept into the identity, plus one sweep-gas tolerance per payment, is
 at least the entry price. An entry failing either check is not credited and its swept funds stay in
 the identity (logged and answered with an error). The draw then
 works in this order, each step durable (fsynced) before the next: record the draw (and open the next
@@ -96,9 +98,11 @@ pre-fund the raffle identity, and a winner is never announced before the payout 
 swept and confirmed on-chain before it is credited.)
 
 **Operator top-up limits.** The stamp wallet may top up the identity only while all hold: the gap is
-no more than the plausible sweep-gas dust for the round size (1.3 x (entrants x sweep gas + payout
-gas); the 30% margin covers fee drift between the sweeps and the draw, and entrants of earlier
-rounds paid without a top-up are carried into the count; a larger gap means an entry paid less than
+no more than the plausible sweep-gas dust for the round's payments (1.3 x (payments x sweep gas +
+payout gas), the payment count recorded per entrant at credit time, so multi-payment entries raise
+the threshold, up to the cap of 3 each; the 30% margin covers fee drift between the sweeps and the draw, and entrants of earlier
+rounds paid without a top-up (at most one round's payments, reset by any top-up) are carried into
+the count; a larger gap means an entry paid less than
 the price, so the round is held and logged with no operator money moved); the round's cumulative top-ups stay within `RAFFLE_BOT_MAX_TOPUP_WEI`
 (per round, persisted); and the trailing 24 hours stay within `RAFFLE_BOT_MAX_TOPUP_PER_DAY_WEI`
 (default 5x the per-round limit, persisted). A failed top-up attempt still counts against the limits.

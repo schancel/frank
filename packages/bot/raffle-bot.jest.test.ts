@@ -179,4 +179,32 @@ describe('recoverAndSweepEntryPayment (#319)', () => {
       ok: false,
     })
   })
+
+  it('does not credit an entry split into more than the allowed payments, and sweeps nothing', async () => {
+    const m = mocks()
+    m.sweepRecoveredMonadStampPayment.mockClear()
+    m.recoverMonadStampPayments.mockReturnValue(
+      [0, 1, 2, 3].map(i => fakePayment(i, 6n * 10n ** 15n, `0x${i}`)),
+    )
+    const result = await recoverAndSweepEntryPayment(base())
+    expect(result).toMatchObject({ ok: false })
+    expect((result as { reason: string }).reason).toMatch(/at most 3/)
+    expect(m.sweepRecoveredMonadStampPayment).not.toHaveBeenCalled()
+  })
+
+  it('credits up to the cap and reports the payment count', async () => {
+    const m = mocks()
+    m.recoverMonadStampPayments.mockReturnValue(
+      [0, 1, 2].map(i => fakePayment(i, 7n * 10n ** 15n, `0x${i}`)),
+    )
+    m.sweepRecoveredMonadStampPayment.mockResolvedValue({
+      swept: true,
+      txHash: '0x1',
+      valueWei: 7n * 10n ** 15n - DUST,
+    })
+    expect(await recoverAndSweepEntryPayment(base())).toMatchObject({
+      ok: true,
+      paymentCount: 3,
+    })
+  })
 })

@@ -63,6 +63,9 @@ import {
 export const RAFFLE_DEFAULT_ENTRY_PRICE_WEI = '20000000000000000' // 0.02 MON
 export const RAFFLE_DEFAULT_MAX_ENTRIES = 5
 export const RAFFLE_DEFAULT_MAX_TOPUP_WEI = '50000000000000000' // 0.05 MON, per round
+/** An entry paid in more on-chain payments than this is not credited (each payment loses one sweep
+ * gas, so an entry split into many small payments would inflate the plausible-dust slack). */
+export const RAFFLE_MAX_PAYMENTS_PER_ENTRY = 3
 export const RAFFLE_DEFAULT_MAX_TOPUP_PER_DAY_WEI = '250000000000000000' // 5x per round
 
 const MINUTE_MS = 60_000
@@ -204,6 +207,7 @@ export async function beginDrawIfFull(params: {
       phase: 'awaiting-funds',
       announcedTo: [],
       topUpWei: '0',
+      paymentCount: round.entrants.reduce((n, e) => n + (e.payments ?? 1), 0),
     },
     nextRound,
     nextCommitment: { serverSeed: nextSeed, serverSeedHash: nextHash },
@@ -362,8 +366,7 @@ export function createRaffleSettler(params: {
         signedAtMs: now(),
       },
     }
-    await state.putDraw(draw)
-    await state.recordTopUp(now(), shortfallWei)
+    await state.putDrawWithTopUp(draw, now(), shortfallWei)
     try {
       await ports.broadcastTopUp(signed.rawTx, signed.txHash)
     } catch (err) {
@@ -414,16 +417,16 @@ export function createRaffleSettler(params: {
       let balance = await ports.getBalanceWei()
       if (balance < required) {
         const shortfall = required - balance
-        const entrants =
-          BigInt(draw.drawItem.entrants?.length ?? 0) +
-          BigInt(state.getCarriedDustEntrants())
+        const payments =
+          BigInt(draw.paymentCount ?? draw.drawItem.entrants?.length ?? 0) +
+          BigInt(state.getCarriedDustPayments())
         const dust = await ports.sweepDustWei()
         const plausible =
-          ((entrants * dust + gas) * PLAUSIBLE_DUST_MARGIN_NUM) /
+          ((payments * dust + gas) * PLAUSIBLE_DUST_MARGIN_NUM) /
           PLAUSIBLE_DUST_MARGIN_DEN
         if (shortfall > plausible) {
           return held(
-            `identity holds ${balance} wei, needs ${required} (pot ${pot} + payout gas ${gas}); the ${shortfall} wei gap exceeds the plausible sweep-gas dust for ${entrants} entrants (${plausible}), so an entry probably paid less than the entry price. Investigate; no operator funds moved.`,
+            `identity holds ${balance} wei, needs ${required} (pot ${pot} + payout gas ${gas}); the ${shortfall} wei gap exceeds the plausible sweep-gas dust for ${payments} payments (${plausible}), so an entry probably paid less than the entry price. Investigate; no operator funds moved.`,
           )
         }
         const funded = await fundIdentity(draw, shortfall, gas)
@@ -563,11 +566,11 @@ export function createRaffleSettler(params: {
       await state.putDraw(draw)
       // Remember whether this round's sweep-gas deficit was covered by an operator top-up or
       // silently absorbed by other funds (which a later round's shortfall then includes).
-      await state.setCarriedDustEntrants(
-        BigInt(draw.topUpWei ?? '0') > 0n
-          ? 0
-          : state.getCarriedDustEntrants() +
-              (draw.drawItem.entrants?.length ?? 0),
+      // Bounded: at most one round's payments are ever carried, and any top-up resets it.
+      const roundPayments =
+        draw.paymentCount ?? draw.drawItem.entrants?.length ?? 0
+      await state.setCarriedDustPayments(
+        BigInt(draw.topUpWei ?? '0') > 0n ? 0 : roundPayments,
       )
       progressed = true
       ports.log(`${tag} payout confirmed`)
@@ -699,13 +702,16 @@ export async function raffleTick(params: {
   nowMs: number
   lastActivityAtMs: number
   idleTimeoutMs: number
+  /** False once `maxRounds` is reached: no further draws are opened while unsettled ones finish. */
+  canOpenDraw?: boolean
 }): Promise<{ exit: boolean; lastActivityAtMs: number; drawsOpened: number }> {
   let lastActivityAtMs = params.lastActivityAtMs
   const exit =
     params.state.getDraws().length === 0 &&
     params.nowMs - lastActivityAtMs > params.idleTimeoutMs
   if (exit) return { exit, lastActivityAtMs, drawsOpened: 0 }
-  const drawsOpened = (await params.openDrawIfFull()) ? 1 : 0
+  const drawsOpened =
+    params.canOpenDraw !== false && (await params.openDrawIfFull()) ? 1 : 0
   const results = await params.settle()
   if (drawsOpened > 0 || results.some(r => r.progressed)) {
     lastActivityAtMs = params.nowMs
@@ -751,6 +757,7 @@ export async function runRaffleLoop(params: {
       nowMs: params.now(),
       lastActivityAtMs,
       idleTimeoutMs: params.idleTimeoutMs,
+      canOpenDraw: roundsDrawn < params.maxRounds,
     })
     if (tick.exit) {
       params.onIdleExit?.()
@@ -762,4 +769,83 @@ export async function runRaffleLoop(params: {
     await params.sleep()
   }
   return { roundsDrawn }
+}
+
+/** The whole raffle runtime behind one entry point, so `main()` only builds real ports and calls
+ * this (a test fails if `main()` stops going through it): builds the settler and the draw opener
+ * and runs `runRaffleLoop`. `pollOnce` gets `drawAndSettle`, to call right after an entry fills a
+ * round. */
+export async function runRaffleBot(params: {
+  state: RaffleBotStateStore
+  ports: RaffleSettlementPorts
+  maxTopUpPerRoundWei: bigint
+  maxTopUpPerDayWei: bigint
+  round: {
+    entryPriceWei: string
+    maxEntries: number
+    newServerSeed: () => string
+    newRaffleId: () => string
+  }
+  pollOnce: (ctx: {
+    markActivity(): void
+    roundsDrawn(): number
+    drawAndSettle(): Promise<void>
+  }) => Promise<void>
+  sleep: () => Promise<void>
+  now: () => number
+  idleTimeoutMs: number
+  maxRounds: number
+  onIdleExit?: () => void
+}): Promise<{ roundsDrawn: number }> {
+  const settle = createRaffleSettler({
+    state: params.state,
+    ports: params.ports,
+    maxTopUpPerRoundWei: params.maxTopUpPerRoundWei,
+    maxTopUpPerDayWei: params.maxTopUpPerDayWei,
+    now: params.now,
+  })
+  const openDrawIfFull = async (): Promise<boolean> => {
+    try {
+      return await beginDrawIfFull({
+        state: params.state,
+        newServerSeed: params.round.newServerSeed,
+        newRaffleId: params.round.newRaffleId,
+        entryPriceWei: params.round.entryPriceWei,
+        maxEntries: params.round.maxEntries,
+        log: message => params.ports.log(message),
+      })
+    } catch (err) {
+      // Not fatal: the full round stays persisted and is retried next tick / on restart.
+      params.ports.error(
+        `[raffle-bot] could not record the draw; will retry: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      )
+      return false
+    }
+  }
+  return runRaffleLoop({
+    state: params.state,
+    openDrawIfFull,
+    settle,
+    pollOnce: ctx =>
+      params.pollOnce({
+        markActivity: ctx.markActivity,
+        roundsDrawn: ctx.roundsDrawn,
+        drawAndSettle: async () => {
+          if (
+            ctx.roundsDrawn() < params.maxRounds &&
+            (await openDrawIfFull())
+          ) {
+            ctx.drawOpened()
+          }
+          await settle()
+        },
+      }),
+    sleep: params.sleep,
+    now: params.now,
+    idleTimeoutMs: params.idleTimeoutMs,
+    maxRounds: params.maxRounds,
+    onIdleExit: params.onIdleExit,
+  })
 }

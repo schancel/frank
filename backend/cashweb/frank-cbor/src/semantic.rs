@@ -181,6 +181,21 @@ pub(crate) fn check_semantics(
             }
             Ok(())
         }
+        TypedPayload::TopicPostSubmission {
+            network,
+            post_frame,
+            ..
+        } => match opened(post_frame) {
+            TypedPayload::TopicPost {
+                network: post_network,
+                ..
+            } if post_network == network => Ok(()),
+            TypedPayload::TopicPost { .. } => Err(semantic(
+                "submission network differs from the type-9 network (S11)",
+                &format!("{path}.0"),
+            )),
+            _ => panic!("internal: expected an opened type-9 frame"),
+        },
         TypedPayload::DirectoryAttestation {
             statement,
             signatures,

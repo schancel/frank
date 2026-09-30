@@ -313,6 +313,41 @@ pub enum TypedPayload {
         /// V6.3 unknown fields.
         unknown: Vec<(u64, CborValue)>,
     },
+    /// Type 9.
+    TopicPost {
+        /// Field 0.
+        network: String,
+        /// Field 1, exact UTF-8, not normalized.
+        topic: String,
+        /// Field 2, when present: T1 hash of the parent type-9 frame.
+        parent_hash: Option<Vec<u8>>,
+        /// Field 3, opaque.
+        body: Vec<u8>,
+        /// V6.3 unknown fields.
+        unknown: Vec<(u64, CborValue)>,
+    },
+    /// Type 10.
+    TopicPostSubmission {
+        /// Field 0.
+        network: String,
+        /// Field 1, opened as type 9.
+        post_frame: ParsedFrame,
+        /// Field 2, raw signed chain transaction.
+        burn_tx: Vec<u8>,
+        /// V6.3 unknown fields.
+        unknown: Vec<(u64, CborValue)>,
+    },
+    /// Type 11.
+    TopicVoteSubmission {
+        /// Field 0.
+        network: String,
+        /// Field 1: T1 hash of the target type-9 frame.
+        target_hash: Vec<u8>,
+        /// Field 2, raw signed chain transaction.
+        burn_tx: Vec<u8>,
+        /// V6.3 unknown fields.
+        unknown: Vec<(u64, CborValue)>,
+    },
     /// Type 8.
     MessageRevision {
         /// Field 1 children.

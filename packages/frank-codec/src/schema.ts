@@ -13,6 +13,9 @@ import {
   MAX_RELAY_BINDINGS,
   MAX_SIGNATURES,
   MAX_FRAME_BYTES,
+  MAX_TOPIC_BODY_BYTES,
+  MAX_TOPIC_FRAME_BYTES,
+  MAX_TOPIC_VOTE_FRAME_BYTES,
   TYPE_CONTAINER_MESSAGE_ITEM,
   TYPE_DIRECT_MESSAGE_DELIVERY,
   TYPE_DIRECTORY_ATTESTATION,
@@ -23,6 +26,9 @@ import {
   TYPE_MESSAGE_CONTENT_REVISION,
   TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
   TYPE_TEXT_MESSAGE_ITEM,
+  TYPE_TOPIC_POST,
+  TYPE_TOPIC_POST_SUBMISSION,
+  TYPE_TOPIC_VOTE_SUBMISSION,
   U32_MAX,
   U64_MAX,
 } from './constants'
@@ -224,6 +230,10 @@ export function checkRootFrameLimit(
 ): boolean {
   if (typeId === TYPE_DIRECT_MESSAGE_DELIVERY) return frameLength <= 1_048_576
   if (typeId === TYPE_DIRECTORY_ATTESTATION) return frameLength <= 262_144
+  if (typeId === TYPE_TOPIC_POST || typeId === TYPE_TOPIC_POST_SUBMISSION)
+    return frameLength <= MAX_TOPIC_FRAME_BYTES
+  if (typeId === TYPE_TOPIC_VOTE_SUBMISSION)
+    return frameLength <= MAX_TOPIC_VOTE_FRAME_BYTES
   return frameLength <= MAX_FRAME_BYTES
 }
 
@@ -261,6 +271,12 @@ export function checkTypeLimits(typeId: number, payload: FrankValue): void {
       const c = f(5)
       if (c instanceof Uint8Array && c.length > MAX_CIPHERTEXT_BYTES)
         over('ciphertext')
+      break
+    }
+    case TYPE_TOPIC_POST: {
+      const b = f(3)
+      if (b instanceof Uint8Array && b.length > MAX_TOPIC_BODY_BYTES)
+        over('topic body')
       break
     }
     case TYPE_MESSAGE_CONTENT_REVISION:
@@ -472,6 +488,38 @@ export function parseDraft(
         priorAuthority: account(m.get(2), `${P}.2`),
         revision: uintRange(m.get(3), `${P}.3`, 1n, U64_MAX),
         newKey: account(m.get(4), `${P}.4`),
+        unknownFields: m.unknown,
+      }
+    }
+    case TYPE_TOPIC_POST: {
+      const m = fields(payload, P, [0, 1, 3], [2], true, allow)
+      const post: DraftPayload = {
+        type: 9,
+        network: networkTag(m.get(0), `${P}.0`),
+        topic: tstr(m.get(1), `${P}.1`, 1, 512),
+        body: bstr(m.get(3), `${P}.3`, 1, MAX_TOPIC_BODY_BYTES),
+        unknownFields: m.unknown,
+      }
+      if (m.has(2)) post.parentHash = bstr(m.get(2), `${P}.2`, 32, 32)
+      return post
+    }
+    case TYPE_TOPIC_POST_SUBMISSION: {
+      const m = fields(payload, P, [0, 1, 2], [], true, allow)
+      return {
+        type: 10,
+        network: networkTag(m.get(0), `${P}.0`),
+        postFrame: framed(m.get(1), `${P}.1`),
+        burnTx: bstr(m.get(2), `${P}.2`, 1, 16384),
+        unknownFields: m.unknown,
+      }
+    }
+    case TYPE_TOPIC_VOTE_SUBMISSION: {
+      const m = fields(payload, P, [0, 1, 2], [], true, allow)
+      return {
+        type: 11,
+        network: networkTag(m.get(0), `${P}.0`),
+        targetHash: bstr(m.get(1), `${P}.1`, 32, 32),
+        burnTx: bstr(m.get(2), `${P}.2`, 1, 16384),
         unknownFields: m.unknown,
       }
     }

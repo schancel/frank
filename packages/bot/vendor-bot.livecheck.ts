@@ -60,6 +60,7 @@ import {
   sendDirectMessageItems,
   setUpFundedStampClient,
 } from './qwen-bot-common'
+import { botProfileFields } from './bot-directory'
 import { VendorBotStateStore } from './vendor-bot-state'
 import { botLoopGuardFromEnv } from './bot-loop-guard'
 
@@ -149,7 +150,12 @@ async function main() {
   console.log(`Catalog: ${CATALOG.map(i => `${i.itemId} (${i.priceWei} wei)`).join(', ')}`)
 
   const identity = loadOrCreateIdentity(identityJsonPath, 'vendor-bot')
-  await registerAndLog({ relayBaseUrl, identity, label: 'vendor-bot' })
+  await registerAndLog({
+    relayBaseUrl,
+    identity,
+    label: 'vendor-bot',
+    profile: botProfileFields('vendor'),
+  })
   console.log(`Vendor bot identity address: ${identity.displayAddress}`)
 
   const { stampClient, mainAccountSigner, provider, pool } =

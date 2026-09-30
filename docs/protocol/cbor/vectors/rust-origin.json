@@ -192,6 +192,232 @@
           }
         ]
       }
+    },
+    {
+      "content_hash_hex": "a58e4709ec532fdce334923ef1228fb109f6d11270b1a8a6005853fff9ea7d4d",
+      "description": "Rust encoding of the type-9 topic post fixture.",
+      "expectation": "accept",
+      "frame_hex": "46524e4b0100000066a400090101020103585ca3006a6672616e6b2d74657374016a6672616e6b2e64656d6f0358400e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3",
+      "id": "rust-fixture-topic-post",
+      "rules": [
+        "S12",
+        "T1"
+      ],
+      "schema_version": 1,
+      "source": "rust",
+      "type_id": 9,
+      "validation_context": {
+        "opaque_retention_allowed": false,
+        "operation": "typed",
+        "prior_directory_statement_frame_hex": null,
+        "reader_version": 1,
+        "route_byte_limit": 8388617,
+        "supported_schemas": [
+          {
+            "schema_version": 1,
+            "type_id": 1
+          },
+          {
+            "schema_version": 1,
+            "type_id": 2
+          },
+          {
+            "schema_version": 1,
+            "type_id": 3
+          },
+          {
+            "schema_version": 1,
+            "type_id": 4
+          },
+          {
+            "schema_version": 1,
+            "type_id": 5
+          },
+          {
+            "schema_version": 1,
+            "type_id": 6
+          },
+          {
+            "schema_version": 1,
+            "type_id": 7
+          },
+          {
+            "schema_version": 1,
+            "type_id": 8
+          },
+          {
+            "schema_version": 1,
+            "type_id": 9
+          },
+          {
+            "schema_version": 1,
+            "type_id": 10
+          },
+          {
+            "schema_version": 1,
+            "type_id": 11
+          },
+          {
+            "schema_version": 1,
+            "type_id": 16
+          },
+          {
+            "schema_version": 1,
+            "type_id": 17
+          }
+        ]
+      }
+    },
+    {
+      "content_hash_hex": "09d259ca6aca5ee0039633bba30e8cf1ae3f9c4e5534c5eca81c7d07a009ee58",
+      "description": "Rust encoding of the type-10 topic post submission fixture.",
+      "expectation": "accept",
+      "frame_hex": "46524e4b01000000faa4000a010102010358f0a3006a6672616e6b2d7465737401586f46524e4b0100000066a400090101020103585ca3006a6672616e6b2d74657374016a6672616e6b2e64656d6f0358400e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c302586e808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f",
+      "id": "rust-fixture-topic-post-submission",
+      "rules": [
+        "S8",
+        "S11",
+        "T7"
+      ],
+      "schema_version": 1,
+      "source": "rust",
+      "type_id": 10,
+      "validation_context": {
+        "opaque_retention_allowed": false,
+        "operation": "typed",
+        "prior_directory_statement_frame_hex": null,
+        "reader_version": 1,
+        "route_byte_limit": 8388617,
+        "supported_schemas": [
+          {
+            "schema_version": 1,
+            "type_id": 1
+          },
+          {
+            "schema_version": 1,
+            "type_id": 2
+          },
+          {
+            "schema_version": 1,
+            "type_id": 3
+          },
+          {
+            "schema_version": 1,
+            "type_id": 4
+          },
+          {
+            "schema_version": 1,
+            "type_id": 5
+          },
+          {
+            "schema_version": 1,
+            "type_id": 6
+          },
+          {
+            "schema_version": 1,
+            "type_id": 7
+          },
+          {
+            "schema_version": 1,
+            "type_id": 8
+          },
+          {
+            "schema_version": 1,
+            "type_id": 9
+          },
+          {
+            "schema_version": 1,
+            "type_id": 10
+          },
+          {
+            "schema_version": 1,
+            "type_id": 11
+          },
+          {
+            "schema_version": 1,
+            "type_id": 16
+          },
+          {
+            "schema_version": 1,
+            "type_id": 17
+          }
+        ]
+      }
+    },
+    {
+      "content_hash_hex": "a51c59373bfc313fedaa676e7f1cfc230c9e9a16901de84454b7ccbf27f3f274",
+      "description": "Rust encoding of the type-11 topic vote fixture.",
+      "expectation": "accept",
+      "frame_hex": "46524e4b01000000aba4000b010102010358a1a3006a6672616e6b2d74657374015820a58e4709ec532fdce334923ef1228fb109f6d11270b1a8a6005853fff9ea7d4d02586ea5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e4954",
+      "id": "rust-fixture-topic-vote",
+      "rules": [
+        "S12",
+        "T7"
+      ],
+      "schema_version": 1,
+      "source": "rust",
+      "type_id": 11,
+      "validation_context": {
+        "opaque_retention_allowed": false,
+        "operation": "typed",
+        "prior_directory_statement_frame_hex": null,
+        "reader_version": 1,
+        "route_byte_limit": 8388617,
+        "supported_schemas": [
+          {
+            "schema_version": 1,
+            "type_id": 1
+          },
+          {
+            "schema_version": 1,
+            "type_id": 2
+          },
+          {
+            "schema_version": 1,
+            "type_id": 3
+          },
+          {
+            "schema_version": 1,
+            "type_id": 4
+          },
+          {
+            "schema_version": 1,
+            "type_id": 5
+          },
+          {
+            "schema_version": 1,
+            "type_id": 6
+          },
+          {
+            "schema_version": 1,
+            "type_id": 7
+          },
+          {
+            "schema_version": 1,
+            "type_id": 8
+          },
+          {
+            "schema_version": 1,
+            "type_id": 9
+          },
+          {
+            "schema_version": 1,
+            "type_id": 10
+          },
+          {
+            "schema_version": 1,
+            "type_id": 11
+          },
+          {
+            "schema_version": 1,
+            "type_id": 16
+          },
+          {
+            "schema_version": 1,
+            "type_id": 17
+          }
+        ]
+      }
     }
   ],
   "format": "frank-cbor-v1-vectors"

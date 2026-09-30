@@ -58,8 +58,13 @@ describe('committed vector manifest', () => {
       'V6.1',
       'V6.3',
       'T3a',
-      'T3a.5',
+      'T3a.4',
       'T6',
+      'R6',
+      'S11',
+      'S12',
+      'T7',
+      'T8',
     ]) {
       expect(ids.has(id)).toBe(true)
     }

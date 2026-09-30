@@ -4,9 +4,8 @@ import {
   ValidationContext,
   defaultContext,
   validateFrame,
-  KNOWN_TYPES,
 } from '../src/validate'
-import { CASES, CaseDef } from './cases'
+import { CASES, CaseDef, PRE_TOPIC_SCHEMAS } from './cases'
 
 export interface ManifestCase {
   id: string
@@ -31,8 +30,7 @@ export function contextOf(c: CaseDef): ValidationContext {
     operation: c.op,
     routeByteLimit: c.routeByteLimit ?? 8_388_617,
     readerVersion: c.readerVersion ?? 1,
-    supportedSchemas:
-      c.supported ?? KNOWN_TYPES.map(typeId => ({ typeId, schemaVersion: 1 })),
+    supportedSchemas: c.supported ?? PRE_TOPIC_SCHEMAS,
     opaqueRetentionAllowed: c.retention ?? false,
     priorDirectoryStatementFrame: c.prior === undefined ? null : c.prior,
   })

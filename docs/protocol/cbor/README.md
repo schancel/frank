@@ -640,7 +640,11 @@ category, and an implementation MUST NOT continue to report a later failure.
 1. **Root limits.** The frame length exceeds `route_byte_limit` or
    `MAX_FRAME_BYTES`: `resource`. No implementation limit other than
    `route_byte_limit` applies here.
-2. **Header.** Fewer than nine bytes or bad magic: `frame`.
+2. **Header.** Fewer than nine bytes or bad magic: `frame`. An embedded child
+   of fewer than nine bytes never reaches this check: the parent's CDDL
+   `framed-object` bound (`bstr .size (9..8388617)`) rejects it first as a
+   stage 8.2 `schema` error, so this check applies to a root and to a child of at
+   least nine bytes.
 3. **Version.** An unsupported frame version is `unsupported`. Where the
    containing contract permits retention (F2), the outcome is instead a
    retained frame: the length field is not interpreted, later stages do not run,
@@ -675,11 +679,7 @@ category, and an implementation MUST NOT continue to report a later failure.
    2. the type's CDDL structure and range rules, including network-tag,
       ASCII-identifier, and endpoint-ASCII syntax (S1, C6, S4), and C12 unknown
       keys: `schema`. A CDDL cardinality or `.size` bound that merely restates an
-      R2 through R4 limit is `resource`, checked in 8.1, not `schema`. The
-      `framed-object` bound `bstr .size (9..8388617)` is one of these `schema`
-      checks: an embedded child of fewer than nine bytes fails here in its
-      parent, never as the child's stage 2 `frame` error, which therefore
-      applies only to a root and to a child of at least nine bytes;
+      R2 through R4 limit is `resource`, checked in 8.1, not `schema`;
    3. allocated-identifier checks (S2b, S2c; every encryption suite other than
       65535 is unallocated in version 1): `unsupported`;
    4. recursive opening of only the byte-string fields that the schema declares

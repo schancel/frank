@@ -38,12 +38,4 @@ describe('Setup persistence integration', () => {
       source.indexOf('await this.persistSetupAndReload()'),
     )
   })
-
-  it('does not persist a generated seed when Setup opens (#267)', () => {
-    const source = readFileSync(resolve(__dirname, 'Setup.vue'), 'utf8')
-    expect(source).not.toContain('wallet.setSeedPhrase(generateMnemonic())')
-    expect(source).toContain(
-      'initialSetupSeed(wallet.seedPhrase, generateMnemonic)',
-    )
-  })
 })

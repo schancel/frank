@@ -88,7 +88,7 @@ describe('setup draft seed (#267)', () => {
     expect(generate).not.toHaveBeenCalled()
   })
 
-  it('completing setup persists exactly once, and import replaces the draft', () => {
+  it('committing persists exactly once and only at commit time, not on draft creation', () => {
     const persistSeed = jest.fn()
     const draft = initialSetupSeed(null, () => 'draft seed')
     expect(persistSeed).not.toHaveBeenCalled()
@@ -96,5 +96,13 @@ describe('setup draft seed (#267)', () => {
     expect(draft).toBe('draft seed')
     expect(persistSeed).toHaveBeenCalledTimes(1)
     expect(persistSeed).toHaveBeenCalledWith(VALID_MNEMONIC)
+  })
+
+  it('an imported phrase is what gets persisted, not the draft', () => {
+    const persistSeed = jest.fn()
+    initialSetupSeed(null, () => 'draft seed')
+    commitValidatedSetupSeed(VALID_MNEMONIC, persistSeed)
+    expect(persistSeed).toHaveBeenCalledWith(VALID_MNEMONIC)
+    expect(persistSeed).not.toHaveBeenCalledWith('draft seed')
   })
 })

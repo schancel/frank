@@ -86,7 +86,7 @@ import {
   dealInitialCards,
   formatBlackjackError,
   HydratedBlackjackMove,
-  resolveOutcome,
+  playOutDealer,
 } from '@frank/wallet/message-item-plugins/blackjack/game'
 import { MonadStampClient } from '@frank/wallet/monad-stamp-client'
 import { MonadSubAccountPool } from '@frank/wallet/monad-account-pool'
@@ -178,7 +178,6 @@ async function resolveAndReveal(params: {
   }
   const deck = deriveDeck(record.serverSeed, record.wagerTxHash, 0)
   const playerCards = playerCardsSoFar(deck, record.dealtCount)
-  const playerValue = handValue(playerCards)
   // A double-down puts a second, independently-verified transfer of the same size into the pot --
   // never just a client-side-doubled number (see `BlackjackGameRecord.doubleWagerWei`'s own
   // header) -- so the payout base is the sum of the two real transfers actually received, not
@@ -188,20 +187,13 @@ async function resolveAndReveal(params: {
       ? record.wagerWei + record.doubleWagerWei
       : record.wagerWei
 
-  let dealerCards = dealInitialCards(deck).dealerCards
-  let dealtCount = record.dealtCount
-  // A player natural is final as dealt -- the dealer never draws further regardless of its own
-  // up-card, matching standard casino rules (see resolveOutcome's own blackjack-vs-blackjack
-  // handling for the push case this still needs to distinguish).
-  if (!playerValue.bust && !playerValue.blackjack) {
-    while (handValue(dealerCards).total < 17) {
-      dealerCards = [...dealerCards, deck[dealtCount]]
-      dealtCount += 1
-    }
-  }
-  const outcome = playerValue.bust
-    ? 'dealer_win'
-    : resolveOutcome(playerValue, handValue(dealerCards))
+  // The dealing rules live in one shared function (also used by the client-side fairness check):
+  // no draw on a player natural or bust, otherwise the dealer draws to 17.
+  const { dealerCards, dealtCount, outcome } = playOutDealer(
+    deck,
+    playerCards,
+    record.dealtCount,
+  )
 
   await state.setGame(gameId, { ...record, dealtCount, revealed: true })
 

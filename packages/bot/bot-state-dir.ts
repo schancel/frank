@@ -27,7 +27,7 @@ export function defaultBotStateDir(
   if (!home || !isAbsolute(home)) {
     throw new Error(
       `Cannot determine a persistent state directory for the ${bot} bot: HOME is unset or not absolute. ` +
-        'Set HOME, XDG_STATE_HOME, or the bot\'s *_BOT_STATE_DIR variable to an absolute path.',
+        "Set HOME, XDG_STATE_HOME, or the bot's *_BOT_STATE_DIR variable to an absolute path.",
     )
   }
   return join(home, '.frank-bots', bot)

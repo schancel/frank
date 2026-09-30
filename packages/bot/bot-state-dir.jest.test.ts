@@ -1,7 +1,13 @@
 import { readFileSync } from 'fs'
 import { join } from 'path'
 
-import { botStateDir, defaultBotStateDir, legacyBotStateDir, planBotStateDir, StateDirBot } from './bot-state-dir'
+import {
+  botStateDir,
+  defaultBotStateDir,
+  legacyBotStateDir,
+  planBotStateDir,
+  StateDirBot,
+} from './bot-state-dir'
 
 const HOME = '/home/dummy'
 const plan = (
@@ -20,26 +26,38 @@ const plan = (
 describe('bot state directories', () => {
   it('defaults to a persistent per-user path, XDG-aware', () => {
     expect(defaultBotStateDir('qwen', {}, HOME)).toBe('/home/dummy/.frank-bots/qwen')
-    expect(defaultBotStateDir('raffle', { XDG_STATE_HOME: '/state' }, HOME)).toBe('/state/frank-bots/raffle')
+    expect(defaultBotStateDir('raffle', { XDG_STATE_HOME: '/state' }, HOME)).toBe(
+      '/state/frank-bots/raffle',
+    )
     expect(plan().dir).toBe('/home/dummy/.frank-bots/vendor')
     expect(plan().notices).toEqual([])
   })
 
   it('ignores a relative XDG_STATE_HOME (per the XDG spec)', () => {
-    expect(defaultBotStateDir('qwen', { XDG_STATE_HOME: 'relative/state' }, HOME)).toBe('/home/dummy/.frank-bots/qwen')
+    expect(defaultBotStateDir('qwen', { XDG_STATE_HOME: 'relative/state' }, HOME)).toBe(
+      '/home/dummy/.frank-bots/qwen',
+    )
   })
 
   it('refuses to start when no absolute home or state dir can be determined', () => {
     for (const home of ['', 'relative/home']) {
-      expect(() => defaultBotStateDir('qwen', {}, home)).toThrow(/Cannot determine a persistent state directory/)
-      expect(() => defaultBotStateDir('qwen', { XDG_STATE_HOME: 'rel' }, home)).toThrow(/HOME is unset or not absolute/)
+      expect(() => defaultBotStateDir('qwen', {}, home)).toThrow(
+        /Cannot determine a persistent state directory/,
+      )
+      expect(() => defaultBotStateDir('qwen', { XDG_STATE_HOME: 'rel' }, home)).toThrow(
+        /HOME is unset or not absolute/,
+      )
     }
     // An absolute XDG dir needs no home.
-    expect(defaultBotStateDir('qwen', { XDG_STATE_HOME: '/state' }, '')).toBe('/state/frank-bots/qwen')
+    expect(defaultBotStateDir('qwen', { XDG_STATE_HOME: '/state' }, '')).toBe(
+      '/state/frank-bots/qwen',
+    )
   })
 
   it('an explicit env override must be absolute', () => {
-    expect(() => plan({ env: { VENDOR_BOT_STATE_DIR: 'state/vendor' } })).toThrow(/VENDOR_BOT_STATE_DIR must be an absolute path/)
+    expect(() => plan({ env: { VENDOR_BOT_STATE_DIR: 'state/vendor' } })).toThrow(
+      /VENDOR_BOT_STATE_DIR must be an absolute path/,
+    )
   })
 
   it('the env variable overrides the default', () => {
@@ -76,7 +94,9 @@ describe('bot state directories', () => {
   it('no migration notice when the new dir already exists, or the operator chose a path', () => {
     const old = legacyBotStateDir('vendor')
     expect(plan({ existing: [old, '/home/dummy/.frank-bots/vendor'] }).notices).toEqual([])
-    expect(plan({ existing: [old], env: { VENDOR_BOT_STATE_DIR: old } }).notices.join()).not.toMatch(/moved from/)
+    expect(
+      plan({ existing: [old], env: { VENDOR_BOT_STATE_DIR: old } }).notices.join(),
+    ).not.toMatch(/moved from/)
   })
 
   it.each([
@@ -84,11 +104,14 @@ describe('bot state directories', () => {
     ['blackjack', 'blackjack-bot.livecheck.ts', 'BLACKJACK_BOT_STATE_DIR'],
     ['raffle', 'raffle-bot.livecheck.ts', 'RAFFLE_BOT_STATE_DIR'],
     ['vendor', 'vendor-bot.livecheck.ts', 'VENDOR_BOT_STATE_DIR'],
-  ] as Array<[StateDirBot, string, string]>)('the %s bot takes its state dir from botStateDir, not a /tmp default', (bot, file, envVar) => {
-    const src = readFileSync(join(__dirname, file), 'utf8')
-    expect(src).toContain(`botStateDir('${bot}', '${envVar}')`)
-    expect(src).not.toMatch(new RegExp(`${envVar} \\?\\? '/tmp`))
-  })
+  ] as Array<[StateDirBot, string, string]>)(
+    'the %s bot takes its state dir from botStateDir, not a /tmp default',
+    (bot, file, envVar) => {
+      const src = readFileSync(join(__dirname, file), 'utf8')
+      expect(src).toContain(`botStateDir('${bot}', '${envVar}')`)
+      expect(src).not.toMatch(new RegExp(`${envVar} \\?\\? '/tmp`))
+    },
+  )
 
   it('botStateDir (the real entry point) warns for /private/tmp and /var/tmp paths', () => {
     const warn = jest.spyOn(console, 'warn').mockImplementation(() => {})

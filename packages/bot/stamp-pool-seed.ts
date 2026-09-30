@@ -75,7 +75,9 @@ export function assertOwnedAndPrivate(
   }
   if ((stat.mode & 0o022) !== 0) {
     throw new Error(
-      `Stamp pool ${what} ${path} is writable by group or others (mode ${(stat.mode & 0o777).toString(8)}). ` +
+      `Stamp pool ${what} ${path} is writable by group or others (mode ${(
+        stat.mode & 0o777
+      ).toString(8)}). ` +
         `Refusing to continue: run chmod go-w on it, or use a private directory.`,
     )
   }
@@ -157,10 +159,7 @@ function readSeed(path: string, label: string): string {
 
 /** Returns the persisted pool mnemonic for `stateDir`, creating (and durably writing) one on first
  * use. Concurrent first starts converge on one file: the loser of the race reads the winner's. */
-export function loadOrCreatePoolMnemonic(
-  stateDir: string,
-  label: string,
-): string {
+export function loadOrCreatePoolMnemonic(stateDir: string, label: string): string {
   ensurePrivateDir(stateDir)
   removeOrphanTemps(stateDir)
   const path = join(stateDir, POOL_SEED_FILE)
@@ -238,17 +237,17 @@ function writeMeta(stateDir: string): void {
 /** Opens the pool for `stateDir`: the same seed and the same records on every start. Refuses to
  * start when the seed survives but the records directory is gone while the marker says records
  * existed: the pool would restart at index 0 and reuse accounts that were already spent. */
-export async function openPersistentStampPool(
-  stateDir: string,
-  label: string,
-): Promise<StampPool> {
+export async function openPersistentStampPool(stateDir: string, label: string): Promise<StampPool> {
   const mnemonic = loadOrCreatePoolMnemonic(stateDir, label)
   if (markerState(stateDir) !== 'absent') {
     for (const name of [SUB_ACCOUNT_RECORDS_DIR, CHANGE_RECORDS_DIR]) {
       const recordsDir = join(stateDir, name)
       if (!existsSync(recordsDir)) {
         throw new Error(
-          `Stamp pool records directory ${recordsDir} is missing, but ${join(stateDir, POOL_META_FILE)} says pool records existed. ` +
+          `Stamp pool records directory ${recordsDir} is missing, but ${join(
+            stateDir,
+            POOL_META_FILE,
+          )} says pool records existed. ` +
             'Refusing to continue: restarting the pool at index 0 would reuse spent sub-accounts. ' +
             'Restore the directory from a backup, or (only if you accept address reuse) delete the marker file.',
         )

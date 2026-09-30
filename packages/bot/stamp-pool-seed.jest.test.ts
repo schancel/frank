@@ -183,7 +183,8 @@ describe('stamp pool seed hardening (#313 review)', () => {
   let dir: string
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'pool-seed-hard-'))
-    for (const m of ['log', 'warn', 'error'] as const) jest.spyOn(console, m).mockImplementation(() => {})
+    for (const m of ['log', 'warn', 'error'] as const)
+      jest.spyOn(console, m).mockImplementation(() => {})
   })
   afterEach(() => {
     jest.restoreAllMocks()
@@ -194,12 +195,22 @@ describe('stamp pool seed hardening (#313 review)', () => {
     it('refuses a file or directory owned by another user, and one writable by group or others', () => {
       const ok = { uid: 1000, mode: 0o100600 }
       expect(() => assertOwnedAndPrivate(ok, 1000, '/x', 'file')).not.toThrow()
-      expect(() => assertOwnedAndPrivate({ ...ok, uid: 0 }, 1000, '/x', 'file')).toThrow(/owned by another user/)
-      expect(() => assertOwnedAndPrivate({ ...ok, uid: 4242 }, 1000, '/x', 'directory')).toThrow(/directory \/x is owned by another user/)
-      expect(() => assertOwnedAndPrivate({ ...ok, mode: 0o100620 }, 1000, '/x', 'file')).toThrow(/writable by group or others/)
-      expect(() => assertOwnedAndPrivate({ ...ok, mode: 0o040777 }, 1000, '/x', 'directory')).toThrow(/writable by group or others/)
+      expect(() => assertOwnedAndPrivate({ ...ok, uid: 0 }, 1000, '/x', 'file')).toThrow(
+        /owned by another user/,
+      )
+      expect(() => assertOwnedAndPrivate({ ...ok, uid: 4242 }, 1000, '/x', 'directory')).toThrow(
+        /directory \/x is owned by another user/,
+      )
+      expect(() => assertOwnedAndPrivate({ ...ok, mode: 0o100620 }, 1000, '/x', 'file')).toThrow(
+        /writable by group or others/,
+      )
+      expect(() =>
+        assertOwnedAndPrivate({ ...ok, mode: 0o040777 }, 1000, '/x', 'directory'),
+      ).toThrow(/writable by group or others/)
       // Readable by others is tightened elsewhere, not refused; no uids (Windows): owner check skipped.
-      expect(() => assertOwnedAndPrivate({ uid: 1, mode: 0o100644 }, undefined, '/x', 'file')).not.toThrow()
+      expect(() =>
+        assertOwnedAndPrivate({ uid: 1, mode: 0o100644 }, undefined, '/x', 'file'),
+      ).not.toThrow()
     })
 
     it('refuses a pre-existing state directory that belongs to someone else, planted seed and all', () => {
@@ -248,7 +259,9 @@ describe('stamp pool seed hardening (#313 review)', () => {
       expect(existsSync(join(dir, POOL_META_FILE))).toBe(true)
       expect(readFileSync(join(dir, POOL_META_FILE), 'utf8')).not.toMatch(/mnemonic|abandon/)
       rmSync(join(dir, 'sub-account-pool'), { recursive: true })
-      await expect(openPersistentStampPool(dir, 'test')).rejects.toThrow(/records directory .* is missing/)
+      await expect(openPersistentStampPool(dir, 'test')).rejects.toThrow(
+        /records directory .* is missing/,
+      )
     })
 
     it('a corrupt or unreadable marker counts as "records existed" (fails closed)', async () => {
@@ -256,9 +269,13 @@ describe('stamp pool seed hardening (#313 review)', () => {
       await first.close()
       writeFileSync(join(dir, POOL_META_FILE), '{not json')
       rmSync(join(dir, 'sub-account-pool'), { recursive: true })
-      await expect(openPersistentStampPool(dir, 'test')).rejects.toThrow(/records directory .* is missing/)
+      await expect(openPersistentStampPool(dir, 'test')).rejects.toThrow(
+        /records directory .* is missing/,
+      )
       writeFileSync(join(dir, POOL_META_FILE), JSON.stringify({ version: 2 }))
-      await expect(openPersistentStampPool(dir, 'test')).rejects.toThrow(/records directory .* is missing/)
+      await expect(openPersistentStampPool(dir, 'test')).rejects.toThrow(
+        /records directory .* is missing/,
+      )
     })
 
     it('also guards the change-pool records directory', async () => {

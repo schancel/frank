@@ -44,12 +44,10 @@
         autogrow
         @paste="dp($event)"
         @drop.prevent="dp($event)"
-        @blur.capture="focusInput($event)"
         @keydown.enter.exact.prevent
         @keydown.enter.exact="sendMessage"
         @mousedown.self.stop
         v-model="innerMessage"
-        :disable="disable"
         :placeholder="$t('chatInput.placeHolder')"
       />
       <q-space />
@@ -155,6 +153,11 @@ export default defineComponent({
       type: String,
       default: () => activeChain.toDisplayAmount(activeChain.defaultStampValue),
     },
+    // A send is in progress. Blocks sending (Enter, the send button) and the toolbar controls,
+    // but deliberately NOT the text box itself (#396): disabling a focused textarea drops its
+    // focus (seen in Chromium) and ignores keystrokes until the send ends, so the first characters
+    // of the next message vanished. The submitted text has already left the box, so typing can
+    // continue; Enter during a send is ignored and the text stays.
     disable: {
       type: Boolean,
       default: false,
@@ -203,18 +206,6 @@ export default defineComponent({
       }
       const blob = await processInput(items)
       return blob ? this.$emit('sendFileClicked', blob) : null
-    },
-    focusInput(e: FocusEvent) {
-      if (e.type === 'blur') {
-        const relatedTarget = e.relatedTarget as Element
-        // Prevent the focus if the target isn't related
-        if (!relatedTarget || relatedTarget.localName === 'input') {
-          return
-          // allow focus change to other inputs (e.g. RightPanel)
-        }
-      }
-      const inputBox = this.$refs.inputBox as HTMLElement
-      inputBox.focus()
     },
     sendMessage() {
       if (this.disable) {

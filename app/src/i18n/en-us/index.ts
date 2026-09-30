@@ -104,6 +104,8 @@ export default {
     refreshRecoveryPhrase: 'Generate a new recovery phrase',
   },
   seedConfirm: {
+    unavailable:
+      'Confirmation is unavailable because this device has no secure random number generator. Go back and try again, or use another browser.',
     stepTitle: 'Confirm phrase',
     title: 'Confirm your recovery phrase',
     instructions:

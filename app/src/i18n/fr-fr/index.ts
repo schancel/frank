@@ -109,6 +109,8 @@ export default {
     refreshRecoveryPhrase: 'Générer une nouvelle phrase de récupération',
   },
   seedConfirm: {
+    unavailable:
+      'La confirmation est indisponible car cet appareil n’a pas de générateur de nombres aléatoires sécurisé. Revenez en arrière et réessayez, ou utilisez un autre navigateur.',
     stepTitle: 'Confirmer la phrase',
     title: 'Confirmez votre phrase de récupération',
     instructions:

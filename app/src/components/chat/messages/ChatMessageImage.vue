@@ -1,5 +1,8 @@
 <template>
-  <template v-if="isReply">
+  <div v-if="!vetted.ok" class="text-caption text-grey q-pa-sm">
+    Image not shown ({{ vetted.reason }})
+  </div>
+  <template v-else-if="isReply">
     <q-img
       fit="cover"
       height="100%"
@@ -27,6 +30,10 @@
 <script lang="ts">
 import { ref } from 'vue'
 
+import {
+  DELIVERED_IMAGE_LIMITS,
+  inspectImageDataUri,
+} from '../../../utils/image-data-uri'
 import ImageDialog from '../../../components/dialogs/ImageDialog.vue'
 
 export default {
@@ -42,6 +49,13 @@ export default {
   },
   components: {
     ImageDialog,
+  },
+  computed: {
+    // Untrusted peer content: size and declared dimensions are checked from the header BEFORE
+    // the browser is asked to decode it (see utils/image-data-uri.ts).
+    vetted() {
+      return inspectImageDataUri(this.image, DELIVERED_IMAGE_LIMITS)
+    },
   },
   setup() {
     const imageDialog = ref(false)

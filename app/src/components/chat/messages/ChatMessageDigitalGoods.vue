@@ -3,7 +3,7 @@
     <template v-if="item.action === 'catalog'">
       <div class="text-caption text-weight-bold q-mb-xs">Catalog</div>
       <div
-        v-for="entry in item.catalog"
+        v-for="entry in shownEntries"
         :key="entry.itemId"
         class="row items-center q-gutter-sm q-mb-xs"
       >
@@ -11,7 +11,7 @@
           v-if="thumbnailSrc(entry.thumbnail)"
           class="catalog-thumbnail"
           :src="thumbnailSrc(entry.thumbnail)"
-          :alt="entry.description"
+          alt=""
           width="64"
           height="48"
           style="object-fit: cover; border-radius: 4px"
@@ -27,6 +27,9 @@
           :disable="!!buyingItemId"
           @click="onBuy(entry)"
         />
+      </div>
+      <div v-if="hiddenCount > 0" class="text-caption text-grey">
+        {{ hiddenCount }} more item{{ hiddenCount === 1 ? '' : 's' }} not shown
       </div>
     </template>
     <div v-else-if="item.action === 'request'" class="text-caption">
@@ -50,6 +53,11 @@ import { defineComponent, PropType } from 'vue'
 import { DigitalGoodsItem } from '@frank/cashweb/types/messages'
 import { activeChain } from '@frank/wallet/chain'
 
+import {
+  inspectImageDataUri,
+  MAX_RENDERED_CATALOG_ENTRIES,
+  THUMBNAIL_LIMITS,
+} from '../../../utils/image-data-uri'
 import { errorNotify } from '../../../utils/notifications'
 
 export default defineComponent({
@@ -70,21 +78,38 @@ export default defineComponent({
       buyingItemId: null as string | null,
     }
   },
+  computed: {
+    shownEntries(): NonNullable<DigitalGoodsItem['catalog']> {
+      const catalog = this.item.catalog
+      return Array.isArray(catalog)
+        ? catalog.slice(0, MAX_RENDERED_CATALOG_ENTRIES)
+        : []
+    },
+    hiddenCount(): number {
+      const catalog = this.item.catalog
+      return Array.isArray(catalog)
+        ? Math.max(0, catalog.length - MAX_RENDERED_CATALOG_ENTRIES)
+        : 0
+    },
+  },
   methods: {
     // Only an inline image data URI is ever rendered: a bot-supplied remote URL would make the
     // viewer's client fetch it (leaking that they opened the chat), so anything else is ignored.
     thumbnailSrc(thumbnail: string | undefined): string | undefined {
-      return typeof thumbnail === 'string' &&
-        /^data:image\/(png|jpeg|gif|webp);base64,[A-Za-z0-9+/=]+$/.test(
-          thumbnail,
-        )
+      return inspectImageDataUri(thumbnail, THUMBNAIL_LIMITS).ok
         ? thumbnail
         : undefined
     },
+    // The price comes from an untrusted peer: never throw while rendering.
     displayPrice(priceWei: string): string {
-      return `${activeChain.toDisplayAmount(BigInt(priceWei))} ${
-        activeChain.unit
-      }`
+      try {
+        if (!/^\d{1,40}$/.test(String(priceWei))) return 'price unavailable'
+        return `${activeChain.toDisplayAmount(BigInt(priceWei))} ${
+          activeChain.unit
+        }`
+      } catch {
+        return 'price unavailable'
+      }
     },
     async onBuy(entry: { itemId: string; priceWei: string }) {
       if (this.buyingItemId) return

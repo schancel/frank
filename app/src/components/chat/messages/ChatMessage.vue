@@ -194,8 +194,19 @@ export default defineComponent({
       required: false,
       default: undefined,
     },
+    /** Legacy failure replaces the deleted bubble; the parent focuses that error row. */
+    focusFailedAfterRetry: {
+      type: Function as PropType<() => void>,
+      required: false,
+      default: undefined,
+    },
   },
   methods: {
+    focusRetryStatus() {
+      ;(
+        this.$refs.suffix as { focusStatus?: () => void } | undefined
+      )?.focusStatus?.()
+    },
     handleReplyDivClick(args: string) {
       this.$emit('replyDivClick', args)
     },
@@ -258,21 +269,29 @@ export default defineComponent({
         return
       }
 
-      // Compatibility path for legacy Lotus messages.
-      await this.deleteMessage({
-        address: this.address,
-        payloadDigest: this.payloadDigest,
-      })
-      const stampAmount = this.getStampAmount(this.address)
-      const outcome = await this.$relayClient.sendMessageImpl({
-        address: this.address,
-        items: this.message.items,
-        stampAmount,
-      })
-      // Legacy retry deletes this keyed bubble before sending its replacement, so the parent is
-      // the only stable owner that can perform the post-success focus handoff.
-      this.focusAfterRetry?.()
-      return outcome
+      // Compatibility path for legacy Lotus messages. Construction can emit messageSendError
+      // and fulfill undefined; that is not delivery. Rejection after delete has no bubble left.
+      try {
+        await this.deleteMessage({
+          address: this.address,
+          payloadDigest: this.payloadDigest,
+        })
+        const stampAmount = this.getStampAmount(this.address)
+        const outcome = await this.$relayClient.sendMessageImpl({
+          address: this.address,
+          items: this.message.items,
+          stampAmount,
+        })
+        if (outcome === undefined || outcome === null) {
+          this.focusFailedAfterRetry?.()
+          return outcome
+        }
+        this.focusAfterRetry?.()
+        return outcome
+      } catch (error) {
+        this.focusFailedAfterRetry?.()
+        errorNotify(error instanceof Error ? error : new Error(String(error)))
+      }
     },
     confirmDiscard() {
       this.$q
@@ -386,4 +405,3 @@ export default defineComponent({
   },
 })
 </script>
-this.focusAfterRetry?.()

@@ -587,6 +587,16 @@ policy explicitly (as S4 does for endpoints). The body is an opaque byte string
 in this version; the topic in a type-9 frame is authoritative for routing, and a
 body that repeats a topic or parent is not cross-checked by the codec.
 
+Known property, first-burner authorship. A post has no author field and no
+nonce: its identity is its T1 hash and its author is the sender of the first
+confirmed burn that carries its T7 commitment (T8). Anyone who sees a public
+post can submit the byte-identical frame with their own burn; the first burn to
+confirm is the author, and the original author's burn then counts only as a
+vote. Front-running from the mempool alone is not possible, because the
+commitment hides the content until the post is public. Adding an author or a
+nonce to the post would close the race but changes the schema, so it is a
+candidate for a later schema version, not a version-1 rule.
+
 ## 6. Fixture schemas and identity boundaries
 
 The CDDL files describe the three proof families required by #131 and, in
@@ -1009,9 +1019,25 @@ up-vote and `00` for a down-vote. The layout of the legacy protobuf path
 (`0x01`, commitment equal to the protobuf `payload_hash`) is a different
 format: a consumer MUST NOT accept `0x01` calldata for a CBOR event or `0x02`
 calldata for a protobuf object, so a burn made for one encoding cannot be
-replayed into the other. Everything else about the chain adapter (the burn
-address, chain identifier, confirmation depth, and value handling) belongs to
-the relay migration and is not decided by this codec specification.
+replayed into the other.
+
+A type-10 post's own burn MUST be an up-vote (direction byte `01`): a post
+enters the tally with positive weight, and a consumer MUST reject a type 10
+whose burn carries `00`. The codec cannot check this, because the burn
+transaction is opaque bytes and there is no stage 10 for these types, so the
+rule is enforced by the consumer and pinned by its own tests, not by a manifest
+vector.
+
+S11 binds a type 10's network to its post's, and T7 binds a burn to its
+network, but a type 11 has no opened post. A consumer MUST confirm that the
+target post it holds belongs to the type-11 frame's network before counting the
+vote, and MUST reject a vote whose target is unknown. The chain identifier and
+burn address for each network come from the consumer's configuration, and the
+consumer MUST check at startup that the network identifier it serves is tied
+to the chain identifier it verifies against (for example `monad-mainnet` to a
+mainnet chain id). Everything else about the chain adapter (confirmation depth
+and value handling) belongs to the relay migration and is not decided by this
+codec specification.
 
 ## 9. Validation order
 

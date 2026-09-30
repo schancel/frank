@@ -2,6 +2,7 @@
 // order T7 fixes, and refuse input that a relay would reject.
 import * as fs from 'fs'
 import * as path from 'path'
+import * as vm from 'vm'
 import {
   FrankCodecError,
   TOPIC_CBOR_CALLDATA_LENGTH,
@@ -374,5 +375,124 @@ describe('topic writers', () => {
     expect(toHex(topicPostBurnCalldata(commitment))).toBe(
       toHex(topicBurnCalldata('up', commitment)),
     )
+  })
+
+  describe('byte inputs', () => {
+    const detached = (): Uint8Array => {
+      const b = new Uint8Array(40)
+      structuredClone(b.buffer, { transfer: [b.buffer] })
+      return b
+    }
+    const crossRealm = (n: number): Uint8Array =>
+      vm.runInNewContext(
+        `(() => { const a = new Uint8Array(${n}); for (let i = 0; i < a.length; i++) a[i] = (i * 7 + 3) & 255; return a })()`,
+      )
+
+    it('refuse a detached buffer with FrankCodecError at every entry point', () => {
+      const post = topicPostFrame()
+      const probes: Array<() => unknown> = [
+        () => topicPostHash(detached()),
+        () => topicBurnCommitment(detached()),
+        () => encodeTopicPostSubmission(detached(), burnTx()),
+        () => encodeTopicPostSubmission(post, detached()),
+        () => encodeTopicPost({ network: NET, topic: 't', body: detached() }),
+        () =>
+          encodeTopicPost({
+            network: NET,
+            topic: 't',
+            body,
+            parentHash: detached(),
+          }),
+        () => encodeTopicVote(NET, detached(), burnTx()),
+        () => encodeTopicVote(NET, bytesOf(32, 1), detached()),
+        () => topicBurnCalldata('up', detached()),
+      ]
+      for (const probe of probes) expect(probe).toThrow(FrankCodecError)
+    })
+
+    it('accept a cross-realm Uint8Array everywhere and produce the same bytes', () => {
+      const b = crossRealm(64)
+      const same = Uint8Array.from(b)
+      expect(
+        toHex(encodeTopicPost({ network: NET, topic: 't', body: b })),
+      ).toBe(toHex(encodeTopicPost({ network: NET, topic: 't', body: same })))
+      const post = encodeTopicPost({ network: NET, topic: 't', body })
+      const foreignPost = vm.runInNewContext(
+        '(a) => new Uint8Array(a)',
+        {},
+      )(post) as Uint8Array
+      expect(toHex(topicPostHash(foreignPost))).toBe(toHex(topicPostHash(post)))
+      expect(toHex(topicBurnCommitment(foreignPost).commitment)).toBe(
+        toHex(topicBurnCommitment(post).commitment),
+      )
+      const tx = crossRealm(110)
+      expect(toHex(encodeTopicPostSubmission(foreignPost, tx))).toBe(
+        toHex(encodeTopicPostSubmission(post, Uint8Array.from(tx))),
+      )
+      const t = crossRealm(32)
+      expect(toHex(encodeTopicVote(NET, t, tx))).toBe(
+        toHex(encodeTopicVote(NET, Uint8Array.from(t), Uint8Array.from(tx))),
+      )
+      expect(toHex(topicBurnCalldata('down', t))).toBe(
+        toHex(topicBurnCalldata('down', Uint8Array.from(t))),
+      )
+    })
+
+    it('accept Buffers, subclasses and SharedArrayBuffer-backed arrays', () => {
+      class Bytes extends Uint8Array {}
+      const plain = encodeTopicPost({ network: NET, topic: 't', body })
+      const shared = new Uint8Array(new SharedArrayBuffer(body.length))
+      shared.set(body)
+      for (const variant of [Buffer.from(body), new Bytes(body), shared]) {
+        expect(
+          toHex(encodeTopicPost({ network: NET, topic: 't', body: variant })),
+        ).toBe(toHex(plain))
+      }
+    })
+
+    it('copy their inputs, so a later change to a foreign array cannot reach the output', () => {
+      const tx = crossRealm(110)
+      const sub = encodeTopicPostSubmission(topicPostFrame(), tx)
+      const snapshot = toHex(sub)
+      tx.fill(0)
+      expect(toHex(sub)).toBe(snapshot)
+    })
+  })
+
+  it('turn any failure reading the fields object into FrankCodecError', () => {
+    const revocable = Proxy.revocable({}, {})
+    revocable.revoke()
+    const throwing = {
+      get network(): string {
+        throw new Error('caller getter')
+      },
+      topic: 't',
+      body,
+    }
+    const throwingBody = {
+      network: NET,
+      topic: 't',
+      get body(): Uint8Array {
+        throw new TypeError('caller getter')
+      },
+    }
+    for (const bad of [revocable.proxy, throwing, throwingBody]) {
+      expect(() => encodeTopicPost(bad as never)).toThrow(FrankCodecError)
+    }
+  })
+
+  it('accept only a string direction: an object whose toString says "up" is refused', () => {
+    const commitment = bytesOf(32, 5)
+    const sneaky = { toString: () => 'up' }
+    expect(() => topicBurnCalldata(sneaky as never, commitment)).toThrow(
+      FrankCodecError,
+    )
+    expect(() =>
+      topicBurnCalldata(new String('up') as never, commitment),
+    ).toThrow(FrankCodecError)
+  })
+
+  it('fix a post burn to the up direction byte', () => {
+    expect(topicPostBurnCalldata(bytesOf(32, 5))[5]).toBe(0x01)
   })
 })

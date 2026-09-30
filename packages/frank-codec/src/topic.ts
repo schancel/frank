@@ -51,7 +51,7 @@ function refuse(message: string, location: string): FrankCodecError {
   return new FrankCodecError('schema', '8.2', message, location)
 }
 
-/** True for a real `Uint8Array` (any realm), false for other typed arrays, proxies, and objects. */
+/** True for a `Uint8Array` of any realm or subclass; false for other typed arrays, proxies, objects. */
 function isBytes(v: unknown): v is Uint8Array {
   return (
     ArrayBuffer.isView(v) &&
@@ -59,9 +59,18 @@ function isBytes(v: unknown): v is Uint8Array {
   )
 }
 
+/**
+ * Returns a fresh same-realm copy of `v`, so a later change to the caller's array cannot reach
+ * what was written and a cross-realm array is usable by the encoder. Copying a detached or
+ * out-of-bounds view throws in the engine, which is reported as a typed refusal.
+ */
 function requireBytes(v: unknown, name: string): Uint8Array {
   if (!isBytes(v)) throw refuse(`${name} must be a Uint8Array`, name)
-  return v
+  try {
+    return new Uint8Array(v)
+  } catch {
+    throw refuse(`${name} is a detached or out-of-bounds Uint8Array`, name)
+  }
 }
 
 function requireText(v: unknown, name: string): string {
@@ -105,16 +114,34 @@ function validated(frame: Uint8Array, typeId: number): ParsedFrame {
 export function encodeTopicPost(fields: TopicPostFields): Uint8Array {
   if (fields === null || typeof fields !== 'object')
     throw refuse('fields must be an object', 'fields')
-  const network = requireText(fields.network, 'network')
-  const topic = requireText(fields.topic, 'topic')
-  const body = requireBytes(fields.body, 'body')
+  let raw: {
+    network: unknown
+    topic: unknown
+    body: unknown
+    parentHash: unknown
+  }
+  try {
+    // Read every field once, up front: a throwing getter or a revoked proxy is a misuse of the
+    // writer, not an error of the caller's to receive.
+    raw = {
+      network: fields.network,
+      topic: fields.topic,
+      body: fields.body,
+      parentHash: fields.parentHash,
+    }
+  } catch {
+    throw refuse('the fields object could not be read', 'fields')
+  }
+  const network = requireText(raw.network, 'network')
+  const topic = requireText(raw.topic, 'topic')
+  const body = requireBytes(raw.body, 'body')
   const payload = new Map<number, Encodable>([
     [0, network],
     [1, topic],
     [3, body],
   ])
-  if (fields.parentHash !== undefined)
-    payload.set(2, requireBytes(fields.parentHash, 'parentHash'))
+  if (raw.parentHash !== undefined)
+    payload.set(2, requireBytes(raw.parentHash, 'parentHash'))
   const frame = encodeFrame(
     { typeId: TYPE_TOPIC_POST, schemaVersion: 1, minReaderVersion: 1 },
     payload,
@@ -167,14 +194,14 @@ export function topicBurnCalldata(
     !Object.prototype.hasOwnProperty.call(DIRECTION_BYTE, direction)
   )
     throw refuse('the vote direction must be "up" or "down"', 'direction')
-  requireBytes(commitment, 'commitment')
-  if (commitment.length !== 32)
+  const bytes = requireBytes(commitment, 'commitment')
+  if (bytes.length !== 32)
     throw refuse('the topic burn commitment must be 32 bytes', 'commitment')
   const out = new Uint8Array(TOPIC_CBOR_CALLDATA_LENGTH)
   out.set(TOPIC_LOKAD_ID, 0)
   out[4] = TOPIC_CBOR_CALLDATA_VERSION
   out[5] = DIRECTION_BYTE[direction]
-  out.set(commitment, 6)
+  out.set(bytes, 6)
   return out
 }
 
@@ -200,8 +227,9 @@ export function encodeTopicPostSubmission(
   postFrame: Uint8Array,
   burnTx: Uint8Array,
 ): Uint8Array {
-  const { network } = topicBurnCommitment(postFrame)
-  requireBytes(burnTx, 'burnTx')
+  const post = requireBytes(postFrame, 'postFrame')
+  const tx = requireBytes(burnTx, 'burnTx')
+  const { network } = topicBurnCommitment(post)
   const frame = encodeFrame(
     {
       typeId: TYPE_TOPIC_POST_SUBMISSION,
@@ -210,8 +238,8 @@ export function encodeTopicPostSubmission(
     },
     new Map<number, Encodable>([
       [0, network],
-      [1, postFrame],
-      [2, burnTx],
+      [1, post],
+      [2, tx],
     ]),
   )
   validated(frame, TYPE_TOPIC_POST_SUBMISSION)

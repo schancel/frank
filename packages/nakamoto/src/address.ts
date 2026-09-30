@@ -151,6 +151,11 @@ export interface AddressWrongPrefix {
   readonly prefix: string
 }
 
+/** Bech32 or cashaddr and base58check both checksum. Neither encoding is chosen. */
+export interface AddressAmbiguous {
+  readonly code: 'ambiguous-encoding'
+}
+
 export interface AddressTooLong {
   readonly code: 'address-too-long'
   readonly actual: number
@@ -183,6 +188,7 @@ export type AddressError =
   | AddressMixedCase
   | AddressChecksum
   | AddressWrongPrefix
+  | AddressAmbiguous
   | AddressTooLong
   | AddressSeparatorMissing
   | AddressEmptyHrp
@@ -205,6 +211,7 @@ const ADDRESS_CODES: ReadonlySet<string> = new Set([
   'mixed-case',
   'bad-checksum',
   'wrong-prefix',
+  'ambiguous-encoding',
   'address-too-long',
   'separator-missing',
   'empty-hrp',
@@ -404,6 +411,8 @@ export function encodeAddress(
   if (!encodingsFor(chain, destination.kind).includes(encoding)) {
     return fail({ code: 'unknown-encoding', encoding })
   }
+  const sized = scriptOf(destination)
+  if (!sized.ok) return sized
   switch (destination.kind) {
     case 'p2pkh':
       if (encoding === 'cashaddr') return encodeCash(chain, 0, destination.hash)
@@ -870,6 +879,25 @@ function decodeLegacy(
   }
 }
 
+function decodePrefixless(
+  text: string,
+  chain: ChainDescriptor | undefined,
+): AddressResult<DecodedAddress> {
+  if (
+    chain === undefined ||
+    chain.family === 'xpi' ||
+    chain.cashaddrPrefix === null
+  ) {
+    return decodeLegacy(text, chain)
+  }
+  const cash = decodeCashaddr(text, chain.cashaddrPrefix)
+  if (cash.ok && decodeBase58Check(text).ok) {
+    return fail({ code: 'ambiguous-encoding' })
+  }
+  if (cash.ok) return decodeCash(text, chain, chain.cashaddrPrefix)
+  return decodeLegacy(text, chain)
+}
+
 export function decodeAddress(
   text: string,
   chain?: ChainDescriptor,
@@ -880,28 +908,14 @@ export function decodeAddress(
   if (split > 0) {
     const hrp = text.slice(0, split).toLowerCase()
     if (chainByBech32(hrp) !== undefined) return decodeWitness(text, chain)
-    const dataText = text.slice(split + 1).toLowerCase()
-    let bech32Shaped =
-      hrp.length >= 1 && hrp.length <= 83 && dataText.length >= 6
-    for (let index = 0; bech32Shaped && index < hrp.length; index += 1) {
-      const code = hrp.charCodeAt(index)
-      const letter = code >= 97 && code <= 122
-      const digit = code >= 48 && code <= 57
-      bech32Shaped = letter || digit
+    const witness = decodeBech32(text)
+    if (witness.ok) {
+      if (decodeBase58Check(text).ok) {
+        return fail({ code: 'ambiguous-encoding' })
+      }
+      return fail({ code: 'wrong-prefix', prefix: witness.value.hrp })
     }
-    for (let index = 0; bech32Shaped && index < dataText.length; index += 1) {
-      bech32Shaped = CASH_CHAR.has(dataText.charAt(index))
-    }
-    if (bech32Shaped) return fail({ code: 'wrong-prefix', prefix: hrp })
   }
-  if (looksLikePrefixlessCashaddr(text)) {
-    if (chain === undefined) return fail({ code: 'chain-required' })
-    if (chain.family === 'xpi')
-      return fail({ code: 'address-format-not-pinned' })
-    if (chain.cashaddrPrefix === null) {
-      return fail({ code: 'wrong-prefix', prefix: '' })
-    }
-    return decodeCash(text, chain, chain.cashaddrPrefix)
-  }
+  if (looksLikePrefixlessCashaddr(text)) return decodePrefixless(text, chain)
   return decodeLegacy(text, chain)
 }

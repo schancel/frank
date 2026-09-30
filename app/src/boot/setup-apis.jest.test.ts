@@ -9,6 +9,7 @@ const mockUseRelayClientStore = jest.fn(() => ({
   restored: Promise.resolve(true),
   token: '',
 }))
+let mockProfileName: string | undefined = 'Monad user'
 const mockLegacyWallet = { setXPrivKey: jest.fn() }
 const mockLegacyWalletConstructor = jest.fn(() => mockLegacyWallet)
 
@@ -54,7 +55,7 @@ jest.mock('src/stores/wallet', () => ({
 jest.mock('src/stores/my-profile', () => ({
   useProfileStore: () => ({
     ...restoredStore(),
-    profile: { name: 'Monad user' },
+    profile: { name: mockProfileName },
   }),
 }))
 jest.mock('src/stores/contacts', () => ({
@@ -88,5 +89,18 @@ describe('setup-apis in Monad mode', () => {
     expect(mockLegacyWalletConstructor).not.toHaveBeenCalled()
     expect(mockGetRelayClient).not.toHaveBeenCalled()
     expect(mockUseRelayClientStore).not.toHaveBeenCalled()
+  })
+
+  it('a stored seed with no display name is not set up (#284, the old #267 bug)', async () => {
+    mockProfileName = undefined
+    try {
+      const globalProperties: Record<string, unknown> = {}
+      await setupApis({
+        app: { config: { globalProperties } },
+      } as never)
+      expect(globalProperties.$status).toMatchObject({ setup: false })
+    } finally {
+      mockProfileName = 'Monad user'
+    }
   })
 })

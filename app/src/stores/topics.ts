@@ -1,5 +1,7 @@
 import assert from 'assert'
+import { refreshAfterBurn } from 'src/utils/burn-refresh-error'
 import { defineStore } from 'pinia'
+import { DEFAULT_TOPIC_NAMES } from 'src/stores/default-topics'
 
 import { activeChain, WalletHandle } from '@frank/wallet/chain'
 
@@ -14,38 +16,12 @@ type Topic = string
 const defaultOffering = 100_000_000
 // How far back should we fetch messages if we have never fetched?
 const defaultFetchDuration = Date.now() - 1000 * 60 * 60 * 24 * 7
-const defaultTopics = [
-  {
-    topic: 'stamp',
-    threshold: 0,
-    offering: defaultOffering,
-    messages: [],
-  },
-  {
-    topic: 'news',
-    threshold: 0,
-    offering: defaultOffering,
-    messages: [],
-  },
-  {
-    topic: 'trading',
-    threshold: 0,
-    offering: defaultOffering,
-    messages: [],
-  },
-  {
-    topic: 'memes',
-    threshold: 0,
-    offering: defaultOffering,
-    messages: [],
-  },
-  {
-    topic: 'help',
-    threshold: 0,
-    offering: defaultOffering,
-    messages: [],
-  },
-]
+const defaultTopics = DEFAULT_TOPIC_NAMES.map(topic => ({
+  topic,
+  threshold: 0,
+  offering: defaultOffering,
+  messages: [],
+}))
 
 export type TopicData = {
   threshold: number
@@ -272,7 +248,9 @@ export const useTopicStore = defineStore('topics', {
         voteWeightWei: BigInt(Math.abs(satoshis)),
         parentDigest,
       })
-      this.fetchMessage({ topic, payloadDigest })
+      await refreshAfterBurn('post', () =>
+        this.fetchMessage({ topic, payloadDigest }),
+      )
     },
     async fetchMessage({
       payloadDigest,
@@ -333,7 +311,9 @@ export const useTopicStore = defineStore('topics', {
         direction: satoshis >= 0 ? 'up' : 'down',
         voteWeightWei: BigInt(Math.abs(satoshis)),
       })
-      await this.fetchMessage({ topic, payloadDigest })
+      await refreshAfterBurn('vote', () =>
+        this.fetchMessage({ topic, payloadDigest }),
+      )
     },
   },
   storage: {

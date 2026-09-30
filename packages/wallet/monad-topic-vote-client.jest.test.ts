@@ -14,7 +14,7 @@ import axios from 'axios'
 
 import { MonadHdKeyring } from './monad-hd-keyring'
 import { MonadSubAccountPool } from './monad-account-pool'
-import { SubAccountLeaseManager } from './monad-account-lease'
+import { BurnNotSentError, SubAccountLeaseManager } from './monad-account-lease'
 import { MonadTxSubmitter } from './monad-account-tx'
 import {
   MONAD_TOPIC_VOTE_CALLDATA_LENGTH,
@@ -393,7 +393,7 @@ describe('MonadTopicVoteClient.castVote', () => {
     expect(retired).toHaveLength(1)
   })
 
-  it('retires the sub-account and rethrows without ever calling axios when signing itself throws', async () => {
+  it('returns the untouched account to available and throws BurnNotSentError when signing itself throws (#273)', async () => {
     const { client, pool } = makeClient()
 
     await expect(
@@ -406,11 +406,46 @@ describe('MonadTopicVoteClient.castVote', () => {
         voteWeightWei: 10_000n,
         overrides: FEE_OVERRIDES,
       }),
-    ).rejects.toThrow()
+    ).rejects.toBeInstanceOf(BurnNotSentError)
 
     expect(mockedAxios).not.toHaveBeenCalled()
-    const retired = pool.records().filter(r => r.status === 'retired')
-    expect(retired).toHaveLength(1)
+    // Nothing was signed or sent: no account is retired or left leased.
+    expect(pool.records().filter(r => r.status === 'retired')).toHaveLength(0)
+    expect(pool.records().filter(r => r.status === 'in-use')).toHaveLength(0)
+  })
+
+  it("leases exactly the requested funded account instead of the pool's next one (#273)", async () => {
+    const pool = makePool(3)
+    pool.setStatus(0, 'available')
+    pool.setStatus(1, 'retired')
+    pool.setStatus(2, 'available')
+    const { client } = makeClient({ pool })
+    mockedAxios.mockImplementationOnce(async config => ({
+      data: storedVoteEntryBytes({
+        targetPayloadHash: TARGET_PAYLOAD_HASH,
+        senderAddress: getBytes('0x' + '11'.repeat(20)),
+        txHash: getBytes('0x' + '22'.repeat(32)),
+        timestamp: 1_700_000_000_000,
+        weight: 10_000,
+      }),
+      status: 200,
+      statusText: 'OK',
+      headers: {},
+      config,
+    }))
+
+    const result = await client.castVote({
+      targetPayloadHash: TARGET_PAYLOAD_HASH,
+      direction: 'up',
+      burnAddress: BURN_ADDRESS,
+      voteWeightWei: 10_000n,
+      overrides: FEE_OVERRIDES,
+      leaseIndex: 2,
+    })
+
+    expect(result.leaseIndex).toBe(2)
+    expect(pool.getRecord(2)?.status).toBe('spent')
+    expect(pool.getRecord(0)?.status).toBe('available')
   })
 
   it('rejects a targetPayloadHash that is not exactly 32 bytes before leasing anything', async () => {

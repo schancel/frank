@@ -23,8 +23,40 @@ export class PayloadConstructor {
     return crypto.Hash.sha256hmac(sharedKey, Buffer.from(payloadDigest))
   }
 
+  /**
+   * The ECDH shared point `privateKey * publicKey`. Serialize it with `toBuffer()`: the result is
+   * always the 33-byte compressed encoding (`02`/`03` parity prefix, then the x coordinate
+   * left-padded to exactly 32 big-endian bytes), so both parties derive identical bytes.
+   */
   constructMergedKey(privateKey: PrivateKey, publicKey: PublicKey) {
     return PublicKey.fromPoint(publicKey.point.mul(privateKey.toBigNumber()))
+  }
+
+  /**
+   * Encodings of the ECDH shared point to try, canonical first. Before #309 one side of some key
+   * pairs (about 1 in 256, every pair whose shared x starts with a zero byte) hashed the point with
+   * its leading zero byte(s) trimmed, so already-stored messages may have been keyed from that
+   * form. It is returned second, and only when it differs from the canonical encoding. Writers
+   * must use only the first entry; the rest exist for read-side compatibility.
+   */
+  constructSharedPointEncodings(
+    privateKey: PrivateKey,
+    publicKey: PublicKey,
+  ): Buffer[] {
+    const canonical = this.constructMergedKey(privateKey, publicKey).toBuffer()
+    let firstNonZero = 1
+    while (
+      firstNonZero < canonical.length - 1 &&
+      canonical[firstNonZero] === 0
+    ) {
+      firstNonZero++
+    }
+    if (firstNonZero === 1) return [canonical]
+    const trimmed = Buffer.concat([
+      canonical.slice(0, 1),
+      canonical.slice(firstNonZero),
+    ])
+    return [canonical, trimmed]
   }
 
   constructSharedKey(
@@ -32,10 +64,18 @@ export class PayloadConstructor {
     publicKey: PublicKey,
     salt: Uint8Array,
   ) {
-    const mergedKey = this.constructMergedKey(privateKey, publicKey)
-    const rawMergedKey = mergedKey.toBuffer()
-    const sharedKey = crypto.Hash.sha256hmac(Buffer.from(salt), rawMergedKey)
-    return sharedKey
+    return this.constructSharedKeys(privateKey, publicKey, salt)[0]
+  }
+
+  /** {@link constructSharedKey} for every encoding of {@link constructSharedPointEncodings}. */
+  constructSharedKeys(
+    privateKey: PrivateKey,
+    publicKey: PublicKey,
+    salt: Uint8Array,
+  ) {
+    return this.constructSharedPointEncodings(privateKey, publicKey).map(
+      (rawMergedKey) => crypto.Hash.sha256hmac(Buffer.from(salt), rawMergedKey),
+    )
   }
 
   constructStealthPublicKey(

@@ -33,6 +33,7 @@
  */
 import { PrivateKey, crypto as bitcoreCrypto } from 'bitcore-lib-xpi'
 import axios from 'axios'
+import { relayOriginHeader } from '../relay/origin-header'
 
 import __pb_registry_metadata_pb from '../registry/metadata_pb'
 const { AddressMetadata } = __pb_registry_metadata_pb
@@ -238,7 +239,7 @@ export async function registerIdentity(params: {
     data: body,
     headers: {
       'Content-Type': 'application/x-protobuf',
-      'Origin': 'http://qwen-bot.frank.local',
+      ...relayOriginHeader('http://qwen-bot.frank.local'),
     },
   })
 }

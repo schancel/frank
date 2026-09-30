@@ -7,6 +7,9 @@ directory-attestation = {
   * uint => frank-value,
 }
 
+; Type 4, schema_version 2, min_reader_version 2: field 8 is required. An
+; account whose only statement is schema 1 has no stamp key and cannot receive
+; stamped direct messages (README S10a).
 directory-statement = {
   0: network-tag,
   1: account-ref, ; directory subject: the currently registered key; changes only through one linked type-7 transition (README S10)
@@ -16,6 +19,22 @@ directory-statement = {
   ? 5: [1*16 key-transition],
   ? 6: timestamp, ; expiry, if present
   ? 7: [1*8 account-ref], ; offline recovery authorities
+  8: account-ref, ; stamp key P': key type 1, mandatory, no fallback (README S10a)
+  * uint => frank-value,
+}
+
+; Type 4, schema_version 1: the layout before the stamp key existed. It has no
+; field 8 (C12: a field 8 in a schema 1 statement is a `schema` error, which
+; CDDL cannot express beside the wildcard). Same fields 0 through 7 as above.
+directory-statement-v1 = {
+  0: network-tag,
+  1: account-ref,
+  2: uint .le 18446744073709551615,
+  3: timestamp,
+  4: [1*32 relay-binding],
+  ? 5: [1*16 key-transition],
+  ? 6: timestamp,
+  ? 7: [1*8 account-ref],
   * uint => frank-value,
 }
 

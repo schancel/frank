@@ -94,6 +94,33 @@ pub const TOPIC_VOTE_LOKAD_ID: [u8; 4] = *b"TPIC";
 /// [`crate::monad_stamp_verify::COMMITMENT_VERSION_TAG`].
 pub const TOPIC_COMMITMENT_VERSION_TAG: u8 = 0x01;
 
+/// Version tag of the same `<lokad_id><version><direction><commitment>` layout when the
+/// commitment is the Frank-CBOR topic burn commitment (README T7, `docs/protocol/cbor`) instead
+/// of a protobuf `payload_hash`. The two versions are never interchangeable: a burn made for
+/// one encoding must not verify for the other (README T8), which is what
+/// [`TopicCalldataVersion`] enforces.
+pub const TOPIC_CBOR_COMMITMENT_VERSION_TAG: u8 = 0x02;
+
+/// Which encoding of topic event a burn's calldata was made for (README T8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TopicCalldataVersion {
+    /// The protobuf path (`MonadTopicPost`/`MonadTopicVote`): version byte `0x01`, the
+    /// commitment is the protobuf `payload_hash`.
+    Protobuf,
+    /// The Frank-CBOR path (types 10 and 11): version byte `0x02`, the commitment is T7.
+    Cbor,
+}
+
+impl TopicCalldataVersion {
+    /// The version byte this encoding writes and accepts.
+    pub const fn tag(self) -> u8 {
+        match self {
+            TopicCalldataVersion::Protobuf => TOPIC_COMMITMENT_VERSION_TAG,
+            TopicCalldataVersion::Cbor => TOPIC_CBOR_COMMITMENT_VERSION_TAG,
+        }
+    }
+}
+
 /// Fixed length, in bytes, of the `<lokad_id><version><direction>` prefix before the commitment.
 const CALLDATA_PREFIX_LEN: usize = 6;
 /// Required length, in bytes, of the commitment itself.
@@ -162,10 +189,13 @@ pub enum TopicCalldataError {
         actual: String,
     },
 
-    /// Byte 4 doesn't match [`TOPIC_COMMITMENT_VERSION_TAG`].
+    /// Byte 4 isn't the version tag of the encoding being verified
+    /// ([`TopicCalldataVersion::tag`]).
     #[error(
-        "Topic vote calldata expected version tag {:#04x} but got {actual:#04x}",
-        TOPIC_COMMITMENT_VERSION_TAG
+        "Topic vote calldata has version tag {actual:#04x}, which is not the tag of the encoding \
+         being verified (protobuf {:#04x}, CBOR {:#04x})",
+        TOPIC_COMMITMENT_VERSION_TAG,
+        TOPIC_CBOR_COMMITMENT_VERSION_TAG
     )]
     InvalidVersion {
         /// Actual version byte found.
@@ -203,6 +233,15 @@ pub enum TopicCalldataError {
 pub fn parse_topic_vote_calldata(
     calldata: &[u8],
 ) -> std::result::Result<(VoteDirection, Sha256), TopicCalldataError> {
+    parse_topic_calldata_versioned(calldata, TopicCalldataVersion::Protobuf)
+}
+
+/// [`parse_topic_vote_calldata`] for either encoding: only calldata carrying `version`'s tag
+/// parses, so protobuf calldata is rejected for a CBOR event and the reverse (README T8).
+pub fn parse_topic_calldata_versioned(
+    calldata: &[u8],
+    version: TopicCalldataVersion,
+) -> std::result::Result<(VoteDirection, Sha256), TopicCalldataError> {
     if calldata.len() < CALLDATA_PREFIX_LEN {
         return Err(TopicCalldataError::CalldataTooShort {
             expected: CALLDATA_PREFIX_LEN,
@@ -218,9 +257,11 @@ pub fn parse_topic_vote_calldata(
         });
     }
 
-    let version = calldata[4];
-    if version != TOPIC_COMMITMENT_VERSION_TAG {
-        return Err(TopicCalldataError::InvalidVersion { actual: version });
+    let version_byte = calldata[4];
+    if version_byte != version.tag() {
+        return Err(TopicCalldataError::InvalidVersion {
+            actual: version_byte,
+        });
     }
 
     let direction_byte = calldata[5];
@@ -309,6 +350,22 @@ pub async fn verify_topic_vote_burn<T>(
 where
     T: JsonRpcTransport + Clone,
 {
+    verify_topic_burn_versioned(transport, tx_hash, expected, TopicCalldataVersion::Protobuf).await
+}
+
+/// [`verify_topic_vote_burn`] for either encoding. `expected.commitment` is the protobuf
+/// `payload_hash` for [`TopicCalldataVersion::Protobuf`] and the README T7 commitment for
+/// [`TopicCalldataVersion::Cbor`]; calldata of the other version is
+/// [`TopicVoteBurnVerification::MalformedCalldata`].
+pub async fn verify_topic_burn_versioned<T>(
+    transport: &T,
+    tx_hash: Hash32,
+    expected: &ExpectedTopicBurn,
+    version: TopicCalldataVersion,
+) -> Result<TopicVoteBurnVerification>
+where
+    T: JsonRpcTransport + Clone,
+{
     let client = MonadHttpClient::with_transport(transport.clone());
 
     let receipt = client
@@ -345,7 +402,7 @@ where
         ),
     };
 
-    let (direction, commitment) = match parse_topic_vote_calldata(&tx.input) {
+    let (direction, commitment) = match parse_topic_calldata_versioned(&tx.input, version) {
         Ok(decoded) => decoded,
         Err(err) => return Ok(TopicVoteBurnVerification::MalformedCalldata(err)),
     };

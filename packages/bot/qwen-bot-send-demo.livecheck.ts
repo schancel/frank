@@ -123,7 +123,7 @@ async function main() {
   console.log(`Turns:      ${messages.length}`)
 
   const identity = loadOrCreateIdentity(identityJsonPath, 'sender')
-  await registerAndLog({ relayBaseUrl, identity, label: 'sender' })
+  await registerAndLog({ relayBaseUrl, identity, label: 'sender', bot: false })
   console.log(`Sender Frank identity address: ${identity.displayAddress}`)
 
   const botPubKey = await fetchMonadIdentityPubKey({

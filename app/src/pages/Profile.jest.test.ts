@@ -31,9 +31,11 @@ jest.mock('../components/Profile.vue', () => ({
 jest.mock('../utils/notifications', () => ({ errorNotify: jest.fn() }))
 
 const messages: Record<string, string> = {
-  'profileDialog.invalidName': 'INVALID_NAME',
   'profileDialog.unableContactRelay': 'RELAY_DOWN',
-  'profile.pleaseType': 'PLEASE_TYPE',
+  'profile.nameBlank': 'NAME_BLANK',
+  'profile.nameTooLong': 'NAME_TOO_LONG',
+  'profile.nameForbiddenCharacters': 'NAME_FORBIDDEN',
+  'profile.nameInvalidUnicode': 'NAME_INVALID_UNICODE',
 }
 
 function mountPage() {
@@ -51,9 +53,14 @@ function mountPage() {
 describe('Profile page display name handling', () => {
   beforeEach(() => jest.clearAllMocks())
 
-  it.each(['', '   ', 'A\u0000B', 'a'.repeat(129)])(
-    'reports an invalid name %#, not a relay failure, and contacts nothing',
-    async name => {
+  it.each([
+    ['', 'NAME_BLANK'],
+    ['   ', 'NAME_BLANK'],
+    ['A\u0000B', 'NAME_FORBIDDEN'],
+    ['a'.repeat(129), 'NAME_TOO_LONG'],
+  ])(
+    'reports invalid name %j as %s, not a relay failure, and contacts nothing',
+    async (name, message) => {
       const wrapper = mountPage()
       ;(wrapper.vm as unknown as { name: string }).name = name
       await nextTick()
@@ -65,9 +72,7 @@ describe('Profile page display name handling', () => {
       expect(registerMonadIdentity).not.toHaveBeenCalled()
       expect(mockSetRelayData).not.toHaveBeenCalled()
       expect(errorNotify).toHaveBeenCalledTimes(1)
-      expect((errorNotify as jest.Mock).mock.calls[0][0].message).toBe(
-        'INVALID_NAME',
-      )
+      expect((errorNotify as jest.Mock).mock.calls[0][0].message).toBe(message)
     },
   )
 

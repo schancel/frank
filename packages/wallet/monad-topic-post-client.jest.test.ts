@@ -14,7 +14,7 @@ import axios from 'axios'
 
 import { MonadHdKeyring } from './monad-hd-keyring'
 import { MonadSubAccountPool } from './monad-account-pool'
-import { SubAccountLeaseManager } from './monad-account-lease'
+import { BurnNotSentError, SubAccountLeaseManager } from './monad-account-lease'
 import { MonadTxSubmitter } from './monad-account-tx'
 import {
   MonadTopicPost,
@@ -327,6 +327,55 @@ describe('MonadTopicPostClient.submitTopicPost', () => {
     )
     // Ticket #34: a confirmed release retires the account as 'spent' -- never back to 'available'.
     expect(pool.getRecord(result.leaseIndex)?.status).toBe('spent')
+  })
+
+  it("leases exactly the requested funded account instead of the pool's next one (ticket #273)", async () => {
+    const pool = makePool(3)
+    pool.setStatus(0, 'available')
+    pool.setStatus(2, 'available')
+    const { client } = makeClient({ pool })
+    mockedAxios.mockImplementationOnce(async config => ({
+      data: storedTopicPostBytes(
+        decodeMonadTopicPost(new Uint8Array(config.data as Buffer)),
+      ),
+      status: 200,
+      statusText: 'OK',
+      headers: {},
+      config,
+    }))
+
+    const result = await client.submitTopicPost({
+      topic: 'general',
+      entries: ENTRIES,
+      direction: 'up',
+      burnAddress: BURN_ADDRESS,
+      voteWeightWei: 5_000n,
+      overrides: FEE_OVERRIDES,
+      leaseIndex: 2,
+    })
+
+    expect(result.leaseIndex).toBe(2)
+    expect(pool.getRecord(2)?.status).toBe('spent')
+    expect(pool.getRecord(0)?.status).toBe('available')
+  })
+
+  it('returns the untouched account to available and throws BurnNotSentError when signing throws (#273)', async () => {
+    const { client, pool } = makeClient()
+
+    await expect(
+      client.submitTopicPost({
+        topic: 'general',
+        entries: ENTRIES,
+        direction: 'up',
+        burnAddress: 'not-an-address',
+        voteWeightWei: 5_000n,
+        overrides: FEE_OVERRIDES,
+      }),
+    ).rejects.toBeInstanceOf(BurnNotSentError)
+
+    expect(mockedAxios).not.toHaveBeenCalled()
+    expect(pool.records().filter(r => r.status === 'retired')).toHaveLength(0)
+    expect(pool.records().filter(r => r.status === 'in-use')).toHaveLength(0)
   })
 
   it('builds down-vote calldata for an initial down-vote post', async () => {

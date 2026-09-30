@@ -68,8 +68,23 @@
         </q-card-section>
       </q-card-section>
       <q-card-actions align="right">
+        <div
+          v-if="preparationStatus"
+          class="text-caption q-mr-sm"
+          role="status"
+          data-test="post-status"
+        >
+          {{ preparationStatus }}
+        </div>
         <q-btn @click="back" label="back" color="negative" class="q-ma-sm" />
-        <q-btn type="submit" label="Post" color="primary" class="q-ma-sm" />
+        <q-btn
+          type="submit"
+          label="Post"
+          color="primary"
+          class="q-ma-sm"
+          :disable="posting"
+          :loading="posting"
+        />
       </q-card-actions>
     </q-form>
   </q-card>
@@ -85,6 +100,7 @@
 </template>
 
 <script lang="ts">
+import { navigateBack } from 'src/utils/navigate-back'
 import { defineComponent } from 'vue'
 import { storeToRefs } from 'pinia'
 
@@ -94,15 +110,19 @@ import { useActiveWallet } from 'src/composables/useActiveWallet'
 import { activeChain } from '@frank/wallet/chain'
 import { displayToSafeRawAmount } from 'src/utils/chain-amount'
 
+import { useTopicStore } from 'src/stores/topics'
+import { topicOptions } from 'src/utils/topic-options'
 import AMessage from '../components/forum/ForumMessage.vue'
 import { errorNotify, infoNotify } from 'src/utils/notifications'
 import { submitPost } from 'src/utils/submit-post'
+import { stampPreparationStatus } from 'src/utils/stamp-preparation-status'
 
 export default defineComponent({
   setup() {
     const forum = useForumStore()
     const { topics, getMessage } = storeToRefs(forum)
     return {
+      topicStore: useTopicStore(),
       getMessage: getMessage,
       availableTopics: topics,
       pushNewTopic: forum.pushNewTopic,
@@ -126,6 +146,8 @@ export default defineComponent({
       message: '',
       parentDigest,
       chainUnit: activeChain.unit,
+      posting: false,
+      preparationStatus: null as string | null,
     }
   },
   beforeRouteUpdate(to, from, next) {
@@ -133,6 +155,10 @@ export default defineComponent({
     next()
   },
   computed: {
+    // Topics seen in posts, plus the default and relay-discovered ones the topic store tracks.
+    knownTopics(): string[] {
+      return [...this.availableTopics, ...this.topicStore.getTopics]
+    },
     markedMessage() {
       const text: string = this.message
       return renderMarkdown(text, this.$q.dark.isActive)
@@ -141,12 +167,7 @@ export default defineComponent({
   methods: {
     filterTopics(inputTopic: string, update: (arg: () => void) => void) {
       update(() => {
-        this.topics = [
-          inputTopic,
-          ...this.availableTopics.filter(
-            (topic: string) => topic.indexOf(inputTopic) > -1,
-          ),
-        ]
+        this.topics = topicOptions(inputTopic, this.knownTopics)
       })
     },
     createValue(
@@ -176,6 +197,10 @@ export default defineComponent({
         console.error('entry is null in CreatePost.vue post handler')
         return
       }
+      // A second submit while the first is still preparing/funding would queue a second burn.
+      if (this.posting) return
+      this.posting = true
+      this.preparationStatus = this.$t('stampPreparation.posting')
 
       await submitPost({
         submit: async () => {
@@ -189,15 +214,32 @@ export default defineComponent({
             ),
             topic: this.topic,
             parentDigest: this.parentDigest,
+            onPreparationProgress: progress => {
+              this.preparationStatus = stampPreparationStatus(
+                progress,
+                (key, params) => this.$t(key, params ?? {}),
+                {
+                  format: raw => activeChain.toDisplayAmount(raw),
+                  unit: activeChain.unit,
+                },
+              )
+            },
           })
         },
         errorNotify,
         infoNotify,
         navigateBack: this.back,
+        messages: {
+          created: this.$t('stampPreparation.postCreated'),
+          refreshFailed: this.$t('stampPreparation.postedRefreshFailed'),
+        },
+      }).finally(() => {
+        this.posting = false
+        this.preparationStatus = null
       })
     },
     back() {
-      window.history.length > 1 ? this.$router.go(-1) : this.$router.push('/')
+      navigateBack(this.$router)
     },
     validateUrl(val: string) {
       try {

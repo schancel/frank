@@ -76,6 +76,15 @@ jest.mock('../components/dialogs/ContactBookDialog.vue', () => ({
 jest.mock('../components/dialogs/SeedPhraseDialog.vue', () => ({
   template: '<div />',
 }))
+jest.mock('../components/dialogs/SeedConfirmDialog.vue', () => ({
+  template: '<div />',
+}))
+jest.mock('../components/panels/BackupReminder.vue', () => ({
+  template: '<div />',
+}))
+jest.mock('src/stores/wallet', () => ({
+  useWalletStore: () => ({ seedPhrase: null, seedConfirmedAt: null }),
+}))
 jest.mock('../components/dialogs/RelayConnectDialog.vue', () => ({
   template: '<div />',
 }))

@@ -102,6 +102,10 @@ export default {
     watchingWallet: 'Watching wallet...',
     searchingExistingMetaData: 'Searching for existing registry metadata...',
     errorContactRegistry: 'Unable to contact registry',
+    storedSeedMismatch:
+      'The recovery phrase on this device cannot be replaced from this screen.',
+    replaceNotAcknowledged:
+      'This account cannot be replaced without confirming the replacement.',
     accountSetupNext: 'Next',
     depositStepNext: 'Next',
   },
@@ -110,6 +114,8 @@ export default {
     importAccount: 'Import Account',
     copyRecoveryPhrase: 'Copy recovery phrase',
     refreshRecoveryPhrase: 'Generate a new recovery phrase',
+    resumeNotice:
+      'A recovery phrase is already stored on this device, but this account has no name yet. Your phrase will not be changed. Confirm it and choose a name to finish.',
   },
   seedConfirm: {
     unavailable:
@@ -126,6 +132,28 @@ export default {
     showPhrase: 'Show my recovery phrase again',
     hidePhrase: 'Hide my recovery phrase',
     phraseLabel: 'Your recovery phrase, in order',
+  },
+  backupReminder: {
+    regionLabel: 'Recovery phrase backup reminder',
+    message:
+      'You have not confirmed your recovery phrase yet. Confirm you saved it so you can always recover your account.',
+    confirm: 'Confirm now',
+    dismiss: 'Later',
+  },
+  replaceGuard: {
+    title: 'You already have an account on this device',
+    intro:
+      'Setting up again would replace it. Your recovery phrase is the only way to get this account and its funds back.',
+    confirmed: 'Your current recovery phrase is confirmed.',
+    cancel: 'Cancel and go back to my account',
+    confirmCurrent: 'Confirm my current recovery phrase',
+    replaceToggle: 'Replace this account',
+    warning:
+      'Replacing this account will remove your current recovery phrase, name and profile from this device. If you have not backed the phrase up, the account and any funds may be unrecoverable.',
+    typeLabel: 'Type {word} to continue',
+    word: 'REPLACE',
+    mismatch: 'That does not match. Type the word exactly to continue.',
+    replace: 'Replace this account',
   },
   newContactDialog: {
     newContact: 'New Contact',
@@ -158,6 +186,8 @@ export default {
     wipeAndSave: 'Remote Wipe Wallet',
     changeLog: 'Changelog',
     showSeed: 'Show Seed',
+    confirmSeed: 'Confirm Recovery Phrase',
+    panelLabel: 'Settings',
   },
   receiveBitcoinDialog: {
     walletStatus: 'Wallet Status',

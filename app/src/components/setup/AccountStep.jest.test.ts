@@ -301,3 +301,59 @@ describe('AccountStep recovery phrase controls', () => {
     expect(committed).toBe(VALID_MNEMONIC)
   })
 })
+
+describe('AccountStep resume mode (#284)', () => {
+  function mountResume() {
+    return shallowMount(AccountStep, {
+      props: {
+        resume: true,
+        accountData: { name: '', seed: VALID_MNEMONIC, valid: false },
+      },
+      global: {
+        mocks: { $t: (key: string) => messages[key] ?? key },
+        stubs: { QBtn: QBtnStub, QInput: QInputStub, QSpace: true },
+      },
+    })
+  }
+
+  it('goes straight to the stored phrase, read-only, with a notice and no New/Import/refresh controls', async () => {
+    const wrapper = mountResume()
+    await nextTick()
+
+    expect(wrapper.find('[data-test="resume-notice"]').exists()).toBe(true)
+    const buttons = wrapper
+      .findAll('button')
+      .map(b => b.attributes('aria-label'))
+    expect(buttons).not.toContain('Generate a new recovery phrase')
+    expect(wrapper.text()).not.toContain('New Account')
+    expect(wrapper.text()).not.toContain('Import Account')
+    const seedBox = wrapper.find('textarea[aria-label="profile.seedEntry"]')
+    expect(seedBox.attributes('readonly')).toBeDefined()
+    expect((seedBox.element as HTMLTextAreaElement).value).toBe(VALID_MNEMONIC)
+  })
+
+  it('publishes the stored seed as a New-Account-shaped draft on mount', async () => {
+    const wrapper = mountResume()
+    await nextTick()
+    expect(wrapper.emitted('update:account-data')?.at(-1)?.[0]).toMatchObject({
+      seed: VALID_MNEMONIC,
+      nameRequired: true,
+    })
+  })
+
+  it('cannot regenerate or import over the stored phrase', async () => {
+    const wrapper = mountResume()
+    const vm = wrapper.vm as unknown as {
+      generateMnemonic(): void
+      importAccount(): void
+    }
+    vm.generateMnemonic()
+    vm.importAccount()
+    await nextTick()
+    const emitted = wrapper.emitted('update:account-data') ?? []
+    for (const [data] of emitted) {
+      expect((data as { seed: string }).seed).toBe(VALID_MNEMONIC)
+      expect((data as { nameRequired: boolean }).nameRequired).toBe(true)
+    }
+  })
+})

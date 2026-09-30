@@ -640,11 +640,13 @@ category, and an implementation MUST NOT continue to report a later failure.
 1. **Root limits.** The frame length exceeds `route_byte_limit` or
    `MAX_FRAME_BYTES`: `resource`. No implementation limit other than
    `route_byte_limit` applies here.
-2. **Header.** Fewer than nine bytes or bad magic: `frame`. An embedded child
-   of fewer than nine bytes never reaches this check: the parent's CDDL
-   `framed-object` bound (`bstr .size (9..8388617)`) rejects it first as a
-   stage 8.2 `schema` error, so this check applies to a root and to a child of at
-   least nine bytes.
+2. **Header.** Fewer than nine bytes or bad magic: `frame`. A child carried in a
+   `framed-object` field and shorter than nine bytes never reaches this check:
+   the parent's CDDL bound (`bstr .size (9..8388617)`) rejects it first as a
+   stage 8.2 `schema` error. The check therefore applies to a root, to such a
+   child of at least nine bytes, and to the stage 10.1 decrypted frame, which is
+   supplied out of band and bounded only by `MAX_FRAME_BYTES`, so a decrypted
+   frame under nine bytes fails here as `frame`.
 3. **Version.** An unsupported frame version is `unsupported`. Where the
    containing contract permits retention (F2), the outcome is instead a
    retained frame: the length field is not interpreted, later stages do not run,
@@ -810,10 +812,12 @@ one stage and one category, so a stage never changes a category. A failure insid
 an opened child carries the child's own stage label (a child runs stages 2
 through 9), except a check the parent makes about the child, which is the
 parent's: the wrong-type, assigned-open-field-type, and R2-total checks are stage
-`8.4`. The property is optional in the schema; when a case carries it, a runner
-MUST compare it with the stage its implementation reports, and the committed
-corpus carries it on every `reject` case. It is not allowed on `accept` or
-`retain` cases.
+`8.4`. The property is optional in the schema, and the committed corpus carries it
+on every `reject` case. A runner that reports validation stages SHOULD compare
+`error_stage`; a runner that reports only categories remains conformant and MUST
+compare `error_category`. An `error_stage` beyond the operation's last stage
+(`frame` 4, `generic` 7, `typed` 9) makes the manifest invalid. It is not allowed
+on `accept` or `retain` cases.
 
 Every `typed` or `full` case carries `prior_directory_statement_frame_hex`, and
 every full case, including rejections and frames whose type is not yet known,

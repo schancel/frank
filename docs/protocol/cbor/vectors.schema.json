@@ -111,6 +111,7 @@
           ]
         },
         "error_stage": {
+          "description": "Optional section 9 stage label of the failing check. A runner that reports stages SHOULD compare it; a runner that reports only categories stays conformant and MUST compare error_category. Beyond the operation's last stage (frame 4, generic 7, typed 9) is invalid.",
           "enum": [
             "1",
             "2",

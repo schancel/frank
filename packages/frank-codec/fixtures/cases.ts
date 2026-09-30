@@ -3282,7 +3282,7 @@ rej(
 // S10 is a type-2 parent check: a type-4 root alone has no prior statement.
 acc(
   'sem-t4-root-with-transition-alone-accepted',
-  'A type-4 root validated by itself is not checked against S10: it may carry a transition (field 5) that a type-2 bootstrap would reject.',
+  "A type-4 root validated by itself is not checked against S10: it may carry a transition (field 5) that a type-2 bootstrap would reject. The transition (revision 6 against statement revision 5) is accepted only because the link check lives in S10, which runs only in a type-2 parent's stage 9.",
   fr(4, statementPayload({ transitions: [transition(transitionStatement())] })),
   ['S10'],
   { prior: null },

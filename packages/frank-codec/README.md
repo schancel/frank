@@ -73,7 +73,7 @@ from `fixtures/` (`builders.ts`, `cases.ts`, `manifest.ts`) and a Jest test fail
 stale. Regenerate with `FRANK_UPDATE_VECTORS=1 yarn test`. `fixtures/checker.ts` enforces the
 README section 10 manifest-validity rules that JSON Schema cannot express.
 
-Each reject case carries the optional `error_stage` (README section 10), which `fixtures/cases.ts`
+Each reject case carries the optional `error_stage` (README section 10; other runners SHOULD compare it, category-only runners stay conformant), which `fixtures/cases.ts`
 declares, the Jest tests assert, and the browser and Python checks compare.
 
 ## BCS falsification check

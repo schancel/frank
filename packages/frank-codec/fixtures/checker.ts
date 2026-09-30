@@ -91,6 +91,7 @@ export function checkManifest(m: Manifest, readme: string): string[] {
       )
     }
     if (c.error_stage !== undefined) {
+      // (A manifest with an error_stage past the operation's last stage is invalid, README section 10.)
       // The operation selects the final stage (README section 10): frame 4, generic 7, typed 9.
       const last = { frame: 4, generic: 7, typed: 9, full: 10 }[v.operation]
       if (Number(c.error_stage.split('.')[0]) > last)

@@ -342,6 +342,8 @@ describe('AddContact latest lookup', () => {
         expect(status(wrapper)).toBe(ownMessage)
         expect(wrapper.text()).toContain(ownMessage)
         expect(isBusy(wrapper)).toBe('false')
+        // Own address is never looked up.
+        expect(chain.fetchProfile).not.toHaveBeenCalled()
         await wrapper.find('input').trigger('keydown.enter')
         await addButton(wrapper).trigger('click')
         expect(mockAddContactToStore).not.toHaveBeenCalled()

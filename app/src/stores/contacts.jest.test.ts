@@ -24,18 +24,11 @@ jest.mock('../utils/notifications', () => ({
   desktopNotify: jest.fn(),
 }))
 
-const mockOwnCanonical = jest.fn()
-jest.mock('../utils/own-address', () => {
-  // Real comparison logic over a mocked identity, so spellings are canonicalized.
-  const { activeChain: chain } = jest.requireActual('@frank/wallet/chain')
-  return {
-    isOwnAddress: async (address: string) => {
-      const own = await mockOwnCanonical()
-      const parsed = chain.parseAddress(address.trim())
-      return own !== null && !!parsed && chain.formatAddress(parsed) === own
-    },
-  }
-})
+// Only the wallet handle is faked; the real own-address.ts (lazy import, parse/format) runs.
+const mockUseActiveWallet = jest.fn()
+jest.mock('src/composables/useActiveWallet', () => ({
+  useActiveWallet: () => mockUseActiveWallet(),
+}))
 
 import { useContactStore } from './contacts'
 import type { ContactState } from './contacts'
@@ -53,8 +46,8 @@ describe('stores/contacts.ts (ticket #42)', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     jest.restoreAllMocks()
-    mockOwnCanonical.mockReset()
-    mockOwnCanonical.mockResolvedValue(null)
+    mockUseActiveWallet.mockReset()
+    mockUseActiveWallet.mockRejectedValue(new Error('wallet not initialized'))
   })
 
   describe('fetchAndAddContact', () => {
@@ -95,7 +88,9 @@ describe('stores/contacts.ts (ticket #42)', () => {
       'refuses to add the current identity as its own contact (%s)',
       async spelling => {
         const contacts = useContactStore()
-        mockOwnCanonical.mockResolvedValue(ADDRESS)
+        mockUseActiveWallet.mockResolvedValue({
+          identity: { address: { raw: ADDRESS } },
+        })
         const fetchProfileSpy = jest.spyOn(activeChain, 'fetchProfile')
 
         await contacts.fetchAndAddContact({ address: spelling, contact: {} })

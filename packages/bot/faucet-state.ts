@@ -8,6 +8,7 @@
  * deleted; a record in any state blocks re-funding that address (fail-safe against double spends).
  */
 import { mkdirSync } from 'fs'
+// @ts-ignore -- `level` v7 ships no types (same as the other bot state stores)
 import level, { LevelDB } from 'level'
 import { join } from 'path'
 

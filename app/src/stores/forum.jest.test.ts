@@ -5,6 +5,7 @@
  * (`ForumMessage.vue`/`ForumPost.vue`'s up/down vote buttons, `CreatePost.vue`'s offering field)
  * still produce as a single signed `satoshis` number).
  */
+import { BurnRefreshError } from 'src/utils/burn-refresh-error'
 import { setActivePinia, createPinia } from 'pinia'
 
 import { useForumStore } from './forum'
@@ -140,6 +141,30 @@ describe('useForumStore: read-back failure after a landed burn (review F3)', () 
         satoshis: 250,
       }),
     ).rejects.toThrow('Nothing was sent')
+    expect(mockedFetchOne).not.toHaveBeenCalled()
+    const failure = await store
+      .addOffering({
+        wallet: testWallet,
+        payloadDigest: 'deadbeef',
+        satoshis: 250,
+      })
+      .catch((e: unknown) => e)
+    expect(failure).not.toBeInstanceOf(BurnRefreshError)
+  })
+
+  it('a failed post burn is NOT wrapped either', async () => {
+    const store = useForumStore()
+    mockedPost.mockRejectedValueOnce(new Error('Nothing was sent'))
+    const failure = await store
+      .putMessage({
+        wallet: testWallet,
+        entry: { kind: 'post', message: 'hello' },
+        satoshis: 10_000_000,
+        topic: 'stamp',
+      })
+      .catch((e: unknown) => e)
+    expect(failure).toBeInstanceOf(Error)
+    expect(failure).not.toBeInstanceOf(BurnRefreshError)
     expect(mockedFetchOne).not.toHaveBeenCalled()
   })
 })

@@ -13,6 +13,7 @@ export default {
       'Preparing a private stamp account ({completed}/{total} on-chain transactions; up to {feeReserve} {unit} fee reserve each)…',
     ready: 'Private stamp account ready; sending…',
     posting: 'Posting…',
+    postCreated: 'Post created!',
     postedRefreshFailed:
       'Your post was published, but refreshing failed. Reload to see it. Do not post it again.',
     votedRefreshFailed:

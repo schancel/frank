@@ -51,3 +51,29 @@ describe('notifyBurnFailure', () => {
     expect(infoNotify).not.toHaveBeenCalled()
   })
 })
+
+describe('refresh-failed wording in the real catalogs (review F6)', () => {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const catalogs = {
+    'en-us': require('src/i18n/en-us').default,
+    'fr-fr': require('src/i18n/fr-fr').default,
+  }
+  const RETRY_INVITATION =
+    /\b(try again|retry|once more|réessay|de nouveau|à nouveau)\b/i
+
+  it.each([
+    ['en-us', /do not (post|vote)( it)? again/i],
+    ['fr-fr', /ne (le )?(publiez|votez) pas (à nouveau|de nouveau)/i],
+  ] as const)(
+    '%s tells the user NOT to repeat, and never invites a retry',
+    (locale, doNotRepeat) => {
+      const text = catalogs[locale].stampPreparation
+      for (const key of ['postedRefreshFailed', 'votedRefreshFailed']) {
+        const message: string = text[key]
+        expect(message).toMatch(doNotRepeat)
+        // Remove the prohibition itself, then no retry-style invitation may remain.
+        expect(message.replace(doNotRepeat, '')).not.toMatch(RETRY_INVITATION)
+      }
+    },
+  )
+})

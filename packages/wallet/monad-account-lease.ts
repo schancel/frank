@@ -16,14 +16,16 @@
  *     `'spent'`, or `'retired'` account throws `SubAccountAlreadyLeasedError` rather than silently
  *     proceeding.
  *   - `releaseLease`: on the tx's `'confirmed'` outcome, `'in-use' -> 'spent'`. On `'failed'` or
- *     `'stuck'` (never confirmed within a timeout), `'in-use' -> 'retired'`. **Neither outcome ever
- *     returns the account to `'available'`** — both are terminal, and both are equally excluded
+ *     `'stuck'` (never confirmed within a timeout), `'in-use' -> 'retired'`. **Neither of those
+ *     outcomes ever returns the account to `'available'`** — both are terminal, and both are equally excluded
  *     from `MonadSubAccountPool.selectForStamp()` forever (see that module's own header). A
  *     stuck/failed account is additionally never silently reused with a guessed next nonce, per
  *     `PLAN.md` M5's explicit non-goal of fee-bumping/nonce-guessing recovery. `'spent'` vs.
  *     `'retired'` is purely a bookkeeping distinction (did the tx actually confirm and consume the
  *     account's funds, or did it fail/get abandoned, possibly leaving a balance to reclaim later) —
- *     functionally, for selection purposes, they're identical.
+ *     functionally, for selection purposes, they're identical. The one exception is `'unused'`
+ *     (#273): the caller failed before anything was signed or sent, so the account keeps its funds
+ *     and an untouched nonce and `'in-use' -> 'available'`.
  *
  *     **Correction (ticket #34, after #14/#18/#21 shipped):** this module originally mapped
  *     `'confirmed'` back to `'available'`, treating the pool as a small, cyclically-reused set of
@@ -82,11 +84,12 @@ export interface AccountLeaseHandle {
   readonly address: string
 }
 
-/** How a leased, in-flight transaction was ultimately settled — the input to `releaseLease`. Every
- * outcome is terminal: `'confirmed'` marks the account `'spent'`; `'failed'` (a reverted/failed
- * receipt) and `'stuck'` (never confirmed within the configured timeout) both mark it `'retired'`.
- * None of the three ever returns the account to `'available'` (see this file's header, "Correction
- * (ticket #34)") — `'failed'`/`'stuck'` additionally satisfy the ticket's "never guess the next
+/** How a leased, in-flight transaction was ultimately settled — the input to `releaseLease`.
+ * `'confirmed'` marks the account `'spent'`; `'failed'` (a reverted/failed receipt) and `'stuck'`
+ * (never confirmed within the configured timeout) both mark it `'retired'`; those three are
+ * terminal and never return the account to `'available'` (see this file's header, "Correction
+ * (ticket #34)"). `'unused'` is only for a burn that failed before anything was signed or sent: the
+ * account goes back to `'available'`. `'failed'`/`'stuck'` additionally satisfy the ticket's "never guess the next
  * nonce" requirement by not silently reusing a possibly-desynced nonce. */
 export type LeaseOutcome = 'confirmed' | 'failed' | 'stuck' | 'unused'
 

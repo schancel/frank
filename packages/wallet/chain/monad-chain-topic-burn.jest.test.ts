@@ -472,7 +472,7 @@ describe('RPC failing between funding and signing (#273 review F1)', () => {
       const failure = await act(chain, fake).catch((e: unknown) => e)
       expect(failure).toBeInstanceOf(TopicBurnPreparationError)
       expect((failure as Error).message).toMatch(
-        /RPC dropped while signing.*Nothing was sent.*safe to try again/s,
+        /RPC dropped while signing.*Nothing was sent.*funded account is kept.*safe to try again/s,
       )
       expect(puts).toHaveLength(0)
       // Funded once, and that account is still available (not retired, not leased).

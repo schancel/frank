@@ -51,7 +51,10 @@ import TopicDrawer from 'src/components/topic/TopicDrawer.vue'
 
 import { useTopicStore } from 'src/stores/topics'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
-import { errorNotify } from 'src/utils/notifications'
+import {
+  BurnRefreshError,
+  notifyBurnFailure,
+} from 'src/utils/burn-refresh-error'
 import { DRAWER_BREAKPOINT } from 'src/utils/layout'
 import assert from 'assert'
 
@@ -121,7 +124,10 @@ export default defineComponent({
         })
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
       } catch (err: any) {
-        errorNotify(err)
+        // A burn that landed but could not be read back clears the draft (resending would burn
+        // again) and says so; any other failure keeps the draft for a retry.
+        notifyBurnFailure(err, key => this.$t(key))
+        if (err instanceof BurnRefreshError) this.message = ''
         return
       }
 

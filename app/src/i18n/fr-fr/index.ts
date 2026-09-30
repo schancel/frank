@@ -13,6 +13,7 @@ export default {
       'Préparation d’un compte de timbre privé ({completed}/{total} transactions on-chain ; jusqu’à {feeReserve} {unit} de réserve de frais chacune)…',
     ready: 'Compte de timbre privé prêt ; envoi en cours…',
     posting: 'Publication en cours…',
+    postCreated: 'Message publié !',
     postedRefreshFailed:
       'Votre message a été publié, mais l’actualisation a échoué. Rechargez pour le voir. Ne le publiez pas à nouveau.',
     votedRefreshFailed:

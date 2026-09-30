@@ -112,7 +112,6 @@ import { displayToSafeRawAmount } from 'src/utils/chain-amount'
 import AMessage from '../components/forum/ForumMessage.vue'
 import { errorNotify, infoNotify } from 'src/utils/notifications'
 import { submitPost } from 'src/utils/submit-post'
-import { BurnRefreshError } from 'src/utils/burn-refresh-error'
 import { stampPreparationStatus } from 'src/utils/stamp-preparation-status'
 
 export default defineComponent({
@@ -203,36 +202,34 @@ export default defineComponent({
       await submitPost({
         submit: async () => {
           const wallet = await useActiveWallet()
-          try {
-            await this.postMessage({
-              wallet,
-              entry,
-              satoshis: displayToSafeRawAmount(
-                activeChain,
-                this.offering.toString(),
-              ),
-              topic: this.topic,
-              parentDigest: this.parentDigest,
-              onPreparationProgress: progress => {
-                this.preparationStatus = stampPreparationStatus(
-                  progress,
-                  (key, params) => this.$t(key, params ?? {}),
-                  {
-                    format: raw => activeChain.toDisplayAmount(raw),
-                    unit: activeChain.unit,
-                  },
-                )
-              },
-            })
-          } catch (err) {
-            // The burn went through; only reading the post back failed. Retrying would burn again.
-            if (!(err instanceof BurnRefreshError)) throw err
-            infoNotify(this.$t('stampPreparation.postedRefreshFailed'))
-          }
+          await this.postMessage({
+            wallet,
+            entry,
+            satoshis: displayToSafeRawAmount(
+              activeChain,
+              this.offering.toString(),
+            ),
+            topic: this.topic,
+            parentDigest: this.parentDigest,
+            onPreparationProgress: progress => {
+              this.preparationStatus = stampPreparationStatus(
+                progress,
+                (key, params) => this.$t(key, params ?? {}),
+                {
+                  format: raw => activeChain.toDisplayAmount(raw),
+                  unit: activeChain.unit,
+                },
+              )
+            },
+          })
         },
         errorNotify,
         infoNotify,
         navigateBack: this.back,
+        messages: {
+          created: this.$t('stampPreparation.postCreated'),
+          refreshFailed: this.$t('stampPreparation.postedRefreshFailed'),
+        },
       }).finally(() => {
         this.posting = false
         this.preparationStatus = null

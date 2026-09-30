@@ -452,10 +452,16 @@ export function viewToForumMessage(
  * pool's funding is record-before-broadcast, so retrying resumes an already-sent funding
  * transaction instead of sending another; the message says so because the caller shows it as is. */
 export class TopicBurnPreparationError extends Error {
-  constructor(reason: string, options?: { cause?: unknown }) {
+  constructor(
+    reason: string,
+    options?: { cause?: unknown; stage?: 'preparing' | 'signing' },
+  ) {
     super(
-      `Could not prepare an account to burn from (${reason}). Nothing was sent. ` +
-        'It is safe to try again: a funding transaction that was already sent is reused, not repeated.',
+      options?.stage === 'signing'
+        ? `Could not build the burn (${reason}). Nothing was sent, and the funded account is kept. ` +
+            'It is safe to try again.'
+        : `Could not prepare an account to burn from (${reason}). Nothing was sent. ` +
+            'It is safe to try again: a funding transaction that was already sent is reused, not repeated.',
     )
     this.name = 'TopicBurnPreparationError'
     if (options?.cause !== undefined) {
@@ -469,7 +475,10 @@ export class TopicBurnPreparationError extends Error {
  * retry" message as a failed preparation. Every other error passes through untouched. */
 function asNothingSent(err: unknown): never {
   if (err instanceof BurnNotSentError) {
-    throw new TopicBurnPreparationError(err.message, { cause: err })
+    throw new TopicBurnPreparationError(err.message, {
+      cause: err,
+      stage: 'signing',
+    })
   }
   throw err
 }

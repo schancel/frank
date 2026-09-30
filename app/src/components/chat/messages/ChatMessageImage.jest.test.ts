@@ -3,6 +3,7 @@
 import { mount } from '@vue/test-utils'
 import { defineComponent, h } from 'vue'
 
+import enUS from '../../../i18n/en-us'
 import { png } from '../../../utils/image-data-uri.fixtures'
 import ChatMessageImage from './ChatMessageImage.vue'
 
@@ -11,12 +12,22 @@ const QImg = defineComponent({
   setup: () => () => h('div', { class: 'q-img-stub' }),
 })
 
+const $t = (key: string, params: Record<string, unknown> = {}) => {
+  const value = key
+    .split('.')
+    .reduce<any>((o, k) => o?.[k], enUS as Record<string, unknown>)
+  return typeof value === 'string'
+    ? value.replace(/\{(\w+)\}/g, (_, k: string) => String(params[k]))
+    : key
+}
+
 describe('ChatMessageImage', () => {
   it('caps the size of a delivered picture instead of filling the chat column', () => {
     const w = mount(ChatMessageImage, {
       props: { image: png(320, 200) },
       global: {
         stubs: { QImg, QDialog: true, ImageDialog: true },
+        mocks: { $t },
       },
     })
     const style = w.find('.q-img-stub').attributes('style') ?? ''
@@ -27,7 +38,10 @@ describe('ChatMessageImage', () => {
   const mountWith = (image: unknown) =>
     mount(ChatMessageImage, {
       props: { image: image as string },
-      global: { stubs: { QImg, QDialog: true, ImageDialog: true } },
+      global: {
+        stubs: { QImg, QDialog: true, ImageDialog: true },
+        mocks: { $t },
+      },
     })
 
   it('does not render an image that declares huge dimensions; shows text instead', () => {

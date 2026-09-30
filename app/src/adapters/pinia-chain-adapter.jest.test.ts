@@ -123,6 +123,12 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
     // proved unreliable in practice (polls never observed as run), so this favors a few tens of
     // milliseconds of real wall-clock time for a much more robust test.
     const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
+    // Condition-based wait: a fixed sleep is flaky when the machine is busy (full jest run).
+    const waitUntil = async (condition: () => boolean, timeoutMs = 3000) => {
+      const deadline = Date.now() + timeoutMs
+      while (!condition() && Date.now() < deadline) await wait(5)
+      await wait(5)
+    }
 
     it('feeds fetchSince results into chats.receiveMessages and advances sinceMs', async () => {
       const chats = useChatStore()
@@ -144,6 +150,7 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
       expect(fetchSinceSpy).toHaveBeenNthCalledWith(1, {
         wallet,
         sinceMs: 0,
+        onTruncated: expect.any(Function),
       })
 
       // The relay bound is inclusive, so advance one millisecond past the received record.
@@ -152,6 +159,7 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
       expect(fetchSinceSpy).toHaveBeenNthCalledWith(2, {
         wallet,
         sinceMs: 1_700_000_000_001,
+        onTruncated: expect.any(Function),
       })
       // No new messages on any subsequent poll.
       expect(receiveMessagesSpy).toHaveBeenCalledTimes(1)
@@ -160,6 +168,76 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
       const callsAtStop = fetchSinceSpy.mock.calls.length
       await wait(60)
       expect(fetchSinceSpy.mock.calls.length).toBe(callsAtStop)
+    })
+
+    it('a truncated inbox scan never skips the rest of a timestamp group (F1 regression)', async () => {
+      const chats = useChatStore()
+      const receiveMessagesSpy = jest.spyOn(chats, 'receiveMessages')
+      jest.spyOn(activeChain, 'fetchProfile').mockResolvedValue({
+        address: { raw: SENDER_ADDRESS },
+        pubKey: PUB_KEY_BYTES,
+      })
+      const warnSpy = jest
+        .spyOn(console, 'warn')
+        .mockImplementation(() => undefined)
+      // Relay rows: X@99, A@100, B@100 (same timestamp). The first scan fetched [X, A] on page 1
+      // and page 2 failed; the client cuts the result back to the complete group [X] and reports
+      // the truncation. `since` is inclusive, so the next poll from 100 must still return A and B.
+      const rows = [
+        makeRecord({ payloadDigest: 'x', receivedTime: 99 }),
+        makeRecord({ payloadDigest: 'a', receivedTime: 100 }),
+        makeRecord({ payloadDigest: 'b', receivedTime: 100 }),
+      ]
+      let firstScan = true
+      const fetchSinceSpy = jest
+        .spyOn(activeChain.directMessages, 'fetchSince')
+        .mockImplementation(async ({ sinceMs, onTruncated }) => {
+          if (firstScan) {
+            firstScan = false
+            onTruncated?.(new Error('page 2 failed'))
+            return rows.filter(r => r.receivedTime === 99)
+          }
+          return rows.filter(r => r.receivedTime >= sinceMs)
+        })
+
+      const polling = startDirectMessagePolling({ wallet, intervalMs: 20 })
+      await waitUntil(() => receiveMessagesSpy.mock.calls.length >= 2)
+      polling.stop()
+
+      expect(warnSpy).toHaveBeenCalled()
+      expect(fetchSinceSpy.mock.calls[1][0].sinceMs).toBe(100)
+      const digests = receiveMessagesSpy.mock.calls.flatMap(([batch]) =>
+        batch.map(m => m.payloadDigest ?? (m as { digest?: string }).digest),
+      )
+      expect(receiveMessagesSpy).toHaveBeenCalledTimes(2)
+      expect(digests).toHaveLength(3)
+    })
+
+    it('stop() during an in-flight poll delivers nothing and never reschedules (wallet switch)', async () => {
+      const chats = useChatStore()
+      const receiveMessagesSpy = jest.spyOn(chats, 'receiveMessages')
+      jest.spyOn(activeChain, 'fetchProfile').mockResolvedValue({
+        address: { raw: SENDER_ADDRESS },
+        pubKey: PUB_KEY_BYTES,
+      })
+      let release: (records: DirectMessageReceived[]) => void = () => undefined
+      const fetchSinceSpy = jest
+        .spyOn(activeChain.directMessages, 'fetchSince')
+        .mockImplementation(
+          () =>
+            new Promise<DirectMessageReceived[]>(resolve => {
+              release = resolve
+            }),
+        )
+
+      const polling = startDirectMessagePolling({ wallet, intervalMs: 10 })
+      await waitUntil(() => fetchSinceSpy.mock.calls.length === 1)
+      polling.stop() // the old wallet is switched away while its request is still in flight
+      release([makeRecord({ payloadDigest: 'old-wallet-msg' })])
+      await wait(80) // several intervals: any reschedule would show up as a second call
+
+      expect(receiveMessagesSpy).not.toHaveBeenCalled()
+      expect(fetchSinceSpy).toHaveBeenCalledTimes(1)
     })
 
     it('advances beyond a valid record returned after an earlier poison record was filtered', async () => {
@@ -183,13 +261,14 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
 
       const polling = startDirectMessagePolling({ wallet, intervalMs: 20 })
       try {
-        await wait(35)
+        await waitUntil(() => fetchSinceSpy.mock.calls.length >= 2)
         expect(receiveMessagesSpy).toHaveBeenCalledWith([
           expect.objectContaining({ index: 'valid-after-poison' }),
         ])
         expect(fetchSinceSpy).toHaveBeenNthCalledWith(2, {
           wallet,
           sinceMs: 201,
+          onTruncated: expect.any(Function),
         })
       } finally {
         polling.stop()
@@ -240,12 +319,13 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
 
       const polling = startDirectMessagePolling({ wallet, intervalMs: 20 })
       try {
-        await wait(35)
+        await waitUntil(() => fetchSinceSpy.mock.calls.length >= 2)
         expect(consoleErrorSpy).toHaveBeenCalled()
         expect(receiveMessagesSpy).toHaveBeenCalledTimes(1)
         expect(fetchSinceSpy).toHaveBeenNthCalledWith(2, {
           wallet,
           sinceMs: 0,
+          onTruncated: expect.any(Function),
         })
       } finally {
         polling.stop()
@@ -275,7 +355,7 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
 
       const polling = startDirectMessagePolling({ wallet, intervalMs: 20 })
       try {
-        await wait(35)
+        await waitUntil(() => fetchSinceSpy.mock.calls.length >= 2)
         expect(consoleErrorSpy).toHaveBeenCalled()
         expect(receiveMessagesSpy).toHaveBeenCalledWith([
           expect.objectContaining({ index: 'later' }),
@@ -283,6 +363,7 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
         expect(fetchSinceSpy).toHaveBeenNthCalledWith(2, {
           wallet,
           sinceMs: 0,
+          onTruncated: expect.any(Function),
         })
       } finally {
         polling.stop()

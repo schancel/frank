@@ -1,0 +1,30 @@
+{
+  "name": "@frank/codec",
+  "version": "0.0.1",
+  "description": "Browser-safe TypeScript reference codec for Frank deterministic CBOR v1 (docs/protocol/cbor): FRNK frame encode/parse, restricted canonical-CBOR encode/validate, section 9 stages 1-9, T1/T1a content hashes. Prototype for #131/#183; no production path uses it.",
+  "license": "MIT",
+  "private": true,
+  "sideEffects": false,
+  "main": "src/index.ts",
+  "scripts": {
+    "test": "jest",
+    "typecheck": "tsc -p tsconfig.json",
+    "format": "prettier --config ../../app/.prettierrc.json --check \"src/**/*.ts\" \"test/**/*.ts\" \"fixtures/**/*.ts\" \"browsercheck/*.js\" package.json tsconfig.json tsconfig.jest.json jest.config.js .eslintrc.js",
+    "build:browser": "node browsercheck/build.js",
+    "check:browser": "node browsercheck/build.js && node browsercheck/check-vm.js && node browsercheck/check-chrome.js",
+    "lint": "eslint . --ext .ts,.js",
+    "crosscheck": "python3 scripts/crosscheck.py"
+  },
+  "dependencies": {
+    "@noble/hashes": "^1.2.0"
+  },
+  "devDependencies": {
+    "@types/jest": "^29",
+    "@types/node": "^16.11.11",
+    "ajv": "^8.6.0",
+    "esbuild": "~0.28.0",
+    "jest": "^29",
+    "ts-jest": "^29",
+    "typescript": "^5.9.3"
+  }
+}

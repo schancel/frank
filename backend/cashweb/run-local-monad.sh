@@ -13,6 +13,12 @@ if [[ -f "$repo_root/.env" ]]; then
 fi
 
 rpc_url="${MONAD_TESTNET_HTTP_RPC_URL:-}"
+# The enabled mailbox requires an explicit aggregate stamp minimum and the EVM chain ID that every
+# signed stamp payment must carry (see `MonadMailboxConf::mode()` in cashweb-config). Both come
+# from the environment with local-testnet defaults: the minimum reuses the client's documented
+# stamp value, and 10143 is Monad testnet's chain ID (mainnet is 143; see PLAN.md).
+min_value_wei="${CASHWEB_STAMP_MIN_BURN_VALUE_WEI:-1000000000000}"
+expected_chain_id="${MONAD_TESTNET_CHAIN_ID:-10143}"
 cargo_command="${CARGO:-cargo}"
 if [[ -z "$rpc_url" ]]; then
     echo "run-local-monad: MONAD_TESTNET_HTTP_RPC_URL is required (set it in .env or the environment)" >&2
@@ -30,6 +36,19 @@ esac
 case "$rpc_url" in
     *[![:print:]]* | *'"'* | *'\'*)
         echo "run-local-monad: MONAD_TESTNET_HTTP_RPC_URL contains unsupported characters" >&2
+        exit 64
+        ;;
+esac
+
+case "$min_value_wei" in
+    '' | *[!0-9]*)
+        echo "run-local-monad: CASHWEB_STAMP_MIN_BURN_VALUE_WEI must be a decimal integer" >&2
+        exit 64
+        ;;
+esac
+case "$expected_chain_id" in
+    '' | *[!0-9]*)
+        echo "run-local-monad: MONAD_TESTNET_CHAIN_ID must be a decimal integer" >&2
         exit 64
         ;;
 esac
@@ -82,7 +101,9 @@ if [[ ! -x "$cashwebd" ]]; then
     exit 70
 fi
 
-runtime_config="$(MONAD_TESTNET_HTTP_RPC_URL="$rpc_url" awk '
+runtime_config="$(MONAD_TESTNET_HTTP_RPC_URL="$rpc_url" \
+    LAUNCHER_MIN_VALUE_WEI="$min_value_wei" \
+    LAUNCHER_EXPECTED_CHAIN_ID="$expected_chain_id" awk '
     /^\[registry\.monad_mailbox\]$/ {
         in_monad_mailbox = 1
         print
@@ -91,6 +112,8 @@ runtime_config="$(MONAD_TESTNET_HTTP_RPC_URL="$rpc_url" awk '
     in_monad_mailbox && /^enabled[[:space:]]*=/ {
         print "enabled = true"
         print "rpc_url = \"" ENVIRON["MONAD_TESTNET_HTTP_RPC_URL"] "\""
+        print "min_value_wei = \"" ENVIRON["LAUNCHER_MIN_VALUE_WEI"] "\""
+        print "expected_chain_id = " ENVIRON["LAUNCHER_EXPECTED_CHAIN_ID"]
         in_monad_mailbox = 0
         next
     }

@@ -89,6 +89,8 @@ import {
 import { PrivateKey, crypto as bitcoreCrypto } from 'bitcore-lib-xpi'
 import axios from 'axios'
 
+import type { MailboxAuthParams } from '@frank/cashweb/relay/monad-mailbox-client'
+
 import __pb_registry_metadata_pb from '@frank/cashweb/registry/metadata_pb'
 const { AddressMetadata, Entry, Header, ListMonadProfilesResponse } =
   __pb_registry_metadata_pb
@@ -96,6 +98,10 @@ import __pb_signed_payload_payload_pb from '@frank/cashweb/signed_payload/payloa
 const { SignedPayload } = __pb_signed_payload_payload_pb
 import { ChainAddress, HDSeed, ProfileInfo } from './chain/active-chain'
 import type { FrankIdentityHandle } from './chain/active-chain'
+import {
+  requireValidProfileDisplayName,
+  validateProfileDisplayName,
+} from './profile-display-name'
 
 /** Reserved BIP-44 path (account index `1'`) for the stable Frank identity key -- see this file's
  * header for why it's kept structurally separate from both `monad-hd-keyring.ts`'s burner
@@ -176,6 +182,21 @@ export class MonadIdentity implements FrankIdentityHandle {
   }
 }
 
+/** Mailbox authentication bundle for `identity`'s own inbox on `relayBaseUrl`
+ * (`@frank/cashweb/relay/monad-mailbox-client`): the relay verifies each private read against the
+ * public key registered for this address, so this signs with the same DER-ECDSA identity key as
+ * `registerMonadIdentity`. */
+export function mailboxAuthFor(
+  identity: MonadIdentity,
+  relayBaseUrl: string,
+): MailboxAuthParams {
+  return {
+    relayBaseUrl,
+    recipient: identity.address.raw,
+    signDigest: digest => identity.signHash(Buffer.from(digest)),
+  }
+}
+
 /** Builds and signs the `cashweb_payload::proto::SignedPayload` wrapper around a fresh, empty
  * `AddressMetadata` -- the same "no vCard content, just proving registration itself" shape
  * `lotus-identity.ts`'s `buildSignedAddressMetadata` uses (see that function's doc comment for why
@@ -196,7 +217,14 @@ function profileEntries(profile: MonadProfileFields = {}) {
     entries.push(entry)
   }
 
-  addTextEntry('display_name', profile.name)
+  // An empty or whitespace-only stored name means "never set" and is simply not signed; any
+  // other invalid name (controls, over-long, lone surrogates) is refused per Decision #189.
+  const displayName =
+    profile.name === undefined ||
+    !validateProfileDisplayName(profile.name).normalized
+      ? undefined
+      : requireValidProfileDisplayName(profile.name)
+  addTextEntry('display_name', displayName)
   addTextEntry('bio', profile.bio)
 
   if (profile.avatar) {

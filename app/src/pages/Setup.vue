@@ -95,7 +95,11 @@ import {
 } from '../utils/constants'
 import { errorNotify } from '../utils/notifications'
 import { persistSetupAndReload } from '../utils/setup-persistence'
-import { commitValidatedSetupSeed } from '../utils/setup-account'
+import {
+  commitValidatedSetupName,
+  commitValidatedSetupSeed,
+  initialSetupSeed,
+} from '../utils/setup-account'
 
 import AccountStep from '../components/setup/AccountStep.vue'
 import DepositStep from '../components/setup/DepositStep.vue'
@@ -124,9 +128,6 @@ export default defineComponent({
     const myProfile = useProfileStore()
     const contacts = useContactStore()
     const { updateInterval } = storeToRefs(contacts)
-    if (!wallet.seedPhrase) {
-      wallet.setSeedPhrase(generateMnemonic())
-    }
 
     return {
       setRelayToken: relayClient.setToken,
@@ -153,7 +154,9 @@ export default defineComponent({
       accountData: {
         name: '',
         valid: false,
-        seed: wallet.seedPhrase,
+        nameRequired: false,
+        // In-memory draft only: persisted by commitValidatedSetupSeed() on completion (#267).
+        seed: initialSetupSeed(wallet.seedPhrase, generateMnemonic),
       },
       relayData: defaultRelayData,
       relayUrl: defaultRelayUrl,
@@ -484,14 +487,19 @@ export default defineComponent({
             this.accountData.seed,
             seed => this.setSeedPhrase(seed),
           )
-          this.setRelayData({
-            profile: {
-              name: this.accountData.name || 'Frank User',
-              bio: '',
-              avatar: this.avatar,
-            },
-            inbox: defaultRelayData.inbox,
-          })
+          this.accountData.name = commitValidatedSetupName(
+            this.accountData.name,
+            this.accountData.nameRequired,
+            name =>
+              this.setRelayData({
+                profile: {
+                  name,
+                  bio: '',
+                  avatar: this.avatar,
+                },
+                inbox: defaultRelayData.inbox,
+              }),
+          )
           // The next boot initializes the Monad identity from these stores, so
           // neither write may be left in flight when the page reloads.
           await this.persistSetupAndReload()

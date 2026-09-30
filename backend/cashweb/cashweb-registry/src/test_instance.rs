@@ -88,6 +88,7 @@ impl RegistryTestInstance {
             pop_gate,
             // No curated defaults needed by any current caller of this test instance (ticket #49).
             curated_defaults: Arc::new(vec![]),
+            monad_mailbox: crate::monad_mailbox::MonadMailboxRuntime::Disabled,
         };
 
         let router = server.into_router();

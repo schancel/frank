@@ -40,7 +40,10 @@ import {
   tryDecryptEnvelope,
 } from '@frank/cashweb/relay/monad-message-envelope'
 import { fetchMonadMessagesSince } from '@frank/cashweb/relay/monad-message-feed'
-import { fetchMonadIdentityPubKey } from '@frank/wallet/monad-identity'
+import {
+  fetchMonadIdentityPubKey,
+  mailboxAuthFor,
+} from '@frank/wallet/monad-identity'
 import { deserializeMessageItems } from '@frank/wallet/chain/monad-chain'
 import { DigitalGoodsItem, Message, MessageItem } from '@frank/cashweb/types/messages'
 import {
@@ -167,7 +170,7 @@ async function main() {
   let lastActivityAt = Date.now()
 
   console.log(
-    `\nPolling ${relayBaseUrl}/message/monad?since=<t> every ${pollIntervalMs}ms for messages addressed to ${identity.displayAddress} ...`,
+    `\nPolling ${relayBaseUrl}/message/monad/inbox/<me> (signed mailbox read, since=<t>) every ${pollIntervalMs}ms for messages addressed to ${identity.displayAddress} ...`,
   )
 
   while (salesCompleted < maxSales) {
@@ -176,7 +179,10 @@ async function main() {
       break
     }
 
-    const stored = await fetchMonadMessagesSince({ relayBaseUrl, sinceMs: since })
+    const stored = await fetchMonadMessagesSince({
+      ...mailboxAuthFor(identity, relayBaseUrl),
+      sinceMs: since,
+    })
     let maxSeenTimestamp = since - 1
 
     for (const message of stored) {

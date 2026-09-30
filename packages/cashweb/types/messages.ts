@@ -40,17 +40,23 @@ export interface ImageItem {
 export interface BlackjackMoveItem {
   type: 'blackjack-move'
   gameId: string
-  action: 'bet' | 'deal' | 'hit' | 'stand' | 'reveal'
+  action: 'bet' | 'deal' | 'hit' | 'stand' | 'double' | 'reveal'
   /** `bet` only: the tx hash of the separate plain value transfer that *is* the wager. Also
    * doubles as the shuffle's client-seed entropy (see `@frank/wallet/message-item-plugins/blackjack`'s header) -- no
    * extra round trip needed to collect one. */
   wagerTxHash?: string
+  /** `double` only: the tx hash of a *second* plain value transfer, matching the original wager --
+   * a double-down doubles the bet in exchange for exactly one more card then an automatic stand,
+   * and since the wager is never a self-reported field (see this type's own header), doubling it
+   * needs a second independently-verified transfer, not just doubling a number client-side. */
+  doubleWagerTxHash?: string
   /** `deal` only: the bot's commitment to its shuffle seed, generated and hashed *before* this
    * specific bet was ever seen (see `@frank/wallet/message-item-plugins/blackjack/deck.ts`'s header for why that
    * ordering is the entire fairness property this scheme relies on). */
   serverSeedHash?: string
-  /** `deal`/`hit`: the player's full hand so far (always the complete cumulative hand, not a diff
-   * from the previous message -- simpler to verify, and each message stays self-contained). */
+  /** `deal`/`hit`/`double`: the player's full hand so far (always the complete cumulative hand,
+   * not a diff from the previous message -- simpler to verify, and each message stays
+   * self-contained). */
   playerCards?: number[]
   /** `deal` only: the dealer's single face-up card. */
   dealerUpCard?: number

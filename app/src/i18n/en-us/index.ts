@@ -22,9 +22,18 @@ export default {
     emojiPickerTitle: 'Select an emoji',
     stampPrice: 'Stamp Price',
   },
+  leftDrawer: {
+    settings: 'Settings',
+    contacts: 'Contacts',
+    forum: 'Forum',
+    railLabel: 'Sidebar sections',
+    contactsUnreadOne: 'Contacts, {count} unread message',
+    contactsUnreadOther: 'Contacts, {count} unread messages',
+  },
   chatList: {
     noContactMessage: 'Add contacts from the drawer above...',
     balance: 'Balance',
+    balanceStale: '(last known)',
     directMessages: 'Direct Messages',
   },
   chatMessage: {
@@ -97,7 +106,11 @@ export default {
   newContactDialog: {
     newContact: 'New Contact',
     enterBitcoinCashAddress: 'Enter address (0x...)',
+    loading: 'Looking up contact',
     notFound: 'Not Found',
+    found: 'Contact found: {name}',
+    ownAddress:
+      "This is your own address. You can't add yourself as a contact.",
   },
   newTopicDialog: {
     newTopic: 'Add Topic',
@@ -124,6 +137,7 @@ export default {
   },
   receiveBitcoinDialog: {
     walletStatus: 'Wallet Status',
+    balanceUnavailable: 'Balance unavailable. Retrying.',
     close: 'Close',
     addressCopied: 'Address copied to clipboard',
   },
@@ -190,6 +204,8 @@ export default {
     avatarTooLarge: 'Profile avatar is too large, select a smaller image.',
     unableContactRelay: 'Unable to contact relay server.',
     pushingProfile: 'Pushing new Profile...',
+    invalidName:
+      'Enter a public name: 1-128 characters, no control characters.',
     profile: 'Profile',
   },
   wipeWallet: {

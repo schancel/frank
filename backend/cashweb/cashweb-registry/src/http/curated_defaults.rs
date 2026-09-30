@@ -204,6 +204,7 @@ mod tests {
             peers: Arc::new(Peers::new("http://127.0.0.1:1".to_string(), vec![])),
             pop_gate: Arc::new(pop_gate),
             curated_defaults: Arc::new(curated_defaults),
+            monad_mailbox: crate::monad_mailbox::MonadMailboxRuntime::Disabled,
         }
     }
 

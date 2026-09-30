@@ -65,8 +65,67 @@ fn by_recipient_time_key(recipient: &Address, timestamp: i64, payload_hash: &[u8
     .concat()
 }
 
+const MAILBOX_AUTH_EXACT_PREFIX: &[u8] = b"\xffmailbox-auth-used-v1\0";
+const MAILBOX_AUTH_EXPIRY_PREFIX: &[u8] = b"\xffmailbox-auth-expiry-v1\0";
+const MAILBOX_AUTH_GC_BATCH: usize = 256;
+
+fn mailbox_auth_exact_key(epoch: &[u8; 32], recipient: &Address, nonce: &[u8; 32]) -> Vec<u8> {
+    [
+        MAILBOX_AUTH_EXACT_PREFIX,
+        epoch.as_slice(),
+        recipient.0.as_slice(),
+        nonce.as_slice(),
+    ]
+    .concat()
+}
+
+fn mailbox_auth_recipient_prefix(epoch: &[u8; 32], recipient: &Address) -> Vec<u8> {
+    [
+        MAILBOX_AUTH_EXACT_PREFIX,
+        epoch.as_slice(),
+        recipient.0.as_slice(),
+    ]
+    .concat()
+}
+
+fn mailbox_auth_expiry_key(
+    expires_at_ms: i64,
+    epoch: &[u8; 32],
+    recipient: &Address,
+    nonce: &[u8; 32],
+) -> Vec<u8> {
+    [
+        MAILBOX_AUTH_EXPIRY_PREFIX,
+        expires_at_ms.to_be_bytes().as_slice(),
+        epoch.as_slice(),
+        recipient.0.as_slice(),
+        nonce.as_slice(),
+    ]
+    .concat()
+}
+
+/// Strict-forward cursor for the recipient journal's composite `(timestamp, payload_hash)` order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RecipientMessageCursor {
+    /// Stored message timestamp.
+    pub timestamp: i64,
+    /// Deterministic tie-breaker for equal timestamps.
+    pub payload_hash: [u8; 32],
+}
+
+/// One encoded-size-bounded recipient inbox page.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RecipientMessagePage {
+    /// Complete records; records are never split to satisfy a byte budget.
+    pub messages: Vec<proto::StoredMonadMessage>,
+    /// Last returned composite key when another record remains.
+    pub next_cursor: Option<RecipientMessageCursor>,
+    /// Exact protobuf response-body size for `StoredMonadMessages { messages }`.
+    pub encoded_bytes: usize,
+}
+
 /// Allows access to stored Monad-stamped messages.
-pub struct DbMonadMessages<'a> {
+pub(crate) struct DbMonadMessages<'a> {
     db: &'a Db,
     cf_monad_messages: &'a CF,
     cf_monad_messages_by_time: &'a CF,
@@ -105,6 +164,10 @@ pub enum MonadMessageAttemptClaim {
 /// Errors indicating some Monad-message store error.
 #[derive(Debug, Error, ErrorMeta, PartialEq, Eq)]
 pub enum DbMonadMessagesError {
+    /// Durable mailbox replay authority has an invalid fixed-width key or value.
+    #[critical()]
+    #[error("Inconsistent db: malformed mailbox authentication replay record")]
+    CorruptMailboxAuthRecord,
     /// Database contains an invalid protobuf `StoredMonadMessage`.
     #[critical()]
     #[error("Inconsistent db: Cannot decode StoredMonadMessage: {0}")]
@@ -114,13 +177,41 @@ pub enum DbMonadMessagesError {
     #[invalid_user_input()]
     #[error("No Monad message found for payload hash {0}")]
     NotFound(String),
+
+    /// A private cursor no longer names an exact recipient index row.
+    #[invalid_user_input()]
+    #[error("Private Monad inbox cursor is stale or belongs to another recipient")]
+    StalePrivateCursor,
+
+    /// One complete record cannot fit within the caller's bounded response budget.
+    #[invalid_user_input()]
+    #[error("Private Monad inbox record requires {required} bytes, page budget is {maximum}")]
+    RecordExceedsPageBudget {
+        /// Exact encoded response bytes required for this one record.
+        required: usize,
+        /// Requested bounded response bytes.
+        maximum: usize,
+    },
 }
 
 use self::DbMonadMessagesError::*;
 
+/// Outcome of consuming a recipient-authenticated mailbox challenge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ChallengeConsumption {
+    /// The nonce was unused and is now durably consumed.
+    Consumed,
+    /// The challenge is expired or its nonce was already consumed (an authentication failure).
+    Rejected,
+    /// The recipient already has the maximum number of live consumed challenges. This is a
+    /// retryable resource condition, not an authentication failure: capacity returns as the
+    /// recipient's earlier challenges expire.
+    AtCapacity,
+}
+
 impl<'a> DbMonadMessages<'a> {
     /// Create a new [`DbMonadMessages`] instance.
-    pub fn new(db: &'a Db) -> Self {
+    pub(crate) fn new(db: &'a Db) -> Self {
         let cf_monad_messages = db.cf(CF_MONAD_MESSAGES).unwrap();
         let cf_monad_messages_by_time = db.cf(CF_MONAD_MESSAGES_BY_TIME).unwrap();
         let cf_monad_messages_by_recipient_time =
@@ -135,6 +226,7 @@ impl<'a> DbMonadMessages<'a> {
         }
     }
 
+    #[cfg(test)]
     fn encoded_attempt(
         message: &proto::MonadStampedMessage,
         policy: &MonadMessageAttemptPolicy,
@@ -158,7 +250,7 @@ impl<'a> DbMonadMessages<'a> {
     }
 
     /// Inspect a durable exact-set claim without creating one.
-    pub fn get_attempt(
+    pub(crate) fn get_attempt(
         &self,
         payload_hash: &[u8],
         message: &proto::MonadStampedMessage,
@@ -204,15 +296,23 @@ impl<'a> DbMonadMessages<'a> {
         }
     }
 
+    #[cfg(test)]
     /// Persist the exact raw payment set and its bounded policy snapshot before its first
     /// broadcast. The encrypted payload itself is represented only by the message digest, avoiding
     /// attacker-controlled disk amplification.
-    pub fn claim_attempt(
+    pub(crate) fn claim_attempt(
         &self,
         payload_hash: &[u8],
         message: &proto::MonadStampedMessage,
         policy: &MonadMessageAttemptPolicy,
     ) -> Result<MonadMessageAttemptClaim> {
+        let _guard = self.db.lock_monad_outbox();
+        // The canonical outbox/inbox is the sole owner once present. This shares the outbox
+        // mutex so a legacy caller cannot create a second digest-only owner during migration.
+        if self.db.monad_outbox().get(payload_hash)?.is_some() || self.get(payload_hash)?.is_some()
+        {
+            return Ok(MonadMessageAttemptClaim::Conflict);
+        }
         match self.get_attempt(payload_hash, message)? {
             MonadMessageAttemptClaim::Missing => {
                 if policy.recipient_pubkey.len() > u8::MAX as usize
@@ -233,14 +333,143 @@ impl<'a> DbMonadMessages<'a> {
         }
     }
 
-    /// Release a claim after the first transaction was definitively rejected by the RPC before
-    /// any member of the set verified. Timeout/accepted ambiguity deliberately does not call this.
-    pub fn delete_attempt(&self, payload_hash: &[u8]) -> Result<()> {
+    #[cfg(test)]
+    /// Release a claim (test-only: production releases digest-only claims solely through exact
+    /// adoption into the canonical outbox).
+    pub(crate) fn delete_attempt(&self, payload_hash: &[u8]) -> Result<()> {
+        let _guard = self.db.lock_monad_outbox();
         let mut batch = rocksdb::WriteBatch::default();
-        batch.delete_cf(self.cf_monad_message_attempts, payload_hash);
+        self.append_delete_attempt_to_batch(&mut batch, payload_hash);
         self.db.write_batch(batch)
     }
 
+    pub(crate) fn append_delete_attempt_to_batch(
+        &self,
+        batch: &mut rocksdb::WriteBatch,
+        payload_hash: &[u8],
+    ) {
+        batch.delete_cf(self.cf_monad_message_attempts, payload_hash);
+    }
+
+    /// Atomically consume one recipient-authenticated mailbox challenge.
+    ///
+    /// Exact unexpired records are durable replay authority and are never evicted. The cap is
+    /// scoped only to this recipient and runtime epoch, so unrelated authenticated principals
+    /// cannot make the recipient fail closed. Expiry-index cleanup is bounded per call; exact
+    /// records remain authoritative even when their cleanup entry has not yet been visited.
+    pub(crate) fn consume_mailbox_challenge(
+        &self,
+        epoch: [u8; 32],
+        recipient: Address,
+        nonce: [u8; 32],
+        expires_at_ms: i64,
+        now_ms: i64,
+        per_recipient_cap: usize,
+    ) -> Result<ChallengeConsumption> {
+        if expires_at_ms < now_ms || per_recipient_cap == 0 {
+            return Ok(ChallengeConsumption::Rejected);
+        }
+        let _guard = self.db.lock_monad_outbox();
+        let exact_key = mailbox_auth_exact_key(&epoch, &recipient, &nonce);
+        let mut batch = rocksdb::WriteBatch::default();
+
+        if let Some(existing) = self.db.get(self.cf_monad_message_attempts, &exact_key)? {
+            let existing_expiry = existing
+                .as_ref()
+                .try_into()
+                .map(i64::from_be_bytes)
+                .map_err(|_| DbMonadMessagesError::CorruptMailboxAuthRecord)?;
+            if existing_expiry >= now_ms {
+                return Ok(ChallengeConsumption::Rejected);
+            }
+            batch.delete_cf(self.cf_monad_message_attempts, &exact_key);
+            batch.delete_cf(
+                self.cf_monad_message_attempts,
+                mailbox_auth_expiry_key(existing_expiry, &epoch, &recipient, &nonce),
+            );
+        }
+
+        let expiry_prefix = MAILBOX_AUTH_EXPIRY_PREFIX;
+        let mut cleaned = 0usize;
+        for item in self.db.rocksdb().iterator_cf(
+            self.cf_monad_message_attempts,
+            IteratorMode::From(expiry_prefix, Direction::Forward),
+        ) {
+            let (key, _) = item?;
+            if !key.starts_with(expiry_prefix) || cleaned == MAILBOX_AUTH_GC_BATCH {
+                break;
+            }
+            let expiry_start = expiry_prefix.len();
+            let expiry_end = expiry_start + 8;
+            let expiry = key
+                .get(expiry_start..expiry_end)
+                .and_then(|bytes| bytes.try_into().ok())
+                .map(i64::from_be_bytes)
+                .ok_or(DbMonadMessagesError::CorruptMailboxAuthRecord)?;
+            if expiry >= now_ms {
+                break;
+            }
+            let suffix = key
+                .get(expiry_end..)
+                .ok_or(DbMonadMessagesError::CorruptMailboxAuthRecord)?;
+            if suffix.len() != 32 + 20 + 32 {
+                return Err(DbMonadMessagesError::CorruptMailboxAuthRecord.into());
+            }
+            let stale_exact = [MAILBOX_AUTH_EXACT_PREFIX, suffix].concat();
+            batch.delete_cf(self.cf_monad_message_attempts, stale_exact);
+            batch.delete_cf(self.cf_monad_message_attempts, key);
+            cleaned += 1;
+        }
+
+        let recipient_prefix = mailbox_auth_recipient_prefix(&epoch, &recipient);
+        let mut active = 0usize;
+        for item in self.db.rocksdb().iterator_cf(
+            self.cf_monad_message_attempts,
+            IteratorMode::From(&recipient_prefix, Direction::Forward),
+        ) {
+            let (key, value) = item?;
+            if !key.starts_with(&recipient_prefix) {
+                break;
+            }
+            let stored_expiry = value
+                .as_ref()
+                .try_into()
+                .map(i64::from_be_bytes)
+                .map_err(|_| DbMonadMessagesError::CorruptMailboxAuthRecord)?;
+            if stored_expiry < now_ms {
+                let stale_nonce: [u8; 32] = key
+                    .get(recipient_prefix.len()..)
+                    .and_then(|bytes| bytes.try_into().ok())
+                    .ok_or(DbMonadMessagesError::CorruptMailboxAuthRecord)?;
+                batch.delete_cf(self.cf_monad_message_attempts, key);
+                batch.delete_cf(
+                    self.cf_monad_message_attempts,
+                    mailbox_auth_expiry_key(stored_expiry, &epoch, &recipient, &stale_nonce),
+                );
+            } else {
+                active += 1;
+                if active >= per_recipient_cap {
+                    self.db.write_batch(batch)?;
+                    return Ok(ChallengeConsumption::AtCapacity);
+                }
+            }
+        }
+
+        batch.put_cf(
+            self.cf_monad_message_attempts,
+            &exact_key,
+            expires_at_ms.to_be_bytes(),
+        );
+        batch.put_cf(
+            self.cf_monad_message_attempts,
+            mailbox_auth_expiry_key(expires_at_ms, &epoch, &recipient, &nonce),
+            [],
+        );
+        self.db.write_batch(batch)?;
+        Ok(ChallengeConsumption::Consumed)
+    }
+
+    #[cfg(test)]
     /// Store a [`proto::StoredMonadMessage`], keyed by its inner message's `payload_hash`, and
     /// index it by `message.timestamp` (ticket #37's `list_since`).
     ///
@@ -250,7 +479,7 @@ impl<'a> DbMonadMessages<'a> {
     /// message already existed under this `payload_hash`, its old by-time index entry is removed
     /// first (in the same batch) so a retry with a different `timestamp` doesn't leave a stale,
     /// orphaned index row behind.
-    pub fn put(
+    pub(crate) fn put(
         &self,
         payload_hash: &[u8],
         recipient: &Address,
@@ -304,7 +533,7 @@ impl<'a> DbMonadMessages<'a> {
     }
 
     /// Retrieve a [`proto::StoredMonadMessage`] by its `payload_hash`. [`None`] if not found.
-    pub fn get(&self, payload_hash: &[u8]) -> Result<Option<proto::StoredMonadMessage>> {
+    pub(crate) fn get(&self, payload_hash: &[u8]) -> Result<Option<proto::StoredMonadMessage>> {
         let serialized = match self.db.get(self.cf_monad_messages, payload_hash)? {
             Some(serialized) => serialized,
             None => return Ok(None),
@@ -316,7 +545,7 @@ impl<'a> DbMonadMessages<'a> {
 
     /// Retrieve a [`proto::StoredMonadMessage`] by its `payload_hash`, erroring with
     /// [`DbMonadMessagesError::NotFound`] if it doesn't exist.
-    pub fn get_existing(&self, payload_hash: &[u8]) -> Result<proto::StoredMonadMessage> {
+    pub(crate) fn get_existing(&self, payload_hash: &[u8]) -> Result<proto::StoredMonadMessage> {
         self.get(payload_hash)?
             .ok_or_else(|| NotFound(hex::encode(payload_hash)).into())
     }
@@ -326,7 +555,8 @@ impl<'a> DbMonadMessages<'a> {
     /// discover newly-stored messages by polling with an advancing cursor, without already
     /// knowing their `payload_hash` out of band -- see this module's docs for why this can't
     /// additionally filter by intended recipient.
-    pub fn list_since(&self, since: i64) -> Result<Vec<proto::StoredMonadMessage>> {
+    #[cfg(test)]
+    pub(crate) fn list_since(&self, since: i64) -> Result<Vec<proto::StoredMonadMessage>> {
         let start_key = by_time_key(since, &[]);
         let iter = self.db.rocksdb().iterator_cf(
             self.cf_monad_messages_by_time,
@@ -342,7 +572,7 @@ impl<'a> DbMonadMessages<'a> {
     /// List one recipient's messages with `timestamp >= since`, ordered by timestamp ascending.
     /// This is the storage boundary for the future authenticated mailbox sync route; the legacy
     /// global list remains available until that route and its client migration land together.
-    pub fn list_for_recipient_since(
+    pub(crate) fn list_for_recipient_since(
         &self,
         recipient: &Address,
         since: i64,
@@ -363,6 +593,97 @@ impl<'a> DbMonadMessages<'a> {
         Ok(messages)
     }
 
+    #[cfg(test)]
+    /// List a strict-forward page from one recipient journal.
+    ///
+    /// Keys are ordered by `(timestamp, payload_hash)`. A supplied authenticated cursor need not
+    /// still exist, but must not precede `since`. At most `limit + 1` index rows and
+    /// `limit` primary records are examined. The byte budget is the exact protobuf response size;
+    /// a record is either returned whole or rejected as too large.
+    pub(crate) fn list_for_recipient_since_capped(
+        &self,
+        recipient: &Address,
+        since: i64,
+        cursor: Option<RecipientMessageCursor>,
+        limit: usize,
+        max_bytes: usize,
+    ) -> Result<RecipientMessagePage> {
+        if limit == 0 || max_bytes == 0 {
+            return Ok(RecipientMessagePage {
+                messages: Vec::new(),
+                next_cursor: None,
+                encoded_bytes: 0,
+            });
+        }
+        let start_key = match cursor {
+            Some(cursor) => {
+                if cursor.timestamp < since {
+                    return Err(StalePrivateCursor.into());
+                }
+                by_recipient_time_key(recipient, cursor.timestamp, &cursor.payload_hash)
+            }
+            None => by_recipient_time_key(recipient, since, &[]),
+        };
+        let iter = self.db.rocksdb().iterator_cf(
+            self.cf_monad_messages_by_recipient_time,
+            IteratorMode::From(&start_key, Direction::Forward),
+        );
+        let mut messages = Vec::with_capacity(limit);
+        let mut encoded_bytes = 0usize;
+        let mut has_more = false;
+        for item in iter {
+            let (key, payload_hash) = item?;
+            if !key.starts_with(&recipient.0) {
+                break;
+            }
+            if cursor.is_some() && key.as_ref() == start_key.as_slice() {
+                continue;
+            }
+            if messages.len() == limit {
+                has_more = true;
+                break;
+            }
+            let message = self.get_existing(&payload_hash)?;
+            let record_len = message.encoded_len();
+            let added = 1 + prost_varint_len(record_len as u64) + record_len;
+            if encoded_bytes.saturating_add(added) > max_bytes {
+                if messages.is_empty() {
+                    return Err(RecordExceedsPageBudget {
+                        required: added,
+                        maximum: max_bytes,
+                    }
+                    .into());
+                }
+                has_more = true;
+                break;
+            }
+            encoded_bytes += added;
+            messages.push(message);
+        }
+        let next_cursor = if has_more {
+            messages.last().and_then(|message| {
+                let payload_hash: [u8; 32] = message
+                    .message
+                    .as_ref()?
+                    .payload_hash
+                    .as_slice()
+                    .try_into()
+                    .ok()?;
+                Some(RecipientMessageCursor {
+                    timestamp: message.timestamp,
+                    payload_hash,
+                })
+            })
+        } else {
+            None
+        };
+        Ok(RecipientMessagePage {
+            messages,
+            next_cursor,
+            encoded_bytes,
+        })
+    }
+
     pub(crate) fn add_cfs(columns: &mut Vec<ColumnFamilyDescriptor>) {
         let options = rocksdb::Options::default();
         columns.push(ColumnFamilyDescriptor::new(CF_MONAD_MESSAGES, options));
@@ -381,6 +702,16 @@ impl<'a> DbMonadMessages<'a> {
     }
 }
 
+#[cfg(test)]
+fn prost_varint_len(mut value: u64) -> usize {
+    let mut len = 1;
+    while value >= 0x80 {
+        value >>= 7;
+        len += 1;
+    }
+    len
+}
+
 impl Debug for DbMonadMessages<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "DbMonadMessages {{ .. }}")
@@ -391,6 +722,8 @@ impl Debug for DbMonadMessages<'_> {
 mod tests {
     use bitcoinsuite_error::Result;
     use pretty_assertions::assert_eq;
+
+    use super::ChallengeConsumption;
 
     use crate::{
         monad_http::Address,
@@ -672,6 +1005,151 @@ mod tests {
             vec![retried]
         );
 
+        Ok(())
+    }
+
+    #[test]
+    fn recipient_pages_use_strict_composite_cursor_without_gaps_or_duplicates() -> Result<()> {
+        let tempdir = tempdir::TempDir::new("cashweb-registry-store--monad-page-cursor")?;
+        let db = Db::open(tempdir.path().join("db.rocksdb"))?;
+        let store = db.monad_messages();
+        let recipient = Address([0x44; 20]);
+        let other = Address([0x55; 20]);
+        for (hash_byte, timestamp) in [(3, 100), (1, 100), (2, 200)] {
+            let stored = make_stored(vec![hash_byte; 32], timestamp);
+            store.put(
+                &stored.message.as_ref().unwrap().payload_hash,
+                &recipient,
+                &stored,
+            )?;
+        }
+        let foreign = make_stored(vec![9; 32], 100);
+        store.put(
+            &foreign.message.as_ref().unwrap().payload_hash,
+            &other,
+            &foreign,
+        )?;
+
+        let mut cursor = None;
+        let mut hashes = Vec::new();
+        loop {
+            let page =
+                store.list_for_recipient_since_capped(&recipient, 0, cursor, 1, usize::MAX)?;
+            hashes.extend(
+                page.messages
+                    .iter()
+                    .map(|stored| stored.message.as_ref().unwrap().payload_hash[0]),
+            );
+            cursor = page.next_cursor;
+            if cursor.is_none() {
+                break;
+            }
+        }
+        assert_eq!(hashes, vec![1, 3, 2]);
+
+        let deleted_position = super::RecipientMessageCursor {
+            timestamp: 100,
+            payload_hash: [2; 32],
+        };
+        let continued = store.list_for_recipient_since_capped(
+            &recipient,
+            0,
+            Some(deleted_position),
+            1,
+            usize::MAX,
+        )?;
+        assert_eq!(
+            continued.messages[0].message.as_ref().unwrap().payload_hash,
+            vec![3; 32],
+            "a lexicographic cursor remains usable after its row was deleted"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn recipient_page_byte_budget_never_splits_a_large_record() -> Result<()> {
+        let tempdir = tempdir::TempDir::new("cashweb-registry-store--monad-page-budget")?;
+        let db = Db::open(tempdir.path().join("db.rocksdb"))?;
+        let store = db.monad_messages();
+        let recipient = Address([0x66; 20]);
+        let mut stored = make_stored(vec![7; 32], 100);
+        stored.message.as_mut().unwrap().encrypted_payload = vec![0xa5; 2 * 1024 * 1024 - 256];
+        store.put(
+            &stored.message.as_ref().unwrap().payload_hash,
+            &recipient,
+            &stored,
+        )?;
+
+        let full =
+            store.list_for_recipient_since_capped(&recipient, 0, None, 1, 2 * 1024 * 1024)?;
+        assert_eq!(full.messages, vec![stored]);
+        assert!(full.encoded_bytes <= 2 * 1024 * 1024);
+        let err = store
+            .list_for_recipient_since_capped(&recipient, 0, None, 1, full.encoded_bytes - 1)
+            .unwrap_err();
+        assert!(matches!(
+            err.downcast_ref::<super::DbMonadMessagesError>(),
+            Some(super::DbMonadMessagesError::RecordExceedsPageBudget { .. })
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn durable_mailbox_replay_authority_never_evicts_an_unexpired_victim() -> Result<()> {
+        let tempdir = tempdir::TempDir::new("cashweb-registry-store--mailbox-replay")?;
+        let path = tempdir.path().join("db.rocksdb");
+        let epoch = [0x11; 32];
+        let victim = Address([0xff; 20]);
+        let nonce = [0x22; 32];
+        {
+            let db = Db::open(&path)?;
+            let store = db.monad_messages();
+            assert_eq!(
+                store.consume_mailbox_challenge(epoch, victim, nonce, 10_000, 1, 2)?,
+                ChallengeConsumption::Consumed
+            );
+            for index in 0..512u64 {
+                let mut address = [0u8; 20];
+                address[..8].copy_from_slice(&index.to_be_bytes());
+                assert_eq!(
+                    store.consume_mailbox_challenge(
+                        epoch,
+                        Address(address),
+                        [index as u8; 32],
+                        10_000,
+                        2,
+                        2,
+                    )?,
+                    ChallengeConsumption::Consumed
+                );
+            }
+            assert_eq!(
+                store.consume_mailbox_challenge(epoch, victim, nonce, 10_000, 3, 2)?,
+                ChallengeConsumption::Rejected,
+                "a replayed nonce is an authentication failure"
+            );
+            assert_eq!(
+                store.consume_mailbox_challenge(epoch, victim, [0x23; 32], 10_000, 3, 2)?,
+                ChallengeConsumption::Consumed
+            );
+            assert_eq!(
+                store.consume_mailbox_challenge(epoch, victim, [0x24; 32], 10_000, 3, 2)?,
+                ChallengeConsumption::AtCapacity,
+                "the per-recipient cap is a retryable capacity condition"
+            );
+        }
+        {
+            let db = Db::open(&path)?;
+            let store = db.monad_messages();
+            assert_eq!(
+                store.consume_mailbox_challenge(epoch, victim, nonce, 10_000, 4, 2)?,
+                ChallengeConsumption::Rejected
+            );
+            assert_eq!(
+                store.consume_mailbox_challenge(epoch, victim, nonce, 20_000, 10_001, 2)?,
+                ChallengeConsumption::Consumed
+            );
+        }
         Ok(())
     }
 }

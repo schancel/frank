@@ -166,12 +166,12 @@ impl Db {
     }
 
     /// Returns `DbMonadMessages`, allowing access to stored Monad-stamped messages (ticket #27).
-    pub fn monad_messages(&self) -> DbMonadMessages<'_> {
+    pub(crate) fn monad_messages(&self) -> DbMonadMessages<'_> {
         DbMonadMessages::new(self)
     }
 
     /// Returns the durable Monad payment outbox facade.
-    pub fn monad_outbox(&self) -> DbMonadOutbox<'_> {
+    pub(crate) fn monad_outbox(&self) -> DbMonadOutbox<'_> {
         DbMonadOutbox::new(self)
     }
 

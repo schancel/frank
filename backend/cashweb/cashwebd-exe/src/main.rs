@@ -10,7 +10,10 @@ use cashweb_registry::{
     },
     lotus_adapter::LotusAdapter,
     monad_http::HttpTransport,
-    monad_outbox::{start_monad_outbox_worker, MonadOutboxReconcileConfig, MonadOutboxWorker},
+    monad_mailbox::MonadMailboxRuntime,
+    monad_outbox::{
+        start_monad_outbox_worker_shared, MonadOutboxReconcileConfig, MonadOutboxWorker,
+    },
     p2p::{
         peer::Peer,
         peers::{InitialMetadataDownloadParams, Peers},
@@ -96,7 +99,14 @@ async fn main() -> Result<()> {
     if check_only {
         return Ok(());
     }
-    let outbox_config = MonadOutboxReconcileConfig::default();
+    let mut outbox_config = MonadOutboxReconcileConfig::default();
+    if let MonadMailboxMode::Enabled {
+        expected_chain_id, ..
+    } = &mailbox_mode
+    {
+        outbox_config.expected_chain_id = *expected_chain_id;
+    }
+    let outbox_config = Arc::new(outbox_config);
     outbox_config.validate()?;
 
     if let Some(parent) = conf
@@ -129,23 +139,41 @@ async fn main() -> Result<()> {
     };
 
     let registry = Arc::new(Registry::new(db, chain_adapter, conf.registry.net));
-    let outbox_worker: Option<MonadOutboxWorker> = match mailbox_mode {
-        MonadMailboxMode::Disabled => {
-            tracing::event!(
+    let (monad_mailbox, outbox_worker): (MonadMailboxRuntime, Option<MonadOutboxWorker>) =
+        match mailbox_mode {
+            MonadMailboxMode::Disabled => {
+                tracing::event!(
                 tracing::Level::WARN,
                 "Monad mailbox is explicitly disabled; omit admission and retain durable rows as readable"
             );
-            None
-        }
-        MonadMailboxMode::Enabled { rpc_url } => Some(
-            start_monad_outbox_worker(
-                HttpTransport::new(rpc_url),
-                Arc::clone(&registry),
-                outbox_config,
-            )
-            .await?,
-        ),
-    };
+                (MonadMailboxRuntime::Disabled, None)
+            }
+            MonadMailboxMode::Enabled {
+                rpc_url,
+                min_value_wei,
+                expected_chain_id: _,
+            } => {
+                let transport = HttpTransport::new(rpc_url);
+                let runtime = MonadMailboxRuntime::enabled(
+                    transport.clone(),
+                    Arc::clone(&outbox_config),
+                    min_value_wei,
+                    cashweb_registry::network_tag::frank_network_tag().to_vec(),
+                );
+                let worker = start_monad_outbox_worker_shared(
+                    transport,
+                    Arc::clone(&registry),
+                    Arc::clone(&outbox_config),
+                    runtime
+                        .as_enabled()
+                        .expect("runtime was constructed enabled")
+                        .outbox_permits()
+                        .clone(),
+                )
+                .await?;
+                (runtime, Some(worker))
+            }
+        };
     let our_peers = conf
         .registry
         .peers
@@ -212,19 +240,42 @@ async fn main() -> Result<()> {
         peers: Arc::clone(&peers),
         pop_gate,
         curated_defaults,
+        monad_mailbox,
     };
 
     let router = server.into_router();
     info!("Listening on {}", conf.host);
-    let server_result = axum::Server::bind(&conf.host)
-        .serve(router.into_make_service())
-        .await;
+    let server = axum::Server::bind(&conf.host).serve(router.into_make_service());
+    tokio::pin!(server);
+    let server_result = tokio::select! {
+        result = &mut server => Some(result),
+        _ = shutdown_signal() => None,
+    };
     if let Some(worker) = outbox_worker {
         worker.shutdown().await;
     }
-    server_result?;
+    if let Some(result) = server_result {
+        result?;
+    }
 
     Ok(())
+}
+
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        let mut terminate =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                .expect("install SIGTERM handler");
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            _ = terminate.recv() => {}
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
 }
 
 #[cfg(test)]

@@ -1,5 +1,26 @@
 # Ticket #8 runbook: live e2e demo on Monad testnet
 
+> [!IMPORTANT]
+> **Historical runbook, partly superseded.** This document records the ticket #8 demo, written when
+> `PUT /message/monad` was gated by process environment variables (`MONAD_TESTNET_HTTP_RPC_URL`,
+> `CASHWEB_STAMP_MIN_BURN_VALUE_WEI`) and the relay served unauthenticated `GET /message/monad`
+> reads. Neither is true any more:
+>
+> - `PUT /message/monad` and the authenticated inbox/recovery routes exist only when
+>   `[registry.monad_mailbox]` is enabled in the `cashwebd` configuration (`enabled = true` plus
+>   `rpc_url`, `min_value_wei`, `expected_chain_id`). `backend/cashweb/run-local-monad.sh`
+>   generates that configuration from `.env` (`MONAD_TESTNET_HTTP_RPC_URL`,
+>   `CASHWEB_STAMP_MIN_BURN_VALUE_WEI`, `MONAD_TESTNET_CHAIN_ID`); the relay process itself no longer
+>   reads the two variables above for this route.
+> - The old unauthenticated exact/global `GET /message/monad...` routes are removed.
+> - `e2e_demo_server` (Step 1) constructs its router with the mailbox **disabled**, so it does not
+>   serve `/message/monad` at all. Step 3's message round trip needs the enabled mailbox (start the
+>   relay with `run-local-monad.sh` instead) and a client that speaks the authenticated mailbox
+>   routes.
+>
+> Steps that only concern identity registration (Step 2) and the on-chain verification remain
+> accurate. The environment-variable and unauthenticated-GET details below are kept as history.
+
 This is the reproduction runbook for issue #8 ("E2E integration demo on Monad testnet"): register
 an identity, send a stamped message relay-to-relay on real Monad testnet, and independently verify
 the resulting burn tx on-chain via Alchemy.
@@ -23,9 +44,11 @@ prove).
   MONAD_TESTNET_HTTP_RPC_URL=https://monad-testnet.g.alchemy.com/v2/<your-alchemy-key>
   MONAD_STAMP_BURN_ADDRESS=0x000000000000000000000000000000000000dEaD
   CASHWEB_STAMP_MIN_BURN_VALUE_WEI=1000000000000
+  MONAD_TESTNET_CHAIN_ID=10143
   ```
-  (The last two lines were missing from this repo's `.env.example` before this ticket — see "Bugs
-  found and fixed" below.)
+  (Copy `.env.example`. Today `run-local-monad.sh` turns the RPC URL, minimum, and chain ID into the
+  relay's `[registry.monad_mailbox]` table; the relay itself no longer reads the minimum from the
+  environment. The burn address still matters only for the topic routes.)
 - A funded Monad testnet account's private key, as a small JSON file `{ "address": "0x...",
   "privateKey": "0x..." }`. This ticket's own run reused the account at
   `frank-worktrees/spike-demo/spike/data/chain-wallet.json` (~9.9976 MON confirmed live via
@@ -125,12 +148,13 @@ crate) and `src/monad_ws.rs` (a WS *client*, subscribing to Monad's own `eth_sub
 block-header feed for internal `ChainAdapter` use — nothing to do with pushing messages to
 recipients). The app's legacy `RelayClient`/`isomorphic-ws` WS code (`app/src/cashweb/relay/
 index.ts`) targets a different, pre-Monad relay-server protocol entirely, not this registry's HTTP
-API. **A Monad-message recipient today has no way to be pushed a new message; they can only poll
-`GET /message/monad/:payload_hash`** (and would need the payload hash out-of-band, since there's
-also no "list new messages for me" endpoint on this path — only `Registry::get_monad_message` by
-exact hash). This demo's step above (`GET` right after `PUT`) proves the read side works, but does
-not and cannot prove "delivery" in the sense of a live push, because that mechanism doesn't exist
-yet for this message path.
+API. **A Monad-message recipient today has no way to be pushed a new message; they can only poll their
+own authenticated inbox** (`POST /message/monad/auth/:recipient` challenge, then a signed
+`GET /message/monad/inbox/:recipient`; the unauthenticated `GET /message/monad/:payload_hash` and
+`GET /message/monad?since=` were removed in PR #197). This demo's read-back step therefore reads the
+recipient's mailbox after the `PUT`; it proves the read side works, but does not and cannot prove
+"delivery" in the sense of a live push, because that mechanism doesn't exist yet for this message
+path.
 
 ## Step 4: independently verify the broadcast on-chain (acceptance criterion 4)
 

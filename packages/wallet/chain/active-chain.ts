@@ -171,9 +171,14 @@ export interface DirectMessageClient {
     stampValue?: bigint
     onPreparationProgress?: (progress: DirectMessagePreparationProgress) => void
   }): Promise<DirectMessageSendResult>
+  /** Returns messages at or after `sinceMs`, ordered by time. If a later inbox page could not be
+   * fetched, the result is cut back to a prefix ending on a complete timestamp group and
+   * `onTruncated` is called: advancing `sinceMs` to `lastReceivedTime + 1` is then safe and the
+   * rest arrives on the next poll. If no complete group exists, the call rejects instead. */
   fetchSince(params: {
     wallet: WalletHandle
     sinceMs: number
+    onTruncated?: (reason: Error) => void
   }): Promise<DirectMessageReceived[]>
   listRecoveredStampPayments(params: {
     wallet: WalletHandle

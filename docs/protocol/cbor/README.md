@@ -46,7 +46,10 @@ boundary that explicitly permits unknown versions MAY retain the complete
 frame opaquely, but MUST NOT interpret it as version 1.
 
 F3. The declared body length MUST equal all bytes remaining after the nine-byte
-header. Truncation, concatenated frames, and trailing bytes MUST reject.
+header. Truncation, concatenated frames, and trailing bytes MUST reject. A
+declared length of 0 with no bytes after the header therefore passes this
+check; the empty envelope is then truncated CBOR at stage 5 of section 9
+(`malformed`), and a `frame` operation, which stops after stage 4, accepts it.
 
 F4. The stage 1 limits (`route_byte_limit` and `MAX_FRAME_BYTES`) MUST be
 checked before allocating or decoding the body. The type-specific frame limits
@@ -150,7 +153,9 @@ duplicate or out-of-order key rather than accepting a last value.
 C5. Unsigned integers, negative integers, byte strings, UTF-8 text strings,
 arrays, maps, `false`, `true`, and `null` are the only permitted CBOR data
 items. Floats, simple values other than those three, tags, `undefined`, and indefinite collections MUST reject. A stray break code
-is `malformed`; an indefinite-length start is `noncanonical`.
+is `malformed`; an indefinite-length start is `noncanonical`, a pass B
+verdict reached only when pass A (section 9) found the whole item, including
+every chunk of an indefinite string, well formed.
 
 C6. Text MUST be well-formed shortest-form UTF-8. Surrogates, overlong
 sequences, and invalid continuation bytes MUST reject. Protocol identifiers
@@ -159,7 +164,13 @@ schema narrows them further.
 
 C7. A declared `u64` is in `0..18446744073709551615`; a declared `i64` is in
 `-9223372036854775808..9223372036854775807`. TypeScript implementations MUST
-expose these as `bigint`, never `number`.
+expose these as `bigint`, never `number`. The `u64` upper bound cannot be
+exceeded by an unsigned integer: the widest unsigned head already ends at
+2^64-1, and anything wider needs a bignum tag, a forbidden class (C5, C8). A
+CDDL `.le 18446744073709551615` on a `uint` therefore never fails at stage 8.2;
+what it rejects there is a negative integer, and a bignum tag fails earlier as
+`schema` in pass B. A negative integer below the `i64` minimum is encodable and
+fails its CDDL range at stage 8.2 as `schema`.
 
 C8. Values wider than 64 bits are fixed-width big-endian byte strings whose
 width is declared by the schema. Leading zero bytes remain significant. No
@@ -182,7 +193,12 @@ C12. For an exact supported `schema_version`, an integer map key not explicitly
 defined by that schema is a `schema` error. The `* uint => frank-value` CDDL
 wildcards describe fields that an older reader may encounter only when V6.3
 processes a newer compatible schema; they do not permit undeclared fields to be
-smuggled into schema version 1. Maps whose CDDL has no wildcard (`payment-member`,
+smuggled into schema version 1. The `schema_version` of the frame whose
+payload contains a map decides whether that map is read as exact or as a newer
+compatible schema, and the same decision covers every wildcard map nested in
+that payload (`relay-binding`, `key-transition`, `journal-fact`). An embedded
+child frame's own `schema_version` governs its own maps; a parent's version
+neither opens nor closes them. Maps whose CDDL has no wildcard (`payment-member`,
 `account-ref`, `timestamp`, `signature-entry`, and the common envelope) are
 closed (and likewise `opaque-section`): an undeclared key is a `schema` error at every schema version, so
 extending one requires a new type or a raised `min_reader_version`.
@@ -209,8 +225,13 @@ R1. One validation operation begins at one externally supplied root frame.
 Before decoding, its complete byte length is charged once against the frame
 limit; embedded frame bytes already lie inside that input and are not charged a
 second time. Container and item counters start at zero and monotonically count
-every decoded map, array, and scalar, including every map key, in the envelope, opened payload, and every
-recursively opened child frame. Logical depth starts at zero for the root
+every decoded map, array, and scalar, including every map key and every tag
+head, in the envelope, opened payload, and every
+recursively opened child frame. A tag head and the item it wraps are each one
+item, so a chain of tags is bounded by `MAX_ITEMS` in pass A even though every
+tag is later rejected as a forbidden class (C5); a chain of more than 131,072
+tags is `resource`, not `schema`. An indefinite-length string is one item, and
+its chunks are not items (section 9, pass A). Logical depth starts at zero for the root
 envelope; entering a map or array adds one, and the payload item is nested
 inside the envelope map, so its first array or map is at depth 2 and a payload
 may nest at most 31 levels. An embedded frame's envelope map is one level
@@ -227,7 +248,9 @@ while leaving room for chunked media beyond R2's 1 MiB message. Depth 32 permits
 a type-16 root with nine further nested type-16 levels and a text leaf (ten
 container levels at three depth each, with no headroom), and only seven type-16
 levels plus a leaf under a type-1 message, whose own nesting uses the first
-nine levels; deeper structures are split into separately framed objects.
+nine levels (that path runs through the decrypted type-6 frame of stage 10.1,
+so this figure is a `full` property that no `typed` vector can exercise, while
+the type-16 root figure is exercised at `typed`); deeper structures are split into separately framed objects.
 Containers 16,384 and items 131,072 (keys counted) let a large
 R4 checkpoint of 4,096 minimal facts (13 items each) plus 4,096 minimal
 sections (7 items each), about 82,000 items, fit under one counter. Map
@@ -237,7 +260,8 @@ limit, so a long string is limited by frame size first, and 256 KiB text is the
 largest single message text a client should render without chunking.
 
 R2. The direct-message frame limit is 1 MiB, with at most 256 message items
-total across the recursively opened item graph, 64 payment members, and 512 KiB
+total across the recursively opened item graph of one validation operation,
+whatever its root type (a bare type 6, 8, or 16 root is bounded the same way), 64 payment members, and 512 KiB
 in one encrypted payload. This deliberately permits messages larger than 64
 KiB while requiring large media to be chunked or referenced rather than
 embedded without bound.
@@ -289,6 +313,9 @@ bytes; algorithm 2 requires key type 3 and exactly 64 signature bytes;
 algorithm 3 requires key type 1 and exactly 64 signature bytes; algorithm 16
 requires key type 2 and exactly 64 signature bytes. Any other
 algorithm/key-type/length combination is unsupported, not a signature failure.
+This pairing applies to every entry that carries an algorithm, a signer
+account, and signature bytes: each type-2 `signature-entry` and each type-4
+`key-transition` entry (fields 1, 2, and 3), at stage 8.3.
 
 S2c. Encryption-suite identifier 65535 is reserved for opaque proof-vector
 ciphertext and MUST NOT be emitted by a production writer. Production suites
@@ -361,7 +388,9 @@ like S3's index and transaction-ID uniqueness. Value and commitment checks from
 S3 and T4 remain separately required.
 
 S10. The validation context's prior statement is the last accepted type-4
-statement. A non-bootstrap statement's revision MUST be greater than the prior
+statement. Only a type-2 root has one, so S10 is checked in a type-2 parent's
+stage 9; a type-4 frame validated as a root, with no type-2 parent, is not
+checked against S10 whatever its field 5 holds. A non-bootstrap statement's revision MUST be greater than the prior
 revision, and its network MUST equal the prior network, regardless of whether
 the subject changes. Field 5 MUST be absent when the subject is unchanged and
 for bootstrap. When the subject changes, field 5 MUST contain exactly one
@@ -531,7 +560,10 @@ Each recipient may therefore have different encrypted bytes and a different
 payload digest for the same logical message.
 
 A type-16 container message item holds complete child frames as byte strings;
-type 17 is a text item. Unknown item types remain exact child-frame bytes. The
+type 17 is a text item. Unknown item types remain exact child-frame bytes. A
+type-5 ciphertext is never opened before stage 10.1, so at `typed` a type-1 root
+reaches no message item: its item graph exists only in `full`, and `typed`
+vectors reach a message-item graph through a type 6, 8, or 16 root. The
 proof fixture MUST contain at least two levels and the permanently reserved
 proof-only unknown type `0xffff0001`.
 
@@ -633,7 +665,11 @@ V6. After generic validation, a reader applies this mandatory decision:
    `min_reader_version > reader_version`: opaque retention only where the
    containing contract permits it; otherwise reject as unsupported.
    For the root frame this is `opaque_retention_allowed`; unknown children of
-   open schema fields are retained as stage 8.4 states.
+   open schema fields are retained as stage 8.4 states. A child in an open
+   field is retained for any of the three conditions. They all produce the same
+   retained bytes, so precedence matters only to a reason an implementation may
+   record: it is the first that applies of unsupported frame version (stage 3),
+   unknown type, then `min_reader_version` above the reader's.
 2. Known type and `schema_version <= highest_supported_schema`: interpret the
    exact supported schema, retaining the original frame alongside the typed
    projection.
@@ -861,7 +897,13 @@ category, and an implementation MUST NOT continue to report a later failure.
 1. **Root limits.** The frame length exceeds `route_byte_limit` or
    `MAX_FRAME_BYTES`: `resource`. No implementation limit other than
    `route_byte_limit` applies here.
-2. **Header.** Fewer than nine bytes or bad magic: `frame`.
+2. **Header.** Fewer than nine bytes or bad magic: `frame`. A child carried in a
+   `framed-object` field and shorter than nine bytes never reaches this check:
+   the parent's CDDL bound (`bstr .size (9..8388617)`) rejects it first as a
+   stage 8.2 `schema` error. The check therefore applies to a root, to such a
+   child of at least nine bytes, and to the stage 10.1 decrypted frame, which is
+   supplied out of band and bounded only by `MAX_FRAME_BYTES`, so a decrypted
+   frame under nine bytes fails here as `frame`.
 3. **Version.** An unsupported frame version is `unsupported`. Where the
    containing contract permits retention (F2), the outcome is instead a
    retained frame: the length field is not interpreted, later stages do not run,
@@ -886,11 +928,8 @@ category, and an implementation MUST NOT continue to report a later failure.
    1. type-specific limits: the root frame length against R2's 1 MiB for type 1
       and R3's 256 KiB for type 2 (type 3 uses the global limit), and the counts
       named by R2 through R4 read from the decoded fields before typed
-      conversion: `resource`. R2's 256-item total counts every child opened
-      from a message-item array, whether its type is known, unknown, or retained,
-      and never a required-type child (type 5, 6, or 8). It is charged when 8.4
-      begins opening each such child, before that child's stage 2, failing at the
-      first item over. The CDDL bounds that restate these limits, and so are
+      conversion: `resource`. R2's cumulative 256-item total is not an 8.1 check; it is
+      charged in 8.4. The CDDL bounds that restate these limits, and so are
       `resource` when exceeded, are exactly: 64 payment members, 256 message
       items per array, the 524,288-byte ciphertext, 32 relay bindings, 16
       signatures, 4,096 journal facts, and 4,096 opaque sections. Every other
@@ -906,11 +945,18 @@ category, and an implementation MUST NOT continue to report a later failure.
       as framed objects (never opaque sections). Each child is an embedded
       frame with the root operation's shared counters (R1), not charged against
       `route_byte_limit`, and runs as follows:
+      - Before opening each child of a message-item array (an open field), charge
+        it against R2's 256-item total for the whole operation. Every such child
+        counts, whether its type is known, unknown, or retained, and a
+        required-type child (type 5, 6, or 8) never does. The first child over
+        256 fails `resource` before that child's stage 2. The rule applies to any
+        root and is labelled stage 8.4.
       - In an open field (a message item), a child of an assigned type other than
         16 or 17 (types 1 through 8) is `semantic`, checked after its stage 6
         like a required-type mismatch. Otherwise the child runs stages 2
         through 9 with V6 applied to it. Children open depth-first in array
-        order, and the first failure wins. An unknown type or unknown frame version is
+        order, and the first failure wins. An unknown type, an unknown frame version, or a
+        `min_reader_version` above the reader's (each V6.1) is
         retained as exact bytes whatever `opaque_retention_allowed` says and is
         not a failure; that flag governs only the root frame (V6.1).
       - In a required-type field (S8) and for the decrypted frame (10.1), the
@@ -969,12 +1015,22 @@ is checked against the limits when its header is read, before its content is
 examined, so an oversize declared length is `resource` even if the input is also
 truncated. The element and entry limits also count the elements of an indefinite
 collection as they are read. Extra data after the single item (C9) is `malformed` and belongs to
-pass A. Only if pass A succeeds does pass B run, in byte order, failing at the
+pass A. Pass A also scans an indefinite-length string, which C5 later rejects in
+pass B: its chunks MUST be definite-length strings of the same major type and it
+MUST end with a break, otherwise it is `malformed` (so a truncated `7f 61 61` is
+`malformed`, and only a complete one is `noncanonical`). The string head is one
+item and its chunks are not items; each chunk's declared length and the running
+total of chunk lengths are checked against the string limit of section 4
+(`resource`). A tag head is charged as an item (R1). Only if pass A succeeds does pass B run, in byte order, failing at the
 first violation. Within one item, a non-minimal or indefinite encoding or a
 duplicate or out-of-order key is `noncanonical` and is reported before a
 forbidden class, including a non-uint map key (C1a), which is `schema`. So
 `78 05 61` (truncated, with a non-minimal header) is `malformed`, and
 `{"b":1,"a":2}` fails at its first key as `schema`, not as an ordering error.
+"Within one item" includes the item's own head: the map `a1 78 01 61 01`, whose
+key is a text string with a non-minimal length head, is `noncanonical`, not
+`schema`. The non-uint class of that key is reported only when its head is
+minimal.
 
 No stage may consume funds, mark a payment used, advance a mailbox cursor, or
 persist an interpreted record before every applicable later stage succeeds.
@@ -983,8 +1039,13 @@ persist an interpreted record before every applicable later stage succeeds.
 
 [vectors.schema.json](vectors.schema.json) defines the committed corpus index.
 Every case names its source implementation, complete frame hex, outcome, and
-normative rules. A `reject` case names its stable error category. An `accept`
-case run through `typed` or `full` additionally names the type/schema and
+normative rules. The generated index is `vectors/manifest.json`. Rust encodings
+of the three proof fixtures (direct message, directory attestation, mailbox
+checkpoint) are committed separately in `vectors/rust-origin.json` so the
+TypeScript codec can re-encode them; that file is not produced by the
+TypeScript fixture builders. A `reject` case names its stable error category and
+MAY name the stage that determined it (`error_stage`, below). An
+`accept` case run through `typed` or `full` additionally names the type/schema and
 expected content hash. A `retain` case names the exact retained frame bytes and
 does not claim interpreted semantics. Hostile vectors retain their input bytes
 even when parsing fails so both implementations test the same input.
@@ -1007,10 +1068,26 @@ context (versions `1..highest`).
 The operation bounds the categories a case may expect: `frame` allows `frame`,
 `unsupported`, and `resource`; `generic` adds `malformed`, `noncanonical`, and
 `schema`; `typed` adds `semantic`; only `full` allows `cryptographic`. A
-`retain` case requires `opaque_retention_allowed: true`. Under `frame` it is
+`retain` case requires `opaque_retention_allowed: true`, but the flag only
+permits retention and never turns an interpretable frame into one: a case whose
+frame the operation fully validates, for example a version-1 frame under `frame`,
+is `accept` whatever the flag says. Under `frame` a retain case is
 valid only for an unsupported frame version (stage 3); an unknown root type is
 retained at stage 7, which `frame` never reaches. The supported-schema list is sorted by
 numeric type ID and has independently unique type IDs.
+
+`error_stage` is the section 9 stage label of the failing check: `1` through
+`7`, `8.1` through `8.4`, `9`, or `10.1` through `10.6`. Every check has exactly
+one stage and one category, so a stage never changes a category. A failure inside
+an opened child carries the child's own stage label (a child runs stages 2
+through 9), except a check the parent makes about the child, which is the
+parent's: the wrong-type, assigned-open-field-type, and R2-total checks are stage
+`8.4`. The property is optional in the schema, and the committed corpus carries it
+on every `reject` case. A runner that reports validation stages SHOULD compare
+`error_stage`; a runner that reports only categories remains conformant and MUST
+compare `error_category`. An `error_stage` beyond the operation's last stage
+(`frame` 4, `generic` 7, `typed` 9) makes the manifest invalid. It is not allowed
+on `accept` or `retain` cases.
 
 Every `typed` or `full` case carries `prior_directory_statement_frame_hex`, and
 every full case, including rejections and frames whose type is not yet known,
@@ -1151,7 +1228,9 @@ manifest, not as a case outcome: unique case IDs; the pairing rules above;
 `frame_hex`; `route_byte_limit` not below the frame length unless the case
 expects `resource`; non-null full-case context whenever the frame's type
 requires it; a `prior_directory_statement_frame_hex` that is a valid type-4
-frame accepted by an earlier full validation; and a `retain` case under `frame`
+frame, meaning it passes stages 1 through 9 as a type-4 root (in a deployment the
+caller asserts it was accepted by full validation of the attestation that carried
+it, which a corpus without a full case cannot show); and a `retain` case under `frame`
 whose frame version byte is `01` (`frame` retention is valid only for an
 unsupported version). It MUST also reject: an accept case whose `type_id` or
 `schema_version` differs from its frame's envelope; a `payment_commitments_hex`

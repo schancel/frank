@@ -16,7 +16,8 @@
  * 1. Registers its own Frank identity (`./monad-identity.ts`) via a real `PUT /metadata/:addr`,
  *    no payment (POP disabled, ticket #35) -- the same acceptance criterion ticket #8 proved,
  *    here done from a from-scratch TS client since no TS client for that route existed yet.
- * 2. Polls the *real*, live `GET /message/monad?since=<t>` route (ticket #37) for new stamped
+ * 2. Polls the *real*, live authenticated mailbox (`POST /message/monad/auth/:me` challenge +
+ *    signed `GET /message/monad/inbox/:me`, PR #197; replaced ticket #37's `GET /message/monad?since=<t>`) for new stamped
  *    messages, filtering client-side for ones addressed to itself via the envelope convention in
  *    `./monad-message-envelope.ts` (see that file's header for why, and for the exact gap in the
  *    wire format this works around).
@@ -79,6 +80,7 @@ const { AddressMetadata } = __pb_registry_metadata_pb
 import {
   fetchMonadIdentityPubKey,
   fetchMonadProfilesSince,
+  mailboxAuthFor,
 } from '@frank/wallet/monad-identity'
 import {
   canonicalMonadEnvelopeAddress,
@@ -274,7 +276,7 @@ async function main() {
     Number(process.env.QWEN_BOT_PROFILE_SINCE_MS ?? profileWatchStartedAt)
 
   console.log(
-    `\nPolling ${relayBaseUrl}/message/monad?since=<t> every ${pollIntervalMs}ms for messages addressed to ${identity.displayAddress} ...`,
+    `\nPolling ${relayBaseUrl}/message/monad/inbox/<me> (signed mailbox read, since=<t>) every ${pollIntervalMs}ms for messages addressed to ${identity.displayAddress} ...`,
   )
   console.log(
     `Polling ${relayBaseUrl}/metadata/monad?since=<t> every ${pollIntervalMs}ms for new profile registrations (greeting + funding up to ${maxGreetings}) ...`,
@@ -380,7 +382,7 @@ async function main() {
     }
 
     const stored = await fetchMonadMessagesSince({
-      relayBaseUrl,
+      ...mailboxAuthFor(identity, relayBaseUrl),
       sinceMs: since,
     })
     let maxSeenTimestamp = since - 1

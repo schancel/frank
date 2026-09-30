@@ -6,6 +6,8 @@
  * layer being tested.
  */
 import axios from 'axios'
+import { readFileSync } from 'fs'
+import { resolve } from 'path'
 
 import __pb_signed_payload_payload_pb from '@frank/cashweb/signed_payload/payload_pb'
 const { SignedPayload } = __pb_signed_payload_payload_pb
@@ -27,6 +29,7 @@ import {
   registerMonadIdentity,
   searchMonadProfiles,
 } from './monad-identity'
+import { validateProfileDisplayName } from './profile-display-name'
 
 jest.mock('axios')
 const mockedAxios = axios as jest.Mocked<typeof axios>
@@ -34,6 +37,27 @@ const mockedAxios = axios as jest.Mocked<typeof axios>
 const RELAY_BASE_URL = 'http://relay.test'
 const SEED = {
   mnemonic: 'test test test test test test test test test test test junk',
+}
+
+interface DisplayNameFixtureCase {
+  id: string
+  input?: string
+  inputRepeat?: { value: string; count: number; suffix?: string }
+  valid: boolean
+}
+
+const displayNameFixture = JSON.parse(
+  readFileSync(
+    resolve(__dirname, '../../fixtures/profile-display-name-v1.json'),
+    'utf8',
+  ),
+) as { cases: DisplayNameFixtureCase[] }
+
+function displayNameFixtureInput(testCase: DisplayNameFixtureCase): string {
+  if (testCase.input !== undefined) return testCase.input
+  const repeated = testCase.inputRepeat
+  if (!repeated) throw new Error(`Fixture ${testCase.id} has no input`)
+  return repeated.value.repeat(repeated.count) + (repeated.suffix ?? '')
 }
 
 describe('MonadIdentity', () => {
@@ -87,6 +111,10 @@ describe('MonadIdentity', () => {
 })
 
 describe('registerMonadIdentity', () => {
+  beforeEach(() => {
+    mockedAxios.mockClear()
+  })
+
   it("PUTs a signed AddressMetadata to /metadata/:addr with the identity's Monad address", async () => {
     const identity = MonadIdentity.fromSeed(SEED)
     mockedAxios.mockResolvedValueOnce({
@@ -123,7 +151,7 @@ describe('registerMonadIdentity', () => {
       relayBaseUrl: RELAY_BASE_URL,
       identity,
       profile: {
-        name: 'Alice',
+        name: '\u00a0Alice\u2003',
         bio: 'Testing Frank',
         avatar: 'data:image/png;base64,AQID',
       },
@@ -134,9 +162,7 @@ describe('registerMonadIdentity', () => {
     const signed = SignedPayload.deserializeBinary(
       new Uint8Array(call?.data as Buffer),
     )
-    const metadata = AddressMetadata.deserializeBinary(
-      signed.getPayload_asU8(),
-    )
+    const metadata = AddressMetadata.deserializeBinary(signed.getPayload_asU8())
     const entries = metadata.getEntriesList()
     expect(entries.map(entry => entry.getKind())).toEqual([
       'display_name',
@@ -148,6 +174,69 @@ describe('registerMonadIdentity', () => {
       Buffer.from([1, 2, 3]),
     )
   })
+
+  it.each(['', '   ', ' \t\n ', '\u00a0\u2003', undefined])(
+    'treats an unset/blank stored name %j as absent: registers with no display_name entry',
+    async name => {
+      const identity = MonadIdentity.fromSeed(SEED)
+      mockedAxios.mockResolvedValueOnce({
+        status: 200,
+        data: new Uint8Array(),
+      })
+
+      await registerMonadIdentity({
+        relayBaseUrl: RELAY_BASE_URL,
+        identity,
+        profile: { name, bio: 'hello' },
+      })
+
+      const call = mockedAxios.mock.calls.at(-1)?.[0]
+      const signed = SignedPayload.deserializeBinary(
+        new Uint8Array(call?.data as Buffer),
+      )
+      const kinds = AddressMetadata.deserializeBinary(signed.getPayload_asU8())
+        .getEntriesList()
+        .map(entry => entry.getKind())
+      expect(kinds).toEqual(['bio'])
+    },
+  )
+
+  it.each(['A\u0000B', 'A\u2028B', 'a'.repeat(129), '\ud800', 'x\udc00'])(
+    'still refuses invalid non-blank name %j',
+    async name => {
+      await expect(
+        registerMonadIdentity({
+          relayBaseUrl: RELAY_BASE_URL,
+          identity: MonadIdentity.fromSeed(SEED),
+          profile: { name },
+        }),
+      ).rejects.toThrow(/invalid profile display name/i)
+      expect(mockedAxios).not.toHaveBeenCalled()
+    },
+  )
+
+  it.each(
+    displayNameFixture.cases.filter(
+      testCase =>
+        !testCase.valid &&
+        validateProfileDisplayName(displayNameFixtureInput(testCase))
+          .normalized !== '',
+    ),
+  )(
+    'refuses invalid display name fixture $id before signing or sending',
+    async testCase => {
+      const identity = MonadIdentity.fromSeed(SEED)
+
+      await expect(
+        registerMonadIdentity({
+          relayBaseUrl: RELAY_BASE_URL,
+          identity,
+          profile: { name: displayNameFixtureInput(testCase) },
+        }),
+      ).rejects.toThrow(/invalid profile display name/i)
+      expect(mockedAxios).not.toHaveBeenCalled()
+    },
+  )
 })
 
 describe('fetchMonadIdentityPubKey / fetchMonadProfile', () => {

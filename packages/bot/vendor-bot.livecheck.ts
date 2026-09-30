@@ -158,13 +158,14 @@ async function main() {
   })
   console.log(`Vendor bot identity address: ${identity.displayAddress}`)
 
-  const { stampClient, mainAccountSigner, provider, pool } =
+  const { stampClient, mainAccountSigner, provider, pool, closePool } =
     await setUpFundedStampClient({
       rpcUrl,
       relayBaseUrl,
       mainWalletJsonPath,
       stampValueWei: replyStampValueWei,
       label: 'vendor-bot',
+      stateDir: stateDirPath,
     })
 
   // #311: the catalog goes to humans only, at most a bounded number of times per window.
@@ -339,6 +340,7 @@ async function main() {
   }
 
   await state.Close()
+  await closePool()
   console.log(`\nDone. Completed ${salesCompleted} sale${salesCompleted === 1 ? '' : 's'}.`)
 }
 

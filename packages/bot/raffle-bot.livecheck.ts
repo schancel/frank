@@ -117,7 +117,8 @@ import {
   RAFFLE_DEFAULT_MAX_ENTRIES,
   RAFFLE_DEFAULT_MAX_TOPUP_PER_DAY_WEI,
   RAFFLE_DEFAULT_MAX_TOPUP_WEI,
-  raffleTick,
+  repriceSignedPayout,
+  runRaffleLoop,
 } from './raffle-settlement'
 
 function sleep(ms: number): Promise<void> {
@@ -165,6 +166,9 @@ export async function recoverAndSweepEntryPayment(params: {
   httpClient: MonadHttpClient
   identitySigner: MonadAccountTxSigner
   label: string
+  /** Sweep gas tolerated per payment when comparing the amount actually swept to the price
+   * (default: the current dust threshold estimate, the amount each sweep leaves behind). */
+  dustToleranceWei?: bigint
 }): Promise<
   | { ok: true; totalValueWei: bigint; combinedTxHash: string }
   | { ok: false; reason: string; totalValueWei?: bigint }
@@ -195,6 +199,7 @@ export async function recoverAndSweepEntryPayment(params: {
     }
   }
 
+  let sweptWei = 0n
   for (const payment of ordered) {
     const outcome = await sweepRecoveredMonadStampPayment({
       payment,
@@ -202,7 +207,10 @@ export async function recoverAndSweepEntryPayment(params: {
       provider: params.provider,
       httpClient: params.httpClient,
     })
-    if (outcome.swept) continue
+    if (outcome.swept) {
+      sweptWei += outcome.valueWei
+      continue
+    }
     if (outcome.reason === 'below-dust-threshold') {
       return {
         ok: false,
@@ -224,11 +232,26 @@ export async function recoverAndSweepEntryPayment(params: {
         outcome.txHash,
         `${params.label} sweep (child ${payment.childIndex})`,
       )
+      sweptWei += outcome.valueWei ?? 0n
     } catch (err) {
       return {
         ok: false,
         reason: `sweep for child ${payment.childIndex} did not confirm: ${err instanceof Error ? err.message : String(err)}`,
       }
+    }
+  }
+
+  // What the identity ACTUALLY received (child balance minus the sweep's gas), not the claimed
+  // payment values above: it must cover the price up to the sweep gas tolerance, or the entry is
+  // not credited (the swept funds stay in the identity; the caller logs and rejects it).
+  const dustTolerance =
+    params.dustToleranceWei ?? (await estimateDustThresholdWei(params.provider))
+  const toleratedWei = dustTolerance * BigInt(ordered.length)
+  if (sweptWei + toleratedWei < params.minTotalValueWei) {
+    return {
+      ok: false,
+      reason: `only ${formatMon(sweptWei)} reached the raffle identity (plus up to ${formatMon(toleratedWei)} of sweep gas), below the required ${formatMon(params.minTotalValueWei)}`,
+      totalValueWei,
     }
   }
 
@@ -327,7 +350,6 @@ async function main() {
   // keys from this, never anyone else's.
   const recipientPrivateKey = getBytes(identity.toPrivateKeyHex())
 
-  let roundsDrawn = 0
   const state = new RaffleBotStateStore(stateDirPath)
   await state.Open()
   console.log(`[raffle-bot] persisted state loaded from ${stateDirPath}`)
@@ -373,21 +395,19 @@ async function main() {
       operatorBalanceWei: () =>
         provider.getBalance(mainAccountSigner.address, 'latest'),
       sweepDustWei: () => estimateDustThresholdWei(provider),
-      repricePayout: async previousRawTx => {
-        const prev = Transaction.from(previousRawTx)
-        // Same nonce, to, value and gas limit; fees x2 (well above the 10% replacement minimum).
-        const tx = await identitySigner.buildAndSignTransfer(
-          prev.to as string,
-          prev.value,
-          {
-            nonce: prev.nonce,
-            gasLimit: prev.gasLimit,
-            maxFeePerGas: (prev.maxFeePerGas ?? prev.gasPrice ?? 0n) * 2n,
-            maxPriorityFeePerGas: (prev.maxPriorityFeePerGas ?? 0n) * 2n,
+      repricePayout: (previousRawTx, gasBudgetWei) =>
+        repriceSignedPayout({
+          previousRawTx,
+          gasBudgetWei,
+          sign: async (to, value, overrides) => {
+            const tx = await identitySigner.buildAndSignTransfer(
+              to,
+              value,
+              overrides,
+            )
+            return { rawTx: tx.rawTx, txHash: tx.txHash }
           },
-        )
-        return { rawTx: tx.rawTx, txHash: tx.txHash }
-      },
+        }),
       isTxKnown: async txHash => (await provider.getTransaction(txHash)) !== null,
       error: message => console.error(message),
       payoutGasReserveWei: async () => {
@@ -395,21 +415,20 @@ async function main() {
         const maxFeePerGas = feeData.maxFeePerGas ?? BigInt(250000000000)
         return (maxFeePerGas * BigInt(21000) * BigInt(11)) / BigInt(10)
       },
-      topUpIdentity: async shortfallWei => {
+      signTopUp: async amountWei => {
         console.log(
-          `[raffle-bot] topping up identity by ${shortfallWei} wei from the operator (stamp) wallet to cover swept-entry gas and payout gas`,
+          `[raffle-bot] topping up identity by ${amountWei} wei from the operator (stamp) wallet to cover swept-entry gas and payout gas`,
         )
-        const signedTx = await mainAccountSigner.buildAndSignTransfer(
+        const tx = await mainAccountSigner.buildAndSignTransfer(
           identity.displayAddress,
-          shortfallWei,
+          amountWei,
         )
-        const txHash = await mainAccountSigner.submit(signedTx)
-        await waitForConfirmation(
-          mainAccountSigner,
-          txHash,
-          'raffle-bot identity funding',
-        )
+        return { rawTx: tx.rawTx, txHash: tx.txHash }
       },
+      broadcastTopUp: async (rawTx, txHash) => {
+        await mainAccountSigner.submitRaw(rawTx, txHash)
+      },
+      getTopUpStatus: txHash => mainAccountSigner.getStatus(txHash),
       signPayout: async (to, valueWei) => {
         const tx = await identitySigner.buildAndSignTransfer(to, valueWei)
         return { rawTx: tx.rawTx, txHash: tx.txHash }
@@ -467,35 +486,20 @@ async function main() {
       return false
     }
   }
-  // Restart resume: a persisted full round (crash before its draw was recorded) is drawn now, and
-  // any recorded-but-unsettled draw continues from its durable phase.
-  if (await openDrawIfFull()) roundsDrawn++
-  await settleDraws()
   let since = Date.now()
-  let lastActivityAt = Date.now()
 
   console.log(
     `\nPolling ${relayBaseUrl}/message/monad/inbox/<me> (signed mailbox read, since=<t>) every ${pollIntervalMs}ms for messages addressed to ${identity.displayAddress} ...`,
   )
 
-  while (roundsDrawn < maxRounds || state.getDraws().length > 0) {
-    // Retry held/unfinished draws every tick (owner funded the wallet, tx confirmed, DM failed).
-    // The idle exit never fires while a draw is unsettled: nothing else would pay the winner.
-    const tick = await raffleTick({
-      state,
-      openDrawIfFull,
-      settle: settleDraws,
-      nowMs: Date.now(),
-      lastActivityAtMs: lastActivityAt,
-      idleTimeoutMs,
-    })
-    if (tick.exit) {
-      console.log(`\nNo activity within ${idleTimeoutMs}ms -- exiting.`)
-      break
-    }
-    lastActivityAt = tick.lastActivityAtMs
-    roundsDrawn += tick.drawsOpened
-
+  // One inbox pass. The loop around it (`runRaffleLoop`, tested) also resumes a persisted full
+  // round or unsettled draw on its first tick, retries held/unfinished draws every tick, and never
+  // idle-exits while a draw is unsettled.
+  const pollOnce = async (ctx: {
+    markActivity(): void
+    drawOpened(): void
+    roundsDrawn(): number
+  }) => {
     const stored = await fetchMonadMessagesSince({
       ...mailboxAuthFor(identity, relayBaseUrl),
       sinceMs: since,
@@ -569,7 +573,7 @@ async function main() {
           item.type === 'raffle' && item.action === 'enter',
       )
 
-      lastActivityAt = Date.now()
+      ctx.markActivity()
 
       const sendReply = async (
         replyItems: RaffleItem[],
@@ -702,15 +706,27 @@ async function main() {
       // Round is full. Order (see raffle-settlement.ts): record the draw + rotate to a fresh
       // commitment atomically, verify/fund the pot, persist then broadcast the payout, reconcile
       // by hash, and only then announce (reveal the seed). Nothing here may throw the process.
-      if (await openDrawIfFull()) roundsDrawn++
+      if (await openDrawIfFull()) ctx.drawOpened()
       await settleDraws()
-      if (roundsDrawn >= maxRounds) break
+      if (ctx.roundsDrawn() >= maxRounds) break
     }
 
     if (stored.length > 0) since = maxSeenTimestamp + 1
     await state.flush()
-    await sleep(pollIntervalMs)
   }
+
+  const { roundsDrawn } = await runRaffleLoop({
+    state,
+    openDrawIfFull,
+    settle: settleDraws,
+    pollOnce,
+    sleep: () => sleep(pollIntervalMs),
+    now: Date.now,
+    idleTimeoutMs,
+    maxRounds,
+    onIdleExit: () =>
+      console.log(`\nNo activity within ${idleTimeoutMs}ms -- exiting.`),
+  })
 
   await state.Close()
   await closePool()

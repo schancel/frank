@@ -34,6 +34,7 @@ const ROUND_KEY = '__current_round__'
 const PROCESSED_PREFIX = 'processed:'
 const DRAW_PREFIX = 'draw:'
 const TOPUP_LEDGER_KEY = '__topup_ledger__'
+const CARRIED_DUST_KEY = '__carried_dust_entrants__'
 const DAY_MS = 24 * 60 * 60 * 1000
 
 /** A full round that has been drawn and is being settled (#363). It is written, together with the
@@ -53,13 +54,24 @@ export interface RaffleDrawRecord {
    * revealed to entrants only once `phase` is `paid`). */
   drawItem: RaffleItem & { winnerAddress: string; potWei: string }
   phase: 'awaiting-funds' | 'signed' | 'paid'
-  /** The latest signed payout. `previousTxHashes` are earlier fee-bumped attempts at the SAME
-   * nonce (at most one of them can ever mine); all are checked when reconciling. */
+  /** The latest signed payout. `previous` are earlier fee-bumped attempts at the SAME nonce (at
+   * most one of them can ever mine); all are reconciled by hash, and their bytes stay available to
+   * re-broadcast if the newest is rejected. */
   payout?: {
     rawTx: string
     txHash: string
     signedAtMs: number
-    previousTxHashes: string[]
+    /** When the newest replacement was signed (drives the next re-price wait). */
+    repricedAtMs?: number
+    previous: Array<{ rawTx: string; txHash: string }>
+  }
+  /** An operator top-up whose signed bytes were persisted before broadcast; checked by hash before
+   * any further top-up so a crash cannot cause a second one while the first sits unmined. */
+  pendingTopUp?: {
+    rawTx: string
+    txHash: string
+    amountWei: string
+    signedAtMs: number
   }
   announcedTo: string[]
   /** Cumulative operator top-up spent on this round (capped per round, persisted so a restart
@@ -128,6 +140,7 @@ export class RaffleBotStateStore {
   private processedPayloadHashes = new Set<string>()
   private draws = new Map<string, RaffleDrawRecord>()
   private topUps: Array<{ atMs: number; wei: string }> = []
+  private carriedDustEntrants = 0
   private pendingWrites: Promise<unknown>[] = []
 
   constructor(location: string) {
@@ -156,6 +169,8 @@ export class RaffleBotStateStore {
         const round = JSON.parse(value) as RaffleRoundRecord
         migratedRound = canonicalizePersistedRound(round)
         this.currentRound = migratedRound
+      } else if (key === CARRIED_DUST_KEY) {
+        this.carriedDustEntrants = JSON.parse(value)
       } else if (key === TOPUP_LEDGER_KEY) {
         this.topUps = JSON.parse(value)
       } else if (key.startsWith(DRAW_PREFIX)) {
@@ -280,5 +295,16 @@ export class RaffleBotStateStore {
     kept.push({ atMs: nowMs, wei: wei.toString() })
     await this.db.put(TOPUP_LEDGER_KEY, JSON.stringify(kept), SYNC)
     this.topUps = kept
+  }
+
+  /** Entrants of already-paid rounds whose sweep-gas deficit was absorbed by the identity's other
+   * funds instead of an operator top-up: a later round's shortfall legitimately includes it. */
+  getCarriedDustEntrants(): number {
+    return this.carriedDustEntrants
+  }
+
+  async setCarriedDustEntrants(n: number): Promise<void> {
+    await this.db.put(CARRIED_DUST_KEY, JSON.stringify(n), SYNC)
+    this.carriedDustEntrants = n
   }
 }

@@ -32,9 +32,11 @@
  *     does not know the tx at all is it re-signed with the SAME nonce and a higher fee, so at most
  *     one of the attempts can ever mine (a replacement, never a second payment).
  *
- * Every entry credited to a round was verified by `recoverAndSweepEntryPayment` to carry at least
- * the round's entry price in on-chain stamp payments to the bot's derived child addresses, so the
- * pot is backed by verified payments; the identity balance differs from it only by sweep gas.
+ * What backs the pot: `recoverAndSweepEntryPayment` requires (a) the entry's verified payments to
+ * the bot's derived child addresses to total at least the entry price, and (b) the amount ACTUALLY
+ * swept into the identity, plus the sweep gas tolerance (one dust threshold per payment), to be at
+ * least the entry price; an entry failing either is not credited. The identity balance therefore
+ * differs from the pot only by roughly the sweep gas.
  *
  * Insufficient funds deliberately do NOT refund entrants here: a refund shares the identity's
  * nonce and balance with the payout, which is exactly the design problem tracked in #218. The
@@ -42,6 +44,8 @@
  * wallet is funded; other rounds keep filling meanwhile. No refund is ever sent, so none can be
  * sent twice.
  */
+import { Transaction } from 'ethers'
+
 import { RaffleItem } from '@frank/cashweb/types/messages'
 import {
   buildRaffleDrawItem,
@@ -55,7 +59,7 @@ import {
 } from './raffle-bot-state'
 
 /** Bot defaults, shared with the launcher's docs/tests so they cannot drift (#363). The launcher
- * keeps the default price and overrides only the round size (3) so a demo round fills quickly. */
+ * keeps the default price; its round size is the launcher table's default. */
 export const RAFFLE_DEFAULT_ENTRY_PRICE_WEI = '20000000000000000' // 0.02 MON
 export const RAFFLE_DEFAULT_MAX_ENTRIES = 5
 export const RAFFLE_DEFAULT_MAX_TOPUP_WEI = '50000000000000000' // 0.05 MON, per round
@@ -68,20 +72,33 @@ export interface PayoutAttempt {
   txHash: string
 }
 
+/** Margin on the plausible-dust bound: the real gap is `entrants x sweep gas + payout gas`; the
+ * estimate at draw time can drift a little from what each sweep actually cost (fee changes), so
+ * 30% covers that. A larger gap is treated as an under-paying entry, not gas. */
+export const PLAUSIBLE_DUST_MARGIN_NUM = 13n
+export const PLAUSIBLE_DUST_MARGIN_DEN = 10n
+
 export interface RaffleSettlementPorts {
   /** The bot identity's current on-chain balance. */
   getBalanceWei(): Promise<bigint>
   /** The operator wallet's balance (a top-up is only attempted when it can pay it). */
   operatorBalanceWei(): Promise<bigint>
-  /** Worst-case gas the payout transfer itself costs (paid from the identity). */
+  /** Gas the payout transfer itself costs at the current fee (paid from the identity). */
   payoutGasReserveWei(): Promise<bigint>
   /** Current per-sweep gas cost (the amount an entry loses on its way to the identity). */
   sweepDustWei(): Promise<bigint>
-  /** Operator wallet -> identity transfer of `shortfallWei`, confirmed. Throws if it cannot. */
-  topUpIdentity(shortfallWei: bigint): Promise<void>
+  /** Sign an operator wallet -> identity transfer (not broadcast; the bytes are persisted first). */
+  signTopUp(amountWei: bigint): Promise<PayoutAttempt>
+  broadcastTopUp(rawTx: string, txHash: string): Promise<void>
+  getTopUpStatus(txHash: string): Promise<'pending' | 'confirmed' | 'failed'>
   signPayout(to: string, valueWei: bigint): Promise<PayoutAttempt>
-  /** Re-sign `previousRawTx` with the SAME nonce, to, value and a higher fee. */
-  repricePayout(previousRawTx: string): Promise<PayoutAttempt>
+  /** Re-sign `previousRawTx` with the SAME nonce, to and value and a higher fee whose maximum cost
+   * fits in `gasBudgetWei` (the identity balance above the pot). `undefined` when no valid
+   * replacement is affordable. */
+  repricePayout(
+    previousRawTx: string,
+    gasBudgetWei: bigint,
+  ): Promise<PayoutAttempt | undefined>
   /** Broadcast exactly these bytes (idempotent by hash). */
   broadcast(rawTx: string, txHash: string): Promise<void>
   getStatus(txHash: string): Promise<'pending' | 'confirmed' | 'failed'>
@@ -107,6 +124,43 @@ export interface RaffleSettleResult {
   status: DrawSettleStatus
   /** True when this pass changed durable state for the draw (phase, announcement, completion). */
   progressed: boolean
+}
+
+/** Pure fee-bump math for a same-nonce replacement, used by the bot's real `repricePayout` port
+ * (extracted so it is tested): keeps nonce, recipient, value and gas limit; multiplies both fee
+ * fields by `factor`, but never beyond what `gasBudgetWei` can pay for at the gas limit; returns
+ * `undefined` when even the minimum valid replacement (>= 12.5% above the previous fee, the
+ * usual replacement rule) does not fit. */
+export async function repriceSignedPayout(params: {
+  previousRawTx: string
+  gasBudgetWei: bigint
+  factor?: bigint
+  sign: (
+    to: string,
+    valueWei: bigint,
+    overrides: {
+      nonce: number
+      gasLimit: bigint
+      maxFeePerGas: bigint
+      maxPriorityFeePerGas: bigint
+    },
+  ) => Promise<PayoutAttempt>
+}): Promise<PayoutAttempt | undefined> {
+  const prev = Transaction.from(params.previousRawTx)
+  const prevFee = prev.maxFeePerGas ?? prev.gasPrice ?? 0n
+  const prevTip = prev.maxPriorityFeePerGas ?? prevFee
+  const affordableFee = params.gasBudgetWei / prev.gasLimit
+  let fee = prevFee * (params.factor ?? 2n)
+  if (fee > affordableFee) fee = affordableFee
+  const minFee = (prevFee * 1125n) / 1000n + 1n
+  if (fee < minFee) return undefined
+  const tip = (prevTip * fee) / (prevFee === 0n ? 1n : prevFee)
+  return params.sign(prev.to as string, prev.value, {
+    nonce: prev.nonce,
+    gasLimit: prev.gasLimit,
+    maxFeePerGas: fee,
+    maxPriorityFeePerGas: tip > fee ? fee : tip,
+  })
 }
 
 /** Opens the draw for a full current round (idempotent): records draw + rotation atomically.
@@ -175,12 +229,16 @@ export function createRaffleSettler(params: {
   stuckAfterMs?: number
   repriceAfterMs?: number
   maxReprices?: number
+  /** A persisted top-up the node has never heard of for this long is abandoned (its nonce may
+   * have been consumed elsewhere); its spend still counts against the limits. */
+  topUpAbandonAfterMs?: number
 }): () => Promise<RaffleSettleResult[]> {
   const { state, ports } = params
   const now = params.now ?? Date.now
   const stuckAfterMs = params.stuckAfterMs ?? 10 * MINUTE_MS
   const repriceAfterMs = params.repriceAfterMs ?? 15 * MINUTE_MS
   const maxReprices = params.maxReprices ?? 3
+  const topUpAbandonAfterMs = params.topUpAbandonAfterMs ?? 30 * MINUTE_MS
   const lastMessage = new Map<string, string>()
   const alert = (
     key: string,
@@ -198,10 +256,135 @@ export function createRaffleSettler(params: {
     { count: number; nextAtMs: number }
   >()
 
-  /** Advances the payout as far as it can; returns the updated record and whether it is `paid`. */
-  async function advancePayout(
+  /** Resolves a persisted top-up by hash before anything else may top up again. */
+  async function resolveTopUp(
     initial: RaffleDrawRecord,
+  ): Promise<{ draw: RaffleDrawRecord; pending: boolean }> {
+    const t = initial.pendingTopUp
+    if (!t) return { draw: initial, pending: false }
+    const clear = async () => {
+      const draw = { ...initial, pendingTopUp: undefined }
+      await state.putDraw(draw)
+      return { draw, pending: false }
+    }
+    if ((await ports.getTopUpStatus(t.txHash)) !== 'pending') return clear()
+    if (
+      !(await ports.isTxKnown(t.txHash)) &&
+      now() - t.signedAtMs >= topUpAbandonAfterMs
+    ) {
+      ports.warn(
+        `[raffle-bot] round ${initial.raffleId}: abandoning operator top-up ${
+          t.txHash
+        } (unknown to the node for ${Math.round(
+          (now() - t.signedAtMs) / MINUTE_MS,
+        )} min); its ${t.amountWei} wei stays counted against the limits.`,
+      )
+      return clear()
+    }
+    try {
+      await ports.broadcastTopUp(t.rawTx, t.txHash) // same bytes, never a second top-up
+    } catch (err) {
+      alert(
+        `${initial.raffleId}:topup`,
+        `[raffle-bot] round ${
+          initial.raffleId
+        }: re-broadcast of operator top-up ${t.txHash} failed (${errText(
+          err,
+        )}).`,
+      )
+    }
+    if ((await ports.getTopUpStatus(t.txHash)) !== 'pending') return clear()
+    return { draw: initial, pending: true }
+  }
+
+  /** Tops up `shortfallWei` from the operator wallet within the per-round and per-day limits.
+   * The signed bytes and their hash are persisted BEFORE broadcast. */
+  async function fundIdentity(
+    initial: RaffleDrawRecord,
+    shortfallWei: bigint,
+    gasWei: bigint,
   ): Promise<{
+    draw: RaffleDrawRecord
+    outcome: 'funded' | 'pending' | 'held'
+    message?: string
+  }> {
+    let draw = initial
+    const spent = BigInt(draw.topUpWei ?? '0')
+    if (spent + shortfallWei > params.maxTopUpPerRoundWei) {
+      return {
+        draw,
+        outcome: 'held',
+        message: `top-up of ${shortfallWei} wei would take this round's operator top-ups to ${
+          spent + shortfallWei
+        }, over the per-round limit ${
+          params.maxTopUpPerRoundWei
+        } (RAFFLE_BOT_MAX_TOPUP_WEI).`,
+      }
+    }
+    const today = state.topUpTotalSince(now())
+    if (today + shortfallWei > params.maxTopUpPerDayWei) {
+      return {
+        draw,
+        outcome: 'held',
+        message: `top-up of ${shortfallWei} wei would take today's operator top-ups to ${
+          today + shortfallWei
+        }, over the per-day limit ${
+          params.maxTopUpPerDayWei
+        } (RAFFLE_BOT_MAX_TOPUP_PER_DAY_WEI).`,
+      }
+    }
+    if ((await ports.operatorBalanceWei()) < shortfallWei + gasWei) {
+      return {
+        draw,
+        outcome: 'held',
+        message: `the operator wallet cannot cover the ${shortfallWei} wei top-up. Fund it; this retries automatically.`,
+      }
+    }
+    let signed: PayoutAttempt
+    try {
+      signed = await ports.signTopUp(shortfallWei)
+    } catch (err) {
+      return {
+        draw,
+        outcome: 'held',
+        message: `could not sign the ${shortfallWei} wei operator top-up (${errText(
+          err,
+        )}).`,
+      }
+    }
+    // Durable BEFORE broadcast: a restart finds this hash and never tops up a second time.
+    draw = {
+      ...draw,
+      topUpWei: (spent + shortfallWei).toString(),
+      pendingTopUp: {
+        ...signed,
+        amountWei: shortfallWei.toString(),
+        signedAtMs: now(),
+      },
+    }
+    await state.putDraw(draw)
+    await state.recordTopUp(now(), shortfallWei)
+    try {
+      await ports.broadcastTopUp(signed.rawTx, signed.txHash)
+    } catch (err) {
+      alert(
+        `${draw.raffleId}:topup`,
+        `[raffle-bot] round ${draw.raffleId}: broadcast of operator top-up ${
+          signed.txHash
+        } failed (${errText(err)}); will retry the same signed tx.`,
+      )
+    }
+    const resolved = await resolveTopUp(draw)
+    return {
+      draw: resolved.draw,
+      outcome: resolved.pending ? 'pending' : 'funded',
+      message: resolved.pending
+        ? `operator top-up ${signed.txHash} is not yet confirmed.`
+        : undefined,
+    }
+  }
+
+  async function advancePayout(initial: RaffleDrawRecord): Promise<{
     draw: RaffleDrawRecord
     status: DrawSettleStatus
     progressed: boolean
@@ -216,60 +399,41 @@ export function createRaffleSettler(params: {
       return { draw, status: 'held' as const, progressed }
     }
 
+    const topUpState = await resolveTopUp(draw)
+    draw = topUpState.draw
+    let topUpPending = topUpState.pending
+
     if (draw.phase === 'awaiting-funds') {
+      if (topUpPending) {
+        return held(
+          `operator top-up ${draw.pendingTopUp?.txHash} is not yet confirmed.`,
+        )
+      }
       const gas = await ports.payoutGasReserveWei()
       const required = pot + gas
-      const balance = await ports.getBalanceWei()
+      let balance = await ports.getBalanceWei()
       if (balance < required) {
         const shortfall = required - balance
-        const entrants = BigInt(draw.drawItem.entrants?.length ?? 0)
+        const entrants =
+          BigInt(draw.drawItem.entrants?.length ?? 0) +
+          BigInt(state.getCarriedDustEntrants())
         const dust = await ports.sweepDustWei()
-        const plausible = entrants * dust * 2n + gas * 2n
+        const plausible =
+          ((entrants * dust + gas) * PLAUSIBLE_DUST_MARGIN_NUM) /
+          PLAUSIBLE_DUST_MARGIN_DEN
         if (shortfall > plausible) {
           return held(
             `identity holds ${balance} wei, needs ${required} (pot ${pot} + payout gas ${gas}); the ${shortfall} wei gap exceeds the plausible sweep-gas dust for ${entrants} entrants (${plausible}), so an entry probably paid less than the entry price. Investigate; no operator funds moved.`,
           )
         }
-        const spent = BigInt(draw.topUpWei ?? '0')
-        if (spent + shortfall > params.maxTopUpPerRoundWei) {
-          return held(
-            `top-up of ${shortfall} wei would take this round's operator top-ups to ${
-              spent + shortfall
-            }, over the per-round limit ${
-              params.maxTopUpPerRoundWei
-            } (RAFFLE_BOT_MAX_TOPUP_WEI).`,
-          )
-        }
-        const today = state.topUpTotalSince(now())
-        if (today + shortfall > params.maxTopUpPerDayWei) {
-          return held(
-            `top-up of ${shortfall} wei would take today's operator top-ups to ${
-              today + shortfall
-            }, over the per-day limit ${
-              params.maxTopUpPerDayWei
-            } (RAFFLE_BOT_MAX_TOPUP_PER_DAY_WEI).`,
-          )
-        }
-        if ((await ports.operatorBalanceWei()) < shortfall + gas) {
-          return held(
-            `the operator wallet cannot cover the ${shortfall} wei top-up. Fund it; this retries automatically.`,
-          )
-        }
-        // Record the spend durably BEFORE moving money, so a restart cannot top up beyond the caps.
-        draw = { ...draw, topUpWei: (spent + shortfall).toString() }
-        await state.putDraw(draw)
-        await state.recordTopUp(now(), shortfall)
+        const funded = await fundIdentity(draw, shortfall, gas)
+        draw = funded.draw
         progressed = true
-        try {
-          await ports.topUpIdentity(shortfall)
-        } catch (err) {
-          return held(
-            `could not top up the raffle identity by ${shortfall} wei from the operator wallet (${errText(
-              err,
-            )}); the attempt counts against the limits.`,
-          )
+        if (funded.outcome !== 'funded') {
+          return held(funded.message as string)
         }
-        if ((await ports.getBalanceWei()) < required) {
+        balance = await ports.getBalanceWei()
+        if (balance < required) {
           return held(
             `identity balance is still below the required ${required} after top-up (funding not yet visible). Retrying.`,
           )
@@ -280,16 +444,21 @@ export function createRaffleSettler(params: {
       draw = {
         ...draw,
         phase: 'signed',
-        payout: { ...signed, signedAtMs: now(), previousTxHashes: [] },
+        payout: { ...signed, signedAtMs: now(), previous: [] },
       }
       await state.putDraw(draw)
       progressed = true
     }
 
     if (draw.phase === 'signed') {
+      const attemptsOf = (d: RaffleDrawRecord) => {
+        const p = d.payout as NonNullable<RaffleDrawRecord['payout']>
+        return [{ rawTx: p.rawTx, txHash: p.txHash }, ...p.previous]
+      }
       const payout = draw.payout as NonNullable<RaffleDrawRecord['payout']>
-      const hashes = [payout.txHash, ...payout.previousTxHashes]
-      const statuses = await Promise.all(hashes.map(h => ports.getStatus(h)))
+      const statuses = await Promise.all(
+        attemptsOf(draw).map(a => ports.getStatus(a.txHash)),
+      )
       if (statuses.some(s => s === 'failed')) {
         // Mined and reverted consumes the nonce, so no other attempt can mine: final.
         alert(raffleId, `${tag} payout attempt reverted on-chain; re-signing.`)
@@ -301,49 +470,77 @@ export function createRaffleSettler(params: {
         return { draw, status: 'pending', progressed: true }
       }
       if (!statuses.some(s => s === 'confirmed')) {
-        const ageMs = now() - payout.signedAtMs
-        const known = await ports.isTxKnown(payout.txHash)
+        const sinceLastAttempt =
+          now() - (payout.repricedAtMs ?? payout.signedAtMs)
         if (
-          !known &&
-          ageMs >= repriceAfterMs &&
-          payout.previousTxHashes.length < maxReprices
+          sinceLastAttempt >= repriceAfterMs &&
+          payout.previous.length < maxReprices &&
+          !topUpPending &&
+          !(await ports.isTxKnown(payout.txHash))
         ) {
-          // Receipt missing AND unknown to the node for a long time: replace it at the SAME
-          // nonce with a higher fee. One nonce, so at most one of the attempts can ever mine.
-          const bumped = await ports.repricePayout(payout.rawTx)
-          draw = {
-            ...draw,
-            payout: {
-              ...bumped,
-              signedAtMs: now(),
-              previousTxHashes: [...hashes],
-            },
+          // Receipt missing AND unknown to the node for a long time: replace it at the SAME nonce
+          // with a higher fee that fits the gas actually held. One nonce mines at most once.
+          const attempt = async () =>
+            ports.repricePayout(
+              payout.rawTx,
+              (await ports.getBalanceWei()) - pot,
+            )
+          let bumped = await attempt()
+          if (!bumped) {
+            const reserve = await ports.payoutGasReserveWei()
+            const funded = await fundIdentity(draw, reserve, reserve)
+            draw = funded.draw
+            progressed = true
+            topUpPending = funded.outcome === 'pending'
+            if (funded.outcome === 'funded') bumped = await attempt()
+            else
+              alert(
+                `${raffleId}:reprice`,
+                `${tag} cannot afford a replacement payout fee: ${funded.message}`,
+              )
           }
-          await state.putDraw(draw)
-          progressed = true
-          ports.warn(
-            `${tag} payout ${
-              payout.txHash
-            } unknown to the node for ${Math.round(
-              ageMs / MINUTE_MS,
-            )} min; replaced at the same nonce by ${bumped.txHash}.`,
-          )
+          if (bumped) {
+            draw = {
+              ...draw,
+              payout: {
+                ...bumped,
+                signedAtMs: payout.signedAtMs,
+                repricedAtMs: now(),
+                previous: attemptsOf(draw),
+              },
+            }
+            await state.putDraw(draw)
+            progressed = true
+            ports.warn(
+              `${tag} payout ${
+                payout.txHash
+              } unknown to the node for ${Math.round(
+                sinceLastAttempt / MINUTE_MS,
+              )} min; replaced at the same nonce by ${bumped.txHash}.`,
+            )
+          }
+        }
+        // Newest first; if it is rejected (underpriced, insufficient funds) fall back to the
+        // earlier attempts' bytes. All share one nonce, so at most one can ever mine.
+        const attempts = attemptsOf(draw)
+        for (const a of attempts) {
+          try {
+            await ports.broadcast(a.rawTx, a.txHash)
+            break
+          } catch (err) {
+            alert(
+              `${raffleId}:${a.txHash}`,
+              `${tag} payout ${a.txHash} broadcast failed (${errText(err)}); ${
+                a === attempts[attempts.length - 1]
+                  ? 'will retry'
+                  : 'trying the earlier signed attempt'
+              }.`,
+            )
+          }
         }
         const current = draw.payout as NonNullable<RaffleDrawRecord['payout']>
-        try {
-          await ports.broadcast(current.rawTx, current.txHash)
-        } catch (err) {
-          alert(
-            raffleId,
-            `${tag} payout ${current.txHash} broadcast failed (${errText(
-              err,
-            )}); will retry the same signed tx.`,
-          )
-        }
         const after = await Promise.all(
-          [current.txHash, ...current.previousTxHashes].map(h =>
-            ports.getStatus(h),
-          ),
+          attemptsOf(draw).map(a => ports.getStatus(a.txHash)),
         )
         if (!after.some(s => s === 'confirmed')) {
           const stuckMin = Math.floor((now() - current.signedAtMs) / MINUTE_MS)
@@ -364,6 +561,14 @@ export function createRaffleSettler(params: {
       }
       draw = { ...draw, phase: 'paid' }
       await state.putDraw(draw)
+      // Remember whether this round's sweep-gas deficit was covered by an operator top-up or
+      // silently absorbed by other funds (which a later round's shortfall then includes).
+      await state.setCarriedDustEntrants(
+        BigInt(draw.topUpWei ?? '0') > 0n
+          ? 0
+          : state.getCarriedDustEntrants() +
+              (draw.drawItem.entrants?.length ?? 0),
+      )
       progressed = true
       ports.log(`${tag} payout confirmed`)
     }
@@ -506,4 +711,55 @@ export async function raffleTick(params: {
     lastActivityAtMs = params.nowMs
   }
   return { exit: false, lastActivityAtMs, drawsOpened }
+}
+
+/** The bot's main loop, extracted so its wiring is tested: each iteration runs `raffleTick`
+ * (open a draw for a full round, settle, idle decision), then one inbox pass (`pollOnce`), then
+ * sleeps. It continues while rounds remain OR any draw is unsettled, and only idle-exits when
+ * nothing is unsettled. */
+export async function runRaffleLoop(params: {
+  state: RaffleBotStateStore
+  openDrawIfFull: () => Promise<boolean>
+  settle: () => Promise<RaffleSettleResult[]>
+  pollOnce: (ctx: {
+    markActivity(): void
+    drawOpened(): void
+    roundsDrawn(): number
+  }) => Promise<void>
+  sleep: () => Promise<void>
+  now: () => number
+  idleTimeoutMs: number
+  maxRounds: number
+  onIdleExit?: () => void
+}): Promise<{ roundsDrawn: number }> {
+  let roundsDrawn = 0
+  let lastActivityAtMs = params.now()
+  const ctx = {
+    markActivity: () => {
+      lastActivityAtMs = params.now()
+    },
+    drawOpened: () => {
+      roundsDrawn++
+    },
+    roundsDrawn: () => roundsDrawn,
+  }
+  while (roundsDrawn < params.maxRounds || params.state.getDraws().length > 0) {
+    const tick = await raffleTick({
+      state: params.state,
+      openDrawIfFull: params.openDrawIfFull,
+      settle: params.settle,
+      nowMs: params.now(),
+      lastActivityAtMs,
+      idleTimeoutMs: params.idleTimeoutMs,
+    })
+    if (tick.exit) {
+      params.onIdleExit?.()
+      break
+    }
+    lastActivityAtMs = tick.lastActivityAtMs
+    roundsDrawn += tick.drawsOpened
+    await params.pollOnce(ctx)
+    await params.sleep()
+  }
+  return { roundsDrawn }
 }

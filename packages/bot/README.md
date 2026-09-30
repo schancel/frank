@@ -20,9 +20,12 @@ absent RPC URL or wallet file) each print one line, never a stack trace.
 ### Raffle draw and payout (#363)
 
 A raffle entry reaches the raffle identity net of the gas of the sweep that moves it there, so the
-identity alone is always a little short of the gross pot (`entry price x entrants`). Every entry is
-first verified to carry at least the entry price in on-chain stamp payments to the bot's derived
-addresses (`recoverAndSweepEntryPayment`), so the pot is backed by verified payments. The draw then
+identity alone is always a little short of the gross pot (`entry price x entrants`). What is enforced
+before an entry is credited (`recoverAndSweepEntryPayment`): the entry's on-chain stamp payments to
+the bot's derived addresses, re-derived and checked against the message, total at least the entry
+price; and the amount actually swept into the identity, plus one sweep-gas tolerance per payment, is
+at least the entry price. An entry failing either check is not credited and its swept funds stay in
+the identity (logged and answered with an error). The draw then
 works in this order, each step durable (fsynced) before the next: record the draw (and open the next
 round with a fresh commitment) in one atomic write; make sure the identity holds pot plus payout
 gas, topping up only that shortfall from the stamp wallet; sign the payout once and persist the exact
@@ -33,11 +36,15 @@ pre-fund the raffle identity, and a winner is never announced before the payout 
 swept and confirmed on-chain before it is credited.)
 
 **Operator top-up limits.** The stamp wallet may top up the identity only while all hold: the gap is
-no more than the plausible sweep-gas dust for the round size (2 x entrants x sweep gas + 2 x payout
-gas; a larger gap means an entry paid less than the price, so the round is held and logged with no
-operator money moved); the round's cumulative top-ups stay within `RAFFLE_BOT_MAX_TOPUP_WEI`
+no more than the plausible sweep-gas dust for the round size (1.3 x (entrants x sweep gas + payout
+gas); the 30% margin covers fee drift between the sweeps and the draw, and entrants of earlier
+rounds paid without a top-up are carried into the count; a larger gap means an entry paid less than
+the price, so the round is held and logged with no operator money moved); the round's cumulative top-ups stay within `RAFFLE_BOT_MAX_TOPUP_WEI`
 (per round, persisted); and the trailing 24 hours stay within `RAFFLE_BOT_MAX_TOPUP_PER_DAY_WEI`
 (default 5x the per-round limit, persisted). A failed top-up attempt still counts against the limits.
+The signed top-up bytes and hash are persisted before broadcast and checked by hash before any
+further top-up, so a restart never tops up twice while the first one is unmined (a top-up the node
+has never heard of for 30 minutes is abandoned).
 
 **Held rounds.** If the pot cannot be funded (stamp wallet empty, a limit reached, or a suspected
 under-paying entry) the bot does not exit and does not refund: it logs `HELD ... Winner NOT
@@ -60,14 +67,16 @@ or unconfirmed round keeps it running, and settlement progress counts as activit
 network base fee, or the identity lacks gas). Operator steps: fund the raffle identity address (shown
 at startup) if it is short of gas, and watch the log; the same signed bytes keep being re-broadcast.
 If the node does not know the transaction at all for 15 minutes (receipt missing and
-`eth_getTransactionByHash` empty), the bot re-signs the SAME nonce, recipient and value with 2x fees
-(at most 3 times); one nonce can mine only once, so at most one of the attempts is ever paid, and
-every attempt is reconciled by hash. A transaction the node still knows is never replaced
+`eth_getTransactionByHash` empty), the bot re-signs the SAME nonce, recipient and value with up to 2x
+fees (at most 3 times), but never with a fee whose maximum cost exceeds the gas the identity actually
+holds above the pot; if no valid bump is affordable it tops up the payout gas reserve from the
+stamp wallet within the same per-round and per-day limits. One nonce can mine only once, so at most
+one of the attempts is ever paid. Every attempt is reconciled by hash, and if the newest bytes are
+rejected (for example insufficient funds) the earlier attempts' bytes are broadcast instead. A transaction the node still knows is never replaced
 automatically: wait for it, or replace it by hand.
 
-The launcher keeps the bot's default entry price and overrides only the round size (3 instead of the
-bot's default 5) so a demo round fills quickly; both defaults live in `raffle-settlement.ts`.
-`yarn demo:smoke` does not yet fill a raffle round (it needs the relay binary and real stamped
+The launcher keeps the bot's default entry price and sets the round size from the
+`RAFFLE_BOT_MAX_ENTRIES` row above; the bot's own default is 5 (`raffle-settlement.ts`). `yarn demo:smoke` does not yet fill a raffle round (it needs the relay binary and real stamped
 entries); this is tracked as remaining work on #363.
 
 The launcher sets every bot's state directory explicitly, under `<state dir>/bots/<bot>/state`

@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 
-import { Wallet } from 'ethers'
+import { Transaction, Wallet } from 'ethers'
 
 import { RaffleItem } from '@frank/cashweb/types/messages'
 import { MonadAccountTxSigner } from '@frank/wallet/monad-account-tx'
@@ -17,6 +17,8 @@ import {
   beginDrawIfFull,
   createRaffleSettler,
   raffleTick,
+  repriceSignedPayout,
+  runRaffleLoop,
   RaffleSettlementPorts,
 } from './raffle-settlement'
 import { sha256Hex } from '@frank/wallet/message-item-plugins/raffle/draw'
@@ -37,7 +39,17 @@ class FakeLedger {
   operator = 10n ** 18n
   balances = new Map<string, bigint>()
   nonce = 0
-  mempool = new Map<string, { to: string; value: bigint; nonce: number }>()
+  mempool = new Map<
+    string,
+    { to: string; value: bigint; nonce: number; fee: bigint }
+  >()
+  lag = false // receipts/mempool invisible although a tx may have mined
+  maxAcceptedFee = 1_000_000n
+  repriceCalls = 0
+  topSigned = 0
+  topMined = new Set<string>()
+  autoMineTopUp = true
+  toppedRaw = new Map<string, bigint>()
   mined = new Set<string>()
   minedNonces = new Set<number>()
   clock = 1_000_000
@@ -59,8 +71,17 @@ class FakeLedger {
       if (this.minedNonces.has(tx.nonce)) continue // a nonce mines at most once
       this.minedNonces.add(tx.nonce)
       this.mined.add(hash)
-      this.identity -= tx.value + GAS / 2n
+      this.identity -= tx.value + (tx.fee * GAS) / 16n
       this.balances.set(tx.to, (this.balances.get(tx.to) ?? 0n) + tx.value)
+    }
+  }
+  mineTopUps() {
+    for (const [hash, amt] of this.toppedRaw) {
+      if (this.topMined.has(hash)) continue
+      this.topMined.add(hash)
+      this.operator -= amt
+      this.identity += amt
+      this.topUps++
     }
   }
   paid(to: string) {
@@ -85,26 +106,38 @@ function makePorts(
     getBalanceWei: async () => l.identity,
     operatorBalanceWei: async () => l.operator,
     sweepDustWei: async () => DUST,
-    isTxKnown: async h => l.mempool.has(h),
-    repricePayout: async prev => {
-      const [, nonce, to, value] = prev.split(':')
-      const rawTx = `raw:${nonce}:${to}:${value}:bumped${l.signCalls++}`
+    isTxKnown: async h => !l.lag && (l.mempool.has(h) || l.toppedRaw.has(h)),
+    repricePayout: async (prev, budget) => {
+      const [, nonce, to, value, fee] = prev.split(':')
+      let f = BigInt(fee) * 2n
+      const affordable = (budget * 16n) / GAS
+      if (f > affordable) f = affordable
+      if (f < (BigInt(fee) * 1125n) / 1000n + 1n) return undefined
+      l.repriceCalls++
+      const rawTx = `raw:${nonce}:${to}:${value}:${f}`
       const txHash = '0x' + createHash('sha256').update(rawTx).digest('hex')
       return { rawTx, txHash }
     },
     payoutGasReserveWei: async () => GAS,
-    topUpIdentity: async shortfall => {
+    signTopUp: async amount => {
       hooks.onTopUp?.()
-      if (l.operator < shortfall) throw new Error('operator wallet is empty')
-      l.operator -= shortfall
-      l.identity += shortfall
-      l.topUps++
+      const rawTx = `top:${l.topSigned++}:${amount}`
+      return {
+        rawTx,
+        txHash: '0x' + createHash('sha256').update(rawTx).digest('hex'),
+      }
     },
+    broadcastTopUp: async (rawTx, txHash) => {
+      l.toppedRaw.set(txHash, BigInt(rawTx.split(':')[2]))
+      if (l.autoMineTopUp) l.mineTopUps()
+    },
+    getTopUpStatus: async h =>
+      l.topMined.has(h) && !l.lag ? 'confirmed' : 'pending',
     signPayout: async (to, value) => {
       hooks.onSign?.()
       l.signCalls++
       const nonce = l.nonce++
-      const rawTx = `raw:${nonce}:${to}:${value}:1`
+      const rawTx = `raw:${nonce}:${to}:${value}:8`
       const txHash = '0x' + createHash('sha256').update(rawTx).digest('hex')
       return { rawTx, txHash }
     },
@@ -112,14 +145,28 @@ function makePorts(
       hooks.onBroadcast?.()
       l.broadcastCalls++
       if (l.rejectBroadcast) throw new Error('underpriced')
-      const [, nonce, to, value] = rawTx.split(':')
-      l.mempool.set(txHash, { to, value: BigInt(value), nonce: Number(nonce) })
+      const [, nonce, to, value, fee] = rawTx.split(':')
+      if (l.minedNonces.has(Number(nonce)) && !l.mined.has(txHash)) {
+        throw new Error('nonce too low')
+      }
+      if (
+        BigInt(fee) > l.maxAcceptedFee ||
+        l.identity < BigInt(value) + (BigInt(fee) * GAS) / 16n
+      ) {
+        throw new Error('insufficient funds for gas * price + value')
+      }
+      l.mempool.set(txHash, {
+        to,
+        value: BigInt(value),
+        nonce: Number(nonce),
+        fee: BigInt(fee),
+      })
       if (l.autoMine) l.mine()
     },
     getStatus: async txHash => {
       hooks.onStatus?.()
       if (l.reverted.has(txHash)) return 'failed'
-      return l.mined.has(txHash) ? 'confirmed' : 'pending'
+      return l.mined.has(txHash) && !l.lag ? 'confirmed' : 'pending'
     },
     announce: async (to, draw) => {
       hooks.onAnnounce?.(to)
@@ -670,7 +717,7 @@ describe('raffle draw settlement (#363)', () => {
       await settle()
       expect(l.errors.join('\n')).toMatch(/STUCK payout 0x[0-9a-f]+/)
       expect(l.signCalls).toBe(1)
-      expect(state.getDraws()[0].payout!.previousTxHashes).toEqual([])
+      expect(state.getDraws()[0].payout!.previous).toEqual([])
       expect(l.announces).toEqual([])
     })
 
@@ -689,7 +736,7 @@ describe('raffle draw settlement (#363)', () => {
       await settle() // re-priced and persisted (still rejected by the node)
       const repriced = state.getDraws()[0].payout!
       expect(repriced.txHash).not.toBe(first.txHash)
-      expect(repriced.previousTxHashes).toEqual([first.txHash])
+      expect(repriced.previous.map(a => a.txHash)).toEqual([first.txHash])
       expect(repriced.rawTx.split(':')[1]).toBe(first.rawTx.split(':')[1]) // same nonce
       l.rejectBroadcast = false
       await settle() // broadcast and mined, persisted, then broadcast and mined
@@ -699,6 +746,234 @@ describe('raffle draw settlement (#363)', () => {
       expect([...l.balances.values()].reduce((x, y) => x + y, 0n)).toBe(
         3n * PRICE,
       )
+    })
+  })
+
+  describe('plausible-dust threshold (1.3x margin)', () => {
+    const plausible = ((3n * DUST + GAS) * 13n) / 10n
+    const need = 3n * PRICE + GAS
+    it('tops up a gap at the margin and holds one just above it', async () => {
+      const ok = new FakeLedger()
+      ok.identity = need - plausible
+      const s1 = await openStore()
+      fullRound(s1)
+      await begin(s1)
+      expect((await settlerFor(s1, ok)())[0].status).toBe('done')
+
+      const over = new FakeLedger()
+      over.identity = need - plausible - 1n
+      await s1.Close()
+      dir = mkdtempSync(join(tmpdir(), 'raffle-settle-'))
+      const s2 = await openStore()
+      fullRound(s2)
+      await begin(s2)
+      expect((await settlerFor(s2, over)())[0].status).toBe('held')
+      expect(over.topUps).toBe(0)
+    })
+  })
+
+  describe('replacement payouts and funds (F1)', () => {
+    const exact = () => {
+      const l = new FakeLedger()
+      l.identity = 3n * PRICE + GAS // exactly pot + the first reserve
+      return l
+    }
+    it('a replacement the node rejects falls back to the earlier attempt; pays once', async () => {
+      const l = exact()
+      l.rejectBroadcast = true // node does not know the original yet
+      const state = await openStore()
+      fullRound(state)
+      await begin(state)
+      const settle = settlerFor(state, l)
+      await settle()
+      l.clock += 16 * 60_000
+      l.rejectBroadcast = false
+      l.maxAcceptedFee = 8n // the 2x replacement is rejected (insufficient funds / underpriced)
+      await settle()
+      expect(l.repriceCalls).toBe(1)
+      expect(l.errors.join(' ') + l.warns.join(' ')).toMatch(
+        /trying the earlier signed attempt/,
+      )
+      expect(l.minedNonces.size).toBe(1)
+      expect(l.announces).toHaveLength(3)
+      expect([...l.balances.values()].reduce((x, y) => x + y, 0n)).toBe(
+        3n * PRICE,
+      )
+    })
+
+    it('a replacement never costs more than the gas held; when none is affordable it tops up within the caps', async () => {
+      const l = exact()
+      l.rejectBroadcast = true
+      const state = await openStore()
+      fullRound(state)
+      await begin(state)
+      const settle = settlerFor(state, l)
+      await settle()
+      l.clock += 16 * 60_000
+      await settle() // 1st replacement: capped to exactly the gas held (2x)
+      expect(l.repriceCalls).toBe(1)
+      expect(l.topUps).toBe(0)
+      l.clock += 16 * 60_000
+      await settle() // 2nd: nothing valid is affordable -> operator top-up, then a bigger fee
+      expect(l.topUps).toBe(1)
+      expect(l.repriceCalls).toBe(2)
+      const rec = state.getDraws()[0]
+      expect(BigInt(rec.topUpWei!)).toBeGreaterThan(0n)
+      l.rejectBroadcast = false
+      await settle()
+      expect(l.minedNonces.size).toBe(1)
+      expect([...l.balances.values()].reduce((x, y) => x + y, 0n)).toBe(
+        3n * PRICE,
+      )
+    })
+
+    it('the top-up for a replacement respects the per-round cap (holds the reprice, keeps broadcasting)', async () => {
+      const l = exact()
+      l.rejectBroadcast = true
+      const state = await openStore()
+      fullRound(state)
+      await begin(state)
+      const settle = settlerFor(state, l, undefined, 1n)
+      await settle()
+      l.clock += 16 * 60_000
+      await settle()
+      l.clock += 16 * 60_000
+      await settle()
+      expect(l.topUps).toBe(0)
+      expect(l.repriceCalls).toBe(1)
+      l.rejectBroadcast = false
+      await settle()
+      expect(l.minedNonces.size).toBe(1)
+    })
+
+    it('lagging node: original mined but invisible for hours, replacements get "nonce too low": ends paid, one nonce, no fresh nonce', async () => {
+      const l = shortLedger()
+      l.lag = true
+      const state = await openStore()
+      fullRound(state)
+      await begin(state)
+      const settle = settlerFor(state, l)
+      await settle() // broadcast; it mines, but nothing is visible
+      for (let i = 0; i < 9; i++) {
+        l.clock += 20 * 60_000
+        await settle() // re-prices (same nonce); broadcasts are "nonce too low"
+      }
+      expect(l.announces).toEqual([])
+      expect(l.signCalls).toBe(1) // never a fresh nonce
+      expect(state.getDraws()[0].phase).toBe('signed')
+      l.lag = false
+      await settle()
+      expect(l.minedNonces.size).toBe(1)
+      expect(l.signCalls).toBe(1)
+      expect(l.announces).toHaveLength(3)
+      expect([...l.balances.values()].reduce((x, y) => x + y, 0n)).toBe(
+        3n * PRICE,
+      )
+    })
+  })
+
+  describe('operator top-up transaction is recorded before broadcast (F5)', () => {
+    it('a restart while the first top-up sits unmined never tops up again', async () => {
+      const l = shortLedger()
+      l.autoMineTopUp = false
+      const s1 = await openStore()
+      fullRound(s1)
+      await begin(s1)
+      expect((await settlerFor(s1, l)())[0].status).toBe('held')
+      expect(l.topSigned).toBe(1)
+      expect(s1.getDraws()[0].pendingTopUp?.txHash).toBeDefined()
+      await s1.Close()
+      const s2 = await openStore()
+      const settle = settlerFor(s2, l)
+      expect((await settle())[0].status).toBe('held') // same bytes re-broadcast, still pending
+      expect(l.topSigned).toBe(1)
+      expect(l.toppedRaw.size).toBe(1)
+      l.mineTopUps()
+      expect((await settle())[0].status).toBe('done')
+      expect(l.topSigned).toBe(1)
+      expect(l.topUps).toBe(1)
+      expect([...l.balances.values()].reduce((x, y) => x + y, 0n)).toBe(
+        3n * PRICE,
+      )
+    })
+  })
+
+  describe('runRaffleLoop wiring', () => {
+    it('keeps looping while a draw is unsettled even past maxRounds and the idle timeout', async () => {
+      const l = shortLedger()
+      l.operator = 0n
+      const state = await openStore()
+      fullRound(state)
+      await begin(state)
+      let iterations = 0
+      let exited = false
+      const out = await runRaffleLoop({
+        state,
+        openDrawIfFull: () => begin(state),
+        settle: settlerFor(state, l),
+        pollOnce: async () => {
+          iterations++
+          if (iterations === 5) l.operator = 10n ** 18n // owner funds the wallet
+        },
+        sleep: async () => {
+          l.clock += 60 * 60_000 // an hour of quiet per iteration
+        },
+        now: () => l.clock,
+        idleTimeoutMs: 10 * 60_000,
+        maxRounds: 0,
+        onIdleExit: () => {
+          exited = true
+        },
+      })
+      expect(iterations).toBeGreaterThanOrEqual(5)
+      expect(state.getDraws()).toEqual([])
+      expect(exited).toBe(false) // it ended because nothing was left to do, not by idling
+      expect([...l.balances.values()].reduce((x, y) => x + y, 0n)).toBe(
+        3n * PRICE,
+      )
+      expect(out.roundsDrawn).toBe(0)
+    })
+
+    it('idle-exits when quiet and nothing is unsettled', async () => {
+      const l = shortLedger()
+      const state = await openStore()
+      let exited = false
+      await runRaffleLoop({
+        state,
+        openDrawIfFull: () => begin(state),
+        settle: settlerFor(state, l),
+        pollOnce: async () => {},
+        sleep: async () => {
+          l.clock += 60 * 60_000
+        },
+        now: () => l.clock,
+        idleTimeoutMs: 10 * 60_000,
+        maxRounds: 5,
+        onIdleExit: () => {
+          exited = true
+        },
+      })
+      expect(exited).toBe(true)
+    })
+
+    it('resumes a persisted full round on its first tick and counts it', async () => {
+      const l = shortLedger()
+      const state = await openStore()
+      fullRound(state) // never drawn: e.g. a crash before the draw was recorded
+      const out = await runRaffleLoop({
+        state,
+        openDrawIfFull: () => begin(state),
+        settle: settlerFor(state, l),
+        pollOnce: async () => {},
+        sleep: async () => {
+          l.clock += 60 * 60_000
+        },
+        now: () => l.clock,
+        idleTimeoutMs: 10 * 60_000,
+        maxRounds: 1,
+      })
+      expect(out.roundsDrawn).toBe(1)
+      expect(l.announces).toHaveLength(3)
     })
   })
 
@@ -803,13 +1078,17 @@ describe('#363 end to end on the fake chain (real signers, zero-balance raffle i
           },
           error: m => process.stderr.write(m + '\n'),
           payoutGasReserveWei: async () => 60_000n * 50n * 10n ** 9n * 2n,
-          topUpIdentity: async shortfall => {
+          signTopUp: async amount => {
             const tx = await opSigner.buildAndSignTransfer(
               identityWallet.address,
-              shortfall,
+              amount,
             )
-            await opSigner.submit(tx)
+            return { rawTx: tx.rawTx, txHash: tx.txHash }
           },
+          broadcastTopUp: async (raw, hash) => {
+            await opSigner.submitRaw(raw, hash)
+          },
+          getTopUpStatus: h => opSigner.getStatus(h),
           signPayout: async (to, value) => {
             const t = await idSigner.buildAndSignTransfer(to, value)
             return { rawTx: t.rawTx, txHash: t.txHash }
@@ -849,5 +1128,71 @@ describe('#363 end to end on the fake chain (real signers, zero-balance raffle i
     } finally {
       await fake.close()
     }
+  })
+})
+
+describe("repriceSignedPayout (the bot's real replacement signing)", () => {
+  const wallet = Wallet.createRandom()
+  const to = '0x' + '77'.repeat(20)
+  const FEE = 50n * 10n ** 9n
+  async function prev(nonce = 7) {
+    return wallet.signTransaction({
+      type: 2,
+      chainId: 10143,
+      nonce,
+      to,
+      value: 123n,
+      gasLimit: 21000n,
+      maxFeePerGas: FEE,
+      maxPriorityFeePerGas: 2n * 10n ** 9n,
+    })
+  }
+  const signer = async (t: string, v: bigint, o: any) => {
+    const raw = await wallet.signTransaction({
+      type: 2,
+      chainId: 10143,
+      to: t,
+      value: v,
+      ...o,
+    })
+    return { rawTx: raw, txHash: Transaction.from(raw).hash as string }
+  }
+
+  it('keeps nonce, recipient, value and gas limit and raises the fee', async () => {
+    const p = await prev()
+    const out = await repriceSignedPayout({
+      previousRawTx: p,
+      gasBudgetWei: 10n ** 18n,
+      sign: signer,
+    })
+    const a = Transaction.from(p)
+    const b = Transaction.from(out!.rawTx)
+    expect(b.nonce).toBe(a.nonce)
+    expect(b.to).toBe(a.to)
+    expect(b.value).toBe(a.value)
+    expect(b.gasLimit).toBe(a.gasLimit)
+    expect(b.maxFeePerGas).toBe(FEE * 2n)
+    expect(b.maxPriorityFeePerGas! > a.maxPriorityFeePerGas!).toBe(true)
+    expect(b.hash).not.toBe(a.hash)
+  })
+
+  it('never costs more than the gas budget, and refuses when no valid bump fits', async () => {
+    const p = await prev()
+    const budget = (21000n * (FEE * 3n)) / 2n // 1.5x
+    const out = await repriceSignedPayout({
+      previousRawTx: p,
+      gasBudgetWei: budget,
+      sign: signer,
+    })
+    const b = Transaction.from(out!.rawTx)
+    expect(b.gasLimit * b.maxFeePerGas!).toBeLessThanOrEqual(budget)
+    expect(b.maxFeePerGas! > FEE).toBe(true)
+    expect(
+      await repriceSignedPayout({
+        previousRawTx: p,
+        gasBudgetWei: 21000n * FEE,
+        sign: signer,
+      }),
+    ).toBeUndefined()
   })
 })

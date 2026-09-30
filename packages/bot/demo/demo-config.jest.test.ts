@@ -257,9 +257,10 @@ describe('raffle defaults stay consistent between the launcher and the bot (#363
     const raffle = FAKE().bots.find(b => b.name === 'raffle')!
     expect(raffle.env.RAFFLE_BOT_ENTRY_PRICE_WEI).toBeUndefined()
   })
-  it('the demo round size (3) is a deliberate override of the bot default', () => {
-    expect(RAFFLE_DEFAULT_MAX_ENTRIES).toBeGreaterThan(3)
-    expect(FAKE().bots.find(b => b.name === 'raffle')!.env.RAFFLE_BOT_MAX_ENTRIES).toBe('3')
+  it('the launcher passes the documented round size, and RAFFLE_BOT_MAX_TOPUP_WEI through', () => {
+    const raffle = FAKE().bots.find(b => b.name === 'raffle')!
+    expect(raffle.env.RAFFLE_BOT_MAX_ENTRIES).toBe(documented('RAFFLE_BOT_MAX_ENTRIES'))
+    expect(RAFFLE_DEFAULT_MAX_ENTRIES).toBe(5)
     expect(FAKE({ RAFFLE_BOT_MAX_TOPUP_WEI: '7' }).bots.find(b => b.name === 'raffle')!.env.RAFFLE_BOT_MAX_TOPUP_WEI).toBe('7')
   })
 })

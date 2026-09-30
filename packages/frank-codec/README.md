@@ -20,6 +20,9 @@ Implemented (against the spec as merged on main):
   linkage, contiguity).
 - T1 content hash, T1a digest, and the pure hashes T3 and T4.
 - Retention: exact original frame bytes at every level, unknown types/frame versions/fields.
+- Reciprocal check of Rust-originated proof fixtures in
+  `docs/protocol/cbor/vectors/rust-origin.json` (`test/rust-origin.jest.test.ts`).
+  The Rust codec itself is `backend/cashweb/frank-cbor` and is not imported here.
 
 Not implemented:
 
@@ -28,7 +31,6 @@ Not implemented:
 - T3a stealth derivation and DLEQ.
 - Type-5 fields 6-8 and directory-statement field 8, pending the stamp-key spec PR #200.
   Type 5 and type 4 are typed only for fields defined on main.
-- The Rust codec and cross-language vectors (#182).
 
 ## API
 

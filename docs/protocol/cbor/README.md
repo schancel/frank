@@ -720,8 +720,12 @@ persist an interpreted record before every applicable later stage succeeds.
 
 [vectors.schema.json](vectors.schema.json) defines the committed corpus index.
 Every case names its source implementation, complete frame hex, outcome, and
-normative rules. A `reject` case names its stable error category. An `accept`
-case run through `typed` or `full` additionally names the type/schema and
+normative rules. The generated index is `vectors/manifest.json`. Rust encodings
+of the three proof fixtures (direct message, directory attestation, mailbox
+checkpoint) are committed separately in `vectors/rust-origin.json` so the
+TypeScript codec can re-encode them; that file is not produced by the
+TypeScript fixture builders. A `reject` case names its stable error category. An
+`accept` case run through `typed` or `full` additionally names the type/schema and
 expected content hash. A `retain` case names the exact retained frame bytes and
 does not claim interpreted semantics. Hostile vectors retain their input bytes
 even when parsing fails so both implementations test the same input.

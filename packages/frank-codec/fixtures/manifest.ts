@@ -21,6 +21,7 @@ export interface ManifestCase {
   content_hash_hex?: string
   retained_frame_hex?: string
   error_category?: string
+  error_stage?: string
   paired_case?: string
   pair_relation?: string
 }
@@ -62,7 +63,10 @@ export function manifestCase(c: CaseDef): ManifestCase {
     expectation: c.expect,
     rules: c.rules,
   }
-  if (c.expect === 'reject') out.error_category = c.category
+  if (c.expect === 'reject') {
+    out.error_category = c.category
+    out.error_stage = c.stage
+  }
   if (c.expect === 'retain') out.retained_frame_hex = toHex(c.frame)
   if (c.expect === 'accept') {
     const r = validateFrame(c.frame, ctx)

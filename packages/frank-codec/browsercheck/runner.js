@@ -32,6 +32,7 @@ const frankBrowserCheckInstall = function () {
       const ctx = ctxOf(c)
       let kind
       let category
+      let stage
       let r
       try {
         r = codec.validateFrame(codec.fromHex(c.frame_hex), ctx)
@@ -43,6 +44,7 @@ const frankBrowserCheckInstall = function () {
         }
         kind = 'reject'
         category = e.category
+        stage = e.stage
       }
       if (kind !== c.expectation) {
         fail(
@@ -59,6 +61,9 @@ const frankBrowserCheckInstall = function () {
       if (kind === 'reject') {
         rejected++
         if (category !== c.error_category) fail(c.id, 'category ' + category)
+        if (c.error_stage === undefined)
+          fail(c.id, 'reject without error_stage')
+        else if (stage !== c.error_stage) fail(c.id, 'stage ' + stage)
       } else if (kind === 'retain') {
         retained++
         if (codec.toHex(r.frame) !== c.retained_frame_hex)

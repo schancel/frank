@@ -26,6 +26,7 @@ export default {
     settings: 'Paramètres',
     contacts: 'Contacts',
     forum: 'Forum',
+    railLabel: 'Sections de la barre latérale',
     contactsUnreadOne: 'Contacts, {count} message non lu',
     contactsUnreadOther: 'Contacts, {count} messages non lus',
   },
@@ -63,6 +64,16 @@ export default {
     sendAgainRecovered:
       "Un message en attente précédent a été remis pendant l'envoi de celui-ci. Le renvoyer comme nouveau message ?",
     sendAgain: 'Renvoyer',
+  },
+  mailboxStatus: {
+    unavailable:
+      'Service de messagerie indisponible : ce relais ne propose pas la messagerie, vous ne recevrez donc pas de messages.',
+    unreachable:
+      'Impossible de joindre le serveur. Vous ne recevez peut-être pas de messages ; nouvelle tentative en cours.',
+    rateLimited:
+      'Le serveur nous a demandé de ralentir. Nouvelle tentative sous peu.',
+    unauthorized:
+      'Le serveur a refusé votre connexion à la messagerie. Nouvelle tentative en cours.',
   },
   chatMessage: {
     noPayloadFound: 'Impossible de trouver les données pour ce message',

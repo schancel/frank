@@ -1,40 +1,35 @@
 <template>
   <div>
     <q-page-container>
-      <q-page class="chat-page-background">
-        <q-scroll-area
-          ref="chatScroll"
-          @scroll="scrollHandler"
-          class="q-px-none absolute full-width full-height column"
-        >
-          <div class="row q-px-lg">
-            <template
-              v-for="(msg, index) in chunkedMessages"
-              :key="msg.payloadDigest"
-            >
-              <chat-message-component
-                :index="index"
-                :message="msg"
-                :address="address"
-                :name="getContact(msg.outbound).name ?? 'unknown'"
-                :chat-width="chatWidth"
-                :payload-digest="msg.payloadDigest"
-                :ref="msg.payloadDigest"
-                @replyClicked="({ payloadDigest }) => setReply(payloadDigest)"
-                @replyDivClick="scrollToMessage"
-                @sendFollowUp="sendFollowUpItems"
-              />
-            </template>
-          </div>
-        </q-scroll-area>
-        <!-- Anchored to the top (not the footer) so it never grows/shrinks the footer and pushes
-        an in-flight message out from under the input box while sending. -->
-        <div
-          v-if="stampPreparationStatus"
-          class="absolute-top full-width text-caption text-center bg-accent text-white q-py-xs"
-          role="status"
-        >
-          {{ stampPreparationStatus }}
+      <q-page class="chat-page-background column no-wrap">
+        <!-- Above the list in normal flow: the banners never cover messages or each other. -->
+        <chat-banner-stack :stamp-status="stampPreparationStatus" />
+        <div class="col relative-position">
+          <q-scroll-area
+            ref="chatScroll"
+            @scroll="scrollHandler"
+            class="q-px-none absolute full-width full-height column"
+          >
+            <div class="row q-px-lg">
+              <template
+                v-for="(msg, index) in chunkedMessages"
+                :key="msg.payloadDigest"
+              >
+                <chat-message-component
+                  :index="index"
+                  :message="msg"
+                  :address="address"
+                  :name="getContact(msg.outbound).name ?? 'unknown'"
+                  :chat-width="chatWidth"
+                  :payload-digest="msg.payloadDigest"
+                  :ref="msg.payloadDigest"
+                  @replyClicked="({ payloadDigest }) => setReply(payloadDigest)"
+                  @replyDivClick="scrollToMessage"
+                  @sendFollowUp="sendFollowUpItems"
+                />
+              </template>
+            </div>
+          </q-scroll-area>
         </div>
         <q-page-sticky
           position="bottom-right"
@@ -95,6 +90,7 @@
 import { defineComponent, ref } from 'vue'
 
 import ChatMessageComponent from '../components/chat/messages/ChatMessage.vue'
+import ChatBannerStack from '../components/chat/ChatBannerStack.vue'
 import ChatInput from '../components/chat/ChatInput.vue'
 import ChatMessageReply from '../components/chat/messages/ChatMessageReply.vue'
 
@@ -121,6 +117,7 @@ export default defineComponent({
     ChatMessageComponent,
     ChatMessageReply,
     ChatInput,
+    ChatBannerStack,
   },
   beforeRouteUpdate(
     to: RouteLocationNormalized,

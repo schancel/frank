@@ -175,6 +175,24 @@ describe('committed vector manifest', () => {
     )
   })
 
+  it('checker rejects an error_stage past the last stage of the operation', () => {
+    const m: Manifest = JSON.parse(JSON.stringify(committed))
+    const c = m.cases.find(x => x.id === 'frame-bad-magic')
+    if (!c) throw new Error('no case frame-bad-magic')
+    c.error_stage = '7'
+    expect(checkManifest(m, readme)).toContainEqual(
+      expect.stringContaining('error_stage 7 is past the last stage'),
+    )
+  })
+
+  it('carries error_stage on every reject and on no other case', () => {
+    for (const c of committed.cases) {
+      if (c.expectation === 'reject')
+        expect([c.id, typeof c.error_stage]).toEqual([c.id, 'string'])
+      else expect([c.id, c.error_stage]).toEqual([c.id, undefined])
+    }
+  })
+
   it('has unique ids, every reject names a category and stage, and covers all eight-stage classes', () => {
     expect(new Set(CASES.map(c => c.id)).size).toBe(CASES.length)
     for (const c of CASES) {
@@ -232,8 +250,10 @@ describe('the committed JSON manifest, run from its own data only', () => {
     for (const c of committed.cases) {
       const out = runCase(c)
       expect([c.id, out.kind]).toEqual([c.id, c.expectation])
-      if (c.expectation === 'reject')
+      if (c.expectation === 'reject') {
         expect([c.id, out.category]).toEqual([c.id, c.error_category])
+        expect([c.id, out.stage]).toEqual([c.id, c.error_stage])
+      }
       if (c.expectation === 'retain')
         expect(out.retainedFrameHex).toBe(c.retained_frame_hex)
       if (c.expectation === 'accept') {

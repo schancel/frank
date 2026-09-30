@@ -66,6 +66,15 @@ fn check_case(case: &serde_json::Value) -> Option<String> {
                     error.stage, error.detail
                 ));
             }
+            // README section 10: a runner that reports stages SHOULD compare `error_stage`.
+            if let Some(want_stage) = case["error_stage"].as_str() {
+                if error.stage.as_str() != want_stage {
+                    return Some(format!(
+                        "{id}: category {got} ok, stage {} ({}), expected stage {want_stage}",
+                        error.stage, error.detail
+                    ));
+                }
+            }
             None
         }
         Err(Error::Context(error)) => Some(format!("{id}: context error: {error}")),

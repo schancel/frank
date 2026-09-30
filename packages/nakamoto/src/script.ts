@@ -1247,9 +1247,18 @@ function sequenceTime(machine: Machine, opcode: number): ScriptFailure | null {
   if (tx.version < 2) return failure('script-locktime', opcode)
   const input = tx.inputs[machine.context.inputIndex ?? -1]
   if (input === undefined) return failure('script-index', opcode)
-  const mask = SEQUENCE_TYPE | SEQUENCE_MASK
   const sequence = BigInt(input.sequence >>> 0)
-  if ((sequence & mask) < (value.value & mask)) {
+  // BIP112: a disabled input sequence is not a relative locktime, and the
+  // type bit has to match before the masked values are ordered.
+  if ((sequence & SEQUENCE_DISABLE) !== 0n) {
+    return failure('script-locktime', opcode)
+  }
+  const mask = SEQUENCE_TYPE | SEQUENCE_MASK
+  const sequenceMasked = sequence & mask
+  const valueMasked = value.value & mask
+  const sequenceTimed = (sequenceMasked & SEQUENCE_TYPE) !== 0n
+  const valueTimed = (valueMasked & SEQUENCE_TYPE) !== 0n
+  if (sequenceTimed !== valueTimed || sequenceMasked < valueMasked) {
     return failure('script-locktime', opcode)
   }
   return null

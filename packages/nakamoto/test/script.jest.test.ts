@@ -449,6 +449,25 @@ describe('per-chain script eras', () => {
     ).toEqual({ ok: true, value: true })
   })
 
+  test('CSV rejects a disabled or differently typed input sequence', () => {
+    const height = scriptOf('51b2')
+    const spend = (version: number, sequence: number, script = height) =>
+      evaluateScript(
+        script,
+        ctx(BTC_MAINNET, {
+          transaction: { ...oneInput(0, sequence), version },
+          inputIndex: 0,
+        }),
+      )
+    expectStack(spend(2, 1), ['01'])
+    expect(codes(spend(2, 0))).toBe('script-locktime')
+    expect(codes(spend(2, 0xffffffff))).toBe('script-locktime')
+    expect(codes(spend(2, 0x80000001))).toBe('script-locktime')
+    expect(codes(spend(2, (1 << 22) | 1))).toBe('script-locktime')
+    expect(codes(spend(1, 1))).toBe('script-locktime')
+    expectStack(spend(2, (1 << 22) | 5, scriptOf('03010040b2')), ['010040'])
+  })
+
   test('CLTV compares the transaction locktime and rejects a final sequence', () => {
     const script = scriptOf('0164b1')
     const open = oneInput(100, 0)

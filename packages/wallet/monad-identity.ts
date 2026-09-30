@@ -89,6 +89,8 @@ import {
 import { PrivateKey, crypto as bitcoreCrypto } from 'bitcore-lib-xpi'
 import axios from 'axios'
 
+import type { MailboxAuthParams } from '@frank/cashweb/relay/monad-mailbox-client'
+
 import __pb_registry_metadata_pb from '@frank/cashweb/registry/metadata_pb'
 const { AddressMetadata, Entry, Header, ListMonadProfilesResponse } =
   __pb_registry_metadata_pb
@@ -177,6 +179,21 @@ export class MonadIdentity implements FrankIdentityHandle {
    * used for Lotus address derivation. */
   toBitcorePrivateKey(): PrivateKey {
     return new PrivateKey(this.wallet.privateKey.slice(2))
+  }
+}
+
+/** Mailbox authentication bundle for `identity`'s own inbox on `relayBaseUrl`
+ * (`@frank/cashweb/relay/monad-mailbox-client`): the relay verifies each private read against the
+ * public key registered for this address, so this signs with the same DER-ECDSA identity key as
+ * `registerMonadIdentity`. */
+export function mailboxAuthFor(
+  identity: MonadIdentity,
+  relayBaseUrl: string,
+): MailboxAuthParams {
+  return {
+    relayBaseUrl,
+    recipient: identity.address.raw,
+    signDigest: digest => identity.signHash(Buffer.from(digest)),
   }
 }
 

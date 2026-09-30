@@ -55,7 +55,8 @@ chatbot with blockchain flavor text sprinkled on top.
     PUT /message/monad  ──────────────────────────────────────────────────▶
                                         broadcasts+confirms+verifies burn tx
                                         on real Monad testnet, stores msg
- 3. poll GET /message/monad?since=t ◀─────────────────────────────────────    4. poll same route,
+ 3. signed mailbox read (challenge +   ◀───────────────────────────────    4. same, as the bot's
+    GET /message/monad/inbox/:me)                                                own recipient,
                                                                                   find msg addressed
                                                                                   to itself, decrypt
                                                                                5. ask Qwen 3.8 Max
@@ -74,8 +75,10 @@ Library code (reusable, no side effects at import time):
   vectors), signing, `PUT`/`GET /metadata/:addr`.
 - `monad-message-envelope.ts` — the E2E encryption + recipient-addressing convention (see "The
   recipient-filtering gap" below), reusing `../relay/crypto.ts`'s existing ECDH+AES code.
-- `monad-message-feed.ts` — `GET /message/monad?since=<t>` client (ticket #37's message-discovery
-  route; no TS client for it existed before this ticket).
+- `monad-message-feed.ts` / `monad-mailbox-client.ts` — the authenticated recipient mailbox
+  client (`POST /message/monad/auth/:me` challenge, identity-key signature, then
+  `GET /message/monad/inbox/:me` with cursor paging). It replaced ticket #37's unauthenticated
+  `GET /message/monad?since=<t>`, which PR #197 removed.
 - `qwen-client.ts` — Qwen 3.8 Max streaming chat client (SSE, hand-parsed; the endpoint rejects
   non-streaming requests — see "Qwen API notes" below).
 - `qwen-bot-common.ts` — shared identity/funding/sub-account-pool setup for both scripts below,
@@ -89,6 +92,11 @@ real network — excluded from `jest`'s `testMatch`, meant to be run manually):
   conversation (supports multiple sequential turns via `QWEN_BOT_MESSAGES`).
 
 ## How the recipient-filtering gap was solved for this demo
+
+> **Historical (pre-PR #197).** The relay now serves each recipient only its own inbox behind a
+> signed challenge, so bots read `fetchMonadMessagesSince({ ...mailboxAuthFor(identity, relayBaseUrl),
+sinceMs })` and no longer download the global feed. The envelope's `to` check below is retained as
+> defence in depth.
 
 Ticket #37's `GET /message/monad?since=<t>` returns **every** stored message — there's no
 recipient field on `MonadStampedMessage`/`StoredMonadMessage` for the relay to filter on (see that

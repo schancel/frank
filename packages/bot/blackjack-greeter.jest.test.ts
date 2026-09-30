@@ -227,6 +227,33 @@ describe('BlackjackGreeter', () => {
     expect(store.hasGreeted(DEALER)).toBe(false)
   })
 
+  it('a per-run cap does not consume a profile that shares a timestamp with one already greeted', async () => {
+    const at = NOW - 1000
+    feed = [profile(addr(1), at), profile(addr(2), at)]
+    const greeter = await makeGreeter({ maxPerRun: 1 })
+    await greeter.poll()
+    expect(sent).toEqual([addr(1)])
+
+    const next = await makeGreeter({ maxPerRun: 1 }, stores[0])
+    await next.poll()
+    expect(sent).toEqual([addr(1), addr(2)])
+  })
+
+  it('short funds do not consume a profile that shares a timestamp with a skipped one', async () => {
+    const at = NOW - 1000
+    feed = [profile(BOT, at, true), profile(addr(2), at)]
+    affordable = false
+    const greeter = await makeGreeter()
+    await greeter.poll()
+    expect(sent).toEqual([])
+    expect(stores[0].hasGreeted(addr(2))).toBe(false)
+
+    affordable = true
+    const next = await makeGreeter({}, stores[0])
+    await next.poll()
+    expect(sent).toEqual([addr(2)])
+  })
+
   it('stops at the per-run cap and leaves the rest for a later run', async () => {
     feed = [
       profile(addr(1), NOW - 3000),

@@ -239,8 +239,11 @@ export class BlackjackGreeter {
     let cursor = since
     for (const profile of profiles) {
       if (this.capped(dayKey(this.now()))) {
-        // Not consumed: a later run or day greets it.
-        cursor = Math.max(cursor, profile.registeredAt)
+        // Not consumed: a later run or day greets it. Hold the cursor ON this
+        // profile. An earlier profile in this batch with the same timestamp has
+        // already moved it to registeredAt + 1, and listProfiles is inclusive
+        // of `since`, so leaving that +1 would skip this one forever.
+        cursor = profile.registeredAt
         break
       }
       const skipReason = guard.profileBlockReason(
@@ -269,7 +272,9 @@ export class BlackjackGreeter {
               `[blackjack-bot] dealer funds are short: skipping the greeting to ${profile.address} for now`,
             )
           }
-          cursor = Math.max(cursor, profile.registeredAt)
+          // Same cursor rule as the cap: do not step past this profile, even
+          // when an earlier same-timestamp profile already did.
+          cursor = profile.registeredAt
           break
         }
         // Durable BEFORE the send: at most once per address, and counted against the caps even if

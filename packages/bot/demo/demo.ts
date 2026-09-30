@@ -17,6 +17,7 @@ import {
   chmodSync,
   existsSync,
   mkdirSync,
+  readFileSync,
   statSync,
   writeFileSync,
 } from 'fs'
@@ -159,17 +160,26 @@ export async function startDemo(config: DemoConfig, options: StartOptions = {}):
 
   try {
     if (config.fakeChain) {
-      fakeRpc = await startFakeRpc({ port: config.fakeRpcPort })
-      if (!existsSync(config.mainWalletJson)) {
-        const wallet = Wallet.createRandom()
-        mkdirSync(dirname(config.mainWalletJson), { recursive: true, mode: 0o700 })
-        writeFileSync(
-          config.mainWalletJson,
-          JSON.stringify({ address: wallet.address, privateKey: wallet.privateKey }),
-          { mode: 0o600 },
-        )
-        chmodSync(config.mainWalletJson, 0o600)
+      const walletPaths = new Set([
+        config.mainWalletJson,
+        ...config.bots.map(b => b.env.E2E_DEMO_MAIN_WALLET_JSON).filter(Boolean),
+      ])
+      const funded: string[] = []
+      for (const path of walletPaths) {
+        if (!existsSync(path)) {
+          const wallet = Wallet.createRandom()
+          mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
+          writeFileSync(
+            path,
+            JSON.stringify({ address: wallet.address, privateKey: wallet.privateKey }),
+            { mode: 0o600 },
+          )
+          chmodSync(path, 0o600)
+        }
+        // Only the address is read, to fund it on the fake chain; the key never leaves the file.
+        funded.push((JSON.parse(readFileSync(path, 'utf8')) as { address: string }).address)
       }
+      fakeRpc = await startFakeRpc({ port: config.fakeRpcPort, funded })
       print(`[demo] fake chain RPC on ${fakeRpc.url} (no real funds, no keys)`)
     }
 
@@ -242,7 +252,7 @@ export async function startDemo(config: DemoConfig, options: StartOptions = {}):
         logPath: join(logDir, `${bot.name}.log`),
         env: bot.env,
         onLine: line => {
-          if (bot.readyLine?.test(line)) readyLines.add(bot.name)
+          if (bot.readyLine.test(line)) readyLines.add(bot.name)
         },
       })
     }
@@ -253,7 +263,8 @@ export async function startDemo(config: DemoConfig, options: StartOptions = {}):
       const registered = await registeredAddresses(config.relayUrl).catch(() => new Set<string>())
       for (const bot of [...waiting]) {
         const address = addresses[bot.name]?.toLowerCase()
-        const ready = address ? registered.has(address) : readyLines.has(bot.name)
+        // Started (its loop is running) AND, for identity bots, visible to users on the relay.
+        const ready = readyLines.has(bot.name) && (!address || registered.has(address))
         if (ready) {
           waiting.delete(bot)
           print(`[demo] ${bot.name} is ready`)
@@ -299,7 +310,10 @@ export function printSummary(handle: DemoHandle, print: (line: string) => void):
   )
   print('  App (in another terminal):')
   print(
-    `    cd app && QCLI_MONAD_TESTNET_HTTP_RPC_URL=${rpcForApp} QCLI_MONAD_RELAY_BASE_URL=${handle.relayUrl} yarn dev:browser`,
+    `    cd app && QCLI_MONAD_TESTNET_HTTP_RPC_URL=${rpcForApp} QCLI_MONAD_RELAY_BASE_URL=${handle.relayUrl} \\`,
+  )
+  print(
+    `      QCLI_MONAD_STAMP_BURN_ADDRESS=0x000000000000000000000000000000000000dEaD QCLI_CASHWEB_STAMP_MIN_BURN_VALUE_WEI=${config.minStampWei} yarn dev:browser`,
   )
   print('Press Ctrl-C to stop everything.')
 }

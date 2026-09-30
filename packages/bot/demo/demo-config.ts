@@ -84,6 +84,8 @@ export const TOOLCHAIN_VARS = [
 /** A duration far longer than any demo, in place of the bots' 10-minute idle exit. */
 export const NEVER_IDLE_MS = String(30 * 24 * 60 * 60 * 1000)
 
+const INBOX_POLLING = /Polling .*\/message\/monad\/inbox/
+
 export type BotName = 'blackjack' | 'raffle' | 'vendor' | 'qwen' | 'faucet'
 
 export interface DemoBot {
@@ -93,8 +95,9 @@ export interface DemoBot {
   env: Record<string, string>
   /** Identity file (absent for the faucet, which has none). */
   identityJson?: string
-  /** Stdout pattern that means "started" for bots without a relay profile. */
-  readyLine?: RegExp
+  /** Stdout pattern printed once the bot is running its loop. A profile that already exists on the
+   * relay from an earlier run does not mean the bot has started, so this is always required. */
+  readyLine: RegExp
 }
 
 export interface DemoConfig {
@@ -222,8 +225,12 @@ export function resolveDemoConfig(params: {
   if (problems.length > 0) throw new DemoConfigError(problems)
 
   const relayUrl = `http://127.0.0.1:${relayPort}`
+  // Two processes sending from one wallet reuse nonces, so the fake chain gets a separate faucet
+  // wallet; on a real network the user decides (defaulting to the shared wallet).
   const faucetWallet = merged.FRANK_DEMO_FAUCET_WALLET_JSON
     ? resolve(cwd, merged.FRANK_DEMO_FAUCET_WALLET_JSON)
+    : fakeChain
+    ? join(stateDir, 'fake-chain-faucet-wallet.json')
     : mainWalletJson
 
   const common: Record<string, string> = {
@@ -246,6 +253,7 @@ export function resolveDemoConfig(params: {
       name: 'blackjack',
       script: 'blackjack-bot.livecheck.ts',
       identityJson: idPath('blackjack'),
+      readyLine: INBOX_POLLING,
       env: {
         ...common,
         BLACKJACK_BOT_IDENTITY_JSON: idPath('blackjack'),
@@ -257,6 +265,7 @@ export function resolveDemoConfig(params: {
       name: 'raffle',
       script: 'raffle-bot.livecheck.ts',
       identityJson: idPath('raffle'),
+      readyLine: INBOX_POLLING,
       env: {
         ...common,
         RAFFLE_BOT_IDENTITY_JSON: idPath('raffle'),
@@ -269,6 +278,7 @@ export function resolveDemoConfig(params: {
       name: 'vendor',
       script: 'vendor-bot.livecheck.ts',
       identityJson: idPath('vendor'),
+      readyLine: INBOX_POLLING,
       env: {
         ...common,
         VENDOR_BOT_IDENTITY_JSON: idPath('vendor'),
@@ -280,6 +290,7 @@ export function resolveDemoConfig(params: {
       name: 'qwen',
       script: 'qwen-bot.livecheck.ts',
       identityJson: idPath('qwen'),
+      readyLine: INBOX_POLLING,
       env: {
         ...common,
         QWEN_BOT_MODE: qwenMode,
@@ -331,4 +342,20 @@ export function resolveDemoConfig(params: {
     secrets,
     bots,
   }
+}
+
+/** The one README table documenting every variable; a test keeps README.md identical to this. */
+export function renderDemoVarTable(): string {
+  const cell = (s: string) => s.replace(/\|/g, '\\|')
+  const rows = DEMO_VARS.map(
+    v =>
+      `| \`${v.name}\` | ${v.scope} | ${cell(v.default)} | ${cell(v.description)}${
+        v.secret ? ' Secret: never printed.' : ''
+      } |`,
+  )
+  return [
+    '| Variable | Applies to | Default | Meaning |',
+    '| --- | --- | --- | --- |',
+    ...rows,
+  ].join('\n')
 }

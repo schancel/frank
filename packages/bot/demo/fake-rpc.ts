@@ -1,7 +1,10 @@
 /**
  * A tiny fake Monad JSON-RPC for the demo's `--fake-chain` mode and its smoke test (#312). It is
  * NOT a chain: every address has a fixed generous balance, every accepted raw transaction is
- * "mined" immediately, and nothing is ever validated beyond parsing. That is enough for the relay
+ * "mined" immediately, and nothing is ever validated beyond parsing. Balances are a simple ledger
+ * (value and fee moved on each accepted transaction, never below zero; only `funded` addresses
+ * start with anything), so a fresh profile really shows 0 until the faucet's transfer arrives.
+ * That is enough for the relay
  * to accept a stamped message (it fetches the payment transaction and its receipt) and for the
  * bots to fund sub-accounts and send transfers, so the whole demo runs with no keys or funds.
  * Never point anything holding real value at it.
@@ -13,7 +16,8 @@ import { createServer, IncomingMessage, Server, ServerResponse } from 'http'
 import { Transaction } from 'ethers'
 
 const CHAIN_ID = 10143
-const BALANCE_WEI = 5n * 10n ** 18n
+/** Starting balance of each `funded` address: far more than any demo spends. */
+const FUNDED_BALANCE_WEI = 1_000_000n * 10n ** 18n
 const ZERO32 = `0x${'00'.repeat(32)}`
 const BLOCK_HASH = `0x${'11'.repeat(32)}`
 
@@ -39,9 +43,22 @@ class RpcError extends Error {
   }
 }
 
-export async function startFakeRpc(params: { port: number; host?: string }): Promise<FakeRpc> {
+export async function startFakeRpc(params: {
+  port: number
+  host?: string
+  /** Addresses that start with a large balance (the demo's main wallet). */
+  funded?: string[]
+}): Promise<FakeRpc> {
   const txs = new Map<string, Transaction>()
   const nonces = new Map<string, number>()
+  const balances = new Map<string, bigint>(
+    (params.funded ?? []).map(a => [a.toLowerCase(), FUNDED_BALANCE_WEI]),
+  )
+  const balanceOf = (a: string) => balances.get(a.toLowerCase()) ?? 0n
+  const debit = (a: string, amount: bigint) => {
+    const cur = balanceOf(a)
+    balances.set(a.toLowerCase(), cur > amount ? cur - amount : 0n)
+  }
 
   function handle(method: string, p: unknown[]): unknown {
     switch (method) {
@@ -52,7 +69,7 @@ export async function startFakeRpc(params: { port: number; host?: string }): Pro
       case 'eth_blockNumber':
         return hex(1000 + txs.size)
       case 'eth_getBalance':
-        return hex(BALANCE_WEI)
+        return hex(balanceOf(String(p[0])))
       case 'eth_getTransactionCount':
         return hex(nonces.get(String(p[0]).toLowerCase()) ?? 0)
       case 'eth_gasPrice':
@@ -94,10 +111,16 @@ export async function startFakeRpc(params: { port: number; host?: string }): Pro
         }
       case 'eth_sendRawTransaction': {
         const tx = Transaction.from(String(p[0]))
-        txs.set(tx.hash as string, tx)
-        const from = (tx.from as string).toLowerCase()
-        nonces.set(from, Math.max(nonces.get(from) ?? 0, tx.nonce + 1))
-        return tx.hash
+        const hash = tx.hash as string
+        if (!txs.has(hash)) {
+          // A replayed identical transaction moves nothing twice.
+          txs.set(hash, tx)
+          const from = (tx.from as string).toLowerCase()
+          nonces.set(from, Math.max(nonces.get(from) ?? 0, tx.nonce + 1))
+          debit(from, tx.value + tx.gasLimit * (tx.maxFeePerGas ?? tx.gasPrice ?? 0n))
+          if (tx.to) balances.set(tx.to.toLowerCase(), balanceOf(tx.to) + tx.value)
+        }
+        return hash
       }
       case 'eth_getTransactionByHash': {
         const t = txs.get(String(p[0]))

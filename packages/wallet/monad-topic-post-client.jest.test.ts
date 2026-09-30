@@ -329,6 +329,36 @@ describe('MonadTopicPostClient.submitTopicPost', () => {
     expect(pool.getRecord(result.leaseIndex)?.status).toBe('spent')
   })
 
+  it("leases exactly the requested funded account instead of the pool's next one (ticket #273)", async () => {
+    const pool = makePool(3)
+    pool.setStatus(0, 'available')
+    pool.setStatus(2, 'available')
+    const { client } = makeClient({ pool })
+    mockedAxios.mockImplementationOnce(async config => ({
+      data: storedTopicPostBytes(
+        decodeMonadTopicPost(new Uint8Array(config.data as Buffer)),
+      ),
+      status: 200,
+      statusText: 'OK',
+      headers: {},
+      config,
+    }))
+
+    const result = await client.submitTopicPost({
+      topic: 'general',
+      entries: ENTRIES,
+      direction: 'up',
+      burnAddress: BURN_ADDRESS,
+      voteWeightWei: 5_000n,
+      overrides: FEE_OVERRIDES,
+      leaseIndex: 2,
+    })
+
+    expect(result.leaseIndex).toBe(2)
+    expect(pool.getRecord(2)?.status).toBe('spent')
+    expect(pool.getRecord(0)?.status).toBe('available')
+  })
+
   it('builds down-vote calldata for an initial down-vote post', async () => {
     const { client } = makeClient()
     mockedAxios.mockImplementationOnce(async config => {

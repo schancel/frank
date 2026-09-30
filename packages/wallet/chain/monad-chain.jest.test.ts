@@ -53,6 +53,7 @@ jest.mock('../monad-topic-post-client', () => {
     MonadTopicPostClient: jest.fn().mockImplementation(() => ({
       submitTopicPost: jest.fn(),
     })),
+    quoteMonadTopicBurnGasReserve: jest.fn().mockResolvedValue(100n),
   }
 })
 jest.mock('../monad-topic-vote-client', () => {
@@ -156,6 +157,10 @@ function makeWallet(identity: MonadIdentity): MonadChainWalletHandle {
       prepareStampInventory: jest.fn().mockResolvedValue({
         fundingTxHashes: [],
         selectedAccountCount: 2,
+      }),
+      prepareBurnAccount: jest.fn().mockResolvedValue({
+        index: 4,
+        fundingTxHashes: [],
       }),
     } as unknown as MonadChainWalletHandle['pool'],
     leaseManager: {} as MonadChainWalletHandle['leaseManager'],
@@ -916,6 +921,11 @@ describe('createMonadChain: topics.post', () => {
     expect(call.voteWeightWei).toBe(5_000n)
     expect(call.burnAddress).toBe(TEST_CONFIG.stampBurnAddress)
     expect(hexlify(call.parentPostHash)).toBe('0x' + 'aa'.repeat(32))
+    // #273: the burn account is prepared (funded) first and that exact account is leased.
+    expect(wallet.pool.prepareBurnAccount).toHaveBeenCalledWith(
+      expect.objectContaining({ burnValueWei: 5_000n, gasReserveWei: 100n }),
+    )
+    expect(call.leaseIndex).toBe(4)
   })
 })
 
@@ -949,6 +959,10 @@ describe('createMonadChain: topics.vote', () => {
     expect(call.direction).toBe('down')
     expect(call.voteWeightWei).toBe(7_000n)
     expect(call.burnAddress).toBe(TEST_CONFIG.stampBurnAddress)
+    expect(wallet.pool.prepareBurnAccount).toHaveBeenCalledWith(
+      expect.objectContaining({ burnValueWei: 7_000n }),
+    )
+    expect(call.leaseIndex).toBe(4)
   })
 })
 

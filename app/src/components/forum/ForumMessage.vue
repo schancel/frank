@@ -119,6 +119,7 @@ import AMessageReplies from './ForumMessageReplies.vue'
 import { MessageWithReplies, useForumStore } from 'src/stores/forum'
 import { useContactStore } from 'src/stores/contacts'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
+import { errorNotify } from 'src/utils/notifications'
 import { activeChain } from '@frank/wallet/chain'
 import { formatSafeRawAmount, rawToSafeNumber } from 'src/utils/chain-amount'
 
@@ -207,13 +208,20 @@ export default defineComponent({
             payloadDigest: this.message?.payloadDigest,
             satoshis: this.voteAmount,
           })
-          const wallet = await useActiveWallet()
-          this.addOffering({
-            wallet,
-            payloadDigest: this.message?.payloadDigest,
-            satoshis: this.voteAmount,
-          })
+          // The votes being sent are consumed either way: a failed burn is reported, never
+          // silently kept and re-sent on top of the next click (ticket #273).
+          const satoshis = this.voteAmount
           this.voteAmount = 0
+          try {
+            const wallet = await useActiveWallet()
+            await this.addOffering({
+              wallet,
+              payloadDigest: this.message?.payloadDigest,
+              satoshis,
+            })
+          } catch (err) {
+            errorNotify(err instanceof Error ? err : new Error(String(err)))
+          }
         })()
       }, 1_000)
     },

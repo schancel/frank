@@ -300,6 +300,9 @@ export interface CastTopicVoteParams {
    * failing immediately when the pool is fully leased. Omit for the default immediate-reject
    * behavior (`SubAccountLeaseManager.acquireLease`). */
   waitForLease?: AcquireLeaseWhenAvailableOptions
+  /** Lease exactly this (already funded, `'available'`) sub-account -- see
+   * `SubmitTopicPostParams.leaseIndex`. Takes precedence over `waitForLease`. */
+  leaseIndex?: number
 }
 
 /** Outcome of a successful `castVote` call — the burn tx confirmed on-chain and the relay recorded
@@ -381,9 +384,15 @@ export class MonadTopicVoteClient {
     )
     const targetPayloadHashHex = toBareHex(params.targetPayloadHash)
 
-    const handle: AccountLeaseHandle = params.waitForLease
-      ? await acquireLeaseWhenAvailable(this.leaseManager, params.waitForLease)
-      : this.leaseManager.acquireLease()
+    const handle: AccountLeaseHandle =
+      params.leaseIndex !== undefined
+        ? this.leaseManager.acquireForIndex(params.leaseIndex)
+        : params.waitForLease
+        ? await acquireLeaseWhenAvailable(
+            this.leaseManager,
+            params.waitForLease,
+          )
+        : this.leaseManager.acquireLease()
 
     let signedTx: SignedMonadTx
     try {
@@ -438,9 +447,9 @@ export class MonadTopicVoteClient {
       // guessing either way.
       this.leaseManager.releaseLease(handle, 'stuck')
       throw new MonadTopicVoteAbandonedError(
-        'Monad topic vote submission abandoned: no response from the relay, and no read-back ' +
-          `route is available in this ticket's scope to confirm whether ${targetPayloadHashHex}'s ` +
-          'vote landed',
+        'The relay did not respond, so it is unknown whether your vote was recorded. ' +
+          'Check the post before voting again: a retry could burn a second time. ' +
+          `(target ${targetPayloadHashHex})`,
         targetPayloadHashHex,
       )
     }

@@ -77,6 +77,27 @@ describe('useForumStore: putMessage', () => {
   })
 })
 
+describe('useForumStore: putMessage preparation progress (ticket #273)', () => {
+  it("hands the caller's progress callback to activeChain.topics.post", async () => {
+    const store = useForumStore()
+    mockedPost.mockResolvedValueOnce({ payloadDigest: 'deadbeef' })
+    mockedFetchOne.mockResolvedValueOnce(makeMessage())
+    const onPreparationProgress = jest.fn()
+
+    await store.putMessage({
+      wallet: testWallet,
+      entry: { kind: 'post', message: 'hello' },
+      satoshis: 10_000_000,
+      topic: 'stamp',
+      onPreparationProgress,
+    })
+
+    expect(mockedPost.mock.calls[0][0].onPreparationProgress).toBe(
+      onPreparationProgress,
+    )
+  })
+})
+
 describe('useForumStore: addOffering', () => {
   it('maps a positive signed vote number to direction "up"', async () => {
     const store = useForumStore()

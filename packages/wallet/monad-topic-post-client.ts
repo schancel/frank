@@ -120,6 +120,7 @@ import {
   acquireLeaseWhenAvailable,
 } from './monad-account-lease'
 import {
+  MonadAccountTxSigner,
   MonadTxOverrides,
   MonadTxSubmitter,
   SignedMonadTx,
@@ -339,6 +340,31 @@ function toBareHex(bytes: Uint8Array): string {
   return hexlify(bytes).slice(2)
 }
 
+/**
+ * Worst-case fee reserve, in wei, for one topic burn (post or vote): the fee cap of a probe
+ * transaction with this module's exact calldata layout (`buildTopicVoteCalldata`, 38 bytes -- the
+ * vote client's layout is byte-for-byte the same length), plus 25% headroom because funding must
+ * confirm before the burn is built. `signer` is only used to quote fields from the RPC; nothing is
+ * broadcast.
+ */
+export async function quoteMonadTopicBurnGasReserve(params: {
+  signer: MonadAccountTxSigner
+  burnAddress: string
+  overrides?: MonadTxOverrides
+}): Promise<bigint> {
+  const probe = await params.signer.buildAndSignCall(
+    params.burnAddress,
+    BigInt(1),
+    buildTopicVoteCalldata('up', new Uint8Array(32).fill(0xff)),
+    params.overrides,
+  )
+  const feePerGas = probe.maxFeePerGas ?? probe.gasPrice
+  if (feePerGas === undefined) {
+    throw new Error('Unable to determine a maximum fee for a topic burn')
+  }
+  return (probe.gasLimit * feePerGas * BigInt(5)) / BigInt(4)
+}
+
 /** Base class for every error this module throws. */
 export class MonadTopicPostError extends Error {}
 
@@ -404,6 +430,10 @@ export interface SubmitTopicPostParams {
    * failing immediately when the pool is fully leased. Omit for the default immediate-reject
    * behavior (`SubAccountLeaseManager.acquireLease`). */
   waitForLease?: AcquireLeaseWhenAvailableOptions
+  /** Lease exactly this (already funded, `'available'`) sub-account instead of whichever the pool
+   * offers next -- what `MonadSubAccountPool.prepareBurnAccount` returns, so the burn is signed by
+   * an account that really holds the vote's weight. Takes precedence over `waitForLease`. */
+  leaseIndex?: number
   /** Overrides the default fallback poll used only when a `PUT` attempt fails with no HTTP
    * response at all (see this file's header, "Lease release policy"). */
   abandonPoll?: AbandonPollOptions
@@ -532,9 +562,15 @@ export class MonadTopicPostClient {
     const calldata = buildTopicVoteCalldata(params.direction, payloadHash)
     const payloadHashHex = toBareHex(payloadHash)
 
-    const handle: AccountLeaseHandle = params.waitForLease
-      ? await acquireLeaseWhenAvailable(this.leaseManager, params.waitForLease)
-      : this.leaseManager.acquireLease()
+    const handle: AccountLeaseHandle =
+      params.leaseIndex !== undefined
+        ? this.leaseManager.acquireForIndex(params.leaseIndex)
+        : params.waitForLease
+        ? await acquireLeaseWhenAvailable(
+            this.leaseManager,
+            params.waitForLease,
+          )
+        : this.leaseManager.acquireLease()
 
     let signedTx: SignedMonadTx
     try {
@@ -601,8 +637,9 @@ export class MonadTopicPostClient {
 
       this.leaseManager.releaseLease(handle, 'stuck')
       throw new MonadTopicPostAbandonedError(
-        'Monad topic post submission abandoned: no response from the relay, and ' +
-          `GET /message/monad/topics/${payloadHashHex} never found a stored post`,
+        'The relay did not respond, so it is unknown whether your post was recorded. ' +
+          'Check the forum before posting again: a retry could burn a second time. ' +
+          `(payload ${payloadHashHex})`,
         payloadHashHex,
       )
     }

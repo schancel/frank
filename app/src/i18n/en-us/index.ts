@@ -7,6 +7,13 @@ export default {
     donationMessage:
       'Thank you for participating in our vision of the future of online communications. Please consider donating to our efforts by sending real BCH to bitcoincash:qq7vt04md0pt6fk5szhcx4cgsfuzmppy5u4hxshr4a',
   },
+  stampPreparation: {
+    checking: 'Checking private stamp accounts…',
+    funding:
+      'Preparing a private stamp account ({completed}/{total} on-chain transactions; up to {feeReserve} {unit} fee reserve each)…',
+    ready: 'Private stamp account ready; sending…',
+    posting: 'Posting…',
+  },
   chatLayout: {
     info: 'Info',
     infoTitle: 'Info',

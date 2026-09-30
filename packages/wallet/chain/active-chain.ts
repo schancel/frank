@@ -225,12 +225,16 @@ export interface TopicBroadcastClient {
     direction: 'up' | 'down'
     voteWeightWei: bigint
     parentDigest?: string
+    /** Progress of preparing the burn account (same stages as a direct message's stamp-account
+     * preparation, always a single funding transaction here). */
+    onPreparationProgress?: (progress: DirectMessagePreparationProgress) => void
   }): Promise<{ payloadDigest: string }>
   vote(params: {
     wallet: WalletHandle
     payloadDigest: string
     voteWeightWei: bigint
     direction: 'up' | 'down'
+    onPreparationProgress?: (progress: DirectMessagePreparationProgress) => void
   }): Promise<void>
   fetchByTopic(params: {
     wallet: WalletHandle

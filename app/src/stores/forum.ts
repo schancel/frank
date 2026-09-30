@@ -2,7 +2,11 @@ import assert from 'assert'
 import { defineStore } from 'pinia'
 import { indexBy, uniq } from 'ramda'
 
-import { activeChain, WalletHandle } from '@frank/wallet/chain'
+import {
+  activeChain,
+  DirectMessagePreparationProgress,
+  WalletHandle,
+} from '@frank/wallet/chain'
 
 import { ForumMessage, ForumMessageEntry } from '@frank/cashweb/types/forum'
 import { SortMode } from 'src/utils/sorting'
@@ -178,12 +182,16 @@ export const useForumStore = defineStore('forum', {
       satoshis,
       topic,
       parentDigest,
+      onPreparationProgress,
     }: {
       wallet: WalletHandle
       entry: ForumMessageEntry
       satoshis: number
       topic: string
       parentDigest?: string
+      onPreparationProgress?: (
+        progress: DirectMessagePreparationProgress,
+      ) => void
     }) {
       // See `stores/topics.ts`'s `putMessage` for the signed-number -> direction/magnitude
       // mapping rationale (same Lotus `RegistryHandler.createBroadcast`/`addOfferings`
@@ -196,6 +204,7 @@ export const useForumStore = defineStore('forum', {
         direction: satoshis >= 0 ? 'up' : 'down',
         voteWeightWei: BigInt(Math.abs(satoshis)),
         parentDigest,
+        onPreparationProgress,
       })
       this.fetchMessage({ payloadDigest })
     },

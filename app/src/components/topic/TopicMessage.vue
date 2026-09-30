@@ -60,6 +60,7 @@ import { useContactStore } from 'src/stores/contacts'
 import { ForumMessage } from '@frank/cashweb/types/forum'
 import { useTopicStore } from 'src/stores/topics'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
+import { errorNotify } from 'src/utils/notifications'
 
 export default defineComponent({
   setup(props) {
@@ -117,16 +118,22 @@ export default defineComponent({
             payloadDigest: this.message?.payloadDigest,
             satoshis: this.voteAmount,
           })
-          const wallet = await useActiveWallet()
-          topicStore.addOffering({
-            wallet,
-            payloadDigest: this.message?.payloadDigest,
-            satoshis:
-              this.voteAmount *
-              (topicStore.topics[topic]?.offering ?? 1_000_000),
-            topic,
-          })
+          // The votes being sent are consumed either way: a failed burn is reported, never
+          // silently kept and re-sent on top of the next click (ticket #273).
+          const satoshis = this.voteAmount
           this.voteAmount = 0
+          try {
+            const wallet = await useActiveWallet()
+            await topicStore.addOffering({
+              wallet,
+              payloadDigest: this.message?.payloadDigest,
+              satoshis:
+                satoshis * (topicStore.topics[topic]?.offering ?? 1_000_000),
+              topic,
+            })
+          } catch (err) {
+            errorNotify(err instanceof Error ? err : new Error(String(err)))
+          }
         })()
       }, 1_000)
     },

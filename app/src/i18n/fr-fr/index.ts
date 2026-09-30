@@ -7,6 +7,13 @@ export default {
     donationMessage:
       "Merci de participer à notre vision du futur des communications. Merci de considérer contribuer en envoyant une donation en BCH à l'adresse suivante : bitcoincash:qq7vt04md0pt6fk5szhcx4cgsfuzmppy5u4hxshr4a",
   },
+  stampPreparation: {
+    checking: 'Vérification des comptes de timbre privés…',
+    funding:
+      'Préparation d’un compte de timbre privé ({completed}/{total} transactions on-chain ; jusqu’à {feeReserve} {unit} de réserve de frais chacune)…',
+    ready: 'Compte de timbre privé prêt ; envoi en cours…',
+    posting: 'Publication en cours…',
+  },
   chatLayout: {
     info: 'Infos',
     infoTitle: 'Infos',

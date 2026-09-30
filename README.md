@@ -162,13 +162,13 @@ backend/cashweb/run-local-monad.sh
 The default local config stores profiles, messages, and topics in
 `backend/cashweb/data/registry.rocksdb`, which is gitignored and survives server restarts. It
 deliberately omits `[bitcoin_rpc]`: legacy Lotus routes fail closed, while the Monad routes do not
-require a running Lotus daemon. The launcher reads `MONAD_TESTNET_HTTP_RPC_URL` from `.env`, enables
-the Monad mailbox in a one-shot anonymous pipe, and compiles through the repository's shared
-cache/slot wrapper. It releases the build slot before starting the long-lived relay and validates
-the generated configuration with the production parser first. `cashwebd-exe` reads that
-configuration from standard input, so the private RPC URL is never written to a named configuration
-file or passed in process arguments. The checked-in config remains secret-free and explicitly
-disabled when invoked directly.
+require a running Lotus daemon. The Monad mailbox (direct messages) is enabled in the checked-in config, which stays secret-free:
+the launcher reads `MONAD_TESTNET_HTTP_RPC_URL` (required) and `FRANK_NETWORK_TAG` (default `MONT`)
+from `.env`/the environment, prints the effective non-secret values, compiles through the
+repository's shared cache/slot wrapper, and validates the configuration with the production parser
+first. It releases the build slot before starting the long-lived relay, which reads the config from
+standard input. `cashwebd-exe` itself refuses to start with the mailbox enabled but no RPC URL or
+network tag; see `docs/backend-topology.md` for the full variable list and production notes.
 
 The dependency-free launcher regression can be run with
 `backend/cashweb/run-local-monad.test.sh`.

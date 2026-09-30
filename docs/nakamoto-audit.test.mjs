@@ -14,4 +14,7 @@ test('phase 0 audit cites the CBOR readme for suite 65535', () => {
   assert.match(audit, /docs\/protocol\/cbor\/README\.md/);
   assert.match(audit, /65535/);
   assert.match(audit, /production writer MUST NOT emit it/);
+  assert.doesNotMatch(audit, /encryption-suite ticket cites that file/);
+  assert.match(audit, /encryption-suite ticket must cite that file/);
+  assert.match(audit, /must not invent a production suite id/);
 });

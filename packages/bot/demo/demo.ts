@@ -13,15 +13,7 @@
  * stack trace.
  */
 import { spawnSync } from 'child_process'
-import {
-  chmodSync,
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  statSync,
-  unlinkSync,
-  writeFileSync,
-} from 'fs'
+import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'fs'
 import { createServer } from 'net'
 import { dirname, join, resolve } from 'path'
 
@@ -36,6 +28,15 @@ import { BOT_PROFILES } from '../bot-directory'
 import { DemoBot, DemoConfig, DemoConfigError, resolveDemoConfig } from './demo-config'
 import { EnvFileError, readEnvFile } from './env-file'
 import { startFakeRpc, FakeRpc } from './fake-rpc'
+import {
+  acquireLock,
+  HeldLock,
+  LockError,
+  removeRunRecord,
+  staleAdvice,
+  takeStaleRecord,
+  writeRunRecord,
+} from './run-lock'
 import { SupervisedChild, Supervisor } from './supervisor'
 
 const BOT_DIR = resolve(__dirname, '..')
@@ -74,6 +75,8 @@ export interface StartOptions {
   botTimeoutS?: number
   /** Readiness poll interval override (tests). */
   pollMs?: number
+  /** Called instead of `process.exit` on a second signal during shutdown (tests). */
+  forceExit?: (code: number) => void
 }
 
 const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms))
@@ -82,26 +85,37 @@ const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms))
  * credential (URL paths and queries, api-key parameters, key-shaped tokens, long opaque strings). */
 export function redact(line: string, secrets: string[]): string {
   let out = secrets.reduce((acc, s) => (s ? acc.split(s).join('<redacted>') : acc), line)
-  out = out.replace(/(https?:\/\/[^/\s"'?#]+)[/?#][^\s"']*/gi, '$1/<redacted>')
-  out = out.replace(/\b((?:api[_-]?)?key|token|secret|password)=[^&\s"']+/gi, '$1=<redacted>')
+  // Credentials embedded in a URL (any scheme), then URL paths and queries (http/https/ws/wss).
+  out = out.replace(/\b([a-z][a-z0-9+.-]*:\/\/)[^/\s@"']+@/gi, '$1<redacted>@')
+  out = out.replace(/\b((?:https?|wss?):\/\/[^/\s"'?#]+)[/?#][^\s"']*/gi, '$1/<redacted>')
+  // JSON fields: "apiKey": "...", "api_key":"...", "password": "..."
+  out = out.replace(
+    /("(?:api[_-]?key|token|secret|password|passwd|authorization|private[_-]?key)"\s*:\s*")[^"]*"/gi,
+    '$1<redacted>"',
+  )
+  // NAME_KEY=value style assignments whose name merely ends in a secret-ish suffix
+  out = out.replace(
+    /\b([A-Za-z0-9_]*(?:_KEY|_TOKEN|_SECRET|_PASSWORD|_PASSWD))=[^\s"']+/gi,
+    '$1=<redacted>',
+  )
+  out = out.replace(
+    /\b((?:api[_-]?)?key|token|secret|password|passwd)=[^&\s"']+/gi,
+    '$1=<redacted>',
+  )
+  // `password: hunter2`, `api key: abc`
+  out = out.replace(/\b(password|passwd|secret|token|api[_ -]?key)\s*:\s*\S+/gi, '$1: <redacted>')
+  // Authorization schemes, however short the token
+  out = out.replace(/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+/g, '$1 <redacted>')
   out = out.replace(/\b(?:sk|key|tok|pk)[-_][A-Za-z0-9_-]{12,}/g, '<redacted>')
   out = out.replace(/\b[A-Za-z0-9+/_-]{40,}\b/g, '<redacted>')
+  // A recovery phrase: a run of exactly 12/15/18/21/24 lowercase words
+  out = out.replace(/(?:\b[a-z]{3,8}\b ?){12,}/g, run => {
+    const words = run.trim().split(/\s+/).length
+    return [12, 15, 18, 21, 24].includes(words)
+      ? '<redacted>' + (run.endsWith(' ') ? ' ' : '')
+      : run
+  })
   return out
-}
-
-const STALE_MARKERS = /run-local-monad|livecheck|cashwebd|frank/
-
-function isAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch {
-    return false
-  }
-}
-
-function commandOf(pid: number): string {
-  return spawnSync('ps', ['-o', 'command=', '-p', String(pid)], { encoding: 'utf8' }).stdout ?? ''
 }
 
 /** The state dir is private to this user: created (or pre-existing) it must be ours and not
@@ -111,65 +125,22 @@ export function prepareStateDir(dir: string): void {
   chmodSync(dir, 0o700)
 }
 
-const pidFilePath = (stateDir: string) => join(stateDir, 'demo.pid')
-
-/** A previous launcher that was killed hard (SIGKILL, power loss) cannot clean up. Its pid file
- * names its children: refuse if that launcher is still running, otherwise kill the leftover
- * process groups (only those whose command still looks like ours, since pids get reused). Returns
- * a message per action; throws when another demo is running on this state dir. */
-export function cleanupStaleRun(stateDir: string): string[] {
-  const path = pidFilePath(stateDir)
-  if (!existsSync(path)) return []
-  const notes: string[] = []
-  try {
-    const rec = JSON.parse(readFileSync(path, 'utf8')) as {
-      launcher?: number
-      children?: Array<{ name: string; pid: number }>
-    }
-    if (rec.launcher && rec.launcher !== process.pid && isAlive(rec.launcher)) {
-      throw new DemoConfigError([
-        `another demo is already running on ${stateDir} (launcher pid ${rec.launcher}); stop it first (Ctrl-C)`,
-      ])
-    }
-    for (const c of rec.children ?? []) {
-      if (
-        Number.isInteger(c.pid) &&
-        c.pid > 1 &&
-        isAlive(c.pid) &&
-        STALE_MARKERS.test(commandOf(c.pid))
-      ) {
-        try {
-          process.kill(-c.pid, 'SIGKILL')
-        } catch {
-          try {
-            process.kill(c.pid, 'SIGKILL')
-          } catch {
-            /* gone */
-          }
-        }
-        notes.push(
-          `stopped a leftover ${c.name} (pid ${c.pid}) from a previous run that was killed`,
-        )
-      }
-    }
-  } catch (err) {
-    if (err instanceof DemoConfigError) throw err
-    /* unreadable pid file: ignore it */
-  }
-  try {
-    unlinkSync(path)
-  } catch {
-    /* already gone */
-  }
-  return notes
-}
-
 async function portIsFree(port: number): Promise<boolean> {
   return new Promise(resolvePort => {
     const server = createServer()
     server.once('error', () => resolvePort(false))
     server.listen(port, '127.0.0.1', () => server.close(() => resolvePort(true)))
   })
+}
+
+/** The `address` field of a wallet JSON file, lower-cased (never reads the key into anything). */
+export function walletAddress(path: string): string | undefined {
+  try {
+    const address = (JSON.parse(readFileSync(path, 'utf8')) as { address?: unknown }).address
+    return typeof address === 'string' && address ? address.toLowerCase() : undefined
+  } catch {
+    return undefined
+  }
 }
 
 /** One message per unmet prerequisite; empty when the demo can start. */
@@ -200,6 +171,24 @@ export async function checkPrerequisites(config: DemoConfig): Promise<string[]> 
       problems.push(
         `E2E_DEMO_MAIN_WALLET_JSON (${config.mainWalletJson}) is readable by other users; run: chmod 600 ${config.mainWalletJson}`,
       )
+    }
+  }
+  if (!config.fakeChain) {
+    const faucet = config.bots.find(b => b.name === 'faucet')
+    const faucetPath = faucet?.env.E2E_DEMO_MAIN_WALLET_JSON
+    if (faucetPath && existsSync(config.mainWalletJson) && existsSync(faucetPath)) {
+      // Paths can differ (a copy, a symlink) while the wallet is the same: compare ADDRESSES.
+      const main = walletAddress(config.mainWalletJson)
+      const other = walletAddress(faucetPath)
+      if (!main || !other) {
+        problems.push(
+          'the stamp wallet and the faucet wallet files must each be JSON with an "address" field',
+        )
+      } else if (main === other) {
+        problems.push(
+          `the faucet wallet (${faucetPath}) is the same wallet as the stamp wallet (${config.mainWalletJson}); the faucet needs its own funded testnet wallet`,
+        )
+      }
     }
   }
   if (!(await portIsFree(config.relayPort))) {
@@ -270,16 +259,18 @@ export async function startDemo(
     }
   })
 
+  let shuttingDown = false
+  let lock: HeldLock | undefined
   const stop = (): Promise<void> =>
     (stopped ??= (async () => {
-      removeGuards()
+      shuttingDown = true
+      // Guards stay installed until everything is dead, so a second signal during the grace
+      // period is handled (see onSignal) instead of falling to the default action.
       await supervisor.stopAll()
       await fakeRpc?.close()
-      try {
-        unlinkSync(pidFilePath(config.stateDir))
-      } catch {
-        /* never written or already gone */
-      }
+      if (lock) removeRunRecord(config.stateDir)
+      lock?.release()
+      removeGuards()
       resolveDone(exitCode ?? 0)
     })())
   function requestStop(code: number): void {
@@ -289,6 +280,18 @@ export async function startDemo(
 
   const signalCodes: Record<string, number> = { SIGINT: 130, SIGTERM: 143, SIGHUP: 129 }
   const onSignal = (signal: NodeJS.Signals) => {
+    if (shuttingDown) {
+      // Second signal while stopping: no more grace. Kill the process groups THIS launcher
+      // spawned (held in memory, never read from a file), release the lock and leave now.
+      print(`\n[demo] received ${signal} again: killing all children now`)
+      supervisor.killAllNow()
+      lock?.release()
+      removeRunRecord(config.stateDir)
+      ;(options.forceExit ?? ((code: number) => process.exit(code)))(
+        exitCode ?? signalCodes[signal],
+      )
+      return
+    }
     print(`\n[demo] received ${signal}, stopping ...`)
     requestStop(started ? 0 : signalCodes[signal])
   }
@@ -296,7 +299,10 @@ export async function startDemo(
     print(`[demo] unexpected error: ${err instanceof Error ? err.message : String(err)}`)
     requestStop(1)
   }
-  const onExit = () => supervisor.killAllNow() // last resort, synchronous
+  const onExit = () => {
+    supervisor.killAllNow() // last resort, synchronous
+    lock?.release()
+  }
   const signals = Object.keys(signalCodes) as NodeJS.Signals[]
   for (const sig of signals) process.on(sig, onSignal)
   process.on('uncaughtException', onFatal)
@@ -311,19 +317,28 @@ export async function startDemo(
   const abortIfStopping = () => {
     if (supervisor.isStopping()) throw new DemoAborted(exitCode ?? 1)
   }
-  const writePidFile = () =>
-    writeFileSync(
-      pidFilePath(config.stateDir),
-      JSON.stringify({ launcher: process.pid, children: supervisor.listPids() }),
-      { mode: 0o600 },
-    )
+  const writePidFile = () => writeRunRecord(config.stateDir, supervisor.listPids())
 
   const logDir = join(config.stateDir, 'logs')
   try {
     prepareStateDir(config.stateDir)
-    for (const note of cleanupStaleRun(config.stateDir)) print(`[demo] ${note}`)
+    // One launcher per state dir. A leftover run record is NEVER acted on (no process is killed
+    // from a file): it is only reported, with commands for the operator to inspect it.
+    try {
+      lock = acquireLock(config.stateDir)
+    } catch (err) {
+      if (err instanceof LockError) throw new DemoConfigError([err.message])
+      throw err
+    }
+    const stale = takeStaleRecord(config.stateDir)
+    const staleLines = stale ? staleAdvice(stale) : []
+    if (stale) for (const line of staleLines) print(`[demo] ${line}`)
     const problems = await checkPrerequisites(config)
-    if (problems.length > 0) throw new DemoConfigError(problems)
+    if (problems.length > 0) {
+      throw new DemoConfigError(
+        problems.some(p => p.includes('is in use')) ? [...problems, ...staleLines] : problems,
+      )
+    }
     prepareStateDir(logDir)
 
     if (config.fakeChain) {

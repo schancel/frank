@@ -1,4 +1,4 @@
-import { ChildProcess, spawn } from 'child_process'
+import { ChildProcess, execFileSync, spawn } from 'child_process'
 import {
   chmodSync,
   existsSync,
@@ -7,6 +7,7 @@ import {
   readFileSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from 'fs'
 import { createServer } from 'net'
@@ -15,12 +16,13 @@ import { join } from 'path'
 
 import { DemoBot, DemoConfig, DemoConfigError, resolveDemoConfig } from './demo-config'
 import {
-  cleanupStaleRun,
   DemoAborted,
   DemoHandle,
   prepareStateDir,
   redact,
   startDemo,
+  walletAddress,
+  checkPrerequisites,
 } from './demo'
 
 const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms))
@@ -87,7 +89,7 @@ describe('demo lifecycle', () => {
   })
 
   /** A stand-in cashwebd-exe. `hang`: never serves; `http`: serves 200 on its configured host. */
-  function relayStub(kind: 'hang' | 'http' | 'leak'): string {
+  function relayStub(kind: 'hang' | 'http' | 'leak' | 'stubborn'): string {
     const path = join(dir, `relay-${kind}.js`)
     writeFileSync(
       path,
@@ -104,6 +106,7 @@ process.stdin.on('end', () => {
   }
   if (args[0] === '--check-config') process.exit(0)
   fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid))
+  if (${kind === 'stubborn'}) process.on('SIGTERM', () => {})
   if (${kind === 'http'}) {
     const [host, port] = /host = "([^"]+)"/.exec(input)[1].split(':')
     require('http').createServer((q, r) => r.end('[]')).listen(Number(port), host)
@@ -161,6 +164,48 @@ process.stdin.on('end', () => {
       expect(redact('bearer sk-abcdefghijklmnop1234 ok', [])).toBe('bearer <redacted> ok')
       expect(redact(`blob ${'A'.repeat(48)} end`, [])).toBe('blob <redacted> end')
       expect(redact('http://127.0.0.1:8098 is up', [])).toBe('http://127.0.0.1:8098 is up')
+    })
+
+    it.each([
+      ['https://user:pass@rpc.example.invalid', 'https://<redacted>@rpc.example.invalid'],
+      [
+        'dial wss://rpc.example.invalid/ws/CREDPATH failed',
+        'dial wss://rpc.example.invalid/<redacted> failed',
+      ],
+      ['wss://user:pw@host:8546', 'wss://<redacted>@host:8546'],
+      ['{"apiKey":"abc123","x":1}', '{"apiKey":"<redacted>","x":1}'],
+      ['{"api_key": "abc123"}', '{"api_key": "<redacted>"}'],
+      ['{"password": "hunter2"}', '{"password": "<redacted>"}'],
+      ['ALCHEMY_API_KEY=abc123 next', 'ALCHEMY_API_KEY=<redacted> next'],
+      ['MY_SERVICE_TOKEN=xyz', 'MY_SERVICE_TOKEN=<redacted>'],
+      ['DB_PASSWORD=p@ss', 'DB_PASSWORD=<redacted>'],
+      ['CLIENT_SECRET=s3', 'CLIENT_SECRET=<redacted>'],
+      ['Authorization: Bearer abc.def', 'Authorization: Bearer <redacted>'],
+      ['Basic dXNlcjpwYXNz', 'Basic <redacted>'],
+      ['password: hunter2', 'password: <redacted>'],
+      ['api key: abc', 'api key: <redacted>'],
+      [
+        'abandon ability able about above absent absorb abstract absurd abuse access accident',
+        '<redacted>',
+      ],
+      [
+        'phrase: abandon ability able about above absent absorb abstract absurd abuse access accident acid across act action actor actress actual adapt add',
+        'phrase: <redacted>',
+      ],
+    ])('redacts %j', (input, expected) => {
+      expect(redact(input, [])).toBe(expected)
+    })
+
+    it('keeps useful diagnostics', () => {
+      for (const keep of [
+        'connect ECONNREFUSED 127.0.0.1:8545',
+        'Error: listen EADDRINUSE: address already in use 127.0.0.1:8098',
+        'relay is up at http://127.0.0.1:8098',
+        'the relay exited during startup with code 1',
+        'eleven words only here so no phrase at all right now ok',
+      ]) {
+        expect(redact(keep, [])).toBe(keep)
+      }
     })
 
     it('a startup failure never echoes the RPC URL credential or key-shaped strings', async () => {
@@ -242,6 +287,7 @@ process.stdin.on('end', () => {
       await waitFor(() => !alive(pid), 5000)
       expect(await portFree(c.fakeRpcPort)).toBe(true)
       expect(existsSync(join(c.stateDir, 'demo.pid'))).toBe(false)
+      expect(existsSync(join(c.stateDir, 'demo.lock'))).toBe(false)
     }, 30000)
 
     it('a signal while bots are still starting also stops everything', async () => {
@@ -304,7 +350,11 @@ process.stdin.on('end', () => {
   })
 
   describe('the real CLI (separate process)', () => {
-    async function runCli(signal: NodeJS.Signals, expectedCode: number): Promise<void> {
+    async function runCli(
+      signal: NodeJS.Signals,
+      expectedCode: number,
+      opts2: { stubborn?: boolean; twice?: boolean } = {},
+    ): Promise<void> {
       const relayPort = await freePort()
       const rpcPort = await freePort()
       const envFile = join(dir, 'dummy.env')
@@ -316,7 +366,7 @@ process.stdin.on('end', () => {
           env: {
             PATH: process.env.PATH,
             HOME: dir,
-            CASHWEBD_BIN: relayStub('hang'),
+            CASHWEBD_BIN: relayStub(opts2.stubborn ? 'stubborn' : 'hang'),
             FRANK_DEMO_ENV_FILE: envFile,
             FRANK_DEMO_STATE_DIR: join(dir, 'cli-state'),
             FRANK_DEMO_RELAY_PORT: String(relayPort),
@@ -329,8 +379,15 @@ process.stdin.on('end', () => {
       const exit = new Promise<number | null>(resolve => cli.on('close', code => resolve(code)))
       await waitFor(() => existsSync(pidFile), 30000) // the relay stub is up: still "starting the relay"
       const relayPid = Number(readFileSync(pidFile, 'utf8'))
+      const t0 = Date.now()
       cli.kill(signal)
+      if (opts2.twice) {
+        await sleep(1500) // the relay ignores SIGTERM: the launcher is now in its grace period
+        expect(alive(relayPid)).toBe(true)
+        cli.kill(signal)
+      }
       expect(await exit).toBe(expectedCode)
+      if (opts2.twice) expect(Date.now() - t0).toBeLessThan(7000) // well inside the 8 s grace
       await waitFor(() => !alive(relayPid), 5000)
       expect(await portFree(rpcPort)).toBe(true)
       expect(await portFree(relayPort)).toBe(true)
@@ -338,6 +395,9 @@ process.stdin.on('end', () => {
 
     it('Ctrl-C (SIGINT) during "starting the relay" leaves no relay process or port', async () => {
       await runCli('SIGINT', 130)
+    }, 60000)
+    it('a second Ctrl-C during the grace period kills a child that ignores SIGTERM, at once', async () => {
+      await runCli('SIGINT', 130, { stubborn: true, twice: true })
     }, 60000)
     it('SIGTERM during startup leaves nothing behind', async () => {
       await runCli('SIGTERM', 143)
@@ -347,60 +407,153 @@ process.stdin.on('end', () => {
     }, 60000)
   })
 
-  describe('leftovers of a launcher that was killed hard', () => {
-    function orphan(name: string, body: string): ChildProcess {
-      const script = join(dir, name)
+  describe('a leftover run record is never acted on', () => {
+    function bystander(name: string, body: string): ChildProcess {
+      // Deliberately looks like our own tree: "frank" and "livecheck" in the command line.
+      const dirFrank = join(dir, 'repos', 'frank')
+      mkdirSync(dirFrank, { recursive: true })
+      const script = join(dirFrank, name)
       writeFileSync(script, body)
       const child = spawn('bash', [script], { detached: true, stdio: 'ignore' })
       spawned.push(child)
       return child
     }
-    const stateDir = () => {
-      const d = join(dir, 'state')
-      mkdirSync(d, { recursive: true, mode: 0o700 })
-      return d
-    }
 
-    it('kills leftover process groups that still look like ours, and removes the pid file', async () => {
-      const child = orphan('bot.livecheck.sh', 'sleep 60 & wait')
+    it('never kills an unrelated process whose command line contains "frank" (group leader or not)', async () => {
+      const leader = bystander('editor.livecheck.sh', 'sleep 60 & wait')
+      await sleep(300)
+      const leaderPid = leader.pid as number
+      // a non-leader: a member of the leader's group
+      const member = Number(
+        execFileSync('pgrep', ['-P', String(leaderPid)], { encoding: 'utf8' }).split('\n')[0],
+      )
+      expect(alive(member)).toBe(true)
+      const relayPort = await freePort()
+      const busy = createServer()
+      await new Promise<void>(r => busy.listen(relayPort, '127.0.0.1', () => r()))
+      try {
+        const state = join(dir, 'state')
+        mkdirSync(state, { recursive: true, mode: 0o700 })
+        // a forged / stale record that names both, with plausible-looking details
+        writeFileSync(
+          join(state, 'demo.pid'),
+          JSON.stringify({
+            launcher: { pid: 2147483000, startTime: 'x' },
+            children: [
+              { name: 'relay', pid: leaderPid, pgid: leaderPid, startTime: 'x', argv: ['bash'] },
+              { name: 'raffle', pid: member, pgid: leaderPid, startTime: 'x', argv: ['node'] },
+            ],
+          }),
+        )
+        const c = await config({
+          CASHWEBD_BIN: relayStub('hang'),
+          FRANK_DEMO_RELAY_PORT: String(relayPort),
+        })
+        const err: Error = await startDemo(c, { ...opts, relayTimeoutS: 1 }).then(
+          () => new Error('expected failure'),
+          e => e,
+        )
+        expect(err.message).toMatch(/is in use/)
+        // advice for the operator, commands to run themselves; nothing was killed
+        expect(err.message).toContain(`ps -p ${leaderPid} -o pid,pgid,lstart,command`)
+        expect(err.message).toContain(`kill -TERM -- -${leaderPid}`)
+        expect(alive(leaderPid)).toBe(true)
+        expect(alive(member)).toBe(true)
+        expect(existsSync(join(state, 'demo.pid'))).toBe(false) // the stale record was removed
+      } finally {
+        await new Promise<void>(r => busy.close(() => r()))
+      }
+    }, 30000)
+
+    it('a planted record naming arbitrary live processes (and garbage) causes no kill and no crash', async () => {
+      const victim = bystander('victim.sh', 'sleep 60')
       await sleep(200)
-      const state = stateDir()
-      writeFileSync(
-        join(state, 'demo.pid'),
-        JSON.stringify({ launcher: 2147483000, children: [{ name: 'bot', pid: child.pid }] }),
-      )
-      const notes = cleanupStaleRun(state)
-      expect(notes.join()).toMatch(/stopped a leftover bot/)
-      await waitFor(() => !alive(child.pid as number), 5000)
-      expect(existsSync(join(state, 'demo.pid'))).toBe(false)
+      for (const content of [
+        JSON.stringify({ children: [{ name: 'x', pid: victim.pid, pgid: victim.pid }] }),
+        JSON.stringify({ children: 'nope' }),
+        'garbage',
+        JSON.stringify({ children: [{ name: 1, pid: 'a', pgid: {}, argv: 5 }] }),
+      ]) {
+        const state = join(dir, 'state')
+        mkdirSync(state, { recursive: true, mode: 0o700 })
+        writeFileSync(join(state, 'demo.pid'), content)
+        const c = await config({ CASHWEBD_BIN: relayStub('hang') })
+        await expect(startDemo(c, { ...opts, relayTimeoutS: 1 })).rejects.toThrow(/did not answer/)
+        expect(alive(victim.pid as number)).toBe(true)
+      }
+    }, 60000)
+  })
+
+  describe('synchronous last-resort kill', () => {
+    it('killAllNow kills each child process GROUP (not just the pid), synchronously', async () => {
+      const { Supervisor } = await import('./supervisor')
+      const sup = new Supervisor({ PATH: process.env.PATH }, () => {})
+      const child = sup.start({
+        name: 'tree',
+        command: 'sh',
+        args: ['-c', 'sleep 60 & echo $! && wait'],
+        cwd: dir,
+        env: {},
+        logPath: join(dir, 'tree.log'),
+      })
+      let grandchild = 0
+      for (let i = 0; i < 60 && !grandchild; i++) {
+        await sleep(50)
+        grandchild = Number(child.tail()[0]) || 0
+      }
+      expect(alive(grandchild)).toBe(true)
+      sup.killAllNow()
+      await waitFor(() => !alive(grandchild), 3000)
+      await child.exited
+    })
+  })
+
+  describe('wallet address comparison', () => {
+    it('reads only the address, lower-cased', () => {
+      const w = join(dir, 'w.json')
+      writeFileSync(w, JSON.stringify({ address: '0xAbC', privateKey: '0x11' }), { mode: 0o600 })
+      expect(walletAddress(w)).toBe('0xabc')
+      writeFileSync(w, '{"privateKey":"x"}')
+      expect(walletAddress(w)).toBeUndefined()
+      expect(walletAddress(join(dir, 'missing.json'))).toBeUndefined()
     })
 
-    it('does not kill a reused pid whose command is not ours', async () => {
-      const decoy = orphan('sleeper.sh', 'sleep 60')
-      await sleep(200)
-      const state = stateDir()
-      writeFileSync(
-        join(state, 'demo.pid'),
-        JSON.stringify({ launcher: 2147483000, children: [{ name: 'x', pid: decoy.pid }] }),
-      )
-      expect(cleanupStaleRun(state)).toEqual([])
-      expect(alive(decoy.pid as number)).toBe(true)
-    })
+    it('refuses a copy or a symlink of the same wallet as the faucet wallet, allows a different one', async () => {
+      const main = join(dir, 'main.json')
+      writeFileSync(main, JSON.stringify({ address: `0x${'ab'.repeat(20)}`, privateKey: '0x1' }), {
+        mode: 0o600,
+      })
+      const copy = join(dir, 'copy.json')
+      writeFileSync(copy, readFileSync(main), { mode: 0o600 })
+      const link = join(dir, 'link.json')
+      symlinkSync(main, link)
+      const other = join(dir, 'other.json')
+      writeFileSync(other, JSON.stringify({ address: `0x${'cd'.repeat(20)}`, privateKey: '0x2' }), {
+        mode: 0o600,
+      })
 
-    it('refuses while the previous launcher is still running', () => {
-      const state = stateDir()
-      writeFileSync(
-        join(state, 'demo.pid'),
-        JSON.stringify({ launcher: process.ppid, children: [] }),
-      )
-      expect(() => cleanupStaleRun(state)).toThrow(/another demo is already running/)
-    })
-
-    it('an unreadable pid file is ignored and removed', () => {
-      const state = stateDir()
-      writeFileSync(join(state, 'demo.pid'), 'garbage')
-      expect(cleanupStaleRun(state)).toEqual([])
-      expect(existsSync(join(state, 'demo.pid'))).toBe(false)
+      const withBots = async (faucet: string) => {
+        const c = resolveDemoConfig({
+          env: {
+            FRANK_DEMO_STATE_DIR: join(dir, 'state'),
+            FRANK_DEMO_RELAY_PORT: String(await freePort()),
+            MONAD_TESTNET_HTTP_RPC_URL: 'http://127.0.0.1:1',
+            E2E_DEMO_MAIN_WALLET_JSON: main,
+            FRANK_DEMO_FAUCET_WALLET_JSON: faucet,
+            CASHWEBD_BIN: relayStub('hang'),
+          },
+          envFile: {},
+          fakeChainFlag: false,
+          home: dir,
+          cwd: dir,
+        })
+        return c
+      }
+      for (const same of [copy, link]) {
+        const problems = await checkPrerequisites(await withBots(same))
+        expect(problems.join('\n')).toMatch(/is the same wallet as the stamp wallet/)
+      }
+      expect(await checkPrerequisites(await withBots(other))).toEqual([])
     })
   })
 

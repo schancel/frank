@@ -16,6 +16,8 @@ export interface SupervisedChild {
   name: string
   proc: ChildProcess
   logPath: string
+  /** The command line it was started with (no environment). */
+  argv: string[]
   /** Last lines of combined stdout/stderr. */
   tail(): string[]
   /** Resolves with the exit code (or signal name) once the child has exited. */
@@ -55,9 +57,9 @@ export class Supervisor {
   }
 
   /** `{name, pid}` of every child started (the pid is also its process-group id). */
-  listPids(): Array<{ name: string; pid: number }> {
+  listPids(): Array<{ name: string; pid: number; argv: string[] }> {
     return this.children.flatMap(c =>
-      c.proc.pid === undefined ? [] : [{ name: c.name, pid: c.proc.pid }],
+      c.proc.pid === undefined ? [] : [{ name: c.name, pid: c.proc.pid, argv: c.argv }],
     )
   }
 
@@ -127,6 +129,7 @@ export class Supervisor {
       name: params.name,
       proc,
       logPath: params.logPath,
+      argv: [params.command, ...params.args],
       tail: () => [...tailLines],
       exited,
       hasExited: () => exitedFlag,

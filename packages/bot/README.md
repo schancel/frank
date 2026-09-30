@@ -74,10 +74,22 @@ to skip the Cargo build.
 | `FRANK_BOT_PEER_DENYLIST` | bots | empty | Comma-separated addresses no bot engages. |
 | `FRANK_BOT_MAX_REPLIES_PER_PEER` | bots | 20 | Per-peer reply budget per window. |
 
-Hard kills: Ctrl-C, SIGTERM, SIGHUP, a crash and the relay dying all stop every child process
-group. A `kill -9` of the launcher (or a power loss) cannot be handled; the launcher records its
-children in `<state dir>/demo.pid`, and the next `yarn demo` on the same state dir stops any
-leftovers of that run (and refuses to start while the previous launcher is still alive).
+Stopping: Ctrl-C, SIGTERM, SIGHUP, a crash and the relay dying all stop every child process
+group; a second Ctrl-C during the 8 s grace period kills them immediately. One launcher runs per
+state dir: `<state dir>/demo.lock` (created exclusively, holding the launcher's pid and start
+time) makes a second launcher refuse to start; a lock left by a dead launcher, or by a pid that
+has since been reused, is recognised by the start time and replaced. If a lock cannot be judged,
+the message says which file to delete.
+
+A `kill -9` of the launcher (or a power loss) cannot be handled, and the launcher NEVER kills a
+process because a file says so. It keeps `<state dir>/demo.pid` (0600; pid, process group, start
+time and command line of each child) purely as information. After a hard kill the next `yarn demo`
+deletes that record, does not stop anything, and, if a port is still busy, prints what the record
+listed with the commands to inspect it: `ps -p <pid> -o pid,pgid,lstart,command`, and, only if
+that really is a leftover of the demo, `kill -TERM -- -<pgid>`.
+
+The faucet wallet must be a different wallet from the stamp wallet: the launcher compares the
+`address` in the two wallet files (a copy or a symlink of the same file is refused).
 
 A child that dies after startup is not restarted: a banner names it and its log, and the
 summary is marked UNHEALTHY. If the relay dies the launcher stops everything and exits non-zero.

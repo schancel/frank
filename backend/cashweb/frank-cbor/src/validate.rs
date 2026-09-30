@@ -10,7 +10,7 @@ use crate::error::{CodecError, ContextError, Error, ErrorCategory, ErrorStage};
 use crate::limits::{
     is_known_type, FRAME_HEADER_BYTES, FRAME_MAGIC, FRAME_VERSION, KNOWN_TYPES, MAX_FRAME_BYTES,
     MAX_MESSAGE_ITEMS_TOTAL, TYPE_DIRECTORY_STATEMENT, TYPE_KEY_TRANSITION_STATEMENT,
-    TYPE_MESSAGE_REVISION, TYPE_RECIPIENT_PAYLOAD,
+    TYPE_MESSAGE_REVISION, TYPE_RECIPIENT_PAYLOAD, TYPE_TOPIC_POST,
 };
 use crate::model::{
     ChildFrame, FrameOnly, JournalFact, KeyTransition, OpaqueSection, ParsedFrame, PaymentMember,
@@ -18,7 +18,7 @@ use crate::model::{
     ValidationResult,
 };
 use crate::schema::{
-    check_allocated, check_root_frame_limit, check_type_limits, parse_draft, Draft,
+    check_allocated, check_root_frame_limit, check_type_limits, parse_draft, Draft, SchemaVersions,
 };
 use crate::semantic::{check_semantics, PriorView};
 
@@ -75,13 +75,19 @@ pub fn default_context() -> ValidationContext {
     ValidationContext {
         operation: Operation::Typed,
         route_byte_limit: MAX_FRAME_BYTES as u64,
-        reader_version: 1,
+        // Reader version 2 reads type 4 at schema 2 (the stamp key, README S10a.1); every other
+        // type stays at schema 1.
+        reader_version: 2,
         supported_schemas: KNOWN_TYPES
             .iter()
             .copied()
             .map(|type_id| SupportedSchema {
                 type_id,
-                schema_version: 1,
+                schema_version: if type_id == TYPE_DIRECTORY_STATEMENT {
+                    2
+                } else {
+                    1
+                },
             })
             .collect(),
         opaque_retention_allowed: false,
@@ -308,7 +314,7 @@ fn process_frame(
             ));
         }
     }
-    if matches!(mode, Mode::Open) && (1..=8).contains(&env.type_id) {
+    if matches!(mode, Mode::Open) && (1..=11).contains(&env.type_id) {
         return Err(fail(
             ErrorCategory::Semantic,
             ErrorStage::S84,
@@ -383,7 +389,15 @@ fn process_frame(
     }
     let draft = relocating(location, {
         check_type_limits(parsed.type_id, &parsed.payload)?;
-        let draft = parse_draft(parsed.type_id, &parsed.payload, allow_unknown)?;
+        let draft = parse_draft(
+            parsed.type_id,
+            &parsed.payload,
+            allow_unknown,
+            SchemaVersions {
+                envelope: parsed.schema_version,
+                effective: parsed.schema_version.min(highest_schema),
+            },
+        )?;
         check_allocated(&draft)?;
         Ok(draft)
     })?;
@@ -602,6 +616,8 @@ fn open_children(
             key_transitions,
             expiry,
             recovery,
+            schema_version,
+            stamp_key,
             unknown,
         } => {
             let key_transitions = match key_transitions {
@@ -644,6 +660,8 @@ fn open_children(
                 key_transitions,
                 expiry,
                 recovery,
+                schema_version,
+                stamp_key,
                 unknown,
             })
         }
@@ -654,6 +672,9 @@ fn open_children(
             suite,
             nonce,
             ciphertext,
+            ephemeral_point,
+            shared_point,
+            dleq_proof,
             unknown,
         } => Ok(TypedPayload::RecipientPayload {
             network,
@@ -662,6 +683,9 @@ fn open_children(
             suite,
             nonce,
             ciphertext,
+            ephemeral_point,
+            shared_point,
+            dleq_proof,
             unknown,
         }),
         Draft::Encrypted {
@@ -696,6 +720,47 @@ fn open_children(
             prior_authority,
             revision,
             new_key,
+            unknown,
+        }),
+        Draft::TopicPost {
+            network,
+            topic,
+            parent_hash,
+            body,
+            unknown,
+        } => Ok(TypedPayload::TopicPost {
+            network,
+            topic,
+            parent_hash,
+            body,
+            unknown,
+        }),
+        Draft::TopicPostSubmission {
+            network,
+            post_frame,
+            burn_tx,
+            unknown,
+        } => Ok(TypedPayload::TopicPostSubmission {
+            network,
+            post_frame: open_required(
+                post_frame,
+                TYPE_TOPIC_POST,
+                env_depth + 1,
+                shared,
+                &format!("{path}.1"),
+            )?,
+            burn_tx,
+            unknown,
+        }),
+        Draft::TopicVoteSubmission {
+            network,
+            target_hash,
+            burn_tx,
+            unknown,
+        } => Ok(TypedPayload::TopicVoteSubmission {
+            network,
+            target_hash,
+            burn_tx,
             unknown,
         }),
         Draft::Revision { items, unknown } => Ok(TypedPayload::MessageRevision {
@@ -737,11 +802,13 @@ fn resolve_prior_view(ctx: &ValidationContext) -> Result<Option<PriorView>, Erro
                         subject,
                         revision,
                         recovery,
+                        schema_version,
                         ..
                     }) => Ok(Some(PriorView {
                         network: network.clone(),
                         subject: subject.clone(),
                         revision: *revision,
+                        schema_version: *schema_version,
                         recovery: recovery.clone().unwrap_or_default(),
                     })),
                     _ => Err(Error::Context(ContextError(

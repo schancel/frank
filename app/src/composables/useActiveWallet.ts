@@ -16,6 +16,7 @@
  */
 import { activeChain, WalletHandle } from '@frank/wallet/chain'
 import { useWalletStore } from 'src/stores/wallet'
+import { walletNotReadyError } from './wallet-not-ready'
 
 let cached:
   | { seedPhrase: string; walletPromise: Promise<WalletHandle> }
@@ -29,7 +30,7 @@ export function useActiveWallet(): Promise<WalletHandle> {
   const walletStore = useWalletStore()
   const seedPhrase = walletStore.seedPhrase
   if (!seedPhrase) {
-    throw new Error(
+    throw walletNotReadyError(
       'useActiveWallet: wallet not initialized yet (no seed phrase set)',
     )
   }

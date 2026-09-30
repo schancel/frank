@@ -387,6 +387,7 @@ dependencies = [
  "cashweb-http-utils",
  "cashweb-payload",
  "cashweb-pop-token",
+ "frank-cbor",
  "futures",
  "hex",
  "hex-literal",
@@ -623,6 +624,7 @@ name = "frank-cbor"
 version = "0.1.0"
 dependencies = [
  "hex",
+ "secp256k1-abc",
  "serde",
  "serde_json",
  "sha2",

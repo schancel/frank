@@ -105,6 +105,10 @@ export interface DirectoryStatement<F> {
   keyTransitions?: KeyTransition<F>[]
   expiry?: Timestamp
   recoveryAuthorities?: AccountRef[]
+  /** The frame's envelope `schema_version`, kept for the S10a.2 same-subject schema order. */
+  schemaVersion: number
+  /** Field 8, the stamp key `P'` (S10a.1). Required in schema 2, undefined in schema 1. */
+  stampKey?: AccountRef
   unknownFields: UnknownFields
 }
 
@@ -116,6 +120,12 @@ export interface RecipientEncryptedPayload {
   suite: number
   nonce: Uint8Array
   ciphertext: Uint8Array
+  /** Field 6, `E = e*G`: a 33-byte compressed point (T3a, T3b encoding rules). */
+  ephemeralPoint: Uint8Array
+  /** Field 7, `X = e*P'`: a 33-byte compressed point (T3a). */
+  sharedPoint: Uint8Array
+  /** Field 8, the DLEQ proof `c || s` (T3b). Verified only at stage 10. */
+  dleqProof: Uint8Array
   unknownFields: UnknownFields
 }
 
@@ -136,6 +146,38 @@ export interface KeyTransitionStatement {
   priorAuthority: AccountRef
   revision: bigint
   newKey: AccountRef
+  unknownFields: UnknownFields
+}
+
+export interface TopicPost {
+  type: 9
+  network: string
+  /** Exact UTF-8, never normalized (S12). */
+  topic: string
+  /** T1 hash of the parent type-9 frame; absent for a top-level post. */
+  parentHash?: Uint8Array
+  /** Opaque in version 1. */
+  body: Uint8Array
+  unknownFields: UnknownFields
+}
+
+export interface TopicPostSubmission<F> {
+  type: 10
+  network: string
+  /** The type-9 topic-post frame. */
+  postFrame: F
+  /** Raw signed chain transaction that burns for the post (T7, T8). */
+  burnTx: Uint8Array
+  unknownFields: UnknownFields
+}
+
+export interface TopicVoteSubmission {
+  type: 11
+  network: string
+  /** T1 hash of the target type-9 frame. */
+  targetHash: Uint8Array
+  /** Raw signed chain transaction that burns for the vote (T7, T8). */
+  burnTx: Uint8Array
   unknownFields: UnknownFields
 }
 
@@ -165,6 +207,9 @@ export type TypedPayload<F, C> =
   | RecipientEncryptedPayload
   | EncryptedMessageContent<F>
   | KeyTransitionStatement
+  | TopicPost
+  | TopicPostSubmission<F>
+  | TopicVoteSubmission
   | MessageContentRevision<C>
   | ContainerMessageItem<C>
   | TextMessageItem

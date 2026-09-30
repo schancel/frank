@@ -492,7 +492,8 @@ export const useChatStore = defineStore('chats', {
       const displayAddress = toChainDisplayAddress(address)
       const chat = this.chats[displayAddress]
       if (!chat) {
-        console.error('Trying to readAll messages from non-existant contact')
+        // Opening a chat with nobody yet (no message either way) is normal, not an error.
+        console.debug('readAll: no chat yet for', displayAddress)
         return
       }
       const values = chat.messages

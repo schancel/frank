@@ -68,7 +68,7 @@
  * State persistence (direct user feedback, 2026-09-28 -- see `qwen-bot-state.ts`'s own header):
  *   QWEN_BOT_STATE_DIR          -- where the `level` DB of polling cursors, greeted-addresses/
  *                                  processed-message idempotency sets, and per-user Qwen
- *                                  conversation history is kept (default /tmp/qwen-bot-state).
+ *                                  conversation history is kept (default ~/.frank-bots/qwen, or $XDG_STATE_HOME/frank-bots/qwen).
  *                                  Survives restarts -- delete this directory to start clean.
  */
 import { writeFileSync } from 'fs'
@@ -89,8 +89,13 @@ import {
   tryDecryptEnvelope,
 } from '@frank/cashweb/relay/monad-message-envelope'
 import { fetchMonadMessagesSince } from '@frank/cashweb/relay/monad-message-feed'
-import { deserializeMessageItems } from '@frank/wallet/chain/monad-chain'
-import { QwenClient } from './qwen-client'
+import { botStateDir } from './bot-state-dir'
+import {
+  createQwenReplyGenerator,
+  qwenBotConfigFromEnv,
+} from './qwen-reply'
+import { botLoopGuardFromEnv } from './bot-loop-guard'
+import { extractPromptText } from './qwen-prompt'
 import {
   loadOrCreateIdentity,
   registerAndLog,
@@ -98,35 +103,11 @@ import {
   sendDirectMessageText,
   setUpFundedStampClient,
 } from './qwen-bot-common'
+import { botProfileFields } from './bot-directory'
 import { QwenBotStateStore } from './qwen-bot-state'
 
 function sleep(ms: number): Promise<void> {
   return new Promise(r => setTimeout(r, ms))
-}
-
-/** Extracts plain text from a decrypted envelope's plaintext, whichever wire shape it's in.
- * Found tonight (autonomous overnight session, 2026-09-27), the hard way: the *real* Frank UI's
- * `MonadChain.directMessages` (`../chain/monad-chain.ts`, ticket #42) always wraps a message's
- * plaintext as `serializeMessageItems`'s JSON-array-of-`MessageItem` shape -- this bot originally
- * sent/expected a bare plaintext string instead (fine when bot and sender were both this same
- * ticket's own scripts, broken once a real `ActiveChain` wallet is on the other end:
- * `deserializeMessageItems` on a bare string throws `SyntaxError`, confirmed live). Tries the real
- * UI's shape first, falls back to treating `plaintext` as a bare string only if that parse fails,
- * so this bot still works talking to itself (or to the old bare-string convention) either way. */
-function extractText(plaintext: string): string {
-  try {
-    const items = deserializeMessageItems(plaintext)
-    const text = items
-      .filter(
-        (item): item is { type: 'text'; text: string } => item.type === 'text',
-      )
-      .map(item => item.text)
-      .join('\n')
-    if (text) return text
-  } catch {
-    // Not a MessageItem[] JSON array -- fall through to the bare-string convention below.
-  }
-  return plaintext
 }
 
 const SYSTEM_PROMPT =
@@ -138,6 +119,8 @@ const SYSTEM_PROMPT =
     'each one costs a real transaction.'
 
 async function main() {
+  // Validated first so a missing key fails immediately, naming the variable (#314).
+  const botConfig = qwenBotConfigFromEnv(process.env)
   const relayBaseUrl = process.env.E2E_DEMO_RELAY_URL ?? 'http://127.0.0.1:8098'
   const rpcUrl = requiredEnv('MONAD_TESTNET_HTTP_RPC_URL')
   const networkTag = requiredEnv('FRANK_NETWORK_TAG')
@@ -156,9 +139,6 @@ async function main() {
       `Qwen stamp default ${stampValueWei} is below the relay minimum ${minimumStampValueWei}`,
     )
   }
-  const qwenApiKey = requiredEnv('QWEN_API_KEY')
-  const qwenEndpoint = requiredEnv('QWEN_OPENAI_COMPATIBLE_ENDPOINT')
-  const qwenModel = process.env.QWEN_MODEL ?? 'qwen3.8-max'
 
   const identityJsonPath = resolve(
     process.cwd(),
@@ -176,15 +156,11 @@ async function main() {
   // Persists polling cursors, the greeted-addresses/processed-message idempotency sets, and each
   // user's Qwen conversation history across restarts -- see qwen-bot-state.ts's own header for
   // the concrete user-visible bug this fixes.
-  const stateDirPath = resolve(
-    process.cwd(),
-    process.env.QWEN_BOT_STATE_DIR ?? '/tmp/qwen-bot-state',
-  )
+  const stateDirPath = botStateDir('qwen', 'QWEN_BOT_STATE_DIR')
   const pollIntervalMs = Number(process.env.QWEN_BOT_POLL_INTERVAL_MS ?? 4000)
-  const maxReplies = Number(process.env.QWEN_BOT_MAX_REPLIES ?? 1)
-  const idleTimeoutMs = Number(
-    process.env.QWEN_BOT_IDLE_TIMEOUT_MS ?? 10 * 60 * 1000,
-  )
+  // Keep running by default; QWEN_BOT_MAX_REPLIES=<n> is the explicit exit-after-n flag.
+  const { maxReplies, idleTimeoutMs } = botConfig
+  const replyGenerator = createQwenReplyGenerator(botConfig)
 
   // Ticket #77: auto-greet/auto-fund newly-registered Monad profiles, alongside this script's
   // pre-existing Qwen-reply behavior. `QWEN_BOT_MAX_GREETINGS` caps how many strangers' addresses
@@ -206,14 +182,21 @@ async function main() {
 
   console.log('== Ticket #9: Qwen 3.8 Max bot over Frank (Monad testnet) ==')
   console.log(`Relay:        ${relayBaseUrl}`)
-  console.log(`Qwen model:   ${qwenModel} @ ${qwenEndpoint}`)
-  console.log(`Max replies:  ${maxReplies}`)
+  console.log(`Reply mode:   ${replyGenerator.describe()}`)
+  console.log(
+    `Max replies:  ${Number.isFinite(maxReplies) ? maxReplies : 'unlimited'}`,
+  )
   console.log(
     `Max greetings: ${maxGreetings} (funding each with ${fundValueWei} wei)`,
   )
 
   const identity = loadOrCreateIdentity(identityJsonPath, 'bot')
-  await registerAndLog({ relayBaseUrl, identity, label: 'bot' })
+  await registerAndLog({
+    relayBaseUrl,
+    identity,
+    label: 'bot',
+    profile: botProfileFields('qwen'),
+  })
   writeFileSync(
     handoffJsonPath,
     JSON.stringify({ address: identity.displayAddress }, null, 2),
@@ -228,19 +211,21 @@ async function main() {
   // tonight's nonce-contention pain: a fixed pool sized to `maxReplies + maxGreetings` meant a big
   // burst of near-simultaneous funding transactions from one account before the bot ever reached
   // its polling loop.
-  const { stampClient, mainAccountSigner, provider, pool } =
+  const { stampClient, mainAccountSigner, provider, pool, closePool } =
     await setUpFundedStampClient({
       rpcUrl,
       relayBaseUrl,
       mainWalletJsonPath,
       stampValueWei,
       label: 'bot',
+      stateDir: stateDirPath,
     })
 
-  const qwen = new QwenClient({
-    apiKey: qwenApiKey,
-    endpoint: qwenEndpoint,
-    model: qwenModel,
+  // #311: never greet/reply to other bots, and cap replies per peer per window (see
+  // bot-loop-guard.ts for the env knobs).
+  const guard = botLoopGuardFromEnv({
+    selfAddress: identity.displayAddress,
+    relayBaseUrl,
   })
 
   // Not persisted, deliberately -- see qwen-bot-state.ts's header for why (cheaply re-fetchable).
@@ -286,7 +271,7 @@ async function main() {
   // no longer gated behind "has the Qwen-reply quota been reached", since it's now this script's
   // second, independent piece of demoed behavior (ticket #77).
   while (repliesSent < maxReplies || greetingsSent < maxGreetings) {
-    if (Date.now() - lastActivityAt > idleTimeoutMs) {
+    if (idleTimeoutMs > 0 && Date.now() - lastActivityAt > idleTimeoutMs) {
       console.log(
         `\nNo activity (messages or new profile registrations) within ${idleTimeoutMs}ms -- exiting.`,
       )
@@ -313,11 +298,18 @@ async function main() {
           registeredAt,
         )
 
-        if (
-          profile.address.toLowerCase() ===
-          identity.displayAddress.toLowerCase()
-        ) {
-          continue // never greet/fund ourselves
+        // Never greet/fund ourselves, a denylisted address, or another bot (#311): the greeting
+        // budget and the funding wallet are for human users. Not marked greeted -- it was never
+        // greeted -- and it does not count against `maxGreetings`.
+        const skipReason = guard.profileBlockReason(
+          profile.address,
+          profile.signedPayload,
+        )
+        if (skipReason) {
+          console.log(
+            `[bot] not greeting ${profile.address} (${skipReason})`,
+          )
+          continue
         }
         if (state.hasGreeted(profile.address)) continue // idempotency guard, persisted
         if (greetingsSent >= maxGreetings) break
@@ -353,18 +345,22 @@ async function main() {
           console.error(`[bot] failed to greet ${profile.address}:`, err)
         }
 
-        try {
-          console.log(
-            `[bot] funding ${profile.address} with ${fundValueWei} wei from the main wallet (${mainAccountSigner.address}) ...`,
-          )
-          const signedFundTx = await mainAccountSigner.buildAndSignTransfer(
-            profile.address,
-            fundValueWei,
-          )
-          const fundTxHash = await mainAccountSigner.submit(signedFundTx)
-          console.log(`[bot] funding tx sent: ${fundTxHash}`)
-        } catch (err) {
-          console.error(`[bot] failed to fund ${profile.address}:`, err)
+        // `QWEN_BOT_FUND_VALUE_WEI=0` turns funding off (e.g. when the standalone faucet, #316,
+        // does it), keeping the greeting.
+        if (fundValueWei > 0n) {
+          try {
+            console.log(
+              `[bot] funding ${profile.address} with ${fundValueWei} wei from the main wallet (${mainAccountSigner.address}) ...`,
+            )
+            const signedFundTx = await mainAccountSigner.buildAndSignTransfer(
+              profile.address,
+              fundValueWei,
+            )
+            const fundTxHash = await mainAccountSigner.submit(signedFundTx)
+            console.log(`[bot] funding tx sent: ${fundTxHash}`)
+          } catch (err) {
+            console.error(`[bot] failed to fund ${profile.address}:`, err)
+          }
         }
 
         // Counted once per newly-greeted address regardless of whether the greeting DM and/or the
@@ -430,6 +426,14 @@ async function main() {
         senderPubKeyCache.set(senderKey, senderPubKey)
       }
 
+      const blockReason = await guard.peerBlockReason(envelope.from)
+      if (blockReason) {
+        console.log(
+          `[bot] ignoring message ${payloadHashHex} from ${envelope.from} (${blockReason})`,
+        )
+        continue
+      }
+
       const rawPlaintext = tryDecryptEnvelope({
         envelope,
         myPrivateKey: identity.toBitcorePrivateKey(),
@@ -441,7 +445,19 @@ async function main() {
         )
         continue
       }
-      const plaintext = extractText(rawPlaintext)
+      const plaintext = extractPromptText(rawPlaintext)
+      if (plaintext === undefined) {
+        console.log(
+          `[bot] message ${payloadHashHex} has no text item -- not a prompt, skipping`,
+        )
+        continue
+      }
+      if (!guard.reserveReply(envelope.from)) {
+        console.log(
+          `[bot] reply budget for ${envelope.from} exhausted this window -- skipping message ${payloadHashHex}`,
+        )
+        continue
+      }
       console.log(`[bot] decrypted: "${plaintext}"`)
 
       const history = state.getConversation(envelope.from) ?? [
@@ -449,10 +465,18 @@ async function main() {
       ]
       history.push({ role: 'user', content: plaintext })
 
-      console.log('[bot] asking Qwen 3.8 Max ...')
-      const completion = await qwen.chat(history)
-      console.log(`[bot] Qwen reasoning: ${completion.reasoning.slice(0, 400)}`)
-      console.log(`[bot] Qwen reply: "${completion.content}"`)
+      console.log(
+        replyGenerator.mode === 'stub'
+          ? '[bot] STUB mode: generating a canned reply (no model call) ...'
+          : '[bot] asking Qwen 3.8 Max ...',
+      )
+      const completion = await replyGenerator.reply(history)
+      console.log(
+        `[bot] ${replyGenerator.mode === 'stub' ? 'STUB' : 'Qwen'} reasoning: ${completion.reasoning.slice(0, 400)}`,
+      )
+      console.log(
+        `[bot] ${replyGenerator.mode === 'stub' ? 'STUB' : 'Qwen'} reply: "${completion.content}"`,
+      )
 
       history.push({ role: 'assistant', content: completion.content })
       state.setConversation(envelope.from, history)
@@ -499,8 +523,9 @@ async function main() {
   }
 
   await state.Close()
+  await closePool()
   console.log(
-    `\nDone. Sent ${repliesSent} real Qwen-generated repl${
+    `\nDone. Sent ${repliesSent} ${replyGenerator.mode === 'stub' ? 'STUB (canned)' : 'real Qwen-generated'} repl${
       repliesSent === 1 ? 'y' : 'ies'
     } and greeted+funded ${greetingsSent} new profile registration${
       greetingsSent === 1 ? '' : 's'
@@ -509,6 +534,10 @@ async function main() {
 }
 
 main().catch(err => {
-  console.error('\nQWEN BOT FAILED:', err)
+  // Message only (no stack) for the operator-facing config errors; set QWEN_BOT_DEBUG=1 for the stack.
+  console.error(
+    '\nQWEN BOT FAILED:',
+    process.env.QWEN_BOT_DEBUG ? err : err instanceof Error ? err.message : err,
+  )
   process.exit(1)
 })

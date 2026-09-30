@@ -213,7 +213,7 @@ describe('type-specific limits (R2-R4)', () => {
           ...statementPayload(),
           [9, new Uint8Array(pad)],
         ]),
-        2,
+        3,
         1,
       )
     const att = (pad: number) => attestationFrame(stmt(pad), [sig(acct2(1))])

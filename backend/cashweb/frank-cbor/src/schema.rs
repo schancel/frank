@@ -6,10 +6,20 @@ use crate::limits::{
     ENCRYPTION_SUITE_PROOF, MAX_CIPHERTEXT_BYTES, MAX_DIRECTORY_ATTESTATION_FRAME_BYTES,
     MAX_DIRECT_MESSAGE_FRAME_BYTES, MAX_FRAME_BYTES, MAX_JOURNAL_FACTS,
     MAX_MESSAGE_ITEMS_PER_ARRAY, MAX_OPAQUE_SECTIONS, MAX_PAYMENT_MEMBERS, MAX_RELAY_BINDINGS,
-    MAX_SIGNATURES, TYPE_CONTAINER_ITEM, TYPE_DIRECTORY_ATTESTATION, TYPE_DIRECTORY_STATEMENT,
-    TYPE_DIRECT_MESSAGE, TYPE_MAILBOX_CHECKPOINT, TYPE_MESSAGE_REVISION, TYPE_RECIPIENT_PAYLOAD,
+    MAX_SIGNATURES, MAX_TOPIC_BODY_BYTES, MAX_TOPIC_FRAME_BYTES, MAX_TOPIC_VOTE_FRAME_BYTES,
+    TYPE_CONTAINER_ITEM, TYPE_DIRECTORY_ATTESTATION, TYPE_DIRECTORY_STATEMENT, TYPE_DIRECT_MESSAGE,
+    TYPE_MAILBOX_CHECKPOINT, TYPE_MESSAGE_REVISION, TYPE_RECIPIENT_PAYLOAD, TYPE_TOPIC_POST,
+    TYPE_TOPIC_POST_SUBMISSION, TYPE_TOPIC_VOTE_SUBMISSION,
 };
 use crate::model::{AccountRef, Timestamp};
+
+/// The schema versions a type-4 parse needs: the envelope's (kept for S10a.2) and the effective
+/// one, the envelope's or the reader's highest supported when the frame is newer (V6.3).
+#[derive(Clone, Copy)]
+pub(crate) struct SchemaVersions {
+    pub envelope: u32,
+    pub effective: u32,
+}
 
 pub(crate) struct MapFields<'a> {
     entries: &'a [(u64, CborValue)],
@@ -214,6 +224,35 @@ fn account(v: Option<&CborValue>, path: &str) -> Result<AccountRef, CodecError> 
     })
 }
 
+/// A type-5 stamp point (T3b encoding rules): 33 compressed bytes on the curve. The parser
+/// rejects a prefix other than 02 or 03, an x at or above the field prime, an off-curve x, and
+/// the all-zero value (the point at infinity has no compressed encoding).
+fn point(v: Option<&CborValue>, path: &str) -> Result<Vec<u8>, CodecError> {
+    let bytes = bstr(v, path, 33, 33)?;
+    if !matches!(bytes[0], 0x02 | 0x03) || secp256k1_abc::PublicKey::from_slice(&bytes).is_err() {
+        return Err(bad(path, "not a valid compressed secp256k1 point (T3b)"));
+    }
+    Ok(bytes)
+}
+
+/// Group order `n` of secp256k1, big-endian.
+const SECP256K1_ORDER: [u8; 32] = [
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xfe,
+    0xba, 0xae, 0xdc, 0xe6, 0xaf, 0x48, 0xa0, 0x3b, 0xbf, 0xd2, 0x5e, 0x8c, 0xd0, 0x36, 0x41, 0x41,
+];
+
+/// The type-5 DLEQ proof `c || s` (T3b encoding rules): 64 bytes, both scalars in `1..n-1`.
+fn proof(v: Option<&CborValue>, path: &str) -> Result<Vec<u8>, CodecError> {
+    let bytes = bstr(v, path, 64, 64)?;
+    for half in bytes.chunks(32) {
+        // Equal-length big-endian byte strings compare like the integers they encode.
+        if half.iter().all(|b| *b == 0) || half >= SECP256K1_ORDER.as_slice() {
+            return Err(bad(path, "proof scalar outside 1..n-1 (T3b)"));
+        }
+    }
+    Ok(bytes)
+}
+
 fn timestamp(v: Option<&CborValue>, path: &str) -> Result<Timestamp, CodecError> {
     let map = fields(v, path, &[0, 1], &[], false, false)?;
     let seconds = match map.get(0) {
@@ -236,6 +275,12 @@ pub(crate) fn check_root_frame_limit(type_id: u32, frame_length: usize) -> bool 
     }
     if type_id == TYPE_DIRECTORY_ATTESTATION {
         return frame_length <= MAX_DIRECTORY_ATTESTATION_FRAME_BYTES;
+    }
+    if type_id == TYPE_TOPIC_POST || type_id == TYPE_TOPIC_POST_SUBMISSION {
+        return frame_length <= MAX_TOPIC_FRAME_BYTES;
+    }
+    if type_id == TYPE_TOPIC_VOTE_SUBMISSION {
+        return frame_length <= MAX_TOPIC_VOTE_FRAME_BYTES;
     }
     frame_length <= MAX_FRAME_BYTES
 }
@@ -292,6 +337,13 @@ pub(crate) fn check_type_limits(type_id: u32, payload: &CborValue) -> Result<(),
             if let Some(CborValue::Bytes(bytes)) = map_field(payload, 5) {
                 if bytes.len() > MAX_CIPHERTEXT_BYTES {
                     return Err(over("ciphertext"));
+                }
+            }
+        }
+        TYPE_TOPIC_POST => {
+            if let Some(CborValue::Bytes(bytes)) = map_field(payload, 3) {
+                if bytes.len() > MAX_TOPIC_BODY_BYTES {
+                    return Err(over("topic body"));
                 }
             }
         }
@@ -390,6 +442,8 @@ pub(crate) enum Draft {
         key_transitions: Option<Vec<TransitionDraft>>,
         expiry: Option<Timestamp>,
         recovery: Option<Vec<AccountRef>>,
+        schema_version: u32,
+        stamp_key: Option<AccountRef>,
         unknown: Vec<(u64, CborValue)>,
     },
     Recipient {
@@ -399,6 +453,9 @@ pub(crate) enum Draft {
         suite: u32,
         nonce: Vec<u8>,
         ciphertext: Vec<u8>,
+        ephemeral_point: Vec<u8>,
+        shared_point: Vec<u8>,
+        dleq_proof: Vec<u8>,
         unknown: Vec<(u64, CborValue)>,
     },
     Encrypted {
@@ -414,6 +471,25 @@ pub(crate) enum Draft {
         prior_authority: AccountRef,
         revision: u64,
         new_key: AccountRef,
+        unknown: Vec<(u64, CborValue)>,
+    },
+    TopicPost {
+        network: String,
+        topic: String,
+        parent_hash: Option<Vec<u8>>,
+        body: Vec<u8>,
+        unknown: Vec<(u64, CborValue)>,
+    },
+    TopicPostSubmission {
+        network: String,
+        post_frame: Vec<u8>,
+        burn_tx: Vec<u8>,
+        unknown: Vec<(u64, CborValue)>,
+    },
+    TopicVoteSubmission {
+        network: String,
+        target_hash: Vec<u8>,
+        burn_tx: Vec<u8>,
         unknown: Vec<(u64, CborValue)>,
     },
     Revision {
@@ -497,6 +573,7 @@ pub(crate) fn parse_draft(
     type_id: u32,
     payload: &CborValue,
     allow: bool,
+    schema: SchemaVersions,
 ) -> Result<Draft, CodecError> {
     let path = "root/payload";
     match type_id {
@@ -557,14 +634,15 @@ pub(crate) fn parse_draft(
             })
         }
         TYPE_DIRECTORY_STATEMENT => {
-            let map = fields(
-                Some(payload),
-                path,
-                &[0, 1, 2, 3, 4],
-                &[5, 6, 7],
-                true,
-                allow,
-            )?;
+            // Field 8 (the stamp key) is required in schema 2 and undefined in schema 1, where
+            // C12 makes it a schema error (S10a.1). `effective` is the exact version, or the
+            // reader's highest supported schema when a newer frame is read through V6.3.
+            let required: &[u64] = if schema.effective >= 2 {
+                &[0, 1, 2, 3, 4, 8]
+            } else {
+                &[0, 1, 2, 3, 4]
+            };
+            let map = fields(Some(payload), path, required, &[5, 6, 7], true, allow)?;
             let relays = as_list(map.get(4), &format!("{path}.4"), 1, MAX_RELAY_BINDINGS)?;
             let mut parsed_relays = Vec::with_capacity(relays.len());
             for (i, item) in relays.iter().enumerate() {
@@ -604,11 +682,24 @@ pub(crate) fn parse_draft(
                 key_transitions,
                 expiry,
                 recovery,
+                schema_version: schema.envelope,
+                stamp_key: if map.has(8) {
+                    Some(account(map.get(8), &format!("{path}.8"))?)
+                } else {
+                    None
+                },
                 unknown: map.unknown,
             })
         }
         TYPE_RECIPIENT_PAYLOAD => {
-            let map = fields(Some(payload), path, &[0, 1, 2, 3, 4, 5], &[], true, allow)?;
+            let map = fields(
+                Some(payload),
+                path,
+                &[0, 1, 2, 3, 4, 5, 6, 7, 8],
+                &[],
+                true,
+                allow,
+            )?;
             Ok(Draft::Recipient {
                 network: network_tag(map.get(0), &format!("{path}.0"))?,
                 sender: account(map.get(1), &format!("{path}.1"))?,
@@ -616,6 +707,9 @@ pub(crate) fn parse_draft(
                 suite: u32_in(map.get(3), &format!("{path}.3"), 0, 65_535)?,
                 nonce: bstr(map.get(4), &format!("{path}.4"), 1, 64)?,
                 ciphertext: bstr(map.get(5), &format!("{path}.5"), 1, MAX_CIPHERTEXT_BYTES)?,
+                ephemeral_point: point(map.get(6), &format!("{path}.6"))?,
+                shared_point: point(map.get(7), &format!("{path}.7"))?,
+                dleq_proof: proof(map.get(8), &format!("{path}.8"))?,
                 unknown: map.unknown,
             })
         }
@@ -637,6 +731,39 @@ pub(crate) fn parse_draft(
                 prior_authority: account(map.get(2), &format!("{path}.2"))?,
                 revision: u64_in(map.get(3), &format!("{path}.3"), 1, u64::MAX)?,
                 new_key: account(map.get(4), &format!("{path}.4"))?,
+                unknown: map.unknown,
+            })
+        }
+        TYPE_TOPIC_POST => {
+            let map = fields(Some(payload), path, &[0, 1, 3], &[2], true, allow)?;
+            let parent_hash = if map.has(2) {
+                Some(bstr(map.get(2), &format!("{path}.2"), 32, 32)?)
+            } else {
+                None
+            };
+            Ok(Draft::TopicPost {
+                network: network_tag(map.get(0), &format!("{path}.0"))?,
+                topic: tstr(map.get(1), &format!("{path}.1"), 1, 512)?,
+                parent_hash,
+                body: bstr(map.get(3), &format!("{path}.3"), 1, MAX_TOPIC_BODY_BYTES)?,
+                unknown: map.unknown,
+            })
+        }
+        TYPE_TOPIC_POST_SUBMISSION => {
+            let map = fields(Some(payload), path, &[0, 1, 2], &[], true, allow)?;
+            Ok(Draft::TopicPostSubmission {
+                network: network_tag(map.get(0), &format!("{path}.0"))?,
+                post_frame: framed(map.get(1), &format!("{path}.1"))?,
+                burn_tx: bstr(map.get(2), &format!("{path}.2"), 1, 16_384)?,
+                unknown: map.unknown,
+            })
+        }
+        TYPE_TOPIC_VOTE_SUBMISSION => {
+            let map = fields(Some(payload), path, &[0, 1, 2], &[], true, allow)?;
+            Ok(Draft::TopicVoteSubmission {
+                network: network_tag(map.get(0), &format!("{path}.0"))?,
+                target_hash: bstr(map.get(1), &format!("{path}.1"), 32, 32)?,
+                burn_tx: bstr(map.get(2), &format!("{path}.2"), 1, 16_384)?,
                 unknown: map.unknown,
             })
         }
@@ -753,11 +880,15 @@ pub(crate) fn check_allocated(draft: &Draft) -> Result<(), CodecError> {
             relays,
             key_transitions,
             recovery,
+            stamp_key,
             ..
         } => {
             check_key_type(subject, &format!("{path}.1"))?;
             for (i, relay) in relays.iter().enumerate() {
                 check_key_type(&relay.identity, &format!("{path}.4[{i}].2"))?;
+            }
+            if let Some(key) = stamp_key {
+                check_key_type(key, &format!("{path}.8"))?;
             }
             if let Some(transitions) = key_transitions {
                 for (i, transition) in transitions.iter().enumerate() {
@@ -805,6 +936,9 @@ pub(crate) fn check_allocated(draft: &Draft) -> Result<(), CodecError> {
             Ok(())
         }
         Draft::Encrypted { .. }
+        | Draft::TopicPost { .. }
+        | Draft::TopicPostSubmission { .. }
+        | Draft::TopicVoteSubmission { .. }
         | Draft::Revision { .. }
         | Draft::Container { .. }
         | Draft::Text { .. } => Ok(()),

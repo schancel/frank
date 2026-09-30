@@ -16,6 +16,7 @@ import { useForumStore } from 'src/stores/forum'
 import { useTopicStore } from 'src/stores/topics'
 import { useChatStore } from 'src/stores/chats'
 import { monadModeEnabled } from 'src/utils/runtime-mode'
+import { isSetupComplete } from 'src/utils/account-state'
 
 function instrumentIndexerClient({
   chronikWs,
@@ -131,9 +132,16 @@ export default boot(async ({ app }) => {
   // existing is exactly the same "is this wallet set up" signal router/index.ts's
   // `skipLegacySetupGate` already uses to let a Monad-only user reach `/chat` at all; mirrored here
   // (same env var, same default-on) so the drawer's own gate agrees with the router's.
+  // #284: a stored seed alone is NOT "set up" (the old /setup bug stored one with no name); the
+  // Monad path needs seed AND name, the same rule as the router (utils/account-state.ts).
   status.setup =
     (!!xPrivKey && !!profile.name) ||
-    (monadModeEnabled() && !!walletStore.seedPhrase)
+    (monadModeEnabled() &&
+      isSetupComplete({
+        seedPhrase: walletStore.seedPhrase,
+        name: profile.name,
+        seedConfirmedAt: walletStore.seedConfirmedAt,
+      }))
 
   const contactStore = useContactStore()
   await contactStore.restored

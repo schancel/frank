@@ -510,4 +510,16 @@ describe('stores/chats.ts (ticket #42)', () => {
     expect(chats.messages['delete-me']).toBeUndefined()
     expect(chats.chats[RECIPIENT_ADDRESS]?.messages).toHaveLength(0)
   })
+
+  describe('readAll (ticket #368)', () => {
+    it('opening a chat that has no messages yet is not an error-level console event', () => {
+      const chats = useChatStore()
+      const errorSpy = jest.spyOn(console, 'error').mockImplementation()
+      jest.spyOn(console, 'debug').mockImplementation()
+
+      chats.readAll(RECIPIENT_ADDRESS)
+
+      expect(errorSpy).not.toHaveBeenCalled()
+    })
+  })
 })

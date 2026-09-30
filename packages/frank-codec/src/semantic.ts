@@ -123,12 +123,8 @@ export function checkSemantics(
           `${P}.0`,
         )
       }
-      if (!accountsEqual(typed.destination, child.recipient)) {
-        throw semantic(
-          'destination differs from the type-5 recipient (S8)',
-          `${P}.1`,
-        )
-      }
+      // The destination is the stamp key P' and is deliberately not compared with the type-5
+      // recipient (S8): the routing identity and the payment key are independent.
       if (typed.destination.keyType !== 1) {
         throw semantic('destination account must be key type 1 (S9)', `${P}.1`)
       }
@@ -203,6 +199,16 @@ export function checkSemantics(
       }
       return
     }
+    case 10: {
+      const child = typedOf(typed.postFrame, 9)
+      if (typed.network !== child.network) {
+        throw semantic(
+          'submission network differs from the type-9 network (S11)',
+          `${P}.0`,
+        )
+      }
+      return
+    }
     case 4: {
       requireOrdered(
         typed.relays,
@@ -219,6 +225,11 @@ export function checkSemantics(
         'relay_id',
         `${P}.4`,
       )
+      // S10a.1: the stamp key is key type 1. Whether it is a curve point is not a statement
+      // check (a bad point makes every delivery to it fail at T3a.6, stage 10).
+      if (typed.stampKey && typed.stampKey.keyType !== 1) {
+        throw semantic('stamp key must be key type 1 (S10a.1)', `${P}.8`)
+      }
       if (typed.keyTransitions) {
         const stmts = typed.keyTransitions.map(t =>
           typedOf(t.statementFrame, 7),
@@ -282,6 +293,11 @@ function checkDirectoryUpdate(
     throw semantic('statement network differs from the prior network (S10)', P)
   }
   const changed = !accountsEqual(st.subject, prior.subject)
+  // S10a.2: a same-subject statement may not lower schema_version, so a stamp key, once
+  // published, cannot be dropped. A new subject starts fresh.
+  if (!changed && st.schemaVersion < prior.schemaVersion) {
+    throw semantic('a same-subject statement lowers schema_version (S10a.2)', P)
+  }
   if (!changed) {
     if (transitions)
       throw semantic('key transitions with an unchanged subject (S10)', P)

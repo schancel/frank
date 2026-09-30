@@ -30,6 +30,9 @@ describe('rust-originated proof fixtures', () => {
       'rust-fixture-direct-message',
       'rust-fixture-directory-attestation',
       'rust-fixture-checkpoint',
+      'rust-fixture-topic-post',
+      'rust-fixture-topic-post-submission',
+      'rust-fixture-topic-vote',
     ])
     for (const c of rustOrigin.cases) expect(c.source).toBe('rust')
   })

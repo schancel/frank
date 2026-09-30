@@ -1,3 +1,174 @@
+## One-command demo (`yarn demo`)
+
+Starts the whole demo stack, waits until it is ready, and stops everything on Ctrl-C:
+
+```sh
+yarn demo --fake-chain      # no keys, no funds, no network: a built-in fake Monad RPC
+yarn demo                   # against Monad testnet, using your .env (below)
+```
+
+Run either from the repo root (or packages/bot). `yarn demo` runs `node --import tsx
+packages/bot/demo/demo.ts` directly, with no second `yarn`/`tsx` process in between. Stop it with
+Ctrl-C, `kill -INT <pid>` or `kill -TERM <pid>` using the launcher pid it prints (that is the
+`node` process). Killing the top-level `yarn` process (`kill -INT <yarn pid>`: yarn exits without
+forwarding SIGINT) also stops the stack: a launcher started by yarn notices that yarn is gone
+within a second and shuts down like a closed terminal. If you script it, prefer
+`node --import tsx packages/bot/demo/demo.ts` and signal that pid.
+
+How the parent check works: when yarn started the launcher, the launcher polls its parent pid once
+a second. Nothing changes while yarn is alive, so `nohup yarn demo &` keeps working (yarn stays the
+parent). The launcher stops only when the yarn process that started it dies, and it then stops
+only its own children. If an ancestor terminal is closed, the usual SIGHUP handling applies. A
+launcher started directly with `node` does no parent polling.
+
+**State dir modes**: a state dir belongs to one mode. The launcher writes a small non-secret marker
+`<state dir>/demo-mode.json` (`{mode: "fake-chain" | "real", chainId, createdAt}`) once the
+prerequisite checks have passed (a start that fails on a missing wallet or a busy port claims
+nothing, so a first failed `yarn demo` does not poison the dir for `--fake-chain`) and refuses to start when the requested mode or chain id differs ("this state dir was created for
+the fake chain; ... use a new FRANK_DEMO_STATE_DIR, or delete <state dir>"), because bot
+identities, stamp-pool records and faucet records made against the fake chain mean nothing on a
+real network. A state dir from before the marker that holds a fake-chain wallet is refused for a
+real run too.
+
+What it does, in order: starts the fake chain (with `--fake-chain`), creates any missing bot
+identity (under one state directory, default `~/.frank-demo`), prints and applies the relay's
+curated-default contact lines, starts the local relay through `backend/cashweb/run-local-monad.sh`
+(the first run builds it with Cargo; or set `CASHWEBD_BIN` to a prebuilt `cashwebd-exe`), then the
+blackjack dealer, raffle, picture shop, Qwen (offline **stub** mode unless `QWEN_API_KEY` is set)
+and the testnet faucet with demo-friendly limits (no idle exit, 5-entrant raffle rounds, no reply
+cap). It prints every bot address, the app URL and the exact command to start the app, then waits. Logs are in
+`<state dir>/logs/`. Missing prerequisites (Node, `bash`, `cargo` or `CASHWEBD_BIN`, a busy port, an
+absent RPC URL or wallet file) each print one line, never a stack trace.
+
+**The app** (started by you, in another terminal, from the repo root) must be given the relay, the
+chain and the burn address. The launcher prints the exact command; with `--fake-chain` it is
+
+```sh
+cd app && QCLI_MONAD_TESTNET_HTTP_RPC_URL=http://127.0.0.1:8545 QCLI_MONAD_RELAY_BASE_URL=http://127.0.0.1:8098 \
+  QCLI_MONAD_STAMP_BURN_ADDRESS=0x000000000000000000000000000000000000dEaD QCLI_CASHWEB_STAMP_MIN_BURN_VALUE_WEI=1000000000000 \
+  yarn dev:browser
+```
+
+(ports follow `FRANK_DEMO_RELAY_PORT` / `FRANK_DEMO_FAKE_RPC_PORT`) and the app is at
+**http://localhost:8080**, the fixed dev-server port from `app/quasar.config.js`. The relay and the
+fake chain send `Access-Control-Allow-Origin: *` and answer preflights, so the browser reaches them
+directly. The fake chain does this with `*` only because it is a local fake bound to 127.0.0.1;
+nothing here adds CORS to a real RPC (on a real network your RPC provider must allow the origin).
+
+**Burn address**: the relay's forum routes (topic posts and votes) return HTTP 500 without
+`MONAD_STAMP_BURN_ADDRESS`. The launcher passes one value (default the well-known
+`0x...dEaD` burn address, override with `MONAD_STAMP_BURN_ADDRESS`) to the relay, every bot and the
+app command above, so the three always agree. `run-local-monad.sh` also warns loudly at start when
+it is missing.
+
+**Faucet amount**: with `--fake-chain` the faucet sends 1 MON per new profile (the faucet's hard
+ceiling): the cheapest blackjack hand needs 0.07 MON (0.01 table minimum + 0.01 default stamp + the
+app's 0.05 MON fee reserve), and a raffle entry (0.02) and a shop picture (0.05-0.1) come on top.
+On a real network the default stays a small 0.05 MON, which is NOT enough for a hand: set
+`FAUCET_AMOUNT_WEI` (up to 1 MON) if you want players to play, and the summary warns when it is too
+low. `FAUCET_MAX_PER_DAY`, the one-funding-per-address rule and the testnet-only guards are unchanged.
+
+**Restarting**: the fake chain is saved to `<state dir>/fake-chain/ledger.json` after every
+transaction and reloaded on the next start, so balances, nonces and profiles survive a restart. The
+fake-chain faucet's records live next to it (`<state dir>/fake-chain/faucet-state`), so the chain
+and the faucet's memory can only reset together: delete `<state dir>/fake-chain` (or the whole
+state dir) for a fresh chain. A ledger that cannot be parsed is refused, not replaced.
+
+**Raffle rounds**: the demo uses 5 entrants per round (`RAFFLE_BOT_MAX_ENTRIES`; the bot's own
+default is unchanged). Set it to a smaller number for a quicker round.
+
+The launcher sets every bot's state directory explicitly, under `<state dir>/bots/<bot>/state`
+(and identities under `<state dir>/bots/<bot>/identity.json`). Bots started on their own with
+`yarn bot`, `yarn blackjack`, ... default to `~/.frank-bots/<bot>` (`$XDG_STATE_HOME/frank-bots/<bot>`
+when set) instead of `/tmp`; see "Stamp pool seed".
+
+Per-bot commands also exist: `yarn bot` (Qwen), `yarn blackjack`, `yarn raffle`, `yarn vendor`,
+`yarn faucet`.
+
+**Configuration** comes only from environment variables and a `.env` file that you provide
+(`FRANK_DEMO_ENV_FILE`, default `<repo>/.env`, gitignored, `KEY=value` lines). The launcher reads
+just the variables in the table below and passes each child only the ones it needs; the process
+environment wins over the file. The wallet file (`E2E_DEMO_MAIN_WALLET_JSON`) is read by the bots,
+never by the launcher, and RPC URLs and keys are never printed.
+
+**Smoke test**: `yarn demo:smoke` starts the stack against the fake chain in a temporary state
+directory with a dummy env file (never your real `.env`), plays a new user against each bot and
+checks that the Qwen stub, picture shop, raffle and dealer answer, the faucet funds the new
+profile, a forum topic can be posted through the relay (a real burn transaction plus the relay's
+topic route: it fails if the relay answers non-2xx) and the fake chain and the relay answer a
+cross-origin browser request (exit 0 only if all pass; logs are kept on failure). The forum check
+compares the title and message read back with what was posted. CORS on the relay comes from its own
+layer (`cashweb-registry` `http/server.rs`), which the smoke checks on the preflight and on real
+PUT and GET responses of the topics route. Use `CASHWEBD_BIN=... yarn demo:smoke`
+to skip the Cargo build.
+
+#### Variables
+
+| Variable | Applies to | Default | Meaning |
+| --- | --- | --- | --- |
+| `FRANK_DEMO_ENV_FILE` | launcher | <repo>/.env if it exists | Path of the .env file to read (KEY=value lines). The process environment wins over the file. Never committed; you provide it. |
+| `FRANK_DEMO_STATE_DIR` | launcher | ~/.frank-demo | One directory holding every bot identity, bot state, the relay database, the fake-chain wallet and the logs. Reused across runs. |
+| `FRANK_DEMO_FAKE_CHAIN` | launcher | 0 | Set to 1 (same as the --fake-chain flag) to run against a built-in fake Monad JSON-RPC: no keys, no funds, no network. |
+| `FRANK_DEMO_RELAY_PORT` | relay | 8098 | Port the local relay listens on (127.0.0.1). |
+| `FRANK_DEMO_FAKE_RPC_PORT` | chain | 8545 | Port of the fake-chain RPC (only with FRANK_DEMO_FAKE_CHAIN=1). |
+| `CASHWEBD_BIN` | relay | built with Cargo | Path of a prebuilt cashwebd-exe; skips the Cargo build in run-local-monad.sh. |
+| `CARGO` | relay build | cargo | Toolchain variables (also CARGO_HOME, CARGO_TARGET_DIR, RUSTUP_HOME, RUSTUP_TOOLCHAIN) are passed to the relay build only when set. Ignored with CASHWEBD_BIN. |
+| `CARGO_HOME` | relay build | unset | See CARGO. |
+| `CARGO_TARGET_DIR` | relay build | unset | See CARGO. Point it at a scratch directory to keep the build out of the repo tree. |
+| `RUSTUP_HOME` | relay build | unset | See CARGO. |
+| `RUSTUP_TOOLCHAIN` | relay build | unset | See CARGO. |
+| `MONAD_TESTNET_HTTP_RPC_URL` | chain | required unless fake chain | Monad TESTNET JSON-RPC URL (chain id 10143). May embed an API key. Secret: never printed. |
+| `FRANK_NETWORK_TAG` | chain | MONT | Network tag the relay and bots stamp messages with (MONT = Monad testnet). |
+| `MONAD_STAMP_BURN_ADDRESS` | relay, bots, app | 0x000000000000000000000000000000000000dEaD | Burn address of stamps and topic votes (0x + 40 hex). Passed to the relay (without it every forum post and vote fails with HTTP 500), to the bots, and printed in the app command as QCLI_MONAD_STAMP_BURN_ADDRESS: all three must agree. The default is the well-known 0x...dEaD burn address. |
+| `CASHWEB_STAMP_MIN_BURN_VALUE_WEI` | relay | 1000000000000 | Minimum wei a message stamp must pay (0.000001 MON). |
+| `FRANK_DM_DEFAULT_STAMP_VALUE_WEI` | bots | 10000000000000000 | Default stamp value bots pay per message (0.01 MON). |
+| `E2E_DEMO_MAIN_WALLET_JSON` | wallet | required unless fake chain | Not allowed with --fake-chain (a throwaway wallet is generated). Path of a JSON file {"address","privateKey"} of a funded TESTNET wallet that pays for bot stamps and payouts. Read by the bots, never by the launcher. chmod 600. Secret: never printed. |
+| `FRANK_DEMO_FAUCET_WALLET_JSON` | wallet | required on a real network unless FRANK_DEMO_NO_FAUCET=1 | Path of a SEPARATE funded testnet wallet file for the faucet (it must differ from E2E_DEMO_MAIN_WALLET_JSON: two processes sending from one wallet reuse nonces, and the faucet should not hold the stamp wallet). Not allowed with --fake-chain. Secret: never printed. |
+| `FRANK_DEMO_NO_FAUCET` | faucet | 0 | Set to 1 to run without the faucet on a real network. |
+| `QWEN_API_KEY` | qwen | unset = stub mode | Set to run the Qwen bot against a real model (needs QWEN_OPENAI_COMPATIBLE_ENDPOINT). Unset: the bot runs in offline STUB mode and its replies say so. Secret: never printed. |
+| `QWEN_OPENAI_COMPATIBLE_ENDPOINT` | qwen | required with QWEN_API_KEY | OpenAI-compatible base URL of the model provider. |
+| `QWEN_MODEL` | qwen | qwen3.8-max | Model name for live mode. |
+| `QWEN_BOT_MODE` | qwen | live if QWEN_API_KEY, else stub | Force "stub" or "live". "live" without a key is an error, never a silent stub. |
+| `RAFFLE_BOT_ENTRY_PRICE_WEI` | raffle | 20000000000000000 | Raffle entry price (0.02 MON). |
+| `RAFFLE_BOT_MAX_ENTRIES` | raffle | 5 | Entrants per round. The demo default is 5 (the bot's own default is unchanged); use a smaller number for a quick round. |
+| `BLACKJACK_BOT_MIN_WAGER_WEI` | blackjack | bot default (0.01 MON) | Table minimum. |
+| `BLACKJACK_BOT_MAX_WAGER_WEI` | blackjack | bot default (1 MON) | Table maximum. |
+| `VENDOR_BOT_CATALOG_DIR` | picture shop | bundled demo-catalog/ | Directory with manifest.json and image files the shop sells. |
+| `FAUCET_AMOUNT_WEI` | faucet | 50000000000000000 (0.05 MON); 1000000000000000000 (1 MON) with --fake-chain | MON sent to each new profile. The 0.05 MON real-network default is small on purpose and is NOT enough for a blackjack hand (0.07 MON minimum: 0.01 bet + 0.01 stamp + 0.05 fee reserve); raise it (ceiling 1 MON) if you want players to be able to play. With --fake-chain the default is 1 MON. FAUCET_MAX_PER_DAY and the per-address rule still apply. |
+| `FAUCET_MAX_PER_DAY` | faucet | 20 | New addresses funded per rolling 24 hours. |
+| `FAUCET_MIN_RESERVE_WEI` | faucet | 100000000000000000 | The faucet wallet keeps at least this balance. |
+| `FRANK_BOT_PEER_DENYLIST` | bots | empty | Comma-separated addresses no bot engages. |
+| `FRANK_BOT_MAX_REPLIES_PER_PEER` | bots | 20 | Per-peer reply budget per window. |
+
+Stopping: Ctrl-C, SIGTERM, SIGHUP, a crash and the relay dying all stop every child process
+group; a second Ctrl-C during the 8 s grace period kills them immediately. One launcher runs per
+state dir: `<state dir>/demo.lock` (created exclusively, holding the launcher's pid and start
+time) makes a second launcher refuse to start; a lock left by a dead launcher, or by a pid that
+has since been reused, is recognised by the start time and replaced. If a lock cannot be judged,
+the message says which file to delete.
+
+A `kill -9` of the launcher (or a power loss) cannot be handled, and the launcher NEVER kills a
+process because a file says so. It keeps `<state dir>/demo.pid` (0600; pid, process group, start
+time and command line of each child) purely as information. After a hard kill the next `yarn demo`
+deletes that record, does not stop anything, and, if a port is still busy, prints what the record
+listed with the commands to inspect it: `ps -p <pid> -o pid,pgid,lstart,command`, and, only if
+that really is a leftover of the demo, `kill -TERM -- -<pgid>`.
+
+The faucet wallet must be a different wallet from the stamp wallet: the launcher compares the
+`address` in the two wallet files (a copy or a symlink of the same file is refused).
+
+A child that dies after startup is not restarted: a banner names it and its log, and the
+summary is marked UNHEALTHY. If the relay dies the launcher stops everything and exits non-zero.
+
+The blackjack smoke check only proves the dealer answers a bare `deal` with its tagged error; it
+does not play a hand.
+
+The fake chain binds 127.0.0.1 only (a test asserts it), so nothing off this machine can reach it. It is a ledger, not a chain: it accepts any well-formed transaction and mines it
+instantly, so it demonstrates flows, not consensus. Never point anything of value at it.
+
+
+---
+
 > **Update (2026-09-27, autonomous overnight session):** the bot and its scripts were ported off
 > `lotus-identity.ts`/`FrankIdentity` onto `monad-identity.ts`/`MonadIdentity` -- the real Frank UI's
 > `ActiveChain`/`MonadChain` stack (tickets #41-#45) only ever resolves a contact via
@@ -228,8 +399,23 @@ Start a local relay exactly as in ticket #8's runbook
 set -a; source ../../.env; set +a   # needs QWEN_API_KEY, QWEN_OPENAI_COMPATIBLE_ENDPOINT too
 export E2E_DEMO_RELAY_URL=http://127.0.0.1:8098
 export E2E_DEMO_MAIN_WALLET_JSON=/absolute/path/to/chain-wallet.json
-export QWEN_BOT_MAX_REPLIES=2   # must be >= however many turns the sender script will send
-yarn bot
+yarn bot   # keeps running; set QWEN_BOT_MAX_REPLIES=<n> to exit after n replies
+```
+
+### Reply mode: live or stub (`QWEN_BOT_MODE`)
+
+- `QWEN_BOT_MODE=live` (default): real Qwen replies. `QWEN_API_KEY` and
+  `QWEN_OPENAI_COMPATIBLE_ENDPOINT` are required; if one is missing the bot exits at startup with a
+  message naming it. It never falls back to the stub by itself.
+- `QWEN_BOT_MODE=stub`: no API key, no network call to any model. Replies are deterministic and
+  every one starts with `[STUB -- no model, offline canned reply]`, the startup banner and the
+  logs say `STUB mode`. Use it for offline demos, smoke tests and CI.
+- `QWEN_BOT_MAX_REPLIES` (default unset = keep running; `1` = exit after one reply) and
+  `QWEN_BOT_IDLE_TIMEOUT_MS` (default: never when unlimited, 10 minutes when a reply cap is set;
+  `0` = never).
+
+```sh
+QWEN_BOT_MODE=stub yarn bot   # still needs the relay/RPC/wallet env, but no Qwen key
 ```
 
 By default the bot only replies to messages received after that process began starting. This
@@ -285,7 +471,156 @@ layer for this manually-run demo script, matching its existing standard.
 or live relay was available in that sandbox. Verified via `yarn jest`/`tsc --noEmit`/code review
 only; see the ticket's PR description for the exact commands run.
 
+## Bot loop guard (#311)
+
+Bots that answer any inbound message (vendor catalog, raffle round status, Qwen chat) would
+otherwise reply to each other forever, each reply paying a stamp. Every bot now registers a
+self-declared `bot` profile entry (`registerAndLog`, an ordinary open-ended `Entry` kind: no
+proto/backend change) and shares `bot-loop-guard.ts`:
+
+- never greet/fund, chat with, or send catalog/status to another bot: a peer is a bot if its
+  profile carries the marker or its address is in `FRANK_BOT_PEER_DENYLIST` (comma-separated;
+  for bots registered before the marker existed or third-party bots). A failed profile lookup
+  fails closed.
+- hard per-peer reply budget per sliding window: `FRANK_BOT_MAX_REPLIES_PER_PEER` (default 20,
+  `0` = never reply) per `FRANK_BOT_REPLY_WINDOW_MS` (default 1 hour). Applies to Qwen replies
+  and the vendor/raffle unsolicited replies; paid fulfilment and game moves are never dropped.
+- Qwen only treats `text` items as prompts; structured items are ignored, never quoted to the model.
+
+Limits: the marker is self-asserted; the budget is in memory (a restart resets it) and per
+address (a sybil gets the budget per address, each still paying a stamp). Blackjack only answers
+`blackjack-move` items and is unchanged apart from registering the marker.
+
+## Standalone testnet faucet (#316)
+
+`yarn faucet` (`faucet-bot.livecheck.ts`, logic in `faucet-core.ts`) funds each newly registered
+profile once with testnet MON. It needs no LLM key, no stamp pool and no identity: only
+`MONAD_TESTNET_HTTP_RPC_URL`, `FRANK_NETWORK_TAG=MONT` and `E2E_DEMO_MAIN_WALLET_JSON`
+(`{address, privateKey}` of a wallet holding testnet MON only). See the file header for every knob
+(`FAUCET_AMOUNT_WEI` default 0.05 MON, hard ceiling 1 MON; `FAUCET_MAX_PER_RUN` 10;
+`FAUCET_MAX_PER_DAY` 20 (max 1000); `FAUCET_MIN_RESERVE_WEI` 0.1 MON (minimum 0.01 MON);
+`FAUCET_POLL_INTERVAL_MS` 4000 (min 1000); `FAUCET_STATE_DIR` default `~/.frank-faucet`, warns if under a
+tmp dir). Invalid values fail startup with the variable name; nothing becomes NaN.
+
+- once per address, durable: the exact signed transaction is persisted before broadcast; any
+  record (signed/submitted/confirmed) blocks re-funding, across restarts and address casing. A
+  crash mid-broadcast replays the same bytes on restart; it never re-signs.
+- skips itself, `FRANK_BOT_PEER_DENYLIST`, self-declared bots (#311) and addresses that already
+  hold at least the amount. Stops (without consuming the profile, so it is retried) at the per-run
+  cap, the rolling 24h cap, or when the wallet would fall under the reserve.
+- testnet only: refuses to start unless `FRANK_NETWORK_TAG=MONT` and the RPC reports chain id 10143.
+- Do not also let Qwen fund: set `QWEN_BOT_FUND_VALUE_WEI=0` on the Qwen bot (it still greets).
+
+- one wallet, one faucet: use a wallet dedicated to it. Do not share it with the Qwen bot's funding
+  (`QWEN_BOT_FUND_VALUE_WEI=0`) or run a second faucet on a different state dir: concurrent senders
+  reuse nonces and one kills the other's transfer. The faucet itself will not sign a new transfer
+  while an earlier one is unsettled, and handles profiles one at a time.
+- the wallet JSON holds a private key: `chmod 600` it (the faucet warns if group/others can read it).
+- a profile that keeps failing (e.g. malformed address) is skipped and recorded after 3
+  consecutive failures while the RPC is healthy, so it cannot block everyone behind it; an RPC
+  outage never counts against a profile.
+
+Stuck transfers. If the node rejects the exact-bytes replay (`already known`, `nonce too low`) the
+faucet looks the receipt up by hash: mined settles the record, otherwise it waits and logs once.
+If a record stays stuck (further funding is paused while any transfer is unsettled):
+
+    yarn faucet --list-stuck          # signed / failed / skipped records with tx hashes
+    yarn faucet --clear <address>     # DANGEROUS: lets the address be paid again
+
+`--clear` is guarded because the record is the only thing preventing a second payment. It never
+clears `submitted`/`confirmed` records; if `MONAD_TESTNET_HTTP_RPC_URL` is set it asks the node and
+refuses any tx that is mined or in the mempool (or if the node cannot be asked). A `signed` record
+may already have been broadcast (a timeout after the node accepted the tx looks identical), so it
+additionally needs `--force --confirm-tx <txHash>` typed exactly, and prints a loud warning. A
+`failed` record with a tx hash needs the same when no node lookup is available (a `failed` set
+because the node did not know the tx may still land later). These
+admin commands run before any other env validation and need only `FAUCET_STATE_DIR`.
+
+A `submitted` transfer whose confirmation was never seen is re-checked by hash (5 min after its
+(re)broadcast, at most every 5 min): a receipt settles it; a tx the node no longer knows is marked `failed` so it
+shows in `--list-stuck`. It is never re-funded automatically.
+
+Profiles with a malformed address (not `0x` + 40 hex, e.g. `abc`, `foo.eth`) are skipped up front,
+without any RPC call, so they never stall the cursor. Skipping a profile after repeated failures ignores transient errors (timeouts, 5xx, rate limits):
+malformed-address errors count 3 times; unclassified errors need 10 failures spread over 10 minutes.
+
+Abuse limits (demo level): registration is free, so a sybil can mint addresses and collect the
+amount per address until the daily cap (loss bounded to `maxPerDay * amount`, wallet floor kept by
+the reserve). No captcha, no proof of humanity, no per-IP limit. The app's Receive page shows the
+user's address and explains the faucet when the balance is a real zero.
+
+## Bot profiles and curated defaults (#317)
+
+Every bot registers a public profile on startup (`bot-directory.ts`): name (`Blackjack Dealer`,
+`Raffle`, `Picture Shop`, `Qwen`), bio, a small generated identicon avatar (no third-party
+artwork) and the `bot` marker. Registration is idempotent: it fetches the relay's copy first and
+only PUTs when a field differs (a re-PUT would bump the registration timestamp and look like a new
+signup to the greeter/faucet), so a bot registered before this change upgrades once.
+
+To make the bots appear in a new user's Contacts, list them in the relay's curated defaults
+(`GET /metadata/monad/curated-defaults`, the mechanism the app already reads):
+
+    cd packages/bot
+    yarn -s curated-defaults          # prints [[registry.curated_defaults]] TOML, address + name only
+    # append the output to the relay config (see backend/docker/cashwebd.toml), restart the relay
+
+Addresses come from each bot's own identity file (`*_BOT_IDENTITY_JSON`, same paths the bots use),
+so they are per machine/network and nothing is hard-coded. The script is read-only: it never
+creates an identity file, and if any are missing it prints every missing path and exits 1 (start
+those bots once, or pass `--create-missing` to create them explicitly; the launcher, #312, should). The app shows the curated name immediately, then refreshes name/bio/avatar from the profile;
+a registered profile whose display name is empty, whitespace or only invisible characters is
+labelled with a short address, never "Loading...". No chat is opened automatically, and a default
+the user deleted is not added back on later launches.
+
 ## Non-goals (per the ticket)
 
 Production hardening, multi-user bot support, prompt/persona design polish, and a full
 recipient-addressing fix to the wire format (ticket #37's noted follow-up).
+
+## Stamp pool seed (#313)
+
+Every stamp payment a bot sends comes from a single-use sub-account derived from an HD seed. The
+seed used to be regenerated on each start, stranding whatever was left on those accounts. Now each
+bot keeps it in its own state directory (`QWEN_BOT_STATE_DIR`, `BLACKJACK_BOT_STATE_DIR`,
+`RAFFLE_BOT_STATE_DIR`, `VENDOR_BOT_STATE_DIR`). The default is per-user and persistent:
+`~/.frank-bots/<bot>` (`$XDG_STATE_HOME/frank-bots/<bot>` when set). It used to be
+`/tmp/<bot>-bot-state`; nothing is moved for you, so if that old directory exists and the new one
+does not, the bot prints a notice naming both paths (move it, or point the variable at it). A state
+directory under the system temp dir gets a warning at startup (a tmp cleaner would delete the seed).
+The directory and the seed file must be owned by the bot's user and not writable by group/others,
+or the bot refuses to start (another local user could otherwise plant a seed they know). The
+directory's `stamp-pool-meta.json` marker records that pool records exist: a seed whose
+`sub-account-pool/` or `change-pool/` directory has gone missing (or a marker that cannot be read)
+is refused instead of restarting at index 0, which would reuse spent sub-accounts. If you accept
+address reuse (or restored the seed without its records), delete `stamp-pool-meta.json` to
+override. A relative `XDG_STATE_HOME` is ignored, and a state directory that cannot be resolved to
+an absolute path (unset `HOME`, relative `*_BOT_STATE_DIR`) is a startup error.
+
+- `stamp-pool-seed.json` -- the BIP-39 mnemonic, created on first start with mode `0600` (directory
+  `0700`), loaded on every later start. It is never logged. It is a wallet secret: **never commit
+  it**, and back it up if the bot holds real funds. A missing file means a new seed is created; an
+  unreadable or invalid file is a startup error (the bot will not silently start a new pool and
+  strand the old one).
+- `sub-account-pool/`, `change-pool/` -- the pool's records (index, address, status; no keys), so a
+  restart continues after the last spent sub-account instead of reusing one.
+
+Recovering leftover funds: import the mnemonic into any BIP-44 wallet; sub-accounts are
+`m/44'/60'/0'/0/<i>` and change accounts `m/44'/60'/0'/1/<i>`. Bots created before this change
+simply gain a seed file on their next start; their identity and other state are untouched.
+
+## Picture shop catalog (`vendor-bot.livecheck.ts`, #315)
+
+The vendor bot sells pictures from a directory, not from code. `VENDOR_BOT_CATALOG_DIR` (default:
+the bundled `demo-catalog/`, three generated original pictures with thumbnails) must contain:
+
+```
+manifest.json   {"items": [{"itemId": "sunrise", "description": "...", "priceWei": "50000000000000000",
+                            "image": "sunrise.png", "thumbnail": "sunrise-thumb.png"}]}
+sunrise.png     png / jpg / gif / webp, paths relative to the directory
+```
+
+`thumbnail` is optional (shown next to the entry in the app's catalog; max 64 KiB). The catalog is
+validated once at startup and a bad one is a one-line error naming the item: unknown/duplicate ids,
+bad prices, files outside the directory, non-image bytes, and any image (or the whole catalog
+message) that would not fit the relay's 2 MiB request cap. To change the bundled art, edit and run
+`yarn tsx scripts/generate-demo-pictures.ts`; to sell your own, point the variable at your directory.

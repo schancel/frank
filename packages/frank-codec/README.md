@@ -2,7 +2,7 @@
 
 Browser-safe TypeScript reference codec for Frank deterministic CBOR, version 1. The
 normative specification is `docs/protocol/cbor/` (README, `*.cddl`, `vectors.schema.json`).
-This is the prototype package for issues #131 and #183. No production message, profile,
+This is the prototype package for issues #131 and #183; issue #136 adds the topic-event types. No production message, profile,
 mailbox, topic or payment path uses it. Rollback is deleting this package and
 `docs/protocol/cbor/vectors/`.
 
@@ -18,7 +18,16 @@ Implemented (against the spec as merged on main):
   (recursive child opening with shared R1 counters, required-type and open-field children),
   and the stage 9 semantic checks that need no cryptography (S3-S10 ordering, uniqueness,
   linkage, contiguity).
-- T1 content hash, T1a digest, and the pure hashes T3 and T4.
+- T1 content hash, T1a digest, and the pure hashes T3, T4, and T7 (`topicVoteCommitment`).
+- Topic events: type 9 (post), type 10 (post plus its burn transaction), and type 11 (vote),
+  with the R6 limits and the S11 network equality. The burn transaction is opaque bytes here;
+  verifying it against the chain (T8) belongs to the relay, not to this codec.
+- The stamp fields of #198 through stage 9: type-5 fields 6-8 (`E`, `X`, the DLEQ proof) with the
+  T3b encoding rules (33-byte compressed point on the curve, `x < p`, prefix 02/03; proof
+  scalars `c` and `s` each in `1..n-1`), the type-4 schema-2 stamp key (field 8, required from
+  schema 2, undefined in schema 1, key type 1, S10a.1), the same-subject schema order (S10a.2),
+  and the S8/S9 rule that the delivery destination is the stamp key `P'` and is not compared with
+  the type-5 recipient. `defaultContext()` is reader version 2 with type 4 at schema 2.
 - Retention: exact original frame bytes at every level, unknown types/frame versions/fields.
 - Reciprocal check of Rust-originated proof fixtures in
   `docs/protocol/cbor/vectors/rust-origin.json` (`test/rust-origin.jest.test.ts`).
@@ -28,9 +37,10 @@ Not implemented:
 
 - Stage 10 (`full` operation): no signature or payment verification, no decrypted-frame
   opening, no `cryptographic` category.
-- T3a stealth derivation and DLEQ.
-- Type-5 fields 6-8 and directory-statement field 8, pending the stamp-key spec PR #200.
-  Type 5 and type 4 are typed only for fields defined on main.
+- T3a stamp destination derivation and the T3b DLEQ proof (verify or prove), keccak, the S10a.4
+  binding of `P'` to a directory state, and every other `cryptographic` check. Type-5 fields 6-8
+  are checked for encoding only; a well-formed but wrong proof is accepted at `typed`.
+- The stage-10 vectors of the #198 list (README section 10). The typed ones are in the manifest.
 
 ## API
 
@@ -44,7 +54,18 @@ Entry point `src/index.ts`.
   `exact` or `newer-schema`) or a `RetainedFrame`. Failures throw `FrankCodecError` with
   `category`, `stage`, `pass`, `location`. A bad context throws `FrankContextError`.
 - `contentHash`, `messageContentDigest`, `recipientPayloadDigest`, `paymentCommitment`,
-  `commonTranscript`, `toHex`, `fromHex`.
+  `topicVoteCommitment`, `commonTranscript`, `toHex`, `fromHex`.
+- Topic-event writers (README T7, T8): `encodeTopicPost`, `topicPostHash`, `topicBurnCommitment`,
+  `topicBurnCalldata` (`"TPIC" || 02 || direction || commitment`), `topicPostBurnCalldata` (fixed to
+  `up`: a post's own burn MUST be an up-vote, T8), `encodeTopicPostSubmission`,
+  and `encodeTopicVote`. Each validates what it wrote with the reader's typed validation, and the
+  order is fixed by T7: encode the post, derive its commitment, sign the burn for it, then wrap.
+  `encodeTopicPostSubmission` and `encodeTopicVote` take the signed burn transaction as opaque
+  bytes: they do not check that its calldata carries the derived commitment (or, for a post, that
+  the burn is an up-vote); the relay checks and rejects a mismatch before broadcasting. Writer
+  misuse (a lone surrogate, an unknown direction, a wrong-length or non-`Uint8Array` commitment,
+  or any argument of the wrong JavaScript type) throws `FrankCodecError`.
+  Nothing calls them yet; wiring them into the wallet's topic clients is a later ticket.
 
 Returned frames are views of one private copy of the input; do not mutate them.
 
@@ -63,7 +84,8 @@ TypeScript-aware bundler or transformer. `yarn build:browser` produces an IIFE b
   (no Node globals), then loads it in headless Chrome. It needs a system Chrome/Chromium
   (`FRANK_CHROME` overrides the path); without one the Chrome step exits 3 (not verified).
 - `yarn crosscheck` runs `scripts/crosscheck.py`, an independent Python implementation of
-  stages 1-7 of the root frame and T1 over the manifest. It needs Python 3 with `jsonschema`.
+  stages 1-7 of the root frame and T1 over the manifest, and T1/T7 over
+  `vectors/topic-commitments.json`. It needs Python 3 with `jsonschema`.
   It reports how many cases it evaluates (root-frame stages 1-7 category, retention, or a
   typed accept's T1 hash) and how many it does NOT evaluate (typed cases rejected at stages
   8-9 or inside an opened child, which it does not implement).
@@ -72,7 +94,12 @@ TypeScript-aware bundler or transformer. `yarn build:browser` produces an IIFE b
 
 `docs/protocol/cbor/vectors/manifest.json` conforms to `vectors.schema.json`. It is generated
 from `fixtures/` (`builders.ts`, `cases.ts`, `manifest.ts`) and a Jest test fails when it is
-stale. Regenerate with `FRANK_UPDATE_VECTORS=1 yarn test`. `fixtures/checker.ts` enforces the
+stale. Regenerate with `FRANK_UPDATE_VECTORS=1 yarn test`, which also rewrites
+`docs/protocol/cbor/vectors/topic-commitments.json` (the T1 and T7 hashes of the topic events,
+recomputed by the Rust codec and by `scripts/crosscheck.py`). Cases without their own
+`supported` list run against the reader that predates the topic types, so the corpus written
+before #136 is unchanged byte for byte; `test/topic.jest.test.ts` proves those cases behave the
+same when the topic types are listed. `fixtures/checker.ts` enforces the
 README section 10 manifest-validity rules that JSON Schema cannot express.
 
 Each reject case carries the optional `error_stage` (README section 10; other runners SHOULD compare it, category-only runners stay conformant), which `fixtures/cases.ts`

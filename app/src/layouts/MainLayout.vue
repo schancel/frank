@@ -5,6 +5,7 @@
       :width="splitterRatio"
       :breakpoint="drawerBreakpoint"
       show-if-above
+      @keydown.esc="closeOverlayOnEscape"
     >
       <!-- `closeDrawer` bubbles up from ChatList.vue (several layers below, via LeftDrawer.vue's
       own `v-bind="$attrs"` on `<chat-list>` -- LeftDrawer.vue declares no `emits` of its own, so
@@ -64,6 +65,9 @@ export default defineComponent({
         | ReturnType<typeof setTimeout>
         | undefined,
       ownedClose: false,
+      // Background layout children this component marked `inert` for the open overlay; only these
+      // are un-marked again, so an `inert` set by anything else is never touched (#277).
+      inertedByOverlay: [] as HTMLElement[],
       // Set in beforeUnmount: a restore still in flight must not touch a dead layout's page.
       disposed: false,
       trueSplitterRatio: compactCutoff,
@@ -118,11 +122,21 @@ export default defineComponent({
   },
   beforeUnmount() {
     this.disposed = true
+    this.setBackgroundInert(false)
     this.removeAfterEach?.()
     this.removeOnError?.()
     clearTimeout(this.pendingRestoreTimer)
   },
   watch: {
+    // While the drawer is an overlay, nothing behind it may take focus or clicks (#277): Tab must
+    // stay in the drawer, and a screen reader must not read the page under the backdrop. Synchronous
+    // so the background is interactive again before any focus restore for the same close runs.
+    overlayOpen: {
+      handler(open: boolean) {
+        this.setBackgroundInert(open)
+      },
+      flush: 'sync',
+    },
     // Any open/close, however triggered: refresh the opener on every open so a stale one is never
     // restored, and hand focus back on every narrow-screen close.
     myDrawerOpen(open: boolean, wasOpen: boolean) {
@@ -134,6 +148,7 @@ export default defineComponent({
           narrow && active instanceof HTMLElement && active !== document.body
             ? active
             : null
+        if (narrow) void this.moveFocusIntoDrawer()
         return
       }
       // Every close forgets the opener, restored or not.
@@ -147,6 +162,49 @@ export default defineComponent({
     },
   },
   methods: {
+    // Opening the overlay leaves focus on the (now covered) opener, so the first Tab walked the
+    // whole page behind the drawer before reaching it (#277). Land on the rail's selected tab -- the
+    // drawer's roving-tabindex stop -- or, failing that, the first control in the drawer.
+    async moveFocusIntoDrawer() {
+      await this.$nextTick()
+      if (this.disposed || !this.overlayOpen) return
+      const drawer = this.$el?.querySelector?.('.q-drawer') as
+        | HTMLElement
+        | null
+        | undefined
+      const target =
+        drawer?.querySelector<HTMLElement>(
+          '[role="tab"][aria-selected="true"]',
+        ) ??
+        drawer?.querySelector<HTMLElement>(
+          'a[href], button:not([disabled]), input:not([disabled]), select, textarea, [tabindex]:not([tabindex="-1"])',
+        )
+      target?.focus({ preventScroll: true })
+    },
+    // Quasar's own Escape handling is a window-level keydown+keyup pair that does not fire while a
+    // rail tab or drawer item has focus in the browser -- exactly where focus now lands on open --
+    // so the drawer closes itself on Escape from anywhere inside it.
+    closeOverlayOnEscape() {
+      if (this.overlayOpen) this.myDrawerOpen = false
+    },
+    setBackgroundInert(on: boolean) {
+      if (!on) {
+        for (const el of this.inertedByOverlay) el.removeAttribute('inert')
+        this.inertedByOverlay = []
+        return
+      }
+      const root = this.$el as HTMLElement | undefined
+      if (!root?.children) return
+      for (const child of Array.from(root.children) as HTMLElement[]) {
+        // The drawer (and its backdrop) live in Quasar's drawer container; everything else in the
+        // layout -- header, page container, footer, the forum's own drawer -- is background.
+        if (child.classList.contains('q-drawer-container')) continue
+        if (child.classList.contains('q-drawer')) continue
+        if (child.hasAttribute('inert')) continue
+        child.setAttribute('inert', '')
+        this.inertedByOverlay.push(child)
+      }
+    },
     toggleContactDrawerOpen() {
       this.contactDrawerOpen = !this.contactDrawerOpen
     },
@@ -184,6 +242,9 @@ export default defineComponent({
         !active ||
         active === document.body ||
         active === document.documentElement ||
+        // A click on the backdrop focuses the nearest focusable ancestor, the layout root itself
+        // (Quasar gives it tabindex -1): that is focus lost as well, not a place the user chose.
+        active.classList.contains('q-layout') ||
         active.closest('.q-drawer') !== null
       if (!focusLost) return
       const target =
@@ -209,6 +270,9 @@ export default defineComponent({
     },
   },
   computed: {
+    overlayOpen(): boolean {
+      return this.myDrawerOpen && isNarrowWidth(this.$q.screen.width)
+    },
     splitterRatio: {
       get(): number {
         return this.trueSplitterRatio

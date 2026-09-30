@@ -133,9 +133,9 @@
               <q-item-section>{{ name }}</q-item-section>
             </q-item>
             <q-item v-if="discoveredTopicNames.length === 0">
-              <q-item-section class="text-grey"
-                >No forums discovered yet.</q-item-section
-              >
+              <q-item-section class="text-grey">{{
+                $t('leftDrawer.noForums')
+              }}</q-item-section>
             </q-item>
           </q-list>
         </q-scroll-area>

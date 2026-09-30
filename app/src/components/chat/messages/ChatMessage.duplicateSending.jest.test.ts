@@ -220,7 +220,11 @@ describe('outgoing bubble shows one status (#393)', () => {
         await wrapper.vm.$nextTick()
         const shown = visibleText(wrapper)
         expect([state.name, countOf(shown, phrase)]).toEqual([state.name, 1])
-        expect(footerRows(wrapper)).toHaveLength(1)
+        // Pending shares the last text line (#391). Error and payment-pending
+        // still take one row under the text.
+        const rowFooter =
+          state.status === 'error' || state.status === 'payment-pending'
+        expect(footerRows(wrapper)).toHaveLength(rowFooter ? 1 : 0)
         const stamp = wrapper.find('[data-testid="outgoing-stamp"]')
         if (stamp.exists()) {
           for (const key of statusKeys) {
@@ -265,11 +269,15 @@ describe('outgoing bubble shows one status (#393)', () => {
       )
     }
     expect(sent.get('[data-testid="outgoing-amount"]').text()).toContain('MON')
+    // Time and amount are one line (#391), not stacked with a break.
     expect(
       sent.get('[data-testid="outgoing-meta"]').findAll('br'),
-    ).toHaveLength(1)
+    ).toHaveLength(0)
+    expect(sent.get('[data-testid="outgoing-meta"]').classes()).toContain(
+      'chat-message-inline-meta',
+    )
     expect(sent.find('[data-testid="outgoing-sending"]').exists()).toBe(false)
-    expect(footerRows(sent)).toHaveLength(1)
+    expect(footerRows(sent)).toHaveLength(0)
     expect(sent.get('[data-testid="outgoing-announcement"]').text()).toBe('')
     expect(sent.findAll('[role="status"]')).toHaveLength(1)
     sending.unmount()

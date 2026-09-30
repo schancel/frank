@@ -73,3 +73,42 @@ body {
   outline: 2px solid #000;
   outline-offset: 2px;
 }
+
+// Telegram-style footer (#391). The cluster floats to the end of the last
+// line of text and drops onto its own line only when that line has no room.
+// flow-root keeps the float inside the bubble. Paragraphs from the markdown
+// renderer stay in the same inline context so they do not force a new row.
+// No opacity: the stamp slot's 0.6 would fail the meta contrast bar.
+.chat-message-body {
+  display: flow-root;
+}
+
+// Only the markdown text. Raffle copy uses its own paragraphs and must stay stacked.
+.chat-message-text p {
+  display: inline;
+  margin: 0;
+}
+
+.chat-message-text p + p::before {
+  content: '\A';
+  white-space: pre;
+}
+
+.chat-message-inline-meta {
+  float: inline-end;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  margin-inline-start: 0.65rem;
+  white-space: nowrap;
+  max-width: 100%;
+  font-size: 0.75em;
+  line-height: inherit;
+}
+
+// White bubble text is 3.88:1 on #9d5cff and 2.88:1 on #b37dff. Sent meta uses
+// black so it clears 4.5:1 on both (5.41 and 7.29). Received meta keeps the
+// bubble text color, which already clears 4.5:1.
+.chat-message-inline-meta--sent {
+  color: #000;
+}

@@ -187,8 +187,26 @@ export default defineComponent({
       required: false,
       default: () => -1,
     },
+    /** Stable parent callback: a successful retry may unmount this keyed component before its
+     * awaited action returns, so a component event is no longer deliverable at that point. */
+    focusAfterRetry: {
+      type: Function as PropType<() => void>,
+      required: false,
+      default: undefined,
+    },
+    /** Legacy failure replaces the deleted bubble; the parent focuses that error row. */
+    focusFailedAfterRetry: {
+      type: Function as PropType<() => void>,
+      required: false,
+      default: undefined,
+    },
   },
   methods: {
+    focusRetryStatus() {
+      ;(
+        this.$refs.suffix as { focusStatus?: () => void } | undefined
+      )?.focusStatus?.()
+    },
     handleReplyDivClick(args: string) {
       this.$emit('replyDivClick', args)
     },
@@ -240,6 +258,10 @@ export default defineComponent({
                 persistent: true,
               })
               .onOk(() => void this.resend(true))
+          } else if (outcome.state === 'sent') {
+            // The store rekeys this bubble from its optimistic id to the final payload digest.
+            // Ask the stable Chat parent to take focus after this component unmounts.
+            this.focusAfterRetry?.()
           }
         } catch (error) {
           errorNotify(error instanceof Error ? error : new Error(String(error)))
@@ -247,17 +269,29 @@ export default defineComponent({
         return
       }
 
-      // Compatibility path for legacy Lotus messages.
-      await this.deleteMessage({
-        address: this.address,
-        payloadDigest: this.payloadDigest,
-      })
-      const stampAmount = this.getStampAmount(this.address)
-      return this.$relayClient.sendMessageImpl({
-        address: this.address,
-        items: this.message.items,
-        stampAmount,
-      })
+      // Compatibility path for legacy Lotus messages. Construction can emit messageSendError
+      // and fulfill undefined; that is not delivery. Rejection after delete has no bubble left.
+      try {
+        await this.deleteMessage({
+          address: this.address,
+          payloadDigest: this.payloadDigest,
+        })
+        const stampAmount = this.getStampAmount(this.address)
+        const outcome = await this.$relayClient.sendMessageImpl({
+          address: this.address,
+          items: this.message.items,
+          stampAmount,
+        })
+        if (outcome === undefined || outcome === null) {
+          this.focusFailedAfterRetry?.()
+          return outcome
+        }
+        this.focusAfterRetry?.()
+        return outcome
+      } catch (error) {
+        this.focusFailedAfterRetry?.()
+        errorNotify(error instanceof Error ? error : new Error(String(error)))
+      }
     },
     confirmDiscard() {
       this.$q

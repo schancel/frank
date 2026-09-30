@@ -25,6 +25,8 @@
                   :chat-width="chatWidth"
                   :payload-digest="msg.payloadDigest"
                   :ref="msg.payloadDigest"
+                  :focus-after-retry="focusComposerAfterRetry"
+                  :focus-failed-after-retry="focusFailedAfterRetry"
                   @replyClicked="({ payloadDigest }) => setReply(payloadDigest)"
                   @replyDivClick="scrollToMessage"
                   @sendFollowUp="sendFollowUpItems"
@@ -205,6 +207,43 @@ export default defineComponent({
     })
   },
   methods: {
+    focusComposerAfterRetry() {
+      void this.$nextTick(() => {
+        // A connected control chosen while Retry was pending is still the user's focus.
+        if (!this.retryFocusLost()) return
+        ;(this.$refs.chatInput as { focus?: () => void } | undefined)?.focus?.()
+      })
+    },
+    focusFailedAfterRetry() {
+      void this.$nextTick(() => {
+        if (!this.retryFocusLost()) return
+        const failed = [...this.messages]
+          .reverse()
+          .find(message => message.outbound && message.status === 'error')
+        if (!failed) return
+        this.focusMessageStatus(failed.payloadDigest)
+      })
+    },
+    /** True when keyed removal left focus on the viewport, not on a live control. */
+    retryFocusLost() {
+      const active = document.activeElement
+      if (
+        active == null ||
+        active === document.body ||
+        active === document.documentElement
+      ) {
+        return true
+      }
+      return !active.isConnected
+    },
+    focusMessageStatus(digest: string) {
+      const raw = this.$refs[digest] as
+        | { focusRetryStatus?: () => void }
+        | Array<{ focusRetryStatus?: () => void }>
+        | undefined
+      const message = Array.isArray(raw) ? raw[0] : raw
+      message?.focusRetryStatus?.()
+    },
     toSendFileDialog(args: unknown) {
       this.$emit('sendFileClicked', args)
     },

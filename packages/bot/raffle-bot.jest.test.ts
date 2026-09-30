@@ -1,6 +1,14 @@
 import { RecoveredMonadStampPayment } from '@frank/wallet/monad-stamp-client'
 
-import { summarizeRecoveredPayments } from './raffle-bot.livecheck'
+import {
+  recoverAndSweepEntryPayment,
+  summarizeRecoveredPayments,
+} from './raffle-bot.livecheck'
+
+jest.mock('@frank/wallet/monad-stamp-client', () => ({
+  ...jest.requireActual('@frank/wallet/monad-stamp-client'),
+  recoverMonadStampPayments: jest.fn(),
+}))
 
 /**
  * Ticket #121 regression: an earlier version of `raffle-bot.livecheck.ts` read only
@@ -70,5 +78,30 @@ describe('summarizeRecoveredPayments', () => {
 
     expect(totalValueWei).toBe(only.valueWei)
     expect(combinedTxHash).toBe(only.txHash)
+  })
+})
+
+describe('recoverAndSweepEntryPayment (#319)', () => {
+  it('quotes an underpaid entry in MON, not wei', async () => {
+    const { recoverMonadStampPayments } = jest.requireMock(
+      '@frank/wallet/monad-stamp-client',
+    )
+    recoverMonadStampPayments.mockReturnValue([
+      fakePayment(0, 5n * 10n ** 15n, '0xaaa'),
+    ])
+    const result = await recoverAndSweepEntryPayment({
+      message: {} as never,
+      recipientPrivateKey: new Uint8Array(32),
+      minTotalValueWei: 2n * 10n ** 16n,
+      destinationAddress: `0x${'11'.repeat(20)}`,
+      provider: {} as never,
+      httpClient: {} as never,
+      identitySigner: {} as never,
+      label: 'test',
+    })
+    expect(result).toMatchObject({ ok: false })
+    const reason = (result as { reason: string }).reason
+    expect(reason).toBe('payment 0.005 MON is below the required 0.02 MON')
+    expect(reason).not.toMatch(/wei/)
   })
 })

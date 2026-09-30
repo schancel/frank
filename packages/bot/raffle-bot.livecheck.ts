@@ -82,6 +82,7 @@ import {
   pickWinnerIndex,
   sha256Hex,
 } from '@frank/wallet/message-item-plugins/raffle/draw'
+import { formatMon } from '@frank/wallet/monad-amount'
 import { MonadHttpClient } from '@frank/wallet/monad-http'
 import { MonadAccountTxSigner } from '@frank/wallet/monad-account-tx'
 import {
@@ -143,7 +144,7 @@ export function summarizeRecoveredPayments(
  * expected failure mode (a payment too small to sweep, one that never confirms) -- ticket #121's
  * acceptance criteria: missing/partial/ambiguous payments must fail closed, not silently accept a
  * short entry or leave funds unaccounted for. */
-async function recoverAndSweepEntryPayment(params: {
+export async function recoverAndSweepEntryPayment(params: {
   message: MonadStampedMessageProto
   recipientPrivateKey: Uint8Array
   minTotalValueWei: bigint
@@ -177,7 +178,7 @@ async function recoverAndSweepEntryPayment(params: {
   if (totalValueWei < params.minTotalValueWei) {
     return {
       ok: false,
-      reason: `payment ${totalValueWei} wei is below the required ${params.minTotalValueWei} wei`,
+      reason: `payment ${formatMon(totalValueWei)} is below the required ${formatMon(params.minTotalValueWei)}`,
       totalValueWei,
     }
   }

@@ -1,14 +1,20 @@
+import { createRequire } from 'module'
 import { readFileSync } from 'fs'
 import { join } from 'path'
 
-import { reverseBytes } from '../src/bytes.js'
+import { sha256 } from '@noble/hashes/sha256.js'
+
+import { concatBytes, reverseBytes } from '../src/bytes.js'
 import {
   BCH_MAINNET,
   BTC_MAINNET,
   XEC_MAINNET,
   XPI_MAINNET,
 } from '../src/chain/index.js'
-import { internalHashFromBytes } from '../src/constructors.js'
+import {
+  internalHashFromBytes,
+  type InternalHash,
+} from '../src/constructors.js'
 import {
   SIGHASH_ALL,
   SIGHASH_FORKID,
@@ -16,12 +22,30 @@ import {
   SIGHASH_NONE,
   SIGHASH_SINGLE,
   SIGHASH_UTXOS,
+  blockMerkleLeaf,
   parseTransaction,
   serializeTransaction,
   sighash,
+  transactionHash,
+  transactionId,
   type SpentOutput,
   type Transaction,
+  type TxInput,
+  type TxOutput,
 } from '../src/transaction.js'
+
+const requireOld = createRequire(__filename)
+const oldTx = requireOld('bitcore-lib-xpi') as {
+  Transaction: new (serialized: Buffer) => {
+    _getHash(): Buffer
+    _getTxid(): Buffer
+    hash: string
+    txid: string
+  }
+  crypto: {
+    Hash: { sha256sha256(bytes: Buffer): Buffer }
+  }
+}
 
 function fromHex(hex: string): Uint8Array {
   if (hex.length % 2 !== 0) throw new Error('hex')
@@ -456,3 +480,313 @@ function twoInputLotus(): Uint8Array {
   if (!result.ok) throw new Error(result.error.code)
   return result.value
 }
+
+function hash256(bytes: Uint8Array): Uint8Array {
+  return new Uint8Array(sha256(sha256(bytes)))
+}
+
+function mustId(tx: Transaction, chain: typeof BTC_MAINNET): InternalHash {
+  const id = transactionId(tx, chain)
+  if (!id.ok) throw new Error(id.error.code)
+  return id.value
+}
+
+function mustHash(tx: Transaction, chain: typeof BTC_MAINNET): InternalHash {
+  const hash = transactionHash(tx, chain)
+  if (!hash.ok) throw new Error(hash.error.code)
+  return hash.value
+}
+
+function mustLeaf(tx: Transaction, chain: typeof BTC_MAINNET): InternalHash {
+  const leaf = blockMerkleLeaf(tx, chain)
+  if (!leaf.ok) throw new Error(leaf.error.code)
+  return leaf.value
+}
+
+function oldOf(bytes: Uint8Array) {
+  return new oldTx.Transaction(Buffer.from(bytes))
+}
+
+function input(txidHex: string, vout: number, script: Uint8Array): TxInput {
+  return {
+    prevout: { txid: brand(fromHex(txidHex)), vout },
+    scriptSig: script,
+    sequence: 0xffffffff,
+  }
+}
+
+function output(value: bigint, scriptHex: string): TxOutput {
+  return { value, scriptPubKey: fromHex(scriptHex) }
+}
+
+// lotusd chainparams.cpp CreateGenesisBlock. One transaction, so the header
+// merkle root is sha256d(GetHash || GetId). Display order is uint256S.
+const XPI_GENESIS_MERKLE =
+  '37f392d88f70cdada6d366a25a7ef90b6711bf2d6b5ffea4f39727dcb90af34c'
+const GENESIS_MESSAGE = 'John 1:1 In the beginning was the Logos'
+const GENESIS_PUBKEY =
+  '04678afdb0fe5548271967f1a67130b7105cd6a828e03909a67962e0ea1f61deb649f6bc3f4cef38c4f35504e51ec112de5c384df7ba0b8d578a4c702b6bf11d5f'
+const GENESIS_PAYLOAD =
+  'ffe330c4b7643e554c62adcbe0b80537435d888b5c33d5e29a70cdd743e3a093'
+
+function pushData(payload: Uint8Array): Uint8Array {
+  if (payload.length >= 0x4c) throw new Error('push')
+  return concatBytes([Uint8Array.of(payload.length), payload])
+}
+
+function lotusGenesisTx(scriptTail: Uint8Array): Transaction {
+  const message = new TextEncoder().encode(GENESIS_MESSAGE)
+  const subsidy = 130_000_000n
+  return {
+    version: 1,
+    locktime: 0,
+    inputs: [
+      {
+        prevout: { txid: brand(new Uint8Array(32)), vout: 0xffffffff },
+        scriptSig: concatBytes([pushData(message), scriptTail]),
+        sequence: 0xffffffff,
+      },
+    ],
+    outputs: [
+      {
+        value: subsidy,
+        scriptPubKey: concatBytes([
+          Uint8Array.of(0x6a),
+          pushData(new TextEncoder().encode('logos')),
+          Uint8Array.of(0x00),
+          pushData(fromHex(GENESIS_PAYLOAD)),
+        ]),
+      },
+      {
+        value: subsidy,
+        scriptPubKey: concatBytes([
+          pushData(fromHex(GENESIS_PUBKEY)),
+          Uint8Array.of(0xac),
+        ]),
+      },
+    ],
+  }
+}
+
+describe('transaction ids', () => {
+  test('bitcoin genesis txid is the header merkle root and ignores no witness', () => {
+    const raw = fromHex(
+      '01000000010000000000000000000000000000000000000000000000000000000000000000ffffffff4d04ffff001d0104455468652054696d65732030332f4a616e2f32303039204368616e63656c6c6f72206f6e206272696e6b206f66207365636f6e64206261696c6f757420666f722062616e6b73ffffffff0100f2052a01000000434104678afdb0fe5548271967f1a67130b7105cd6a828e03909a67962e0ea1f61deb649f6bc3f4cef38c4f35504e51ec112de5c384df7ba0b8d578a4c702b6bf11d5fac00000000',
+    )
+    const tx = mustTx(raw)
+    const id = mustId(tx, BTC_MAINNET)
+    expect(display(id)).toBe(
+      '4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b',
+    )
+    expect(toHex(mustHash(tx, BTC_MAINNET))).toBe(toHex(id))
+    expect(toHex(mustLeaf(tx, BTC_MAINNET))).toBe(toHex(id))
+    expect(toHex(id)).toBe(toHex(hash256(raw)))
+    for (const chain of [BCH_MAINNET, XEC_MAINNET]) {
+      expect(toHex(mustId(tx, chain))).toBe(toHex(id))
+      expect(toHex(mustLeaf(tx, chain))).toBe(toHex(id))
+    }
+  })
+
+  test('a BTC witness changes the full hash and not the txid or block leaf', () => {
+    const signed = mustTx(fromHex(BIP143_SIGNED))
+    const unsigned = mustTx(fromHex(BIP143_UNSIGNED))
+    const id = mustId(signed, BTC_MAINNET)
+    expect(toHex(id)).toBe(toHex(mustId(unsigned, BTC_MAINNET)))
+    expect(toHex(id)).toBe(toHex(hash256(fromHex(BIP143_UNSIGNED))))
+    expect(toHex(mustLeaf(signed, BTC_MAINNET))).toBe(toHex(id))
+    expect(toHex(mustLeaf(unsigned, BTC_MAINNET))).toBe(toHex(id))
+    const full = mustHash(signed, BTC_MAINNET)
+    expect(toHex(full)).toBe(toHex(hash256(fromHex(BIP143_SIGNED))))
+    expect(toHex(full)).not.toBe(toHex(id))
+    const resigned = {
+      ...unsigned,
+      inputs: unsigned.inputs.map(item => ({
+        ...item,
+        scriptSig: fromHex('51'),
+      })),
+    }
+    expect(toHex(mustId(resigned, BTC_MAINNET))).not.toBe(toHex(id))
+    expect(toHex(mustLeaf(resigned, BTC_MAINNET))).not.toBe(toHex(id))
+    expect(transactionId(signed, BCH_MAINNET)).toEqual({
+      ok: false,
+      error: { code: 'tx-witness-rejected' },
+    })
+    expect(blockMerkleLeaf(signed, XPI_MAINNET)).toEqual({
+      ok: false,
+      error: { code: 'tx-witness-rejected' },
+    })
+  })
+
+  test('lotus genesis leaf is the header merkle root and matches bitcore', () => {
+    const tx = lotusGenesisTx(new Uint8Array())
+    const raw = serializeChecked(tx)
+    const parsed = mustTx(raw, XPI_MAINNET)
+    const id = mustId(parsed, XPI_MAINNET)
+    const hash = mustHash(parsed, XPI_MAINNET)
+    const leaf = mustLeaf(parsed, XPI_MAINNET)
+    const reference = oldOf(raw)
+    expect(toHex(id)).toBe(reference._getTxid().toString('hex'))
+    expect(display(id)).toBe(reference.txid)
+    expect(toHex(hash)).toBe(reference._getHash().toString('hex'))
+    expect(display(hash)).toBe(reference.hash)
+    const oldLeaf = oldTx.crypto.Hash.sha256sha256(
+      Buffer.concat([reference._getHash(), reference._getTxid()]),
+    )
+    expect(toHex(leaf)).toBe(oldLeaf.toString('hex'))
+    expect(display(leaf)).toBe(XPI_GENESIS_MERKLE)
+    expect(toHex(hash)).not.toBe(toHex(id))
+  })
+
+  test('scriptSig moves the lotus hash and block leaf and not the segmented id', () => {
+    const bare = lotusGenesisTx(new Uint8Array())
+    const signed = lotusGenesisTx(fromHex('51'))
+    const bareId = mustId(bare, XPI_MAINNET)
+    const signedId = mustId(signed, XPI_MAINNET)
+    expect(toHex(signedId)).toBe(toHex(bareId))
+    expect(toHex(mustHash(signed, XPI_MAINNET))).not.toBe(
+      toHex(mustHash(bare, XPI_MAINNET)),
+    )
+    const bareLeaf = mustLeaf(bare, XPI_MAINNET)
+    const signedLeaf = mustLeaf(signed, XPI_MAINNET)
+    expect(toHex(signedLeaf)).not.toBe(toHex(bareLeaf))
+    const raw = serializeChecked(signed)
+    const reference = oldOf(raw)
+    expect(toHex(signedId)).toBe(reference._getTxid().toString('hex'))
+    expect(toHex(mustHash(signed, XPI_MAINNET))).toBe(
+      reference._getHash().toString('hex'),
+    )
+    expect(reference.txid).toBe(oldOf(serializeChecked(bare)).txid)
+    expect(reference.hash).not.toBe(oldOf(serializeChecked(bare)).hash)
+  })
+
+  test('an odd input list puts a zero pad in the lotus id', () => {
+    const tx: Transaction = {
+      version: 2,
+      locktime: 9,
+      inputs: [
+        input('11'.repeat(32), 0, fromHex('51')),
+        input('22'.repeat(32), 1, fromHex('52')),
+        input('33'.repeat(32), 2, fromHex('53')),
+      ],
+      outputs: [output(50n, '6a')],
+    }
+    const raw = serializeChecked(tx)
+    const id = mustId(tx, XPI_MAINNET)
+    expect(toHex(id)).toBe(oldOf(raw)._getTxid().toString('hex'))
+    expect(display(id)).toBe(oldOf(raw).txid)
+    const leaves = tx.inputs.map(item =>
+      hash256(
+        concatBytes([
+          item.prevout.txid,
+          Uint8Array.of(
+            item.prevout.vout & 0xff,
+            (item.prevout.vout >>> 8) & 0xff,
+            (item.prevout.vout >>> 16) & 0xff,
+            (item.prevout.vout >>> 24) & 0xff,
+          ),
+          Uint8Array.of(0xff, 0xff, 0xff, 0xff),
+        ]),
+      ),
+    )
+    const first = leaves[0]
+    const second = leaves[1]
+    const third = leaves[2]
+    if (!first || !second || !third) throw new Error('leaves')
+    const padded = hash256(concatBytes([third, new Uint8Array(32)]))
+    const duplicated = hash256(concatBytes([third, third]))
+    expect(toHex(padded)).not.toBe(toHex(duplicated))
+    const script = tx.outputs[0]?.scriptPubKey ?? new Uint8Array()
+    const outLeaf = hash256(
+      concatBytes([
+        Uint8Array.of(50, 0, 0, 0, 0, 0, 0, 0),
+        Uint8Array.of(script.length),
+        script,
+      ]),
+    )
+    const left = hash256(concatBytes([first, second]))
+    const root = hash256(concatBytes([left, padded]))
+    const duplicateRoot = hash256(concatBytes([left, duplicated]))
+    const preimage = (side: Uint8Array) =>
+      concatBytes([
+        Uint8Array.of(2, 0, 0, 0),
+        side,
+        Uint8Array.of(3),
+        outLeaf,
+        Uint8Array.of(1),
+        Uint8Array.of(9, 0, 0, 0),
+      ])
+    expect(toHex(hash256(preimage(root)))).toBe(toHex(id))
+    expect(toHex(hash256(preimage(duplicateRoot)))).not.toBe(toHex(id))
+  })
+
+  test('an odd output list puts a zero pad in the lotus id', () => {
+    const tx: Transaction = {
+      version: 1,
+      locktime: 0,
+      inputs: [input('ab'.repeat(32), 4, new Uint8Array())],
+      outputs: [output(1n, '51'), output(2n, '52'), output(3n, '53')],
+    }
+    const raw = serializeChecked(tx)
+    const id = mustId(tx, XPI_MAINNET)
+    expect(toHex(id)).toBe(oldOf(raw)._getTxid().toString('hex'))
+    const changed = {
+      ...tx,
+      inputs: tx.inputs.map(item => ({
+        ...item,
+        scriptSig: fromHex('0100'),
+      })),
+    }
+    expect(toHex(mustId(changed, XPI_MAINNET))).toBe(toHex(id))
+    expect(toHex(mustLeaf(changed, XPI_MAINNET))).not.toBe(
+      toHex(mustLeaf(tx, XPI_MAINNET)),
+    )
+    expect(toHex(mustLeaf(changed, XPI_MAINNET))).toBe(
+      oldTx.crypto.Hash.sha256sha256(
+        Buffer.concat([
+          oldOf(serializeChecked(changed))._getHash(),
+          oldOf(serializeChecked(changed))._getTxid(),
+        ]),
+      ).toString('hex'),
+    )
+  })
+
+  test('an empty output side is height 0, which bitcore does not implement', () => {
+    const tx: Transaction = {
+      version: 1,
+      locktime: 7,
+      inputs: [input('44'.repeat(32), 0, fromHex('00'))],
+      outputs: [],
+    }
+    const raw = serializeChecked(tx)
+    const id = mustId(tx, XPI_MAINNET)
+    const reference = oldOf(raw)
+    expect(toHex(id)).not.toBe(reference._getTxid().toString('hex'))
+    const leaf = hash256(
+      concatBytes([
+        brand(fromHex('44'.repeat(32))),
+        Uint8Array.of(0, 0, 0, 0),
+        Uint8Array.of(0xff, 0xff, 0xff, 0xff),
+      ]),
+    )
+    const preimage = concatBytes([
+      Uint8Array.of(1, 0, 0, 0),
+      leaf,
+      Uint8Array.of(1),
+      new Uint8Array(32),
+      Uint8Array.of(0),
+      Uint8Array.of(7, 0, 0, 0),
+    ])
+    expect(toHex(hash256(preimage))).toBe(toHex(id))
+    const bitcoreHeight = concatBytes([
+      Uint8Array.of(1, 0, 0, 0),
+      leaf,
+      Uint8Array.of(1),
+      new Uint8Array(32),
+      Uint8Array.of(1),
+      Uint8Array.of(7, 0, 0, 0),
+    ])
+    expect(toHex(hash256(bitcoreHeight))).toBe(
+      reference._getTxid().toString('hex'),
+    )
+  })
+})

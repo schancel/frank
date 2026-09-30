@@ -32,6 +32,7 @@ export default {
   chatList: {
     noContactMessage: 'Add contacts from the drawer above...',
     balance: 'Balance',
+    balanceStale: '(last known)',
     directMessages: 'Direct Messages',
   },
   chatMessage: {

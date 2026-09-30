@@ -32,6 +32,7 @@ export default {
   chatList: {
     noContactMessage: 'Add contacts from the drawer above...', //----
     balance: 'Crédit',
+    balanceStale: '(dernière valeur connue)',
     directMessages: 'Messages privés',
   },
   chatMessage: {

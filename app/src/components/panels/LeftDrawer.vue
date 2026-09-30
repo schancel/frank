@@ -117,9 +117,21 @@
         <q-item clickable>
           <q-item-section @click="openReceive">
             <q-item-label>{{ $t('chatList.balance') }}</q-item-label>
-            <q-item-label caption role="status" aria-live="polite">{{
-              formattedBalance
-            }}</q-item-label>
+            <q-item-label
+              caption
+              role="status"
+              aria-live="polite"
+              :aria-label="
+                loaded
+                  ? undefined
+                  : $t('receiveBitcoinDialog.balanceUnavailable')
+              "
+              data-testid="drawer-balance"
+              >{{ balanceText
+              }}<template v-if="balanceStale">
+                {{ ' ' + $t('chatList.balanceStale') }}</template
+              ></q-item-label
+            >
           </q-item-section>
           <q-item-section
             v-if="legacyRelayEnabled && !relayConnected"
@@ -212,7 +224,14 @@ export default defineComponent({
     // Balance polling (real user report: an external transfer never showed up without a reload)
     // now lives in the shared `useBalance` composable (ticket #213): one ref-counted loop with
     // in-flight guard, visibility/app-resume handling and backoff, shared with the Receive page.
-    const { formattedBalance } = useBalance()
+    const { formattedBalance, loaded, hasError } = useBalance()
+    // Same unknown representation as Receive: an em dash until the first successful fetch, never
+    // a false "0". After a failure following a good fetch (#272) the last-known value stays,
+    // marked stale, rather than flipping to a dash.
+    const balanceText = computed(() =>
+      loaded.value ? formattedBalance.value : '\u2014',
+    )
+    const balanceStale = computed(() => loaded.value && hasError.value)
 
     onMounted(() => {
       // Fire-and-forget, same convention as `ForumLayout.vue`'s own identical call --
@@ -257,7 +276,9 @@ export default defineComponent({
       selectedForumTopic,
       browseForumTopic,
       totalUnread: totalUnread,
-      formattedBalance,
+      balanceText,
+      balanceStale,
+      loaded,
       legacyRelayEnabled: legacyLotusModeEnabled(),
     }
   },

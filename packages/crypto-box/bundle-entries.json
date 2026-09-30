@@ -1,0 +1,10 @@
+{
+  "globalName": "FrankCryptoBox",
+  "tokens": {},
+  "entries": [
+    {
+      "name": "root",
+      "entry": "src/index.ts"
+    }
+  ]
+}

@@ -5,7 +5,7 @@
 export const RESERVED_PROOF_SUITE_ID = 65535
 
 /** Suite identifiers this package emits. Empty until a suite is implemented. */
-export const producedSuiteIds: readonly number[] = []
+export const producedSuiteIds: readonly number[] = Object.freeze([])
 
 export class ReservedSuiteError extends Error {
   readonly code = 'reserved-suite' as const
@@ -28,4 +28,16 @@ export function refuseReservedSuite(suiteId: number): void {
   if (suiteId === RESERVED_PROOF_SUITE_ID) {
     throw new ReservedSuiteError(suiteId)
   }
+}
+
+/**
+ * Structural check. A second copy of this package does not share the class,
+ * and callers branch on `code` plus `suiteId`.
+ */
+export function isReservedSuiteError(
+  value: unknown,
+): value is { readonly code: 'reserved-suite'; readonly suiteId: number } {
+  if (typeof value !== 'object' || value === null) return false
+  const record = value as { code?: unknown; suiteId?: unknown }
+  return record.code === 'reserved-suite' && typeof record.suiteId === 'number'
 }

@@ -7,12 +7,14 @@ on:
       - "packages/nakamoto/**"
       - "packages/crypto-box/**"
       - ".github/workflows/nakamoto.yml"
+      - "yarn.lock"
   pull_request:
     branches: [main]
     paths:
       - "packages/nakamoto/**"
       - "packages/crypto-box/**"
       - ".github/workflows/nakamoto.yml"
+      - "yarn.lock"
 
 jobs:
   test:
@@ -25,7 +27,7 @@ jobs:
       - run: yarn install --ignore-engines --frozen-lockfile
       - name: nakamoto
         working-directory: packages/nakamoto
-        run: yarn test && yarn typecheck && yarn lint && yarn format
+        run: yarn test && yarn typecheck && yarn lint && yarn format && yarn check:shared && yarn check:deps && yarn check:bundle
       - name: crypto-box
         working-directory: packages/crypto-box
-        run: yarn test && yarn typecheck && yarn lint && yarn format
+        run: yarn test && yarn typecheck && yarn lint && yarn format && yarn check:shared && yarn check:deps && yarn check:bundle

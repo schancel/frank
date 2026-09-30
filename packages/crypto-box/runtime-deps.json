@@ -1,0 +1,7 @@
+{
+  "allowed": [],
+  "optional": [],
+  "planned": ["@noble/ciphers", "@frank/nakamoto"],
+  "plannedOptional": [],
+  "note": "Planned names are not installed. @noble/ciphers stays out until the suite ticket cites its audit. @frank/nakamoto is how ECDH stays one implementation. Moving a name into allowed or optional requires the same name in docs/nakamoto-audit.md."
+}

@@ -1,4 +1,4 @@
-import { addressVersionBytes, getChain } from '../src/chain'
+import { addressVersionBytes, getChain } from '../src/chain/index.js'
 
 // Chain-dependent calls do not compile without a descriptor.
 // @ts-expect-error chain is required

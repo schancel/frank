@@ -101,15 +101,18 @@ const BCH_MESSAGE: MessageMagic = Object.freeze({
     'bitcoin-cash-node/bitcoin-cash-node src/validation.cpp strMessageMagic (master, read 2026-09-30)',
 })
 
-const UNPINNED_XEC_MESSAGE: MessageMagic = Object.freeze({
-  status: 'unpinned',
-  reason:
-    'A wallet string "eCash Signed Message:\\n" was seen in Trezor coininfo. Bitcoin ABC was not quoted, so the descriptor does not offer a magic.',
+const XEC_MESSAGE: MessageMagic = Object.freeze({
+  status: 'pinned',
+  text: 'eCash Signed Message:\n',
+  source:
+    'Bitcoin-ABC/bitcoin-abc src/common/signmessage.cpp MESSAGE_MAGIC (master, read 2026-09-30)',
 })
 
-const UNPINNED_XPI_MESSAGE: MessageMagic = Object.freeze({
-  status: 'unpinned',
-  reason: 'lotusd message magic was not quoted.',
+const XPI_MESSAGE: MessageMagic = Object.freeze({
+  status: 'pinned',
+  text: 'Bitcoin Signed Message:\n',
+  source:
+    'LotusiaStewardship/lotusd src/util/message.cpp MESSAGE_MAGIC (master, read 2026-09-30)',
 })
 
 const COIN_100_000_000: DisplayUnit = Object.freeze({
@@ -176,6 +179,7 @@ const BCH_SOURCES = [
 
 const XEC_SOURCES = [
   'Bitcoin-ABC/bitcoin-abc src/kernel/chainparams.cpp (master, read 2026-09-29)',
+  'Bitcoin-ABC/bitcoin-abc src/common/signmessage.cpp MESSAGE_MAGIC',
   'Bitcoin-ABC/bitcoin-abc src/currencyunit.h DEFAULT_ECASH = true',
   'Bitcoin-ABC/bitcoin-abc doc/standards/cashaddr.md prefixes ecash, ectest, ecregtest',
   'SLIP-0044 coin type 899, eCash token 1899; historical wallet path 145',
@@ -183,6 +187,7 @@ const XEC_SOURCES = [
 
 const XPI_SOURCES = [
   'LotusiaStewardship/lotusd src/chainparams.cpp (master, read 2026-09-29)',
+  'LotusiaStewardship/lotusd src/util/message.cpp MESSAGE_MAGIC',
   'SLIP-0044 coin type 10605',
 ] as const
 
@@ -351,7 +356,7 @@ export const XEC_MAINNET: ChainDescriptor = chain({
   p2pPort: 8333,
   registeredSlip44: 899,
   alsoDocumentsSlip44: [145, 1899],
-  messageMagic: UNPINNED_XEC_MESSAGE,
+  messageMagic: XEC_MESSAGE,
   displayUnit: UNPINNED_XEC_UNIT,
   sighash: FORKID_ZERO(
     'Bitcoin ABC src/kernel/chainparams.cpp keeps the Bitcoin Cash network magic. No new fork id is in that file. The sighash ticket must quote SignatureHash before treating fork id 0 as eCash consensus.',
@@ -372,7 +377,7 @@ export const XEC_TESTNET: ChainDescriptor = chain({
   p2pPort: 18333,
   registeredSlip44: 1,
   alsoDocumentsSlip44: [145, 1899],
-  messageMagic: UNPINNED_XEC_MESSAGE,
+  messageMagic: XEC_MESSAGE,
   displayUnit: UNPINNED_XEC_UNIT,
   sighash: XEC_MAINNET.sighash,
   dust: UNPINNED_POLICY,
@@ -391,7 +396,7 @@ export const XEC_REGTEST: ChainDescriptor = chain({
   p2pPort: 18444,
   registeredSlip44: 1,
   alsoDocumentsSlip44: [145, 1899],
-  messageMagic: UNPINNED_XEC_MESSAGE,
+  messageMagic: XEC_MESSAGE,
   displayUnit: UNPINNED_XEC_UNIT,
   sighash: XEC_MAINNET.sighash,
   dust: UNPINNED_POLICY,
@@ -413,7 +418,7 @@ export const XPI_MAINNET: ChainDescriptor = chain({
   p2pPort: 10605,
   registeredSlip44: 10605,
   alsoDocumentsSlip44: [],
-  messageMagic: UNPINNED_XPI_MESSAGE,
+  messageMagic: XPI_MESSAGE,
   displayUnit: UNPINNED_XPI_UNIT,
   sighash: UNPINNED_XPI_SIGHASH,
   dust: UNPINNED_POLICY,
@@ -432,7 +437,7 @@ export const XPI_TESTNET: ChainDescriptor = chain({
   p2pPort: 11605,
   registeredSlip44: 1,
   alsoDocumentsSlip44: [],
-  messageMagic: UNPINNED_XPI_MESSAGE,
+  messageMagic: XPI_MESSAGE,
   displayUnit: UNPINNED_XPI_UNIT,
   sighash: UNPINNED_XPI_SIGHASH,
   dust: UNPINNED_POLICY,
@@ -451,7 +456,7 @@ export const XPI_REGTEST: ChainDescriptor = chain({
   p2pPort: 12605,
   registeredSlip44: 1,
   alsoDocumentsSlip44: [],
-  messageMagic: UNPINNED_XPI_MESSAGE,
+  messageMagic: XPI_MESSAGE,
   displayUnit: UNPINNED_XPI_UNIT,
   sighash: UNPINNED_XPI_SIGHASH,
   dust: UNPINNED_POLICY,

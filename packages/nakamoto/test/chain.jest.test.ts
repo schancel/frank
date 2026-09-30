@@ -42,6 +42,32 @@ describe('chain descriptors', () => {
     })
   })
 
+  test('XEC signed-message magic is the Bitcoin ABC string', () => {
+    for (const item of [
+      XEC_MAINNET,
+      getChain('xec', 'testnet'),
+      getChain('xec', 'regtest'),
+    ]) {
+      expect(item).toMatchObject({
+        messageMagic: {
+          status: 'pinned',
+          text: 'eCash Signed Message:\n',
+        },
+      })
+    }
+  })
+
+  test('XPI signed-message magic is the lotusd string', () => {
+    for (const item of [XPI_MAINNET, XPI_TESTNET, XPI_REGTEST]) {
+      expect(item).toMatchObject({
+        messageMagic: {
+          status: 'pinned',
+          text: 'Bitcoin Signed Message:\n',
+        },
+      })
+    }
+  })
+
   test('BCH signed-message magic is the Bitcoin Cash Node string', () => {
     for (const item of [
       BCH_MAINNET,

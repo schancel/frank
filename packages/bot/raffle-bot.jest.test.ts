@@ -8,6 +8,7 @@ import {
 jest.mock('@frank/wallet/monad-stamp-client', () => ({
   ...jest.requireActual('@frank/wallet/monad-stamp-client'),
   recoverMonadStampPayments: jest.fn(),
+  sweepRecoveredMonadStampPayment: jest.fn(),
 }))
 
 /**
@@ -103,5 +104,140 @@ describe('recoverAndSweepEntryPayment (#319)', () => {
     const reason = (result as { reason: string }).reason
     expect(reason).toBe('payment 0.005 MON is below the required 0.02 MON')
     expect(reason).not.toMatch(/wei/)
+  })
+
+  const DUST = 2n * 10n ** 15n
+  const base = () => ({
+    message: {} as never,
+    recipientPrivateKey: new Uint8Array(32),
+    minTotalValueWei: 2n * 10n ** 16n,
+    destinationAddress: `0x${'11'.repeat(20)}`,
+    provider: {} as never,
+    httpClient: {} as never,
+    identitySigner: {} as never,
+    label: 'test',
+    dustToleranceWei: DUST,
+  })
+  const mocks = () =>
+    jest.requireMock('@frank/wallet/monad-stamp-client') as {
+      recoverMonadStampPayments: jest.Mock
+      sweepRecoveredMonadStampPayment: jest.Mock
+    }
+
+  it('credits an entry whose swept amount is the price minus one sweep gas', async () => {
+    const m = mocks()
+    m.recoverMonadStampPayments.mockReturnValue([
+      fakePayment(0, 2n * 10n ** 16n, '0xaaa'),
+    ])
+    m.sweepRecoveredMonadStampPayment.mockResolvedValue({
+      swept: true,
+      txHash: '0x1',
+      valueWei: 2n * 10n ** 16n - DUST,
+    })
+    expect(await recoverAndSweepEntryPayment(base())).toMatchObject({
+      ok: true,
+    })
+  })
+
+  it('does NOT credit an entry whose child held less than the claimed payment (swept + gas < price)', async () => {
+    const m = mocks()
+    m.recoverMonadStampPayments.mockReturnValue([
+      fakePayment(0, 2n * 10n ** 16n, '0xaaa'),
+    ])
+    m.sweepRecoveredMonadStampPayment.mockResolvedValue({
+      swept: true,
+      txHash: '0x1',
+      valueWei: 1n * 10n ** 16n, // the claim says 0.02 but only 0.01 was there to sweep
+    })
+    const result = await recoverAndSweepEntryPayment(base())
+    expect(result).toMatchObject({ ok: false })
+    expect((result as { reason: string }).reason).toMatch(
+      /reached the raffle identity/,
+    )
+  })
+
+  it('sums what was actually swept across every payment of a multi-payment entry', async () => {
+    const m = mocks()
+    m.recoverMonadStampPayments.mockReturnValue([
+      fakePayment(0, 1n * 10n ** 16n, '0xaaa'),
+      fakePayment(1, 1n * 10n ** 16n, '0xbbb'),
+    ])
+    m.sweepRecoveredMonadStampPayment.mockResolvedValue({
+      swept: true,
+      txHash: '0x1',
+      valueWei: 1n * 10n ** 16n - DUST,
+    })
+    expect(await recoverAndSweepEntryPayment(base())).toMatchObject({
+      ok: true,
+    })
+    m.sweepRecoveredMonadStampPayment.mockResolvedValue({
+      swept: true,
+      txHash: '0x1',
+      valueWei: 5n * 10n ** 15n, // 2 x (0.005 + 0.002 tolerance) < 0.02
+    })
+    expect(await recoverAndSweepEntryPayment(base())).toMatchObject({
+      ok: false,
+    })
+  })
+
+  it('sweeps an over-cap entry into the identity but does NOT credit it, reporting what to record', async () => {
+    const m = mocks()
+    m.sweepRecoveredMonadStampPayment.mockReset()
+    m.recoverMonadStampPayments.mockReturnValue(
+      [0, 1, 2, 3, 4, 5, 6].map(i => fakePayment(i, 4n * 10n ** 15n, `0x${i}`)),
+    )
+    m.sweepRecoveredMonadStampPayment.mockResolvedValue({
+      swept: true,
+      txHash: '0x1',
+      valueWei: 4n * 10n ** 15n - DUST,
+    })
+    const result = await recoverAndSweepEntryPayment({
+      ...base(),
+      minTotalValueWei: 2n * 10n ** 16n,
+    })
+    expect(result).toMatchObject({
+      ok: false,
+      paymentCount: 7,
+      sweptWei: 7n * (4n * 10n ** 15n - DUST),
+    })
+    expect((result as { reason: string }).reason).toMatch(/at most 6/)
+    expect((result as { paymentHashes: string[] }).paymentHashes).toHaveLength(7)
+    expect(m.sweepRecoveredMonadStampPayment).toHaveBeenCalledTimes(7)
+  })
+
+  it('credits up to the cap (6 payments) and reports the payment count', async () => {
+    const m = mocks()
+    m.sweepRecoveredMonadStampPayment.mockReset()
+    m.recoverMonadStampPayments.mockReturnValue(
+      [0, 1, 2, 3, 4, 5].map(i => fakePayment(i, 4n * 10n ** 15n, `0x${i}`)),
+    )
+    m.sweepRecoveredMonadStampPayment.mockResolvedValue({
+      swept: true,
+      txHash: '0x1',
+      valueWei: 4n * 10n ** 15n - DUST,
+    })
+    // 6 x (0.004 - 0.002) + 6 x 0.002 tolerance = 0.024 >= 0.02
+    expect(await recoverAndSweepEntryPayment(base())).toMatchObject({
+      ok: true,
+      paymentCount: 6,
+    })
+  })
+
+  it('an under-paying entry reports the swept amount so it can be refunded', async () => {
+    const m = mocks()
+    m.sweepRecoveredMonadStampPayment.mockReset()
+    m.recoverMonadStampPayments.mockReturnValue([
+      fakePayment(0, 2n * 10n ** 16n, '0xaaa'),
+    ])
+    m.sweepRecoveredMonadStampPayment.mockResolvedValue({
+      swept: true,
+      txHash: '0x1',
+      valueWei: 1n * 10n ** 16n,
+    })
+    expect(await recoverAndSweepEntryPayment(base())).toMatchObject({
+      ok: false,
+      sweptWei: 1n * 10n ** 16n,
+      paymentHashes: ['0xaaa'],
+    })
   })
 })

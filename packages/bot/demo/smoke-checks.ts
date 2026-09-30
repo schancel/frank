@@ -11,7 +11,7 @@ import {
   tryDecryptEnvelope,
 } from '@frank/cashweb/relay/monad-message-envelope'
 import { fetchMonadMessagesSince } from '@frank/cashweb/relay/monad-message-feed'
-import { MessageItem } from '@frank/cashweb/types/messages'
+import { MessageItem, RaffleItem } from '@frank/cashweb/types/messages'
 import { deserializeMessageItems } from '@frank/wallet/chain/monad-chain'
 import {
   fetchMonadIdentityPubKey,
@@ -290,7 +290,181 @@ export async function checkTopicPost(
   }
 }
 
+/** Judges a filled raffle round from what entrants received and what the fake chain saw (#363):
+ * every entrant got the same draw naming one of them, and the raffle identity paid exactly that
+ * winner exactly the pot in one transaction. Pure, unit-tested. */
+export function judgeRaffleFill(params: {
+  entrants: string[]
+  draws: Map<string, RaffleItem>
+  raffleAddress: string
+  txs: Array<{ from: string; to: string | null; valueWei: string }>
+  entryPriceWei: bigint
+  maxEntries: number
+}): SmokeCheck {
+  const name = 'raffle-round'
+  const { entrants, draws, raffleAddress, txs } = params
+  const missing = entrants.filter(e => !draws.has(e))
+  if (missing.length > 0) {
+    return {
+      name,
+      ok: false,
+      detail: `${missing.length}/${entrants.length} entrants got no draw message`,
+    }
+  }
+  const first = draws.get(entrants[0]) as RaffleItem
+  const winner = first.winnerAddress ?? ''
+  const pot = first.potWei ?? ''
+  if (
+    ![...draws.values()].every(
+      d => d.winnerAddress === winner && d.potWei === pot,
+    )
+  ) {
+    return {
+      name,
+      ok: false,
+      detail: 'entrants were sent different draw results',
+    }
+  }
+  if (!entrants.some(e => e.toLowerCase() === winner.toLowerCase())) {
+    return { name, ok: false, detail: 'the announced winner is not an entrant' }
+  }
+  if (entrants.length !== params.maxEntries) {
+    return {
+      name,
+      ok: false,
+      detail: `expected ${params.maxEntries} entrants, got ${entrants.length}`,
+    }
+  }
+  const expectedPot = params.entryPriceWei * BigInt(entrants.length)
+  if (pot !== expectedPot.toString()) {
+    return {
+      name,
+      ok: false,
+      detail: `the draw states a pot of ${pot} wei, expected ${expectedPot} (${entrants.length} x ${params.entryPriceWei})`,
+    }
+  }
+  // Everything the raffle identity sent to an entrant: exactly one payment, to the winner.
+  const isEntrant = (a: string | null) =>
+    a !== null && entrants.some(e => e.toLowerCase() === a.toLowerCase())
+  const toEntrants = txs.filter(
+    t => t.from.toLowerCase() === raffleAddress.toLowerCase() && isEntrant(t.to),
+  )
+  const others = toEntrants.filter(t => t.to?.toLowerCase() !== winner.toLowerCase())
+  if (others.length > 0) {
+    return {
+      name,
+      ok: false,
+      detail: `the raffle also paid ${others.length} non-winner entrant(s)`,
+    }
+  }
+  const payouts = toEntrants
+  if (payouts.length !== 1 || payouts[0].valueWei !== pot) {
+    return {
+      name,
+      ok: false,
+      detail: `expected exactly one payout of ${pot} wei to the winner, saw ${
+        payouts.length
+      } (${payouts.map(p => p.valueWei).join(',')})`,
+    }
+  }
+  return {
+    name,
+    ok: true,
+    detail: `${entrants.length} entrants drew; the winner was paid the ${pot} wei pot`,
+  }
+}
+
 const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms))
+
+async function checkRaffleFill(
+  handle: DemoHandle,
+  ctx: Pick<
+    Awaited<ReturnType<typeof setUpFundedStampClient>>,
+    'stampClient' | 'pool' | 'provider' | 'mainAccountSigner'
+  >,
+): Promise<SmokeCheck> {
+  const name = 'raffle-round'
+  try {
+    const raffle = handle.config.bots.find(b => b.name === 'raffle')
+    const maxEntries = Number(raffle?.env.RAFFLE_BOT_MAX_ENTRIES ?? 5)
+    const price = BigInt(
+      raffle?.env.RAFFLE_BOT_ENTRY_PRICE_WEI ?? '20000000000000000',
+    )
+    const raffleAddress = handle.addresses.raffle
+    const raffleKey = await fetchMonadIdentityPubKey({
+      relayBaseUrl: handle.relayUrl,
+      address: raffleAddress,
+    })
+    if (!raffleKey)
+      return { name, ok: false, detail: 'the raffle has no registered profile' }
+    const entrants: MonadIdentity[] = []
+    const startedAt = Date.now()
+    for (let i = 0; i < maxEntries; i++) {
+      const who = MonadIdentity.generate()
+      await registerAndLog({
+        relayBaseUrl: handle.relayUrl,
+        identity: who,
+        label: `raffle-entrant-${i}`,
+        bot: false,
+      })
+      entrants.push(who)
+      await sendDirectMessageItems({
+        ...ctx,
+        fromIdentity: who,
+        toAddress: raffleAddress,
+        toPubKey: raffleKey,
+        items: [{ type: 'raffle', raffleId: 'current', action: 'enter' }],
+        stampValueWei: price,
+        networkTag: handle.config.networkTag,
+      })
+    }
+    const draws = new Map<string, RaffleItem>()
+    const deadline = Date.now() + 120_000
+    while (draws.size < entrants.length && Date.now() < deadline) {
+      for (const who of entrants) {
+        if (draws.has(who.displayAddress)) continue
+        const stored = await fetchMonadMessagesSince({
+          ...mailboxAuthFor(who, handle.relayUrl),
+          sinceMs: startedAt,
+        })
+        for (const row of stored) {
+          if (!row.message) continue
+          const envelope = parseEnvelope(row.message.encryptedPayload)
+          if (
+            !envelope ||
+            !sameMonadEnvelopeAddress(envelope.from, raffleAddress)
+          )
+            continue
+          const plaintext = tryDecryptEnvelope({
+            envelope,
+            myPrivateKey: who.toBitcorePrivateKey(),
+            senderPubKey: raffleKey,
+          })
+          if (plaintext === undefined) continue
+          const draw = deserializeMessageItems(plaintext).find(
+            (i): i is RaffleItem => i.type === 'raffle' && i.action === 'draw',
+          )
+          if (draw) draws.set(who.displayAddress, draw)
+        }
+      }
+      if (draws.size < entrants.length) await sleep(2000)
+    }
+    return judgeRaffleFill({
+      entrants: entrants.map(e => e.displayAddress),
+      draws,
+      raffleAddress,
+      txs: handle.fakeRpc?.transactions() ?? [],
+      entryPriceWei: price,
+      maxEntries,
+    })
+  } catch (err) {
+    return {
+      name,
+      ok: false,
+      detail: err instanceof Error ? err.message : String(err),
+    }
+  }
+}
 
 export async function runSmokeChecks(
   handle: DemoHandle,
@@ -384,6 +558,15 @@ export async function runSmokeChecks(
       }
     }
 
+    // Fill a raffle round: N fresh entrants each pay the entry price, then everyone must receive
+    // the draw and the winner must actually be paid the pot (the #363 acceptance check).
+    const raffleCheck = await checkRaffleFill(handle, {
+      stampClient,
+      pool,
+      mainAccountSigner,
+      provider,
+    })
+
     // The faucet has no chat: it must have sent the new profile a transfer on the fake chain.
     let funded = false
     while (!funded && Date.now() < deadline) {
@@ -395,7 +578,13 @@ export async function runSmokeChecks(
     const faucet: SmokeCheck = funded
       ? { name: 'faucet', ok: true, detail: 'funded the new profile' }
       : { name: 'faucet', ok: false, detail: 'no funding transfer to the new profile' }
-    return [...Object.keys(PROMPTS).map(b => results.get(b) as SmokeCheck), faucet, topicPost, cors]
+    return [
+      ...Object.keys(PROMPTS).map(b => results.get(b) as SmokeCheck),
+      faucet,
+      topicPost,
+      cors,
+      raffleCheck,
+    ]
   } finally {
     await closePool()
   }

@@ -8,6 +8,7 @@ import { buildTopicPostPayload } from '@frank/wallet/monad-topic-post-client'
 import {
   checkCors,
   classifyReply,
+  judgeRaffleFill,
   POSTED_MESSAGE,
   POSTED_TITLE,
   verifyReadBackPost,
@@ -144,5 +145,83 @@ describe('verifyReadBackPost (#364)', () => {
       verifyReadBackPost(buildTopicPostPayload({ topic: 'news', entries: [] }), 'ab').detail,
     ).toMatch(/no entries/)
     expect(verifyReadBackPost(undefined, 'ab').detail).toMatch(/does not return it/)
+  })
+})
+
+describe('judgeRaffleFill (#363)', () => {
+  const E = ['0xaa', '0xbb', '0xcc']
+  const RAFFLE = '0xraffle'
+  const draw = (winner: string): MessageItem =>
+    ({
+      type: 'raffle',
+      raffleId: 'r',
+      action: 'draw',
+      winnerAddress: winner,
+      potWei: '60',
+    } as MessageItem)
+  const draws = (winner = '0xbb') =>
+    new Map(E.map(e => [e, draw(winner) as never]))
+  const pay = { from: RAFFLE, to: '0xbb', valueWei: '60' }
+  it('passes when everyone got the draw and the winner was paid exactly the pot once', () => {
+    expect(
+      judgeRaffleFill({
+        entrants: E,
+        draws: draws(),
+        raffleAddress: RAFFLE,
+        entryPriceWei: 20n,
+        maxEntries: 3,
+        txs: [pay],
+      }).ok,
+    ).toBe(true)
+  })
+  it.each([
+    ['no payout', []],
+    ['a short payout', [{ ...pay, valueWei: '59' }]],
+    ['a double payout', [pay, pay]],
+    ['a payout to someone else', [{ ...pay, to: '0xcc' }]],
+  ])('fails on %s', (_n, txs) => {
+    expect(
+      judgeRaffleFill({
+        entrants: E,
+        draws: draws(),
+        raffleAddress: RAFFLE,
+        entryPriceWei: 20n,
+        maxEntries: 3,
+        txs,
+      }).ok,
+    ).toBe(false)
+  })
+  it('fails on a wrong pot, a wrong round size, or a payment to a non-winner entrant', () => {
+    const base = { entrants: E, raffleAddress: RAFFLE, entryPriceWei: 20n, maxEntries: 3 }
+    expect(judgeRaffleFill({ ...base, draws: draws(), txs: [pay], entryPriceWei: 25n }).ok).toBe(false) // pot 60 != 75
+    expect(judgeRaffleFill({ ...base, draws: draws(), txs: [pay], maxEntries: 4 }).ok).toBe(false)
+    const extra = { from: RAFFLE, to: '0xcc', valueWei: '1' }
+    expect(judgeRaffleFill({ ...base, draws: draws(), txs: [pay, extra] }).ok).toBe(false)
+    // Payments to non-entrants (e.g. a top-up recipient) are not this check's business.
+    expect(judgeRaffleFill({ ...base, draws: draws(), txs: [pay, { from: RAFFLE, to: '0xdd', valueWei: '9' }] }).ok).toBe(true)
+  })
+  it('fails when an entrant got no draw or the winner is not an entrant', () => {
+    const partial = draws()
+    partial.delete('0xcc')
+    expect(
+      judgeRaffleFill({
+        entrants: E,
+        draws: partial,
+        raffleAddress: RAFFLE,
+        entryPriceWei: 20n,
+        maxEntries: 3,
+        txs: [pay],
+      }).ok,
+    ).toBe(false)
+    expect(
+      judgeRaffleFill({
+        entrants: E,
+        draws: draws('0xzz'),
+        raffleAddress: RAFFLE,
+        entryPriceWei: 20n,
+        maxEntries: 3,
+        txs: [{ ...pay, to: '0xzz' }],
+      }).ok,
+    ).toBe(false)
   })
 })

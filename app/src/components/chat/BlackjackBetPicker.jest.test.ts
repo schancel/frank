@@ -25,7 +25,12 @@ const mockErrorNotify = jest.fn()
 jest.mock('../../utils/notifications', () => ({
   errorNotify: (e: unknown) => mockErrorNotify(e),
 }))
+jest.mock('../../utils/own-address', () => ({
+  getOwnCanonicalAddress: async () =>
+    '0xAAAA00000000000000000000000000000000BBBB',
+}))
 const mockSend = jest.fn()
+const mockStatus = jest.fn()
 jest.mock('@frank/wallet/chain', () => ({
   activeChain: {
     unit: 'MON',
@@ -39,7 +44,11 @@ jest.mock('@frank/wallet/chain', () => ({
       if (frac.length > 18) throw new Error('too many decimals')
       return BigInt((whole || '0') + frac.padEnd(18, '0'))
     },
-    nativeTransfers: { send: (args: unknown) => mockSend(args) },
+    formatAddress: (a: { raw: string }) => a.raw,
+    nativeTransfers: {
+      send: (args: unknown) => mockSend(args),
+      getTransactionStatus: (args: unknown) => mockStatus(args),
+    },
   },
 }))
 
@@ -195,6 +204,8 @@ const confirm = async (w: Wrapper) => {
 const button = (w: Wrapper) => w.find('[data-testid="blackjack-bet-submit"]')
 const status = (w: Wrapper) => w.find('[role="status"]').text()
 const flush = () => flushPromises()
+const HASH = `0x${'ab'.repeat(32)}`
+const broadcast: string[] = []
 const stored = () =>
   JSON.parse(storageData.unsentWagers ?? '{"wagers":[]}').wagers
 async function place(w: Wrapper, amount?: string) {
@@ -209,8 +220,20 @@ describe('BlackjackBetPicker (ticket #310: first bet entry point)', () => {
     balance.value = 5n * 10n ** 18n
     storageData = {}
     failPut = false
-    mockGetWallet.mockReset().mockResolvedValue({ wallet: true })
-    mockSend.mockReset().mockResolvedValue({ txHash: `0x${'ab'.repeat(32)}` })
+    mockGetWallet.mockReset().mockResolvedValue({
+      wallet: true,
+      identity: {
+        address: { raw: '0xAAAA00000000000000000000000000000000BBBB' },
+      },
+    })
+    mockStatus.mockReset().mockResolvedValue('confirmed')
+    // Like the real wallet: sign, await onSigned (persist), THEN "broadcast".
+    mockSend.mockReset().mockImplementation(async (args: any) => {
+      await args.onSigned?.({ txHash: HASH })
+      broadcast.push(HASH)
+      return { txHash: HASH }
+    })
+    broadcast.length = 0
     mockErrorNotify.mockReset()
     document.body.innerHTML = ''
   })
@@ -260,28 +283,41 @@ describe('BlackjackBetPicker (ticket #310: first bet entry point)', () => {
     expect(mockSend).not.toHaveBeenCalled()
   })
 
-  it('places the first bet: one transfer, a durable record first, then one bet item, then the record is removed', async () => {
+  it('places the first bet: one transfer, the record persisted BEFORE broadcast, one bet item, record kept as sent until the dealer replies', async () => {
     const pinia = installPinia()
     const store = useUnsentWagersStore()
     await store.restored
+    let recordedAtBroadcast: unknown[] = []
+    mockSend.mockImplementation(async (args: any) => {
+      await args.onSigned({ txHash: HASH })
+      recordedAtBroadcast = stored() // what storage holds the instant bytes would be sent
+      broadcast.push(HASH)
+      return { txHash: HASH }
+    })
     let recordedBeforeSend: unknown[] = []
     const submit = jest.fn(async () => {
-      recordedBeforeSend = stored()
+      recordedBeforeSend = useUnsentWagersStore().wagers.map(w => ({ ...w }))
     })
     const { wrapper } = mountPicker({ submit, pinia })
     await place(wrapper, '0.25')
     expect(mockSend).toHaveBeenCalledTimes(1)
     expect(mockSend).toHaveBeenCalledWith({
-      wallet: { wallet: true },
+      wallet: expect.objectContaining({ wallet: true }),
       recipient: { raw: DEALER },
       value: 250000000000000000n,
+      onSigned: expect.any(Function),
     })
-    expect(recordedBeforeSend).toEqual([
+    expect(recordedAtBroadcast).toEqual([
       expect.objectContaining({
-        wagerTxHash: `0x${'ab'.repeat(32)}`,
+        wagerTxHash: HASH,
         dealerAddress: DEALER,
+        walletAddress: '0xAAAA00000000000000000000000000000000BBBB',
         amountWei: '250000000000000000',
+        state: 'signed',
       }),
+    ])
+    expect(recordedBeforeSend).toEqual([
+      expect.objectContaining({ state: 'paid' }),
     ])
     const payload = submit.mock.calls[0][0]
     expect(payload.address).toBe(DEALER)
@@ -293,7 +329,10 @@ describe('BlackjackBetPicker (ticket #310: first bet entry point)', () => {
         wagerTxHash: `0x${'ab'.repeat(32)}`,
       },
     ])
-    expect(stored()).toEqual([])
+    // Delivered is not proven: the record stays (state sent) until the dealer replies.
+    expect(stored()).toEqual([
+      expect.objectContaining({ wagerTxHash: HASH, state: 'sent' }),
+    ])
     expect(wrapper.emitted('placed')).toHaveLength(1)
     expect(status(wrapper)).toBe('Bet sent. Waiting for the dealer to deal.')
   })
@@ -328,7 +367,7 @@ describe('BlackjackBetPicker (ticket #310: first bet entry point)', () => {
     expect(submit).toHaveBeenCalledTimes(1)
     // The record exists but is "in flight": no stranded-wager alarm during a normal send.
     expect(useUnsentWagersStore().wagers).toHaveLength(1)
-    expect(useUnsentWagersStore().stranded(DEALER)).toHaveLength(0)
+    expect(useUnsentWagersStore().inFlight).toEqual([HASH])
     await wrapper.find('form').trigger('submit')
     expect(mockSend).toHaveBeenCalledTimes(1)
     finish()
@@ -449,9 +488,9 @@ describe('BlackjackBetPicker (ticket #310: first bet entry point)', () => {
     expect(wrapper.emitted('placed')).toBeUndefined()
     expect(wrapper.emitted('pendingChange')).toEqual([[true], [false]])
     expect(stored()).toEqual([
-      expect.objectContaining({ wagerTxHash: `0x${'ab'.repeat(32)}` }),
+      expect.objectContaining({ wagerTxHash: HASH, state: 'paid' }),
     ])
-    expect(useUnsentWagersStore().stranded(DEALER)).toHaveLength(1)
+    expect(useUnsentWagersStore().inFlight).toEqual([])
   })
 
   it('an unsent record blocks a NEW wager to that dealer (no second transfer without action on the record)', async () => {
@@ -466,13 +505,81 @@ describe('BlackjackBetPicker (ticket #310: first bet entry point)', () => {
     expect(mockSend).toHaveBeenCalledTimes(1)
   })
 
-  it('a storage failure after payment still attempts delivery and reports the tx hash', async () => {
+  it('F1: if the record cannot be saved, nothing is broadcast and it is safe to say nothing was paid', async () => {
     failPut = true
-    const submit = jest.fn().mockRejectedValue(new Error('relay down'))
-    const { wrapper } = mountPicker({ submit })
+    const { wrapper, submit } = mountPicker()
     await place(wrapper)
+    expect(broadcast).toEqual([])
+    expect(submit).not.toHaveBeenCalled()
+    expect(status(wrapper)).toContain('Could not place the bet')
+    expect(useUnsentWagersStore().wagers).toEqual([])
+  })
+
+  it('F1: a lost broadcast response after signing is reconciled with the node: mined -> the bet is still delivered', async () => {
+    mockSend.mockImplementation(async (args: any) => {
+      await args.onSigned({ txHash: HASH })
+      throw new Error('socket hang up') // node accepted it, the response never arrived
+    })
+    const { wrapper, submit } = mountPicker()
+    await place(wrapper)
+    expect(mockStatus).toHaveBeenCalledWith(
+      expect.objectContaining({ txHash: HASH }),
+    )
     expect(submit).toHaveBeenCalledTimes(1)
-    expect(status(wrapper)).toContain(`0x${'ab'.repeat(32)}`)
+    expect(submit.mock.calls[0][0].items[0].wagerTxHash).toBe(HASH)
+    expect(stored()).toEqual([expect.objectContaining({ state: 'sent' })])
+  })
+
+  it.each([
+    ['unknown', 'paymentUnknown'],
+    ['pending', 'paymentPending'],
+  ])(
+    'F1: a lost broadcast whose hash is %s never claims nothing was paid; the record is kept for reconciliation',
+    async (nodeSays, key) => {
+      mockSend.mockImplementation(async (args: any) => {
+        await args.onSigned({ txHash: HASH })
+        throw new Error('socket hang up')
+      })
+      mockStatus.mockResolvedValue(nodeSays)
+      const { wrapper, submit } = mountPicker()
+      await wrapper.setProps({ paymentTimeoutMs: 20, paymentPollMs: 1 })
+      await place(wrapper)
+      await new Promise(r => setTimeout(r, 80))
+      await flush()
+      expect(submit).not.toHaveBeenCalled()
+      expect(status(wrapper)).toBe(t(enUS, `blackjackBet.${key}`))
+      expect(status(wrapper)).not.toMatch(/nothing was paid(?!\.)|no wager/i)
+      expect(stored()).toEqual([expect.objectContaining({ state: 'signed' })])
+      expect(useUnsentWagersStore().inFlight).toEqual([])
+    },
+  )
+
+  it('F2: the bet message is not sent until the wager receipt is confirmed (waits, then sends)', async () => {
+    let confirmed = false
+    mockStatus.mockImplementation(async () =>
+      confirmed ? 'confirmed' : 'pending',
+    )
+    const submit = jest.fn().mockResolvedValue(undefined)
+    const { wrapper } = mountPicker({ submit })
+    await wrapper.setProps({ paymentTimeoutMs: 2000, paymentPollMs: 5 })
+    await confirm(wrapper)
+    await wrapper.find('form').trigger('submit')
+    await new Promise(r => setTimeout(r, 60))
+    expect(status(wrapper)).toBe(t(enUS, 'blackjackBet.confirming'))
+    expect(submit).not.toHaveBeenCalled()
+    confirmed = true
+    await new Promise(r => setTimeout(r, 40))
+    await flush()
+    expect(submit).toHaveBeenCalledTimes(1)
+  })
+
+  it('F2: a wager that failed on chain is removed and no bet is sent', async () => {
+    mockStatus.mockResolvedValue('failed')
+    const { wrapper, submit } = mountPicker()
+    await place(wrapper)
+    expect(submit).not.toHaveBeenCalled()
+    expect(stored()).toEqual([])
+    expect(status(wrapper)).toBe(t(enUS, 'blackjackBet.errorPaymentFailed'))
   })
 
   it('does not start a transfer while the chat is busy sending', async () => {

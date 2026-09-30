@@ -6,12 +6,14 @@ import type { LevelDB } from 'level'
 import { createStoragePlugin } from '../boot/pinia'
 import { restoreUnsentWagers, useUnsentWagersStore } from './unsent-wagers'
 
-const wager = (hash: string, dealer = '0xDealer') => ({
+const wager = (hash: string, dealer = '0xDealer', wallet = '0xMe') => ({
   gameId: `g-${hash}`,
   wagerTxHash: hash,
   dealerAddress: dealer,
+  walletAddress: wallet,
   amountWei: '100000000000000000',
   createdAt: 1,
+  state: 'signed' as const,
 })
 
 function boot(data: Record<string, string>) {
@@ -42,13 +44,13 @@ describe('unsent wagers store (#310)', () => {
     first.add(wager('0xh1'))
     first.setInFlight('0xh1', true)
     await first.flushPersistence()
-    expect(first.stranded('0xDealer')).toHaveLength(0) // being sent right now
+    expect(first.inFlight).toEqual(['0xh1'])
 
     const reloaded = boot(data) // same storage, fresh app
     await reloaded.restored
     expect(reloaded.wagers).toEqual([wager('0xh1')])
     expect(reloaded.inFlight).toEqual([])
-    expect(reloaded.stranded('0xdealer')).toEqual([wager('0xh1')]) // needs attention
+    expect(reloaded.forDealer('0xdealer', '0xme')).toEqual([wager('0xh1')])
   })
 
   it('is idempotent per transaction hash and removal clears the record', async () => {
@@ -61,20 +63,86 @@ describe('unsent wagers store (#310)', () => {
     expect(store.wagers).toEqual([])
   })
 
-  it('scopes records by dealer address', async () => {
+  it('scopes records by dealer AND paying wallet (another account never sees or is blocked by them)', async () => {
     const store = boot({})
     await store.restored
-    store.add(wager('0xh1', '0xA'))
-    store.add(wager('0xh2', '0xB'))
-    expect(store.forDealer('0xA').map(w => w.wagerTxHash)).toEqual(['0xh1'])
+    store.add(wager('0xh1', '0xA', '0xMe'))
+    store.add(wager('0xh2', '0xB', '0xMe'))
+    store.add(wager('0xh3', '0xA', '0xSomeoneElse'))
+    expect(store.forDealer('0xA', '0xMe').map(w => w.wagerTxHash)).toEqual([
+      '0xh1',
+    ])
+    expect(store.forDealer('0xA', '0xNew')).toEqual([])
+  })
+
+  it('a state transition and sentAt are persisted', async () => {
+    const data: Record<string, string> = {}
+    const store = boot(data)
+    await store.restored
+    store.add(wager('0xh1'))
+    store.setState('0xh1', 'sent', 99, 4)
+    await store.flushPersistence()
+    expect(JSON.parse(data.unsentWagers).wagers[0]).toMatchObject({
+      state: 'sent',
+      sentAt: 99,
+      seenMessages: 4,
+    })
+  })
+
+  it('F4: an unreadable stored value is never overwritten, and adding a record throws (aborting a new wager)', async () => {
+    const data: Record<string, string> = { unsentWagers: '{not json' }
+    const store = boot(data)
+    await store.restored
+    expect(store.loadError).toMatch(/unreadable/)
+    expect(() => store.add(wager('0xh1'))).toThrow(/unreadable/)
+    store.setInFlight('0xzz', true) // any mutation triggers a save attempt
+    await store.flushPersistence()
+    expect(data.unsentWagers).toBe('{not json')
+  })
+
+  it('F4: an I/O error (not "not found") is surfaced, a missing key is just empty', async () => {
+    const io = {
+      get: async () => {
+        throw new Error('EIO disk')
+      },
+    } as unknown as LevelDB
+    expect((await restoreUnsentWagers(io)).loadError).toMatch(/EIO disk/)
+    const missing = {
+      get: async () => {
+        throw Object.assign(new Error('NotFound: key'), { notFound: true })
+      },
+    } as unknown as LevelDB
+    expect(await restoreUnsentWagers(missing)).toEqual({})
+  })
+
+  it('a pre-state record (older format) restores as paid with no wallet', async () => {
+    const old = {
+      get: async () =>
+        JSON.stringify({
+          wagers: [
+            {
+              gameId: 'g',
+              wagerTxHash: '0xh',
+              dealerAddress: '0xD',
+              amountWei: '1',
+              createdAt: 1,
+            },
+          ],
+        }),
+    } as unknown as LevelDB
+    expect((await restoreUnsentWagers(old)).wagers).toEqual([
+      expect.objectContaining({ state: 'paid', walletAddress: '' }),
+    ])
   })
 
   it('tolerates a corrupt or missing blob', async () => {
     const bad = { get: async () => 'not json' } as unknown as LevelDB
-    expect(await restoreUnsentWagers(bad)).toEqual({})
+    expect((await restoreUnsentWagers(bad)).loadError).toBeTruthy()
     const junk = {
       get: async () => JSON.stringify({ wagers: [{ nope: 1 }, wager('0xok')] }),
     } as unknown as LevelDB
-    expect((await restoreUnsentWagers(junk)).wagers).toEqual([wager('0xok')])
+    expect((await restoreUnsentWagers(junk)).wagers).toEqual([
+      expect.objectContaining({ wagerTxHash: '0xok' }),
+    ])
   })
 })

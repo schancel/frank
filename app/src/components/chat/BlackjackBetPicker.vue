@@ -61,14 +61,18 @@
 <script lang="ts">
 import { defineComponent, PropType } from 'vue'
 
-import { MessageItem } from '@frank/cashweb/types/messages'
+import { BlackjackMoveItem, MessageItem } from '@frank/cashweb/types/messages'
 import { activeChain } from '@frank/wallet/chain'
 
 import { useBalance } from '../../composables/useBalance'
 import { useUnsentWagersStore } from '../../stores/unsent-wagers'
+import { getOwnCanonicalAddress } from '../../utils/own-address'
 import {
+  awaitPayment,
   BetErrorCode,
   betFundsRequired,
+  checkWagerStatus,
+  WagerBroadcastError,
   BET_MESSAGE_FEE_RESERVE_WEI,
   betLimitsDisplay,
   parseBetInput,
@@ -124,6 +128,9 @@ export default defineComponent({
     },
     /** The chat is already sending something; hold off starting a new transfer. */
     busy: { type: Boolean, default: false },
+    /** How long to wait for the wager's receipt before handing the record to the chat banner. */
+    paymentTimeoutMs: { type: Number, default: undefined },
+    paymentPollMs: { type: Number, default: undefined },
   },
   emits: ['placed', 'pendingChange'],
   setup() {
@@ -134,8 +141,10 @@ export default defineComponent({
     return {
       amountDisplay: DEFAULT_BET_AMOUNT_DISPLAY,
       pending: false,
+      phase: '' as '' | 'confirming',
       sent: false,
       confirmed: false,
+      walletAddress: '',
       actionError: '',
     }
   },
@@ -154,7 +163,8 @@ export default defineComponent({
     },
     /** A previous wager to this dealer was paid but its bet message is still undelivered. */
     unsentBlock(): string {
-      return useUnsentWagersStore().forDealer(this.address).length
+      return useUnsentWagersStore().forDealer(this.address, this.walletAddress)
+        .length
         ? this.$t('blackjackBet.errorUnsent')
         : ''
     },
@@ -189,9 +199,13 @@ export default defineComponent({
     },
     statusText(): string {
       if (this.actionError) return this.actionError
+      if (this.phase === 'confirming') return this.$t('blackjackBet.confirming')
       if (this.pending) return this.$t('blackjackBet.sending')
       return this.sent ? this.$t('blackjackBet.sent') : ''
     },
+  },
+  async created() {
+    this.walletAddress = (await getOwnCanonicalAddress()) ?? ''
   },
   watch: {
     pending(value: boolean) {
@@ -226,52 +240,101 @@ export default defineComponent({
       const submit = this.submit
       const address = this.address
       const unsent = useUnsentWagersStore()
-      let betItem: Awaited<ReturnType<typeof sendBlackjackWager>>
-      try {
-        betItem = await sendBlackjackWager(address, parsed.wei)
-      } catch (err) {
-        // Nothing was paid: a plain failure the player can retry.
+      const fail = (err: unknown, key: string) => {
         const error = err instanceof Error ? err : new Error(String(err))
-        this.actionError = /insufficient/i.test(error.message)
-          ? this.$t('blackjackBet.errorFunds', { message: error.message })
-          : this.$t('blackjackBet.errorSend', { message: error.message })
+        this.actionError = this.$t(
+          /insufficient/i.test(error.message) ? 'blackjackBet.errorFunds' : key,
+          { message: error.message },
+        )
         errorNotify(error)
-        this.focusInput()
+      }
+
+      // 1. Pay. The record is persisted BEFORE any byte is broadcast (onSigned), so a lost
+      // broadcast response or a killed app can never leave a paid wager without a record.
+      let hash = ''
+      let betItem: BlackjackMoveItem | undefined
+      try {
+        betItem = await sendBlackjackWager(address, parsed.wei, {
+          onSigned: async info => {
+            await unsent.restored
+            unsent.add({
+              gameId: info.gameId,
+              walletAddress: info.walletAddress,
+              wagerTxHash: info.txHash,
+              dealerAddress: address,
+              amountWei: parsed.wei.toString(),
+              createdAt: Date.now(),
+              state: 'signed',
+            })
+            unsent.setInFlight(info.txHash, true)
+            // A failed flush rejects here, which aborts the broadcast: nothing is paid.
+            await unsent.flushPersistence()
+          },
+        })
+        hash = betItem.wagerTxHash as string
+      } catch (err) {
+        if (err instanceof WagerBroadcastError) {
+          // Signed and recorded, but the broadcast outcome is unknown: reconcile with the node
+          // below. NEVER claim nothing was paid from here on.
+          hash = err.txHash
+        } else {
+          // Nothing was broadcast (signing, funds, or the record could not be saved first).
+          const stale = unsent.wagers.find(
+            w =>
+              w.state === 'signed' && unsent.inFlight.includes(w.wagerTxHash),
+          )
+          if (stale) unsent.remove(stale.wagerTxHash)
+          fail(err, 'blackjackBet.errorSend')
+          this.focusInput()
+          this.pending = false
+          return
+        }
+      }
+
+      // 2. Wait (bounded) for the receipt: the dealer drops a bet whose payment it cannot verify
+      // yet, so the bet message must not go out before the wager is mined.
+      this.phase = 'confirming'
+      const status = await awaitPayment(() => checkWagerStatus(hash), {
+        timeoutMs: this.paymentTimeoutMs,
+        pollMs: this.paymentPollMs,
+      })
+      this.phase = ''
+      if (status === 'failed') {
+        unsent.remove(hash)
+        this.actionError = this.$t('blackjackBet.errorPaymentFailed')
         this.pending = false
         return
       }
-      // The wager is PAID. From here every failure must leave a durable, retryable record: the
-      // dealer only acts on messages it receives, so an unrecorded wager would be stranded.
-      const hash = betItem.wagerTxHash as string
-      let saveFailed = false
-      try {
-        await unsent.restored
-        unsent.add({
-          gameId: betItem.gameId,
-          wagerTxHash: hash,
-          dealerAddress: address,
-          amountWei: parsed.wei.toString(),
-          createdAt: Date.now(),
-        })
-        unsent.setInFlight(hash, true)
-        await unsent.flushPersistence()
-      } catch {
-        saveFailed = true
+      if (status !== 'confirmed') {
+        // Still pending, or the node does not know it (yet): keep the record for the chat banner
+        // to reconcile; say exactly that, never "nothing was paid".
+        unsent.setInFlight(hash, false)
+        this.actionError = this.$t(
+          status === 'pending'
+            ? 'blackjackBet.paymentPending'
+            : 'blackjackBet.paymentUnknown',
+        )
+        this.pending = false
+        return
+      }
+      unsent.setState(hash, 'paid')
+
+      // 3. Deliver the bet for THIS wager. The record stays until the dealer's reply proves it.
+      const item = betItem ?? {
+        type: 'blackjack-move' as const,
+        gameId: unsent.wagers.find(w => w.wagerTxHash === hash)?.gameId ?? '',
+        action: 'bet' as const,
+        wagerTxHash: hash,
       }
       try {
-        await submit({ items: [betItem], address })
-        unsent.remove(hash)
+        await submit({ items: [item], address })
+        unsent.setState(hash, 'sent', Date.now())
+        unsent.setInFlight(hash, false)
         this.sent = true
         this.$emit('placed')
       } catch (err) {
-        const error = err instanceof Error ? err : new Error(String(err))
         unsent.setInFlight(hash, false)
-        this.actionError = this.$t('blackjackBet.notDelivered', {
-          message: `${error.message}${
-            saveFailed ? ` (wager transaction ${hash}, not saved locally)` : ''
-          }`,
-        })
-        errorNotify(error)
+        fail(err, 'blackjackBet.notDelivered')
       } finally {
         this.pending = false
       }

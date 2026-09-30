@@ -2,6 +2,7 @@ import { BlackjackMoveItem } from '@frank/cashweb/types/messages'
 import { activeChain } from '@frank/wallet/chain'
 import {
   BLACKJACK_DEFAULT_MAX_WAGER_WEI,
+  parseBlackjackError,
   BLACKJACK_DEFAULT_MIN_WAGER_WEI,
   validateBetWei,
 } from '@frank/wallet/message-item-plugins/blackjack/game'
@@ -58,29 +59,139 @@ export function betLimitsDisplay(): { min: string; max: string } {
   }
 }
 
+/** The wager was signed and its hash persisted (so a broadcast may have happened) but `send`
+ * failed: the transfer may or may not have reached the chain. Only the node can say; never treat
+ * this as "nothing was paid". */
+export class WagerBroadcastError extends Error {
+  constructor(
+    readonly txHash: string,
+    readonly gameId: string,
+    cause: unknown,
+  ) {
+    super(cause instanceof Error ? cause.message : String(cause))
+    this.name = 'WagerBroadcastError'
+  }
+}
+
 /**
  * Sends ONE wager transfer to the dealer and returns the `bet` move that references it. Every
  * call creates a fresh `gameId` and a fresh transfer: the caller must have validated `wei` first
  * and must not call this twice for one click (the transfer is real money and the dealer claims
  * each transaction hash for exactly one stake).
+ *
+ * `onSigned` runs with the hash after signing and BEFORE any byte is broadcast; if it rejects,
+ * nothing is sent and that error propagates unchanged (definitely nothing paid). Any failure
+ * AFTER `onSigned` succeeded surfaces as a {@link WagerBroadcastError} (paid: unknown).
  */
 export async function sendBlackjackWager(
   dealerAddress: string,
   wei: bigint,
+  hooks: {
+    onSigned?: (info: {
+      gameId: string
+      txHash: string
+      walletAddress: string
+    }) => Promise<void>
+  } = {},
 ): Promise<BlackjackMoveItem> {
   const wallet = await useActiveWallet()
-  const result = await activeChain.nativeTransfers.send({
-    wallet,
-    recipient: { raw: dealerAddress },
-    value: wei,
-  })
   const gameId = `bj-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-  return {
-    type: 'blackjack-move',
-    gameId,
-    action: 'bet',
-    wagerTxHash: result.txHash,
+  let signedHash: string | undefined
+  try {
+    const result = await activeChain.nativeTransfers.send({
+      wallet,
+      recipient: { raw: dealerAddress },
+      value: wei,
+      onSigned: async ({ txHash }) => {
+        await hooks.onSigned?.({
+          gameId,
+          txHash,
+          walletAddress: activeChain.formatAddress(wallet.identity.address),
+        })
+        signedHash = txHash
+      },
+    })
+    return {
+      type: 'blackjack-move',
+      gameId,
+      action: 'bet',
+      wagerTxHash: result.txHash,
+    }
+  } catch (err) {
+    if (signedHash !== undefined) {
+      throw new WagerBroadcastError(signedHash, gameId, err)
+    }
+    throw err
   }
+}
+
+export type PaymentStatus = 'confirmed' | 'failed' | 'pending' | 'unknown'
+
+/** What the node says about a wager transaction hash right now. */
+export async function checkWagerStatus(txHash: string): Promise<PaymentStatus> {
+  const wallet = await useActiveWallet()
+  return activeChain.nativeTransfers.getTransactionStatus({ wallet, txHash })
+}
+
+export const PAYMENT_CONFIRM_TIMEOUT_MS = 60_000
+export const PAYMENT_POLL_MS = 2_000
+
+/**
+ * Polls `getStatus` until the payment is `confirmed` or `failed`, or the bounded time runs out
+ * (then the last status is returned: `pending` or `unknown`). A lookup error counts as `pending`
+ * (an RPC hiccup is not evidence that nothing was paid).
+ */
+export async function awaitPayment(
+  getStatus: () => Promise<PaymentStatus>,
+  opts: { timeoutMs?: number; pollMs?: number } = {},
+): Promise<PaymentStatus> {
+  const deadline = Date.now() + (opts.timeoutMs ?? PAYMENT_CONFIRM_TIMEOUT_MS)
+  let last: PaymentStatus = 'pending'
+  for (;;) {
+    try {
+      last = await getStatus()
+    } catch {
+      last = 'pending'
+    }
+    if (last === 'confirmed' || last === 'failed') return last
+    if (Date.now() >= deadline) return last
+    await new Promise(resolve =>
+      setTimeout(resolve, opts.pollMs ?? PAYMENT_POLL_MS),
+    )
+  }
+}
+
+export type DealerReply = 'none' | 'accepted' | 'unconfirmed' | 'rejected'
+
+/**
+ * What the dealer answered for `gameId`, from the chat history: a `blackjack-move` for the game =
+ * `accepted` (the hand is dealt); a game-tagged error "already authorized" = `accepted` (this very
+ * wager already has its game); one saying the payment could not be verified/is unconfirmed =
+ * `unconfirmed` (the bet was DROPPED, retry is safe); any other tagged error = `rejected` (the bot
+ * refunds a rejected stake). The latest reply wins.
+ */
+export function dealerReplyFor(
+  messages: Array<{ outbound: boolean; items: Array<Record<string, any>> }>,
+  gameId: string,
+): DealerReply {
+  let reply: DealerReply = 'none'
+  for (const message of messages) {
+    if (message.outbound) continue
+    for (const item of message.items) {
+      if (item.type === 'blackjack-move' && item.gameId === gameId) {
+        reply = 'accepted'
+      } else if (item.type === 'text') {
+        const parsed = parseBlackjackError(String(item.text))
+        if (parsed?.gameId !== gameId) continue
+        reply = /already authorized/i.test(parsed.text)
+          ? 'accepted'
+          : /unconfirmed|could not verify/i.test(parsed.text)
+          ? 'unconfirmed'
+          : 'rejected'
+      }
+    }
+  }
+  return reply
 }
 
 /**
@@ -106,6 +217,7 @@ export function shortAddress(address: string): string {
 }
 
 export const BET_DELIVERY_TIMEOUT_MS = 30_000
+export const BET_SEND_TIMEOUT_MS = 120_000
 
 /**
  * Delivers a `bet` move whose wager transfer is already paid, via the chat's send pipeline, and
@@ -123,6 +235,8 @@ export async function deliverBetWhenReady(opts: {
   send: () => Promise<boolean>
   pollMs?: number
   timeoutMs?: number
+  /** Bound on the send itself (a pipeline that never settles must not hide the wager). */
+  sendTimeoutMs?: number
 }): Promise<void> {
   const check = () => {
     if (opts.currentAddress() !== opts.betAddress) {
@@ -140,7 +254,20 @@ export async function deliverBetWhenReady(opts: {
     await new Promise(resolve => setTimeout(resolve, opts.pollMs ?? 100))
     check()
   }
-  if (!(await opts.send())) {
-    throw new Error('The bet message could not be sent.')
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timedOut = new Promise<'timeout'>(resolve => {
+    timer = setTimeout(
+      () => resolve('timeout'),
+      opts.sendTimeoutMs ?? BET_SEND_TIMEOUT_MS,
+    )
+  })
+  try {
+    const outcome = await Promise.race([opts.send(), timedOut])
+    if (outcome === 'timeout') {
+      throw new Error('Sending the bet message is taking too long.')
+    }
+    if (!outcome) throw new Error('The bet message could not be sent.')
+  } finally {
+    clearTimeout(timer)
   }
 }

@@ -58,6 +58,36 @@ export default {
     unsentRetry: "Réessayer d'envoyer le pari",
     unsentRetrying: 'Envoi du pari…',
     unsentFailed: 'Toujours pas livré : {message}',
+    confirming:
+      'En attente de la confirmation de votre paiement par le réseau…',
+    errorPaymentFailed:
+      "La transaction de paiement a échoué sur le réseau : aucune mise n'a été placée.",
+    paymentPending:
+      'Votre paiement est encore en cours de confirmation. Il est conservé dans la conversation ; utilisez Vérifier le paiement.',
+    paymentUnknown:
+      "Le réseau n'a pas encore vu votre paiement. Il peut encore arriver : il est conservé dans la conversation ; utilisez Vérifier le paiement. Ne supposez pas que rien n'a été payé.",
+    unsentSigned: 'Paiement non confirmé',
+    unsentSignedBody:
+      "Une mise de {amount} MON vers {name} ({address}) a été envoyée, mais le réseau ne l'a pas encore confirmée.",
+    unsentDealerSilent: 'En attente du croupier',
+    unsentDealerSilentBody:
+      "Votre pari de {amount} MON vers {name} ({address}) a été livré, mais le croupier n'a pas répondu.",
+    unsentDealerUnconfirmed:
+      "Le croupier n'a pas encore pu vérifier votre paiement",
+    checkPayment: 'Vérifier le paiement',
+    checking: 'Vérification auprès du réseau…',
+    paymentStillPending: 'Le paiement est toujours en attente sur le réseau.',
+    paymentNotFound:
+      "Le réseau ne connaît pas (encore) ce paiement. Si vous êtes certain qu'il n'a jamais été envoyé, vous pouvez supprimer cet enregistrement.",
+    paymentFailedRemoved:
+      "La transaction de paiement a échoué sur le réseau ; rien n'a été payé. L'enregistrement a été supprimé.",
+    dismiss: 'Supprimer cet enregistrement',
+    dismissWarning:
+      "Si cette mise a réellement été payée, supprimer l'enregistrement peut faire perdre l'argent. Ne le faites que si vous êtes sûr qu'elle n'a pas été payée ou a été remboursée.",
+    dismissConfirm: 'Oui, le supprimer',
+    dismissCancel: 'Le garder',
+    loadError:
+      'Les enregistrements de mises sauvegardés sont illisibles : {message}',
   },
   leftDrawer: {
     settings: 'Paramètres',

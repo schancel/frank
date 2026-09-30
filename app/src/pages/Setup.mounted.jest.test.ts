@@ -29,8 +29,13 @@ jest.mock('src/stores/relay-client', () => ({
 jest.mock('src/stores/appearance', () => ({
   useAppearanceStore: () => ({ setDarkMode: jest.fn() }),
 }))
+let mockProfileName: string | undefined
+const mockSetRelayData = jest.fn()
 jest.mock('src/stores/my-profile', () => ({
-  useProfileStore: () => ({ setRelayData: jest.fn() }),
+  useProfileStore: () => ({
+    profile: { name: mockProfileName },
+    setRelayData: mockSetRelayData,
+  }),
 }))
 jest.mock('../utils/setup-account', () => {
   const actual = jest.requireActual('../utils/setup-account')
@@ -272,5 +277,96 @@ describe('Setup page mounted (#267)', () => {
     expect(setSeed).not.toHaveBeenCalled()
     expect(wallet.seedPhrase).toBe(STORED)
     expect(wallet.seedConfirmedAt).toBeNull()
+  })
+
+  describe('resume mode for a stored seed with no name (#284, the old #267 bug)', () => {
+    async function resumeVm() {
+      setActivePinia(createPinia())
+      useWalletStore().seedPhrase = STORED
+      const ctx = await mountSetup()
+      const vm = ctx.wrapper.vm as unknown as Vm & {
+        resume: boolean
+        storedSeed: string | null
+      }
+      vm.persistSetupAndReload = jest.fn(() => Promise.resolve())
+      vm.avatar = 'data:avatar'
+      vm.step = 2
+      vm.accountData.name = 'Alice'
+      vm.accountData.nameRequired = true
+      await nextTick()
+      return { ...ctx, vm }
+    }
+
+    beforeEach(() => {
+      mockProfileName = undefined
+    })
+
+    it('shows the STORED phrase and does not regenerate or store anything on open', async () => {
+      const { wallet, setSeed, vm } = await resumeVm()
+      expect(vm.resume).toBe(true)
+      expect(vm.accountData.seed).toBe(STORED)
+      expect(setSeed).not.toHaveBeenCalled()
+      expect(wallet.seedPhrase).toBe(STORED)
+    })
+
+    it('needs the confirmation before anything is written', async () => {
+      const { wallet, setSeed, vm } = await resumeVm()
+      await vm.next()
+      await nextTick()
+      expect(vm.step).toBe(3)
+      await vm.next()
+      expect(setSeed).not.toHaveBeenCalled()
+      expect(mockSetRelayData).not.toHaveBeenCalled()
+      expect(wallet.seedConfirmedAt).toBeNull()
+    })
+
+    it('confirming re-stores the identical seed with the marker and sets the name', async () => {
+      const { wallet, vm } = await resumeVm()
+      await vm.next()
+      await nextTick()
+      vm.onSeedConfirmed()
+      await vm.next()
+
+      expect(wallet.seedPhrase).toBe(STORED)
+      expect(wallet.seedConfirmedAt).toEqual(expect.any(Number))
+      expect(mockSetRelayData).toHaveBeenCalledWith(
+        expect.objectContaining({
+          profile: expect.objectContaining({ name: 'Alice' }),
+        }),
+      )
+    })
+
+    it('refuses to replace the stored phrase with a different one', async () => {
+      const { wallet, setSeed, vm } = await resumeVm()
+      await vm.next()
+      await nextTick()
+      vm.accountData.seed =
+        'legal winner thank year wave sausage worth useful legal winner thank yellow'
+      vm.onSeedConfirmed()
+
+      // The changed phrase is unconfirmed, so the commit is blocked at step 3...
+      await vm.next()
+      expect(setSeed).not.toHaveBeenCalled()
+
+      // ...and even a forced confirmation cannot overwrite the stored seed.
+      ;(vm as unknown as { confirmedSeed: string }).confirmedSeed =
+        vm.accountData.seed
+      await expect(vm.next()).rejects.toThrow()
+      expect(setSeed).not.toHaveBeenCalled()
+      expect(wallet.seedPhrase).toBe(STORED)
+    })
+
+    it('a stored seed WITH a name is not resume mode (completed-old is unaffected)', async () => {
+      mockProfileName = 'Alice'
+      setActivePinia(createPinia())
+      useWalletStore().seedPhrase = STORED
+      const { wrapper } = await mountSetup()
+      expect((wrapper.vm as unknown as { resume: boolean }).resume).toBe(false)
+    })
+
+    it('a fresh device (no seed) is not resume mode', async () => {
+      const { wrapper } = await mountSetup()
+      expect((wrapper.vm as unknown as { resume: boolean }).resume).toBe(false)
+    })
   })
 })

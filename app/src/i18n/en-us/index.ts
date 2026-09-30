@@ -94,6 +94,8 @@ export default {
     watchingWallet: 'Watching wallet...',
     searchingExistingMetaData: 'Searching for existing registry metadata...',
     errorContactRegistry: 'Unable to contact registry',
+    storedSeedMismatch:
+      'The recovery phrase on this device cannot be replaced from this screen.',
     accountSetupNext: 'Next',
     depositStepNext: 'Next',
   },
@@ -102,6 +104,8 @@ export default {
     importAccount: 'Import Account',
     copyRecoveryPhrase: 'Copy recovery phrase',
     refreshRecoveryPhrase: 'Generate a new recovery phrase',
+    resumeNotice:
+      'A recovery phrase is already stored on this device, but this account has no name yet. Your phrase will not be changed. Confirm it and choose a name to finish.',
   },
   seedConfirm: {
     stepTitle: 'Confirm phrase',
@@ -116,6 +120,13 @@ export default {
     showPhrase: 'Show my recovery phrase again',
     hidePhrase: 'Hide my recovery phrase',
     phraseLabel: 'Your recovery phrase, in order',
+  },
+  backupReminder: {
+    regionLabel: 'Recovery phrase backup reminder',
+    message:
+      'You have not confirmed your recovery phrase yet. Confirm you saved it so you can always recover your account.',
+    confirm: 'Confirm now',
+    dismiss: 'Later',
   },
   newContactDialog: {
     newContact: 'New Contact',
@@ -148,6 +159,7 @@ export default {
     wipeAndSave: 'Remote Wipe Wallet',
     changeLog: 'Changelog',
     showSeed: 'Show Seed',
+    confirmSeed: 'Confirm Recovery Phrase',
   },
   receiveBitcoinDialog: {
     walletStatus: 'Wallet Status',

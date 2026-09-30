@@ -99,6 +99,8 @@ export default {
     watchingWallet: 'Surveillance du wallet...', //?
     searchingExistingMetaData: 'Recherche des métadonnées dans le registre...',
     errorContactRegistry: 'Impossible de se connecter au registre',
+    storedSeedMismatch:
+      'La phrase de récupération de cet appareil ne peut pas être remplacée depuis cet écran.',
     accountSetupNext: 'Suivant',
     depositStepNext: 'Suivant',
   },
@@ -107,6 +109,8 @@ export default {
     importAccount: 'Importer un compte',
     copyRecoveryPhrase: 'Copier la phrase de récupération',
     refreshRecoveryPhrase: 'Générer une nouvelle phrase de récupération',
+    resumeNotice:
+      'Une phrase de récupération est déjà enregistrée sur cet appareil, mais ce compte n’a pas encore de nom. Votre phrase ne sera pas modifiée. Confirmez-la et choisissez un nom pour terminer.',
   },
   seedConfirm: {
     stepTitle: 'Confirmer la phrase',
@@ -122,6 +126,13 @@ export default {
     showPhrase: 'Afficher à nouveau ma phrase de récupération',
     hidePhrase: 'Masquer ma phrase de récupération',
     phraseLabel: 'Votre phrase de récupération, dans l’ordre',
+  },
+  backupReminder: {
+    regionLabel: 'Rappel de sauvegarde de la phrase de récupération',
+    message:
+      'Vous n’avez pas encore confirmé votre phrase de récupération. Confirmez que vous l’avez sauvegardée pour toujours pouvoir récupérer votre compte.',
+    confirm: 'Confirmer maintenant',
+    dismiss: 'Plus tard',
   },
   newContactDialog: {
     newContact: 'Nouveau contact',
@@ -151,6 +162,7 @@ export default {
     wipeAndSave: 'Consolidation du portefeuille',
     changeLog: 'Changelog',
     showSeed: 'Montrer la phrase de passe',
+    confirmSeed: 'Confirmer la phrase de récupération',
   },
   receiveBitcoinDialog: {
     walletStatus: 'Etat du wallet',

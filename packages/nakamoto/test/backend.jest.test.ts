@@ -25,10 +25,13 @@ interface BitcorePoint {
   neg(): BitcorePoint
   mul(scalar: unknown): BitcorePoint
   isInfinity(): boolean
+  getX(): BitcoreBn
+  getY(): BitcoreBn
 }
 
 interface BitcoreBn {
   toBuffer(options: { size: number }): Buffer
+  toArrayLike(arrayType: typeof Buffer, endian: 'be', length: number): Buffer
 }
 
 interface BitcoreKey {
@@ -97,6 +100,31 @@ function mustBytes(value: bigint): Uint8Array {
   const encoded = bigintToBytes(value, 32)
   if (!encoded.ok) throw new Error('scalar')
   return encoded.value
+}
+
+// PublicKey.toBuffer calls bn.toBuffer({size:32}). Elliptic's BN.toBuffer
+// is (endian, length) and ignores that object, so a coordinate below 2^248
+// loses its leading zero. Pad both coordinates. The short buffer is not a key.
+function fixed32(value: BitcoreBn): Buffer {
+  return value.toArrayLike(Buffer, 'be', 32)
+}
+
+function uncompressedPoint(key: BitcoreKey): Uint8Array {
+  const point = key.toPublicKey().point
+  const encoded = new Uint8Array(65)
+  encoded[0] = 0x04
+  encoded.set(fixed32(point.getX()), 1)
+  encoded.set(fixed32(point.getY()), 33)
+  return encoded
+}
+
+function compressedPoint(point: BitcorePoint): Buffer {
+  const x = fixed32(point.getX())
+  const y = fixed32(point.getY())
+  const encoded = Buffer.alloc(33)
+  encoded[0] = (y[y.length - 1] ?? 0) % 2 === 1 ? 0x03 : 0x02
+  encoded.set(x, 1)
+  return encoded
 }
 
 function codeOf(run: () => void): string {
@@ -270,11 +298,7 @@ describe('crypto backend', () => {
       Buffer.from(mustBytes(SECP256K1_N - 1n)),
     )
     expect(
-      cryptoBackend.verifyEcdsa(
-        almostN,
-        digest,
-        Uint8Array.from(almostKey.toPublicKey().toBuffer()),
-      ),
+      cryptoBackend.verifyEcdsa(almostN, digest, uncompressedPoint(almostKey)),
     ).toBe(true)
 
     for (let index = 0; index < 40; index += 1) {
@@ -289,13 +313,9 @@ describe('crypto backend', () => {
       ecdsa.sign()
       const parsed = secp256k1.Signature.fromDER(der)
       const compact = parsed.toCompactRawBytes()
-      expect(Buffer.from(compact.subarray(0, 32))).toEqual(
-        ecdsa.sig.r.toBuffer({ size: 32 }),
-      )
-      expect(Buffer.from(compact.subarray(32))).toEqual(
-        ecdsa.sig.s.toBuffer({ size: 32 }),
-      )
-      const pub = Uint8Array.from(key.toPublicKey().toBuffer())
+      expect(Buffer.from(compact.subarray(0, 32))).toEqual(fixed32(ecdsa.sig.r))
+      expect(Buffer.from(compact.subarray(32))).toEqual(fixed32(ecdsa.sig.s))
+      const pub = uncompressedPoint(key)
       expect(cryptoBackend.verifyEcdsa(der, hash, pub)).toBe(true)
       expect(cryptoBackend.verifyEcdsa(der, randomInput(32), pub)).toBe(false)
       const high = new secp256k1.Signature(parsed.r, SECP256K1_N - parsed.s)
@@ -306,6 +326,40 @@ describe('crypto backend', () => {
         ),
       ).toBe('high-s')
     }
+  })
+
+  test('ECDSA verifies a bitcore key that drops a leading zero', () => {
+    const secret = mustBytes(0x7an)
+    const digest = new Uint8Array(32).fill(0x11)
+    const der = cryptoBackend.signEcdsa(secret, digest)
+    const key = new bitcore.PrivateKey(Buffer.from(secret))
+    const raw = Uint8Array.from(key.toPublicKey().toBuffer())
+    expect(raw.length).toBe(64)
+    expect(codeOf(() => cryptoBackend.verifyEcdsa(der, digest, raw))).toBe(
+      'bad-length',
+    )
+    expect(cryptoBackend.verifyEcdsa(der, digest, uncompressedPoint(key))).toBe(
+      true,
+    )
+  })
+
+  test('ECDSA r matches bitcore when r drops a leading zero', () => {
+    const secret = mustBytes(1n)
+    const digest = mustBytes(47n)
+    const der = cryptoBackend.signEcdsa(secret, digest)
+    const key = new bitcore.PrivateKey(Buffer.from(secret))
+    const ecdsa = new bitcore.crypto.ECDSA()
+    ecdsa.hashbuf = Buffer.from(digest)
+    ecdsa.privkey = key
+    ecdsa.pubkey = key.toPublicKey()
+    ecdsa.sign()
+    const compact = secp256k1.Signature.fromDER(der).toCompactRawBytes()
+    expect(ecdsa.sig.r.toBuffer({ size: 32 }).length).toBe(31)
+    expect(Buffer.from(compact.subarray(0, 32))).toEqual(fixed32(ecdsa.sig.r))
+    expect(Buffer.from(compact.subarray(32))).toEqual(fixed32(ecdsa.sig.s))
+    expect(cryptoBackend.verifyEcdsa(der, digest, uncompressedPoint(key))).toBe(
+      true,
+    )
   })
 
   test('point addition agrees with the jacobian fallback', () => {
@@ -349,14 +403,14 @@ describe('crypto backend', () => {
       const left = secp256k1.getPublicKey(leftSecret, true)
       const right = secp256k1.getPublicKey(rightSecret, true)
       const sum = cryptoBackend.pointAdd(left, right)
-      const oracle = bitcore.crypto.Point.pointToCompressed(
+      const oracle = compressedPoint(
         bitcore.PublicKey.fromBuffer(Buffer.from(left)).point.add(
           bitcore.PublicKey.fromBuffer(Buffer.from(right)).point,
         ),
       )
       expect(Buffer.from(sum)).toEqual(oracle)
       const shared = cryptoBackend.ecdh(leftSecret, right)
-      const theirShared = bitcore.crypto.Point.pointToCompressed(
+      const theirShared = compressedPoint(
         bitcore.PublicKey.fromBuffer(Buffer.from(right)).point.mul(
           new bitcore.PrivateKey(Buffer.from(leftSecret)).bn,
         ),
@@ -365,5 +419,15 @@ describe('crypto backend', () => {
       const product = cryptoBackend.pointMultiply(right, leftSecret)
       expect(product).toEqual(shared)
     }
+  })
+
+  test('compressed points pad an x coordinate below 2^248', () => {
+    const secret = mustBytes(153n)
+    const point = new bitcore.PrivateKey(Buffer.from(secret)).toPublicKey()
+      .point
+    const raw = bitcore.crypto.Point.pointToCompressed(point)
+    expect(raw.length).toBe(32)
+    const padded = compressedPoint(point)
+    expect(Buffer.from(secp256k1.getPublicKey(secret, true))).toEqual(padded)
   })
 })

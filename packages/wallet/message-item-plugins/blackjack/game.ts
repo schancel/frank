@@ -360,6 +360,32 @@ export function dealInitialCards(deck: Card[]): {
   return { playerCards: [deck[0], deck[2]], dealerCards: [deck[1], deck[3]] }
 }
 
+/** The dealer's side of a hand, the ONE implementation of the dealing rules: shared by the dealer
+ * bot (resolving a hand) and `verifyRevealedHand` (replaying it), so they cannot drift apart.
+ *
+ * `dealtCount` is how many cards of the deck are already out (4 + the player's hits/double card).
+ * A busted player or a player natural is final as dealt: the dealer draws nothing. Otherwise the
+ * dealer draws to 17 or more (stands on all 17s). The outcome is `dealer_win` on a player bust. */
+export function playOutDealer(
+  deck: Card[],
+  playerCards: Card[],
+  dealtCount: number,
+): { dealerCards: Card[]; dealtCount: number; outcome: BlackjackOutcome } {
+  const playerValue = handValue(playerCards)
+  let dealerCards = dealInitialCards(deck).dealerCards
+  let next = dealtCount
+  if (!playerValue.bust && !playerValue.blackjack) {
+    while (handValue(dealerCards).total < 17) {
+      dealerCards = [...dealerCards, deck[next]]
+      next += 1
+    }
+  }
+  const outcome: BlackjackOutcome = playerValue.bust
+    ? 'dealer_win'
+    : resolveOutcome(playerValue, handValue(dealerCards))
+  return { dealerCards, dealtCount: next, outcome }
+}
+
 /** Independently replays a resolved hand's committed shuffle against its own recorded
  * player/dealer cards, per this file's "Dealing order convention" -- the actual fairness check a
  * player's own client should run before trusting a `reveal`. Never trusts `state.outcome` either;
@@ -376,7 +402,6 @@ export function verifyRevealedHand(
   const deck = deriveDeck(state.serverSeed, state.wagerTxHash, 0)
   const initial = dealInitialCards(deck)
   const expectedPlayerCards = [...initial.playerCards]
-  const expectedDealerCards = [...initial.dealerCards]
   let next = 4
   const numHits = Math.max(0, state.playerCards.length - 2)
   for (let i = 0; i < numHits; i++) {
@@ -384,12 +409,11 @@ export function verifyRevealedHand(
     next += 1
   }
   const playerBust = handValue(expectedPlayerCards).bust
-  if (!playerBust) {
-    while (handValue(expectedDealerCards).total < 17) {
-      expectedDealerCards.push(deck[next])
-      next += 1
-    }
-  }
+  const { dealerCards: expectedDealerCards } = playOutDealer(
+    deck,
+    expectedPlayerCards,
+    next,
+  )
   if (JSON.stringify(expectedPlayerCards) !== JSON.stringify(state.playerCards)) {
     return { valid: false, reason: 'recorded player cards do not match the committed shuffle' }
   }
@@ -399,9 +423,7 @@ export function verifyRevealedHand(
   ) {
     return { valid: false, reason: 'recorded dealer cards do not match the committed shuffle' }
   }
-  const expectedOutcome = playerBust
-    ? 'dealer_win'
-    : resolveOutcome(handValue(expectedPlayerCards), handValue(expectedDealerCards))
+  const expectedOutcome = playOutDealer(deck, expectedPlayerCards, next).outcome
   if (expectedOutcome !== state.outcome) {
     return { valid: false, reason: 'recorded outcome does not match the committed shuffle' }
   }

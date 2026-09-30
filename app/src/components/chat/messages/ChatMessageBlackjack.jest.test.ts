@@ -350,7 +350,7 @@ describe('ChatMessageBlackjack bet and payout lines (ticket #368)', () => {
 
   // A genuinely fair hand (the seed's commitment, deck and outcome all check out), so the
   // fairness line passes; a stand right after the deal means no hits.
-  function honestHand(wanted: string) {
+  function honestHand(wanted: string, dealerUnder17 = false) {
     for (let i = 0; i < 5000; i++) {
       const seed = `seed-${i}`
       const deck = deriveDeck(seed, HASH, 0)
@@ -362,9 +362,7 @@ describe('ChatMessageBlackjack bet and payout lines (ticket #368)', () => {
       }
       const outcome = resolveOutcome(handValue(player), handValue(dealer))
       if (outcome !== wanted || handValue(player).bust) continue
-      // (`verifyRevealedHand` always draws the dealer to 17 while the bot stops on a natural, so
-      // only naturals against a dealer already at 17+ can verify.)
-      if (handValue(player).blackjack && handValue(dealer).total < 17) continue
+      if (dealerUnder17 && handValue([deck[1], deck[3]]).total >= 17) continue
       return {
         dealMsg: msg(false, {
           type: 'blackjack-move',
@@ -403,6 +401,13 @@ describe('ChatMessageBlackjack bet and payout lines (ticket #368)', () => {
       expect(line).toContain('sent by the dealer after it reveals the hand')
     },
   )
+
+  it('a fair natural against a dealer under 17 shows Verified fair (ticket #378)', async () => {
+    const { dealMsg, revealMsg } = honestHand('player_blackjack', true)
+    const w = await mountWithT([bet(), dealMsg, stand(), revealMsg], 3)
+    expect(w.text()).toContain('Verified fair')
+    expect(w.text()).not.toContain('Verification failed')
+  })
 
   it('hides the payout when the fairness check failed', async () => {
     // Same outcome claim as a win, but the revealed seed does not match the commitment.

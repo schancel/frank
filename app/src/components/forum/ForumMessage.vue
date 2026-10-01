@@ -1,10 +1,5 @@
 <template>
-  <q-card
-    class="q-pa-none max-w-720"
-    :class="{ 'q-ma-sm': !compact }"
-    flat
-    bordered
-  >
+  <q-card class="q-pa-none" :class="{ 'q-ma-sm': !compact }" flat bordered>
     <q-card-section class="row" horizontal>
       <q-card-section class="col-shrink q-pa-sm bg-on-secondary">
         <q-card-section class="q-pa-none text-center">
@@ -284,10 +279,6 @@ h4 {
   font-size: 120%;
   font-weight: bold;
   line-height: inherit;
-}
-
-.max-w-720 {
-  width: min(100% - 32px, 720px);
 }
 
 .post-title {

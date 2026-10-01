@@ -84,7 +84,7 @@
           label="Post"
           color="primary"
           class="q-ma-sm"
-          :disable="posting"
+          :disable="posting || (!!parentDigest && !parentMessage)"
           :loading="posting"
         />
       </q-card-actions>
@@ -152,6 +152,8 @@ export default defineComponent({
       chainUnit: activeChain.unit,
       posting: false,
       preparationStatus: null as string | null,
+      nextSubmissionId: 0,
+      activeSubmissionId: null as number | null,
     }
   },
   computed: {
@@ -187,6 +189,11 @@ export default defineComponent({
   },
   methods: {
     syncParentDigest(parentDigest: string | undefined) {
+      if (parentDigest !== this.parentDigest) {
+        this.activeSubmissionId = null
+        this.posting = false
+        this.preparationStatus = null
+      }
       this.parentDigest = parentDigest
       if (parentDigest) {
         this.topic = this.getMessage(parentDigest)?.topic ?? ''
@@ -230,8 +237,14 @@ export default defineComponent({
       }
     },
     async post() {
+      if (this.parentDigest && !this.parentMessage) return
+      // A second submit while the first is still preparing/funding would queue a second burn.
+      if (this.posting) return
+
       const submittedTopic = this.topic
       const submittedParentDigest = this.parentDigest
+      const submissionId = ++this.nextSubmissionId
+      this.activeSubmissionId = submissionId
       const entry = {
         kind: 'post' as const,
         title: this.title,
@@ -243,8 +256,6 @@ export default defineComponent({
         console.error('entry is null in CreatePost.vue post handler')
         return
       }
-      // A second submit while the first is still preparing/funding would queue a second burn.
-      if (this.posting) return
       this.posting = true
       this.preparationStatus = this.$t('stampPreparation.posting')
 
@@ -261,6 +272,7 @@ export default defineComponent({
             topic: submittedTopic,
             parentDigest: submittedParentDigest,
             onPreparationProgress: progress => {
+              if (this.activeSubmissionId !== submissionId) return
               this.preparationStatus = stampPreparationStatus(
                 progress,
                 (key, params) => this.$t(key, params ?? {}),
@@ -274,7 +286,11 @@ export default defineComponent({
         },
         errorNotify,
         infoNotify,
-        navigateBack: this.back,
+        navigateBack: () => {
+          if (this.activeSubmissionId === submissionId) {
+            this.back()
+          }
+        },
         messages: {
           created: this.$t('stampPreparation.postCreated', {
             topic: submittedTopic,
@@ -282,8 +298,11 @@ export default defineComponent({
           refreshFailed: this.$t('stampPreparation.postedRefreshFailed'),
         },
       }).finally(() => {
-        this.posting = false
-        this.preparationStatus = null
+        if (this.activeSubmissionId === submissionId) {
+          this.activeSubmissionId = null
+          this.posting = false
+          this.preparationStatus = null
+        }
       })
     },
     back() {

@@ -79,6 +79,22 @@ beforeAll(async () => {
   RouterView = vueRouter.RouterView
 })
 
+// Jest aliases `quasar` to its SSR build, whose form controls do not render. Load the real UMD
+// components for the regression that exercises disabled-field registration in QForm.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function loadQuasar(): any {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const globals = globalThis as any
+  globals.Vue = jest.requireActual('vue')
+  globals.ResizeObserver ??= class {
+    observe = jest.fn()
+    unobserve = jest.fn()
+    disconnect = jest.fn()
+  }
+  jest.requireActual('quasar/dist/quasar.umd.prod.js')
+  return globals.Quasar
+}
+
 const messages: Record<string, string> = {
   'stampPreparation.posting': 'POSTING',
   'stampPreparation.postCreated': 'Post created in {topic}.',
@@ -161,6 +177,24 @@ async function mountRoutedPage(path: string) {
   }
 }
 
+async function mountRealReplyForm(parentDigest: string) {
+  const host = document.createElement('div')
+  document.body.appendChild(host)
+  const wrapper = mount(CreatePost, {
+    attachTo: host,
+    global: {
+      plugins: [loadQuasar()],
+      mocks: {
+        $t,
+        $route: { params: { parentDigest } },
+        $router: { back: jest.fn(), push: jest.fn() },
+      },
+    },
+  })
+  await flushPromises()
+  return wrapper
+}
+
 const status = (w: ReturnType<typeof mountPage>['wrapper']) =>
   w.find('[data-test="post-status"]')
 
@@ -173,6 +207,10 @@ beforeEach(() => {
   }
   forum.selectedTopic = 'stamp'
   forum.index = {}
+})
+
+afterEach(() => {
+  document.body.innerHTML = ''
 })
 
 describe('CreatePost selected-topic default (ticket #414)', () => {
@@ -313,6 +351,34 @@ describe('CreatePost selected-topic default (ticket #414)', () => {
     })
   })
 
+  it('blocks a real QForm reply until its late parent supplies the topic', async () => {
+    const forum = useForumStore() as unknown as {
+      index: Record<string, { topic: string }>
+    }
+    const wrapper = await mountRealReplyForm('late-parent')
+
+    expect(wrapper.get('button[type="submit"]').attributes('disabled')).toBe('')
+    // Quasar unregisters the disabled topic selector from QForm validation. A direct form submit
+    // therefore reaches post(), whose guard must still prevent an empty-topic burn.
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expect(useActiveWallet).not.toHaveBeenCalled()
+    expect(mockPutMessage).not.toHaveBeenCalled()
+
+    forum.index = { 'late-parent': { topic: 'news' } }
+    await nextTick()
+    await flushPromises()
+    expect(
+      wrapper.get('button[type="submit"]').attributes('disabled'),
+    ).toBeUndefined()
+
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expect(mockPutMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ topic: 'news', parentDigest: 'late-parent' }),
+    )
+  })
+
   it('submits and names the exact topic shown in the form', async () => {
     const { wrapper } = mountPage()
 
@@ -348,6 +414,53 @@ describe('CreatePost selected-topic default (ticket #414)', () => {
       expect.objectContaining({ topic: 'stamp' }),
     )
     expect(infoNotify).toHaveBeenCalledWith('Post created in stamp.')
+  })
+
+  it('detaches an old deferred submission from a newer reused compose route', async () => {
+    const forum = useForumStore() as unknown as {
+      index: Record<string, { topic: string }>
+    }
+    forum.index = {
+      parentA: { topic: 'news' },
+      parentB: { topic: 'help' },
+    }
+    const { page, router } = await mountRoutedPage('/new-post/parentA')
+    let resolveWallet!: (wallet: { identity: object }) => void
+    jest.mocked(useActiveWallet).mockReturnValueOnce(
+      new Promise(resolve => {
+        resolveWallet = resolve
+      }),
+    )
+
+    const oldSubmission = (
+      page().vm as unknown as { post(): Promise<void> }
+    ).post()
+    await flushPromises()
+    expect(page().vm).toMatchObject({ posting: true, parentDigest: 'parentA' })
+
+    await router.push('/new-post/parentB')
+    await flushPromises()
+    expect(page().vm).toMatchObject({
+      posting: false,
+      preparationStatus: null,
+      parentDigest: 'parentB',
+      topic: 'help',
+    })
+
+    resolveWallet({ identity: {} })
+    await oldSubmission
+    await flushPromises()
+
+    expect(mockPutMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ topic: 'news', parentDigest: 'parentA' }),
+    )
+    expect(router.currentRoute.value.fullPath).toBe('/new-post/parentB')
+    expect(page().vm).toMatchObject({
+      posting: false,
+      preparationStatus: null,
+      parentDigest: 'parentB',
+      topic: 'help',
+    })
   })
 })
 

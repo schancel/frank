@@ -87,8 +87,9 @@ it('matches bitcore stamp parent secrets for digests in (0, n)', () => {
     'constructStealthPrivateKey(',
     'constructHDStealthPrivateKey(',
   )
-  expect(stealth).toContain('point.mul')
-  expect(stealth).toContain('crypto.BN')
+  expect(stealth).toContain('stealthParentSecret(')
+  expect(stealth).not.toContain('point.mul')
+  expect(stealth).not.toContain('crypto.BN')
   const address = methodBody(source, 'constructStampAddress(', 'encrypt(')
   expect(address).toContain('crypto.BN')
   expect(address).toContain('.toAddress(')

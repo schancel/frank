@@ -70,7 +70,9 @@ it('derives stealth keys from that digest and leaves HMAC on bitcore', () => {
     'constructHDStealthPrivateKey(',
   )
   expect(publicBody).toContain('stealthPointDigest(dhKeyPointRaw)')
-  expect(privateBody).toContain('stealthPointDigest(dhKeyPointRaw)')
+  expect(privateBody).toContain('stealthParentSecret(')
+  expect(privateBody).not.toContain('point.mul')
+  expect(privateBody).not.toContain('crypto.BN')
   expect(publicBody).not.toContain('crypto.Hash.sha256')
   expect(privateBody).not.toContain('crypto.Hash.sha256')
   expect(source).not.toContain('crypto.Hash.sha256(')

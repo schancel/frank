@@ -100,6 +100,10 @@
     "./transaction": {
       "types": "./dist/transaction.d.ts",
       "import": "./dist/transaction.js"
+    },
+    "./block": {
+      "types": "./dist/block.d.ts",
+      "import": "./dist/block.js"
     }
   },
   "dependencies": {

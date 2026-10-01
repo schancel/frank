@@ -3,6 +3,10 @@
 // BIP143 and BIP341 are BTC only. BCH and XEC share the fork-id preimage;
 // BCH inserts the Upgrade9 UTXO hash only when commitUtxos is set.
 // XPI uses SignatureHashLotus (lotusd interpreter.cpp). Fork id 0 is not that path.
+// Txids: BTC, BCH, and XEC are sha256d of the serialization with witness bytes
+// omitted. XPI follows lotusd ComputeTxId at master 5d192488 (no third witness
+// merkle). The XPI block leaf is sha256d(GetHash || GetId). GetHash includes
+// the scriptSig. Display order is the reversal of these internal hashes.
 
 import { sha256 } from '@noble/hashes/sha256.js'
 
@@ -403,6 +407,106 @@ export function parseTransaction(
       locktime: locktime.value,
     },
   }
+}
+
+function brandHash(bytes: Uint8Array): TxResult<InternalHash> {
+  const branded = internalHashFromBytes(bytes)
+  if (!branded.ok) return fail('tx-range')
+  return branded
+}
+
+function withoutWitness(tx: Transaction): Transaction {
+  return {
+    version: tx.version,
+    locktime: tx.locktime,
+    outputs: tx.outputs,
+    inputs: tx.inputs.map(input => ({
+      prevout: input.prevout,
+      scriptSig: input.scriptSig,
+      sequence: input.sequence,
+    })),
+  }
+}
+
+/**
+ * sha256d of the full consensus serialization. Lotus GetHash includes the
+ * scriptSig. A BTC witness stack is included here and excluded from the txid.
+ */
+export function transactionHash(
+  tx: Transaction,
+  chain: ChainDescriptor,
+): TxResult<InternalHash> {
+  const bytes = serializeTransaction(tx, chain)
+  if (!bytes.ok) return bytes
+  return brandHash(hash256(bytes.value))
+}
+
+function lotusTransactionId(tx: Transaction): TxResult<InternalHash> {
+  if (hasWitness(tx)) return fail('tx-witness-rejected')
+  if (i32Bits(tx.version) === null || u32Bits(tx.locktime) === null) {
+    return fail('tx-range')
+  }
+  const inputLeaves: Uint8Array[] = []
+  for (const input of tx.inputs) {
+    const prevout = outPointBytes(input.prevout)
+    const sequence = encodeUnsignedLE(BigInt(input.sequence), 4)
+    if (prevout === null || !sequence.ok) return fail('tx-range')
+    inputLeaves.push(hash256(concatBytes([prevout, sequence.value])))
+  }
+  const outputLeaves: Uint8Array[] = []
+  for (const output of tx.outputs) {
+    const encoded = outputBytes(output)
+    if (encoded === null) return fail('tx-range')
+    outputLeaves.push(hash256(encoded))
+  }
+  const inputsRoot = merkleRoot(inputLeaves)
+  const outputsRoot = merkleRoot(outputLeaves)
+  if (!inputsRoot.ok) return inputsRoot
+  if (!outputsRoot.ok) return outputsRoot
+  const writer = new ByteWriter()
+  if (!writeI32(writer, tx.version)) return fail('tx-range')
+  writer.write(inputsRoot.value.root)
+  writer.writeUInt8(inputsRoot.value.height)
+  writer.write(outputsRoot.value.root)
+  writer.writeUInt8(outputsRoot.value.height)
+  if (!writeU32(writer, tx.locktime)) return fail('tx-range')
+  return brandHash(hash256(writer.finish()))
+}
+
+/**
+ * Internal txid. XPI is the segmented id. BTC, BCH, and XEC are sha256d of
+ * the serialization with witness bytes omitted.
+ */
+export function transactionId(
+  tx: Transaction,
+  chain: ChainDescriptor,
+): TxResult<InternalHash> {
+  if (chain.family === 'xpi') return lotusTransactionId(tx)
+  if (chain.family !== 'btc' && hasWitness(tx)) {
+    return fail('tx-witness-rejected')
+  }
+  const bytes = serializeTransaction(
+    chain.family === 'btc' ? withoutWitness(tx) : tx,
+    chain,
+  )
+  if (!bytes.ok) return bytes
+  return brandHash(hash256(bytes.value))
+}
+
+/**
+ * Block merkle leaf. XPI is sha256d(GetHash || GetId), both internal.
+ * The other chains use the txid, so a witness stack does not move the leaf.
+ */
+export function blockMerkleLeaf(
+  tx: Transaction,
+  chain: ChainDescriptor,
+): TxResult<InternalHash> {
+  const id = transactionId(tx, chain)
+  if (!id.ok) return id
+  if (chain.family !== 'xpi') return id
+  const hash = transactionHash(tx, chain)
+  if (!hash.ok) return hash
+  return brandHash(hash256(concatBytes([hash.value, id.value])))
 }
 
 /**

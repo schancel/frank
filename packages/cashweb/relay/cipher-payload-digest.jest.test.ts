@@ -76,7 +76,8 @@ it('checks message payloads with that digest and leaves the salt HMAC', () => {
   const index = readFileSync(join(__dirname, 'index.ts'), 'utf8')
   expect(index).toContain('relayCipherPayloadDigest(rawCipherPayload)')
   expect(index).not.toContain('crypto.Hash.sha256')
-  expect(index).toContain('crypto.Point.pointToCompressed')
+  expect(index).not.toContain('crypto.Point.pointToCompressed')
+  expect(index).toContain('stampOutpointPublicKey(')
 
   const payload = Uint8Array.from([9, 8, 7, 6])
   const open = messageMixin('livenet', {

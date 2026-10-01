@@ -15,7 +15,7 @@ import {
   Transaction,
   PublicKey,
 } from 'bitcore-lib-xpi'
-import { pondBurnIsDownvote, pondBurnScript } from './burn-script'
+import { pondBurnOutputSatoshis, pondBurnScript } from './burn-script'
 import {
   cryptoBackend,
   privateKeyFromSecretBytes,
@@ -87,7 +87,8 @@ export function signRegistryDigest(hash: Buffer, privKey: PrivateKey): Buffer {
  * in `SignedPayload::parse_proto` and the registry HTTP test that hashes
  * `AddressMetadata::encode_to_vec`. Not double-SHA256. Broadcast digests and
  * address strings in this file stay on bitcore (decision #507). The burn
- * script is decision #519. cryptoBackend rejects Buffer. */
+ * script is decision #519. Burn output amounts are decision #521.
+ * cryptoBackend rejects Buffer. */
 export function registryAddressMetadataDigest(
   payload: Uint8Array,
 ): Uint8Array {
@@ -96,23 +97,14 @@ export function registryAddressMetadataDigest(
 
 function calculateBurnAmount(burnOutputs: BurnOutputs[]) {
   return burnOutputs.reduce((total, burn) => {
-    // TODO: Validate format
     const index = burn.getIndex()
     const tx = burn.getTx()
     assert(
       typeof tx !== 'string',
       'Tx returned as string from protobuf library',
     )
-    const parsedTx = new Transaction(Buffer.from(tx))
-    const output = parsedTx.outputs[index]
-    const script = new Uint8Array(output.script.toBuffer())
-    const isDownVote = pondBurnIsDownvote(script)
-    return (
-      total +
-      (isDownVote
-        ? -parsedTx.outputs[index].satoshis
-        : parsedTx.outputs[index].satoshis)
-    )
+    // Value and script bytes, not a bitcore Transaction (decision #521).
+    return total + pondBurnOutputSatoshis(Uint8Array.from(tx), index)
   }, 0)
 }
 

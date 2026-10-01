@@ -28,7 +28,11 @@ import { createPinia, setActivePinia } from 'pinia'
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 ;(global as any).document = { hasFocus: () => true }
 
-import { rehydateChat, useChatStore } from './chats'
+import {
+  indexOutboundDeliveryOwners,
+  rehydateChat,
+  useChatStore,
+} from './chats'
 import { useContactStore } from './contacts'
 import { store as messageStorePromise } from '../adapters/level-message-store'
 import { activeChain } from '@frank/wallet/chain'
@@ -59,6 +63,7 @@ jest.mock('../utils/own-address', () => ({
 
 const SENDER_ADDRESS = '0x1a1A1A1A1a1A1A1a1A1a1a1a1a1a1a1A1A1a1a1a'
 const RECIPIENT_ADDRESS = '0x2b2B2B2b2B2b2B2b2B2b2b2b2B2B2b2b2B2b2B2B'
+const THIRD_ADDRESS = '0x3333333333333333333333333333333333333333'
 // Same address as RECIPIENT_ADDRESS, different case -- exercises store-key consistency (decision 2).
 const RECIPIENT_ADDRESS_LOWERCASE = RECIPIENT_ADDRESS.toLowerCase()
 
@@ -92,6 +97,35 @@ describe('stores/chats.ts (ticket #42)', () => {
     jest.mocked(desktopNotify).mockClear()
     mockOwnAddress.mockReset()
     mockOwnAddress.mockResolvedValue(SENDER_ADDRESS)
+  })
+
+  it('indexes outbound payload and attempt ownership in one history pass', () => {
+    let attemptReads = 0
+    const messages = Array.from({ length: 300 }, (_, index) => {
+      const delivery = {}
+      Object.defineProperty(delivery, 'attemptDigest', {
+        enumerable: true,
+        get: () => {
+          attemptReads += 1
+          return `attempt-${index}`
+        },
+      })
+      return {
+        outbound: true,
+        payloadDigest: `payload-${index}`,
+        delivery,
+      }
+    })
+
+    const owners = indexOutboundDeliveryOwners({
+      [RECIPIENT_ADDRESS]: { messages } as never,
+    })
+    expect(attemptReads).toBe(300)
+    for (let index = 0; index < 3000; index += 1) {
+      const owner = owners.byAttempt.get(`attempt-${index % 300}`)
+      expect(owner?.index).toBe(`payload-${index % 300}`)
+    }
+    expect(attemptReads).toBe(300)
   })
 
   describe('sendMessage', () => {
@@ -170,6 +204,7 @@ describe('stores/chats.ts (ticket #42)', () => {
         }),
       )
       expect(chats.chats[SENDER_ADDRESS]?.totalUnreadMessages).toBe(0)
+      expect(chats.chats[SENDER_ADDRESS]?.totalValue).toBe(7000)
       expect(desktopNotify).not.toHaveBeenCalled()
       expect(mockMessageStore.saveMessage).toHaveBeenLastCalledWith(
         expect.objectContaining({
@@ -205,9 +240,10 @@ describe('stores/chats.ts (ticket #42)', () => {
           stampValueWei: 7000n,
         }),
       ])
+      expect(restored.chats[SENDER_ADDRESS]?.totalValue).toBe(7000)
     })
 
-    it('atomically re-keys a pending self-send when polling wins the send-completion race', async () => {
+    it('serializes an overlapping relay save with send completion and reloads one relay-authored record', async () => {
       const chats = useChatStore()
       const contacts = useContactStore()
       const wallet = makeWallet(SENDER_ADDRESS)
@@ -255,7 +291,28 @@ describe('stores/chats.ts (ticket #42)', () => {
       if (!pendingIndex) throw new Error('pending message was not recorded')
 
       const loopbackTime = Date.now() + 2000
-      await chats.receiveMessages([
+      let relaySaveStartedResolve: (() => void) | undefined
+      const relaySaveStarted = new Promise<void>(resolve => {
+        relaySaveStartedResolve = resolve
+      })
+      let releaseRelaySave: (() => void) | undefined
+      const relaySaveGate = new Promise<void>(resolve => {
+        releaseRelaySave = resolve
+      })
+      mockMessageStore.saveMessage.mockImplementation(async wrapper => {
+        if (
+          wrapper.index === 'race-digest' &&
+          wrapper.message.serverTime === loopbackTime
+        ) {
+          relaySaveStartedResolve?.()
+          await relaySaveGate
+        }
+      })
+      mockMessageStore.deleteMessage.mockRejectedValue(
+        new Error('simulated crash before stale-pending cleanup'),
+      )
+      const warning = jest.spyOn(console, 'warn').mockImplementation()
+      const receiving = chats.receiveMessages([
         {
           outbound: false,
           senderAddress: SENDER_ADDRESS,
@@ -284,6 +341,7 @@ describe('stores/chats.ts (ticket #42)', () => {
           },
         },
       ])
+      await relaySaveStarted
 
       finishSend?.({
         payloadDigest: 'race-digest',
@@ -297,7 +355,14 @@ describe('stores/chats.ts (ticket #42)', () => {
         ],
         preparationTxHashes: [],
       })
-      await sending
+      let sendSettled = false
+      void sending.then(() => {
+        sendSettled = true
+      })
+      await Promise.resolve()
+      expect(sendSettled).toBe(false)
+      releaseRelaySave?.()
+      await Promise.all([receiving, sending])
 
       const chat = chats.chats[SENDER_ADDRESS]
       expect(chat?.messages).toHaveLength(1)
@@ -310,18 +375,33 @@ describe('stores/chats.ts (ticket #42)', () => {
         }),
       )
       expect(chats.messages[pendingIndex]).toBeUndefined()
+      expect(chats.messages['race-digest']).toBe(chat?.messages[0])
       expect(chat?.totalUnreadMessages).toBe(0)
       expect(chat?.totalUnreadValue).toBe(0)
-      expect(chat?.totalValue).toBe(0)
+      expect(chat?.totalValue).toBe(9000)
       expect(desktopNotify).not.toHaveBeenCalled()
       expect(mockMessageStore.deleteMessage).toHaveBeenCalledWith(pendingIndex)
 
-      const persisted = mockMessageStore.saveMessage.mock.calls.find(
-        ([wrapper]) => wrapper.index === 'race-digest',
+      const pending = mockMessageStore.saveMessage.mock.calls.find(
+        ([wrapper]) =>
+          wrapper.index === pendingIndex &&
+          wrapper.message.delivery?.attemptDigest === 'race-digest',
       )?.[0] as MessageWrapper
+      expect(pending).toBeDefined()
+      const persisted = mockMessageStore.saveMessage.mock.calls.find(
+        ([wrapper]) =>
+          wrapper.index === 'race-digest' &&
+          wrapper.message.serverTime === loopbackTime,
+      )?.[0] as MessageWrapper
+      expect(
+        mockMessageStore.saveMessage.mock.calls.filter(
+          ([wrapper]) => wrapper.index === 'race-digest',
+        ),
+      ).toHaveLength(1)
       if (!chat) throw new Error('self chat was not retained')
       mockMessageStore.getIterator.mockResolvedValueOnce(
         (async function* () {
+          yield pending
           yield persisted
         })(),
       )
@@ -340,9 +420,17 @@ describe('stores/chats.ts (ticket #42)', () => {
       ])
       expect(restored.chats[SENDER_ADDRESS]?.totalUnreadMessages).toBe(0)
       expect(restored.chats[SENDER_ADDRESS]?.totalUnreadValue).toBe(0)
+      expect(restored.chats[SENDER_ADDRESS]?.totalValue).toBe(9000)
+      expect(restored.messages['race-digest']).toBe(
+        restored.chats[SENDER_ADDRESS]?.messages[0],
+      )
+      expect(restored.messages[pendingIndex]).toBeUndefined()
+      mockMessageStore.deleteMessage.mockResolvedValue(undefined)
+      await Promise.resolve()
+      warning.mockRestore()
     })
 
-    it('does not classify an old-account digest collision as current self loopback', async () => {
+    it('reaccounts and resorts a rehydrated old-account digest collision as inbound', async () => {
       const chats = useChatStore()
       const contacts = useContactStore()
       mockOwnAddress.mockResolvedValue(RECIPIENT_ADDRESS)
@@ -352,32 +440,50 @@ describe('stores/chats.ts (ticket #42)', () => {
           profile: { name: 'Old account', bio: '', avatar: '', pubKey: null },
         },
       })
-      chats.chats[RECIPIENT_ADDRESS] = {
-        address: RECIPIENT_ADDRESS,
-        messages: [],
-        totalUnreadMessages: 0,
-        totalUnreadValue: 0,
-        totalValue: 0,
-        lastReceived: 0,
-        lastRead: 0,
-        stampAmount: 1,
-      }
-      chats.sendMessageLocal({
-        address: RECIPIENT_ADDRESS,
-        senderAddress: SENDER_ADDRESS,
-        index: 'shared-digest',
-        items: [{ type: 'text', text: 'from old account' }],
-        outpoints: [],
-        stampValueWei: 111n,
-        status: 'confirmed',
-        previousHash: null,
-      })
+      mockMessageStore.getIterator.mockResolvedValueOnce(
+        (async function* (): AsyncGenerator<MessageWrapper> {
+          for (const [index, copartyAddress, stampValueWei] of [
+            ['shared-digest', RECIPIENT_ADDRESS, 111n],
+            ['other-digest', THIRD_ADDRESS, 150n],
+          ] as const) {
+            yield {
+              index,
+              outbound: true,
+              senderAddress: SENDER_ADDRESS,
+              copartyAddress,
+              message: {
+                outbound: true,
+                status: 'confirmed',
+                items: [{ type: 'text', text: index }],
+                serverTime: Number(stampValueWei),
+                receivedTime: Number(stampValueWei),
+                outpoints: [],
+                stampValueWei,
+                senderAddress: SENDER_ADDRESS,
+              },
+            }
+          }
+        })(),
+      )
+      chats.$patch(
+        await rehydateChat({
+          activeChatAddr: null,
+          chats: {},
+          messages: {},
+          lastReceived: 0,
+        }),
+      )
+      expect(chats.chats[RECIPIENT_ADDRESS]?.totalValue).toBe(111)
+      expect(chats.getSortedChatOrder.map(chat => chat?.address)).toEqual([
+        THIRD_ADDRESS,
+        RECIPIENT_ADDRESS,
+      ])
 
       await chats.receiveMessages([
         {
           outbound: false,
-          senderAddress: SENDER_ADDRESS.toLowerCase(),
-          copartyAddress: SENDER_ADDRESS.toLowerCase(),
+          senderAddress: SENDER_ADDRESS,
+          copartyAddress: SENDER_ADDRESS,
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           copartyPubKey: {} as any,
           index: 'shared-digest',
@@ -397,6 +503,7 @@ describe('stores/chats.ts (ticket #42)', () => {
       ])
 
       expect(chats.chats[RECIPIENT_ADDRESS]?.messages).toHaveLength(0)
+      expect(chats.chats[RECIPIENT_ADDRESS]?.totalValue).toBe(0)
       expect(chats.chats[SENDER_ADDRESS]?.messages).toEqual([
         expect.objectContaining({
           payloadDigest: 'shared-digest',
@@ -406,11 +513,23 @@ describe('stores/chats.ts (ticket #42)', () => {
       ])
       expect(chats.chats[SENDER_ADDRESS]?.totalUnreadMessages).toBe(1)
       expect(chats.chats[SENDER_ADDRESS]?.totalUnreadValue).toBe(222)
+      expect(chats.chats[SENDER_ADDRESS]?.totalValue).toBe(222)
+      expect(
+        Object.values(chats.chats).reduce(
+          (sum, chat) => sum + (chat?.totalValue ?? 0),
+          0,
+        ),
+      ).toBe(372)
+      expect(chats.getSortedChatOrder.map(chat => chat?.address)).toEqual([
+        SENDER_ADDRESS,
+        THIRD_ADDRESS,
+        RECIPIENT_ADDRESS,
+      ])
       expect(mockMessageStore.saveMessage).toHaveBeenLastCalledWith(
         expect.objectContaining({
           index: 'shared-digest',
           outbound: false,
-          copartyAddress: SENDER_ADDRESS.toLowerCase(),
+          copartyAddress: SENDER_ADDRESS,
         }),
       )
     })
@@ -470,7 +589,7 @@ describe('stores/chats.ts (ticket #42)', () => {
       ])
       expect(chats.chats[RECIPIENT_ADDRESS]?.totalUnreadMessages).toBe(0)
       expect(chats.chats[RECIPIENT_ADDRESS]?.totalUnreadValue).toBe(0)
-      expect(chats.chats[RECIPIENT_ADDRESS]?.totalValue).toBe(0)
+      expect(chats.chats[RECIPIENT_ADDRESS]?.totalValue).toBe(333)
     })
 
     it('shows one pending message immediately and reconciles it after the send completes', async () => {

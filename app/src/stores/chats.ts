@@ -187,6 +187,27 @@ const inflightOutgoing = new Set<string>()
 // first await, and released once the call has stored it (or failed, so a retry can still notify).
 const notifyingIncoming = new Set<string>()
 
+// Inbox delivery and local send completion can both confirm/re-key the same payload. Enqueue the
+// mutation synchronously, before either path's first await, so relay-authored metadata always wins
+// when a poll overlaps `directMessages.send` completion.
+let deliveryMutationTail: Promise<void> = Promise.resolve()
+
+async function serializeDeliveryMutation<T>(
+  work: () => Promise<T>,
+): Promise<T> {
+  const predecessor = deliveryMutationTail
+  let release = () => undefined
+  deliveryMutationTail = new Promise<void>(resolve => {
+    release = resolve
+  })
+  await predecessor
+  try {
+    return await work()
+  } finally {
+    release()
+  }
+}
+
 export type OutgoingOutcome =
   /** Delivered; the local copy is now keyed by its real payload hash. */
   | { state: 'sent'; payloadDigest: string }
@@ -262,6 +283,45 @@ type OutboundDeliveryMatch = {
   oldIndex: string
   chatAddress: string
   message: Message
+}
+
+type OutboundDeliveryOwner = {
+  chatAddress: string
+  index: string
+  message: Message
+}
+
+export function indexOutboundDeliveryOwners(
+  chats: Record<string, { messages: Array<ChatMessage | Message> } | undefined>,
+): {
+  byPayload: Map<string, OutboundDeliveryOwner>
+  byAttempt: Map<string, OutboundDeliveryOwner>
+} {
+  const byPayload = new Map<string, OutboundDeliveryOwner>()
+  const byAttempt = new Map<string, OutboundDeliveryOwner>()
+  for (const [chatAddress, chat] of Object.entries(chats)) {
+    for (const message of chat?.messages ?? []) {
+      if (!message.outbound) continue
+      const index =
+        'payloadDigest' in message ? message.payloadDigest : undefined
+      if (!index) continue
+      const owner = { chatAddress, index, message }
+      byPayload.set(index, owner)
+      const attempt = message.delivery?.attemptDigest
+      if (attempt !== undefined) byAttempt.set(attempt, owner)
+    }
+  }
+  return { byPayload, byAttempt }
+}
+
+function recomputeChatTotalValue(chat: ChatState): void {
+  chat.totalValue = chat.messages.reduce(
+    (total, message) =>
+      total +
+      messageStampPrice(message) +
+      tallyMessageItemsValue(message.items),
+    0,
+  )
 }
 
 export type RestorableState = {
@@ -836,7 +896,30 @@ export const useChatStore = defineStore('chats', {
       payloadDigest: string
       stampValueWei?: bigint
       stampPayments?: DirectMessageSendResult['stampPayments']
-    }) {
+    }): Promise<void> {
+      return serializeDeliveryMutation(() =>
+        this.confirmOutgoingExclusive({
+          address,
+          id,
+          payloadDigest,
+          stampValueWei,
+          stampPayments,
+        }),
+      )
+    },
+    async confirmOutgoingExclusive({
+      address,
+      id,
+      payloadDigest,
+      stampValueWei,
+      stampPayments,
+    }: {
+      address: string
+      id: string
+      payloadDigest: string
+      stampValueWei?: bigint
+      stampPayments?: DirectMessageSendResult['stampPayments']
+    }): Promise<void> {
       const message = this.messages[id]
       if (!message) return
       const { items, senderAddress, serverTime } = message
@@ -854,6 +937,8 @@ export const useChatStore = defineStore('chats', {
         previousHash: id,
         timestamp: serverTime,
       })
+      const chat = this.chats[toChainDisplayAddress(address)]
+      if (chat) recomputeChatTotalValue(chat)
       const messageStore = await store
       await messageStore.saveMessage(
         {
@@ -1272,7 +1357,15 @@ export const useChatStore = defineStore('chats', {
     async storeReceivedMessages(
       messageWrappers: ReceivedMessageWrapper[],
       toNotify: Set<string>,
-    ) {
+    ): Promise<void> {
+      return serializeDeliveryMutation(() =>
+        this.storeReceivedMessagesExclusive(messageWrappers, toNotify),
+      )
+    },
+    async storeReceivedMessagesExclusive(
+      messageWrappers: ReceivedMessageWrapper[],
+      toNotify: Set<string>,
+    ): Promise<void> {
       console.log('receiving messages')
       const messageStore = await store
       const ownAddress = await getOwnCanonicalAddress()
@@ -1282,22 +1375,13 @@ export const useChatStore = defineStore('chats', {
         { chatAddress: string }
       >()
 
-      for (const wrapper of messageWrappers) {
-        const confirmed = this.messages[wrapper.index]
-        const pendingEntry = Object.entries(this.messages).find(
-          ([, candidate]) =>
-            candidate?.outbound === true &&
-            candidate.delivery?.attemptDigest === wrapper.index,
-        )
-        const oldIndex = confirmed ? wrapper.index : pendingEntry?.[0]
-        const existing = confirmed ?? pendingEntry?.[1]
-        if (!oldIndex || !existing?.outbound) continue
+      const owners = indexOutboundDeliveryOwners(this.chats)
 
-        const chatEntry = Object.entries(this.chats).find(([, chat]) =>
-          chat?.messages.some(message => message.payloadDigest === oldIndex),
-        )
-        if (!chatEntry) continue
-        const [chatAddress] = chatEntry
+      for (const wrapper of messageWrappers) {
+        const confirmed = owners.byPayload.get(wrapper.index)
+        const owner = confirmed ?? owners.byAttempt.get(wrapper.index)
+        if (!owner) continue
+        const { chatAddress, index: oldIndex, message: existing } = owner
         const isCurrentSender =
           sameCanonicalAddress(existing.senderAddress, ownAddress) &&
           sameCanonicalAddress(wrapper.senderAddress, ownAddress)
@@ -1375,7 +1459,9 @@ export const useChatStore = defineStore('chats', {
       for (const [index, loopback] of outboundMatches) {
         const chat = this.chats[loopback.chatAddress]
         const position = chat?.messages.findIndex(
-          message => message.payloadDigest === loopback.oldIndex,
+          message =>
+            message.payloadDigest === loopback.oldIndex ||
+            message.payloadDigest === index,
         )
         const reconciled: ChatMessage = {
           payloadDigest: index,
@@ -1384,6 +1470,7 @@ export const useChatStore = defineStore('chats', {
         if (chat && position !== undefined && position >= 0) {
           chat.messages.splice(position, 1, reconciled)
           chat.lastReceived = Math.max(chat.lastReceived, reconciled.serverTime)
+          recomputeChatTotalValue(chat)
         }
         delete this.messages[loopback.oldIndex]
         this.messages[index] = reconciled
@@ -1400,6 +1487,7 @@ export const useChatStore = defineStore('chats', {
         )
         if (chat && position !== undefined && position >= 0) {
           chat.messages.splice(position, 1)
+          recomputeChatTotalValue(chat)
         }
         delete this.messages[index]
       }

@@ -206,6 +206,7 @@ export default defineComponent({
       parentLoading: false,
       nextParentRequestId: 0,
       activeParentRequestId: null as number | null,
+      parentFocusHandoffRequestId: null as number | null,
       activeWallet: null as WalletHandle | null,
     }
   },
@@ -222,6 +223,7 @@ export default defineComponent({
     this.routeEpoch += 1
     this.parentRouteEpoch += 1
     this.activeSubmissionId = null
+    this.parentFocusHandoffRequestId = null
   },
   computed: {
     // Topics seen in posts, plus the default and relay-discovered ones the topic store tracks.
@@ -251,9 +253,31 @@ export default defineComponent({
     },
     'parentMessage'(nextParent: { topic: string } | undefined) {
       if (this.parentDigest && nextParent) {
+        const requestId = this.activeParentRequestId
+        const retryButton = this.$refs.retryParentButton as
+          | { $el?: HTMLElement }
+          | HTMLElement
+          | undefined
+        const retryElement =
+          retryButton instanceof HTMLElement ? retryButton : retryButton?.$el
+        const retryOwnedFocus = retryElement?.contains(document.activeElement)
+        const handoff =
+          retryOwnedFocus && requestId !== null
+            ? {
+                parentDigest: this.parentDigest,
+                parentRouteEpoch: this.parentRouteEpoch,
+                requestId,
+              }
+            : null
+        // A valid parent makes every in-flight request for this route redundant. Revoke its
+        // completion authority before either the request that populated the shared store or a
+        // newer retry can settle and interfere with the resolved-parent UI.
+        this.activeParentRequestId = null
+        this.parentFocusHandoffRequestId = handoff?.requestId ?? null
         this.parentLoading = false
         this.topic = nextParent.topic
         void this.syncSubmissionUi(this.parentDigest)
+        if (handoff) void this.handoffResolvedParentFocus(handoff)
       }
     },
     'currentReservationId'(nextReservationId: number | undefined) {
@@ -325,6 +349,7 @@ export default defineComponent({
     syncParentDigest(parentDigest: string | undefined) {
       this.routeEpoch += 1
       this.parentRouteEpoch += 1
+      this.parentFocusHandoffRequestId = null
       this.parentDigest = parentDigest
       if (parentDigest) {
         this.topic = this.getMessage(parentDigest)?.topic ?? ''
@@ -349,6 +374,7 @@ export default defineComponent({
       if (!requestedParent || this.getMessage(requestedParent)) return
       const requestedParentRouteEpoch = this.parentRouteEpoch
       const requestId = ++this.nextParentRequestId
+      this.parentFocusHandoffRequestId = null
       this.activeParentRequestId = requestId
       const retryButton = this.$refs.retryParentButton as
         | { $el?: HTMLElement }
@@ -392,6 +418,37 @@ export default defineComponent({
           }
           if (ownsParentRequest()) this.activeParentRequestId = null
         }
+      }
+    },
+    async handoffResolvedParentFocus(handoff: {
+      parentDigest: string
+      parentRouteEpoch: number
+      requestId: number
+    }) {
+      await this.$nextTick()
+      if (this.parentFocusHandoffRequestId !== handoff.requestId) return
+      this.parentFocusHandoffRequestId = null
+      if (
+        !this.componentMounted ||
+        this.parentRouteEpoch !== handoff.parentRouteEpoch ||
+        this.parentDigest !== handoff.parentDigest ||
+        !this.parentMessage
+      ) {
+        return
+      }
+      const activeElement = document.activeElement
+      const hasConnectedFocus =
+        activeElement instanceof HTMLElement &&
+        activeElement !== document.body &&
+        activeElement.isConnected
+      if (!hasConnectedFocus) {
+        const focusTarget = this.$refs.composeFocusTarget as
+          | { $el?: HTMLElement }
+          | HTMLElement
+          | undefined
+        const targetElement =
+          focusTarget instanceof HTMLElement ? focusTarget : focusTarget?.$el
+        targetElement?.focus()
       }
     },
     setTopic(topic: string | null) {

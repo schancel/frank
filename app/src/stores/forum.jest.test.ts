@@ -206,6 +206,38 @@ describe('useForumStore: session post reservations', () => {
 })
 
 describe('useForumStore: own indexed messages', () => {
+  it('rejects an otherwise valid message stored under an empty digest', () => {
+    const store = useForumStore()
+    store.index[''] = {
+      ...makeMessage({ payloadDigest: '' }),
+      replies: [],
+    }
+
+    expect(store.getMessage('')).toBeNull()
+  })
+
+  it('rejects an otherwise valid inherited message', () => {
+    const store = useForumStore()
+    Object.setPrototypeOf(store.index, {
+      inherited: {
+        ...makeMessage({ payloadDigest: 'inherited' }),
+        replies: [],
+      },
+    })
+
+    expect(store.getMessage('inherited')).toBeNull()
+  })
+
+  it.each([null, undefined])(
+    'rejects the falsy own indexed value %s',
+    value => {
+      const store = useForumStore()
+      store.index.candidate = value as unknown as MessageWithReplies
+
+      expect(store.getMessage('candidate')).toBeNull()
+    },
+  )
+
   it.each(['__proto__', 'constructor', 'toString'])(
     'does not resolve inherited key %s as a forum parent',
     key => {

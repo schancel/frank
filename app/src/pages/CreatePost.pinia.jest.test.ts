@@ -142,8 +142,22 @@ it('uses the production forum store for same-wallet distinct destinations and a 
   )
 
   pending[0]?.({ payloadDigest: 'posted-top-level' })
+  await postingTopLevel
+  await flushPromises()
+
+  expect(topLevel.vm).toMatchObject({ posting: false })
+  expect(nestedReply.vm).toMatchObject({ posting: true })
+  const duplicateNestedReply = (
+    nestedReply.vm as unknown as { post(): Promise<void> }
+  ).post()
+  await flushPromises()
+  expect(mockTopicPost).toHaveBeenCalledTimes(2)
+  await duplicateNestedReply
+
   pending[1]?.({ payloadDigest: 'posted-nested-reply' })
-  await Promise.all([postingTopLevel, postingNestedReply])
+  await postingNestedReply
+  await flushPromises()
+  expect(nestedReply.vm).toMatchObject({ posting: false })
 })
 
 it('exposes an in-flight production reservation to a remounted CreatePost instance', async () => {

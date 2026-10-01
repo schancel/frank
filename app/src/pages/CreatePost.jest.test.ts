@@ -710,6 +710,90 @@ describe('CreatePost selected-topic default (ticket #414)', () => {
     await flushPromises()
   })
 
+  it.each(['success', 'failure'] as const)(
+    'keeps meaningful focus when stale A succeeds during the current A retry, then that retry ends in %s',
+    async currentRetryOutcome => {
+      const forum = useForumStore() as unknown as {
+        index: Record<string, { topic: string }>
+        fetchMessage: jest.Mock
+      }
+      const { page, router } = await mountRealRoutedReplyForm(
+        '/new-post/parentA',
+      )
+      const pending: Array<{
+        digest: string
+        resolve(): void
+        reject(error: Error): void
+      }> = []
+      forum.fetchMessage.mockImplementation(
+        ({ payloadDigest }: { payloadDigest: string }) =>
+          new Promise<void>((resolve, reject) => {
+            pending.push({ digest: payloadDigest, resolve, reject })
+          }),
+      )
+
+      const retry = page().get<HTMLButtonElement>(
+        '[data-test="retry-parent"]',
+      ).element
+      retry.focus()
+      await page().get('[data-test="retry-parent"]').trigger('click')
+      await nextTick()
+      await router.push('/new-post/parentB')
+      await flushPromises()
+      await router.push('/new-post/parentA')
+      await flushPromises()
+
+      expect(pending.map(request => request.digest)).toEqual([
+        'parentA',
+        'parentB',
+        'parentA',
+      ])
+      expect(retry.isConnected).toBe(true)
+      expect(document.activeElement).toBe(retry)
+
+      // A1 is no longer route-authoritative, but its content-addressed result is still a valid
+      // shared-cache population. It must intentionally hand focus off before removing Retry,
+      // while A2 remains pending.
+      forum.index = { parentA: { topic: 'news' } }
+      pending[0]?.resolve()
+      await flushPromises()
+
+      const composeTarget = page().get(
+        '[data-test="compose-focus-target"]',
+      ).element
+      expect(router.currentRoute.value.fullPath).toBe('/new-post/parentA')
+      expect(page().find('[data-test="retry-parent"]').exists()).toBe(false)
+      expect(page().vm).toMatchObject({
+        activeParentRequestId: null,
+        parentDigest: 'parentA',
+        parentLoading: false,
+        topic: 'news',
+      })
+      expect(composeTarget.isConnected).toBe(true)
+      expect(document.activeElement).toBe(composeTarget)
+
+      if (currentRetryOutcome === 'success') {
+        pending[2]?.resolve()
+      } else {
+        pending[2]?.reject(new Error('current A retry failed after resolution'))
+      }
+      await flushPromises()
+      expect(document.activeElement).toBe(composeTarget)
+      expect(page().vm).toMatchObject({
+        activeParentRequestId: null,
+        parentDigest: 'parentA',
+        parentLoading: false,
+        topic: 'news',
+      })
+
+      // B's route completion is stale too and cannot disturb the resolved A route or focus.
+      pending[1]?.resolve()
+      await flushPromises()
+      expect(router.currentRoute.value.fullPath).toBe('/new-post/parentA')
+      expect(document.activeElement).toBe(composeTarget)
+    },
+  )
+
   it('blocks a real QForm reply until its late parent supplies the topic', async () => {
     const forum = useForumStore() as unknown as {
       index: Record<string, { topic: string }>

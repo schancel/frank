@@ -157,11 +157,8 @@ it('matches bitcore and the stealth parent scalar for the reduced digest', () =>
   ).toEqual(derived.stealthPublicKey.toBuffer())
 
   const hd = ctor.constructHDStealthPublicKey(ephemeral, uncompressed)
-  const hdDescribed = hd.toObject() as { chainCode: string }
-  expect(hd.publicKey.toBuffer()).toEqual(derived.stealthPublicKey.toBuffer())
-  expect(Buffer.from(hdDescribed.chainCode, 'hex')).toEqual(
-    Buffer.from(derived.digest),
-  )
+  expect(Buffer.from(hd.publicKey)).toEqual(derived.stealthPublicKey.toBuffer())
+  expect(Buffer.from(hd.chainCode)).toEqual(Buffer.from(derived.digest))
 
   const leadingZeroSecret = `${'00'.repeat(31)}6d`
   const leadingZeroKey = new PrivateKey(leadingZeroSecret)

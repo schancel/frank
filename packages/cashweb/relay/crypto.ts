@@ -10,6 +10,7 @@ import * as forge from 'node-forge'
 import { stampParentSecret } from './stamp-parent'
 import { stampParentPublicKey } from './stamp-public'
 import { stealthParentHdNode } from './stealth-hd'
+import { stealthParentHdPublicNode } from './stealth-hd-public'
 import { stealthParentSecret } from './stealth-parent'
 import { stealthParentPublicKey } from './stealth-public'
 import { stealthPointDigest } from './stealth-point-digest'
@@ -114,22 +115,19 @@ export class PayloadConstructor {
     }
   }
 
+  // Depth-0 node. Chain code is the raw SHA-256 digest, not the reduced
+  // scalar (decision #559). Public key bytes match bitcore HDPublicKey.
+  // A secret outside (0, n), a public key that is not 33 or 65 SEC1
+  // bytes, an invalid point, or a point at infinity is an error. The
+  // caller's PrivateKey is not wiped. Stamp HD nodes stay on bitcore.
   constructHDStealthPublicKey(
     emphemeralPrivKey: PrivateKey,
     destinationPublicKey: PublicKey,
   ) {
-    const { stealthPublicKey, digest } = this.constructStealthPublicKey(
-      emphemeralPrivKey,
-      destinationPublicKey,
+    return stealthParentHdPublicNode(
+      Uint8Array.from(emphemeralPrivKey.toBuffer()),
+      Uint8Array.from(destinationPublicKey.toBuffer()),
     )
-    return new HDPublicKey({
-      publicKey: stealthPublicKey.toBuffer(),
-      depth: 0,
-      network: this.networkName,
-      childIndex: 0,
-      chainCode: digest,
-      parentFingerPrint: 0,
-    })
   }
 
   // ebG is ecdh of the destination secret and the ephemeral point.

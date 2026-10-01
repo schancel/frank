@@ -212,6 +212,7 @@ export default defineComponent({
     this.resizeHandler()
     // Adjust the chat width when window resizes
     window.addEventListener('resize', debounce(this.resizeHandler, 50))
+    this.focusComposeOnOpen()
   },
   updated() {
     this.$nextTick(() => {
@@ -222,6 +223,46 @@ export default defineComponent({
     })
   },
   methods: {
+    // Opening a chat (mount or a reused route) places the caret (#411). Deferred
+    // so a narrow overlay can release the page first (#277). Fine pointer only.
+    focusComposeOnOpen() {
+      void this.$nextTick(() => {
+        void this.$nextTick(() => {
+          if (!this.composeAutofocusAllowed()) return
+          ;(
+            this.$refs.chatInput as { focus?: () => void } | undefined
+          )?.focus?.()
+        })
+      })
+    },
+    finePointer() {
+      return (
+        typeof window.matchMedia === 'function' &&
+        window.matchMedia('(pointer: fine)').matches
+      )
+    },
+    composeAutofocusAllowed() {
+      if (!this.finePointer()) return false
+      if (document.querySelector('.q-dialog, .q-menu')) return false
+      const root = this.$el as HTMLElement | undefined
+      if (!root?.isConnected || root.closest('[inert]')) return false
+      const active = document.activeElement
+      if (!(active instanceof HTMLElement)) return true
+      if (
+        active === document.body ||
+        active === document.documentElement ||
+        active.classList.contains('q-layout') ||
+        active.classList.contains('q-page-container') ||
+        active.closest('.q-drawer') !== null
+      ) {
+        return true
+      }
+      // A control already chosen in this chat stays put, except the composer.
+      if (root.contains(active)) {
+        return active.tagName === 'TEXTAREA' || active.tagName === 'INPUT'
+      }
+      return false
+    },
     focusComposerAfterRetry() {
       void this.$nextTick(() => {
         // A connected control chosen while Retry was pending is still the user's focus.
@@ -627,6 +668,9 @@ export default defineComponent({
     },
   },
   watch: {
+    'address'() {
+      this.focusComposeOnOpen()
+    },
     'messages.length'() {
       // Scroll to bottom if user was already there.
       this.scrollBottom()

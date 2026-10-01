@@ -342,6 +342,12 @@ ciphertext and MUST NOT be emitted by a production writer. Production suites
 are allocated only with their nonce, key-agreement, authentication/deniability,
 and failure rules. The codec does not infer a suite from nonce length.
 
+`@frank/crypto-box` registry identifiers `0xFE01`, `0xFE02`, `0xFE03`, and
+`0xFE04` are not version-1 encryption-suite allocations (decision 356). A
+version-1 writer MUST NOT emit them in an encryption-suite field. Version 1
+allocates no production encryption suite. A crypto-box envelope is not a frame.
+Frames are produced only by this specification's codecs.
+
 S3. Payment members are ordered by numeric `child_index`, then bytewise
 `transaction_id`. Child indices and transaction identifiers MUST each be
 independently unique. Because T3a.4 also requires the child indices to be exactly contiguous

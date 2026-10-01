@@ -1,0 +1,32 @@
+# frank-cbor
+
+Rust codec for Frank deterministic CBOR, version 1. The normative text is
+`docs/protocol/cbor/`. The TypeScript reference is `@frank/codec`
+(`packages/frank-codec`). The two codecs meet at
+`docs/protocol/cbor/vectors/`. Nothing here is wired into cashwebd or a stored
+record format.
+
+## Ownership
+
+This crate owns canonical CBOR encoding and decoding, FRNK frame bytes, schema
+checks through section 9 stage 9, and the pure hashes T1, T1a, T3, T4, and T7.
+Callers pass typed values or payload bytes. They do not hand-roll CBOR maps.
+
+## Public entry points
+
+`encode_frame`, `wrap_frame`, `parse_frame`, `validate_frame`,
+`encode_canonical`, `decode_canonical`, `is_valid_canonical`, and `cbor_map`,
+re-exported from `src/lib.rs`. Stage 10 (signatures, payment observation, and
+the DLEQ proof) is out of scope.
+
+## Encryption suites
+
+Version 1 allocates no production encryption suite. Suite 65535 is reserved for
+opaque proof-vector ciphertext and must not be emitted by a production writer.
+`@frank/crypto-box` registry ids `0xFE01`, `0xFE02`, `0xFE03`, and `0xFE04` are
+not version-1 encryption-suite allocations (decision 356). A crypto-box envelope
+is not a frame.
+
+## Tests
+
+From `backend/cashweb`: `cargo test -p frank-cbor`.

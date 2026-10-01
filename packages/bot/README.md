@@ -1,3 +1,10 @@
+# @frank/bot
+
+Headless demo and qwen bot. It drives `@frank/wallet` against the relay. It
+does not own chain codecs, encryption suites, or CashWeb CBOR layouts. Frames
+belong to `@frank/codec` and `frank-cbor`. The live demo path still uses the
+protobuf relay.
+
 ## One-command demo (`yarn demo`)
 
 Starts the whole demo stack, waits until it is ready, and stops everything on Ctrl-C:

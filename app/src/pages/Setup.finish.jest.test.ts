@@ -2,7 +2,8 @@
 
 import { flushPromises, shallowMount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
-import { defineComponent, nextTick } from 'vue'
+import { createApp, defineComponent, nextTick } from 'vue'
+import type { LevelDB } from 'level'
 
 jest.mock('../adapters/level-utxo-store', () => ({
   store: Promise.resolve({}),
@@ -53,6 +54,7 @@ import {
   setupFinishReloads,
 } from '../utils/monad-identity-session'
 import { errorNotify } from '../utils/notifications'
+import { createStoragePlugin } from '../boot/pinia'
 
 const STORED = 'test test test test test test test test test test test junk'
 const OTHER =
@@ -74,9 +76,11 @@ const QBtnStub = defineComponent({
 })
 const routerPush = jest.fn(() => Promise.resolve())
 
-async function mountFinish() {
+async function mountFinish(options: { productionWallet?: boolean } = {}) {
   const wallet = useWalletStore()
-  wallet.flushPersistence = jest.fn(() => Promise.resolve())
+  if (!options.productionWallet) {
+    wallet.flushPersistence = jest.fn(() => Promise.resolve())
+  }
   const wrapper = shallowMount(Setup, {
     global: {
       stubs: {
@@ -112,13 +116,31 @@ async function mountFinish() {
     next: () => Promise<void>
     acknowledgeReplace: () => void
     completionPending: boolean
+    completionRequiresReload: boolean
     forwardEnabled: boolean
+    reloadAfterPersistenceFailure: () => void
+    selectRandomAvatar: () => Promise<string>
   }
+  const reloadAfterPersistenceFailure = jest.fn()
+  vm.reloadAfterPersistenceFailure = reloadAfterPersistenceFailure
   vm.avatar = 'data:avatar'
-  return { wallet, vm, wrapper }
+  return { wallet, vm, wrapper, reloadAfterPersistenceFailure }
 }
 
-describe('Setup finish does not reload (#389)', () => {
+function installProductionStoragePinia(storage: LevelDB) {
+  const pinia = createPinia()
+  pinia.use(
+    createStoragePlugin(
+      storage,
+      Promise.resolve({ networkName: 'test', version: 4 }),
+    ),
+  )
+  createApp({}).use(pinia)
+  setActivePinia(pinia)
+  return pinia
+}
+
+describe('Setup finish lifecycle (#389)', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     jest.clearAllMocks()
@@ -199,7 +221,7 @@ describe('Setup finish does not reload (#389)', () => {
     expect(errorNotify).toHaveBeenCalledWith(expect.any(Error))
   })
 
-  it('serializes completion and clears the pending guard for a retry after failure', async () => {
+  it('serializes completion and leaves a post-write failure terminal', async () => {
     let rejectFirstFlush!: (error: Error) => void
     const firstFlush = new Promise<void>((_resolve, reject) => {
       rejectFirstFlush = reject
@@ -213,7 +235,8 @@ describe('Setup finish does not reload (#389)', () => {
     })
 
     try {
-      const { wallet, vm, wrapper } = await mountFinish()
+      const { wallet, vm, wrapper, reloadAfterPersistenceFailure } =
+        await mountFinish()
       const setSeedPhrase = jest.spyOn(wallet, 'setSeedPhrase')
       vm.step = 2
       vm.accountData = {
@@ -249,25 +272,112 @@ describe('Setup finish does not reload (#389)', () => {
       await firstFailure
       await duplicate
       await nextTick()
-      expect(vm.completionPending).toBe(false)
-      expect(vm.forwardEnabled).toBe(true)
+      expect(vm.completionPending).toBe(true)
+      expect(vm.completionRequiresReload).toBe(true)
+      expect(vm.forwardEnabled).toBe(false)
+      expect(reloadAfterPersistenceFailure).toHaveBeenCalledTimes(1)
 
       await vm.next()
 
-      expect(setSeedPhrase).toHaveBeenCalledTimes(2)
-      expect(mockSetRelayData).toHaveBeenCalledTimes(2)
-      expect(persisted).toHaveBeenCalledTimes(2)
-      expect(persist).toHaveBeenCalledTimes(2)
+      expect(setSeedPhrase).toHaveBeenCalledTimes(1)
+      expect(mockSetRelayData).toHaveBeenCalledTimes(1)
+      expect(persisted).toHaveBeenCalledTimes(1)
+      expect(persist).toHaveBeenCalledTimes(1)
       expect(wallet.flushPersistence).toHaveBeenCalledTimes(2)
       expect(mockFlushProfile).toHaveBeenCalledTimes(2)
-      expect(initializeMonadIdentity).toHaveBeenCalledTimes(1)
-      expect(routerPush).toHaveBeenCalledTimes(1)
+      expect(initializeMonadIdentity).not.toHaveBeenCalled()
+      expect(routerPush).not.toHaveBeenCalled()
     } finally {
       Object.defineProperty(navigator, 'storage', {
         configurable: true,
         value: undefined,
       })
     }
+  })
+
+  it('keeps Next terminal when the production persistence barrier remains poisoned', async () => {
+    const diskError = new Error('disk unavailable')
+    const put = jest
+      .fn<Promise<void>, [string, string]>()
+      .mockResolvedValueOnce()
+      .mockRejectedValueOnce(diskError)
+      .mockResolvedValue()
+    const storage = {
+      get: jest.fn().mockRejectedValue(new Error('not found')),
+      put,
+    } as unknown as LevelDB
+    const pinia = installProductionStoragePinia(storage)
+    const wallet = useWalletStore(pinia)
+    await wallet.restored
+    await wallet.flushPersistence()
+    put.mockClear()
+
+    const { vm, wrapper, reloadAfterPersistenceFailure } = await mountFinish({
+      productionWallet: true,
+    })
+    vm.step = 2
+    vm.accountData = {
+      seed: STORED,
+      name: '',
+      nameRequired: false,
+      valid: true,
+    }
+
+    await expect(vm.next()).rejects.toThrow('disk unavailable')
+
+    expect(vm.completionPending).toBe(true)
+    expect(vm.completionRequiresReload).toBe(true)
+    expect(vm.forwardEnabled).toBe(false)
+    expect(reloadAfterPersistenceFailure).toHaveBeenCalledTimes(1)
+    expect(initializeMonadIdentity).not.toHaveBeenCalled()
+    expect(routerPush).not.toHaveBeenCalled()
+    const nextButton = wrapper
+      .findAll('button')
+      .find(button => button.text() === 'setup.accountSetupNext')
+    expect(nextButton?.attributes('disabled')).toBeDefined()
+
+    wallet.setSeedPhrase(OTHER, Date.now())
+    await nextTick()
+    expect(put).toHaveBeenCalledTimes(2)
+    await expect(wallet.flushPersistence()).rejects.toThrow('disk unavailable')
+
+    await vm.next()
+    await nextTick()
+    expect(put).toHaveBeenCalledTimes(2)
+    expect(reloadAfterPersistenceFailure).toHaveBeenCalledTimes(1)
+  })
+
+  it('clears the pending guard when avatar selection fails before any write', async () => {
+    const { wallet, vm, reloadAfterPersistenceFailure } = await mountFinish()
+    const setSeedPhrase = jest.spyOn(wallet, 'setSeedPhrase')
+    vm.step = 2
+    vm.avatar = ''
+    vm.accountData = {
+      seed: STORED,
+      name: '',
+      nameRequired: false,
+      valid: true,
+    }
+    vm.selectRandomAvatar = jest
+      .fn<Promise<string>, []>()
+      .mockRejectedValueOnce(new Error('avatar unavailable'))
+      .mockResolvedValue('data:avatar')
+
+    await expect(vm.next()).rejects.toThrow('avatar unavailable')
+
+    expect(vm.completionPending).toBe(false)
+    expect(vm.completionRequiresReload).toBe(false)
+    expect(vm.forwardEnabled).toBe(true)
+    expect(setSeedPhrase).not.toHaveBeenCalled()
+    expect(mockSetRelayData).not.toHaveBeenCalled()
+    expect(reloadAfterPersistenceFailure).not.toHaveBeenCalled()
+
+    await vm.next()
+
+    expect(setSeedPhrase).toHaveBeenCalledTimes(1)
+    expect(mockSetRelayData).toHaveBeenCalledTimes(1)
+    expect(initializeMonadIdentity).toHaveBeenCalledTimes(1)
+    expect(routerPush).toHaveBeenCalledTimes(1)
   })
 
   it('replace finish tears down by initializing the new seed in place', async () => {

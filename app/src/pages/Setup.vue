@@ -221,6 +221,8 @@ export default defineComponent({
       replaceAcknowledged: false,
       resumeReplaceAcknowledged: false,
       completionPending: false,
+      completionWritesStarted: false,
+      completionRequiresReload: false,
       storedSeed: resume ? storedSeed : null,
       step: 1,
       accountData: {
@@ -325,7 +327,12 @@ export default defineComponent({
       }
       this.accountData.seed = commitValidatedSetupSeed(
         this.accountData.seed,
-        (seed, at) => this.setSeedPhrase(seed, at),
+        (seed, at) => {
+          // From this first store mutation onward, a failure may leave partial durable state and
+          // the production persistence barrier may remain rejected for this app lifetime.
+          this.completionWritesStarted = true
+          this.setSeedPhrase(seed, at)
+        },
         confirmedAt,
       )
       this.accountData.name = commitValidatedSetupName(
@@ -349,13 +356,38 @@ export default defineComponent({
       await this.finishSetup()
     },
     async submitAccountStep(confirmedAt: number) {
-      if (this.completionPending) return
+      if (this.completionPending || this.completionRequiresReload) return
       this.completionPending = true
+      this.completionWritesStarted = false
       try {
         await this.completeAccountStep(confirmedAt)
+      } catch (error) {
+        if (this.completionWritesStarted) {
+          // createStoragePlugin deliberately keeps any rejected write in the store barrier for
+          // this application lifetime. Wait for both stores' observed writes before reloading;
+          // never present an in-page retry after a possibly partial wallet/profile commit.
+          this.completionRequiresReload = true
+          await Promise.allSettled([
+            useWalletStore().flushPersistence(),
+            useProfileStore().flushPersistence(),
+          ])
+          try {
+            this.reloadAfterPersistenceFailure()
+          } catch {
+            // If the browser refuses the reload, remain terminal rather than invite a duplicate
+            // commit through the poisoned barrier.
+          }
+        }
+        throw error
       } finally {
-        this.completionPending = false
+        if (!this.completionRequiresReload) {
+          this.completionPending = false
+          this.completionWritesStarted = false
+        }
       }
+    },
+    reloadAfterPersistenceFailure() {
+      window.location.reload()
     },
     selectRandomAvatar(): Promise<string> {
       const avatarName =
@@ -646,7 +678,7 @@ export default defineComponent({
       await this.$emit('setupCompleted')
     },
     async next() {
-      if (this.completionPending) return
+      if (this.completionPending || this.completionRequiresReload) return
       const stepper = this.$refs.stepper as QStepper
 
       switch (this.step) {

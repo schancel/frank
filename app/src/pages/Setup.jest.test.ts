@@ -20,7 +20,9 @@ describe('Setup persistence integration', () => {
     expect(source).toContain(
       'this.accountData.seed = commitValidatedSetupSeed(',
     )
-    expect(source).toContain('(seed, at) => this.setSeedPhrase(seed, at)')
+    expect(source).toContain('(seed, at) => {')
+    expect(source).toContain('this.completionWritesStarted = true')
+    expect(source).toContain('this.setSeedPhrase(seed, at)')
     expect(source).toContain(
       'this.accountData.name = commitValidatedSetupName(',
     )
@@ -28,8 +30,10 @@ describe('Setup persistence integration', () => {
     expect(source).toContain('name,\n              bio:')
     expect(source).not.toContain("name: this.accountData.name || 'Frank User'")
     expect(source).toContain('await this.finishSetup()')
-    expect(source).not.toContain('window.location.reload()')
-    expect(source).not.toContain('location.reload()')
+    expect(source).toContain('this.completionRequiresReload = true')
+    expect(source).toContain('await Promise.allSettled([')
+    expect(source).toContain('this.reloadAfterPersistenceFailure()')
+    expect(source).toContain('window.location.reload()')
     expect(
       source.indexOf('this.accountData.seed = commitValidatedSetupSeed('),
     ).toBeLessThan(

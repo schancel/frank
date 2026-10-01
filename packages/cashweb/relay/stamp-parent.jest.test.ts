@@ -59,6 +59,19 @@ it('matches bitcore stamp parent secrets for digests in (0, n)', () => {
   const hdDescribed = hd.toObject() as { chainCode: string }
   expect(hd.privateKey.toBuffer()).toEqual(key.toBuffer())
   expect(Buffer.from(hdDescribed.chainCode, 'hex')).toEqual(digest)
+  expect(
+    Buffer.from(
+      stampParentSecret(Uint8Array.from(destination.toBuffer()), digest),
+    ),
+  ).toEqual(hd.privateKey.toBuffer())
+  expect(destination.toBuffer().toString('hex')).toBe(DEST_SECRET)
+
+  const crossedHd = ctor.constructStampHDPrivateKey(cross, almost)
+  expect(crossedHd.privateKey.toBuffer()).toEqual(crossed.toBuffer())
+  expect(
+    Buffer.from(stampParentSecret(Uint8Array.from(almost.toBuffer()), cross)),
+  ).toEqual(crossedHd.privateKey.toBuffer())
+  expect(almost.toBuffer().toString('hex')).toBe(N_MINUS_1)
 
   const source = readFileSync(join(__dirname, 'crypto.ts'), 'utf8')
   const body = methodBody(

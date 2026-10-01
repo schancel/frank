@@ -103,6 +103,11 @@ const frankBrowserCheckInstall = function () {
     runManifest('rust', rustOrigin)
 
     const byId = (document, id) => document.cases.find(c => c.id === id)
+    const unknownItem = n =>
+      codec.encodeFrame(
+        { typeId: 0xffff0001, schemaVersion: 1, minReaderVersion: 1 },
+        new Map([[0, 'future item ' + n]]),
+      )
     for (const id of interoperability.typescript_origin_ids) {
       if (!byId(manifest, id)) fail(id, 'missing TypeScript-origin proof case')
     }
@@ -126,23 +131,69 @@ const frankBrowserCheckInstall = function () {
       if (!c || !c.frame_hex.includes('1affff0001'))
         fail(id, 'nested opaque future frame missing')
     }
-    for (const id of interoperability.rust_origin_ids) {
+    const rustExpected = [
+      [1, 'rust-additive-direct'],
+      [2, 'rust-additive-directory'],
+      [3, 'rust-additive-checkpoint'],
+    ]
+    for (const [index, id] of interoperability.rust_origin_ids.entries()) {
       const c = byId(rustOrigin, id)
       if (!c) {
         fail(id, 'missing Rust-origin proof case')
         continue
       }
       const r = codec.validateFrame(codec.fromHex(c.frame_hex), ctxOf(c))
-      if (r.kind !== 'parsed' || !r.payload.has(100n))
+      if (r.kind !== 'parsed' || !r.payload.has(100n)) {
         fail(id, 'additive field 100 was not retained')
-    }
-    for (const id of [
-      'rust-fixture-direct-message',
-      'rust-fixture-checkpoint',
-    ]) {
-      const c = byId(rustOrigin, id)
-      if (!c || !c.frame_hex.includes('1affff0001'))
-        fail(id, 'nested opaque future frame missing')
+        continue
+      }
+      const [expectedType, expectedUnknown] = rustExpected[index]
+      if (r.projection !== 'newer-schema')
+        fail(id, 'typed projection was not newer-schema')
+      if (!r.typed || r.typed.type !== expectedType) {
+        fail(id, 'unexpected typed payload')
+        continue
+      }
+      if (r.typed.unknownFields.get(100n) !== expectedUnknown)
+        fail(id, 'typed unknown field 100 differs')
+      if (r.typed.type === 1) {
+        const recipient = r.typed.payloadFrame.typed
+        const encrypted =
+          recipient && recipient.type === 5
+            ? codec.validateFrame(recipient.ciphertext, codec.defaultContext())
+            : undefined
+        const revision =
+          encrypted &&
+          encrypted.kind === 'parsed' &&
+          encrypted.typed?.type === 6
+            ? encrypted.typed.revisionFrame.typed
+            : undefined
+        const container =
+          revision && revision.type === 8 ? revision.items[1] : undefined
+        const opaque =
+          container &&
+          container.kind === 'parsed' &&
+          container.typed?.type === 16
+            ? container.typed.items[1]
+            : undefined
+        if (
+          !opaque ||
+          opaque.kind !== 'retained' ||
+          codec.toHex(opaque.frame) !== codec.toHex(unknownItem(1))
+        )
+          fail(id, 'typed nested opaque child bytes differ')
+      }
+      if (r.typed.type === 3) {
+        if (
+          codec.toHex(r.typed.facts[1].payload) !== codec.toHex(unknownItem(2))
+        )
+          fail(id, 'typed opaque fact bytes differ')
+        if (
+          !r.typed.sections ||
+          codec.toHex(r.typed.sections[1].value) !== codec.toHex(unknownItem(3))
+        )
+          fail(id, 'typed opaque section bytes differ')
+      }
     }
 
     const rejectCategories = {}

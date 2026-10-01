@@ -99,7 +99,7 @@ fn container_item(children: Vec<Vec<u8>>) -> Vec<u8> {
     fr(16, &cbor_map(vec![(0, CborValue::Array(items))]))
 }
 
-fn unknown_item(n: u32) -> Vec<u8> {
+pub fn unknown_item(n: u32) -> Vec<u8> {
     fr(
         0xffff_0001,
         &cbor_map(vec![(0, CborValue::Text(format!("future item {n}")))]),

@@ -6,13 +6,14 @@ use std::collections::BTreeMap;
 
 use frank_cbor::{
     content_hash, decode_canonical, encode_canonical, message_content_digest, payment_commitment,
-    recipient_payload_digest, validate_frame, Error, ValidationResult,
+    recipient_payload_digest, validate_frame, CborValue, ChildFrame, Error, Projection,
+    TypedPayload, ValidationResult,
 };
 use secp256k1_abc::{Message, PublicKey, Secp256k1, SecretKey, Signature};
 
 use common::{
     context_from_json, mutated_type5_frame, repo_path, round_trip_item, type5_frame,
-    type5_frame_reverse_order, typed_context, NET,
+    type5_frame_reverse_order, typed_context, unknown_item, NET,
 };
 
 const TYPESCRIPT_IDS: [&str; 3] = [
@@ -116,23 +117,80 @@ fn rust_origin_frames_and_opaque_data_round_trip_exactly_in_rust() {
         else {
             panic!("{id}: expected parsed frame")
         };
-        let frank_cbor::CborValue::Map(fields) = parsed.payload else {
-            panic!("{id}: payload map")
-        };
-        assert!(
-            fields.iter().any(|(key, _)| *key == 100),
-            "{id}: additive field was not retained"
-        );
+        assert_eq!(parsed.projection, Projection::NewerSchema, "{id}");
+        match (id, parsed.typed.as_deref()) {
+            (
+                "rust-fixture-direct-message",
+                Some(TypedPayload::DirectMessage {
+                    unknown,
+                    payload_frame,
+                    ..
+                }),
+            ) => {
+                assert_unknown(unknown, "rust-additive-direct", id);
+                assert_direct_nested_opaque(payload_frame);
+            }
+            (
+                "rust-fixture-directory-attestation",
+                Some(TypedPayload::DirectoryAttestation { unknown, .. }),
+            ) => assert_unknown(unknown, "rust-additive-directory", id),
+            (
+                "rust-fixture-checkpoint",
+                Some(TypedPayload::MailboxCheckpoint {
+                    unknown,
+                    facts,
+                    sections,
+                    ..
+                }),
+            ) => {
+                assert_unknown(unknown, "rust-additive-checkpoint", id);
+                assert_eq!(facts[1].payload, unknown_item(2), "{id}: opaque fact");
+                assert_eq!(
+                    sections.as_ref().expect("checkpoint sections")[1].value,
+                    unknown_item(3),
+                    "{id}: opaque section"
+                );
+            }
+            _ => panic!("{id}: unexpected typed projection"),
+        }
     }
-    for id in [RUST_IDS[0], RUST_IDS[2]] {
-        assert!(
-            find_case(&manifest, id)["frame_hex"]
-                .as_str()
-                .unwrap()
-                .contains("1affff0001"),
-            "{id}: nested opaque future frame missing"
-        );
-    }
+}
+
+fn assert_unknown(unknown: &[(u64, CborValue)], value: &str, id: &str) {
+    assert_eq!(
+        unknown,
+        &[(100, CborValue::Text(value.to_string()))],
+        "{id}: typed unknown field"
+    );
+}
+
+fn assert_direct_nested_opaque(payload_frame: &frank_cbor::ParsedFrame) {
+    let Some(TypedPayload::RecipientPayload { ciphertext, .. }) = payload_frame.typed.as_deref()
+    else {
+        panic!("direct payload was not typed as type 5")
+    };
+    let ValidationResult::Parsed(encrypted) =
+        validate_frame(ciphertext, &typed_context()).expect("type-6 ciphertext fixture")
+    else {
+        panic!("type-6 ciphertext fixture was not parsed")
+    };
+    let Some(TypedPayload::EncryptedContent { revision_frame, .. }) = encrypted.typed.as_deref()
+    else {
+        panic!("ciphertext was not typed as type 6")
+    };
+    let Some(TypedPayload::MessageRevision { items, .. }) = revision_frame.typed.as_deref() else {
+        panic!("revision was not typed as type 8")
+    };
+    let ChildFrame::Parsed(container) = &items[1] else {
+        panic!("nested container was not parsed")
+    };
+    let Some(TypedPayload::ContainerItem { items, .. }) = container.typed.as_deref() else {
+        panic!("nested frame was not typed as type 16")
+    };
+    let ChildFrame::Retained(opaque) = &items[1] else {
+        panic!("future nested item was not retained")
+    };
+    assert_eq!(opaque.frame, unknown_item(1));
 }
 
 #[test]

@@ -12,6 +12,11 @@ use common::{
 
 #[test]
 fn rust_fixtures_match_the_committed_file() {
+    let typescript_manifest_text =
+        include_str!("../../../../docs/protocol/cbor/vectors/manifest.json");
+    let typescript_manifest: serde_json::Value =
+        serde_json::from_str(typescript_manifest_text).unwrap();
+    let typescript_cases = typescript_manifest["cases"].as_array().unwrap();
     let direct = rust_origin_direct_message_frame();
     let directory = rust_origin_directory_attestation_frame();
     let checkpoint = rust_origin_checkpoint_frame();
@@ -20,6 +25,18 @@ fn rust_fixtures_match_the_committed_file() {
         topic_post_submission_frame(),
         topic_vote_frame(),
     ];
+    for (id, frame) in [
+        ("fixture-topic-post-typed", topic[0].as_slice()),
+        ("fixture-topic-post-submission-typed", topic[1].as_slice()),
+        ("fixture-topic-vote-typed", topic[2].as_slice()),
+    ] {
+        let typescript_case = typescript_cases
+            .iter()
+            .find(|case| case["id"] == id)
+            .unwrap_or_else(|| panic!("missing TypeScript case {id}"));
+        let typescript_frame = hex::decode(typescript_case["frame_hex"].as_str().unwrap()).unwrap();
+        assert_eq!(frame, typescript_frame, "{id}");
+    }
 
     let document = document(&direct, &directory, &checkpoint, &topic);
     let serialized = serde_json::to_string_pretty(&document).unwrap() + "\n";

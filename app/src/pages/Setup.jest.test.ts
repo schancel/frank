@@ -35,10 +35,11 @@ describe('Setup persistence integration', () => {
     expect(source).not.toContain("name: this.accountData.name || 'Frank User'")
     expect(source).toContain('await useProfileStore().flushPersistence()')
     expect(source).toContain('await this.finishSetup()')
-    expect(source).not.toContain('setupFinishReloads')
+    expect(source).toContain('finishReloads: setupFinishReloads()')
+    expect(source).toContain('location: this.setupFinishLocation()')
+    expect(source).toContain('return window.location')
     expect(source).not.toContain('reloadAfterPersistenceFailure')
-    expect(source).not.toContain('window.location.reload()')
-    expect(finishSource).not.toContain('reload')
+    expect(finishSource).toContain('options.location.reload()')
     expect(
       source.indexOf('this.accountData.seed = commitValidatedSetupSeed('),
     ).toBeLessThan(source.indexOf('await useWalletStore().flushPersistence()'))

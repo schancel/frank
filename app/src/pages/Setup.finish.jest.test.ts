@@ -44,12 +44,16 @@ jest.mock('src/stores/my-profile', () => ({
 }))
 jest.mock('../utils/monad-identity-session', () => ({
   initializeMonadIdentity: jest.fn(async () => 'started'),
+  setupFinishReloads: jest.fn(() => false),
   configureMonadIdentitySession: jest.fn(),
 }))
 
 import Setup from './Setup.vue'
 import { useWalletStore } from 'src/stores/wallet'
-import { initializeMonadIdentity } from '../utils/monad-identity-session'
+import {
+  initializeMonadIdentity,
+  setupFinishReloads,
+} from '../utils/monad-identity-session'
 import { errorNotify } from '../utils/notifications'
 import { createStoragePlugin } from '../boot/pinia'
 import { classifyAccount } from '../utils/account-state'
@@ -128,6 +132,7 @@ async function mountFinish(options: { productionWallet?: boolean } = {}) {
     completionPhase: string
     forwardEnabled: boolean
     selectRandomAvatar: () => Promise<string>
+    setupFinishLocation: () => { hash: string; reload(): void }
   }
   vm.avatar = 'data:avatar'
   return { wallet, vm, wrapper }
@@ -151,6 +156,7 @@ describe('Setup finish lifecycle (#389)', () => {
     setActivePinia(createPinia())
     jest.clearAllMocks()
     ;(initializeMonadIdentity as jest.Mock).mockResolvedValue('started')
+    ;(setupFinishReloads as jest.Mock).mockReturnValue(false)
     routerPush.mockResolvedValue(undefined)
     mockFlushProfile.mockImplementation(() => Promise.resolve())
     mockProfile.name = 'Alice'
@@ -206,6 +212,93 @@ describe('Setup finish lifecycle (#389)', () => {
     expect(initializeMonadIdentity).toHaveBeenCalledTimes(1)
     expect(routerPush).toHaveBeenCalledWith('/forum')
     expect((window as { __frankStay?: string }).__frankStay).toBe('stay')
+  })
+
+  it('uses a returning configured reload once after both stores are durable and remains complete', async () => {
+    ;(setupFinishReloads as jest.Mock).mockReturnValue(true)
+    const location = { hash: '#/setup', reload: jest.fn() }
+    const { wallet, vm } = await mountFinish()
+    const setSeedPhrase = jest.spyOn(wallet, 'setSeedPhrase')
+    vm.setupFinishLocation = () => location
+    vm.step = 2
+    vm.accountData = {
+      seed: STORED,
+      name: '',
+      nameRequired: false,
+      valid: true,
+    }
+
+    await vm.next()
+
+    expect(location.hash).toBe('#/')
+    expect(location.reload).toHaveBeenCalledTimes(1)
+    expect(initializeMonadIdentity).not.toHaveBeenCalled()
+    expect(routerPush).not.toHaveBeenCalled()
+    expect(vm.completionPhase).toBe('completed')
+    expect(vm.forwardEnabled).toBe(false)
+    expect(setSeedPhrase).toHaveBeenCalledTimes(1)
+    expect(mockSetRelayData).toHaveBeenCalledTimes(1)
+    expect(wallet.flushPersistence).toHaveBeenCalledTimes(1)
+    expect(mockFlushProfile).toHaveBeenCalledTimes(1)
+    expect(mockFlushProfile.mock.invocationCallOrder[0]).toBeLessThan(
+      location.reload.mock.invocationCallOrder[0],
+    )
+
+    await vm.next()
+    expect(location.reload).toHaveBeenCalledTimes(1)
+    expect(setSeedPhrase).toHaveBeenCalledTimes(1)
+    expect(mockSetRelayData).toHaveBeenCalledTimes(1)
+  })
+
+  it('reports a throwing configured reload once and retries it without rewriting stores', async () => {
+    ;(setupFinishReloads as jest.Mock).mockReturnValue(true)
+    const location = {
+      hash: '#/setup',
+      reload: jest
+        .fn()
+        .mockImplementationOnce(() => {
+          throw new Error('reload refused')
+        })
+        .mockImplementationOnce(() => undefined),
+    }
+    const { wallet, vm } = await mountFinish()
+    const setSeedPhrase = jest.spyOn(wallet, 'setSeedPhrase')
+    vm.setupFinishLocation = () => location
+    vm.step = 2
+    vm.accountData = {
+      seed: STORED,
+      name: '',
+      nameRequired: false,
+      valid: true,
+    }
+
+    await expect(vm.next()).rejects.toThrow('reload refused')
+
+    expect(location.reload).toHaveBeenCalledTimes(1)
+    expect(errorNotify).toHaveBeenCalledTimes(1)
+    expect(initializeMonadIdentity).not.toHaveBeenCalled()
+    expect(routerPush).not.toHaveBeenCalled()
+    expect(vm.completionPhase).toBe('entering')
+    expect(vm.completionPending).toBe(false)
+    expect(setSeedPhrase).toHaveBeenCalledTimes(1)
+    expect(mockSetRelayData).toHaveBeenCalledTimes(1)
+    expect(wallet.flushPersistence).toHaveBeenCalledTimes(1)
+    expect(mockFlushProfile).toHaveBeenCalledTimes(1)
+    expect(mockFlushProfile.mock.invocationCallOrder[0]).toBeLessThan(
+      location.reload.mock.invocationCallOrder[0],
+    )
+
+    await vm.next()
+
+    expect(location.reload).toHaveBeenCalledTimes(2)
+    expect(errorNotify).toHaveBeenCalledTimes(1)
+    expect(initializeMonadIdentity).not.toHaveBeenCalled()
+    expect(routerPush).not.toHaveBeenCalled()
+    expect(vm.completionPhase).toBe('completed')
+    expect(setSeedPhrase).toHaveBeenCalledTimes(1)
+    expect(mockSetRelayData).toHaveBeenCalledTimes(1)
+    expect(wallet.flushPersistence).toHaveBeenCalledTimes(1)
+    expect(mockFlushProfile).toHaveBeenCalledTimes(1)
   })
 
   it('never starts the profile mutation when the wallet write fails', async () => {
@@ -357,15 +450,27 @@ describe('Setup finish lifecycle (#389)', () => {
       valid: true,
     }
 
-    await expect(vm.next()).rejects.toThrow('prior disk failure')
+    const completion = vm.next()
+    const completionOutcome = completion.then(
+      () => 'resolved',
+      () => 'rejected',
+    )
+    await nextTick()
+    const beforeWriteSettles = await Promise.race([
+      completionOutcome,
+      new Promise<'pending'>(resolve =>
+        setTimeout(() => resolve('pending'), 0),
+      ),
+    ])
 
     expect(put).toHaveBeenCalledTimes(2)
+    expect(beforeWriteSettles).toBe('pending')
     expect(mockSetRelayData).not.toHaveBeenCalled()
     expect(mockFlushProfile).not.toHaveBeenCalled()
-    expect(vm.completionPending).toBe(false)
-    expect(vm.completionPhase).toBe('terminal')
+    expect(vm.completionPending).toBe(true)
+    expect(vm.completionPhase).toBe('wallet-persistence')
     expect(vm.forwardEnabled).toBe(false)
-    expect(errorNotify).toHaveBeenCalledTimes(1)
+    expect(errorNotify).not.toHaveBeenCalled()
     expect(initializeMonadIdentity).not.toHaveBeenCalled()
     expect(routerPush).not.toHaveBeenCalled()
     const nextButton = wrapper
@@ -373,11 +478,15 @@ describe('Setup finish lifecycle (#389)', () => {
       .find(button => button.text() === 'setup.accountSetupNext')
     expect(nextButton?.attributes('disabled')).toBeDefined()
 
-    await vm.next()
-    await nextTick()
-    expect(put).toHaveBeenCalledTimes(2)
+    const duplicate = vm.next()
     laterWrite.resolve()
-    await laterWrite.promise
+    await expect(completion).rejects.toThrow('prior disk failure')
+    await duplicate
+
+    expect(vm.completionPending).toBe(false)
+    expect(vm.completionPhase).toBe('terminal')
+    expect(errorNotify).toHaveBeenCalledTimes(1)
+    expect(put).toHaveBeenCalledTimes(2)
   })
 
   it('clears the pending guard when avatar selection fails before any write', async () => {

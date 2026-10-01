@@ -129,7 +129,10 @@ import {
   networkName,
 } from '../utils/constants'
 import { errorNotify } from '../utils/notifications'
-import { initializeMonadIdentity } from '../utils/monad-identity-session'
+import {
+  initializeMonadIdentity,
+  setupFinishReloads,
+} from '../utils/monad-identity-session'
 import { finishSetupAndEnter } from '../utils/setup-persistence'
 import { classifyAccount } from '../utils/account-state'
 import { requestPersistentStorageWithin } from '../utils/persistent-storage'
@@ -298,9 +301,14 @@ export default defineComponent({
      */
     async finishSetup() {
       return finishSetupAndEnter({
+        finishReloads: setupFinishReloads(),
+        location: this.setupFinishLocation(),
         initialize: () => initializeMonadIdentity(),
         navigate: (path: string) => this.$router.push(path),
       })
+    },
+    setupFinishLocation() {
+      return window.location
     },
     async completeAccountStep(confirmedAt: number) {
       if (this.completionPhase === 'entering') {
@@ -336,9 +344,9 @@ export default defineComponent({
       // Ticket #370: ask the browser to keep the just-stored seed while we still hold the user's
       // click. The helper is bounded and best-effort, and never blocks signup for long.
       await requestPersistentStorageWithin(PERSIST_REQUEST_WAIT_MS)
-      // Never create a new profile until the matching wallet seed is known durable. If the
-      // production wallet barrier was already poisoned, it can reject while its latest physical
-      // write is still pending; the terminal page deliberately neither reloads nor proceeds.
+      // Never create a new profile until the matching wallet seed is known durable. A poisoned
+      // production barrier drains its latest physical write before rejecting; the terminal page
+      // then deliberately neither reloads nor proceeds.
       await useWalletStore().flushPersistence()
       this.completionPhase = 'profile-persistence'
       this.accountData.name = commitValidatedSetupName(

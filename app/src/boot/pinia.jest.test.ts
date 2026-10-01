@@ -216,6 +216,43 @@ describe('Pinia persistence barrier', () => {
     catchSpy.mockRestore()
   })
 
+  it('drains a later physical write before surfacing the retained error', async () => {
+    const failedWrite = deferred()
+    const laterWrite = deferred()
+    const save = jest
+      .fn<Promise<void>, []>()
+      .mockResolvedValueOnce()
+      .mockReturnValueOnce(failedWrite.promise)
+      .mockReturnValueOnce(laterWrite.promise)
+    const store = persistentStore(save)
+    await store.restored
+    await store.flushPersistence()
+
+    store.setValue(1)
+    const firstBarrier = store.flushPersistence()
+    await nextTick()
+    failedWrite.reject(new Error('disk unavailable'))
+    await expect(firstBarrier).rejects.toThrow('disk unavailable')
+
+    store.setValue(2)
+    const laterBarrier = store.flushPersistence()
+    await nextTick()
+    const outcome = laterBarrier.then(
+      () => 'resolved',
+      () => 'rejected',
+    )
+    const beforeWriteSettles = await Promise.race([
+      outcome,
+      new Promise<'pending'>(resolve =>
+        setTimeout(() => resolve('pending'), 0),
+      ),
+    ])
+    expect(beforeWriteSettles).toBe('pending')
+
+    laterWrite.resolve()
+    await expect(laterBarrier).rejects.toThrow('disk unavailable')
+  })
+
   it('coalesces same-tick mutations and waits for the final-state write', async () => {
     const write = deferred()
     const save = jest

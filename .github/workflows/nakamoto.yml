@@ -7,6 +7,7 @@ on:
       - "packages/nakamoto/**"
       - "packages/crypto-box/**"
       - "packages/cashweb/**"
+      - "packages/wallet/**"
       - ".github/workflows/nakamoto.yml"
       - "yarn.lock"
   pull_request:
@@ -15,6 +16,7 @@ on:
       - "packages/nakamoto/**"
       - "packages/crypto-box/**"
       - "packages/cashweb/**"
+      - "packages/wallet/**"
       - ".github/workflows/nakamoto.yml"
       - "yarn.lock"
 
@@ -122,3 +124,85 @@ jobs:
           yarn --cwd packages/cashweb jest --config /tmp/cashweb-jest-built.cjs --watchman=false
           test -s /tmp/nakamoto-dist-bridge.hit
           echo "cashweb jest loaded packages/nakamoto/dist/index.js"
+      # Wallet's jest config maps @frank/nakamoto to TypeScript source. This step
+      # typechecks monad-identity.ts against the built declarations and runs the
+      # identity tests through a require() of dist. Other wallet files may already
+      # fail tsc; only monad-identity.ts diagnostics fail this step.
+      - name: wallet
+        run: |
+          test -s packages/nakamoto/dist/index.js
+          test -s packages/nakamoto/dist/index.d.ts
+          node <<'NODE'
+          const fs = require('fs')
+          const path = require('path')
+          const ts = require('typescript')
+          const configPath = path.resolve('packages/wallet/tsconfig.json')
+          const read = ts.readConfigFile(configPath, ts.sys.readFile)
+          if (read.error) throw new Error('wallet tsconfig unreadable')
+          const parsed = ts.parseJsonConfigFileContent(
+            read.config,
+            ts.sys,
+            path.dirname(configPath),
+          )
+          const host = ts.createCompilerHost(parsed.options)
+          const from = path.resolve('packages/wallet/monad-identity.ts')
+          const resolved = ts.resolveModuleName(
+            '@frank/nakamoto',
+            from,
+            parsed.options,
+            host,
+          ).resolvedModule
+          const file = resolved && resolved.resolvedFileName
+          if (!file || !file.endsWith(`${path.sep}nakamoto${path.sep}dist${path.sep}index.d.ts`)) {
+            console.error('wallet resolved @frank/nakamoto to', file)
+            process.exit(1)
+          }
+          console.log('wallet @frank/nakamoto ->', file)
+          const dist = path.resolve('packages/nakamoto/dist/index.js')
+          const bridge = '/tmp/nakamoto-wallet-dist-bridge.cjs'
+          const hit = '/tmp/nakamoto-wallet-dist-bridge.hit'
+          fs.writeFileSync(
+            bridge,
+            `'use strict'\nrequire('fs').writeFileSync(${JSON.stringify(hit)}, '1')\nmodule.exports = require(${JSON.stringify(dist)})\n`,
+          )
+          const cfg = require('./packages/wallet/jest.config.js')
+          const mapped = cfg.moduleNameMapper['^@frank/nakamoto$']
+          if (!mapped || !mapped.includes('nakamoto/src/index.ts')) {
+            throw new Error('expected the jest source map so this step can replace it')
+          }
+          cfg.rootDir = path.resolve('packages/wallet')
+          cfg.moduleNameMapper['^@frank/nakamoto$'] = bridge
+          fs.writeFileSync(
+            '/tmp/wallet-jest-built.cjs',
+            'module.exports = ' + JSON.stringify(cfg, null, 2) + '\n',
+          )
+          try {
+            fs.unlinkSync(hit)
+          } catch (error) {
+            if (error.code !== 'ENOENT') throw error
+          }
+          NODE
+          tsc_log=/tmp/wallet-tsc.txt
+          set +e
+          yarn --cwd packages/wallet tsc -p tsconfig.json --pretty false --noEmit >"$tsc_log" 2>&1
+          tsc_status=$?
+          set -e
+          cat "$tsc_log"
+          if [ "$tsc_status" -ne 0 ] && ! grep -q "error TS" "$tsc_log"; then
+            echo "wallet tsc failed before diagnostics"
+            exit "$tsc_status"
+          fi
+          WALLET_TSC_LOG="$tsc_log" node <<'NODE'
+          const fs = require('fs')
+          const text = fs.readFileSync(process.env.WALLET_TSC_LOG, 'utf8')
+          const lines = text.split('\n').filter(line => line.startsWith('monad-identity.ts('))
+          if (lines.length) {
+            console.error('monad-identity.ts failed to typecheck against the built package')
+            for (const line of lines) console.error(line)
+            process.exit(1)
+          }
+          console.log('wallet monad-identity.ts typecheck ok')
+          NODE
+          yarn --cwd packages/wallet jest --config /tmp/wallet-jest-built.cjs --watchman=false packages/wallet/monad-identity
+          test -s /tmp/nakamoto-wallet-dist-bridge.hit
+          echo "wallet jest loaded packages/nakamoto/dist/index.js"

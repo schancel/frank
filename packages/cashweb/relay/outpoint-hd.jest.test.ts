@@ -204,7 +204,7 @@ it('derives stamp and stealth outpoint private keys on the bitcore m/44/145 path
     PAYLOAD_DIGEST,
     destination,
   )
-  const stampSecret = stampParent.privateKey.toBuffer()
+  const stampSecret = Buffer.from(stampParent.privateKey.bytes)
   const stampChild = Buffer.from(
     outpointPrivateKey(stampSecret, PAYLOAD_DIGEST, 0, 1),
   )

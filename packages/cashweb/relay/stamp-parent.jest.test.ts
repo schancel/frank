@@ -56,21 +56,20 @@ it('matches bitcore stamp parent secrets for digests in (0, n)', () => {
   expect(crossed.toBuffer().toString('hex')).toBe(`${'00'.repeat(31)}01`)
 
   const hd = ctor.constructStampHDPrivateKey(digest, destination)
-  const hdDescribed = hd.toObject() as { chainCode: string }
-  expect(hd.privateKey.toBuffer()).toEqual(key.toBuffer())
-  expect(Buffer.from(hdDescribed.chainCode, 'hex')).toEqual(digest)
+  expect(Buffer.from(hd.privateKey.bytes)).toEqual(key.toBuffer())
+  expect(Buffer.from(hd.chainCode)).toEqual(digest)
   expect(
     Buffer.from(
       stampParentSecret(Uint8Array.from(destination.toBuffer()), digest),
     ),
-  ).toEqual(hd.privateKey.toBuffer())
+  ).toEqual(Buffer.from(hd.privateKey.bytes))
   expect(destination.toBuffer().toString('hex')).toBe(DEST_SECRET)
 
   const crossedHd = ctor.constructStampHDPrivateKey(cross, almost)
-  expect(crossedHd.privateKey.toBuffer()).toEqual(crossed.toBuffer())
+  expect(Buffer.from(crossedHd.privateKey.bytes)).toEqual(crossed.toBuffer())
   expect(
     Buffer.from(stampParentSecret(Uint8Array.from(almost.toBuffer()), cross)),
-  ).toEqual(crossedHd.privateKey.toBuffer())
+  ).toEqual(Buffer.from(crossedHd.privateKey.bytes))
   expect(almost.toBuffer().toString('hex')).toBe(N_MINUS_1)
 
   const source = readFileSync(join(__dirname, 'crypto.ts'), 'utf8')

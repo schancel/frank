@@ -301,7 +301,11 @@ export default defineComponent({
     onBannerResize({ height }: { height: number }) {
       const next = height > 0 ? Math.ceil(height) + 16 : 0
       if (next === this.bannerClearance) return
-      const delta = next - this.bannerClearance
+      // Inline clearance replaces q-py-md's 16px. The visible shift is the
+      // change in that used padding, not the raw clearance value.
+      const prevPad = this.bannerClearance > 0 ? this.bannerClearance : 16
+      const nextPad = next > 0 ? next : 16
+      const delta = nextPad - prevPad
       const target = this.chatScroll?.getScrollTarget?.()
       const prevTop = target ? target.scrollTop : 0
       const pinBottom = this.bottom

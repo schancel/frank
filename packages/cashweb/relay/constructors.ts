@@ -31,6 +31,7 @@ import VCard from 'vcf'
 import __pb_signed_payload_payload_pb from '../signed_payload/payload_pb'
 const { SignedPayload } = __pb_signed_payload_payload_pb
 import { Wallet } from '../legacy-wallet'
+import { signRegistryDigest } from '../registry'
 
 export class MessageConstructor {
   payloadConstructor: PayloadConstructor
@@ -384,10 +385,9 @@ export class MessageConstructor {
 
     const rawProfile = profile.serializeBinary()
     const hashbuf = crypto.Hash.sha256(Buffer.from(rawProfile))
-    const sig = crypto.ECDSA.sign(hashbuf, privKey)
+    const rawSig = signRegistryDigest(hashbuf, privKey)
 
     const signedPayload = new SignedPayload()
-    const rawSig = sig.toCompact(1, true).slice(1)
     signedPayload.setPublicKey(privKey.toPublicKey().toBuffer())
     signedPayload.setSignature(rawSig)
     signedPayload.setScheme(1)

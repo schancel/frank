@@ -14,7 +14,7 @@
       </q-avatar>
     </q-item-section>
     <q-item-section v-show="!compact">
-      <q-item-label lines="1">{{ contact.name }}</q-item-label>
+      <q-item-label lines="1">{{ contactName }}</q-item-label>
       <q-item-label caption lines="2">{{ latestMessageBody }}</q-item-label>
     </q-item-section>
     <q-item-section v-show="!compact" side>
@@ -39,8 +39,15 @@ import { useChatStore } from 'src/stores/chats'
 import { useContactStore } from 'src/stores/contacts'
 import { defineComponent } from 'vue'
 import { profileAvatar } from 'src/utils/avatar'
+import { getOwnCanonicalAddress } from 'src/utils/own-address'
 
 export default defineComponent({
+  data() {
+    return { ownAddress: null as string | null }
+  },
+  async mounted() {
+    this.ownAddress = await getOwnCanonicalAddress()
+  },
   setup() {
     const contacts = useContactStore()
     const chats = useChatStore()
@@ -68,6 +75,11 @@ export default defineComponent({
     },
     contact() {
       return this.getContactProfile(this.chatAddress)
+    },
+    contactName(): string {
+      return this.chatAddress === this.ownAddress
+        ? this.$t('selfChat.you')
+        : this.contact.name
     },
     isActive() {
       return this.$route.params.address === this.chatAddress

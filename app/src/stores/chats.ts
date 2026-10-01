@@ -1255,11 +1255,27 @@ export const useChatStore = defineStore('chats', {
         if (!toNotify.has(wrapper.index) && !(wrapper.index in this.messages)) {
           continue
         }
+        const existing = this.messages[wrapper.index]
+        // A self-chat arrives back through the ordinary mailbox with the same payload digest as
+        // the already-confirmed outbox record. The digest is the identity: keep one message and
+        // keep its direction, while adopting the relay's authoritative timestamp/stamp fields.
+        // Persisting the raw inbox wrapper here used to turn the message into "received" after a
+        // reload even though the in-memory list had already deduplicated it.
+        const loopback = existing?.outbound === true ? existing : undefined
+        const persistedMessage: Message = loopback
+          ? {
+              ...wrapper.message,
+              outbound: true,
+              status: 'confirmed',
+              items: loopback.items,
+              senderAddress: loopback.senderAddress,
+            }
+          : { ...wrapper.message }
         const persisted: MessageWrapper = {
-          message: { ...wrapper.message },
+          message: persistedMessage,
           index: wrapper.index,
-          outbound: wrapper.outbound,
-          senderAddress: wrapper.senderAddress,
+          outbound: loopback ? true : wrapper.outbound,
+          senderAddress: loopback?.senderAddress ?? wrapper.senderAddress,
           copartyAddress: wrapper.copartyAddress,
         }
         await messageStore.saveMessage(persisted)
@@ -1371,8 +1387,27 @@ export const useChatStore = defineStore('chats', {
         if (index in this.messages) {
           const existingMessage = this.messages[index]
           assert(existingMessage, 'For great typescript')
-          // Mutate the object so that it striggers reactivity
-          this.messages[index] = Object.assign(existingMessage, message)
+          const wasOutbound = existingMessage.outbound
+          const senderAddress = existingMessage.senderAddress
+          // Mutate the object so that it triggers reactivity. A loopback is still the outbox
+          // message the user sent; only its relay-authored time/stamp metadata is refreshed.
+          this.messages[index] = Object.assign(existingMessage, message, {
+            outbound: wasOutbound,
+            senderAddress,
+          })
+          if (wasOutbound) {
+            const chat = this.chats[displayAddress]
+            if (chat) {
+              chat.lastReceived = Math.max(
+                chat.lastReceived,
+                message.serverTime,
+              )
+            }
+            this.lastReceived = Math.max(
+              this.lastReceived ?? 0,
+              message.serverTime,
+            )
+          }
           // We should already have created the chat if we have the message. Continue so one
           // replayed item cannot hide later, genuinely new messages from this same poll batch.
           continue

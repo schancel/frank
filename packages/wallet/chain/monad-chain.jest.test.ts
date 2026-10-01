@@ -20,6 +20,10 @@ import { StoredMonadMessageProto } from '../monad-stamp-client'
 import { MonadTopicPostProto } from '../monad-topic-post-client'
 import { buildTopicPostPayload } from '../monad-topic-post-client'
 import { MessageItem, TextItem } from '@frank/cashweb/types/messages'
+import {
+  decryptEnvelope,
+  parseEnvelope,
+} from '@frank/cashweb/relay/monad-message-envelope'
 
 import {
   MonadChainConfig,
@@ -441,6 +445,66 @@ describe('serializeMessageItems / deserializeMessageItems', () => {
 })
 
 describe('createMonadChain: directMessages.send', () => {
+  it('uses the ordinary encrypted stamped relay path when sender and recipient are the same (#420)', async () => {
+    const chain = createMonadChain(TEST_CONFIG)
+    const alice = MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX)
+    const wallet = makeWallet(alice)
+
+    mockedFetchMonadProfile.mockResolvedValueOnce({
+      address: alice.address,
+      pubKey: new Uint8Array(alice.compressedPubKey),
+    })
+
+    const submitStampedMessage = jest.fn().mockResolvedValue({
+      stored: {} as StoredMonadMessageProto,
+      payloadHashHex: 'self-digest',
+      txHashes: ['0xstamp'],
+      leaseIndices: [0],
+    })
+    ;(MonadStampClient as jest.Mock).mockImplementation(() => ({
+      submitStampedMessage,
+    }))
+
+    const items: MessageItem[] = [{ type: 'text', text: 'note to self' }]
+    await expect(
+      chain.directMessages.send({
+        wallet,
+        recipient: alice.address,
+        items,
+        stampValue: 9000n,
+      }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        payloadDigest: 'self-digest',
+        stampValueWei: 9000n,
+      }),
+    )
+
+    expect(wallet.pool.prepareStampInventory).toHaveBeenCalledWith(
+      expect.objectContaining({ stampValueWei: 9000n }),
+    )
+    expect(submitStampedMessage).toHaveBeenCalledTimes(1)
+    const call = submitStampedMessage.mock.calls[0][0]
+    expect(call.recipientPublicKey).toEqual(
+      new Uint8Array(alice.compressedPubKey),
+    )
+    expect(call.stampValueWei).toBe(9000n)
+
+    const envelope = parseEnvelope(call.encryptedPayload)
+    expect(envelope).toBeDefined()
+    expect(envelope?.from).toBe(alice.address.raw)
+    expect(envelope?.to).toBe(alice.address.raw)
+    expect(
+      JSON.parse(
+        decryptEnvelope({
+          envelope: envelope!,
+          myPrivateKey: alice.toBitcorePrivateKey(),
+          senderPubKey: alice.compressedPubKey,
+        }),
+      ),
+    ).toEqual(items)
+  })
+
   it('encrypts the items and submits a real stamped message via MonadStampClient', async () => {
     const chain = createMonadChain(TEST_CONFIG)
     const alice = MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX)

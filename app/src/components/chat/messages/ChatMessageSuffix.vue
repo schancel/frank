@@ -63,9 +63,6 @@
         <span v-if="failureText" data-testid="outgoing-failure-reason">
           {{ failureText }}
         </span>
-        <div class="text-caption" data-testid="outgoing-retry-hint">
-          {{ $t('outgoing.retryHint') }}
-        </div>
       </div>
       <div v-if="!outbound" :class="buttonPlacement">
         <chat-message-suffix-buttons

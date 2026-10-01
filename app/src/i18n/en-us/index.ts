@@ -194,6 +194,9 @@ export default {
     balanceStale: '(last known)',
     directMessages: 'Direct Messages',
   },
+  selfChat: {
+    you: 'You',
+  },
   outgoing: {
     sending: 'Sending…',
     paymentPending:
@@ -207,7 +210,7 @@ export default {
     reasonInterrupted: 'It was interrupted before it was sent.',
     reasonUnverified: 'Delivery could not be confirmed.',
     reasonRecovered: 'An earlier message was delivered meanwhile.',
-    reasonError: 'Something went wrong.',
+    reasonError: 'The message could not be sent.',
     retry: 'Retry',
     retryHint:
       'Retry re-sends the same payment while it is still valid. A new payment is made only if it is not.',

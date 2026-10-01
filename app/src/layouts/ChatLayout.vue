@@ -50,7 +50,7 @@
             <img :src="profileAvatar(contactProfile?.avatar, address)" />
           </q-avatar>
           <q-toolbar-title class="h6" :style="contactNameColorStyle">{{
-            contactProfile.name
+            contactName
           }}</q-toolbar-title>
           <q-space />
           <q-btn class="q-px-sm" flat dense icon="more_vert">
@@ -153,6 +153,7 @@ import SendFileDialog from '../components/dialogs/SendFileDialog.vue'
 import { useContactStore } from 'src/stores/contacts'
 import { pubKeyToColor } from 'src/utils/formatting'
 import { profileAvatar } from 'src/utils/avatar'
+import { getOwnCanonicalAddress } from 'src/utils/own-address'
 
 export default defineComponent({
   emits: ['toggleMyDrawerOpen'],
@@ -195,7 +196,11 @@ export default defineComponent({
       confirmClearOpen: false,
       confirmDeleteOpen: false,
       image: null as unknown | null,
+      ownAddress: null as string | null,
     }
+  },
+  async mounted() {
+    this.ownAddress = await getOwnCanonicalAddress()
   },
   beforeRouteUpdate(
     to: RouteLocationNormalized,
@@ -226,6 +231,11 @@ export default defineComponent({
   computed: {
     contactProfile() {
       return this.getContact(this.address)?.profile
+    },
+    contactName(): string {
+      return this.address === this.ownAddress
+        ? this.$t('selfChat.you')
+        : this.contactProfile.name
     },
     notifications: {
       get(): boolean {

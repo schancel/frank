@@ -88,6 +88,118 @@ describe('stores/chats.ts (ticket #42)', () => {
   })
 
   describe('sendMessage', () => {
+    it('keeps one outbound stamped message when a self-send loops back from the relay (#420)', async () => {
+      const chats = useChatStore()
+      const contacts = useContactStore()
+      const wallet = makeWallet(SENDER_ADDRESS)
+      contacts.addContact({
+        address: SENDER_ADDRESS,
+        contact: {
+          profile: {
+            name: 'Alice',
+            bio: '',
+            avatar: 'alice.png',
+            pubKey: null,
+          },
+        },
+      })
+      jest.spyOn(activeChain.directMessages, 'send').mockResolvedValue({
+        payloadDigest: 'self-digest',
+        stampValueWei: 7000n,
+        stampPayments: [
+          {
+            txHash: '0xstamp',
+            destinationAddress: SENDER_ADDRESS,
+            valueWei: 7000n,
+          },
+        ],
+        preparationTxHashes: [],
+      })
+
+      await chats.sendMessage({
+        wallet,
+        address: SENDER_ADDRESS,
+        items: [{ type: 'text', text: 'note to self' }],
+        stampValue: 7000n,
+      })
+      const loopbackTime = Date.now() + 1000
+      await chats.receiveMessages([
+        {
+          outbound: false,
+          senderAddress: SENDER_ADDRESS,
+          copartyAddress: SENDER_ADDRESS,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          copartyPubKey: {} as any,
+          index: 'self-digest',
+          stampValue: 7000,
+          message: {
+            outbound: false,
+            status: 'confirmed',
+            items: [{ type: 'text', text: 'note to self' }],
+            serverTime: loopbackTime,
+            receivedTime: loopbackTime,
+            outpoints: [],
+            stampValueWei: 7000n,
+            stampPayments: [
+              {
+                txHash: '0xstamp',
+                destinationAddress: SENDER_ADDRESS,
+                valueWei: 7000n,
+              },
+            ],
+            senderAddress: SENDER_ADDRESS,
+            destinationAddress: SENDER_ADDRESS,
+          },
+        },
+      ])
+
+      expect(chats.chats[SENDER_ADDRESS]?.messages).toHaveLength(1)
+      expect(chats.chats[SENDER_ADDRESS]?.messages[0]).toEqual(
+        expect.objectContaining({
+          payloadDigest: 'self-digest',
+          outbound: true,
+          stampValueWei: 7000n,
+          serverTime: loopbackTime,
+        }),
+      )
+      expect(chats.chats[SENDER_ADDRESS]?.totalUnreadMessages).toBe(0)
+      expect(desktopNotify).not.toHaveBeenCalled()
+      expect(mockMessageStore.saveMessage).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          index: 'self-digest',
+          outbound: true,
+          copartyAddress: SENDER_ADDRESS,
+          message: expect.objectContaining({
+            outbound: true,
+            stampValueWei: 7000n,
+          }),
+        }),
+      )
+      const persisted = mockMessageStore.saveMessage.mock.calls.at(
+        -1,
+      )?.[0] as MessageWrapper
+      mockMessageStore.getIterator.mockResolvedValueOnce(
+        (async function* () {
+          yield persisted
+        })(),
+      )
+      const restored = await rehydateChat({
+        activeChatAddr: SENDER_ADDRESS,
+        chats: {
+          [SENDER_ADDRESS]: chats.chats[SENDER_ADDRESS]!,
+        },
+        messages: {},
+        lastReceived: loopbackTime,
+      })
+      expect(restored.chats[SENDER_ADDRESS]?.messages).toEqual([
+        expect.objectContaining({
+          payloadDigest: 'self-digest',
+          outbound: true,
+          stampValueWei: 7000n,
+        }),
+      ])
+    })
+
     it('shows one pending message immediately and reconciles it after the send completes', async () => {
       const chats = useChatStore()
       const wallet = makeWallet(SENDER_ADDRESS)

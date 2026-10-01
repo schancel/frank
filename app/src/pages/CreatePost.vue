@@ -154,7 +154,17 @@ export default defineComponent({
       preparationStatus: null as string | null,
       nextSubmissionId: 0,
       activeSubmissionId: null as number | null,
+      inFlightSubmissions: {} as Record<string, number | undefined>,
+      submissionStatuses: {} as Record<string, string | null | undefined>,
+      componentMounted: false,
     }
+  },
+  mounted() {
+    this.componentMounted = true
+  },
+  beforeUnmount() {
+    this.componentMounted = false
+    this.activeSubmissionId = null
   },
   computed: {
     // Topics seen in posts, plus the default and relay-discovered ones the topic store tracks.
@@ -188,22 +198,30 @@ export default defineComponent({
     },
   },
   methods: {
+    submissionDestination(parentDigest: string | undefined) {
+      return parentDigest ? `reply:${parentDigest}` : 'top-level'
+    },
+    syncSubmissionUi(parentDigest: string | undefined) {
+      const destination = this.submissionDestination(parentDigest)
+      const submissionId = this.inFlightSubmissions[destination] ?? null
+      this.activeSubmissionId = submissionId
+      this.posting = submissionId !== null
+      this.preparationStatus =
+        submissionId === null
+          ? null
+          : this.submissionStatuses[destination] ?? null
+    },
     syncParentDigest(parentDigest: string | undefined) {
-      if (parentDigest !== this.parentDigest) {
-        this.activeSubmissionId = null
-        this.posting = false
-        this.preparationStatus = null
-      }
       this.parentDigest = parentDigest
       if (parentDigest) {
         this.topic = this.getMessage(parentDigest)?.topic ?? ''
-        return
+      } else {
+        if (!this.topLevelTopicWasEdited) {
+          this.topLevelTopic = this.selectedTopic
+        }
+        this.topic = this.topLevelTopic
       }
-
-      if (!this.topLevelTopicWasEdited) {
-        this.topLevelTopic = this.selectedTopic
-      }
-      this.topic = this.topLevelTopic
+      this.syncSubmissionUi(parentDigest)
     },
     setTopic(topic: string | null) {
       if (this.parentDigest) return
@@ -243,7 +261,15 @@ export default defineComponent({
 
       const submittedTopic = this.topic
       const submittedParentDigest = this.parentDigest
+      const submittedDestination = this.submissionDestination(
+        submittedParentDigest,
+      )
+      if (this.inFlightSubmissions[submittedDestination] !== undefined) return
+
       const submissionId = ++this.nextSubmissionId
+      const postingStatus = this.$t('stampPreparation.posting')
+      this.inFlightSubmissions[submittedDestination] = submissionId
+      this.submissionStatuses[submittedDestination] = postingStatus
       this.activeSubmissionId = submissionId
       const entry = {
         kind: 'post' as const,
@@ -257,7 +283,7 @@ export default defineComponent({
         return
       }
       this.posting = true
-      this.preparationStatus = this.$t('stampPreparation.posting')
+      this.preparationStatus = postingStatus
 
       await submitPost({
         submit: async () => {
@@ -272,8 +298,12 @@ export default defineComponent({
             topic: submittedTopic,
             parentDigest: submittedParentDigest,
             onPreparationProgress: progress => {
-              if (this.activeSubmissionId !== submissionId) return
-              this.preparationStatus = stampPreparationStatus(
+              if (
+                this.inFlightSubmissions[submittedDestination] !== submissionId
+              ) {
+                return
+              }
+              const status = stampPreparationStatus(
                 progress,
                 (key, params) => this.$t(key, params ?? {}),
                 {
@@ -281,13 +311,22 @@ export default defineComponent({
                   unit: activeChain.unit,
                 },
               )
+              this.submissionStatuses[submittedDestination] = status
+              if (this.activeSubmissionId === submissionId) {
+                this.preparationStatus = status
+              }
             },
           })
         },
         errorNotify,
         infoNotify,
         navigateBack: () => {
-          if (this.activeSubmissionId === submissionId) {
+          if (
+            this.componentMounted &&
+            this.activeSubmissionId === submissionId &&
+            this.submissionDestination(this.parentDigest) ===
+              submittedDestination
+          ) {
             this.back()
           }
         },
@@ -298,6 +337,10 @@ export default defineComponent({
           refreshFailed: this.$t('stampPreparation.postedRefreshFailed'),
         },
       }).finally(() => {
+        if (this.inFlightSubmissions[submittedDestination] === submissionId) {
+          delete this.inFlightSubmissions[submittedDestination]
+          delete this.submissionStatuses[submittedDestination]
+        }
         if (this.activeSubmissionId === submissionId) {
           this.activeSubmissionId = null
           this.posting = false

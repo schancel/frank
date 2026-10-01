@@ -135,6 +135,12 @@ async function mountRoutedPage(path: string) {
     routes: [
       { path: '/new-post', component: CreatePost },
       { path: '/new-post/:parentDigest', component: CreatePost },
+      {
+        path: '/outside',
+        component: defineComponent({
+          render: () => h('div', { 'data-test': 'outside' }),
+        }),
+      },
     ],
   })
   await router.push(path)
@@ -319,12 +325,14 @@ describe('CreatePost selected-topic default (ticket #414)', () => {
       parentB: { topic: 'help' },
     }
     const { page, router } = await mountRoutedPage('/new-post/parentA')
-    const originalElement = page().element
+    const originalUid = (page().vm as unknown as { $: { uid: number } }).$.uid
 
     await router.push('/new-post/parentB')
     await flushPromises()
 
-    expect(page().element).toBe(originalElement)
+    expect((page().vm as unknown as { $: { uid: number } }).$.uid).toBe(
+      originalUid,
+    )
     expect(page().vm).toMatchObject({ parentDigest: 'parentB', topic: 'help' })
   })
 
@@ -389,6 +397,22 @@ describe('CreatePost selected-topic default (ticket #414)', () => {
       expect.objectContaining({ topic: 'stamp' }),
     )
     expect(infoNotify).toHaveBeenCalledWith('Post created in stamp.')
+  })
+
+  it('preserves an inherited topic as notification text for the safe notifier', async () => {
+    const inheritedTopic = '<img src=x onerror="globalThis.topicXss=true">'
+    const forum = useForumStore() as unknown as {
+      index: Record<string, { topic: string }>
+    }
+    forum.index = { parent: { topic: inheritedTopic } }
+    const { wrapper } = mountPage('parent')
+
+    await (wrapper.vm as unknown as { post(): Promise<void> }).post()
+    await flushPromises()
+
+    expect(infoNotify).toHaveBeenCalledWith(
+      `Post created in ${inheritedTopic}.`,
+    )
   })
 
   it('keeps the submitted topic across a deferred wallet lookup', async () => {
@@ -458,6 +482,82 @@ describe('CreatePost selected-topic default (ticket #414)', () => {
     expect(page().vm).toMatchObject({
       posting: false,
       preparationStatus: null,
+      parentDigest: 'parentB',
+      topic: 'help',
+    })
+  })
+
+  it('keeps the original destination busy across A to B to A route reuse', async () => {
+    const forum = useForumStore() as unknown as {
+      index: Record<string, { topic: string }>
+    }
+    forum.index = {
+      parentA: { topic: 'news' },
+      parentB: { topic: 'help' },
+    }
+    const { page, router } = await mountRoutedPage('/new-post/parentA')
+    let resolveWallet!: (wallet: { identity: object }) => void
+    jest.mocked(useActiveWallet).mockReturnValueOnce(
+      new Promise(resolve => {
+        resolveWallet = resolve
+      }),
+    )
+
+    const first = (page().vm as unknown as { post(): Promise<void> }).post()
+    await flushPromises()
+    await router.push('/new-post/parentB')
+    await flushPromises()
+    expect(page().vm).toMatchObject({ posting: false, parentDigest: 'parentB' })
+
+    await router.push('/new-post/parentA')
+    await flushPromises()
+    expect(page().vm).toMatchObject({ posting: true, parentDigest: 'parentA' })
+    await (page().vm as unknown as { post(): Promise<void> }).post()
+    expect(useActiveWallet).toHaveBeenCalledTimes(1)
+
+    resolveWallet({ identity: {} })
+    await first
+    await flushPromises()
+    expect(mockPutMessage).toHaveBeenCalledTimes(1)
+  })
+
+  it('cannot navigate a newer compose instance after the origin unmounts', async () => {
+    const forum = useForumStore() as unknown as {
+      index: Record<string, { topic: string }>
+    }
+    forum.index = {
+      parentA: { topic: 'news' },
+      parentB: { topic: 'help' },
+    }
+    const { page, router } = await mountRoutedPage('/new-post/parentA')
+    const originalUid = (page().vm as unknown as { $: { uid: number } }).$.uid
+    let resolveWallet!: (wallet: { identity: object }) => void
+    jest.mocked(useActiveWallet).mockReturnValueOnce(
+      new Promise(resolve => {
+        resolveWallet = resolve
+      }),
+    )
+
+    const oldSubmission = (
+      page().vm as unknown as { post(): Promise<void> }
+    ).post()
+    await flushPromises()
+    await router.push('/outside')
+    await flushPromises()
+    expect(page().exists()).toBe(false)
+    await router.push('/new-post/parentB')
+    await flushPromises()
+    expect((page().vm as unknown as { $: { uid: number } }).$.uid).not.toBe(
+      originalUid,
+    )
+
+    resolveWallet({ identity: {} })
+    await oldSubmission
+    await flushPromises()
+
+    expect(router.currentRoute.value.fullPath).toBe('/new-post/parentB')
+    expect(page().vm).toMatchObject({
+      posting: false,
       parentDigest: 'parentB',
       topic: 'help',
     })

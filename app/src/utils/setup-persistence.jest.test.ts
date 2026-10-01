@@ -54,6 +54,32 @@ describe('setup finish boundary (#171, #389)', () => {
     expect(initialize).toHaveBeenCalledTimes(1)
   })
 
+  it.each([4, 8])(
+    'treats a resolved navigation failure (type %i) as an incomplete navigation instead of success',
+    async type => {
+      const { location, initialize, navigate } = harness()
+      // Vue Router resolves an aborted (4) or cancelled (8) navigation instead of rejecting
+      // it: the resolved value is an Error carrying the numeric NavigationFailureType, like
+      // a route guard that returns false.
+      const resolvedFailure = Object.assign(new Error('Navigation ended'), {
+        type,
+      })
+      navigate.mockResolvedValueOnce(resolvedFailure as unknown as void)
+
+      await expect(
+        finishSetupAndEnter({
+          finishReloads: false,
+          location,
+          initialize,
+          navigate,
+        }),
+      ).rejects.toThrow('setup finish navigation did not complete')
+
+      expect(initialize).toHaveBeenCalledTimes(1)
+      expect(navigate).toHaveBeenCalledWith('/forum')
+    },
+  )
+
   it('uses the configured reload fallback once without initializing or navigating', async () => {
     const { location, initialize, navigate } = harness()
 

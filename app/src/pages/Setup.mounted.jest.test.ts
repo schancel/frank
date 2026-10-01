@@ -81,7 +81,7 @@ const QBtnStub = defineComponent({
   },
   emits: ['click'],
   template:
-    '<button :aria-label="ariaLabel" :disabled="disable || undefined" @click="$emit(\'click\')">{{ label }}</button>',
+    '<button v-bind="$attrs" :aria-label="ariaLabel" :disabled="disable || undefined" @click="$emit(\'click\')">{{ label }}</button>',
 })
 
 const QInputStub = defineComponent({
@@ -136,9 +136,11 @@ async function mountResumeImport(translate: Translate) {
       stubs: {
         QPageContainer: SlotStub,
         QPage: SlotStub,
-        QHeader: true,
-        QToolbar: true,
-        QToolbarTitle: true,
+        // Slot-rendering stubs: the header holds the layout drawer toggle whose locked state
+        // the navigation-lock test asserts on.
+        QHeader: SlotStub,
+        QToolbar: SlotStub,
+        QToolbarTitle: SlotStub,
         QBanner: true,
         QBtn: QBtnStub,
         QInput: QInputStub,
@@ -912,6 +914,89 @@ describe('Setup page mounted (#267)', () => {
     it('a fresh device (no seed) is not resume mode', async () => {
       const { wrapper } = await mountSetup()
       expect((wrapper.vm as unknown as { resume: boolean }).resume).toBe(false)
+    })
+
+    it('the header menu button navigates the layout while editing and is disabled once the account step is locked (#387)', async () => {
+      const walletWrite = deferred()
+      const { wallet, wrapper, vm } = await resumeImportContext()
+      await wrapper
+        .get('[data-test="import-different-phrase"]')
+        .trigger('click')
+      await wrapper
+        .get('[data-test="import-different-input"]')
+        .setValue('REPLACE')
+      await wrapper.get('[data-test="import-different-form"]').trigger('submit')
+      await wrapper
+        .get('textarea[aria-label="profile.seedEntry"]')
+        .setValue(OTHER)
+      wallet.flushPersistence = jest.fn(() => walletWrite.promise)
+
+      const menu = wrapper.get('[data-test="setup-header-menu"]')
+      // Editing is a safe (pre-lock) state: the layout drawer toggle works as before.
+      expect(menu.attributes('disabled')).toBeUndefined()
+      await menu.trigger('click')
+      expect(wrapper.emitted('toggleMyDrawerOpen')).toHaveLength(1)
+      expect(wrapper.emitted('setupNavigationLocked')).toBeUndefined()
+
+      const completion = vm.next()
+      await flushPromises()
+
+      // Pending persistence: the menu can no longer route away through the layout drawer.
+      expect(menu.attributes('disabled')).toBeDefined()
+      expect(wrapper.emitted('toggleMyDrawerOpen')).toHaveLength(1)
+      expect(wrapper.emitted('setupNavigationLocked')).toEqual([[true]])
+
+      walletWrite.resolve()
+      await completion
+      // Completed is still a locked state; the layout keeps its lock until the authorized
+      // completion navigation settles (MainLayout resets it in its afterEach).
+      expect(
+        (vm as unknown as { completionPhase: string }).completionPhase,
+      ).toBe('completed')
+      expect(wrapper.emitted('setupNavigationLocked')).toEqual([[true]])
+    })
+  })
+
+  describe('layout-wide navigation lock (#387)', () => {
+    it('reports lock transitions to the layout so the drawer can be frozen for their duration', async () => {
+      const { wrapper } = await mountSetup()
+      const vm = wrapper.vm as unknown as { completionPending: boolean }
+
+      vm.completionPending = true
+      await nextTick()
+      expect(wrapper.emitted('setupNavigationLocked')).toEqual([[true]])
+
+      vm.completionPending = false
+      await nextTick()
+      expect(wrapper.emitted('setupNavigationLocked')).toEqual([
+        [true],
+        [false],
+      ])
+    })
+
+    it('rejects route departures while locked, allows safe states, and allows the authorized completion push', () => {
+      type GuardThis = {
+        completionLocked: boolean
+        completionNavigationAuthorized: boolean
+      }
+      const guard = (
+        Setup as unknown as {
+          beforeRouteLeave?: (this: GuardThis) => boolean
+        }
+      ).beforeRouteLeave
+      expect(typeof guard).toBe('function')
+      const instance = (locked: boolean, authorized: boolean): GuardThis => ({
+        completionLocked: locked,
+        completionNavigationAuthorized: authorized,
+      })
+
+      // Safe (pre-lock) states keep navigating as before: editing step 1 is not trapped.
+      expect(guard?.call(instance(false, false))).toBe(true)
+      // Locked states block every unauthorized departure: pending persistence, terminal,
+      // and entry retry.
+      expect(guard?.call(instance(true, false))).toBe(false)
+      // The internally authorized completion push is the only allowed departure while locked.
+      expect(guard?.call(instance(true, true))).toBe(true)
     })
   })
 

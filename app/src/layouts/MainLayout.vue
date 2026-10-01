@@ -16,6 +16,7 @@
     <router-view
       @toggleContactDrawerOpen="toggleContactDrawerOpen"
       @toggleMyDrawerOpen="toggleMyDrawerOpen"
+      @setupNavigationLocked="setSetupNavigationLocked"
       @setupCompleted="$emit('setupCompleted')"
     />
   </q-layout>
@@ -77,6 +78,14 @@ export default defineComponent({
       compact: false,
       compactWidth,
       drawerBreakpoint,
+      // #387: Setup reports its completion lock (pending persistence, terminal, or entry
+      // retry) through this flag. While it is set, the drawer is a navigation surface this
+      // layout must not expose, and its own toggle is a no-op; the setup page's own
+      // route-leave guard blocks whatever else still tries to route away.
+      setupNavigationLocked: false,
+      // Whether the drawer was open (or the desktop default) when the setup lock engaged, so
+      // the width's default can be restored when the lock clears.
+      drawerClosedForSetupLock: false,
     }
   },
   provide() {
@@ -104,7 +113,12 @@ export default defineComponent({
         // stay inside it.
         // The navigation has settled: a pending @closeDrawer focus restore can run now.
         this.flushPendingRestore()
-        if (failure || railTab) return
+        if (failure) return
+        // A settled navigation either is the authorized setup completion (the page unmounts)
+        // or ran from a pre-lock state: the lock the page reported is stale either way, and a
+        // blocked (failed) navigation must keep it.
+        this.setupNavigationLocked = false
+        if (railTab) return
         if (isNarrowWidth(this.$q.screen.width)) {
           // Focus is restored by the myDrawerOpen watcher, shared with every other way the
           // overlay can close (Escape, backdrop, swipe, @closeDrawer).
@@ -128,6 +142,20 @@ export default defineComponent({
     clearTimeout(this.pendingRestoreTimer)
   },
   watch: {
+    // #387: Setup's completion lock hides the layout's navigation surface. Close the drawer
+    // for the lock's duration (on desktop it would otherwise stay open with usable
+    // destinations, on mobile the overlay must not open either) and restore the width's
+    // default when the lock clears.
+    setupNavigationLocked(locked: boolean) {
+      if (locked) {
+        if (this.myDrawerOpen) this.drawerClosedForSetupLock = true
+        this.myDrawerOpen = false
+        return
+      }
+      if (!this.drawerClosedForSetupLock) return
+      this.drawerClosedForSetupLock = false
+      this.myDrawerOpen = !isNarrowWidth(this.$q.screen.width)
+    },
     // While the drawer is an overlay, nothing behind it may take focus or clicks (#277): Tab must
     // stay in the drawer, and a screen reader must not read the page under the backdrop. Synchronous
     // so the background is interactive again before any focus restore for the same close runs.
@@ -140,6 +168,12 @@ export default defineComponent({
     // Any open/close, however triggered: refresh the opener on every open so a stale one is never
     // restored, and hand focus back on every narrow-screen close.
     myDrawerOpen(open: boolean, wasOpen: boolean) {
+      // Nothing may expose the drawer while Setup's completion lock is active -- not a stray
+      // toggle and not Quasar's own `show-if-above` reopen when a resize crosses the breakpoint.
+      if (open && this.setupNavigationLocked) {
+        this.myDrawerOpen = false
+        return
+      }
       const narrow = isNarrowWidth(this.$q.screen.width)
       if (open) {
         // Only the narrow overlay hands focus back; never keep a control from a desktop open.
@@ -261,7 +295,12 @@ export default defineComponent({
       }
       target.focus({ preventScroll: true })
     },
+    setSetupNavigationLocked(locked: boolean) {
+      this.setupNavigationLocked = locked
+    },
     toggleMyDrawerOpen() {
+      // #387: the drawer must not open while Setup's completion lock is active.
+      if (this.setupNavigationLocked) return
       if (this.compact) {
         this.compact = false
         this.trueSplitterRatio = compactCutoff

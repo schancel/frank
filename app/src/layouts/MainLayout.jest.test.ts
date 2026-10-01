@@ -391,6 +391,73 @@ describe('MainLayout rail-navigation marker', () => {
   })
 })
 
+describe('MainLayout setup completion lock (#387)', () => {
+  interface LockVm extends LayoutVm {
+    setSetupNavigationLocked(locked: boolean): void
+    setupNavigationLocked: boolean
+  }
+  const lockVm = (w: VueWrapper) => w.vm as unknown as LockVm
+
+  it('does not open the drawer from the toggle while the lock is active (mobile)', async () => {
+    const { wrapper } = await mountLayout(390)
+    lockVm(wrapper).setSetupNavigationLocked(true)
+    await flushPromises()
+    layoutVm(wrapper).toggleMyDrawerOpen()
+    await flushPromises()
+    expect(open(wrapper)).toBe('false')
+    wrapper.unmount()
+  })
+
+  it('closes an open drawer when the lock engages and keeps it closed (desktop)', async () => {
+    const { wrapper } = await mountLayout(1024)
+    expect(open(wrapper)).toBe('true') // the desktop default
+    lockVm(wrapper).setSetupNavigationLocked(true)
+    await flushPromises()
+    expect(open(wrapper)).toBe('false')
+    // Neither the toggle nor Quasar's own show-if-above reopen (a resize crossing the
+    // breakpoint) may expose the drawer's destinations again while the lock is active.
+    layoutVm(wrapper).toggleMyDrawerOpen()
+    await flushPromises()
+    layoutVm(wrapper).myDrawerOpen = true
+    await flushPromises()
+    expect(open(wrapper)).toBe('false')
+    wrapper.unmount()
+  })
+
+  it('restores the width default when the lock clears after the authorized completion', async () => {
+    const desktop = await mountLayout(1024)
+    lockVm(desktop.wrapper).setSetupNavigationLocked(true)
+    await flushPromises()
+    expect(open(desktop.wrapper)).toBe('false')
+    lockVm(desktop.wrapper).setSetupNavigationLocked(false)
+    await flushPromises()
+    expect(open(desktop.wrapper)).toBe('true')
+    desktop.wrapper.unmount()
+
+    const mobile = await mountLayout(390)
+    lockVm(mobile.wrapper).setSetupNavigationLocked(true)
+    await flushPromises()
+    lockVm(mobile.wrapper).setSetupNavigationLocked(false)
+    await flushPromises()
+    expect(open(mobile.wrapper)).toBe('false')
+    mobile.wrapper.unmount()
+  })
+
+  it('keeps the lock for a blocked navigation and clears it when a navigation settles', async () => {
+    const { wrapper, router } = await mountLayout(390)
+    lockVm(wrapper).setSetupNavigationLocked(true)
+    await flushPromises()
+    // A blocked (duplicated) navigation: afterEach runs with a failure and must keep the lock
+    // -- the setup page is still mounted and still locked.
+    await router.push('/')
+    expect(lockVm(wrapper).setupNavigationLocked).toBe(true)
+    // The authorized completion settles: afterEach without a failure resets the lock.
+    await router.push('/forum')
+    expect(lockVm(wrapper).setupNavigationLocked).toBe(false)
+    wrapper.unmount()
+  })
+})
+
 describe('MainLayout router hooks and signed-out rail', () => {
   it('unregisters its afterEach and onError hooks on unmount', async () => {
     const { wrapper, router } = await mountLayout(390)

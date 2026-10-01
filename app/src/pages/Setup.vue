@@ -6,6 +6,8 @@
           class="q-px-sm"
           flat
           dense
+          data-test="setup-header-menu"
+          :disable="completionLocked"
           @click="$emit('toggleMyDrawerOpen')"
           icon="menu"
         />
@@ -245,6 +247,9 @@ export default defineComponent({
       completionPending: false,
       completionPhase: 'editing' as CompletionPhase,
       accountSubmission: null as Readonly<AccountSubmission> | null,
+      // Set only around the internally authorized completion push (see finishSetup()): the one
+      // departure beforeRouteLeave allows while the wizard is locked.
+      completionNavigationAuthorized: false,
       storedSeed: resume ? storedSeed : null,
       step: 1,
       accountData: {
@@ -272,13 +277,29 @@ export default defineComponent({
       },
     }
   },
-  emits: ['setupCompleted', 'toggleMyDrawerOpen'],
+  emits: ['setupCompleted', 'toggleMyDrawerOpen', 'setupNavigationLocked'],
   watch: {
     // Positions are drawn on entering the confirmation step and are reused while the phrase
     // is unchanged; going back and changing the phrase draws new ones.
     step(step: number) {
       if (step === 3) this.prepareChallenge()
     },
+    // #387: while the account step is locked (pending persistence, terminal, or entry retry),
+    // no layout-owned navigation may leave Setup. The drawer lives in MainLayout, which can
+    // only know about this lock through this event.
+    completionLocked(locked: boolean) {
+      this.$emit('setupNavigationLocked', locked)
+    },
+  },
+  beforeRouteLeave() {
+    // Layout-wide lock (#387): AccountStep, Back and the inactive QStepper headers are frozen
+    // while the account step is locked, but the header menu and MainLayout's drawer would
+    // still route away, unmounting this page and dropping its frozen submission/phase state.
+    // Block every departure except the internally authorized completion push (finishSetup
+    // marks the navigation around the router.push call). Safe (pre-lock) states -- e.g.
+    // editing step 1 -- keep navigating as before.
+    if (this.completionNavigationAuthorized) return true
+    return !this.completionLocked
   },
   methods: {
     prepareChallenge() {
@@ -323,7 +344,15 @@ export default defineComponent({
         finishReloads: setupFinishReloads(),
         location: this.setupFinishLocation(),
         initialize: () => initializeMonadIdentity(),
-        navigate: (path: string) => this.$router.push(path),
+        navigate: (path: string) => {
+          // The only departure beforeRouteLeave allows: the completion push after everything
+          // is durable. The flag wraps the whole push (settling it either way), so a
+          // concurrent unauthorized navigation can never slip through an open window.
+          this.completionNavigationAuthorized = true
+          return Promise.resolve(this.$router.push(path)).finally(() => {
+            this.completionNavigationAuthorized = false
+          })
+        },
       })
     },
     setupFinishLocation() {

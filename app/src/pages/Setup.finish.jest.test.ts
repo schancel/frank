@@ -635,6 +635,64 @@ describe('Setup finish lifecycle (#389)', () => {
     expect(errorNotify).toHaveBeenCalledTimes(1)
   })
 
+  it('reports a resolved navigation failure once and serializes a retry without rewriting stores', async () => {
+    // Vue Router resolves an aborted or cancelled navigation instead of rejecting it: the push
+    // settles with a NavigationFailure -- an Error carrying the numeric failure type (aborted,
+    // cancelled, ...), like a route guard that returns false. Treating that resolution as
+    // success used to mark the account completed while /setup was still the current route.
+    const cancelledNavigation = Object.assign(
+      new Error('Navigation cancelled'),
+      {
+        type: 4, // NavigationFailureType.aborted
+        from: { fullPath: '/setup' },
+        to: { fullPath: '/forum' },
+      },
+    )
+    const retryNavigation = deferred()
+    // A resolved NavigationFailure, not a rejection: the router resolves it. The retry stays
+    // pending until released below, so its serialization can be observed.
+    routerPush
+      .mockResolvedValueOnce(cancelledNavigation as unknown as void)
+      .mockReturnValueOnce(retryNavigation.promise)
+    const { wallet, vm } = await mountFinish()
+    const setSeedPhrase = jest.spyOn(wallet, 'setSeedPhrase')
+    vm.step = 2
+    vm.accountData = {
+      seed: STORED,
+      name: '',
+      nameRequired: false,
+      valid: true,
+    }
+
+    await expect(vm.next()).rejects.toThrow(
+      'setup finish navigation did not complete',
+    )
+
+    expect(errorNotify).toHaveBeenCalledTimes(1)
+    expect(vm.completionPending).toBe(false)
+    expect(vm.completionPhase).toBe('entering')
+    expect(vm.forwardEnabled).toBe(true)
+
+    const retry = vm.next()
+    await flushPromises()
+    const duplicate = vm.next()
+    await flushPromises()
+    expect(vm.completionPending).toBe(true)
+    expect(routerPush).toHaveBeenCalledTimes(2)
+
+    retryNavigation.resolve()
+    await retry
+    await duplicate
+
+    expect(initializeMonadIdentity).toHaveBeenCalledTimes(2)
+    expect(setSeedPhrase).toHaveBeenCalledTimes(1)
+    expect(mockSetRelayData).toHaveBeenCalledTimes(1)
+    expect(wallet.flushPersistence).toHaveBeenCalledTimes(1)
+    expect(mockFlushProfile).toHaveBeenCalledTimes(1)
+    expect(vm.completionPhase).toBe('completed')
+    expect(errorNotify).toHaveBeenCalledTimes(1)
+  })
+
   it('replace finish tears down by initializing the new seed in place', async () => {
     useWalletStore().seedPhrase = STORED
     useWalletStore().seedConfirmedAt = 5

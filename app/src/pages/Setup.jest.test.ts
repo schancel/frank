@@ -17,8 +17,11 @@ describe('Setup persistence integration', () => {
     )
 
     expect(source).toContain('initialize: () => initializeMonadIdentity()')
+    // The completion push is wrapped in the authorized-navigation flag the route-leave guard
+    // allows (#387), but it is still a direct router push on the production setup path.
+    expect(source).toContain('this.completionNavigationAuthorized = true')
     expect(source).toContain(
-      'navigate: (path: string) => this.$router.push(path)',
+      'return Promise.resolve(this.$router.push(path)).finally(() => {',
     )
     expect(source).toContain('const seed = commitValidatedSetupSeed(')
     expect(source).toContain('const name = commitValidatedSetupName(')

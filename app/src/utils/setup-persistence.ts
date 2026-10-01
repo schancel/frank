@@ -20,5 +20,12 @@ export async function finishSetupAndEnter(options: {
     return
   }
   await options.initialize()
-  await options.navigate('/forum')
+  const outcome = await options.navigate('/forum')
+  // Vue Router resolves an aborted or cancelled navigation instead of rejecting it: a
+  // NavigationFailure is the resolved value (an Error carrying a numeric failure type), and a
+  // successful push resolves void/undefined. Treating a resolved failure as success would mark
+  // the account completed while /setup is still the current route, with no way to retry entry.
+  if (outcome) {
+    throw new Error('setup finish navigation did not complete')
+  }
 }

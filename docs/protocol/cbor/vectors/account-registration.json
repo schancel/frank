@@ -1,0 +1,2075 @@
+{
+  "format": "frank-cbor-v1-vectors",
+  "cases": [
+    {
+      "id": "reg-fixture-testnet-statement-typed",
+      "description": "Registration record, monad-testnet: a type-2 attestation of a schema-3 statement carrying the migrated profile entries (field 9), an expiry, and one algorithm-1 signature by the subject. Accept twin of every reg-crypto-* reject.",
+      "source": "handcrafted",
+      "frame_hex": "46524e4b01000001d8a4000201010201035901cda20059015146524e4b0100000148a40004010302020359013da8006d6d6f6e61642d746573746e657401a2000101582103a15a52deb82549bc2326d42219400f41190ace7bf040fa8721017f2c10512b65021b0000019ad735840003a2001a692cda8001000481a400502a35404b56616c77828d98a3aeb9c4cf01782a68747470733a2f2f72656c6179312e6672616e6b2e6578616d706c652f6d6f6e61642d746573746e657402a20001015821024c98599fba6955ea0fd4eeeb7f955e51ab01cb67a3bcbf2f38c5d3df81a4d92903a2001a6b49d200010006a2001a692e2c00010008a2000101582103fa7f25b60ff95c79f2ebb70f7355d93674a018483deb2e4e0eda405402682a3a0982a3006c646973706c61795f6e616d650181a200646c616e670162656e0245616c696365a300666176617461720180025818747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66710181a3000101a2000101582103a15a52deb82549bc2326d42219400f41190ace7bf040fa8721017f2c10512b650258473045022100a5890503858616c51426b9bf768aa451771e96aefdb5457bed0b19c7cf02aa7202207d0d0928d9542badb0b06eaff65a32762878c5c545d3e8e1cae663852cb3d449",
+      "validation_context": {
+        "operation": "typed",
+        "route_byte_limit": 8388617,
+        "reader_version": 2,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 3
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 9,
+            "schema_version": 1
+          },
+          {
+            "type_id": 10,
+            "schema_version": 1
+          },
+          {
+            "type_id": 11,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null
+      },
+      "expectation": "accept",
+      "rules": [
+        "M1",
+        "M2",
+        "M3",
+        "M4",
+        "M5",
+        "S2a",
+        "S2b",
+        "S4",
+        "S10",
+        "T2",
+        "T5"
+      ],
+      "type_id": 2,
+      "schema_version": 1,
+      "content_hash_hex": "4b112d4c800fcbbcd6c9533bf18754e1c23cccf24753ae0cd21677eb03ef7425"
+    },
+    {
+      "id": "reg-fixture-mainnet-statement-typed",
+      "description": "Registration record, monad-mainnet: the same shape on the second first-slice network with a fractional-millisecond timestamp.",
+      "source": "handcrafted",
+      "frame_hex": "46524e4b01000001e0a4000201010201035901d5a20059015946524e4b0100000150a400040103020203590145a8006d6d6f6e61642d6d61696e6e657401a2000101582102ac3d02eaddcd36e47b5ca63cbe76b443f58f234781f4ee0318a1ca0212e1cf33021b0000019ad736c15203a2001a692cdad1011a0df28e800481a400502a35404b56616c77828d98a3aeb9c4cf01782a68747470733a2f2f72656c6179322e6672616e6b2e6578616d706c652f6d6f6e61642d6d61696e6e657402a200010158210347154420ddb5d603116010bcb98dbeb9eea911bb75ac4e703c08754d8219fa2303a2001a6b49d200010006a2001a6b0e0e51011a0df28e8008a2000101582103d0125be2f25355ac8647593a59f456a47d29e28dddd41a8575041b9b74542c720982a3006c646973706c61795f6e616d650181a200646c616e670162656e0245616c696365a300666176617461720180025818747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66710181a3000101a2000101582102ac3d02eaddcd36e47b5ca63cbe76b443f58f234781f4ee0318a1ca0212e1cf330258473045022100a3d5300e4d6d149e83ef1ca97deaefa05a2727eb0833795537279c78db51344b02206ffd32e26e2dfeb4ff3688ca0f206c661fade4d8852f2e0de63fb244636ab96a",
+      "validation_context": {
+        "operation": "typed",
+        "route_byte_limit": 8388617,
+        "reader_version": 2,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 3
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 9,
+            "schema_version": 1
+          },
+          {
+            "type_id": 10,
+            "schema_version": 1
+          },
+          {
+            "type_id": 11,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null
+      },
+      "expectation": "accept",
+      "rules": [
+        "M1",
+        "M2",
+        "M3",
+        "M4",
+        "M5",
+        "S2a",
+        "S2b",
+        "S4",
+        "S10",
+        "T2",
+        "T5"
+      ],
+      "type_id": 2,
+      "schema_version": 1,
+      "content_hash_hex": "2ccd30c856e8880847a49fd3d4c8175231eac49dce92baebfd3a124b4a6d3761"
+    },
+    {
+      "id": "reg-fixture-testnet-update-typed",
+      "description": "Same-subject update: greater revision, no key transition, network unchanged. Live against the current codecs because the statement carries no profile entries.",
+      "source": "handcrafted",
+      "frame_hex": "46524e4b010000018ca400020101020103590181a20059010546524e4b01000000fca40004010302020358f2a7006d6d6f6e61642d746573746e657401a2000101582103a15a52deb82549bc2326d42219400f41190ace7bf040fa8721017f2c10512b65021b0000019ad7366e6003a2001a692cdabc01000481a400502a35404b56616c77828d98a3aeb9c4cf01782a68747470733a2f2f72656c6179312e6672616e6b2e6578616d706c652f6d6f6e61642d746573746e657402a20001015821024c98599fba6955ea0fd4eeeb7f955e51ab01cb67a3bcbf2f38c5d3df81a4d92903a2001a6b49d200010006a2001a692e2c3c010008a2000101582103fa7f25b60ff95c79f2ebb70f7355d93674a018483deb2e4e0eda405402682a3a0181a3000101a2000101582103a15a52deb82549bc2326d42219400f41190ace7bf040fa8721017f2c10512b650258473045022100c7cd34108eb58e9f5e3097292182a7bf45f732a538bb2f3895bc66fd1842c6500220237412ac6c7dca2351d77ee607c8558874b0c6dccd86aed70e7f9c0566b30641",
+      "validation_context": {
+        "operation": "typed",
+        "route_byte_limit": 8388617,
+        "reader_version": 2,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 3
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 9,
+            "schema_version": 1
+          },
+          {
+            "type_id": 10,
+            "schema_version": 1
+          },
+          {
+            "type_id": 11,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": "46524e4b01000000fca40004010302020358f2a7006d6d6f6e61642d746573746e657401a2000101582103a15a52deb82549bc2326d42219400f41190ace7bf040fa8721017f2c10512b65021b0000019ad735840003a2001a692cda8001000481a400502a35404b56616c77828d98a3aeb9c4cf01782a68747470733a2f2f72656c6179312e6672616e6b2e6578616d706c652f6d6f6e61642d746573746e657402a20001015821024c98599fba6955ea0fd4eeeb7f955e51ab01cb67a3bcbf2f38c5d3df81a4d92903a2001a6b49d200010006a2001a692e2c00010008a2000101582103fa7f25b60ff95c79f2ebb70f7355d93674a018483deb2e4e0eda405402682a3a"
+      },
+      "expectation": "accept",
+      "rules": ["M1", "M2", "M3", "S10", "S10a.2"],
+      "type_id": 2,
+      "schema_version": 1,
+      "content_hash_hex": "e0ca52b29f8dae750222efe9fe5af2c11e37ef6942c952a02aed8980c9438a5e"
+    },
+    {
+      "id": "reg-fixture-v63-profile-retained",
+      "description": "A schema-2 reader lists type 4 at schema 2, so the schema-3 statement is read through V6.3: fields 0-8 are interpreted and field 9 is retained as an unknown field. Pins the exact profile-entry encoding while the bytes are live in both codecs.",
+      "source": "handcrafted",
+      "frame_hex": "46524e4b01000001d8a4000201010201035901cda20059015146524e4b0100000148a40004010302020359013da8006d6d6f6e61642d746573746e657401a2000101582103a15a52deb82549bc2326d42219400f41190ace7bf040fa8721017f2c10512b65021b0000019ad735840003a2001a692cda8001000481a400502a35404b56616c77828d98a3aeb9c4cf01782a68747470733a2f2f72656c6179312e6672616e6b2e6578616d706c652f6d6f6e61642d746573746e657402a20001015821024c98599fba6955ea0fd4eeeb7f955e51ab01cb67a3bcbf2f38c5d3df81a4d92903a2001a6b49d200010006a2001a692e2c00010008a2000101582103fa7f25b60ff95c79f2ebb70f7355d93674a018483deb2e4e0eda405402682a3a0982a3006c646973706c61795f6e616d650181a200646c616e670162656e0245616c696365a300666176617461720180025818747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66710181a3000101a2000101582103a15a52deb82549bc2326d42219400f41190ace7bf040fa8721017f2c10512b650258473045022100a5890503858616c51426b9bf768aa451771e96aefdb5457bed0b19c7cf02aa7202207d0d0928d9542badb0b06eaff65a32762878c5c545d3e8e1cae663852cb3d449",
+      "validation_context": {
+        "operation": "typed",
+        "route_byte_limit": 8388617,
+        "reader_version": 2,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 2
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 9,
+            "schema_version": 1
+          },
+          {
+            "type_id": 10,
+            "schema_version": 1
+          },
+          {
+            "type_id": 11,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null
+      },
+      "expectation": "accept",
+      "rules": ["V6", "V6.3", "M4", "C12"],
+      "type_id": 2,
+      "schema_version": 1,
+      "content_hash_hex": "4b112d4c800fcbbcd6c9533bf18754e1c23cccf24753ae0cd21677eb03ef7425"
+    },
+    {
+      "id": "reg-alg16-recognized-typed",
+      "description": "An Ed25519 (key type 2) subject with an algorithm-16 signature entry is an allocated S2b pairing, so stage 8.3 accepts it and stage 9 sees a subject-signed entry.",
+      "source": "handcrafted",
+      "frame_hex": "46524e4b0100000183a400020101020103590178a20059010446524e4b01000000fba40004010302020358f1a7006d6d6f6e61642d746573746e657401a20002015820a42ba93737ce4c738cf9e97f623fa859bfe6e7833dfcba3da8cbb51dfdb573aa021b0000019ad735840003a2001a692cda8001000481a400502a35404b56616c77828d98a3aeb9c4cf01782a68747470733a2f2f72656c6179312e6672616e6b2e6578616d706c652f6d6f6e61642d746573746e657402a20001015821024c98599fba6955ea0fd4eeeb7f955e51ab01cb67a3bcbf2f38c5d3df81a4d92903a2001a6b49d200010006a2001a692e2c00010008a2000101582103fa7f25b60ff95c79f2ebb70f7355d93674a018483deb2e4e0eda405402682a3a0181a3001001a20002015820a42ba93737ce4c738cf9e97f623fa859bfe6e7833dfcba3da8cbb51dfdb573aa025840525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07",
+      "validation_context": {
+        "operation": "typed",
+        "route_byte_limit": 8388617,
+        "reader_version": 2,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 3
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 9,
+            "schema_version": 1
+          },
+          {
+            "type_id": 10,
+            "schema_version": 1
+          },
+          {
+            "type_id": 11,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null
+      },
+      "expectation": "accept",
+      "rules": ["S2a", "S2b", "S10"],
+      "type_id": 2,
+      "schema_version": 1,
+      "content_hash_hex": "ac3d9ac208ece2cd1f1bb32e4b999987cadf6345e5fff41b012378f0fcb3492a"
+    },
+    {
+      "id": "reg-t4-key-32-bytes",
+      "description": "Subject account-ref with key type 1 and a 32-byte key. Accept twin: reg-fixture-testnet-statement-typed.",
+      "source": "handcrafted",
+      "frame_hex": "46524e4b01000001d6a4000201010201035901cba20059015046524e4b0100000147a40004010302020359013ca8006d6d6f6e61642d746573746e657401a2000101582003a15a52deb82549bc2326d42219400f41190ace7bf040fa8721017f2c10512b021b0000019ad735840003a2001a692cda8001000481a400502a35404b56616c77828d98a3aeb9c4cf01782a68747470733a2f2f72656c6179312e6672616e6b2e6578616d706c652f6d6f6e61642d746573746e657402a20001015821024c98599fba6955ea0fd4eeeb7f955e51ab01cb67a3bcbf2f38c5d3df81a4d92903a2001a6b49d200010006a2001a692e2c00010008a2000101582103fa7f25b60ff95c79f2ebb70f7355d93674a018483deb2e4e0eda405402682a3a0982a3006c646973706c61795f6e616d650181a200646c616e670162656e0245616c696365a300666176617461720180025818747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66710181a3000101a2000101582003a15a52deb82549bc2326d42219400f41190ace7bf040fa8721017f2c10512b0258473045022100a5890503858616c51426b9bf768aa451771e96aefdb5457bed0b19c7cf02aa7202207d0d0928d9542badb0b06eaff65a32762878c5c545d3e8e1cae663852cb3d449",
+      "validation_context": {
+        "operation": "typed",
+        "route_byte_limit": 8388617,
+        "reader_version": 2,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 3
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 9,
+            "schema_version": 1
+          },
+          {
+            "type_id": 10,
+            "schema_version": 1
+          },
+          {
+            "type_id": 11,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null
+      },
+      "expectation": "reject",
+      "rules": ["S2"],
+      "error_category": "schema",
+      "error_stage": "8.2"
+    },
+    {
+      "id": "reg-t4-key-uncompressed-65",
+      "description": "Subject account-ref with key type 1 carrying a 65-byte uncompressed key: the app already uses compressed keys, so this is a wrong encoding for the allocated length.",
+      "source": "handcrafted",
+      "frame_hex": "46524e4b0100000218a40002010102010359020da20059017146524e4b0100000168a40004010302020359015da8006d6d6f6e61642d746573746e657401a2000101584104bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d6873021b0000019ad735840003a2001a692cda8001000481a400502a35404b56616c77828d98a3aeb9c4cf01782a68747470733a2f2f72656c6179312e6672616e6b2e6578616d706c652f6d6f6e61642d746573746e657402a20001015821024c98599fba6955ea0fd4eeeb7f955e51ab01cb67a3bcbf2f38c5d3df81a4d92903a2001a6b49d200010006a2001a692e2c00010008a2000101582103fa7f25b60ff95c79f2ebb70f7355d93674a018483deb2e4e0eda405402682a3a0982a3006c646973706c61795f6e616d650181a200646c616e670162656e0245616c696365a300666176617461720180025818747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66710181a3000101a2000101584104bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68730258473045022100a5890503858616c51426b9bf768aa451771e96aefdb5457bed0b19c7cf02aa7202207d0d0928d9542badb0b06eaff65a32762878c5c545d3e8e1cae663852cb3d449",
+      "validation_context": {
+        "operation": "typed",
+        "route_byte_limit": 8388617,
+        "reader_version": 2,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 3
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 9,
+            "schema_version": 1
+          },
+          {
+            "type_id": 10,
+            "schema_version": 1
+          },
+          {
+            "type_id": 11,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null
+      },
+      "expectation": "reject",
+      "rules": ["S2", "M1"],
+      "error_category": "schema",
+      "error_stage": "8.2"
+    },
+    {
+      "id": "reg-t2-sig-7-bytes",
+      "description": "Algorithm-1 signature of 7 bytes, below the S2b minimum of 8. Accept twin: reg-fixture-testnet-statement-typed.",
+      "source": "handcrafted",
+      "frame_hex": "46524e4b010000014ba400020101020103590140a20059010546524e4b01000000fca40004010302020358f2a7006d6d6f6e61642d746573746e657401a2000101582103a15a52deb82549bc2326d42219400f41190ace7bf040fa8721017f2c10512b65021b0000019ad735840003a2001a692cda8001000481a400502a35404b56616c77828d98a3aeb9c4cf01782a68747470733a2f2f72656c6179312e6672616e6b2e6578616d706c652f6d6f6e61642d746573746e657402a20001015821024c98599fba6955ea0fd4eeeb7f955e51ab01cb67a3bcbf2f38c5d3df81a4d92903a2001a6b49d200010006a2001a692e2c00010008a2000101582103fa7f25b60ff95c79f2ebb70f7355d93674a018483deb2e4e0eda405402682a3a0181a3000101a2000101582103a15a52deb82549bc2326d42219400f41190ace7bf040fa8721017f2c10512b650247304402200d28d5",
+      "validation_context": {
+        "operation": "typed",
+        "route_byte_limit": 8388617,
+        "reader_version": 2,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 3
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 9,
+            "schema_version": 1
+          },
+          {
+            "type_id": 10,
+            "schema_version": 1
+          },
+          {
+            "type_id": 11,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null
+      },
+      "expectation": "reject",
+      "rules": ["S2b"],
+      "error_category": "unsupported",
+      "error_stage": "8.3"
+    },
+    {
+      "id": "reg-t2-algorithm-unallocated-99",
+      "description": "Signature algorithm 99 is unallocated (S2a). Accept twin: reg-fixture-testnet-statement-typed.",
+      "source": "handcrafted",
+      "frame_hex": "46524e4b010000018ca400020101020103590181a20059010546524e4b01000000fca40004010302020358f2a7006d6d6f6e61642d746573746e657401a2000101582103a15a52deb82549bc2326d42219400f41190ace7bf040fa8721017f2c10512b65021b0000019ad735840003a2001a692cda8001000481a400502a35404b56616c77828d98a3aeb9c4cf01782a68747470733a2f2f72656c6179312e6672616e6b2e6578616d706c652f6d6f6e61642d746573746e657402a20001015821024c98599fba6955ea0fd4eeeb7f955e51ab01cb67a3bcbf2f38c5d3df81a4d92903a2001a6b49d200010006a2001a692e2c00010008a2000101582103fa7f25b60ff95c79f2ebb70f7355d93674a018483deb2e4e0eda405402682a3a0181a300186301a2000101582103a15a52deb82549bc2326d42219400f41190ace7bf040fa8721017f2c10512b65025846304402200d28d5fa1fff25e649a4411a7332b2e64c162b0cd698cc342e884ee5145adf9602200233666fe4038d689a484b6502dd4340141ce38d57839d7e61002e2e57cc5363",
+      "validation_context": {
+        "operation": "typed",
+        "route_byte_limit": 8388617,
+        "reader_version": 2,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 3
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 9,
+            "schema_version": 1
+          },
+          {
+            "type_id": 10,
+            "schema_version": 1
+          },
+          {
+            "type_id": 11,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null
+      },
+      "expectation": "reject",
+      "rules": ["S2a"],
+      "error_category": "unsupported",
+      "error_stage": "8.3"
+    },
+    {
+      "id": "reg-t2-alg1-keytype3",
+      "description": "Algorithm 1 with a key type 3 (x-only) signer: an S2b pairing violation, not a signature failure. Accept twin: reg-fixture-testnet-statement-typed.",
+      "source": "handcrafted",
+      "frame_hex": "46524e4b01000001d6a4000201010201035901cba20059015046524e4b0100000147a40004010302020359013ca8006d6d6f6e61642d746573746e657401a20003015820a15a52deb82549bc2326d42219400f41190ace7bf040fa8721017f2c10512b65021b0000019ad735840003a2001a692cda8001000481a400502a35404b56616c77828d98a3aeb9c4cf01782a68747470733a2f2f72656c6179312e6672616e6b2e6578616d706c652f6d6f6e61642d746573746e657402a20001015821024c98599fba6955ea0fd4eeeb7f955e51ab01cb67a3bcbf2f38c5d3df81a4d92903a2001a6b49d200010006a2001a692e2c00010008a2000101582103fa7f25b60ff95c79f2ebb70f7355d93674a018483deb2e4e0eda405402682a3a0982a3006c646973706c61795f6e616d650181a200646c616e670162656e0245616c696365a300666176617461720180025818747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66710181a3000101a20003015820a15a52deb82549bc2326d42219400f41190ace7bf040fa8721017f2c10512b650258473045022100a5890503858616c51426b9bf768aa451771e96aefdb5457bed0b19c7cf02aa7202207d0d0928d9542badb0b06eaff65a32762878c5c545d3e8e1cae663852cb3d449",
+      "validation_context": {
+        "operation": "typed",
+        "route_byte_limit": 8388617,
+        "reader_version": 2,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 3
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 9,
+            "schema_version": 1
+          },
+          {
+            "type_id": 10,
+            "schema_version": 1
+          },
+          {
+            "type_id": 11,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null
+      },
+      "expectation": "reject",
+      "rules": ["S2b"],
+      "error_category": "unsupported",
+      "error_stage": "8.3"
+    },
+    {
+      "id": "reg-t4-schema2-carries-profile",
+      "description": "A schema-2 statement carrying field 9: C12 makes the undeclared key a schema error at the exact supported schema. Accept twin: reg-fixture-testnet-statement-typed.",
+      "source": "handcrafted",
+      "frame_hex": "46524e4b01000001d8a4000201010201035901cda20059015146524e4b0100000148a40004010202020359013da8006d6d6f6e61642d746573746e657401a2000101582103a15a52deb82549bc2326d42219400f41190ace7bf040fa8721017f2c10512b65021b0000019ad735840003a2001a692cda8001000481a400502a35404b56616c77828d98a3aeb9c4cf01782a68747470733a2f2f72656c6179312e6672616e6b2e6578616d706c652f6d6f6e61642d746573746e657402a20001015821024c98599fba6955ea0fd4eeeb7f955e51ab01cb67a3bcbf2f38c5d3df81a4d92903a2001a6b49d200010006a2001a692e2c00010008a2000101582103fa7f25b60ff95c79f2ebb70f7355d93674a018483deb2e4e0eda405402682a3a0982a3006c646973706c61795f6e616d650181a200646c616e670162656e0245616c696365a300666176617461720180025818747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66710181a3000101a2000101582103a15a52deb82549bc2326d42219400f41190ace7bf040fa8721017f2c10512b650258473045022100a5890503858616c51426b9bf768aa451771e96aefdb5457bed0b19c7cf02aa7202207d0d0928d9542badb0b06eaff65a32762878c5c545d3e8e1cae663852cb3d449",
+      "validation_context": {
+        "operation": "typed",
+        "route_byte_limit": 8388617,
+        "reader_version": 2,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 3
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 9,
+            "schema_version": 1
+          },
+          {
+            "type_id": 10,
+            "schema_version": 1
+          },
+          {
+            "type_id": 11,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null
+      },
+      "expectation": "reject",
+      "rules": ["C12", "M4", "V1"],
+      "error_category": "schema",
+      "error_stage": "8.2"
+    },
+    {
+      "id": "reg-t4-schema1-carries-profile",
+      "description": "A schema-1 statement carrying field 9 (and no stamp key): undeclared at schema 1 (C12).",
+      "source": "handcrafted",
+      "frame_hex": "46524e4b01000001b0a4000201010201035901a5a20059012946524e4b0100000120a400040101020103590115a7006d6d6f6e61642d746573746e657401a2000101582103a15a52deb82549bc2326d42219400f41190ace7bf040fa8721017f2c10512b65021b0000019ad735840003a2001a692cda8001000481a400502a35404b56616c77828d98a3aeb9c4cf01782a68747470733a2f2f72656c6179312e6672616e6b2e6578616d706c652f6d6f6e61642d746573746e657402a20001015821024c98599fba6955ea0fd4eeeb7f955e51ab01cb67a3bcbf2f38c5d3df81a4d92903a2001a6b49d200010006a2001a692e2c0001000982a3006c646973706c61795f6e616d650181a200646c616e670162656e0245616c696365a300666176617461720180025818747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66710181a3000101a2000101582103a15a52deb82549bc2326d42219400f41190ace7bf040fa8721017f2c10512b650258473045022100a5890503858616c51426b9bf768aa451771e96aefdb5457bed0b19c7cf02aa7202207d0d0928d9542badb0b06eaff65a32762878c5c545d3e8e1cae663852cb3d449",
+      "validation_context": {
+        "operation": "typed",
+        "route_byte_limit": 8388617,
+        "reader_version": 2,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 3
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 9,
+            "schema_version": 1
+          },
+          {
+            "type_id": 10,
+            "schema_version": 1
+          },
+          {
+            "type_id": 11,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null
+      },
+      "expectation": "reject",
+      "rules": ["C12", "M4", "V1"],
+      "error_category": "schema",
+      "error_stage": "8.2"
+    },
+    {
+      "id": "reg-t4-network-uppercase",
+      "description": "Statement network \"Monad-Testnet\" violates the S1 lowercase-tag syntax.",
+      "source": "handcrafted",
+      "frame_hex": "46524e4b01000001d8a4000201010201035901cda20059015146524e4b0100000148a40004010302020359013da8006d4d6f6e61642d546573746e657401a2000101582103a15a52deb82549bc2326d42219400f41190ace7bf040fa8721017f2c10512b65021b0000019ad735840003a2001a692cda8001000481a400502a35404b56616c77828d98a3aeb9c4cf01782a68747470733a2f2f72656c6179312e6672616e6b2e6578616d706c652f6d6f6e61642d746573746e657402a20001015821024c98599fba6955ea0fd4eeeb7f955e51ab01cb67a3bcbf2f38c5d3df81a4d92903a2001a6b49d200010006a2001a692e2c00010008a2000101582103fa7f25b60ff95c79f2ebb70f7355d93674a018483deb2e4e0eda405402682a3a0982a3006c646973706c61795f6e616d650181a200646c616e670162656e0245616c696365a300666176617461720180025818747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66710181a3000101a2000101582103a15a52deb82549bc2326d42219400f41190ace7bf040fa8721017f2c10512b650258473045022100a5890503858616c51426b9bf768aa451771e96aefdb5457bed0b19c7cf02aa7202207d0d0928d9542badb0b06eaff65a32762878c5c545d3e8e1cae663852cb3d449",
+      "validation_context": {
+        "operation": "typed",
+        "route_byte_limit": 8388617,
+        "reader_version": 2,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 3
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 9,
+            "schema_version": 1
+          },
+          {
+            "type_id": 10,
+            "schema_version": 1
+          },
+          {
+            "type_id": 11,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null
+      },
+      "expectation": "reject",
+      "rules": ["S1"],
+      "error_category": "schema",
+      "error_stage": "8.2"
+    },
+    {
+      "id": "reg-t4-noncanonical-statement",
+      "description": "The opened type-4 statement emits key 4 before key 3: pass B reports the first non-canonical key order (the child carries its own stage label).",
+      "source": "handcrafted",
+      "frame_hex": "46524e4b0100000180a400020101020103590175a20058fb46524e4b01000000f2a40004010302020358e8a6006d6d6f6e61642d746573746e657401a2000101582103a15a52deb82549bc2326d42219400f41190ace7bf040fa8721017f2c10512b65021b0000019ad73584000481a400502a35404b56616c77828d98a3aeb9c4cf01782a68747470733a2f2f72656c6179312e6672616e6b2e6578616d706c652f6d6f6e61642d746573746e657402a20001015821024c98599fba6955ea0fd4eeeb7f955e51ab01cb67a3bcbf2f38c5d3df81a4d92903a2001a6b49d200010003a2001a692cda80010008a2000101582103fa7f25b60ff95c79f2ebb70f7355d93674a018483deb2e4e0eda405402682a3a0181a3000101a2000101582103a15a52deb82549bc2326d42219400f41190ace7bf040fa8721017f2c10512b65025846304402200d28d5fa1fff25e649a4411a7332b2e64c162b0cd698cc342e884ee5145adf9602200233666fe4038d689a484b6502dd4340141ce38d57839d7e61002e2e57cc5363",
+      "validation_context": {
+        "operation": "typed",
+        "route_byte_limit": 8388617,
+        "reader_version": 2,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 3
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 9,
+            "schema_version": 1
+          },
+          {
+            "type_id": 10,
+            "schema_version": 1
+          },
+          {
+            "type_id": 11,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null
+      },
+      "expectation": "reject",
+      "rules": ["C1", "C4"],
+      "error_category": "noncanonical",
+      "error_stage": "7"
+    },
+    {
+      "id": "reg-s10a2-schema-downgrade",
+      "description": "A same-subject update whose schema_version (2) is lower than the prior statement's (3): a subject cannot drop a stamp key it published (S10a.2).",
+      "source": "handcrafted",
+      "frame_hex": "46524e4b010000018ca400020101020103590181a20059010546524e4b01000000fca40004010202020358f2a7006d6d6f6e61642d746573746e657401a2000101582103a15a52deb82549bc2326d42219400f41190ace7bf040fa8721017f2c10512b65021b0000019ad7366e6003a2001a692cdabc01000481a400502a35404b56616c77828d98a3aeb9c4cf01782a68747470733a2f2f72656c6179312e6672616e6b2e6578616d706c652f6d6f6e61642d746573746e657402a20001015821024c98599fba6955ea0fd4eeeb7f955e51ab01cb67a3bcbf2f38c5d3df81a4d92903a2001a6b49d200010006a2001a692e2c3c010008a2000101582103fa7f25b60ff95c79f2ebb70f7355d93674a018483deb2e4e0eda405402682a3a0181a3000101a2000101582103a15a52deb82549bc2326d42219400f41190ace7bf040fa8721017f2c10512b65025847304502210098d00ce5da91d3265c29f8935548a1353d314fdd39773ac928110f0912383ad3022060ab78ad9cc3c37ed99d8d2df71c2524b27f21387344f18cebeb8cf271ade41a",
+      "validation_context": {
+        "operation": "typed",
+        "route_byte_limit": 8388617,
+        "reader_version": 2,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 3
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 9,
+            "schema_version": 1
+          },
+          {
+            "type_id": 10,
+            "schema_version": 1
+          },
+          {
+            "type_id": 11,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": "46524e4b01000000fca40004010302020358f2a7006d6d6f6e61642d746573746e657401a2000101582103a15a52deb82549bc2326d42219400f41190ace7bf040fa8721017f2c10512b65021b0000019ad735840003a2001a692cda8001000481a400502a35404b56616c77828d98a3aeb9c4cf01782a68747470733a2f2f72656c6179312e6672616e6b2e6578616d706c652f6d6f6e61642d746573746e657402a20001015821024c98599fba6955ea0fd4eeeb7f955e51ab01cb67a3bcbf2f38c5d3df81a4d92903a2001a6b49d200010006a2001a692e2c00010008a2000101582103fa7f25b60ff95c79f2ebb70f7355d93674a018483deb2e4e0eda405402682a3a"
+      },
+      "expectation": "reject",
+      "rules": ["S10a", "S10a.2"],
+      "error_category": "semantic",
+      "error_stage": "9"
+    },
+    {
+      "id": "reg-t4-headers-unsorted",
+      "description": "Profile-entry headers not sorted bytewise by name (M4/C11): a stage 9 semantic reject. Forward-looking: the current codecs fail earlier at C12 (schema 8.2, undeclared key 9).",
+      "source": "handcrafted",
+      "frame_hex": "46524e4b01000001b5a4000201010201035901aaa20059012e46524e4b0100000125a40004010302020359011aa8006d6d6f6e61642d746573746e657401a2000101582103a15a52deb82549bc2326d42219400f41190ace7bf040fa8721017f2c10512b65021b0000019ad735840003a2001a692cda8001000481a400502a35404b56616c77828d98a3aeb9c4cf01782a68747470733a2f2f72656c6179312e6672616e6b2e6578616d706c652f6d6f6e61642d746573746e657402a20001015821024c98599fba6955ea0fd4eeeb7f955e51ab01cb67a3bcbf2f38c5d3df81a4d92903a2001a6b49d200010006a2001a692e2c00010008a2000101582103fa7f25b60ff95c79f2ebb70f7355d93674a018483deb2e4e0eda405402682a3a0981a3006c646973706c61795f6e616d650182a200617a016161a20061610161620245616c6963650181a3000101a2000101582103a15a52deb82549bc2326d42219400f41190ace7bf040fa8721017f2c10512b650258473045022100a5890503858616c51426b9bf768aa451771e96aefdb5457bed0b19c7cf02aa7202207d0d0928d9542badb0b06eaff65a32762878c5c545d3e8e1cae663852cb3d449",
+      "validation_context": {
+        "operation": "typed",
+        "route_byte_limit": 8388617,
+        "reader_version": 2,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 3
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 9,
+            "schema_version": 1
+          },
+          {
+            "type_id": 10,
+            "schema_version": 1
+          },
+          {
+            "type_id": 11,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null
+      },
+      "expectation": "reject",
+      "rules": ["C11", "M4"],
+      "error_category": "semantic",
+      "error_stage": "9"
+    },
+    {
+      "id": "reg-t4-headers-duplicate",
+      "description": "Duplicate header name \"lang\" in one profile entry (M4/C11). Forward-looking: the current codecs fail earlier at C12 (schema 8.2, undeclared key 9).",
+      "source": "handcrafted",
+      "frame_hex": "46524e4b01000001bda4000201010201035901b2a20059013646524e4b010000012da400040103020203590122a8006d6d6f6e61642d746573746e657401a2000101582103a15a52deb82549bc2326d42219400f41190ace7bf040fa8721017f2c10512b65021b0000019ad735840003a2001a692cda8001000481a400502a35404b56616c77828d98a3aeb9c4cf01782a68747470733a2f2f72656c6179312e6672616e6b2e6578616d706c652f6d6f6e61642d746573746e657402a20001015821024c98599fba6955ea0fd4eeeb7f955e51ab01cb67a3bcbf2f38c5d3df81a4d92903a2001a6b49d200010006a2001a692e2c00010008a2000101582103fa7f25b60ff95c79f2ebb70f7355d93674a018483deb2e4e0eda405402682a3a0981a3006c646973706c61795f6e616d650182a200646c616e670162656ea200646c616e67016266720245616c6963650181a3000101a2000101582103a15a52deb82549bc2326d42219400f41190ace7bf040fa8721017f2c10512b650258473045022100a5890503858616c51426b9bf768aa451771e96aefdb5457bed0b19c7cf02aa7202207d0d0928d9542badb0b06eaff65a32762878c5c545d3e8e1cae663852cb3d449",
+      "validation_context": {
+        "operation": "typed",
+        "route_byte_limit": 8388617,
+        "reader_version": 2,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 3
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 9,
+            "schema_version": 1
+          },
+          {
+            "type_id": 10,
+            "schema_version": 1
+          },
+          {
+            "type_id": 11,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null
+      },
+      "expectation": "reject",
+      "rules": ["C11", "M4"],
+      "error_category": "semantic",
+      "error_stage": "9"
+    },
+    {
+      "id": "reg-fixture-testnet-full",
+      "description": "Bootstrap registration on monad-testnet: every stage-10 check passes - the algorithm-1 signature verifies over the frozen T2 transcript of the exact type-4 frame.",
+      "source": "handcrafted",
+      "frame_hex": "46524e4b01000001d8a4000201010201035901cda20059015146524e4b0100000148a40004010302020359013da8006d6d6f6e61642d746573746e657401a2000101582103a15a52deb82549bc2326d42219400f41190ace7bf040fa8721017f2c10512b65021b0000019ad735840003a2001a692cda8001000481a400502a35404b56616c77828d98a3aeb9c4cf01782a68747470733a2f2f72656c6179312e6672616e6b2e6578616d706c652f6d6f6e61642d746573746e657402a20001015821024c98599fba6955ea0fd4eeeb7f955e51ab01cb67a3bcbf2f38c5d3df81a4d92903a2001a6b49d200010006a2001a692e2c00010008a2000101582103fa7f25b60ff95c79f2ebb70f7355d93674a018483deb2e4e0eda405402682a3a0982a3006c646973706c61795f6e616d650181a200646c616e670162656e0245616c696365a300666176617461720180025818747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66710181a3000101a2000101582103a15a52deb82549bc2326d42219400f41190ace7bf040fa8721017f2c10512b650258473045022100a5890503858616c51426b9bf768aa451771e96aefdb5457bed0b19c7cf02aa7202207d0d0928d9542badb0b06eaff65a32762878c5c545d3e8e1cae663852cb3d449",
+      "validation_context": {
+        "operation": "full",
+        "route_byte_limit": 8388617,
+        "reader_version": 2,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 3
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 9,
+            "schema_version": 1
+          },
+          {
+            "type_id": 10,
+            "schema_version": 1
+          },
+          {
+            "type_id": 11,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null,
+        "payment_policy": null,
+        "decrypted_frame_hex": null,
+        "recipient_directory_state": null
+      },
+      "expectation": "accept",
+      "rules": ["M1", "M5", "M6", "M7", "S2a", "S2b", "S10", "T2", "T5", "T6"],
+      "type_id": 2,
+      "schema_version": 1,
+      "content_hash_hex": "4b112d4c800fcbbcd6c9533bf18754e1c23cccf24753ae0cd21677eb03ef7425"
+    },
+    {
+      "id": "reg-fixture-testnet-minimal-full",
+      "description": "The same bootstrap shape without profile entries: the stage-10 isolation record. Every reg-crypto-* and reg-unsupported-* reject derives from this frame, so the current codecs accept it at typed today and only the stage-10 check is forward-looking.",
+      "source": "handcrafted",
+      "frame_hex": "46524e4b010000018ba400020101020103590180a20059010546524e4b01000000fca40004010302020358f2a7006d6d6f6e61642d746573746e657401a2000101582103a15a52deb82549bc2326d42219400f41190ace7bf040fa8721017f2c10512b65021b0000019ad735840003a2001a692cda8001000481a400502a35404b56616c77828d98a3aeb9c4cf01782a68747470733a2f2f72656c6179312e6672616e6b2e6578616d706c652f6d6f6e61642d746573746e657402a20001015821024c98599fba6955ea0fd4eeeb7f955e51ab01cb67a3bcbf2f38c5d3df81a4d92903a2001a6b49d200010006a2001a692e2c00010008a2000101582103fa7f25b60ff95c79f2ebb70f7355d93674a018483deb2e4e0eda405402682a3a0181a3000101a2000101582103a15a52deb82549bc2326d42219400f41190ace7bf040fa8721017f2c10512b65025846304402200d28d5fa1fff25e649a4411a7332b2e64c162b0cd698cc342e884ee5145adf9602200233666fe4038d689a484b6502dd4340141ce38d57839d7e61002e2e57cc5363",
+      "validation_context": {
+        "operation": "full",
+        "route_byte_limit": 8388617,
+        "reader_version": 2,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 3
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 9,
+            "schema_version": 1
+          },
+          {
+            "type_id": 10,
+            "schema_version": 1
+          },
+          {
+            "type_id": 11,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null,
+        "payment_policy": null,
+        "decrypted_frame_hex": null,
+        "recipient_directory_state": null
+      },
+      "expectation": "accept",
+      "rules": [
+        "M1",
+        "M2",
+        "M3",
+        "M5",
+        "M6",
+        "M7",
+        "S2a",
+        "S2b",
+        "S10",
+        "T2",
+        "T5"
+      ],
+      "type_id": 2,
+      "schema_version": 1,
+      "content_hash_hex": "6346a4bbc3070bce5b49ab5f2c5569235dab7bf5627510a687afff065b03abc8",
+      "paired_case": "reg-crypto-sig-mutation",
+      "pair_relation": "one_byte_mutation"
+    },
+    {
+      "id": "reg-fixture-mainnet-full",
+      "description": "Bootstrap registration on monad-mainnet, verified identically.",
+      "source": "handcrafted",
+      "frame_hex": "46524e4b01000001e0a4000201010201035901d5a20059015946524e4b0100000150a400040103020203590145a8006d6d6f6e61642d6d61696e6e657401a2000101582102ac3d02eaddcd36e47b5ca63cbe76b443f58f234781f4ee0318a1ca0212e1cf33021b0000019ad736c15203a2001a692cdad1011a0df28e800481a400502a35404b56616c77828d98a3aeb9c4cf01782a68747470733a2f2f72656c6179322e6672616e6b2e6578616d706c652f6d6f6e61642d6d61696e6e657402a200010158210347154420ddb5d603116010bcb98dbeb9eea911bb75ac4e703c08754d8219fa2303a2001a6b49d200010006a2001a6b0e0e51011a0df28e8008a2000101582103d0125be2f25355ac8647593a59f456a47d29e28dddd41a8575041b9b74542c720982a3006c646973706c61795f6e616d650181a200646c616e670162656e0245616c696365a300666176617461720180025818747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66710181a3000101a2000101582102ac3d02eaddcd36e47b5ca63cbe76b443f58f234781f4ee0318a1ca0212e1cf330258473045022100a3d5300e4d6d149e83ef1ca97deaefa05a2727eb0833795537279c78db51344b02206ffd32e26e2dfeb4ff3688ca0f206c661fade4d8852f2e0de63fb244636ab96a",
+      "validation_context": {
+        "operation": "full",
+        "route_byte_limit": 8388617,
+        "reader_version": 2,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 3
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 9,
+            "schema_version": 1
+          },
+          {
+            "type_id": 10,
+            "schema_version": 1
+          },
+          {
+            "type_id": 11,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null,
+        "payment_policy": null,
+        "decrypted_frame_hex": null,
+        "recipient_directory_state": null
+      },
+      "expectation": "accept",
+      "rules": ["M1", "M5", "M6", "M7", "S2a", "S2b", "S10", "T2", "T5", "T6"],
+      "type_id": 2,
+      "schema_version": 1,
+      "content_hash_hex": "2ccd30c856e8880847a49fd3d4c8175231eac49dce92baebfd3a124b4a6d3761"
+    },
+    {
+      "id": "reg-fixture-testnet-update-full",
+      "description": "Same-subject update on monad-testnet: the prior statement is the entry-less bootstrap, the revision is greater, no transition is required, and the new signature verifies.",
+      "source": "handcrafted",
+      "frame_hex": "46524e4b01000001daa4000201010201035901cfa20059015346524e4b010000014aa40004010302020359013fa8006d6d6f6e61642d746573746e657401a2000101582103a15a52deb82549bc2326d42219400f41190ace7bf040fa8721017f2c10512b65021b0000019ad7366e6003a2001a692cdabc01000481a400502a35404b56616c77828d98a3aeb9c4cf01782a68747470733a2f2f72656c6179312e6672616e6b2e6578616d706c652f6d6f6e61642d746573746e657402a20001015821024c98599fba6955ea0fd4eeeb7f955e51ab01cb67a3bcbf2f38c5d3df81a4d92903a2001a6b49d200010006a2001a692e2c3c010008a2000101582103fa7f25b60ff95c79f2ebb70f7355d93674a018483deb2e4e0eda405402682a3a0982a3006c646973706c61795f6e616d650181a200646c616e670162656e0247616c6963652d32a300666176617461720180025818747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66710181a3000101a2000101582103a15a52deb82549bc2326d42219400f41190ace7bf040fa8721017f2c10512b650258473045022100c862b3aaaf18b790571af337614b670888c10d0816e1d52b53f1cc5fcc648caf02203a666a4fc9ad74534328c169293a2ba0649cdb9cf8d3b7efe4793c48cbae0a48",
+      "validation_context": {
+        "operation": "full",
+        "route_byte_limit": 8388617,
+        "reader_version": 2,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 3
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 9,
+            "schema_version": 1
+          },
+          {
+            "type_id": 10,
+            "schema_version": 1
+          },
+          {
+            "type_id": 11,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": "46524e4b01000000fca40004010302020358f2a7006d6d6f6e61642d746573746e657401a2000101582103a15a52deb82549bc2326d42219400f41190ace7bf040fa8721017f2c10512b65021b0000019ad735840003a2001a692cda8001000481a400502a35404b56616c77828d98a3aeb9c4cf01782a68747470733a2f2f72656c6179312e6672616e6b2e6578616d706c652f6d6f6e61642d746573746e657402a20001015821024c98599fba6955ea0fd4eeeb7f955e51ab01cb67a3bcbf2f38c5d3df81a4d92903a2001a6b49d200010006a2001a692e2c00010008a2000101582103fa7f25b60ff95c79f2ebb70f7355d93674a018483deb2e4e0eda405402682a3a",
+        "payment_policy": null,
+        "decrypted_frame_hex": null,
+        "recipient_directory_state": null
+      },
+      "expectation": "accept",
+      "rules": ["M1", "M5", "M6", "M7", "S10", "S10a.2", "T2", "T5"],
+      "type_id": 2,
+      "schema_version": 1,
+      "content_hash_hex": "b59b85ef02d72be15c7ad86d59143cf1335cd7eea9de660361beee58d675d8d7"
+    },
+    {
+      "id": "reg-crypto-sig-mutation",
+      "description": "One byte of the minimal bootstrap signature differs: the digest no longer verifies (T6). Pair of reg-fixture-testnet-minimal-full.",
+      "source": "handcrafted",
+      "frame_hex": "46524e4b010000018ba400020101020103590180a20059010546524e4b01000000fca40004010302020358f2a7006d6d6f6e61642d746573746e657401a2000101582103a15a52deb82549bc2326d42219400f41190ace7bf040fa8721017f2c10512b65021b0000019ad735840003a2001a692cda8001000481a400502a35404b56616c77828d98a3aeb9c4cf01782a68747470733a2f2f72656c6179312e6672616e6b2e6578616d706c652f6d6f6e61642d746573746e657402a20001015821024c98599fba6955ea0fd4eeeb7f955e51ab01cb67a3bcbf2f38c5d3df81a4d92903a2001a6b49d200010006a2001a692e2c00010008a2000101582103fa7f25b60ff95c79f2ebb70f7355d93674a018483deb2e4e0eda405402682a3a0181a3000101a2000101582103a15a52deb82549bc2326d42219400f41190ace7bf040fa8721017f2c10512b65025846304402200c28d5fa1fff25e649a4411a7332b2e64c162b0cd698cc342e884ee5145adf9602200233666fe4038d689a484b6502dd4340141ce38d57839d7e61002e2e57cc5363",
+      "validation_context": {
+        "operation": "full",
+        "route_byte_limit": 8388617,
+        "reader_version": 2,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 3
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 9,
+            "schema_version": 1
+          },
+          {
+            "type_id": 10,
+            "schema_version": 1
+          },
+          {
+            "type_id": 11,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null,
+        "payment_policy": null,
+        "decrypted_frame_hex": null,
+        "recipient_directory_state": null
+      },
+      "expectation": "reject",
+      "rules": ["T6", "T2"],
+      "error_category": "cryptographic",
+      "error_stage": "10.6",
+      "paired_case": "reg-fixture-testnet-minimal-full",
+      "pair_relation": "one_byte_mutation"
+    },
+    {
+      "id": "reg-crypto-wrong-network",
+      "description": "The record claims monad-mainnet but the signature was made over the monad-testnet transcript of the same statement: T5 binds the transcript network to field 0, so verification fails while every stage-9 rule holds. Accept twin: reg-fixture-testnet-minimal-full (the same statement on its own network).",
+      "source": "handcrafted",
+      "frame_hex": "46524e4b010000018ba400020101020103590180a20059010546524e4b01000000fca40004010302020358f2a7006d6d6f6e61642d6d61696e6e657401a2000101582103a15a52deb82549bc2326d42219400f41190ace7bf040fa8721017f2c10512b65021b0000019ad735840003a2001a692cda8001000481a400502a35404b56616c77828d98a3aeb9c4cf01782a68747470733a2f2f72656c6179312e6672616e6b2e6578616d706c652f6d6f6e61642d746573746e657402a20001015821024c98599fba6955ea0fd4eeeb7f955e51ab01cb67a3bcbf2f38c5d3df81a4d92903a2001a6b49d200010006a2001a692e2c00010008a2000101582103fa7f25b60ff95c79f2ebb70f7355d93674a018483deb2e4e0eda405402682a3a0181a3000101a2000101582103a15a52deb82549bc2326d42219400f41190ace7bf040fa8721017f2c10512b6502584630440220474aa5541a6ab91726eb066a575fbd59636bcffe5f870e1bc0c68416895ca30e0220572bb6b50654a520e6c351402fcdb7d84415ce647c95465d5585dd12676f418a",
+      "validation_context": {
+        "operation": "full",
+        "route_byte_limit": 8388617,
+        "reader_version": 2,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 3
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 9,
+            "schema_version": 1
+          },
+          {
+            "type_id": 10,
+            "schema_version": 1
+          },
+          {
+            "type_id": 11,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null,
+        "payment_policy": null,
+        "decrypted_frame_hex": null,
+        "recipient_directory_state": null
+      },
+      "expectation": "reject",
+      "rules": ["T5", "M5"],
+      "error_category": "cryptographic",
+      "error_stage": "10.6"
+    },
+    {
+      "id": "reg-crypto-wrong-domain",
+      "description": "The exact minimal bootstrap statement signed over the key-transition transcript domain instead of frank/directory-signature/v1: the T2 digest differs, verification fails. Accept twin: reg-fixture-testnet-minimal-full (same statement, matching domain).",
+      "source": "handcrafted",
+      "frame_hex": "46524e4b010000018ca400020101020103590181a20059010546524e4b01000000fca40004010302020358f2a7006d6d6f6e61642d746573746e657401a2000101582103a15a52deb82549bc2326d42219400f41190ace7bf040fa8721017f2c10512b65021b0000019ad735840003a2001a692cda8001000481a400502a35404b56616c77828d98a3aeb9c4cf01782a68747470733a2f2f72656c6179312e6672616e6b2e6578616d706c652f6d6f6e61642d746573746e657402a20001015821024c98599fba6955ea0fd4eeeb7f955e51ab01cb67a3bcbf2f38c5d3df81a4d92903a2001a6b49d200010006a2001a692e2c00010008a2000101582103fa7f25b60ff95c79f2ebb70f7355d93674a018483deb2e4e0eda405402682a3a0181a3000101a2000101582103a15a52deb82549bc2326d42219400f41190ace7bf040fa8721017f2c10512b650258473045022100d19bb1e8dd4d6dd0180298e5bf25c189f4c17cc81bf596576ac1b35df2308e1b022065fbb38fab4f225b278e31982450175bf243745285a8879a2292adb3ff85f8f7",
+      "validation_context": {
+        "operation": "full",
+        "route_byte_limit": 8388617,
+        "reader_version": 2,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 3
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 9,
+            "schema_version": 1
+          },
+          {
+            "type_id": 10,
+            "schema_version": 1
+          },
+          {
+            "type_id": 11,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null,
+        "payment_policy": null,
+        "decrypted_frame_hex": null,
+        "recipient_directory_state": null
+      },
+      "expectation": "reject",
+      "rules": ["T2", "M5", "M8"],
+      "error_category": "cryptographic",
+      "error_stage": "10.6"
+    },
+    {
+      "id": "reg-crypto-malformed-der",
+      "description": "The r integer's DER length byte claims one byte more than it carries: strict-DER parsing (S2a/M5) fails before any curve arithmetic. Accept twin: reg-fixture-testnet-minimal-full.",
+      "source": "handcrafted",
+      "frame_hex": "46524e4b010000018ba400020101020103590180a20059010546524e4b01000000fca40004010302020358f2a7006d6d6f6e61642d746573746e657401a2000101582103a15a52deb82549bc2326d42219400f41190ace7bf040fa8721017f2c10512b65021b0000019ad735840003a2001a692cda8001000481a400502a35404b56616c77828d98a3aeb9c4cf01782a68747470733a2f2f72656c6179312e6672616e6b2e6578616d706c652f6d6f6e61642d746573746e657402a20001015821024c98599fba6955ea0fd4eeeb7f955e51ab01cb67a3bcbf2f38c5d3df81a4d92903a2001a6b49d200010006a2001a692e2c00010008a2000101582103fa7f25b60ff95c79f2ebb70f7355d93674a018483deb2e4e0eda405402682a3a0181a3000101a2000101582103a15a52deb82549bc2326d42219400f41190ace7bf040fa8721017f2c10512b65025846304402210d28d5fa1fff25e649a4411a7332b2e64c162b0cd698cc342e884ee5145adf9602200233666fe4038d689a484b6502dd4340141ce38d57839d7e61002e2e57cc5363",
+      "validation_context": {
+        "operation": "full",
+        "route_byte_limit": 8388617,
+        "reader_version": 2,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 3
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 9,
+            "schema_version": 1
+          },
+          {
+            "type_id": 10,
+            "schema_version": 1
+          },
+          {
+            "type_id": 11,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null,
+        "payment_policy": null,
+        "decrypted_frame_hex": null,
+        "recipient_directory_state": null
+      },
+      "expectation": "reject",
+      "rules": ["S2a", "M5"],
+      "error_category": "cryptographic",
+      "error_stage": "10.6"
+    },
+    {
+      "id": "reg-crypto-high-s",
+      "description": "The bootstrap digest signed with s = n - s_low: a validly encoded signature above n/2, rejected by the algorithm-1 low-S rule (S2a/M5). Accept twin: reg-fixture-testnet-minimal-full.",
+      "source": "handcrafted",
+      "frame_hex": "46524e4b010000018ca400020101020103590181a20059010546524e4b01000000fca40004010302020358f2a7006d6d6f6e61642d746573746e657401a2000101582103a15a52deb82549bc2326d42219400f41190ace7bf040fa8721017f2c10512b65021b0000019ad735840003a2001a692cda8001000481a400502a35404b56616c77828d98a3aeb9c4cf01782a68747470733a2f2f72656c6179312e6672616e6b2e6578616d706c652f6d6f6e61642d746573746e657402a20001015821024c98599fba6955ea0fd4eeeb7f955e51ab01cb67a3bcbf2f38c5d3df81a4d92903a2001a6b49d200010006a2001a692e2c00010008a2000101582103fa7f25b60ff95c79f2ebb70f7355d93674a018483deb2e4e0eda405402682a3a0181a3000101a2000101582103a15a52deb82549bc2326d42219400f41190ace7bf040fa8721017f2c10512b65025847304502200d28d5fa1fff25e649a4411a7332b2e64c162b0cd698cc342e884ee5145adf96022100fdcc99901bfc729765b7b49afd22bcbea691f95957c502bd5ed2305e7869edde",
+      "validation_context": {
+        "operation": "full",
+        "route_byte_limit": 8388617,
+        "reader_version": 2,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 3
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 9,
+            "schema_version": 1
+          },
+          {
+            "type_id": 10,
+            "schema_version": 1
+          },
+          {
+            "type_id": 11,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null,
+        "payment_policy": null,
+        "decrypted_frame_hex": null,
+        "recipient_directory_state": null
+      },
+      "expectation": "reject",
+      "rules": ["S2a", "M5"],
+      "error_category": "cryptographic",
+      "error_stage": "10.6"
+    },
+    {
+      "id": "reg-crypto-subject-not-point",
+      "description": "The subject is 02 || p-1: a well-formed key-type-1 account-ref that is not a curve point, so stage 10.6 cannot verify the signature by it. Accept twin: reg-fixture-testnet-minimal-full.",
+      "source": "handcrafted",
+      "frame_hex": "46524e4b010000018ca400020101020103590181a20059010546524e4b01000000fca40004010302020358f2a7006d6d6f6e61642d746573746e657401a2000101582102fffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2e021b0000019ad735840003a2001a692cda8001000481a400502a35404b56616c77828d98a3aeb9c4cf01782a68747470733a2f2f72656c6179312e6672616e6b2e6578616d706c652f6d6f6e61642d746573746e657402a20001015821024c98599fba6955ea0fd4eeeb7f955e51ab01cb67a3bcbf2f38c5d3df81a4d92903a2001a6b49d200010006a2001a692e2c00010008a2000101582103fa7f25b60ff95c79f2ebb70f7355d93674a018483deb2e4e0eda405402682a3a0181a3000101a2000101582102fffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2e0258473045022100a5890503858616c51426b9bf768aa451771e96aefdb5457bed0b19c7cf02aa7202207d0d0928d9542badb0b06eaff65a32762878c5c545d3e8e1cae663852cb3d449",
+      "validation_context": {
+        "operation": "full",
+        "route_byte_limit": 8388617,
+        "reader_version": 2,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 3
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 9,
+            "schema_version": 1
+          },
+          {
+            "type_id": 10,
+            "schema_version": 1
+          },
+          {
+            "type_id": 11,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null,
+        "payment_policy": null,
+        "decrypted_frame_hex": null,
+        "recipient_directory_state": null
+      },
+      "expectation": "reject",
+      "rules": ["S2", "M5"],
+      "error_category": "cryptographic",
+      "error_stage": "10.6"
+    },
+    {
+      "id": "reg-unsupported-alg16-entry",
+      "description": "An allocated algorithm-16 (Ed25519) entry is recognized at 8.3, but the first slice verifies only algorithm 1 (M7): the attestation is unsupported, not cryptographic, because no verification ran (V3). Typed twin (recognized): reg-alg16-recognized-typed.",
+      "source": "handcrafted",
+      "frame_hex": "46524e4b0100000183a400020101020103590178a20059010446524e4b01000000fba40004010302020358f1a7006d6d6f6e61642d746573746e657401a20002015820a42ba93737ce4c738cf9e97f623fa859bfe6e7833dfcba3da8cbb51dfdb573aa021b0000019ad735840003a2001a692cda8001000481a400502a35404b56616c77828d98a3aeb9c4cf01782a68747470733a2f2f72656c6179312e6672616e6b2e6578616d706c652f6d6f6e61642d746573746e657402a20001015821024c98599fba6955ea0fd4eeeb7f955e51ab01cb67a3bcbf2f38c5d3df81a4d92903a2001a6b49d200010006a2001a692e2c00010008a2000101582103fa7f25b60ff95c79f2ebb70f7355d93674a018483deb2e4e0eda405402682a3a0181a3001001a20002015820a42ba93737ce4c738cf9e97f623fa859bfe6e7833dfcba3da8cbb51dfdb573aa025840525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07",
+      "validation_context": {
+        "operation": "full",
+        "route_byte_limit": 8388617,
+        "reader_version": 2,
+        "supported_schemas": [
+          {
+            "type_id": 1,
+            "schema_version": 1
+          },
+          {
+            "type_id": 2,
+            "schema_version": 1
+          },
+          {
+            "type_id": 3,
+            "schema_version": 1
+          },
+          {
+            "type_id": 4,
+            "schema_version": 3
+          },
+          {
+            "type_id": 5,
+            "schema_version": 1
+          },
+          {
+            "type_id": 6,
+            "schema_version": 1
+          },
+          {
+            "type_id": 7,
+            "schema_version": 1
+          },
+          {
+            "type_id": 8,
+            "schema_version": 1
+          },
+          {
+            "type_id": 9,
+            "schema_version": 1
+          },
+          {
+            "type_id": 10,
+            "schema_version": 1
+          },
+          {
+            "type_id": 11,
+            "schema_version": 1
+          },
+          {
+            "type_id": 16,
+            "schema_version": 1
+          },
+          {
+            "type_id": 17,
+            "schema_version": 1
+          }
+        ],
+        "opaque_retention_allowed": false,
+        "prior_directory_statement_frame_hex": null,
+        "payment_policy": null,
+        "decrypted_frame_hex": null,
+        "recipient_directory_state": null
+      },
+      "expectation": "reject",
+      "rules": ["M7", "V3"],
+      "error_category": "unsupported",
+      "error_stage": "10.6"
+    }
+  ]
+}

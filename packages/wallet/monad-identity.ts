@@ -41,9 +41,10 @@
  * Monad/Ethereum accounts use, so the *same raw 32-byte
  * private key* this module derives via `ethers` HD derivation can be wrapped in a
  * `bitcore-lib-xpi` `PrivateKey` purely to reuse that existing ECDH code (`toBitcorePrivateKey`
- * below) and `bitcore-lib-xpi`'s DER ECDSA signer (`signHash`, for `AddressMetadata` registration
- * signatures -- same `SignedPayload.SignatureScheme.ECDSA`/DER-not-compact reasoning
- * `lotus-identity.ts`'s own header documents) -- with the *address* itself always computed the
+ * below). `signHash` calls `@frank/nakamoto` `signEcdsa` (DER, bitcore RFC6979 nonce) for
+ * `AddressMetadata` registration signatures. The payload digest is one
+ * `cryptoBackend.sha256`, matching `Sha256::digest` in `verify_monad_profile`.
+ * The *address* itself is always computed the
  * plain EVM way, never through any Lotus/base58/cashaddr path.
  *
  * ## Identity key derivation path, and why it's reserved separately from the burner pool
@@ -86,7 +87,8 @@ import {
   hexlify,
   randomBytes,
 } from 'ethers'
-import { PrivateKey, crypto as bitcoreCrypto } from 'bitcore-lib-xpi'
+import { PrivateKey } from 'bitcore-lib-xpi'
+import { cryptoBackend, privateKeyFromHex, signEcdsa } from '@frank/nakamoto'
 import axios from 'axios'
 
 import type { MailboxAuthParams } from '@frank/cashweb/relay/monad-mailbox-client'
@@ -165,14 +167,14 @@ export class MonadIdentity implements FrankIdentityHandle {
     return Buffer.from(getBytes(this.wallet.signingKey.compressedPublicKey))
   }
 
-  /** DER-encoded ECDSA signature over `hash`, via this identity's key -- the signature scheme
-   * `cashweb_payload::verify::SignedPayload::verify` expects for `SignatureScheme::Ecdsa` (see
-   * `lotus-identity.ts`'s header for why DER, not a 65-byte recoverable form). Delegates to
-   * `bitcore-lib-xpi`'s ECDSA signer purely for its DER encoder -- no Lotus addressing involved
-   * (see this file's header). */
+  /** DER-encoded ECDSA signature over a 32-byte `hash`. A bad digest throws. */
   signHash(hash: Buffer): Buffer {
-    const signature = bitcoreCrypto.ECDSA.sign(hash, this.toBitcorePrivateKey())
-    return (signature as unknown as { toDER(): Buffer }).toDER()
+    if (hash.length !== 32) throw new Error('sign-digest')
+    const key = privateKeyFromHex(this.wallet.privateKey.slice(2), true)
+    if (!key.ok) throw new Error(key.error.code)
+    const signed = signEcdsa(key.value, Uint8Array.from(hash))
+    if (!signed.ok) throw new Error(signed.error.code)
+    return Buffer.from(signed.value)
   }
 
   /** Wraps this identity's raw private key in a `bitcore-lib-xpi` `PrivateKey`, purely to reuse
@@ -273,6 +275,12 @@ function profileEntries(profile: MonadProfileFields = {}) {
   return entries
 }
 
+/** One SHA-256 of AddressMetadata bytes. Matches `Sha256::digest` in
+ * `verify_monad_profile`. Not double-SHA256. cryptoBackend rejects Buffer. */
+export function monadProfilePayloadDigest(payload: Uint8Array): Uint8Array {
+  return cryptoBackend.sha256(Uint8Array.from(payload))
+}
+
 function buildSignedAddressMetadata(
   identity: MonadIdentity,
   profile: MonadProfileFields = {},
@@ -282,7 +290,7 @@ function buildSignedAddressMetadata(
   metadata.setTtl(1000 * 60 * 60 * 24 * 365) // 1 year, in milliseconds
   metadata.setEntriesList(profileEntries(profile))
   const serializedPayload = Buffer.from(metadata.serializeBinary())
-  const payloadHash = bitcoreCrypto.Hash.sha256(serializedPayload)
+  const payloadHash = Buffer.from(monadProfilePayloadDigest(serializedPayload))
 
   const signedPayload = new SignedPayload()
   signedPayload.setPublicKey(identity.compressedPubKey)

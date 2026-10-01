@@ -186,9 +186,21 @@ export default {
     settings: 'Settings',
     contacts: 'Contacts',
     forum: 'Forum',
+    wallet: 'Wallet',
     railLabel: 'Sidebar sections',
     contactsUnreadOne: 'Contacts, {count} unread message',
     contactsUnreadOther: 'Contacts, {count} unread messages',
+  },
+  walletPanel: {
+    title: 'Wallets',
+    monad: 'Monad',
+    send: 'Send MON',
+    receive: 'Receive MON',
+    showSeed: 'Show recovery phrase',
+    confirmSeed: 'Confirm recovery phrase',
+    balanceLoading: 'Loading balance…',
+    balanceUnavailable: 'Balance unavailable. Retrying.',
+    balanceStale: '{balance} (last known)',
   },
   chatList: {
     noContactMessage: 'Add contacts from the drawer above...',
@@ -311,7 +323,10 @@ export default {
     copyRecoveryPhrase: 'Copy recovery phrase',
     refreshRecoveryPhrase: 'Generate a new recovery phrase',
     resumeNotice:
-      'A recovery phrase is already stored on this device, but this account has no name yet. Your phrase will not be changed. Confirm it and choose a name to finish.',
+      'A recovery phrase is already stored on this device, but this account has no name yet. Confirm it and choose a name to finish. It is not replaced unless you import a different phrase you already have.',
+    confirmStoredFirst: 'Confirm or copy your stored recovery phrase first.',
+    importDifferentPhrase: 'I already have a different recovery phrase',
+    importDifferentContinue: 'Continue to import',
   },
   seedConfirm: {
     unavailable:

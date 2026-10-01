@@ -266,7 +266,7 @@ describe('MainLayout closes the mobile overlay on navigation', () => {
     await flushPromises()
     expect(router.push).toHaveBeenCalledWith('/forum')
     expect(open(wrapper)).toBe('true')
-    await tabs(wrapper)[1].trigger('click')
+    await wrapper.get('#rail-tab-contacts').trigger('click')
     await flushPromises()
     expect(router.push).toHaveBeenCalledWith('/chat/addr1')
     expect(open(wrapper)).toBe('true')
@@ -306,11 +306,12 @@ describe('MainLayout closes the mobile overlay on navigation', () => {
     expect(open(wrapper)).toBe('false')
   })
 
-  it('closes after the balance (receive) item on a narrow screen', async () => {
-    const { wrapper } = await mountLayout(390)
+  it('closes after Wallet Receive on a narrow screen', async () => {
+    const { wrapper, router } = await mountLayout(390)
     await openDrawer(wrapper)
-    await byText(wrapper, 'Balance')[0].trigger('click')
+    await wrapper.get('[data-test="wallet-receive"]').trigger('click')
     await flushPromises()
+    expect(router.push).toHaveBeenCalledWith('/receive')
     expect(open(wrapper)).toBe('false')
   })
 
@@ -341,8 +342,18 @@ describe('LeftDrawer icon rail accessible names', () => {
   it('gives every icon-only tab an aria-label and a tooltip', async () => {
     const { wrapper } = await mountLayout(1024)
     const labels = tabs(wrapper).map(t => t.attributes('aria-label'))
-    expect(labels).toEqual(['Settings', 'Contacts, 3 unread messages', 'Forum'])
-    for (const [i, name] of ['Settings', 'Contacts', 'Forum'].entries()) {
+    expect(labels).toEqual([
+      'Contacts, 3 unread messages',
+      'Wallet',
+      'Forum',
+      'Settings',
+    ])
+    for (const [i, name] of [
+      'Contacts',
+      'Wallet',
+      'Forum',
+      'Settings',
+    ].entries()) {
       expect(tabs(wrapper)[i].find('[data-testid="tooltip"]').text()).toBe(name)
     }
   })
@@ -350,17 +361,19 @@ describe('LeftDrawer icon rail accessible names', () => {
   it('announces the unread count in the Contacts tab label, singular and plural', async () => {
     mockUnread.value = 1
     const one = await mountLayout(1024)
-    expect(tabs(one.wrapper)[1].attributes('aria-label')).toBe(
+    expect(one.wrapper.get('#rail-tab-contacts').attributes('aria-label')).toBe(
       'Contacts, 1 unread message',
     )
     mockUnread.value = 3
     const many = await mountLayout(1024)
-    expect(tabs(many.wrapper)[1].attributes('aria-label')).toBe(
-      'Contacts, 3 unread messages',
-    )
+    expect(
+      many.wrapper.get('#rail-tab-contacts').attributes('aria-label'),
+    ).toBe('Contacts, 3 unread messages')
     mockUnread.value = 0
     const none = await mountLayout(1024)
-    expect(tabs(none.wrapper)[1].attributes('aria-label')).toBe('Contacts')
+    expect(
+      none.wrapper.get('#rail-tab-contacts').attributes('aria-label'),
+    ).toBe('Contacts')
   })
 })
 
@@ -375,6 +388,73 @@ describe('MainLayout rail-navigation marker', () => {
     await byText(wrapper, 'Profile')[0].trigger('click')
     await flushPromises()
     expect(open(wrapper)).toBe('false')
+  })
+})
+
+describe('MainLayout setup completion lock (#387)', () => {
+  interface LockVm extends LayoutVm {
+    setSetupNavigationLocked(locked: boolean): void
+    setupNavigationLocked: boolean
+  }
+  const lockVm = (w: VueWrapper) => w.vm as unknown as LockVm
+
+  it('does not open the drawer from the toggle while the lock is active (mobile)', async () => {
+    const { wrapper } = await mountLayout(390)
+    lockVm(wrapper).setSetupNavigationLocked(true)
+    await flushPromises()
+    layoutVm(wrapper).toggleMyDrawerOpen()
+    await flushPromises()
+    expect(open(wrapper)).toBe('false')
+    wrapper.unmount()
+  })
+
+  it('closes an open drawer when the lock engages and keeps it closed (desktop)', async () => {
+    const { wrapper } = await mountLayout(1024)
+    expect(open(wrapper)).toBe('true') // the desktop default
+    lockVm(wrapper).setSetupNavigationLocked(true)
+    await flushPromises()
+    expect(open(wrapper)).toBe('false')
+    // Neither the toggle nor Quasar's own show-if-above reopen (a resize crossing the
+    // breakpoint) may expose the drawer's destinations again while the lock is active.
+    layoutVm(wrapper).toggleMyDrawerOpen()
+    await flushPromises()
+    layoutVm(wrapper).myDrawerOpen = true
+    await flushPromises()
+    expect(open(wrapper)).toBe('false')
+    wrapper.unmount()
+  })
+
+  it('restores the width default when the lock clears after the authorized completion', async () => {
+    const desktop = await mountLayout(1024)
+    lockVm(desktop.wrapper).setSetupNavigationLocked(true)
+    await flushPromises()
+    expect(open(desktop.wrapper)).toBe('false')
+    lockVm(desktop.wrapper).setSetupNavigationLocked(false)
+    await flushPromises()
+    expect(open(desktop.wrapper)).toBe('true')
+    desktop.wrapper.unmount()
+
+    const mobile = await mountLayout(390)
+    lockVm(mobile.wrapper).setSetupNavigationLocked(true)
+    await flushPromises()
+    lockVm(mobile.wrapper).setSetupNavigationLocked(false)
+    await flushPromises()
+    expect(open(mobile.wrapper)).toBe('false')
+    mobile.wrapper.unmount()
+  })
+
+  it('keeps the lock for a blocked navigation and clears it when a navigation settles', async () => {
+    const { wrapper, router } = await mountLayout(390)
+    lockVm(wrapper).setSetupNavigationLocked(true)
+    await flushPromises()
+    // A blocked (duplicated) navigation: afterEach runs with a failure and must keep the lock
+    // -- the setup page is still mounted and still locked.
+    await router.push('/')
+    expect(lockVm(wrapper).setupNavigationLocked).toBe(true)
+    // The authorized completion settles: afterEach without a failure resets the lock.
+    await router.push('/forum')
+    expect(lockVm(wrapper).setupNavigationLocked).toBe(false)
+    wrapper.unmount()
   })
 })
 

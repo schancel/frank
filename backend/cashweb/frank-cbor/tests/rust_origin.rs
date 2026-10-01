@@ -5,35 +5,38 @@ mod common;
 use frank_cbor::{validate_frame, ValidationResult};
 
 use common::{
-    checkpoint_frame, content_hash_hex, direct_message_frame, directory_attestation_frame,
-    repo_path, topic_context, topic_post_frame, topic_post_submission_frame, topic_vote_frame,
-    typed_context,
+    content_hash_hex, repo_path, rust_origin_checkpoint_frame, rust_origin_direct_message_frame,
+    rust_origin_directory_attestation_frame, topic_context, topic_post_frame,
+    topic_post_submission_frame, topic_vote_frame, typed_context,
 };
 
 #[test]
-fn rust_fixtures_match_the_typescript_bytes_and_the_committed_file() {
-    let manifest_text = include_str!("../../../../docs/protocol/cbor/vectors/manifest.json");
-    let manifest: serde_json::Value = serde_json::from_str(manifest_text).unwrap();
-    let cases = manifest["cases"].as_array().unwrap();
-    let expect_same = |id: &str, frame: &[u8]| {
-        let case = cases.iter().find(|case| case["id"] == id).expect(id);
-        let want = hex::decode(case["frame_hex"].as_str().unwrap()).unwrap();
-        assert_eq!(frame, want.as_slice(), "{id}");
-    };
-    let direct = direct_message_frame();
-    let directory = directory_attestation_frame();
-    let checkpoint = checkpoint_frame();
-    expect_same("fixture-direct-message-typed", &direct);
-    expect_same("fixture-directory-attestation-typed", &directory);
-    expect_same("fixture-checkpoint-typed", &checkpoint);
+fn rust_fixtures_match_the_committed_file() {
+    let typescript_manifest_text =
+        include_str!("../../../../docs/protocol/cbor/vectors/manifest.json");
+    let typescript_manifest: serde_json::Value =
+        serde_json::from_str(typescript_manifest_text).unwrap();
+    let typescript_cases = typescript_manifest["cases"].as_array().unwrap();
+    let direct = rust_origin_direct_message_frame();
+    let directory = rust_origin_directory_attestation_frame();
+    let checkpoint = rust_origin_checkpoint_frame();
     let topic = [
         topic_post_frame(),
         topic_post_submission_frame(),
         topic_vote_frame(),
     ];
-    expect_same("fixture-topic-post-typed", &topic[0]);
-    expect_same("fixture-topic-post-submission-typed", &topic[1]);
-    expect_same("fixture-topic-vote-typed", &topic[2]);
+    for (id, frame) in [
+        ("fixture-topic-post-typed", topic[0].as_slice()),
+        ("fixture-topic-post-submission-typed", topic[1].as_slice()),
+        ("fixture-topic-vote-typed", topic[2].as_slice()),
+    ] {
+        let typescript_case = typescript_cases
+            .iter()
+            .find(|case| case["id"] == id)
+            .unwrap_or_else(|| panic!("missing TypeScript case {id}"));
+        let typescript_frame = hex::decode(typescript_case["frame_hex"].as_str().unwrap()).unwrap();
+        assert_eq!(frame, typescript_frame, "{id}");
+    }
 
     let document = document(&direct, &directory, &checkpoint, &topic);
     let serialized = serde_json::to_string_pretty(&document).unwrap() + "\n";
@@ -61,19 +64,19 @@ fn document(
         "cases": [
             case(
                 "rust-fixture-direct-message",
-                "Rust encoding of the direct-message proof fixture (type 1).",
+                "Rust encoding of the direct-message proof fixture with an additive field and nested opaque future item (type 1).",
                 direct,
                 &["S3", "S8", "S9", "T3", "T4"],
             ),
             case(
                 "rust-fixture-directory-attestation",
-                "Rust encoding of the directory-attestation proof fixture (type 2, bootstrap, u64::MAX revision).",
+                "Rust encoding of the directory-attestation proof fixture with an additive field (type 2, bootstrap, u64::MAX revision).",
                 directory,
                 &["S4", "S10", "T1"],
             ),
             case(
                 "rust-fixture-checkpoint",
-                "Rust encoding of the mailbox-checkpoint proof fixture (type 3).",
+                "Rust encoding of the mailbox-checkpoint proof fixture with an additive field and opaque future fact/section frames (type 3).",
                 checkpoint,
                 &["S6", "S7"],
             ),

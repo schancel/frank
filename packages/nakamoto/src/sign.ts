@@ -3,9 +3,7 @@
 // assignment and does not return a transaction (decision 328). Script-path,
 // annex, and lotus extension witnesses are unsupported, not silently dropped.
 
-import { ripemd160 } from '@noble/hashes/ripemd160.js'
-import { sha256 } from '@noble/hashes/sha256.js'
-
+import { cryptoBackend } from './backend.js'
 import { copyBytes, isPlainBytes } from './bytes.js'
 import type { ChainDescriptor } from './chain/types.js'
 import {
@@ -70,6 +68,8 @@ export interface SignOptions {
   readonly keyVersion?: number
   readonly codeSeparatorPosition?: number
   readonly executedScriptHash?: Uint8Array
+  /** Fork-id only. See SighashOptions.replayProtection. */
+  readonly replayProtection?: boolean
 }
 
 export interface SignAssignment {
@@ -155,11 +155,11 @@ function fail(code: SignCode): SignResult<never> {
 }
 
 function hash160(bytes: Uint8Array): Uint8Array {
-  return new Uint8Array(ripemd160(sha256(bytes)))
+  return new Uint8Array(cryptoBackend.hash160(bytes))
 }
 
 function sha256d(bytes: Uint8Array): Uint8Array {
-  return new Uint8Array(sha256(sha256(bytes)))
+  return new Uint8Array(cryptoBackend.sha256d(bytes))
 }
 
 /** lotusd ScriptExecutionData::DEFAULT_CODESEP_POS. Plain templates have no separator. */
@@ -422,6 +422,9 @@ function hashOptions(
     ...(options.commitUtxos === undefined
       ? {}
       : { commitUtxos: options.commitUtxos }),
+    ...(options.replayProtection === undefined
+      ? {}
+      : { replayProtection: options.replayProtection }),
   }
   if (template.kind === 'p2tr') return shared
   const plain = {

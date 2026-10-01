@@ -175,7 +175,7 @@ export const XPI_SCRIPT: ScriptRules = scriptRules({
   reverseBytes: true,
   introspection: false,
   source:
-    'bitcore-lib-xpi lib/script/interpreter.js isOpcodeDisabled enables CAT, SPLIT, AND, OR, XOR, DIV, MOD, BIN2NUM, and NUM2BIN, and the interpreter implements CHECKDATASIG and REVERSEBYTES. MUL, INVERT, LSHIFT, RSHIFT, 2MUL, and 2DIV stay disabled. lotusd was not quoted for an opcode past OP_REVERSEBYTES, so bytes at 0xc0 and above are not OP_NOP. Sighash for CHECKSIG is lotus.',
+    'bitcore-lib-xpi lib/script/interpreter.js isOpcodeDisabled enables CAT, SPLIT, AND, OR, XOR, DIV, MOD, BIN2NUM, and NUM2BIN, and the interpreter implements CHECKDATASIG and REVERSEBYTES. MUL, INVERT, LSHIFT, RSHIFT, 2MUL, and 2DIV stay disabled. lotusd was not quoted for an opcode past OP_REVERSEBYTES, so bytes at 0xc0 and above are not OP_NOP. CHECKSIG uses lotus when the algorithm mask is 0x60, and BIP143 fork-id with Ruth replay when the mask is 0x40.',
 })
 
 /** Legacy base58 version byte. The chain argument is required. */

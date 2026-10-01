@@ -85,6 +85,10 @@
       "types": "./dist/address.d.ts",
       "import": "./dist/address.js"
     },
+    "./backend": {
+      "types": "./dist/backend.d.ts",
+      "import": "./dist/backend.js"
+    },
     "./keys": {
       "types": "./dist/keys.d.ts",
       "import": "./dist/keys.js"
@@ -100,13 +104,23 @@
     "./transaction": {
       "types": "./dist/transaction.d.ts",
       "import": "./dist/transaction.js"
+    },
+    "./block": {
+      "types": "./dist/block.d.ts",
+      "import": "./dist/block.js"
+    },
+    "./curve": {
+      "types": "./dist/curve.d.ts",
+      "import": "./dist/curve.js"
     }
   },
   "dependencies": {
+    "@noble/curves": "1.9.1",
     "@noble/hashes": "1.8.0"
   },
   "scripts": {
     "test": "jest",
+    "bench": "tsc -p tsconfig.json --pretty false && node scripts/hot-path-bench.mjs",
     "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.jest.json",
     "lint": "eslint . --ext .ts,.js,.cjs,.mjs",
     "format": "prettier --config ../../app/.prettierrc.json --check \"src/**/*.ts\" \"test/**/*.ts\" \"scripts/**/*.mjs\" package.json tsconfig.json tsconfig.jest.json jest.config.cjs .eslintrc.cjs runtime-deps.json bundle-entries.json ATTRIBUTION.md",

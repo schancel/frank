@@ -1,73 +1,118 @@
-import { persistSetupAndReload } from './setup-persistence'
+import { finishSetupAndEnter } from './setup-persistence'
 
-function deferred() {
-  let resolve!: () => void
-  let reject!: (error: Error) => void
-  const promise = new Promise<void>((resolvePromise, rejectPromise) => {
-    resolve = resolvePromise
-    reject = rejectPromise
-  })
-  return { promise, resolve, reject }
+function harness() {
+  const location = { hash: '#/setup', reload: jest.fn() }
+  const initialize = jest.fn(() => Promise.resolve('started'))
+  const navigate = jest.fn(() => Promise.resolve())
+  return { location, initialize, navigate }
 }
 
-describe('setup persistence boundary', () => {
-  it('does not reload until both wallet and profile writes are durable', async () => {
-    const walletWrite = deferred()
-    const profileWrite = deferred()
-    const location = { hash: '#/setup', reload: jest.fn() }
-    const notifyError = jest.fn()
+describe('setup finish boundary (#171, #389)', () => {
+  it('navigates only after identity initialization succeeds', async () => {
+    const { location, initialize, navigate } = harness()
 
-    const completion = persistSetupAndReload(
-      { flushPersistence: () => walletWrite.promise },
-      { flushPersistence: () => profileWrite.promise },
+    await finishSetupAndEnter({
+      finishReloads: false,
       location,
-      notifyError,
-    )
+      initialize,
+      navigate,
+    })
 
-    walletWrite.resolve()
-    await Promise.resolve()
-    expect(location.reload).not.toHaveBeenCalled()
+    expect(initialize).toHaveBeenCalledTimes(1)
+    expect(navigate).toHaveBeenCalledWith('/forum')
+  })
 
-    profileWrite.resolve()
-    await completion
+  it('does not navigate when identity initialization fails', async () => {
+    const { location, navigate } = harness()
+    const failure = new Error('wallet derive failed')
+
+    await expect(
+      finishSetupAndEnter({
+        finishReloads: false,
+        location,
+        initialize: () => Promise.reject(failure),
+        navigate,
+      }),
+    ).rejects.toThrow('wallet derive failed')
+
+    expect(navigate).not.toHaveBeenCalled()
+  })
+
+  it('surfaces navigation failures to the caller', async () => {
+    const { location, initialize } = harness()
+    const failure = new Error('navigation failed')
+
+    await expect(
+      finishSetupAndEnter({
+        finishReloads: false,
+        location,
+        initialize,
+        navigate: () => Promise.reject(failure),
+      }),
+    ).rejects.toThrow('navigation failed')
+
+    expect(initialize).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([4, 8])(
+    'treats a resolved navigation failure (type %i) as an incomplete navigation instead of success',
+    async type => {
+      const { location, initialize, navigate } = harness()
+      // Vue Router resolves an aborted (4) or cancelled (8) navigation instead of rejecting
+      // it: the resolved value is an Error carrying the numeric NavigationFailureType, like
+      // a route guard that returns false.
+      const resolvedFailure = Object.assign(new Error('Navigation ended'), {
+        type,
+      })
+      navigate.mockResolvedValueOnce(resolvedFailure as unknown as void)
+
+      await expect(
+        finishSetupAndEnter({
+          finishReloads: false,
+          location,
+          initialize,
+          navigate,
+        }),
+      ).rejects.toThrow('setup finish navigation did not complete')
+
+      expect(initialize).toHaveBeenCalledTimes(1)
+      expect(navigate).toHaveBeenCalledWith('/forum')
+    },
+  )
+
+  it('uses the configured reload fallback once without initializing or navigating', async () => {
+    const { location, initialize, navigate } = harness()
+
+    await finishSetupAndEnter({
+      finishReloads: true,
+      location,
+      initialize,
+      navigate,
+    })
+
     expect(location.hash).toBe('#/')
     expect(location.reload).toHaveBeenCalledTimes(1)
-    expect(notifyError).not.toHaveBeenCalled()
+    expect(initialize).not.toHaveBeenCalled()
+    expect(navigate).not.toHaveBeenCalled()
   })
 
-  it('does not reload when persistence fails', async () => {
-    const location = { hash: '#/setup', reload: jest.fn() }
-    const notifyError = jest.fn()
-    const failure = new Error('disk full')
+  it('propagates a throwing reload once without initializing or navigating', async () => {
+    const { location, initialize, navigate } = harness()
+    location.reload.mockImplementation(() => {
+      throw new Error('reload refused')
+    })
 
     await expect(
-      persistSetupAndReload(
-        { flushPersistence: () => Promise.resolve() },
-        { flushPersistence: () => Promise.reject(failure) },
+      finishSetupAndEnter({
+        finishReloads: true,
         location,
-        notifyError,
-      ),
-    ).rejects.toThrow('disk full')
+        initialize,
+        navigate,
+      }),
+    ).rejects.toThrow('reload refused')
 
-    expect(location).toEqual({ hash: '#/setup', reload: expect.any(Function) })
-    expect(location.reload).not.toHaveBeenCalled()
-    expect(notifyError).toHaveBeenCalledWith(failure)
-  })
-
-  it('normalizes non-Error persistence failures for the user', async () => {
-    const location = { hash: '#/setup', reload: jest.fn() }
-    const notifyError = jest.fn()
-
-    await expect(
-      persistSetupAndReload(
-        { flushPersistence: () => Promise.reject('storage unavailable') },
-        { flushPersistence: () => Promise.resolve() },
-        location,
-        notifyError,
-      ),
-    ).rejects.toThrow('storage unavailable')
-
-    expect(notifyError).toHaveBeenCalledWith(expect.any(Error))
-    expect(location.reload).not.toHaveBeenCalled()
+    expect(location.reload).toHaveBeenCalledTimes(1)
+    expect(initialize).not.toHaveBeenCalled()
+    expect(navigate).not.toHaveBeenCalled()
   })
 })

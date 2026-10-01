@@ -4,8 +4,7 @@
 // build a string. Taproot output keys are encoded as given. This module does
 // not add the tweak on the curve; issue 249 owns that check.
 
-import { ripemd160 } from '@noble/hashes/ripemd160.js'
-import { sha256 } from '@noble/hashes/sha256.js'
+import { cryptoBackend } from './backend.js'
 import { decodeBech32, encodeBech32, type Bech32Spec } from './bech32.js'
 import { CASHADDR_CHARSET } from './base32.js'
 import { decodeBase58Check, encodeBase58Check } from './base58check.js'
@@ -174,6 +173,11 @@ export interface AddressHrpChar {
   readonly index: number
 }
 
+/** Not the 25-byte pubkey-hash output. Includes non-minimal pushes. */
+export interface OutputScriptUnmatched {
+  readonly code: 'output-script-unmatched'
+}
+
 export type AddressError =
   | EncodingError
   | AddressFormatNotPinned
@@ -193,6 +197,7 @@ export type AddressError =
   | AddressSeparatorMissing
   | AddressEmptyHrp
   | AddressHrpChar
+  | OutputScriptUnmatched
 
 export type AddressResult<T> =
   | { readonly ok: true; readonly value: T }
@@ -216,6 +221,7 @@ const ADDRESS_CODES: ReadonlySet<string> = new Set([
   'separator-missing',
   'empty-hrp',
   'hrp-char',
+  'output-script-unmatched',
 ])
 
 const OP_0 = 0x00
@@ -250,8 +256,8 @@ function relay(error: { readonly code: string }): AddressResult<never> {
   return fail({ code: 'bad-checksum' })
 }
 
-function hash160(bytes: Uint8Array): Uint8Array {
-  return new Uint8Array(ripemd160(sha256(bytes)))
+function hash160(bytes: Uint8Array) {
+  return new Uint8Array(cryptoBackend.hash160(bytes))
 }
 
 function take(bytes: Uint8Array, length: number): AddressResult<Uint8Array> {
@@ -613,6 +619,26 @@ export function lockingScript(destination: Destination): Uint8Array {
     })
   }
   return built.value
+}
+
+/**
+ * 25-byte pubkey-hash output: OP_DUP OP_HASH160 20 <hash> OP_EQUALVERIFY
+ * OP_CHECKSIG. A non-minimal push is not this template (decision #493).
+ */
+export function pubkeyHashFromOutputScript(
+  script: Uint8Array,
+): AddressResult<PubkeyHash> {
+  if (
+    script.length !== 25 ||
+    script[0] !== OP_DUP ||
+    script[1] !== OP_HASH160 ||
+    script[2] !== PUSH_20 ||
+    script[23] !== OP_EQUALVERIFY ||
+    script[24] !== OP_CHECKSIG
+  ) {
+    return fail({ code: 'output-script-unmatched' })
+  }
+  return asPubkeyHash(script.subarray(3, 23))
 }
 
 export function sameDestination(

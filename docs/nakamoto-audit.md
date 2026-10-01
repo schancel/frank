@@ -334,7 +334,7 @@ Machine: Node `v26.8.2`, `arm64`, `darwin`. Throwaway project `/tmp/nakamoto-ben
 
 Method: warmup, then a tight loop, `performance.now()`. Hash loops were 20,000 iterations except where noted. Sign/verify/ECDH loops were 300 to 400. Merkle was 200 runs of a 2,048-txid tree. Sanity check: `@noble/hashes` SHA-256d and RIPEMD-160 matched `node:crypto` on the sampled inputs.
 
-Rates are operations per second. Higher is faster. These are single-core, single-process numbers on this laptop, not a CI baseline. The performance ticket should re-run the same shapes and keep the script.
+Rates are operations per second. Higher is faster. These are single-core, single-process numbers on this laptop, not a CI baseline. The performance ticket should re-run the same shapes and keep the script. That script is `packages/nakamoto/scripts/hot-path-bench.mjs`. Run it with `yarn workspace @frank/nakamoto bench`. CI does not run it, and its output does not replace this table.
 
 | Operation | node:crypto | @noble/hashes | hash-wasm (sync hasher) |
 | --- | ---: | ---: | ---: |

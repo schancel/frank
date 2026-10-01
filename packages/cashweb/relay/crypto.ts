@@ -3,10 +3,18 @@ import {
   PrivateKey,
   PublicKey,
   crypto,
-  HDPublicKey,
-  HDPrivateKey,
 } from 'bitcore-lib-xpi'
 import * as forge from 'node-forge'
+import { stampParentHdNode } from './stamp-hd'
+import { stampParentHdPublicNode } from './stamp-hd-public'
+import { stampParentSecret } from './stamp-parent'
+import { stampParentPublicKey } from './stamp-public'
+import { stealthParentHdNode } from './stealth-hd'
+import { stealthParentHdPublicNode } from './stealth-hd-public'
+import { stealthParentSecret } from './stealth-parent'
+import { stealthParentPublicKey } from './stealth-public'
+import { stealthPointDigest } from './stealth-point-digest'
+import { stealthSharedPoint } from './stealth-shared'
 
 export class PayloadConstructor {
   networkName: string
@@ -78,148 +86,173 @@ export class PayloadConstructor {
     )
   }
 
+  // ebG is ecdh of the ephemeral secret and the destination point
+  // (decision #559). The scalar is a secret. The parent public key is
+  // destination + (H(ebG) mod n)·G.
+  // A reduced hash of 0 yields the destination. A point at infinity is an
+  // error. The digest is the raw SHA-256 and is the HD chain code. Bytes
+  // match PublicKey.fromPoint: compressed, default network. Envelope ECDH
+  // stays on bitcore point.mul until #258.
   constructStealthPublicKey(
     emphemeralPrivKey: PrivateKey,
     destinationPublicKey: PublicKey,
   ) {
-    const dhKeyPoint = destinationPublicKey.point.mul(emphemeralPrivKey.bn) // ebG
-    const dhKeyPointRaw = crypto.Point.pointToCompressed(dhKeyPoint)
+    const dhKeyPointRaw = Buffer.from(
+      stealthSharedPoint(
+        Uint8Array.from(emphemeralPrivKey.toBuffer()),
+        Uint8Array.from(destinationPublicKey.toBuffer()),
+      ),
+    )
 
-    const digest = crypto.Hash.sha256(dhKeyPointRaw) // H(ebG)
-    const digestPublicKey = PrivateKey.fromBuffer(
+    const digest = Buffer.from(stealthPointDigest(dhKeyPointRaw)) // H(ebG)
+    const bytes = stealthParentPublicKey(
+      Uint8Array.from(destinationPublicKey.toBuffer()),
       digest,
-      this.networkName,
-    ).toPublicKey() // H(ebG)G
-
-    const stealthPublicKey = PublicKey.fromPoint(
-      digestPublicKey.point.add(destinationPublicKey.point),
-    ) // H(ebG)G + bG
-    return { stealthPublicKey, digest }
+    )
+    return {
+      stealthPublicKey: new PublicKey(Buffer.from(bytes)),
+      digest,
+    }
   }
 
+  // Depth-0 node. Chain code is the raw SHA-256 digest, not the reduced
+  // scalar (decision #559). Public key bytes match bitcore HDPublicKey.
+  // A secret outside (0, n), a public key that is not 33 or 65 SEC1
+  // bytes, an invalid point, or a point at infinity is an error. The
+  // caller's PrivateKey is not wiped. HMAC, salt, and envelope ECDH stay on bitcore.
   constructHDStealthPublicKey(
     emphemeralPrivKey: PrivateKey,
     destinationPublicKey: PublicKey,
   ) {
-    const { stealthPublicKey, digest } = this.constructStealthPublicKey(
-      emphemeralPrivKey,
-      destinationPublicKey,
+    return stealthParentHdPublicNode(
+      Uint8Array.from(emphemeralPrivKey.toBuffer()),
+      Uint8Array.from(destinationPublicKey.toBuffer()),
     )
-    return new HDPublicKey({
-      publicKey: stealthPublicKey.toBuffer(),
-      depth: 0,
-      network: this.networkName,
-      childIndex: 0,
-      chainCode: digest,
-      parentFingerPrint: 0,
-    })
   }
 
+  // ebG is ecdh of the destination secret and the ephemeral point.
+  // The parent is (H(ebG) + destination) mod n (decision #559). A secret
+  // outside (0, n), a public key that is not 33 or 65 SEC1 bytes, an
+  // invalid point, or a zero sum is an error. Hex matches new PrivateKey(bn):
+  // compressed, default network. The digest is the raw SHA-256 and is the
+  // HD chain code. Stealth public addition is stealthParentPublicKey.
   constructStealthPrivateKey(
     emphemeralPubKey: PublicKey,
     destinationPrivateKey: PrivateKey,
   ) {
-    const dhKeyPoint = emphemeralPubKey.point.mul(destinationPrivateKey.bn) // ebG
-    const dhKeyPointRaw = crypto.Point.pointToCompressed(dhKeyPoint)
-
-    const digest = crypto.Hash.sha256(dhKeyPointRaw) // H(ebG)
-    const digestBn = crypto.BN.fromBuffer(digest)
-
-    const stealthPrivBn = digestBn
-      .add(destinationPrivateKey.bn)
-      .mod(crypto.Point.getN()) // H(ebG) + b
-    const stealthPrivateKey = new PrivateKey(stealthPrivBn)
-    return { stealthPrivateKey, digest }
+    const derived = stealthParentSecret(
+      Uint8Array.from(destinationPrivateKey.toBuffer()),
+      Uint8Array.from(emphemeralPubKey.toBuffer()),
+    )
+    try {
+      return {
+        stealthPrivateKey: new PrivateKey(
+          Buffer.from(derived.secret).toString('hex'),
+        ),
+        digest: Buffer.from(derived.digest),
+      }
+    } finally {
+      derived.secret.fill(0)
+    }
   }
 
+  // Depth-0 node. Chain code is the raw SHA-256 digest, not the reduced
+  // scalar (decision #559). Secret bytes match bitcore HDPrivateKey.
+  // A secret outside (0, n), a public key that is not 33 or 65 SEC1
+  // bytes, an invalid point, or a zero sum is an error. The caller's
+  // PrivateKey is not wiped. HMAC, salt, and envelope ECDH stay on bitcore.
   constructHDStealthPrivateKey(
     emphemeralPubKey: PublicKey,
     destinationPrivateKey: PrivateKey,
   ) {
-    const { stealthPrivateKey, digest } = this.constructStealthPrivateKey(
-      emphemeralPubKey,
-      destinationPrivateKey,
+    return stealthParentHdNode(
+      Uint8Array.from(destinationPrivateKey.toBuffer()),
+      Uint8Array.from(emphemeralPubKey.toBuffer()),
     )
-    return new HDPrivateKey({
-      privateKey: stealthPrivateKey.toBuffer(),
-      depth: 0,
-      network: this.networkName,
-      childIndex: 0,
-      chainCode: digest,
-      parentFingerPrint: 0,
-    })
   }
 
+  // Digest in (0, n). A zero digest, a digest >= n, a non-32-byte digest,
+  // a destination that is not 33 or 65 SEC1 bytes, or a point at infinity
+  // is an error (decision #539). Bytes match PublicKey.fromPoint: compressed,
+  // default network. Stealth public addition reduces H mod n and does
+  // not use this reject-digest rule.
   constructStampPublicKey(
     payloadDigest: Uint8Array,
     destinationPublicKey: PublicKey,
   ) {
-    const digestPrivateKey = PrivateKey.fromBuffer(
-      Buffer.from(payloadDigest),
-      this.networkName,
+    const bytes = stampParentPublicKey(
+      Uint8Array.from(destinationPublicKey.toBuffer()),
+      payloadDigest,
     )
-    const digestPublicKey = digestPrivateKey.toPublicKey()
-    const stampPoint = digestPublicKey.point.add(destinationPublicKey.point)
-    const stampPublicKey = PublicKey.fromPoint(stampPoint)
-    return stampPublicKey
+    return new PublicKey(Buffer.from(bytes))
   }
 
+  // Depth-0 node. Chain code is the raw payload digest, not a reduced
+  // scalar (decision #537). A digest >= n is an error and is not reduced.
+  // Public key bytes match bitcore HDPublicKey. A zero digest, a digest
+  // that is not 32 bytes, a destination that is not 33 or 65 SEC1 bytes,
+  // or a point at infinity is an error. The caller's PublicKey is not
+  // wiped. HMAC, salt, and envelope ECDH stay on bitcore.
   constructStampHDPublicKey(
     payloadDigest: Uint8Array,
     destinationPublicKey: PublicKey,
   ) {
-    const stampPublicKey = this.constructStampPublicKey(
+    return stampParentHdPublicNode(
+      Uint8Array.from(destinationPublicKey.toBuffer()),
       payloadDigest,
-      destinationPublicKey,
     )
-    return new HDPublicKey({
-      publicKey: stampPublicKey.toBuffer(),
-      depth: 0,
-      network: this.networkName,
-      childIndex: 0,
-      chainCode: payloadDigest,
-      parentFingerPrint: 0,
-    })
   }
 
+  // Digest in (0, n). A zero digest, a digest >= n, or a zero sum is an
+  // error (decision #537). Hex matches new PrivateKey(bn): compressed,
+  // default network. Stealth parent scalars use stealthParentSecret
+  // (decision #559).
   constructStampPrivateKey(
     payloadDigest: Uint8Array,
     destinationPrivateKey: PrivateKey,
   ) {
-    const digestBn = crypto.BN.fromBuffer(Buffer.from(payloadDigest))
-    const stampPrivBn = digestBn
-      .add(destinationPrivateKey.toBigNumber())
-      .mod(crypto.Point.getN())
-    const stampPrivKey = new PrivateKey(stampPrivBn)
-    return stampPrivKey
+    const secret = stampParentSecret(
+      Uint8Array.from(destinationPrivateKey.toBuffer()),
+      payloadDigest,
+    )
+    try {
+      return new PrivateKey(Buffer.from(secret).toString('hex'))
+    } finally {
+      secret.fill(0)
+    }
   }
 
+  // Depth-0 node. Chain code is the raw payload digest, not the tweaked
+  // scalar (decision #537). A digest >= n is an error and is not reduced.
+  // Secret bytes match bitcore HDPrivateKey. A zero digest, a digest that
+  // is not 32 bytes, a destination outside (0, n), or a zero sum is an
+  // error. The caller's PrivateKey is not wiped. HMAC, salt, and envelope
+  // ECDH stay on bitcore.
   constructStampHDPrivateKey(
     payloadDigest: Uint8Array,
     destinationPrivateKey: PrivateKey,
   ) {
-    const stampPrivateKey = this.constructStampPrivateKey(
+    return stampParentHdNode(
+      Uint8Array.from(destinationPrivateKey.toBuffer()),
       payloadDigest,
-      destinationPrivateKey,
     )
-    return new HDPrivateKey({
-      privateKey: stampPrivateKey.toBuffer(),
-      depth: 0,
-      network: this.networkName,
-      childIndex: 0,
-      chainCode: payloadDigest,
-      parentFingerPrint: 0,
-    })
   }
 
+  // Same scalar as constructStampPrivateKey (decision #537). A digest
+  // outside (0, n) or a zero sum returns no address. The string is still
+  // bitcore toAddress(networkName) (issue #242).
   constructStampAddress(outpointDigest: Uint8Array, privKey: PrivateKey) {
-    const digestBn = crypto.BN.fromBuffer(Buffer.from(outpointDigest))
-    const stampPrivBn = privKey
-      .toBigNumber()
-      .add(digestBn)
-      .mod(crypto.Point.getN())
-    const stampAddress = new PrivateKey(stampPrivBn).toAddress(this.networkName)
-    return stampAddress
+    const secret = stampParentSecret(
+      Uint8Array.from(privKey.toBuffer()),
+      outpointDigest,
+    )
+    try {
+      return new PrivateKey(Buffer.from(secret).toString('hex')).toAddress(
+        this.networkName,
+      )
+    } finally {
+      secret.fill(0)
+    }
   }
 
   encrypt(sharedKey: Buffer, plainText: Uint8Array) {

@@ -4,10 +4,19 @@ import type { PayloadEntry } from './relay_pb'
 import { entryToImage } from './images'
 import stealth from './stealth_pb'
 import { TextItem, MessageItem } from '../types/messages'
-import { PublicKey, crypto, Transaction, HDPrivateKey } from 'bitcore-lib-xpi'
+import {
+  Networks,
+  PrivateKey,
+  PublicKey,
+  Script,
+} from 'bitcore-lib-xpi'
 import { Wallet } from '../legacy-wallet'
 import { calcUtxoId } from '../legacy-wallet/helpers'
 import { Utxo } from '../types/utxo'
+import { outpointPrivateKey } from './outpoint-hd'
+import { stealthOutpointPublicKey } from './stealth-outpoint-pub'
+import { stealthParentSecret } from './stealth-parent'
+import { readStealthTransaction } from './stealth-tx'
 
 export async function decodeEntry(
   entry: PayloadEntry,
@@ -15,11 +24,11 @@ export async function decodeEntry(
   {
     networkName,
     wallet,
-    constructHDStealthPrivateKey,
+    destinationPrivateKey,
   }: {
     networkName: string
     wallet: Wallet
-    constructHDStealthPrivateKey: (pubKey: PublicKey) => HDPrivateKey
+    destinationPrivateKey: PrivateKey
   },
 ): Promise<[MessageItem, Utxo[]] | null> {
   // If address data doesn't exist then add it
@@ -78,20 +87,29 @@ export async function decodeEntry(
     const ephemeralPubKey = PublicKey.fromBuffer(
       Buffer.from(ephemeralPubKeyRaw),
     )
-    const stealthHDPrivKey = constructHDStealthPrivateKey(ephemeralPubKey)
+    // Parent is stealthParentSecret (decision #559). Chain code is the raw
+    // SHA-256 digest, not the reduced scalar. The caller's PrivateKey is
+    // not wiped. Address strings stay on bitcore (issue #242).
+    const derived = stealthParentSecret(
+      Uint8Array.from(destinationPrivateKey.toBuffer()),
+      Uint8Array.from(ephemeralPubKey.toBuffer()),
+    )
+    const stealthSecret = derived.secret
+    const stealthChain = derived.digest
 
     let stealthValue = 0
     for (const [i, outpoint] of outpointsList.entries()) {
       const stealthTxRaw = Buffer.from(outpoint.getStealthTx())
-      const stealthTx = new Transaction(stealthTxRaw)
-      const txId = stealthTx.txid
+      // Segmented id and output amounts, not a bitcore Transaction (decision #529).
+      const stealthTx = readStealthTransaction(stealthTxRaw)
+      const txId = stealthTx.txId
       const vouts = outpoint.getVoutsList()
 
       if (outbound) {
         for (const input of stealthTx.inputs) {
           // Don't add these outputs to our wallet. They're the other persons
           const utxoId = calcUtxoId({
-            txId: input.prevTxId.toString('hex'),
+            txId: input.txId,
             outputIndex: input.outputIndex,
           })
           await wallet.deleteUtxo(utxoId)
@@ -100,19 +118,28 @@ export async function decodeEntry(
 
       for (const [j, outputIndex] of vouts.entries()) {
         const output = stealthTx.outputs[outputIndex]
+        if (output === undefined) throw new Error('stealth-output')
         const satoshis = output.satoshis
 
-        const outpointPrivKey = stealthHDPrivKey
-          .deriveChild(44)
-          .deriveChild(145)
-          .deriveChild(i)
-          .deriveChild(j).privateKey
-        const address = output.script.toAddress(networkName) // TODO: Make generic
-        // Network doesn't really matter here, just serves as a placeholder to avoid needing to compute the
-        // HASH160(SHA256(point)) ourself
-        // Also, ensure the point is compressed first before calculating the address so the hash is deterministic
+        // Non-hardened m/44/145 private child (decision #531).
+        const outpointSecret = outpointPrivateKey(
+          stealthSecret,
+          stealthChain,
+          i,
+          j,
+        )
+        const outpointPrivKey = new PrivateKey(
+          Buffer.from(outpointSecret).toString('hex'),
+          Networks.get(networkName),
+        )
+        // Address strings stay on bitcore (issue #242).
+        const address = new Script(Buffer.from(output.script)).toAddress(
+          networkName,
+        )
+        // Compressed point of the outpoint secret (decision #555). Address
+        // strings stay on bitcore (issue #242).
         const computedAddress = new PublicKey(
-          crypto.Point.pointToCompressed(outpointPrivKey.toPublicKey().point),
+          Buffer.from(stealthOutpointPublicKey(outpointSecret)),
         ).toAddress(networkName)
         if (
           !outbound &&

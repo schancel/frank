@@ -1,9 +1,9 @@
 /** @jest-environment jsdom */
 // Mounted Chat.vue LAYOUT structure (#390, and the structure half of #302). jsdom cannot measure
-// layout (the real-pixel check is test/browser/chat-layout.mjs), but the classes that produce it
-// are asserted here: the banner stack sits above the list in the same flex column, the list is
-// wrapped in the `col relative-position` box that bounds the scroll area, and the message list
-// carries vertical padding so the first bubble never touches the header.
+// layout, but the topology and positioning classes that produce it are asserted here: the banner
+// stack overlays the bounded chat viewport instead of consuming flex height, the scroll box keeps
+// its identity when a banner toggles, and the message list carries vertical padding so the first
+// bubble never touches the header.
 import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import * as quasar from 'quasar'
@@ -66,15 +66,51 @@ stubs.QScrollArea = defineComponent({
   },
 })
 const Blank = defineComponent({ setup: () => () => h('div') })
+const MessageStub = defineComponent({
+  inheritAttrs: false,
+  props: { payloadDigest: { type: String, required: true } },
+  setup:
+    (props, { attrs }) =>
+    () =>
+      h('div', {
+        ...attrs,
+        'data-testid': 'chat-message',
+        'data-payload-digest': props.payloadDigest,
+      }),
+})
 const BannerStackStub = defineComponent({
-  props: ['stampStatus'],
-  setup: () => () => h('div', { 'data-testid': 'chat-banner-stack' }),
+  props: { stampStatus: { type: String, default: null } },
+  setup: props => () => {
+    if (!props.stampStatus) return null
+    return h('div', { 'data-testid': 'chat-banner-stack' }, [
+      h('div', { 'data-testid': 'mailbox-banner' }, 'Mailbox unavailable'),
+      h('div', { 'data-testid': 'stamp-banner' }, String(props.stampStatus)),
+    ])
+  },
+})
+const ResizeObserverStub = defineComponent({
+  name: 'QResizeObserver',
+  emits: ['resize'],
+  setup: () => () => h('span', { 'data-testid': 'banner-resize-observer' }),
 })
 
-async function mountChat() {
+function message(payloadDigest: string) {
+  return {
+    outbound: false,
+    status: '',
+    receivedTime: 0,
+    serverTime: 0,
+    items: [],
+    outpoints: [],
+    senderAddress: DEALER,
+    payloadDigest,
+  }
+}
+
+async function mountChat(messages: ReturnType<typeof message>[] = []) {
   const pinia = createPinia()
   setActivePinia(pinia)
-  useChatStore().chats[DEALER] = { messages: [] } as never
+  useChatStore().chats[DEALER] = { messages } as never
   const wrapper = mount(ChatPage as never, {
     global: {
       plugins: [pinia],
@@ -82,9 +118,10 @@ async function mountChat() {
       stubs: {
         ChatInput: Blank,
         BlackjackUnsentWagers: Blank,
-        ChatMessageComponent: Blank,
+        ChatMessageComponent: MessageStub,
         ChatMessageReply: Blank,
         ChatBannerStack: BannerStackStub,
+        QResizeObserver: ResizeObserverStub,
       },
       mocks: {
         $route: { params: { address: DEALER } },
@@ -104,6 +141,8 @@ describe('Chat.vue layout structure (mounted)', () => {
     expect(list.classes()).toEqual(
       expect.arrayContaining(['q-py-md', 'q-px-lg']),
     )
+    expect(list.classes()).not.toContain('chat-message-list--overlay-clearance')
+    expect((list.element as HTMLElement).style.paddingTop).toBe('')
   })
 
   it('puts the message list inside the scroll area, inside the bounded col/relative box', async () => {
@@ -118,22 +157,108 @@ describe('Chat.vue layout structure (mounted)', () => {
     expect(scroll.find('.chat-message-list').exists()).toBe(true)
   })
 
-  it('stacks the banners ABOVE the list, as siblings in one no-wrap column', async () => {
+  it('places the banner stack in an absolute overlay inside the bounded viewport', async () => {
     const wrapper = await mountChat()
-    const page = wrapper.find('.chat-page-background')
-    expect(page.classes()).toEqual(
-      expect.arrayContaining(['column', 'no-wrap']),
+    ;(
+      wrapper.vm as unknown as { stampPreparationStatus: string | null }
+    ).stampPreparationStatus = 'checking'
+    await wrapper.vm.$nextTick()
+
+    const viewport = wrapper.get('.col.relative-position')
+    const scroll = viewport.get('.q-scroll-area-stub')
+    const overlay = viewport.get('.chat-banner-overlay')
+    expect(overlay.classes()).toEqual(
+      expect.arrayContaining(['absolute-top', 'full-width']),
     )
-    const kids = Array.from(page.element.children)
-    const banner = kids.findIndex(
-      el => el.getAttribute('data-testid') === 'chat-banner-stack',
+    expect(overlay.get('[data-testid="chat-banner-stack"]').exists()).toBe(true)
+    expect(scroll.element.parentElement).toBe(viewport.element)
+    expect(overlay.element.parentElement).toBe(viewport.element)
+  })
+
+  it('uses the measured two-banner height for list clearance without replacing the scroll box', async () => {
+    const wrapper = await mountChat()
+    const scroll = wrapper.get('.q-scroll-area-stub').element as HTMLElement
+    const bottom = (wrapper.vm as unknown as { bottom: boolean }).bottom
+
+    ;(
+      wrapper.vm as unknown as { stampPreparationStatus: string | null }
+    ).stampPreparationStatus = 'checking a wrapped funding transaction'
+    await wrapper.vm.$nextTick()
+    expect(wrapper.findAll('[data-testid$="banner"]')).toHaveLength(2)
+
+    wrapper.getComponent(ResizeObserverStub).vm.$emit('resize', {
+      width: 375,
+      height: 96,
+    })
+    await wrapper.vm.$nextTick()
+
+    const scrollAfter = wrapper.get('.q-scroll-area-stub')
+      .element as HTMLElement
+    expect(scrollAfter).toBe(scroll)
+    expect(wrapper.get('.chat-message-list').attributes('style')).toContain(
+      'padding-top: 112px',
     )
-    const listBox = kids.findIndex(
-      el =>
-        el.classList.contains('col') &&
-        el.classList.contains('relative-position'),
-    )
-    expect(banner).toBeGreaterThanOrEqual(0)
-    expect(listBox).toBeGreaterThan(banner)
+    expect((wrapper.vm as unknown as { bottom: boolean }).bottom).toBe(bottom)
+  })
+
+  it('lets pointer, wheel, and touch input pass through and paints no empty shadow', async () => {
+    const wrapper = await mountChat()
+    const overlay = wrapper.get('.chat-banner-overlay')
+    expect(overlay.classes()).toContain('no-pointer-events')
+    expect(overlay.classes()).not.toContain('shadow-2')
+    ;(
+      wrapper.vm as unknown as { stampPreparationStatus: string | null }
+    ).stampPreparationStatus = 'checking'
+    await wrapper.vm.$nextTick()
+    wrapper.getComponent(ResizeObserverStub).vm.$emit('resize', {
+      width: 375,
+      height: 96,
+    })
+    await wrapper.vm.$nextTick()
+
+    expect(overlay.classes()).toContain('shadow-2')
+  })
+
+  it('offsets an interior reply target by the same measured banner clearance', async () => {
+    const wrapper = await mountChat([message('reply-target')])
+    ;(
+      wrapper.vm as unknown as { stampPreparationStatus: string | null }
+    ).stampPreparationStatus = 'checking'
+    await wrapper.vm.$nextTick()
+    wrapper.getComponent(ResizeObserverStub).vm.$emit('resize', {
+      width: 375,
+      height: 96,
+    })
+    await wrapper.vm.$nextTick()
+
+    const target = wrapper.get('[data-payload-digest="reply-target"]')
+    const scrollIntoView = jest.fn()
+    target.element.scrollIntoView = scrollIntoView
+    ;(
+      wrapper.vm as unknown as { scrollToMessage: (digest: string) => void }
+    ).scrollToMessage('reply-target')
+    await new Promise(resolve => setTimeout(resolve, 80))
+
+    expect(target.attributes('style')).toContain('scroll-margin-top: 112px')
+    expect(scrollIntoView).toHaveBeenCalledWith({ behavior: 'smooth' })
+  })
+
+  it('moves a history scroll by the padding change, not the extra stylesheet gap', async () => {
+    const wrapper = await mountChat()
+    const target = { scrollTop: 40 }
+    const scroll = wrapper.getComponent(stubs.QScrollArea)
+    scroll.vm.getScrollTarget = () => target
+    ;(wrapper.vm as unknown as { bottom: boolean }).bottom = false
+    ;(
+      wrapper.vm as unknown as { stampPreparationStatus: string | null }
+    ).stampPreparationStatus = 'checking'
+    await wrapper.vm.$nextTick()
+    wrapper.getComponent(ResizeObserverStub).vm.$emit('resize', {
+      width: 375,
+      height: 96,
+    })
+    await wrapper.vm.$nextTick()
+    // q-py-md is already 16px. Clearance 112 replaces it, so the list grows by 96.
+    expect(target.scrollTop).toBe(40 + 96)
   })
 })

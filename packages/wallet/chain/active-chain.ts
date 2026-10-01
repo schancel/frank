@@ -210,9 +210,10 @@ export interface DirectMessageClient {
    * fetched, the result is cut back to a prefix ending on a complete timestamp group and
    * `onTruncated` is called: advancing `sinceMs` to `lastReceivedTime + 1` is then safe and the
    * rest arrives on the next poll. If no complete group exists, the call rejects instead.
-   * `onSkippedTimestamp` reports a terminal row whose sender is authoritatively unregistered
-   * (HTTP 404). It is absent from the returned array but may grant cursor progress. Retryable
-   * profile/network failures reject the scan instead and grant no cursor authority. */
+   * `onSkippedTimestamp` reports a terminal row that is structurally invalid, undecryptable, or
+   * whose sender is authoritatively unregistered (HTTP 404). It is absent from the returned array
+   * but may grant cursor progress. Retryable profile/network failures reject the scan instead and
+   * grant no cursor authority. */
   fetchSince(params: {
     wallet: WalletHandle
     sinceMs: number

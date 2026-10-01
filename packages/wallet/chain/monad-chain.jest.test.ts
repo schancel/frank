@@ -820,9 +820,14 @@ describe('createMonadChain: directMessages.fetchSince', () => {
       address: alice.address,
       pubKey: new Uint8Array(alice.compressedPubKey),
     })
+    const onSkippedTimestamp = jest.fn()
 
     await expect(
-      chain.directMessages.fetchSince({ wallet, sinceMs: 0 }),
+      chain.directMessages.fetchSince({
+        wallet,
+        sinceMs: 0,
+        onSkippedTimestamp,
+      }),
     ).resolves.toEqual([
       expect.objectContaining({
         items: validItems,
@@ -830,6 +835,8 @@ describe('createMonadChain: directMessages.fetchSince', () => {
         receivedTime: 200,
       }),
     ])
+    expect(onSkippedTimestamp).toHaveBeenCalledTimes(1)
+    expect(onSkippedTimestamp).toHaveBeenCalledWith(100)
   })
 
   it('decrypts envelopes addressed to the wallet and skips everything else', async () => {

@@ -3,14 +3,22 @@
  */
 import { createPinia, setActivePinia } from 'pinia'
 
+const mockSaveMessage = jest.fn(async () => undefined)
+const mockAdvanceRelayCursor = jest.fn(
+  async (_address: string, next: number) => next,
+)
+
 jest.mock('../adapters/level-utxo-store', () => ({
   store: Promise.resolve({}),
 }))
 jest.mock('../adapters/level-message-store', () => ({
   store: Promise.resolve({
-    saveMessage: jest.fn(async () => undefined),
+    saveMessage: mockSaveMessage,
     deleteMessage: jest.fn(async () => undefined),
     mostRecentMessageTime: jest.fn(async () => 0),
+    relayCursor: jest.fn(async () => 0),
+    advanceRelayCursor: mockAdvanceRelayCursor,
+    suppressedRelayReceipts: jest.fn(async () => new Set<string>()),
     getIterator: async function* () {
       /* no persisted messages */
     },
@@ -40,7 +48,10 @@ import {
 
 const SEED_A = 'seed-a'
 const SEED_B = 'seed-b'
-const SENDER = '0x4C4C4C4C4C4c4C4C4C4C4c4C4C4c4C4c4C4C4c4C'
+const OWNER_A = '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+const OWNER_B = '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+const TAIL_OWNER = '0xdddddddddddddddddddddddddddddddddddddddd'
+const SENDER = '0xcccccccccccccccccccccccccccccccccccccccc'
 const PUB_KEY = Uint8Array.from(
   Buffer.from(
     '0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798',
@@ -49,7 +60,7 @@ const PUB_KEY = Uint8Array.from(
 )
 
 function walletFor(seed: string): WalletHandle {
-  const address = seed === SEED_A ? '0xaaa' : '0xbbb'
+  const address = seed === SEED_A ? OWNER_A : OWNER_B
   return {
     identity: { address: { raw: address }, displayAddress: address },
   }
@@ -92,6 +103,10 @@ describe('initializeMonadIdentity (#389)', () => {
     resetMonadIdentitySessionForTests()
     localStorage.clear()
     jest.restoreAllMocks()
+    mockSaveMessage.mockReset().mockResolvedValue(undefined)
+    mockAdvanceRelayCursor
+      .mockReset()
+      .mockImplementation(async (_address: string, next: number) => next)
   })
 
   afterEach(() => {
@@ -126,10 +141,10 @@ describe('initializeMonadIdentity (#389)', () => {
       expect.objectContaining({
         relayBaseUrl: 'http://relay.test',
         profile: expect.objectContaining({ name: 'Alice' }),
-        identity: expect.objectContaining({ displayAddress: '0xaaa' }),
+        identity: expect.objectContaining({ displayAddress: OWNER_A }),
       }),
     )
-    expect(useMonadWallet().identity.displayAddress).toBe('0xaaa')
+    expect(useMonadWallet().identity.displayAddress).toBe(OWNER_A)
   })
 
   it('treats a second call that overlaps the first as a no-op', async () => {
@@ -189,10 +204,10 @@ describe('initializeMonadIdentity (#389)', () => {
     expect(register).toHaveBeenLastCalledWith(
       expect.objectContaining({
         profile: expect.objectContaining({ name: 'Bob' }),
-        identity: expect.objectContaining({ displayAddress: '0xbbb' }),
+        identity: expect.objectContaining({ displayAddress: OWNER_B }),
       }),
     )
-    expect(useMonadWallet().identity.displayAddress).toBe('0xbbb')
+    expect(useMonadWallet().identity.displayAddress).toBe(OWNER_B)
   })
 
   it('does not ask for persistent storage again after sign-up just asked', async () => {
@@ -228,7 +243,7 @@ describe('initializeMonadIdentity (#389)', () => {
       .mockResolvedValue([
         {
           senderAddress: { raw: SENDER },
-          recipientAddress: { raw: '0xaaa' },
+          recipientAddress: { raw: OWNER_A },
           items: [{ type: 'text', text: 'hello from the bot' }],
           payloadDigest: 'digest-1',
           stampValueWei: 1_000_000_000_000n,
@@ -249,5 +264,116 @@ describe('initializeMonadIdentity (#389)', () => {
     expect(chats.messages['digest-1']?.items).toEqual([
       { type: 'text', text: 'hello from the bot' },
     ])
+  })
+
+  it('does not let a replaced identity persist a receipt queued behind delivery', async () => {
+    const chats = useChatStore()
+    useContactStore().addContact({
+      address: SENDER,
+      contact: {
+        profile: { name: 'Sender', bio: '', avatar: '', pubKey: null },
+      },
+    })
+    jest.spyOn(activeChain, 'fetchProfile').mockResolvedValue({
+      address: { raw: SENDER },
+      pubKey: PUB_KEY,
+    })
+    jest
+      .spyOn(activeChain.directMessages, 'fetchSince')
+      .mockImplementation(async ({ wallet }) => {
+        const recipient = wallet.identity.address.raw
+        return [
+          {
+            senderAddress: { raw: SENDER },
+            recipientAddress: { raw: recipient },
+            items: [{ type: 'text', text: `for ${recipient}` }],
+            payloadDigest:
+              recipient === OWNER_A ? 'old-session' : 'current-session',
+            stampValueWei: 1_000_000_000_000n,
+            receivedTime: recipient === OWNER_A ? 100 : 101,
+          },
+        ]
+      })
+
+    let firstSaveStarted: (() => void) | undefined
+    const saveStarted = new Promise<void>(resolve => {
+      firstSaveStarted = resolve
+    })
+    let releaseFirstSave: (() => void) | undefined
+    const saveGate = new Promise<void>(resolve => {
+      releaseFirstSave = resolve
+    })
+    mockSaveMessage.mockImplementationOnce(async () => {
+      firstSaveStarted?.()
+      await saveGate
+    })
+    const deliverySpy = jest.spyOn(chats, 'receiveMessages')
+    const tailOwner = chats.receiveMessages(
+      [
+        {
+          outbound: false,
+          senderAddress: SENDER,
+          copartyAddress: SENDER,
+          // The store only forwards this opaque key to an already-known contact.
+          copartyPubKey: {} as never,
+          index: 'delivery-tail-owner',
+          stampValue: 1,
+          message: {
+            outbound: false,
+            status: 'confirmed',
+            items: [{ type: 'text', text: 'tail owner' }],
+            serverTime: 99,
+            receivedTime: 99,
+            outpoints: [],
+            stampValueWei: 1n,
+            senderAddress: SENDER,
+            destinationAddress: TAIL_OWNER,
+          },
+        },
+      ],
+      TAIL_OWNER,
+    )
+    await saveStarted
+
+    useWalletStore().seedPhrase = SEED_A
+    configureMonadIdentitySession({ pollIntervalMs: 60 * 60 * 1000 })
+    const { deps } = fakes()
+    delete deps.startPolling
+    await initializeMonadIdentity(deps)
+    for (
+      let attempt = 0;
+      attempt < 20 && deliverySpy.mock.calls.length < 2;
+      attempt += 1
+    ) {
+      await new Promise<void>(resolve => setTimeout(resolve, 0))
+    }
+    expect(deliverySpy.mock.calls).toHaveLength(2)
+
+    useWalletStore().seedPhrase = SEED_B
+    await expect(initializeMonadIdentity(deps)).resolves.toBe('started')
+    releaseFirstSave?.()
+    await tailOwner
+    await settle()
+
+    expect(chats.messages['old-session']).toBeUndefined()
+    expect(chats.messages['current-session']?.items).toEqual([
+      { type: 'text', text: `for ${OWNER_B}` },
+    ])
+    expect(mockSaveMessage).not.toHaveBeenCalledWith(
+      expect.objectContaining({ index: 'old-session' }),
+      expect.anything(),
+    )
+    expect(mockAdvanceRelayCursor).not.toHaveBeenCalledWith(
+      OWNER_A,
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+    )
+    expect(mockAdvanceRelayCursor).toHaveBeenCalledWith(
+      OWNER_B,
+      102,
+      [],
+      [expect.objectContaining({ index: 'current-session' })],
+    )
   })
 })

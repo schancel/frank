@@ -669,10 +669,24 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
       const received: DirectMessageReceived[] = []
 
       for (const record of stored) {
-        if (record.message === undefined) continue
+        // The relay row is durable, so these structural/decryption failures are terminal for this
+        // wallet rather than transient lookup failures. Surface their timestamp as quarantined
+        // progress; otherwise a hostile row at the front of the bounded scan can pin the cursor
+        // forever. Profile transport/decode failures still throw below and grant no authority.
+        const quarantine = () => params.onSkippedTimestamp?.(record.timestamp)
+        if (record.message === undefined) {
+          quarantine()
+          continue
+        }
         const envelope = parseEnvelope(record.message.encryptedPayload)
-        if (envelope === undefined) continue
-        if (envelope.to.toLowerCase() !== myAddress) continue
+        if (envelope === undefined) {
+          quarantine()
+          continue
+        }
+        if (envelope.to.toLowerCase() !== myAddress) {
+          quarantine()
+          continue
+        }
 
         const payloadHashHex = bareHex(record.message.payloadHash)
         if (wallet.stampPaymentJournal !== undefined) {
@@ -721,6 +735,7 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
         } catch {
           // Wrong/stale key, corrupted ciphertext, or authenticated but malformed plaintext: one
           // poison record must not reject the rest of this mailbox page.
+          quarantine()
           continue
         }
 

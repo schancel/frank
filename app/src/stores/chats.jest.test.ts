@@ -1408,6 +1408,7 @@ describe('stores/chats.ts (ticket #42)', () => {
 
       await expect(canceled).resolves.toEqual({
         suppressedReceipts: [],
+        durableReceipts: [],
         canceled: true,
       })
       expect(mockMessageStore.saveMessage).toHaveBeenCalledTimes(1)

@@ -17,14 +17,18 @@ import { ChronikClient, WsEndpoint } from 'chronik-client'
 import { AddressEvent, ChainAdapter } from './chain-adapter'
 import { LotusAdapter } from './lotus-adapter'
 import {
+  BTC_MAINNET,
+  BTC_TESTNET,
   SIGHASH_ALL,
   SIGHASH_FORKID,
   XPI_MAINNET,
   XPI_REGTEST,
   XPI_TESTNET,
   cryptoBackend,
+  deriveHdPath,
   internalHashFromBytes,
   lockingScript,
+  parseHdPrivate,
   privateKeyFromSecretBytes,
   pubkeyHashFromBytes,
   signAll,
@@ -92,6 +96,42 @@ export function p2pkhScriptFromPublicKey(publicKey: PublicKey): Buffer {
   const hash = pubkeyHashFromBytes(cryptoBackend.hash160(serialized))
   if (!hash.ok) throw new Error('p2pkh-hash')
   return Buffer.from(lockingScript({ kind: 'p2pkh', hash: hash.value }))
+}
+
+// Existing tree, not XPI slip44 10605 (decision #497, issue #241).
+const WALLET_RECEIVE_PREFIX = "m/44'/899'/0'/0"
+const WALLET_CHANGE_PREFIX = "m/44'/899'/0'/1"
+
+// BIP32 child of a bitcore xprv. The returned key stays a bitcore PrivateKey so
+// address strings stay on bitcore until issue #242. Version bytes are the
+// xprv/tprv pair bitcore already writes (decision #497).
+export function privateKeyFromHdPath(
+  xPrivKey: HDPrivateKey,
+  path: string,
+): PrivateKey {
+  const serialized = xPrivKey.toString()
+  const mainnet = parseHdPrivate(serialized, BTC_MAINNET)
+  const parsed = mainnet.ok ? mainnet : parseHdPrivate(serialized, BTC_TESTNET)
+  if (!parsed.ok) throw new Error(`hd-parse:${parsed.error.code}`)
+  const child = deriveHdPath(parsed.value, path)
+  if (!child.ok) throw new Error(`hd-derive:${child.error.code}`)
+  const secret = Buffer.from(child.value.privateKey.bytes).toString('hex')
+  const network = (xPrivKey as { network?: PrivateKey['network'] }).network
+  return new PrivateKey(secret, network)
+}
+
+export function walletReceivePrivateKey(
+  xPrivKey: HDPrivateKey,
+  index: number,
+): PrivateKey {
+  return privateKeyFromHdPath(xPrivKey, `${WALLET_RECEIVE_PREFIX}/${index}`)
+}
+
+export function walletChangePrivateKey(
+  xPrivKey: HDPrivateKey,
+  index: number,
+): PrivateKey {
+  return privateKeyFromHdPath(xPrivKey, `${WALLET_CHANGE_PREFIX}/${index}`)
 }
 
 // bitcore's Input type omits setScript; the runtime method writes _scriptBuffer.
@@ -277,12 +317,7 @@ export class Wallet {
     // TODO: we're just using the first key in the HD addresses for now
     // so that it'll be compatible (mostly) with other HD wallets.
     // We should do something to allow revocations in the future.
-    this._identityPrivKey = xPrivKey
-      .deriveChild(44, true)
-      .deriveChild(899, true)
-      .deriveChild(0, true)
-      .deriveChild(0)
-      .deriveChild(0).privateKey
+    this._identityPrivKey = walletReceivePrivateKey(xPrivKey, 0)
 
     this.init()
   }
@@ -321,22 +356,12 @@ export class Wallet {
     this.changeKeys = []
     this.addressDataByPkh = new Map()
     for (let i = 0; i < this.numAddresses; i++) {
-      const privKey = xPrivKey
-        .deriveChild(44, true)
-        .deriveChild(899, true)
-        .deriveChild(0, true)
-        .deriveChild(0)
-        .deriveChild(i).privateKey
+      const privKey = walletReceivePrivateKey(xPrivKey, i)
       this.walletKeys.push({ privKey })
       this.addAddressData({ privKey, change: false })
     }
     for (let j = 0; j < this.numChangeAddresses; j++) {
-      const privKey = xPrivKey
-        .deriveChild(44, true)
-        .deriveChild(899, true)
-        .deriveChild(0, true)
-        .deriveChild(1)
-        .deriveChild(j).privateKey
+      const privKey = walletChangePrivateKey(xPrivKey, j)
       this.changeKeys.push({ privKey })
       this.addAddressData({ privKey, change: true })
     }

@@ -11,6 +11,7 @@ import pop from '../pop'
 import VCard from 'vcf'
 import EventEmitter from 'events'
 import { MessageConstructor } from './constructors'
+import { relayCipherPayloadDigest } from './cipher-payload-digest'
 import { arrayBufferToBase64 } from './images'
 
 import { PayloadConstructor } from './crypto'
@@ -842,7 +843,7 @@ export class RelayClient extends ReadOnlyRelayClient {
     const parsedMessage = preParsedMessage
 
     const payloadDigest = Buffer.from(
-      crypto.Hash.sha256(Buffer.from(rawCipherPayload)),
+      relayCipherPayloadDigest(rawCipherPayload),
     )
     if (payloadDigest.compare(parsedMessage.payloadDigest) !== 0) {
       console.error(

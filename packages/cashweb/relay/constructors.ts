@@ -33,6 +33,7 @@ import __pb_signed_payload_payload_pb from '../signed_payload/payload_pb'
 const { SignedPayload } = __pb_signed_payload_payload_pb
 import { Wallet } from '../legacy-wallet'
 import { signRegistryDigest } from '../registry'
+import { relayCipherPayloadDigest } from './cipher-payload-digest'
 
 /** One SHA-256 of Profile protobuf bytes. Matches `Sha256::digest` in
  * `SignedPayload::parse_proto`, the message `SignedPayload::verify` checks.
@@ -152,7 +153,7 @@ export class MessageConstructor {
     const payload = this.payloadConstructor.encrypt(sharedKey, plainTextPayload)
 
     // Calculate payload hmac
-    const payloadDigest = crypto.Hash.sha256(Buffer.from(payload))
+    const payloadDigest = Buffer.from(relayCipherPayloadDigest(payload))
     const payloadHmac = this.payloadConstructor.constructPayloadHmac(
       sharedKey,
       payloadDigest,

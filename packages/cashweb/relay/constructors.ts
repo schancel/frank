@@ -34,6 +34,7 @@ const { SignedPayload } = __pb_signed_payload_payload_pb
 import { Wallet } from '../legacy-wallet'
 import { signRegistryDigest } from '../registry'
 import { relayCipherPayloadDigest } from './cipher-payload-digest'
+import { outpointPublicKey } from './outpoint-hd'
 
 /** One SHA-256 of Profile protobuf bytes. Matches `Sha256::digest` in
  * `SignedPayload::parse_proto`, the message `SignedPayload::verify` checks.
@@ -62,8 +63,9 @@ export class MessageConstructor {
   ) {
     assert(payloadDigest instanceof Buffer, 'digestPayload is wrong type')
 
-    // Stamp output
-    const stampHDPubKey = this.payloadConstructor.constructStampHDPublicKey(
+    // Stamp output. Public child only; the receive path still derives
+    // the private key with bitcore (decision #513).
+    const stampPublicKey = this.payloadConstructor.constructStampPublicKey(
       payloadDigest,
       destPubKey,
     )
@@ -71,13 +73,15 @@ export class MessageConstructor {
 
     const stampAddressGenerator =
       (transactionNumber: number) => (outputNumber: number) => {
-        const outpointPubKey = stampHDPubKey
-          .deriveChild(44)
-          .deriveChild(145)
-          .deriveChild(transactionNumber)
-          .deriveChild(outputNumber).publicKey
         const address = new PublicKey(
-          crypto.Point.pointToCompressed(outpointPubKey.point),
+          Buffer.from(
+            outpointPublicKey(
+              stampPublicKey.toBuffer(),
+              payloadDigest,
+              transactionNumber,
+              outputNumber,
+            ),
+          ),
         )
         transactionNumber += 1
         return address
@@ -102,20 +106,23 @@ export class MessageConstructor {
     // Add ephemeral output
     // NOTE: We're only doing 1 stealth txn, and 1 output for now.
     // But the spec should allow doing confidential amounts.
-    const stealthHDPubKey = this.payloadConstructor.constructHDStealthPublicKey(
-      ephemeralPrivKey,
-      destPubKey,
-    )
+    const { stealthPublicKey, digest } =
+      this.payloadConstructor.constructStealthPublicKey(
+        ephemeralPrivKey,
+        destPubKey,
+      )
 
     const stealthPubKeyGenerator =
       (transactionNumber: number) => (outputNumber: number) => {
-        const stealthPubKey = stealthHDPubKey
-          .deriveChild(44)
-          .deriveChild(145)
-          .deriveChild(transactionNumber)
-          .deriveChild(outputNumber).publicKey
         const stealthAddress = new PublicKey(
-          crypto.Point.pointToCompressed(stealthPubKey.point),
+          Buffer.from(
+            outpointPublicKey(
+              stealthPublicKey.toBuffer(),
+              digest,
+              transactionNumber,
+              outputNumber,
+            ),
+          ),
         )
 
         transactionNumber += 1

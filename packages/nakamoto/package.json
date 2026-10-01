@@ -85,6 +85,10 @@
       "types": "./dist/address.d.ts",
       "import": "./dist/address.js"
     },
+    "./backend": {
+      "types": "./dist/backend.d.ts",
+      "import": "./dist/backend.js"
+    },
     "./keys": {
       "types": "./dist/keys.d.ts",
       "import": "./dist/keys.js"

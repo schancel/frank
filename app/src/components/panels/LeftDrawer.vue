@@ -300,10 +300,14 @@ export default defineComponent({
       path => {
         // `/new-post` (not `/forum/new-post`) is intentionally a top-level path -- see
         // `router/index.ts`'s own comment on `protectedRoutes` -- but is still a Forum page.
-        // Only force the highlight *into* 'forum' on navigation -- never overrides a subsequent
-        // direct 'settings'/'contacts' click, since this only runs when `path` itself changes.
+        // Only force the highlight on navigation -- never overrides a subsequent direct
+        // 'settings'/'contacts' click, since this only runs when `path` itself changes. /wallet
+        // gets the same treatment (#570): opening a wallet (deep link, back navigation) puts the
+        // highlight back on its own rail tab.
         if (path.startsWith('/forum') || path.startsWith('/new-post')) {
           tab.value = 'forum'
+        } else if (path.startsWith('/wallet')) {
+          tab.value = 'wallet'
         }
       },
       { immediate: true },

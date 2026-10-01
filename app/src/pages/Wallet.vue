@@ -1,0 +1,133 @@
+<template>
+  <q-page-container>
+    <q-page class="q-ma-none q-pa-sm">
+      <q-card>
+        <q-card-section>
+          <div class="text-h6" data-testid="wallet-name">
+            {{ $t('walletPanel.mainWallet') }}
+          </div>
+          <div class="text-caption" data-testid="wallet-chain">
+            {{ $t('walletPanel.monad') }}
+          </div>
+        </q-card-section>
+        <q-separator />
+        <q-card-section>
+          <div
+            class="text-bold text-subtitle1 text-center"
+            role="status"
+            aria-live="polite"
+            data-testid="wallet-balance"
+          >
+            {{ balanceText }}
+          </div>
+          <div
+            v-if="hasError"
+            class="text-negative text-caption text-center"
+            data-testid="wallet-balance-error"
+          >
+            {{ $t('walletPanel.balanceUnavailable') }}
+          </div>
+        </q-card-section>
+        <q-separator />
+        <q-card-section>
+          <div class="row">
+            <q-input
+              class="fit"
+              filled
+              auto-grow
+              v-model="displayAddress"
+              readonly
+            >
+              <template #after>
+                <q-btn
+                  dense
+                  color="primary"
+                  flat
+                  icon="content_copy"
+                  data-testid="wallet-copy-address"
+                  @click="copyAddress"
+                />
+              </template>
+            </q-input>
+          </div>
+        </q-card-section>
+        <q-card-actions align="right">
+          <q-btn
+            :label="$t('walletPanel.receive')"
+            color="primary"
+            data-testid="wallet-receive-action"
+            @click="openReceive"
+          />
+          <q-btn
+            :label="$t('walletPanel.send')"
+            color="primary"
+            data-testid="wallet-send-action"
+            @click="openSend"
+          />
+        </q-card-actions>
+      </q-card>
+    </q-page>
+  </q-page-container>
+</template>
+
+<script lang="ts">
+import { computed, defineComponent, onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
+
+import { copyToClipboard } from 'quasar'
+import { useActiveWallet } from 'src/composables/useActiveWallet'
+import { useBalance } from 'src/composables/useBalance'
+import { openPage } from 'src/utils/routes'
+import { addressCopiedNotify, errorNotify } from 'src/utils/notifications'
+
+// One wallet's detail view in the main pane (#570): the Wallet rail tab's drawer shows the
+// wallet list; picking a row lands here for that wallet's info and actions. Stealth payment
+// initiation is deliberately absent until the stealth design (#71) lands -- no dead controls.
+export default defineComponent({
+  setup() {
+    const router = useRouter()
+    // Shared with the drawer: one polling loop, so this page refreshes without a reload.
+    const { formattedBalance, loaded, hasError } = useBalance()
+    // An em dash (not "0") until the first successful fetch: an unloaded or failed balance must
+    // not look like a real zero.
+    const balanceText = computed(() =>
+      loaded.value ? formattedBalance.value : '\u2014',
+    )
+    const displayAddress = ref('')
+
+    onMounted(async () => {
+      try {
+        const wallet = await useActiveWallet()
+        displayAddress.value = wallet.identity.displayAddress
+      } catch (err) {
+        errorNotify(
+          err instanceof Error
+            ? err
+            : new Error('Failed to load the Monad wallet address'),
+        )
+      }
+    })
+
+    return {
+      displayAddress,
+      balanceText,
+      hasError,
+      async copyAddress() {
+        if (!displayAddress.value) return
+        try {
+          await copyToClipboard(displayAddress.value)
+          addressCopiedNotify()
+        } catch {
+          errorNotify(new Error('Unable to copy the Monad address'))
+        }
+      },
+      openSend() {
+        openPage(router, '/send')
+      },
+      openReceive() {
+        openPage(router, '/receive')
+      },
+    }
+  },
+})
+</script>

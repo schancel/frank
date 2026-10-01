@@ -70,7 +70,7 @@ function mountPanel() {
   })
 }
 
-describe('WalletPanel (#399)', () => {
+describe('WalletPanel (#399, #570)', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     useWalletStore().seedPhrase = SEED
@@ -81,17 +81,24 @@ describe('WalletPanel (#399)', () => {
     openPage.mockReset()
   })
 
-  it('shows the active chain balance and keeps Send and Receive reachable', async () => {
+  it('lists the main wallet with its chain and opens it in the main pane', async () => {
     const wrapper = mountPanel()
-    expect(wrapper.get('[data-test="wallet-balance"]').text()).toBe('1 MON')
-    expect(
-      wrapper.get('[data-test="wallet-balance"]').attributes(),
-    ).toMatchObject({ 'role': 'status', 'aria-live': 'polite' })
+    expect(wrapper.get('[data-test="wallet-name"]').text()).toBe(
+      'walletPanel.mainWallet',
+    )
+    expect(wrapper.get('[data-test="wallet-chain"]').text()).toBe(
+      'walletPanel.monad',
+    )
+    const balanceRegion = wrapper.get('[data-test="wallet-balance"]')
+    expect(balanceRegion.text()).toBe('1 MON')
+    expect(balanceRegion.attributes()).toMatchObject({
+      'role': 'status',
+      'aria-live': 'polite',
+    })
 
-    await wrapper.get('[data-test="wallet-send"]').trigger('click')
-    await wrapper.get('[data-test="wallet-receive"]').trigger('click')
-    expect(openPage).toHaveBeenNthCalledWith(1, expect.anything(), '/send')
-    expect(openPage).toHaveBeenNthCalledWith(2, expect.anything(), '/receive')
+    await wrapper.get('[data-test="wallet-row"]').trigger('click')
+    expect(openPage).toHaveBeenCalledTimes(1)
+    expect(openPage).toHaveBeenCalledWith(expect.anything(), '/wallet')
   })
 
   it.each([

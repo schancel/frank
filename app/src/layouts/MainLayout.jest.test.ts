@@ -306,12 +306,12 @@ describe('MainLayout closes the mobile overlay on navigation', () => {
     expect(open(wrapper)).toBe('false')
   })
 
-  it('closes after Wallet Receive on a narrow screen', async () => {
+  it('closes after picking a wallet on a narrow screen', async () => {
     const { wrapper, router } = await mountLayout(390)
     await openDrawer(wrapper)
-    await wrapper.get('[data-test="wallet-receive"]').trigger('click')
+    await wrapper.get('[data-test="wallet-row"]').trigger('click')
     await flushPromises()
-    expect(router.push).toHaveBeenCalledWith('/receive')
+    expect(router.push).toHaveBeenCalledWith('/wallet')
     expect(open(wrapper)).toBe('false')
   })
 

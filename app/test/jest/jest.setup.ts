@@ -2,6 +2,19 @@
 // console.log = jest.fn(() => { throw new Error('Do not use console.log() in production') })
 jest.setTimeout(1000)
 
+// jsdom in this repo does not provide the platform text codecs. Wallet envelope
+// code constructs them at import, which sign-up now reaches from Setup.vue.
+const util = require('util') as {
+  TextEncoder: typeof TextEncoder
+  TextDecoder: typeof TextDecoder
+}
+if (typeof globalThis.TextEncoder === 'undefined') {
+  globalThis.TextEncoder = util.TextEncoder
+}
+if (typeof globalThis.TextDecoder === 'undefined') {
+  globalThis.TextDecoder = util.TextDecoder
+}
+
 // jest speedup when errors are part of the game
 // Error.stackTraceLimit = 0
 

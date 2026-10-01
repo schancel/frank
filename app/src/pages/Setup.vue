@@ -124,7 +124,11 @@ import {
   networkName,
 } from '../utils/constants'
 import { errorNotify } from '../utils/notifications'
-import { persistSetupAndReload } from '../utils/setup-persistence'
+import {
+  initializeMonadIdentity,
+  setupFinishReloads,
+} from '../utils/monad-identity-session'
+import { finishSetupAndEnter } from '../utils/setup-persistence'
 import { classifyAccount } from '../utils/account-state'
 import { requestPersistentStorageWithin } from '../utils/persistent-storage'
 import {
@@ -179,8 +183,6 @@ export default defineComponent({
       setUpdateInterval: contacts.setUpdateInterval,
       seedPhrase: seedPhrase,
       setRelayData: myProfile.setRelayData,
-      persistSetupAndReload: () =>
-        persistSetupAndReload(wallet, myProfile, window.location, errorNotify),
       resetWallet: wallet.reset,
       setXPrivKey: wallet.setXPrivKey,
       setSeedPhrase: (seed: string, confirmedAt: number | null = null) =>
@@ -272,9 +274,20 @@ export default defineComponent({
       if (this.challenge) this.confirmedSeed = this.challenge.seed
     },
     /**
-     * Persist the seed and name, then reload. `confirmedAt` is the durable proof-of-backup
-     * marker stored atomically with the seed.
+     * Persist the seed and name, then start the Monad identity in this page.
+     * `confirmedAt` is the durable proof-of-backup marker stored with the seed.
      */
+    async finishSetup() {
+      return finishSetupAndEnter({
+        wallet: useWalletStore(),
+        profile: useProfileStore(),
+        notifyError: errorNotify,
+        finishReloads: setupFinishReloads(),
+        location: window.location,
+        initialize: () => initializeMonadIdentity(),
+        navigate: (path: string) => this.$router.push(path),
+      })
+    },
     async completeAccountStep(confirmedAt: number) {
       if (this.existingAccount && !this.replaceAcknowledged) {
         // Independent of the UI: an existing account is never replaced, and its profile never
@@ -317,9 +330,9 @@ export default defineComponent({
       // Ticket #370: ask the browser to keep the just-stored seed while we still hold the user's
       // click. Never fails and never blocks signup for long (a permission prompt may stay open).
       await requestPersistentStorageWithin(PERSIST_REQUEST_WAIT_MS)
-      // The next boot initializes the Monad identity from these stores, so
-      // neither write may be left in flight when the page reloads.
-      await this.persistSetupAndReload()
+      // Seed and name must be durable before the identity starts. A failed write does not
+      // initialize. The default path does not reload (#389).
+      await this.finishSetup()
     },
     selectRandomAvatar(): Promise<string> {
       const avatarName =
@@ -622,14 +635,9 @@ export default defineComponent({
           // newWallet()/setupRelayData(), both entirely Lotus-registry-specific (deriving a Lotus
           // HDPrivateKey via a worker, then looking an existing profile up on a live Lotus
           // registry/relay) that this Monad-only deployment has no working backend for, and that
-          // Monad messaging/identity doesn't need at all -- boot/monad-direct-messages.ts derives
-          // everything Monad needs straight from walletStore.seedPhrase, already set by this
-          // component's own setup() the instant /setup was visited. That boot file only runs once
-          // at app startup though, so a full reload (not just an in-SPA route change) is required
-          // for it to pick the now-existing seed phrase up and actually register the Monad identity
-          // with the relay -- this is a pragmatic bridge to a working signup, not the real Monad-
-          // native onboarding UI #47 still wants designed (no seed-backup reminder screen, no
-          // display name wired to a Monad profile yet, "Deposit" step now unreachable dead UI).
+          // Monad messaging/identity doesn't need at all. Finish commits the seed and name, then
+          // initializeMonadIdentity (the same session boot starts) registers and polls in place
+          // (#389) instead of reloading. Deposit stays unreachable dead UI (#47).
           // Only an explicit, valid New or Import choice may proceed. In the initial (no choice
           // yet) state accountData.valid is false, so the never-shown generated draft can
           // neither be committed nor stamped as confirmed.

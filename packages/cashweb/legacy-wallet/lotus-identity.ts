@@ -37,6 +37,7 @@ import {
   privateKeyFromSecretBytes,
   signEcdsa,
 } from '@frank/nakamoto'
+import { lotusIdentityPublicKey } from './lotus-identity-pubkey'
 import axios from 'axios'
 import { relayOriginHeader } from '../relay/origin-header'
 
@@ -158,7 +159,12 @@ export class FrankIdentity {
   constructor(privateKey: PrivateKey, net: LotusNet) {
     this.privateKey = privateKey
     this.net = net
-    this.pubKey = privateKey.toPublicKey().toBuffer()
+    this.pubKey = Buffer.from(
+      lotusIdentityPublicKey(
+        Uint8Array.from(privateKey.toBuffer()),
+        privateKey.compressed,
+      ),
+    )
     this.address = computeLotusAddress(this.pubKey, net)
   }
 

@@ -701,7 +701,13 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
           relayBaseUrl: wallet.relayBaseUrl,
           address: toChainAddress(envelope.from),
         })
-        if (senderProfile === undefined) continue
+        if (senderProfile === undefined) {
+          // Unlike authenticated poison below, a missing profile is transient. Surface the raw
+          // relay timestamp so the polling adapter cannot advance past this omitted row (or a
+          // successfully decoded sibling with the same timestamp).
+          params.onIncompleteTimestamp?.(record.timestamp)
+          continue
+        }
 
         let items: MessageItem[]
         try {

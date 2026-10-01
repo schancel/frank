@@ -14,7 +14,6 @@ import { createPinia, setActivePinia } from 'pinia'
 ;(global as any).document = { hasFocus: () => true }
 
 import { rehydateChat, useChatStore } from './chats'
-import type { OutgoingOutcome } from './chats'
 import { activeChain } from '@frank/wallet/chain'
 import type {
   DirectMessageAttemptStatus,
@@ -29,7 +28,6 @@ import {
 } from '@frank/wallet/monad-stamp-client'
 import { MonadMailboxUnavailableError } from '@frank/cashweb/relay/monad-mailbox-client'
 import type { MessageWrapper } from '@frank/cashweb/types/messages'
-import type { RelayDeliverySuppression } from '@frank/cashweb/relay/storage/storage'
 import {
   deserializeMessageWrapper,
   serializeMessageWrapper,
@@ -685,10 +683,9 @@ describe('outgoing direct messages (#269, #270)', () => {
       const chats = useChatStore()
       await chats.sendMessage({ wallet, address: PEER, items: TEXT })
       const messageStore = (await messageStorePromise) as unknown as {
-        suppressAndDelete: jest.Mock
+        deleteMessage: jest.Mock
       }
-      const originalSuppress =
-        messageStore.suppressAndDelete.getMockImplementation()
+      const originalDelete = messageStore.deleteMessage.getMockImplementation()
       let clearStarted: (() => void) | undefined
       const started = new Promise<void>(resolve => {
         clearStarted = resolve
@@ -697,24 +694,18 @@ describe('outgoing direct messages (#269, #270)', () => {
       const gate = new Promise<void>(resolve => {
         releaseClear = resolve
       })
-      messageStore.suppressAndDelete.mockImplementation(
-        async (
-          address: string,
-          digests: string[],
-          suppressions: RelayDeliverySuppression[],
-        ) => {
-          clearStarted?.()
-          await gate
-          return originalSuppress?.(address, digests, suppressions)
-        },
-      )
+      messageStore.deleteMessage.mockImplementation(async (digest: string) => {
+        clearStarted?.()
+        await gate
+        return originalDelete?.(digest)
+      })
 
       const clearing = chats.clearChat(PEER)
       await started
       const sending = chats.sendMessage({ wallet, address: PEER, items: TEXT })
       releaseClear?.()
       await Promise.all([clearing, sending])
-      messageStore.suppressAndDelete.mockImplementation(originalSuppress)
+      messageStore.deleteMessage.mockImplementation(originalDelete)
 
       expect(only(chats)).toHaveLength(1)
       expect(only(await reload())).toHaveLength(1)

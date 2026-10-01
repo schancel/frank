@@ -634,10 +634,14 @@ export const useChatStore = defineStore('chats', {
     }): Promise<void> {
       const message = this.messages[payloadDigest]
       const attemptDigest = message?.delivery?.attemptDigest
-      const recipientAddress = message?.outbound
-        ? message.senderAddress
-        : message
-        ? messageDestinationAddress(message)
+      // Relay inboxes are recipient-indexed. An ordinary outbound row can never return to the
+      // sender's mailbox, so only a self-route needs a durable delayed-receipt suppression.
+      const recipientAddress = message
+        ? message.outbound
+          ? sameCanonicalAddress(address, message.senderAddress)
+            ? message.senderAddress
+            : null
+          : messageDestinationAddress(message)
         : null
       return serializeDeliveryMutation(() =>
         this.deleteMessageExclusive({
@@ -1476,8 +1480,11 @@ export const useChatStore = defineStore('chats', {
       >()
       const unscopedDigests = new Set<string>()
       for (const message of clearingMessages) {
+        // As above, peer-directed outbound history has no receipt in our mailbox to suppress.
         const recipientAddress = message.outbound
-          ? message.senderAddress
+          ? sameCanonicalAddress(address, message.senderAddress)
+            ? message.senderAddress
+            : null
           : messageDestinationAddress(message)
         const digests = [
           message.payloadDigest,

@@ -729,6 +729,47 @@ describe('createMonadChain: directMessages.unattributedAttempts (#269)', () => {
 })
 
 describe('createMonadChain: directMessages.fetchSince', () => {
+  it('reports a raw relay timestamp when a transiently missing profile omits its row', async () => {
+    const chain = createMonadChain(TEST_CONFIG)
+    const alice = MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX)
+    const bob = MonadIdentity.fromPrivateKeyHex(BOB_PRIVATE_KEY_HEX)
+    const wallet = makeWallet(bob)
+    const { buildEnvelope } = jest.requireActual(
+      '@frank/cashweb/relay/monad-message-envelope',
+    )
+    const encryptedPayload: Uint8Array = buildEnvelope({
+      fromAddress: alice.address.raw,
+      fromPrivateKey: alice.toBitcorePrivateKey(),
+      toAddress: bob.address.raw,
+      toPubKey: bob.compressedPubKey,
+      plaintext: serializeMessageItems([{ type: 'text', text: 'retry me' }]),
+      networkTag: TEST_CONFIG.networkTag,
+    })
+    mockedFetchMonadMessagesSince.mockResolvedValueOnce([
+      {
+        message: {
+          stampPayments: [],
+          encryptedPayload,
+          payloadHash: getBytes(`0x${'aa'.repeat(32)}`),
+        },
+        timestamp: 700,
+        networkTag: new Uint8Array(0),
+      },
+    ])
+    mockedFetchMonadProfile.mockResolvedValueOnce(undefined)
+    const onIncompleteTimestamp = jest.fn()
+
+    await expect(
+      chain.directMessages.fetchSince({
+        wallet,
+        sinceMs: 0,
+        onIncompleteTimestamp,
+      }),
+    ).resolves.toEqual([])
+    expect(onIncompleteTimestamp).toHaveBeenCalledTimes(1)
+    expect(onIncompleteTimestamp).toHaveBeenCalledWith(700)
+  })
+
   it('rejects authenticated malformed plaintext per record and returns the following message', async () => {
     const chain = createMonadChain(TEST_CONFIG)
     const alice = MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX)

@@ -145,6 +145,7 @@ export function startDirectMessagePolling({
     try {
       await cursorReady
       if (stopped) return
+      const incompleteTimestamps: number[] = []
       const received = await activeChain.directMessages.fetchSince({
         wallet,
         sinceMs,
@@ -155,6 +156,15 @@ export function startDirectMessagePolling({
             'direct-message inbox page truncated; will continue',
             reason,
           ),
+        onIncompleteTimestamp: receivedTime => {
+          if (isSafeRelayTimestamp(receivedTime)) {
+            incompleteTimestamps.push(receivedTime)
+          } else {
+            console.error(
+              'direct-message polling: unsafe incomplete relay timestamp, ignoring row',
+            )
+          }
+        },
       })
       // stop() cannot cancel an in-flight request; a stopped poller (e.g. the wallet was
       // switched) must never deliver its messages into the shared chat store.
@@ -172,6 +182,14 @@ export function startDirectMessagePolling({
         number,
         { records: number; durableCandidates: number }
       >()
+      for (const receivedTime of incompleteTimestamps) {
+        const group = timestampGroups.get(receivedTime) ?? {
+          records: 0,
+          durableCandidates: 0,
+        }
+        group.records += 1
+        timestampGroups.set(receivedTime, group)
+      }
       for (const record of received) {
         const receivedTime: unknown = record.receivedTime
         if (!isSafeRelayTimestamp(receivedTime)) {
@@ -387,7 +405,10 @@ export function startOutgoingReconciliation({
   // A message that newly becomes payment-pending must not wait out a long backoff earned by an
   // older one: restart the ladder and look again after the base interval.
   const unsubscribe = chats.$onAction(({ name, after }) => {
-    if (name !== 'setOutgoingState') return
+    // Observe the serialized mutation action itself. `setOutgoingState` now delegates through
+    // the delivery queue, so its outer action can settle after another action has already updated
+    // `knownPending`; the exclusive action is the exact serialized state/persistence boundary.
+    if (name !== 'setOutgoingStateExclusive') return
     after(() => {
       const now = pendingIds()
       const isNew = [...now].some(id => !knownPending.has(id))

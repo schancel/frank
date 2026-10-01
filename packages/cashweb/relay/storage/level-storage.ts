@@ -18,9 +18,10 @@ const metadataKeys = {
 }
 
 const suppressionIndexPrefix = 'relaySuppressionIndex:'
+const relayCursorPrefix = 'relayCursor:'
 
 function relayCursorKey(recipientAddress: string): string {
-  return `relayCursor:${recipientAddress.toLowerCase()}`
+  return `${relayCursorPrefix}${recipientAddress.toLowerCase()}`
 }
 
 function suppressionIndexKey(recipientAddress: string): string {
@@ -149,7 +150,8 @@ class MessageIterator implements AsyncIterableIterator<MessageWrapper> {
       }
       if (
         entry.key !== metadataKeys.lastServerTime &&
-        !entry.key.startsWith(suppressionIndexPrefix)
+        !entry.key.startsWith(suppressionIndexPrefix) &&
+        !entry.key.startsWith(relayCursorPrefix)
       ) {
         return new MessageResult(deserializeMessageWrapper(entry.value))
       }
@@ -174,7 +176,7 @@ class MessageIterator implements AsyncIterableIterator<MessageWrapper> {
   }
 }
 
-const currentSchemaVersion = 3
+const currentSchemaVersion = 4
 
 export class LevelMessageStore implements MessageStore {
   private messageDbLocation: string
@@ -197,8 +199,8 @@ export class LevelMessageStore implements MessageStore {
     if (!dbSchemaVersion) {
       await this.setSchemaVersion(currentSchemaVersion)
     } else if (dbSchemaVersion < currentSchemaVersion) {
-      // v2 remains able to read v1 records, whose Monad wei fields were absent (JSON.stringify
-      // could not encode bigint). New and rewritten records use exact decimal strings.
+      // Records remain backward-readable. Schema v4 deliberately does not copy legacy cursors
+      // from metadata: those cursors predate same-database receipt ordering and must replay.
       await this.setSchemaVersion(currentSchemaVersion)
     } else if (dbSchemaVersion > currentSchemaVersion) {
       console.warn('Newer DB found. Client downgraded?')
@@ -241,7 +243,9 @@ export class LevelMessageStore implements MessageStore {
   }
 
   async deleteMessage(payloadDigest: string): Promise<void> {
-    const deletion = this.mutationQueue.then(() => this.db.del(payloadDigest))
+    const deletion = this.mutationQueue.then(() =>
+      this.db.del(payloadDigest, { sync: true }),
+    )
     this.mutationQueue = deletion.then(
       () => undefined,
       () => undefined,
@@ -314,19 +318,22 @@ export class LevelMessageStore implements MessageStore {
         payloadDigest,
         receivedTime,
       }))
-      await (this.db as any).batch([
-        entries.length === 0
-          ? { type: 'del', key: suppressionIndexKey(recipientAddress) }
-          : {
-              type: 'put',
-              key: suppressionIndexKey(recipientAddress),
-              value: JSON.stringify(entries),
-            },
-        ...[...new Set(payloadDigests)].map(payloadDigest => ({
-          type: 'del',
-          key: payloadDigest,
-        })),
-      ])
+      await (this.db as any).batch(
+        [
+          entries.length === 0
+            ? { type: 'del', key: suppressionIndexKey(recipientAddress) }
+            : {
+                type: 'put',
+                key: suppressionIndexKey(recipientAddress),
+                value: JSON.stringify(entries),
+              },
+          ...[...new Set(payloadDigests)].map(payloadDigest => ({
+            type: 'del',
+            key: payloadDigest,
+          })),
+        ],
+        { sync: true },
+      )
     })
     this.mutationQueue = mutation.then(
       () => undefined,
@@ -366,6 +373,7 @@ export class LevelMessageStore implements MessageStore {
               receivedTime,
             })),
           ),
+          { sync: true },
         )
       }
       return suppressed
@@ -386,6 +394,7 @@ export class LevelMessageStore implements MessageStore {
         await this.db.put(
           messageWrapper.index,
           serializeMessageWrapper(messageWrapper),
+          { sync: true },
         )
         return
       }
@@ -396,18 +405,21 @@ export class LevelMessageStore implements MessageStore {
       )
       // level@7 exposes atomic batch writes at runtime, but this repository's legacy `LevelDB`
       // type alias omits the method.
-      await (this.db as any).batch([
-        {
-          type: 'put',
-          key: messageWrapper.index,
-          value: serializeMessageWrapper(messageWrapper),
-        },
-        {
-          type: 'put',
-          key: metadataKeys.lastServerTime,
-          value: JSON.stringify(nextServerTime),
-        },
-      ])
+      await (this.db as any).batch(
+        [
+          {
+            type: 'put',
+            key: messageWrapper.index,
+            value: serializeMessageWrapper(messageWrapper),
+          },
+          {
+            type: 'put',
+            key: metadataKeys.lastServerTime,
+            value: JSON.stringify(nextServerTime),
+          },
+        ],
+        { sync: true },
+      )
     })
     this.mutationQueue = save.then(
       () => undefined,
@@ -445,13 +457,13 @@ export class LevelMessageStore implements MessageStore {
     }
   }
 
-  /** Recipient-scoped mailbox progress. The legacy global `lastServerTime` is deliberately not
-   * migrated: it mixed identities and local/outbound clocks, so replaying from zero is the only
+  /** Recipient-scoped mailbox progress. Legacy global and metadata-DB cursors are deliberately
+   * not migrated: both predate same-database receipt ordering, so replaying from zero is the only
    * conservative migration. Duplicate relay rows are already idempotent by payload digest. */
   async relayCursor(recipientAddress: string): Promise<number> {
     try {
       const cursor: unknown = JSON.parse(
-        await this.metadataDb.get(relayCursorKey(recipientAddress)),
+        await this.db.get(relayCursorKey(recipientAddress)),
       )
       return isSafeRelayCursor(cursor) ? cursor : 0
     } catch (err: any) {
@@ -478,15 +490,9 @@ export class LevelMessageStore implements MessageStore {
       }
       const current = await this.relayCursor(recipientAddress)
       const next = Math.max(current, nextReceivedTime)
-      if (next !== current) {
-        await this.metadataDb.put(
-          relayCursorKey(recipientAddress),
-          JSON.stringify(next),
-        )
-      }
-      // Cursor persistence is the authority boundary. Only after it succeeds may suppression
-      // records for receipts strictly behind that inclusive cursor be collected. A crash between
-      // these writes leaves a harmless tombstone, which the next advance collects.
+      // Cursor authority and suppression collection share the message database and one atomic,
+      // durable batch. A crash can therefore retain both or neither, never the unsafe state where
+      // a tombstone disappeared while its inclusive cursor did not advance.
       const observed = new Map(
         suppressedReceipts.map(receipt => [
           receipt.payloadDigest,
@@ -500,14 +506,27 @@ export class LevelMessageStore implements MessageStore {
           return safeAfter === null || next <= safeAfter
         },
       )
-      if (remaining.length === 0) {
-        await this.db.del(suppressionIndexKey(recipientAddress))
-      } else {
-        await this.db.put(
-          suppressionIndexKey(recipientAddress),
-          JSON.stringify(remaining),
-        )
-      }
+      await (this.db as any).batch(
+        [
+          ...(next === current
+            ? []
+            : [
+                {
+                  type: 'put',
+                  key: relayCursorKey(recipientAddress),
+                  value: JSON.stringify(next),
+                },
+              ]),
+          remaining.length === 0
+            ? { type: 'del', key: suppressionIndexKey(recipientAddress) }
+            : {
+                type: 'put',
+                key: suppressionIndexKey(recipientAddress),
+                value: JSON.stringify(remaining),
+              },
+        ],
+        { sync: true },
+      )
       return next
     })
     this.mutationQueue = advance.then(

@@ -37,7 +37,7 @@ function wrapper(index = 'payload-digest'): MessageWrapper {
   }
 }
 
-describe('LevelMessageStore schema v3', () => {
+describe('LevelMessageStore schema v4', () => {
   it('round-trips financial integers beyond Number.MAX_SAFE_INTEGER exactly', () => {
     const encoded = serializeMessageWrapper(wrapper())
 
@@ -98,6 +98,10 @@ describe('LevelMessageStore schema v3', () => {
     try {
       await store.Open()
       await store.mostRecentMessageTime(9000)
+      const legacyMetadataDb = Reflect.get(store, 'metadataDb') as {
+        put(key: string, value: string): Promise<void>
+      }
+      await legacyMetadataDb.put('relayCursor:0xaa', JSON.stringify(8000))
       expect(await store.relayCursor('0xAa')).toBe(0)
       await store.advanceRelayCursor('0xAa', 500)
       await store.advanceRelayCursor('0xaa', 400)
@@ -121,10 +125,10 @@ describe('LevelMessageStore schema v3', () => {
       await expect(store.advanceRelayCursor('0xAa', -1)).rejects.toThrow(
         'Unsafe relay cursor timestamp',
       )
-      const metadataDb = Reflect.get(store, 'metadataDb') as {
+      const messageDb = Reflect.get(store, 'db') as {
         put(key: string, value: string): Promise<void>
       }
-      await metadataDb.put(
+      await messageDb.put(
         'relayCursor:0xaa',
         JSON.stringify('9007199254740992'),
       )
@@ -195,6 +199,102 @@ describe('LevelMessageStore schema v3', () => {
         persisted.push(message)
       }
       expect(persisted).toEqual([])
+    } finally {
+      await store.Close()
+      await rm(location, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps a durable receipt when the later cursor commit fails', async () => {
+    const location = await mkdtemp(join(tmpdir(), 'frank-cursor-fault-'))
+    let store = new LevelMessageStore(location)
+    try {
+      await store.Open()
+      const durableDb = Reflect.get(store, 'db') as {
+        put: (...args: unknown[]) => Promise<void>
+      }
+      const put = jest.spyOn(durableDb, 'put')
+      await store.saveMessage(wrapper('durable-before-cursor'), {
+        advanceCursor: false,
+      })
+      expect(put).toHaveBeenCalledWith(
+        'durable-before-cursor',
+        expect.any(String),
+        { sync: true },
+      )
+      put.mockRestore()
+      const messageDb = Reflect.get(store, 'db') as {
+        batch: (...args: unknown[]) => Promise<void>
+      }
+      const batch = jest
+        .spyOn(messageDb, 'batch')
+        .mockRejectedValueOnce(new Error('cursor commit failed'))
+      await expect(store.advanceRelayCursor('0xAa', 457)).rejects.toThrow(
+        'cursor commit failed',
+      )
+      expect(batch).toHaveBeenCalledWith(
+        expect.arrayContaining([
+          expect.objectContaining({ type: 'put', key: 'relayCursor:0xaa' }),
+        ]),
+        { sync: true },
+      )
+      batch.mockRestore()
+      await store.Close()
+
+      store = new LevelMessageStore(location)
+      await store.Open()
+      expect(await store.relayCursor('0xaa')).toBe(0)
+      expect(await store.getMessage('durable-before-cursor')).toEqual(
+        wrapper('durable-before-cursor'),
+      )
+    } finally {
+      await store.Close()
+      await rm(location, { recursive: true, force: true })
+    }
+  })
+
+  it('atomically retains both cursor and suppression when their shared commit fails', async () => {
+    const location = await mkdtemp(join(tmpdir(), 'frank-suppression-fault-'))
+    let store = new LevelMessageStore(location)
+    const receipt = { payloadDigest: 'deleted-receipt', receivedTime: 456 }
+    try {
+      await store.Open()
+      await store.suppressAndDelete(
+        '0xAa',
+        ['deleted-receipt'],
+        [{ payloadDigest: 'deleted-receipt' }],
+      )
+      expect(await store.suppressedRelayReceipts('0xAa', [receipt])).toEqual(
+        new Set(['deleted-receipt']),
+      )
+      const messageDb = Reflect.get(store, 'db') as {
+        batch: (...args: unknown[]) => Promise<void>
+      }
+      const batch = jest
+        .spyOn(messageDb, 'batch')
+        .mockRejectedValueOnce(new Error('atomic commit failed'))
+      await expect(
+        store.advanceRelayCursor('0xAa', 457, [receipt]),
+      ).rejects.toThrow('atomic commit failed')
+      expect(batch).toHaveBeenCalledWith(
+        expect.arrayContaining([
+          expect.objectContaining({ type: 'put', key: 'relayCursor:0xaa' }),
+          expect.objectContaining({
+            type: 'del',
+            key: 'relaySuppressionIndex:0xaa',
+          }),
+        ]),
+        { sync: true },
+      )
+      batch.mockRestore()
+      await store.Close()
+
+      store = new LevelMessageStore(location)
+      await store.Open()
+      expect(await store.relayCursor('0xaa')).toBe(0)
+      expect(await store.suppressedRelayReceipts('0xaa', [receipt])).toEqual(
+        new Set(['deleted-receipt']),
+      )
     } finally {
       await store.Close()
       await rm(location, { recursive: true, force: true })

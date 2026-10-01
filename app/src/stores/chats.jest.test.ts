@@ -1662,7 +1662,7 @@ describe('stores/chats.ts (ticket #42)', () => {
     })
   })
 
-  it('deletes a local confirmed message with an unresolved durable receipt tombstone', async () => {
+  it('deletes an ordinary non-self outbound without an impossible sender-mailbox tombstone', async () => {
     const chats = useChatStore()
     chats.chats[RECIPIENT_ADDRESS] = {
       address: RECIPIENT_ADDRESS,
@@ -1691,14 +1691,82 @@ describe('stores/chats.ts (ticket #42)', () => {
       payloadDigest: 'delete-me',
     })
 
-    expect(mockMessageStore.suppressAndDelete).toHaveBeenCalledWith(
-      SENDER_ADDRESS,
-      ['delete-me'],
-      [{ payloadDigest: 'delete-me' }],
-    )
+    expect(mockMessageStore.suppressAndDelete).not.toHaveBeenCalled()
+    expect(mockMessageStore.deleteMessage).toHaveBeenCalledWith('delete-me')
     expect(chats.messages['delete-me']).toBeUndefined()
     expect(chats.chats[RECIPIENT_ADDRESS]?.messages).toHaveLength(0)
     expect(chats.chats[RECIPIENT_ADDRESS]?.totalValue).toBe(0)
+  })
+
+  it('keeps durable receipt suppression for an outbound self-route', async () => {
+    const chats = useChatStore()
+    chats.chats[SENDER_ADDRESS] = {
+      address: SENDER_ADDRESS,
+      messages: [],
+      totalUnreadMessages: 0,
+      totalUnreadValue: 0,
+      totalValue: 0,
+      lastReceived: 0,
+      lastRead: 0,
+      stampAmount: 0,
+    }
+    chats.sendMessageLocal({
+      address: SENDER_ADDRESS,
+      senderAddress: SENDER_ADDRESS,
+      index: 'delete-self',
+      items: [{ type: 'text', text: 'temporary loopback' }],
+      outpoints: [],
+      stampValueWei: 10n,
+      status: 'confirmed',
+      previousHash: null,
+    })
+
+    await chats.deleteMessage({
+      address: SENDER_ADDRESS,
+      payloadDigest: 'delete-self',
+    })
+
+    expect(mockMessageStore.suppressAndDelete).toHaveBeenCalledWith(
+      SENDER_ADDRESS,
+      ['delete-self'],
+      [{ payloadDigest: 'delete-self' }],
+    )
+    expect(mockMessageStore.deleteMessage).not.toHaveBeenCalled()
+  })
+
+  it('clears ordinary outbound history without growing sender-mailbox suppression', async () => {
+    const chats = useChatStore()
+    chats.chats[RECIPIENT_ADDRESS] = {
+      address: RECIPIENT_ADDRESS,
+      messages: [],
+      totalUnreadMessages: 0,
+      totalUnreadValue: 0,
+      totalValue: 0,
+      lastReceived: 0,
+      lastRead: 0,
+      stampAmount: 0,
+    }
+    for (const digest of ['clear-one', 'clear-two']) {
+      chats.sendMessageLocal({
+        address: RECIPIENT_ADDRESS,
+        senderAddress: SENDER_ADDRESS,
+        index: digest,
+        items: [{ type: 'text', text: digest }],
+        outpoints: [],
+        stampValueWei: 10n,
+        status: 'confirmed',
+        previousHash: null,
+      })
+    }
+
+    await chats.clearChat(RECIPIENT_ADDRESS)
+
+    expect(mockMessageStore.suppressAndDelete).not.toHaveBeenCalled()
+    expect(mockMessageStore.deleteMessage.mock.calls).toEqual([
+      ['clear-one'],
+      ['clear-two'],
+    ])
+    expect(chats.chats[RECIPIENT_ADDRESS]?.messages).toHaveLength(0)
   })
 
   describe('readAll (ticket #368)', () => {

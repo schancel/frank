@@ -209,6 +209,7 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
         wallet,
         sinceMs: 0,
         onTruncated: expect.any(Function),
+        onIncompleteTimestamp: expect.any(Function),
       })
 
       // The relay bound is inclusive, so advance one millisecond past the received record.
@@ -218,6 +219,7 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
         wallet,
         sinceMs: 1_700_000_000_001,
         onTruncated: expect.any(Function),
+        onIncompleteTimestamp: expect.any(Function),
       })
       // No new messages on any subsequent poll.
       expect(receiveMessagesSpy).toHaveBeenCalledTimes(1)
@@ -256,6 +258,7 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
         wallet,
         sinceMs: 700,
         onTruncated: expect.any(Function),
+        onIncompleteTimestamp: expect.any(Function),
       })
       expect(mockMessageStore.advanceRelayCursor).toHaveBeenLastCalledWith(
         RECIPIENT_ADDRESS,
@@ -452,6 +455,7 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
           wallet,
           sinceMs: 201,
           onTruncated: expect.any(Function),
+          onIncompleteTimestamp: expect.any(Function),
         })
       } finally {
         polling.stop()
@@ -509,45 +513,46 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
           wallet,
           sinceMs: 0,
           onTruncated: expect.any(Function),
+          onIncompleteTimestamp: expect.any(Function),
         })
       } finally {
         polling.stop()
       }
     })
 
-    it('persists later messages but replays from an unresolved sender timestamp', async () => {
+    it('replays a same-timestamp sibling omitted by MonadChain profile lookup', async () => {
       const chats = useChatStore()
       const receiveMessagesSpy = jest.spyOn(chats, 'receiveMessages')
       const consoleErrorSpy = jest
         .spyOn(console, 'error')
         .mockImplementation(() => undefined)
-      jest
-        .spyOn(activeChain, 'fetchProfile')
-        .mockResolvedValueOnce(undefined)
-        .mockResolvedValue({
-          address: { raw: SENDER_ADDRESS },
-          pubKey: PUB_KEY_BYTES,
-        })
+      jest.spyOn(activeChain, 'fetchProfile').mockResolvedValue({
+        address: { raw: SENDER_ADDRESS },
+        pubKey: PUB_KEY_BYTES,
+      })
       const fetchSinceSpy = jest
         .spyOn(activeChain.directMessages, 'fetchSince')
-        .mockResolvedValueOnce([
-          makeRecord({ payloadDigest: 'unresolved', receivedTime: 100 }),
-          makeRecord({ payloadDigest: 'later', receivedTime: 200 }),
-        ])
+        .mockImplementationOnce(async ({ onIncompleteTimestamp }) => {
+          // This is the MonadChain -> adapter seam: MonadChain cannot return the raw row
+          // without its sender profile, so it reports only the omitted row's relay timestamp.
+          onIncompleteTimestamp?.(100)
+          return [makeRecord({ payloadDigest: 'same-time', receivedTime: 100 })]
+        })
         .mockResolvedValue([])
 
       const polling = startPolling(20)
       try {
         await advanceUntil(() => fetchSinceSpy.mock.calls.length >= 2)
-        expect(consoleErrorSpy).toHaveBeenCalled()
+        expect(consoleErrorSpy).not.toHaveBeenCalled()
         expect(receiveMessagesSpy).toHaveBeenCalledWith(
-          [expect.objectContaining({ index: 'later' })],
+          [expect.objectContaining({ index: 'same-time' })],
           RECIPIENT_ADDRESS,
         )
         expect(fetchSinceSpy).toHaveBeenNthCalledWith(2, {
           wallet,
           sinceMs: 100,
           onTruncated: expect.any(Function),
+          onIncompleteTimestamp: expect.any(Function),
         })
       } finally {
         polling.stop()

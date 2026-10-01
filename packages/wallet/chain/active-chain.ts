@@ -206,11 +206,15 @@ export interface DirectMessageClient {
   /** Returns messages at or after `sinceMs`, ordered by time. If a later inbox page could not be
    * fetched, the result is cut back to a prefix ending on a complete timestamp group and
    * `onTruncated` is called: advancing `sinceMs` to `lastReceivedTime + 1` is then safe and the
-   * rest arrives on the next poll. If no complete group exists, the call rejects instead. */
+   * rest arrives on the next poll. If no complete group exists, the call rejects instead.
+   * `onIncompleteTimestamp` reports a relay row that could not yet be translated because its
+   * sender profile was temporarily unavailable. Callers must keep that inclusive timestamp in
+   * their replay window even though the incomplete row is absent from the returned array. */
   fetchSince(params: {
     wallet: WalletHandle
     sinceMs: number
     onTruncated?: (reason: Error) => void
+    onIncompleteTimestamp?: (receivedTime: number) => void
   }): Promise<DirectMessageReceived[]>
   listRecoveredStampPayments(params: {
     wallet: WalletHandle

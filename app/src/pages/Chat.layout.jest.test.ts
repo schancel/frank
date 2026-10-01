@@ -242,4 +242,23 @@ describe('Chat.vue layout structure (mounted)', () => {
     expect(target.attributes('style')).toContain('scroll-margin-top: 112px')
     expect(scrollIntoView).toHaveBeenCalledWith({ behavior: 'smooth' })
   })
+
+  it('moves a history scroll by the padding change, not the extra stylesheet gap', async () => {
+    const wrapper = await mountChat()
+    const target = { scrollTop: 40 }
+    const scroll = wrapper.getComponent(stubs.QScrollArea)
+    scroll.vm.getScrollTarget = () => target
+    ;(wrapper.vm as unknown as { bottom: boolean }).bottom = false
+    ;(
+      wrapper.vm as unknown as { stampPreparationStatus: string | null }
+    ).stampPreparationStatus = 'checking'
+    await wrapper.vm.$nextTick()
+    wrapper.getComponent(ResizeObserverStub).vm.$emit('resize', {
+      width: 375,
+      height: 96,
+    })
+    await wrapper.vm.$nextTick()
+    // q-py-md is already 16px. Clearance 112 replaces it, so the list grows by 96.
+    expect(target.scrollTop).toBe(40 + 96)
+  })
 })

@@ -78,7 +78,8 @@ it('matches bitcore profile public keys', () => {
     messageStart,
     source.indexOf('constructReplyEntry(', messageStart),
   )
-  expect(message).toContain('toPublicKey(')
+  expect(message).toContain('messageSourcePublicKey(')
+  expect(message).not.toContain('toPublicKey')
   expect(message).toContain('crypto.Hash.sha256hmac(')
   expect(message).toContain('crypto.Hash.sha256(')
   const helper = readFileSync(join(__dirname, 'profile-pubkey.ts'), 'utf8')

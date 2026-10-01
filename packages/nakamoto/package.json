@@ -120,6 +120,7 @@
   },
   "scripts": {
     "test": "jest",
+    "bench": "tsc -p tsconfig.json --pretty false && node scripts/hot-path-bench.mjs",
     "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.jest.json",
     "lint": "eslint . --ext .ts,.js,.cjs,.mjs",
     "format": "prettier --config ../../app/.prettierrc.json --check \"src/**/*.ts\" \"test/**/*.ts\" \"scripts/**/*.mjs\" package.json tsconfig.json tsconfig.jest.json jest.config.cjs .eslintrc.cjs runtime-deps.json bundle-entries.json ATTRIBUTION.md",

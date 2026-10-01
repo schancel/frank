@@ -1,6 +1,8 @@
 /** @jest-environment jsdom */
 
 import { flushPromises, mount } from '@vue/test-utils'
+import { readFileSync } from 'fs'
+import { resolve } from 'path'
 
 import enUS from 'src/i18n/en-us'
 import MainLayout from './MainLayout.vue'
@@ -165,6 +167,27 @@ async function mountReal(width: number) {
 
 const tabsOf = (root: Element) =>
   Array.from(root.querySelectorAll<HTMLElement>('[role="tab"]'))
+
+function installLeftDrawerStyles() {
+  const filename = resolve(__dirname, '../components/panels/LeftDrawer.vue')
+  const source = readFileSync(filename, 'utf8')
+  // vue-jest intentionally omits styles. Inject the two production rules that form this layout
+  // contract so their computed result is checked on Quasar's real internal DOM shape.
+  const settingsRule = source.match(/\.settings-rail-tab\s*\{[^}]+\}/)?.[0]
+  const contentRule = source.match(
+    /\.icon-rail\s+:deep\(\.settings-pin-content\)\s*\{[^}]+\}/,
+  )?.[0]
+  if (!settingsRule || !contentRule) {
+    throw new Error('LeftDrawer Settings pin styles are missing')
+  }
+  const style = document.createElement('style')
+  style.dataset.test = 'left-drawer-styles'
+  style.textContent = `${settingsRule}\n${contentRule.replace(
+    ':deep(.settings-pin-content)',
+    '.settings-pin-content',
+  )}`
+  document.head.appendChild(style)
+}
 // Quasar keeps the backdrop mounted but `hidden` while the mobile overlay is closed.
 const drawerIsOverlayOpen = () => {
   const backdrop = document.querySelector('.q-drawer__backdrop')
@@ -173,6 +196,9 @@ const drawerIsOverlayOpen = () => {
 
 afterEach(() => {
   document.body.innerHTML = ''
+  document
+    .querySelectorAll('style[data-test="left-drawer-styles"]')
+    .forEach(style => style.remove())
 })
 
 describe('LeftDrawer rail with real Quasar QDrawer/QTabs/QTab', () => {
@@ -183,9 +209,10 @@ describe('LeftDrawer rail with real Quasar QDrawer/QTabs/QTab', () => {
     expect(list?.getAttribute('aria-orientation')).toBe('vertical')
     const tabs = tabsOf(document.body)
     expect(tabs.map(t => t.getAttribute('aria-label'))).toEqual([
-      'Settings',
       'Contacts, 3 unread messages',
+      'Wallet',
       'Forum',
+      'Settings',
     ])
     for (const tab of tabs) {
       const panel = document.getElementById(tab.getAttribute('aria-controls')!)
@@ -194,8 +221,9 @@ describe('LeftDrawer rail with real Quasar QDrawer/QTabs/QTab', () => {
     }
     // Contacts is the default selection; only its panel is displayed.
     expect(tabs.map(t => t.getAttribute('aria-selected'))).toEqual([
-      'false',
       'true',
+      'false',
+      'false',
       'false',
     ])
     const shown = tabs.map(
@@ -203,7 +231,46 @@ describe('LeftDrawer rail with real Quasar QDrawer/QTabs/QTab', () => {
         document.getElementById(t.getAttribute('aria-controls')!)!.style
           .display !== 'none',
     )
-    expect(shown).toEqual([false, true, false])
+    expect(shown).toEqual([true, false, false, false])
+    wrapper.unmount()
+  })
+
+  it('renders the Quasar tab content as a column so Settings can consume remaining rail height', async () => {
+    const { wrapper } = await mountReal(1024)
+    installLeftDrawerStyles()
+    const content = document.querySelector<HTMLElement>(
+      '.q-tabs__content.settings-pin-content',
+    )
+    const settings = document.getElementById('rail-tab-settings')!
+
+    expect(content).not.toBeNull()
+    expect(getComputedStyle(content!).display).toBe('flex')
+    expect(getComputedStyle(content!).flexDirection).toBe('column')
+    expect(getComputedStyle(content!).overflowY).toBe('auto')
+    expect(getComputedStyle(settings).marginTop).toBe('auto')
+    expect(content!.lastElementChild).toBe(settings)
+    wrapper.unmount()
+  })
+
+  it('selecting Wallet moves aria-selected and swaps the rendered panel', async () => {
+    const { wrapper } = await mountReal(1024)
+    const wallet = document.getElementById('rail-tab-wallet')!
+    wallet.click()
+    await flushPromises()
+
+    const tabs = tabsOf(document.body)
+    expect(tabs.map(t => t.getAttribute('aria-selected'))).toEqual([
+      'false',
+      'true',
+      'false',
+      'false',
+    ])
+    expect(
+      document.getElementById('rail-panel-wallet')!.style.display,
+    ).not.toBe('none')
+    expect(document.getElementById('rail-panel-contacts')!.style.display).toBe(
+      'none',
+    )
     wrapper.unmount()
   })
 
@@ -218,6 +285,7 @@ describe('LeftDrawer rail with real Quasar QDrawer/QTabs/QTab', () => {
       'false',
       'false',
       'true',
+      'false',
     ])
     expect(document.getElementById('rail-panel-forum')!.style.display).not.toBe(
       'none',

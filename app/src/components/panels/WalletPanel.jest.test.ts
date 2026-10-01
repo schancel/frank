@@ -109,6 +109,26 @@ describe('WalletPanel (#399)', () => {
     },
   )
 
+  it('updates balance status live after the panel is mounted', async () => {
+    const wrapper = mountPanel()
+    const value = () => wrapper.get('[data-test="wallet-balance"]').text()
+
+    expect(value()).toBe('1 MON')
+    balance.hasError.value = true
+    await nextTick()
+    expect(value()).toBe('walletPanel.balanceStale:1 MON')
+
+    balance.loaded.value = false
+    await nextTick()
+    expect(value()).toBe('walletPanel.balanceUnavailable')
+
+    balance.formattedBalance.value = '2 MON'
+    balance.loaded.value = true
+    balance.hasError.value = false
+    await nextTick()
+    expect(value()).toBe('2 MON')
+  })
+
   it('closes recovery confirmation and returns focus to the Wallet panel', async () => {
     const wrapper = mountPanel()
     const vm = wrapper.vm as unknown as { seedConfirmOpen: boolean }
@@ -121,5 +141,22 @@ describe('WalletPanel (#399)', () => {
     expect(document.activeElement).toBe(
       wrapper.get('[data-test="wallet-panel"]').element,
     )
+  })
+
+  it('does not steal focus when recovery confirmation is cancelled', async () => {
+    const caller = document.createElement('button')
+    document.body.appendChild(caller)
+    caller.focus()
+    const wrapper = mountPanel()
+    const vm = wrapper.vm as unknown as { seedConfirmOpen: boolean }
+
+    vm.seedConfirmOpen = true
+    await nextTick()
+    vm.seedConfirmOpen = false
+    await nextTick()
+    await nextTick()
+
+    expect(document.activeElement).toBe(caller)
+    caller.remove()
   })
 })

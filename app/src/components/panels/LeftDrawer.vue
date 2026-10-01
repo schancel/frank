@@ -25,6 +25,7 @@
         v-model="tab"
         vertical
         class="col full-width"
+        content-class="settings-pin-content"
         :aria-label="$t('leftDrawer.railLabel')"
       >
         <!-- Navigates to the active (or most recently used) chat, so this tab actually shows
@@ -158,14 +159,26 @@
 
       <!-- Keep the legacy-relay reconnect affordance while that runtime mode exists. The Wallet
       panel is the primary balance surface; this compatibility footer is not shown in Monad mode. -->
-      <q-list v-if="legacyRelayEnabled">
+      <q-list v-if="$status.setup && legacyRelayEnabled">
         <q-separator />
         <q-item clickable>
           <q-item-section @click="openReceive">
             <q-item-label>{{ $t('chatList.balance') }}</q-item-label>
-            <q-item-label caption role="status" aria-live="polite">
-              {{ balanceText }}
-            </q-item-label>
+            <q-item-label
+              caption
+              role="status"
+              aria-live="polite"
+              :aria-label="
+                loaded
+                  ? undefined
+                  : $t('receiveBitcoinDialog.balanceUnavailable')
+              "
+              data-testid="drawer-balance"
+              >{{ balanceText
+              }}<template v-if="balanceStale">
+                {{ ' ' + $t('chatList.balanceStale') }}</template
+              ></q-item-label
+            >
           </q-item-section>
           <q-item-section
             v-if="!relayConnected"
@@ -255,10 +268,11 @@ export default defineComponent({
       await forum.refreshMessages({ wallet, topic: name })
     }
 
-    const { formattedBalance, loaded } = useBalance()
+    const { formattedBalance, loaded, hasError } = useBalance()
     const balanceText = computed(() =>
       loaded.value ? formattedBalance.value : '\u2014',
     )
+    const balanceStale = computed(() => loaded.value && hasError.value)
 
     onMounted(() => {
       // Fire-and-forget, same convention as `ForumLayout.vue`'s own identical call --
@@ -304,6 +318,8 @@ export default defineComponent({
       browseForumTopic,
       totalUnread: totalUnread,
       balanceText,
+      balanceStale,
+      loaded,
       legacyRelayEnabled: legacyLotusModeEnabled(),
     }
   },
@@ -401,6 +417,15 @@ export default defineComponent({
 
 .settings-rail-tab {
   margin-top: auto;
+}
+
+// Quasar's vertical-tab rule uses `display: block !important` on this internal element, so the
+// Settings tab's auto margin only consumes the remaining rail height after restoring a column
+// flex context here. Keep short rails scrollable instead of making Settings unreachable.
+.icon-rail :deep(.settings-pin-content) {
+  display: flex !important;
+  flex-direction: column;
+  overflow-y: auto;
 }
 
 .list-column {

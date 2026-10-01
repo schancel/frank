@@ -4,7 +4,6 @@ import assert from 'assert'
 import { calcUtxoId } from './helpers'
 
 import {
-  Address,
   Script,
   Transaction,
   PrivateKey,
@@ -23,8 +22,11 @@ import {
   XPI_MAINNET,
   XPI_REGTEST,
   XPI_TESTNET,
+  cryptoBackend,
   internalHashFromBytes,
+  lockingScript,
   privateKeyFromSecretBytes,
+  pubkeyHashFromBytes,
   signAll,
   signEcdsa,
   type ChainDescriptor,
@@ -83,6 +85,15 @@ function scriptBytes(script: Script): Uint8Array {
   return Uint8Array.from(script.toBuffer())
 }
 
+// HASH160 of the serialized public key, then the 25-byte template (decision #495).
+// Address-string scripts stay on bitcore until issue #242.
+export function p2pkhScriptFromPublicKey(publicKey: PublicKey): Buffer {
+  const serialized = Uint8Array.from(publicKey.toBuffer())
+  const hash = pubkeyHashFromBytes(cryptoBackend.hash160(serialized))
+  if (!hash.ok) throw new Error('p2pkh-hash')
+  return Buffer.from(lockingScript({ kind: 'p2pkh', hash: hash.value }))
+}
+
 // bitcore's Input type omits setScript; the runtime method writes _scriptBuffer.
 function setInputScript(input: Transaction.Input, script: Buffer): void {
   const writable = input as Transaction.Input & {
@@ -126,7 +137,7 @@ function explicitAssignments(
     const locking = output.script.toBuffer()
     let signer: InputSigner | undefined
     for (const key of signingKeys) {
-      const built = Script.buildPublicKeyHashOut(key.toPublicKey()).toBuffer()
+      const built = p2pkhScriptFromPublicKey(key.toPublicKey())
       if (!built.equals(locking)) continue
       signer = signerFromPrivateKey(key)
       break
@@ -605,7 +616,7 @@ export class Wallet {
     transaction.addOutput(
       new Transaction.Output({
         satoshis: satoshis - fees,
-        script: Script.buildPublicKeyHashOut(pubkey),
+        script: p2pkhScriptFromPublicKey(pubkey),
       }),
     )
     // Sign transaction
@@ -711,9 +722,9 @@ export class Wallet {
       console.log('Generating a change UTXO for amount:', changeOutputAmount)
       // Create the output
       const output = new Transaction.Output({
-        script: Script.buildPublicKeyHashOut(
+        script: p2pkhScriptFromPublicKey(
           changeKey.privKey.toPublicKey(),
-        ).toHex(),
+        ).toString('hex'),
         satoshis: changeOutputAmount,
       })
       transaction = transaction.addOutput(output)
@@ -730,9 +741,9 @@ export class Wallet {
       const changeOutputAmount = delta - properFee
       if (changeOutputAmount >= minimumNewInputAmount) {
         const output = new Transaction.Output({
-          script: Script.buildPublicKeyHashOut(
+          script: p2pkhScriptFromPublicKey(
             changeKeys[0].privKey.toPublicKey(),
-          ).toHex(),
+          ).toString('hex'),
           satoshis: changeOutputAmount,
         })
         transaction = transaction.addOutput(output)
@@ -943,7 +954,7 @@ export class Wallet {
       const amountToUse = Math.min(amountLeft, availableAmount)
       transaction.addOutput(
         new Transaction.Output({
-          script: new Script(new Address(address)),
+          script: p2pkhScriptFromPublicKey(address),
           satoshis: amountToUse,
         }),
       )

@@ -2,17 +2,18 @@
   <div>
     <q-page-container>
       <q-page class="chat-page-background column no-wrap">
-        <!-- Above the list in normal flow: the banners never cover messages or each other. -->
-        <chat-banner-stack :stamp-status="stampPreparationStatus" />
         <div class="col relative-position">
           <q-scroll-area
             ref="chatScroll"
             @scroll="scrollHandler"
             class="q-px-none absolute full-width full-height column"
           >
-            <!-- q-py-md: breathing room above the first bubble (it used to touch the header) and
-            below the last one; inside the scroll content, so scroll-to-bottom still reaches it. -->
-            <div class="chat-message-list row q-px-lg q-py-md">
+            <!-- Clearance tracks the overlay height so a wrapped banner cannot cover the
+            oldest bubble. q-py-md is the gap when the overlay is empty. -->
+            <div
+              class="chat-message-list row q-px-lg q-py-md"
+              :style="bannerClearanceStyle"
+            >
               <template
                 v-for="(msg, index) in chunkedMessages"
                 :key="msg.payloadDigest"
@@ -24,6 +25,7 @@
                   :name="getContact(msg.outbound).name ?? 'unknown'"
                   :chat-width="chatWidth"
                   :payload-digest="msg.payloadDigest"
+                  :style="messageScrollMarginStyle"
                   :ref="msg.payloadDigest"
                   :focus-after-retry="focusComposerAfterRetry"
                   :focus-failed-after-retry="focusFailedAfterRetry"
@@ -34,6 +36,14 @@
               </template>
             </div>
           </q-scroll-area>
+          <!-- Overlaying the bounded viewport keeps banner changes from resizing the scroll box. -->
+          <div
+            class="chat-banner-overlay absolute-top full-width no-pointer-events"
+            :class="{ 'shadow-2': bannerClearance > 0 }"
+          >
+            <q-resize-observer @resize="onBannerResize" />
+            <chat-banner-stack :stamp-status="stampPreparationStatus" />
+          </div>
         </div>
         <q-page-sticky
           position="bottom-right"
@@ -164,6 +174,11 @@ export default defineComponent({
     return {
       address: this.$route.params.address as string,
       bottom: true as boolean,
+      // Overlay height plus the 16px q-py-md gap. Zero keeps the stylesheet pad
+      // when no banner is showing.
+      bannerClearance: 0,
+      // While a clearance change settles, stay pinned instead of flashing jump-to-bottom.
+      keepBottomForBanner: false,
       messagesToShow: 30,
       replyDigest: null as string | null,
       scrollDigest: null as string | null,
@@ -197,6 +212,7 @@ export default defineComponent({
     this.resizeHandler()
     // Adjust the chat width when window resizes
     window.addEventListener('resize', debounce(this.resizeHandler, 50))
+    this.focusComposeOnOpen()
   },
   updated() {
     this.$nextTick(() => {
@@ -207,6 +223,56 @@ export default defineComponent({
     })
   },
   methods: {
+    // Opening a chat (mount or a reused route) places the caret (#411). On this
+    // turn, before MainLayout's narrow-overlay restore (one tick later) treats a
+    // still-unfocused page as focus lost and moves focus to the opener (#277).
+    // One later attempt covers an overlay that is still inert on this turn.
+    focusComposeOnOpen() {
+      if (this.focusComposeNow()) return
+      const root = this.$el as HTMLElement | undefined
+      if (!root?.isConnected || root.closest('[inert]')) {
+        void this.$nextTick(() => {
+          this.focusComposeNow()
+        })
+      }
+    },
+    focusComposeNow() {
+      if (!this.composeAutofocusAllowed()) return false
+      ;(this.$refs.chatInput as { focus?: () => void } | undefined)?.focus?.()
+      const active = document.activeElement
+      return (
+        active instanceof HTMLTextAreaElement ||
+        active instanceof HTMLInputElement
+      )
+    },
+    finePointer() {
+      return (
+        typeof window.matchMedia === 'function' &&
+        window.matchMedia('(pointer: fine)').matches
+      )
+    },
+    composeAutofocusAllowed() {
+      if (!this.finePointer()) return false
+      if (document.querySelector('.q-dialog, .q-menu')) return false
+      const root = this.$el as HTMLElement | undefined
+      if (!root?.isConnected || root.closest('[inert]')) return false
+      const active = document.activeElement
+      if (!(active instanceof HTMLElement)) return true
+      if (
+        active === document.body ||
+        active === document.documentElement ||
+        active.classList.contains('q-layout') ||
+        active.classList.contains('q-page-container') ||
+        active.closest('.q-drawer') !== null
+      ) {
+        return true
+      }
+      // A control already chosen in this chat stays put, except the composer.
+      if (root.contains(active)) {
+        return active.tagName === 'TEXTAREA' || active.tagName === 'INPUT'
+      }
+      return false
+    },
     focusComposerAfterRetry() {
       void this.$nextTick(() => {
         // A connected control chosen while Retry was pending is still the user's focus.
@@ -266,13 +332,51 @@ export default defineComponent({
         this.messagesToShow += 30
         return
       }
+      const gap =
+        details.verticalSize -
+        details.verticalPosition -
+        details.verticalContainerSize
+      // Banner clearance grows the content above the viewport. Re-pin once so
+      // the jump button does not flash while that height settles.
+      if (this.keepBottomForBanner && gap > 10) {
+        this.keepBottomForBanner = false
+        this.bottom = true
+        this.pinScrollToBottom()
+        return
+      }
+      this.keepBottomForBanner = false
       // Set this afterwards, incase we were at the bottom already.
       // We want to ensure that we scroll!
-      this.bottom =
-        details.verticalSize -
-          details.verticalPosition -
-          details.verticalContainerSize <=
-        10
+      this.bottom = gap <= 10
+    },
+    onBannerResize({ height }: { height: number }) {
+      const next = height > 0 ? Math.ceil(height) + 16 : 0
+      if (next === this.bannerClearance) return
+      // Inline clearance replaces q-py-md's 16px. The visible shift is the
+      // change in that used padding, not the raw clearance value.
+      const prevPad = this.bannerClearance > 0 ? this.bannerClearance : 16
+      const nextPad = next > 0 ? next : 16
+      const delta = nextPad - prevPad
+      const target = this.chatScroll?.getScrollTarget?.()
+      const prevTop = target ? target.scrollTop : 0
+      const pinBottom = this.bottom
+      this.keepBottomForBanner = pinBottom
+      this.bannerClearance = next
+      this.$nextTick(() => {
+        if (pinBottom) {
+          this.pinScrollToBottom()
+          return
+        }
+        // Reading history: grow the top pad without shifting the visible bubbles.
+        if (target && prevTop > 10) target.scrollTop = prevTop + delta
+      })
+    },
+    pinScrollToBottom() {
+      const scrollArea = this.chatScroll
+      const target = scrollArea?.getScrollTarget?.()
+      if (!scrollArea || !target) return
+      scrollArea.setScrollPosition('vertical', target.scrollHeight, 0)
+      this.bottom = true
     },
     // Used by sticky QButton to scroll to bottom
     buttonScrollBottom() {
@@ -512,6 +616,16 @@ export default defineComponent({
     },
   },
   computed: {
+    bannerClearanceStyle(): { paddingTop: string } | undefined {
+      return this.bannerClearance > 0
+        ? { paddingTop: `${this.bannerClearance}px` }
+        : undefined
+    },
+    messageScrollMarginStyle(): { scrollMarginTop: string } | undefined {
+      return this.bannerClearance > 0
+        ? { scrollMarginTop: `${this.bannerClearance}px` }
+        : undefined
+    },
     peerName(): string {
       return this.getContactVuex(this.address)?.profile?.name ?? ''
     },
@@ -564,6 +678,9 @@ export default defineComponent({
     },
   },
   watch: {
+    'address'() {
+      this.focusComposeOnOpen()
+    },
     'messages.length'() {
       // Scroll to bottom if user was already there.
       this.scrollBottom()
@@ -586,5 +703,8 @@ export default defineComponent({
 }
 :deep() .message-color-sent {
   background-color: var(--q-message-color-sent);
+}
+.chat-banner-overlay {
+  z-index: 1;
 }
 </style>

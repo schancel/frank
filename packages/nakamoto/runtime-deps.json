@@ -1,7 +1,7 @@
 {
-  "allowed": ["@noble/hashes"],
+  "allowed": ["@noble/curves", "@noble/hashes"],
   "optional": [],
-  "planned": ["@noble/curves", "@scure/base", "@scure/bip32", "@scure/bip39"],
+  "planned": ["@scure/base", "@scure/bip32", "@scure/bip39"],
   "plannedOptional": ["hash-wasm", "tiny-secp256k1"],
   "note": "Planned names are not installed. Moving a name into allowed or optional requires the same name in docs/nakamoto-audit.md, including maintenance, audit status, size, and license. Optional accelerators stay optional and keep a pure-JS fallback."
 }

@@ -2,9 +2,18 @@
 // Per-chain entries: ./btc ./bch ./xec ./xpi.
 // Feature entries: ./integer ./script ./script-num ./base58 ./base58check
 // ./varint ./reader ./convert-bits ./base32 ./encoding-error ./constructors
-// ./bech32 ./cashaddr ./address ./keys ./hd ./transaction ./sign.
+// ./bech32 ./cashaddr ./address ./backend ./keys ./hd ./transaction ./sign
+// ./block ./curve.
 
 export const PACKAGE_NAME = '@frank/nakamoto'
+
+export {
+  CryptoBackendError,
+  cryptoBackend,
+  nobleBackend,
+  selectCryptoBackend,
+} from './backend.js'
+export type { BackendCode, CryptoBackend } from './backend.js'
 
 export {
   BCH_MAINNET,
@@ -186,10 +195,13 @@ export {
   SIGHASH_NONE,
   SIGHASH_SINGLE,
   SIGHASH_UTXOS,
+  blockMerkleLeaf,
   isTxError,
   parseTransaction,
   serializeTransaction,
   sighash,
+  transactionHash,
+  transactionId,
 } from './transaction.js'
 export type {
   OutPoint,
@@ -203,7 +215,46 @@ export type {
   TxResult,
 } from './transaction.js'
 
+export {
+  BITCOIN_HEADER_BYTES,
+  LOTUS_HEADER_BYTES,
+  headerHash,
+  isBlockError,
+  merkleRoot,
+  parseHeader,
+  parseMerkleBlock,
+  partialMerkleRoot,
+  serializeHeader,
+  serializeMerkleBlock,
+} from './block.js'
+export type {
+  BitcoinHeader,
+  BlockFailure,
+  BlockHeader,
+  BlockResult,
+  LotusHeader,
+  MerkleBlock,
+} from './block.js'
+
 export { isSignError, signAll, signInput } from './sign.js'
+export {
+  ecdh,
+  ecdhWithHash,
+  generateDleqProof,
+  isCurveError,
+  messageDigest,
+  pointAdd,
+  pointMultiply,
+  signEcdsa,
+  signMessage,
+  signSchnorr,
+  tweakAddPrivateKey,
+  tweakAddPublicKey,
+  verifyDleqProof,
+  verifyEcdsa,
+  verifyMessage,
+  verifySchnorr,
+} from './curve.js'
 export type {
   InputSigner,
   InputStatus,
@@ -216,3 +267,21 @@ export type {
   SignedOutput,
   SignedTransaction,
 } from './sign.js'
+export type {
+  BadLength,
+  CompressionRequired as CurveCompressionRequired,
+  CurveError,
+  CurveResult,
+  DleqInput,
+  DleqProof,
+  DleqVerifyInput,
+  HashRequired,
+  HighS,
+  MessageBytes,
+  MessageMagicUnpinned,
+  PointAtInfinity,
+  PointInvalid,
+  ScalarOutOfRange as CurveScalarOutOfRange,
+  SharedPoint,
+  SignatureInvalid,
+} from './curve.js'

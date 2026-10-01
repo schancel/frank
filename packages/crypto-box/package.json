@@ -18,7 +18,7 @@
     "test": "jest",
     "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.jest.json",
     "lint": "eslint . --ext .ts,.js,.cjs,.mjs",
-    "format": "prettier --config ../../app/.prettierrc.json --check \"src/**/*.ts\" \"test/**/*.ts\" \"scripts/**/*.mjs\" package.json tsconfig.json tsconfig.jest.json jest.config.cjs .eslintrc.cjs runtime-deps.json bundle-entries.json",
+    "format": "prettier --config ../../app/.prettierrc.json --check \"src/**/*.ts\" \"test/**/*.ts\" \"scripts/**/*.mjs\" package.json tsconfig.json tsconfig.jest.json jest.config.cjs .eslintrc.cjs runtime-deps.json bundle-entries.json README.md",
     "check:shared": "node scripts/check-shared.mjs",
     "check:deps": "node scripts/check-deps.mjs",
     "check:bundle": "node scripts/bundle-report.mjs"
@@ -30,5 +30,10 @@
     "jest": "^29",
     "ts-jest": "^29",
     "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "@frank/nakamoto": "0.0.1",
+    "@noble/ciphers": "1.3.0",
+    "@noble/hashes": "1.8.0"
   }
 }

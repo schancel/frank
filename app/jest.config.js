@@ -9,6 +9,7 @@ module.exports = {
       pug: { doctype: 'html' },
     },
   },
+  setupFiles: ['<rootDir>/test/jest/level-open-guard.js'],
   setupFilesAfterEnv: ['<rootDir>/test/jest/jest.setup.ts'],
   // noStackTrace: true,
   // bail: true,

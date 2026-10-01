@@ -3,9 +3,12 @@
 // BIP143 and BIP341 are BTC only. BCH and XEC share the fork-id preimage;
 // BCH inserts the Upgrade9 UTXO hash only when commitUtxos is set.
 // XPI uses SignatureHashLotus (lotusd interpreter.cpp). Fork id 0 is not that path.
+// Txids: BTC, BCH, and XEC are sha256d of the serialization with witness bytes
+// omitted. XPI follows lotusd ComputeTxId at master 5d192488 (no third witness
+// merkle). The XPI block leaf is sha256d(GetHash || GetId). GetHash includes
+// the scriptSig. Display order is the reversal of these internal hashes.
 
-import { sha256 } from '@noble/hashes/sha256.js'
-
+import { cryptoBackend } from './backend.js'
 import { concatBytes, copyBytes, encodeUnsignedLE } from './bytes.js'
 import type { ChainDescriptor } from './chain/types.js'
 import { internalHashFromBytes, type InternalHash } from './constructors.js'
@@ -35,7 +38,7 @@ const NEGATIVE_ONE = Uint8Array.of(
   0xff,
 )
 const TAP_TAG = Uint8Array.of(84, 97, 112, 83, 105, 103, 104, 97, 115, 104)
-const TAP_TAG_HASH = new Uint8Array(sha256(TAP_TAG))
+const TAP_TAG_HASH = new Uint8Array(cryptoBackend.sha256(TAP_TAG))
 const INT64_MAX = (1n << 63n) - 1n
 const UINT64_MAX = (1n << 64n) - 1n
 const CODESEP_NONE = 0xffffffff
@@ -158,7 +161,7 @@ function fail(code: TxFailure['code']): TxResult<never> {
 }
 
 function hash256(bytes: Uint8Array) {
-  return new Uint8Array(sha256(sha256(bytes)))
+  return new Uint8Array(cryptoBackend.sha256d(bytes))
 }
 
 function u32Bits(value: number): number | null {
@@ -405,6 +408,106 @@ export function parseTransaction(
   }
 }
 
+function brandHash(bytes: Uint8Array): TxResult<InternalHash> {
+  const branded = internalHashFromBytes(bytes)
+  if (!branded.ok) return fail('tx-range')
+  return branded
+}
+
+function withoutWitness(tx: Transaction): Transaction {
+  return {
+    version: tx.version,
+    locktime: tx.locktime,
+    outputs: tx.outputs,
+    inputs: tx.inputs.map(input => ({
+      prevout: input.prevout,
+      scriptSig: input.scriptSig,
+      sequence: input.sequence,
+    })),
+  }
+}
+
+/**
+ * sha256d of the full consensus serialization. Lotus GetHash includes the
+ * scriptSig. A BTC witness stack is included here and excluded from the txid.
+ */
+export function transactionHash(
+  tx: Transaction,
+  chain: ChainDescriptor,
+): TxResult<InternalHash> {
+  const bytes = serializeTransaction(tx, chain)
+  if (!bytes.ok) return bytes
+  return brandHash(hash256(bytes.value))
+}
+
+function lotusTransactionId(tx: Transaction): TxResult<InternalHash> {
+  if (hasWitness(tx)) return fail('tx-witness-rejected')
+  if (i32Bits(tx.version) === null || u32Bits(tx.locktime) === null) {
+    return fail('tx-range')
+  }
+  const inputLeaves: Uint8Array[] = []
+  for (const input of tx.inputs) {
+    const prevout = outPointBytes(input.prevout)
+    const sequence = encodeUnsignedLE(BigInt(input.sequence), 4)
+    if (prevout === null || !sequence.ok) return fail('tx-range')
+    inputLeaves.push(hash256(concatBytes([prevout, sequence.value])))
+  }
+  const outputLeaves: Uint8Array[] = []
+  for (const output of tx.outputs) {
+    const encoded = outputBytes(output)
+    if (encoded === null) return fail('tx-range')
+    outputLeaves.push(hash256(encoded))
+  }
+  const inputsRoot = merkleRoot(inputLeaves)
+  const outputsRoot = merkleRoot(outputLeaves)
+  if (!inputsRoot.ok) return inputsRoot
+  if (!outputsRoot.ok) return outputsRoot
+  const writer = new ByteWriter()
+  if (!writeI32(writer, tx.version)) return fail('tx-range')
+  writer.write(inputsRoot.value.root)
+  writer.writeUInt8(inputsRoot.value.height)
+  writer.write(outputsRoot.value.root)
+  writer.writeUInt8(outputsRoot.value.height)
+  if (!writeU32(writer, tx.locktime)) return fail('tx-range')
+  return brandHash(hash256(writer.finish()))
+}
+
+/**
+ * Internal txid. XPI is the segmented id. BTC, BCH, and XEC are sha256d of
+ * the serialization with witness bytes omitted.
+ */
+export function transactionId(
+  tx: Transaction,
+  chain: ChainDescriptor,
+): TxResult<InternalHash> {
+  if (chain.family === 'xpi') return lotusTransactionId(tx)
+  if (chain.family !== 'btc' && hasWitness(tx)) {
+    return fail('tx-witness-rejected')
+  }
+  const bytes = serializeTransaction(
+    chain.family === 'btc' ? withoutWitness(tx) : tx,
+    chain,
+  )
+  if (!bytes.ok) return bytes
+  return brandHash(hash256(bytes.value))
+}
+
+/**
+ * Block merkle leaf. XPI is sha256d(GetHash || GetId), both internal.
+ * The other chains use the txid, so a witness stack does not move the leaf.
+ */
+export function blockMerkleLeaf(
+  tx: Transaction,
+  chain: ChainDescriptor,
+): TxResult<InternalHash> {
+  const id = transactionId(tx, chain)
+  if (!id.ok) return id
+  if (chain.family !== 'xpi') return id
+  const hash = transactionHash(tx, chain)
+  if (!hash.ok) return hash
+  return brandHash(hash256(concatBytes([hash.value, id.value])))
+}
+
 /**
  * GetOp cursor. A push that runs past the script fails and leaves `next` on
  * the first unread byte. PUSHDATA4 length is unsigned; `<< 24` is a signed int32.
@@ -644,7 +747,7 @@ function sighashBip143(
 const TAP_TYPES = new Set([0x00, 0x01, 0x02, 0x03, 0x81, 0x82, 0x83])
 
 function shaConcat(parts: readonly Uint8Array[]) {
-  return new Uint8Array(sha256(concatBytes(parts)))
+  return new Uint8Array(cryptoBackend.sha256(concatBytes(parts)))
 }
 
 function sighashTaproot(
@@ -738,14 +841,14 @@ function sighashTaproot(
   if (annex !== null) {
     const annexBytes = new ByteWriter()
     writeScript(annexBytes, annex)
-    writer.write(new Uint8Array(sha256(annexBytes.finish())))
+    writer.write(new Uint8Array(cryptoBackend.sha256(annexBytes.finish())))
   }
   if (low === SIGHASH_SINGLE) {
     const output = tx.outputs[inputIndex]
     if (output === undefined) return fail('sighash-single')
     const encoded = outputBytes(output)
     if (encoded === null) return fail('tx-range')
-    writer.write(new Uint8Array(sha256(encoded)))
+    writer.write(new Uint8Array(cryptoBackend.sha256(encoded)))
   }
   if (extFlag === 1 && options.tapleafHash !== undefined) {
     writer.write(copyBytes(options.tapleafHash))
@@ -754,7 +857,7 @@ function sighashTaproot(
   }
   const message = writer.finish()
   const digest = new Uint8Array(
-    sha256(concatBytes([TAP_TAG_HASH, TAP_TAG_HASH, message])),
+    cryptoBackend.sha256(concatBytes([TAP_TAG_HASH, TAP_TAG_HASH, message])),
   )
   const branded = internalHashFromBytes(digest)
   if (!branded.ok) return fail('tx-range')

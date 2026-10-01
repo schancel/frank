@@ -14,7 +14,7 @@ use cashweb_registry::{
     monad_outbox::{
         start_monad_outbox_worker_shared, MonadOutboxReconcileConfig, MonadOutboxWorker,
     },
-    network_tag::is_valid_network_tag,
+    network_tag::{is_valid_network_tag, monad_network},
     p2p::{
         peer::Peer,
         peers::{InitialMetadataDownloadParams, Peers},
@@ -65,6 +65,17 @@ pub enum CashwebdExeError {
          MONT, MON1): refusing to start rather than guess a network"
     )]
     UnknownNetworkTagEnv,
+
+    #[error(
+        "FRANK_NETWORK_TAG {tag} identifies EVM chain {expected_chain_id}, but \
+         registry.monad_mailbox.expected_chain_id is {actual_chain_id}: refusing to start with \
+         mismatched Frank-CBOR and transaction networks"
+    )]
+    NetworkChainMismatch {
+        tag: String,
+        expected_chain_id: u64,
+        actual_chain_id: u64,
+    },
 }
 
 use self::CashwebdExeError::*;
@@ -123,17 +134,33 @@ fn read_and_validate_conf_with_env(
         .wrap_err("Invalid registry.monad_mailbox configuration")?;
     // An enabled mailbox admits only envelopes carrying the relay's network tag; an unset tag would
     // silently reject every direct message, so refuse to start instead.
+    let network_tag = env(NETWORK_TAG_ENV);
     if matches!(mailbox_mode, MonadMailboxMode::Enabled { .. })
-        && !env(NETWORK_TAG_ENV).is_some_and(|tag| is_valid_network_tag(&tag))
+        && !network_tag.as_deref().is_some_and(is_valid_network_tag)
     {
         return Err(MissingNetworkTagEnv.into());
     }
-    // A tag that is set must be one the relay can map to a Frank-CBOR network identifier
-    // (`network_tag::CBOR_NETWORK_IDENTIFIERS`); an unset tag keeps its existing meaning.
-    if env(NETWORK_TAG_ENV).is_some_and(|tag| {
-        cashweb_registry::network_tag::cbor_network_identifier(tag.as_bytes()).is_none()
-    }) {
-        return Err(UnknownNetworkTagEnv.into());
+    // A tag that is set must identify one complete deployment (CBOR identifier and EVM chain).
+    // An unset tag keeps its existing disabled-mailbox meaning.
+    let network = match network_tag.as_deref() {
+        Some(tag) => Some(monad_network(tag.as_bytes()).ok_or(UnknownNetworkTagEnv)?),
+        None => None,
+    };
+    if let (
+        Some(network),
+        MonadMailboxMode::Enabled {
+            expected_chain_id, ..
+        },
+    ) = (network, &mailbox_mode)
+    {
+        if network.evm_chain_id != *expected_chain_id {
+            return Err(NetworkChainMismatch {
+                tag: String::from_utf8_lossy(network.network_tag).into_owned(),
+                expected_chain_id: network.evm_chain_id,
+                actual_chain_id: *expected_chain_id,
+            }
+            .into());
+        }
     }
     Ok((conf, mailbox_mode))
 }
@@ -463,7 +490,7 @@ mod tests {
     }
 
     #[test]
-    fn a_well_formed_tag_with_no_cbor_identifier_is_refused_and_both_known_tags_pass() {
+    fn a_tag_must_name_a_known_cbor_network_on_the_configured_evm_chain() {
         for config in [LOCAL, DOCKER] {
             for tag in ["MONX", "mont", "TEST"] {
                 let vars = [
@@ -475,13 +502,34 @@ mod tests {
                         .expect_err("an unmapped tag must fail startup");
                 assert!(format!("{error:?}").contains("no Frank-CBOR network identifier"));
             }
-            for tag in ["MONT", "MON1"] {
+            read_and_validate_conf_with_env("-", &mut Cursor::new(config), env(FULL_ENV))
+                .expect("MONT and chain 10143 start");
+
+            let mainnet = config.replace("expected_chain_id = 10143", "expected_chain_id = 143");
+            let mainnet_vars = [
+                ("MONAD_TESTNET_HTTP_RPC_URL", "http://127.0.0.1:1"),
+                ("FRANK_NETWORK_TAG", "MON1"),
+            ];
+            read_and_validate_conf_with_env("-", &mut Cursor::new(&mainnet), env(&mainnet_vars))
+                .expect("MON1 and chain 143 start");
+
+            for (tag, needle) in [
+                ("MON1", "identifies EVM chain 143"),
+                ("MONT", "identifies EVM chain 10143"),
+            ] {
+                let crossed = if tag == "MON1" {
+                    config.to_owned()
+                } else {
+                    mainnet.clone()
+                };
                 let vars = [
                     ("MONAD_TESTNET_HTTP_RPC_URL", "http://127.0.0.1:1"),
                     ("FRANK_NETWORK_TAG", tag),
                 ];
-                read_and_validate_conf_with_env("-", &mut Cursor::new(config), env(&vars))
-                    .expect("known tags start");
+                let error =
+                    read_and_validate_conf_with_env("-", &mut Cursor::new(crossed), env(&vars))
+                        .expect_err("a crossed tag and chain must fail startup");
+                assert!(format!("{error:?}").contains(needle));
             }
         }
         // Also with the mailbox disabled: a set-but-unmapped tag still stamps topic records.

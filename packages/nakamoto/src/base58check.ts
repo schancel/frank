@@ -1,13 +1,13 @@
-import { sha256 } from '@noble/hashes/sha256.js'
+import { cryptoBackend } from './backend.js'
 import { decodeBase58, encodeBase58 } from './base58.js'
 import { concatBytes, copyBytes } from './bytes.js'
 import type { EncodingResult } from './encoding-error.js'
 
 // Bitcoin base58check: payload || SHA-256d(payload)[0..4], then base58.
-// The hash function stays private. The hash-backend ticket owns the public API.
+// The checksum hash stays private. Callers use the backend for SHA-256d.
 
-function hash256(bytes: Uint8Array): Uint8Array {
-  return sha256(sha256(bytes))
+function hash256(bytes: Uint8Array) {
+  return new Uint8Array(cryptoBackend.sha256d(bytes))
 }
 
 export function encodeBase58Check(payload: Uint8Array): string {

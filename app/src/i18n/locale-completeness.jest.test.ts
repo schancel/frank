@@ -26,6 +26,7 @@ const fr = flatten(frFR)
 const SAME_IN_FRENCH = new Set([
   'leftDrawer.contacts',
   'leftDrawer.forum',
+  'walletPanel.monad',
   'SettingPanel.contacts',
   'contactBookDialog.contacts',
   'chatRightDrawer.notifications',

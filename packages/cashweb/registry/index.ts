@@ -17,7 +17,11 @@ import {
   PublicKey,
   Opcode,
 } from 'bitcore-lib-xpi'
-import { privateKeyFromSecretBytes, signEcdsa } from '@frank/nakamoto'
+import {
+  cryptoBackend,
+  privateKeyFromSecretBytes,
+  signEcdsa,
+} from '@frank/nakamoto'
 import { Wallet } from '../legacy-wallet'
 import { Utxo } from '../types/utxo'
 import { calcUtxoId } from '../legacy-wallet/helpers'
@@ -78,6 +82,17 @@ export function signRegistryDigest(hash: Buffer, privKey: PrivateKey): Buffer {
   const signed = signEcdsa(key.value, Uint8Array.from(hash))
   if (!signed.ok) throw new Error(signed.error.code)
   return compactRsFromDer(signed.value)
+}
+
+/** One SHA-256 of AddressMetadata protobuf bytes. Matches `Sha256::digest`
+ * in `SignedPayload::parse_proto` and the registry HTTP test that hashes
+ * `AddressMetadata::encode_to_vec`. Not double-SHA256. Broadcast digests,
+ * address strings, and scripts in this file stay on bitcore (decision #507).
+ * cryptoBackend rejects Buffer. */
+export function registryAddressMetadataDigest(
+  payload: Uint8Array,
+): Uint8Array {
+  return cryptoBackend.sha256(Uint8Array.from(payload))
 }
 
 function calculateBurnAmount(burnOutputs: BurnOutputs[]) {
@@ -150,7 +165,9 @@ export class RegistryHandler {
     metadata.addEntries(relayUrlEntry)
 
     const serializedPayload = metadata.serializeBinary()
-    const hashbuf = crypto.Hash.sha256(Buffer.from(serializedPayload))
+    const hashbuf = Buffer.from(
+      registryAddressMetadataDigest(serializedPayload),
+    )
     const sig = signRegistryDigest(hashbuf, privKey)
 
     const signedPayload = new SignedPayload()
@@ -252,16 +269,16 @@ export class RegistryHandler {
 
     const serverUrl = this.chooseServer()
     const payloadRaw = signedPayload.getPayload()
-    assert(typeof payloadRaw !== 'string', 'payloadRaw is a string?')
-    const payload = Buffer.from(payloadRaw)
-    const payloadDigest = crypto.Hash.sha256(payload)
+    if (typeof payloadRaw === 'string') {
+      throw new Error('payloadRaw is a string?')
+    }
+    const payloadDigest = registryAddressMetadataDigest(payloadRaw)
     const truncatedSignedPayload = new SignedPayload()
     const publicKey = signedPayload.getPublicKey()
     assert(typeof publicKey !== 'string', 'publicKey is a string?')
 
     truncatedSignedPayload.setPublicKey(publicKey)
-    const payloadBuf = payloadDigest.buffer
-    truncatedSignedPayload.setPayloadDigest(new Uint8Array(payloadBuf))
+    truncatedSignedPayload.setPayloadDigest(payloadDigest)
 
     const { paymentDetails } = (await this.paymentRequest(
       serverUrl,

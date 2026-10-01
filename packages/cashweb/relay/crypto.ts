@@ -3,10 +3,10 @@ import {
   PrivateKey,
   PublicKey,
   crypto,
-  HDPublicKey,
 } from 'bitcore-lib-xpi'
 import * as forge from 'node-forge'
 import { stampParentHdNode } from './stamp-hd'
+import { stampParentHdPublicNode } from './stamp-hd-public'
 import { stampParentSecret } from './stamp-parent'
 import { stampParentPublicKey } from './stamp-public'
 import { stealthParentHdNode } from './stealth-hd'
@@ -119,7 +119,7 @@ export class PayloadConstructor {
   // scalar (decision #559). Public key bytes match bitcore HDPublicKey.
   // A secret outside (0, n), a public key that is not 33 or 65 SEC1
   // bytes, an invalid point, or a point at infinity is an error. The
-  // caller's PrivateKey is not wiped. Stamp HD public nodes stay on bitcore.
+  // caller's PrivateKey is not wiped. HMAC, salt, and envelope ECDH stay on bitcore.
   constructHDStealthPublicKey(
     emphemeralPrivKey: PrivateKey,
     destinationPublicKey: PublicKey,
@@ -160,7 +160,7 @@ export class PayloadConstructor {
   // scalar (decision #559). Secret bytes match bitcore HDPrivateKey.
   // A secret outside (0, n), a public key that is not 33 or 65 SEC1
   // bytes, an invalid point, or a zero sum is an error. The caller's
-  // PrivateKey is not wiped. Stamp HD public nodes stay on bitcore.
+  // PrivateKey is not wiped. HMAC, salt, and envelope ECDH stay on bitcore.
   constructHDStealthPrivateKey(
     emphemeralPubKey: PublicKey,
     destinationPrivateKey: PrivateKey,
@@ -187,22 +187,20 @@ export class PayloadConstructor {
     return new PublicKey(Buffer.from(bytes))
   }
 
+  // Depth-0 node. Chain code is the raw payload digest, not a reduced
+  // scalar (decision #537). A digest >= n is an error and is not reduced.
+  // Public key bytes match bitcore HDPublicKey. A zero digest, a digest
+  // that is not 32 bytes, a destination that is not 33 or 65 SEC1 bytes,
+  // or a point at infinity is an error. The caller's PublicKey is not
+  // wiped. HMAC, salt, and envelope ECDH stay on bitcore.
   constructStampHDPublicKey(
     payloadDigest: Uint8Array,
     destinationPublicKey: PublicKey,
   ) {
-    const stampPublicKey = this.constructStampPublicKey(
+    return stampParentHdPublicNode(
+      Uint8Array.from(destinationPublicKey.toBuffer()),
       payloadDigest,
-      destinationPublicKey,
     )
-    return new HDPublicKey({
-      publicKey: stampPublicKey.toBuffer(),
-      depth: 0,
-      network: this.networkName,
-      childIndex: 0,
-      chainCode: payloadDigest,
-      parentFingerPrint: 0,
-    })
   }
 
   // Digest in (0, n). A zero digest, a digest >= n, or a zero sum is an
@@ -228,8 +226,8 @@ export class PayloadConstructor {
   // scalar (decision #537). A digest >= n is an error and is not reduced.
   // Secret bytes match bitcore HDPrivateKey. A zero digest, a digest that
   // is not 32 bytes, a destination outside (0, n), or a zero sum is an
-  // error. The caller's PrivateKey is not wiped. Stamp HD public nodes
-  // stay on bitcore.
+  // error. The caller's PrivateKey is not wiped. HMAC, salt, and envelope
+  // ECDH stay on bitcore.
   constructStampHDPrivateKey(
     payloadDigest: Uint8Array,
     destinationPrivateKey: PrivateKey,

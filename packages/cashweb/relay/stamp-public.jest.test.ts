@@ -70,9 +70,8 @@ it('matches bitcore stamp public keys for digests in (0, n)', () => {
   )
 
   const hd = ctor.constructStampHDPublicKey(digest, uncompressed)
-  const hdDescribed = hd.toObject() as { chainCode: string }
-  expect(hd.publicKey.toBuffer()).toEqual(key.toBuffer())
-  expect(Buffer.from(hdDescribed.chainCode, 'hex')).toEqual(digest)
+  expect(Buffer.from(hd.publicKey)).toEqual(key.toBuffer())
+  expect(Buffer.from(hd.chainCode)).toEqual(digest)
 
   const source = readFileSync(join(__dirname, 'crypto.ts'), 'utf8')
   const body = methodBody(

@@ -6,6 +6,7 @@ on:
     paths:
       - "packages/nakamoto/**"
       - "packages/crypto-box/**"
+      - "packages/cashweb/**"
       - ".github/workflows/nakamoto.yml"
       - "yarn.lock"
   pull_request:
@@ -13,6 +14,7 @@ on:
     paths:
       - "packages/nakamoto/**"
       - "packages/crypto-box/**"
+      - "packages/cashweb/**"
       - ".github/workflows/nakamoto.yml"
       - "yarn.lock"
 

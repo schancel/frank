@@ -10,6 +10,7 @@
           class="q-ma-xs q-ma-xsrow"
           color="primary"
           :label="$t('accountStep.newAccount')"
+          :disable="locked"
           @click="newAccount"
         />
         <q-space />
@@ -20,6 +21,7 @@
           class="row q-ma-xs q-ma-xs"
           color="primary"
           :label="$t('accountStep.importAccount')"
+          :disable="locked"
           @click="importAccount"
         />
         <q-space />
@@ -31,6 +33,7 @@
         v-if="action === 'new'"
         v-model="name"
         filled
+        :readonly="locked"
         :label="$t('profile.name')"
         lazy-rules
         style="width: 100%"
@@ -41,7 +44,7 @@
       />
       <q-input
         ref="seedInput"
-        :readonly="action === 'new'"
+        :readonly="locked || action === 'new'"
         v-model="seed"
         :label="$t('profile.seedEntry')"
         type="textarea"
@@ -67,6 +70,7 @@
         color="primary"
         icon="refresh"
         :aria-label="$t('accountStep.refreshRecoveryPhrase')"
+        :disable="locked"
         @click="generateMnemonic"
       />
       <p
@@ -82,6 +86,7 @@
         data-test="import-different-phrase"
         :aria-expanded="differentOpen ? 'true' : 'false'"
         :aria-controls="differentFormId"
+        :disabled="locked"
         @click="openDifferentPhrase"
       >
         {{ $t('accountStep.importDifferentPhrase') }}
@@ -109,6 +114,7 @@
           autocapitalize="off"
           spellcheck="false"
           data-test="import-different-input"
+          :disabled="locked"
           style="width: 100%; padding: 8px"
           :aria-invalid="differentMismatch ? 'true' : 'false'"
           :aria-describedby="`${differentWarningId} ${differentStatusId}`"
@@ -121,7 +127,11 @@
         >
           {{ differentMismatch ? $t('replaceGuard.mismatch') : '' }}
         </div>
-        <button type="submit" data-test="import-different-confirm">
+        <button
+          type="submit"
+          data-test="import-different-confirm"
+          :disabled="locked"
+        >
           {{ $t('accountStep.importDifferentContinue') }}
         </button>
       </form>
@@ -137,6 +147,7 @@ import {
   onMounted,
   PropType,
   ref,
+  watch,
 } from 'vue'
 import { copyToClipboard } from 'quasar'
 
@@ -181,6 +192,10 @@ export default defineComponent({
       type: Boolean,
       default: false,
     },
+    locked: {
+      type: Boolean,
+      default: false,
+    },
   },
   emits: ['update:account-data', 'resume-import-acknowledged'],
   setup(props, { emit }) {
@@ -215,6 +230,7 @@ export default defineComponent({
       return false
     })
     const emitAccountData = () => {
+      if (props.locked) return
       emit('update:account-data', {
         name:
           action.value === 'new' ? displayName.value.normalized : rawName.value,
@@ -228,6 +244,7 @@ export default defineComponent({
         return rawSeed.value
       },
       set(val: string) {
+        if (props.locked) return
         rawSeed.value = val
         emitAccountData()
       },
@@ -238,6 +255,7 @@ export default defineComponent({
         return rawName.value
       },
       set(val: string) {
+        if (props.locked) return
         rawName.value = val
         emitAccountData()
       },
@@ -247,6 +265,14 @@ export default defineComponent({
     onMounted(() => {
       if (props.resume) emitAccountData()
     })
+    watch(
+      () => props.locked,
+      locked => {
+        if (!locked) return
+        rawName.value = props.accountData.name
+        rawSeed.value = props.accountData.seed
+      },
+    )
 
     return {
       action,
@@ -267,7 +293,7 @@ export default defineComponent({
       differentWarningId: `import-different-warning-${phraseUid}`,
       differentStatusId: `import-different-status-${phraseUid}`,
       openDifferentPhrase() {
-        if (!props.resume || action.value !== 'new') return
+        if (props.locked || !props.resume || action.value !== 'new') return
         if (differentOpen.value) {
           differentOpen.value = false
           differentTyped.value = ''
@@ -281,6 +307,7 @@ export default defineComponent({
       },
       // Parent records the acknowledgement before this draft changes. Neither side writes.
       acceptDifferentPhrase() {
+        if (props.locked) return
         emit('resume-import-acknowledged')
         differentOpen.value = false
         differentMismatch.value = false
@@ -292,7 +319,7 @@ export default defineComponent({
         void nextTick(() => seedInput.value?.focus())
       },
       commitName() {
-        if (action.value !== 'new') return
+        if (props.locked || action.value !== 'new') return
         rawName.value = displayName.value.normalized
         emitAccountData()
       },
@@ -306,17 +333,18 @@ export default defineComponent({
           })
       },
       generateMnemonic() {
-        if (props.resume) return
+        if (props.locked || props.resume) return
         rawSeed.value = generateMnemonic()
         emitAccountData()
       },
       newAccount() {
+        if (props.locked) return
         action.value = 'new'
         rawName.value = ''
         emitAccountData()
       },
       importAccount() {
-        if (props.resume) return
+        if (props.locked || props.resume) return
         action.value = 'import'
         rawSeed.value = ''
         emitAccountData()
@@ -325,6 +353,7 @@ export default defineComponent({
   },
   methods: {
     tryDifferentPhrase() {
+      if (this.locked) return
       if (this.differentTyped.trim() !== this.$t('replaceGuard.word')) {
         this.differentMismatch = true
         void nextTick(() => this.differentInput?.focus())

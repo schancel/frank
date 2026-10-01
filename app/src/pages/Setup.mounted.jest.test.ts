@@ -1,6 +1,6 @@
 /** @jest-environment jsdom */
 
-import { mount, shallowMount } from '@vue/test-utils'
+import { flushPromises, mount, shallowMount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { QStep, QStepper, QStepperNavigation } from 'quasar'
 import { defineComponent, nextTick, type App } from 'vue'
@@ -53,11 +53,22 @@ jest.mock('../utils/setup-account', () => {
 })
 
 import Setup from './Setup.vue'
+import AccountStep from '../components/setup/AccountStep.vue'
 import ReplaceAccountGuard from '../components/setup/ReplaceAccountGuard.vue'
 import { useWalletStore } from 'src/stores/wallet'
 import { commitValidatedSetupSeed } from '../utils/setup-account'
 
 const STORED = 'test test test test test test test test test test test junk'
+const OTHER =
+  'legal winner thank year wave sausage worth useful legal winner thank yellow'
+
+function deferred() {
+  let resolve!: () => void
+  const promise = new Promise<void>(resolvePromise => {
+    resolve = resolvePromise
+  })
+  return { promise, resolve }
+}
 
 const SlotStub = defineComponent({ template: '<div><slot /></div>' })
 
@@ -771,8 +782,6 @@ describe('Setup page mounted (#267)', () => {
     })
 
     it('preserves the acknowledged import draft across real QStepper Back/remount', async () => {
-      const OTHER =
-        'legal winner thank year wave sausage worth useful legal winner thank yellow'
       const { wrapper, vm } = await resumeImportContext()
       await wrapper
         .get('[data-test="import-different-phrase"]')
@@ -801,6 +810,95 @@ describe('Setup page mounted (#267)', () => {
       expect(remountedImport.attributes('readonly')).toBeUndefined()
       expect((remountedImport.element as HTMLTextAreaElement).value).toBe(OTHER)
       expect(vm.accountData.nameRequired).toBe(false)
+    })
+
+    it('freezes the visible import identity and navigation while wallet durability is pending', async () => {
+      const walletWrite = deferred()
+      const { wallet, setSeed, wrapper, vm } = await resumeImportContext()
+      await wrapper
+        .get('[data-test="import-different-phrase"]')
+        .trigger('click')
+      await wrapper
+        .get('[data-test="import-different-input"]')
+        .setValue('REPLACE')
+      await wrapper.get('[data-test="import-different-form"]').trigger('submit')
+      const importBox = wrapper.get('textarea[aria-label="profile.seedEntry"]')
+      await importBox.setValue(OTHER)
+      wallet.flushPersistence = jest.fn(() => walletWrite.promise)
+
+      const completion = vm.next()
+      await flushPromises()
+      expect(wallet.seedPhrase).toBe(OTHER)
+      const committedName = vm.accountData.name
+
+      const editor = wrapper.findComponent(AccountStep).vm as unknown as {
+        seed: string
+        name: string
+      }
+      editor.seed = STORED
+      editor.name = 'Changed after submit'
+      vm.previous()
+      await wrapper.findAll('.q-stepper__tab')[0].trigger('click')
+      await nextTick()
+
+      expect(vm.step).toBe(2)
+      expect(vm.accountData.seed).toBe(OTHER)
+      expect(vm.accountData.name).toBe(committedName)
+      expect((importBox.element as HTMLTextAreaElement).value).toBe(OTHER)
+      expect(importBox.attributes('readonly')).toBeDefined()
+
+      walletWrite.resolve()
+      await completion
+      expect(setSeed).toHaveBeenCalledTimes(1)
+      expect(wallet.seedPhrase).toBe(OTHER)
+      expect(mockSetRelayData).toHaveBeenCalledWith(
+        expect.objectContaining({
+          profile: expect.objectContaining({ name: committedName }),
+        }),
+      )
+    })
+
+    it('keeps an entry-failure retry on the committed identity without rewriting stores', async () => {
+      const { wallet, setSeed, wrapper, vm } = await resumeImportContext()
+      await wrapper
+        .get('[data-test="import-different-phrase"]')
+        .trigger('click')
+      await wrapper
+        .get('[data-test="import-different-input"]')
+        .setValue('REPLACE')
+      await wrapper.get('[data-test="import-different-form"]').trigger('submit')
+      const importBox = wrapper.get('textarea[aria-label="profile.seedEntry"]')
+      await importBox.setValue(OTHER)
+      vm.finishSetup = jest
+        .fn()
+        .mockRejectedValueOnce(new Error('entry failed'))
+        .mockResolvedValueOnce(undefined)
+
+      await expect(vm.next()).rejects.toThrow('entry failed')
+      expect(wallet.seedPhrase).toBe(OTHER)
+      const committedName = vm.accountData.name
+      const editor = wrapper.findComponent(AccountStep).vm as unknown as {
+        seed: string
+        name: string
+      }
+      editor.seed = STORED
+      editor.name = 'Changed after entry failure'
+      vm.previous()
+      await wrapper.findAll('.q-stepper__tab')[0].trigger('click')
+      await nextTick()
+
+      expect(vm.step).toBe(2)
+      expect(vm.accountData.seed).toBe(OTHER)
+      expect(vm.accountData.name).toBe(committedName)
+      expect((importBox.element as HTMLTextAreaElement).value).toBe(OTHER)
+      expect(importBox.attributes('readonly')).toBeDefined()
+
+      await vm.next()
+      expect(vm.finishSetup).toHaveBeenCalledTimes(2)
+      expect(setSeed).toHaveBeenCalledTimes(1)
+      expect(wallet.flushPersistence).toHaveBeenCalledTimes(1)
+      expect(mockSetRelayData).toHaveBeenCalledTimes(1)
+      expect(mockFlushProfile).toHaveBeenCalledTimes(1)
     })
 
     it('a stored seed WITH a name is not resume mode (completed-old is unaffected)', async () => {

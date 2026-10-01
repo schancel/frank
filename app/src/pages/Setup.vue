@@ -36,6 +36,7 @@
             :title="$t('setup.eula')"
             icon="flaky"
             :done="step > 1"
+            :disable="completionLocked && step !== 1"
           >
             <eula-step />
           </q-step>
@@ -44,11 +45,14 @@
             :title="$t('setup.setupWallet')"
             icon="vpn_key"
             :done="step > 2"
+            :disable="completionLocked && step !== 2"
           >
             <account-step
-              v-model:account-data="accountData"
+              :account-data="accountData"
+              :locked="completionLocked"
               :resume="resume"
               :resume-import-acknowledged="resumeReplaceAcknowledged"
+              @update:account-data="updateAccountData"
               @resume-import-acknowledged="acknowledgeResumeImport"
             />
           </q-step>
@@ -58,6 +62,7 @@
             :title="$t('seedConfirm.stepTitle')"
             icon="fact_check"
             :done="step > 3"
+            :disable="completionLocked && step !== 3"
           >
             <div
               v-if="challengeError"
@@ -80,6 +85,7 @@
             :title="$t('setup.deposit')"
             icon="attach_money"
             :done="step > 4"
+            :disable="completionLocked && step !== 4"
           >
             <deposit-step />
           </q-step>
@@ -97,6 +103,7 @@
                 @click="previous()"
                 :label="$t('setup.back')"
                 class="q-ml-sm"
+                :disable="completionLocked"
               />
             </q-stepper-navigation>
             <q-banner inline-actions class="text-white bg-red">
@@ -170,6 +177,13 @@ type CompletionPhase =
   | 'completed'
   | 'terminal'
 
+interface AccountSubmission {
+  readonly seed: string
+  readonly name: string
+  readonly nameRequired: boolean
+  readonly confirmedAt: number
+}
+
 export default defineComponent({
   components: {
     AccountStep,
@@ -230,6 +244,7 @@ export default defineComponent({
       resumeReplaceAcknowledged: false,
       completionPending: false,
       completionPhase: 'editing' as CompletionPhase,
+      accountSubmission: null as Readonly<AccountSubmission> | null,
       storedSeed: resume ? storedSeed : null,
       step: 1,
       accountData: {
@@ -292,6 +307,10 @@ export default defineComponent({
       if (!this.resume) return
       this.resumeReplaceAcknowledged = true
     },
+    updateAccountData(accountData: typeof this.accountData) {
+      if (this.completionLocked) return
+      this.accountData = accountData
+    },
     onSeedConfirmed() {
       if (this.challenge) this.confirmedSeed = this.challenge.seed
     },
@@ -310,12 +329,7 @@ export default defineComponent({
     setupFinishLocation() {
       return window.location
     },
-    async completeAccountStep(confirmedAt: number) {
-      if (this.completionPhase === 'entering') {
-        await this.finishSetup()
-        this.completionPhase = 'completed'
-        return
-      }
+    captureAccountSubmission(confirmedAt: number): Readonly<AccountSubmission> {
       if (this.existingAccount && !this.replaceAcknowledged) {
         // Independent of the UI: an existing account is never replaced, and its profile never
         // overwritten, without the typed acknowledgement.
@@ -330,17 +344,41 @@ export default defineComponent({
         // Without the typed acknowledgement, resume mode may only re-store the SAME phrase.
         throw new Error(this.$t('setup.storedSeedMismatch'))
       }
+
+      // Validate and canonicalize the whole identity synchronously, before avatar loading or any
+      // persistence await opens a window for the editable draft to diverge from durable state.
+      const seed = commitValidatedSetupSeed(
+        this.accountData.seed,
+        () => undefined,
+        confirmedAt,
+      )
+      const name = commitValidatedSetupName(
+        this.accountData.name,
+        this.accountData.nameRequired,
+        () => undefined,
+      )
+      const submission = Object.freeze({
+        seed,
+        name,
+        nameRequired: this.accountData.nameRequired,
+        confirmedAt,
+      })
+      this.accountData.seed = seed
+      this.accountData.name = name
+      this.accountData.nameRequired = submission.nameRequired
+      return submission
+    },
+    async completeAccountStep(submission: Readonly<AccountSubmission>) {
+      if (this.completionPhase === 'entering') {
+        await this.finishSetup()
+        this.completionPhase = 'completed'
+        return
+      }
       if (!this.avatar) {
         this.avatar = await this.selectRandomAvatar()
       }
-      this.accountData.seed = commitValidatedSetupSeed(
-        this.accountData.seed,
-        (seed, at) => {
-          this.completionPhase = 'wallet-persistence'
-          this.setSeedPhrase(seed, at)
-        },
-        confirmedAt,
-      )
+      this.completionPhase = 'wallet-persistence'
+      this.setSeedPhrase(submission.seed, submission.confirmedAt)
       // Ticket #370: ask the browser to keep the just-stored seed while we still hold the user's
       // click. The helper is bounded and best-effort, and never blocks signup for long.
       await requestPersistentStorageWithin(PERSIST_REQUEST_WAIT_MS)
@@ -349,19 +387,14 @@ export default defineComponent({
       // then deliberately neither reloads nor proceeds.
       await useWalletStore().flushPersistence()
       this.completionPhase = 'profile-persistence'
-      this.accountData.name = commitValidatedSetupName(
-        this.accountData.name,
-        this.accountData.nameRequired,
-        name =>
-          this.setRelayData({
-            profile: {
-              name,
-              bio: '',
-              avatar: this.avatar,
-            },
-            inbox: defaultRelayData.inbox,
-          }),
-      )
+      this.setRelayData({
+        profile: {
+          name: submission.name,
+          bio: '',
+          avatar: this.avatar,
+        },
+        inbox: defaultRelayData.inbox,
+      })
       await useProfileStore().flushPersistence()
       this.completionPhase = 'entering'
       await this.finishSetup()
@@ -371,7 +404,10 @@ export default defineComponent({
       if (this.completionBlocked) return
       this.completionPending = true
       try {
-        await this.completeAccountStep(confirmedAt)
+        if (!this.accountSubmission) {
+          this.accountSubmission = this.captureAccountSubmission(confirmedAt)
+        }
+        await this.completeAccountStep(this.accountSubmission)
       } catch (error) {
         const completionError =
           error instanceof Error ? error : new Error(String(error))
@@ -720,11 +756,19 @@ export default defineComponent({
       }
     },
     previous() {
+      if (this.completionLocked) return
       const stepper = this.$refs.stepper as QStepper
       stepper.previous()
     },
   },
   computed: {
+    completionLocked(): boolean {
+      return (
+        this.completionPending ||
+        this.accountSubmission !== null ||
+        this.completionPhase !== 'editing'
+      )
+    },
     completionBlocked(): boolean {
       return (
         this.completionPending ||

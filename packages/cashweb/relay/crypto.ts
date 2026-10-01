@@ -7,6 +7,7 @@ import {
   HDPrivateKey,
 } from 'bitcore-lib-xpi'
 import * as forge from 'node-forge'
+import { stampParentSecret } from './stamp-parent'
 import { stealthPointDigest } from './stealth-point-digest'
 
 export class PayloadConstructor {
@@ -183,16 +184,22 @@ export class PayloadConstructor {
     })
   }
 
+  // Digest in (0, n). A zero digest, a digest >= n, or a zero sum is an
+  // error (decision #537). Hex matches new PrivateKey(bn): compressed,
+  // default network. Stealth parent scalars stay on bitcore.
   constructStampPrivateKey(
     payloadDigest: Uint8Array,
     destinationPrivateKey: PrivateKey,
   ) {
-    const digestBn = crypto.BN.fromBuffer(Buffer.from(payloadDigest))
-    const stampPrivBn = digestBn
-      .add(destinationPrivateKey.toBigNumber())
-      .mod(crypto.Point.getN())
-    const stampPrivKey = new PrivateKey(stampPrivBn)
-    return stampPrivKey
+    const secret = stampParentSecret(
+      Uint8Array.from(destinationPrivateKey.toBuffer()),
+      payloadDigest,
+    )
+    try {
+      return new PrivateKey(Buffer.from(secret).toString('hex'))
+    } finally {
+      secret.fill(0)
+    }
   }
 
   constructStampHDPrivateKey(

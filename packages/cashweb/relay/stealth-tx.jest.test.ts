@@ -3,7 +3,7 @@ import { join } from 'path'
 
 import { Script, Transaction } from 'bitcore-lib-xpi'
 
-import { readStampTransaction } from './stamp-tx'
+import { readStealthTransaction } from './stealth-tx'
 
 // Bitcoin Core BIP143 unsigned transaction. Input 0 prevout is the
 // internal hash below and vout 4c1d0000. Output 0 is value 1 and an
@@ -101,33 +101,35 @@ function bitcoreView(tx: Buffer): {
   }
 }
 
-it('reads stamp transactions from transaction bytes', () => {
-  const source = readFileSync(join(__dirname, 'index.ts'), 'utf8')
-  const receiveStart = source.indexOf('async receiveMessage')
-  const receive = source.slice(
-    receiveStart,
-    source.indexOf('Decode entries', receiveStart),
-  )
-  expect(receive).toContain('readStampTransaction')
-  expect(receive).not.toContain('new Transaction')
-  expect(receive).toContain('constructStampHDPrivateKey')
-  expect(receive).toContain('new Script(')
-  expect(receive).toContain("throw new Error('stamp-output')")
+it('reads stealth transactions from transaction bytes', () => {
   const stealth = readFileSync(join(__dirname, 'decode-entry.ts'), 'utf8')
-  expect(stealth).toContain('readStealthTransaction')
-  expect(stealth).not.toContain('new Transaction')
+  const payment = stealth.slice(stealth.indexOf("kind === 'stealth-payment'"))
+  const readAt = payment.indexOf('readStealthTransaction(stealthTxRaw)')
+  const deleteAt = payment.indexOf('deleteUtxo')
+  const missingAt = payment.indexOf("throw new Error('stealth-output')")
+  expect(readAt).toBeGreaterThan(-1)
+  expect(deleteAt).toBeGreaterThan(readAt)
+  expect(missingAt).toBeGreaterThan(deleteAt)
+  expect(payment).not.toContain('new Transaction')
+  expect(payment).toContain('pointToCompressed')
+  expect(payment).toContain('.deriveChild(44)')
+  expect(payment).toContain('.toAddress(')
+  expect(payment).toContain('constructHDStealthPrivateKey')
+  const receive = readFileSync(join(__dirname, 'index.ts'), 'utf8')
+  expect(receive).toContain('readStampTransaction')
+  expect(receive).toContain('constructStampHDPrivateKey')
 
   const bip143 = Buffer.from(BIP143_UNSIGNED, 'hex')
   const bip143Bitcore = bitcoreView(bip143)
-  const bip143Stamp = readStampTransaction(bip143)
-  expect(bip143Stamp.txId).toBe(bip143Bitcore.txId)
-  expect(bip143Stamp.txId).toHaveLength(64)
-  expect(bip143Stamp.txId).not.toBe(bip143Bitcore.hash)
-  expect(bip143Stamp.inputs).toEqual([
+  const bip143Stealth = readStealthTransaction(bip143)
+  expect(bip143Stealth.txId).toBe(bip143Bitcore.txId)
+  expect(bip143Stealth.txId).toHaveLength(64)
+  expect(bip143Stealth.txId).not.toBe(bip143Bitcore.hash)
+  expect(bip143Stealth.inputs).toEqual([
     { txId: displayHex(BIP143_INTERNAL), outputIndex: 0x1d4c },
   ])
-  expect(bip143Stamp.inputs).toEqual(bip143Bitcore.inputs)
-  expect(bip143Stamp.outputs).toEqual([
+  expect(bip143Stealth.inputs).toEqual(bip143Bitcore.inputs)
+  expect(bip143Stealth.outputs).toEqual([
     { satoshis: 1, script: new Uint8Array() },
   ])
   expect(bip143Bitcore.outputs[0].satoshis).toBe(1)
@@ -147,16 +149,16 @@ it('reads stamp transactions from transaction bytes', () => {
     ],
   })
   const paidBitcore = bitcoreView(paid)
-  const paidStamp = readStampTransaction(paid)
-  expect(paidStamp.txId).toBe(paidBitcore.txId)
-  expect(paidStamp.txId).not.toBe(paidBitcore.hash)
-  expect(paidStamp.inputs).toEqual(paidBitcore.inputs)
-  expect(paidStamp.inputs[1].txId.startsWith('00')).toBe(false)
-  expect(paidStamp.inputs[1].txId.endsWith('00')).toBe(true)
-  expect(paidStamp.outputs[0].satoshis).toBe(1000)
-  expect(Buffer.from(paidStamp.outputs[0].script)).toEqual(Buffer.from(P2PKH))
-  expect(paidStamp.outputs[1].satoshis).toBe(0)
-  const address = new Script(Buffer.from(paidStamp.outputs[0].script)).toAddress()
+  const paidStealth = readStealthTransaction(paid)
+  expect(paidStealth.txId).toBe(paidBitcore.txId)
+  expect(paidStealth.txId).not.toBe(paidBitcore.hash)
+  expect(paidStealth.inputs).toEqual(paidBitcore.inputs)
+  expect(paidStealth.inputs[1].txId.startsWith('00')).toBe(false)
+  expect(paidStealth.inputs[1].txId.endsWith('00')).toBe(true)
+  expect(paidStealth.outputs[0].satoshis).toBe(1000)
+  expect(Buffer.from(paidStealth.outputs[0].script)).toEqual(Buffer.from(P2PKH))
+  expect(paidStealth.outputs[1].satoshis).toBe(0)
+  const address = new Script(Buffer.from(paidStealth.outputs[0].script)).toAddress()
   const bitcoreAddress = new Script(paidBitcore.outputs[0].script).toAddress()
   if (
     !address ||
@@ -179,8 +181,8 @@ it('reads stamp transactions from transaction bytes', () => {
     ],
   })
   const otherBitcore = bitcoreView(otherScript)
-  const otherStamp = readStampTransaction(otherScript)
-  expect(otherStamp.txId).toBe(paidStamp.txId)
+  const otherStealth = readStealthTransaction(otherScript)
+  expect(otherStealth.txId).toBe(paidStealth.txId)
   expect(otherBitcore.txId).toBe(paidBitcore.txId)
   expect(otherBitcore.hash).not.toBe(paidBitcore.hash)
 
@@ -196,18 +198,38 @@ it('reads stamp transactions from transaction bytes', () => {
     outputs: [{ value: 50n, script: P2PKH }],
   })
   const coinbaseBitcore = bitcoreView(coinbase)
-  const coinbaseStamp = readStampTransaction(coinbase)
-  expect(coinbaseStamp.txId).toBe(coinbaseBitcore.txId)
-  expect(coinbaseStamp.inputs).toEqual([
+  const coinbaseStealth = readStealthTransaction(coinbase)
+  expect(coinbaseStealth.txId).toBe(coinbaseBitcore.txId)
+  expect(coinbaseStealth.inputs).toEqual([
     { txId: '00'.repeat(32), outputIndex: 0xffffffff },
   ])
+
+  const safeMax = rawTx({
+    inputs: [
+      { txidInternal: first, vout: 1, script: Uint8Array.of(), sequence: 0 },
+    ],
+    outputs: [{ value: BigInt(Number.MAX_SAFE_INTEGER), script: P2PKH }],
+  })
+  expect(readStealthTransaction(safeMax).outputs[0].satoshis).toBe(
+    bitcoreView(safeMax).outputs[0].satoshis,
+  )
 
   const emptyInputs = rawTx({
     inputs: [],
     outputs: [{ value: 1n, script: Uint8Array.of() }],
   })
-  expect(readStampTransaction(emptyInputs).txId).not.toBe(
+  expect(readStealthTransaction(emptyInputs).txId).not.toBe(
     bitcoreView(emptyInputs).txId,
+  )
+
+  const emptyOutputs = rawTx({
+    inputs: [
+      { txidInternal: first, vout: 1, script: Uint8Array.of(), sequence: 0 },
+    ],
+    outputs: [],
+  })
+  expect(readStealthTransaction(emptyOutputs).txId).not.toBe(
+    bitcoreView(emptyOutputs).txId,
   )
 
   const huge = rawTx({
@@ -216,11 +238,11 @@ it('reads stamp transactions from transaction bytes', () => {
     ],
     outputs: [{ value: 1n << 53n, script: P2PKH }],
   })
-  expect(() => readStampTransaction(huge)).toThrow('stamp-value')
+  expect(() => readStealthTransaction(huge)).toThrow('stealth-value')
 
   const trailing = Buffer.concat([bip143, Buffer.of(0)])
   expect(bitcoreView(trailing).txId).toBe(bip143Bitcore.txId)
-  expect(() => readStampTransaction(trailing)).toThrow('stamp-tx')
-  expect(() => readStampTransaction(Uint8Array.of())).toThrow('stamp-tx')
-  expect(readStampTransaction(paid).outputs[9]).toBeUndefined()
+  expect(() => readStealthTransaction(trailing)).toThrow('stealth-tx')
+  expect(() => readStealthTransaction(Uint8Array.of())).toThrow('stealth-tx')
+  expect(readStealthTransaction(paid).outputs[9]).toBeUndefined()
 })

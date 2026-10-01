@@ -4,10 +4,11 @@ import type { PayloadEntry } from './relay_pb'
 import { entryToImage } from './images'
 import stealth from './stealth_pb'
 import { TextItem, MessageItem } from '../types/messages'
-import { PublicKey, crypto, Transaction, HDPrivateKey } from 'bitcore-lib-xpi'
+import { PublicKey, crypto, HDPrivateKey, Script } from 'bitcore-lib-xpi'
 import { Wallet } from '../legacy-wallet'
 import { calcUtxoId } from '../legacy-wallet/helpers'
 import { Utxo } from '../types/utxo'
+import { readStealthTransaction } from './stealth-tx'
 
 export async function decodeEntry(
   entry: PayloadEntry,
@@ -83,15 +84,16 @@ export async function decodeEntry(
     let stealthValue = 0
     for (const [i, outpoint] of outpointsList.entries()) {
       const stealthTxRaw = Buffer.from(outpoint.getStealthTx())
-      const stealthTx = new Transaction(stealthTxRaw)
-      const txId = stealthTx.txid
+      // Segmented id and output amounts, not a bitcore Transaction (decision #529).
+      const stealthTx = readStealthTransaction(stealthTxRaw)
+      const txId = stealthTx.txId
       const vouts = outpoint.getVoutsList()
 
       if (outbound) {
         for (const input of stealthTx.inputs) {
           // Don't add these outputs to our wallet. They're the other persons
           const utxoId = calcUtxoId({
-            txId: input.prevTxId.toString('hex'),
+            txId: input.txId,
             outputIndex: input.outputIndex,
           })
           await wallet.deleteUtxo(utxoId)
@@ -100,6 +102,7 @@ export async function decodeEntry(
 
       for (const [j, outputIndex] of vouts.entries()) {
         const output = stealthTx.outputs[outputIndex]
+        if (output === undefined) throw new Error('stealth-output')
         const satoshis = output.satoshis
 
         const outpointPrivKey = stealthHDPrivKey
@@ -107,7 +110,10 @@ export async function decodeEntry(
           .deriveChild(145)
           .deriveChild(i)
           .deriveChild(j).privateKey
-        const address = output.script.toAddress(networkName) // TODO: Make generic
+        // Address strings stay on bitcore (issue #242).
+        const address = new Script(Buffer.from(output.script)).toAddress(
+          networkName,
+        )
         // Network doesn't really matter here, just serves as a placeholder to avoid needing to compute the
         // HASH160(SHA256(point)) ourself
         // Also, ensure the point is compressed first before calculating the address so the hash is deterministic

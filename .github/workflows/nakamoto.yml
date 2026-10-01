@@ -31,3 +31,92 @@ jobs:
       - name: crypto-box
         working-directory: packages/crypto-box
         run: yarn test && yarn typecheck && yarn lint && yarn format && yarn check:shared && yarn check:deps && yarn check:bundle
+      # Cashweb's jest config maps @frank/nakamoto to TypeScript source. This step
+      # builds dist, typechecks the consumer against that declaration, and runs the
+      # suite through a require() of dist. Node 26 can require the ESM build.
+      # packages/cashweb has no typecheck script and tsc is already red on main
+      # (untyped bluebird/level, protobuf values used as types). Fail only when
+      # legacy-wallet/index.ts reports anything besides those bluebird diagnostics.
+      - name: cashweb
+        run: |
+          yarn --cwd packages/nakamoto tsc -p tsconfig.json --pretty false
+          test -s packages/nakamoto/dist/index.js
+          test -s packages/nakamoto/dist/index.d.ts
+          node <<'NODE'
+          const fs = require('fs')
+          const path = require('path')
+          const ts = require('typescript')
+          const configPath = path.resolve('packages/cashweb/tsconfig.json')
+          const read = ts.readConfigFile(configPath, ts.sys.readFile)
+          if (read.error) throw new Error('cashweb tsconfig unreadable')
+          const parsed = ts.parseJsonConfigFileContent(
+            read.config,
+            ts.sys,
+            path.dirname(configPath),
+          )
+          const host = ts.createCompilerHost(parsed.options)
+          const from = path.resolve('packages/cashweb/legacy-wallet/index.ts')
+          const resolved = ts.resolveModuleName(
+            '@frank/nakamoto',
+            from,
+            parsed.options,
+            host,
+          ).resolvedModule
+          const file = resolved && resolved.resolvedFileName
+          if (!file || !file.endsWith(`${path.sep}nakamoto${path.sep}dist${path.sep}index.d.ts`)) {
+            console.error('cashweb resolved @frank/nakamoto to', file)
+            process.exit(1)
+          }
+          console.log('cashweb @frank/nakamoto ->', file)
+          const dist = path.resolve('packages/nakamoto/dist/index.js')
+          const bridge = '/tmp/nakamoto-dist-bridge.cjs'
+          const hit = '/tmp/nakamoto-dist-bridge.hit'
+          fs.writeFileSync(
+            bridge,
+            `'use strict'\nrequire('fs').writeFileSync(${JSON.stringify(hit)}, '1')\nmodule.exports = require(${JSON.stringify(dist)})\n`,
+          )
+          const cfg = require('./packages/cashweb/jest.config.js')
+          const mapped = cfg.moduleNameMapper['^@frank/nakamoto$']
+          if (!mapped || !mapped.includes('nakamoto/src/index.ts')) {
+            throw new Error('expected the jest source map so this step can replace it')
+          }
+          cfg.rootDir = path.resolve('packages/cashweb')
+          cfg.moduleNameMapper['^@frank/nakamoto$'] = bridge
+          fs.writeFileSync(
+            '/tmp/cashweb-jest-built.cjs',
+            'module.exports = ' + JSON.stringify(cfg, null, 2) + '\n',
+          )
+          try {
+            fs.unlinkSync(hit)
+          } catch (error) {
+            if (error.code !== 'ENOENT') throw error
+          }
+          NODE
+          tsc_log=/tmp/cashweb-tsc.txt
+          set +e
+          yarn --cwd packages/cashweb tsc -p tsconfig.json --pretty false --noEmit >"$tsc_log" 2>&1
+          tsc_status=$?
+          set -e
+          cat "$tsc_log"
+          if [ "$tsc_status" -ne 0 ] && ! grep -q "error TS" "$tsc_log"; then
+            echo "cashweb tsc failed before diagnostics"
+            exit "$tsc_status"
+          fi
+          CASHWEB_TSC_LOG="$tsc_log" node <<'NODE'
+          const fs = require('fs')
+          const text = fs.readFileSync(process.env.CASHWEB_TSC_LOG, 'utf8')
+          const lines = text.split('\n').filter(line => line.startsWith('legacy-wallet/index.ts('))
+          const allowed = line =>
+            (line.includes('error TS7016:') && line.includes("module 'bluebird'")) ||
+            (line.includes('error TS7006:') && /Parameter '(pkh|key)'/.test(line))
+          const unexpected = lines.filter(line => !allowed(line))
+          if (unexpected.length) {
+            console.error('signing file failed to typecheck against the built package')
+            for (const line of unexpected) console.error(line)
+            process.exit(1)
+          }
+          console.log('cashweb signing file typecheck ok (' + lines.length + ' pre-existing bluebird diagnostics)')
+          NODE
+          yarn --cwd packages/cashweb jest --config /tmp/cashweb-jest-built.cjs --watchman=false
+          test -s /tmp/nakamoto-dist-bridge.hit
+          echo "cashweb jest loaded packages/nakamoto/dist/index.js"

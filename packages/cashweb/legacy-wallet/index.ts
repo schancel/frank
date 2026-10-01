@@ -29,6 +29,7 @@ import {
   signEcdsa,
   type ChainDescriptor,
   type InputSigner,
+  type InternalHash,
   type SpentOutput,
   type Transaction as NakamotoTransaction,
 } from '@frank/nakamoto'
@@ -68,7 +69,7 @@ type SignableTransaction = Transaction & {
 }
 
 // bitcore stores the display txid. Nakamoto outpoints use the internal hash.
-function internalTxid(display: Buffer): Uint8Array {
+function internalTxid(display: Buffer): InternalHash {
   const internal = new Uint8Array(display.length)
   for (let index = 0; index < display.length; index += 1) {
     internal[index] = display[display.length - 1 - index]

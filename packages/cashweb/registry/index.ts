@@ -13,10 +13,9 @@ import {
   Networks,
   PrivateKey,
   Transaction,
-  Script,
   PublicKey,
-  Opcode,
 } from 'bitcore-lib-xpi'
+import { pondBurnIsDownvote, pondBurnScript } from './burn-script'
 import {
   cryptoBackend,
   privateKeyFromSecretBytes,
@@ -86,9 +85,9 @@ export function signRegistryDigest(hash: Buffer, privKey: PrivateKey): Buffer {
 
 /** One SHA-256 of AddressMetadata protobuf bytes. Matches `Sha256::digest`
  * in `SignedPayload::parse_proto` and the registry HTTP test that hashes
- * `AddressMetadata::encode_to_vec`. Not double-SHA256. Broadcast digests,
- * address strings, and scripts in this file stay on bitcore (decision #507).
- * cryptoBackend rejects Buffer. */
+ * `AddressMetadata::encode_to_vec`. Not double-SHA256. Broadcast digests and
+ * address strings in this file stay on bitcore (decision #507). The burn
+ * script is decision #519. cryptoBackend rejects Buffer. */
 export function registryAddressMetadataDigest(
   payload: Uint8Array,
 ): Uint8Array {
@@ -107,7 +106,7 @@ function calculateBurnAmount(burnOutputs: BurnOutputs[]) {
     const parsedTx = new Transaction(Buffer.from(tx))
     const output = parsedTx.outputs[index]
     const script = new Uint8Array(output.script.toBuffer())
-    const isDownVote = script[6] === Opcode.map.OP_0
+    const isDownVote = pondBurnIsDownvote(script)
     return (
       total +
       (isDownVote
@@ -310,12 +309,8 @@ export class RegistryHandler {
     const upvote = vote > 0
     const satoshis = vote < 0 ? -vote : vote
 
-    // Create burn output
-    const script = new Script(undefined)
-      .add(Opcode.map.OP_RETURN)
-      .add(Buffer.from([80, 79, 78, 68])) // POND
-      .add(upvote ? Opcode.map.OP_1 : Opcode.map.OP_0)
-      .add(hash)
+    // Create burn output. Bytes match bitcore Script.add (decision #519).
+    const script = Buffer.from(pondBurnScript(Uint8Array.from(hash), upvote))
 
     const output = new Transaction.Output({
       script,

@@ -35,6 +35,7 @@ import { Wallet } from '../legacy-wallet'
 import { signRegistryDigest } from '../registry'
 import { relayCipherPayloadDigest } from './cipher-payload-digest'
 import { outpointPublicKey } from './outpoint-hd'
+import { relayProfilePublicKey } from './profile-pubkey'
 
 /** One SHA-256 of Profile protobuf bytes. Matches `Sha256::digest` in
  * `SignedPayload::parse_proto`, the message `SignedPayload::verify` checks.
@@ -404,8 +405,18 @@ export class MessageConstructor {
     const hashbuf = Buffer.from(relayProfilePayloadDigest(rawProfile))
     const rawSig = signRegistryDigest(hashbuf, privKey)
 
+    // SEC1 point of the signing key (decision #543). types.d.ts omits the
+    // runtime compression flag; bitcore-lib-xpi stays until #259.
+    const compressed = (privKey as unknown as { compressed?: boolean }).compressed
+    if (compressed !== true && compressed !== false) {
+      throw new Error('profile-pubkey:compressed')
+    }
     const signedPayload = new SignedPayload()
-    signedPayload.setPublicKey(privKey.toPublicKey().toBuffer())
+    signedPayload.setPublicKey(
+      Buffer.from(
+        relayProfilePublicKey(Uint8Array.from(privKey.toBuffer()), compressed),
+      ),
+    )
     signedPayload.setSignature(rawSig)
     signedPayload.setScheme(1)
     signedPayload.setPayload(rawProfile)

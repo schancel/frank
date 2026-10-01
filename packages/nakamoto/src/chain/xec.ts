@@ -12,7 +12,7 @@ const XEC_MESSAGE: MessageMagic = Object.freeze({
   status: 'pinned',
   text: 'eCash Signed Message:\n',
   source:
-    'trezor/trezor-firmware core/src/apps/common/coininfo.py Ecash signed_message_header (main, read 2026-09-30). Bitcoin ABC was not quoted.',
+    'Bitcoin-ABC/bitcoin-abc src/common/signmessage.cpp MESSAGE_MAGIC (master, read 2026-09-30)',
 })
 
 const UNPINNED_XEC_UNIT = Object.freeze({
@@ -23,6 +23,7 @@ const UNPINNED_XEC_UNIT = Object.freeze({
 
 const XEC_SOURCES = [
   'Bitcoin-ABC/bitcoin-abc src/kernel/chainparams.cpp (master, read 2026-09-29)',
+  'Bitcoin-ABC/bitcoin-abc src/common/signmessage.cpp MESSAGE_MAGIC',
   'Bitcoin-ABC/bitcoin-abc src/currencyunit.h DEFAULT_ECASH = true',
   'Bitcoin-ABC/bitcoin-abc doc/standards/cashaddr.md prefixes ecash, ectest, ecregtest',
   'SLIP-0044 coin type 899, eCash token 1899; historical wallet path 145',

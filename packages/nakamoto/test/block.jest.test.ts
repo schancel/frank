@@ -131,9 +131,9 @@ describe('block headers and merkle roots', () => {
   test('genesis coinbase merkle root matches the header', () => {
     const txid = hash256(fromHex(BTC_GENESIS_COINBASE))
     expect(display(txid)).toBe(BTC_GENESIS_MERKLE)
-    const root = merkleRoot([hashOf(toHex(txid))])
+    const root = merkleRoot([hashOf(toHex(txid))], BTC_MAINNET)
     expect(display(root)).toBe(BTC_GENESIS_MERKLE)
-    expect(toHex(merkleRoot([]))).toBe('00'.repeat(32))
+    expect(toHex(merkleRoot([], BTC_MAINNET))).toBe('00'.repeat(32))
   })
 
   test('an odd merkle level duplicates the last hash', () => {
@@ -146,26 +146,65 @@ describe('block headers and merkle roots', () => {
     const nulled = hash256(
       concatBytes([left, hash256(concatBytes([third, new Uint8Array(32)]))]),
     )
-    expect(toHex(merkleRoot([first, second, third]))).toBe(toHex(expected))
+    for (const chain of [BTC_MAINNET, BCH_MAINNET, XEC_MAINNET]) {
+      expect(toHex(merkleRoot([first, second, third], chain))).toBe(
+        toHex(expected),
+      )
+    }
     expect(toHex(expected)).not.toBe(toHex(nulled))
-    const partial = partialMerkleRoot({
-      transactions: 3,
-      hashes: [first, second, third],
-      flags: Uint8Array.of(0x3f),
-    })
+    const partial = partialMerkleRoot(
+      {
+        transactions: 3,
+        hashes: [first, second, third],
+        flags: Uint8Array.of(0x3f),
+      },
+      BTC_MAINNET,
+    )
     expect(partial.ok).toBe(true)
     if (!partial.ok) return
     expect(toHex(partial.value.root)).toBe(toHex(expected))
     expect(partial.value.matches).toHaveLength(3)
   })
 
+  test('an odd lotus level pads with a zero hash', () => {
+    const first = hashOf('11'.repeat(32))
+    const second = hashOf('22'.repeat(32))
+    const third = hashOf('33'.repeat(32))
+    const left = hash256(concatBytes([first, second]))
+    const padded = hash256(
+      concatBytes([left, hash256(concatBytes([third, new Uint8Array(32)]))]),
+    )
+    const duplicated = hash256(concatBytes([third, third]))
+    expect(toHex(merkleRoot([first, second, third], XPI_MAINNET))).toBe(
+      toHex(padded),
+    )
+    expect(toHex(padded)).not.toBe(
+      toHex(hash256(concatBytes([left, duplicated]))),
+    )
+    const partial = partialMerkleRoot(
+      {
+        transactions: 3,
+        hashes: [first, second, third],
+        flags: Uint8Array.of(0x3f),
+      },
+      XPI_MAINNET,
+    )
+    expect(partial.ok).toBe(true)
+    if (!partial.ok) return
+    expect(toHex(partial.value.root)).toBe(toHex(padded))
+    expect(partial.value.matches).toHaveLength(3)
+  })
+
   test('a partial tree rejects an inner duplicate', () => {
     const leaf = hashOf('ab'.repeat(32))
-    const proof = partialMerkleRoot({
-      transactions: 2,
-      hashes: [leaf, leaf],
-      flags: Uint8Array.of(0x07),
-    })
+    const proof = partialMerkleRoot(
+      {
+        transactions: 2,
+        hashes: [leaf, leaf],
+        flags: Uint8Array.of(0x07),
+      },
+      BTC_MAINNET,
+    )
     expect(proof.ok).toBe(false)
     if (proof.ok) return
     expect(proof.error.code).toBe('merkle-proof')

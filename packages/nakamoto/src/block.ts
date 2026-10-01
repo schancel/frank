@@ -1,8 +1,9 @@
 // Block headers and merkle roots. BTC, BCH, and XEC use the 80-byte header
 // and hash256 of those bytes. Lotus does not: lotusd serializes 160 bytes and
 // hashes three single-SHA256 layers. An 80-byte buffer is not a Lotus header.
-// Merkle pairing duplicates the last hash of an odd level, matching Bitcoin
-// Core ComputeMerkleRoot. Partial trees follow CPartialMerkleTree.
+// BTC, BCH, and XEC duplicate the last hash of an odd merkle level (Core,
+// BCHN, Bitcoin ABC). Lotus pads that slot with a zero hash (lotusd
+// ComputeMerkleRoot and CPartialMerkleTree). Partial trees follow that rule.
 
 import { cryptoBackend } from './backend.js'
 import { concatBytes, copyBytes, encodeUnsignedLE } from './bytes.js'
@@ -156,14 +157,22 @@ function headerLength(chain: ChainDescriptor): 80 | 160 {
     : LOTUS_HEADER_BYTES
 }
 
-export function merkleRoot(leaves: readonly InternalHash[]): InternalHash {
+/** Lotus odd levels hash against zero. The other chains duplicate the last. */
+function oddPartner(last: Uint8Array, chain: ChainDescriptor): Uint8Array {
+  return chain.family === 'xpi' ? copyBytes(ZERO32) : copyBytes(last)
+}
+
+export function merkleRoot(
+  leaves: readonly InternalHash[],
+  chain: ChainDescriptor,
+): InternalHash {
   if (leaves.length === 0) return brand(ZERO32)
   let level = leaves.map(leaf => copyBytes(leaf))
   while (level.length > 1) {
     if (level.length % 2 === 1) {
       const last = level[level.length - 1]
       if (!last) break
-      level.push(copyBytes(last))
+      level.push(oddPartner(last, chain))
     }
     const next: Uint8Array[] = []
     for (let index = 0; index < level.length; index += 2) {
@@ -210,6 +219,7 @@ function walk(
   height: number,
   pos: number,
   state: Walk,
+  chain: ChainDescriptor,
 ): Uint8Array {
   if (state.bad) return ZERO32
   const bit = flagBit(flags, state.bitsUsed)
@@ -228,23 +238,42 @@ function walk(
     if (height === 0 && bit === 1) state.matches.push(brand(hash))
     return copyBytes(hash)
   }
-  const left = walk(transactions, hashes, flags, height - 1, pos * 2, state)
+  const left = walk(
+    transactions,
+    hashes,
+    flags,
+    height - 1,
+    pos * 2,
+    state,
+    chain,
+  )
   const rightIndex = pos * 2 + 1
   let right: Uint8Array
   if (rightIndex < treeWidth(transactions, height - 1)) {
-    right = walk(transactions, hashes, flags, height - 1, rightIndex, state)
+    right = walk(
+      transactions,
+      hashes,
+      flags,
+      height - 1,
+      rightIndex,
+      state,
+      chain,
+    )
     if (sameBytes(left, right)) state.bad = true
   } else {
-    right = left
+    right = oddPartner(left, chain)
   }
   return hash256(concatBytes([left, right]))
 }
 
-export function partialMerkleRoot(proof: {
-  readonly transactions: number
-  readonly hashes: readonly InternalHash[]
-  readonly flags: Uint8Array
-}): BlockResult<{
+export function partialMerkleRoot(
+  proof: {
+    readonly transactions: number
+    readonly hashes: readonly InternalHash[]
+    readonly flags: Uint8Array
+  },
+  chain: ChainDescriptor,
+): BlockResult<{
   readonly root: InternalHash
   readonly matches: readonly InternalHash[]
 }> {
@@ -275,6 +304,7 @@ export function partialMerkleRoot(proof: {
     treeHeight(proof.transactions),
     0,
     state,
+    chain,
   )
   const usedBytes = (state.bitsUsed + 7) >> 3
   if (
@@ -579,11 +609,14 @@ export function parseMerkleBlock(
   const flags = reader.readBytesPrefixed()
   if (!flags.ok) return fail('block-truncated')
   if (!reader.finished()) return fail('block-trailing')
-  const proof = partialMerkleRoot({
-    transactions: countBits.value,
-    hashes,
-    flags: flags.value,
-  })
+  const proof = partialMerkleRoot(
+    {
+      transactions: countBits.value,
+      hashes,
+      flags: flags.value,
+    },
+    chain,
+  )
   if (!proof.ok) return proof
   if (!sameBytes(proof.value.root, header.value.merkleRoot)) {
     return fail('merkle-root')

@@ -7,11 +7,13 @@
 > reads. Neither is true any more:
 >
 > - `PUT /message/monad` and the authenticated inbox/recovery routes exist only when
->   `[registry.monad_mailbox]` is enabled in the `cashwebd` configuration (`enabled = true` plus
->   `rpc_url`, `min_value_wei`, `expected_chain_id`). `backend/cashweb/run-local-monad.sh`
->   generates that configuration from `.env` (`MONAD_TESTNET_HTTP_RPC_URL`,
->   `CASHWEB_STAMP_MIN_BURN_VALUE_WEI`, `MONAD_TESTNET_CHAIN_ID`); the relay process itself no longer
->   reads the two variables above for this route.
+>   `[registry.monad_mailbox]` is enabled in the `cashwebd` configuration; both shipped configs now
+>   enable it (`min_value_wei`, `expected_chain_id = 10143`). The RPC URL is not in the file: the
+>   relay reads `MONAD_TESTNET_HTTP_RPC_URL` and requires `FRANK_NETWORK_TAG` (MONT) from its
+>   environment and refuses to start without them. `backend/cashweb/run-local-monad.sh` takes both
+>   from `.env`/the environment (tag defaults to MONT), applies the optional
+>   `CASHWEB_STAMP_MIN_BURN_VALUE_WEI`/`MONAD_TESTNET_CHAIN_ID` overrides and prints the effective
+>   non-secret values. See `docs/backend-topology.md` for the exact variables and a recipe.
 > - The old unauthenticated exact/global `GET /message/monad...` routes are removed.
 > - `e2e_demo_server` (Step 1) constructs its router with the mailbox **disabled**, so it does not
 >   serve `/message/monad` at all. Step 3's message round trip needs the enabled mailbox (start the
@@ -46,9 +48,9 @@ prove).
   CASHWEB_STAMP_MIN_BURN_VALUE_WEI=1000000000000
   MONAD_TESTNET_CHAIN_ID=10143
   ```
-  (Copy `.env.example`. Today `run-local-monad.sh` turns the RPC URL, minimum, and chain ID into the
-  relay's `[registry.monad_mailbox]` table; the relay itself no longer reads the minimum from the
-  environment. The burn address still matters only for the topic routes.)
+  (Copy `.env.example`. `run-local-monad.sh` passes the RPC URL and `FRANK_NETWORK_TAG=MONT` to the
+  relay's environment and applies the minimum and chain ID to its `[registry.monad_mailbox]`
+  table; the relay itself never reads the minimum from the environment. The burn address still matters only for the topic routes.)
 - A funded Monad testnet account's private key, as a small JSON file `{ "address": "0x...",
   "privateKey": "0x..." }`. This ticket's own run reused the account at
   `frank-worktrees/spike-demo/spike/data/chain-wallet.json` (~9.9976 MON confirmed live via

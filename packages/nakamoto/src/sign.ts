@@ -109,6 +109,8 @@ const SIGN_CODES: readonly SignCode[] = [
   'sign-partial',
 ]
 
+/** Body only. Consensus counts the appended sighash byte inside 73. */
+const ECDSA_BODY_MAX = 72
 const OP_DUP = 0x76
 const OP_HASH160 = 0xa9
 const OP_EQUALVERIFY = 0x88
@@ -150,9 +152,16 @@ function fail(code: SignCode): SignResult<never> {
   return { ok: false, error: { code } }
 }
 
-function hash160(bytes: Uint8Array) {
+function hash160(bytes: Uint8Array): Uint8Array {
   return new Uint8Array(cryptoBackend.hash160(bytes))
 }
+
+function sha256d(bytes: Uint8Array): Uint8Array {
+  return new Uint8Array(cryptoBackend.sha256d(bytes))
+}
+
+/** lotusd ScriptExecutionData::DEFAULT_CODESEP_POS. Plain templates have no separator. */
+const LOTUS_CODESEP_NONE = 0xffffffff
 
 function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
   if (left.length !== right.length) return false
@@ -391,7 +400,9 @@ function signatureBytes(
     return { ok: true, value: out }
   }
   const parsed = ecdsaSignatureFromBytes(raw)
-  if (!parsed.ok) return fail('sign-signature')
+  if (!parsed.ok || parsed.value.length > ECDSA_BODY_MAX) {
+    return fail('sign-signature')
+  }
   const out = new Uint8Array(parsed.value.length + 1)
   out.set(parsed.value, 0)
   out[parsed.value.length] = sighashType
@@ -411,10 +422,18 @@ function hashOptions(
       : { commitUtxos: options.commitUtxos }),
   }
   if (template.kind === 'p2tr') return shared
-  return {
+  const plain = {
     ...shared,
     scriptCode: template.scriptCode,
     amount: coin.value,
+  }
+  // lotusd VerifyScript always builds ScriptExecutionData for a plain script,
+  // so SignatureHashLotus sets ext_flag. Omitting it signs a digest nodes reject.
+  if (options.algorithm !== 'lotus') return plain
+  return {
+    ...plain,
+    executedScriptHash: sha256d(template.scriptCode),
+    codeSeparatorPosition: LOTUS_CODESEP_NONE,
   }
 }
 

@@ -115,6 +115,7 @@ export {
   encodeAddress,
   isAddressError,
   lockingScript,
+  pubkeyHashFromOutputScript,
   sameDestination,
 } from './address.js'
 export type {

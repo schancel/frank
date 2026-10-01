@@ -173,6 +173,11 @@ export interface AddressHrpChar {
   readonly index: number
 }
 
+/** Not lotusd MatchPayToPubkeyHash. Includes non-minimal pushes. */
+export interface OutputScriptUnmatched {
+  readonly code: 'output-script-unmatched'
+}
+
 export type AddressError =
   | EncodingError
   | AddressFormatNotPinned
@@ -192,6 +197,7 @@ export type AddressError =
   | AddressSeparatorMissing
   | AddressEmptyHrp
   | AddressHrpChar
+  | OutputScriptUnmatched
 
 export type AddressResult<T> =
   | { readonly ok: true; readonly value: T }
@@ -215,6 +221,7 @@ const ADDRESS_CODES: ReadonlySet<string> = new Set([
   'separator-missing',
   'empty-hrp',
   'hrp-char',
+  'output-script-unmatched',
 ])
 
 const OP_0 = 0x00
@@ -612,6 +619,27 @@ export function lockingScript(destination: Destination): Uint8Array {
     })
   }
   return built.value
+}
+
+/**
+ * lotusd `MatchPayToPubkeyHash` (`src/script/standard.cpp`): exactly 25 bytes,
+ * OP_DUP OP_HASH160 20 <hash> OP_EQUALVERIFY OP_CHECKSIG.
+ * A non-minimal push is not this template (decision #493).
+ */
+export function pubkeyHashFromOutputScript(
+  script: Uint8Array,
+): AddressResult<PubkeyHash> {
+  if (
+    script.length !== 25 ||
+    script[0] !== OP_DUP ||
+    script[1] !== OP_HASH160 ||
+    script[2] !== PUSH_20 ||
+    script[23] !== OP_EQUALVERIFY ||
+    script[24] !== OP_CHECKSIG
+  ) {
+    return fail({ code: 'output-script-unmatched' })
+  }
+  return asPubkeyHash(script.subarray(3, 23))
 }
 
 export function sameDestination(

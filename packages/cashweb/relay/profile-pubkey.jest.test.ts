@@ -96,7 +96,8 @@ it('matches bitcore profile public keys', () => {
   expect(crypto).toContain('pointToCompressed')
   expect(crypto).toContain('constructStampAddress')
   expect(crypto).toContain('point.mul')
-  expect(crypto).toContain('point.add')
+  expect(crypto).toContain('stealthParentPublicKey(')
+  expect(crypto).not.toContain('point.add')
 })
 
 it('rejects a secret outside (0, n), a non-32-byte secret, and a missing flag', () => {

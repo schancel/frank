@@ -10,6 +10,7 @@ import * as forge from 'node-forge'
 import { stampParentSecret } from './stamp-parent'
 import { stampParentPublicKey } from './stamp-public'
 import { stealthParentSecret } from './stealth-parent'
+import { stealthParentPublicKey } from './stealth-public'
 import { stealthPointDigest } from './stealth-point-digest'
 
 export class PayloadConstructor {
@@ -82,6 +83,11 @@ export class PayloadConstructor {
     )
   }
 
+  // ebG stays on bitcore point multiplication. The parent public key
+  // is destination + (H(ebG) mod n)·G (decision #559). A reduced hash
+  // of 0 yields the destination. A point at infinity is an error. The
+  // digest is the raw SHA-256 and is the HD chain code. Bytes match
+  // PublicKey.fromPoint: compressed, default network.
   constructStealthPublicKey(
     emphemeralPrivKey: PrivateKey,
     destinationPublicKey: PublicKey,
@@ -90,15 +96,14 @@ export class PayloadConstructor {
     const dhKeyPointRaw = crypto.Point.pointToCompressed(dhKeyPoint)
 
     const digest = Buffer.from(stealthPointDigest(dhKeyPointRaw)) // H(ebG)
-    const digestPublicKey = PrivateKey.fromBuffer(
+    const bytes = stealthParentPublicKey(
+      Uint8Array.from(destinationPublicKey.toBuffer()),
       digest,
-      this.networkName,
-    ).toPublicKey() // H(ebG)G
-
-    const stealthPublicKey = PublicKey.fromPoint(
-      digestPublicKey.point.add(destinationPublicKey.point),
-    ) // H(ebG)G + bG
-    return { stealthPublicKey, digest }
+    )
+    return {
+      stealthPublicKey: new PublicKey(Buffer.from(bytes)),
+      digest,
+    }
   }
 
   constructHDStealthPublicKey(
@@ -124,7 +129,7 @@ export class PayloadConstructor {
   // outside (0, n), a public key that is not 33 or 65 SEC1 bytes, an
   // invalid point, or a zero sum is an error. Hex matches new PrivateKey(bn):
   // compressed, default network. The digest is the raw SHA-256 and is the
-  // HD chain code. Stealth public point.add stays on bitcore.
+  // HD chain code. Stealth public addition is stealthParentPublicKey.
   constructStealthPrivateKey(
     emphemeralPubKey: PublicKey,
     destinationPrivateKey: PrivateKey,
@@ -166,7 +171,8 @@ export class PayloadConstructor {
   // Digest in (0, n). A zero digest, a digest >= n, a non-32-byte digest,
   // a destination that is not 33 or 65 SEC1 bytes, or a point at infinity
   // is an error (decision #539). Bytes match PublicKey.fromPoint: compressed,
-  // default network. Stealth public point.add stays on bitcore.
+  // default network. Stealth public addition reduces H mod n and does
+  // not use this reject-digest rule.
   constructStampPublicKey(
     payloadDigest: Uint8Array,
     destinationPublicKey: PublicKey,

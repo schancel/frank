@@ -154,7 +154,7 @@ it('adds the stealth digest to the destination the way bitcore does', () => {
   expect(destination.toBuffer().toString('hex')).toBe(DEST_SECRET)
 })
 
-it('derives the stealth parent from ecdh and leaves the public point add on bitcore', () => {
+it('derives the stealth parent from ecdh and leaves ebG multiplication on bitcore', () => {
   const ctor = new PayloadConstructor({ networkName: 'testnet' })
   const destination = PrivateKey.fromBuffer(Buffer.from(DEST_SECRET, 'hex'), NETWORK)
   const ephemeral = PrivateKey.fromBuffer(
@@ -262,7 +262,8 @@ it('derives the stealth parent from ecdh and leaves the public point add on bitc
     'constructHDStealthPublicKey(',
   )
   expect(publicBody).toContain('point.mul')
-  expect(publicBody).toContain('point.add')
+  expect(publicBody).toContain('stealthParentPublicKey(')
+  expect(publicBody).not.toContain('point.add')
   expect(publicBody).toContain('stealthPointDigest(')
   const merged = methodBody(source, 'constructMergedKey(', 'constructSharedPointEncodings(')
   expect(merged).toContain('point.mul')

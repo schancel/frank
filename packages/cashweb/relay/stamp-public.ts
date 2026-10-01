@@ -6,7 +6,7 @@ import { tweakAddPublicKey } from '@frank/nakamoto'
  * infinity is an error (decision #539). tweakAddPublicKey rejects 0,
  * values >= n, and infinity. A 32-byte x-only point is rejected here
  * so it is not lifted with even Y. The caller wraps the bytes in a
- * bitcore PublicKey. Stealth public point.add stays on bitcore. */
+ * bitcore PublicKey. Stealth public addition is stealthParentPublicKey. */
 export function stampParentPublicKey(
   destinationPublicKey: Uint8Array,
   payloadDigest: Uint8Array,

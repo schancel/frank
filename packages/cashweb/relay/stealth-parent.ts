@@ -88,7 +88,7 @@ export function stealthParentScalar(
  * the raw hash, not the reduced scalar. A secret outside (0, n), a public
  * key that is not 33 or 65 SEC1 bytes, an invalid point, or a zero sum is
  * an error. The caller's secret is not wiped. Stealth public addition
- * stays on bitcore. */
+ * is stealthParentPublicKey. */
 export function stealthParentSecret(
   destinationSecret: Uint8Array,
   ephemeralPublicKey: Uint8Array,

@@ -266,7 +266,7 @@ describe('MainLayout closes the mobile overlay on navigation', () => {
     await flushPromises()
     expect(router.push).toHaveBeenCalledWith('/forum')
     expect(open(wrapper)).toBe('true')
-    await tabs(wrapper)[1].trigger('click')
+    await wrapper.get('#rail-tab-contacts').trigger('click')
     await flushPromises()
     expect(router.push).toHaveBeenCalledWith('/chat/addr1')
     expect(open(wrapper)).toBe('true')
@@ -306,11 +306,12 @@ describe('MainLayout closes the mobile overlay on navigation', () => {
     expect(open(wrapper)).toBe('false')
   })
 
-  it('closes after the balance (receive) item on a narrow screen', async () => {
-    const { wrapper } = await mountLayout(390)
+  it('closes after Wallet Receive on a narrow screen', async () => {
+    const { wrapper, router } = await mountLayout(390)
     await openDrawer(wrapper)
-    await byText(wrapper, 'Balance')[0].trigger('click')
+    await wrapper.get('[data-test="wallet-receive"]').trigger('click')
     await flushPromises()
+    expect(router.push).toHaveBeenCalledWith('/receive')
     expect(open(wrapper)).toBe('false')
   })
 
@@ -341,8 +342,18 @@ describe('LeftDrawer icon rail accessible names', () => {
   it('gives every icon-only tab an aria-label and a tooltip', async () => {
     const { wrapper } = await mountLayout(1024)
     const labels = tabs(wrapper).map(t => t.attributes('aria-label'))
-    expect(labels).toEqual(['Settings', 'Contacts, 3 unread messages', 'Forum'])
-    for (const [i, name] of ['Settings', 'Contacts', 'Forum'].entries()) {
+    expect(labels).toEqual([
+      'Contacts, 3 unread messages',
+      'Wallet',
+      'Forum',
+      'Settings',
+    ])
+    for (const [i, name] of [
+      'Contacts',
+      'Wallet',
+      'Forum',
+      'Settings',
+    ].entries()) {
       expect(tabs(wrapper)[i].find('[data-testid="tooltip"]').text()).toBe(name)
     }
   })
@@ -350,17 +361,19 @@ describe('LeftDrawer icon rail accessible names', () => {
   it('announces the unread count in the Contacts tab label, singular and plural', async () => {
     mockUnread.value = 1
     const one = await mountLayout(1024)
-    expect(tabs(one.wrapper)[1].attributes('aria-label')).toBe(
+    expect(one.wrapper.get('#rail-tab-contacts').attributes('aria-label')).toBe(
       'Contacts, 1 unread message',
     )
     mockUnread.value = 3
     const many = await mountLayout(1024)
-    expect(tabs(many.wrapper)[1].attributes('aria-label')).toBe(
-      'Contacts, 3 unread messages',
-    )
+    expect(
+      many.wrapper.get('#rail-tab-contacts').attributes('aria-label'),
+    ).toBe('Contacts, 3 unread messages')
     mockUnread.value = 0
     const none = await mountLayout(1024)
-    expect(tabs(none.wrapper)[1].attributes('aria-label')).toBe('Contacts')
+    expect(
+      none.wrapper.get('#rail-tab-contacts').attributes('aria-label'),
+    ).toBe('Contacts')
   })
 })
 

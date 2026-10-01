@@ -17,12 +17,67 @@ import {
   PublicKey,
   Opcode,
 } from 'bitcore-lib-xpi'
+import { privateKeyFromSecretBytes, signEcdsa } from '@frank/nakamoto'
 import { Wallet } from '../legacy-wallet'
 import { Utxo } from '../types/utxo'
 import { calcUtxoId } from '../legacy-wallet/helpers'
 import __pb_broadcast_pb from './broadcast_pb'
 const { BroadcastEntry, BroadcastMessage, ForumPost } = __pb_broadcast_pb
 import { ForumMessage, ForumMessageEntry } from '../types/forum'
+
+/** Canonical DER integer to a 32-byte big-endian magnitude. */
+function readDerInt(
+  der: Uint8Array,
+  offset: number,
+): { value: Buffer; next: number } {
+  if (der[offset] !== 0x02) throw new Error('signature-invalid')
+  const length = der[offset + 1]
+  if (length === undefined || length < 1 || offset + 2 + length > der.length) {
+    throw new Error('signature-invalid')
+  }
+  let magnitude = der.subarray(offset + 2, offset + 2 + length)
+  if (magnitude[0] === 0x00) {
+    if (magnitude.length === 1 || (magnitude[1] & 0x80) === 0) {
+      throw new Error('signature-invalid')
+    }
+    magnitude = magnitude.subarray(1)
+  } else if ((magnitude[0] & 0x80) !== 0) {
+    throw new Error('signature-invalid')
+  }
+  if (magnitude.length < 1 || magnitude.length > 32) {
+    throw new Error('signature-invalid')
+  }
+  const fixed = Buffer.alloc(32)
+  Buffer.from(magnitude).copy(fixed, 32 - magnitude.length)
+  return { value: fixed, next: offset + 2 + length }
+}
+
+/**
+ * 64-byte r||s. Same bytes as bitcore compact form with the header removed.
+ * bitcore `fromDER` returns a string when the DER is 64 bytes and starts with
+ * 0x30, so r and s are read here.
+ */
+export function compactRsFromDer(der: Uint8Array): Buffer {
+  if (der.length < 8 || der[0] !== 0x30 || der[1] !== der.length - 2) {
+    throw new Error('signature-invalid')
+  }
+  const r = readDerInt(der, 2)
+  const s = readDerInt(der, r.next)
+  if (s.next !== der.length) throw new Error('signature-invalid')
+  return Buffer.concat([r.value, s.value])
+}
+
+/** 64-byte r||s over a 32-byte digest. A bad digest throws and returns nothing. */
+export function signRegistryDigest(hash: Buffer, privKey: PrivateKey): Buffer {
+  if (hash.length !== 32) throw new Error('sign-digest')
+  const secretBytes = Uint8Array.from(privKey.toBuffer())
+  const key = privateKeyFromSecretBytes(secretBytes, true)
+  secretBytes.fill(0)
+  if (!key.ok) throw new Error(key.error.code)
+  const signed = signEcdsa(key.value, Uint8Array.from(hash))
+  if (!signed.ok) throw new Error(signed.error.code)
+  return compactRsFromDer(signed.value)
+}
 
 function calculateBurnAmount(burnOutputs: BurnOutputs[]) {
   return burnOutputs.reduce((total, burn) => {
@@ -95,10 +150,9 @@ export class RegistryHandler {
 
     const serializedPayload = metadata.serializeBinary()
     const hashbuf = crypto.Hash.sha256(Buffer.from(serializedPayload))
-    const signature = crypto.ECDSA.sign(hashbuf, privKey)
+    const sig = signRegistryDigest(hashbuf, privKey)
 
     const signedPayload = new SignedPayload()
-    const sig = signature.toCompact(1, true).slice(1)
     signedPayload.setPublicKey(privKey.toPublicKey().toBuffer())
     signedPayload.setSignature(sig)
     signedPayload.setScheme(1)
@@ -297,8 +351,7 @@ export class RegistryHandler {
     assert(idPrivKey, 'Missing private key in createBroadcast')
     const idPubKey = idPrivKey.toPublicKey().toBuffer()
 
-    const signature = crypto.ECDSA.sign(payloadDigest, idPrivKey)
-    const sig = signature.toCompact(1, true).slice(1)
+    const sig = signRegistryDigest(payloadDigest, idPrivKey)
 
     const signedPayload = new SignedPayload()
     signedPayload.setPublicKey(idPubKey)
@@ -347,8 +400,7 @@ export class RegistryHandler {
     assert(idPrivKey, 'Missing private key in createBroadcast')
     const idPubKey = idPrivKey.toPublicKey().toBuffer()
 
-    const signature = crypto.ECDSA.sign(payloadDigestBinary, idPrivKey)
-    const sig = signature.toCompact(1, true).slice(1)
+    const sig = signRegistryDigest(payloadDigestBinary, idPrivKey)
 
     const signedPayload = new SignedPayload()
     signedPayload.setPublicKey(idPubKey)

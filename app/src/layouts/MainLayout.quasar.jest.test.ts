@@ -438,6 +438,32 @@ describe('LeftDrawer rail with real Quasar QDrawer/QTabs/QTab', () => {
     })
   })
 
+  describe('setup completion lock (#387)', () => {
+    it('never opens the overlay while the lock is active and closes it when the lock engages', async () => {
+      const { wrapper } = await mountReal(390)
+      const vm = wrapper.vm as unknown as {
+        setSetupNavigationLocked(locked: boolean): void
+        toggleMyDrawerOpen(): void
+      }
+      vm.setSetupNavigationLocked(true)
+      await flushPromises()
+      vm.toggleMyDrawerOpen()
+      await flushPromises()
+      expect(drawerIsOverlayOpen()).toBe(false)
+      // A lock that engages while the overlay is already out (a submit with the drawer open)
+      // closes it: the drawer's destinations must not be reachable mid-completion.
+      vm.setSetupNavigationLocked(false)
+      await flushPromises()
+      vm.toggleMyDrawerOpen()
+      await flushPromises()
+      expect(drawerIsOverlayOpen()).toBe(true)
+      vm.setSetupNavigationLocked(true)
+      await flushPromises()
+      expect(drawerIsOverlayOpen()).toBe(false)
+      wrapper.unmount()
+    })
+  })
+
   describe('other ways the overlay closes', () => {
     async function openFrom(wrapper: any, button: HTMLElement) {
       button.focus()

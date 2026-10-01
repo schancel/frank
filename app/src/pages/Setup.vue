@@ -6,6 +6,8 @@
           class="q-px-sm"
           flat
           dense
+          data-test="setup-header-menu"
+          :disable="completionLocked"
           @click="$emit('toggleMyDrawerOpen')"
           icon="menu"
         />
@@ -36,6 +38,7 @@
             :title="$t('setup.eula')"
             icon="flaky"
             :done="step > 1"
+            :disable="completionLocked && step !== 1"
           >
             <eula-step />
           </q-step>
@@ -44,8 +47,16 @@
             :title="$t('setup.setupWallet')"
             icon="vpn_key"
             :done="step > 2"
+            :disable="completionLocked && step !== 2"
           >
-            <account-step v-model:account-data="accountData" :resume="resume" />
+            <account-step
+              :account-data="accountData"
+              :locked="completionLocked"
+              :resume="resume"
+              :resume-import-acknowledged="resumeReplaceAcknowledged"
+              @update:account-data="updateAccountData"
+              @resume-import-acknowledged="acknowledgeResumeImport"
+            />
           </q-step>
           <q-step
             v-if="isNewAccount"
@@ -53,6 +64,7 @@
             :title="$t('seedConfirm.stepTitle')"
             icon="fact_check"
             :done="step > 3"
+            :disable="completionLocked && step !== 3"
           >
             <div
               v-if="challengeError"
@@ -75,6 +87,7 @@
             :title="$t('setup.deposit')"
             icon="attach_money"
             :done="step > 4"
+            :disable="completionLocked && step !== 4"
           >
             <deposit-step />
           </q-step>
@@ -92,6 +105,7 @@
                 @click="previous()"
                 :label="$t('setup.back')"
                 class="q-ml-sm"
+                :disable="completionLocked"
               />
             </q-stepper-navigation>
             <q-banner inline-actions class="text-white bg-red">
@@ -157,6 +171,21 @@ import { storeToRefs } from 'pinia'
 // How long signup waits for the browser's answer to the persistent-storage request (ticket #370).
 const PERSIST_REQUEST_WAIT_MS = 3000
 
+type CompletionPhase =
+  | 'editing'
+  | 'wallet-persistence'
+  | 'profile-persistence'
+  | 'entering'
+  | 'completed'
+  | 'terminal'
+
+interface AccountSubmission {
+  readonly seed: string
+  readonly name: string
+  readonly nameRequired: boolean
+  readonly confirmedAt: number
+}
+
 export default defineComponent({
   components: {
     AccountStep,
@@ -195,7 +224,8 @@ export default defineComponent({
     const contacts = useContactStore()
     const storedSeed = wallet.seedPhrase
     // #284 resume mode: a stored seed with no display name (the old #267 bug). The stored phrase
-    // is confirmed and named in place; it is never regenerated, replaced or imported over.
+    // is confirmed and named in place. Importing a different phrase (#387) waits for the same
+    // typed acknowledgement as the replace-seed guard, and that acknowledgement writes nothing.
     const accountState = classifyAccount({
       seedPhrase: storedSeed,
       name: useProfileStore().profile?.name,
@@ -213,6 +243,13 @@ export default defineComponent({
       existingAccount,
       existingConfirmed: accountState === 'confirmed',
       replaceAcknowledged: false,
+      resumeReplaceAcknowledged: false,
+      completionPending: false,
+      completionPhase: 'editing' as CompletionPhase,
+      accountSubmission: null as Readonly<AccountSubmission> | null,
+      // Set only around the internally authorized completion push (see finishSetup()): the one
+      // departure beforeRouteLeave allows while the wizard is locked.
+      completionNavigationAuthorized: false,
       storedSeed: resume ? storedSeed : null,
       step: 1,
       accountData: {
@@ -240,13 +277,29 @@ export default defineComponent({
       },
     }
   },
-  emits: ['setupCompleted', 'toggleMyDrawerOpen'],
+  emits: ['setupCompleted', 'toggleMyDrawerOpen', 'setupNavigationLocked'],
   watch: {
     // Positions are drawn on entering the confirmation step and are reused while the phrase
     // is unchanged; going back and changing the phrase draws new ones.
     step(step: number) {
       if (step === 3) this.prepareChallenge()
     },
+    // #387: while the account step is locked (pending persistence, terminal, or entry retry),
+    // no layout-owned navigation may leave Setup. The drawer lives in MainLayout, which can
+    // only know about this lock through this event.
+    completionLocked(locked: boolean) {
+      this.$emit('setupNavigationLocked', locked)
+    },
+  },
+  beforeRouteLeave() {
+    // Layout-wide lock (#387): AccountStep, Back and the inactive QStepper headers are frozen
+    // while the account step is locked, but the header menu and MainLayout's drawer would
+    // still route away, unmounting this page and dropping its frozen submission/phase state.
+    // Block every departure except the internally authorized completion push (finishSetup
+    // marks the navigation around the router.push call). Safe (pre-lock) states -- e.g.
+    // editing step 1 -- keep navigating as before.
+    if (this.completionNavigationAuthorized) return true
+    return !this.completionLocked
   },
   methods: {
     prepareChallenge() {
@@ -270,6 +323,15 @@ export default defineComponent({
       this.accountData.seed = generateMnemonic()
       this.step = 1
     },
+    acknowledgeResumeImport() {
+      // Unlocks an in-memory import draft only. The stored seed stays until import finishes.
+      if (!this.resume) return
+      this.resumeReplaceAcknowledged = true
+    },
+    updateAccountData(accountData: typeof this.accountData) {
+      if (this.completionLocked) return
+      this.accountData = accountData
+    },
     onSeedConfirmed() {
       if (this.challenge) this.confirmedSeed = this.challenge.seed
     },
@@ -279,60 +341,116 @@ export default defineComponent({
      */
     async finishSetup() {
       return finishSetupAndEnter({
-        wallet: useWalletStore(),
-        profile: useProfileStore(),
-        notifyError: errorNotify,
         finishReloads: setupFinishReloads(),
-        location: window.location,
+        location: this.setupFinishLocation(),
         initialize: () => initializeMonadIdentity(),
-        navigate: (path: string) => this.$router.push(path),
+        navigate: (path: string) => {
+          // The only departure beforeRouteLeave allows: the completion push after everything
+          // is durable. The flag wraps the whole push (settling it either way), so a
+          // concurrent unauthorized navigation can never slip through an open window.
+          this.completionNavigationAuthorized = true
+          return Promise.resolve(this.$router.push(path)).finally(() => {
+            this.completionNavigationAuthorized = false
+          })
+        },
       })
     },
-    async completeAccountStep(confirmedAt: number) {
+    setupFinishLocation() {
+      return window.location
+    },
+    captureAccountSubmission(confirmedAt: number): Readonly<AccountSubmission> {
       if (this.existingAccount && !this.replaceAcknowledged) {
         // Independent of the UI: an existing account is never replaced, and its profile never
         // overwritten, without the typed acknowledgement.
-        const error = new Error(this.$t('setup.replaceNotAcknowledged'))
-        errorNotify(error)
-        throw error
+        throw new Error(this.$t('setup.replaceNotAcknowledged'))
       }
       if (
         this.resume &&
+        !this.resumeReplaceAcknowledged &&
         normalizeSetupMnemonic(this.accountData.seed) !==
           normalizeSetupMnemonic(this.storedSeed ?? '')
       ) {
-        // Belt and braces: resume mode may only ever re-store the SAME phrase it found.
-        const error = new Error(this.$t('setup.storedSeedMismatch'))
-        errorNotify(error)
-        throw error
+        // Without the typed acknowledgement, resume mode may only re-store the SAME phrase.
+        throw new Error(this.$t('setup.storedSeedMismatch'))
+      }
+
+      // Validate and canonicalize the whole identity synchronously, before avatar loading or any
+      // persistence await opens a window for the editable draft to diverge from durable state.
+      const seed = commitValidatedSetupSeed(
+        this.accountData.seed,
+        () => undefined,
+        confirmedAt,
+      )
+      const name = commitValidatedSetupName(
+        this.accountData.name,
+        this.accountData.nameRequired,
+        () => undefined,
+      )
+      const submission = Object.freeze({
+        seed,
+        name,
+        nameRequired: this.accountData.nameRequired,
+        confirmedAt,
+      })
+      this.accountData.seed = seed
+      this.accountData.name = name
+      this.accountData.nameRequired = submission.nameRequired
+      return submission
+    },
+    async completeAccountStep(submission: Readonly<AccountSubmission>) {
+      if (this.completionPhase === 'entering') {
+        await this.finishSetup()
+        this.completionPhase = 'completed'
+        return
       }
       if (!this.avatar) {
         this.avatar = await this.selectRandomAvatar()
       }
-      this.accountData.seed = commitValidatedSetupSeed(
-        this.accountData.seed,
-        (seed, at) => this.setSeedPhrase(seed, at),
-        confirmedAt,
-      )
-      this.accountData.name = commitValidatedSetupName(
-        this.accountData.name,
-        this.accountData.nameRequired,
-        name =>
-          this.setRelayData({
-            profile: {
-              name,
-              bio: '',
-              avatar: this.avatar,
-            },
-            inbox: defaultRelayData.inbox,
-          }),
-      )
+      this.completionPhase = 'wallet-persistence'
+      this.setSeedPhrase(submission.seed, submission.confirmedAt)
       // Ticket #370: ask the browser to keep the just-stored seed while we still hold the user's
-      // click. Never fails and never blocks signup for long (a permission prompt may stay open).
+      // click. The helper is bounded and best-effort, and never blocks signup for long.
       await requestPersistentStorageWithin(PERSIST_REQUEST_WAIT_MS)
-      // Seed and name must be durable before the identity starts. A failed write does not
-      // initialize. The default path does not reload (#389).
+      // Never create a new profile until the matching wallet seed is known durable. A poisoned
+      // production barrier drains its latest physical write before rejecting; the terminal page
+      // then deliberately neither reloads nor proceeds.
+      await useWalletStore().flushPersistence()
+      this.completionPhase = 'profile-persistence'
+      this.setRelayData({
+        profile: {
+          name: submission.name,
+          bio: '',
+          avatar: this.avatar,
+        },
+        inbox: defaultRelayData.inbox,
+      })
+      await useProfileStore().flushPersistence()
+      this.completionPhase = 'entering'
       await this.finishSetup()
+      this.completionPhase = 'completed'
+    },
+    async submitAccountStep(confirmedAt: number) {
+      if (this.completionBlocked) return
+      this.completionPending = true
+      try {
+        if (!this.accountSubmission) {
+          this.accountSubmission = this.captureAccountSubmission(confirmedAt)
+        }
+        await this.completeAccountStep(this.accountSubmission)
+      } catch (error) {
+        const completionError =
+          error instanceof Error ? error : new Error(String(error))
+        if (
+          this.completionPhase === 'wallet-persistence' ||
+          this.completionPhase === 'profile-persistence'
+        ) {
+          this.completionPhase = 'terminal'
+        }
+        errorNotify(completionError)
+        throw completionError
+      } finally {
+        this.completionPending = false
+      }
     },
     selectRandomAvatar(): Promise<string> {
       const avatarName =
@@ -623,6 +741,7 @@ export default defineComponent({
       await this.$emit('setupCompleted')
     },
     async next() {
+      if (this.completionBlocked) return
       const stepper = this.$refs.stepper as QStepper
 
       switch (this.step) {
@@ -650,13 +769,13 @@ export default defineComponent({
           }
           // Import (explicit: valid and nameRequired === false): the user already holds this
           // phrase, so it counts as confirmed.
-          await this.completeAccountStep(Date.now())
+          await this.submitAccountStep(Date.now())
           break
         case 3:
           // Second, independent guard: never commit a New Account phrase unless the user
           // confirmed exactly this phrase (forwardEnabled is only the UI half).
           if (!this.isSeedConfirmed) break
-          await this.completeAccountStep(Date.now())
+          await this.submitAccountStep(Date.now())
           break
         case 4:
           this.setupSettings()
@@ -666,12 +785,28 @@ export default defineComponent({
       }
     },
     previous() {
+      if (this.completionLocked) return
       const stepper = this.$refs.stepper as QStepper
       stepper.previous()
     },
   },
   computed: {
+    completionLocked(): boolean {
+      return (
+        this.completionPending ||
+        this.accountSubmission !== null ||
+        this.completionPhase !== 'editing'
+      )
+    },
+    completionBlocked(): boolean {
+      return (
+        this.completionPending ||
+        this.completionPhase === 'terminal' ||
+        this.completionPhase === 'completed'
+      )
+    },
     forwardEnabled() {
+      if (this.completionBlocked) return false
       // Ticket #47 (real signup bug): this used to hard-block every step, including the EULA's own
       // "Agree" button, on `this.$indexer.connected` -- a live Lotus chronik indexer this Monad-only
       // deployment never stands up, so this was permanently false and no fresh user could ever get

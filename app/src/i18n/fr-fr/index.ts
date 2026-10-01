@@ -330,7 +330,11 @@ export default {
     copyRecoveryPhrase: 'Copier la phrase de récupération',
     refreshRecoveryPhrase: 'Générer une nouvelle phrase de récupération',
     resumeNotice:
-      'Une phrase de récupération est déjà enregistrée sur cet appareil, mais ce compte n’a pas encore de nom. Votre phrase ne sera pas modifiée. Confirmez-la et choisissez un nom pour terminer.',
+      'Une phrase de récupération est déjà enregistrée sur cet appareil, mais ce compte n’a pas encore de nom. Confirmez-la et choisissez un nom pour terminer. Elle n’est pas remplacée, sauf si vous importez une autre phrase que vous possédez déjà.',
+    confirmStoredFirst:
+      'Confirmez ou copiez d’abord votre phrase de récupération enregistrée.',
+    importDifferentPhrase: 'J’ai déjà une autre phrase de récupération',
+    importDifferentContinue: 'Continuer vers l’importation',
   },
   seedConfirm: {
     unavailable:

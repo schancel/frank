@@ -44,9 +44,9 @@
  *    wiring `crate::monad_stamp_relay`'s module docs left for whoever picks up the wire format
  *    decision" — that "whoever" on the client side is this ticket).
  * 5. Releases the lease once the outcome is known — see "Lease release policy" below for exactly
- *    when/how, since `PUT /message/monad`'s handler is itself synchronous end-to-end (broadcast +
- *    poll-for-confirmation happens server-side, inside the request), which changes what "success"
- *    means for the lease compared to a fire-and-forget submit.
+ *    when/how. Since PR #197, `PUT /message/monad` claims the exact raw payment set durably and may
+ *    answer 503 `mailbox_retryable` before delivery completes, so success is a 200 (possibly on an
+ *    idempotent re-PUT of the same bytes), not merely "the request was accepted".
  *
  * ## Protobuf encoding
  *
@@ -65,42 +65,44 @@
  * `MonadStampedMessageProto`/`StoredMonadMessageProto` shapes, so the rest of this file (and its
  * tests) didn't need to change when the encoding underneath them did.
  *
- * ## Lease release policy
+ * ## Lease release policy (PR #197 durable mailbox semantics)
  *
  * `SubAccountLeaseManager.releaseLease` (#18) only accepts three outcomes: `'confirmed'`
  * (`'in-use' -> 'spent'`, corrected by ticket #34 — see that file's own header for why this never
  * goes back to `'available'`), or `'failed'`/`'stuck'` (`'in-use' -> 'retired'`, never reused with a
- * guessed nonce). This module maps the three ways a `submitStampedMessage` call can end onto those:
+ * guessed nonce). `PUT /message/monad` no longer blocks until the payments are confirmed: the relay
+ * claims the exact raw payment set in a durable outbox, reconciles it, and answers
  *
- *   - **`PUT /message/monad` returns 2xx**: the relay only reaches its success response after
- *     `StampRelayOutcome::Verified` (see `process_monad_message` in `http/monad_message.rs` — every
- *     other outcome is a rejection *before* any store happens), i.e. every payment is already
- *     confirmed on-chain by the time this resolves. → `'confirmed'`.
- *   - **`PUT /message/monad` returns an HTTP error response** (4xx/5xx — the relay was reached and
- *     definitively responded): per the same handler, a stored message only ever exists after
- *     `Verified`, so any HTTP-level error here means the message was never accepted/stored. →
- *     `'failed'` (retire rather than risk the rare case where an underlying payment nonetheless landed
- *     on-chain but the relay's own bookkeeping failed after verifying it — a real possibility for a
- *     `500` from a storage-layer error in `process_monad_message`'s final `put_monad_message` call —
- *     but this module has no way to distinguish that case from "never touched the network" without
- *     parsing the relay's `ProcessMonadMessageError` variant out of its JSON error body, which is
- *     needlessly fragile; retiring is the conservative, "never silently reuse" choice this
- *     codebase's lease module already documents as its default).
- *   - **No HTTP response at all** (network/timeout failure — genuinely unknown whether the relay
- *     ever received/broadcast/stored the message before the connection dropped): falls back to
- *     polling `GET /message/monad/:payload_hash` (`pollForStoredMessage`) a bounded number of times.
- *     Found → `'confirmed'`. Still not found after the poll budget is exhausted → `'stuck'` (the
- *     documented abandonment path this ticket calls for), and `MonadStampAbandonedError` is thrown
- *     so the caller knows the outcome is unresolved (not confirmed-failed, just abandoned).
+ *   - **200** (`StoredMonadMessage`): durably delivered to the recipient inbox. → `'confirmed'`.
+ *     `PUT` of a set that is *already* delivered also answers 200 with the stored record
+ *     (`admit_monad_message`'s `DeliveredExact` arm), so **an idempotent re-`PUT` of the same exact
+ *     bytes is the confirmation**. The relay exposes no sender-side read route any more
+ *     (`GET /message/monad/:payload_hash` was removed), and none is needed.
+ *   - **503 `mailbox_retryable`** (outbox pending/at capacity/relay busy/RPC timeout/storage
+ *     hiccup), **429**, or **no HTTP response / an unverifiable 2xx**: the outcome is not final.
+ *     The client retries the SAME encoded bytes with bounded exponential backoff (honouring
+ *     `Retry-After`; `putRetry`). Never a freshly signed set: that would pay twice.
+ *     If the budget is spent: `exact_set_retained: false` → nothing was claimed, released
+ *     `'failed'` and {@link MonadStampRejectedError}; otherwise the set may be owned by the relay,
+ *     so with an attempt journal the reservations and journal are kept and
+ *     {@link MonadStampPendingAttemptError} is thrown (`resumePendingAttempts` re-PUTs later);
+ *     without a journal leases are retired `'stuck'` and {@link MonadStampAbandonedError} is thrown.
+ *   - **409 `mailbox_conflict`** (payload hash already bound to a different payment set) and
+ *     **422 `mailbox_terminal`** (the durable claim reached a terminal state, e.g. stale nonce or
+ *     expiry): re-sending can never succeed. Journal entry dropped, leases retired (`'stuck'` when
+ *     the relay still owns the bytes, else `'failed'`), {@link MonadStampTerminalError} thrown —
+ *     distinct from a plain rejection so callers know the exact set is dead and a *new* send is the
+ *     only way forward.
+ *   - **404**: the relay has no mailbox (disabled/old). Nothing was admitted; leases released
+ *     `'failed'`, {@link MonadMailboxUnavailableError} thrown.
+ *   - **400** and other 4xx: rejected before/without retention (`exact_set_retained`, as before).
  *   - **Building/signing a payment itself throws** (before any network call to the relay at all —
  *     e.g. a bad address, or a transient RPC failure while `MonadAccountTxSigner` reads
- *     gas/fee/nonce from the chain): also released as `'failed'`. No transaction was ever broadcast
- *     in this case, so the sub-account's nonce is not actually at risk — but `releaseLease` has no
- *     "never attempted, fully safe to reuse immediately" outcome to distinguish this from a genuine
- *     failure, and this module's ownership rules forbid adding one to `monad-account-lease.ts`. This
- *     trades a small amount of pool capacity (a healthy sub-account gets retired on what might be a
- *     one-off transient error) for staying strictly within the existing three-outcome contract
- *     rather than guessing; documented here as a known, deliberate trade-off.
+ *     gas/fee/nonce from the chain): released as `'failed'`. No transaction was ever broadcast in
+ *     this case, so the sub-account's nonce is not actually at risk — but `releaseLease` has no
+ *     "never attempted, fully safe to reuse immediately" outcome, and this module's ownership rules
+ *     forbid adding one to `monad-account-lease.ts`. This trades a small amount of pool capacity
+ *     for staying strictly within the existing three-outcome contract.
  */
 import {
   Provider,
@@ -113,6 +115,7 @@ import {
 } from 'ethers'
 import axios from 'axios'
 
+import { MonadMailboxUnavailableError } from '@frank/cashweb/relay/monad-mailbox-client'
 import __pb_monad_message_pb from '@frank/cashweb/relay/monad_message_pb'
 const { MonadStampedMessage, StoredMonadMessage } = __pb_monad_message_pb
 const { MonadStampPayment } = __pb_monad_message_pb
@@ -506,16 +509,20 @@ export class MonadStampRejectedError extends MonadStampError {
 
 function relayRejectionDetail(detail: unknown): string | undefined {
   if (typeof detail === 'string') return detail
-  if (detail && typeof detail === 'object' && 'error' in detail) {
-    const error = (detail as { error?: unknown }).error
-    if (typeof error === 'string') return error
-  }
-  return undefined
+  const body = relayErrorBody(detail)
+  const error = typeof body?.error === 'string' ? body.error : undefined
+  // The relay's human-readable `detail` distinguishes, e.g., the per-recipient/global unconfirmed
+  // claim cap ("...outbox is temporarily at capacity", 503 with exact_set_retained=false: nothing
+  // was claimed) from "the exact set is pending" (503 with exact_set_retained=true).
+  const text = typeof body?.detail === 'string' ? body.detail : undefined
+  return error !== undefined && text !== undefined
+    ? `${error}: ${text}`
+    : error ?? text
 }
 
-/** Thrown when a network-level failure left the outcome genuinely unknown, and polling
- * `GET /message/monad/:payload_hash` never turned up a stored message within the configured
- * budget (see this file's header, "Lease release policy"). The lease has already been released as
+/** Thrown when the outcome stayed unresolved through the whole idempotent-retry budget (network
+ * failure or a persistent `503 mailbox_retryable`) and no attempt journal exists to resume it
+ * (see this file's header, "Lease release policy"). The lease has already been released as
  * `'stuck'` (retired) by the time this is thrown. */
 export class MonadStampAbandonedError extends MonadStampError {
   readonly payloadHashHex: string
@@ -523,6 +530,31 @@ export class MonadStampAbandonedError extends MonadStampError {
   constructor(message: string, payloadHashHex: string) {
     super(message)
     this.payloadHashHex = payloadHashHex
+  }
+}
+
+/** The relay ended this exact payment set for good: `409 mailbox_conflict` (the payload hash is
+ * owned by a different set) or `422 mailbox_terminal` (durable claim terminal: stale nonce, expiry,
+ * failed verification, ...). Re-sending the same bytes cannot succeed; only a new send can. */
+export class MonadStampTerminalError extends MonadStampError {
+  readonly status: number
+  readonly code: 'mailbox_conflict' | 'mailbox_terminal'
+  /** Whether the relay still owns these exact bytes (`exact_set_retained`). */
+  readonly exactSetRetained: boolean | undefined
+  readonly detail: unknown
+
+  constructor(
+    message: string,
+    status: number,
+    code: 'mailbox_conflict' | 'mailbox_terminal',
+    exactSetRetained: boolean | undefined,
+    detail: unknown,
+  ) {
+    super(message)
+    this.status = status
+    this.code = code
+    this.exactSetRetained = exactSetRetained
+    this.detail = detail
   }
 }
 
@@ -553,7 +585,11 @@ export class MonadStampRecoveredAttemptError extends MonadStampError {
 const MAX_STAMP_PAYMENTS = 64
 export const MAX_MONAD_STAMPED_MESSAGE_BYTES = 2 * 1024 * 1024
 
-function exactSetRetained(responseData: unknown): boolean | undefined {
+/** Parses a relay JSON error body (`{ error, detail, exact_set_retained }`), which axios hands
+ * back as raw bytes under `responseType: 'arraybuffer'`. */
+function relayErrorBody(
+  responseData: unknown,
+): Record<string, unknown> | undefined {
   let parsed = responseData
   if (responseData instanceof ArrayBuffer || ArrayBuffer.isView(responseData)) {
     try {
@@ -571,23 +607,102 @@ function exactSetRetained(responseData: unknown): boolean | undefined {
     }
   }
   if (typeof parsed !== 'object' || parsed === null) return undefined
-  const value = (parsed as Record<string, unknown>).exact_set_retained
+  return parsed as Record<string, unknown>
+}
+
+function exactSetRetained(responseData: unknown): boolean | undefined {
+  const value = relayErrorBody(responseData)?.exact_set_retained
   return typeof value === 'boolean' ? value : undefined
+}
+
+function relayErrorCode(responseData: unknown): string | undefined {
+  const value = relayErrorBody(responseData)?.error
+  return typeof value === 'string' ? value : undefined
+}
+
+/** Terminal relay verdicts for one exact set (`409`/`422`), else undefined. */
+function terminalCode(
+  status: number,
+  responseData: unknown,
+): 'mailbox_conflict' | 'mailbox_terminal' | undefined {
+  const code = relayErrorCode(responseData)
+  if (status === 409 && code === 'mailbox_conflict') return code
+  if (status === 422 && code === 'mailbox_terminal') return code
+  return undefined
+}
+
+/** A response that means "not final yet, re-PUT the same bytes". */
+function isRetryablePutResponse(status: number, responseData: unknown) {
+  return (
+    status === 429 ||
+    (status === 503 && relayErrorCode(responseData) === 'mailbox_retryable')
+  )
+}
+
+function retryAfterMs(headers: unknown): number | undefined {
+  const raw = (headers as Record<string, unknown> | undefined)?.['retry-after']
+  if (typeof raw !== 'string' && typeof raw !== 'number') return undefined
+  const seconds = Number(raw)
+  if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1000
+  const date = typeof raw === 'string' ? Date.parse(raw) : NaN
+  return Number.isNaN(date) ? undefined : Math.max(0, date - Date.now())
 }
 
 function defaultSleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
 
-/** Options for the `GET /message/monad/:payload_hash` fallback poll used when a `PUT` attempt fails
- * with no HTTP response at all (see this file's header, "Lease release policy"). */
-export interface AbandonPollOptions {
-  /** Delay between poll attempts, in ms. Default 2000. */
-  intervalMs?: number
-  /** Number of `GET` attempts before giving up. Default 5. */
+/** Idempotent re-`PUT` policy for a non-final outcome (`503 mailbox_retryable`, `429`, no response;
+ * see this file's header, "Lease release policy"). Every attempt sends the identical bytes. */
+export interface PutRetryOptions {
+  /** Total `PUT` attempts including the first. Default 5. */
   maxAttempts?: number
+  /** First backoff delay in ms; doubles each attempt (a larger `Retry-After` wins). Default 1000. */
+  intervalMs?: number
+  /** Cap for one delay in ms, including `Retry-After`. Default 15000. */
+  maxDelayMs?: number
   /** Injectable in place of the real `setTimeout`-based delay, for deterministic tests. */
   sleep?: (ms: number) => Promise<void>
+}
+
+/**
+ * What this process last learned about one outgoing attempt (identified by its bare-hex payload
+ * hash), as answered by {@link MonadStampClient.attemptStatus}. Ticket #269/#270: a caller that
+ * kept a message after a failed send must be able to ask "is the earlier payment still live?"
+ * *before* it ever builds new payment transactions, because a second payment for the same message
+ * while the first can still land is a double payment.
+ *
+ * - `live`: the exact signed set is still in the attempt journal. It will be re-`PUT` byte for byte
+ *   by {@link MonadStampClient.resumePendingAttempts}; re-sending is free and idempotent. Never
+ *   build a new payment for this message.
+ * - `delivered`: an idempotent re-`PUT` was answered 200 (the relay durably delivered it).
+ * - `dead`: the relay ended the set (409/422 terminal, or it never retained it) or the relay has
+ *   no mailbox; nothing can land for it any more, and a new payment is the only way forward.
+ * - `unknown`: not in the journal and no recorded outcome (for example the outcome was resolved
+ *   by a previous process). It may or may not have been delivered; callers must not silently pay
+ *   again.
+ */
+export type MonadStampAttemptStatus = 'live' | 'delivered' | 'dead' | 'unknown'
+
+/** Outcomes resolved in this process, per attempt journal (shared by every client instance built
+ * over the same journal, e.g. the per-send client and the wallet-load resume). In memory only. */
+const resolvedAttemptOutcomes = new WeakMap<
+  object,
+  Map<string, 'delivered' | 'dead'>
+>()
+
+function recordAttemptOutcome(
+  journal: object | undefined,
+  payloadHashHex: string,
+  outcome: 'delivered' | 'dead',
+): void {
+  if (journal === undefined) return
+  let outcomes = resolvedAttemptOutcomes.get(journal)
+  if (outcomes === undefined) {
+    outcomes = new Map()
+    resolvedAttemptOutcomes.set(journal, outcomes)
+  }
+  outcomes.set(payloadHashHex, outcome)
 }
 
 /** Params for `MonadStampClient.submitStampedMessage`. */
@@ -605,17 +720,25 @@ export interface StampMonadMessageParams {
    * failing immediately when the pool is fully leased. Omit for the default immediate-reject
    * behavior (`SubAccountLeaseManager.acquireLease`). */
   waitForLease?: AcquireLeaseWhenAvailableOptions
-  /** Overrides the default fallback poll used only when a `PUT` attempt fails with no HTTP response
-   * at all (see this file's header, "Lease release policy"). */
-  abandonPoll?: AbandonPollOptions
+  /** Overrides the default idempotent re-`PUT` backoff (see this file's header, "Lease release
+   * policy"). */
+  putRetry?: PutRetryOptions
+  /** Called (and awaited) once the exact signed payment set is durably journaled and before any
+   * byte of it is sent to the relay, with the attempt's bare-hex payload hash. A caller that owns
+   * a user-visible message records this hash so it can later ask {@link
+   * MonadStampClient.attemptStatus} about exactly this attempt. A throwing or rejecting
+   * callback aborts the send BEFORE any request to the relay and rolls the attempt back (journal
+   * entry deleted, reservations retired), so no payment can exist that the caller could not
+   * record. */
+  onAttemptJournaled?: (payloadHashHex: string) => void | Promise<void>
 }
 
-/** Outcome of a successful `submitStampedMessage` call — all payment transactions confirmed and the
- * relay stored the message (see this file's header: a 2xx `PUT /message/monad` response, or a
- * found `GET` after the network-failure fallback poll, are the only two ways to reach this). */
+/** Outcome of a successful `submitStampedMessage` call — the relay durably delivered the message
+ * (see this file's header: a 200 `PUT /message/monad` response, on the first send or on an
+ * idempotent re-`PUT`, is the only way to reach this). */
 export interface StampMonadMessageResult {
   stored: StoredMonadMessageProto
-  /** Bare (no `0x`) hex of `h_m` — also `GET /message/monad/:payload_hash`'s path segment. */
+  /** Bare (no `0x`) hex of `h_m`. */
   payloadHashHex: string
   txHashes: string[]
   leaseIndices: number[]
@@ -627,7 +750,7 @@ export interface StampMonadMessageResult {
 
 /**
  * Ties together sub-account leasing (#14/#18), payment construction (#11), and the live
- * `PUT /message/monad` / `GET /message/monad/:payload_hash` HTTP surface (#27) into one call:
+ * `PUT /message/monad` HTTP surface (#27) into one call:
  * "stamp this encrypted payload onto Monad and hand it to the relay." See this file's header for
  * the full commitment/calldata/protobuf/lease-release design.
  */
@@ -639,7 +762,7 @@ export class MonadStampClient {
   private readonly changePool: MonadChangePool | undefined
   private readonly attemptJournal: MonadWalletHandle['stampAttemptJournal']
   /** Base URL of the `cashweb-registry` relay, e.g. `https://relay.example.com` — no trailing
-   * slash. `/message/monad` (`PUT`) and `/message/monad/:payload_hash` (`GET`) are appended to it. */
+   * slash. `/message/monad` (`PUT`) is appended to it. */
   private readonly relayBaseUrl: string
 
   constructor(params: MonadWalletHandle) {
@@ -652,61 +775,43 @@ export class MonadStampClient {
     this.relayBaseUrl = params.relayBaseUrl.replace(/\/+$/, '')
   }
 
-  /** Fetch a previously-stored message by its bare-hex `payload_hash` via
-   * `GET /message/monad/:payload_hash`. Returns `undefined` on a `404` (not yet stored/found) — any
-   * other non-2xx response, or a network-level failure, propagates as a thrown error. */
-  async fetchStoredMessage(
-    payloadHashHex: string,
-  ): Promise<StoredMonadMessageProto | undefined> {
-    try {
-      const response = await axios({
-        method: 'get',
-        url: `${this.relayBaseUrl}/message/monad/${payloadHashHex}`,
-        responseType: 'arraybuffer',
-      })
-      return decodeStoredMonadMessage(new Uint8Array(response.data))
-    } catch (err) {
-      if (axios.isAxiosError(err) && err.response?.status === 404) {
-        return undefined
-      }
-      throw err
-    }
-  }
-
-  private async pollForStoredMessage(
-    payloadHashHex: string,
-    expectedMessage: MonadStampedMessageProto,
-    options?: AbandonPollOptions,
-  ): Promise<StoredMonadMessageProto | undefined> {
-    const intervalMs = options?.intervalMs ?? 2000
-    const maxAttempts = options?.maxAttempts ?? 5
-    const sleep = options?.sleep ?? defaultSleep
-    for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      if (attempt > 0) await sleep(intervalMs)
-      // A single poll attempt failing (another network hiccup, a transient 5xx, ...) is not itself
-      // proof of abandonment -- only exhausting the whole poll budget without ever finding the
-      // message is. Swallow per-attempt errors here and let the loop keep trying; the overall
-      // "genuinely unknown" -> `'stuck'` outcome is decided by the caller once every attempt in the
-      // budget has been spent.
-      const stored = await this.fetchStoredMessage(payloadHashHex).catch(
-        () => undefined,
-      )
-      if (
-        stored?.message !== undefined &&
-        bytesEqual(
-          encodeMonadStampedMessage(stored.message),
-          encodeMonadStampedMessage(expectedMessage),
-        )
-      ) {
-        return stored
-      }
-    }
-    return undefined
-  }
-
+  /** `PUT` the exact bytes, re-sending the identical bytes while the outcome is not final. A 200
+   * for an already-delivered set returns the stored record, so re-sending is the confirmation. */
   private async putStampedMessage(
     message: MonadStampedMessageProto,
     encoded = encodeMonadStampedMessage(message),
+    retry?: PutRetryOptions,
+  ): Promise<StoredMonadMessageProto> {
+    const maxAttempts = Math.max(1, retry?.maxAttempts ?? 5)
+    const baseDelayMs = retry?.intervalMs ?? 1000
+    const maxDelayMs = retry?.maxDelayMs ?? 15_000
+    const sleep = retry?.sleep ?? defaultSleep
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await this.putStampedMessageOnce(message, encoded)
+      } catch (err) {
+        let hintMs: number | undefined
+        if (axios.isAxiosError(err) && err.response) {
+          if (!isRetryablePutResponse(err.response.status, err.response.data)) {
+            throw err
+          }
+          hintMs = retryAfterMs(err.response.headers)
+        }
+        // No response, an unverifiable 2xx, 429, or 503 mailbox_retryable: not final.
+        if (attempt >= maxAttempts) throw err
+        await sleep(
+          Math.min(
+            maxDelayMs,
+            Math.max(baseDelayMs * 2 ** (attempt - 1), hintMs ?? 0),
+          ),
+        )
+      }
+    }
+  }
+
+  private async putStampedMessageOnce(
+    message: MonadStampedMessageProto,
+    encoded: Uint8Array,
   ): Promise<StoredMonadMessageProto> {
     const response = await axios({
       method: 'put',
@@ -762,7 +867,7 @@ export class MonadStampClient {
       this.attemptJournal !== undefined &&
       this.attemptJournal.getAll().length > 0
     ) {
-      const recovered = await this.resumePendingAttempts()
+      const recovered = await this.resumePendingAttempts(params.putRetry)
       if (recovered.length > 0) {
         throw new MonadStampRecoveredAttemptError(recovered)
       }
@@ -954,6 +1059,38 @@ export class MonadStampClient {
       await this.pool.flush()
       throw err
     }
+    try {
+      await params.onAttemptJournaled?.(payloadHashHex)
+    } catch (callbackError) {
+      // Fail closed. The caller could not durably attribute this attempt to its message, and a
+      // payment nobody can attribute is exactly what gets paid twice on the next Retry. Nothing
+      // has been sent to the relay yet (it broadcasts the signed set only on PUT), so roll the
+      // attempt back completely: drop the journal entry, then retire the reservations.
+      try {
+        await this.attemptJournal?.delete(payloadHashHex)
+      } catch {
+        // Journal entry could not be removed: keep it (and the reservations it protects) so that
+        // resume can still re-send it byte for byte. The caller sees the original error.
+        throw callbackError
+      }
+      // Record first: the journal entry is already gone, so this is the truth even if the
+      // reservation bookkeeping below fails.
+      recordAttemptOutcome(this.attemptJournal, payloadHashHex, 'dead')
+      for (const handle of handles) {
+        this.leaseManager.releaseLease(handle, 'failed')
+      }
+      try {
+        await this.pool.flush()
+      } catch (flushError) {
+        // Startup recovery retires unjournaled reservations; the caller must see the original
+        // failure, not this one.
+        console.warn(
+          'could not persist the rolled-back reservations',
+          flushError,
+        )
+      }
+      throw callbackError
+    }
     const releaseAll = async (
       outcome: 'confirmed' | 'failed' | 'stuck',
     ): Promise<Array<ChangeSweepOutcome | undefined>> => {
@@ -987,98 +1124,154 @@ export class MonadStampClient {
       return sweeps
     }
 
+    let stored: StoredMonadMessageProto
     try {
-      const stored = await this.putStampedMessage(message, encodedMessage)
-      const changeSweeps = await releaseAll('confirmed')
-      if (
-        changeSweeps.some(
-          sweep =>
-            sweep?.swept === false && sweep.reason !== 'below-dust-threshold',
-        )
-      ) {
-        throw new MonadStampPendingAttemptError([payloadHashHex])
-      }
-      await this.attemptJournal?.delete(payloadHashHex)
-      return {
-        stored,
-        payloadHashHex,
-        txHashes: signedTxs.map(signedTx => signedTx.txHash),
-        leaseIndices: handles.map(handle => handle.index),
-        changeSweeps,
-      }
+      stored = await this.putStampedMessage(
+        message,
+        encodedMessage,
+        params.putRetry,
+      )
     } catch (err) {
-      if (err instanceof MonadStampPendingAttemptError) throw err
       if (axios.isAxiosError(err) && err.response) {
-        if (exactSetRetained(err.response.data) === false) {
+        const { status, data } = err.response
+        const retained = exactSetRetained(data)
+        const detail = relayRejectionDetail(data)
+        if (status === 404) {
+          // No mailbox routes: the relay never saw or admitted these bytes.
           await releaseAll('failed')
           await this.attemptJournal?.delete(payloadHashHex)
-          const detail = relayRejectionDetail(err.response.data)
+          recordAttemptOutcome(this.attemptJournal, payloadHashHex, 'dead')
+          throw new MonadMailboxUnavailableError(
+            'PUT /message/monad: HTTP 404: the relay has no Monad mailbox (disabled or too old); the message was not sent',
+            404,
+          )
+        }
+        const terminal = terminalCode(status, data)
+        if (terminal !== undefined) {
+          // The exact set is dead at the relay: never re-send it, never reuse its accounts.
+          await releaseAll(retained === false ? 'failed' : 'stuck')
+          await this.attemptJournal?.delete(payloadHashHex)
+          recordAttemptOutcome(this.attemptJournal, payloadHashHex, 'dead')
+          throw new MonadStampTerminalError(
+            `Relay ended this Monad-stamped payment set (HTTP ${status} ${terminal})${
+              detail ? `: ${detail}` : ''
+            }; build a new message to retry`,
+            status,
+            terminal,
+            retained,
+            data,
+          )
+        }
+        if (retained === false) {
+          await releaseAll('failed')
+          await this.attemptJournal?.delete(payloadHashHex)
+          recordAttemptOutcome(this.attemptJournal, payloadHashHex, 'dead')
           throw new MonadStampRejectedError(
-            `Relay rejected the Monad-stamped message before retaining its payment set (HTTP ${err.response.status})${
+            `Relay rejected the Monad-stamped message before retaining its payment set (HTTP ${status})${
               detail ? `: ${detail}` : ''
             }`,
-            err.response.status,
-            err.response.data,
+            status,
+            data,
           )
         }
         if (this.attemptJournal !== undefined) {
-          // The relay may have accepted a prefix of this exact payment set before returning an
-          // error. Keep the journal and reservations intact so reconciliation can replay only the
-          // already-authorized bytes; presenting this as a terminal rejection could prompt a
-          // caller to create a second salted payment and pay twice.
+          // The relay may own this exact set (or a prefix of it was accepted). Keep the journal and
+          // reservations so `resumePendingAttempts` can re-PUT the identical bytes; presenting
+          // this as a terminal rejection could prompt a caller to create a second salted payment
+          // and pay twice.
           throw new MonadStampPendingAttemptError([payloadHashHex])
         }
+        if (isRetryablePutResponse(status, data)) {
+          await releaseAll('stuck')
+          throw new MonadStampAbandonedError(
+            `Monad stamp submission abandoned: the relay kept answering HTTP ${status}${
+              detail ? ` (${detail})` : ''
+            } through the retry budget`,
+            payloadHashHex,
+          )
+        }
         await releaseAll('failed')
-        const detail = relayRejectionDetail(err.response.data)
         throw new MonadStampRejectedError(
-          `Relay rejected the Monad-stamped message (HTTP ${err.response.status})${
+          `Relay rejected the Monad-stamped message (HTTP ${status})${
             detail ? `: ${detail}` : ''
           }`,
-          err.response.status,
-          err.response.data,
+          status,
+          data,
         )
       }
 
-      // A missing HTTP response or a semantically invalid 2xx is genuinely ambiguous: the relay
-      // may still have received/broadcast/stored the exact message. Poll the read side before
-      // giving up, and require byte-for-byte equality there too.
-      const stored = await this.pollForStoredMessage(
-        payloadHashHex,
-        message,
-        params.abandonPoll,
-      )
-      if (stored !== undefined) {
-        const changeSweeps = await releaseAll('confirmed')
-        if (
-          changeSweeps.some(
-            sweep =>
-              sweep?.swept === false && sweep.reason !== 'below-dust-threshold',
-          )
-        ) {
-          throw new MonadStampPendingAttemptError([payloadHashHex])
-        }
-        await this.attemptJournal?.delete(payloadHashHex)
-        return {
-          stored,
-          payloadHashHex,
-          txHashes: signedTxs.map(signedTx => signedTx.txHash),
-          leaseIndices: handles.map(handle => handle.index),
-          changeSweeps,
-        }
-      }
-
+      // No HTTP response (or an unverifiable 2xx) through the whole idempotent-retry budget: the
+      // relay may still own the exact bytes, so retire the accounts rather than guess.
       await releaseAll('stuck')
       throw new MonadStampAbandonedError(
-        'Monad stamp submission abandoned: no response from the relay, and ' +
-          `GET /message/monad/${payloadHashHex} never found a stored message`,
+        'Monad stamp submission abandoned: no usable response from the relay through ' +
+          `the retry budget for PUT /message/monad (${payloadHashHex})`,
         payloadHashHex,
       )
     }
+
+    const changeSweeps = await releaseAll('confirmed')
+    if (
+      changeSweeps.some(
+        sweep =>
+          sweep?.swept === false && sweep.reason !== 'below-dust-threshold',
+      )
+    ) {
+      throw new MonadStampPendingAttemptError([payloadHashHex])
+    }
+    await this.attemptJournal?.delete(payloadHashHex)
+    recordAttemptOutcome(this.attemptJournal, payloadHashHex, 'delivered')
+    return {
+      stored,
+      payloadHashHex,
+      txHashes: signedTxs.map(signedTx => signedTx.txHash),
+      leaseIndices: handles.map(handle => handle.index),
+      changeSweeps,
+    }
+  }
+
+  /** Answers, without any network call or payment, whether the attempt with this bare-hex payload
+   * hash is still recoverable. See {@link MonadStampAttemptStatus}. A caller deciding whether a
+   * retry may build *new* payments must get `dead` here (or explicit user confirmation for
+   * `unknown`) first: `live` means re-send the same bytes via {@link resumePendingAttempts}. */
+  attemptStatus(payloadHashHex: string): MonadStampAttemptStatus {
+    if (
+      this.attemptJournal
+        ?.getAll()
+        .some(attempt => attempt.payloadHashHex === payloadHashHex)
+    ) {
+      return 'live'
+    }
+    const outcome =
+      this.attemptJournal === undefined
+        ? undefined
+        : resolvedAttemptOutcomes.get(this.attemptJournal)?.get(payloadHashHex)
+    return outcome ?? 'unknown'
+  }
+
+  /** Every attempt this process can still account for: those in the journal (`live`) and those
+   * whose outcome it resolved. Lets a caller notice an attempt no message of its own points at. */
+  recordedAttempts(): Array<{
+    payloadHashHex: string
+    status: MonadStampAttemptStatus
+  }> {
+    const hashes = new Set<string>(
+      this.attemptJournal?.getAll().map(attempt => attempt.payloadHashHex),
+    )
+    const outcomes =
+      this.attemptJournal === undefined
+        ? undefined
+        : resolvedAttemptOutcomes.get(this.attemptJournal)
+    for (const hash of outcomes?.keys() ?? []) hashes.add(hash)
+    return [...hashes].map(payloadHashHex => ({
+      payloadHashHex,
+      status: this.attemptStatus(payloadHashHex),
+    }))
   }
 
   /** Replay crash-surviving attempts byte-for-byte. Exact-set relay binding makes this safe when
    * only a prefix of the transactions landed before the previous process stopped. */
-  async resumePendingAttempts(): Promise<string[]> {
+  async resumePendingAttempts(retry?: PutRetryOptions): Promise<string[]> {
     if (this.attemptJournal === undefined) return []
     const completed: string[] = []
     for (const attempt of this.attemptJournal.getAll()) {
@@ -1095,7 +1288,7 @@ export class MonadStampClient {
         const message = decodeMonadStampedMessage(
           Uint8Array.from(attempt.messageBytes),
         )
-        await this.putStampedMessage(message)
+        await this.putStampedMessage(message, undefined, retry)
         for (const index of attempt.leaseIndices) {
           const record = this.pool.getRecord(index)
           if (record !== undefined && record.status !== 'spent') {
@@ -1119,12 +1312,18 @@ export class MonadStampClient {
           }
         }
         await this.attemptJournal.delete(attempt.payloadHashHex)
+        recordAttemptOutcome(
+          this.attemptJournal,
+          attempt.payloadHashHex,
+          'delivered',
+        )
         completed.push(attempt.payloadHashHex)
       } catch (err) {
         if (
           axios.isAxiosError(err) &&
           err.response &&
-          exactSetRetained(err.response.data) === false
+          (exactSetRetained(err.response.data) === false ||
+            terminalCode(err.response.status, err.response.data) !== undefined)
         ) {
           for (const index of attempt.leaseIndices) {
             const record = this.pool.getRecord(index)
@@ -1134,6 +1333,11 @@ export class MonadStampClient {
           }
           await this.pool.flush()
           await this.attemptJournal.delete(attempt.payloadHashHex)
+          recordAttemptOutcome(
+            this.attemptJournal,
+            attempt.payloadHashHex,
+            'dead',
+          )
         }
         // Otherwise retain the raw set and keep its accounts unavailable for a later retry.
       }

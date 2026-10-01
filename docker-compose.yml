@@ -15,9 +15,10 @@ services:
     ports:
       - '${BACKEND_PORT:-8080}:8080'
     environment:
+      # Required: the shipped backend/docker/cashwebd.toml enables the Monad mailbox and the daemon
+      # exits at startup, naming this variable, when it is empty or unset.
       MONAD_TESTNET_HTTP_RPC_URL: ${MONAD_TESTNET_HTTP_RPC_URL}
       MONAD_STAMP_BURN_ADDRESS: ${MONAD_STAMP_BURN_ADDRESS:-0x000000000000000000000000000000000000dEaD}
-      CASHWEB_STAMP_MIN_BURN_VALUE_WEI: ${CASHWEB_STAMP_MIN_BURN_VALUE_WEI:-1000000000000}
       FRANK_NETWORK_TAG: ${FRANK_NETWORK_TAG:-MONT}
     volumes:
       - registry-data:/data

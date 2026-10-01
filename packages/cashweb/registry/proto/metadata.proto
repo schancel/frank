@@ -65,7 +65,7 @@ message ListMonadProfilesEntry {
 // registered at or after `since`, ordered by registration timestamp ascending. Client-side
 // counterpart of the backend's `ListMonadProfilesResponse` (see that backend proto's doc comment)
 // -- lets a bot discover newly-registered identities by polling with an advancing cursor,
-// mirroring `StoredMonadMessages`/`GET /message/monad?since=` (ticket #37/#72's precedent for this
+// mirroring `StoredMonadMessages`/the inbox feed (originally `GET /message/monad?since=`, ticket #37/#72's precedent for this
 // exact "add message(s) to an existing client proto file + regenerate" pattern).
 message ListMonadProfilesResponse {
   // Profiles registered at or after the request's `since`, ordered by timestamp ascending.

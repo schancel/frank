@@ -1,4 +1,4 @@
-import { Script } from 'bitcore-lib-xpi'
+import { pubkeyHashFromOutputScript } from '@frank/nakamoto'
 import { ChronikClient, SubscribeMsg, WsEndpoint } from 'chronik-client'
 
 import {
@@ -12,17 +12,34 @@ import {
   NewBlockEvent,
 } from './chain-adapter'
 
+function scriptFromHex(hex: string): Uint8Array {
+  if (hex.length % 2 !== 0 || !/^[0-9a-fA-F]*$/.test(hex)) {
+    throw new Error(`Invalid script: ${JSON.stringify(hex)}`)
+  }
+  const out = new Uint8Array(hex.length / 2)
+  for (let index = 0; index < out.length; index += 1) {
+    out[index] = Number.parseInt(hex.slice(index * 2, index * 2 + 2), 16)
+  }
+  return out
+}
+
+function bytesToHex(bytes: Uint8Array): string {
+  let hex = ''
+  for (const byte of bytes) {
+    hex += byte.toString(16).padStart(2, '0')
+  }
+  return hex
+}
+
 function decodeP2pkhOutput(
   outputScriptHex: string | undefined,
 ): { pkh: string } | undefined {
   if (outputScriptHex === undefined) {
     return undefined
   }
-  const script = new Script(outputScriptHex)
-  if (!script.isPublicKeyHashOut()) {
-    return undefined
-  }
-  return { pkh: script.getPublicKeyHash().toString('hex') }
+  const matched = pubkeyHashFromOutputScript(scriptFromHex(outputScriptHex))
+  if (!matched.ok) return undefined
+  return { pkh: bytesToHex(matched.value) }
 }
 
 function utxoStateToChainUtxoState(state: string): ChainUtxoState {
@@ -41,12 +58,11 @@ function utxoStateToChainUtxoState(state: string): ChainUtxoState {
 }
 
 /**
- * `ChainAdapter` implementation backed by a Lotus chronik indexer (via `chronik-client`) for
- * chain reads/writes, and `bitcore-lib-xpi` for script decoding.
+ * `ChainAdapter` implementation backed by a Lotus chronik indexer (via `chronik-client`).
+ * P2PKH outputs use nakamoto's 25-byte template (decision #493), not bitcore's chunk parser.
  *
  * This is a pure extraction: every call here was already made directly against
- * `ChronikClient`/`WsEndpoint`/`bitcore-lib-xpi` inside `Wallet` before this boundary existed.
- * No behavior change is intended.
+ * `ChronikClient`/`WsEndpoint` inside `Wallet` before this boundary existed.
  */
 export class LotusAdapter implements ChainAdapter {
   private chronikClient: ChronikClient

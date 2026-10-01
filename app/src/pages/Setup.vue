@@ -17,7 +17,14 @@
 
     <q-page-container>
       <q-page class="q-ma-none q-pa-sm">
+        <replace-account-guard
+          v-if="guardActive"
+          :confirmed="existingConfirmed"
+          @cancel="$router.push('/')"
+          @acknowledge="acknowledgeReplace"
+        />
         <q-stepper
+          v-else
           v-model="step"
           ref="stepper"
           color="primary"
@@ -38,13 +45,36 @@
             icon="vpn_key"
             :done="step > 2"
           >
-            <account-step v-model:account-data="accountData" />
+            <account-step v-model:account-data="accountData" :resume="resume" />
           </q-step>
           <q-step
+            v-if="isNewAccount"
             :name="3"
+            :title="$t('seedConfirm.stepTitle')"
+            icon="fact_check"
+            :done="step > 3"
+          >
+            <div
+              v-if="challengeError"
+              role="alert"
+              class="text-negative"
+              data-test="challenge-error"
+            >
+              {{ $t('seedConfirm.unavailable') }}
+            </div>
+            <seed-confirm-step
+              v-else-if="challenge"
+              :seed="challenge.seed"
+              :positions="challenge.positions"
+              :confirmed="isSeedConfirmed"
+              @confirmed="onSeedConfirmed"
+            />
+          </q-step>
+          <q-step
+            :name="4"
             :title="$t('setup.deposit')"
             icon="attach_money"
-            :done="step > 3"
+            :done="step > 4"
           >
             <deposit-step />
           </q-step>
@@ -94,15 +124,27 @@ import {
   networkName,
 } from '../utils/constants'
 import { errorNotify } from '../utils/notifications'
-import { persistSetupAndReload } from '../utils/setup-persistence'
+import {
+  initializeMonadIdentity,
+  setupFinishReloads,
+} from '../utils/monad-identity-session'
+import { finishSetupAndEnter } from '../utils/setup-persistence'
+import { classifyAccount } from '../utils/account-state'
+import { requestPersistentStorageWithin } from '../utils/persistent-storage'
 import {
   commitValidatedSetupName,
   commitValidatedSetupSeed,
+  ensureConfirmationChallenge,
+  initialSetupSeed,
+  normalizeSetupMnemonic,
+  type SeedConfirmationChallenge,
 } from '../utils/setup-account'
 
 import AccountStep from '../components/setup/AccountStep.vue'
 import DepositStep from '../components/setup/DepositStep.vue'
 import EulaStep from '../components/setup/EULAStep.vue'
+import SeedConfirmStep from '../components/setup/SeedConfirmStep.vue'
+import ReplaceAccountGuard from '../components/setup/ReplaceAccountGuard.vue'
 
 import { useRelayClientStore } from 'src/stores/relay-client'
 import { useWalletStore } from 'src/stores/wallet'
@@ -112,11 +154,16 @@ import { useProfileStore } from 'src/stores/my-profile'
 import { defaultRelayData, useContactStore } from 'src/stores/contacts'
 import { storeToRefs } from 'pinia'
 
+// How long signup waits for the browser's answer to the persistent-storage request (ticket #370).
+const PERSIST_REQUEST_WAIT_MS = 3000
+
 export default defineComponent({
   components: {
     AccountStep,
     DepositStep,
     EulaStep,
+    SeedConfirmStep,
+    ReplaceAccountGuard,
   },
   setup() {
     const relayClient = useRelayClientStore()
@@ -127,9 +174,6 @@ export default defineComponent({
     const myProfile = useProfileStore()
     const contacts = useContactStore()
     const { updateInterval } = storeToRefs(contacts)
-    if (!wallet.seedPhrase) {
-      wallet.setSeedPhrase(generateMnemonic())
-    }
 
     return {
       setRelayToken: relayClient.setToken,
@@ -139,26 +183,52 @@ export default defineComponent({
       setUpdateInterval: contacts.setUpdateInterval,
       seedPhrase: seedPhrase,
       setRelayData: myProfile.setRelayData,
-      persistSetupAndReload: () =>
-        persistSetupAndReload(wallet, myProfile, window.location, errorNotify),
       resetWallet: wallet.reset,
       setXPrivKey: wallet.setXPrivKey,
-      setSeedPhrase: wallet.setSeedPhrase,
+      setSeedPhrase: (seed: string, confirmedAt: number | null = null) =>
+        wallet.setSeedPhrase(seed, confirmedAt),
       balance: balance,
     }
   },
   data() {
     const wallet = useWalletStore()
     const contacts = useContactStore()
+    const storedSeed = wallet.seedPhrase
+    // #284 resume mode: a stored seed with no display name (the old #267 bug). The stored phrase
+    // is confirmed and named in place; it is never regenerated, replaced or imported over.
+    const accountState = classifyAccount({
+      seedPhrase: storedSeed,
+      name: useProfileStore().profile?.name,
+      seedConfirmedAt: wallet.seedConfirmedAt,
+    })
+    const resume = accountState === 'needs-recovery'
+    // #304: a finished account (seed and name) already lives on this device. Replacing it
+    // needs an explicit, typed acknowledgement; until then the onboarding steps are not shown
+    // and nothing can be committed.
+    const existingAccount =
+      accountState === 'completed-unconfirmed' || accountState === 'confirmed'
 
     return {
+      resume,
+      existingAccount,
+      existingConfirmed: accountState === 'confirmed',
+      replaceAcknowledged: false,
+      storedSeed: resume ? storedSeed : null,
       step: 1,
       accountData: {
         name: '',
         valid: false,
         nameRequired: false,
-        seed: wallet.seedPhrase,
+        // In-memory draft only: persisted by commitValidatedSetupSeed() on completion (#267).
+        seed: initialSetupSeed(wallet.seedPhrase, generateMnemonic),
       },
+      // Confirmation challenge for the New Account phrase (positions asked for), bound to the
+      // phrase it was drawn for; in memory only.
+      challenge: null as SeedConfirmationChallenge | null,
+      // The (normalized) phrase the user has proven they hold. Never persisted by itself: the
+      // durable seedConfirmedAt marker is written only together with the seed at commit.
+      confirmedSeed: null as string | null,
+      challengeError: false,
       relayData: defaultRelayData,
       relayUrl: defaultRelayUrl,
       avatar: '',
@@ -171,7 +241,99 @@ export default defineComponent({
     }
   },
   emits: ['setupCompleted', 'toggleMyDrawerOpen'],
+  watch: {
+    // Positions are drawn on entering the confirmation step and are reused while the phrase
+    // is unchanged; going back and changing the phrase draws new ones.
+    step(step: number) {
+      if (step === 3) this.prepareChallenge()
+    },
+  },
   methods: {
+    prepareChallenge() {
+      try {
+        this.challenge = ensureConfirmationChallenge(
+          this.challenge,
+          this.accountData.seed,
+        )
+        this.challengeError = false
+      } catch {
+        // No secure random source: never fall back to a weaker one. Show a message instead of an
+        // empty step; Back still works and re-entering the step tries again.
+        this.challenge = null
+        this.challengeError = true
+      }
+    },
+    acknowledgeReplace() {
+      this.replaceAcknowledged = true
+      // The default draft is the STORED phrase; a replacement must start from a fresh one
+      // (or an import), never silently keep the old one under a new profile.
+      this.accountData.seed = generateMnemonic()
+      this.step = 1
+    },
+    onSeedConfirmed() {
+      if (this.challenge) this.confirmedSeed = this.challenge.seed
+    },
+    /**
+     * Persist the seed and name, then start the Monad identity in this page.
+     * `confirmedAt` is the durable proof-of-backup marker stored with the seed.
+     */
+    async finishSetup() {
+      return finishSetupAndEnter({
+        wallet: useWalletStore(),
+        profile: useProfileStore(),
+        notifyError: errorNotify,
+        finishReloads: setupFinishReloads(),
+        location: window.location,
+        initialize: () => initializeMonadIdentity(),
+        navigate: (path: string) => this.$router.push(path),
+      })
+    },
+    async completeAccountStep(confirmedAt: number) {
+      if (this.existingAccount && !this.replaceAcknowledged) {
+        // Independent of the UI: an existing account is never replaced, and its profile never
+        // overwritten, without the typed acknowledgement.
+        const error = new Error(this.$t('setup.replaceNotAcknowledged'))
+        errorNotify(error)
+        throw error
+      }
+      if (
+        this.resume &&
+        normalizeSetupMnemonic(this.accountData.seed) !==
+          normalizeSetupMnemonic(this.storedSeed ?? '')
+      ) {
+        // Belt and braces: resume mode may only ever re-store the SAME phrase it found.
+        const error = new Error(this.$t('setup.storedSeedMismatch'))
+        errorNotify(error)
+        throw error
+      }
+      if (!this.avatar) {
+        this.avatar = await this.selectRandomAvatar()
+      }
+      this.accountData.seed = commitValidatedSetupSeed(
+        this.accountData.seed,
+        (seed, at) => this.setSeedPhrase(seed, at),
+        confirmedAt,
+      )
+      this.accountData.name = commitValidatedSetupName(
+        this.accountData.name,
+        this.accountData.nameRequired,
+        name =>
+          this.setRelayData({
+            profile: {
+              name,
+              bio: '',
+              avatar: this.avatar,
+            },
+            inbox: defaultRelayData.inbox,
+          }),
+      )
+      // Ticket #370: ask the browser to keep the just-stored seed while we still hold the user's
+      // click. Never fails and never blocks signup for long (a permission prompt may stay open).
+      await requestPersistentStorageWithin(PERSIST_REQUEST_WAIT_MS)
+      // Seed and name must be durable before the identity starts. A failed write does not
+      // initialize. The default path does not reload (#389).
+      await this.finishSetup()
+    },
     selectRandomAvatar(): Promise<string> {
       const avatarName =
         defaultAvatars[Math.floor(Math.random() * defaultAvatars.length)]
@@ -473,39 +635,30 @@ export default defineComponent({
           // newWallet()/setupRelayData(), both entirely Lotus-registry-specific (deriving a Lotus
           // HDPrivateKey via a worker, then looking an existing profile up on a live Lotus
           // registry/relay) that this Monad-only deployment has no working backend for, and that
-          // Monad messaging/identity doesn't need at all -- boot/monad-direct-messages.ts derives
-          // everything Monad needs straight from walletStore.seedPhrase, already set by this
-          // component's own setup() the instant /setup was visited. That boot file only runs once
-          // at app startup though, so a full reload (not just an in-SPA route change) is required
-          // for it to pick the now-existing seed phrase up and actually register the Monad identity
-          // with the relay -- this is a pragmatic bridge to a working signup, not the real Monad-
-          // native onboarding UI #47 still wants designed (no seed-backup reminder screen, no
-          // display name wired to a Monad profile yet, "Deposit" step now unreachable dead UI).
-          if (!this.avatar) {
-            this.avatar = await this.selectRandomAvatar()
+          // Monad messaging/identity doesn't need at all. Finish commits the seed and name, then
+          // initializeMonadIdentity (the same session boot starts) registers and polls in place
+          // (#389) instead of reloading. Deposit stays unreachable dead UI (#47).
+          // Only an explicit, valid New or Import choice may proceed. In the initial (no choice
+          // yet) state accountData.valid is false, so the never-shown generated draft can
+          // neither be committed nor stamped as confirmed.
+          if (!this.accountData.valid) break
+          if (this.isNewAccount) {
+            // New Account: the phrase is NOT committed here. The user must first confirm it
+            // on the next step.
+            this.step = 3
+            break
           }
-          this.accountData.seed = commitValidatedSetupSeed(
-            this.accountData.seed,
-            seed => this.setSeedPhrase(seed),
-          )
-          this.accountData.name = commitValidatedSetupName(
-            this.accountData.name,
-            this.accountData.nameRequired,
-            name =>
-              this.setRelayData({
-                profile: {
-                  name,
-                  bio: '',
-                  avatar: this.avatar,
-                },
-                inbox: defaultRelayData.inbox,
-              }),
-          )
-          // The next boot initializes the Monad identity from these stores, so
-          // neither write may be left in flight when the page reloads.
-          await this.persistSetupAndReload()
+          // Import (explicit: valid and nameRequired === false): the user already holds this
+          // phrase, so it counts as confirmed.
+          await this.completeAccountStep(Date.now())
           break
         case 3:
+          // Second, independent guard: never commit a New Account phrase unless the user
+          // confirmed exactly this phrase (forwardEnabled is only the UI half).
+          if (!this.isSeedConfirmed) break
+          await this.completeAccountStep(Date.now())
+          break
+        case 4:
           this.setupSettings()
             .then(() => this.$router.push('/'))
             .catch(err => errorNotify(err))
@@ -529,9 +682,23 @@ export default defineComponent({
       switch (this.step) {
         case 2:
           return this.isWalletValid
+        case 3:
+          return this.isSeedConfirmed
         default:
           return true
       }
+    },
+    guardActive(): boolean {
+      return this.existingAccount && !this.replaceAcknowledged
+    },
+    isNewAccount(): boolean {
+      return this.accountData.nameRequired !== false
+    },
+    isSeedConfirmed(): boolean {
+      return (
+        this.confirmedSeed !== null &&
+        this.confirmedSeed === normalizeSetupMnemonic(this.accountData.seed)
+      )
     },
     isWalletValid(): boolean {
       return this.accountData.valid
@@ -556,6 +723,8 @@ export default defineComponent({
         case 2:
           return this.$t('setup.accountSetupNext')
         case 3:
+          return this.$t('setup.finish')
+        case 4:
           return this.$t('setup.depositStepNext')
         default:
           return 'Unknown'

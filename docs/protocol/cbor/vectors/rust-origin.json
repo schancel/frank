@@ -1,0 +1,424 @@
+{
+  "cases": [
+    {
+      "content_hash_hex": "824c4b503a571b8211b33eb390848cb870b9926380fca42e8abf5e81518d600f",
+      "description": "Rust encoding of the direct-message proof fixture with an additive field and nested opaque future item (type 1).",
+      "expectation": "accept",
+      "frame_hex": "46524e4b01000003eda4000101020201035903e2a6006a6672616e6b2d7465737401a2000101582103f7fc9b839b4c4c8ff821777ecc410b461d6ca6b36e931ddbfadda8b37a55ae330259026946524e4b0100000260a400050101020103590255a9006a6672616e6b2d7465737401a20002015820095d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca702a2000101582102747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec90319ffff04581899a4afbac5d0dbe6f1fc07121d28333e49545f6a75808b960559014b46524e4b0100000142a400060101020103590137a4006a6672616e6b2d74657374015008131e29343f4a55606b76818c97a2ad0258f246524e4b01000000e9a40008010102010358dfa200656672616e6b0182583346524e4b010000002aa4001101010201035820a100781c68656c6c6f2066726f6d207468652062726f7773657220636f646563589e46524e4b0100000095a400100101020103588ba10083582046524e4b0100000017a4001101010201034ea1006b6e65737465642074657874582646524e4b010000001da4001affff0001010102010350a1006d667574757265206974656d2031583c46524e4b0100000033a4001001010201035829a10081582446524e4b010000001ba40011010102010352a1006f74776f206c6576656c7320646f776e03582007863dab2409d2276b8fc18762491554eb12b630e282b71a967392029508c4fe065821022f88fd8059bf1bfda332a2ff01f4667efdc1d8526562ecbd6bcac57ace81b6c307582102d066aa56e65e5cba4051500237a51ae9fd16c2c3476904d47d667f9fe1fca3e9085840bf8f2ddfeb72fb808d95507bf325ca2e09ea762fd874aef4422a74b7b82e327da6708a4fa9553e426718e3cf8ed714d75546b0458f8a4ef1820c30dce4b0163a0358202f3efec4b3eb71526aa2397d934bd3f2bb7153eeec532f874a0bc30ef2088aec0482a5000001582079848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ce0258200000000000000000000000000000000000000000000000000000000000000f0103543f4a55606b76818c97a2adb8c3ced9e4effa0510045820ba516b8f2c6c533eaf846a144ddaa718c7633369141ee61c39f2a134bd42daf9a500010158209ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f30258200000000000000000000000000000000000000000000000000000000000000f020354646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35045820a50f8c42014a00a0cefb9ca76e5547b3ae8884b7ed2222ff830e156d35399d02186474727573742d61646469746976652d646972656374",
+      "id": "rust-fixture-direct-message",
+      "rules": [
+        "S3",
+        "S8",
+        "S9",
+        "T3",
+        "T4"
+      ],
+      "schema_version": 2,
+      "source": "rust",
+      "type_id": 1,
+      "validation_context": {
+        "opaque_retention_allowed": false,
+        "operation": "typed",
+        "prior_directory_statement_frame_hex": null,
+        "reader_version": 2,
+        "route_byte_limit": 8388617,
+        "supported_schemas": [
+          {
+            "schema_version": 1,
+            "type_id": 1
+          },
+          {
+            "schema_version": 1,
+            "type_id": 2
+          },
+          {
+            "schema_version": 1,
+            "type_id": 3
+          },
+          {
+            "schema_version": 2,
+            "type_id": 4
+          },
+          {
+            "schema_version": 1,
+            "type_id": 5
+          },
+          {
+            "schema_version": 1,
+            "type_id": 6
+          },
+          {
+            "schema_version": 1,
+            "type_id": 7
+          },
+          {
+            "schema_version": 1,
+            "type_id": 8
+          },
+          {
+            "schema_version": 1,
+            "type_id": 16
+          },
+          {
+            "schema_version": 1,
+            "type_id": 17
+          }
+        ]
+      }
+    },
+    {
+      "content_hash_hex": "809e7777ef35d470863471eb28b7084693a1459e51520d76211ae4a4cfb199a5",
+      "description": "Rust encoding of the directory-attestation proof fixture with an additive field (type 2, bootstrap, u64::MAX revision).",
+      "expectation": "accept",
+      "frame_hex": "46524e4b01000001f9a4000201020201035901eea30059016046524e4b0100000157a40004010202020359014ca7006a6672616e6b2d7465737401a200020158200135404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f021bffffffffffffffff03a2001a6553f100011a075bcd150482a400500135404b56616c77828d98a3aeb9c4cf01781c68747470733a2f2f72656c6179312e6578616d706c652f6672616e6b02a20001015821020e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d586303a2001a6b49d2000100a40050025a65707b86919ca7b2bdc8d3dee9f401781c68747470733a2f2f72656c6179322e6578616d706c652f6672616e6b02a2000101582102333e49545f6a75808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d8803a2001a6b49d200010006a2001a713fb300011a3b9ac9ff08a2000101582103f7fc9b839b4c4c8ff821777ecc410b461d6ca6b36e931ddbfadda8b37a55ae330181a3001001a200020158200135404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f0258402a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f3a45505b66717c87929da8b3bec9d4df186477727573742d61646469746976652d6469726563746f7279",
+      "id": "rust-fixture-directory-attestation",
+      "rules": [
+        "S4",
+        "S10",
+        "T1"
+      ],
+      "schema_version": 2,
+      "source": "rust",
+      "type_id": 2,
+      "validation_context": {
+        "opaque_retention_allowed": false,
+        "operation": "typed",
+        "prior_directory_statement_frame_hex": null,
+        "reader_version": 2,
+        "route_byte_limit": 8388617,
+        "supported_schemas": [
+          {
+            "schema_version": 1,
+            "type_id": 1
+          },
+          {
+            "schema_version": 1,
+            "type_id": 2
+          },
+          {
+            "schema_version": 1,
+            "type_id": 3
+          },
+          {
+            "schema_version": 2,
+            "type_id": 4
+          },
+          {
+            "schema_version": 1,
+            "type_id": 5
+          },
+          {
+            "schema_version": 1,
+            "type_id": 6
+          },
+          {
+            "schema_version": 1,
+            "type_id": 7
+          },
+          {
+            "schema_version": 1,
+            "type_id": 8
+          },
+          {
+            "schema_version": 1,
+            "type_id": 16
+          },
+          {
+            "schema_version": 1,
+            "type_id": 17
+          }
+        ]
+      }
+    },
+    {
+      "content_hash_hex": "2695fb57efd1f2820f63805b435af7d3bca40b4dd36144f6083144d8beb9d4d3",
+      "description": "Rust encoding of the mailbox-checkpoint proof fixture with an additive field and opaque future fact/section frames (type 3).",
+      "expectation": "accept",
+      "frame_hex": "46524e4b0100000134a400030102020103590129a7006a6672616e6b2d7465737401a2000101582102bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd0813025026313c47525d68737e89949faab5c0cb03a2001a6553f2f401050482a400a2001a6553f164010001502a35404b56616c77828d98a3aeb9c4cf0207034a2a35404b56616c77828da400a2001a6553f164010901504f5a65707b86919ca7b2bdc8d3dee9f4020703582646524e4b010000001da4001affff0001010102010350a1006d667574757265206974656d20320582a300010101024c747f8a95a0abb6c1ccd7e2eda3001a7fff0001010902582646524e4b010000001da4001affff0001010102010350a1006d667574757265206974656d203318647818727573742d61646469746976652d636865636b706f696e74",
+      "id": "rust-fixture-checkpoint",
+      "rules": [
+        "S6",
+        "S7"
+      ],
+      "schema_version": 2,
+      "source": "rust",
+      "type_id": 3,
+      "validation_context": {
+        "opaque_retention_allowed": false,
+        "operation": "typed",
+        "prior_directory_statement_frame_hex": null,
+        "reader_version": 2,
+        "route_byte_limit": 8388617,
+        "supported_schemas": [
+          {
+            "schema_version": 1,
+            "type_id": 1
+          },
+          {
+            "schema_version": 1,
+            "type_id": 2
+          },
+          {
+            "schema_version": 1,
+            "type_id": 3
+          },
+          {
+            "schema_version": 2,
+            "type_id": 4
+          },
+          {
+            "schema_version": 1,
+            "type_id": 5
+          },
+          {
+            "schema_version": 1,
+            "type_id": 6
+          },
+          {
+            "schema_version": 1,
+            "type_id": 7
+          },
+          {
+            "schema_version": 1,
+            "type_id": 8
+          },
+          {
+            "schema_version": 1,
+            "type_id": 16
+          },
+          {
+            "schema_version": 1,
+            "type_id": 17
+          }
+        ]
+      }
+    },
+    {
+      "content_hash_hex": "a58e4709ec532fdce334923ef1228fb109f6d11270b1a8a6005853fff9ea7d4d",
+      "description": "Rust encoding of the type-9 topic post fixture.",
+      "expectation": "accept",
+      "frame_hex": "46524e4b0100000066a400090101020103585ca3006a6672616e6b2d74657374016a6672616e6b2e64656d6f0358400e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3",
+      "id": "rust-fixture-topic-post",
+      "rules": [
+        "S12",
+        "T1"
+      ],
+      "schema_version": 1,
+      "source": "rust",
+      "type_id": 9,
+      "validation_context": {
+        "opaque_retention_allowed": false,
+        "operation": "typed",
+        "prior_directory_statement_frame_hex": null,
+        "reader_version": 2,
+        "route_byte_limit": 8388617,
+        "supported_schemas": [
+          {
+            "schema_version": 1,
+            "type_id": 1
+          },
+          {
+            "schema_version": 1,
+            "type_id": 2
+          },
+          {
+            "schema_version": 1,
+            "type_id": 3
+          },
+          {
+            "schema_version": 2,
+            "type_id": 4
+          },
+          {
+            "schema_version": 1,
+            "type_id": 5
+          },
+          {
+            "schema_version": 1,
+            "type_id": 6
+          },
+          {
+            "schema_version": 1,
+            "type_id": 7
+          },
+          {
+            "schema_version": 1,
+            "type_id": 8
+          },
+          {
+            "schema_version": 1,
+            "type_id": 9
+          },
+          {
+            "schema_version": 1,
+            "type_id": 10
+          },
+          {
+            "schema_version": 1,
+            "type_id": 11
+          },
+          {
+            "schema_version": 1,
+            "type_id": 16
+          },
+          {
+            "schema_version": 1,
+            "type_id": 17
+          }
+        ]
+      }
+    },
+    {
+      "content_hash_hex": "09d259ca6aca5ee0039633bba30e8cf1ae3f9c4e5534c5eca81c7d07a009ee58",
+      "description": "Rust encoding of the type-10 topic post submission fixture.",
+      "expectation": "accept",
+      "frame_hex": "46524e4b01000000faa4000a010102010358f0a3006a6672616e6b2d7465737401586f46524e4b0100000066a400090101020103585ca3006a6672616e6b2d74657374016a6672616e6b2e64656d6f0358400e19242f3a45505b66717c87929da8b3bec9d4dfeaf5000b16212c37424d58636e79848f9aa5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c302586e808b96a1acb7c2cdd8e3eef9040f1a25303b46515c67727d88939ea9b4bfcad5e0ebf6010c17222d38434e59646f7a85909ba6b1bcc7d2dde8f3fe09141f2a35404b56616c77828d98a3aeb9c4cfdae5f0fb06111c27323d48535e69747f8a95a0abb6c1ccd7e2edf8030e19242f",
+      "id": "rust-fixture-topic-post-submission",
+      "rules": [
+        "S8",
+        "S11",
+        "T7"
+      ],
+      "schema_version": 1,
+      "source": "rust",
+      "type_id": 10,
+      "validation_context": {
+        "opaque_retention_allowed": false,
+        "operation": "typed",
+        "prior_directory_statement_frame_hex": null,
+        "reader_version": 2,
+        "route_byte_limit": 8388617,
+        "supported_schemas": [
+          {
+            "schema_version": 1,
+            "type_id": 1
+          },
+          {
+            "schema_version": 1,
+            "type_id": 2
+          },
+          {
+            "schema_version": 1,
+            "type_id": 3
+          },
+          {
+            "schema_version": 2,
+            "type_id": 4
+          },
+          {
+            "schema_version": 1,
+            "type_id": 5
+          },
+          {
+            "schema_version": 1,
+            "type_id": 6
+          },
+          {
+            "schema_version": 1,
+            "type_id": 7
+          },
+          {
+            "schema_version": 1,
+            "type_id": 8
+          },
+          {
+            "schema_version": 1,
+            "type_id": 9
+          },
+          {
+            "schema_version": 1,
+            "type_id": 10
+          },
+          {
+            "schema_version": 1,
+            "type_id": 11
+          },
+          {
+            "schema_version": 1,
+            "type_id": 16
+          },
+          {
+            "schema_version": 1,
+            "type_id": 17
+          }
+        ]
+      }
+    },
+    {
+      "content_hash_hex": "a51c59373bfc313fedaa676e7f1cfc230c9e9a16901de84454b7ccbf27f3f274",
+      "description": "Rust encoding of the type-11 topic vote fixture.",
+      "expectation": "accept",
+      "frame_hex": "46524e4b01000000aba4000b010102010358a1a3006a6672616e6b2d74657374015820a58e4709ec532fdce334923ef1228fb109f6d11270b1a8a6005853fff9ea7d4d02586ea5b0bbc6d1dce7f2fd08131e29343f4a55606b76818c97a2adb8c3ced9e4effa05101b26313c47525d68737e89949faab5c0cbd6e1ecf7020d18232e39444f5a65707b86919ca7b2bdc8d3dee9f4ff0a15202b36414c57626d78838e99a4afbac5d0dbe6f1fc07121d28333e4954",
+      "id": "rust-fixture-topic-vote",
+      "rules": [
+        "S12",
+        "T7"
+      ],
+      "schema_version": 1,
+      "source": "rust",
+      "type_id": 11,
+      "validation_context": {
+        "opaque_retention_allowed": false,
+        "operation": "typed",
+        "prior_directory_statement_frame_hex": null,
+        "reader_version": 2,
+        "route_byte_limit": 8388617,
+        "supported_schemas": [
+          {
+            "schema_version": 1,
+            "type_id": 1
+          },
+          {
+            "schema_version": 1,
+            "type_id": 2
+          },
+          {
+            "schema_version": 1,
+            "type_id": 3
+          },
+          {
+            "schema_version": 2,
+            "type_id": 4
+          },
+          {
+            "schema_version": 1,
+            "type_id": 5
+          },
+          {
+            "schema_version": 1,
+            "type_id": 6
+          },
+          {
+            "schema_version": 1,
+            "type_id": 7
+          },
+          {
+            "schema_version": 1,
+            "type_id": 8
+          },
+          {
+            "schema_version": 1,
+            "type_id": 9
+          },
+          {
+            "schema_version": 1,
+            "type_id": 10
+          },
+          {
+            "schema_version": 1,
+            "type_id": 11
+          },
+          {
+            "schema_version": 1,
+            "type_id": 16
+          },
+          {
+            "schema_version": 1,
+            "type_id": 17
+          }
+        ]
+      }
+    }
+  ],
+  "format": "frank-cbor-v1-vectors"
+}

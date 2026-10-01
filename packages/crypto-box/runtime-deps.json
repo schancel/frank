@@ -1,0 +1,7 @@
+{
+  "allowed": ["@frank/nakamoto", "@noble/ciphers", "@noble/hashes"],
+  "optional": [],
+  "planned": [],
+  "plannedOptional": [],
+  "note": "@noble/ciphers is installed at exact 1.3.0 (decision 353, section 11). No other ciphers version is allowed. @noble/hashes 1.8.0 is the existing section 11 pin, used here for HKDF-SHA256. @frank/nakamoto is the only ECDH implementation. The cipher package's block-chaining mode is not called. Suite 65535 is not produced."
+}

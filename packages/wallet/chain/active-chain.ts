@@ -99,6 +99,8 @@ export interface ProfileInfo {
   name?: string
   bio?: string
   avatar?: string
+  /** Self-declared automated account (#311); see `MonadProfileFields.bot`. */
+  bot?: boolean
 }
 
 export interface DirectMessageSendResult {
@@ -162,6 +164,16 @@ export type RecoveredStampPaymentSweepResult =
       txHash?: string
     }
 
+/** What the sender's client knows about one earlier outgoing attempt (ticket #269/#270); see
+ * `MonadStampAttemptStatus` in `../monad-stamp-client.ts` for the exact meaning. `dead` means it
+ * can never land, so a new payment is the only way to send; anything else means "do not pay
+ * again without the user's explicit say-so". */
+export type DirectMessageAttemptStatus =
+  | 'live'
+  | 'delivered'
+  | 'dead'
+  | 'unknown'
+
 export interface DirectMessageClient {
   send(params: {
     wallet: WalletHandle
@@ -170,10 +182,35 @@ export interface DirectMessageClient {
     /** Raw native-chain value attached as the mandatory stamp payment. */
     stampValue?: bigint
     onPreparationProgress?: (progress: DirectMessagePreparationProgress) => void
+    /** Called once this send's exact payment set is durably journaled, before it is submitted to
+     * the relay, with its `payloadDigest` (the eventual `DirectMessageSendResult.payloadDigest`).
+     * Lets the caller tie its own pending message to the attempt for `reconcileAttempts`. */
+    onAttemptCreated?: (payloadDigest: string) => void | Promise<void>
   }): Promise<DirectMessageSendResult>
+  /** Re-sends the SAME exact bytes of every still-live earlier attempt (idempotent and free: the
+   * relay answers 200 for an already-delivered set, and 503 while it is pending), then reports
+   * what is now known about each requested `payloadDigest`. Never builds or signs a payment. */
+  reconcileAttempts(params: {
+    wallet: WalletHandle
+    payloadDigests: string[]
+    /** Idempotent re-PUT budget per live attempt; defaults to a single try (callers back off). */
+    maxPutAttempts?: number
+  }): Promise<Record<string, DirectMessageAttemptStatus>>
+  /** Payload hashes of every attempt the wallet can still account for (live in its journal, or
+   * resolved in this process) that is not in `knownDigests`: payments no message points at.
+   * Re-sends live attempts first, so a just-resumed one is included. */
+  unattributedAttempts(params: {
+    wallet: WalletHandle
+    knownDigests: string[]
+  }): Promise<string[]>
+  /** Returns messages at or after `sinceMs`, ordered by time. If a later inbox page could not be
+   * fetched, the result is cut back to a prefix ending on a complete timestamp group and
+   * `onTruncated` is called: advancing `sinceMs` to `lastReceivedTime + 1` is then safe and the
+   * rest arrives on the next poll. If no complete group exists, the call rejects instead. */
   fetchSince(params: {
     wallet: WalletHandle
     sinceMs: number
+    onTruncated?: (reason: Error) => void
   }): Promise<DirectMessageReceived[]>
   listRecoveredStampPayments(params: {
     wallet: WalletHandle
@@ -193,7 +230,19 @@ export interface NativeTransferClient {
     wallet: WalletHandle
     recipient: ChainAddress
     value: bigint
+    /** Called with the transaction hash after signing and BEFORE any byte is broadcast. It is
+     * awaited; if it rejects, nothing is broadcast and `send` rejects with that error. Lets a
+     * caller persist "this hash may be paid" durably first, so a lost broadcast response or a
+     * killed app can never leave a paid transfer with no record. */
+    onSigned?: (signed: { txHash: string }) => Promise<void>
   }): Promise<{ txHash: string }>
+  /** What the node says about a transaction hash: mined ok (`confirmed`), mined but reverted
+   * (`failed`), known but not mined (`pending`), or not known to the node (`unknown`; only
+   * meaningful as "not paid" after enough time has passed and the caller says so). */
+  getTransactionStatus(params: {
+    wallet: WalletHandle
+    txHash: string
+  }): Promise<'confirmed' | 'failed' | 'pending' | 'unknown'>
 }
 
 export interface TopicBroadcastClient {
@@ -206,12 +255,16 @@ export interface TopicBroadcastClient {
     direction: 'up' | 'down'
     voteWeightWei: bigint
     parentDigest?: string
+    /** Progress of preparing the burn account (same stages as a direct message's stamp-account
+     * preparation, always a single funding transaction here). */
+    onPreparationProgress?: (progress: DirectMessagePreparationProgress) => void
   }): Promise<{ payloadDigest: string }>
   vote(params: {
     wallet: WalletHandle
     payloadDigest: string
     voteWeightWei: bigint
     direction: 'up' | 'down'
+    onPreparationProgress?: (progress: DirectMessagePreparationProgress) => void
   }): Promise<void>
   fetchByTopic(params: {
     wallet: WalletHandle

@@ -11,6 +11,8 @@ use sha2::Sha512;
 use sha3::{Digest, Keccak256};
 use thiserror::Error;
 
+use crate::monad_http::Address;
+
 const HARDENED_CHILD: u32 = 1 << 31;
 const STAMP_PATH_PREFIX: [u32; 2] = [44, 145];
 
@@ -62,6 +64,18 @@ fn evm_address(public_key: &PublicKey) -> [u8; 20] {
     let mut address = [0; 20];
     address.copy_from_slice(&digest[12..]);
     address
+}
+
+/// Derive the normalized Monad address that owns a compressed recipient public key.
+pub(crate) fn recipient_address_from_public_key(
+    recipient_public_key: &[u8],
+) -> Result<Address, StampStealthError> {
+    if recipient_public_key.len() != 33 {
+        return Err(StampStealthError::InvalidRecipientPublicKey);
+    }
+    let public_key = PublicKey::from_slice(recipient_public_key)
+        .map_err(|_| StampStealthError::InvalidRecipientPublicKey)?;
+    Ok(Address(evm_address(&public_key)))
 }
 
 fn child_tweak(public_key: &PublicKey, chain_code: &[u8; 32], index: u32) -> ([u8; 32], [u8; 32]) {

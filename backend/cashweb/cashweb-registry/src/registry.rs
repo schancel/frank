@@ -2,7 +2,10 @@
 
 use std::sync::Arc;
 
-use bitcoinsuite_core::{lotus_txid, Hashed, LotusAddress, Net, Sha256d};
+#[cfg(test)]
+use std::cell::Cell;
+
+use bitcoinsuite_core::{ecc::Ecc, lotus_txid, Bytes, Hashed, LotusAddress, Net, Sha256d};
 use bitcoinsuite_ecc_secp256k1::EccSecp256k1;
 use bitcoinsuite_error::{ErrorMeta, Result};
 use cashweb_payload::{
@@ -20,8 +23,54 @@ use crate::{
     store::{db::Db, pubkeyhash::PubKeyHash},
 };
 
+#[cfg(test)]
+thread_local! {
+    static RECIPIENT_SIGNATURE_WORK: Cell<usize> = const { Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_recipient_signature_work() {
+    RECIPIENT_SIGNATURE_WORK.set(0);
+}
+
+#[cfg(test)]
+pub(crate) fn recipient_signature_work() -> usize {
+    RECIPIENT_SIGNATURE_WORK.get()
+}
+
 /// Cashweb [`Registry`] stores [`SignedPayload`]s containing [`proto::AddressMetadata`] for
 /// addresses.
+///
+/// Raw mailbox stores are intentionally inaccessible outside this crate; inbox publication must
+/// pass through the validated atomic outbox finalizer.
+///
+/// ```compile_fail
+/// # let db: cashweb_registry::store::db::Db = todo!();
+/// let _ = db.monad_messages();
+/// ```
+///
+/// ```compile_fail
+/// # let db: cashweb_registry::store::db::Db = todo!();
+/// let _ = db.monad_outbox();
+/// ```
+///
+/// ```compile_fail
+/// use cashweb_registry::registry::Registry;
+/// let _ = Registry::claim_monad_outbox;
+/// ```
+///
+/// ```compile_fail
+/// use cashweb_registry::{
+///     monad_http::Address,
+///     store::monad_outbox::MonadOutboxPolicy,
+/// };
+/// let _ = MonadOutboxPolicy {
+///     recipient: Address([0; 20]),
+///     recipient_pubkey: vec![2; 33],
+///     min_value_wei: 1,
+///     network_tag: b"testnet".to_vec(),
+/// };
+/// ```
 #[derive(Debug)]
 pub struct Registry {
     /// Database storing the address metadata in RocksDB.
@@ -461,6 +510,7 @@ impl Registry {
     /// through, rather than trusting each caller to have already set the field correctly --
     /// returns the tagged record actually persisted, so the caller's own response (or further use
     /// of the value) reflects exactly what's now in the database.
+    #[cfg(test)]
     pub(crate) fn put_monad_message(
         &self,
         payload_hash: &[u8],
@@ -487,6 +537,7 @@ impl Registry {
     }
 
     /// Reserve a payload hash for one exact signed payment set before broadcasting any member.
+    #[cfg(test)]
     pub(crate) fn claim_monad_message_attempt(
         &self,
         payload_hash: &[u8],
@@ -498,6 +549,7 @@ impl Registry {
             .claim_attempt(payload_hash, message, policy)
     }
 
+    #[cfg(test)]
     pub(crate) fn get_monad_message_attempt(
         &self,
         payload_hash: &[u8],
@@ -506,16 +558,11 @@ impl Registry {
         self.db.monad_messages().get_attempt(payload_hash, message)
     }
 
-    /// Release an exact-set claim only when the relay knows no member was accepted. Ambiguous or
-    /// partially verified attempts must remain bound to their original signed bytes.
-    pub(crate) fn delete_monad_message_attempt(&self, payload_hash: &[u8]) -> Result<()> {
-        self.db.monad_messages().delete_attempt(payload_hash)
-    }
-
     /// Atomically claim one canonical Monad payment request and all hash-only child references.
-    /// This is the durable replacement seam for the legacy digest-only attempt methods above;
-    /// those remain temporarily until the HTTP admission owner switches its concurrent branch.
-    pub fn claim_monad_outbox(
+    /// This is the durable replacement seam for legacy digest-only attempts. Production keeps
+    /// only read access to those rows so an exact request can atomically adopt matching evidence;
+    /// legacy claim/delete mutators above are test-only.
+    pub(crate) fn claim_monad_outbox(
         &self,
         message: &proto::MonadStampedMessage,
         policy: &crate::store::monad_outbox::MonadOutboxPolicy,
@@ -527,6 +574,17 @@ impl Registry {
             .claim(&message.payload_hash, message, policy, now_ms, limits)
     }
 
+    /// Coherently classify all durable owner forms for one candidate request.
+    pub(crate) fn classify_monad_message_ownership(
+        &self,
+        message: &proto::MonadStampedMessage,
+    ) -> Result<crate::store::monad_outbox::MonadMessageOwnership> {
+        self.db
+            .monad_outbox()
+            .classify_ownership(&message.payload_hash, message)
+    }
+
+    #[cfg(test)]
     /// Read one canonical outbox record.
     pub(crate) fn monad_outbox_record(
         &self,
@@ -535,8 +593,51 @@ impl Registry {
         self.db.monad_outbox().get(payload_hash)
     }
 
-    /// Read one hash-only child state in focused recovery tests.
     #[cfg(test)]
+    pub(crate) fn replace_monad_outbox_canonical_for_test(
+        &self,
+        payload_hash: &[u8],
+        message: &proto::MonadStampedMessage,
+    ) -> Result<()> {
+        self.db
+            .monad_outbox()
+            .replace_canonical_for_test(payload_hash, message)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn replace_monad_outbox_lifecycle_for_test(
+        &self,
+        payload_hash: &[u8],
+        lifecycle: crate::store::monad_outbox::MonadOutboxLifecycle,
+    ) -> Result<()> {
+        self.db
+            .monad_outbox()
+            .replace_lifecycle_for_test(payload_hash, lifecycle)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn replace_monad_outbox_minimum_for_test(
+        &self,
+        payload_hash: &[u8],
+        min_value_wei: u128,
+    ) -> Result<()> {
+        self.db
+            .monad_outbox()
+            .replace_minimum_for_test(payload_hash, min_value_wei)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn replace_monad_outbox_recipient_for_test(
+        &self,
+        payload_hash: &[u8],
+        recipient: Address,
+    ) -> Result<()> {
+        self.db
+            .monad_outbox()
+            .replace_recipient_for_test(payload_hash, recipient)
+    }
+
+    /// Read one exact child state after a conditional transition loses its lease race.
     pub(crate) fn monad_outbox_member(
         &self,
         payload_hash: &[u8],
@@ -545,19 +646,12 @@ impl Registry {
         self.db.monad_outbox().get_member(payload_hash, child_index)
     }
 
-    /// Recover canonical raw bytes through an index/hash-checked child reference.
-    pub(crate) fn monad_outbox_referenced_raw_tx(
+    /// Load one immutable canonical/member snapshot for a complete reconciliation pass.
+    pub(crate) fn monad_outbox_reconciliation_snapshot(
         &self,
         payload_hash: &[u8],
-        child_index: u32,
-    ) -> Result<(
-        crate::store::monad_outbox::MonadOutboxRecord,
-        crate::store::monad_outbox::MonadOutboxMember,
-        Vec<u8>,
-    )> {
-        self.db
-            .monad_outbox()
-            .referenced_raw_tx(payload_hash, child_index)
+    ) -> Result<Option<crate::store::monad_outbox::MonadOutboxSnapshot>> {
+        self.db.monad_outbox().reconciliation_snapshot(payload_hash)
     }
 
     /// Enumerate the bounded set of claims which need startup reconciliation.
@@ -569,13 +663,69 @@ impl Registry {
         self.db.monad_outbox().list_active_after(after, limit)
     }
 
+    /// Validate one bounded page of durable chain authority before startup mutation.
+    pub(crate) fn bind_monad_outbox_chain_page(
+        &self,
+        expected_chain_id: u64,
+        max_rows: usize,
+        max_bytes: usize,
+    ) -> Result<crate::store::monad_outbox::ChainBindingProgress> {
+        self.db
+            .monad_outbox()
+            .bind_chain_page(expected_chain_id, max_rows, max_bytes)
+    }
+
+    /// Supersede one bounded page of durable leases left by the prior process.
+    pub(crate) fn supersede_monad_outbox_startup_leases_page(
+        &self,
+        now_ms: i64,
+        max_claims: usize,
+        max_bytes: usize,
+    ) -> Result<crate::store::monad_outbox::StartupLeasePage> {
+        self.db
+            .monad_outbox()
+            .supersede_startup_leases_page(now_ms, max_claims, max_bytes)
+    }
+
     /// Enforce configured compact-history bounds independently of new claim transitions.
     pub(crate) fn gc_monad_outbox_history(
         &self,
         now_ms: i64,
         limits: &crate::store::monad_outbox::MonadOutboxLimits,
     ) -> Result<()> {
-        self.db.monad_outbox().gc_history(now_ms, limits)
+        self.db.monad_outbox().gc_history(now_ms, limits)?;
+        self.db
+            .monad_outbox()
+            .expire_unconfirmed_recovery(now_ms, limits)?;
+        Ok(())
+    }
+
+    /// Terminal outcome of a claim, if it has one (one record read, no member decoding).
+    pub(crate) fn monad_outbox_terminal(
+        &self,
+        payload_hash: &[u8],
+    ) -> Result<Option<crate::store::monad_outbox::MonadOutboxTerminal>> {
+        Ok(self
+            .db
+            .monad_outbox()
+            .get(payload_hash)?
+            .and_then(|record| match record.lifecycle {
+                crate::store::monad_outbox::MonadOutboxLifecycle::Terminal(terminal) => {
+                    Some(terminal)
+                }
+                _ => None,
+            }))
+    }
+
+    /// Push out replay timing for a claim whose reconciliation hit the per-claim deadline.
+    pub(crate) fn backoff_monad_outbox_after_cancelled_reconcile(
+        &self,
+        payload_hash: &[u8],
+        now_ms: i64,
+    ) -> Result<()> {
+        self.db
+            .monad_outbox()
+            .backoff_after_cancelled_reconcile(payload_hash, now_ms)
     }
 
     /// Acquire one durable replay generation after exact-hash absence was observed.
@@ -661,6 +811,48 @@ impl Registry {
         )
     }
 
+    /// Complete an owned replay whose send the node definitively rejected.
+    pub(crate) fn complete_rejected_monad_outbox_member(
+        &self,
+        payload_hash: &[u8],
+        child_index: u32,
+        lease: crate::store::monad_outbox::MonadOutboxLease,
+        was_exposed: bool,
+        detail: &str,
+        now_ms: i64,
+        limits: &crate::store::monad_outbox::MonadOutboxLimits,
+    ) -> Result<crate::store::monad_outbox::MonadOutboxTransition> {
+        self.db.monad_outbox().complete_rejected_member(
+            payload_hash,
+            child_index,
+            lease,
+            was_exposed,
+            detail,
+            now_ms,
+            limits,
+        )
+    }
+
+    /// Persist exact transaction-body visibility without a receipt as possible exposure.
+    pub(crate) fn complete_submitted_monad_outbox_member(
+        &self,
+        payload_hash: &[u8],
+        child_index: u32,
+        lease: crate::store::monad_outbox::MonadOutboxLease,
+        detail: &str,
+        now_ms: i64,
+        limits: &crate::store::monad_outbox::MonadOutboxLimits,
+    ) -> Result<crate::store::monad_outbox::MonadOutboxTransition> {
+        self.db.monad_outbox().complete_submitted_member(
+            payload_hash,
+            child_index,
+            lease,
+            detail,
+            now_ms,
+            limits,
+        )
+    }
+
     /// Complete an owned replay generation with a permanent losing outcome.
     pub(crate) fn complete_terminal_monad_outbox_member(
         &self,
@@ -713,11 +905,12 @@ impl Registry {
         &self,
         payload_hash: &[u8],
         now_ms: i64,
+        expected_chain_id: u64,
         limits: &crate::store::monad_outbox::MonadOutboxLimits,
     ) -> Result<proto::StoredMonadMessage> {
         self.db
             .monad_outbox()
-            .finalize_delivery(payload_hash, now_ms, limits)
+            .finalize_delivery(payload_hash, now_ms, expected_chain_id, limits)
     }
 
     /// Recipient-private recovery view for retained, incomplete confirmed prefixes. This method
@@ -737,6 +930,42 @@ impl Registry {
         self.db
             .monad_outbox()
             .confirmed_prefixes_for_recipient(&recipient, limit)
+    }
+
+    /// Return one strict-forward, scan-bounded recipient recovery page.
+    pub fn confirmed_monad_outbox_prefixes_page(
+        &self,
+        recipient: Address,
+        cursor: Option<[u8; 32]>,
+        limit: usize,
+        scan_limit: usize,
+        max_canonical_bytes: usize,
+        max_inspected_bytes: usize,
+    ) -> Result<crate::store::monad_outbox::ConfirmedPrefixRecoveryPage> {
+        self.db
+            .monad_outbox()
+            .confirmed_prefixes_for_recipient_page(
+                &recipient,
+                cursor,
+                limit,
+                scan_limit,
+                max_canonical_bytes,
+                max_inspected_bytes,
+            )
+    }
+
+    /// Atomically retire one recipient-authenticated terminal recovery obligation.
+    pub(crate) fn acknowledge_monad_outbox_recovery(
+        &self,
+        recipient: Address,
+        payload_hash: &[u8],
+        obligation_id: &[u8],
+    ) -> Result<crate::store::monad_outbox::MonadRecoveryAck> {
+        self.db.monad_outbox().acknowledge_terminal_recovery(
+            &recipient,
+            payload_hash,
+            obligation_id,
+        )
     }
 
     /// Fully verify and write a Monad-native profile registration (ticket #45) -- the Monad
@@ -788,6 +1017,72 @@ impl Registry {
         self.db.monad_profiles().get(&address)
     }
 
+    /// Verify a mailbox request digest with the recipient's already-registered profile key.
+    /// Missing/malformed profiles and bad signatures intentionally collapse to `false`.
+    pub(crate) fn verify_monad_recipient_signature(
+        &self,
+        recipient: Address,
+        digest: [u8; 32],
+        signature: &[u8],
+    ) -> Result<bool> {
+        self.verify_monad_recipient_signature_observed(recipient, digest, signature, || {})
+    }
+
+    /// Atomically persist one successfully authenticated mailbox challenge as consumed.
+    pub(crate) fn consume_monad_mailbox_challenge(
+        &self,
+        epoch: [u8; 32],
+        recipient: Address,
+        nonce: [u8; 32],
+        expires_at_ms: i64,
+        now_ms: i64,
+        per_recipient_cap: usize,
+    ) -> Result<crate::store::monad_messages::ChallengeConsumption> {
+        self.db.monad_messages().consume_mailbox_challenge(
+            epoch,
+            recipient,
+            nonce,
+            expires_at_ms,
+            now_ms,
+            per_recipient_cap,
+        )
+    }
+
+    fn verify_monad_recipient_signature_observed<F>(
+        &self,
+        recipient: Address,
+        digest: [u8; 32],
+        signature: &[u8],
+        before_verify: F,
+    ) -> Result<bool>
+    where
+        F: FnOnce(),
+    {
+        #[cfg(test)]
+        RECIPIENT_SIGNATURE_WORK.set(RECIPIENT_SIGNATURE_WORK.get() + 1);
+        let profile = self.db.monad_profiles().get(&recipient)?;
+        let registered = profile.is_some();
+        let candidate = profile.map(|profile| profile.pubkey).unwrap_or_else(|| {
+            let secret = self
+                .ecc
+                .seckey_from_array([1; 32])
+                .expect("fixed non-zero secp256k1 key");
+            self.ecc.derive_pubkey(&secret).as_slice().to_vec()
+        });
+        let Ok(pubkey_bytes) = candidate.as_slice().try_into() else {
+            return Ok(false);
+        };
+        let Ok(pubkey) = self.ecc.pubkey_from_array(pubkey_bytes) else {
+            return Ok(false);
+        };
+        let sig: Bytes = signature.into();
+        before_verify();
+        let verified = self.ecc.verify(&pubkey, digest.into(), &sig).is_ok();
+        // Bitwise `&` is deliberate: missing profiles must execute the same ECDSA verification
+        // work against the fixed dummy key before their uniform false result is selected.
+        Ok(registered & verified)
+    }
+
     /// List every `(address, SignedPayload)` registered with the profile's own `timestamp >=
     /// since` (ticket #75), ordered by `timestamp` ascending -- see
     /// `crate::store::monad_profiles`'s module docs for the by-time index this reads, and
@@ -816,6 +1111,7 @@ impl Registry {
     /// List every [`proto::StoredMonadMessage`] stored with `timestamp >= since` (ticket #37),
     /// ordered by `timestamp` ascending. This remains the legacy global compatibility view until
     /// an authenticated recipient-scoped HTTP route is introduced.
+    #[cfg(test)]
     pub(crate) fn list_monad_messages_since(
         &self,
         since: i64,
@@ -834,6 +1130,20 @@ impl Registry {
         self.db
             .monad_messages()
             .list_for_recipient_since(&recipient, since)
+    }
+
+    /// Return one bounded recipient-private inbox page.
+    pub fn list_monad_messages_for_recipient_since_capped(
+        &self,
+        recipient: Address,
+        since: i64,
+        cursor: Option<crate::store::monad_messages::RecipientMessageCursor>,
+        limit: usize,
+        max_bytes: usize,
+    ) -> Result<crate::store::monad_messages::RecipientMessagePage> {
+        self.db
+            .monad_outbox()
+            .validated_inbox_page(&recipient, since, cursor, limit, max_bytes)
     }
 
     /// Store a [`proto::StoredMonadTopicPost`] (ticket #30), once its initial vote's burn has
@@ -2063,6 +2373,37 @@ mod tests {
             test_monad_profile_registry("cashweb-registry--registry-monad-profile-not-found");
         let address = crate::monad_http::Address([3u8; 20]);
         assert_eq!(registry.get_monad_profile(address)?, None);
+        Ok(())
+    }
+
+    #[test]
+    fn missing_and_registered_recipients_both_execute_one_signature_verification() -> Result<()> {
+        let (_tempdir, registry) =
+            test_monad_profile_registry("cashweb-registry--registry-recipient-auth-work");
+        let seckey = registry.ecc.seckey_from_array([9; 32])?;
+        let (signed, registered) = sign_monad_profile(&seckey, &sample_monad_profile(1000));
+        registry.put_monad_profile(registered, signed)?;
+        let wrong_digest = Sha256::digest(b"wrong digest".as_slice().into());
+        let bad_signature = registry
+            .ecc
+            .sign(&seckey, wrong_digest.byte_array().clone())
+            .to_vec();
+        let requested_digest = [0x77; 32];
+
+        for recipient in [registered, crate::monad_http::Address([0xee; 20])] {
+            let calls = std::cell::Cell::new(0);
+            assert!(!registry.verify_monad_recipient_signature_observed(
+                recipient,
+                requested_digest,
+                &bad_signature,
+                || calls.set(calls.get() + 1),
+            )?);
+            assert_eq!(
+                calls.get(),
+                1,
+                "each result executes exactly one ECDSA verify"
+            );
+        }
         Ok(())
     }
 }

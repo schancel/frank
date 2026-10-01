@@ -67,7 +67,7 @@ message StoredMonadMessage {
   bytes network_tag = 5;
 }
 
-// Response for `GET /message/monad?since=<timestamp>` (ticket #37): a page of
+// Response for the authenticated recipient inbox `GET /message/monad/inbox/:recipient` (originally ticket #37's `GET /message/monad?since=<timestamp>`, removed in PR #197): a page of
 // [`StoredMonadMessage`]s the relay has stored, ordered by `timestamp` ascending, letting a
 // client discover newly-stored messages without already knowing their `payload_hash` out of
 // band.
@@ -76,7 +76,7 @@ message StoredMonadMessage {
 // `MonadStampedMessage` nor `StoredMonadMessage` carries an intended-recipient field -- a Monad
 // message is addressed purely by content hash, with `encrypted_payload` opaque to the relay.
 // This endpoint therefore cannot filter server-side by recipient (unlike the polling endpoint
-// shape ticket #37 sketches, `GET /message/monad?since=<timestamp>&recipient=<address>`) --
+// shape ticket #37 sketches, the removed `GET /message/monad?since=<timestamp>&recipient=<address>`) --
 // there is nothing in the wire format for the relay to filter *on*. A client must currently
 // fetch this "since" page and determine which (if any) messages are addressed to it itself
 // (e.g. by trial decryption), mirroring how `DbTopics`'s existing topic-broadcast model already

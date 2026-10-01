@@ -13,6 +13,7 @@
  * `directMessages.send`/`fetchSince` actually encrypt/decrypt, not merely pass a plaintext through.
  */
 import { Wallet, getBytes, hexlify } from 'ethers'
+import { crypto as bitcoreCrypto } from 'bitcore-lib-xpi'
 
 import { MonadIdentity } from '../monad-identity'
 import { StoredMonadMessageProto } from '../monad-stamp-client'
@@ -23,6 +24,8 @@ import { MessageItem, TextItem } from '@frank/cashweb/types/messages'
 import {
   MonadChainConfig,
   MonadChainWalletHandle,
+  MAILBOX_RECOVERY_SYNC_INTERVAL_MS,
+  MAILBOX_RECOVERY_SYNC_WAIT_MS,
   createMonadChain,
   deserializeMessageItems,
   serializeMessageItems,
@@ -50,6 +53,7 @@ jest.mock('../monad-topic-post-client', () => {
     MonadTopicPostClient: jest.fn().mockImplementation(() => ({
       submitTopicPost: jest.fn(),
     })),
+    quoteMonadTopicBurnGasReserve: jest.fn().mockResolvedValue(100n),
   }
 })
 jest.mock('../monad-topic-vote-client', () => {
@@ -61,7 +65,16 @@ jest.mock('../monad-topic-vote-client', () => {
     })),
   }
 })
-jest.mock('@frank/cashweb/relay/monad-message-feed')
+// Explicit factories, not automocks: automock generation loads the real modules in an isolated
+// registry, which makes `bitcore-lib-xpi`'s "more than one instance" guard throw.
+jest.mock('@frank/cashweb/relay/monad-message-feed', () => ({
+  fetchMonadMessagesSince: jest.fn(),
+}))
+jest.mock('@frank/cashweb/relay/monad-mailbox-client', () => ({
+  ...jest.requireActual('@frank/cashweb/relay/monad-mailbox-client'),
+  fetchMonadMailboxRecoveries: jest.fn(),
+  ackMonadMailboxRecovery: jest.fn(),
+}))
 jest.mock('../monad-topic-tally-client')
 jest.mock('../monad-identity', () => {
   const actual = jest.requireActual('../monad-identity')
@@ -88,12 +101,23 @@ const { MonadTopicVoteClient } = jest.requireMock('../monad-topic-vote-client')
 const { MonadAccountTxSigner } = jest.requireMock('../monad-account-tx')
 import { fetchMonadMessagesSince } from '@frank/cashweb/relay/monad-message-feed'
 import {
+  ackMonadMailboxRecovery,
+  fetchMonadMailboxRecoveries,
+} from '@frank/cashweb/relay/monad-mailbox-client'
+import {
   fetchDiscoveredTopics,
   fetchMonadTopicPostView,
   fetchMonadTopicPostsSince,
 } from '../monad-topic-tally-client'
 import { fetchMonadProfile } from '../monad-identity'
 
+const mockedFetchRecoveries =
+  fetchMonadMailboxRecoveries as jest.MockedFunction<
+    typeof fetchMonadMailboxRecoveries
+  >
+const mockedAckRecovery = ackMonadMailboxRecovery as jest.MockedFunction<
+  typeof ackMonadMailboxRecovery
+>
 const mockedFetchMonadMessagesSince =
   fetchMonadMessagesSince as jest.MockedFunction<typeof fetchMonadMessagesSince>
 const mockedFetchMonadTopicPostsSince =
@@ -134,6 +158,10 @@ function makeWallet(identity: MonadIdentity): MonadChainWalletHandle {
         fundingTxHashes: [],
         selectedAccountCount: 2,
       }),
+      prepareBurnAccount: jest.fn().mockResolvedValue({
+        index: 4,
+        fundingTxHashes: [],
+      }),
     } as unknown as MonadChainWalletHandle['pool'],
     leaseManager: {} as MonadChainWalletHandle['leaseManager'],
     provider: {} as MonadChainWalletHandle['provider'],
@@ -144,6 +172,8 @@ function makeWallet(identity: MonadIdentity): MonadChainWalletHandle {
 
 beforeEach(() => {
   jest.clearAllMocks()
+  mockedFetchRecoveries.mockResolvedValue({ records: [] })
+  mockedAckRecovery.mockResolvedValue(undefined)
 })
 
 describe('createMonadChain: basic chain properties', () => {
@@ -303,6 +333,71 @@ describe('createMonadChain: nativeTransfers', () => {
       1_500_000_000_000_000_000n,
     )
     expect(submit).toHaveBeenCalledWith(signed)
+  })
+
+  it('awaits onSigned with the hash BEFORE broadcasting, and a failing onSigned broadcasts nothing', async () => {
+    const chain = createMonadChain(TEST_CONFIG)
+    const identity = MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX)
+    const wallet = makeWallet(identity)
+    const order: string[] = []
+    const buildAndSignTransfer = jest
+      .fn()
+      .mockResolvedValue({ txHash: '0xsigned' })
+    const submit = jest.fn(async () => {
+      order.push('submit')
+      return '0xsigned'
+    })
+    ;(MonadAccountTxSigner as jest.Mock).mockImplementation(() => ({
+      buildAndSignTransfer,
+      submit,
+    }))
+    await chain.nativeTransfers.send({
+      wallet,
+      recipient: identity.address,
+      value: 1n,
+      onSigned: async ({ txHash }) => {
+        await Promise.resolve()
+        order.push(`signed:${txHash}`)
+      },
+    })
+    expect(order).toEqual(['signed:0xsigned', 'submit'])
+
+    submit.mockClear()
+    await expect(
+      chain.nativeTransfers.send({
+        wallet,
+        recipient: identity.address,
+        value: 1n,
+        onSigned: async () => {
+          throw new Error('disk full')
+        },
+      }),
+    ).rejects.toThrow('disk full')
+    expect(submit).not.toHaveBeenCalled()
+  })
+
+  it('reports a transaction hash as confirmed / failed / pending / unknown from the node', async () => {
+    const chain = createMonadChain(TEST_CONFIG)
+    const wallet = makeWallet(
+      MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX),
+    )
+    const getTransactionReceipt = jest.fn()
+    const getTransaction = jest.fn()
+    wallet.provider = {
+      getTransactionReceipt,
+      getTransaction,
+    } as unknown as MonadChainWalletHandle['provider']
+    const status = () =>
+      chain.nativeTransfers.getTransactionStatus({ wallet, txHash: '0xh' })
+    getTransactionReceipt.mockResolvedValue({ status: 1 })
+    await expect(status()).resolves.toBe('confirmed')
+    getTransactionReceipt.mockResolvedValue({ status: 0 })
+    await expect(status()).resolves.toBe('failed')
+    getTransactionReceipt.mockResolvedValue(null)
+    getTransaction.mockResolvedValue({ hash: '0xh' })
+    await expect(status()).resolves.toBe('pending')
+    getTransaction.mockResolvedValue(null)
+    await expect(status()).resolves.toBe('unknown')
   })
 
   it('rejects zero-value transfers before constructing a signer', async () => {
@@ -492,6 +587,83 @@ describe('createMonadChain: directMessages.send', () => {
   })
 })
 
+describe('createMonadChain: directMessages.reconcileAttempts (#269/#270)', () => {
+  it('passes onAttemptCreated through to the stamp client as onAttemptJournaled', async () => {
+    const chain = createMonadChain(TEST_CONFIG)
+    const alice = MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX)
+    const bob = MonadIdentity.fromPrivateKeyHex(BOB_PRIVATE_KEY_HEX)
+    mockedFetchMonadProfile.mockResolvedValueOnce({
+      address: bob.address,
+      pubKey: new Uint8Array(bob.compressedPubKey),
+    })
+    const submitStampedMessage = jest.fn().mockResolvedValue({
+      stored: {} as StoredMonadMessageProto,
+      payloadHashHex: 'deadbeef',
+      txHashes: [],
+      leaseIndices: [],
+    })
+    ;(MonadStampClient as jest.Mock).mockImplementation(() => ({
+      submitStampedMessage,
+    }))
+    const onAttemptCreated = jest.fn()
+    await chain.directMessages.send({
+      wallet: makeWallet(alice),
+      recipient: bob.address,
+      items: [{ type: 'text', text: 'x' } as TextItem],
+      onAttemptCreated,
+    })
+    expect(submitStampedMessage.mock.calls[0][0].onAttemptJournaled).toBe(
+      onAttemptCreated,
+    )
+  })
+
+  it('re-sends the live attempts (never signs a payment) and reports each requested digest', async () => {
+    const chain = createMonadChain(TEST_CONFIG)
+    const alice = MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX)
+    const resumePendingAttempts = jest.fn().mockResolvedValue([])
+    const submitStampedMessage = jest.fn()
+    const statuses: Record<string, string> = {
+      live1: 'live',
+      done: 'delivered',
+    }
+    ;(MonadStampClient as jest.Mock).mockImplementation(() => ({
+      resumePendingAttempts,
+      submitStampedMessage,
+      attemptStatus: (digest: string) => statuses[digest] ?? 'unknown',
+    }))
+    await expect(
+      chain.directMessages.reconcileAttempts({
+        wallet: makeWallet(alice),
+        payloadDigests: ['live1', 'done', 'other'],
+      }),
+    ).resolves.toEqual({ live1: 'live', done: 'delivered', other: 'unknown' })
+    expect(resumePendingAttempts).toHaveBeenCalledWith({ maxAttempts: 1 })
+    expect(submitStampedMessage).not.toHaveBeenCalled()
+  })
+})
+
+describe('createMonadChain: directMessages.unattributedAttempts (#269)', () => {
+  it('resumes live attempts and returns recorded hashes no message points at', async () => {
+    const chain = createMonadChain(TEST_CONFIG)
+    const alice = MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX)
+    const resumePendingAttempts = jest.fn().mockResolvedValue([])
+    ;(MonadStampClient as jest.Mock).mockImplementation(() => ({
+      resumePendingAttempts,
+      recordedAttempts: () => [
+        { payloadHashHex: 'mine', status: 'delivered' },
+        { payloadHashHex: 'orphan', status: 'live' },
+      ],
+    }))
+    await expect(
+      chain.directMessages.unattributedAttempts({
+        wallet: makeWallet(alice),
+        knownDigests: ['mine'],
+      }),
+    ).resolves.toEqual(['orphan'])
+    expect(resumePendingAttempts).toHaveBeenCalledTimes(1)
+  })
+})
+
 describe('createMonadChain: directMessages.fetchSince', () => {
   it('rejects authenticated malformed plaintext per record and returns the following message', async () => {
     const chain = createMonadChain(TEST_CONFIG)
@@ -623,10 +795,23 @@ describe('createMonadChain: directMessages.fetchSince', () => {
       sinceMs: 0,
     })
 
+    // The inbox is the wallet's OWN mailbox, authenticated with its identity key.
     expect(mockedFetchMonadMessagesSince).toHaveBeenCalledWith({
       relayBaseUrl: wallet.relayBaseUrl,
+      recipient: bob.address.raw,
+      signDigest: expect.any(Function),
       sinceMs: 0,
     })
+    const { signDigest } = mockedFetchMonadMessagesSince.mock.calls[0][0]
+    const digest = new Uint8Array(32).fill(7)
+    const der = Buffer.from(await signDigest(digest))
+    expect(
+      bitcoreCrypto.ECDSA.verify(
+        Buffer.from(digest),
+        bitcoreCrypto.Signature.fromDER(der),
+        bob.toBitcorePrivateKey().toPublicKey(),
+      ),
+    ).toBe(true)
     expect(received).toHaveLength(1)
     expect(received[0].senderAddress.raw).toBe(alice.address.raw)
     expect(received[0].recipientAddress.raw).toBe(bob.address.raw)
@@ -779,6 +964,98 @@ describe('createMonadChain: directMessages.fetchSince', () => {
   })
 })
 
+describe('createMonadChain: one per-wallet queue for every account-spending operation', () => {
+  it('a slow direct-message send blocks reconcile, the unattributed check and a topic burn until it settles, then they run one at a time in order', async () => {
+    const chain = createMonadChain(TEST_CONFIG)
+    const alice = MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX)
+    const bob = MonadIdentity.fromPrivateKeyHex(BOB_PRIVATE_KEY_HEX)
+    const wallet = makeWallet(alice)
+    mockedFetchMonadProfile.mockResolvedValue({
+      address: bob.address,
+      pubKey: new Uint8Array(bob.compressedPubKey),
+    })
+    const events: string[] = []
+    let running = 0
+    let maxRunning = 0
+    const track = async <T>(name: string, work: () => Promise<T>) => {
+      running += 1
+      maxRunning = Math.max(maxRunning, running)
+      events.push(`start:${name}`)
+      try {
+        return await work()
+      } finally {
+        events.push(`end:${name}`)
+        running -= 1
+      }
+    }
+    let finishSend!: (value: unknown) => void
+    const sendPending = new Promise(resolve => {
+      finishSend = resolve
+    })
+    ;(MonadStampClient as jest.Mock).mockImplementation(() => ({
+      submitStampedMessage: () => track('dm-send', () => sendPending),
+      resumePendingAttempts: () =>
+        track('resume', async () => {
+          await new Promise(resolve => setImmediate(resolve))
+          return []
+        }),
+      attemptStatus: () => 'unknown',
+      recordedAttempts: () => [],
+    }))
+    ;(MonadTopicPostClient as jest.Mock).mockImplementation(() => ({
+      submitTopicPost: () =>
+        track('topic-post', async () => ({
+          stored: {},
+          payloadHashHex: 'feed',
+          txHash: '0xt',
+          leaseIndex: 0,
+        })),
+    }))
+    ;(wallet.pool.prepareBurnAccount as jest.Mock).mockImplementation(() =>
+      track('burn-prepare', async () => ({ index: 4, fundingTxHashes: [] })),
+    )
+
+    const send = chain.directMessages.send({
+      wallet,
+      recipient: bob.address,
+      items: [{ type: 'text', text: 'x' }],
+    })
+    await new Promise(resolve => setImmediate(resolve))
+    const others = [
+      chain.directMessages.reconcileAttempts({
+        wallet,
+        payloadDigests: ['a'],
+      }),
+      chain.directMessages.unattributedAttempts({
+        wallet,
+        knownDigests: [],
+      }),
+      chain.topics.post({
+        wallet,
+        topic: 'general',
+        entries: [{ kind: 'post', message: 'hi' }],
+        direction: 'up',
+        voteWeightWei: 5_000n,
+      }),
+    ]
+    await new Promise(resolve => setImmediate(resolve))
+    // Only the first send has started; nothing else touched the wallet's accounts meanwhile.
+    expect(events).toEqual(['start:dm-send'])
+
+    finishSend({ payloadHashHex: 'first' })
+    await send
+    await Promise.all(others)
+    expect(maxRunning).toBe(1) // never two account-touching operations at once
+    expect(events.filter(e => e.startsWith('start:'))).toEqual([
+      'start:dm-send',
+      'start:resume',
+      'start:resume',
+      'start:burn-prepare',
+      'start:topic-post',
+    ])
+  })
+})
+
 describe('createMonadChain: topics.post', () => {
   it('submits a topic post via MonadTopicPostClient and returns its payloadDigest', async () => {
     const chain = createMonadChain(TEST_CONFIG)
@@ -813,6 +1090,11 @@ describe('createMonadChain: topics.post', () => {
     expect(call.voteWeightWei).toBe(5_000n)
     expect(call.burnAddress).toBe(TEST_CONFIG.stampBurnAddress)
     expect(hexlify(call.parentPostHash)).toBe('0x' + 'aa'.repeat(32))
+    // #273: the burn account is prepared (funded) first and that exact account is leased.
+    expect(wallet.pool.prepareBurnAccount).toHaveBeenCalledWith(
+      expect.objectContaining({ burnValueWei: 5_000n, gasReserveWei: 100n }),
+    )
+    expect(call.leaseIndex).toBe(4)
   })
 })
 
@@ -846,6 +1128,10 @@ describe('createMonadChain: topics.vote', () => {
     expect(call.direction).toBe('down')
     expect(call.voteWeightWei).toBe(7_000n)
     expect(call.burnAddress).toBe(TEST_CONFIG.stampBurnAddress)
+    expect(wallet.pool.prepareBurnAccount).toHaveBeenCalledWith(
+      expect.objectContaining({ burnValueWei: 7_000n }),
+    )
+    expect(call.leaseIndex).toBe(4)
   })
 })
 
@@ -975,6 +1261,329 @@ describe('createMonadChain: topics.fetchByTopic / fetchOne / viewToForumMessage'
     expect(result).toEqual([
       { topic: 'general', postCount: 3, lastActivityMs: 500 },
     ])
+  })
+})
+
+describe('createMonadChain: directMessages.fetchSince mailbox behaviour', () => {
+  const { MonadMailboxUnavailableError } = jest.requireActual(
+    '@frank/cashweb/relay/monad-mailbox-client',
+  )
+
+  async function recoveryRecord(
+    bob: MonadIdentity,
+    lifecycle: string,
+    byte: string,
+    options: { wrongDestination?: boolean } = {},
+  ) {
+    const payloadHash = getBytes(`0x${byte.repeat(32)}`)
+    const child = (index: number) =>
+      deriveMonadStampChildPublic({
+        payloadHash,
+        recipientPublicKey: new Uint8Array(bob.compressedPubKey),
+        paymentIndex: index,
+      })
+    const raw = async (index: number, to: string) =>
+      getBytes(
+        await new Wallet(ALICE_PRIVATE_KEY_HEX).signTransaction({
+          type: 2,
+          chainId: 10143,
+          nonce: index,
+          to,
+          value: 100n + BigInt(index),
+          gasLimit: 60_000n,
+          maxFeePerGas: 2n,
+          maxPriorityFeePerGas: 1n,
+        }),
+      )
+    return {
+      payloadHashHex: byte.repeat(32),
+      obligationIdHex: 'cd'.repeat(32),
+      canonicalMessage: {
+        stampPayments: [
+          {
+            childIndex: 0,
+            rawTx: await raw(
+              0,
+              options.wrongDestination
+                ? '0x000000000000000000000000000000000000dEaD'
+                : child(0).address,
+            ),
+          },
+          // Child 1 is not yet confirmed: it must never be journaled.
+          { childIndex: 1, rawTx: await raw(1, child(1).address) },
+        ],
+        encryptedPayload: new Uint8Array([1]),
+        payloadHash,
+      },
+      confirmedChildren: [0],
+      lifecycle,
+    }
+  }
+
+  /** `durable` stands in for a `LevelStampPaymentJournal` (persists across restarts). */
+  function walletWithJournal(durable = true) {
+    const bob = MonadIdentity.fromPrivateKeyHex(BOB_PRIVATE_KEY_HEX)
+    const wallet = makeWallet(bob)
+    const journal = new InMemoryStampPaymentJournal()
+    ;(journal as { durable: boolean }).durable = durable
+    wallet.stampPaymentJournal = journal
+    return { bob, wallet, journal }
+  }
+
+  it('imports confirmed children of a terminal recovery into the journal, then acks it', async () => {
+    const chain = createMonadChain(TEST_CONFIG)
+    const { bob, wallet, journal } = walletWithJournal()
+    mockedFetchMonadMessagesSince.mockResolvedValueOnce([])
+    const record = await recoveryRecord(bob, 'terminal:expired', 'ab')
+    mockedFetchRecoveries.mockResolvedValueOnce({ records: [record] })
+
+    await expect(
+      chain.directMessages.fetchSince({ wallet, sinceMs: 0 }),
+    ).resolves.toEqual([])
+
+    // F3: a terminal obligation journals EVERY child (child 1 was not confirmed yet but may still
+    // land on chain after the ack), and the ack follows only once child 0 is journalled.
+    expect(journal.getAll()).toEqual([
+      expect.objectContaining({
+        payloadHashHex: 'ab'.repeat(32),
+        childIndex: 0,
+        status: 'discovered',
+        valueWei: '100',
+      }),
+      expect.objectContaining({
+        payloadHashHex: 'ab'.repeat(32),
+        childIndex: 1,
+        status: 'discovered',
+        valueWei: '101',
+      }),
+    ])
+    expect(mockedAckRecovery).toHaveBeenCalledTimes(1)
+    expect(mockedAckRecovery).toHaveBeenCalledWith(
+      expect.objectContaining({
+        recipient: bob.address.raw,
+        payloadHashHex: 'ab'.repeat(32),
+        obligationIdHex: 'cd'.repeat(32),
+      }),
+    )
+  })
+
+  it('imports but does not ack an obligation that is still active (pending/fully_confirmed/delivered)', async () => {
+    const chain = createMonadChain(TEST_CONFIG)
+    const { bob, wallet, journal } = walletWithJournal()
+    mockedFetchMonadMessagesSince.mockResolvedValueOnce([])
+    mockedFetchRecoveries.mockResolvedValueOnce({
+      records: [
+        await recoveryRecord(bob, 'pending', 'ab'),
+        await recoveryRecord(bob, 'fully_confirmed', 'ac'),
+      ],
+    })
+    await chain.directMessages.fetchSince({ wallet, sinceMs: 0 })
+    // Non-terminal: only the confirmed child (0) of each is imported.
+    expect(
+      journal
+        .getAll()
+        .map(r => `${r.payloadHashHex.slice(0, 2)}:${r.childIndex}`),
+    ).toEqual(['ab:0', 'ac:0'])
+    expect(mockedAckRecovery).not.toHaveBeenCalled()
+  })
+
+  it('F1: passes onTruncated through to the mailbox feed so callers can observe truncation', async () => {
+    const chain = createMonadChain(TEST_CONFIG)
+    const { wallet } = walletWithJournal()
+    const onTruncated = jest.fn()
+    mockedFetchMonadMessagesSince.mockResolvedValueOnce([])
+    await chain.directMessages.fetchSince({ wallet, sinceMs: 5, onTruncated })
+    expect(mockedFetchMonadMessagesSince.mock.calls[0][0].onTruncated).toBe(
+      onTruncated,
+    )
+  })
+
+  it('F2: an in-memory (non-durable) journal is filled but NEVER acks a terminal obligation', async () => {
+    const chain = createMonadChain(TEST_CONFIG)
+    const { bob, wallet, journal } = walletWithJournal(false)
+    mockedFetchMonadMessagesSince.mockResolvedValueOnce([])
+    mockedFetchRecoveries.mockResolvedValueOnce({
+      records: [await recoveryRecord(bob, 'terminal:expired', 'ab')],
+    })
+    await chain.directMessages.fetchSince({ wallet, sinceMs: 0 })
+    expect(journal.getAll()).toHaveLength(2) // usable for this session
+    expect(mockedAckRecovery).not.toHaveBeenCalled() // relay keeps the obligation for a restart
+  })
+
+  it('the real journal implementations declare durability correctly', () => {
+    expect(new InMemoryStampPaymentJournal().durable).toBe(false)
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { LevelStampPaymentJournal } = jest.requireActual(
+      '../storage/stamp-payment-journal',
+    )
+    expect(new LevelStampPaymentJournal('/nonexistent').durable).toBe(true)
+  })
+
+  it('F3: does not ack when a confirmed child could not be journalled, even if other children were', async () => {
+    const chain = createMonadChain(TEST_CONFIG)
+    const { bob, wallet, journal } = walletWithJournal()
+    mockedFetchMonadMessagesSince.mockResolvedValueOnce([])
+    mockedFetchRecoveries.mockResolvedValueOnce({
+      records: [
+        await recoveryRecord(bob, 'terminal:expired', 'ab', {
+          wrongDestination: true,
+        }),
+      ],
+    })
+    await chain.directMessages.fetchSince({ wallet, sinceMs: 0 })
+    expect(journal.getAll().map(r => r.childIndex)).toEqual([1]) // unconfirmed child still kept
+    expect(mockedAckRecovery).not.toHaveBeenCalled()
+  })
+
+  it('F3: an unrecoverable UNCONFIRMED child does not block the ack of a fully journalled confirmed prefix', async () => {
+    const chain = createMonadChain(TEST_CONFIG)
+    const { bob, wallet, journal } = walletWithJournal()
+    mockedFetchMonadMessagesSince.mockResolvedValueOnce([])
+    const record = await recoveryRecord(
+      bob,
+      'terminal:attempts_exhausted',
+      'ab',
+    )
+    record.canonicalMessage.stampPayments[1] = {
+      childIndex: 1,
+      rawTx: new Uint8Array([1, 2, 3]),
+    }
+    mockedFetchRecoveries.mockResolvedValueOnce({ records: [record] })
+    await chain.directMessages.fetchSince({ wallet, sinceMs: 0 })
+    expect(journal.getAll().map(r => r.childIndex)).toEqual([0])
+    expect(mockedAckRecovery).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not ack a record it could not import (wrong destination) and still handles the next one', async () => {
+    const chain = createMonadChain(TEST_CONFIG)
+    const { bob, wallet, journal } = walletWithJournal()
+    mockedFetchMonadMessagesSince.mockResolvedValueOnce([])
+    mockedFetchRecoveries.mockResolvedValueOnce({
+      records: [
+        await recoveryRecord(bob, 'terminal:expired', 'ab', {
+          wrongDestination: true,
+        }),
+        await recoveryRecord(bob, 'terminal:expired', 'ac'),
+      ],
+    })
+    await chain.directMessages.fetchSince({ wallet, sinceMs: 0 })
+    // 'ab' has an unrecoverable CONFIRMED child 0 (its unconfirmed child 1 is still kept but the
+    // record is not acked); 'ac' is fully journalled and acked.
+    expect(
+      journal
+        .getAll()
+        .map(r => `${r.payloadHashHex.slice(0, 2)}:${r.childIndex}`),
+    ).toEqual(['ab:1', 'ac:0', 'ac:1'])
+    expect(mockedAckRecovery).toHaveBeenCalledTimes(1)
+    expect(mockedAckRecovery).toHaveBeenCalledWith(
+      expect.objectContaining({ payloadHashHex: 'ac'.repeat(32) }),
+    )
+  })
+
+  it('never fetches or acks recoveries without a durable journal (an ack asserts durable import)', async () => {
+    const chain = createMonadChain(TEST_CONFIG)
+    const bob = MonadIdentity.fromPrivateKeyHex(BOB_PRIVATE_KEY_HEX)
+    mockedFetchMonadMessagesSince.mockResolvedValueOnce([])
+    await chain.directMessages.fetchSince({
+      wallet: makeWallet(bob),
+      sinceMs: 0,
+    })
+    expect(mockedFetchRecoveries).not.toHaveBeenCalled()
+    expect(mockedAckRecovery).not.toHaveBeenCalled()
+  })
+
+  it('a recovery/ack failure does not lose the inbox result', async () => {
+    const chain = createMonadChain(TEST_CONFIG)
+    const { bob, wallet } = walletWithJournal()
+    mockedFetchMonadMessagesSince.mockResolvedValue([])
+    mockedFetchRecoveries.mockRejectedValueOnce(new Error('relay down'))
+    await expect(
+      chain.directMessages.fetchSince({ wallet, sinceMs: 0 }),
+    ).resolves.toEqual([])
+
+    mockedFetchRecoveries.mockResolvedValueOnce({
+      records: [await recoveryRecord(bob, 'terminal:expired', 'ab')],
+    })
+    mockedAckRecovery.mockRejectedValueOnce(new Error('ack failed'))
+    // Recovery is throttled per wallet, so let the interval elapse before the second attempt.
+    const realNow = Date.now()
+    const nowSpy = jest
+      .spyOn(Date, 'now')
+      .mockReturnValue(realNow + MAILBOX_RECOVERY_SYNC_INTERVAL_MS + 1)
+    try {
+      await expect(
+        chain.directMessages.fetchSince({ wallet, sinceMs: 0 }),
+      ).resolves.toEqual([])
+      expect(mockedAckRecovery).toHaveBeenCalledTimes(1)
+    } finally {
+      nowSpy.mockRestore()
+    }
+  })
+
+  it('syncs recovery at most once per interval so a steady poll spends one challenge (inbox only)', async () => {
+    const chain = createMonadChain(TEST_CONFIG)
+    const { wallet } = walletWithJournal()
+    mockedFetchMonadMessagesSince.mockResolvedValue([])
+    const t0 = Date.now()
+    const nowSpy = jest.spyOn(Date, 'now')
+    try {
+      for (const offset of [0, 7_000, 14_000, 59_000]) {
+        nowSpy.mockReturnValue(t0 + offset)
+        await chain.directMessages.fetchSince({ wallet, sinceMs: 0 })
+      }
+      expect(mockedFetchMonadMessagesSince).toHaveBeenCalledTimes(4)
+      expect(mockedFetchRecoveries).toHaveBeenCalledTimes(1)
+      nowSpy.mockReturnValue(t0 + MAILBOX_RECOVERY_SYNC_INTERVAL_MS + 1)
+      await chain.directMessages.fetchSince({ wallet, sinceMs: 0 })
+      expect(mockedFetchRecoveries).toHaveBeenCalledTimes(2)
+    } finally {
+      nowSpy.mockRestore()
+    }
+  })
+
+  it('a hung recovery read delays message delivery by at most the bound (recovery runs after the messages are ready)', async () => {
+    jest.useFakeTimers({
+      doNotFake: ['setImmediate', 'nextTick', 'queueMicrotask'],
+    })
+    try {
+      const chain = createMonadChain(TEST_CONFIG)
+      const { wallet } = walletWithJournal()
+      mockedFetchMonadMessagesSince.mockResolvedValueOnce([])
+      mockedFetchRecoveries.mockReturnValueOnce(new Promise(() => undefined))
+      let done = false
+      void chain.directMessages
+        .fetchSince({ wallet, sinceMs: 0 })
+        .then(() => (done = true))
+      await jest.advanceTimersByTimeAsync(MAILBOX_RECOVERY_SYNC_WAIT_MS - 1)
+      expect(mockedFetchRecoveries).toHaveBeenCalledTimes(1)
+      expect(done).toBe(false)
+      await jest.advanceTimersByTimeAsync(2)
+      expect(done).toBe(true)
+    } finally {
+      jest.useRealTimers()
+    }
+  })
+
+  it('a failed recovery read is not retried on the very next poll', async () => {
+    const chain = createMonadChain(TEST_CONFIG)
+    const { wallet } = walletWithJournal()
+    mockedFetchMonadMessagesSince.mockResolvedValue([])
+    mockedFetchRecoveries.mockRejectedValue(new Error('relay down'))
+    await chain.directMessages.fetchSince({ wallet, sinceMs: 0 })
+    await chain.directMessages.fetchSince({ wallet, sinceMs: 0 })
+    expect(mockedFetchRecoveries).toHaveBeenCalledTimes(1)
+  })
+
+  it('propagates a missing mailbox (404) instead of reporting an empty inbox, and skips recovery', async () => {
+    const chain = createMonadChain(TEST_CONFIG)
+    const { wallet } = walletWithJournal()
+    mockedFetchMonadMessagesSince.mockRejectedValueOnce(
+      new MonadMailboxUnavailableError('HTTP 404', 404),
+    )
+    await expect(
+      chain.directMessages.fetchSince({ wallet, sinceMs: 0 }),
+    ).rejects.toBeInstanceOf(MonadMailboxUnavailableError)
+    expect(mockedFetchRecoveries).not.toHaveBeenCalled()
   })
 })
 

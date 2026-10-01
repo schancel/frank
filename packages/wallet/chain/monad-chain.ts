@@ -40,7 +40,11 @@
  * this would need "have no Monad equivalent to port -- not a gap, a simplification"), so `send()`
  * throws a clear error if asked to send one rather than silently dropping it.
  *
- * `fetchSince()` pages `monad-message-feed.ts`'s `fetchMonadMessagesSince`, parses every stored
+ * `fetchSince()` reads the wallet's own authenticated mailbox (`monad-message-feed.ts`'s
+ * `fetchMonadMessagesSince`, which signs a relay challenge with the identity key; the relay serves
+ * only rows addressed to this identity and a relay without the mailbox is a thrown
+ * `MonadMailboxUnavailableError`, never an empty inbox), then imports/acks confirmed-prefix
+ * recovery obligations (`syncMailboxRecoveries` below), parses every stored
  * message's `encrypted_payload` as a `MonadMessageEnvelope` (`parseEnvelope` -- silently skipping
  * anything that doesn't parse as one, e.g. pre-#9 demo messages with no envelope at all, exactly
  * the behavior that function's own doc comment describes), keeps only envelopes addressed to the
@@ -85,6 +89,7 @@ import {
   ActiveChain,
   ChainAddress,
   DirectMessageClient,
+  DirectMessagePreparationProgress,
   DirectMessageReceived,
   DirectMessageSendResult,
   ProfileInfo,
@@ -102,11 +107,18 @@ import { MonadHdKeyring } from '../monad-hd-keyring'
 import { MonadChangeKeyring } from '../monad-change-keyring'
 import { MonadChangePool } from '../monad-change-pool'
 import { MonadSubAccountPool } from '../monad-account-pool'
-import { SubAccountLeaseManager } from '../monad-account-lease'
+import {
+  BurnNotSentError,
+  SubAccountLeaseManager,
+} from '../monad-account-lease'
 import { MonadHttpClient } from '../monad-http'
 import { MonadAccountTxSigner } from '../monad-account-tx'
 import { MonadWalletHandle } from '../monad-wallet-handle'
-import { MonadIdentity, fetchMonadProfile } from '../monad-identity'
+import {
+  MonadIdentity,
+  fetchMonadProfile,
+  mailboxAuthFor,
+} from '../monad-identity'
 import {
   MonadStampClient,
   quoteMonadStampPaymentGasReserve,
@@ -116,6 +128,11 @@ import {
 import { deriveMonadStampChildPrivate } from '../monad-stamp-stealth'
 import { fetchMonadMessagesSince } from '@frank/cashweb/relay/monad-message-feed'
 import {
+  MailboxAuthParams,
+  ackMonadMailboxRecovery,
+  fetchMonadMailboxRecoveries,
+} from '@frank/cashweb/relay/monad-mailbox-client'
+import {
   buildEnvelope,
   decryptEnvelope,
   parseEnvelope,
@@ -123,6 +140,7 @@ import {
 import {
   MonadTopicPostClient,
   MonadTopicPostViewProto,
+  quoteMonadTopicBurnGasReserve,
 } from '../monad-topic-post-client'
 import { MonadTopicVoteClient } from '../monad-topic-vote-client'
 import {
@@ -246,6 +264,116 @@ function bareHex(bytes: Uint8Array): string {
   return hexlify(bytes).slice(2)
 }
 
+/**
+ * Imports the recipient-owned payments of relay recovery obligations into the wallet's stamp
+ * payment journal (status `discovered`, so the ordinary sweep path can spend them) and then, only
+ * when it is safe, acknowledges terminal obligations so the relay can retire them.
+ *
+ * Ack safety (the relay forgets the obligation, so the journal becomes the only record of the
+ * one-time-address payments):
+ * - only a `durable` journal may trigger an ack; an in-memory journal (e.g. `walletStorageLocation:
+ *   false`) is still filled for the current session but never acks, so a restart re-reads the
+ *   obligation from the relay;
+ * - for a terminal obligation EVERY child of the canonical message is journalled, not just the
+ *   confirmed prefix: expired/attempts-exhausted claims can still have unconfirmed children land
+ *   on chain after the ack, and the sweep checks the on-chain balance;
+ * - the ack is sent only after every `confirmedChildren` index is verifiably present in the
+ *   journal. A record whose confirmed child cannot be recovered is left un-acked.
+ * Non-terminal obligations (`pending`, `fully_confirmed`, `delivered`) import the confirmed
+ * children and are never acked (the relay answers 409).
+ *
+ * Best-effort relative to the inbox read (which already succeeded when this runs): a relay/network
+ * failure here is retried on the next poll rather than failing message delivery.
+ */
+/** Longest `fetchSince` waits for the recovery sync before returning the messages. */
+export const MAILBOX_RECOVERY_SYNC_WAIT_MS = 5_000
+
+async function boundedSync(sync: Promise<void>): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    await Promise.race([
+      sync,
+      new Promise<void>(resolve => {
+        timer = setTimeout(resolve, MAILBOX_RECOVERY_SYNC_WAIT_MS)
+      }),
+    ])
+  } finally {
+    if (timer !== undefined) clearTimeout(timer)
+  }
+}
+
+/** Recovery obligations change rarely, but each read spends one of the relay's per-recipient
+ * authenticated-request slots (a challenge is consumed per signed read). Polling inbox + recovery
+ * every few seconds exhausts that budget, so recovery is synced at most this often per wallet. */
+export const MAILBOX_RECOVERY_SYNC_INTERVAL_MS = 60_000
+const lastRecoverySync = new WeakMap<object, number>()
+
+async function syncMailboxRecoveries(
+  wallet: MonadChainWalletHandle,
+  mailbox: MailboxAuthParams,
+): Promise<void> {
+  const journal = wallet.stampPaymentJournal
+  if (journal === undefined) return
+  const now = Date.now()
+  const last = lastRecoverySync.get(wallet)
+  if (last !== undefined && now - last < MAILBOX_RECOVERY_SYNC_INTERVAL_MS)
+    return
+  // Stamp the attempt (not just success): a failing relay must not be re-asked every poll.
+  lastRecoverySync.set(wallet, now)
+  let records
+  try {
+    records = (await fetchMonadMailboxRecoveries(mailbox)).records
+  } catch {
+    return
+  }
+  const recipientPrivateKey = getBytes(wallet.identity.toPrivateKeyHex())
+  for (const record of records) {
+    try {
+      const terminal = record.lifecycle.startsWith('terminal:')
+      const confirmed = new Set(record.confirmedChildren)
+      const wanted = record.canonicalMessage.stampPayments.filter(
+        payment => terminal || confirmed.has(payment.childIndex),
+      )
+      for (const payment of wanted) {
+        // One child at a time: an unrecoverable unconfirmed child must not block the confirmed
+        // ones, while an unrecoverable confirmed child is caught by the check below.
+        let recovered
+        try {
+          recovered = recoverMonadStampPayments({
+            message: { ...record.canonicalMessage, stampPayments: [payment] },
+            recipientPrivateKey,
+          })
+        } catch {
+          continue
+        }
+        for (const child of recovered) {
+          if (journal.get(record.payloadHashHex, child.childIndex)) continue
+          await journal.put({
+            payloadHashHex: record.payloadHashHex,
+            childIndex: child.childIndex,
+            txHash: child.txHash,
+            address: child.address,
+            valueWei: child.valueWei.toString(),
+            status: 'discovered',
+          })
+        }
+      }
+      const confirmedJournalled = record.confirmedChildren.every(
+        index => journal.get(record.payloadHashHex, index) !== undefined,
+      )
+      if (terminal && journal.durable && confirmedJournalled) {
+        await ackMonadMailboxRecovery({
+          ...mailbox,
+          payloadHashHex: record.payloadHashHex,
+          obligationIdHex: record.obligationIdHex,
+        })
+      }
+    } catch {
+      // Leave the obligation unacknowledged; the next poll retries it.
+    }
+  }
+}
+
 /** JSON-serializes `items` for use as a direct message's plaintext -- only the item kinds that
  * have a real Monad-side meaning (see this file's header). Throws on `'stealth'`/`'p2pkh'` items,
  * which have no Monad equivalent to build (no UTXO coin selection exists on this chain -- see
@@ -320,15 +448,102 @@ export function viewToForumMessage(
   }
 }
 
+/** Preparing the account that will burn a topic post/vote failed before anything was posted. The
+ * pool's funding is record-before-broadcast, so retrying resumes an already-sent funding
+ * transaction instead of sending another; the message says so because the caller shows it as is. */
+export class TopicBurnPreparationError extends Error {
+  constructor(
+    reason: string,
+    options?: { cause?: unknown; stage?: 'preparing' | 'signing' },
+  ) {
+    super(
+      options?.stage === 'signing'
+        ? `Could not build the burn (${reason}). Nothing was sent, and the funded account is kept. ` +
+            'It is safe to try again.'
+        : `Could not prepare an account to burn from (${reason}). Nothing was sent. ` +
+            'It is safe to try again: a funding transaction that was already sent is reused, not repeated.',
+    )
+    this.name = 'TopicBurnPreparationError'
+    if (options?.cause !== undefined) {
+      ;(this as { cause?: unknown }).cause = options.cause
+    }
+  }
+}
+
+/** A burn that failed while being built/signed (RPC hiccup after the account was funded) sent
+ * nothing and left the funded account available: report it with the same "nothing sent, safe to
+ * retry" message as a failed preparation. Every other error passes through untouched. */
+function asNothingSent(err: unknown): never {
+  if (err instanceof BurnNotSentError) {
+    throw new TopicBurnPreparationError(err.message, {
+      cause: err,
+      stage: 'signing',
+    })
+  }
+  throw err
+}
+
 /** Pure factory: builds an `ActiveChain` from an explicit `MonadChainConfig`. See this file's
  * header, "Configuration", for why config is a param here (unlike the `MonadChain` singleton
  * below, which reads it from env). */
 export function createMonadChain(config: MonadChainConfig): ActiveChain {
   const walletsByIdentity = new Map<string, Promise<MonadChainWalletHandle>>()
-  const directMessageSendQueues = new WeakMap<
-    MonadChainWalletHandle,
-    Promise<void>
-  >()
+  // One queue per wallet for everything that prepares and spends sub-accounts (direct messages,
+  // topic posts, votes): a burn account prepared for a topic post must not be picked up by a
+  // concurrent stamp selection between preparation and lease.
+  const walletSendQueues = new WeakMap<MonadChainWalletHandle, Promise<void>>()
+  const runWalletExclusive = <T>(
+    wallet: MonadChainWalletHandle,
+    task: () => Promise<T>,
+  ): Promise<T> => {
+    const run = (walletSendQueues.get(wallet) ?? Promise.resolve()).then(task)
+    walletSendQueues.set(
+      wallet,
+      run.then(
+        () => undefined,
+        () => undefined,
+      ),
+    )
+    return run
+  }
+  /** Funds (or reuses) one sub-account able to burn `voteWeightWei` in a single transaction and
+   * returns its pool index for the caller to lease. See `MonadSubAccountPool.prepareBurnAccount`. */
+  const prepareTopicBurnAccount = async (
+    wallet: MonadChainWalletHandle,
+    voteWeightWei: bigint,
+    onProgress:
+      | ((progress: DirectMessagePreparationProgress) => void)
+      | undefined,
+  ): Promise<number> => {
+    const mainAccountSigner = new MonadAccountTxSigner({
+      privateKey: wallet.identity.toPrivateKeyHex(),
+      provider: wallet.provider,
+      httpClient: wallet.httpClient,
+    })
+    try {
+      onProgress?.({ stage: 'checking' })
+      const gasReserveWei = await quoteMonadTopicBurnGasReserve({
+        signer: mainAccountSigner,
+        burnAddress: config.stampBurnAddress,
+      })
+      const preparation = await wallet.pool.prepareBurnAccount({
+        mainAccountSigner,
+        provider: wallet.provider,
+        burnValueWei: voteWeightWei,
+        gasReserveWei,
+        onProgress,
+      })
+      return preparation.index
+    } catch (err) {
+      const reason =
+        typeof (err as { shortMessage?: unknown })?.shortMessage === 'string'
+          ? (err as { shortMessage: string }).shortMessage
+          : err instanceof Error
+          ? err.message
+          : String(err)
+      throw new TopicBurnPreparationError(reason, { cause: err })
+    }
+  }
   const sendDirectMessageExclusive = async (
     params: Parameters<DirectMessageClient['send']>[0],
     wallet: MonadChainWalletHandle,
@@ -380,6 +595,7 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
       // `post`/`vote` below, where there's no single recipient to pay.
       recipientPublicKey: recipientProfile.pubKey,
       stampValueWei: params.stampValue ?? config.defaultStampValueWei,
+      onAttemptJournaled: params.onAttemptCreated,
     })
 
     const stampPayments =
@@ -406,26 +622,49 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
   const directMessages: DirectMessageClient = {
     async send(params): Promise<DirectMessageSendResult> {
       const wallet = asMonadWallet(params.wallet)
-      const run = (
-        directMessageSendQueues.get(wallet) ?? Promise.resolve()
-      ).then(() => sendDirectMessageExclusive(params, wallet))
-      directMessageSendQueues.set(
-        wallet,
-        run.then(
-          () => undefined,
-          () => undefined,
-        ),
+      return runWalletExclusive(wallet, () =>
+        sendDirectMessageExclusive(params, wallet),
       )
-      return run
+    },
+
+    async unattributedAttempts(params) {
+      const wallet = asMonadWallet(params.wallet)
+      return runWalletExclusive(wallet, async () => {
+        const client = new MonadStampClient(wallet)
+        await client.resumePendingAttempts({ maxAttempts: 1 })
+        const known = new Set(params.knownDigests)
+        return client
+          .recordedAttempts()
+          .map(attempt => attempt.payloadHashHex)
+          .filter(hash => !known.has(hash))
+      })
+    },
+
+    async reconcileAttempts(params) {
+      const wallet = asMonadWallet(params.wallet)
+      return runWalletExclusive(wallet, async () => {
+        const client = new MonadStampClient(wallet)
+        // Replays every journaled set byte for byte; this never signs or funds anything.
+        await client.resumePendingAttempts({
+          maxAttempts: params.maxPutAttempts ?? 1,
+        })
+        return Object.fromEntries(
+          params.payloadDigests.map(digest => [
+            digest,
+            client.attemptStatus(digest),
+          ]),
+        )
+      })
     },
 
     async fetchSince(params): Promise<DirectMessageReceived[]> {
       const wallet = asMonadWallet(params.wallet)
+      const mailbox = mailboxAuthFor(wallet.identity, wallet.relayBaseUrl)
       const stored = await fetchMonadMessagesSince({
-        relayBaseUrl: wallet.relayBaseUrl,
+        ...mailbox,
         sinceMs: params.sinceMs,
+        onTruncated: params.onTruncated,
       })
-
       const myAddress = wallet.identity.address.raw.toLowerCase()
       const received: DirectMessageReceived[] = []
 
@@ -507,6 +746,9 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
           receivedTime: record.timestamp,
         })
       }
+      // Recovery is housekeeping: run it only after the messages are ready and never let a slow
+      // recovery read/ack delay their delivery (the sync keeps running in the background).
+      await boundedSync(syncMailboxRecoveries(wallet, mailbox))
       return received
     },
 
@@ -648,7 +890,12 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
       return monadWallet.provider.getBalance(monadWallet.identity.address.raw)
     },
 
-    async send({ wallet, recipient, value }): Promise<{ txHash: string }> {
+    async send({
+      wallet,
+      recipient,
+      value,
+      onSigned,
+    }): Promise<{ txHash: string }> {
       if (value <= 0n) {
         throw new Error('Transfer value must be greater than zero')
       }
@@ -659,7 +906,17 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
         httpClient: monadWallet.httpClient,
       })
       const signed = await signer.buildAndSignTransfer(recipient.raw, value)
+      // Awaited before any broadcast: a failure here aborts with nothing sent.
+      await onSigned?.({ txHash: signed.txHash })
       return { txHash: await signer.submit(signed) }
+    },
+
+    async getTransactionStatus({ wallet, txHash }) {
+      const monadWallet = asMonadWallet(wallet)
+      const receipt = await monadWallet.provider.getTransactionReceipt(txHash)
+      if (receipt) return receipt.status === 0 ? 'failed' : 'confirmed'
+      const known = await monadWallet.provider.getTransaction(txHash)
+      return known ? 'pending' : 'unknown'
     },
   }
 
@@ -667,27 +924,47 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
     async post(params): Promise<{ payloadDigest: string }> {
       const wallet = asMonadWallet(params.wallet)
       const client = new MonadTopicPostClient(wallet)
-      const result = await client.submitTopicPost({
-        topic: params.topic,
-        entries: params.entries,
-        parentPostHash: params.parentDigest
-          ? getBytes(`0x${params.parentDigest}`)
-          : undefined,
-        direction: params.direction,
-        burnAddress: config.stampBurnAddress,
-        voteWeightWei: params.voteWeightWei,
+      return runWalletExclusive(wallet, async () => {
+        const leaseIndex = await prepareTopicBurnAccount(
+          wallet,
+          params.voteWeightWei,
+          params.onPreparationProgress,
+        )
+        const result = await client
+          .submitTopicPost({
+            topic: params.topic,
+            entries: params.entries,
+            parentPostHash: params.parentDigest
+              ? getBytes(`0x${params.parentDigest}`)
+              : undefined,
+            direction: params.direction,
+            burnAddress: config.stampBurnAddress,
+            voteWeightWei: params.voteWeightWei,
+            leaseIndex,
+          })
+          .catch(asNothingSent)
+        return { payloadDigest: result.payloadHashHex }
       })
-      return { payloadDigest: result.payloadHashHex }
     },
 
     async vote(params): Promise<void> {
       const wallet = asMonadWallet(params.wallet)
       const client = new MonadTopicVoteClient(wallet)
-      await client.castVote({
-        targetPayloadHash: getBytes(`0x${params.payloadDigest}`),
-        direction: params.direction,
-        burnAddress: config.stampBurnAddress,
-        voteWeightWei: params.voteWeightWei,
+      await runWalletExclusive(wallet, async () => {
+        const leaseIndex = await prepareTopicBurnAccount(
+          wallet,
+          params.voteWeightWei,
+          params.onPreparationProgress,
+        )
+        await client
+          .castVote({
+            targetPayloadHash: getBytes(`0x${params.payloadDigest}`),
+            direction: params.direction,
+            burnAddress: config.stampBurnAddress,
+            voteWeightWei: params.voteWeightWei,
+            leaseIndex,
+          })
+          .catch(asNothingSent)
       })
     },
 

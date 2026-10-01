@@ -1,10 +1,12 @@
 /**
  * Unit tests for `monad-stamp-client.ts` (ticket #13).
  *
- * `axios` is mocked (`jest.mock('axios')`) so `PUT /message/monad` / `GET
- * /message/monad/:payload_hash` never touch a real network — each test drives the mock to exercise
+ * `axios` is mocked (`jest.mock('axios')`) so `PUT /message/monad` never touches a real network
+ * (there is no sender-side GET any more: PR #197 removed `GET /message/monad/:payload_hash`; an
+ * idempotent re-PUT of the same exact bytes is the confirmation) — each test drives the mock to exercise
  * one of `submitStampedMessage`'s documented outcomes (2xx success, HTTP-level rejection,
- * network-failure-then-found-via-poll, network-failure-then-abandoned). Payment construction goes
+ * network-failure-then-idempotent-re-PUT, 503 `mailbox_retryable` retries, 409/422 terminal
+ * verdicts, 404 mailbox-disabled, retry exhaustion). Payment construction goes
  * through a real `MonadSubAccountPool`/`MonadAccountTxSigner` against a stubbed ethers
  * `JsonRpcProvider._perform` (same technique `monad-account-tx.jest.test.ts` uses), so the signed
  * raw tx and its calldata are real, decodable bytes, not placeholders.
@@ -20,6 +22,7 @@ import {
 } from 'ethers'
 import axios from 'axios'
 
+import { MonadMailboxUnavailableError } from '@frank/cashweb/relay/monad-mailbox-client'
 import { MonadHdKeyring } from './monad-hd-keyring'
 import { MonadSubAccountPool } from './monad-account-pool'
 import { SubAccountLeaseManager } from './monad-account-lease'
@@ -35,6 +38,7 @@ import {
   MonadStampRejectedError,
   MonadStampPendingAttemptError,
   MonadStampRecoveredAttemptError,
+  MonadStampTerminalError,
   MONAD_STAMP_CALLDATA_LENGTH,
   buildMonadStampCalldata,
   computeMonadStampCommitment,
@@ -396,7 +400,7 @@ describe('MonadStampClient.submitStampedMessage', () => {
       recipientPublicKey: RECIPIENT_PUBLIC_KEY,
       stampValueWei: 10_000n,
       overrides: FEE_OVERRIDES,
-      abandonPoll: { maxAttempts: 1, intervalMs: 0 },
+      putRetry: { maxAttempts: 1, intervalMs: 0 },
     })
 
     expect(result.payloadHashHex).toBe(hexNoPrefix(expectedCommitment))
@@ -525,7 +529,7 @@ describe('MonadStampClient.submitStampedMessage', () => {
       recipientPublicKey: RECIPIENT_PUBLIC_KEY,
       stampValueWei: 10_000n,
       overrides: FEE_OVERRIDES,
-      abandonPoll: { maxAttempts: 1, intervalMs: 0 },
+      putRetry: { maxAttempts: 1, intervalMs: 0 },
     })
 
     expect(sentMessage).toBeDefined()
@@ -608,30 +612,25 @@ describe('MonadStampClient.submitStampedMessage', () => {
     expect(estimatedData[2]).not.toBe(estimatedData[3])
   })
 
-  it('falls back to polling GET and confirms when a network failure is followed by a found message', async () => {
+  it('re-PUTs the identical bytes after a network failure and confirms on the 200 (no GET exists any more)', async () => {
     const { client, pool } = makeClient()
     const encryptedPayload = new TextEncoder().encode('flaky network')
 
-    let putCalls = 0
-    let getCalls = 0
-    let submittedMessage: MonadStampedMessageProto | undefined
+    const sentBodies: Uint8Array[] = []
+    const sleeps: number[] = []
     mockedAxios.mockImplementation(async config => {
-      if (config.method === 'put') {
-        putCalls++
-        submittedMessage = decodeMonadStampedMessage(
-          new Uint8Array(config.data as Buffer),
-        )
-        const networkErr = Object.assign(new Error('socket hang up'), {
+      expect(config.method).toBe('put')
+      const sent = new Uint8Array(config.data as Buffer)
+      sentBodies.push(sent)
+      if (sentBodies.length === 1) {
+        throw Object.assign(new Error('socket hang up'), {
           isAxiosError: true,
           response: undefined,
         })
-        throw networkErr
       }
-      // GET /message/monad/:payload_hash
-      getCalls++
-      if (submittedMessage === undefined) throw new Error('missing PUT message')
+      // The relay already owns/delivered this exact set: idempotent PUT returns the stored row.
       return {
-        data: storedMessageBytes(submittedMessage),
+        data: storedMessageBytes(decodeMonadStampedMessage(sent)),
         status: 200,
         statusText: 'OK',
         headers: {},
@@ -644,16 +643,18 @@ describe('MonadStampClient.submitStampedMessage', () => {
       recipientPublicKey: RECIPIENT_PUBLIC_KEY,
       stampValueWei: 10_000n,
       overrides: FEE_OVERRIDES,
-      abandonPoll: {
-        maxAttempts: 2,
-        intervalMs: 0,
-        sleep: async () => undefined,
+      putRetry: {
+        maxAttempts: 3,
+        intervalMs: 50,
+        sleep: async ms => void sleeps.push(ms),
       },
     })
 
-    expect(putCalls).toBe(1)
-    expect(getCalls).toBe(1)
+    expect(sentBodies).toHaveLength(2)
+    expect(Array.from(sentBodies[1])).toEqual(Array.from(sentBodies[0]))
+    expect(sleeps).toEqual([50])
     expect(result.stored.message?.encryptedPayload).toEqual(encryptedPayload)
+    expect(mockedAxios.mock.calls.every(([c]) => c.method === 'put')).toBe(true)
     // Ticket #34: same as above -- confirmed means 'spent', never 'available' again.
     expect(pool.getRecord(result.leaseIndices[0])?.status).toBe('spent')
   })
@@ -681,28 +682,23 @@ describe('MonadStampClient.submitStampedMessage', () => {
         }),
     ],
   ])(
-    'treats a 2xx containing %s as ambiguous and confirms only through an exact GET',
+    'treats a 2xx containing %s as unverified and confirms only when a re-PUT returns the exact set',
     async (_description, responseBytes) => {
       const stampAttemptJournal = new InMemoryStampAttemptJournal()
       const { client, pool } = makeClient({ stampAttemptJournal })
       let submittedMessage: MonadStampedMessageProto | undefined
+      let puts = 0
       mockedAxios.mockImplementation(async config => {
-        if (config.method === 'put') {
-          submittedMessage = decodeMonadStampedMessage(
-            new Uint8Array(config.data as Buffer),
-          )
-          return {
-            data: responseBytes(submittedMessage),
-            status: 200,
-            statusText: 'OK',
-            headers: {},
-            config,
-          }
-        }
-        if (submittedMessage === undefined)
-          throw new Error('missing submitted message')
+        expect(config.method).toBe('put')
+        puts++
+        submittedMessage = decodeMonadStampedMessage(
+          new Uint8Array(config.data as Buffer),
+        )
         return {
-          data: storedMessageBytes(submittedMessage),
+          data:
+            puts === 1
+              ? responseBytes(submittedMessage)
+              : storedMessageBytes(submittedMessage),
           status: 200,
           statusText: 'OK',
           headers: {},
@@ -715,7 +711,11 @@ describe('MonadStampClient.submitStampedMessage', () => {
         recipientPublicKey: RECIPIENT_PUBLIC_KEY,
         stampValueWei: 10_000n,
         overrides: FEE_OVERRIDES,
-        abandonPoll: { maxAttempts: 1, intervalMs: 0 },
+        putRetry: {
+          maxAttempts: 2,
+          intervalMs: 0,
+          sleep: async () => undefined,
+        },
       })
 
       expect(mockedAxios).toHaveBeenCalledTimes(2)
@@ -765,12 +765,6 @@ describe('MonadStampClient.submitStampedMessage', () => {
           response: undefined,
         })
       })
-      mockedAxios.mockRejectedValue(
-        Object.assign(new Error('not found'), {
-          isAxiosError: true,
-          response: { status: 404 },
-        }),
-      )
 
       await expect(
         first.submitStampedMessage({
@@ -778,7 +772,7 @@ describe('MonadStampClient.submitStampedMessage', () => {
           recipientPublicKey: RECIPIENT_PUBLIC_KEY,
           stampValueWei: 10_000n,
           overrides: FEE_OVERRIDES,
-          abandonPoll: { maxAttempts: 1, intervalMs: 0 },
+          putRetry: { maxAttempts: 1, intervalMs: 0 },
         }),
       ).rejects.toThrow(MonadStampAbandonedError)
       expect(stampAttemptJournal.getAll()).toHaveLength(1)
@@ -786,9 +780,10 @@ describe('MonadStampClient.submitStampedMessage', () => {
 
       mockedAxios.mockReset()
       mockedAxios.isAxiosError.mockImplementation(
-        (e: unknown) => (e as { isAxiosError?: boolean })?.isAxiosError === true,
+        (e: unknown) =>
+          (e as { isAxiosError?: boolean })?.isAxiosError === true,
       )
-      mockedAxios.mockImplementationOnce(async config => ({
+      mockedAxios.mockImplementation(async config => ({
         data: responseBytes(submittedMessage as MonadStampedMessageProto),
         status: 200,
         statusText: 'OK',
@@ -797,7 +792,13 @@ describe('MonadStampClient.submitStampedMessage', () => {
       }))
 
       const resumed = makeClient({ pool, stampAttemptJournal }).client
-      await expect(resumed.resumePendingAttempts()).resolves.toEqual([])
+      await expect(
+        resumed.resumePendingAttempts({
+          maxAttempts: 2,
+          intervalMs: 0,
+          sleep: async () => undefined,
+        }),
+      ).resolves.toEqual([])
       expect(stampAttemptJournal.getAll()).toHaveLength(1)
       expect(
         pool.records().filter(record => record.status === 'spent'),
@@ -806,7 +807,7 @@ describe('MonadStampClient.submitStampedMessage', () => {
     },
   )
 
-  it('retires as stuck and throws MonadStampAbandonedError when the fallback poll never finds it', async () => {
+  it('retires as stuck and throws MonadStampAbandonedError when every idempotent re-PUT gets no response', async () => {
     const stampAttemptJournal = new InMemoryStampAttemptJournal()
     const { client, pool } = makeClient({ stampAttemptJournal })
     mockedAxios.mockImplementation(async () => {
@@ -823,13 +824,14 @@ describe('MonadStampClient.submitStampedMessage', () => {
         recipientPublicKey: RECIPIENT_PUBLIC_KEY,
         stampValueWei: 10_000n,
         overrides: FEE_OVERRIDES,
-        abandonPoll: {
+        putRetry: {
           maxAttempts: 2,
           intervalMs: 0,
           sleep: async () => undefined,
         },
       }),
     ).rejects.toThrow(MonadStampAbandonedError)
+    expect(mockedAxios).toHaveBeenCalledTimes(2) // both attempts were PUTs of the same bytes
 
     const retired = pool.records().filter(r => r.status === 'retired')
     expect(retired).toHaveLength(2)
@@ -840,6 +842,7 @@ describe('MonadStampClient.submitStampedMessage', () => {
         recipientPublicKey: RECIPIENT_PUBLIC_KEY,
         stampValueWei: 10_000n,
         overrides: FEE_OVERRIDES,
+        putRetry: { maxAttempts: 1, intervalMs: 0 },
       }),
     ).rejects.toThrow(MonadStampPendingAttemptError)
 
@@ -847,7 +850,9 @@ describe('MonadStampClient.submitStampedMessage', () => {
     // earlier status writes did not. A failed startup replay must reserve those
     // accounts again before returning control to the wallet.
     for (const record of retired) pool.setStatus(record.index, 'available')
-    await expect(client.resumePendingAttempts()).resolves.toEqual([])
+    await expect(
+      client.resumePendingAttempts({ maxAttempts: 1, intervalMs: 0 }),
+    ).resolves.toEqual([])
     expect(pool.records().filter(r => r.status === 'in-use')).toHaveLength(2)
 
     mockedAxios.mockReset()
@@ -938,15 +943,9 @@ describe('MonadStampClient.submitStampedMessage', () => {
     expect(mockedAxios).not.toHaveBeenCalled()
   })
 
-  it('does not confirm a different stored payment set after an ambiguous PUT', async () => {
+  it('does not confirm when every PUT answers 2xx with a different payment set', async () => {
     const { client, pool } = makeClient()
     mockedAxios.mockImplementation(async config => {
-      if (config.method === 'put') {
-        throw Object.assign(new Error('socket hang up'), {
-          isAxiosError: true,
-          response: undefined,
-        })
-      }
       const conflicting: MonadStampedMessageProto = {
         encryptedPayload: new TextEncoder().encode('different'),
         payloadHash: new Uint8Array(32).fill(0x55),
@@ -967,11 +966,468 @@ describe('MonadStampClient.submitStampedMessage', () => {
         recipientPublicKey: RECIPIENT_PUBLIC_KEY,
         stampValueWei: 10_000n,
         overrides: FEE_OVERRIDES,
-        abandonPoll: { maxAttempts: 1, intervalMs: 0 },
+        putRetry: {
+          maxAttempts: 2,
+          intervalMs: 0,
+          sleep: async () => undefined,
+        },
       }),
     ).rejects.toThrow(MonadStampAbandonedError)
 
     expect(pool.records().filter(r => r.status === 'retired')).toHaveLength(2)
+  })
+})
+
+/** A relay JSON error as axios delivers it under `responseType: 'arraybuffer'` (raw bytes). */
+function relayError(
+  status: number,
+  body: Record<string, unknown>,
+  headers: Record<string, string> = {},
+) {
+  return Object.assign(new Error(`HTTP ${status}`), {
+    isAxiosError: true,
+    response: {
+      status,
+      headers,
+      data: new TextEncoder().encode(JSON.stringify(body)).buffer,
+    },
+  })
+}
+
+describe('MonadStampClient: PR #197 durable mailbox PUT semantics', () => {
+  const retryable = {
+    error: 'mailbox_retryable',
+    detail: 'the exact stamp-payment set is pending durable reconciliation',
+    exact_set_retained: true,
+  }
+  const send = (
+    client: MonadStampClient,
+    putRetry: {
+      maxAttempts?: number
+      intervalMs?: number
+      sleep?: (ms: number) => Promise<void>
+    } = { maxAttempts: 3, intervalMs: 10, sleep: async () => undefined },
+  ) =>
+    client.submitStampedMessage({
+      encryptedPayload: new TextEncoder().encode('mailbox semantics'),
+      recipientPublicKey: RECIPIENT_PUBLIC_KEY,
+      stampValueWei: 10_000n,
+      overrides: FEE_OVERRIDES,
+      putRetry,
+    })
+
+  beforeEach(() => {
+    jest.clearAllMocks()
+    mockedAxios.mockReset()
+    mockedAxios.isAxiosError.mockImplementation(
+      (e: unknown) => (e as { isAxiosError?: boolean })?.isAxiosError === true,
+    )
+  })
+
+  it('retries 503 mailbox_retryable with the SAME exact bytes (honouring Retry-After) until the relay delivers', async () => {
+    const { client, pool } = makeClient({
+      stampAttemptJournal: new InMemoryStampAttemptJournal(),
+    })
+    const bodies: Uint8Array[] = []
+    const sleeps: number[] = []
+    mockedAxios.mockImplementation(async config => {
+      const sent = new Uint8Array(config.data as Buffer)
+      bodies.push(sent)
+      if (bodies.length === 1)
+        throw relayError(503, retryable, { 'retry-after': '2' })
+      if (bodies.length === 2) throw relayError(429, { error: 'rate_limited' })
+      return {
+        data: storedMessageBytes(decodeMonadStampedMessage(sent)),
+        status: 200,
+        statusText: 'OK',
+        headers: {},
+        config,
+      }
+    })
+
+    const result = await send(client, {
+      maxAttempts: 4,
+      intervalMs: 100,
+      sleep: async ms => void sleeps.push(ms),
+    })
+
+    expect(bodies).toHaveLength(3)
+    expect(
+      bodies.every(b => Buffer.from(b).equals(Buffer.from(bodies[0]))),
+    ).toBe(true)
+    expect(sleeps).toEqual([2000, 200]) // Retry-After beats backoff; then 100 * 2
+    expect(pool.records().filter(r => r.status === 'spent')).toHaveLength(2)
+    expect(result.payloadHashHex).toHaveLength(64)
+  })
+
+  it('keeps the journal and reservations (Pending) when 503 outlasts the budget and the relay may own the set', async () => {
+    const stampAttemptJournal = new InMemoryStampAttemptJournal()
+    const { client, pool } = makeClient({ stampAttemptJournal })
+    mockedAxios.mockImplementation(async () => {
+      throw relayError(503, retryable)
+    })
+    await expect(send(client)).rejects.toThrow(MonadStampPendingAttemptError)
+    expect(mockedAxios).toHaveBeenCalledTimes(3)
+    expect(stampAttemptJournal.getAll()).toHaveLength(1)
+    expect(pool.records().filter(r => r.status === 'in-use')).toHaveLength(2)
+
+    // Later, the relay delivers: resume re-PUTs the identical bytes and completes.
+    mockedAxios.mockReset()
+    mockedAxios.mockImplementationOnce(async config => ({
+      data: storedMessageBytes(
+        decodeMonadStampedMessage(new Uint8Array(config.data as Buffer)),
+      ),
+      status: 200,
+      statusText: 'OK',
+      headers: {},
+      config,
+    }))
+    await expect(client.resumePendingAttempts()).resolves.toHaveLength(1)
+    expect(stampAttemptJournal.getAll()).toHaveLength(0)
+    expect(pool.records().filter(r => r.status === 'spent')).toHaveLength(2)
+  })
+
+  it('without a journal, an exhausted 503 retires stuck and throws Abandoned (not a rejection)', async () => {
+    const { client, pool } = makeClient()
+    mockedAxios.mockImplementation(async () => {
+      throw relayError(503, { ...retryable, exact_set_retained: null })
+    })
+    await expect(send(client)).rejects.toThrow(MonadStampAbandonedError)
+    expect(pool.records().filter(r => r.status === 'retired')).toHaveLength(2)
+  })
+
+  it('a 503 with exact_set_retained=false (nothing claimed) is a safe rejection after the budget', async () => {
+    const stampAttemptJournal = new InMemoryStampAttemptJournal()
+    const { client, pool } = makeClient({ stampAttemptJournal })
+    // Capacity (per-recipient cap of 32 unconfirmed claims / global outbox bound) is a 503 with
+    // exact_set_retained=false and its own detail: nothing was claimed, so say so.
+    mockedAxios.mockImplementation(async () => {
+      throw relayError(503, {
+        ...retryable,
+        detail: 'the durable stamp outbox is temporarily at capacity',
+        exact_set_retained: false,
+      })
+    })
+    const capacityError = await send(client).catch(e => e)
+    expect(capacityError).toBeInstanceOf(MonadStampRejectedError)
+    expect(capacityError.message).toMatch(
+      /before retaining its payment set.*at capacity/,
+    )
+    expect(mockedAxios).toHaveBeenCalledTimes(3) // still retried the same bytes first
+    expect(stampAttemptJournal.getAll()).toHaveLength(0)
+    expect(pool.records().filter(r => r.status === 'retired')).toHaveLength(2)
+  })
+
+  it.each([
+    [409, 'mailbox_conflict', false, 'failed'],
+    [422, 'mailbox_terminal', true, 'stuck'],
+    [422, 'mailbox_terminal', false, 'failed'],
+  ] as const)(
+    '%s %s (retained=%s) is a distinct terminal error: not retried, journal dropped, accounts retired',
+    async (status, code, retained) => {
+      const stampAttemptJournal = new InMemoryStampAttemptJournal()
+      const { client, pool } = makeClient({ stampAttemptJournal })
+      mockedAxios.mockImplementation(async () => {
+        throw relayError(status, {
+          error: code,
+          detail: 'x',
+          exact_set_retained: retained,
+        })
+      })
+      const error = await send(client).catch(e => e)
+      expect(error).toBeInstanceOf(MonadStampTerminalError)
+      expect(error).not.toBeInstanceOf(MonadStampRejectedError)
+      expect(error).toMatchObject({ status, code, exactSetRetained: retained })
+      expect(mockedAxios).toHaveBeenCalledTimes(1)
+      expect(stampAttemptJournal.getAll()).toHaveLength(0)
+      expect(pool.records().filter(r => r.status === 'retired')).toHaveLength(2)
+    },
+  )
+
+  it('a 404 means the relay has no mailbox: distinct error, nothing pending, not retried', async () => {
+    const stampAttemptJournal = new InMemoryStampAttemptJournal()
+    const { client, pool } = makeClient({ stampAttemptJournal })
+    mockedAxios.mockImplementation(async () => {
+      throw Object.assign(new Error('Not Found'), {
+        isAxiosError: true,
+        response: { status: 404, headers: {}, data: new ArrayBuffer(0) },
+      })
+    })
+    await expect(send(client)).rejects.toBeInstanceOf(
+      MonadMailboxUnavailableError,
+    )
+    expect(mockedAxios).toHaveBeenCalledTimes(1)
+    expect(stampAttemptJournal.getAll()).toHaveLength(0)
+    expect(pool.records().filter(r => r.status === 'retired')).toHaveLength(2)
+  })
+
+  it('resume drops a journaled set the relay declared terminal, but keeps it when the relay has no mailbox', async () => {
+    const stampAttemptJournal = new InMemoryStampAttemptJournal()
+    const { client, pool } = makeClient({ stampAttemptJournal })
+    mockedAxios.mockImplementation(async () => {
+      throw relayError(503, retryable)
+    })
+    await expect(send(client)).rejects.toThrow(MonadStampPendingAttemptError)
+
+    mockedAxios.mockReset()
+    mockedAxios.mockImplementation(async () => {
+      throw Object.assign(new Error('Not Found'), {
+        isAxiosError: true,
+        response: { status: 404, headers: {}, data: new ArrayBuffer(0) },
+      })
+    })
+    await expect(client.resumePendingAttempts()).resolves.toEqual([])
+    expect(stampAttemptJournal.getAll()).toHaveLength(1)
+
+    mockedAxios.mockReset()
+    mockedAxios.mockImplementation(async () => {
+      throw relayError(422, {
+        error: 'mailbox_terminal',
+        detail: 'stale nonce',
+        exact_set_retained: true,
+      })
+    })
+    await expect(client.resumePendingAttempts()).resolves.toEqual([])
+    expect(stampAttemptJournal.getAll()).toHaveLength(0)
+    expect(pool.records().filter(r => r.status === 'retired')).toHaveLength(2)
+  })
+
+  describe('attempt liveness for message-level retry (#269/#270)', () => {
+    async function pendingAttempt() {
+      const stampAttemptJournal = new InMemoryStampAttemptJournal()
+      const { client, pool } = makeClient({ stampAttemptJournal })
+      let journaled: string | undefined
+      let axiosCallsWhenJournaled = -1
+      mockedAxios.mockImplementation(async () => {
+        throw relayError(503, retryable)
+      })
+      await expect(
+        client.submitStampedMessage({
+          encryptedPayload: new TextEncoder().encode('liveness'),
+          recipientPublicKey: RECIPIENT_PUBLIC_KEY,
+          stampValueWei: 10_000n,
+          overrides: FEE_OVERRIDES,
+          putRetry: { maxAttempts: 2, intervalMs: 0, sleep: async () => {} },
+          onAttemptJournaled: hash => {
+            journaled = hash
+            axiosCallsWhenJournaled = mockedAxios.mock.calls.length
+          },
+        }),
+      ).rejects.toThrow(MonadStampPendingAttemptError)
+      return {
+        client,
+        pool,
+        stampAttemptJournal,
+        journaled,
+        axiosCallsWhenJournaled,
+      }
+    }
+
+    describe('onAttemptJournaled is a durability gate', () => {
+      const okPut = async (config: { data?: unknown }) => ({
+        data: storedMessageBytes(
+          decodeMonadStampedMessage(new Uint8Array(config.data as Buffer)),
+        ),
+        status: 200,
+        statusText: 'OK',
+        headers: {},
+        config,
+      })
+      const submit = (
+        client: MonadStampClient,
+        onAttemptJournaled: (hash: string) => Promise<void>,
+      ) =>
+        client.submitStampedMessage({
+          encryptedPayload: new TextEncoder().encode('gate'),
+          recipientPublicKey: RECIPIENT_PUBLIC_KEY,
+          stampValueWei: 10_000n,
+          overrides: FEE_OVERRIDES,
+          putRetry: { maxAttempts: 1 },
+          onAttemptJournaled,
+        })
+
+      it('issues no PUT until a slow async callback has resolved', async () => {
+        const stampAttemptJournal = new InMemoryStampAttemptJournal()
+        const { client } = makeClient({ stampAttemptJournal })
+        mockedAxios.mockImplementation(okPut as never)
+        let release: () => void = () => undefined
+        const sending = submit(
+          client,
+          () => new Promise<void>(resolve => (release = resolve)),
+        )
+        await new Promise(resolve => setTimeout(resolve, 50))
+        expect(release).not.toBe(undefined)
+        expect(stampAttemptJournal.getAll()).toHaveLength(1)
+        expect(mockedAxios).not.toHaveBeenCalled()
+        release()
+        await sending
+        expect(mockedAxios).toHaveBeenCalledTimes(1)
+      })
+
+      it('a rejecting callback sends nothing, rolls the attempt back and leaves no payment that could land', async () => {
+        const stampAttemptJournal = new InMemoryStampAttemptJournal()
+        const { client, pool } = makeClient({ stampAttemptJournal })
+        mockedAxios.mockImplementation(okPut as never)
+        let hash = ''
+        const failure = new Error('cannot record the attempt durably')
+        await expect(
+          submit(client, async h => {
+            hash = h
+            await new Promise(resolve => setTimeout(resolve, 20))
+            throw failure
+          }),
+        ).rejects.toBe(failure)
+        expect(mockedAxios).not.toHaveBeenCalled()
+        expect(stampAttemptJournal.getAll()).toHaveLength(0)
+        expect(pool.records().filter(r => r.status === 'in-use')).toHaveLength(
+          0,
+        )
+        expect(pool.records().filter(r => r.status === 'retired')).toHaveLength(
+          2,
+        )
+        expect(client.attemptStatus(hash)).toBe('dead')
+        // Nothing to resume: a later resume cannot pay or send it.
+        await client.resumePendingAttempts()
+        expect(mockedAxios).not.toHaveBeenCalled()
+      })
+
+      it('if the journal entry cannot be deleted, it is KEPT with its reservations, nothing is sent, and the callback error propagates (no dead record)', async () => {
+        const stampAttemptJournal = new InMemoryStampAttemptJournal()
+        stampAttemptJournal.delete = jest
+          .fn()
+          .mockRejectedValue(new Error('journal delete failed'))
+        const { client, pool } = makeClient({ stampAttemptJournal })
+        mockedAxios.mockImplementation(okPut as never)
+        let hash = ''
+        const failure = new Error('cannot record the attempt durably')
+        await expect(
+          submit(client, async h => {
+            hash = h
+            throw failure
+          }),
+        ).rejects.toBe(failure)
+        expect(mockedAxios).not.toHaveBeenCalled()
+        expect(stampAttemptJournal.getAll()).toHaveLength(1)
+        expect(pool.records().filter(r => r.status === 'in-use')).toHaveLength(
+          2,
+        )
+        expect(client.attemptStatus(hash)).toBe('live') // not 'dead': resume can still re-send it
+      })
+
+      it('the dead outcome is recorded even if flushing the retired reservations fails, and the callback error still wins', async () => {
+        const stampAttemptJournal = new InMemoryStampAttemptJournal()
+        const { client, pool } = makeClient({ stampAttemptJournal })
+        mockedAxios.mockImplementation(okPut as never)
+        const realFlush = pool.flush.bind(pool)
+        let armed = false
+        jest.spyOn(pool, 'flush').mockImplementation(async () => {
+          if (armed) throw new Error('flush failed')
+          return realFlush()
+        })
+        let hash = ''
+        const failure = new Error('cannot record the attempt durably')
+        await expect(
+          submit(client, async h => {
+            hash = h
+            armed = true
+            throw failure
+          }),
+        ).rejects.toBe(failure)
+        expect(mockedAxios).not.toHaveBeenCalled()
+        expect(stampAttemptJournal.getAll()).toHaveLength(0)
+        expect(client.attemptStatus(hash)).toBe('dead')
+      })
+
+      it('recordedAttempts lists journaled and resolved attempts', async () => {
+        const stampAttemptJournal = new InMemoryStampAttemptJournal()
+        const { client } = makeClient({ stampAttemptJournal })
+        mockedAxios.mockImplementation(okPut as never)
+        const result = await send(client)
+        expect(client.recordedAttempts()).toEqual([
+          { payloadHashHex: result.payloadHashHex, status: 'delivered' },
+        ])
+      })
+    })
+
+    it('reports the journaled hash before any byte reaches the relay, and the attempt as live while pending', async () => {
+      const { client, journaled, axiosCallsWhenJournaled } =
+        await pendingAttempt()
+      expect(journaled).toMatch(/^[0-9a-f]{64}$/)
+      expect(axiosCallsWhenJournaled).toBe(0)
+      expect(client.attemptStatus(journaled as string)).toBe('live')
+    })
+
+    it('stays live (never dead) while the relay keeps answering 503, and then reports delivered', async () => {
+      const { client, journaled } = await pendingAttempt()
+      mockedAxios.mockReset()
+      mockedAxios.mockImplementation(async () => {
+        throw relayError(503, retryable)
+      })
+      await client.resumePendingAttempts({ maxAttempts: 1 })
+      expect(client.attemptStatus(journaled as string)).toBe('live')
+
+      mockedAxios.mockReset()
+      mockedAxios.mockImplementationOnce(async config => ({
+        data: storedMessageBytes(
+          decodeMonadStampedMessage(new Uint8Array(config.data as Buffer)),
+        ),
+        status: 200,
+        statusText: 'OK',
+        headers: {},
+        config,
+      }))
+      await client.resumePendingAttempts({ maxAttempts: 1 })
+      expect(client.attemptStatus(journaled as string)).toBe('delivered')
+    })
+
+    it('reports dead once the relay declares the exact set terminal', async () => {
+      const { client, journaled } = await pendingAttempt()
+      mockedAxios.mockReset()
+      mockedAxios.mockImplementation(async () => {
+        throw relayError(422, {
+          error: 'mailbox_terminal',
+          detail: 'stale nonce',
+          exact_set_retained: true,
+        })
+      })
+      await client.resumePendingAttempts({ maxAttempts: 1 })
+      expect(client.attemptStatus(journaled as string)).toBe('dead')
+    })
+
+    it('reports unknown for a hash it never journaled, and delivered/dead for a direct outcome', async () => {
+      const stampAttemptJournal = new InMemoryStampAttemptJournal()
+      const { client } = makeClient({ stampAttemptJournal })
+      expect(client.attemptStatus('ab'.repeat(32))).toBe('unknown')
+      mockedAxios.mockImplementation(async config => ({
+        data: storedMessageBytes(
+          decodeMonadStampedMessage(new Uint8Array(config.data as Buffer)),
+        ),
+        status: 200,
+        statusText: 'OK',
+        headers: {},
+        config,
+      }))
+      const result = await send(client)
+      expect(client.attemptStatus(result.payloadHashHex)).toBe('delivered')
+    })
+  })
+
+  it('never issues a GET (the sender-side read route no longer exists)', async () => {
+    const { client } = makeClient()
+    mockedAxios.mockImplementation(async config => ({
+      data: storedMessageBytes(
+        decodeMonadStampedMessage(new Uint8Array(config.data as Buffer)),
+      ),
+      status: 200,
+      statusText: 'OK',
+      headers: {},
+      config,
+    }))
+    await send(client)
+    expect(mockedAxios.mock.calls.map(([c]) => c.method)).toEqual(['put'])
+    expect(
+      (client as unknown as Record<string, unknown>).fetchStoredMessage,
+    ).toBeUndefined()
   })
 })
 

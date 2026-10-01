@@ -44,12 +44,10 @@
         autogrow
         @paste="dp($event)"
         @drop.prevent="dp($event)"
-        @blur.capture="focusInput($event)"
         @keydown.enter.exact.prevent
         @keydown.enter.exact="sendMessage"
         @mousedown.self.stop
         v-model="innerMessage"
-        :disable="disable"
         :placeholder="$t('chatInput.placeHolder')"
       />
       <q-space />
@@ -58,7 +56,7 @@
         flat
         round
         icon="local_post_office"
-        aria-label="Stamp payment"
+        :aria-label="$t('chatInput.stampPayment')"
         :disable="disable"
       >
         <q-tooltip>{{ stampLabel }}</q-tooltip>
@@ -71,7 +69,7 @@
               type="number"
               :min="minimumStampAmount"
               :suffix="chainUnit"
-              label="Stamp payment"
+              :label="$t('chatInput.stampPayment')"
             />
             <q-slider
               v-model="stampMultiplier"
@@ -81,10 +79,14 @@
               :step="1"
               label
               label-always
-              :label-value="`${stampMultiplier}× default`"
+              :label-value="
+                $t('chatInput.stampMultiplierValue', {
+                  multiplier: stampMultiplier,
+                })
+              "
             />
             <div class="text-caption text-grey-7">
-              Quick selection from 1× to 100× the default stamp
+              {{ $t('chatInput.stampQuickSelection') }}
             </div>
           </div>
         </q-menu>
@@ -108,9 +110,6 @@ import { processInput } from '../../utils/chat'
 import { activeChain } from '@frank/wallet/chain'
 
 export default defineComponent({
-  components: {
-    // Picker
-  },
   props: {
     message: {
       type: String,
@@ -120,6 +119,11 @@ export default defineComponent({
       type: String,
       default: () => activeChain.toDisplayAmount(activeChain.defaultStampValue),
     },
+    // A send is in progress. Blocks sending (Enter, the send button) and the toolbar controls,
+    // but deliberately NOT the text box itself (#396): disabling a focused textarea drops its
+    // focus (seen in Chromium) and ignores keystrokes until the send ends, so the first characters
+    // of the next message vanished. The submitted text has already left the box, so typing can
+    // continue; Enter during a send is ignored and the text stays.
     disable: {
       type: Boolean,
       default: false,
@@ -132,8 +136,18 @@ export default defineComponent({
     'sendFileClicked',
   ],
   methods: {
+    /** Public focus target for chat-level focus handoffs. */
+    focus() {
+      ;(this.$refs.inputBox as { focus?: () => void } | undefined)?.focus?.()
+    },
     // ChatInput drop/paste handler
     async dp(e: ClipboardEvent | DragEvent) {
+      // The text box stays editable during a send (#396), so the attachment path must be gated
+      // here: no file dialog while a send is in flight. (A drop's default, navigating to the
+      // file, is still prevented by the template's `.prevent`.)
+      if (this.disable) {
+        return
+      }
       const items =
         'clipboardData' in e ? e.clipboardData?.items : e.dataTransfer?.items
       if (!items) {
@@ -142,18 +156,6 @@ export default defineComponent({
       }
       const blob = await processInput(items)
       return blob ? this.$emit('sendFileClicked', blob) : null
-    },
-    focusInput(e: FocusEvent) {
-      if (e.type === 'blur') {
-        const relatedTarget = e.relatedTarget as Element
-        // Prevent the focus if the target isn't related
-        if (!relatedTarget || relatedTarget.localName === 'input') {
-          return
-          // allow focus change to other inputs (e.g. RightPanel)
-        }
-      }
-      const inputBox = this.$refs.inputBox as HTMLElement
-      inputBox.focus()
     },
     sendMessage() {
       if (this.disable) {

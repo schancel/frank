@@ -36,7 +36,7 @@ message ListMonadProfilesEntry {
 // Response for GET /metadata/monad?since=<timestamp> (ticket #75): every Monad profile
 // registered at or after `since`, ordered by registration timestamp ascending. Lets a bot
 // discover newly-registered identities by polling with an advancing cursor, mirroring
-// StoredMonadMessages/GET /message/monad?since= (ticket #37)'s identical shape for messages.
+// StoredMonadMessages/the inbox response (originally `GET /message/monad?since=`, ticket #37)'s identical shape for messages.
 message ListMonadProfilesResponse {
     // Profiles registered at or after the request's `since`, ordered by timestamp ascending.
     repeated ListMonadProfilesEntry entries = 1;

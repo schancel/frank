@@ -41,9 +41,10 @@
  * Monad/Ethereum accounts use, so the *same raw 32-byte
  * private key* this module derives via `ethers` HD derivation can be wrapped in a
  * `bitcore-lib-xpi` `PrivateKey` purely to reuse that existing ECDH code (`toBitcorePrivateKey`
- * below) and `bitcore-lib-xpi`'s DER ECDSA signer (`signHash`, for `AddressMetadata` registration
- * signatures -- same `SignedPayload.SignatureScheme.ECDSA`/DER-not-compact reasoning
- * `lotus-identity.ts`'s own header documents) -- with the *address* itself always computed the
+ * below). `signHash` calls `@frank/nakamoto` `signEcdsa` (DER, bitcore RFC6979 nonce) for
+ * `AddressMetadata` registration signatures. The payload digest is one
+ * `cryptoBackend.sha256`, matching `Sha256::digest` in `verify_monad_profile`.
+ * The *address* itself is always computed the
  * plain EVM way, never through any Lotus/base58/cashaddr path.
  *
  * ## Identity key derivation path, and why it's reserved separately from the burner pool
@@ -86,8 +87,12 @@ import {
   hexlify,
   randomBytes,
 } from 'ethers'
-import { PrivateKey, crypto as bitcoreCrypto } from 'bitcore-lib-xpi'
+import { PrivateKey } from 'bitcore-lib-xpi'
+import { cryptoBackend, privateKeyFromHex, signEcdsa } from '@frank/nakamoto'
 import axios from 'axios'
+
+import type { MailboxAuthParams } from '@frank/cashweb/relay/monad-mailbox-client'
+import { relayOriginHeader } from '@frank/cashweb/relay/origin-header'
 
 import __pb_registry_metadata_pb from '@frank/cashweb/registry/metadata_pb'
 const { AddressMetadata, Entry, Header, ListMonadProfilesResponse } =
@@ -162,14 +167,14 @@ export class MonadIdentity implements FrankIdentityHandle {
     return Buffer.from(getBytes(this.wallet.signingKey.compressedPublicKey))
   }
 
-  /** DER-encoded ECDSA signature over `hash`, via this identity's key -- the signature scheme
-   * `cashweb_payload::verify::SignedPayload::verify` expects for `SignatureScheme::Ecdsa` (see
-   * `lotus-identity.ts`'s header for why DER, not a 65-byte recoverable form). Delegates to
-   * `bitcore-lib-xpi`'s ECDSA signer purely for its DER encoder -- no Lotus addressing involved
-   * (see this file's header). */
+  /** DER-encoded ECDSA signature over a 32-byte `hash`. A bad digest throws. */
   signHash(hash: Buffer): Buffer {
-    const signature = bitcoreCrypto.ECDSA.sign(hash, this.toBitcorePrivateKey())
-    return (signature as unknown as { toDER(): Buffer }).toDER()
+    if (hash.length !== 32) throw new Error('sign-digest')
+    const key = privateKeyFromHex(this.wallet.privateKey.slice(2), true)
+    if (!key.ok) throw new Error(key.error.code)
+    const signed = signEcdsa(key.value, Uint8Array.from(hash))
+    if (!signed.ok) throw new Error(signed.error.code)
+    return Buffer.from(signed.value)
   }
 
   /** Wraps this identity's raw private key in a `bitcore-lib-xpi` `PrivateKey`, purely to reuse
@@ -177,6 +182,21 @@ export class MonadIdentity implements FrankIdentityHandle {
    * used for Lotus address derivation. */
   toBitcorePrivateKey(): PrivateKey {
     return new PrivateKey(this.wallet.privateKey.slice(2))
+  }
+}
+
+/** Mailbox authentication bundle for `identity`'s own inbox on `relayBaseUrl`
+ * (`@frank/cashweb/relay/monad-mailbox-client`): the relay verifies each private read against the
+ * public key registered for this address, so this signs with the same DER-ECDSA identity key as
+ * `registerMonadIdentity`. */
+export function mailboxAuthFor(
+  identity: MonadIdentity,
+  relayBaseUrl: string,
+): MailboxAuthParams {
+  return {
+    relayBaseUrl,
+    recipient: identity.address.raw,
+    signDigest: digest => identity.signHash(Buffer.from(digest)),
   }
 }
 
@@ -188,6 +208,34 @@ export interface MonadProfileFields {
   name?: string
   bio?: string
   avatar?: string
+  /** Marks the profile as an automated account (#311). Signed as an ordinary profile `Entry`
+   * with kind {@link MONAD_PROFILE_BOT_KIND} -- `Entry.kind` is an open string and the registry
+   * ignores kinds it does not know, so this needs no proto or backend change. It is
+   * self-asserted, which is enough for cooperating bots (see `packages/bot/bot-loop-guard.ts`,
+   * which also supports an operator address denylist for bots that do not set it). */
+  bot?: boolean
+}
+
+/** `Entry.kind` of the self-declared "this account is a bot" profile marker (#311). */
+export const MONAD_PROFILE_BOT_KIND = 'bot'
+
+/** Whether a decoded profile `SignedPayload` carries the {@link MONAD_PROFILE_BOT_KIND} marker.
+ * Unparseable payloads are not bots (callers that must fail closed handle lookup errors
+ * themselves). */
+export function isBotProfileSignedPayload(
+  signedPayload: InstanceType<typeof SignedPayload>,
+): boolean {
+  try {
+    return AddressMetadata.deserializeBinary(signedPayload.getPayload_asU8())
+      .getEntriesList()
+      .some(
+        entry =>
+          entry.getKind() === MONAD_PROFILE_BOT_KIND &&
+          new TextDecoder().decode(entry.getBody_asU8()) === '1',
+      )
+  } catch {
+    return false
+  }
 }
 
 function profileEntries(profile: MonadProfileFields = {}) {
@@ -209,6 +257,7 @@ function profileEntries(profile: MonadProfileFields = {}) {
       : requireValidProfileDisplayName(profile.name)
   addTextEntry('display_name', displayName)
   addTextEntry('bio', profile.bio)
+  if (profile.bot) addTextEntry(MONAD_PROFILE_BOT_KIND, '1')
 
   if (profile.avatar) {
     const match = /^data:([^;,]+);base64,(.+)$/.exec(profile.avatar)
@@ -226,6 +275,12 @@ function profileEntries(profile: MonadProfileFields = {}) {
   return entries
 }
 
+/** One SHA-256 of AddressMetadata bytes. Matches `Sha256::digest` in
+ * `verify_monad_profile`. Not double-SHA256. cryptoBackend rejects Buffer. */
+export function monadProfilePayloadDigest(payload: Uint8Array): Uint8Array {
+  return cryptoBackend.sha256(Uint8Array.from(payload))
+}
+
 function buildSignedAddressMetadata(
   identity: MonadIdentity,
   profile: MonadProfileFields = {},
@@ -235,7 +290,7 @@ function buildSignedAddressMetadata(
   metadata.setTtl(1000 * 60 * 60 * 24 * 365) // 1 year, in milliseconds
   metadata.setEntriesList(profileEntries(profile))
   const serializedPayload = Buffer.from(metadata.serializeBinary())
-  const payloadHash = bitcoreCrypto.Hash.sha256(serializedPayload)
+  const payloadHash = Buffer.from(monadProfilePayloadDigest(serializedPayload))
 
   const signedPayload = new SignedPayload()
   signedPayload.setPublicKey(identity.compressedPubKey)
@@ -252,7 +307,8 @@ function buildSignedAddressMetadata(
  * `registerIdentity` exactly, just Monad-addressed. See this file's header for the live backend
  * gap (`LotusAddress`-only address parsing) this inherits until the server grows a Monad-native
  * path. Requires an `Origin` header -- `RelayInfo::parse_from_headers` fails the whole request
- * with `MissingOrigin` otherwise. */
+ * with `MissingOrigin` otherwise. A browser sends its own; only non-browser callers set one (see
+ * `relayOriginHeader`). */
 export async function registerMonadIdentity(params: {
   relayBaseUrl: string
   identity: MonadIdentity
@@ -267,7 +323,7 @@ export async function registerMonadIdentity(params: {
     data: body,
     headers: {
       'Content-Type': 'application/x-protobuf',
-      'Origin': 'http://frank.local',
+      ...relayOriginHeader('http://frank.local'),
     },
   })
 }
@@ -331,6 +387,8 @@ export async function fetchMonadProfile(params: {
         result.name = new TextDecoder().decode(entry.getBody_asU8())
       } else if (kind === 'bio') {
         result.bio = new TextDecoder().decode(entry.getBody_asU8())
+      } else if (kind === MONAD_PROFILE_BOT_KIND) {
+        result.bot = new TextDecoder().decode(entry.getBody_asU8()) === '1'
       } else if (kind === 'avatar') {
         const contentType =
           entry

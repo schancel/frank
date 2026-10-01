@@ -15,14 +15,19 @@
       v-if="$status.setup"
       data-testid="icon-rail"
     >
-      <q-tabs v-model="tab" vertical class="col full-width">
-        <q-tab
-          name="settings"
-          icon="settings"
-          :aria-label="$t('leftDrawer.settings')"
-        >
-          <q-tooltip>{{ $t('leftDrawer.settings') }}</q-tooltip>
-        </q-tab>
+      <!-- WAI-ARIA tabs pattern (ticket #214): each rail item selects which list the column beside
+      it shows (settings panel / chat list / forum topics -- the role="tabpanel" blocks below), and
+      the contacts/forum items additionally navigate the main pane. Selecting a view is what makes
+      them tabs; Settings does not navigate at all, so a nav-landmark-with-links model would be
+      wrong for it. Quasar's q-tabs/q-tab supply role=tablist/tab, aria-selected and the vertical
+      orientation; this file adds the tablist name and the tab <-> tabpanel wiring. -->
+      <q-tabs
+        v-model="tab"
+        vertical
+        class="col full-width"
+        content-class="settings-pin-content"
+        :aria-label="$t('leftDrawer.railLabel')"
+      >
         <!-- Navigates to the active (or most recently used) chat, so this tab actually shows
         something different from "forum" in the main pane -- an earlier version of this fix
         removed navigation entirely to stop it fighting with "forum" over `/`, but that also made
@@ -31,6 +36,8 @@
         navigates to a genuinely different, contacts-focused route instead of re-using `/`. -->
         <q-tab
           name="contacts"
+          id="rail-tab-contacts"
+          aria-controls="rail-panel-contacts"
           icon="contacts"
           :aria-label="contactsLabel()"
           @click="openActiveOrRecentChat"
@@ -46,6 +53,15 @@
           />
         </q-tab>
 
+        <q-tab
+          name="wallet"
+          id="rail-tab-wallet"
+          aria-controls="rail-panel-wallet"
+          icon="account_balance_wallet"
+          :aria-label="$t('leftDrawer.wallet')"
+        >
+          <q-tooltip>{{ $t('leftDrawer.wallet') }}</q-tooltip>
+        </q-tab>
         <!-- Per-owner decision (2026-09-27, following #61): the flat groupchat-style Topics list
         is hidden in favor of the Forum's threaded view -- both still work (stores/topics.ts and
         stores/forum.ts share the same activeChain.topics data), but only Forum is surfaced in nav
@@ -53,26 +69,51 @@
         since Forum is a full page/route, not another sidebar-list mode like contacts/settings. -->
         <q-tab
           name="forum"
+          id="rail-tab-forum"
+          aria-controls="rail-panel-forum"
           icon="forum"
           :aria-label="$t('leftDrawer.forum')"
           @click="openForumTab"
         >
           <q-tooltip>{{ $t('leftDrawer.forum') }}</q-tooltip>
         </q-tab>
+        <q-tab
+          name="settings"
+          id="rail-tab-settings"
+          aria-controls="rail-panel-settings"
+          icon="settings"
+          class="settings-rail-tab"
+          :aria-label="$t('leftDrawer.settings')"
+        >
+          <q-tooltip>{{ $t('leftDrawer.settings') }}</q-tooltip>
+        </q-tab>
       </q-tabs>
     </div>
 
-    <!-- List column: whatever the active rail icon selects (settings panel / chat list / forum
-    topics), plus the balance footer -- exactly the content this drawer showed before the icon
-    rail existed, just no longer sharing a column with the tab icons themselves. -->
+    <!-- List column: whatever the active rail icon selects (settings, chats, wallet or forum) --
+    no longer sharing a column with the tab icons themselves. -->
     <div class="column full-height col list-column">
-      <settings-panel v-if="$status.setup" v-show="tab == 'settings'" />
+      <settings-panel
+        v-if="$status.setup"
+        v-show="tab == 'settings'"
+        v-bind="panelAttrs('settings')"
+      />
       <div v-if="!$status.setup">
         <q-separator />
         <chat-list-link title="Login/Sign Up" route="/setup" icon="login" />
       </div>
 
-      <chat-list v-show="tab == 'contacts'" v-bind="$attrs" :compact="false" />
+      <chat-list
+        v-show="tab == 'contacts'"
+        v-bind="{ ...$attrs, ...panelAttrs('contacts') }"
+        :compact="false"
+      />
+
+      <wallet-panel
+        v-if="$status.setup"
+        v-show="tab == 'wallet'"
+        v-bind="panelAttrs('wallet')"
+      />
 
       <!-- Real user-reported gap (ticket #61's own follow-up comment admitted this was a stopgap:
       "there's no forum-specific content this drawer could show instead"): clicking "forum" used
@@ -89,7 +130,11 @@
       handling, no consistent width/column behavior) and (b) didn't fill the remaining flex space,
       so "Balance" below no longer stayed pinned to the bottom of the drawer the way it does for
       every other tab -- it just sat directly under however many topics happened to be listed. -->
-      <div class="full-width column col" v-show="tab == 'forum'">
+      <div
+        class="full-width column col"
+        v-show="tab == 'forum'"
+        v-bind="panelAttrs('forum')"
+      >
         <q-scroll-area class="q-px-none col">
           <q-list v-bind="$attrs">
             <q-separator />
@@ -104,25 +149,39 @@
               <q-item-section>{{ name }}</q-item-section>
             </q-item>
             <q-item v-if="discoveredTopicNames.length === 0">
-              <q-item-section class="text-grey"
-                >No forums discovered yet.</q-item-section
-              >
+              <q-item-section class="text-grey">{{
+                $t('leftDrawer.noForums')
+              }}</q-item-section>
             </q-item>
           </q-list>
         </q-scroll-area>
       </div>
 
-      <q-list v-if="$status.setup">
+      <!-- Keep the legacy-relay reconnect affordance while that runtime mode exists. The Wallet
+      panel is the primary balance surface; this compatibility footer is not shown in Monad mode. -->
+      <q-list v-if="$status.setup && legacyRelayEnabled">
         <q-separator />
         <q-item clickable>
           <q-item-section @click="openReceive">
             <q-item-label>{{ $t('chatList.balance') }}</q-item-label>
-            <q-item-label caption role="status" aria-live="polite">{{
-              formattedBalance
-            }}</q-item-label>
+            <q-item-label
+              caption
+              role="status"
+              aria-live="polite"
+              :aria-label="
+                loaded
+                  ? undefined
+                  : $t('receiveBitcoinDialog.balanceUnavailable')
+              "
+              data-testid="drawer-balance"
+              >{{ balanceText
+              }}<template v-if="balanceStale">
+                {{ ' ' + $t('chatList.balanceStale') }}</template
+              ></q-item-label
+            >
           </q-item-section>
           <q-item-section
-            v-if="legacyRelayEnabled && !relayConnected"
+            v-if="!relayConnected"
             side
             clickable
             @click="relayConnectOpen = true"
@@ -136,14 +195,14 @@
 </template>
 
 <script lang="ts">
-import { computed, defineComponent, onMounted, ref, watch } from 'vue'
-import { inject } from 'vue'
+import { computed, defineComponent, inject, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
 
 import ChatList from '../chat/ChatList.vue'
 import ChatListLink from '../chat/ChatListLink.vue'
 import SettingsPanel from '../panels/SettingsPanel.vue'
+import WalletPanel from '../panels/WalletPanel.vue'
 import RelayConnectDialog from '../dialogs/RelayConnectDialog.vue'
 
 import { openChat, openPage } from '../../utils/routes'
@@ -209,10 +268,11 @@ export default defineComponent({
       await forum.refreshMessages({ wallet, topic: name })
     }
 
-    // Balance polling (real user report: an external transfer never showed up without a reload)
-    // now lives in the shared `useBalance` composable (ticket #213): one ref-counted loop with
-    // in-flight guard, visibility/app-resume handling and backoff, shared with the Receive page.
-    const { formattedBalance } = useBalance()
+    const { formattedBalance, loaded, hasError } = useBalance()
+    const balanceText = computed(() =>
+      loaded.value ? formattedBalance.value : '\u2014',
+    )
+    const balanceStale = computed(() => loaded.value && hasError.value)
 
     onMounted(() => {
       // Fire-and-forget, same convention as `ForumLayout.vue`'s own identical call --
@@ -234,7 +294,7 @@ export default defineComponent({
     // Composition API's own, more direct seam onto routing state (vs. the Options API
     // string-path watcher an earlier attempt used, which didn't reliably fire in at least one
     // real session).
-    const tab = ref<'contacts' | 'settings' | 'forum'>('contacts')
+    const tab = ref<'contacts' | 'wallet' | 'settings' | 'forum'>('contacts')
     watch(
       () => route.path,
       path => {
@@ -257,7 +317,9 @@ export default defineComponent({
       selectedForumTopic,
       browseForumTopic,
       totalUnread: totalUnread,
-      formattedBalance,
+      balanceText,
+      balanceStale,
+      loaded,
       legacyRelayEnabled: legacyLotusModeEnabled(),
     }
   },
@@ -265,6 +327,7 @@ export default defineComponent({
     ChatListLink,
     ChatList,
     SettingsPanel,
+    WalletPanel,
     RelayConnectDialog,
   },
   data() {
@@ -306,6 +369,16 @@ export default defineComponent({
         { count: n },
       )
     },
+    // Tabpanel wiring for the rail (see the tablist comment in the template). Without the rail
+    // (signed-out: no tabs rendered) the list is just content, so no dangling aria-labelledby.
+    panelAttrs(name: 'settings' | 'contacts' | 'wallet' | 'forum') {
+      if (!this.$status.setup) return {}
+      return {
+        'id': `rail-panel-${name}`,
+        'role': 'tabpanel',
+        'aria-labelledby': `rail-tab-${name}`,
+      }
+    },
     openReceive() {
       openPage(this.$router, '/receive')
     },
@@ -340,6 +413,19 @@ export default defineComponent({
   width: 72px;
   min-width: 72px;
   background: var(--q-color-bg-active);
+}
+
+.settings-rail-tab {
+  margin-top: auto;
+}
+
+// Quasar's vertical-tab rule uses `display: block !important` on this internal element, so the
+// Settings tab's auto margin only consumes the remaining rail height after restoring a column
+// flex context here. Keep short rails scrollable instead of making Settings unreachable.
+.icon-rail :deep(.settings-pin-content) {
+  display: flex !important;
+  flex-direction: column;
+  overflow-y: auto;
 }
 
 .list-column {

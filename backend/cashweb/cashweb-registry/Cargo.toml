@@ -11,6 +11,10 @@ bitcoinsuite-ecc-secp256k1 = { path = "../../bitcoinsuite/bitcoinsuite-ecc-secp2
 bitcoinsuite-test-utils = { path = "../../bitcoinsuite/bitcoinsuite-test-utils" }
 bitcoinsuite-test-utils-blockchain = { path = "../../bitcoinsuite/bitcoinsuite-test-utils-blockchain" }
 
+# Frank deterministic CBOR (docs/protocol/cbor): decodes and validates topic events (types 10 and
+# 11) for `monad_topic_cbor`. Pure and dependency-light (no I/O).
+frank-cbor = { path = "../frank-cbor" }
+
 cashweb-http-utils = { path = "../cashweb-http-utils" }
 cashweb-payload = { path = "../cashweb-payload" }
 # POP bearer-token extraction/issuance layer (ticket #22), wired into the registry-metadata-put

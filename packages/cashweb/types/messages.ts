@@ -40,7 +40,7 @@ export interface ImageItem {
 export interface BlackjackMoveItem {
   type: 'blackjack-move'
   gameId: string
-  action: 'bet' | 'deal' | 'hit' | 'stand' | 'double' | 'reveal'
+  action: 'bet' | 'deal' | 'hit' | 'stand' | 'double' | 'reveal' | 'welcome'
   /** `bet` only: the tx hash of the separate plain value transfer that *is* the wager. Also
    * doubles as the shuffle's client-seed entropy (see `@frank/wallet/message-item-plugins/blackjack`'s header) -- no
    * extra round trip needed to collect one. */
@@ -69,6 +69,17 @@ export interface BlackjackMoveItem {
   serverSeed?: string
   /** `reveal` only. */
   outcome?: 'player_win' | 'dealer_win' | 'push' | 'player_blackjack'
+  /** `welcome` only (dealer to player, #395): the table's minimum wager, a decimal wei string.
+   * Untrusted advertising: the client parses it strictly (`parseBlackjackWelcome`) and the
+   * dealer enforces its own limits regardless. */
+  minWagerWei?: string
+  /** `welcome` only: the table's maximum wager, a decimal wei string. */
+  maxWagerWei?: string
+  /** `welcome` only: hint, in wei, of what sending a bet message costs beyond the wager (its stamp
+   * plus fees). A client that already assumes more keeps its own figure. */
+  feeHintWei?: string
+  /** `welcome` only: a short plain-text summary of the house rules. */
+  rules?: string
 }
 
 /**
@@ -85,7 +96,14 @@ export interface DigitalGoodsItem {
   type: 'digital-goods'
   action: 'catalog' | 'request' | 'fulfill' | 'error'
   /** `catalog` only: what the vendor currently has for sale. */
-  catalog?: Array<{ itemId: string; description: string; priceWei: string }>
+  catalog?: Array<{
+    itemId: string
+    description: string
+    priceWei: string
+    /** Optional small `data:image/...;base64,...` preview shown next to the entry. Clients render
+     * it only when it is such a data URI, never a remote URL (a URL would leak the viewer). */
+    thumbnail?: string
+  }>
   /** `request` only: which catalog item this message's own stamp payment is meant to buy. */
   itemId?: string
   /** `error` only: e.g. "payment below this item's price," "unknown itemId." */
@@ -154,6 +172,41 @@ export type MessageItem =
   | DigitalGoodsItem
   | RaffleItem
 
+/** Why an outgoing direct message is not (yet) delivered (tickets #269/#270). Persisted with the
+ * message so the failure and its manual Retry survive a reload. */
+export type OutgoingFailureReason =
+  /** The relay could not be reached or kept failing. Nothing was paid for; retry is safe. */
+  | 'unreachable'
+  /** The relay has no messaging mailbox (404). Nothing was sent; retry is safe once it does. */
+  | 'unavailable'
+  /** The relay refused the message for good (400/409/422...). The old payment can never land. */
+  | 'rejected'
+  /** The app stopped while this was sending and no payment attempt was recorded for it. */
+  | 'interrupted'
+  /** A payment attempt exists but neither delivery nor death of it could be established. A retry
+   * may pay a second time, so it needs the user's explicit confirmation. */
+  | 'unverified'
+  /** Another, earlier payment attempt completed while this one was being prepared, so this
+   * draft may duplicate it. A retry needs the user's explicit confirmation. */
+  | 'recovered'
+  | 'error'
+
+/** Delivery bookkeeping for an outgoing (`outbound`) direct message that is not yet confirmed. */
+export interface OutgoingDelivery {
+  /** Bare-hex payload hash of the exact signed payment set built for this message, recorded
+   * before that set is first submitted. While this attempt is live, a retry re-sends the same
+   * bytes and never builds a new payment. Absent until a payment set exists. */
+  attemptDigest?: string
+  /** Set on `status: 'error'`. */
+  failureReason?: OutgoingFailureReason
+  /** Short technical detail for the failure (not localized). */
+  detail?: string
+  /** In-memory only, never persisted: the wallet confirmed this session that the attempt is
+   * still live (so "you will not be charged again" is true). Absent after a reload until the
+   * first reconcile. */
+  live?: boolean
+}
+
 export interface Message {
   outbound: boolean
   status: string
@@ -173,6 +226,10 @@ export interface Message {
     destinationAddress: string
     valueWei: bigint
   }>
+  /** Present only while an outgoing message is unconfirmed. `status` is then `'pending'`
+   * (sending), `'payment-pending'` (payment not yet confirmed; retried automatically with the same
+   * bytes) or `'error'` (failed; the user may Retry or Discard). */
+  delivery?: OutgoingDelivery
 }
 
 export interface MessageWrapper {

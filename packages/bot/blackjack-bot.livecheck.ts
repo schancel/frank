@@ -43,7 +43,8 @@
  * broadcast) `-> submitted -> confirmed` (only a successful receipt clears it). A restart or the
  * poll loop re-broadcasts the same signed bytes -- never re-signs -- and no other payer-account
  * transaction is signed while a signed payout is unconfirmed (it owns the nonce). See
- * `attemptPayout`/`settlePayouts`.
+ * `attemptPayout`/`settlePayouts`. The welcome greeter signs from the payer account too (the
+ * welcome stamp's funding transfer), so `runBlackjackLoop` runs it behind the same lane gate.
  *
  * ## Usage
  *
@@ -55,12 +56,23 @@
  *
  * Env vars (mirroring qwen-bot.livecheck.ts's own naming where the concept is the same):
  *   BLACKJACK_BOT_IDENTITY_JSON     -- default /tmp/blackjack-bot-identity.json
- *   BLACKJACK_BOT_STATE_DIR         -- default /tmp/blackjack-bot-state
+ *   BLACKJACK_BOT_STATE_DIR         -- default ~/.frank-bots/blackjack (or $XDG_STATE_HOME/frank-bots/blackjack)
  *   BLACKJACK_BOT_MIN_WAGER_WEI     -- default 0.01 MON
  *   BLACKJACK_BOT_MAX_WAGER_WEI     -- default 1 MON (the client UI's documented default limits)
  *   BLACKJACK_BOT_MAX_HANDS         -- how many hands to resolve before exiting (default 1000)
  *   BLACKJACK_BOT_POLL_INTERVAL_MS  -- default 4000
  *   BLACKJACK_BOT_IDLE_TIMEOUT_MS   -- default 10 minutes
+ *   BLACKJACK_BOT_MAX_GREETINGS     -- welcomes sent per run (default 5; 0 = never greet)
+ *   BLACKJACK_BOT_MAX_GREETINGS_PER_DAY -- welcomes per UTC day across restarts (default 20)
+ *   BLACKJACK_BOT_GREETING_MAX_AGE_MS   -- skip registrations older than this (default 24 h)
+ *   BLACKJACK_BOT_PROFILE_SINCE_MS  -- first-run start of the registration watch (default: now)
+ *
+ * ## Welcome greeting (#395)
+ *
+ * The dealer greets each NEW registration once with a `blackjack-move` `welcome` item (table limits
+ * from this bot's own config, fee hint, rules) plus a text line: see `blackjack-greeter.ts` for the
+ * once-per-address record, the per-run/per-day caps (each greeting costs a stamp), the funds
+ * check and the loop guard (never greets itself, the denylist or bot-marked profiles).
  */
 import { randomBytes } from 'crypto'
 import { resolve } from 'path'
@@ -75,8 +87,12 @@ import {
 import { fetchMonadMessagesSince } from '@frank/cashweb/relay/monad-message-feed'
 import {
   fetchMonadIdentityPubKey,
+  fetchMonadProfilesSince,
   MonadIdentity,
+  mailboxAuthFor,
 } from '@frank/wallet/monad-identity'
+import __pb_registry_metadata_pb from '@frank/cashweb/registry/metadata_pb'
+const { AddressMetadata } = __pb_registry_metadata_pb
 import { deserializeMessageItems } from '@frank/wallet/chain/monad-chain'
 import { BlackjackMoveItem, Message } from '@frank/cashweb/types/messages'
 import {
@@ -92,7 +108,7 @@ import {
   dealInitialCards,
   formatBlackjackError,
   HydratedBlackjackMove,
-  resolveOutcome,
+  playOutDealer,
 } from '@frank/wallet/message-item-plugins/blackjack/game'
 import { MonadStampClient } from '@frank/wallet/monad-stamp-client'
 import { MonadSubAccountPool } from '@frank/wallet/monad-account-pool'
@@ -105,6 +121,18 @@ import {
   sendDirectMessageText,
   setUpFundedStampClient,
 } from './qwen-bot-common'
+import { botStateDir } from './bot-state-dir'
+import { botLoopGuardFromEnv } from './bot-loop-guard'
+import {
+  BlackjackGreeter,
+  BlackjackGreetingStore,
+  GREETING_FEE_RESERVE_WEI,
+  greeterConfigFromEnv,
+  GreeterProfile,
+  welcomeItems,
+} from './blackjack-greeter'
+import { formatMon } from '@frank/wallet/monad-amount'
+import { botProfileFields } from './bot-directory'
 import {
   BlackjackBotStateStore,
   BlackjackGameRecord,
@@ -183,7 +211,6 @@ async function resolveAndReveal(params: {
   }
   const deck = deriveDeck(record.serverSeed, record.wagerTxHash, 0)
   const playerCards = playerCardsSoFar(deck, record.dealtCount)
-  const playerValue = handValue(playerCards)
   // A double-down puts a second, independently-verified transfer of the same size into the pot --
   // never just a client-side-doubled number (see `BlackjackGameRecord.doubleWagerWei`'s own
   // header) -- so the payout base is the sum of the two real transfers actually received, not
@@ -193,20 +220,13 @@ async function resolveAndReveal(params: {
       ? record.wagerWei + record.doubleWagerWei
       : record.wagerWei
 
-  let dealerCards = dealInitialCards(deck).dealerCards
-  let dealtCount = record.dealtCount
-  // A player natural is final as dealt -- the dealer never draws further regardless of its own
-  // up-card, matching standard casino rules (see resolveOutcome's own blackjack-vs-blackjack
-  // handling for the push case this still needs to distinguish).
-  if (!playerValue.bust && !playerValue.blackjack) {
-    while (handValue(dealerCards).total < 17) {
-      dealerCards = [...dealerCards, deck[dealtCount]]
-      dealtCount += 1
-    }
-  }
-  const outcome = playerValue.bust
-    ? 'dealer_win'
-    : resolveOutcome(playerValue, handValue(dealerCards))
+  // The dealing rules live in one shared function (also used by the client-side fairness check):
+  // no draw on a player natural or bust, otherwise the dealer draws to 17.
+  const { dealerCards, dealtCount, outcome } = playOutDealer(
+    deck,
+    playerCards,
+    record.dealtCount,
+  )
 
   const multiplier = payoutMultiplier(outcome)
   const payoutWei =
@@ -727,13 +747,13 @@ export async function handleMove(params: {
     }
     if (wager.valueWei < minWagerWei) {
       await rejectBet(
-        `wager ${wager.valueWei} wei is below the table minimum of ${minWagerWei} wei`,
+        `wager ${formatMon(wager.valueWei)} is below the table minimum of ${formatMon(minWagerWei)}`,
       )
       return
     }
     if (wager.valueWei > maxWagerWei) {
       await rejectBet(
-        `wager ${wager.valueWei} wei is above the table maximum of ${maxWagerWei} wei`,
+        `wager ${formatMon(wager.valueWei)} is above the table maximum of ${formatMon(maxWagerWei)}`,
       )
       return
     }
@@ -837,7 +857,7 @@ export async function handleMove(params: {
     return
   }
 
-  if (action === 'deal' || action === 'reveal') {
+  if (action === 'deal' || action === 'reveal' || action === 'welcome') {
     await sendError(`${action} is a dealer-only action`)
     return
   }
@@ -970,7 +990,7 @@ export async function handleMove(params: {
     // is always precisely 2x what the player actually put at risk.
     if (doubleWager.valueWei !== record.wagerWei) {
       await rejectDouble(
-        `double-down wager must match your original wager exactly (${record.wagerWei} wei)`,
+        `double-down wager must match your original wager exactly (${formatMon(record.wagerWei)})`,
       )
       return
     }
@@ -1090,6 +1110,11 @@ export interface BlackjackLoopDeps {
   /** Decrypts/hydrates/handles one not-yet-processed message. Returns what it acted on, or
    * `undefined` when the message was not a blackjack move for this bot. */
   processMessage: (message: StoredRelayMessage) => Promise<{ action: string; gameId: string } | undefined>
+  /** The welcome greeter's poll (main's greeting flow, #395). Its sends sign from the payer
+   * account, so it is invoked only while the payout lane is free -- never while a signed payout
+   * is submitting/submitted (a greeting funding tx could otherwise steal the payout's nonce).
+   * Returns how many greetings were sent. */
+  greet?: () => Promise<number>
   now?: () => number
   sleep?: (ms: number) => Promise<void>
   /** How long, after the loop ends, to keep settling payouts before reporting them unsettled. */
@@ -1132,6 +1157,9 @@ export async function runBlackjackLoop(
       await pause(pollIntervalMs)
       continue
     }
+    // The greeter signs from the payer account too (the welcome stamp's funding transfer), so it
+    // sits behind the same lane gate: a held payout's nonce can never be stolen by a greeting.
+    if (deps.greet && (await deps.greet()) > 0) lastActivityAt = now()
 
     const stored = await deps.fetchMessages(since)
     let maxSeenTimestamp: number = since - 1
@@ -1246,10 +1274,7 @@ async function main() {
     process.env.E2E_DEMO_MAIN_WALLET_JSON ??
       '../frank-worktrees/spike-demo/spike/data/chain-wallet.json',
   )
-  const stateDirPath = resolve(
-    process.cwd(),
-    process.env.BLACKJACK_BOT_STATE_DIR ?? '/tmp/blackjack-bot-state',
-  )
+  const stateDirPath = botStateDir('blackjack', 'BLACKJACK_BOT_STATE_DIR')
   const pollIntervalMs = Number(
     process.env.BLACKJACK_BOT_POLL_INTERVAL_MS ?? 4000,
   )
@@ -1265,18 +1290,24 @@ async function main() {
   console.log(`Max hands:  ${maxHands}`)
 
   const identity = loadOrCreateIdentity(identityJsonPath, 'blackjack-bot')
-  await registerAndLog({ relayBaseUrl, identity, label: 'blackjack-bot' })
+  await registerAndLog({
+    relayBaseUrl,
+    identity,
+    label: 'blackjack-bot',
+    profile: botProfileFields('blackjack'),
+  })
   console.log(`Blackjack bot identity address: ${identity.displayAddress}`)
 
   // No poolSize -- lazily funded per-send, same as qwen-bot.livecheck.ts (see
   // setUpFundedStampClient's own header, "Lazy per-send funding").
-  const { stampClient, mainAccountSigner, provider, pool } =
+  const { stampClient, mainAccountSigner, provider, pool, closePool } =
     await setUpFundedStampClient({
       rpcUrl,
       relayBaseUrl,
       mainWalletJsonPath,
       stampValueWei,
       label: 'blackjack-bot',
+      stateDir: stateDirPath,
     })
 
   const rpcProvider = new JsonRpcProvider(rpcUrl)
@@ -1294,21 +1325,86 @@ async function main() {
     console.log('[blackjack-bot] generated initial pending seed commitment')
   }
 
+// The welcome greeting. Its own small durable store (never the game-authority store).
+  const greetingStore = new BlackjackGreetingStore(stateDirPath)
+  await greetingStore.Open()
+  const greeterConfig = greeterConfigFromEnv(process.env)
+  const profileWatchStart = Number(
+    process.env.BLACKJACK_BOT_PROFILE_SINCE_MS || Date.now(),
+  )
+  if (!Number.isFinite(profileWatchStart)) {
+    throw new Error('BLACKJACK_BOT_PROFILE_SINCE_MS must be a number of milliseconds')
+  }
+  const guard = botLoopGuardFromEnv({
+    selfAddress: identity.displayAddress,
+    relayBaseUrl,
+  })
+  const greeter = new BlackjackGreeter(
+    {
+      store: greetingStore,
+      guard,
+      startedAt: profileWatchStart,
+      async listProfiles(sinceMs): Promise<GreeterProfile[]> {
+        const profiles = await fetchMonadProfilesSince({ relayBaseUrl, sinceMs })
+        return profiles.map(profile => ({
+          address: profile.address,
+          signedPayload: profile.signedPayload,
+          registeredAt: AddressMetadata.deserializeBinary(
+            profile.signedPayload.getPayload_asU8(),
+          ).getTimestamp(),
+        }))
+      },
+      // A greeting must never eat what open hands may still owe, nor the stamp it pays.
+      async canAffordGreeting() {
+        const balance = await rpcProvider.getBalance(mainAccountSigner.address)
+        return (
+          balance >=
+          state.openExposureWei() + stampValueWei + GREETING_FEE_RESERVE_WEI
+        )
+      },
+      async sendWelcome(profile) {
+        await sendDirectMessageItems({
+          stampClient,
+          pool,
+          mainAccountSigner,
+          provider,
+          fromIdentity: identity,
+          toAddress: profile.address,
+          toPubKey: Buffer.from(profile.signedPayload.getPublicKey_asU8()),
+          items: welcomeItems({ minWagerWei, maxWagerWei, stampValueWei }),
+          stampValueWei,
+          networkTag,
+        })
+      },
+    },
+    greeterConfig,
+  )
   console.log(
-    `\nPolling ${relayBaseUrl}/message/monad?since=<t> every ${pollIntervalMs}ms for messages addressed to ${identity.displayAddress} ...`,
+    `Greetings:  up to ${greeterConfig.maxPerRun} per run, ${greeterConfig.maxPerDay} per day`,
+  )
+
+  console.log(
+    `\nPolling ${relayBaseUrl}/message/monad/inbox/<me> (signed mailbox read, since=<t>) every ${pollIntervalMs}ms for messages addressed to ${identity.displayAddress} ...`,
   )
   console.log(
     `[blackjack-bot] payer account ${mainAccountSigner.address}: this bot assumes it is the ONLY signer of that key (the raffle and qwen bots default to the same chain wallet file -- do not run them against it concurrently). Payout nonces are reserved in-process only.`,
   )
 
-  const senderPubKeyCache = new Map<string, Buffer>()
+const senderPubKeyCache = new Map<string, Buffer>()
   const result = await runBlackjackLoop({
     state,
     mainAccountSigner,
     pollIntervalMs,
     maxHands,
     idleTimeoutMs,
-    fetchMessages: (sinceMs) => fetchMonadMessagesSince({ relayBaseUrl, sinceMs }),
+    fetchMessages: (sinceMs) =>
+      fetchMonadMessagesSince({
+        ...mailboxAuthFor(identity, relayBaseUrl),
+        sinceMs,
+      }),
+    // Greetings sign from the payer account (the welcome stamp's funding transfer); the loop runs
+    // them only while the payout lane is free (see runBlackjackLoop's lane gate).
+    greet: () => greeter.poll(),
     processMessage: async (message) => {
       const payloadHashHex = Buffer.from(message.message!.payloadHash).toString('hex')
       const envelope = parseEnvelope(message.message!.encryptedPayload)
@@ -1418,6 +1514,8 @@ async function main() {
   })
 
   await state.Close()
+  await greetingStore.Close()
+  await closePool()
   console.log(`\nDone. Resolved ${result.handsResolved} hand${result.handsResolved === 1 ? '' : 's'}.`)
   if (result.exitCode !== 0) process.exitCode = result.exitCode
 }

@@ -6,6 +6,7 @@ import {
   Address,
   PrivateKey,
 } from 'bitcore-lib-xpi'
+import { cryptoBackend } from '@frank/nakamoto'
 import assert from 'assert'
 import atob from 'atob'
 
@@ -31,6 +32,18 @@ import VCard from 'vcf'
 import __pb_signed_payload_payload_pb from '../signed_payload/payload_pb'
 const { SignedPayload } = __pb_signed_payload_payload_pb
 import { Wallet } from '../legacy-wallet'
+import { signRegistryDigest } from '../registry'
+import { relayCipherPayloadDigest } from './cipher-payload-digest'
+import { outpointPublicKey } from './outpoint-hd'
+import { relayProfilePublicKey } from './profile-pubkey'
+
+/** One SHA-256 of Profile protobuf bytes. Matches `Sha256::digest` in
+ * `SignedPayload::parse_proto`, the message `SignedPayload::verify` checks.
+ * Not double-SHA256. cryptoBackend rejects Buffer. Relay encryption in this
+ * file stays on bitcore (decision #505, issue #258). */
+export function relayProfilePayloadDigest(payload: Uint8Array): Uint8Array {
+  return cryptoBackend.sha256(Uint8Array.from(payload))
+}
 
 export class MessageConstructor {
   payloadConstructor: PayloadConstructor
@@ -51,8 +64,9 @@ export class MessageConstructor {
   ) {
     assert(payloadDigest instanceof Buffer, 'digestPayload is wrong type')
 
-    // Stamp output
-    const stampHDPubKey = this.payloadConstructor.constructStampHDPublicKey(
+    // Stamp output. Public child only; the receive path still derives
+    // the private key with bitcore (decision #513).
+    const stampPublicKey = this.payloadConstructor.constructStampPublicKey(
       payloadDigest,
       destPubKey,
     )
@@ -60,13 +74,15 @@ export class MessageConstructor {
 
     const stampAddressGenerator =
       (transactionNumber: number) => (outputNumber: number) => {
-        const outpointPubKey = stampHDPubKey
-          .deriveChild(44)
-          .deriveChild(145)
-          .deriveChild(transactionNumber)
-          .deriveChild(outputNumber).publicKey
         const address = new PublicKey(
-          crypto.Point.pointToCompressed(outpointPubKey.point),
+          Buffer.from(
+            outpointPublicKey(
+              stampPublicKey.toBuffer(),
+              payloadDigest,
+              transactionNumber,
+              outputNumber,
+            ),
+          ),
         )
         transactionNumber += 1
         return address
@@ -91,20 +107,23 @@ export class MessageConstructor {
     // Add ephemeral output
     // NOTE: We're only doing 1 stealth txn, and 1 output for now.
     // But the spec should allow doing confidential amounts.
-    const stealthHDPubKey = this.payloadConstructor.constructHDStealthPublicKey(
-      ephemeralPrivKey,
-      destPubKey,
-    )
+    const { stealthPublicKey, digest } =
+      this.payloadConstructor.constructStealthPublicKey(
+        ephemeralPrivKey,
+        destPubKey,
+      )
 
     const stealthPubKeyGenerator =
       (transactionNumber: number) => (outputNumber: number) => {
-        const stealthPubKey = stealthHDPubKey
-          .deriveChild(44)
-          .deriveChild(145)
-          .deriveChild(transactionNumber)
-          .deriveChild(outputNumber).publicKey
         const stealthAddress = new PublicKey(
-          crypto.Point.pointToCompressed(stealthPubKey.point),
+          Buffer.from(
+            outpointPublicKey(
+              stealthPublicKey.toBuffer(),
+              digest,
+              transactionNumber,
+              outputNumber,
+            ),
+          ),
         )
 
         transactionNumber += 1
@@ -142,7 +161,7 @@ export class MessageConstructor {
     const payload = this.payloadConstructor.encrypt(sharedKey, plainTextPayload)
 
     // Calculate payload hmac
-    const payloadDigest = crypto.Hash.sha256(Buffer.from(payload))
+    const payloadDigest = Buffer.from(relayCipherPayloadDigest(payload))
     const payloadHmac = this.payloadConstructor.constructPayloadHmac(
       sharedKey,
       payloadDigest,
@@ -383,12 +402,21 @@ export class MessageConstructor {
     profile.addEntries(filterEntry)
 
     const rawProfile = profile.serializeBinary()
-    const hashbuf = crypto.Hash.sha256(Buffer.from(rawProfile))
-    const sig = crypto.ECDSA.sign(hashbuf, privKey)
+    const hashbuf = Buffer.from(relayProfilePayloadDigest(rawProfile))
+    const rawSig = signRegistryDigest(hashbuf, privKey)
 
+    // SEC1 point of the signing key (decision #543). types.d.ts omits the
+    // runtime compression flag; bitcore-lib-xpi stays until #259.
+    const compressed = (privKey as unknown as { compressed?: boolean }).compressed
+    if (compressed !== true && compressed !== false) {
+      throw new Error('profile-pubkey:compressed')
+    }
     const signedPayload = new SignedPayload()
-    const rawSig = sig.toCompact(1, true).slice(1)
-    signedPayload.setPublicKey(privKey.toPublicKey().toBuffer())
+    signedPayload.setPublicKey(
+      Buffer.from(
+        relayProfilePublicKey(Uint8Array.from(privKey.toBuffer()), compressed),
+      ),
+    )
     signedPayload.setSignature(rawSig)
     signedPayload.setScheme(1)
     signedPayload.setPayload(rawProfile)

@@ -18,9 +18,10 @@
  *   half deterministic, half random) so clients do not hammer an unhealthy RPC in lockstep. A
  *   success resets it. Failures are logged with `console.error`; there is no UI error state.
  */
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, readonly, ref } from 'vue'
 import { activeChain, WalletHandle } from '@frank/wallet/chain'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
+import { isWalletNotReady } from 'src/composables/wallet-not-ready'
 
 /** Window event the capacitor-only boot file dispatches on native app pause/resume, so this
  * composable needs no Capacitor import (the SPA/Electron builds deliberately never load it). */
@@ -34,6 +35,8 @@ export const BALANCE_BACKOFF_MAX_MS = 5 * 60 * 1000
 const balance = ref<bigint | null>(null)
 const hasError = ref(false)
 const loaded = computed(() => balance.value !== null)
+// True only for a real, loaded zero (never for "not loaded yet" or a failed fetch).
+const isEmpty = computed(() => balance.value === 0n)
 const formattedBalance = computed(
   () =>
     `${activeChain.toDisplayAmount(balance.value ?? 0n)} ${activeChain.unit}`,
@@ -111,8 +114,13 @@ async function fetchBalance(force: boolean) {
     hasError.value = false
     failures = 0
   } catch (err) {
-    // The setup route may render the drawer before a seed exists; log and keep polling.
-    console.error('balance refresh failed', err)
+    // The setup route may render the drawer before a seed exists: not an error, keep polling.
+    // Anything else is a real failure worth an error-level log.
+    if (isWalletNotReady(err)) {
+      console.debug('balance refresh waiting for a wallet (no seed phrase yet)')
+    } else {
+      console.error('balance refresh failed', err)
+    }
     if (isCurrent()) {
       failures++
       hasError.value = true
@@ -175,8 +183,10 @@ export function useBalance() {
   onMounted(acquire)
   onUnmounted(release)
   return {
+    balance: readonly(balance),
     formattedBalance,
     loaded,
+    isEmpty,
     hasError,
     refresh: () => fetchBalance(true),
   }

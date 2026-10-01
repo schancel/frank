@@ -48,14 +48,26 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", help="owner/name (default: current gh repo)")
     args = parser.parse_args()
-    cmd = ["gh", "issue", "list", "--state", "open", "--limit", "100", "--json", "number,title,body"]
-    if args.repo:
-        cmd.extend(["--repo", args.repo])
+    endpoint = f"repos/{args.repo}/issues" if args.repo else "repos/{owner}/{repo}/issues"
+    cmd = [
+        "gh",
+        "api",
+        "--method",
+        "GET",
+        "--paginate",
+        "--slurp",
+        endpoint,
+        "-f",
+        "state=open",
+        "-f",
+        "per_page=100",
+    ]
     result = subprocess.run(cmd, capture_output=True, text=True, check=False)
     if result.returncode != 0:
         sys.stderr.write(result.stderr or result.stdout)
         return result.returncode or 1
-    issues = json.loads(result.stdout)
+    pages = json.loads(result.stdout)
+    issues = [issue for page in pages for issue in page if "pull_request" not in issue]
     json.dump(from_gh_issues(issues), sys.stdout, indent=2)
     sys.stdout.write("\n")
     return 0

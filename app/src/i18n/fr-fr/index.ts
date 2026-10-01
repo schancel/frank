@@ -16,7 +16,7 @@ export default {
   },
   stampPreparation: {
     posting: 'Publication en cours…',
-    postCreated: 'Message publié !',
+    postCreated: 'Message publié dans {topic} !',
     postedRefreshFailed:
       'Votre message a été publié, mais l’actualisation a échoué. Rechargez pour le voir. Ne le publiez pas à nouveau.',
     votedRefreshFailed:

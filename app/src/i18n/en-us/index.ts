@@ -13,7 +13,7 @@ export default {
   },
   stampPreparation: {
     posting: 'Posting…',
-    postCreated: 'Post created!',
+    postCreated: 'Post created in {topic}.',
     postedRefreshFailed:
       'Your post was published, but refreshing failed. Reload to see it. Do not post it again.',
     votedRefreshFailed:

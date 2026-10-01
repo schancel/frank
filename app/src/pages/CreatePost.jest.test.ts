@@ -3,24 +3,29 @@
 // burn landed but could not be read back says so instead of inviting a retry (#273 review).
 
 import { flushPromises, shallowMount } from '@vue/test-utils'
+import { nextTick } from 'vue'
 
 import CreatePost from './CreatePost.vue'
 import { BurnRefreshError } from 'src/utils/burn-refresh-error'
 import { errorNotify, infoNotify } from 'src/utils/notifications'
+import { useForumStore } from 'src/stores/forum'
 
 const mockPutMessage = jest.fn()
 jest.mock('pinia', () => ({
   storeToRefs: (store: object) => jest.requireActual('vue').toRefs(store),
 }))
 jest.mock('src/stores/forum', () => ({
-  useForumStore: () =>
-    jest.requireActual('vue').reactive({
+  useForumStore: (() => {
+    const store = jest.requireActual('vue').reactive({
       topics: ['help'],
+      selectedTopic: 'stamp',
       index: {},
       getMessage: () => undefined,
       pushNewTopic: jest.fn(),
       putMessage: (...args: unknown[]) => mockPutMessage(...args),
-    }),
+    })
+    return () => store
+  })(),
 }))
 jest.mock('src/stores/topics', () => ({
   useTopicStore: () => ({ getTopics: ['stamp', 'news', 'help'] }),
@@ -50,6 +55,7 @@ jest.mock('../utils/markdown', () => ({ renderMarkdown: () => '' }))
 
 const messages: Record<string, string> = {
   'stampPreparation.posting': 'POSTING',
+  'stampPreparation.postCreated': 'Post created in {topic}.',
   'chat.stampPreparationChecking': 'CHECKING',
   'chat.stampPreparationFunding': 'FUNDING {completed}/{total} {feeReserve}',
   'chat.stampPreparationReady': 'READY',
@@ -58,15 +64,23 @@ const messages: Record<string, string> = {
 const $t = (key: string, params: Record<string, unknown> = {}) =>
   (messages[key] ?? key).replace(/\{(\w+)\}/g, (_m, n) => String(params[n]))
 
-function mountPage() {
+function mountPage(parentDigest?: string) {
   const router = { go: jest.fn(), push: jest.fn() }
   const wrapper = shallowMount(CreatePost, {
     global: {
       mocks: {
         $t,
-        $route: { params: {} },
+        $route: { params: { parentDigest } },
         $router: router,
         $q: { dark: { isActive: false } },
+      },
+      stubs: {
+        QSelect: {
+          name: 'QSelect',
+          props: ['modelValue'],
+          emits: ['update:modelValue', 'input-value'],
+          template: '<div data-test="topic-select" />',
+        },
       },
     },
   })
@@ -76,7 +90,77 @@ function mountPage() {
 const status = (w: ReturnType<typeof mountPage>['wrapper']) =>
   w.find('[data-test="post-status"]')
 
-beforeEach(() => jest.clearAllMocks())
+beforeEach(() => {
+  jest.clearAllMocks()
+  const forum = useForumStore() as unknown as {
+    selectedTopic: string
+    index: Record<string, { topic: string }>
+  }
+  forum.selectedTopic = 'stamp'
+  forum.index = {}
+})
+
+describe('CreatePost selected-topic default (ticket #414)', () => {
+  it('follows channel switches until the author edits the topic', async () => {
+    const { wrapper } = mountPage()
+    const forum = useForumStore() as unknown as { selectedTopic: string }
+    const vm = wrapper.vm as unknown as { topic: string }
+
+    expect(vm.topic).toBe('stamp')
+
+    forum.selectedTopic = 'news'
+    await nextTick()
+    expect(vm.topic).toBe('news')
+
+    wrapper
+      .findComponent({ name: 'QSelect' })
+      .vm.$emit('update:modelValue', 'custom')
+    await nextTick()
+    forum.selectedTopic = 'help'
+    await nextTick()
+    expect(vm.topic).toBe('custom')
+  })
+
+  it('does not overwrite the default while the author is typing a topic', async () => {
+    const { wrapper } = mountPage()
+    const forum = useForumStore() as unknown as { selectedTopic: string }
+    const vm = wrapper.vm as unknown as { topic: string }
+
+    wrapper.findComponent({ name: 'QSelect' }).vm.$emit('input-value', 'sta')
+    await nextTick()
+    forum.selectedTopic = 'news'
+    await nextTick()
+
+    expect(vm.topic).toBe('stamp')
+  })
+
+  it('pins replies to the parent topic instead of later channel switches', async () => {
+    const forum = useForumStore() as unknown as {
+      selectedTopic: string
+      index: Record<string, { topic: string }>
+    }
+    forum.index = { parent: { topic: 'news' } }
+    const { wrapper } = mountPage('parent')
+    const vm = wrapper.vm as unknown as { topic: string }
+
+    expect(vm.topic).toBe('news')
+    forum.selectedTopic = 'help'
+    await nextTick()
+    expect(vm.topic).toBe('news')
+  })
+
+  it('submits and names the exact topic shown in the form', async () => {
+    const { wrapper } = mountPage()
+
+    await (wrapper.vm as unknown as { post(): Promise<void> }).post()
+    await flushPromises()
+
+    expect(mockPutMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ topic: 'stamp' }),
+    )
+    expect(infoNotify).toHaveBeenCalledWith('Post created in stamp.')
+  })
+})
 
 describe('CreatePost preparation status', () => {
   it('shows each stage in a live region and clears it when the post is done', async () => {

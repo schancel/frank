@@ -22,7 +22,9 @@
         <q-select
           label="Topic"
           :disable="!!getMessage(parentDigest)"
-          v-model="topic"
+          :model-value="topic"
+          @update:model-value="setTopic"
+          @input-value="markTopicEdited"
           :options="topics"
           @filter="filterTopics"
           use-input
@@ -120,11 +122,12 @@ import { stampPreparationStatus } from 'src/utils/stamp-preparation-status'
 export default defineComponent({
   setup() {
     const forum = useForumStore()
-    const { topics, getMessage } = storeToRefs(forum)
+    const { topics, getMessage, selectedTopic } = storeToRefs(forum)
     return {
       topicStore: useTopicStore(),
       getMessage: getMessage,
       availableTopics: topics,
+      selectedTopic,
       pushNewTopic: forum.pushNewTopic,
       postMessage: forum.putMessage,
     }
@@ -139,7 +142,8 @@ export default defineComponent({
     const parentDigest = this.$route.params.parentDigest as string
     return {
       offering: activeChain.toDisplayAmount(activeChain.defaultTopicVoteValue),
-      topic: forum.index[parentDigest]?.topic ?? '',
+      topic: forum.index[parentDigest]?.topic ?? forum.selectedTopic,
+      topicWasEdited: false,
       topics: [] as string[],
       title: '',
       url: null,
@@ -164,7 +168,21 @@ export default defineComponent({
       return renderMarkdown(text, this.$q.dark.isActive)
     },
   },
+  watch: {
+    selectedTopic(nextTopic: string) {
+      if (!this.parentDigest && !this.topicWasEdited) {
+        this.topic = nextTopic
+      }
+    },
+  },
   methods: {
+    setTopic(topic: string | null) {
+      this.topicWasEdited = true
+      this.topic = topic ?? ''
+    },
+    markTopicEdited() {
+      this.topicWasEdited = true
+    },
     filterTopics(inputTopic: string, update: (arg: () => void) => void) {
       update(() => {
         this.topics = topicOptions(inputTopic, this.knownTopics)
@@ -186,6 +204,7 @@ export default defineComponent({
       }
     },
     async post() {
+      const submittedTopic = this.topic
       const entry = {
         kind: 'post' as const,
         title: this.title,
@@ -212,7 +231,7 @@ export default defineComponent({
               activeChain,
               this.offering.toString(),
             ),
-            topic: this.topic,
+            topic: submittedTopic,
             parentDigest: this.parentDigest,
             onPreparationProgress: progress => {
               this.preparationStatus = stampPreparationStatus(
@@ -230,7 +249,9 @@ export default defineComponent({
         infoNotify,
         navigateBack: this.back,
         messages: {
-          created: this.$t('stampPreparation.postCreated'),
+          created: this.$t('stampPreparation.postCreated', {
+            topic: submittedTopic,
+          }),
           refreshFailed: this.$t('stampPreparation.postedRefreshFailed'),
         },
       }).finally(() => {

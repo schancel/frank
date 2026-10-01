@@ -1,15 +1,21 @@
 import { activeChain } from '@frank/wallet/chain'
+import { effectScope, reactive } from 'vue'
 import {
   getOwnCanonicalAddress,
   isOwnAddress,
   resolveOwnAddress,
   sameCanonicalAddress,
+  useReactiveOwnCanonicalAddress,
 } from './own-address'
 
 // Only the wallet handle is faked; the lazy import, parse and format are the real ones.
 const mockUseActiveWallet = jest.fn()
+let mockWalletStore: { seedPhrase: string | null }
 jest.mock('src/composables/useActiveWallet', () => ({
   useActiveWallet: () => mockUseActiveWallet(),
+}))
+jest.mock('src/stores/wallet', () => ({
+  useWalletStore: () => mockWalletStore,
 }))
 
 const OWN = '0x3e3e3e3e3e3E3E3E3e3e3E3E3e3e3E3E3e3E3E3e'
@@ -21,6 +27,7 @@ const canonicalOwn = activeChain.formatAddress(
 describe('utils/own-address.ts', () => {
   let consoleError: jest.SpyInstance
   beforeEach(() => {
+    mockWalletStore = reactive({ seedPhrase: 'first seed' })
     mockUseActiveWallet.mockReset()
     mockUseActiveWallet.mockResolvedValue({
       identity: { address: { raw: OWN } },
@@ -73,5 +80,39 @@ describe('utils/own-address.ts', () => {
     expect(result.error).toBeInstanceOf(Error)
     expect(consoleError).toHaveBeenCalled()
     expect(await isOwnAddress(OWN)).toBe(false)
+  })
+
+  it('clears synchronously on seed change and ignores a stale address resolution', async () => {
+    const replacement = activeChain.formatAddress(
+      activeChain.parseAddress(OTHER) as never,
+    )
+    let resolveFirst: ((wallet: unknown) => void) | undefined
+    let resolveSecond: ((wallet: unknown) => void) | undefined
+    mockUseActiveWallet
+      .mockReturnValueOnce(
+        new Promise(resolve => {
+          resolveFirst = resolve
+        }),
+      )
+      .mockReturnValueOnce(
+        new Promise(resolve => {
+          resolveSecond = resolve
+        }),
+      )
+    const scope = effectScope()
+    const address = scope.run(() => useReactiveOwnCanonicalAddress())!
+    await Promise.resolve()
+    mockWalletStore.seedPhrase = 'replacement seed'
+    expect(address.value).toBeNull()
+    await Promise.resolve()
+    resolveSecond?.({ identity: { address: { raw: OTHER } } })
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(address.value).toBe(replacement)
+    resolveFirst?.({ identity: { address: { raw: OWN } } })
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(address.value).toBe(replacement)
+    scope.stop()
   })
 })

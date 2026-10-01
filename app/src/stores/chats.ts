@@ -118,6 +118,16 @@ function messageStampPrice(message: {
   return stampPrice(message.outpoints)
 }
 
+function accountedMessageValue(message: {
+  status: string
+  items: MessageItem[]
+  outpoints: Utxo[]
+  stampValueWei?: bigint
+}): number {
+  if (message.status !== 'confirmed') return 0
+  return messageStampPrice(message) + tallyMessageItemsValue(message.items)
+}
+
 type ChatState = {
   address: string
   messages: ChatMessage[]
@@ -186,6 +196,10 @@ const inflightOutgoing = new Set<string>()
 // same message would both pass it and both notify. An index is claimed synchronously, before the
 // first await, and released once the call has stored it (or failed, so a retry can still notify).
 const notifyingIncoming = new Set<string>()
+
+// A Discard/Clear can win the delivery queue before an already-started poll reaches it. Remember
+// the pending attempt digest synchronously so that poll is consumed without resurrecting the row.
+const discardedDeliveryDigests = new Set<string>()
 
 // Inbox delivery and local send completion can both confirm/re-key the same payload. Enqueue the
 // mutation synchronously, before either path's first await, so relay-authored metadata always wins
@@ -314,13 +328,34 @@ export function indexOutboundDeliveryOwners(
   return { byPayload, byAttempt }
 }
 
-function recomputeChatTotalValue(chat: ChatState): void {
-  chat.totalValue = chat.messages.reduce(
-    (total, message) =>
-      total +
-      messageStampPrice(message) +
-      tallyMessageItemsValue(message.items),
-    0,
+function recomputeChatAccounting(
+  chat: ChatState,
+  activeChatAddr: string | null,
+): void {
+  chat.totalValue = 0
+  chat.totalUnreadMessages = 0
+  chat.totalUnreadValue = 0
+  for (const message of chat.messages) {
+    const value = accountedMessageValue(message)
+    chat.totalValue += value
+    if (
+      !message.outbound &&
+      chat.address !== activeChatAddr &&
+      chat.lastRead < message.serverTime
+    ) {
+      chat.totalUnreadMessages += 1
+      chat.totalUnreadValue += value
+    }
+  }
+}
+
+export function walletOwnsMessage(
+  wallet: WalletHandle,
+  message: { senderAddress: string },
+): boolean {
+  return sameCanonicalAddress(
+    activeChain.formatAddress(wallet.identity.address),
+    message.senderAddress,
   )
 }
 
@@ -422,11 +457,10 @@ export async function rehydateChat(chatState: RestorableState): Promise<State> {
     assert(chat, 'Missing chat for message')
     chat.messages.push(message)
     chat.lastReceived = message.serverTime
-    const messageValue =
-      messageStampPrice(message) + tallyMessageItemsValue(message.items)
+    const messageValue = accountedMessageValue(message)
     if (
       !newMsg.outbound &&
-      chat.lastRead &&
+      chat.address !== chatState.activeChatAddr &&
       chat.lastRead < message.serverTime
     ) {
       chat.totalUnreadValue += messageValue
@@ -560,27 +594,68 @@ export const useChatStore = defineStore('chats', {
     },
   },
   actions: {
+    async relayCursor(recipientAddress: string): Promise<number> {
+      return (await store).relayCursor(toChainDisplayAddress(recipientAddress))
+    },
+    async advanceRelayCursor(
+      recipientAddress: string,
+      nextReceivedTime: number,
+    ): Promise<number> {
+      return (await store).advanceRelayCursor(
+        toChainDisplayAddress(recipientAddress),
+        nextReceivedTime,
+      )
+    },
     async deleteMessage({
       address,
       payloadDigest,
     }: {
       address: string
       payloadDigest: string
-    }) {
-      await (await store).deleteMessage(payloadDigest)
+    }): Promise<void> {
+      const attemptDigest =
+        this.messages[payloadDigest]?.delivery?.attemptDigest
+      if (attemptDigest) discardedDeliveryDigests.add(attemptDigest)
+      return serializeDeliveryMutation(() =>
+        this.deleteMessageExclusive({
+          address,
+          payloadDigest,
+          attemptDigest,
+        }),
+      )
+    },
+    async deleteMessageExclusive({
+      address,
+      payloadDigest,
+      attemptDigest,
+    }: {
+      address: string
+      payloadDigest: string
+      attemptDigest?: string
+    }): Promise<void> {
+      const messageStore = await store
+      const digests = new Set([payloadDigest, attemptDigest].filter(Boolean))
+      const installedDelivery =
+        attemptDigest !== undefined && attemptDigest in this.messages
+      for (const digest of digests) {
+        await messageStore.deleteMessage(digest as string)
+        delete this.messages[digest as string]
+      }
+      // When receipt reconciliation acquired the queue first, its durable delivery row has now
+      // been removed and no later in-flight receipt still needs suppressing. If deletion acquired
+      // the queue first, leave the marker for that already-started receipt to consume.
+      if (installedDelivery && attemptDigest) {
+        discardedDeliveryDigests.delete(attemptDigest)
+      }
       const displayAddress = toChainDisplayAddress(address)
-
-      delete this.messages[payloadDigest]
       const chat = this.chats[displayAddress]
       if (!chat) {
         return
       }
-      const msgIndex = chat.messages.findIndex(
-        msg => msg.payloadDigest === payloadDigest,
+      chat.messages = chat.messages.filter(
+        message => !digests.has(message.payloadDigest),
       )
-      if (msgIndex >= 0) {
-        chat.messages.splice(msgIndex, 1)
-      }
+      recomputeChatAccounting(chat, this.activeChatAddr)
     },
     readAll(address: string) {
       const displayAddress = toChainDisplayAddress(address)
@@ -611,6 +686,9 @@ export const useChatStore = defineStore('chats', {
             {
               ...chatData,
               messages: [],
+              totalUnreadMessages: 0,
+              totalUnreadValue: 0,
+              totalValue: 0,
             },
           ]
         }),
@@ -677,6 +755,10 @@ export const useChatStore = defineStore('chats', {
         assert(existingMessage, 'For great typescript')
         // we have the message already, just need to update some fields and return
         this.messages[payloadDigest] = Object.assign(existingMessage, message)
+        const existingChat = this.chats[displayAddress]
+        if (existingChat) {
+          recomputeChatAccounting(existingChat, this.activeChatAddr)
+        }
         return
       }
 
@@ -704,13 +786,16 @@ export const useChatStore = defineStore('chats', {
       if (displayAddress in this.chats) {
         chat.messages.push(message)
         chat.lastRead = Date.now()
+        recomputeChatAccounting(chat, this.activeChatAddr)
         return
       }
-      this.chats[displayAddress] = {
+      const createdChat = {
         ...defaultContactObject,
         messages: [message],
         address: displayAddress,
       }
+      this.chats[displayAddress] = createdChat
+      recomputeChatAccounting(createdChat, this.activeChatAddr)
     },
     /**
      * Sends a direct message like iMessage does (#269/#270): the message appears in the
@@ -804,7 +889,12 @@ export const useChatStore = defineStore('chats', {
       ) => void
     }): Promise<OutgoingOutcome> {
       const message = this.messages[payloadDigest]
-      if (!message || !message.outbound || message.status !== 'error') {
+      if (
+        !message ||
+        !message.outbound ||
+        message.status !== 'error' ||
+        !walletOwnsMessage(wallet, message)
+      ) {
         return { state: 'busy' }
       }
       return this.runOutgoing({
@@ -938,7 +1028,7 @@ export const useChatStore = defineStore('chats', {
         timestamp: serverTime,
       })
       const chat = this.chats[toChainDisplayAddress(address)]
-      if (chat) recomputeChatTotalValue(chat)
+      if (chat) recomputeChatAccounting(chat, this.activeChatAddr)
       const messageStore = await store
       await messageStore.saveMessage(
         {
@@ -1014,7 +1104,12 @@ export const useChatStore = defineStore('chats', {
         progress: DirectMessagePreparationProgress,
       ) => void
     }): Promise<OutgoingOutcome> {
-      if (inflightOutgoing.has(id) || !this.messages[id]) {
+      const message = this.messages[id]
+      if (
+        inflightOutgoing.has(id) ||
+        !message ||
+        !walletOwnsMessage(wallet, message)
+      ) {
         return { state: 'busy' }
       }
       inflightOutgoing.add(id)
@@ -1224,6 +1319,7 @@ export const useChatStore = defineStore('chats', {
           if (
             message.outbound &&
             message.status === 'payment-pending' &&
+            walletOwnsMessage(wallet, message) &&
             !inflightOutgoing.has(message.payloadDigest)
           ) {
             waiting.push({
@@ -1273,24 +1369,52 @@ export const useChatStore = defineStore('chats', {
       for (const chat of Object.values(this.chats)) {
         pending +=
           chat?.messages.filter(
-            message => message.outbound && message.status === 'payment-pending',
+            message =>
+              message.outbound &&
+              message.status === 'payment-pending' &&
+              walletOwnsMessage(wallet, message),
           ).length ?? 0
       }
       return { pending }
     },
-    async clearChat(address: string) {
+    async clearChat(address: string): Promise<void> {
       const displayAddress = toChainDisplayAddress(address)
-
       const chat = this.chats[displayAddress]
       if (!chat) {
         return
       }
-      const messageStore = await store
+      const digests = chat.messages.flatMap(message => [
+        message.payloadDigest,
+        message.delivery?.attemptDigest,
+      ])
       for (const message of chat.messages) {
-        await messageStore.deleteMessage(message.payloadDigest)
-        delete this.messages[message.payloadDigest]
+        const attempt = message.delivery?.attemptDigest
+        if (attempt) discardedDeliveryDigests.add(attempt)
+      }
+      return serializeDeliveryMutation(() =>
+        this.clearChatExclusive(displayAddress, digests),
+      )
+    },
+    async clearChatExclusive(
+      address: string,
+      digests: Array<string | undefined>,
+    ): Promise<void> {
+      const chat = this.chats[address]
+      if (!chat) return
+      const messageStore = await store
+      const uniqueDigests = new Set(digests.filter(Boolean))
+      const installedDeliveries = new Set(
+        [...uniqueDigests].filter(digest => digest && digest in this.messages),
+      )
+      for (const digest of uniqueDigests) {
+        await messageStore.deleteMessage(digest as string)
+        delete this.messages[digest as string]
+      }
+      for (const digest of installedDeliveries) {
+        discardedDeliveryDigests.delete(digest as string)
       }
       chat.messages = []
+      recomputeChatAccounting(chat, this.activeChatAddr)
     },
     async deleteChat(address: string) {
       const displayAddress = toChainDisplayAddress(address)
@@ -1338,7 +1462,10 @@ export const useChatStore = defineStore('chats', {
       }
       this.activeChatAddr = displayAddress
     },
-    async receiveMessages(messageWrappers: ReceivedMessageWrapper[]) {
+    async receiveMessages(
+      messageWrappers: ReceivedMessageWrapper[],
+      ownAddressOverride?: string,
+    ) {
       const toNotify = new Set<string>()
       for (const { index } of messageWrappers) {
         if (!(index in this.messages) && !notifyingIncoming.has(index)) {
@@ -1347,7 +1474,11 @@ export const useChatStore = defineStore('chats', {
         }
       }
       try {
-        await this.storeReceivedMessages(messageWrappers, toNotify)
+        await this.storeReceivedMessages(
+          messageWrappers,
+          toNotify,
+          ownAddressOverride,
+        )
       } finally {
         for (const index of toNotify) {
           notifyingIncoming.delete(index)
@@ -1357,27 +1488,42 @@ export const useChatStore = defineStore('chats', {
     async storeReceivedMessages(
       messageWrappers: ReceivedMessageWrapper[],
       toNotify: Set<string>,
+      ownAddressOverride?: string,
     ): Promise<void> {
-      return serializeDeliveryMutation(() =>
-        this.storeReceivedMessagesExclusive(messageWrappers, toNotify),
+      const ownAddress =
+        ownAddressOverride === undefined
+          ? await getOwnCanonicalAddress()
+          : toChainDisplayAddress(ownAddressOverride)
+      await serializeDeliveryMutation(() =>
+        this.storeReceivedMessagesExclusive(
+          messageWrappers,
+          toNotify,
+          ownAddress,
+        ),
       )
+      await this.notifyReceivedMessages(messageWrappers, toNotify)
     },
     async storeReceivedMessagesExclusive(
       messageWrappers: ReceivedMessageWrapper[],
       toNotify: Set<string>,
+      ownAddress: string | null,
     ): Promise<void> {
       console.log('receiving messages')
       const messageStore = await store
-      const ownAddress = await getOwnCanonicalAddress()
+      const deliverableWrappers = messageWrappers.filter(wrapper => {
+        if (!discardedDeliveryDigests.delete(wrapper.index)) return true
+        toNotify.delete(wrapper.index)
+        return false
+      })
       const outboundMatches = new Map<string, OutboundDeliveryMatch>()
       const replacedAccountCollisions = new Map<
         string,
-        { chatAddress: string }
+        { chatAddress: string; oldIndex: string }
       >()
 
       const owners = indexOutboundDeliveryOwners(this.chats)
 
-      for (const wrapper of messageWrappers) {
+      for (const wrapper of deliverableWrappers) {
         const confirmed = owners.byPayload.get(wrapper.index)
         const owner = confirmed ?? owners.byAttempt.get(wrapper.index)
         if (!owner) continue
@@ -1416,17 +1562,18 @@ export const useChatStore = defineStore('chats', {
               delivery: undefined,
             },
           })
-        } else if (confirmed) {
+        } else {
           // A payload from an earlier account can legitimately arrive after Replace Account.
           // It is a new inbound record for the current identity, not the old account's outbox.
           replacedAccountCollisions.set(wrapper.index, {
             chatAddress,
+            oldIndex,
           })
           toNotify.add(wrapper.index)
         }
       }
 
-      for (const wrapper of messageWrappers) {
+      for (const wrapper of deliverableWrappers) {
         // An index this call did not claim belongs to an overlapping receive.
         // Do not persist it: if the claimer fails before storing, a later poll
         // must still be able to notify.
@@ -1442,13 +1589,26 @@ export const useChatStore = defineStore('chats', {
             loopback?.message.senderAddress ?? wrapper.senderAddress,
           copartyAddress: loopback?.chatAddress ?? wrapper.copartyAddress,
         }
-        await messageStore.saveMessage(persisted)
+        // Mailbox progress is advanced separately, after this durable relay receipt. Never let
+        // local/outbound timestamps participate in the recipient-scoped cursor.
+        await messageStore.saveMessage(persisted, { advanceCursor: false })
+        const collision = replacedAccountCollisions.get(wrapper.index)
         if (loopback && loopback.oldIndex !== wrapper.index) {
           try {
             await messageStore.deleteMessage(loopback.oldIndex)
           } catch (err) {
             // The confirmed digest wins during reload if a crash leaves the pending record.
             console.warn('could not remove the looped-back pending record', err)
+          }
+        } else if (collision && collision.oldIndex !== wrapper.index) {
+          try {
+            await messageStore.deleteMessage(collision.oldIndex)
+          } catch (err) {
+            // Reload drops the stale pending record when it sees the confirmed digest.
+            console.warn(
+              'could not remove the replaced-account pending record',
+              err,
+            )
           }
         }
       }
@@ -1470,7 +1630,7 @@ export const useChatStore = defineStore('chats', {
         if (chat && position !== undefined && position >= 0) {
           chat.messages.splice(position, 1, reconciled)
           chat.lastReceived = Math.max(chat.lastReceived, reconciled.serverTime)
-          recomputeChatTotalValue(chat)
+          recomputeChatAccounting(chat, this.activeChatAddr)
         }
         delete this.messages[loopback.oldIndex]
         this.messages[index] = reconciled
@@ -1480,97 +1640,18 @@ export const useChatStore = defineStore('chats', {
         )
       }
 
-      for (const [index, collision] of replacedAccountCollisions) {
+      for (const collision of replacedAccountCollisions.values()) {
         const chat = this.chats[collision.chatAddress]
         const position = chat?.messages.findIndex(
-          message => message.payloadDigest === index,
+          message => message.payloadDigest === collision.oldIndex,
         )
         if (chat && position !== undefined && position >= 0) {
           chat.messages.splice(position, 1)
-          recomputeChatTotalValue(chat)
+          recomputeChatAccounting(chat, this.activeChatAddr)
         }
-        delete this.messages[index]
+        delete this.messages[collision.oldIndex]
       }
-      // Ensure contacts are all setup
-      for (const messageWrapper of messageWrappers) {
-        const {
-          outbound,
-          copartyAddress,
-          copartyPubKey,
-          index,
-          message: newMsg,
-          stampValue,
-        } = messageWrapper
-        if (index in this.messages || !toNotify.has(index)) {
-          continue
-        }
-        // Check whether contact exists
-        const contacts = useContactStore()
-        if (!contacts.isContact(copartyAddress)) {
-          // Add dummy contact
-
-          contacts.addLoadingContact({
-            address: copartyAddress,
-            pubKey: copartyPubKey,
-          })
-
-          // Load contact
-          await contacts.refresh(copartyAddress)
-        }
-
-        const profileStore = useProfileStore()
-
-        // Ignore messages below acceptance price
-        const acceptancePrice = profileStore.inbox.acceptancePrice ?? 0
-        const lastRead = this.lastRead(copartyAddress)
-
-        const acceptable = stampValue >= acceptancePrice
-        // If not focused (and not outbox message) then notify
-        if (
-          document.hasFocus() ||
-          outbound ||
-          !acceptable ||
-          lastRead > newMsg.serverTime ||
-          // Don't notify or reset active chat if we are bulk loading messages
-          messageWrappers.length !== 1
-        ) {
-          continue
-        }
-
-        const contactStore = useContactStore()
-
-        const contact = contactStore.getContact(copartyAddress)
-        const textItem: TextItem = (newMsg.items.find(
-          item => item.type === 'text',
-        ) as TextItem) ?? { text: '' }
-        const stealthItem: StealthItem = (newMsg.items.find(
-          item => item.type === 'stealth',
-        ) as StealthItem) ?? { amount: 0 }
-        const imageItem: ImageItem = (newMsg.items.find(
-          item => item.type === 'image',
-        ) as ImageItem) ?? { image: '' }
-
-        let body = ''
-        if (stealthItem.amount > 0) {
-          const formatted = formatBalance(stealthItem.amount)
-          body = `[${formatted}] ` + body
-        }
-        if (imageItem.image.length > 0) {
-          body = '[Image] ' + body
-        }
-        body = body + textItem.text
-        if (contact && contact.notify) {
-          desktopNotify(
-            contact.profile.name ?? 'Unknown',
-            body,
-            contact.profile.avatar ?? '',
-            async () => (this.activeChatAddr = copartyAddress),
-            index,
-          )
-        }
-      }
-
-      for (const wrapper of messageWrappers) {
+      for (const wrapper of deliverableWrappers) {
         const {
           copartyAddress,
           index,
@@ -1643,8 +1724,7 @@ export const useChatStore = defineStore('chats', {
         // TODO: Better indexing
         chat.messages.push(message)
         chat.lastReceived = message.serverTime
-        const messageValue =
-          messageStampPrice(message) + tallyMessageItemsValue(message.items)
+        const messageValue = accountedMessageValue(message)
         if (
           displayAddress !== this.activeChatAddr &&
           chat.lastRead < message.serverTime
@@ -1654,6 +1734,67 @@ export const useChatStore = defineStore('chats', {
         }
         this.lastReceived = message.serverTime
         chat.totalValue += messageValue
+      }
+    },
+    async notifyReceivedMessages(
+      messageWrappers: ReceivedMessageWrapper[],
+      toNotify: Set<string>,
+    ): Promise<void> {
+      for (const messageWrapper of messageWrappers) {
+        const {
+          copartyAddress,
+          copartyPubKey,
+          index,
+          message: newMsg,
+          stampValue,
+        } = messageWrapper
+        const stored = this.messages[index]
+        if (!toNotify.has(index) || !stored || stored.outbound) continue
+
+        const contacts = useContactStore()
+        if (!contacts.isContact(copartyAddress)) {
+          contacts.addLoadingContact({
+            address: copartyAddress,
+            pubKey: copartyPubKey,
+          })
+          await contacts.refresh(copartyAddress)
+        }
+
+        const acceptancePrice = useProfileStore().inbox.acceptancePrice ?? 0
+        if (
+          document.hasFocus() ||
+          stampValue < acceptancePrice ||
+          this.lastRead(copartyAddress) > newMsg.serverTime ||
+          messageWrappers.length !== 1
+        ) {
+          continue
+        }
+
+        const contact = contacts.getContact(copartyAddress)
+        const textItem: TextItem = (newMsg.items.find(
+          item => item.type === 'text',
+        ) as TextItem) ?? { text: '' }
+        const stealthItem: StealthItem = (newMsg.items.find(
+          item => item.type === 'stealth',
+        ) as StealthItem) ?? { amount: 0 }
+        const imageItem: ImageItem = (newMsg.items.find(
+          item => item.type === 'image',
+        ) as ImageItem) ?? { image: '' }
+        let body = ''
+        if (stealthItem.amount > 0) {
+          body = `[${formatBalance(stealthItem.amount)}] `
+        }
+        if (imageItem.image.length > 0) body += '[Image] '
+        body += textItem.text
+        if (contact?.notify) {
+          desktopNotify(
+            contact.profile.name ?? 'Unknown',
+            body,
+            contact.profile.avatar ?? '',
+            async () => (this.activeChatAddr = copartyAddress),
+            index,
+          )
+        }
       }
     },
   },

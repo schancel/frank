@@ -41,17 +41,11 @@ import { useProfileStore } from 'src/stores/my-profile'
 import { defineComponent } from 'vue'
 import { profileAvatar } from 'src/utils/avatar'
 import {
-  getOwnCanonicalAddress,
   sameCanonicalAddress,
+  useReactiveOwnCanonicalAddress,
 } from 'src/utils/own-address'
 
 export default defineComponent({
-  data() {
-    return { ownAddress: null as string | null }
-  },
-  async mounted() {
-    this.ownAddress = await getOwnCanonicalAddress()
-  },
   setup() {
     const contacts = useContactStore()
     const chats = useChatStore()
@@ -62,6 +56,7 @@ export default defineComponent({
       getLatestMessage: chats.getLatestMessage,
       myProfile,
       profileAvatar,
+      ownAddress: useReactiveOwnCanonicalAddress(),
     }
   },
   computed: {

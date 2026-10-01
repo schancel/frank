@@ -41,7 +41,7 @@ import {
   MonadMailboxUnavailableError,
 } from '@frank/cashweb/relay/monad-mailbox-client'
 import type { ReceivedMessageWrapper } from '@frank/cashweb/types/user-interface'
-import { useChatStore } from '../stores/chats'
+import { useChatStore, walletOwnsMessage } from '../stores/chats'
 import { useMailboxStatusStore } from '../stores/mailbox-status'
 
 /** Default direct-message poll interval, in milliseconds -- within issue #42's suggested 5-10s
@@ -102,10 +102,8 @@ export interface DirectMessagePolling {
  * `intervalMs` (default {@link DEFAULT_DIRECT_MESSAGE_POLL_INTERVAL_MS}). Returns a handle to
  * `stop()` the loop (e.g. on logout/wallet teardown).
  *
- * `sinceMs` is tracked locally, seeded from `chats.getLastReceived` (persisted across reloads --
- * see `stores/chats.ts`'s own `storage.save`) so a fresh page load doesn't refetch a wallet's
- * entire message history, and advanced to the newest `receivedTime` seen after each successful
- * poll that returned results.
+ * `sinceMs` is recipient-identity scoped in the durable message store. It advances only after the
+ * corresponding relay receipts have been saved, never from local/outbound message clocks.
  */
 export function startDirectMessagePolling({
   wallet,
@@ -116,7 +114,11 @@ export function startDirectMessagePolling({
 }): DirectMessagePolling {
   const chats = useChatStore()
   const mailboxStatus = useMailboxStatusStore()
-  let sinceMs = chats.getLastReceived ?? 0
+  const recipientAddress = activeChain.formatAddress(wallet.identity.address)
+  let sinceMs = 0
+  const cursorReady = chats.relayCursor(recipientAddress).then(cursor => {
+    sinceMs = cursor
+  })
   let stopped = false
   let timer: ReturnType<typeof setTimeout> | undefined
   let unavailableFailures = 0
@@ -130,6 +132,8 @@ export function startDirectMessagePolling({
     let nextDelayMs = intervalMs
     let steady = true
     try {
+      await cursorReady
+      if (stopped) return
       const received = await activeChain.directMessages.fetchSince({
         wallet,
         sinceMs,
@@ -172,8 +176,8 @@ export function startDirectMessagePolling({
 
       if (stopped) return
       if (wrappers.length > 0) {
-        await chats.receiveMessages(wrappers)
-        sinceMs = nextSinceMs
+        await chats.receiveMessages(wrappers, recipientAddress)
+        sinceMs = await chats.advanceRelayCursor(recipientAddress, nextSinceMs)
       }
     } catch (err) {
       // stop() cannot cancel an in-flight request: a poll that fails after stop() must not put a
@@ -290,7 +294,11 @@ export function startOutgoingReconciliation({
     const ids = new Set<string>()
     for (const chat of Object.values(chats.chats)) {
       for (const message of chat?.messages ?? []) {
-        if (message.outbound && message.status === 'payment-pending') {
+        if (
+          message.outbound &&
+          message.status === 'payment-pending' &&
+          walletOwnsMessage(wallet, message)
+        ) {
           ids.add(message.payloadDigest)
         }
       }

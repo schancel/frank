@@ -91,4 +91,22 @@ describe('LevelMessageStore schema v2', () => {
       await rm(location, { recursive: true, force: true })
     }
   })
+
+  it('keeps relay progress recipient-scoped and ignores the legacy global cursor', async () => {
+    const location = await mkdtemp(join(tmpdir(), 'frank-message-cursor-'))
+    const store = new LevelMessageStore(location)
+    try {
+      await store.Open()
+      await store.mostRecentMessageTime(9000)
+      expect(await store.relayCursor('0xAa')).toBe(0)
+      await store.advanceRelayCursor('0xAa', 500)
+      await store.advanceRelayCursor('0xaa', 400)
+      await store.advanceRelayCursor('0xBb', 200)
+      expect(await store.relayCursor('0xAA')).toBe(500)
+      expect(await store.relayCursor('0xbb')).toBe(200)
+    } finally {
+      await store.Close()
+      await rm(location, { recursive: true, force: true })
+    }
+  })
 })

@@ -2,6 +2,7 @@
 
 import { flushPromises, shallowMount } from '@vue/test-utils'
 import { messages } from 'src/i18n'
+import { ref } from 'vue'
 import ChatListItem from './ChatListItem.vue'
 
 let latest: { text: string; outbound: boolean } | null = null
@@ -19,9 +20,9 @@ jest.mock('src/stores/my-profile', () => ({
 jest.mock('src/utils/avatar', () => ({
   profileAvatar: (avatar: string | undefined) => avatar ?? 'fallback.png',
 }))
-const mockOwnAddress = jest.fn()
+const mockOwnAddress = ref<string | null>(null)
 jest.mock('src/utils/own-address', () => ({
-  getOwnCanonicalAddress: () => mockOwnAddress(),
+  useReactiveOwnCanonicalAddress: () => mockOwnAddress,
   sameCanonicalAddress: (first: string | null, second: string | null) =>
     Boolean(first && second && first.toLowerCase() === second.toLowerCase()),
 }))
@@ -62,8 +63,7 @@ function preview(locale: string) {
 
 describe('ChatListItem message preview (ticket #274)', () => {
   beforeEach(() => {
-    mockOwnAddress.mockReset()
-    mockOwnAddress.mockResolvedValue(OWN_ADDRESS)
+    mockOwnAddress.value = OWN_ADDRESS
   })
 
   it.each([
@@ -104,4 +104,22 @@ describe('ChatListItem message preview (ticket #274)', () => {
       expect(wrapper.get('img').attributes('src')).toBe('local-owner.png')
     },
   )
+
+  it('drops the old You/avatar presentation immediately during replacement', async () => {
+    const wrapper = shallowMount(ChatListItem, {
+      props: { chatAddress: OWN_ADDRESS, compact: false },
+      global: {
+        mocks: {
+          $t: translator('en-us'),
+          $status: { setup: true },
+          $route: { params: {} },
+        },
+      },
+    })
+    expect(wrapper.text()).toContain('You')
+    mockOwnAddress.value = null
+    await wrapper.vm.$nextTick()
+    expect(wrapper.text()).toContain('Alice Profile')
+    expect(wrapper.get('img').attributes('src')).toBe('fallback.png')
+  })
 })

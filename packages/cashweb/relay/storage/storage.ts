@@ -29,6 +29,11 @@ export interface MessageStore {
   ): Promise<void>
   deleteMessage(payloadDigest: string): Promise<void>
   mostRecentMessageTime(newLastServerTime?: number): Promise<number>
+  relayCursor(recipientAddress: string): Promise<number>
+  advanceRelayCursor(
+    recipientAddress: string,
+    nextReceivedTime: number,
+  ): Promise<number>
   getIterator(): Promise<AsyncIterableIterator<MessageWrapper>>
   clear(): Promise<void>
 }

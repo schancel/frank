@@ -52,6 +52,10 @@ jest.mock('../adapters/level-message-store', () => {
         serialized.delete(index)
       }),
       mostRecentMessageTime: jest.fn(async () => 0),
+      relayCursor: jest.fn(async () => 0),
+      advanceRelayCursor: jest.fn(
+        async (_address: string, next: number) => next,
+      ),
       getIterator: jest.fn(async () =>
         (async function* () {
           for (const value of serialized.values()) {
@@ -391,6 +395,72 @@ describe('outgoing direct messages (#269, #270)', () => {
       ])
       expect(send).toHaveBeenCalledTimes(2)
     })
+
+    it('quarantines an old account unsettled message from automatic and manual spending', async () => {
+      const oldSender = '0x3333333333333333333333333333333333333333'
+      const db = await durable()
+      db.set(
+        'pending:old-account',
+        serializeMessageWrapper({
+          index: 'pending:old-account',
+          outbound: true,
+          senderAddress: oldSender,
+          copartyAddress: PEER,
+          message: {
+            outbound: true,
+            status: 'payment-pending',
+            receivedTime: 1,
+            serverTime: 1,
+            items: TEXT,
+            outpoints: [],
+            stampValueWei: 5n,
+            senderAddress: oldSender,
+            delivery: {},
+          },
+        }),
+      )
+      const restored = await reload()
+      const send = jest.spyOn(activeChain.directMessages, 'send')
+
+      await expect(restored.reconcileOutgoing({ wallet })).resolves.toEqual({
+        pending: 0,
+      })
+      only(restored)[0].status = 'error'
+      await expect(
+        restored.retryOutgoing({
+          wallet,
+          address: PEER,
+          payloadDigest: 'pending:old-account',
+        }),
+      ).resolves.toEqual({ state: 'busy' })
+      expect(send).not.toHaveBeenCalled()
+    })
+  })
+
+  it('accounts only confirmed value live and after reload', async () => {
+    const send = jest
+      .spyOn(activeChain.directMessages, 'send')
+      .mockRejectedValueOnce(new Error('preparation failed'))
+      .mockResolvedValueOnce({
+        ...okResult('confirmed-value'),
+        stampValueWei: 7n,
+      })
+    const chats = useChatStore()
+    await chats.sendMessage({
+      wallet,
+      address: PEER,
+      items: TEXT,
+      stampValue: 5n,
+    })
+    await chats.sendMessage({
+      wallet,
+      address: PEER,
+      items: TEXT,
+      stampValue: 7n,
+    })
+    expect(chats.chats[PEER]?.totalValue).toBe(7)
+    expect((await reload()).chats[PEER]?.totalValue).toBe(7)
+    expect(send).toHaveBeenCalledTimes(2)
   })
 
   describe('a manual Retry never pays twice for the same message', () => {

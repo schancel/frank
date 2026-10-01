@@ -33,6 +33,8 @@ jest.mock('./level-message-store', () => ({
     saveMessage: jest.fn(async () => undefined),
     deleteMessage: jest.fn(async () => undefined),
     mostRecentMessageTime: jest.fn(async () => 0),
+    relayCursor: jest.fn(async () => 0),
+    advanceRelayCursor: jest.fn(async (_address: string, next: number) => next),
     getIterator: async function* () {
       /* no persisted Lotus-era messages in tests */
     },
@@ -46,7 +48,12 @@ const PUB_KEY_HEX =
   '0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798'
 const PUB_KEY_BYTES = Uint8Array.from(Buffer.from(PUB_KEY_HEX, 'hex'))
 
-type MockMessageStore = { saveMessage: jest.Mock }
+type MockMessageStore = {
+  saveMessage: jest.Mock
+  relayCursor: jest.Mock
+  advanceRelayCursor: jest.Mock
+  mostRecentMessageTime: jest.Mock
+}
 let mockMessageStore: MockMessageStore
 
 function makeRecord(
@@ -74,6 +81,11 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
     mockMessageStore =
       (await messageStorePromise) as unknown as MockMessageStore
     mockMessageStore.saveMessage.mockClear()
+    mockMessageStore.relayCursor.mockReset().mockResolvedValue(0)
+    mockMessageStore.advanceRelayCursor
+      .mockReset()
+      .mockImplementation(async (_address: string, next: number) => next)
+    mockMessageStore.mostRecentMessageTime.mockReset().mockResolvedValue(0)
     useContactStore().addContact({
       address: SENDER_ADDRESS,
       contact: {
@@ -186,6 +198,10 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
       // Initial immediate poll.
       await settle()
       expect(receiveMessagesSpy).toHaveBeenCalledTimes(1)
+      expect(mockMessageStore.advanceRelayCursor).toHaveBeenCalledWith(
+        RECIPIENT_ADDRESS,
+        1_700_000_000_001,
+      )
       expect(fetchSinceSpy).toHaveBeenNthCalledWith(1, {
         wallet,
         sinceMs: 0,
@@ -207,6 +223,46 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
       const callsAtStop = fetchSinceSpy.mock.calls.length
       await advance(60)
       expect(fetchSinceSpy.mock.calls.length).toBe(callsAtStop)
+    })
+
+    it('uses only the current recipient cursor, never another account or an outbound clock', async () => {
+      const oldAddress = '0x1111111111111111111111111111111111111111'
+      const replacementAddress = RECIPIENT_ADDRESS
+      mockMessageStore.mostRecentMessageTime.mockResolvedValue(99_999)
+      mockMessageStore.relayCursor.mockImplementation(async address =>
+        address.toLowerCase() === oldAddress.toLowerCase() ? 9000 : 20,
+      )
+      const fetchSinceSpy = jest
+        .spyOn(activeChain.directMessages, 'fetchSince')
+        .mockResolvedValue([])
+      const oldPolling = startDirectMessagePolling({
+        wallet: {
+          identity: {
+            address: { raw: oldAddress },
+            displayAddress: oldAddress,
+          },
+        },
+        intervalMs: 20,
+      })
+      pollers.push(oldPolling)
+      await settle()
+      oldPolling.stop()
+
+      const replacementPolling = startDirectMessagePolling({
+        wallet: {
+          identity: {
+            address: { raw: replacementAddress },
+            displayAddress: replacementAddress,
+          },
+        },
+        intervalMs: 20,
+      })
+      pollers.push(replacementPolling)
+      await settle()
+
+      expect(fetchSinceSpy.mock.calls[0]?.[0].sinceMs).toBe(9000)
+      expect(fetchSinceSpy.mock.calls.at(-1)?.[0].sinceMs).toBe(20)
+      expect(mockMessageStore.mostRecentMessageTime).not.toHaveBeenCalled()
     })
 
     it('a truncated inbox scan never skips the rest of a timestamp group (F1 regression)', async () => {
@@ -301,9 +357,10 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
       const polling = startPolling(20)
       try {
         await advanceUntil(() => fetchSinceSpy.mock.calls.length >= 2)
-        expect(receiveMessagesSpy).toHaveBeenCalledWith([
-          expect.objectContaining({ index: 'valid-after-poison' }),
-        ])
+        expect(receiveMessagesSpy).toHaveBeenCalledWith(
+          [expect.objectContaining({ index: 'valid-after-poison' })],
+          RECIPIENT_ADDRESS,
+        )
         expect(fetchSinceSpy).toHaveBeenNthCalledWith(2, {
           wallet,
           sinceMs: 201,
@@ -396,9 +453,10 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
       try {
         await advanceUntil(() => fetchSinceSpy.mock.calls.length >= 2)
         expect(consoleErrorSpy).toHaveBeenCalled()
-        expect(receiveMessagesSpy).toHaveBeenCalledWith([
-          expect.objectContaining({ index: 'later' }),
-        ])
+        expect(receiveMessagesSpy).toHaveBeenCalledWith(
+          [expect.objectContaining({ index: 'later' })],
+          RECIPIENT_ADDRESS,
+        )
         expect(fetchSinceSpy).toHaveBeenNthCalledWith(2, {
           wallet,
           sinceMs: 0,

@@ -1,7 +1,7 @@
 /** @jest-environment jsdom */
 
 import { flushPromises, mount } from '@vue/test-utils'
-import { defineComponent, h } from 'vue'
+import { defineComponent, h, ref } from 'vue'
 
 import ChatLayout from './ChatLayout.vue'
 
@@ -32,9 +32,9 @@ jest.mock('src/stores/my-profile', () => ({
 jest.mock('src/utils/avatar', () => ({
   profileAvatar: (avatar: string | undefined) => avatar ?? 'fallback.png',
 }))
-const mockOwnAddress = jest.fn()
+const mockOwnAddress = ref<string | null>(null)
 jest.mock('src/utils/own-address', () => ({
-  getOwnCanonicalAddress: () => mockOwnAddress(),
+  useReactiveOwnCanonicalAddress: () => mockOwnAddress,
   sameCanonicalAddress: (first: string | null, second: string | null) =>
     Boolean(first && second && first.toLowerCase() === second.toLowerCase()),
 }))
@@ -54,7 +54,7 @@ describe('ChatLayout self-chat identity (#420)', () => {
   ])(
     'uses the localized own label in %s while retaining the profile avatar',
     async (_locale, label) => {
-      mockOwnAddress.mockResolvedValue(OWN_ADDRESS)
+      mockOwnAddress.value = OWN_ADDRESS
       const wrapper = mount(ChatLayout, {
         global: {
           mocks: {

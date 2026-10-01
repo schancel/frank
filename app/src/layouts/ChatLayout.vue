@@ -155,8 +155,8 @@ import { useProfileStore } from 'src/stores/my-profile'
 import { pubKeyToColor } from 'src/utils/formatting'
 import { profileAvatar } from 'src/utils/avatar'
 import {
-  getOwnCanonicalAddress,
   sameCanonicalAddress,
+  useReactiveOwnCanonicalAddress,
 } from 'src/utils/own-address'
 
 export default defineComponent({
@@ -187,6 +187,7 @@ export default defineComponent({
       getNotify: contactStore.getNotify,
       myProfile,
       profileAvatar,
+      ownAddress: useReactiveOwnCanonicalAddress(),
     }
   },
   data() {
@@ -202,11 +203,7 @@ export default defineComponent({
       confirmClearOpen: false,
       confirmDeleteOpen: false,
       image: null as unknown | null,
-      ownAddress: null as string | null,
     }
-  },
-  async mounted() {
-    this.ownAddress = await getOwnCanonicalAddress()
   },
   beforeRouteUpdate(
     to: RouteLocationNormalized,

@@ -9,6 +9,10 @@ const metadataKeys = {
   lastServerTime: 'lastServerTime',
 }
 
+function relayCursorKey(recipientAddress: string): string {
+  return `relayCursor:${recipientAddress.toLowerCase()}`
+}
+
 type JsonMessageWrapper = Omit<MessageWrapper, 'message'> & {
   message: Omit<
     MessageWrapper['message'],
@@ -289,6 +293,42 @@ export class LevelMessageStore implements MessageStore {
       }
       throw err
     }
+  }
+
+  /** Recipient-scoped mailbox progress. The legacy global `lastServerTime` is deliberately not
+   * migrated: it mixed identities and local/outbound clocks, so replaying from zero is the only
+   * conservative migration. Duplicate relay rows are already idempotent by payload digest. */
+  async relayCursor(recipientAddress: string): Promise<number> {
+    try {
+      return JSON.parse(
+        await this.metadataDb.get(relayCursorKey(recipientAddress)),
+      )
+    } catch (err: any) {
+      if (err.type === 'NotFoundError') return 0
+      throw err
+    }
+  }
+
+  async advanceRelayCursor(
+    recipientAddress: string,
+    nextReceivedTime: number,
+  ): Promise<number> {
+    const advance = this.mutationQueue.then(async () => {
+      const current = await this.relayCursor(recipientAddress)
+      const next = Math.max(current, nextReceivedTime)
+      if (next !== current) {
+        await this.metadataDb.put(
+          relayCursorKey(recipientAddress),
+          JSON.stringify(next),
+        )
+      }
+      return next
+    })
+    this.mutationQueue = advance.then(
+      () => undefined,
+      () => undefined,
+    )
+    return advance
   }
 
   private async getSchemaVersion(): Promise<number> {

@@ -36,6 +36,8 @@ jest.mock('./level-message-store', () => ({
     saveMessage: jest.fn(async () => undefined),
     deleteMessage: jest.fn(async () => undefined),
     mostRecentMessageTime: jest.fn(async () => 0),
+    relayCursor: jest.fn(async () => 0),
+    advanceRelayCursor: jest.fn(async (_address: string, next: number) => next),
     getIterator: async function* () {
       /* none */
     },
@@ -84,6 +86,10 @@ async function pollTimeline(
   relay: MockMailboxRelay,
   seconds: number,
 ): Promise<number[]> {
+  // Cursor initialization is asynchronous but deliberately happens before the first relay call.
+  // Let that one-time local read settle so the timeline remains relative to the immediate poll.
+  await new Promise(resolve => setImmediate(resolve))
+  await new Promise(resolve => setImmediate(resolve))
   const times: number[] = []
   let seen = count(relay, 'challenge')
   for (let t = 1; t <= seconds; t++) {
@@ -305,6 +311,8 @@ describe('direct-message polling vs the relay challenge cap', () => {
       const { relay, wallet } = setup({ enabled: false })
       const status = useMailboxStatusStore()
       const polling = startDirectMessagePolling({ wallet })
+      await new Promise(resolve => setImmediate(resolve))
+      await new Promise(resolve => setImmediate(resolve))
       polling.stop() // the first poll is already in flight
       expect(status.state).toBe('ok')
       await jest.advanceTimersByTimeAsync(30_000)

@@ -7,6 +7,8 @@ import CreatePost from './CreatePost.vue'
 import { useForumStore } from 'src/stores/forum'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
 import type { ForumMessage } from '@frank/cashweb/types/forum'
+import { TopicPostOutcomeUnknownError } from '@frank/wallet/chain/active-chain'
+import { MonadTopicPostAbandonedError } from '@frank/wallet/monad-topic-post-client'
 
 const mockTopicPost = jest.fn()
 const mockFetchOne = jest.fn()
@@ -190,4 +192,90 @@ it('exposes an in-flight production reservation to a remounted CreatePost instan
   await posting
   await flushPromises()
   expect(remounted.vm).toMatchObject({ posting: false })
+})
+
+it('keeps an unknown paid outcome reserved across a Pinia remount and rebuilt wallet handle', async () => {
+  const originalWallet = {
+    identity: {
+      address: { raw: '0xUnknown' },
+      displayAddress: '0xUnknown',
+    },
+  }
+  jest.mocked(useActiveWallet).mockResolvedValue(originalWallet as never)
+  const abandoned = new MonadTopicPostAbandonedError(
+    'The paid post outcome is unknown',
+    'feedface',
+  )
+  mockTopicPost.mockRejectedValueOnce(
+    new TopicPostOutcomeUnknownError(abandoned.message, abandoned),
+  )
+  const firstPinia = createPinia()
+  setActivePinia(firstPinia)
+  const original = mountPage(firstPinia)
+  await flushPromises()
+
+  await (original.vm as unknown as { post(): Promise<void> }).post()
+  await flushPromises()
+  expect(mockTopicPost).toHaveBeenCalledTimes(1)
+  expect(original.vm).toMatchObject({ posting: true })
+  original.unmount()
+
+  const rebuiltWallet = {
+    identity: {
+      address: { raw: '0xunknown' },
+      displayAddress: '0xunknown',
+    },
+  }
+  jest.mocked(useActiveWallet).mockResolvedValue(rebuiltWallet as never)
+  const remountedPinia = createPinia()
+  setActivePinia(remountedPinia)
+  const remounted = mountPage(remountedPinia)
+  await flushPromises()
+
+  expect(remounted.vm).toMatchObject({ posting: true })
+  await (remounted.vm as unknown as { post(): Promise<void> }).post()
+  await flushPromises()
+  expect(mockTopicPost).toHaveBeenCalledTimes(1)
+  expect(
+    useForumStore().getPostReservationId({
+      wallet: rebuiltWallet as never,
+      destination: 'top-level',
+    }),
+  ).toEqual(expect.any(Number))
+  remounted.unmount()
+})
+
+it('releases a definitive failure so a rebuilt same-wallet handle can retry', async () => {
+  const originalWallet = {
+    identity: { address: { raw: '0xRetry' }, displayAddress: '0xRetry' },
+  }
+  jest.mocked(useActiveWallet).mockResolvedValue(originalWallet as never)
+  mockTopicPost.mockRejectedValueOnce(new Error('Nothing was sent'))
+  const firstPinia = createPinia()
+  setActivePinia(firstPinia)
+  const original = mountPage(firstPinia)
+  await flushPromises()
+
+  await (original.vm as unknown as { post(): Promise<void> }).post()
+  await flushPromises()
+  expect(mockTopicPost).toHaveBeenCalledTimes(1)
+  expect(original.vm).toMatchObject({ posting: false })
+  original.unmount()
+
+  const rebuiltWallet = {
+    identity: { address: { raw: '0xretry' }, displayAddress: '0xretry' },
+  }
+  jest.mocked(useActiveWallet).mockResolvedValue(rebuiltWallet as never)
+  mockTopicPost.mockResolvedValueOnce({ payloadDigest: 'retry-succeeded' })
+  mockFetchOne.mockResolvedValueOnce(message('retry-succeeded', 'stamp'))
+  const remountedPinia = createPinia()
+  setActivePinia(remountedPinia)
+  const remounted = mountPage(remountedPinia)
+  await flushPromises()
+
+  await (remounted.vm as unknown as { post(): Promise<void> }).post()
+  await flushPromises()
+  expect(mockTopicPost).toHaveBeenCalledTimes(2)
+  expect(remounted.vm).toMatchObject({ posting: false })
+  remounted.unmount()
 })

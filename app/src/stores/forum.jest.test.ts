@@ -14,6 +14,7 @@ import { computed, defineComponent, h, nextTick } from 'vue'
 import { MessageWithReplies, useForumStore } from './forum'
 import { ForumMessage } from '@frank/cashweb/types/forum'
 import { WalletHandle } from '@frank/wallet/chain'
+import { TopicPostOutcomeUnknownError } from '@frank/wallet/chain/active-chain'
 import { sortPostsByMode } from 'src/utils/sorting'
 
 jest.mock('@frank/wallet/chain', () => ({
@@ -403,6 +404,27 @@ describe('useForumStore: read-back failure after a landed burn (review F3)', () 
       .catch((e: unknown) => e)
     expect(failure).toBeInstanceOf(Error)
     expect(failure).not.toBeInstanceOf(BurnRefreshError)
+    expect(mockedFetchOne).not.toHaveBeenCalled()
+  })
+
+  it('preserves a typed unknown post outcome without attempting read-back', async () => {
+    const store = useForumStore()
+    const unknownOutcome = new TopicPostOutcomeUnknownError(
+      'The paid post outcome is unknown',
+      new Error('Monad post abandoned'),
+    )
+    mockedPost.mockRejectedValueOnce(unknownOutcome)
+
+    const failure = await store
+      .putMessage({
+        wallet: testWallet,
+        entry: { kind: 'post', message: 'hello' },
+        satoshis: 10_000_000,
+        topic: 'stamp',
+      })
+      .catch((err: unknown) => err)
+
+    expect(failure).toBe(unknownOutcome)
     expect(mockedFetchOne).not.toHaveBeenCalled()
   })
 })

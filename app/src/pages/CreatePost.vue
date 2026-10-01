@@ -206,7 +206,8 @@ export default defineComponent({
       parentLoading: false,
       nextParentRequestId: 0,
       activeParentRequestId: null as number | null,
-      parentFocusHandoffRequestId: null as number | null,
+      nextParentFocusHandoffId: 0,
+      parentFocusHandoffId: null as number | null,
       activeWallet: null as WalletHandle | null,
     }
   },
@@ -223,7 +224,7 @@ export default defineComponent({
     this.routeEpoch += 1
     this.parentRouteEpoch += 1
     this.activeSubmissionId = null
-    this.parentFocusHandoffRequestId = null
+    this.parentFocusHandoffId = null
   },
   computed: {
     // Topics seen in posts, plus the default and relay-discovered ones the topic store tracks.
@@ -253,7 +254,6 @@ export default defineComponent({
     },
     'parentMessage'(nextParent: { topic: string } | undefined) {
       if (this.parentDigest && nextParent) {
-        const requestId = this.activeParentRequestId
         const retryButton = this.$refs.retryParentButton as
           | { $el?: HTMLElement }
           | HTMLElement
@@ -261,19 +261,22 @@ export default defineComponent({
         const retryElement =
           retryButton instanceof HTMLElement ? retryButton : retryButton?.$el
         const retryOwnedFocus = retryElement?.contains(document.activeElement)
+        const handoffId = retryOwnedFocus
+          ? ++this.nextParentFocusHandoffId
+          : null
         const handoff =
-          retryOwnedFocus && requestId !== null
+          handoffId !== null
             ? {
                 parentDigest: this.parentDigest,
                 parentRouteEpoch: this.parentRouteEpoch,
-                requestId,
+                handoffId,
               }
             : null
         // A valid parent makes every in-flight request for this route redundant. Revoke its
         // completion authority before either the request that populated the shared store or a
         // newer retry can settle and interfere with the resolved-parent UI.
         this.activeParentRequestId = null
-        this.parentFocusHandoffRequestId = handoff?.requestId ?? null
+        this.parentFocusHandoffId = handoff?.handoffId ?? null
         this.parentLoading = false
         this.topic = nextParent.topic
         void this.syncSubmissionUi(this.parentDigest)
@@ -349,7 +352,7 @@ export default defineComponent({
     syncParentDigest(parentDigest: string | undefined) {
       this.routeEpoch += 1
       this.parentRouteEpoch += 1
-      this.parentFocusHandoffRequestId = null
+      this.parentFocusHandoffId = null
       this.parentDigest = parentDigest
       if (parentDigest) {
         this.topic = this.getMessage(parentDigest)?.topic ?? ''
@@ -374,7 +377,7 @@ export default defineComponent({
       if (!requestedParent || this.getMessage(requestedParent)) return
       const requestedParentRouteEpoch = this.parentRouteEpoch
       const requestId = ++this.nextParentRequestId
-      this.parentFocusHandoffRequestId = null
+      this.parentFocusHandoffId = null
       this.activeParentRequestId = requestId
       const retryButton = this.$refs.retryParentButton as
         | { $el?: HTMLElement }
@@ -401,7 +404,7 @@ export default defineComponent({
             if (ownsParentRequest()) {
               const activeElement = document.activeElement
               const hasConnectedFocus =
-                activeElement instanceof HTMLElement &&
+                activeElement instanceof Element &&
                 activeElement !== document.body &&
                 activeElement.isConnected
               if (!hasConnectedFocus) {
@@ -423,11 +426,11 @@ export default defineComponent({
     async handoffResolvedParentFocus(handoff: {
       parentDigest: string
       parentRouteEpoch: number
-      requestId: number
+      handoffId: number
     }) {
       await this.$nextTick()
-      if (this.parentFocusHandoffRequestId !== handoff.requestId) return
-      this.parentFocusHandoffRequestId = null
+      if (this.parentFocusHandoffId !== handoff.handoffId) return
+      this.parentFocusHandoffId = null
       if (
         !this.componentMounted ||
         this.parentRouteEpoch !== handoff.parentRouteEpoch ||
@@ -438,7 +441,7 @@ export default defineComponent({
       }
       const activeElement = document.activeElement
       const hasConnectedFocus =
-        activeElement instanceof HTMLElement &&
+        activeElement instanceof Element &&
         activeElement !== document.body &&
         activeElement.isConnected
       if (!hasConnectedFocus) {
@@ -549,60 +552,69 @@ export default defineComponent({
         this.preparationStatus = postingStatus
       }
       console.log('posting message', entry)
-      await submitPost({
-        submit: async () => {
-          await this.postMessage({
-            wallet,
-            entry,
-            satoshis: submittedOffering,
-            topic: submittedTopic,
-            parentDigest: submittedParentDigest,
-            onPreparationProgress: progress => {
-              if (
-                !this.componentMounted ||
-                this.activeSubmissionId !== submissionId ||
-                this.routeEpoch !== submissionEpoch
-              ) {
-                return
-              }
-              const status = stampPreparationStatus(
-                progress,
-                (key, params) => this.$t(key, params ?? {}),
-                {
-                  format: raw => activeChain.toDisplayAmount(raw),
-                  unit: activeChain.unit,
-                },
-              )
-              this.preparationStatus = status
-            },
-          })
-        },
-        errorNotify,
-        infoNotify,
-        navigateBack: () => {
-          if (
-            this.componentMounted &&
-            this.activeSubmissionId === submissionId &&
-            this.routeEpoch === submissionEpoch &&
-            this.sameWalletIdentity(this.activeWallet, wallet) &&
-            this.submissionDestination(this.parentDigest) ===
-              submittedDestination
-          ) {
-            this.back()
-          }
-        },
-        messages: {
-          created: this.$t('stampPreparation.postCreated', {
-            topic: submittedTopic,
-          }),
-          refreshFailed: this.$t('stampPreparation.postedRefreshFailed'),
-        },
-      }).finally(() => {
-        this.releasePostSubmission({
-          wallet,
-          destination: submittedDestination,
-          reservationId: submissionId,
+      let retainReservation = false
+      try {
+        const outcome = await submitPost({
+          submit: async () => {
+            await this.postMessage({
+              wallet,
+              entry,
+              satoshis: submittedOffering,
+              topic: submittedTopic,
+              parentDigest: submittedParentDigest,
+              onPreparationProgress: progress => {
+                if (
+                  !this.componentMounted ||
+                  this.activeSubmissionId !== submissionId ||
+                  this.routeEpoch !== submissionEpoch
+                ) {
+                  return
+                }
+                const status = stampPreparationStatus(
+                  progress,
+                  (key, params) => this.$t(key, params ?? {}),
+                  {
+                    format: raw => activeChain.toDisplayAmount(raw),
+                    unit: activeChain.unit,
+                  },
+                )
+                this.preparationStatus = status
+              },
+            })
+          },
+          errorNotify,
+          infoNotify,
+          onOutcome: outcome => {
+            retainReservation = outcome === 'unknown-outcome'
+          },
+          navigateBack: () => {
+            if (
+              this.componentMounted &&
+              this.activeSubmissionId === submissionId &&
+              this.routeEpoch === submissionEpoch &&
+              this.sameWalletIdentity(this.activeWallet, wallet) &&
+              this.submissionDestination(this.parentDigest) ===
+                submittedDestination
+            ) {
+              this.back()
+            }
+          },
+          messages: {
+            created: this.$t('stampPreparation.postCreated', {
+              topic: submittedTopic,
+            }),
+            refreshFailed: this.$t('stampPreparation.postedRefreshFailed'),
+          },
         })
+        retainReservation = outcome === 'unknown-outcome'
+      } finally {
+        if (!retainReservation) {
+          this.releasePostSubmission({
+            wallet,
+            destination: submittedDestination,
+            reservationId: submissionId,
+          })
+        }
         if (
           ownsCurrentUi() &&
           this.activeSubmissionId === submissionId &&
@@ -611,7 +623,7 @@ export default defineComponent({
           this.activeSubmissionId = null
           this.syncCurrentReservationUi()
         }
-      })
+      }
     },
     back() {
       navigateBack(this.$router)

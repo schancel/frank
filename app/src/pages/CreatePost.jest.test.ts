@@ -623,6 +623,33 @@ describe('CreatePost selected-topic default (ticket #414)', () => {
     expect(document.activeElement).toBe(back)
   })
 
+  it('does not steal focus from a connected non-HTML control after an unsuccessful retry', async () => {
+    const forum = useForumStore() as unknown as { fetchMessage: jest.Mock }
+    const wrapper = await mountRealReplyForm('missing-parent')
+    let finishRetry!: () => void
+    forum.fetchMessage.mockImplementationOnce(
+      () => new Promise<void>(resolve => (finishRetry = resolve)),
+    )
+    const retry = wrapper.get<HTMLButtonElement>('[data-test="retry-parent"]')
+    retry.element.focus()
+    await retry.trigger('click')
+    await nextTick()
+
+    const svgControl = document.createElementNS(
+      'http://www.w3.org/2000/svg',
+      'svg',
+    )
+    svgControl.setAttribute('tabindex', '0')
+    document.body.appendChild(svgControl)
+    svgControl.focus()
+    expect(document.activeElement).toBe(svgControl)
+
+    finishRetry()
+    await flushPromises()
+    expect(document.activeElement).toBe(svgControl)
+    svgControl.remove()
+  })
+
   it('returns genuinely lost focus to Retry after an unsuccessful retry', async () => {
     const forum = useForumStore() as unknown as { fetchMessage: jest.Mock }
     const wrapper = await mountRealReplyForm('missing-parent')
@@ -790,6 +817,84 @@ describe('CreatePost selected-topic default (ticket #414)', () => {
       pending[1]?.resolve()
       await flushPromises()
       expect(router.currentRoute.value.fullPath).toBe('/new-post/parentA')
+      expect(document.activeElement).toBe(composeTarget)
+    },
+  )
+
+  it.each(['empty', 'failure'] as const)(
+    'hands idle Retry focus to compose when stale A arrives after A2 settles %s',
+    async currentRetryOutcome => {
+      const forum = useForumStore() as unknown as {
+        index: Record<string, { topic: string }>
+        fetchMessage: jest.Mock
+      }
+      const { page, router } = await mountRealRoutedReplyForm(
+        '/new-post/parentA',
+      )
+      const pending: Array<{
+        digest: string
+        resolve(): void
+        reject(error: Error): void
+      }> = []
+      forum.fetchMessage.mockImplementation(
+        ({ payloadDigest }: { payloadDigest: string }) =>
+          new Promise<void>((resolve, reject) => {
+            pending.push({ digest: payloadDigest, resolve, reject })
+          }),
+      )
+
+      await page().get('[data-test="retry-parent"]').trigger('click')
+      await nextTick()
+      await router.push('/new-post/parentB')
+      await flushPromises()
+      await router.push('/new-post/parentA')
+      await flushPromises()
+      expect(pending.map(request => request.digest)).toEqual([
+        'parentA',
+        'parentB',
+        'parentA',
+      ])
+
+      if (currentRetryOutcome === 'empty') {
+        pending[2]?.resolve()
+      } else {
+        pending[2]?.reject(new Error('current A retry failed'))
+      }
+      await flushPromises()
+      expect(page().vm).toMatchObject({
+        activeParentRequestId: null,
+        parentDigest: 'parentA',
+        parentLoading: false,
+      })
+
+      const idleRetry = page().get<HTMLButtonElement>(
+        '[data-test="retry-parent"]',
+      ).element
+      idleRetry.focus()
+      expect(document.activeElement).toBe(idleRetry)
+
+      // A1 no longer owns a request finalizer, but its content-addressed cache result is valid.
+      // Removing the idle Retry must still make a current-route meaningful focus handoff.
+      forum.index = { parentA: { topic: 'news' } }
+      pending[0]?.resolve()
+      await flushPromises()
+
+      const composeTarget = page().get(
+        '[data-test="compose-focus-target"]',
+      ).element
+      expect(router.currentRoute.value.fullPath).toBe('/new-post/parentA')
+      expect(page().find('[data-test="retry-parent"]').exists()).toBe(false)
+      expect(page().vm).toMatchObject({
+        activeParentRequestId: null,
+        parentDigest: 'parentA',
+        parentLoading: false,
+        topic: 'news',
+      })
+      expect(document.activeElement).toBe(composeTarget)
+
+      // B's stale finalizer has no authority to take focus from the resolved A route.
+      pending[1]?.resolve()
+      await flushPromises()
       expect(document.activeElement).toBe(composeTarget)
     },
   )

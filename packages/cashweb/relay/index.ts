@@ -14,6 +14,7 @@ import { MessageConstructor } from './constructors'
 import { relayCipherPayloadDigest } from './cipher-payload-digest'
 import { p2pkhSpentOutpoints } from './p2pkh-spent'
 import { outpointPrivateKey } from './outpoint-hd'
+import { stampOutpointPublicKey } from './stamp-outpoint-pub'
 import { readStampTransaction } from './stamp-tx'
 import { arrayBufferToBase64 } from './images'
 
@@ -30,7 +31,6 @@ import type { Payment } from '../bip70/paymentrequest_pb'
 import WebSocket from 'isomorphic-ws'
 import {
   PublicKey,
-  crypto,
   Transaction,
   Script,
   Networks,
@@ -907,11 +907,10 @@ export class RelayClient extends ReadOnlyRelayClient {
           Networks.get(this.networkName),
         )
 
-        // Network doesn't really matter here, just serves as a placeholder to avoid needing to compute the
-        // HASH160(SHA256(point)) ourself
-        // Also, ensure the point is compressed first before calculating the address so the hash is deterministic
+        // Compressed point of the outpoint secret (decision #541). Address
+        // strings stay on bitcore (issue #242).
         const computedAddress = new PublicKey(
-          crypto.Point.pointToCompressed(outputPrivKey.toPublicKey().point),
+          Buffer.from(stampOutpointPublicKey(outputSecret)),
         ).toAddress(this.networkName)
         if (
           !outbound &&

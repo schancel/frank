@@ -8,6 +8,7 @@ import {
 } from 'bitcore-lib-xpi'
 import * as forge from 'node-forge'
 import { stampParentSecret } from './stamp-parent'
+import { stampParentPublicKey } from './stamp-public'
 import { stealthPointDigest } from './stealth-point-digest'
 
 export class PayloadConstructor {
@@ -152,18 +153,19 @@ export class PayloadConstructor {
     })
   }
 
+  // Digest in (0, n). A zero digest, a digest >= n, a non-32-byte digest,
+  // a destination that is not 33 or 65 SEC1 bytes, or a point at infinity
+  // is an error (decision #539). Bytes match PublicKey.fromPoint: compressed,
+  // default network. Stealth public point.add stays on bitcore.
   constructStampPublicKey(
     payloadDigest: Uint8Array,
     destinationPublicKey: PublicKey,
   ) {
-    const digestPrivateKey = PrivateKey.fromBuffer(
-      Buffer.from(payloadDigest),
-      this.networkName,
+    const bytes = stampParentPublicKey(
+      Uint8Array.from(destinationPublicKey.toBuffer()),
+      payloadDigest,
     )
-    const digestPublicKey = digestPrivateKey.toPublicKey()
-    const stampPoint = digestPublicKey.point.add(destinationPublicKey.point)
-    const stampPublicKey = PublicKey.fromPoint(stampPoint)
-    return stampPublicKey
+    return new PublicKey(Buffer.from(bytes))
   }
 
   constructStampHDPublicKey(

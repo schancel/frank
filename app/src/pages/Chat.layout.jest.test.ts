@@ -66,16 +66,51 @@ stubs.QScrollArea = defineComponent({
   },
 })
 const Blank = defineComponent({ setup: () => () => h('div') })
+const MessageStub = defineComponent({
+  inheritAttrs: false,
+  props: { payloadDigest: { type: String, required: true } },
+  setup:
+    (props, { attrs }) =>
+    () =>
+      h('div', {
+        ...attrs,
+        'data-testid': 'chat-message',
+        'data-payload-digest': props.payloadDigest,
+      }),
+})
 const BannerStackStub = defineComponent({
   props: { stampStatus: { type: String, default: null } },
-  setup: props => () =>
-    props.stampStatus ? h('div', { 'data-testid': 'chat-banner-stack' }) : null,
+  setup: props => () => {
+    if (!props.stampStatus) return null
+    return h('div', { 'data-testid': 'chat-banner-stack' }, [
+      h('div', { 'data-testid': 'mailbox-banner' }, 'Mailbox unavailable'),
+      h('div', { 'data-testid': 'stamp-banner' }, String(props.stampStatus)),
+    ])
+  },
+})
+const ResizeObserverStub = defineComponent({
+  name: 'QResizeObserver',
+  emits: ['resize'],
+  setup: () => () => h('span', { 'data-testid': 'banner-resize-observer' }),
 })
 
-async function mountChat() {
+function message(payloadDigest: string) {
+  return {
+    outbound: false,
+    status: '',
+    receivedTime: 0,
+    serverTime: 0,
+    items: [],
+    outpoints: [],
+    senderAddress: DEALER,
+    payloadDigest,
+  }
+}
+
+async function mountChat(messages: ReturnType<typeof message>[] = []) {
   const pinia = createPinia()
   setActivePinia(pinia)
-  useChatStore().chats[DEALER] = { messages: [] } as never
+  useChatStore().chats[DEALER] = { messages } as never
   const wrapper = mount(ChatPage as never, {
     global: {
       plugins: [pinia],
@@ -83,9 +118,10 @@ async function mountChat() {
       stubs: {
         ChatInput: Blank,
         BlackjackUnsentWagers: Blank,
-        ChatMessageComponent: Blank,
+        ChatMessageComponent: MessageStub,
         ChatMessageReply: Blank,
         ChatBannerStack: BannerStackStub,
+        QResizeObserver: ResizeObserverStub,
       },
       mocks: {
         $route: { params: { address: DEALER } },
@@ -103,12 +139,10 @@ describe('Chat.vue layout structure (mounted)', () => {
     const list = (await mountChat()).find('.chat-message-list')
     expect(list.exists()).toBe(true)
     expect(list.classes()).toEqual(
-      expect.arrayContaining([
-        'chat-message-list--overlay-clearance',
-        'q-py-md',
-        'q-px-lg',
-      ]),
+      expect.arrayContaining(['q-py-md', 'q-px-lg']),
     )
+    expect(list.classes()).not.toContain('chat-message-list--overlay-clearance')
+    expect((list.element as HTMLElement).style.paddingTop).toBe('')
   })
 
   it('puts the message list inside the scroll area, inside the bounded col/relative box', async () => {
@@ -141,27 +175,71 @@ describe('Chat.vue layout structure (mounted)', () => {
     expect(overlay.element.parentElement).toBe(viewport.element)
   })
 
-  it('keeps the same scroll box dimensions and bottom state when a banner toggles', async () => {
+  it('uses the measured two-banner height for list clearance without replacing the scroll box', async () => {
     const wrapper = await mountChat()
     const scroll = wrapper.get('.q-scroll-area-stub').element as HTMLElement
-    Object.defineProperties(scroll, {
-      clientWidth: { configurable: true, value: 720 },
-      clientHeight: { configurable: true, value: 480 },
-    })
-    const dimensions = [scroll.clientWidth, scroll.clientHeight]
     const bottom = (wrapper.vm as unknown as { bottom: boolean }).bottom
 
     ;(
       wrapper.vm as unknown as { stampPreparationStatus: string | null }
-    ).stampPreparationStatus = 'checking'
+    ).stampPreparationStatus = 'checking a wrapped funding transaction'
+    await wrapper.vm.$nextTick()
+    expect(wrapper.findAll('[data-testid$="banner"]')).toHaveLength(2)
+
+    wrapper.getComponent(ResizeObserverStub).vm.$emit('resize', {
+      width: 375,
+      height: 96,
+    })
     await wrapper.vm.$nextTick()
 
     const scrollAfter = wrapper.get('.q-scroll-area-stub')
       .element as HTMLElement
     expect(scrollAfter).toBe(scroll)
-    expect([scrollAfter.clientWidth, scrollAfter.clientHeight]).toEqual(
-      dimensions,
+    expect(wrapper.get('.chat-message-list').attributes('style')).toContain(
+      'padding-top: 112px',
     )
     expect((wrapper.vm as unknown as { bottom: boolean }).bottom).toBe(bottom)
+  })
+
+  it('lets pointer, wheel, and touch input pass through and paints no empty shadow', async () => {
+    const wrapper = await mountChat()
+    const overlay = wrapper.get('.chat-banner-overlay')
+    expect(overlay.classes()).toContain('no-pointer-events')
+    expect(overlay.classes()).not.toContain('shadow-2')
+    ;(
+      wrapper.vm as unknown as { stampPreparationStatus: string | null }
+    ).stampPreparationStatus = 'checking'
+    await wrapper.vm.$nextTick()
+    wrapper.getComponent(ResizeObserverStub).vm.$emit('resize', {
+      width: 375,
+      height: 96,
+    })
+    await wrapper.vm.$nextTick()
+
+    expect(overlay.classes()).toContain('shadow-2')
+  })
+
+  it('offsets an interior reply target by the same measured banner clearance', async () => {
+    const wrapper = await mountChat([message('reply-target')])
+    ;(
+      wrapper.vm as unknown as { stampPreparationStatus: string | null }
+    ).stampPreparationStatus = 'checking'
+    await wrapper.vm.$nextTick()
+    wrapper.getComponent(ResizeObserverStub).vm.$emit('resize', {
+      width: 375,
+      height: 96,
+    })
+    await wrapper.vm.$nextTick()
+
+    const target = wrapper.get('[data-payload-digest="reply-target"]')
+    const scrollIntoView = jest.fn()
+    target.element.scrollIntoView = scrollIntoView
+    ;(
+      wrapper.vm as unknown as { scrollToMessage: (digest: string) => void }
+    ).scrollToMessage('reply-target')
+    await new Promise(resolve => setTimeout(resolve, 80))
+
+    expect(target.attributes('style')).toContain('scroll-margin-top: 112px')
+    expect(scrollIntoView).toHaveBeenCalledWith({ behavior: 'smooth' })
   })
 })

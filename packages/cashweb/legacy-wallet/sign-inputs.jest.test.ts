@@ -1,16 +1,8 @@
 import { readFileSync } from 'fs'
 import { join } from 'path'
 
-import {
-  PrivateKey,
-  Script,
-  Transaction,
-} from 'bitcore-lib-xpi'
-import {
-  XPI_MAINNET,
-  parseTransaction,
-  verifyScript,
-} from '@frank/nakamoto'
+import { PrivateKey, Script, Transaction } from 'bitcore-lib-xpi'
+import { XPI_MAINNET, parseTransaction, verifyScript } from '@frank/nakamoto'
 
 import { signTransactionInputs } from './index'
 
@@ -31,21 +23,21 @@ function spendable(key: PrivateKey, txId: string, satoshis: number) {
 }
 
 function oneInput(key: PrivateKey): Transaction {
-  return new Transaction()
-    .from([spendable(key, TXID_A, 50_000)])
-    .addOutput(
-      new Transaction.Output({
-        satoshis: 40_000,
-        script: lockingScript(key),
-      }),
-    )
+  return new Transaction().from([spendable(key, TXID_A, 50_000)]).addOutput(
+    new Transaction.Output({
+      satoshis: 40_000,
+      script: lockingScript(key),
+    }),
+  )
 }
 
 function scriptHex(transaction: Transaction): string[] {
-  return transaction.inputs.map(input => input.script.toBuffer().toString('hex'))
+  return transaction.inputs.map(input =>
+    input.script.toBuffer().toString('hex'),
+  )
 }
 
-it('signs legacy wallet inputs with explicit lotus assignments and refuses a partial sign', () => {
+it('signs legacy wallet inputs with explicit fork-id assignments and refuses a partial sign', () => {
   const source = readFileSync(join(__dirname, 'index.ts'), 'utf8')
   expect(source).not.toContain('.sign(signingKeys)')
 
@@ -62,13 +54,18 @@ it('signs legacy wallet inputs with explicit lotus assignments and refuses a par
   const signatureLength = unlocking[0]
   expect(signatureLength).toBeGreaterThan(8)
   expect(signatureLength).toBeLessThan(0x4c)
-  // First push is DER plus the lotus sighash byte. ALL|FORKID would be 0x41.
-  expect(unlocking[signatureLength]).toBe(0x61)
+  // First push is DER plus ALL|FORKID. SIGHASH_LOTUS|ALL would be 0x61.
+  expect(unlocking[signatureLength]).toBe(0x41)
   expect(scriptHex(transaction)).not.toEqual(before)
 
-  const parsed = parseTransaction(Uint8Array.from(transaction.toBuffer()), XPI_MAINNET)
+  const parsed = parseTransaction(
+    Uint8Array.from(transaction.toBuffer()),
+    XPI_MAINNET,
+  )
   if (!parsed.ok) throw new Error(parsed.error.code)
-  const locking = Uint8Array.from(transaction.inputs[0].output!.script.toBuffer())
+  const locking = Uint8Array.from(
+    transaction.inputs[0].output!.script.toBuffer(),
+  )
   const spent = [
     {
       value: BigInt(transaction.inputs[0].output!.satoshis),

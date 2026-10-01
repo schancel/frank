@@ -19,7 +19,7 @@ import { AddressEvent, ChainAdapter } from './chain-adapter'
 import { LotusAdapter } from './lotus-adapter'
 import {
   SIGHASH_ALL,
-  SIGHASH_LOTUS,
+  SIGHASH_FORKID,
   XPI_MAINNET,
   XPI_REGTEST,
   XPI_TESTNET,
@@ -101,10 +101,7 @@ function xpiChain(networkName: string): ChainDescriptor {
 function signerFromPrivateKey(key: PrivateKey): InputSigner {
   const publicKey = Uint8Array.from(key.toPublicKey().toBuffer())
   const secretBytes = Uint8Array.from(key.toBuffer())
-  const parsed = privateKeyFromSecretBytes(
-    secretBytes,
-    publicKey.length === 33,
-  )
+  const parsed = privateKeyFromSecretBytes(secretBytes, publicKey.length === 33)
   secretBytes.fill(0)
   if (!parsed.ok) throw new Error('sign-bytes')
   const secret = parsed.value
@@ -173,7 +170,10 @@ function nakamotoTransaction(transaction: SignableTransaction): {
   }
 }
 
-// Lotus sighash is SIGHASH_LOTUS|ALL. ALL|FORKID is not an XPI signature.
+// Post-Numbers XPI rejects SIGHASH_LOTUS. The signature byte is ALL|FORKID.
+// Ruth rewrites the BIP143 preimage fork value; the byte stays 0x41.
+// Activation height is not modeled, so replay is always on. A regtest whose
+// median time is still before Ruth will reject the spend.
 // A partial assignment throws and leaves every input script untouched.
 export function signTransactionInputs(
   transaction: Transaction,
@@ -185,9 +185,10 @@ export function signTransactionInputs(
   const assignments = explicitAssignments(transaction, signingKeys)
   const signed = signAll(tx, assignments, {
     chain,
-    algorithm: 'lotus',
-    sighashType: SIGHASH_LOTUS | SIGHASH_ALL,
+    algorithm: 'forkid',
+    sighashType: SIGHASH_FORKID | SIGHASH_ALL,
     spent,
+    replayProtection: true,
   })
   if (!signed.ok) throw new Error(signed.error.code)
   const next: Array<Buffer | undefined> = new Array(transaction.inputs.length)

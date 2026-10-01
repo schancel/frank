@@ -690,15 +690,48 @@ describe('explicit signing', () => {
     expect(toHex(signer.calls[0] ?? new Uint8Array())).toBe(
       toHex(expected.value),
     )
-    const forkid = signInput(
+    const plainSigner = recorder(pubA, der)
+    const plain = signInput(
       tx,
       0,
-      recorder(pubA, der),
+      plainSigner,
       options(XPI_MAINNET, 'forkid', FORKID_ALL, coins),
     )
-    expect(forkid.ok).toBe(false)
-    if (forkid.ok) return
-    expect(forkid.error.code).toBe('sighash-algorithm')
+    expect(plain.ok).toBe(true)
+    if (!plain.ok) return
+    const plainDigest = sighash(tx, 0, XPI_MAINNET, FORKID_ALL, {
+      algorithm: 'forkid',
+      scriptCode: scripts[0],
+      amount: coins[0]?.value,
+      spent: coins,
+    })
+    if (!plainDigest.ok) throw new Error(plainDigest.error.code)
+    expect(toHex(plainSigner.calls[0] ?? new Uint8Array())).toBe(
+      toHex(plainDigest.value),
+    )
+    const replaySigner = recorder(pubA, der)
+    const replay = signInput(
+      tx,
+      0,
+      replaySigner,
+      options(XPI_MAINNET, 'forkid', FORKID_ALL, coins, {
+        replayProtection: true,
+      }),
+    )
+    expect(replay.ok).toBe(true)
+    if (!replay.ok) return
+    const replayDigest = sighash(tx, 0, XPI_MAINNET, FORKID_ALL, {
+      algorithm: 'forkid',
+      scriptCode: scripts[0],
+      amount: coins[0]?.value,
+      spent: coins,
+      replayProtection: true,
+    })
+    if (!replayDigest.ok) throw new Error(replayDigest.error.code)
+    expect(toHex(replaySigner.calls[0] ?? new Uint8Array())).toBe(
+      toHex(replayDigest.value),
+    )
+    expect(toHex(replayDigest.value)).not.toBe(toHex(plainDigest.value))
   })
 
   test('BCH commitUtxos is passed through to the digest', () => {

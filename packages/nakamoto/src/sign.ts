@@ -68,6 +68,8 @@ export interface SignOptions {
   readonly keyVersion?: number
   readonly codeSeparatorPosition?: number
   readonly executedScriptHash?: Uint8Array
+  /** Fork-id only. See SighashOptions.replayProtection. */
+  readonly replayProtection?: boolean
 }
 
 export interface SignAssignment {
@@ -420,6 +422,9 @@ function hashOptions(
     ...(options.commitUtxos === undefined
       ? {}
       : { commitUtxos: options.commitUtxos }),
+    ...(options.replayProtection === undefined
+      ? {}
+      : { replayProtection: options.replayProtection }),
   }
   if (template.kind === 'p2tr') return shared
   const plain = {

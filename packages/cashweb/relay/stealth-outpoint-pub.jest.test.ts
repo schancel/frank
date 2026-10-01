@@ -3,7 +3,7 @@ import { join } from 'path'
 
 import { PrivateKey, PublicKey, crypto as bitcoreCrypto } from 'bitcore-lib-xpi'
 
-import { stampOutpointPublicKey } from './stamp-outpoint-pub'
+import { stealthOutpointPublicKey } from './stealth-outpoint-pub'
 
 const SECRET = '22'.repeat(32)
 const N_HEX =
@@ -19,9 +19,9 @@ function bitcoreCompressed(hex: string): Buffer {
   )
 }
 
-it('matches bitcore compressed stamp outpoint public keys', () => {
+it('matches bitcore compressed stealth outpoint public keys', () => {
   const secret = Buffer.from(SECRET, 'hex')
-  const bytes = stampOutpointPublicKey(secret)
+  const bytes = stealthOutpointPublicKey(secret)
   const wrapped = new PublicKey(Buffer.from(bytes))
   const described = wrapped.toObject() as { compressed: boolean }
   expect(Buffer.from(bytes)).toEqual(bitcoreCompressed(SECRET))
@@ -37,14 +37,29 @@ it('matches bitcore compressed stamp outpoint public keys', () => {
   )
 
   const almost = Buffer.from(N_MINUS_1, 'hex')
-  expect(Buffer.from(stampOutpointPublicKey(almost))).toEqual(
+  expect(Buffer.from(stealthOutpointPublicKey(almost))).toEqual(
     bitcoreCompressed(N_MINUS_1),
   )
-  expect(Buffer.from(stampOutpointPublicKey(Buffer.from(ONE, 'hex')))).toEqual(
-    bitcoreCompressed(ONE),
-  )
+  expect(
+    Buffer.from(stealthOutpointPublicKey(Buffer.from(ONE, 'hex'))),
+  ).toEqual(bitcoreCompressed(ONE))
   expect(secret.toString('hex')).toBe(SECRET)
 
+  const decode = readFileSync(join(__dirname, 'decode-entry.ts'), 'utf8')
+  const payment = decode.slice(decode.indexOf("kind === 'stealth-payment'"))
+  expect(payment).toContain('stealthOutpointPublicKey(')
+  expect(payment).toContain('outpointPrivateKey(')
+  expect(payment).toContain('constructHDStealthPrivateKey')
+  expect(payment).toContain('.toAddress(')
+  expect(payment).toContain('new Script(')
+  expect(payment).not.toContain('pointToCompressed')
+  expect(payment).not.toContain('toPublicKey(')
+  expect(payment).not.toContain('point.mul')
+  const crypto = readFileSync(join(__dirname, 'crypto.ts'), 'utf8')
+  expect(crypto).toContain('pointToCompressed')
+  expect(crypto).toContain('point.mul')
+  expect(crypto).toContain('point.add')
+  expect(crypto).toContain('constructStampAddress')
   const index = readFileSync(join(__dirname, 'index.ts'), 'utf8')
   const receiveStart = index.indexOf('async receiveMessage')
   const receive = index.slice(
@@ -52,14 +67,11 @@ it('matches bitcore compressed stamp outpoint public keys', () => {
     index.indexOf('Decode entries', receiveStart),
   )
   expect(receive).toContain('stampOutpointPublicKey(')
-  expect(receive).not.toContain('pointToCompressed')
-  expect(receive).not.toContain('point.mul')
-  expect(receive).toContain('.toAddress(')
-  expect(receive).toContain('new Script(')
-  const stealth = readFileSync(join(__dirname, 'decode-entry.ts'), 'utf8')
-  expect(stealth).toContain('stealthOutpointPublicKey(')
-  expect(stealth).not.toContain('pointToCompressed')
-  const helper = readFileSync(join(__dirname, 'stamp-outpoint-pub.ts'), 'utf8')
+  expect(receive).not.toContain('stealthOutpointPublicKey(')
+  const helper = readFileSync(
+    join(__dirname, 'stealth-outpoint-pub.ts'),
+    'utf8',
+  )
   expect(helper).toContain('publicFromPrivate(')
   expect(helper).toContain('privateKeyFromSecretBytes(')
   expect(helper).not.toContain('point.mul')
@@ -70,16 +82,16 @@ it('matches bitcore compressed stamp outpoint public keys', () => {
 })
 
 it('rejects a secret outside (0, n) and a non-32-byte secret', () => {
-  expect(() => stampOutpointPublicKey(Buffer.alloc(32))).toThrow(
-    'stamp-outpoint-pub:scalar-out-of-range',
+  expect(() => stealthOutpointPublicKey(Buffer.alloc(32))).toThrow(
+    'stealth-outpoint-pub:scalar-out-of-range',
   )
-  expect(() => stampOutpointPublicKey(Buffer.from(N_HEX, 'hex'))).toThrow(
-    'stamp-outpoint-pub:scalar-out-of-range',
+  expect(() => stealthOutpointPublicKey(Buffer.from(N_HEX, 'hex'))).toThrow(
+    'stealth-outpoint-pub:scalar-out-of-range',
   )
-  expect(() => stampOutpointPublicKey(Buffer.from('22'.repeat(31), 'hex'))).toThrow(
-    'stamp-outpoint-pub:secret',
-  )
-  expect(() => stampOutpointPublicKey(Buffer.alloc(0))).toThrow(
-    'stamp-outpoint-pub:secret',
+  expect(() =>
+    stealthOutpointPublicKey(Buffer.from('22'.repeat(31), 'hex')),
+  ).toThrow('stealth-outpoint-pub:secret')
+  expect(() => stealthOutpointPublicKey(Buffer.alloc(0))).toThrow(
+    'stealth-outpoint-pub:secret',
   )
 })

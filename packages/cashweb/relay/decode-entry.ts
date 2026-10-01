@@ -8,7 +8,6 @@ import {
   Networks,
   PrivateKey,
   PublicKey,
-  crypto,
   HDPrivateKey,
   Script,
 } from 'bitcore-lib-xpi'
@@ -16,6 +15,7 @@ import { Wallet } from '../legacy-wallet'
 import { calcUtxoId } from '../legacy-wallet/helpers'
 import { Utxo } from '../types/utxo'
 import { outpointPrivateKey } from './outpoint-hd'
+import { stealthOutpointPublicKey } from './stealth-outpoint-pub'
 import { readStealthTransaction } from './stealth-tx'
 
 export async function decodeEntry(
@@ -136,11 +136,10 @@ export async function decodeEntry(
         const address = new Script(Buffer.from(output.script)).toAddress(
           networkName,
         )
-        // Network doesn't really matter here, just serves as a placeholder to avoid needing to compute the
-        // HASH160(SHA256(point)) ourself
-        // Also, ensure the point is compressed first before calculating the address so the hash is deterministic
+        // Compressed point of the outpoint secret (decision #555). Address
+        // strings stay on bitcore (issue #242).
         const computedAddress = new PublicKey(
-          crypto.Point.pointToCompressed(outpointPrivKey.toPublicKey().point),
+          Buffer.from(stealthOutpointPublicKey(outpointSecret)),
         ).toAddress(networkName)
         if (
           !outbound &&

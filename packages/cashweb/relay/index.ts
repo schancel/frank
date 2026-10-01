@@ -12,6 +12,7 @@ import VCard from 'vcf'
 import EventEmitter from 'events'
 import { MessageConstructor } from './constructors'
 import { relayCipherPayloadDigest } from './cipher-payload-digest'
+import { p2pkhSpentOutpoints } from './p2pkh-spent'
 import { arrayBufferToBase64 } from './images'
 
 import { PayloadConstructor } from './crypto'
@@ -759,18 +760,13 @@ export class RelayClient extends ReadOnlyRelayClient {
         assert(typeof entryData !== 'string', 'entryData of wrong type')
         const p2pkhMessage = p2pkh.P2PKHEntry.deserializeBinary(entryData)
 
-        // Add stealth outputs
+        // Spent inputs, not a bitcore Transaction (decision #524).
         const transactionRaw = p2pkhMessage.getTransaction()
-        const p2pkhTxRaw = Buffer.from(transactionRaw)
-        const p2pkhTxR = new Transaction(p2pkhTxRaw)
-
-        for (const input of p2pkhTxR.inputs) {
+        for (const spent of p2pkhSpentOutpoints(
+          Uint8Array.from(Buffer.from(transactionRaw)),
+        )) {
           // Don't add these outputs to our wallet. They're the other persons
-          const utxoId = calcUtxoId({
-            txId: input.prevTxId.toString('hex'),
-            outputIndex: input.outputIndex,
-          })
-          this.wallet.deleteUtxo(utxoId)
+          this.wallet.deleteUtxo(calcUtxoId(spent))
         }
 
         continue

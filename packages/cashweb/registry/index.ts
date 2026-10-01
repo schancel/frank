@@ -25,7 +25,7 @@ import __pb_broadcast_pb from './broadcast_pb'
 const { BroadcastEntry, BroadcastMessage, ForumPost } = __pb_broadcast_pb
 import { ForumMessage, ForumMessageEntry } from '../types/forum'
 
-/** Canonical DER integer to a 32-byte big-endian magnitude. */
+/** Canonical DER integer as a minimal big-endian magnitude. */
 function readDerInt(
   der: Uint8Array,
   offset: number,
@@ -47,15 +47,14 @@ function readDerInt(
   if (magnitude.length < 1 || magnitude.length > 32) {
     throw new Error('signature-invalid')
   }
-  const fixed = Buffer.alloc(32)
-  Buffer.from(magnitude).copy(fixed, 32 - magnitude.length)
-  return { value: fixed, next: offset + 2 + length }
+  return { value: Buffer.from(magnitude), next: offset + 2 + length }
 }
 
 /**
- * 64-byte r||s. Same bytes as bitcore compact form with the header removed.
- * bitcore `fromDER` returns a string when the DER is 64 bytes and starts with
- * 0x30, so r and s are read here.
+ * r||s with the compact header removed. r is minimal. s is 32 bytes.
+ * `fromDER` returns a string when the DER is 64 bytes and starts with 0x30,
+ * so r and s are read here. The replaced compact slice calls `toBuffer({size:32})`:
+ * r is an elliptic BN and ignores size, s is a bitcore BN and left-pads.
  */
 export function compactRsFromDer(der: Uint8Array): Buffer {
   if (der.length < 8 || der[0] !== 0x30 || der[1] !== der.length - 2) {
@@ -64,10 +63,12 @@ export function compactRsFromDer(der: Uint8Array): Buffer {
   const r = readDerInt(der, 2)
   const s = readDerInt(der, r.next)
   if (s.next !== der.length) throw new Error('signature-invalid')
-  return Buffer.concat([r.value, s.value])
+  const sFixed = Buffer.alloc(32)
+  s.value.copy(sFixed, 32 - s.value.length)
+  return Buffer.concat([r.value, sFixed])
 }
 
-/** 64-byte r||s over a 32-byte digest. A bad digest throws and returns nothing. */
+/** Compact r||s over a 32-byte digest. A bad digest throws and returns nothing. */
 export function signRegistryDigest(hash: Buffer, privKey: PrivateKey): Buffer {
   if (hash.length !== 32) throw new Error('sign-digest')
   const secretBytes = Uint8Array.from(privKey.toBuffer())

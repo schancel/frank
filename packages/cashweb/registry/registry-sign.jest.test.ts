@@ -33,10 +33,13 @@ it('signs registry digests as the bitcore compact r||s bytes', () => {
   const privKey = new PrivateKey(SECRET)
   const digest = sha256d('Very deterministic message')
   const signature = signRegistryDigest(digest, privKey)
-  const parsed = bitcoreCrypto.Signature.fromDER(Buffer.from(BITCORE_DER, 'hex'))
-  if (typeof parsed === 'string') throw new Error('signature-invalid')
-  const expected = parsed.toCompact(1, true).slice(1)
-  expect(signature.toString('hex')).toBe(expected.toString('hex'))
+  const live = bitcoreCrypto.ECDSA.sign(digest, privKey)
+    .toCompact(1, true)
+    .slice(1)
+  expect(signature.toString('hex')).toBe(live.toString('hex'))
+  expect(live.toString('hex')).toBe(
+    '5dbbddda71772d95ce91cd2d14b592cfbc1dd0aabd6a394b6c2d377bbe59d31d14ddda21494a4e221f0824f0b8b924c43fa43c0ad57dccdaa11f81a6bd4582f6',
+  )
   expect(signature).toHaveLength(64)
 
   const pubkey = Uint8Array.from(privKey.toPublicKey().toBuffer())
@@ -64,7 +67,27 @@ it('signs registry digests as the bitcore compact r||s bytes', () => {
   )
 })
 
-it('pads a 64-byte DER that bitcore fromDER rejects', () => {
+it('keeps a short r unpadded, matching the compact slice', () => {
+  // sha256("d104"). r's high bit is set, so DER is 0x00 plus 31 bytes.
+  // The replaced compact slice is 63 bytes, not a left-padded 64.
+  const digest = createHash('sha256').update('d104').digest()
+  const privKey = new PrivateKey(SECRET)
+  const pinned =
+    'b1fc53d9ed112d8594c95448f0f1033e9d4e7347c4a5925c2668c4ac2dc95e06cca8ed8b1a5f1d45928b298b7cef197d481fea61921cc452c1ff180a53704d'
+  const live = bitcoreCrypto.ECDSA.sign(digest, privKey)
+    .toCompact(1, true)
+    .slice(1)
+  expect(live.toString('hex')).toBe(pinned)
+  expect(live).toHaveLength(63)
+  expect(signRegistryDigest(digest, privKey).toString('hex')).toBe(pinned)
+  const der = Buffer.from(
+    '3044022000b1fc53d9ed112d8594c95448f0f1033e9d4e7347c4a5925c2668c4ac2dc95e022006cca8ed8b1a5f1d45928b298b7cef197d481fea61921cc452c1ff180a53704d',
+    'hex',
+  )
+  expect(compactRsFromDer(der).toString('hex')).toBe(pinned)
+})
+
+it('does not pad a 64-byte DER that bitcore fromDER rejects', () => {
   const r = Buffer.alloc(29, 0x11)
   const s = Buffer.alloc(29, 0x22)
   const der = Buffer.concat([
@@ -76,8 +99,9 @@ it('pads a 64-byte DER that bitcore fromDER rejects', () => {
   expect(der).toHaveLength(64)
   expect(typeof bitcoreCrypto.Signature.fromDER(der)).toBe('string')
   const compact = compactRsFromDer(der)
-  expect(compact.subarray(0, 32)).toEqual(Buffer.concat([Buffer.alloc(3), r]))
-  expect(compact.subarray(32)).toEqual(Buffer.concat([Buffer.alloc(3), s]))
+  expect(compact.subarray(0, 29)).toEqual(r)
+  expect(compact.subarray(29)).toEqual(Buffer.concat([Buffer.alloc(3), s]))
+  expect(compact).toHaveLength(61)
 })
 
 it('drops the DER sign byte the same way as bitcore compact encoding', () => {

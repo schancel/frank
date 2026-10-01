@@ -1,7 +1,12 @@
 {
   "extends": "./tsconfig.json",
   "compilerOptions": {
-    "isolatedModules": true
+    "isolatedModules": true,
+    "moduleResolution": "bundler",
+    "baseUrl": ".",
+    "paths": {
+      "@frank/nakamoto": ["../nakamoto/src/index.ts"]
+    }
   },
   "exclude": ["node_modules"]
 }

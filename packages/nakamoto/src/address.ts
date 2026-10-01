@@ -173,7 +173,7 @@ export interface AddressHrpChar {
   readonly index: number
 }
 
-/** Not lotusd MatchPayToPubkeyHash. Includes non-minimal pushes. */
+/** Not the 25-byte pubkey-hash output. Includes non-minimal pushes. */
 export interface OutputScriptUnmatched {
   readonly code: 'output-script-unmatched'
 }
@@ -622,9 +622,8 @@ export function lockingScript(destination: Destination): Uint8Array {
 }
 
 /**
- * lotusd `MatchPayToPubkeyHash` (`src/script/standard.cpp`): exactly 25 bytes,
- * OP_DUP OP_HASH160 20 <hash> OP_EQUALVERIFY OP_CHECKSIG.
- * A non-minimal push is not this template (decision #493).
+ * 25-byte pubkey-hash output: OP_DUP OP_HASH160 20 <hash> OP_EQUALVERIFY
+ * OP_CHECKSIG. A non-minimal push is not this template (decision #493).
  */
 export function pubkeyHashFromOutputScript(
   script: Uint8Array,

@@ -35,6 +35,7 @@ import { Wallet } from '../legacy-wallet'
 import { signRegistryDigest } from '../registry'
 import { relayCipherPayloadDigest } from './cipher-payload-digest'
 import { outpointPublicKey } from './outpoint-hd'
+import { messageSourcePublicKey } from './message-source-pubkey'
 import { relayProfilePublicKey } from './profile-pubkey'
 
 /** One SHA-256 of Profile protobuf bytes. Matches `Sha256::digest` in
@@ -189,9 +190,21 @@ export class MessageConstructor {
         stamp.addStampOutpoints(stampOutpoints)
       }
 
-      // Construct message
+      // Construct message. SEC1 point of the sender (decision #574).
+      // types.d.ts omits the runtime compression flag; bitcore-lib-xpi
+      // stays until #259. HMAC, salt, and envelope ECDH stay on bitcore.
       const message = new Message()
-      const rawSourcePublickey = sourcePrivateKey.toPublicKey().toBuffer()
+      const compressed = (sourcePrivateKey as unknown as { compressed?: boolean })
+        .compressed
+      if (compressed !== true && compressed !== false) {
+        throw new Error('message-source-pubkey:compressed')
+      }
+      const rawSourcePublickey = Buffer.from(
+        messageSourcePublicKey(
+          Uint8Array.from(sourcePrivateKey.toBuffer()),
+          compressed,
+        ),
+      )
       const rawDestinationPublicKey = destinationPublicKey.toBuffer()
       message.setScheme(1)
       message.setDestinationPublicKey(rawDestinationPublicKey)

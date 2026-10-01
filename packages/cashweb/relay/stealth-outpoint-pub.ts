@@ -7,7 +7,8 @@ import {
  * The secret must be 32 bytes in (0, n) (decision #555).
  * publicFromPrivate rejects 0 and values >= n. The caller wraps the
  * bytes in a bitcore PublicKey and still compares addresses with
- * toAddress (issue #242). Stealth parent scalars stay on bitcore. */
+ * toAddress (issue #242). Stealth parent scalars use stealthParentSecret
+ * (decision #559). */
 export function stealthOutpointPublicKey(secret: Uint8Array): Uint8Array {
   const bytes = Uint8Array.from(secret)
   if (bytes.length !== 32) {

@@ -7,7 +7,7 @@ import {
  * The digest must be 32 bytes in (0, n). A zero sum is an error
  * (decision #537). tweakAddPrivateKey rejects 0, values >= n, and a
  * zero sum. The caller wraps the secret in a bitcore PrivateKey.
- * Stealth parent scalars stay on bitcore. */
+ * Stealth parent scalars use stealthParentSecret (decision #559). */
 export function stampParentSecret(
   destinationSecret: Uint8Array,
   payloadDigest: Uint8Array,

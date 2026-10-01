@@ -9,6 +9,7 @@ import {
 import * as forge from 'node-forge'
 import { stampParentSecret } from './stamp-parent'
 import { stampParentPublicKey } from './stamp-public'
+import { stealthParentSecret } from './stealth-parent'
 import { stealthPointDigest } from './stealth-point-digest'
 
 export class PayloadConstructor {
@@ -118,21 +119,30 @@ export class PayloadConstructor {
     })
   }
 
+  // ebG is ecdh of the destination secret and the ephemeral point.
+  // The parent is (H(ebG) + destination) mod n (decision #559). A secret
+  // outside (0, n), a public key that is not 33 or 65 SEC1 bytes, an
+  // invalid point, or a zero sum is an error. Hex matches new PrivateKey(bn):
+  // compressed, default network. The digest is the raw SHA-256 and is the
+  // HD chain code. Stealth public point.add stays on bitcore.
   constructStealthPrivateKey(
     emphemeralPubKey: PublicKey,
     destinationPrivateKey: PrivateKey,
   ) {
-    const dhKeyPoint = emphemeralPubKey.point.mul(destinationPrivateKey.bn) // ebG
-    const dhKeyPointRaw = crypto.Point.pointToCompressed(dhKeyPoint)
-
-    const digest = Buffer.from(stealthPointDigest(dhKeyPointRaw)) // H(ebG)
-    const digestBn = crypto.BN.fromBuffer(digest)
-
-    const stealthPrivBn = digestBn
-      .add(destinationPrivateKey.bn)
-      .mod(crypto.Point.getN()) // H(ebG) + b
-    const stealthPrivateKey = new PrivateKey(stealthPrivBn)
-    return { stealthPrivateKey, digest }
+    const derived = stealthParentSecret(
+      Uint8Array.from(destinationPrivateKey.toBuffer()),
+      Uint8Array.from(emphemeralPubKey.toBuffer()),
+    )
+    try {
+      return {
+        stealthPrivateKey: new PrivateKey(
+          Buffer.from(derived.secret).toString('hex'),
+        ),
+        digest: Buffer.from(derived.digest),
+      }
+    } finally {
+      derived.secret.fill(0)
+    }
   }
 
   constructHDStealthPrivateKey(
@@ -188,7 +198,8 @@ export class PayloadConstructor {
 
   // Digest in (0, n). A zero digest, a digest >= n, or a zero sum is an
   // error (decision #537). Hex matches new PrivateKey(bn): compressed,
-  // default network. Stealth parent scalars stay on bitcore.
+  // default network. Stealth parent scalars use stealthParentSecret
+  // (decision #559).
   constructStampPrivateKey(
     payloadDigest: Uint8Array,
     destinationPrivateKey: PrivateKey,

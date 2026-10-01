@@ -157,7 +157,7 @@ describe('Setup page mounted (#267)', () => {
     avatar: string
     challenge: { seed: string; positions: number[] } | null
     isSeedConfirmed: boolean
-    persistSetupAndReload: () => Promise<void>
+    finishSetup: () => Promise<void>
     onSeedConfirmed: () => void
     next: () => Promise<void>
   }
@@ -168,7 +168,7 @@ describe('Setup page mounted (#267)', () => {
     vm.accountData.name = 'Alice'
     vm.accountData.nameRequired = true
     ;(vm.accountData as { valid?: boolean }).valid = true
-    vm.persistSetupAndReload = jest.fn(() => Promise.resolve())
+    vm.finishSetup = jest.fn(() => Promise.resolve())
     vm.avatar = 'data:avatar'
     await nextTick()
     return { ...ctx, vm }
@@ -184,7 +184,7 @@ describe('Setup page mounted (#267)', () => {
     expect(commitValidatedSetupSeed).not.toHaveBeenCalled()
     expect(setSeed).not.toHaveBeenCalled()
     expect(wallet.seedPhrase).toBeNull()
-    expect(vm.persistSetupAndReload).not.toHaveBeenCalled()
+    expect(vm.finishSetup).not.toHaveBeenCalled()
   })
 
   it('New Account: cannot reach the commit without a confirmation', async () => {
@@ -199,7 +199,7 @@ describe('Setup page mounted (#267)', () => {
     expect(setSeed).not.toHaveBeenCalled()
     expect(wallet.seedPhrase).toBeNull()
     expect(wallet.seedConfirmedAt).toBeNull()
-    expect(vm.persistSetupAndReload).not.toHaveBeenCalled()
+    expect(vm.finishSetup).not.toHaveBeenCalled()
   })
 
   it('New Account: after confirmation the seed is committed once, with the marker', async () => {
@@ -216,10 +216,10 @@ describe('Setup page mounted (#267)', () => {
     expect(setSeed).toHaveBeenCalledTimes(1)
     expect(wallet.seedPhrase).toBe(draft)
     expect(wallet.seedConfirmedAt).toBeGreaterThanOrEqual(before)
-    expect(vm.persistSetupAndReload).toHaveBeenCalledTimes(1)
+    expect(vm.finishSetup).toHaveBeenCalledTimes(1)
   })
 
-  it('New Account: asks the browser for persistent storage after the commit, before the reload (ticket #370)', async () => {
+  it('New Account: asks the browser for persistent storage after the commit, before identity init (ticket #370)', async () => {
     const order: string[] = []
     const persist = jest.fn(async () => {
       order.push('persist')
@@ -232,8 +232,8 @@ describe('Setup page mounted (#267)', () => {
     try {
       const { setSeed, vm } = await newAccountVm()
       setSeed.mockImplementation(() => order.push('commit'))
-      vm.persistSetupAndReload = jest.fn(() => {
-        order.push('reload')
+      vm.finishSetup = jest.fn(() => {
+        order.push('finish')
         return Promise.resolve()
       })
       await vm.next()
@@ -243,7 +243,7 @@ describe('Setup page mounted (#267)', () => {
       await vm.next()
 
       expect(persist).toHaveBeenCalledTimes(1)
-      expect(order).toEqual(['commit', 'persist', 'reload'])
+      expect(order).toEqual(['commit', 'persist', 'finish'])
     } finally {
       Object.defineProperty(navigator, 'storage', {
         configurable: true,
@@ -263,7 +263,7 @@ describe('Setup page mounted (#267)', () => {
       await nextTick()
       vm.onSeedConfirmed()
       await vm.next()
-      expect(vm.persistSetupAndReload).toHaveBeenCalledTimes(1)
+      expect(vm.finishSetup).toHaveBeenCalledTimes(1)
     } finally {
       Object.defineProperty(navigator, 'storage', {
         configurable: true,
@@ -320,7 +320,7 @@ describe('Setup page mounted (#267)', () => {
     const { wallet, setSeed, wrapper } = await mountSetup()
     const vm = wrapper.vm as unknown as Vm
     vm.step = 2
-    vm.persistSetupAndReload = jest.fn(() => Promise.resolve())
+    vm.finishSetup = jest.fn(() => Promise.resolve())
     vm.avatar = 'data:avatar'
     // Initial state: neither New nor Import chosen (valid false, nameRequired false).
     await vm.next()
@@ -330,7 +330,7 @@ describe('Setup page mounted (#267)', () => {
     expect(setSeed).not.toHaveBeenCalled()
     expect(wallet.seedPhrase).toBeNull()
     expect(wallet.seedConfirmedAt).toBeNull()
-    expect(vm.persistSetupAndReload).not.toHaveBeenCalled()
+    expect(vm.finishSetup).not.toHaveBeenCalled()
   })
 
   it('an invalid import cannot be committed or stamped', async () => {
@@ -425,9 +425,9 @@ describe('Setup page mounted (#267)', () => {
       valid: true,
     } as typeof vm.accountData
     vm.avatar = 'data:avatar'
-    ;(
-      vm as unknown as { persistSetupAndReload: unknown }
-    ).persistSetupAndReload = jest.fn(() => Promise.resolve())
+    ;(vm as unknown as { finishSetup: unknown }).finishSetup = jest.fn(() =>
+      Promise.resolve(),
+    )
 
     await vm.next()
 
@@ -457,7 +457,7 @@ describe('Setup page mounted (#267)', () => {
         resume: boolean
         storedSeed: string | null
       }
-      vm.persistSetupAndReload = jest.fn(() => Promise.resolve())
+      vm.finishSetup = jest.fn(() => Promise.resolve())
       vm.avatar = 'data:avatar'
       vm.step = 2
       vm.accountData.name = 'Alice'
@@ -557,7 +557,7 @@ describe('Setup page mounted (#267)', () => {
       w.seedConfirmedAt = confirmedAt
       const ctx = await mountSetup()
       const vm = ctx.wrapper.vm as unknown as GuardVm
-      vm.persistSetupAndReload = jest.fn(() => Promise.resolve())
+      vm.finishSetup = jest.fn(() => Promise.resolve())
       vm.avatar = 'data:avatar'
       return { ...ctx, vm }
     }
@@ -592,7 +592,7 @@ describe('Setup page mounted (#267)', () => {
 
       expect(setSeed).not.toHaveBeenCalled()
       expect(mockSetRelayData).not.toHaveBeenCalled()
-      expect(vm.persistSetupAndReload).not.toHaveBeenCalled()
+      expect(vm.finishSetup).not.toHaveBeenCalled()
       expect(wallet.seedPhrase).toBe(STORED)
     })
 

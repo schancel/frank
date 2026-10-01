@@ -7,15 +7,9 @@ export interface ReloadLocation {
   reload(): void
 }
 
-/**
- * Cross the setup reload boundary only after both pieces of identity state are
- * durable. A rejected write deliberately prevents the reload so the next boot
- * cannot silently restore stale profile or wallet data.
- */
-export async function persistSetupAndReload(
+async function flushSetupPersistence(
   wallet: PersistenceBarrier,
   profile: PersistenceBarrier,
-  location: ReloadLocation,
   notifyError: (error: Error) => void,
 ): Promise<void> {
   try {
@@ -26,6 +20,38 @@ export async function persistSetupAndReload(
     notifyError(persistenceError)
     throw persistenceError
   }
-  location.hash = '#/'
-  location.reload()
+}
+
+/**
+ * After the seed and name are durable, start the Monad identity in this page and open the
+ * forum. A rejected write never initializes and never navigates. `finishReloads` is the explicit
+ * fallback (`QCLI_SETUP_FINISH_RELOAD=true`) and is the only path that reloads.
+ */
+export async function finishSetupAndEnter(options: {
+  wallet: PersistenceBarrier
+  profile: PersistenceBarrier
+  notifyError: (error: Error) => void
+  finishReloads: boolean
+  location: ReloadLocation
+  initialize: () => Promise<unknown>
+  navigate: (path: string) => Promise<unknown> | unknown
+}): Promise<void> {
+  await flushSetupPersistence(
+    options.wallet,
+    options.profile,
+    options.notifyError,
+  )
+  if (options.finishReloads) {
+    options.location.hash = '#/'
+    options.location.reload()
+    return
+  }
+  try {
+    await options.initialize()
+  } catch (error) {
+    const initError = error instanceof Error ? error : new Error(String(error))
+    options.notifyError(initError)
+    throw initError
+  }
+  await options.navigate('/forum')
 }

@@ -8,7 +8,6 @@ import {
   Networks,
   PrivateKey,
   PublicKey,
-  HDPrivateKey,
   Script,
 } from 'bitcore-lib-xpi'
 import { Wallet } from '../legacy-wallet'
@@ -16,6 +15,7 @@ import { calcUtxoId } from '../legacy-wallet/helpers'
 import { Utxo } from '../types/utxo'
 import { outpointPrivateKey } from './outpoint-hd'
 import { stealthOutpointPublicKey } from './stealth-outpoint-pub'
+import { stealthParentSecret } from './stealth-parent'
 import { readStealthTransaction } from './stealth-tx'
 
 export async function decodeEntry(
@@ -24,11 +24,11 @@ export async function decodeEntry(
   {
     networkName,
     wallet,
-    constructHDStealthPrivateKey,
+    destinationPrivateKey,
   }: {
     networkName: string
     wallet: Wallet
-    constructHDStealthPrivateKey: (pubKey: PublicKey) => HDPrivateKey
+    destinationPrivateKey: PrivateKey
   },
 ): Promise<[MessageItem, Utxo[]] | null> {
   // If address data doesn't exist then add it
@@ -87,15 +87,15 @@ export async function decodeEntry(
     const ephemeralPubKey = PublicKey.fromBuffer(
       Buffer.from(ephemeralPubKeyRaw),
     )
-    const stealthParent = constructHDStealthPrivateKey(ephemeralPubKey)
-    const stealthSecret = Uint8Array.from(stealthParent.privateKey.toBuffer())
-    const stealthDescribed = stealthParent.toObject() as { chainCode?: unknown }
-    if (typeof stealthDescribed.chainCode !== 'string') {
-      throw new Error('outpoint-hd:chain-code')
-    }
-    const stealthChain = Uint8Array.from(
-      Buffer.from(stealthDescribed.chainCode, 'hex'),
+    // Parent is stealthParentSecret (decision #559). Chain code is the raw
+    // SHA-256 digest, not the reduced scalar. The caller's PrivateKey is
+    // not wiped. Address strings stay on bitcore (issue #242).
+    const derived = stealthParentSecret(
+      Uint8Array.from(destinationPrivateKey.toBuffer()),
+      Uint8Array.from(ephemeralPubKey.toBuffer()),
     )
+    const stealthSecret = derived.secret
+    const stealthChain = derived.digest
 
     let stealthValue = 0
     for (const [i, outpoint] of outpointsList.entries()) {

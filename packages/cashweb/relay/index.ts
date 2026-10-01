@@ -968,11 +968,7 @@ export class RelayClient extends ReadOnlyRelayClient {
     }
     for (const entry of entriesList) {
       const entryData = await decodeEntry(entry, outbound, {
-        constructHDStealthPrivateKey: (publicKey: PublicKey) =>
-          this.payloadConstructor.constructHDStealthPrivateKey(
-            publicKey,
-            identityPrivateKey,
-          ),
+        destinationPrivateKey: identityPrivateKey,
         networkName: this.networkName,
         wallet: wallet,
       })

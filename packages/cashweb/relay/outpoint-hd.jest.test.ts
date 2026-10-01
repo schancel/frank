@@ -295,7 +295,9 @@ it('derives stamp and stealth outpoint private keys on the bitcore m/44/145 path
 
   const decode = readFileSync(join(__dirname, 'decode-entry.ts'), 'utf8')
   const payment = decode.slice(decode.indexOf("kind === 'stealth-payment'"))
-  expect(payment).toContain('constructHDStealthPrivateKey')
+  expect(payment).toContain('stealthParentSecret(')
+  expect(payment).not.toContain('constructHDStealthPrivateKey')
+  expect(payment).not.toContain('HDPrivateKey')
   expect(payment).toContain('outpointPrivateKey(')
   expect(payment).not.toContain('deriveChild')
   expect(payment).not.toContain('point.mul')

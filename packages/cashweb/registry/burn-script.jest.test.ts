@@ -34,7 +34,9 @@ it('builds the legacy POND burn script from opcode bytes', () => {
   expect(burn).toContain('pondBurnScript')
   expect(burn).not.toContain('new Script')
   expect(burn).not.toContain('Opcode')
-  expect(amount).toContain('pondBurnIsDownvote')
+  expect(amount).toContain('pondBurnOutputSatoshis')
+  expect(amount).not.toContain('pondBurnIsDownvote')
+  expect(amount).not.toContain('new Transaction')
   expect(amount).not.toContain('Opcode')
   expect(source).not.toContain('Opcode')
 

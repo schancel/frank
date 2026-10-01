@@ -13,6 +13,7 @@ import EventEmitter from 'events'
 import { MessageConstructor } from './constructors'
 import { relayCipherPayloadDigest } from './cipher-payload-digest'
 import { p2pkhSpentOutpoints } from './p2pkh-spent'
+import { outpointPrivateKey } from './outpoint-hd'
 import { readStampTransaction } from './stamp-tx'
 import { arrayBufferToBase64 } from './images'
 
@@ -864,10 +865,13 @@ export class RelayClient extends ReadOnlyRelayClient {
     const identityPrivateKey = wallet.identityPrivKey
     assert(identityPrivateKey, 'No identity privkey set')
 
-    const stampRootHDPrivKey = this.payloadConstructor
-      .constructStampHDPrivateKey(payloadDigest, identityPrivateKey)
-      .deriveChild(44)
-      .deriveChild(145)
+    const stampParent = this.payloadConstructor.constructStampHDPrivateKey(
+      payloadDigest,
+      identityPrivateKey,
+    )
+    // Same chain code constructStampHDPrivateKey stored (decision #531).
+    const stampSecret = Uint8Array.from(stampParent.privateKey.toBuffer())
+    const stampChain = Uint8Array.from(payloadDigest)
 
     for (const [i, stampOutpoint] of stampOutpoints.entries()) {
       const stampTxRaw = Buffer.from(stampOutpoint.getStampTx())
@@ -875,7 +879,6 @@ export class RelayClient extends ReadOnlyRelayClient {
       const stampTx = readStampTransaction(stampTxRaw)
       const txId = stampTx.txId
       const vouts = stampOutpoint.getVoutsList()
-      const stampTxHDPrivKey = stampRootHDPrivKey.deriveChild(i)
       if (outbound) {
         for (const input of stampTx.inputs) {
           // In order to update UTXO state more quickly, go ahead and remove the inputs from our set immediately
@@ -896,8 +899,13 @@ export class RelayClient extends ReadOnlyRelayClient {
         )
         stampValue += satoshis
 
-        // Also note, we should use an HD key here.
-        const outputPrivKey = stampTxHDPrivKey.deriveChild(j).privateKey
+        // Non-hardened m/44/145 private child (decision #531). Address strings
+        // stay on bitcore (issue #242).
+        const outputSecret = outpointPrivateKey(stampSecret, stampChain, i, j)
+        const outputPrivKey = new PrivateKey(
+          Buffer.from(outputSecret).toString('hex'),
+          Networks.get(this.networkName),
+        )
 
         // Network doesn't really matter here, just serves as a placeholder to avoid needing to compute the
         // HASH160(SHA256(point)) ourself

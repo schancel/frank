@@ -4,10 +4,18 @@ import type { PayloadEntry } from './relay_pb'
 import { entryToImage } from './images'
 import stealth from './stealth_pb'
 import { TextItem, MessageItem } from '../types/messages'
-import { PublicKey, crypto, HDPrivateKey, Script } from 'bitcore-lib-xpi'
+import {
+  Networks,
+  PrivateKey,
+  PublicKey,
+  crypto,
+  HDPrivateKey,
+  Script,
+} from 'bitcore-lib-xpi'
 import { Wallet } from '../legacy-wallet'
 import { calcUtxoId } from '../legacy-wallet/helpers'
 import { Utxo } from '../types/utxo'
+import { outpointPrivateKey } from './outpoint-hd'
 import { readStealthTransaction } from './stealth-tx'
 
 export async function decodeEntry(
@@ -79,7 +87,15 @@ export async function decodeEntry(
     const ephemeralPubKey = PublicKey.fromBuffer(
       Buffer.from(ephemeralPubKeyRaw),
     )
-    const stealthHDPrivKey = constructHDStealthPrivateKey(ephemeralPubKey)
+    const stealthParent = constructHDStealthPrivateKey(ephemeralPubKey)
+    const stealthSecret = Uint8Array.from(stealthParent.privateKey.toBuffer())
+    const stealthDescribed = stealthParent.toObject() as { chainCode?: unknown }
+    if (typeof stealthDescribed.chainCode !== 'string') {
+      throw new Error('outpoint-hd:chain-code')
+    }
+    const stealthChain = Uint8Array.from(
+      Buffer.from(stealthDescribed.chainCode, 'hex'),
+    )
 
     let stealthValue = 0
     for (const [i, outpoint] of outpointsList.entries()) {
@@ -105,11 +121,17 @@ export async function decodeEntry(
         if (output === undefined) throw new Error('stealth-output')
         const satoshis = output.satoshis
 
-        const outpointPrivKey = stealthHDPrivKey
-          .deriveChild(44)
-          .deriveChild(145)
-          .deriveChild(i)
-          .deriveChild(j).privateKey
+        // Non-hardened m/44/145 private child (decision #531).
+        const outpointSecret = outpointPrivateKey(
+          stealthSecret,
+          stealthChain,
+          i,
+          j,
+        )
+        const outpointPrivKey = new PrivateKey(
+          Buffer.from(outpointSecret).toString('hex'),
+          Networks.get(networkName),
+        )
         // Address strings stay on bitcore (issue #242).
         const address = new Script(Buffer.from(output.script)).toAddress(
           networkName,

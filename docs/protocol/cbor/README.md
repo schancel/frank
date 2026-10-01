@@ -201,7 +201,8 @@ processes a newer compatible schema; they do not permit undeclared fields to be
 smuggled into schema version 1. The `schema_version` of the frame whose
 payload contains a map decides whether that map is read as exact or as a newer
 compatible schema, and the same decision covers every wildcard map nested in
-that payload (`relay-binding`, `key-transition`, `journal-fact`). An embedded
+that payload (`relay-binding`, `key-transition`, `journal-fact`, and section
+11's `profile-entry` and `profile-header`). An embedded
 child frame's own `schema_version` governs its own maps; a parent's version
 neither opens nor closes them. Maps whose CDDL has no wildcard (`payment-member`,
 `account-ref`, `timestamp`, `signature-entry`, and the common envelope) are
@@ -653,6 +654,9 @@ deployed before this merges. Type 4 gets `schema_version` 2 with
 field (S10a.1): schema 1 is the statement layout without field 8 and stays
 readable by a schema-2 reader, and a reader below version 2 retains a schema-2
 statement opaquely and never treats it as a statement without a stamp key.
+Section 11's registration profile is type-4 `schema_version` 3 and keeps
+`min_reader_version` 2 per V1, because its field 9 is optional: a schema-2
+reader projects a schema-3 statement through V6.3 and retains field 9.
 
 Migration. Profiles registered today are protobuf profiles and carry no field
 8; until the directory migration (#133) lets a subject publish a schema-2
@@ -1160,7 +1164,9 @@ category, and an implementation MUST NOT continue to report a later failure.
        relay-side policy belong to the relay and the migration tickets (#60,
        #132), not to the codec.
     6. Every signature entry and transition authorization verifies, not only the
-       subject's: `cryptographic`.
+       subject's: `cryptographic`. An entry whose algorithm is allocated but not
+       verifiable in the reader's slice is `unsupported` before any verification
+       runs (M7); `cryptographic` otherwise.
 
 Passes A and B of the CBOR stages. Pass A is a streaming syntax pass that
 proceeds in byte order and fails at the first item that violates a resource
@@ -1364,7 +1370,7 @@ and B in section 9 define the order within CBOR validation.
 | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------- |
 | Frame or route length over a limit; any byte/depth/container/item limit; R2 through R4 type-specific limits, including a CDDL bound that restates them                                                                                                                                                                                                                                                                                                                                                                                                    | `resource`      |
 | Short header, bad magic, declared-length mismatch, concatenated frame, bytes outside the declared body                                                                                                                                                                                                                                                                                                                                                                                                                                                    | `frame`         |
-| Unknown frame version or uninterpretable type/schema without permitted retention; unallocated key type, algorithm, encryption suite, or algorithm/key-type/length pairing                                                                                                                                                                                                                                                                                                                                                                                 | `unsupported`   |
+| Unknown frame version or uninterpretable type/schema without permitted retention; unallocated key type, algorithm, encryption suite, or algorithm/key-type/length pairing; an entry whose algorithm is allocated but not verifiable in the reader's slice (M7)                                                                                                                                                                                                                                                                                            | `unsupported`   |
 | Truncated/invalid CBOR syntax, invalid UTF-8, reserved additional information, or extra CBOR item in body/payload                                                                                                                                                                                                                                                                                                                                                                                                                                         | `malformed`     |
 | Non-minimal integer/length, indefinite value, duplicate/out-of-order map key, or another alternate encoding of an allowed value                                                                                                                                                                                                                                                                                                                                                                                                                           | `noncanonical`  |
 | Forbidden CBOR class (float, tag, forbidden simple value; a stray break code is `malformed`; non-uint map key), envelope/CDDL type mismatch, undeclared key (C12), missing/extra required key, scalar range violation, network-tag/ASCII-identifier/endpoint syntax violation, wrong key length for an allocated key type, a type-4 statement missing required field 8 or a schema-1 statement carrying it, a type-5 stamp field with the wrong length or an invalid point or proof-scalar encoding (T3b), or `min_reader_version` above `schema_version` | `schema`        |
@@ -1449,7 +1455,8 @@ the profile carries at least one entry and absent otherwise. A schema-1 or
 schema-2 statement that carries field 9 is a C12 `schema` error, a same-subject
 update must not lower `schema_version` (S10a.2), and every schema-3 statement
 still requires the stamp key (S10a.1). The codec-level rules of sections 2
-through 9 are unchanged by this section.
+through 9 are unchanged by this section except where M7 records an
+`unsupported` category at stage 10.6 for allocated-but-unverifiable algorithms.
 
 M1. Field mapping. Every protobuf field of the registration record maps 1:1
 into the type-4 statement and its type-2 wrapper; nothing is dropped, nothing
@@ -1545,7 +1552,9 @@ over the 32-byte SHA-256 digest of the frozen T2 transcript
 exact complete type-4 frame, empty context). This pins the record this
 migration writes; the frozen schema's allowance of further entries (a verified
 co-signature, for example) is unchanged, and stage 9 requires an entry signed
-by the statement subject while stage 10.6 verifies every entry. The protobuf
+by the statement subject while stage 10.6 verifies every entry (M7's
+allocated-but-unverifiable algorithms are `unsupported` before verification).
+The protobuf
 `payload_digest` (the SHA-256 of the protobuf payload bytes) is absorbed: the
 CBOR record authenticates the statement through T2 instead, and is recomputed
 at registration time, so legacy signature bytes are never copied or

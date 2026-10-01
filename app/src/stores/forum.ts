@@ -1,5 +1,6 @@
 import assert from 'assert'
 import { defineStore } from 'pinia'
+import { reactive } from 'vue'
 import { indexBy, uniq } from 'ramda'
 
 import {
@@ -31,6 +32,32 @@ export interface State {
   hasFetchedOnce: boolean
 }
 
+type ForumPostReservation = {
+  id: number
+  ownerKey: string
+}
+
+// Session-only economic ownership for paid forum submissions. This deliberately lives outside
+// Pinia's persisted State: it must survive page unmount/remount, but a process restart must not
+// manufacture a crash-retry policy or a durable operation journal. The memoized wallet promise is
+// the account identity for this session without retaining the seed phrase in a key.
+const walletSessionIds = new WeakMap<Promise<WalletHandle>, number>()
+const forumPostReservations = reactive(new Map<string, ForumPostReservation>())
+let nextWalletSessionId = 0
+let nextForumPostReservationId = 0
+
+function forumPostReservationKey(
+  walletPromise: Promise<WalletHandle>,
+  destination: string,
+): string {
+  let walletSessionId = walletSessionIds.get(walletPromise)
+  if (walletSessionId === undefined) {
+    walletSessionId = ++nextWalletSessionId
+    walletSessionIds.set(walletPromise, walletSessionId)
+  }
+  return `${walletSessionId}:${destination}`
+}
+
 export const useForumStore = defineStore('forum', {
   state: (): State => ({
     messages: [],
@@ -55,6 +82,41 @@ export const useForumStore = defineStore('forum', {
     },
   },
   actions: {
+    getPostDestinationReservationId(destination: string): number | undefined {
+      return forumPostReservations.get(destination)?.id
+    },
+    reservePostSubmission({
+      walletPromise,
+      destination,
+    }: {
+      walletPromise: Promise<WalletHandle>
+      destination: string
+    }): number | undefined {
+      const ownerKey = forumPostReservationKey(walletPromise, destination)
+      if (forumPostReservations.has(destination)) return undefined
+      const id = ++nextForumPostReservationId
+      forumPostReservations.set(destination, { id, ownerKey })
+      return id
+    },
+    releasePostSubmission({
+      walletPromise,
+      destination,
+      reservationId,
+    }: {
+      walletPromise: Promise<WalletHandle>
+      destination: string
+      reservationId: number
+    }): boolean {
+      const ownerKey = forumPostReservationKey(walletPromise, destination)
+      const reservation = forumPostReservations.get(destination)
+      if (
+        reservation?.id !== reservationId ||
+        reservation.ownerKey !== ownerKey
+      ) {
+        return false
+      }
+      return forumPostReservations.delete(destination)
+    },
     setSortMode(sortMode: SortMode) {
       this.sortMode = sortMode
     },

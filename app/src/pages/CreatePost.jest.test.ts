@@ -12,6 +12,7 @@ import { useForumStore } from 'src/stores/forum'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
 
 const mockPutMessage = jest.fn()
+const mockDisplayToSafeRawAmount = jest.fn(() => 1_000_000)
 // vue-router's CommonJS build imports this ESM-only diagnostics package. The router behavior is
 // the boundary under test here, not its development reporter.
 jest.mock('nostics', () => ({
@@ -30,6 +31,20 @@ jest.mock('pinia', () => ({
 }))
 jest.mock('src/stores/forum', () => ({
   useForumStore: (() => {
+    const reservations = jest
+      .requireActual('vue')
+      .reactive(new Map<string, { id: number; ownerKey: string }>())
+    const walletIds = new WeakMap<object, number>()
+    let nextWalletId = 0
+    let nextReservationId = 0
+    const reservationKey = (walletPromise: object, destination: string) => {
+      let walletId = walletIds.get(walletPromise)
+      if (walletId === undefined) {
+        walletId = ++nextWalletId
+        walletIds.set(walletPromise, walletId)
+      }
+      return `${walletId}:${destination}`
+    }
     const store = jest.requireActual('vue').reactive({
       topics: ['help'],
       selectedTopic: 'stamp',
@@ -38,6 +53,46 @@ jest.mock('src/stores/forum', () => ({
         digest ? store.index[digest] : undefined,
       pushNewTopic: jest.fn(),
       putMessage: (...args: unknown[]) => mockPutMessage(...args),
+      fetchMessage: jest.fn(
+        async ({ payloadDigest }: { payloadDigest: string }) =>
+          store.index[payloadDigest],
+      ),
+      getPostDestinationReservationId: (destination: string) => {
+        return reservations.get(destination)?.id
+      },
+      reservePostSubmission: ({
+        walletPromise,
+        destination,
+      }: {
+        walletPromise: object
+        destination: string
+      }) => {
+        const ownerKey = reservationKey(walletPromise, destination)
+        if (reservations.has(destination)) return undefined
+        const id = ++nextReservationId
+        reservations.set(destination, { id, ownerKey })
+        return id
+      },
+      releasePostSubmission: ({
+        walletPromise,
+        destination,
+        reservationId,
+      }: {
+        walletPromise: object
+        destination: string
+        reservationId: number
+      }) => {
+        const ownerKey = reservationKey(walletPromise, destination)
+        const reservation = reservations.get(destination)
+        if (
+          reservation?.id !== reservationId ||
+          reservation.ownerKey !== ownerKey
+        ) {
+          return false
+        }
+        return reservations.delete(destination)
+      },
+      clearPostReservations: () => reservations.clear(),
     })
     return () => store
   })(),
@@ -61,7 +116,8 @@ jest.mock('@frank/wallet/chain', () => ({
   },
 }))
 jest.mock('src/utils/chain-amount', () => ({
-  displayToSafeRawAmount: () => 1_000_000,
+  displayToSafeRawAmount: (...args: unknown[]) =>
+    mockDisplayToSafeRawAmount(...args),
 }))
 jest.mock('../components/forum/ForumMessage.vue', () => ({
   template: '<div />',
@@ -98,6 +154,9 @@ function loadQuasar(): any {
 const messages: Record<string, string> = {
   'stampPreparation.posting': 'POSTING',
   'stampPreparation.postCreated': 'Post created in {topic}.',
+  'stampPreparation.replyParentLoading': 'LOADING_PARENT',
+  'stampPreparation.replyParentUnavailable': 'PARENT_UNAVAILABLE',
+  'stampPreparation.retryReplyParent': 'RETRY_PARENT',
   'chat.stampPreparationChecking': 'CHECKING',
   'chat.stampPreparationFunding': 'FUNDING {completed}/{total} {feeReserve}',
   'chat.stampPreparationReady': 'READY',
@@ -210,9 +269,14 @@ beforeEach(() => {
   const forum = useForumStore() as unknown as {
     selectedTopic: string
     index: Record<string, { topic: string }>
+    fetchMessage: jest.Mock
+    clearPostReservations(): void
   }
   forum.selectedTopic = 'stamp'
   forum.index = {}
+  forum.fetchMessage.mockReset().mockResolvedValue(undefined)
+  forum.clearPostReservations()
+  mockDisplayToSafeRawAmount.mockReset().mockReturnValue(1_000_000)
 })
 
 afterEach(() => {
@@ -359,6 +423,61 @@ describe('CreatePost selected-topic default (ticket #414)', () => {
     })
   })
 
+  it('announces parent loading and pins the fetched parent topic', async () => {
+    const forum = useForumStore() as unknown as {
+      index: Record<string, { topic: string }>
+      fetchMessage: jest.Mock
+    }
+    let finishFetch!: () => void
+    forum.fetchMessage.mockImplementationOnce(
+      () =>
+        new Promise<void>(resolve => {
+          finishFetch = () => {
+            forum.index = { parent: { topic: 'news' } }
+            resolve()
+          }
+        }),
+    )
+
+    const { page } = await mountRoutedPage('/new-post/parent')
+    const parentStatus = page().get('[data-test="parent-resolution-status"]')
+    expect(parentStatus.attributes('role')).toBe('status')
+    expect(parentStatus.attributes('aria-live')).toBe('polite')
+    expect(parentStatus.text()).toContain('LOADING_PARENT')
+
+    finishFetch()
+    await flushPromises()
+
+    expect(page().find('[data-test="parent-resolution-status"]').exists()).toBe(
+      false,
+    )
+    expect(page().vm).toMatchObject({ topic: 'news' })
+  })
+
+  it('explains an unavailable parent and retries the same parent', async () => {
+    const forum = useForumStore() as unknown as {
+      index: Record<string, { topic: string }>
+      fetchMessage: jest.Mock
+    }
+    const { page } = await mountRoutedPage('/new-post/parent')
+
+    expect(
+      page().get('[data-test="parent-resolution-status"]').text(),
+    ).toContain('PARENT_UNAVAILABLE')
+
+    forum.fetchMessage.mockImplementationOnce(async () => {
+      forum.index = { parent: { topic: 'help' } }
+    })
+    await page().get('[data-test="retry-parent"]').trigger('click')
+    await flushPromises()
+
+    expect(forum.fetchMessage).toHaveBeenCalledTimes(2)
+    expect(page().find('[data-test="parent-resolution-status"]').exists()).toBe(
+      false,
+    )
+    expect(page().vm).toMatchObject({ topic: 'help' })
+  })
+
   it('blocks a real QForm reply until its late parent supplies the topic', async () => {
     const forum = useForumStore() as unknown as {
       index: Record<string, { topic: string }>
@@ -440,6 +559,38 @@ describe('CreatePost selected-topic default (ticket #414)', () => {
     expect(infoNotify).toHaveBeenCalledWith('Post created in stamp.')
   })
 
+  it('keeps the authorized offering across a deferred wallet lookup', async () => {
+    const { wrapper } = mountPage()
+    let resolveWallet!: (wallet: { identity: object }) => void
+    jest.mocked(useActiveWallet).mockReturnValueOnce(
+      new Promise(resolve => {
+        resolveWallet = resolve
+      }),
+    )
+    mockDisplayToSafeRawAmount.mockImplementationOnce(
+      (_chain: unknown, amount: string) => Number(amount),
+    )
+    const vm = wrapper.vm as unknown as {
+      offering: string
+      post(): Promise<void>
+    }
+    vm.offering = '2'
+
+    const posting = vm.post()
+    vm.offering = '9'
+    resolveWallet({ identity: {} })
+    await posting
+    await flushPromises()
+
+    expect(mockDisplayToSafeRawAmount).toHaveBeenCalledWith(
+      expect.anything(),
+      '2',
+    )
+    expect(mockPutMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ satoshis: 2 }),
+    )
+  })
+
   it('detaches an old deferred submission from a newer reused compose route', async () => {
     const forum = useForumStore() as unknown as {
       index: Record<string, { topic: string }>
@@ -519,6 +670,41 @@ describe('CreatePost selected-topic default (ticket #414)', () => {
     await first
     await flushPromises()
     expect(mockPutMessage).toHaveBeenCalledTimes(1)
+    expect(router.currentRoute.value.fullPath).toBe('/new-post/parentA')
+  })
+
+  it('keeps a remounted destination busy until the original submission settles', async () => {
+    const forum = useForumStore() as unknown as {
+      index: Record<string, { topic: string }>
+    }
+    forum.index = { parentA: { topic: 'news' } }
+    const { page, router } = await mountRoutedPage('/new-post/parentA')
+    let resolveWallet!: (wallet: { identity: object }) => void
+    jest.mocked(useActiveWallet).mockReturnValueOnce(
+      new Promise(resolve => {
+        resolveWallet = resolve
+      }),
+    )
+
+    const original = (page().vm as unknown as { post(): Promise<void> }).post()
+    await flushPromises()
+    await router.push('/outside')
+    await flushPromises()
+    await router.push('/new-post/parentA')
+    await flushPromises()
+
+    expect(page().vm).toMatchObject({ posting: true, parentDigest: 'parentA' })
+    await (page().vm as unknown as { post(): Promise<void> }).post()
+    expect(useActiveWallet).toHaveBeenCalledTimes(1)
+    expect(mockPutMessage).not.toHaveBeenCalled()
+
+    resolveWallet({ identity: {} })
+    await original
+    await flushPromises()
+
+    expect(mockPutMessage).toHaveBeenCalledTimes(1)
+    expect(router.currentRoute.value.fullPath).toBe('/new-post/parentA')
+    expect(page().vm).toMatchObject({ posting: false, parentDigest: 'parentA' })
   })
 
   it('cannot navigate a newer compose instance after the origin unmounts', async () => {
@@ -614,6 +800,76 @@ describe('CreatePost preparation status', () => {
     await first
 
     expect(mockPutMessage).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps pending B progress and ownership isolated from stale A', async () => {
+    const forum = useForumStore() as unknown as {
+      index: Record<string, { topic: string }>
+      getPostDestinationReservationId(destination: string): number | undefined
+    }
+    forum.index = {
+      parentA: { topic: 'news' },
+      parentB: { topic: 'help' },
+    }
+    const { page, router } = await mountRoutedPage('/new-post/parentA')
+    let finishA!: () => void
+    let finishB!: () => void
+    let reportA!: (progress: unknown) => void
+    let reportB!: (progress: unknown) => void
+    mockPutMessage
+      .mockImplementationOnce(
+        (args: { onPreparationProgress: (progress: unknown) => void }) => {
+          reportA = args.onPreparationProgress
+          return new Promise<void>(resolve => (finishA = resolve))
+        },
+      )
+      .mockImplementationOnce(
+        (args: { onPreparationProgress: (progress: unknown) => void }) => {
+          reportB = args.onPreparationProgress
+          return new Promise<void>(resolve => (finishB = resolve))
+        },
+      )
+
+    const postingA = (page().vm as unknown as { post(): Promise<void> }).post()
+    await flushPromises()
+    await router.push('/new-post/parentB')
+    await flushPromises()
+    const postingB = (page().vm as unknown as { post(): Promise<void> }).post()
+    await flushPromises()
+
+    reportB({ stage: 'checking' })
+    await flushPromises()
+    expect(page().vm).toMatchObject({
+      posting: true,
+      preparationStatus: 'CHECKING',
+      parentDigest: 'parentB',
+    })
+
+    reportA({ stage: 'funding', completed: 0, total: 1, feeReserveWei: 7n })
+    finishA()
+    await postingA
+    await flushPromises()
+    expect(page().vm).toMatchObject({
+      posting: true,
+      preparationStatus: 'CHECKING',
+      parentDigest: 'parentB',
+    })
+    expect(router.currentRoute.value.fullPath).toBe('/new-post/parentB')
+
+    reportA({ stage: 'ready', fundingTxHashes: [] })
+    await flushPromises()
+    expect(page().vm).toMatchObject({
+      posting: true,
+      preparationStatus: 'CHECKING',
+      parentDigest: 'parentB',
+    })
+
+    finishB()
+    await postingB
+    await flushPromises()
+    expect(
+      forum.getPostDestinationReservationId('reply:parentB'),
+    ).toBeUndefined()
   })
 })
 

@@ -10,6 +10,30 @@
   layout) wrap themselves this way -- this page was the only one that did, confirmed by checking
   both siblings before making this change. -->
   <q-card class="q-ma-none q-pa-sm">
+    <div
+      v-if="parentDigest && !parentMessage"
+      class="q-pa-md"
+      role="status"
+      aria-live="polite"
+      data-test="parent-resolution-status"
+    >
+      {{
+        $t(
+          parentLoading
+            ? 'stampPreparation.replyParentLoading'
+            : 'stampPreparation.replyParentUnavailable',
+        )
+      }}
+      <q-btn
+        v-if="!parentLoading"
+        class="q-ml-sm"
+        flat
+        dense
+        :label="$t('stampPreparation.retryReplyParent')"
+        @click="loadParent"
+        data-test="retry-parent"
+      />
+    </div>
     <q-form @submit="post">
       <q-card-section>
         <q-input
@@ -126,6 +150,10 @@ export default defineComponent({
       selectedTopic,
       pushNewTopic: forum.pushNewTopic,
       postMessage: forum.putMessage,
+      fetchMessage: forum.fetchMessage,
+      getPostDestinationReservationId: forum.getPostDestinationReservationId,
+      reservePostSubmission: forum.reservePostSubmission,
+      releasePostSubmission: forum.releasePostSubmission,
     }
   },
   components: {
@@ -152,18 +180,22 @@ export default defineComponent({
       chainUnit: activeChain.unit,
       posting: false,
       preparationStatus: null as string | null,
-      nextSubmissionId: 0,
       activeSubmissionId: null as number | null,
-      inFlightSubmissions: {} as Record<string, number | undefined>,
-      submissionStatuses: {} as Record<string, string | null | undefined>,
       componentMounted: false,
+      routeEpoch: 0,
+      parentLoading: false,
     }
   },
   mounted() {
     this.componentMounted = true
+    this.syncSubmissionUi(this.parentDigest)
+    if (this.parentDigest && !this.parentMessage) {
+      void this.loadParent()
+    }
   },
   beforeUnmount() {
     this.componentMounted = false
+    this.routeEpoch += 1
     this.activeSubmissionId = null
   },
   computed: {
@@ -178,6 +210,11 @@ export default defineComponent({
     parentMessage() {
       return this.parentDigest ? this.getMessage(this.parentDigest) : undefined
     },
+    currentReservationId() {
+      return this.getPostDestinationReservationId(
+        this.submissionDestination(this.parentDigest),
+      )
+    },
   },
   watch: {
     '$route.params.parentDigest'(nextParentDigest: unknown) {
@@ -187,7 +224,16 @@ export default defineComponent({
     },
     'parentMessage'(nextParent: { topic: string } | undefined) {
       if (this.parentDigest && nextParent) {
+        this.parentLoading = false
         this.topic = nextParent.topic
+      }
+    },
+    'currentReservationId'(nextReservationId: number | undefined) {
+      this.posting = nextReservationId !== undefined
+      if (nextReservationId === undefined) {
+        this.preparationStatus = null
+      } else if (this.activeSubmissionId !== nextReservationId) {
+        this.preparationStatus = this.$t('stampPreparation.posting')
       }
     },
     'selectedTopic'(nextTopic: string) {
@@ -202,16 +248,16 @@ export default defineComponent({
       return parentDigest ? `reply:${parentDigest}` : 'top-level'
     },
     syncSubmissionUi(parentDigest: string | undefined) {
-      const destination = this.submissionDestination(parentDigest)
-      const submissionId = this.inFlightSubmissions[destination] ?? null
-      this.activeSubmissionId = submissionId
-      this.posting = submissionId !== null
-      this.preparationStatus =
-        submissionId === null
-          ? null
-          : this.submissionStatuses[destination] ?? null
+      const reservationId = this.getPostDestinationReservationId(
+        this.submissionDestination(parentDigest),
+      )
+      this.posting = reservationId !== undefined
+      this.preparationStatus = this.posting
+        ? this.$t('stampPreparation.posting')
+        : null
     },
     syncParentDigest(parentDigest: string | undefined) {
+      this.routeEpoch += 1
       this.parentDigest = parentDigest
       if (parentDigest) {
         this.topic = this.getMessage(parentDigest)?.topic ?? ''
@@ -222,6 +268,25 @@ export default defineComponent({
         this.topic = this.topLevelTopic
       }
       this.syncSubmissionUi(parentDigest)
+      if (parentDigest && !this.parentMessage) {
+        void this.loadParent()
+      } else {
+        this.parentLoading = false
+      }
+    },
+    async loadParent() {
+      const requestedParent = this.parentDigest
+      if (!requestedParent || this.getMessage(requestedParent)) return
+      this.parentLoading = true
+      try {
+        await this.fetchMessage({ payloadDigest: requestedParent })
+      } catch {
+        // The visible terminal state supplies the retry path.
+      } finally {
+        if (this.parentDigest === requestedParent) {
+          this.parentLoading = false
+        }
+      }
     },
     setTopic(topic: string | null) {
       if (this.parentDigest) return
@@ -257,19 +322,40 @@ export default defineComponent({
     async post() {
       if (this.parentDigest && !this.parentMessage) return
       // A second submit while the first is still preparing/funding would queue a second burn.
-      if (this.posting) return
+      if (this.currentReservationId !== undefined) return
 
       const submittedTopic = this.topic
       const submittedParentDigest = this.parentDigest
+      let submittedOffering: number
+      try {
+        submittedOffering = displayToSafeRawAmount(
+          activeChain,
+          this.offering.toString(),
+        )
+      } catch (err) {
+        errorNotify(err as Error)
+        return
+      }
       const submittedDestination = this.submissionDestination(
         submittedParentDigest,
       )
-      if (this.inFlightSubmissions[submittedDestination] !== undefined) return
-
-      const submissionId = ++this.nextSubmissionId
+      let walletPromise: ReturnType<typeof useActiveWallet>
+      try {
+        walletPromise = useActiveWallet()
+      } catch (err) {
+        errorNotify(err as Error)
+        return
+      }
+      const submissionId = this.reservePostSubmission({
+        walletPromise,
+        destination: submittedDestination,
+      })
+      if (submissionId === undefined) {
+        this.syncSubmissionUi(this.parentDigest)
+        return
+      }
+      const submissionEpoch = this.routeEpoch
       const postingStatus = this.$t('stampPreparation.posting')
-      this.inFlightSubmissions[submittedDestination] = submissionId
-      this.submissionStatuses[submittedDestination] = postingStatus
       this.activeSubmissionId = submissionId
       const entry = {
         kind: 'post' as const,
@@ -287,19 +373,18 @@ export default defineComponent({
 
       await submitPost({
         submit: async () => {
-          const wallet = await useActiveWallet()
+          const wallet = await walletPromise
           await this.postMessage({
             wallet,
             entry,
-            satoshis: displayToSafeRawAmount(
-              activeChain,
-              this.offering.toString(),
-            ),
+            satoshis: submittedOffering,
             topic: submittedTopic,
             parentDigest: submittedParentDigest,
             onPreparationProgress: progress => {
               if (
-                this.inFlightSubmissions[submittedDestination] !== submissionId
+                !this.componentMounted ||
+                this.activeSubmissionId !== submissionId ||
+                this.routeEpoch !== submissionEpoch
               ) {
                 return
               }
@@ -311,10 +396,7 @@ export default defineComponent({
                   unit: activeChain.unit,
                 },
               )
-              this.submissionStatuses[submittedDestination] = status
-              if (this.activeSubmissionId === submissionId) {
-                this.preparationStatus = status
-              }
+              this.preparationStatus = status
             },
           })
         },
@@ -324,6 +406,7 @@ export default defineComponent({
           if (
             this.componentMounted &&
             this.activeSubmissionId === submissionId &&
+            this.routeEpoch === submissionEpoch &&
             this.submissionDestination(this.parentDigest) ===
               submittedDestination
           ) {
@@ -337,10 +420,11 @@ export default defineComponent({
           refreshFailed: this.$t('stampPreparation.postedRefreshFailed'),
         },
       }).finally(() => {
-        if (this.inFlightSubmissions[submittedDestination] === submissionId) {
-          delete this.inFlightSubmissions[submittedDestination]
-          delete this.submissionStatuses[submittedDestination]
-        }
+        this.releasePostSubmission({
+          walletPromise,
+          destination: submittedDestination,
+          reservationId: submissionId,
+        })
         if (this.activeSubmissionId === submissionId) {
           this.activeSubmissionId = null
           this.posting = false

@@ -56,6 +56,87 @@ beforeEach(() => {
   mockedDiscoverTopics.mockResolvedValue([])
 })
 
+describe('useForumStore: session post reservations', () => {
+  it('survives a Pinia remount and requires the exact owner to release it', () => {
+    const firstStore = useForumStore()
+    const walletPromise = Promise.resolve(testWallet)
+    const reservationId = firstStore.reservePostSubmission({
+      walletPromise,
+      destination: 'reply:parent',
+    })
+
+    expect(reservationId).toEqual(expect.any(Number))
+    setActivePinia(createPinia())
+    const remountedStore = useForumStore()
+    expect(remountedStore.getPostDestinationReservationId('reply:parent')).toBe(
+      reservationId,
+    )
+    expect(
+      remountedStore.releasePostSubmission({
+        walletPromise: Promise.resolve(testWallet),
+        destination: 'reply:parent',
+        reservationId: reservationId as number,
+      }),
+    ).toBe(false)
+    expect(
+      remountedStore.releasePostSubmission({
+        walletPromise,
+        destination: 'reply:parent',
+        reservationId: (reservationId as number) + 1,
+      }),
+    ).toBe(false)
+    expect(remountedStore.getPostDestinationReservationId('reply:parent')).toBe(
+      reservationId,
+    )
+    expect(
+      remountedStore.releasePostSubmission({
+        walletPromise,
+        destination: 'reply:parent',
+        reservationId: reservationId as number,
+      }),
+    ).toBe(true)
+    expect(
+      remountedStore.getPostDestinationReservationId('reply:parent'),
+    ).toBeUndefined()
+  })
+
+  it('allows separate destinations while rejecting the same account and destination', () => {
+    const store = useForumStore()
+    const walletPromise = Promise.resolve(testWallet)
+    const parentA = store.reservePostSubmission({
+      walletPromise,
+      destination: 'reply:parentA',
+    })
+
+    expect(
+      store.reservePostSubmission({
+        walletPromise,
+        destination: 'reply:parentA',
+      }),
+    ).toBeUndefined()
+    const parentB = store.reservePostSubmission({
+      walletPromise,
+      destination: 'reply:parentB',
+    })
+    expect(parentB).toEqual(expect.any(Number))
+
+    expect(
+      store.releasePostSubmission({
+        walletPromise,
+        destination: 'reply:parentA',
+        reservationId: parentA as number,
+      }),
+    ).toBe(true)
+    expect(
+      store.releasePostSubmission({
+        walletPromise,
+        destination: 'reply:parentB',
+        reservationId: parentB as number,
+      }),
+    ).toBe(true)
+  })
+})
+
 describe('useForumStore: putMessage', () => {
   it('posts through activeChain.topics.post, mapping a positive satoshis offering to direction "up"', async () => {
     const store = useForumStore()

@@ -280,12 +280,15 @@ it('derives stamp and stealth outpoint private keys on the bitcore m/44/145 path
   ).toThrow('outpoint-hd:chain-code')
 
   const receive = readFileSync(join(__dirname, 'index.ts'), 'utf8')
-  const receiveAt = receive.indexOf('constructStampHDPrivateKey')
+  const receiveAt = receive.indexOf('stampParentSecret(')
   const receiveBody = receive.slice(
     receiveAt,
     receive.indexOf('invalid stamp address', receiveAt),
   )
   expect(receiveBody).toContain('outpointPrivateKey(')
+  expect(receiveBody).toContain('stampParentSecret(')
+  expect(receiveBody).not.toContain('constructStampHDPrivateKey')
+  expect(receiveBody).not.toContain('HDPrivateKey')
   expect(receiveBody).not.toContain('deriveChild')
   expect(receiveBody).not.toContain('899')
   expect(receiveBody).not.toContain('10605')

@@ -118,7 +118,8 @@ it('reads stealth transactions from transaction bytes', () => {
   expect(payment).toContain('constructHDStealthPrivateKey')
   const receive = readFileSync(join(__dirname, 'index.ts'), 'utf8')
   expect(receive).toContain('readStampTransaction')
-  expect(receive).toContain('constructStampHDPrivateKey')
+  expect(receive).toContain('stampParentSecret(')
+  expect(receive).not.toContain('constructStampHDPrivateKey')
 
   const bip143 = Buffer.from(BIP143_UNSIGNED, 'hex')
   const bip143Bitcore = bitcoreView(bip143)

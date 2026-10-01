@@ -15,6 +15,7 @@ import { relayCipherPayloadDigest } from './cipher-payload-digest'
 import { p2pkhSpentOutpoints } from './p2pkh-spent'
 import { outpointPrivateKey } from './outpoint-hd'
 import { stampOutpointPublicKey } from './stamp-outpoint-pub'
+import { stampParentSecret } from './stamp-parent'
 import { readStampTransaction } from './stamp-tx'
 import { arrayBufferToBase64 } from './images'
 
@@ -865,12 +866,12 @@ export class RelayClient extends ReadOnlyRelayClient {
     const identityPrivateKey = wallet.identityPrivKey
     assert(identityPrivateKey, 'No identity privkey set')
 
-    const stampParent = this.payloadConstructor.constructStampHDPrivateKey(
+    // Parent secret is stampParentSecret of the identity key (decision #547).
+    // Chain code stays the payload digest (decision #531).
+    const stampSecret = stampParentSecret(
+      Uint8Array.from(identityPrivateKey.toBuffer()),
       payloadDigest,
-      identityPrivateKey,
     )
-    // Same chain code constructStampHDPrivateKey stored (decision #531).
-    const stampSecret = Uint8Array.from(stampParent.privateKey.toBuffer())
     const stampChain = Uint8Array.from(payloadDigest)
 
     for (const [i, stampOutpoint] of stampOutpoints.entries()) {

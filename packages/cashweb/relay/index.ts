@@ -13,6 +13,7 @@ import EventEmitter from 'events'
 import { MessageConstructor } from './constructors'
 import { relayCipherPayloadDigest } from './cipher-payload-digest'
 import { p2pkhSpentOutpoints } from './p2pkh-spent'
+import { readStampTransaction } from './stamp-tx'
 import { arrayBufferToBase64 } from './images'
 
 import { PayloadConstructor } from './crypto'
@@ -30,6 +31,7 @@ import {
   PublicKey,
   crypto,
   Transaction,
+  Script,
   Networks,
   Address,
   PrivateKey,
@@ -869,15 +871,16 @@ export class RelayClient extends ReadOnlyRelayClient {
 
     for (const [i, stampOutpoint] of stampOutpoints.entries()) {
       const stampTxRaw = Buffer.from(stampOutpoint.getStampTx())
-      const stampTx = new Transaction(stampTxRaw)
-      const txId = stampTx.txid
+      // Segmented id and output amounts, not a bitcore Transaction (decision #527).
+      const stampTx = readStampTransaction(stampTxRaw)
+      const txId = stampTx.txId
       const vouts = stampOutpoint.getVoutsList()
       const stampTxHDPrivKey = stampRootHDPrivKey.deriveChild(i)
       if (outbound) {
         for (const input of stampTx.inputs) {
           // In order to update UTXO state more quickly, go ahead and remove the inputs from our set immediately
           const utxoId = calcUtxoId({
-            txId: input.prevTxId.toString('hex'),
+            txId: input.txId,
             outputIndex: input.outputIndex,
           })
           await wallet.deleteUtxo(utxoId)
@@ -885,8 +888,12 @@ export class RelayClient extends ReadOnlyRelayClient {
       }
       for (const [j, outputIndex] of vouts.entries()) {
         const output = stampTx.outputs[outputIndex]
+        if (output === undefined) throw new Error('stamp-output')
         const satoshis = output.satoshis
-        const address = output.script.toAddress(this.networkName)
+        // Address strings stay on bitcore (issue #242).
+        const address = new Script(Buffer.from(output.script)).toAddress(
+          this.networkName,
+        )
         stampValue += satoshis
 
         // Also note, we should use an HD key here.

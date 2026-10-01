@@ -154,19 +154,20 @@ describe('stores/chats.ts (ticket #42)', () => {
           preparationTxHashes: [],
         })
 
-      const result = await chats.sendMessage({
+      const outcome = await chats.sendMessage({
         wallet,
         address: RECIPIENT_ADDRESS,
         items: [{ type: 'text', text: 'hello' }],
         onPreparationProgress,
       })
 
-      expect(result.payloadDigest).toBe('deadbeef')
+      expect(outcome).toEqual({ state: 'sent', payloadDigest: 'deadbeef' })
       expect(sendSpy).toHaveBeenCalledWith({
         wallet,
         recipient: { raw: RECIPIENT_ADDRESS },
         items: [{ type: 'text', text: 'hello' }],
         onPreparationProgress,
+        onAttemptCreated: expect.any(Function),
       })
 
       const chat = chats.chats[RECIPIENT_ADDRESS]
@@ -225,7 +226,7 @@ describe('stores/chats.ts (ticket #42)', () => {
       expect(sendSpy).not.toHaveBeenCalled()
     })
 
-    it('propagates a send failure and marks the optimistic message as failed', async () => {
+    it('keeps a failed send in the conversation, marked failed, instead of throwing (#269)', async () => {
       const chats = useChatStore()
       const wallet = makeWallet(SENDER_ADDRESS)
       jest
@@ -238,7 +239,7 @@ describe('stores/chats.ts (ticket #42)', () => {
           address: RECIPIENT_ADDRESS,
           items: [{ type: 'text', text: 'hi' }],
         }),
-      ).rejects.toThrow('no registered profile')
+      ).resolves.toEqual({ state: 'failed', reason: 'error' })
 
       const messages = chats.chats[RECIPIENT_ADDRESS]?.messages ?? []
       expect(messages).toHaveLength(1)
@@ -248,7 +249,15 @@ describe('stores/chats.ts (ticket #42)', () => {
           items: [{ type: 'text', text: 'hi' }],
         }),
       )
-      expect(mockMessageStore.saveMessage).not.toHaveBeenCalled()
+      // The failed message and its text are stored durably (the full reload proof is in
+      // chats.outgoing.jest.test.ts).
+      expect(mockMessageStore.saveMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          outbound: true,
+          message: expect.objectContaining({ status: 'error' }),
+        }),
+        { advanceCursor: false },
+      )
     })
 
     it('does not make a delivered message look retryable when local persistence fails', async () => {
@@ -259,9 +268,12 @@ describe('stores/chats.ts (ticket #42)', () => {
         stampValueWei: 321n,
         preparationTxHashes: [],
       })
-      mockMessageStore.saveMessage.mockRejectedValueOnce(
-        new Error('local storage unavailable'),
-      )
+      mockMessageStore.saveMessage.mockImplementation(async wrapper => {
+        // Only the confirmed record's write fails; the earlier pending writes are best effort.
+        if (wrapper.index === 'delivered-digest') {
+          throw new Error('local storage unavailable')
+        }
+      })
 
       await expect(
         chats.sendMessage({
@@ -465,6 +477,131 @@ describe('stores/chats.ts (ticket #42)', () => {
 
       expect(desktopNotify).toHaveBeenCalledTimes(1)
     })
+
+    function notifyingContact() {
+      useContactStore().addContact({
+        address: RECIPIENT_ADDRESS,
+        contact: {
+          notify: true,
+          profile: { name: 'Bob', bio: '', avatar: '', pubKey: null },
+        },
+      })
+      jest.spyOn(document, 'hasFocus').mockReturnValue(false)
+    }
+
+    it('notifies once when two overlapping polls deliver the same message from an unknown contact (#412)', async () => {
+      const chats = useChatStore()
+      jest.spyOn(document, 'hasFocus').mockReturnValue(false)
+      // Loading an unknown contact awaits, which is the window between the "already have it?"
+      // check and the message being stored.
+      jest
+        .spyOn(useContactStore(), 'refresh')
+        .mockImplementation(
+          () => new Promise(resolve => setTimeout(resolve, 5)),
+        )
+      const wrapper = makeWrapper()
+
+      await Promise.all([
+        chats.receiveMessages([wrapper]),
+        chats.receiveMessages([{ ...wrapper }]),
+      ])
+
+      expect(desktopNotify).toHaveBeenCalledTimes(1)
+    })
+
+    it('notifies once when two overlapping polls deliver the same message from a known contact (#412)', async () => {
+      const chats = useChatStore()
+      notifyingContact()
+      const wrapper = makeWrapper()
+
+      await Promise.all([
+        chats.receiveMessages([wrapper]),
+        chats.receiveMessages([{ ...wrapper }]),
+      ])
+
+      expect(desktopNotify).toHaveBeenCalledTimes(1)
+    })
+
+    it('tags the notification with the message index so the browser collapses repeats (#412)', async () => {
+      const chats = useChatStore()
+      notifyingContact()
+
+      await chats.receiveMessages([makeWrapper({ index: 'digest-tag' })])
+
+      expect(desktopNotify).toHaveBeenCalledWith(
+        'Bob',
+        'hi there',
+        '',
+        expect.any(Function),
+        'digest-tag',
+      )
+    })
+
+    it('stores a message once when two overlapping polls deliver it (#412)', async () => {
+      const chats = useChatStore()
+      jest.spyOn(document, 'hasFocus').mockReturnValue(false)
+      jest
+        .spyOn(useContactStore(), 'refresh')
+        .mockImplementation(
+          () => new Promise(resolve => setTimeout(resolve, 5)),
+        )
+      const wrapper = makeWrapper()
+
+      await Promise.all([
+        chats.receiveMessages([wrapper]),
+        chats.receiveMessages([{ ...wrapper }]),
+      ])
+
+      expect(chats.chats[RECIPIENT_ADDRESS]?.messages).toHaveLength(1)
+      expect(chats.chats[RECIPIENT_ADDRESS]?.totalUnreadMessages).toBe(1)
+      expect(chats.chats[RECIPIENT_ADDRESS]?.totalValue).toBe(5000)
+    })
+
+    it('still notifies different messages that overlap (#412)', async () => {
+      const chats = useChatStore()
+      notifyingContact()
+
+      await Promise.all([
+        chats.receiveMessages([makeWrapper({ index: 'digest-a' })]),
+        chats.receiveMessages([makeWrapper({ index: 'digest-b' })]),
+      ])
+
+      expect(desktopNotify).toHaveBeenCalledTimes(2)
+    })
+
+    it('does not let an overlapping poll store a message whose claimer failed, so a retry can still notify (#412)', async () => {
+      const chats = useChatStore()
+      notifyingContact()
+      mockMessageStore.saveMessage
+        .mockRejectedValueOnce(new Error('disk'))
+        .mockResolvedValue(undefined)
+      const wrapper = makeWrapper()
+
+      await Promise.allSettled([
+        chats.receiveMessages([wrapper]),
+        chats.receiveMessages([{ ...wrapper }]),
+      ])
+
+      expect(chats.chats[RECIPIENT_ADDRESS]?.messages ?? []).toHaveLength(0)
+      expect(desktopNotify).not.toHaveBeenCalled()
+
+      await chats.receiveMessages([wrapper])
+      expect(desktopNotify).toHaveBeenCalledTimes(1)
+      expect(chats.chats[RECIPIENT_ADDRESS]?.messages).toHaveLength(1)
+    })
+
+    it('lets a retry notify when the first attempt failed before storing (#412)', async () => {
+      const chats = useChatStore()
+      notifyingContact()
+      mockMessageStore.saveMessage.mockRejectedValueOnce(new Error('disk'))
+      const wrapper = makeWrapper()
+
+      await expect(chats.receiveMessages([wrapper])).rejects.toThrow('disk')
+      await chats.receiveMessages([wrapper])
+
+      expect(desktopNotify).toHaveBeenCalledTimes(1)
+      expect(chats.chats[RECIPIENT_ADDRESS]?.messages).toHaveLength(1)
+    })
   })
 
   it('deletes a message durably before removing it from the chat', async () => {
@@ -497,5 +634,17 @@ describe('stores/chats.ts (ticket #42)', () => {
     expect(mockMessageStore.deleteMessage).toHaveBeenCalledWith('delete-me')
     expect(chats.messages['delete-me']).toBeUndefined()
     expect(chats.chats[RECIPIENT_ADDRESS]?.messages).toHaveLength(0)
+  })
+
+  describe('readAll (ticket #368)', () => {
+    it('opening a chat that has no messages yet is not an error-level console event', () => {
+      const chats = useChatStore()
+      const errorSpy = jest.spyOn(console, 'error').mockImplementation()
+      jest.spyOn(console, 'debug').mockImplementation()
+
+      chats.readAll(RECIPIENT_ADDRESS)
+
+      expect(errorSpy).not.toHaveBeenCalled()
+    })
   })
 })

@@ -135,9 +135,25 @@ Point.prototype.validate = function validate() {
 
 };
 
+/**
+ * Serialize a curve coordinate as exactly 32 big-endian bytes, left-padded with zeros.
+ *
+ * `point.getX()` / `point.getY()` return elliptic's own BN. Which `bn.js` copy that is depends on
+ * how the point was built and on the install layout, and only bitcore's patched copy honors
+ * `toBuffer({size: 32})`; the other silently returns the minimal-length buffer, dropping a leading
+ * zero byte (about 1 coordinate in 256). `toArray('be', 32)` is defined by every bn.js and pads,
+ * so the encoding is identical regardless of which class produced the number.
+ *
+ * @param {BN} coordinate - A field element (X or Y coordinate)
+ * @returns {Buffer} 32 bytes, big-endian
+ */
+Point.coordinateToBuffer = function coordinateToBuffer(coordinate) {
+  return Buffer.from(coordinate.toArray('be', 32));
+};
+
 Point.pointToCompressed = function pointToCompressed(point) {
-  var xbuf = point.getX().toBuffer({size: 32});
-  var ybuf = point.getY().toBuffer({size: 32});
+  var xbuf = Point.coordinateToBuffer(point.getX());
+  var ybuf = Point.coordinateToBuffer(point.getY());
 
   var prefix;
   var odd = ybuf[ybuf.length - 1] % 2;

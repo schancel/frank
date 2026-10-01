@@ -191,14 +191,15 @@ describe('stage precedence', () => {
         ),
       ),
     ).toBe('semantic@8.4')
-    // Whereas an unassigned type reaches stage 7 and reports its malformed payload.
+    // Whereas an unassigned type (12; types 9 through 11 are assigned since #136) reaches stage 7
+    // and reports its malformed payload.
     expect(
       outcome(
         fr(
           8,
           M([
             [0, 'frank'],
-            [1, [framePayload(hex('780561'), 9)]],
+            [1, [framePayload(hex('780561'), 12)]],
           ]),
         ),
       ),

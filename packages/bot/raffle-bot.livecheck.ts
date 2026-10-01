@@ -29,9 +29,10 @@
  * assumption about where stamp value lands. The only thing `mainAccountSigner` ever funds here is
  * a small, flat, round-count-independent gas reserve on the identity address (see
  * `ensureIdentityFunded`) -- ordinary bot-operation overhead, never payout money -- and the payout
- * path re-asserts the identity's balance actually covers the pot immediately before paying out, so
- * a bug here fails closed (refuses to draw) rather than silently drawing the shortfall from that
- * shared wallet.
+ * path re-asserts the identity's balance actually covers the pot immediately before paying out.
+ * NOTE (#363): swept entries arrive net of sweep gas, so the identity is always short of the gross
+ * pot by that gas; `raffle-settlement.ts` covers only that bounded shortfall (plus payout gas) from
+ * the operator wallet, and HOLDS the draw (never announces, never exits) when it cannot.
  *
  * ## Fairness scheme
  *
@@ -51,17 +52,18 @@
  *
  * Env vars:
  *   RAFFLE_BOT_IDENTITY_JSON     -- default /tmp/raffle-bot-identity.json
- *   RAFFLE_BOT_STATE_DIR         -- default /tmp/raffle-bot-state
+ *   RAFFLE_BOT_STATE_DIR         -- default ~/.frank-bots/raffle (or $XDG_STATE_HOME/frank-bots/raffle)
  *   RAFFLE_BOT_ENTRY_PRICE_WEI   -- default 0.02 MON
  *   RAFFLE_BOT_MAX_ENTRIES       -- entrants per round, default 5
  *   RAFFLE_BOT_MAX_ROUNDS        -- how many rounds to draw before exiting (default 1000)
+ *   RAFFLE_BOT_MAX_TOPUP_WEI     -- largest operator top-up to cover sweep+payout gas, default 0.05 MON
  *   RAFFLE_BOT_POLL_INTERVAL_MS  -- default 4000
  *   RAFFLE_BOT_IDLE_TIMEOUT_MS   -- default 10 minutes
  */
 import { randomBytes } from 'crypto'
 import { resolve } from 'path'
 
-import { getBytes, Provider } from 'ethers'
+import { getBytes, Provider, Transaction } from 'ethers'
 
 import {
   canonicalMonadEnvelopeAddress,
@@ -79,11 +81,12 @@ import { deserializeMessageItems } from '@frank/wallet/chain/monad-chain'
 import { RaffleItem } from '@frank/cashweb/types/messages'
 import {
   combineEntrantEntropy,
-  pickWinnerIndex,
   sha256Hex,
 } from '@frank/wallet/message-item-plugins/raffle/draw'
+import { formatMon } from '@frank/wallet/monad-amount'
 import { MonadHttpClient } from '@frank/wallet/monad-http'
 import { MonadAccountTxSigner } from '@frank/wallet/monad-account-tx'
+import { estimateDustThresholdWei } from '@frank/wallet/monad-change-pool'
 import {
   MonadStampedMessageProto,
   RecoveredMonadStampPayment,
@@ -98,12 +101,25 @@ import {
   setUpFundedStampClient,
   waitForConfirmation,
 } from './qwen-bot-common'
+import { botProfileFields } from './bot-directory'
+import { botStateDir } from './bot-state-dir'
+import { botLoopGuardFromEnv } from './bot-loop-guard'
 import {
   hasRaffleEntrant,
   RaffleBotStateStore,
   RaffleEntrant,
   RaffleRoundRecord,
 } from './raffle-bot-state'
+import {
+  RAFFLE_DEFAULT_ENTRY_PRICE_WEI,
+  RAFFLE_DEFAULT_MAX_ENTRIES,
+  RAFFLE_DEFAULT_MAX_TOPUP_PER_DAY_WEI,
+  RAFFLE_DEFAULT_MAX_TOPUP_WEI,
+  repriceSignedPayout,
+  RAFFLE_MAX_PAYMENTS_PER_ENTRY,
+  RaffleSettlementPorts,
+  runRaffleBot,
+} from './raffle-settlement'
 
 function sleep(ms: number): Promise<void> {
   return new Promise(r => setTimeout(r, ms))
@@ -141,7 +157,7 @@ export function summarizeRecoveredPayments(
  * expected failure mode (a payment too small to sweep, one that never confirms) -- ticket #121's
  * acceptance criteria: missing/partial/ambiguous payments must fail closed, not silently accept a
  * short entry or leave funds unaccounted for. */
-async function recoverAndSweepEntryPayment(params: {
+export async function recoverAndSweepEntryPayment(params: {
   message: MonadStampedMessageProto
   recipientPrivateKey: Uint8Array
   minTotalValueWei: bigint
@@ -150,9 +166,25 @@ async function recoverAndSweepEntryPayment(params: {
   httpClient: MonadHttpClient
   identitySigner: MonadAccountTxSigner
   label: string
+  /** Sweep gas tolerated per payment when comparing the amount actually swept to the price
+   * (default: the current dust threshold estimate, the amount each sweep leaves behind). */
+  dustToleranceWei?: bigint
 }): Promise<
-  | { ok: true; totalValueWei: bigint; combinedTxHash: string }
-  | { ok: false; reason: string; totalValueWei?: bigint }
+  | {
+      ok: true
+      totalValueWei: bigint
+      combinedTxHash: string
+      paymentCount: number
+    }
+  | {
+      ok: false
+      reason: string
+      totalValueWei?: bigint
+      /** Present once anything was swept into the identity: what to record as unclaimed. */
+      sweptWei?: bigint
+      paymentHashes?: string[]
+      paymentCount?: number
+    }
 > {
   let recovered
   try {
@@ -175,11 +207,23 @@ async function recoverAndSweepEntryPayment(params: {
   if (totalValueWei < params.minTotalValueWei) {
     return {
       ok: false,
-      reason: `payment ${totalValueWei} wei is below the required ${params.minTotalValueWei} wei`,
+      reason: `payment ${formatMon(totalValueWei)} is below the required ${formatMon(params.minTotalValueWei)}`,
       totalValueWei,
     }
   }
 
+  let sweptWei = 0n
+  const paymentHashes = ordered.map(p => p.txHash)
+  // Every rejection after this point may already hold entrant money in the identity: report it so
+  // the caller records an `unclaimed` entry the operator can refund exactly once.
+  const fail = (reason: string) => ({
+    ok: false as const,
+    reason,
+    totalValueWei,
+    sweptWei,
+    paymentHashes,
+    paymentCount: ordered.length,
+  })
   for (const payment of ordered) {
     const outcome = await sweepRecoveredMonadStampPayment({
       payment,
@@ -187,21 +231,22 @@ async function recoverAndSweepEntryPayment(params: {
       provider: params.provider,
       httpClient: params.httpClient,
     })
-    if (outcome.swept) continue
+    if (outcome.swept) {
+      sweptWei += outcome.valueWei
+      continue
+    }
     if (outcome.reason === 'below-dust-threshold') {
-      return {
-        ok: false,
-        reason: `entry payment (child ${payment.childIndex}) is below the dust threshold to sweep`,
-      }
+      return fail(
+        `entry payment (child ${payment.childIndex}) is below the dust threshold to sweep`,
+      )
     }
     // 'pending': a sweep tx was already submitted for this child key. Wait for it rather than
     // re-invoking the sweep (re-invoking would race the same child key's own nonce against its
     // still-in-flight transaction).
     if (!outcome.txHash) {
-      return {
-        ok: false,
-        reason: `sweep for child ${payment.childIndex} is pending with no tx hash to await`,
-      }
+      return fail(
+        `sweep for child ${payment.childIndex} is pending with no tx hash to await`,
+      )
     }
     try {
       await waitForConfirmation(
@@ -209,44 +254,41 @@ async function recoverAndSweepEntryPayment(params: {
         outcome.txHash,
         `${params.label} sweep (child ${payment.childIndex})`,
       )
+      sweptWei += outcome.valueWei ?? 0n
     } catch (err) {
-      return {
-        ok: false,
-        reason: `sweep for child ${payment.childIndex} did not confirm: ${err instanceof Error ? err.message : String(err)}`,
-      }
+      return fail(
+        `sweep for child ${payment.childIndex} did not confirm: ${err instanceof Error ? err.message : String(err)}`,
+      )
     }
   }
 
-  return { ok: true, totalValueWei, combinedTxHash }
-}
+  // What the identity ACTUALLY received (child balance minus the sweep's gas), not the claimed
+  // payment values above: it must cover the price up to the sweep gas tolerance, or the entry is
+  // not credited (the swept funds stay in the identity; the caller logs and rejects it).
+  const dustTolerance =
+    params.dustToleranceWei ?? (await estimateDustThresholdWei(params.provider))
+  const toleratedWei = dustTolerance * BigInt(ordered.length)
+  // Each payment loses one sweep gas on the way in and the draw's plausible-dust slack scales with
+  // the payment count, so an entry in more than the cap is NOT credited; its funds were swept into
+  // the identity above (operator-controlled) and are recorded for refund, never left at the
+  // children. The cap is a griefing bound, not a rule for honest users.
+  if (ordered.length > RAFFLE_MAX_PAYMENTS_PER_ENTRY) {
+    return fail(
+      `entry is split into ${ordered.length} payments; at most ${RAFFLE_MAX_PAYMENTS_PER_ENTRY} are counted`,
+    )
+  }
+  if (sweptWei + toleratedWei < params.minTotalValueWei) {
+    return fail(
+      `only ${formatMon(sweptWei)} reached the raffle identity (plus up to ${formatMon(toleratedWei)} of sweep gas), below the required ${formatMon(params.minTotalValueWei)}`,
+    )
+  }
 
-/** Tops up `identitySigner`'s own on-chain balance from `mainAccountSigner` if it's short of
- * `neededWei` -- a small, flat, per-payout operational gas cost, never scaled to a round's pot size
- * (see this file's header, "Why this bot can't be drained"). Only ever moves enough to cover the
- * shortfall, never a fixed lump sum, so repeated calls don't compound. */
-async function ensureIdentityFunded(params: {
-  identityAddress: string
-  mainAccountSigner: MonadAccountTxSigner
-  provider: Provider
-  neededWei: bigint
-  label: string
-}): Promise<void> {
-  const balance = await params.provider.getBalance(params.identityAddress)
-  if (balance >= params.neededWei) return
-  const shortfall = params.neededWei - balance
-  console.log(
-    `[${params.label}] topping up identity gas reserve by ${shortfall} wei from the main funded wallet`,
-  )
-  const signedTx = await params.mainAccountSigner.buildAndSignTransfer(
-    params.identityAddress,
-    shortfall,
-  )
-  const txHash = await params.mainAccountSigner.submit(signedTx)
-  await waitForConfirmation(
-    params.mainAccountSigner,
-    txHash,
-    `${params.label} identity funding`,
-  )
+  return {
+    ok: true,
+    totalValueWei,
+    combinedTxHash,
+    paymentCount: ordered.length,
+  }
 }
 
 async function main() {
@@ -257,14 +299,14 @@ async function main() {
     requiredEnv('CASHWEB_STAMP_MIN_BURN_VALUE_WEI'),
   )
   const entryPriceWei = BigInt(
-    process.env.RAFFLE_BOT_ENTRY_PRICE_WEI ?? '20000000000000000', // 0.02 MON
+    process.env.RAFFLE_BOT_ENTRY_PRICE_WEI ?? RAFFLE_DEFAULT_ENTRY_PRICE_WEI,
   )
   if (entryPriceWei < minimumStampValueWei) {
     throw new Error(
       `Raffle bot entry price ${entryPriceWei} wei is below the relay minimum ${minimumStampValueWei}`,
     )
   }
-  const maxEntries = Number(process.env.RAFFLE_BOT_MAX_ENTRIES ?? 5)
+  const maxEntries = Number(process.env.RAFFLE_BOT_MAX_ENTRIES ?? RAFFLE_DEFAULT_MAX_ENTRIES)
   if (maxEntries < 2) {
     throw new Error('RAFFLE_BOT_MAX_ENTRIES must be at least 2')
   }
@@ -281,11 +323,17 @@ async function main() {
     process.env.E2E_DEMO_MAIN_WALLET_JSON ??
       '../frank-worktrees/spike-demo/spike/data/chain-wallet.json',
   )
-  const stateDirPath = resolve(
-    process.cwd(),
-    process.env.RAFFLE_BOT_STATE_DIR ?? '/tmp/raffle-bot-state',
-  )
+  const stateDirPath = botStateDir('raffle', 'RAFFLE_BOT_STATE_DIR')
   const pollIntervalMs = Number(process.env.RAFFLE_BOT_POLL_INTERVAL_MS ?? 4000)
+  // Operator top-ups allowed to cover swept-entry gas + payout gas at draw time, per round and per
+  // trailing day (see raffle-settlement.ts); beyond either the draw is held instead.
+  const maxTopUpPerRoundWei = BigInt(
+    process.env.RAFFLE_BOT_MAX_TOPUP_WEI ?? RAFFLE_DEFAULT_MAX_TOPUP_WEI,
+  )
+  const maxTopUpPerDayWei = BigInt(
+    process.env.RAFFLE_BOT_MAX_TOPUP_PER_DAY_WEI ??
+      RAFFLE_DEFAULT_MAX_TOPUP_PER_DAY_WEI,
+  )
   const maxRounds = Number(process.env.RAFFLE_BOT_MAX_ROUNDS ?? 1000)
   const idleTimeoutMs = Number(
     process.env.RAFFLE_BOT_IDLE_TIMEOUT_MS ?? 10 * 60 * 1000,
@@ -299,16 +347,27 @@ async function main() {
   console.log(`Round size:   ${maxEntries} entrants`)
 
   const identity = loadOrCreateIdentity(identityJsonPath, 'raffle-bot')
-  await registerAndLog({ relayBaseUrl, identity, label: 'raffle-bot' })
+  await registerAndLog({
+    relayBaseUrl,
+    identity,
+    label: 'raffle-bot',
+    profile: botProfileFields('raffle'),
+  })
+  // #311: round-status replies go to humans only, at most a bounded number per peer per window.
+  const guard = botLoopGuardFromEnv({
+    selfAddress: identity.displayAddress,
+    relayBaseUrl,
+  })
   console.log(`Raffle bot identity address: ${identity.displayAddress}`)
 
-  const { stampClient, mainAccountSigner, provider, pool } =
+  const { stampClient, mainAccountSigner, provider, pool, closePool } =
     await setUpFundedStampClient({
       rpcUrl,
       relayBaseUrl,
       mainWalletJsonPath,
       stampValueWei: replyStampValueWei,
       label: 'raffle-bot',
+      stateDir: stateDirPath,
     })
 
   // This bot's own signer over its own identity's private key -- used *only* to pay a round's
@@ -358,20 +417,102 @@ async function main() {
   }
 
   const senderPubKeyCache = new Map<string, Buffer>()
+
+  const ports: RaffleSettlementPorts = {
+    getBalanceWei: () =>
+      provider.getBalance(identity.displayAddress, 'latest'),
+    operatorBalanceWei: () =>
+      provider.getBalance(mainAccountSigner.address, 'latest'),
+    sweepDustWei: () => estimateDustThresholdWei(provider),
+    repricePayout: (previousRawTx, gasBudgetWei) =>
+      repriceSignedPayout({
+        previousRawTx,
+        gasBudgetWei,
+        sign: async (to, value, overrides) => {
+          const tx = await identitySigner.buildAndSignTransfer(
+            to,
+            value,
+            overrides,
+          )
+          return { rawTx: tx.rawTx, txHash: tx.txHash }
+        },
+      }),
+    isTxKnown: async txHash => (await provider.getTransaction(txHash)) !== null,
+    error: message => console.error(message),
+    payoutGasReserveWei: async () => {
+      const feeData = await provider.getFeeData()
+      const maxFeePerGas = feeData.maxFeePerGas ?? BigInt(250000000000)
+      return (maxFeePerGas * BigInt(21000) * BigInt(11)) / BigInt(10)
+    },
+    signTopUp: async amountWei => {
+      console.log(
+        `[raffle-bot] topping up identity by ${amountWei} wei from the operator (stamp) wallet to cover swept-entry gas and payout gas`,
+      )
+      const tx = await mainAccountSigner.buildAndSignTransfer(
+        identity.displayAddress,
+        amountWei,
+      )
+      return { rawTx: tx.rawTx, txHash: tx.txHash }
+    },
+    broadcastTopUp: async (rawTx, txHash) => {
+      await mainAccountSigner.submitRaw(rawTx, txHash)
+    },
+    getTopUpStatus: txHash => mainAccountSigner.getStatus(txHash),
+    signPayout: async (to, valueWei) => {
+      const tx = await identitySigner.buildAndSignTransfer(to, valueWei)
+      return { rawTx: tx.rawTx, txHash: tx.txHash }
+    },
+    broadcast: async (rawTx, txHash) => {
+      await identitySigner.submitRaw(rawTx, txHash)
+    },
+    getStatus: txHash => identitySigner.getStatus(txHash),
+    announce: async (entrantAddress, drawItem) => {
+      const entrantKey = canonicalMonadEnvelopeAddress(entrantAddress)
+      let toPubKey = senderPubKeyCache.get(entrantKey)
+      if (!toPubKey) {
+        toPubKey = await fetchMonadIdentityPubKey({
+          relayBaseUrl,
+          address: entrantAddress,
+        })
+        if (!toPubKey) {
+          console.warn(
+            `[raffle-bot] no public key for ${entrantAddress}; cannot deliver the draw message`,
+          )
+          return
+        }
+        senderPubKeyCache.set(entrantKey, toPubKey)
+      }
+      await sendDirectMessageItems({
+        stampClient,
+        pool,
+        mainAccountSigner,
+        provider,
+        fromIdentity: identity,
+        toAddress: entrantAddress,
+        toPubKey,
+        items: [drawItem],
+        stampValueWei: replyStampValueWei,
+        networkTag,
+      })
+    },
+    log: message => console.log(message),
+    warn: message => console.warn(message),
+  }
+
   let since = Date.now()
-  let roundsDrawn = 0
-  let lastActivityAt = Date.now()
 
   console.log(
     `\nPolling ${relayBaseUrl}/message/monad/inbox/<me> (signed mailbox read, since=<t>) every ${pollIntervalMs}ms for messages addressed to ${identity.displayAddress} ...`,
   )
 
-  while (roundsDrawn < maxRounds) {
-    if (Date.now() - lastActivityAt > idleTimeoutMs) {
-      console.log(`\nNo activity within ${idleTimeoutMs}ms -- exiting.`)
-      break
-    }
-
+  // One inbox pass. The loop around it (`runRaffleLoop`, tested) also resumes a persisted full
+  // round or unsettled draw on its first tick, retries held/unfinished draws every tick, and never
+  // idle-exits while a draw is unsettled.
+  const pollOnce = async (ctx: {
+    markActivity(): void
+    roundsDrawn(): number
+    drawAndSettle(): Promise<void>
+  }) => {
     const stored = await fetchMonadMessagesSince({
       ...mailboxAuthFor(identity, relayBaseUrl),
       sinceMs: since,
@@ -445,7 +586,7 @@ async function main() {
           item.type === 'raffle' && item.action === 'enter',
       )
 
-      lastActivityAt = Date.now()
+      ctx.markActivity()
 
       const sendReply = async (
         replyItems: RaffleItem[],
@@ -467,7 +608,18 @@ async function main() {
       const round = state.getCurrentRound() as RaffleRoundRecord
 
       if (!request) {
-        // Any other message from a would-be entrant gets the current round's status.
+        // Any other message from a would-be entrant gets the current round's status -- except from
+        // another bot, and only within the per-peer budget (#311, ping-pong prevention).
+        const blockReason = await guard.peerBlockReason(envelope.from)
+        if (blockReason || !guard.reserveReply(envelope.from)) {
+          console.log(
+            `[raffle-bot] not sending round status to ${envelope.from} (${
+              blockReason ?? 'reply budget exhausted this window'
+            })`,
+          )
+          markProcessed()
+          continue
+        }
         console.log(`\n[raffle-bot] sending round status to ${envelope.from}`)
         await sendReply([
           {
@@ -519,12 +671,29 @@ async function main() {
       })
       if (!swept.ok) {
         console.log(`[raffle-bot] rejecting -- ${swept.reason}`)
+        let note = ''
+        if (swept.sweptWei !== undefined && swept.sweptWei > 0n) {
+          // Money already reached the identity: record it so the operator can refund it once.
+          const entrantAddress = canonicalMonadEnvelopeAddress(envelope.from)
+          await state.putUnclaimed({
+            id: `${entrantAddress}:${sha256Hex((swept.paymentHashes ?? []).join(',')).slice(0, 16)}`,
+            entrant: entrantAddress,
+            paymentHashes: swept.paymentHashes ?? [],
+            sweptWei: swept.sweptWei.toString(),
+            reason: swept.reason,
+            atMs: Date.now(),
+          })
+          console.warn(
+            `[raffle-bot] UNCLAIMED ${formatMon(swept.sweptWei)} from ${entrantAddress} (${swept.paymentCount} payments) swept but not credited; refund with 'yarn raffle:refund --list'. Reason: ${swept.reason}`,
+          )
+          note = ` Your ${swept.paymentCount} payment(s) (${(swept.paymentHashes ?? []).join(', ')}) were received but the entry was not counted; the operator will refund ${formatMon(swept.sweptWei)}.`
+        }
         await sendReply([
           {
             type: 'raffle',
             raffleId: round.raffleId,
             action: 'error',
-            message: `Entry rejected: ${swept.reason}`,
+            message: `Entry rejected: ${swept.reason}.${note}`,
           },
         ])
         markProcessed()
@@ -534,6 +703,7 @@ async function main() {
       const entrant: RaffleEntrant = {
         address: canonicalMonadEnvelopeAddress(envelope.from),
         txHash: swept.combinedTxHash,
+        payments: swept.paymentCount,
       }
       const updatedEntrants = [...round.entrants, entrant]
       const updatedRound: RaffleRoundRecord = {
@@ -564,121 +734,39 @@ async function main() {
 
       if (updatedEntrants.length < round.maxEntries) continue
 
-      // Round is full -- draw, reveal, and pay out, then immediately rotate to a fresh round with
-      // a brand new commitment (generated *before* it can have any entrants).
-      const commitment = state.getPendingCommitment()
-      if (!commitment || commitment.serverSeedHash !== round.serverSeedHash) {
-        console.error(
-          `[raffle-bot] internal error: no matching pending commitment for round ${round.raffleId} -- refusing to draw`,
-        )
-        continue
-      }
-      const entrantAddresses = updatedEntrants.map(e => e.address)
-      const entryTxHashes = updatedEntrants.map(e => e.txHash)
-      const winnerIndex = pickWinnerIndex(
-        commitment.serverSeed,
-        combineEntrantEntropy(entryTxHashes),
-        entrantAddresses.length,
-      )
-      const winnerAddress = entrantAddresses[winnerIndex]
-      const potWei =
-        BigInt(round.entryPriceWei) * BigInt(updatedEntrants.length)
-
-      console.log(
-        `[raffle-bot] drawing round ${round.raffleId}: winner=${winnerAddress} pot=${potWei} wei`,
-      )
-
-      for (const e of updatedEntrants) {
-        const entrantKey = canonicalMonadEnvelopeAddress(e.address)
-        let toPubKey = senderPubKeyCache.get(entrantKey)
-        if (!toPubKey) {
-          toPubKey = await fetchMonadIdentityPubKey({
-            relayBaseUrl,
-            address: e.address,
-          })
-          if (!toPubKey) continue
-          senderPubKeyCache.set(entrantKey, toPubKey)
-        }
-        await sendDirectMessageItems({
-          stampClient,
-          pool,
-          mainAccountSigner,
-          provider,
-          fromIdentity: identity,
-          toAddress: e.address,
-          toPubKey,
-          items: [
-            {
-              type: 'raffle',
-              raffleId: round.raffleId,
-              action: 'draw',
-              entryPriceWei: round.entryPriceWei,
-              winnerAddress,
-              serverSeed: commitment.serverSeed,
-              entrants: entrantAddresses,
-              entryTxHashes,
-              potWei: potWei.toString(),
-            },
-          ],
-          stampValueWei: replyStampValueWei,
-          networkTag,
-        })
-      }
-
-      // Fail closed (ticket #121 acceptance criteria): every entrant's payment was already swept
-      // into this identity's balance before they were ever credited into `round.entrants` above,
-      // so by the time a round can reach `maxEntries` its balance must already cover the pot on
-      // its own. If it doesn't, something upstream is broken -- refuse the draw rather than
-      // silently letting `ensureIdentityFunded` below paper over the gap with mainAccountSigner
-      // funds (exactly the bug this file used to have).
-      const identityBalanceWei = await provider.getBalance(
-        identity.displayAddress,
-      )
-      if (identityBalanceWei < potWei) {
-        throw new Error(
-          `[raffle-bot] refusing to draw round ${round.raffleId}: identity balance ${identityBalanceWei} wei is below the ${potWei} wei pot it should already hold from this round's swept entries`,
-        )
-      }
-
-      // See this file's header, "Why this bot can't be drained" -- this only ever tops up a flat
-      // gas buffer *on top of* the pot already confirmed above, never the payout amount itself.
-      const feeData = await provider.getFeeData()
-      const fallbackMaxFeePerGas = BigInt(250000000000)
-      const maxFeePerGas = feeData.maxFeePerGas ?? fallbackMaxFeePerGas
-      const gasBufferWei =
-        (maxFeePerGas * BigInt(21000) * BigInt(11)) / BigInt(10)
-      await ensureIdentityFunded({
-        identityAddress: identity.displayAddress,
-        mainAccountSigner,
-        provider,
-        neededWei: identityBalanceWei + gasBufferWei,
-        label: 'raffle-bot',
-      })
-
-      console.log(
-        `[raffle-bot] paying out ${potWei} wei to ${winnerAddress} ...`,
-      )
-      const payoutTx = await identitySigner.buildAndSignTransfer(
-        winnerAddress,
-        potWei,
-      )
-      const payoutTxHash = await identitySigner.submit(payoutTx)
-      console.log(`[raffle-bot] payout tx sent: ${payoutTxHash}`)
-
-      roundsDrawn++
-      const nextRound = openFreshRound()
-      console.log(
-        `[raffle-bot] opened round ${nextRound.raffleId} (commitment ${nextRound.serverSeedHash})`,
-      )
-      if (roundsDrawn >= maxRounds) break
+      // Round is full. Order (see raffle-settlement.ts): record the draw + rotate to a fresh
+      // commitment atomically, verify/fund the pot, persist then broadcast the payout, reconcile
+      // by hash, and only then announce (reveal the seed). Nothing here may throw the process.
+      await ctx.drawAndSettle()
+      if (ctx.roundsDrawn() >= maxRounds) break
     }
 
     if (stored.length > 0) since = maxSeenTimestamp + 1
     await state.flush()
-    await sleep(pollIntervalMs)
   }
 
+  const { roundsDrawn } = await runRaffleBot({
+    state,
+    ports,
+    maxTopUpPerRoundWei,
+    maxTopUpPerDayWei,
+    round: {
+      entryPriceWei: entryPriceWei.toString(),
+      maxEntries,
+      newServerSeed: generateServerSeed,
+      newRaffleId: generateRaffleId,
+    },
+    pollOnce,
+    sleep: () => sleep(pollIntervalMs),
+    now: Date.now,
+    idleTimeoutMs,
+    maxRounds,
+    onIdleExit: () =>
+      console.log(`\nNo activity within ${idleTimeoutMs}ms -- exiting.`),
+  })
+
   await state.Close()
+  await closePool()
   console.log(
     `\nDone. Drew ${roundsDrawn} round${roundsDrawn === 1 ? '' : 's'}.`,
   )

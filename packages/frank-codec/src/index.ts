@@ -29,5 +29,18 @@ export {
   paymentCommitment,
   recipientPayloadDigest,
   toHex,
+  topicVoteCommitment,
 } from './hash'
 export { compareAccounts, compareBytes } from './semantic'
+export type { TopicPostFields, TopicVoteDirection } from './topic'
+export {
+  TOPIC_CBOR_CALLDATA_LENGTH,
+  TOPIC_CBOR_CALLDATA_VERSION,
+  encodeTopicPost,
+  encodeTopicPostSubmission,
+  encodeTopicVote,
+  topicBurnCalldata,
+  topicBurnCommitment,
+  topicPostBurnCalldata,
+  topicPostHash,
+} from './topic'

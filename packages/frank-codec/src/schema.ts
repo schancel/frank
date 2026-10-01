@@ -13,6 +13,9 @@ import {
   MAX_RELAY_BINDINGS,
   MAX_SIGNATURES,
   MAX_FRAME_BYTES,
+  MAX_TOPIC_BODY_BYTES,
+  MAX_TOPIC_FRAME_BYTES,
+  MAX_TOPIC_VOTE_FRAME_BYTES,
   TYPE_CONTAINER_MESSAGE_ITEM,
   TYPE_DIRECT_MESSAGE_DELIVERY,
   TYPE_DIRECTORY_ATTESTATION,
@@ -23,10 +26,14 @@ import {
   TYPE_MESSAGE_CONTENT_REVISION,
   TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
   TYPE_TEXT_MESSAGE_ITEM,
+  TYPE_TOPIC_POST,
+  TYPE_TOPIC_POST_SUBMISSION,
+  TYPE_TOPIC_VOTE_SUBMISSION,
   U32_MAX,
   U64_MAX,
 } from './constants'
 import { ErrorCategory, ErrorStage, FrankCodecError } from './errors'
+import { isCompressedPoint, isProofEncoding } from './point'
 import type {
   AccountRef,
   DraftPayload,
@@ -204,6 +211,21 @@ function account(v: FrankValue | undefined, path: string): AccountRef {
   return { keyType, keyBytes }
 }
 
+/** A type-5 stamp point (T3b encoding rules): 33 compressed bytes on the curve. */
+function point(v: FrankValue | undefined, path: string): Uint8Array {
+  const b = bstr(v, path, 33, 33)
+  if (!isCompressedPoint(b))
+    throw bad(path, 'not a valid compressed secp256k1 point (T3b)')
+  return b
+}
+
+/** The type-5 DLEQ proof `c || s` (T3b encoding rules): 64 bytes, both scalars in 1..n-1. */
+function proof(v: FrankValue | undefined, path: string): Uint8Array {
+  const b = bstr(v, path, 64, 64)
+  if (!isProofEncoding(b)) throw bad(path, 'proof scalar outside 1..n-1 (T3b)')
+  return b
+}
+
 function timestamp(v: FrankValue | undefined, path: string): Timestamp {
   const m = fields(v, path, [0, 1], [], false, false)
   const seconds = m.get(0)
@@ -224,6 +246,10 @@ export function checkRootFrameLimit(
 ): boolean {
   if (typeId === TYPE_DIRECT_MESSAGE_DELIVERY) return frameLength <= 1_048_576
   if (typeId === TYPE_DIRECTORY_ATTESTATION) return frameLength <= 262_144
+  if (typeId === TYPE_TOPIC_POST || typeId === TYPE_TOPIC_POST_SUBMISSION)
+    return frameLength <= MAX_TOPIC_FRAME_BYTES
+  if (typeId === TYPE_TOPIC_VOTE_SUBMISSION)
+    return frameLength <= MAX_TOPIC_VOTE_FRAME_BYTES
   return frameLength <= MAX_FRAME_BYTES
 }
 
@@ -261,6 +287,12 @@ export function checkTypeLimits(typeId: number, payload: FrankValue): void {
       const c = f(5)
       if (c instanceof Uint8Array && c.length > MAX_CIPHERTEXT_BYTES)
         over('ciphertext')
+      break
+    }
+    case TYPE_TOPIC_POST: {
+      const b = f(3)
+      if (b instanceof Uint8Array && b.length > MAX_TOPIC_BODY_BYTES)
+        over('topic body')
       break
     }
     case TYPE_MESSAGE_CONTENT_REVISION:
@@ -365,6 +397,10 @@ export function parseDraft(
   typeId: number,
   payload: FrankValue,
   allow: boolean,
+  schema: { envelope: number; effective: number } = {
+    envelope: 1,
+    effective: 1,
+  },
 ): DraftPayload {
   const P = 'root/payload'
   switch (typeId) {
@@ -414,7 +450,17 @@ export function parseDraft(
       return cp
     }
     case TYPE_DIRECTORY_STATEMENT: {
-      const m = fields(payload, P, [0, 1, 2, 3, 4], [5, 6, 7], true, allow)
+      // Field 8 (the stamp key) is required in schema 2 and undefined in schema 1, where C12
+      // makes it a schema error (S10a.1). `effective` is the exact version, or the reader's
+      // highest supported schema when a newer frame is read through V6.3.
+      const m = fields(
+        payload,
+        P,
+        schema.effective >= 2 ? [0, 1, 2, 3, 4, 8] : [0, 1, 2, 3, 4],
+        [5, 6, 7],
+        true,
+        allow,
+      )
       const st: DraftPayload = {
         type: 4,
         network: networkTag(m.get(0), `${P}.0`),
@@ -424,8 +470,10 @@ export function parseDraft(
         relays: asList(m.get(4), `${P}.4`, 1, MAX_RELAY_BINDINGS).map((e, i) =>
           relayBinding(e, `${P}.4[${i}]`, allow),
         ),
+        schemaVersion: schema.envelope,
         unknownFields: m.unknown,
       }
+      if (m.has(8)) st.stampKey = account(m.get(8), `${P}.8`)
       if (m.has(5)) {
         st.keyTransitions = asList(m.get(5), `${P}.5`, 1, 16).map((e, i) =>
           keyTransition(e, `${P}.5[${i}]`, allow),
@@ -440,7 +488,7 @@ export function parseDraft(
       return st
     }
     case TYPE_RECIPIENT_ENCRYPTED_PAYLOAD: {
-      const m = fields(payload, P, [0, 1, 2, 3, 4, 5], [], true, allow)
+      const m = fields(payload, P, [0, 1, 2, 3, 4, 5, 6, 7, 8], [], true, allow)
       return {
         type: 5,
         network: networkTag(m.get(0), `${P}.0`),
@@ -449,6 +497,9 @@ export function parseDraft(
         suite: u32ish(m.get(3), `${P}.3`, 0, 65535),
         nonce: bstr(m.get(4), `${P}.4`, 1, 64),
         ciphertext: bstr(m.get(5), `${P}.5`, 1, MAX_CIPHERTEXT_BYTES),
+        ephemeralPoint: point(m.get(6), `${P}.6`),
+        sharedPoint: point(m.get(7), `${P}.7`),
+        dleqProof: proof(m.get(8), `${P}.8`),
         unknownFields: m.unknown,
       }
     }
@@ -472,6 +523,38 @@ export function parseDraft(
         priorAuthority: account(m.get(2), `${P}.2`),
         revision: uintRange(m.get(3), `${P}.3`, 1n, U64_MAX),
         newKey: account(m.get(4), `${P}.4`),
+        unknownFields: m.unknown,
+      }
+    }
+    case TYPE_TOPIC_POST: {
+      const m = fields(payload, P, [0, 1, 3], [2], true, allow)
+      const post: DraftPayload = {
+        type: 9,
+        network: networkTag(m.get(0), `${P}.0`),
+        topic: tstr(m.get(1), `${P}.1`, 1, 512),
+        body: bstr(m.get(3), `${P}.3`, 1, MAX_TOPIC_BODY_BYTES),
+        unknownFields: m.unknown,
+      }
+      if (m.has(2)) post.parentHash = bstr(m.get(2), `${P}.2`, 32, 32)
+      return post
+    }
+    case TYPE_TOPIC_POST_SUBMISSION: {
+      const m = fields(payload, P, [0, 1, 2], [], true, allow)
+      return {
+        type: 10,
+        network: networkTag(m.get(0), `${P}.0`),
+        postFrame: framed(m.get(1), `${P}.1`),
+        burnTx: bstr(m.get(2), `${P}.2`, 1, 16384),
+        unknownFields: m.unknown,
+      }
+    }
+    case TYPE_TOPIC_VOTE_SUBMISSION: {
+      const m = fields(payload, P, [0, 1, 2], [], true, allow)
+      return {
+        type: 11,
+        network: networkTag(m.get(0), `${P}.0`),
+        targetHash: bstr(m.get(1), `${P}.1`, 32, 32),
+        burnTx: bstr(m.get(2), `${P}.2`, 1, 16384),
         unknownFields: m.unknown,
       }
     }
@@ -584,6 +667,7 @@ export function checkAllocated(d: DraftPayload): void {
     case 4:
       checkKeyType(d.subject, `${P}.1`)
       d.relays.forEach((r, i) => checkKeyType(r.identity, `${P}.4[${i}].2`))
+      if (d.stampKey) checkKeyType(d.stampKey, `${P}.8`)
       d.keyTransitions?.forEach((t, i) => {
         checkKeyType(t.signer, `${P}.5[${i}].2`)
         checkSignatureShape(t.algorithm, t.signer, t.signature, `${P}.5[${i}]`)

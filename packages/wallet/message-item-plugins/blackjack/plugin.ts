@@ -12,6 +12,7 @@ import { BlackjackMoveItem } from '@frank/cashweb/types/messages'
 import {
   BlackjackGameState,
   HydratedBlackjackMove,
+  parseBlackjackWelcome,
   reduceBlackjackState,
 } from './game'
 import { registerMessageItemPlugin } from '../index'
@@ -100,6 +101,7 @@ registerMessageItemPlugin<BlackjackMoveItem, HydratedBlackjackMove, BlackjackGam
       outcome: raw.outcome,
       verifiedWager,
       verifiedDoubleWager,
+      welcome: parseBlackjackWelcome(raw),
       senderAddress: context.message.senderAddress,
     }
   },
@@ -117,6 +119,11 @@ registerMessageItemPlugin<BlackjackMoveItem, HydratedBlackjackMove, BlackjackGam
         return 'Stood'
       case 'reveal':
         return 'Blackjack hand resolved'
+      case 'welcome':
+        return 'Blackjack table open'
+      default:
+        // An action a newer dealer added: still a string, so a chat-list preview never breaks.
+        return 'Blackjack'
     }
   },
   threadKey: raw => raw.gameId,

@@ -36,11 +36,13 @@ import { PublicKey } from 'bitcore-lib-xpi'
 import { activeChain } from '@frank/wallet/chain'
 import type { DirectMessageReceived, WalletHandle } from '@frank/wallet/chain'
 import {
+  MonadMailboxAuthError,
   MonadMailboxChallengeCapacityError,
   MonadMailboxUnavailableError,
 } from '@frank/cashweb/relay/monad-mailbox-client'
 import type { ReceivedMessageWrapper } from '@frank/cashweb/types/user-interface'
 import { useChatStore } from '../stores/chats'
+import { useMailboxStatusStore } from '../stores/mailbox-status'
 
 /** Default direct-message poll interval, in milliseconds -- within issue #42's suggested 5-10s
  * range. Configurable via `MONAD_DM_POLL_INTERVAL_MS` (see `src/boot/monad-direct-messages.ts`). */
@@ -113,6 +115,7 @@ export function startDirectMessagePolling({
   intervalMs?: number
 }): DirectMessagePolling {
   const chats = useChatStore()
+  const mailboxStatus = useMailboxStatusStore()
   let sinceMs = chats.getLastReceived ?? 0
   let stopped = false
   let timer: ReturnType<typeof setTimeout> | undefined
@@ -144,6 +147,7 @@ export function startDirectMessagePolling({
       unavailableFailures = 0
       otherFailures = 0
       lastErrorKey = undefined
+      mailboxStatus.setOk()
       if (received.length === 0) {
         return
       }
@@ -172,21 +176,28 @@ export function startDirectMessagePolling({
         sinceMs = nextSinceMs
       }
     } catch (err) {
+      // stop() cannot cancel an in-flight request: a poll that fails after stop() must not put a
+      // problem back on screen after stop() cleared it.
+      if (stopped) return
       if (err instanceof MonadMailboxChallengeCapacityError) {
         // The relay caps authenticated reads per recipient per minute; hammering only extends
         // the outage. Wait as long as the relay asked, but keep the loop alive.
         steady = false
+        otherFailures = 0
         nextDelayMs = Math.max(intervalMs, err.retryAfterMs)
+        mailboxStatus.setProblem('rate-limited', nextDelayMs)
         console.warn(
           `direct-message polling rate limited; retrying in ${nextDelayMs} ms`,
         )
       } else if (err instanceof MonadMailboxUnavailableError) {
         steady = false
         unavailableFailures += 1
+        otherFailures = 0
         nextDelayMs = Math.min(
           MAX_MAILBOX_UNAVAILABLE_BACKOFF_MS,
           intervalMs * 2 ** unavailableFailures,
         )
+        mailboxStatus.setProblem('unavailable', nextDelayMs)
         console.error(
           `relay has no direct-message mailbox; retrying in ${nextDelayMs} ms`,
           err,
@@ -200,6 +211,18 @@ export function startDirectMessagePolling({
           nextDelayMs = Math.min(
             MAX_MAILBOX_UNAVAILABLE_BACKOFF_MS,
             intervalMs * 2 ** (otherFailures - 1),
+          )
+        }
+        // A single failed poll is routine (a dropped connection); only a repeat is shown, so the
+        // status does not flicker on every blip. But if a problem is already on screen (e.g. the
+        // relay just answered 404), replace it with what is true now instead of leaving it up.
+        // It clears on the next successful poll.
+        if (otherFailures > 1 || mailboxStatus.hasProblem) {
+          mailboxStatus.setProblem(
+            err instanceof MonadMailboxAuthError
+              ? 'unauthorized'
+              : 'unreachable',
+            nextDelayMs,
           )
         }
         const key =
@@ -224,7 +247,112 @@ export function startDirectMessagePolling({
   return {
     stop: () => {
       stopped = true
+      // A stopped poller (e.g. the wallet was switched) must not leave its last problem on screen.
+      mailboxStatus.setOk()
       if (timer !== undefined) clearTimeout(timer)
+    },
+  }
+}
+
+/** How often the background reconciliation looks at messages whose payment is pending, and the
+ * longest pause it backs off to while they stay pending. */
+export const OUTGOING_RECONCILE_INTERVAL_MS = 15_000
+export const MAX_OUTGOING_RECONCILE_INTERVAL_MS = 120_000
+
+export interface OutgoingReconciliation {
+  stop: () => void
+}
+
+/**
+ * Keeps settling outgoing messages whose stamp payment is still pending (#270). Every tick asks
+ * the wallet to re-send the SAME exact bytes of each live payment attempt (free and idempotent,
+ * never a new payment; see `stores/chats.ts`, `sendMessage`), and flips a message to sent when it
+ * finally delivers, so the sender's copy follows reality without any user action. While something
+ * stays pending the pause doubles up to {@link MAX_OUTGOING_RECONCILE_INTERVAL_MS}; with nothing
+ * pending each tick is a cheap local check.
+ */
+export function startOutgoingReconciliation({
+  wallet,
+  intervalMs = OUTGOING_RECONCILE_INTERVAL_MS,
+  maxIntervalMs = MAX_OUTGOING_RECONCILE_INTERVAL_MS,
+}: {
+  wallet: WalletHandle
+  intervalMs?: number
+  maxIntervalMs?: number
+}): OutgoingReconciliation {
+  const chats = useChatStore()
+  let stopped = false
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let delayMs = intervalMs
+  let knownPending = new Set<string>()
+
+  const pendingIds = () => {
+    const ids = new Set<string>()
+    for (const chat of Object.values(chats.chats)) {
+      for (const message of chat?.messages ?? []) {
+        if (message.outbound && message.status === 'payment-pending') {
+          ids.add(message.payloadDigest)
+        }
+      }
+    }
+    return ids
+  }
+
+  // Invariant: at most ONE timer exists, and only `schedule` arms it (clearing any previous one).
+  const schedule = (ms: number) => {
+    if (timer !== undefined) clearTimeout(timer)
+    timer = undefined
+    if (!stopped) timer = setTimeout(() => void tick(), ms)
+  }
+
+  let ticking = false
+  let resetRequested = false
+  // What is pending now is not "new": seed before the first tick so a reload with a pending
+  // message does not look like a fresh arrival.
+  knownPending = pendingIds()
+
+  const tick = async () => {
+    ticking = true
+    resetRequested = false
+    let pending = 0
+    try {
+      pending = (await chats.reconcileOutgoing({ wallet })).pending
+    } catch (err) {
+      console.warn('outgoing message reconciliation failed', err)
+      pending = 1
+    }
+    ticking = false
+    knownPending = pendingIds()
+    delayMs =
+      pending > 0 && !resetRequested
+        ? Math.min(maxIntervalMs, delayMs * 2)
+        : intervalMs
+    schedule(delayMs)
+  }
+  void tick()
+
+  // A message that newly becomes payment-pending must not wait out a long backoff earned by an
+  // older one: restart the ladder and look again after the base interval.
+  const unsubscribe = chats.$onAction(({ name, after }) => {
+    if (name !== 'setOutgoingState') return
+    after(() => {
+      const now = pendingIds()
+      const isNew = [...now].some(id => !knownPending.has(id))
+      knownPending = now
+      if (!isNew || stopped) return
+      delayMs = intervalMs
+      // Mid-tick, the tick itself re-arms at the base interval; never start a second chain.
+      if (ticking) resetRequested = true
+      else schedule(intervalMs)
+    })
+  })
+
+  return {
+    stop: () => {
+      stopped = true
+      unsubscribe()
+      if (timer !== undefined) clearTimeout(timer)
+      timer = undefined
     },
   }
 }

@@ -15,9 +15,22 @@
       v-if="$status.setup"
       data-testid="icon-rail"
     >
-      <q-tabs v-model="tab" vertical class="col full-width">
+      <!-- WAI-ARIA tabs pattern (ticket #214): each rail item selects which list the column beside
+      it shows (settings panel / chat list / forum topics -- the role="tabpanel" blocks below), and
+      the contacts/forum items additionally navigate the main pane. Selecting a view is what makes
+      them tabs; Settings does not navigate at all, so a nav-landmark-with-links model would be
+      wrong for it. Quasar's q-tabs/q-tab supply role=tablist/tab, aria-selected and the vertical
+      orientation; this file adds the tablist name and the tab <-> tabpanel wiring. -->
+      <q-tabs
+        v-model="tab"
+        vertical
+        class="col full-width"
+        :aria-label="$t('leftDrawer.railLabel')"
+      >
         <q-tab
           name="settings"
+          id="rail-tab-settings"
+          aria-controls="rail-panel-settings"
           icon="settings"
           :aria-label="$t('leftDrawer.settings')"
         >
@@ -31,6 +44,8 @@
         navigates to a genuinely different, contacts-focused route instead of re-using `/`. -->
         <q-tab
           name="contacts"
+          id="rail-tab-contacts"
+          aria-controls="rail-panel-contacts"
           icon="contacts"
           :aria-label="contactsLabel()"
           @click="openActiveOrRecentChat"
@@ -53,6 +68,8 @@
         since Forum is a full page/route, not another sidebar-list mode like contacts/settings. -->
         <q-tab
           name="forum"
+          id="rail-tab-forum"
+          aria-controls="rail-panel-forum"
           icon="forum"
           :aria-label="$t('leftDrawer.forum')"
           @click="openForumTab"
@@ -66,13 +83,21 @@
     topics), plus the balance footer -- exactly the content this drawer showed before the icon
     rail existed, just no longer sharing a column with the tab icons themselves. -->
     <div class="column full-height col list-column">
-      <settings-panel v-if="$status.setup" v-show="tab == 'settings'" />
+      <settings-panel
+        v-if="$status.setup"
+        v-show="tab == 'settings'"
+        v-bind="panelAttrs('settings')"
+      />
       <div v-if="!$status.setup">
         <q-separator />
         <chat-list-link title="Login/Sign Up" route="/setup" icon="login" />
       </div>
 
-      <chat-list v-show="tab == 'contacts'" v-bind="$attrs" :compact="false" />
+      <chat-list
+        v-show="tab == 'contacts'"
+        v-bind="{ ...$attrs, ...panelAttrs('contacts') }"
+        :compact="false"
+      />
 
       <!-- Real user-reported gap (ticket #61's own follow-up comment admitted this was a stopgap:
       "there's no forum-specific content this drawer could show instead"): clicking "forum" used
@@ -89,7 +114,11 @@
       handling, no consistent width/column behavior) and (b) didn't fill the remaining flex space,
       so "Balance" below no longer stayed pinned to the bottom of the drawer the way it does for
       every other tab -- it just sat directly under however many topics happened to be listed. -->
-      <div class="full-width column col" v-show="tab == 'forum'">
+      <div
+        class="full-width column col"
+        v-show="tab == 'forum'"
+        v-bind="panelAttrs('forum')"
+      >
         <q-scroll-area class="q-px-none col">
           <q-list v-bind="$attrs">
             <q-separator />
@@ -104,9 +133,9 @@
               <q-item-section>{{ name }}</q-item-section>
             </q-item>
             <q-item v-if="discoveredTopicNames.length === 0">
-              <q-item-section class="text-grey"
-                >No forums discovered yet.</q-item-section
-              >
+              <q-item-section class="text-grey">{{
+                $t('leftDrawer.noForums')
+              }}</q-item-section>
             </q-item>
           </q-list>
         </q-scroll-area>
@@ -117,9 +146,21 @@
         <q-item clickable>
           <q-item-section @click="openReceive">
             <q-item-label>{{ $t('chatList.balance') }}</q-item-label>
-            <q-item-label caption role="status" aria-live="polite">{{
-              formattedBalance
-            }}</q-item-label>
+            <q-item-label
+              caption
+              role="status"
+              aria-live="polite"
+              :aria-label="
+                loaded
+                  ? undefined
+                  : $t('receiveBitcoinDialog.balanceUnavailable')
+              "
+              data-testid="drawer-balance"
+              >{{ balanceText
+              }}<template v-if="balanceStale">
+                {{ ' ' + $t('chatList.balanceStale') }}</template
+              ></q-item-label
+            >
           </q-item-section>
           <q-item-section
             v-if="legacyRelayEnabled && !relayConnected"
@@ -136,8 +177,7 @@
 </template>
 
 <script lang="ts">
-import { computed, defineComponent, onMounted, ref, watch } from 'vue'
-import { inject } from 'vue'
+import { computed, defineComponent, inject, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
 
@@ -212,7 +252,14 @@ export default defineComponent({
     // Balance polling (real user report: an external transfer never showed up without a reload)
     // now lives in the shared `useBalance` composable (ticket #213): one ref-counted loop with
     // in-flight guard, visibility/app-resume handling and backoff, shared with the Receive page.
-    const { formattedBalance } = useBalance()
+    const { formattedBalance, loaded, hasError } = useBalance()
+    // Same unknown representation as Receive: an em dash until the first successful fetch, never
+    // a false "0". After a failure following a good fetch (#272) the last-known value stays,
+    // marked stale, rather than flipping to a dash.
+    const balanceText = computed(() =>
+      loaded.value ? formattedBalance.value : '\u2014',
+    )
+    const balanceStale = computed(() => loaded.value && hasError.value)
 
     onMounted(() => {
       // Fire-and-forget, same convention as `ForumLayout.vue`'s own identical call --
@@ -257,7 +304,9 @@ export default defineComponent({
       selectedForumTopic,
       browseForumTopic,
       totalUnread: totalUnread,
-      formattedBalance,
+      balanceText,
+      balanceStale,
+      loaded,
       legacyRelayEnabled: legacyLotusModeEnabled(),
     }
   },
@@ -305,6 +354,16 @@ export default defineComponent({
           : 'leftDrawer.contactsUnreadOther',
         { count: n },
       )
+    },
+    // Tabpanel wiring for the rail (see the tablist comment in the template). Without the rail
+    // (signed-out: no tabs rendered) the list is just content, so no dangling aria-labelledby.
+    panelAttrs(name: 'settings' | 'contacts' | 'forum') {
+      if (!this.$status.setup) return {}
+      return {
+        'id': `rail-panel-${name}`,
+        'role': 'tabpanel',
+        'aria-labelledby': `rail-tab-${name}`,
+      }
     },
     openReceive() {
       openPage(this.$router, '/receive')

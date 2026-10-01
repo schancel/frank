@@ -6,6 +6,7 @@ import {
   Address,
   PrivateKey,
 } from 'bitcore-lib-xpi'
+import { cryptoBackend } from '@frank/nakamoto'
 import assert from 'assert'
 import atob from 'atob'
 
@@ -32,6 +33,14 @@ import __pb_signed_payload_payload_pb from '../signed_payload/payload_pb'
 const { SignedPayload } = __pb_signed_payload_payload_pb
 import { Wallet } from '../legacy-wallet'
 import { signRegistryDigest } from '../registry'
+
+/** One SHA-256 of Profile protobuf bytes. Matches `Sha256::digest` in
+ * `SignedPayload::parse_proto`, the message `SignedPayload::verify` checks.
+ * Not double-SHA256. cryptoBackend rejects Buffer. Relay encryption in this
+ * file stays on bitcore (decision #505, issue #258). */
+export function relayProfilePayloadDigest(payload: Uint8Array): Uint8Array {
+  return cryptoBackend.sha256(Uint8Array.from(payload))
+}
 
 export class MessageConstructor {
   payloadConstructor: PayloadConstructor
@@ -384,7 +393,7 @@ export class MessageConstructor {
     profile.addEntries(filterEntry)
 
     const rawProfile = profile.serializeBinary()
-    const hashbuf = crypto.Hash.sha256(Buffer.from(rawProfile))
+    const hashbuf = Buffer.from(relayProfilePayloadDigest(rawProfile))
     const rawSig = signRegistryDigest(hashbuf, privKey)
 
     const signedPayload = new SignedPayload()

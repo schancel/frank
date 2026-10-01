@@ -4,6 +4,7 @@
     :class="{
       'chat-message-inline-meta': inline,
       'chat-message-inline-meta--sent': inline && outbound,
+      'q-message-stamp': !inline,
     }"
     tabindex="-1"
     ref="focusTarget"

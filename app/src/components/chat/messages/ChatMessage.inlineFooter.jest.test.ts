@@ -7,7 +7,7 @@
  * Error and payment-pending keep their own row.
  */
 import { readFileSync } from 'fs'
-import { join } from 'path'
+import { dirname, join } from 'path'
 
 import { mount } from '@vue/test-utils'
 
@@ -67,13 +67,48 @@ function translate(messages: unknown) {
   }
 }
 
+// The server build mapped by Jest does not render QChatMessage's real structure. Load the UMD
+// build for the regression that must exercise Quasar's actual stamp layout.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function loadQuasar(): any {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const globals = globalThis as any
+  globals.Vue = jest.requireActual('vue')
+  jest.requireActual('quasar/dist/quasar.umd.prod.js')
+  return globals.Quasar
+}
+
 function mountBubble(options: {
   status: string
   text: string
   outbound?: boolean
   delivery?: Record<string, unknown>
+  attachToDocument?: boolean
+  realQChatMessage?: boolean
 }) {
+  const stubs: Record<string, unknown> = {
+    QDialog: { template: '<div />' },
+    QIcon: { template: '<i />' },
+    QBtn: { template: '<button><slot /></button>' },
+    ChatMessageReply: { template: '<i />' },
+    ChatMessageText: {
+      props: ['text'],
+      template: '<span data-testid="bubble-text">{{ text }}</span>',
+    },
+    ChatMessageImage: { template: '<i />' },
+    ChatMessageStealth: { template: '<i />' },
+    ChatMessageBlackjack: { template: '<i />' },
+    ChatMessageDigitalGoods: { template: '<i />' },
+    ChatMessageRaffle: { template: '<i />' },
+  }
+  if (!options.realQChatMessage) {
+    stubs.QChatMessage = {
+      template: '<div><slot /><slot name="stamp" /></div>',
+    }
+  }
+
   return mount(ChatMessage, {
+    attachTo: options.attachToDocument ? document.body : undefined,
     props: {
       address: '0xPEER',
       name: 'peer',
@@ -92,26 +127,30 @@ function mountBubble(options: {
       },
     },
     global: {
+      plugins: options.realQChatMessage ? [loadQuasar()] : [],
       mocks: { $t: translate(enUS) },
-      directives: { 'touch-swipe': {} },
-      stubs: {
-        QChatMessage: { template: '<div><slot /><slot name="stamp" /></div>' },
-        QDialog: { template: '<div />' },
-        QIcon: { template: '<i />' },
-        QBtn: { template: '<button><slot /></button>' },
-        ChatMessageReply: { template: '<i />' },
-        ChatMessageText: {
-          props: ['text'],
-          template: '<span data-testid="bubble-text">{{ text }}</span>',
-        },
-        ChatMessageImage: { template: '<i />' },
-        ChatMessageStealth: { template: '<i />' },
-        ChatMessageBlackjack: { template: '<i />' },
-        ChatMessageDigitalGoods: { template: '<i />' },
-        ChatMessageRaffle: { template: '<i />' },
+      directives: options.realQChatMessage ? {} : { 'touch-swipe': {} },
+      stubs,
+    },
+  })
+}
+
+async function setStatus(
+  wrapper: ReturnType<typeof mountBubble>,
+  status: string,
+) {
+  await wrapper.setProps({
+    message: {
+      ...wrapper.props('message'),
+      status,
+      delivery: {
+        attemptDigest: 'attempt-1',
+        live: true,
+        failureReason: status === 'error' ? 'unavailable' : undefined,
       },
     },
   })
+  await wrapper.vm.$nextTick()
 }
 
 function inlineRule(): string {
@@ -202,10 +241,7 @@ describe('inline bubble footer (#391)', () => {
     expect(failedBody.find('[data-testid="outgoing-meta"]').exists()).toBe(
       false,
     )
-    expect(failedBody.find('[data-testid="outgoing-failed"]').exists()).toBe(
-      false,
-    )
-    const failedRow = failed.get('[data-testid="outgoing-failed"]')
+    const failedRow = failedBody.get('[data-testid="outgoing-failed"]')
     expect(failedRow.classes()).toContain('row')
     expect(
       failed.get('[data-testid="outgoing-focus-target"]').classes(),
@@ -226,8 +262,58 @@ describe('inline bubble footer (#391)', () => {
         .exists(),
     ).toBe(false)
     expect(
-      pendingPay.get('[data-testid="outgoing-payment-pending"]').classes(),
+      pendingPay
+        .get('[data-testid="chat-message-body"]')
+        .get('[data-testid="outgoing-payment-pending"]')
+        .classes(),
     ).toContain('row')
+  })
+
+  it('keeps Quasar stamp styling on one real suffix across row transitions', async () => {
+    const wrapper = mountBubble({
+      status: 'error',
+      text: 'hello',
+      delivery: { failureReason: 'unavailable' },
+      realQChatMessage: true,
+    })
+    await wrapper.vm.$nextTick()
+    const suffix = wrapper.get('[data-testid="outgoing-focus-target"]')
+    const announcement = suffix.get('[data-testid="outgoing-announcement"]')
+
+    expect(suffix.classes()).toContain('q-message-stamp')
+    expect(
+      wrapper
+        .get('.q-message-text:last-child')
+        .element.contains(suffix.element),
+    ).toBe(true)
+
+    await setStatus(wrapper, 'pending')
+    expect(wrapper.get('[data-testid="outgoing-meta"]').element).toBe(
+      suffix.element,
+    )
+    expect(suffix.classes()).not.toContain('q-message-stamp')
+
+    await setStatus(wrapper, 'payment-pending')
+    expect(wrapper.get('[data-testid="outgoing-focus-target"]').element).toBe(
+      suffix.element,
+    )
+    expect(suffix.classes()).toContain('q-message-stamp')
+    expect(suffix.get('[data-testid="outgoing-announcement"]').element).toBe(
+      announcement.element,
+    )
+
+    const quasarCss = readFileSync(
+      join(
+        dirname(require.resolve('quasar/dist/quasar.umd.prod.js')),
+        'quasar.css',
+      ),
+      'utf8',
+    )
+    const stampRule =
+      quasarCss.match(/\.q-message-stamp\s*\{[^}]*\}/)?.[0] ?? ''
+    expect(stampRule).toMatch(/margin-top:\s*4px/)
+    expect(stampRule).toMatch(/opacity:\s*0\.6/)
+    expect(stampRule).toMatch(/font-size:\s*small/)
   })
 
   it('puts a fresh send on the inline cluster without a second stamp line', async () => {
@@ -245,4 +331,50 @@ describe('inline bubble footer (#391)', () => {
     )
     expect(meta.get('[data-testid="outgoing-amount"]').text()).toContain('MON')
   })
+
+  it.each([
+    ['payment-pending', 'outgoing.paymentPending'],
+    ['error', 'chatMessage.failedToSend'],
+  ])(
+    'keeps the live region mounted and announces pending -> %s',
+    async (status, announcementKey) => {
+      const wrapper = mountBubble({ status: 'pending', text: 'hello' })
+      await wrapper.vm.$nextTick()
+      await wrapper.vm.$nextTick()
+      const region = wrapper.get('[data-testid="outgoing-announcement"]')
+
+      await setStatus(wrapper, status)
+
+      expect(wrapper.get('[data-testid="outgoing-announcement"]').element).toBe(
+        region.element,
+      )
+      expect(region.text()).toContain(translate(enUS)(announcementKey))
+    },
+  )
+
+  it.each(['payment-pending', 'error'])(
+    'keeps Retry focus through error -> pending -> %s',
+    async status => {
+      const wrapper = mountBubble({
+        status: 'error',
+        text: 'hello',
+        delivery: { failureReason: 'unavailable' },
+        attachToDocument: true,
+      })
+      await wrapper.vm.$nextTick()
+      const focusTarget = wrapper.get('[data-testid="outgoing-focus-target"]')
+        .element as HTMLElement
+      focusTarget.focus()
+      expect(document.activeElement).toBe(focusTarget)
+
+      await setStatus(wrapper, 'pending')
+      expect(focusTarget.isConnected).toBe(true)
+      expect(document.activeElement).toBe(focusTarget)
+
+      await setStatus(wrapper, status)
+      expect(focusTarget.isConnected).toBe(true)
+      expect(document.activeElement).toBe(focusTarget)
+      wrapper.unmount()
+    },
+  )
 })

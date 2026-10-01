@@ -74,12 +74,12 @@
               {{ getMessageItemPreview(item) }}
             </span>
           </template>
-          <!-- Time and stamp amount share the last text line (#391). Error and
-               payment-pending stay in the stamp slot, which is its own row. -->
+          <!-- Keep one suffix instance mounted across status changes. Its inline
+               mode shares the last text line; error and payment-pending render
+               their own row without replacing the live region or focus target. -->
           <chat-message-suffix
-            v-if="usesInlineFooter"
             ref="suffix"
-            inline
+            :inline="usesInlineFooter"
             :status="message.status"
             :stamp="shortTimestamp"
             :stamp-datetime="stampDatetime"
@@ -94,22 +94,6 @@
             @discardClick="confirmDiscard()"
           />
         </div>
-        <template v-if="!usesInlineFooter" #stamp>
-          <chat-message-suffix
-            ref="suffix"
-            :status="message.status"
-            :stamp="shortTimestamp"
-            :amount="stampAmount"
-            :outbound="message.outbound"
-            :failure-reason="message.delivery?.failureReason ?? ''"
-            :payment-state="paymentState"
-            @infoClick="transactionDialog = true"
-            @deleteClick="deleteDialog = true"
-            @replyClick="replyClicked({ address, payloadDigest })"
-            @resendClick="resend()"
-            @discardClick="confirmDiscard()"
-          />
-        </template>
       </q-chat-message>
     </template>
     <div class="col" v-else-if="!payloadDigest">

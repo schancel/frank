@@ -83,6 +83,7 @@ function hashed(
     spent?: readonly SpentOutput[]
     commitUtxos?: boolean
     executedScriptHash?: Uint8Array
+    replayProtection?: boolean
   } = {},
 ) {
   const result = sighash(tx, index, chain, hashType, {
@@ -106,6 +107,7 @@ function digest(
     spent?: readonly SpentOutput[]
     commitUtxos?: boolean
     executedScriptHash?: Uint8Array
+    replayProtection?: boolean
   } = {},
 ): string {
   return display(hashed(tx, index, chain, hashType, algorithm, extra))
@@ -323,7 +325,7 @@ describe('sighash', () => {
     })
   })
 
-  test('the old package fork-id rows match BCH and XEC, and not XPI', () => {
+  test('the old package fork-id rows match BCH, XEC, and XPI without Ruth replay', () => {
     const rows = JSON.parse(
       readFileSync(
         join(__dirname, '../../bitcore-lib-xpi/test/data/sighash.json'),
@@ -356,20 +358,40 @@ describe('sighash', () => {
         scriptCode,
         amount: 0n,
       })
-      if (bch !== row[4] || xec !== bch) {
-        throw new Error(`forkid vector ${index}: ${bch} ${xec} != ${row[4]}`)
+      const xpi = digest(tx, row[2], XPI_MAINNET, row[3], 'forkid', {
+        scriptCode,
+        amount: 0n,
+      })
+      if (bch !== row[4] || xec !== bch || xpi !== bch) {
+        throw new Error(
+          `forkid vector ${index}: ${bch} ${xec} ${xpi} != ${row[4]}`,
+        )
       }
     })
-    const sample = fork[0]
-    if (sample === undefined) throw new Error('missing forkid vector')
-    const tx = mustTx(fromHex(sample[0]), XPI_MAINNET)
+  })
+
+  test('XPI Ruth replay matches a lotusd sighash.json rep digest', () => {
+    // lotusd src/test/data/sighash.json. sighash_tests.cpp passes Amount::zero()
+    // and SCRIPT_ENABLE_REPLAY_PROTECTION for the rep column. reg is fork-id
+    // without that flag. GetHex is the reversed digest.
+    const raw =
+      '9a0a16bd0275ddbdf660921424a8c193c8fdc9277c4f6f4eca56a2864f1f860d2fb35c87410200000008ab535353655253abde09065f0d537954a4a0f1a660d0b1f91d6a07191ab3af8622e5441b77b020c9f821ceab0000000007630065650000ab4e958d59016ee750020000000009abac52ab5365ab516300000000'
+    const tx = mustTx(fromHex(raw), XPI_MAINNET)
+    const scriptCode = fromHex('636a')
+    const hashType = 0x4fbecb41
     expect(
-      sighash(tx, sample[2], XPI_MAINNET, sample[3], {
-        algorithm: 'forkid',
-        scriptCode: fromHex(sample[1]),
+      digest(tx, 0, XPI_MAINNET, hashType, 'forkid', {
+        scriptCode,
         amount: 0n,
       }),
-    ).toEqual({ ok: false, error: { code: 'sighash-algorithm' } })
+    ).toBe('9ad37f59be9450677dde0f62c930bc90122012ebb43d92a655adbeb5e33ec950')
+    expect(
+      digest(tx, 0, XPI_MAINNET, hashType, 'forkid', {
+        scriptCode,
+        amount: 0n,
+        replayProtection: true,
+      }),
+    ).toBe('9caa0be661c07b50b49e42e2c73091a546523a119e191f36ec6b4591e5bf6065')
   })
 
   test('BIP143 commits the amount and is not a BCH hash', () => {
@@ -543,13 +565,29 @@ describe('sighash', () => {
     expect(toHex(two)).toBe(
       'f164b36533e61a5962b136acaeb51e0339dfa067b9489d0366f0ed69e88b65b2',
     )
-    expect(
-      sighash(parsedId, 0, XPI_MAINNET, SIGHASH_FORKID | SIGHASH_ALL, {
+    const xpiFork = sighash(
+      parsedId,
+      0,
+      XPI_MAINNET,
+      SIGHASH_FORKID | SIGHASH_ALL,
+      { algorithm: 'forkid', scriptCode: script, amount: 2000n },
+    )
+    if (!xpiFork.ok) throw new Error(xpiFork.error.code)
+    expect(toHex(xpiFork.value)).toBe(toHex(forkid.value))
+    const replay = sighash(
+      parsedId,
+      0,
+      XPI_MAINNET,
+      SIGHASH_FORKID | SIGHASH_ALL,
+      {
         algorithm: 'forkid',
         scriptCode: script,
         amount: 2000n,
-      }).ok,
-    ).toBe(false)
+        replayProtection: true,
+      },
+    )
+    if (!replay.ok) throw new Error(replay.error.code)
+    expect(toHex(replay.value)).not.toBe(toHex(forkid.value))
   })
 
   test('SIGHASH_NONE changes the legacy digest and SINGLE past the end is the one-bug', () => {

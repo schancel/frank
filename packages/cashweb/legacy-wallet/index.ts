@@ -17,6 +17,22 @@ import { Utxo } from '../types/utxo'
 import { ChronikClient, WsEndpoint } from 'chronik-client'
 import { AddressEvent, ChainAdapter } from './chain-adapter'
 import { LotusAdapter } from './lotus-adapter'
+import {
+  SIGHASH_ALL,
+  SIGHASH_FORKID,
+  XPI_MAINNET,
+  XPI_REGTEST,
+  XPI_TESTNET,
+  internalHashFromBytes,
+  privateKeyFromSecretBytes,
+  signAll,
+  signEcdsa,
+  type ChainDescriptor,
+  type InputSigner,
+  type InternalHash,
+  type SpentOutput,
+  type Transaction as NakamotoTransaction,
+} from '@frank/nakamoto'
 
 const standardUtxoSize = 34
 const standardInputSize = 175 // A few extra bytes
@@ -47,6 +63,158 @@ type AddressData = { address: string; change: boolean } & PrivateKeyData
 type AddressGenerator = (txnNumber: number) => (output: number) => PublicKey
 // UnspendOutpout.fromObject can work with this
 type BuildableUtxo = Utxo & { script?: string }
+type SignableTransaction = Transaction & {
+  version: number
+  nLockTime: number
+}
+
+// bitcore stores the display txid. Nakamoto outpoints use the internal hash.
+function internalTxid(display: Buffer): InternalHash {
+  const internal = new Uint8Array(display.length)
+  for (let index = 0; index < display.length; index += 1) {
+    internal[index] = display[display.length - 1 - index]
+  }
+  const branded = internalHashFromBytes(internal)
+  if (!branded.ok) throw new Error('sign-bytes')
+  return branded.value
+}
+
+function scriptBytes(script: Script): Uint8Array {
+  return Uint8Array.from(script.toBuffer())
+}
+
+// bitcore's Input type omits setScript; the runtime method writes _scriptBuffer.
+function setInputScript(input: Transaction.Input, script: Buffer): void {
+  const writable = input as Transaction.Input & {
+    setScript(next: Buffer): void
+  }
+  writable.setScript(script)
+}
+
+function xpiChain(networkName: string): ChainDescriptor {
+  if (networkName === 'testnet') return XPI_TESTNET
+  if (networkName === 'regtest') return XPI_REGTEST
+  if (networkName === 'livenet' || networkName === 'mainnet') return XPI_MAINNET
+  throw new Error('sign-chain')
+}
+
+function signerFromPrivateKey(key: PrivateKey): InputSigner {
+  const publicKey = Uint8Array.from(key.toPublicKey().toBuffer())
+  const secretBytes = Uint8Array.from(key.toBuffer())
+  const parsed = privateKeyFromSecretBytes(secretBytes, publicKey.length === 33)
+  secretBytes.fill(0)
+  if (!parsed.ok) throw new Error('sign-bytes')
+  const secret = parsed.value
+  return {
+    publicKey,
+    sign(digest: Uint8Array): Uint8Array {
+      const signed = signEcdsa(secret, digest)
+      if (!signed.ok) throw new Error('sign-signature')
+      return signed.value
+    },
+  }
+}
+
+function explicitAssignments(
+  transaction: Transaction,
+  signingKeys: readonly PrivateKey[],
+): { inputIndex: number; signer: InputSigner }[] {
+  const assignments: { inputIndex: number; signer: InputSigner }[] = []
+  for (let index = 0; index < transaction.inputs.length; index += 1) {
+    const output = transaction.inputs[index].output
+    if (!output) throw new Error('sign-spent')
+    const locking = output.script.toBuffer()
+    let signer: InputSigner | undefined
+    for (const key of signingKeys) {
+      const built = Script.buildPublicKeyHashOut(key.toPublicKey()).toBuffer()
+      if (!built.equals(locking)) continue
+      signer = signerFromPrivateKey(key)
+      break
+    }
+    if (!signer) continue
+    assignments.push({ inputIndex: index, signer })
+  }
+  return assignments
+}
+
+function nakamotoTransaction(transaction: SignableTransaction): {
+  tx: NakamotoTransaction
+  spent: SpentOutput[]
+} {
+  const spent: SpentOutput[] = []
+  const inputs = transaction.inputs.map(input => {
+    const output = input.output
+    if (!output) throw new Error('sign-spent')
+    const scriptPubKey = scriptBytes(output.script)
+    spent.push({ value: BigInt(output.satoshis), scriptPubKey })
+    return {
+      prevout: {
+        txid: internalTxid(input.prevTxId),
+        vout: input.outputIndex,
+      },
+      scriptSig: new Uint8Array(),
+      sequence: input.sequenceNumber >>> 0,
+    }
+  })
+  return {
+    tx: {
+      version: transaction.version,
+      inputs,
+      outputs: transaction.outputs.map(output => ({
+        value: BigInt(output.satoshis),
+        scriptPubKey: scriptBytes(output.script),
+      })),
+      locktime: transaction.nLockTime >>> 0,
+    },
+    spent,
+  }
+}
+
+// Post-Numbers XPI rejects SIGHASH_LOTUS. The signature byte is ALL|FORKID.
+// Ruth rewrites the BIP143 preimage fork value; the byte stays 0x41.
+// Activation height is not modeled, so replay is always on. A regtest whose
+// median time is still before Ruth will reject the spend.
+// A partial assignment throws and leaves every input script untouched.
+export function signTransactionInputs(
+  transaction: Transaction,
+  signingKeys: readonly PrivateKey[],
+  networkName: string,
+): Transaction {
+  const chain = xpiChain(networkName)
+  const { tx, spent } = nakamotoTransaction(transaction as SignableTransaction)
+  const assignments = explicitAssignments(transaction, signingKeys)
+  const signed = signAll(tx, assignments, {
+    chain,
+    algorithm: 'forkid',
+    sighashType: SIGHASH_FORKID | SIGHASH_ALL,
+    spent,
+    replayProtection: true,
+  })
+  if (!signed.ok) throw new Error(signed.error.code)
+  const next: Array<Buffer | undefined> = new Array(transaction.inputs.length)
+  for (const input of signed.value.inputs) {
+    if (input.scriptSig.length === 0) throw new Error('sign-partial')
+    if (next[input.index] !== undefined) throw new Error('sign-assignment')
+    next[input.index] = Buffer.from(input.scriptSig)
+  }
+  if (next.some(script => script === undefined)) throw new Error('sign-partial')
+  const previous = transaction.inputs.map(input =>
+    Buffer.from(input.script.toBuffer()),
+  )
+  try {
+    for (let index = 0; index < next.length; index += 1) {
+      const script = next[index]
+      if (!script) throw new Error('sign-partial')
+      setInputScript(transaction.inputs[index], script)
+    }
+  } catch (error) {
+    for (let index = 0; index < previous.length; index += 1) {
+      setInputScript(transaction.inputs[index], previous[index])
+    }
+    throw error
+  }
+  return transaction
+}
 
 export class Wallet {
   storage: UtxoStore
@@ -441,7 +609,11 @@ export class Wallet {
       }),
     )
     // Sign transaction
-    transaction = transaction.sign(signingKeys)
+    transaction = signTransactionInputs(
+      transaction,
+      signingKeys,
+      this.networkName,
+    )
 
     console.log('Broadcasting forwarding txn', transaction)
     const txHex = transaction.toString()
@@ -601,7 +773,11 @@ export class Wallet {
       ? shuffleArray(transaction.outputs).findIndex(v => v === 0)
       : 0
     // Sign transaction
-    transaction = transaction.sign(signingKeys)
+    transaction = signTransactionInputs(
+      transaction,
+      signingKeys,
+      this.networkName,
+    )
     const finalTxnSize = this._estimateSize(transaction)
     // Sweep change into a randomly provided output.  Helps provide noise and obsfuscation
     console.log(

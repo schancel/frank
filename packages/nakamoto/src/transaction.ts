@@ -107,6 +107,12 @@ export interface SighashOptions {
    * the same order lotusd stores in uint256.
    */
   readonly executedScriptHash?: Uint8Array
+  /**
+   * Lotus Ruth replay protection. The signature byte stays `hashType & 0xff`.
+   * The BIP143 preimage uses `0xff0000 | ((hashType >> 8) ^ 0xdead)` in the
+   * high 24 bits, matching lotusd `SCRIPT_ENABLE_REPLAY_PROTECTION`.
+   */
+  readonly replayProtection?: boolean
 }
 
 export interface TxFailure {
@@ -174,6 +180,14 @@ function i32Bits(value: number): number | null {
     return null
   }
   return value < 0 ? value + 0x100000000 : value
+}
+
+/** lotusd SignatureHash replay rewrite. `bits` is an unsigned 32-bit type. */
+function ruthReplayType(bits: number): number {
+  const value = BigInt(bits)
+  const fork = (value >> 8n) & 0xffffffn
+  const next = 0xff0000n | (fork ^ 0xdeadn)
+  return Number((next << 8n) | (value & 0xffn))
 }
 
 function writeI32(writer: ByteWriter, value: number): boolean {
@@ -670,6 +684,7 @@ function sighashBip143(
   amount: bigint,
   spent: readonly SpentOutput[] | undefined,
   commitUtxos: boolean,
+  replayProtection: boolean,
 ): TxResult<InternalHash> {
   const input = tx.inputs[inputIndex]
   if (input === undefined) return fail('sighash-index')
@@ -738,7 +753,7 @@ function sighashBip143(
   if (!writeU32(writer, tx.locktime)) return fail('tx-range')
   const bits = i32Bits(hashType)
   if (bits === null) return fail('sighash-type')
-  writer.writeUInt32LE(bits)
+  writer.writeUInt32LE(replayProtection ? ruthReplayType(bits) : bits)
   const branded = internalHashFromBytes(hash256(writer.finish()))
   if (!branded.ok) return fail('tx-range')
   return branded
@@ -1005,7 +1020,11 @@ function allowed(chain: ChainDescriptor, algorithm: SighashAlgorithm): boolean {
   if (algorithm === 'bip143' || algorithm === 'bip341') {
     return chain.sighash.kind === 'btc-legacy-and-segwit'
   }
-  if (algorithm === 'forkid') return chain.sighash.kind === 'forkid'
+  if (algorithm === 'forkid') {
+    // XPI kind stays lotus for the pre-Numbers algorithm. Post-Numbers
+    // spends use BIP143 fork id; Ruth replay is opt-in via replayProtection.
+    return chain.sighash.kind === 'forkid' || chain.family === 'xpi'
+  }
   return chain.sighash.kind === 'lotus'
 }
 
@@ -1050,6 +1069,7 @@ export function sighash(
       amount.value,
       options.spent,
       options.commitUtxos === true,
+      options.replayProtection === true,
     )
   }
   if (options.algorithm === 'bip341')

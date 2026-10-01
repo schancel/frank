@@ -131,7 +131,9 @@ describe('chain descriptors', () => {
     expect(XPI_MAINNET.sighash.kind).toBe('lotus')
     if (XPI_MAINNET.sighash.kind === 'lotus') {
       expect(XPI_MAINNET.sighash.source).toContain('SignatureHashLotus')
-      expect(XPI_MAINNET.sighash.source).toContain('not used for XPI')
+      expect(XPI_MAINNET.sighash.source).toContain(
+        'SCRIPT_ENABLE_REPLAY_PROTECTION',
+      )
     }
     for (const item of [XPI_MAINNET, XPI_TESTNET, XPI_REGTEST]) {
       expect(item.cashaddrPrefix).not.toBe('bitcoincash')

@@ -118,7 +118,8 @@ E5. Type identifiers are never reused. Version 1 reserves:
 
 The CDDL rule for each type's payload is: 1 `direct-message-delivery`; 2
 `directory-attestation`; 3 `mailbox-checkpoint`; 4 `directory-statement`
-(schema 2; schema 1 is `directory-statement-v1`); 5
+(schema 2; schema 1 is `directory-statement-v1`; schema 3, the registration
+profile of section 11, is `directory-statement-v3`); 5
 `recipient-encrypted-payload`; 6 `encrypted-message-content`; 7
 `key-transition-statement`; 8 `message-content-revision`; 9 `topic-post`; 10 `topic-post-submission`; 11
 `topic-vote-submission`; 16 `container-message-item`; 17 `text-message-item`.
@@ -200,7 +201,8 @@ processes a newer compatible schema; they do not permit undeclared fields to be
 smuggled into schema version 1. The `schema_version` of the frame whose
 payload contains a map decides whether that map is read as exact or as a newer
 compatible schema, and the same decision covers every wildcard map nested in
-that payload (`relay-binding`, `key-transition`, `journal-fact`). An embedded
+that payload (`relay-binding`, `key-transition`, `journal-fact`, and section
+11's `profile-entry` and `profile-header`). An embedded
 child frame's own `schema_version` governs its own maps; a parent's version
 neither opens nor closes them. Maps whose CDDL has no wildcard (`payment-member`,
 `account-ref`, `timestamp`, `signature-entry`, and the common envelope) are
@@ -652,6 +654,9 @@ deployed before this merges. Type 4 gets `schema_version` 2 with
 field (S10a.1): schema 1 is the statement layout without field 8 and stays
 readable by a schema-2 reader, and a reader below version 2 retains a schema-2
 statement opaquely and never treats it as a statement without a stamp key.
+Section 11's registration profile is type-4 `schema_version` 3 and keeps
+`min_reader_version` 2 per V1, because its field 9 is optional: a schema-2
+reader projects a schema-3 statement through V6.3 and retains field 9.
 
 Migration. Profiles registered today are protobuf profiles and carry no field
 8; until the directory migration (#133) lets a subject publish a schema-2
@@ -1159,7 +1164,9 @@ category, and an implementation MUST NOT continue to report a later failure.
        relay-side policy belong to the relay and the migration tickets (#60,
        #132), not to the codec.
     6. Every signature entry and transition authorization verifies, not only the
-       subject's: `cryptographic`.
+       subject's: `cryptographic`. An entry whose algorithm is allocated but not
+       verifiable in the reader's slice is `unsupported` before any verification
+       runs (M7); `cryptographic` otherwise.
 
 Passes A and B of the CBOR stages. Pass A is a streaming syntax pass that
 proceeds in byte order and fails at the first item that violates a resource
@@ -1216,9 +1223,9 @@ ambient chain, database, reader, or decryption state can change its outcome.
 `1..highest`, and an object interprets by its own exact version's CDDL; until a
 later schema is allocated the corpus has no schema-version-2 fixtures beyond
 proof frames that carry `schema_version` 2 to exercise V6.3 against a reader
-whose context supports only schema 1, and type 4, whose schema 2 (with
-`min_reader_version` 2) requires a context with `reader_version` at least 2 and
-type 4 supported at schema 2; a schema-1 statement is also interpreted by that
+whose context supports only schema 1, and type 4, whose schemas 2 and 3 (both
+with `min_reader_version` 2) require a context with `reader_version` at least 2
+and type 4 supported at schema 2 or 3; a schema-1 statement is also interpreted by that
 context (versions `1..highest`).
 
 The operation bounds the categories a case may expect: `frame` allows `frame`,
@@ -1363,7 +1370,7 @@ and B in section 9 define the order within CBOR validation.
 | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------- |
 | Frame or route length over a limit; any byte/depth/container/item limit; R2 through R4 type-specific limits, including a CDDL bound that restates them                                                                                                                                                                                                                                                                                                                                                                                                    | `resource`      |
 | Short header, bad magic, declared-length mismatch, concatenated frame, bytes outside the declared body                                                                                                                                                                                                                                                                                                                                                                                                                                                    | `frame`         |
-| Unknown frame version or uninterpretable type/schema without permitted retention; unallocated key type, algorithm, encryption suite, or algorithm/key-type/length pairing                                                                                                                                                                                                                                                                                                                                                                                 | `unsupported`   |
+| Unknown frame version or uninterpretable type/schema without permitted retention; unallocated key type, algorithm, encryption suite, or algorithm/key-type/length pairing; an entry whose algorithm is allocated but not verifiable in the reader's slice (M7)                                                                                                                                                                                                                                                                                            | `unsupported`   |
 | Truncated/invalid CBOR syntax, invalid UTF-8, reserved additional information, or extra CBOR item in body/payload                                                                                                                                                                                                                                                                                                                                                                                                                                         | `malformed`     |
 | Non-minimal integer/length, indefinite value, duplicate/out-of-order map key, or another alternate encoding of an allowed value                                                                                                                                                                                                                                                                                                                                                                                                                           | `noncanonical`  |
 | Forbidden CBOR class (float, tag, forbidden simple value; a stray break code is `malformed`; non-uint map key), envelope/CDDL type mismatch, undeclared key (C12), missing/extra required key, scalar range violation, network-tag/ASCII-identifier/endpoint syntax violation, wrong key length for an allocated key type, a type-4 statement missing required field 8 or a schema-1 statement carrying it, a type-5 stamp field with the wrong length or an invalid point or proof-scalar encoding (T3b), or `min_reader_version` above `schema_version` | `schema`        |
@@ -1424,3 +1431,181 @@ and builds no frame (S10a.2). The proof-scalar and point range checks
 are redundant with hash equality for acceptance, so only the category in the
 schema vectors above distinguishes an implementation that has them; and retention of unknown children and of the original
 frame after a V6.3 projection, which a future manifest field may assert.
+
+## 11. The account and attestation registration record
+
+Status: the migration first slice of #106. This section pins the exact
+deterministic-CBOR encoding of the account/attestation registration record that
+today's protobuf `SignedPayload` wrapping `MonadProfile` carries (`packages/
+cashweb/registry/proto/metadata.proto`, the backend `monad_profile.proto`, and
+the verifier in `backend/cashweb/cashweb-registry/src/monad_profile_verify.rs`).
+It is a pure serialization-format migration: same fields, same semantics, no new
+identity schema. No production route uses the CBOR record until the directory
+cutover (#133) lands. It is normative for
+[vectors/account-registration.json](vectors/account-registration.json) and
+[vectors/account-registration-values.json](vectors/account-registration-values.json)
+and for the codec implementation of #106's child B.
+
+The record is a type-2 attestation of a complete type-4 statement frame
+(section 6, Directory attestations), written at `schema_version` 3 with
+`min_reader_version` 2: V1 bumps `schema_version` for the new optional field 9
+and does not raise `min_reader_version`, because a schema-2 reader can safely
+project the statement through V6.3 and retain field 9. Field 9 is present when
+the profile carries at least one entry and absent otherwise. A schema-1 or
+schema-2 statement that carries field 9 is a C12 `schema` error, a same-subject
+update must not lower `schema_version` (S10a.2), and every schema-3 statement
+still requires the stamp key (S10a.1). The codec-level rules of sections 2
+through 9 are unchanged by this section except where M7 records an
+`unsupported` category at stage 10.6 for allocated-but-unverifiable algorithms.
+
+M1. Field mapping. Every protobuf field of the registration record maps 1:1
+into the type-4 statement and its type-2 wrapper; nothing is dropped, nothing
+new is invented, and the signature is always recomputed over the new bytes
+(never transcoded):
+
+| Protobuf field                                            | CBOR location (type-4 statement unless noted)                                          |
+| --------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| `SignedPayload.public_key`                                | field 1, subject `account-ref`: key type 1, 33-byte compressed SEC1                    |
+| `MonadProfile.timestamp` (ms)                             | field 2 (revision) and field 3 (`timestamp`), per M2                                   |
+| `MonadProfile.ttl` (ms)                                   | field 6, expiry `timestamp`, per M3                                                    |
+| `MonadProfile.entries` (`AddressEntry.kind/headers/body`) | field 9, `profile-entry` array, per M4                                                 |
+| `SignedPayload.signature`, `scheme = ECDSA`               | type-2 wrapper field 1, `signature-entry` with algorithm 1, per M5                     |
+| `SignedPayload.payload_digest`                            | absorbed: the SHA-256 digest of the frozen T2 transcript replaces it (M5)              |
+| `SignedPayload.burn_amount`, `SignedPayload.transactions` | absent: registration is never burn-gated (the legacy verifier rejects a non-empty set) |
+| (no protobuf counterpart)                                 | field 0, network tag (T5); field 4, relay bindings; field 8, stamp key `P'` (S10a)     |
+| (no CBOR counterpart)                                     | the claimed registration address: derived from the subject, never stored (M6)          |
+
+The last two rows are the frozen statement shape, not new semantics: field 0,
+field 4, and field 8 are required fields of every type-4 statement, so the
+first-slice registration fills them with the network it registers on (one of
+the configured `MonadNetworkDescriptor` rows of
+`backend/cashweb/cashweb-registry/src/network_tag.rs`, currently
+`monad-testnet` or `monad-mainnet`), with the relay bindings the record is
+published through, and with the wallet's stamp key. Which relay bindings a
+wallet puts in field 4 at registration time is the directory cutover's (#133)
+flow decision; the format is unchanged by it.
+
+M2. Milliseconds to revision and timestamp, lossless. A source value `ms` (a
+non-negative `int64` millisecond timestamp, the protobuf field's semantics)
+becomes the statement's revision (`field 2`, the exact value of `ms`, which
+therefore increases on every later update exactly as the protobuf verifier
+requires) and its timestamp (field 3) as `seconds = ms div 1000` and
+`nanoseconds = (ms mod 1000) * 1000000`, where `div` rounds toward negative
+infinity and `mod` yields the non-negative remainder of that division (floor
+semantics; TypeScript computes the remainder as
+`((ms % 1000n) + 1000n) % 1000n` and its seconds as
+`(ms - nanoseconds / 1000000n) / 1000n`, because bigint `/` truncates toward
+zero; Rust uses `div_euclid` and `rem_euclid`). The inverse is `ms = seconds * 1000 +
+nanoseconds div 1000000`; TypeScript implementations hold every part as
+`bigint` (C7) because `ms` is an `int64`, and JSON vector files carry such
+values as decimal strings because `2^63-1` exceeds the safe JSON integer range.
+A negative `ms` has no unsigned revision: such a record is unencodable and the
+mapping fails closed. The nanoseconds component is always a multiple of
+`1000000`; a timestamp that is not came from no millisecond value, and the
+migration reader MUST reject rather than silently truncate it. The round trips,
+including `ms = 0` and `ms = 2^63-1`, are pinned in
+`vectors/account-registration-values.json`.
+
+M3. TTL to expiry. The protobuf `ttl` (milliseconds, `int64`) and the
+registration timestamp `ms` produce field 6, an absolute expiry timestamp, as
+`expiry = split_ms(ms + ttl)` with M2's split and its floor semantics, so a
+negative total is a timestamp with a negative seconds component and is
+encodable (the codec performs no clock check; a consumer may reject an already
+expired record, which is #133 policy). The arithmetic MUST be done in a width
+that cannot overflow (`i128` in Rust, `bigint` in TypeScript) before the split;
+the result always fits the `timestamp` schema, because two `i64` millisecond
+values sum below `2^64` and the seconds component of any value below `2^64` ms
+is far below the `i64` maximum. Field 6 is present on every registration
+record; a `ttl` of zero encodes an expiry equal to the registration timestamp.
+The codec performs no clock check (S10's freshness policy stays with #133).
+
+M4. Profile entries, field 9. The protobuf `repeated AddressEntry` becomes the
+optional field 9: an array of 1 through 64 `profile-entry` maps in authored
+order, which is never resorted (message-item array order is likewise authored,
+S8), and absent when the profile carries no entries. One `profile-entry`:
+
+| Key | Name      | CDDL value              | Meaning                                                                  |
+| --: | --------- | ----------------------- | ------------------------------------------------------------------------ |
+|   0 | `kind`    | `tstr`                  | The wallet's entry-type hint (`AddressEntry.kind`); consumer-interpreted |
+|   1 | `headers` | `[0*64 profile-header]` | The entry's `map<string, string>` as a C11 list                          |
+|   2 | `body`    | `bstr`                  | The entry body (`AddressEntry.body`), exact bytes                        |
+
+One `profile-header` is `{0: name (tstr), 1: value (tstr)}`. The protobuf
+headers are a set of name/value strings, and C1a forbids text keys in every
+map, so the set is represented as a list sorted bytewise by the header name
+(S1a) with duplicate names rejected; C11 applies with the header name as the
+declared semantic key. An empty headers map is an empty array, an empty body an
+empty byte string, exactly the protobuf defaults. The count bounds (`1*64`
+entries, `0*64` headers) are plain CDDL bounds, so exceeding them is a `schema`
+error at stage 8.2 and not a `resource` verdict (the 256 KiB type-2 frame limit
+of R3 bounds the record first). Both maps carry the `* uint => frank-value`
+wildcard, so a later schema may extend them and a V6.3 reader retains the
+unknown fields, exactly as `relay-binding` does. Display-name content rules
+(Decision #189) are consumer checks, not codec rules.
+
+M5. Signature. The registration's type-2 wrapper carries the subject's
+signature as exactly one entry in this slice: `{0: algorithm 1, 1: the
+statement subject as the signer, 2: the signature bytes}`, where the bytes are
+a strict-DER, low-S secp256k1 ECDSA signature (S2a, S2b: 8 through 72 bytes)
+over the 32-byte SHA-256 digest of the frozen T2 transcript
+(`frank/directory-signature/v1`, network = the statement's field 0, frame = the
+exact complete type-4 frame, empty context). This pins the record this
+migration writes; the frozen schema's allowance of further entries (a verified
+co-signature, for example) is unchanged, and stage 9 requires an entry signed
+by the statement subject while stage 10.6 verifies every entry (M7's
+allocated-but-unverifiable algorithms are `unsupported` before verification).
+The protobuf
+`payload_digest` (the SHA-256 of the protobuf payload bytes) is absorbed: the
+CBOR record authenticates the statement through T2 instead, and is recomputed
+at registration time, so legacy signature bytes are never copied or
+reinterpreted (V5, M8).
+
+M6. Canonical address. The statement subject is the public key; the canonical
+address is the low 20 bytes of `Keccak256(uncompressed_pubkey_without_04_prefix)`
+— the exact rule of `monad_evm_tx::address_from_uncompressed_pubkey`, applied
+to the 65-byte uncompressed encoding of the subject key. The address is
+derived, never stored: no CBOR field of the record carries it. A consumer that
+registers or serves the record under a claimed address MUST derive the address
+from the verified statement's subject and MUST fail closed when they differ;
+the claimed address is an out-of-frame input (the HTTP path today), so this
+check has no manifest vector, exactly as S10a.2's sender-side error has none,
+and each codec's unit tests cover it once child B lands.
+`vectors/account-registration-values.json` pins the derivation itself, carrying
+each vector's compressed key, its uncompressed `X||Y` (the exact Keccak input),
+and the resulting address.
+
+M7. First-slice support. This slice recognizes exactly the networks
+`monad-testnet` and `monad-mainnet`, signature algorithm 1, and key type 1.
+S2's allocation table and S2b's pairings are unchanged (an unallocated key
+type, algorithm, or pairing is `unsupported` at stage 8.3). An entry whose
+algorithm is allocated but not verifiable in this slice — algorithms 2, 3, and
+16 today — passes stage 8.3 and stage 9 and then makes the attestation
+`unsupported` at stage 10.6, not `cryptographic`: no verification ran, and V3
+forbids reporting unverified semantics. A registration consumer SHOULD apply
+the same slice to what it accepts (M8's legacy adapter is the only other
+reader); widening the slice is a new decision that also adds the vectors.
+
+M8. Legacy records. The protobuf `SignedPayload` with `scheme = SCHNORR`
+(or `ECDSA` over the legacy SHA-256-of-payload digest) stays readable only
+through the explicit legacy adapter. The legacy transcript differs from T2 in
+domain, length prefixes, and coverage, so a legacy signature MUST NOT be
+reinterpreted as algorithm 2 or 3 (S2a: Schnorr identifiers are not
+interchangeable) or algorithm 1, a CBOR record is never built by transcribing
+legacy signature bytes, and the two encodings never share an identity (V5).
+
+M9. Vectors. `vectors/account-registration.json` is a manifest in the format of
+[vectors.schema.json](vectors.schema.json) (`frank-cbor-v1-vectors`), so the
+committed manifest checkers and runners of #185 accept it unchanged once child
+B lifts their stage-10 guard; its cases cite this section's rules. At the
+landing of this section the codecs implement stages 1-9 only, so the corpus
+splits into: live cases, whose recorded outcome the current codecs already
+produce at `typed` (the entry-less shapes, the V6.3 retention of field 9, and
+every stage 1-9 reject), and forward-looking cases, which the current codecs
+reach only until they fail on the C12 declaration of field 9 or at the not-yet-
+implemented stage 10.6; those record the normative outcomes child B must
+produce. The corpus checker of #185 (README section 10) applies to this file's
+cases as written, including its stage labels (`10.6` is within `full`'s last
+stage). `vectors/account-registration-values.json` carries the pure-value
+vectors (M2, M3, M6) in its own documented format, mirroring
+`vectors/topic-commitments.json`, which is not a frame manifest because no
+manifest field can carry a value that is not a content hash.

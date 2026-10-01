@@ -26,7 +26,10 @@ describe('runtime constraints', () => {
   test('the package is ESM, side-effect free, and split by entry', () => {
     expect(pkg.type).toBe('module')
     expect(pkg.sideEffects).toBe(false)
-    expect(pkg.dependencies).toEqual({ '@noble/hashes': '1.8.0' })
+    expect(pkg.dependencies).toEqual({
+      '@noble/curves': '1.9.1',
+      '@noble/hashes': '1.8.0',
+    })
     expect(Object.keys(pkg.exports).sort()).toEqual([
       '.',
       './address',
@@ -40,6 +43,7 @@ describe('runtime constraints', () => {
       './cashaddr',
       './constructors',
       './convert-bits',
+      './curve',
       './encoding-error',
       './hd',
       './integer',
@@ -53,10 +57,9 @@ describe('runtime constraints', () => {
       './xec',
       './xpi',
     ])
-    expect(runtime.allowed).toEqual(['@noble/hashes'])
+    expect(runtime.allowed).toEqual(['@noble/curves', '@noble/hashes'])
     expect(runtime.optional).toEqual([])
     expect(runtime.planned).toEqual([
-      '@noble/curves',
       '@scure/base',
       '@scure/bip32',
       '@scure/bip39',
@@ -87,6 +90,7 @@ describe('runtime constraints', () => {
       'transaction',
       'script',
       'block',
+      'curve',
     ])
   })
 

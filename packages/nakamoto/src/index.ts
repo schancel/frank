@@ -2,7 +2,8 @@
 // Per-chain entries: ./btc ./bch ./xec ./xpi.
 // Feature entries: ./integer ./script ./script-num ./base58 ./base58check
 // ./varint ./reader ./convert-bits ./base32 ./encoding-error ./constructors
-// ./bech32 ./cashaddr ./address ./keys ./hd ./transaction ./sign ./block.
+// ./bech32 ./cashaddr ./address ./keys ./hd ./transaction ./sign ./block
+// ./curve.
 
 export const PACKAGE_NAME = '@frank/nakamoto'
 
@@ -228,6 +229,24 @@ export type {
 } from './block.js'
 
 export { isSignError, signAll, signInput } from './sign.js'
+export {
+  ecdh,
+  ecdhWithHash,
+  generateDleqProof,
+  isCurveError,
+  messageDigest,
+  pointAdd,
+  pointMultiply,
+  signEcdsa,
+  signMessage,
+  signSchnorr,
+  tweakAddPrivateKey,
+  tweakAddPublicKey,
+  verifyDleqProof,
+  verifyEcdsa,
+  verifyMessage,
+  verifySchnorr,
+} from './curve.js'
 export type {
   InputSigner,
   InputStatus,
@@ -240,3 +259,21 @@ export type {
   SignedOutput,
   SignedTransaction,
 } from './sign.js'
+export type {
+  BadLength,
+  CompressionRequired as CurveCompressionRequired,
+  CurveError,
+  CurveResult,
+  DleqInput,
+  DleqProof,
+  DleqVerifyInput,
+  HashRequired,
+  HighS,
+  MessageBytes,
+  MessageMagicUnpinned,
+  PointAtInfinity,
+  PointInvalid,
+  ScalarOutOfRange as CurveScalarOutOfRange,
+  SharedPoint,
+  SignatureInvalid,
+} from './curve.js'

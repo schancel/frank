@@ -104,9 +104,14 @@
     "./block": {
       "types": "./dist/block.d.ts",
       "import": "./dist/block.js"
+    },
+    "./curve": {
+      "types": "./dist/curve.d.ts",
+      "import": "./dist/curve.js"
     }
   },
   "dependencies": {
+    "@noble/curves": "1.9.1",
     "@noble/hashes": "1.8.0"
   },
   "scripts": {

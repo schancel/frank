@@ -8,8 +8,15 @@ db_path = "data/registry.rocksdb"
 net = "mainnet"
 peers = []
 
+# The RPC URL is deliberately NOT in this file: `cashwebd-exe` reads it from the
+# MONAD_TESTNET_HTTP_RPC_URL environment variable (and refuses to start with a clear message when
+# it is missing), and requires FRANK_NETWORK_TAG (MONT on Monad testnet) to be set too.
+# An explicit `rpc_url = "..."` here would take precedence over the environment.
+# 10143 is Monad testnet's chain ID (mainnet is 143); 1000000000000 wei = 0.000001 MON.
 [registry.monad_mailbox]
-enabled = false
+enabled = true
+min_value_wei = "1000000000000"
+expected_chain_id = 10143
 
 [registry.pop]
 enabled = false

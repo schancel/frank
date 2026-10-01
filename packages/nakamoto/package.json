@@ -1,0 +1,140 @@
+{
+  "name": "@frank/nakamoto",
+  "version": "0.0.1",
+  "description": "Typed chain library for BTC, BCH, XEC, and XPI. Consensus bytes follow the chains. The public API does not follow bitcore-lib.",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "sideEffects": false,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./btc": {
+      "types": "./dist/btc.d.ts",
+      "import": "./dist/btc.js"
+    },
+    "./bch": {
+      "types": "./dist/bch.d.ts",
+      "import": "./dist/bch.js"
+    },
+    "./xec": {
+      "types": "./dist/xec.d.ts",
+      "import": "./dist/xec.js"
+    },
+    "./xpi": {
+      "types": "./dist/xpi.d.ts",
+      "import": "./dist/xpi.js"
+    },
+    "./integer": {
+      "types": "./dist/integer.d.ts",
+      "import": "./dist/integer.js"
+    },
+    "./script": {
+      "types": "./dist/script.d.ts",
+      "import": "./dist/script.js"
+    },
+    "./script-num": {
+      "types": "./dist/script-num.d.ts",
+      "import": "./dist/script-num.js"
+    },
+    "./base58": {
+      "types": "./dist/base58.d.ts",
+      "import": "./dist/base58.js"
+    },
+    "./base58check": {
+      "types": "./dist/base58check.d.ts",
+      "import": "./dist/base58check.js"
+    },
+    "./varint": {
+      "types": "./dist/varint.d.ts",
+      "import": "./dist/varint.js"
+    },
+    "./reader": {
+      "types": "./dist/reader.d.ts",
+      "import": "./dist/reader.js"
+    },
+    "./convert-bits": {
+      "types": "./dist/convert-bits.d.ts",
+      "import": "./dist/convert-bits.js"
+    },
+    "./base32": {
+      "types": "./dist/base32.d.ts",
+      "import": "./dist/base32.js"
+    },
+    "./encoding-error": {
+      "types": "./dist/encoding-error.d.ts",
+      "import": "./dist/encoding-error.js"
+    },
+    "./constructors": {
+      "types": "./dist/constructors.d.ts",
+      "import": "./dist/constructors.js"
+    },
+    "./bech32": {
+      "types": "./dist/bech32.d.ts",
+      "import": "./dist/bech32.js"
+    },
+    "./cashaddr": {
+      "types": "./dist/cashaddr.d.ts",
+      "import": "./dist/cashaddr.js"
+    },
+    "./address": {
+      "types": "./dist/address.d.ts",
+      "import": "./dist/address.js"
+    },
+    "./backend": {
+      "types": "./dist/backend.d.ts",
+      "import": "./dist/backend.js"
+    },
+    "./keys": {
+      "types": "./dist/keys.d.ts",
+      "import": "./dist/keys.js"
+    },
+    "./hd": {
+      "types": "./dist/hd.d.ts",
+      "import": "./dist/hd.js"
+    },
+    "./sign": {
+      "types": "./dist/sign.d.ts",
+      "import": "./dist/sign.js"
+    },
+    "./transaction": {
+      "types": "./dist/transaction.d.ts",
+      "import": "./dist/transaction.js"
+    },
+    "./block": {
+      "types": "./dist/block.d.ts",
+      "import": "./dist/block.js"
+    },
+    "./curve": {
+      "types": "./dist/curve.d.ts",
+      "import": "./dist/curve.js"
+    }
+  },
+  "dependencies": {
+    "@noble/curves": "1.9.1",
+    "@noble/hashes": "1.8.0"
+  },
+  "scripts": {
+    "test": "jest",
+    "bench": "tsc -p tsconfig.json --pretty false && node scripts/hot-path-bench.mjs",
+    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.jest.json",
+    "lint": "eslint . --ext .ts,.js,.cjs,.mjs",
+    "format": "prettier --config ../../app/.prettierrc.json --check \"src/**/*.ts\" \"test/**/*.ts\" \"scripts/**/*.mjs\" package.json tsconfig.json tsconfig.jest.json jest.config.cjs .eslintrc.cjs runtime-deps.json bundle-entries.json ATTRIBUTION.md",
+    "check:shared": "node scripts/check-shared.mjs",
+    "check:deps": "node scripts/check-deps.mjs",
+    "check:bundle": "node scripts/bundle-report.mjs"
+  },
+  "devDependencies": {
+    "@types/jest": "^29",
+    "@types/node": "^16.11.11",
+    "bitcore-lib-xpi": "*",
+    "esbuild": "~0.28.0",
+    "jest": "^29",
+    "ts-jest": "^29",
+    "typescript": "^5.9.3"
+  }
+}

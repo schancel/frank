@@ -1,11 +1,16 @@
 # Static docker-compose config for `cashwebd-exe` (see ../Dockerfile). This file deliberately
-# holds no real secrets and needs no templating at container-start time: the genuinely-variable,
-# secret-bearing config for the hackathon demo (the real Alchemy RPC URL, burn address, network
-# tag) is read lazily, per-request, from plain env vars by `cashweb-registry`'s own
-# `OnceLock`-based gate configs (`http/monad_message.rs::MonadMessageGateConfig::from_env`,
-# `http/monad_topics.rs::MonadTopicGateConfig::from_env`, `network_tag.rs::network_tag`) --
-# entirely separate from this file's `cashweb_config::parse_conf` mechanism. See docker-compose.yml
-# for where those env vars actually get set.
+# holds no real secrets and needs no templating at container-start time.
+#
+# The durable Monad direct-message mailbox (`PUT /message/monad` and the authenticated inbox and
+# recovery routes) is enabled by default, configured by `[registry.monad_mailbox]` below. The
+# Monad JSON-RPC URL is secret-bearing and so is NOT stored here: `cashwebd-exe` reads it from
+# `MONAD_TESTNET_HTTP_RPC_URL` (docker-compose.yml passes it through) and exits at startup with a
+# clear message when it is missing. `FRANK_NETWORK_TAG` (compose defaults it to MONT) must also be
+# set or the daemon refuses to start. An explicit `rpc_url` key here would override the
+# environment. 10143 is Monad testnet's chain ID (mainnet is 143, tag MON1). Set `enabled =
+# false` to roll back to a relay that 404s every `/message/monad` route except the topic routes.
+# The topic routes read `MONAD_TESTNET_HTTP_RPC_URL`/`MONAD_STAMP_BURN_ADDRESS` from the
+# environment as well.
 #
 # `[bitcoin_rpc]` is deliberately omitted: `cashwebd-exe` installs a fail-closed adapter for
 # legacy Lotus routes while continuing to serve Monad routes. Add real Lotus RPC credentials to
@@ -24,7 +29,9 @@ net = "mainnet"
 peers = []
 
 [registry.monad_mailbox]
-enabled = false
+enabled = true
+min_value_wei = "1000000000000"
+expected_chain_id = 10143
 
 [registry.pop]
 enabled = false

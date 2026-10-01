@@ -9,6 +9,7 @@ module.exports = {
       pug: { doctype: 'html' },
     },
   },
+  setupFiles: ['<rootDir>/test/jest/level-open-guard.js'],
   setupFilesAfterEnv: ['<rootDir>/test/jest/jest.setup.ts'],
   // noStackTrace: true,
   // bail: true,
@@ -52,6 +53,10 @@ module.exports = {
     // node_modules directory, whose workspace symlinks otherwise point at another checkout.
     '^@frank/cashweb/(.*)$': '<rootDir>/../packages/cashweb/$1',
     '^@frank/wallet/(.*)$': '<rootDir>/../packages/wallet/$1',
+    // Same source map cashweb's jest uses. The package export points at dist,
+    // which this suite does not build. Nakamoto's own imports end in .js.
+    '^@frank/nakamoto$': '<rootDir>/../packages/nakamoto/src/index.ts',
+    '^(\\.{1,2}/.*)\\.js$': '$1',
     // Use Quasar's CommonJS server entry in Jest. The older
     // `quasar.cjs.prod.js` filename disappeared in Quasar 2.33.
     '^quasar$': 'quasar/dist/quasar.server.prod.cjs',
@@ -89,7 +94,8 @@ module.exports = {
     ],
     // @vue/vue3-jest (Vue 3 + jest 29 compatible) replaces the old Vue2-era 'vue-jest'
     // package, which this app (Vue 3 / Quasar 2) was never actually compatible with.
-    '.*\\.vue$': '@vue/vue3-jest',
+    // Wraps @vue/vue3-jest, only adding an `import.meta.url` rewrite (see the file).
+    '.*\\.vue$': '<rootDir>/test/jest/vue-import-meta-transform.js',
     '.+\\.(css|styl|less|sass|scss|svg|png|jpg|ttf|woff|woff2)$':
       'jest-transform-stub',
   },

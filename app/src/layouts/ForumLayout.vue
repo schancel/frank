@@ -1,6 +1,10 @@
 <template>
   <div>
-    <q-drawer v-model="showForumDrawer" side="right" :breakpoint="800">
+    <q-drawer
+      v-model="showForumDrawer"
+      side="right"
+      :breakpoint="drawerBreakpoint"
+    >
       <forum-drawer />
     </q-drawer>
 
@@ -66,11 +70,13 @@ import { useTopicStore } from 'src/stores/topics'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
 
 import ForumDrawer from '../components/panels/ForumDrawer.vue'
+import { DRAWER_BREAKPOINT } from '../utils/layout'
 
 export default defineComponent({
   data() {
     return {
       showForumDrawer: false,
+      drawerBreakpoint: DRAWER_BREAKPOINT,
     }
   },
   setup() {

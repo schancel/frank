@@ -11,6 +11,12 @@ import pop from '../pop'
 import VCard from 'vcf'
 import EventEmitter from 'events'
 import { MessageConstructor } from './constructors'
+import { relayCipherPayloadDigest } from './cipher-payload-digest'
+import { p2pkhSpentOutpoints } from './p2pkh-spent'
+import { outpointPrivateKey } from './outpoint-hd'
+import { stampOutpointPublicKey } from './stamp-outpoint-pub'
+import { stampParentSecret } from './stamp-parent'
+import { readStampTransaction } from './stamp-tx'
 import { arrayBufferToBase64 } from './images'
 
 import { PayloadConstructor } from './crypto'
@@ -26,8 +32,8 @@ import type { Payment } from '../bip70/paymentrequest_pb'
 import WebSocket from 'isomorphic-ws'
 import {
   PublicKey,
-  crypto,
   Transaction,
+  Script,
   Networks,
   Address,
   PrivateKey,
@@ -758,18 +764,13 @@ export class RelayClient extends ReadOnlyRelayClient {
         assert(typeof entryData !== 'string', 'entryData of wrong type')
         const p2pkhMessage = p2pkh.P2PKHEntry.deserializeBinary(entryData)
 
-        // Add stealth outputs
+        // Spent inputs, not a bitcore Transaction (decision #524).
         const transactionRaw = p2pkhMessage.getTransaction()
-        const p2pkhTxRaw = Buffer.from(transactionRaw)
-        const p2pkhTxR = new Transaction(p2pkhTxRaw)
-
-        for (const input of p2pkhTxR.inputs) {
+        for (const spent of p2pkhSpentOutpoints(
+          Uint8Array.from(Buffer.from(transactionRaw)),
+        )) {
           // Don't add these outputs to our wallet. They're the other persons
-          const utxoId = calcUtxoId({
-            txId: input.prevTxId.toString('hex'),
-            outputIndex: input.outputIndex,
-          })
-          this.wallet.deleteUtxo(utxoId)
+          this.wallet.deleteUtxo(calcUtxoId(spent))
         }
 
         continue
@@ -842,7 +843,7 @@ export class RelayClient extends ReadOnlyRelayClient {
     const parsedMessage = preParsedMessage
 
     const payloadDigest = Buffer.from(
-      crypto.Hash.sha256(Buffer.from(rawCipherPayload)),
+      relayCipherPayloadDigest(rawCipherPayload),
     )
     if (payloadDigest.compare(parsedMessage.payloadDigest) !== 0) {
       console.error(
@@ -865,22 +866,25 @@ export class RelayClient extends ReadOnlyRelayClient {
     const identityPrivateKey = wallet.identityPrivKey
     assert(identityPrivateKey, 'No identity privkey set')
 
-    const stampRootHDPrivKey = this.payloadConstructor
-      .constructStampHDPrivateKey(payloadDigest, identityPrivateKey)
-      .deriveChild(44)
-      .deriveChild(145)
+    // Parent secret is stampParentSecret of the identity key (decision #547).
+    // Chain code stays the payload digest (decision #531).
+    const stampSecret = stampParentSecret(
+      Uint8Array.from(identityPrivateKey.toBuffer()),
+      payloadDigest,
+    )
+    const stampChain = Uint8Array.from(payloadDigest)
 
     for (const [i, stampOutpoint] of stampOutpoints.entries()) {
       const stampTxRaw = Buffer.from(stampOutpoint.getStampTx())
-      const stampTx = new Transaction(stampTxRaw)
-      const txId = stampTx.txid
+      // Segmented id and output amounts, not a bitcore Transaction (decision #527).
+      const stampTx = readStampTransaction(stampTxRaw)
+      const txId = stampTx.txId
       const vouts = stampOutpoint.getVoutsList()
-      const stampTxHDPrivKey = stampRootHDPrivKey.deriveChild(i)
       if (outbound) {
         for (const input of stampTx.inputs) {
           // In order to update UTXO state more quickly, go ahead and remove the inputs from our set immediately
           const utxoId = calcUtxoId({
-            txId: input.prevTxId.toString('hex'),
+            txId: input.txId,
             outputIndex: input.outputIndex,
           })
           await wallet.deleteUtxo(utxoId)
@@ -888,18 +892,26 @@ export class RelayClient extends ReadOnlyRelayClient {
       }
       for (const [j, outputIndex] of vouts.entries()) {
         const output = stampTx.outputs[outputIndex]
+        if (output === undefined) throw new Error('stamp-output')
         const satoshis = output.satoshis
-        const address = output.script.toAddress(this.networkName)
+        // Address strings stay on bitcore (issue #242).
+        const address = new Script(Buffer.from(output.script)).toAddress(
+          this.networkName,
+        )
         stampValue += satoshis
 
-        // Also note, we should use an HD key here.
-        const outputPrivKey = stampTxHDPrivKey.deriveChild(j).privateKey
+        // Non-hardened m/44/145 private child (decision #531). Address strings
+        // stay on bitcore (issue #242).
+        const outputSecret = outpointPrivateKey(stampSecret, stampChain, i, j)
+        const outputPrivKey = new PrivateKey(
+          Buffer.from(outputSecret).toString('hex'),
+          Networks.get(this.networkName),
+        )
 
-        // Network doesn't really matter here, just serves as a placeholder to avoid needing to compute the
-        // HASH160(SHA256(point)) ourself
-        // Also, ensure the point is compressed first before calculating the address so the hash is deterministic
+        // Compressed point of the outpoint secret (decision #541). Address
+        // strings stay on bitcore (issue #242).
         const computedAddress = new PublicKey(
-          crypto.Point.pointToCompressed(outputPrivKey.toPublicKey().point),
+          Buffer.from(stampOutpointPublicKey(outputSecret)),
         ).toAddress(this.networkName)
         if (
           !outbound &&
@@ -956,11 +968,7 @@ export class RelayClient extends ReadOnlyRelayClient {
     }
     for (const entry of entriesList) {
       const entryData = await decodeEntry(entry, outbound, {
-        constructHDStealthPrivateKey: (publicKey: PublicKey) =>
-          this.payloadConstructor.constructHDStealthPrivateKey(
-            publicKey,
-            identityPrivateKey,
-          ),
+        destinationPrivateKey: identityPrivateKey,
         networkName: this.networkName,
         wallet: wallet,
       })

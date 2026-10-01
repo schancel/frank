@@ -1,10 +1,5 @@
 <template>
-  <q-card
-    class="q-pa-none max-w-720"
-    :class="{ 'q-ma-sm': !compact }"
-    flat
-    bordered
-  >
+  <q-card class="q-pa-none" :class="{ 'q-ma-sm': !compact }" flat bordered>
     <q-card-section class="row" horizontal>
       <q-card-section class="col-shrink q-pa-sm bg-on-secondary">
         <q-card-section class="q-pa-none text-center">
@@ -126,6 +121,7 @@ import AMessageReplies from './ForumMessageReplies.vue'
 import { MessageWithReplies, useForumStore } from 'src/stores/forum'
 import { useContactStore } from 'src/stores/contacts'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
+import { notifyBurnFailure } from 'src/utils/burn-refresh-error'
 import { activeChain } from '@frank/wallet/chain'
 import { formatSafeRawAmount, rawToSafeNumber } from 'src/utils/chain-amount'
 
@@ -214,13 +210,20 @@ export default defineComponent({
             payloadDigest: this.message?.payloadDigest,
             satoshis: this.voteAmount,
           })
-          const wallet = await useActiveWallet()
-          this.addOffering({
-            wallet,
-            payloadDigest: this.message?.payloadDigest,
-            satoshis: this.voteAmount,
-          })
+          // The votes being sent are consumed either way: a failed burn is reported, never
+          // silently kept and re-sent on top of the next click (ticket #273).
+          const satoshis = this.voteAmount
           this.voteAmount = 0
+          try {
+            const wallet = await useActiveWallet()
+            await this.addOffering({
+              wallet,
+              payloadDigest: this.message?.payloadDigest,
+              satoshis,
+            })
+          } catch (err) {
+            notifyBurnFailure(err, key => this.$t(key))
+          }
         })()
       }, 1_000)
     },
@@ -283,10 +286,6 @@ h4 {
   font-size: 120%;
   font-weight: bold;
   line-height: inherit;
-}
-
-.max-w-720 {
-  width: min(100% - 32px, 720px);
 }
 
 .post-title {

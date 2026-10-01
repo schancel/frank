@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "isolatedModules": true,
+    "module": "es2020",
+    "moduleResolution": "bundler",
+    "noEmit": true,
+    "rootDir": "..",
+    "types": ["node", "jest"]
+  },
+  "include": ["src/**/*", "test/**/*", "../bitcore-lib-xpi/types.d.ts"]
+}

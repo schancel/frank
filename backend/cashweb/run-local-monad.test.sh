@@ -10,6 +10,39 @@ cleanup() {
 }
 trap cleanup EXIT HUP INT TERM
 
+# The launcher's generated configuration is validated against the REAL production parser
+# (`cashwebd-exe --check-config -`), not a grep-based stand-in, so a config the daemon would
+# reject (for example an enabled mailbox missing a required key) fails this test.
+build_real_cashwebd() {
+    local parser='
+        my $record = decode_json($_);
+        next unless ($record->{reason} // "") eq "compiler-artifact";
+        next unless ($record->{target}->{name} // "") eq "cashwebd-exe";
+        next unless grep { $_ eq "bin" } @{$record->{target}->{kind} // []};
+        next unless defined $record->{executable};
+        $artifact = $record->{executable};
+        END { print $artifact if defined $artifact; }
+    '
+    local -a wrapper=()
+    if [[ -z "${CARGO_TARGET_DIR:-}" ]]; then
+        wrapper=("$repo_root/.agents/scripts/with-cargo-slot")
+    fi
+    (
+        cd -- "$script_dir"
+        ${wrapper[@]+"${wrapper[@]}"} "${CARGO:-cargo}" build -p cashwebd-exe --bin cashwebd-exe \
+            --message-format=json-render-diagnostics |
+            perl -MJSON::PP=decode_json -ne "$parser"
+    )
+}
+built_cashwebd="$(build_real_cashwebd)"
+if [[ ! -x "$built_cashwebd" ]]; then
+    echo "could not build the real cashwebd-exe for full-config validation" >&2
+    exit 1
+fi
+# The fixture below must select its own isolated target directory through the cargo slot wrapper;
+# a caller-provided target directory would let the fake cargo overwrite a real build.
+unset CARGO_TARGET_DIR
+
 mkdir -p \
     "$fixture_root/.agents/scripts" \
     "$fixture_root/.cargo" \
@@ -17,6 +50,11 @@ mkdir -p \
     "$fixture_root/bin" \
     "$fixture_root/tmp"
 git init -q "$fixture_root"
+# Copy the real daemon out of Cargo's target directory: the fake-cargo below writes its stand-in
+# artifact into the (possibly shared) target directory and must never overwrite the real binary.
+FRANK_REAL_CASHWEBD="$fixture_root/bin/real-cashwebd"
+cp "$built_cashwebd" "$FRANK_REAL_CASHWEBD"
+export FRANK_REAL_CASHWEBD
 cp "$script_dir/run-local-monad.sh" "$fixture_root/backend/cashweb/"
 cp "$script_dir/cashwebd.local.toml" "$fixture_root/backend/cashweb/"
 cp "$repo_root/.agents/scripts/with-cargo-slot" "$fixture_root/.agents/scripts/"
@@ -24,8 +62,8 @@ cp "$repo_root/.agents/scripts/with-cargo-slot" "$fixture_root/.agents/scripts/"
 cat >"$fixture_root/bin/fake-cargo" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-[[ "${1:-}" == "build" ]]
-[[ -n "${CARGO_TARGET_DIR:-}" ]]
+[[ "${1:-}" == "build" ]] || exit 1
+[[ -n "${CARGO_TARGET_DIR:-}" ]] || exit 1
 target_name="${CARGO_BUILD_TARGET:-}"
 if [[ -z "$target_name" ]]; then
     repo_root="$(git rev-parse --show-toplevel)"
@@ -46,12 +84,19 @@ set -euo pipefail
 if [[ "${1:-}" == "--check-config" ]]; then
     [[ "${2:-}" == "-" ]]
     config="$(cat)"
+    # Record that the launcher itself ran the pre-flight check, and let a test make it fail.
+    [[ -z "${FRANK_LAUNCHER_CHECK_LOG:-}" ]] || echo "check-config" >>"$FRANK_LAUNCHER_CHECK_LOG"
+    [[ "${FRANK_FAKE_CHECK_FAIL:-}" != "1" ]] || exit 1
     grep -q '^\[registry\.monad_mailbox\]$' <<<"$config"
     grep -q '^enabled = true$' <<<"$config"
-    grep -q '^rpc_url = "https\?://' <<<"$config"
+    # The complete generated document goes through the real production parser, with the same
+    # environment the launcher hands the daemon.
+    printf '%s\n' "$config" | "$FRANK_REAL_CASHWEBD" --check-config -
     exit 0
 fi
 printf '%s\n' "$@" >"$FRANK_LAUNCHER_ARGS"
+printf 'rpc=%s\ntag=%s\n' "${MONAD_TESTNET_HTTP_RPC_URL:-}" "${FRANK_NETWORK_TAG:-}" \
+    >"$FRANK_LAUNCHER_ARGS.env"
 cat >"$FRANK_LAUNCHER_CONFIG"
 if [[ "${FRANK_LAUNCHER_MODE:-}" == "block" ]]; then
     trap 'exit 143' TERM
@@ -107,14 +152,90 @@ fi
         CARGO="$fixture_root/bin/fake-cargo" \
         FRANK_LAUNCHER_ARGS="$args_file" \
         FRANK_LAUNCHER_CONFIG="$config_file" \
-        "$launcher"
+        FRANK_LAUNCHER_CHECK_LOG="$fixture_root/check.log" \
+        "$launcher" 2>"$fixture_root/effective.err"
 )
 
 diff -u <(printf '%s\n' -) "$args_file"
-[[ "$(grep -c '^\[registry\.monad_mailbox\]$' "$config_file")" -eq 1 ]]
-[[ "$(grep -c '^enabled = true$' "$config_file")" -eq 1 ]]
-[[ "$(grep -Fxc "rpc_url = \"$dummy_rpc_url\"" "$config_file")" -eq 1 ]]
-[[ -z "$(find "$fixture_root/tmp" -type f -print -quit)" ]]
+# The launcher must run `--check-config` itself, before starting the daemon.
+[[ "$(cat "$fixture_root/check.log")" == "check-config" ]] || exit 1
+[[ "$(grep -c '^\[registry\.monad_mailbox\]$' "$config_file")" -eq 1 ]] || exit 1
+[[ "$(grep -c '^enabled = true$' "$config_file")" -eq 1 ]] || exit 1
+# The endpoint is secret-bearing: it reaches the daemon only through its environment, never the
+# generated config, and the network tag defaults to Monad testnet's MONT.
+[[ "$(grep -c '^rpc_url' "$config_file")" -eq 0 ]] || exit 1
+! grep -Fq "$dummy_rpc_url" "$config_file" || exit 1
+[[ "$(cat "$args_file.env")" == "$(printf 'rpc=%s\ntag=MONT' "$dummy_rpc_url")" ]] || exit 1
+# The effective values are printed, but the secret path of the URL is not.
+grep -Fq 'FRANK_NETWORK_TAG:      MONT' "$fixture_root/effective.err" || exit 1
+grep -Fq 'min_value_wei:          1000000000000' "$fixture_root/effective.err" || exit 1
+grep -Fq 'expected_chain_id:      10143' "$fixture_root/effective.err" || exit 1
+grep -Fq 'origin https://rpc.invalid.example' "$fixture_root/effective.err" || exit 1
+! grep -Fq 'test-only' "$fixture_root/effective.err" || exit 1
+# Enabled mode requires an explicit minimum and chain ID; local defaults are Monad testnet's.
+[[ "$(grep -Fxc 'min_value_wei = "1000000000000"' "$config_file")" -eq 1 ]] || exit 1
+[[ "$(grep -Fxc 'expected_chain_id = 10143' "$config_file")" -eq 1 ]] || exit 1
+# Guard against the harness silently weakening: an enabled mailbox without its minimum/chain ID
+# is rejected by the real parser even with the RPC URL and tag supplied.
+old_style="$(sed '/^min_value_wei/d;/^expected_chain_id/d' "$script_dir/cashwebd.local.toml")"
+if printf '%s\n' "$old_style" |
+    MONAD_TESTNET_HTTP_RPC_URL="$dummy_rpc_url" FRANK_NETWORK_TAG=MONT \
+        "$FRANK_REAL_CASHWEBD" --check-config - 2>/dev/null; then
+    echo "real parser unexpectedly accepted an enabled mailbox without minimum/chain ID" >&2
+    exit 1
+fi
+# ... and the shipped config fails fast, naming the variable, when the RPC URL or tag is missing.
+if env -u MONAD_TESTNET_HTTP_RPC_URL FRANK_NETWORK_TAG=MONT \
+    "$FRANK_REAL_CASHWEBD" --check-config - <"$script_dir/cashwebd.local.toml" 2>"$fixture_root/norpc.err"; then
+    echo "shipped config unexpectedly validated without the RPC URL" >&2
+    exit 1
+fi
+grep -Fq 'MONAD_TESTNET_HTTP_RPC_URL' "$fixture_root/norpc.err" || exit 1
+if env -u FRANK_NETWORK_TAG MONAD_TESTNET_HTTP_RPC_URL="$dummy_rpc_url" \
+    "$FRANK_REAL_CASHWEBD" --check-config - <"$script_dir/cashwebd.local.toml" 2>"$fixture_root/notag.err"; then
+    echo "shipped config unexpectedly validated without the network tag" >&2
+    exit 1
+fi
+grep -Fq 'FRANK_NETWORK_TAG' "$fixture_root/notag.err" || exit 1
+# The real parser accepts exactly what the launcher generated.
+MONAD_TESTNET_HTTP_RPC_URL="$dummy_rpc_url" FRANK_NETWORK_TAG=MONT \
+    "$FRANK_REAL_CASHWEBD" --check-config - <"$config_file"
+[[ -z "$(find "$fixture_root/tmp" -type f -print -quit)" ]] || exit 1
+
+# A failing pre-flight check must stop the launcher before the daemon is ever started.
+rm -f -- "$args_file" "$config_file"
+if MONAD_TESTNET_HTTP_RPC_URL="$dummy_rpc_url" FRANK_FAKE_CHECK_FAIL=1 \
+    CARGO="$fixture_root/bin/fake-cargo" \
+    FRANK_LAUNCHER_ARGS="$args_file" \
+    FRANK_LAUNCHER_CONFIG="$config_file" \
+    "$launcher" >/dev/null 2>&1; then
+    echo "launcher ignored a failing --check-config" >&2
+    exit 1
+fi
+[[ ! -e "$args_file" ]] || exit 1
+
+for invalid_env in "CASHWEB_STAMP_MIN_BURN_VALUE_WEI=1e12" "MONAD_TESTNET_CHAIN_ID=0x279f" "FRANK_NETWORK_TAG=MO NT" "FRANK_NETWORK_TAG=MONX" "FRANK_NETWORK_TAG=mont"; do
+    if env "$invalid_env" MONAD_TESTNET_HTTP_RPC_URL="$dummy_rpc_url" \
+        CARGO="$fixture_root/bin/fake-cargo" \
+        "$launcher" >"$fixture_root/invalid-env.out" 2>"$fixture_root/invalid-env.err"; then
+        echo "$invalid_env unexpectedly succeeded" >&2
+        exit 1
+    else
+        status=$?
+        [[ "$status" -eq 64 ]]
+    fi
+done
+
+rm -f -- "$args_file" "$config_file"
+CASHWEB_STAMP_MIN_BURN_VALUE_WEI=340282366920938463463374607431768211455 \
+    MONAD_TESTNET_CHAIN_ID=143 \
+    MONAD_TESTNET_HTTP_RPC_URL="$dummy_rpc_url" \
+    CARGO="$fixture_root/bin/fake-cargo" \
+    FRANK_LAUNCHER_ARGS="$args_file" \
+    FRANK_LAUNCHER_CONFIG="$config_file" \
+    "$launcher"
+grep -Fxq 'min_value_wei = "340282366920938463463374607431768211455"' "$config_file"
+grep -Fxq 'expected_chain_id = 143' "$config_file"
 
 configured_target="fixture-host-target"
 rm -f -- "$args_file" "$config_file"
@@ -125,8 +246,8 @@ CARGO_BUILD_TARGET="$configured_target" \
     FRANK_LAUNCHER_CONFIG="$config_file" \
     "$launcher"
 [[ -n "$(find "$fixture_root/cache/cargo-target" \
-    -path "*/$configured_target/debug/cashwebd-exe" -type f -perm -u+x -print -quit)" ]]
-[[ -s "$config_file" ]]
+    -path "*/$configured_target/debug/cashwebd-exe" -type f -perm -u+x -print -quit)" ]] || exit 1
+[[ -s "$config_file" ]] || exit 1
 
 cat >"$fixture_root/.cargo/config.toml" <<EOF
 [build]
@@ -139,14 +260,16 @@ env -u CARGO_BUILD_TARGET \
     FRANK_LAUNCHER_ARGS="$args_file" \
     FRANK_LAUNCHER_CONFIG="$config_file" \
     "$launcher"
-[[ -s "$config_file" ]]
+[[ -s "$config_file" ]] || exit 1
 rm -f -- "$fixture_root/.cargo/config.toml"
 
 cp "$repo_root/.env.example" "$fixture_root/.env"
 printf '\nCARGO=%q\nFRANK_LAUNCHER_ARGS=%q\nFRANK_LAUNCHER_CONFIG=%q\n' \
     "$fixture_root/bin/fake-cargo" "$args_file" "$config_file" >>"$fixture_root/.env"
 env -u MONAD_TESTNET_HTTP_RPC_URL "$launcher"
-grep -Fq 'rpc_url = "https://monad-testnet.g.alchemy.com/v2/<your-alchemy-key>"' "$config_file"
+grep -Fq 'expected_chain_id = 10143' "$config_file" || exit 1
+grep -Fxq 'tag=MONT' "$args_file.env" || exit 1
+grep -Fxq 'rpc=https://monad-testnet.g.alchemy.com/v2/<your-alchemy-key>' "$args_file.env" || exit 1
 
 rm -f -- "$config_file"
 TMPDIR="$fixture_root/tmp" \
@@ -161,7 +284,7 @@ for _ in {1..100}; do
     [[ -s "$config_file" ]] && break
     sleep 0.01
 done
-[[ -s "$config_file" ]]
+[[ -s "$config_file" ]] || exit 1
 (
     cd "$fixture_root"
     FRANK_CARGO_SLOT_TIMEOUT_SECONDS=1 \
@@ -175,6 +298,6 @@ else
     status=$?
     [[ "$status" -eq 143 ]]
 fi
-[[ -z "$(find "$fixture_root/tmp" -type f -print -quit)" ]]
+[[ -z "$(find "$fixture_root/tmp" -type f -print -quit)" ]] || exit 1
 
 echo "run-local-monad tests passed"

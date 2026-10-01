@@ -7,7 +7,19 @@
       padding="xs"
       class="q-btn"
       :aria-label="$t('a11y.resendMessage')"
+      data-testid="outgoing-retry"
       @click="$emit('resendClick')"
+    />
+    <q-btn
+      icon="delete"
+      dense
+      flat
+      padding="xs"
+      class="q-btn"
+      color="negative"
+      :aria-label="$t('outgoing.discard')"
+      data-testid="outgoing-discard"
+      @click="$emit('discardClick')"
     />
   </div>
   <!-- Select mode (see this file's script header): a message has exactly one action while
@@ -77,7 +89,7 @@ type ButtonType = (typeof ButtonNames)[number] | 'delete'
 
 export default defineComponent({
   name: 'ChatMessageSuffixButtons',
-  emits: [...AllButtonEvents, 'resendClick'],
+  emits: [...AllButtonEvents, 'resendClick', 'discardClick'],
   props: {
     status: {
       type: String,

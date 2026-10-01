@@ -61,11 +61,22 @@ pub struct RegistryConf {
 /// binaries cannot read newer versioned outbox rows.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 pub struct MonadMailboxConf {
-    /// Whether admission and reconciliation are enabled. A disabled deployment must omit the
-    /// admission route and does not start a worker; durable rows remain readable.
+    /// Whether admission and reconciliation are enabled. This is the only switch for
+    /// `PUT /message/monad` and the private mailbox routes (the shipped configs enable it). The
+    /// one environment input is `cashwebd-exe` filling a missing `rpc_url` from
+    /// `MONAD_TESTNET_HTTP_RPC_URL`; this type itself never reads the environment. A disabled deployment omits those routes (every `/message/monad` request
+    /// other than the separate topic routes answers 404) and does not start a worker; durable rows
+    /// remain readable.
     pub enabled: bool,
-    /// Monad JSON-RPC endpoint. Required exactly when `enabled` is true.
+    /// Monad JSON-RPC endpoint. Required exactly when `enabled` is true; the shipped configs omit it
+    /// and `cashwebd-exe` supplies it from the environment before calling `mode()`.
     pub rpc_url: Option<url::Url>,
+    /// Aggregate direct-message stamp minimum, as a decimal string because TOML has no `u128`.
+    /// Required exactly when the mailbox is enabled.
+    pub min_value_wei: Option<String>,
+    /// EIP-155/EIP-1559 chain ID every signed stamp payment must carry.
+    /// Required exactly when the mailbox is enabled.
+    pub expected_chain_id: Option<u64>,
 }
 
 /// Validated mailbox mode consumed once, before database open or socket readiness.
@@ -77,6 +88,10 @@ pub enum MonadMailboxMode {
     Enabled {
         /// Validated Monad JSON-RPC endpoint.
         rpc_url: url::Url,
+        /// Validated aggregate direct-message stamp minimum.
+        min_value_wei: u128,
+        /// Required EVM chain identity for signed stamp payments.
+        expected_chain_id: u64,
     },
 }
 
@@ -87,6 +102,10 @@ pub enum MonadMailboxConfigError {
     MissingRpcUrl,
     /// The endpoint is not a hosted HTTP(S) URL.
     InvalidRpcUrl,
+    /// Enabled mode omitted or malformed its aggregate stamp minimum.
+    InvalidMinValueWei,
+    /// Enabled mode omitted its expected EVM chain identity.
+    MissingExpectedChainId,
 }
 
 impl fmt::Display for MonadMailboxConfigError {
@@ -97,6 +116,12 @@ impl fmt::Display for MonadMailboxConfigError {
             ),
             Self::InvalidRpcUrl => f.write_str(
                 "registry.monad_mailbox.rpc_url must be a hosted http(s) URL when the mailbox is enabled",
+            ),
+            Self::InvalidMinValueWei => f.write_str(
+                "registry.monad_mailbox.min_value_wei must be a decimal u128 when the mailbox is enabled",
+            ),
+            Self::MissingExpectedChainId => f.write_str(
+                "registry.monad_mailbox.expected_chain_id is required when the mailbox is enabled",
             ),
         }
     }
@@ -117,7 +142,20 @@ impl MonadMailboxConf {
         if !matches!(rpc_url.scheme(), "http" | "https") || rpc_url.host_str().is_none() {
             return Err(MonadMailboxConfigError::InvalidRpcUrl);
         }
-        Ok(MonadMailboxMode::Enabled { rpc_url })
+        let min_value_wei = self
+            .min_value_wei
+            .as_deref()
+            .ok_or(MonadMailboxConfigError::InvalidMinValueWei)?
+            .parse()
+            .map_err(|_| MonadMailboxConfigError::InvalidMinValueWei)?;
+        let expected_chain_id = self
+            .expected_chain_id
+            .ok_or(MonadMailboxConfigError::MissingExpectedChainId)?;
+        Ok(MonadMailboxMode::Enabled {
+            rpc_url,
+            min_value_wei,
+            expected_chain_id,
+        })
     }
 }
 
@@ -156,8 +194,9 @@ pub struct PopConf {
     /// the rest of this struct to parse into a valid gate at server-construction time, or every
     /// gated request fails closed with a `500` (see this struct's docs).
     pub enabled: bool,
-    /// Monad JSON-RPC endpoint used to verify payment transaction receipts (same convention as
-    /// the `MONAD_TESTNET_HTTP_RPC_URL` env var used elsewhere in this crate/`cashweb-registry`).
+    /// Monad JSON-RPC endpoint used to verify payment transaction receipts. (The direct-message
+    /// mailbox has its own `registry.monad_mailbox.rpc_url`; only the topic routes still read the
+    /// `MONAD_TESTNET_HTTP_RPC_URL` environment variable.)
     pub monad_rpc_url: url::Url,
     /// Server-side secret used to sign/verify bearer tokens (HMAC). Must be a long random string
     /// kept only in server config; there is deliberately no built-in default.
@@ -299,6 +338,8 @@ mod tests {
                     monad_mailbox: MonadMailboxConf {
                         enabled: false,
                         rpc_url: None,
+                        min_value_wei: None,
+                        expected_chain_id: None,
                     },
                     curated_defaults: vec![],
                 },
@@ -370,6 +411,8 @@ mod tests {
                     monad_mailbox: MonadMailboxConf {
                         enabled: false,
                         rpc_url: None,
+                        min_value_wei: None,
+                        expected_chain_id: None,
                     },
                     curated_defaults: vec![],
                 },
@@ -468,11 +511,59 @@ mod tests {
     }
 
     #[test]
+    fn deployed_default_configurations_enable_the_monad_mailbox() {
+        // The mailbox is on by default (owner decision, ticket #279): both checked-in defaults
+        // must parse enabled with the safe non-secret keys. The RPC URL is deliberately absent
+        // (secret-bearing); `cashwebd-exe` resolves it from MONAD_TESTNET_HTTP_RPC_URL, so
+        // `mode()` alone reports it missing while the file is otherwise complete.
+        for (name, config) in [
+            (
+                "cashwebd.local.toml",
+                include_str!("../../cashwebd.local.toml"),
+            ),
+            (
+                "docker/cashwebd.toml",
+                include_str!("../../../docker/cashwebd.toml"),
+            ),
+        ] {
+            let mut conf = parse_conf(config).unwrap_or_else(|err| panic!("{name}: {err}"));
+            assert_eq!(
+                conf.registry.monad_mailbox,
+                MonadMailboxConf {
+                    enabled: true,
+                    rpc_url: None,
+                    min_value_wei: Some("1000000000000".to_string()),
+                    expected_chain_id: Some(10143),
+                },
+                "{name}"
+            );
+            assert_eq!(
+                conf.registry.monad_mailbox.mode(),
+                Err(MonadMailboxConfigError::MissingRpcUrl),
+                "{name}"
+            );
+            let rpc_url: url::Url = "http://127.0.0.1:1".parse().unwrap();
+            conf.registry.monad_mailbox.rpc_url = Some(rpc_url.clone());
+            assert_eq!(
+                conf.registry.monad_mailbox.mode(),
+                Ok(MonadMailboxMode::Enabled {
+                    rpc_url,
+                    min_value_wei: 1_000_000_000_000,
+                    expected_chain_id: 10143,
+                }),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
     fn mailbox_mode_requires_rpc_exactly_when_enabled() {
         assert_eq!(
             MonadMailboxConf {
                 enabled: false,
                 rpc_url: None,
+                min_value_wei: None,
+                expected_chain_id: None,
             }
             .mode()
             .unwrap(),
@@ -481,6 +572,8 @@ mod tests {
         assert!(MonadMailboxConf {
             enabled: true,
             rpc_url: None,
+            min_value_wei: Some("1".to_string()),
+            expected_chain_id: Some(41454),
         }
         .mode()
         .is_err());
@@ -489,13 +582,29 @@ mod tests {
             MonadMailboxConf {
                 enabled: true,
                 rpc_url: Some(rpc_url.clone()),
+                min_value_wei: Some("1000".to_string()),
+                expected_chain_id: Some(41454),
             }
             .mode()
             .unwrap(),
-            MonadMailboxMode::Enabled { rpc_url }
+            MonadMailboxMode::Enabled {
+                rpc_url,
+                min_value_wei: 1000,
+                expected_chain_id: 41454,
+            }
         );
         let missing: MonadMailboxConf = toml::from_str("enabled = true").unwrap();
         assert!(missing.mode().is_err());
+        assert_eq!(
+            MonadMailboxConf {
+                enabled: true,
+                rpc_url: Some("https://rpc.example".parse().unwrap()),
+                min_value_wei: Some("1".to_string()),
+                expected_chain_id: None,
+            }
+            .mode(),
+            Err(MonadMailboxConfigError::MissingExpectedChainId)
+        );
         assert!(toml::from_str::<MonadMailboxConf>(
             "enabled = true\nrpc_url = 'this is not a URL'"
         )
@@ -509,6 +618,8 @@ mod tests {
                 MonadMailboxConf {
                     enabled: true,
                     rpc_url: Some(rejected.parse().unwrap()),
+                    min_value_wei: Some("1".to_string()),
+                    expected_chain_id: Some(41454),
                 }
                 .mode(),
                 Err(MonadMailboxConfigError::InvalidRpcUrl)

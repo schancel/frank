@@ -22,7 +22,8 @@ use crate::{
     monad_http::{Hash32, JsonRpcTransport, MonadHttpClient, MonadRpcError},
     monad_stamp_relay::PollConfig,
     monad_topic_verify::{
-        verify_topic_vote_burn, ExpectedTopicBurn, TopicVoteBurnVerification, VoteDirection,
+        verify_topic_burn_versioned, ExpectedTopicBurn, TopicCalldataVersion,
+        TopicVoteBurnVerification, VoteDirection,
     },
 };
 
@@ -47,12 +48,21 @@ pub enum TopicVoteRelayOutcome {
     },
     /// `eth_sendRawTransaction` itself failed.
     BroadcastFailed(MonadRpcError),
+    /// The node accepted the transaction under a different hash from the one the caller computed
+    /// from the signed bytes, so nothing it reports would be about that transaction. Detected
+    /// before any polling.
+    NodeHashMismatch {
+        /// The hash the caller computed.
+        signed: Hash32,
+        /// The hash the node reported.
+        returned: Hash32,
+    },
     /// The tx broadcast without error, but never confirmed within the configured polling budget.
     ConfirmationTimedOut {
         /// Hash of the broadcast (still-unconfirmed) transaction.
         tx_hash: Hash32,
     },
-    /// The tx confirmed, but [`verify_topic_vote_burn`] didn't return `Verified` (wrong
+    /// The tx confirmed, but [`crate::monad_topic_verify::verify_topic_vote_burn`] didn't return `Verified` (wrong
     /// recipient, wrong/malformed commitment, or the tx itself reverted).
     VerificationFailed {
         /// Hash of the confirmed transaction that failed verification.
@@ -75,12 +85,37 @@ impl TopicVoteRelayOutcome {
 /// [`crate::monad_stamp_relay::broadcast_and_verify_stamp`]'s loop exactly (see this module's
 /// docs for why that function itself can't be called here).
 ///
-/// Returns `Err` only for infrastructure failures from [`verify_topic_vote_burn`] itself; every
+/// Returns `Err` only for infrastructure failures from [`crate::monad_topic_verify::verify_topic_vote_burn`] itself; every
 /// expected rejection reason is a distinct `Ok(TopicVoteRelayOutcome)` variant.
 pub async fn broadcast_and_verify_topic_vote<T>(
     transport: &T,
     raw_tx: &[u8],
     expected: &ExpectedTopicBurn,
+    poll: PollConfig,
+) -> Result<TopicVoteRelayOutcome>
+where
+    T: JsonRpcTransport + Clone,
+{
+    broadcast_and_verify_topic_burn(
+        transport,
+        raw_tx,
+        expected,
+        TopicCalldataVersion::Protobuf,
+        None,
+        poll,
+    )
+    .await
+}
+
+/// [`broadcast_and_verify_topic_vote`] for either encoding (see
+/// [`crate::monad_topic_verify::verify_topic_burn_versioned`]). With `signed_hash`, the hash the
+/// node returns from `eth_sendRawTransaction` must equal it before anything is polled.
+pub async fn broadcast_and_verify_topic_burn<T>(
+    transport: &T,
+    raw_tx: &[u8],
+    expected: &ExpectedTopicBurn,
+    version: TopicCalldataVersion,
+    signed_hash: Option<Hash32>,
     poll: PollConfig,
 ) -> Result<TopicVoteRelayOutcome>
 where
@@ -93,9 +128,18 @@ where
         Err(err) => return Ok(TopicVoteRelayOutcome::BroadcastFailed(err)),
     };
 
+    if let Some(signed) = signed_hash {
+        if signed != tx_hash {
+            return Ok(TopicVoteRelayOutcome::NodeHashMismatch {
+                signed,
+                returned: tx_hash,
+            });
+        }
+    }
+
     let max_attempts = poll.max_attempts.max(1);
     for attempt in 0..max_attempts {
-        let outcome = verify_topic_vote_burn(transport, tx_hash, expected)
+        let outcome = verify_topic_burn_versioned(transport, tx_hash, expected, version)
             .await
             .wrap_err_with(|| {
                 format!("verifying Monad topic-vote burn {tx_hash} after broadcast")

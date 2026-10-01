@@ -4,6 +4,8 @@ import { mount, VueWrapper } from '@vue/test-utils'
 import { createApp, defineComponent, h } from 'vue'
 import type { Pinia } from 'pinia'
 import type { Router } from 'vue-router'
+import { generateMnemonic } from 'bip39'
+import { initialSetupSeed } from '../utils/setup-account'
 
 type PersistedState = Record<string, string>
 
@@ -31,6 +33,9 @@ let mockStorage: MemoryLevel
 const mockSetActiveChat = jest.fn()
 const mockForumLayoutSetup = jest.fn()
 const mockSetupPageSetup = jest.fn()
+// Mirrors what Setup.vue does when it opens (draft seed offered to the New
+// Account step); must never write the wallet store.
+const mockSetupOpen = jest.fn()
 
 Object.defineProperty(window, 'scrollTo', { value: jest.fn(), writable: true })
 
@@ -98,6 +103,7 @@ jest.mock('pages/Setup.vue', () =>
     name: 'SetupPageBoundary',
     setup() {
       mockSetupPageSetup()
+      mockSetupOpen()
       return () => h('div', { 'data-test': 'setup' }, 'Set up wallet')
     },
   }),
@@ -127,15 +133,24 @@ async function renderRoute(
   persistedState: {
     seedPhrase?: string
     profileName?: string
+    seedConfirmedAt?: number
   } = {},
 ): Promise<{
   router: Router
   wrapper: VueWrapper
+  walletStore: ReturnType<typeof useWalletStore>
+  storedWallet: () => Promise<{
+    seedPhrase: string | null
+    seedConfirmedAt?: number | null
+  }>
 }> {
   mockStorage = new MemoryLevel({
     wallet: JSON.stringify({
       xPrivKey: null,
       seedPhrase: persistedState.seedPhrase ?? null,
+      ...(persistedState.seedConfirmedAt !== undefined
+        ? { seedConfirmedAt: persistedState.seedConfirmedAt }
+        : {}),
       utxos: {},
       feePerByte: 2,
       balance: 0,
@@ -159,7 +174,15 @@ async function renderRoute(
   await router.isReady()
   const wrapper = mount(AppRoot, { global: { plugins: [router] } })
   await wrapper.vm.$nextTick()
-  return { router, wrapper }
+  return {
+    router,
+    wrapper,
+    walletStore,
+    storedWallet: async () => {
+      await walletStore.flushPersistence()
+      return JSON.parse(await mockStorage.get('wallet'))
+    },
+  }
 }
 
 describe('wallet onboarding router boundary', () => {
@@ -204,9 +227,10 @@ describe('wallet onboarding router boundary', () => {
     wrapper.unmount()
   })
 
-  it('keeps Forum reachable for a configured wallet', async () => {
+  it('keeps Forum reachable for a completed wallet (seed and name)', async () => {
     const { router, wrapper } = await renderRoute('/forum', {
       seedPhrase: 'configured wallet seed',
+      profileName: 'Alice',
     })
 
     expect(router.currentRoute.value.fullPath).toBe('/forum')
@@ -215,5 +239,100 @@ describe('wallet onboarding router boundary', () => {
     expect(mockSetupPageSetup).not.toHaveBeenCalled()
 
     wrapper.unmount()
+  })
+
+  describe('existing accounts without the confirmation marker (#284)', () => {
+    it.each(['/', '/forum'])(
+      'completed-old (seed + name, no marker) is grandfathered on %s: not sent to onboarding, storage untouched',
+      async path => {
+        const seed = generateMnemonic()
+        const { router, walletStore, storedWallet, wrapper } =
+          await renderRoute(path, { seedPhrase: seed, profileName: 'Alice' })
+
+        expect(router.currentRoute.value.fullPath).toBe('/forum')
+        expect(mockSetupPageSetup).not.toHaveBeenCalled()
+        expect(walletStore.seedPhrase).toBe(seed)
+        expect(walletStore.seedConfirmedAt).toBeNull()
+        expect((await storedWallet()).seedPhrase).toBe(seed)
+        wrapper.unmount()
+      },
+    )
+
+    it.each(['/', '/forum'])(
+      'affected-by-#267 (seed, no name) is routed to setup from %s with the seed intact',
+      async path => {
+        const seed = generateMnemonic()
+        const { router, walletStore, storedWallet, wrapper } =
+          await renderRoute(path, { seedPhrase: seed })
+
+        expect(router.currentRoute.value.fullPath).toBe('/setup')
+        expect(mockForumLayoutSetup).not.toHaveBeenCalled()
+        expect(walletStore.seedPhrase).toBe(seed)
+        expect((await storedWallet()).seedPhrase).toBe(seed)
+        wrapper.unmount()
+      },
+    )
+
+    it('confirmed accounts stay on Forum and keep their marker', async () => {
+      const seed = generateMnemonic()
+      const { router, walletStore, wrapper } = await renderRoute('/forum', {
+        seedPhrase: seed,
+        profileName: 'Alice',
+        seedConfirmedAt: 1700000000000,
+      })
+      expect(router.currentRoute.value.fullPath).toBe('/forum')
+      expect(walletStore.seedConfirmedAt).toBe(1700000000000)
+      wrapper.unmount()
+    })
+  })
+
+  describe('opening setup does not persist a wallet (#267)', () => {
+    beforeEach(() => {
+      mockSetupOpen.mockImplementation(() => {
+        const store = useWalletStore()
+        initialSetupSeed(store.seedPhrase, generateMnemonic)
+      })
+    })
+
+    it('reload during onboarding lands back on setup with no seed stored', async () => {
+      const first = await renderRoute('/setup')
+      expect(mockSetupPageSetup).toHaveBeenCalledTimes(1)
+      expect(first.walletStore.seedPhrase).toBeNull()
+      const persisted = await first.storedWallet()
+      expect(persisted.seedPhrase).toBeNull()
+      first.wrapper.unmount()
+
+      // "Reload": new app boot over the same storage.
+      for (const path of ['/', '/forum']) {
+        const reloaded = await renderRoute(path, {
+          seedPhrase: persisted.seedPhrase ?? undefined,
+        })
+        expect(reloaded.router.currentRoute.value.fullPath).toBe('/setup')
+        expect(reloaded.walletStore.seedPhrase).toBeNull()
+        reloaded.wrapper.unmount()
+      }
+    })
+
+    it('never touches an existing stored account when setup is opened', async () => {
+      const seed = generateMnemonic()
+      const { walletStore, storedWallet, wrapper } = await renderRoute(
+        '/setup',
+        { seedPhrase: seed, profileName: 'Alice' },
+      )
+      expect(walletStore.seedPhrase).toBe(seed)
+      expect((await storedWallet()).seedPhrase).toBe(seed)
+      wrapper.unmount()
+    })
+
+    it('leaves a completed-setup user on Forum, seed intact', async () => {
+      const seed = generateMnemonic()
+      const { router, walletStore, wrapper } = await renderRoute('/forum', {
+        seedPhrase: seed,
+        profileName: 'Alice',
+      })
+      expect(router.currentRoute.value.fullPath).toBe('/forum')
+      expect(walletStore.seedPhrase).toBe(seed)
+      wrapper.unmount()
+    })
   })
 })

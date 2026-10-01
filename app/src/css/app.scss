@@ -49,3 +49,66 @@ body {
 .chat-page-background {
   background: var(--q-chat-background);
 }
+
+// Quasar does not define this. The outgoing live region stays in the accessibility
+// tree and must not paint a second copy of the status (#393).
+.q-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+  clip-path: inset(50%);
+}
+
+// Retry moves focus here instead of the clipped live region (#429).
+// Quasar's .q-message-stamp is opacity .6, and --q-primary matches the sent
+// bubble, so that ring composites away. Black still clears 3:1 on both sent
+// bubbles after that composite.
+.outgoing-focus-target:focus {
+  outline: 2px solid #000;
+  outline-offset: 2px;
+}
+
+// Telegram-style footer (#391). The cluster floats to the end of the last
+// line of text and drops onto its own line only when that line has no room.
+// flow-root keeps the float inside the bubble. Paragraphs from the markdown
+// renderer stay in the same inline context so they do not force a new row.
+// No opacity: the stamp slot's 0.6 would fail the meta contrast bar.
+.chat-message-body {
+  display: flow-root;
+}
+
+// Only the markdown text. Raffle copy uses its own paragraphs and must stay stacked.
+.chat-message-text p {
+  display: inline;
+  margin: 0;
+}
+
+.chat-message-text p + p::before {
+  content: '\A';
+  white-space: pre;
+}
+
+.chat-message-inline-meta {
+  float: inline-end;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  margin-inline-start: 0.65rem;
+  white-space: nowrap;
+  max-width: 100%;
+  font-size: 0.75em;
+  line-height: inherit;
+}
+
+// White bubble text is 3.88:1 on #9d5cff and 2.88:1 on #b37dff. Sent meta uses
+// black so it clears 4.5:1 on both (5.41 and 7.29). Received meta keeps the
+// bubble text color, which already clears 4.5:1.
+.chat-message-inline-meta--sent {
+  color: #000;
+}

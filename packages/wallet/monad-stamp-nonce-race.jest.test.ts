@@ -45,7 +45,7 @@
  *      since this file doesn't touch chain-funding infra) is what actually unblocks the waiter, not
  *      the first's release.
  *   3. Documented "first tx never confirms" case: a network failure on the PUT followed by an
- *      exhausted `GET` poll budget releases the lease as `'stuck'`, which `SubAccountLeaseManager`
+ *      exhausted idempotent re-PUT budget releases the lease as `'stuck'`, which `SubAccountLeaseManager`
  *      maps to `'retired'` (per #18 -- never reused with a guessed nonce). This does not deadlock a
  *      later, unrelated stamp attempt: with a second sub-account still `'available'` in the pool,
  *      `acquireLease()` simply picks that other account and proceeds normally. (Recovering the
@@ -393,8 +393,8 @@ describe('nonce-race sequencing proof (#21)', () => {
     const { client } = makeClient(pool, makeSegmentedChainProvider())
 
     // Every PUT is a network-level failure (no HTTP response at all -- "genuinely unknown" per
-    // monad-stamp-client.ts's header), and the abandon-poll GET never finds a stored message
-    // either -- the documented "first tx never confirms" case.
+    // monad-stamp-client.ts's header) through the whole idempotent re-PUT budget -- the documented
+    // "first tx never confirms" case.
     mockedAxios.mockImplementation(async () => {
       const networkErr = Object.assign(new Error('timeout'), {
         isAxiosError: true,
@@ -409,7 +409,7 @@ describe('nonce-race sequencing proof (#21)', () => {
         recipientPublicKey: RECIPIENT_PUBLIC_KEY,
         stampValueWei: 10_000n,
         overrides: FEE_OVERRIDES,
-        abandonPoll: {
+        putRetry: {
           maxAttempts: 2,
           intervalMs: 0,
           sleep: async () => undefined,

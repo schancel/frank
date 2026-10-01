@@ -7,6 +7,9 @@ directory-attestation = {
   * uint => frank-value,
 }
 
+; Type 4, schema_version 2, min_reader_version 2: field 8 is required. An
+; account whose only statement is schema 1 has no stamp key and cannot receive
+; stamped direct messages (README S10a).
 directory-statement = {
   0: network-tag,
   1: account-ref, ; directory subject: the currently registered key; changes only through one linked type-7 transition (README S10)
@@ -16,6 +19,22 @@ directory-statement = {
   ? 5: [1*16 key-transition],
   ? 6: timestamp, ; expiry, if present
   ? 7: [1*8 account-ref], ; offline recovery authorities
+  8: account-ref, ; stamp key P': key type 1, mandatory, no fallback (README S10a)
+  * uint => frank-value,
+}
+
+; Type 4, schema_version 1: the layout before the stamp key existed. It has no
+; field 8 (C12: a field 8 in a schema 1 statement is a `schema` error, which
+; CDDL cannot express beside the wildcard). Same fields 0 through 7 as above.
+directory-statement-v1 = {
+  0: network-tag,
+  1: account-ref,
+  2: uint .le 18446744073709551615,
+  3: timestamp,
+  4: [1*32 relay-binding],
+  ? 5: [1*16 key-transition],
+  ? 6: timestamp,
+  ? 7: [1*8 account-ref],
   * uint => frank-value,
 }
 
@@ -41,5 +60,43 @@ key-transition-statement = {
   2: account-ref, ; prior registered or offline recovery authority
   3: 1..18446744073709551615, ; revision
   4: account-ref, ; new key
+  * uint => frank-value,
+}
+
+; Type 4, schema_version 3, min_reader_version 2: the registration profile of
+; README section 11 (#106). V1 adds the optional field 9 without raising
+; min_reader_version, because a schema-2 reader projects the statement through
+; V6.3 and retains field 9. A schema-1 or schema-2 statement carrying field 9
+; is a C12 `schema` error at its exact version, so neither older rule is
+; extended in place; field 8 stays required (S10a.1).
+directory-statement-v3 = {
+  0: network-tag,
+  1: account-ref, ; directory subject: the registrant's compressed public key
+  2: uint .le 18446744073709551615, ; revision: the ms timestamp (M2)
+  3: timestamp, ; the same ms timestamp split (M2)
+  4: [1*32 relay-binding],
+  ? 5: [1*16 key-transition],
+  ? 6: timestamp, ; expiry = timestamp + ttl ms (M3)
+  ? 7: [1*8 account-ref], ; offline recovery authorities
+  8: account-ref, ; stamp key P': key type 1, mandatory, no fallback (S10a)
+  ? 9: [1*64 profile-entry], ; the migrated profile entries (M4); absent when empty
+  * uint => frank-value,
+}
+
+; One migrated AddressEntry. Authored array order is preserved (never resorted,
+; like message-item order). Both maps are open for a later schema (C12).
+profile-entry = {
+  0: tstr, ; kind: the wallet's entry-type hint, consumer-interpreted
+  1: [0*64 profile-header], ; the protobuf map<string, string>, C11-sorted
+  2: bstr, ; body: exact bytes
+  * uint => frank-value,
+}
+
+; One header of a profile entry. C1a forbids text map keys, so the protobuf
+; name/value set is a list sorted bytewise by name with duplicates rejected
+; (C11, S1a).
+profile-header = {
+  0: tstr, ; name
+  1: tstr, ; value
   * uint => frank-value,
 }

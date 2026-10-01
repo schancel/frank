@@ -10,7 +10,7 @@ import { useContactStore } from 'src/stores/contacts'
 import { useProfileStore } from 'src/stores/my-profile'
 import { useChatStore } from 'src/stores/chats'
 import { useWalletStore } from 'src/stores/wallet'
-import { monadModeEnabled } from 'src/utils/runtime-mode'
+import { setupGatePasses } from 'src/utils/account-state'
 
 // Found live tonight (autonomous overnight session, 2026-09-27), by actually driving a real
 // browser: this guard's `profileStore.profile.name` check can never become true through the
@@ -37,7 +37,8 @@ import { monadModeEnabled } from 'src/utils/runtime-mode'
 // here). `import.meta.env.QCLI_KEY` (Quasar's own env-var-prefix convention) is the mechanism
 // that actually works, confirmed live: set `QCLI_MONAD_SKIP_LEGACY_SETUP_GATE=false` (not
 // `MONAD_SKIP_LEGACY_SETUP_GATE=false`) to restore the strict gate.
-const skipLegacySetupGate = monadModeEnabled()
+// (`MONAD_SKIP_LEGACY_SETUP_GATE`/`skipLegacySetupGate`, described above, no longer exists: since
+// #284 a seed alone never satisfies the gate, so there is nothing left to skip.)
 
 const unprotectedRoutes = ['/setup', '/changelog']
 const walletRequiredRoutes = ['/forum', '/new-post']
@@ -103,9 +104,16 @@ export default () => {
       return '/setup'
     }
 
+    // #284: a stored seed alone no longer counts as "set up" (the old /setup bug persisted a
+    // generated seed with no name). See utils/account-state.ts for the grandfathering rule.
+    // Accounts with a seed and a name are unchanged; seed-without-name is sent to /setup,
+    // which resumes with the STORED phrase and never regenerates it.
     if (
-      profileStore.profile.name ||
-      (skipLegacySetupGate && !!walletStore.seedPhrase) ||
+      setupGatePasses({
+        seedPhrase: walletStore.seedPhrase,
+        name: profileStore.profile.name,
+        seedConfirmedAt: walletStore.seedConfirmedAt,
+      }) ||
       (unprotectedRoutes.some(path => to.fullPath.startsWith(path)) &&
         !protectedRoutes.some(path => to.fullPath.startsWith(path)))
     ) {

@@ -14,6 +14,7 @@ export const activeChain: ActiveChain = MonadChain
 export type {
   ActiveChain,
   ChainAddress,
+  DirectMessageAttemptStatus,
   DirectMessageClient,
   DirectMessagePreparationProgress,
   DirectMessageReceived,

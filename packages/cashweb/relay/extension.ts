@@ -1,7 +1,8 @@
 import type { Message, Stamp } from './relay_pb'
 import { PayloadConstructor } from './crypto'
-import { crypto, PrivateKey, PublicKey } from 'bitcore-lib-xpi'
+import { PrivateKey, PublicKey } from 'bitcore-lib-xpi'
 import assert from 'assert'
+import { relayCipherPayloadDigest } from './cipher-payload-digest'
 
 export class ParsedMessage {
   sourcePublicKey: PublicKey
@@ -111,14 +112,15 @@ export function messageMixin(
           if (!payload.length) {
             throw new Error('Missing payload and digest')
           }
-          return crypto.Hash.sha256(payloadBuffer)
+          return Buffer.from(relayCipherPayloadDigest(payloadBuffer))
         case 32:
           assert(
             typeof payloadDigest !== 'string',
             'payload digest is a string',
           )
           if (payload.length) {
-            const computedPayloadDigest = crypto.Hash.sha256(payloadBuffer)
+            const computedPayloadDigest =
+              relayCipherPayloadDigest(payloadBuffer)
             const computedDigest = Buffer.from(computedPayloadDigest)
             if (computedDigest.compare(payloadDigest) !== 0) {
               throw new Error(

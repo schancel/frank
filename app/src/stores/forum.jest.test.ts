@@ -1,3 +1,4 @@
+/** @jest-environment jsdom */
 /**
  * Unit tests for `stores/forum.ts` (ticket #43) -- see `stores/topics.jest.test.ts`'s header for
  * the shared rationale (mocking `activeChain`, not the underlying Monad clients; the
@@ -7,6 +8,8 @@
  */
 import { BurnRefreshError } from 'src/utils/burn-refresh-error'
 import { setActivePinia, createPinia } from 'pinia'
+import { mount } from '@vue/test-utils'
+import { computed, defineComponent, h, nextTick } from 'vue'
 
 import { useForumStore } from './forum'
 import { ForumMessage } from '@frank/cashweb/types/forum'
@@ -57,83 +60,170 @@ beforeEach(() => {
 })
 
 describe('useForumStore: session post reservations', () => {
-  it('survives a Pinia remount and requires the exact owner to release it', () => {
+  it('survives a Pinia remount and treats rebuilt handles for one identity as one owner', () => {
     const firstStore = useForumStore()
-    const walletPromise = Promise.resolve(testWallet)
+    const rebuiltWallet = {
+      identity: {
+        address: { raw: '0xAbC' },
+        displayAddress: '0xAbC',
+      },
+    } as unknown as WalletHandle
     const reservationId = firstStore.reservePostSubmission({
-      walletPromise,
+      wallet: testWallet,
       destination: 'reply:parent',
     })
 
     expect(reservationId).toEqual(expect.any(Number))
     setActivePinia(createPinia())
     const remountedStore = useForumStore()
-    expect(remountedStore.getPostDestinationReservationId('reply:parent')).toBe(
-      reservationId,
-    )
     expect(
-      remountedStore.releasePostSubmission({
-        walletPromise: Promise.resolve(testWallet),
+      remountedStore.getPostReservationId({
+        wallet: rebuiltWallet,
         destination: 'reply:parent',
-        reservationId: reservationId as number,
       }),
-    ).toBe(false)
+    ).toBe(reservationId)
+    expect(
+      remountedStore.reservePostSubmission({
+        wallet: rebuiltWallet,
+        destination: 'reply:parent',
+      }),
+    ).toBeUndefined()
     expect(
       remountedStore.releasePostSubmission({
-        walletPromise,
+        wallet: rebuiltWallet,
         destination: 'reply:parent',
         reservationId: (reservationId as number) + 1,
       }),
     ).toBe(false)
-    expect(remountedStore.getPostDestinationReservationId('reply:parent')).toBe(
-      reservationId,
-    )
     expect(
       remountedStore.releasePostSubmission({
-        walletPromise,
+        wallet: rebuiltWallet,
         destination: 'reply:parent',
         reservationId: reservationId as number,
       }),
     ).toBe(true)
-    expect(
-      remountedStore.getPostDestinationReservationId('reply:parent'),
-    ).toBeUndefined()
   })
 
-  it('allows separate destinations while rejecting the same account and destination', () => {
+  it('allows distinct wallets at one destination and keeps release scoped to wallet plus request', () => {
     const store = useForumStore()
-    const walletPromise = Promise.resolve(testWallet)
-    const parentA = store.reservePostSubmission({
-      walletPromise,
-      destination: 'reply:parentA',
+    const otherWallet = {
+      identity: {
+        address: { raw: '0xdef' },
+        displayAddress: '0xdef',
+      },
+    } as unknown as WalletHandle
+    const first = store.reservePostSubmission({
+      wallet: testWallet,
+      destination: 'reply:parent',
+    })
+    const second = store.reservePostSubmission({
+      wallet: otherWallet,
+      destination: 'reply:parent',
     })
 
+    expect(first).toEqual(expect.any(Number))
+    expect(second).toEqual(expect.any(Number))
+    expect(second).not.toBe(first)
     expect(
-      store.reservePostSubmission({
-        walletPromise,
-        destination: 'reply:parentA',
+      store.getPostReservationId({
+        wallet: testWallet,
+        destination: 'reply:parent',
       }),
-    ).toBeUndefined()
-    const parentB = store.reservePostSubmission({
-      walletPromise,
-      destination: 'reply:parentB',
-    })
-    expect(parentB).toEqual(expect.any(Number))
+    ).toBe(first)
+    expect(
+      store.getPostReservationId({
+        wallet: otherWallet,
+        destination: 'reply:parent',
+      }),
+    ).toBe(second)
 
     expect(
       store.releasePostSubmission({
-        walletPromise,
-        destination: 'reply:parentA',
-        reservationId: parentA as number,
+        wallet: otherWallet,
+        destination: 'reply:parent',
+        reservationId: first as number,
+      }),
+    ).toBe(false)
+    expect(
+      store.releasePostSubmission({
+        wallet: testWallet,
+        destination: 'reply:parent',
+        reservationId: first as number,
       }),
     ).toBe(true)
     expect(
+      store.getPostReservationId({
+        wallet: otherWallet,
+        destination: 'reply:parent',
+      }),
+    ).toBe(second)
+    expect(
       store.releasePostSubmission({
-        walletPromise,
-        destination: 'reply:parentB',
-        reservationId: parentB as number,
+        wallet: otherWallet,
+        destination: 'reply:parent',
+        reservationId: second as number,
       }),
     ).toBe(true)
+  })
+
+  it('reactively exposes a real reservation across mounted component instances', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const store = useForumStore()
+    const Probe = defineComponent({
+      setup() {
+        const reservationId = computed(() =>
+          useForumStore().getPostReservationId({
+            wallet: testWallet,
+            destination: 'reply:parent',
+          }),
+        )
+        return () => h('div', reservationId.value ?? 'idle')
+      },
+    })
+    const first = mount(Probe, { global: { plugins: [pinia] } })
+    expect(first.text()).toBe('idle')
+
+    const reservationId = store.reservePostSubmission({
+      wallet: testWallet,
+      destination: 'reply:parent',
+    })
+    await nextTick()
+    expect(first.text()).toBe(String(reservationId))
+
+    first.unmount()
+    const remounted = mount(Probe, { global: { plugins: [pinia] } })
+    expect(remounted.text()).toBe(String(reservationId))
+
+    store.releasePostSubmission({
+      wallet: testWallet,
+      destination: 'reply:parent',
+      reservationId: reservationId as number,
+    })
+    await nextTick()
+    expect(remounted.text()).toBe('idle')
+  })
+})
+
+describe('useForumStore: own indexed messages', () => {
+  it.each(['__proto__', 'constructor', 'toString'])(
+    'does not resolve inherited key %s as a forum parent',
+    key => {
+      const store = useForumStore()
+
+      expect(store.getMessage(key)).toBeNull()
+    },
+  )
+
+  it('rejects an own property that is not an indexed ForumMessage', () => {
+    const store = useForumStore()
+    Object.defineProperty(store.index, 'constructor', {
+      configurable: true,
+      enumerable: true,
+      value: { topic: 'attacker-controlled' },
+    })
+
+    expect(store.getMessage('constructor')).toBeNull()
   })
 })
 

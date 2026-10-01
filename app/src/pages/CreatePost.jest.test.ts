@@ -10,6 +10,7 @@ import { BurnRefreshError } from 'src/utils/burn-refresh-error'
 import { errorNotify, infoNotify } from 'src/utils/notifications'
 import { useForumStore } from 'src/stores/forum'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
+import { useWalletStore } from 'src/stores/wallet'
 
 const mockPutMessage = jest.fn()
 const mockDisplayToSafeRawAmount = jest.fn(() => 1_000_000)
@@ -33,64 +34,60 @@ jest.mock('src/stores/forum', () => ({
   useForumStore: (() => {
     const reservations = jest
       .requireActual('vue')
-      .reactive(new Map<string, { id: number; ownerKey: string }>())
-    const walletIds = new WeakMap<object, number>()
-    let nextWalletId = 0
+      .reactive(new Map<string, { id: number }>())
     let nextReservationId = 0
-    const reservationKey = (walletPromise: object, destination: string) => {
-      let walletId = walletIds.get(walletPromise)
-      if (walletId === undefined) {
-        walletId = ++nextWalletId
-        walletIds.set(walletPromise, walletId)
-      }
-      return `${walletId}:${destination}`
-    }
+    const reservationKey = (
+      wallet: { identity: { address: { raw: string } } },
+      destination: string,
+    ) => `${wallet.identity.address.raw.toLowerCase()}\u0000${destination}`
     const store = jest.requireActual('vue').reactive({
       topics: ['help'],
       selectedTopic: 'stamp',
       index: {} as Record<string, { topic: string }>,
       getMessage: (digest?: string) =>
-        digest ? store.index[digest] : undefined,
+        digest && Object.prototype.hasOwnProperty.call(store.index, digest)
+          ? store.index[digest]
+          : undefined,
       pushNewTopic: jest.fn(),
       putMessage: (...args: unknown[]) => mockPutMessage(...args),
       fetchMessage: jest.fn(
         async ({ payloadDigest }: { payloadDigest: string }) =>
-          store.index[payloadDigest],
+          store.getMessage(payloadDigest),
       ),
-      getPostDestinationReservationId: (destination: string) => {
-        return reservations.get(destination)?.id
-      },
-      reservePostSubmission: ({
-        walletPromise,
+      getPostReservationId: ({
+        wallet,
         destination,
       }: {
-        walletPromise: object
+        wallet: { identity: { address: { raw: string } } }
         destination: string
       }) => {
-        const ownerKey = reservationKey(walletPromise, destination)
-        if (reservations.has(destination)) return undefined
+        return reservations.get(reservationKey(wallet, destination))?.id
+      },
+      reservePostSubmission: ({
+        wallet,
+        destination,
+      }: {
+        wallet: { identity: { address: { raw: string } } }
+        destination: string
+      }) => {
+        const key = reservationKey(wallet, destination)
+        if (reservations.has(key)) return undefined
         const id = ++nextReservationId
-        reservations.set(destination, { id, ownerKey })
+        reservations.set(key, { id })
         return id
       },
       releasePostSubmission: ({
-        walletPromise,
+        wallet,
         destination,
         reservationId,
       }: {
-        walletPromise: object
+        wallet: { identity: { address: { raw: string } } }
         destination: string
         reservationId: number
       }) => {
-        const ownerKey = reservationKey(walletPromise, destination)
-        const reservation = reservations.get(destination)
-        if (
-          reservation?.id !== reservationId ||
-          reservation.ownerKey !== ownerKey
-        ) {
-          return false
-        }
-        return reservations.delete(destination)
+        const key = reservationKey(wallet, destination)
+        if (reservations.get(key)?.id !== reservationId) return false
+        return reservations.delete(key)
       },
       clearPostReservations: () => reservations.clear(),
     })
@@ -101,7 +98,15 @@ jest.mock('src/stores/topics', () => ({
   useTopicStore: () => ({ getTopics: ['stamp', 'news', 'help'] }),
 }))
 jest.mock('src/composables/useActiveWallet', () => ({
-  useActiveWallet: jest.fn(async () => ({ identity: {} })),
+  useActiveWallet: jest.fn(async () => ({
+    identity: { address: { raw: '0xaaa' }, displayAddress: '0xaaa' },
+  })),
+}))
+jest.mock('src/stores/wallet', () => ({
+  useWalletStore: (() => {
+    const store = jest.requireActual('vue').reactive({ seedPhrase: 'seed-a' })
+    return () => store
+  })(),
 }))
 jest.mock('src/utils/notifications', () => ({
   errorNotify: jest.fn(),
@@ -164,6 +169,10 @@ const messages: Record<string, string> = {
 }
 const $t = (key: string, params: Record<string, unknown> = {}) =>
   (messages[key] ?? key).replace(/\{(\w+)\}/g, (_m, n) => String(params[n]))
+
+const makeWallet = (address = '0xaaa') => ({
+  identity: { address: { raw: address }, displayAddress: address },
+})
 
 function mountPage(parentDigest?: string) {
   const router = { go: jest.fn(), push: jest.fn() }
@@ -265,7 +274,10 @@ const status = (w: ReturnType<typeof mountPage>['wrapper']) =>
 
 beforeEach(() => {
   jest.clearAllMocks()
-  jest.mocked(useActiveWallet).mockResolvedValue({ identity: {} } as never)
+  jest
+    .mocked(useActiveWallet)
+    .mockReturnValue(Promise.resolve(makeWallet()) as never)
+  ;(useWalletStore() as unknown as { seedPhrase: string }).seedPhrase = 'seed-a'
   const forum = useForumStore() as unknown as {
     selectedTopic: string
     index: Record<string, { topic: string }>
@@ -478,6 +490,85 @@ describe('CreatePost selected-topic default (ticket #414)', () => {
     expect(page().vm).toMatchObject({ topic: 'help' })
   })
 
+  it('keeps only the latest A request authoritative across A to B to A', async () => {
+    const forum = useForumStore() as unknown as {
+      fetchMessage: jest.Mock
+    }
+    const pending: Array<{
+      digest: string
+      resolve(): void
+      reject(error: Error): void
+    }> = []
+    forum.fetchMessage.mockImplementation(
+      ({ payloadDigest }: { payloadDigest: string }) =>
+        new Promise<void>((resolve, reject) => {
+          pending.push({ digest: payloadDigest, resolve, reject })
+        }),
+    )
+    const { page, router } = await mountRoutedPage('/new-post/parentA')
+    await router.push('/new-post/parentB')
+    await flushPromises()
+    await router.push('/new-post/parentA')
+    await flushPromises()
+
+    expect(pending.map(request => request.digest)).toEqual([
+      'parentA',
+      'parentB',
+      'parentA',
+    ])
+    pending[0]?.reject(new Error('stale A failed'))
+    await flushPromises()
+    expect(page().vm).toMatchObject({
+      parentDigest: 'parentA',
+      parentLoading: true,
+    })
+    expect(
+      page().get('[data-test="parent-resolution-status"]').text(),
+    ).toContain('LOADING_PARENT')
+
+    pending[2]?.resolve()
+    await flushPromises()
+    expect(page().vm).toMatchObject({
+      parentDigest: 'parentA',
+      parentLoading: false,
+    })
+    expect(
+      page().get('[data-test="parent-resolution-status"]').text(),
+    ).toContain('PARENT_UNAVAILABLE')
+    pending[1]?.resolve()
+    await flushPromises()
+  })
+
+  it('keeps keyboard focus on the real retry button after an unsuccessful retry', async () => {
+    const forum = useForumStore() as unknown as { fetchMessage: jest.Mock }
+    const wrapper = await mountRealReplyForm('missing-parent')
+    let finishRetry!: () => void
+    forum.fetchMessage.mockImplementationOnce(
+      () =>
+        new Promise<void>(resolve => {
+          finishRetry = resolve
+        }),
+    )
+    const retry = wrapper.get<HTMLButtonElement>('[data-test="retry-parent"]')
+    const retryElement = retry.element
+    retryElement.focus()
+    expect(document.activeElement).toBe(retryElement)
+
+    await retry.trigger('keydown', { key: 'Enter' })
+    await retry.trigger('keyup', { key: 'Enter' })
+    retryElement.dispatchEvent(
+      new MouseEvent('click', { bubbles: true, detail: 0 }),
+    )
+    await nextTick()
+
+    expect(forum.fetchMessage).toHaveBeenCalledTimes(2)
+    expect(wrapper.get('[data-test="retry-parent"]').element).toBe(retryElement)
+    finishRetry()
+    await flushPromises()
+    expect(wrapper.get('[data-test="retry-parent"]').element).toBe(retryElement)
+    expect(document.activeElement).toBe(retryElement)
+  })
+
   it('blocks a real QForm reply until its late parent supplies the topic', async () => {
     const forum = useForumStore() as unknown as {
       index: Record<string, { topic: string }>
@@ -505,6 +596,22 @@ describe('CreatePost selected-topic default (ticket #414)', () => {
       expect.objectContaining({ topic: 'news', parentDigest: 'late-parent' }),
     )
   })
+
+  it.each(['__proto__', 'constructor', 'toString'])(
+    'never prepares or burns for inherited parent key %s',
+    async parentDigest => {
+      const wrapper = await mountRealReplyForm(parentDigest)
+
+      expect(wrapper.get('button[type="submit"]').attributes('disabled')).toBe(
+        '',
+      )
+      await wrapper.get('form').trigger('submit')
+      await flushPromises()
+
+      expect(useActiveWallet).not.toHaveBeenCalled()
+      expect(mockPutMessage).not.toHaveBeenCalled()
+    },
+  )
 
   it('submits and names the exact topic shown in the form', async () => {
     const { wrapper } = mountPage()
@@ -537,7 +644,7 @@ describe('CreatePost selected-topic default (ticket #414)', () => {
   it('keeps the submitted topic across a deferred wallet lookup', async () => {
     const { wrapper } = mountPage()
     let resolveWallet!: (wallet: { identity: object }) => void
-    jest.mocked(useActiveWallet).mockReturnValueOnce(
+    jest.mocked(useActiveWallet).mockReturnValue(
       new Promise(resolve => {
         resolveWallet = resolve
       }),
@@ -549,7 +656,7 @@ describe('CreatePost selected-topic default (ticket #414)', () => {
       .findComponent({ name: 'QSelect' })
       .vm.$emit('update:modelValue', 'news')
     await nextTick()
-    resolveWallet({ identity: {} })
+    resolveWallet(makeWallet())
     await posting
     await flushPromises()
 
@@ -562,7 +669,7 @@ describe('CreatePost selected-topic default (ticket #414)', () => {
   it('keeps the authorized offering across a deferred wallet lookup', async () => {
     const { wrapper } = mountPage()
     let resolveWallet!: (wallet: { identity: object }) => void
-    jest.mocked(useActiveWallet).mockReturnValueOnce(
+    jest.mocked(useActiveWallet).mockReturnValue(
       new Promise(resolve => {
         resolveWallet = resolve
       }),
@@ -578,7 +685,7 @@ describe('CreatePost selected-topic default (ticket #414)', () => {
 
     const posting = vm.post()
     vm.offering = '9'
-    resolveWallet({ identity: {} })
+    resolveWallet(makeWallet())
     await posting
     await flushPromises()
 
@@ -601,7 +708,7 @@ describe('CreatePost selected-topic default (ticket #414)', () => {
     }
     const { page, router } = await mountRoutedPage('/new-post/parentA')
     let resolveWallet!: (wallet: { identity: object }) => void
-    jest.mocked(useActiveWallet).mockReturnValueOnce(
+    jest.mocked(useActiveWallet).mockReturnValue(
       new Promise(resolve => {
         resolveWallet = resolve
       }),
@@ -611,7 +718,7 @@ describe('CreatePost selected-topic default (ticket #414)', () => {
       page().vm as unknown as { post(): Promise<void> }
     ).post()
     await flushPromises()
-    expect(page().vm).toMatchObject({ posting: true, parentDigest: 'parentA' })
+    expect(page().vm).toMatchObject({ posting: false, parentDigest: 'parentA' })
 
     await router.push('/new-post/parentB')
     await flushPromises()
@@ -622,7 +729,7 @@ describe('CreatePost selected-topic default (ticket #414)', () => {
       topic: 'help',
     })
 
-    resolveWallet({ identity: {} })
+    resolveWallet(makeWallet())
     await oldSubmission
     await flushPromises()
 
@@ -648,7 +755,7 @@ describe('CreatePost selected-topic default (ticket #414)', () => {
     }
     const { page, router } = await mountRoutedPage('/new-post/parentA')
     let resolveWallet!: (wallet: { identity: object }) => void
-    jest.mocked(useActiveWallet).mockReturnValueOnce(
+    jest.mocked(useActiveWallet).mockReturnValue(
       new Promise(resolve => {
         resolveWallet = resolve
       }),
@@ -662,11 +769,11 @@ describe('CreatePost selected-topic default (ticket #414)', () => {
 
     await router.push('/new-post/parentA')
     await flushPromises()
-    expect(page().vm).toMatchObject({ posting: true, parentDigest: 'parentA' })
-    await (page().vm as unknown as { post(): Promise<void> }).post()
-    expect(useActiveWallet).toHaveBeenCalledTimes(1)
+    expect(page().vm).toMatchObject({ posting: false, parentDigest: 'parentA' })
+    const second = (page().vm as unknown as { post(): Promise<void> }).post()
 
-    resolveWallet({ identity: {} })
+    resolveWallet(makeWallet())
+    await second
     await first
     await flushPromises()
     expect(mockPutMessage).toHaveBeenCalledTimes(1)
@@ -679,26 +786,43 @@ describe('CreatePost selected-topic default (ticket #414)', () => {
     }
     forum.index = { parentA: { topic: 'news' } }
     const { page, router } = await mountRoutedPage('/new-post/parentA')
-    let resolveWallet!: (wallet: { identity: object }) => void
-    jest.mocked(useActiveWallet).mockReturnValueOnce(
+    let resolveOriginalWallet!: (wallet: { identity: object }) => void
+    let resolveRemountedWallet!: (wallet: { identity: object }) => void
+    let finishPost!: () => void
+    jest.mocked(useActiveWallet).mockReturnValue(
       new Promise(resolve => {
-        resolveWallet = resolve
+        resolveOriginalWallet = resolve
       }),
+    )
+    mockPutMessage.mockImplementationOnce(
+      () => new Promise<void>(resolve => (finishPost = resolve)),
     )
 
     const original = (page().vm as unknown as { post(): Promise<void> }).post()
     await flushPromises()
     await router.push('/outside')
     await flushPromises()
+    jest.mocked(useActiveWallet).mockReturnValue(
+      new Promise(resolve => {
+        resolveRemountedWallet = resolve
+      }),
+    )
     await router.push('/new-post/parentA')
     await flushPromises()
 
-    expect(page().vm).toMatchObject({ posting: true, parentDigest: 'parentA' })
-    await (page().vm as unknown as { post(): Promise<void> }).post()
-    expect(useActiveWallet).toHaveBeenCalledTimes(1)
+    expect(page().vm).toMatchObject({ posting: false, parentDigest: 'parentA' })
+    const duplicate = (page().vm as unknown as { post(): Promise<void> }).post()
     expect(mockPutMessage).not.toHaveBeenCalled()
 
-    resolveWallet({ identity: {} })
+    resolveOriginalWallet(makeWallet())
+    await flushPromises()
+    expect(mockPutMessage).toHaveBeenCalledTimes(1)
+    resolveRemountedWallet(makeWallet())
+    await duplicate
+    await flushPromises()
+    expect(page().vm).toMatchObject({ posting: true, parentDigest: 'parentA' })
+    expect(mockPutMessage).toHaveBeenCalledTimes(1)
+    finishPost()
     await original
     await flushPromises()
 
@@ -718,7 +842,7 @@ describe('CreatePost selected-topic default (ticket #414)', () => {
     const { page, router } = await mountRoutedPage('/new-post/parentA')
     const originalUid = (page().vm as unknown as { $: { uid: number } }).$.uid
     let resolveWallet!: (wallet: { identity: object }) => void
-    jest.mocked(useActiveWallet).mockReturnValueOnce(
+    jest.mocked(useActiveWallet).mockReturnValue(
       new Promise(resolve => {
         resolveWallet = resolve
       }),
@@ -737,7 +861,7 @@ describe('CreatePost selected-topic default (ticket #414)', () => {
       originalUid,
     )
 
-    resolveWallet({ identity: {} })
+    resolveWallet(makeWallet())
     await oldSubmission
     await flushPromises()
 
@@ -805,7 +929,10 @@ describe('CreatePost preparation status', () => {
   it('keeps pending B progress and ownership isolated from stale A', async () => {
     const forum = useForumStore() as unknown as {
       index: Record<string, { topic: string }>
-      getPostDestinationReservationId(destination: string): number | undefined
+      getPostReservationId(args: {
+        wallet: ReturnType<typeof makeWallet>
+        destination: string
+      }): number | undefined
     }
     forum.index = {
       parentA: { topic: 'news' },
@@ -868,8 +995,78 @@ describe('CreatePost preparation status', () => {
     await postingB
     await flushPromises()
     expect(
-      forum.getPostDestinationReservationId('reply:parentB'),
+      forum.getPostReservationId({
+        wallet: makeWallet(),
+        destination: 'reply:parentB',
+      }),
     ).toBeUndefined()
+  })
+
+  it('does not let wallet B completion clear wallet A busy UI at the same destination', async () => {
+    const forum = useForumStore() as unknown as {
+      index: Record<string, { topic: string }>
+      getPostReservationId(args: {
+        wallet: ReturnType<typeof makeWallet>
+        destination: string
+      }): number | undefined
+    }
+    const walletStore = useWalletStore() as unknown as { seedPhrase: string }
+    const walletA = makeWallet('0xaaa')
+    const walletB = makeWallet('0xbbb')
+    const walletAPromise = Promise.resolve(walletA)
+    const walletBPromise = Promise.resolve(walletB)
+    jest.mocked(useActiveWallet).mockReturnValue(walletAPromise as never)
+    forum.index = { parent: { topic: 'news' } }
+    const { page, router } = await mountRoutedPage('/new-post/parent')
+    let finishA!: () => void
+    let finishB!: () => void
+    mockPutMessage
+      .mockImplementationOnce(
+        () => new Promise<void>(resolve => (finishA = resolve)),
+      )
+      .mockImplementationOnce(
+        () => new Promise<void>(resolve => (finishB = resolve)),
+      )
+
+    const postingA = (page().vm as unknown as { post(): Promise<void> }).post()
+    await flushPromises()
+    expect(page().vm).toMatchObject({ posting: true })
+
+    jest.mocked(useActiveWallet).mockReturnValue(walletBPromise as never)
+    walletStore.seedPhrase = 'seed-b'
+    await flushPromises()
+    expect(page().vm).toMatchObject({ posting: false })
+    const postingB = (page().vm as unknown as { post(): Promise<void> }).post()
+    await flushPromises()
+    expect(page().vm).toMatchObject({ posting: true })
+
+    jest.mocked(useActiveWallet).mockReturnValue(walletAPromise as never)
+    walletStore.seedPhrase = 'seed-a'
+    await flushPromises()
+    expect(page().vm).toMatchObject({ posting: true })
+
+    finishB()
+    await postingB
+    await flushPromises()
+    expect(router.currentRoute.value.fullPath).toBe('/new-post/parent')
+    expect(page().vm).toMatchObject({ posting: true })
+    expect(
+      forum.getPostReservationId({
+        wallet: walletA,
+        destination: 'reply:parent',
+      }),
+    ).toEqual(expect.any(Number))
+    expect(
+      forum.getPostReservationId({
+        wallet: walletB,
+        destination: 'reply:parent',
+      }),
+    ).toBeUndefined()
+
+    finishA()
+    await postingA
+    await flushPromises()
+    expect(page().vm).toMatchObject({ posting: false })
   })
 })
 

@@ -111,12 +111,48 @@ def test_script_omits_needs_specification(tmp_path: Path) -> None:
     assert 4 not in payload["waves"][1]["parallel"]
 
 
+def test_script_dispatches_ready_issue_beyond_legacy_export_boundary(tmp_path: Path) -> None:
+    waves_path = tmp_path / "waves.json"
+    triage_path = tmp_path / "triage.json"
+    waves_path.write_text(json.dumps({"waves": [{"wave": 0, "parallel": [185]}]}))
+    issues = [
+        {"number": number, "title": f"unready {number}", "body": "an idea"}
+        for number in range(1, 101)
+    ]
+    issues.append(ready_issue(185, "ready beyond the old export boundary"))
+    triage_path.write_text(json.dumps(issues))
+
+    script = Path(__file__).with_name("ready_queue.py")
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(script),
+            "--waves",
+            str(waves_path),
+            "--triage",
+            str(triage_path),
+            "--format",
+            "json",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["dispatchable"] == [185]
+    assert payload["ready"] == [185]
+    assert payload["waves"] == [{"wave": 0, "parallel": [185]}]
+
+
 def main() -> int:
     test_needs_specification_omitted()
     test_dependency_order()
     test_unready_blocker_does_not_promote()
     with tempfile.TemporaryDirectory() as directory:
         test_script_omits_needs_specification(Path(directory))
+    with tempfile.TemporaryDirectory() as directory:
+        test_script_dispatches_ready_issue_beyond_legacy_export_boundary(Path(directory))
     print("ok")
     return 0
 

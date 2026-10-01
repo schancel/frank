@@ -239,14 +239,21 @@ export class PayloadConstructor {
     })
   }
 
+  // Same scalar as constructStampPrivateKey (decision #537). A digest
+  // outside (0, n) or a zero sum returns no address. The string is still
+  // bitcore toAddress(networkName) (issue #242).
   constructStampAddress(outpointDigest: Uint8Array, privKey: PrivateKey) {
-    const digestBn = crypto.BN.fromBuffer(Buffer.from(outpointDigest))
-    const stampPrivBn = privKey
-      .toBigNumber()
-      .add(digestBn)
-      .mod(crypto.Point.getN())
-    const stampAddress = new PrivateKey(stampPrivBn).toAddress(this.networkName)
-    return stampAddress
+    const secret = stampParentSecret(
+      Uint8Array.from(privKey.toBuffer()),
+      outpointDigest,
+    )
+    try {
+      return new PrivateKey(Buffer.from(secret).toString('hex')).toAddress(
+        this.networkName,
+      )
+    } finally {
+      secret.fill(0)
+    }
   }
 
   encrypt(sharedKey: Buffer, plainText: Uint8Array) {

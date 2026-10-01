@@ -29,6 +29,7 @@ import {
 } from '@frank/wallet/monad-stamp-client'
 import { MonadMailboxUnavailableError } from '@frank/cashweb/relay/monad-mailbox-client'
 import type { MessageWrapper } from '@frank/cashweb/types/messages'
+import type { RelayDeliverySuppression } from '@frank/cashweb/relay/storage/storage'
 import {
   deserializeMessageWrapper,
   serializeMessageWrapper,
@@ -56,6 +57,12 @@ jest.mock('../adapters/level-message-store', () => {
       advanceRelayCursor: jest.fn(
         async (_address: string, next: number) => next,
       ),
+      suppressAndDelete: jest.fn(
+        async (_address: string, digests: string[]) => {
+          digests.forEach(digest => serialized.delete(digest))
+        },
+      ),
+      suppressedRelayReceipts: jest.fn(async () => new Set<string>()),
       getIterator: jest.fn(async () =>
         (async function* () {
           for (const value of serialized.values()) {
@@ -604,6 +611,113 @@ describe('outgoing direct messages (#269, #270)', () => {
       release({ [HASH]: 'live' })
       await first
       expect(send).toHaveBeenCalledTimes(1)
+    })
+
+    it('Discard wins over a Retry waiting on reconciliation without durable resurrection', async () => {
+      const { chats, id } = await failedWithAttempt()
+      let release: (
+        status: Record<string, DirectMessageAttemptStatus>,
+      ) => void = () => undefined
+      const reconcile = jest
+        .spyOn(activeChain.directMessages, 'reconcileAttempts')
+        .mockReturnValue(
+          new Promise(resolve => {
+            release = resolve
+          }),
+        )
+      const retrying = chats.retryOutgoing({
+        wallet,
+        address: PEER,
+        payloadDigest: id,
+      })
+      while (reconcile.mock.calls.length === 0) await Promise.resolve()
+
+      await chats.deleteMessage({ address: PEER, payloadDigest: id })
+      release({ [HASH]: 'live' })
+
+      await expect(retrying).resolves.toEqual({ state: 'busy' })
+      expect(only(chats)).toEqual([])
+      expect(only(await reload())).toEqual([])
+    })
+  })
+
+  describe('Clear and composer sends share one durable state order', () => {
+    it('a send whose first save started before Clear is removed live and after reload', async () => {
+      const messageStore = (await messageStorePromise) as unknown as {
+        saveMessage: jest.Mock
+      }
+      const originalSave = messageStore.saveMessage.getMockImplementation()
+      let saveStarted: (() => void) | undefined
+      const started = new Promise<void>(resolve => {
+        saveStarted = resolve
+      })
+      let releaseSave: (() => void) | undefined
+      const gate = new Promise<void>(resolve => {
+        releaseSave = resolve
+      })
+      messageStore.saveMessage.mockImplementation(
+        async (wrapper: MessageWrapper) => {
+          saveStarted?.()
+          await gate
+          return originalSave?.(wrapper)
+        },
+      )
+      jest
+        .spyOn(activeChain.directMessages, 'send')
+        .mockRejectedValue(new Error('offline'))
+      const chats = useChatStore()
+
+      const sending = chats.sendMessage({ wallet, address: PEER, items: TEXT })
+      await started
+      const clearing = chats.clearChat(PEER)
+      releaseSave?.()
+      await Promise.all([sending, clearing])
+      messageStore.saveMessage.mockImplementation(originalSave)
+
+      expect(only(chats)).toEqual([])
+      expect(only(await reload())).toEqual([])
+    })
+
+    it('a send queued after Clear remains both visible and durable', async () => {
+      jest
+        .spyOn(activeChain.directMessages, 'send')
+        .mockRejectedValue(new Error('offline'))
+      const chats = useChatStore()
+      await chats.sendMessage({ wallet, address: PEER, items: TEXT })
+      const messageStore = (await messageStorePromise) as unknown as {
+        suppressAndDelete: jest.Mock
+      }
+      const originalSuppress =
+        messageStore.suppressAndDelete.getMockImplementation()
+      let clearStarted: (() => void) | undefined
+      const started = new Promise<void>(resolve => {
+        clearStarted = resolve
+      })
+      let releaseClear: (() => void) | undefined
+      const gate = new Promise<void>(resolve => {
+        releaseClear = resolve
+      })
+      messageStore.suppressAndDelete.mockImplementation(
+        async (
+          address: string,
+          digests: string[],
+          suppressions: RelayDeliverySuppression[],
+        ) => {
+          clearStarted?.()
+          await gate
+          return originalSuppress?.(address, digests, suppressions)
+        },
+      )
+
+      const clearing = chats.clearChat(PEER)
+      await started
+      const sending = chats.sendMessage({ wallet, address: PEER, items: TEXT })
+      releaseClear?.()
+      await Promise.all([clearing, sending])
+      messageStore.suppressAndDelete.mockImplementation(originalSuppress)
+
+      expect(only(chats)).toHaveLength(1)
+      expect(only(await reload())).toHaveLength(1)
     })
   })
 

@@ -1,5 +1,13 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { MessageStore, MessageResult, MessageReturnResult } from './storage'
+import {
+  isSafeRelayCursor,
+  isSafeRelayTimestamp,
+  MessageStore,
+  MessageResult,
+  MessageReturnResult,
+  RelayDeliverySuppression,
+  RelayReceiptIdentity,
+} from './storage'
 import { MessageWrapper } from '../../types/messages'
 import level, { LevelDB } from 'level'
 import { join } from 'path'
@@ -9,8 +17,19 @@ const metadataKeys = {
   lastServerTime: 'lastServerTime',
 }
 
+const suppressionIndexPrefix = 'relaySuppressionIndex:'
+
 function relayCursorKey(recipientAddress: string): string {
   return `relayCursor:${recipientAddress.toLowerCase()}`
+}
+
+function suppressionIndexKey(recipientAddress: string): string {
+  return `${suppressionIndexPrefix}${recipientAddress.toLowerCase()}`
+}
+
+type StoredSuppression = {
+  payloadDigest: string
+  receivedTime: number | null
 }
 
 type JsonMessageWrapper = Omit<MessageWrapper, 'message'> & {
@@ -128,7 +147,10 @@ class MessageIterator implements AsyncIterableIterator<MessageWrapper> {
       if (!entry) {
         return new MessageReturnResult()
       }
-      if (entry.key !== metadataKeys.lastServerTime) {
+      if (
+        entry.key !== metadataKeys.lastServerTime &&
+        !entry.key.startsWith(suppressionIndexPrefix)
+      ) {
         return new MessageResult(deserializeMessageWrapper(entry.value))
       }
     }
@@ -152,7 +174,7 @@ class MessageIterator implements AsyncIterableIterator<MessageWrapper> {
   }
 }
 
-const currentSchemaVersion = 2
+const currentSchemaVersion = 3
 
 export class LevelMessageStore implements MessageStore {
   private messageDbLocation: string
@@ -225,6 +247,134 @@ export class LevelMessageStore implements MessageStore {
       () => undefined,
     )
     await deletion
+  }
+
+  private async suppressionIndex(
+    recipientAddress: string,
+  ): Promise<StoredSuppression[]> {
+    try {
+      const parsed = JSON.parse(
+        await this.db.get(suppressionIndexKey(recipientAddress)),
+      )
+      if (!Array.isArray(parsed)) return []
+      return parsed.flatMap((entry): StoredSuppression[] => {
+        if (
+          entry === null ||
+          typeof entry !== 'object' ||
+          typeof entry.payloadDigest !== 'string'
+        ) {
+          return []
+        }
+        // Corrupt timing metadata must not discard the deletion intent. Retain the tombstone as
+        // unresolved so it can suppress a later authoritative relay receipt, but never use the
+        // untrusted value for collection.
+        return [
+          {
+            payloadDigest: entry.payloadDigest,
+            receivedTime: isSafeRelayTimestamp(entry.receivedTime)
+              ? entry.receivedTime
+              : null,
+          },
+        ]
+      })
+    } catch (err: any) {
+      if (err.type === 'NotFoundError') return []
+      throw err
+    }
+  }
+
+  async suppressAndDelete(
+    recipientAddress: string,
+    payloadDigests: string[],
+    suppressions: RelayDeliverySuppression[],
+  ): Promise<void> {
+    const mutation = this.mutationQueue.then(async () => {
+      const byDigest = new Map(
+        (await this.suppressionIndex(recipientAddress)).map(entry => [
+          entry.payloadDigest,
+          entry.receivedTime,
+        ]),
+      )
+      const cursor = await this.relayCursor(recipientAddress)
+      for (const suppression of suppressions) {
+        const receivedTime = suppression.receivedTime
+        if (receivedTime !== undefined && !isSafeRelayTimestamp(receivedTime)) {
+          throw new Error('Unsafe relay receipt timestamp in suppression')
+        }
+        // A known receipt strictly behind durable cursor authority cannot replay. Do not create
+        // a tombstone that would have no future receipt available to collect it.
+        if (receivedTime !== undefined && cursor > receivedTime) continue
+        const existing = byDigest.get(suppression.payloadDigest)
+        byDigest.set(
+          suppression.payloadDigest,
+          receivedTime ?? existing ?? null,
+        )
+      }
+      const entries = [...byDigest].map(([payloadDigest, receivedTime]) => ({
+        payloadDigest,
+        receivedTime,
+      }))
+      await (this.db as any).batch([
+        entries.length === 0
+          ? { type: 'del', key: suppressionIndexKey(recipientAddress) }
+          : {
+              type: 'put',
+              key: suppressionIndexKey(recipientAddress),
+              value: JSON.stringify(entries),
+            },
+        ...[...new Set(payloadDigests)].map(payloadDigest => ({
+          type: 'del',
+          key: payloadDigest,
+        })),
+      ])
+    })
+    this.mutationQueue = mutation.then(
+      () => undefined,
+      () => undefined,
+    )
+    await mutation
+  }
+
+  async suppressedRelayReceipts(
+    recipientAddress: string,
+    receipts: RelayReceiptIdentity[],
+  ): Promise<Set<string>> {
+    const mutation = this.mutationQueue.then(async () => {
+      const entries = await this.suppressionIndex(recipientAddress)
+      const byDigest = new Map(
+        entries.map(entry => [entry.payloadDigest, entry.receivedTime]),
+      )
+      const suppressed = new Set<string>()
+      let changed = false
+      for (const receipt of receipts) {
+        if (!isSafeRelayTimestamp(receipt.receivedTime)) {
+          throw new Error('Unsafe relay receipt timestamp')
+        }
+        if (!byDigest.has(receipt.payloadDigest)) continue
+        suppressed.add(receipt.payloadDigest)
+        if (byDigest.get(receipt.payloadDigest) === null) {
+          byDigest.set(receipt.payloadDigest, receipt.receivedTime)
+          changed = true
+        }
+      }
+      if (changed) {
+        await this.db.put(
+          suppressionIndexKey(recipientAddress),
+          JSON.stringify(
+            [...byDigest].map(([payloadDigest, receivedTime]) => ({
+              payloadDigest,
+              receivedTime,
+            })),
+          ),
+        )
+      }
+      return suppressed
+    })
+    this.mutationQueue = mutation.then(
+      () => undefined,
+      () => undefined,
+    )
+    return mutation
   }
 
   async saveMessage(
@@ -300,9 +450,10 @@ export class LevelMessageStore implements MessageStore {
    * conservative migration. Duplicate relay rows are already idempotent by payload digest. */
   async relayCursor(recipientAddress: string): Promise<number> {
     try {
-      return JSON.parse(
+      const cursor: unknown = JSON.parse(
         await this.metadataDb.get(relayCursorKey(recipientAddress)),
       )
+      return isSafeRelayCursor(cursor) ? cursor : 0
     } catch (err: any) {
       if (err.type === 'NotFoundError') return 0
       throw err
@@ -312,14 +463,49 @@ export class LevelMessageStore implements MessageStore {
   async advanceRelayCursor(
     recipientAddress: string,
     nextReceivedTime: number,
+    suppressedReceipts: RelayReceiptIdentity[] = [],
   ): Promise<number> {
     const advance = this.mutationQueue.then(async () => {
+      if (!isSafeRelayCursor(nextReceivedTime)) {
+        throw new Error('Unsafe relay cursor timestamp')
+      }
+      if (
+        suppressedReceipts.some(
+          receipt => !isSafeRelayTimestamp(receipt.receivedTime),
+        )
+      ) {
+        throw new Error('Unsafe relay receipt timestamp')
+      }
       const current = await this.relayCursor(recipientAddress)
       const next = Math.max(current, nextReceivedTime)
       if (next !== current) {
         await this.metadataDb.put(
           relayCursorKey(recipientAddress),
           JSON.stringify(next),
+        )
+      }
+      // Cursor persistence is the authority boundary. Only after it succeeds may suppression
+      // records for receipts strictly behind that inclusive cursor be collected. A crash between
+      // these writes leaves a harmless tombstone, which the next advance collects.
+      const observed = new Map(
+        suppressedReceipts.map(receipt => [
+          receipt.payloadDigest,
+          receipt.receivedTime,
+        ]),
+      )
+      const remaining = (await this.suppressionIndex(recipientAddress)).filter(
+        entry => {
+          const receivedTime = observed.get(entry.payloadDigest)
+          const safeAfter = receivedTime ?? entry.receivedTime
+          return safeAfter === null || next <= safeAfter
+        },
+      )
+      if (remaining.length === 0) {
+        await this.db.del(suppressionIndexKey(recipientAddress))
+      } else {
+        await this.db.put(
+          suppressionIndexKey(recipientAddress),
+          JSON.stringify(remaining),
         )
       }
       return next

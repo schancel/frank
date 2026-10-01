@@ -50,6 +50,11 @@ import type {
   ImageItem,
   StealthItem,
 } from '@frank/cashweb/types/messages'
+import {
+  isSafeRelayTimestamp,
+  type RelayDeliverySuppression,
+  type RelayReceiptIdentity,
+} from '@frank/cashweb/relay/storage/storage'
 import type { ReceivedMessageWrapper } from '@frank/cashweb/types/user-interface'
 import { useProfileStore } from './my-profile'
 import { useContactStore } from './contacts'
@@ -76,6 +81,7 @@ export type ChatMessage = {
     valueWei: bigint
   }>
   senderAddress: string
+  destinationAddress?: string
   payloadDigest: string
   /** Outgoing messages that are not yet confirmed (#269/#270); see `Message.delivery`. */
   delivery?: OutgoingDelivery
@@ -116,6 +122,21 @@ function messageStampPrice(message: {
     return Number(message.stampValueWei)
   }
   return stampPrice(message.outpoints)
+}
+
+/** Relay receipts carry the recipient identity at runtime, but legacy/local Message rows predate it. */
+function messageDestinationAddress(message: Message): string | undefined {
+  return (message as Message & { destinationAddress?: string })
+    .destinationAddress
+}
+
+/** A confirmed local outbox row is not proof that its relay receipt was observed. */
+function observedRelayReceiptTime(
+  message: Message | undefined,
+): number | undefined {
+  return message?.status === 'confirmed' && messageDestinationAddress(message)
+    ? message.receivedTime
+    : undefined
 }
 
 function accountedMessageValue(message: {
@@ -196,10 +217,6 @@ const inflightOutgoing = new Set<string>()
 // same message would both pass it and both notify. An index is claimed synchronously, before the
 // first await, and released once the call has stored it (or failed, so a retry can still notify).
 const notifyingIncoming = new Set<string>()
-
-// A Discard/Clear can win the delivery queue before an already-started poll reaches it. Remember
-// the pending attempt digest synchronously so that poll is consumed without resurrecting the row.
-const discardedDeliveryDigests = new Set<string>()
 
 // Inbox delivery and local send completion can both confirm/re-key the same payload. Enqueue the
 // mutation synchronously, before either path's first await, so relay-authored metadata always wins
@@ -296,7 +313,7 @@ function classifySendFailure(
 type OutboundDeliveryMatch = {
   oldIndex: string
   chatAddress: string
-  message: Message
+  message: Message & { destinationAddress?: string }
 }
 
 type OutboundDeliveryOwner = {
@@ -600,10 +617,12 @@ export const useChatStore = defineStore('chats', {
     async advanceRelayCursor(
       recipientAddress: string,
       nextReceivedTime: number,
+      suppressedReceipts: RelayReceiptIdentity[] = [],
     ): Promise<number> {
       return (await store).advanceRelayCursor(
         toChainDisplayAddress(recipientAddress),
         nextReceivedTime,
+        suppressedReceipts,
       )
     },
     async deleteMessage({
@@ -613,13 +632,18 @@ export const useChatStore = defineStore('chats', {
       address: string
       payloadDigest: string
     }): Promise<void> {
-      const attemptDigest =
-        this.messages[payloadDigest]?.delivery?.attemptDigest
-      if (attemptDigest) discardedDeliveryDigests.add(attemptDigest)
+      const message = this.messages[payloadDigest]
+      const attemptDigest = message?.delivery?.attemptDigest
+      const recipientAddress = message?.outbound
+        ? message.senderAddress
+        : message
+        ? messageDestinationAddress(message)
+        : null
       return serializeDeliveryMutation(() =>
         this.deleteMessageExclusive({
           address,
           payloadDigest,
+          recipientAddress,
           attemptDigest,
         }),
       )
@@ -627,25 +651,49 @@ export const useChatStore = defineStore('chats', {
     async deleteMessageExclusive({
       address,
       payloadDigest,
+      recipientAddress,
       attemptDigest,
     }: {
       address: string
       payloadDigest: string
+      recipientAddress: string | null
       attemptDigest?: string
     }): Promise<void> {
       const messageStore = await store
+      const message = this.messages[payloadDigest]
+      const installedDelivery = attemptDigest
+        ? this.messages[attemptDigest]
+        : undefined
       const digests = new Set([payloadDigest, attemptDigest].filter(Boolean))
-      const installedDelivery =
-        attemptDigest !== undefined && attemptDigest in this.messages
-      for (const digest of digests) {
-        await messageStore.deleteMessage(digest as string)
-        delete this.messages[digest as string]
+      const suppressions: RelayDeliverySuppression[] = []
+      if (attemptDigest) suppressions.push({ payloadDigest: attemptDigest })
+      if (!payloadDigest.startsWith('pending:')) {
+        const receivedTime = observedRelayReceiptTime(message)
+        suppressions.push({
+          payloadDigest,
+          ...(receivedTime === undefined ? {} : { receivedTime }),
+        })
       }
-      // When receipt reconciliation acquired the queue first, its durable delivery row has now
-      // been removed and no later in-flight receipt still needs suppressing. If deletion acquired
-      // the queue first, leave the marker for that already-started receipt to consume.
-      if (installedDelivery && attemptDigest) {
-        discardedDeliveryDigests.delete(attemptDigest)
+      const installedReceivedTime = observedRelayReceiptTime(installedDelivery)
+      if (installedReceivedTime !== undefined && attemptDigest) {
+        suppressions.splice(0, 1, {
+          payloadDigest: attemptDigest,
+          receivedTime: installedReceivedTime,
+        })
+      }
+      if (recipientAddress) {
+        await messageStore.suppressAndDelete(
+          recipientAddress,
+          [...digests] as string[],
+          suppressions,
+        )
+      } else {
+        for (const digest of digests) {
+          await messageStore.deleteMessage(digest as string)
+        }
+      }
+      for (const digest of digests) {
+        delete this.messages[digest as string]
       }
       const displayAddress = toChainDisplayAddress(address)
       const chat = this.chats[displayAddress]
@@ -859,7 +907,8 @@ export const useChatStore = defineStore('chats', {
         timestamp,
         delivery: {},
       })
-      // Durable before anything can go wrong: the typed text must survive a reload (#269).
+      // Enqueue the first durable save synchronously. Clear called after this composer action is
+      // therefore ordered after the row, while the optimistic bubble remains visible immediately.
       await this.saveOutgoing(displayAddress, pendingMessageId)
       return this.runOutgoing({
         wallet,
@@ -912,6 +961,15 @@ export const useChatStore = defineStore('chats', {
       id: string,
       { strict = false }: { strict?: boolean } = {},
     ) {
+      return serializeDeliveryMutation(() =>
+        this.saveOutgoingExclusive(address, id, { strict }),
+      )
+    },
+    async saveOutgoingExclusive(
+      address: string,
+      id: string,
+      { strict = false }: { strict?: boolean } = {},
+    ) {
       const message = this.messages[id]
       if (!message) {
         // Strict callers are attributing a payment to this message: a vanished record means the
@@ -959,6 +1017,17 @@ export const useChatStore = defineStore('chats', {
       delivery: OutgoingDelivery,
       options: { strict?: boolean } = {},
     ) {
+      return serializeDeliveryMutation(() =>
+        this.setOutgoingStateExclusive(address, id, status, delivery, options),
+      )
+    },
+    async setOutgoingStateExclusive(
+      address: string,
+      id: string,
+      status: 'pending' | 'payment-pending' | 'error',
+      delivery: OutgoingDelivery,
+      options: { strict?: boolean } = {},
+    ) {
       const message = this.messages[id]
       if (!message) {
         if (options.strict) {
@@ -968,7 +1037,7 @@ export const useChatStore = defineStore('chats', {
       }
       message.status = status
       message.delivery = delivery
-      await this.saveOutgoing(address, id, options)
+      await this.saveOutgoingExclusive(address, id, options)
     },
     /** The exact payment set of this message was delivered: re-key the local copy by its payload
      * hash (unless already so), persist it, and drop the local-id record. The UI is reconciled
@@ -1155,6 +1224,8 @@ export const useChatStore = defineStore('chats', {
       assert(recipient, `Invalid recipient address: ${address}`)
       const previous = message.delivery
       const digest = previous?.attemptDigest
+      const stillCurrent = () =>
+        this.messages[id] === message && walletOwnsMessage(wallet, message)
 
       // 1. An earlier payment attempt exists: ask what became of it BEFORE anything else.
       if (digest !== undefined) {
@@ -1178,9 +1249,16 @@ export const useChatStore = defineStore('chats', {
           }
           return { state: 'payment-pending' }
         }
+        if (!stillCurrent()) return { state: 'busy' }
         const status = statuses[digest] ?? 'unknown'
         const applied = await this.applyAttemptStatus({ address, id, status })
-        if (applied === 'sent') return { state: 'sent', payloadDigest: digest }
+        if (applied === 'sent') {
+          const confirmed = this.messages[digest]
+          return confirmed && walletOwnsMessage(wallet, confirmed)
+            ? { state: 'sent', payloadDigest: digest }
+            : { state: 'busy' }
+        }
+        if (!stillCurrent()) return { state: 'busy' }
         if (applied === 'live') return { state: 'payment-pending' }
         if (applied === 'unknown') {
           if (!manual || !confirmed) {
@@ -1238,7 +1316,9 @@ export const useChatStore = defineStore('chats', {
       }
 
       // 2. Build and send a new payment set.
+      if (!stillCurrent()) return { state: 'busy' }
       await this.setOutgoingState(address, id, 'pending', {})
+      if (!stillCurrent()) return { state: 'busy' }
       let ownDigest: string | undefined
       let result: DirectMessageSendResult
       try {
@@ -1379,41 +1459,73 @@ export const useChatStore = defineStore('chats', {
     },
     async clearChat(address: string): Promise<void> {
       const displayAddress = toChainDisplayAddress(address)
-      const chat = this.chats[displayAddress]
-      if (!chat) {
-        return
-      }
-      const digests = chat.messages.flatMap(message => [
-        message.payloadDigest,
-        message.delivery?.attemptDigest,
-      ])
-      for (const message of chat.messages) {
-        const attempt = message.delivery?.attemptDigest
-        if (attempt) discardedDeliveryDigests.add(attempt)
-      }
       return serializeDeliveryMutation(() =>
-        this.clearChatExclusive(displayAddress, digests),
+        this.clearChatExclusive(displayAddress),
       )
     },
-    async clearChatExclusive(
-      address: string,
-      digests: Array<string | undefined>,
-    ): Promise<void> {
+    async clearChatExclusive(address: string): Promise<void> {
       const chat = this.chats[address]
       if (!chat) return
       const messageStore = await store
-      const uniqueDigests = new Set(digests.filter(Boolean))
-      const installedDeliveries = new Set(
-        [...uniqueDigests].filter(digest => digest && digest in this.messages),
+      // This is Clear's atomic cutoff. Composer sends invoked while its durable deletes are in
+      // flight may appear optimistically, but are queued after this mutation and must survive.
+      const clearingMessages = [...chat.messages]
+      const groups = new Map<
+        string,
+        { digests: Set<string>; suppressions: RelayDeliverySuppression[] }
+      >()
+      const unscopedDigests = new Set<string>()
+      for (const message of clearingMessages) {
+        const recipientAddress = message.outbound
+          ? message.senderAddress
+          : messageDestinationAddress(message)
+        const digests = [
+          message.payloadDigest,
+          message.delivery?.attemptDigest,
+        ].filter((digest): digest is string => digest !== undefined)
+        if (!recipientAddress) {
+          digests.forEach(digest => unscopedDigests.add(digest))
+          continue
+        }
+        const group = groups.get(recipientAddress) ?? {
+          digests: new Set<string>(),
+          suppressions: [],
+        }
+        digests.forEach(digest => group.digests.add(digest))
+        if (message.delivery?.attemptDigest) {
+          group.suppressions.push({
+            payloadDigest: message.delivery.attemptDigest,
+          })
+        }
+        if (!message.payloadDigest.startsWith('pending:')) {
+          const receivedTime = observedRelayReceiptTime(message)
+          group.suppressions.push({
+            payloadDigest: message.payloadDigest,
+            ...(receivedTime === undefined ? {} : { receivedTime }),
+          })
+        }
+        groups.set(recipientAddress, group)
+      }
+      for (const [recipientAddress, group] of groups) {
+        await messageStore.suppressAndDelete(
+          recipientAddress,
+          [...group.digests],
+          group.suppressions,
+        )
+      }
+      for (const digest of unscopedDigests) {
+        await messageStore.deleteMessage(digest)
+      }
+      const clearedPayloads = new Set<string>()
+      for (const message of clearingMessages) {
+        clearedPayloads.add(message.payloadDigest)
+        delete this.messages[message.payloadDigest]
+        const attempt = message.delivery?.attemptDigest
+        if (attempt) delete this.messages[attempt]
+      }
+      chat.messages = chat.messages.filter(
+        message => !clearedPayloads.has(message.payloadDigest),
       )
-      for (const digest of uniqueDigests) {
-        await messageStore.deleteMessage(digest as string)
-        delete this.messages[digest as string]
-      }
-      for (const digest of installedDeliveries) {
-        discardedDeliveryDigests.delete(digest as string)
-      }
-      chat.messages = []
       recomputeChatAccounting(chat, this.activeChatAddr)
     },
     async deleteChat(address: string) {
@@ -1465,7 +1577,7 @@ export const useChatStore = defineStore('chats', {
     async receiveMessages(
       messageWrappers: ReceivedMessageWrapper[],
       ownAddressOverride?: string,
-    ) {
+    ): Promise<{ suppressedReceipts: RelayReceiptIdentity[] }> {
       const toNotify = new Set<string>()
       for (const { index } of messageWrappers) {
         if (!(index in this.messages) && !notifyingIncoming.has(index)) {
@@ -1474,7 +1586,7 @@ export const useChatStore = defineStore('chats', {
         }
       }
       try {
-        await this.storeReceivedMessages(
+        return await this.storeReceivedMessages(
           messageWrappers,
           toNotify,
           ownAddressOverride,
@@ -1489,12 +1601,12 @@ export const useChatStore = defineStore('chats', {
       messageWrappers: ReceivedMessageWrapper[],
       toNotify: Set<string>,
       ownAddressOverride?: string,
-    ): Promise<void> {
+    ): Promise<{ suppressedReceipts: RelayReceiptIdentity[] }> {
       const ownAddress =
         ownAddressOverride === undefined
           ? await getOwnCanonicalAddress()
           : toChainDisplayAddress(ownAddressOverride)
-      await serializeDeliveryMutation(() =>
+      const suppressedReceipts = await serializeDeliveryMutation(() =>
         this.storeReceivedMessagesExclusive(
           messageWrappers,
           toNotify,
@@ -1502,16 +1614,31 @@ export const useChatStore = defineStore('chats', {
         ),
       )
       await this.notifyReceivedMessages(messageWrappers, toNotify)
+      return { suppressedReceipts }
     },
     async storeReceivedMessagesExclusive(
       messageWrappers: ReceivedMessageWrapper[],
       toNotify: Set<string>,
       ownAddress: string | null,
-    ): Promise<void> {
+    ): Promise<RelayReceiptIdentity[]> {
       console.log('receiving messages')
       const messageStore = await store
+      if (
+        messageWrappers.some(
+          wrapper => !isSafeRelayTimestamp(wrapper.message.receivedTime),
+        )
+      ) {
+        throw new Error('Unsafe relay receipt timestamp')
+      }
+      const receipts = messageWrappers.map(wrapper => ({
+        payloadDigest: wrapper.index,
+        receivedTime: wrapper.message.receivedTime,
+      }))
+      const suppressedDigests = ownAddress
+        ? await messageStore.suppressedRelayReceipts(ownAddress, receipts)
+        : new Set<string>()
       const deliverableWrappers = messageWrappers.filter(wrapper => {
-        if (!discardedDeliveryDigests.delete(wrapper.index)) return true
+        if (!suppressedDigests.has(wrapper.index)) return true
         toNotify.delete(wrapper.index)
         return false
       })
@@ -1559,6 +1686,7 @@ export const useChatStore = defineStore('chats', {
               stampPayments:
                 wrapper.message.stampPayments ?? existing.stampPayments,
               senderAddress: existing.senderAddress,
+              destinationAddress: wrapper.message.destinationAddress,
               delivery: undefined,
             },
           })
@@ -1616,22 +1744,32 @@ export const useChatStore = defineStore('chats', {
       // Apply persistence-backed reconciliations before notification/accounting. This makes a
       // poll that wins the race with `directMessages.send` completion indistinguishable from the
       // send completing first: one outbound object, one key, and no inbound value/unread effects.
+      const chatMutations = new Map<
+        string,
+        {
+          replacements: Map<string, ChatMessage>
+          removals: Set<string>
+        }
+      >()
+      const mutationFor = (chatAddress: string) => {
+        const existing = chatMutations.get(chatAddress)
+        if (existing) return existing
+        const created = {
+          replacements: new Map<string, ChatMessage>(),
+          removals: new Set<string>(),
+        }
+        chatMutations.set(chatAddress, created)
+        return created
+      }
+
       for (const [index, loopback] of outboundMatches) {
-        const chat = this.chats[loopback.chatAddress]
-        const position = chat?.messages.findIndex(
-          message =>
-            message.payloadDigest === loopback.oldIndex ||
-            message.payloadDigest === index,
-        )
         const reconciled: ChatMessage = {
           payloadDigest: index,
           ...loopback.message,
         }
-        if (chat && position !== undefined && position >= 0) {
-          chat.messages.splice(position, 1, reconciled)
-          chat.lastReceived = Math.max(chat.lastReceived, reconciled.serverTime)
-          recomputeChatAccounting(chat, this.activeChatAddr)
-        }
+        const mutation = mutationFor(loopback.chatAddress)
+        mutation.replacements.set(loopback.oldIndex, reconciled)
+        mutation.replacements.set(index, reconciled)
         delete this.messages[loopback.oldIndex]
         this.messages[index] = reconciled
         this.lastReceived = Math.max(
@@ -1641,15 +1779,31 @@ export const useChatStore = defineStore('chats', {
       }
 
       for (const collision of replacedAccountCollisions.values()) {
-        const chat = this.chats[collision.chatAddress]
-        const position = chat?.messages.findIndex(
-          message => message.payloadDigest === collision.oldIndex,
-        )
-        if (chat && position !== undefined && position >= 0) {
-          chat.messages.splice(position, 1)
-          recomputeChatAccounting(chat, this.activeChatAddr)
-        }
+        mutationFor(collision.chatAddress).removals.add(collision.oldIndex)
         delete this.messages[collision.oldIndex]
+      }
+      for (const [chatAddress, mutation] of chatMutations) {
+        const chat = this.chats[chatAddress]
+        if (!chat) continue
+        const installedReplacements = new Set<string>()
+        chat.messages = chat.messages.flatMap(message => {
+          const replacement = mutation.replacements.get(message.payloadDigest)
+          if (replacement) {
+            if (installedReplacements.has(replacement.payloadDigest)) return []
+            installedReplacements.add(replacement.payloadDigest)
+            return [replacement]
+          }
+          return mutation.removals.has(message.payloadDigest) ? [] : [message]
+        })
+        if (installedReplacements.size > 0) {
+          chat.lastReceived = Math.max(
+            chat.lastReceived,
+            ...[...mutation.replacements.values()].map(
+              message => message.serverTime,
+            ),
+          )
+        }
+        recomputeChatAccounting(chat, this.activeChatAddr)
       }
       for (const wrapper of deliverableWrappers) {
         const {
@@ -1731,10 +1885,17 @@ export const useChatStore = defineStore('chats', {
         ) {
           chat.totalUnreadValue += messageValue
           chat.totalUnreadMessages += 1
+        } else if (displayAddress === this.activeChatAddr) {
+          // The receipt was visible while this chat was active. Persist that read decision so
+          // navigating elsewhere and reloading cannot reconstruct it as unread.
+          chat.lastRead = Math.max(chat.lastRead, message.serverTime)
         }
         this.lastReceived = message.serverTime
         chat.totalValue += messageValue
       }
+      return receipts.filter(receipt =>
+        suppressedDigests.has(receipt.payloadDigest),
+      )
     },
     async notifyReceivedMessages(
       messageWrappers: ReceivedMessageWrapper[],

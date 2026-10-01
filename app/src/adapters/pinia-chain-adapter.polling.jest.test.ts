@@ -38,6 +38,8 @@ jest.mock('./level-message-store', () => ({
     mostRecentMessageTime: jest.fn(async () => 0),
     relayCursor: jest.fn(async () => 0),
     advanceRelayCursor: jest.fn(async (_address: string, next: number) => next),
+    suppressAndDelete: jest.fn(async () => undefined),
+    suppressedRelayReceipts: jest.fn(async () => new Set<string>()),
     getIterator: async function* () {
       /* none */
     },

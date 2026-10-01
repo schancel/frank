@@ -7,6 +7,7 @@ on:
       - "app/**"
       - "packages/wallet/**"
       - "packages/cashweb/**"
+      - "packages/bitcore-lib-xpi/**"
       - "package.json"
       - "yarn.lock"
       - ".github/workflows/app-lint-and-test.yml"
@@ -16,6 +17,7 @@ on:
       - "app/**"
       - "packages/wallet/**"
       - "packages/cashweb/**"
+      - "packages/bitcore-lib-xpi/**"
       - "package.json"
       - "yarn.lock"
       - ".github/workflows/app-lint-and-test.yml"
@@ -45,3 +47,14 @@ jobs:
       - run: yarn install
       - name: Wallet Monad-chain regression
         run: yarn workspace @frank/wallet test --ci --runInBand chain/monad-chain.jest.test.ts
+
+  cashweb-message-store:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - uses: actions/setup-node@v2
+        with:
+          node-version: "26"
+      - run: yarn install
+      - name: Cashweb message-store regressions
+        run: yarn workspace @frank/cashweb test --ci --runInBand relay/storage/level-storage.jest.test.ts

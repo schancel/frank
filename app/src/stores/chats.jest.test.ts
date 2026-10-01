@@ -48,6 +48,8 @@ jest.mock('../adapters/level-message-store', () => ({
     mostRecentMessageTime: jest.fn(async () => 0),
     relayCursor: jest.fn(async () => 0),
     advanceRelayCursor: jest.fn(async (_address: string, next: number) => next),
+    suppressAndDelete: jest.fn(async () => undefined),
+    suppressedRelayReceipts: jest.fn(async () => new Set<string>()),
     getIterator: jest.fn(async function* () {
       /* no persisted messages by default */
     }),
@@ -72,6 +74,8 @@ const RECIPIENT_ADDRESS_LOWERCASE = RECIPIENT_ADDRESS.toLowerCase()
 type MockMessageStore = {
   saveMessage: jest.Mock
   deleteMessage: jest.Mock
+  suppressAndDelete: jest.Mock
+  suppressedRelayReceipts: jest.Mock
   mostRecentMessageTime: jest.Mock
   getIterator: jest.Mock
 }
@@ -94,6 +98,10 @@ describe('stores/chats.ts (ticket #42)', () => {
       (await messageStorePromise) as unknown as MockMessageStore
     mockMessageStore.saveMessage.mockReset().mockResolvedValue(undefined)
     mockMessageStore.deleteMessage.mockReset().mockResolvedValue(undefined)
+    mockMessageStore.suppressAndDelete.mockReset().mockResolvedValue(undefined)
+    mockMessageStore.suppressedRelayReceipts
+      .mockReset()
+      .mockResolvedValue(new Set<string>())
     mockMessageStore.mostRecentMessageTime.mockReset().mockResolvedValue(0)
     mockMessageStore.getIterator.mockClear()
     jest.mocked(desktopNotify).mockClear()
@@ -131,6 +139,69 @@ describe('stores/chats.ts (ticket #42)', () => {
   })
 
   describe('sendMessage', () => {
+    it('reconciles a receipt batch with one history/accounting pass per chat', async () => {
+      const chats = useChatStore()
+      const historySize = 200
+      const batchSize = 50
+      let statusReads = 0
+      const history = Array.from({ length: historySize }, (_, index) => {
+        const message = {
+          outbound: true,
+          payloadDigest: `pending:complexity-${index}`,
+          receivedTime: index,
+          serverTime: index,
+          items: [{ type: 'text' as const, text: `${index}` }],
+          outpoints: [],
+          senderAddress: SENDER_ADDRESS,
+          delivery: { attemptDigest: `delivered-complexity-${index}` },
+        }
+        Object.defineProperty(message, 'status', {
+          enumerable: true,
+          get: () => {
+            statusReads += 1
+            return 'payment-pending'
+          },
+        })
+        chats.messages[message.payloadDigest] = message as never
+        return message as never
+      })
+      chats.chats[SENDER_ADDRESS] = {
+        address: SENDER_ADDRESS,
+        messages: history,
+        totalUnreadMessages: 0,
+        totalUnreadValue: 0,
+        totalValue: 0,
+        lastReceived: historySize,
+        lastRead: 0,
+        stampAmount: 1,
+      }
+      const wrappers = Array.from({ length: batchSize }, (_, index) => ({
+        outbound: false,
+        senderAddress: SENDER_ADDRESS,
+        copartyAddress: SENDER_ADDRESS,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        copartyPubKey: {} as any,
+        index: `delivered-complexity-${index}`,
+        stampValue: 1,
+        message: {
+          outbound: false,
+          status: 'confirmed',
+          items: [{ type: 'text' as const, text: `${index}` }],
+          serverTime: 1000 + index,
+          receivedTime: 1000 + index,
+          outpoints: [],
+          stampValueWei: 1n,
+          senderAddress: SENDER_ADDRESS,
+          destinationAddress: SENDER_ADDRESS,
+        },
+      }))
+
+      await chats.receiveMessages(wrappers, SENDER_ADDRESS)
+
+      expect(chats.chats[SENDER_ADDRESS]?.messages).toHaveLength(historySize)
+      expect(statusReads).toBeLessThanOrEqual(historySize)
+    })
+
     it('keeps one outbound stamped message when a self-send loops back from the relay (#420)', async () => {
       const chats = useChatStore()
       const contacts = useContactStore()
@@ -203,6 +274,7 @@ describe('stores/chats.ts (ticket #42)', () => {
           outbound: true,
           stampValueWei: 7000n,
           serverTime: loopbackTime,
+          destinationAddress: SENDER_ADDRESS,
         }),
       )
       expect(chats.chats[SENDER_ADDRESS]?.totalUnreadMessages).toBe(0)
@@ -216,6 +288,7 @@ describe('stores/chats.ts (ticket #42)', () => {
           message: expect.objectContaining({
             outbound: true,
             stampValueWei: 7000n,
+            destinationAddress: SENDER_ADDRESS,
           }),
         }),
         { advanceCursor: false },
@@ -779,8 +852,18 @@ describe('stores/chats.ts (ticket #42)', () => {
         expect(chats.chats[SENDER_ADDRESS]?.messages).toHaveLength(0)
         expect(chats.messages['pending:discard-race']).toBeUndefined()
         expect(chats.messages['discard-race-digest']).toBeUndefined()
-        expect(mockMessageStore.deleteMessage).toHaveBeenCalledWith(
-          'discard-race-digest',
+        expect(mockMessageStore.suppressAndDelete).toHaveBeenCalledWith(
+          SENDER_ADDRESS,
+          expect.arrayContaining(
+            operation === 'discard'
+              ? ['pending:discard-race', 'discard-race-digest']
+              : ['discard-race-digest'],
+          ),
+          expect.arrayContaining([
+            expect.objectContaining({
+              payloadDigest: 'discard-race-digest',
+            }),
+          ]),
         )
       },
     )
@@ -810,6 +893,24 @@ describe('stores/chats.ts (ticket #42)', () => {
           previousHash: null,
           delivery: { attemptDigest: 'identity-race-digest' },
         })
+        const durableSuppressions = new Set<string>()
+        mockMessageStore.suppressAndDelete.mockImplementation(
+          async (_address, _digests, suppressions) => {
+            for (const suppression of suppressions) {
+              durableSuppressions.add(suppression.payloadDigest)
+            }
+          },
+        )
+        mockMessageStore.suppressedRelayReceipts.mockImplementation(
+          async (_address, receipts) =>
+            new Set(
+              receipts
+                .filter(receipt =>
+                  durableSuppressions.has(receipt.payloadDigest),
+                )
+                .map(receipt => receipt.payloadDigest),
+            ),
+        )
         let releaseIdentity: (() => void) | undefined
         mockOwnAddress.mockReturnValueOnce(
           new Promise(resolve => {
@@ -1271,6 +1372,28 @@ describe('stores/chats.ts (ticket #42)', () => {
       )
     })
 
+    it('returns durable suppressions to cursor acknowledgement without recreating the row', async () => {
+      const chats = useChatStore()
+      const wrapper = makeWrapper({ index: 'discarded-receipt' })
+      mockMessageStore.suppressedRelayReceipts.mockResolvedValueOnce(
+        new Set(['discarded-receipt']),
+      )
+
+      await expect(
+        chats.receiveMessages([wrapper], SENDER_ADDRESS),
+      ).resolves.toEqual({
+        suppressedReceipts: [
+          {
+            payloadDigest: 'discarded-receipt',
+            receivedTime: wrapper.message.receivedTime,
+          },
+        ],
+      })
+      expect(mockMessageStore.saveMessage).not.toHaveBeenCalled()
+      expect(chats.messages['discarded-receipt']).toBeUndefined()
+      expect(desktopNotify).not.toHaveBeenCalled()
+    })
+
     it('rehydrates a new chat with lastRead zero as unread just like live insertion', async () => {
       const chats = useChatStore()
       useContactStore().addContact({
@@ -1302,6 +1425,46 @@ describe('stores/chats.ts (ticket #42)', () => {
       })
       expect(restored.chats[RECIPIENT_ADDRESS]?.totalUnreadMessages).toBe(1)
       expect(restored.chats[RECIPIENT_ADDRESS]?.totalUnreadValue).toBe(5000)
+    })
+
+    it('persists an active-chat receipt as read across navigation and reload', async () => {
+      const chats = useChatStore()
+      useContactStore().addContact({
+        address: RECIPIENT_ADDRESS,
+        contact: {
+          profile: { name: 'Bob', bio: '', avatar: '', pubKey: null },
+        },
+      })
+      chats.activeChatAddr = RECIPIENT_ADDRESS
+      const wrapper = makeWrapper()
+
+      await chats.receiveMessages([wrapper])
+      expect(chats.chats[RECIPIENT_ADDRESS]?.totalUnreadMessages).toBe(0)
+      expect(chats.chats[RECIPIENT_ADDRESS]?.lastRead).toBe(
+        wrapper.message.serverTime,
+      )
+      chats.activeChatAddr = THIRD_ADDRESS
+
+      const persisted = mockMessageStore.saveMessage.mock.calls.at(-1)?.[0]
+      mockMessageStore.getIterator.mockResolvedValueOnce(
+        (async function* () {
+          yield persisted
+        })(),
+      )
+      const restored = await rehydateChat({
+        activeChatAddr: THIRD_ADDRESS,
+        chats: {
+          [RECIPIENT_ADDRESS]: {
+            ...chats.chats[RECIPIENT_ADDRESS]!,
+            messages: [],
+          },
+        },
+        messages: {},
+        lastReceived: chats.lastReceived,
+      })
+
+      expect(restored.chats[RECIPIENT_ADDRESS]?.totalUnreadMessages).toBe(0)
+      expect(restored.chats[RECIPIENT_ADDRESS]?.totalUnreadValue).toBe(0)
     })
 
     it('still falls back to stampPrice(outpoints) when stampValueWei is absent (Lotus-origin)', async () => {
@@ -1499,7 +1662,7 @@ describe('stores/chats.ts (ticket #42)', () => {
     })
   })
 
-  it('deletes a message durably before removing it from the chat', async () => {
+  it('deletes a local confirmed message with an unresolved durable receipt tombstone', async () => {
     const chats = useChatStore()
     chats.chats[RECIPIENT_ADDRESS] = {
       address: RECIPIENT_ADDRESS,
@@ -1528,7 +1691,11 @@ describe('stores/chats.ts (ticket #42)', () => {
       payloadDigest: 'delete-me',
     })
 
-    expect(mockMessageStore.deleteMessage).toHaveBeenCalledWith('delete-me')
+    expect(mockMessageStore.suppressAndDelete).toHaveBeenCalledWith(
+      SENDER_ADDRESS,
+      ['delete-me'],
+      [{ payloadDigest: 'delete-me' }],
+    )
     expect(chats.messages['delete-me']).toBeUndefined()
     expect(chats.chats[RECIPIENT_ADDRESS]?.messages).toHaveLength(0)
     expect(chats.chats[RECIPIENT_ADDRESS]?.totalValue).toBe(0)

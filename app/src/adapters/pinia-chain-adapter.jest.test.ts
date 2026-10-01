@@ -35,6 +35,8 @@ jest.mock('./level-message-store', () => ({
     mostRecentMessageTime: jest.fn(async () => 0),
     relayCursor: jest.fn(async () => 0),
     advanceRelayCursor: jest.fn(async (_address: string, next: number) => next),
+    suppressAndDelete: jest.fn(async () => undefined),
+    suppressedRelayReceipts: jest.fn(async () => new Set<string>()),
     getIterator: async function* () {
       /* no persisted Lotus-era messages in tests */
     },
@@ -201,6 +203,7 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
       expect(mockMessageStore.advanceRelayCursor).toHaveBeenCalledWith(
         RECIPIENT_ADDRESS,
         1_700_000_000_001,
+        [],
       )
       expect(fetchSinceSpy).toHaveBeenNthCalledWith(1, {
         wallet,
@@ -223,6 +226,90 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
       const callsAtStop = fetchSinceSpy.mock.calls.length
       await advance(60)
       expect(fetchSinceSpy.mock.calls.length).toBe(callsAtStop)
+    })
+
+    it('replays a timestamp group when a later sibling profile is unresolved', async () => {
+      const profile = {
+        address: { raw: SENDER_ADDRESS },
+        pubKey: PUB_KEY_BYTES,
+      }
+      jest
+        .spyOn(activeChain, 'fetchProfile')
+        .mockResolvedValueOnce(profile)
+        .mockResolvedValueOnce(undefined)
+        .mockResolvedValue(profile)
+      const rows = [
+        makeRecord({ payloadDigest: 'same-time-a', receivedTime: 700 }),
+        makeRecord({ payloadDigest: 'same-time-b', receivedTime: 700 }),
+      ]
+      const fetchSinceSpy = jest
+        .spyOn(activeChain.directMessages, 'fetchSince')
+        .mockImplementation(async ({ sinceMs }) =>
+          rows.filter(row => row.receivedTime >= sinceMs),
+        )
+
+      const polling = startPolling(20)
+      await advanceUntil(() => fetchSinceSpy.mock.calls.length >= 2)
+      polling.stop()
+
+      expect(fetchSinceSpy).toHaveBeenNthCalledWith(2, {
+        wallet,
+        sinceMs: 700,
+        onTruncated: expect.any(Function),
+      })
+      expect(mockMessageStore.advanceRelayCursor).toHaveBeenLastCalledWith(
+        RECIPIENT_ADDRESS,
+        701,
+        [],
+      )
+      expect(useChatStore().messages['same-time-a']).toBeDefined()
+      expect(useChatStore().messages['same-time-b']).toBeDefined()
+    })
+
+    it('rejects unsafe wire timestamps without granting them cursor authority', async () => {
+      jest.spyOn(activeChain, 'fetchProfile').mockResolvedValue({
+        address: { raw: SENDER_ADDRESS },
+        pubKey: PUB_KEY_BYTES,
+      })
+      jest.spyOn(console, 'error').mockImplementation(() => undefined)
+      const fetchSinceSpy = jest
+        .spyOn(activeChain.directMessages, 'fetchSince')
+        .mockResolvedValueOnce([
+          makeRecord({
+            payloadDigest: 'unsafe-time',
+            receivedTime: '9007199254740992' as never,
+          }),
+          makeRecord({ payloadDigest: 'safe-time', receivedTime: 100 }),
+        ])
+        .mockResolvedValue([])
+
+      const polling = startPolling(20)
+      await advanceUntil(() => fetchSinceSpy.mock.calls.length >= 2)
+      polling.stop()
+
+      expect(useChatStore().messages['unsafe-time']).toBeUndefined()
+      expect(useChatStore().messages['safe-time']).toBeDefined()
+      expect(fetchSinceSpy.mock.calls[1][0].sinceMs).toBe(101)
+    })
+
+    it('does not poll after stop while cursor hydration is deferred', async () => {
+      let releaseCursor: ((cursor: number) => void) | undefined
+      mockMessageStore.relayCursor.mockReturnValueOnce(
+        new Promise(resolve => {
+          releaseCursor = resolve
+        }),
+      )
+      const fetchSinceSpy = jest
+        .spyOn(activeChain.directMessages, 'fetchSince')
+        .mockResolvedValue([])
+
+      const polling = startPolling(20)
+      polling.stop()
+      releaseCursor?.(0)
+      await settle()
+      await advance(40)
+
+      expect(fetchSinceSpy).not.toHaveBeenCalled()
     })
 
     it('uses only the current recipient cursor, never another account or an outbound clock', async () => {
@@ -400,7 +487,7 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
       const receiveMessagesSpy = jest
         .spyOn(chats, 'receiveMessages')
         .mockRejectedValueOnce(new Error('indexeddb write failed'))
-        .mockResolvedValue(undefined)
+        .mockResolvedValue({ suppressedReceipts: [] })
       const consoleErrorSpy = jest
         .spyOn(console, 'error')
         .mockImplementation(() => undefined)
@@ -428,7 +515,7 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
       }
     })
 
-    it('persists later messages without advancing past an unresolved sender profile', async () => {
+    it('persists later messages but replays from an unresolved sender timestamp', async () => {
       const chats = useChatStore()
       const receiveMessagesSpy = jest.spyOn(chats, 'receiveMessages')
       const consoleErrorSpy = jest
@@ -459,7 +546,7 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
         )
         expect(fetchSinceSpy).toHaveBeenNthCalledWith(2, {
           wallet,
-          sinceMs: 0,
+          sinceMs: 100,
           onTruncated: expect.any(Function),
         })
       } finally {

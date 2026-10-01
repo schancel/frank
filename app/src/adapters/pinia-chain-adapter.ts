@@ -41,6 +41,10 @@ import {
   MonadMailboxUnavailableError,
 } from '@frank/cashweb/relay/monad-mailbox-client'
 import type { ReceivedMessageWrapper } from '@frank/cashweb/types/user-interface'
+import {
+  isSafeRelayTimestamp,
+  type RelayReceiptIdentity,
+} from '@frank/cashweb/relay/storage/storage'
 import { useChatStore, walletOwnsMessage } from '../stores/chats'
 import { useMailboxStatusStore } from '../stores/mailbox-status'
 
@@ -58,6 +62,13 @@ export const MAX_MAILBOX_UNAVAILABLE_BACKOFF_MS = 60_000
 export async function toReceivedMessageWrapper(
   record: DirectMessageReceived,
 ): Promise<ReceivedMessageWrapper | undefined> {
+  const receivedTime: unknown = record.receivedTime
+  if (!isSafeRelayTimestamp(receivedTime)) {
+    console.error(
+      `direct-message polling: unsafe relay timestamp, skipping message ${record.payloadDigest}`,
+    )
+    return undefined
+  }
   const senderProfile = await activeChain.fetchProfile(record.senderAddress)
   if (senderProfile === undefined) {
     console.error(
@@ -157,27 +168,61 @@ export function startDirectMessagePolling({
       }
 
       const wrappers: ReceivedMessageWrapper[] = []
-      let nextSinceMs = sinceMs
-      let cursorBlocked = false
+      const timestampGroups = new Map<
+        number,
+        { records: number; durableCandidates: number }
+      >()
       for (const record of received) {
+        const receivedTime: unknown = record.receivedTime
+        if (!isSafeRelayTimestamp(receivedTime)) {
+          console.error(
+            `direct-message polling: unsafe relay timestamp, skipping message ${record.payloadDigest}`,
+          )
+          continue
+        }
+        const group = timestampGroups.get(receivedTime) ?? {
+          records: 0,
+          durableCandidates: 0,
+        }
+        group.records += 1
+        timestampGroups.set(receivedTime, group)
         const wrapper = await toReceivedMessageWrapper(record)
         if (stopped) return
         if (wrapper !== undefined) {
           wrappers.push(wrapper)
-          // The relay's `since` bound is inclusive. Only advance through the contiguous prefix
-          // that can become durable; an unresolved earlier sender profile must remain retryable.
-          if (!cursorBlocked) {
-            nextSinceMs = Math.max(nextSinceMs, record.receivedTime + 1)
-          }
-        } else {
-          cursorBlocked = true
+          group.durableCandidates += 1
         }
       }
 
+      // There is no stable per-row tie-break in the relay API. Advance past a timestamp only
+      // when its entire group can become durable; otherwise stop at the inclusive timestamp so
+      // successful siblings dedupe while the unresolved row is fetched again.
+      let nextSinceMs = sinceMs
+      for (const [receivedTime, group] of [...timestampGroups].sort(
+        ([left], [right]) => left - right,
+      )) {
+        if (group.durableCandidates !== group.records) {
+          nextSinceMs = Math.max(nextSinceMs, receivedTime)
+          break
+        }
+        nextSinceMs = Math.max(nextSinceMs, receivedTime + 1)
+      }
+
       if (stopped) return
+      let suppressedReceipts: RelayReceiptIdentity[] = []
       if (wrappers.length > 0) {
-        await chats.receiveMessages(wrappers, recipientAddress)
-        sinceMs = await chats.advanceRelayCursor(recipientAddress, nextSinceMs)
+        const receiveResult = await chats.receiveMessages(
+          wrappers,
+          recipientAddress,
+        )
+        suppressedReceipts = receiveResult.suppressedReceipts
+      }
+      if (nextSinceMs > sinceMs || suppressedReceipts.length > 0) {
+        sinceMs = await chats.advanceRelayCursor(
+          recipientAddress,
+          nextSinceMs,
+          suppressedReceipts,
+        )
       }
     } catch (err) {
       // stop() cannot cancel an in-flight request: a poll that fails after stop() must not put a

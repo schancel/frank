@@ -37,7 +37,7 @@ function wrapper(index = 'payload-digest'): MessageWrapper {
   }
 }
 
-describe('LevelMessageStore schema v2', () => {
+describe('LevelMessageStore schema v3', () => {
   it('round-trips financial integers beyond Number.MAX_SAFE_INTEGER exactly', () => {
     const encoded = serializeMessageWrapper(wrapper())
 
@@ -104,6 +104,97 @@ describe('LevelMessageStore schema v2', () => {
       await store.advanceRelayCursor('0xBb', 200)
       expect(await store.relayCursor('0xAA')).toBe(500)
       expect(await store.relayCursor('0xbb')).toBe(200)
+    } finally {
+      await store.Close()
+      await rm(location, { recursive: true, force: true })
+    }
+  })
+
+  it('rejects unsafe cursor writes and conservatively ignores a poisoned stored cursor', async () => {
+    const location = await mkdtemp(join(tmpdir(), 'frank-message-cursor-'))
+    const store = new LevelMessageStore(location)
+    try {
+      await store.Open()
+      await expect(
+        store.advanceRelayCursor('0xAa', Number.MAX_SAFE_INTEGER),
+      ).rejects.toThrow('Unsafe relay cursor timestamp')
+      await expect(store.advanceRelayCursor('0xAa', -1)).rejects.toThrow(
+        'Unsafe relay cursor timestamp',
+      )
+      const metadataDb = Reflect.get(store, 'metadataDb') as {
+        put(key: string, value: string): Promise<void>
+      }
+      await metadataDb.put(
+        'relayCursor:0xaa',
+        JSON.stringify('9007199254740992'),
+      )
+      expect(await store.relayCursor('0xAA')).toBe(0)
+    } finally {
+      await store.Close()
+      await rm(location, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps delayed-receipt suppression durable until cursor acknowledgement safely collects it', async () => {
+    const location = await mkdtemp(join(tmpdir(), 'frank-suppression-'))
+    let store = new LevelMessageStore(location)
+    try {
+      await store.Open()
+      await store.saveMessage(wrapper('delayed-receipt'), {
+        advanceCursor: false,
+      })
+      await store.suppressAndDelete(
+        '0xAa',
+        ['delayed-receipt'],
+        [{ payloadDigest: 'delayed-receipt' }],
+      )
+      expect(await store.getMessage('delayed-receipt')).toBeUndefined()
+      await store.Close()
+
+      store = new LevelMessageStore(location)
+      await store.Open()
+      const receipt = {
+        payloadDigest: 'delayed-receipt',
+        receivedTime: 456,
+      }
+      expect(await store.suppressedRelayReceipts('0xaa', [receipt])).toEqual(
+        new Set(['delayed-receipt']),
+      )
+      await expect(
+        store.advanceRelayCursor('0xaa', Number.MAX_SAFE_INTEGER, [receipt]),
+      ).rejects.toThrow('Unsafe relay cursor timestamp')
+      await store.Close()
+
+      store = new LevelMessageStore(location)
+      await store.Open()
+      expect(await store.suppressedRelayReceipts('0xAA', [receipt])).toEqual(
+        new Set(['delayed-receipt']),
+      )
+      await store.advanceRelayCursor('0xAA', 457, [receipt])
+      expect(await store.suppressedRelayReceipts('0xaa', [receipt])).toEqual(
+        new Set(),
+      )
+    } finally {
+      await store.Close()
+      await rm(location, { recursive: true, force: true })
+    }
+  })
+
+  it('hides suppression metadata from message iteration', async () => {
+    const location = await mkdtemp(join(tmpdir(), 'frank-suppression-'))
+    const store = new LevelMessageStore(location)
+    try {
+      await store.Open()
+      await store.suppressAndDelete(
+        '0xAa',
+        [],
+        [{ payloadDigest: 'not-a-message' }],
+      )
+      const persisted: MessageWrapper[] = []
+      for await (const message of await store.getIterator()) {
+        persisted.push(message)
+      }
+      expect(persisted).toEqual([])
     } finally {
       await store.Close()
       await rm(location, { recursive: true, force: true })

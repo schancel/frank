@@ -1,5 +1,5 @@
 <template>
-  <q-card class="q-pa-none q-ma-sm max-w-720" flat bordered>
+  <q-card class="q-pa-none q-ma-sm" flat bordered>
     <q-card-section class="row" horizontal>
       <q-card-section class="col-shrink q-pa-none q-ma-none bg-on-secondary">
         <q-card-section class="q-pa-none q-ma-none text-center">
@@ -275,10 +275,6 @@ h4 {
   font-size: 120%;
   font-weight: bold;
   line-height: inherit;
-}
-
-.max-w-720 {
-  width: min(100% - 32px, 720px);
 }
 
 .post-title {

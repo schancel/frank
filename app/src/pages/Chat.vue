@@ -2,17 +2,17 @@
   <div>
     <q-page-container>
       <q-page class="chat-page-background column no-wrap">
-        <!-- Above the list in normal flow: the banners never cover messages or each other. -->
-        <chat-banner-stack :stamp-status="stampPreparationStatus" />
         <div class="col relative-position">
           <q-scroll-area
             ref="chatScroll"
             @scroll="scrollHandler"
             class="q-px-none absolute full-width full-height column"
           >
-            <!-- q-py-md: breathing room above the first bubble (it used to touch the header) and
-            below the last one; inside the scroll content, so scroll-to-bottom still reaches it. -->
-            <div class="chat-message-list row q-px-lg q-py-md">
+            <!-- The fixed overlay clearance keeps the oldest bubble readable beneath both banners;
+            q-py-md still supplies bottom breathing room inside the scrollable content. -->
+            <div
+              class="chat-message-list chat-message-list--overlay-clearance row q-px-lg q-py-md"
+            >
               <template
                 v-for="(msg, index) in chunkedMessages"
                 :key="msg.payloadDigest"
@@ -34,6 +34,10 @@
               </template>
             </div>
           </q-scroll-area>
+          <!-- Overlaying the bounded viewport keeps banner changes from resizing the scroll box. -->
+          <div class="chat-banner-overlay absolute-top full-width">
+            <chat-banner-stack :stamp-status="stampPreparationStatus" />
+          </div>
         </div>
         <q-page-sticky
           position="bottom-right"
@@ -586,5 +590,13 @@ export default defineComponent({
 }
 :deep() .message-color-sent {
   background-color: var(--q-message-color-sent);
+}
+.chat-banner-overlay {
+  z-index: 1;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.18);
+}
+.chat-message-list--overlay-clearance {
+  // Leave the oldest message readable beneath the two-banner stack at scroll-top.
+  padding-top: 4rem;
 }
 </style>

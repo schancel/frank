@@ -1,9 +1,9 @@
 /** @jest-environment jsdom */
 // Mounted Chat.vue LAYOUT structure (#390, and the structure half of #302). jsdom cannot measure
-// layout (the real-pixel check is test/browser/chat-layout.mjs), but the classes that produce it
-// are asserted here: the banner stack sits above the list in the same flex column, the list is
-// wrapped in the `col relative-position` box that bounds the scroll area, and the message list
-// carries vertical padding so the first bubble never touches the header.
+// layout, but the topology and positioning classes that produce it are asserted here: the banner
+// stack overlays the bounded chat viewport instead of consuming flex height, the scroll box keeps
+// its identity when a banner toggles, and the message list carries vertical padding so the first
+// bubble never touches the header.
 import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import * as quasar from 'quasar'
@@ -67,8 +67,9 @@ stubs.QScrollArea = defineComponent({
 })
 const Blank = defineComponent({ setup: () => () => h('div') })
 const BannerStackStub = defineComponent({
-  props: ['stampStatus'],
-  setup: () => () => h('div', { 'data-testid': 'chat-banner-stack' }),
+  props: { stampStatus: { type: String, default: null } },
+  setup: props => () =>
+    props.stampStatus ? h('div', { 'data-testid': 'chat-banner-stack' }) : null,
 })
 
 async function mountChat() {
@@ -102,7 +103,11 @@ describe('Chat.vue layout structure (mounted)', () => {
     const list = (await mountChat()).find('.chat-message-list')
     expect(list.exists()).toBe(true)
     expect(list.classes()).toEqual(
-      expect.arrayContaining(['q-py-md', 'q-px-lg']),
+      expect.arrayContaining([
+        'chat-message-list--overlay-clearance',
+        'q-py-md',
+        'q-px-lg',
+      ]),
     )
   })
 
@@ -118,22 +123,45 @@ describe('Chat.vue layout structure (mounted)', () => {
     expect(scroll.find('.chat-message-list').exists()).toBe(true)
   })
 
-  it('stacks the banners ABOVE the list, as siblings in one no-wrap column', async () => {
+  it('places the banner stack in an absolute overlay inside the bounded viewport', async () => {
     const wrapper = await mountChat()
-    const page = wrapper.find('.chat-page-background')
-    expect(page.classes()).toEqual(
-      expect.arrayContaining(['column', 'no-wrap']),
+    ;(
+      wrapper.vm as unknown as { stampPreparationStatus: string | null }
+    ).stampPreparationStatus = 'checking'
+    await wrapper.vm.$nextTick()
+
+    const viewport = wrapper.get('.col.relative-position')
+    const scroll = viewport.get('.q-scroll-area-stub')
+    const overlay = viewport.get('.chat-banner-overlay')
+    expect(overlay.classes()).toEqual(
+      expect.arrayContaining(['absolute-top', 'full-width']),
     )
-    const kids = Array.from(page.element.children)
-    const banner = kids.findIndex(
-      el => el.getAttribute('data-testid') === 'chat-banner-stack',
+    expect(overlay.get('[data-testid="chat-banner-stack"]').exists()).toBe(true)
+    expect(scroll.element.parentElement).toBe(viewport.element)
+    expect(overlay.element.parentElement).toBe(viewport.element)
+  })
+
+  it('keeps the same scroll box dimensions and bottom state when a banner toggles', async () => {
+    const wrapper = await mountChat()
+    const scroll = wrapper.get('.q-scroll-area-stub').element as HTMLElement
+    Object.defineProperties(scroll, {
+      clientWidth: { configurable: true, value: 720 },
+      clientHeight: { configurable: true, value: 480 },
+    })
+    const dimensions = [scroll.clientWidth, scroll.clientHeight]
+    const bottom = (wrapper.vm as unknown as { bottom: boolean }).bottom
+
+    ;(
+      wrapper.vm as unknown as { stampPreparationStatus: string | null }
+    ).stampPreparationStatus = 'checking'
+    await wrapper.vm.$nextTick()
+
+    const scrollAfter = wrapper.get('.q-scroll-area-stub')
+      .element as HTMLElement
+    expect(scrollAfter).toBe(scroll)
+    expect([scrollAfter.clientWidth, scrollAfter.clientHeight]).toEqual(
+      dimensions,
     )
-    const listBox = kids.findIndex(
-      el =>
-        el.classList.contains('col') &&
-        el.classList.contains('relative-position'),
-    )
-    expect(banner).toBeGreaterThanOrEqual(0)
-    expect(listBox).toBeGreaterThan(banner)
+    expect((wrapper.vm as unknown as { bottom: boolean }).bottom).toBe(bottom)
   })
 })

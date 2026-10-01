@@ -25,6 +25,7 @@ import {
 import {
   SIGHASH_ALL,
   SIGHASH_LOTUS,
+  parseTransaction,
   sighash,
   type SpentOutput,
   type Transaction,
@@ -468,6 +469,38 @@ describe('per-chain script eras', () => {
     expect(codes(spend(2, (1 << 22) | 1))).toBe('script-locktime')
     expect(codes(spend(1, 1))).toBe('script-locktime')
     expectStack(spend(2, (1 << 22) | 5, scriptOf('03010040b2')), ['010040'])
+    // Wire version is uint32. int32 -1 is bytes ffffffff, which is not < 2.
+    // bitcoin/bitcoin interpreter.cpp CheckSequence (BIP112, 93c85d4),
+    // bitcoin-cash-node TransactionSignatureChecker::CheckSequence,
+    // Bitcoin-ABC GenericTransactionSignatureChecker::CheckSequence, and
+    // lotusd src/script/interpreter.cpp CheckSequence all cast nVersion
+    // with static_cast<uint32_t> before comparing to 2. A signed `< 2`
+    // rejects that version even when sequence 1 satisfies operand 1.
+    expectStack(spend(-1, 1), ['01'])
+    expectStack(spend(-0x80000000, 1), ['01'])
+    const highVersion = parseTransaction(
+      fromHex(
+        'ffffffff01' +
+          '00'.repeat(32) +
+          '00000000000100000001' +
+          '01000000000000000151' +
+          '00000000',
+      ),
+      XPI_MAINNET,
+    )
+    if (!highVersion.ok) throw new Error(highVersion.error.code)
+    expect(highVersion.value.version).toBe(-1)
+    expect(highVersion.value.inputs[0]?.sequence).toBe(1)
+    expectStack(
+      evaluateScript(
+        height,
+        ctx(XPI_MAINNET, {
+          transaction: highVersion.value,
+          inputIndex: 0,
+        }),
+      ),
+      ['01'],
+    )
   })
 
   test('CLTV compares the transaction locktime and rejects a final sequence', () => {

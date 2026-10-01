@@ -1251,7 +1251,13 @@ function sequenceTime(machine: Machine, opcode: number): ScriptFailure | null {
   if (tx === null || 'code' in tx) {
     return tx === null ? failure('script-spent', opcode) : tx
   }
-  if (tx.version < 2) return failure('script-locktime', opcode)
+  // BIP112 compares the serialized version as uint32. int32 -1 is wire
+  // 0xffffffff and is not below 2 (Core, BCHN, ABC, and lotusd).
+  const versionWire =
+    Number.isInteger(tx.version) && tx.version >= -0x80000000 && tx.version < 0
+      ? tx.version + 0x100000000
+      : tx.version
+  if (versionWire < 2) return failure('script-locktime', opcode)
   const input = tx.inputs[machine.context.inputIndex ?? -1]
   if (input === undefined) return failure('script-index', opcode)
   const sequence = BigInt(input.sequence >>> 0)

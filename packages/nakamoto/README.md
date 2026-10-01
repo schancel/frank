@@ -6,12 +6,15 @@ unpublished. Browser-safe: the public modules do not use Node built-ins.
 
 ## Ownership
 
-This package owns integers, script numbers, script evaluation, base58 and
-cashaddr codecs, transactions, blocks, BIP32 HD nodes, secp256k1 keys, ECDSA,
-Schnorr, and ECDH. It signs and hashes byte arrays. It does not read or write
-CashWeb CBOR. `@frank/codec` and `frank-cbor` marshal frames and pass digest
-bytes here. Encryption suites are `@frank/crypto-box`, which also takes byte
-arrays and does not parse CBOR.
+This package owns the chain objects: HD private and public nodes, keys,
+transactions, scripts, addresses, integers, and script numbers, plus script
+evaluation, base58, cashaddr, ECDSA, Schnorr, and ECDH. Callers build and
+pass those objects. They do not drop down to raw scalars for ordinary work.
+
+It does not read or write CashWeb CBOR. `@frank/codec` and `frank-cbor`
+marshal a frame and pass the digest bytes into a nakamoto sign or hash call.
+The key that signs is still a nakamoto key object. Encryption suites are
+`@frank/crypto-box`. That package seals byte arrays and does not parse CBOR.
 
 XPI address strings are not pinned (issue #242). `encodeAddress` and
 `decodeAddress` for the XPI family return `address-format-not-pinned` and do
@@ -26,10 +29,10 @@ entry (`./btc`, `./bch`, `./xec`, `./xpi`). Feature entries include `./keys`,
 
 ## Callers
 
-`@frank/cashweb` and `@frank/wallet` call the typed helpers for hashes, HD
-derivation, and signatures. A caller passes bytes and a chain id. It does not
-import `bitcore-lib-xpi` from this package. Attribution for the bitcore-derived
-parts is `ATTRIBUTION.md`.
+`@frank/cashweb` and `@frank/wallet` derive HD nodes, build keys, and sign
+with those objects. A digest that came from a CashWeb frame is a byte string
+argument to that call. Callers do not import `bitcore-lib-xpi` from this
+package. Attribution for the bitcore-derived parts is `ATTRIBUTION.md`.
 
 ## Tests
 

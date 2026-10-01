@@ -25,9 +25,10 @@ Version 1 allocates no production encryption suite. Suite 65535 is reserved for
 opaque proof-vector ciphertext and must not be emitted by a production writer.
 `@frank/crypto-box` registry ids `0xFE01`, `0xFE02`, `0xFE03`, and `0xFE04` are
 not version-1 encryption-suite allocations (decision 356). A crypto-box envelope
-is not a frame. This crate marshals and unmarshals frames, then hands digest
-and ciphertext byte arrays to nakamoto and crypto-box. Those libraries do not
-parse CBOR.
+is not a frame. This crate marshals and unmarshals frames. A digest or
+ciphertext is a byte array passed into nakamoto or crypto-box. Nakamoto still
+owns the HD nodes, keys, and transactions that do the signing. Neither library
+parses CBOR.
 
 ## Tests
 

@@ -664,6 +664,77 @@ describe('blackjack payout is durable and exactly-once (#215)', () => {
       expect(state.getSince()).toBe(1501)
     })
 
+    // The welcome greeter signs its stamp funding from the payer account (main's greeting flow):
+    // while a signed payout holds the nonce lane, a greeting send could otherwise sign a transfer
+    // at the payout's reserved nonce and replace it. The greeter sits behind the same
+    // hasSignedUnconfirmedPayout() gate as message handling -- it must not even run, let alone sign.
+    it('a greeting is never signed while a payout holds the lane (submitting)', async () => {
+      await startWinningGame()
+      chain.failSubmit = { error: new Error('x'), reachesMempool: false }
+      await stand() // signed bytes journaled, broadcast failed: `submitting`
+      t = 1000
+      const signs: string[] = []
+      stopAfter(2)
+      await expect(
+        loop({
+          greet: async () => {
+            // Mimics the greeter's sendWelcome: its stamp funding signs from the payer account.
+            const signed = await chain.buildAndSignTransfer(PLAYER_CANON, 1n)
+            signs.push(signed.txHash)
+            return 1
+          },
+        } as never),
+      ).rejects.toThrow('stop')
+      expect(signs).toEqual([]) // the lane was held: the greeter never ran, never signed
+      expect(chain.builds).toBe(1) // the payout's own signing is the only build that happened
+    })
+
+    it('a greeting is never signed while a payout holds the lane (submitted)', async () => {
+      await startWinningGame()
+      await stand() // accepted into the mempool, no receipt yet: `submitted`
+      t = 1000
+      const signs: string[] = []
+      stopAfter(2)
+      await expect(
+        loop({
+          greet: async () => {
+            signs.push('greet')
+            return 1
+          },
+        } as never),
+      ).rejects.toThrow('stop')
+      expect(signs).toEqual([])
+      expect(chain.builds).toBe(1)
+    })
+
+    it('the greeter runs again once the lane clears (and counts as activity)', async () => {
+      await startWinningGame()
+      await stand()
+      t = 1000
+      const greets: number[] = []
+      let mined = false
+      let greeted = false
+      onSleep = () => {
+        if (t >= 1000 + 5000 && !mined) {
+          mined = true
+          chain.mine()
+        }
+      }
+      const r = await loop({
+        drainTimeoutMs: 300,
+        greet: async () => {
+          greets.push(t)
+          const first = !greeted
+          greeted = true
+          return first ? 1 : 0 // one greeting, then nothing (like the capped real greeter)
+        },
+      })
+      expect(mined).toBe(true) // the payout confirmed
+      expect(greets.length).toBeGreaterThan(0) // ... and the greeter ran afterwards
+      expect(greets.every((g) => g >= 6000)).toBe(true) // never before the receipt cleared
+      expect(r).toMatchObject({ exitCode: 0, unsettled: [] })
+    })
+
     it('a fresh database starts at "now" and persists it; the cursor never passes unhandled messages', async () => {
       expect(state.getSince()).toBeUndefined()
       relay = [

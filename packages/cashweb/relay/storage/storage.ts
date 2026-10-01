@@ -71,6 +71,7 @@ export interface MessageStore {
     recipientAddress: string,
     nextReceivedTime: number,
     suppressedReceipts?: RelayReceiptIdentity[],
+    durableReceipts?: MessageWrapper[],
   ): Promise<number>
   suppressAndDelete(
     recipientAddress: string,

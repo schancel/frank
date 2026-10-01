@@ -729,7 +729,7 @@ describe('createMonadChain: directMessages.unattributedAttempts (#269)', () => {
 })
 
 describe('createMonadChain: directMessages.fetchSince', () => {
-  it('reports a raw relay timestamp when a transiently missing profile omits its row', async () => {
+  it('reports a terminal skip timestamp when the sender profile is authoritatively absent', async () => {
     const chain = createMonadChain(TEST_CONFIG)
     const alice = MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX)
     const bob = MonadIdentity.fromPrivateKeyHex(BOB_PRIVATE_KEY_HEX)
@@ -745,29 +745,40 @@ describe('createMonadChain: directMessages.fetchSince', () => {
       plaintext: serializeMessageItems([{ type: 'text', text: 'retry me' }]),
       networkTag: TEST_CONFIG.networkTag,
     })
-    mockedFetchMonadMessagesSince.mockResolvedValueOnce([
-      {
-        message: {
-          stampPayments: [],
-          encryptedPayload,
-          payloadHash: getBytes(`0x${'aa'.repeat(32)}`),
-        },
-        timestamp: 700,
-        networkTag: new Uint8Array(0),
+    const stored: StoredMonadMessageProto = {
+      message: {
+        stampPayments: [],
+        encryptedPayload,
+        payloadHash: getBytes(`0x${'aa'.repeat(32)}`),
       },
-    ])
+      timestamp: 700,
+      networkTag: new Uint8Array(0),
+    }
+    mockedFetchMonadMessagesSince.mockResolvedValueOnce([stored])
     mockedFetchMonadProfile.mockResolvedValueOnce(undefined)
-    const onIncompleteTimestamp = jest.fn()
+    const onSkippedTimestamp = jest.fn()
 
     await expect(
       chain.directMessages.fetchSince({
         wallet,
         sinceMs: 0,
-        onIncompleteTimestamp,
+        onSkippedTimestamp,
       }),
     ).resolves.toEqual([])
-    expect(onIncompleteTimestamp).toHaveBeenCalledTimes(1)
-    expect(onIncompleteTimestamp).toHaveBeenCalledWith(700)
+    expect(onSkippedTimestamp).toHaveBeenCalledTimes(1)
+    expect(onSkippedTimestamp).toHaveBeenCalledWith(700)
+
+    mockedFetchMonadMessagesSince.mockResolvedValueOnce([stored])
+    mockedFetchMonadProfile.mockRejectedValueOnce(new Error('profile timeout'))
+    onSkippedTimestamp.mockClear()
+    await expect(
+      chain.directMessages.fetchSince({
+        wallet,
+        sinceMs: 0,
+        onSkippedTimestamp,
+      }),
+    ).rejects.toThrow('profile timeout')
+    expect(onSkippedTimestamp).not.toHaveBeenCalled()
   })
 
   it('rejects authenticated malformed plaintext per record and returns the following message', async () => {

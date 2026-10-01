@@ -126,6 +126,17 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
       expect(wrapper).toBeUndefined()
       expect(consoleErrorSpy).toHaveBeenCalled()
     })
+
+    it('uses the pubkey that MonadChain already resolved without a second profile lookup', async () => {
+      const fetchProfile = jest.spyOn(activeChain, 'fetchProfile')
+
+      const wrapper = await toReceivedMessageWrapper(
+        makeRecord({ senderPublicKey: PUB_KEY_BYTES }),
+      )
+
+      expect(wrapper).toBeDefined()
+      expect(fetchProfile).not.toHaveBeenCalled()
+    })
   })
 
   describe('startDirectMessagePolling', () => {
@@ -204,12 +215,13 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
         RECIPIENT_ADDRESS,
         1_700_000_000_001,
         [],
+        [expect.objectContaining({ index: 'digest-1' })],
       )
       expect(fetchSinceSpy).toHaveBeenNthCalledWith(1, {
         wallet,
         sinceMs: 0,
         onTruncated: expect.any(Function),
-        onIncompleteTimestamp: expect.any(Function),
+        onSkippedTimestamp: expect.any(Function),
       })
 
       // The relay bound is inclusive, so advance one millisecond past the received record.
@@ -219,7 +231,7 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
         wallet,
         sinceMs: 1_700_000_000_001,
         onTruncated: expect.any(Function),
-        onIncompleteTimestamp: expect.any(Function),
+        onSkippedTimestamp: expect.any(Function),
       })
       // No new messages on any subsequent poll.
       expect(receiveMessagesSpy).toHaveBeenCalledTimes(1)
@@ -258,12 +270,16 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
         wallet,
         sinceMs: 700,
         onTruncated: expect.any(Function),
-        onIncompleteTimestamp: expect.any(Function),
+        onSkippedTimestamp: expect.any(Function),
       })
       expect(mockMessageStore.advanceRelayCursor).toHaveBeenLastCalledWith(
         RECIPIENT_ADDRESS,
         701,
         [],
+        expect.arrayContaining([
+          expect.objectContaining({ index: 'same-time-a' }),
+          expect.objectContaining({ index: 'same-time-b' }),
+        ]),
       )
       expect(useChatStore().messages['same-time-a']).toBeDefined()
       expect(useChatStore().messages['same-time-b']).toBeDefined()
@@ -425,6 +441,39 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
       expect(fetchSinceSpy).toHaveBeenCalledTimes(1)
     })
 
+    it('stop after receive queued prevents the old session from advancing its cursor', async () => {
+      const chats = useChatStore()
+      jest.spyOn(activeChain, 'fetchProfile').mockResolvedValue({
+        address: { raw: SENDER_ADDRESS },
+        pubKey: PUB_KEY_BYTES,
+      })
+      jest
+        .spyOn(activeChain.directMessages, 'fetchSince')
+        .mockResolvedValueOnce([makeRecord({ payloadDigest: 'old-session' })])
+        .mockResolvedValue([])
+      let receiveStarted: (() => void) | undefined
+      const started = new Promise<void>(resolve => {
+        receiveStarted = resolve
+      })
+      let releaseReceive: (() => void) | undefined
+      const gate = new Promise<void>(resolve => {
+        releaseReceive = resolve
+      })
+      jest.spyOn(chats, 'receiveMessages').mockImplementationOnce(async () => {
+        receiveStarted?.()
+        await gate
+        return { suppressedReceipts: [] }
+      })
+
+      const polling = startPolling(20)
+      await started
+      polling.stop()
+      releaseReceive?.()
+      await settle()
+
+      expect(mockMessageStore.advanceRelayCursor).not.toHaveBeenCalled()
+    })
+
     it('advances beyond a valid record returned after an earlier poison record was filtered', async () => {
       const chats = useChatStore()
       const receiveMessagesSpy = jest.spyOn(chats, 'receiveMessages')
@@ -450,12 +499,13 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
         expect(receiveMessagesSpy).toHaveBeenCalledWith(
           [expect.objectContaining({ index: 'valid-after-poison' })],
           RECIPIENT_ADDRESS,
+          expect.any(Function),
         )
         expect(fetchSinceSpy).toHaveBeenNthCalledWith(2, {
           wallet,
           sinceMs: 201,
           onTruncated: expect.any(Function),
-          onIncompleteTimestamp: expect.any(Function),
+          onSkippedTimestamp: expect.any(Function),
         })
       } finally {
         polling.stop()
@@ -513,14 +563,14 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
           wallet,
           sinceMs: 0,
           onTruncated: expect.any(Function),
-          onIncompleteTimestamp: expect.any(Function),
+          onSkippedTimestamp: expect.any(Function),
         })
       } finally {
         polling.stop()
       }
     })
 
-    it('replays a same-timestamp sibling omitted by MonadChain profile lookup', async () => {
+    it('quarantines a terminal missing-profile row without skipping its valid same-time sibling', async () => {
       const chats = useChatStore()
       const receiveMessagesSpy = jest.spyOn(chats, 'receiveMessages')
       const consoleErrorSpy = jest
@@ -532,10 +582,10 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
       })
       const fetchSinceSpy = jest
         .spyOn(activeChain.directMessages, 'fetchSince')
-        .mockImplementationOnce(async ({ onIncompleteTimestamp }) => {
+        .mockImplementationOnce(async ({ onSkippedTimestamp }) => {
           // This is the MonadChain -> adapter seam: MonadChain cannot return the raw row
           // without its sender profile, so it reports only the omitted row's relay timestamp.
-          onIncompleteTimestamp?.(100)
+          onSkippedTimestamp?.(100)
           return [makeRecord({ payloadDigest: 'same-time', receivedTime: 100 })]
         })
         .mockResolvedValue([])
@@ -547,13 +597,51 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
         expect(receiveMessagesSpy).toHaveBeenCalledWith(
           [expect.objectContaining({ index: 'same-time' })],
           RECIPIENT_ADDRESS,
+          expect.any(Function),
         )
         expect(fetchSinceSpy).toHaveBeenNthCalledWith(2, {
           wallet,
-          sinceMs: 100,
+          sinceMs: 101,
           onTruncated: expect.any(Function),
-          onIncompleteTimestamp: expect.any(Function),
+          onSkippedTimestamp: expect.any(Function),
         })
+      } finally {
+        polling.stop()
+      }
+    })
+
+    it('makes bounded progress past more terminal profile misses than one mailbox scan budget', async () => {
+      jest.spyOn(activeChain, 'fetchProfile').mockResolvedValue({
+        address: { raw: SENDER_ADDRESS },
+        pubKey: PUB_KEY_BYTES,
+      })
+      let scan = 0
+      const fetchSinceSpy = jest
+        .spyOn(activeChain.directMessages, 'fetchSince')
+        .mockImplementation(async ({ onSkippedTimestamp }) => {
+          scan += 1
+          if (scan === 1) {
+            // The feed scans at most 64 pages x 100 rows. Every terminal row in that bounded
+            // prefix must grant progress or newer valid mail can starve forever.
+            for (let timestamp = 1; timestamp <= 6400; timestamp++) {
+              onSkippedTimestamp?.(timestamp)
+            }
+            return []
+          }
+          return scan === 2
+            ? [makeRecord({ payloadDigest: 'after-terminal-prefix', receivedTime: 6401 })]
+            : []
+        })
+
+      const polling = startPolling(20)
+      try {
+        await advanceUntil(
+          () =>
+            fetchSinceSpy.mock.calls.length >= 3 &&
+            useChatStore().messages['after-terminal-prefix'] !== undefined,
+        )
+        expect(fetchSinceSpy.mock.calls[1]?.[0].sinceMs).toBe(6401)
+        expect(fetchSinceSpy.mock.calls[2]?.[0].sinceMs).toBe(6402)
       } finally {
         polling.stop()
       }

@@ -702,10 +702,10 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
           address: toChainAddress(envelope.from),
         })
         if (senderProfile === undefined) {
-          // Unlike authenticated poison below, a missing profile is transient. Surface the raw
-          // relay timestamp so the polling adapter cannot advance past this omitted row (or a
-          // successfully decoded sibling with the same timestamp).
-          params.onIncompleteTimestamp?.(record.timestamp)
+          // `fetchMonadProfile` returns undefined only for an authoritative 404. Network and
+          // decode failures throw, aborting the scan without cursor authority. A paid hostile or
+          // permanently unregistered sender must not pin this recipient's bounded mailbox scan.
+          params.onSkippedTimestamp?.(record.timestamp)
           continue
         }
 
@@ -744,6 +744,7 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
 
         received.push({
           senderAddress: toChainAddress(envelope.from),
+          senderPublicKey: new Uint8Array(senderProfile.pubKey),
           recipientAddress: toChainAddress(envelope.to),
           items,
           payloadDigest: payloadHashHex,

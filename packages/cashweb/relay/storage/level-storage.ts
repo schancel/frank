@@ -19,6 +19,7 @@ const metadataKeys = {
 
 const suppressionIndexPrefix = 'relaySuppressionIndex:'
 const relayCursorPrefix = 'relayCursor:'
+const relayReceiptPrefix = 'relayReceipt:'
 
 function relayCursorKey(recipientAddress: string): string {
   return `${relayCursorPrefix}${recipientAddress.toLowerCase()}`
@@ -26,6 +27,40 @@ function relayCursorKey(recipientAddress: string): string {
 
 function suppressionIndexKey(recipientAddress: string): string {
   return `${suppressionIndexPrefix}${recipientAddress.toLowerCase()}`
+}
+
+function relayReceiptKey(
+  recipientAddress: string,
+  payloadDigest: string,
+): string {
+  return `${relayReceiptPrefix}${recipientAddress.toLowerCase()}:${payloadDigest}`
+}
+
+async function entriesWithPrefix(
+  db: LevelDB,
+  prefix: string,
+): Promise<Array<{ key: string; value: string }>> {
+  const entries: Array<{ key: string; value: string }> = []
+  const iterator = db.iterator({
+    gte: prefix,
+    lt: `${prefix}\uffff`,
+  })
+  while (true) {
+    const entry = await new Promise<
+      { key: string; value: string } | undefined
+    >((resolve, reject) => {
+      iterator.next((error: Error, key: string, value: string) => {
+        if (error) reject(error)
+        else resolve(key ? { key, value } : undefined)
+      })
+    })
+    if (!entry) break
+    entries.push(entry)
+  }
+  await new Promise<void>((resolve, reject) => {
+    iterator.end((error: Error) => (error ? reject(error) : resolve()))
+  })
+  return entries
 }
 
 type StoredSuppression = {
@@ -151,7 +186,8 @@ class MessageIterator implements AsyncIterableIterator<MessageWrapper> {
       if (
         entry.key !== metadataKeys.lastServerTime &&
         !entry.key.startsWith(suppressionIndexPrefix) &&
-        !entry.key.startsWith(relayCursorPrefix)
+        !entry.key.startsWith(relayCursorPrefix) &&
+        !entry.key.startsWith(relayReceiptPrefix)
       ) {
         return new MessageResult(deserializeMessageWrapper(entry.value))
       }
@@ -204,6 +240,71 @@ export class LevelMessageStore implements MessageStore {
       await this.setSchemaVersion(currentSchemaVersion)
     } else if (dbSchemaVersion > currentSchemaVersion) {
       console.warn('Newer DB found. Client downgraded?')
+    }
+    await this.migrateRelayAuthorityOutOfMessageDb()
+    await this.recoverRelayReceipts()
+  }
+
+  /** c087f6e briefly wrote relay authority into the iterable message database. Move those keys
+   * before Open resolves so the unchanged v2 reader can still open this store after a rollback. */
+  private async migrateRelayAuthorityOutOfMessageDb(): Promise<void> {
+    const legacy = [
+      ...(await entriesWithPrefix(this.db, relayCursorPrefix)),
+      ...(await entriesWithPrefix(this.db, suppressionIndexPrefix)),
+    ]
+    if (legacy.length === 0) return
+    // The message-db copy was c087f6e's active authority; overwrite any older metadata-db value.
+    await (this.metadataDb as any).batch(
+      legacy.map(entry => ({ type: 'put', ...entry })),
+      { sync: true },
+    )
+    await (this.db as any).batch(
+      legacy.map(({ key }) => ({ type: 'del', key })),
+      { sync: true },
+    )
+  }
+
+  /** Relay receipt journals are authoritative browser crash-recovery copies committed in the
+   * same IndexedDB/Level transaction as cursor authority. Reapply them on every Open; deletion
+   * tombstones win and make an interrupted message-database delete repeatable. */
+  private async recoverRelayReceipts(): Promise<void> {
+    const suppressed = new Set<string>()
+    for (const { value } of await entriesWithPrefix(
+      this.metadataDb,
+      suppressionIndexPrefix,
+    )) {
+      const parsed: unknown = JSON.parse(value)
+      if (!Array.isArray(parsed)) continue
+      for (const entry of parsed) {
+        if (
+          entry !== null &&
+          typeof entry === 'object' &&
+          typeof entry.payloadDigest === 'string'
+        ) {
+          suppressed.add(entry.payloadDigest)
+        }
+      }
+    }
+    const operations: Array<
+      | { type: 'put'; key: string; value: string }
+      | { type: 'del'; key: string }
+    > = []
+    for (const { value } of await entriesWithPrefix(
+      this.metadataDb,
+      relayReceiptPrefix,
+    )) {
+      const wrapper = deserializeMessageWrapper(value)
+      operations.push(
+        suppressed.has(wrapper.index)
+          ? { type: 'del', key: wrapper.index }
+          : { type: 'put', key: wrapper.index, value },
+      )
+    }
+    for (const payloadDigest of suppressed) {
+      operations.push({ type: 'del', key: payloadDigest })
+    }
+    if (operations.length > 0) {
+      await (this.db as any).batch(operations, { sync: true })
     }
   }
 
@@ -258,7 +359,7 @@ export class LevelMessageStore implements MessageStore {
   ): Promise<StoredSuppression[]> {
     try {
       const parsed = JSON.parse(
-        await this.db.get(suppressionIndexKey(recipientAddress)),
+        await this.metadataDb.get(suppressionIndexKey(recipientAddress)),
       )
       if (!Array.isArray(parsed)) return []
       return parsed.flatMap((entry): StoredSuppression[] => {
@@ -318,7 +419,7 @@ export class LevelMessageStore implements MessageStore {
         payloadDigest,
         receivedTime,
       }))
-      await (this.db as any).batch(
+      await (this.metadataDb as any).batch(
         [
           entries.length === 0
             ? { type: 'del', key: suppressionIndexKey(recipientAddress) }
@@ -329,9 +430,16 @@ export class LevelMessageStore implements MessageStore {
               },
           ...[...new Set(payloadDigests)].map(payloadDigest => ({
             type: 'del',
-            key: payloadDigest,
+            key: relayReceiptKey(recipientAddress, payloadDigest),
           })),
         ],
+        { sync: true },
+      )
+      await (this.db as any).batch(
+        [...new Set(payloadDigests)].map(payloadDigest => ({
+          type: 'del',
+          key: payloadDigest,
+        })),
         { sync: true },
       )
     })
@@ -365,7 +473,7 @@ export class LevelMessageStore implements MessageStore {
         }
       }
       if (changed) {
-        await this.db.put(
+        await this.metadataDb.put(
           suppressionIndexKey(recipientAddress),
           JSON.stringify(
             [...byDigest].map(([payloadDigest, receivedTime]) => ({
@@ -457,13 +565,13 @@ export class LevelMessageStore implements MessageStore {
     }
   }
 
-  /** Recipient-scoped mailbox progress. Legacy global and metadata-DB cursors are deliberately
-   * not migrated: both predate same-database receipt ordering, so replaying from zero is the only
-   * conservative migration. Duplicate relay rows are already idempotent by payload digest. */
+  /** Recipient-scoped mailbox progress. The legacy global `lastServerTime` is deliberately not
+   * migrated because it mixed identities and local clocks. Recipient cursors live in the
+   * non-iterable metadata database beside their authoritative receipt journals. */
   async relayCursor(recipientAddress: string): Promise<number> {
     try {
       const cursor: unknown = JSON.parse(
-        await this.db.get(relayCursorKey(recipientAddress)),
+        await this.metadataDb.get(relayCursorKey(recipientAddress)),
       )
       return isSafeRelayCursor(cursor) ? cursor : 0
     } catch (err: any) {
@@ -476,6 +584,7 @@ export class LevelMessageStore implements MessageStore {
     recipientAddress: string,
     nextReceivedTime: number,
     suppressedReceipts: RelayReceiptIdentity[] = [],
+    durableReceipts: MessageWrapper[] = [],
   ): Promise<number> {
     const advance = this.mutationQueue.then(async () => {
       if (!isSafeRelayCursor(nextReceivedTime)) {
@@ -488,11 +597,21 @@ export class LevelMessageStore implements MessageStore {
       ) {
         throw new Error('Unsafe relay receipt timestamp')
       }
+      if (
+        durableReceipts.some(
+          receipt =>
+            !isSafeRelayTimestamp(receipt.message.receivedTime) ||
+            receipt.message.destinationAddress?.toLowerCase() !==
+              recipientAddress.toLowerCase(),
+        )
+      ) {
+        throw new Error('Invalid durable relay receipt')
+      }
       const current = await this.relayCursor(recipientAddress)
       const next = Math.max(current, nextReceivedTime)
-      // Cursor authority and suppression collection share the message database and one atomic,
-      // durable batch. A crash can therefore retain both or neither, never the unsafe state where
-      // a tombstone disappeared while its inclusive cursor did not advance.
+      // Cursor authority, a complete receipt journal, and suppression collection share one
+      // metadata-database transaction. `level-js` maps this batch to one IndexedDB transaction,
+      // so a browser crash can never retain the cursor without a recoverable receipt copy.
       const observed = new Map(
         suppressedReceipts.map(receipt => [
           receipt.payloadDigest,
@@ -506,7 +625,7 @@ export class LevelMessageStore implements MessageStore {
           return safeAfter === null || next <= safeAfter
         },
       )
-      await (this.db as any).batch(
+      await (this.metadataDb as any).batch(
         [
           ...(next === current
             ? []
@@ -524,6 +643,11 @@ export class LevelMessageStore implements MessageStore {
                 key: suppressionIndexKey(recipientAddress),
                 value: JSON.stringify(remaining),
               },
+          ...durableReceipts.map(receipt => ({
+            type: 'put',
+            key: relayReceiptKey(recipientAddress, receipt.index),
+            value: serializeMessageWrapper(receipt),
+          })),
         ],
         { sync: true },
       )

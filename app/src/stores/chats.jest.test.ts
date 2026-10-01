@@ -1372,6 +1372,49 @@ describe('stores/chats.ts (ticket #42)', () => {
       )
     })
 
+    it('cancels an old-session receipt queued behind the delivery tail before persistence', async () => {
+      const chats = useChatStore()
+      useContactStore().addContact({
+        address: RECIPIENT_ADDRESS,
+        contact: {
+          profile: { name: 'Bob', bio: '', avatar: '', pubKey: null },
+        },
+      })
+      let firstSaveStarted: (() => void) | undefined
+      const started = new Promise<void>(resolve => {
+        firstSaveStarted = resolve
+      })
+      let releaseFirstSave: (() => void) | undefined
+      const gate = new Promise<void>(resolve => {
+        releaseFirstSave = resolve
+      })
+      mockMessageStore.saveMessage.mockImplementationOnce(async () => {
+        firstSaveStarted?.()
+        await gate
+      })
+      const first = chats.receiveMessages([
+        makeWrapper({ index: 'delivery-tail-owner' }),
+      ])
+      await started
+
+      const stale = makeWrapper({ index: 'stopped-old-session' })
+      const canceled = chats.receiveMessages(
+        [stale],
+        SENDER_ADDRESS,
+        () => false,
+      )
+      releaseFirstSave?.()
+      await first
+
+      await expect(canceled).resolves.toEqual({
+        suppressedReceipts: [],
+        canceled: true,
+      })
+      expect(mockMessageStore.saveMessage).toHaveBeenCalledTimes(1)
+      expect(chats.messages['stopped-old-session']).toBeUndefined()
+      expect(desktopNotify).not.toHaveBeenCalled()
+    })
+
     it('returns durable suppressions to cursor acknowledgement without recreating the row', async () => {
       const chats = useChatStore()
       const wrapper = makeWrapper({ index: 'discarded-receipt' })
@@ -1388,6 +1431,7 @@ describe('stores/chats.ts (ticket #42)', () => {
             receivedTime: wrapper.message.receivedTime,
           },
         ],
+        durableReceipts: [],
       })
       expect(mockMessageStore.saveMessage).not.toHaveBeenCalled()
       expect(chats.messages['discarded-receipt']).toBeUndefined()

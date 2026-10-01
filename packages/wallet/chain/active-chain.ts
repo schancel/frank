@@ -126,6 +126,9 @@ export type DirectMessagePreparationProgress =
  * isn't `ReceivedMessageWrapper` (`../types/user-interface.ts`). */
 export interface DirectMessageReceived {
   senderAddress: ChainAddress
+  /** Pubkey resolved while translating this exact relay row. Keeping it with the decrypted
+   * record avoids a second, racy profile lookup in the app adapter. */
+  senderPublicKey?: Uint8Array
   recipientAddress: ChainAddress
   items: MessageItem[]
   /** Bare (no `0x`) hex `payload_hash` of the stamped message this was decoded from. */
@@ -207,14 +210,14 @@ export interface DirectMessageClient {
    * fetched, the result is cut back to a prefix ending on a complete timestamp group and
    * `onTruncated` is called: advancing `sinceMs` to `lastReceivedTime + 1` is then safe and the
    * rest arrives on the next poll. If no complete group exists, the call rejects instead.
-   * `onIncompleteTimestamp` reports a relay row that could not yet be translated because its
-   * sender profile was temporarily unavailable. Callers must keep that inclusive timestamp in
-   * their replay window even though the incomplete row is absent from the returned array. */
+   * `onSkippedTimestamp` reports a terminal row whose sender is authoritatively unregistered
+   * (HTTP 404). It is absent from the returned array but may grant cursor progress. Retryable
+   * profile/network failures reject the scan instead and grant no cursor authority. */
   fetchSince(params: {
     wallet: WalletHandle
     sinceMs: number
     onTruncated?: (reason: Error) => void
-    onIncompleteTimestamp?: (receivedTime: number) => void
+    onSkippedTimestamp?: (receivedTime: number) => void
   }): Promise<DirectMessageReceived[]>
   listRecoveredStampPayments(params: {
     wallet: WalletHandle

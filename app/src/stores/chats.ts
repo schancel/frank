@@ -618,11 +618,13 @@ export const useChatStore = defineStore('chats', {
       recipientAddress: string,
       nextReceivedTime: number,
       suppressedReceipts: RelayReceiptIdentity[] = [],
+      durableReceipts: ReceivedMessageWrapper[] = [],
     ): Promise<number> {
       return (await store).advanceRelayCursor(
         toChainDisplayAddress(recipientAddress),
         nextReceivedTime,
         suppressedReceipts,
+        durableReceipts,
       )
     },
     async deleteMessage({
@@ -1584,7 +1586,12 @@ export const useChatStore = defineStore('chats', {
     async receiveMessages(
       messageWrappers: ReceivedMessageWrapper[],
       ownAddressOverride?: string,
-    ): Promise<{ suppressedReceipts: RelayReceiptIdentity[] }> {
+      shouldDeliver: () => boolean = () => true,
+    ): Promise<{
+      suppressedReceipts: RelayReceiptIdentity[]
+      durableReceipts?: MessageWrapper[]
+      canceled?: true
+    }> {
       const toNotify = new Set<string>()
       for (const { index } of messageWrappers) {
         if (!(index in this.messages) && !notifyingIncoming.has(index)) {
@@ -1597,6 +1604,7 @@ export const useChatStore = defineStore('chats', {
           messageWrappers,
           toNotify,
           ownAddressOverride,
+          shouldDeliver,
         )
       } finally {
         for (const index of toNotify) {
@@ -1608,7 +1616,12 @@ export const useChatStore = defineStore('chats', {
       messageWrappers: ReceivedMessageWrapper[],
       toNotify: Set<string>,
       ownAddressOverride?: string,
-    ): Promise<{ suppressedReceipts: RelayReceiptIdentity[] }> {
+      shouldDeliver: () => boolean = () => true,
+    ): Promise<{
+      suppressedReceipts: RelayReceiptIdentity[]
+      durableReceipts?: MessageWrapper[]
+      canceled?: true
+    }> {
       const ownAddress =
         ownAddressOverride === undefined
           ? await getOwnCanonicalAddress()
@@ -1618,16 +1631,32 @@ export const useChatStore = defineStore('chats', {
           messageWrappers,
           toNotify,
           ownAddress,
+          shouldDeliver,
         ),
       )
-      await this.notifyReceivedMessages(messageWrappers, toNotify)
-      return { suppressedReceipts }
+      if (suppressedReceipts === null) {
+        return { suppressedReceipts: [], durableReceipts: [], canceled: true }
+      }
+      await this.notifyReceivedMessages(
+        messageWrappers,
+        toNotify,
+        shouldDeliver,
+      )
+      return suppressedReceipts
     },
     async storeReceivedMessagesExclusive(
       messageWrappers: ReceivedMessageWrapper[],
       toNotify: Set<string>,
       ownAddress: string | null,
-    ): Promise<RelayReceiptIdentity[]> {
+      shouldDeliver: () => boolean = () => true,
+    ): Promise<{
+      suppressedReceipts: RelayReceiptIdentity[]
+      durableReceipts: MessageWrapper[]
+    } | null> {
+      // This check runs only after the module-global delivery tail grants this call ownership.
+      // A replaced identity can therefore stop an old poll even after it queued here, before any
+      // old receipt persists or mutates the new session's Pinia state.
+      if (!shouldDeliver()) return null
       console.log('receiving messages')
       const messageStore = await store
       if (
@@ -1649,6 +1678,7 @@ export const useChatStore = defineStore('chats', {
         toNotify.delete(wrapper.index)
         return false
       })
+      const durableReceipts: MessageWrapper[] = []
       const outboundMatches = new Map<string, OutboundDeliveryMatch>()
       const replacedAccountCollisions = new Map<
         string,
@@ -1727,6 +1757,7 @@ export const useChatStore = defineStore('chats', {
         // Mailbox progress is advanced separately, after this durable relay receipt. Never let
         // local/outbound timestamps participate in the recipient-scoped cursor.
         await messageStore.saveMessage(persisted, { advanceCursor: false })
+        durableReceipts.push(persisted)
         const collision = replacedAccountCollisions.get(wrapper.index)
         if (loopback && loopback.oldIndex !== wrapper.index) {
           try {
@@ -1900,15 +1931,20 @@ export const useChatStore = defineStore('chats', {
         this.lastReceived = message.serverTime
         chat.totalValue += messageValue
       }
-      return receipts.filter(receipt =>
-        suppressedDigests.has(receipt.payloadDigest),
-      )
+      return {
+        suppressedReceipts: receipts.filter(receipt =>
+          suppressedDigests.has(receipt.payloadDigest),
+        ),
+        durableReceipts,
+      }
     },
     async notifyReceivedMessages(
       messageWrappers: ReceivedMessageWrapper[],
       toNotify: Set<string>,
+      shouldDeliver: () => boolean = () => true,
     ): Promise<void> {
       for (const messageWrapper of messageWrappers) {
+        if (!shouldDeliver()) return
         const {
           copartyAddress,
           copartyPubKey,
@@ -1926,6 +1962,7 @@ export const useChatStore = defineStore('chats', {
             pubKey: copartyPubKey,
           })
           await contacts.refresh(copartyAddress)
+          if (!shouldDeliver()) return
         }
 
         const acceptancePrice = useProfileStore().inbox.acceptancePrice ?? 0

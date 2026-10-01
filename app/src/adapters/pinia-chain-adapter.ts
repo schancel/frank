@@ -25,11 +25,9 @@
  * - `copartyPubKey` needs an actual `PublicKey` (not optional on `ReceivedMessageWrapper`), only
  *   used by `receiveMessages` as a placeholder for `contacts.addLoadingContact` when the sender
  *   isn't already a known contact -- `contacts.refresh` (rewritten by this ticket) immediately
- *   re-fetches and overwrites it with the real profile right after. This calls
- *   `activeChain.fetchProfile` a second time per unique sender (once inside `MonadChain.fetchSince`
- *   itself, to decrypt; once here, to get bytes to wrap as a placeholder) -- a known small
- *   inefficiency, not fixed here since `ActiveChain`'s interface (owned by #41, off-limits to this
- *   ticket) has no cheaper way to ask "what pubkey did you just use to decrypt this."
+ *   re-fetches and overwrites it with the real profile right after. MonadChain carries forward
+ *   the exact pubkey it used to decrypt, avoiding a second racy profile lookup; the fallback is
+ *   retained for other `ActiveChain` implementations and old test fixtures.
  */
 import { PublicKey } from 'bitcore-lib-xpi'
 
@@ -41,6 +39,7 @@ import {
   MonadMailboxUnavailableError,
 } from '@frank/cashweb/relay/monad-mailbox-client'
 import type { ReceivedMessageWrapper } from '@frank/cashweb/types/user-interface'
+import type { MessageWrapper } from '@frank/cashweb/types/messages'
 import {
   isSafeRelayTimestamp,
   type RelayReceiptIdentity,
@@ -69,8 +68,10 @@ export async function toReceivedMessageWrapper(
     )
     return undefined
   }
-  const senderProfile = await activeChain.fetchProfile(record.senderAddress)
-  if (senderProfile === undefined) {
+  const senderPublicKey =
+    record.senderPublicKey ??
+    (await activeChain.fetchProfile(record.senderAddress))?.pubKey
+  if (senderPublicKey === undefined) {
     console.error(
       `direct-message polling: no profile found for sender ${record.senderAddress.raw}, skipping message ${record.payloadDigest}`,
     )
@@ -85,7 +86,7 @@ export async function toReceivedMessageWrapper(
     outbound: false,
     senderAddress: copartyAddress,
     copartyAddress,
-    copartyPubKey: PublicKey.fromBuffer(Buffer.from(senderProfile.pubKey)),
+    copartyPubKey: PublicKey.fromBuffer(Buffer.from(senderPublicKey)),
     index: record.payloadDigest,
     stampValue,
     message: {
@@ -145,7 +146,7 @@ export function startDirectMessagePolling({
     try {
       await cursorReady
       if (stopped) return
-      const incompleteTimestamps: number[] = []
+      const skippedTimestamps: number[] = []
       const received = await activeChain.directMessages.fetchSince({
         wallet,
         sinceMs,
@@ -156,12 +157,12 @@ export function startDirectMessagePolling({
             'direct-message inbox page truncated; will continue',
             reason,
           ),
-        onIncompleteTimestamp: receivedTime => {
+        onSkippedTimestamp: receivedTime => {
           if (isSafeRelayTimestamp(receivedTime)) {
-            incompleteTimestamps.push(receivedTime)
+            skippedTimestamps.push(receivedTime)
           } else {
             console.error(
-              'direct-message polling: unsafe incomplete relay timestamp, ignoring row',
+              'direct-message polling: unsafe skipped relay timestamp, ignoring row',
             )
           }
         },
@@ -173,7 +174,7 @@ export function startDirectMessagePolling({
       otherFailures = 0
       lastErrorKey = undefined
       mailboxStatus.setOk()
-      if (received.length === 0) {
+      if (received.length === 0 && skippedTimestamps.length === 0) {
         return
       }
 
@@ -182,12 +183,13 @@ export function startDirectMessagePolling({
         number,
         { records: number; durableCandidates: number }
       >()
-      for (const receivedTime of incompleteTimestamps) {
+      for (const receivedTime of skippedTimestamps) {
         const group = timestampGroups.get(receivedTime) ?? {
           records: 0,
           durableCandidates: 0,
         }
         group.records += 1
+        group.durableCandidates += 1
         timestampGroups.set(receivedTime, group)
       }
       for (const record of received) {
@@ -228,18 +230,28 @@ export function startDirectMessagePolling({
 
       if (stopped) return
       let suppressedReceipts: RelayReceiptIdentity[] = []
+      let durableReceipts: MessageWrapper[] = []
       if (wrappers.length > 0) {
         const receiveResult = await chats.receiveMessages(
           wrappers,
           recipientAddress,
+          () => !stopped,
         )
+        if (receiveResult.canceled || stopped) return
         suppressedReceipts = receiveResult.suppressedReceipts
+        durableReceipts = receiveResult.durableReceipts ?? wrappers
       }
       if (nextSinceMs > sinceMs || suppressedReceipts.length > 0) {
+        const suppressedDigests = new Set(
+          suppressedReceipts.map(receipt => receipt.payloadDigest),
+        )
         sinceMs = await chats.advanceRelayCursor(
           recipientAddress,
           nextSinceMs,
           suppressedReceipts,
+          durableReceipts.filter(
+            wrapper => !suppressedDigests.has(wrapper.index),
+          ),
         )
       }
     } catch (err) {

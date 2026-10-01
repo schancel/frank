@@ -20,9 +20,8 @@ function isZero(bytes: Uint8Array): boolean {
  * tweak, so that case is pointMultiply by 1: the same point, compressed.
  * A point at infinity is an error and no key is returned. A 32-byte
  * x-only point is rejected so it is not lifted with even Y. The caller
- * wraps the bytes in a bitcore PublicKey. ebG point multiplication
- * stays on bitcore. A digest >= n is not rejected (#537 is the stamp
- * path). */
+ * wraps the bytes in a bitcore PublicKey. ebG is stealthSharedPoint.
+ * A digest >= n is not rejected (#537 is the stamp path). */
 export function stealthParentPublicKey(
   destinationPublicKey: Uint8Array,
   digest: Uint8Array,

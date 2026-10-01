@@ -197,7 +197,8 @@ it('matches bitcore and the stealth parent scalar for the reduced digest', () =>
     'constructHDStealthPublicKey(',
   )
   expect(body).toContain('stealthParentPublicKey(')
-  expect(body).toContain('point.mul')
+  expect(body).toContain('stealthSharedPoint(')
+  expect(body).not.toContain('point.mul')
   expect(body).toContain('stealthPointDigest(dhKeyPointRaw)')
   expect(body).not.toContain('point.add')
   expect(body).not.toContain('PrivateKey.fromBuffer')

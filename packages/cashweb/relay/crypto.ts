@@ -12,6 +12,7 @@ import { stampParentPublicKey } from './stamp-public'
 import { stealthParentSecret } from './stealth-parent'
 import { stealthParentPublicKey } from './stealth-public'
 import { stealthPointDigest } from './stealth-point-digest'
+import { stealthSharedPoint } from './stealth-shared'
 
 export class PayloadConstructor {
   networkName: string
@@ -83,17 +84,23 @@ export class PayloadConstructor {
     )
   }
 
-  // ebG stays on bitcore point multiplication. The parent public key
-  // is destination + (H(ebG) mod n)·G (decision #559). A reduced hash
-  // of 0 yields the destination. A point at infinity is an error. The
-  // digest is the raw SHA-256 and is the HD chain code. Bytes match
-  // PublicKey.fromPoint: compressed, default network.
+  // ebG is ecdh of the ephemeral secret and the destination point
+  // (decision #559). The scalar is a secret. The parent public key is
+  // destination + (H(ebG) mod n)·G.
+  // A reduced hash of 0 yields the destination. A point at infinity is an
+  // error. The digest is the raw SHA-256 and is the HD chain code. Bytes
+  // match PublicKey.fromPoint: compressed, default network. Envelope ECDH
+  // stays on bitcore point.mul until #258.
   constructStealthPublicKey(
     emphemeralPrivKey: PrivateKey,
     destinationPublicKey: PublicKey,
   ) {
-    const dhKeyPoint = destinationPublicKey.point.mul(emphemeralPrivKey.bn) // ebG
-    const dhKeyPointRaw = crypto.Point.pointToCompressed(dhKeyPoint)
+    const dhKeyPointRaw = Buffer.from(
+      stealthSharedPoint(
+        Uint8Array.from(emphemeralPrivKey.toBuffer()),
+        Uint8Array.from(destinationPublicKey.toBuffer()),
+      ),
+    )
 
     const digest = Buffer.from(stealthPointDigest(dhKeyPointRaw)) // H(ebG)
     const bytes = stealthParentPublicKey(

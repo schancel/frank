@@ -93,7 +93,8 @@ it('matches bitcore stamp addresses for digests in (0, n)', () => {
     'constructStealthPublicKey(',
     'constructHDStealthPublicKey(',
   )
-  expect(stealth).toContain('point.mul')
+  expect(stealth).toContain('stealthSharedPoint(')
+  expect(stealth).not.toContain('point.mul')
   expect(stealth).not.toContain('constructStampAddress')
 })
 

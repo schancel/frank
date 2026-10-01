@@ -2,7 +2,8 @@
 
 import { mount, shallowMount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
-import { defineComponent, nextTick } from 'vue'
+import { QStep, QStepper, QStepperNavigation } from 'quasar'
+import { defineComponent, nextTick, type App } from 'vue'
 
 import enUs from '../i18n/en-us'
 import frFr from '../i18n/fr-fr'
@@ -62,11 +63,12 @@ const QBtnStub = defineComponent({
   inheritAttrs: false,
   props: {
     ariaLabel: { type: String, default: '' },
+    disable: { type: Boolean, default: false },
     label: { type: String, default: '' },
   },
   emits: ['click'],
   template:
-    '<button :aria-label="ariaLabel" @click="$emit(\'click\')">{{ label }}</button>',
+    '<button :aria-label="ariaLabel" :disabled="disable || undefined" @click="$emit(\'click\')">{{ label }}</button>',
 })
 
 const QInputStub = defineComponent({
@@ -77,13 +79,35 @@ const QInputStub = defineComponent({
     readonly: { type: Boolean, default: false },
   },
   emits: ['update:modelValue', 'blur'],
+  methods: {
+    focus() {
+      ;(this.$refs.control as HTMLTextAreaElement).focus()
+    },
+  },
   template:
-    '<textarea :aria-label="label" :readonly="readonly || undefined" :value="modelValue" @input="$emit(\'update:modelValue\', $event.target.value)" @blur="$emit(\'blur\')" />',
+    '<textarea ref="control" :aria-label="label" :readonly="readonly || undefined" :value="modelValue" @input="$emit(\'update:modelValue\', $event.target.value)" @blur="$emit(\'blur\')" />',
 })
 
 type Translate = (key: string, params?: { word?: string }) => string
+const attachedResumePages: Array<{ unmount(): void }> = []
 
-/** Real AccountStep inside the setup page. Quasar chrome is stubbed. */
+const quasarStepperTestPlugin = {
+  install(app: App) {
+    const $q = {
+      dark: { isActive: false },
+      iconMapFn: null,
+      iconSet: {
+        stepper: { active: 'edit', done: 'done', error: 'warning' },
+      },
+      lang: { rtl: false },
+      platform: { is: { chrome: false, ios: false } },
+    }
+    app.config.globalProperties.$q = $q
+    app.provide('_q_', $q)
+  },
+}
+
+/** Real QStepper and AccountStep inside the setup page. Unrelated Quasar chrome is stubbed. */
 async function mountResumeImport(translate: Translate) {
   const wallet = useWalletStore()
   const setSeed = jest.fn()
@@ -91,7 +115,10 @@ async function mountResumeImport(translate: Translate) {
     if (name === 'setSeedPhrase') setSeed()
   })
   const wrapper = mount(Setup, {
+    attachTo: document.body,
     global: {
+      components: { QStep, QStepper, QStepperNavigation },
+      plugins: [quasarStepperTestPlugin],
       stubs: {
         QPageContainer: SlotStub,
         QPage: SlotStub,
@@ -99,9 +126,6 @@ async function mountResumeImport(translate: Translate) {
         QToolbar: true,
         QToolbarTitle: true,
         QBanner: true,
-        QStepper: SlotStub,
-        QStep: SlotStub,
-        QStepperNavigation: SlotStub,
         QBtn: QBtnStub,
         QInput: QInputStub,
         QSpace: true,
@@ -112,11 +136,11 @@ async function mountResumeImport(translate: Translate) {
       },
       mocks: {
         $t: translate,
-        $q: { loading: { show: jest.fn(), hide: jest.fn() } },
         $router: { push: mockRouterPush },
       },
     },
   })
+  attachedResumePages.push(wrapper)
   await nextTick()
   return { wallet, setSeed, wrapper }
 }
@@ -169,6 +193,10 @@ async function mountSetup(extraStubs: Record<string, unknown> = {}) {
 // The Setup.vue `import.meta.url` asset lookups load via
 // test/jest/vue-import-meta-transform.js.
 describe('Setup page mounted (#267)', () => {
+  afterEach(() => {
+    for (const wrapper of attachedResumePages.splice(0)) wrapper.unmount()
+  })
+
   beforeEach(() => {
     setActivePinia(createPinia())
     jest.clearAllMocks()
@@ -533,6 +561,29 @@ describe('Setup page mounted (#267)', () => {
       return { ...ctx, vm }
     }
 
+    async function resumeImportContext() {
+      setActivePinia(createPinia())
+      useWalletStore().seedPhrase = STORED
+      const translate: Translate = (key, params) => {
+        if (key === 'replaceGuard.word') return 'REPLACE'
+        if (key === 'replaceGuard.typeLabel') {
+          return `Type ${params?.word ?? ''} to continue`
+        }
+        return key
+      }
+      const ctx = await mountResumeImport(translate)
+      const vm = ctx.wrapper.vm as unknown as Vm & {
+        finishSetup: () => Promise<void>
+        avatar: string
+        previous: () => void
+      }
+      vm.finishSetup = jest.fn(() => Promise.resolve())
+      vm.avatar = 'data:avatar'
+      vm.step = 2
+      await nextTick()
+      return { ...ctx, vm }
+    }
+
     beforeEach(() => {
       mockProfileName = undefined
     })
@@ -609,22 +660,7 @@ describe('Setup page mounted (#267)', () => {
         /phrase de récupération/i,
       )
 
-      setActivePinia(createPinia())
-      useWalletStore().seedPhrase = STORED
-      const translate: Translate = (key, params) => {
-        if (key === 'replaceGuard.word') return 'REPLACE'
-        if (key === 'replaceGuard.typeLabel') {
-          return `Type ${params?.word ?? ''} to continue`
-        }
-        return key
-      }
-      const { wallet, setSeed, wrapper } = await mountResumeImport(translate)
-      const vm = wrapper.vm as unknown as Vm & {
-        finishSetup: () => Promise<void>
-        avatar: string
-      }
-      vm.finishSetup = jest.fn(() => Promise.resolve())
-      vm.avatar = 'data:avatar'
+      const { wallet, setSeed, wrapper, vm } = await resumeImportContext()
 
       const secondary = wrapper.get('[data-test="import-different-phrase"]')
       expect(secondary.text()).toBe('accountStep.importDifferentPhrase')
@@ -691,12 +727,76 @@ describe('Setup page mounted (#267)', () => {
 
       await importBox.setValue(OTHER)
       await nextTick()
-      vm.step = 2
       await vm.next()
 
       expect(commitValidatedSetupSeed).toHaveBeenCalledTimes(1)
       expect(setSeed).toHaveBeenCalledTimes(1)
       expect(wallet.seedPhrase).toBe(OTHER)
+    })
+
+    it('describes the acknowledgement field with the destructive-loss warning', async () => {
+      const { wrapper } = await resumeImportContext()
+      await wrapper
+        .get('[data-test="import-different-phrase"]')
+        .trigger('click')
+      await nextTick()
+
+      const input = wrapper.get('[data-test="import-different-input"]')
+      const describedIds = input.attributes('aria-describedby').split(' ')
+      expect(document.activeElement).toBe(input.element)
+      expect(describedIds).toHaveLength(2)
+      expect(describedIds.map(id => wrapper.get(`#${id}`).text())).toContain(
+        'replaceGuard.warning',
+      )
+    })
+
+    it('moves focus to the editable phrase after acknowledgement', async () => {
+      const { wrapper } = await resumeImportContext()
+      await wrapper
+        .get('[data-test="import-different-phrase"]')
+        .trigger('click')
+      const input = wrapper.get('[data-test="import-different-input"]')
+      await input.setValue('REPLACE')
+
+      await wrapper.get('[data-test="import-different-form"]').trigger('submit')
+      await nextTick()
+
+      const importBox = wrapper.get('textarea[aria-label="profile.seedEntry"]')
+      expect(importBox.attributes('readonly')).toBeUndefined()
+      expect(document.activeElement).toBe(importBox.element)
+    })
+
+    it('preserves the acknowledged import draft across real QStepper Back/remount', async () => {
+      const OTHER =
+        'legal winner thank year wave sausage worth useful legal winner thank yellow'
+      const { wrapper, vm } = await resumeImportContext()
+      await wrapper
+        .get('[data-test="import-different-phrase"]')
+        .trigger('click')
+      const input = wrapper.get('[data-test="import-different-input"]')
+      await input.setValue('REPLACE')
+      await wrapper.get('[data-test="import-different-form"]').trigger('submit')
+      await nextTick()
+      await wrapper
+        .get('textarea[aria-label="profile.seedEntry"]')
+        .setValue(OTHER)
+
+      vm.previous()
+      await nextTick()
+      expect(vm.step).toBe(1)
+      expect(
+        wrapper.find('textarea[aria-label="profile.seedEntry"]').exists(),
+      ).toBe(false)
+
+      await vm.next()
+      await nextTick()
+      expect(vm.step).toBe(2)
+      const remountedImport = wrapper.get(
+        'textarea[aria-label="profile.seedEntry"]',
+      )
+      expect(remountedImport.attributes('readonly')).toBeUndefined()
+      expect((remountedImport.element as HTMLTextAreaElement).value).toBe(OTHER)
+      expect(vm.accountData.nameRequired).toBe(false)
     })
 
     it('a stored seed WITH a name is not resume mode (completed-old is unaffected)', async () => {

@@ -1,6 +1,6 @@
 /** @jest-environment jsdom */
 
-import { shallowMount } from '@vue/test-utils'
+import { flushPromises, shallowMount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { defineComponent, nextTick } from 'vue'
 
@@ -59,6 +59,19 @@ const OTHER =
   'legal winner thank year wave sausage worth useful legal winner thank yellow'
 
 const SlotStub = defineComponent({ template: '<div><slot /></div>' })
+const StepperStub = defineComponent({
+  template: '<div><slot /><slot name="navigation" /></div>',
+})
+const QBtnStub = defineComponent({
+  inheritAttrs: false,
+  props: {
+    disable: { type: Boolean, default: false },
+    label: { type: String, default: '' },
+  },
+  emits: ['click'],
+  template:
+    '<button :disabled="disable || undefined" @click="$emit(\'click\')">{{ label }}</button>',
+})
 const routerPush = jest.fn(() => Promise.resolve())
 
 async function mountFinish() {
@@ -72,10 +85,10 @@ async function mountFinish() {
         'q-header': true,
         'q-toolbar': true,
         'q-toolbar-title': true,
-        'q-btn': true,
-        'q-stepper': true,
-        'q-step': true,
-        'q-stepper-navigation': true,
+        'q-btn': QBtnStub,
+        'q-stepper': StepperStub,
+        'q-step': SlotStub,
+        'q-stepper-navigation': SlotStub,
         'q-banner': true,
       },
       mocks: {
@@ -98,9 +111,11 @@ async function mountFinish() {
     onSeedConfirmed: () => void
     next: () => Promise<void>
     acknowledgeReplace: () => void
+    completionPending: boolean
+    forwardEnabled: boolean
   }
   vm.avatar = 'data:avatar'
-  return { wallet, vm }
+  return { wallet, vm, wrapper }
 }
 
 describe('Setup finish does not reload (#389)', () => {
@@ -182,6 +197,77 @@ describe('Setup finish does not reload (#389)', () => {
     expect(initializeMonadIdentity).not.toHaveBeenCalled()
     expect(routerPush).not.toHaveBeenCalled()
     expect(errorNotify).toHaveBeenCalledWith(expect.any(Error))
+  })
+
+  it('serializes completion and clears the pending guard for a retry after failure', async () => {
+    let rejectFirstFlush!: (error: Error) => void
+    const firstFlush = new Promise<void>((_resolve, reject) => {
+      rejectFirstFlush = reject
+    })
+    mockFlushProfile.mockImplementationOnce(() => firstFlush)
+    const persisted = jest.fn(async () => false)
+    const persist = jest.fn(async () => true)
+    Object.defineProperty(navigator, 'storage', {
+      configurable: true,
+      value: { persisted, persist },
+    })
+
+    try {
+      const { wallet, vm, wrapper } = await mountFinish()
+      const setSeedPhrase = jest.spyOn(wallet, 'setSeedPhrase')
+      vm.step = 2
+      vm.accountData = {
+        seed: STORED,
+        name: '',
+        nameRequired: false,
+        valid: true,
+      }
+
+      const first = vm.next()
+      const firstFailure = expect(first).rejects.toThrow('disk full')
+      await flushPromises()
+      const duplicate = vm.next()
+      await flushPromises()
+      await nextTick()
+
+      expect(vm.completionPending).toBe(true)
+      expect(vm.forwardEnabled).toBe(false)
+      const nextButton = wrapper
+        .findAll('button')
+        .find(button => button.text() === 'setup.accountSetupNext')
+      expect(nextButton?.attributes('disabled')).toBeDefined()
+      expect(setSeedPhrase).toHaveBeenCalledTimes(1)
+      expect(mockSetRelayData).toHaveBeenCalledTimes(1)
+      expect(persisted).toHaveBeenCalledTimes(1)
+      expect(persist).toHaveBeenCalledTimes(1)
+      expect(wallet.flushPersistence).toHaveBeenCalledTimes(1)
+      expect(mockFlushProfile).toHaveBeenCalledTimes(1)
+      expect(initializeMonadIdentity).not.toHaveBeenCalled()
+      expect(routerPush).not.toHaveBeenCalled()
+
+      rejectFirstFlush(new Error('disk full'))
+      await firstFailure
+      await duplicate
+      await nextTick()
+      expect(vm.completionPending).toBe(false)
+      expect(vm.forwardEnabled).toBe(true)
+
+      await vm.next()
+
+      expect(setSeedPhrase).toHaveBeenCalledTimes(2)
+      expect(mockSetRelayData).toHaveBeenCalledTimes(2)
+      expect(persisted).toHaveBeenCalledTimes(2)
+      expect(persist).toHaveBeenCalledTimes(2)
+      expect(wallet.flushPersistence).toHaveBeenCalledTimes(2)
+      expect(mockFlushProfile).toHaveBeenCalledTimes(2)
+      expect(initializeMonadIdentity).toHaveBeenCalledTimes(1)
+      expect(routerPush).toHaveBeenCalledTimes(1)
+    } finally {
+      Object.defineProperty(navigator, 'storage', {
+        configurable: true,
+        value: undefined,
+      })
+    }
   })
 
   it('replace finish tears down by initializing the new seed in place', async () => {

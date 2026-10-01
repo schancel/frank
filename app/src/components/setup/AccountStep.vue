@@ -40,6 +40,7 @@
         @blur="commitName"
       />
       <q-input
+        ref="seedInput"
         :readonly="action === 'new'"
         v-model="seed"
         :label="$t('profile.seedEntry')"
@@ -93,7 +94,7 @@
         data-test="import-different-form"
         @submit.prevent="tryDifferentPhrase"
       >
-        <p class="q-ma-none text-negative" role="note">
+        <p :id="differentWarningId" class="q-ma-none text-negative" role="note">
           {{ $t('replaceGuard.warning') }}
         </p>
         <label :for="differentInputId" style="display: block">
@@ -110,7 +111,7 @@
           data-test="import-different-input"
           style="width: 100%; padding: 8px"
           :aria-invalid="differentMismatch ? 'true' : 'false'"
-          :aria-describedby="differentStatusId"
+          :aria-describedby="`${differentWarningId} ${differentStatusId}`"
         />
         <div
           :id="differentStatusId"
@@ -152,6 +153,10 @@ interface AccountData {
   nameRequired?: boolean
 }
 
+interface FocusableInput {
+  focus(): void
+}
+
 let differentPhraseCounter = 0
 
 export default defineComponent({
@@ -172,17 +177,28 @@ export default defineComponent({
       type: Boolean,
       default: false,
     },
+    resumeImportAcknowledged: {
+      type: Boolean,
+      default: false,
+    },
   },
   emits: ['update:account-data', 'resume-import-acknowledged'],
   setup(props, { emit }) {
     const phraseUid = ++differentPhraseCounter
-    const action = ref(props.resume ? 'new' : 'none')
+    const action = ref(
+      props.resume
+        ? props.resumeImportAcknowledged
+          ? 'import'
+          : 'new'
+        : 'none',
+    )
     const rawName = ref(props.accountData.name)
     const rawSeed = ref(props.accountData.seed)
     const differentOpen = ref(false)
     const differentTyped = ref('')
     const differentMismatch = ref(false)
     const differentInput = ref<HTMLInputElement | null>(null)
+    const seedInput = ref<FocusableInput | null>(null)
     const isSeedValid = computed(() => {
       return validateMnemonic(normalizeSetupMnemonic(rawSeed.value))
     })
@@ -245,8 +261,10 @@ export default defineComponent({
       differentTyped,
       differentMismatch,
       differentInput,
+      seedInput,
       differentFormId: `import-different-form-${phraseUid}`,
       differentInputId: `import-different-input-${phraseUid}`,
+      differentWarningId: `import-different-warning-${phraseUid}`,
       differentStatusId: `import-different-status-${phraseUid}`,
       openDifferentPhrase() {
         if (!props.resume || action.value !== 'new') return
@@ -271,6 +289,7 @@ export default defineComponent({
         rawName.value = ''
         rawSeed.value = ''
         emitAccountData()
+        void nextTick(() => seedInput.value?.focus())
       },
       commitName() {
         if (action.value !== 'new') return

@@ -48,6 +48,7 @@
             <account-step
               v-model:account-data="accountData"
               :resume="resume"
+              :resume-import-acknowledged="resumeReplaceAcknowledged"
               @resume-import-acknowledged="acknowledgeResumeImport"
             />
           </q-step>
@@ -219,6 +220,7 @@ export default defineComponent({
       existingConfirmed: accountState === 'confirmed',
       replaceAcknowledged: false,
       resumeReplaceAcknowledged: false,
+      completionPending: false,
       storedSeed: resume ? storedSeed : null,
       step: 1,
       accountData: {
@@ -345,6 +347,15 @@ export default defineComponent({
       // Seed and name must be durable before the identity starts. A failed write does not
       // initialize. The default path does not reload (#389).
       await this.finishSetup()
+    },
+    async submitAccountStep(confirmedAt: number) {
+      if (this.completionPending) return
+      this.completionPending = true
+      try {
+        await this.completeAccountStep(confirmedAt)
+      } finally {
+        this.completionPending = false
+      }
     },
     selectRandomAvatar(): Promise<string> {
       const avatarName =
@@ -635,6 +646,7 @@ export default defineComponent({
       await this.$emit('setupCompleted')
     },
     async next() {
+      if (this.completionPending) return
       const stepper = this.$refs.stepper as QStepper
 
       switch (this.step) {
@@ -662,13 +674,13 @@ export default defineComponent({
           }
           // Import (explicit: valid and nameRequired === false): the user already holds this
           // phrase, so it counts as confirmed.
-          await this.completeAccountStep(Date.now())
+          await this.submitAccountStep(Date.now())
           break
         case 3:
           // Second, independent guard: never commit a New Account phrase unless the user
           // confirmed exactly this phrase (forwardEnabled is only the UI half).
           if (!this.isSeedConfirmed) break
-          await this.completeAccountStep(Date.now())
+          await this.submitAccountStep(Date.now())
           break
         case 4:
           this.setupSettings()
@@ -684,6 +696,7 @@ export default defineComponent({
   },
   computed: {
     forwardEnabled() {
+      if (this.completionPending) return false
       // Ticket #47 (real signup bug): this used to hard-block every step, including the EULA's own
       // "Agree" button, on `this.$indexer.connected` -- a live Lotus chronik indexer this Monad-only
       // deployment never stands up, so this was permanently false and no fresh user could ever get

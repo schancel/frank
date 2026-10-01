@@ -215,9 +215,10 @@ it('derives the stealth parent from ecdh', () => {
   expect(Buffer.from(leadingParent.digest)).toEqual(leadingMatch.digest)
 
   const hd = ctor.constructHDStealthPrivateKey(ephemeralPublic, destination)
-  const hdDescribed = hd.toObject() as { chainCode: string }
-  expect(hd.privateKey.toBuffer()).toEqual(derived.stealthPrivateKey.toBuffer())
-  expect(Buffer.from(hdDescribed.chainCode, 'hex')).toEqual(Buffer.from(derived.digest))
+  expect(Buffer.from(hd.privateKey.bytes)).toEqual(
+    derived.stealthPrivateKey.toBuffer(),
+  )
+  expect(Buffer.from(hd.chainCode)).toEqual(Buffer.from(derived.digest))
 
   const caller = Uint8Array.from(destination.toBuffer())
   const callerPoint = Uint8Array.from(ephemeralPublic.toBuffer())

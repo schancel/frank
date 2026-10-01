@@ -9,6 +9,7 @@ import {
 import * as forge from 'node-forge'
 import { stampParentSecret } from './stamp-parent'
 import { stampParentPublicKey } from './stamp-public'
+import { stealthParentHdNode } from './stealth-hd'
 import { stealthParentSecret } from './stealth-parent'
 import { stealthParentPublicKey } from './stealth-public'
 import { stealthPointDigest } from './stealth-point-digest'
@@ -157,22 +158,19 @@ export class PayloadConstructor {
     }
   }
 
+  // Depth-0 node. Chain code is the raw SHA-256 digest, not the reduced
+  // scalar (decision #559). Secret bytes match bitcore HDPrivateKey.
+  // A secret outside (0, n), a public key that is not 33 or 65 SEC1
+  // bytes, an invalid point, or a zero sum is an error. The caller's
+  // PrivateKey is not wiped. Stamp HD nodes stay on bitcore.
   constructHDStealthPrivateKey(
     emphemeralPubKey: PublicKey,
     destinationPrivateKey: PrivateKey,
   ) {
-    const { stealthPrivateKey, digest } = this.constructStealthPrivateKey(
-      emphemeralPubKey,
-      destinationPrivateKey,
+    return stealthParentHdNode(
+      Uint8Array.from(destinationPrivateKey.toBuffer()),
+      Uint8Array.from(emphemeralPubKey.toBuffer()),
     )
-    return new HDPrivateKey({
-      privateKey: stealthPrivateKey.toBuffer(),
-      depth: 0,
-      network: this.networkName,
-      childIndex: 0,
-      chainCode: digest,
-      parentFingerPrint: 0,
-    })
   }
 
   // Digest in (0, n). A zero digest, a digest >= n, a non-32-byte digest,

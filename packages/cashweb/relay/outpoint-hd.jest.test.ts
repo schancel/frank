@@ -243,9 +243,8 @@ it('derives stamp and stealth outpoint private keys on the bitcore m/44/145 path
     ephemeral.toPublicKey(),
     destination,
   )
-  const stealthSecret = stealthParent.privateKey.toBuffer()
-  const stealthDescribed = stealthParent.toObject() as { chainCode: string }
-  const stealthChain = Buffer.from(stealthDescribed.chainCode, 'hex')
+  const stealthSecret = Buffer.from(stealthParent.privateKey.bytes)
+  const stealthChain = Buffer.from(stealthParent.chainCode)
   const stealthChild = Buffer.from(
     outpointPrivateKey(stealthSecret, stealthChain, 2, 3),
   )

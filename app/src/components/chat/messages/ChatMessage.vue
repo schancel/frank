@@ -28,7 +28,7 @@
         v-touch-swipe.touch.right="swipeRight"
       >
         <!-- Wrap a div around the template to keep all items within 1 QChatMessasge -->
-        <div>
+        <div data-testid="chat-message-body" class="chat-message-body">
           <template v-for="(item, subIndex) in message.items" :key="subIndex">
             <chat-message-reply
               v-if="item.type == 'reply'"
@@ -57,6 +57,7 @@
               v-else-if="item.type == 'digital-goods'"
               :item="item"
               :address="address"
+              :recipient-name="name"
               @sendFollowUp="handleSendFollowUp"
             />
             <chat-message-raffle
@@ -73,19 +74,26 @@
               {{ getMessageItemPreview(item) }}
             </span>
           </template>
-        </div>
-        <template #stamp>
+          <!-- Keep one suffix instance mounted across status changes. Its inline
+               mode shares the last text line; error and payment-pending render
+               their own row without replacing the live region or focus target. -->
           <chat-message-suffix
+            ref="suffix"
+            :inline="usesInlineFooter"
             :status="message.status"
             :stamp="shortTimestamp"
+            :stamp-datetime="stampDatetime"
             :amount="stampAmount"
             :outbound="message.outbound"
+            :failure-reason="message.delivery?.failureReason ?? ''"
+            :payment-state="paymentState"
             @infoClick="transactionDialog = true"
             @deleteClick="deleteDialog = true"
             @replyClick="replyClicked({ address, payloadDigest })"
             @resendClick="resend()"
+            @discardClick="confirmDiscard()"
           />
-        </template>
+        </div>
       </q-chat-message>
     </template>
     <div class="col" v-else-if="!payloadDigest">
@@ -150,6 +158,7 @@ export default defineComponent({
       deleteMessage: chats.deleteMessage,
       getStampAmount: chats.getStampAmount,
       sendDirectMessage: chats.sendMessage,
+      retryOutgoing: chats.retryOutgoing,
       getMessageItemPreview,
     }
   },
@@ -181,8 +190,26 @@ export default defineComponent({
       required: false,
       default: () => -1,
     },
+    /** Stable parent callback: a successful retry may unmount this keyed component before its
+     * awaited action returns, so a component event is no longer deliverable at that point. */
+    focusAfterRetry: {
+      type: Function as PropType<() => void>,
+      required: false,
+      default: undefined,
+    },
+    /** Legacy failure replaces the deleted bubble; the parent focuses that error row. */
+    focusFailedAfterRetry: {
+      type: Function as PropType<() => void>,
+      required: false,
+      default: undefined,
+    },
   },
   methods: {
+    focusRetryStatus() {
+      ;(
+        this.$refs.suffix as { focusStatus?: () => void } | undefined
+      )?.focusStatus?.()
+    },
     handleReplyDivClick(args: string) {
       this.$emit('replyDivClick', args)
     },
@@ -194,6 +221,7 @@ export default defineComponent({
     handleSendFollowUp(payload: {
       items: MessageItem[]
       stampValueWei?: bigint
+      settled?: (sent: boolean) => void
     }) {
       this.$emit('sendFollowUp', payload)
     },
@@ -203,39 +231,97 @@ export default defineComponent({
         payloadDigest: this.payloadDigest,
       })
     },
-    async resend() {
-      await this.deleteMessage({
-        address: this.address,
-        payloadDigest: this.payloadDigest,
-      })
-
+    /** Manual Retry of a failed message. For a Monad message this never deletes it first: the
+     * store asks the wallet whether the earlier payment is still live and re-sends the same bytes
+     * if so (see `stores/chats.ts`, `sendMessage`); a new payment happens only if the earlier one
+     * can no longer be delivered. */
+    async resend(confirmed = false) {
+      // The Retry button unmounts as soon as the state changes; keep focus on this message.
+      ;(
+        this.$refs.suffix as { focusStatus?: () => void } | undefined
+      )?.focusStatus?.()
       if (this.message.stampValueWei !== undefined) {
         try {
-          await this.sendDirectMessage({
+          const outcome = await this.retryOutgoing({
             wallet: useMonadWallet(),
             address: this.address,
-            items: this.message.items,
-            stampValue: this.message.stampValueWei,
+            payloadDigest: this.payloadDigest,
+            confirmed,
           })
+          if (outcome.state === 'needs-confirmation') {
+            this.$q
+              .dialog({
+                title: this.$t('outgoing.sendAgainTitle'),
+                message:
+                  outcome.reason === 'recovered'
+                    ? this.$t('outgoing.sendAgainRecovered')
+                    : this.$t('outgoing.sendAgainUnverified'),
+                ok: { label: this.$t('outgoing.sendAgain') },
+                cancel: true,
+                persistent: true,
+              })
+              .onOk(() => void this.resend(true))
+          } else if (outcome.state === 'sent') {
+            // The store rekeys this bubble from its optimistic id to the final payload digest.
+            // Ask the stable Chat parent to take focus after this component unmounts.
+            this.focusAfterRetry?.()
+          }
         } catch (error) {
           errorNotify(error instanceof Error ? error : new Error(String(error)))
         }
         return
       }
 
-      // Compatibility path for legacy Lotus messages.
-      const stampAmount = this.getStampAmount(this.address)
-      return this.$relayClient.sendMessageImpl({
-        address: this.address,
-        items: this.message.items,
-        stampAmount,
-      })
+      // Compatibility path for legacy Lotus messages. Construction can emit messageSendError
+      // and fulfill undefined; that is not delivery. Rejection after delete has no bubble left.
+      try {
+        await this.deleteMessage({
+          address: this.address,
+          payloadDigest: this.payloadDigest,
+        })
+        const stampAmount = this.getStampAmount(this.address)
+        const outcome = await this.$relayClient.sendMessageImpl({
+          address: this.address,
+          items: this.message.items,
+          stampAmount,
+        })
+        if (outcome === undefined || outcome === null) {
+          this.focusFailedAfterRetry?.()
+          return outcome
+        }
+        this.focusAfterRetry?.()
+        return outcome
+      } catch (error) {
+        this.focusFailedAfterRetry?.()
+        errorNotify(error instanceof Error ? error : new Error(String(error)))
+      }
+    },
+    confirmDiscard() {
+      this.$q
+        .dialog({
+          title: this.$t('outgoing.discardConfirmTitle'),
+          message: this.$t('outgoing.discardConfirmMessage'),
+          ok: { label: this.$t('outgoing.discard'), color: 'negative' },
+          cancel: true,
+          persistent: true,
+        })
+        .onOk(() => {
+          void this.deleteMessage({
+            address: this.address,
+            payloadDigest: this.payloadDigest,
+          })
+        })
     },
     replyClicked(args: { address: string; payloadDigest: string }) {
       this.$emit('replyClicked', args)
     },
   },
   computed: {
+    paymentState(): string {
+      const delivery = this.message.delivery
+      if (delivery?.attemptDigest === undefined) return 'queued'
+      return delivery.live === true ? 'live' : 'checking'
+    },
     bubbleSize() {
       // Default chatbubble size; assume small screen
       let base = 9
@@ -285,11 +371,25 @@ export default defineComponent({
           })
         }
         case 'pending':
-          return 'sending...'
+        case 'payment-pending':
         case 'error':
+          // The stamp is the time. Status text lives in ChatMessageSuffix once (#393).
           return ''
       }
       return 'N/A'
+    },
+    usesInlineFooter(): boolean {
+      // Confirmed and the fresh-send line are one cluster on the last text
+      // line. Failed and payment-pending keep the row under the text.
+      return (
+        this.message.status === 'confirmed' || this.message.status === 'pending'
+      )
+    },
+    stampDatetime(): string {
+      const timestamp = this.message.serverTime
+      if (timestamp === undefined || timestamp === null) return ''
+      const parsed = new Date(timestamp)
+      return Number.isNaN(parsed.getTime()) ? '' : parsed.toISOString()
     },
     stampAmount() {
       if (this.message.stampValueWei !== undefined) {

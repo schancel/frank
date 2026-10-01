@@ -44,6 +44,7 @@
 </template>
 
 <script lang="ts">
+import { navigateBack } from 'src/utils/navigate-back'
 import { computed, defineComponent, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
@@ -84,7 +85,7 @@ export default defineComponent({
             value: transfer.value,
           })
           sentTransactionNotify(result.txHash)
-          window.history.length > 1 ? router.go(-1) : router.push('/')
+          navigateBack(router)
         } catch (err) {
           errorNotify(
             err instanceof Error
@@ -96,7 +97,7 @@ export default defineComponent({
         }
       },
       cancel() {
-        window.history.length > 1 ? router.go(-1) : router.push('/')
+        navigateBack(router)
       },
     }
   },

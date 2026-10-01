@@ -187,10 +187,13 @@ export {
   SIGHASH_NONE,
   SIGHASH_SINGLE,
   SIGHASH_UTXOS,
+  blockMerkleLeaf,
   isTxError,
   parseTransaction,
   serializeTransaction,
   sighash,
+  transactionHash,
+  transactionId,
 } from './transaction.js'
 export type {
   OutPoint,

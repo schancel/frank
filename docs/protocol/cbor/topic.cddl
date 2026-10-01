@@ -1,0 +1,38 @@
+; Payload schemas for Monad-native topic events (README section 6, "Topic events").
+; Imports common.cddl names conceptually; each implementation compiles a
+; combined schema/module.
+;
+; Type 9 is the post itself. Types 10 and 11 wrap a burn transaction. A burn
+; transaction commits to the identity of the object it pays for (README T7),
+; and a frame cannot contain a commitment to itself, so the burn lives in a
+; wrapper frame rather than inside the post (compare types 2 and 4).
+;
+; Neither wrapper carries a vote direction, a burned value, or a sender: all
+; three are read from the verified chain transaction (README T8), never from an
+; encoded assertion.
+
+; Type 9. `topic` is exact UTF-8 with no normalization (README S12). `body` is
+; opaque to this schema; the forum payload migration (#113) defines its content.
+topic-post = {
+  0: network-tag,
+  1: tstr .size (1..512), ; topic name
+  ? 2: digest-32, ; T1 hash of the parent type-9 frame; absent for a top-level post
+  3: bstr .size (1..524288), ; opaque post body (R6)
+  * uint => frank-value,
+}
+
+; Type 10. The initial vote of the post is its own burn transaction.
+topic-post-submission = {
+  0: network-tag, ; MUST equal the opened type-9 network (README S11)
+  1: framed-object, ; type-9 topic-post frame
+  2: bstr .size (1..16384), ; raw signed chain transaction that burns for the post
+  * uint => frank-value,
+}
+
+; Type 11. A further vote on an already-posted type-9 frame.
+topic-vote-submission = {
+  0: network-tag,
+  1: digest-32, ; T1 hash of the target type-9 frame
+  2: bstr .size (1..16384), ; raw signed chain transaction that burns for the vote
+  * uint => frank-value,
+}

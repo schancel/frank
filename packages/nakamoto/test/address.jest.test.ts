@@ -548,4 +548,111 @@ describe('address codecs', () => {
       ),
     ).toThrow(EncodingException)
   })
+
+  test('base58check is not classified as bech32 or cashaddr before its checksum', () => {
+    const pubkeyHash = must(
+      decodeAddress('1KS9k1zvhZ13HGGGPRLPKS4kmHErj24GyK', BTC_MAINNET),
+    )
+    expect(pubkeyHash.encoding).toBe('base58check')
+    expect(pubkeyHash.chain).toBe(BTC_MAINNET)
+    expect(pubkeyHash.destination.kind).toBe('p2pkh')
+    if (pubkeyHash.destination.kind !== 'p2pkh') return
+    expect(hex(pubkeyHash.destination.hash)).toBe(
+      'ca33f5d89d736cb6829eeb2c6ce195e245e7eda4',
+    )
+    expect(decodeAddress('1KS9k1zvhZ13HGGGPRLPKS4kmHErj24GyK')).toMatchObject({
+      ok: false,
+      error: { code: 'chain-required' },
+    })
+    const unpinned = decodeAddress(
+      '1KS9k1zvhZ13HGGGPRLPKS4kmHErj24GyK',
+      XPI_MAINNET,
+    )
+    expect(unpinned).toMatchObject({
+      ok: false,
+      error: { code: 'address-format-not-pinned' },
+    })
+    expect(JSON.stringify(unpinned)).not.toContain('lotus')
+    expect(JSON.stringify(unpinned)).not.toContain('1KS9k1')
+
+    const scriptHash = must(
+      decodeAddress('35zQLvu1gr5urq8Lj9LjMCRtD5cxqZDzX7', BTC_MAINNET),
+    )
+    expect(scriptHash.encoding).toBe('base58check')
+    expect(scriptHash.destination.kind).toBe('p2sh')
+    if (scriptHash.destination.kind !== 'p2sh') return
+    expect(hex(scriptHash.destination.hash)).toBe(
+      '2f2a4a467891cd034bc3dfac15967bbb5345a55d',
+    )
+
+    const mixed = must(
+      decodeAddress('3CDCwV5swLTr2AGsteUshkVQhkY8dMQ7CT', BCH_MAINNET),
+    )
+    expect(mixed.encoding).toBe('base58check')
+    expect(mixed.chain).toBe(BCH_MAINNET)
+    expect(mixed.destination.kind).toBe('p2sh')
+    if (mixed.destination.kind !== 'p2sh') return
+    expect(hex(mixed.destination.hash)).toBe(
+      '7366eebd4fe1b2575263749e4bb53323d3e8f22e',
+    )
+
+    const control = must(
+      decodeAddress('1BpEi6DfDAUFd7GtittLSdBeYJvcoaVggu', BTC_MAINNET),
+    )
+    expect(control.destination.kind).toBe('p2pkh')
+    expect(
+      decodeAddress('tc1qw508d6qejxtdg4y5r3zarvary0c5xw7kg3g4ty'),
+    ).toMatchObject({
+      ok: false,
+      error: { code: 'wrong-prefix', prefix: 'tc' },
+    })
+    expect(isAddressError({ code: 'ambiguous-encoding' })).toBe(true)
+  })
+
+  test('encodeAddress rejects a witness program with the other v0 length', () => {
+    const longWitness = Object.freeze({
+      kind: 'p2wpkh',
+      hash: new Uint8Array(32).fill(0x11),
+    }) as Destination
+    const rejectedWpkh = encodeAddress(longWitness, BTC_MAINNET, 'bech32')
+    expect(rejectedWpkh).toMatchObject({
+      ok: false,
+      error: { code: 'wrong-length', min: 20, max: 20, actual: 32 },
+    })
+    expect(JSON.stringify(rejectedWpkh)).not.toContain('bc1')
+    expect(() => lockingScript(longWitness)).toThrow(EncodingException)
+
+    const shortWitness = Object.freeze({
+      kind: 'p2wsh',
+      hash: new Uint8Array(20).fill(0x22),
+    }) as Destination
+    const rejectedWsh = encodeAddress(shortWitness, BTC_MAINNET, 'bech32')
+    expect(rejectedWsh).toMatchObject({
+      ok: false,
+      error: { code: 'wrong-length', min: 32, max: 32, actual: 20 },
+    })
+    expect(JSON.stringify(rejectedWsh)).not.toContain('bc1')
+    expect(() => lockingScript(shortWitness)).toThrow(EncodingException)
+
+    const listed = must(
+      addressesFor(pubkey(), BTC_MAINNET, {
+        outputKey: outputKey(),
+        tweak: TWEAK,
+      }),
+    )
+    const wpkh = kind(listed, 'p2wpkh')
+    const wpkhText = must(
+      encodeAddress(wpkh.destination, BTC_MAINNET, 'bech32'),
+    )
+    expect(must(decodeAddress(wpkhText)).destination.kind).toBe('p2wpkh')
+    const validWsh = Object.freeze({
+      kind: 'p2wsh',
+      hash: new Uint8Array(32).fill(0x22),
+    }) as Destination
+    const wshText = must(encodeAddress(validWsh, BTC_MAINNET, 'bech32'))
+    const decodedWsh = must(decodeAddress(wshText))
+    expect(decodedWsh.destination.kind).toBe('p2wsh')
+    expect(sameDestination(decodedWsh.destination, validWsh)).toBe(true)
+    expect(lockingScript(validWsh).length).toBe(34)
+  })
 })

@@ -68,12 +68,75 @@
         :aria-label="$t('accountStep.refreshRecoveryPhrase')"
         @click="generateMnemonic"
       />
+      <p
+        v-if="resume && action === 'new'"
+        class="q-ma-none text-body2"
+        data-test="confirm-stored-first"
+      >
+        {{ $t('accountStep.confirmStoredFirst') }}
+      </p>
+      <button
+        v-if="resume && action === 'new'"
+        type="button"
+        data-test="import-different-phrase"
+        :aria-expanded="differentOpen ? 'true' : 'false'"
+        :aria-controls="differentFormId"
+        @click="openDifferentPhrase"
+      >
+        {{ $t('accountStep.importDifferentPhrase') }}
+      </button>
+      <form
+        v-if="resume && action === 'new' && differentOpen"
+        :id="differentFormId"
+        class="q-gutter-y-sm"
+        novalidate
+        data-test="import-different-form"
+        @submit.prevent="tryDifferentPhrase"
+      >
+        <p class="q-ma-none text-negative" role="note">
+          {{ $t('replaceGuard.warning') }}
+        </p>
+        <label :for="differentInputId" style="display: block">
+          {{ $t('replaceGuard.typeLabel', { word: $t('replaceGuard.word') }) }}
+        </label>
+        <input
+          :id="differentInputId"
+          ref="differentInput"
+          v-model="differentTyped"
+          type="text"
+          autocomplete="off"
+          autocapitalize="off"
+          spellcheck="false"
+          data-test="import-different-input"
+          style="width: 100%; padding: 8px"
+          :aria-invalid="differentMismatch ? 'true' : 'false'"
+          :aria-describedby="differentStatusId"
+        />
+        <div
+          :id="differentStatusId"
+          role="status"
+          aria-live="polite"
+          class="text-negative"
+        >
+          {{ differentMismatch ? $t('replaceGuard.mismatch') : '' }}
+        </div>
+        <button type="submit" data-test="import-different-confirm">
+          {{ $t('accountStep.importDifferentContinue') }}
+        </button>
+      </form>
     </div>
   </div>
 </template>
 
 <script lang="ts">
-import { computed, defineComponent, onMounted, PropType, ref } from 'vue'
+import {
+  computed,
+  defineComponent,
+  nextTick,
+  onMounted,
+  PropType,
+  ref,
+} from 'vue'
 import { copyToClipboard } from 'quasar'
 
 import { generateMnemonic, validateMnemonic } from 'bip39'
@@ -89,6 +152,8 @@ interface AccountData {
   nameRequired?: boolean
 }
 
+let differentPhraseCounter = 0
+
 export default defineComponent({
   model: {
     accountData: Object,
@@ -100,18 +165,24 @@ export default defineComponent({
     },
     /**
      * Resume mode (#284): the wallet already holds a seed but no account name. The stored phrase
-     * is shown read-only; it can neither be regenerated nor replaced by an import.
+     * is shown read-only. New/generate stay hidden. A different phrase (#387) is reachable only
+     * after the same typed acknowledgement as the replace-seed guard, and nothing is written here.
      */
     resume: {
       type: Boolean,
       default: false,
     },
   },
-  emits: ['update:account-data'],
+  emits: ['update:account-data', 'resume-import-acknowledged'],
   setup(props, { emit }) {
+    const phraseUid = ++differentPhraseCounter
     const action = ref(props.resume ? 'new' : 'none')
     const rawName = ref(props.accountData.name)
     const rawSeed = ref(props.accountData.seed)
+    const differentOpen = ref(false)
+    const differentTyped = ref('')
+    const differentMismatch = ref(false)
+    const differentInput = ref<HTMLInputElement | null>(null)
     const isSeedValid = computed(() => {
       return validateMnemonic(normalizeSetupMnemonic(rawSeed.value))
     })
@@ -170,6 +241,37 @@ export default defineComponent({
       profileNameRule,
       seed,
       name,
+      differentOpen,
+      differentTyped,
+      differentMismatch,
+      differentInput,
+      differentFormId: `import-different-form-${phraseUid}`,
+      differentInputId: `import-different-input-${phraseUid}`,
+      differentStatusId: `import-different-status-${phraseUid}`,
+      openDifferentPhrase() {
+        if (!props.resume || action.value !== 'new') return
+        if (differentOpen.value) {
+          differentOpen.value = false
+          differentTyped.value = ''
+          differentMismatch.value = false
+          return
+        }
+        differentOpen.value = true
+        differentTyped.value = ''
+        differentMismatch.value = false
+        void nextTick(() => differentInput.value?.focus())
+      },
+      // Parent records the acknowledgement before this draft changes. Neither side writes.
+      acceptDifferentPhrase() {
+        emit('resume-import-acknowledged')
+        differentOpen.value = false
+        differentMismatch.value = false
+        differentTyped.value = ''
+        action.value = 'import'
+        rawName.value = ''
+        rawSeed.value = ''
+        emitAccountData()
+      },
       commitName() {
         if (action.value !== 'new') return
         rawName.value = displayName.value.normalized
@@ -201,6 +303,16 @@ export default defineComponent({
         emitAccountData()
       },
     }
+  },
+  methods: {
+    tryDifferentPhrase() {
+      if (this.differentTyped.trim() !== this.$t('replaceGuard.word')) {
+        this.differentMismatch = true
+        void nextTick(() => this.differentInput?.focus())
+        return
+      }
+      this.acceptDifferentPhrase()
+    },
   },
 })
 </script>

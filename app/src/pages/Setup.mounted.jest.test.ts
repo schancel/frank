@@ -1,8 +1,11 @@
 /** @jest-environment jsdom */
 
-import { shallowMount } from '@vue/test-utils'
+import { mount, shallowMount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { defineComponent, nextTick } from 'vue'
+
+import enUs from '../i18n/en-us'
+import frFr from '../i18n/fr-fr'
 
 jest.mock('../adapters/level-utxo-store', () => ({
   store: Promise.resolve({}),
@@ -54,6 +57,69 @@ import { commitValidatedSetupSeed } from '../utils/setup-account'
 const STORED = 'test test test test test test test test test test test junk'
 
 const SlotStub = defineComponent({ template: '<div><slot /></div>' })
+
+const QBtnStub = defineComponent({
+  inheritAttrs: false,
+  props: {
+    ariaLabel: { type: String, default: '' },
+    label: { type: String, default: '' },
+  },
+  emits: ['click'],
+  template:
+    '<button :aria-label="ariaLabel" @click="$emit(\'click\')">{{ label }}</button>',
+})
+
+const QInputStub = defineComponent({
+  inheritAttrs: false,
+  props: {
+    label: { type: String, default: '' },
+    modelValue: { type: String, default: '' },
+    readonly: { type: Boolean, default: false },
+  },
+  emits: ['update:modelValue', 'blur'],
+  template:
+    '<textarea :aria-label="label" :readonly="readonly || undefined" :value="modelValue" @input="$emit(\'update:modelValue\', $event.target.value)" @blur="$emit(\'blur\')" />',
+})
+
+type Translate = (key: string, params?: { word?: string }) => string
+
+/** Real AccountStep inside the setup page. Quasar chrome is stubbed. */
+async function mountResumeImport(translate: Translate) {
+  const wallet = useWalletStore()
+  const setSeed = jest.fn()
+  wallet.$onAction(({ name }) => {
+    if (name === 'setSeedPhrase') setSeed()
+  })
+  const wrapper = mount(Setup, {
+    global: {
+      stubs: {
+        QPageContainer: SlotStub,
+        QPage: SlotStub,
+        QHeader: true,
+        QToolbar: true,
+        QToolbarTitle: true,
+        QBanner: true,
+        QStepper: SlotStub,
+        QStep: SlotStub,
+        QStepperNavigation: SlotStub,
+        QBtn: QBtnStub,
+        QInput: QInputStub,
+        QSpace: true,
+        EulaStep: true,
+        DepositStep: true,
+        SeedConfirmStep: true,
+        ReplaceAccountGuard: true,
+      },
+      mocks: {
+        $t: translate,
+        $q: { loading: { show: jest.fn(), hide: jest.fn() } },
+        $router: { push: mockRouterPush },
+      },
+    },
+  })
+  await nextTick()
+  return { wallet, setSeed, wrapper }
+}
 
 async function mountSetup(extraStubs: Record<string, unknown> = {}) {
   const wallet = useWalletStore()
@@ -524,6 +590,113 @@ describe('Setup page mounted (#267)', () => {
       await expect(vm.next()).rejects.toThrow()
       expect(setSeed).not.toHaveBeenCalled()
       expect(wallet.seedPhrase).toBe(STORED)
+    })
+
+    it('offers import of a different phrase only after the typed replace confirmation, and writes nothing before it (#387)', async () => {
+      const OTHER =
+        'legal winner thank year wave sausage worth useful legal winner thank yellow'
+      expect(enUs.accountStep.importDifferentPhrase).toBe(
+        'I already have a different recovery phrase',
+      )
+      expect(frFr.accountStep.importDifferentPhrase).toMatch(
+        /phrase de récupération/i,
+      )
+      expect(frFr.accountStep.importDifferentPhrase).not.toBe(
+        enUs.accountStep.importDifferentPhrase,
+      )
+      expect(enUs.accountStep.confirmStoredFirst).toMatch(/stored/i)
+      expect(frFr.accountStep.confirmStoredFirst).toMatch(
+        /phrase de récupération/i,
+      )
+
+      setActivePinia(createPinia())
+      useWalletStore().seedPhrase = STORED
+      const translate: Translate = (key, params) => {
+        if (key === 'replaceGuard.word') return 'REPLACE'
+        if (key === 'replaceGuard.typeLabel') {
+          return `Type ${params?.word ?? ''} to continue`
+        }
+        return key
+      }
+      const { wallet, setSeed, wrapper } = await mountResumeImport(translate)
+      const vm = wrapper.vm as unknown as Vm & {
+        finishSetup: () => Promise<void>
+        avatar: string
+      }
+      vm.finishSetup = jest.fn(() => Promise.resolve())
+      vm.avatar = 'data:avatar'
+
+      const secondary = wrapper.get('[data-test="import-different-phrase"]')
+      expect(secondary.text()).toBe('accountStep.importDifferentPhrase')
+      expect(wrapper.get('[data-test="confirm-stored-first"]').text()).toBe(
+        'accountStep.confirmStoredFirst',
+      )
+      expect(wrapper.find('[data-test="import-different-form"]').exists()).toBe(
+        false,
+      )
+      const storedBox = wrapper.get('textarea[aria-label="profile.seedEntry"]')
+      expect(storedBox.attributes('readonly')).toBeDefined()
+      expect((storedBox.element as HTMLTextAreaElement).value).toBe(STORED)
+      expect(
+        wrapper
+          .find('[aria-label="accountStep.refreshRecoveryPhrase"]')
+          .exists(),
+      ).toBe(false)
+      expect(setSeed).not.toHaveBeenCalled()
+      expect(commitValidatedSetupSeed).not.toHaveBeenCalled()
+      expect(wallet.seedPhrase).toBe(STORED)
+
+      await secondary.trigger('click')
+      await nextTick()
+      expect(wrapper.find('[data-test="import-different-form"]').exists()).toBe(
+        true,
+      )
+      expect(setSeed).not.toHaveBeenCalled()
+      expect(wallet.seedPhrase).toBe(STORED)
+      expect(
+        (
+          wrapper.get('textarea[aria-label="profile.seedEntry"]')
+            .element as HTMLTextAreaElement
+        ).value,
+      ).toBe(STORED)
+
+      const input = wrapper.get('[data-test="import-different-input"]')
+      await input.setValue('replace')
+      await wrapper.get('[data-test="import-different-form"]').trigger('submit')
+      await nextTick()
+      expect(wrapper.get('[role="status"]').text()).toBe(
+        'replaceGuard.mismatch',
+      )
+      expect(setSeed).not.toHaveBeenCalled()
+      expect(commitValidatedSetupSeed).not.toHaveBeenCalled()
+      expect(mockSetRelayData).not.toHaveBeenCalled()
+      expect(wallet.seedPhrase).toBe(STORED)
+      expect(
+        wrapper
+          .get('textarea[aria-label="profile.seedEntry"]')
+          .attributes('readonly'),
+      ).toBeDefined()
+
+      await input.setValue('  REPLACE ')
+      await wrapper.get('[data-test="import-different-form"]').trigger('submit')
+      await nextTick()
+      expect(setSeed).not.toHaveBeenCalled()
+      expect(commitValidatedSetupSeed).not.toHaveBeenCalled()
+      expect(mockSetRelayData).not.toHaveBeenCalled()
+      expect(wallet.seedPhrase).toBe(STORED)
+
+      const importBox = wrapper.get('textarea[aria-label="profile.seedEntry"]')
+      expect(importBox.attributes('readonly')).toBeUndefined()
+      expect((importBox.element as HTMLTextAreaElement).value).toBe('')
+
+      await importBox.setValue(OTHER)
+      await nextTick()
+      vm.step = 2
+      await vm.next()
+
+      expect(commitValidatedSetupSeed).toHaveBeenCalledTimes(1)
+      expect(setSeed).toHaveBeenCalledTimes(1)
+      expect(wallet.seedPhrase).toBe(OTHER)
     })
 
     it('a stored seed WITH a name is not resume mode (completed-old is unaffected)', async () => {

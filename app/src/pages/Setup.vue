@@ -45,7 +45,11 @@
             icon="vpn_key"
             :done="step > 2"
           >
-            <account-step v-model:account-data="accountData" :resume="resume" />
+            <account-step
+              v-model:account-data="accountData"
+              :resume="resume"
+              @resume-import-acknowledged="acknowledgeResumeImport"
+            />
           </q-step>
           <q-step
             v-if="isNewAccount"
@@ -195,7 +199,8 @@ export default defineComponent({
     const contacts = useContactStore()
     const storedSeed = wallet.seedPhrase
     // #284 resume mode: a stored seed with no display name (the old #267 bug). The stored phrase
-    // is confirmed and named in place; it is never regenerated, replaced or imported over.
+    // is confirmed and named in place. Importing a different phrase (#387) waits for the same
+    // typed acknowledgement as the replace-seed guard, and that acknowledgement writes nothing.
     const accountState = classifyAccount({
       seedPhrase: storedSeed,
       name: useProfileStore().profile?.name,
@@ -213,6 +218,7 @@ export default defineComponent({
       existingAccount,
       existingConfirmed: accountState === 'confirmed',
       replaceAcknowledged: false,
+      resumeReplaceAcknowledged: false,
       storedSeed: resume ? storedSeed : null,
       step: 1,
       accountData: {
@@ -270,6 +276,11 @@ export default defineComponent({
       this.accountData.seed = generateMnemonic()
       this.step = 1
     },
+    acknowledgeResumeImport() {
+      // Unlocks an in-memory import draft only. The stored seed stays until import finishes.
+      if (!this.resume) return
+      this.resumeReplaceAcknowledged = true
+    },
     onSeedConfirmed() {
       if (this.challenge) this.confirmedSeed = this.challenge.seed
     },
@@ -298,10 +309,11 @@ export default defineComponent({
       }
       if (
         this.resume &&
+        !this.resumeReplaceAcknowledged &&
         normalizeSetupMnemonic(this.accountData.seed) !==
           normalizeSetupMnemonic(this.storedSeed ?? '')
       ) {
-        // Belt and braces: resume mode may only ever re-store the SAME phrase it found.
+        // Without the typed acknowledgement, resume mode may only re-store the SAME phrase.
         const error = new Error(this.$t('setup.storedSeedMismatch'))
         errorNotify(error)
         throw error

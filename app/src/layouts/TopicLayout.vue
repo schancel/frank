@@ -3,7 +3,7 @@
     <q-drawer
       v-model="showTopicDrawer"
       side="right"
-      :breakpoint="800"
+      :breakpoint="drawerBreakpoint"
       show-if-above
     >
       <topic-drawer :topic="topic" />
@@ -37,7 +37,11 @@
     </q-page-container>
 
     <q-footer bordered v-show="$status.setup">
-      <topic-input @send-message="sendMessage" v-model:message="message" />
+      <topic-input
+        @send-message="sendMessage"
+        v-model:message="message"
+        :disable="sendingMessage"
+      />
     </q-footer>
   </div>
 </template>
@@ -51,13 +55,19 @@ import TopicDrawer from 'src/components/topic/TopicDrawer.vue'
 
 import { useTopicStore } from 'src/stores/topics'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
-import { errorNotify } from 'src/utils/notifications'
+import {
+  BurnRefreshError,
+  notifyBurnFailure,
+} from 'src/utils/burn-refresh-error'
+import { DRAWER_BREAKPOINT } from 'src/utils/layout'
 import assert from 'assert'
 
 export default defineComponent({
   data() {
     return {
       message: '',
+      sendingMessage: false,
+      drawerBreakpoint: DRAWER_BREAKPOINT,
     }
   },
   props: {},
@@ -94,14 +104,18 @@ export default defineComponent({
   },
   methods: {
     async sendMessage(message: string) {
-      if (!message) {
+      if (this.sendingMessage || !message) {
         // Don't send blank messages
         return
       }
 
+      const submittedMessage = message
+      this.sendingMessage = true
+      if (this.message === submittedMessage) this.message = ''
+
       const entry = {
         kind: 'post' as const,
-        message: message,
+        message: submittedMessage,
       }
 
       console.log('posting message', entry)
@@ -119,11 +133,19 @@ export default defineComponent({
         })
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
       } catch (err: any) {
-        errorNotify(err)
+        // A burn that landed but could not be read back clears the draft (resending would burn
+        // again) and says so; any other failure keeps the draft for a retry.
+        notifyBurnFailure(err, key => this.$t(key))
+        if (!(err instanceof BurnRefreshError)) {
+          // Restore a post that never landed without overwriting a new draft typed in flight.
+          this.message = this.message
+            ? `${submittedMessage}\n${this.message}`
+            : submittedMessage
+        }
         return
+      } finally {
+        this.sendingMessage = false
       }
-
-      this.message = ''
     },
     toggleSettingsDrawerOpen() {
       this.$emit('toggleMyDrawerOpen')

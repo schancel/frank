@@ -156,6 +156,12 @@
       "entry": "src/curve.ts",
       "forbid": ["btc-magic", "xpi-port", "xpi-magic"],
       "absentExports": ["BTC_MAINNET", "BCH_MAINNET", "encodeBase58"]
+    },
+    {
+      "name": "backend",
+      "entry": "src/backend.ts",
+      "forbid": ["btc-magic", "xpi-port", "xpi-magic"],
+      "absentExports": ["BTC_MAINNET", "BCH_MAINNET", "encodeBase58"]
     }
   ]
 }

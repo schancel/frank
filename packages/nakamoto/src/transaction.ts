@@ -3,9 +3,12 @@
 // BIP143 and BIP341 are BTC only. BCH and XEC share the fork-id preimage;
 // BCH inserts the Upgrade9 UTXO hash only when commitUtxos is set.
 // XPI uses SignatureHashLotus (lotusd interpreter.cpp). Fork id 0 is not that path.
+// Txids: BTC, BCH, and XEC are sha256d of the serialization with witness bytes
+// omitted. XPI follows lotusd ComputeTxId at master 5d192488 (no third witness
+// merkle). The XPI block leaf is sha256d(GetHash || GetId). GetHash includes
+// the scriptSig. Display order is the reversal of these internal hashes.
 
-import { sha256 } from '@noble/hashes/sha256.js'
-
+import { cryptoBackend } from './backend.js'
 import { concatBytes, copyBytes, encodeUnsignedLE } from './bytes.js'
 import type { ChainDescriptor } from './chain/types.js'
 import { internalHashFromBytes, type InternalHash } from './constructors.js'
@@ -35,7 +38,7 @@ const NEGATIVE_ONE = Uint8Array.of(
   0xff,
 )
 const TAP_TAG = Uint8Array.of(84, 97, 112, 83, 105, 103, 104, 97, 115, 104)
-const TAP_TAG_HASH = new Uint8Array(sha256(TAP_TAG))
+const TAP_TAG_HASH = new Uint8Array(cryptoBackend.sha256(TAP_TAG))
 const INT64_MAX = (1n << 63n) - 1n
 const UINT64_MAX = (1n << 64n) - 1n
 const CODESEP_NONE = 0xffffffff
@@ -56,7 +59,10 @@ export interface TxInput {
   readonly prevout: OutPoint
   readonly scriptSig: Uint8Array
   readonly sequence: number
-  /** Present only on a BIP144 witness transaction. Omitted for legacy bytes. */
+  /**
+   * BIP144 stack. Omitted on legacy bytes. An empty stack is not a witness
+   * and is serialized without the marker.
+   */
   readonly witness?: readonly Uint8Array[]
 }
 
@@ -109,6 +115,7 @@ export interface TxFailure {
     | 'tx-trailing'
     | 'tx-witness-flag'
     | 'tx-witness-rejected'
+    | 'tx-witness-superfluous'
     | 'tx-range'
     | 'sighash-algorithm'
     | 'sighash-index'
@@ -134,6 +141,7 @@ export function isTxError(value: unknown): value is TxFailure {
     code === 'tx-trailing' ||
     code === 'tx-witness-flag' ||
     code === 'tx-witness-rejected' ||
+    code === 'tx-witness-superfluous' ||
     code === 'tx-range' ||
     code === 'sighash-algorithm' ||
     code === 'sighash-index' ||
@@ -153,7 +161,7 @@ function fail(code: TxFailure['code']): TxResult<never> {
 }
 
 function hash256(bytes: Uint8Array) {
-  return new Uint8Array(sha256(sha256(bytes)))
+  return new Uint8Array(cryptoBackend.sha256d(bytes))
 }
 
 function u32Bits(value: number): number | null {
@@ -210,8 +218,12 @@ function outputBytes(output: TxOutput | SpentOutput): Uint8Array | null {
   return writer.finish()
 }
 
+function witnessHasItem(witness: readonly Uint8Array[] | undefined): boolean {
+  return (witness?.length ?? 0) > 0
+}
+
 function hasWitness(tx: Transaction): boolean {
-  return tx.inputs.some(input => input.witness !== undefined)
+  return tx.inputs.some(input => witnessHasItem(input.witness))
 }
 
 function fitsCount(count: bigint, byteLength: number): boolean {
@@ -346,20 +358,34 @@ export function parseTransaction(
   if (!vin.ok) return vin
   let witness = false
   let inputCount = vin.value
+  let legacyEmpty = false
   if (chain.family === 'btc' && vin.value === 0) {
     const flag = reader.readUInt8()
     if (!flag.ok) return fail('tx-truncated')
-    if (flag.value !== 1) return fail('tx-witness-flag')
-    witness = true
-    const real = readCount(reader, raw.length)
-    if (!real.ok) return real
-    inputCount = real.value
+    if (flag.value === 1) {
+      witness = true
+      const real = readCount(reader, raw.length)
+      if (!real.ok) return real
+      inputCount = real.value
+    } else if (flag.value === 0) {
+      // Core reads this byte as flags 0 and leaves the output vector empty.
+      legacyEmpty = true
+    } else {
+      return fail('tx-witness-flag')
+    }
   }
-  const inputs = readInputs(reader, inputCount)
+  const inputs: TxResult<TxInput[]> = legacyEmpty
+    ? { ok: true, value: [] }
+    : readInputs(reader, inputCount)
   if (!inputs.ok) return inputs
-  const vout = readCount(reader, raw.length)
-  if (!vout.ok) return vout
-  const outputs = readOutputs(reader, vout.value)
+  let outputs: TxResult<TxOutput[]>
+  if (legacyEmpty) {
+    outputs = { ok: true, value: [] }
+  } else {
+    const vout = readCount(reader, raw.length)
+    if (!vout.ok) return vout
+    outputs = readOutputs(reader, vout.value)
+  }
   if (!outputs.ok) return outputs
   const txInputs = witness
     ? readWitness(reader, inputs.value, raw.length)
@@ -368,6 +394,9 @@ export function parseTransaction(
   const locktime = reader.readUInt32LE()
   if (!locktime.ok) return fail('tx-truncated')
   if (!reader.finished()) return fail('tx-trailing')
+  if (witness && !txInputs.value.some(input => witnessHasItem(input.witness))) {
+    return fail('tx-witness-superfluous')
+  }
   return {
     ok: true,
     value: {
@@ -379,40 +408,179 @@ export function parseTransaction(
   }
 }
 
-function withoutCodeSeparators(script: Uint8Array): Uint8Array {
-  const out: number[] = []
-  let index = 0
-  while (index < script.length) {
-    const opcode = script[index] ?? 0
-    if (opcode === OP_CODESEPARATOR) {
-      index += 1
-      continue
-    }
-    let data = 0
-    let header = 1
-    if (opcode > 0 && opcode < 0x4c) {
-      data = opcode
-    } else if (opcode === 0x4c || opcode === 0x4d || opcode === 0x4e) {
-      header = opcode === 0x4c ? 2 : opcode === 0x4d ? 3 : 5
-      if (index + header > script.length) {
-        for (let rest = index; rest < script.length; rest += 1) {
-          out.push(script[rest] ?? 0)
-        }
-        break
-      }
-      for (let byte = 0; byte < header - 1; byte += 1) {
-        data |= (script[index + 1 + byte] ?? 0) << (8 * byte)
-      }
-    }
-    const end = index + header + data
-    const limit = end > script.length ? script.length : end
-    for (let cursor = index; cursor < limit; cursor += 1) {
-      out.push(script[cursor] ?? 0)
-    }
-    if (end > script.length) break
-    index = end
+function brandHash(bytes: Uint8Array): TxResult<InternalHash> {
+  const branded = internalHashFromBytes(bytes)
+  if (!branded.ok) return fail('tx-range')
+  return branded
+}
+
+function withoutWitness(tx: Transaction): Transaction {
+  return {
+    version: tx.version,
+    locktime: tx.locktime,
+    outputs: tx.outputs,
+    inputs: tx.inputs.map(input => ({
+      prevout: input.prevout,
+      scriptSig: input.scriptSig,
+      sequence: input.sequence,
+    })),
   }
-  return Uint8Array.from(out)
+}
+
+/**
+ * sha256d of the full consensus serialization. Lotus GetHash includes the
+ * scriptSig. A BTC witness stack is included here and excluded from the txid.
+ */
+export function transactionHash(
+  tx: Transaction,
+  chain: ChainDescriptor,
+): TxResult<InternalHash> {
+  const bytes = serializeTransaction(tx, chain)
+  if (!bytes.ok) return bytes
+  return brandHash(hash256(bytes.value))
+}
+
+function lotusTransactionId(tx: Transaction): TxResult<InternalHash> {
+  if (hasWitness(tx)) return fail('tx-witness-rejected')
+  if (i32Bits(tx.version) === null || u32Bits(tx.locktime) === null) {
+    return fail('tx-range')
+  }
+  const inputLeaves: Uint8Array[] = []
+  for (const input of tx.inputs) {
+    const prevout = outPointBytes(input.prevout)
+    const sequence = encodeUnsignedLE(BigInt(input.sequence), 4)
+    if (prevout === null || !sequence.ok) return fail('tx-range')
+    inputLeaves.push(hash256(concatBytes([prevout, sequence.value])))
+  }
+  const outputLeaves: Uint8Array[] = []
+  for (const output of tx.outputs) {
+    const encoded = outputBytes(output)
+    if (encoded === null) return fail('tx-range')
+    outputLeaves.push(hash256(encoded))
+  }
+  const inputsRoot = merkleRoot(inputLeaves)
+  const outputsRoot = merkleRoot(outputLeaves)
+  if (!inputsRoot.ok) return inputsRoot
+  if (!outputsRoot.ok) return outputsRoot
+  const writer = new ByteWriter()
+  if (!writeI32(writer, tx.version)) return fail('tx-range')
+  writer.write(inputsRoot.value.root)
+  writer.writeUInt8(inputsRoot.value.height)
+  writer.write(outputsRoot.value.root)
+  writer.writeUInt8(outputsRoot.value.height)
+  if (!writeU32(writer, tx.locktime)) return fail('tx-range')
+  return brandHash(hash256(writer.finish()))
+}
+
+/**
+ * Internal txid. XPI is the segmented id. BTC, BCH, and XEC are sha256d of
+ * the serialization with witness bytes omitted.
+ */
+export function transactionId(
+  tx: Transaction,
+  chain: ChainDescriptor,
+): TxResult<InternalHash> {
+  if (chain.family === 'xpi') return lotusTransactionId(tx)
+  if (chain.family !== 'btc' && hasWitness(tx)) {
+    return fail('tx-witness-rejected')
+  }
+  const bytes = serializeTransaction(
+    chain.family === 'btc' ? withoutWitness(tx) : tx,
+    chain,
+  )
+  if (!bytes.ok) return bytes
+  return brandHash(hash256(bytes.value))
+}
+
+/**
+ * Block merkle leaf. XPI is sha256d(GetHash || GetId), both internal.
+ * The other chains use the txid, so a witness stack does not move the leaf.
+ */
+export function blockMerkleLeaf(
+  tx: Transaction,
+  chain: ChainDescriptor,
+): TxResult<InternalHash> {
+  const id = transactionId(tx, chain)
+  if (!id.ok) return id
+  if (chain.family !== 'xpi') return id
+  const hash = transactionHash(tx, chain)
+  if (!hash.ok) return hash
+  return brandHash(hash256(concatBytes([hash.value, id.value])))
+}
+
+/**
+ * GetOp cursor. A push that runs past the script fails and leaves `next` on
+ * the first unread byte. PUSHDATA4 length is unsigned; `<< 24` is a signed int32.
+ */
+function scriptOp(
+  script: Uint8Array,
+  pc: number,
+):
+  | { readonly ok: true; readonly opcode: number; readonly next: number }
+  | { readonly ok: false; readonly next: number } {
+  if (pc >= script.length) return { ok: false, next: pc }
+  const opcode = script[pc] ?? 0
+  let cursor = pc + 1
+  if (opcode <= 0x4e) {
+    let size = 0
+    if (opcode < 0x4c) {
+      size = opcode
+    } else if (opcode === 0x4c) {
+      if (script.length - cursor < 1) return { ok: false, next: cursor }
+      size = script[cursor] ?? 0
+      cursor += 1
+    } else if (opcode === 0x4d) {
+      if (script.length - cursor < 2) return { ok: false, next: cursor }
+      size = (script[cursor] ?? 0) + ((script[cursor + 1] ?? 0) << 8)
+      cursor += 2
+    } else {
+      if (script.length - cursor < 4) return { ok: false, next: cursor }
+      size =
+        (script[cursor] ?? 0) +
+        (script[cursor + 1] ?? 0) * 256 +
+        (script[cursor + 2] ?? 0) * 65536 +
+        (script[cursor + 3] ?? 0) * 16777216
+      cursor += 4
+    }
+    if (script.length - cursor < size) return { ok: false, next: cursor }
+    cursor += size
+  }
+  return { ok: true, opcode, next: cursor }
+}
+
+/**
+ * Legacy scriptCode field, including its compact size. Matches Bitcoin Core
+ * SerializeScriptCode: separators are removed, and a failed GetOp does not
+ * contribute the unread tail. The size is the original length minus separators,
+ * which can be longer than the bytes that follow.
+ */
+function legacyScriptCode(script: Uint8Array): Uint8Array {
+  let cursor = 0
+  let separators = 0
+  while (cursor < script.length) {
+    const op = scriptOp(script, cursor)
+    if (!op.ok) break
+    if (op.opcode === OP_CODESEPARATOR) separators += 1
+    cursor = op.next
+  }
+  const writer = new ByteWriter()
+  writer.writeVarint(BigInt(script.length - separators))
+  cursor = 0
+  let begin = 0
+  while (cursor < script.length) {
+    const op = scriptOp(script, cursor)
+    if (!op.ok) {
+      cursor = op.next
+      break
+    }
+    if (op.opcode === OP_CODESEPARATOR) {
+      if (op.next - 1 > begin) writer.write(script.subarray(begin, op.next - 1))
+      begin = op.next
+    }
+    cursor = op.next
+  }
+  if (begin < cursor) writer.write(script.subarray(begin, cursor))
+  return writer.finish()
 }
 
 function baseType(hashType: number): number {
@@ -447,7 +615,7 @@ function sighashLegacy(
     if (!bug.ok) return fail('tx-range')
     return bug
   }
-  const script = withoutCodeSeparators(scriptCode)
+  const script = legacyScriptCode(scriptCode)
   const anyone = anyoneCanPay(hashType)
   const writer = new ByteWriter()
   if (!writeI32(writer, tx.version)) return fail('tx-range')
@@ -460,7 +628,7 @@ function sighashLegacy(
     const prevout = outPointBytes(input.prevout)
     if (prevout === null) return fail('tx-range')
     writer.write(prevout)
-    if (index === inputIndex) writeScript(writer, script)
+    if (index === inputIndex) writer.write(script)
     else writer.writeUInt8(0)
     const clear =
       index !== inputIndex && (base === SIGHASH_NONE || base === SIGHASH_SINGLE)
@@ -579,7 +747,7 @@ function sighashBip143(
 const TAP_TYPES = new Set([0x00, 0x01, 0x02, 0x03, 0x81, 0x82, 0x83])
 
 function shaConcat(parts: readonly Uint8Array[]) {
-  return new Uint8Array(sha256(concatBytes(parts)))
+  return new Uint8Array(cryptoBackend.sha256(concatBytes(parts)))
 }
 
 function sighashTaproot(
@@ -673,14 +841,14 @@ function sighashTaproot(
   if (annex !== null) {
     const annexBytes = new ByteWriter()
     writeScript(annexBytes, annex)
-    writer.write(new Uint8Array(sha256(annexBytes.finish())))
+    writer.write(new Uint8Array(cryptoBackend.sha256(annexBytes.finish())))
   }
   if (low === SIGHASH_SINGLE) {
     const output = tx.outputs[inputIndex]
     if (output === undefined) return fail('sighash-single')
     const encoded = outputBytes(output)
     if (encoded === null) return fail('tx-range')
-    writer.write(new Uint8Array(sha256(encoded)))
+    writer.write(new Uint8Array(cryptoBackend.sha256(encoded)))
   }
   if (extFlag === 1 && options.tapleafHash !== undefined) {
     writer.write(copyBytes(options.tapleafHash))
@@ -689,7 +857,7 @@ function sighashTaproot(
   }
   const message = writer.finish()
   const digest = new Uint8Array(
-    sha256(concatBytes([TAP_TAG_HASH, TAP_TAG_HASH, message])),
+    cryptoBackend.sha256(concatBytes([TAP_TAG_HASH, TAP_TAG_HASH, message])),
   )
   const branded = internalHashFromBytes(digest)
   if (!branded.ok) return fail('tx-range')

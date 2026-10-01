@@ -62,12 +62,14 @@ pub struct RegistryConf {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 pub struct MonadMailboxConf {
     /// Whether admission and reconciliation are enabled. This is the only switch for
-    /// `PUT /message/monad` and the private mailbox routes: no environment variable enables or
-    /// configures them. A disabled deployment omits those routes (every `/message/monad` request
+    /// `PUT /message/monad` and the private mailbox routes (the shipped configs enable it). The
+    /// one environment input is `cashwebd-exe` filling a missing `rpc_url` from
+    /// `MONAD_TESTNET_HTTP_RPC_URL`; this type itself never reads the environment. A disabled deployment omits those routes (every `/message/monad` request
     /// other than the separate topic routes answers 404) and does not start a worker; durable rows
     /// remain readable.
     pub enabled: bool,
-    /// Monad JSON-RPC endpoint. Required exactly when `enabled` is true.
+    /// Monad JSON-RPC endpoint. Required exactly when `enabled` is true; the shipped configs omit it
+    /// and `cashwebd-exe` supplies it from the environment before calling `mode()`.
     pub rpc_url: Option<url::Url>,
     /// Aggregate direct-message stamp minimum, as a decimal string because TOML has no `u128`.
     /// Required exactly when the mailbox is enabled.
@@ -509,9 +511,11 @@ mod tests {
     }
 
     #[test]
-    fn deployed_default_configurations_keep_the_monad_mailbox_disabled() {
-        // The mailbox is opt-in: both checked-in defaults must parse and stay explicitly
-        // disabled, so deploying this binary with them changes no served route.
+    fn deployed_default_configurations_enable_the_monad_mailbox() {
+        // The mailbox is on by default (owner decision, ticket #279): both checked-in defaults
+        // must parse enabled with the safe non-secret keys. The RPC URL is deliberately absent
+        // (secret-bearing); `cashwebd-exe` resolves it from MONAD_TESTNET_HTTP_RPC_URL, so
+        // `mode()` alone reports it missing while the file is otherwise complete.
         for (name, config) in [
             (
                 "cashwebd.local.toml",
@@ -522,20 +526,31 @@ mod tests {
                 include_str!("../../../docker/cashwebd.toml"),
             ),
         ] {
-            let conf = parse_conf(config).unwrap_or_else(|err| panic!("{name}: {err}"));
+            let mut conf = parse_conf(config).unwrap_or_else(|err| panic!("{name}: {err}"));
             assert_eq!(
                 conf.registry.monad_mailbox,
                 MonadMailboxConf {
-                    enabled: false,
+                    enabled: true,
                     rpc_url: None,
-                    min_value_wei: None,
-                    expected_chain_id: None,
+                    min_value_wei: Some("1000000000000".to_string()),
+                    expected_chain_id: Some(10143),
                 },
                 "{name}"
             );
             assert_eq!(
                 conf.registry.monad_mailbox.mode(),
-                Ok(MonadMailboxMode::Disabled),
+                Err(MonadMailboxConfigError::MissingRpcUrl),
+                "{name}"
+            );
+            let rpc_url: url::Url = "http://127.0.0.1:1".parse().unwrap();
+            conf.registry.monad_mailbox.rpc_url = Some(rpc_url.clone());
+            assert_eq!(
+                conf.registry.monad_mailbox.mode(),
+                Ok(MonadMailboxMode::Enabled {
+                    rpc_url,
+                    min_value_wei: 1_000_000_000_000,
+                    expected_chain_id: 10143,
+                }),
                 "{name}"
             );
         }

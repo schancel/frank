@@ -3,7 +3,8 @@
 // stage, which the manifest schema has no field for.
 import { Encodable, encodeCanonical } from '../src/cbor'
 import { ErrorCategory, ErrorStage } from '../src/errors'
-import { SupportedSchema } from '../src/validate'
+import { contentHash } from '../src/hash'
+import { KNOWN_TYPES, SupportedSchema, validateFrame } from '../src/validate'
 import {
   M,
   NET,
@@ -14,6 +15,7 @@ import {
   acct2,
   attestationFrame,
   body,
+  burnTx,
   bytesOf,
   checkpointFrame,
   checkpointPayload,
@@ -35,10 +37,19 @@ import {
   statementFrame,
   statementPayload,
   textItem,
+  topicPostFrame,
+  topicPostPayload,
+  topicSubmissionFrame,
+  topicSubmissionPayload,
+  topicVoteFrame,
+  topicVotePayload,
   transition,
+  ts,
   transitionStatement,
   type5Frame,
   type5Payload,
+  T3C,
+  stampAccount,
   type6Frame,
   unknownItem,
   patchBytes,
@@ -1130,14 +1141,14 @@ rej(
   'unsupported',
   '7',
   ['E2', 'V6.1'],
-  { source: 'typescript' },
+  { source: 'typescript', readerVersion: 1 },
 )
 ret(
   'v6-min-reader-above-reader-retained',
   'The same frame where the root may retain it opaquely.',
   fr(17, M([[0, 'x']]), 2, 2),
   ['E3', 'V6.1'],
-  { source: 'typescript' },
+  { source: 'typescript', readerVersion: 1 },
 )
 acc(
   'v6-newer-schema-extra-field',
@@ -1703,7 +1714,7 @@ rej(
   'unsupported',
   '7',
   ['V6.1', 'S8'],
-  TS,
+  { ...TS, readerVersion: 1 },
 )
 rej(
   't1-payload-frame-bad-magic',
@@ -1904,13 +1915,11 @@ rej(
   ['S8'],
   S,
 )
-rej(
-  'sem-t1-recipient-differs',
-  'Delivery destination differs from the type-5 recipient (S8).',
+acc(
+  'sem-t1-stamp-key-differs-from-recipient',
+  "Delivery destination (the stamp key P') differs from the type-5 recipient: accepted, because the routing identity and the payment key are independent (S8, S9; #198).",
   deliveryFrame({ destination: acct1(4) }),
-  'semantic',
-  '9',
-  ['S8'],
+  ['S8', 'S9'],
   S,
 )
 rej(
@@ -2986,8 +2995,8 @@ rej(
   NOP,
 )
 
-// Depth accounting of every required-child path. Each child is a schema-2 frame whose unknown
-// field 9 nests arrays: the child's payload map sits at depth D, so `32 - D` array levels fit.
+// Depth accounting of every required-child path. Each child is a frame one schema above its
+// reader's highest (type 4: schema 3, type 5 and 8: schema 2) whose unknown field 9 nests arrays: the child's payload map sits at depth D, so `32 - D` array levels fit.
 // (Any change to the depth offset used when opening that child flips exactly one of each pair.)
 const nestedArrays = (levels: number): Encodable => {
   let v: Encodable = []
@@ -2998,7 +3007,7 @@ const deep = (payload: Fields, levels: number) =>
   new Map([...payload, [9, nestedArrays(levels)]])
 type Fields = Map<number, Encodable>
 const child2 = (type: number, payload: Fields, levels: number) =>
-  fr(type, deep(payload, levels), 2, 1)
+  fr(type, deep(payload, levels), type === 4 ? 3 : 2, 1)
 const pair = (
   id: string,
   what: string,
@@ -3099,4 +3108,1132 @@ pair(
   27,
   n => fr(16, M([[0, [child2(17, M([[0, 'x']]), n)]]])),
   {},
+)
+
+// ---------------------------------------------------------------------------------------------
+// Spec clarifications (#182): each vector below pins a reading that the README states explicitly
+// after the codec-implementation ambiguity review.
+// ---------------------------------------------------------------------------------------------
+
+// Pass A scans an indefinite string before pass B reports it (C5, section 9 passes A and B).
+rej(
+  'payload-indefinite-text-truncated',
+  'A truncated indefinite text string is malformed (pass A), not noncanonical: pass A scans the chunks before pass B calls the indefinite start noncanonical.',
+  P('a1 00 7f 61 68'),
+  'malformed',
+  '7',
+  ['C3', 'C5', 'C10'],
+  g,
+)
+rej(
+  'payload-indefinite-bytes-chunk-wrong-major',
+  'An indefinite byte string holding a text chunk is malformed (pass A).',
+  P('a1 00 5f 61 68 ff'),
+  'malformed',
+  '7',
+  ['C3', 'C5', 'C10'],
+  g,
+)
+rej(
+  'payload-indefinite-string-nested-chunk',
+  'An indefinite byte string whose chunk is itself indefinite is malformed (pass A).',
+  P('a1 00 5f 5f 41 01 ff ff'),
+  'malformed',
+  '7',
+  ['C3', 'C5', 'C10'],
+  g,
+)
+
+// C7: the u64 bound is unreachable for unsigned values; the i64 lower bound is reachable.
+const seconds = (n: bigint) => ts(n, 0)
+acc(
+  't4-timestamp-seconds-i64-min',
+  'Timestamp seconds -2^63, the i64 minimum: accepted (C7).',
+  fr(4, withField(statementPayload(), 3, seconds(-9223372036854775808n))),
+  ['C7'],
+  { prior: null },
+)
+rej(
+  't4-timestamp-seconds-below-i64-min',
+  'Timestamp seconds -2^63-1: a negative integer that still fits a CBOR head but not an i64, a schema error at 8.2 (C7).',
+  framePayload(
+    patchBytes(
+      encodeCanonical(
+        withField(statementPayload(), 3, seconds(-9223372036854775808n)),
+      ),
+      hex('3b7fffffffffffffff'),
+      hex('3b8000000000000000'),
+    ),
+    4,
+  ),
+  'schema',
+  '8.2',
+  ['C7'],
+  { prior: null },
+)
+
+// framed-object `.size (9..)`: a short embedded child is a parent schema error (8.2).
+rej(
+  't1-payload-frame-8-bytes',
+  'A required child of 8 bytes violates the framed-object size bound: schema at the parent stage 8.2, never the child stage 2 frame error.',
+  deliveryFrame({ payloadFrame: type5Frame().slice(0, 8) }),
+  'schema',
+  '8.2',
+  ['F3', 'S8'],
+  TS,
+)
+rej(
+  't1-payload-frame-9-bytes-empty-body',
+  'A required child of exactly 9 bytes (valid header, declared length 0) passes the size bound; its empty body is truncated CBOR at the child stage 5.',
+  deliveryFrame({ payloadFrame: body('') }),
+  'malformed',
+  '5',
+  ['F3', 'S8'],
+  TS,
+)
+
+// S2b for key-transition entries (type 4 fields 1-3), at stage 8.3.
+const transitionWith = (field: number, value: Encodable) =>
+  fr(
+    4,
+    statementPayload({
+      transitions: [withField(transition(transitionStatement()), field, value)],
+    }),
+  )
+rej(
+  't4-transition-algorithm-key-type-mismatch',
+  'A key-transition entry with algorithm 1 and an Ed25519 (key type 2) signer: unsupported at 8.3, as for a type-2 signature entry (S2b).',
+  transitionWith(1, 1),
+  'unsupported',
+  '8.3',
+  ['S2a', 'S2b'],
+  { ...TS, prior: null },
+)
+rej(
+  't4-transition-signature-length-mismatch',
+  'A key-transition entry with algorithm 16 and a 63-byte signature: unsupported at 8.3 (S2b).',
+  transitionWith(3, bytesOf(63, 9)),
+  'unsupported',
+  '8.3',
+  ['S2b'],
+  { ...TS, prior: null },
+)
+rej(
+  't4-transition-algorithm-unallocated',
+  'A key-transition entry with unallocated algorithm 99: unsupported at 8.3 (S2a).',
+  transitionWith(1, 99),
+  'unsupported',
+  '8.3',
+  ['S2a', 'S2b'],
+  { ...TS, prior: null },
+)
+
+// C12 / V6.3: the frame containing a map decides whether its wildcard is open.
+const factExtra = withField(fact(1_700_000_100, 0, 1, bytesOf(10, 1)), 9, 7)
+acc(
+  'v6-nested-wildcard-journal-fact-schema2-accept',
+  'Type 3 at schema 2 (min_reader 1): a journal fact, a map nested in the payload, carries an undeclared key 9; the frame is read as a newer compatible schema, so the wildcard is open (C12, V6.3).',
+  fr(3, checkpointPayload({ facts: [factExtra] }), 2, 1),
+  ['C12', 'V6.3'],
+)
+rej(
+  'v6-nested-wildcard-journal-fact-schema1-reject',
+  'The same nested key at exact schema 1 is a schema error at 8.2 (C12).',
+  fr(3, checkpointPayload({ facts: [factExtra] }), 1, 1),
+  'schema',
+  '8.2',
+  ['C12'],
+  TS,
+)
+rej(
+  'v6-nested-closed-map-schema2-reject',
+  'Type 3 at schema 2: an opaque-section map (no wildcard) with an undeclared key stays closed at every schema version (C12).',
+  fr(
+    3,
+    checkpointPayload({
+      sections: [withField(section(1, 1, bytesOf(12, 3)), 9, 1)],
+    }),
+    2,
+    1,
+  ),
+  'schema',
+  '8.2',
+  ['C12'],
+  TS,
+)
+rej(
+  'v6-parent-newer-schema-does-not-open-child-wildcard',
+  'A type-2 root at schema 2 (V6.3) wrapping a type-4 child at exact schema 1 whose relay binding has an undeclared key: the child frame decides, so its wildcard is closed (schema at the child stage 8.2, C12).',
+  fr(
+    2,
+    M([
+      [
+        0,
+        fr(
+          4,
+          statementPayload({
+            relays: [withField(relay(1), 9, 1), relay(2)],
+          }),
+        ),
+      ],
+      [1, [sig(acct2(1))]],
+    ]),
+    2,
+    1,
+  ),
+  'schema',
+  '8.2',
+  ['C12', 'V6.3'],
+  { ...TS, prior: null },
+)
+
+// S10 is a type-2 parent check: a type-4 root alone has no prior statement.
+acc(
+  'sem-t4-root-with-transition-alone-accepted',
+  "A type-4 root validated by itself is not checked against S10: it may carry a transition (field 5) that a type-2 bootstrap would reject. The transition (revision 6 against statement revision 5) is accepted only because the link check lives in S10, which runs only in a type-2 parent's stage 9.",
+  fr(4, statementPayload({ transitions: [transition(transitionStatement())] })),
+  ['S10'],
+  { prior: null },
+)
+
+// R2 applies to any root, not only type 1 (charged at 8.4).
+acc(
+  'limit-type16-root-total-256',
+  'Type-16 root holding one container of 255 texts: 256 opened items in all.',
+  fr(16, M([[0, [containerItem(items(255))]]])),
+  ['R2'],
+)
+rej(
+  'limit-type16-root-total-257',
+  'Type-16 root holding one container of 256 texts: the 257th opened item exceeds the total (charged at 8.4).',
+  fr(16, M([[0, [containerItem(items(256))]]])),
+  'resource',
+  '8.4',
+  ['R2'],
+  TS,
+)
+
+// The retention flag only permits retention (F2, section 10).
+acc(
+  'frame-only-version1-accepts-with-retention-allowed',
+  'A version-1 frame under the frame operation is accepted even where opaque retention is allowed: the flag never turns an interpretable frame into a retain.',
+  hi,
+  ['F2'],
+  { ...fo, retention: true },
+)
+
+// ---------------------------------------------------------------------------------------------
+// Topic events (types 9, 10, 11; README section 6, S11, S12, R6, T7, T8)
+//
+// Every case above runs against the reader that predates these types, so the corpus written
+// before #136 is unchanged byte for byte. The cases below run against a reader that lists them.
+// ---------------------------------------------------------------------------------------------
+
+const TOPIC_TYPES = new Set([9, 10, 11])
+const WITH_TOPICS: SupportedSchema[] = KNOWN_TYPES.map(typeId => ({
+  typeId,
+  // Type 4 is read at schema 2 (the stamp key, #198); every other type is at schema 1.
+  schemaVersion: typeId === 4 ? 2 : 1,
+}))
+/** The reader of every case above: the version-1 types allocated before #136. */
+export const PRE_TOPIC_SCHEMAS: SupportedSchema[] = WITH_TOPICS.filter(
+  s => !TOPIC_TYPES.has(s.typeId),
+)
+const TP = { ...TS, supported: WITH_TOPICS }
+
+const topicHash = (frame: Uint8Array): Uint8Array => {
+  const r = validateFrame(frame, { ...defaultTopicContext() })
+  if (r.kind !== 'parsed') throw new Error('topic fixture was not parsed')
+  return contentHash(r)
+}
+function defaultTopicContext() {
+  return {
+    operation: 'typed' as const,
+    routeByteLimit: 8_388_617,
+    readerVersion: 1,
+    supportedSchemas: WITH_TOPICS,
+    opaqueRetentionAllowed: false,
+    priorDirectoryStatementFrame: null,
+  }
+}
+
+const post = topicPostFrame()
+const postMutated = post.slice()
+postMutated[postMutated.length - 1] ^= 0x01
+const TOPIC_PARENT = topicHash(post)
+const replyPost = topicPostFrame({
+  parent: TOPIC_PARENT,
+  topic: 'frank.demo.reply',
+})
+
+acc(
+  'fixture-topic-post-typed',
+  'Fixture 4: a top-level type-9 topic post (no parent, 64-byte opaque body).',
+  post,
+  ['S12', 'T1'],
+  {
+    ...TP,
+    paired: 'topic-post-one-byte-mutation',
+    relation: 'one_byte_mutation',
+  },
+)
+acc(
+  'topic-post-one-byte-mutation',
+  'The topic post with its last body byte changed: still valid, a different T1 content hash and therefore a different T7 commitment (T6, T7).',
+  postMutated,
+  ['T6', 'T7'],
+  { ...TP, paired: 'fixture-topic-post-typed', relation: 'one_byte_mutation' },
+)
+acc(
+  'topic-post-with-parent',
+  'A reply: field 2 holds the 32-byte T1 hash of the parent type-9 frame.',
+  replyPost,
+  ['S12'],
+  TP,
+)
+acc(
+  'topic-post-topic-at-limit',
+  'A 512-byte topic (the CDDL upper bound; multi-byte UTF-8 counts bytes, not characters).',
+  topicPostFrame({ topic: 'a'.repeat(510) + 'é' }),
+  ['R6', 'S12'],
+  TP,
+)
+acc(
+  'topic-post-topic-not-normalized',
+  'A topic with a decomposed combining mark, an uppercase letter, and a dot-separated empty segment: accepted exactly as written (no normalization, S12).',
+  topicPostFrame({ topic: 'Cafe\u0301..x' }),
+  ['S12'],
+  TP,
+)
+acc(
+  'topic-post-newer-schema-extra-field',
+  'A type-9 post at schema 2 (min_reader 1) with an undeclared field 9: read through the schema-1 projection and the field retained (V6.3).',
+  fr(9, new Map([...topicPostPayload(), [9, 'future']]), 2, 1),
+  ['V6.3', 'C12'],
+  TP,
+)
+ret(
+  'topic-post-retained-by-a-reader-without-topics',
+  'A reader that predates type 9 retains a topic post as exact bytes where its containing contract permits it (E3, V6.1).',
+  post,
+  ['E3', 'V6.1'],
+  { supported: PRE_TOPIC_SCHEMAS },
+)
+
+acc(
+  'fixture-topic-post-submission-typed',
+  'Fixture 5: a type-10 submission that opens the type-9 post and carries its burn transaction (filler bytes: the codec never opens the transaction).',
+  topicSubmissionFrame(),
+  ['S8', 'S11', 'T1', 'T7'],
+  TP,
+)
+acc(
+  'topic-post-submission-of-reply',
+  'A type-10 submission whose opened post is a reply.',
+  topicSubmissionFrame({ post: replyPost }),
+  ['S8', 'S11'],
+  TP,
+)
+acc(
+  'fixture-topic-vote-typed',
+  "Fixture 6: a type-11 vote naming the T1 hash of the fixture post, with its burn transaction (filler bytes). The direction and the weight are the transaction's (T8).",
+  topicVoteFrame({ target: TOPIC_PARENT }),
+  ['S12', 'T1', 'T7'],
+  TP,
+)
+acc(
+  'topic-vote-newer-schema-extra-field',
+  'A type-11 vote at schema 2 with an undeclared field 9: retained through the schema-1 projection (V6.3).',
+  fr(11, new Map([...topicVotePayload(), [9, 1]]), 2, 1),
+  ['V6.3', 'C12'],
+  TP,
+)
+
+// Type 9 structure.
+const tpRej = (
+  id: string,
+  description: string,
+  frame: Uint8Array,
+  category: ErrorCategory,
+  stage: ErrorStage,
+  rules: string[],
+  o: Opts = {},
+) => rej(id, description, frame, category, stage, rules, { ...TP, ...o })
+const p9 = (mutate: (m: Map<number, Encodable>) => void): Uint8Array => {
+  const m = topicPostPayload()
+  mutate(m)
+  return fr(9, m)
+}
+tpRej(
+  'topic-post-missing-topic',
+  'A type-9 post without its topic (field 1).',
+  p9(m => m.delete(1)),
+  'schema',
+  '8.2',
+  ['C12'],
+)
+tpRej(
+  'topic-post-missing-body',
+  'A type-9 post without its body (field 3).',
+  p9(m => m.delete(3)),
+  'schema',
+  '8.2',
+  ['C12'],
+)
+tpRej(
+  'topic-post-empty-topic',
+  'A type-9 post with an empty topic: the CDDL lower bound is 1 byte.',
+  p9(m => m.set(1, '')),
+  'schema',
+  '8.2',
+  ['S12'],
+)
+tpRej(
+  'topic-post-topic-over-limit',
+  'A 513-byte topic, one over the CDDL upper bound.',
+  p9(m => m.set(1, 'a'.repeat(513))),
+  'schema',
+  '8.2',
+  ['S12'],
+)
+tpRej(
+  'topic-post-topic-multibyte-over-limit',
+  'A topic of 257 two-byte characters: 514 UTF-8 bytes, over the bound although only 257 characters long.',
+  p9(m => m.set(1, 'é'.repeat(257))),
+  'schema',
+  '8.2',
+  ['S12'],
+)
+tpRej(
+  'topic-post-topic-not-text',
+  'A type-9 post whose topic is a byte string.',
+  p9(m => m.set(1, bytesOf(4, 1))),
+  'schema',
+  '8.2',
+  ['S12'],
+)
+rej(
+  'topic-post-topic-invalid-utf8',
+  'A type-9 payload whose topic holds the invalid UTF-8 bytes c3 28.',
+  framePayload('a3 00 6a 6672616e6b2d74657374 01 62 c328 03 41 aa', 9),
+  'malformed',
+  '7',
+  ['C6'],
+  TP,
+)
+tpRej(
+  'topic-post-parent-null',
+  'A type-9 post whose optional parent (field 2) is encoded as null: an absent key is the only encoding of a top-level post (S12).',
+  p9(m => m.set(2, null)),
+  'schema',
+  '8.2',
+  ['S12'],
+)
+tpRej(
+  'topic-post-parent-31-bytes',
+  'A type-9 post with a 31-byte parent hash.',
+  p9(m => m.set(2, bytesOf(31, 5))),
+  'schema',
+  '8.2',
+  ['S12'],
+)
+tpRej(
+  'topic-post-parent-33-bytes',
+  'A type-9 post with a 33-byte parent hash.',
+  p9(m => m.set(2, bytesOf(33, 5))),
+  'schema',
+  '8.2',
+  ['S12'],
+)
+tpRej(
+  'topic-post-empty-body',
+  'A type-9 post with an empty body: the CDDL lower bound is 1 byte.',
+  p9(m => m.set(3, new Uint8Array(0))),
+  'schema',
+  '8.2',
+  ['R6'],
+)
+tpRej(
+  'topic-post-body-not-bytes',
+  'A type-9 post whose body is text.',
+  p9(m => m.set(3, 'hello')),
+  'schema',
+  '8.2',
+  ['C12'],
+)
+tpRej(
+  'topic-post-undeclared-field',
+  'A type-9 post at schema 1 with an undeclared field 4: an exact supported schema is closed (C12).',
+  p9(m => m.set(4, 1)),
+  'schema',
+  '8.2',
+  ['C12'],
+)
+tpRej(
+  'topic-post-carries-burn-field',
+  'A type-9 post that smuggles a burn transaction at field 4: the burn belongs to the type-10 wrapper (S12).',
+  p9(m => m.set(4, burnTx())),
+  'schema',
+  '8.2',
+  ['C12', 'S12'],
+)
+tpRej(
+  'topic-post-network-uppercase',
+  'A type-9 post with an uppercase network tag.',
+  p9(m => m.set(0, 'Frank-Test')),
+  'schema',
+  '8.2',
+  ['S1'],
+)
+tpRej(
+  'topic-post-network-missing',
+  'A type-9 post without a network tag.',
+  p9(m => m.delete(0)),
+  'schema',
+  '8.2',
+  ['S1'],
+)
+
+// Type 10 structure and semantics.
+tpRej(
+  'topic-submission-post-is-text-item',
+  'A type-10 submission whose field 1 is a type-17 frame instead of type 9.',
+  topicSubmissionFrame({ post: textItem() }),
+  'semantic',
+  '8.4',
+  ['S8'],
+)
+tpRej(
+  'topic-submission-post-is-vote',
+  'A type-10 submission whose field 1 is a type-11 vote frame.',
+  topicSubmissionFrame({ post: topicVoteFrame() }),
+  'semantic',
+  '8.4',
+  ['S8'],
+)
+tpRej(
+  'topic-submission-post-is-submission',
+  'A type-10 submission that opens another type-10 submission: a submission is never nested.',
+  topicSubmissionFrame({ post: topicSubmissionFrame() }),
+  'semantic',
+  '8.4',
+  ['S8'],
+)
+tpRej(
+  'topic-submission-post-is-unknown-type',
+  'A type-10 submission whose field 1 is an unknown frame: a required-type field never retains (S8).',
+  topicSubmissionFrame({ post: unknownItem() }),
+  'semantic',
+  '8.4',
+  ['S8', 'V6.1'],
+)
+tpRej(
+  'topic-submission-post-unsupported-frame-version',
+  'A type-10 submission whose embedded post has frame version 2.',
+  topicSubmissionFrame({ post: body('a0', 2) }),
+  'unsupported',
+  '3',
+  ['F2'],
+)
+tpRej(
+  'topic-submission-post-invalid-inside',
+  'A type-10 submission whose embedded post lacks its topic: the child fails at its own stage 8.2.',
+  topicSubmissionFrame({ post: p9(m => m.delete(1)) }),
+  'schema',
+  '8.2',
+  ['C12', 'S8'],
+)
+tpRej(
+  'topic-submission-post-truncated',
+  'A type-10 submission whose embedded post is shorter than its header declares.',
+  topicSubmissionFrame({ post: topicPostFrame().slice(0, 20) }),
+  'frame',
+  '4',
+  ['F3'],
+)
+tpRej(
+  'topic-submission-network-differs',
+  'A type-10 submission whose network differs from the opened type-9 network (S11).',
+  topicSubmissionFrame({ net: 'other-net' }),
+  'semantic',
+  '9',
+  ['S11'],
+)
+tpRej(
+  'topic-submission-missing-burn',
+  'A type-10 submission without a burn transaction.',
+  fr(10, new Map([...topicSubmissionPayload()].filter(([k]) => k !== 2))),
+  'schema',
+  '8.2',
+  ['T8'],
+)
+tpRej(
+  'topic-submission-empty-burn',
+  'A type-10 submission with an empty burn transaction.',
+  topicSubmissionFrame({ burnTx: new Uint8Array(0) }),
+  'schema',
+  '8.2',
+  ['T8'],
+)
+tpRej(
+  'topic-submission-burn-over-limit',
+  'A type-10 submission with a 16,385-byte burn transaction, one over the CDDL bound.',
+  topicSubmissionFrame({ burnTx: burnTx(31, 16_385) }),
+  'schema',
+  '8.2',
+  ['T8'],
+)
+acc(
+  'topic-submission-burn-at-limit',
+  'A type-10 submission with a 16,384-byte burn transaction: at the CDDL bound.',
+  topicSubmissionFrame({ burnTx: burnTx(31, 16_384) }),
+  ['T8'],
+  TP,
+)
+tpRej(
+  'topic-submission-carries-direction',
+  'A type-10 submission that adds a vote direction at field 3: the direction is read from the transaction, so the schema has none (T8, C12).',
+  fr(10, new Map([...topicSubmissionPayload(), [3, 1]])),
+  'schema',
+  '8.2',
+  ['T8', 'C12'],
+)
+tpRej(
+  'topic-submission-burn-not-bytes',
+  'A type-10 submission whose burn transaction is text.',
+  fr(10, new Map([...topicSubmissionPayload(), [2, 'tx']])),
+  'schema',
+  '8.2',
+  ['T8'],
+)
+
+// Type 11 structure.
+tpRej(
+  'topic-vote-target-31-bytes',
+  'A type-11 vote with a 31-byte target hash.',
+  topicVoteFrame({ target: bytesOf(31, 2) }),
+  'schema',
+  '8.2',
+  ['S12'],
+)
+tpRej(
+  'topic-vote-target-33-bytes',
+  'A type-11 vote with a 33-byte target hash.',
+  topicVoteFrame({ target: bytesOf(33, 2) }),
+  'schema',
+  '8.2',
+  ['S12'],
+)
+tpRej(
+  'topic-vote-target-not-bytes',
+  'A type-11 vote whose target is text.',
+  fr(11, new Map([...topicVotePayload(), [1, 'abc']])),
+  'schema',
+  '8.2',
+  ['S12'],
+)
+tpRej(
+  'topic-vote-missing-burn',
+  'A type-11 vote without a burn transaction.',
+  fr(11, new Map([...topicVotePayload()].filter(([k]) => k !== 2))),
+  'schema',
+  '8.2',
+  ['T8'],
+)
+tpRej(
+  'topic-vote-empty-burn',
+  'A type-11 vote with an empty burn transaction.',
+  topicVoteFrame({ burnTx: new Uint8Array(0) }),
+  'schema',
+  '8.2',
+  ['T8'],
+)
+tpRej(
+  'topic-vote-carries-direction',
+  "A type-11 vote that adds a direction at field 3: the direction and the weight are the transaction's (T8, C12).",
+  fr(11, new Map([...topicVotePayload(), [3, 1]])),
+  'schema',
+  '8.2',
+  ['T8', 'C12'],
+)
+tpRej(
+  'topic-vote-network-invalid',
+  'A type-11 vote with an invalid network tag.',
+  topicVoteFrame({ net: '-bad' }),
+  'schema',
+  '8.2',
+  ['S1'],
+)
+
+// Message items: the assigned topic types are not message-item types (S8).
+tpRej(
+  'topic-post-as-message-item',
+  'A type-8 revision whose item is a type-9 topic post: an assigned type is not an open-field type.',
+  fr(8, revision8([post])),
+  'semantic',
+  '8.4',
+  ['S8'],
+)
+tpRej(
+  'topic-submission-as-message-item',
+  'A type-16 container holding a type-10 submission.',
+  fr(16, M([[0, [topicSubmissionFrame()]]])),
+  'semantic',
+  '8.4',
+  ['S8'],
+)
+tpRej(
+  'topic-vote-as-message-item',
+  'A type-8 revision whose item is a type-11 vote.',
+  fr(8, revision8([topicVoteFrame()])),
+  'semantic',
+  '8.4',
+  ['S8'],
+)
+acc(
+  'unassigned-type-12-remains-an-open-item',
+  'A type-8 revision whose item has the still-unassigned type 12: retained as an unknown child (V6.1), so the assigned range ends at 11.',
+  fr(8, revision8([fr(12, M([[0, 1]]))])),
+  ['V6.1', 'S8'],
+  TP,
+)
+
+// R6 in the manifest, so the limits are interop vectors and not only per-codec unit tests.
+const R6_BODY = 524_288
+const bigPost = topicPostFrame({ body: new Uint8Array(R6_BODY) })
+acc(
+  'topic-post-body-at-limit',
+  'A type-9 post with a 524,288-byte body: exactly at the R6 body limit.',
+  bigPost,
+  ['R6'],
+  TP,
+)
+tpRej(
+  'topic-post-body-over-limit',
+  'A type-9 post with a 524,289-byte body: one over R6, a resource error at stage 8.1 before any other field check.',
+  topicPostFrame({ body: new Uint8Array(R6_BODY + 1) }),
+  'resource',
+  '8.1',
+  ['R6'],
+)
+tpRej(
+  'topic-submission-frame-over-1mib',
+  'A type-10 submission of a maximal post with an unknown padding field, making the frame exceed 1 MiB: resource at stage 8.1 (R6).',
+  fr(
+    10,
+    new Map([
+      ...topicSubmissionPayload({ post: bigPost }),
+      [9, new Uint8Array(1_048_576 - bigPost.length)],
+    ]),
+  ),
+  'resource',
+  '8.1',
+  ['R6'],
+)
+const votePadded = (pad: number, schema = 1): Uint8Array =>
+  fr(11, new Map([...topicVotePayload(), [9, new Uint8Array(pad)]]), schema, 1)
+let votePad = 65_536 - votePadded(0, 2).length
+votePad -= votePadded(votePad, 2).length - 65_536
+acc(
+  'topic-vote-frame-at-64kib',
+  'A type-11 vote at schema 2 whose unknown padding field makes the frame exactly 65,536 bytes: at the R6 limit.',
+  votePadded(votePad, 2),
+  ['R6', 'V6.3'],
+  TP,
+)
+tpRej(
+  'topic-vote-frame-over-64kib',
+  'The same vote one byte larger, 65,537 bytes: resource at stage 8.1 (R6).',
+  votePadded(votePad + 1, 2),
+  'resource',
+  '8.1',
+  ['R6'],
+)
+tpRej(
+  'topic-vote-frame-over-64kib-schema-1',
+  'A type-11 vote at schema 1 with a 65,536-byte padding field: over R6 (resource at 8.1) even though the undeclared field is also a schema error later.',
+  votePadded(65_536),
+  'resource',
+  '8.1',
+  ['R6', 'C12'],
+)
+
+// ---------------------------------------------------------------------------------------------
+// Stamp key and stamp fields (#198; README T3a, T3b, S9, S10a). Stages 8.2 through 9 only: the
+// DLEQ proof, the binding of P' to a directory state and the destinations are stage 10 checks
+// (`full`), which this corpus does not carry yet.
+// ---------------------------------------------------------------------------------------------
+
+const SECP_P =
+  0xfffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2fn
+const SECP_N =
+  0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n
+const be32 = (v: bigint): Uint8Array => {
+  const out = new Uint8Array(32)
+  for (let i = 31, x = v; i >= 0; i--, x >>= 8n) out[i] = Number(x & 0xffn)
+  return out
+}
+const point33 = (prefix: number, x: Uint8Array): Uint8Array => {
+  const out = new Uint8Array(33)
+  out[0] = prefix
+  out.set(x, 1)
+  return out
+}
+const withPrefix = (b: Uint8Array, prefix: number): Uint8Array => {
+  const out = b.slice()
+  out[0] = prefix
+  return out
+}
+const cHalf = T3C.proof.slice(0, 32)
+const sHalf = T3C.proof.slice(32)
+const stampT5 = (o: Parameters<typeof type5Payload>[0]) =>
+  fr(5, type5Payload(o))
+const stampT5Without = (k: number) => {
+  const m = type5Payload()
+  m.delete(k)
+  return fr(5, m)
+}
+
+// The x coordinates below are all fixed by arithmetic: 1 has y^2 = 8, a square, so `p + 1` is a
+// non-canonical alias of an on-curve point; 5 has y^2 = 132, a non-square, so it is off curve.
+const STAMP_BAD_POINTS: Array<[string, string, Uint8Array]> = [
+  [
+    'x-at-or-above-p',
+    'x = p + 1 (the on-curve x = 1 plus p)',
+    point33(2, be32(SECP_P + 1n)),
+  ],
+  [
+    'prefix-04',
+    'prefix 04 (uncompressed marker on 33 bytes)',
+    withPrefix(T3C.ephemeral, 0x04),
+  ],
+  ['prefix-05', 'prefix 05', withPrefix(T3C.ephemeral, 0x05)],
+  [
+    'all-zero',
+    'all 33 bytes zero (no compressed encoding of infinity)',
+    new Uint8Array(33),
+  ],
+  [
+    'off-curve',
+    'prefix 02 with x = 5 (no point has this x)',
+    point33(2, be32(5n)),
+  ],
+]
+for (const [field, name] of [
+  [6, 'e'],
+  [7, 'x'],
+] as const) {
+  const label = field === 6 ? 'E' : 'X'
+  for (const [id, what, bad] of STAMP_BAD_POINTS) {
+    rej(
+      `stamp-t5-${name}-${id}`,
+      `Type-5 field ${field} (${label}): ${what}.`,
+      stampT5({ [name]: bad }),
+      'schema',
+      '8.2',
+      ['T3b'],
+      S,
+    )
+  }
+}
+for (const [field, label] of [
+  [6, 'E'],
+  [7, 'X'],
+  [8, 'proof'],
+] as const) {
+  rej(
+    `stamp-t5-missing-field-${field}`,
+    `Type-5 frame without field ${field} (${label}): a required key.`,
+    stampT5Without(field),
+    'schema',
+    '8.2',
+    ['T3a', 'T3b'],
+    S,
+  )
+}
+rej(
+  'stamp-t5-e-wrong-length',
+  'Type-5 field 6 (E) of 32 bytes.',
+  stampT5({ e: T3C.ephemeral.slice(0, 32) }),
+  'schema',
+  '8.2',
+  ['T3b'],
+  S,
+)
+rej(
+  'stamp-t5-x-wrong-length',
+  'Type-5 field 7 (X) of 34 bytes.',
+  stampT5({ x: concatBytes(T3C.shared, Uint8Array.of(0)) }),
+  'schema',
+  '8.2',
+  ['T3b'],
+  S,
+)
+rej(
+  'stamp-t5-proof-wrong-length',
+  'Type-5 field 8 (proof) of 63 bytes.',
+  stampT5({ proof: T3C.proof.slice(0, 63) }),
+  'schema',
+  '8.2',
+  ['T3b'],
+  S,
+)
+for (const [id, what, proof] of [
+  ['c-zero', 'c = 0', concatBytes(new Uint8Array(32), sHalf)],
+  ['c-at-n', 'c = n (not reduced)', concatBytes(be32(SECP_N), sHalf)],
+  ['s-zero', 's = 0', concatBytes(cHalf, new Uint8Array(32))],
+  ['s-at-n', 's = n (not reduced)', concatBytes(cHalf, be32(SECP_N))],
+] as const) {
+  rej(
+    `stamp-t5-proof-${id}`,
+    `Type-5 field 8: proof scalar ${what}; the other scalar is valid.`,
+    stampT5({ proof }),
+    'schema',
+    '8.2',
+    ['T3b'],
+    S,
+  )
+}
+acc(
+  'stamp-t5-point-x-1-accepted',
+  'Type-5 field 6 (E) with prefix 02 and x = 1, an on-curve point: the accept twin of the x = p + 1 alias.',
+  stampT5({ e: point33(2, be32(1n)) }),
+  ['T3b'],
+  S,
+)
+acc(
+  'stamp-t5-proof-scalars-at-n-minus-1-accepted',
+  'Type-5 field 8 with c = s = n - 1, the largest scalars the encoding admits (T3b).',
+  stampT5({ proof: concatBytes(be32(SECP_N - 1n), be32(SECP_N - 1n)) }),
+  ['T3b'],
+  S,
+)
+acc(
+  'stamp-t5-real-points-accepted',
+  'Type-5 frame carrying the README T3c values for E, X and the proof: the encoding rules pass (the proof itself is verified only at stage 10).',
+  stampT5({}),
+  ['T3a', 'T3b'],
+  S,
+)
+
+// Type 1: the destination is the stamp key P' (S9), independent of the routing recipient (S8).
+rej(
+  'stamp-t1-destination-32-byte-key-type-1',
+  'Type-1 field 1 of key type 1 with a 32-byte value: key type 1 needs 33 bytes (S2).',
+  deliveryFrame({
+    destination: M([
+      [0, 1],
+      [1, bytesOf(32, 3)],
+    ]),
+  }),
+  'schema',
+  '8.2',
+  ['S2', 'S9'],
+  S,
+)
+rej(
+  'stamp-t1-destination-unallocated-key-type',
+  'Type-1 field 1 with the unallocated key type 9.',
+  deliveryFrame({
+    destination: M([
+      [0, 9],
+      [1, bytesOf(33, 3)],
+    ]),
+  }),
+  'unsupported',
+  '8.3',
+  ['S2b', 'S9'],
+  S,
+)
+rej(
+  'stamp-t1-destination-key-type-3',
+  'Type-1 field 1 of the allocated key type 3 with a 32-byte value: S9 requires key type 1.',
+  deliveryFrame({
+    destination: M([
+      [0, 3],
+      [1, bytesOf(32, 3)],
+    ]),
+  }),
+  'semantic',
+  '9',
+  ['S9'],
+  S,
+)
+acc(
+  'stamp-t1-delivery-to-rotated-key',
+  "A delivery whose stamp key P' is the T3c E point standing for a rotated key: accepted at typed, where the binding to a directory state is not evaluated (S10a.4).",
+  deliveryFrame({ destination: stampAccount(T3C.ephemeral) }),
+  ['S9', 'S10a'],
+  S,
+)
+
+// Type 4: field 8 is required from schema 2 and undefined in schema 1 (S10a.1).
+const stmtSchema1 = (o: Parameters<typeof statementPayload>[0] = {}) =>
+  fr(4, statementPayload({ ...o, stampKey: null }), 1, 1)
+rej(
+  'stamp-t4-schema2-without-field-8',
+  'Type-4 statement at schema_version 2 without field 8: a required key is missing.',
+  fr(4, statementPayload({ stampKey: null })),
+  'schema',
+  '8.2',
+  ['S10a', 'V2'],
+  NOP,
+)
+rej(
+  'stamp-t4-schema1-with-field-8',
+  'Type-4 statement at schema_version 1 that carries field 8: undeclared in schema 1 (C12).',
+  fr(4, statementPayload(), 1, 1),
+  'schema',
+  '8.2',
+  ['S10a', 'C12'],
+  NOP,
+)
+acc(
+  'stamp-t4-schema1-accepted',
+  'Type-4 statement at schema_version 1 without field 8: still readable by a schema-2 reader, and carries no stamp key.',
+  stmtSchema1(),
+  ['S10a', 'V6.2'],
+  NOP,
+)
+for (const [type, seed] of [
+  [2, 5],
+  [3, 6],
+] as const) {
+  rej(
+    `stamp-t4-field-8-key-type-${type}`,
+    `Type-4 field 8 of the allocated key type ${type} with a 32-byte value: the stamp key must be key type 1.`,
+    fr(
+      4,
+      statementPayload({
+        stampKey: M([
+          [0, type],
+          [1, bytesOf(32, seed)],
+        ]),
+      }),
+    ),
+    'semantic',
+    '9',
+    ['S10a'],
+    NOP,
+  )
+}
+rej(
+  'stamp-t4-field-8-unallocated-key-type',
+  'Type-4 field 8 of the unallocated key type 9.',
+  fr(
+    4,
+    statementPayload({
+      stampKey: M([
+        [0, 9],
+        [1, bytesOf(33, 6)],
+      ]),
+    }),
+  ),
+  'unsupported',
+  '8.3',
+  ['S10a', 'S2b'],
+  NOP,
+)
+acc(
+  'stamp-t4-field-8-equals-subject-accepted',
+  'Type-4 field 8 equal to the subject key: not rejected (S10a.1 forbids nothing here; the identity key as stamp key only forfeits the blast-radius protection).',
+  fr(4, statementPayload({ subject: acct1(3), stampKey: acct1(3) })),
+  ['S10a'],
+  NOP,
+)
+// A reader whose highest type-4 schema is 1 reads a schema-2 statement through the schema-1
+// projection (V6.3): field 8 is neither required nor declared there.
+const TYPE4_AT_SCHEMA_1 = PRE_TOPIC_SCHEMAS.map(x =>
+  x.typeId === 4 ? { ...x, schemaVersion: 1 } : x,
+)
+acc(
+  'stamp-t4-schema2-projected-without-field-8',
+  'A schema-2 statement without field 8 read by a reader whose highest type-4 schema is 1: accepted through the schema-1 projection (V6.3), since field 8 is not part of that schema.',
+  fr(4, statementPayload({ stampKey: null }), 2, 2),
+  ['V6.3', 'S10a'],
+  { ...NOP, supported: TYPE4_AT_SCHEMA_1 },
+)
+acc(
+  'stamp-t4-schema2-projected-with-field-8',
+  'A schema-2 statement with field 8 read by a reader whose highest type-4 schema is 1: accepted, and field 8 is kept as an unknown field (V6.3).',
+  fr(4, statementPayload(), 2, 2),
+  ['V6.3', 'S10a'],
+  { ...NOP, supported: TYPE4_AT_SCHEMA_1 },
+)
+rej(
+  'stamp-t2-schema2-statement-for-reader-1',
+  'Type-2 attestation of a schema-2 statement (min_reader_version 2) opened by a reader with reader_version 1: unsupported as a required-type child, never read as a statement without a stamp key (V6.1).',
+  attestationFrame(statementFrame(), [sig(acct2(1))]),
+  'unsupported',
+  '7',
+  ['V6.1', 'S10a'],
+  { ...NOP, readerVersion: 1 },
+)
+
+// Same-subject updates (S10, S10a.2, S10a.3) against the schema-2 prior of `priorStmt`.
+const otherStampKey = stampAccount(T3C.ephemeral)
+acc(
+  'stamp-s10a-rotate-stamp-key-accepted',
+  'Same subject, greater revision, no transition, a new field 8: a stamp-key rotation (S10a.3).',
+  upd({ revision: 6n, subject: acct2(1), stampKey: otherStampKey }, acct2(1)),
+  ['S10', 'S10a'],
+  { prior: priorStmt },
+)
+acc(
+  'stamp-s10a-add-stamp-key-accepted',
+  'Same subject, greater revision: a schema-2 statement adds the stamp key to a schema-1 prior (migration, S10a.2, S10a.3).',
+  upd({ revision: 6n, subject: acct2(1) }, acct2(1)),
+  ['S10', 'S10a'],
+  { prior: stmtSchema1() },
+)
+rej(
+  'stamp-s10a-rotate-revision-not-increasing',
+  'A statement that changes only field 8 with a revision equal to the prior revision.',
+  upd({ revision: 5n, subject: acct2(1), stampKey: otherStampKey }, acct2(1)),
+  'semantic',
+  '9',
+  ['S10', 'S10a'],
+  P1,
+)
+rej(
+  'stamp-s10a-rotate-with-transition',
+  'A statement that changes field 8 and carries a key transition for an unchanged subject: a stamp key confers no authority over the directory (S10a.3).',
+  upd(
+    {
+      revision: 6n,
+      subject: acct2(1),
+      stampKey: otherStampKey,
+      transitions: [transition(t7())],
+    },
+    acct2(1),
+  ),
+  'semantic',
+  '9',
+  ['S10', 'S10a'],
+  P1,
+)
+rej(
+  'stamp-s10a-schema-downgrade',
+  'A same-subject schema-1 statement after a schema-2 prior: schema_version may not drop, so a published stamp key cannot be removed (S10a.2).',
+  attestationFrame(stmtSchema1({ revision: 6n, subject: acct2(1) }), [
+    sig(acct2(1)),
+  ]),
+  'semantic',
+  '9',
+  ['S10a'],
+  P1,
+)
+acc(
+  'stamp-s10a-new-subject-schema-1-accepted',
+  'A subject change (with its linked transition) to a schema-1 statement after a schema-2 prior: a new subject starts fresh, so the schema order does not apply (S10a.2).',
+  attestationFrame(
+    stmtSchema1({
+      subject: acct2(2),
+      revision: 6n,
+      transitions: [transition(t7())],
+    }),
+    [sig(acct2(2))],
+  ),
+  ['S10', 'S10a'],
+  { prior: priorStmt },
 )

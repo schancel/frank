@@ -14,7 +14,7 @@
       </q-avatar>
     </q-item-section>
     <q-item-section v-show="!compact">
-      <q-item-label>{{ contact.name }}</q-item-label>
+      <q-item-label lines="1">{{ contact.name }}</q-item-label>
       <q-item-label caption lines="2">{{ latestMessageBody }}</q-item-label>
     </q-item-section>
     <q-item-section v-show="!compact" side>
@@ -61,11 +61,10 @@ export default defineComponent({
         .split(' ')
         .map(word => word.slice(0, 15))
         .join(' ')
-      if (info.outbound) {
-        return 'You: ' + slicedText
-      } else {
-        return 'Them: ' + slicedText
-      }
+      return this.$t(
+        info.outbound ? 'chatList.youPrefix' : 'chatList.themPrefix',
+        { text: slicedText },
+      )
     },
     contact() {
       return this.getContactProfile(this.chatAddress)

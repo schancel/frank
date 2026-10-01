@@ -4,10 +4,9 @@
 // CashToken codepoints fail closed. ECDSA digest checks use the in-tree
 // curve; typed Schnorr stays on issue 249.
 
-import { ripemd160 } from '@noble/hashes/ripemd160.js'
 import { sha1 } from '@noble/hashes/sha1.js'
-import { sha256 } from '@noble/hashes/sha256.js'
 
+import { cryptoBackend } from './backend.js'
 import { isPlainBytes } from './bytes.js'
 import type { ChainDescriptor, ChainFamily } from './chain/types.js'
 import { bytesToBigint } from './integer.js'
@@ -237,7 +236,9 @@ interface Machine {
   readonly alt: Uint8Array[]
   readonly cond: boolean[]
   codeSep: number
-  separated: boolean
+  /** lotusd `opcode_pos` of the last executed OP_CODESEPARATOR, or 0xffffffff. */
+  codeSepOpcode: number
+  opcodeIndex: number
   opCount: number
   pc: number
 }
@@ -270,17 +271,21 @@ export function evaluateScript(
     alt: [],
     cond: [],
     codeSep: 0,
-    separated: false,
+    codeSepOpcode: 0xffffffff,
+    opcodeIndex: 0,
     opCount: 0,
     pc: 0,
   }
   if (stack.length > rules.maxStackItems) return reject('script-stack-size')
   let pc = 0
+  let opcodeIndex = 0
   while (pc < script.length) {
     const op = readOp(script, pc)
     if (op === null) return reject('script-encoding')
     pc = op.next
     machine.pc = pc
+    machine.opcodeIndex = opcodeIndex
+    opcodeIndex += 1
     if (op.data !== null && op.data.length > rules.maxElementBytes) {
       return reject('script-push-size', op.opcode)
     }
@@ -802,8 +807,9 @@ function apply(
     case OP_HASH256:
       return hashOp(stack, opcode)
     case OP_CODESEPARATOR:
-      machine.separated = true
+      // Byte offset is the legacy subscript. lotusd also stores opcode_pos.
       machine.codeSep = machine.pc
+      machine.codeSepOpcode = machine.opcodeIndex
       return null
     case OP_CHECKSIG:
     case OP_CHECKSIGVERIFY:
@@ -1042,11 +1048,14 @@ function hashOp(stack: Uint8Array[], opcode: number): ScriptFailure | null {
   const top = stack.pop()
   if (top === undefined) return failure('script-invalid-stack', opcode)
   let hashed: Uint8Array
-  if (opcode === OP_RIPEMD160) hashed = ripemd160(top)
+  if (opcode === OP_RIPEMD160)
+    hashed = new Uint8Array(cryptoBackend.ripemd160(top))
   else if (opcode === OP_SHA1) hashed = sha1(top)
-  else if (opcode === OP_SHA256) hashed = sha256(top)
-  else if (opcode === OP_HASH160) hashed = ripemd160(sha256(top))
-  else hashed = sha256(sha256(top))
+  else if (opcode === OP_SHA256)
+    hashed = new Uint8Array(cryptoBackend.sha256(top))
+  else if (opcode === OP_HASH160)
+    hashed = new Uint8Array(cryptoBackend.hash160(top))
+  else hashed = new Uint8Array(cryptoBackend.sha256d(top))
   stack.push(hashed)
   return null
 }
@@ -1244,12 +1253,27 @@ function sequenceTime(machine: Machine, opcode: number): ScriptFailure | null {
   if (tx === null || 'code' in tx) {
     return tx === null ? failure('script-spent', opcode) : tx
   }
-  if (tx.version < 2) return failure('script-locktime', opcode)
+  // BIP112 compares the serialized version as uint32. int32 -1 is wire
+  // 0xffffffff and is not below 2 (Core, BCHN, ABC, and lotusd).
+  const versionWire =
+    Number.isInteger(tx.version) && tx.version >= -0x80000000 && tx.version < 0
+      ? tx.version + 0x100000000
+      : tx.version
+  if (versionWire < 2) return failure('script-locktime', opcode)
   const input = tx.inputs[machine.context.inputIndex ?? -1]
   if (input === undefined) return failure('script-index', opcode)
-  const mask = SEQUENCE_TYPE | SEQUENCE_MASK
   const sequence = BigInt(input.sequence >>> 0)
-  if ((sequence & mask) < (value.value & mask)) {
+  // BIP112: a disabled input sequence is not a relative locktime, and the
+  // type bit has to match before the masked values are ordered.
+  if ((sequence & SEQUENCE_DISABLE) !== 0n) {
+    return failure('script-locktime', opcode)
+  }
+  const mask = SEQUENCE_TYPE | SEQUENCE_MASK
+  const sequenceMasked = sequence & mask
+  const valueMasked = value.value & mask
+  const sequenceTimed = (sequenceMasked & SEQUENCE_TYPE) !== 0n
+  const valueTimed = (valueMasked & SEQUENCE_TYPE) !== 0n
+  if (sequenceTimed !== valueTimed || sequenceMasked < valueMasked) {
     return failure('script-locktime', opcode)
   }
   return null
@@ -1554,7 +1578,7 @@ function checkOne(
   if (point === null) return false
   let digest: Uint8Array
   if (dataSig) {
-    digest = sha256(message ?? new Uint8Array(0))
+    digest = new Uint8Array(cryptoBackend.sha256(message ?? new Uint8Array(0)))
   } else {
     if (
       parsed.hashType === null ||
@@ -1596,21 +1620,21 @@ function digestFor(
   ) {
     return null
   }
-  const locking = spentOutput?.scriptPubKey
-  const active = machine.script.subarray(machine.codeSep)
-  const sameLock = locking !== undefined && sameBytes(locking, active)
-  const extend = algorithm === 'lotus' && (machine.separated || !sameLock)
+  // lotusd EvalChecksig always passes ScriptExecutionData. That is CHash256
+  // of the whole script being executed (scriptPubKey, or the P2SH redeem
+  // script) and the opcode index of the last CODESEPARATOR, defaulting to
+  // 0xffffffff. The legacy subscript stays in scriptCode for other algorithms.
+  const lotus = algorithm === 'lotus'
   const hashed = sighash(tx, inputIndex, chain, hashType, {
     algorithm,
     scriptCode,
     amount: spentOutput?.value,
     spent: machine.context.spent,
     commitUtxos: false,
-    executedScriptHash: extend
-      ? sha256(removeCodeSeparators(active))
+    executedScriptHash: lotus
+      ? new Uint8Array(cryptoBackend.sha256d(machine.script))
       : undefined,
-    codeSeparatorPosition:
-      extend && machine.separated ? machine.codeSep : undefined,
+    codeSeparatorPosition: lotus ? machine.codeSepOpcode : undefined,
   })
   if (!hashed.ok) return failure('script-signature', opcode)
   return hashed.value

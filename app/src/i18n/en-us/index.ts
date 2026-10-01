@@ -4,8 +4,23 @@
 export default {
   agree: 'Agree',
   chat: {
+    stampPreparationChecking: 'Checking private stamp accounts…',
+    stampPreparationFunding:
+      'Preparing private stamp accounts ({completed}/{total} on-chain transactions; up to {feeReserve} {unit} fee reserve each)…',
+    stampPreparationReady: 'Private stamp accounts ready; sending message…',
     donationMessage:
       'Thank you for participating in our vision of the future of online communications. Please consider donating to our efforts by sending real BCH to bitcoincash:qq7vt04md0pt6fk5szhcx4cgsfuzmppy5u4hxshr4a',
+  },
+  stampPreparation: {
+    posting: 'Posting…',
+    postCreated: 'Post created!',
+    postedRefreshFailed:
+      'Your post was published, but refreshing failed. Reload to see it. Do not post it again.',
+    votedRefreshFailed:
+      'Your vote was sent, but refreshing failed. Reload to see it. Do not vote again.',
+  },
+  forum: {
+    noPosts: 'No posts yet.',
   },
   chatLayout: {
     info: 'Info',
@@ -21,21 +36,220 @@ export default {
     placeHolder: 'Write a message...',
     emojiPickerTitle: 'Select an emoji',
     stampPrice: 'Stamp Price',
+    stampPayment: 'Stamp payment',
+    stampQuickSelection: 'Quick selection from 1× to 100× the default stamp',
+    stampMultiplierValue: '{multiplier}× default',
+  },
+  digitalGoods: {
+    catalog: 'Catalog',
+    buy: 'Buy',
+    confirmPrompt: 'Pay {price} to {name} ({address}) for "{item}"?',
+    confirmBuy: 'Confirm and pay {price}',
+    cancel: 'Cancel',
+    confirmGroupLabel: 'Confirm purchase of {item}',
+    priceUnavailable: 'price unavailable',
+    hiddenOne: '{count} more item not shown',
+    hiddenMany: '{count} more items not shown',
+    requested: 'Requested: {itemId}',
+    fulfilled: "Here's your purchase ({itemId}):",
+  },
+  chatImage: {
+    notShown: 'Image not shown ({reason})',
+    reasonNotAnImage: 'not an image',
+    reasonTooLarge: 'too large',
+    reasonNotInline: 'not an inline image',
+    reasonUnreadableHeader: 'unreadable image header',
+    reasonEmpty: 'empty image',
+    reasonDimensionsTooLarge: 'dimensions too large',
+  },
+  raffleDraw: {
+    verified: 'Draw matches the seed commitment',
+    failed: 'Verification failed: {reason}',
+    explainerToggle: 'What does this show?',
+    explainerShows:
+      'Shows: the operator did not change the seed after committing to it, and the winner follows from the listed entrants and that seed.',
+    explainerNotShown:
+      'Does not show: that the listed entrants are real on-chain payments, or that no entries were left out.',
+    explainerCountUnverified:
+      'The round did not announce its size, so the number of entrants is not checked.',
+  },
+  blackjackDealer: {
+    silentTitle: 'The dealer has not answered',
+    silentBody:
+      'Your move was sent and paid for, but no reply has come back. The dealer may be offline, and a move sent while it was offline may never be seen.',
+    silentWait: 'Wait for the dealer to come back before trying again.',
+    silentNoResend:
+      'This wager cannot be re-sent from here: it would be paid twice.',
+    silentRefund:
+      'Your wager is not refunded automatically (only a bet the dealer rejects is). If the dealer stays offline, contact whoever runs it.',
+    resendConfirm:
+      'Send my {action} again. I understand it is paid again and, if the first one also arrives, it may be played twice.',
+    resend: 'Send my move again',
+  },
+  blackjackHand: {
+    bet: 'Your bet: {amount} MON',
+    betUnverified: 'Your bet',
+    betWaiting: 'Waiting for the dealer to deal.',
+    payout:
+      'Payout: {amount} MON (wager back plus any winnings), sent by the dealer after it reveals the hand.',
+  },
+  persistentStorage: {
+    tab: 'Storage',
+    heading: 'Persistent storage',
+    granted: 'Persistent storage: granted',
+    notGranted: 'Persistent storage: not granted',
+    unsupported: 'Persistent storage: unavailable',
+    unknown: 'Persistent storage: checking…',
+    explainGranted:
+      'Your browser has agreed to keep this app’s data unless you clear it yourself. Your recovery phrase is still the only backup if you lose this device.',
+    explainNotGranted:
+      'Your browser may delete this app’s data, including your stored recovery phrase, when it is short on space or, in Safari, after 7 days without a visit unless the app is added to your Home Screen. Your recovery phrase is the only backup.',
+    explainUnsupported:
+      'Persistent storage is unavailable (this page is not a secure context or the browser does not support it), so the browser may delete this app’s data (Safari does after 7 days without a visit unless the app is added to your Home Screen). Your recovery phrase is the only backup.',
+    request: 'Ask the browser to keep my data',
+    confirmSeed: 'Confirm my recovery phrase',
+    seedConfirmed: 'Your recovery phrase is confirmed.',
+  },
+  blackjackWelcome: {
+    title: 'Blackjack table',
+  },
+  blackjackBet: {
+    playAgainTitle: 'Play again',
+    faucetHint:
+      'Need MON to play? This app uses testnet MON, which has no real value. The demo faucet funds new profiles automatically; if nothing arrived, ask the demo operator to send you some.',
+    title: 'Start a blackjack hand',
+    amountLabel: 'Bet amount',
+    amountAria: 'Bet amount in MON',
+    limits: 'Table limits: {min} to {max} MON',
+    notice:
+      'Your bet is a real transfer of MON to {name} ({address}). Only use it with a blackjack dealer.',
+    confirm: 'I understand {amount} MON will be sent to {name} ({address})',
+    submit: 'Deal me in with {name} {address} ({amount} MON)',
+    sending: 'Sending your bet…',
+    sent: 'Bet sent. Waiting for the dealer to deal.',
+    notDelivered:
+      'Wager paid, bet not delivered: {message} Use Retry in the chat to send the bet again.',
+    errorFormat: 'Enter a bet as a plain decimal number',
+    errorInvalid: 'Enter a valid MON amount to bet',
+    errorZero: 'Bet must be greater than zero',
+    errorMin: 'Bet is below the table minimum ({min} MON)',
+    errorMax: 'Bet is above the table maximum ({max} MON)',
+    errorBalanceUnknown:
+      'Your balance is not loaded yet. Try again in a moment.',
+    errorBalance:
+      'Not enough balance: this bet needs {needed} MON (bet plus about {rest} MON for the message stamp and fees), you have {balance} MON.',
+    errorUnsent:
+      'Finish the unsent wager in the chat before starting a new bet.',
+    errorFunds: 'Insufficient funds: {message}',
+    errorSend: 'Could not place the bet: {message}',
+    unsentTitle: 'Wager paid, bet not delivered',
+    unsentBody:
+      'Your {amount} MON wager to {name} ({address}) was paid, but the bet message did not reach the dealer.',
+    unsentTx: 'Transaction: {hash}',
+    unsentRetry: 'Retry sending the bet',
+    unsentRetrying: 'Sending the bet…',
+    unsentFailed: 'Still not delivered: {message}',
+    confirming: 'Waiting for your payment to be confirmed on the network…',
+    errorPaymentFailed:
+      'The payment transaction failed on the network, so no wager was placed.',
+    paymentPending:
+      'Your payment is still confirming. It is saved in the chat; use Check payment there.',
+    paymentUnknown:
+      'The network has not shown your payment yet. It may still arrive, so it is saved in the chat; use Check payment there. Do not assume nothing was paid.',
+    unsentSigned: 'Payment not confirmed',
+    unsentSignedBody:
+      'A {amount} MON wager to {name} ({address}) was sent, but the network has not confirmed it yet.',
+    unsentDealerSilent: 'Waiting for the dealer',
+    unsentDealerSilentBody:
+      'Your bet for {amount} MON to {name} ({address}) was delivered but the dealer has not answered.',
+    unsentDealerUnconfirmed: 'The dealer could not verify your payment yet',
+    checkPayment: 'Check payment',
+    checking: 'Checking the network…',
+    paymentStillPending: 'The payment is still pending on the network.',
+    paymentNotFound:
+      'The network does not know this payment (yet). If you are sure it was never sent, you can discard this record.',
+    paymentFailedRemoved:
+      'The payment transaction failed on the network; nothing was paid. The record was removed.',
+    dismiss: 'Discard this record',
+    dismissWarning:
+      'If this wager was actually paid, discarding the record can lose the money. Discard only if you are sure it was not paid or was refunded.',
+    dismissConfirm: 'Yes, discard it',
+    dismissCancel: 'Keep it',
+    loadError: 'Saved wager records could not be read: {message}',
   },
   leftDrawer: {
+    noForums: 'No forums discovered yet.',
     settings: 'Settings',
     contacts: 'Contacts',
     forum: 'Forum',
+    wallet: 'Wallet',
+    railLabel: 'Sidebar sections',
     contactsUnreadOne: 'Contacts, {count} unread message',
     contactsUnreadOther: 'Contacts, {count} unread messages',
   },
+  walletPanel: {
+    title: 'Wallets',
+    monad: 'Monad',
+    send: 'Send MON',
+    receive: 'Receive MON',
+    showSeed: 'Show recovery phrase',
+    confirmSeed: 'Confirm recovery phrase',
+    balanceLoading: 'Loading balance…',
+    balanceUnavailable: 'Balance unavailable. Retrying.',
+    balanceStale: '{balance} (last known)',
+  },
   chatList: {
     noContactMessage: 'Add contacts from the drawer above...',
+    youPrefix: 'You: {text}',
+    themPrefix: 'Them: {text}',
     balance: 'Balance',
+    balanceStale: '(last known)',
     directMessages: 'Direct Messages',
+  },
+  outgoing: {
+    sending: 'Sending…',
+    paymentPending:
+      'Payment pending, will retry. You will not be charged again.',
+    paymentQueued:
+      'Waiting for an earlier message to finish. This one will be sent after it.',
+    paymentChecking: 'Checking payment status…',
+    reasonUnreachable: "Can't reach the server.",
+    reasonUnavailable: 'This relay does not offer messaging.',
+    reasonRejected: 'The relay rejected it.',
+    reasonInterrupted: 'It was interrupted before it was sent.',
+    reasonUnverified: 'Delivery could not be confirmed.',
+    reasonRecovered: 'An earlier message was delivered meanwhile.',
+    reasonError: 'Something went wrong.',
+    retry: 'Retry',
+    retryHint:
+      'Retry re-sends the same payment while it is still valid. A new payment is made only if it is not.',
+    discard: 'Discard',
+    discardConfirmTitle: 'Discard message?',
+    discardConfirmMessage:
+      'This removes it from your conversation. If its payment is still pending it may still be delivered.',
+    sendAgainTitle: 'Send again?',
+    sendAgainUnverified:
+      'We could not confirm whether the first payment was delivered. Sending again may charge you a second time.',
+    sendAgainRecovered:
+      'An earlier pending message was delivered while this one was being sent. Send this one again as a new message?',
+    sendAgain: 'Send again',
+  },
+  mailboxStatus: {
+    unavailable:
+      'Messaging service unavailable: this relay does not offer messaging, so you will not receive messages.',
+    unreachable:
+      "Can't reach the server. You may not be receiving messages; retrying.",
+    rateLimited: 'The server asked us to slow down. Retrying shortly.',
+    unauthorized: 'The server rejected your messaging login. Retrying.',
   },
   chatMessage: {
     noPayloadFound: 'Unable to find message payload',
+    failedToSend: 'Failed to send',
+    showActions: 'Show message actions',
+    replyMessage: 'Reply to message',
+    forwardMessage: 'Forward message',
+    infoMessage: 'Message info',
+    deleteMessage: 'Delete message',
   },
   chatRightDrawer: {
     stampPrice: 'Stamp Price',
@@ -75,7 +289,7 @@ export default {
     settings: 'Settings',
     back: 'Back',
     seedWarning:
-      "Do not forget your character's secret name, you will never be able to remember them again.",
+      'Write down your recovery phrase and keep it safe. If you lose it, nobody can recover your account.',
     searchingRelay: 'Searching for existing relay data...',
     networkErrorRelayDied: 'Network Error: Relay server connection died. ',
     networkErrorRelayUnexpected: 'Network error: Relay errored unexpectedly.',
@@ -92,6 +306,10 @@ export default {
     watchingWallet: 'Watching wallet...',
     searchingExistingMetaData: 'Searching for existing registry metadata...',
     errorContactRegistry: 'Unable to contact registry',
+    storedSeedMismatch:
+      'The recovery phrase on this device cannot be replaced from this screen.',
+    replaceNotAcknowledged:
+      'This account cannot be replaced without confirming the replacement.',
     accountSetupNext: 'Next',
     depositStepNext: 'Next',
   },
@@ -100,6 +318,47 @@ export default {
     importAccount: 'Import Account',
     copyRecoveryPhrase: 'Copy recovery phrase',
     refreshRecoveryPhrase: 'Generate a new recovery phrase',
+    resumeNotice:
+      'A recovery phrase is already stored on this device, but this account has no name yet. Your phrase will not be changed. Confirm it and choose a name to finish.',
+  },
+  seedConfirm: {
+    unavailable:
+      'Confirmation is unavailable because this device has no secure random number generator. Go back and try again, or use another browser.',
+    stepTitle: 'Confirm phrase',
+    title: 'Confirm your recovery phrase',
+    instructions:
+      'Enter the requested words from the recovery phrase you wrote down. Your account is only created once they match.',
+    wordLabel: 'Word #{n}',
+    check: 'Check my answers',
+    wordError: 'Word #{n} does not match',
+    recheck:
+      'Some words do not match your recovery phrase. Re-check these word numbers: {positions}.',
+    success: 'Recovery phrase confirmed. You can finish setup.',
+    showPhrase: 'Show my recovery phrase again',
+    hidePhrase: 'Hide my recovery phrase',
+    phraseLabel: 'Your recovery phrase, in order',
+  },
+  backupReminder: {
+    regionLabel: 'Recovery phrase backup reminder',
+    message:
+      'You have not confirmed your recovery phrase yet. Confirm you saved it so you can always recover your account.',
+    confirm: 'Confirm now',
+    dismiss: 'Later',
+  },
+  replaceGuard: {
+    title: 'You already have an account on this device',
+    intro:
+      'Setting up again would replace it. Your recovery phrase is the only way to get this account and its funds back.',
+    confirmed: 'Your current recovery phrase is confirmed.',
+    cancel: 'Cancel and go back to my account',
+    confirmCurrent: 'Confirm my current recovery phrase',
+    replaceToggle: 'Replace this account',
+    warning:
+      'Replacing this account will remove your current recovery phrase, name and profile from this device. If you have not backed the phrase up, the account and any funds may be unrecoverable.',
+    typeLabel: 'Type {word} to continue',
+    word: 'REPLACE',
+    mismatch: 'That does not match. Type the word exactly to continue.',
+    replace: 'Replace this account',
   },
   newContactDialog: {
     newContact: 'New Contact',
@@ -107,6 +366,8 @@ export default {
     loading: 'Looking up contact',
     notFound: 'Not Found',
     found: 'Contact found: {name}',
+    ownAddress:
+      "This is your own address. You can't add yourself as a contact.",
   },
   newTopicDialog: {
     newTopic: 'Add Topic',
@@ -130,10 +391,14 @@ export default {
     wipeAndSave: 'Remote Wipe Wallet',
     changeLog: 'Changelog',
     showSeed: 'Show Seed',
+    confirmSeed: 'Confirm Recovery Phrase',
+    panelLabel: 'Settings',
   },
   receiveBitcoinDialog: {
     walletStatus: 'Wallet Status',
     balanceUnavailable: 'Balance unavailable. Retrying.',
+    noFundsHint:
+      'Your balance is 0. This app uses testnet MON, which has no real value. The demo faucet funds new profiles automatically; if nothing arrives after a minute, ask the demo operator to send testnet MON to the address below.',
     close: 'Close',
     addressCopied: 'Address copied to clipboard',
   },
@@ -155,6 +420,9 @@ export default {
     notFound: 'Not Found',
   },
   settings: {
+    title: 'Settings',
+    back: 'Back',
+    openMenu: 'Open the menu',
     appearance: 'Appearance',
     networking: 'Networking',
     contactRefreshInterval: 'Contact Refresh Interval (minutes)',
@@ -166,12 +434,17 @@ export default {
   },
   profile: {
     name: "Character's Public Name",
-    seedEntry: "Character's Secret Name",
+    seedEntry: 'Recovery phrase',
     importSeed: 'Recover past memories',
-    invalidSeed: 'Unknown secret name...',
+    invalidSeed: 'That is not a valid recovery phrase.',
     nameHint: 'Name displayed to others',
-    enterSeed: "Enter your character's secret name...",
-    pleaseType: 'Please be more creative',
+    enterSeed: 'Enter your recovery phrase...',
+    nameBlank: 'Enter a name: it cannot be empty or only spaces.',
+    nameTooLong: 'The name is too long: use at most {max} characters.',
+    nameForbiddenCharacters:
+      'The name contains characters that are not allowed. Remove line breaks and other control characters.',
+    nameInvalidUnicode:
+      'The name contains an invalid character. Delete it or paste plain text.',
     bio: 'Bio',
     bioHint: 'Short biolography displayed to others',
     uploadAvatar: 'Upload Avatar',
@@ -200,8 +473,6 @@ export default {
     avatarTooLarge: 'Profile avatar is too large, select a smaller image.',
     unableContactRelay: 'Unable to contact relay server.',
     pushingProfile: 'Pushing new Profile...',
-    invalidName:
-      'Enter a public name: 1-128 characters, no control characters.',
     profile: 'Profile',
   },
   wipeWallet: {
@@ -219,6 +490,9 @@ export default {
   },
   transactionDialog: {
     backingTransactions: 'Backing Transactions',
+    totalStampPayment: 'Total stamp payment',
+    stampPaymentN: 'Stamp payment {n}',
+    sentTo: 'To {address}',
     txId: 'Transaction ID',
     txType: 'Type',
     txAddress: 'Address',

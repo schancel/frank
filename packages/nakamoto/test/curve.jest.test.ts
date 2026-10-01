@@ -352,14 +352,27 @@ describe('typed curve', () => {
       ok: false,
       error: { code: 'bad-length', actual: 64 },
     })
-    expect(messageDigest(BCH_MAINNET, message)).toEqual({
-      ok: false,
-      error: { code: 'message-magic-unpinned' },
+    expect(BCH_MAINNET.messageMagic).toMatchObject({
+      status: 'pinned',
+      text: 'Bitcoin Signed Message:\n',
     })
-    expect(signMessage(XPI_MAINNET, secret, message)).toEqual({
-      ok: false,
-      error: { code: 'message-magic-unpinned' },
+    expect(hex(must(messageDigest(BCH_MAINNET, message)))).toBe(
+      '88630588cd15244c180c7dee585b64278907703fd086e8f4cebec2daf3de28d3',
+    )
+    expect(XPI_MAINNET.messageMagic).toMatchObject({
+      status: 'pinned',
+      text: 'Bitcoin Signed Message:\n',
     })
+    expect(hex(must(messageDigest(XPI_MAINNET, message)))).toBe(
+      '88630588cd15244c180c7dee585b64278907703fd086e8f4cebec2daf3de28d3',
+    )
+    expect(hex(must(signMessage(XPI_MAINNET, secret, message)))).toBe(
+      hex(signature),
+    )
+    const xecDigest = must(messageDigest(XEC_MAINNET, message))
+    expect(hex(xecDigest)).toBe(
+      '1ec0236c442700dca21f8a41e991776be53c19e6f2cf38a4ff1aa1ba43d93fdd',
+    )
     const xec = must(signMessage(XEC_MAINNET, secret, message))
     expect(hex(xec)).not.toBe(hex(signature))
     expect(must(verifyMessage(XEC_MAINNET, point, message, xec))).toBe(true)

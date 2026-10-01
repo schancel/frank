@@ -48,6 +48,39 @@ describe('Decision #189 profile display name fixtures', () => {
     }
   })
 
+  it.each(fixture.cases)(
+    '$id reports a reason exactly when invalid',
+    testCase => {
+      const result = validateProfileDisplayName(fixtureInput(testCase))
+      expect(result.reason === undefined).toBe(testCase.valid)
+    },
+  )
+
+  // Ticket #268: the UI says what to fix, so each failure class must map to its own reason.
+  it.each([
+    ['empty', '', 'blank'],
+    ['spaces', '   ', 'blank'],
+    ['no-break space', '\u00a0', 'blank'],
+    ['control character', 'a\u0007b', 'forbidden-character'],
+    ['line separator', 'a\u2028b', 'forbidden-character'],
+    ['newline', 'a\nb', 'forbidden-character'],
+    ['129 letters', 'x'.repeat(129), 'too-long'],
+    ['200 letters', 'x'.repeat(200), 'too-long'],
+    ['129 emoji', '\u{1f600}'.repeat(129), 'too-long'],
+    ['unpaired high surrogate', 'a\ud800b', 'invalid-unicode'],
+    ['unpaired low surrogate', '\udc00', 'invalid-unicode'],
+  ])('reports %s as %s', (_label, input, reason) => {
+    expect(validateProfileDisplayName(input as string).reason).toBe(reason)
+  })
+
+  it('accepts exactly 128 characters, counting an emoji as one', () => {
+    expect(validateProfileDisplayName('x'.repeat(128)).valid).toBe(true)
+    expect(validateProfileDisplayName('\u{1f600}'.repeat(128))).toEqual({
+      normalized: '\u{1f600}'.repeat(128),
+      valid: true,
+    })
+  })
+
   it('does not apply Unicode normalization', () => {
     const decomposed = 'e\u0301'
     expect(requireValidProfileDisplayName(decomposed)).toBe(decomposed)

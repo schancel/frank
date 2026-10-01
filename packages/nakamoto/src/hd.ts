@@ -5,9 +5,9 @@
 // Serialization version bytes come from the chain the caller passes.
 
 import { hmac } from '@noble/hashes/hmac.js'
-import { ripemd160 } from '@noble/hashes/ripemd160.js'
-import { sha256 } from '@noble/hashes/sha256.js'
 import { sha512 } from '@noble/hashes/sha512.js'
+
+import { cryptoBackend } from './backend.js'
 import { decodeBase58Check, encodeBase58Check } from './base58check.js'
 import { copyBytes, encodeUnsignedBE } from './bytes.js'
 import type { ChainDescriptor } from './chain/types.js'
@@ -152,8 +152,8 @@ function ser32(value: number): Uint8Array {
   return encoded.value
 }
 
-function hash160(bytes: Uint8Array): Uint8Array {
-  return new Uint8Array(ripemd160(sha256(bytes)))
+function hash160(bytes: Uint8Array) {
+  return new Uint8Array(cryptoBackend.hash160(bytes))
 }
 
 function fingerprintOf(publicKey: Uint8Array): Uint8Array {

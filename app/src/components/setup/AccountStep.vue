@@ -1,5 +1,8 @@
 <template>
   <div class="col q-gutter-y-md">
+    <div v-if="resume" role="note" class="text-body2" data-test="resume-notice">
+      {{ $t('accountStep.resumeNotice') }}
+    </div>
     <div v-if="action === 'none'">
       <div class="row q-ma-xs q-ma-xs">
         <q-space />
@@ -32,8 +35,7 @@
         lazy-rules
         style="width: 100%"
         :rules="[
-          val =>
-            validateProfileDisplayName(val).valid || $t('profile.pleaseType'),
+          val => profileNameRule(val, (key, params) => $t(key, params ?? {})),
         ]"
         @blur="commitName"
       />
@@ -45,7 +47,7 @@
         filled
         rows="2"
         lazy-rules
-        :rules="[val => isSeedValid || $t('profile.invalidSeed')]"
+        :rules="[val => !val || isSeedValid || $t('profile.invalidSeed')]"
         :placeholder="$t('profile.enterSeed')"
       />
       <q-btn
@@ -58,7 +60,7 @@
         @click="copySeed"
       />
       <q-btn
-        v-if="action === 'new'"
+        v-if="action === 'new' && !resume"
         flat
         class="q-pa-xs q-ma-none"
         color="primary"
@@ -71,13 +73,14 @@
 </template>
 
 <script lang="ts">
-import { computed, defineComponent, PropType, ref } from 'vue'
+import { computed, defineComponent, onMounted, PropType, ref } from 'vue'
 import { copyToClipboard } from 'quasar'
 
 import { generateMnemonic, validateMnemonic } from 'bip39'
 import { seedCopiedNotify } from '../../utils/notifications'
 import { normalizeSetupMnemonic } from '../../utils/setup-account'
 import { validateProfileDisplayName } from '@frank/wallet/profile-display-name'
+import { profileNameRule } from 'src/utils/profile-name'
 
 interface AccountData {
   name: string
@@ -95,10 +98,18 @@ export default defineComponent({
       type: Object as PropType<AccountData>,
       required: true,
     },
+    /**
+     * Resume mode (#284): the wallet already holds a seed but no account name. The stored phrase
+     * is shown read-only; it can neither be regenerated nor replaced by an import.
+     */
+    resume: {
+      type: Boolean,
+      default: false,
+    },
   },
   emits: ['update:account-data'],
   setup(props, { emit }) {
-    const action = ref('none')
+    const action = ref(props.resume ? 'new' : 'none')
     const rawName = ref(props.accountData.name)
     const rawSeed = ref(props.accountData.seed)
     const isSeedValid = computed(() => {
@@ -145,13 +156,18 @@ export default defineComponent({
       },
     })
 
+    // Resume mode has no New/Import choice to click: publish the (stored-seed) account data now.
+    onMounted(() => {
+      if (props.resume) emitAccountData()
+    })
+
     return {
       action,
       rawName,
       rawSeed,
       isSeedValid,
       isValid,
-      validateProfileDisplayName,
+      profileNameRule,
       seed,
       name,
       commitName() {
@@ -169,6 +185,7 @@ export default defineComponent({
           })
       },
       generateMnemonic() {
+        if (props.resume) return
         rawSeed.value = generateMnemonic()
         emitAccountData()
       },
@@ -178,6 +195,7 @@ export default defineComponent({
         emitAccountData()
       },
       importAccount() {
+        if (props.resume) return
         action.value = 'import'
         rawSeed.value = ''
         emitAccountData()

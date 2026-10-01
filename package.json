@@ -15,5 +15,9 @@
     "node": ">=24.0.0",
     "npm": ">= 6.13.4",
     "yarn": ">= 1.21.1"
+  },
+  "scripts": {
+    "demo": "node --import tsx packages/bot/demo/demo.ts",
+    "demo:smoke": "node --import tsx packages/bot/demo/smoke.ts"
   }
 }

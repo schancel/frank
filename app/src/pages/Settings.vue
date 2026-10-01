@@ -1,4 +1,27 @@
 <template>
+  <q-header>
+    <q-toolbar class="q-pl-sm">
+      <q-btn
+        flat
+        dense
+        class="q-px-sm"
+        icon="arrow_back"
+        :aria-label="$t('settings.back')"
+        data-test="settings-back"
+        @click="cancel"
+      />
+      <q-toolbar-title class="h6">{{ $t('settings.title') }}</q-toolbar-title>
+      <q-btn
+        flat
+        dense
+        class="q-px-sm"
+        icon="menu"
+        :aria-label="$t('settings.openMenu')"
+        data-test="settings-menu"
+        @click="$emit('toggleMyDrawerOpen')"
+      />
+    </q-toolbar>
+  </q-header>
   <q-page-container>
     <q-page class="q-ma-none q-pa-sm">
       <q-card>
@@ -14,6 +37,11 @@
                 name="appearance"
                 icon="color_lens"
                 :label="$t('settings.appearance')"
+              />
+              <q-tab
+                name="storage"
+                icon="save"
+                :label="$t('persistentStorage.tab')"
               />
             </q-tabs>
           </template>
@@ -61,6 +89,9 @@
                   />
                 </div>
               </q-tab-panel>
+              <q-tab-panel name="storage">
+                <persistent-storage-panel />
+              </q-tab-panel>
             </q-tab-panels>
           </template>
         </q-splitter>
@@ -84,6 +115,7 @@
 </template>
 
 <script lang="ts">
+import { navigateBack } from 'src/utils/navigate-back'
 import { localeOptions } from 'src/i18n'
 import { applyLocale } from 'src/utils/apply-locale'
 
@@ -93,9 +125,12 @@ import { QInput } from 'quasar'
 import { useAppearanceStore } from 'src/stores/appearance'
 import { useContactStore } from 'src/stores/contacts'
 import { storeToRefs } from 'pinia'
+import PersistentStoragePanel from 'src/components/settings/PersistentStoragePanel.vue'
 const msToMinutes = 60000
 
 export default defineComponent({
+  components: { PersistentStoragePanel },
+  emits: ['toggleMyDrawerOpen'],
   setup() {
     const appearanceStore = useAppearanceStore()
     const contactStore = useContactStore()
@@ -134,12 +169,12 @@ export default defineComponent({
         },
         locale: this.locale,
       })
-      window.history.length > 1 ? this.$router.go(-1) : this.$router.push('/')
+      navigateBack(this.$router)
     },
     cancel() {
       // Discard the draft -- it was never applied anywhere, so there's nothing else to undo.
       this.locale = this.storeLocale
-      window.history.length > 1 ? this.$router.go(-1) : this.$router.push('/')
+      navigateBack(this.$router)
     },
   },
   mounted() {

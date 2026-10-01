@@ -373,6 +373,34 @@ describe('explicit signing', () => {
     expect(signed.ok ? null : signed).not.toHaveProperty('value')
   })
 
+  test('an ecdsa body longer than 72 bytes is not attached', () => {
+    const scripts = [p2pkh(hashA)]
+    const coins = spent(scripts)
+    const tooLong = new Uint8Array(73)
+    tooLong[0] = 0x30
+    const rejected = signInput(
+      transaction(scripts),
+      0,
+      recorder(pubA, tooLong),
+      options(BTC_MAINNET, 'legacy', SIGHASH_ALL, coins),
+    )
+    expect(rejected).toEqual({ ok: false, error: { code: 'sign-signature' } })
+    expect(rejected.ok ? null : rejected).not.toHaveProperty('value')
+
+    const body = new Uint8Array(72)
+    body[0] = 0x30
+    const accepted = signInput(
+      transaction(scripts),
+      0,
+      recorder(pubA, body),
+      options(BTC_MAINNET, 'legacy', SIGHASH_ALL, coins),
+    )
+    expect(accepted.ok).toBe(true)
+    if (!accepted.ok) return
+    expect(accepted.value.scriptSig[0]).toBe(73)
+    expect(accepted.value.scriptSig[73]).toBe(SIGHASH_ALL)
+  })
+
   test('two inputs and one key do not look like success', () => {
     const key = new old.PrivateKey({
       bn: '11'.repeat(32),
@@ -578,6 +606,64 @@ describe('explicit signing', () => {
     )
   })
 
+  test('lotus p2pkh matches lotusd VerifyScript executed-script commitment', () => {
+    // lotusd src/test/data/sighash_lotus.json row "1->2 Lotus sighash ALL":
+    // script OP_3, codeseparator 0xffffffff, CHash256 preimage.
+    const script = Uint8Array.of(0x53)
+    const raw = fromHex(
+      '01000000010123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0000000000ffffffff02ffff0000000000000151ffffff0000000000015200000000',
+    )
+    const parsed = parseTransaction(raw, XPI_MAINNET)
+    if (!parsed.ok) throw new Error(parsed.error.code)
+    const executed = new Uint8Array(sha256(sha256(script)))
+    const vector = sighash(
+      parsed.value,
+      0,
+      XPI_MAINNET,
+      SIGHASH_LOTUS | SIGHASH_ALL,
+      {
+        algorithm: 'lotus',
+        spent: [{ value: 1245n, scriptPubKey: script }],
+        executedScriptHash: executed,
+        codeSeparatorPosition: 0xffffffff,
+      },
+    )
+    if (!vector.ok) throw new Error(vector.error.code)
+    expect(toHex(vector.value)).toBe(
+      '75eb0eea1ee2fcd6fccd7a340ef4d0928d82b8e741a04b9fd94039254639aa21',
+    )
+
+    const scripts = [p2pkh(hashA)]
+    const tx = transaction(scripts)
+    const coins = spent(scripts)
+    const sighashType = SIGHASH_LOTUS | SIGHASH_ALL
+    const signer = recorder(pubA, der)
+    const signed = signInput(
+      tx,
+      0,
+      signer,
+      options(XPI_MAINNET, 'lotus', sighashType, coins),
+    )
+    expect(signed.ok).toBe(true)
+    if (!signed.ok) return
+    const scriptCode = scripts[0] as Uint8Array
+    const consensus = sighash(tx, 0, XPI_MAINNET, sighashType, {
+      algorithm: 'lotus',
+      spent: coins,
+      executedScriptHash: new Uint8Array(sha256(sha256(scriptCode))),
+      codeSeparatorPosition: 0xffffffff,
+    })
+    const bare = sighash(tx, 0, XPI_MAINNET, sighashType, {
+      algorithm: 'lotus',
+      spent: coins,
+    })
+    if (!consensus.ok || !bare.ok) throw new Error('digest')
+    expect(toHex(consensus.value)).not.toBe(toHex(bare.value))
+    expect(toHex(signer.calls[0] ?? new Uint8Array())).toBe(
+      toHex(consensus.value),
+    )
+  })
+
   test('lotus uses the explicit lotus type and the spent output', () => {
     const scripts = [p2pkh(hashA)]
     const tx = transaction(scripts)
@@ -595,6 +681,10 @@ describe('explicit signing', () => {
     const expected = sighash(tx, 0, XPI_MAINNET, sighashType, {
       algorithm: 'lotus',
       spent: coins,
+      executedScriptHash: new Uint8Array(
+        sha256(sha256(scripts[0] as Uint8Array)),
+      ),
+      codeSeparatorPosition: 0xffffffff,
     })
     if (!expected.ok) throw new Error(expected.error.code)
     expect(toHex(signer.calls[0] ?? new Uint8Array())).toBe(

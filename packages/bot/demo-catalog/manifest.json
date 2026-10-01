@@ -1,0 +1,25 @@
+{
+  "items": [
+    {
+      "itemId": "sunrise",
+      "description": "Sunrise over hills (generated demo picture)",
+      "priceWei": "50000000000000000",
+      "image": "sunrise.png",
+      "thumbnail": "sunrise-thumb.png"
+    },
+    {
+      "itemId": "waves",
+      "description": "Blue waves (generated demo picture)",
+      "priceWei": "50000000000000000",
+      "image": "waves.png",
+      "thumbnail": "waves-thumb.png"
+    },
+    {
+      "itemId": "rings",
+      "description": "Concentric rings (generated demo picture)",
+      "priceWei": "100000000000000000",
+      "image": "rings.png",
+      "thumbnail": "rings-thumb.png"
+    }
+  ]
+}

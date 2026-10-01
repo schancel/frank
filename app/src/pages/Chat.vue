@@ -223,17 +223,27 @@ export default defineComponent({
     })
   },
   methods: {
-    // Opening a chat (mount or a reused route) places the caret (#411). Deferred
-    // so a narrow overlay can release the page first (#277). Fine pointer only.
+    // Opening a chat (mount or a reused route) places the caret (#411). On this
+    // turn, before MainLayout's narrow-overlay restore (one tick later) treats a
+    // still-unfocused page as focus lost and moves focus to the opener (#277).
+    // One later attempt covers an overlay that is still inert on this turn.
     focusComposeOnOpen() {
-      void this.$nextTick(() => {
+      if (this.focusComposeNow()) return
+      const root = this.$el as HTMLElement | undefined
+      if (!root?.isConnected || root.closest('[inert]')) {
         void this.$nextTick(() => {
-          if (!this.composeAutofocusAllowed()) return
-          ;(
-            this.$refs.chatInput as { focus?: () => void } | undefined
-          )?.focus?.()
+          this.focusComposeNow()
         })
-      })
+      }
+    },
+    focusComposeNow() {
+      if (!this.composeAutofocusAllowed()) return false
+      ;(this.$refs.chatInput as { focus?: () => void } | undefined)?.focus?.()
+      const active = document.activeElement
+      return (
+        active instanceof HTMLTextAreaElement ||
+        active instanceof HTMLInputElement
+      )
     },
     finePointer() {
       return (

@@ -259,4 +259,27 @@ describe('opening a chat focuses the compose box (#411)', () => {
     expect(document.activeElement).toBe(outside)
     wrapper.unmount()
   })
+
+  it('owns the composer before a narrow overlay can restore the opener', async () => {
+    setPointer(true)
+    const listItem = focusInDrawer()
+    const opener = document.createElement('button')
+    opener.type = 'button'
+    document.body.appendChild(opener)
+    const wrapper = mountChat()
+    // MainLayout restores the opener on the next turn when focus is still in the
+    // drawer. The composer has to own focus before that turn (#277, #411).
+    expect(document.activeElement).toBe(composeBox())
+    await nextTick()
+    if (
+      document.activeElement === listItem ||
+      document.activeElement === document.body
+    ) {
+      opener.focus()
+    }
+    await settle()
+    expect(document.activeElement).toBe(composeBox())
+    expect(document.activeElement).not.toBe(opener)
+    wrapper.unmount()
+  })
 })

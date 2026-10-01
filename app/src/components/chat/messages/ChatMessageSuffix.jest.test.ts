@@ -151,4 +151,25 @@ describe('ChatMessageSuffix outgoing states (#269, #270)', () => {
     )
     expect(pending.text()).toContain('Paiement en attente')
   })
+
+  it.each([
+    [enUS, 'There are not enough funds to send this message.'],
+    [frFR, 'Les fonds sont insuffisants pour envoyer ce message.'],
+  ])('localizes an insufficient-funds preparation failure', (locale, text) => {
+    const failed = mountSuffix(
+      { status: 'error', failureReason: 'insufficient-funds' },
+      locale,
+    )
+    expect(failed.get('[data-testid="outgoing-failure-reason"]').text()).toBe(
+      text,
+    )
+    expect(failed.text()).not.toContain('stamp-account')
+  })
+
+  it('keeps a localized generic fallback for unclassified failures', () => {
+    const failed = mountSuffix({ status: 'error', failureReason: 'error' })
+    expect(failed.get('[data-testid="outgoing-failure-reason"]').text()).toBe(
+      'The message could not be sent.',
+    )
+  })
 })

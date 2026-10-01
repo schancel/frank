@@ -37,6 +37,7 @@ const { useChatStore } = require('../stores/chats')
 const { useContactStore } = require('../stores/contacts')
 
 const DEALER = '0x3e3e3e3e3e3E3E3E3e3e3E3E3e3e3E3E3e3E3E3e'
+const SELF = '0x1a1A1A1A1a1A1A1a1A1a1a1a1a1a1a1A1A1a1a1a'
 const items = [
   { type: 'blackjack-move', gameId: 'g', action: 'bet', wagerTxHash: '0xh' },
 ]
@@ -95,14 +96,15 @@ const Blank = defineComponent({ setup: () => () => h('div') })
 
 async function mountChat(
   profile: { isBot?: boolean } | undefined,
-  options: { realInput?: boolean } = {},
+  options: { realInput?: boolean; address?: string } = {},
 ) {
+  const address = options.address ?? DEALER
   const pinia = createPinia()
   setActivePinia(pinia)
   const contacts = useContactStore()
   if (profile) {
     contacts.addContact({
-      address: DEALER,
+      address,
       contact: {
         profile: {
           name: 'Dealer',
@@ -114,7 +116,8 @@ async function mountChat(
       },
     })
   }
-  useChatStore().chats[DEALER] = {
+  const chats = useChatStore()
+  chats.chats[address] = {
     messages: [{ payloadDigest: 'd1', outbound: false, items, outpoints: [] }],
   } as never
   provided = undefined
@@ -131,7 +134,7 @@ async function mountChat(
         ChatBannerStack: Blank,
       },
       mocks: {
-        $route: { params: { address: DEALER } },
+        $route: { params: { address } },
         $q: { dark: { isActive: false } },
         $t: (key: string) => key,
       },
@@ -142,6 +145,7 @@ async function mountChat(
     wrapper,
     input: wrapper.findComponent(InputStub),
     banner: wrapper.findComponent(BannerStub),
+    chats,
   }
 }
 
@@ -211,5 +215,27 @@ describe('Chat.vue blackjack wiring (mounted)', () => {
       .mockResolvedValue({ state: 'sent', payloadDigest: 'd' })
     await expect(submit({ items, address: DEALER })).resolves.toBeUndefined()
     expect(vm.sendDirectMessage).toHaveBeenCalledTimes(1)
+  })
+
+  it('submits the mounted composer to the ordinary stamped store path for self-chat', async () => {
+    const mounted = await mountChat({}, { address: SELF })
+    const send = jest
+      .spyOn(mounted.chats, 'sendMessage')
+      .mockResolvedValue({ state: 'sent', payloadDigest: 'self-digest' })
+    const vm = mounted.wrapper.vm as any
+    // setup() captured the action before this spy was installed, so point the mounted boundary at
+    // the same wrapped Pinia action rather than replacing the behavior with a local-only path.
+    vm.sendDirectMessage = send
+
+    await vm.sendMessage('note to self')
+
+    expect(send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        address: SELF,
+        items: [{ type: 'text', text: 'note to self' }],
+        stampValue: expect.anything(),
+      }),
+    )
+    expect(typeof send.mock.calls[0]?.[0].stampValue).toBe('bigint')
   })
 })

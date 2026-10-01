@@ -210,6 +210,7 @@ export default {
     reasonInterrupted: 'It was interrupted before it was sent.',
     reasonUnverified: 'Delivery could not be confirmed.',
     reasonRecovered: 'An earlier message was delivered meanwhile.',
+    reasonInsufficientFunds: 'There are not enough funds to send this message.',
     reasonError: 'The message could not be sent.',
     retry: 'Retry',
     retryHint:

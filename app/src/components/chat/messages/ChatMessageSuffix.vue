@@ -244,6 +244,7 @@ export default defineComponent({
         recovered: 'outgoing.reasonRecovered',
         error: 'outgoing.reasonError',
       }
+      keys['insufficient-funds'] = 'outgoing.reasonInsufficientFunds'
       const key = keys[this.failureReason]
       return key === undefined ? '' : this.$t(key)
     },

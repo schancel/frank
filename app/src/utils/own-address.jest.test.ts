@@ -3,6 +3,7 @@ import {
   getOwnCanonicalAddress,
   isOwnAddress,
   resolveOwnAddress,
+  sameCanonicalAddress,
 } from './own-address'
 
 // Only the wallet handle is faked; the lazy import, parse and format are the real ones.
@@ -46,6 +47,12 @@ describe('utils/own-address.ts', () => {
   it('does not treat a different or unparseable address as own', async () => {
     expect(await isOwnAddress(OTHER)).toBe(false)
     expect(await isOwnAddress('not-an-address')).toBe(false)
+  })
+
+  it('compares accepted route spellings canonically', () => {
+    expect(sameCanonicalAddress(OWN, OWN.toLowerCase())).toBe(true)
+    expect(sameCanonicalAddress(OWN, OTHER)).toBe(false)
+    expect(sameCanonicalAddress(OWN, 'not-an-address')).toBe(false)
   })
 
   it('fails open, without an error, when the wallet is unavailable', async () => {

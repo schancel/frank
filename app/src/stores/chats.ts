@@ -55,6 +55,10 @@ import { useProfileStore } from './my-profile'
 import { useContactStore } from './contacts'
 import { mapObjIndexed, pathOr } from 'ramda'
 import { STORE_SCHEMA_VERSION } from 'src/boot/pinia'
+import {
+  getOwnCanonicalAddress,
+  sameCanonicalAddress,
+} from '../utils/own-address'
 
 export type ChatMessage = {
   outbound: boolean
@@ -208,6 +212,20 @@ function isNoResponseError(error: unknown): boolean {
   )
 }
 
+function isInsufficientFundsError(error: unknown): boolean {
+  const kind =
+    error !== null && typeof error === 'object' && 'kind' in error
+      ? (error as { kind?: unknown }).kind
+      : undefined
+  return (
+    kind === 'insufficient-funds' ||
+    (error instanceof Error &&
+      /insufficient (?:main account )?(?:balance|funds)|insufficient stamp-account capacity/i.test(
+        error.message,
+      ))
+  )
+}
+
 /** Maps a failed send to the reason class shown to the user, and says whether the message must
  * keep its payment attempt (so a later retry asks the wallet about it instead of paying again). */
 function classifySendFailure(
@@ -230,11 +248,20 @@ function classifySendFailure(
   if (error instanceof MonadMailboxUnavailableError) {
     return { reason: 'unavailable' }
   }
+  if (isInsufficientFundsError(error)) {
+    return { reason: 'insufficient-funds' }
+  }
   return {
     reason: isNoResponseError(error) ? 'unreachable' : 'error',
     // Any failure after the payment set was journaled leaves that set on the message.
     keepDigest: ownDigest,
   }
+}
+
+type OutboundDeliveryMatch = {
+  oldIndex: string
+  chatAddress: string
+  message: Message
 }
 
 export type RestorableState = {
@@ -1248,6 +1275,73 @@ export const useChatStore = defineStore('chats', {
     ) {
       console.log('receiving messages')
       const messageStore = await store
+      const ownAddress = await getOwnCanonicalAddress()
+      const outboundMatches = new Map<string, OutboundDeliveryMatch>()
+      const replacedAccountCollisions = new Map<
+        string,
+        { chatAddress: string }
+      >()
+
+      for (const wrapper of messageWrappers) {
+        const confirmed = this.messages[wrapper.index]
+        const pendingEntry = Object.entries(this.messages).find(
+          ([, candidate]) =>
+            candidate?.outbound === true &&
+            candidate.delivery?.attemptDigest === wrapper.index,
+        )
+        const oldIndex = confirmed ? wrapper.index : pendingEntry?.[0]
+        const existing = confirmed ?? pendingEntry?.[1]
+        if (!oldIndex || !existing?.outbound) continue
+
+        const chatEntry = Object.entries(this.chats).find(([, chat]) =>
+          chat?.messages.some(message => message.payloadDigest === oldIndex),
+        )
+        if (!chatEntry) continue
+        const [chatAddress] = chatEntry
+        const isCurrentSender =
+          sameCanonicalAddress(existing.senderAddress, ownAddress) &&
+          sameCanonicalAddress(wrapper.senderAddress, ownAddress)
+        const isMatchingOutboxRoute =
+          wrapper.outbound === true &&
+          sameCanonicalAddress(chatAddress, wrapper.copartyAddress)
+        const isCurrentSelfRoute =
+          wrapper.outbound === false &&
+          sameCanonicalAddress(chatAddress, ownAddress) &&
+          sameCanonicalAddress(wrapper.copartyAddress, ownAddress)
+        const isSameIdentityAndRoute =
+          isCurrentSender && (isMatchingOutboxRoute || isCurrentSelfRoute)
+
+        if (isSameIdentityAndRoute) {
+          // The local outbox owns content/direction. The relay owns only delivery time and the
+          // observed stamp metadata; never spread an inbox wrapper over the outbound record.
+          outboundMatches.set(wrapper.index, {
+            oldIndex,
+            chatAddress,
+            message: {
+              outbound: true,
+              status: 'confirmed',
+              items: existing.items,
+              serverTime: wrapper.message.serverTime,
+              receivedTime: wrapper.message.receivedTime,
+              outpoints: wrapper.message.outpoints,
+              stampValueWei:
+                wrapper.message.stampValueWei ?? existing.stampValueWei,
+              stampPayments:
+                wrapper.message.stampPayments ?? existing.stampPayments,
+              senderAddress: existing.senderAddress,
+              delivery: undefined,
+            },
+          })
+        } else if (confirmed) {
+          // A payload from an earlier account can legitimately arrive after Replace Account.
+          // It is a new inbound record for the current identity, not the old account's outbox.
+          replacedAccountCollisions.set(wrapper.index, {
+            chatAddress,
+          })
+          toNotify.add(wrapper.index)
+        }
+      }
+
       for (const wrapper of messageWrappers) {
         // An index this call did not claim belongs to an overlapping receive.
         // Do not persist it: if the claimer fails before storing, a later poll
@@ -1255,30 +1349,59 @@ export const useChatStore = defineStore('chats', {
         if (!toNotify.has(wrapper.index) && !(wrapper.index in this.messages)) {
           continue
         }
-        const existing = this.messages[wrapper.index]
-        // A self-chat arrives back through the ordinary mailbox with the same payload digest as
-        // the already-confirmed outbox record. The digest is the identity: keep one message and
-        // keep its direction, while adopting the relay's authoritative timestamp/stamp fields.
-        // Persisting the raw inbox wrapper here used to turn the message into "received" after a
-        // reload even though the in-memory list had already deduplicated it.
-        const loopback = existing?.outbound === true ? existing : undefined
-        const persistedMessage: Message = loopback
-          ? {
-              ...wrapper.message,
-              outbound: true,
-              status: 'confirmed',
-              items: loopback.items,
-              senderAddress: loopback.senderAddress,
-            }
-          : { ...wrapper.message }
+        const loopback = outboundMatches.get(wrapper.index)
         const persisted: MessageWrapper = {
-          message: persistedMessage,
+          message: loopback?.message ?? { ...wrapper.message },
           index: wrapper.index,
           outbound: loopback ? true : wrapper.outbound,
-          senderAddress: loopback?.senderAddress ?? wrapper.senderAddress,
-          copartyAddress: wrapper.copartyAddress,
+          senderAddress:
+            loopback?.message.senderAddress ?? wrapper.senderAddress,
+          copartyAddress: loopback?.chatAddress ?? wrapper.copartyAddress,
         }
         await messageStore.saveMessage(persisted)
+        if (loopback && loopback.oldIndex !== wrapper.index) {
+          try {
+            await messageStore.deleteMessage(loopback.oldIndex)
+          } catch (err) {
+            // The confirmed digest wins during reload if a crash leaves the pending record.
+            console.warn('could not remove the looped-back pending record', err)
+          }
+        }
+      }
+
+      // Apply persistence-backed reconciliations before notification/accounting. This makes a
+      // poll that wins the race with `directMessages.send` completion indistinguishable from the
+      // send completing first: one outbound object, one key, and no inbound value/unread effects.
+      for (const [index, loopback] of outboundMatches) {
+        const chat = this.chats[loopback.chatAddress]
+        const position = chat?.messages.findIndex(
+          message => message.payloadDigest === loopback.oldIndex,
+        )
+        const reconciled: ChatMessage = {
+          payloadDigest: index,
+          ...loopback.message,
+        }
+        if (chat && position !== undefined && position >= 0) {
+          chat.messages.splice(position, 1, reconciled)
+          chat.lastReceived = Math.max(chat.lastReceived, reconciled.serverTime)
+        }
+        delete this.messages[loopback.oldIndex]
+        this.messages[index] = reconciled
+        this.lastReceived = Math.max(
+          this.lastReceived ?? 0,
+          reconciled.serverTime,
+        )
+      }
+
+      for (const [index, collision] of replacedAccountCollisions) {
+        const chat = this.chats[collision.chatAddress]
+        const position = chat?.messages.findIndex(
+          message => message.payloadDigest === index,
+        )
+        if (chat && position !== undefined && position >= 0) {
+          chat.messages.splice(position, 1)
+        }
+        delete this.messages[index]
       }
       // Ensure contacts are all setup
       for (const messageWrapper of messageWrappers) {
@@ -1365,6 +1488,10 @@ export const useChatStore = defineStore('chats', {
           index,
           message: newMsg,
         }: { copartyAddress: string; index: string; message: Message } = wrapper
+
+        if (outboundMatches.has(index)) {
+          continue
+        }
 
         assert(newMsg.outbound !== undefined, 'outbound is not defined')
         assert(newMsg.status !== undefined, 'status is not defined')

@@ -20,17 +20,26 @@ jest.mock('../components/dialogs/SendFileDialog.vue', () => ({
 jest.mock('src/stores/contacts', () => ({
   useContactStore: () => ({
     getContact: () => ({
-      profile: { name: 'Alice Profile', avatar: 'alice.png', pubKey: null },
+      profile: { name: 'Alice Profile', avatar: undefined, pubKey: null },
     }),
     setNotify: jest.fn(),
     getNotify: () => true,
   }),
 }))
-jest.mock('src/utils/avatar', () => ({ profileAvatar: () => 'alice.png' }))
+jest.mock('src/stores/my-profile', () => ({
+  useProfileStore: () => ({ profile: { avatar: 'local-owner.png' } }),
+}))
+jest.mock('src/utils/avatar', () => ({
+  profileAvatar: (avatar: string | undefined) => avatar ?? 'fallback.png',
+}))
 const mockOwnAddress = jest.fn()
 jest.mock('src/utils/own-address', () => ({
   getOwnCanonicalAddress: () => mockOwnAddress(),
+  sameCanonicalAddress: (first: string | null, second: string | null) =>
+    Boolean(first && second && first.toLowerCase() === second.toLowerCase()),
 }))
+
+const OWN_ADDRESS = '0x1a1A1A1A1a1A1A1a1A1a1a1a1a1a1a1A1A1a1a1a'
 
 const passthrough = defineComponent({
   setup(_props, { slots }) {
@@ -45,11 +54,11 @@ describe('ChatLayout self-chat identity (#420)', () => {
   ])(
     'uses the localized own label in %s while retaining the profile avatar',
     async (_locale, label) => {
-      mockOwnAddress.mockResolvedValue('0xme')
+      mockOwnAddress.mockResolvedValue(OWN_ADDRESS)
       const wrapper = mount(ChatLayout, {
         global: {
           mocks: {
-            $route: { params: { address: '0xme' } },
+            $route: { params: { address: OWN_ADDRESS.toLowerCase() } },
             $router: { push: jest.fn() },
             $t: (key: string) => (key === 'selfChat.you' ? label : key),
           },
@@ -79,7 +88,7 @@ describe('ChatLayout self-chat identity (#420)', () => {
       await flushPromises()
       expect(wrapper.text()).toContain(label)
       expect(wrapper.text()).not.toContain('Alice Profile')
-      expect(wrapper.get('img').attributes('src')).toBe('alice.png')
+      expect(wrapper.get('img').attributes('src')).toBe('local-owner.png')
     },
   )
 })

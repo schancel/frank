@@ -214,6 +214,8 @@ export default {
     reasonInterrupted: "L'envoi a été interrompu avant son terme.",
     reasonUnverified: "La remise n'a pas pu être confirmée.",
     reasonRecovered: 'Un message précédent a été remis entre-temps.',
+    reasonInsufficientFunds:
+      'Les fonds sont insuffisants pour envoyer ce message.',
     reasonError: 'Le message n’a pas pu être envoyé.',
     retry: 'Réessayer',
     retryHint:

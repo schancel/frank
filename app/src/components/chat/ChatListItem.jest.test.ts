@@ -10,14 +10,23 @@ jest.mock('src/stores/chats', () => ({
 }))
 jest.mock('src/stores/contacts', () => ({
   useContactStore: () => ({
-    getContactProfile: () => ({ name: 'Alice Profile', avatar: 'alice.png' }),
+    getContactProfile: () => ({ name: 'Alice Profile', avatar: undefined }),
   }),
 }))
-jest.mock('src/utils/avatar', () => ({ profileAvatar: () => '' }))
+jest.mock('src/stores/my-profile', () => ({
+  useProfileStore: () => ({ profile: { avatar: 'local-owner.png' } }),
+}))
+jest.mock('src/utils/avatar', () => ({
+  profileAvatar: (avatar: string | undefined) => avatar ?? 'fallback.png',
+}))
 const mockOwnAddress = jest.fn()
 jest.mock('src/utils/own-address', () => ({
   getOwnCanonicalAddress: () => mockOwnAddress(),
+  sameCanonicalAddress: (first: string | null, second: string | null) =>
+    Boolean(first && second && first.toLowerCase() === second.toLowerCase()),
 }))
+
+const OWN_ADDRESS = '0x1a1A1A1A1a1A1A1a1A1a1a1a1a1a1a1A1A1a1a1a'
 
 // vue-i18n's ESM browser build cannot load under this Jest config, so `$t` is a small lookup over
 // the app's real message tables (same `{name}` interpolation).
@@ -54,7 +63,7 @@ function preview(locale: string) {
 describe('ChatListItem message preview (ticket #274)', () => {
   beforeEach(() => {
     mockOwnAddress.mockReset()
-    mockOwnAddress.mockResolvedValue('0xme')
+    mockOwnAddress.mockResolvedValue(OWN_ADDRESS)
   })
 
   it.each([
@@ -79,7 +88,7 @@ describe('ChatListItem message preview (ticket #274)', () => {
     'labels the own-address row %j and keeps the profile avatar',
     async (locale, label) => {
       const wrapper = shallowMount(ChatListItem, {
-        props: { chatAddress: '0xme', compact: false },
+        props: { chatAddress: OWN_ADDRESS.toLowerCase(), compact: false },
         global: {
           mocks: {
             $t: translator(locale),
@@ -92,10 +101,7 @@ describe('ChatListItem message preview (ticket #274)', () => {
       await flushPromises()
       expect(wrapper.text()).toContain(label)
       expect(wrapper.text()).not.toContain('Alice Profile')
-      expect(
-        (wrapper.vm as unknown as { contact: { avatar: string } }).contact
-          .avatar,
-      ).toBe('alice.png')
+      expect(wrapper.get('img').attributes('src')).toBe('local-owner.png')
     },
   )
 })

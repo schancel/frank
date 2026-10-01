@@ -34,16 +34,28 @@ export async function getOwnCanonicalAddress(): Promise<string | null> {
   return (await resolveOwnAddress()).address
 }
 
-/** True when `address` (any form the chain parses) is the current identity's own address. */
-export async function isOwnAddress(address: string): Promise<boolean> {
-  const own = await getOwnCanonicalAddress()
-  if (own === null) {
-    return false
-  }
+/** Compares any two accepted spellings at the presentation/storage edge. */
+export function sameCanonicalAddress(
+  first: string | null | undefined,
+  second: string | null | undefined,
+): boolean {
+  if (!first || !second) return false
   try {
-    const parsed = activeChain.parseAddress(address.trim())
-    return parsed !== null && activeChain.formatAddress(parsed) === own
+    const firstParsed = activeChain.parseAddress(first)
+    const secondParsed = activeChain.parseAddress(second)
+    return (
+      firstParsed !== null &&
+      secondParsed !== null &&
+      activeChain.formatAddress(firstParsed) ===
+        activeChain.formatAddress(secondParsed)
+    )
   } catch {
     return false
   }
+}
+
+/** True when `address` (any form the chain parses) is the current identity's own address. */
+export async function isOwnAddress(address: string): Promise<boolean> {
+  const own = await getOwnCanonicalAddress()
+  return sameCanonicalAddress(address.trim(), own)
 }

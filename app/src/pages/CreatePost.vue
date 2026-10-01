@@ -103,7 +103,14 @@
         >
           {{ preparationStatus }}
         </div>
-        <q-btn @click="back" label="back" color="negative" class="q-ma-sm" />
+        <q-btn
+          ref="composeFocusTarget"
+          @click="back"
+          label="back"
+          color="negative"
+          class="q-ma-sm"
+          data-test="compose-focus-target"
+        />
         <q-btn
           type="submit"
           label="Post"
@@ -349,33 +356,41 @@ export default defineComponent({
         | undefined
       const retryElement =
         retryButton instanceof HTMLElement ? retryButton : retryButton?.$el
-      const restoreRetryFocus = retryElement?.contains(document.activeElement)
+      const retryOwnedFocus = retryElement?.contains(document.activeElement)
       this.parentLoading = true
       try {
         await this.fetchMessage({ payloadDigest: requestedParent })
       } catch {
         // The visible terminal state supplies the retry path.
       } finally {
-        const ownsParentRequest =
+        const ownsParentRequest = () =>
           this.componentMounted &&
           this.parentRouteEpoch === requestedParentRouteEpoch &&
           this.parentDigest === requestedParent &&
           this.activeParentRequestId === requestId
-        if (ownsParentRequest) {
-          this.activeParentRequestId = null
+        if (ownsParentRequest()) {
           this.parentLoading = false
-          if (restoreRetryFocus && !this.parentMessage) {
+          if (retryOwnedFocus) {
             await this.$nextTick()
-            const currentButton = this.$refs.retryParentButton as
-              | { $el?: HTMLElement }
-              | HTMLElement
-              | undefined
-            const currentElement =
-              currentButton instanceof HTMLElement
-                ? currentButton
-                : currentButton?.$el
-            currentElement?.focus()
+            if (ownsParentRequest()) {
+              const activeElement = document.activeElement
+              const hasConnectedFocus =
+                activeElement instanceof HTMLElement &&
+                activeElement !== document.body &&
+                activeElement.isConnected
+              if (!hasConnectedFocus) {
+                const focusTarget = this.parentMessage
+                  ? this.$refs.composeFocusTarget
+                  : this.$refs.retryParentButton
+                const targetElement =
+                  focusTarget instanceof HTMLElement
+                    ? focusTarget
+                    : (focusTarget as { $el?: HTMLElement } | undefined)?.$el
+                targetElement?.focus()
+              }
+            }
           }
+          if (ownsParentRequest()) this.activeParentRequestId = null
         }
       }
     },

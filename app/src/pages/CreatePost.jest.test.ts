@@ -269,6 +269,34 @@ async function mountRealReplyForm(parentDigest: string) {
   return wrapper
 }
 
+async function mountRealRoutedReplyForm(path: string) {
+  const router = createRouter({
+    history: createMemoryHistory(),
+    routes: [
+      { path: '/new-post', component: CreatePost },
+      { path: '/new-post/:parentDigest', component: CreatePost },
+    ],
+  })
+  await router.push(path)
+  await router.isReady()
+  const hostElement = document.createElement('div')
+  document.body.appendChild(hostElement)
+  const host = mount(
+    defineComponent({
+      render: () => h(RouterView),
+    }),
+    {
+      attachTo: hostElement,
+      global: {
+        plugins: [router, loadQuasar()],
+        mocks: { $t },
+      },
+    },
+  )
+  await flushPromises()
+  return { host, router, page: () => host.findComponent(CreatePost) }
+}
+
 const status = (w: ReturnType<typeof mountPage>['wrapper']) =>
   w.find('[data-test="post-status"]')
 
@@ -563,10 +591,123 @@ describe('CreatePost selected-topic default (ticket #414)', () => {
 
     expect(forum.fetchMessage).toHaveBeenCalledTimes(2)
     expect(wrapper.get('[data-test="retry-parent"]').element).toBe(retryElement)
+    expect(retryElement.isConnected).toBe(true)
+    expect(document.activeElement).toBe(retryElement)
     finishRetry()
     await flushPromises()
     expect(wrapper.get('[data-test="retry-parent"]').element).toBe(retryElement)
     expect(document.activeElement).toBe(retryElement)
+  })
+
+  it('does not steal focus from a connected control after an unsuccessful retry', async () => {
+    const forum = useForumStore() as unknown as { fetchMessage: jest.Mock }
+    const wrapper = await mountRealReplyForm('missing-parent')
+    let finishRetry!: () => void
+    forum.fetchMessage.mockImplementationOnce(
+      () => new Promise<void>(resolve => (finishRetry = resolve)),
+    )
+    const retry = wrapper.get<HTMLButtonElement>('[data-test="retry-parent"]')
+    retry.element.focus()
+    await retry.trigger('click')
+    await nextTick()
+
+    const back = wrapper.get<HTMLButtonElement>(
+      '[data-test="compose-focus-target"]',
+    ).element
+    back.focus()
+    expect(document.activeElement).toBe(back)
+    finishRetry()
+    await flushPromises()
+
+    expect(back.isConnected).toBe(true)
+    expect(document.activeElement).toBe(back)
+  })
+
+  it('returns genuinely lost focus to Retry after an unsuccessful retry', async () => {
+    const forum = useForumStore() as unknown as { fetchMessage: jest.Mock }
+    const wrapper = await mountRealReplyForm('missing-parent')
+    let finishRetry!: () => void
+    forum.fetchMessage.mockImplementationOnce(
+      () => new Promise<void>(resolve => (finishRetry = resolve)),
+    )
+    const retry = wrapper.get<HTMLButtonElement>('[data-test="retry-parent"]')
+    retry.element.focus()
+    await retry.trigger('click')
+    await nextTick()
+
+    const transient = document.createElement('button')
+    document.body.appendChild(transient)
+    transient.focus()
+    transient.remove()
+    expect(document.activeElement).toBe(document.body)
+    finishRetry()
+    await flushPromises()
+
+    expect(document.activeElement).toBe(
+      wrapper.get('[data-test="retry-parent"]').element,
+    )
+  })
+
+  it('hands lost focus to a stable compose control when Retry resolves successfully', async () => {
+    const forum = useForumStore() as unknown as {
+      index: Record<string, { topic: string }>
+      fetchMessage: jest.Mock
+    }
+    const wrapper = await mountRealReplyForm('missing-parent')
+    let finishRetry!: () => void
+    forum.fetchMessage.mockImplementationOnce(
+      () =>
+        new Promise<void>(resolve => {
+          finishRetry = () => {
+            forum.index = { 'missing-parent': { topic: 'news' } }
+            resolve()
+          }
+        }),
+    )
+    const retry = wrapper.get<HTMLButtonElement>('[data-test="retry-parent"]')
+    retry.element.focus()
+    await retry.trigger('click')
+    await nextTick()
+
+    finishRetry()
+    await flushPromises()
+    const composeTarget = wrapper.get(
+      '[data-test="compose-focus-target"]',
+    ).element
+    expect(wrapper.find('[data-test="retry-parent"]').exists()).toBe(false)
+    expect(composeTarget.isConnected).toBe(true)
+    expect(document.activeElement).toBe(composeTarget)
+  })
+
+  it('never changes focus for a stale real-router parent completion', async () => {
+    const forum = useForumStore() as unknown as { fetchMessage: jest.Mock }
+    const { page, router } = await mountRealRoutedReplyForm('/new-post/parentA')
+    const pending: Array<() => void> = []
+    forum.fetchMessage.mockImplementation(
+      () => new Promise<void>(resolve => pending.push(resolve)),
+    )
+    const retryA = page().get<HTMLButtonElement>('[data-test="retry-parent"]')
+    retryA.element.focus()
+    await retryA.trigger('click')
+    await nextTick()
+
+    await router.push('/new-post/parentB')
+    await flushPromises()
+    const retryB = page().get<HTMLButtonElement>(
+      '[data-test="retry-parent"]',
+    ).element
+    const transient = document.createElement('button')
+    document.body.appendChild(transient)
+    transient.focus()
+    transient.remove()
+    expect(document.activeElement).toBe(document.body)
+
+    pending[0]?.()
+    await flushPromises()
+    expect(retryB.isConnected).toBe(true)
+    expect(document.activeElement).toBe(document.body)
+    pending[1]?.()
+    await flushPromises()
   })
 
   it('blocks a real QForm reply until its late parent supplies the topic', async () => {
@@ -641,7 +782,7 @@ describe('CreatePost selected-topic default (ticket #414)', () => {
     )
   })
 
-  it('keeps the submitted topic across a deferred wallet lookup', async () => {
+  it('keeps the complete submitted entry and topic across a deferred wallet lookup', async () => {
     const { wrapper } = mountPage()
     let resolveWallet!: (wallet: { identity: object }) => void
     jest.mocked(useActiveWallet).mockReturnValue(
@@ -650,18 +791,38 @@ describe('CreatePost selected-topic default (ticket #414)', () => {
       }),
     )
 
-    const posting = (wrapper.vm as unknown as { post(): Promise<void> }).post()
+    const vm = wrapper.vm as unknown as {
+      title: string
+      url: string | null
+      message: string
+      post(): Promise<void>
+    }
+    vm.title = 'Original title'
+    vm.url = 'https://example.com/original'
+    vm.message = 'Original message'
+    const posting = vm.post()
     await flushPromises()
     wrapper
       .findComponent({ name: 'QSelect' })
       .vm.$emit('update:modelValue', 'news')
+    vm.title = 'Changed title'
+    vm.url = 'https://example.com/changed'
+    vm.message = 'Changed message'
     await nextTick()
     resolveWallet(makeWallet())
     await posting
     await flushPromises()
 
     expect(mockPutMessage).toHaveBeenCalledWith(
-      expect.objectContaining({ topic: 'stamp' }),
+      expect.objectContaining({
+        topic: 'stamp',
+        entry: {
+          kind: 'post',
+          title: 'Original title',
+          url: 'https://example.com/original',
+          message: 'Original message',
+        },
+      }),
     )
     expect(infoNotify).toHaveBeenCalledWith('Post created in stamp.')
   })

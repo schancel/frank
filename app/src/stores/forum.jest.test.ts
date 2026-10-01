@@ -11,7 +11,7 @@ import { setActivePinia, createPinia } from 'pinia'
 import { mount } from '@vue/test-utils'
 import { computed, defineComponent, h, nextTick } from 'vue'
 
-import { useForumStore } from './forum'
+import { MessageWithReplies, useForumStore } from './forum'
 import { ForumMessage } from '@frank/cashweb/types/forum'
 import { WalletHandle } from '@frank/wallet/chain'
 import { sortPostsByMode } from 'src/utils/sorting'
@@ -224,6 +224,38 @@ describe('useForumStore: own indexed messages', () => {
     })
 
     expect(store.getMessage('constructor')).toBeNull()
+  })
+
+  it('rejects an otherwise valid indexed message whose payload digest does not match its key', () => {
+    const store = useForumStore()
+    store.index.candidate = {
+      ...makeMessage({ payloadDigest: 'different' }),
+      replies: [],
+    }
+
+    expect(store.getMessage('candidate')).toBeNull()
+  })
+
+  it('rejects an otherwise valid indexed message whose topic is not a string', () => {
+    const store = useForumStore()
+    store.index.candidate = {
+      ...makeMessage({ payloadDigest: 'candidate' }),
+      topic: null,
+      replies: [],
+    } as unknown as MessageWithReplies
+
+    expect(store.getMessage('candidate')).toBeNull()
+  })
+
+  it('rejects an otherwise valid indexed message whose entries are not an array', () => {
+    const store = useForumStore()
+    store.index.candidate = {
+      ...makeMessage({ payloadDigest: 'candidate' }),
+      entries: {},
+      replies: [],
+    } as unknown as MessageWithReplies
+
+    expect(store.getMessage('candidate')).toBeNull()
   })
 })
 

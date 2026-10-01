@@ -104,7 +104,7 @@ describe('encryption suites', () => {
     expect(readme).toContain('no ratchet')
     expect(readme).toContain('0xFF00')
     expect(readme).toContain('0xFE01')
-    expect(readme).toContain('not a CashWeb relay frame')
+    expect(readme).toContain('does not read or write CashWeb CBOR')
     expect(readme).toContain('@frank/codec')
     expect(readme).toContain('frank-cbor')
     expect(readme).toContain('protobuf')

@@ -2,7 +2,7 @@
 
 Versioned deniable encryption. This package owns suite ids, the KEM, the KDF, the AEAD, envelope bytes, and the vectors for those suites.
 
-This envelope is not a CashWeb relay frame. The live relay path is still protobuf. A Frank-CBOR frame is serialized only by the CashWeb codec (`@frank/codec` and `frank-cbor`, specified in `docs/protocol/cbor/`).
+Callers pass byte arrays in and get byte arrays out. This package does not read or write CashWeb CBOR. The live relay path is still protobuf. `@frank/codec` and `frank-cbor` marshal frames and hand this package those bytes.
 
 ## Suites
 

@@ -8,9 +8,10 @@ unpublished. Browser-safe: the public modules do not use Node built-ins.
 
 This package owns integers, script numbers, script evaluation, base58 and
 cashaddr codecs, transactions, blocks, BIP32 HD nodes, secp256k1 keys, ECDSA,
-Schnorr, and ECDH. It does not own CashWeb frames, protobuf, relay mail, or
-encryption suites. Those belong to `@frank/codec`, `frank-cbor`, and
-`@frank/crypto-box`.
+Schnorr, and ECDH. It signs and hashes byte arrays. It does not read or write
+CashWeb CBOR. `@frank/codec` and `frank-cbor` marshal frames and pass digest
+bytes here. Encryption suites are `@frank/crypto-box`, which also takes byte
+arrays and does not parse CBOR.
 
 XPI address strings are not pinned (issue #242). `encodeAddress` and
 `decodeAddress` for the XPI family return `address-format-not-pinned` and do

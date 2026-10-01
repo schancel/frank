@@ -129,10 +129,7 @@ import {
   networkName,
 } from '../utils/constants'
 import { errorNotify } from '../utils/notifications'
-import {
-  initializeMonadIdentity,
-  setupFinishReloads,
-} from '../utils/monad-identity-session'
+import { initializeMonadIdentity } from '../utils/monad-identity-session'
 import { finishSetupAndEnter } from '../utils/setup-persistence'
 import { classifyAccount } from '../utils/account-state'
 import { requestPersistentStorageWithin } from '../utils/persistent-storage'
@@ -161,6 +158,14 @@ import { storeToRefs } from 'pinia'
 
 // How long signup waits for the browser's answer to the persistent-storage request (ticket #370).
 const PERSIST_REQUEST_WAIT_MS = 3000
+
+type CompletionPhase =
+  | 'editing'
+  | 'wallet-persistence'
+  | 'profile-persistence'
+  | 'entering'
+  | 'completed'
+  | 'terminal'
 
 export default defineComponent({
   components: {
@@ -221,8 +226,7 @@ export default defineComponent({
       replaceAcknowledged: false,
       resumeReplaceAcknowledged: false,
       completionPending: false,
-      completionWritesStarted: false,
-      completionRequiresReload: false,
+      completionPhase: 'editing' as CompletionPhase,
       storedSeed: resume ? storedSeed : null,
       step: 1,
       accountData: {
@@ -294,22 +298,20 @@ export default defineComponent({
      */
     async finishSetup() {
       return finishSetupAndEnter({
-        wallet: useWalletStore(),
-        profile: useProfileStore(),
-        notifyError: errorNotify,
-        finishReloads: setupFinishReloads(),
-        location: window.location,
         initialize: () => initializeMonadIdentity(),
         navigate: (path: string) => this.$router.push(path),
       })
     },
     async completeAccountStep(confirmedAt: number) {
+      if (this.completionPhase === 'entering') {
+        await this.finishSetup()
+        this.completionPhase = 'completed'
+        return
+      }
       if (this.existingAccount && !this.replaceAcknowledged) {
         // Independent of the UI: an existing account is never replaced, and its profile never
         // overwritten, without the typed acknowledgement.
-        const error = new Error(this.$t('setup.replaceNotAcknowledged'))
-        errorNotify(error)
-        throw error
+        throw new Error(this.$t('setup.replaceNotAcknowledged'))
       }
       if (
         this.resume &&
@@ -318,9 +320,7 @@ export default defineComponent({
           normalizeSetupMnemonic(this.storedSeed ?? '')
       ) {
         // Without the typed acknowledgement, resume mode may only re-store the SAME phrase.
-        const error = new Error(this.$t('setup.storedSeedMismatch'))
-        errorNotify(error)
-        throw error
+        throw new Error(this.$t('setup.storedSeedMismatch'))
       }
       if (!this.avatar) {
         this.avatar = await this.selectRandomAvatar()
@@ -328,13 +328,19 @@ export default defineComponent({
       this.accountData.seed = commitValidatedSetupSeed(
         this.accountData.seed,
         (seed, at) => {
-          // From this first store mutation onward, a failure may leave partial durable state and
-          // the production persistence barrier may remain rejected for this app lifetime.
-          this.completionWritesStarted = true
+          this.completionPhase = 'wallet-persistence'
           this.setSeedPhrase(seed, at)
         },
         confirmedAt,
       )
+      // Ticket #370: ask the browser to keep the just-stored seed while we still hold the user's
+      // click. The helper is bounded and best-effort, and never blocks signup for long.
+      await requestPersistentStorageWithin(PERSIST_REQUEST_WAIT_MS)
+      // Never create a new profile until the matching wallet seed is known durable. If the
+      // production wallet barrier was already poisoned, it can reject while its latest physical
+      // write is still pending; the terminal page deliberately neither reloads nor proceeds.
+      await useWalletStore().flushPersistence()
+      this.completionPhase = 'profile-persistence'
       this.accountData.name = commitValidatedSetupName(
         this.accountData.name,
         this.accountData.nameRequired,
@@ -348,46 +354,30 @@ export default defineComponent({
             inbox: defaultRelayData.inbox,
           }),
       )
-      // Ticket #370: ask the browser to keep the just-stored seed while we still hold the user's
-      // click. Never fails and never blocks signup for long (a permission prompt may stay open).
-      await requestPersistentStorageWithin(PERSIST_REQUEST_WAIT_MS)
-      // Seed and name must be durable before the identity starts. A failed write does not
-      // initialize. The default path does not reload (#389).
+      await useProfileStore().flushPersistence()
+      this.completionPhase = 'entering'
       await this.finishSetup()
+      this.completionPhase = 'completed'
     },
     async submitAccountStep(confirmedAt: number) {
-      if (this.completionPending || this.completionRequiresReload) return
+      if (this.completionBlocked) return
       this.completionPending = true
-      this.completionWritesStarted = false
       try {
         await this.completeAccountStep(confirmedAt)
       } catch (error) {
-        if (this.completionWritesStarted) {
-          // createStoragePlugin deliberately keeps any rejected write in the store barrier for
-          // this application lifetime. Wait for both stores' observed writes before reloading;
-          // never present an in-page retry after a possibly partial wallet/profile commit.
-          this.completionRequiresReload = true
-          await Promise.allSettled([
-            useWalletStore().flushPersistence(),
-            useProfileStore().flushPersistence(),
-          ])
-          try {
-            this.reloadAfterPersistenceFailure()
-          } catch {
-            // If the browser refuses the reload, remain terminal rather than invite a duplicate
-            // commit through the poisoned barrier.
-          }
+        const completionError =
+          error instanceof Error ? error : new Error(String(error))
+        if (
+          this.completionPhase === 'wallet-persistence' ||
+          this.completionPhase === 'profile-persistence'
+        ) {
+          this.completionPhase = 'terminal'
         }
-        throw error
+        errorNotify(completionError)
+        throw completionError
       } finally {
-        if (!this.completionRequiresReload) {
-          this.completionPending = false
-          this.completionWritesStarted = false
-        }
+        this.completionPending = false
       }
-    },
-    reloadAfterPersistenceFailure() {
-      window.location.reload()
     },
     selectRandomAvatar(): Promise<string> {
       const avatarName =
@@ -678,7 +668,7 @@ export default defineComponent({
       await this.$emit('setupCompleted')
     },
     async next() {
-      if (this.completionPending || this.completionRequiresReload) return
+      if (this.completionBlocked) return
       const stepper = this.$refs.stepper as QStepper
 
       switch (this.step) {
@@ -727,8 +717,15 @@ export default defineComponent({
     },
   },
   computed: {
+    completionBlocked(): boolean {
+      return (
+        this.completionPending ||
+        this.completionPhase === 'terminal' ||
+        this.completionPhase === 'completed'
+      )
+    },
     forwardEnabled() {
-      if (this.completionPending) return false
+      if (this.completionBlocked) return false
       // Ticket #47 (real signup bug): this used to hard-block every step, including the EULA's own
       // "Agree" button, on `this.$indexer.connected` -- a live Lotus chronik indexer this Monad-only
       // deployment never stands up, so this was permanently false and no fresh user could ever get

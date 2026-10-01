@@ -35,11 +35,13 @@ jest.mock('src/stores/appearance', () => ({
 }))
 let mockProfileName: string | undefined
 const mockSetRelayData = jest.fn()
+const mockFlushProfile = jest.fn(() => Promise.resolve())
 const mockRouterPush = jest.fn()
 jest.mock('src/stores/my-profile', () => ({
   useProfileStore: () => ({
     profile: { name: mockProfileName },
     setRelayData: mockSetRelayData,
+    flushPersistence: mockFlushProfile,
   }),
 }))
 jest.mock('../utils/setup-account', () => {
@@ -110,6 +112,7 @@ const quasarStepperTestPlugin = {
 /** Real QStepper and AccountStep inside the setup page. Unrelated Quasar chrome is stubbed. */
 async function mountResumeImport(translate: Translate) {
   const wallet = useWalletStore()
+  wallet.flushPersistence = jest.fn(() => Promise.resolve())
   const setSeed = jest.fn()
   wallet.$onAction(({ name }) => {
     if (name === 'setSeedPhrase') setSeed()
@@ -147,6 +150,7 @@ async function mountResumeImport(translate: Translate) {
 
 async function mountSetup(extraStubs: Record<string, unknown> = {}) {
   const wallet = useWalletStore()
+  wallet.flushPersistence = jest.fn(() => Promise.resolve())
   const setSeed = jest.fn()
   wallet.$onAction(({ name }) => {
     if (name === 'setSeedPhrase') setSeed()

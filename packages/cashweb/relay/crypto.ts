@@ -7,6 +7,7 @@ import {
   HDPrivateKey,
 } from 'bitcore-lib-xpi'
 import * as forge from 'node-forge'
+import { stealthPointDigest } from './stealth-point-digest'
 
 export class PayloadConstructor {
   networkName: string
@@ -85,7 +86,7 @@ export class PayloadConstructor {
     const dhKeyPoint = destinationPublicKey.point.mul(emphemeralPrivKey.bn) // ebG
     const dhKeyPointRaw = crypto.Point.pointToCompressed(dhKeyPoint)
 
-    const digest = crypto.Hash.sha256(dhKeyPointRaw) // H(ebG)
+    const digest = Buffer.from(stealthPointDigest(dhKeyPointRaw)) // H(ebG)
     const digestPublicKey = PrivateKey.fromBuffer(
       digest,
       this.networkName,
@@ -122,7 +123,7 @@ export class PayloadConstructor {
     const dhKeyPoint = emphemeralPubKey.point.mul(destinationPrivateKey.bn) // ebG
     const dhKeyPointRaw = crypto.Point.pointToCompressed(dhKeyPoint)
 
-    const digest = crypto.Hash.sha256(dhKeyPointRaw) // H(ebG)
+    const digest = Buffer.from(stealthPointDigest(dhKeyPointRaw)) // H(ebG)
     const digestBn = crypto.BN.fromBuffer(digest)
 
     const stealthPrivBn = digestBn

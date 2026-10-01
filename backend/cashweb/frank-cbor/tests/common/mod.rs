@@ -77,6 +77,19 @@ pub fn fr(type_id: u32, payload: &CborValue) -> Vec<u8> {
     .expect("fixture frame")
 }
 
+/// A forward-schema frame readable by the version-1 schema while retaining additive fields.
+fn fr_additive(type_id: u32, payload: &CborValue) -> Vec<u8> {
+    encode_frame(
+        EnvelopeFields {
+            type_id,
+            schema_version: 2,
+            min_reader_version: 1,
+        },
+        FramePayload::Value(payload),
+    )
+    .expect("forward-schema fixture frame")
+}
+
 fn text_item(text: &str) -> Vec<u8> {
     fr(17, &cbor_map(vec![(0, CborValue::Text(text.to_string()))]))
 }
@@ -104,7 +117,7 @@ fn nested_items() -> Vec<Vec<u8>> {
     ]
 }
 
-fn revision_frame() -> Vec<u8> {
+pub fn revision_frame() -> Vec<u8> {
     let items = nested_items().into_iter().map(CborValue::Bytes).collect();
     fr(
         8,
@@ -145,8 +158,30 @@ pub fn type5_fields() -> Vec<(u64, CborValue)> {
     ]
 }
 
-fn type5_frame() -> Vec<u8> {
+pub fn type5_frame() -> Vec<u8> {
     fr(5, &cbor_map(type5_fields()))
+}
+
+/// A second canonical encoding of the type-5 fixture whose source map was assembled in reverse
+/// order. The encoder must converge on [`type5_frame`].
+pub fn type5_frame_reverse_order() -> Vec<u8> {
+    let mut fields = type5_fields();
+    fields.reverse();
+    fr(5, &CborValue::Map(fields))
+}
+
+/// A valid canonical one-byte mutation of [`type5_frame`]. Only the final nonce byte changes.
+pub fn mutated_type5_frame() -> Vec<u8> {
+    let mut fields = type5_fields();
+    let (_, CborValue::Bytes(nonce)) = fields
+        .iter_mut()
+        .find(|(key, _)| *key == 4)
+        .expect("nonce field")
+    else {
+        panic!("nonce is not bytes")
+    };
+    *nonce.last_mut().expect("non-empty nonce") ^= 1;
+    fr(5, &CborValue::Map(fields))
 }
 
 fn payment(t3: &[u8], index: u32) -> CborValue {
@@ -174,6 +209,24 @@ pub fn direct_message_frame() -> Vec<u8> {
             (2, CborValue::Bytes(payload_frame)),
             (3, CborValue::Bytes(t3.to_vec())),
             (4, CborValue::Array(vec![payment(&t3, 0), payment(&t3, 1)])),
+        ]),
+    )
+}
+
+/// Rust-origin direct message with an additive root payload field. Its nested revision also
+/// contains an unknown future item two levels down.
+pub fn rust_origin_direct_message_frame() -> Vec<u8> {
+    let payload_frame = type5_frame();
+    let t3 = recipient_payload_digest(NET, &payload_frame).expect("t3");
+    fr_additive(
+        1,
+        &cbor_map(vec![
+            (0, CborValue::Text(NET.to_string())),
+            (1, stamp_account(T3C_STAMP_KEY)),
+            (2, CborValue::Bytes(payload_frame)),
+            (3, CborValue::Bytes(t3.to_vec())),
+            (4, CborValue::Array(vec![payment(&t3, 0), payment(&t3, 1)])),
+            (100, CborValue::Text("rust-additive-direct".to_string())),
         ]),
     )
 }
@@ -271,6 +324,19 @@ pub fn directory_attestation_frame() -> Vec<u8> {
     )
 }
 
+/// Rust-origin directory attestation with an additive root payload field.
+pub fn rust_origin_directory_attestation_frame() -> Vec<u8> {
+    let statement = directory_statement_frame();
+    fr_additive(
+        2,
+        &cbor_map(vec![
+            (0, CborValue::Bytes(statement)),
+            (1, CborValue::Array(vec![signature(acct2(1))])),
+            (100, CborValue::Text("rust-additive-directory".to_string())),
+        ]),
+    )
+}
+
 fn fact(seconds: i64, nanos: u32, id_seed: u32, payload: Vec<u8>) -> CborValue {
     cbor_map(vec![
         (0, ts(seconds, nanos)),
@@ -311,6 +377,35 @@ pub fn checkpoint_frame() -> Vec<u8> {
                     section(0x7fff_0001, 9, unknown_item(3)),
                 ]),
             ),
+        ]),
+    )
+}
+
+/// Rust-origin checkpoint with an additive root payload field. Its facts and sections retain
+/// opaque future frames without opening them.
+pub fn rust_origin_checkpoint_frame() -> Vec<u8> {
+    fr_additive(
+        3,
+        &cbor_map(vec![
+            (0, CborValue::Text(NET.to_string())),
+            (1, acct1(5)),
+            (2, CborValue::Bytes(bytes_of(16, 77))),
+            (3, ts(1_700_000_500, 5)),
+            (
+                4,
+                CborValue::Array(vec![
+                    fact(1_700_000_100, 0, 1, bytes_of(10, 1)),
+                    fact(1_700_000_100, 9, 2, unknown_item(2)),
+                ]),
+            ),
+            (
+                5,
+                CborValue::Array(vec![
+                    section(1, 1, bytes_of(12, 3)),
+                    section(0x7fff_0001, 9, unknown_item(3)),
+                ]),
+            ),
+            (100, CborValue::Text("rust-additive-checkpoint".to_string())),
         ]),
     )
 }

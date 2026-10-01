@@ -237,7 +237,9 @@ interface Machine {
   readonly alt: Uint8Array[]
   readonly cond: boolean[]
   codeSep: number
-  separated: boolean
+  /** lotusd `opcode_pos` of the last executed OP_CODESEPARATOR, or 0xffffffff. */
+  codeSepOpcode: number
+  opcodeIndex: number
   opCount: number
   pc: number
 }
@@ -270,17 +272,21 @@ export function evaluateScript(
     alt: [],
     cond: [],
     codeSep: 0,
-    separated: false,
+    codeSepOpcode: 0xffffffff,
+    opcodeIndex: 0,
     opCount: 0,
     pc: 0,
   }
   if (stack.length > rules.maxStackItems) return reject('script-stack-size')
   let pc = 0
+  let opcodeIndex = 0
   while (pc < script.length) {
     const op = readOp(script, pc)
     if (op === null) return reject('script-encoding')
     pc = op.next
     machine.pc = pc
+    machine.opcodeIndex = opcodeIndex
+    opcodeIndex += 1
     if (op.data !== null && op.data.length > rules.maxElementBytes) {
       return reject('script-push-size', op.opcode)
     }
@@ -802,8 +808,9 @@ function apply(
     case OP_HASH256:
       return hashOp(stack, opcode)
     case OP_CODESEPARATOR:
-      machine.separated = true
+      // Byte offset is the legacy subscript. lotusd also stores opcode_pos.
       machine.codeSep = machine.pc
+      machine.codeSepOpcode = machine.opcodeIndex
       return null
     case OP_CHECKSIG:
     case OP_CHECKSIGVERIFY:
@@ -1605,21 +1612,19 @@ function digestFor(
   ) {
     return null
   }
-  const locking = spentOutput?.scriptPubKey
-  const active = machine.script.subarray(machine.codeSep)
-  const sameLock = locking !== undefined && sameBytes(locking, active)
-  const extend = algorithm === 'lotus' && (machine.separated || !sameLock)
+  // lotusd EvalChecksig always passes ScriptExecutionData. That is CHash256
+  // of the whole script being executed (scriptPubKey, or the P2SH redeem
+  // script) and the opcode index of the last CODESEPARATOR, defaulting to
+  // 0xffffffff. The legacy subscript stays in scriptCode for other algorithms.
+  const lotus = algorithm === 'lotus'
   const hashed = sighash(tx, inputIndex, chain, hashType, {
     algorithm,
     scriptCode,
     amount: spentOutput?.value,
     spent: machine.context.spent,
     commitUtxos: false,
-    executedScriptHash: extend
-      ? sha256(removeCodeSeparators(active))
-      : undefined,
-    codeSeparatorPosition:
-      extend && machine.separated ? machine.codeSep : undefined,
+    executedScriptHash: lotus ? sha256(sha256(machine.script)) : undefined,
+    codeSeparatorPosition: lotus ? machine.codeSepOpcode : undefined,
   })
   if (!hashed.ok) return failure('script-signature', opcode)
   return hashed.value

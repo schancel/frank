@@ -23,6 +23,8 @@ import {
   type ScriptResult,
 } from '../src/script.js'
 import {
+  SIGHASH_ALL,
+  SIGHASH_LOTUS,
   sighash,
   type SpentOutput,
   type Transaction,
@@ -621,6 +623,171 @@ describe('per-chain script eras', () => {
         ctx(BTC_MAINNET, {
           transaction: btcTx,
           inputIndex: 0,
+        }),
+      ),
+    ).toEqual({ ok: true, value: true })
+  })
+
+  test('lotus CHECKSIG commits the executed script the way lotusd VerifyScript does', () => {
+    // lotusd src/script/interpreter.cpp VerifyScript builds
+    // ScriptExecutionData{scriptPubKey} (P2SH uses the redeem script).
+    // script_exec_data.h hashes that whole script with CHash256 and starts
+    // codeseparator at 0xffffffff. EvalChecksig always passes that execdata,
+    // so SignatureHashLotus sets ext_flag. sighash_lotus.json row
+    // "1->2 Lotus sighash ALL" is the same preimage (script OP_3, codesep
+    // 4294967295). A matching script must not drop the extension.
+    const pub = fromHex(PUB)
+    const hashType = SIGHASH_LOTUS | SIGHASH_ALL
+    const locking = concat(push(pub), Uint8Array.of(0xac))
+    const tx = oneInput(0, 0xffffffff)
+    const amount = 50_000n
+    const spent: SpentOutput[] = [{ value: amount, scriptPubKey: locking }]
+    const executed = sha256(sha256(locking))
+    const consensus = sighash(tx, 0, XPI_MAINNET, hashType, {
+      algorithm: 'lotus',
+      scriptCode: locking,
+      amount,
+      spent,
+      commitUtxos: false,
+      executedScriptHash: executed,
+      codeSeparatorPosition: 0xffffffff,
+    })
+    const bare = sighash(tx, 0, XPI_MAINNET, hashType, {
+      algorithm: 'lotus',
+      scriptCode: locking,
+      amount,
+      spent,
+      commitUtxos: false,
+    })
+    if (!consensus.ok || !bare.ok) throw new Error('digest')
+    expect(toHex(consensus.value)).not.toBe(toHex(bare.value))
+    const sig = signDigest(consensus.value, hashType)
+    expect(
+      verifyScript(
+        push(sig),
+        locking,
+        ctx(XPI_MAINNET, { transaction: tx, inputIndex: 0, spent }),
+      ),
+    ).toEqual({ ok: true, value: true })
+    expect(
+      codes(
+        verifyScript(
+          push(signDigest(bare.value, hashType)),
+          locking,
+          ctx(XPI_MAINNET, { transaction: tx, inputIndex: 0, spent }),
+        ),
+      ),
+    ).not.toBe('ok')
+
+    // OP_CODESEPARATOR is instruction 0. The byte offset after it is 1.
+    // lotusd stores opcode_pos, not that byte offset, and still hashes the
+    // whole script (interpreter.cpp OP_CODESEPARATOR).
+    const separated = concat(
+      Uint8Array.of(0xab),
+      push(pub),
+      Uint8Array.of(0xac),
+    )
+    const separatedSpent: SpentOutput[] = [
+      { value: amount, scriptPubKey: separated },
+    ]
+    const separatedDigest = sighash(tx, 0, XPI_MAINNET, hashType, {
+      algorithm: 'lotus',
+      scriptCode: separated,
+      amount,
+      spent: separatedSpent,
+      commitUtxos: false,
+      executedScriptHash: sha256(sha256(separated)),
+      codeSeparatorPosition: 0,
+    })
+    if (!separatedDigest.ok) throw new Error(separatedDigest.error.code)
+    expect(
+      verifyScript(
+        push(signDigest(separatedDigest.value, hashType)),
+        separated,
+        ctx(XPI_MAINNET, {
+          transaction: tx,
+          inputIndex: 0,
+          spent: separatedSpent,
+        }),
+      ),
+    ).toEqual({ ok: true, value: true })
+    const byteOffset = sighash(tx, 0, XPI_MAINNET, hashType, {
+      algorithm: 'lotus',
+      scriptCode: separated,
+      amount,
+      spent: separatedSpent,
+      commitUtxos: false,
+      executedScriptHash: sha256(sha256(separated)),
+      codeSeparatorPosition: 1,
+    })
+    if (!byteOffset.ok) throw new Error(byteOffset.error.code)
+    expect(
+      codes(
+        verifyScript(
+          push(signDigest(byteOffset.value, hashType)),
+          separated,
+          ctx(XPI_MAINNET, {
+            transaction: tx,
+            inputIndex: 0,
+            spent: separatedSpent,
+          }),
+        ),
+      ),
+    ).not.toBe('ok')
+
+    // A separator in a false branch is not executed, so the position stays
+    // 0xffffffff. lotusd only assigns m_codeseparator_pos inside fExec.
+    const skipped = concat(
+      Uint8Array.of(0x00, 0x63, 0xab, 0x68),
+      push(pub),
+      Uint8Array.of(0xac),
+    )
+    const skippedSpent: SpentOutput[] = [
+      { value: amount, scriptPubKey: skipped },
+    ]
+    const skippedDigest = sighash(tx, 0, XPI_MAINNET, hashType, {
+      algorithm: 'lotus',
+      scriptCode: skipped,
+      amount,
+      spent: skippedSpent,
+      commitUtxos: false,
+      executedScriptHash: sha256(sha256(skipped)),
+      codeSeparatorPosition: 0xffffffff,
+    })
+    if (!skippedDigest.ok) throw new Error(skippedDigest.error.code)
+    expect(
+      verifyScript(
+        push(signDigest(skippedDigest.value, hashType)),
+        skipped,
+        ctx(XPI_MAINNET, {
+          transaction: tx,
+          inputIndex: 0,
+          spent: skippedSpent,
+        }),
+      ),
+    ).toEqual({ ok: true, value: true })
+
+    const redeem = locking
+    const p2shLock = p2sh(redeem)
+    const p2shSpent: SpentOutput[] = [{ value: amount, scriptPubKey: p2shLock }]
+    const redeemDigest = sighash(tx, 0, XPI_MAINNET, hashType, {
+      algorithm: 'lotus',
+      scriptCode: redeem,
+      amount,
+      spent: p2shSpent,
+      commitUtxos: false,
+      executedScriptHash: sha256(sha256(redeem)),
+      codeSeparatorPosition: 0xffffffff,
+    })
+    if (!redeemDigest.ok) throw new Error(redeemDigest.error.code)
+    expect(
+      verifyScript(
+        concat(push(signDigest(redeemDigest.value, hashType)), push(redeem)),
+        p2shLock,
+        ctx(XPI_MAINNET, {
+          transaction: tx,
+          inputIndex: 0,
+          spent: p2shSpent,
         }),
       ),
     ).toEqual({ ok: true, value: true })

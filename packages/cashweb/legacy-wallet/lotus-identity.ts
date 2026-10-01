@@ -26,12 +26,11 @@
  * bitcoinsuite-ecc-secp256k1/src/lib.rs`) does `Signature::from_der(sig)` -- a *DER*-encoded
  * signature, not the 65-byte recoverable "compact" form `../registry/index.ts`'s (legacy, `/keys/
  * :address`-targeting) `constructRelayUrlMetadata` builds via `signature.toCompact(1,
- * true).slice(1)`. `bitcore-lib-xpi`'s `crypto.Signature` supports both (`.toDER()`/`.toBuffer()`
- * are aliases; its own `.d.ts` shim only declares `.toCompact()`/`.toString()`, hence the narrow
- * `as unknown as { toDER(): Buffer }` cast below rather than editing that shared, merged .d.ts for
- * one extra method signature).
+ * true).slice(1)`. `signHash` calls `@frank/nakamoto` `signEcdsa`, which returns
+ * that DER encoding. Address encoding in this file is unchanged.
  */
 import { PrivateKey, crypto as bitcoreCrypto } from 'bitcore-lib-xpi'
+import { privateKeyFromSecretBytes, signEcdsa } from '@frank/nakamoto'
 import axios from 'axios'
 import { relayOriginHeader } from '../relay/origin-header'
 
@@ -181,11 +180,16 @@ export class FrankIdentity {
     return this.privateKey.toBuffer().toString('hex')
   }
 
-  /** DER-encoded ECDSA signature over `hash` (see this file's header for why DER, not bitcore's
-   * compact form). */
+  /** DER-encoded ECDSA signature over a 32-byte `hash`. A bad digest throws. */
   signHash(hash: Buffer): Buffer {
-    const signature = bitcoreCrypto.ECDSA.sign(hash, this.privateKey)
-    return (signature as unknown as { toDER(): Buffer }).toDER()
+    if (hash.length !== 32) throw new Error('sign-digest')
+    const secretBytes = Uint8Array.from(this.privateKey.toBuffer())
+    const key = privateKeyFromSecretBytes(secretBytes, true)
+    secretBytes.fill(0)
+    if (!key.ok) throw new Error(key.error.code)
+    const signed = signEcdsa(key.value, Uint8Array.from(hash))
+    if (!signed.ok) throw new Error(signed.error.code)
+    return Buffer.from(signed.value)
   }
 }
 

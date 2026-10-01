@@ -32,6 +32,7 @@ export type {
   MessageMagic,
   NetworkKind,
   PolicyAmount,
+  ScriptRules,
   SighashFamily,
   UnknownChainError,
 } from './types.js'

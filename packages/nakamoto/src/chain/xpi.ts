@@ -1,5 +1,10 @@
 import type { ChainDescriptor, MessageMagic } from './types.js'
-import { UNPINNED_POLICY, btcLikeVersions, chain } from './shared.js'
+import {
+  UNPINNED_POLICY,
+  XPI_SCRIPT,
+  btcLikeVersions,
+  chain,
+} from './shared.js'
 
 const XPI_MESSAGE: MessageMagic = Object.freeze({
   status: 'pinned',
@@ -52,6 +57,7 @@ export const XPI_MAINNET: ChainDescriptor = chain({
   dust: UNPINNED_POLICY,
   relayFeePerKb: UNPINNED_POLICY,
   header: XPI_HEADER,
+  script: XPI_SCRIPT,
   sources: [...XPI_SOURCES, XPI_CASHADDR_REASON],
 })
 
@@ -71,6 +77,7 @@ export const XPI_TESTNET: ChainDescriptor = chain({
   dust: UNPINNED_POLICY,
   relayFeePerKb: UNPINNED_POLICY,
   header: XPI_HEADER,
+  script: XPI_SCRIPT,
   sources: XPI_SOURCES,
 })
 
@@ -90,5 +97,6 @@ export const XPI_REGTEST: ChainDescriptor = chain({
   dust: UNPINNED_POLICY,
   relayFeePerKb: UNPINNED_POLICY,
   header: XPI_HEADER,
+  script: XPI_SCRIPT,
   sources: XPI_SOURCES,
 })

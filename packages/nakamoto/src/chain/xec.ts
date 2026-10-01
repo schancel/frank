@@ -3,6 +3,7 @@ import {
   BITCOIN_80,
   FORKID_ZERO,
   UNPINNED_POLICY,
+  XEC_SCRIPT,
   btcLikeVersions,
   chain,
 } from './shared.js'
@@ -46,6 +47,7 @@ export const XEC_MAINNET: ChainDescriptor = chain({
   dust: UNPINNED_POLICY,
   relayFeePerKb: UNPINNED_POLICY,
   header: BITCOIN_80,
+  script: XEC_SCRIPT,
   sources: XEC_SOURCES,
 })
 
@@ -65,6 +67,7 @@ export const XEC_TESTNET: ChainDescriptor = chain({
   dust: UNPINNED_POLICY,
   relayFeePerKb: UNPINNED_POLICY,
   header: BITCOIN_80,
+  script: XEC_SCRIPT,
   sources: XEC_SOURCES,
 })
 
@@ -84,5 +87,6 @@ export const XEC_REGTEST: ChainDescriptor = chain({
   dust: UNPINNED_POLICY,
   relayFeePerKb: UNPINNED_POLICY,
   header: BITCOIN_80,
+  script: XEC_SCRIPT,
   sources: XEC_SOURCES,
 })

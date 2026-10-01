@@ -1,5 +1,6 @@
 import type { ChainDescriptor, MessageMagic } from './types.js'
 import {
+  BCH_SCRIPT,
   BITCOIN_80,
   COIN_100_000_000,
   FORKID_ZERO,
@@ -38,6 +39,7 @@ export const BCH_MAINNET: ChainDescriptor = chain({
   dust: UNPINNED_POLICY,
   relayFeePerKb: UNPINNED_POLICY,
   header: BITCOIN_80,
+  script: BCH_SCRIPT,
   sources: BCH_SOURCES,
 })
 
@@ -57,6 +59,7 @@ export const BCH_TESTNET: ChainDescriptor = chain({
   dust: UNPINNED_POLICY,
   relayFeePerKb: UNPINNED_POLICY,
   header: BITCOIN_80,
+  script: BCH_SCRIPT,
   sources: [
     ...BCH_SOURCES,
     'This testnet is Bitcoin Cash Node testnet3 (port 18333, cashaddr bchtest). testnet4, chipnet, and scalenet are not this descriptor.',
@@ -79,5 +82,6 @@ export const BCH_REGTEST: ChainDescriptor = chain({
   dust: UNPINNED_POLICY,
   relayFeePerKb: UNPINNED_POLICY,
   header: BITCOIN_80,
+  script: BCH_SCRIPT,
   sources: BCH_SOURCES,
 })

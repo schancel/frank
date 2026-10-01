@@ -175,6 +175,53 @@ export function compressedPointFromBytes(
   return { x, y }
 }
 
+/** Scalar must be in [1, n). Null at 0, out of range, or infinity. */
+export function multiplyPoint(
+  point: AffinePoint,
+  scalar: bigint,
+): AffinePoint | null {
+  if (scalar <= 0n || scalar >= SECP256K1_N) return null
+  if (!onCurve(point.x, point.y)) return null
+  let acc: Jacobian | null = null
+  let base: Jacobian = { x: point.x, y: point.y, z: 1n }
+  let bits = scalar
+  while (bits > 0n) {
+    if ((bits & 1n) === 1n) {
+      acc = acc === null ? base : addJac(acc, base)
+      if (acc === null) return null
+    }
+    base = doubleJac(base)
+    bits >>= 1n
+  }
+  if (acc === null) return null
+  return toAffine(acc)
+}
+
+/** Null when either point is off-curve or the sum is infinity. */
+export function addPoints(
+  left: AffinePoint,
+  right: AffinePoint,
+): AffinePoint | null {
+  if (!onCurve(left.x, left.y) || !onCurve(right.x, right.y)) return null
+  const sum = addJac(
+    { x: left.x, y: left.y, z: 1n },
+    { x: right.x, y: right.y, z: 1n },
+  )
+  if (sum === null) return null
+  return toAffine(sum)
+}
+
+/** Compressed 33-byte or uncompressed 65-byte SEC1 point. Hybrid is rejected. */
+export function pointFromPublicKey(bytes: Uint8Array): AffinePoint | null {
+  if (bytes.length === 33) return compressedPointFromBytes(bytes)
+  if (bytes.length !== 65 || bytes[0] !== 0x04) return null
+  const x = bytesToBigint(bytes.subarray(1, 33))
+  const y = bytesToBigint(bytes.subarray(33))
+  if (x >= SECP256K1_P || y >= SECP256K1_P) return null
+  if (!onCurve(x, y)) return null
+  return { x, y }
+}
+
 /**
  * BIP32 public child point: scalar*G + parent. Null when the scalar is
  * outside [1, n), the parent is not a compressed curve point, or the sum

@@ -33,6 +33,10 @@
       "types": "./dist/integer.d.ts",
       "import": "./dist/integer.js"
     },
+    "./script": {
+      "types": "./dist/script.d.ts",
+      "import": "./dist/script.js"
+    },
     "./script-num": {
       "types": "./dist/script-num.d.ts",
       "import": "./dist/script-num.js"

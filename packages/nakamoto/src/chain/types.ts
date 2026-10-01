@@ -45,6 +45,44 @@ export type HeaderShape =
       readonly source: string
     }
 
+/**
+ * Opcode set and limits for one named upgrade. Flags are explicit: nothing
+ * defaults to off. `tapscript` and `schnorr` stay rejected until a later
+ * ticket implements them against vectors. Unknown witness programs are not
+ * a legacy success.
+ */
+export interface ScriptRules {
+  readonly era: string
+  readonly source: string
+  readonly tapscript: 'rejected'
+  readonly schnorr: 'rejected'
+  readonly p2sh: boolean
+  readonly sigPushOnly: boolean
+  readonly minimalData: boolean
+  readonly minimalIf: boolean
+  readonly cleanStack: boolean
+  readonly nullDummy: boolean
+  readonly nullFail: boolean
+  readonly lowS: boolean
+  readonly derSig: boolean
+  readonly strictEnc: boolean
+  readonly checkLockTime: boolean
+  readonly checkSequence: boolean
+  readonly discourageNops: boolean
+  readonly cat: boolean
+  readonly bitwise: boolean
+  readonly divMod: boolean
+  readonly num2bin: boolean
+  readonly checkDataSig: boolean
+  readonly reverseBytes: boolean
+  readonly introspection: boolean
+  readonly maxElementBytes: number
+  readonly maxOps: number
+  readonly maxScriptBytes: number
+  readonly maxStackItems: number
+  readonly maxScriptNumBytes: number
+}
+
 export interface ChainDescriptor {
   readonly family: ChainFamily
   readonly network: NetworkKind
@@ -73,6 +111,7 @@ export interface ChainDescriptor {
   readonly dust: PolicyAmount
   readonly relayFeePerKb: PolicyAmount
   readonly header: HeaderShape
+  readonly script: ScriptRules
   readonly sources: readonly string[]
 }
 

@@ -21,7 +21,7 @@
         />
         <q-select
           label="Topic"
-          :disable="!!getMessage(parentDigest)"
+          :disable="!!parentDigest"
           :model-value="topic"
           @update:model-value="setTopic"
           @input-value="markTopicEdited"
@@ -91,13 +91,9 @@
     </q-form>
   </q-card>
 
-  <q-card class="q-ma-sm" v-if="getMessage(parentDigest)">
+  <q-card class="q-ma-sm" v-if="parentMessage">
     <q-card-section>Replying to:</q-card-section>
-    <a-message
-      :message="getMessage(parentDigest)"
-      :show-replies="false"
-      :compact="true"
-    />
+    <a-message :message="parentMessage" :show-replies="false" :compact="true" />
   </q-card>
 </template>
 
@@ -140,10 +136,14 @@ export default defineComponent({
   data() {
     const forum = useForumStore()
     const parentDigest = this.$route.params.parentDigest as string
+    const topLevelTopic = forum.selectedTopic
     return {
       offering: activeChain.toDisplayAmount(activeChain.defaultTopicVoteValue),
-      topic: forum.index[parentDigest]?.topic ?? forum.selectedTopic,
-      topicWasEdited: false,
+      topic: parentDigest
+        ? forum.index[parentDigest]?.topic ?? ''
+        : topLevelTopic,
+      topLevelTopic,
+      topLevelTopicWasEdited: false,
       topics: [] as string[],
       title: '',
       url: null,
@@ -154,10 +154,6 @@ export default defineComponent({
       preparationStatus: null as string | null,
     }
   },
-  beforeRouteUpdate(to, from, next) {
-    this.parentDigest = to.params.parentDigest as string
-    next()
-  },
   computed: {
     // Topics seen in posts, plus the default and relay-discovered ones the topic store tracks.
     knownTopics(): string[] {
@@ -167,21 +163,51 @@ export default defineComponent({
       const text: string = this.message
       return renderMarkdown(text, this.$q.dark.isActive)
     },
+    parentMessage() {
+      return this.parentDigest ? this.getMessage(this.parentDigest) : undefined
+    },
   },
   watch: {
-    selectedTopic(nextTopic: string) {
-      if (!this.parentDigest && !this.topicWasEdited) {
+    '$route.params.parentDigest'(nextParentDigest: unknown) {
+      this.syncParentDigest(
+        typeof nextParentDigest === 'string' ? nextParentDigest : undefined,
+      )
+    },
+    'parentMessage'(nextParent: { topic: string } | undefined) {
+      if (this.parentDigest && nextParent) {
+        this.topic = nextParent.topic
+      }
+    },
+    'selectedTopic'(nextTopic: string) {
+      if (!this.parentDigest && !this.topLevelTopicWasEdited) {
+        this.topLevelTopic = nextTopic
         this.topic = nextTopic
       }
     },
   },
   methods: {
+    syncParentDigest(parentDigest: string | undefined) {
+      this.parentDigest = parentDigest
+      if (parentDigest) {
+        this.topic = this.getMessage(parentDigest)?.topic ?? ''
+        return
+      }
+
+      if (!this.topLevelTopicWasEdited) {
+        this.topLevelTopic = this.selectedTopic
+      }
+      this.topic = this.topLevelTopic
+    },
     setTopic(topic: string | null) {
-      this.topicWasEdited = true
-      this.topic = topic ?? ''
+      if (this.parentDigest) return
+      this.topLevelTopicWasEdited = true
+      this.topLevelTopic = topic ?? ''
+      this.topic = this.topLevelTopic
     },
     markTopicEdited() {
-      this.topicWasEdited = true
+      if (!this.parentDigest) {
+        this.topLevelTopicWasEdited = true
+      }
     },
     filterTopics(inputTopic: string, update: (arg: () => void) => void) {
       update(() => {
@@ -205,6 +231,7 @@ export default defineComponent({
     },
     async post() {
       const submittedTopic = this.topic
+      const submittedParentDigest = this.parentDigest
       const entry = {
         kind: 'post' as const,
         title: this.title,
@@ -232,7 +259,7 @@ export default defineComponent({
               this.offering.toString(),
             ),
             topic: submittedTopic,
-            parentDigest: this.parentDigest,
+            parentDigest: submittedParentDigest,
             onPreparationProgress: progress => {
               this.preparationStatus = stampPreparationStatus(
                 progress,

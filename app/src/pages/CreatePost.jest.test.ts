@@ -2,15 +2,29 @@
 // CreatePost: the preparation stages are shown in a live region while posting, and a post whose
 // burn landed but could not be read back says so instead of inviting a retry (#273 review).
 
-import { flushPromises, shallowMount } from '@vue/test-utils'
-import { nextTick } from 'vue'
+import { flushPromises, mount, shallowMount } from '@vue/test-utils'
+import { defineComponent, h, nextTick } from 'vue'
 
 import CreatePost from './CreatePost.vue'
 import { BurnRefreshError } from 'src/utils/burn-refresh-error'
 import { errorNotify, infoNotify } from 'src/utils/notifications'
 import { useForumStore } from 'src/stores/forum'
+import { useActiveWallet } from 'src/composables/useActiveWallet'
 
 const mockPutMessage = jest.fn()
+// vue-router's CommonJS build imports this ESM-only diagnostics package. The router behavior is
+// the boundary under test here, not its development reporter.
+jest.mock('nostics', () => ({
+  createConsoleReporter: () => jest.fn(),
+  defineDiagnostics: () => new Proxy({}, { get: () => jest.fn() }),
+}))
+jest.mock('@vue/devtools-api', () => ({ setupDevtoolsPlugin: jest.fn() }))
+const nestedDevtoolsApiPath = require
+  .resolve('@vue/devtools-api', { paths: [require.resolve('vue-router')] })
+  .replace('index-node.cjs', 'index.cjs')
+jest.doMock(nestedDevtoolsApiPath, () => ({
+  setupDevtoolsPlugin: jest.fn(),
+}))
 jest.mock('pinia', () => ({
   storeToRefs: (store: object) => jest.requireActual('vue').toRefs(store),
 }))
@@ -19,8 +33,9 @@ jest.mock('src/stores/forum', () => ({
     const store = jest.requireActual('vue').reactive({
       topics: ['help'],
       selectedTopic: 'stamp',
-      index: {},
-      getMessage: () => undefined,
+      index: {} as Record<string, { topic: string }>,
+      getMessage: (digest?: string) =>
+        digest ? store.index[digest] : undefined,
       pushNewTopic: jest.fn(),
       putMessage: (...args: unknown[]) => mockPutMessage(...args),
     })
@@ -31,7 +46,7 @@ jest.mock('src/stores/topics', () => ({
   useTopicStore: () => ({ getTopics: ['stamp', 'news', 'help'] }),
 }))
 jest.mock('src/composables/useActiveWallet', () => ({
-  useActiveWallet: async () => ({ identity: {} }),
+  useActiveWallet: jest.fn(async () => ({ identity: {} })),
 }))
 jest.mock('src/utils/notifications', () => ({
   errorNotify: jest.fn(),
@@ -52,6 +67,17 @@ jest.mock('../components/forum/ForumMessage.vue', () => ({
   template: '<div />',
 }))
 jest.mock('../utils/markdown', () => ({ renderMarkdown: () => '' }))
+
+let createMemoryHistory: typeof import('vue-router').createMemoryHistory
+let createRouter: typeof import('vue-router').createRouter
+let RouterView: typeof import('vue-router').RouterView
+
+beforeAll(async () => {
+  const vueRouter = await import('vue-router')
+  createMemoryHistory = vueRouter.createMemoryHistory
+  createRouter = vueRouter.createRouter
+  RouterView = vueRouter.RouterView
+})
 
 const messages: Record<string, string> = {
   'stampPreparation.posting': 'POSTING',
@@ -87,11 +113,60 @@ function mountPage(parentDigest?: string) {
   return { wrapper, router }
 }
 
+async function mountRoutedPage(path: string) {
+  const router = createRouter({
+    history: createMemoryHistory(),
+    routes: [
+      { path: '/new-post', component: CreatePost },
+      { path: '/new-post/:parentDigest', component: CreatePost },
+    ],
+  })
+  await router.push(path)
+  await router.isReady()
+
+  const host = mount(
+    defineComponent({
+      render: () => h(RouterView),
+    }),
+    {
+      global: {
+        plugins: [router],
+        mocks: {
+          $t,
+          $q: { dark: { isActive: false } },
+        },
+        stubs: {
+          QCard: { template: '<div><slot /></div>' },
+          QCardSection: { template: '<div><slot /></div>' },
+          QCardActions: { template: '<div><slot /></div>' },
+          QForm: { template: '<form><slot /></form>' },
+          QInput: true,
+          QBtn: true,
+          QSelect: {
+            name: 'QSelect',
+            props: ['modelValue', 'disable'],
+            emits: ['update:modelValue', 'input-value'],
+            template: '<div data-test="topic-select" />',
+          },
+        },
+      },
+    },
+  )
+  await flushPromises()
+
+  return {
+    host,
+    router,
+    page: () => host.findComponent(CreatePost),
+  }
+}
+
 const status = (w: ReturnType<typeof mountPage>['wrapper']) =>
   w.find('[data-test="post-status"]')
 
 beforeEach(() => {
   jest.clearAllMocks()
+  jest.mocked(useActiveWallet).mockResolvedValue({ identity: {} } as never)
   const forum = useForumStore() as unknown as {
     selectedTopic: string
     index: Record<string, { topic: string }>
@@ -149,10 +224,124 @@ describe('CreatePost selected-topic default (ticket #414)', () => {
     expect(vm.topic).toBe('news')
   })
 
+  it('synchronizes a reused pristine compose page from top-level to reply and back', async () => {
+    const forum = useForumStore() as unknown as {
+      selectedTopic: string
+      index: Record<string, { topic: string }>
+    }
+    forum.index = { parent: { topic: 'news' } }
+    const { page, router } = await mountRoutedPage('/new-post')
+    const originalElement = page().element
+
+    await router.push('/new-post/parent')
+    await flushPromises()
+    expect(page().element).toBe(originalElement)
+    expect(page().vm).toMatchObject({ parentDigest: 'parent', topic: 'news' })
+
+    forum.selectedTopic = 'help'
+    await nextTick()
+    await router.push('/new-post')
+    await flushPromises()
+    expect(page().element).toBe(originalElement)
+    expect(page().vm).toMatchObject({ parentDigest: undefined, topic: 'help' })
+  })
+
+  it('restores an authored top-level topic after visiting a reply', async () => {
+    const forum = useForumStore() as unknown as {
+      selectedTopic: string
+      index: Record<string, { topic: string }>
+    }
+    forum.index = { parent: { topic: 'news' } }
+    const { page, router } = await mountRoutedPage('/new-post')
+
+    page()
+      .findComponent({ name: 'QSelect' })
+      .vm.$emit('update:modelValue', 'custom')
+    await nextTick()
+    await router.push('/new-post/parent')
+    await flushPromises()
+    expect(page().vm).toMatchObject({ parentDigest: 'parent', topic: 'news' })
+
+    forum.selectedTopic = 'help'
+    await nextTick()
+    await router.push('/new-post')
+    await flushPromises()
+    expect(page().vm).toMatchObject({
+      parentDigest: undefined,
+      topic: 'custom',
+    })
+  })
+
+  it('repins the reused reply page when navigating from parent A to parent B', async () => {
+    const forum = useForumStore() as unknown as {
+      index: Record<string, { topic: string }>
+    }
+    forum.index = {
+      parentA: { topic: 'news' },
+      parentB: { topic: 'help' },
+    }
+    const { page, router } = await mountRoutedPage('/new-post/parentA')
+    const originalElement = page().element
+
+    await router.push('/new-post/parentB')
+    await flushPromises()
+
+    expect(page().element).toBe(originalElement)
+    expect(page().vm).toMatchObject({ parentDigest: 'parentB', topic: 'help' })
+  })
+
+  it('locks a reply and pins its topic when the parent arrives later', async () => {
+    const forum = useForumStore() as unknown as {
+      index: Record<string, { topic: string }>
+    }
+    const { page } = await mountRoutedPage('/new-post/late-parent')
+
+    expect(page().vm).toMatchObject({
+      parentDigest: 'late-parent',
+      topic: '',
+    })
+    expect(page().findComponent({ name: 'QSelect' }).props('disable')).toBe(
+      true,
+    )
+
+    forum.index = { 'late-parent': { topic: 'news' } }
+    await nextTick()
+
+    expect(page().vm).toMatchObject({
+      parentDigest: 'late-parent',
+      topic: 'news',
+    })
+  })
+
   it('submits and names the exact topic shown in the form', async () => {
     const { wrapper } = mountPage()
 
     await (wrapper.vm as unknown as { post(): Promise<void> }).post()
+    await flushPromises()
+
+    expect(mockPutMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ topic: 'stamp' }),
+    )
+    expect(infoNotify).toHaveBeenCalledWith('Post created in stamp.')
+  })
+
+  it('keeps the submitted topic across a deferred wallet lookup', async () => {
+    const { wrapper } = mountPage()
+    let resolveWallet!: (wallet: { identity: object }) => void
+    jest.mocked(useActiveWallet).mockReturnValueOnce(
+      new Promise(resolve => {
+        resolveWallet = resolve
+      }),
+    )
+
+    const posting = (wrapper.vm as unknown as { post(): Promise<void> }).post()
+    await flushPromises()
+    wrapper
+      .findComponent({ name: 'QSelect' })
+      .vm.$emit('update:modelValue', 'news')
+    await nextTick()
+    resolveWallet({ identity: {} })
+    await posting
     await flushPromises()
 
     expect(mockPutMessage).toHaveBeenCalledWith(

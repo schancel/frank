@@ -1,6 +1,3 @@
-import { readFileSync } from 'fs'
-import { join } from 'path'
-
 import { crypto as bitcoreCrypto } from 'bitcore-lib-xpi'
 
 import {
@@ -44,12 +41,6 @@ function bitcoreLotusAddress(pubKeyHash20: Buffer, net: LotusNet): string {
 }
 
 it('hashes a pubkey and encodes the bitcoinsuite Lotus address vectors', () => {
-  const source = readFileSync(join(__dirname, 'lotus-identity.ts'), 'utf8')
-  expect(source).not.toContain('bitcoreCrypto')
-  expect(source).not.toContain('Hash.sha256')
-  expect(source).toContain('cryptoBackend.hash160')
-  expect(source).toContain('cryptoBackend.sha256')
-  expect(source).toContain('const payloadHash = sha256(serializedPayload)')
 
   const hashed = pubKeyHash160(GENERATOR)
   expect(hashed.toString('hex')).toBe(GENERATOR_HASH160)

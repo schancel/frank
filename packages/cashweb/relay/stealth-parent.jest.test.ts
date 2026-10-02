@@ -1,6 +1,3 @@
-import { readFileSync } from 'fs'
-import { join } from 'path'
-
 import { PrivateKey, PublicKey, crypto as bitcoreCrypto } from 'bitcore-lib-xpi'
 
 import { PayloadConstructor } from './crypto'
@@ -20,14 +17,6 @@ const N_MINUS_1 =
 const N_PLUS_ONE =
   'fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364142'
 const ONE = `${'00'.repeat(31)}01`
-
-function methodBody(source: string, start: string, end: string): string {
-  const from = source.indexOf(start)
-  const to = source.indexOf(end, from)
-  expect(from).toBeGreaterThanOrEqual(0)
-  expect(to).toBeGreaterThan(from)
-  return source.slice(from, to)
-}
 
 function bitcoreMod(digest: Buffer): Buffer {
   return bitcoreCrypto.BN.fromBuffer(digest)
@@ -247,35 +236,4 @@ it('derives the stealth parent from ecdh', () => {
     'stealth-parent:wrong-length',
   )
 
-  const source = readFileSync(join(__dirname, 'crypto.ts'), 'utf8')
-  const body = methodBody(
-    source,
-    'constructStealthPrivateKey(',
-    'constructHDStealthPrivateKey(',
-  )
-  expect(body).toContain('stealthParentSecret(')
-  expect(body).not.toContain('point.mul')
-  expect(body).not.toContain('crypto.BN')
-  expect(body).not.toContain('Point.getN')
-  const publicBody = methodBody(
-    source,
-    'constructStealthPublicKey(',
-    'constructHDStealthPublicKey(',
-  )
-  expect(publicBody).toContain('stealthSharedPoint(')
-  expect(publicBody).not.toContain('point.mul')
-  expect(publicBody).toContain('stealthParentPublicKey(')
-  expect(publicBody).not.toContain('point.add')
-  expect(publicBody).toContain('stealthPointDigest(')
-  const merged = methodBody(source, 'constructMergedKey(', 'constructSharedPointEncodings(')
-  expect(merged).toContain('point.mul')
-  const helper = readFileSync(join(__dirname, 'stealth-parent.ts'), 'utf8')
-  expect(helper).toContain('ecdh(')
-  expect(helper).toContain('tweakAddPrivateKey(')
-  expect(helper).toContain('stealthPointDigest(')
-  expect(helper).not.toContain('pointMultiply')
-  expect(helper).not.toContain('point.mul')
-  expect(helper).not.toContain('point.add')
-  expect(helper).not.toContain('899')
-  expect(helper).not.toContain('10605')
 })

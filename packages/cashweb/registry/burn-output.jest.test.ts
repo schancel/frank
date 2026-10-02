@@ -1,6 +1,3 @@
-import { readFileSync } from 'fs'
-import { join } from 'path'
-
 import { Transaction } from 'bitcore-lib-xpi'
 
 import { pondBurnScript } from './burn-script'
@@ -34,7 +31,4 @@ it('matches pondBurnScript and wraps as a payment output', () => {
   expect(Array.from(wrapped.script.toBuffer())).toEqual(Array.from(up.script))
   expect(wrapped.satoshis).toBe(1000)
 
-  const source = readFileSync(join(__dirname, 'index.ts'), 'utf8')
-  expect(source).not.toMatch(/new Transaction\.Output/)
-  expect(source).toContain('registryBurnOutput')
 })

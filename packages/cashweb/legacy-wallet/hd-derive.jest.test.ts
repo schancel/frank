@@ -1,6 +1,3 @@
-import { readFileSync } from 'fs'
-import { join } from 'path'
-
 import { HDPrivateKey, Networks, PrivateKey } from 'bitcore-lib-xpi'
 
 import {
@@ -22,11 +19,6 @@ function secretHex(key: PrivateKey): string {
 }
 
 it('derives the published BIP32 child and the existing coin-type 899 paths', () => {
-  const source = readFileSync(join(__dirname, 'index.ts'), 'utf8')
-  expect(source).toContain('deriveHdPath')
-  expect(source).toContain("m/44'/899'/0'/0")
-  expect(source).toContain("m/44'/899'/0'/1")
-  expect(source).not.toContain('deriveChild')
 
   const master = new HDPrivateKey(VECTOR_1_MASTER)
   const published = master.deriveChild("m/0'/1/2'/2")

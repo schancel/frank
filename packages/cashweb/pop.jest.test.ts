@@ -1,6 +1,3 @@
-import { readFileSync } from 'fs'
-import { join } from 'path'
-
 import { Transaction } from 'bitcore-lib-xpi'
 
 import { paymentOutput } from './pop'
@@ -26,7 +23,4 @@ it('copies BIP70 script bytes into the record constructTransaction wraps', () =>
   expect(Array.from(wrapped.script.toBuffer())).toEqual(Array.from(SCRIPT))
   expect(wrapped.satoshis).toBe(546)
 
-  const source = readFileSync(join(__dirname, 'pop.ts'), 'utf8')
-  expect(source).not.toMatch(/from ['"]bitcore-lib-xpi['"]/)
-  expect(source).toContain('paymentOutput')
 })

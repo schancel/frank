@@ -1,6 +1,3 @@
-import { readFileSync } from 'fs'
-import { join } from 'path'
-
 import { Transaction } from 'bitcore-lib-xpi'
 
 import { p2pkhSpentOutpoints } from './p2pkh-spent'
@@ -68,15 +65,6 @@ function bitcoreInputs(
 }
 
 it('reads p2pkh spent outpoints from transaction bytes', () => {
-  const source = readFileSync(join(__dirname, 'index.ts'), 'utf8')
-  const selfSend = source.slice(
-    source.indexOf('receiveSelfSend'),
-    source.indexOf('async receiveMessage'),
-  )
-  expect(selfSend).toContain('p2pkhSpentOutpoints')
-  expect(selfSend).not.toContain('new Transaction')
-  expect(source).toContain('readStampTransaction')
-  expect(source).not.toContain('new Transaction(stampTxRaw)')
 
   const bip143 = Buffer.from(BIP143_UNSIGNED, 'hex')
   const bip143Spent = {

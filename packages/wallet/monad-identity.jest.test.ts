@@ -35,6 +35,7 @@ import {
   searchMonadProfiles,
 } from './monad-identity'
 import { defaultContext, validateFrame } from '@frank/codec'
+import { publicFromPrivate } from '@frank/nakamoto'
 import { validateProfileDisplayName } from './profile-display-name'
 
 jest.mock('axios')
@@ -107,10 +108,15 @@ describe('MonadIdentity', () => {
     expect(signature.length).toBeGreaterThan(0)
   })
 
-  it('toBitcorePrivateKey wraps the same secp256k1 key (shared curve, no Lotus encoding)', () => {
+  it('toNakamotoPrivateKey is the same secp256k1 secret, with no Lotus encoding', () => {
     const identity = MonadIdentity.fromSeed(SEED)
-    const bitcoreKey = identity.toBitcorePrivateKey()
-    expect(bitcoreKey.toPublicKey().toBuffer()).toEqual(
+    const key = identity.toNakamotoPrivateKey()
+    expect(Buffer.from(key.bytes).toString('hex')).toBe(
+      identity.toPrivateKeyHex().slice(2),
+    )
+    const point = publicFromPrivate(key)
+    if (!point.ok) throw new Error(point.error.code)
+    expect(Buffer.from(point.value.compressed)).toEqual(
       identity.compressedPubKey,
     )
   })

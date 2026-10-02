@@ -1424,7 +1424,7 @@ const senderPubKeyCache = new Map<string, Buffer>()
 
       const rawPlaintext = tryDecryptEnvelope({
         envelope,
-        myPrivateKey: identity.toBitcorePrivateKey(),
+        myPrivateKey: identity.toNakamotoPrivateKey(),
         senderPubKey,
       })
       if (rawPlaintext === undefined) {

@@ -538,7 +538,7 @@ async function checkRaffleFill(
             continue
           const plaintext = tryDecryptEnvelope({
             envelope,
-            myPrivateKey: who.toBitcorePrivateKey(),
+            myPrivateKey: who.toNakamotoPrivateKey(),
             senderPubKey: raffleKey,
           })
           if (plaintext === undefined) continue
@@ -593,7 +593,7 @@ async function dealerMessages(
     }
     const plaintext = tryDecryptEnvelope({
       envelope,
-      myPrivateKey: human.toBitcorePrivateKey(),
+      myPrivateKey: human.toNakamotoPrivateKey(),
       senderPubKey: dealerKey,
     })
     if (plaintext === undefined) continue
@@ -793,7 +793,7 @@ export async function runSmokeChecks(
         if (!bot || results.has(bot)) continue
         const plaintext = tryDecryptEnvelope({
           envelope,
-          myPrivateKey: human.toBitcorePrivateKey(),
+          myPrivateKey: human.toNakamotoPrivateKey(),
           senderPubKey: botKeys[bot],
         })
         if (plaintext === undefined) continue

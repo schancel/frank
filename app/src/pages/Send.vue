@@ -52,9 +52,11 @@ import { sentTransactionNotify, errorNotify } from '../utils/notifications'
 import { activeChain } from '@frank/wallet/chain'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
 import { parseNativeTransferInput } from 'src/utils/native-transfer'
+import { useTranslate } from 'src/composables/useTranslate'
 
 export default defineComponent({
   setup() {
+    const $t = useTranslate()
     const address = ref('')
     const amount = ref('')
     const sending = ref(false)
@@ -72,7 +74,7 @@ export default defineComponent({
         const transfer = parsedTransfer.value
         if (!transfer) {
           errorNotify({
-            message: 'Enter a valid Monad address and MON amount.',
+            message: $t('sendAddressDialog.invalidTransfer'),
           })
           return
         }
@@ -90,7 +92,7 @@ export default defineComponent({
           errorNotify(
             err instanceof Error
               ? err
-              : new Error('Failed to send Monad transaction'),
+              : new Error($t('sendAddressDialog.failedSendTransaction')),
           )
         } finally {
           sending.value = false

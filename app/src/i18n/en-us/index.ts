@@ -239,6 +239,8 @@ export default {
     balanceLoading: 'Loading balance…',
     balanceUnavailable: 'Balance unavailable. Retrying.',
     balanceStale: '{balance} (last known)',
+    failedLoadAddress: 'Failed to load the Monad wallet address',
+    unableCopyAddress: 'Unable to copy the Monad address',
   },
   chatList: {
     noContactMessage: 'Add contacts from the drawer above...',
@@ -296,6 +298,16 @@ export default {
     forwardMessage: 'Forward message',
     infoMessage: 'Message info',
     deleteMessage: 'Delete message',
+  },
+  chatMessageMenu: {
+    messageCopied: 'Message copied to clipboard',
+  },
+  notifications: {
+    addressCopied: 'Address copied to clipboard.',
+    insufficientStamp: 'Stamp is too small, receiver will not be notified.',
+    seedCopied: 'Your recovery phrase has been copied to your clipboard.',
+    sentTransaction: 'Sent transaction',
+    viewAction: 'View',
   },
   chatRightDrawer: {
     stampPrice: 'Stamp Price',
@@ -450,6 +462,8 @@ export default {
       'Your balance is 0. This app uses testnet MON, which has no real value. The demo faucet funds new profiles automatically; if nothing arrives after a minute, ask the demo operator to send testnet MON to the address below.',
     close: 'Close',
     addressCopied: 'Address copied to clipboard',
+    failedLoadBalance: 'Failed to load Monad wallet balance',
+    unableCopyAddress: 'Unable to copy the Monad address',
   },
   sendAddressDialog: {
     sendToAddress: 'Send to Address',
@@ -457,6 +471,8 @@ export default {
     enterAmount: 'Enter Amount (MON)',
     cancel: 'Cancel',
     send: 'Send',
+    invalidTransfer: 'Enter a valid Monad address and MON amount.',
+    failedSendTransaction: 'Failed to send Monad transaction',
   },
   contactBookDialog: {
     contacts: 'Contacts',

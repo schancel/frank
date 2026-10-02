@@ -6,7 +6,8 @@ use cashweb_config::{parse_conf, CashwebdConf, MonadMailboxMode};
 use cashweb_registry::{
     disabled_chain_adapter::DisabledChainAdapter,
     http::{
-        curated_defaults::build_curated_defaults, pop_protection::PopGate, server::RegistryServer,
+        curated_defaults::build_curated_defaults, evm_rpc::EvmRpcRuntime, pop_protection::PopGate,
+        server::RegistryServer,
     },
     lotus_adapter::LotusAdapter,
     monad_http::HttpTransport,
@@ -132,10 +133,14 @@ fn read_and_validate_conf_with_env(
         .monad_mailbox
         .mode()
         .wrap_err("Invalid registry.monad_mailbox configuration")?;
+    conf.registry
+        .evm_rpc
+        .validate()
+        .wrap_err("Invalid registry.evm_rpc configuration")?;
     // An enabled mailbox admits only envelopes carrying the relay's network tag; an unset tag would
     // silently reject every direct message, so refuse to start instead.
     let network_tag = env(NETWORK_TAG_ENV);
-    if matches!(mailbox_mode, MonadMailboxMode::Enabled { .. })
+    if (matches!(mailbox_mode, MonadMailboxMode::Enabled { .. }) || conf.registry.evm_rpc.enabled)
         && !network_tag.as_deref().is_some_and(is_valid_network_tag)
     {
         return Err(MissingNetworkTagEnv.into());
@@ -226,6 +231,7 @@ async fn main() -> Result<()> {
     };
 
     let registry = Arc::new(Registry::new(db, chain_adapter, conf.registry.net));
+    let evm_rpc_conf = conf.registry.evm_rpc.clone();
     let (monad_mailbox, outbox_worker): (MonadMailboxRuntime, Option<MonadOutboxWorker>) =
         match mailbox_mode {
             MonadMailboxMode::Disabled => {
@@ -321,6 +327,13 @@ async fn main() -> Result<()> {
         build_curated_defaults(&conf.registry.curated_defaults)
             .wrap_err("Invalid registry.curated_defaults entry in configuration file")?,
     );
+    let evm_rpc = EvmRpcRuntime::from_conf_with_env(
+        &evm_rpc_conf,
+        cashweb_registry::network_tag::frank_network_tag().to_vec(),
+        |name| std::env::var(name).ok(),
+    )
+    .await
+    .wrap_err("Starting customer-authenticated EVM RPC proxy")?;
 
     let server = RegistryServer {
         registry: Arc::clone(&registry),
@@ -328,6 +341,7 @@ async fn main() -> Result<()> {
         pop_gate,
         curated_defaults,
         monad_mailbox,
+        evm_rpc,
     };
 
     let router = server.into_router();

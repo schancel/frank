@@ -18,6 +18,17 @@ enabled = true
 min_value_wei = "1000000000000"
 expected_chain_id = 10143
 
+# One EVM-family handler serves chain rows as data. The provider URL remains server-only in the
+# named environment variable and is chain-id checked before the relay becomes ready.
+[registry.evm_rpc]
+enabled = true
+
+[[registry.evm_rpc.chains]]
+id = "monad-testnet"
+expected_chain_id = 10143
+upstream_env = "MONAD_TESTNET_HTTP_RPC_URL"
+max_get_logs_range = 10
+
 [registry.pop]
 enabled = false
 monad_rpc_url = "http://unused.invalid"

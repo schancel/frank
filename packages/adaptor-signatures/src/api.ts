@@ -399,7 +399,6 @@ export function completeAdaptorSignature(
     return failure('bad-length')
   }
   try {
-    const scalar = scalarFromBytesCanonical(secret, false)
     const verified = verifyAdaptorSignatureSnapshot({
       publicKey,
       adaptorPoint: adaptorPoint as AdaptorPoint,
@@ -409,6 +408,12 @@ export function completeAdaptorSignature(
     })
     if (!verified.ok) return verified
     if (!verified.value) return failure('invalid-signature')
+    let scalar: bigint
+    try {
+      scalar = scalarFromBytesCanonical(secret, false)
+    } catch {
+      return failure('invalid-scalar')
+    }
     const expectedPoint = pointBytes(G.multiply(scalar))
     if (!equalBytes(expectedPoint, adaptorPoint)) {
       return failure('secret-point-mismatch')

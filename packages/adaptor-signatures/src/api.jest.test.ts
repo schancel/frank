@@ -150,6 +150,41 @@ describe('safe byte-oriented API', () => {
     })
   })
 
+  it('reports noncanonical completion secrets as invalid scalars', () => {
+    const signer = privateKeyFromSecretBytes(bytes(7), true)
+    const material = generateAdaptorSecret(() => bytes(9))
+    expect(signer.ok && material.ok).toBe(true)
+    if (!signer.ok || !material.ok) return
+    const publicKey = publicFromPrivate(signer.value)
+    if (!publicKey.ok) return
+    const digest = bytes(11)
+    const signed = adaptorSign({
+      privateKey: signer.value.bytes,
+      adaptorPoint: material.value.point,
+      adaptorProof: material.value.proof,
+      digest,
+    })
+    if (!signed.ok) return
+    const invalidSecrets = [
+      new Uint8Array(32),
+      fromHex(
+        'fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141',
+      ),
+    ]
+    for (const secret of invalidSecrets) {
+      expect(
+        completeAdaptorSignature({
+          publicKey: publicKey.value.compressed,
+          adaptorPoint: material.value.point,
+          adaptorProof: material.value.proof,
+          digest,
+          signature: signed.value,
+          secret: secret as typeof material.value.secret,
+        }),
+      ).toEqual({ ok: false, error: { code: 'invalid-scalar' } })
+    }
+  })
+
   it('rejects a structurally parseable forged adaptor signature at completion', () => {
     const signer = privateKeyFromSecretBytes(bytes(7), true)
     const material = generateAdaptorSecret(() => bytes(9))
@@ -172,6 +207,16 @@ describe('safe byte-oriented API', () => {
         digest: bytes(11),
         signature: forged.value,
         secret: material.value.secret,
+      }),
+    ).toEqual({ ok: false, error: { code: 'invalid-signature' } })
+    expect(
+      completeAdaptorSignature({
+        publicKey: publicKey.value.compressed,
+        adaptorPoint: material.value.point,
+        adaptorProof: material.value.proof,
+        digest: bytes(11),
+        signature: forged.value,
+        secret: new Uint8Array(32) as typeof material.value.secret,
       }),
     ).toEqual({ ok: false, error: { code: 'invalid-signature' } })
   })

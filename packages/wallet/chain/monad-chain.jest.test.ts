@@ -503,7 +503,7 @@ describe("createMonadChain: directMessages.send", () => {
       JSON.parse(
         decryptEnvelope({
           envelope: envelope!,
-          myPrivateKey: alice.toBitcorePrivateKey(),
+          myPrivateKey: alice.toNakamotoPrivateKey(),
           senderPubKey: alice.compressedPubKey,
         })
       )
@@ -744,7 +744,7 @@ describe("createMonadChain: directMessages.fetchSince", () => {
     );
     const encryptedPayload: Uint8Array = buildEnvelope({
       fromAddress: alice.address.raw,
-      fromPrivateKey: alice.toBitcorePrivateKey(),
+      fromPrivateKey: alice.toNakamotoPrivateKey(),
       toAddress: bob.address.raw,
       toPubKey: bob.compressedPubKey,
       plaintext: serializeMessageItems([{ type: "text", text: "poison" }]),
@@ -752,7 +752,7 @@ describe("createMonadChain: directMessages.fetchSince", () => {
     });
     const validPayload: Uint8Array = buildEnvelope({
       fromAddress: alice.address.raw,
-      fromPrivateKey: alice.toBitcorePrivateKey(),
+      fromPrivateKey: alice.toNakamotoPrivateKey(),
       toAddress: bob.address.raw,
       toPubKey: bob.compressedPubKey,
       plaintext: serializeMessageItems([{ type: "text", text: "real mail" }]),
@@ -817,7 +817,7 @@ describe("createMonadChain: directMessages.fetchSince", () => {
     );
     const encryptedPayload: Uint8Array = buildEnvelope({
       fromAddress: alice.address.raw,
-      fromPrivateKey: alice.toBitcorePrivateKey(),
+      fromPrivateKey: alice.toNakamotoPrivateKey(),
       toAddress: bob.address.raw,
       toPubKey: bob.compressedPubKey,
       plaintext: serializeMessageItems([{ type: "text", text: "retry me" }]),

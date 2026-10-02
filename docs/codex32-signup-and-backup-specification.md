@@ -228,10 +228,13 @@ fingerprint preimage. The encoder emits canonical lowercase. The decoder accepts
 uniform lowercase or uppercase only, validates Bech32m before normalization,
 uses strict `convertbits(5, 8, pad=false)`, requires exactly 37 payload bytes,
 and rejects mixed case, unknown versions or codes, noncanonical padding,
-truncation, and trailing bytes. It recomputes and compares all 32 fingerprint
-bytes. Optional inventory text such as “share X of n” is outside this record and
-has no authentication meaning. The resulting v1 record is 76 characters and
-fits the Bech32 90-character limit.
+truncation, and trailing bytes. It returns all 32 fingerprint bytes without
+truncation but does not authenticate them by comparing the field to itself.
+After reconstructing `M`, the ceremony maps both codes to their canonical
+identifiers, recomputes the fingerprint, and compares all 32 bytes. Optional
+inventory text such as “share X of n” is outside this record and has no
+authentication meaning. The resulting v1 record is 76 characters and fits the
+Bech32 90-character limit.
 
 ### 5.2 Canonicalization
 
@@ -904,6 +907,9 @@ the repository's current localization boundary.
 - Descriptor known encoding, parse/encode round trip, and independent decoder;
   altered version, format code, registry code, fingerprint, checksum, case,
   padding, length, truncation, trailing bytes, and optional annotations.
+- A fingerprint mutation with a stale checksum fails descriptor decoding; a
+  validly re-encoded wrong fingerprint passes structural decoding but fails the
+  ceremony's recomputation against `M`.
 - Fuzzing of decoding and recovery with bounded time and memory.
 
 ### 15.2 Signup integration

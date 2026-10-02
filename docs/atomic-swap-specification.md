@@ -488,8 +488,9 @@ only an EIP-1559 type-2 transaction and commits:
 - a reserve invariant proving `principal + gasLimit * maxFeePerGas` does not exceed the funded
   balance at the policy ceiling;
 - the canonical eCash claim-intent/body predicate and funding outpoint whose first consensus-valid
-  success-branch spend with an extractable A signature authorizes signing, the last-claim cutoff,
-  validity window, and the same-nonce replacement rule; and
+  success-branch spend with an extractable A signature authorizes signing, B's advisory
+  `lastSafeClaimBroadcast`, A's state-based `successTriggerAcceptanceHorizon`, and the same-nonce
+  replacement rule; and
 - canonical lengths and big-endian encodings for every integer and byte field.
 
 The local signer parses and validates the policy before signing. It accepts only the exact immutable
@@ -527,7 +528,7 @@ For this subsection, A offers XEC and receives MON; B offers MON and receives XE
 5. Both identities sign the pre-funding authorization root containing the exact EVM funding bytes,
    the withheld-parent txid/output commitment, canonical eCash claim intent, exact refund artifact,
    A's presignature, all public points/proofs/signatures, amounts, EVM success-policy artifact, and
-   conservative last-claim cutoff.
+   conservative `lastSafeClaimBroadcast`.
    They durably record both attestations. B cannot validate the hidden parent's signatures or output
    before risking MON and explicitly accepts invalid-parent, double-spend, and non-reveal grief.
 6. B broadcasts EVM funding and waits for the manifest's threshold. Only then does A reveal and
@@ -537,21 +538,28 @@ For this subsection, A offers XEC and receives MON; B offers MON and receives XE
    encoding, malleation, non-reveal, or confirmation under another txid aborts settlement and leaves
    the disclosed grief outcome. This order gives B no broadcastable claim on XEC before MON is
    committed.
-7. B either stops before the last-claim cutoff or completes A's adaptor signature with `t`, supplies
-   any consensus-valid B signature and success-branch encoding, and broadcasts the eCash claim. On
-   first mempool observation, A parses the actual spend and verifies the exact funding outpoint,
-   canonical sighash-covered body, redeem script and success branch, both signatures, and mandatory
-   sighash flags. A extracts from the observed A signature and stored presignature, accepts only `t`
-   or `-t` matching `T`, computes `x = a + t mod n`, and signs a fresh EVM principal payment to A
-   under the canonical success policy. A trusted local signer may reprice this payment and later
-   sweep the residual reserve because it now holds the complete one-use key.
+7. Honest B stops before `lastSafeClaimBroadcast` unless it can still satisfy the declared inclusion
+   assumption; this is advice, not a consensus expiry or revocation of A's rights. To claim, B
+   completes A's adaptor signature with `t`, supplies any consensus-valid B signature and
+   success-branch encoding, and broadcasts. On observation in the mempool, a block, or a reorg branch,
+   A parses the actual spend and verifies the exact funding outpoint, canonical sighash-covered body,
+   redeem script and success branch, both signatures, and mandatory sighash flags. A extracts from
+   the observed A signature and stored presignature, accepts only `t` or `-t` matching `T`, durably
+   records the trigger and counter-action, computes `x = a + t mod n`, and signs a fresh EVM principal
+   payment to A under the canonical success policy. A trusted local signer may reprice this payment
+   and later sweep the residual reserve because it now holds the complete one-use key.
 8. If B does not reveal in time, A broadcasts the eCash refund. B's EVM principal has no contractless
-   unilateral refund and enters `cooperative-recovery-required`. A never publishes or authorizes an
-   EVM payment to itself before observing a valid matching claim reveal. Only after the exact refund
-   is final beyond the declared reorg horizon and the success outpoint can no longer be spent may A
-   offer lane-specific salvage by releasing `a` to B. B verifies `aG = A_evm`, derives `x = a + t`,
-   and sweeps the one-use EOA. Releasing `a` earlier could let B recover MON while still obtaining
-   XEC. If A disappears or refuses, the MON remains stranded indefinitely.
+   unilateral refund and enters `cooperative-recovery-required` only when that refund is final under
+   the rule below. A never publishes or authorizes an EVM payment to itself before observing a valid
+   matching claim reveal. A's
+   `successTriggerAcceptanceHorizon` remains open from EVM funding until the exact refund is final
+   beyond the declared reorg horizon and the success outpoint can no longer be spent. A valid success
+   first observed after B's cutoff still authorizes settlement throughout that state. Once a trigger
+   is durably accepted, a later cutoff, competing refund, or reorg does not revoke EVM authorization
+   and `a` never enters salvage. Only after the horizon closes with no accepted trigger may A offer
+   lane-specific salvage by releasing `a` to B. B verifies `aG = A_evm`, derives `x = a + t`, and
+   sweeps the one-use EOA. Releasing `a` earlier could let B recover MON while still obtaining XEC.
+   If A disappears or refuses, the MON remains stranded indefinitely.
 
 Safety invariant: before B's reveal, B cannot spend XEC and A cannot spend MON; after B obtains XEC,
 A has the scalar and unilateral fee authority needed to obtain MON under the declared inclusion
@@ -832,7 +840,8 @@ The first implementation should provide:
     the recoverable envelope, including peer claim, fee spike, and disappearance;
 12. canonical EVM policy tests in which two differently priced in-range type-2 transactions pass,
     while mutation of every immutable field, either fee bound, the priority/base relationship, the
-    reserve ceiling, encoding, recovered sender, trigger, validity window, or nonce fails;
+    reserve ceiling, encoding, recovered sender, trigger predicate, acceptance horizon, or nonce
+    fails;
 13. withheld-parent tests proving B cannot reconstruct or broadcast the eCash parent from disclosed
     preparation data, and that alternate parent encodings, signatures, or txids never retarget the
     claim outpoint;
@@ -841,9 +850,13 @@ The first implementation should provide:
     field fails;
 15. post-refund salvage tests proving `a` is never released before refund finality, is retained across
     restart while MON remains, verifies against `A_evm`, and recovers only the one-use EOA for B;
-16. authentic old-snapshot restore tests that either verify an external freshness anchor or fail
+16. cutoff-race tests in which a claim first appears after `lastSafeClaimBroadcast`, a claim and
+    refund race in either order, a shallow refund reorganizes to a claim, and a restart crosses the
+    cutoff; every winning valid claim remains authorized, while final refund without an accepted
+    trigger retires signing and enables salvage;
+17. authentic old-snapshot restore tests that either verify an external freshness anchor or fail
     closed without signing; malicious-watcher capability tests; and
-17. a live testnet griefable-mode completion/lockout demonstration or recoverable-mode
+18. a live testnet griefable-mode completion/lockout demonstration or recoverable-mode
     completion/refund demonstration, using disposable keys and negligible value and labelled
     accordingly.
 

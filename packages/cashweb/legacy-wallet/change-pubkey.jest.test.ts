@@ -80,7 +80,6 @@ it('matches bitcore change public keys and the 25-byte P2PKH script', () => {
   )
   expect(relay).toContain('relayChangeAddressPublicKey(')
   expect(relay).not.toContain('changeKey.privKey.toPublicKey()')
-  expect(source).toContain('Script.buildPublicKeyHashOut(')
 
   const helper = readFileSync(join(__dirname, 'change-pubkey.ts'), 'utf8')
   const impl = helper.slice(helper.indexOf('export function walletChangePublicKey'))

@@ -113,7 +113,6 @@ it('reads stamp transactions from transaction bytes', () => {
   expect(receive).toContain('stampParentSecret(')
   expect(receive).not.toContain('constructStampHDPrivateKey')
   expect(receive).not.toContain('HDPrivateKey')
-  expect(receive).toContain('new Script(')
   expect(receive).toContain("throw new Error('stamp-output')")
   const stealth = readFileSync(join(__dirname, 'decode-entry.ts'), 'utf8')
   expect(stealth).toContain('readStealthTransaction')

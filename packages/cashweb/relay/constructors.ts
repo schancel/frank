@@ -1,10 +1,4 @@
-import {
-  PublicKey,
-  Transaction,
-  Script,
-  Address,
-  PrivateKey,
-} from 'bitcore-lib-xpi'
+import { PublicKey, Transaction, PrivateKey } from 'bitcore-lib-xpi'
 import { hmacSha256 } from '@frank/crypto-box'
 import { cryptoBackend } from '@frank/nakamoto'
 import assert from 'assert'
@@ -32,6 +26,7 @@ import VCard from 'vcf'
 import __pb_signed_payload_payload_pb from '../signed_payload/payload_pb'
 const { SignedPayload } = __pb_signed_payload_payload_pb
 import { Wallet } from '../legacy-wallet'
+import { p2pkhLockingScript } from '../legacy-wallet/lotus-address'
 import { signRegistryDigest } from '../registry'
 import { relayCipherPayloadDigest } from './cipher-payload-digest'
 import { relayPlainPayloadDigest } from './plain-payload-digest'
@@ -200,8 +195,9 @@ export class MessageConstructor {
       // types.d.ts omits the runtime compression flag; bitcore-lib-xpi
       // stays until #259. HMAC, salt, and envelope ECDH stay on bitcore.
       const message = new Message()
-      const compressed = (sourcePrivateKey as unknown as { compressed?: boolean })
-        .compressed
+      const compressed = (
+        sourcePrivateKey as unknown as { compressed?: boolean }
+      ).compressed
       if (compressed !== true && compressed !== false) {
         throw new Error('message-source-pubkey:compressed')
       }
@@ -342,7 +338,7 @@ export class MessageConstructor {
     const p2pkhEntry = new p2pkh.P2PKHEntry()
 
     const output = new Transaction.Output({
-      script: new Script(new Address(address)),
+      script: Buffer.from(p2pkhLockingScript(address)),
       satoshis: amount,
     })
 
@@ -438,7 +434,8 @@ export class MessageConstructor {
 
     // SEC1 point of the signing key (decision #543). types.d.ts omits the
     // runtime compression flag; bitcore-lib-xpi stays until #259.
-    const compressed = (privKey as unknown as { compressed?: boolean }).compressed
+    const compressed = (privKey as unknown as { compressed?: boolean })
+      .compressed
     if (compressed !== true && compressed !== false) {
       throw new Error('profile-pubkey:compressed')
     }

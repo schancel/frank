@@ -23,7 +23,13 @@ import { arrayBufferToBase64 } from './images'
 import { PayloadConstructor } from './crypto'
 import { messageMixin } from './extension'
 import { calcUtxoId } from '../legacy-wallet/helpers'
-import { lotusFromAddress } from '../legacy-wallet/lotus-address'
+import {
+  lotusFromAddress,
+  p2pkhHashFromPublicKey,
+  p2pkhHashFromScript,
+  sameHash,
+} from '../legacy-wallet/lotus-address'
+import { lotusP2pkhFromHash } from '../legacy-wallet/lotus-identity'
 import assert from 'assert'
 // See cashweb/pop.ts's identical import for why this is a default-import + destructure rather
 // than a combined default+named import (ticket #51, Vite migration -- CJS interop only
@@ -35,7 +41,6 @@ import WebSocket from 'isomorphic-ws'
 import {
   PublicKey,
   Transaction,
-  Script,
   Networks,
   Address,
   PrivateKey,
@@ -916,9 +921,7 @@ export class RelayClient extends ReadOnlyRelayClient {
         const output = stampTx.outputs[outputIndex]
         if (output === undefined) throw new Error('stamp-output')
         const satoshis = output.satoshis
-        const address = new Script(Buffer.from(output.script)).toAddress(
-          this.networkName,
-        )
+        const scriptHash = p2pkhHashFromScript(output.script)
         stampValue += satoshis
 
         // Non-hardened m/44/145 private child (decision #531).
@@ -928,13 +931,10 @@ export class RelayClient extends ReadOnlyRelayClient {
           Networks.get(this.networkName),
         )
 
-        const computedAddress = new PublicKey(
-          Buffer.from(stampOutpointPublicKey(outputSecret)),
-        ).toAddress(this.networkName)
-        if (
-          !outbound &&
-          !address.toBuffer().equals(computedAddress.toBuffer())
-        ) {
+        const computedHash = p2pkhHashFromPublicKey(
+          stampOutpointPublicKey(outputSecret),
+        )
+        if (!outbound && !sameHash(scriptHash, computedHash)) {
           // Assume outbound addresses were valid.  Otherwise we need to calclate a different
           // derivation then based on our identity address.
           console.error('invalid stamp address, ignoring')
@@ -943,7 +943,7 @@ export class RelayClient extends ReadOnlyRelayClient {
 
         const stampOutput = {
           type: 'stamp',
-          address: lotusFromAddress(address, this.networkName),
+          address: lotusP2pkhFromHash(scriptHash, this.networkName),
           satoshis,
           txId,
           outputIndex,

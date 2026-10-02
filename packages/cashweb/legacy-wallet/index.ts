@@ -5,19 +5,19 @@ import { walletChangeP2pkhScript } from './change-pubkey'
 import { calcUtxoId } from './helpers'
 
 import {
-  Script,
   Transaction,
   PrivateKey,
   HDPrivateKey,
   PublicKey,
 } from 'bitcore-lib-xpi'
+import type { Script } from 'bitcore-lib-xpi'
 import { UtxoStore } from './storage/storage'
 
 import { Utxo } from '../types/utxo'
 import { ChronikClient, WsEndpoint } from 'chronik-client'
 import { AddressEvent, ChainAdapter } from './chain-adapter'
 import { LotusAdapter } from './lotus-adapter'
-import { lotusFromAddress } from './lotus-address'
+import { lotusFromAddress, p2pkhLockingScript } from './lotus-address'
 import {
   BTC_MAINNET,
   BTC_TESTNET,
@@ -92,7 +92,6 @@ function scriptBytes(script: Script): Uint8Array {
 }
 
 // HASH160 of the serialized public key, then the 25-byte template (decision #495).
-// Address-string scripts stay on bitcore until issue #242.
 export function p2pkhScriptFromPublicKey(publicKey: PublicKey): Buffer {
   const serialized = Uint8Array.from(publicKey.toBuffer())
   const hash = pubkeyHashFromBytes(cryptoBackend.hash160(serialized))
@@ -153,6 +152,22 @@ export function hdPrivateKeyFromStored(
 ): HDPrivateKey {
   if (value instanceof HDPrivateKey) return value
   return new HDPrivateKey(value)
+}
+
+// Build the locking script here. UnspentOutput also parses `address`, so the
+// Lotus string stays off that object.
+export function unspentOutputFromAddress(utxo: {
+  txId: string
+  outputIndex: number
+  satoshis: number
+  address: string
+}): Transaction.UnspentOutput {
+  return Transaction.UnspentOutput.fromObject({
+    txId: utxo.txId,
+    outputIndex: utxo.outputIndex,
+    satoshis: utxo.satoshis,
+    script: Buffer.from(p2pkhLockingScript(utxo.address)).toString('hex'),
+  })
 }
 
 // bitcore's Input type omits setScript; the runtime method writes _scriptBuffer.
@@ -644,11 +659,8 @@ export class Wallet {
         continue
       }
       stagedUtxos.push(outpoint)
-      outpoint.script = Script.buildPublicKeyHashOut(outpoint.address).toHex()
       signingKeys.push(outpoint.privKey)
-      transaction = transaction.from([
-        Transaction.UnspentOutput.fromObject(outpoint),
-      ])
+      transaction = transaction.from([unspentOutputFromAddress(outpoint)])
       satoshis += outpoint.satoshis
     }
 
@@ -921,10 +933,7 @@ export class Wallet {
           1,
         )
         stagedUtxos.push(utxoToUse)
-        utxoToUse.script = Script.buildPublicKeyHashOut(
-          utxoToUse.address,
-        ).toHex()
-        transaction.from([Transaction.UnspentOutput.fromObject(utxoToUse)])
+        transaction.from([unspentOutputFromAddress(utxoToUse)])
         signingKeys.push(utxoToUse.privKey)
         const txnSize = this._estimateSize(transaction)
         satoshis += utxoToUse.satoshis
@@ -1103,13 +1112,8 @@ export class Wallet {
       usedUtxos.push(utxo)
       console.log(utxo)
 
-      const address = utxo.address
-      utxo.script = Script.buildPublicKeyHashOut(address).toHex()
-      // Grab private key
       signingKeys.push(utxo.privKey)
-      transaction = transaction.from([
-        Transaction.UnspentOutput.fromObject(utxo),
-      ])
+      transaction = transaction.from([unspentOutputFromAddress(utxo)])
       satoshis += utxo.satoshis
     }
 

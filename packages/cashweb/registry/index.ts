@@ -15,6 +15,7 @@ import {
   PublicKey,
 } from 'bitcore-lib-xpi'
 import { pondBurnOutputSatoshis } from './burn-script'
+import { registryBroadcastDigest } from './broadcast-digest'
 import { registryBurnOutput } from './burn-output'
 import { registryIdentityPublicKey } from './identity-pubkey'
 import {
@@ -86,9 +87,11 @@ export function signRegistryDigest(hash: Buffer, privKey: PrivateKey): Buffer {
 
 /** One SHA-256 of AddressMetadata protobuf bytes. Matches `Sha256::digest`
  * in `SignedPayload::parse_proto` and the registry HTTP test that hashes
- * `AddressMetadata::encode_to_vec`. Not double-SHA256. Broadcast digests and
- * address strings in this file stay on bitcore (decision #507). The burn
- * script is decision #519. Burn output amounts are decision #521.
+ * `AddressMetadata::encode_to_vec`. Not double-SHA256. createBroadcast uses
+ * registryBroadcastDigest (decision #598). parseWrapper still hashes with
+ * bitcore and emits an address string (#242). Address strings stay on
+ * bitcore (decision #507). The burn script is decision #519. Burn output
+ * amounts are decision #521.
  * cryptoBackend rejects Buffer. */
 export function registryAddressMetadataDigest(
   payload: Uint8Array,
@@ -97,8 +100,7 @@ export function registryAddressMetadataDigest(
 }
 
 /** SEC1 point of a registry identity key (decision #578). types.d.ts omits
- * the runtime compression flag; bitcore-lib-xpi stays until #259. Broadcast
- * digests and the burn Output wrap stay on bitcore. */
+ * the runtime compression flag; bitcore-lib-xpi stays until #259. */
 function registryIdentityPoint(privKey: PrivateKey): Buffer {
   const compressed = (privKey as unknown as { compressed?: boolean }).compressed
   if (compressed !== true && compressed !== false) {
@@ -352,7 +354,9 @@ export class RegistryHandler {
     broadcastMessage.setEntriesList(protoEntries)
 
     const serializedMessage = broadcastMessage.serializeBinary()
-    const payloadDigest = crypto.Hash.sha256(Buffer.from(serializedMessage))
+    const payloadDigest = Buffer.from(
+      registryBroadcastDigest(serializedMessage),
+    )
     const { transaction: burnTransaction, usedUtxos } =
       this.constructBurnTransaction(this.wallet, payloadDigest, vote)
 

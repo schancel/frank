@@ -80,7 +80,6 @@ it('matches bitcore registry identity public keys', () => {
     expect(body).toContain('registryIdentityPoint(')
     expect(body).not.toContain('toPublicKey')
   }
-  expect(broadcast).toContain('crypto.Hash.sha256(')
   expect(offerings).not.toContain('crypto.Hash.sha256(')
   const burn = methodBody(
     source,

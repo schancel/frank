@@ -26,6 +26,7 @@ if (!material.ok) throw new Error(material.error.code)
 const encrypted = adaptorSign({
   privateKey,
   adaptorPoint: material.value.point,
+  adaptorProof: material.value.proof,
   digest: explicit32ByteSighash,
 })
 ```
@@ -39,6 +40,12 @@ R (33) || R_a (33) || s_a (32) || proof.b (32) || proof.c (32)
 The test suite includes the 11 upstream `dlcspecs` vectors vendored from commit
 `fcc9619f3505afbb5a3d2f7ba3896fc4910ae08e`, plus round-trip and adversarial
 tests.
+
+Signing and acceptance require a proof of knowledge bound to the exact adaptor
+point. Completion validates encodings and performs the specified arithmetic; a
+wrong but valid scalar can still produce a compact signature. The true scalar,
+or downstream ECDSA verification against the expected key and digest,
+determines whether that completed signature is valid.
 
 ## Security status
 

@@ -95,9 +95,9 @@ export interface EcdsaSignature {
  * Generate a fresh secp256k1 keypair.
  *
  * Side-channel note: `G.multiply(privateKey)` multiplies the curve generator by a freshly
- * generated secret scalar. This relies entirely on @noble/curves' `Point.multiply` being
- * constant-time (with scalar blinding) -- see curve.ts's header comment. This file never uses
- * `multiplyUnsafe` on a secret scalar anywhere.
+ * generated secret scalar. This uses Noble's algorithmically constant-shape wNAF path, without
+ * scalar blinding or a JavaScript runtime timing guarantee; see curve.ts's header comment. This
+ * file never uses `multiplyUnsafe` on a secret scalar.
  */
 export function generateKeypair(): Keypair {
   const privateKey = randomScalar()
@@ -109,8 +109,8 @@ export function generateKeypair(): Keypair {
  * proof-of-knowledge of `t`. Whoever will reveal `t` later (the game host revealing a provably
  * fair outcome seed, or a swap counterparty revealing their half of the swap) calls this.
  *
- * Side-channel note: same as `generateKeypair` above -- `G.multiply(t)` relies on @noble/curves'
- * constant-time `Point.multiply`.
+ * Side-channel note: same as `generateKeypair` above -- `G.multiply(t)` uses Noble's
+ * algorithmically constant-shape path, subject to the JavaScript limitations already noted.
  */
 export function generateTweak(): Tweak {
   const t = randomScalar()
@@ -141,9 +141,9 @@ export function verifyTweak(T: Point, pok: PokProof): boolean {
  * material at once -- the private signing key `privateKey` and the per-call nonce `k` are both
  * secret here. The length check below only inspects the public `messageHash`'s length (fixed,
  * public-format validation, not a secret-dependent branch) and fails before any secret is
- * touched. `G.multiply(k)` / `T.multiply(k)` rely on @noble/curves' constant-time `Point.multiply`
- * (see curve.ts's header comment); `modInv(k)` uses curve.ts's Fermat-based constant-shape
- * inverse, not a data-dependent one.
+ * touched. `G.multiply(k)` / `T.multiply(k)` use Noble's algorithmically constant-shape wNAF path
+ * (see curve.ts's JavaScript-runtime caveat); `modInv(k)` uses this package's fixed-shape
+ * Fermat-based exponentiation rather than a data-dependent loop.
  */
 export function encryptedSign(
   privateKey: bigint,

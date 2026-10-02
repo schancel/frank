@@ -43,7 +43,14 @@ interface RelayRpcChallenge {
 
 interface RelayRpcCapability {
   rpc_path: string;
+  ws_path?: string;
   expires_at_ms: number;
+}
+
+export interface MonadRelayRpcCapability {
+  rpcUrl: string;
+  wsUrl?: string;
+  expiresAtMs: number;
 }
 
 const RELAY_RPC_AUTH_DOMAIN = "frank:rpc-http-auth:v1";
@@ -113,6 +120,64 @@ function rpcAuthDigest(
   );
 }
 
+/** Obtain one standard-client-compatible HTTP/WebSocket bearer URL pair from a relay. */
+export async function issueMonadRelayRpcCapability(
+  rpcUrl: string,
+  auth: MonadRelayRpcAuth,
+  timeout = 30_000
+): Promise<MonadRelayRpcCapability> {
+  const relayBaseUrl = rpcUrl.replace(/\/rpc\/?$/, "");
+  const emptyBody = new Uint8Array(0);
+  const bodyHash = bareHex(getBytes(sha256(emptyBody)));
+  const challengeRequest = new FetchRequest(`${relayBaseUrl}/capability/auth`);
+  challengeRequest.body = emptyBody;
+  challengeRequest.timeout = timeout;
+  challengeRequest.retryFunc = async () => false;
+  challengeRequest.setHeader("content-type", "application/octet-stream");
+  challengeRequest.setHeader("x-frank-rpc-customer", auth.customer);
+  const challengeResponse = await challengeRequest.send();
+  challengeResponse.assertOk();
+  const challenge = challengeResponse.bodyJson as RelayRpcChallenge;
+  validateChallenge(challenge, auth, bodyHash);
+  const signature = await auth.signDigest(
+    rpcAuthDigest(challenge, auth, bodyHash, "capability")
+  );
+
+  const issueRequest = new FetchRequest(`${relayBaseUrl}/capability`);
+  issueRequest.body = emptyBody;
+  issueRequest.timeout = timeout;
+  issueRequest.retryFunc = async () => false;
+  issueRequest.setHeader("content-type", "application/octet-stream");
+  issueRequest.setHeader("x-frank-rpc-customer", auth.customer);
+  issueRequest.setHeader("x-frank-rpc-epoch", challenge.epoch);
+  issueRequest.setHeader("x-frank-rpc-nonce", challenge.nonce);
+  issueRequest.setHeader("x-frank-rpc-expires-at-ms", challenge.expires_at_ms);
+  issueRequest.setHeader("x-frank-rpc-token", challenge.token);
+  issueRequest.setHeader("x-frank-rpc-signature", bareHex(signature));
+  const issueResponse = await issueRequest.send();
+  issueResponse.assertOk();
+  const capability = issueResponse.bodyJson as RelayRpcCapability;
+  if (
+    !capability.rpc_path.startsWith("/chain-rpc/") ||
+    (capability.ws_path !== undefined &&
+      !capability.ws_path.startsWith("/chain-rpc/")) ||
+    !Number.isSafeInteger(capability.expires_at_ms) ||
+    capability.expires_at_ms <= Date.now()
+  ) {
+    throw new Error("relay returned a malformed RPC capability");
+  }
+  const httpUrl = new URL(capability.rpc_path, rpcUrl);
+  const wsUrl = capability.ws_path
+    ? new URL(capability.ws_path, rpcUrl)
+    : undefined;
+  if (wsUrl) wsUrl.protocol = httpUrl.protocol === "https:" ? "wss:" : "ws:";
+  return {
+    rpcUrl: httpUrl.toString(),
+    wsUrl: wsUrl?.toString(),
+    expiresAtMs: capability.expires_at_ms,
+  };
+}
+
 /** Builds an ethers connection to a relay family route. The first customer request obtains one
  * expiring bearer capability; subsequent requests are ordinary JSON-RPC POSTs to that URL. The
  * upstream provider URL never reaches this process or the browser bundle. */
@@ -124,68 +189,25 @@ export function createMonadRelayRpcConnection(
   // A fixed-hour quota cannot recover during ethers' short automatic 429
   // retry window. Return ownership of retry timing to the application.
   connection.retryFunc = async () => false;
-  const relayBaseUrl = rpcUrl.replace(/\/rpc\/?$/, "");
-  let capabilityPromise: Promise<RelayRpcCapability> | null = null;
-
-  const issueCapability = async (
-    timeout: number
-  ): Promise<RelayRpcCapability> => {
-    const emptyBody = new Uint8Array(0);
-    const bodyHash = bareHex(getBytes(sha256(emptyBody)));
-    const challengeRequest = new FetchRequest(
-      `${relayBaseUrl}/capability/auth`
-    );
-    challengeRequest.body = emptyBody;
-    challengeRequest.timeout = timeout;
-    challengeRequest.retryFunc = async () => false;
-    challengeRequest.setHeader("content-type", "application/octet-stream");
-    challengeRequest.setHeader("x-frank-rpc-customer", auth.customer);
-    const challengeResponse = await challengeRequest.send();
-    challengeResponse.assertOk();
-    const challenge = challengeResponse.bodyJson as RelayRpcChallenge;
-    validateChallenge(challenge, auth, bodyHash);
-    const signature = await auth.signDigest(
-      rpcAuthDigest(challenge, auth, bodyHash, "capability")
-    );
-
-    const issueRequest = new FetchRequest(`${relayBaseUrl}/capability`);
-    issueRequest.body = emptyBody;
-    issueRequest.timeout = timeout;
-    issueRequest.retryFunc = async () => false;
-    issueRequest.setHeader("content-type", "application/octet-stream");
-    issueRequest.setHeader("x-frank-rpc-customer", auth.customer);
-    issueRequest.setHeader("x-frank-rpc-epoch", challenge.epoch);
-    issueRequest.setHeader("x-frank-rpc-nonce", challenge.nonce);
-    issueRequest.setHeader(
-      "x-frank-rpc-expires-at-ms",
-      challenge.expires_at_ms
-    );
-    issueRequest.setHeader("x-frank-rpc-token", challenge.token);
-    issueRequest.setHeader("x-frank-rpc-signature", bareHex(signature));
-    const issueResponse = await issueRequest.send();
-    issueResponse.assertOk();
-    const capability = issueResponse.bodyJson as RelayRpcCapability;
-    if (
-      !capability.rpc_path.startsWith("/chain-rpc/") ||
-      !Number.isSafeInteger(capability.expires_at_ms) ||
-      capability.expires_at_ms <= Date.now()
-    ) {
-      throw new Error("relay returned a malformed RPC capability");
-    }
-    return capability;
-  };
+  let capabilityPromise: Promise<MonadRelayRpcCapability> | null = null;
 
   connection.preflightFunc = async (request) => {
     const body = request.body;
     if (body === null) return request;
-    let capability = await (capabilityPromise ??=
-      issueCapability(request.timeout));
-    if (capability.expires_at_ms <= Date.now() + 30_000) {
-      capabilityPromise = issueCapability(request.timeout);
+    let capability = await (capabilityPromise ??= issueMonadRelayRpcCapability(
+      rpcUrl,
+      auth,
+      request.timeout
+    ));
+    if (capability.expiresAtMs <= Date.now() + 30_000) {
+      capabilityPromise = issueMonadRelayRpcCapability(
+        rpcUrl,
+        auth,
+        request.timeout
+      );
       capability = await capabilityPromise;
     }
-    const capabilityUrl = new URL(capability.rpc_path, rpcUrl).toString();
-    const authorized = new FetchRequest(capabilityUrl);
+    const authorized = new FetchRequest(capability.rpcUrl);
     authorized.body = body;
     authorized.timeout = request.timeout;
     authorized.retryFunc = async () => false;

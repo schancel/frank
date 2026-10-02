@@ -237,19 +237,14 @@ describe("MonadJsonRpcProvider (#534)", () => {
       },
     });
     try {
-      await provider.send("eth_getBalance", [
-        `0x${"34".repeat(20)}`,
-        "latest",
-      ]);
+      await provider.send("eth_getBalance", [`0x${"34".repeat(20)}`, "latest"]);
       expect(challengeBody).toBe("");
       expect(authenticatedBody).not.toBe("");
       expect(signedDigests).toHaveLength(1);
       expect(signedDigests[0]).toHaveLength(32);
       expect(issuanceHeaders["x-frank-rpc-customer"]).toBe(customer);
       expect(issuanceHeaders["x-frank-rpc-epoch"]).toBe("11".repeat(32));
-      expect(issuanceHeaders["x-frank-rpc-signature"]).toBe(
-        "3006020101020101"
-      );
+      expect(issuanceHeaders["x-frank-rpc-signature"]).toBe("3006020101020101");
     } finally {
       provider.destroy();
     }

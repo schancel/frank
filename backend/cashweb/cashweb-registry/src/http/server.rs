@@ -8,8 +8,8 @@ use crate::{
     http::error::HttpRegistryError,
     http::evm_rpc::{
         handle_issue_rpc_capability, handle_issue_rpc_capability_challenge,
-        handle_issue_rpc_challenge, handle_proxy_rpc, handle_proxy_rpc_capability, EvmRpcRuntime,
-        RPC_CORS_HEADERS,
+        handle_issue_rpc_challenge, handle_proxy_rpc, handle_proxy_rpc_capability, handle_proxy_ws,
+        EvmRpcRuntime, RPC_CORS_HEADERS,
     },
     http::monad_message::{
         handle_ack_private_monad_recovery, handle_get_private_monad_messages,
@@ -44,7 +44,7 @@ use cashweb_http_utils::protobuf::Protobuf;
 use cashweb_payload::proto::SignedPayloadSet;
 use prost::Message;
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, str::FromStr, sync::Arc};
+use std::{borrow::Cow, collections::HashMap, str::FromStr, sync::Arc};
 use thiserror::Error;
 use tower_http::cors::{Any, CorsLayer};
 use tracing::Level;
@@ -221,7 +221,7 @@ async fn log_request<B>(
     next: axum::middleware::Next<B>,
 ) -> axum::response::Response {
     let method = request.method().to_owned();
-    let uri = request.uri().to_owned();
+    let path = safe_log_path(request.uri().path()).into_owned();
     let start = std::time::Instant::now();
 
     let response = next.run(request).await;
@@ -229,7 +229,7 @@ async fn log_request<B>(
     tracing::event!(
         Level::INFO,
         method = method.as_str(),
-        path = uri.path(),
+        path = path.as_str(),
         // latency = format_args!("{} ms", latency.as_millis()),
         status = response.status().as_u16(),
         duration = format!("{} mcs", start.elapsed().as_micros()),
@@ -237,6 +237,51 @@ async fn log_request<B>(
     );
 
     response
+}
+
+fn safe_log_path(path: &str) -> Cow<'_, str> {
+    let mut segments = path.trim_matches('/').split('/');
+    let capability_transport = match (
+        segments.next(),
+        segments.next(),
+        segments.next(),
+        segments.next(),
+        segments.next(),
+        segments.next(),
+    ) {
+        (Some("chain-rpc"), Some(_), Some("cap"), Some(_), Some(transport), None) => {
+            Some(transport)
+        }
+        _ => None,
+    };
+    match capability_transport {
+        Some("rpc") => Cow::Borrowed("/chain-rpc/:chain/cap/:capability/rpc"),
+        Some("ws") => Cow::Borrowed("/chain-rpc/:chain/cap/:capability/ws"),
+        _ => Cow::Borrowed(path),
+    }
+}
+
+#[cfg(test)]
+mod request_log_tests {
+    use super::safe_log_path;
+
+    #[test]
+    fn capability_credentials_never_enter_request_log_paths() {
+        let token = "sentinel-capability-secret";
+        for transport in ["rpc", "ws"] {
+            let path = format!("/chain-rpc/monad-testnet/cap/{token}/{transport}");
+            let logged = safe_log_path(&path);
+            assert!(!logged.contains(token));
+            assert_eq!(
+                logged,
+                format!("/chain-rpc/:chain/cap/:capability/{transport}")
+            );
+        }
+        assert_eq!(
+            safe_log_path("/chain-rpc/monad-testnet/rpc"),
+            "/chain-rpc/monad-testnet/rpc"
+        );
+    }
 }
 
 impl RegistryServer {
@@ -340,6 +385,10 @@ impl RegistryServer {
                 .route(
                     "/chain-rpc/:chain/cap/:capability/rpc",
                     routing::post(handle_proxy_rpc_capability),
+                )
+                .route(
+                    "/chain-rpc/:chain/cap/:capability/ws",
+                    routing::get(handle_proxy_ws),
                 )
         } else {
             router

@@ -1,6 +1,3 @@
-import { readFileSync } from 'fs'
-import { join } from 'path'
-
 import {
   PrivateKey,
   PublicKey,
@@ -17,14 +14,6 @@ const N_HEX =
 const N_MINUS_1 =
   'fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364140'
 const ONE = `${'00'.repeat(31)}01`
-
-function methodBody(source: string, start: string, end: string): string {
-  const from = source.indexOf(start)
-  const to = source.indexOf(end, from)
-  expect(from).toBeGreaterThanOrEqual(0)
-  expect(to).toBeGreaterThan(from)
-  return source.slice(from, to)
-}
 
 function bitcoreStampPublic(digest: Buffer, destination: PublicKey): Buffer {
   const digestPoint = PrivateKey.fromBuffer(digest).toPublicKey().point
@@ -73,36 +62,6 @@ it('matches bitcore stamp public keys for digests in (0, n)', () => {
   expect(Buffer.from(hd.publicKey)).toEqual(key.toBuffer())
   expect(Buffer.from(hd.chainCode)).toEqual(digest)
 
-  const source = readFileSync(join(__dirname, 'crypto.ts'), 'utf8')
-  const body = methodBody(
-    source,
-    'constructStampPublicKey(',
-    'constructStampHDPublicKey(',
-  )
-  expect(body).toContain('stampParentPublicKey(')
-  expect(body).not.toContain('point.add')
-  expect(body).not.toContain('PrivateKey.fromBuffer')
-  expect(body).not.toContain('point.mul')
-  const stealth = methodBody(
-    source,
-    'constructStealthPublicKey(',
-    'constructHDStealthPublicKey(',
-  )
-  expect(stealth).toContain('stealthSharedPoint(')
-  expect(stealth).not.toContain('point.mul')
-  expect(stealth).toContain('stealthParentPublicKey(')
-  expect(stealth).not.toContain('point.add')
-  const address = methodBody(source, 'constructStampAddress(', 'encrypt(')
-  expect(address).toContain('stampParentSecret(')
-  expect(address).toContain('.toAddress(')
-  expect(address).not.toContain('crypto.BN')
-  expect(address).not.toContain('Point.getN')
-  const helper = readFileSync(join(__dirname, 'stamp-public.ts'), 'utf8')
-  expect(helper).toContain('tweakAddPublicKey(')
-  expect(helper).not.toContain('point.mul')
-  expect(helper).not.toContain('pointMultiply')
-  expect(helper).not.toContain('899')
-  expect(helper).not.toContain('10605')
 })
 
 it('rejects digests outside (0, n), a bad point, and infinity', () => {

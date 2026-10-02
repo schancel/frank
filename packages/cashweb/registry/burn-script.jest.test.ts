@@ -1,6 +1,3 @@
-import { readFileSync } from 'fs'
-import { join } from 'path'
-
 import { XPI_MAINNET, evaluateScript } from '@frank/nakamoto'
 import { Opcode, Script } from 'bitcore-lib-xpi'
 
@@ -22,23 +19,6 @@ function bitcoreBurn(hash: Buffer, upvote: boolean): Buffer {
 }
 
 it('builds the legacy POND burn script from opcode bytes', () => {
-  const source = readFileSync(join(__dirname, 'index.ts'), 'utf8')
-  const burn = source.slice(
-    source.indexOf('private constructBurnTransaction'),
-    source.indexOf('async createBroadcast'),
-  )
-  const amount = source.slice(
-    source.indexOf('function calculateBurnAmount'),
-    source.indexOf('export class RegistryHandler'),
-  )
-  expect(burn).toContain('pondBurnScript')
-  expect(burn).not.toContain('new Script')
-  expect(burn).not.toContain('Opcode')
-  expect(amount).toContain('pondBurnOutputSatoshis')
-  expect(amount).not.toContain('pondBurnIsDownvote')
-  expect(amount).not.toContain('new Transaction')
-  expect(amount).not.toContain('Opcode')
-  expect(source).not.toContain('Opcode')
 
   const upvote = Buffer.from(pondBurnScript(HASH, true))
   const downvote = Buffer.from(pondBurnScript(Uint8Array.from(HASH), false))

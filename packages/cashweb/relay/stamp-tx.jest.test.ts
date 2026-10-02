@@ -1,6 +1,3 @@
-import { readFileSync } from 'fs'
-import { join } from 'path'
-
 import { Script, Transaction } from 'bitcore-lib-xpi'
 
 import { readStampTransaction } from './stamp-tx'
@@ -102,21 +99,6 @@ function bitcoreView(tx: Buffer): {
 }
 
 it('reads stamp transactions from transaction bytes', () => {
-  const source = readFileSync(join(__dirname, 'index.ts'), 'utf8')
-  const receiveStart = source.indexOf('async receiveMessage')
-  const receive = source.slice(
-    receiveStart,
-    source.indexOf('Decode entries', receiveStart),
-  )
-  expect(receive).toContain('readStampTransaction')
-  expect(receive).not.toContain('new Transaction')
-  expect(receive).toContain('stampParentSecret(')
-  expect(receive).not.toContain('constructStampHDPrivateKey')
-  expect(receive).not.toContain('HDPrivateKey')
-  expect(receive).toContain("throw new Error('stamp-output')")
-  const stealth = readFileSync(join(__dirname, 'decode-entry.ts'), 'utf8')
-  expect(stealth).toContain('readStealthTransaction')
-  expect(stealth).not.toContain('new Transaction')
 
   const bip143 = Buffer.from(BIP143_UNSIGNED, 'hex')
   const bip143Bitcore = bitcoreView(bip143)

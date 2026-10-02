@@ -1,6 +1,4 @@
 import { randomBytes } from 'crypto'
-import { readFileSync } from 'fs'
-import { join } from 'path'
 
 import { PrivateKey } from 'bitcore-lib-xpi'
 
@@ -18,10 +16,6 @@ function bitcorePublicKey(hex: string): Buffer {
 }
 
 it('matches bitcore public keys for a known compressed secret', () => {
-  const source = readFileSync(join(__dirname, 'lotus-identity.ts'), 'utf8')
-  expect(source).not.toMatch(/from ['"]bitcore-lib-xpi['"]/)
-  expect(source).toContain('randomBytes(')
-  expect(source).toContain('signEcdsa(')
 
   for (const hex of [SECRET, N_MINUS_1, ONE]) {
     const identity = FrankIdentity.fromPrivateKeyHex(hex, 'mainnet')

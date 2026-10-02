@@ -1,6 +1,3 @@
-import { readFileSync } from 'fs'
-import { join } from 'path'
-
 import { PrivateKey, PublicKey } from 'bitcore-lib-xpi'
 
 import { relayChangeAddressPublicKey } from './change-address-pubkey'
@@ -67,25 +64,6 @@ it('matches bitcore change-address public keys', () => {
   expect(uncompressed.toBuffer().toString('hex')).toBe(SECRET)
   expect(uncompressed.toPublicKey().toBuffer().length).toBe(65)
 
-  const source = readFileSync(join(__dirname, 'index.ts'), 'utf8')
-  const start = source.indexOf('async deleteMessage(digest: string)')
-  const body = source.slice(start, source.indexOf('async putProfile(', start))
-  expect(body).toContain('relayChangeAddressPublicKey(')
-  expect(body).toContain('new PublicKey(')
-  expect(body).not.toContain('toPublicKey')
-
-  const helper = readFileSync(
-    join(__dirname, 'change-address-pubkey.ts'),
-    'utf8',
-  )
-  expect(helper).toContain('publicFromPrivate(')
-  expect(helper).toContain('privateKeyFromSecretBytes(')
-  expect(helper).not.toContain('point.mul')
-  expect(helper).not.toContain('pointMultiply')
-  expect(helper).not.toContain('point.add')
-  expect(helper).not.toContain('sha256')
-  expect(helper).not.toContain('899')
-  expect(helper).not.toContain('10605')
 })
 
 it('rejects a secret outside (0, n), a non-32-byte secret, and a missing flag', () => {

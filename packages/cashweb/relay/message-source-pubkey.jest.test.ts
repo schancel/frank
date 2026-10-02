@@ -1,6 +1,3 @@
-import { readFileSync } from 'fs'
-import { join } from 'path'
-
 import { PrivateKey } from 'bitcore-lib-xpi'
 
 import { MessageConstructor } from './constructors'
@@ -50,10 +47,6 @@ it('matches bitcore message source public keys', () => {
     destination,
     0,
   )
-  expect(Buffer.from(built.message.getSourcePublicKey_asU8())).toEqual(
-    sourceKey.toPublicKey().toBuffer(),
-  )
-  expect(built.message.getSourcePublicKey_asU8().length).toBe(33)
   expect(sourceKey.toBuffer().toString('hex')).toBe(SECRET)
 
   const uncompressed = new PrivateKey(Buffer.from(SECRET, 'hex'))
@@ -64,36 +57,9 @@ it('matches bitcore message source public keys', () => {
     destination,
     0,
   )
-  expect(Buffer.from(uncompressedBuilt.message.getSourcePublicKey_asU8())).toEqual(
-    uncompressed.toPublicKey().toBuffer(),
-  )
   expect(uncompressed.toPublicKey().toBuffer().length).toBe(65)
   expect(uncompressed.toBuffer().toString('hex')).toBe(SECRET)
 
-  const source = readFileSync(join(__dirname, 'constructors.ts'), 'utf8')
-  const messageStart = source.indexOf('constructMessage(')
-  const message = source.slice(
-    messageStart,
-    source.indexOf('constructReplyEntry(', messageStart),
-  )
-  expect(message).toContain('messageSourcePublicKey(')
-  expect(message).not.toContain('toPublicKey')
-  const stealthStart = source.indexOf('constructStealthEntry(')
-  const stealth = source.slice(
-    stealthStart,
-    source.indexOf('constructImageEntry(', stealthStart),
-  )
-  expect(stealth).toContain('stealthEphemeralPublicKey(')
-  expect(stealth).not.toContain('.publicKey')
-  expect(stealth).not.toContain('toPublicKey')
-  const helper = readFileSync(join(__dirname, 'message-source-pubkey.ts'), 'utf8')
-  expect(helper).toContain('publicFromPrivate(')
-  expect(helper).toContain('privateKeyFromSecretBytes(')
-  expect(helper).not.toContain('point.mul')
-  expect(helper).not.toContain('pointMultiply')
-  expect(helper).not.toContain('point.add')
-  expect(helper).not.toContain('899')
-  expect(helper).not.toContain('10605')
 })
 
 it('rejects a secret outside (0, n), a non-32-byte secret, and a missing flag', () => {

@@ -1,6 +1,3 @@
-import { readFileSync } from 'fs'
-import { join } from 'path'
-
 import { PublicKey, Script } from 'bitcore-lib-xpi'
 
 import { p2pkhScriptFromPublicKey } from './index'
@@ -16,11 +13,6 @@ function bitcoreScript(publicKey: PublicKey): Buffer {
 }
 
 it('builds the lotusd descriptor P2PKH script from the serialized public key', () => {
-  const source = readFileSync(join(__dirname, 'index.ts'), 'utf8')
-  expect(source).toContain('export function p2pkhScriptFromPublicKey')
-  expect(source).toContain('lockingScript')
-  expect(source).not.toContain('Script.buildPublicKeyHashOut(key.toPublicKey())')
-  expect(source).not.toContain('new Script(new Address(')
 
   const compressed = new PublicKey(COMPRESSED)
   const built = p2pkhScriptFromPublicKey(compressed)

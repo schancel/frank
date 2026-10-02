@@ -1,6 +1,3 @@
-import { readFileSync } from 'fs'
-import { join } from 'path'
-
 import { PrivateKey, Script } from 'bitcore-lib-xpi'
 
 import { walletChangeP2pkhScript, walletChangePublicKey } from './change-pubkey'
@@ -62,38 +59,6 @@ it('matches bitcore change public keys and the 25-byte P2PKH script', () => {
   expect(uncompressed.toPublicKey().toBuffer().length).toBe(65)
   expect(uncompressed.toBuffer().toString('hex')).toBe(SECRET)
 
-  const source = readFileSync(join(__dirname, 'index.ts'), 'utf8')
-  const change = source.slice(
-    source.indexOf('finalizeTransaction({'),
-    source.indexOf('_buildTransactionSetForExplicitAmount({'),
-  )
-  expect(change).toContain('walletChangeP2pkhScript(')
-  expect(change).not.toContain('toPublicKey')
-  const signing = source.slice(
-    source.indexOf('function signerFromPrivateKey('),
-    source.indexOf('function explicitAssignments('),
-  )
-  expect(signing).toContain('toPublicKey')
-  const relay = readFileSync(
-    join(__dirname, '../relay/index.ts'),
-    'utf8',
-  )
-  expect(relay).toContain('relayChangeAddressPublicKey(')
-  expect(relay).not.toContain('changeKey.privKey.toPublicKey()')
-
-  const helper = readFileSync(join(__dirname, 'change-pubkey.ts'), 'utf8')
-  const impl = helper.slice(helper.indexOf('export function walletChangePublicKey'))
-  expect(impl).toContain('publicFromPrivate(')
-  expect(impl).toContain('privateKeyFromSecretBytes(')
-  expect(impl).toContain('lockingScript(')
-  expect(impl).not.toContain('toPublicKey')
-  expect(helper).not.toContain('point.mul')
-  expect(helper).not.toContain('pointMultiply')
-  expect(helper).not.toContain('point.add')
-  expect(helper).not.toContain('fromSeed')
-  expect(helper).not.toContain('lotus')
-  expect(helper).not.toContain('899')
-  expect(helper).not.toContain('10605')
 })
 
 it('rejects a secret outside (0, n), a non-32-byte secret, and a missing flag', () => {

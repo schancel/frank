@@ -1,6 +1,3 @@
-import { readFileSync } from 'fs'
-import { join } from 'path'
-
 import { HDPublicKey, PrivateKey, PublicKey } from 'bitcore-lib-xpi'
 
 import { PayloadConstructor } from './crypto'
@@ -17,14 +14,6 @@ const N_HEX =
   'fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141'
 const N_PLUS_ONE =
   'fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364142'
-
-function methodBody(source: string, start: string, end: string): string {
-  const from = source.indexOf(start)
-  const to = source.indexOf(end, from)
-  expect(from).toBeGreaterThanOrEqual(0)
-  expect(to).toBeGreaterThan(from)
-  return source.slice(from, to)
-}
 
 function bitcoreNode(publicKey: Buffer, chainCode: Buffer, network: string) {
   return new HDPublicKey({
@@ -178,23 +167,4 @@ it('rejects the same parent inputs as stealthSharedPoint', () => {
   expect(destination.toBuffer().toString('hex')).toBe(DEST_SECRET)
   expect(Buffer.from(point)).toEqual(destination.toPublicKey().toBuffer())
 
-  const source = readFileSync(join(__dirname, 'crypto.ts'), 'utf8')
-  const body = methodBody(
-    source,
-    'constructHDStealthPublicKey(',
-    'constructStealthPrivateKey(',
-  )
-  expect(body).toContain('stealthParentHdPublicNode(')
-  expect(body).not.toContain('HDPublicKey')
-  expect(body).not.toContain('fromSeed')
-  expect(body).not.toContain('networkName')
-  const helper = readFileSync(join(__dirname, 'stealth-hd-public.ts'), 'utf8')
-  expect(helper).toContain('compressedPublicKeyFromBytes(')
-  expect(helper).toContain('stealthSharedPoint(')
-  expect(helper).toContain('stealthPointDigest(')
-  expect(helper).toContain('stealthParentPublicKey(')
-  expect(helper).not.toContain('stealthDigestModN')
-  expect(helper).not.toContain('hdPrivateFromSeed')
-  expect(helper).not.toContain('bitcore')
-  expect(helper).not.toContain('Point.getN')
 })

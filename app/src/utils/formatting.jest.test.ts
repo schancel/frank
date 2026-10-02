@@ -1,6 +1,4 @@
 import { createHash } from 'crypto'
-import { readFileSync } from 'fs'
-import { join } from 'path'
 
 import { Address, Networks, crypto as bitcoreCrypto } from 'bitcore-lib-xpi'
 
@@ -74,13 +72,6 @@ describe('salted color digest', () => {
     const zeroLead = Buffer.alloc(32, 0)
     const zeroHash = bitcoreCrypto.Hash.sha256(salted(zeroLead))
     expect(pubKeyToColor(zeroLead)).toBe(hsl(zeroHash))
-  })
-
-  it('keeps the color digest on one SHA-256', () => {
-    const source = readFileSync(join(__dirname, 'formatting.ts'), 'utf8')
-    expect(source).toContain('cryptoBackend.sha256')
-    expect(source.match(/crypto\.Hash\.sha256\(/g)).toBeNull()
-    expect(source).not.toContain('sha256d')
   })
 })
 

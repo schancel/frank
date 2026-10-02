@@ -35,4 +35,6 @@ There is no forward secrecy against the recipient static key. v1 has no prekeys 
 
 Base mode does not use the sender static secret. The sender public key is only bound in the associated data. Anyone who knows the recipient public key can seal a base-mode message that names any sender key.
 
+`sha256`, `hmacSha256`, and `randomBytes` are the plain operations. `hmacSha256(data, key)` takes the message first and the key second. `seal` and `open` are a separate framed ciphertext. They do not replace these functions.
+
 `@noble/ciphers` is exact `1.3.0`. `@noble/hashes` is exact `1.8.0` for HKDF-SHA256. Cure53 NBL-04 scoped ciphers tag `0.6.0` and does not cover `1.3.0`. AES T-tables (NBL-04-001) remain a property of that JavaScript library.

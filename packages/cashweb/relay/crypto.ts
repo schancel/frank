@@ -1,9 +1,6 @@
 import assert from 'assert'
-import {
-  PrivateKey,
-  PublicKey,
-  crypto,
-} from 'bitcore-lib-xpi'
+import { hmacSha256 } from '@frank/crypto-box'
+import { PrivateKey, PublicKey } from 'bitcore-lib-xpi'
 import * as forge from 'node-forge'
 import { stampParentHdNode } from './stamp-hd'
 import { stampParentHdPublicNode } from './stamp-hd-public'
@@ -28,7 +25,7 @@ export class PayloadConstructor {
   }
 
   constructPayloadHmac(sharedKey: Buffer, payloadDigest: Uint8Array) {
-    return crypto.Hash.sha256hmac(sharedKey, Buffer.from(payloadDigest))
+    return Buffer.from(hmacSha256(sharedKey, Buffer.from(payloadDigest)))
   }
 
   /**
@@ -82,7 +79,8 @@ export class PayloadConstructor {
     salt: Uint8Array,
   ) {
     return this.constructSharedPointEncodings(privateKey, publicKey).map(
-      (rawMergedKey) => crypto.Hash.sha256hmac(Buffer.from(salt), rawMergedKey),
+      (rawMergedKey) =>
+        Buffer.from(hmacSha256(Buffer.from(salt), rawMergedKey)),
     )
   }
 

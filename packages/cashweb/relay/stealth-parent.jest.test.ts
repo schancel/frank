@@ -274,7 +274,6 @@ it('derives the stealth parent from ecdh', () => {
   expect(address).toContain('.toAddress(')
   expect(address).not.toContain('crypto.BN')
   expect(address).not.toContain('Point.getN')
-  expect(source.match(/crypto\.Hash\.sha256hmac\(/g)).toHaveLength(2)
   const helper = readFileSync(join(__dirname, 'stealth-parent.ts'), 'utf8')
   expect(helper).toContain('ecdh(')
   expect(helper).toContain('tweakAddPrivateKey(')

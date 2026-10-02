@@ -1,11 +1,11 @@
 import {
   PublicKey,
-  crypto,
   Transaction,
   Script,
   Address,
   PrivateKey,
 } from 'bitcore-lib-xpi'
+import { hmacSha256 } from '@frank/crypto-box'
 import { cryptoBackend } from '@frank/nakamoto'
 import assert from 'assert'
 import atob from 'atob'
@@ -153,7 +153,9 @@ export class MessageConstructor {
 
     // Construct salt
     const rawSourcePrivateKey = sourcePrivateKey.toBuffer()
-    const salt = crypto.Hash.sha256hmac(plainPayloadDigest, rawSourcePrivateKey)
+    const salt = Buffer.from(
+      hmacSha256(plainPayloadDigest, rawSourcePrivateKey),
+    )
 
     // Construct shared key
     const sharedKey = this.payloadConstructor.constructSharedKey(

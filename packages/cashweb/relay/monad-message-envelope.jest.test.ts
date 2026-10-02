@@ -1,3 +1,4 @@
+import * as cryptoBox from "@frank/crypto-box";
 import { PrivateKey, crypto as bitcoreCrypto } from "bitcore-lib-xpi";
 
 import { IDENTITY_KEY_NETWORK_NAME } from "../legacy-wallet/lotus-identity";
@@ -40,10 +41,10 @@ const fixedNonce = Buffer.from("202122232425262728292a2b", "hex");
 
 function useFixedEntropy(): void {
   jest
-    .spyOn(bitcoreCrypto.Random, "getRandomBuffer")
+    .spyOn(cryptoBox, "randomBytes")
     .mockImplementation((size: number) => {
-      if (size === fixedSalt.length) return Buffer.from(fixedSalt);
-      if (size === fixedNonce.length) return Buffer.from(fixedNonce);
+      if (size === fixedSalt.length) return Uint8Array.from(fixedSalt);
+      if (size === fixedNonce.length) return Uint8Array.from(fixedNonce);
       throw new Error(`unexpected random byte request: ${size}`);
     });
 }
@@ -162,13 +163,13 @@ describe("Monad message envelope v2", () => {
       Buffer.alloc(12, 0x04),
     ];
     const random = jest
-      .spyOn(bitcoreCrypto.Random, "getRandomBuffer")
+      .spyOn(cryptoBox, "randomBytes")
       .mockImplementation((size: number) => {
         const next = entropy.shift();
         if (next === undefined || next.length !== size) {
           throw new Error(`unexpected random byte request: ${size}`);
         }
-        return next;
+        return Uint8Array.from(next);
       });
     const build = (): MonadMessageEnvelopeV2 => {
       const envelope = parseEnvelope(

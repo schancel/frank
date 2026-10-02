@@ -26,11 +26,13 @@ use rand::RngCore;
 use serde::Serialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use tokio::sync::Semaphore;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use url::Url;
 
 use crate::{
-    http::{hourly_quota::FixedHourQuota, server::RegistryServer},
+    http::{
+        bitcoin_proxy::BitcoinProxyRuntime, hourly_quota::FixedHourQuota, server::RegistryServer,
+    },
     monad_http::Address,
     store::monad_messages::ChallengeConsumption,
 };
@@ -57,7 +59,10 @@ const MAX_ECDSA_DER_SIGNATURE_BYTES: usize = 72;
 
 /// A request body bounded before allocation, including for chunked requests.
 #[derive(Debug)]
-pub(crate) struct BoundedRpcBody(pub(crate) Bytes);
+pub(crate) struct BoundedRpcBody {
+    pub(crate) bytes: Bytes,
+    pub(crate) _permit: OwnedSemaphorePermit,
+}
 
 #[async_trait::async_trait]
 impl axum::extract::FromRequest<axum::body::Body> for BoundedRpcBody {
@@ -66,22 +71,72 @@ impl axum::extract::FromRequest<axum::body::Body> for BoundedRpcBody {
     async fn from_request(
         req: &mut axum::extract::RequestParts<axum::body::Body>,
     ) -> Result<Self, Self::Rejection> {
+        let server = req
+            .extensions()
+            .get::<RegistryServer>()
+            .ok_or_else(|| rpc_error(StatusCode::INTERNAL_SERVER_ERROR, "rpc_unavailable"))?;
+        let path = req.uri().path();
+        let segments = path.trim_matches('/').split('/').collect::<Vec<_>>();
+        let chain_id = segments
+            .get(1)
+            .filter(|_| segments.first() == Some(&"chain-rpc"))
+            .ok_or_else(|| rpc_error(StatusCode::NOT_FOUND, "unknown_rpc_chain"))?;
+        let (permits, max_bytes, timeout) =
+            if segments.get(2) == Some(&"chronik") || segments.get(2) == Some(&"chronik-auth") {
+                server
+                    .bitcoin_proxy
+                    .as_deref()
+                    .filter(|runtime| runtime.has_chronik_chain(chain_id))
+                    .map(BitcoinProxyRuntime::body_admission)
+            } else {
+                server
+                    .evm_rpc
+                    .as_deref()
+                    .filter(|runtime| runtime.has_chain(chain_id))
+                    .map(EvmRpcRuntime::body_admission)
+                    .or_else(|| {
+                        server
+                            .bitcoin_proxy
+                            .as_deref()
+                            .filter(|runtime| runtime.has_rpc_chain(chain_id))
+                            .map(BitcoinProxyRuntime::body_admission)
+                    })
+            }
+            .ok_or_else(|| rpc_error(StatusCode::NOT_FOUND, "unknown_rpc_chain"))?;
+        let permit = permits
+            .try_acquire_owned()
+            .map_err(|_| rpc_error(StatusCode::SERVICE_UNAVAILABLE, "rpc_ingress_busy"))?;
         let mut body = req
             .take_body()
             .ok_or_else(|| rpc_error(StatusCode::INTERNAL_SERVER_ERROR, "rpc_body_unavailable"))?;
-        let mut bytes = Vec::new();
-        while let Some(chunk) = body.data().await {
-            let chunk =
-                chunk.map_err(|_| rpc_error(StatusCode::BAD_REQUEST, "invalid_rpc_body"))?;
-            if bytes.len().saturating_add(chunk.len()) > MAX_RPC_REQUEST_BYTES {
-                return Err(rpc_error(
-                    StatusCode::PAYLOAD_TOO_LARGE,
-                    "rpc_request_too_large",
-                ));
+        let read_body = async {
+            let mut bytes = Vec::new();
+            loop {
+                let chunk = tokio::time::timeout(timeout, body.data())
+                    .await
+                    .map_err(|_| rpc_error(StatusCode::REQUEST_TIMEOUT, "rpc_body_timeout"))?;
+                let Some(chunk) = chunk else {
+                    break;
+                };
+                let chunk =
+                    chunk.map_err(|_| rpc_error(StatusCode::BAD_REQUEST, "invalid_rpc_body"))?;
+                if bytes.len().saturating_add(chunk.len()) > max_bytes {
+                    return Err(rpc_error(
+                        StatusCode::PAYLOAD_TOO_LARGE,
+                        "rpc_request_too_large",
+                    ));
+                }
+                bytes.extend_from_slice(&chunk);
             }
-            bytes.extend_from_slice(&chunk);
-        }
-        Ok(Self(bytes.into()))
+            Ok::<_, RpcRejection>(bytes)
+        };
+        let bytes = tokio::time::timeout(timeout, read_body)
+            .await
+            .map_err(|_| rpc_error(StatusCode::REQUEST_TIMEOUT, "rpc_body_timeout"))??;
+        Ok(Self {
+            bytes: bytes.into(),
+            _permit: permit,
+        })
     }
 }
 
@@ -198,6 +253,7 @@ pub struct EvmRpcRuntime {
     auth: RpcAuthState,
     network_tag: Vec<u8>,
     permits: Arc<Semaphore>,
+    ingress_permits: Arc<Semaphore>,
     max_request_bytes: usize,
     max_batch_len: usize,
     max_response_bytes: usize,
@@ -251,6 +307,18 @@ pub enum EvmRpcStartError {
 }
 
 impl EvmRpcRuntime {
+    pub(crate) fn has_chain(&self, id: &str) -> bool {
+        self.chains.contains_key(id)
+    }
+
+    pub(crate) fn body_admission(&self) -> (Arc<Semaphore>, usize, Duration) {
+        (
+            Arc::clone(&self.ingress_permits),
+            self.max_request_bytes,
+            self.timeout,
+        )
+    }
+
     pub(crate) fn chain_ids(&self) -> Vec<String> {
         self.chains.keys().cloned().collect()
     }
@@ -299,6 +367,7 @@ impl EvmRpcRuntime {
             auth: RpcAuthState::new(),
             network_tag,
             permits: Arc::new(Semaphore::new(conf.max_concurrency)),
+            ingress_permits: Arc::new(Semaphore::new(conf.max_concurrency)),
             max_request_bytes: conf.max_request_bytes,
             max_batch_len: conf.max_batch_len,
             max_response_bytes: conf.max_response_bytes,
@@ -745,7 +814,10 @@ pub(crate) async fn handle_issue_rpc_challenge(
     Path(chain_id): Path<String>,
     headers: HeaderMap,
     Extension(server): Extension<RegistryServer>,
-    BoundedRpcBody(body): BoundedRpcBody,
+    BoundedRpcBody {
+        bytes: body,
+        _permit: _ingress_permit,
+    }: BoundedRpcBody,
 ) -> Result<Json<RpcChallengeBody>, RpcRejection> {
     let Some(runtime) = server.evm_rpc.as_deref() else {
         return crate::http::bitcoin_proxy::issue_rpc_challenge(chain_id, headers, server, body)
@@ -808,7 +880,10 @@ pub(crate) async fn handle_proxy_rpc(
     peer: Option<ConnectInfo<SocketAddr>>,
     headers: HeaderMap,
     Extension(server): Extension<RegistryServer>,
-    BoundedRpcBody(body): BoundedRpcBody,
+    BoundedRpcBody {
+        bytes: body,
+        _permit: _ingress_permit,
+    }: BoundedRpcBody,
 ) -> Result<Response, RpcRejection> {
     let Some(runtime) = server.evm_rpc.as_deref() else {
         return crate::http::bitcoin_proxy::proxy_rpc(chain_id, peer, headers, server, body).await;
@@ -993,6 +1068,7 @@ mod tests {
             auth: RpcAuthState::new(),
             network_tag: b"MONT".to_vec(),
             permits: Arc::new(Semaphore::new(1)),
+            ingress_permits: Arc::new(Semaphore::new(1)),
             max_request_bytes: MAX_RPC_REQUEST_BYTES,
             max_batch_len: 2,
             max_response_bytes: 1024,
@@ -1280,6 +1356,42 @@ mod tests {
             response_json(response).await,
             json!({"relays": ["http://127.0.0.1:1"]})
         );
+    }
+
+    #[tokio::test]
+    async fn body_admission_and_deadline_apply_before_challenge_processing() {
+        let mut runtime = runtime();
+        runtime.timeout = Duration::from_millis(20);
+        let ingress = Arc::clone(&runtime.ingress_permits);
+        let (_tempdir, server) = registered_server(Arc::new(runtime));
+        let router = server.into_router();
+
+        let held = Arc::clone(&ingress).try_acquire_owned().unwrap();
+        let response = router
+            .clone()
+            .oneshot(
+                Request::post("/chain-rpc/monad-testnet/rpc/auth")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(response_json(response).await["error"], "rpc_ingress_busy");
+        drop(held);
+
+        let stalled =
+            Body::wrap_stream(futures::stream::pending::<Result<Bytes, std::io::Error>>());
+        let response = router
+            .oneshot(
+                Request::post("/chain-rpc/monad-testnet/rpc/auth")
+                    .body(stalled)
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::REQUEST_TIMEOUT);
+        assert_eq!(response_json(response).await["error"], "rpc_body_timeout");
     }
 
     #[tokio::test]

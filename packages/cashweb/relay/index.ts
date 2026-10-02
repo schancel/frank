@@ -12,6 +12,7 @@ import VCard from 'vcf'
 import EventEmitter from 'events'
 import { MessageConstructor } from './constructors'
 import { relayCipherPayloadDigest } from './cipher-payload-digest'
+import { relayChangePublicKey } from './relay-change-pubkey'
 import { p2pkhSpentOutpoints } from './p2pkh-spent'
 import { outpointPrivateKey } from './outpoint-hd'
 import { stampOutpointPublicKey } from './stamp-outpoint-pub'
@@ -303,12 +304,29 @@ export class RelayClient extends ReadOnlyRelayClient {
     const message = await this.messageStore.getMessage(digest)
     assert(message, 'message not found?')
 
-    // Send utxos to a change address
+    // Send utxos to a change address. SEC1 point of that change key
+    // (decision #583). types.d.ts omits the runtime compression flag;
+    // bitcore-lib-xpi stays until #259. HMAC, salt, the plaintext digest,
+    // and envelope ECDH stay on bitcore.
     const randomChangeIdx = (this.wallet.changeKeys.length * Math.random()) << 0
     const changeKey = this.wallet.changeKeys[randomChangeIdx]
+    const compressed = (
+      changeKey.privKey as unknown as { compressed?: boolean }
+    ).compressed
+    if (compressed !== true && compressed !== false) {
+      throw new Error('relay-change-pubkey:compressed')
+    }
+    const changePublicKey = new PublicKey(
+      Buffer.from(
+        relayChangePublicKey(
+          Uint8Array.from(changeKey.privKey.toBuffer()),
+          compressed,
+        ),
+      ),
+    )
     await this.wallet.forwardUTXOsToPubkey({
       utxos: message.message.outpoints,
-      pubkey: changeKey.privKey.toPublicKey(),
+      pubkey: changePublicKey,
     })
     assert(this.wallet.myAddress, 'Missing address? Wallet not loaded.')
     const url = `${this.url}/messages/${this.toAPIAddress(

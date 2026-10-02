@@ -74,11 +74,9 @@ it('matches bitcore change public keys and the 25-byte P2PKH script', () => {
     source.indexOf('function explicitAssignments('),
   )
   expect(signing).toContain('toPublicKey')
-  const relay = readFileSync(
-    join(__dirname, '../relay/index.ts'),
-    'utf8',
-  )
-  expect(relay).toContain('changeKey.privKey.toPublicKey()')
+  const relay = readFileSync(join(__dirname, '../relay/index.ts'), 'utf8')
+  expect(relay).toContain('relayChangePublicKey(')
+  expect(relay).not.toContain('toPublicKey')
   expect(source).toContain('Script.buildPublicKeyHashOut(')
 
   const helper = readFileSync(join(__dirname, 'change-pubkey.ts'), 'utf8')

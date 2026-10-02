@@ -11,8 +11,8 @@ import {
  * The secret must be 32 bytes in (0, n). Compressed is 33 bytes and
  * matches bitcore `toPublicKey().toBuffer()`. Uncompressed is 65 bytes,
  * `04 || x || y`. The caller's secret buffer is not wiped. Same point
- * encoding as registry identity keys (decision #578). Signing keys and
- * the relay change-address key stay on bitcore. */
+ * encoding as registry identity keys (decision #578). Signing keys stay
+ * on bitcore. The relay change-address key is decision #583. */
 export function walletChangePublicKey(
   secret: Uint8Array,
   compressed: boolean,

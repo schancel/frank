@@ -59,6 +59,8 @@ const send = (w: ReturnType<typeof mountLayout>) =>
   )
 const draft = (w: ReturnType<typeof mountLayout>) =>
   (w.vm as unknown as { message: string }).message
+const inputDisable = (w: ReturnType<typeof mountLayout>) =>
+  w.findComponent({ name: 'TopicInput' }).props('disable')
 
 beforeEach(() => jest.clearAllMocks())
 
@@ -74,13 +76,14 @@ describe('TopicLayout sendMessage', () => {
       sendingMessage: boolean
     }
 
+    expect(inputDisable(wrapper)).toBe(false)
+    expect(vm.sendingMessage).toBe(false)
+
     const first = vm.sendMessage('my draft')
     await flushPromises()
     expect(vm.sendingMessage).toBe(true)
     expect(draft(wrapper)).toBe('')
-    expect(wrapper.findComponent({ name: 'TopicInput' }).props('disable')).toBe(
-      true,
-    )
+    expect(inputDisable(wrapper)).toBe(true)
 
     await vm.sendMessage('duplicate')
     expect(mockPutMessage).toHaveBeenCalledTimes(1)
@@ -88,6 +91,7 @@ describe('TopicLayout sendMessage', () => {
     finish()
     await first
     expect(vm.sendingMessage).toBe(false)
+    expect(inputDisable(wrapper)).toBe(false)
   })
 
   it('does not erase text edited while the submitted post is in flight', async () => {
@@ -99,8 +103,10 @@ describe('TopicLayout sendMessage', () => {
     const vm = wrapper.vm as unknown as {
       message: string
       sendMessage(m: string): Promise<void>
+      sendingMessage: boolean
     }
 
+    expect(inputDisable(wrapper)).toBe(false)
     const post = vm.sendMessage('my draft')
     await flushPromises()
     vm.message = 'newly typed text'
@@ -108,6 +114,8 @@ describe('TopicLayout sendMessage', () => {
     await post
 
     expect(vm.message).toBe('newly typed text')
+    expect(vm.sendingMessage).toBe(false)
+    expect(inputDisable(wrapper)).toBe(false)
   })
 
   it('restores a failed post without overwriting text entered in flight', async () => {
@@ -119,8 +127,10 @@ describe('TopicLayout sendMessage', () => {
     const vm = wrapper.vm as unknown as {
       message: string
       sendMessage(m: string): Promise<void>
+      sendingMessage: boolean
     }
 
+    expect(inputDisable(wrapper)).toBe(false)
     const post = vm.sendMessage('my draft')
     await flushPromises()
     vm.message = 'next draft'
@@ -128,6 +138,8 @@ describe('TopicLayout sendMessage', () => {
     await post
 
     expect(vm.message).toBe('my draft\nnext draft')
+    expect(vm.sendingMessage).toBe(false)
+    expect(inputDisable(wrapper)).toBe(false)
   })
 
   it('burn landed but read-back failed: info notice, no error toast, draft cleared', async () => {
@@ -135,12 +147,16 @@ describe('TopicLayout sendMessage', () => {
       new BurnRefreshError('post', new Error('read failed')),
     )
     const wrapper = mountLayout()
+    const vm = wrapper.vm as unknown as { sendingMessage: boolean }
 
+    expect(inputDisable(wrapper)).toBe(false)
     await send(wrapper)
 
     expect(infoNotify).toHaveBeenCalledWith('POSTED_REFRESH_FAILED')
     expect(errorNotify).not.toHaveBeenCalled()
     expect(draft(wrapper)).toBe('')
+    expect(vm.sendingMessage).toBe(false)
+    expect(inputDisable(wrapper)).toBe(false)
   })
 
   it('burn refresh failure does not overwrite text entered in flight', async () => {
@@ -152,8 +168,10 @@ describe('TopicLayout sendMessage', () => {
     const vm = wrapper.vm as unknown as {
       message: string
       sendMessage(m: string): Promise<void>
+      sendingMessage: boolean
     }
 
+    expect(inputDisable(wrapper)).toBe(false)
     const post = vm.sendMessage('my draft')
     await flushPromises()
     vm.message = 'next draft'
@@ -163,28 +181,38 @@ describe('TopicLayout sendMessage', () => {
     expect(vm.message).toBe('next draft')
     expect(infoNotify).toHaveBeenCalledWith('POSTED_REFRESH_FAILED')
     expect(errorNotify).not.toHaveBeenCalled()
+    expect(vm.sendingMessage).toBe(false)
+    expect(inputDisable(wrapper)).toBe(false)
   })
 
   it('failure before the burn: error toast, draft kept so it can be retried', async () => {
     const failure = new Error('Nothing was sent')
     mockPutMessage.mockRejectedValueOnce(failure)
     const wrapper = mountLayout()
+    const vm = wrapper.vm as unknown as { sendingMessage: boolean }
 
+    expect(inputDisable(wrapper)).toBe(false)
     await send(wrapper)
 
     expect(errorNotify).toHaveBeenCalledWith(failure)
     expect(infoNotify).not.toHaveBeenCalled()
     expect(draft(wrapper)).toBe('my draft')
+    expect(vm.sendingMessage).toBe(false)
+    expect(inputDisable(wrapper)).toBe(false)
   })
 
   it('success clears the draft and shows nothing', async () => {
     mockPutMessage.mockResolvedValueOnce(undefined)
     const wrapper = mountLayout()
+    const vm = wrapper.vm as unknown as { sendingMessage: boolean }
 
+    expect(inputDisable(wrapper)).toBe(false)
     await send(wrapper)
 
     expect(draft(wrapper)).toBe('')
     expect(errorNotify).not.toHaveBeenCalled()
     expect(infoNotify).not.toHaveBeenCalled()
+    expect(vm.sendingMessage).toBe(false)
+    expect(inputDisable(wrapper)).toBe(false)
   })
 })

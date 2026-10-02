@@ -73,7 +73,11 @@ function shuffleArray(arr: unknown[]) {
 
 type PrivateKeyData = { privKey: PrivateKey }
 type AddressData = { address: string; change: boolean } & PrivateKeyData
-type AddressGenerator = (txnNumber: number) => (output: number) => PublicKey
+type SerializedPublicKey = Uint8Array | { toBuffer(): Uint8Array }
+
+type AddressGenerator = (
+  txnNumber: number,
+) => (output: number) => SerializedPublicKey
 // UnspendOutpout.fromObject can work with this
 type BuildableUtxo = Utxo & { script?: string }
 type SignableTransaction = Transaction & {
@@ -97,8 +101,13 @@ function scriptBytes(script: Script): Uint8Array {
 }
 
 // HASH160 of the serialized public key, then the 25-byte template (decision #495).
-export function p2pkhScriptFromPublicKey(publicKey: PublicKey): Buffer {
-  const serialized = Uint8Array.from(publicKey.toBuffer())
+export function p2pkhScriptFromPublicKey(
+  publicKey: SerializedPublicKey,
+): Buffer {
+  const serialized =
+    publicKey instanceof Uint8Array
+      ? Uint8Array.from(publicKey)
+      : Uint8Array.from(publicKey.toBuffer())
   const hash = pubkeyHashFromBytes(cryptoBackend.hash160(serialized))
   if (!hash.ok) throw new Error('p2pkh-hash')
   return Buffer.from(lockingScript({ kind: 'p2pkh', hash: hash.value }))
@@ -650,7 +659,7 @@ export class Wallet {
     pubkey,
   }: {
     utxos: Utxo[]
-    pubkey: PublicKey
+    pubkey: SerializedPublicKey
   }) {
     let transaction = new Transaction()
 

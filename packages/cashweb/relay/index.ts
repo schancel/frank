@@ -41,12 +41,12 @@ import type { Payment } from '../bip70/paymentrequest_pb'
 
 import WebSocket from 'isomorphic-ws'
 import {
-  PublicKey,
   Transaction,
   Networks,
   Address,
   PrivateKey,
 } from 'bitcore-lib-xpi'
+import type { PublicKey } from 'bitcore-lib-xpi'
 import { MessageStore } from './storage/storage'
 import { Wallet } from '../legacy-wallet'
 import { Utxo } from '../types/utxo'
@@ -307,7 +307,7 @@ export class RelayClient extends ReadOnlyRelayClient {
     assert(message, 'message not found?')
 
     // Send utxos to a change address. SEC1 point from publicFromPrivate
-    // (decision #583). forwardUTXOsToPubkey still takes a bitcore PublicKey.
+    // (decision #583).
     const randomChangeIdx = (this.wallet.changeKeys.length * Math.random()) << 0
     const changeKey = this.wallet.changeKeys[randomChangeIdx]
     const compressed = (
@@ -318,13 +318,9 @@ export class RelayClient extends ReadOnlyRelayClient {
     }
     await this.wallet.forwardUTXOsToPubkey({
       utxos: message.message.outpoints,
-      pubkey: new PublicKey(
-        Buffer.from(
-          relayChangeAddressPublicKey(
-            Uint8Array.from(changeKey.privKey.toBuffer()),
-            compressed,
-          ),
-        ),
+      pubkey: relayChangeAddressPublicKey(
+        Uint8Array.from(changeKey.privKey.toBuffer()),
+        compressed,
       ),
     })
     assert(this.wallet.myAddress, 'Missing address? Wallet not loaded.')

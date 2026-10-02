@@ -275,6 +275,21 @@ The descriptor is public but indispensable. V1 signup MUST verify at least two
 retrieved copies stored in distinct trust and failure domains independent from
 the threshold shares; activation is blocked with zero or one. A duplicate
 retrieval from the same declared destination does not increment the count.
+Each destination produces a versioned attestation
+`{class, providerId?, accountIdCommitment?, deviceId?, syncDomainId?, userAssertions}`.
+Frank machine-verifies available stable provider/account/device/sync identifiers,
+normalizes aliases, and rejects two destinations sharing any policy-disallowed
+provider account, synchronized storage domain, or physical device. Properties a
+platform cannot verify—such as physical separation or control by a different
+person—remain explicit user assertions and are labelled as such, never inferred
+from two display names. V1 applies this frozen table: cloud/password-manager
+copies must have different provider IDs, account commitments, and sync-domain
+IDs; two files must have different device or removable-volume IDs and no common
+sync domain; a cloud copy and its synced local mirror are one domain; print copies
+require separately confirmed physical-domain labels and are explicitly
+user-asserted rather than machine-verified. Same-provider/different-account is
+one domain in v1. An online destination with an unknown provider, account, or
+sync correlation fails closed for activation.
 Losing every trusted descriptor blocks authenticated blank-install recovery
 even when `k` shares survive. In v1 there is no descriptorless preview: a
 missing descriptor stops the normal recovery route before share entry. A future
@@ -797,10 +812,11 @@ Frank exposes two distinct ceremonies:
 An import never destroys the former account as part of activation. Frank keeps
 it as a rollback target until a later, separately confirmed deletion.
 
-That later deletion may target only an inactive account. It first takes the
-exclusive account-lifecycle permit, closes operation admission, drains shared
-holders, and then performs its final inventory while holding the permit through
-the deletion tombstone and custody generation/revision increment. It is blocked
+That later deletion may target only an inactive account. It follows the
+authoritative `open -> closing -> drain/classify/transfer -> exclusive` lifecycle
+transition below, performs its final inventory only after exclusivity is acquired,
+and holds exclusivity through the deletion tombstone and custody epoch/revision
+increment. It is blocked
 unless each detached or nonterminal operation's required journal and
 non-derivable capability—including a vault-held cooperative-salvage lane
 share—has been preserved independently of the account record, or the user completes an
@@ -809,6 +825,17 @@ swap specification's local-entry, fresh-authentication, exact-value disclosure,
 recovery-export, and revision-bound durable-confirmation rules. Generic account
 deletion cannot create that record. Deleting an account must never implicitly
 destroy the only copy of such a capability.
+
+Account deletion itself is a distinct locally initiated destructive ceremony,
+never entered through a deep link, QR code, message, or support instruction. It
+requires fresh local authentication; pins the exact account ID, recovery
+fingerprint, custody epoch, account revision, and frozen inventory; discloses
+that activation and recovery of this identity will be permanently rejected and
+that Frank cannot know whether physical shares still exist; and offers a verified
+descriptor/backup export before an accessible account-bound confirmation. The
+confirmation text, consequences, and affected identity are programmatically
+associated, announced on dialog entry, and reachable in deterministic keyboard
+and screen-reader focus order. A stale or wrong-account confirmation fails.
 
 Before any account-owned vault handle is destroyed, one atomic transaction
 commits a non-cancellable deletion tombstone under a stable deletion ID. It
@@ -824,16 +851,19 @@ operation. After every account-owned handle is durably confirmed destroyed, one
 final atomic transaction purges local wrapped/software secrets, wrapping
 references, backup metadata, and live indices, and converts the cleanup
 tombstone into a permanent minimal non-secret deletion receipt containing the
-account ID, deletion ID, terminal custody epoch/revision, and inventory digest.
+account ID, canonical recovery-identity commitment, deletion ID, terminal custody
+epoch/revision, inventory digest, and exact retired handle identifiers (or
+references to a permanent non-reuse index).
 Only per-handle cleanup authority is retired. Account creation, import, restore,
 activation, and handle allocation MUST consult the receipt and reject account
 or identifier reuse. Before the tombstone, deletion can roll back to a wholly
 intact inactive account; after it, deletion must run to completion and the
 account can never become active again.
 
-Before switching accounts, Frank takes that same exclusive permit before its
-final inventory and holds it continuously through atomic disposition of every
-operation and the active-pointer compare-and-swap. The inventory covers all
+Before switching accounts, Frank follows that same
+`open -> closing -> drain/classify/transfer -> exclusive` transition, then takes
+its final inventory and holds exclusivity continuously through atomic disposition
+of every operation and the active-pointer compare-and-swap. The inventory covers all
 operations bound to the old account at or beyond their conservative
 authorization cutoff, including funded swaps and unknown funding outcomes.
 Replacement is blocked unless none exist or their non-derivable journals and
@@ -850,7 +880,10 @@ account active. Pre-linearization cancel and error handling is an idempotent
 restore transaction: it fences and removes the candidate stage, releases or
 fences the exclusive permit, and reopens ordinary dispatch for the former
 account only after cleanup is durably recorded. Detached operation watchers
-remain authoritative until terminal or are atomically reattached under a new
+remain authoritative until `lifecycleTerminal`—the negotiated reorg/recovery
+horizon has closed and the operation is cleanup-eligible, not merely when an
+apparent `complete` or `refunded` outcome first appears—or are atomically
+reattached under a new
 old-account lease after their prior lease is fenced; a crash resumes this same
 restore transaction. At or after the linearization point, the complete new record
 remains committed and the ceremony enters resumable cleanup/activation; a lost
@@ -984,7 +1017,7 @@ reader/writer gate below.
 The authoritative lifecycle model has:
 
 - one durable gate
-  `{ term, mode: open | closing | exclusive, exclusiveOwnerId?, custodyGeneration,
+  `{ term, mode: open | closing | exclusive, exclusiveOwnerId?, custodyEpoch,
   accountRevision }`; and
 - a durable set of shared-holder rows keyed by `(term, holderId)`, each with its
   own fencing revision, lease state, protected operation IDs, and outbox
@@ -995,7 +1028,7 @@ authorization cutoff, release of unilateral authorization, attachment of an
 account-bound journal or capability, and ordinary account-scoped remote
 mutation atomically acquire a unique shared-holder row only when the gate is
 `open`. Every protected write compares the gate term, holder ID/fencing
-revision, custody generation, and account revision. Multiple holders may coexist
+revision, custody epoch, and account revision. Multiple holders may coexist
 without overwriting or fencing one another.
 
 Recovery, replacement, and deletion compare-and-swap `open -> closing` before
@@ -1010,14 +1043,23 @@ holders. The gate term remains fixed during `closing` so snapshotted holders can
 finish only their already-admitted reconciliation work; `closing -> exclusive`
 increments the term and makes every prior shared token stale.
 
-While holding a shared-holder row, an actor atomically writes an
-operation-scoped `reserved-to-sign` record before signing. It contains a stable
-action/idempotency ID, gate term, holder ID/fencing revision, exact canonical
+Concurrent holders may protect disjoint operations, but they do not gain
+concurrent mutation authority over the same semantic action slot. Every operation
+has a monotonic `operationRevision`; every external effect has a canonical
+`actionSlot` and a uniqueness constraint on `(operationId, actionSlot)`. While
+holding a shared-holder row, an actor atomically writes an operation-scoped
+`reserved-to-sign` record before signing by comparing the expected operation
+revision, proving the slot absent or byte-identically reserved, binding that slot
+to the current holder, and incrementing the revision. It contains a stable
+action/idempotency ID, action slot, resulting operation revision, gate term,
+holder ID/fencing revision, exact canonical
 unsigned signing payload and semantic fields, their hash, and a stable
 signer-request ID. After signing, Frank validates the result against that
 reservation and durably commits immutable exact signed wire bytes plus the
 derived transaction/signature/external identity as `ready-to-dispatch` before
-any enqueue or send. Only those byte-identical bytes may be queried, dispatched,
+any enqueue or send. Sign-result, ready, enqueue, dispatch, and classification
+transitions CAS the exact reservation/action ID and operation revision. Only
+those byte-identical bytes may be queried, dispatched,
 or replayed; an ambiguous action is never re-signed or repriced.
 
 An external or threshold signer must make its request/result idempotent and
@@ -1030,8 +1072,11 @@ failure, or unknown outcome. Once any of those classifications is durably
 committed, the actor releases its shared-holder row unless other protected work
 remains. An unknown action—not the lifecycle gate—remains blocked from
 redispatch and transfers only through the detached-watcher protocol. Replacement
-atomically increments the custody generation with the active-pointer switch.
-Storage transactions also compare the generation and expected revision.
+atomically increments the custody epoch with the active-pointer switch.
+`custodyEpoch` is the single canonical custody fence in the lifecycle gate,
+account record, operation tokens, vault intents, abandonment records, deletion
+receipt, and every callback; there is no separate generation counter. Storage
+transactions also compare the epoch and expected revision.
 Checking only a late callback is insufficient because a remote chain or relay
 cannot enforce a browser-local epoch.
 
@@ -1162,19 +1207,28 @@ not an absent row that can be recreated:
 
 ```text
 accountId: <retired stable identity>
+recoveryIdentityCommitment: byte[32]
 deletionId: <stable unique identifier>
 terminalCustodyEpoch: <monotonic value>
 terminalAccountRevision: <monotonic value>
 destroyedInventoryDigest: byte[32]
+retiredHandleIds: [<exact stable identifiers>] | <permanent non-reuse-index reference>
 status: "deleted"
 ```
 
 The receipt contains no private key, wrapped secret, vault handle, backup
-metadata, or live pointer. It is consulted by every create, import, restore,
+metadata, or live pointer. `recoveryIdentityCommitment` is the domain-separated
+SHA-256 commitment to the canonical recovery format, derivation registry, and raw
+32-byte public recovery fingerprint. It is indexed independently of `accountId`;
+the same recovered master is rejected even if a caller proposes a fresh local ID.
+The destroyed-inventory digest is audit-only and never substitutes for exact
+retired-handle membership. Backends whose identifiers may be reused require a
+permanent bounded membership index; otherwise the adapter must guarantee IDs are
+globally non-reusable. The receipt and non-reuse index are consulted by every create, import, restore,
 activation, and identifier-allocation path. Whole-store rollback limitations
 below still apply; within a non-rolled-back store, deletion is permanent.
 
-The generation and account revision prevent stale concurrent writers; they do
+The custody epoch and account revision prevent stale concurrent writers; they do
 not detect restoration of an older authentic copy of the whole local store. A
 non-rollbackable platform or external anchor is required for that stronger
 claim. Without one, suspected snapshot rollback fails closed into manual
@@ -1240,7 +1294,7 @@ the repository's current localization boundary.
   split/recover preserves arbitrary threshold-share field symbols through
   interpolation.
 - The frozen `k=2` `a/c/d` final-symbol mutant with share deltas `(0, 0, 5)`
-  reconstructs decoded-byte deltas `0`, `1`, and `25` for subsets `ac`, `ad`,
+  reconstructs final-symbol XOR deltas `0`, `1`, and `25` for subsets `ac`, `ad`,
   and `cd`; the canonical full-symbol ceremony rejects `ad` even though its
   decoded 64 bytes match.
 - RNG failure, short return, throwing RNG, mutation, aliasing, getters, proxies,
@@ -1398,6 +1452,11 @@ against `open -> closing`. Exclusive replacement cannot proceed after draining
 only one holder; the third is atomically admitted into the frozen set or
 rejected, and a stale holder cannot mutate after `closing -> exclusive` advances
 the term. Individual-holder takeover never fences the unrelated live holder.
+Two live holders then race reservations for the same operation/action slot from
+the same expected operation revision with distinct action IDs and payloads.
+Exactly one slot/revision CAS reaches the signer; the loser cannot commit a sign
+result, dispatch, or allocate a sibling action. Disjoint operation slots remain
+concurrent.
 
 Actual-browser tests freeze, BFCache, resume, and kill owners before `reserved-to-sign`, after that
 commit, after signer success or lost signer response but before signed-byte
@@ -1425,7 +1484,7 @@ stale ordinary actors cannot authorize a new broadcast.
 Account-lifecycle race tests attempt operation admission, cutoff crossing,
 unilateral-authorization release, and account-bound capability attachment
 between inventory and both pointer switch and deletion. The shared/exclusive
-permit plus generation/revision checks yield either a fully admitted preserved
+permit plus custody-epoch/revision checks yield either a fully admitted preserved
 operation or a rejected stale admission, never an orphan. An imminent-deadline
 operation continues under old services until its atomic watcher handoff, with
 no route-entry polling or broadcast gap.
@@ -1463,7 +1522,10 @@ key, an orphan handle, identifier reuse, or loss of a detached operation or
 salvage capability. After final cleanup, a storage dump contains no account
 secret record, wrapping ciphertext/reference, backup metadata, or live index;
 the permanent non-secret receipt rejects stale restore/import/activation and
-account/handle identifier reuse across restart.
+account/handle identifier reuse across restart. Re-importing the same master and
+descriptor under a fresh requested account ID is rejected by the indexed recovery-
+identity commitment; every retired handle is rejected by exact membership after
+compaction, while a fresh identifier remains allocatable.
 
 Usability testing MUST include nontechnical users, keyboard-only users, screen
 reader users, handwritten uppercase shares, camera scanning, one deliberately
@@ -1475,7 +1537,15 @@ deep links, cloned UI, and lookalike/punycode origins. Long-delay exercises give
 users only each default exported artifact plus a generic Codex32 wallet choice;
 they identify the artifact as Frank-only and do not disclose it to the generic
 wallet. Generic deletion, deep links, support prompts, and screen-reader or
-keyboard shortcuts cannot enter irreversible operation abandonment.
+keyboard shortcuts cannot enter irreversible operation abandonment. Account
+deletion itself is tested against fake-support/deep-link entry, wrong or stale
+account revisions, missing fresh authentication, and ambiguous “remove profile”
+copy. Keyboard and screen-reader users receive the exact identity, inventory,
+backup uncertainty, and permanent recovery consequence before the bound
+confirmation. Destination-independence tests normalize aliases and cover the
+same provider account, same sync domain under different labels, same provider
+with different accounts, separate removable devices, print copies, and unknown
+correlation according to the frozen v1 table.
 
 ## 16. Implementation sequence and gates
 

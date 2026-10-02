@@ -161,11 +161,19 @@ The protocol keeps three domains separate:
 3. each observer's append-only local evidence journal.
 
 Message predecessor fields commit only to the replicated protocol-state root, never to
-arrival-ordered local observations. Chain observations receive canonical semantic evidence IDs and
-merge as an order-independent set whose root sorts by semantic slot and evidence ID; duplicate or
-byte-distinct witnesses satisfying the same allowed predicate may coexist. Equivocation applies only
-to a single-valued semantic slot, not to multiple valid observations. Reorganizations append status
-facts and never rewrite either the authorization transcript or prior evidence. Later chain evidence
+arrival-ordered local observations. A chain observation receives a canonical semantic slot and
+effect ID derived from the authorized body and effect, not from variable signature or unlocking
+bytes. The first valid witness materializes that monotone semantic effect; equivalent byte-distinct
+witnesses do not change the replicated root and may be retained only in the bounded local journal.
+Equivocation applies only to a single-valued semantic slot, not to multiple valid observations.
+Reorganizations append status facts that identify the affected evidence ID, chain object, block
+identity, and accepted-chain ancestry; they never rewrite the authorization transcript or prior
+evidence. A deterministic, order-independent `activeFinal(legId, chainObjectId)` projection is true
+only when an accepted inclusion is on the adapter's current canonical chain and has the required
+depth with no accepted invalidation targeting that inclusion. Re-inclusion after invalidation
+creates new evidence and must independently regain finality. Readiness and every irreversible
+action are re-evaluated against this projection, never against the historical presence or maximum
+status of a `final` fact. Later chain evidence
 needs no renewed peer cooperation. Native chain signatures continue to sign only the exact digest
 accepted by their chain; they are transaction
 authorization, not a substitute for protocol attestation. Any future primitive that adds associated
@@ -229,7 +237,8 @@ Offer
 
 Funding is not one overwriteable step. `FundingProgress` facts are keyed by
 `(laneId, legId, chainObjectId)` and advance monotonically through the pair policy's broadcast,
-observed, and final states. `ArtifactReveal` is a distinct keyed fact that validates exact bytes
+observed, and final historical states; only `activeFinal` satisfies a live finality guard.
+`ArtifactReveal` is a distinct keyed fact that validates exact bytes
 against a committed opaque leaf. The readiness join enters `ReadyToSettle` only when every required
 funding and reveal predicate is satisfied in the pair-specific order. For the initial pair that order
 is: EVM funding final, exact withheld parent revealed and validated, then that eCash parent final.
@@ -324,6 +333,19 @@ its set of revealed event IDs, so v1 visits at most `2^8` reveal states and `2^8
 not their order permutations. A future version needing larger bundles must specify a reviewed
 polynomial certificate/validator rather than silently raising these limits.
 
+Runtime evidence is bounded independently of the manifest. V1 permits at most 256 rooted semantic
+effect slots, 512 active-horizon chain-status records, 64 recognized predecessor roots, and 1 MiB
+of local raw-witness material per swap. Equivalent witnesses consume the already-materialized slot
+and cannot force a new root. Status history is checkpointed by the chain adapter into a canonical
+ancestry/finality summary before a bound is crossed; the checkpoint commits the pruned IDs and
+preserves every fact needed by `activeFinal`, recovery, and the negotiated reorg horizon. Only the
+64 most recent roots are accepted as commuting predecessors; an older sender must resynchronize to
+the current root. Parsing rejects an over-limit peer message before allocation or signature work.
+Quota pressure never suppresses the first valid safety-critical reveal or invalidation: reserved
+slots admit it, then the operation fails closed into recovery if safe checkpointing cannot restore
+headroom. Raw local witnesses use deterministic byte/count caps and may be discarded after their
+semantic effect and audit hash are durable.
+
 The fundamental batching invariant is:
 
 > Every independently exercisable settlement domain must be economically fair by itself.
@@ -377,9 +399,13 @@ holds. A cyclic dependency with no cryptographic or consensus gate is invalid an
 `ReadyToFund`. Generating a capability does not itself invalidate the bundle, but it must not create
 an ungated exercise option.
 
-The per-holder exercise gate is necessary but not sufficient. No withheld artifact may be released
-and no incoming exercise gate may open before the bundle atomically enters `ReadyToSettle` after all
-four global conditions above and every deadline inequality below pass.
+The per-holder exercise gate is necessary but not sufficient. No capability-expanding settlement
+artifact may be released and no incoming exercise gate may open before the bundle atomically enters
+`ReadyToSettle` after all four global conditions above and every deadline inequality below pass.
+A transcript-declared funding-artifact reveal needed to make a funding object observable—such as
+the initial withheld eCash parent—is permitted in its named pre-settlement state after its
+prerequisite funding leg is actively final. Such a reveal opens no claim or exercise gate; invalid
+bytes are rejected, and only active finality of the revealed object may complete the readiness join.
 
 At `ReadyToSettle`, deadline ordering must be acyclic. For every revelation leg `r` and remaining
 leg `j`, the manifest must establish, in a common conservative time model:
@@ -598,6 +624,16 @@ The local signer parses and validates the policy before signing. It accepts only
 fields and fees inside both ranges, then parses the final signed bytes, recovers the sender, and
 rechecks the same policy before release. Replacement uses the same nonce and template. No generic
 `signTransaction` or arbitrary-recipient capability satisfies this requirement.
+
+Every fee replacement is a distinct immutable action in a transcript-bound replacement lineage:
+`{actionId, actionSlot, parentActionId, nonceOrOutpoint, immutableTemplateHash, feeFields}`. A
+successor may be reserved only after authoritative reconciliation classifies its parent as
+`known-not-sent`, `known-pending/replacement-permitted`, or `confirmed-replaceable` under the chain
+policy. A parent with an unknown external outcome blocks a successor; that possible delay is part
+of the liveness and timeout calculation. Exactly one successor per parent/slot may win the durable
+operation-revision CAS. Known-pending replacement may coexist on chain only where the adapter proves
+the same nonce/outpoint makes the lineage mutually exclusive. Restart and takeover reuse the same
+lineage and never invent a parallel action.
 
 The eCash adapter defines `earliestRefundValidity` as the first height or median-time state in which
 the exact CLTV refund can satisfy consensus, including all locktime and sequence off-by-one rules.
@@ -917,8 +953,14 @@ and monotonic journal revision. AEAD and a counter stored in the same local data
 freshness against restoration of an older authentic snapshot. Until a non-rollbackable platform or
 external anchor is selected, whole-store malicious/backup rollback is outside the guarantee and an
 ambiguous restore fails closed into manual recovery without signing. Restore reconciles against both
-chains and relays but does not assume they reveal every previously exposed off-chain share. Export
-requires an explicit disclosure boundary and contains only the minimum recovery capability. After
+chains and relays but does not assume they reveal every previously exposed off-chain share.
+Recovery-package export is a locally initiated, freshly authenticated ceremony. Frank classifies
+the selected package as observation-only, transaction-broadcast, signing-request, or direct-spend
+authority; states that support will never ask the user to send one; and programmatically associates
+and announces the exact recipient, assets/value, actions, deadlines, and compromise consequence.
+Where a destination is known, the package is authenticated and encrypted to that destination;
+otherwise the UI treats it as bearer authority and requires an operation-bound confirmation. Export
+contains only the minimum recovery capability. After
 the negotiated reorg/recovery horizon, compaction preserves audit hashes while destroying spent or
 obsolete capabilities on a best-effort basis. It MUST retain lane share `a` and the minimum salvage
 record while a one-use EOA has value in `cooperative-recovery-required`, unless the owner explicitly
@@ -1001,12 +1043,14 @@ The first implementation should provide:
     but the revelation leg cannot itself reach finality and reorg margin before its refund, including
     equality and one-unit failures;
 21. transcript-convergence tests delivering two predicate-valid byte-distinct witnesses, duplicates,
-    and reorg status facts in opposite orders to two replicas; both retain all evidence, derive the
-    same replicated state, accept the same next message, and do not report equivocation, while a
+    and reorg status facts in opposite orders to two replicas; both retain the same bounded semantic
+    effects and audit hashes, derive the same replicated state, accept the same next message, and do not report equivocation, while a
     conflicting single-valued preparation fact does;
 22. initial-pair reducer tests in which EVM pending/final, exact or invalid parent reveal, and eCash
     pending/final facts arrive duplicated and reordered with restart after every step; only `EVM
-    final -> exact parent validated -> eCash final` enters `ReadyToSettle`;
+    final -> exact parent validated -> eCash final` enters `ReadyToSettle`; active EVM finality permits
+    the named parent reveal without opening the claim gate, while invalid or capability-expanding
+    artifacts remain rejected before readiness;
 23. custody-mode transition tests proving adaptor mode requires scalar extraction and counter-leg
     evidence, hashlock/program mode requires a validated preimage rather than scalar extraction, and
     native-atomic mode completes from one action proving both transfers while rejecting the other
@@ -1017,7 +1061,26 @@ The first implementation should provide:
 25. presentation and destructive-flow tests proving terminal `Cancel` exists only before the cutoff,
     post-cutoff controls disclose continuing recovery obligations, and generic delete, deep-link,
     support-prompt, stale-revision, or generic confirmation cannot abandon a capability; the exact
-    freshly authenticated operation-bound ceremony commits once and crash-retries idempotently.
+    freshly authenticated operation-bound ceremony commits once and crash-retries idempotently;
+26. reorg-reducer tests permuting finality, invalidation, reveal, and canonical re-inclusion across
+    replicas and restarts for both legs; invalidation clears `activeFinal`, closes readiness and the
+    settlement gate, and only fresh finality plus renewed deadline checks restores it; post-revelation
+    invalidation enters the specified recovery/loss path;
+27. evidence-resource tests submit more than every count/byte bound using valid signature and push
+    variants plus reorg statuses; equivalent witnesses never change the root after the first effect,
+    one-over input rejects before allocation or expensive validation, safety-critical invalidations
+    still fit reserved slots, and checkpoint/resynchronization preserves the correct reducer state;
+28. fee-lineage tests cover known-not-sent, known-pending, accepted with lost response, and unknown
+    parent outcomes; only specified authoritative states allocate one CAS-winning successor, and
+    restart/takeover never creates parallel replacements; and
+29. independent canonical-root vectors freeze semantic-slot, effect-ID, leaf, ordering, checkpoint,
+    and hash encodings. A separately implemented oracle—not two replicas of the same code—constructs
+    the expected root, and mutation of every bound field changes or invalidates it; and
+30. recovery-package and destructive-dialog tests cover fake-support requests, wrong recipients,
+    every capability class, and observation-only exports. Screen-reader and keyboard users receive
+    programmatically associated assets, deadlines, continuing watcher behavior, and irreversible
+    consequences in deterministic focus order; “enter recovery” never implies unilateral recovery
+    in a griefable mode.
 
 Passing functional tests is not a substitute for cryptographic review. Each threshold-signature
 scheme, cross-curve proof, adaptor-point reuse pattern, or other primitive actually used by a

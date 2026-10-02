@@ -293,7 +293,7 @@ describe('Pinia persistence barrier', () => {
     await expect(store.rehydrate()).resolves.toBeUndefined()
   })
 
-  it('rehydrates persisted state from storage and patches store (#308)', async () => {
+  it('rehydrates persisted state from storage, patches store, and does not re-save to storage (#308)', async () => {
     let persistedValue = 10
     const storage = {
       get: jest
@@ -304,10 +304,18 @@ describe('Pinia persistence barrier', () => {
       put: jest.fn().mockResolvedValue(undefined),
     } as unknown as LevelDB
     const { pinia } = installPinia(storage)
+    const saveSpy = jest.fn(async (s: any, _m: any, state: any) => {
+      await s.put('test', JSON.stringify(state))
+    })
     const useTestStore = defineStore(`rehydrate-test-${nextStoreId++}`, {
       state: () => ({ value: 0 }),
+      actions: {
+        setValue(value: number) {
+          this.value = value
+        },
+      },
       storage: {
-        save: async () => undefined,
+        save: saveSpy,
         restore: async (s: any) => {
           const raw = await s.get('test')
           return JSON.parse(raw)
@@ -318,9 +326,29 @@ describe('Pinia persistence barrier', () => {
     await store.restored
     expect(store.value).toBe(10)
 
+    // Clear initial restore write from mock
+    ;(storage.put as jest.Mock).mockClear()
+    saveSpy.mockClear()
+
     // Simulating external write (e.g. another tab)
     persistedValue = 99
     await store.rehydrate()
     expect(store.value).toBe(99)
+
+    // Crucial premise: rehydrate() must NOT trigger a save back to storage!
+    expect(storage.put).not.toHaveBeenCalled()
+    expect(saveSpy).not.toHaveBeenCalled()
+
+    // But subsequent ordinary mutations still save as expected:
+    store.setValue(100)
+    const barrier = store.flushPersistence()
+    await nextTick()
+    await barrier
+    expect(saveSpy).toHaveBeenCalledTimes(1)
+    expect(storage.put).toHaveBeenCalledTimes(1)
+    expect(storage.put).toHaveBeenCalledWith(
+      'test',
+      JSON.stringify({ value: 100 }),
+    )
   })
 })

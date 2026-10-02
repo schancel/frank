@@ -58,6 +58,62 @@ describe('ReplaceAccountGuard (#304)', () => {
     expect(w.find('[data-test="replace-toggle"]').exists()).toBe(true)
   })
 
+  it('renders truthful seedless copy for name-only profiles in English and French (#308)', async () => {
+    // English mock keys
+    const wEn = mountGuard({ hasSeed: false })
+    expect(wEn.text()).toContain('replaceGuard.introNameOnly')
+    await wEn.get('[data-test="replace-toggle"]').trigger('click')
+    expect(wEn.text()).toContain('replaceGuard.warningNameOnly')
+
+    // Real English strings
+    const enMessages: Record<string, string> = {
+      'replaceGuard.introNameOnly':
+        'Setting up again would replace it. This profile does not have a recovery phrase or wallet funds on this device.',
+      'replaceGuard.warningNameOnly':
+        'Replacing this account will remove your current name and profile from this device.',
+    }
+    const wEnReal = mount(ReplaceAccountGuard, {
+      props: { hasSeed: false },
+      global: {
+        mocks: {
+          $t: (k: string) => enMessages[k] ?? k,
+        },
+        stubs: { QDialog: QDialogStub },
+      },
+    })
+    expect(wEnReal.text()).toContain(
+      'This profile does not have a recovery phrase or wallet funds on this device.',
+    )
+    await wEnReal.get('[data-test="replace-toggle"]').trigger('click')
+    expect(wEnReal.text()).toContain(
+      'Replacing this account will remove your current name and profile from this device.',
+    )
+
+    // Real French strings
+    const frMessages: Record<string, string> = {
+      'replaceGuard.introNameOnly':
+        'Recommencer la configuration le remplacerait. Ce profil ne possède ni phrase de récupération ni fonds de portefeuille sur cet appareil.',
+      'replaceGuard.warningNameOnly':
+        'Remplacer ce compte supprimera de cet appareil votre nom et votre profil actuels.',
+    }
+    const wFrReal = mount(ReplaceAccountGuard, {
+      props: { hasSeed: false },
+      global: {
+        mocks: {
+          $t: (k: string) => frMessages[k] ?? k,
+        },
+        stubs: { QDialog: QDialogStub },
+      },
+    })
+    expect(wFrReal.text()).toContain(
+      'Ce profil ne possède ni phrase de récupération ni fonds de portefeuille sur cet appareil.',
+    )
+    await wFrReal.get('[data-test="replace-toggle"]').trigger('click')
+    expect(wFrReal.text()).toContain(
+      'Remplacer ce compte supprimera de cet appareil votre nom et votre profil actuels.',
+    )
+  })
+
   it('cancel emits cancel only', async () => {
     const w = mountGuard()
     await w.get('[data-test="cancel"]').trigger('click')

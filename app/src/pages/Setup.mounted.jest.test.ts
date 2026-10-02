@@ -1271,6 +1271,7 @@ describe('Setup page mounted (#267)', () => {
         }
       }
 
+      vmA.avatar = 'data:avatar'
       vmA.rehydrateStores = jest.fn(async () => {
         walletA.seedPhrase = persistedSeed
         walletA.seedConfirmedAt = persistedConfirmedAt
@@ -1326,6 +1327,7 @@ describe('Setup page mounted (#267)', () => {
         }
       }
 
+      vmA.avatar = 'data:avatar'
       vmA.rehydrateStores = jest.fn(async () => {
         walletA.seedPhrase = persistedSeed
         mockProfileName = persistedName

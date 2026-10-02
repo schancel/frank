@@ -1,4 +1,5 @@
 import {
+  accountDigest,
   classifyAccount,
   isSetupComplete,
   needsBackupConfirmation,
@@ -85,5 +86,61 @@ describe('account state (#284, #308)', () => {
     expect(setupGatePasses(facts)).toBe(true)
     expect(classifyAccount(facts)).toBe('name-only')
     expect(isSetupComplete(facts)).toBe(false)
+  })
+
+  describe('accountDigest (#308)', () => {
+    it('returns fresh for fresh accounts', () => {
+      expect(
+        accountDigest({
+          seedPhrase: null,
+          name: null,
+          seedConfirmedAt: null,
+        }),
+      ).toBe('fresh')
+      expect(
+        accountDigest({
+          seedPhrase: undefined,
+          name: undefined,
+          seedConfirmedAt: undefined,
+        }),
+      ).toBe('fresh')
+    })
+
+    it('returns deterministic digest for name-only account', () => {
+      expect(
+        accountDigest({
+          seedPhrase: null,
+          name: 'Alice',
+          seedConfirmedAt: null,
+        }),
+      ).toBe('name-only::::Alice::')
+    })
+
+    it('returns distinct digests for different account facts', () => {
+      const digest1 = accountDigest({
+        seedPhrase: 'seed1',
+        name: 'Alice',
+        seedConfirmedAt: 10,
+      })
+      const digest2 = accountDigest({
+        seedPhrase: 'seed2',
+        name: 'Alice',
+        seedConfirmedAt: 10,
+      })
+      const digest3 = accountDigest({
+        seedPhrase: 'seed1',
+        name: 'Bob',
+        seedConfirmedAt: 10,
+      })
+      const digest4 = accountDigest({
+        seedPhrase: 'seed1',
+        name: 'Alice',
+        seedConfirmedAt: 20,
+      })
+
+      expect(digest1).not.toBe(digest2)
+      expect(digest1).not.toBe(digest3)
+      expect(digest1).not.toBe(digest4)
+    })
   })
 })

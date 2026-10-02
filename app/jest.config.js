@@ -64,6 +64,9 @@ module.exports = {
       '<rootDir>/../packages/nakamoto/src/constructors.ts',
     '^bitcore-lib-xpi$': '<rootDir>/../packages/bitcore-lib-xpi/index.js',
     '^bitcore-lib-xpi/(.*)$': '<rootDir>/../packages/bitcore-lib-xpi/$1',
+    '^@noble/curves/(.*)\\.js$': '@noble/curves/$1',
+    '^@noble/hashes/(.*)\\.js$': '@noble/hashes/$1',
+    '^@noble/ciphers/(.*)\\.js$': '@noble/ciphers/$1',
     '^(\\.{1,2}/.*)\\.js$': '$1',
     // Use Quasar's CommonJS server entry in Jest. The older
     // `quasar.cjs.prod.js` filename disappeared in Quasar 2.33.

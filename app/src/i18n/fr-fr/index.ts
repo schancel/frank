@@ -455,12 +455,16 @@ export default {
     title: 'Vous avez déjà un compte sur cet appareil',
     intro:
       'Recommencer la configuration le remplacerait. Votre phrase de récupération est le seul moyen de récupérer ce compte et ses fonds.',
+    introNameOnly:
+      'Recommencer la configuration le remplacerait. Ce profil ne possède ni phrase de récupération ni fonds de portefeuille sur cet appareil.',
     confirmed: 'Votre phrase de récupération actuelle est confirmée.',
     cancel: 'Annuler et revenir à mon compte',
     confirmCurrent: 'Confirmer ma phrase de récupération actuelle',
     replaceToggle: 'Remplacer ce compte',
     warning:
       'Remplacer ce compte supprimera de cet appareil votre phrase de récupération, votre nom et votre profil actuels. Si vous n’avez pas sauvegardé la phrase, le compte et ses fonds pourraient être irrécupérables.',
+    warningNameOnly:
+      'Remplacer ce compte supprimera de cet appareil votre nom et votre profil actuels.',
     typeLabel: 'Saisissez {word} pour continuer',
     word: 'REMPLACER',
     mismatch:

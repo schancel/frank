@@ -347,6 +347,7 @@ describe('AccountStep recovery phrase controls', () => {
       .find(button => button.text() === 'New Account')
     expect(newAccount).toBeDefined()
     await newAccount?.trigger('click')
+    expect(generateMnemonic).toHaveBeenCalledTimes(1)
 
     const copy = wrapper.find('button[aria-label="Copy recovery phrase"]')
     const refresh = wrapper.find(
@@ -363,7 +364,7 @@ describe('AccountStep recovery phrase controls', () => {
     expect(copyToClipboard).toHaveBeenCalledWith(originalSeed)
 
     await refresh.trigger('click')
-    expect(generateMnemonic).toHaveBeenCalledTimes(1)
+    expect(generateMnemonic).toHaveBeenCalledTimes(2)
     expect(wrapper.vm.rawSeed).toBe(VALID_MNEMONIC)
   })
 
@@ -462,5 +463,51 @@ describe('AccountStep resume mode (#284)', () => {
       expect((data as { seed: string }).seed).toBe(VALID_MNEMONIC)
       expect((data as { nameRequired: boolean }).nameRequired).toBe(true)
     }
+  })
+})
+
+describe('AccountStep mode switching (#516)', () => {
+  it('generates a fresh recovery phrase on New Account after an abandoned import draft', async () => {
+    const wrapper = mountStep()
+    const vm = wrapper.vm as unknown as {
+      importAccount(): void
+      newAccount(): void
+      action: string
+      rawSeed: string
+    }
+
+    // 1. User starts Import Account and enters an invalid draft phrase
+    vm.importAccount()
+    await nextTick()
+    await wrapper
+      .find('textarea[aria-label="profile.seedEntry"]')
+      .setValue('invalid abandoned import phrase')
+
+    expect(wrapper.emitted('update:account-data')?.at(-1)?.[0]).toEqual({
+      name: '',
+      seed: 'invalid abandoned import phrase',
+      valid: false,
+      nameRequired: false,
+    })
+
+    // 2. User abandons Import Account and selects New Account
+    vm.newAccount()
+    await nextTick()
+
+    // 3. New Account presents a newly generated valid phrase distinct from the import draft
+    const emitted = wrapper.emitted('update:account-data')?.at(-1)?.[0] as {
+      name: string
+      seed: string
+      valid: boolean
+      nameRequired: boolean
+    }
+    expect(emitted.seed).not.toBe('invalid abandoned import phrase')
+    expect(emitted.seed).toBe(VALID_MNEMONIC)
+    expect(emitted.nameRequired).toBe(true)
+    expect(
+      wrapper
+        .find('textarea[aria-label="profile.seedEntry"]')
+        .attributes('readonly'),
+    ).toBeDefined()
   })
 })

@@ -341,6 +341,9 @@ export default defineComponent({
         if (props.locked) return
         action.value = 'new'
         rawName.value = ''
+        if (!props.resume) {
+          rawSeed.value = generateMnemonic()
+        }
         emitAccountData()
       },
       importAccount() {

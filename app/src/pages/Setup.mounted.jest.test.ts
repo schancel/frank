@@ -1105,4 +1105,83 @@ describe('Setup page mounted (#267)', () => {
       expect(wallet.seedPhrase).toBe(STORED)
     })
   })
+
+  describe('abandoned import mode switching (#516)', () => {
+    it('generates a fresh valid phrase when switching from abandoned Import to New Account', async () => {
+      setActivePinia(createPinia())
+      const translate: Translate = key => key
+      const { wrapper } = await mountResumeImport(translate)
+      const vm = wrapper.vm as unknown as {
+        step: number
+        next: () => Promise<void>
+        previous: () => void
+        accountData: {
+          seed: string
+          name: string
+          valid: boolean
+          nameRequired: boolean
+        }
+      }
+
+      // Step 1: EULA -> Agree
+      expect(vm.step).toBe(1)
+      await vm.next()
+      await nextTick()
+      expect(vm.step).toBe(2)
+
+      // Step 2: Choose Import Account
+      const importBtn = wrapper
+        .findAll('button')
+        .find(b => b.text() === 'accountStep.importAccount')
+      expect(importBtn).toBeDefined()
+      await importBtn?.trigger('click')
+      await nextTick()
+
+      // User enters invalid placeholder text in the recovery-phrase field
+      const importDraft = 'invalid abandoned import phrase placeholder'
+      const textarea = wrapper.get('textarea[aria-label="profile.seedEntry"]')
+      await textarea.setValue(importDraft)
+      await nextTick()
+
+      expect(vm.accountData.seed).toBe(importDraft)
+      expect(vm.accountData.valid).toBe(false)
+
+      // User selects Back (step 2 -> step 1)
+      vm.previous()
+      await nextTick()
+      expect(vm.step).toBe(1)
+
+      // User selects Agree (step 1 -> step 2)
+      await vm.next()
+      await nextTick()
+      expect(vm.step).toBe(2)
+
+      // User selects New Account
+      const newAccBtn = wrapper
+        .findAll('button')
+        .find(b => b.text() === 'accountStep.newAccount')
+      expect(newAccBtn).toBeDefined()
+      await newAccBtn?.trigger('click')
+      await nextTick()
+
+      // Recovery phrase must be newly generated, valid, distinct from import draft, and textarea read-only
+      const readOnlyBox = wrapper.get(
+        'textarea[aria-label="profile.seedEntry"]',
+      )
+      expect(readOnlyBox.attributes('readonly')).toBeDefined()
+      expect(vm.accountData.seed).not.toBe(importDraft)
+      expect(vm.accountData.seed.split(' ').filter(Boolean)).toHaveLength(12)
+      expect(vm.accountData.nameRequired).toBe(true)
+
+      // Entering a valid name enables progressing to Step 3
+      const nameBox = wrapper.get('textarea[aria-label="profile.name"]')
+      await nameBox.setValue('Alice')
+      await nextTick()
+      expect(vm.accountData.valid).toBe(true)
+
+      await vm.next()
+      await nextTick()
+      expect(vm.step).toBe(3)
+    })
+  })
 })

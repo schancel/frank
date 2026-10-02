@@ -95,7 +95,15 @@
  *     ambiguous case. Found → `'confirmed'`. Still not found after the poll budget is exhausted →
  *     `'stuck'`, and `MonadTopicPostAbandonedError` is thrown.
  */
-import { Provider, concat, getBytes, hexlify, sha256 } from 'ethers'
+import {
+  Provider,
+  Transaction,
+  concat,
+  getAddress,
+  getBytes,
+  hexlify,
+  sha256,
+} from 'ethers'
 import axios from 'axios'
 
 // Ticket #51 (Vite migration): see cashweb/pop.ts's comment for why generated `*_pb.js` files
@@ -127,6 +135,11 @@ import {
   SignedMonadTx,
 } from './monad-account-tx'
 import { MonadWalletHandle } from './monad-wallet-handle'
+import type { MonadWalletOperationAdmission } from './storage/monad-wallet-bundle'
+import type {
+  OutgoingTopicOperation,
+  TopicOperationJournal,
+} from './storage/topic-operation-journal'
 
 /** `cashweb_registry::monad_topic_verify::TOPIC_VOTE_LOKAD_ID` (that file, line 94: `*b"TPIC"`) —
  * distinct from both `monad-stamp-client.ts`'s `"POND"` and Lotus's private-message LOKAD ID. */
@@ -197,7 +210,7 @@ export interface MonadTopicPostViewProto {
   voteWeight: number
 }
 
-function encodeMonadTopicPost(msg: MonadTopicPostProto): Uint8Array {
+export function encodeMonadTopicPost(msg: MonadTopicPostProto): Uint8Array {
   const pb = new MonadTopicPost()
   pb.setTopic(msg.topic)
   pb.setParentPostHash(msg.parentPostHash)
@@ -221,7 +234,7 @@ export function decodeMonadTopicPost(bytes: Uint8Array): MonadTopicPostProto {
 }
 
 function decodeStoredMonadTopicPostPb(
-  pb: StoredMonadTopicPost,
+  pb: InstanceType<typeof StoredMonadTopicPost>,
 ): StoredMonadTopicPostProto {
   const nested = pb.getPost()
   return {
@@ -288,7 +301,7 @@ export function buildTopicPostPayload(params: {
     broadcastMessage.setParentDigest(params.parentPostHash)
   }
 
-  const protoEntries: BroadcastEntry[] = []
+  const protoEntries: Array<InstanceType<typeof BroadcastEntry>> = []
   for (const entry of params.entries) {
     if (entry.kind !== 'post') {
       throw new Error(`unsupported topic entry kind: ${entry.kind}`)
@@ -463,6 +476,8 @@ export class MonadTopicPostClient {
   private readonly leaseManager: SubAccountLeaseManager
   private readonly provider: Provider
   private readonly httpClient: MonadTxSubmitter
+  private readonly walletState: MonadWalletHandle['walletState']
+  private readonly topicJournal: TopicOperationJournal | undefined
   /** Base URL of the `cashweb-registry` relay, e.g. `https://relay.example.com` — no trailing
    * slash. `/message/monad/topics` (`PUT`) and `/message/monad/topics/:payload_hash` (`GET`) are
    * appended to it. */
@@ -473,6 +488,8 @@ export class MonadTopicPostClient {
     this.leaseManager = params.leaseManager
     this.provider = params.provider
     this.httpClient = params.httpClient
+    this.walletState = params.walletState
+    this.topicJournal = params.topicOperationJournal
     this.relayBaseUrl = params.relayBaseUrl.replace(/\/+$/, '')
   }
 
@@ -536,6 +553,27 @@ export class MonadTopicPostClient {
     return decodeStoredMonadTopicPost(new Uint8Array(response.data))
   }
 
+  private assertStoredMatches(
+    stored: StoredMonadTopicPostProto,
+    operation: OutgoingTopicOperation,
+  ): void {
+    if (operation.kind !== 'post' || stored.post === undefined) {
+      throw new Error('Relay returned a mismatched topic-post result')
+    }
+    const request = Uint8Array.from(operation.requestBytes)
+    const returned = encodeMonadTopicPost(stored.post)
+    if (
+      returned.length !== request.length ||
+      !returned.every((byte, index) => byte === request[index]) ||
+      stored.senderAddress.length !== 20 ||
+      getAddress(hexlify(stored.senderAddress)) !==
+        getAddress(operation.senderAddress) ||
+      hexlify(stored.txHash).toLowerCase() !== operation.txHash.toLowerCase()
+    ) {
+      throw new Error('Relay returned a mismatched topic-post result')
+    }
+  }
+
   /**
    * Posts `params.topic`/`params.entries` (with `params.direction`/`params.voteWeightWei` as its
    * initial vote) to Monad end-to-end: builds the payload, computes its hash, builds the topic
@@ -547,6 +585,20 @@ export class MonadTopicPostClient {
    */
   async submitTopicPost(
     params: SubmitTopicPostParams,
+    admission?: MonadWalletOperationAdmission,
+  ): Promise<SubmitTopicPostResult> {
+    if (this.walletState !== undefined) {
+      return this.walletState.runOperation(
+        admitted => this.submitTopicPostAdmitted(params, admitted),
+        admission,
+      )
+    }
+    return this.submitTopicPostAdmitted(params, admission)
+  }
+
+  private async submitTopicPostAdmitted(
+    params: SubmitTopicPostParams,
+    admission?: MonadWalletOperationAdmission,
   ): Promise<SubmitTopicPostResult> {
     if (params.entries.length === 0) {
       throw new Error('entries must not be empty')
@@ -572,6 +624,7 @@ export class MonadTopicPostClient {
             params.waitForLease,
           )
         : this.leaseManager.acquireLease()
+    await this.leaseManager.flush()
 
     let signedTx: SignedMonadTx
     try {
@@ -589,6 +642,7 @@ export class MonadTopicPostClient {
       // Nothing was signed, broadcast or sent to the relay, so the account still holds its funds
       // and an untouched nonce: hand it back so a retry reuses it instead of funding another.
       this.leaseManager.releaseLease(handle, 'unused')
+      await this.leaseManager.flush()
       throw new BurnNotSentError(
         err instanceof Error ? err.message : String(err),
         err,
@@ -603,9 +657,47 @@ export class MonadTopicPostClient {
       payloadHash,
     }
 
+    const operation: OutgoingTopicOperation = {
+      version: 1,
+      kind: 'post',
+      requestBytes: Array.from(encodeMonadTopicPost(post)),
+      leaseIndex: handle.index,
+      senderAddress: signedTx.from,
+      rawTx: signedTx.rawTx,
+      txHash: signedTx.txHash,
+      valueWei: signedTx.value.toString(),
+      direction: params.direction,
+      payloadHashHex,
+    }
+    // The operation journal is the first durable home for the signed authority. If machine loss
+    // happens before the pool's spend checkpoint commits, startup reconstructs that checkpoint
+    // from these validated exact bytes before any relay I/O.
+    await this.topicJournal?.put(operation)
+    this.pool.recordSpendTransaction(handle.index, {
+      rawTx: signedTx.rawTx,
+      txHash: signedTx.txHash,
+      valueWei: signedTx.value.toString(),
+    })
+    await this.pool.flush()
+
     try {
       const stored = await this.putTopicPost(post)
+      if (this.topicJournal !== undefined) {
+        try {
+          this.assertStoredMatches(stored, operation)
+        } catch {
+          throw new MonadTopicPostAbandonedError(
+            'Relay returned a mismatched topic-post result',
+            payloadHashHex,
+          )
+        }
+      }
       this.leaseManager.releaseLease(handle, 'confirmed')
+      await this.leaseManager.flush()
+      await this.topicJournal?.delete(operation)
+      if (admission !== undefined) {
+        await this.walletState?.compactTerminalAccounts(8, admission)
+      }
       return {
         stored,
         payloadHashHex,
@@ -613,8 +705,11 @@ export class MonadTopicPostClient {
         leaseIndex: handle.index,
       }
     } catch (err) {
+      if (err instanceof MonadTopicPostAbandonedError) throw err
       if (axios.isAxiosError(err) && err.response) {
         this.leaseManager.releaseLease(handle, 'failed')
+        await this.leaseManager.flush()
+        await this.topicJournal?.delete(operation)
         throw new MonadTopicPostRejectedError(
           `Relay rejected the Monad topic post (HTTP ${err.response.status})`,
           err.response.status,
@@ -629,7 +724,22 @@ export class MonadTopicPostClient {
         params.abandonPoll,
       )
       if (stored !== undefined) {
+        if (this.topicJournal !== undefined) {
+          try {
+            this.assertStoredMatches(stored, operation)
+          } catch {
+            throw new MonadTopicPostAbandonedError(
+              'Monad topic post readback did not match the exact durable operation',
+              payloadHashHex,
+            )
+          }
+        }
         this.leaseManager.releaseLease(handle, 'confirmed')
+        await this.leaseManager.flush()
+        await this.topicJournal?.delete(operation)
+        if (admission !== undefined) {
+          await this.walletState?.compactTerminalAccounts(8, admission)
+        }
         return {
           stored,
           payloadHashHex,
@@ -638,13 +748,82 @@ export class MonadTopicPostClient {
         }
       }
 
-      this.leaseManager.releaseLease(handle, 'stuck')
+      if (this.topicJournal === undefined) {
+        this.leaseManager.releaseLease(handle, 'stuck')
+        await this.leaseManager.flush()
+      }
       throw new MonadTopicPostAbandonedError(
-        'The relay did not respond, so it is unknown whether your post was recorded. ' +
-          'Check the forum before posting again: a retry could burn a second time. ' +
-          `(payload ${payloadHashHex})`,
+        'Monad topic post submission abandoned: no response from the relay, and ' +
+          `GET /message/monad/topics/${payloadHashHex} never found a stored post`,
         payloadHashHex,
       )
     }
+  }
+
+  async resumePendingOperations(
+    admission?: MonadWalletOperationAdmission,
+  ): Promise<void> {
+    if (this.walletState === undefined || this.topicJournal === undefined)
+      return
+    return this.walletState.runOperation(async admitted => {
+      for (const operation of this.topicJournal!.getAll()) {
+        if (operation.kind !== 'post') continue
+        const transaction = Transaction.from(operation.rawTx)
+        const post = decodeMonadTopicPost(
+          Uint8Array.from(operation.requestBytes),
+        )
+        let authorityRecord = this.pool.getRecord(operation.leaseIndex)
+        if (
+          transaction.hash?.toLowerCase() !== operation.txHash.toLowerCase() ||
+          transaction.from === null ||
+          getAddress(transaction.from) !==
+            getAddress(operation.senderAddress) ||
+          transaction.value.toString() !== operation.valueWei ||
+          hexlify(post.rawBurnTx).toLowerCase() !==
+            transaction.serialized.toLowerCase() ||
+          toBareHex(post.payloadHash) !== operation.payloadHashHex ||
+          authorityRecord === undefined ||
+          getAddress(authorityRecord.address) !==
+            getAddress(operation.senderAddress)
+        ) {
+          throw new Error('Invalid durable topic-post operation authority')
+        }
+        if (authorityRecord.lifecycle?.spend === undefined) {
+          if (authorityRecord.status !== 'in-use') {
+            throw new Error('Invalid durable topic-post operation authority')
+          }
+          this.pool.recordSpendTransaction(operation.leaseIndex, {
+            rawTx: operation.rawTx,
+            txHash: operation.txHash,
+            valueWei: operation.valueWei,
+          })
+          await this.pool.flush()
+          authorityRecord = this.pool.getRecord(operation.leaseIndex)
+        }
+        if (
+          authorityRecord?.lifecycle?.spend?.rawTx.toLowerCase() !==
+          operation.rawTx.toLowerCase()
+        ) {
+          throw new Error('Invalid durable topic-post operation authority')
+        }
+        if (
+          authorityRecord.status === 'spent' ||
+          authorityRecord.status === 'retired'
+        ) {
+          await this.topicJournal!.delete(operation)
+          await this.walletState!.compactTerminalAccounts(8, admitted)
+          continue
+        }
+        if (authorityRecord.status !== 'in-use') {
+          throw new Error('Invalid durable topic-post operation authority')
+        }
+        const stored = await this.putTopicPost(post)
+        this.assertStoredMatches(stored, operation)
+        this.pool.setStatus(operation.leaseIndex, 'spent')
+        await this.pool.flush()
+        await this.topicJournal!.delete(operation)
+        await this.walletState!.compactTerminalAccounts(8, admitted)
+      }
+    }, admission)
   }
 }

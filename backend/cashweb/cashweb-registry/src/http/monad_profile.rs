@@ -49,14 +49,19 @@
 
 use std::str::FromStr;
 
+use axum::body::Body;
 use axum::{
     extract::{Path, Query},
-    http::StatusCode,
+    http::{
+        header::{HeaderMap, HeaderValue, CONTENT_TYPE},
+        StatusCode,
+    },
     response::{IntoResponse, Response},
     Extension,
 };
 use bitcoinsuite_error::{ErrorMeta, Report, Result};
 use cashweb_http_utils::protobuf::Protobuf;
+use prost::Message;
 use serde::Deserialize;
 use thiserror::Error;
 use tracing::Level;
@@ -67,6 +72,42 @@ use crate::{
     proto,
     registry::Registry,
 };
+
+/// Maximum accepted payload size for Monad profile registration (256 KiB),
+/// matching the CBOR validation route byte limit.
+pub const MAX_PROFILE_PAYLOAD_BYTES: usize = 262_144;
+
+/// A raw request body bounded to [`MAX_PROFILE_PAYLOAD_BYTES`] before reading into memory,
+/// protecting against unauthenticated OOM without requiring a Content-Length header.
+#[derive(Debug)]
+pub struct BoundedProfileBody(pub axum::body::Bytes);
+
+#[async_trait::async_trait]
+impl axum::extract::FromRequest<axum::body::Body> for BoundedProfileBody {
+    type Rejection = (StatusCode, &'static str);
+
+    async fn from_request(
+        req: &mut axum::extract::RequestParts<axum::body::Body>,
+    ) -> std::result::Result<Self, Self::Rejection> {
+        use axum::body::HttpBody;
+        let mut body = req
+            .take_body()
+            .ok_or((StatusCode::INTERNAL_SERVER_ERROR, "body already taken"))?;
+        let mut body_bytes = Vec::new();
+        while let Some(chunk_result) = body.data().await {
+            let chunk = chunk_result
+                .map_err(|_| (StatusCode::BAD_REQUEST, "failed to read request body"))?;
+            if body_bytes.len().saturating_add(chunk.len()) > MAX_PROFILE_PAYLOAD_BYTES {
+                return Err((
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    "profile payload exceeds 256 KiB limit",
+                ));
+            }
+            body_bytes.extend_from_slice(&chunk);
+        }
+        Ok(BoundedProfileBody(body_bytes.into()))
+    }
+}
 
 /// Errors indicating an invalid request to the Monad profile routes, independent of the
 /// pre-existing Lotus [`crate::http::server::RegistryServerError`] (this route has its own address
@@ -97,38 +138,71 @@ fn parse_addr(addr: &str) -> Result<Address> {
 /// [`proto::PutSignedPayloadResponse`] for its response shape (with an always-empty `txid` list,
 /// since profile registration is never burn-gated) purely to match `PUT /metadata/:addr`'s
 /// existing response shape -- not because a burn tx could ever appear here.
+/// Accepts either canonical Frank-CBOR type-2 registration attestation or legacy protobuf SignedPayload.
 pub async fn handle_put_monad_profile(
     Path(address): Path<String>,
-    Protobuf(signed_metadata): Protobuf<cashweb_payload::proto::SignedPayload>,
     Extension(server): Extension<RegistryServer>,
+    headers: HeaderMap,
+    BoundedProfileBody(body_bytes): BoundedProfileBody,
 ) -> std::result::Result<Protobuf<proto::PutSignedPayloadResponse>, HttpRegistryError> {
     let address = parse_addr(&address)?;
-    server
-        .registry
-        .put_monad_profile(address, signed_metadata)?;
+    let is_cbor = headers
+        .get(CONTENT_TYPE)
+        .and_then(|val| val.to_str().ok())
+        .map(|ct| ct.starts_with("application/cbor"))
+        .unwrap_or(false)
+        || crate::store::monad_profiles::is_cbor_frame(&body_bytes);
+
+    if is_cbor {
+        server
+            .registry
+            .put_monad_profile_cbor(address, &body_bytes)?;
+    } else {
+        let signed_metadata = cashweb_payload::proto::SignedPayload::decode(body_bytes.as_ref())
+            .map_err(|err| {
+                HttpRegistryError(Report::from(
+                    crate::monad_profile_verify::MonadProfileVerifyError::InvalidProfilePayload(
+                        err.to_string(),
+                    ),
+                ))
+            })?;
+        server
+            .registry
+            .put_monad_profile(address, signed_metadata)?;
+    }
     Ok(Protobuf(proto::PutSignedPayloadResponse { txid: vec![] }))
 }
 
-/// `GET /metadata/monad/:addr`: fetch a previously-registered Monad profile's
-/// `cashweb_payload::proto::SignedPayload` envelope.
+/// `GET /metadata/monad/:addr`: fetch a previously-registered Monad profile's exact stored bytes.
+/// Returns Content-Type application/cbor for CBOR registrations, or application/x-protobuf for legacy.
 pub async fn handle_get_monad_profile(
     Path(address): Path<String>,
     Extension(server): Extension<RegistryServer>,
-) -> std::result::Result<Protobuf<cashweb_payload::proto::SignedPayload>, HttpRegistryError> {
+) -> std::result::Result<Response, HttpRegistryError> {
     let address = parse_addr(&address)?;
-    let signed = fetch_profile_or_not_found(&server.registry, address)?;
-    Ok(Protobuf(signed))
+    let raw = fetch_profile_raw_or_not_found(&server.registry, address)?;
+    let content_type = if crate::store::monad_profiles::is_cbor_frame(&raw) {
+        "application/cbor"
+    } else {
+        "application/x-protobuf"
+    };
+    let mut response = Response::builder()
+        .status(StatusCode::OK)
+        .body(axum::body::boxed(Body::from(raw)))
+        .unwrap();
+    response
+        .headers_mut()
+        .insert(CONTENT_TYPE, HeaderValue::from_static(content_type));
+    Ok(response)
 }
 
-/// Fetch a registered Monad profile, or fail with [`MonadProfileRouteError::ProfileNotFound`] --
-/// shared by [`handle_get_monad_profile`] and `crate::http::server::handle_get_registry`'s
-/// Monad-address dispatch branch, so the two routes can't drift on "not found" handling.
-pub(crate) fn fetch_profile_or_not_found(
+/// Fetch raw registered profile bytes, or fail with [`MonadProfileRouteError::ProfileNotFound`].
+pub(crate) fn fetch_profile_raw_or_not_found(
     registry: &Registry,
     address: Address,
-) -> Result<cashweb_payload::proto::SignedPayload> {
+) -> Result<Vec<u8>> {
     Ok(registry
-        .get_monad_profile(address)?
+        .get_monad_profile_raw(address)?
         .ok_or(ProfileNotFound(address))?)
 }
 
@@ -168,12 +242,12 @@ pub async fn handle_list_monad_profiles(
     let since = params.since.unwrap_or(0);
     let entries = server
         .registry
-        .list_monad_profiles_since(since)
+        .list_monad_profiles_since_raw(since)
         .map_err(ListMonadProfilesError::Infrastructure)?
         .into_iter()
-        .map(|(address, signed_payload)| proto::ListMonadProfilesEntry {
+        .map(|(address, raw_bytes)| proto::ListMonadProfilesEntry {
             address: address.to_hex(),
-            signed_payload: Some(signed_payload),
+            signed_payload: raw_bytes,
         })
         .collect();
     Ok(Protobuf(proto::ListMonadProfilesResponse { entries }))
@@ -208,12 +282,12 @@ pub async fn handle_search_monad_profiles(
     let limit = params.limit.unwrap_or(DEFAULT_SEARCH_LIMIT);
     let entries = server
         .registry
-        .search_monad_profiles_by_name(&prefix, limit)
+        .search_monad_profiles_by_name_raw(&prefix, limit)
         .map_err(ListMonadProfilesError::Infrastructure)?
         .into_iter()
-        .map(|(address, signed_payload)| proto::ListMonadProfilesEntry {
+        .map(|(address, raw_bytes)| proto::ListMonadProfilesEntry {
             address: address.to_hex(),
-            signed_payload: Some(signed_payload),
+            signed_payload: raw_bytes,
         })
         .collect();
     Ok(Protobuf(proto::ListMonadProfilesResponse { entries }))
@@ -363,7 +437,10 @@ mod tests {
             .unwrap();
         assert_eq!(response.entries.len(), 1);
         assert_eq!(response.entries[0].address, alice_address.to_hex());
-        assert_eq!(response.entries[0].signed_payload, Some(alice_signed));
+        assert_eq!(
+            response.entries[0].signed_payload,
+            alice_signed.encode_to_vec()
+        );
     }
 
     #[tokio::test]
@@ -432,6 +509,6 @@ mod tests {
         let body = proto::ListMonadProfilesResponse::decode(body_bytes).unwrap();
         assert_eq!(body.entries.len(), 1);
         assert_eq!(body.entries[0].address, address.to_hex());
-        assert_eq!(body.entries[0].signed_payload, Some(signed));
+        assert_eq!(body.entries[0].signed_payload, signed.encode_to_vec());
     }
 }

@@ -7,7 +7,6 @@ import __pb_signed_payload_payload_pb from '../signed_payload/payload_pb'
 const { SignedPayload, SignedPayloadSet, BurnOutputs } =
   __pb_signed_payload_payload_pb
 import pop from '../pop'
-import { PrivateKey, PublicKey } from 'bitcore-lib-xpi'
 import { pondBurnOutputSatoshis } from './burn-script'
 import { registryBroadcastDigest } from './broadcast-digest'
 import { registryWrapperDigest } from './wrapper-digest'
@@ -18,6 +17,7 @@ import {
   privateKeyFromSecretBytes,
   signEcdsa,
 } from '@frank/nakamoto'
+import { pointFromPublicKey } from '../../nakamoto/src/secp256k1'
 import { Wallet } from '../legacy-wallet'
 import { Utxo } from '../types/utxo'
 import { calcUtxoId } from '../legacy-wallet/helpers'
@@ -73,8 +73,17 @@ export function compactRsFromDer(der: Uint8Array): Buffer {
   return Buffer.concat([r.value, sFixed])
 }
 
+/** Callers still pass bitcore PrivateKey. types.d.ts omits `compressed`. */
+type RegistryPrivateKey = {
+  toBuffer(): Uint8Array
+  compressed?: boolean
+}
+
 /** Compact r||s over a 32-byte digest. A bad digest throws and returns nothing. */
-export function signRegistryDigest(hash: Buffer, privKey: PrivateKey): Buffer {
+export function signRegistryDigest(
+  hash: Buffer,
+  privKey: RegistryPrivateKey,
+): Buffer {
   if (hash.length !== 32) throw new Error('sign-digest')
   const secretBytes = Uint8Array.from(privKey.toBuffer())
   const key = privateKeyFromSecretBytes(secretBytes, true)
@@ -97,10 +106,9 @@ export function registryAddressMetadataDigest(payload: Uint8Array): Uint8Array {
   return cryptoBackend.sha256(Uint8Array.from(payload))
 }
 
-/** SEC1 point of a registry identity key (decision #578). types.d.ts omits
- * the runtime compression flag; bitcore-lib-xpi stays until #259. */
-function registryIdentityPoint(privKey: PrivateKey): Buffer {
-  const compressed = (privKey as unknown as { compressed?: boolean }).compressed
+/** SEC1 point of a registry identity key (decision #578). */
+function registryIdentityPoint(privKey: RegistryPrivateKey): Buffer {
+  const compressed = privKey.compressed
   if (compressed !== true && compressed !== false) {
     throw new Error('registry-identity-pubkey:compressed')
   }
@@ -154,7 +162,7 @@ export class RegistryHandler {
     return lotusFromAddress(address, this.networkName)
   }
 
-  constructRelayUrlMetadata(relayUrl: string, privKey: PrivateKey) {
+  constructRelayUrlMetadata(relayUrl: string, privKey: RegistryPrivateKey) {
     const relayUrlEntry = new Entry()
     relayUrlEntry.setKind('relay-server')
     const rawRelayUrl = new TextEncoder().encode(relayUrl)
@@ -263,9 +271,15 @@ export class RegistryHandler {
     })
   }
 
-  async updateKeyMetadata(relayUrl: string, idPrivKey: PrivateKey) {
+  async updateKeyMetadata(relayUrl: string, idPrivKey: RegistryPrivateKey) {
     assert(this.wallet, 'Missing wallet while running updateKeyMetadata')
-    const idAddress = lotusFromPrivateKey(idPrivKey, this.networkName)
+    // Bitcore keys still expose toPublicKey. The parameter type does not.
+    const idAddress = lotusFromPrivateKey(
+      idPrivKey as RegistryPrivateKey & {
+        toPublicKey(): { toBuffer(): Uint8Array }
+      },
+      this.networkName,
+    )
     // Construct metadata
     const signedPayload = this.constructRelayUrlMetadata(relayUrl, idPrivKey)
 
@@ -442,8 +456,12 @@ export class RegistryHandler {
     assert(typeof payload !== 'string', 'payload type should not be a string')
     const message = BroadcastMessage.deserializeBinary(payload)
     const pubKey = Buffer.from(wrapper.getPublicKey())
+    const pointBytes = Uint8Array.from(pubKey)
+    if (pointFromPublicKey(pointBytes) === null) {
+      throw new Error('registry-public-key')
+    }
     const address = lotusFromPublicKey(
-      PublicKey.fromBuffer(pubKey),
+      { toBuffer: () => pointBytes },
       this.networkName,
     )
     const entries = message.getEntriesList()

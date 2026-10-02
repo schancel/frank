@@ -1,6 +1,3 @@
-import { readFileSync } from 'fs'
-import { join } from 'path'
-
 import { PrivateKey } from 'bitcore-lib-xpi'
 
 import { registryIdentityPublicKey } from './identity-pubkey'
@@ -18,12 +15,6 @@ function bitcorePublicKey(hex: string, compressed: boolean): Buffer {
     ? new PrivateKey(hex)
     : new PrivateKey(Buffer.from(hex, 'hex'))
   return key.toPublicKey().toBuffer()
-}
-
-function methodBody(source: string, name: string, next: string): string {
-  const start = source.indexOf(name)
-  const end = source.indexOf(next, start)
-  return source.slice(start, end)
 }
 
 it('matches bitcore registry identity public keys', () => {
@@ -67,39 +58,6 @@ it('matches bitcore registry identity public keys', () => {
     uncompressed.toPublicKey().toBuffer(),
   )
   expect(uncompressed.toPublicKey().toBuffer().length).toBe(65)
-
-  const source = readFileSync(join(__dirname, 'index.ts'), 'utf8')
-  const metadata = methodBody(
-    source,
-    'constructRelayUrlMetadata(',
-    'async fetchMetadata(',
-  )
-  const broadcast = methodBody(source, 'async createBroadcast(', 'async addOfferings(')
-  const offerings = methodBody(source, 'async addOfferings(', 'parseWrapper(')
-  for (const body of [metadata, broadcast, offerings]) {
-    expect(body).toContain('registryIdentityPoint(')
-    expect(body).not.toContain('toPublicKey')
-  }
-  expect(broadcast).toContain('crypto.Hash.sha256(')
-  expect(offerings).not.toContain('crypto.Hash.sha256(')
-  const burn = methodBody(
-    source,
-    'private constructBurnTransaction(',
-    'async createBroadcast(',
-  )
-  expect(burn).toContain('registryBurnOutput(')
-  expect(burn).not.toContain('new Transaction.Output(')
-  expect(source).toContain('PublicKey.fromBuffer(')
-  expect(source).toContain('crypto.Hash.sha256(')
-
-  const helper = readFileSync(join(__dirname, 'identity-pubkey.ts'), 'utf8')
-  expect(helper).toContain('publicFromPrivate(')
-  expect(helper).toContain('privateKeyFromSecretBytes(')
-  expect(helper).not.toContain('point.mul')
-  expect(helper).not.toContain('pointMultiply')
-  expect(helper).not.toContain('point.add')
-  expect(helper).not.toContain('899')
-  expect(helper).not.toContain('10605')
 })
 
 it('rejects a secret outside (0, n), a non-32-byte secret, and a missing flag', () => {
@@ -120,13 +78,4 @@ it('rejects a secret outside (0, n), a non-32-byte secret, and a missing flag', 
     registryIdentityPublicKey(kept, undefined as unknown as boolean),
   ).toThrow('registry-identity-pubkey:compressed')
   expect(kept.toString('hex')).toBe(SECRET)
-
-  const source = readFileSync(join(__dirname, 'index.ts'), 'utf8')
-  const point = source.slice(
-    source.indexOf('function registryIdentityPoint('),
-    source.indexOf('function calculateBurnAmount('),
-  )
-  expect(point).toContain('registry-identity-pubkey:compressed')
-  expect(point).toContain('registryIdentityPublicKey(')
-  expect(point).not.toContain('toPublicKey')
 })

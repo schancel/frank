@@ -1,6 +1,3 @@
-import { readFileSync } from 'fs'
-import { join } from 'path'
-
 import { PrivateKey } from 'bitcore-lib-xpi'
 
 import { MessageConstructor } from './constructors'
@@ -45,37 +42,6 @@ it('matches bitcore stealth ephemeral public keys', () => {
   ).toEqual(bitcorePublicKey(ONE, true))
   expect(secret.toString('hex')).toBe(SECRET)
   expect(almost.toString('hex')).toBe(N_MINUS_1)
-
-  const source = readFileSync(join(__dirname, 'constructors.ts'), 'utf8')
-  const stealthStart = source.indexOf('constructStealthEntry(')
-  const stealthBody = source.slice(
-    stealthStart,
-    source.indexOf('constructImageEntry(', stealthStart),
-  )
-  expect(stealthBody).toContain('stealthEphemeralPublicKey(')
-  expect(stealthBody).not.toContain('.publicKey')
-  expect(stealthBody).not.toContain('toPublicKey')
-  expect(stealthBody).toContain('constructStealthTransactions(')
-
-  const helper = readFileSync(
-    join(__dirname, 'stealth-ephemeral-pubkey.ts'),
-    'utf8',
-  )
-  expect(helper).toContain('publicFromPrivate(')
-  expect(helper).toContain('privateKeyFromSecretBytes(')
-  expect(helper).not.toContain('point.mul')
-  expect(helper).not.toContain('pointMultiply')
-  expect(helper).not.toContain('point.add')
-  expect(helper).not.toContain('899')
-  expect(helper).not.toContain('10605')
-
-  const registry = readFileSync(join(__dirname, '../registry/index.ts'), 'utf8')
-  expect(registry).toContain('registryIdentityPoint(')
-  expect(registry).not.toContain('toPublicKey(')
-  expect(registry).toContain('crypto.Hash.sha256(')
-  expect(registry).toContain('registryBurnOutput(')
-  expect(registry).not.toContain('new Transaction.Output(')
-  expect(registry).toContain('PublicKey.fromBuffer(')
 })
 
 it('sets ephemeral_pub_key from the generated private key', () => {

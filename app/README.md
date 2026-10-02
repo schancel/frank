@@ -25,9 +25,13 @@
 Clone this repository using
 
 ```bash
-git clone https://github.com/stampchat/stamp.git
-cd stamp
+git clone https://github.com/schancel/frank.git
+cd frank
 ```
+
+The UI calls `@frank/wallet` and `@frank/cashweb`. It does not own chain
+codecs, encryption suites, or CashWeb CBOR layouts. A few screens still import
+`bitcore-lib-xpi` while issue #257 is open.
 
 ### Development Mode
 

@@ -1,15 +1,17 @@
 # @frank/crypto-box
 
-Versioned deniable encryption. This envelope is not the live relay protobuf and it is not a CBOR version-1 frame. CBOR version 1 allocates no production encryption suite. Do not write these registry ids into a version-1 CBOR encryption-suite field. They are not S2b or S2c. Decision 356.
+Versioned deniable encryption. This package owns suite ids, the KEM, the KDF, the AEAD, envelope bytes, and the vectors for those suites.
+
+Callers pass byte arrays in and get byte arrays out. This package does not read or write CashWeb CBOR. The live relay path is still protobuf. `@frank/codec` and `frank-cbor` marshal frames and hand this package those bytes.
 
 ## Suites
 
-| Id       | Name                    | Mode | AEAD               | CBOR v1 |
-| -------- | ----------------------- | ---- | ------------------ | ------- |
-| `0xFE01` | base-aes-256-gcm        | base | AES-256-GCM        | waiting |
-| `0xFE02` | base-xchacha20-poly1305 | base | XChaCha20-Poly1305 | waiting |
-| `0xFE03` | auth-aes-256-gcm        | auth | AES-256-GCM        | waiting |
-| `0xFE04` | auth-xchacha20-poly1305 | auth | XChaCha20-Poly1305 | waiting |
+| Id       | Name                    | Mode | AEAD               |
+| -------- | ----------------------- | ---- | ------------------ |
+| `0xFE01` | base-aes-256-gcm        | base | AES-256-GCM        |
+| `0xFE02` | base-xchacha20-poly1305 | base | XChaCha20-Poly1305 |
+| `0xFE03` | auth-aes-256-gcm        | auth | AES-256-GCM        |
+| `0xFE04` | auth-xchacha20-poly1305 | auth | XChaCha20-Poly1305 |
 
 Suite id 65535 is reserved for proof vectors and is never produced. AES-CBC is not used.
 

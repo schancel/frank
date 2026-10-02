@@ -4,7 +4,22 @@ Browser-safe TypeScript reference codec for Frank deterministic CBOR, version 1.
 normative specification is `docs/protocol/cbor/` (README, `*.cddl`, `vectors.schema.json`).
 This is the prototype package for issues #131 and #183; issue #136 adds the topic-event types. No production message, profile,
 mailbox, topic or payment path uses it. Rollback is deleting this package and
-`docs/protocol/cbor/vectors/`.
+`docs/protocol/cbor/vectors/`. The Rust codec is `backend/cashweb/frank-cbor`.
+It is not imported here. Shared vectors under `docs/protocol/cbor/vectors/` are
+the compatibility contract.
+
+## Encryption suites
+
+This package owns Frank-CBOR field layout, including the version-1 encryption-suite
+field. Version 1 allocates no production encryption suite. Suite 65535 is reserved
+for opaque proof-vector ciphertext (spec S2c) and is not a production suite.
+`@frank/crypto-box` registry ids `0xFE01`, `0xFE02`, `0xFE03`, and `0xFE04` are
+not version-1 encryption-suite allocations (decision 356). A crypto-box envelope
+is not a frame. This codec marshals and unmarshals frames. A digest or
+ciphertext is a byte array passed into `@frank/nakamoto` or `@frank/crypto-box`.
+Nakamoto still owns the HD nodes, keys, and transactions that do the signing.
+Neither package parses CBOR. Callers do not write crypto-box registry ids into
+a version-1 encryption-suite field.
 
 ## Scope
 

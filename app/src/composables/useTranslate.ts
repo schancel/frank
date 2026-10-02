@@ -19,6 +19,12 @@ export function useTranslate(): TranslateFunction {
         params,
       )
     }
-    return translateMessage(key)
+    let message = translateMessage(key)
+    if (params) {
+      for (const [paramKey, paramVal] of Object.entries(params)) {
+        message = message.replaceAll(`{${paramKey}}`, String(paramVal))
+      }
+    }
+    return message
   }
 }

@@ -113,6 +113,10 @@ import {
   SubAccountLeaseManager,
 } from "../monad-account-lease";
 import { MonadHttpClient } from "../monad-http";
+import {
+  createMonadJsonRpcProvider,
+  DEFAULT_MONAD_CHAIN_ID,
+} from "../monad-provider";
 import { MonadAccountTxSigner } from "../monad-account-tx";
 import { MonadWalletHandle } from "../monad-wallet-handle";
 import {
@@ -165,6 +169,8 @@ import {
 export interface MonadChainConfig {
   /** Monad JSON-RPC HTTP endpoint, e.g. `MONAD_TESTNET_HTTP_RPC_URL`. */
   rpcUrl: string;
+  /** Expected EVM chain ID, e.g. 10143 for Monad testnet. */
+  chainId?: number | bigint;
   /** Base URL of the `cashweb-registry` relay. */
   relayBaseUrl: string;
   /** Frank network tag included in every DM envelope before hashing. */
@@ -202,8 +208,19 @@ function readEnv(key: string): string | undefined {
  * "Configuration", for why this (unlike the wallet client modules it configures) reads env
  * directly, and why it never throws on a missing var. */
 export function loadMonadChainConfigFromEnv(): MonadChainConfig {
+  const rawChainId = readEnv("MONAD_CHAIN_ID");
+  let chainId: bigint | undefined;
+  if (rawChainId) {
+    try {
+      chainId = BigInt(rawChainId);
+    } catch {
+      // ignore invalid env var and fallback
+    }
+  }
+
   return {
     rpcUrl: readEnv("MONAD_TESTNET_HTTP_RPC_URL") ?? "http://127.0.0.1:8545",
+    chainId: chainId ?? DEFAULT_MONAD_CHAIN_ID,
     relayBaseUrl:
       readEnv("MONAD_RELAY_BASE_URL") ??
       readEnv("E2E_DEMO_RELAY_URL") ??
@@ -1117,8 +1134,14 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
           store: changeStore,
         });
         const leaseManager = new SubAccountLeaseManager(pool);
-        const provider = new JsonRpcProvider(config.rpcUrl);
-        const httpClient = new MonadHttpClient({ rpcUrl: config.rpcUrl });
+        const provider = createMonadJsonRpcProvider({
+          rpcUrl: config.rpcUrl,
+          chainId: config.chainId,
+        });
+        const httpClient = new MonadHttpClient({
+          rpcUrl: config.rpcUrl,
+          chainId: config.chainId,
+        });
         const wallet: MonadChainWalletHandle = {
           identity,
           pool,

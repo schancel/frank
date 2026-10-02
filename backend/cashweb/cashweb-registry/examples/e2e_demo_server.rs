@@ -184,6 +184,7 @@ async fn main() -> Result<()> {
         pop_gate,
         curated_defaults: Arc::new(curated_defaults),
         monad_mailbox: cashweb_registry::monad_mailbox::MonadMailboxRuntime::Disabled,
+        evm_rpc: None,
     };
     let router = server.into_router();
 

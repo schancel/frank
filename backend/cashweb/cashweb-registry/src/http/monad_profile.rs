@@ -373,6 +373,7 @@ mod tests {
             pop_gate: Arc::new(pop_gate),
             curated_defaults: Arc::new(vec![]),
             monad_mailbox: crate::monad_mailbox::MonadMailboxRuntime::Disabled,
+            evm_rpc: None,
         }
     }
 

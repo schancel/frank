@@ -3,6 +3,9 @@
 use crate::{
     http::curated_defaults::{handle_get_curated_default_contacts, CuratedDefaultContact},
     http::error::HttpRegistryError,
+    http::evm_rpc::{
+        handle_issue_rpc_challenge, handle_proxy_rpc, EvmRpcRuntime, RPC_CORS_HEADERS,
+    },
     http::monad_message::{
         handle_ack_private_monad_recovery, handle_get_private_monad_messages,
         handle_get_private_monad_recovery, handle_issue_mailbox_challenge,
@@ -84,6 +87,8 @@ pub struct RegistryServer {
     pub curated_defaults: Arc<Vec<CuratedDefaultContact>>,
     /// Validated direct-message mailbox lifecycle. Disabled mode has no admission route.
     pub monad_mailbox: MonadMailboxRuntime,
+    /// Optional customer-authenticated EVM proxy runtime. `None` installs no `/rpc/*` routes.
+    pub evm_rpc: Option<Arc<EvmRpcRuntime>>,
 }
 
 /// Relevant parts of an HTTP request to put new address metadata.
@@ -163,6 +168,7 @@ impl RegistryServer {
     /// Turn this registry server into a [`Router`].
     pub fn into_router(self) -> Router {
         let mailbox_enabled = self.monad_mailbox.as_enabled().is_some();
+        let evm_rpc_enabled = self.evm_rpc.is_some();
         let router = Router::new()
             .route("/metadata", routing::get(handle_get_metadata_range))
             .route(
@@ -238,6 +244,16 @@ impl RegistryServer {
                 routing::any(|| async { StatusCode::NOT_FOUND }),
             )
         };
+        let router = if evm_rpc_enabled {
+            router
+                .route("/rpc/:chain", routing::post(handle_proxy_rpc))
+                .route(
+                    "/rpc/:chain/auth",
+                    routing::post(handle_issue_rpc_challenge),
+                )
+        } else {
+            router
+        };
         router
             // Monad topic post + burn-weighted vote path (ticket #30), additive alongside
             // the plain Monad-message route above -- see `crate::http::monad_topics`'s module docs.
@@ -287,6 +303,12 @@ impl RegistryServer {
                         header::HeaderName::from_static("x-frank-mailbox-expires-at-ms"),
                         header::HeaderName::from_static("x-frank-mailbox-signature"),
                         header::HeaderName::from_static("x-frank-mailbox-token"),
+                        header::HeaderName::from_static(RPC_CORS_HEADERS[0]),
+                        header::HeaderName::from_static(RPC_CORS_HEADERS[1]),
+                        header::HeaderName::from_static(RPC_CORS_HEADERS[2]),
+                        header::HeaderName::from_static(RPC_CORS_HEADERS[3]),
+                        header::HeaderName::from_static(RPC_CORS_HEADERS[4]),
+                        header::HeaderName::from_static(RPC_CORS_HEADERS[5]),
                     ])
                     .expose_headers([header::HeaderName::from_static(
                         "x-frank-mailbox-next-cursor",

@@ -7,7 +7,7 @@
     unreachable_pub
 )]
 
-use std::{error::Error, fmt, net::SocketAddr, path::PathBuf};
+use std::{collections::HashSet, error::Error, fmt, net::SocketAddr, path::PathBuf};
 
 use bitcoinsuite_bitcoind::rpc_client::BitcoindRpcClientConf;
 use bitcoinsuite_core::Net;
@@ -47,11 +47,177 @@ pub struct RegistryConf {
     /// Durable Monad mailbox admission/reconciliation lifecycle. This is required so disabled is
     /// an explicit operator choice rather than an accidental missing RPC environment variable.
     pub monad_mailbox: MonadMailboxConf,
+    /// Customer-authenticated, allowlisted EVM JSON-RPC proxy. Omitted means disabled so old
+    /// operator configurations do not acquire a new network surface on upgrade.
+    #[serde(default)]
+    pub evm_rpc: EvmRpcConf,
     /// Operator-curated default contacts advertised to fresh clients (ticket #49). Empty by
     /// default -- unlike `PopConf` this is display-only config with no security implications, so
     /// (unlike `pop`) it's safe to default to "none" rather than requiring an explicit value.
     #[serde(default)]
     pub curated_defaults: Vec<CuratedContactConf>,
+}
+
+/// Relay-owned EVM JSON-RPC proxy configuration.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+pub struct EvmRpcConf {
+    /// Whether the relay installs any `/rpc/*` routes.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Chain rows served by the single EVM-family handler.
+    #[serde(default)]
+    pub chains: Vec<EvmRpcChainConf>,
+    /// Maximum accepted request body, before JSON parsing.
+    #[serde(default = "default_rpc_request_bytes")]
+    pub max_request_bytes: usize,
+    /// Maximum number of calls in one JSON-RPC batch.
+    #[serde(default = "default_rpc_batch_len")]
+    pub max_batch_len: usize,
+    /// Maximum accepted upstream response body.
+    #[serde(default = "default_rpc_response_bytes")]
+    pub max_response_bytes: usize,
+    /// Maximum in-flight upstream requests for this relay.
+    #[serde(default = "default_rpc_concurrency")]
+    pub max_concurrency: usize,
+    /// Complete upstream request timeout.
+    #[serde(default = "default_rpc_timeout_ms")]
+    pub timeout_ms: u64,
+}
+
+impl Default for EvmRpcConf {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            chains: vec![],
+            max_request_bytes: default_rpc_request_bytes(),
+            max_batch_len: default_rpc_batch_len(),
+            max_response_bytes: default_rpc_response_bytes(),
+            max_concurrency: default_rpc_concurrency(),
+            timeout_ms: default_rpc_timeout_ms(),
+        }
+    }
+}
+
+const fn default_rpc_request_bytes() -> usize {
+    256 * 1024
+}
+
+const fn default_rpc_batch_len() -> usize {
+    20
+}
+
+const fn default_rpc_response_bytes() -> usize {
+    4 * 1024 * 1024
+}
+
+const fn default_rpc_concurrency() -> usize {
+    32
+}
+
+const fn default_rpc_timeout_ms() -> u64 {
+    15_000
+}
+
+/// One EVM chain row. The upstream itself is named by environment variable so provider secrets
+/// are never serialized into the checked-in operator configuration.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+pub struct EvmRpcChainConf {
+    /// Stable URL path id, for example `monad-testnet`.
+    pub id: String,
+    /// EIP-155 chain id the upstream must report before readiness.
+    pub expected_chain_id: u64,
+    /// Name of the server-only environment variable containing the upstream HTTP(S) URL.
+    pub upstream_env: String,
+    /// Largest inclusive explicit block range accepted by `eth_getLogs`.
+    #[serde(default = "default_rpc_log_range")]
+    pub max_get_logs_range: u64,
+}
+
+const fn default_rpc_log_range() -> u64 {
+    10
+}
+
+/// Invalid EVM proxy configuration.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum EvmRpcConfigError {
+    /// Enabled mode has no chain rows.
+    MissingChains,
+    /// A chain id is empty, unsafe for a path segment, or duplicated.
+    InvalidChainId(String),
+    /// An upstream environment-variable name is empty or malformed.
+    InvalidUpstreamEnv(String),
+    /// A numeric protection limit is zero or exceeds its hard ceiling.
+    InvalidLimit(&'static str),
+}
+
+impl fmt::Display for EvmRpcConfigError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MissingChains => f.write_str("registry.evm_rpc.chains is required when enabled"),
+            Self::InvalidChainId(id) => write!(f, "invalid or duplicate EVM RPC chain id {id:?}"),
+            Self::InvalidUpstreamEnv(name) => {
+                write!(f, "invalid EVM RPC upstream environment name {name:?}")
+            }
+            Self::InvalidLimit(name) => write!(f, "invalid registry.evm_rpc limit {name}"),
+        }
+    }
+}
+
+impl Error for EvmRpcConfigError {}
+
+impl EvmRpcConf {
+    /// Validate the bounded, chain-as-data shape without reading environment secrets.
+    pub fn validate(&self) -> std::result::Result<(), EvmRpcConfigError> {
+        if !self.enabled {
+            return Ok(());
+        }
+        if self.chains.is_empty() {
+            return Err(EvmRpcConfigError::MissingChains);
+        }
+        if self.max_request_bytes == 0 || self.max_request_bytes > 256 * 1024 {
+            return Err(EvmRpcConfigError::InvalidLimit("max_request_bytes"));
+        }
+        if self.max_batch_len == 0 || self.max_batch_len > 100 {
+            return Err(EvmRpcConfigError::InvalidLimit("max_batch_len"));
+        }
+        if self.max_response_bytes == 0 || self.max_response_bytes > 16 * 1024 * 1024 {
+            return Err(EvmRpcConfigError::InvalidLimit("max_response_bytes"));
+        }
+        if self.max_concurrency == 0 || self.max_concurrency > 1024 {
+            return Err(EvmRpcConfigError::InvalidLimit("max_concurrency"));
+        }
+        if self.timeout_ms == 0 || self.timeout_ms > 120_000 {
+            return Err(EvmRpcConfigError::InvalidLimit("timeout_ms"));
+        }
+        let mut ids = HashSet::new();
+        for chain in &self.chains {
+            let valid_id = !chain.id.is_empty()
+                && chain.id.len() <= 64
+                && chain
+                    .id
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-');
+            if !valid_id || !ids.insert(chain.id.as_str()) {
+                return Err(EvmRpcConfigError::InvalidChainId(chain.id.clone()));
+            }
+            let valid_env = !chain.upstream_env.is_empty()
+                && chain.upstream_env.len() <= 128
+                && chain.upstream_env.bytes().enumerate().all(|(index, byte)| {
+                    byte.is_ascii_uppercase()
+                        || byte == b'_'
+                        || (index > 0 && byte.is_ascii_digit())
+                });
+            if !valid_env {
+                return Err(EvmRpcConfigError::InvalidUpstreamEnv(
+                    chain.upstream_env.clone(),
+                ));
+            }
+            if chain.expected_chain_id == 0 || chain.max_get_logs_range == 0 {
+                return Err(EvmRpcConfigError::InvalidLimit("chain row"));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Typed durable Monad mailbox configuration.
@@ -271,9 +437,36 @@ mod tests {
     use bitcoinsuite_error::Result;
 
     use crate::{
-        parse_conf, CashwebdConf, CuratedContactConf, InitialMetadataDownloadConf,
-        MonadMailboxConf, MonadMailboxConfigError, MonadMailboxMode, PopConf, RegistryConf,
+        parse_conf, CashwebdConf, CuratedContactConf, EvmRpcChainConf, EvmRpcConf,
+        EvmRpcConfigError, InitialMetadataDownloadConf, MonadMailboxConf, MonadMailboxConfigError,
+        MonadMailboxMode, PopConf, RegistryConf,
     };
+
+    #[test]
+    fn evm_rpc_is_disabled_when_omitted_and_validates_enabled_rows() -> Result<()> {
+        let base = EvmRpcConf::default();
+        assert!(!base.enabled);
+        assert_eq!(base.validate(), Ok(()));
+
+        let mut enabled = EvmRpcConf {
+            enabled: true,
+            chains: vec![EvmRpcChainConf {
+                id: "monad-testnet".to_string(),
+                expected_chain_id: 10_143,
+                upstream_env: "MONAD_TESTNET_HTTP_RPC_URL".to_string(),
+                max_get_logs_range: 10,
+            }],
+            ..base
+        };
+        assert_eq!(enabled.validate(), Ok(()));
+
+        enabled.chains.push(enabled.chains[0].clone());
+        assert!(matches!(
+            enabled.validate(),
+            Err(EvmRpcConfigError::InvalidChainId(id)) if id == "monad-testnet"
+        ));
+        Ok(())
+    }
 
     #[test]
     fn test_config_err() -> Result<()> {
@@ -341,6 +534,7 @@ mod tests {
                         min_value_wei: None,
                         expected_chain_id: None,
                     },
+                    evm_rpc: EvmRpcConf::default(),
                     curated_defaults: vec![],
                 },
                 bitcoin_rpc: Some(BitcoindRpcClientConf {
@@ -414,6 +608,7 @@ mod tests {
                         min_value_wei: None,
                         expected_chain_id: None,
                     },
+                    evm_rpc: EvmRpcConf::default(),
                     curated_defaults: vec![],
                 },
                 bitcoin_rpc: Some(BitcoindRpcClientConf {
@@ -511,7 +706,7 @@ mod tests {
     }
 
     #[test]
-    fn deployed_default_configurations_enable_the_monad_mailbox() {
+    fn deployed_default_configurations_enable_mailbox_and_evm_proxy() {
         // The mailbox is on by default (owner decision, ticket #279): both checked-in defaults
         // must parse enabled with the safe non-secret keys. The RPC URL is deliberately absent
         // (secret-bearing); `cashwebd-exe` resolves it from MONAD_TESTNET_HTTP_RPC_URL, so
@@ -553,6 +748,17 @@ mod tests {
                 }),
                 "{name}"
             );
+            assert!(conf.registry.evm_rpc.enabled, "{name}");
+            assert_eq!(conf.registry.evm_rpc.chains.len(), 1, "{name}");
+            assert_eq!(
+                conf.registry.evm_rpc.chains[0].id, "monad-testnet",
+                "{name}"
+            );
+            assert_eq!(
+                conf.registry.evm_rpc.chains[0].upstream_env, "MONAD_TESTNET_HTTP_RPC_URL",
+                "{name}"
+            );
+            conf.registry.evm_rpc.validate().unwrap();
         }
     }
 

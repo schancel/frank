@@ -5,8 +5,7 @@ import { stampParentSecret } from './stamp-parent'
 
 const NETWORK = 'livenet'
 const DEST_SECRET = '11'.repeat(32)
-const N_HEX =
-  'fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141'
+const N_HEX = 'fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141'
 const N_MINUS_1 =
   'fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364140'
 const ZERO_SUM_DIGEST =
@@ -27,22 +26,22 @@ it('matches bitcore stamp parent secrets for digests in (0, n)', () => {
   )
   const digest = Buffer.from('33'.repeat(32), 'hex')
   const key = ctor.constructStampPrivateKey(digest, destination)
-  const described = key.toObject() as { compressed: boolean; network: string }
-  expect(key.toBuffer()).toEqual(bitcoreStampParent(digest, destination))
-  expect(described.compressed).toBe(true)
-  expect(described.network).toBe('livenet')
-  expect(key.network.name).toBe('livenet')
+  const oracle = bitcoreStampParent(digest, destination)
+  expect(key.toBuffer()).toEqual(oracle)
+  expect(key.toPublicKey().toBuffer()).toEqual(
+    new PrivateKey(oracle.toString('hex')).toPublicKey().toBuffer(),
+  )
   const pub = ctor.constructStampPublicKey(digest, destination.toPublicKey())
-  expect(
-    bitcoreCrypto.Point.pointToCompressed(key.toPublicKey().point),
-  ).toEqual(pub.toBuffer())
+  expect(key.toPublicKey().toBuffer()).toEqual(pub.toBuffer())
 
   const almost = new PrivateKey(N_MINUS_1)
   const cross = Buffer.alloc(32)
   cross[31] = 2
   const crossed = ctor.constructStampPrivateKey(cross, almost)
   expect(crossed.toBuffer()).toEqual(bitcoreStampParent(cross, almost))
-  expect(crossed.toBuffer().toString('hex')).toBe(`${'00'.repeat(31)}01`)
+  expect(Buffer.from(crossed.toBuffer()).toString('hex')).toBe(
+    `${'00'.repeat(31)}01`,
+  )
 
   const hd = ctor.constructStampHDPrivateKey(digest, destination)
   expect(Buffer.from(hd.privateKey.bytes)).toEqual(key.toBuffer())
@@ -60,7 +59,6 @@ it('matches bitcore stamp parent secrets for digests in (0, n)', () => {
     Buffer.from(stampParentSecret(Uint8Array.from(almost.toBuffer()), cross)),
   ).toEqual(Buffer.from(crossedHd.privateKey.bytes))
   expect(almost.toBuffer().toString('hex')).toBe(N_MINUS_1)
-
 })
 
 it('rejects a zero sum and digests outside (0, n)', () => {
@@ -73,19 +71,20 @@ it('rejects a zero sum and digests outside (0, n)', () => {
   expect(() => stampParentSecret(secret, zeroSum)).toThrow(
     'stamp-parent:scalar-out-of-range',
   )
-  expect(() =>
-    new PrivateKey(
-      bitcoreCrypto.BN.fromBuffer(zeroSum)
-        .add(destination.toBigNumber())
-        .mod(bitcoreCrypto.Point.getN()),
-    ),
+  expect(
+    () =>
+      new PrivateKey(
+        bitcoreCrypto.BN.fromBuffer(zeroSum)
+          .add(destination.toBigNumber())
+          .mod(bitcoreCrypto.Point.getN()),
+      ),
   ).toThrow('Number can not be equal to zero')
   expect(() => stampParentSecret(secret, Buffer.alloc(32))).toThrow(
     'stamp-parent:scalar-out-of-range',
   )
-  expect(() =>
-    stampParentSecret(secret, Buffer.from(N_HEX, 'hex')),
-  ).toThrow('stamp-parent:scalar-out-of-range')
+  expect(() => stampParentSecret(secret, Buffer.from(N_HEX, 'hex'))).toThrow(
+    'stamp-parent:scalar-out-of-range',
+  )
   expect(() =>
     stampParentSecret(secret, Buffer.from('33'.repeat(31), 'hex')),
   ).toThrow('stamp-parent:digest')

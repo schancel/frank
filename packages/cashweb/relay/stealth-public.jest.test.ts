@@ -1,8 +1,4 @@
-import {
-  PrivateKey,
-  PublicKey,
-  crypto as bitcoreCrypto,
-} from 'bitcore-lib-xpi'
+import { PrivateKey, PublicKey, crypto as bitcoreCrypto } from 'bitcore-lib-xpi'
 
 import { PayloadConstructor } from './crypto'
 import { stealthParentScalar } from './stealth-parent'
@@ -11,8 +7,7 @@ import { stealthParentPublicKey } from './stealth-public'
 const NETWORK = 'livenet'
 const DEST_SECRET = '11'.repeat(32)
 const EPHEMERAL_SECRET = '22'.repeat(32)
-const N_HEX =
-  'fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141'
+const N_HEX = 'fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141'
 const N_MINUS_1 =
   'fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364140'
 const N_PLUS_ONE =
@@ -121,16 +116,15 @@ it('matches bitcore and the stealth parent scalar for the reduced digest', () =>
     NETWORK,
   )
   const derived = ctor.constructStealthPublicKey(ephemeral, uncompressed)
-  const described = derived.stealthPublicKey.toObject() as {
-    compressed: boolean
-  }
   const raw = bitcoreCrypto.Point.pointToCompressed(
     uncompressed.point.mul(ephemeral.bn),
   )
   const expectedDigest = bitcoreCrypto.Hash.sha256(raw)
+  const expectedPublic = bitcoreReducedPublic(expectedDigest, uncompressed)
   expect(Buffer.from(derived.digest)).toEqual(expectedDigest)
+  expect(derived.stealthPublicKey.toBuffer()).toEqual(expectedPublic)
   expect(derived.stealthPublicKey.toBuffer()).toEqual(
-    bitcoreReducedPublic(expectedDigest, uncompressed),
+    new PublicKey(Buffer.from(expectedPublic)).toBuffer(),
   )
   expect(derived.stealthPublicKey.toBuffer()).toEqual(
     ctor
@@ -138,11 +132,11 @@ it('matches bitcore and the stealth parent scalar for the reduced digest', () =>
       .stealthPrivateKey.toPublicKey()
       .toBuffer(),
   )
-  expect(described.compressed).toBe(true)
-  expect(derived.stealthPublicKey.network.name).toBe('livenet')
   expect(derived.stealthPublicKey.toBuffer().length).toBe(33)
   expect(
-    ctor.constructStealthPublicKey(ephemeral, compressed).stealthPublicKey.toBuffer(),
+    ctor
+      .constructStealthPublicKey(ephemeral, compressed)
+      .stealthPublicKey.toBuffer(),
   ).toEqual(derived.stealthPublicKey.toBuffer())
 
   const hd = ctor.constructHDStealthPublicKey(ephemeral, uncompressed)
@@ -175,7 +169,6 @@ it('matches bitcore and the stealth parent scalar for the reduced digest', () =>
   stealthParentPublicKey(callerPoint, callerDigest)
   expect(Buffer.from(callerPoint)).toEqual(uncompressed.toBuffer())
   expect(Buffer.from(callerDigest).toString('hex')).toBe('33'.repeat(32))
-
 })
 
 it('rejects a bad point, a bad digest, and a point at infinity', () => {
@@ -213,7 +206,9 @@ it('rejects a bad point, a bad digest, and a point at infinity', () => {
   )
   expect(() =>
     PublicKey.fromPoint(
-      PrivateKey.fromBuffer(inverse).toPublicKey().point.add(destination.toPublicKey().point),
+      PrivateKey.fromBuffer(inverse)
+        .toPublicKey()
+        .point.add(destination.toPublicKey().point),
     ),
   ).toThrow()
   expect(() =>

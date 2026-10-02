@@ -238,6 +238,9 @@ pub struct EvmRpcChainConf {
     pub expected_chain_id: u64,
     /// Name of the server-only environment variable containing the upstream HTTP(S) URL.
     pub upstream_env: String,
+    /// Optional server-only environment variable containing the upstream WebSocket URL.
+    #[serde(default)]
+    pub upstream_ws_env: Option<String>,
     /// Optional block number whose hash must match before readiness.
     #[serde(default)]
     pub checkpoint_block_number: Option<u64>,
@@ -358,6 +361,20 @@ impl EvmRpcConf {
                 return Err(EvmRpcConfigError::InvalidUpstreamEnv(
                     chain.upstream_env.clone(),
                 ));
+            }
+            if let Some(upstream_ws_env) = &chain.upstream_ws_env {
+                let valid_ws_env = !upstream_ws_env.is_empty()
+                    && upstream_ws_env.len() <= 128
+                    && upstream_ws_env.bytes().enumerate().all(|(index, byte)| {
+                        byte.is_ascii_uppercase()
+                            || byte == b'_'
+                            || (index > 0 && byte.is_ascii_digit())
+                    });
+                if !valid_ws_env {
+                    return Err(EvmRpcConfigError::InvalidUpstreamEnv(
+                        upstream_ws_env.clone(),
+                    ));
+                }
             }
             if chain.expected_chain_id == 0 || chain.max_get_logs_range == 0 {
                 return Err(EvmRpcConfigError::InvalidLimit("chain row"));
@@ -776,6 +793,7 @@ mod tests {
                 id: "monad-testnet".to_string(),
                 expected_chain_id: 10_143,
                 upstream_env: "MONAD_TESTNET_HTTP_RPC_URL".to_string(),
+                upstream_ws_env: None,
                 checkpoint_block_number: None,
                 checkpoint_block_hash: None,
                 max_get_logs_range: 10,
@@ -795,6 +813,12 @@ mod tests {
             Err(EvmRpcConfigError::InvalidLimit("capability_ttl_ms"))
         );
         enabled.capability_ttl_ms = 60 * 60 * 1000;
+        enabled.chains[0].upstream_ws_env = Some(String::new());
+        assert_eq!(
+            enabled.validate(),
+            Err(EvmRpcConfigError::InvalidUpstreamEnv(String::new()))
+        );
+        enabled.chains[0].upstream_ws_env = Some("MONAD_TESTNET_WS_RPC_URL".to_string());
 
         enabled.chains.push(enabled.chains[0].clone());
         assert!(matches!(
@@ -825,6 +849,7 @@ mod tests {
                 id: "btc-mainnet".to_string(),
                 expected_chain_id: 10_143,
                 upstream_env: "BTC_RPC".to_string(),
+                upstream_ws_env: None,
                 checkpoint_block_number: None,
                 checkpoint_block_hash: None,
                 max_get_logs_range: 10,
@@ -1149,6 +1174,10 @@ mod tests {
             );
             assert_eq!(
                 conf.registry.evm_rpc.chains[0].upstream_env, "MONAD_TESTNET_HTTP_RPC_URL",
+                "{name}"
+            );
+            assert_eq!(
+                conf.registry.evm_rpc.chains[0].upstream_ws_env, None,
                 "{name}"
             );
             conf.registry.evm_rpc.validate().unwrap();

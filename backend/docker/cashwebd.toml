@@ -41,6 +41,8 @@ capability_ttl_ms = 3600000
 id = "monad-testnet"
 expected_chain_id = 10143
 upstream_env = "MONAD_TESTNET_HTTP_RPC_URL"
+# Optional; uncomment and pass this environment variable to enable WebSockets.
+# upstream_ws_env = "MONAD_TESTNET_WS_RPC_URL"
 max_get_logs_range = 10
 
 [registry.pop]

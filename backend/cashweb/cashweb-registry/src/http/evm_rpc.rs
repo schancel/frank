@@ -15,18 +15,27 @@ use std::{
 
 use axum::{
     body::{boxed, Bytes, HttpBody},
-    extract::{connect_info::ConnectInfo, Extension, Path},
+    extract::{
+        connect_info::ConnectInfo,
+        ws::{Message as ClientWsMessage, WebSocket, WebSocketUpgrade},
+        Extension, Path,
+    },
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     Json,
 };
 use cashweb_config::EvmRpcConf;
+use futures::{SinkExt, StreamExt};
 use hmac::{Hmac, Mac};
 use rand::RngCore;
 use serde::Serialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio_tungstenite::{
+    connect_async_with_config,
+    tungstenite::{protocol::WebSocketConfig, Message as UpstreamWsMessage},
+};
 use url::Url;
 
 use crate::{
@@ -51,6 +60,8 @@ const RPC_CAPABILITY_CUSTOMER_DOMAIN: &[u8] = b"frank:rpc-capability-customer:v1
 const RPC_CAPABILITY_NONCE_BYTES: usize = 16;
 const RPC_CAPABILITY_BYTES: usize = 1 + 20 + 8 + RPC_CAPABILITY_NONCE_BYTES + 32;
 const RPC_CAPABILITY_VERSION: u8 = 1;
+const MAX_WS_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
+const MAX_WS_SUBSCRIPTIONS: usize = 32;
 // EVM clients batch when they can, but boot-time log scans and multi-account sweeps can still
 // legitimately exceed the mailbox's much smaller read cadence. This is replay-retention capacity,
 // not the usage limit; weighted fixed-hour quotas remain the resource-control boundary.
@@ -152,6 +163,7 @@ struct EvmChainRuntime {
     id: String,
     expected_chain_id: u64,
     upstream_url: Url,
+    upstream_ws_url: Option<Url>,
     checkpoint: Option<(u64, String)>,
     max_get_logs_range: u64,
 }
@@ -162,6 +174,10 @@ impl fmt::Debug for EvmChainRuntime {
             .field("id", &self.id)
             .field("expected_chain_id", &self.expected_chain_id)
             .field("upstream_url", &"<redacted>")
+            .field(
+                "upstream_ws_url",
+                &self.upstream_ws_url.as_ref().map(|_| "<redacted>"),
+            )
             .field("checkpoint", &self.checkpoint)
             .field("max_get_logs_range", &self.max_get_logs_range)
             .finish()
@@ -302,7 +318,7 @@ impl RpcAuthState {
         (hex::encode(bytes), expires_at_ms)
     }
 
-    fn verify_capability(&self, token: &str, chain: &str, now_ms: i64) -> Option<Address> {
+    fn verify_capability(&self, token: &str, chain: &str, now_ms: i64) -> Option<(Address, i64)> {
         if token.len() != RPC_CAPABILITY_BYTES * 2 {
             return None;
         }
@@ -327,7 +343,7 @@ impl RpcAuthState {
         for (index, byte) in customer.iter_mut().enumerate() {
             *byte = bytes[index + 1] ^ customer_mask[index];
         }
-        Some(Address(customer))
+        Some((Address(customer), expires_at_ms))
     }
 }
 
@@ -343,9 +359,10 @@ pub struct EvmRpcRuntime {
     max_batch_len: usize,
     max_response_bytes: usize,
     timeout: Duration,
-    customer_quota: FixedHourQuota<Address>,
+    customer_quota: Arc<FixedHourQuota<Address>>,
     anonymous_quota: FixedHourQuota<IpAddr>,
     capability_ttl: Duration,
+    ws_permits: Arc<Semaphore>,
 }
 
 impl fmt::Debug for EvmRpcRuntime {
@@ -371,8 +388,8 @@ pub enum EvmRpcStartError {
     /// The named server-only environment variable is absent.
     #[error("missing EVM RPC upstream environment variable {0}")]
     MissingUpstream(String),
-    /// The named environment variable does not contain a hosted HTTP(S) URL.
-    #[error("EVM RPC upstream environment variable {0} is not a hosted HTTP(S) URL")]
+    /// The named environment variable does not contain a hosted URL of the required transport.
+    #[error("EVM RPC upstream environment variable {0} is not a valid hosted transport URL")]
     InvalidUpstream(String),
     /// The upstream could not be validated before readiness.
     #[error("EVM RPC chain {0} failed startup identity validation")]
@@ -430,12 +447,29 @@ impl EvmRpcRuntime {
                 .ok()
                 .filter(|url| matches!(url.scheme(), "http" | "https") && url.host_str().is_some())
                 .ok_or_else(|| EvmRpcStartError::InvalidUpstream(chain.upstream_env.clone()))?;
+            let upstream_ws_url = chain
+                .upstream_ws_env
+                .as_deref()
+                .map(|name| {
+                    let raw = env(name)
+                        .filter(|value| !value.trim().is_empty())
+                        .ok_or_else(|| EvmRpcStartError::MissingUpstream(name.to_string()))?;
+                    raw.trim()
+                        .parse::<Url>()
+                        .ok()
+                        .filter(|url| {
+                            matches!(url.scheme(), "ws" | "wss") && url.host_str().is_some()
+                        })
+                        .ok_or_else(|| EvmRpcStartError::InvalidUpstream(name.to_string()))
+                })
+                .transpose()?;
             chains.insert(
                 chain.id.clone(),
                 EvmChainRuntime {
                     id: chain.id.clone(),
                     expected_chain_id: chain.expected_chain_id,
                     upstream_url,
+                    upstream_ws_url,
                     checkpoint: chain
                         .checkpoint_block_number
                         .zip(chain.checkpoint_block_hash.clone()),
@@ -458,9 +492,10 @@ impl EvmRpcRuntime {
             max_batch_len: conf.max_batch_len,
             max_response_bytes: conf.max_response_bytes,
             timeout: Duration::from_millis(conf.timeout_ms),
-            customer_quota: FixedHourQuota::new(conf.customer_units_per_hour),
+            customer_quota: Arc::new(FixedHourQuota::new(conf.customer_units_per_hour)),
             anonymous_quota: FixedHourQuota::new(conf.anonymous_units_per_hour),
             capability_ttl: Duration::from_millis(conf.capability_ttl_ms),
+            ws_permits: Arc::new(Semaphore::new(conf.max_concurrency)),
         });
         runtime.verify_chain_identities().await?;
         Ok(Some(runtime))
@@ -994,6 +1029,8 @@ pub(crate) async fn handle_issue_rpc_capability_challenge(
 #[derive(Serialize)]
 pub(crate) struct RpcCapabilityBody {
     rpc_path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ws_path: Option<String>,
     expires_at_ms: i64,
 }
 
@@ -1044,6 +1081,10 @@ pub(crate) async fn handle_issue_rpc_capability(
             .issue_capability(customer, &chain_id, now_ms(), ttl_ms);
     Ok(Json(RpcCapabilityBody {
         rpc_path: format!("/chain-rpc/{chain_id}/cap/{token}/rpc"),
+        ws_path: runtime.chains[&chain_id]
+            .upstream_ws_url
+            .as_ref()
+            .map(|_| format!("/chain-rpc/{chain_id}/cap/{token}/ws")),
         expires_at_ms,
     }))
 }
@@ -1075,6 +1116,225 @@ pub(crate) async fn handle_proxy_rpc_capability(
     proxy_rpc_inner(chain_id, peer, headers, server, body, Some(capability)).await
 }
 
+fn validate_ws_call(
+    call: &Value,
+    chain: &EvmChainRuntime,
+) -> Result<(CallCost, bool), RpcRejection> {
+    let object = call
+        .as_object()
+        .ok_or_else(|| rpc_error(StatusCode::BAD_REQUEST, "invalid_json_rpc"))?;
+    if object.get("jsonrpc").and_then(Value::as_str) != Some("2.0") || !object.contains_key("id") {
+        return Err(rpc_error(StatusCode::BAD_REQUEST, "invalid_json_rpc"));
+    }
+    match object.get("method").and_then(Value::as_str) {
+        Some("eth_subscribe") => {
+            let params = object
+                .get("params")
+                .and_then(Value::as_array)
+                .ok_or_else(|| rpc_error(StatusCode::BAD_REQUEST, "invalid_json_rpc"))?;
+            match params.first().and_then(Value::as_str) {
+                Some("newHeads") if params.len() == 1 => Ok((
+                    CallCost {
+                        units: 5,
+                        anonymous: false,
+                        broadcast: false,
+                    },
+                    true,
+                )),
+                Some("logs") if params.len() <= 2 => {
+                    if let Some(filter) = params.get(1) {
+                        let filter = filter.as_object().ok_or_else(|| {
+                            rpc_error(StatusCode::BAD_REQUEST, "invalid_json_rpc")
+                        })?;
+                        if filter.len() > 3
+                            || filter
+                                .keys()
+                                .any(|key| !matches!(key.as_str(), "address" | "topics"))
+                        {
+                            return Err(rpc_error(StatusCode::FORBIDDEN, "rpc_method_denied"));
+                        }
+                        if filter
+                            .get("address")
+                            .and_then(Value::as_array)
+                            .is_some_and(|addresses| addresses.len() > 32)
+                            || filter
+                                .get("topics")
+                                .and_then(Value::as_array)
+                                .is_some_and(|topics| topics.len() > 4)
+                        {
+                            return Err(rpc_error(StatusCode::FORBIDDEN, "rpc_method_denied"));
+                        }
+                    }
+                    Ok((
+                        CallCost {
+                            units: 20,
+                            anonymous: false,
+                            broadcast: false,
+                        },
+                        true,
+                    ))
+                }
+                _ => Err(rpc_error(StatusCode::FORBIDDEN, "rpc_method_denied")),
+            }
+        }
+        Some("eth_unsubscribe") => {
+            let valid = object
+                .get("params")
+                .and_then(Value::as_array)
+                .filter(|params| params.len() == 1)
+                .and_then(|params| params.first())
+                .and_then(Value::as_str)
+                .is_some();
+            if !valid {
+                return Err(rpc_error(StatusCode::BAD_REQUEST, "invalid_json_rpc"));
+            }
+            Ok((
+                CallCost {
+                    units: 1,
+                    anonymous: false,
+                    broadcast: false,
+                },
+                false,
+            ))
+        }
+        Some(_) => validate_call(call, chain).map(|cost| (cost, false)),
+        None => Err(rpc_error(StatusCode::BAD_REQUEST, "invalid_json_rpc")),
+    }
+}
+
+fn ws_error(id: Value, code: i64, message: &'static str) -> ClientWsMessage {
+    ClientWsMessage::Text(
+        json!({"jsonrpc":"2.0","id":id,"error":{"code":code,"message":message}}).to_string(),
+    )
+}
+
+pub(crate) async fn handle_proxy_ws(
+    Path((chain_id, capability)): Path<(String, String)>,
+    Extension(server): Extension<RegistryServer>,
+    ws: WebSocketUpgrade,
+) -> Result<Response, RpcRejection> {
+    let runtime = server
+        .evm_rpc
+        .as_deref()
+        .filter(|runtime| runtime.has_chain(&chain_id))
+        .ok_or_else(|| rpc_error(StatusCode::NOT_FOUND, "unknown_rpc_chain"))?;
+    let chain = runtime.chains.get(&chain_id).expect("chain checked above");
+    let upstream_url = chain
+        .upstream_ws_url
+        .clone()
+        .ok_or_else(|| rpc_error(StatusCode::NOT_FOUND, "rpc_ws_disabled"))?;
+    let (customer, expires_at_ms) = runtime
+        .auth
+        .verify_capability(&capability, &chain_id, now_ms())
+        .ok_or_else(|| rpc_error(StatusCode::UNAUTHORIZED, "rpc_auth_failed"))?;
+    let permit = Arc::clone(&runtime.ws_permits)
+        .try_acquire_owned()
+        .map_err(|_| rpc_error(StatusCode::SERVICE_UNAVAILABLE, "rpc_busy"))?;
+    let max_client_bytes = runtime.max_request_bytes;
+    let max_upstream_bytes = runtime.max_response_bytes.min(MAX_WS_RESPONSE_BYTES);
+    let timeout = runtime.timeout;
+    let quota = runtime.customer_quota.clone();
+    let chain = chain.clone();
+    let lifetime_ms = expires_at_ms.saturating_sub(now_ms()).max(1) as u64;
+    Ok(ws
+        .max_message_size(max_client_bytes)
+        .max_frame_size(max_client_bytes)
+        .on_upgrade(move |socket| async move {
+            let _permit = permit;
+            let config = WebSocketConfig {
+                max_send_queue: Some(32),
+                max_message_size: Some(max_upstream_bytes),
+                max_frame_size: Some(max_upstream_bytes),
+                accept_unmasked_frames: false,
+            };
+            let connected = tokio::time::timeout(
+                timeout,
+                connect_async_with_config(upstream_url.as_str(), Some(config)),
+            )
+            .await;
+            let Ok(Ok((upstream, _response))) = connected else {
+                return;
+            };
+            let _ = tokio::time::timeout(
+                Duration::from_millis(lifetime_ms),
+                proxy_ws_connection(socket, upstream, chain, customer, quota),
+            )
+            .await;
+        })
+        .into_response())
+}
+
+async fn proxy_ws_connection<S>(
+    socket: WebSocket,
+    upstream: tokio_tungstenite::WebSocketStream<S>,
+    chain: EvmChainRuntime,
+    customer: Address,
+    quota: Arc<FixedHourQuota<Address>>,
+) where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let (mut client_write, mut client_read) = socket.split();
+    let (mut upstream_write, mut upstream_read) = upstream.split();
+    let mut subscriptions = 0usize;
+    loop {
+        tokio::select! {
+            client = client_read.next() => {
+                let Some(Ok(client)) = client else { break; };
+                match client {
+                    ClientWsMessage::Text(text) => {
+                        let parsed = super::json_rpc::parse_without_duplicate_keys(text.as_bytes());
+                        let id = parsed.as_ref().ok().and_then(|value| value.get("id")).cloned().unwrap_or(Value::Null);
+                        let Ok(value) = parsed else {
+                            let _ = client_write.send(ws_error(id, -32600, "invalid request")).await;
+                            continue;
+                        };
+                        let Ok((cost, subscribes)) = validate_ws_call(&value, &chain) else {
+                            let _ = client_write.send(ws_error(id, -32601, "method denied by relay")).await;
+                            continue;
+                        };
+                        if subscribes {
+                            subscriptions = subscriptions.saturating_add(1);
+                            if subscriptions > MAX_WS_SUBSCRIPTIONS {
+                                let _ = client_write.send(ws_error(id, -32005, "subscription limit exceeded")).await;
+                                continue;
+                            }
+                        }
+                        if quota.charge(customer, cost.units, now_seconds()).is_none() {
+                            let _ = client_write.send(ws_error(id, -32005, "hourly quota exceeded")).await;
+                            continue;
+                        }
+                        if upstream_write.send(UpstreamWsMessage::Text(text)).await.is_err() { break; }
+                    }
+                    ClientWsMessage::Ping(payload) => {
+                        if client_write.send(ClientWsMessage::Pong(payload)).await.is_err() { break; }
+                    }
+                    ClientWsMessage::Close(_) => break,
+                    ClientWsMessage::Binary(_) => {
+                        let _ = client_write.send(ws_error(Value::Null, -32600, "binary requests are not supported")).await;
+                    }
+                    ClientWsMessage::Pong(_) => {}
+                }
+            }
+            upstream = upstream_read.next() => {
+                let Some(Ok(upstream)) = upstream else { break; };
+                match upstream {
+                    UpstreamWsMessage::Text(text) => {
+                        let Ok(mut value) = super::json_rpc::parse_without_duplicate_keys(text.as_bytes()) else { break; };
+                        super::json_rpc::sanitize_response_errors(&mut value);
+                        if client_write.send(ClientWsMessage::Text(value.to_string())).await.is_err() { break; }
+                    }
+                    UpstreamWsMessage::Ping(payload) => {
+                        if upstream_write.send(UpstreamWsMessage::Pong(payload)).await.is_err() { break; }
+                    }
+                    UpstreamWsMessage::Close(_) => break,
+                    UpstreamWsMessage::Binary(_) => break,
+                    UpstreamWsMessage::Pong(_) | UpstreamWsMessage::Frame(_) => {}
+                }
+            }
+        }
+    }
+}
+
 async fn proxy_rpc_inner(
     chain_id: String,
     peer: Option<ConnectInfo<SocketAddr>>,
@@ -1097,7 +1357,8 @@ async fn proxy_rpc_inner(
             runtime
                 .auth
                 .verify_capability(capability, &chain_id, now_ms())
-                .ok_or_else(|| rpc_error(StatusCode::UNAUTHORIZED, "rpc_auth_failed"))?,
+                .ok_or_else(|| rpc_error(StatusCode::UNAUTHORIZED, "rpc_auth_failed"))?
+                .0,
         )
     } else {
         headers
@@ -1302,6 +1563,7 @@ mod tests {
             id: "monad-testnet".to_string(),
             expected_chain_id: 10_143,
             upstream_url: "http://127.0.0.1:1/provider-secret".parse().unwrap(),
+            upstream_ws_url: None,
             checkpoint: None,
             max_get_logs_range: 10,
         }
@@ -1320,9 +1582,10 @@ mod tests {
             max_batch_len: 2,
             max_response_bytes: 1024,
             timeout: Duration::from_secs(1),
-            customer_quota: FixedHourQuota::new(10_000),
+            customer_quota: Arc::new(FixedHourQuota::new(10_000)),
             anonymous_quota: FixedHourQuota::new(500),
             capability_ttl: Duration::from_secs(60 * 60),
+            ws_permits: Arc::new(Semaphore::new(1)),
         }
     }
 
@@ -1375,7 +1638,7 @@ mod tests {
         assert_eq!(expires_at, issued_at + 60_000);
         assert_eq!(
             auth.verify_capability(&token, "monad-testnet", issued_at),
-            Some(customer)
+            Some((customer, expires_at))
         );
         assert_eq!(
             auth.verify_capability(&token, "monad-mainnet", issued_at),
@@ -1449,6 +1712,28 @@ mod tests {
         let chain = runtime.chains.get("monad-testnet").unwrap();
         let ambiguous = br#"{"jsonrpc":"2.0","id":1,"method":"personal_sign","method":"eth_chainId","params":[]}"#;
         assert!(validate_body(&runtime, chain, ambiguous).is_err());
+    }
+
+    #[test]
+    fn websocket_policy_allows_bounded_subscriptions_only() {
+        let chain = chain();
+        let new_heads = json!({
+            "jsonrpc":"2.0", "id":1, "method":"eth_subscribe", "params":["newHeads"]
+        });
+        let logs = json!({
+            "jsonrpc":"2.0", "id":2, "method":"eth_subscribe",
+            "params":["logs", {"address": [format!("0x{}", "11".repeat(20))], "topics": []}]
+        });
+        assert!(validate_ws_call(&new_heads, &chain).unwrap().1);
+        assert!(validate_ws_call(&logs, &chain).unwrap().1);
+
+        for denied in [
+            json!({"jsonrpc":"2.0", "id":3, "method":"eth_subscribe", "params":["newPendingTransactions"]}),
+            json!({"jsonrpc":"2.0", "id":4, "method":"eth_subscribe", "params":["logs", {"fromBlock":"0x1"}]}),
+            json!({"jsonrpc":"2.0", "id":5, "method":"debug_subscribe", "params":[]}),
+        ] {
+            assert!(validate_ws_call(&denied, &chain).is_err(), "{denied}");
+        }
     }
 
     #[test]
@@ -1793,6 +2078,7 @@ mod tests {
                 id: "monad-testnet".to_string(),
                 expected_chain_id: 10_143,
                 upstream_env: "TEST_UPSTREAM".to_string(),
+                upstream_ws_env: None,
                 checkpoint_block_number: None,
                 checkpoint_block_hash: None,
                 max_get_logs_range: 10,
@@ -1986,6 +2272,110 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn websocket_proxy_uses_capability_policy_and_customer_quota() {
+        let ws_calls = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&ws_calls);
+        let upstream = Router::new().route(
+            "/provider-secret",
+            routing::post(|| async { Json(json!({"jsonrpc":"2.0","id":1,"result":"0x279f"})) })
+                .get(move |ws: WebSocketUpgrade| {
+                    let counted = Arc::clone(&counted);
+                    async move {
+                        ws.on_upgrade(move |mut socket| async move {
+                            while let Some(Ok(ClientWsMessage::Text(text))) = socket.next().await {
+                                counted.fetch_add(1, Ordering::SeqCst);
+                                let request: Value = serde_json::from_str(&text).unwrap();
+                                let response = json!({
+                                    "jsonrpc":"2.0",
+                                    "id":request["id"],
+                                    "result":"0x279f"
+                                });
+                                if socket
+                                    .send(ClientWsMessage::Text(response.to_string()))
+                                    .await
+                                    .is_err()
+                                {
+                                    break;
+                                }
+                            }
+                        })
+                    }
+                }),
+        );
+        let upstream_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        upstream_listener.set_nonblocking(true).unwrap();
+        let upstream_address = upstream_listener.local_addr().unwrap();
+        tokio::spawn(
+            axum::Server::from_tcp(upstream_listener)
+                .unwrap()
+                .serve(upstream.into_make_service()),
+        );
+        let conf = EvmRpcConf {
+            enabled: true,
+            chains: vec![cashweb_config::EvmRpcChainConf {
+                id: "monad-testnet".to_string(),
+                expected_chain_id: 10_143,
+                upstream_env: "TEST_UPSTREAM".to_string(),
+                upstream_ws_env: Some("TEST_WS_UPSTREAM".to_string()),
+                checkpoint_block_number: None,
+                checkpoint_block_hash: None,
+                max_get_logs_range: 10,
+            }],
+            ..EvmRpcConf::default()
+        };
+        let http_url = format!("http://{upstream_address}/provider-secret");
+        let ws_url = format!("ws://{upstream_address}/provider-secret");
+        let runtime =
+            EvmRpcRuntime::from_conf_with_env(&conf, b"MONT".to_vec(), |name| match name {
+                "TEST_UPSTREAM" => Some(http_url.clone()),
+                "TEST_WS_UPSTREAM" => Some(ws_url.clone()),
+                _ => None,
+            })
+            .await
+            .unwrap()
+            .unwrap();
+        let (capability, _) =
+            runtime
+                .auth
+                .issue_capability(customer_address(), "monad-testnet", now_ms(), 60_000);
+        let (_tempdir, server) = registered_server(runtime);
+        let relay_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        relay_listener.set_nonblocking(true).unwrap();
+        let relay_address = relay_listener.local_addr().unwrap();
+        tokio::spawn(
+            axum::Server::from_tcp(relay_listener)
+                .unwrap()
+                .serve(server.into_router().into_make_service()),
+        );
+
+        let url = format!("ws://{relay_address}/chain-rpc/monad-testnet/cap/{capability}/ws");
+        let (mut client, _) = tokio_tungstenite::connect_async(url).await.unwrap();
+        client
+            .send(UpstreamWsMessage::Text(
+                json!({"jsonrpc":"2.0","id":7,"method":"eth_chainId","params":[]}).to_string(),
+            ))
+            .await
+            .unwrap();
+        let response = client.next().await.unwrap().unwrap().into_text().unwrap();
+        assert_eq!(serde_json::from_str::<Value>(&response).unwrap()["id"], 7);
+        assert_eq!(ws_calls.load(Ordering::SeqCst), 1);
+
+        client
+            .send(UpstreamWsMessage::Text(
+                json!({"jsonrpc":"2.0","id":8,"method":"debug_traceTransaction","params":[]})
+                    .to_string(),
+            ))
+            .await
+            .unwrap();
+        let denied = client.next().await.unwrap().unwrap().into_text().unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&denied).unwrap()["error"]["code"],
+            -32601
+        );
+        assert_eq!(ws_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
     async fn startup_rejects_wrong_chain_without_leaking_url() {
         let upstream = Router::new().route(
             "/sentinel-api-key",
@@ -2005,6 +2395,7 @@ mod tests {
                 id: "monad-testnet".to_string(),
                 expected_chain_id: 10_143,
                 upstream_env: "TEST_UPSTREAM".to_string(),
+                upstream_ws_env: None,
                 checkpoint_block_number: None,
                 checkpoint_block_hash: None,
                 max_get_logs_range: 10,
@@ -2065,6 +2456,7 @@ mod tests {
                 id: "monad-testnet".to_string(),
                 expected_chain_id: 10_143,
                 upstream_env: "TEST_UPSTREAM".to_string(),
+                upstream_ws_env: None,
                 checkpoint_block_number: None,
                 checkpoint_block_hash: None,
                 max_get_logs_range: 10,
@@ -2167,6 +2559,7 @@ mod tests {
                 id: "monad-testnet".to_string(),
                 expected_chain_id: 10_143,
                 upstream_env: "TEST_UPSTREAM".to_string(),
+                upstream_ws_env: None,
                 checkpoint_block_number: None,
                 checkpoint_block_hash: None,
                 max_get_logs_range: 10,
@@ -2255,6 +2648,7 @@ mod tests {
                 id: "monad-testnet".to_string(),
                 expected_chain_id: 10_143,
                 upstream_env: "TEST_UPSTREAM".to_string(),
+                upstream_ws_env: None,
                 checkpoint_block_number: None,
                 checkpoint_block_hash: None,
                 max_get_logs_range: 10,

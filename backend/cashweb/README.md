@@ -47,9 +47,12 @@ currently registered Monad profile key. A client sends an empty body and an
 `x-frank-rpc-customer` header to `POST /chain-rpc/:chain/capability/auth`, signs the returned
 one-minute challenge, and exchanges it at `POST /chain-rpc/:chain/capability` for an expiring
 `/chain-rpc/:chain/cap/:token/rpc` URL. That URL is an ordinary JSON-RPC endpoint: the bearer is in
-the path because browser WebSockets cannot set an Authorization header. Treat capability URLs as
-secrets and never log or persist them. Their lifetime defaults to one hour and is configured with
-`capability_ttl_ms` (one minute through 24 hours).
+the path because browser WebSockets cannot set an Authorization header. If the chain config names
+an `upstream_ws_env`, issuance also returns `/chain-rpc/:chain/cap/:token/ws`; the TypeScript
+`issueMonadRelayRpcCapability` helper resolves both into standard-client-compatible absolute URLs.
+Treat capability URLs as secrets, and configure access logs to redact their token path segment.
+Their lifetime defaults to one hour and is configured with `capability_ttl_ms` (one minute through
+24 hours).
 
 The two capability-issuance requests use these headers:
 
@@ -81,6 +84,13 @@ debug/trace and log requests are denied. Transaction broadcasts are not put behi
 rate limiter: a pre-upstream quota or busy response is a definite non-attempt, while an upstream
 timeout is ambiguous and clients must retain the signed transaction/account reservation and retry
 the exact bytes. See issue #664 for the durable client reconciliation contract.
+
+WebSocket connections require a customer capability and share that customer's fixed-hour quota.
+They use a separate connection semaphore, close no later than capability expiry, cap client frames
+at `max_request_bytes`, and cap upstream frames at the lesser of `max_response_bytes` and 16 MiB.
+Only the HTTP allowlist plus `eth_unsubscribe`, `eth_subscribe("newHeads")`, and bounded
+`eth_subscribe("logs", filter)` are accepted; pending-transaction and debug subscriptions are
+denied. A connection may attempt at most 32 subscriptions.
 
 Bitcoin-family configuration names optional node JSON-RPC and Chronik upstream environment
 variables plus a required checkpoint height/hash. Startup checks `getblockhash` and Chronik's

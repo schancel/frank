@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "@frank/cashweb": "*",
+    "@solana/web3.js": "3.0.0",
     "axios": "^0.24.0",
     "bip39": "^3.0.2",
     "bitcore-lib-xpi": "*",

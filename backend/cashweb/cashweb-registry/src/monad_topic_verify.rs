@@ -308,6 +308,10 @@ pub enum TopicVoteBurnVerification {
         value_wei: u128,
         /// This vote's direction, decoded from calldata.
         direction: VoteDirection,
+        /// Confirmed block number used to choose the immutable author burn.
+        block_number: u64,
+        /// Transaction position within the confirmed block.
+        transaction_index: u64,
     },
     /// The node has no receipt for this tx hash (unmined, or unknown to the node).
     TxNotConfirmed,
@@ -417,6 +421,12 @@ where
     Ok(TopicVoteBurnVerification::Verified {
         value_wei: tx.value,
         direction,
+        block_number: receipt.block_number,
+        transaction_index: receipt.transaction_index.ok_or_else(|| {
+            bitcoinsuite_error::Report::msg(format!(
+                "Monad tx {tx_hash} receipt omitted transactionIndex"
+            ))
+        })?,
     })
 }
 
@@ -579,6 +589,7 @@ mod tests {
             "transactionHash": hex_hash(0x11),
             "blockHash": hex_hash(0x22),
             "blockNumber": "0x2a",
+            "transactionIndex": "0x0",
             "from": hex_addr(0x33),
             "to": to,
             "contractAddress": null,
@@ -644,6 +655,8 @@ mod tests {
             TopicVoteBurnVerification::Verified {
                 value_wei: 12_345,
                 direction: VoteDirection::Up,
+                block_number: 42,
+                transaction_index: 0,
             },
         );
         assert_eq!(
@@ -680,6 +693,8 @@ mod tests {
             TopicVoteBurnVerification::Verified {
                 value_wei: 500,
                 direction: VoteDirection::Down,
+                block_number: 42,
+                transaction_index: 0,
             },
         );
     }

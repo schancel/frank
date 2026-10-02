@@ -39,11 +39,15 @@ import { SubAccountLeaseManager } from './monad-account-lease'
 import { MonadTxSubmitter } from './monad-account-tx'
 import { ForumMessageEntry } from '@frank/cashweb/types/forum'
 import {
+  defaultContext,
+  topicBurnCommitment,
+  validateFrame,
+} from '@frank/codec'
+import {
   ListTopicsResponse,
   MonadTopicPost,
   MonadTopicPostView,
   MonadTopicPostViews,
-  MonadTopicVote,
   StoredMonadTopicPost,
   StoredMonadTopicVoteEntry,
   TopicDiscoveryEntry,
@@ -395,8 +399,26 @@ describe('post -> vote -> tally, chained through the real #31/#32/#33 clients', 
     }
 
     handlePutPost(bytes: Uint8Array): Uint8Array {
-      const post = MonadTopicPost.deserializeBinary(bytes)
-      const payloadHashHex = bareHexOf(post.getPayloadHash_asU8())
+      const decoded = validateFrame(
+        bytes,
+        defaultContext({ operation: 'typed' }),
+      )
+      if (
+        decoded.kind !== 'parsed' ||
+        decoded.typed?.type !== 10 ||
+        decoded.typed.postFrame.typed?.type !== 9
+      ) {
+        throw new Error('expected a type-10 CBOR submission')
+      }
+      const typedPost = decoded.typed.postFrame.typed
+      const identity = topicBurnCommitment(decoded.typed.postFrame.frame)
+      const post = new MonadTopicPost()
+      post.setTopic(typedPost.topic)
+      post.setParentPostHash(typedPost.parentHash ?? new Uint8Array(0))
+      post.setRawBurnTx(decoded.typed.burnTx)
+      post.setEncryptedPayload(typedPost.body)
+      post.setPayloadHash(identity.hash)
+      const payloadHashHex = bareHexOf(identity.hash)
       const stored = new StoredMonadTopicPost()
       stored.setPost(post)
       stored.setSenderAddress(getBytes('0x' + '33'.repeat(20)))
@@ -407,7 +429,7 @@ describe('post -> vote -> tally, chained through the real #31/#32/#33 clients', 
         payloadHashHex,
         this.deriveWeight(post.getRawBurnTx_asU8()),
       )
-      return stored.serializeBinary()
+      return decoded.typed.postFrame.frame
     }
 
     handlePutVote(
@@ -475,7 +497,10 @@ describe('post -> vote -> tally, chained through the real #31/#32/#33 clients', 
   }
 
   function makeMockHttpClient(): jest.Mocked<MonadTxSubmitter> {
-    return { submitRawTransaction: jest.fn(), getTransactionReceipt: jest.fn() }
+    return {
+      submitRawTransaction: jest.fn(),
+      getTransactionReceipt: jest.fn(),
+    }
   }
 
   beforeEach(() => {
@@ -498,6 +523,7 @@ describe('post -> vote -> tally, chained through the real #31/#32/#33 clients', 
       provider,
       httpClient,
       relayBaseUrl: RELAY_BASE_URL,
+      topicWriteFormat: 'cbor',
     })
     const voteClient = new MonadTopicVoteClient({
       pool,
@@ -505,6 +531,7 @@ describe('post -> vote -> tally, chained through the real #31/#32/#33 clients', 
       provider,
       httpClient,
       relayBaseUrl: RELAY_BASE_URL,
+      topicWriteFormat: 'cbor',
     })
 
     mockedAxios.mockImplementation(async config => {
@@ -523,15 +550,16 @@ describe('post -> vote -> tally, chained through the real #31/#32/#33 clients', 
         config.method === 'put' &&
         url.endsWith('/message/monad/topics/vote')
       ) {
-        const vote = MonadTopicVote.deserializeBinary(
+        const decoded = validateFrame(
           new Uint8Array(config.data as Buffer),
+          defaultContext({ operation: 'typed' }),
         )
-        relay.handlePutVote(
-          vote.getTargetPayloadHash_asU8(),
-          vote.getRawBurnTx_asU8(),
-        )
+        if (decoded.kind !== 'parsed' || decoded.typed?.type !== 11) {
+          throw new Error('expected a type-11 CBOR vote')
+        }
+        relay.handlePutVote(decoded.typed.targetHash, decoded.typed.burnTx)
         const entry = new StoredMonadTopicVoteEntry()
-        entry.setTargetPayloadHash(vote.getTargetPayloadHash_asU8())
+        entry.setTargetPayloadHash(decoded.typed.targetHash)
         entry.setSenderAddress(getBytes('0x' + '55'.repeat(20)))
         entry.setTxHash(getBytes('0x' + '66'.repeat(32)))
         entry.setTimestamp(1_700_000_001_000)
@@ -679,7 +707,9 @@ describe('fetchDiscoveredTopics', () => {
       }
     })
 
-    const result = await fetchDiscoveredTopics({ relayBaseUrl: RELAY_BASE_URL })
+    const result = await fetchDiscoveredTopics({
+      relayBaseUrl: RELAY_BASE_URL,
+    })
 
     expect(result).toEqual([
       { topic: 'topic.newest', postCount: 3, lastActivityMs: 300 },
@@ -721,7 +751,9 @@ describe('fetchDiscoveredTopics', () => {
       throw new Error('socket hang up')
     })
 
-    const result = await fetchDiscoveredTopics({ relayBaseUrl: RELAY_BASE_URL })
+    const result = await fetchDiscoveredTopics({
+      relayBaseUrl: RELAY_BASE_URL,
+    })
     expect(result).toEqual([])
   })
 
@@ -734,7 +766,9 @@ describe('fetchDiscoveredTopics', () => {
       throw err
     })
 
-    const result = await fetchDiscoveredTopics({ relayBaseUrl: RELAY_BASE_URL })
+    const result = await fetchDiscoveredTopics({
+      relayBaseUrl: RELAY_BASE_URL,
+    })
     expect(result).toEqual([])
   })
 
@@ -749,7 +783,9 @@ describe('fetchDiscoveredTopics', () => {
       config: {},
     }))
 
-    const result = await fetchDiscoveredTopics({ relayBaseUrl: RELAY_BASE_URL })
+    const result = await fetchDiscoveredTopics({
+      relayBaseUrl: RELAY_BASE_URL,
+    })
     expect(result).toEqual([])
   })
 })

@@ -111,6 +111,8 @@ pub struct Db {
     monad_outbox_lock: Mutex<()>,
     /// Serializes profile writes and secondary index cleanups across formats.
     monad_profile_lock: Mutex<()>,
+    /// Serializes compare-and-batch topic-author admission inside this process.
+    monad_topic_lock: Mutex<()>,
 }
 
 /// Errors indicating something went wrong with the database itself.
@@ -206,6 +208,7 @@ impl Db {
             db,
             monad_outbox_lock: Mutex::new(()),
             monad_profile_lock: Mutex::new(()),
+            monad_topic_lock: Mutex::new(()),
         })
     }
 
@@ -251,6 +254,12 @@ impl Db {
 
     pub(crate) fn lock_monad_profiles(&self) -> std::sync::MutexGuard<'_, ()> {
         self.monad_profile_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    pub(crate) fn lock_monad_topics(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.monad_topic_lock
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }

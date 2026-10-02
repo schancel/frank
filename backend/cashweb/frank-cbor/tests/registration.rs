@@ -384,6 +384,42 @@ fn rust_originated_t2a_known_answer_is_pinned() {
         case["validation_context"]["prior_directory_statement_frame_hex"],
         vector["prior_statement_frame_hex"]
     );
+    let ValidationResult::Parsed(parsed) = validate_frame(
+        &case_frame(case),
+        &context_from_json(&case["validation_context"]),
+    )
+    .expect("linked attestation validates") else {
+        panic!("linked attestation was not parsed");
+    };
+    let Some(typed) = parsed.typed else {
+        panic!("linked attestation was not typed");
+    };
+    let TypedPayload::DirectoryAttestation { statement, .. } = *typed else {
+        panic!("linked case was not an attestation");
+    };
+    let Some(statement_typed) = statement.typed else {
+        panic!("linked statement was not typed");
+    };
+    let TypedPayload::DirectoryStatement {
+        network,
+        key_transitions: Some(transitions),
+        ..
+    } = *statement_typed
+    else {
+        panic!("linked statement had no transitions");
+    };
+    assert_eq!(network, vector["network"]);
+    assert_eq!(transitions.len(), 1);
+    let entry = &transitions[0];
+    assert_eq!(
+        hex::encode(&entry.statement.frame),
+        vector["transition_statement_frame_hex"]
+    );
+    assert_eq!(
+        hex::encode(&entry.signer.key_bytes),
+        vector["signer_public_key_hex"]
+    );
+    assert_eq!(hex::encode(&entry.signature), vector["signature_der_hex"]);
 }
 
 #[test]

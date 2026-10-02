@@ -43,9 +43,15 @@ server-side environment value and restarting the relay; the URL and key are neve
 logged by the proxy.
 
 RPC access uses the same customer authority source as private mailbox reads: control of a
-currently registered Monad profile key. A client sends the exact intended JSON-RPC body and an
-`x-frank-rpc-customer` header to `POST /chain-rpc/:chain/rpc/auth`, signs the returned one-minute challenge,
-then retries the same bytes at `POST /chain-rpc/:chain/rpc` with these headers:
+currently registered Monad profile key. A client sends an empty body and an
+`x-frank-rpc-customer` header to `POST /chain-rpc/:chain/capability/auth`, signs the returned
+one-minute challenge, and exchanges it at `POST /chain-rpc/:chain/capability` for an expiring
+`/chain-rpc/:chain/cap/:token/rpc` URL. That URL is an ordinary JSON-RPC endpoint: the bearer is in
+the path because browser WebSockets cannot set an Authorization header. Treat capability URLs as
+secrets and never log or persist them. Their lifetime defaults to one hour and is configured with
+`capability_ttl_ms` (one minute through 24 hours).
+
+The two capability-issuance requests use these headers:
 
 - `x-frank-rpc-customer`
 - `x-frank-rpc-epoch`
@@ -56,10 +62,13 @@ then retries the same bytes at `POST /chain-rpc/:chain/rpc` with these headers:
 
 The signature digest is SHA-256 over `signing_domain || 0x00 || epoch || nonce || expires_at_ms
 (i64 big-endian) || token || "POST\0/chain-rpc/" || chain_length (u32 big-endian) || chain UTF-8 ||
-"\0rpc" ||
+"\0capability" ||
 customer (20 bytes) || body_sha256 || network_tag_length (u32 big-endian) || network_tag`. The
-challenge is single-use and bound to the customer, chain, and exact body bytes. Anonymous,
-expired, replayed, or modified authenticated requests fail before any provider call.
+challenge is single-use and bound to the customer, chain, and empty issuance body. The returned
+capability is HMAC authenticated, chain/customer scoped, reusable until its expiry, and charged to
+the same fixed-hour customer quota. Anonymous, expired, replayed-challenge, modified, or
+wrong-chain requests fail before any provider call. The older per-request `/rpc/auth` proof remains
+accepted during migration.
 
 The EVM handler accepts only the configured allowlist. It rejects notifications, oversized or
 over-count batches, full-transaction block reads, and `eth_getLogs` without a bounded explicit

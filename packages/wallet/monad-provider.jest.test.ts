@@ -169,14 +169,14 @@ describe("MonadJsonRpcProvider (#534)", () => {
     const signedDigests: Uint8Array[] = [];
     let challengeBody = "";
     let authenticatedBody = "";
-    let authenticatedHeaders: typeof import("http").IncomingHttpHeaders = {};
+    let issuanceHeaders: typeof import("http").IncomingHttpHeaders = {};
 
     await new Promise<void>((resolve) => server.close(() => resolve()));
     server = createServer((req, res) => {
       let body = "";
       req.on("data", (chunk) => (body += chunk));
       req.on("end", () => {
-        if (req.url?.endsWith("/auth")) {
+        if (req.url?.endsWith("/capability/auth")) {
           challengeBody = body;
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(
@@ -194,8 +194,18 @@ describe("MonadJsonRpcProvider (#534)", () => {
           );
           return;
         }
+        if (req.url?.endsWith("/capability")) {
+          issuanceHeaders = req.headers;
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(
+            JSON.stringify({
+              rpc_path: "/chain-rpc/monad-testnet/cap/bearer/rpc",
+              expires_at_ms: Date.now() + 60_000,
+            })
+          );
+          return;
+        }
         authenticatedBody = body;
-        authenticatedHeaders = req.headers;
         const payload = JSON.parse(body);
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(
@@ -231,12 +241,13 @@ describe("MonadJsonRpcProvider (#534)", () => {
         `0x${"34".repeat(20)}`,
         "latest",
       ]);
-      expect(challengeBody).toBe(authenticatedBody);
+      expect(challengeBody).toBe("");
+      expect(authenticatedBody).not.toBe("");
       expect(signedDigests).toHaveLength(1);
       expect(signedDigests[0]).toHaveLength(32);
-      expect(authenticatedHeaders["x-frank-rpc-customer"]).toBe(customer);
-      expect(authenticatedHeaders["x-frank-rpc-epoch"]).toBe("11".repeat(32));
-      expect(authenticatedHeaders["x-frank-rpc-signature"]).toBe(
+      expect(issuanceHeaders["x-frank-rpc-customer"]).toBe(customer);
+      expect(issuanceHeaders["x-frank-rpc-epoch"]).toBe("11".repeat(32));
+      expect(issuanceHeaders["x-frank-rpc-signature"]).toBe(
         "3006020101020101"
       );
     } finally {
@@ -254,7 +265,7 @@ describe("MonadJsonRpcProvider (#534)", () => {
       let body = "";
       req.on("data", (chunk) => (body += chunk));
       req.on("end", () => {
-        if (req.url?.endsWith("/auth")) {
+        if (req.url?.endsWith("/capability/auth")) {
           challengeRequests++;
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(
@@ -268,6 +279,16 @@ describe("MonadJsonRpcProvider (#534)", () => {
               chain: "monad-testnet",
               body_sha256: createHash("sha256").update(body).digest("hex"),
               network_tag: Buffer.from("MONT").toString("hex"),
+            })
+          );
+          return;
+        }
+        if (req.url?.endsWith("/capability")) {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(
+            JSON.stringify({
+              rpc_path: "/chain-rpc/monad-testnet/cap/bearer/rpc",
+              expires_at_ms: Date.now() + 60_000,
             })
           );
           return;

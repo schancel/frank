@@ -26,7 +26,7 @@ use crate::{
     http::{
         evm_rpc::{
             authenticate, body_hash, now_ms, rpc_error, BoundedRpcBody, RpcAuthState, RpcBinding,
-            RpcChallengeBody, RpcRejection, RPC_AUTH_DOMAIN, RPC_CUSTOMER_HEADER,
+            RpcChallengeBody, RpcRejection, RpcResource, RPC_AUTH_DOMAIN, RPC_CUSTOMER_HEADER,
         },
         hourly_quota::{normalize_quota_ip, FixedHourQuota},
         server::RegistryServer,
@@ -434,6 +434,7 @@ fn challenge(
         customer,
         chain: scope.clone(),
         body_sha256: body_hash(body),
+        resource: RpcResource::Rpc,
     };
     let issued = runtime.auth.issue(&binding, now_ms());
     Ok(Json(RpcChallengeBody {
@@ -478,6 +479,7 @@ pub(crate) async fn proxy_rpc(
                 customer,
                 chain: chain_id,
                 body_sha256: body_hash(&body),
+                resource: RpcResource::Rpc,
             },
         )?;
         None
@@ -722,6 +724,7 @@ pub(crate) async fn proxy_chronik(
                 customer,
                 chain: chronik_scope(&chain_id, &method, &uri),
                 body_sha256: body_hash(&body),
+                resource: RpcResource::Rpc,
             },
         )?;
         None

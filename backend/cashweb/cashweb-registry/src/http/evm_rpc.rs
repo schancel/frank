@@ -46,6 +46,11 @@ pub const MAX_RPC_REQUEST_BYTES: usize = 512 * 1024;
 pub(crate) const RPC_AUTH_DOMAIN: &str = "frank:rpc-http-auth:v1";
 const RPC_CHALLENGE_MAC_DOMAIN: &[u8] = b"frank:rpc-challenge-mac:v1\0";
 const RPC_CHALLENGE_TTL_MS: i64 = 60_000;
+const RPC_CAPABILITY_MAC_DOMAIN: &[u8] = b"frank:rpc-capability-mac:v1\0";
+const RPC_CAPABILITY_CUSTOMER_DOMAIN: &[u8] = b"frank:rpc-capability-customer:v1\0";
+const RPC_CAPABILITY_NONCE_BYTES: usize = 16;
+const RPC_CAPABILITY_BYTES: usize = 1 + 20 + 8 + RPC_CAPABILITY_NONCE_BYTES + 32;
+const RPC_CAPABILITY_VERSION: u8 = 1;
 // EVM clients batch when they can, but boot-time log scans and multi-account sweeps can still
 // legitimately exceed the mailbox's much smaller read cadence. This is replay-retention capacity,
 // not the usage limit; weighted fixed-hour quotas remain the resource-control boundary.
@@ -176,6 +181,13 @@ pub(crate) struct RpcBinding {
     pub(crate) customer: Address,
     pub(crate) chain: String,
     pub(crate) body_sha256: [u8; 32],
+    pub(crate) resource: RpcResource,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum RpcResource {
+    Rpc,
+    Capability,
 }
 
 impl RpcBinding {
@@ -183,7 +195,10 @@ impl RpcBinding {
         bytes.extend_from_slice(b"POST\0/chain-rpc/");
         bytes.extend_from_slice(&(self.chain.len() as u32).to_be_bytes());
         bytes.extend_from_slice(self.chain.as_bytes());
-        bytes.extend_from_slice(b"\0rpc");
+        bytes.extend_from_slice(match self.resource {
+            RpcResource::Rpc => b"\0rpc",
+            RpcResource::Capability => b"\0capability",
+        });
         bytes.extend_from_slice(&self.customer.0);
         bytes.extend_from_slice(&self.body_sha256);
     }
@@ -204,6 +219,15 @@ impl fmt::Debug for RpcAuthState {
 }
 
 impl RpcAuthState {
+    fn capability_customer_mask(&self, chain: &str, nonce: &[u8]) -> [u8; 32] {
+        let mut mac = HmacSha256::new_from_slice(&self.secret).expect("HMAC accepts 32 bytes");
+        mac.update(RPC_CAPABILITY_CUSTOMER_DOMAIN);
+        mac.update(&(chain.len() as u32).to_be_bytes());
+        mac.update(chain.as_bytes());
+        mac.update(nonce);
+        mac.finalize().into_bytes().into()
+    }
+
     pub(crate) fn new() -> Self {
         let mut epoch = [0; 32];
         let mut secret = [0; 32];
@@ -246,6 +270,65 @@ impl RpcAuthState {
         mac.update(&self.preimage(binding, challenge.nonce, challenge.expires_at_ms));
         mac.verify_slice(&challenge.token).is_ok()
     }
+
+    fn issue_capability(
+        &self,
+        customer: Address,
+        chain: &str,
+        now_ms: i64,
+        ttl_ms: i64,
+    ) -> (String, i64) {
+        let expires_at_ms = now_ms.saturating_add(ttl_ms);
+        let mut nonce = [0; RPC_CAPABILITY_NONCE_BYTES];
+        rand::thread_rng().fill_bytes(&mut nonce);
+        let customer_mask = self.capability_customer_mask(chain, &nonce);
+        let mut bytes = Vec::with_capacity(RPC_CAPABILITY_BYTES);
+        bytes.push(RPC_CAPABILITY_VERSION);
+        bytes.extend(
+            customer
+                .0
+                .iter()
+                .zip(customer_mask)
+                .map(|(customer, mask)| customer ^ mask),
+        );
+        bytes.extend_from_slice(&expires_at_ms.to_be_bytes());
+        bytes.extend_from_slice(&nonce);
+        let mut mac = HmacSha256::new_from_slice(&self.secret).expect("HMAC accepts 32 bytes");
+        mac.update(RPC_CAPABILITY_MAC_DOMAIN);
+        mac.update(&(chain.len() as u32).to_be_bytes());
+        mac.update(chain.as_bytes());
+        mac.update(&bytes);
+        bytes.extend_from_slice(&mac.finalize().into_bytes());
+        (hex::encode(bytes), expires_at_ms)
+    }
+
+    fn verify_capability(&self, token: &str, chain: &str, now_ms: i64) -> Option<Address> {
+        if token.len() != RPC_CAPABILITY_BYTES * 2 {
+            return None;
+        }
+        let bytes = hex::decode(token).ok()?;
+        if bytes.first().copied()? != RPC_CAPABILITY_VERSION {
+            return None;
+        }
+        let expires_at_ms = i64::from_be_bytes(bytes[21..29].try_into().ok()?);
+        if expires_at_ms < now_ms {
+            return None;
+        }
+        let payload_len = RPC_CAPABILITY_BYTES - 32;
+        let mut mac = HmacSha256::new_from_slice(&self.secret).ok()?;
+        mac.update(RPC_CAPABILITY_MAC_DOMAIN);
+        mac.update(&(chain.len() as u32).to_be_bytes());
+        mac.update(chain.as_bytes());
+        mac.update(&bytes[..payload_len]);
+        mac.verify_slice(&bytes[payload_len..]).ok()?;
+        let nonce = &bytes[29..29 + RPC_CAPABILITY_NONCE_BYTES];
+        let customer_mask = self.capability_customer_mask(chain, nonce);
+        let mut customer = [0; 20];
+        for (index, byte) in customer.iter_mut().enumerate() {
+            *byte = bytes[index + 1] ^ customer_mask[index];
+        }
+        Some(Address(customer))
+    }
 }
 
 /// Validated process-owned EVM proxy state.
@@ -262,6 +345,7 @@ pub struct EvmRpcRuntime {
     timeout: Duration,
     customer_quota: FixedHourQuota<Address>,
     anonymous_quota: FixedHourQuota<IpAddr>,
+    capability_ttl: Duration,
 }
 
 impl fmt::Debug for EvmRpcRuntime {
@@ -376,6 +460,7 @@ impl EvmRpcRuntime {
             timeout: Duration::from_millis(conf.timeout_ms),
             customer_quota: FixedHourQuota::new(conf.customer_units_per_hour),
             anonymous_quota: FixedHourQuota::new(conf.anonymous_units_per_hour),
+            capability_ttl: Duration::from_millis(conf.capability_ttl_ms),
         });
         runtime.verify_chain_identities().await?;
         Ok(Some(runtime))
@@ -842,6 +927,7 @@ pub(crate) async fn handle_issue_rpc_challenge(
         customer,
         chain: chain_id.clone(),
         body_sha256: body_hash(&body),
+        resource: RpcResource::Rpc,
     };
     let challenge = runtime.auth.issue(&binding, now_ms());
     Ok(Json(RpcChallengeBody {
@@ -857,6 +943,111 @@ pub(crate) async fn handle_issue_rpc_challenge(
     }))
 }
 
+/// Issue a challenge for a reusable, expiring capability URL. The empty body is intentional: the
+/// resulting signature authorizes only capability issuance for this customer and chain, not an
+/// arbitrary RPC request.
+pub(crate) async fn handle_issue_rpc_capability_challenge(
+    Path(chain_id): Path<String>,
+    headers: HeaderMap,
+    Extension(server): Extension<RegistryServer>,
+    BoundedRpcBody {
+        bytes: body,
+        _permit: _ingress_permit,
+    }: BoundedRpcBody,
+) -> Result<Json<RpcChallengeBody>, RpcRejection> {
+    if !body.is_empty() {
+        return Err(rpc_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_capability_request",
+        ));
+    }
+    let runtime = server
+        .evm_rpc
+        .as_deref()
+        .filter(|runtime| runtime.has_chain(&chain_id))
+        .ok_or_else(|| rpc_error(StatusCode::NOT_FOUND, "unknown_rpc_chain"))?;
+    let customer = headers
+        .get(RPC_CUSTOMER_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| Address::from_hex(value).ok())
+        .ok_or_else(|| rpc_error(StatusCode::UNAUTHORIZED, "rpc_auth_failed"))?;
+    let binding = RpcBinding {
+        customer,
+        chain: chain_id.clone(),
+        body_sha256: body_hash(&body),
+        resource: RpcResource::Capability,
+    };
+    let challenge = runtime.auth.issue(&binding, now_ms());
+    Ok(Json(RpcChallengeBody {
+        epoch: hex::encode(challenge.epoch),
+        nonce: hex::encode(challenge.nonce),
+        expires_at_ms: challenge.expires_at_ms,
+        token: hex::encode(challenge.token),
+        signing_domain: RPC_AUTH_DOMAIN,
+        customer: customer.to_hex(),
+        chain: chain_id,
+        body_sha256: hex::encode(binding.body_sha256),
+        network_tag: hex::encode(&runtime.network_tag),
+    }))
+}
+
+#[derive(Serialize)]
+pub(crate) struct RpcCapabilityBody {
+    rpc_path: String,
+    expires_at_ms: i64,
+}
+
+/// Exchange one valid profile signature for a URL bearer capability. The bearer is deliberately
+/// returned in a path segment so unmodified browser WebSocket and JSON-RPC clients can use it.
+pub(crate) async fn handle_issue_rpc_capability(
+    Path(chain_id): Path<String>,
+    headers: HeaderMap,
+    Extension(server): Extension<RegistryServer>,
+    BoundedRpcBody {
+        bytes: body,
+        _permit: _ingress_permit,
+    }: BoundedRpcBody,
+) -> Result<Json<RpcCapabilityBody>, RpcRejection> {
+    if !body.is_empty() {
+        return Err(rpc_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_capability_request",
+        ));
+    }
+    let runtime = server
+        .evm_rpc
+        .as_deref()
+        .filter(|runtime| runtime.has_chain(&chain_id))
+        .ok_or_else(|| rpc_error(StatusCode::NOT_FOUND, "unknown_rpc_chain"))?;
+    let customer = headers
+        .get(RPC_CUSTOMER_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| Address::from_hex(value).ok())
+        .ok_or_else(|| rpc_error(StatusCode::UNAUTHORIZED, "rpc_auth_failed"))?;
+    let binding = RpcBinding {
+        customer,
+        chain: chain_id.clone(),
+        body_sha256: body_hash(&body),
+        resource: RpcResource::Capability,
+    };
+    authenticate(
+        &headers,
+        &server,
+        &runtime.auth,
+        &runtime.network_tag,
+        &binding,
+    )?;
+    let ttl_ms = i64::try_from(runtime.capability_ttl.as_millis()).unwrap_or(i64::MAX);
+    let (token, expires_at_ms) =
+        runtime
+            .auth
+            .issue_capability(customer, &chain_id, now_ms(), ttl_ms);
+    Ok(Json(RpcCapabilityBody {
+        rpc_path: format!("/chain-rpc/{chain_id}/cap/{token}/rpc"),
+        expires_at_ms,
+    }))
+}
+
 /// Authenticate and forward an exact allowlisted JSON-RPC request.
 pub(crate) async fn handle_proxy_rpc(
     Path(chain_id): Path<String>,
@@ -868,6 +1059,30 @@ pub(crate) async fn handle_proxy_rpc(
         _permit: _ingress_permit,
     }: BoundedRpcBody,
 ) -> Result<Response, RpcRejection> {
+    proxy_rpc_inner(chain_id, peer, headers, server, body, None).await
+}
+
+pub(crate) async fn handle_proxy_rpc_capability(
+    Path((chain_id, capability)): Path<(String, String)>,
+    peer: Option<ConnectInfo<SocketAddr>>,
+    headers: HeaderMap,
+    Extension(server): Extension<RegistryServer>,
+    BoundedRpcBody {
+        bytes: body,
+        _permit: _ingress_permit,
+    }: BoundedRpcBody,
+) -> Result<Response, RpcRejection> {
+    proxy_rpc_inner(chain_id, peer, headers, server, body, Some(capability)).await
+}
+
+async fn proxy_rpc_inner(
+    chain_id: String,
+    peer: Option<ConnectInfo<SocketAddr>>,
+    headers: HeaderMap,
+    server: RegistryServer,
+    body: Bytes,
+    capability: Option<String>,
+) -> Result<Response, RpcRejection> {
     let Some(runtime) = server.evm_rpc.as_deref() else {
         return crate::http::bitcoin_proxy::proxy_rpc(chain_id, peer, headers, server, body).await;
     };
@@ -877,12 +1092,21 @@ pub(crate) async fn handle_proxy_rpc(
     let cost = validate_body(runtime, chain, &body)?;
     let expected_ids = super::json_rpc::request_ids(&body)
         .map_err(|_| rpc_error(StatusCode::BAD_REQUEST, "invalid_json_rpc"))?;
-    let customer = headers
-        .get(RPC_CUSTOMER_HEADER)
-        .and_then(|value| value.to_str().ok())
-        .map(Address::from_hex)
-        .transpose()
-        .map_err(|_| rpc_error(StatusCode::UNAUTHORIZED, "rpc_auth_failed"))?;
+    let customer = if let Some(capability) = capability.as_deref() {
+        Some(
+            runtime
+                .auth
+                .verify_capability(capability, &chain_id, now_ms())
+                .ok_or_else(|| rpc_error(StatusCode::UNAUTHORIZED, "rpc_auth_failed"))?,
+        )
+    } else {
+        headers
+            .get(RPC_CUSTOMER_HEADER)
+            .and_then(|value| value.to_str().ok())
+            .map(Address::from_hex)
+            .transpose()
+            .map_err(|_| rpc_error(StatusCode::UNAUTHORIZED, "rpc_auth_failed"))?
+    };
     let permit = Arc::clone(&runtime.permits)
         .try_acquire_owned()
         .map_err(|_| {
@@ -894,18 +1118,21 @@ pub(crate) async fn handle_proxy_rpc(
             )
         })?;
     if let Some(customer) = customer {
-        let binding = RpcBinding {
-            customer,
-            chain: chain_id,
-            body_sha256: body_hash(&body),
-        };
-        authenticate(
-            &headers,
-            &server,
-            &runtime.auth,
-            &runtime.network_tag,
-            &binding,
-        )?;
+        if capability.is_none() {
+            let binding = RpcBinding {
+                customer,
+                chain: chain_id.clone(),
+                body_sha256: body_hash(&body),
+                resource: RpcResource::Rpc,
+            };
+            authenticate(
+                &headers,
+                &server,
+                &runtime.auth,
+                &runtime.network_tag,
+                &binding,
+            )?;
+        }
         runtime
             .customer_quota
             .charge(customer, cost.units, now_seconds())
@@ -1095,6 +1322,7 @@ mod tests {
             timeout: Duration::from_secs(1),
             customer_quota: FixedHourQuota::new(10_000),
             anonymous_quota: FixedHourQuota::new(500),
+            capability_ttl: Duration::from_secs(60 * 60),
         }
     }
 
@@ -1124,6 +1352,7 @@ mod tests {
             customer: Address([1; 20]),
             chain: "monad-testnet".to_string(),
             body_sha256: body_hash(br#"{"jsonrpc":"2.0"}"#),
+            resource: RpcResource::Rpc,
         };
         let challenge = runtime.auth.issue(&base, 100);
         assert!(runtime.auth.verify(&base, challenge, 101));
@@ -1133,6 +1362,58 @@ mod tests {
         changed = base.clone();
         changed.customer = Address([2; 20]);
         assert!(!runtime.auth.verify(&changed, challenge, 101));
+    }
+
+    #[test]
+    fn capability_is_chain_bound_tamper_evident_and_expiring() {
+        let auth = RpcAuthState::new();
+        let customer = Address([4; 20]);
+        let issued_at = 1_000_000;
+        let (token, expires_at) =
+            auth.issue_capability(customer, "monad-testnet", issued_at, 60_000);
+
+        assert_eq!(expires_at, issued_at + 60_000);
+        assert_eq!(
+            auth.verify_capability(&token, "monad-testnet", issued_at),
+            Some(customer)
+        );
+        assert_eq!(
+            auth.verify_capability(&token, "monad-mainnet", issued_at),
+            None
+        );
+        assert_eq!(
+            auth.verify_capability(&token, "monad-testnet", expires_at + 1),
+            None
+        );
+
+        let mut tampered = token.into_bytes();
+        tampered[10] = if tampered[10] == b'0' { b'1' } else { b'0' };
+        assert_eq!(
+            auth.verify_capability(
+                std::str::from_utf8(&tampered).unwrap(),
+                "monad-testnet",
+                issued_at
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn rpc_challenge_cannot_authorize_capability_issuance() {
+        let auth = RpcAuthState::new();
+        let rpc = RpcBinding {
+            customer: Address([1; 20]),
+            chain: "monad-testnet".to_string(),
+            body_sha256: body_hash(b""),
+            resource: RpcResource::Rpc,
+        };
+        let capability = RpcBinding {
+            resource: RpcResource::Capability,
+            ..rpc.clone()
+        };
+        let challenge = auth.issue(&rpc, 1_000);
+        assert!(auth.verify(&rpc, challenge, 1_001));
+        assert!(!auth.verify(&capability, challenge, 1_001));
     }
 
     #[test]
@@ -1294,7 +1575,7 @@ mod tests {
         )
     }
 
-    fn signed_headers(challenge: &Value, customer: Address) -> HeaderMap {
+    fn signed_headers(challenge: &Value, customer: Address, resource: &str) -> HeaderMap {
         let mut preimage = Vec::new();
         preimage.extend_from_slice(challenge["signing_domain"].as_str().unwrap().as_bytes());
         preimage.push(0);
@@ -1306,7 +1587,8 @@ mod tests {
         let chain = challenge["chain"].as_str().unwrap();
         preimage.extend_from_slice(&(chain.len() as u32).to_be_bytes());
         preimage.extend_from_slice(chain.as_bytes());
-        preimage.extend_from_slice(b"\0rpc");
+        preimage.extend_from_slice(b"\0");
+        preimage.extend_from_slice(resource.as_bytes());
         preimage.extend_from_slice(&customer.0);
         preimage
             .extend_from_slice(&hex::decode(challenge["body_sha256"].as_str().unwrap()).unwrap());
@@ -1474,7 +1756,7 @@ mod tests {
             .header("content-type", "application/json")
             .body(Body::from(body))
             .unwrap();
-        *request.headers_mut() = signed_headers(&challenge, customer);
+        *request.headers_mut() = signed_headers(&challenge, customer, "rpc");
         request
     }
 
@@ -1522,6 +1804,7 @@ mod tests {
             timeout_ms: 1_000,
             customer_units_per_hour: 10_000,
             anonymous_units_per_hour: 500,
+            capability_ttl_ms: 60 * 60 * 1000,
         };
         let upstream_url = format!("http://{address}/provider-secret");
         let runtime = EvmRpcRuntime::from_conf_with_env(&conf, b"MONT".to_vec(), |name| {
@@ -1588,7 +1871,7 @@ mod tests {
             .await
             .unwrap();
         let unregistered_challenge = response_json(unregistered_challenge).await;
-        let unregistered_headers = signed_headers(&unregistered_challenge, unregistered);
+        let unregistered_headers = signed_headers(&unregistered_challenge, unregistered, "rpc");
         let mut unregistered_request = Request::post("/chain-rpc/monad-testnet/rpc")
             .body(Body::from(body.as_slice()))
             .unwrap();
@@ -1611,7 +1894,7 @@ mod tests {
         assert_eq!(challenge_response.status(), StatusCode::OK);
         let challenge = response_json(challenge_response).await;
         assert_eq!(upstream_calls.load(Ordering::SeqCst), 1);
-        let headers = signed_headers(&challenge, customer_address());
+        let headers = signed_headers(&challenge, customer_address(), "rpc");
 
         let request = || {
             let mut request = Request::post("/chain-rpc/monad-testnet/rpc")
@@ -1633,6 +1916,63 @@ mod tests {
         assert_eq!(replay.status(), StatusCode::UNAUTHORIZED);
         assert_eq!(upstream_calls.load(Ordering::SeqCst), 2);
 
+        let capability_challenge = router
+            .clone()
+            .oneshot(
+                Request::post("/chain-rpc/monad-testnet/capability/auth")
+                    .header(RPC_CUSTOMER_HEADER, customer_address().to_hex())
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(capability_challenge.status(), StatusCode::OK);
+        let capability_challenge = response_json(capability_challenge).await;
+        let capability_headers =
+            signed_headers(&capability_challenge, customer_address(), "capability");
+        let mut issuance = Request::post("/chain-rpc/monad-testnet/capability")
+            .body(Body::empty())
+            .unwrap();
+        *issuance.headers_mut() = capability_headers;
+        let issued = router.clone().oneshot(issuance).await.unwrap();
+        assert_eq!(issued.status(), StatusCode::OK);
+        let rpc_path = response_json(issued).await["rpc_path"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(rpc_path.starts_with("/chain-rpc/monad-testnet/cap/"));
+
+        for expected_calls in [3, 4] {
+            let capability_request = Request::post(&rpc_path)
+                .header("content-type", "application/json")
+                .body(Body::from(body.as_slice()))
+                .unwrap();
+            let response = router.clone().oneshot(capability_request).await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(upstream_calls.load(Ordering::SeqCst), expected_calls);
+        }
+
+        let mut bad_path = rpc_path.into_bytes();
+        let token_byte = bad_path.len() - "/rpc".len() - 1;
+        bad_path[token_byte] = if bad_path[token_byte] == b'0' {
+            b'1'
+        } else {
+            b'0'
+        };
+        let bad_path = String::from_utf8(bad_path).unwrap();
+        let rejected = router
+            .clone()
+            .oneshot(
+                Request::post(&bad_path)
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.as_slice()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(rejected.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(upstream_calls.load(Ordering::SeqCst), 4);
+
         let mut tampered = Request::post("/chain-rpc/monad-testnet/rpc")
             .body(Body::from(
                 br#"{"jsonrpc":"2.0","id":"changed","method":"eth_blockNumber","params":[]}"#
@@ -1642,7 +1982,7 @@ mod tests {
         *tampered.headers_mut() = headers;
         let tampered = router.oneshot(tampered).await.unwrap();
         assert_eq!(tampered.status(), StatusCode::UNAUTHORIZED);
-        assert_eq!(upstream_calls.load(Ordering::SeqCst), 2);
+        assert_eq!(upstream_calls.load(Ordering::SeqCst), 4);
     }
 
     #[tokio::test]
@@ -1736,6 +2076,7 @@ mod tests {
             timeout_ms: 25,
             customer_units_per_hour: 10_000,
             anonymous_units_per_hour: 500,
+            capability_ttl_ms: 60 * 60 * 1000,
         };
         let upstream_url = format!("http://{address}/");
         let runtime = EvmRpcRuntime::from_conf_with_env(&conf, b"MONT".to_vec(), |_| {
@@ -1837,6 +2178,7 @@ mod tests {
             timeout_ms: 1_000,
             customer_units_per_hour: 10_000,
             anonymous_units_per_hour: 500,
+            capability_ttl_ms: 60 * 60 * 1000,
         };
         let upstream_url = format!("http://{address}/");
         let runtime = EvmRpcRuntime::from_conf_with_env(&conf, b"MONT".to_vec(), |_| {
@@ -1924,6 +2266,7 @@ mod tests {
             timeout_ms: 120_000,
             customer_units_per_hour: 10_000,
             anonymous_units_per_hour: 500,
+            capability_ttl_ms: 60 * 60 * 1000,
         };
         conf.validate().unwrap();
         let upstream_url = format!("http://{address}/");

@@ -252,10 +252,12 @@ pub async fn handle_get_monad_profile(
 ) -> std::result::Result<Response, HttpRegistryError> {
     let address = parse_addr(&address)?;
     let (raw, content_type) = if explicitly_accepts_cbor(&headers) {
-        (
-            fetch_profile_cbor_or_not_found(&server.registry, address).await?,
-            "application/cbor",
-        )
+        let raw = match fetch_profile_cbor_or_not_found(&server.registry, address).await {
+            Ok(raw) => raw,
+            Err(FetchProfileCborError::Overloaded) => return Ok(profile_overloaded_response()),
+            Err(FetchProfileCborError::Infrastructure(err)) => return Err(HttpRegistryError(err)),
+        };
+        (raw, "application/cbor")
     } else {
         let signed = fetch_profile_or_not_found(&server.registry, address)?;
         (signed.encode_to_vec(), "application/x-protobuf")
@@ -280,14 +282,23 @@ pub(crate) fn fetch_profile_or_not_found(
         .ok_or(ProfileNotFound(address))?)
 }
 
+pub(crate) enum FetchProfileCborError {
+    Overloaded,
+    Infrastructure(Report),
+}
+
 pub(crate) async fn fetch_profile_cbor_or_not_found(
     registry: &std::sync::Arc<Registry>,
     address: Address,
-) -> Result<Vec<u8>> {
-    Ok(registry
-        .get_validated_monad_profile_cbor(address)
-        .await?
-        .ok_or(ProfileNotFound(address))?)
+) -> std::result::Result<Vec<u8>, FetchProfileCborError> {
+    let admission = registry
+        .try_acquire_profile_read_validation()
+        .map_err(|_| FetchProfileCborError::Overloaded)?;
+    registry
+        .get_validated_monad_profile_cbor(address, admission)
+        .await
+        .map_err(FetchProfileCborError::Infrastructure)?
+        .ok_or_else(|| FetchProfileCborError::Infrastructure(ProfileNotFound(address).into()))
 }
 
 /// Query parameters for [`handle_list_monad_profiles`].

@@ -24,7 +24,10 @@ use cashweb_registry::{
     monad_http::Address,
     p2p::peers::Peers,
     proto,
-    registry::{ProfileRegistrationAdmissionError, Registry, PROFILE_REGISTRATION_CONCURRENCY},
+    registry::{
+        ProfileRegistrationAdmissionError, Registry, PROFILE_READ_VALIDATION_CONCURRENCY,
+        PROFILE_REGISTRATION_CONCURRENCY,
+    },
     store::db::Db,
     test_instance::placeholder_pop_conf,
 };
@@ -1694,4 +1697,43 @@ async fn cbor_get_aliases_validate_stored_registration_before_serving_bytes() {
             valid
         );
     }
+}
+
+#[tokio::test]
+async fn cbor_get_aliases_reject_exhausted_read_validation_before_storage_work() {
+    let address = Address([0x51; 20]);
+    let tempdir = tempdir::TempDir::new("cashweb-registry--cbor-get-read-overload").unwrap();
+    drop(open_registry(tempdir.path(), Net::Regtest));
+    overwrite_candidate_cbor(tempdir.path(), address, b"malformed-stored-bytes");
+    let server = make_server(open_registry(tempdir.path(), Net::Regtest));
+    let permits: Vec<_> = (0..PROFILE_READ_VALIDATION_CONCURRENCY)
+        .map(|_| {
+            server
+                .registry
+                .try_acquire_profile_read_validation()
+                .unwrap()
+        })
+        .collect();
+    let router = server.into_router();
+
+    for uri in [
+        format!("/metadata/{}", address.to_hex()),
+        format!("/metadata/monad/{}", address.to_hex()),
+    ] {
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(uri)
+                    .header("Accept", CONTENT_TYPE_CBOR)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(response.headers().get(RETRY_AFTER).unwrap(), "1");
+        assert_vary_accept(&response);
+    }
+    drop(permits);
 }

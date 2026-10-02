@@ -129,8 +129,12 @@ pub struct Registry {
     profile_write_locks: Vec<Arc<tokio::sync::Mutex<()>>>,
     /// Global no-queue admission bound for CPU/RocksDB profile registration work.
     profile_registration_admission: Arc<tokio::sync::Semaphore>,
+    /// Independent no-queue bound for stored candidate reads and signature validation.
+    profile_read_validation_admission: Arc<tokio::sync::Semaphore>,
     #[cfg(test)]
     profile_worker_gate: Option<Arc<TestProfileWorkerGate>>,
+    #[cfg(test)]
+    profile_read_worker_gate: Option<Arc<TestProfileWorkerGate>>,
 }
 
 /// Result of putting metadata into the registry.
@@ -264,6 +268,9 @@ use self::RegistryError::*;
 const PROFILE_WRITE_STRIPES: usize = 64;
 /// Maximum profile registrations concurrently admitted to verification/storage.
 pub const PROFILE_REGISTRATION_CONCURRENCY: usize = 32;
+/// Maximum concurrent stored-CBOR reads and full signature validations. This independent pool
+/// prevents an opt-in GET flood from consuming profile-registration capacity.
+pub const PROFILE_READ_VALIDATION_CONCURRENCY: usize = 16;
 
 /// A no-wait profile registration could not enter its address stripe or the global worker pool.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -281,6 +288,13 @@ pub enum ProfileRegistrationAdmissionError {
 pub struct ProfileRegistrationAdmission {
     _stripe: tokio::sync::OwnedMutexGuard<()>,
     _global: tokio::sync::OwnedSemaphorePermit,
+}
+
+/// Owns one no-wait stored-CBOR read-validation slot. It moves into the blocking worker so
+/// cancelling the request cannot release capacity while detached work is still running.
+#[derive(Debug)]
+pub struct ProfileReadValidationAdmission {
+    _permit: tokio::sync::OwnedSemaphorePermit,
 }
 
 fn profile_write_locks() -> Vec<Arc<tokio::sync::Mutex<()>>> {
@@ -315,8 +329,13 @@ impl Registry {
             profile_registration_admission: Arc::new(tokio::sync::Semaphore::new(
                 PROFILE_REGISTRATION_CONCURRENCY,
             )),
+            profile_read_validation_admission: Arc::new(tokio::sync::Semaphore::new(
+                PROFILE_READ_VALIDATION_CONCURRENCY,
+            )),
             #[cfg(test)]
             profile_worker_gate: None,
+            #[cfg(test)]
+            profile_read_worker_gate: None,
         }
     }
 
@@ -1280,6 +1299,15 @@ impl Registry {
         })
     }
 
+    /// Try to reserve one stored-CBOR read-validation worker without queueing.
+    pub fn try_acquire_profile_read_validation(
+        &self,
+    ) -> std::result::Result<ProfileReadValidationAdmission, tokio::sync::TryAcquireError> {
+        Arc::clone(&self.profile_read_validation_admission)
+            .try_acquire_owned()
+            .map(|permit| ProfileReadValidationAdmission { _permit: permit })
+    }
+
     /// Read a previously-registered Monad profile's `cashweb_payload::proto::SignedPayload`
     /// envelope. Returns [`None`] if nothing is registered under `address` or if stored as CBOR.
     pub fn get_monad_profile(
@@ -1289,7 +1317,8 @@ impl Registry {
         self.db.monad_profiles().get(&address)
     }
 
-    /// Read the exact opt-in candidate CBOR frame, without falling back to the legacy record.
+    /// Unchecked storage accessor for diagnostics and storage tests. HTTP response paths must use
+    /// [`Registry::get_validated_monad_profile_cbor`] and never expose these bytes directly.
     pub fn get_monad_profile_cbor(&self, address: Address) -> Result<Option<Vec<u8>>> {
         self.db.monad_profiles().get_cbor(&address)
     }
@@ -1299,9 +1328,17 @@ impl Registry {
     pub async fn get_validated_monad_profile_cbor(
         self: &Arc<Self>,
         address: Address,
+        admission: ProfileReadValidationAdmission,
     ) -> Result<Option<Vec<u8>>> {
         let registry = Arc::clone(self);
+        #[cfg(test)]
+        let gate = self.profile_read_worker_gate.clone();
         tokio::task::spawn_blocking(move || {
+            let _admission = admission;
+            #[cfg(test)]
+            if let Some(gate) = gate {
+                gate.wait();
+            }
             let raw = match registry.db.monad_profiles().get_cbor(&address)? {
                 Some(raw) => raw,
                 None => return Ok(None),
@@ -1585,7 +1622,8 @@ mod tests {
         registry::{
             profile_write_locks, GetMetadataRangeResult, ProfileRegistrationAdmissionError,
             PutBlockchainAction, PutMessageResult, PutMetadataResult, Registry, RegistryError,
-            TestProfileWorkerGate, PROFILE_REGISTRATION_CONCURRENCY,
+            TestProfileWorkerGate, PROFILE_READ_VALIDATION_CONCURRENCY,
+            PROFILE_REGISTRATION_CONCURRENCY,
         },
         store::{
             db::{Db, CF_PKH_BY_TIME},
@@ -1621,7 +1659,11 @@ mod tests {
             profile_registration_admission: Arc::new(tokio::sync::Semaphore::new(
                 PROFILE_REGISTRATION_CONCURRENCY,
             )),
+            profile_read_validation_admission: Arc::new(tokio::sync::Semaphore::new(
+                PROFILE_READ_VALIDATION_CONCURRENCY,
+            )),
             profile_worker_gate: None,
+            profile_read_worker_gate: None,
         };
 
         let seckey = registry.ecc.seckey_from_array([4; 32])?;
@@ -2021,7 +2063,11 @@ mod tests {
             profile_registration_admission: Arc::new(tokio::sync::Semaphore::new(
                 PROFILE_REGISTRATION_CONCURRENCY,
             )),
+            profile_read_validation_admission: Arc::new(tokio::sync::Semaphore::new(
+                PROFILE_READ_VALIDATION_CONCURRENCY,
+            )),
             profile_worker_gate: None,
+            profile_read_worker_gate: None,
         };
 
         // Generate a few anyone can spend coins
@@ -2181,7 +2227,11 @@ mod tests {
             profile_registration_admission: Arc::new(tokio::sync::Semaphore::new(
                 PROFILE_REGISTRATION_CONCURRENCY,
             )),
+            profile_read_validation_admission: Arc::new(tokio::sync::Semaphore::new(
+                PROFILE_READ_VALIDATION_CONCURRENCY,
+            )),
             profile_worker_gate: None,
+            profile_read_worker_gate: None,
         };
 
         let seckey = registry.ecc.seckey_from_array([4; 32])?;
@@ -2510,7 +2560,11 @@ mod tests {
             profile_registration_admission: Arc::new(tokio::sync::Semaphore::new(
                 PROFILE_REGISTRATION_CONCURRENCY,
             )),
+            profile_read_validation_admission: Arc::new(tokio::sync::Semaphore::new(
+                PROFILE_READ_VALIDATION_CONCURRENCY,
+            )),
             profile_worker_gate: None,
+            profile_read_worker_gate: None,
         };
         (tempdir, registry)
     }
@@ -2833,6 +2887,43 @@ mod tests {
             drop(recovered);
             drop(other_admissions);
         }
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancelled_cbor_read_keeps_admission_until_blocking_worker_exits() -> Result<()> {
+        use std::time::Duration;
+
+        let (_tempdir, mut registry) =
+            test_monad_profile_registry("cashweb-registry--cancelled-cbor-read-worker");
+        registry.profile_read_validation_admission = Arc::new(tokio::sync::Semaphore::new(1));
+        let (gate, started_rx) = TestProfileWorkerGate::new();
+        registry.profile_read_worker_gate = Some(Arc::clone(&gate));
+        let registry = Arc::new(registry);
+        let admission = registry.try_acquire_profile_read_validation().unwrap();
+        let worker_registry = Arc::clone(&registry);
+        let request = tokio::spawn(async move {
+            worker_registry
+                .get_validated_monad_profile_cbor(Address([0; 20]), admission)
+                .await
+        });
+        started_rx.await.unwrap();
+
+        request.abort();
+        assert!(request.await.unwrap_err().is_cancelled());
+        assert!(registry.try_acquire_profile_read_validation().is_err());
+        gate.release();
+        let recovered = tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if let Ok(admission) = registry.try_acquire_profile_read_validation() {
+                    break admission;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("blocking read worker released admission after exiting");
+        drop(recovered);
         Ok(())
     }
 

@@ -12,7 +12,8 @@ use crate::{
         check_monad_profile_body_size, fetch_profile_cbor_or_not_found, fetch_profile_or_not_found,
         handle_get_monad_profile, handle_list_monad_profiles, handle_put_monad_profile,
         handle_search_monad_profiles, parse_monad_profile_content_type,
-        profile_body_too_large_response, profile_overloaded_response, MonadProfileMediaType,
+        profile_body_too_large_response, profile_overloaded_response, FetchProfileCborError,
+        MonadProfileMediaType,
     },
     http::monad_topics::{
         handle_get_monad_topic_post, handle_list_monad_topic_posts, handle_list_topics,
@@ -563,7 +564,13 @@ async fn handle_get_registry(
         let (raw, content_type) = if header_map.get(header::ACCEPT).map(HeaderValue::as_bytes)
             == Some(b"application/cbor")
         {
-            let raw = fetch_profile_cbor_or_not_found(&server.registry, monad_address).await?;
+            let raw = match fetch_profile_cbor_or_not_found(&server.registry, monad_address).await {
+                Ok(raw) => raw,
+                Err(FetchProfileCborError::Overloaded) => return Ok(profile_overloaded_response()),
+                Err(FetchProfileCborError::Infrastructure(err)) => {
+                    return Err(HttpRegistryError(err))
+                }
+            };
             (raw, "application/cbor")
         } else {
             let signed = fetch_profile_or_not_found(&server.registry, monad_address)?;

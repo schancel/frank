@@ -2,7 +2,7 @@
 
 Versioned deniable encryption. `seal` returns a deterministic RFC 8949 CBOR envelope; `open` consumes that format and the read-only legacy envelope described below. These envelopes are not the live relay protobuf or a Frank direct-message frame. Frank CBOR version 1 allocates no production encryption suite. Do not write these registry ids into a Frank version-1 CBOR encryption-suite field. They are not S2b or S2c. Decision 356.
 
-Envelope version 2 is a definite-length map with unsigned integer keys in canonical order: `0` version, `1` suite id, `2` KEM id, `3` 32-byte salt, `4` 33-byte encapsulated public key, and `5` ciphertext. All integers and lengths use their shortest encoding. `seal` emits only version 2. `open` also reads the legacy version-1 fixed-layout envelope so previously sealed bytes remain usable; it never emits that layout. The outer first byte distinguishes legacy version 1 (`0x01`) from the CBOR map (`0xA6`). Callers must select a suite explicitly for every `seal`; `open` dispatches from the encoded suite id.
+Envelope version 2 is a definite-length map with unsigned integer keys in canonical order: `0` version, `1` suite id, `2` KEM id, `3` 32-byte salt, `4` 33-byte encapsulated public key, and `5` ciphertext. All integers and lengths use their shortest encoding. `seal` emits only version 2. `open` also reads the legacy version-1 fixed-layout envelope so previously sealed bytes remain usable; it never emits that layout. The outer first byte distinguishes legacy version 1 (`0x01`) from the CBOR map (`0xA6`). Version 2 authenticates a fixed envelope-domain label and its encoded version as associated data; legacy version 1 retains its historical associated data exactly. Callers must select a suite explicitly for every `seal`; `open` dispatches from the encoded suite id.
 
 ## Suites
 
@@ -33,7 +33,7 @@ Authentication is only the AEAD under DH-derived keys, so it is deniable. The re
 
 A stolen recipient static key is key-compromise impersonation: it decrypts recorded mail and can forge messages from any sender to that recipient. Compromise of the sender static key does not decrypt recorded auth-mode mail. The ephemeral share is not recoverable from that key. It does let an attacker seal new auth-mode messages as that sender.
 
-There is no forward secrecy against the recipient static key. v1 has no prekeys and no ratchet.
+There is no forward secrecy against the recipient static key. This construction, in both envelope versions, has no prekeys and no ratchet.
 
 Base mode does not use the sender static secret. The sender public key is only bound in the associated data. Anyone who knows the recipient public key can seal a base-mode message that names any sender key.
 

@@ -20,7 +20,6 @@ import {
   ENC_LENGTH,
   ENVELOPE_VERSION,
   KEM_SECP256K1,
-  LEGACY_ENVELOPE_VERSION,
   MAX_MESSAGE,
   MAX_PADDING,
   MODE_AUTH,
@@ -201,7 +200,13 @@ function finish(
     salt,
     nonceLength: spec.nonceLength,
   })
-  const aad = associatedData(spec.id, sender, recipient, context)
+  const aad = associatedData(
+    ENVELOPE_VERSION,
+    spec.id,
+    sender,
+    recipient,
+    context,
+  )
   const inner = concatBytes([i2osp(plaintext.length, 4), plaintext, padding])
   try {
     const ciphertext = aeadEncrypt(spec.aead, keys.key, keys.nonce, aad, inner)
@@ -400,13 +405,7 @@ export function open(args: OpenArgs): SuiteResult<Uint8Array> {
   const sender = requirePoint(args.senderPublicKey)
   if (!sender.ok) return sender
   const envelope = decodeEnvelope(args.envelope)
-  if (
-    envelope === null ||
-    (envelope.version !== LEGACY_ENVELOPE_VERSION &&
-      envelope.version !== ENVELOPE_VERSION)
-  ) {
-    return fail({ code: 'envelope' })
-  }
+  if (envelope === null) return fail({ code: 'envelope' })
   if (envelope.kemId !== KEM_SECP256K1) return fail({ code: 'envelope' })
   const spec = selectSuite(envelope.suiteId)
   if (!spec.ok) return spec
@@ -453,6 +452,7 @@ export function open(args: OpenArgs): SuiteResult<Uint8Array> {
   })
   shared.fill(0)
   const aad = associatedData(
+    envelope.version,
     spec.value.id,
     sender.value,
     recipientPublic,

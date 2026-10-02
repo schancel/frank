@@ -76,6 +76,24 @@ const recipientPk = publicKey(recipientSk)
 const ephemeralPk = publicKey(ephemeral)
 const context = text('ctx')
 const CIPHERTEXT_HEAD_OFFSET = 83
+const LEGACY_V1_VECTORS = new Map([
+  [
+    SUITE_BASE_AES_GCM,
+    '01fe01ff00070707070707070707070707070707070707070707070707070707070707070702f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f98c60b582dc48876cd46f72eaa4544263a6ab1804aa709d44b1',
+  ],
+  [
+    SUITE_BASE_XCHACHA,
+    '01fe02ff00070707070707070707070707070707070707070707070707070707070707070702f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f951a7ad9509175b1502c13aeffec3f63af78a76298fee13861e',
+  ],
+  [
+    SUITE_AUTH_AES_GCM,
+    '01fe03ff00070707070707070707070707070707070707070707070707070707070707070702f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9988bf88bd65e72ddf13713ea9cc5be63da20d7fb81ab73f864',
+  ],
+  [
+    SUITE_AUTH_XCHACHA,
+    '01fe04ff00070707070707070707070707070707070707070707070707070707070707070702f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9c1b582181da35780536a806ac7f220b9ccb5e3760fa2ca3daa',
+  ],
+])
 
 function mustSeal(suiteId: number, plaintext: string, padding = 0): Uint8Array {
   const sealed = seal({
@@ -91,6 +109,23 @@ function mustSeal(suiteId: number, plaintext: string, padding = 0): Uint8Array {
   })
   if (!sealed.ok) throw new Error(sealed.error.code)
   return sealed.value
+}
+
+function rewrapAsLegacy(envelope: Uint8Array): Uint8Array {
+  const decoded = decodeEnvelope(envelope)
+  if (decoded === null) throw new Error('envelope')
+  const out = new Uint8Array(70 + decoded.ciphertext.length)
+  out.set([
+    1,
+    decoded.suiteId >>> 8,
+    decoded.suiteId & 0xff,
+    decoded.kemId >>> 8,
+    decoded.kemId & 0xff,
+  ])
+  out.set(decoded.salt, 5)
+  out.set(decoded.enc, 37)
+  out.set(decoded.ciphertext, 70)
+  return out
 }
 
 describe('encryption suites', () => {
@@ -396,18 +431,66 @@ describe('encryption suites', () => {
     if (!overBound.ok) expect(overBound.error.code).toBe('envelope')
   })
 
-  test('opens the frozen legacy v1 envelope without emitting it', () => {
-    const legacy = fromHex(
-      '01fe01ff00070707070707070707070707070707070707070707070707070707070707070702f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f98c60b582dc48876cd46f72eaa4544263a6ab1804aa709d44b1',
-    )
-    const opened = open({
+  test.each([
+    SUITE_BASE_AES_GCM,
+    SUITE_BASE_XCHACHA,
+    SUITE_AUTH_AES_GCM,
+    SUITE_AUTH_XCHACHA,
+  ])('authenticates v1 and v2 as distinct domains for suite %i', suiteId => {
+    const frozen = LEGACY_V1_VECTORS.get(suiteId)
+    if (frozen === undefined) throw new Error('legacy vector')
+    const legacy = fromHex(frozen)
+    const legacyOpened = open({
       envelope: legacy,
       recipientPrivateKey: recipientSk,
       senderPublicKey: senderPk,
       context,
     })
-    expect(opened.ok).toBe(true)
-    if (opened.ok) expect(Buffer.from(opened.value).toString()).toBe('frank')
+    expect(legacyOpened.ok).toBe(true)
+    if (legacyOpened.ok) {
+      expect(Buffer.from(legacyOpened.value).toString()).toBe('frank')
+    }
+
+    const current = mustSeal(suiteId, 'frank')
+    const currentOpened = open({
+      envelope: current,
+      recipientPrivateKey: recipientSk,
+      senderPublicKey: senderPk,
+      context,
+    })
+    expect(currentOpened.ok).toBe(true)
+
+    const v2AsV1 = open({
+      envelope: rewrapAsLegacy(current),
+      recipientPrivateKey: recipientSk,
+      senderPublicKey: senderPk,
+      context,
+    })
+    expect(v2AsV1.ok).toBe(false)
+    if (!v2AsV1.ok) expect(v2AsV1.error.code).toBe('open-failed')
+
+    const decodedLegacy = decodeEnvelope(legacy)
+    if (decodedLegacy === null) throw new Error('legacy decode')
+    const v1AsV2 = open({
+      envelope: encodeEnvelope(
+        decodedLegacy.suiteId,
+        decodedLegacy.kemId,
+        decodedLegacy.salt,
+        decodedLegacy.enc,
+        decodedLegacy.ciphertext,
+      ),
+      recipientPrivateKey: recipientSk,
+      senderPublicKey: senderPk,
+      context,
+    })
+    expect(v1AsV2.ok).toBe(false)
+    if (!v1AsV2.ok) expect(v1AsV2.error.code).toBe('open-failed')
+  })
+
+  test('rejects unknown versions and malformed legacy envelopes', () => {
+    const frozen = LEGACY_V1_VECTORS.get(SUITE_BASE_AES_GCM)
+    if (frozen === undefined) throw new Error('legacy vector')
+    const legacy = fromHex(frozen)
 
     const current = mustSeal(SUITE_BASE_AES_GCM, 'frank')
     expect(current.slice(0, 3)).toEqual(Uint8Array.of(0xa6, 0, 2))
@@ -601,19 +684,19 @@ describe('encryption suites', () => {
     const vectors = new Map([
       [
         SUITE_BASE_AES_GCM,
-        'a600020119fe010219ff00035820070707070707070707070707070707070707070707070707070707070707070704582102f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f90558198c60b582dc48876cd46f72eaa4544263a6ab1804aa709d44b1',
+        'a600020119fe010219ff00035820070707070707070707070707070707070707070707070707070707070707070704582102f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f90558198c60b582dc48876cd4c9094cf347d1f73ba9573694f1ad2c55',
       ],
       [
         SUITE_BASE_XCHACHA,
-        'a600020119fe020219ff00035820070707070707070707070707070707070707070707070707070707070707070704582102f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f905581951a7ad9509175b1502c13aeffec3f63af78a76298fee13861e',
+        'a600020119fe020219ff00035820070707070707070707070707070707070707070707070707070707070707070704582102f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f905581951a7ad9509175b1502d2a5a3327090ed57a609e14918954b32',
       ],
       [
         SUITE_AUTH_AES_GCM,
-        'a600020119fe030219ff00035820070707070707070707070707070707070707070707070707070707070707070704582102f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9055819988bf88bd65e72ddf13713ea9cc5be63da20d7fb81ab73f864',
+        'a600020119fe030219ff00035820070707070707070707070707070707070707070707070707070707070707070704582102f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9055819988bf88bd65e72ddf1084879129f81d4070f65edfd087f6aa6',
       ],
       [
         SUITE_AUTH_XCHACHA,
-        'a600020119fe040219ff00035820070707070707070707070707070707070707070707070707070707070707070704582102f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9055819c1b582181da35780536a806ac7f220b9ccb5e3760fa2ca3daa',
+        'a600020119fe040219ff00035820070707070707070707070707070707070707070707070707070707070707070704582102f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9055819c1b582181da3578053f5e224eb01c12b89ce7429dc47ef3803',
       ],
     ])
     for (const [suiteId, expected] of vectors) {

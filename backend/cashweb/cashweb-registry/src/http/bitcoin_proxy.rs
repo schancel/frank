@@ -483,7 +483,7 @@ pub(crate) async fn proxy_rpc(
         }
         Some(peer_ip(peer)?)
     };
-    let _permit = Arc::clone(&runtime.permits)
+    let permit = Arc::clone(&runtime.permits)
         .try_acquire_owned()
         .map_err(|_| rpc_error(StatusCode::SERVICE_UNAVAILABLE, "rpc_busy"))?;
     if let Some(ip) = anonymous_ip {
@@ -513,7 +513,7 @@ pub(crate) async fn proxy_rpc(
     crate::http::json_rpc::sanitize_response_errors(&mut value);
     let bytes = serde_json::to_vec(&value)
         .map_err(|_| rpc_error(StatusCode::BAD_GATEWAY, "invalid_rpc_upstream_response"))?;
-    Ok((
+    let response = (
         if version == super::json_rpc::JsonRpcVersion::V2 {
             StatusCode::OK
         } else {
@@ -522,7 +522,10 @@ pub(crate) async fn proxy_rpc(
         [(axum::http::header::CONTENT_TYPE, "application/json")],
         bytes,
     )
-        .into_response())
+        .into_response();
+    Ok(crate::http::json_rpc::hold_response_permit(
+        response, permit,
+    ))
 }
 
 fn chronik_scope(chain: &str, method: &Method, uri: &axum::http::Uri) -> String {
@@ -708,7 +711,7 @@ pub(crate) async fn proxy_chronik(
         };
         Some((broadcast, peer_ip(peer)?, units))
     };
-    let _permit = Arc::clone(&runtime.permits)
+    let permit = Arc::clone(&runtime.permits)
         .try_acquire_owned()
         .map_err(|_| rpc_error(StatusCode::SERVICE_UNAVAILABLE, "rpc_busy"))?;
     if let Some((is_broadcast, ip, units)) = anonymous_charge {
@@ -752,12 +755,15 @@ pub(crate) async fn proxy_chronik(
         error.msg = "upstream Chronik error".to_string();
         error.encode_to_vec().into()
     };
-    Ok((
+    let response = (
         upstream.status,
         [(axum::http::header::CONTENT_TYPE, "application/x-protobuf")],
         body,
     )
-        .into_response())
+        .into_response();
+    Ok(crate::http::json_rpc::hold_response_permit(
+        response, permit,
+    ))
 }
 
 /// Extra request headers needed by Bitcoin-family proxy preflight requests.

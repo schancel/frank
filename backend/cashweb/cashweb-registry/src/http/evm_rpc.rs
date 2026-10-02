@@ -898,7 +898,7 @@ pub(crate) async fn handle_proxy_rpc(
         .map(Address::from_hex)
         .transpose()
         .map_err(|_| rpc_error(StatusCode::UNAUTHORIZED, "rpc_auth_failed"))?;
-    let _permit = Arc::clone(&runtime.permits)
+    let permit = Arc::clone(&runtime.permits)
         .try_acquire_owned()
         .map_err(|_| {
             broadcast_error(
@@ -1011,11 +1011,14 @@ pub(crate) async fn handle_proxy_rpc(
             true,
         )
     })?;
-    Ok((
+    let response = (
         [(axum::http::header::CONTENT_TYPE, "application/json")],
         body,
     )
-        .into_response())
+        .into_response();
+    Ok(crate::http::json_rpc::hold_response_permit(
+        response, permit,
+    ))
 }
 
 /// CORS request headers used by the RPC signature protocol.

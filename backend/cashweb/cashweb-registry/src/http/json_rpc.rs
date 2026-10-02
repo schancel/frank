@@ -1,12 +1,58 @@
-use std::fmt;
+use std::{
+    fmt,
+    pin::Pin,
+    task::{Context, Poll},
+};
 
+use axum::{
+    body::{boxed, BoxBody, Bytes, HttpBody},
+    response::Response,
+};
 use serde::de::{self, Deserialize, Deserializer, MapAccess, SeqAccess, Visitor};
 use serde_json::{Map, Number, Value};
+use tokio::sync::OwnedSemaphorePermit;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum JsonRpcVersion {
     Legacy,
     V2,
+}
+
+struct PermitBody {
+    inner: BoxBody,
+    _permit: OwnedSemaphorePermit,
+}
+
+impl HttpBody for PermitBody {
+    type Data = Bytes;
+    type Error = axum::Error;
+
+    fn poll_data(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Self::Data, Self::Error>>> {
+        Pin::new(&mut self.inner).poll_data(cx)
+    }
+
+    fn poll_trailers(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<Option<axum::http::HeaderMap>, Self::Error>> {
+        Pin::new(&mut self.inner).poll_trailers(cx)
+    }
+}
+
+/// Keep upstream admission charged until the downstream response body is
+/// completely consumed or dropped by the transport.
+pub(crate) fn hold_response_permit(response: Response, permit: OwnedSemaphorePermit) -> Response {
+    let (parts, body) = response.into_parts();
+    Response::from_parts(
+        parts,
+        boxed(PermitBody {
+            inner: body,
+            _permit: permit,
+        }),
+    )
 }
 
 /// Parse JSON while rejecting duplicate object members at every nesting level.
@@ -191,6 +237,10 @@ impl<'de> Visitor<'de> for UniqueValueVisitor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+
+    use axum::response::IntoResponse;
+    use tokio::sync::Semaphore;
 
     #[test]
     fn rejects_duplicate_members_at_any_depth() {
@@ -266,5 +316,18 @@ mod tests {
             &serde_json::json!([]),
             JsonRpcVersion::Legacy,
         ));
+    }
+
+    #[tokio::test]
+    async fn response_permit_lives_until_body_is_consumed() {
+        let permits = Arc::new(Semaphore::new(1));
+        let permit = Arc::clone(&permits).try_acquire_owned().unwrap();
+        let response = hold_response_permit("ok".into_response(), permit);
+        assert!(Arc::clone(&permits).try_acquire_owned().is_err());
+        assert_eq!(
+            hyper::body::to_bytes(response.into_body()).await.unwrap(),
+            "ok"
+        );
+        assert!(Arc::clone(&permits).try_acquire_owned().is_ok());
     }
 }

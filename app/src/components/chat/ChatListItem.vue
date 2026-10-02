@@ -2,7 +2,7 @@
   <q-item :active="isActive" active-class="active-chat-list-item" clickable>
     <q-item-section avatar v-if="$status.setup" side>
       <q-avatar rounded>
-        <img :src="profileAvatar(contact.avatar, chatAddress)" />
+        <img :src="profileAvatar(presentedAvatar, chatAddress)" />
         <q-badge
           v-show="compact"
           v-if="!!numUnread"
@@ -14,7 +14,7 @@
       </q-avatar>
     </q-item-section>
     <q-item-section v-show="!compact">
-      <q-item-label lines="1">{{ contact.name }}</q-item-label>
+      <q-item-label lines="1">{{ contactName }}</q-item-label>
       <q-item-label caption lines="2">{{ latestMessageBody }}</q-item-label>
     </q-item-section>
     <q-item-section v-show="!compact" side>
@@ -37,18 +37,26 @@
 <script lang="ts">
 import { useChatStore } from 'src/stores/chats'
 import { useContactStore } from 'src/stores/contacts'
+import { useProfileStore } from 'src/stores/my-profile'
 import { defineComponent } from 'vue'
 import { profileAvatar } from 'src/utils/avatar'
+import {
+  sameCanonicalAddress,
+  useReactiveOwnCanonicalAddress,
+} from 'src/utils/own-address'
 
 export default defineComponent({
   setup() {
     const contacts = useContactStore()
     const chats = useChatStore()
+    const myProfile = useProfileStore()
 
     return {
       getContactProfile: contacts.getContactProfile,
       getLatestMessage: chats.getLatestMessage,
+      myProfile,
       profileAvatar,
+      ownAddress: useReactiveOwnCanonicalAddress(),
     }
   },
   computed: {
@@ -68,6 +76,16 @@ export default defineComponent({
     },
     contact() {
       return this.getContactProfile(this.chatAddress)
+    },
+    contactName(): string {
+      return sameCanonicalAddress(this.chatAddress, this.ownAddress)
+        ? this.$t('selfChat.you')
+        : this.contact.name
+    },
+    presentedAvatar(): string | undefined {
+      return sameCanonicalAddress(this.chatAddress, this.ownAddress)
+        ? this.myProfile.profile.avatar || this.contact.avatar
+        : this.contact.avatar
     },
     isActive() {
       return this.$route.params.address === this.chatAddress

@@ -141,6 +141,15 @@ not create a mixed-provenance v1 account. Adding a domain never reinterprets an
 existing root. Any constrained extension root needs a frozen child KDF and
 namespace of its own.
 
+For an existing v1 account, reconstructing `M` may derive an omitted domain only
+when that purpose already exists byte-for-byte in the account's recorded
+registry. A later append-only registry is available to newly created accounts;
+it does not upgrade an existing account or replace its descriptor or recovery
+fingerprint. A purpose absent from the recorded registry requires either a
+constrained extension namespace already frozen in that registry or an explicit
+new-format account rotation that issues and independently verifies a new
+descriptor before migrating domains.
+
 Before integration, every chain-facing wallet constructor MUST accept its typed
 byte domain root. The current mnemonic-shaped active-chain and Monad APIs need a
 separate legacy adapter plus byte-root constructors shared by identity, burn,
@@ -202,6 +211,27 @@ descriptor blocks authenticated blank-install recovery even when `k` shares
 survive. A quarantined tool MAY derive and display candidate public identities
 without a descriptor, but it cannot activate, publish, fund, overwrite, or use
 networking until identity is independently authenticated.
+
+The authoritative v1 descriptor is one Bech32m record. Its human-readable part
+is `frankdesc`, and its decoded payload is exactly:
+
+```text
+u8 envelopeVersion = 1
+u16be recoveryFormatCode
+u16be derivationRegistryCode
+byte[32] publicRecoveryFingerprint
+```
+
+The companion registry specification assigns immutable unsigned codes to the
+canonical ASCII recovery-format and derivation-registry identifiers used in the
+fingerprint preimage. The encoder emits canonical lowercase. The decoder accepts
+uniform lowercase or uppercase only, validates Bech32m before normalization,
+uses strict `convertbits(5, 8, pad=false)`, requires exactly 37 payload bytes,
+and rejects mixed case, unknown versions or codes, noncanonical padding,
+truncation, and trailing bytes. It recomputes and compares all 32 fingerprint
+bytes. Optional inventory text such as “share X of n” is outside this record and
+has no authentication meaning. The resulting v1 record is 76 characters and
+fits the Bech32 90-character limit.
 
 ### 5.2 Canonicalization
 
@@ -272,8 +302,8 @@ The cryptographic library MUST:
 - recover from exactly `k` valid non-`s` shares;
 - return structured error codes that reveal no secret material;
 - never log or stringify caller inputs on failure; and
-- pass all applicable vectors from the pinned BIP-93 revision plus independent negative and
-  property tests.
+- pass all applicable vectors from the pinned BIP-93 revision plus independent
+  negative and property tests.
 
 Callers MUST NOT implement interpolation, field arithmetic, checksum checks, or
 share parsing in UI code.
@@ -285,8 +315,9 @@ symbols and defines correction goals of up to four substitutions, eight known
 erasures, or thirteen consecutive erasures. This does not cover every insertion,
 deletion, transposition, truncation, or adversarial replacement.
 
-The first release MAY ship strict validation before correction suggestions. If
-correction is implemented:
+Testnet and preproduction builds MAY ship strict validation before correction
+suggestions. Production recovery MUST offer bounded correction candidates for
+the advertised goals. Correction:
 
 - it MUST be a separate API from validation and recovery;
 - it MUST return candidates without selecting one;
@@ -295,6 +326,10 @@ correction is implemented:
 - it MUST NOT continue recovery automatically;
 - ambiguity MUST stop the flow; and
 - tests MUST cover the promised correction bound and cases outside it.
+
+Candidate search has explicit time, memory, and result-count bounds. Exhausting
+a bound returns a distinct error and never weakens validation, chooses a partial
+candidate, or reports the expected account as recovered.
 
 ## 6. New-account signup
 
@@ -644,6 +679,18 @@ interconversion. Frank's future migration should generate a fresh `M` and use
 domain-specific rotation or fund sweeps. Until those procedures exist, legacy
 users keep their existing backup.
 
+A BIP-39 checksum authenticates only the mnemonic encoding, never the intended
+account; every passphrase also deterministically selects some wallet. Legacy
+recovery therefore freezes the exact historical derivation profile and
+passphrase semantics, derives its configured public identities, and compares
+them with an independently retained expected legacy account descriptor before
+persistence, networking, funding, active-account replacement, or the word
+“recovered” is shown. A known local account pins its authenticated expected
+identity before mnemonic entry. A blank install without independently trusted
+expected identity material permits only a no-network quarantined public preview.
+A wrong mnemonic, passphrase, or legacy derivation profile fails closed even if
+all resulting keys and addresses are mathematically valid.
+
 ## 10. Threat model and adversarial cases
 
 ### 10.1 Compromised setup runtime
@@ -735,12 +782,18 @@ encodeSecret(secret, metadata) -> Result<Codex32String>
 decodeShare(text) -> Result<DecodedShare>
 splitSecret(secret, policy, randomBytes) -> Result<Codex32String[]>
 recoverExact(shares) -> Result<Uint8Array>
-suggestCorrections(text) -> Result<Candidate[]> // optional milestone
+suggestCorrections(text, limits) -> Result<Candidate[]>
+encodeRecoveryDescriptor(fields) -> Result<RecoveryDescriptorString>
+decodeRecoveryDescriptor(text) -> Result<RecoveryDescriptorFields>
 ```
 
 API rules:
 
 - secret inputs and outputs use byte arrays, not hexadecimal strings;
+- descriptor encode/decode is a separate strict API returning typed version,
+  format, registry, and fingerprint fields; UI code never frames or parses it;
+- correction candidate generation is separate from strict share validation and
+  reconstruction and accepts explicit resource limits;
 - returned byte arrays do not alias caller-owned buffers;
 - parsing returns canonical metadata separately from any secret bytes;
 - errors are stable codes with localized UI mapping outside the package;
@@ -846,6 +899,11 @@ the repository's current localization boundary.
 - RNG failure, short return, throwing RNG, mutation, aliasing, getters, proxies,
   and oversized input.
 - Cross-checks against an independent BIP-93 implementation.
+- Correction vectors at every promised substitution and erasure bound, ambiguous
+  and out-of-bound inputs, and deterministic time/memory/result-cap exhaustion.
+- Descriptor known encoding, parse/encode round trip, and independent decoder;
+  altered version, format code, registry code, fingerprint, checksum, case,
+  padding, length, truncation, trailing bytes, and optional annotations.
 - Fuzzing of decoding and recovery with bounded time and memory.
 
 ### 15.2 Signup integration
@@ -892,6 +950,10 @@ the repository's current localization boundary.
   permits only the quarantined no-network public-identity preview.
 - Fingerprint known-answer, full-byte comparison, Bech32m padding, and targeted
   wrong-master cases pass for every released format/registry pair.
+- A descriptor emitted by frozen v1 remains readable on a blank later-version
+  install; unknown descriptor or registry versions fail closed.
+- An account recorded under registry R0 rejects an R1-only purpose and cannot
+  mutate its registry identifier or recovery fingerprint in place.
 - Known-account mismatch has no override; different-account import creates a
   rollback-safe separate record and cannot be entered through restore.
 - Mixed and duplicate shares do not alter locked recovery metadata.
@@ -902,6 +964,10 @@ the repository's current localization boundary.
   receive the same lifecycle and secret-sink coverage as signup.
 - A funded swap under the old account remains settleable or refundable after an
   allowed account switch and crash/restart; otherwise switching is blocked.
+- A valid wrong legacy mnemonic, wrong passphrase, or wrong frozen derivation
+  profile cannot commit, network, or be labelled recovered. Exact legacy inputs
+  plus an independently matching full identity succeed; missing expected
+  identity material permits only quarantined preview.
 
 ### 15.4 Persistence, lifecycle, and human factors
 
@@ -937,7 +1003,8 @@ retirement gate is exercised.
 
 1. Freeze the master derivation registry and publish deterministic vectors.
 2. Complete and independently review `@frank/codex32`, including uppercase
-   input and cross-implementation tests.
+   input, production-bounded correction, canonical descriptor codecs, and
+   cross-implementation tests.
 3. Migrate chain wallet boundaries from mnemonic-shaped inputs to registry-typed
    byte roots, retaining a separate legacy adapter.
 4. Add versioned, fenced account storage and an awaitable atomic persistence
@@ -956,8 +1023,9 @@ retirement gate is exercised.
 12. Enable only testnet accounts behind a format-version feature gate.
 
 Production custody remains blocked until the derivation registry, package audit,
-implemented and verified vault, recovery descriptor, chain byte-root migration,
-and exact signup/recovery integration have all passed their gates.
+implemented and verified vault, canonical recovery descriptor, bounded error
+correction, chain byte-root migration, legacy expected-identity gate, and exact
+signup/recovery integration have all passed their gates.
 
 ## 17. Open decisions
 
@@ -967,7 +1035,6 @@ and exact signup/recovery integration have all passed their gates.
 - Trusted distribution and redundancy policy for the public recovery descriptor.
 - Whether v1 verifies only a random threshold subset or requires every exported
   share to participate in a successful reconstruction.
-- Whether correction suggestions ship with initial recovery or later.
 - The platform-specific local vault and passkey wrapping policy.
 - Hardware or air-gapped ceremony support.
 - Domain-specific rotation and funded-account migration.

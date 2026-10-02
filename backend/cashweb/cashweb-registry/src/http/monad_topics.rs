@@ -602,29 +602,56 @@ fn topic_request_format(headers: &HeaderMap) -> Option<TopicRequestFormat> {
 /// row origin first: wildcard requests receive that row's sole semantically valid representation,
 /// never a projection into the other format.
 fn topic_accepts(headers: &HeaderMap, expected: &str) -> bool {
-    let Some(value) = headers.get(ACCEPT) else {
+    if !headers.contains_key(ACCEPT) {
         return true;
-    };
-    let Ok(value) = value.to_str() else {
+    }
+    let expected = expected.to_ascii_lowercase();
+    let Some((expected_type, _)) = expected.split_once('/') else {
         return false;
     };
-    value.split(',').any(|range| {
-        let mut parts = range.split(';');
-        let media_type = parts.next().unwrap_or_default().trim().to_ascii_lowercase();
-        let refused = parts.any(|parameter| {
-            let mut pair = parameter.trim().splitn(2, '=');
-            pair.next()
-                .is_some_and(|name| name.eq_ignore_ascii_case("q"))
-                && pair.next().is_some_and(|quality| {
-                    quality
-                        .trim()
-                        .parse::<f32>()
-                        .is_ok_and(|quality| quality == 0.0)
-                })
-        });
-        !refused && matches!(media_type.as_str(), "*/*" | "application/*")
-            || (!refused && media_type.eq_ignore_ascii_case(expected))
-    })
+    let type_wildcard = format!("{expected_type}/*");
+    let mut selected: Option<(u8, f32)> = None;
+
+    for value in headers.get_all(ACCEPT).iter() {
+        let Ok(value) = value.to_str() else {
+            return false;
+        };
+        for range in value.split(',') {
+            let mut parts = range.split(';');
+            let media_type = parts.next().unwrap_or_default().trim().to_ascii_lowercase();
+            let specificity = if media_type == expected {
+                2
+            } else if media_type == type_wildcard {
+                1
+            } else if media_type == "*/*" {
+                0
+            } else {
+                continue;
+            };
+            let mut quality = 1.0;
+            for parameter in parts {
+                let mut pair = parameter.trim().splitn(2, '=');
+                if pair
+                    .next()
+                    .is_some_and(|name| name.eq_ignore_ascii_case("q"))
+                {
+                    quality = pair
+                        .next()
+                        .and_then(|quality| quality.trim().parse::<f32>().ok())
+                        .filter(|quality| quality.is_finite() && (0.0..=1.0).contains(quality))
+                        .unwrap_or(0.0);
+                }
+            }
+            match selected {
+                Some((selected_specificity, selected_quality))
+                    if selected_specificity > specificity
+                        || (selected_specificity == specificity && selected_quality >= quality) => {
+                }
+                _ => selected = Some((specificity, quality)),
+            }
+        }
+    }
+    selected.is_some_and(|(_, quality)| quality > 0.0)
 }
 
 /// Error type for [`handle_put_monad_topic_post`].
@@ -1369,6 +1396,32 @@ mod tests {
         assert!(topic_accepts(&headers, "application/x-protobuf"));
         headers.insert(ACCEPT, "application/cbor".parse().unwrap());
         assert!(!topic_accepts(&headers, "application/x-protobuf"));
+
+        for expected in ["application/cbor", "application/x-protobuf"] {
+            headers.insert(
+                ACCEPT,
+                format!("{expected};q=0, application/*;q=1, */*;q=1")
+                    .parse()
+                    .unwrap(),
+            );
+            assert!(
+                !topic_accepts(&headers, expected),
+                "an exact refusal must override positive wildcards for {expected}"
+            );
+            headers.insert(ACCEPT, "application/*;q=0, */*;q=1".parse().unwrap());
+            assert!(
+                !topic_accepts(&headers, expected),
+                "a type-wildcard refusal must override a positive global wildcard for {expected}"
+            );
+            headers.insert(
+                ACCEPT,
+                format!("{expected};q=0.4, */*;q=0").parse().unwrap(),
+            );
+            assert!(
+                topic_accepts(&headers, expected),
+                "a positive exact range must override a refused wildcard for {expected}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -1515,7 +1568,12 @@ mod tests {
             );
         }
         let mut protobuf_only = HeaderMap::new();
-        protobuf_only.insert(ACCEPT, "application/x-protobuf".parse().unwrap());
+        protobuf_only.insert(
+            ACCEPT,
+            "application/cbor;q=0, application/x-protobuf;q=1, */*;q=1"
+                .parse()
+                .unwrap(),
+        );
         assert!(matches!(
             handle_get_monad_topic_post(
                 Path(hex::encode(&inner.payload_hash)),
@@ -1630,7 +1688,12 @@ mod tests {
             assert_eq!(response.headers()[CONTENT_TYPE], "application/x-protobuf");
         }
         let mut cbor_only = HeaderMap::new();
-        cbor_only.insert(ACCEPT, "application/cbor".parse().unwrap());
+        cbor_only.insert(
+            ACCEPT,
+            "application/x-protobuf;q=0, application/cbor;q=1, */*;q=1"
+                .parse()
+                .unwrap(),
+        );
         assert!(matches!(
             handle_get_monad_topic_post(
                 Path(hex::encode(&hash)),
@@ -2300,7 +2363,9 @@ mod tests {
         use tower::ServiceExt;
 
         let (_tempdir, registry) = test_registry();
-        let router = test_server(registry).into_router();
+        let server = test_server(registry);
+        let stored = Arc::clone(&server.registry);
+        let router = server.into_router();
         let unsupported = axum::http::Request::builder()
             .method("PUT")
             .uri("/message/monad/topics")
@@ -2312,21 +2377,39 @@ mod tests {
             StatusCode::UNSUPPORTED_MEDIA_TYPE
         );
 
-        let mismatched_response = axum::http::Request::builder()
-            .method("PUT")
-            .uri("/message/monad/topics/vote")
-            .header(CONTENT_TYPE, "application/cbor")
-            .header(ACCEPT, "application/x-protobuf")
-            .body(hyper::Body::from(vec![0u8]))
-            .unwrap();
-        assert_eq!(
-            router
-                .clone()
-                .oneshot(mismatched_response)
-                .await
-                .unwrap()
-                .status(),
-            StatusCode::NOT_ACCEPTABLE
+        for (uri, content_type, accept) in [
+            (
+                "/message/monad/topics",
+                "application/cbor",
+                "application/cbor;q=0, application/*;q=1, */*;q=1",
+            ),
+            (
+                "/message/monad/topics/vote",
+                "application/x-protobuf",
+                "application/x-protobuf;q=0, application/*;q=1, */*;q=1",
+            ),
+        ] {
+            let explicitly_refused = axum::http::Request::builder()
+                .method("PUT")
+                .uri(uri)
+                .header(CONTENT_TYPE, content_type)
+                .header(ACCEPT, accept)
+                .body(hyper::Body::from(vec![0xff]))
+                .unwrap();
+            assert_eq!(
+                router
+                    .clone()
+                    .oneshot(explicitly_refused)
+                    .await
+                    .unwrap()
+                    .status(),
+                StatusCode::NOT_ACCEPTABLE,
+                "an exact q=0 must reject before malformed-body decode or RPC"
+            );
+        }
+        assert!(
+            stored.list_topics().unwrap().is_empty(),
+            "refused writes must not mutate topic storage"
         );
 
         let oversized = axum::http::Request::builder()

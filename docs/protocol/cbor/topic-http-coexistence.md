@@ -19,6 +19,8 @@ For an exact-post GET, the stored row's origin selects its only semantically val
 An absent or wildcard `Accept` therefore returns exact CBOR for a CBOR-origin row and protobuf for
 a legacy row. A request that explicitly accepts only the other format receives `404`; one that
 accepts neither supported format receives `406`.
+Media-range quality follows specificity precedence: an exact range overrides `application/*`,
+which overrides `*/*`, so an exact `q=0` cannot be bypassed by a positive wildcard.
 
 CBOR is enabled in wallet clients only with `topicWriteFormat: 'cbor'`. Omitting the option uses
 protobuf. A CBOR vote may target only an authoritative stored canonical type-9 frame whose T1 hash

@@ -36,6 +36,22 @@ export function classifyAccount(facts: StoredAccountFacts): AccountState {
   return facts.seedConfirmedAt != null ? 'confirmed' : 'completed-unconfirmed'
 }
 
+/**
+ * A deterministic digest of the durable account facts (#308).
+ * Used to bind replacement acknowledgement to the exact target account state:
+ * if the account changes between acknowledgement and commit, the digest changes
+ * and invalidates the acknowledgement.
+ */
+export function accountDigest(facts: StoredAccountFacts): string {
+  const state = classifyAccount(facts)
+  if (state === 'fresh') {
+    return 'fresh'
+  }
+  return `${state}::${facts.seedPhrase?.trim() ?? ''}::${
+    facts.name?.trim() ?? ''
+  }::${facts.seedConfirmedAt ?? ''}`
+}
+
 /** The account may use the app (no onboarding redirect). Needs a seed and a name. */
 export function isSetupComplete(facts: StoredAccountFacts): boolean {
   const state = classifyAccount(facts)

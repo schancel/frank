@@ -148,10 +148,12 @@ import {
 } from '../utils/monad-identity-session'
 import { finishSetupAndEnter } from '../utils/setup-persistence'
 import {
+  accountDigest,
   classifyAccount,
   type AccountState,
   type StoredAccountFacts,
 } from '../utils/account-state'
+import { withSetupCommitLock } from '../utils/setup-lock'
 import { requestPersistentStorageWithin } from '../utils/persistent-storage'
 import {
   commitValidatedSetupName,
@@ -236,11 +238,13 @@ export default defineComponent({
     // #284 resume mode: a stored seed with no display name (the old #267 bug). The stored phrase
     // is confirmed and named in place. Importing a different phrase (#387) waits for the same
     // typed acknowledgement as the replace-seed guard, and that acknowledgement writes nothing.
-    const accountState = classifyAccount({
+    const initialFacts: StoredAccountFacts = {
       seedPhrase: storedSeed,
       name: useProfileStore().profile?.name,
       seedConfirmedAt: wallet.seedConfirmedAt,
-    })
+    }
+    const accountState = classifyAccount(initialFacts)
+    const initialDigest = accountDigest(initialFacts)
     const resume = accountState === 'needs-recovery'
     // #304: a finished account (seed and name) already lives on this device.
     // #308: a legacy profile (name-only) is also an existing account.
@@ -257,6 +261,8 @@ export default defineComponent({
       existingAccount,
       existingConfirmed: accountState === 'confirmed',
       hasStoredSeed,
+      currentAccountDigest: initialDigest,
+      acknowledgedAccountDigest: null as string | null,
       replaceAcknowledged: false,
       resumeReplaceAcknowledged: false,
       completionPending: false,
@@ -332,6 +338,7 @@ export default defineComponent({
       }
     },
     acknowledgeReplace() {
+      this.acknowledgedAccountDigest = this.currentAccountDigest
       this.replaceAcknowledged = true
       // The default draft is the STORED phrase; a replacement must start from a fresh one
       // (or an import), never silently keep the old one under a new profile.
@@ -389,6 +396,9 @@ export default defineComponent({
         seedConfirmedAt: wallet.seedConfirmedAt,
       }
       const accountState = classifyAccount(facts)
+      const digest = accountDigest(facts)
+      this.currentAccountDigest = digest
+
       if (
         accountState === 'completed-unconfirmed' ||
         accountState === 'confirmed' ||
@@ -398,21 +408,36 @@ export default defineComponent({
         this.existingConfirmed = accountState === 'confirmed'
         this.hasStoredSeed = accountState !== 'name-only'
         this.storedSeed = wallet.seedPhrase
+      } else {
+        this.existingAccount = false
+        this.existingConfirmed = false
+        this.hasStoredSeed = false
       }
       if (accountState === 'needs-recovery') {
         this.resume = true
         this.storedSeed = wallet.seedPhrase
       }
+
+      if (
+        this.replaceAcknowledged &&
+        this.acknowledgedAccountDigest !== digest
+      ) {
+        // Target account changed since replacement was acknowledged (#308)
+        this.replaceAcknowledged = false
+        this.acknowledgedAccountDigest = null
+      }
       return accountState
     },
-    async captureAccountSubmission(
-      confirmedAt: number,
-    ): Promise<Readonly<AccountSubmission>> {
-      await this.syncPersistedAccountState()
-
-      if (this.existingAccount && !this.replaceAcknowledged) {
+    captureAccountSubmission(confirmedAt: number): Readonly<AccountSubmission> {
+      if (
+        this.existingAccount &&
+        (!this.replaceAcknowledged ||
+          this.acknowledgedAccountDigest !== this.currentAccountDigest)
+      ) {
         // Independent of the UI: an existing account is never replaced, and its profile never
-        // overwritten, without the typed acknowledgement.
+        // overwritten, without the typed acknowledgement bound to this exact target account.
+        this.replaceAcknowledged = false
+        this.acknowledgedAccountDigest = null
         throw new Error(this.$t('setup.replaceNotAcknowledged'))
       }
       if (
@@ -458,26 +483,54 @@ export default defineComponent({
       if (!this.avatar) {
         this.avatar = await this.selectRandomAvatar()
       }
-      this.completionPhase = 'wallet-persistence'
-      this.setSeedPhrase(submission.seed, submission.confirmedAt)
-      // Ticket #370: ask the browser to keep the just-stored seed while we still hold the user's
-      // click. The helper is bounded and best-effort, and never blocks signup for long.
-      await requestPersistentStorageWithin(PERSIST_REQUEST_WAIT_MS)
-      // Never create a new profile until the matching wallet seed is known durable. A poisoned
-      // production barrier drains its latest physical write before rejecting; the terminal page
-      // then deliberately neither reloads nor proceeds.
-      await useWalletStore().flushPersistence()
-      this.completionPhase = 'profile-persistence'
-      this.setRelayData({
-        profile: {
+      await withSetupCommitLock(async () => {
+        // Re-read and synchronize durable account facts right inside the critical section (#308)
+        await this.syncPersistedAccountState()
+        if (
+          this.existingAccount &&
+          (!this.replaceAcknowledged ||
+            this.acknowledgedAccountDigest !== this.currentAccountDigest)
+        ) {
+          this.replaceAcknowledged = false
+          this.acknowledgedAccountDigest = null
+          this.accountSubmission = null
+          throw new Error(this.$t('setup.replaceNotAcknowledged'))
+        }
+        if (
+          this.resume &&
+          !this.resumeReplaceAcknowledged &&
+          normalizeSetupMnemonic(submission.seed) !==
+            normalizeSetupMnemonic(this.storedSeed ?? '')
+        ) {
+          throw new Error(this.$t('setup.storedSeedMismatch'))
+        }
+
+        this.completionPhase = 'wallet-persistence'
+        this.setSeedPhrase(submission.seed, submission.confirmedAt)
+        // Ticket #370: ask the browser to keep the just-stored seed while we still hold the user's
+        // click. The helper is bounded and best-effort, and never blocks signup for long.
+        await requestPersistentStorageWithin(PERSIST_REQUEST_WAIT_MS)
+        // Never create a new profile until the matching wallet seed is known durable. A poisoned
+        // production barrier drains its latest physical write before rejecting; the terminal page
+        // then deliberately neither reloads nor proceeds.
+        await useWalletStore().flushPersistence()
+        this.completionPhase = 'profile-persistence'
+        this.setRelayData({
+          profile: {
+            name: submission.name,
+            bio: '',
+            avatar: this.avatar,
+          },
+          inbox: defaultRelayData.inbox,
+        })
+        await useProfileStore().flushPersistence()
+        this.currentAccountDigest = accountDigest({
+          seedPhrase: submission.seed,
           name: submission.name,
-          bio: '',
-          avatar: this.avatar,
-        },
-        inbox: defaultRelayData.inbox,
+          seedConfirmedAt: submission.confirmedAt,
+        })
+        this.completionPhase = 'entering'
       })
-      await useProfileStore().flushPersistence()
-      this.completionPhase = 'entering'
       await this.finishSetup()
       this.completionPhase = 'completed'
     },
@@ -486,9 +539,7 @@ export default defineComponent({
       this.completionPending = true
       try {
         if (!this.accountSubmission) {
-          this.accountSubmission = await this.captureAccountSubmission(
-            confirmedAt,
-          )
+          this.accountSubmission = this.captureAccountSubmission(confirmedAt)
         }
         await this.completeAccountStep(this.accountSubmission)
       } catch (error) {

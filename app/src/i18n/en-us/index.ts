@@ -437,12 +437,16 @@ export default {
     title: 'You already have an account on this device',
     intro:
       'Setting up again would replace it. Your recovery phrase is the only way to get this account and its funds back.',
+    introNameOnly:
+      'Setting up again would replace it. This profile does not have a recovery phrase or wallet funds on this device.',
     confirmed: 'Your current recovery phrase is confirmed.',
     cancel: 'Cancel and go back to my account',
     confirmCurrent: 'Confirm my current recovery phrase',
     replaceToggle: 'Replace this account',
     warning:
       'Replacing this account will remove your current recovery phrase, name and profile from this device. If you have not backed the phrase up, the account and any funds may be unrecoverable.',
+    warningNameOnly:
+      'Replacing this account will remove your current name and profile from this device.',
     typeLabel: 'Type {word} to continue',
     word: 'REPLACE',
     mismatch: 'That does not match. Type the word exactly to continue.',

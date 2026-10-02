@@ -130,6 +130,7 @@ export function createStoragePlugin(
         isRehydrating = true
         try {
           store.$patch(partialState)
+          await nextTick()
         } finally {
           isRehydrating = false
         }

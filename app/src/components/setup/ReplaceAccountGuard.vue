@@ -7,7 +7,11 @@
     <h2 :id="headingId" ref="heading" class="text-h6 q-ma-none" tabindex="-1">
       {{ $t('replaceGuard.title') }}
     </h2>
-    <p class="q-ma-none">{{ $t('replaceGuard.intro') }}</p>
+    <p class="q-ma-none">
+      {{
+        hasSeed ? $t('replaceGuard.intro') : $t('replaceGuard.introNameOnly')
+      }}
+    </p>
 
     <p v-if="confirmed" class="q-ma-none text-positive" data-test="confirmed">
       {{ $t('replaceGuard.confirmed') }}
@@ -54,7 +58,11 @@
       @submit.prevent="tryReplace"
     >
       <p class="q-ma-none text-negative" role="note">
-        {{ $t('replaceGuard.warning') }}
+        {{
+          hasSeed
+            ? $t('replaceGuard.warning')
+            : $t('replaceGuard.warningNameOnly')
+        }}
       </p>
       <label :for="inputId" style="display: block">
         {{ $t('replaceGuard.typeLabel', { word: $t('replaceGuard.word') }) }}

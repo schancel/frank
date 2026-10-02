@@ -114,7 +114,7 @@ import {
   useContactStore,
 } from 'src/stores/contacts'
 import { activeChain } from '@frank/wallet/chain'
-import { PublicKey } from 'bitcore-lib-xpi'
+import { profilePubKeyFromBytes } from 'src/utils/profile-pubkey'
 import { openChat } from 'src/utils/routes'
 import { getOwnCanonicalAddress } from 'src/utils/own-address'
 
@@ -272,7 +272,7 @@ export default defineComponent({
               bio: profileInfo.bio ?? '',
               avatar: profileInfo.avatar ?? '',
               isBot: profileInfo.bot === true,
-              pubKey: markRaw(PublicKey.fromBuffer(profileInfo.pubKey)),
+              pubKey: markRaw(profilePubKeyFromBytes(profileInfo.pubKey)),
             },
           },
         }

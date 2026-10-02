@@ -85,7 +85,9 @@ it('matches bitcore message source public keys', () => {
     stealthStart,
     source.indexOf('constructImageEntry(', stealthStart),
   )
-  expect(stealth).toContain('.publicKey.toBuffer()')
+  expect(stealth).toContain('stealthEphemeralPublicKey(')
+  expect(stealth).not.toContain('.publicKey')
+  expect(stealth).not.toContain('toPublicKey')
   const helper = readFileSync(join(__dirname, 'message-source-pubkey.ts'), 'utf8')
   expect(helper).toContain('publicFromPrivate(')
   expect(helper).toContain('privateKeyFromSecretBytes(')

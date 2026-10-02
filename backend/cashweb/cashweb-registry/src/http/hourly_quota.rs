@@ -1,6 +1,11 @@
 //! In-memory fixed-hour quotas for bursty public APIs.
 
-use std::{collections::HashMap, hash::Hash, sync::Mutex};
+use std::{
+    collections::HashMap,
+    hash::Hash,
+    net::{IpAddr, Ipv6Addr},
+    sync::Mutex,
+};
 
 const MAX_QUOTA_KEYS: usize = 100_000;
 
@@ -13,7 +18,6 @@ pub(crate) struct QuotaSnapshot {
 
 #[derive(Debug, Clone, Copy)]
 struct Usage {
-    hour: u64,
     units: u32,
 }
 
@@ -21,14 +25,23 @@ struct Usage {
 #[derive(Debug)]
 pub(crate) struct FixedHourQuota<K> {
     limit: u32,
-    usage: Mutex<HashMap<K, Usage>>,
+    state: Mutex<QuotaState<K>>,
+}
+
+#[derive(Debug)]
+struct QuotaState<K> {
+    hour: Option<u64>,
+    usage: HashMap<K, Usage>,
 }
 
 impl<K: Eq + Hash + Clone> FixedHourQuota<K> {
     pub(crate) fn new(limit: u32) -> Self {
         Self {
             limit,
-            usage: Mutex::new(HashMap::new()),
+            state: Mutex::new(QuotaState {
+                hour: None,
+                usage: HashMap::new(),
+            }),
         }
     }
 
@@ -37,17 +50,15 @@ impl<K: Eq + Hash + Clone> FixedHourQuota<K> {
             return None;
         }
         let hour = now_seconds / 3600;
-        let mut usage = self.usage.lock().ok()?;
-        if usage.len() >= MAX_QUOTA_KEYS && !usage.contains_key(&key) {
-            usage.retain(|_, value| value.hour == hour);
-            if usage.len() >= MAX_QUOTA_KEYS {
-                return None;
-            }
+        let mut state = self.state.lock().ok()?;
+        if state.hour != Some(hour) {
+            state.hour = Some(hour);
+            state.usage.clear();
         }
-        let entry = usage.entry(key).or_insert(Usage { hour, units: 0 });
-        if entry.hour != hour {
-            *entry = Usage { hour, units: 0 };
+        if state.usage.len() >= MAX_QUOTA_KEYS && !state.usage.contains_key(&key) {
+            return None;
         }
+        let entry = state.usage.entry(key).or_insert(Usage { units: 0 });
         let next = entry.units.checked_add(units)?;
         if next > self.limit {
             return None;
@@ -61,6 +72,16 @@ impl<K: Eq + Hash + Clone> FixedHourQuota<K> {
     }
 }
 
+pub(crate) fn normalize_quota_ip(ip: IpAddr) -> IpAddr {
+    match ip {
+        IpAddr::V4(ip) => IpAddr::V4(ip),
+        IpAddr::V6(ip) => match ip.to_ipv4_mapped() {
+            Some(ip) => IpAddr::V4(ip),
+            None => IpAddr::V6(Ipv6Addr::from(u128::from(ip) & (!0u128 << 64))),
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -71,5 +92,21 @@ mod tests {
         assert_eq!(quota.charge("a", 5, 3599).unwrap().remaining, 0);
         assert!(quota.charge("a", 1, 3599).is_none());
         assert_eq!(quota.charge("a", 1, 3600).unwrap().remaining, 4);
+    }
+
+    #[test]
+    fn quota_ip_preserves_ipv4_and_groups_native_ipv6_by_prefix() {
+        assert_eq!(
+            normalize_quota_ip("::ffff:192.0.2.1".parse().unwrap()),
+            "192.0.2.1".parse::<IpAddr>().unwrap()
+        );
+        assert_eq!(
+            normalize_quota_ip("::ffff:192.0.2.2".parse().unwrap()),
+            "192.0.2.2".parse::<IpAddr>().unwrap()
+        );
+        assert_eq!(
+            normalize_quota_ip("2001:db8:1:2::1234".parse().unwrap()),
+            "2001:db8:1:2::".parse::<IpAddr>().unwrap()
+        );
     }
 }

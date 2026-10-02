@@ -96,6 +96,51 @@ pub(crate) fn is_response_envelope(value: &Value, version: JsonRpcVersion) -> bo
     }
 }
 
+/// Validate JSON-RPC 2.0 response shape and exact request-ID correlation.
+pub(crate) fn response_matches_request(request: &[u8], response: &Value) -> bool {
+    let Ok(request) = parse_without_duplicate_keys(request) else {
+        return false;
+    };
+    let requests = match &request {
+        Value::Array(requests) if !requests.is_empty() => requests.as_slice(),
+        Value::Array(_) => return false,
+        request => std::slice::from_ref(request),
+    };
+    let responses = match response {
+        Value::Array(responses) if requests.len() > 1 && !responses.is_empty() => {
+            responses.as_slice()
+        }
+        Value::Array(_) => return false,
+        response if requests.len() == 1 => std::slice::from_ref(response),
+        _ => return false,
+    };
+    if requests.len() != responses.len() {
+        return false;
+    }
+
+    let mut expected = Vec::with_capacity(requests.len());
+    for request in requests {
+        let Some(id) = request.as_object().and_then(|request| request.get("id")) else {
+            return false;
+        };
+        if expected.contains(id) {
+            return false;
+        }
+        expected.push(id.clone());
+    }
+    for response in responses {
+        if !is_single_response_envelope(response, JsonRpcVersion::V2) {
+            return false;
+        }
+        let id = &response["id"];
+        let Some(index) = expected.iter().position(|expected| expected == id) else {
+            return false;
+        };
+        expected.swap_remove(index);
+    }
+    expected.is_empty()
+}
+
 fn is_single_response_envelope(value: &Value, version: JsonRpcVersion) -> bool {
     let Some(response) = value.as_object() else {
         return false;
@@ -315,6 +360,30 @@ mod tests {
         assert!(!is_response_envelope(
             &serde_json::json!([]),
             JsonRpcVersion::Legacy,
+        ));
+    }
+
+    #[test]
+    fn correlates_reordered_responses_and_rejects_missing_or_duplicate_ids() {
+        let request =
+            br#"[{"jsonrpc":"2.0","id":1,"method":"a"},{"jsonrpc":"2.0","id":2,"method":"b"}]"#;
+        assert!(response_matches_request(
+            request,
+            &serde_json::json!([
+                {"jsonrpc":"2.0","id":2,"result":true},
+                {"jsonrpc":"2.0","id":1,"error":{"code":-1,"message":"no"}},
+            ]),
+        ));
+        assert!(!response_matches_request(
+            request,
+            &serde_json::json!([{"jsonrpc":"2.0","id":1,"result":true}]),
+        ));
+        assert!(!response_matches_request(
+            request,
+            &serde_json::json!([
+                {"jsonrpc":"2.0","id":1,"result":true},
+                {"jsonrpc":"2.0","id":1,"result":false},
+            ]),
         ));
     }
 

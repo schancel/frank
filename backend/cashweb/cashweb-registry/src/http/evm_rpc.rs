@@ -31,7 +31,9 @@ use url::Url;
 
 use crate::{
     http::{
-        bitcoin_proxy::BitcoinProxyRuntime, hourly_quota::FixedHourQuota, server::RegistryServer,
+        bitcoin_proxy::BitcoinProxyRuntime,
+        hourly_quota::{normalize_quota_ip, FixedHourQuota},
+        server::RegistryServer,
     },
     monad_http::Address,
     store::monad_messages::ChallengeConsumption,
@@ -686,8 +688,14 @@ fn validate_body(
             let mut units = 0u32;
             let mut anonymous = true;
             let mut broadcast = false;
+            let mut ids = Vec::with_capacity(calls.len());
             for call in &calls {
                 let cost = validate_call(call, chain)?;
+                let id = call.get("id").expect("validate_call requires an id");
+                if ids.contains(id) {
+                    return Err(rpc_error(StatusCode::BAD_REQUEST, "invalid_json_rpc"));
+                }
+                ids.push(id.clone());
                 units = units.saturating_add(cost.units);
                 anonymous &= cost.anonymous;
                 broadcast |= cost.broadcast;
@@ -703,10 +711,7 @@ fn validate_body(
 }
 
 fn quota_ip(address: SocketAddr) -> IpAddr {
-    match address.ip() {
-        IpAddr::V4(ip) => IpAddr::V4(ip),
-        IpAddr::V6(ip) => IpAddr::V6(std::net::Ipv6Addr::from(u128::from(ip) & (!0u128 << 64))),
-    }
+    normalize_quota_ip(address.ip())
 }
 
 fn now_seconds() -> u64 {
@@ -984,7 +989,7 @@ pub(crate) async fn handle_proxy_rpc(
                 }
             })
     };
-    let body = tokio::time::timeout(runtime.timeout, upstream)
+    let response_body = tokio::time::timeout(runtime.timeout, upstream)
         .await
         .map_err(|_| {
             broadcast_error(
@@ -994,14 +999,23 @@ pub(crate) async fn handle_proxy_rpc(
                 true,
             )
         })??;
-    let mut value = serde_json::from_slice::<Value>(&body).map_err(|_| {
-        broadcast_error(
+    let mut value =
+        super::json_rpc::parse_without_duplicate_keys(&response_body).map_err(|_| {
+            broadcast_error(
+                StatusCode::BAD_GATEWAY,
+                "invalid_rpc_upstream_response",
+                cost.broadcast,
+                true,
+            )
+        })?;
+    if !super::json_rpc::response_matches_request(&body, &value) {
+        return Err(broadcast_error(
             StatusCode::BAD_GATEWAY,
             "invalid_rpc_upstream_response",
             cost.broadcast,
             true,
-        )
-    })?;
+        ));
+    }
     crate::http::json_rpc::sanitize_response_errors(&mut value);
     let body = serde_json::to_vec(&value).map_err(|_| {
         broadcast_error(
@@ -1134,6 +1148,11 @@ mod tests {
         ])
         .unwrap();
         assert!(validate_body(&runtime, chain, &too_many).is_err());
+        let duplicate_ids = br#"[
+            {"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]},
+            {"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}
+        ]"#;
+        assert!(validate_body(&runtime, chain, duplicate_ids).is_err());
         let first = Arc::clone(&runtime.permits).try_acquire_owned().unwrap();
         assert!(Arc::clone(&runtime.permits).try_acquire_owned().is_err());
         drop(first);
@@ -1680,6 +1699,11 @@ mod tests {
                         tokio::time::sleep(Duration::from_millis(100)).await;
                         Json(json!({"jsonrpc":"2.0","id":request["id"],"result":"0x1"}))
                     }
+                    "eth_sendRawTransaction" => Json(json!({
+                        "jsonrpc":"2.0",
+                        "id":"wrong-id",
+                        "result":"0xdeadbeef"
+                    })),
                     other => panic!("unexpected method {other}"),
                 }
             }),
@@ -1740,5 +1764,21 @@ mod tests {
             .unwrap();
         assert_eq!(slow.status(), StatusCode::GATEWAY_TIMEOUT);
         assert_eq!(response_json(slow).await["error"], "rpc_upstream_timeout");
+
+        let broadcast_body =
+            br#"{"jsonrpc":"2.0","id":3,"method":"eth_sendRawTransaction","params":["0x00"]}"#;
+        let mismatched = router
+            .clone()
+            .oneshot(request_with_proof(&router, broadcast_body, customer_address()).await)
+            .await
+            .unwrap();
+        assert_eq!(mismatched.status(), StatusCode::BAD_GATEWAY);
+        assert_eq!(
+            response_json(mismatched).await,
+            json!({
+                "error":"invalid_rpc_upstream_response",
+                "broadcast_state":"unknown"
+            })
+        );
     }
 }

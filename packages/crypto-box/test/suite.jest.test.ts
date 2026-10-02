@@ -48,6 +48,23 @@ function toHex(bytes: Uint8Array): string {
   return Buffer.from(bytes).toString('hex')
 }
 
+function fromHex(hex: string): Uint8Array {
+  return Uint8Array.from(Buffer.from(hex, 'hex'))
+}
+
+function replaceBytes(
+  bytes: Uint8Array,
+  offset: number,
+  removed: number,
+  inserted: readonly number[],
+): Uint8Array {
+  const out = new Uint8Array(bytes.length - removed + inserted.length)
+  out.set(bytes.subarray(0, offset))
+  out.set(inserted, offset)
+  out.set(bytes.subarray(offset + removed), offset + inserted.length)
+  return out
+}
+
 const senderSk = secret(1)
 const recipientSk = secret(2)
 const ephemeral = secret(3)
@@ -103,7 +120,8 @@ describe('encryption suites', () => {
     expect(readme).toContain('no prekeys')
     expect(readme).toContain('no ratchet')
     expect(readme).toContain('0xFF00')
-    expect(readme).toContain('not a CBOR version-1')
+    expect(readme).toContain('not the live relay protobuf')
+    expect(readme).toContain('Frank CBOR version 1')
     expect(readme).toContain('protobuf')
     expect(readme).toContain('AES-CBC is not used')
     expect(readme).toContain('waiting')
@@ -125,9 +143,10 @@ describe('encryption suites', () => {
       SUITE_AUTH_XCHACHA,
     ]) {
       const envelope = mustSeal(suiteId, 'frank')
-      expect(envelope[0]).toBe(1)
-      expect((envelope[1] << 8) | envelope[2]).toBe(suiteId)
-      expect((envelope[3] << 8) | envelope[4]).toBe(0xff00)
+      expect(envelope[0]).toBe(0xa6)
+      expect(envelope.slice(0, 4)).toEqual(Uint8Array.of(0xa6, 0, 1, 1))
+      expect((envelope[5] << 8) | envelope[6]).toBe(suiteId)
+      expect((envelope[9] << 8) | envelope[10]).toBe(0xff00)
       const opened = open({
         envelope,
         recipientPrivateKey: recipientSk,
@@ -255,7 +274,7 @@ describe('encryption suites', () => {
     if (!wrongContext.ok) expect(wrongContext.error.code).toBe('open-failed')
 
     const salted = new Uint8Array(envelope)
-    salted[5] ^= 0x01
+    salted[14] ^= 0x01
     const wrongSalt = open({
       envelope: salted,
       recipientPrivateKey: recipientSk,
@@ -286,8 +305,8 @@ describe('encryption suites', () => {
     }
 
     const reserved = new Uint8Array(envelope)
-    reserved[1] = 0xff
-    reserved[2] = 0xff
+    reserved[5] = 0xff
+    reserved[6] = 0xff
     const reservedOpen = open({
       envelope: reserved,
       recipientPrivateKey: recipientSk,
@@ -298,8 +317,8 @@ describe('encryption suites', () => {
     if (!reservedOpen.ok) expect(reservedOpen.error.code).toBe('reserved-suite')
 
     const badKem = new Uint8Array(envelope)
-    badKem[3] = 0x00
-    badKem[4] = 0x10
+    badKem[9] = 0x00
+    badKem[10] = 0x10
     const kemOpen = open({
       envelope: badKem,
       recipientPrivateKey: recipientSk,
@@ -320,25 +339,124 @@ describe('encryption suites', () => {
     if (!badLength.ok) expect(badLength.error.code).toBe('bad-length')
   })
 
-  test('whole-envelope vectors', () => {
-    const base = mustSeal(SUITE_BASE_AES_GCM, 'frank')
-    const auth = mustSeal(SUITE_AUTH_XCHACHA, 'frank')
-    expect(base.length).toBeGreaterThan(70)
-    expect(auth.length).toBe(base.length)
-    expect(toHex(base)).not.toBe(toHex(auth))
-    expect(toHex(base)).toBe(
-      '01fe01ff00070707070707070707070707070707070707070707070707070707070707070702f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f98c60b582dc48876cd46f72eaa4544263a6ab1804aa709d44b1',
-    )
-    expect(toHex(auth)).toBe(
-      '01fe04ff00070707070707070707070707070707070707070707070707070707070707070702f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9c1b582181da35780536a806ac7f220b9ccb5e3760fa2ca3daa',
-    )
-    const opened = open({
-      envelope: base,
+  test('rejects every non-canonical or malformed envelope shape', () => {
+    const valid = mustSeal(SUITE_AUTH_XCHACHA, 'frank')
+    const malformed = [
+      // The pre-CBOR ad-hoc format is not accepted.
+      fromHex(
+        '01fe04ff00070707070707070707070707070707070707070707070707070707070707070702f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9c1b582181da35780536a806ac7f220b9ccb5e3760fa2ca3daa',
+      ),
+      replaceBytes(valid, 0, 1, [0xb8, 0x06]), // non-canonical map length
+      replaceBytes(valid, 1, 1, [0x18, 0x00]), // non-canonical map key
+      replaceBytes(valid, 2, 1, [0x18, 0x01]), // non-canonical integer
+      replaceBytes(valid, 4, 3, [0x1a, 0x00, 0x00, 0xfe, 0x04]),
+      replaceBytes(valid, 12, 2, [0x59, 0x00, 0x20]), // non-canonical bstr length
+      replaceBytes(valid, 83, 2, [0x59, 0x00, 0x19]),
+      replaceBytes(
+        valid,
+        3,
+        8,
+        Array.from(valid.subarray(7, 11)).concat(
+          Array.from(valid.subarray(3, 7)),
+        ),
+      ), // reordered keys
+      replaceBytes(valid, 7, 1, [0x01]), // duplicate key
+      replaceBytes(valid, 7, 1, [0x06]), // unknown key
+      replaceBytes(valid, 0, 1, [0xa5]).slice(0, 82), // missing key
+      replaceBytes(valid, 4, 1, [0x59]), // wrong suite type
+      replaceBytes(valid, 12, 1, [0x98]), // wrong salt type
+      replaceBytes(valid, 83, 1, [0x99]), // wrong ciphertext type
+      replaceBytes(valid, 0, 1, [0xbf]), // indefinite map
+      replaceBytes(valid, 12, 1, [0x5f]), // indefinite bstr
+      replaceBytes(valid, valid.length, 0, [0x00]), // trailing byte
+      replaceBytes(valid, 12, 2, [0x58, 0x1f]), // salt fixed length
+      replaceBytes(valid, 47, 2, [0x58, 0x20]), // enc fixed length
+    ]
+    for (const envelope of malformed) {
+      const result = open({
+        envelope,
+        recipientPrivateKey: recipientSk,
+        senderPublicKey: senderPk,
+        context,
+      })
+      expect(result.ok).toBe(false)
+      if (!result.ok) expect(result.error.code).toBe('envelope')
+    }
+
+    const oversized = new Uint8Array(1_114_220)
+    const overBound = open({
+      envelope: oversized,
       recipientPrivateKey: recipientSk,
       senderPublicKey: senderPk,
       context,
     })
-    expect(opened.ok).toBe(true)
-    if (opened.ok) expect(Buffer.from(opened.value).toString()).toBe('frank')
+    expect(overBound.ok).toBe(false)
+    if (!overBound.ok) expect(overBound.error.code).toBe('envelope')
+  })
+
+  test('encoded fields control dispatch and cryptographic inputs', () => {
+    const envelope = mustSeal(SUITE_AUTH_XCHACHA, 'frank')
+    const mutations = [
+      [2, 0x02], // version
+      [6, 0x03], // suite: auth XChaCha -> auth AES-GCM
+      [10, 0x01], // KEM
+      [14, 0x06], // salt
+      [49, envelope[49] ^ 0x01], // encapsulated point
+      [85, envelope[85] ^ 0x01], // ciphertext
+    ] as const
+    for (const [offset, value] of mutations) {
+      const changed = new Uint8Array(envelope)
+      changed[offset] = value
+      const result = open({
+        envelope: changed,
+        recipientPrivateKey: recipientSk,
+        senderPublicKey: senderPk,
+        context,
+      })
+      expect(result.ok).toBe(false)
+    }
+    const unknownSuite = new Uint8Array(envelope)
+    unknownSuite[6] = 0x05
+    const unknown = open({
+      envelope: unknownSuite,
+      recipientPrivateKey: recipientSk,
+      senderPublicKey: senderPk,
+      context,
+    })
+    expect(unknown.ok).toBe(false)
+    if (!unknown.ok) expect(unknown.error.code).toBe('suite-unknown')
+  })
+
+  test('whole-envelope deterministic-CBOR vectors for every suite', () => {
+    const vectors = new Map([
+      [
+        SUITE_BASE_AES_GCM,
+        'a600010119fe010219ff00035820070707070707070707070707070707070707070707070707070707070707070704582102f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f90558198c60b582dc48876cd46f72eaa4544263a6ab1804aa709d44b1',
+      ],
+      [
+        SUITE_BASE_XCHACHA,
+        'a600010119fe020219ff00035820070707070707070707070707070707070707070707070707070707070707070704582102f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f905581951a7ad9509175b1502c13aeffec3f63af78a76298fee13861e',
+      ],
+      [
+        SUITE_AUTH_AES_GCM,
+        'a600010119fe030219ff00035820070707070707070707070707070707070707070707070707070707070707070704582102f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9055819988bf88bd65e72ddf13713ea9cc5be63da20d7fb81ab73f864',
+      ],
+      [
+        SUITE_AUTH_XCHACHA,
+        'a600010119fe040219ff00035820070707070707070707070707070707070707070707070707070707070707070704582102f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9055819c1b582181da35780536a806ac7f220b9ccb5e3760fa2ca3daa',
+      ],
+    ])
+    for (const [suiteId, expected] of vectors) {
+      const envelope = mustSeal(suiteId, 'frank')
+      expect(toHex(envelope)).toBe(expected)
+      const opened = open({
+        envelope,
+        recipientPrivateKey: recipientSk,
+        senderPublicKey: senderPk,
+        context,
+      })
+      expect(opened.ok).toBe(true)
+      if (opened.ok) expect(Buffer.from(opened.value).toString()).toBe('frank')
+    }
   })
 })

@@ -52,10 +52,6 @@ export function i2osp(value: number, length: number): Uint8Array {
   return out
 }
 
-export function readU16(bytes: Uint8Array, offset: number): number {
-  return (bytes[offset] ?? 0) * 256 + (bytes[offset + 1] ?? 0)
-}
-
 export function readU32(bytes: Uint8Array, offset: number): number {
   return (
     (bytes[offset] ?? 0) * 0x1000000 +

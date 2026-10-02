@@ -53,16 +53,30 @@
  */
 import { ForumMessage, ForumMessageEntry } from "@frank/cashweb/types/forum";
 import { MessageItem } from "@frank/cashweb/types/messages";
+import {
+  ChainAddress,
+  ChainKind,
+  ChainTransaction,
+  FrankIdentityHandle,
+  NativeWalletHandle,
+  WalletHandle,
+} from "./chain-wallet";
+
+export type {
+  ChainAddress,
+  ChainKind,
+  ChainTransaction,
+  FrankIdentityHandle,
+  NativeWalletHandle,
+  WalletHandle,
+} from "./chain-wallet";
+export { NativeTransactionSubmissionError } from "./chain-wallet";
 
 /** Canonical string form of an on-chain address, for storage keys, API calls, and equality checks.
  * For `MonadChain`, this is an EIP-55 checksummed `0x...` string (`../wallet/monad-identity.ts`) --
  * there is deliberately no separate "API" vs. "display" encoding the way Lotus's
  * `toAPIAddress`/`toDisplayAddress` (`../../utils/address.ts`) need, since EVM has exactly one
  * canonical address representation. */
-export interface ChainAddress {
-  readonly raw: string;
-}
-
 /** A chain-agnostic HD seed. Mirrors the only real seed-consuming primitive in this codebase today
  * (`../wallet/monad-hd-keyring.ts`'s `MonadHdKeyring.fromMnemonic(mnemonic, passphrase)`) rather
  * than inventing an abstract seed format with no real consumer yet. */
@@ -73,19 +87,10 @@ export interface HDSeed {
   passphrase?: string;
 }
 
-export interface FrankIdentityHandle {
-  address: ChainAddress;
-  displayAddress: string;
-}
-
 /** The generic per-user wallet handle every `ActiveChain` method that needs a sender identity
  * takes. See this file's header, deviation 1: concrete chain implementations (`MonadChain`) attach
  * more than `identity` to the object they actually hand back from `createWallet`; this interface
  * only promises what every chain implementation must have. */
-export interface WalletHandle {
-  readonly identity: FrankIdentityHandle;
-}
-
 /** A looked-up identity's registered profile/pubkey -- `contacts.ts` (#42) needs this to resolve a
  * coparty's encryption key; the Lotus-side equivalent is `../wallet/lotus-identity.ts`'s
  * `fetchIdentityPubKey`, which Monad had no analog of before this ticket
@@ -242,22 +247,36 @@ export interface DirectMessageClient {
 
 /** Standard native-asset wallet operations, independent of Frank's mandatory message stamps. */
 export interface NativeTransferClient {
-  getBalance(params: { wallet: WalletHandle }): Promise<bigint>;
+  getBalance(params: { wallet: NativeWalletHandle }): Promise<bigint>;
   send(params: {
-    wallet: WalletHandle;
+    wallet: NativeWalletHandle;
+    recipient: ChainAddress;
+    value: bigint;
+    onSigned?: (signed: ChainTransaction) => Promise<void>;
+  }): Promise<ChainTransaction>;
+  getTransactionStatus?(params: {
+    wallet: NativeWalletHandle;
+    txHash: string;
+  }): Promise<"confirmed" | "failed" | "pending" | "unknown">;
+}
+
+/** Native-transfer guarantees required by the currently selected full application chain. */
+export interface ActiveNativeTransferClient extends NativeTransferClient {
+  send(params: {
+    wallet: NativeWalletHandle;
     recipient: ChainAddress;
     value: bigint;
     /** Called with the transaction hash after signing and BEFORE any byte is broadcast. It is
      * awaited; if it rejects, nothing is broadcast and `send` rejects with that error. Lets a
      * caller persist "this hash may be paid" durably first, so a lost broadcast response or a
      * killed app can never leave a paid transfer with no record. */
-    onSigned?: (signed: { txHash: string }) => Promise<void>;
-  }): Promise<{ txHash: string }>;
+    onSigned?: (signed: ChainTransaction) => Promise<void>;
+  }): Promise<ChainTransaction>;
   /** What the node says about a transaction hash: mined ok (`confirmed`), mined but reverted
    * (`failed`), known but not mined (`pending`), or not known to the node (`unknown`; only
    * meaningful as "not paid" after enough time has passed and the caller says so). */
   getTransactionStatus(params: {
-    wallet: WalletHandle;
+    wallet: NativeWalletHandle;
     txHash: string;
   }): Promise<"confirmed" | "failed" | "pending" | "unknown">;
 }
@@ -318,20 +337,44 @@ export interface TopicBroadcastClient {
   >;
 }
 
-export interface ActiveChain {
+export interface ChainCapabilities {
+  readonly profiles: boolean;
+  readonly directMessages: boolean;
+  readonly topics: boolean;
+  readonly stealthPayments: boolean;
+}
+
+/** Native-asset surface implemented by every chain returned from the factory. */
+export interface NativeAssetChain {
+  readonly kind: ChainKind;
   readonly name: string;
   /** Display denomination, e.g. `'MON'`. */
   readonly unit: string;
+  readonly capabilities: ChainCapabilities;
+  toDisplayAmount(raw: bigint): string;
+  fromDisplayAmount(display: string): bigint;
+  addressToString(addr: ChainAddress): string;
+  transactionToString(transaction: ChainTransaction): string;
+  /** @deprecated Use addressToString. */
+  formatAddress(addr: ChainAddress): string;
+  parseAddress(input: string): ChainAddress | undefined;
+  createWallet(seed: HDSeed): Promise<NativeWalletHandle>;
+  nativeTransfers: NativeTransferClient;
+}
+
+/** Full Frank application capability set. The selected implementation remains Monad. */
+export interface ActiveChain extends NativeAssetChain {
+  readonly capabilities: ChainCapabilities & {
+    readonly profiles: true;
+    readonly directMessages: true;
+    readonly topics: true;
+  };
   /** Default raw native-chain value for a direct-message stamp payment. */
   readonly defaultStampValue: bigint;
   /** Default raw native-chain value burned for a topic post or vote. */
   readonly defaultTopicVoteValue: bigint;
-  toDisplayAmount(raw: bigint): string;
-  fromDisplayAmount(display: string): bigint;
-  formatAddress(addr: ChainAddress): string;
-  parseAddress(input: string): ChainAddress | undefined;
-  createWallet(seed: HDSeed): Promise<WalletHandle>;
-  nativeTransfers: NativeTransferClient;
+  createWallet(seed: HDSeed): Promise<NativeWalletHandle & WalletHandle>;
+  nativeTransfers: ActiveNativeTransferClient;
   /** Look up an identity's registered profile/pubkey. Returns `undefined` if nothing is
    * registered under `addr` yet. `opts.relayBaseUrl`, when given, looks the address up against
    * that relay instead of this chain's own configured default (ticket #78 -- a client-initiated,

@@ -8,38 +8,38 @@
  */
 type WalletTransactionMetadata<TMetadata> = [TMetadata] extends [never]
   ? { readonly metadata?: never }
-  : { readonly metadata: TMetadata }
+  : { readonly metadata: TMetadata };
 
 export type WalletTransaction<TAddress, TRawTransaction, TMetadata = never> = {
   /** Stable position used by message formats to associate a payment with its destination. */
-  readonly index: number
-  readonly destination: TAddress
-  readonly value: bigint
-  readonly rawTransaction: TRawTransaction
-} & WalletTransactionMetadata<TMetadata>
+  readonly index: number;
+  readonly destination: TAddress;
+  readonly value: bigint;
+  readonly rawTransaction: TRawTransaction;
+} & WalletTransactionMetadata<TMetadata>;
 
 export interface WalletTransactionBundle<
   TAddress,
   TRawTransaction,
-  TMetadata = never,
+  TMetadata = never
 > {
   /** Stable identity of the complete ordered payment plan, independent of transaction lifetime. */
-  readonly bundleId: string
-  readonly source: TAddress
+  readonly bundleId: string;
+  readonly source: TAddress;
   readonly transactions: ReadonlyArray<
     WalletTransaction<TAddress, TRawTransaction, TMetadata>
-  >
+  >;
 }
 
 export interface SubmittedWalletTransaction<TAddress> {
-  index: number
-  destination: TAddress
-  value: bigint
-  txId: string
+  index: number;
+  destination: TAddress;
+  value: bigint;
+  txId: string;
 }
 
 export interface WalletBundleSubmission<TAddress> {
-  submitted: ReadonlyArray<SubmittedWalletTransaction<TAddress>>
+  submitted: ReadonlyArray<SubmittedWalletTransaction<TAddress>>;
 }
 
 export interface SubmitTransactionBundleOptions {
@@ -47,9 +47,9 @@ export interface SubmitTransactionBundleOptions {
    * Skip an already reconciled prefix when resuming a non-atomic bundle. The caller must retain
    * or rebuild the complete bundle so implementations can still validate its signed positions.
    */
-  startIndex?: number
+  startIndex?: number;
   /** Bundle id retained from the reconciled prefix; required when startIndex is nonzero. */
-  expectedBundleId?: string
+  expectedBundleId?: string;
 }
 
 /**
@@ -57,39 +57,71 @@ export interface SubmitTransactionBundleOptions {
  * Chain-specific build parameters and metadata remain generic rather than being flattened into a
  * misleading universal transaction format.
  */
-export interface TransactionBundleWallet<
+export interface TransactionBundleCapability<
   TAddress,
   TRawTransaction,
   TTransferParams,
-  TTransferMetadata = never,
+  TTransferMetadata = never
 > {
-  readonly address: TAddress
-  getBalance(): Promise<bigint>
+  readonly address: TAddress;
+  getBalance(): Promise<bigint>;
   buildTransactionBundle(
-    params: TTransferParams,
+    params: TTransferParams
   ): Promise<
     WalletTransactionBundle<TAddress, TRawTransaction, TTransferMetadata>
-  >
+  >;
   submitTransactionBundle<TMetadata = TTransferMetadata>(
     bundle: WalletTransactionBundle<TAddress, TRawTransaction, TMetadata>,
-    options?: SubmitTransactionBundleOptions,
-  ): Promise<WalletBundleSubmission<TAddress>>
+    options?: SubmitTransactionBundleOptions
+  ): Promise<WalletBundleSubmission<TAddress>>;
 }
 
 /** An explicit capability layered on a wallet only when a reviewed stealth scheme is present. */
-export interface StealthTransactionBundleWallet<
+export interface StealthTransactionBundleCapability<
   TAddress,
   TRawTransaction,
   TTransferParams,
   TStealthParams,
-  TStealthMetadata,
-> extends TransactionBundleWallet<TAddress, TRawTransaction, TTransferParams> {
+  TStealthMetadata
+> extends TransactionBundleCapability<
+    TAddress,
+    TRawTransaction,
+    TTransferParams
+  > {
   buildStealthTransactionBundle(
-    params: TStealthParams,
+    params: TStealthParams
   ): Promise<
     WalletTransactionBundle<TAddress, TRawTransaction, TStealthMetadata>
-  >
+  >;
 }
+
+/** @deprecated Prefer TransactionBundleCapability; this is a capability, not the bundle data. */
+export type TransactionBundleWallet<
+  TAddress,
+  TRawTransaction,
+  TTransferParams,
+  TTransferMetadata = never
+> = TransactionBundleCapability<
+  TAddress,
+  TRawTransaction,
+  TTransferParams,
+  TTransferMetadata
+>;
+
+/** @deprecated Prefer StealthTransactionBundleCapability. */
+export type StealthTransactionBundleWallet<
+  TAddress,
+  TRawTransaction,
+  TTransferParams,
+  TStealthParams,
+  TStealthMetadata
+> = StealthTransactionBundleCapability<
+  TAddress,
+  TRawTransaction,
+  TTransferParams,
+  TStealthParams,
+  TStealthMetadata
+>;
 
 /**
  * A non-atomic bundle stopped after zero or more earlier transactions were accepted by the RPC.
@@ -97,23 +129,23 @@ export interface StealthTransactionBundleWallet<
  * accepted it, so callers must reconcile `attempted.txId` before rebuilding or retrying.
  */
 export class TransactionBundleSubmissionError<TAddress> extends Error {
-  readonly submitted: ReadonlyArray<SubmittedWalletTransaction<TAddress>>
-  readonly attempted: SubmittedWalletTransaction<TAddress>
-  readonly failedIndex: number
-  readonly reason: unknown
+  readonly submitted: ReadonlyArray<SubmittedWalletTransaction<TAddress>>;
+  readonly attempted: SubmittedWalletTransaction<TAddress>;
+  readonly failedIndex: number;
+  readonly reason: unknown;
 
   constructor(params: {
-    submitted: ReadonlyArray<SubmittedWalletTransaction<TAddress>>
-    attempted: SubmittedWalletTransaction<TAddress>
-    reason: unknown
+    submitted: ReadonlyArray<SubmittedWalletTransaction<TAddress>>;
+    attempted: SubmittedWalletTransaction<TAddress>;
+    reason: unknown;
   }) {
     super(
-      `transaction bundle submission outcome is unknown at index ${params.attempted.index}`,
-    )
-    this.name = 'TransactionBundleSubmissionError'
-    this.submitted = [...params.submitted]
-    this.attempted = params.attempted
-    this.failedIndex = params.attempted.index
-    this.reason = params.reason
+      `transaction bundle submission outcome is unknown at index ${params.attempted.index}`
+    );
+    this.name = "TransactionBundleSubmissionError";
+    this.submitted = [...params.submitted];
+    this.attempted = params.attempted;
+    this.failedIndex = params.attempted.index;
+    this.reason = params.reason;
   }
 }

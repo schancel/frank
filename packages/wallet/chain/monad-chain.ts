@@ -88,6 +88,7 @@ import {
 import {
   ActiveChain,
   ChainAddress,
+  ChainTransaction,
   DirectMessageClient,
   DirectMessagePreparationProgress,
   DirectMessageReceived,
@@ -95,6 +96,7 @@ import {
   ProfileInfo,
   TopicBroadcastClient,
   TopicPostOutcomeUnknownError,
+  NativeWalletHandle,
   WalletHandle,
 } from "./active-chain";
 import { MessageItem } from "@frank/cashweb/types/messages";
@@ -167,6 +169,8 @@ import {
 } from "../storage/stamp-attempt-journal";
 
 export interface MonadChainConfig {
+  /** Stable chain/deployment identifier used for wallet affinity checks. */
+  networkId: string;
   /** Monad JSON-RPC HTTP endpoint, e.g. `MONAD_TESTNET_HTTP_RPC_URL`. */
   rpcUrl: string;
   /** Expected EVM chain ID, e.g. 10143 for Monad testnet. */
@@ -219,6 +223,7 @@ export function loadMonadChainConfigFromEnv(): MonadChainConfig {
   }
 
   return {
+    networkId: readEnv("MONAD_NETWORK_ID") ?? "monad-testnet",
     rpcUrl: readEnv("MONAD_TESTNET_HTTP_RPC_URL") ?? "http://127.0.0.1:8545",
     chainId: chainId ?? DEFAULT_MONAD_CHAIN_ID,
     relayBaseUrl:
@@ -249,7 +254,10 @@ export function loadMonadChainConfigFromEnv(): MonadChainConfig {
  * `{ identity }`-only while this concrete type carries more. */
 export interface MonadChainWalletHandle
   extends MonadWalletHandle,
-    WalletHandle {
+    WalletHandle,
+    NativeWalletHandle {
+  readonly chainKind: "monad";
+  readonly networkId: string;
   readonly identity: MonadIdentity;
 }
 
@@ -258,9 +266,13 @@ export interface MonadChainWalletHandle
  * is the only producer of `WalletHandle` values in a Monad-only build, so every handle reaching
  * `MonadChain`'s other methods already is one; this throws instead of silently misbehaving if that
  * invariant is ever broken. */
-function asMonadWallet(wallet: WalletHandle): MonadChainWalletHandle {
+function asMonadWallet(
+  wallet: WalletHandle,
+  expectedNetworkId?: string
+): MonadChainWalletHandle {
   const candidate = wallet as Partial<MonadChainWalletHandle>;
   if (
+    (candidate.chainKind !== undefined && candidate.chainKind !== "monad") ||
     candidate.pool === undefined ||
     candidate.leaseManager === undefined ||
     candidate.provider === undefined ||
@@ -270,6 +282,15 @@ function asMonadWallet(wallet: WalletHandle): MonadChainWalletHandle {
     throw new Error(
       "Expected a MonadChainWalletHandle (produced by MonadChain.createWallet), got a " +
         "WalletHandle missing the Monad wallet-client bundle"
+    );
+  }
+  if (
+    expectedNetworkId !== undefined &&
+    candidate.networkId !== undefined &&
+    candidate.networkId !== expectedNetworkId
+  ) {
+    throw new Error(
+      `Expected Monad network ${expectedNetworkId}, got ${candidate.networkId}`
     );
   }
   return candidate as MonadChainWalletHandle;
@@ -640,14 +661,14 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
 
   const directMessages: DirectMessageClient = {
     async send(params): Promise<DirectMessageSendResult> {
-      const wallet = asMonadWallet(params.wallet);
+      const wallet = asMonadWallet(params.wallet, config.networkId);
       return runWalletExclusive(wallet, () =>
         sendDirectMessageExclusive(params, wallet)
       );
     },
 
     async unattributedAttempts(params) {
-      const wallet = asMonadWallet(params.wallet);
+      const wallet = asMonadWallet(params.wallet, config.networkId);
       return runWalletExclusive(wallet, async () => {
         const client = new MonadStampClient(wallet);
         await client.resumePendingAttempts({ maxAttempts: 1 });
@@ -660,7 +681,7 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
     },
 
     async reconcileAttempts(params) {
-      const wallet = asMonadWallet(params.wallet);
+      const wallet = asMonadWallet(params.wallet, config.networkId);
       return runWalletExclusive(wallet, async () => {
         const client = new MonadStampClient(wallet);
         // Replays every journaled set byte for byte; this never signs or funds anything.
@@ -677,7 +698,7 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
     },
 
     async fetchSince(params): Promise<DirectMessageReceived[]> {
-      const wallet = asMonadWallet(params.wallet);
+      const wallet = asMonadWallet(params.wallet, config.networkId);
       const mailbox = mailboxAuthFor(wallet.identity, wallet.relayBaseUrl);
       const stored = await fetchMonadMessagesSince({
         ...mailbox,
@@ -783,7 +804,7 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
     },
 
     async listRecoveredStampPayments({ wallet }) {
-      const monadWallet = asMonadWallet(wallet);
+      const monadWallet = asMonadWallet(wallet, config.networkId);
       return (monadWallet.stampPaymentJournal?.getAll() ?? []).map(
         (record) => ({
           payloadDigest: record.payloadHashHex,
@@ -803,7 +824,7 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
       childIndex,
       destination,
     }) {
-      const monadWallet = asMonadWallet(wallet);
+      const monadWallet = asMonadWallet(wallet, config.networkId);
       const journal = monadWallet.stampPaymentJournal;
       if (journal === undefined) {
         throw new Error("Stamp-payment recovery journal is not configured");
@@ -918,7 +939,7 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
 
   const nativeTransfers: ActiveChain["nativeTransfers"] = {
     async getBalance({ wallet }): Promise<bigint> {
-      const monadWallet = asMonadWallet(wallet);
+      const monadWallet = asMonadWallet(wallet, config.networkId);
       return monadWallet.provider.getBalance(monadWallet.identity.address.raw);
     },
 
@@ -931,20 +952,19 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
       if (value <= 0n) {
         throw new Error("Transfer value must be greater than zero");
       }
-      const monadWallet = asMonadWallet(wallet);
+      const monadWallet = asMonadWallet(wallet, config.networkId);
       const signer = new MonadAccountTxSigner({
         privateKey: monadWallet.identity.toPrivateKeyHex(),
         provider: monadWallet.provider,
         httpClient: monadWallet.httpClient,
       });
       const signed = await signer.buildAndSignTransfer(recipient.raw, value);
-      // Awaited before any broadcast: a failure here aborts with nothing sent.
-      await onSigned?.({ txHash: signed.txHash });
+      if (onSigned !== undefined) await onSigned({ txHash: signed.txHash });
       return { txHash: await signer.submit(signed) };
     },
 
     async getTransactionStatus({ wallet, txHash }) {
-      const monadWallet = asMonadWallet(wallet);
+      const monadWallet = asMonadWallet(wallet, config.networkId);
       const receipt = await monadWallet.provider.getTransactionReceipt(txHash);
       if (receipt) return receipt.status === 0 ? "failed" : "confirmed";
       const known = await monadWallet.provider.getTransaction(txHash);
@@ -954,7 +974,7 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
 
   const topics: TopicBroadcastClient = {
     async post(params): Promise<{ payloadDigest: string }> {
-      const wallet = asMonadWallet(params.wallet);
+      const wallet = asMonadWallet(params.wallet, config.networkId);
       const client = new MonadTopicPostClient(wallet);
       return runWalletExclusive(wallet, async () => {
         const leaseIndex = await prepareTopicBurnAccount(
@@ -985,7 +1005,7 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
     },
 
     async vote(params): Promise<void> {
-      const wallet = asMonadWallet(params.wallet);
+      const wallet = asMonadWallet(params.wallet, config.networkId);
       const client = new MonadTopicVoteClient(wallet);
       await runWalletExclusive(wallet, async () => {
         const leaseIndex = await prepareTopicBurnAccount(
@@ -1006,7 +1026,7 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
     },
 
     async fetchByTopic(params): Promise<ForumMessage[]> {
-      const wallet = asMonadWallet(params.wallet);
+      const wallet = asMonadWallet(params.wallet, config.networkId);
       const views = await fetchMonadTopicPostsSince({
         relayBaseUrl: wallet.relayBaseUrl,
         topic: params.topic,
@@ -1037,8 +1057,15 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
   };
 
   return {
+    kind: "monad",
     name: "monad",
     unit: "MON",
+    capabilities: {
+      profiles: true,
+      directMessages: true,
+      topics: true,
+      stealthPayments: true,
+    },
     defaultStampValue: config.defaultStampValueWei,
     defaultTopicVoteValue: config.defaultTopicVoteValueWei,
 
@@ -1048,6 +1075,14 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
 
     fromDisplayAmount(display: string): bigint {
       return parseEther(display);
+    },
+
+    addressToString(addr: ChainAddress): string {
+      return addr.raw;
+    },
+
+    transactionToString(transaction: ChainTransaction): string {
+      return transaction.txHash;
     },
 
     formatAddress(addr: ChainAddress): string {
@@ -1062,7 +1097,7 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
       }
     },
 
-    async createWallet(seed): Promise<WalletHandle> {
+    async createWallet(seed): Promise<MonadChainWalletHandle> {
       const identity = MonadIdentity.fromSeed(seed);
       const identityKey = identity.address.raw.toLowerCase();
       const existing = walletsByIdentity.get(identityKey);
@@ -1143,7 +1178,33 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
           chainId: config.chainId,
         });
         const wallet: MonadChainWalletHandle = {
+          chainKind: "monad",
+          networkId: config.networkId,
           identity,
+          async getReceiveAddress() {
+            return identity.address;
+          },
+          async getBalance() {
+            return provider.getBalance(identity.address.raw);
+          },
+          async sendNative({ recipient, value, onSigned }) {
+            if (value <= 0n) {
+              throw new Error("Transfer value must be greater than zero");
+            }
+            const signer = new MonadAccountTxSigner({
+              privateKey: identity.toPrivateKeyHex(),
+              provider,
+              httpClient,
+            });
+            const signed = await signer.buildAndSignTransfer(
+              recipient.raw,
+              value
+            );
+            if (onSigned !== undefined) {
+              await onSigned({ txHash: signed.txHash });
+            }
+            return { txHash: await signer.submit(signed) };
+          },
           pool,
           leaseManager,
           provider,

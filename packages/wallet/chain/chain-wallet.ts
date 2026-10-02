@@ -1,0 +1,221 @@
+/** Canonical address value passed across the application/chain boundary. */
+export interface ChainAddress {
+  readonly raw: string;
+}
+
+/** A submitted native-chain transaction, with any prerequisite transactions it depended on. */
+export interface ChainTransaction {
+  /** The user-facing transaction id for the requested action. */
+  readonly txHash: string;
+  /** Ordered prerequisite/action ids when one logical action required more than one transaction. */
+  readonly relatedTxHashes?: ReadonlyArray<string>;
+}
+
+/**
+ * Submission reached the network boundary, but the caller cannot safely infer whether the
+ * transaction was accepted. `transaction` is derived from the exact signed bytes, so callers can
+ * reconcile that id before deciding whether to create a replacement payment.
+ */
+export class NativeTransactionSubmissionError extends Error {
+  readonly transaction: ChainTransaction;
+  readonly reason: unknown;
+
+  constructor(params: { transaction: ChainTransaction; reason: unknown }) {
+    super(
+      `native transaction submission outcome is unknown for ${params.transaction.txHash}`
+    );
+    this.name = "NativeTransactionSubmissionError";
+    this.transaction = params.transaction;
+    this.reason = params.reason;
+  }
+}
+
+/** Durable guard record; signed replay material may remain wallet-specific and in memory. */
+export interface NativeTransactionAttemptStore {
+  get(key: string): ChainTransaction | undefined;
+  /** Must not return until the record is durable; throw instead of degrading to volatile state. */
+  put(key: string, transaction: ChainTransaction): void;
+  delete(key: string): void;
+}
+
+/** Isolated store for tests and non-browser hosts that supply their own lifecycle. */
+export class InMemoryNativeTransactionAttemptStore
+  implements NativeTransactionAttemptStore
+{
+  private readonly attempts = new Map<string, ChainTransaction>();
+
+  get(key: string): ChainTransaction | undefined {
+    return this.attempts.get(key);
+  }
+
+  put(key: string, transaction: ChainTransaction): void {
+    this.attempts.set(key, transaction);
+  }
+
+  delete(key: string): void {
+    this.attempts.delete(key);
+  }
+}
+
+interface NativeAttemptStorage {
+  getItem(key: string): string | null;
+  setItem(key: string, value: string): void;
+  removeItem(key: string): void;
+}
+
+function browserStorage(): NativeAttemptStorage | undefined {
+  const host = globalThis as {
+    window?: unknown;
+    localStorage?: NativeAttemptStorage;
+  };
+  if (host.window === undefined) return undefined;
+  try {
+    return host.localStorage;
+  } catch {
+    // Privacy settings and sandboxed webviews can make localStorage access throw.
+    return undefined;
+  }
+}
+
+function isBrowserContext(): boolean {
+  return (globalThis as { window?: unknown }).window !== undefined;
+}
+
+function parseStoredTransaction(
+  serialized: string
+): ChainTransaction | undefined {
+  try {
+    const value = JSON.parse(serialized) as Partial<ChainTransaction>;
+    if (typeof value.txHash !== "string") return undefined;
+    if (
+      value.relatedTxHashes !== undefined &&
+      (!Array.isArray(value.relatedTxHashes) ||
+        value.relatedTxHashes.some((txHash) => typeof txHash !== "string"))
+    ) {
+      return undefined;
+    }
+    return {
+      txHash: value.txHash,
+      ...(value.relatedTxHashes === undefined
+        ? {}
+        : { relatedTxHashes: value.relatedTxHashes }),
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+/** Browser-durable store. Non-browser senders must inject a durable host-specific implementation. */
+export class DefaultNativeTransactionAttemptStore
+  implements NativeTransactionAttemptStore
+{
+  private readonly prefix = "frank:native-attempt:v1:";
+
+  get(key: string): ChainTransaction | undefined {
+    const storage = browserStorage();
+    if (storage === undefined) {
+      if (isBrowserContext()) {
+        throw new Error(
+          "Native transaction attempt persistence is unavailable"
+        );
+      }
+      return undefined;
+    }
+    let serialized: string | null;
+    try {
+      serialized = storage.getItem(`${this.prefix}${key}`);
+    } catch {
+      throw new Error("Unable to read persisted native transaction attempts");
+    }
+    if (serialized === null) return undefined;
+    const transaction = parseStoredTransaction(serialized);
+    if (transaction === undefined) {
+      throw new Error(
+        `Invalid persisted native transaction attempt for ${key}`
+      );
+    }
+    return transaction;
+  }
+
+  put(key: string, transaction: ChainTransaction): void {
+    const storage = browserStorage();
+    if (storage === undefined) {
+      throw new Error("Native transaction attempt persistence is unavailable");
+    }
+    try {
+      storage.setItem(`${this.prefix}${key}`, JSON.stringify(transaction));
+    } catch {
+      throw new Error("Unable to persist native transaction attempt");
+    }
+  }
+
+  delete(key: string): void {
+    const storage = browserStorage();
+    if (storage === undefined) {
+      throw new Error("Native transaction attempt persistence is unavailable");
+    }
+    try {
+      storage.removeItem(`${this.prefix}${key}`);
+    } catch {
+      throw new Error("Unable to remove persisted native transaction attempt");
+    }
+  }
+}
+
+export const defaultNativeTransactionAttemptStore =
+  new DefaultNativeTransactionAttemptStore();
+
+export interface FrankIdentityHandle {
+  readonly address: ChainAddress;
+  readonly displayAddress: string;
+}
+
+/**
+ * The wallet surface used by chain-neutral UI code. Complex build/sign/retry protocols remain
+ * capabilities below this boundary; a simple native transfer is one logical operation here.
+ */
+export interface NativeWalletHandle {
+  /** Runtime discriminator preventing a chain adapter from operating another chain's wallet. */
+  readonly chainKind: ChainKind;
+  /** Stable configured network discriminator (for example, mainnet versus testnet). */
+  readonly networkId: string;
+  readonly identity: FrankIdentityHandle;
+  /** Address to show for a new inbound payment; may rotate independently of wallet identity. */
+  getReceiveAddress(): Promise<ChainAddress>;
+  getBalance(): Promise<bigint>;
+  /** The exact signed attempt whose submission outcome must be resolved before a fresh send. */
+  getUnresolvedNativeTransaction?(): ChainTransaction | undefined;
+  /** Resubmits the exact unresolved signed bytes; never builds a replacement payment. */
+  retryUnresolvedNativeTransaction?(): Promise<ChainTransaction>;
+  /** Clears a blocked attempt only after the caller has reconciled its exact id with the chain. */
+  resolveUnresolvedNativeTransaction?(params: {
+    transaction: ChainTransaction;
+    outcome: "submitted" | "not-submitted";
+  }): void;
+  sendNative(params: {
+    recipient: ChainAddress;
+    value: bigint;
+    /** Invoked after signing and before broadcast so callers can durably record the exact id. */
+    onSigned?: (signed: ChainTransaction) => Promise<void>;
+  }): Promise<ChainTransaction>;
+}
+
+/** Minimum identity surface accepted by profile, message, and topic capabilities. */
+export interface WalletHandle {
+  readonly identity: FrankIdentityHandle;
+}
+export type ChainKind = "monad" | "solana" | "ecash";
+
+/** Stable namespace for safety records shared by multiple configured settlement networks. */
+export function nativeTransactionAttemptKey(params: {
+  chainKind: ChainKind;
+  networkId: string;
+  address: string;
+}): string {
+  if (params.networkId.trim().length === 0) {
+    throw new Error("Native transaction network id must not be empty");
+  }
+  return `${params.chainKind}:${encodeURIComponent(params.networkId)}:${
+    params.address
+  }`;
+}

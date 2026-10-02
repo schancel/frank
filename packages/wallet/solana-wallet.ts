@@ -6,24 +6,33 @@ import {
   TransactionInstruction,
   TransactionMessage,
   VersionedTransaction,
-} from '@solana/web3.js'
-import { getBase58Decoder } from '@solana/codecs-strings'
-import { install as installEd25519Polyfill } from '@solana/webcrypto-ed25519-polyfill'
+} from "@solana/web3.js";
+import { getBase58Decoder } from "@solana/codecs-strings";
+import { install as installEd25519Polyfill } from "@solana/webcrypto-ed25519-polyfill";
 
 import {
   SubmittedWalletTransaction,
-  StealthTransactionBundleWallet,
+  StealthTransactionBundleCapability,
   SubmitTransactionBundleOptions,
   TransactionBundleSubmissionError,
-  TransactionBundleWallet,
+  TransactionBundleCapability,
   WalletBundleSubmission,
   WalletTransaction,
   WalletTransactionBundle,
-} from './transaction-bundle-wallet'
+} from "./transaction-bundle-wallet";
+import {
+  ChainAddress,
+  ChainTransaction,
+  defaultNativeTransactionAttemptStore,
+  nativeTransactionAttemptKey,
+  NativeTransactionAttemptStore,
+  NativeTransactionSubmissionError,
+  NativeWalletHandle,
+} from "./chain/chain-wallet";
 
 // Capacitor still targets pre-iOS-17 WebViews, which lack native WebCrypto Ed25519. Probe once so
 // modern runtimes stay entirely native and older secure WebViews receive the upstream polyfill.
-let ed25519Ready: Promise<void> | undefined
+let ed25519Ready: Promise<void> | undefined;
 
 function ensureEd25519Support(): Promise<void> {
   ed25519Ready ??= (async () => {
@@ -35,37 +44,37 @@ function ensureEd25519Support(): Promise<void> {
               generateKey(
                 algorithm: { name: string },
                 extractable: boolean,
-                usages: string[],
-              ): Promise<unknown>
-            }
-          }
+                usages: string[]
+              ): Promise<unknown>;
+            };
+          };
         }
-      ).crypto
-      if (runtimeCrypto === undefined) throw new Error('WebCrypto unavailable')
-      await runtimeCrypto.subtle.generateKey({ name: 'Ed25519' }, false, [
-        'sign',
-        'verify',
-      ])
+      ).crypto;
+      if (runtimeCrypto === undefined) throw new Error("WebCrypto unavailable");
+      await runtimeCrypto.subtle.generateKey({ name: "Ed25519" }, false, [
+        "sign",
+        "verify",
+      ]);
     } catch {
-      installEd25519Polyfill()
+      installEd25519Polyfill();
     }
-  })()
-  return ed25519Ready
+  })();
+  return ed25519Ready;
 }
 
 /** The small RPC boundary needed by this wallet. A real web3.js Connection satisfies it. */
 export interface SolanaWalletConnection {
-  getBalance(address: PublicKey): Promise<bigint>
+  getBalance(address: PublicKey): Promise<bigint>;
   getLatestBlockhash(): Promise<{
-    blockhash: string
-    lastValidBlockHeight: number | bigint
-  }>
-  sendRawTransaction(rawTransaction: Uint8Array): Promise<string>
+    blockhash: string;
+    lastValidBlockHeight: number | bigint;
+  }>;
+  sendRawTransaction(rawTransaction: Uint8Array): Promise<string>;
 }
 
 export interface SolanaTransfer {
-  destination: PublicKey | string
-  lamports: bigint
+  destination: PublicKey | string;
+  lamports: bigint;
 }
 
 export interface BuildSolanaTransactionBundleParams {
@@ -73,14 +82,14 @@ export interface BuildSolanaTransactionBundleParams {
    * Durable 32-byte payment-operation id used for reconciliation. Rebuilding can change txids
    * when the blockhash changes; never resend an accepted index or reuse this id for a new intent.
    */
-  intentId: Uint8Array
-  transfers: ReadonlyArray<SolanaTransfer>
+  intentId: Uint8Array;
+  transfers: ReadonlyArray<SolanaTransfer>;
 }
 
 export interface SolanaStealthDestination<TMetadata> {
-  address: PublicKey
+  address: PublicKey;
   /** Scheme-owned public data needed by a recipient to discover/spend the payment. */
-  metadata: TMetadata
+  metadata: TMetadata;
 }
 
 /**
@@ -90,10 +99,10 @@ export interface SolanaStealthDestination<TMetadata> {
  */
 export interface SolanaStealthAddressStrategy<TMetadata> {
   createDestination(params: {
-    recipient: PublicKey
-    paymentIndex: number
-    context: Uint8Array
-  }): Promise<SolanaStealthDestination<TMetadata>>
+    recipient: PublicKey;
+    paymentIndex: number;
+    context: Uint8Array;
+  }): Promise<SolanaStealthDestination<TMetadata>>;
 }
 
 export interface BuildSolanaStealthTransactionBundleParams {
@@ -101,76 +110,76 @@ export interface BuildSolanaStealthTransactionBundleParams {
    * Durable 32-byte payment-operation id used for reconciliation. Rebuilding can change txids
    * when the blockhash changes; never resend an accepted index or reuse this id for a new intent.
    */
-  intentId: Uint8Array
-  recipient: PublicKey | string
-  lamports: ReadonlyArray<bigint>
+  intentId: Uint8Array;
+  recipient: PublicKey | string;
+  lamports: ReadonlyArray<bigint>;
   /** Domain-separated message/payment context consumed by the reviewed strategy. */
-  context: Uint8Array
+  context: Uint8Array;
 }
 
 export interface SolanaStealthTransactionMetadata<TMetadata> {
-  stealth: TMetadata
+  stealth: TMetadata;
 }
 
 export type SolanaTransactionBundle<TMetadata = never> =
   WalletTransactionBundle<string, Uint8Array, TMetadata> & {
     /** Retained so an expired bundle can be refreshed without re-deriving stealth destinations. */
-    readonly intentId: Uint8Array
-  }
+    readonly intentId: Uint8Array;
+  };
 
-const base58Decoder = getBase58Decoder()
+const base58Decoder = getBase58Decoder();
 const MEMO_PROGRAM_ID = new PublicKey(
-  'MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr',
-)
-const PAYMENT_INTENT_PREFIX_TEXT = 'frank:solana-payment:v1:'
+  "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr"
+);
+const PAYMENT_INTENT_PREFIX_TEXT = "frank:solana-payment:v1:";
 const PAYMENT_INTENT_PREFIX = new TextEncoder().encode(
-  PAYMENT_INTENT_PREFIX_TEXT,
-)
-const PAYMENT_INTENT_ID_LENGTH = 32
-const PAYMENT_PLAN_COMMITMENT_LENGTH = 32
-const PAYMENT_INTENT_INDEX_LENGTH = 8
+  PAYMENT_INTENT_PREFIX_TEXT
+);
+const PAYMENT_INTENT_ID_LENGTH = 32;
+const PAYMENT_PLAN_COMMITMENT_LENGTH = 32;
+const PAYMENT_INTENT_INDEX_LENGTH = 8;
 const PAYMENT_INTENT_DATA_LENGTH =
   PAYMENT_INTENT_PREFIX.length +
   PAYMENT_INTENT_ID_LENGTH * 2 +
   1 +
   PAYMENT_PLAN_COMMITMENT_LENGTH * 2 +
   1 +
-  PAYMENT_INTENT_INDEX_LENGTH
-const MAX_U64 = (1n << 64n) - 1n
+  PAYMENT_INTENT_INDEX_LENGTH;
+const MAX_U64 = (1n << 64n) - 1n;
 const PAYMENT_PLAN_DOMAIN = new TextEncoder().encode(
-  'frank:solana-payment-plan:v1:',
-)
+  "frank:solana-payment-plan:v1:"
+);
 
 function bytesKey(bytes: Uint8Array): string {
-  let key = ''
-  for (const byte of bytes) key += byte.toString(16).padStart(2, '0')
-  return key
+  let key = "";
+  for (const byte of bytes) key += byte.toString(16).padStart(2, "0");
+  return key;
 }
 
 function bytesFromHex(hex: string): Uint8Array {
   return Uint8Array.from(
-    hex.match(/.{2}/g)?.map(byte => Number.parseInt(byte, 16)) ?? [],
-  )
+    hex.match(/.{2}/g)?.map((byte) => Number.parseInt(byte, 16)) ?? []
+  );
 }
 
 function parsePublicKey(value: PublicKey | string): PublicKey {
-  return value instanceof PublicKey ? value : new PublicKey(value)
+  return value instanceof PublicKey ? value : new PublicKey(value);
 }
 
 function assertTransfers(transfers: ReadonlyArray<SolanaTransfer>): void {
   if (transfers.length === 0) {
     throw new RangeError(
-      'a transaction bundle must contain at least one transfer',
-    )
+      "a transaction bundle must contain at least one transfer"
+    );
   }
   for (const [index, transfer] of transfers.entries()) {
     if (transfer.lamports <= 0n) {
-      throw new RangeError(`transfer ${index} must contain positive lamports`)
+      throw new RangeError(`transfer ${index} must contain positive lamports`);
     }
     if (transfer.lamports > MAX_U64) {
       throw new RangeError(
-        `transfer ${index} exceeds Solana's u64 lamport limit`,
-      )
+        `transfer ${index} exceeds Solana's u64 lamport limit`
+      );
     }
   }
 }
@@ -178,52 +187,72 @@ function assertTransfers(transfers: ReadonlyArray<SolanaTransfer>): void {
 function assertIntentId(intentId: Uint8Array): void {
   if (intentId.length !== PAYMENT_INTENT_ID_LENGTH) {
     throw new RangeError(
-      `Solana payment intent id must be ${PAYMENT_INTENT_ID_LENGTH} bytes`,
-    )
+      `Solana payment intent id must be ${PAYMENT_INTENT_ID_LENGTH} bytes`
+    );
   }
 }
 
 function paymentIntentData(
   intentId: Uint8Array,
   planCommitment: Uint8Array,
-  paymentIndex: number,
+  paymentIndex: number
 ): Uint8Array {
   return new TextEncoder().encode(
     `${PAYMENT_INTENT_PREFIX_TEXT}${bytesKey(intentId)}:${bytesKey(
-      planCommitment,
-    )}:${paymentIndex.toString(16).padStart(PAYMENT_INTENT_INDEX_LENGTH, '0')}`,
-  )
+      planCommitment
+    )}:${paymentIndex.toString(16).padStart(PAYMENT_INTENT_INDEX_LENGTH, "0")}`
+  );
 }
 
 function intentInstruction(
   intentId: Uint8Array,
   planCommitment: Uint8Array,
-  paymentIndex: number,
+  paymentIndex: number
 ): TransactionInstruction {
   return new TransactionInstruction({
     keys: [],
     programId: MEMO_PROGRAM_ID,
     data: paymentIntentData(intentId, planCommitment, paymentIndex),
-  })
+  });
 }
 
 async function paymentPlanCommitment(
-  transfers: ReadonlyArray<{ destination: PublicKey; lamports: bigint }>,
+  transfers: ReadonlyArray<{ destination: PublicKey; lamports: bigint }>
 ): Promise<Uint8Array> {
   const encoded = new Uint8Array(
-    PAYMENT_PLAN_DOMAIN.length + 4 + transfers.length * 40,
-  )
-  encoded.set(PAYMENT_PLAN_DOMAIN)
-  const view = new DataView(encoded.buffer)
-  view.setUint32(PAYMENT_PLAN_DOMAIN.length, transfers.length, false)
+    PAYMENT_PLAN_DOMAIN.length + 4 + transfers.length * 40
+  );
+  encoded.set(PAYMENT_PLAN_DOMAIN);
+  const view = new DataView(encoded.buffer);
+  view.setUint32(PAYMENT_PLAN_DOMAIN.length, transfers.length, false);
   transfers.forEach((transfer, index) => {
-    const offset = PAYMENT_PLAN_DOMAIN.length + 4 + index * 40
-    encoded.set(transfer.destination.toBytes(), offset)
-    view.setBigUint64(offset + 32, transfer.lamports, false)
-  })
-  return new Uint8Array(
-    await globalThis.crypto.subtle.digest('SHA-256', encoded),
-  )
+    const offset = PAYMENT_PLAN_DOMAIN.length + 4 + index * 40;
+    encoded.set(transfer.destination.toBytes(), offset);
+    view.setBigUint64(offset + 32, transfer.lamports, false);
+  });
+  const runtimeCrypto = (
+    globalThis as unknown as {
+      crypto?: {
+        subtle: {
+          digest(algorithm: string, data: Uint8Array): Promise<ArrayBuffer>;
+        };
+      };
+    }
+  ).crypto;
+  if (runtimeCrypto === undefined) throw new Error("WebCrypto unavailable");
+  return new Uint8Array(await runtimeCrypto.subtle.digest("SHA-256", encoded));
+}
+
+function randomIntentId(): Uint8Array {
+  const runtimeCrypto = (
+    globalThis as unknown as {
+      crypto?: { getRandomValues<T extends Uint8Array>(bytes: T): T };
+    }
+  ).crypto;
+  if (runtimeCrypto === undefined) throw new Error("WebCrypto unavailable");
+  return runtimeCrypto.getRandomValues(
+    new Uint8Array(PAYMENT_INTENT_ID_LENGTH)
+  );
 }
 
 /**
@@ -235,102 +264,254 @@ async function paymentPlanCommitment(
  */
 export class SolanaWallet
   implements
-    TransactionBundleWallet<
+    NativeWalletHandle,
+    TransactionBundleCapability<
       string,
       Uint8Array,
       BuildSolanaTransactionBundleParams,
       never
     >
 {
-  protected readonly connection: SolanaWalletConnection
-  protected readonly signer: Keypair
+  readonly chainKind = "solana" as const;
+  readonly networkId: string;
+  private nativeOperationQueue: Promise<void> = Promise.resolve();
+  private unresolvedNative:
+    | {
+        bundle?: SolanaTransactionBundle;
+        error: NativeTransactionSubmissionError;
+      }
+    | undefined;
+  protected readonly connection: SolanaWalletConnection;
+  protected readonly signer: Keypair;
+  private readonly nativeAttemptStore: NativeTransactionAttemptStore;
+  private readonly nativeAttemptKey: string;
 
-  constructor(params: { connection: SolanaWalletConnection; signer: Keypair }) {
-    this.connection = params.connection
-    this.signer = params.signer
+  constructor(params: {
+    connection: SolanaWalletConnection;
+    signer: Keypair;
+    networkId: string;
+    nativeAttemptStore?: NativeTransactionAttemptStore;
+  }) {
+    this.connection = params.connection;
+    this.signer = params.signer;
+    this.networkId = params.networkId;
+    this.nativeAttemptStore =
+      params.nativeAttemptStore ?? defaultNativeTransactionAttemptStore;
+    this.nativeAttemptKey = nativeTransactionAttemptKey({
+      chainKind: "solana",
+      networkId: params.networkId,
+      address: this.address,
+    });
+    const persisted = this.nativeAttemptStore.get(this.nativeAttemptKey);
+    if (persisted !== undefined) {
+      this.unresolvedNative = {
+        error: new NativeTransactionSubmissionError({
+          transaction: persisted,
+          reason: new Error("Recovered unresolved native transaction"),
+        }),
+      };
+    }
   }
 
   static async generate(params: {
-    connection: SolanaWalletConnection
+    connection: SolanaWalletConnection;
+    networkId: string;
+    nativeAttemptStore?: NativeTransactionAttemptStore;
   }): Promise<SolanaWallet> {
-    await ensureEd25519Support()
+    await ensureEd25519Support();
     return new SolanaWallet({
       ...params,
       signer: await Keypair.generate(),
-    })
+    });
   }
 
   static async fromSeed(params: {
-    connection: SolanaWalletConnection
-    seed: Uint8Array
+    connection: SolanaWalletConnection;
+    networkId: string;
+    seed: Uint8Array;
+    nativeAttemptStore?: NativeTransactionAttemptStore;
   }): Promise<SolanaWallet> {
-    const stableSeed = params.seed.slice()
-    await ensureEd25519Support()
+    const stableSeed = params.seed.slice();
+    await ensureEd25519Support();
     return new SolanaWallet({
       connection: params.connection,
       signer: await Keypair.fromSeed(stableSeed),
-    })
+      networkId: params.networkId,
+      nativeAttemptStore: params.nativeAttemptStore,
+    });
   }
 
   get address(): string {
-    return this.signer.publicKey.toBase58()
+    return this.signer.publicKey.toBase58();
+  }
+
+  get identity(): NativeWalletHandle["identity"] {
+    return {
+      address: { raw: this.address },
+      displayAddress: this.address,
+    };
+  }
+
+  async getReceiveAddress(): Promise<ChainAddress> {
+    return this.identity.address;
   }
 
   async getBalance(): Promise<bigint> {
-    return this.connection.getBalance(this.signer.publicKey)
+    return this.connection.getBalance(this.signer.publicKey);
+  }
+
+  getUnresolvedNativeTransaction(): ChainTransaction | undefined {
+    return this.unresolvedNative?.error.transaction;
+  }
+
+  async retryUnresolvedNativeTransaction(): Promise<ChainTransaction> {
+    return this.runNativeExclusive(async () => {
+      const unresolved = this.unresolvedNative;
+      if (unresolved === undefined) {
+        throw new Error("No unresolved native transaction to retry");
+      }
+      if (unresolved.bundle === undefined) {
+        throw new Error(
+          "Recovered unresolved transaction must be reconciled by id before sending again"
+        );
+      }
+      return this.submitNativeBundle(unresolved.bundle);
+    });
+  }
+
+  resolveUnresolvedNativeTransaction(params: {
+    transaction: ChainTransaction;
+    outcome: "submitted" | "not-submitted";
+  }): void {
+    const unresolved = this.unresolvedNative;
+    if (
+      unresolved === undefined ||
+      unresolved.error.transaction.txHash !== params.transaction.txHash
+    ) {
+      throw new Error(
+        "Transaction does not match the unresolved native attempt"
+      );
+    }
+    this.nativeAttemptStore.delete(this.nativeAttemptKey);
+    this.unresolvedNative = undefined;
+  }
+
+  async sendNative(params: {
+    recipient: ChainAddress;
+    value: bigint;
+    onSigned?: (signed: ChainTransaction) => Promise<void>;
+  }): Promise<ChainTransaction> {
+    return this.runNativeExclusive(async () => {
+      if (this.unresolvedNative !== undefined) {
+        throw this.unresolvedNative.error;
+      }
+      const bundle = await this.buildTransactionBundle({
+        intentId: randomIntentId(),
+        transfers: [
+          { destination: params.recipient.raw, lamports: params.value },
+        ],
+      });
+      return this.submitNativeBundle(bundle, params.onSigned);
+    });
+  }
+
+  private async runNativeExclusive<T>(operation: () => Promise<T>): Promise<T> {
+    const run = this.nativeOperationQueue.then(operation);
+    this.nativeOperationQueue = run.then(
+      () => undefined,
+      () => undefined
+    );
+    return run;
+  }
+
+  private async submitNativeBundle(
+    bundle: SolanaTransactionBundle,
+    onSigned?: (signed: ChainTransaction) => Promise<void>
+  ): Promise<ChainTransaction> {
+    const validated = await this.validateBundle(bundle);
+    const txHash = validated.canonicalTransactions[0]?.txId;
+    if (txHash === undefined) {
+      throw new Error("Native transaction bundle is empty");
+    }
+    if (onSigned !== undefined) await onSigned({ txHash });
+    const pendingError = new NativeTransactionSubmissionError({
+      transaction: { txHash },
+      reason: new Error("Native transaction submission is in progress"),
+    });
+    this.nativeAttemptStore.put(
+      this.nativeAttemptKey,
+      pendingError.transaction
+    );
+    this.unresolvedNative = { bundle, error: pendingError };
+    try {
+      const result = await this.submitTransactionBundle(bundle);
+      this.nativeAttemptStore.delete(this.nativeAttemptKey);
+      this.unresolvedNative = undefined;
+      return { txHash: result.submitted[0].txId };
+    } catch (reason) {
+      if (reason instanceof TransactionBundleSubmissionError) {
+        const error = new NativeTransactionSubmissionError({
+          transaction: { txHash: reason.attempted.txId },
+          reason,
+        });
+        this.unresolvedNative = { bundle, error };
+        throw error;
+      }
+      throw reason;
+    }
   }
 
   async buildTransactionBundle(
-    params: BuildSolanaTransactionBundleParams,
+    params: BuildSolanaTransactionBundleParams
   ): Promise<SolanaTransactionBundle> {
-    return this.buildSignedBundle(params.transfers, params.intentId)
+    return this.buildSignedBundle(params.transfers, params.intentId);
   }
 
   async submitTransactionBundle<TMetadata = never>(
     bundle: WalletTransactionBundle<string, Uint8Array, TMetadata>,
-    options: SubmitTransactionBundleOptions = {},
+    options: SubmitTransactionBundleOptions = {}
   ): Promise<WalletBundleSubmission<string>> {
-    const startIndex = options.startIndex ?? 0
+    const startIndex = options.startIndex ?? 0;
     if (
       !Number.isSafeInteger(startIndex) ||
       startIndex < 0 ||
       startIndex > bundle.transactions.length
     ) {
-      throw new RangeError('bundle start index is out of range')
+      throw new RangeError("bundle start index is out of range");
     }
     if (startIndex > 0 && options.expectedBundleId === undefined) {
-      throw new Error('resuming a bundle requires its reconciled bundle id')
+      throw new Error("resuming a bundle requires its reconciled bundle id");
     }
     const { snapshots, canonicalTransactions, canonicalBundleId } =
-      await this.validateBundle(bundle)
+      await this.validateBundle(bundle);
     if (startIndex > 0 && options.expectedBundleId !== canonicalBundleId) {
       throw new Error(
-        'resumed bundle does not match the reconciled payment plan',
-      )
+        "resumed bundle does not match the reconciled payment plan"
+      );
     }
-    const submitted: SubmittedWalletTransaction<string>[] = []
+    const submitted: SubmittedWalletTransaction<string>[] = [];
     for (
       let position = startIndex;
       position < snapshots.length;
       position += 1
     ) {
-      const transaction = snapshots[position]
+      const transaction = snapshots[position];
       try {
-        const canonical = canonicalTransactions[position]
+        const canonical = canonicalTransactions[position];
         const rpcTxId = await this.connection.sendRawTransaction(
-          transaction.rawTransaction.slice(),
-        )
+          transaction.rawTransaction.slice()
+        );
         if (rpcTxId !== canonical.txId) {
           throw new Error(
-            `RPC returned transaction id ${rpcTxId}, expected ${canonical.txId}`,
-          )
+            `RPC returned transaction id ${rpcTxId}, expected ${canonical.txId}`
+          );
         }
         submitted.push({
           index: position,
           destination: canonical.destination,
           value: canonical.value,
           txId: canonical.txId,
-        })
+        });
       } catch (reason) {
         throw new TransactionBundleSubmissionError({
           submitted,
@@ -341,10 +522,10 @@ export class SolanaWallet
             txId: canonicalTransactions[position].txId,
           },
           reason,
-        })
+        });
       }
     }
-    return { submitted }
+    return { submitted };
   }
 
   /**
@@ -352,171 +533,173 @@ export class SolanaWallet
    * identity. In particular, this does not invoke a stealth derivation strategy again.
    */
   async refreshTransactionBundle<TMetadata = never>(
-    bundle: SolanaTransactionBundle<TMetadata>,
+    bundle: SolanaTransactionBundle<TMetadata>
   ): Promise<SolanaTransactionBundle<TMetadata>> {
     const hasMetadata = bundle.transactions.every(
-      transaction => 'metadata' in transaction,
-    )
+      (transaction) => "metadata" in transaction
+    );
     const metadata = hasMetadata
       ? (bundle.transactions.map(
-          transaction =>
+          (transaction) =>
             (transaction as WalletTransaction<string, Uint8Array, TMetadata>)
-              .metadata,
+              .metadata
         ) as TMetadata[])
-      : undefined
+      : undefined;
     const { canonicalTransactions, bundleIntentId } = await this.validateBundle(
-      bundle,
-    )
+      bundle
+    );
     const refreshed = await this.buildSignedBundle<TMetadata>(
-      canonicalTransactions.map(transaction => ({
+      canonicalTransactions.map((transaction) => ({
         destination: transaction.destination,
         lamports: transaction.value,
       })),
       bytesFromHex(bundleIntentId),
-      metadata,
-    )
+      metadata
+    );
     if (refreshed.bundleId !== bundle.bundleId) {
       throw new Error(
-        'refreshed bundle does not match the original payment plan',
-      )
+        "refreshed bundle does not match the original payment plan"
+      );
     }
-    return refreshed
+    return refreshed;
   }
 
   private async validateBundle<TMetadata>(
-    bundle: WalletTransactionBundle<string, Uint8Array, TMetadata>,
+    bundle: WalletTransactionBundle<string, Uint8Array, TMetadata>
   ): Promise<{
     snapshots: Array<
       Pick<
         WalletTransaction<string, Uint8Array>,
-        'index' | 'destination' | 'value' | 'rawTransaction'
+        "index" | "destination" | "value" | "rawTransaction"
       >
-    >
+    >;
     canonicalTransactions: Array<{
-      destination: string
-      value: bigint
-      messageKey: string
-      txId: string
-      intentId: string
-      planCommitment: string
-      recentBlockhash: string
-    }>
-    bundleIntentId: string
-    canonicalBundleId: string
+      destination: string;
+      value: bigint;
+      messageKey: string;
+      txId: string;
+      intentId: string;
+      planCommitment: string;
+      recentBlockhash: string;
+    }>;
+    bundleIntentId: string;
+    canonicalBundleId: string;
   }> {
     if (bundle.source !== this.address) {
-      throw new Error('transaction bundle source does not match wallet')
+      throw new Error("transaction bundle source does not match wallet");
     }
     if (bundle.transactions.length === 0) {
       throw new RangeError(
-        'a transaction bundle must contain at least one transfer',
-      )
+        "a transaction bundle must contain at least one transfer"
+      );
     }
-    const claimedBundleId = bundle.bundleId
+    const claimedBundleId = bundle.bundleId;
     const claimedIntentId =
-      'intentId' in bundle && bundle.intentId instanceof Uint8Array
+      "intentId" in bundle && bundle.intentId instanceof Uint8Array
         ? bundle.intentId.slice()
-        : undefined
-    const snapshots = bundle.transactions.map(transaction => ({
+        : undefined;
+    const snapshots = bundle.transactions.map((transaction) => ({
       index: transaction.index,
       destination: transaction.destination,
       value: transaction.value,
       rawTransaction: transaction.rawTransaction.slice(),
-    }))
-    const transactionMessages = new Set<string>()
+    }));
+    const transactionMessages = new Set<string>();
     const canonicalTransactions = [] as Array<{
-      destination: string
-      value: bigint
-      messageKey: string
-      txId: string
-      intentId: string
-      planCommitment: string
-      recentBlockhash: string
-    }>
+      destination: string;
+      value: bigint;
+      messageKey: string;
+      txId: string;
+      intentId: string;
+      planCommitment: string;
+      recentBlockhash: string;
+    }>;
     for (const [position, transaction] of snapshots.entries()) {
-      const canonical = await this.validateTransaction(transaction, position)
+      const canonical = await this.validateTransaction(transaction, position);
       if (transactionMessages.has(canonical.messageKey)) {
-        throw new Error('transaction bundle contains duplicate signed messages')
+        throw new Error(
+          "transaction bundle contains duplicate signed messages"
+        );
       }
-      transactionMessages.add(canonical.messageKey)
-      canonicalTransactions.push(canonical)
+      transactionMessages.add(canonical.messageKey);
+      canonicalTransactions.push(canonical);
     }
-    const bundleIntentId = canonicalTransactions[0].intentId
-    const bundleBlockhash = canonicalTransactions[0].recentBlockhash
+    const bundleIntentId = canonicalTransactions[0].intentId;
+    const bundleBlockhash = canonicalTransactions[0].recentBlockhash;
     const expectedPlanCommitment = bytesKey(
       await paymentPlanCommitment(
-        canonicalTransactions.map(transaction => ({
+        canonicalTransactions.map((transaction) => ({
           destination: new PublicKey(transaction.destination),
           lamports: transaction.value,
-        })),
-      ),
-    )
-    const canonicalBundleId = `${bundleIntentId}:${expectedPlanCommitment}`
+        }))
+      )
+    );
+    const canonicalBundleId = `${bundleIntentId}:${expectedPlanCommitment}`;
     if (claimedBundleId !== canonicalBundleId) {
       throw new Error(
-        'transaction bundle id does not match its signed payment plan',
-      )
+        "transaction bundle id does not match its signed payment plan"
+      );
     }
     if (
       claimedIntentId !== undefined &&
       bytesKey(claimedIntentId) !== bundleIntentId
     ) {
       throw new Error(
-        'transaction bundle intent id does not match signed bytes',
-      )
+        "transaction bundle intent id does not match signed bytes"
+      );
     }
     if (
       canonicalTransactions.some(
-        transaction =>
+        (transaction) =>
           transaction.intentId !== bundleIntentId ||
           transaction.planCommitment !== expectedPlanCommitment ||
-          transaction.recentBlockhash !== bundleBlockhash,
+          transaction.recentBlockhash !== bundleBlockhash
       )
     ) {
       throw new Error(
-        'transaction bundle members do not share one signed payment plan and lifetime',
-      )
+        "transaction bundle members do not share one signed payment plan and lifetime"
+      );
     }
     return {
       snapshots,
       canonicalTransactions,
       bundleIntentId,
       canonicalBundleId,
-    }
+    };
   }
 
   protected async buildSignedBundle<TMetadata = never>(
     transfers: ReadonlyArray<SolanaTransfer>,
     intentId: Uint8Array,
-    metadata?: ReadonlyArray<TMetadata>,
+    metadata?: ReadonlyArray<TMetadata>
   ): Promise<SolanaTransactionBundle<TMetadata>> {
-    assertTransfers(transfers)
-    assertIntentId(intentId)
-    const stableIntentId = intentId.slice()
+    assertTransfers(transfers);
+    assertIntentId(intentId);
+    const stableIntentId = intentId.slice();
     if (metadata !== undefined && metadata.length !== transfers.length) {
-      throw new Error('transaction metadata length does not match transfers')
+      throw new Error("transaction metadata length does not match transfers");
     }
-    const stableTransfers = transfers.map(transfer => ({
+    const stableTransfers = transfers.map((transfer) => ({
       destination: parsePublicKey(transfer.destination),
       lamports: transfer.lamports,
-    }))
-    const stableMetadata = metadata?.slice()
-    await ensureEd25519Support()
-    const planCommitment = await paymentPlanCommitment(stableTransfers)
+    }));
+    const stableMetadata = metadata?.slice();
+    await ensureEd25519Support();
+    const planCommitment = await paymentPlanCommitment(stableTransfers);
 
-    const lifetime = await this.connection.getLatestBlockhash()
-    const lastValidBlockHeight = BigInt(lifetime.lastValidBlockHeight)
+    const lifetime = await this.connection.getLatestBlockhash();
+    const lastValidBlockHeight = BigInt(lifetime.lastValidBlockHeight);
     const transactions: Array<
       WalletTransaction<string, Uint8Array, TMetadata>
-    > = []
-    const transactionMessages = new Set<string>()
+    > = [];
+    const transactionMessages = new Set<string>();
     for (const [index, transfer] of stableTransfers.entries()) {
-      const destination = transfer.destination
+      const destination = transfer.destination;
       const message = new TransactionMessage({
         payerKey: this.signer.publicKey,
         recentBlockhash: lifetime.blockhash as ConstructorParameters<
           typeof TransactionMessage
-        >[0]['recentBlockhash'],
+        >[0]["recentBlockhash"],
         instructions: [
           SystemProgram.transfer({
             fromPubkey: this.signer.publicKey,
@@ -525,15 +708,17 @@ export class SolanaWallet
           }),
           intentInstruction(stableIntentId, planCommitment, index),
         ],
-      }).compileToV0Message()
-      const messageKey = bytesKey(message.serialize())
+      }).compileToV0Message();
+      const messageKey = bytesKey(message.serialize());
       if (transactionMessages.has(messageKey)) {
-        throw new Error('transaction bundle contains duplicate signed messages')
+        throw new Error(
+          "transaction bundle contains duplicate signed messages"
+        );
       }
-      transactionMessages.add(messageKey)
-      const transaction = new VersionedTransaction(message)
-      await transaction.sign([this.signer], { lastValidBlockHeight })
-      const rawTransaction = transaction.serialize()
+      transactionMessages.add(messageKey);
+      const transaction = new VersionedTransaction(message);
+      await transaction.sign([this.signer], { lastValidBlockHeight });
+      const rawTransaction = transaction.serialize();
       transactions.push({
         index,
         destination: destination.toBase58(),
@@ -542,7 +727,7 @@ export class SolanaWallet
         ...(stableMetadata === undefined
           ? {}
           : { metadata: stableMetadata[index] }),
-      } as WalletTransaction<string, Uint8Array, TMetadata>)
+      } as WalletTransaction<string, Uint8Array, TMetadata>);
     }
 
     return {
@@ -550,66 +735,70 @@ export class SolanaWallet
       intentId: stableIntentId.slice(),
       source: this.address,
       transactions,
-    }
+    };
   }
 
   private async validateTransaction(
     bundled: Pick<
       WalletTransaction<string, Uint8Array>,
-      'index' | 'destination' | 'value' | 'rawTransaction'
+      "index" | "destination" | "value" | "rawTransaction"
     >,
-    position: number,
+    position: number
   ): Promise<{
-    destination: string
-    value: bigint
-    messageKey: string
-    txId: string
-    intentId: string
-    planCommitment: string
-    recentBlockhash: string
+    destination: string;
+    value: bigint;
+    messageKey: string;
+    txId: string;
+    intentId: string;
+    planCommitment: string;
+    recentBlockhash: string;
   }> {
     if (bundled.index !== position) {
-      throw new Error(`transaction index ${bundled.index} is out of order`)
+      throw new Error(`transaction index ${bundled.index} is out of order`);
     }
-    const transaction = VersionedTransaction.deserialize(bundled.rawTransaction)
+    const transaction = VersionedTransaction.deserialize(
+      bundled.rawTransaction
+    );
     if (transaction.signatures.length !== 1) {
-      throw new Error('bundle transaction must have exactly one signature')
+      throw new Error("bundle transaction must have exactly one signature");
     }
     const signatureIsValid = await this.signer.publicKey.verifySignature(
       transaction.signatures[0],
-      transaction.message.serialize(),
-    )
+      transaction.message.serialize()
+    );
     if (!signatureIsValid) {
-      throw new Error('bundle transaction signature is invalid')
+      throw new Error("bundle transaction signature is invalid");
     }
-    const messageKey = bytesKey(transaction.message.serialize())
-    const txId = base58Decoder.decode(transaction.signatures[0])
-    const message = TransactionMessage.decompile(transaction.message)
+    const messageKey = bytesKey(transaction.message.serialize());
+    const txId = base58Decoder.decode(transaction.signatures[0]);
+    const message = TransactionMessage.decompile(transaction.message);
     if (!message.payerKey.equals(this.signer.publicKey)) {
-      throw new Error('bundle transaction payer does not match wallet')
+      throw new Error("bundle transaction payer does not match wallet");
     }
     if (message.instructions.length !== 2) {
       throw new Error(
-        'bundle transaction must contain one transfer and one intent instruction',
-      )
+        "bundle transaction must contain one transfer and one intent instruction"
+      );
     }
-    const transfer = SystemInstruction.decodeTransfer(message.instructions[0])
+    const transfer = SystemInstruction.decodeTransfer(message.instructions[0]);
     if (!transfer.fromPubkey.equals(this.signer.publicKey)) {
-      throw new Error('bundle transfer source does not match wallet')
+      throw new Error("bundle transfer source does not match wallet");
     }
-    const destination = transfer.toPubkey.toBase58()
-    const value = BigInt(transfer.lamports)
+    const destination = transfer.toPubkey.toBase58();
+    const value = BigInt(transfer.lamports);
     if (bundled.destination !== destination || bundled.value !== value) {
       throw new Error(
-        'bundle transaction description does not match signed bytes',
-      )
+        "bundle transaction description does not match signed bytes"
+      );
     }
-    const intent = message.instructions[1]
-    let intentText: string
+    const intent = message.instructions[1];
+    let intentText: string;
     try {
-      intentText = new TextDecoder('utf-8', { fatal: true }).decode(intent.data)
+      intentText = new TextDecoder("utf-8", { fatal: true }).decode(
+        intent.data
+      );
     } catch {
-      throw new Error('bundle transaction intent instruction is invalid')
+      throw new Error("bundle transaction intent instruction is invalid");
     }
     if (
       !intent.programId.equals(MEMO_PROGRAM_ID) ||
@@ -617,28 +806,28 @@ export class SolanaWallet
       !bytesKey(intent.data).startsWith(bytesKey(PAYMENT_INTENT_PREFIX)) ||
       intent.data.length !== PAYMENT_INTENT_DATA_LENGTH ||
       !/^frank:solana-payment:v1:[0-9a-f]{64}:[0-9a-f]{64}:[0-9a-f]{8}$/.test(
-        intentText,
+        intentText
       )
     ) {
-      throw new Error('bundle transaction intent instruction is invalid')
+      throw new Error("bundle transaction intent instruction is invalid");
     }
     const signedIndex = Number.parseInt(
       intentText.slice(-PAYMENT_INTENT_INDEX_LENGTH),
-      16,
-    )
+      16
+    );
     if (signedIndex !== position) {
-      throw new Error(`signed payment index ${signedIndex} is out of order`)
+      throw new Error(`signed payment index ${signedIndex} is out of order`);
     }
     const intentId = intentText.slice(
       PAYMENT_INTENT_PREFIX_TEXT.length,
-      PAYMENT_INTENT_PREFIX_TEXT.length + PAYMENT_INTENT_ID_LENGTH * 2,
-    )
+      PAYMENT_INTENT_PREFIX_TEXT.length + PAYMENT_INTENT_ID_LENGTH * 2
+    );
     const planCommitmentStart =
-      PAYMENT_INTENT_PREFIX_TEXT.length + PAYMENT_INTENT_ID_LENGTH * 2 + 1
+      PAYMENT_INTENT_PREFIX_TEXT.length + PAYMENT_INTENT_ID_LENGTH * 2 + 1;
     const planCommitment = intentText.slice(
       planCommitmentStart,
-      planCommitmentStart + PAYMENT_PLAN_COMMITMENT_LENGTH * 2,
-    )
+      planCommitmentStart + PAYMENT_PLAN_COMMITMENT_LENGTH * 2
+    );
     return {
       destination,
       value,
@@ -647,7 +836,7 @@ export class SolanaWallet
       intentId,
       planCommitment,
       recentBlockhash: transaction.message.recentBlockhash,
-    }
+    };
   }
 }
 
@@ -655,7 +844,7 @@ export class SolanaWallet
 export class SolanaStealthWallet<TStealthMetadata extends {}>
   extends SolanaWallet
   implements
-    StealthTransactionBundleWallet<
+    StealthTransactionBundleCapability<
       string,
       Uint8Array,
       BuildSolanaTransactionBundleParams,
@@ -663,82 +852,92 @@ export class SolanaStealthWallet<TStealthMetadata extends {}>
       SolanaStealthTransactionMetadata<TStealthMetadata>
     >
 {
-  private readonly stealthStrategy: SolanaStealthAddressStrategy<TStealthMetadata>
+  private readonly stealthStrategy: SolanaStealthAddressStrategy<TStealthMetadata>;
 
   constructor(params: {
-    connection: SolanaWalletConnection
-    signer: Keypair
-    stealthStrategy: SolanaStealthAddressStrategy<TStealthMetadata>
+    connection: SolanaWalletConnection;
+    signer: Keypair;
+    networkId: string;
+    stealthStrategy: SolanaStealthAddressStrategy<TStealthMetadata>;
   }) {
-    super(params)
-    this.stealthStrategy = params.stealthStrategy
+    super(params);
+    this.stealthStrategy = params.stealthStrategy;
   }
 
   /** Use generateStealth; the inherited base factory cannot supply a stealth strategy. */
   static override async generate(_params: {
-    connection: SolanaWalletConnection
+    connection: SolanaWalletConnection;
+    networkId: string;
   }): Promise<never> {
-    throw new Error('use SolanaStealthWallet.generateStealth with a strategy')
+    throw new Error("use SolanaStealthWallet.generateStealth with a strategy");
   }
 
   /** Use fromSeedWithStealth; the inherited base factory cannot supply a stealth strategy. */
   static override async fromSeed(_params: {
-    connection: SolanaWalletConnection
-    seed: Uint8Array
+    connection: SolanaWalletConnection;
+    networkId: string;
+    seed: Uint8Array;
   }): Promise<never> {
     throw new Error(
-      'use SolanaStealthWallet.fromSeedWithStealth with a strategy',
-    )
+      "use SolanaStealthWallet.fromSeedWithStealth with a strategy"
+    );
   }
 
   static async generateStealth<TStealthMetadata extends {}>(params: {
-    connection: SolanaWalletConnection
-    stealthStrategy: SolanaStealthAddressStrategy<TStealthMetadata>
+    connection: SolanaWalletConnection;
+    networkId: string;
+    stealthStrategy: SolanaStealthAddressStrategy<TStealthMetadata>;
   }): Promise<SolanaStealthWallet<TStealthMetadata>> {
-    await ensureEd25519Support()
+    await ensureEd25519Support();
     return new SolanaStealthWallet({
       ...params,
       signer: await Keypair.generate(),
-    })
+    });
   }
 
   static async fromSeedWithStealth<TStealthMetadata extends {}>(params: {
-    connection: SolanaWalletConnection
-    seed: Uint8Array
-    stealthStrategy: SolanaStealthAddressStrategy<TStealthMetadata>
+    connection: SolanaWalletConnection;
+    networkId: string;
+    seed: Uint8Array;
+    stealthStrategy: SolanaStealthAddressStrategy<TStealthMetadata>;
   }): Promise<SolanaStealthWallet<TStealthMetadata>> {
-    const stableSeed = params.seed.slice()
-    await ensureEd25519Support()
+    const stableSeed = params.seed.slice();
+    await ensureEd25519Support();
     return new SolanaStealthWallet({
       connection: params.connection,
       signer: await Keypair.fromSeed(stableSeed),
+      networkId: params.networkId,
       stealthStrategy: params.stealthStrategy,
-    })
+    });
   }
 
   async buildStealthTransactionBundle(
-    params: BuildSolanaStealthTransactionBundleParams,
+    params: BuildSolanaStealthTransactionBundleParams
   ): Promise<
     SolanaTransactionBundle<SolanaStealthTransactionMetadata<TStealthMetadata>>
   > {
-    const stableLamports = params.lamports.slice()
-    const stableIntentId = params.intentId.slice()
-    const stableContext = params.context.slice()
-    const recipient = parsePublicKey(params.recipient)
+    const stableLamports = params.lamports.slice();
+    const stableIntentId = params.intentId.slice();
+    const stableContext = params.context.slice();
+    const recipient = parsePublicKey(params.recipient);
     if (stableLamports.length === 0) {
-      throw new RangeError('a stealth bundle must contain at least one payment')
+      throw new RangeError(
+        "a stealth bundle must contain at least one payment"
+      );
     }
     stableLamports.forEach((lamports, index) => {
       if (lamports <= 0n) {
-        throw new RangeError(`transfer ${index} must contain positive lamports`)
+        throw new RangeError(
+          `transfer ${index} must contain positive lamports`
+        );
       }
       if (lamports > MAX_U64) {
         throw new RangeError(
-          `transfer ${index} exceeds Solana's u64 lamport limit`,
-        )
+          `transfer ${index} exceeds Solana's u64 lamport limit`
+        );
       }
-    })
-    assertIntentId(stableIntentId)
+    });
+    assertIntentId(stableIntentId);
     const destinations = await Promise.all(
       stableLamports.map(async (lamports, paymentIndex) => ({
         lamports,
@@ -747,21 +946,21 @@ export class SolanaStealthWallet<TStealthMetadata extends {}>
           paymentIndex,
           context: stableContext.slice(),
         }),
-      })),
-    )
+      }))
+    );
     const uniqueAddresses = new Set(
-      destinations.map(item => item.destination.address.toBase58()),
-    )
+      destinations.map((item) => item.destination.address.toBase58())
+    );
     if (uniqueAddresses.size !== destinations.length) {
-      throw new Error('stealth strategy returned duplicate destinations')
+      throw new Error("stealth strategy returned duplicate destinations");
     }
     return this.buildSignedBundle(
-      destinations.map(item => ({
+      destinations.map((item) => ({
         destination: item.destination.address,
         lamports: item.lamports,
       })),
       stableIntentId,
-      destinations.map(item => ({ stealth: item.destination.metadata })),
-    )
+      destinations.map((item) => ({ stealth: item.destination.metadata }))
+    );
   }
 }

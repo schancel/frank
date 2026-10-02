@@ -144,6 +144,7 @@ const mockedFetchMonadProfile = fetchMonadProfile as jest.MockedFunction<
 >;
 
 const TEST_CONFIG: MonadChainConfig = {
+  networkId: "monad-test",
   rpcUrl: "http://127.0.0.1:1",
   relayBaseUrl: "http://relay.test",
   networkTag: "MONT",
@@ -160,7 +161,12 @@ const EVE_PRIVATE_KEY_HEX = "0x" + "33".repeat(31) + "3c";
 
 function makeWallet(identity: MonadIdentity): MonadChainWalletHandle {
   return {
+    chainKind: "monad",
+    networkId: TEST_CONFIG.networkId,
     identity,
+    getReceiveAddress: jest.fn(async () => identity.address),
+    getBalance: jest.fn(),
+    sendNative: jest.fn(),
     // These are never dereferenced by real logic in this test file: every client that would
     // actually use them (`MonadStampClient`/`MonadTopicPostClient`/`MonadTopicVoteClient`) is
     // mocked above, so `MonadChain` only ever passes this bundle through to a mock constructor.
@@ -191,11 +197,18 @@ describe("createMonadChain: basic chain properties", () => {
   const chain = createMonadChain(TEST_CONFIG);
 
   it("exposes the Monad name/unit", () => {
+    expect(chain.kind).toBe("monad");
     expect(chain.name).toBe("monad");
     expect(chain.unit).toBe("MON");
     expect(chain.defaultTopicVoteValue).toBe(
       TEST_CONFIG.defaultTopicVoteValueWei
     );
+    expect(chain.capabilities).toEqual({
+      profiles: true,
+      directMessages: true,
+      topics: true,
+      stealthPayments: true,
+    });
   });
 
   it("round-trips display <-> raw amounts", () => {

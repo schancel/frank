@@ -17,6 +17,8 @@
     "axios": "^0.24.0",
     "bip39": "^3.0.2",
     "bitcore-lib-xpi": "*",
+    "ecash-lib": "4.14.1",
+    "ecash-wallet": "6.2.1",
     "ethers": "^6.17.0",
     "google-protobuf": "4.0.3",
     "level": "^7.0.0",

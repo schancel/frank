@@ -82,6 +82,7 @@ import { useActiveWallet } from 'src/composables/useActiveWallet'
 import { useBalance } from 'src/composables/useBalance'
 import { addressCopiedNotify, errorNotify } from 'src/utils/notifications'
 import { useTranslate } from 'src/composables/useTranslate'
+import { activeChain } from '@frank/wallet/chain'
 
 export default defineComponent({
   setup() {
@@ -99,7 +100,9 @@ export default defineComponent({
     onMounted(async () => {
       try {
         const wallet = await useActiveWallet()
-        displayAddress.value = wallet.identity.displayAddress
+        displayAddress.value = activeChain.addressToString(
+          await wallet.getReceiveAddress(),
+        )
       } catch (err) {
         errorNotify(
           err instanceof Error

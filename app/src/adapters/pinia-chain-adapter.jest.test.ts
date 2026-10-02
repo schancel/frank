@@ -23,6 +23,7 @@ import { useContactStore } from '../stores/contacts'
 import { store as messageStorePromise } from './level-message-store'
 import { activeChain } from '@frank/wallet/chain'
 import type { DirectMessageReceived, WalletHandle } from '@frank/wallet/chain'
+import type { ReceivedMessageWrapper } from '@frank/cashweb/types/user-interface'
 
 jest.mock('../utils/notifications', () => ({
   desktopNotify: jest.fn(),
@@ -33,6 +34,10 @@ jest.mock('./level-message-store', () => ({
     saveMessage: jest.fn(async () => undefined),
     deleteMessage: jest.fn(async () => undefined),
     mostRecentMessageTime: jest.fn(async () => 0),
+    relayCursor: jest.fn(async () => 0),
+    quarantineRelayReceipts: jest.fn(async () => undefined),
+    suppressAndDelete: jest.fn(async () => undefined),
+    suppressedRelayReceipts: jest.fn(async () => new Set<string>()),
     getIterator: async function* () {
       /* no persisted Lotus-era messages in tests */
     },
@@ -46,7 +51,12 @@ const PUB_KEY_HEX =
   '0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798'
 const PUB_KEY_BYTES = Uint8Array.from(Buffer.from(PUB_KEY_HEX, 'hex'))
 
-type MockMessageStore = { saveMessage: jest.Mock }
+type MockMessageStore = {
+  saveMessage: jest.Mock
+  relayCursor: jest.Mock
+  quarantineRelayReceipts: jest.Mock
+  mostRecentMessageTime: jest.Mock
+}
 let mockMessageStore: MockMessageStore
 
 function makeRecord(
@@ -63,6 +73,28 @@ function makeRecord(
   }
 }
 
+function makeWrapper(index: string): ReceivedMessageWrapper {
+  return {
+    outbound: false,
+    senderAddress: SENDER_ADDRESS,
+    copartyAddress: SENDER_ADDRESS,
+    // Only used to load an unknown contact, which is pre-registered in beforeEach.
+    copartyPubKey: null as never,
+    index,
+    stampValue: 1,
+    message: {
+      outbound: false,
+      status: 'confirmed',
+      items: [{ type: 'text', text: 'hi' }],
+      serverTime: 1_700_000_000_000,
+      receivedTime: 1_700_000_000_000,
+      outpoints: [],
+      senderAddress: SENDER_ADDRESS,
+      destinationAddress: RECIPIENT_ADDRESS,
+    },
+  }
+}
+
 // Generous ceiling only: with fake timers nothing waits on wall-clock time, but cold module
 // transforms under CPU load can exceed the 1 s default from jest.setup.ts (ticket #285).
 jest.setTimeout(30_000)
@@ -74,6 +106,11 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
     mockMessageStore =
       (await messageStorePromise) as unknown as MockMessageStore
     mockMessageStore.saveMessage.mockClear()
+    mockMessageStore.relayCursor.mockReset().mockResolvedValue(0)
+    mockMessageStore.quarantineRelayReceipts
+      .mockReset()
+      .mockResolvedValue(undefined)
+    mockMessageStore.mostRecentMessageTime.mockReset().mockResolvedValue(0)
     useContactStore().addContact({
       address: SENDER_ADDRESS,
       contact: {
@@ -190,6 +227,8 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
         wallet,
         sinceMs: 0,
         onTruncated: expect.any(Function),
+        onIncompleteTimestamp: expect.any(Function),
+        onQuarantinedTimestamp: expect.any(Function),
       })
 
       // The relay bound is inclusive, so advance one millisecond past the received record.
@@ -199,6 +238,8 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
         wallet,
         sinceMs: 1_700_000_000_001,
         onTruncated: expect.any(Function),
+        onIncompleteTimestamp: expect.any(Function),
+        onQuarantinedTimestamp: expect.any(Function),
       })
       // No new messages on any subsequent poll.
       expect(receiveMessagesSpy).toHaveBeenCalledTimes(1)
@@ -207,6 +248,127 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
       const callsAtStop = fetchSinceSpy.mock.calls.length
       await advance(60)
       expect(fetchSinceSpy.mock.calls.length).toBe(callsAtStop)
+    })
+
+    it('replays a timestamp group when a later sibling profile is unresolved', async () => {
+      const profile = {
+        address: { raw: SENDER_ADDRESS },
+        pubKey: PUB_KEY_BYTES,
+      }
+      jest
+        .spyOn(activeChain, 'fetchProfile')
+        .mockResolvedValueOnce(profile)
+        .mockResolvedValueOnce(undefined)
+        .mockResolvedValue(profile)
+      const rows = [
+        makeRecord({ payloadDigest: 'same-time-a', receivedTime: 700 }),
+        makeRecord({ payloadDigest: 'same-time-b', receivedTime: 700 }),
+      ]
+      const fetchSinceSpy = jest
+        .spyOn(activeChain.directMessages, 'fetchSince')
+        .mockImplementation(async ({ sinceMs }) =>
+          rows.filter(row => row.receivedTime >= sinceMs),
+        )
+
+      const polling = startPolling(20)
+      await advanceUntil(() => fetchSinceSpy.mock.calls.length >= 2)
+      polling.stop()
+
+      expect(fetchSinceSpy).toHaveBeenNthCalledWith(2, {
+        wallet,
+        sinceMs: 700,
+        onTruncated: expect.any(Function),
+        onIncompleteTimestamp: expect.any(Function),
+        onQuarantinedTimestamp: expect.any(Function),
+      })
+      expect(useChatStore().messages['same-time-a']).toBeDefined()
+      expect(useChatStore().messages['same-time-b']).toBeDefined()
+    })
+
+    it('rejects unsafe wire timestamps without granting them cursor authority', async () => {
+      jest.spyOn(activeChain, 'fetchProfile').mockResolvedValue({
+        address: { raw: SENDER_ADDRESS },
+        pubKey: PUB_KEY_BYTES,
+      })
+      jest.spyOn(console, 'error').mockImplementation(() => undefined)
+      const fetchSinceSpy = jest
+        .spyOn(activeChain.directMessages, 'fetchSince')
+        .mockResolvedValueOnce([
+          makeRecord({
+            payloadDigest: 'unsafe-time',
+            receivedTime: '9007199254740992' as never,
+          }),
+          makeRecord({ payloadDigest: 'safe-time', receivedTime: 100 }),
+        ])
+        .mockResolvedValue([])
+
+      const polling = startPolling(20)
+      await advanceUntil(() => fetchSinceSpy.mock.calls.length >= 2)
+      polling.stop()
+
+      expect(useChatStore().messages['unsafe-time']).toBeUndefined()
+      expect(useChatStore().messages['safe-time']).toBeDefined()
+      expect(fetchSinceSpy.mock.calls[1][0].sinceMs).toBe(101)
+    })
+
+    it('does not poll after stop while cursor hydration is deferred', async () => {
+      let releaseCursor: ((cursor: number) => void) | undefined
+      mockMessageStore.relayCursor.mockReturnValueOnce(
+        new Promise(resolve => {
+          releaseCursor = resolve
+        }),
+      )
+      const fetchSinceSpy = jest
+        .spyOn(activeChain.directMessages, 'fetchSince')
+        .mockResolvedValue([])
+
+      const polling = startPolling(20)
+      polling.stop()
+      releaseCursor?.(0)
+      await settle()
+      await advance(40)
+
+      expect(fetchSinceSpy).not.toHaveBeenCalled()
+    })
+
+    it('uses only the current recipient cursor, never another account or an outbound clock', async () => {
+      const oldAddress = '0x1111111111111111111111111111111111111111'
+      const replacementAddress = RECIPIENT_ADDRESS
+      mockMessageStore.mostRecentMessageTime.mockResolvedValue(99_999)
+      mockMessageStore.relayCursor.mockImplementation(async address =>
+        address.toLowerCase() === oldAddress.toLowerCase() ? 9000 : 20,
+      )
+      const fetchSinceSpy = jest
+        .spyOn(activeChain.directMessages, 'fetchSince')
+        .mockResolvedValue([])
+      const oldPolling = startDirectMessagePolling({
+        wallet: {
+          identity: {
+            address: { raw: oldAddress },
+            displayAddress: oldAddress,
+          },
+        },
+        intervalMs: 20,
+      })
+      pollers.push(oldPolling)
+      await settle()
+      oldPolling.stop()
+
+      const replacementPolling = startDirectMessagePolling({
+        wallet: {
+          identity: {
+            address: { raw: replacementAddress },
+            displayAddress: replacementAddress,
+          },
+        },
+        intervalMs: 20,
+      })
+      pollers.push(replacementPolling)
+      await settle()
+
+      expect(fetchSinceSpy.mock.calls[0]?.[0].sinceMs).toBe(9000)
+      expect(fetchSinceSpy.mock.calls.at(-1)?.[0].sinceMs).toBe(20)
+      expect(mockMessageStore.mostRecentMessageTime).not.toHaveBeenCalled()
     })
 
     it('a truncated inbox scan never skips the rest of a timestamp group (F1 regression)', async () => {
@@ -301,13 +463,17 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
       const polling = startPolling(20)
       try {
         await advanceUntil(() => fetchSinceSpy.mock.calls.length >= 2)
-        expect(receiveMessagesSpy).toHaveBeenCalledWith([
-          expect.objectContaining({ index: 'valid-after-poison' }),
-        ])
+        expect(receiveMessagesSpy).toHaveBeenCalledWith(
+          [expect.objectContaining({ index: 'valid-after-poison' })],
+          RECIPIENT_ADDRESS,
+          { isCancelled: expect.any(Function) },
+        )
         expect(fetchSinceSpy).toHaveBeenNthCalledWith(2, {
           wallet,
           sinceMs: 201,
           onTruncated: expect.any(Function),
+          onIncompleteTimestamp: expect.any(Function),
+          onQuarantinedTimestamp: expect.any(Function),
         })
       } finally {
         polling.stop()
@@ -343,7 +509,7 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
       const receiveMessagesSpy = jest
         .spyOn(chats, 'receiveMessages')
         .mockRejectedValueOnce(new Error('indexeddb write failed'))
-        .mockResolvedValue(undefined)
+        .mockResolvedValue({ suppressedReceipts: [], cancelled: false })
       const consoleErrorSpy = jest
         .spyOn(console, 'error')
         .mockImplementation(() => undefined)
@@ -365,45 +531,201 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
           wallet,
           sinceMs: 0,
           onTruncated: expect.any(Function),
+          onIncompleteTimestamp: expect.any(Function),
+          onQuarantinedTimestamp: expect.any(Function),
         })
       } finally {
         polling.stop()
       }
     })
 
-    it('persists later messages without advancing past an unresolved sender profile', async () => {
+    it('replays a same-timestamp sibling omitted by MonadChain profile lookup', async () => {
       const chats = useChatStore()
       const receiveMessagesSpy = jest.spyOn(chats, 'receiveMessages')
       const consoleErrorSpy = jest
         .spyOn(console, 'error')
         .mockImplementation(() => undefined)
-      jest
-        .spyOn(activeChain, 'fetchProfile')
-        .mockResolvedValueOnce(undefined)
-        .mockResolvedValue({
-          address: { raw: SENDER_ADDRESS },
-          pubKey: PUB_KEY_BYTES,
-        })
+      jest.spyOn(activeChain, 'fetchProfile').mockResolvedValue({
+        address: { raw: SENDER_ADDRESS },
+        pubKey: PUB_KEY_BYTES,
+      })
       const fetchSinceSpy = jest
         .spyOn(activeChain.directMessages, 'fetchSince')
-        .mockResolvedValueOnce([
-          makeRecord({ payloadDigest: 'unresolved', receivedTime: 100 }),
-          makeRecord({ payloadDigest: 'later', receivedTime: 200 }),
-        ])
+        .mockImplementationOnce(async ({ onIncompleteTimestamp }) => {
+          // This is the MonadChain -> adapter seam: MonadChain cannot return the raw row
+          // without its sender profile, so it reports only the omitted row's relay timestamp.
+          onIncompleteTimestamp?.(100)
+          return [makeRecord({ payloadDigest: 'same-time', receivedTime: 100 })]
+        })
         .mockResolvedValue([])
 
       const polling = startPolling(20)
       try {
         await advanceUntil(() => fetchSinceSpy.mock.calls.length >= 2)
-        expect(consoleErrorSpy).toHaveBeenCalled()
-        expect(receiveMessagesSpy).toHaveBeenCalledWith([
-          expect.objectContaining({ index: 'later' }),
-        ])
+        expect(consoleErrorSpy).not.toHaveBeenCalled()
+        expect(receiveMessagesSpy).toHaveBeenCalledWith(
+          [expect.objectContaining({ index: 'same-time' })],
+          RECIPIENT_ADDRESS,
+          { isCancelled: expect.any(Function) },
+        )
         expect(fetchSinceSpy).toHaveBeenNthCalledWith(2, {
           wallet,
-          sinceMs: 0,
+          sinceMs: 100,
           onTruncated: expect.any(Function),
+          onIncompleteTimestamp: expect.any(Function),
+          onQuarantinedTimestamp: expect.any(Function),
         })
+      } finally {
+        polling.stop()
+      }
+    })
+
+    it('quarantines a permanently absent sender and never lets it pin newer mail (fail-before: the row pinned the inclusive cursor forever)', async () => {
+      const chats = useChatStore()
+      const receiveMessagesSpy = jest.spyOn(chats, 'receiveMessages')
+      const consoleErrorSpy = jest
+        .spyOn(console, 'error')
+        .mockImplementation(() => undefined)
+      jest.spyOn(activeChain, 'fetchProfile').mockResolvedValue({
+        address: { raw: SENDER_ADDRESS },
+        pubKey: PUB_KEY_BYTES,
+      })
+      const fetchSinceSpy = jest
+        .spyOn(activeChain.directMessages, 'fetchSince')
+        .mockImplementationOnce(async ({ onQuarantinedTimestamp }) => {
+          // This is the MonadChain -> adapter seam for terminal rows: the registry
+          // authoritatively has no sender account, so MonadChain omits the row and reports its
+          // receipt for durable quarantine instead of reporting an incomplete timestamp.
+          onQuarantinedTimestamp?.(100, 'unregistered-sender')
+          return [
+            makeRecord({ payloadDigest: 'later-valid', receivedTime: 200 }),
+          ]
+        })
+        .mockResolvedValue([])
+
+      const polling = startPolling(20)
+      try {
+        await advanceUntil(() => fetchSinceSpy.mock.calls.length >= 2)
+        // The terminal row is anchored durably, so neither this session nor a restart can stay
+        // pinned behind it, and the newer valid row is still delivered (bounded backlog).
+        expect(mockMessageStore.quarantineRelayReceipts).toHaveBeenCalledWith(
+          RECIPIENT_ADDRESS,
+          [{ payloadDigest: 'unregistered-sender', receivedTime: 100 }],
+        )
+        expect(receiveMessagesSpy).toHaveBeenCalledWith(
+          [expect.objectContaining({ index: 'later-valid' })],
+          RECIPIENT_ADDRESS,
+          { isCancelled: expect.any(Function) },
+        )
+        expect(consoleErrorSpy).not.toHaveBeenCalled()
+        expect(fetchSinceSpy).toHaveBeenNthCalledWith(2, {
+          wallet,
+          sinceMs: 201,
+          onTruncated: expect.any(Function),
+          onIncompleteTimestamp: expect.any(Function),
+          onQuarantinedTimestamp: expect.any(Function),
+        })
+      } finally {
+        polling.stop()
+      }
+    })
+
+    it('a retryable profile failure still holds the whole timestamp group in replay', async () => {
+      const chats = useChatStore()
+      const receiveMessagesSpy = jest.spyOn(chats, 'receiveMessages')
+      const consoleErrorSpy = jest
+        .spyOn(console, 'error')
+        .mockImplementation(() => undefined)
+      jest.spyOn(activeChain, 'fetchProfile').mockResolvedValue({
+        address: { raw: SENDER_ADDRESS },
+        pubKey: PUB_KEY_BYTES,
+      })
+      const fetchSinceSpy = jest
+        .spyOn(activeChain.directMessages, 'fetchSince')
+        .mockImplementationOnce(async ({ onIncompleteTimestamp }) => {
+          // Retryable transport failure: the row may yet deliver, so its whole timestamp group
+          // stays in the replay window and no quarantine anchor may be written.
+          onIncompleteTimestamp?.(100)
+          return []
+        })
+        .mockResolvedValue([])
+
+      const polling = startPolling(20)
+      try {
+        await advanceUntil(() => fetchSinceSpy.mock.calls.length >= 2)
+        expect(mockMessageStore.quarantineRelayReceipts).not.toHaveBeenCalled()
+        expect(receiveMessagesSpy).not.toHaveBeenCalled()
+        expect(fetchSinceSpy).toHaveBeenNthCalledWith(2, {
+          wallet,
+          sinceMs: 100,
+          onTruncated: expect.any(Function),
+          onIncompleteTimestamp: expect.any(Function),
+          onQuarantinedTimestamp: expect.any(Function),
+        })
+      } finally {
+        polling.stop()
+      }
+    })
+
+    it('a delivery queued behind the mutation boundary produces nothing after stop() (fail-before: the queued poll persisted, mutated, notified, and advanced the cursor)', async () => {
+      const chats = useChatStore()
+      const receiveMessagesSpy = jest.spyOn(chats, 'receiveMessages')
+      jest.spyOn(activeChain, 'fetchProfile').mockResolvedValue({
+        address: { raw: SENDER_ADDRESS },
+        pubKey: PUB_KEY_BYTES,
+      })
+      // Hold the module-global delivery boundary with an unrelated slow delivery so the
+      // poller's receiveMessages is QUEUED (not merely in flight) when stop() lands.
+      let releaseBlocker: (() => void) | undefined
+      mockMessageStore.saveMessage.mockImplementationOnce(
+        () =>
+          new Promise<void>(resolve => {
+            releaseBlocker = resolve
+          }),
+      )
+      const blocker = chats.receiveMessages(
+        [makeWrapper('blocking-unrelated')],
+        RECIPIENT_ADDRESS,
+      )
+      let releaseFetch: ((records: DirectMessageReceived[]) => void) | undefined
+      const fetchSinceSpy = jest
+        .spyOn(activeChain.directMessages, 'fetchSince')
+        .mockImplementationOnce(
+          () =>
+            new Promise<DirectMessageReceived[]>(resolve => {
+              releaseFetch = resolve
+            }),
+        )
+        .mockResolvedValue([])
+
+      const polling = startPolling(10_000)
+      try {
+        await advanceUntil(() => fetchSinceSpy.mock.calls.length === 1)
+        releaseFetch([makeRecord({ payloadDigest: 'old-wallet-msg' })])
+        // The poll passes its final pre-delivery stop() check and enqueues behind the blocker.
+        await advanceUntil(() => receiveMessagesSpy.mock.calls.length >= 2)
+        // The wallet is replaced now: stop() on the old generation while its delivery is queued.
+        polling.stop()
+        // The blocker finishes; the queued delivery reaches the boundary and must bail on its
+        // cancelled lease.
+        releaseBlocker?.()
+        await blocker
+        await advance(30)
+
+        // No persistence, no shared-state mutation, no notification, no quarantine write, and
+        // no cursor advance for the replaced generation: the replacement poller replays the
+        // window from its own cursor instead.
+        // The poller's delivery is the second receiveMessages call (the blocker is the first).
+        expect(receiveMessagesSpy.mock.results[1].value).resolves.toEqual(
+          expect.objectContaining({ cancelled: true }),
+        )
+        expect(mockMessageStore.saveMessage).not.toHaveBeenCalledWith(
+          expect.objectContaining({ index: 'old-wallet-msg' }),
+          expect.anything(),
+        )
+        expect(useChatStore().messages['old-wallet-msg']).toBeUndefined()
+        expect(mockMessageStore.quarantineRelayReceipts).not.toHaveBeenCalled()
+        expect(fetchSinceSpy).toHaveBeenCalledTimes(1)
       } finally {
         polling.stop()
       }

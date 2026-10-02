@@ -10,14 +10,12 @@ module.exports = {
   // Substitute the Node-safe stub (`vite-env.node.ts`) for tests only; Vite and `tsx` both
   // resolve the real file normally, unaffected by this (Jest-only) config.
   moduleNameMapper: {
-    // Worktree node_modules symlinks point at another checkout. Load this
-    // tree's sources. crypto-box exports point at dist, which Jest does not build.
-    '^@frank/codec$': '<rootDir>/../frank-codec/src/index.ts',
-    '^@frank/crypto-box$': '<rootDir>/../crypto-box/src/index.ts',
+    '^@frank/nakamoto/(.*)$': '<rootDir>/../nakamoto/src/$1',
     '^@frank/nakamoto$': '<rootDir>/../nakamoto/src/index.ts',
-    '^@frank/nakamoto/curve$': '<rootDir>/../nakamoto/src/curve.ts',
-    '^@frank/nakamoto/constructors$':
-      '<rootDir>/../nakamoto/src/constructors.ts',
+    '^@frank/crypto-box/(.*)$': '<rootDir>/../crypto-box/src/$1',
+    '^@frank/crypto-box$': '<rootDir>/../crypto-box/src/index.ts',
+    '^@frank/codec/(.*)$': '<rootDir>/../frank-codec/src/$1',
+    '^@frank/codec$': '<rootDir>/../frank-codec/src/index.ts',
     '^(\\.{1,2}/.*)\\.js$': '$1',
     '^@frank/cashweb/(.*)$': '<rootDir>/../cashweb/$1',
     '^@frank/wallet/(.*)$': '<rootDir>/$1',

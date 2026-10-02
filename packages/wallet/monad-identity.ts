@@ -328,6 +328,73 @@ export function isCborFrame(bytes: Uint8Array): boolean {
   )
 }
 
+export interface MonadCborRelayBinding {
+  id: Uint8Array
+  endpoint: string
+  key: Uint8Array
+  validUntilSeconds: bigint | number
+}
+
+function requireRelayBindings(
+  identity: MonadIdentity,
+  relays: readonly MonadCborRelayBinding[],
+  statementSeconds: bigint,
+): Encodable[] {
+  if (relays.length === 0) {
+    throw new Error('at least one caller-supplied relay binding is required')
+  }
+  return relays.map(relay => {
+    if (relay.id.length !== 16 || relay.id.every(byte => byte === 0)) {
+      throw new Error('relay id must be a non-zero 16-byte identifier')
+    }
+    let endpoint: URL
+    try {
+      endpoint = new URL(relay.endpoint)
+    } catch {
+      throw new Error('relay endpoint must be an absolute URL')
+    }
+    if (
+      endpoint.protocol !== 'https:' ||
+      endpoint.hostname === 'example' ||
+      endpoint.hostname.endsWith('.example')
+    ) {
+      throw new Error('relay endpoint must be a genuine HTTPS endpoint')
+    }
+    if (
+      relay.key.length !== 33 ||
+      relay.key.every(
+        (byte, index) => byte === identity.compressedPubKey[index],
+      )
+    ) {
+      throw new Error('relay key must be a distinct compressed secp256k1 key')
+    }
+    const validUntil = BigInt(relay.validUntilSeconds)
+    if (validUntil < statementSeconds) {
+      throw new Error(
+        'relay binding must remain valid at the statement timestamp',
+      )
+    }
+    return cborMap([
+      [0, Uint8Array.from(relay.id)],
+      [1, endpoint.toString()],
+      [
+        2,
+        cborMap([
+          [0, 1],
+          [1, Uint8Array.from(relay.key)],
+        ]),
+      ],
+      [
+        3,
+        cborMap([
+          [0, validUntil],
+          [1, 0],
+        ]),
+      ],
+    ])
+  })
+}
+
 /**
  * Builds a canonical Deterministic-CBOR signed account registration frame
  * (Type 2 DirectoryAttestation wrapping a Type 4 DirectoryStatement with schema 3).
@@ -336,18 +403,13 @@ export function isCborFrame(bytes: Uint8Array): boolean {
 export function buildSignedDirectoryStatement(
   identity: MonadIdentity,
   options: {
+    relays: readonly MonadCborRelayBinding[]
     network?: string
     profile?: MonadProfileFields
     timestampMs?: number
     ttlMs?: number
     stampKey?: Uint8Array
-    relays?: Array<{
-      id?: Uint8Array
-      endpoint: string
-      key?: Uint8Array
-      validUntilSeconds?: bigint | number
-    }>
-  } = {},
+  },
 ): Uint8Array {
   const network = options.network ?? 'monad-testnet'
   const ms = BigInt(options.timestampMs ?? Date.now())
@@ -356,56 +418,12 @@ export function buildSignedDirectoryStatement(
   const exp = expiryTimestamp(ms, ttlMs)
   const stampKeyBytes = options.stampKey ?? identity.compressedPubKey
 
-  const relayBindings: Encodable[] = []
-  if (options.relays && options.relays.length > 0) {
-    for (const r of options.relays) {
-      const id = r.id ?? new Uint8Array(16)
-      const keyBytes = r.key ?? identity.compressedPubKey
-      const validUntil = BigInt(r.validUntilSeconds ?? 2_000_000_000n)
-      relayBindings.push(
-        cborMap([
-          [0, id],
-          [1, r.endpoint],
-          [
-            2,
-            cborMap([
-              [0, 1],
-              [1, Uint8Array.from(keyBytes)],
-            ]),
-          ],
-          [
-            3,
-            cborMap([
-              [0, validUntil],
-              [1, 0],
-            ]),
-          ],
-        ]),
-      )
-    }
-  } else {
-    // Default relay binding: required by Type 4 schema (min 1 relay)
-    relayBindings.push(
-      cborMap([
-        [0, new Uint8Array(16)],
-        [1, 'https://relay1.frank.example/monad-testnet'],
-        [
-          2,
-          cborMap([
-            [0, 1],
-            [1, Uint8Array.from(identity.compressedPubKey)],
-          ]),
-        ],
-        [
-          3,
-          cborMap([
-            [0, 2_000_000_000n],
-            [1, 0],
-          ]),
-        ],
-      ]),
-    )
-  }
+  // Validate the caller-owned descriptor before constructing/signing any statement.
+  const relayBindings = requireRelayBindings(
+    identity,
+    options.relays,
+    BigInt(ts.seconds),
+  )
 
   // Profile entries (field 9 in schema 3)
   const entries: Encodable[] = []
@@ -540,12 +558,7 @@ export async function registerMonadIdentityCbor(params: {
   timestampMs?: number
   ttlMs?: number
   stampKey?: Uint8Array
-  relays?: Array<{
-    id?: Uint8Array
-    endpoint: string
-    key?: Uint8Array
-    validUntilSeconds?: bigint | number
-  }>
+  relays: readonly MonadCborRelayBinding[]
 }): Promise<void> {
   const body = buildSignedDirectoryStatement(params.identity, {
     network: params.network,
@@ -589,16 +602,27 @@ export async function registerMonadIdentity(params: {
   })
 }
 
-/** Decodes either a CBOR directory statement or a legacy protobuf SignedPayload. */
-export function decodeProfileBytes(raw: Uint8Array): {
+interface DecodedProfileFields {
   pubKey: Uint8Array
   timestampMs: number
   name?: string
   bio?: string
   bot?: boolean
   avatar?: string
-  signedPayload: InstanceType<typeof SignedPayload>
-} {
+}
+
+export type DecodedProfileBytes =
+  | (DecodedProfileFields & {
+      format: 'cbor'
+      rawCbor: Uint8Array
+    })
+  | (DecodedProfileFields & {
+      format: 'protobuf'
+      signedPayload: InstanceType<typeof SignedPayload>
+    })
+
+/** Decodes a registration without pretending a CBOR signature authenticates protobuf bytes. */
+export function decodeProfileBytes(raw: Uint8Array): DecodedProfileBytes {
   if (isCborFrame(raw)) {
     const validated = validateFrame(raw, defaultContext({ operation: 'full' }))
     if (validated.kind !== 'parsed' || validated.typed?.type !== 2) {
@@ -619,24 +643,8 @@ export function decodeProfileBytes(raw: Uint8Array): {
     let bot: boolean | undefined
     let avatar: string | undefined
 
-    const metadata = new AddressMetadata()
-    metadata.setTimestamp(timestampMs)
-    metadata.setTtl(1000 * 60 * 60 * 24 * 365)
-    const protoEntries: InstanceType<typeof Entry>[] = []
-
     if (stmt.profileEntries) {
       for (const entry of stmt.profileEntries) {
-        const protoEntry = new Entry()
-        protoEntry.setKind(entry.kind)
-        protoEntry.setBody(Buffer.from(entry.body))
-        for (const h of entry.headers) {
-          const header = new Header()
-          header.setName(h.name)
-          header.setValue(h.value)
-          protoEntry.addHeaders(header)
-        }
-        protoEntries.push(protoEntry)
-
         if (entry.kind === 'display_name') {
           name = new TextDecoder().decode(entry.body)
         } else if (entry.kind === 'bio') {
@@ -653,24 +661,15 @@ export function decodeProfileBytes(raw: Uint8Array): {
         }
       }
     }
-    metadata.setEntriesList(protoEntries)
-
-    const signedPayload = new SignedPayload()
-    signedPayload.setPublicKey(pubKey)
-    signedPayload.setPayload(metadata.serializeBinary())
-    signedPayload.setScheme(SignedPayload.SignatureScheme.ECDSA)
-    if (validated.typed.signatures.length > 0) {
-      signedPayload.setSignature(validated.typed.signatures[0].signature)
-    }
-
     return {
+      format: 'cbor',
       pubKey,
       timestampMs,
       name,
       bio,
       bot,
       avatar,
-      signedPayload,
+      rawCbor: Uint8Array.from(raw),
     }
   }
 
@@ -704,6 +703,7 @@ export function decodeProfileBytes(raw: Uint8Array): {
   }
 
   return {
+    format: 'protobuf',
     pubKey: signedPayload.getPublicKey_asU8(),
     timestampMs: metadata.getTimestamp(),
     name,
@@ -714,8 +714,8 @@ export function decodeProfileBytes(raw: Uint8Array): {
   }
 }
 
-/** `GET /metadata/:addr`: fetches a previously-registered identity's pubkey, supporting both
- * deterministic CBOR and legacy protobuf representations. Returns `undefined` on a `404`. */
+/** `GET /metadata/:addr`: fetches the live legacy-protobuf identity pubkey. The CBOR candidate
+ * remains opt-in until ticket #133. Returns `undefined` on a `404`. */
 export async function fetchMonadIdentityPubKey(params: {
   relayBaseUrl: string
   address: string
@@ -727,6 +727,7 @@ export async function fetchMonadIdentityPubKey(params: {
         params.address
       }`,
       responseType: 'arraybuffer',
+      headers: { Accept: 'application/x-protobuf' },
     })
     const raw = new Uint8Array(response.data)
     const decoded = decodeProfileBytes(raw)
@@ -739,9 +740,8 @@ export async function fetchMonadIdentityPubKey(params: {
   }
 }
 
-/** `MonadChain.fetchProfile`'s real implementation: resolves `address`'s registered pubkey and
- * profile fields supporting both deterministic CBOR and legacy protobuf. Returns `undefined` if
- * nothing is registered under `address` yet. */
+/** `MonadChain.fetchProfile`'s live legacy-protobuf implementation. The CBOR candidate remains
+ * opt-in until ticket #133. Returns `undefined` if nothing is registered under `address` yet. */
 export async function fetchMonadProfile(params: {
   relayBaseUrl: string
   address: ChainAddress
@@ -753,6 +753,7 @@ export async function fetchMonadProfile(params: {
         params.address.raw
       }`,
       responseType: 'arraybuffer',
+      headers: { Accept: 'application/x-protobuf' },
     })
     const raw = new Uint8Array(response.data)
     const decoded = decodeProfileBytes(raw)
@@ -773,16 +774,14 @@ export async function fetchMonadProfile(params: {
   }
 }
 
-/** One entry of `fetchMonadProfilesSince`'s result: a registered Monad profile's address, paired
- * with its `SignedPayload` representation and `rawBytes`. */
+/** One entry of `fetchMonadProfilesSince`'s legacy-protobuf result. */
 export interface MonadProfileListingEntry {
   address: string
   signedPayload: InstanceType<typeof SignedPayload>
-  rawBytes: Uint8Array
 }
 
-/** `GET /metadata/monad?since=<sinceMs>`: every Monad profile registered at or after `sinceMs`,
- * ordered by registration timestamp ascending. Transparently supports CBOR and protobuf. */
+/** `GET /metadata/monad?since=<sinceMs>`: legacy profiles registered at or after `sinceMs`,
+ * ordered by registration timestamp ascending. */
 export async function fetchMonadProfilesSince(params: {
   relayBaseUrl: string
   sinceMs: number
@@ -792,27 +791,25 @@ export async function fetchMonadProfilesSince(params: {
     url: `${params.relayBaseUrl.replace(/\/+$/, '')}/metadata/monad`,
     params: { since: params.sinceMs },
     responseType: 'arraybuffer',
+    headers: { Accept: 'application/x-protobuf' },
   })
   const decoded = ListMonadProfilesResponse.deserializeBinary(
     new Uint8Array(response.data),
   )
-  return decoded.getEntriesList().map(entry => {
-    const rawBytes = entry.getSignedPayload_asU8()
-    const profile = decodeProfileBytes(rawBytes)
-    return {
-      address: entry.getAddress(),
-      signedPayload: profile.signedPayload,
-      rawBytes,
-    }
-  })
+  return decoded.getEntriesList().map(entry => ({
+    address: entry.getAddress(),
+    signedPayload: SignedPayload.deserializeBinary(
+      entry.getSignedPayload_asU8(),
+    ),
+  }))
 }
 
 /** Server-side clamp on `searchMonadProfiles`'s `limit` -- mirrors
  * `cashweb-registry`'s `store::monad_profiles::MAX_SEARCH_RESULTS` (ticket #48). */
 export const MONAD_PROFILE_SEARCH_MAX_RESULTS = 100
 
-/** `GET /metadata/monad/search?prefix=<text>&limit=<n>`: prefix-search registered
- * Monad profiles by their normalized `display_name`. Transparently supports CBOR and protobuf. */
+/** `GET /metadata/monad/search?prefix=<text>&limit=<n>`: prefix-search legacy profiles by their
+ * normalized `display_name`. */
 export async function searchMonadProfiles(params: {
   relayBaseUrl: string
   prefix: string
@@ -826,19 +823,17 @@ export async function searchMonadProfiles(params: {
       ...(params.limit === undefined ? {} : { limit: params.limit }),
     },
     responseType: 'arraybuffer',
+    headers: { Accept: 'application/x-protobuf' },
   })
   const decoded = ListMonadProfilesResponse.deserializeBinary(
     new Uint8Array(response.data),
   )
-  return decoded.getEntriesList().map(entry => {
-    const rawBytes = entry.getSignedPayload_asU8()
-    const profile = decodeProfileBytes(rawBytes)
-    return {
-      address: entry.getAddress(),
-      signedPayload: profile.signedPayload,
-      rawBytes,
-    }
-  })
+  return decoded.getEntriesList().map(entry => ({
+    address: entry.getAddress(),
+    signedPayload: SignedPayload.deserializeBinary(
+      entry.getSignedPayload_asU8(),
+    ),
+  }))
 }
 
 /** One entry in the relay's operator-curated default-contacts list -- see

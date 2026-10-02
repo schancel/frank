@@ -422,6 +422,17 @@ pub fn verify_cbor_account_registration(
         .map_err(|err| InvalidCborFrame(err.to_string()))?
         .try_into()
         .map_err(|_| InvalidCborFrame("timestamp out of range for i64 milliseconds".to_string()))?;
+    if timestamp_ms < 0 {
+        return Err(InvalidCborFrame("timestamp_ms must be nonnegative".to_string()).into());
+    }
+    let revision_i64 = i64::try_from(revision)
+        .map_err(|_| InvalidCborFrame("revision exceeds i64::MAX".to_string()))?;
+    if revision_i64 != timestamp_ms {
+        return Err(InvalidCborFrame(format!(
+            "revision must equal timestamp_ms: {revision} != {timestamp_ms}"
+        ))
+        .into());
+    }
 
     let display_name = profile_entries.as_ref().and_then(|entries| {
         entries

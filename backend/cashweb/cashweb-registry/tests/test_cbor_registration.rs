@@ -285,7 +285,7 @@ async fn test_create_persist_restart_read_verify_lookup() {
     let (cbor_bytes, address, _pubkey) = build_cbor_attestation(
         &key,
         "monad-testnet",
-        1,
+        1_700_000_000_000,
         1_700_000_000_000,
         1000 * 60 * 60 * 24 * 365,
         Some("Alice"),
@@ -321,6 +321,7 @@ async fn test_create_persist_restart_read_verify_lookup() {
         let req = Request::builder()
             .method("GET")
             .uri(format!("/metadata/{}", address.to_hex()))
+            .header("Accept", CONTENT_TYPE_CBOR)
             .body(Body::empty())
             .unwrap();
 
@@ -333,7 +334,7 @@ async fn test_create_persist_restart_read_verify_lookup() {
         let body = hyper::body::to_bytes(resp.into_body()).await.unwrap();
         assert_eq!(body.to_vec(), cbor_bytes);
 
-        // 4. Discovery via /metadata/monad?since=0 includes exact CBOR bytes
+        // 4. Legacy list/search schemas never contain candidate CBOR records.
         let req = Request::builder()
             .method("GET")
             .uri("/metadata/monad?since=0")
@@ -344,9 +345,7 @@ async fn test_create_persist_restart_read_verify_lookup() {
         assert_eq!(resp.status(), StatusCode::OK);
         let body = hyper::body::to_bytes(resp.into_body()).await.unwrap();
         let list = proto::ListMonadProfilesResponse::decode(body).unwrap();
-        assert_eq!(list.entries.len(), 1);
-        assert_eq!(list.entries[0].address, address.to_hex());
-        assert_eq!(list.entries[0].signed_payload, cbor_bytes);
+        assert!(list.entries.is_empty());
 
         // 5. Prefix search by display_name
         let req = Request::builder()
@@ -355,13 +354,27 @@ async fn test_create_persist_restart_read_verify_lookup() {
             .body(Body::empty())
             .unwrap();
 
-        let resp = router.oneshot(req).await.unwrap();
+        let resp = router.clone().oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         let body = hyper::body::to_bytes(resp.into_body()).await.unwrap();
         let search = proto::ListMonadProfilesResponse::decode(body).unwrap();
-        assert_eq!(search.entries.len(), 1);
-        assert_eq!(search.entries[0].address, address.to_hex());
-        assert_eq!(search.entries[0].signed_payload, cbor_bytes);
+        assert!(search.entries.is_empty());
+
+        for uri in [
+            "/metadata/monad?since=0",
+            "/metadata/monad/search?prefix=ali",
+        ] {
+            let req = Request::builder()
+                .method("GET")
+                .uri(uri)
+                .header("Accept", CONTENT_TYPE_CBOR)
+                .body(Body::empty())
+                .unwrap();
+            assert_eq!(
+                router.clone().oneshot(req).await.unwrap().status(),
+                StatusCode::NOT_ACCEPTABLE
+            );
+        }
     }
 }
 
@@ -406,6 +419,7 @@ async fn test_typescript_rust_byte_identity_for_actual_production_record() {
     let req = Request::builder()
         .method("GET")
         .uri(format!("/metadata/{}", address.to_hex()))
+        .header("Accept", CONTENT_TYPE_CBOR)
         .body(Body::empty())
         .unwrap();
 
@@ -414,20 +428,69 @@ async fn test_typescript_rust_byte_identity_for_actual_production_record() {
     let body = hyper::body::to_bytes(resp.into_body()).await.unwrap();
     assert_eq!(body.to_vec(), frame_bytes);
 
-    // Search by name "alice" finds this profile
+    // Candidate records do not leak into the legacy search response schema.
     let req = Request::builder()
         .method("GET")
         .uri("/metadata/monad/search?prefix=alice")
         .body(Body::empty())
         .unwrap();
 
-    let resp = router.oneshot(req).await.unwrap();
+    let resp = router.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = hyper::body::to_bytes(resp.into_body()).await.unwrap();
     let search = proto::ListMonadProfilesResponse::decode(body).unwrap();
-    assert_eq!(search.entries.len(), 1);
-    assert_eq!(search.entries[0].address, address.to_hex());
-    assert_eq!(search.entries[0].signed_payload, frame_bytes);
+    assert!(search.entries.is_empty());
+}
+
+#[tokio::test]
+async fn test_content_type_is_exact_and_never_sniffed() {
+    let tempdir = tempdir::TempDir::new("cashweb-registry--cbor-content-type").unwrap();
+    let key = seckey(18);
+    let timestamp = 1_700_000_000_000;
+    let (frame, address, _) = build_cbor_attestation(
+        &key,
+        "monad-testnet",
+        timestamp as u64,
+        timestamp,
+        1000,
+        None,
+        None,
+        1,
+    );
+    let router = make_server(open_registry(tempdir.path(), Net::Regtest)).into_router();
+
+    for content_type in [
+        None,
+        Some("application/cbor; charset=binary"),
+        Some("application/cborx"),
+    ] {
+        let mut request = Request::builder()
+            .method("PUT")
+            .uri(format!("/metadata/{}", address.to_hex()))
+            .header("Origin", "http://frank.local");
+        if let Some(content_type) = content_type {
+            request = request.header(CONTENT_TYPE, content_type);
+        }
+        let response = router
+            .clone()
+            .oneshot(request.body(Body::from(frame.clone())).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    let response = router
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/metadata/{}", address.to_hex()))
+                .header("Accept", CONTENT_TYPE_CBOR)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
@@ -439,7 +502,7 @@ async fn test_wrong_network_and_altered_signature_rejection() {
     let (wrong_net_bytes, address, _) = build_cbor_attestation(
         &key,
         "monad-mainnet",
-        1,
+        1_700_000_000_000,
         1_700_000_000_000,
         1000 * 60 * 60 * 24 * 365,
         Some("NetFail"),
@@ -466,7 +529,7 @@ async fn test_wrong_network_and_altered_signature_rejection() {
     let (mut bad_sig_bytes, address2, _) = build_cbor_attestation(
         &key,
         "monad-testnet",
-        1,
+        1_700_000_000_000,
         1_700_000_000_000,
         1000 * 60 * 60 * 24 * 365,
         Some("SigFail"),
@@ -484,7 +547,7 @@ async fn test_wrong_network_and_altered_signature_rejection() {
         .body(Body::from(bad_sig_bytes))
         .unwrap();
 
-    let resp = router.oneshot(req).await.unwrap();
+    let resp = router.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }
 
@@ -496,7 +559,7 @@ async fn test_duplicate_replay_and_non_monotonic_revision_rejection() {
     let (cbor_rev1, address, _) = build_cbor_attestation(
         &key,
         "monad-testnet",
-        10,
+        1_700_000_000_000,
         1_700_000_000_000,
         1000 * 60 * 60 * 24 * 365,
         Some("MonoUser"),
@@ -534,8 +597,8 @@ async fn test_duplicate_replay_and_non_monotonic_revision_rejection() {
     let (cbor_rev_lower, _, _) = build_cbor_attestation(
         &key,
         "monad-testnet",
-        9,
-        1_700_000_001_000,
+        1_699_999_999_000,
+        1_699_999_999_000,
         1000 * 60 * 60 * 24 * 365,
         Some("MonoUser"),
         None,
@@ -555,7 +618,7 @@ async fn test_duplicate_replay_and_non_monotonic_revision_rejection() {
     let (cbor_rev_higher, _, _) = build_cbor_attestation(
         &key,
         "monad-testnet",
-        11,
+        1_700_000_002_000,
         1_700_000_002_000,
         1000 * 60 * 60 * 24 * 365,
         Some("MonoUserUpdated"),
@@ -583,7 +646,7 @@ async fn test_unsupported_algorithm_handling() {
         let (cbor_bytes, address, _) = build_cbor_attestation(
             &key,
             "monad-testnet",
-            1,
+            1_700_000_000_000,
             1_700_000_000_000,
             1000 * 60 * 60 * 24 * 365,
             Some("AlgTest"),
@@ -612,12 +675,11 @@ async fn test_unsupported_algorithm_handling() {
 async fn test_legacy_record_coexistence_without_rewriting() {
     let tempdir = tempdir::TempDir::new("cashweb-registry--coexistence").unwrap();
     let key_legacy = seckey(14);
-    let key_cbor = seckey(15);
 
     let (legacy_bytes, legacy_addr, _) =
         build_legacy_signed_payload(&key_legacy, 100, Some("LegacyUser"));
     let (cbor_bytes, cbor_addr, _) = build_cbor_attestation(
-        &key_cbor,
+        &key_legacy,
         "monad-testnet",
         200,
         200,
@@ -626,6 +688,7 @@ async fn test_legacy_record_coexistence_without_rewriting() {
         None,
         1,
     );
+    assert_eq!(cbor_addr, legacy_addr);
 
     let registry = open_registry(tempdir.path(), Net::Regtest);
     let server = make_server(registry);
@@ -653,7 +716,7 @@ async fn test_legacy_record_coexistence_without_rewriting() {
     let resp = router.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 
-    // 3. GET legacy returns exact protobuf bytes and application/x-protobuf
+    // 3. The unnegotiated legacy read remains byte-for-byte protobuf-compatible.
     let req = Request::builder()
         .method("GET")
         .uri(format!("/metadata/{}", legacy_addr.to_hex()))
@@ -668,10 +731,11 @@ async fn test_legacy_record_coexistence_without_rewriting() {
     let body = hyper::body::to_bytes(resp.into_body()).await.unwrap();
     assert_eq!(body.to_vec(), legacy_bytes);
 
-    // 4. GET CBOR returns exact CBOR bytes and application/cbor
+    // 4. The opt-in record is available only through explicit single-record negotiation.
     let req = Request::builder()
         .method("GET")
         .uri(format!("/metadata/{}", cbor_addr.to_hex()))
+        .header("Accept", CONTENT_TYPE_CBOR)
         .body(Body::empty())
         .unwrap();
     let resp = router.clone().oneshot(req).await.unwrap();
@@ -683,7 +747,7 @@ async fn test_legacy_record_coexistence_without_rewriting() {
     let body = hyper::body::to_bytes(resp.into_body()).await.unwrap();
     assert_eq!(body.to_vec(), cbor_bytes);
 
-    // 5. Listing /metadata/monad?since=0 contains BOTH records with exact stored bytes
+    // 5. Legacy list/search still contain only the protobuf record.
     let req = Request::builder()
         .method("GET")
         .uri("/metadata/monad?since=0")
@@ -693,13 +757,18 @@ async fn test_legacy_record_coexistence_without_rewriting() {
     assert_eq!(resp.status(), StatusCode::OK);
     let body = hyper::body::to_bytes(resp.into_body()).await.unwrap();
     let list = proto::ListMonadProfilesResponse::decode(body).unwrap();
-    assert_eq!(list.entries.len(), 2);
+    assert_eq!(list.entries.len(), 1);
     assert_eq!(list.entries[0].address, legacy_addr.to_hex());
-    assert_eq!(list.entries[0].signed_payload, legacy_bytes);
-    assert_eq!(list.entries[1].address, cbor_addr.to_hex());
-    assert_eq!(list.entries[1].signed_payload, cbor_bytes);
+    assert_eq!(
+        list.entries[0]
+            .signed_payload
+            .as_ref()
+            .unwrap()
+            .encode_to_vec(),
+        legacy_bytes
+    );
 
-    // 6. Overwrite legacy profile with CBOR profile atomically cleans up old name
+    // 6. A later CBOR candidate still cannot overwrite or de-index the legacy record.
     let (cbor_over_legacy, _, _) = build_cbor_attestation(
         &key_legacy,
         "monad-testnet",
@@ -720,7 +789,7 @@ async fn test_legacy_record_coexistence_without_rewriting() {
     let resp = router.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 
-    // Old name "legacyuser" is no longer found in search
+    // Old legacy name remains searchable.
     let req = Request::builder()
         .method("GET")
         .uri("/metadata/monad/search?prefix=legacy")
@@ -730,21 +799,30 @@ async fn test_legacy_record_coexistence_without_rewriting() {
     assert_eq!(resp.status(), StatusCode::OK);
     let body = hyper::body::to_bytes(resp.into_body()).await.unwrap();
     let search = proto::ListMonadProfilesResponse::decode(body).unwrap();
-    assert_eq!(search.entries.len(), 0);
+    assert_eq!(search.entries.len(), 1);
 
-    // New name "updateduser" is found
+    // Candidate-only name is absent from the legacy search schema.
     let req = Request::builder()
         .method("GET")
         .uri("/metadata/monad/search?prefix=updated")
         .body(Body::empty())
         .unwrap();
-    let resp = router.oneshot(req).await.unwrap();
+    let resp = router.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = hyper::body::to_bytes(resp.into_body()).await.unwrap();
     let search = proto::ListMonadProfilesResponse::decode(body).unwrap();
-    assert_eq!(search.entries.len(), 1);
-    assert_eq!(search.entries[0].address, legacy_addr.to_hex());
-    assert_eq!(search.entries[0].signed_payload, cbor_over_legacy);
+    assert!(search.entries.is_empty());
+
+    drop(router);
+    let reopened = make_server(open_registry(tempdir.path(), Net::Regtest)).into_router();
+    let req = Request::builder()
+        .method("GET")
+        .uri(format!("/metadata/{}", legacy_addr.to_hex()))
+        .body(Body::empty())
+        .unwrap();
+    let resp = reopened.oneshot(req).await.unwrap();
+    let body = hyper::body::to_bytes(resp.into_body()).await.unwrap();
+    assert_eq!(body.to_vec(), legacy_bytes);
 }
 
 #[tokio::test]
@@ -756,7 +834,7 @@ async fn test_rollback_on_failed_write_leaves_no_partial_state() {
     let (mut bad_cbor, address, _) = build_cbor_attestation(
         &key,
         "monad-testnet",
-        1,
+        1_700_000_000_000,
         1_700_000_000_000,
         1000 * 60 * 60 * 24 * 365,
         Some("GhostUser"),
@@ -817,40 +895,196 @@ async fn test_max_integer_and_timestamp_boundaries() {
     let tempdir = tempdir::TempDir::new("cashweb-registry--boundaries").unwrap();
     let key = seckey(17);
 
-    // 1. Extreme valid boundaries: u64::MAX revision, large timestamp
-    let (cbor_bytes, address, _) = build_cbor_attestation(
+    let router = make_server(open_registry(tempdir.path(), Net::Regtest)).into_router();
+
+    // Revisions above i64::MAX are rejected even when the timestamp itself is representable.
+    let (too_large, address, _) = build_cbor_attestation(
         &key,
         "monad-testnet",
         u64::MAX,
-        1_000_000_000_000_000,
-        1000 * 60 * 60 * 24 * 365,
+        i64::MAX,
+        0,
         Some("MaxUser"),
         None,
         1,
     );
-
-    let registry = open_registry(tempdir.path(), Net::Regtest);
-    let server = make_server(registry);
-    let router = server.into_router();
-
-    let req = Request::builder()
-        .method("PUT")
-        .uri(format!("/metadata/{}", address.to_hex()))
-        .header(CONTENT_TYPE, CONTENT_TYPE_CBOR)
-        .header("Origin", "http://frank.local")
-        .body(Body::from(cbor_bytes.clone()))
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/metadata/{}", address.to_hex()))
+                .header(CONTENT_TYPE, CONTENT_TYPE_CBOR)
+                .body(Body::from(too_large))
+                .unwrap(),
+        )
+        .await
         .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
-    let resp = router.clone().oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
+    for (revision, timestamp) in [(0, -1), (1, 2)] {
+        let (invalid, _, _) =
+            build_cbor_attestation(&key, "monad-testnet", revision, timestamp, 0, None, None, 1);
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(format!("/metadata/{}", address.to_hex()))
+                    .header(CONTENT_TYPE, CONTENT_TYPE_CBOR)
+                    .body(Body::from(invalid))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
 
-    let req = Request::builder()
-        .method("GET")
-        .uri(format!("/metadata/{}", address.to_hex()))
-        .body(Body::empty())
+    let max = i64::MAX as u64;
+    let (valid, _, _) =
+        build_cbor_attestation(&key, "monad-testnet", max, i64::MAX, 0, None, None, 1);
+    let response = router
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/metadata/{}", address.to_hex()))
+                .header(CONTENT_TYPE, CONTENT_TYPE_CBOR)
+                .body(Body::from(valid))
+                .unwrap(),
+        )
+        .await
         .unwrap();
-    let resp = router.clone().oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = hyper::body::to_bytes(resp.into_body()).await.unwrap();
-    assert_eq!(body.to_vec(), cbor_bytes);
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn test_concurrent_lower_revision_cannot_overwrite_higher_revision() {
+    let tempdir = tempdir::TempDir::new("cashweb-registry--cbor-concurrency").unwrap();
+    let key = seckey(19);
+    let (lower, address, _) = build_cbor_attestation(
+        &key,
+        "monad-testnet",
+        100,
+        100,
+        1000,
+        Some("Lower"),
+        None,
+        1,
+    );
+    let (higher, _, _) = build_cbor_attestation(
+        &key,
+        "monad-testnet",
+        200,
+        200,
+        1000,
+        Some("Higher"),
+        None,
+        1,
+    );
+    let router = make_server(open_registry(tempdir.path(), Net::Regtest)).into_router();
+    let put = |body: Vec<u8>| {
+        Request::builder()
+            .method("PUT")
+            .uri(format!("/metadata/{}", address.to_hex()))
+            .header(CONTENT_TYPE, CONTENT_TYPE_CBOR)
+            .body(Body::from(body))
+            .unwrap()
+    };
+
+    let (lower_response, higher_response) = tokio::join!(
+        router.clone().oneshot(put(lower)),
+        router.clone().oneshot(put(higher.clone())),
+    );
+    assert!(matches!(
+        lower_response.unwrap().status(),
+        StatusCode::OK | StatusCode::BAD_REQUEST
+    ));
+    assert_eq!(higher_response.unwrap().status(), StatusCode::OK);
+
+    let response = router
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/metadata/{}", address.to_hex()))
+                .header("Accept", CONTENT_TYPE_CBOR)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = hyper::body::to_bytes(response.into_body()).await.unwrap();
+    assert_eq!(body.to_vec(), higher);
+}
+
+#[tokio::test]
+async fn test_concurrent_legacy_write_keeps_highest_timestamp_and_clean_indexes() {
+    let tempdir = tempdir::TempDir::new("cashweb-registry--legacy-concurrency").unwrap();
+    let key = seckey(20);
+    let (lower, address, _) = build_legacy_signed_payload(&key, 100, Some("Lower"));
+    let (higher, _, _) = build_legacy_signed_payload(&key, 200, Some("Higher"));
+    let router = make_server(open_registry(tempdir.path(), Net::Regtest)).into_router();
+    let put = |body: Vec<u8>| {
+        Request::builder()
+            .method("PUT")
+            .uri(format!("/metadata/{}", address.to_hex()))
+            .header(CONTENT_TYPE, "application/x-protobuf")
+            .body(Body::from(body))
+            .unwrap()
+    };
+
+    let (lower_response, higher_response) = tokio::join!(
+        router.clone().oneshot(put(lower)),
+        router.clone().oneshot(put(higher.clone())),
+    );
+    assert!(matches!(
+        lower_response.unwrap().status(),
+        StatusCode::OK | StatusCode::BAD_REQUEST
+    ));
+    assert_eq!(higher_response.unwrap().status(), StatusCode::OK);
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/metadata/{}", address.to_hex()))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = hyper::body::to_bytes(response.into_body()).await.unwrap();
+    assert_eq!(body.to_vec(), higher);
+
+    for (prefix, expected_len) in [("lower", 0), ("higher", 1)] {
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/metadata/monad/search?prefix={prefix}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = hyper::body::to_bytes(response.into_body()).await.unwrap();
+        let search = proto::ListMonadProfilesResponse::decode(body).unwrap();
+        assert_eq!(search.entries.len(), expected_len);
+    }
+
+    let response = router
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/metadata/monad?since=0")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = hyper::body::to_bytes(response.into_body()).await.unwrap();
+    let list = proto::ListMonadProfilesResponse::decode(body).unwrap();
+    assert_eq!(list.entries.len(), 1);
+    assert_eq!(list.entries[0].address, address.to_hex());
 }

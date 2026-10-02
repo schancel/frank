@@ -1006,32 +1006,19 @@ impl Registry {
         address: Address,
         signed_profile: cashweb_payload::proto::SignedPayload,
     ) -> Result<()> {
+        let _guard = self.db.lock_monad_profile();
         let verified = verify_monad_profile(&self.ecc, address, &signed_profile)?;
 
-        if let Some(existing_bytes) = self.db.monad_profiles().get_raw(&address)? {
-            if crate::store::monad_profiles::is_cbor_frame(&existing_bytes) {
-                if let Some(info) = self.db.monad_profiles().get_cbor_statement_info(&address)? {
-                    if info.timestamp_ms >= verified.profile.timestamp {
-                        return Err(MonadProfileTimestampNotMonotonicallyIncreasing {
-                            previous: info.timestamp_ms,
-                            next: verified.profile.timestamp,
-                        }
-                        .into());
-                    }
-                }
-            } else if let Ok(existing_signed) =
-                cashweb_payload::proto::SignedPayload::decode(existing_bytes.as_slice())
+        if let Some(existing_signed) = self.db.monad_profiles().get(&address)? {
+            if let Ok(existing_profile) =
+                proto::MonadProfile::decode(existing_signed.payload.as_slice())
             {
-                if let Ok(existing_profile) =
-                    proto::MonadProfile::decode(existing_signed.payload.as_slice())
-                {
-                    if existing_profile.timestamp >= verified.profile.timestamp {
-                        return Err(MonadProfileTimestampNotMonotonicallyIncreasing {
-                            previous: existing_profile.timestamp,
-                            next: verified.profile.timestamp,
-                        }
-                        .into());
+                if existing_profile.timestamp >= verified.profile.timestamp {
+                    return Err(MonadProfileTimestampNotMonotonicallyIncreasing {
+                        previous: existing_profile.timestamp,
+                        next: verified.profile.timestamp,
                     }
+                    .into());
                 }
             }
         }
@@ -1043,6 +1030,7 @@ impl Registry {
     /// Fully verify and write a Frank-CBOR type-2 account registration attestation (ticket #605).
     /// Enforces stage 10.6 signature verification and monotonic revision/timestamp invariants.
     pub fn put_monad_profile_cbor(&self, address: Address, frame_bytes: &[u8]) -> Result<()> {
+        let _guard = self.db.lock_monad_profile();
         let expected_net = self.expected_cbor_network();
         let prior_statement =
             if let Some(info) = self.db.monad_profiles().get_cbor_statement_info(&address)? {
@@ -1054,40 +1042,17 @@ impl Registry {
         let verified =
             verify_cbor_account_registration(address, expected_net, frame_bytes, prior_statement)?;
 
-        if let Some(existing_bytes) = self.db.monad_profiles().get_raw(&address)? {
-            if !crate::store::monad_profiles::is_cbor_frame(&existing_bytes) {
-                if let Ok(signed) =
-                    cashweb_payload::proto::SignedPayload::decode(existing_bytes.as_slice())
-                {
-                    if let Ok(existing_profile) =
-                        proto::MonadProfile::decode(signed.payload.as_slice())
-                    {
-                        if existing_profile.timestamp >= verified.timestamp_ms {
-                            return Err(MonadProfileTimestampNotMonotonicallyIncreasing {
-                                previous: existing_profile.timestamp,
-                                next: verified.timestamp_ms,
-                            }
-                            .into());
-                        }
-                    }
+        if let Some(info) = self.db.monad_profiles().get_cbor_statement_info(&address)? {
+            if info.revision >= verified.revision {
+                return Err(MonadProfileTimestampNotMonotonicallyIncreasing {
+                    previous: info.timestamp_ms,
+                    next: verified.timestamp_ms,
                 }
-            } else if let Some(info) = self.db.monad_profiles().get_cbor_statement_info(&address)? {
-                if info.timestamp_ms > verified.timestamp_ms {
-                    return Err(MonadProfileTimestampNotMonotonicallyIncreasing {
-                        previous: info.timestamp_ms,
-                        next: verified.timestamp_ms,
-                    }
-                    .into());
-                }
+                .into());
             }
         }
 
-        self.db.monad_profiles().put_cbor(
-            &address,
-            frame_bytes,
-            verified.timestamp_ms,
-            verified.display_name.as_deref(),
-        )?;
+        self.db.monad_profiles().put_cbor(&address, frame_bytes)?;
         Ok(())
     }
 
@@ -1100,13 +1065,13 @@ impl Registry {
         self.db.monad_profiles().get(&address)
     }
 
-    /// Read raw profile bytes (legacy protobuf or Frank-CBOR) as stored.
-    pub fn get_monad_profile_raw(&self, address: Address) -> Result<Option<Vec<u8>>> {
-        self.db.monad_profiles().get_raw(&address)
+    /// Read the exact opt-in candidate CBOR frame, without falling back to the legacy record.
+    pub fn get_monad_profile_cbor(&self, address: Address) -> Result<Option<Vec<u8>>> {
+        self.db.monad_profiles().get_cbor(&address)
     }
 
-    /// Read registered public key (33-byte compressed secp256k1) for address, whether
-    /// stored as protobuf or CBOR.
+    /// Read the registered public key from the legacy protobuf profile. Candidate CBOR records
+    /// stay opt-in and cannot authorize live mailbox behavior before ticket #133.
     pub fn get_monad_profile_pubkey(&self, address: Address) -> Result<Option<Vec<u8>>> {
         self.db.monad_profiles().get_pubkey(&address)
     }
@@ -1177,21 +1142,11 @@ impl Registry {
         Ok(registered & verified)
     }
 
-    #[cfg(test)]
     pub(crate) fn list_monad_profiles_since(
         &self,
         since: i64,
     ) -> Result<Vec<(Address, cashweb_payload::proto::SignedPayload)>> {
         self.db.monad_profiles().list_since(since)
-    }
-
-    /// List every `(address, raw_bytes)` registered with timestamp >= since, ordered by
-    /// timestamp ascending.
-    pub(crate) fn list_monad_profiles_since_raw(
-        &self,
-        since: i64,
-    ) -> Result<Vec<(Address, Vec<u8>)>> {
-        self.db.monad_profiles().list_since_raw(since)
     }
 
     #[allow(dead_code)]
@@ -1201,16 +1156,6 @@ impl Registry {
         limit: usize,
     ) -> Result<Vec<(Address, cashweb_payload::proto::SignedPayload)>> {
         self.db.monad_profiles().search_by_name(prefix, limit)
-    }
-
-    /// Prefix-search registered Monad profiles by their normalized `display_name` returning raw
-    /// bytes.
-    pub(crate) fn search_monad_profiles_by_name_raw(
-        &self,
-        prefix: &str,
-        limit: usize,
-    ) -> Result<Vec<(Address, Vec<u8>)>> {
-        self.db.monad_profiles().search_by_name_raw(prefix, limit)
     }
 
     /// List every [`proto::StoredMonadMessage`] stored with `timestamp >= since` (ticket #37),

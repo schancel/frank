@@ -9,8 +9,9 @@ use crate::{
         handle_put_monad_message,
     },
     http::monad_profile::{
-        fetch_profile_raw_or_not_found, handle_get_monad_profile, handle_list_monad_profiles,
-        handle_put_monad_profile, handle_search_monad_profiles,
+        fetch_profile_cbor_or_not_found, fetch_profile_or_not_found, handle_get_monad_profile,
+        handle_list_monad_profiles, handle_put_monad_profile, handle_search_monad_profiles,
+        parse_monad_profile_content_type, MonadProfileMediaType,
     },
     http::monad_topics::{
         handle_get_monad_topic_post, handle_list_monad_topic_posts, handle_list_topics,
@@ -419,31 +420,25 @@ async fn handle_put_registry(
     // branch: profile registration was never POP-gated to begin with, and this ticket's non-goals
     // explicitly exclude adding it.
     if let Ok(monad_address) = MonadAddress::from_str(&address) {
-        let is_cbor = header_map
-            .get(header::CONTENT_TYPE)
-            .and_then(|val| val.to_str().ok())
-            .map(|ct| ct.starts_with("application/cbor"))
-            .unwrap_or(false)
-            || crate::store::monad_profiles::is_cbor_frame(&body_bytes);
-
-        if is_cbor {
-            server
+        match parse_monad_profile_content_type(&header_map).map_err(PutRegistryError::from)? {
+            MonadProfileMediaType::Cbor => server
                 .registry
-                .put_monad_profile_cbor(monad_address, &body_bytes)?;
-        } else {
-            let signed_metadata = cashweb_payload::proto::SignedPayload::decode(
-                body_bytes.as_ref(),
-            )
-            .map_err(|err| {
-                PutRegistryError::from(Report::from(
-                    crate::monad_profile_verify::MonadProfileVerifyError::InvalidProfilePayload(
-                        err.to_string(),
-                    ),
-                ))
-            })?;
-            server
-                .registry
-                .put_monad_profile(monad_address, signed_metadata)?;
+                .put_monad_profile_cbor(monad_address, &body_bytes)?,
+            MonadProfileMediaType::Protobuf => {
+                let signed_metadata = cashweb_payload::proto::SignedPayload::decode(
+                    body_bytes.as_ref(),
+                )
+                .map_err(|err| {
+                    PutRegistryError::from(Report::from(
+                        crate::monad_profile_verify::MonadProfileVerifyError::InvalidProfilePayload(
+                            err.to_string(),
+                        ),
+                    ))
+                })?;
+                server
+                    .registry
+                    .put_monad_profile(monad_address, signed_metadata)?;
+            }
         }
         return Ok(PutRegistrySuccess {
             body: proto::PutSignedPayloadResponse { txid: vec![] },
@@ -521,15 +516,19 @@ async fn handle_put_registry(
 async fn handle_get_registry(
     Path(address): Path<String>,
     Extension(server): Extension<RegistryServer>,
+    header_map: HeaderMap,
 ) -> Result<Response, HttpRegistryError> {
     // Monad-native dispatch (ticket #45) -- see `handle_put_registry`'s identical branch, and
     // `crate::http::monad_profile`'s module docs, for why.
     if let Ok(monad_address) = MonadAddress::from_str(&address) {
-        let raw = fetch_profile_raw_or_not_found(&server.registry, monad_address)?;
-        let content_type = if crate::store::monad_profiles::is_cbor_frame(&raw) {
-            "application/cbor"
+        let (raw, content_type) = if header_map.get(header::ACCEPT).map(HeaderValue::as_bytes)
+            == Some(b"application/cbor")
+        {
+            let raw = fetch_profile_cbor_or_not_found(&server.registry, monad_address)?;
+            (raw, "application/cbor")
         } else {
-            "application/x-protobuf"
+            let signed = fetch_profile_or_not_found(&server.registry, monad_address)?;
+            (signed.encode_to_vec(), "application/x-protobuf")
         };
         let mut response = Response::builder()
             .status(StatusCode::OK)

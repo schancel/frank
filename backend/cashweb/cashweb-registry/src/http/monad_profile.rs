@@ -53,7 +53,7 @@ use axum::body::Body;
 use axum::{
     extract::{Path, Query},
     http::{
-        header::{HeaderMap, HeaderValue, CONTENT_TYPE},
+        header::{HeaderMap, HeaderValue, ACCEPT, CONTENT_TYPE},
         StatusCode,
     },
     response::{IntoResponse, Response},
@@ -87,6 +87,11 @@ pub enum MonadProfileRouteError {
     #[not_found()]
     #[error("Not found: no Monad profile registered for {0}")]
     ProfileNotFound(Address),
+
+    /// Registration writes must declare one of the two supported wire formats exactly.
+    #[invalid_client_input()]
+    #[error("Unsupported Content-Type; expected application/cbor or application/x-protobuf")]
+    UnsupportedContentType,
 }
 
 use self::MonadProfileRouteError::*;
@@ -95,6 +100,26 @@ use self::MonadProfileRouteError::*;
 /// [`MonadProfileRouteError::InvalidAddress`].
 fn parse_addr(addr: &str) -> Result<Address> {
     Ok(Address::from_str(addr).map_err(InvalidAddress)?)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MonadProfileMediaType {
+    Cbor,
+    Protobuf,
+}
+
+pub(crate) fn parse_monad_profile_content_type(
+    headers: &HeaderMap,
+) -> Result<MonadProfileMediaType> {
+    match headers.get(CONTENT_TYPE).map(HeaderValue::as_bytes) {
+        Some(b"application/cbor") => Ok(MonadProfileMediaType::Cbor),
+        Some(b"application/x-protobuf") => Ok(MonadProfileMediaType::Protobuf),
+        _ => Err(UnsupportedContentType.into()),
+    }
+}
+
+fn explicitly_accepts_cbor(headers: &HeaderMap) -> bool {
+    headers.get(ACCEPT).map(HeaderValue::as_bytes) == Some(b"application/cbor")
 }
 
 /// `PUT /metadata/monad/:addr`: verify and store a Monad-native profile registration (see this
@@ -110,19 +135,14 @@ pub async fn handle_put_monad_profile(
     body_bytes: axum::body::Bytes,
 ) -> std::result::Result<Protobuf<proto::PutSignedPayloadResponse>, HttpRegistryError> {
     let address = parse_addr(&address)?;
-    let is_cbor = headers
-        .get(CONTENT_TYPE)
-        .and_then(|val| val.to_str().ok())
-        .map(|ct| ct.starts_with("application/cbor"))
-        .unwrap_or(false)
-        || crate::store::monad_profiles::is_cbor_frame(&body_bytes);
-
-    if is_cbor {
-        server
+    match parse_monad_profile_content_type(&headers)? {
+        MonadProfileMediaType::Cbor => server
             .registry
-            .put_monad_profile_cbor(address, &body_bytes)?;
-    } else {
-        let signed_metadata = cashweb_payload::proto::SignedPayload::decode(body_bytes.as_ref())
+            .put_monad_profile_cbor(address, &body_bytes)?,
+        MonadProfileMediaType::Protobuf => {
+            let signed_metadata = cashweb_payload::proto::SignedPayload::decode(
+                body_bytes.as_ref(),
+            )
             .map_err(|err| {
                 HttpRegistryError(Report::from(
                     crate::monad_profile_verify::MonadProfileVerifyError::InvalidProfilePayload(
@@ -130,9 +150,10 @@ pub async fn handle_put_monad_profile(
                     ),
                 ))
             })?;
-        server
-            .registry
-            .put_monad_profile(address, signed_metadata)?;
+            server
+                .registry
+                .put_monad_profile(address, signed_metadata)?;
+        }
     }
     Ok(Protobuf(proto::PutSignedPayloadResponse { txid: vec![] }))
 }
@@ -142,13 +163,17 @@ pub async fn handle_put_monad_profile(
 pub async fn handle_get_monad_profile(
     Path(address): Path<String>,
     Extension(server): Extension<RegistryServer>,
+    headers: HeaderMap,
 ) -> std::result::Result<Response, HttpRegistryError> {
     let address = parse_addr(&address)?;
-    let raw = fetch_profile_raw_or_not_found(&server.registry, address)?;
-    let content_type = if crate::store::monad_profiles::is_cbor_frame(&raw) {
-        "application/cbor"
+    let (raw, content_type) = if explicitly_accepts_cbor(&headers) {
+        (
+            fetch_profile_cbor_or_not_found(&server.registry, address)?,
+            "application/cbor",
+        )
     } else {
-        "application/x-protobuf"
+        let signed = fetch_profile_or_not_found(&server.registry, address)?;
+        (signed.encode_to_vec(), "application/x-protobuf")
     };
     let mut response = Response::builder()
         .status(StatusCode::OK)
@@ -161,12 +186,21 @@ pub async fn handle_get_monad_profile(
 }
 
 /// Fetch raw registered profile bytes, or fail with [`MonadProfileRouteError::ProfileNotFound`].
-pub(crate) fn fetch_profile_raw_or_not_found(
+pub(crate) fn fetch_profile_or_not_found(
+    registry: &Registry,
+    address: Address,
+) -> Result<cashweb_payload::proto::SignedPayload> {
+    Ok(registry
+        .get_monad_profile(address)?
+        .ok_or(ProfileNotFound(address))?)
+}
+
+pub(crate) fn fetch_profile_cbor_or_not_found(
     registry: &Registry,
     address: Address,
 ) -> Result<Vec<u8>> {
     Ok(registry
-        .get_monad_profile_raw(address)?
+        .get_monad_profile_cbor(address)?
         .ok_or(ProfileNotFound(address))?)
 }
 
@@ -181,6 +215,8 @@ pub struct ListMonadProfilesQuery {
 /// Error type for [`handle_list_monad_profiles`].
 #[derive(Debug)]
 pub enum ListMonadProfilesError {
+    /// There is no list/search response schema for CBOR candidate records yet.
+    CborResponseSchemaUnavailable,
     /// A storage-level error.
     Infrastructure(Report),
 }
@@ -188,6 +224,9 @@ pub enum ListMonadProfilesError {
 impl IntoResponse for ListMonadProfilesError {
     fn into_response(self) -> Response {
         match self {
+            ListMonadProfilesError::CborResponseSchemaUnavailable => {
+                StatusCode::NOT_ACCEPTABLE.into_response()
+            }
             ListMonadProfilesError::Infrastructure(err) => {
                 tracing::event!(Level::ERROR, error = %err, "infrastructure failure listing Monad profiles");
                 StatusCode::INTERNAL_SERVER_ERROR.into_response()
@@ -202,16 +241,20 @@ impl IntoResponse for ListMonadProfilesError {
 pub async fn handle_list_monad_profiles(
     Query(params): Query<ListMonadProfilesQuery>,
     Extension(server): Extension<RegistryServer>,
+    headers: HeaderMap,
 ) -> std::result::Result<Protobuf<proto::ListMonadProfilesResponse>, ListMonadProfilesError> {
+    if explicitly_accepts_cbor(&headers) {
+        return Err(ListMonadProfilesError::CborResponseSchemaUnavailable);
+    }
     let since = params.since.unwrap_or(0);
     let entries = server
         .registry
-        .list_monad_profiles_since_raw(since)
+        .list_monad_profiles_since(since)
         .map_err(ListMonadProfilesError::Infrastructure)?
         .into_iter()
-        .map(|(address, raw_bytes)| proto::ListMonadProfilesEntry {
+        .map(|(address, signed_payload)| proto::ListMonadProfilesEntry {
             address: address.to_hex(),
-            signed_payload: raw_bytes,
+            signed_payload: Some(signed_payload),
         })
         .collect();
     Ok(Protobuf(proto::ListMonadProfilesResponse { entries }))
@@ -241,17 +284,21 @@ pub struct SearchMonadProfilesQuery {
 pub async fn handle_search_monad_profiles(
     Query(params): Query<SearchMonadProfilesQuery>,
     Extension(server): Extension<RegistryServer>,
+    headers: HeaderMap,
 ) -> std::result::Result<Protobuf<proto::ListMonadProfilesResponse>, ListMonadProfilesError> {
+    if explicitly_accepts_cbor(&headers) {
+        return Err(ListMonadProfilesError::CborResponseSchemaUnavailable);
+    }
     let prefix = params.prefix.unwrap_or_default();
     let limit = params.limit.unwrap_or(DEFAULT_SEARCH_LIMIT);
     let entries = server
         .registry
-        .search_monad_profiles_by_name_raw(&prefix, limit)
+        .search_monad_profiles_by_name(&prefix, limit)
         .map_err(ListMonadProfilesError::Infrastructure)?
         .into_iter()
-        .map(|(address, raw_bytes)| proto::ListMonadProfilesEntry {
+        .map(|(address, signed_payload)| proto::ListMonadProfilesEntry {
             address: address.to_hex(),
-            signed_payload: raw_bytes,
+            signed_payload: Some(signed_payload),
         })
         .collect();
     Ok(Protobuf(proto::ListMonadProfilesResponse { entries }))
@@ -396,15 +443,13 @@ mod tests {
             prefix: Some("ali".to_string()),
             limit: None,
         };
-        let Protobuf(response) = handle_search_monad_profiles(Query(query), Extension(server))
-            .await
-            .unwrap();
+        let Protobuf(response) =
+            handle_search_monad_profiles(Query(query), Extension(server), HeaderMap::new())
+                .await
+                .unwrap();
         assert_eq!(response.entries.len(), 1);
         assert_eq!(response.entries[0].address, alice_address.to_hex());
-        assert_eq!(
-            response.entries[0].signed_payload,
-            alice_signed.encode_to_vec()
-        );
+        assert_eq!(response.entries[0].signed_payload, Some(alice_signed));
     }
 
     #[tokio::test]
@@ -418,9 +463,10 @@ mod tests {
             prefix: Some("zzz".to_string()),
             limit: None,
         };
-        let Protobuf(response) = handle_search_monad_profiles(Query(query), Extension(server))
-            .await
-            .unwrap();
+        let Protobuf(response) =
+            handle_search_monad_profiles(Query(query), Extension(server), HeaderMap::new())
+                .await
+                .unwrap();
         assert_eq!(response.entries, vec![]);
     }
 
@@ -439,9 +485,10 @@ mod tests {
             prefix: Some("name".to_string()),
             limit: Some(3),
         };
-        let Protobuf(response) = handle_search_monad_profiles(Query(query), Extension(server))
-            .await
-            .unwrap();
+        let Protobuf(response) =
+            handle_search_monad_profiles(Query(query), Extension(server), HeaderMap::new())
+                .await
+                .unwrap();
         assert_eq!(response.entries.len(), 3);
     }
 
@@ -473,6 +520,6 @@ mod tests {
         let body = proto::ListMonadProfilesResponse::decode(body_bytes).unwrap();
         assert_eq!(body.entries.len(), 1);
         assert_eq!(body.entries[0].address, address.to_hex());
-        assert_eq!(body.entries[0].signed_payload, signed.encode_to_vec());
+        assert_eq!(body.entries[0].signed_payload, Some(signed));
     }
 }

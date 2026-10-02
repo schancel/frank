@@ -28,11 +28,9 @@ message MonadProfile {
 message ListMonadProfilesEntry {
     // 0x-prefixed, EIP-55-checksummed 20-byte Monad address this profile is registered under.
     string address = 1;
-    // The exact signed envelope as stored/returned by GET /metadata/monad/:addr --
-    // exact bytes for either legacy protobuf SignedPayload or canonical Frank-CBOR frame.
-    // Length-delimited wire encoding is identical to embedded messages, matching TypeScript
-    // metadata.proto's `bytes signed_payload = 2;` definition.
-    bytes signed_payload = 2;
+    // The exact SignedPayload envelope as stored/returned by GET /metadata/monad/:addr -- not
+    // re-wrapped, so a caller can verify it exactly as it would a single-address fetch.
+    cashweb.payload.SignedPayload signed_payload = 2;
 }
 
 // Response for GET /metadata/monad?since=<timestamp> (ticket #75): every Monad profile

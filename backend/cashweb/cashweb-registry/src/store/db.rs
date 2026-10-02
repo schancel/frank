@@ -83,6 +83,10 @@ pub(crate) const CF_MONAD_TOPIC_DISCOVERY: &str = "monad_topic_discovery";
 /// raw 20-byte Monad address -- see `crate::store::monad_profiles`'s module docs for why this is
 /// separate from `CF_METADATA` (which is keyed by a Lotus-only `PubKeyHash`).
 pub(crate) const CF_MONAD_PROFILES: &str = "monad_profiles";
+/// Opt-in deterministic-CBOR account registrations. This versioned candidate store is deliberately
+/// separate from [`CF_MONAD_PROFILES`]: a CBOR write must never replace bytes that an older binary
+/// still expects to decode as a protobuf `SignedPayload`. Ticket #133 owns any eventual cutover.
+pub(crate) const CF_MONAD_PROFILE_CBOR_V1: &str = "monad_profile_cbor_v1";
 /// Ticket #75: secondary index over `CF_MONAD_PROFILES`, keyed by `timestamp.to_be_bytes() ++
 /// address` (value: the raw address, so a range scan doesn't need a second lookup to know which
 /// `CF_MONAD_PROFILES` entry to fetch) -- mirrors `CF_MONAD_MESSAGES_BY_TIME` exactly. Lets
@@ -106,6 +110,10 @@ pub(crate) type CF = rocksdb::ColumnFamily;
 /// Owns the underlying rocksdb::DB instance.
 pub struct Db {
     db: rocksdb::DB,
+    /// Serializes each profile read/validate/write sequence. The RocksDB batch makes the write
+    /// atomic, while this guard prevents two concurrent requests from both validating against the
+    /// same predecessor and committing out of revision order.
+    monad_profile_lock: Mutex<()>,
     /// Serializes read-check-batch outbox mutations inside this process. RocksDB batches are
     /// atomic, but the active-claim bound also needs its preceding count to be serialized.
     monad_outbox_lock: Mutex<()>,
@@ -202,6 +210,7 @@ impl Db {
         let db = rocksdb::DB::open_cf_descriptors(&db_options, path, cfs).wrap_err(RocksDb)?;
         Ok(Db {
             db,
+            monad_profile_lock: Mutex::new(()),
             monad_outbox_lock: Mutex::new(()),
         })
     }
@@ -242,6 +251,12 @@ impl Db {
 
     pub(crate) fn lock_monad_outbox(&self) -> std::sync::MutexGuard<'_, ()> {
         self.monad_outbox_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    pub(crate) fn lock_monad_profile(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.monad_profile_lock
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }

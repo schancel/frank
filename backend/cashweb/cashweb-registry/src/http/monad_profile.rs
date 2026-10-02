@@ -158,8 +158,9 @@ pub async fn handle_put_monad_profile(
     Ok(Protobuf(proto::PutSignedPayloadResponse { txid: vec![] }))
 }
 
-/// `GET /metadata/monad/:addr`: fetch a previously-registered Monad profile's exact stored bytes.
-/// Returns Content-Type application/cbor for CBOR registrations, or application/x-protobuf for legacy.
+/// `GET /metadata/monad/:addr`: fetch a previously registered Monad profile. Exact
+/// `Accept: application/cbor` opts into the isolated CBOR candidate; every other request remains
+/// on the legacy protobuf representation.
 pub async fn handle_get_monad_profile(
     Path(address): Path<String>,
     Extension(server): Extension<RegistryServer>,

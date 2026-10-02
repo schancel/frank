@@ -621,6 +621,54 @@ export type DecodedProfileBytes =
       signedPayload: InstanceType<typeof SignedPayload>
     })
 
+function decodeLegacyProfileBytes(
+  raw: Uint8Array,
+): Extract<DecodedProfileBytes, { format: 'protobuf' }> {
+  if (isCborFrame(raw)) {
+    throw new Error('CBOR profile reads remain opt-in until ticket #133')
+  }
+
+  const signedPayload = SignedPayload.deserializeBinary(raw)
+  const metadata = AddressMetadata.deserializeBinary(
+    signedPayload.getPayload_asU8(),
+  )
+  let name: string | undefined
+  let bio: string | undefined
+  let bot: boolean | undefined
+  let avatar: string | undefined
+
+  for (const entry of metadata.getEntriesList()) {
+    const kind = entry.getKind()
+    if (kind === 'display_name') {
+      name = new TextDecoder().decode(entry.getBody_asU8())
+    } else if (kind === 'bio') {
+      bio = new TextDecoder().decode(entry.getBody_asU8())
+    } else if (kind === MONAD_PROFILE_BOT_KIND) {
+      bot = new TextDecoder().decode(entry.getBody_asU8()) === '1'
+    } else if (kind === 'avatar') {
+      const contentType =
+        entry
+          .getHeadersList()
+          .find(header => header.getName() === 'content-type')
+          ?.getValue() ?? 'image/png'
+      avatar = `data:${contentType};base64,${Buffer.from(
+        entry.getBody_asU8(),
+      ).toString('base64')}`
+    }
+  }
+
+  return {
+    format: 'protobuf',
+    pubKey: signedPayload.getPublicKey_asU8(),
+    timestampMs: metadata.getTimestamp(),
+    name,
+    bio,
+    bot,
+    avatar,
+    signedPayload,
+  }
+}
+
 /** Decodes a registration without pretending a CBOR signature authenticates protobuf bytes. */
 export function decodeProfileBytes(raw: Uint8Array): DecodedProfileBytes {
   if (isCborFrame(raw)) {
@@ -673,45 +721,7 @@ export function decodeProfileBytes(raw: Uint8Array): DecodedProfileBytes {
     }
   }
 
-  const signedPayload = SignedPayload.deserializeBinary(raw)
-  const metadata = AddressMetadata.deserializeBinary(
-    signedPayload.getPayload_asU8(),
-  )
-  let name: string | undefined
-  let bio: string | undefined
-  let bot: boolean | undefined
-  let avatar: string | undefined
-
-  for (const entry of metadata.getEntriesList()) {
-    const kind = entry.getKind()
-    if (kind === 'display_name') {
-      name = new TextDecoder().decode(entry.getBody_asU8())
-    } else if (kind === 'bio') {
-      bio = new TextDecoder().decode(entry.getBody_asU8())
-    } else if (kind === MONAD_PROFILE_BOT_KIND) {
-      bot = new TextDecoder().decode(entry.getBody_asU8()) === '1'
-    } else if (kind === 'avatar') {
-      const contentType =
-        entry
-          .getHeadersList()
-          .find(header => header.getName() === 'content-type')
-          ?.getValue() ?? 'image/png'
-      avatar = `data:${contentType};base64,${Buffer.from(
-        entry.getBody_asU8(),
-      ).toString('base64')}`
-    }
-  }
-
-  return {
-    format: 'protobuf',
-    pubKey: signedPayload.getPublicKey_asU8(),
-    timestampMs: metadata.getTimestamp(),
-    name,
-    bio,
-    bot,
-    avatar,
-    signedPayload,
-  }
+  return decodeLegacyProfileBytes(raw)
 }
 
 /** `GET /metadata/:addr`: fetches the live legacy-protobuf identity pubkey. The CBOR candidate
@@ -729,8 +739,7 @@ export async function fetchMonadIdentityPubKey(params: {
       responseType: 'arraybuffer',
       headers: { Accept: 'application/x-protobuf' },
     })
-    const raw = new Uint8Array(response.data)
-    const decoded = decodeProfileBytes(raw)
+    const decoded = decodeLegacyProfileBytes(new Uint8Array(response.data))
     return Buffer.from(decoded.pubKey)
   } catch (err) {
     if (axios.isAxiosError(err) && err.response?.status === 404) {
@@ -755,8 +764,7 @@ export async function fetchMonadProfile(params: {
       responseType: 'arraybuffer',
       headers: { Accept: 'application/x-protobuf' },
     })
-    const raw = new Uint8Array(response.data)
-    const decoded = decodeProfileBytes(raw)
+    const decoded = decodeLegacyProfileBytes(new Uint8Array(response.data))
     const result: ProfileInfo = {
       address: params.address,
       pubKey: decoded.pubKey,

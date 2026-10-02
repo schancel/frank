@@ -339,6 +339,31 @@ describe('fetchMonadIdentityPubKey / fetchMonadProfile', () => {
     expect(pubKey).toBeUndefined()
   })
 
+  it('rejects CBOR from live profile reads until the #133 cutover', async () => {
+    const identity = MonadIdentity.fromSeed(SEED)
+    const cborFrame = buildSignedDirectoryStatement(identity, {
+      network: 'monad-testnet',
+      profile: { name: 'Opt-in only' },
+      relays: [relayBinding()],
+    })
+    mockedAxios
+      .mockResolvedValueOnce({ status: 200, data: cborFrame })
+      .mockResolvedValueOnce({ status: 200, data: cborFrame })
+
+    await expect(
+      fetchMonadIdentityPubKey({
+        relayBaseUrl: RELAY_BASE_URL,
+        address: identity.address.raw,
+      }),
+    ).rejects.toThrow(/CBOR profile reads remain opt-in/)
+    await expect(
+      fetchMonadProfile({
+        relayBaseUrl: RELAY_BASE_URL,
+        address: identity.address,
+      }),
+    ).rejects.toThrow(/CBOR profile reads remain opt-in/)
+  })
+
   it('fetchMonadProfile wraps the pubkey with the requested ChainAddress', async () => {
     const identity = MonadIdentity.fromSeed(SEED)
     const signedPayload = new SignedPayload()

@@ -14,7 +14,8 @@ pass those objects. They do not drop down to raw scalars for ordinary work.
 It does not read or write CashWeb CBOR. `@frank/codec` and `frank-cbor`
 marshal a frame and pass the digest bytes into a nakamoto sign or hash call.
 The key that signs is still a nakamoto key object. Encryption suites are
-`@frank/crypto-box`. That package seals byte arrays and does not parse CBOR.
+`@frank/crypto-box`. That package seals byte arrays. Crypto-box does not parse
+Frank/CashWeb CBOR; it privately parses only its fixed-schema envelope CBOR.
 
 XPI address strings are pinned to the Lotus encoding (`lotus_` on mainnet,
 `lotusR` on regtest). `encodeAddress` and `decodeAddress` emit and parse those

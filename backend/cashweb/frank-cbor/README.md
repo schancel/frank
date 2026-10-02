@@ -27,8 +27,9 @@ opaque proof-vector ciphertext and must not be emitted by a production writer.
 not version-1 encryption-suite allocations (decision 356). A crypto-box envelope
 is not a frame. This crate marshals and unmarshals frames. A digest or
 ciphertext is a byte array passed into nakamoto or crypto-box. Nakamoto still
-owns the HD nodes, keys, and transactions that do the signing. Neither library
-parses CBOR.
+owns the HD nodes, keys, and transactions that do the signing. Nakamoto does
+not parse CBOR. Crypto-box does not parse Frank/CashWeb CBOR; it privately
+parses only its fixed-schema envelope CBOR.
 
 ## Tests
 

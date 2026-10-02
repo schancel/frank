@@ -6,11 +6,17 @@ import { expand, extract } from '@noble/hashes/hkdf.js'
 import { sha256 } from '@noble/hashes/sha256.js'
 
 import { ascii, concatBytes, i2osp } from './bytes.js'
-import { KDF_HKDF_SHA256, KEM_SECP256K1 } from './ids.js'
+import {
+  ENVELOPE_VERSION,
+  KDF_HKDF_SHA256,
+  KEM_SECP256K1,
+  LEGACY_ENVELOPE_VERSION,
+} from './ids.js'
 
 const HPKE_V1 = ascii('HPKE-v1')
 const KEM_SUITE = concatBytes([ascii('KEM'), i2osp(KEM_SECP256K1, 2)])
 const INFO_LABEL = ascii('frank-crypto-box/v1')
+const ENVELOPE_AAD_DOMAIN = ascii('frank-crypto-box/envelope')
 
 function defaultSalt(salt: Uint8Array): Uint8Array {
   return salt.length === 0 ? new Uint8Array(sha256.outputLen) : salt
@@ -118,12 +124,26 @@ export function messageKeys(input: {
 }
 
 export function associatedData(
+  envelopeVersion: number,
   suiteId: number,
   sender: Uint8Array,
   recipient: Uint8Array,
   context: Uint8Array,
 ): Uint8Array {
+  let prefix: readonly Uint8Array[]
+  if (envelopeVersion === LEGACY_ENVELOPE_VERSION) {
+    prefix = []
+  } else if (envelopeVersion === ENVELOPE_VERSION) {
+    prefix = [
+      i2osp(ENVELOPE_AAD_DOMAIN.length, 2),
+      ENVELOPE_AAD_DOMAIN,
+      i2osp(envelopeVersion, 2),
+    ]
+  } else {
+    throw new Error('unsupported envelope version')
+  }
   return concatBytes([
+    ...prefix,
     i2osp(suiteId, 2),
     i2osp(sender.length, 2),
     sender,

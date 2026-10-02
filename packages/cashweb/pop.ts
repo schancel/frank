@@ -1,6 +1,5 @@
 import assert from 'assert'
 import axios, { Method } from 'axios'
-import { Transaction } from 'bitcore-lib-xpi'
 
 // Ticket #51 (Vite migration): generated `*_pb.js` files (google-protobuf codegen, e.g.
 // `goog.object.extend(exports, proto.bip70)`) are genuinely CommonJS despite living in
@@ -13,6 +12,17 @@ import { Transaction } from 'bitcore-lib-xpi'
 import paymentrequest from './bip70/paymentrequest_pb'
 import type { Payment, PaymentDetails } from './bip70/paymentrequest_pb'
 import { Wallet } from './legacy-wallet'
+
+/** BIP70 output passed to constructTransaction (decision #594). */
+export function paymentOutput(
+  script: Uint8Array,
+  satoshis: number,
+): { script: Buffer; satoshis: number } {
+  return {
+    script: Buffer.from(script),
+    satoshis,
+  }
+}
 
 export default {
   async getPaymentRequest(url: string, method: Method, data?: Uint8Array) {
@@ -67,15 +77,9 @@ export default {
   ) {
     // Get Outputs
     const requestOutputs = paymentDetails.getOutputsList()
-    const outputs = requestOutputs.map(reqOutput => {
-      const script = Buffer.from(reqOutput.getScript())
-      const satoshis = reqOutput.getAmount()
-      const output = new Transaction.Output({
-        script,
-        satoshis,
-      })
-      return output
-    })
+    const outputs = requestOutputs.map(reqOutput =>
+      paymentOutput(reqOutput.getScript(), reqOutput.getAmount()),
+    )
 
     // Construct tx
     const { transaction, usedUtxos } = await wallet.constructTransaction({

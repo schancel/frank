@@ -6,6 +6,7 @@ import {
 import {
   adaptorPointFromBytes,
   adaptorSecretFromBytes,
+  adaptorSecretProofFromBytes,
   adaptorSign,
   adaptorSignatureFromBytes,
   completeAdaptorSignature,
@@ -19,6 +20,12 @@ function bytes(value: number): Uint8Array {
   const out = new Uint8Array(32)
   out[31] = value
   return out
+}
+
+function fromHex(hex: string): Uint8Array {
+  return Uint8Array.from({ length: hex.length / 2 }, (_, index) =>
+    Number.parseInt(hex.slice(index * 2, index * 2 + 2), 16),
+  )
 }
 
 describe('safe byte-oriented API', () => {
@@ -58,6 +65,10 @@ describe('safe byte-oriented API', () => {
     ).toEqual({ ok: true, value: true })
 
     const completed = completeAdaptorSignature({
+      publicKey: publicKey.value.compressed,
+      adaptorPoint: generated.value.point,
+      adaptorProof: generated.value.proof,
+      digest,
       signature: signed.value,
       secret: generated.value.secret,
     })
@@ -109,32 +120,113 @@ describe('safe byte-oriented API', () => {
     ).toEqual({ ok: false, error: { code: 'invalid-proof' } })
   })
 
-  it('keeps completion arithmetic-only for a wrong but valid secret', () => {
+  it('rejects completion with a wrong but structurally valid secret', () => {
     const signer = privateKeyFromSecretBytes(bytes(7), true)
     const material = generateAdaptorSecret(() => bytes(9))
     const wrong = adaptorSecretFromBytes(bytes(10))
     expect(signer.ok && material.ok && wrong.ok).toBe(true)
     if (!signer.ok || !material.ok || !wrong.ok) return
+    const publicKey = publicFromPrivate(signer.value)
+    if (!publicKey.ok) return
+    const digest = bytes(11)
     const signed = adaptorSign({
       privateKey: signer.value.bytes,
       adaptorPoint: material.value.point,
       adaptorProof: material.value.proof,
-      digest: bytes(11),
+      digest,
     })
     if (!signed.ok) return
     const completed = completeAdaptorSignature({
+      publicKey: publicKey.value.compressed,
+      adaptorPoint: material.value.point,
+      adaptorProof: material.value.proof,
+      digest,
       signature: signed.value,
       secret: wrong.value,
     })
-    expect(completed.ok).toBe(true)
-    if (!completed.ok) return
+    expect(completed).toEqual({
+      ok: false,
+      error: { code: 'secret-point-mismatch' },
+    })
+  })
+
+  it('rejects a structurally parseable forged adaptor signature at completion', () => {
+    const signer = privateKeyFromSecretBytes(bytes(7), true)
+    const material = generateAdaptorSecret(() => bytes(9))
+    expect(signer.ok && material.ok).toBe(true)
+    if (!signer.ok || !material.ok) return
+    const publicKey = publicFromPrivate(signer.value)
+    if (!publicKey.ok) return
+    const forgedBytes = new Uint8Array(162)
+    forgedBytes.set(material.value.point, 0)
+    forgedBytes.set(material.value.point, 33)
+    forgedBytes.set(bytes(1), 66)
+    const forged = adaptorSignatureFromBytes(forgedBytes)
+    expect(forged.ok).toBe(true)
+    if (!forged.ok) return
     expect(
-      extractAdaptorSecret({
+      completeAdaptorSignature({
+        publicKey: publicKey.value.compressed,
         adaptorPoint: material.value.point,
-        signature: signed.value,
-        completedSignature: completed.value,
+        adaptorProof: material.value.proof,
+        digest: bytes(11),
+        signature: forged.value,
+        secret: material.value.secret,
       }),
-    ).toEqual({ ok: false, error: { code: 'mismatched-signature' } })
+    ).toEqual({ ok: false, error: { code: 'invalid-signature' } })
+  })
+
+  it('accepts valid Buffer inputs and contains malformed subclasses', () => {
+    const signer = privateKeyFromSecretBytes(bytes(7), true)
+    const material = generateAdaptorSecret(() => bytes(9))
+    expect(signer.ok && material.ok).toBe(true)
+    if (!signer.ok || !material.ok) return
+    const valid = adaptorSign({
+      privateKey: Buffer.from(signer.value.bytes),
+      adaptorPoint: Buffer.from(
+        material.value.point,
+      ) as typeof material.value.point,
+      adaptorProof: Buffer.from(
+        material.value.proof,
+      ) as typeof material.value.proof,
+      digest: Buffer.from(bytes(11)),
+    })
+    expect(valid.ok).toBe(true)
+    expect(() =>
+      adaptorSign({
+        privateKey: Buffer.alloc(31),
+        adaptorPoint: material.value.point,
+        adaptorProof: material.value.proof,
+        digest: Buffer.from(bytes(11)),
+      }),
+    ).not.toThrow()
+    expect(
+      adaptorSign({
+        privateKey: Buffer.alloc(31),
+        adaptorPoint: material.value.point,
+        adaptorProof: material.value.proof,
+        digest: Buffer.from(bytes(11)),
+      }),
+    ).toEqual({ ok: false, error: { code: 'bad-length' } })
+  })
+
+  it('verifies the frozen Frank PoK v1 wire/transcript vector', () => {
+    const point = adaptorPointFromBytes(
+      fromHex(
+        '03acd484e2f0c7f65309ad178a9f559abde09796974c57e714c35f110dfc27ccbe',
+      ),
+    )
+    const proof = adaptorSecretProofFromBytes(
+      fromHex(
+        '038094126a4a9cf7e9945a7b152a55a5ee90a61013df9dfface9f935e6d8ec88ee3b5b7372c6bf2ef36cde2e8ea8cfdfa8a3100b548c3cff5f57fe12c891d2652b',
+      ),
+    )
+    expect(point.ok && proof.ok).toBe(true)
+    if (!point.ok || !proof.ok) return
+    expect(verifyAdaptorSecret(point.value, proof.value)).toEqual({
+      ok: true,
+      value: true,
+    })
   })
 
   it('rejects malformed and noncanonical inputs without throwing', () => {

@@ -14,6 +14,10 @@ reject malformed checksums, unsupported lengths, duplicate shares,
 inconsistent metadata, and any recovery set that is not exactly the threshold
 size. BIP-93's residual 0-4 payload bits are discarded whether zero or nonzero.
 
+The checksum detects transcription errors; it does not authenticate shares
+against an adversary. Applications need an authenticated transcript or another
+trusted mechanism for binding shares to the intended recovery set.
+
 This implementation has not received an external cryptographic audit. Do not
 use it as the sole backup mechanism for real funds until it has independent
 review and the remaining official long-checksum vectors are incorporated.

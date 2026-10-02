@@ -138,6 +138,11 @@ pub enum DbMonadProfilesError {
     #[error("Cannot index profile by time: payload doesn't decode as MonadProfile: {0}")]
     CannotDecodeMonadProfile(String),
 
+    /// The candidate CF contains bytes that are not a supported type-2/type-4 registration.
+    #[critical()]
+    #[error("Inconsistent db: invalid stored CBOR registration: {0}")]
+    InvalidStoredCborRegistration(String),
+
     /// Database contains an invalid by-time index entry (not a 20-byte Monad address).
     #[critical()]
     #[error("Inconsistent db: by-time index value isn't a 20-byte address: {0}")]
@@ -261,32 +266,49 @@ impl<'a> DbMonadProfiles<'a> {
             opaque_retention_allowed: false,
             prior: frank_cbor::PriorStatement::None,
         };
-        if let Ok(frank_cbor::ValidationResult::Parsed(parsed)) =
-            frank_cbor::validate_frame(&raw, &ctx)
-        {
-            if let Some(frank_cbor::TypedPayload::DirectoryAttestation { statement, .. }) =
-                parsed.typed.as_deref()
-            {
-                if let Some(frank_cbor::TypedPayload::DirectoryStatement {
-                    revision,
-                    timestamp,
-                    ..
-                }) = statement.typed.as_deref()
-                {
-                    let timestamp_ms =
-                        frank_cbor::join_ms(timestamp.seconds, timestamp.nanoseconds)
-                            .ok()
-                            .and_then(|ms| ms.try_into().ok())
-                            .unwrap_or(0);
-                    return Ok(Some(CborStatementInfo {
-                        revision: *revision,
-                        timestamp_ms,
-                        type_4_frame: statement.frame.clone(),
-                    }));
-                }
+        let parsed = match frank_cbor::validate_frame(&raw, &ctx) {
+            Ok(frank_cbor::ValidationResult::Parsed(parsed)) => parsed,
+            Ok(other) => {
+                return Err(InvalidStoredCborRegistration(format!(
+                    "unexpected validation result: {other:?}"
+                ))
+                .into())
             }
-        }
-        Ok(None)
+            Err(err) => return Err(InvalidStoredCborRegistration(err.to_string()).into()),
+        };
+        let statement = match parsed.typed.as_deref() {
+            Some(frank_cbor::TypedPayload::DirectoryAttestation { statement, .. }) => statement,
+            _ => {
+                return Err(InvalidStoredCborRegistration(
+                    "root is not a typed DirectoryAttestation".to_string(),
+                )
+                .into())
+            }
+        };
+        let (revision, timestamp) = match statement.typed.as_deref() {
+            Some(frank_cbor::TypedPayload::DirectoryStatement {
+                revision,
+                timestamp,
+                ..
+            }) => (*revision, timestamp),
+            _ => {
+                return Err(InvalidStoredCborRegistration(
+                    "attestation payload is not a typed DirectoryStatement".to_string(),
+                )
+                .into())
+            }
+        };
+        let timestamp_ms = frank_cbor::join_ms(timestamp.seconds, timestamp.nanoseconds)
+            .map_err(|err| InvalidStoredCborRegistration(err.to_string()))?
+            .try_into()
+            .map_err(|_| {
+                InvalidStoredCborRegistration("timestamp is outside i64 milliseconds".to_string())
+            })?;
+        Ok(Some(CborStatementInfo {
+            revision,
+            timestamp_ms,
+            type_4_frame: statement.frame.clone(),
+        }))
     }
 
     /// List the legacy protobuf registrations only.
@@ -393,7 +415,7 @@ mod tests {
 
     use crate::{monad_http::Address, proto, store::db::Db};
 
-    use super::{normalized_display_name, MAX_SEARCH_RESULTS};
+    use super::{normalized_display_name, DbMonadProfilesError, MAX_SEARCH_RESULTS};
 
     /// `timestamp` is a real field now (ticket #75's by-time index decodes it), not just a seed
     /// for varying the `sig` bytes -- callers pick it explicitly so tests can assert ordering.
@@ -709,6 +731,28 @@ mod tests {
         let results = store.search_by_name("shared", total * 2)?;
         assert_eq!(results.len(), MAX_SEARCH_RESULTS);
 
+        Ok(())
+    }
+
+    #[test]
+    fn malformed_present_cbor_is_storage_inconsistency_and_is_not_rewritten() -> Result<()> {
+        let _ = bitcoinsuite_error::install();
+        let tempdir = tempdir::TempDir::new("cashweb-registry-store--malformed-profile-cbor")?;
+        let db = Db::open(tempdir.path().join("db.rocksdb"))?;
+        let store = db.monad_profiles();
+        let address = Address([0x55; 20]);
+        let malformed = b"present-but-not-a-frame".to_vec();
+        store.put_cbor(&address, &malformed)?;
+
+        let err = store
+            .get_cbor_statement_info(&address)
+            .unwrap_err()
+            .downcast::<DbMonadProfilesError>()?;
+        assert!(matches!(
+            err,
+            DbMonadProfilesError::InvalidStoredCborRegistration(_)
+        ));
+        assert_eq!(store.get_cbor(&address)?, Some(malformed));
         Ok(())
     }
 }

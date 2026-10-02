@@ -92,6 +92,11 @@ pub enum MonadProfileRouteError {
     #[invalid_client_input()]
     #[error("Unsupported Content-Type; expected application/cbor or application/x-protobuf")]
     UnsupportedContentType,
+
+    /// Legacy Lotus metadata accepts protobuf only and still requires an exact declaration.
+    #[invalid_client_input()]
+    #[error("Unsupported Content-Type; expected application/x-protobuf")]
+    UnsupportedProtobufContentType,
 }
 
 use self::MonadProfileRouteError::*;
@@ -118,6 +123,14 @@ pub(crate) fn parse_monad_profile_content_type(
     }
 }
 
+pub(crate) fn require_protobuf_content_type(headers: &HeaderMap) -> Result<()> {
+    if headers.get(CONTENT_TYPE).map(HeaderValue::as_bytes) == Some(b"application/x-protobuf") {
+        Ok(())
+    } else {
+        Err(UnsupportedProtobufContentType.into())
+    }
+}
+
 fn explicitly_accepts_cbor(headers: &HeaderMap) -> bool {
     headers.get(ACCEPT).map(HeaderValue::as_bytes) == Some(b"application/cbor")
 }
@@ -136,9 +149,12 @@ pub async fn handle_put_monad_profile(
 ) -> std::result::Result<Protobuf<proto::PutSignedPayloadResponse>, HttpRegistryError> {
     let address = parse_addr(&address)?;
     match parse_monad_profile_content_type(&headers)? {
-        MonadProfileMediaType::Cbor => server
-            .registry
-            .put_monad_profile_cbor(address, &body_bytes)?,
+        MonadProfileMediaType::Cbor => {
+            server
+                .registry
+                .put_monad_profile_cbor_async(address, body_bytes.to_vec())
+                .await?
+        }
         MonadProfileMediaType::Protobuf => {
             let signed_metadata = cashweb_payload::proto::SignedPayload::decode(
                 body_bytes.as_ref(),
@@ -152,7 +168,8 @@ pub async fn handle_put_monad_profile(
             })?;
             server
                 .registry
-                .put_monad_profile(address, signed_metadata)?;
+                .put_monad_profile_async(address, signed_metadata)
+                .await?;
         }
     }
     Ok(Protobuf(proto::PutSignedPayloadResponse { txid: vec![] }))

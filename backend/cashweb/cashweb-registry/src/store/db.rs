@@ -110,10 +110,6 @@ pub(crate) type CF = rocksdb::ColumnFamily;
 /// Owns the underlying rocksdb::DB instance.
 pub struct Db {
     db: rocksdb::DB,
-    /// Serializes each profile read/validate/write sequence. The RocksDB batch makes the write
-    /// atomic, while this guard prevents two concurrent requests from both validating against the
-    /// same predecessor and committing out of revision order.
-    monad_profile_lock: Mutex<()>,
     /// Serializes read-check-batch outbox mutations inside this process. RocksDB batches are
     /// atomic, but the active-claim bound also needs its preceding count to be serialized.
     monad_outbox_lock: Mutex<()>,
@@ -210,7 +206,6 @@ impl Db {
         let db = rocksdb::DB::open_cf_descriptors(&db_options, path, cfs).wrap_err(RocksDb)?;
         Ok(Db {
             db,
-            monad_profile_lock: Mutex::new(()),
             monad_outbox_lock: Mutex::new(()),
         })
     }
@@ -251,12 +246,6 @@ impl Db {
 
     pub(crate) fn lock_monad_outbox(&self) -> std::sync::MutexGuard<'_, ()> {
         self.monad_outbox_lock
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-
-    pub(crate) fn lock_monad_profile(&self) -> std::sync::MutexGuard<'_, ()> {
-        self.monad_profile_lock
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }

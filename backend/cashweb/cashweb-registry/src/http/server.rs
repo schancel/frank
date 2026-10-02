@@ -11,7 +11,7 @@ use crate::{
     http::monad_profile::{
         fetch_profile_cbor_or_not_found, fetch_profile_or_not_found, handle_get_monad_profile,
         handle_list_monad_profiles, handle_put_monad_profile, handle_search_monad_profiles,
-        parse_monad_profile_content_type, MonadProfileMediaType,
+        parse_monad_profile_content_type, require_protobuf_content_type, MonadProfileMediaType,
     },
     http::monad_topics::{
         handle_get_monad_topic_post, handle_list_monad_topic_posts, handle_list_topics,
@@ -160,6 +160,22 @@ async fn log_request<B>(
     response
 }
 
+/// Every profile response can vary by the exact `Accept` request header. Apply this at the
+/// response boundary so early extractor failures, 404s, 406s, and handler errors cannot omit it.
+async fn vary_profile_responses_by_accept<B>(
+    request: axum::http::Request<B>,
+    next: axum::middleware::Next<B>,
+) -> axum::response::Response {
+    let is_profile_path = request.uri().path().starts_with("/metadata/");
+    let mut response = next.run(request).await;
+    if is_profile_path {
+        response
+            .headers_mut()
+            .append(header::VARY, HeaderValue::from_static("Accept"));
+    }
+    response
+}
+
 impl RegistryServer {
     /// Turn this registry server into a [`Router`].
     pub fn into_router(self) -> Router {
@@ -296,6 +312,7 @@ impl RegistryServer {
                     .allow_origin(Any),
             )
             .layer(from_fn(log_request))
+            .layer(from_fn(vary_profile_responses_by_accept))
     }
 }
 
@@ -421,9 +438,12 @@ async fn handle_put_registry(
     // explicitly exclude adding it.
     if let Ok(monad_address) = MonadAddress::from_str(&address) {
         match parse_monad_profile_content_type(&header_map).map_err(PutRegistryError::from)? {
-            MonadProfileMediaType::Cbor => server
-                .registry
-                .put_monad_profile_cbor(monad_address, &body_bytes)?,
+            MonadProfileMediaType::Cbor => {
+                server
+                    .registry
+                    .put_monad_profile_cbor_async(monad_address, body_bytes.to_vec())
+                    .await?
+            }
             MonadProfileMediaType::Protobuf => {
                 let signed_metadata = cashweb_payload::proto::SignedPayload::decode(
                     body_bytes.as_ref(),
@@ -437,7 +457,8 @@ async fn handle_put_registry(
                 })?;
                 server
                     .registry
-                    .put_monad_profile(monad_address, signed_metadata)?;
+                    .put_monad_profile_async(monad_address, signed_metadata)
+                    .await?;
             }
         }
         return Ok(PutRegistrySuccess {
@@ -447,6 +468,7 @@ async fn handle_put_registry(
     }
 
     let address = address.parse::<LotusAddress>().map_err(InvalidAddress)?;
+    require_protobuf_content_type(&header_map).map_err(PutRegistryError::from)?;
     let signed_metadata = cashweb_payload::proto::SignedPayload::decode(body_bytes.as_ref())
         .map_err(|err| {
             PutRegistryError::from(Report::from(

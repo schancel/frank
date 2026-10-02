@@ -18,7 +18,10 @@ use thiserror::Error;
 
 use crate::{
     monad_http::Address,
-    monad_profile_verify::{verify_cbor_account_registration, verify_monad_profile},
+    monad_profile_verify::{
+        validate_cbor_account_registration_envelope, verify_cbor_account_registration,
+        verify_monad_profile,
+    },
     proto::{self, BroadcastMessage},
     store::{db::Db, pubkeyhash::PubKeyHash},
 };
@@ -83,6 +86,9 @@ pub struct Registry {
     chain_adapter: Arc<dyn ChainAdapter>,
     /// Whether server is running on a mainnet or regtest network.
     net: Net,
+    /// Bounded striped async coordination for profile mutations. Requests for different stripes
+    /// wait independently, and owned guards can move into the blocking RocksDB worker.
+    profile_write_locks: Vec<Arc<tokio::sync::Mutex<()>>>,
 }
 
 /// Result of putting metadata into the registry.
@@ -204,9 +210,22 @@ pub enum RegistryError {
     #[invalid_user_input()]
     #[error("Value provided for topic is invalid")]
     InvalidTopicFormat,
+
+    /// A profile verification/storage worker failed before returning its typed result.
+    #[critical()]
+    #[error("Monad profile blocking worker failed: {0}")]
+    MonadProfileWorkerFailed(String),
 }
 
 use self::RegistryError::*;
+
+const PROFILE_WRITE_STRIPES: usize = 64;
+
+fn profile_write_locks() -> Vec<Arc<tokio::sync::Mutex<()>>> {
+    (0..PROFILE_WRITE_STRIPES)
+        .map(|_| Arc::new(tokio::sync::Mutex::new(())))
+        .collect()
+}
 
 impl Registry {
     /// Construct new [`Registry`]
@@ -216,6 +235,7 @@ impl Registry {
             ecc: EccSecp256k1::default(),
             chain_adapter,
             net,
+            profile_write_locks: profile_write_locks(),
         }
     }
 
@@ -1001,22 +1021,31 @@ impl Registry {
     /// (`crate::http::monad_profile::handle_put_monad_profile`) and from the plain
     /// `PUT /metadata/:addr` route's Monad-address dispatch branch
     /// (`crate::http::server::handle_put_registry`) -- see that module's docs for why both exist.
-    pub fn put_monad_profile(
+    #[cfg(test)]
+    pub(crate) fn put_monad_profile(
         &self,
         address: Address,
         signed_profile: cashweb_payload::proto::SignedPayload,
     ) -> Result<()> {
-        let _guard = self.db.lock_monad_profile();
         let verified = verify_monad_profile(&self.ecc, address, &signed_profile)?;
 
+        self.put_verified_monad_profile(address, signed_profile, verified.profile.timestamp)
+    }
+
+    fn put_verified_monad_profile(
+        &self,
+        address: Address,
+        signed_profile: cashweb_payload::proto::SignedPayload,
+        timestamp: i64,
+    ) -> Result<()> {
         if let Some(existing_signed) = self.db.monad_profiles().get(&address)? {
             if let Ok(existing_profile) =
                 proto::MonadProfile::decode(existing_signed.payload.as_slice())
             {
-                if existing_profile.timestamp >= verified.profile.timestamp {
+                if existing_profile.timestamp >= timestamp {
                     return Err(MonadProfileTimestampNotMonotonicallyIncreasing {
                         previous: existing_profile.timestamp,
-                        next: verified.profile.timestamp,
+                        next: timestamp,
                     }
                     .into());
                 }
@@ -1027,22 +1056,46 @@ impl Registry {
         Ok(())
     }
 
+    /// Async request-boundary wrapper: verify independent fields off-runtime, wait only for this
+    /// address stripe, then re-read and atomically replace the record/indexes on a blocking worker.
+    pub async fn put_monad_profile_async(
+        self: &Arc<Self>,
+        address: Address,
+        signed_profile: cashweb_payload::proto::SignedPayload,
+    ) -> Result<()> {
+        let registry = Arc::clone(self);
+        let verify_signed = signed_profile.clone();
+        let verified = tokio::task::spawn_blocking(move || {
+            verify_monad_profile(&registry.ecc, address, &verify_signed)
+        })
+        .await
+        .map_err(|err| MonadProfileWorkerFailed(err.to_string()))??;
+        let guard = Arc::clone(&self.profile_write_locks[self.profile_write_stripe(address)])
+            .lock_owned()
+            .await;
+        let registry = Arc::clone(self);
+        tokio::task::spawn_blocking(move || {
+            let _guard = guard;
+            registry.put_verified_monad_profile(address, signed_profile, verified.profile.timestamp)
+        })
+        .await
+        .map_err(|err| MonadProfileWorkerFailed(err.to_string()))?
+    }
+
     /// Fully verify and write a Frank-CBOR type-2 account registration attestation (ticket #605).
     /// Enforces stage 10.6 signature verification and monotonic revision/timestamp invariants.
-    pub fn put_monad_profile_cbor(&self, address: Address, frame_bytes: &[u8]) -> Result<()> {
-        let _guard = self.db.lock_monad_profile();
+    fn put_monad_profile_cbor(&self, address: Address, frame_bytes: &[u8]) -> Result<()> {
         let expected_net = self.expected_cbor_network();
-        let prior_statement =
-            if let Some(info) = self.db.monad_profiles().get_cbor_statement_info(&address)? {
-                frank_cbor::PriorStatement::Frame(info.type_4_frame)
-            } else {
-                frank_cbor::PriorStatement::None
-            };
+        let prior_info = self.db.monad_profiles().get_cbor_statement_info(&address)?;
+        let prior_statement = prior_info
+            .as_ref()
+            .map(|info| frank_cbor::PriorStatement::Frame(info.type_4_frame.clone()))
+            .unwrap_or(frank_cbor::PriorStatement::None);
 
         let verified =
             verify_cbor_account_registration(address, expected_net, frame_bytes, prior_statement)?;
 
-        if let Some(info) = self.db.monad_profiles().get_cbor_statement_info(&address)? {
+        if let Some(info) = prior_info {
             if info.revision >= verified.revision {
                 return Err(MonadProfileTimestampNotMonotonicallyIncreasing {
                     previous: info.timestamp_ms,
@@ -1054,6 +1107,38 @@ impl Registry {
 
         self.db.monad_profiles().put_cbor(&address, frame_bytes)?;
         Ok(())
+    }
+
+    /// Async request-boundary wrapper for candidate CBOR writes. The bootstrap verification is
+    /// predecessor-independent; after waiting for the address stripe, the blocking worker parses
+    /// the stored predecessor exactly once, validates the dependent transition, and writes.
+    pub async fn put_monad_profile_cbor_async(
+        self: &Arc<Self>,
+        address: Address,
+        frame_bytes: Vec<u8>,
+    ) -> Result<()> {
+        let verify_bytes = frame_bytes.clone();
+        tokio::task::spawn_blocking(move || {
+            validate_cbor_account_registration_envelope(&verify_bytes)
+        })
+        .await
+        .map_err(|err| MonadProfileWorkerFailed(err.to_string()))??;
+        let guard = Arc::clone(&self.profile_write_locks[self.profile_write_stripe(address)])
+            .lock_owned()
+            .await;
+        let registry = Arc::clone(self);
+        tokio::task::spawn_blocking(move || {
+            let _guard = guard;
+            registry.put_monad_profile_cbor(address, &frame_bytes)
+        })
+        .await
+        .map_err(|err| MonadProfileWorkerFailed(err.to_string()))?
+    }
+
+    fn profile_write_stripe(&self, address: Address) -> usize {
+        address.0.iter().fold(0usize, |hash, byte| {
+            hash.wrapping_mul(31) ^ usize::from(*byte)
+        }) % self.profile_write_locks.len()
     }
 
     /// Read a previously-registered Monad profile's `cashweb_payload::proto::SignedPayload`
@@ -1333,8 +1418,8 @@ mod tests {
         lotus_adapter::LotusAdapter,
         proto,
         registry::{
-            GetMetadataRangeResult, PutBlockchainAction, PutMessageResult, PutMetadataResult,
-            Registry, RegistryError,
+            profile_write_locks, GetMetadataRangeResult, PutBlockchainAction, PutMessageResult,
+            PutMetadataResult, Registry, RegistryError,
         },
         store::{
             db::{Db, CF_PKH_BY_TIME},
@@ -1366,6 +1451,7 @@ mod tests {
             ecc: EccSecp256k1::default(),
             chain_adapter: Arc::new(LotusAdapter::new(bitcoind.clone())),
             net: Net::Regtest,
+            profile_write_locks: profile_write_locks(),
         };
 
         let seckey = registry.ecc.seckey_from_array([4; 32])?;
@@ -1761,6 +1847,7 @@ mod tests {
             ecc: EccSecp256k1::default(),
             chain_adapter: Arc::new(LotusAdapter::new(bitcoind.clone())),
             net: Net::Regtest,
+            profile_write_locks: profile_write_locks(),
         };
 
         // Generate a few anyone can spend coins
@@ -1916,6 +2003,7 @@ mod tests {
             ecc: EccSecp256k1::default(),
             chain_adapter: Arc::new(LotusAdapter::new(bitcoind.clone())),
             net: Net::Regtest,
+            profile_write_locks: profile_write_locks(),
         };
 
         let seckey = registry.ecc.seckey_from_array([4; 32])?;
@@ -2240,6 +2328,7 @@ mod tests {
             ecc: EccSecp256k1::default(),
             chain_adapter: Arc::new(NeverCalledChainAdapter),
             net: Net::Regtest,
+            profile_write_locks: profile_write_locks(),
         };
         (tempdir, registry)
     }
@@ -2423,6 +2512,68 @@ mod tests {
             test_monad_profile_registry("cashweb-registry--registry-monad-profile-not-found");
         let address = crate::monad_http::Address([3u8; 20]);
         assert_eq!(registry.get_monad_profile(address)?, None);
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn held_profile_address_does_not_block_other_address_or_runtime() -> Result<()> {
+        use std::time::Duration;
+
+        let (_tempdir, registry) =
+            test_monad_profile_registry("cashweb-registry--registry-profile-async-stripes");
+        let registry = Arc::new(registry);
+        let key_a = registry.ecc.seckey_from_array([21; 32])?;
+        let (signed_a, address_a) = sign_monad_profile(&key_a, &sample_monad_profile(100));
+        let (newer_signed_a, _) = sign_monad_profile(&key_a, &sample_monad_profile(200));
+        let stripe_a = registry.profile_write_stripe(address_a);
+        let (signed_b, address_b) = (22u8..=255)
+            .find_map(|byte| {
+                let key = registry.ecc.seckey_from_array([byte; 32]).ok()?;
+                let pair = sign_monad_profile(&key, &sample_monad_profile(100));
+                (registry.profile_write_stripe(pair.1) != stripe_a).then_some(pair)
+            })
+            .expect("test keys must cover a second profile stripe");
+
+        let held_guard = Arc::clone(&registry.profile_write_locks[stripe_a])
+            .lock_owned()
+            .await;
+        let blocked_registry = Arc::clone(&registry);
+        let blocked_low = tokio::spawn(async move {
+            blocked_registry
+                .put_monad_profile_async(address_a, signed_a)
+                .await
+        });
+        let blocked_registry = Arc::clone(&registry);
+        let blocked_high = tokio::spawn(async move {
+            blocked_registry
+                .put_monad_profile_async(address_a, newer_signed_a)
+                .await
+        });
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
+        }
+        assert!(!blocked_low.is_finished());
+        assert!(!blocked_high.is_finished());
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            tokio::task::yield_now().await;
+            registry.put_monad_profile_async(address_b, signed_b).await
+        })
+        .await
+        .expect("held address A must not stall address B or the runtime")?;
+
+        drop(held_guard);
+        let low = blocked_low
+            .await
+            .map_err(|err| RegistryError::MonadProfileWorkerFailed(err.to_string()))?;
+        let high = blocked_high
+            .await
+            .map_err(|err| RegistryError::MonadProfileWorkerFailed(err.to_string()))?;
+        assert!(low.is_ok() || high.is_ok());
+        assert_eq!(
+            registry.get_monad_profile(address_a)?,
+            Some(sign_monad_profile(&key_a, &sample_monad_profile(200)).0)
+        );
         Ok(())
     }
 

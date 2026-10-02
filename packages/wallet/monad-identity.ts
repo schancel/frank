@@ -82,6 +82,7 @@
 import {
   HDNodeWallet,
   Mnemonic,
+  SigningKey,
   Wallet,
   getBytes,
   hexlify,
@@ -332,18 +333,95 @@ export interface MonadCborRelayBinding {
   id: Uint8Array
   endpoint: string
   key: Uint8Array
-  validUntilSeconds: bigint | number
+  validUntil: {
+    seconds: bigint | number
+    nanoseconds: number
+  }
+}
+
+const trustedRelayDescriptorBrand: unique symbol = Symbol(
+  'trustedMonadCborRelayDescriptor',
+)
+
+/** An explicit trust-boundary object populated from caller-owned relay configuration. The
+ * publication target used by `registerMonadIdentityCbor` may legitimately differ from these
+ * advertised mailbox relay endpoints; #133 owns that selection policy. */
+export interface TrustedMonadCborRelayDescriptor {
+  readonly bindings: readonly MonadCborRelayBinding[]
+  readonly [trustedRelayDescriptorBrand]: true
+}
+
+/** Marks copied configured relay bindings as trusted input for the opt-in candidate helper. */
+export function trustedMonadCborRelayDescriptor(
+  bindings: readonly MonadCborRelayBinding[],
+): TrustedMonadCborRelayDescriptor {
+  if (bindings.length === 0) {
+    throw new Error('at least one trusted relay binding is required')
+  }
+  return {
+    [trustedRelayDescriptorBrand]: true,
+    bindings: bindings.map(binding => ({
+      id: Uint8Array.from(binding.id),
+      endpoint: binding.endpoint,
+      key: Uint8Array.from(binding.key),
+      validUntil: { ...binding.validUntil },
+    })),
+  }
+}
+
+function cborProfilePublicationUrl(baseUrl: string, address: string): string {
+  let url: URL
+  try {
+    url = new URL(baseUrl)
+  } catch {
+    throw new Error('CBOR publication target must be an absolute URL')
+  }
+  if (
+    !['http:', 'https:'].includes(url.protocol) ||
+    url.username !== '' ||
+    url.password !== '' ||
+    url.search !== '' ||
+    url.hash !== ''
+  ) {
+    throw new Error(
+      'CBOR publication target must be a canonical HTTP(S) base URL',
+    )
+  }
+  url.pathname = `${url.pathname.replace(/\/+$/, '')}/metadata/${address}`
+  return url.toString()
+}
+
+function exactBigInt(value: bigint | number, field: string): bigint {
+  if (typeof value === 'number') {
+    if (!Number.isSafeInteger(value)) {
+      throw new Error(`${field} number must be a safe integer; use bigint`)
+    }
+    return BigInt(value)
+  }
+  return value
+}
+
+function compareBytes(left: Uint8Array, right: Uint8Array): number {
+  for (let i = 0; i < Math.min(left.length, right.length); i += 1) {
+    if (left[i] !== right[i]) return left[i] - right[i]
+  }
+  return left.length - right.length
 }
 
 function requireRelayBindings(
   identity: MonadIdentity,
-  relays: readonly MonadCborRelayBinding[],
-  statementSeconds: bigint,
+  descriptor: TrustedMonadCborRelayDescriptor,
+  statement: { seconds: bigint | number; nanoseconds: number },
 ): Encodable[] {
-  if (relays.length === 0) {
-    throw new Error('at least one caller-supplied relay binding is required')
+  if (
+    !descriptor ||
+    descriptor[trustedRelayDescriptorBrand] !== true ||
+    descriptor.bindings.length === 0
+  ) {
+    throw new Error('a trusted caller-supplied relay descriptor is required')
   }
-  return relays.map(relay => {
+  const statementSeconds = exactBigInt(statement.seconds, 'statement seconds')
+  const canonical = descriptor.bindings.map(relay => {
     if (relay.id.length !== 16 || relay.id.every(byte => byte === 0)) {
       throw new Error('relay id must be a non-zero 16-byte identifier')
     }
@@ -355,28 +433,76 @@ function requireRelayBindings(
     }
     if (
       endpoint.protocol !== 'https:' ||
+      endpoint.username !== '' ||
+      endpoint.password !== '' ||
+      endpoint.hash !== '' ||
       endpoint.hostname === 'example' ||
       endpoint.hostname.endsWith('.example')
     ) {
       throw new Error('relay endpoint must be a genuine HTTPS endpoint')
     }
+    if (relay.key.length !== 33 || ![2, 3].includes(relay.key[0])) {
+      throw new Error('relay key must be a valid compressed secp256k1 key')
+    }
+    try {
+      SigningKey.computePublicKey(hexlify(relay.key), true)
+    } catch {
+      throw new Error('relay key must be a valid compressed secp256k1 key')
+    }
     if (
-      relay.key.length !== 33 ||
       relay.key.every(
         (byte, index) => byte === identity.compressedPubKey[index],
       )
     ) {
       throw new Error('relay key must be a distinct compressed secp256k1 key')
     }
-    const validUntil = BigInt(relay.validUntilSeconds)
-    if (validUntil < statementSeconds) {
+    const validUntilSeconds = exactBigInt(
+      relay.validUntil.seconds,
+      'relay validUntil.seconds',
+    )
+    const validUntilNanoseconds = relay.validUntil.nanoseconds
+    if (
+      !Number.isInteger(validUntilNanoseconds) ||
+      validUntilNanoseconds < 0 ||
+      validUntilNanoseconds > 999_999_999
+    ) {
+      throw new Error('relay validUntil.nanoseconds must be in 0..999999999')
+    }
+    if (
+      validUntilSeconds < statementSeconds ||
+      (validUntilSeconds === statementSeconds &&
+        validUntilNanoseconds < statement.nanoseconds)
+    ) {
       throw new Error(
         'relay binding must remain valid at the statement timestamp',
       )
     }
+    return {
+      id: Uint8Array.from(relay.id),
+      endpoint: endpoint.toString(),
+      key: Uint8Array.from(relay.key),
+      validUntilSeconds,
+      validUntilNanoseconds,
+    }
+  })
+  canonical.sort(
+    (left, right) =>
+      compareBytes(left.id, right.id) ||
+      (left.endpoint < right.endpoint
+        ? -1
+        : left.endpoint > right.endpoint
+        ? 1
+        : 0),
+  )
+  for (let i = 1; i < canonical.length; i += 1) {
+    if (compareBytes(canonical[i - 1].id, canonical[i].id) === 0) {
+      throw new Error('relay descriptor contains a duplicate relay id')
+    }
+  }
+  return canonical.map(relay => {
     return cborMap([
       [0, Uint8Array.from(relay.id)],
-      [1, endpoint.toString()],
+      [1, relay.endpoint],
       [
         2,
         cborMap([
@@ -387,8 +513,8 @@ function requireRelayBindings(
       [
         3,
         cborMap([
-          [0, validUntil],
-          [1, 0],
+          [0, relay.validUntilSeconds],
+          [1, relay.validUntilNanoseconds],
         ]),
       ],
     ])
@@ -403,17 +529,19 @@ function requireRelayBindings(
 export function buildSignedDirectoryStatement(
   identity: MonadIdentity,
   options: {
-    relays: readonly MonadCborRelayBinding[]
+    relayDescriptor: TrustedMonadCborRelayDescriptor
     network?: string
     profile?: MonadProfileFields
-    timestampMs?: number
-    ttlMs?: number
+    timestampMs?: bigint | number
+    ttlMs?: bigint | number
     stampKey?: Uint8Array
   },
 ): Uint8Array {
   const network = options.network ?? 'monad-testnet'
-  const ms = BigInt(options.timestampMs ?? Date.now())
-  const ttlMs = BigInt(options.ttlMs ?? 1000 * 60 * 60 * 24 * 365) // 1 year
+  const ms = exactBigInt(options.timestampMs ?? Date.now(), 'timestampMs')
+  const ttlMs = exactBigInt(options.ttlMs ?? 1000 * 60 * 60 * 24 * 365, 'ttlMs') // 1 year
+  if (ms < 0n) throw new Error('timestampMs must be nonnegative')
+  if (ttlMs < 0n) throw new Error('ttlMs must be nonnegative')
   const ts = splitMs(ms)
   const exp = expiryTimestamp(ms, ttlMs)
   const stampKeyBytes = options.stampKey ?? identity.compressedPubKey
@@ -421,8 +549,8 @@ export function buildSignedDirectoryStatement(
   // Validate the caller-owned descriptor before constructing/signing any statement.
   const relayBindings = requireRelayBindings(
     identity,
-    options.relays,
-    BigInt(ts.seconds),
+    options.relayDescriptor,
+    ts,
   )
 
   // Profile entries (field 9 in schema 3)
@@ -551,28 +679,31 @@ export function buildSignedDirectoryStatement(
 /** `PUT /metadata/:addr` with `Content-Type: application/cbor` (ticket #605).
  * Sends a canonical Type-2 directory attestation signed by the identity key. */
 export async function registerMonadIdentityCbor(params: {
+  /** Publication/directory target; advertised relay selection is deferred to #133. */
   relayBaseUrl: string
   identity: MonadIdentity
   profile?: MonadProfileFields
   network?: string
-  timestampMs?: number
-  ttlMs?: number
+  timestampMs?: bigint | number
+  ttlMs?: bigint | number
   stampKey?: Uint8Array
-  relays: readonly MonadCborRelayBinding[]
+  relayDescriptor: TrustedMonadCborRelayDescriptor
 }): Promise<void> {
+  const publicationUrl = cborProfilePublicationUrl(
+    params.relayBaseUrl,
+    params.identity.address.raw,
+  )
   const body = buildSignedDirectoryStatement(params.identity, {
     network: params.network,
     profile: params.profile,
     timestampMs: params.timestampMs,
     ttlMs: params.ttlMs,
     stampKey: params.stampKey,
-    relays: params.relays,
+    relayDescriptor: params.relayDescriptor,
   })
   await axios({
     method: 'put',
-    url: `${params.relayBaseUrl.replace(/\/+$/, '')}/metadata/${
-      params.identity.address.raw
-    }`,
+    url: publicationUrl,
     data: Buffer.from(body),
     headers: {
       'Content-Type': 'application/cbor',
@@ -604,7 +735,6 @@ export async function registerMonadIdentity(params: {
 
 interface DecodedProfileFields {
   pubKey: Uint8Array
-  timestampMs: number
   name?: string
   bio?: string
   bot?: boolean
@@ -614,10 +744,12 @@ interface DecodedProfileFields {
 export type DecodedProfileBytes =
   | (DecodedProfileFields & {
       format: 'cbor'
+      timestampMs: bigint
       rawCbor: Uint8Array
     })
   | (DecodedProfileFields & {
       format: 'protobuf'
+      timestampMs: number
       signedPayload: InstanceType<typeof SignedPayload>
     })
 
@@ -684,7 +816,7 @@ export function decodeProfileBytes(raw: Uint8Array): DecodedProfileBytes {
     const pubKey = stmt.subject.keyBytes
     const sec = BigInt(stmt.timestamp.seconds)
     const nanos = BigInt(stmt.timestamp.nanoseconds)
-    const timestampMs = Number(sec * 1000n + nanos / 1_000_000n)
+    const timestampMs = sec * 1000n + nanos / 1_000_000n
 
     let name: string | undefined
     let bio: string | undefined

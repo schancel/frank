@@ -33,7 +33,10 @@ use frank_cbor::{
     directory_signature_digest, encode_frame, expiry_timestamp, split_timestamp_ms, CborValue,
     EnvelopeFields, FramePayload,
 };
-use hyper::{header::CONTENT_TYPE, Body, Request, StatusCode};
+use hyper::{
+    header::{CONTENT_TYPE, VARY},
+    Body, Request, Response, StatusCode,
+};
 use pretty_assertions::assert_eq;
 use prost::Message;
 use tower::ServiceExt;
@@ -92,6 +95,32 @@ fn make_server(registry: Registry) -> RegistryServer {
         curated_defaults: Arc::new(vec![]),
         monad_mailbox: cashweb_registry::monad_mailbox::MonadMailboxRuntime::Disabled,
     }
+}
+
+fn overwrite_candidate_cbor(path: &std::path::Path, address: Address, bytes: &[u8]) {
+    let db_path = path.join("db.rocksdb");
+    let options = rocksdb::Options::default();
+    let cfs = rocksdb::DB::list_cf(&options, &db_path).unwrap();
+    let db = rocksdb::DB::open_cf(&options, &db_path, cfs).unwrap();
+    let cf = db.cf_handle("monad_profile_cbor_v1").unwrap();
+    db.put_cf(cf, address.0, bytes).unwrap();
+}
+
+fn read_candidate_cbor(path: &std::path::Path, address: Address) -> Vec<u8> {
+    let db_path = path.join("db.rocksdb");
+    let options = rocksdb::Options::default();
+    let cfs = rocksdb::DB::list_cf(&options, &db_path).unwrap();
+    let db = rocksdb::DB::open_cf(&options, &db_path, cfs).unwrap();
+    let cf = db.cf_handle("monad_profile_cbor_v1").unwrap();
+    db.get_cf(cf, address.0).unwrap().unwrap()
+}
+
+fn assert_vary_accept(response: &Response<axum::body::BoxBody>) {
+    assert!(response
+        .headers()
+        .get_all(VARY)
+        .iter()
+        .any(|value| value.as_bytes() == b"Accept"));
 }
 
 fn seckey(byte: u8) -> SecKey {
@@ -1087,4 +1116,172 @@ async fn test_concurrent_legacy_write_keeps_highest_timestamp_and_clean_indexes(
     let list = proto::ListMonadProfilesResponse::decode(body).unwrap();
     assert_eq!(list.entries.len(), 1);
     assert_eq!(list.entries[0].address, address.to_hex());
+}
+
+#[tokio::test]
+async fn lotus_put_requires_exact_protobuf_content_type() {
+    let tempdir = tempdir::TempDir::new("cashweb-registry--lotus-content-type").unwrap();
+    let router = make_server(open_registry(tempdir.path(), Net::Regtest)).into_router();
+    let lotus = "lotus_16PSJNf1EDEfGvaYzaXJCJZrXH4pgiTo7kyW61iGi";
+
+    for content_type in [
+        None,
+        Some("application/cbor"),
+        Some("application/x-protobuf; v=1"),
+    ] {
+        let mut request = Request::builder()
+            .method("PUT")
+            .uri(format!("/metadata/{lotus}"));
+        if let Some(value) = content_type {
+            request = request.header(CONTENT_TYPE, value);
+        }
+        let response = router
+            .clone()
+            .oneshot(request.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = hyper::body::to_bytes(response.into_body()).await.unwrap();
+        assert!(String::from_utf8_lossy(&body).contains("expected application/x-protobuf"));
+    }
+
+    let response = router
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/metadata/{lotus}"))
+                .header(CONTENT_TYPE, "application/x-protobuf")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = hyper::body::to_bytes(response.into_body()).await.unwrap();
+    assert!(!String::from_utf8_lossy(&body).contains("Unsupported Content-Type"));
+}
+
+#[tokio::test]
+async fn negotiated_profile_responses_always_vary_on_accept() {
+    let tempdir = tempdir::TempDir::new("cashweb-registry--profile-vary").unwrap();
+    let key = seckey(29);
+    let (frame, address, _) =
+        build_cbor_attestation(&key, "monad-testnet", 100, 100, 1000, None, None, 1);
+    let router = make_server(open_registry(tempdir.path(), Net::Regtest)).into_router();
+    let put_response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/metadata/{}", address.to_hex()))
+                .header(CONTENT_TYPE, CONTENT_TYPE_CBOR)
+                .body(Body::from(frame))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(put_response.status(), StatusCode::OK);
+    assert_vary_accept(&put_response);
+
+    for uri in [
+        format!("/metadata/{}", address.to_hex()),
+        format!("/metadata/monad/{}", address.to_hex()),
+    ] {
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(uri)
+                    .header("Accept", CONTENT_TYPE_CBOR)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_vary_accept(&response);
+    }
+
+    for (uri, accept, status) in [
+        (
+            format!("/metadata/{}", Address([0x77; 20]).to_hex()),
+            None,
+            StatusCode::NOT_FOUND,
+        ),
+        (
+            format!("/metadata/monad/{}", Address([0x77; 20]).to_hex()),
+            Some(CONTENT_TYPE_CBOR),
+            StatusCode::NOT_FOUND,
+        ),
+        (
+            "/metadata/monad?since=0".to_string(),
+            Some(CONTENT_TYPE_CBOR),
+            StatusCode::NOT_ACCEPTABLE,
+        ),
+        (
+            "/metadata/monad/search?prefix=a".to_string(),
+            Some(CONTENT_TYPE_CBOR),
+            StatusCode::NOT_ACCEPTABLE,
+        ),
+        (
+            "/metadata/not-an-address".to_string(),
+            None,
+            StatusCode::BAD_REQUEST,
+        ),
+        ("/metadata/monad?since=0".to_string(), None, StatusCode::OK),
+    ] {
+        let mut request = Request::builder().uri(uri);
+        if let Some(value) = accept {
+            request = request.header("Accept", value);
+        }
+        let response = router
+            .clone()
+            .oneshot(request.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), status);
+        assert_vary_accept(&response);
+    }
+}
+
+#[tokio::test]
+async fn malformed_stored_cbor_fails_update_without_rewriting_bytes() {
+    let key = seckey(30);
+    let (frame, address, statement_frame) =
+        build_cbor_attestation(&key, "monad-testnet", 100, 100, 1000, None, None, 1);
+    let unsupported = encode_frame(
+        EnvelopeFields {
+            type_id: 2,
+            schema_version: 99,
+            min_reader_version: 1,
+        },
+        FramePayload::Value(&cbor_map(vec![])),
+    )
+    .unwrap();
+
+    for (case, stored) in [
+        ("malformed", b"stored-but-malformed".to_vec()),
+        ("wrong-type", statement_frame),
+        ("unsupported", unsupported),
+    ] {
+        let tempdir =
+            tempdir::TempDir::new(&format!("cashweb-registry--{case}-stored-cbor")).unwrap();
+        drop(open_registry(tempdir.path(), Net::Regtest));
+        overwrite_candidate_cbor(tempdir.path(), address, &stored);
+
+        let router = make_server(open_registry(tempdir.path(), Net::Regtest)).into_router();
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(format!("/metadata/{}", address.to_hex()))
+                    .header(CONTENT_TYPE, CONTENT_TYPE_CBOR)
+                    .body(Body::from(frame.clone()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(read_candidate_cbor(tempdir.path(), address), stored);
+    }
 }

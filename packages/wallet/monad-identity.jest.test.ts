@@ -33,6 +33,7 @@ import {
   registerMonadIdentity,
   registerMonadIdentityCbor,
   searchMonadProfiles,
+  trustedMonadCborRelayDescriptor,
 } from './monad-identity'
 import { defaultContext, validateFrame } from '@frank/codec'
 import { validateProfileDisplayName } from './profile-display-name'
@@ -51,8 +52,14 @@ function relayBinding() {
     id: Uint8Array.from([1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]),
     endpoint: 'https://relay.frank.network/monad-testnet',
     key: Uint8Array.from(relayIdentity.compressedPubKey),
-    validUntilSeconds: 2_000_000_000n,
+    validUntil: { seconds: 2_000_000_000n, nanoseconds: 0 },
   }
+}
+
+function relayDescriptor(...bindings: ReturnType<typeof relayBinding>[]) {
+  return trustedMonadCborRelayDescriptor(
+    bindings.length === 0 ? [relayBinding()] : bindings,
+  )
 }
 
 interface DisplayNameFixtureCase {
@@ -344,7 +351,7 @@ describe('fetchMonadIdentityPubKey / fetchMonadProfile', () => {
     const cborFrame = buildSignedDirectoryStatement(identity, {
       network: 'monad-testnet',
       profile: { name: 'Opt-in only' },
-      relays: [relayBinding()],
+      relayDescriptor: relayDescriptor(),
     })
     mockedAxios
       .mockResolvedValueOnce({ status: 200, data: cborFrame })
@@ -696,7 +703,7 @@ describe('registerMonadIdentityCbor & dual-format CBOR/protobuf handling', () =>
         avatar: 'data:image/png;base64,QUJDRA==',
       },
       timestampMs: 1_700_000_000_000,
-      relays: [relayBinding()],
+      relayDescriptor: relayDescriptor(),
     })
 
     expect(isCborFrame(frame)).toBe(true)
@@ -739,7 +746,7 @@ describe('registerMonadIdentityCbor & dual-format CBOR/protobuf handling', () =>
       relayBaseUrl: RELAY_BASE_URL,
       identity,
       profile: { name: 'Bob' },
-      relays: [relayBinding()],
+      relayDescriptor: relayDescriptor(),
     })
 
     expect(mockedAxios).toHaveBeenCalledWith(
@@ -754,6 +761,31 @@ describe('registerMonadIdentityCbor & dual-format CBOR/protobuf handling', () =>
     )
   })
 
+  it('canonicalizes the publication target independently of advertised relay endpoints', async () => {
+    mockedAxios.mockResolvedValueOnce({ status: 200, data: '' })
+    const identity = MonadIdentity.fromSeed(SEED)
+    await registerMonadIdentityCbor({
+      relayBaseUrl: 'https://publisher.frank.network:443/root/../directory/',
+      identity,
+      relayDescriptor: relayDescriptor(),
+    })
+    expect(mockedAxios).toHaveBeenCalledWith(
+      expect.objectContaining({
+        url: `https://publisher.frank.network/directory/metadata/${identity.address.raw}`,
+      }),
+    )
+
+    const callsBefore = mockedAxios.mock.calls.length
+    await expect(
+      registerMonadIdentityCbor({
+        relayBaseUrl: 'https://user:secret@publisher.frank.network/directory',
+        identity,
+        relayDescriptor: relayDescriptor(),
+      }),
+    ).rejects.toThrow(/canonical HTTP\(S\) base URL/)
+    expect(mockedAxios).toHaveBeenCalledTimes(callsBefore)
+  })
+
   it('returns a format-discriminated raw CBOR result without synthesizing SignedPayload', () => {
     const identity = MonadIdentity.fromSeed(SEED)
     const cborFrame = buildSignedDirectoryStatement(identity, {
@@ -764,7 +796,7 @@ describe('registerMonadIdentityCbor & dual-format CBOR/protobuf handling', () =>
         bot: false,
         avatar: 'data:image/jpeg;base64,MTIzNA==',
       },
-      relays: [relayBinding()],
+      relayDescriptor: relayDescriptor(),
     })
     const decoded = decodeProfileBytes(cborFrame)
     expect(decoded.format).toBe('cbor')
@@ -776,30 +808,138 @@ describe('registerMonadIdentityCbor & dual-format CBOR/protobuf handling', () =>
     expect('signedPayload' in decoded).toBe(false)
   })
 
+  it('preserves exact bigint timestamps beyond MAX_SAFE_INTEGER, including i64::MAX', () => {
+    const identity = MonadIdentity.fromSeed(SEED)
+    const max = 9_223_372_036_854_775_807n
+    const binding = relayBinding()
+    binding.validUntil = {
+      seconds: max / 1000n + 1n,
+      nanoseconds: 0,
+    }
+    for (const timestampMs of [
+      BigInt(Number.MAX_SAFE_INTEGER) + 1n,
+      BigInt(Number.MAX_SAFE_INTEGER) + 2n,
+      max,
+    ]) {
+      const decoded = decodeProfileBytes(
+        buildSignedDirectoryStatement(identity, {
+          timestampMs,
+          ttlMs: 0n,
+          relayDescriptor: relayDescriptor(binding),
+        }),
+      )
+      expect(decoded.format).toBe('cbor')
+      if (decoded.format !== 'cbor') throw new Error('expected CBOR')
+      expect(decoded.timestampMs).toBe(timestampMs)
+    }
+  })
+
+  it('rejects unsafe numeric timestamp, ttl, and relay expiry inputs', () => {
+    const identity = MonadIdentity.fromSeed(SEED)
+    expect(() =>
+      buildSignedDirectoryStatement(identity, {
+        timestampMs: Number.MAX_SAFE_INTEGER + 1,
+        relayDescriptor: relayDescriptor(),
+      }),
+    ).toThrow(/timestampMs number must be a safe integer/)
+    expect(() =>
+      buildSignedDirectoryStatement(identity, {
+        ttlMs: Number.MAX_SAFE_INTEGER + 1,
+        relayDescriptor: relayDescriptor(),
+      }),
+    ).toThrow(/ttlMs number must be a safe integer/)
+    const binding = relayBinding()
+    binding.validUntil.seconds = Number.MAX_SAFE_INTEGER + 1
+    expect(() =>
+      buildSignedDirectoryStatement(identity, {
+        timestampMs: 1n,
+        relayDescriptor: relayDescriptor(binding),
+      }),
+    ).toThrow(/validUntil.seconds number must be a safe integer/)
+  })
+
+  it('sorts copied relay bindings canonically and rejects duplicate ids', () => {
+    const identity = MonadIdentity.fromSeed(SEED)
+    const first = relayBinding()
+    const secondIdentity = MonadIdentity.fromPrivateKeyHex(
+      `0x${'33'.repeat(32)}`,
+    )
+    const second = {
+      ...relayBinding(),
+      id: Uint8Array.from([2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]),
+      endpoint: 'https://relay-two.frank.network:443/mailbox/../mailbox',
+      key: Uint8Array.from(secondIdentity.compressedPubKey),
+    }
+    const options = { timestampMs: 1_700_000_000_000n, ttlMs: 0n }
+    const forward = buildSignedDirectoryStatement(identity, {
+      ...options,
+      relayDescriptor: relayDescriptor(first, second),
+    })
+    const reverse = buildSignedDirectoryStatement(identity, {
+      ...options,
+      relayDescriptor: relayDescriptor(second, first),
+    })
+    expect(reverse).toEqual(forward)
+
+    expect(() =>
+      buildSignedDirectoryStatement(identity, {
+        ...options,
+        relayDescriptor: relayDescriptor(first, {
+          ...second,
+          id: Uint8Array.from(first.id),
+        }),
+      }),
+    ).toThrow(/duplicate relay id/)
+  })
+
+  it('validates relay points and compares expiry at nanosecond precision', () => {
+    const identity = MonadIdentity.fromSeed(SEED)
+    const invalidPoint = relayBinding()
+    invalidPoint.key = Uint8Array.from([2, ...new Array(32).fill(0xff)])
+    expect(() =>
+      buildSignedDirectoryStatement(identity, {
+        relayDescriptor: relayDescriptor(invalidPoint),
+      }),
+    ).toThrow(/valid compressed secp256k1 key/)
+
+    const expiresAtWholeSecond = relayBinding()
+    expiresAtWholeSecond.validUntil = { seconds: 1n, nanoseconds: 0 }
+    expect(() =>
+      buildSignedDirectoryStatement(identity, {
+        timestampMs: 1001n,
+        ttlMs: 0n,
+        relayDescriptor: relayDescriptor(expiresAtWholeSecond),
+      }),
+    ).toThrow(/remain valid at the statement timestamp/)
+  })
+
   it('requires a genuine caller-supplied relay binding before signing or PUT', async () => {
     const identity = MonadIdentity.fromSeed(SEED)
+    const signHash = jest.spyOn(identity, 'signHash')
     const callsBefore = mockedAxios.mock.calls.length
     await expect(
       registerMonadIdentityCbor({
         relayBaseUrl: RELAY_BASE_URL,
         identity,
-        relays: [],
+        relayDescriptor: undefined as never,
       }),
-    ).rejects.toThrow(/caller-supplied relay binding/)
+    ).rejects.toThrow(/trusted caller-supplied relay descriptor/)
     expect(mockedAxios).toHaveBeenCalledTimes(callsBefore)
+    expect(signHash).not.toHaveBeenCalled()
 
     expect(() =>
       buildSignedDirectoryStatement(identity, {
-        relays: [
+        relayDescriptor: trustedMonadCborRelayDescriptor([
           {
             id: new Uint8Array(16),
             endpoint: 'https://relay.example',
             key: identity.compressedPubKey,
-            validUntilSeconds: 2_000_000_000n,
+            validUntil: { seconds: 2_000_000_000n, nanoseconds: 0 },
           },
-        ],
+        ]),
       }),
     ).toThrow(/non-zero 16-byte/)
+    expect(signHash).not.toHaveBeenCalled()
   })
 
   it('fails closed when CBOR frame has tampered signature', async () => {
@@ -807,7 +947,7 @@ describe('registerMonadIdentityCbor & dual-format CBOR/protobuf handling', () =>
     const cborFrame = buildSignedDirectoryStatement(identity, {
       network: 'monad-testnet',
       profile: { name: 'Eve' },
-      relays: [relayBinding()],
+      relayDescriptor: relayDescriptor(),
     })
 
     // Tamper with the last byte (part of signature)

@@ -306,6 +306,37 @@ pub struct VerifiedCborRegistration {
     pub type_4_frame: Vec<u8>,
 }
 
+/// Perform the bounded, canonical, predecessor-independent portion of candidate validation.
+/// Directory-update semantics and signatures intentionally remain for the later `Full` pass,
+/// after the address coordinator has re-read the actual stored predecessor.
+pub fn validate_cbor_account_registration_envelope(frame_bytes: &[u8]) -> Result<()> {
+    let ctx = frank_cbor::ValidationContext {
+        operation: frank_cbor::Operation::Generic,
+        route_byte_limit: 262_144,
+        reader_version: 2,
+        supported_schemas: frank_cbor::default_context().supported_schemas,
+        opaque_retention_allowed: false,
+        prior: frank_cbor::PriorStatement::Absent,
+    };
+    let parsed = match frank_cbor::validate_frame(frame_bytes, &ctx) {
+        Ok(frank_cbor::ValidationResult::Parsed(parsed)) => parsed,
+        Ok(_) => {
+            return Err(
+                InvalidCborFrame("candidate root was not generically parsed".to_string()).into(),
+            )
+        }
+        Err(err) => return Err(InvalidCborFrame(err.to_string()).into()),
+    };
+    if parsed.type_id != 2 {
+        return Err(InvalidCborFrame(format!(
+            "expected type 2 (DirectoryAttestation), got type {}",
+            parsed.type_id
+        ))
+        .into());
+    }
+    Ok(())
+}
+
 /// Verify that `frame_bytes` is a valid Frank-CBOR type-2 account registration attestation for
 /// `claimed_address` on `expected_network`. Stage 10.6 signature verification is performed over
 /// the type-4 directory statement with `Operation::Full`.

@@ -316,6 +316,13 @@ const frankBrowserCheckInstall = function () {
 
     // Account-registration corpus (README section 11): every case, including the full
     // operation's stage-10.6 signature verification, plus the pure-value M2/M3/M6 vectors.
+    const registrationIds = registration.cases.map(c => c.id)
+    if (
+      registrationIds.length !== 30 ||
+      registrationIds.join('\n') !==
+        registrationValues.manifest_case_ids.join('\n')
+    )
+      fail('registration', 'exact case inventory differs')
     const registrationCounts = { total: 0, accepted: 0, rejected: 0 }
     for (const c of registration.cases) {
       registrationCounts.total++
@@ -364,6 +371,25 @@ const frankBrowserCheckInstall = function () {
       registrationCounts.rejected === 0
     ) {
       fail('registration', 'implausible outcome split')
+    }
+    const t2a = registrationValues.key_transition_authorizations
+    if (t2a.length !== 1 || t2a[0].id !== 't2a-rust-secret-2') {
+      fail('T2a', 'exact known-answer inventory differs')
+    } else {
+      const v = t2a[0]
+      const digest = codec.keyTransitionSignatureDigest(
+        v.network,
+        codec.fromHex(v.transition_statement_frame_hex),
+      )
+      if (codec.toHex(digest) !== v.digest_hex) fail(v.id, 'T2a digest differs')
+      if (
+        !codec.verifyAlgorithm1(
+          digest,
+          codec.fromHex(v.signature_der_hex),
+          codec.fromHex(v.signer_public_key_hex),
+        )
+      )
+        fail(v.id, 'T2a signature does not verify')
     }
     for (const v of registrationValues.timestamp_mappings) {
       const ms = BigInt(v.timestamp_ms)

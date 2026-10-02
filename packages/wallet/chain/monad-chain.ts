@@ -564,7 +564,7 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
 
     const envelopeBytes = buildEnvelope({
       fromAddress: wallet.identity.address.raw,
-      fromPrivateKey: wallet.identity.toBitcorePrivateKey(),
+      fromPrivateKey: wallet.identity.toNakamotoPrivateKey(),
       toAddress: params.recipient.raw,
       toPubKey: Buffer.from(recipientProfile.pubKey),
       plaintext,
@@ -719,7 +719,7 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
           items = deserializeMessageItems(
             decryptEnvelope({
               envelope,
-              myPrivateKey: wallet.identity.toBitcorePrivateKey(),
+              myPrivateKey: wallet.identity.toNakamotoPrivateKey(),
               senderPubKey: Buffer.from(senderProfile.pubKey),
             })
           );

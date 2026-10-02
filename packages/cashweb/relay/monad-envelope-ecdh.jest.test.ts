@@ -12,6 +12,7 @@ import * as crypto from "crypto";
 import * as fs from "fs";
 import * as path from "path";
 
+import { privateKeyFromHex } from "@frank/nakamoto";
 import {
   PrivateKey,
   PublicKey,
@@ -68,6 +69,11 @@ const constructor_ = new PayloadConstructor({
 });
 const privateKey = (hex: string) =>
   PrivateKey.fromBuffer(Buffer.from(hex, "hex"), IDENTITY_KEY_NETWORK_NAME);
+const envelopeKey = (hex: string) => {
+  const key = privateKeyFromHex(hex, true);
+  if (!key.ok) throw new Error(key.error.code);
+  return key.value;
+};
 const publicKey = (hex: string) =>
   PublicKey.fromBuffer(Buffer.from(hex, "hex"));
 const addressA = "0x1111111111111111111111111111111111111111";
@@ -108,7 +114,7 @@ describe("ECDH shared point encoding (#309)", () => {
     ] as const) {
       const bytes = buildEnvelope({
         fromAddress: from,
-        fromPrivateKey: privateKey(fromPriv),
+        fromPrivateKey: envelopeKey(fromPriv),
         toAddress: to,
         toPubKey: Buffer.from(toPub, "hex"),
         plaintext: "hi",
@@ -122,7 +128,7 @@ describe("ECDH shared point encoding (#309)", () => {
       expect(
         decryptEnvelope({
           envelope,
-          myPrivateKey: privateKey(recipientPriv),
+          myPrivateKey: envelopeKey(recipientPriv),
           senderPubKey: senderPub,
         })
       ).toBe("hi");
@@ -148,14 +154,14 @@ describe("ECDH shared point encoding (#309)", () => {
     expect(
       decryptEnvelopeV2({
         envelope,
-        myPrivateKey: privateKey(issue.privB),
+        myPrivateKey: envelopeKey(issue.privB),
         senderPubKey: Buffer.from(issue.pubA, "hex"),
       })
     ).toBe(fixture.hkdf.plaintext);
     expect(
       decryptEnvelopeV2({
         envelope,
-        myPrivateKey: privateKey(issue.privA),
+        myPrivateKey: envelopeKey(issue.privA),
         senderPubKey: Buffer.from(issue.pubB, "hex"),
       })
     ).toBe(fixture.hkdf.plaintext);
@@ -170,7 +176,7 @@ describe("ECDH shared point encoding (#309)", () => {
       const envelope = parseEnvelope(
         buildEnvelope({
           fromAddress: addressA,
-          fromPrivateKey: privateKey(pair.privA),
+          fromPrivateKey: envelopeKey(pair.privA),
           toAddress: addressB,
           toPubKey: Buffer.from(pair.pubB, "hex"),
           plaintext: "canonical writer",
@@ -226,7 +232,7 @@ describe("ECDH shared point encoding (#309)", () => {
         const envelope = parseEnvelope(
           buildEnvelope({
             fromAddress: from,
-            fromPrivateKey: privateKey(fromPriv),
+            fromPrivateKey: envelopeKey(fromPriv),
             toAddress: to,
             toPubKey: Buffer.from(toPub, "hex"),
             plaintext: "round trip",
@@ -237,7 +243,7 @@ describe("ECDH shared point encoding (#309)", () => {
         expect(
           tryDecryptEnvelope({
             envelope,
-            myPrivateKey: privateKey(toPriv),
+            myPrivateKey: envelopeKey(toPriv),
             senderPubKey: Buffer.from(fromPub, "hex"),
           })
         ).toBe("round trip");
@@ -298,7 +304,7 @@ describe("ECDH shared point encoding (#309)", () => {
       const envelope = parseEnvelope(
         buildEnvelope({
           fromAddress: addressA,
-          fromPrivateKey: privates[i],
+          fromPrivateKey: envelopeKey(secrets[i].toString("hex")),
           toAddress: addressB,
           toPubKey: rawPublics[j],
           plaintext: `pair ${i} ${j}`,
@@ -309,7 +315,7 @@ describe("ECDH shared point encoding (#309)", () => {
       expect(
         decryptEnvelope({
           envelope,
-          myPrivateKey: privates[j],
+          myPrivateKey: envelopeKey(secrets[j].toString("hex")),
           senderPubKey: rawPublics[i],
         })
       ).toBe(`pair ${i} ${j}`);
@@ -329,7 +335,7 @@ describe("pre-#309 envelopes stay readable", () => {
         expect(
           decryptEnvelope({
             envelope,
-            myPrivateKey: privateKey(recipientPriv),
+            myPrivateKey: envelopeKey(recipientPriv),
             senderPubKey: Buffer.from(senderPub, "hex"),
           })
         ).toBe(side.plaintext);
@@ -365,7 +371,7 @@ describe("pre-#309 envelopes stay readable", () => {
         envelope.ciphertext.slice(1),
     };
     const args = {
-      myPrivateKey: privateKey(pair.privB),
+      myPrivateKey: envelopeKey(pair.privB),
       senderPubKey: Buffer.from(pair.pubA, "hex"),
     };
     expect(decryptEnvelopeV2({ envelope, ...args })).toBe(pair.aToB.plaintext);
@@ -381,7 +387,7 @@ describe("pre-#309 envelopes stay readable", () => {
     expect(() =>
       decryptEnvelopeV2({
         envelope,
-        myPrivateKey: privateKey("33".repeat(32)),
+        myPrivateKey: envelopeKey("33".repeat(32)),
         senderPubKey: args.senderPubKey,
       })
     ).toThrow("Monad envelope authentication failed");
@@ -425,7 +431,7 @@ describe("pre-#309 envelopes stay readable", () => {
       expect(
         decryptEnvelope({
           envelope,
-          myPrivateKey: privateKey(pair.privB),
+          myPrivateKey: envelopeKey(pair.privB),
           senderPubKey: Buffer.from(pair.pubA, "hex"),
         })
       ).toBe("v1 hello, long enough text");

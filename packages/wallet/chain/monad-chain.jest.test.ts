@@ -13,7 +13,7 @@
  * `directMessages.send`/`fetchSince` actually encrypt/decrypt, not merely pass a plaintext through.
  */
 import { Wallet, getBytes, hexlify } from "ethers";
-import { crypto as bitcoreCrypto } from "bitcore-lib-xpi";
+import { PublicKey, crypto as bitcoreCrypto } from "bitcore-lib-xpi";
 
 import { MonadIdentity } from "../monad-identity";
 import { StoredMonadMessageProto } from "../monad-stamp-client";
@@ -503,7 +503,7 @@ describe("createMonadChain: directMessages.send", () => {
       JSON.parse(
         decryptEnvelope({
           envelope: envelope!,
-          myPrivateKey: alice.toBitcorePrivateKey(),
+          myPrivateKey: alice.toNakamotoPrivateKey(),
           senderPubKey: alice.compressedPubKey,
         })
       )
@@ -744,7 +744,7 @@ describe("createMonadChain: directMessages.fetchSince", () => {
     );
     const encryptedPayload: Uint8Array = buildEnvelope({
       fromAddress: alice.address.raw,
-      fromPrivateKey: alice.toBitcorePrivateKey(),
+      fromPrivateKey: alice.toNakamotoPrivateKey(),
       toAddress: bob.address.raw,
       toPubKey: bob.compressedPubKey,
       plaintext: serializeMessageItems([{ type: "text", text: "poison" }]),
@@ -752,7 +752,7 @@ describe("createMonadChain: directMessages.fetchSince", () => {
     });
     const validPayload: Uint8Array = buildEnvelope({
       fromAddress: alice.address.raw,
-      fromPrivateKey: alice.toBitcorePrivateKey(),
+      fromPrivateKey: alice.toNakamotoPrivateKey(),
       toAddress: bob.address.raw,
       toPubKey: bob.compressedPubKey,
       plaintext: serializeMessageItems([{ type: "text", text: "real mail" }]),
@@ -817,7 +817,7 @@ describe("createMonadChain: directMessages.fetchSince", () => {
     );
     const encryptedPayload: Uint8Array = buildEnvelope({
       fromAddress: alice.address.raw,
-      fromPrivateKey: alice.toBitcorePrivateKey(),
+      fromPrivateKey: alice.toNakamotoPrivateKey(),
       toAddress: bob.address.raw,
       toPubKey: bob.compressedPubKey,
       plaintext: serializeMessageItems([{ type: "text", text: "retry me" }]),
@@ -865,7 +865,7 @@ describe("createMonadChain: directMessages.fetchSince", () => {
     const envelope = (plaintext: string): Uint8Array =>
       buildEnvelope({
         fromAddress: alice.address.raw,
-        fromPrivateKey: alice.toBitcorePrivateKey(),
+        fromPrivateKey: alice.toNakamotoPrivateKey(),
         toAddress: bob.address.raw,
         toPubKey: bob.compressedPubKey,
         plaintext,
@@ -924,7 +924,7 @@ describe("createMonadChain: directMessages.fetchSince", () => {
     const items: MessageItem[] = [{ type: "text", text: "hi bob" }];
     const envelopeBytes: Uint8Array = buildEnvelope({
       fromAddress: alice.address.raw,
-      fromPrivateKey: alice.toBitcorePrivateKey(),
+      fromPrivateKey: alice.toNakamotoPrivateKey(),
       toAddress: bob.address.raw,
       toPubKey: bob.compressedPubKey,
       plaintext: serializeMessageItems(items),
@@ -998,7 +998,7 @@ describe("createMonadChain: directMessages.fetchSince", () => {
       bitcoreCrypto.ECDSA.verify(
         Buffer.from(digest),
         bitcoreCrypto.Signature.fromDER(der),
-        bob.toBitcorePrivateKey().toPublicKey()
+        PublicKey.fromBuffer(bob.compressedPubKey)
       )
     ).toBe(true);
     expect(received).toHaveLength(1);
@@ -1042,7 +1042,7 @@ describe("createMonadChain: directMessages.fetchSince", () => {
     );
     const envelopeBytes: Uint8Array = buildEnvelope({
       fromAddress: alice.address.raw,
-      fromPrivateKey: alice.toBitcorePrivateKey(),
+      fromPrivateKey: alice.toNakamotoPrivateKey(),
       toAddress: eve.address.raw,
       toPubKey: eve.compressedPubKey,
       plaintext: serializeMessageItems([{ type: "text", text: "not for bob" }]),

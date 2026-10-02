@@ -176,7 +176,7 @@ describe('blackjack move authorization', () => {
     const envelope = parseEnvelope(
       buildEnvelope({
         fromAddress: playerIdentity.displayAddress,
-        fromPrivateKey: playerIdentity.toBitcorePrivateKey(),
+        fromPrivateKey: playerIdentity.toNakamotoPrivateKey(),
         toAddress: dealerIdentity.displayAddress,
         toPubKey: dealerIdentity.compressedPubKey,
         plaintext: serializeMessageItems([rawMove]),
@@ -185,7 +185,7 @@ describe('blackjack move authorization', () => {
     )!
     const decrypted = tryDecryptEnvelope({
       envelope,
-      myPrivateKey: dealerIdentity.toBitcorePrivateKey(),
+      myPrivateKey: dealerIdentity.toNakamotoPrivateKey(),
       senderPubKey: playerIdentity.compressedPubKey,
     })
     expect(decrypted).toBeDefined()

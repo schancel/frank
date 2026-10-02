@@ -200,7 +200,7 @@ async function main() {
 
         const rawPlaintext = tryDecryptEnvelope({
           envelope: envelopeIn,
-          myPrivateKey: identity.toBitcorePrivateKey(),
+          myPrivateKey: identity.toNakamotoPrivateKey(),
           senderPubKey: botPubKey,
         })
         if (rawPlaintext === undefined) continue

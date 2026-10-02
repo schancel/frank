@@ -14,7 +14,8 @@ cryptographic or side-channel audit, and must not protect assets of real value.
 
 The plugin should demonstrate that Frank can provide the private, authenticated transport and
 durable state machine for a swap while the participating chains enforce settlement. The design
-should eventually cover the Cartesian product of three chain families:
+should eventually cover every unordered pairing, including same-family pairings, among three chain
+families:
 
 1. EVM account chains, initially Monad and later Ethereum-compatible networks;
 2. eCash/BCH-family UTXO chains; and
@@ -41,9 +42,12 @@ truth, or remain available after the parties have exchanged all settlement artif
 
 ## Terminology
 
-**Party A** initially offers eCash and receives the EVM or Solana asset. **Party B** initially
-offers the account-chain asset and receives eCash. Pair-specific sections may use more descriptive
-names where needed.
+**Party A** and **Party B** are pair-local protocol roles assigned in `Offer` and `Accept` and
+committed in the transcript before artifacts are derived. `sideA` and `sideB` each identify a chain,
+network, and asset instance; A offers `sideA` and receives `sideB`, while B does the inverse. A pair
+policy may require a deterministic initiator/responder or identity ordering, but both peers must
+derive the same assignment. In the initial eCash/Monad policy, A offers XEC and B offers MON.
+Asset-leg names should be used where a generic A/B label would be ambiguous.
 
 A **lane** is the smallest independently scoped exchange of two specified amounts. It has its own
 chain objects, deadlines or explicit absence of a refund deadline, settlement evidence, and normally
@@ -93,13 +97,15 @@ mode may put B's own principal at unverifiable grief risk because A still cannot
 
 For a recoverable mode, assuming each chain satisfies the negotiated finality model, an online party
 or its delegated watcher can eventually claim or refund without further cooperation. A griefable
-mode explicitly does not satisfy this property. Liveness assumptions must name:
+mode explicitly does not satisfy this property. Liveness assumptions must name the universal items
+below and every item applicable to a chain adapter or custody mechanism used by the pair. An absent
+mechanism is recorded as reviewed `not applicable`, not given a fictional value:
 
 - confirmation or finality thresholds;
 - safe claim cutoffs before refund deadlines;
 - fee-bumping strategy;
-- EVM nonce and balance reservations;
-- Solana blockhash or durable-nonce policy; and
+- EVM nonce and balance reservations, when an EVM leg is present;
+- Solana blockhash or durable-nonce policy, when a Solana leg is present; and
 - maximum tolerated RPC, relay, and watcher outages.
 
 ### Finality assumptions
@@ -287,19 +293,24 @@ higher ones. Transactions sharing an EVM nonce are alternatives, not parallel sw
 A coupled bundle uses one secret, or cryptographically linked secrets, to make all prepared legs
 completable after any settlement reveals the capability. This can make uneven lanes fair only as a
 whole. It does not force miners, validators, or participants to broadcast every leg. Before the
-secret is exposed:
+first **settlement revelation**—a publication or delivery that expands which actors can exercise or
+derive a settlement capability:
 
 1. every funding object must be final enough for the selected policy;
 2. every counterparty must hold every required completion artifact;
 3. account nonces, balances, and durable nonces must remain reserved; and
 4. watchers must be able to submit all remaining legs with adequate fees.
 
-“Exposed” includes knowledge held by the party that generated a capability. For every initial
-capability holder, the manifest defines a funding partial order under which all of that holder's
-offered legs become final and non-invalidatable before any incoming leg becomes claimable by that
-holder. The honest counterparty withholds its funding object, parent transaction, signature, account
-authorization, or another indispensable spend artifact until that condition holds. A cyclic order
-with no such cryptographic or consensus gate is invalid and cannot enter `ReadyToFund`.
+Initial controlled possession by the party that generated a capability is not a settlement
+revelation; it is governed by an exercise gate instead. The manifest computes the transitive
+capability-knowledge and derivation closure for every possible reveal prefix. For every party and
+every capability it initially holds or can derive at that prefix, all of that party's outgoing
+obligations unlocked by those capabilities must be final and non-invalidatable before any incoming
+leg becomes exercisable by that party. Counterparties withhold a funding object, parent transaction,
+signature, account authorization, or another indispensable spend artifact until the relevant gate
+holds. A cyclic dependency with no cryptographic or consensus gate is invalid and cannot enter
+`ReadyToFund`. Generating a capability does not itself invalidate the bundle, but it must not create
+an ungated exercise option.
 
 At `ReadyToSettle`, deadline ordering must be acyclic. For every revelation leg `r` and remaining
 leg `j`, the manifest must establish, in a common conservative time model:
@@ -329,8 +340,9 @@ of knowledge requirement must be retained, and multi-party reuse needs independe
 
 A multi-user match should clear at a common rational price or divide into independently fair lanes.
 No participant may depend on another participant's excess value to make its own lane fair. A user
-who goes offline after funding must be replaceable by a watcher holding already-authorized
-transactions; otherwise the group has only a cooperative batch, not an atomic one.
+who goes offline at or beyond the conservative authorization cutoff must be replaceable by a
+watcher holding already-authorized transactions; otherwise the group has only a cooperative batch,
+not an atomic one.
 
 ## Chain capability model
 
@@ -607,17 +619,19 @@ assumption. Finality failures remain bounded only by the negotiated reorg model.
 ### Implementation stages
 
 **Stage 0: deterministic transcript.** Run the full plugin state machine with deterministic fake
-chain adapters. Abort at every transition. In recoverable mode, prove that no funded state lacks a
-unilateral recovery plan. In griefable mode, prove that disappearance cannot let either party profit
-unilaterally and surface the permanent-lock outcome explicitly.
+chain adapters. Abort at every transition. In recoverable mode, prove that no state at or beyond the
+conservative authorization cutoff—including an unknown funding outcome—lacks a unilateral recovery
+plan. In griefable mode, prove that disappearance cannot let either party profit unilaterally and
+surface the permanent-lock outcome explicitly.
 
 **Stage 1: cryptographic compatibility.** Connect exact eCash and Monad digests to adaptor signing,
 completion, ordinary chain verification, and extraction. Establish deterministic vectors for both
 signature encodings. No funds are broadcast.
 
 **Stage 2: cooperative testnet demonstration.** Broadcast one native-asset lane with disposable
-testnet keys. Demonstrate normal completion and every pre-funding abort. Label the EVM trust
-assumption if custody is still unilateral.
+testnet keys. Demonstrate normal completion, terminal aborts strictly before the conservative
+authorization cutoff, and recovery/watchers at or after the cutoff including unknown funding
+outcomes. Label the EVM trust assumption if custody is still unilateral.
 
 **Stage 3: adversarial conditional custody.** Implement and attack the conditional key-share flow
 above. Exercise malformed shares, nonce invalidation, conflicting spends, stale fees, restart,
@@ -769,7 +783,8 @@ Solana system account.
 
 ## Failure and race analysis
 
-Every pair-specific implementation must test at least these cases:
+Every pair-specific implementation must test every applicable case below and record a reviewed
+`not applicable` entry for each omitted chain adapter, custody mechanism, or cryptographic primitive:
 
 - peer disappears before accepting;
 - peer disappears after exchanging keys or proofs;
@@ -853,10 +868,12 @@ custody, its delegated-liveness claim remains unsatisfied. Capability tests assu
 untrusted watcher and prove it cannot redirect value, act before its trigger, exceed fees, or affect
 another lane.
 
-Changing the active Frank account does not delete or orphan funded swap state. Account replacement
-is blocked while nonterminal obligations exist unless their account-bound journal and capabilities
-are atomically detached into a watcher store with a durably verified resume path. A Codex32 master
-does not regenerate swap-session nonces, adaptor secrets, or already-authorized transactions.
+Changing the active Frank account does not delete or orphan an operation at or beyond its
+conservative authorization cutoff, including one with an unknown funding or dispatch outcome.
+Account replacement is blocked while such nonterminal obligations exist unless their account-bound
+journal and capabilities are atomically detached into a watcher store with a durably verified resume
+path. A Codex32 master does not regenerate swap-session nonces, adaptor secrets, or already-authorized
+transactions.
 
 ## Verification plan
 
@@ -869,13 +886,16 @@ The first implementation should provide:
 5. tests proving mutation of every bound transaction field invalidates acceptance;
 6. crash/restart tests on both sides of every durable commit, relay send, chain broadcast, secret
    observation, and acknowledgement;
-7. abort tests at every state, proving pre-funding cleanup and post-funding watcher survival;
+7. abort tests at every state, proving terminal cleanup only before the conservative authorization
+   cutoff and watcher/recovery survival at or after it, including unknown funding outcomes;
 8. chain reorganization simulations before and after counter-leg finality, including rollback beyond
    the declared assumption;
 9. multi-lane tests over every reachable success/refund subset using net values and worst-case fees,
-   plus late revelation against the slowest coupled leg; for every partial-funding prefix, give each
-   initial capability holder every exchanged completion artifact and prove it cannot claim incoming
-   value until all of its outgoing obligations are final;
+   plus late revelation against the slowest coupled leg; for every partial-funding and
+   reveal/derivation prefix, compute the transitive capability closure, give every newly empowered
+   party all exchanged completion artifacts, and prove it cannot claim incoming value until all of
+   its outgoing obligations are final; capability generation alone remains a valid prefix but never
+   creates an ungated exercise option;
 10. account-replacement tests proving every old-account swap at or beyond its conservative
     authorization cutoff—including unknown funding outcomes—retains the mode-specific claim, refund,
     monitoring, and cooperative-salvage capabilities after restart, or replacement is blocked;
@@ -911,9 +931,10 @@ The first implementation should provide:
     but the revelation leg cannot itself reach finality and reorg margin before its refund, including
     equality and one-unit failures.
 
-Passing functional tests is not a substitute for cryptographic review. Threshold ECDSA,
-cross-curve proofs, adaptor-point reuse, and the final settlement state machine require independent
-review before moving beyond a research demonstration.
+Passing functional tests is not a substitute for cryptographic review. Each threshold-signature
+scheme, cross-curve proof, adaptor-point reuse pattern, or other primitive actually used by a
+pair—and the final settlement state machine—requires independent review before moving beyond a
+research demonstration.
 
 ## Decisions recorded
 

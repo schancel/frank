@@ -444,7 +444,7 @@ export default {
     receiveMonad: 'Recevoir des MON',
     profile: 'Profil',
     settings: 'Configuration',
-    wipeAndSave: 'Consolidation du portefeuille',
+    wipeAndSave: 'Supprimer les messages du relais',
     changeLog: 'Journal des modifications',
     showSeed: 'Montrer la phrase de passe',
     confirmSeed: 'Confirmer la phrase de récupération',
@@ -539,13 +539,13 @@ export default {
     profile: 'Profil',
   },
   wipeWallet: {
-    warning: 'ATTENTION!',
+    warning: 'Supprimer tous les messages du relais ?',
     warningMsg:
-      'Cette opération va effacer tous les messages du serveur et consolider les fonds associés dans votre wallet (celui dont vous avez la phrase de passe)',
-    cannotBeUndone: 'Cette opération ne peut pas être annulée !',
+      'Cette opération supprime définitivement tous les messages stockés sur le serveur relais, ainsi que les copies locales dans cette application. Votre portefeuille, votre phrase de récupération et vos fonds ne sont pas concernés.',
+    cannotBeUndone: 'Cette opération est irréversible.',
     cancel: 'Annuler',
-    wipe: 'Effacer tout le contenu distant', //?Wipe All Remote Content
-    spinnerText: 'Effacer tous les messages',
+    wipe: 'Supprimer tous les messages',
+    spinnerText: 'Suppression des messages…',
   },
   seedPhraseDialog: {
     close: 'Fermer',

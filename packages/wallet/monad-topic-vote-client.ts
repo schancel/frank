@@ -111,7 +111,14 @@
  *     `MonadTopicVoteAbandonedError` so the caller knows the outcome is genuinely unresolved —
  *     never silently assumed confirmed or failed.
  */
-import { Provider, concat, getBytes, hexlify } from 'ethers'
+import {
+  Provider,
+  Transaction,
+  concat,
+  getAddress,
+  getBytes,
+  hexlify,
+} from 'ethers'
 import axios from 'axios'
 
 import __pb_topic_message_pb from './topic_message_pb'
@@ -130,6 +137,11 @@ import {
   SignedMonadTx,
 } from './monad-account-tx'
 import { MonadWalletHandle } from './monad-wallet-handle'
+import type { MonadWalletOperationAdmission } from './storage/monad-wallet-bundle'
+import type {
+  OutgoingTopicOperation,
+  TopicOperationJournal,
+} from './storage/topic-operation-journal'
 
 /** `cashweb_registry::monad_topic_verify::TOPIC_VOTE_LOKAD_ID` (`monad_topic_verify.rs` line 94,
  * `*b"TPIC"`) — distinct from Stamp's `"POND"`/`"STMP"` LOKAD IDs. */
@@ -329,6 +341,8 @@ export class MonadTopicVoteClient {
   private readonly leaseManager: SubAccountLeaseManager
   private readonly provider: Provider
   private readonly httpClient: MonadTxSubmitter
+  private readonly walletState: MonadWalletHandle['walletState']
+  private readonly topicJournal: TopicOperationJournal | undefined
   /** Base URL of the `cashweb-registry` relay, e.g. `https://relay.example.com` — no trailing
    * slash. `/message/monad/topics/vote` (`PUT`) is appended to it. */
   private readonly relayBaseUrl: string
@@ -338,6 +352,8 @@ export class MonadTopicVoteClient {
     this.leaseManager = params.leaseManager
     this.provider = params.provider
     this.httpClient = params.httpClient
+    this.walletState = params.walletState
+    this.topicJournal = params.topicOperationJournal
     this.relayBaseUrl = params.relayBaseUrl.replace(/\/+$/, '')
   }
 
@@ -358,6 +374,30 @@ export class MonadTopicVoteClient {
     return decodeStoredMonadTopicVoteEntry(new Uint8Array(response.data))
   }
 
+  private assertStoredMatches(
+    stored: StoredMonadTopicVoteEntryProto,
+    operation: OutgoingTopicOperation,
+  ): void {
+    const expectedWeight =
+      operation.direction === 'up'
+        ? BigInt(operation.valueWei)
+        : -BigInt(operation.valueWei)
+    if (
+      operation.kind !== 'vote' ||
+      expectedWeight > BigInt(Number.MAX_SAFE_INTEGER) ||
+      expectedWeight < BigInt(Number.MIN_SAFE_INTEGER) ||
+      hexlify(stored.targetPayloadHash).slice(2).toLowerCase() !==
+        operation.targetPayloadHashHex.toLowerCase() ||
+      stored.senderAddress.length !== 20 ||
+      getAddress(hexlify(stored.senderAddress)) !==
+        getAddress(operation.senderAddress) ||
+      hexlify(stored.txHash).toLowerCase() !== operation.txHash.toLowerCase() ||
+      stored.weight !== Number(expectedWeight)
+    ) {
+      throw new Error('Relay returned a mismatched topic-vote result')
+    }
+  }
+
   /**
    * Casts `params.direction`-weighted vote of `params.voteWeightWei` against
    * `params.targetPayloadHash`: builds the calldata, leases a sub-account, builds+signs the burn
@@ -367,7 +407,23 @@ export class MonadTopicVoteClient {
    * {@link MonadTopicVoteAbandonedError} if a network failure left the outcome unresolved (no
    * read-back fallback is available in this ticket's scope — see header).
    */
-  async castVote(params: CastTopicVoteParams): Promise<CastTopicVoteResult> {
+  async castVote(
+    params: CastTopicVoteParams,
+    admission?: MonadWalletOperationAdmission,
+  ): Promise<CastTopicVoteResult> {
+    if (this.walletState !== undefined) {
+      return this.walletState.runOperation(
+        admitted => this.castVoteAdmitted(params, admitted),
+        admission,
+      )
+    }
+    return this.castVoteAdmitted(params, admission)
+  }
+
+  private async castVoteAdmitted(
+    params: CastTopicVoteParams,
+    admission?: MonadWalletOperationAdmission,
+  ): Promise<CastTopicVoteResult> {
     if (params.targetPayloadHash.length !== 32) {
       throw new Error(
         `targetPayloadHash must be exactly 32 bytes, got ${params.targetPayloadHash.length}`,
@@ -394,6 +450,7 @@ export class MonadTopicVoteClient {
             params.waitForLease,
           )
         : this.leaseManager.acquireLease()
+    await this.leaseManager.flush()
 
     let signedTx: SignedMonadTx
     try {
@@ -413,6 +470,7 @@ export class MonadTopicVoteClient {
       // Nothing was signed, broadcast or sent to the relay, so the account still holds its funds
       // and an untouched nonce: hand it back so a retry reuses it instead of funding another.
       this.leaseManager.releaseLease(handle, 'unused')
+      await this.leaseManager.flush()
       throw new BurnNotSentError(
         err instanceof Error ? err.message : String(err),
         err,
@@ -424,9 +482,46 @@ export class MonadTopicVoteClient {
       rawBurnTx: getBytes(signedTx.rawTx),
     }
 
+    const operation: OutgoingTopicOperation = {
+      version: 1,
+      kind: 'vote',
+      requestBytes: Array.from(encodeMonadTopicVote(vote)),
+      leaseIndex: handle.index,
+      senderAddress: signedTx.from,
+      rawTx: signedTx.rawTx,
+      txHash: signedTx.txHash,
+      valueWei: signedTx.value.toString(),
+      direction: params.direction,
+      targetPayloadHashHex,
+    }
+    // Journal the exact signed authority before the separate pool checkpoint. Startup can repair
+    // the latter from this validated operation without broadcasting until both are durable.
+    await this.topicJournal?.put(operation)
+    this.pool.recordSpendTransaction(handle.index, {
+      rawTx: signedTx.rawTx,
+      txHash: signedTx.txHash,
+      valueWei: signedTx.value.toString(),
+    })
+    await this.pool.flush()
+
     try {
       const stored = await this.putTopicVote(vote)
+      if (this.topicJournal !== undefined) {
+        try {
+          this.assertStoredMatches(stored, operation)
+        } catch {
+          throw new MonadTopicVoteAbandonedError(
+            'Relay returned a mismatched topic-vote result',
+            targetPayloadHashHex,
+          )
+        }
+      }
       this.leaseManager.releaseLease(handle, 'confirmed')
+      await this.leaseManager.flush()
+      await this.topicJournal?.delete(operation)
+      if (admission !== undefined) {
+        await this.walletState?.compactTerminalAccounts(8, admission)
+      }
       return {
         stored,
         targetPayloadHashHex,
@@ -434,8 +529,11 @@ export class MonadTopicVoteClient {
         leaseIndex: handle.index,
       }
     } catch (err) {
+      if (err instanceof MonadTopicVoteAbandonedError) throw err
       if (axios.isAxiosError(err) && err.response) {
         this.leaseManager.releaseLease(handle, 'failed')
+        await this.leaseManager.flush()
+        await this.topicJournal?.delete(operation)
         throw new MonadTopicVoteRejectedError(
           `Relay rejected the Monad topic vote (HTTP ${err.response.status})`,
           err.response.status,
@@ -448,13 +546,84 @@ export class MonadTopicVoteClient {
       // `GET /message/monad/topics/:payload_hash` route in this ticket's scope to poll for
       // disambiguation (ticket #33, not yet built) — retire and surface the ambiguity rather than
       // guessing either way.
-      this.leaseManager.releaseLease(handle, 'stuck')
+      if (this.topicJournal === undefined) {
+        this.leaseManager.releaseLease(handle, 'stuck')
+        await this.leaseManager.flush()
+      }
       throw new MonadTopicVoteAbandonedError(
-        'The relay did not respond, so it is unknown whether your vote was recorded. ' +
-          'Check the post before voting again: a retry could burn a second time. ' +
-          `(target ${targetPayloadHashHex})`,
+        'Monad topic vote submission abandoned: no response from the relay, and no read-back ' +
+          `route is available in this ticket's scope to confirm whether ${targetPayloadHashHex}'s ` +
+          'vote landed',
         targetPayloadHashHex,
       )
     }
+  }
+
+  async resumePendingOperations(
+    admission?: MonadWalletOperationAdmission,
+  ): Promise<void> {
+    if (this.walletState === undefined || this.topicJournal === undefined)
+      return
+    return this.walletState.runOperation(async admitted => {
+      for (const operation of this.topicJournal!.getAll()) {
+        if (operation.kind !== 'vote') continue
+        const transaction = Transaction.from(operation.rawTx)
+        const vote = decodeMonadTopicVote(
+          Uint8Array.from(operation.requestBytes),
+        )
+        let authorityRecord = this.pool.getRecord(operation.leaseIndex)
+        if (
+          transaction.hash?.toLowerCase() !== operation.txHash.toLowerCase() ||
+          transaction.from === null ||
+          getAddress(transaction.from) !==
+            getAddress(operation.senderAddress) ||
+          transaction.value.toString() !== operation.valueWei ||
+          hexlify(vote.rawBurnTx).toLowerCase() !==
+            transaction.serialized.toLowerCase() ||
+          toBareHex(vote.targetPayloadHash) !==
+            operation.targetPayloadHashHex ||
+          authorityRecord === undefined ||
+          getAddress(authorityRecord.address) !==
+            getAddress(operation.senderAddress)
+        ) {
+          throw new Error('Invalid durable topic-vote operation authority')
+        }
+        if (authorityRecord.lifecycle?.spend === undefined) {
+          if (authorityRecord.status !== 'in-use') {
+            throw new Error('Invalid durable topic-vote operation authority')
+          }
+          this.pool.recordSpendTransaction(operation.leaseIndex, {
+            rawTx: operation.rawTx,
+            txHash: operation.txHash,
+            valueWei: operation.valueWei,
+          })
+          await this.pool.flush()
+          authorityRecord = this.pool.getRecord(operation.leaseIndex)
+        }
+        if (
+          authorityRecord?.lifecycle?.spend?.rawTx.toLowerCase() !==
+          operation.rawTx.toLowerCase()
+        ) {
+          throw new Error('Invalid durable topic-vote operation authority')
+        }
+        if (
+          authorityRecord.status === 'spent' ||
+          authorityRecord.status === 'retired'
+        ) {
+          await this.topicJournal!.delete(operation)
+          await this.walletState!.compactTerminalAccounts(8, admitted)
+          continue
+        }
+        if (authorityRecord.status !== 'in-use') {
+          throw new Error('Invalid durable topic-vote operation authority')
+        }
+        const stored = await this.putTopicVote(vote)
+        this.assertStoredMatches(stored, operation)
+        this.pool.setStatus(operation.leaseIndex, 'spent')
+        await this.pool.flush()
+        await this.topicJournal!.delete(operation)
+        await this.walletState!.compactTerminalAccounts(8, admitted)
+      }
+    }, admission)
   }
 }

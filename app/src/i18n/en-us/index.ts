@@ -230,6 +230,7 @@ export default {
   },
   walletPanel: {
     title: 'Wallets',
+    mainWallet: 'Main wallet',
     monad: 'Monad',
     send: 'Send MON',
     receive: 'Receive MON',

@@ -4,6 +4,7 @@ import { shallowMount } from '@vue/test-utils'
 import { defineComponent, nextTick, ref } from 'vue'
 
 const runtime = { legacy: false }
+const mockRoute = { path: '/' }
 const balance = {
   formattedBalance: ref('1 MON'),
   loaded: ref(true),
@@ -11,7 +12,7 @@ const balance = {
 }
 
 jest.mock('vue-router', () => ({
-  useRoute: () => ({ path: '/' }),
+  useRoute: () => mockRoute,
   useRouter: () => ({ push: jest.fn() }),
 }))
 jest.mock('src/stores/chats', () => ({
@@ -78,6 +79,7 @@ function mountDrawer(setup = true, relayConnected = true) {
 describe('LeftDrawer Wallet rail tab (#399)', () => {
   beforeEach(() => {
     runtime.legacy = false
+    mockRoute.path = '/'
     balance.formattedBalance.value = '1 MON'
     balance.loaded.value = true
     balance.hasError.value = false
@@ -107,6 +109,19 @@ describe('LeftDrawer Wallet rail tab (#399)', () => {
     expect(html.indexOf('rail-tab-wallet')).toBeLessThan(
       html.indexOf('rail-tab-settings'),
     )
+  })
+
+  it('forces the rail highlight onto the picked page on navigation (#570)', () => {
+    const vm = (w: ReturnType<typeof mountDrawer>) =>
+      w.vm as unknown as { tab: string }
+
+    mockRoute.path = '/wallet'
+    expect(vm(mountDrawer()).tab).toBe('wallet')
+    mockRoute.path = '/forum'
+    expect(vm(mountDrawer()).tab).toBe('forum')
+    // Other routes never override the highlight (a later direct click must win).
+    mockRoute.path = '/chat/addr1'
+    expect(vm(mountDrawer()).tab).toBe('contacts')
   })
 
   it('hides the legacy footer until setup is complete', () => {

@@ -234,6 +234,7 @@ export default {
   },
   walletPanel: {
     title: 'Portefeuilles',
+    mainWallet: 'Portefeuille principal',
     monad: 'Monad',
     send: 'Envoyer des MON',
     receive: 'Recevoir des MON',

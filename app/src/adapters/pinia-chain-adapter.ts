@@ -40,8 +40,12 @@ import {
   MonadMailboxUnavailableError,
 } from '@frank/cashweb/relay/monad-mailbox-client'
 import type { ReceivedMessageWrapper } from '@frank/cashweb/types/user-interface'
+import {
+  isSafeRelayTimestamp,
+  type RelayReceiptIdentity,
+} from '@frank/cashweb/relay/storage/storage'
 import { profilePubKeyFromBytes } from '../utils/profile-pubkey'
-import { useChatStore } from '../stores/chats'
+import { useChatStore, walletOwnsMessage } from '../stores/chats'
 import { useMailboxStatusStore } from '../stores/mailbox-status'
 
 /** Default direct-message poll interval, in milliseconds -- within issue #42's suggested 5-10s
@@ -58,6 +62,13 @@ export const MAX_MAILBOX_UNAVAILABLE_BACKOFF_MS = 60_000
 export async function toReceivedMessageWrapper(
   record: DirectMessageReceived,
 ): Promise<ReceivedMessageWrapper | undefined> {
+  const receivedTime: unknown = record.receivedTime
+  if (!isSafeRelayTimestamp(receivedTime)) {
+    console.error(
+      `direct-message polling: unsafe relay timestamp, skipping message ${record.payloadDigest}`,
+    )
+    return undefined
+  }
   const senderProfile = await activeChain.fetchProfile(record.senderAddress)
   if (senderProfile === undefined) {
     console.error(
@@ -104,10 +115,11 @@ export interface DirectMessagePolling {
  * `intervalMs` (default {@link DEFAULT_DIRECT_MESSAGE_POLL_INTERVAL_MS}). Returns a handle to
  * `stop()` the loop (e.g. on logout/wallet teardown).
  *
- * `sinceMs` is tracked locally, seeded from `chats.getLastReceived` (persisted across reloads --
- * see `stores/chats.ts`'s own `storage.save`) so a fresh page load doesn't refetch a wallet's
- * entire message history, and advanced to the newest `receivedTime` seen after each successful
- * poll that returned results.
+ * `sinceMs` is recipient-identity scoped. Its durable authority is derived by the message store
+ * from the relay receipts themselves (there is no separately persisted cursor row, so saved
+ * progress can never outrun a receipt that a browser crash lost). In-session, the value here
+ * advances only after the corresponding relay receipts have been saved (or durably quarantined),
+ * never from local/outbound message clocks.
  */
 export function startDirectMessagePolling({
   wallet,
@@ -118,7 +130,11 @@ export function startDirectMessagePolling({
 }): DirectMessagePolling {
   const chats = useChatStore()
   const mailboxStatus = useMailboxStatusStore()
-  let sinceMs = chats.getLastReceived ?? 0
+  const recipientAddress = activeChain.formatAddress(wallet.identity.address)
+  let sinceMs = 0
+  const cursorReady = chats.relayCursor(recipientAddress).then(cursor => {
+    sinceMs = cursor
+  })
   let stopped = false
   let timer: ReturnType<typeof setTimeout> | undefined
   let unavailableFailures = 0
@@ -132,6 +148,13 @@ export function startDirectMessagePolling({
     let nextDelayMs = intervalMs
     let steady = true
     try {
+      await cursorReady
+      if (stopped) return
+      const incompleteTimestamps: number[] = []
+      // Rows the registry authoritatively has no sender account for. They are terminally
+      // undeliverable; they are durably quarantined below so neither the in-session replay nor
+      // the durable frontier can stay pinned behind them.
+      const quarantined: RelayReceiptIdentity[] = []
       const received = await activeChain.directMessages.fetchSince({
         wallet,
         sinceMs,
@@ -142,6 +165,24 @@ export function startDirectMessagePolling({
             'direct-message inbox page truncated; will continue',
             reason,
           ),
+        onIncompleteTimestamp: receivedTime => {
+          if (isSafeRelayTimestamp(receivedTime)) {
+            incompleteTimestamps.push(receivedTime)
+          } else {
+            console.error(
+              'direct-message polling: unsafe incomplete relay timestamp, ignoring row',
+            )
+          }
+        },
+        onQuarantinedTimestamp: (receivedTime, payloadDigest) => {
+          if (isSafeRelayTimestamp(receivedTime)) {
+            quarantined.push({ payloadDigest, receivedTime })
+          } else {
+            console.error(
+              'direct-message polling: unsafe quarantined relay timestamp, ignoring row',
+            )
+          }
+        },
       })
       // stop() cannot cancel an in-flight request; a stopped poller (e.g. the wallet was
       // switched) must never deliver its messages into the shared chat store.
@@ -150,33 +191,95 @@ export function startDirectMessagePolling({
       otherFailures = 0
       lastErrorKey = undefined
       mailboxStatus.setOk()
-      if (received.length === 0) {
+      if (
+        received.length === 0 &&
+        quarantined.length === 0 &&
+        incompleteTimestamps.length === 0
+      ) {
         return
       }
 
       const wrappers: ReceivedMessageWrapper[] = []
-      let nextSinceMs = sinceMs
-      let cursorBlocked = false
+      // `quarantined` rows count as resolved records: they never become wrappers, but a terminal
+      // row must not hold its timestamp group (or anything behind it) in replay either.
+      const timestampGroups = new Map<
+        number,
+        { records: number; durableCandidates: number; quarantined: number }
+      >()
+      const groupFor = (receivedTime: number) => {
+        const group = timestampGroups.get(receivedTime) ?? {
+          records: 0,
+          durableCandidates: 0,
+          quarantined: 0,
+        }
+        timestampGroups.set(receivedTime, group)
+        return group
+      }
+      for (const receivedTime of incompleteTimestamps) {
+        groupFor(receivedTime).records += 1
+      }
+      for (const receipt of quarantined) {
+        const group = groupFor(receipt.receivedTime)
+        group.records += 1
+        group.quarantined += 1
+      }
       for (const record of received) {
+        const receivedTime: unknown = record.receivedTime
+        if (!isSafeRelayTimestamp(receivedTime)) {
+          console.error(
+            `direct-message polling: unsafe relay timestamp, skipping message ${record.payloadDigest}`,
+          )
+          continue
+        }
+        const group = groupFor(receivedTime)
+        group.records += 1
+        timestampGroups.set(receivedTime, group)
         const wrapper = await toReceivedMessageWrapper(record)
         if (stopped) return
         if (wrapper !== undefined) {
           wrappers.push(wrapper)
-          // The relay's `since` bound is inclusive. Only advance through the contiguous prefix
-          // that can become durable; an unresolved earlier sender profile must remain retryable.
-          if (!cursorBlocked) {
-            nextSinceMs = Math.max(nextSinceMs, record.receivedTime + 1)
-          }
-        } else {
-          cursorBlocked = true
+          group.durableCandidates += 1
         }
+      }
+
+      // There is no stable per-row tie-break in the relay API. Advance past a timestamp only
+      // when its entire group can become durable (or is durably quarantined); otherwise stop at
+      // the inclusive timestamp so successful siblings dedupe while the unresolved row is
+      // fetched again.
+      let nextSinceMs = sinceMs
+      for (const [receivedTime, group] of [...timestampGroups].sort(
+        ([left], [right]) => left - right,
+      )) {
+        if (group.durableCandidates + group.quarantined !== group.records) {
+          nextSinceMs = Math.max(nextSinceMs, receivedTime)
+          break
+        }
+        nextSinceMs = Math.max(nextSinceMs, receivedTime + 1)
       }
 
       if (stopped) return
       if (wrappers.length > 0) {
-        await chats.receiveMessages(wrappers)
-        sinceMs = nextSinceMs
+        const receiveResult = await chats.receiveMessages(
+          wrappers,
+          recipientAddress,
+          // Delivery is queued behind a module-global mutation boundary; a poller the wallet
+          // replaced while queued must not persist, mutate shared state, or notify.
+          { isCancelled: () => stopped },
+        )
+        // The queued boundary ran after replacement: nothing was delivered, so nothing may
+        // advance -- the replacement poller replays this window from its own cursor.
+        if (receiveResult.cancelled) return
       }
+      if (stopped) return
+      if (quarantined.length > 0) {
+        // Terminal rows are anchored durably before the in-session replay moves past them, so a
+        // restart derives a frontier that does not re-pin the poisoned prefix.
+        await chats.quarantineRelayReceipts(recipientAddress, quarantined)
+      }
+      // Poll-progress authority for this session. The durable frontier is derived by the message
+      // store from the receipts this and earlier sessions persisted, never from local or
+      // outbound clocks -- a cursor row is deliberately never written ahead of a receipt.
+      sinceMs = nextSinceMs
     } catch (err) {
       // stop() cannot cancel an in-flight request: a poll that fails after stop() must not put a
       // problem back on screen after stop() cleared it.
@@ -292,7 +395,11 @@ export function startOutgoingReconciliation({
     const ids = new Set<string>()
     for (const chat of Object.values(chats.chats)) {
       for (const message of chat?.messages ?? []) {
-        if (message.outbound && message.status === 'payment-pending') {
+        if (
+          message.outbound &&
+          message.status === 'payment-pending' &&
+          walletOwnsMessage(wallet, message)
+        ) {
           ids.add(message.payloadDigest)
         }
       }
@@ -336,7 +443,10 @@ export function startOutgoingReconciliation({
   // A message that newly becomes payment-pending must not wait out a long backoff earned by an
   // older one: restart the ladder and look again after the base interval.
   const unsubscribe = chats.$onAction(({ name, after }) => {
-    if (name !== 'setOutgoingState') return
+    // Observe the serialized mutation action itself. `setOutgoingState` now delegates through
+    // the delivery queue, so its outer action can settle after another action has already updated
+    // `knownPending`; the exclusive action is the exact serialized state/persistence boundary.
+    if (name !== 'setOutgoingStateExclusive') return
     after(() => {
       const now = pendingIds()
       const isNew = [...now].some(id => !knownPending.has(id))

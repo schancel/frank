@@ -15,6 +15,16 @@ const GENERATORS = [
   0x1739640bdeee3fdadn,
   0x07729a039cfc75f5an,
 ] as const
+const TYPED_ARRAY_PROTOTYPE = Object.getPrototypeOf(Uint8Array.prototype)
+const TYPED_ARRAY_LENGTH_GETTER = Object.getOwnPropertyDescriptor(
+  TYPED_ARRAY_PROTOTYPE,
+  'length',
+)?.get
+const TYPED_ARRAY_TAG_GETTER = Object.getOwnPropertyDescriptor(
+  TYPED_ARRAY_PROTOTYPE,
+  Symbol.toStringTag,
+)?.get
+const UINT8_ARRAY_SET = Uint8Array.prototype.set
 
 export type Codex32ErrorCode =
   | 'bad-format'
@@ -83,17 +93,51 @@ function validIndex(index: string): boolean {
   return index.length === 1 && valueOf(index) >= 0
 }
 
-function copyStrings(values: readonly string[]): string[] | null {
-  if (!Array.isArray(values)) return null
-  const length = values.length
-  if (!Number.isInteger(length) || length < 0) return null
-  const copied = new Array<string>(length)
-  for (let index = 0; index < length; index += 1) {
-    const value = values[index]
-    if (typeof value !== 'string') return null
-    copied[index] = value
+function snapshotRegularSecret(value: unknown): Codex32Result<Uint8Array> {
+  try {
+    if (
+      typeof TYPED_ARRAY_LENGTH_GETTER !== 'function' ||
+      typeof TYPED_ARRAY_TAG_GETTER !== 'function' ||
+      Reflect.apply(TYPED_ARRAY_TAG_GETTER, value, []) !== 'Uint8Array'
+    ) {
+      return fail('bad-format')
+    }
+    const length = Reflect.apply(TYPED_ARRAY_LENGTH_GETTER, value, [])
+    if (typeof length !== 'number' || !REGULAR_SECRET_BYTES.has(length)) {
+      return fail('unsupported-length')
+    }
+    const copied = new Uint8Array(length)
+    Reflect.apply(UINT8_ARRAY_SET, copied, [value])
+    return { ok: true, value: copied }
+  } catch {
+    return fail('bad-format')
   }
-  return copied
+}
+
+function snapshotStrings(
+  values: unknown,
+  minimumLength: number,
+): Codex32Result<string[]> {
+  try {
+    if (!Array.isArray(values)) return fail('bad-format')
+    const length = values.length
+    if (
+      !Number.isSafeInteger(length) ||
+      length < minimumLength ||
+      length > 31
+    ) {
+      return fail('insufficient-shares')
+    }
+    const copied = new Array<string>(length)
+    for (let index = 0; index < length; index += 1) {
+      const value = values[index]
+      if (typeof value !== 'string') return fail('bad-format')
+      copied[index] = value
+    }
+    return { ok: true, value: copied }
+  } catch {
+    return fail('bad-format')
+  }
 }
 
 function polymod(values: readonly number[]): bigint {
@@ -198,11 +242,9 @@ export function encodeCodex32(
   let index: string
   let secret: Uint8Array | null = null
   try {
-    const suppliedSecret = input.secret
-    secret =
-      suppliedSecret instanceof Uint8Array
-        ? new Uint8Array(suppliedSecret)
-        : null
+    const secretSnapshot = snapshotRegularSecret(input.secret)
+    if (!secretSnapshot.ok) return secretSnapshot
+    secret = secretSnapshot.value
     threshold = input.threshold
     identifier = input.identifier
     index = input.index
@@ -226,9 +268,6 @@ export function encodeCodex32(
     // This public API encodes raw seed bytes, which are only meaningful at the
     // secret index. Threshold shares use the internal symbol encoder in split().
     if (index !== SECRET_INDEX) return fail('invalid-index')
-    if (!REGULAR_SECRET_BYTES.has(secret.length)) {
-      return fail('unsupported-length')
-    }
     groups = bytesToGroups(secret)
     return encodeGroups(threshold, identifier, index, groups)
   } finally {
@@ -372,14 +411,25 @@ export function splitCodex32(
   let indices: string[] | null
   let randomBytes: SplitCodex32Input['randomBytes']
   try {
-    const suppliedSecret = input.secret
-    secret =
-      suppliedSecret instanceof Uint8Array
-        ? new Uint8Array(suppliedSecret)
-        : null
+    const secretSnapshot = snapshotRegularSecret(input.secret)
+    if (!secretSnapshot.ok) return secretSnapshot
+    secret = secretSnapshot.value
     threshold = input.threshold
     identifier = input.identifier
-    indices = copyStrings(input.indices)
+    const indicesSnapshot = snapshotStrings(
+      input.indices,
+      typeof threshold === 'number' &&
+        Number.isInteger(threshold) &&
+        threshold >= 2 &&
+        threshold <= 9
+        ? threshold
+        : 0,
+    )
+    if (!indicesSnapshot.ok) {
+      secret.fill(0)
+      return indicesSnapshot
+    }
+    indices = indicesSnapshot.value
     randomBytes = input.randomBytes
   } catch {
     secret?.fill(0)
@@ -403,12 +453,6 @@ export function splitCodex32(
     }
     if (typeof identifier !== 'string') return fail('invalid-identifier')
     if (!validIdentifier(identifier)) return fail('invalid-identifier')
-    if (!REGULAR_SECRET_BYTES.has(secret.length)) {
-      return fail('unsupported-length')
-    }
-    if (indices.length < threshold || indices.length > 31) {
-      return fail('insufficient-shares')
-    }
     const seen = new Set<string>()
     for (const index of indices) {
       if (!validIndex(index) || index === SECRET_INDEX) {
@@ -479,16 +523,9 @@ export function splitCodex32(
 export function recoverCodex32(
   encodedShares: readonly string[],
 ): Codex32Result<Uint8Array> {
-  let snapshots: string[] | null
-  try {
-    snapshots = copyStrings(encodedShares)
-  } catch {
-    return fail('bad-format')
-  }
-  if (snapshots === null) return fail('bad-format')
-  if (snapshots.length === 0 || snapshots.length > 31) {
-    return fail('insufficient-shares')
-  }
+  const snapshot = snapshotStrings(encodedShares, 1)
+  if (!snapshot.ok) return snapshot
+  const snapshots = snapshot.value
   const parsed: Codex32Share[] = []
   let secretGroups: number[] | null = null
   try {

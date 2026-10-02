@@ -79,6 +79,39 @@ describe('Codex32 standard-checksum core', () => {
     ).toEqual({ ok: false, error: { code: 'unsupported-length' } })
   })
 
+  it('rejects proxied and intrinsic-oversized seed storage before cloning', () => {
+    const proxied = new Proxy(seed(), {})
+    expect(
+      encodeCodex32({
+        threshold: 0,
+        identifier: 'cash',
+        index: 's',
+        secret: proxied,
+      }),
+    ).toEqual({ ok: false, error: { code: 'bad-format' } })
+
+    const oversized = new Uint8Array(1024 * 1024)
+    Object.defineProperty(oversized, 'length', { value: 32 })
+    expect(oversized.length).toBe(32)
+    expect(
+      encodeCodex32({
+        threshold: 0,
+        identifier: 'cash',
+        index: 's',
+        secret: oversized,
+      }),
+    ).toEqual({ ok: false, error: { code: 'unsupported-length' } })
+    expect(
+      splitCodex32({
+        threshold: 2,
+        identifier: 'cash',
+        indices: ['q', 'p'],
+        secret: oversized,
+        randomBytes: length => new Uint8Array(length),
+      }),
+    ).toEqual({ ok: false, error: { code: 'unsupported-length' } })
+  })
+
   it('encodes and strictly decodes canonical seed material', () => {
     const encoded = encodeCodex32({
       threshold: 0,
@@ -241,6 +274,71 @@ describe('Codex32 standard-checksum core', () => {
       value: original,
     })
     expect(reads).toEqual([1, 1])
+
+    let lengthReads = 0
+    const indexedReads = [0, 0]
+    const proxied = new Proxy(selected, {
+      get(target, property, receiver) {
+        if (property === 'length') lengthReads += 1
+        if (property === '0') indexedReads[0] += 1
+        if (property === '1') indexedReads[1] += 1
+        return Reflect.get(target, property, receiver)
+      },
+    })
+    expect(recoverCodex32(proxied)).toEqual({ ok: true, value: original })
+    expect(lengthReads).toBe(1)
+    expect(indexedReads).toEqual([1, 1])
+  })
+
+  it('rejects oversized share arrays before allocation or indexed reads', () => {
+    for (const claimedLength of [32, Number.MAX_SAFE_INTEGER]) {
+      let splitLengthReads = 0
+      let splitIndexedReads = 0
+      const splitIndices = new Proxy([], {
+        get(target, property, receiver) {
+          if (property === 'length') {
+            splitLengthReads += 1
+            return claimedLength
+          }
+          if (typeof property === 'string' && /^\d+$/.test(property)) {
+            splitIndexedReads += 1
+          }
+          return Reflect.get(target, property, receiver)
+        },
+      })
+      expect(
+        splitCodex32({
+          threshold: 2,
+          identifier: 'cash',
+          indices: splitIndices,
+          secret: seed(),
+          randomBytes: length => new Uint8Array(length),
+        }),
+      ).toEqual({ ok: false, error: { code: 'insufficient-shares' } })
+      expect(splitLengthReads).toBe(1)
+      expect(splitIndexedReads).toBe(0)
+
+      let recoveryLengthReads = 0
+      let recoveryIndexedReads = 0
+      const recoveryShares = new Proxy([], {
+        get(target, property, receiver) {
+          if (property === 'length') {
+            recoveryLengthReads += 1
+            return claimedLength
+          }
+          if (typeof property === 'string' && /^\d+$/.test(property)) {
+            recoveryIndexedReads += 1
+          }
+          return Reflect.get(target, property, receiver)
+        },
+      })
+      expect(recoverCodex32(recoveryShares)).toEqual({
+        ok: false,
+        error: { code: 'insufficient-shares' },
+      })
+      expect(recoveryLengthReads).toBe(1)
+      expect(recoveryIndexedReads).toBe(0)
+    }
   })
 
   it('rejects the secret index in recovery but accepts vector-3 shares', () => {

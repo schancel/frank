@@ -70,8 +70,11 @@ it('matches bitcore stealth ephemeral public keys', () => {
   expect(helper).not.toContain('10605')
 
   const registry = readFileSync(join(__dirname, '../registry/index.ts'), 'utf8')
-  expect(registry).toContain('privKey.toPublicKey()')
-  expect(registry).toContain('idPrivKey.toPublicKey()')
+  expect(registry).toContain('registryIdentityPoint(')
+  expect(registry).not.toContain('toPublicKey(')
+  expect(registry).toContain('crypto.Hash.sha256(')
+  expect(registry).toContain('new Transaction.Output(')
+  expect(registry).toContain('PublicKey.fromBuffer(')
 })
 
 it('sets ephemeral_pub_key from the generated private key', () => {

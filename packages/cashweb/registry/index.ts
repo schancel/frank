@@ -16,6 +16,7 @@ import {
   PublicKey,
 } from 'bitcore-lib-xpi'
 import { pondBurnOutputSatoshis, pondBurnScript } from './burn-script'
+import { registryIdentityPublicKey } from './identity-pubkey'
 import {
   cryptoBackend,
   privateKeyFromSecretBytes,
@@ -95,6 +96,19 @@ export function registryAddressMetadataDigest(
   return cryptoBackend.sha256(Uint8Array.from(payload))
 }
 
+/** SEC1 point of a registry identity key (decision #578). types.d.ts omits
+ * the runtime compression flag; bitcore-lib-xpi stays until #259. Broadcast
+ * digests and the burn Output wrap stay on bitcore. */
+function registryIdentityPoint(privKey: PrivateKey): Buffer {
+  const compressed = (privKey as unknown as { compressed?: boolean }).compressed
+  if (compressed !== true && compressed !== false) {
+    throw new Error('registry-identity-pubkey:compressed')
+  }
+  return Buffer.from(
+    registryIdentityPublicKey(Uint8Array.from(privKey.toBuffer()), compressed),
+  )
+}
+
 function calculateBurnAmount(burnOutputs: BurnOutputs[]) {
   return burnOutputs.reduce((total, burn) => {
     const index = burn.getIndex()
@@ -162,7 +176,7 @@ export class RegistryHandler {
     const sig = signRegistryDigest(hashbuf, privKey)
 
     const signedPayload = new SignedPayload()
-    signedPayload.setPublicKey(privKey.toPublicKey().toBuffer())
+    signedPayload.setPublicKey(registryIdentityPoint(privKey))
     signedPayload.setSignature(sig)
     signedPayload.setScheme(1)
     signedPayload.setPayload(serializedPayload)
@@ -354,7 +368,7 @@ export class RegistryHandler {
 
     const idPrivKey = this.wallet?.identityPrivKey
     assert(idPrivKey, 'Missing private key in createBroadcast')
-    const idPubKey = idPrivKey.toPublicKey().toBuffer()
+    const idPubKey = registryIdentityPoint(idPrivKey)
 
     const sig = signRegistryDigest(payloadDigest, idPrivKey)
 
@@ -403,7 +417,7 @@ export class RegistryHandler {
 
     const idPrivKey = this.wallet?.identityPrivKey
     assert(idPrivKey, 'Missing private key in createBroadcast')
-    const idPubKey = idPrivKey.toPublicKey().toBuffer()
+    const idPubKey = registryIdentityPoint(idPrivKey)
 
     const sig = signRegistryDigest(payloadDigestBinary, idPrivKey)
 

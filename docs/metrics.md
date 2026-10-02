@@ -66,15 +66,22 @@ endpoint = "http://otel-collector:4317"
 protocol = "grpc"
 queue_capacity = 8192
 batch_size = 512
+max_record_bytes = 16384
+memory_budget_bytes = 33554432
+max_in_flight_batches = 2
 flush_interval_ms = 1000
 timeout_ms = 3000
+retry_max_elapsed_ms = 30000
 trace_sample_ratio = 0.01
 headers_env = "CASHWEBD_OTLP_HEADERS"
 ```
 
-Configuration validation must reject zero or unbounded queues, batches larger than queues,
-unreasonable timeouts, invalid sampling ratios, a public wildcard Prometheus bind unless explicitly
-acknowledged, and estimated telemetry buffers that exceed the configured telemetry memory budget.
+`queue_capacity` counts records. Configuration validation must reject zero or unbounded queues,
+batches larger than queues, unreasonable timeouts, invalid sampling ratios, a public wildcard
+Prometheus bind unless explicitly acknowledged, and estimated telemetry buffers that exceed the
+configured telemetry memory budget. That estimate covers queued records, in-flight and retry
+batches, serialization buffers, and SDK-owned buffers. Attribute lengths and serialized record size
+are bounded; oversized records are dropped before exporter allocation and counted locally.
 Disabling observability installs a no-op implementation rather than scattering conditionals through
 handlers.
 
@@ -99,8 +106,9 @@ Allowed bounded dimensions include:
 | `transport` | `http` or `ws` |
 | `auth_class` | `anonymous` or `customer` |
 | `outcome` | A finite handler-defined enum |
-| `status_class` | `2xx`, `4xx`, or `5xx` |
+| `status_class` | `1xx`, `2xx`, `3xx`, `4xx`, `5xx`, or `no_response` |
 | `broadcast_state` | `none`, `not_attempted`, `unknown`, or `accepted` |
+| `quota_class` | A finite configured quota category, never an identity |
 
 The following must never be Prometheus labels or unredacted log fields:
 
@@ -121,8 +129,9 @@ operator remembering to configure those processors.
 Names may receive a project prefix during implementation, but their meanings and bounded dimensions
 must remain stable.
 
-- HTTP request count, active requests, request duration, request bytes, and response bytes by route
-  template, API family, authentication class, outcome, and status class.
+- HTTP request count, request duration, request bytes, and response bytes by route template, API
+  family, authentication class, outcome, and status class. Active requests use only dimensions known
+  at admission: route template, API family, and authentication class.
 - JSON-RPC call count and weighted quota units by family, chain, normalized method, transport,
   authentication class, and outcome. A batch increments one call observation for each validated
   member as well as one transport request observation.
@@ -169,38 +178,59 @@ Request policy must be completely validated before any bytes are sent upstream. 
 enough for the configured memory threshold may use a bounded memory buffer. If a future family
 permits larger requests, the relay must stream them into a bounded temporary spool while parsing,
 then stream the validated spool upstream. It must never optimistically forward a transaction or
-other side-effecting request before validation completes.
+other side-effecting request before validation completes. Inspection is observational: authentication
+hashes the original request bytes, and the validated request forwards those same bytes without JSON
+normalization. Temporary spools are removed on every terminal path. Unsupported request content
+encodings are rejected rather than ambiguously authenticating one representation and forwarding
+another.
 
-Upstream responses are streamed to the client with backpressure while a side observer counts bytes
-and incrementally inspects only the JSON-RPC envelope. The relay must enforce its limit on decoded
-bytes, including decompressed upstream responses, and enforce total and idle timeouts. It must not
-buffer or deserialize a large `result` merely to identify the corresponding method: the validated
-request already supplies that association. Batch correlation may retain only the configured bounded
-number of IDs and normalized methods.
+Upstream responses are streamed to the client with backpressure while an incremental inspector
+processes the JSON-RPC envelope. Inspection and mandatory sanitization complete before the
+corresponding bytes reach the client. The relay must enforce its limit on decoded bytes, including
+decompressed upstream responses, and enforce total and idle timeouts. It must not buffer or
+deserialize a large `result` merely to identify the corresponding method: the validated request
+already supplies that association. Batch correlation may retain only the configured bounded number
+of IDs and normalized methods. Duplicate request IDs are rejected; unmatched, duplicate, or missing
+response IDs produce a deterministic malformed-upstream outcome rather than guessed attribution.
 
 Provider URLs and credentials must not leak through upstream errors. Transport failures and
-non-success HTTP responses are normalized before forwarding. If successful JSON must be rewritten
-to enforce redaction, rewriting is token-streamed with bounded token storage; it is never implemented
-by rebuilding a complete `Value`.
+non-success HTTP responses are normalized before forwarding. HTTP-200 JSON-RPC errors use a bounded
+allowlist (for example, numeric code) and replace or discard upstream message, data, and extension
+fields before their bytes are committed. If any other successful JSON must be rewritten, rewriting
+is token-streamed with bounded token storage; it is never implemented by rebuilding a complete
+`Value`. If a malformed, oversized, or timed-out response is discovered after response headers are
+committed, the stream terminates and records a non-success outcome instead of attempting to append a
+replacement JSON document.
 
 ### Proof requirements
 
-Tests must feed the parser fragmented tokens, deep nesting, oversized keys/methods/IDs, duplicate
-fields, malformed trailing input, large skipped parameter/result strings, large batches, compressed
-responses, and client/upstream disconnects. A deterministic stress test must process a synthetic
-250 MiB result while asserting that peak relay heap attributable to inspection stays within a small,
-documented constant bound independent of payload size. It must also prove that denied or malformed
-requests send zero upstream bytes.
+Tests must feed the production forwarding pipeline fragmented tokens, deep nesting, oversized
+keys/methods/IDs, duplicate fields, malformed trailing input, large skipped parameter/result strings,
+many-small-value results, large batches, compressed responses, slow clients, and client/upstream
+disconnects. A lazily generated 250 MiB result and smaller comparison sizes must prove a numeric
+per-stream peak-live-allocation ceiling independent of payload size across receiving, decompression,
+inspection, sanitization, and forwarding. Only a fixed test-harness baseline and explicitly listed
+transport overhead may be excluded; the generator and draining client must not materialize the
+payload. Tests must also prove that denied or malformed requests send zero upstream bytes and that
+cancellation releases parser, spool, and correlation state.
 
 ## Reliability and rollout
 
 - Telemetry recording must not hold an application database lock or an upstream concurrency permit.
-- Each asynchronous exporter has an independent bounded queue and finite retry policy.
+- Each asynchronous exporter has independent bounded, non-blocking admission and a finite retry
+  policy. The pinned Collector topology must prove that a full, unavailable, or storage-failed sink
+  cannot stall delivery to another sink sharing the receiver; affected records are dropped or
+  rejected promptly and retry-induced duplication is documented.
 - Queue exhaustion drops telemetry and increments a local Prometheus counter; it does not await
   capacity on the request path.
 - Collector self-metrics and container memory must be scraped and alerted independently.
 - Collector examples include a memory limiter before batching, explicit queue bounds, and container
   headroom. A Collector restart or OOM must not affect relay readiness.
+- Per-instrument label sets, histogram buckets, and a repository-wide maximum Prometheus series
+  budget are checked in tests; a finite value vocabulary alone is not sufficient.
+- WebSocket parsing applies the same limits across fragmented messages and bounds pending request
+  IDs, active subscriptions, and per-connection buffered bytes. Close, timeout, and cancellation
+  release all state.
 - Operators can enable Prometheus first, then OTLP, then individual warehouse sinks. Each stage has
   an independent rollback switch.
 

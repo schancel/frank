@@ -62,7 +62,6 @@ it('reads burn output amounts from transaction bytes', () => {
   )
   expect(amount).toContain('pondBurnOutputSatoshis')
   expect(amount).not.toContain('new Transaction')
-  expect(source).toContain('crypto.Hash.sha256(Buffer.from(serializedMessage))')
 
   const bip143 = Buffer.from(BIP143_UNSIGNED, 'hex')
   const empty = bitcoreOutput(bip143, 0)

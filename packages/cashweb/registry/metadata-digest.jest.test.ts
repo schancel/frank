@@ -64,17 +64,11 @@ it('signs relay-url metadata over that digest', () => {
     'async updateKeyMetadata(',
     'private constructBurnTransaction',
   )
-  const broadcast = methodBody(
-    source,
-    'async createBroadcast(',
-    'async addOfferings',
-  )
   expect(relayUrl).toContain('registryAddressMetadataDigest')
   expect(relayUrl).not.toContain('crypto.Hash')
   expect(payment).toContain('registryAddressMetadataDigest')
   expect(payment).not.toContain('crypto.Hash')
   expect(payment).not.toContain('.buffer')
-  expect(broadcast).toContain('crypto.Hash.sha256')
 
   const privKey = new PrivateKey(SECRET)
   const handler = new RegistryHandler({

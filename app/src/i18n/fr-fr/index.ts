@@ -16,9 +16,15 @@ export default {
   },
   stampPreparation: {
     posting: 'Publication en cours…',
-    postCreated: 'Message publié !',
+    postCreated: 'Message publié dans {topic} !',
+    replyParentLoading: 'Chargement du message auquel vous répondez…',
+    replyParentUnavailable:
+      'Le message auquel vous répondez n’a pas pu être chargé. Vous pouvez réessayer.',
+    retryReplyParent: 'Réessayer',
     postedRefreshFailed:
       'Votre message a été publié, mais l’actualisation a échoué. Rechargez pour le voir. Ne le publiez pas à nouveau.',
+    postOutcomeUnknown:
+      'Votre message a peut-être été publié. Rechargez pour le vérifier. Ne le publiez pas à nouveau.',
     votedRefreshFailed:
       'Votre vote a été envoyé, mais l’actualisation a échoué. Rechargez pour le voir. Ne votez pas à nouveau.',
   },

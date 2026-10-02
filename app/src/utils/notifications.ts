@@ -34,8 +34,11 @@ export function errorNotify(
 
 export function infoNotify(text: string) {
   Notify.create({
-    message: '<div class="text-center"> ' + text + ' </div>',
-    html: true,
+    // Some callers include relay-authored values (for example a forum topic). Keep Quasar on its
+    // textContent path so those values can never become notification markup or event handlers.
+    message: text,
+    html: false,
+    classes: 'text-center',
     color: 'accent',
   })
 }

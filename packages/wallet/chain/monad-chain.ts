@@ -94,6 +94,7 @@ import {
   DirectMessageSendResult,
   ProfileInfo,
   TopicBroadcastClient,
+  TopicPostOutcomeUnknownError,
   WalletHandle,
 } from './active-chain'
 import { MessageItem } from '@frank/cashweb/types/messages'
@@ -139,6 +140,7 @@ import {
 } from '@frank/cashweb/relay/monad-message-envelope'
 import {
   MonadTopicPostClient,
+  MonadTopicPostAbandonedError,
   MonadTopicPostViewProto,
   quoteMonadTopicBurnGasReserve,
 } from '../monad-topic-post-client'
@@ -942,7 +944,12 @@ export function createMonadChain(config: MonadChainConfig): ActiveChain {
             voteWeightWei: params.voteWeightWei,
             leaseIndex,
           })
-          .catch(asNothingSent)
+          .catch((err: unknown) => {
+            if (err instanceof MonadTopicPostAbandonedError) {
+              throw new TopicPostOutcomeUnknownError(err.message, err)
+            }
+            return asNothingSent(err)
+          })
         return { payloadDigest: result.payloadHashHex }
       })
     },

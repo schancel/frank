@@ -1,4 +1,5 @@
 import { submitPost } from './submit-post'
+import { TopicPostOutcomeUnknownError } from '@frank/wallet/chain/active-chain'
 
 describe('submitPost', () => {
   it('on success: notifies and navigates away exactly once', async () => {
@@ -7,8 +8,14 @@ describe('submitPost', () => {
     const infoNotify = jest.fn()
     const navigateBack = jest.fn()
 
-    await submitPost({ submit, errorNotify, infoNotify, navigateBack })
+    const outcome = await submitPost({
+      submit,
+      errorNotify,
+      infoNotify,
+      navigateBack,
+    })
 
+    expect(outcome).toBe('submitted')
     expect(infoNotify).toHaveBeenCalledTimes(1)
     expect(infoNotify).toHaveBeenCalledWith('Post created!')
     expect(navigateBack).toHaveBeenCalledTimes(1)
@@ -22,8 +29,14 @@ describe('submitPost', () => {
     const infoNotify = jest.fn()
     const navigateBack = jest.fn()
 
-    await submitPost({ submit, errorNotify, infoNotify, navigateBack })
+    const outcome = await submitPost({
+      submit,
+      errorNotify,
+      infoNotify,
+      navigateBack,
+    })
 
+    expect(outcome).toBe('retryable-failure')
     expect(errorNotify).toHaveBeenCalledTimes(1)
     expect(errorNotify).toHaveBeenCalledWith(error)
     // The actual bug (ticket #159): navigateBack used to run unconditionally in a `finally`,
@@ -44,6 +57,56 @@ describe('submitPost', () => {
     await submitPost({ submit, errorNotify, infoNotify, navigateBack })
 
     expect(errorNotify).toHaveBeenCalledWith(error)
+    expect(navigateBack).not.toHaveBeenCalled()
+  })
+
+  it('classifies the unknown outcome before notification side effects run', async () => {
+    const abandoned = new Error('The paid post outcome is unknown')
+    const onOutcome = jest.fn()
+
+    await expect(
+      submitPost({
+        submit: jest
+          .fn()
+          .mockRejectedValue(
+            new TopicPostOutcomeUnknownError(abandoned.message, abandoned),
+          ),
+        errorNotify: () => {
+          throw new Error('notification failed')
+        },
+        infoNotify: jest.fn(),
+        navigateBack: jest.fn(),
+        onOutcome,
+      }),
+    ).rejects.toThrow('notification failed')
+    expect(onOutcome).toHaveBeenCalledWith('unknown-outcome')
+  })
+})
+
+describe('submitPost with an unknown paid outcome', () => {
+  it('reports the original typed cause and tells the reservation owner not to retry', async () => {
+    const abandoned = new Error('The paid post outcome is unknown')
+    const errorNotify = jest.fn()
+    const infoNotify = jest.fn()
+    const navigateBack = jest.fn()
+    const onOutcome = jest.fn()
+
+    const outcome = await submitPost({
+      submit: jest
+        .fn()
+        .mockRejectedValue(
+          new TopicPostOutcomeUnknownError(abandoned.message, abandoned),
+        ),
+      errorNotify,
+      infoNotify,
+      navigateBack,
+      onOutcome,
+    })
+
+    expect(outcome).toBe('unknown-outcome')
+    expect(onOutcome).toHaveBeenCalledWith('unknown-outcome')
+    expect(errorNotify).toHaveBeenCalledWith(abandoned)
+    expect(infoNotify).not.toHaveBeenCalled()
     expect(navigateBack).not.toHaveBeenCalled()
   })
 })

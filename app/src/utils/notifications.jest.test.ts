@@ -1,3 +1,5 @@
+/** @jest-environment jsdom */
+
 const createNotification = jest.fn()
 const openURL = jest.fn()
 
@@ -6,7 +8,44 @@ jest.mock('quasar', () => ({
   openURL,
 }))
 
-import { desktopNotify, sentTransactionNotify } from './notifications'
+import {
+  desktopNotify,
+  infoNotify,
+  sentTransactionNotify,
+} from './notifications'
+
+describe('infoNotify', () => {
+  beforeEach(() => {
+    createNotification.mockReset()
+    document.body.innerHTML = ''
+    ;(globalThis as { topicXss?: boolean }).topicXss = false
+  })
+
+  it('renders relay-authored notification content as text, never HTML', () => {
+    const payload = '<img src=x onerror="globalThis.topicXss=true">'
+    const message = `Post created in ${payload}.`
+    createNotification.mockImplementationOnce(
+      ({ message: rendered, html }: { message: string; html?: boolean }) => {
+        const notification = document.createElement('div')
+        if (html) {
+          notification.innerHTML = rendered
+        } else {
+          notification.textContent = rendered
+        }
+        document.body.appendChild(notification)
+      },
+    )
+
+    infoNotify(message)
+
+    expect(document.body.textContent).toBe(message)
+    expect(document.querySelector('img')).toBeNull()
+    expect((globalThis as { topicXss?: boolean }).topicXss).toBe(false)
+    expect(createNotification).toHaveBeenCalledWith(
+      expect.objectContaining({ message, html: false }),
+    )
+  })
+})
 
 describe('sentTransactionNotify', () => {
   beforeEach(() => {

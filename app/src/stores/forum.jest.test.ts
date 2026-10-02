@@ -1,3 +1,4 @@
+/** @jest-environment jsdom */
 /**
  * Unit tests for `stores/forum.ts` (ticket #43) -- see `stores/topics.jest.test.ts`'s header for
  * the shared rationale (mocking `activeChain`, not the underlying Monad clients; the
@@ -7,10 +8,13 @@
  */
 import { BurnRefreshError } from 'src/utils/burn-refresh-error'
 import { setActivePinia, createPinia } from 'pinia'
+import { mount } from '@vue/test-utils'
+import { computed, defineComponent, h, nextTick } from 'vue'
 
-import { useForumStore } from './forum'
+import { MessageWithReplies, useForumStore } from './forum'
 import { ForumMessage } from '@frank/cashweb/types/forum'
 import { WalletHandle } from '@frank/wallet/chain'
+import { TopicPostOutcomeUnknownError } from '@frank/wallet/chain/active-chain'
 import { sortPostsByMode } from 'src/utils/sorting'
 
 jest.mock('@frank/wallet/chain', () => ({
@@ -54,6 +58,316 @@ beforeEach(() => {
   setActivePinia(createPinia())
   jest.clearAllMocks()
   mockedDiscoverTopics.mockResolvedValue([])
+})
+
+describe('useForumStore: session post reservations', () => {
+  it('starts in-flight and can be marked outcome-unknown only by its own reservation id', () => {
+    const store = useForumStore()
+    const reservationId = store.reservePostSubmission({
+      wallet: testWallet,
+      destination: 'reply:parent',
+    })
+    expect(reservationId).toEqual(expect.any(Number))
+    expect(
+      store.getPostReservationStatus({
+        wallet: testWallet,
+        destination: 'reply:parent',
+      }),
+    ).toBe('in-flight')
+
+    expect(
+      store.markPostSubmissionOutcomeUnknown({
+        wallet: testWallet,
+        destination: 'reply:parent',
+        reservationId: (reservationId as number) + 1,
+      }),
+    ).toBe(false)
+    expect(
+      store.getPostReservationStatus({
+        wallet: testWallet,
+        destination: 'reply:parent',
+      }),
+    ).toBe('in-flight')
+
+    expect(
+      store.markPostSubmissionOutcomeUnknown({
+        wallet: testWallet,
+        destination: 'reply:parent',
+        reservationId: reservationId as number,
+      }),
+    ).toBe(true)
+    expect(
+      store.getPostReservationStatus({
+        wallet: testWallet,
+        destination: 'reply:parent',
+      }),
+    ).toBe('outcome-unknown')
+    // Release: the module-scope reservation map is process-lifetime, and later tests in this
+    // file must be able to reserve the same destination again.
+    expect(
+      store.releasePostSubmission({
+        wallet: testWallet,
+        destination: 'reply:parent',
+        reservationId: reservationId as number,
+      }),
+    ).toBe(true)
+  })
+
+  it('reports no status once the reservation is released', () => {
+    const store = useForumStore()
+    const reservationId = store.reservePostSubmission({
+      wallet: testWallet,
+      destination: 'top-level',
+    })
+    store.markPostSubmissionOutcomeUnknown({
+      wallet: testWallet,
+      destination: 'top-level',
+      reservationId: reservationId as number,
+    })
+    expect(
+      store.releasePostSubmission({
+        wallet: testWallet,
+        destination: 'top-level',
+        reservationId: reservationId as number,
+      }),
+    ).toBe(true)
+    expect(
+      store.getPostReservationStatus({
+        wallet: testWallet,
+        destination: 'top-level',
+      }),
+    ).toBeUndefined()
+  })
+
+  it('survives a Pinia remount and treats rebuilt handles for one identity as one owner', () => {
+    const firstStore = useForumStore()
+    const rebuiltWallet = {
+      identity: {
+        address: { raw: '0xAbC' },
+        displayAddress: '0xAbC',
+      },
+    } as unknown as WalletHandle
+    const reservationId = firstStore.reservePostSubmission({
+      wallet: testWallet,
+      destination: 'reply:parent',
+    })
+
+    expect(reservationId).toEqual(expect.any(Number))
+    setActivePinia(createPinia())
+    const remountedStore = useForumStore()
+    expect(
+      remountedStore.getPostReservationId({
+        wallet: rebuiltWallet,
+        destination: 'reply:parent',
+      }),
+    ).toBe(reservationId)
+    expect(
+      remountedStore.reservePostSubmission({
+        wallet: rebuiltWallet,
+        destination: 'reply:parent',
+      }),
+    ).toBeUndefined()
+    expect(
+      remountedStore.releasePostSubmission({
+        wallet: rebuiltWallet,
+        destination: 'reply:parent',
+        reservationId: (reservationId as number) + 1,
+      }),
+    ).toBe(false)
+    expect(
+      remountedStore.releasePostSubmission({
+        wallet: rebuiltWallet,
+        destination: 'reply:parent',
+        reservationId: reservationId as number,
+      }),
+    ).toBe(true)
+  })
+
+  it('allows distinct wallets at one destination and keeps release scoped to wallet plus request', () => {
+    const store = useForumStore()
+    const otherWallet = {
+      identity: {
+        address: { raw: '0xdef' },
+        displayAddress: '0xdef',
+      },
+    } as unknown as WalletHandle
+    const first = store.reservePostSubmission({
+      wallet: testWallet,
+      destination: 'reply:parent',
+    })
+    const second = store.reservePostSubmission({
+      wallet: otherWallet,
+      destination: 'reply:parent',
+    })
+
+    expect(first).toEqual(expect.any(Number))
+    expect(second).toEqual(expect.any(Number))
+    expect(second).not.toBe(first)
+    expect(
+      store.getPostReservationId({
+        wallet: testWallet,
+        destination: 'reply:parent',
+      }),
+    ).toBe(first)
+    expect(
+      store.getPostReservationId({
+        wallet: otherWallet,
+        destination: 'reply:parent',
+      }),
+    ).toBe(second)
+
+    expect(
+      store.releasePostSubmission({
+        wallet: otherWallet,
+        destination: 'reply:parent',
+        reservationId: first as number,
+      }),
+    ).toBe(false)
+    expect(
+      store.releasePostSubmission({
+        wallet: testWallet,
+        destination: 'reply:parent',
+        reservationId: first as number,
+      }),
+    ).toBe(true)
+    expect(
+      store.getPostReservationId({
+        wallet: otherWallet,
+        destination: 'reply:parent',
+      }),
+    ).toBe(second)
+    expect(
+      store.releasePostSubmission({
+        wallet: otherWallet,
+        destination: 'reply:parent',
+        reservationId: second as number,
+      }),
+    ).toBe(true)
+  })
+
+  it('reactively exposes a real reservation across mounted component instances', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const store = useForumStore()
+    const Probe = defineComponent({
+      setup() {
+        const reservationId = computed(() =>
+          useForumStore().getPostReservationId({
+            wallet: testWallet,
+            destination: 'reply:parent',
+          }),
+        )
+        return () => h('div', reservationId.value ?? 'idle')
+      },
+    })
+    const first = mount(Probe, { global: { plugins: [pinia] } })
+    expect(first.text()).toBe('idle')
+
+    const reservationId = store.reservePostSubmission({
+      wallet: testWallet,
+      destination: 'reply:parent',
+    })
+    await nextTick()
+    expect(first.text()).toBe(String(reservationId))
+
+    first.unmount()
+    const remounted = mount(Probe, { global: { plugins: [pinia] } })
+    expect(remounted.text()).toBe(String(reservationId))
+
+    store.releasePostSubmission({
+      wallet: testWallet,
+      destination: 'reply:parent',
+      reservationId: reservationId as number,
+    })
+    await nextTick()
+    expect(remounted.text()).toBe('idle')
+  })
+})
+
+describe('useForumStore: own indexed messages', () => {
+  it('rejects an otherwise valid message stored under an empty digest', () => {
+    const store = useForumStore()
+    store.index[''] = {
+      ...makeMessage({ payloadDigest: '' }),
+      replies: [],
+    }
+
+    expect(store.getMessage('')).toBeNull()
+  })
+
+  it('rejects an otherwise valid inherited message', () => {
+    const store = useForumStore()
+    Object.setPrototypeOf(store.index, {
+      inherited: {
+        ...makeMessage({ payloadDigest: 'inherited' }),
+        replies: [],
+      },
+    })
+
+    expect(store.getMessage('inherited')).toBeNull()
+  })
+
+  it.each([null, undefined])(
+    'rejects the falsy own indexed value %s',
+    value => {
+      const store = useForumStore()
+      store.index.candidate = value as unknown as MessageWithReplies
+
+      expect(store.getMessage('candidate')).toBeNull()
+    },
+  )
+
+  it.each(['__proto__', 'constructor', 'toString'])(
+    'does not resolve inherited key %s as a forum parent',
+    key => {
+      const store = useForumStore()
+
+      expect(store.getMessage(key)).toBeNull()
+    },
+  )
+
+  it('rejects an own property that is not an indexed ForumMessage', () => {
+    const store = useForumStore()
+    Object.defineProperty(store.index, 'constructor', {
+      configurable: true,
+      enumerable: true,
+      value: { topic: 'attacker-controlled' },
+    })
+
+    expect(store.getMessage('constructor')).toBeNull()
+  })
+
+  it('rejects an otherwise valid indexed message whose payload digest does not match its key', () => {
+    const store = useForumStore()
+    store.index.candidate = {
+      ...makeMessage({ payloadDigest: 'different' }),
+      replies: [],
+    }
+
+    expect(store.getMessage('candidate')).toBeNull()
+  })
+
+  it('rejects an otherwise valid indexed message whose topic is not a string', () => {
+    const store = useForumStore()
+    store.index.candidate = {
+      ...makeMessage({ payloadDigest: 'candidate' }),
+      topic: null,
+      replies: [],
+    } as unknown as MessageWithReplies
+
+    expect(store.getMessage('candidate')).toBeNull()
+  })
+
+  it('rejects an otherwise valid indexed message whose entries are not an array', () => {
+    const store = useForumStore()
+    store.index.candidate = {
+      ...makeMessage({ payloadDigest: 'candidate' }),
+      entries: {},
+      replies: [],
+    } as unknown as MessageWithReplies
+
+    expect(store.getMessage('candidate')).toBeNull()
+  })
 })
 
 describe('useForumStore: putMessage', () => {
@@ -168,6 +482,27 @@ describe('useForumStore: read-back failure after a landed burn (review F3)', () 
       .catch((e: unknown) => e)
     expect(failure).toBeInstanceOf(Error)
     expect(failure).not.toBeInstanceOf(BurnRefreshError)
+    expect(mockedFetchOne).not.toHaveBeenCalled()
+  })
+
+  it('preserves a typed unknown post outcome without attempting read-back', async () => {
+    const store = useForumStore()
+    const unknownOutcome = new TopicPostOutcomeUnknownError(
+      'The paid post outcome is unknown',
+      new Error('Monad post abandoned'),
+    )
+    mockedPost.mockRejectedValueOnce(unknownOutcome)
+
+    const failure = await store
+      .putMessage({
+        wallet: testWallet,
+        entry: { kind: 'post', message: 'hello' },
+        satoshis: 10_000_000,
+        topic: 'stamp',
+      })
+      .catch((err: unknown) => err)
+
+    expect(failure).toBe(unknownOutcome)
     expect(mockedFetchOne).not.toHaveBeenCalled()
   })
 })

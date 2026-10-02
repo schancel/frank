@@ -13,9 +13,15 @@ export default {
   },
   stampPreparation: {
     posting: 'Posting…',
-    postCreated: 'Post created!',
+    postCreated: 'Post created in {topic}.',
+    replyParentLoading: 'Loading the post you are replying to…',
+    replyParentUnavailable:
+      'The post you are replying to could not be loaded. You can try again.',
+    retryReplyParent: 'Try again',
     postedRefreshFailed:
       'Your post was published, but refreshing failed. Reload to see it. Do not post it again.',
+    postOutcomeUnknown:
+      'Your post may have been published. Reload to check for it. Do not post it again.',
     votedRefreshFailed:
       'Your vote was sent, but refreshing failed. Reload to see it. Do not vote again.',
   },

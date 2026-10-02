@@ -252,6 +252,9 @@ export default {
     balanceStale: '(dernière valeur connue)',
     directMessages: 'Messages privés',
   },
+  selfChat: {
+    you: 'Vous',
+  },
   outgoing: {
     sending: 'Envoi…',
     paymentPending:
@@ -265,7 +268,9 @@ export default {
     reasonInterrupted: "L'envoi a été interrompu avant son terme.",
     reasonUnverified: "La remise n'a pas pu être confirmée.",
     reasonRecovered: 'Un message précédent a été remis entre-temps.',
-    reasonError: "Une erreur s'est produite.",
+    reasonInsufficientFunds:
+      'Les fonds sont insuffisants pour envoyer ce message.',
+    reasonError: 'Le message n’a pas pu être envoyé.',
     retry: 'Réessayer',
     retryHint:
       "Réessayer renvoie le même paiement tant qu'il est valide. Un nouveau paiement n'est fait que s'il ne l'est plus.",

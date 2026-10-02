@@ -18,7 +18,10 @@ jest.mock('../adapters/level-message-store', () => ({
     },
   }),
 }))
-jest.mock('../utils/clients', () => ({ useMonadWallet: () => ({}) }))
+const mockUseMonadWallet = jest.fn()
+jest.mock('../utils/clients', () => ({
+  useMonadWallet: () => mockUseMonadWallet(),
+}))
 jest.mock('../utils/notifications', () => ({
   errorNotify: jest.fn(),
   insufficientStampNotify: jest.fn(),
@@ -33,10 +36,13 @@ import { TextDecoder, TextEncoder } from 'util'
 Object.assign(globalThis, { TextEncoder, TextDecoder })
 /* eslint-disable @typescript-eslint/no-var-requires */
 const ChatPage = require('./Chat.vue').default
+const ChatInput = require('../components/chat/ChatInput.vue').default
 const { useChatStore } = require('../stores/chats')
 const { useContactStore } = require('../stores/contacts')
+const { activeChain } = require('@frank/wallet/chain')
 
 const DEALER = '0x3e3e3e3e3e3E3E3E3e3e3E3E3e3e3E3E3e3E3E3e'
+const SELF = '0x1a1A1A1A1a1A1A1a1A1a1a1a1a1a1a1A1A1a1a1a'
 const items = [
   { type: 'blackjack-move', gameId: 'g', action: 'bet', wagerTxHash: '0xh' },
 ]
@@ -95,14 +101,19 @@ const Blank = defineComponent({ setup: () => () => h('div') })
 
 async function mountChat(
   profile: { isBot?: boolean } | undefined,
-  options: { realInput?: boolean } = {},
+  options: {
+    realInput?: boolean
+    address?: string
+    seedMessage?: boolean
+  } = {},
 ) {
+  const address = options.address ?? DEALER
   const pinia = createPinia()
   setActivePinia(pinia)
   const contacts = useContactStore()
   if (profile) {
     contacts.addContact({
-      address: DEALER,
+      address,
       contact: {
         profile: {
           name: 'Dealer',
@@ -114,9 +125,14 @@ async function mountChat(
       },
     })
   }
-  useChatStore().chats[DEALER] = {
-    messages: [{ payloadDigest: 'd1', outbound: false, items, outpoints: [] }],
-  } as never
+  const chats = useChatStore()
+  if (options.seedMessage !== false) {
+    chats.chats[address] = {
+      messages: [
+        { payloadDigest: 'd1', outbound: false, items, outpoints: [] },
+      ],
+    } as never
+  }
   provided = undefined
   const wrapper = mount(ChatPage as never, {
     global: {
@@ -131,7 +147,7 @@ async function mountChat(
         ChatBannerStack: Blank,
       },
       mocks: {
-        $route: { params: { address: DEALER } },
+        $route: { params: { address } },
         $q: { dark: { isActive: false } },
         $t: (key: string) => key,
       },
@@ -142,10 +158,18 @@ async function mountChat(
     wrapper,
     input: wrapper.findComponent(InputStub),
     banner: wrapper.findComponent(BannerStub),
+    chats,
   }
 }
 
 describe('Chat.vue blackjack wiring (mounted)', () => {
+  beforeEach(() => {
+    mockUseMonadWallet.mockReset()
+    mockUseMonadWallet.mockReturnValue({
+      identity: { address: { raw: SELF }, displayAddress: SELF },
+    })
+  })
+
   it.each([
     ['a bot-marked dealer', { isBot: true }],
     ['a plain profile', { isBot: false }],
@@ -211,5 +235,48 @@ describe('Chat.vue blackjack wiring (mounted)', () => {
       .mockResolvedValue({ state: 'sent', payloadDigest: 'd' })
     await expect(submit({ items, address: DEALER })).resolves.toBeUndefined()
     expect(vm.sendDirectMessage).toHaveBeenCalledTimes(1)
+  })
+
+  it('submits the mounted composer to the ordinary stamped store path for self-chat', async () => {
+    const send = jest
+      .spyOn(activeChain.directMessages, 'send')
+      .mockResolvedValue({
+        payloadDigest: 'self-digest',
+        stampValueWei: 7000n,
+        stampPayments: [
+          {
+            txHash: '0xstamp',
+            destinationAddress: SELF,
+            valueWei: 7000n,
+          },
+        ],
+        preparationTxHashes: [],
+      })
+    const mounted = await mountChat(
+      {},
+      { address: SELF, realInput: true, seedMessage: false },
+    )
+    const vm = mounted.wrapper.vm as any
+    vm.message = 'note to self'
+    await mounted.wrapper.vm.$nextTick()
+    ;(mounted.wrapper.findComponent(ChatInput).vm as any).sendMessage()
+    await flushPromises()
+
+    expect(send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        recipient: expect.objectContaining({ raw: SELF }),
+        stampValue: expect.anything(),
+      }),
+    )
+    expect(typeof send.mock.calls[0]?.[0].stampValue).toBe('bigint')
+    expect(mounted.chats.chats[SELF]?.messages).toEqual([
+      expect.objectContaining({
+        payloadDigest: 'self-digest',
+        outbound: true,
+        status: 'confirmed',
+        items: [{ type: 'text', text: 'note to self' }],
+      }),
+    ])
+    expect(mounted.chats.chats[SELF]?.totalValue).toBeGreaterThan(0)
   })
 })

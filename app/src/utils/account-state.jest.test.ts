@@ -44,9 +44,16 @@ const cases = [
     complete: true,
     reminder: false,
   },
+  {
+    label: 'legacy profile (name only, no seed, #308)',
+    facts: { seedPhrase: null, name: 'Alice', seedConfirmedAt: null },
+    state: 'name-only',
+    complete: false,
+    reminder: false,
+  },
 ] as const
 
-describe('account state (#284)', () => {
+describe('account state (#284, #308)', () => {
   it.each(cases)('$label', ({ facts, state, complete, reminder }) => {
     expect(classifyAccount(facts)).toBe(state)
     expect(isSetupComplete(facts)).toBe(complete)
@@ -66,14 +73,17 @@ describe('account state (#284)', () => {
     ({ facts, state }) => {
       // Seed-only (needs-recovery) never passes; every named account passes.
       expect(setupGatePasses(facts)).toBe(
-        state === 'completed-unconfirmed' || state === 'confirmed',
+        state === 'completed-unconfirmed' ||
+          state === 'confirmed' ||
+          state === 'name-only',
       )
     },
   )
 
-  it('a name without a seed passes the router gate but is not "complete" (walletRequired routes redirect it)', () => {
+  it('a name without a seed passes the router gate, classifies as name-only, and is not "complete" (walletRequired routes redirect it)', () => {
     const facts = { seedPhrase: null, name: 'Alice', seedConfirmedAt: null }
     expect(setupGatePasses(facts)).toBe(true)
+    expect(classifyAccount(facts)).toBe('name-only')
     expect(isSetupComplete(facts)).toBe(false)
   })
 })

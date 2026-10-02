@@ -45,6 +45,7 @@ declare module 'pinia' {
     // you can define simpler values too
     restored: Promise<boolean>
     flushPersistence: () => Promise<void>
+    rehydrate: () => Promise<void>
   }
 }
 
@@ -57,6 +58,7 @@ export function createStoragePlugin(
       return {
         restored: Promise.resolve(true),
         flushPersistence: () => Promise.resolve(),
+        rehydrate: () => Promise.resolve(),
       }
     }
     const { save, restore } = options.storage
@@ -77,8 +79,10 @@ export function createStoragePlugin(
     // cannot slip through before its save has even been started.
     let issuedMutation = 0
     let processedMutation = 0
+    let isRehydrating = false
     store.$subscribe(
       () => {
+        if (isRehydrating) return
         issuedMutation += 1
       },
       { flush: 'sync' },
@@ -91,6 +95,7 @@ export function createStoragePlugin(
     let hasPersistenceError = false
     let persistenceError: unknown
     store.$subscribe((mutation, state) => {
+      if (isRehydrating) return
       processedMutation = issuedMutation
       let write: Promise<void>
       try {
@@ -118,6 +123,16 @@ export function createStoragePlugin(
         }
         await writeDrain
         if (hasPersistenceError) throw persistenceError
+      },
+      async rehydrate() {
+        const metadata = await metadataPromise
+        const partialState = await restore(storage, metadata, store.$state)
+        isRehydrating = true
+        try {
+          store.$patch(partialState)
+        } finally {
+          isRehydrating = false
+        }
       },
     }
   }

@@ -590,11 +590,21 @@ def strict_der_parse(der):
     return r, s
 
 
-def reg_t2_transcript(network, statement_frame):
-    d = b'frank/directory-signature/v1'
+def reg_signature_transcript(domain, network, statement_frame):
+    d = domain.encode()
     n = network.encode()
     return struct.pack('>H', len(d)) + d + struct.pack('>H', len(n)) + n + \
         struct.pack('>I', len(statement_frame)) + statement_frame
+
+
+def reg_t2_transcript(network, statement_frame):
+    return reg_signature_transcript(
+        'frank/directory-signature/v1', network, statement_frame)
+
+
+def reg_t2a_transcript(network, transition_frame):
+    return reg_signature_transcript(
+        'frank/key-transition-signature/v1', network, transition_frame)
 
 
 # ---- reg-corpus typed structure (stages 8.1-8.3) and semantics (stage 9) ----------------------
@@ -888,24 +898,37 @@ def reg_prior_statement(frame_bytes, child_highest):
 
 
 def reg_verify_stage10(sigs, st, run_10):
-    """Stage 10.6 in document order: M7 first, then the algorithm-1 verification (T2)."""
+    """Stage 10.6: whole-attestation M7 preflight, then T2 and T2a verification."""
     if not run_10:
         return
-    for algorithm, (key_type, key), signature in sigs:
+    transitions = st['transitions'] or []
+    entries = list(sigs) + [
+        (t['algorithm'], t['signer'], t['signature']) for t in transitions]
+    for algorithm, _, _ in entries:
         if algorithm in (2, 3, 16):
             rfail('unsupported', '10.6')
-        if algorithm == 1:
-            digest = hashlib.sha256(reg_t2_transcript(st['network'], st['frame'])).digest()
-            r, s = strict_der_parse(signature)
-            if not ecdsa_verify(digest, r, s, key):
-                rfail('cryptographic', '10.6')
-            continue
-        rfail('unsupported', '10.6')
+        if algorithm != 1:
+            rfail('unsupported', '10.6')
+    for _, (_, key), signature in sigs:
+        digest = hashlib.sha256(reg_t2_transcript(st['network'], st['frame'])).digest()
+        r, s = strict_der_parse(signature)
+        if not ecdsa_verify(digest, r, s, key):
+            rfail('cryptographic', '10.6')
+    for transition in transitions:
+        _, key = transition['signer']
+        digest = hashlib.sha256(reg_t2a_transcript(
+            st['network'], transition['frame'])).digest()
+        r, s = strict_der_parse(transition['signature'])
+        if not ecdsa_verify(digest, r, s, key):
+            rfail('cryptographic', '10.6')
 
 
 def check_account_registration():
     doc = json.load(open(os.path.join(ROOT, 'vectors', 'account-registration.json')))
     problems, n = [], 0
+    values = json.load(open(os.path.join(ROOT, 'vectors', 'account-registration-values.json')))
+    if [c['id'] for c in doc['cases']] != values.get('manifest_case_ids'):
+        problems.append('account-registration: exact case inventory differs')
     jsonschema.Draft202012Validator(
         json.load(open(os.path.join(ROOT, 'vectors.schema.json')))).validate(doc)
     for c in doc['cases']:
@@ -958,6 +981,18 @@ def check_account_registration():
 def check_registration_values():
     doc = json.load(open(os.path.join(ROOT, 'vectors', 'account-registration-values.json')))
     problems, n = [], 0
+    vectors = doc.get('key_transition_authorizations', [])
+    if [v.get('id') for v in vectors] != ['t2a-rust-secret-2']:
+        problems.append('T2a: exact known-answer inventory differs')
+    for v in vectors:
+        transition = bytes.fromhex(v['transition_statement_frame_hex'])
+        digest = hashlib.sha256(reg_t2a_transcript(v['network'], transition)).digest()
+        if digest.hex() != v['digest_hex']:
+            problems.append('T2a %s: digest differs' % v['id'])
+        r, s = strict_der_parse(bytes.fromhex(v['signature_der_hex']))
+        if not ecdsa_verify(digest, r, s, bytes.fromhex(v['signer_public_key_hex'])):
+            problems.append('T2a %s: signature does not verify' % v['id'])
+        n += 1
     for v in doc['timestamp_mappings']:
         ms = int(v['timestamp_ms'])
         seconds, remainder = divmod(ms, 1000)

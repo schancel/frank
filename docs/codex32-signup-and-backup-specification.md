@@ -282,6 +282,9 @@ accountIdCommitment?, deviceId?, syncDomainId?, removableVolumeId?, physicalDoma
 userAssertions}`. `artifactCommitment` is
 `SHA-256(ASCII("frank/backup-artifact/v1") || 0x00 || u8(artifactRole) ||
 u32be(byteLength) || exactCanonicalArtifactBytes)`.
+V1 artifact-role octets are `{masterShare=0, recoveryDescriptor=1}`; all other
+values are reserved and rejected. Frozen known-answer vectors cover both roles
+and prove that swapping only the role changes the commitment.
 Frank machine-verifies available stable provider/account/device/sync identifiers,
 normalizes aliases, and rejects two destinations sharing any policy-disallowed
 provider account, synchronized storage domain, or physical device. Properties a
@@ -949,12 +952,11 @@ acknowledgement or runtime activation error is not reported as rollback.
 Account creation and active-pointer switch are either one atomic linearization
 or two named phases. In a two-phase import, post-record/pre-switch failure leaves
 the new record inactive and the former account active until explicit resume or
-bounded cleanup. Cleanup may return the two identity rows to absent only in the
-same transaction that proves the candidate was never active, has the matching
-creation ID, has no detached operation or adopted handle, and destroys the whole
-inactive candidate record; this is cancellation of an unactivated creation, not
-identity deletion or retirement. After the pointer switch, that transition is
-forever forbidden and startup resumes the new identity.
+normal inactive-account deletion. Because the committed record owns adopted
+handles, it is never silently or automatically cleaned up and its identity rows
+never return to absent. A user who declines resume must use the full deletion
+ceremony and durable tombstone/handle-destruction machine, including its permanent
+retirement consequence. After the pointer switch, startup resumes the new identity.
 Secret cleanup precedes normal networking in either case.
 
 ## 8. Backup management after signup
@@ -1626,9 +1628,9 @@ plus terminal `adopted` intents for every exact handle—never both or neither;
 startup does not block on adopted intents and cleanup cannot destroy them.
 A lost commit acknowledgement retries the same `creationId` and byte-identical
 record successfully rather than colliding with its own identity rows. A competing
-creation fails. Two-phase inactive-candidate cleanup removes active identity rows
-only in the same transaction that proves the matching creation never activated
-and has no adopted handle or detached operation; after pointer switch it cannot.
+creation fails. A two-phase post-record/pre-switch failure persists the complete
+inactive account and adopted intents across restart; it can only resume or enter
+the ordinary inactive-account deletion ceremony, never automatic cleanup.
 
 Backup-status tests deterministically re-export the exact descriptor from
 persisted versions and raw fingerprint, round-trip it independently, and reject

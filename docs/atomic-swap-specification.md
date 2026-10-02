@@ -171,6 +171,40 @@ transition-table slots are independent. A receiver derives protocol state determ
 validating both sender chains and applying ready events in lexicographic event-ID order; a missing
 predecessor or prerequisite buffers the event without authorizing action.
 
+The common framing helper is
+`frame(tag, payload) = u16be(ASCII-tag byte length) || ASCII(tag) ||
+u32be(payload byte length) || payload`. A v1 unsigned event core is exactly:
+
+```text
+u16be(protocolVersion=1) || swapId[32] || laneIdU8 || messageTypeU16 ||
+senderKeyId[32] || senderRoleU8 || sequenceU64 || previousEventHash[32] ||
+prerequisiteCountU8 || sortedPrerequisiteEventIds[32]* ||
+payloadLengthU32 || canonicalPayload || SHA256(canonicalPayload)
+```
+
+There are at most 32 prerequisites and 65,536 payload bytes. `eventId` is
+`SHA256(frame("frank/swap-event-id/v1", unsignedCore))`; the signature preimage is
+`frame("frank/swap-event-signature/v1", unsignedCore || eventId)`. The envelope appends
+`eventId[32] || signatureAlgorithmU16 || signatureLengthU16 || signatureBytes`, where the
+authorization transcript fixes the allowed identity-signature algorithm and canonical signature
+encoding. The first sender event has sequence zero and an all-zero previous hash; every later event
+has sequence exactly one greater and names the prior event ID.
+
+`(senderKeyId, sequence)` and `(senderKeyId, previousEventHash)` are single-valued chain slots. Two
+distinct correctly signed successors are sender equivocation regardless of their payload keys. Once
+both are known, all replicas enter the same fail-closed violation/recovery state, authorize no new
+descendant of either branch, and never roll back already durable external effects; watchers retain
+only the recovery actions allowed from the last nonforked prefix. Opposite arrival order has the same
+result.
+
+V1 assigns each of at most eight participants a disjoint 32-event sender budget: 24 ordinary slots
+whose complete message plan is proven by the manifest and eight reserved safety/recovery slots whose
+message types are enumerated there. A semantic-key duplicate with identical canonical payload is an
+idempotent retransmission only when it is the byte-identical original event. A new sequence targeting
+an already materialized semantic key is rejected without advancing the accepted sender head; a
+nonidentical second value is conflict or equivocation, not a fresh slot. One sender cannot consume another's budget, and ordinary events
+cannot consume its reserved safety slots.
+
 Chain observations are not coordination events and never become authoritative merely because a
 peer reports them. Each adapter independently verifies its current canonical chain and maintains a
 bounded local projection. A semantic effect is keyed by the authorized body, not variable signature,
@@ -362,13 +396,25 @@ polynomial certificate/validator rather than silently raising these limits.
 Runtime storage is bounded independently of the manifest. V1 permits at most 256 signed coordination
 events and 256 authorized semantic chain objects per swap; byte-identical retries and equivalent
 witnesses consume no new slot. Peer messages never carry arbitrary raw chain-proof collections.
-Each local raw-evidence segment is capped at 1 MiB. Before crossing the cap, the adapter atomically
-persists its current canonical projection for every authorized object, the chain tip and policy
-version used, and a rolling audit hash over the retired segment, then deletes the raw variants. This
+Each raw evidence record is capped at 256 KiB, a header/ancestry path at 4,096 entries and 512 KiB,
+an RPC response at 8 MiB, and each local raw-evidence segment at 1 MiB. Content length or a streaming
+byte/item counter rejects one-over-limit input before full allocation, parsing, or cryptographic
+validation; adapters stream and discard unrelated RPC fields rather than retaining the response.
+Before crossing the segment cap, the adapter atomically persists a versioned authenticated snapshot:
+`{swapId, adapterId, policyVersion, snapshotRevision, previousSnapshotHash, chainGenesisId,
+acceptedTipId, acceptedTipHeight, sorted[<=256] object projections, retiredSegmentAuditHash}`. Each
+object projection binds its authorized-body hash, chain identity, inclusion block/height, observed
+depth/status, and `activeFinal` value. The snapshot is MACed or AEAD-authenticated by the local vault,
+written to a fresh record, independently read back and verified, and only then replaces the prior
+snapshot and permits raw-segment deletion. This
 local snapshot is not signed by the peer and is never used as peer authority. Current safety-critical
 state always has a reserved record outside the raw-evidence quota, so a reorg or first valid reveal
 updates the projection even when raw diagnostic storage is full. If the adapter cannot durably
 snapshot, the operation fails closed into recovery while the watcher continues querying the chain.
+On startup, resume, or network change, and immediately before every irreversible action, the adapter
+must query the chain and refresh every relevant projection against the current canonical tip. Until
+that succeeds, cached `activeFinal=true` authorizes nothing and the operation remains in polling/
+recovery state.
 After `lifecycleTerminal`, old segments may be destroyed while the terminal outcome and audit hash
 remain. Parsing rejects an over-limit coordination event before allocation or signature work.
 
@@ -660,7 +706,7 @@ successor may be reserved only after authoritative reconciliation classifies its
 policy. A parent with an unknown external outcome blocks a successor; that possible delay is part
 of the liveness and timeout calculation. The initial action uses its semantic action slot; every
 candidate child of parent `p` uses the single canonical slot
-`SHA256(frame("frank/replacement-slot/v1", operationId || p.actionId))`. Reservation atomically
+`SHA256(frame("frank/replacement-slot/v1", operationId[32] || p.actionId[32]))`. Reservation atomically
 requires `p.successorActionId` absent and sets it to the winning child, with a durable unique
 constraint on `(operationId, parentActionId)`. Sequential retries cannot create a sibling after the
 first child wins. Known-pending replacement may coexist on chain only where the adapter proves
@@ -708,27 +754,30 @@ For this subsection, A offers XEC and receives MON; B offers MON and receives XE
    success-branch spend matching the canonical body pays only B and is the sole first-reveal action.
    B's signature bytes and consensus-valid push encodings may vary. A holds its complete refund
    artifact.
-4. B constructs, but does not broadcast, exact EVM funding to `P` for the MON principal plus the
+4. B constructs only the exact unsigned EVM funding template to `P` for the MON principal plus the
    negotiated success-fee reserve. The settlement policy fixes A's recipient, principal, allowed
    transaction type, nonce, gas limit, and maximum fee envelope while allowing A to choose a fresh
    fee within that envelope after learning `t`. Because possession of `x` ultimately controls the
    entire EOA, the quote treats the whole funded balance, including any unused reserve, as value
    transferred to A; it does not pretend residual change remains under B's control.
-5. Both identities sign the pre-funding authorization root containing the exact EVM funding bytes,
+5. Both identities sign the pre-funding authorization root containing the exact unsigned EVM
+   funding template and sender/nonce policy,
    the withheld-parent txid/output commitment, canonical eCash claim intent, exact refund artifact,
    A's required sighash type, the initially supplied B signature as readiness evidence, all
    public points/proofs, amounts, the predicate permitting a later valid B witness, EVM success-policy
    artifact, the presignature commitment and release predicate (not its withheld bytes), and conservative `lastSafeClaimBroadcast`.
    They durably record both attestations. B cannot validate the hidden parent's signatures or output
    before risking MON and explicitly accepts invalid-parent, invalid-presignature, double-spend,
-   and non-reveal grief. Immediately before B authorizes EVM broadcast, the UI separately names the
+   and non-reveal grief. Before B signs the funding transaction or releases any broadcast-capable
+   bytes, the UI separately names the
    still-unverified parent and withheld adaptor presignature, explains that even a final parent is
    unclaimable until A releases a valid presignature, and obtains operation-bound consent that A's
    disappearance can strand MON permanently. Both artifact identities, that dependency warning,
    the permanent-lock consequence, and the authorization control are programmatically associated,
    announced on dialog entry, and encountered in deterministic keyboard and screen-reader order
    before authorization can activate.
-6. B broadcasts EVM funding and waits for the manifest's threshold. Only then does A reveal and
+6. Only after that consent is durably bound to the exact authorization root and artifacts does B
+   sign and broadcast the exact EVM funding transaction. B waits for the manifest's threshold. Only then does A reveal and
    broadcast the exact raw eCash parent. B byte-checks its txid and promised output, fully validates
    it, retains the bytes for rebroadcast, and waits until that exact txid reaches the negotiated
    eCash threshold. Only after the parent is actively final does A reveal the exact committed
@@ -1090,7 +1139,9 @@ The first implementation should provide:
 21. coordination-convergence tests delivering independent sender-chain events, prerequisites, and
     duplicates in opposite orders; once all predecessors arrive, both replicas derive the same
     protocol state and accept the same next event, while a broken sender chain or conflicting
-    single-valued slot enters the violation path. Given the same canonical chain tip, byte-distinct
+    single-valued slot enters the violation path. Distinct signed same-sequence/same-predecessor
+    siblings and descendants arrive in opposite orders; both replicas retain prior durable effects,
+    authorize no branch descendant, and enter the same recovery state. Given the same canonical chain tip, byte-distinct
     valid witnesses produce the same local semantic effect without becoming protocol authority;
 22. initial-pair reducer tests in which EVM pending/final, exact or invalid parent reveal, and eCash
     pending/final facts arrive duplicated and reordered with restart after every step; only `EVM
@@ -1117,7 +1168,10 @@ The first implementation should provide:
     variants compact into a verified local snapshot and rolling audit hash, and a full diagnostic
     segment cannot suppress a first reveal, reorg, refund, or watcher action. More than 256 signed
     coordination events or semantic objects rejects before expensive validation, while identical
-    retry consumes no slot;
+    retry consumes no slot. Per-sender ordinary and safety budgets prevent one peer exhausting
+    another; one-over record, ancestry-path, streamed RPC, payload, and prerequisite limits reject
+    before full allocation or cryptography. Crash before/after snapshot write/readback/delete plus an
+    offline reorg never lets cached finality authorize an action before mandatory refresh;
 28. fee-lineage tests cover known-not-sent, known-pending, accepted with lost response, and unknown
     parent outcomes; only specified authoritative states allocate one CAS-winning successor, and
     restart/takeover never creates parallel replacements; and
@@ -1130,6 +1184,8 @@ The first implementation should provide:
     consequences in deterministic focus order; “enter recovery” never implies unilateral recovery
     in a griefable mode. Before EVM funding, B must identify both unverified withheld artifacts and
     encounter their programmatically associated dependency warning before the authorization control.
+    Declining consent leaves no signed or otherwise broadcast-capable EVM funding bytes outside B;
+    stale consent cannot authorize signing after any root/artifact mutation.
     After recovery-package export, abandonment copy changes only after exact-byte durable write and
     independent read-back/import verification; failed, lost-response, cancelled, and mismatched
     exports retain sole-authority copy and a fresh inventory distinguishes observation from recovery

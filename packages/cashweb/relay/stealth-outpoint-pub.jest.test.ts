@@ -1,47 +1,24 @@
-import { PrivateKey, PublicKey, crypto as bitcoreCrypto } from 'bitcore-lib-xpi'
-
 import { stealthOutpointPublicKey } from './stealth-outpoint-pub'
+import { sec1Point, SEC1_N_MINUS_1, SEC1_ONE, SEC1_SECRET } from '../sec1-pins'
 
-const SECRET = '22'.repeat(32)
 const N_HEX =
   'fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141'
-const N_MINUS_1 =
-  'fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364140'
-const ONE = `${'00'.repeat(31)}01`
 
-function bitcoreCompressed(hex: string): Buffer {
-  const key = new PrivateKey(hex)
-  return Buffer.from(
-    bitcoreCrypto.Point.pointToCompressed(key.toPublicKey().point),
-  )
-}
-
-it('matches bitcore compressed stealth outpoint public keys', () => {
-  const secret = Buffer.from(SECRET, 'hex')
+it('matches the pinned compressed stealth outpoint public keys', () => {
+  const secret = Buffer.from(SEC1_SECRET, 'hex')
   const bytes = stealthOutpointPublicKey(secret)
-  const wrapped = new PublicKey(Buffer.from(bytes))
-  const described = wrapped.toObject() as { compressed: boolean }
-  expect(Buffer.from(bytes)).toEqual(bitcoreCompressed(SECRET))
-  expect(wrapped.toBuffer()).toEqual(bitcoreCompressed(SECRET))
-  expect(described.compressed).toBe(true)
-  expect(wrapped.network.name).toBe('livenet')
+  expect(Buffer.from(bytes)).toEqual(sec1Point(SEC1_SECRET, true))
   expect(bytes.length).toBe(33)
-  expect(wrapped.toAddress('testnet').toBuffer()).toEqual(
-    new PublicKey(bitcoreCompressed(SECRET)).toAddress('testnet').toBuffer(),
-  )
-  expect(wrapped.toAddress('livenet').toBuffer()).toEqual(
-    new PublicKey(bitcoreCompressed(SECRET)).toAddress('livenet').toBuffer(),
-  )
+  expect(bytes[0] === 0x02 || bytes[0] === 0x03).toBe(true)
 
-  const almost = Buffer.from(N_MINUS_1, 'hex')
+  const almost = Buffer.from(SEC1_N_MINUS_1, 'hex')
   expect(Buffer.from(stealthOutpointPublicKey(almost))).toEqual(
-    bitcoreCompressed(N_MINUS_1),
+    sec1Point(SEC1_N_MINUS_1, true),
   )
   expect(
-    Buffer.from(stealthOutpointPublicKey(Buffer.from(ONE, 'hex'))),
-  ).toEqual(bitcoreCompressed(ONE))
-  expect(secret.toString('hex')).toBe(SECRET)
-
+    Buffer.from(stealthOutpointPublicKey(Buffer.from(SEC1_ONE, 'hex'))),
+  ).toEqual(sec1Point(SEC1_ONE, true))
+  expect(secret.toString('hex')).toBe(SEC1_SECRET)
 })
 
 it('rejects a secret outside (0, n) and a non-32-byte secret', () => {

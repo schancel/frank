@@ -28,7 +28,7 @@ use crate::{
             authenticate, body_hash, now_ms, rpc_error, BoundedRpcBody, RpcAuthState, RpcBinding,
             RpcChallengeBody, RpcRejection, RPC_AUTH_DOMAIN, RPC_CUSTOMER_HEADER,
         },
-        hourly_quota::FixedHourQuota,
+        hourly_quota::{normalize_quota_ip, FixedHourQuota},
         server::RegistryServer,
     },
     monad_http::Address,
@@ -390,10 +390,7 @@ fn peer_ip(peer: Option<ConnectInfo<SocketAddr>>) -> Result<IpAddr, RpcRejection
         .ok_or_else(|| rpc_error(StatusCode::UNAUTHORIZED, "rpc_source_required"))?
         .0
         .ip();
-    Ok(match ip {
-        IpAddr::V4(v) => IpAddr::V4(v),
-        IpAddr::V6(v) => IpAddr::V6(std::net::Ipv6Addr::from(u128::from(v) & (!0u128 << 64))),
-    })
+    Ok(normalize_quota_ip(ip))
 }
 
 fn unix_seconds() -> u64 {

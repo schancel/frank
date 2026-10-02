@@ -51,8 +51,8 @@
  *    post, which is exactly the kind of unstated encoding choice issue #41 itself warns against
  *    (see the note on `direction` vs. signed `voteWeightWei` below).
  */
-import { ForumMessage, ForumMessageEntry } from '@frank/cashweb/types/forum'
-import { MessageItem } from '@frank/cashweb/types/messages'
+import { ForumMessage, ForumMessageEntry } from "@frank/cashweb/types/forum";
+import { MessageItem } from "@frank/cashweb/types/messages";
 
 /** Canonical string form of an on-chain address, for storage keys, API calls, and equality checks.
  * For `MonadChain`, this is an EIP-55 checksummed `0x...` string (`../wallet/monad-identity.ts`) --
@@ -60,7 +60,7 @@ import { MessageItem } from '@frank/cashweb/types/messages'
  * `toAPIAddress`/`toDisplayAddress` (`../../utils/address.ts`) need, since EVM has exactly one
  * canonical address representation. */
 export interface ChainAddress {
-  readonly raw: string
+  readonly raw: string;
 }
 
 /** A chain-agnostic HD seed. Mirrors the only real seed-consuming primitive in this codebase today
@@ -68,14 +68,14 @@ export interface ChainAddress {
  * than inventing an abstract seed format with no real consumer yet. */
 export interface HDSeed {
   /** BIP-39 mnemonic phrase. */
-  mnemonic: string
+  mnemonic: string;
   /** Optional BIP-39 25th-word passphrase. Defaults to none. */
-  passphrase?: string
+  passphrase?: string;
 }
 
 export interface FrankIdentityHandle {
-  address: ChainAddress
-  displayAddress: string
+  address: ChainAddress;
+  displayAddress: string;
 }
 
 /** The generic per-user wallet handle every `ActiveChain` method that needs a sender identity
@@ -83,7 +83,7 @@ export interface FrankIdentityHandle {
  * more than `identity` to the object they actually hand back from `createWallet`; this interface
  * only promises what every chain implementation must have. */
 export interface WalletHandle {
-  readonly identity: FrankIdentityHandle
+  readonly identity: FrankIdentityHandle;
 }
 
 /** A looked-up identity's registered profile/pubkey -- `contacts.ts` (#42) needs this to resolve a
@@ -91,162 +91,175 @@ export interface WalletHandle {
  * `fetchIdentityPubKey`, which Monad had no analog of before this ticket
  * (`../wallet/monad-identity.ts`'s `fetchMonadProfile`). */
 export interface ProfileInfo {
-  address: ChainAddress
+  address: ChainAddress;
   /** Raw registered public key bytes (secp256k1), if any -- needed to derive an ECDH shared key
    * for direct-message encryption (`../wallet/monad-message-envelope.ts`). */
-  pubKey: Uint8Array
+  pubKey: Uint8Array;
   /** Optional user-facing profile fields carried by the signed registration. */
-  name?: string
-  bio?: string
-  avatar?: string
+  name?: string;
+  bio?: string;
+  avatar?: string;
   /** Self-declared automated account (#311); see `MonadProfileFields.bot`. */
-  bot?: boolean
+  bot?: boolean;
 }
 
 export interface DirectMessageSendResult {
-  payloadDigest: string
-  stampValueWei: bigint
-  stampPayments: StampPaymentInfo[]
+  payloadDigest: string;
+  stampValueWei: bigint;
+  stampPayments: StampPaymentInfo[];
   /** Main-account transactions used to prepare sender inventory for this Send, if any. */
-  preparationTxHashes: string[]
+  preparationTxHashes: string[];
 }
 
 export type DirectMessagePreparationProgress =
-  | { stage: 'checking' }
+  | { stage: "checking" }
   | {
-      stage: 'funding'
-      completed: number
-      total: number
-      feeReserveWei: bigint
-      txHash?: string
+      stage: "funding";
+      completed: number;
+      total: number;
+      feeReserveWei: bigint;
+      txHash?: string;
     }
-  | { stage: 'ready'; fundingTxHashes: string[] }
+  | { stage: "ready"; fundingTxHashes: string[] };
 
 /** A single decrypted, received direct message. See this file's header, deviation 2, for why this
  * isn't `ReceivedMessageWrapper` (`../types/user-interface.ts`). */
 export interface DirectMessageReceived {
-  senderAddress: ChainAddress
-  recipientAddress: ChainAddress
-  items: MessageItem[]
+  senderAddress: ChainAddress;
+  recipientAddress: ChainAddress;
+  items: MessageItem[];
   /** Bare (no `0x`) hex `payload_hash` of the stamped message this was decoded from. */
-  payloadDigest: string
+  payloadDigest: string;
   /** Wei actually paid across the message's stamp transactions (read back from the signed raw
    * transactions, not merely echoing a configured constant -- see `./monad-chain.ts`). */
-  stampValueWei: bigint
-  stampPayments: StampPaymentInfo[]
+  stampValueWei: bigint;
+  stampPayments: StampPaymentInfo[];
   /** Milliseconds since the Unix epoch, as recorded by the relay. */
-  receivedTime: number
+  receivedTime: number;
 }
 
 export interface StampPaymentInfo {
-  txHash: string
-  destinationAddress: string
-  valueWei: bigint
+  txHash: string;
+  destinationAddress: string;
+  valueWei: bigint;
 }
 
 export interface RecoveredStampPaymentInfo {
-  payloadDigest: string
-  childIndex: number
-  txHash: string
-  address: ChainAddress
-  valueWei: bigint
-  status: 'discovered' | 'sweep-pending' | 'swept'
-  sweepTxHash?: string
+  payloadDigest: string;
+  childIndex: number;
+  txHash: string;
+  address: ChainAddress;
+  valueWei: bigint;
+  status: "discovered" | "sweep-pending" | "swept";
+  sweepTxHash?: string;
 }
 
 export type RecoveredStampPaymentSweepResult =
   | { swept: true; txHash: string; valueWei: bigint }
   | {
-      swept: false
-      reason: 'below-dust-threshold' | 'pending'
-      balanceWei?: bigint
-      dustThresholdWei?: bigint
-      txHash?: string
-    }
+      swept: false;
+      reason: "below-dust-threshold" | "pending";
+      balanceWei?: bigint;
+      dustThresholdWei?: bigint;
+      txHash?: string;
+    };
 
 /** What the sender's client knows about one earlier outgoing attempt (ticket #269/#270); see
  * `MonadStampAttemptStatus` in `../monad-stamp-client.ts` for the exact meaning. `dead` means it
  * can never land, so a new payment is the only way to send; anything else means "do not pay
  * again without the user's explicit say-so". */
 export type DirectMessageAttemptStatus =
-  | 'live'
-  | 'delivered'
-  | 'dead'
-  | 'unknown'
+  | "live"
+  | "delivered"
+  | "dead"
+  | "unknown";
 
 export interface DirectMessageClient {
   send(params: {
-    wallet: WalletHandle
-    recipient: ChainAddress
-    items: MessageItem[]
+    wallet: WalletHandle;
+    recipient: ChainAddress;
+    items: MessageItem[];
     /** Raw native-chain value attached as the mandatory stamp payment. */
-    stampValue?: bigint
-    onPreparationProgress?: (progress: DirectMessagePreparationProgress) => void
+    stampValue?: bigint;
+    onPreparationProgress?: (
+      progress: DirectMessagePreparationProgress
+    ) => void;
     /** Called once this send's exact payment set is durably journaled, before it is submitted to
      * the relay, with its `payloadDigest` (the eventual `DirectMessageSendResult.payloadDigest`).
      * Lets the caller tie its own pending message to the attempt for `reconcileAttempts`. */
-    onAttemptCreated?: (payloadDigest: string) => void | Promise<void>
-  }): Promise<DirectMessageSendResult>
+    onAttemptCreated?: (payloadDigest: string) => void | Promise<void>;
+  }): Promise<DirectMessageSendResult>;
   /** Re-sends the SAME exact bytes of every still-live earlier attempt (idempotent and free: the
    * relay answers 200 for an already-delivered set, and 503 while it is pending), then reports
    * what is now known about each requested `payloadDigest`. Never builds or signs a payment. */
   reconcileAttempts(params: {
-    wallet: WalletHandle
-    payloadDigests: string[]
+    wallet: WalletHandle;
+    payloadDigests: string[];
     /** Idempotent re-PUT budget per live attempt; defaults to a single try (callers back off). */
-    maxPutAttempts?: number
-  }): Promise<Record<string, DirectMessageAttemptStatus>>
+    maxPutAttempts?: number;
+  }): Promise<Record<string, DirectMessageAttemptStatus>>;
   /** Payload hashes of every attempt the wallet can still account for (live in its journal, or
    * resolved in this process) that is not in `knownDigests`: payments no message points at.
    * Re-sends live attempts first, so a just-resumed one is included. */
   unattributedAttempts(params: {
-    wallet: WalletHandle
-    knownDigests: string[]
-  }): Promise<string[]>
+    wallet: WalletHandle;
+    knownDigests: string[];
+  }): Promise<string[]>;
   /** Returns messages at or after `sinceMs`, ordered by time. If a later inbox page could not be
    * fetched, the result is cut back to a prefix ending on a complete timestamp group and
    * `onTruncated` is called: advancing `sinceMs` to `lastReceivedTime + 1` is then safe and the
    * rest arrives on the next poll. If no complete group exists, the call rejects instead.
    * `onIncompleteTimestamp` reports a relay row that could not yet be translated because its
-   * sender profile was temporarily unavailable. Callers must keep that inclusive timestamp in
-   * their replay window even though the incomplete row is absent from the returned array. */
+   * sender profile was temporarily unavailable (transport failure). Callers must keep that
+   * inclusive timestamp in their replay window even though the incomplete row is absent from the
+   * returned array.
+   * `onQuarantinedTimestamp` reports a relay row that is terminally undeliverable because the
+   * registry authoritatively has no profile for its sender (HTTP 404 -- registered absence, not a
+   * transport failure). The row is absent from the returned array and will stay so, so callers
+   * durably quarantine the reported receipt and let their cursor pass it; keeping it in the
+   * replay window would let one paid envelope from an unregistered sender pin the bounded inbox
+   * scan forever. */
   fetchSince(params: {
-    wallet: WalletHandle
-    sinceMs: number
-    onTruncated?: (reason: Error) => void
-    onIncompleteTimestamp?: (receivedTime: number) => void
-  }): Promise<DirectMessageReceived[]>
+    wallet: WalletHandle;
+    sinceMs: number;
+    onTruncated?: (reason: Error) => void;
+    onIncompleteTimestamp?: (receivedTime: number) => void;
+    onQuarantinedTimestamp?: (
+      receivedTime: number,
+      payloadDigest: string
+    ) => void;
+  }): Promise<DirectMessageReceived[]>;
   listRecoveredStampPayments(params: {
-    wallet: WalletHandle
-  }): Promise<RecoveredStampPaymentInfo[]>
+    wallet: WalletHandle;
+  }): Promise<RecoveredStampPaymentInfo[]>;
   sweepRecoveredStampPayment(params: {
-    wallet: WalletHandle
-    payloadDigest: string
-    childIndex: number
-    destination: ChainAddress
-  }): Promise<RecoveredStampPaymentSweepResult>
+    wallet: WalletHandle;
+    payloadDigest: string;
+    childIndex: number;
+    destination: ChainAddress;
+  }): Promise<RecoveredStampPaymentSweepResult>;
 }
 
 /** Standard native-asset wallet operations, independent of Frank's mandatory message stamps. */
 export interface NativeTransferClient {
-  getBalance(params: { wallet: WalletHandle }): Promise<bigint>
+  getBalance(params: { wallet: WalletHandle }): Promise<bigint>;
   send(params: {
-    wallet: WalletHandle
-    recipient: ChainAddress
-    value: bigint
+    wallet: WalletHandle;
+    recipient: ChainAddress;
+    value: bigint;
     /** Called with the transaction hash after signing and BEFORE any byte is broadcast. It is
      * awaited; if it rejects, nothing is broadcast and `send` rejects with that error. Lets a
      * caller persist "this hash may be paid" durably first, so a lost broadcast response or a
      * killed app can never leave a paid transfer with no record. */
-    onSigned?: (signed: { txHash: string }) => Promise<void>
-  }): Promise<{ txHash: string }>
+    onSigned?: (signed: { txHash: string }) => Promise<void>;
+  }): Promise<{ txHash: string }>;
   /** What the node says about a transaction hash: mined ok (`confirmed`), mined but reverted
    * (`failed`), known but not mined (`pending`), or not known to the node (`unknown`; only
    * meaningful as "not paid" after enough time has passed and the caller says so). */
   getTransactionStatus(params: {
-    wallet: WalletHandle
-    txHash: string
-  }): Promise<'confirmed' | 'failed' | 'pending' | 'unknown'>
+    wallet: WalletHandle;
+    txHash: string;
+  }): Promise<"confirmed" | "failed" | "pending" | "unknown">;
 }
 
 /** A paid topic post may have reached the relay, but the chain adapter could not prove whether
@@ -254,42 +267,46 @@ export interface NativeTransferClient {
  * doing so could pay for the same logical submission twice. The chain-specific error is retained
  * as `cause` for diagnostics without leaking that implementation into app-level policy. */
 export class TopicPostOutcomeUnknownError extends Error {
-  readonly cause: unknown
+  readonly cause: unknown;
 
   constructor(message: string, cause: unknown) {
-    super(message)
-    this.name = 'TopicPostOutcomeUnknownError'
-    this.cause = cause
+    super(message);
+    this.name = "TopicPostOutcomeUnknownError";
+    this.cause = cause;
   }
 }
 
 export interface TopicBroadcastClient {
   post(params: {
-    wallet: WalletHandle
-    topic: string
-    entries: ForumMessageEntry[]
+    wallet: WalletHandle;
+    topic: string;
+    entries: ForumMessageEntry[];
     /** This post's own initial vote direction -- see this file's header, deviation 3, for why this
      * is required (no default), unlike the issue's own sketch. */
-    direction: 'up' | 'down'
-    voteWeightWei: bigint
-    parentDigest?: string
+    direction: "up" | "down";
+    voteWeightWei: bigint;
+    parentDigest?: string;
     /** Progress of preparing the burn account (same stages as a direct message's stamp-account
      * preparation, always a single funding transaction here). */
-    onPreparationProgress?: (progress: DirectMessagePreparationProgress) => void
-  }): Promise<{ payloadDigest: string }>
+    onPreparationProgress?: (
+      progress: DirectMessagePreparationProgress
+    ) => void;
+  }): Promise<{ payloadDigest: string }>;
   vote(params: {
-    wallet: WalletHandle
-    payloadDigest: string
-    voteWeightWei: bigint
-    direction: 'up' | 'down'
-    onPreparationProgress?: (progress: DirectMessagePreparationProgress) => void
-  }): Promise<void>
+    wallet: WalletHandle;
+    payloadDigest: string;
+    voteWeightWei: bigint;
+    direction: "up" | "down";
+    onPreparationProgress?: (
+      progress: DirectMessagePreparationProgress
+    ) => void;
+  }): Promise<void>;
   fetchByTopic(params: {
-    wallet: WalletHandle
-    topic: string
-    sinceMs?: number
-  }): Promise<ForumMessage[]>
-  fetchOne(payloadDigest: string): Promise<ForumMessage | undefined>
+    wallet: WalletHandle;
+    topic: string;
+    sinceMs?: number;
+  }): Promise<ForumMessage[]>;
+  fetchOne(payloadDigest: string): Promise<ForumMessage | undefined>;
   /** Discover distinct topic names the relay has seen at least one (burn-gated) post for, each
    * with its post count and last-activity timestamp, ordered by last-activity descending (ticket
    * #72). No `wallet` needed -- like `fetchOne`, this is a plain read against the chain's own
@@ -298,23 +315,23 @@ export interface TopicBroadcastClient {
    * `app/src/stores/topics.ts`'s hardcoded default topic list. */
   discoverTopics(): Promise<
     { topic: string; postCount: number; lastActivityMs: number }[]
-  >
+  >;
 }
 
 export interface ActiveChain {
-  readonly name: string
+  readonly name: string;
   /** Display denomination, e.g. `'MON'`. */
-  readonly unit: string
+  readonly unit: string;
   /** Default raw native-chain value for a direct-message stamp payment. */
-  readonly defaultStampValue: bigint
+  readonly defaultStampValue: bigint;
   /** Default raw native-chain value burned for a topic post or vote. */
-  readonly defaultTopicVoteValue: bigint
-  toDisplayAmount(raw: bigint): string
-  fromDisplayAmount(display: string): bigint
-  formatAddress(addr: ChainAddress): string
-  parseAddress(input: string): ChainAddress | undefined
-  createWallet(seed: HDSeed): Promise<WalletHandle>
-  nativeTransfers: NativeTransferClient
+  readonly defaultTopicVoteValue: bigint;
+  toDisplayAmount(raw: bigint): string;
+  fromDisplayAmount(display: string): bigint;
+  formatAddress(addr: ChainAddress): string;
+  parseAddress(input: string): ChainAddress | undefined;
+  createWallet(seed: HDSeed): Promise<WalletHandle>;
+  nativeTransfers: NativeTransferClient;
   /** Look up an identity's registered profile/pubkey. Returns `undefined` if nothing is
    * registered under `addr` yet. `opts.relayBaseUrl`, when given, looks the address up against
    * that relay instead of this chain's own configured default (ticket #78 -- a client-initiated,
@@ -322,19 +339,19 @@ export interface ActiveChain {
    * talks to). */
   fetchProfile(
     addr: ChainAddress,
-    opts?: { relayBaseUrl?: string },
-  ): Promise<ProfileInfo | undefined>
-  directMessages: DirectMessageClient
-  topics: TopicBroadcastClient
+    opts?: { relayBaseUrl?: string }
+  ): Promise<ProfileInfo | undefined>;
+  directMessages: DirectMessageClient;
+  topics: TopicBroadcastClient;
 }
 
 /** Parsed result of {@link parseAddressWithOptionalRelay}. */
 export interface AddressWithOptionalRelay {
   /** Everything before the last `@`, or the whole input if there's no `@`. */
-  address: string
+  address: string;
   /** Everything after the last `@`, normalized to an `http(s)://` base URL, or `undefined` if
    * the input had no `@`. */
-  relayBaseUrl?: string
+  relayBaseUrl?: string;
 }
 
 /** Parses a "finger"-style `address@relayHost` input (ticket #78): splits on the *last* `@` (an
@@ -354,14 +371,14 @@ export interface AddressWithOptionalRelay {
  * issue #78's own comment thread for why the actual entry point (`AddContact.vue` or a new
  * dialog) is a separate, not-yet-decided UX question. */
 export function parseAddressWithOptionalRelay(
-  input: string,
+  input: string
 ): AddressWithOptionalRelay {
-  const at = input.lastIndexOf('@')
+  const at = input.lastIndexOf("@");
   if (at === -1) {
-    return { address: input }
+    return { address: input };
   }
-  const address = input.slice(0, at)
-  const host = input.slice(at + 1)
-  const relayBaseUrl = /^https?:\/\//i.test(host) ? host : `https://${host}`
-  return { address, relayBaseUrl }
+  const address = input.slice(0, at);
+  const host = input.slice(at + 1);
+  const relayBaseUrl = /^https?:\/\//i.test(host) ? host : `https://${host}`;
+  return { address, relayBaseUrl };
 }

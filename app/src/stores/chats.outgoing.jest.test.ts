@@ -52,9 +52,7 @@ jest.mock('../adapters/level-message-store', () => {
       }),
       mostRecentMessageTime: jest.fn(async () => 0),
       relayCursor: jest.fn(async () => 0),
-      advanceRelayCursor: jest.fn(
-        async (_address: string, next: number) => next,
-      ),
+      quarantineRelayReceipts: jest.fn(async () => undefined),
       suppressAndDelete: jest.fn(
         async (_address: string, digests: string[]) => {
           digests.forEach(digest => serialized.delete(digest))

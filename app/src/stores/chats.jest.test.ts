@@ -47,7 +47,7 @@ jest.mock('../adapters/level-message-store', () => ({
     deleteMessage: jest.fn(async () => undefined),
     mostRecentMessageTime: jest.fn(async () => 0),
     relayCursor: jest.fn(async () => 0),
-    advanceRelayCursor: jest.fn(async (_address: string, next: number) => next),
+    quarantineRelayReceipts: jest.fn(async () => undefined),
     suppressAndDelete: jest.fn(async () => undefined),
     suppressedRelayReceipts: jest.fn(async () => new Set<string>()),
     getIterator: jest.fn(async function* () {
@@ -1372,7 +1372,7 @@ describe('stores/chats.ts (ticket #42)', () => {
       )
     })
 
-    it('returns durable suppressions to cursor acknowledgement without recreating the row', async () => {
+    it('returns durable suppressions to the delivery caller without recreating the row', async () => {
       const chats = useChatStore()
       const wrapper = makeWrapper({ index: 'discarded-receipt' })
       mockMessageStore.suppressedRelayReceipts.mockResolvedValueOnce(
@@ -1388,6 +1388,7 @@ describe('stores/chats.ts (ticket #42)', () => {
             receivedTime: wrapper.message.receivedTime,
           },
         ],
+        cancelled: false,
       })
       expect(mockMessageStore.saveMessage).not.toHaveBeenCalled()
       expect(chats.messages['discarded-receipt']).toBeUndefined()

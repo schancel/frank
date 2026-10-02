@@ -23,6 +23,7 @@ import { useContactStore } from '../stores/contacts'
 import { store as messageStorePromise } from './level-message-store'
 import { activeChain } from '@frank/wallet/chain'
 import type { DirectMessageReceived, WalletHandle } from '@frank/wallet/chain'
+import type { ReceivedMessageWrapper } from '@frank/cashweb/types/user-interface'
 
 jest.mock('../utils/notifications', () => ({
   desktopNotify: jest.fn(),
@@ -34,7 +35,7 @@ jest.mock('./level-message-store', () => ({
     deleteMessage: jest.fn(async () => undefined),
     mostRecentMessageTime: jest.fn(async () => 0),
     relayCursor: jest.fn(async () => 0),
-    advanceRelayCursor: jest.fn(async (_address: string, next: number) => next),
+    quarantineRelayReceipts: jest.fn(async () => undefined),
     suppressAndDelete: jest.fn(async () => undefined),
     suppressedRelayReceipts: jest.fn(async () => new Set<string>()),
     getIterator: async function* () {
@@ -53,7 +54,7 @@ const PUB_KEY_BYTES = Uint8Array.from(Buffer.from(PUB_KEY_HEX, 'hex'))
 type MockMessageStore = {
   saveMessage: jest.Mock
   relayCursor: jest.Mock
-  advanceRelayCursor: jest.Mock
+  quarantineRelayReceipts: jest.Mock
   mostRecentMessageTime: jest.Mock
 }
 let mockMessageStore: MockMessageStore
@@ -72,6 +73,28 @@ function makeRecord(
   }
 }
 
+function makeWrapper(index: string): ReceivedMessageWrapper {
+  return {
+    outbound: false,
+    senderAddress: SENDER_ADDRESS,
+    copartyAddress: SENDER_ADDRESS,
+    // Only used to load an unknown contact, which is pre-registered in beforeEach.
+    copartyPubKey: null as never,
+    index,
+    stampValue: 1,
+    message: {
+      outbound: false,
+      status: 'confirmed',
+      items: [{ type: 'text', text: 'hi' }],
+      serverTime: 1_700_000_000_000,
+      receivedTime: 1_700_000_000_000,
+      outpoints: [],
+      senderAddress: SENDER_ADDRESS,
+      destinationAddress: RECIPIENT_ADDRESS,
+    },
+  }
+}
+
 // Generous ceiling only: with fake timers nothing waits on wall-clock time, but cold module
 // transforms under CPU load can exceed the 1 s default from jest.setup.ts (ticket #285).
 jest.setTimeout(30_000)
@@ -84,9 +107,9 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
       (await messageStorePromise) as unknown as MockMessageStore
     mockMessageStore.saveMessage.mockClear()
     mockMessageStore.relayCursor.mockReset().mockResolvedValue(0)
-    mockMessageStore.advanceRelayCursor
+    mockMessageStore.quarantineRelayReceipts
       .mockReset()
-      .mockImplementation(async (_address: string, next: number) => next)
+      .mockResolvedValue(undefined)
     mockMessageStore.mostRecentMessageTime.mockReset().mockResolvedValue(0)
     useContactStore().addContact({
       address: SENDER_ADDRESS,
@@ -200,16 +223,12 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
       // Initial immediate poll.
       await settle()
       expect(receiveMessagesSpy).toHaveBeenCalledTimes(1)
-      expect(mockMessageStore.advanceRelayCursor).toHaveBeenCalledWith(
-        RECIPIENT_ADDRESS,
-        1_700_000_000_001,
-        [],
-      )
       expect(fetchSinceSpy).toHaveBeenNthCalledWith(1, {
         wallet,
         sinceMs: 0,
         onTruncated: expect.any(Function),
         onIncompleteTimestamp: expect.any(Function),
+        onQuarantinedTimestamp: expect.any(Function),
       })
 
       // The relay bound is inclusive, so advance one millisecond past the received record.
@@ -220,6 +239,7 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
         sinceMs: 1_700_000_000_001,
         onTruncated: expect.any(Function),
         onIncompleteTimestamp: expect.any(Function),
+        onQuarantinedTimestamp: expect.any(Function),
       })
       // No new messages on any subsequent poll.
       expect(receiveMessagesSpy).toHaveBeenCalledTimes(1)
@@ -259,12 +279,8 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
         sinceMs: 700,
         onTruncated: expect.any(Function),
         onIncompleteTimestamp: expect.any(Function),
+        onQuarantinedTimestamp: expect.any(Function),
       })
-      expect(mockMessageStore.advanceRelayCursor).toHaveBeenLastCalledWith(
-        RECIPIENT_ADDRESS,
-        701,
-        [],
-      )
       expect(useChatStore().messages['same-time-a']).toBeDefined()
       expect(useChatStore().messages['same-time-b']).toBeDefined()
     })
@@ -450,12 +466,14 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
         expect(receiveMessagesSpy).toHaveBeenCalledWith(
           [expect.objectContaining({ index: 'valid-after-poison' })],
           RECIPIENT_ADDRESS,
+          { isCancelled: expect.any(Function) },
         )
         expect(fetchSinceSpy).toHaveBeenNthCalledWith(2, {
           wallet,
           sinceMs: 201,
           onTruncated: expect.any(Function),
           onIncompleteTimestamp: expect.any(Function),
+          onQuarantinedTimestamp: expect.any(Function),
         })
       } finally {
         polling.stop()
@@ -491,7 +509,7 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
       const receiveMessagesSpy = jest
         .spyOn(chats, 'receiveMessages')
         .mockRejectedValueOnce(new Error('indexeddb write failed'))
-        .mockResolvedValue({ suppressedReceipts: [] })
+        .mockResolvedValue({ suppressedReceipts: [], cancelled: false })
       const consoleErrorSpy = jest
         .spyOn(console, 'error')
         .mockImplementation(() => undefined)
@@ -514,6 +532,7 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
           sinceMs: 0,
           onTruncated: expect.any(Function),
           onIncompleteTimestamp: expect.any(Function),
+          onQuarantinedTimestamp: expect.any(Function),
         })
       } finally {
         polling.stop()
@@ -547,13 +566,166 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
         expect(receiveMessagesSpy).toHaveBeenCalledWith(
           [expect.objectContaining({ index: 'same-time' })],
           RECIPIENT_ADDRESS,
+          { isCancelled: expect.any(Function) },
         )
         expect(fetchSinceSpy).toHaveBeenNthCalledWith(2, {
           wallet,
           sinceMs: 100,
           onTruncated: expect.any(Function),
           onIncompleteTimestamp: expect.any(Function),
+          onQuarantinedTimestamp: expect.any(Function),
         })
+      } finally {
+        polling.stop()
+      }
+    })
+
+    it('quarantines a permanently absent sender and never lets it pin newer mail (fail-before: the row pinned the inclusive cursor forever)', async () => {
+      const chats = useChatStore()
+      const receiveMessagesSpy = jest.spyOn(chats, 'receiveMessages')
+      const consoleErrorSpy = jest
+        .spyOn(console, 'error')
+        .mockImplementation(() => undefined)
+      jest.spyOn(activeChain, 'fetchProfile').mockResolvedValue({
+        address: { raw: SENDER_ADDRESS },
+        pubKey: PUB_KEY_BYTES,
+      })
+      const fetchSinceSpy = jest
+        .spyOn(activeChain.directMessages, 'fetchSince')
+        .mockImplementationOnce(async ({ onQuarantinedTimestamp }) => {
+          // This is the MonadChain -> adapter seam for terminal rows: the registry
+          // authoritatively has no sender account, so MonadChain omits the row and reports its
+          // receipt for durable quarantine instead of reporting an incomplete timestamp.
+          onQuarantinedTimestamp?.(100, 'unregistered-sender')
+          return [
+            makeRecord({ payloadDigest: 'later-valid', receivedTime: 200 }),
+          ]
+        })
+        .mockResolvedValue([])
+
+      const polling = startPolling(20)
+      try {
+        await advanceUntil(() => fetchSinceSpy.mock.calls.length >= 2)
+        // The terminal row is anchored durably, so neither this session nor a restart can stay
+        // pinned behind it, and the newer valid row is still delivered (bounded backlog).
+        expect(mockMessageStore.quarantineRelayReceipts).toHaveBeenCalledWith(
+          RECIPIENT_ADDRESS,
+          [{ payloadDigest: 'unregistered-sender', receivedTime: 100 }],
+        )
+        expect(receiveMessagesSpy).toHaveBeenCalledWith(
+          [expect.objectContaining({ index: 'later-valid' })],
+          RECIPIENT_ADDRESS,
+          { isCancelled: expect.any(Function) },
+        )
+        expect(consoleErrorSpy).not.toHaveBeenCalled()
+        expect(fetchSinceSpy).toHaveBeenNthCalledWith(2, {
+          wallet,
+          sinceMs: 201,
+          onTruncated: expect.any(Function),
+          onIncompleteTimestamp: expect.any(Function),
+          onQuarantinedTimestamp: expect.any(Function),
+        })
+      } finally {
+        polling.stop()
+      }
+    })
+
+    it('a retryable profile failure still holds the whole timestamp group in replay', async () => {
+      const chats = useChatStore()
+      const receiveMessagesSpy = jest.spyOn(chats, 'receiveMessages')
+      const consoleErrorSpy = jest
+        .spyOn(console, 'error')
+        .mockImplementation(() => undefined)
+      jest.spyOn(activeChain, 'fetchProfile').mockResolvedValue({
+        address: { raw: SENDER_ADDRESS },
+        pubKey: PUB_KEY_BYTES,
+      })
+      const fetchSinceSpy = jest
+        .spyOn(activeChain.directMessages, 'fetchSince')
+        .mockImplementationOnce(async ({ onIncompleteTimestamp }) => {
+          // Retryable transport failure: the row may yet deliver, so its whole timestamp group
+          // stays in the replay window and no quarantine anchor may be written.
+          onIncompleteTimestamp?.(100)
+          return []
+        })
+        .mockResolvedValue([])
+
+      const polling = startPolling(20)
+      try {
+        await advanceUntil(() => fetchSinceSpy.mock.calls.length >= 2)
+        expect(mockMessageStore.quarantineRelayReceipts).not.toHaveBeenCalled()
+        expect(receiveMessagesSpy).not.toHaveBeenCalled()
+        expect(fetchSinceSpy).toHaveBeenNthCalledWith(2, {
+          wallet,
+          sinceMs: 100,
+          onTruncated: expect.any(Function),
+          onIncompleteTimestamp: expect.any(Function),
+          onQuarantinedTimestamp: expect.any(Function),
+        })
+      } finally {
+        polling.stop()
+      }
+    })
+
+    it('a delivery queued behind the mutation boundary produces nothing after stop() (fail-before: the queued poll persisted, mutated, notified, and advanced the cursor)', async () => {
+      const chats = useChatStore()
+      const receiveMessagesSpy = jest.spyOn(chats, 'receiveMessages')
+      jest.spyOn(activeChain, 'fetchProfile').mockResolvedValue({
+        address: { raw: SENDER_ADDRESS },
+        pubKey: PUB_KEY_BYTES,
+      })
+      // Hold the module-global delivery boundary with an unrelated slow delivery so the
+      // poller's receiveMessages is QUEUED (not merely in flight) when stop() lands.
+      let releaseBlocker: (() => void) | undefined
+      mockMessageStore.saveMessage.mockImplementationOnce(
+        () =>
+          new Promise<void>(resolve => {
+            releaseBlocker = resolve
+          }),
+      )
+      const blocker = chats.receiveMessages(
+        [makeWrapper('blocking-unrelated')],
+        RECIPIENT_ADDRESS,
+      )
+      let releaseFetch: ((records: DirectMessageReceived[]) => void) | undefined
+      const fetchSinceSpy = jest
+        .spyOn(activeChain.directMessages, 'fetchSince')
+        .mockImplementationOnce(
+          () =>
+            new Promise<DirectMessageReceived[]>(resolve => {
+              releaseFetch = resolve
+            }),
+        )
+        .mockResolvedValue([])
+
+      const polling = startPolling(10_000)
+      try {
+        await advanceUntil(() => fetchSinceSpy.mock.calls.length === 1)
+        releaseFetch([makeRecord({ payloadDigest: 'old-wallet-msg' })])
+        // The poll passes its final pre-delivery stop() check and enqueues behind the blocker.
+        await advanceUntil(() => receiveMessagesSpy.mock.calls.length >= 2)
+        // The wallet is replaced now: stop() on the old generation while its delivery is queued.
+        polling.stop()
+        // The blocker finishes; the queued delivery reaches the boundary and must bail on its
+        // cancelled lease.
+        releaseBlocker?.()
+        await blocker
+        await advance(30)
+
+        // No persistence, no shared-state mutation, no notification, no quarantine write, and
+        // no cursor advance for the replaced generation: the replacement poller replays the
+        // window from its own cursor instead.
+        // The poller's delivery is the second receiveMessages call (the blocker is the first).
+        expect(receiveMessagesSpy.mock.results[1].value).resolves.toEqual(
+          expect.objectContaining({ cancelled: true }),
+        )
+        expect(mockMessageStore.saveMessage).not.toHaveBeenCalledWith(
+          expect.objectContaining({ index: 'old-wallet-msg' }),
+          expect.anything(),
+        )
+        expect(useChatStore().messages['old-wallet-msg']).toBeUndefined()
+        expect(mockMessageStore.quarantineRelayReceipts).not.toHaveBeenCalled()
+        expect(fetchSinceSpy).toHaveBeenCalledTimes(1)
       } finally {
         polling.stop()
       }

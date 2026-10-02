@@ -239,6 +239,23 @@ async function serializeDeliveryMutation<T>(
   }
 }
 
+/**
+ * Cancellation identity of one delivery attempt (e.g. one direct-message poller generation).
+ * Whether to notify is decided synchronously, but the delivery mutation itself is queued behind
+ * the module-global serialized boundary -- when account replacement stops the old poller and
+ * starts a new session, a queued delivery must re-check the guard AT the boundary and again
+ * before every notification step, so an old generation never persists into the message store,
+ * mutates the shared chats state, or notifies through the current session's stores.
+ */
+export type DeliveryLease = { isCancelled: () => boolean }
+
+export type ReceivedDeliveryResult = {
+  suppressedReceipts: RelayReceiptIdentity[]
+  /** True when the lease was cancelled at or after the delivery boundary: nothing was
+   * persisted, mutated, or notified, and the caller must not treat the batch as consumed. */
+  cancelled: boolean
+}
+
 export type OutgoingOutcome =
   /** Delivered; the local copy is now keyed by its real payload hash. */
   | { state: 'sent'; payloadDigest: string }
@@ -614,15 +631,13 @@ export const useChatStore = defineStore('chats', {
     async relayCursor(recipientAddress: string): Promise<number> {
       return (await store).relayCursor(toChainDisplayAddress(recipientAddress))
     },
-    async advanceRelayCursor(
+    async quarantineRelayReceipts(
       recipientAddress: string,
-      nextReceivedTime: number,
-      suppressedReceipts: RelayReceiptIdentity[] = [],
-    ): Promise<number> {
-      return (await store).advanceRelayCursor(
+      receipts: RelayReceiptIdentity[],
+    ): Promise<void> {
+      return (await store).quarantineRelayReceipts(
         toChainDisplayAddress(recipientAddress),
-        nextReceivedTime,
-        suppressedReceipts,
+        receipts,
       )
     },
     async deleteMessage({
@@ -1584,7 +1599,8 @@ export const useChatStore = defineStore('chats', {
     async receiveMessages(
       messageWrappers: ReceivedMessageWrapper[],
       ownAddressOverride?: string,
-    ): Promise<{ suppressedReceipts: RelayReceiptIdentity[] }> {
+      lease?: DeliveryLease,
+    ): Promise<ReceivedDeliveryResult> {
       const toNotify = new Set<string>()
       for (const { index } of messageWrappers) {
         if (!(index in this.messages) && !notifyingIncoming.has(index)) {
@@ -1597,6 +1613,7 @@ export const useChatStore = defineStore('chats', {
           messageWrappers,
           toNotify,
           ownAddressOverride,
+          lease,
         )
       } finally {
         for (const index of toNotify) {
@@ -1608,26 +1625,44 @@ export const useChatStore = defineStore('chats', {
       messageWrappers: ReceivedMessageWrapper[],
       toNotify: Set<string>,
       ownAddressOverride?: string,
-    ): Promise<{ suppressedReceipts: RelayReceiptIdentity[] }> {
+      lease?: DeliveryLease,
+    ): Promise<ReceivedDeliveryResult> {
       const ownAddress =
         ownAddressOverride === undefined
           ? await getOwnCanonicalAddress()
           : toChainDisplayAddress(ownAddressOverride)
-      const suppressedReceipts = await serializeDeliveryMutation(() =>
-        this.storeReceivedMessagesExclusive(
-          messageWrappers,
-          toNotify,
-          ownAddress,
-        ),
+      const { suppressedReceipts, cancelled } = await serializeDeliveryMutation(
+        () =>
+          this.storeReceivedMessagesExclusive(
+            messageWrappers,
+            toNotify,
+            ownAddress,
+            lease,
+          ),
       )
-      await this.notifyReceivedMessages(messageWrappers, toNotify)
-      return { suppressedReceipts }
+      // A generation that lost its wallet while queued behind the boundary must not notify
+      // either: the notification path mutates the contacts store and uses the current
+      // session's profile/active-chat state.
+      if (!cancelled) {
+        await this.notifyReceivedMessages(messageWrappers, toNotify, lease)
+      }
+      return { suppressedReceipts, cancelled }
     },
     async storeReceivedMessagesExclusive(
       messageWrappers: ReceivedMessageWrapper[],
       toNotify: Set<string>,
       ownAddress: string | null,
-    ): Promise<RelayReceiptIdentity[]> {
+      lease?: DeliveryLease,
+    ): Promise<{
+      suppressedReceipts: RelayReceiptIdentity[]
+      cancelled: boolean
+    }> {
+      // The lease is checked HERE, after the serialized boundary has been acquired: a
+      // replacement that stopped this poller while the delivery was queued leaves the queue
+      // holding this work, and only this check prevents the old generation from persisting.
+      if (lease?.isCancelled()) {
+        return { suppressedReceipts: [], cancelled: true }
+      }
       console.log('receiving messages')
       const messageStore = await store
       if (
@@ -1900,13 +1935,17 @@ export const useChatStore = defineStore('chats', {
         this.lastReceived = message.serverTime
         chat.totalValue += messageValue
       }
-      return receipts.filter(receipt =>
-        suppressedDigests.has(receipt.payloadDigest),
-      )
+      return {
+        suppressedReceipts: receipts.filter(receipt =>
+          suppressedDigests.has(receipt.payloadDigest),
+        ),
+        cancelled: false,
+      }
     },
     async notifyReceivedMessages(
       messageWrappers: ReceivedMessageWrapper[],
       toNotify: Set<string>,
+      lease?: DeliveryLease,
     ): Promise<void> {
       for (const messageWrapper of messageWrappers) {
         const {
@@ -1918,6 +1957,10 @@ export const useChatStore = defineStore('chats', {
         } = messageWrapper
         const stored = this.messages[index]
         if (!toNotify.has(index) || !stored || stored.outbound) continue
+        // The notification decision may predate a stop() that lands while earlier wrappers of
+        // this batch are still being notified. Contacts refresh and desktop notifications act on
+        // whatever generation currently owns the stores, so a cancelled lease must not run them.
+        if (lease?.isCancelled()) return
 
         const contacts = useContactStore()
         if (!contacts.isContact(copartyAddress)) {

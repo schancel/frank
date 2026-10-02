@@ -34,6 +34,7 @@ const { SignedPayload } = __pb_signed_payload_payload_pb
 import { Wallet } from '../legacy-wallet'
 import { signRegistryDigest } from '../registry'
 import { relayCipherPayloadDigest } from './cipher-payload-digest'
+import { relayPlainPayloadDigest } from './plain-payload-digest'
 import { outpointPublicKey } from './outpoint-hd'
 import { messageSourcePublicKey } from './message-source-pubkey'
 import { relayProfilePublicKey } from './profile-pubkey'
@@ -146,7 +147,9 @@ export class MessageConstructor {
     destinationPublicKey: PublicKey,
     stampAmount: number,
   ) {
-    const plainPayloadDigest = crypto.Hash.sha256(Buffer.from(plainTextPayload))
+    const plainPayloadDigest = Buffer.from(
+      relayPlainPayloadDigest(plainTextPayload),
+    )
 
     // Construct salt
     const rawSourcePrivateKey = sourcePrivateKey.toBuffer()

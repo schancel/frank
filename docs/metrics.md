@@ -214,6 +214,24 @@ transport overhead may be excluded; the generator and draining client must not m
 payload. Tests must also prove that denied or malformed requests send zero upstream bytes and that
 cancellation releases parser, spool, and correlation state.
 
+### Relay implementation bounds
+
+The relay's HTTP JSON-RPC response path uses an unlink-on-drop temporary-file spool. Decoded
+upstream chunks are admitted under `max_response_bytes`, then a blocking inspector reads through a
+64 KiB buffer and retains at most 32 envelope keys, one 256-byte representation per bounded batch
+ID, and one rewrite range per response. Delivery uses one 64 KiB read buffer and applies bounded
+constant-size error replacements while preserving opaque success bytes. Apart from HTTP-library
+transport buffers, live application allocation is therefore bounded by roughly 128 KiB plus the
+configured batch metadata and one decoded input chunk, independent of result size. Aggregate spool
+disk is bounded by `max_concurrency * max_response_bytes`; both values are finite, validated
+configuration. The hard EVM per-response configuration ceiling is 512 MiB; the Bitcoin/Chronik
+family retains its 32 MiB ceiling.
+
+`production_pipeline_streams_250_mib_result_without_materializing_it` is the intentionally ignored
+large-fixture proof: its upstream generator reuses a 64 KiB chunk, its client counts chunks without
+collecting them, and it traverses the production router, decoded-byte spool, inspector, rewrite
+adapter, and response-permit lifetime. Run it explicitly when changing any of those layers.
+
 ## Reliability and rollout
 
 - Telemetry recording must not hold an application database lock or an upstream concurrency permit.

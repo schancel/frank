@@ -9,7 +9,7 @@ use std::{
 };
 
 use axum::{
-    body::Bytes,
+    body::{boxed, Bytes},
     extract::{connect_info::ConnectInfo, Extension, OriginalUri, Path},
     http::{HeaderMap, Method, StatusCode},
     response::{IntoResponse, Response},
@@ -272,6 +272,11 @@ impl BitcoinProxyRuntime {
     }
 
     async fn rpc_request(&self, url: &Url, body: Vec<u8>) -> Result<UpstreamResponse, ()> {
+        self.bounded_request(self.rpc_request_builder(url, body))
+            .await
+    }
+
+    fn rpc_request_builder(&self, url: &Url, body: Vec<u8>) -> reqwest::RequestBuilder {
         let mut request = self
             .client
             .post(url.clone())
@@ -280,7 +285,7 @@ impl BitcoinProxyRuntime {
         if !url.username().is_empty() {
             request = request.basic_auth(url.username(), url.password());
         }
-        self.bounded_request(request).await
+        request
     }
 }
 
@@ -461,6 +466,8 @@ pub(crate) async fn proxy_rpc(
         .filter(|c| c.rpc.is_some())
         .ok_or_else(|| rpc_error(StatusCode::NOT_FOUND, "unknown_rpc_chain"))?;
     let (_units, send_only, version) = validate_rpc(&body, runtime.max_request_bytes)?;
+    let expected_ids = super::json_rpc::request_ids(&body)
+        .map_err(|_| rpc_error(StatusCode::BAD_REQUEST, "invalid_json_rpc"))?;
     let anonymous_ip = if let Some(customer) = parse_customer(&headers)? {
         authenticate(
             &headers,
@@ -489,37 +496,58 @@ pub(crate) async fn proxy_rpc(
             .charge(ip, 1, unix_seconds())
             .ok_or_else(|| rpc_error(StatusCode::TOO_MANY_REQUESTS, "rpc_hourly_quota"))?;
     }
-    let upstream = runtime
-        .rpc_request(chain.rpc.as_ref().unwrap(), body.to_vec())
-        .await
-        .map_err(|_| rpc_error(StatusCode::BAD_GATEWAY, "rpc_upstream_unavailable"))?;
-    let mut value = super::json_rpc::parse_without_duplicate_keys(&upstream.body)
-        .map_err(|_| rpc_error(StatusCode::BAD_GATEWAY, "invalid_rpc_upstream_response"))?;
-    if version == super::json_rpc::JsonRpcVersion::V2 && upstream.status != StatusCode::OK {
+    let deadline = tokio::time::Instant::now() + runtime.timeout;
+    let upstream = tokio::time::timeout_at(
+        deadline,
+        runtime
+            .rpc_request_builder(chain.rpc.as_ref().unwrap(), body.to_vec())
+            .send(),
+    )
+    .await
+    .map_err(|_| rpc_error(StatusCode::GATEWAY_TIMEOUT, "rpc_upstream_timeout"))?
+    .map_err(|_| rpc_error(StatusCode::BAD_GATEWAY, "rpc_upstream_unavailable"))?;
+    let upstream_status = upstream.status();
+    if version == super::json_rpc::JsonRpcVersion::V2 && upstream_status != StatusCode::OK {
         return Err(rpc_error(
             StatusCode::BAD_GATEWAY,
             "rpc_upstream_unavailable",
         ));
     }
-    if !super::json_rpc::is_response_envelope(&value, version) {
-        return Err(rpc_error(
-            StatusCode::BAD_GATEWAY,
-            "invalid_rpc_upstream_response",
-        ));
-    }
-    crate::http::json_rpc::sanitize_response_errors(&mut value);
-    let bytes = serde_json::to_vec(&value)
-        .map_err(|_| rpc_error(StatusCode::BAD_GATEWAY, "invalid_rpc_upstream_response"))?;
-    let response = (
-        if version == super::json_rpc::JsonRpcVersion::V2 {
-            StatusCode::OK
-        } else {
-            upstream.status
-        },
-        [(axum::http::header::CONTENT_TYPE, "application/json")],
-        bytes,
+    let spool = tokio::time::timeout_at(
+        deadline,
+        super::json_rpc::spool_response(upstream, runtime.max_response_bytes, runtime.timeout),
     )
-        .into_response();
+    .await
+    .map_err(|_| rpc_error(StatusCode::GATEWAY_TIMEOUT, "rpc_upstream_timeout"))?
+    .map_err(|error| match error {
+        super::json_rpc::SpoolError::TooLarge => {
+            rpc_error(StatusCode::BAD_GATEWAY, "rpc_upstream_response_too_large")
+        }
+        super::json_rpc::SpoolError::Timeout => {
+            rpc_error(StatusCode::GATEWAY_TIMEOUT, "rpc_upstream_timeout")
+        }
+        super::json_rpc::SpoolError::Io => {
+            rpc_error(StatusCode::BAD_GATEWAY, "rpc_upstream_unavailable")
+        }
+    })?;
+    let inspected = tokio::time::timeout_at(deadline, spool.inspect(version, expected_ids))
+        .await
+        .map_err(|_| rpc_error(StatusCode::GATEWAY_TIMEOUT, "rpc_upstream_timeout"))?
+        .map_err(|_| rpc_error(StatusCode::BAD_GATEWAY, "invalid_rpc_upstream_response"))?;
+    let body = spool
+        .into_body(inspected.error_rewrites)
+        .await
+        .map_err(|_| rpc_error(StatusCode::BAD_GATEWAY, "rpc_upstream_unavailable"))?;
+    let mut response = Response::new(boxed(body));
+    *response.status_mut() = if version == super::json_rpc::JsonRpcVersion::V2 {
+        StatusCode::OK
+    } else {
+        upstream_status
+    };
+    response.headers_mut().insert(
+        axum::http::header::CONTENT_TYPE,
+        axum::http::HeaderValue::from_static("application/json"),
+    );
     Ok(crate::http::json_rpc::hold_response_permit(
         response, permit,
     ))

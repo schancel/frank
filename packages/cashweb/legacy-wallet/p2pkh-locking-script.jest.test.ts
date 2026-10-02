@@ -9,7 +9,7 @@ import {
   p2pkhLockingScript,
   sameHash,
 } from './lotus-address'
-import { unspentOutputFromAddress } from './index'
+import { Wallet, unspentOutputFromAddress } from './index'
 
 const HASH = 'b50b86a893d80c9e2ee72b199612374b7b4c1cd8'
 const LOTUS = 'lotus_16PSJNf1EDEfGvaYzaXJCJZrXH4pgiTo7kyW61iGi'
@@ -65,4 +65,18 @@ it('builds the p2pkh script from a lotus string and omits that string from the u
   expect(() => p2pkhLockingScript(scriptHash.toString())).toThrow(
     'address-kind',
   )
+})
+
+it('returns the Lotus identity string from myAddress', () => {
+  const key = new PrivateKey(WIF)
+  const wallet = new Wallet({} as never, { networkName: 'livenet' })
+  wallet._identityPrivKey = key
+  expect(wallet.myAddress).toBe(lotusFromPrivateKey(key, 'livenet'))
+  expect(wallet.displayAddress).toBe(wallet.myAddress)
+  expect(wallet.myAddress).toBe(
+    lotusFromAddress(key.toAddress('livenet'), 'livenet'),
+  )
+  const missing = new Wallet({} as never, { networkName: 'testnet' })
+  expect(missing.myAddress).toBeUndefined()
+  expect(missing.displayAddress).toBeUndefined()
 })

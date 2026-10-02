@@ -1160,16 +1160,14 @@ export class Wallet {
     return 2
   }
 
-  get myAddress() {
-    // TODO: This should be in the relay client, not the wallet...
-    // TODO: Not just testnet
-    return this.identityPrivKey?.toAddress(this.networkName)
-  }
-
-  get displayAddress() {
+  get myAddress(): string | undefined {
     const key = this.identityPrivKey
     if (!key) return undefined
     return lotusFromPrivateKey(key, this.networkName)
+  }
+
+  get displayAddress(): string | undefined {
+    return this.myAddress
   }
 
   freezeUtxo(utxo: Utxo) {

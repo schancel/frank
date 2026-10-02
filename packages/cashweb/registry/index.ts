@@ -7,15 +7,10 @@ import __pb_signed_payload_payload_pb from '../signed_payload/payload_pb'
 const { SignedPayload, SignedPayloadSet, BurnOutputs } =
   __pb_signed_payload_payload_pb
 import pop from '../pop'
-import {
-  crypto,
-  Address,
-  Networks,
-  PrivateKey,
-  PublicKey,
-} from 'bitcore-lib-xpi'
+import { Address, Networks, PrivateKey, PublicKey } from 'bitcore-lib-xpi'
 import { pondBurnOutputSatoshis } from './burn-script'
 import { registryBroadcastDigest } from './broadcast-digest'
+import { registryWrapperDigest } from './wrapper-digest'
 import { registryBurnOutput } from './burn-output'
 import { registryIdentityPublicKey } from './identity-pubkey'
 import {
@@ -454,7 +449,7 @@ export class RegistryHandler {
     const parsedEntries: ForumMessageEntry[] = []
     const satoshisBurned = calculateBurnAmount(wrapper.getTransactionsList())
     assert(satoshisBurned === wrapper.getBurnAmount())
-    const payloadDigest = crypto.Hash.sha256(Buffer.from(payload)).toString(
+    const payloadDigest = Buffer.from(registryWrapperDigest(payload)).toString(
       'hex',
     )
     const parentDigestBinary = message.getParentDigest()

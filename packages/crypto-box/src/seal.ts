@@ -20,6 +20,7 @@ import {
   ENC_LENGTH,
   ENVELOPE_VERSION,
   KEM_SECP256K1,
+  LEGACY_ENVELOPE_VERSION,
   MAX_MESSAGE,
   MAX_PADDING,
   MODE_AUTH,
@@ -399,7 +400,11 @@ export function open(args: OpenArgs): SuiteResult<Uint8Array> {
   const sender = requirePoint(args.senderPublicKey)
   if (!sender.ok) return sender
   const envelope = decodeEnvelope(args.envelope)
-  if (envelope === null || envelope.version !== ENVELOPE_VERSION) {
+  if (
+    envelope === null ||
+    (envelope.version !== LEGACY_ENVELOPE_VERSION &&
+      envelope.version !== ENVELOPE_VERSION)
+  ) {
     return fail({ code: 'envelope' })
   }
   if (envelope.kemId !== KEM_SECP256K1) return fail({ code: 'envelope' })

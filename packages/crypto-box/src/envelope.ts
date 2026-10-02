@@ -4,6 +4,7 @@
 import {
   ENC_LENGTH,
   ENVELOPE_VERSION,
+  LEGACY_ENVELOPE_VERSION,
   MAX_MESSAGE,
   MAX_PADDING,
   SALT_LENGTH,
@@ -16,6 +17,8 @@ const MIN_CIPHERTEXT = INNER_LENGTH_PREFIX + AEAD_TAG_LENGTH
 const MAX_CIPHERTEXT =
   INNER_LENGTH_PREFIX + MAX_MESSAGE + MAX_PADDING + AEAD_TAG_LENGTH
 const MAX_ENVELOPE = 88 + MAX_CIPHERTEXT
+const LEGACY_HEADER = 1 + 2 + 2 + SALT_LENGTH + ENC_LENGTH
+const MAX_LEGACY_ENVELOPE = LEGACY_HEADER + MAX_CIPHERTEXT
 
 export interface DecodedEnvelope {
   readonly version: number
@@ -161,7 +164,7 @@ class Reader {
   }
 }
 
-export function decodeEnvelope(bytes: Uint8Array): DecodedEnvelope | null {
+function decodeCborEnvelope(bytes: Uint8Array): DecodedEnvelope | null {
   if (bytes.length > MAX_ENVELOPE) return null
   const reader = new Reader(bytes)
   if (!reader.readExact(0xa0 | MAP_SIZE)) return null
@@ -178,7 +181,7 @@ export function decodeEnvelope(bytes: Uint8Array): DecodedEnvelope | null {
   if (!reader.readExact(5)) return null
   const ciphertext = reader.readBytes(null, MAX_CIPHERTEXT)
   if (
-    version === null ||
+    version !== ENVELOPE_VERSION ||
     suiteId === null ||
     kemId === null ||
     salt === null ||
@@ -190,4 +193,34 @@ export function decodeEnvelope(bytes: Uint8Array): DecodedEnvelope | null {
     return null
   }
   return { version, suiteId, kemId, salt, enc, ciphertext }
+}
+
+function readU16(bytes: Uint8Array, offset: number): number {
+  return (bytes[offset] ?? 0) * 0x100 + (bytes[offset + 1] ?? 0)
+}
+
+function decodeLegacyEnvelope(bytes: Uint8Array): DecodedEnvelope | null {
+  if (
+    bytes.length < LEGACY_HEADER + MIN_CIPHERTEXT ||
+    bytes.length > MAX_LEGACY_ENVELOPE
+  ) {
+    return null
+  }
+  const saltOffset = 5
+  const encOffset = saltOffset + SALT_LENGTH
+  const ciphertextOffset = encOffset + ENC_LENGTH
+  return {
+    version: LEGACY_ENVELOPE_VERSION,
+    suiteId: readU16(bytes, 1),
+    kemId: readU16(bytes, 3),
+    salt: new Uint8Array(bytes.subarray(saltOffset, encOffset)),
+    enc: new Uint8Array(bytes.subarray(encOffset, ciphertextOffset)),
+    ciphertext: new Uint8Array(bytes.subarray(ciphertextOffset)),
+  }
+}
+
+export function decodeEnvelope(bytes: Uint8Array): DecodedEnvelope | null {
+  if (bytes[0] === LEGACY_ENVELOPE_VERSION) return decodeLegacyEnvelope(bytes)
+  if (bytes[0] === (0xa0 | MAP_SIZE)) return decodeCborEnvelope(bytes)
+  return null
 }

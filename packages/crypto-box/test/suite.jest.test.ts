@@ -148,7 +148,7 @@ describe('encryption suites', () => {
     ]) {
       const envelope = mustSeal(suiteId, 'frank')
       expect(envelope[0]).toBe(0xa6)
-      expect(envelope.slice(0, 4)).toEqual(Uint8Array.of(0xa6, 0, 1, 1))
+      expect(envelope.slice(0, 4)).toEqual(Uint8Array.of(0xa6, 0, 2, 1))
       expect((envelope[5] << 8) | envelope[6]).toBe(suiteId)
       expect((envelope[9] << 8) | envelope[10]).toBe(0xff00)
       const opened = open({
@@ -346,13 +346,9 @@ describe('encryption suites', () => {
   test('rejects every non-canonical or malformed envelope shape', () => {
     const valid = mustSeal(SUITE_AUTH_XCHACHA, 'frank')
     const malformed = [
-      // The pre-CBOR ad-hoc format is not accepted.
-      fromHex(
-        '01fe04ff00070707070707070707070707070707070707070707070707070707070707070702f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9c1b582181da35780536a806ac7f220b9ccb5e3760fa2ca3daa',
-      ),
       replaceBytes(valid, 0, 1, [0xb8, 0x06]), // non-canonical map length
       replaceBytes(valid, 1, 1, [0x18, 0x00]), // non-canonical map key
-      replaceBytes(valid, 2, 1, [0x18, 0x01]), // non-canonical integer
+      replaceBytes(valid, 2, 1, [0x18, 0x02]), // non-canonical integer
       replaceBytes(valid, 4, 3, [0x1a, 0x00, 0x00, 0xfe, 0x04]),
       replaceBytes(valid, 12, 2, [0x59, 0x00, 0x20]), // non-canonical bstr length
       replaceBytes(valid, 83, 2, [0x59, 0x00, 0x19]),
@@ -388,6 +384,7 @@ describe('encryption suites', () => {
     }
 
     const oversized = new Uint8Array(1_114_220)
+    oversized[0] = 0xa6
     expect(decodeEnvelope(oversized)).toBeNull()
     const overBound = open({
       envelope: oversized,
@@ -397,6 +394,63 @@ describe('encryption suites', () => {
     })
     expect(overBound.ok).toBe(false)
     if (!overBound.ok) expect(overBound.error.code).toBe('envelope')
+  })
+
+  test('opens the frozen legacy v1 envelope without emitting it', () => {
+    const legacy = fromHex(
+      '01fe01ff00070707070707070707070707070707070707070707070707070707070707070702f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f98c60b582dc48876cd46f72eaa4544263a6ab1804aa709d44b1',
+    )
+    const opened = open({
+      envelope: legacy,
+      recipientPrivateKey: recipientSk,
+      senderPublicKey: senderPk,
+      context,
+    })
+    expect(opened.ok).toBe(true)
+    if (opened.ok) expect(Buffer.from(opened.value).toString()).toBe('frank')
+
+    const current = mustSeal(SUITE_BASE_AES_GCM, 'frank')
+    expect(current.slice(0, 3)).toEqual(Uint8Array.of(0xa6, 0, 2))
+
+    for (const version of [1, 3]) {
+      const changed = new Uint8Array(current)
+      changed[2] = version
+      const result = open({
+        envelope: changed,
+        recipientPrivateKey: recipientSk,
+        senderPublicKey: senderPk,
+        context,
+      })
+      expect(result.ok).toBe(false)
+      if (!result.ok) expect(result.error.code).toBe('envelope')
+    }
+
+    for (const [envelope, code] of [
+      [legacy.slice(0, 89), 'envelope'],
+      [legacy.slice(0, 90), 'open-failed'],
+      [Uint8Array.of(0x02), 'envelope'],
+      [new Uint8Array(1_114_202).fill(0x01), 'envelope'],
+    ] as const) {
+      const result = open({
+        envelope,
+        recipientPrivateKey: recipientSk,
+        senderPublicKey: senderPk,
+        context,
+      })
+      expect(result.ok).toBe(false)
+      if (!result.ok) expect(result.error.code).toBe(code)
+    }
+
+    const legacyBadKem = new Uint8Array(legacy)
+    legacyBadKem[4] = 0x01
+    const badKem = open({
+      envelope: legacyBadKem,
+      recipientPrivateKey: recipientSk,
+      senderPublicKey: senderPk,
+      context,
+    })
+    expect(badKem.ok).toBe(false)
+    if (!badKem.ok) expect(badKem.error.code).toBe('envelope')
   })
 
   test('rejects structurally impossible ciphertext lengths before opening', () => {
@@ -513,7 +567,7 @@ describe('encryption suites', () => {
   test('encoded fields control dispatch and cryptographic inputs', () => {
     const envelope = mustSeal(SUITE_AUTH_XCHACHA, 'frank')
     const mutations = [
-      [2, 0x02], // version
+      [2, 0x01], // CBOR v1 is not the legacy fixed layout
       [6, 0x03], // suite: auth XChaCha -> auth AES-GCM
       [10, 0x01], // KEM
       [14, 0x06], // salt
@@ -547,19 +601,19 @@ describe('encryption suites', () => {
     const vectors = new Map([
       [
         SUITE_BASE_AES_GCM,
-        'a600010119fe010219ff00035820070707070707070707070707070707070707070707070707070707070707070704582102f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f90558198c60b582dc48876cd46f72eaa4544263a6ab1804aa709d44b1',
+        'a600020119fe010219ff00035820070707070707070707070707070707070707070707070707070707070707070704582102f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f90558198c60b582dc48876cd46f72eaa4544263a6ab1804aa709d44b1',
       ],
       [
         SUITE_BASE_XCHACHA,
-        'a600010119fe020219ff00035820070707070707070707070707070707070707070707070707070707070707070704582102f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f905581951a7ad9509175b1502c13aeffec3f63af78a76298fee13861e',
+        'a600020119fe020219ff00035820070707070707070707070707070707070707070707070707070707070707070704582102f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f905581951a7ad9509175b1502c13aeffec3f63af78a76298fee13861e',
       ],
       [
         SUITE_AUTH_AES_GCM,
-        'a600010119fe030219ff00035820070707070707070707070707070707070707070707070707070707070707070704582102f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9055819988bf88bd65e72ddf13713ea9cc5be63da20d7fb81ab73f864',
+        'a600020119fe030219ff00035820070707070707070707070707070707070707070707070707070707070707070704582102f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9055819988bf88bd65e72ddf13713ea9cc5be63da20d7fb81ab73f864',
       ],
       [
         SUITE_AUTH_XCHACHA,
-        'a600010119fe040219ff00035820070707070707070707070707070707070707070707070707070707070707070704582102f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9055819c1b582181da35780536a806ac7f220b9ccb5e3760fa2ca3daa',
+        'a600020119fe040219ff00035820070707070707070707070707070707070707070707070707070707070707070704582102f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9055819c1b582181da35780536a806ac7f220b9ccb5e3760fa2ca3daa',
       ],
     ])
     for (const [suiteId, expected] of vectors) {

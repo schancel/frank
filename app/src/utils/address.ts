@@ -1,4 +1,3 @@
-import type { Address } from 'bitcore-lib-xpi'
 import { lotusFromAddress } from '@frank/cashweb/legacy-wallet/lotus-address'
 import { networkName, displayNetwork } from './constants'
 
@@ -9,10 +8,23 @@ import { networkName, displayNetwork } from './constants'
 // `parseAddress` instead. Superseded for anything chain-generic; still genuinely needed by the
 // remaining Lotus-only callers of this file (`components/setup/DepositStep.vue`, part of the
 // still-unmigrated Setup.vue onboarding wizard -- see issue #47).
-export function toAPIAddress(address: string | Address) {
-  return lotusFromAddress(address, networkName)
+type AddressInput =
+  | string
+  | {
+      readonly hashBuffer: Uint8Array
+      readonly type: string
+    }
+
+function asLotusInput(
+  address: AddressInput,
+): Parameters<typeof lotusFromAddress>[0] {
+  return address as Parameters<typeof lotusFromAddress>[0]
 }
 
-export function toDisplayAddress(address: string | Address) {
-  return lotusFromAddress(address, displayNetwork)
+export function toAPIAddress(address: AddressInput) {
+  return lotusFromAddress(asLotusInput(address), networkName)
+}
+
+export function toDisplayAddress(address: AddressInput) {
+  return lotusFromAddress(asLotusInput(address), displayNetwork)
 }

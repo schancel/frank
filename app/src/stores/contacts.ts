@@ -380,11 +380,6 @@ export const useContactStore = defineStore('contacts', {
         return
       }
       const displayAddress = toChainDisplayAddress(address)
-      // Deep links / route navigation land here: never store the user as their own contact.
-      if (await isOwnAddress(address)) {
-        return
-      }
-
       if (!contact) {
         const chainAddress = activeChain.parseAddress(address)
         if (!chainAddress) {

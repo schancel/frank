@@ -57,7 +57,7 @@
  * Likewise out of scope (ticket #34 non-goal): sweeping/reclaiming any leftover balance sitting on a
  * `'retired'` (failed/stuck) account — not attempted here.
  */
-import { Provider } from 'ethers'
+import { Provider, Transaction, getAddress } from 'ethers'
 
 import { MonadHdKeyring } from './monad-hd-keyring'
 import {
@@ -68,16 +68,23 @@ import {
 } from './monad-account-tx'
 import {
   InMemorySubAccountPoolStore,
+  assertSubAccountStatusTransition,
   SubAccountPoolStore,
+  SubAccountRecoveryDisposition,
   SubAccountRecord,
   SubAccountStatus,
+  SubAccountTransactionCheckpoint,
+  TerminalSubAccountCheckpoint,
 } from './storage/sub-account-pool-storage'
+import type { MonadWalletOperationAdmission } from './storage/monad-wallet-bundle'
 import { selectStampAccounts } from './monad-stamp-account-selection'
 
 export type {
   SubAccountPoolStore,
+  SubAccountRecoveryDisposition,
   SubAccountRecord,
   SubAccountStatus,
+  TerminalSubAccountCheckpoint,
 } from './storage/sub-account-pool-storage'
 
 /** Default target number of pre-funded, unused (`'available'`) sub-accounts `topUpPool()` tries to
@@ -129,13 +136,36 @@ export class MonadSubAccountPool {
   private lastSelectedIndex = -1
   /** Serializes main-account funding so concurrent Sends cannot sign the same pending nonce. */
   private preparationQueue: Promise<void> = Promise.resolve()
+  private readonly requireStampReconciliationPreflight: boolean
+  private stampPreparationAuthorized = false
+  private compactionCursor = -1
+  private walletOperationGate?: <T>(
+    operation: (admission: MonadWalletOperationAdmission) => Promise<T>,
+    admission?: MonadWalletOperationAdmission,
+  ) => Promise<T>
 
   constructor(params: {
     keyring: MonadHdKeyring
     store?: SubAccountPoolStore
+    requireStampReconciliationPreflight?: boolean
   }) {
     this.keyring = params.keyring
     this.store = params.store ?? new InMemorySubAccountPoolStore()
+    this.requireStampReconciliationPreflight =
+      params.requireStampReconciliationPreflight ?? false
+  }
+
+  /** Bundle-owned lifecycle gate. Persistence factories attach this before exposing the pool. */
+  attachWalletOperationGate(
+    gate: <T>(
+      operation: (admission: MonadWalletOperationAdmission) => Promise<T>,
+      admission?: MonadWalletOperationAdmission,
+    ) => Promise<T>,
+  ): void {
+    if (this.walletOperationGate !== undefined) {
+      throw new Error('Sub-account pool already has a wallet operation gate')
+    }
+    this.walletOperationGate = gate
   }
 
   /**
@@ -181,8 +211,66 @@ export class MonadSubAccountPool {
     return this.store.getAll()
   }
 
+  /** Wallet-recovery boundary: applies a fully prevalidated set in one component-store batch. */
+  applyPrevalidatedRecoveryRecords(records: readonly SubAccountRecord[]): void {
+    this.store.putMany(records)
+  }
+
   getRecord(index: number): SubAccountRecord | undefined {
     return this.store.getByIndex(index)
+  }
+
+  /** Persistent derivation high-water mark; unlike scanning history, this remains O(1) after
+   * compaction and for long-lived wallets. */
+  nextUnusedIndex(): number {
+    return this.store.getNextIndex()
+  }
+
+  deriveNextUnfunded(): SubAccountRecord {
+    const index = this.nextFreshIndex()
+    const derived = this.keyring.deriveSubAccount(index)
+    const record: SubAccountRecord = {
+      index,
+      address: derived.address,
+      status: 'unfunded',
+    }
+    this.store.put(record)
+    return record
+  }
+
+  /** Reconstructs a locally-missing reservation only from an exact durable attempt whose signed
+   * sender has already been validated against this derived index. */
+  restoreJournaledInUse(index: number): SubAccountRecord {
+    const existing = this.store.getByIndex(index)
+    if (existing !== undefined) return existing
+    const derived = this.keyring.deriveSubAccount(index)
+    const record: SubAccountRecord = {
+      index,
+      address: derived.address,
+      status: 'in-use',
+    }
+    this.store.put(record)
+    return record
+  }
+
+  stageJournaledInUse(index: number): SubAccountRecord {
+    const existing = this.store.getByIndex(index)
+    if (existing !== undefined) return existing
+    const derived = this.keyring.deriveSubAccount(index)
+    return { index, address: derived.address, status: 'in-use' }
+  }
+
+  restoreTerminalEvidence(record: SubAccountRecord): void {
+    if (record.status !== 'spent' && record.status !== 'retired') {
+      throw new Error('Recovered sender evidence must be terminal')
+    }
+    if (
+      getAddress(record.address) !==
+      this.keyring.deriveSubAccount(record.index).address
+    ) {
+      throw new Error('Recovered sender evidence belongs to a different seed')
+    }
+    this.store.put(record)
   }
 
   /** Directly persists a status transition for sub-account `index` — the mechanism ticket #18's
@@ -203,6 +291,107 @@ export class MonadSubAccountPool {
     const updated: SubAccountRecord = { ...base, status }
     this.store.put(updated)
     return updated
+  }
+
+  /** Retains confirmed funding bytes/value after the transient funding attempt is resolved. */
+  recordFundingTransaction(
+    index: number,
+    transaction: SubAccountTransactionCheckpoint,
+  ): void {
+    const existing = this.store.getByIndex(index)
+    if (existing === undefined) {
+      throw new Error(`No sub-account at index ${index} in the pool`)
+    }
+    this.store.put({
+      ...existing,
+      lifecycle: { ...existing.lifecycle, funding: { ...transaction } },
+    })
+  }
+
+  /** Retains the exact signed spend before it can become terminal/recoverable state. */
+  recordSpendTransaction(
+    index: number,
+    transaction: SubAccountTransactionCheckpoint,
+  ): void {
+    const existing = this.store.getByIndex(index)
+    if (existing === undefined) {
+      throw new Error(`No sub-account at index ${index} in the pool`)
+    }
+    this.store.put({
+      ...existing,
+      lifecycle: { ...existing.lifecycle, spend: { ...transaction } },
+    })
+  }
+
+  recordRecoveryDisposition(
+    index: number,
+    recovery: SubAccountRecoveryDisposition,
+  ): void {
+    const existing = this.store.getByIndex(index)
+    if (existing === undefined) {
+      throw new Error(`No sub-account at index ${index} in the pool`)
+    }
+    this.store.put({
+      ...existing,
+      lifecycle: { ...existing.lifecycle, recovery: { ...recovery } },
+    })
+  }
+
+  terminalCheckpoints(): TerminalSubAccountCheckpoint[] {
+    return this.store.getCheckpoints()
+  }
+
+  /** Bounded compaction. A mutable row is replaced only when its complete recovery checkpoint is
+   * available and no live attempt/recovery object still refers to the funding index. */
+  async compactTerminalAccounts(params: {
+    limit: number
+    referencedIndices?: ReadonlySet<number>
+    isReferenced?: (index: number) => boolean
+    now?: () => number
+  }): Promise<number> {
+    if (!Number.isSafeInteger(params.limit) || params.limit < 0) {
+      throw new Error(`Compaction limit must be a non-negative safe integer`)
+    }
+    // Settle all earlier row/high-water writes before issuing atomic row->checkpoint batches;
+    // otherwise an older in-flight put could race the deletion and resurrect a terminal row.
+    await this.store.flush()
+    const referenced = params.referencedIndices ?? new Set<number>()
+    let records = this.store.scanRecords(this.compactionCursor, params.limit)
+    if (records.length === 0 && this.compactionCursor >= 0) {
+      this.compactionCursor = -1
+      records = this.store.scanRecords(this.compactionCursor, params.limit)
+    }
+    let compacted = 0
+    for (const record of records) {
+      this.compactionCursor = record.index
+      if (
+        (record.status !== 'spent' && record.status !== 'retired') ||
+        referenced.has(record.index) ||
+        params.isReferenced?.(record.index) === true
+      ) {
+        continue
+      }
+      const { funding, spend, recovery } = record.lifecycle ?? {}
+      if (
+        funding === undefined ||
+        spend === undefined ||
+        recovery === undefined
+      ) {
+        continue
+      }
+      this.store.replaceWithCheckpoint({
+        version: 1,
+        index: record.index,
+        address: record.address,
+        status: record.status,
+        denominationWei: spend.valueWei,
+        lifecycle: { funding, spend, recovery },
+        compactedAt: (params.now ?? Date.now)(),
+      })
+      compacted++
+    }
+    await this.store.flush()
+    return compacted
   }
 
   /** Waits until all pool mutations made so far have reached persistent storage. */

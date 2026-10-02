@@ -1235,7 +1235,10 @@ mod tests {
             tempdir,
             RegistryServer {
                 registry: Arc::new(registry),
-                peers: Arc::new(Peers::new("http://127.0.0.1:1".to_string(), vec![])),
+                peers: Arc::new(Peers::new(
+                    "http://user:secret@127.0.0.1:1/private?token=hidden".to_string(),
+                    vec![],
+                )),
                 pop_gate: Arc::new(pop_gate),
                 curated_defaults: Arc::new(vec![]),
                 monad_mailbox: crate::monad_mailbox::MonadMailboxRuntime::Disabled,

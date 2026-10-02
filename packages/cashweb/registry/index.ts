@@ -6,7 +6,7 @@ const { Entry, AddressMetadata } = __pb_metadata_pb
 import __pb_signed_payload_payload_pb from '../signed_payload/payload_pb'
 const { SignedPayload, SignedPayloadSet, BurnOutputs } =
   __pb_signed_payload_payload_pb
-import pop, { paymentOutput } from '../pop'
+import pop from '../pop'
 import {
   crypto,
   Address,

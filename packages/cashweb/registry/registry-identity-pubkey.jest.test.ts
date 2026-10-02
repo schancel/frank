@@ -87,7 +87,8 @@ it('matches bitcore registry identity public keys', () => {
     'private constructBurnTransaction(',
     'async createBroadcast(',
   )
-  expect(burn).toContain('new Transaction.Output(')
+  expect(burn).toContain('registryBurnOutput(')
+  expect(burn).not.toContain('new Transaction.Output(')
   expect(source).toContain('PublicKey.fromBuffer(')
   expect(source).toContain('crypto.Hash.sha256(')
 

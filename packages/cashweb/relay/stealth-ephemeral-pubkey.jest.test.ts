@@ -73,7 +73,8 @@ it('matches bitcore stealth ephemeral public keys', () => {
   expect(registry).toContain('registryIdentityPoint(')
   expect(registry).not.toContain('toPublicKey(')
   expect(registry).toContain('crypto.Hash.sha256(')
-  expect(registry).toContain('new Transaction.Output(')
+  expect(registry).toContain('registryBurnOutput(')
+  expect(registry).not.toContain('new Transaction.Output(')
   expect(registry).toContain('PublicKey.fromBuffer(')
 })
 

@@ -243,6 +243,8 @@ export default {
     balanceLoading: 'Chargement du solde…',
     balanceUnavailable: 'Solde indisponible. Nouvelle tentative.',
     balanceStale: '{balance} (dernière valeur connue)',
+    failedLoadAddress: 'Échec du chargement de l’adresse du portefeuille Monad',
+    unableCopyAddress: 'Impossible de copier l’adresse Monad',
   },
   chatList: {
     noContactMessage: 'Ajoutez des contacts depuis le tiroir ci-dessus...',
@@ -303,6 +305,18 @@ export default {
     forwardMessage: 'Transférer le message',
     infoMessage: 'Informations sur le message',
     deleteMessage: 'Supprimer le message',
+  },
+  chatMessageMenu: {
+    messageCopied: 'Message copié dans le presse-papier',
+  },
+  notifications: {
+    addressCopied: 'Adresse copiée dans le presse-papier.',
+    insufficientStamp:
+      'Le timbre est trop petit, le destinataire ne sera pas notifié.',
+    seedCopied:
+      'Votre phrase de récupération a été copiée dans votre presse-papier.',
+    sentTransaction: 'Transaction envoyée',
+    viewAction: 'Voir',
   },
   chatRightDrawer: {
     stampPrice: 'Prix du timbre',
@@ -462,6 +476,8 @@ export default {
     noFundsHint:
       "Votre solde est de 0. Cette application utilise des MON de testnet, sans valeur réelle. Le faucet de démonstration alimente automatiquement les nouveaux profils ; si rien n'arrive après une minute, demandez à l'opérateur de la démo d'envoyer des MON de testnet à l'adresse ci-dessous.",
     addressCopied: 'Adresse copiée dans le presse papier',
+    failedLoadBalance: 'Échec du chargement du solde du portefeuille Monad',
+    unableCopyAddress: 'Impossible de copier l’adresse Monad',
   },
   sendAddressDialog: {
     sendToAddress: "Envoyer vers l'adresse",
@@ -469,6 +485,9 @@ export default {
     enterAmount: 'Saisissez le montant (MON)',
     cancel: 'Annuler',
     send: 'Envoyer',
+    invalidTransfer:
+      'Saisissez une adresse Monad et un montant de MON valides.',
+    failedSendTransaction: 'Échec de l’envoi de la transaction Monad',
   },
   contactBookDialog: {
     close: 'Fermer',

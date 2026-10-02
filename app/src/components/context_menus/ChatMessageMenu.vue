@@ -120,7 +120,9 @@ export default defineComponent({
         .then(() => {
           this.$q.notify({
             message:
-              '<div class="text-center"> Message copied to clipboard </div>',
+              '<div class="text-center"> ' +
+              this.$t('chatMessageMenu.messageCopied') +
+              ' </div>',
             html: true,
             color: 'purple',
           })

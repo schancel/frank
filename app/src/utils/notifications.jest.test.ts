@@ -8,9 +8,14 @@ jest.mock('quasar', () => ({
   openURL,
 }))
 
+import { createPinia, setActivePinia } from 'pinia'
+import { useAppearanceStore } from 'src/stores/appearance'
 import {
+  addressCopiedNotify,
   desktopNotify,
   infoNotify,
+  insufficientStampNotify,
+  seedCopiedNotify,
   sentTransactionNotify,
 } from './notifications'
 
@@ -106,5 +111,96 @@ describe('desktopNotify', () => {
     desktopNotify('Qwen', 'hi', 'icon.png', () => undefined)
 
     expect(constructed[0]?.options).not.toHaveProperty('tag')
+  })
+})
+
+describe('localized notifications (#589)', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    createNotification.mockClear()
+  })
+
+  it('translates addressCopiedNotify in en-us and fr-fr', () => {
+    addressCopiedNotify()
+    expect(createNotification).toHaveBeenLastCalledWith(
+      expect.objectContaining({ message: 'Address copied to clipboard.' }),
+    )
+
+    useAppearanceStore().locale = 'fr-fr'
+    addressCopiedNotify()
+    expect(createNotification).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        message: 'Adresse copiée dans le presse-papier.',
+      }),
+    )
+  })
+
+  it('translates insufficientStampNotify in en-us and fr-fr', () => {
+    insufficientStampNotify()
+    expect(createNotification).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        message: 'Stamp is too small, receiver will not be notified.',
+      }),
+    )
+
+    useAppearanceStore().locale = 'fr-fr'
+    insufficientStampNotify()
+    expect(createNotification).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        message:
+          'Le timbre est trop petit, le destinataire ne sera pas notifié.',
+      }),
+    )
+  })
+
+  it('translates seedCopiedNotify in en-us and fr-fr', () => {
+    seedCopiedNotify()
+    expect(createNotification).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        message: 'Your recovery phrase has been copied to your clipboard.',
+      }),
+    )
+
+    useAppearanceStore().locale = 'fr-fr'
+    seedCopiedNotify()
+    expect(createNotification).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        message:
+          'Votre phrase de récupération a été copiée dans votre presse-papier.',
+      }),
+    )
+  })
+
+  it('translates sentTransactionNotify message and view action in en-us and fr-fr', () => {
+    sentTransactionNotify('0x123')
+    expect(createNotification).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        message: '<div class="text-center"> Sent transaction </div>',
+        actions: [expect.objectContaining({ label: 'View' })],
+      }),
+    )
+
+    useAppearanceStore().locale = 'fr-fr'
+    sentTransactionNotify('0x123')
+    expect(createNotification).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        message: '<div class="text-center"> Transaction envoyée </div>',
+        actions: [expect.objectContaining({ label: 'Voir' })],
+      }),
+    )
+  })
+
+  it('allows custom overrides for notifications', () => {
+    addressCopiedNotify('Custom copy message')
+    expect(createNotification).toHaveBeenLastCalledWith(
+      expect.objectContaining({ message: 'Custom copy message' }),
+    )
+
+    sentTransactionNotify('0x123', 'Custom sent')
+    expect(createNotification).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        message: '<div class="text-center"> Custom sent </div>',
+      }),
+    )
   })
 })

@@ -80,12 +80,14 @@ import { useActiveWallet } from 'src/composables/useActiveWallet'
 import { useBalance } from 'src/composables/useBalance'
 import { openPage } from 'src/utils/routes'
 import { addressCopiedNotify, errorNotify } from 'src/utils/notifications'
+import { useTranslate } from 'src/composables/useTranslate'
 
 // One wallet's detail view in the main pane (#570): the Wallet rail tab's drawer shows the
 // wallet list; picking a row lands here for that wallet's info and actions. Stealth payment
 // initiation is deliberately absent until the stealth design (#71) lands -- no dead controls.
 export default defineComponent({
   setup() {
+    const $t = useTranslate()
     const router = useRouter()
     // Shared with the drawer: one polling loop, so this page refreshes without a reload.
     const { formattedBalance, loaded, hasError } = useBalance()
@@ -104,7 +106,7 @@ export default defineComponent({
         errorNotify(
           err instanceof Error
             ? err
-            : new Error('Failed to load the Monad wallet address'),
+            : new Error($t('walletPanel.failedLoadAddress')),
         )
       }
     })
@@ -119,7 +121,7 @@ export default defineComponent({
           await copyToClipboard(displayAddress.value)
           addressCopiedNotify()
         } catch {
-          errorNotify(new Error('Unable to copy the Monad address'))
+          errorNotify(new Error($t('walletPanel.unableCopyAddress')))
         }
       },
       openSend() {

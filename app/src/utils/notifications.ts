@@ -1,5 +1,8 @@
 import { Notify, openURL } from 'quasar'
 import { transactionExplorerUrl } from './explorer'
+import { translateMessage } from 'src/i18n'
+
+const $t = (key: string) => translateMessage(key)
 
 // Error notifications
 
@@ -43,21 +46,21 @@ export function infoNotify(text: string) {
   })
 }
 
-export function addressCopiedNotify() {
-  infoNotify('Address copied to clipboard.')
+export function addressCopiedNotify(customMessage?: string) {
+  infoNotify(customMessage ?? $t('notifications.addressCopied'))
 }
 
-export function insufficientStampNotify() {
-  infoNotify('Stamp is too small, receiver will not be notified.')
+export function insufficientStampNotify(customMessage?: string) {
+  infoNotify(customMessage ?? $t('notifications.insufficientStamp'))
 }
 
-export function seedCopiedNotify() {
-  infoNotify('Your recovery phrase has been copied to your clipboard.')
+export function seedCopiedNotify(customMessage?: string) {
+  infoNotify(customMessage ?? $t('notifications.seedCopied'))
 }
 
-export function sentTransactionNotify(txId?: string) {
+export function sentTransactionNotify(txId?: string, customMessage?: string) {
   const action = {
-    label: 'View',
+    label: $t('notifications.viewAction'),
     color: 'secondary',
     handler: () => {
       if (txId) {
@@ -66,9 +69,10 @@ export function sentTransactionNotify(txId?: string) {
     },
   }
   const actions = txId ? [action] : []
+  const messageText = customMessage ?? $t('notifications.sentTransaction')
 
   Notify.create({
-    message: '<div class="text-center"> Sent transaction </div>',
+    message: `<div class="text-center"> ${messageText} </div>`,
     html: true,
     color: 'accent',
     actions,

@@ -411,6 +411,12 @@ export default {
       'Confirmez ou copiez d’abord votre phrase de récupération enregistrée.',
     importDifferentPhrase: 'J’ai déjà une autre phrase de récupération',
     importDifferentContinue: 'Continuer vers l’importation',
+    invalidWordCount:
+      'Une phrase de récupération doit contenir 12, 15, 18, 21 ou 24 mots.',
+    unrecognizedWords:
+      'Un ou plusieurs mots ne sont pas reconnus. Vérifiez l’orthographe.',
+    invalidChecksum:
+      'La somme de contrôle de la phrase de récupération est invalide. Vérifiez l’ordre et l’orthographe de vos mots.',
   },
   seedConfirm: {
     unavailable:

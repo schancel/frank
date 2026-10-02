@@ -47,12 +47,23 @@ const QInputStub = defineComponent({
     label: { type: String, default: '' },
     modelValue: { type: String, default: '' },
     readonly: { type: Boolean, default: false },
+    error: { type: Boolean, default: null },
+    errorMessage: { type: String, default: '' },
     // Like Quasar's QInput: the first rule that does not return `true` supplies the error text.
     rules: { type: Array, default: () => [] },
   },
-  emits: ['update:modelValue', 'blur'],
+  emits: ['update:modelValue', 'blur', 'focus'],
   computed: {
-    error(): string {
+    hasError(): boolean {
+      if (this.error !== null) return this.error
+      for (const rule of this.rules as Array<(v: string) => true | string>) {
+        const outcome = rule(this.modelValue)
+        if (outcome !== true) return true
+      }
+      return false
+    },
+    errorText(): string {
+      if (this.error && this.errorMessage) return this.errorMessage
       for (const rule of this.rules as Array<(v: string) => true | string>) {
         const outcome = rule(this.modelValue)
         if (outcome !== true) return outcome
@@ -61,7 +72,7 @@ const QInputStub = defineComponent({
     },
   },
   template:
-    '<div><textarea :aria-label="label" :readonly="readonly" :value="modelValue" @input="$emit(\'update:modelValue\', $event.target.value)" @blur="$emit(\'blur\')" /><span v-if="error" role="alert" :data-error-for="label">{{ error }}</span></div>',
+    '<div><textarea :aria-label="label" :readonly="readonly" :value="modelValue" :aria-invalid="hasError ? \'true\' : \'false\'" :aria-describedby="hasError ? label + \'-error\' : undefined" @input="$emit(\'update:modelValue\', $event.target.value)" @blur="$emit(\'blur\')" @focus="$emit(\'focus\')" /><span v-if="hasError && errorText" :id="label + \'-error\'" role="alert" :data-error-for="label">{{ errorText }}</span></div>',
 })
 
 const messages: Record<string, string> = {
@@ -131,26 +142,160 @@ describe('AccountStep import flow', () => {
   })
 })
 
-describe('AccountStep import: error only once something is typed (ticket #369)', () => {
+describe('AccountStep import: error only once something is typed and blurred (tickets #369, #515)', () => {
   const seedError = (w: ReturnType<typeof mountStep>) =>
     w.find('[data-error-for="profile.seedEntry"]')
+  const seedTextarea = (w: ReturnType<typeof mountStep>) =>
+    w.find('textarea[aria-label="profile.seedEntry"]')
 
-  it('shows no "invalid phrase" error on an empty box, then does for a wrong phrase', async () => {
+  it('shows no error on an empty box, shows actionable error on blur for a wrong phrase, and clears when valid', async () => {
     const wrapper = mountStep()
     ;(wrapper.vm as unknown as { importAccount(): void }).importAccount()
     await nextTick()
     expect(seedError(wrapper).exists()).toBe(false)
+    expect(seedTextarea(wrapper).attributes('aria-invalid')).toBe('false')
 
-    await wrapper
-      .find('textarea[aria-label="profile.seedEntry"]')
-      .setValue('not a recovery phrase')
-    expect(seedError(wrapper).text()).toBe('profile.invalidSeed')
+    await seedTextarea(wrapper).setValue('not a recovery phrase')
+    // Untouched/not blurred yet: no premature error
+    expect(seedError(wrapper).exists()).toBe(false)
 
-    await wrapper
-      .find('textarea[aria-label="profile.seedEntry"]')
-      .setValue(VALID_MNEMONIC)
+    // Moving focus away triggers validation and accessibility attributes
+    await seedTextarea(wrapper).trigger('blur')
+    expect(seedError(wrapper).exists()).toBe(true)
+    expect(seedError(wrapper).text()).toBe('accountStep.invalidWordCount')
+    expect(seedTextarea(wrapper).attributes('aria-invalid')).toBe('true')
+    expect(seedTextarea(wrapper).attributes('aria-describedby')).toBe(
+      'profile.seedEntry-error',
+    )
+    expect(seedError(wrapper).attributes('role')).toBe('alert')
+
+    // Entering a valid phrase clears the error and invalid state
+    await seedTextarea(wrapper).setValue(VALID_MNEMONIC)
+    expect(seedError(wrapper).exists()).toBe(false)
+    expect(seedTextarea(wrapper).attributes('aria-invalid')).toBe('false')
+  })
+})
+
+describe('AccountStep recovery phrase actionable validation (#515)', () => {
+  const CHECKSUM_INVALID_12 =
+    'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon'
+  const UNRECOGNIZED_12 =
+    'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon zzzzz'
+
+  const seedError = (w: ReturnType<typeof mountStep>) =>
+    w.find('[data-error-for="profile.seedEntry"]')
+  const seedTextarea = (w: ReturnType<typeof mountStep>) =>
+    w.find('textarea[aria-label="profile.seedEntry"]')
+
+  it('explains invalid word count for ordinary text', async () => {
+    const wrapper = mountStep()
+    ;(wrapper.vm as unknown as { importAccount(): void }).importAccount()
+    await nextTick()
+
+    await seedTextarea(wrapper).setValue('not a recovery phrase')
+    await seedTextarea(wrapper).trigger('blur')
+
+    expect(seedError(wrapper).text()).toBe('accountStep.invalidWordCount')
+    expect(seedTextarea(wrapper).attributes('aria-invalid')).toBe('true')
+  })
+
+  it('explains checksum failure for a 12-word checksum-invalid phrase', async () => {
+    const wrapper = mountStep()
+    ;(wrapper.vm as unknown as { importAccount(): void }).importAccount()
+    await nextTick()
+
+    await seedTextarea(wrapper).setValue(CHECKSUM_INVALID_12)
+    await seedTextarea(wrapper).trigger('blur')
+
+    expect(seedError(wrapper).text()).toBe('accountStep.invalidChecksum')
+    expect(seedTextarea(wrapper).attributes('aria-invalid')).toBe('true')
+  })
+
+  it('explains unrecognized words without leaking entered words', async () => {
+    const wrapper = mountStep()
+    ;(wrapper.vm as unknown as { importAccount(): void }).importAccount()
+    await nextTick()
+
+    await seedTextarea(wrapper).setValue(UNRECOGNIZED_12)
+    await seedTextarea(wrapper).trigger('blur')
+
+    expect(seedError(wrapper).text()).toBe('accountStep.unrecognizedWords')
+    expect(seedError(wrapper).text()).not.toContain('zzzzz')
+    expect(seedTextarea(wrapper).attributes('aria-invalid')).toBe('true')
+  })
+
+  it('clears error if user clears input completely', async () => {
+    const wrapper = mountStep()
+    ;(wrapper.vm as unknown as { importAccount(): void }).importAccount()
+    await nextTick()
+
+    await seedTextarea(wrapper).setValue('invalid text')
+    await seedTextarea(wrapper).trigger('blur')
+    expect(seedError(wrapper).exists()).toBe(true)
+
+    await seedTextarea(wrapper).setValue('')
     expect(seedError(wrapper).exists()).toBe(false)
   })
+
+  it.each([
+    ['en-us', enUs],
+    ['fr-fr', frFr],
+  ])(
+    '%s: displays localized, actionable messages and maintains accessibility parity',
+    async (_lang, locale) => {
+      const label = locale.profile.seedEntry
+      const wrapper = shallowMount(AccountStep, {
+        props: {
+          accountData: { name: '', seed: '', valid: false },
+        },
+        global: {
+          mocks: {
+            $t: (key: string) => {
+              const parts = key.split('.')
+              let cur: unknown = locale
+              for (const part of parts) {
+                cur = (cur as Record<string, unknown>)?.[part]
+              }
+              return (cur as string) ?? key
+            },
+          },
+          stubs: {
+            QBtn: QBtnStub,
+            QInput: QInputStub,
+            QSpace: true,
+          },
+        },
+      })
+
+      ;(wrapper.vm as unknown as { importAccount(): void }).importAccount()
+      await nextTick()
+
+      const textarea = wrapper.find(`textarea[aria-label="${label}"]`)
+      const errorEl = () => wrapper.find(`[data-error-for="${label}"]`)
+
+      // 1. Ordinary invalid text (word count error)
+      await textarea.setValue('invalid text')
+      await textarea.trigger('blur')
+      expect(errorEl().text()).toBe(locale.accountStep.invalidWordCount)
+      expect(textarea.attributes('aria-invalid')).toBe('true')
+
+      // 2. 12-word checksum error
+      await textarea.setValue(CHECKSUM_INVALID_12)
+      expect(errorEl().text()).toBe(locale.accountStep.invalidChecksum)
+      expect(textarea.attributes('aria-invalid')).toBe('true')
+
+      // 3. 12-word unrecognized words error
+      await textarea.setValue(UNRECOGNIZED_12)
+      expect(errorEl().text()).toBe(locale.accountStep.unrecognizedWords)
+      expect(errorEl().text()).not.toContain('zzzzz')
+      expect(textarea.attributes('aria-invalid')).toBe('true')
+
+      // 4. Valid phrase clears error and marks valid
+      await textarea.setValue(VALID_MNEMONIC)
+      expect(errorEl().exists()).toBe(false)
+      expect(textarea.attributes('aria-invalid')).toBe('false')
+    },
+  )
 })
 
 describe('AccountStep import account finalization', () => {

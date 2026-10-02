@@ -1,4 +1,4 @@
-// Identifiers for the crypto-box registry. CBOR version 1 allocates no
+// Identifiers for the crypto-box registry. Frank CBOR version 1 allocates no
 // production encryption suite. 65535 stays reserved. Decision 356.
 
 /** RFC 9180 private-use KEM. Not a registered code point. */
@@ -45,7 +45,7 @@ export interface SuiteSpec {
   readonly aeadId: number
   readonly aead: AeadName
   readonly nonceLength: number
-  /** CBOR version 1 has not allocated this id. */
+  /** Frank CBOR version 1 has not allocated this id. */
   readonly cborVersion1: 'waiting'
 }
 

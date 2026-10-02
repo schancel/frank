@@ -1,6 +1,8 @@
 # @frank/crypto-box
 
-Versioned deniable encryption. This envelope is not the live relay protobuf and it is not a CBOR version-1 frame. CBOR version 1 allocates no production encryption suite. Do not write these registry ids into a version-1 CBOR encryption-suite field. They are not S2b or S2c. Decision 356.
+Versioned deniable encryption. `seal` returns and `open` consumes one deterministic RFC 8949 CBOR envelope. This envelope is not the live relay protobuf or a Frank direct-message frame. Frank CBOR version 1 allocates no production encryption suite. Do not write these registry ids into a Frank version-1 CBOR encryption-suite field. They are not S2b or S2c. Decision 356.
+
+Envelope version 1 is a definite-length map with unsigned integer keys in canonical order: `0` version, `1` suite id, `2` KEM id, `3` 32-byte salt, `4` 33-byte encapsulated public key, and `5` ciphertext. All integers and lengths use their shortest encoding. `open` rejects any other encoding or shape. Callers must select a suite explicitly for every `seal`; `open` dispatches from the encoded suite id.
 
 ## Suites
 

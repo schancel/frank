@@ -243,6 +243,48 @@ describe('AddContact latest lookup', () => {
     ).toBe(true)
   })
 
+  it('exercises an already-canonical address input and validates dealer eligibility (#434)', async () => {
+    chain.fetchProfile.mockResolvedValue({
+      ...profile(ADDRESS_A, 'Blackjack Dealer'),
+      bot: true,
+    })
+
+    await typeAndFire(wrapper, `  ${ADDRESS_A}  `)
+
+    expect(chain.parseAddress).toHaveBeenCalledWith(ADDRESS_A)
+    expect(chain.fetchProfile).toHaveBeenCalledTimes(1)
+    expect(chain.fetchProfile).toHaveBeenCalledWith(parsedAddresses[ADDRESS_A])
+    expect(status(wrapper)).toContain('Blackjack Dealer')
+    expect(addButton(wrapper).attributes('disabled')).toBeUndefined()
+
+    await addButton(wrapper).trigger('click')
+
+    expect(mockAddContactToStore).toHaveBeenCalledTimes(1)
+    expect(mockAddContactToStore).toHaveBeenCalledWith({
+      address: ADDRESS_A,
+      contact: {
+        profile: expect.objectContaining({
+          name: 'Blackjack Dealer',
+          signedName: 'Blackjack Dealer',
+        }),
+      },
+    })
+    const storedProfile = mockAddContactToStore.mock.calls[0][0].contact.profile
+    expect(storedProfile.signedName).toBe('Blackjack Dealer')
+    expect(
+      peerOffersDealerTable(storedProfile, ADDRESS_A, [
+        { address: ADDRESS_A, name: 'Blackjack Dealer' },
+      ]),
+    ).toBe(true)
+    expect(
+      peerOffersDealerTable(storedProfile, ADDRESS_B, [
+        { address: ADDRESS_B, name: 'Blackjack Dealer' },
+      ]),
+    ).toBe(false)
+    expect(mockOpenChat).toHaveBeenCalledTimes(1)
+    expect(mockOpenChat).toHaveBeenCalledWith(mockRouter, ADDRESS_A)
+  })
+
   it.each([
     ['blank', ''],
     ['missing', undefined],

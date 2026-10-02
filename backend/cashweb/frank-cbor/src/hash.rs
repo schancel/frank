@@ -125,6 +125,27 @@ pub fn message_content_digest(type8_frame: &[u8]) -> Result<[u8; 32], UsageError
     Ok(sha256(&transcript))
 }
 
+/// T2: the 32-byte SHA-256 digest algorithm 1 signs, over the complete type-4 statement frame.
+/// The network argument is the statement's own field 0 (T5), never ambient state; the context
+/// is empty.
+pub fn directory_signature_digest(network: &str, type4_frame: &[u8]) -> [u8; 32] {
+    let transcript = common_transcript("frank/directory-signature/v1", network, type4_frame, &[])
+        .expect("directory transcript");
+    sha256(&transcript)
+}
+
+/// T2a: the digest of a key-transition authorization over the complete type-7 frame.
+pub fn key_transition_signature_digest(network: &str, type7_frame: &[u8]) -> [u8; 32] {
+    let transcript = common_transcript(
+        "frank/key-transition-signature/v1",
+        network,
+        type7_frame,
+        &[],
+    )
+    .expect("key-transition transcript");
+    sha256(&transcript)
+}
+
 /// T3 recipient-payload digest of a complete type-5 frame.
 pub fn recipient_payload_digest(network: &str, type5_frame: &[u8]) -> Result<[u8; 32], UsageError> {
     let transcript = common_transcript("frank/recipient-payload/v1", network, type5_frame, &[])?;

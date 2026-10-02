@@ -23,6 +23,7 @@ type Ctx = {
   opaque_retention_allowed: boolean
   payment_policy?: unknown
   decrypted_frame_hex?: string | null
+  recipient_directory_state?: unknown
   prior_directory_statement_frame_hex?: string | null
 }
 
@@ -39,8 +40,19 @@ export function readmeRuleIds(readme: string): Set<string> {
 
 export function contextFromManifest(c: ManifestCase): ValidationContext {
   const v = c.validation_context as unknown as Ctx
-  if (v.operation === 'full')
-    throw new Error('stage 10 (full) is not implemented by this codec')
+  // The type-1 stage-10 inputs (10.1-10.5) are outside this slice: a `full` case may carry
+  // them only as null (they exist in the schema for the type-1 corpus of #198).
+  for (const key of [
+    'payment_policy',
+    'decrypted_frame_hex',
+    'recipient_directory_state',
+  ] as const) {
+    if (v[key] !== undefined && v[key] !== null) {
+      throw new Error(
+        `stage 10.1-10.5 inputs (${key}) are not implemented by this codec`,
+      )
+    }
+  }
   return defaultContext({
     operation: v.operation,
     routeByteLimit: v.route_byte_limit,
@@ -233,7 +245,8 @@ export function runCase(c: ManifestCase): Outcome {
       typeId: r.typeId,
       schemaVersion: r.schemaVersion,
     }
-    if (ctx.operation === 'typed') out.contentHashHex = toHex(contentHash(r))
+    if (ctx.operation === 'typed' || ctx.operation === 'full')
+      out.contentHashHex = toHex(contentHash(r))
     return out
   } catch (e) {
     if (e instanceof FrankCodecError)

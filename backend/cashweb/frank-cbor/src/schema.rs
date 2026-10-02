@@ -6,10 +6,11 @@ use crate::limits::{
     ENCRYPTION_SUITE_PROOF, MAX_CIPHERTEXT_BYTES, MAX_DIRECTORY_ATTESTATION_FRAME_BYTES,
     MAX_DIRECT_MESSAGE_FRAME_BYTES, MAX_FRAME_BYTES, MAX_JOURNAL_FACTS,
     MAX_MESSAGE_ITEMS_PER_ARRAY, MAX_OPAQUE_SECTIONS, MAX_PAYMENT_MEMBERS, MAX_RELAY_BINDINGS,
-    MAX_SIGNATURES, MAX_TOPIC_BODY_BYTES, MAX_TOPIC_FRAME_BYTES, MAX_TOPIC_VOTE_FRAME_BYTES,
-    TYPE_CONTAINER_ITEM, TYPE_DIRECTORY_ATTESTATION, TYPE_DIRECTORY_STATEMENT, TYPE_DIRECT_MESSAGE,
-    TYPE_MAILBOX_CHECKPOINT, TYPE_MESSAGE_REVISION, TYPE_RECIPIENT_PAYLOAD, TYPE_TOPIC_POST,
-    TYPE_TOPIC_POST_SUBMISSION, TYPE_TOPIC_VOTE_SUBMISSION,
+    MAX_SIGNATURES, MAX_TEXT_STRING_BYTES, MAX_TOPIC_BODY_BYTES, MAX_TOPIC_FRAME_BYTES,
+    MAX_TOPIC_VOTE_FRAME_BYTES, TYPE_CONTAINER_ITEM, TYPE_DIRECTORY_ATTESTATION,
+    TYPE_DIRECTORY_STATEMENT, TYPE_DIRECT_MESSAGE, TYPE_MAILBOX_CHECKPOINT, TYPE_MESSAGE_REVISION,
+    TYPE_RECIPIENT_PAYLOAD, TYPE_TOPIC_POST, TYPE_TOPIC_POST_SUBMISSION,
+    TYPE_TOPIC_VOTE_SUBMISSION,
 };
 use crate::model::{AccountRef, Timestamp};
 
@@ -410,6 +411,19 @@ pub(crate) struct SectionDraft {
     pub value: Vec<u8>,
 }
 
+pub(crate) struct HeaderDraft {
+    pub name: String,
+    pub value: String,
+    pub unknown: Vec<(u64, CborValue)>,
+}
+
+pub(crate) struct ProfileEntryDraft {
+    pub kind: String,
+    pub headers: Vec<HeaderDraft>,
+    pub body: Vec<u8>,
+    pub unknown: Vec<(u64, CborValue)>,
+}
+
 pub(crate) enum Draft {
     DirectMessage {
         network: String,
@@ -444,6 +458,7 @@ pub(crate) enum Draft {
         recovery: Option<Vec<AccountRef>>,
         schema_version: u32,
         stamp_key: Option<AccountRef>,
+        profile_entries: Option<Vec<ProfileEntryDraft>>,
         unknown: Vec<(u64, CborValue)>,
     },
     Recipient {
@@ -568,6 +583,32 @@ fn opaque_section(v: &CborValue, path: &str) -> Result<SectionDraft, CodecError>
     })
 }
 
+/// One profile-entry header (M4): the protobuf name/value set, C11-sorted by name.
+fn profile_header(v: &CborValue, path: &str, allow: bool) -> Result<HeaderDraft, CodecError> {
+    let map = fields(Some(v), path, &[0, 1], &[], true, allow)?;
+    Ok(HeaderDraft {
+        name: tstr(map.get(0), &format!("{path}.0"), 0, MAX_TEXT_STRING_BYTES)?,
+        value: tstr(map.get(1), &format!("{path}.1"), 0, MAX_TEXT_STRING_BYTES)?,
+        unknown: map.unknown,
+    })
+}
+
+/// One migrated AddressEntry (M4). Authored array order is preserved, never resorted.
+fn profile_entry(v: &CborValue, path: &str, allow: bool) -> Result<ProfileEntryDraft, CodecError> {
+    let map = fields(Some(v), path, &[0, 1, 2], &[], true, allow)?;
+    let headers = as_list(map.get(1), &format!("{path}.1"), 0, 64)?;
+    let mut parsed_headers = Vec::with_capacity(headers.len());
+    for (i, header) in headers.iter().enumerate() {
+        parsed_headers.push(profile_header(header, &format!("{path}.1[{i}]"), allow)?);
+    }
+    Ok(ProfileEntryDraft {
+        kind: tstr(map.get(0), &format!("{path}.0"), 0, MAX_TEXT_STRING_BYTES)?,
+        headers: parsed_headers,
+        body: bstr(map.get(2), &format!("{path}.2"), 0, 8_388_608)?,
+        unknown: map.unknown,
+    })
+}
+
 /// Stage 8.2. Framed fields stay raw bytes until stage 8.4.
 pub(crate) fn parse_draft(
     type_id: u32,
@@ -634,15 +675,22 @@ pub(crate) fn parse_draft(
             })
         }
         TYPE_DIRECTORY_STATEMENT => {
-            // Field 8 (the stamp key) is required in schema 2 and undefined in schema 1, where
-            // C12 makes it a schema error (S10a.1). `effective` is the exact version, or the
-            // reader's highest supported schema when a newer frame is read through V6.3.
+            // Fields 5-7 are optional at every schema; field 8 (the stamp key) is required from
+            // schema 2 and undefined in schema 1, where C12 makes it a schema error (S10a.1);
+            // field 9 (the profile entries, M4) is optional from schema 3, where a schema-2
+            // reader reads the statement through V6.3 and retains it. `effective` is the exact
+            // version, or the reader's highest supported schema when the frame is newer (V6.3).
+            let optional: &[u64] = if schema.effective >= 3 {
+                &[5, 6, 7, 9]
+            } else {
+                &[5, 6, 7]
+            };
             let required: &[u64] = if schema.effective >= 2 {
                 &[0, 1, 2, 3, 4, 8]
             } else {
                 &[0, 1, 2, 3, 4]
             };
-            let map = fields(Some(payload), path, required, &[5, 6, 7], true, allow)?;
+            let map = fields(Some(payload), path, required, optional, true, allow)?;
             let relays = as_list(map.get(4), &format!("{path}.4"), 1, MAX_RELAY_BINDINGS)?;
             let mut parsed_relays = Vec::with_capacity(relays.len());
             for (i, item) in relays.iter().enumerate() {
@@ -685,6 +733,16 @@ pub(crate) fn parse_draft(
                 schema_version: schema.envelope,
                 stamp_key: if map.has(8) {
                     Some(account(map.get(8), &format!("{path}.8"))?)
+                } else {
+                    None
+                },
+                profile_entries: if map.has(9) && schema.effective >= 3 {
+                    let items = as_list(map.get(9), &format!("{path}.9"), 1, 64)?;
+                    let mut parsed = Vec::with_capacity(items.len());
+                    for (i, item) in items.iter().enumerate() {
+                        parsed.push(profile_entry(item, &format!("{path}.9[{i}]"), allow)?);
+                    }
+                    Some(parsed)
                 } else {
                     None
                 },

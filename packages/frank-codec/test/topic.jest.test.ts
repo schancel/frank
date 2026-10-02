@@ -252,7 +252,10 @@ describe('the corpus written before #136', () => {
       expect(before.supportedSchemas).toEqual(PRE_TOPIC_SCHEMAS)
       const after = {
         ...before,
-        supportedSchemas: defaultContext().supportedSchemas,
+        supportedSchemas: [
+          ...PRE_TOPIC_SCHEMAS,
+          ...[9, 10, 11].map(typeId => ({ typeId, schemaVersion: 1 })),
+        ],
       }
       const run = (ctx: typeof before): string => {
         try {

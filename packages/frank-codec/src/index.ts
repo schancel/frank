@@ -24,13 +24,31 @@ export {
   commonTranscript,
   contentHash,
   contentHashNetwork,
+  directorySignatureDigest,
   fromHex,
+  keyTransitionSignatureDigest,
   messageContentDigest,
   paymentCommitment,
   recipientPayloadDigest,
   toHex,
   topicVoteCommitment,
 } from './hash'
+export {
+  addressFromCompressedPubkey,
+  addressFromUncompressedPubkey,
+  expiryTimestamp,
+  joinMs,
+  splitMs,
+  splitTimestampMs,
+  uncompressedPubkey,
+  uncompressedPubkeyXy,
+} from './registration'
+export {
+  hasLowS,
+  parseStrictDer,
+  verifyAlgorithm1,
+  verifyDirectoryAttestation,
+} from './verify'
 export { compareAccounts, compareBytes } from './semantic'
 export type { TopicPostFields, TopicVoteDirection } from './topic'
 export {

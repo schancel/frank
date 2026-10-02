@@ -162,6 +162,30 @@ pub struct RelayBinding {
     pub unknown: Vec<(u64, CborValue)>,
 }
 
+/// One header of a profile entry (M4): the protobuf name/value set as a C11-sorted list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProfileHeader {
+    /// Header name.
+    pub name: String,
+    /// Header value.
+    pub value: String,
+    /// Fields kept under V6.3.
+    pub unknown: Vec<(u64, CborValue)>,
+}
+
+/// One migrated AddressEntry (M4). Authored array order is preserved, never resorted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProfileEntry {
+    /// The wallet's entry-type hint, consumer-interpreted.
+    pub kind: String,
+    /// The entry headers, ordered bytewise by name (C11).
+    pub headers: Vec<ProfileHeader>,
+    /// Exact body bytes.
+    pub body: Vec<u8>,
+    /// Fields kept under V6.3.
+    pub unknown: Vec<(u64, CborValue)>,
+}
+
 /// One key-transition entry after its type-7 frame has been opened.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeyTransition {
@@ -269,6 +293,8 @@ pub enum TypedPayload {
         schema_version: u32,
         /// Field 8, the stamp key `P'` (S10a.1): required in schema 2, undefined in schema 1.
         stamp_key: Option<AccountRef>,
+        /// Field 9, the migrated profile entries (M4): absent when empty. Schema 3 only.
+        profile_entries: Option<Vec<ProfileEntry>>,
         /// V6.3 unknown fields.
         unknown: Vec<(u64, CborValue)>,
     },

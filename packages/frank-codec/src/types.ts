@@ -1,4 +1,5 @@
-// Typed projections of the payload schemas in docs/protocol/cbor/*.cddl (schema version 1).
+// Typed projections of the payload schemas in docs/protocol/cbor/*.cddl (schema version 1,
+// type-4 schemas 1-3).
 //
 // `F` is the representation of a required-type framed field (the opened child frame once
 // validated, raw bytes in a draft) and `C` that of an open-field child.
@@ -36,6 +37,21 @@ export interface RelayBinding {
   endpoint: string
   identity: AccountRef
   expiry: Timestamp
+  unknownFields: UnknownFields
+}
+
+/** One header of a profile entry (M4): the protobuf name/value set as a C11-sorted list. */
+export interface ProfileHeader {
+  name: string
+  value: string
+  unknownFields: UnknownFields
+}
+
+/** One migrated AddressEntry (M4): authored array order is preserved, never resorted. */
+export interface ProfileEntry {
+  kind: string
+  headers: ProfileHeader[]
+  body: Uint8Array
   unknownFields: UnknownFields
 }
 
@@ -107,8 +123,10 @@ export interface DirectoryStatement<F> {
   recoveryAuthorities?: AccountRef[]
   /** The frame's envelope `schema_version`, kept for the S10a.2 same-subject schema order. */
   schemaVersion: number
-  /** Field 8, the stamp key `P'` (S10a.1). Required in schema 2, undefined in schema 1. */
+  /** Field 8, the stamp key `P'` (S10a.1). Required from schema 2, undefined in schema 1. */
   stampKey?: AccountRef
+  /** Field 9, the migrated profile entries (M4); absent when empty. Schema 3 only. */
+  profileEntries?: ProfileEntry[]
   unknownFields: UnknownFields
 }
 

@@ -26,6 +26,7 @@ export type ErrorStage =
   | '8.3'
   | '8.4'
   | '9'
+  | '10.6'
   | 'cbor'
 
 /** Which CBOR pass raised the error, when the failure is a CBOR-stage failure. */

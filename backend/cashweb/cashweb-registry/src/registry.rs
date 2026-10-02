@@ -1294,6 +1294,31 @@ impl Registry {
         self.db.monad_profiles().get_cbor(&address)
     }
 
+    /// Read and fully validate an opt-in candidate CBOR frame before exposing its exact bytes.
+    /// RocksDB access and signature verification both run off the async runtime's worker threads.
+    pub async fn get_validated_monad_profile_cbor(
+        self: &Arc<Self>,
+        address: Address,
+    ) -> Result<Option<Vec<u8>>> {
+        let registry = Arc::clone(self);
+        tokio::task::spawn_blocking(move || {
+            let raw = match registry.db.monad_profiles().get_cbor(&address)? {
+                Some(raw) => raw,
+                None => return Ok(None),
+            };
+            verify_cbor_account_registration(
+                address,
+                registry.expected_cbor_network(),
+                &raw,
+                frank_cbor::PriorStatement::None,
+            )
+            .map_err(|err| DbMonadProfilesError::InvalidStoredCborRegistration(err.to_string()))?;
+            Ok(Some(raw))
+        })
+        .await
+        .map_err(|err| MonadProfileWorkerFailed(err.to_string()))?
+    }
+
     /// Read the registered public key from the legacy protobuf profile. Candidate CBOR records
     /// stay opt-in and cannot authorize live mailbox behavior before ticket #133.
     pub fn get_monad_profile_pubkey(&self, address: Address) -> Result<Option<Vec<u8>>> {

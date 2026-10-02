@@ -1602,3 +1602,96 @@ async fn malformed_stored_cbor_fails_update_without_rewriting_bytes() {
         assert_eq!(read_candidate_cbor(tempdir.path(), address), stored);
     }
 }
+
+#[tokio::test]
+async fn cbor_get_aliases_validate_stored_registration_before_serving_bytes() {
+    let key = seckey(28);
+    let (valid, address, original_statement) =
+        build_cbor_attestation(&key, "monad-testnet", 100, 100, 1000, None, None, 1);
+    let (mut bad_signature, _, _) =
+        build_cbor_attestation(&key, "monad-testnet", 100, 100, 1000, None, None, 1);
+    *bad_signature.last_mut().unwrap() ^= 0x01;
+    let (_, _, tampered_statement) =
+        build_cbor_attestation(&key, "monad-testnet", 101, 101, 1000, None, None, 1);
+    let stale_signature = wrap_statement_with_signature_over(
+        &key,
+        "monad-testnet",
+        tampered_statement,
+        &original_statement,
+    );
+    let (wrong_subject, _, _) =
+        build_cbor_attestation(&seckey(27), "monad-testnet", 100, 100, 1000, None, None, 1);
+    let (wrong_network, _, _) =
+        build_cbor_attestation(&key, "monad-mainnet", 100, 100, 1000, None, None, 1);
+    let (m2_mismatch, _, _) =
+        build_cbor_attestation(&key, "monad-testnet", 101, 100, 1000, None, None, 1);
+
+    for (case, stored) in [
+        ("malformed", b"stored-but-malformed".to_vec()),
+        ("bad-signature", bad_signature),
+        ("stale-signature", stale_signature),
+        ("wrong-subject", wrong_subject),
+        ("wrong-network", wrong_network),
+        ("m2-mismatch", m2_mismatch),
+    ] {
+        let tempdir =
+            tempdir::TempDir::new(&format!("cashweb-registry--validated-cbor-get-{case}")).unwrap();
+        drop(open_registry(tempdir.path(), Net::Regtest));
+        overwrite_candidate_cbor(tempdir.path(), address, &stored);
+        let router = make_server(open_registry(tempdir.path(), Net::Regtest)).into_router();
+
+        for uri in [
+            format!("/metadata/{}", address.to_hex()),
+            format!("/metadata/monad/{}", address.to_hex()),
+        ] {
+            let response = router
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(uri)
+                        .header("Accept", CONTENT_TYPE_CBOR)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "{case}"
+            );
+            let body = hyper::body::to_bytes(response.into_body()).await.unwrap();
+            assert_ne!(body.as_ref(), stored.as_slice(), "{case} must never echo");
+        }
+    }
+
+    let tempdir = tempdir::TempDir::new("cashweb-registry--validated-cbor-get-valid").unwrap();
+    drop(open_registry(tempdir.path(), Net::Regtest));
+    overwrite_candidate_cbor(tempdir.path(), address, &valid);
+    let router = make_server(open_registry(tempdir.path(), Net::Regtest)).into_router();
+    for uri in [
+        format!("/metadata/{}", address.to_hex()),
+        format!("/metadata/monad/{}", address.to_hex()),
+    ] {
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(uri)
+                    .header("Accept", CONTENT_TYPE_CBOR)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(CONTENT_TYPE).unwrap(),
+            CONTENT_TYPE_CBOR
+        );
+        assert_eq!(
+            hyper::body::to_bytes(response.into_body()).await.unwrap(),
+            valid
+        );
+    }
+}

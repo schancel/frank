@@ -563,7 +563,7 @@ async fn handle_get_registry(
         let (raw, content_type) = if header_map.get(header::ACCEPT).map(HeaderValue::as_bytes)
             == Some(b"application/cbor")
         {
-            let raw = fetch_profile_cbor_or_not_found(&server.registry, monad_address)?;
+            let raw = fetch_profile_cbor_or_not_found(&server.registry, monad_address).await?;
             (raw, "application/cbor")
         } else {
             let signed = fetch_profile_or_not_found(&server.registry, monad_address)?;

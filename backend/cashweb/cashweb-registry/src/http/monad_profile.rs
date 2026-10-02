@@ -253,7 +253,7 @@ pub async fn handle_get_monad_profile(
     let address = parse_addr(&address)?;
     let (raw, content_type) = if explicitly_accepts_cbor(&headers) {
         (
-            fetch_profile_cbor_or_not_found(&server.registry, address)?,
+            fetch_profile_cbor_or_not_found(&server.registry, address).await?,
             "application/cbor",
         )
     } else {
@@ -280,12 +280,13 @@ pub(crate) fn fetch_profile_or_not_found(
         .ok_or(ProfileNotFound(address))?)
 }
 
-pub(crate) fn fetch_profile_cbor_or_not_found(
-    registry: &Registry,
+pub(crate) async fn fetch_profile_cbor_or_not_found(
+    registry: &std::sync::Arc<Registry>,
     address: Address,
 ) -> Result<Vec<u8>> {
     Ok(registry
-        .get_monad_profile_cbor(address)?
+        .get_validated_monad_profile_cbor(address)
+        .await?
         .ok_or(ProfileNotFound(address))?)
 }
 

@@ -3,6 +3,12 @@ use std::fmt;
 use serde::de::{self, Deserialize, Deserializer, MapAccess, SeqAccess, Visitor};
 use serde_json::{Map, Number, Value};
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum JsonRpcVersion {
+    Legacy,
+    V2,
+}
+
 /// Parse JSON while rejecting duplicate object members at every nesting level.
 ///
 /// The proxy forwards the original bytes after policy validation. Rejecting
@@ -28,6 +34,43 @@ pub(crate) fn sanitize_response_errors(value: &mut Value) {
             }
         }
         response => sanitize_response_error(response),
+    }
+}
+
+/// Check the response envelope shape without interpreting opaque result data.
+pub(crate) fn is_response_envelope(value: &Value, version: JsonRpcVersion) -> bool {
+    match value {
+        Value::Array(responses) => {
+            !responses.is_empty()
+                && responses
+                    .iter()
+                    .all(|response| is_single_response_envelope(response, version))
+        }
+        response => is_single_response_envelope(response, version),
+    }
+}
+
+fn is_single_response_envelope(value: &Value, version: JsonRpcVersion) -> bool {
+    let Some(response) = value.as_object() else {
+        return false;
+    };
+    if !response.contains_key("id") {
+        return false;
+    }
+    let has_result = response.contains_key("result");
+    let has_error = response.contains_key("error");
+    match version {
+        JsonRpcVersion::Legacy => {
+            matches!(
+                response.get("jsonrpc").and_then(Value::as_str),
+                None | Some("1.0")
+            ) && has_result
+                && has_error
+        }
+        JsonRpcVersion::V2 => {
+            response.get("jsonrpc").and_then(Value::as_str) == Some("2.0")
+                && (has_result ^ has_error)
+        }
     }
 }
 
@@ -190,5 +233,38 @@ mod tests {
         assert_eq!(error["error"]["message"], "upstream RPC error");
         assert!(error["error"].get("data").is_none());
         assert!(!error.to_string().contains("secret"));
+    }
+
+    #[test]
+    fn validates_single_and_batch_response_envelopes() {
+        assert!(is_response_envelope(
+            &serde_json::json!({"result": 1, "error": null, "id": 7}),
+            JsonRpcVersion::Legacy,
+        ));
+        assert!(is_response_envelope(
+            &serde_json::json!([{
+                "jsonrpc": "2.0",
+                "error": {"code": -1, "message": "rejected"},
+                "id": "a",
+            }]),
+            JsonRpcVersion::V2,
+        ));
+        assert!(!is_response_envelope(
+            &serde_json::json!({"result": 1, "error": null, "id": 7}),
+            JsonRpcVersion::V2,
+        ));
+        assert!(!is_response_envelope(
+            &serde_json::json!({"jsonrpc": "2.0", "result": 1, "error": null, "id": 7}),
+            JsonRpcVersion::V2,
+        ));
+        assert!(!is_response_envelope(&Value::Null, JsonRpcVersion::Legacy,));
+        assert!(!is_response_envelope(
+            &serde_json::json!({}),
+            JsonRpcVersion::Legacy,
+        ));
+        assert!(!is_response_envelope(
+            &serde_json::json!([]),
+            JsonRpcVersion::Legacy,
+        ));
     }
 }

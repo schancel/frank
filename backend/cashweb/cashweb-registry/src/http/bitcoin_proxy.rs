@@ -45,6 +45,11 @@ struct Chain {
     checkpoint_hash: String,
 }
 
+struct UpstreamResponse {
+    status: StatusCode,
+    body: Bytes,
+}
+
 impl fmt::Debug for Chain {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("BitcoinProxyChain")
@@ -188,7 +193,12 @@ impl BitcoinProxyRuntime {
                     .rpc_request(url, serde_json::to_vec(&body).unwrap())
                     .await
                     .map_err(|_| BitcoinProxyStartError::UpstreamUnavailable(chain.id.clone()))?;
-                let actual = serde_json::from_slice::<Value>(&response)
+                if !response.status.is_success() {
+                    return Err(BitcoinProxyStartError::UpstreamUnavailable(
+                        chain.id.clone(),
+                    ));
+                }
+                let actual = serde_json::from_slice::<Value>(&response.body)
                     .ok()
                     .and_then(|v| v.get("result")?.as_str().map(str::to_owned))
                     .ok_or_else(|| BitcoinProxyStartError::UpstreamUnavailable(chain.id.clone()))?;
@@ -223,18 +233,28 @@ impl BitcoinProxyRuntime {
     }
 
     async fn simple_request(&self, request: reqwest::RequestBuilder) -> Result<Bytes, ()> {
+        let response = self.bounded_request(request).await?;
+        if !response.status.is_success() {
+            return Err(());
+        }
+        Ok(response.body)
+    }
+
+    async fn bounded_request(
+        &self,
+        request: reqwest::RequestBuilder,
+    ) -> Result<UpstreamResponse, ()> {
         tokio::time::timeout(self.timeout, async {
             let response = request.send().await.map_err(|_| ())?;
-            if !response.status().is_success() {
-                return Err(());
-            }
-            read_response(response, self.max_response_bytes).await
+            let status = response.status();
+            let body = read_response(response, self.max_response_bytes).await?;
+            Ok(UpstreamResponse { status, body })
         })
         .await
         .map_err(|_| ())?
     }
 
-    async fn rpc_request(&self, url: &Url, body: Vec<u8>) -> Result<Bytes, ()> {
+    async fn rpc_request(&self, url: &Url, body: Vec<u8>) -> Result<UpstreamResponse, ()> {
         let mut request = self
             .client
             .post(url.clone())
@@ -243,7 +263,7 @@ impl BitcoinProxyRuntime {
         if !url.username().is_empty() {
             request = request.basic_auth(url.username(), url.password());
         }
-        self.simple_request(request).await
+        self.bounded_request(request).await
     }
 }
 
@@ -277,7 +297,10 @@ fn parse_customer(headers: &HeaderMap) -> Result<Option<Address>, RpcRejection> 
         .transpose()
 }
 
-fn validate_rpc(body: &[u8], max: usize) -> Result<(u32, bool), RpcRejection> {
+fn validate_rpc(
+    body: &[u8],
+    max: usize,
+) -> Result<(u32, bool, super::json_rpc::JsonRpcVersion), RpcRejection> {
     if body.is_empty() || body.len() > max {
         return Err(rpc_error(
             StatusCode::PAYLOAD_TOO_LARGE,
@@ -293,11 +316,23 @@ fn validate_rpc(body: &[u8], max: usize) -> Result<(u32, bool), RpcRejection> {
     };
     let mut units = 0u32;
     let mut only_send = calls.len() == 1;
+    let mut version = None;
     for call in calls {
         let obj = call
             .as_object()
             .ok_or_else(|| rpc_error(StatusCode::BAD_REQUEST, "invalid_json_rpc"))?;
         if !obj.contains_key("id") {
+            return Err(rpc_error(StatusCode::BAD_REQUEST, "invalid_json_rpc"));
+        }
+        let call_version = match obj.get("jsonrpc").and_then(Value::as_str) {
+            None | Some("1.0") => super::json_rpc::JsonRpcVersion::Legacy,
+            Some("2.0") => super::json_rpc::JsonRpcVersion::V2,
+            Some(_) => return Err(rpc_error(StatusCode::BAD_REQUEST, "invalid_json_rpc")),
+        };
+        if version
+            .replace(call_version)
+            .is_some_and(|v| v != call_version)
+        {
             return Err(rpc_error(StatusCode::BAD_REQUEST, "invalid_json_rpc"));
         }
         let method = obj
@@ -330,7 +365,7 @@ fn validate_rpc(body: &[u8], max: usize) -> Result<(u32, bool), RpcRejection> {
             1
         });
     }
-    Ok((units, only_send))
+    Ok((units, only_send, version.expect("non-empty calls")))
 }
 
 fn peer_ip(peer: Option<ConnectInfo<SocketAddr>>) -> Result<IpAddr, RpcRejection> {
@@ -411,7 +446,7 @@ pub(crate) async fn proxy_rpc(
         .get(&chain_id)
         .filter(|c| c.rpc.is_some())
         .ok_or_else(|| rpc_error(StatusCode::NOT_FOUND, "unknown_rpc_chain"))?;
-    let (_units, send_only) = validate_rpc(&body, runtime.max_request_bytes)?;
+    let (_units, send_only, version) = validate_rpc(&body, runtime.max_request_bytes)?;
     let anonymous_ip = if let Some(customer) = parse_customer(&headers)? {
         authenticate(
             &headers,
@@ -440,16 +475,33 @@ pub(crate) async fn proxy_rpc(
             .charge(ip, 1, unix_seconds())
             .ok_or_else(|| rpc_error(StatusCode::TOO_MANY_REQUESTS, "rpc_hourly_quota"))?;
     }
-    let bytes = runtime
+    let upstream = runtime
         .rpc_request(chain.rpc.as_ref().unwrap(), body.to_vec())
         .await
         .map_err(|_| rpc_error(StatusCode::BAD_GATEWAY, "rpc_upstream_unavailable"))?;
-    let mut value = serde_json::from_slice::<Value>(&bytes)
+    let mut value = super::json_rpc::parse_without_duplicate_keys(&upstream.body)
         .map_err(|_| rpc_error(StatusCode::BAD_GATEWAY, "invalid_rpc_upstream_response"))?;
+    if version == super::json_rpc::JsonRpcVersion::V2 && upstream.status != StatusCode::OK {
+        return Err(rpc_error(
+            StatusCode::BAD_GATEWAY,
+            "rpc_upstream_unavailable",
+        ));
+    }
+    if !super::json_rpc::is_response_envelope(&value, version) {
+        return Err(rpc_error(
+            StatusCode::BAD_GATEWAY,
+            "invalid_rpc_upstream_response",
+        ));
+    }
     crate::http::json_rpc::sanitize_response_errors(&mut value);
     let bytes = serde_json::to_vec(&value)
         .map_err(|_| rpc_error(StatusCode::BAD_GATEWAY, "invalid_rpc_upstream_response"))?;
     Ok((
+        if version == super::json_rpc::JsonRpcVersion::V2 {
+            StatusCode::OK
+        } else {
+            upstream.status
+        },
         [(axum::http::header::CONTENT_TYPE, "application/json")],
         bytes,
     )
@@ -665,13 +717,22 @@ pub(crate) async fn proxy_chronik(
             .header(reqwest::header::CONTENT_TYPE, "application/x-protobuf")
             .body(body.to_vec())
     };
-    let bytes = runtime
-        .simple_request(request)
+    let upstream = runtime
+        .bounded_request(request)
         .await
         .map_err(|_| rpc_error(StatusCode::BAD_GATEWAY, "rpc_upstream_unavailable"))?;
+    let body = if upstream.status.is_success() {
+        upstream.body
+    } else {
+        let mut error = proto::Error::decode(upstream.body.as_ref())
+            .map_err(|_| rpc_error(StatusCode::BAD_GATEWAY, "invalid_rpc_upstream_response"))?;
+        error.msg = "upstream Chronik error".to_string();
+        error.encode_to_vec().into()
+    };
     Ok((
+        upstream.status,
         [(axum::http::header::CONTENT_TYPE, "application/x-protobuf")],
-        bytes,
+        body,
     )
         .into_response())
 }
@@ -688,9 +749,20 @@ mod tests {
     #[test]
     fn node_rpc_allows_only_bounded_reads_and_anonymous_single_broadcast() {
         let read = br#"{"jsonrpc":"1.0","id":1,"method":"getblockhash","params":[1]}"#;
-        assert_eq!(validate_rpc(read, 1024).unwrap(), (1, false));
+        assert_eq!(
+            validate_rpc(read, 1024).unwrap(),
+            (1, false, crate::http::json_rpc::JsonRpcVersion::Legacy)
+        );
         let send = br#"{"jsonrpc":"1.0","id":1,"method":"sendrawtransaction","params":["00"]}"#;
-        assert_eq!(validate_rpc(send, 1024).unwrap(), (10, true));
+        assert_eq!(
+            validate_rpc(send, 1024).unwrap(),
+            (10, true, crate::http::json_rpc::JsonRpcVersion::Legacy)
+        );
+        let v2 = br#"{"jsonrpc":"2.0","id":1,"method":"getblockhash","params":[1]}"#;
+        assert_eq!(
+            validate_rpc(v2, 1024).unwrap(),
+            (1, false, crate::http::json_rpc::JsonRpcVersion::V2)
+        );
         let denied = br#"{"jsonrpc":"1.0","id":1,"method":"dumpprivkey","params":[]}"#;
         assert!(validate_rpc(denied, 1024).is_err());
         let anonymous_batch = format!(
@@ -699,6 +771,12 @@ mod tests {
             String::from_utf8_lossy(send)
         );
         assert!(!validate_rpc(anonymous_batch.as_bytes(), 1024).unwrap().1);
+        let mixed_versions = format!(
+            "[{},{}]",
+            String::from_utf8_lossy(read),
+            String::from_utf8_lossy(v2)
+        );
+        assert!(validate_rpc(mixed_versions.as_bytes(), 1024).is_err());
     }
 
     #[test]

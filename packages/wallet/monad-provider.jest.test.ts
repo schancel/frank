@@ -5,6 +5,7 @@ import {
   DEFAULT_MONAD_CHAIN_ID,
   MonadJsonRpcProvider,
   createMonadJsonRpcProvider,
+  createMonadRelayRpcConnection,
 } from "./monad-provider";
 
 describe("MonadJsonRpcProvider (#534)", () => {
@@ -12,6 +13,7 @@ describe("MonadJsonRpcProvider (#534)", () => {
   let rpcUrl: string;
   let requestCount = 0;
   let requestMethods: string[] = [];
+  let batchSizes: number[] = [];
   let statusCode = 200;
   let chainIdHex = "0x279f"; // 10143
   let balanceHex = "0x2a"; // 42
@@ -19,6 +21,7 @@ describe("MonadJsonRpcProvider (#534)", () => {
   beforeEach(async () => {
     requestCount = 0;
     requestMethods = [];
+    batchSizes = [];
     statusCode = 200;
     chainIdHex = "0x279f";
     balanceHex = "0x2a";
@@ -39,6 +42,7 @@ describe("MonadJsonRpcProvider (#534)", () => {
         try {
           const payload = JSON.parse(body);
           const items = Array.isArray(payload) ? payload : [payload];
+          batchSizes.push(items.length);
           const responses = items.map((item) => {
             requestMethods.push(item.method);
             if (item.method === "eth_chainId") {
@@ -142,7 +146,25 @@ describe("MonadJsonRpcProvider (#534)", () => {
     }
   });
 
-  it("signs a request-bound relay challenge for customer-only RPC methods", async () => {
+  it("keeps client batches within the relay default", async () => {
+    const provider = createMonadJsonRpcProvider({ rpcUrl });
+    try {
+      await Promise.all(
+        Array.from({ length: 21 }, (_, index) =>
+          provider.send("eth_getBalance", [
+            `0x${(index + 1).toString(16).padStart(40, "0")}`,
+            "latest",
+          ])
+        )
+      );
+      expect(Math.max(...batchSizes)).toBeLessThanOrEqual(20);
+      expect(batchSizes.reduce((sum, size) => sum + size, 0)).toBe(21);
+    } finally {
+      provider.destroy();
+    }
+  });
+
+  it("uses customer accounting for methods that also permit anonymous access", async () => {
     const customer = `0x${"12".repeat(20)}`;
     const signedDigests: Uint8Array[] = [];
     let challengeBody = "";
@@ -205,8 +227,8 @@ describe("MonadJsonRpcProvider (#534)", () => {
       },
     });
     try {
-      await provider.send("eth_call", [
-        { to: `0x${"34".repeat(20)}`, data: "0x" },
+      await provider.send("eth_getBalance", [
+        `0x${"34".repeat(20)}`,
         "latest",
       ]);
       expect(challengeBody).toBe(authenticatedBody);
@@ -220,6 +242,68 @@ describe("MonadJsonRpcProvider (#534)", () => {
     } finally {
       provider.destroy();
     }
+  });
+
+  it("does not internally retry a fixed-hour relay quota response", async () => {
+    const customer = `0x${"12".repeat(20)}`;
+    let challengeRequests = 0;
+    let rpcRequests = 0;
+
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    server = createServer((req, res) => {
+      let body = "";
+      req.on("data", (chunk) => (body += chunk));
+      req.on("end", () => {
+        if (req.url?.endsWith("/auth")) {
+          challengeRequests++;
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(
+            JSON.stringify({
+              epoch: "11".repeat(32),
+              nonce: "22".repeat(32),
+              expires_at_ms: Date.now() + 60_000,
+              token: "33".repeat(32),
+              signing_domain: "frank:rpc-http-auth:v1",
+              customer,
+              chain: "monad-testnet",
+              body_sha256: createHash("sha256").update(body).digest("hex"),
+              network_tag: Buffer.from("MONT").toString("hex"),
+            })
+          );
+          return;
+        }
+        rpcRequests++;
+        res.writeHead(429, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "rpc_hourly_quota" }));
+      });
+    });
+    await new Promise<void>((resolve) => {
+      server.listen(0, "127.0.0.1", () => {
+        rpcUrl = `http://127.0.0.1:${
+          (server.address() as AddressInfo).port
+        }/chain-rpc/monad-testnet/rpc`;
+        resolve();
+      });
+    });
+
+    const request = createMonadRelayRpcConnection(rpcUrl, {
+      chain: "monad-testnet",
+      customer,
+      networkTag: "MONT",
+      signDigest: () =>
+        Uint8Array.from([0x30, 0x06, 0x02, 0x01, 0x01, 0x02, 0x01, 0x01]),
+    });
+    request.body = JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "eth_getBalance",
+      params: [`0x${"34".repeat(20)}`, "latest"],
+    });
+    request.setHeader("content-type", "application/json");
+    const response = await request.send();
+    expect(response.statusCode).toBe(429);
+    expect(challengeRequests).toBe(1);
+    expect(rpcRequests).toBe(1);
   });
 
   it("recovers promptly when RPC becomes healthy", async () => {

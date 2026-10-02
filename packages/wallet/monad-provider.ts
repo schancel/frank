@@ -42,19 +42,6 @@ interface RelayRpcChallenge {
 }
 
 const RELAY_RPC_AUTH_DOMAIN = "frank:rpc-http-auth:v1";
-const ANONYMOUS_RPC_METHODS = new Set([
-  "eth_chainId",
-  "eth_blockNumber",
-  "eth_getBalance",
-  "eth_getTransactionCount",
-  "eth_gasPrice",
-  "eth_feeHistory",
-  "eth_maxPriorityFeePerGas",
-  "eth_getTransactionByHash",
-  "eth_getTransactionReceipt",
-  "eth_sendRawTransaction",
-]);
-
 function u32be(value: number): Uint8Array {
   const bytes = new Uint8Array(4);
   new DataView(bytes.buffer).setUint32(0, value, false);
@@ -63,34 +50,6 @@ function u32be(value: number): Uint8Array {
 
 function bareHex(bytes: Uint8Array): string {
   return hexlify(bytes).slice(2);
-}
-
-function rpcMethods(body: Uint8Array): string[] | undefined {
-  try {
-    const parsed: unknown = JSON.parse(new TextDecoder().decode(body));
-    const calls = Array.isArray(parsed) ? parsed : [parsed];
-    if (calls.length === 0) return undefined;
-    const methods = calls.map((call) =>
-      call !== null && typeof call === "object" && "method" in call
-        ? (call as { method?: unknown }).method
-        : undefined
-    );
-    return methods.every(
-      (method): method is string => typeof method === "string"
-    )
-      ? methods
-      : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-function needsCustomerAuth(body: Uint8Array): boolean {
-  const methods = rpcMethods(body);
-  return (
-    methods !== undefined &&
-    methods.some((method) => !ANONYMOUS_RPC_METHODS.has(method))
-  );
 }
 
 function validateChallenge(
@@ -156,13 +115,18 @@ export function createMonadRelayRpcConnection(
   auth: MonadRelayRpcAuth
 ): FetchRequest {
   const connection = new FetchRequest(rpcUrl);
+  // A fixed-hour quota cannot recover during ethers' short automatic 429
+  // retry window. Return ownership of retry timing to the application.
+  connection.retryFunc = async () => false;
   connection.preflightFunc = async (request) => {
     const body = request.body;
-    if (body === null || !needsCustomerAuth(body)) return request;
+    if (body === null) return request;
 
     const bodyHash = bareHex(getBytes(sha256(body)));
     const challengeRequest = new FetchRequest(`${rpcUrl}/auth`);
     challengeRequest.body = body;
+    challengeRequest.timeout = request.timeout;
+    challengeRequest.retryFunc = async () => false;
     challengeRequest.setHeader("content-type", "application/json");
     challengeRequest.setHeader("x-frank-rpc-customer", auth.customer);
     const response = await challengeRequest.send();
@@ -226,6 +190,8 @@ export class MonadJsonRpcProvider extends JsonRpcProvider {
         : url;
     super(connection, chainId, {
       ...providerOptions,
+      batchMaxCount: providerOptions.batchMaxCount ?? 20,
+      batchMaxSize: providerOptions.batchMaxSize ?? 256 * 1024,
       staticNetwork: true,
     });
 

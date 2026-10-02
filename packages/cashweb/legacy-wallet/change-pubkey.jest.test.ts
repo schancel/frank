@@ -78,7 +78,8 @@ it('matches bitcore change public keys and the 25-byte P2PKH script', () => {
     join(__dirname, '../relay/index.ts'),
     'utf8',
   )
-  expect(relay).toContain('changeKey.privKey.toPublicKey()')
+  expect(relay).toContain('relayChangeAddressPublicKey(')
+  expect(relay).not.toContain('changeKey.privKey.toPublicKey()')
   expect(source).toContain('Script.buildPublicKeyHashOut(')
 
   const helper = readFileSync(join(__dirname, 'change-pubkey.ts'), 'utf8')

@@ -17,6 +17,7 @@ import { outpointPrivateKey } from './outpoint-hd'
 import { stampOutpointPublicKey } from './stamp-outpoint-pub'
 import { stampParentSecret } from './stamp-parent'
 import { readStampTransaction } from './stamp-tx'
+import { relayChangeAddressPublicKey } from './change-address-pubkey'
 import { arrayBufferToBase64 } from './images'
 
 import { PayloadConstructor } from './crypto'
@@ -303,12 +304,26 @@ export class RelayClient extends ReadOnlyRelayClient {
     const message = await this.messageStore.getMessage(digest)
     assert(message, 'message not found?')
 
-    // Send utxos to a change address
+    // Send utxos to a change address. SEC1 point from publicFromPrivate
+    // (decision #583). forwardUTXOsToPubkey still takes a bitcore PublicKey.
     const randomChangeIdx = (this.wallet.changeKeys.length * Math.random()) << 0
     const changeKey = this.wallet.changeKeys[randomChangeIdx]
+    const compressed = (
+      changeKey.privKey as unknown as { compressed?: boolean }
+    ).compressed
+    if (compressed !== true && compressed !== false) {
+      throw new Error('change-address-pubkey:compressed')
+    }
     await this.wallet.forwardUTXOsToPubkey({
       utxos: message.message.outpoints,
-      pubkey: changeKey.privKey.toPublicKey(),
+      pubkey: new PublicKey(
+        Buffer.from(
+          relayChangeAddressPublicKey(
+            Uint8Array.from(changeKey.privKey.toBuffer()),
+            compressed,
+          ),
+        ),
+      ),
     })
     assert(this.wallet.myAddress, 'Missing address? Wallet not loaded.')
     const url = `${this.url}/messages/${this.toAPIAddress(

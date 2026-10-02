@@ -31,6 +31,8 @@ const SAME_IN_FRENCH = new Set([
   'contactBookDialog.contacts',
   'chatRightDrawer.notifications',
   'transactionDialog.txType',
+  'createPost.url',
+  'createPost.message',
 ])
 
 const placeholders = (text: string) =>

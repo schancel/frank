@@ -76,14 +76,14 @@
             no-caps
             icon="forum"
             class="q-ml-md"
-            :label="`${message.replies.length} replies`"
+            :label="repliesLabel"
             :to="`/forum/${message.payloadDigest}`"
           />
           <q-btn
             flat
             no-caps
             icon="reply"
-            label="Reply"
+            :label="$t('forum.reply')"
             class="q-ml-sm"
             :to="`/new-post/${message.payloadDigest}`"
           />
@@ -94,7 +94,9 @@
           v-if="showParent && parentDigest && parentMessage"
           class="q-pa-none"
         >
-          <q-card-section class="q-pa-sm">In reply to:</q-card-section>
+          <q-card-section class="q-pa-sm">{{
+            $t('forum.inReplyTo')
+          }}</q-card-section>
           <forum-message
             v-bind="$attrs"
             class="q-ma-none"
@@ -229,6 +231,12 @@ export default defineComponent({
     },
   },
   computed: {
+    repliesLabel(): string {
+      const count = this.message?.replies.length ?? 0
+      return count === 1
+        ? this.$t('forum.repliesOne', { count })
+        : this.$t('forum.repliesOther', { count })
+    },
     timestamp() {
       if (!this.message) {
         return ''

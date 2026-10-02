@@ -27,8 +27,6 @@ const BASELINE: Record<string, number> = {
   'components/chat/messages/ChatMessageRaffle.vue': 9,
   'components/context_menus/ChatMessageMenu.vue': 6,
   'components/dialogs/RelayConnectDialog.vue': 3,
-  'components/forum/ForumMessage.vue': 2,
-  'components/forum/ForumPost.vue': 1,
   'components/panels/ForumDrawer.vue': 6,
   'components/panels/LeftDrawer.vue': 1,
   'components/setup/DepositStep.vue': 2,
@@ -40,7 +38,6 @@ const BASELINE: Record<string, number> = {
   'layouts/ForumLayout.vue': 1,
   'pages/AddContact.vue': 2,
   'pages/Chat.vue': 1,
-  'pages/CreatePost.vue': 10,
   'pages/Topic.vue': 1,
 }
 

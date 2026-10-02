@@ -4,6 +4,29 @@
 export default {
   forum: {
     noPosts: 'Aucun message pour le moment.',
+    commentsOne: '{count} commentaire',
+    commentsOther: '{count} commentaires',
+    repliesOne: '{count} réponse',
+    repliesOther: '{count} réponses',
+    reply: 'Répondre',
+    inReplyTo: 'En réponse à :',
+  },
+  createPost: {
+    offering: 'Offre',
+    topic: 'Sujet',
+    postTitle: 'Titre de la publication',
+    url: 'URL',
+    message: 'Message',
+    messagePreview: 'Aperçu du message',
+    noResults: 'Aucun résultat',
+    replyingTo: 'Réponse à :',
+    back: 'Retour',
+    post: 'Publier',
+    invalidNumber: 'Nombre invalide',
+    topicCharsRule:
+      'Seuls les chiffres, les lettres minuscules, les points et les tirets sont autorisés',
+    topicEmptySegment: 'Les segments du sujet ne peuvent pas être vides',
+    invalidUrl: 'URL invalide',
   },
   agree: "D'accord",
   chat: {

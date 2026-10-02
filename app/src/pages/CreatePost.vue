@@ -38,14 +38,16 @@
     <q-form @submit="post">
       <q-card-section>
         <q-input
-          label="Offering"
+          :label="$t('createPost.offering')"
           v-model="offering"
           :suffix="chainUnit"
-          :rules="[val => Number.parseFloat(val) || 'Invalid number']"
+          :rules="[
+            val => Number.parseFloat(val) || $t('createPost.invalidNumber'),
+          ]"
           lazy-rules
         />
         <q-select
-          label="Topic"
+          :label="$t('createPost.topic')"
           :disable="!!parentDigest"
           :model-value="topic"
           @update:model-value="setTopic"
@@ -59,24 +61,28 @@
           :rules="[
             val =>
               (val && val.length > 0 && /^[a-z0-9.-]+$/.test(val)) ||
-              'Only numbers, lowercase, periods and dashes allowed',
+              $t('createPost.topicCharsRule'),
             val =>
               !val.split('.').some(val => val.length === 0) ||
-              'Topic segments not allowed to be empty',
+              $t('createPost.topicEmptySegment'),
           ]"
           lazy-rules
         >
           <template #no-option>
             <q-item>
-              <q-item-section class="text-grey">No results</q-item-section>
+              <q-item-section class="text-grey">{{
+                $t('createPost.noResults')
+              }}</q-item-section>
             </q-item>
           </template>
         </q-select>
-        <q-input label="Post Title" v-model="title" />
+        <q-input :label="$t('createPost.postTitle')" v-model="title" />
         <q-input
-          label="URL"
+          :label="$t('createPost.url')"
           v-model="url"
-          :rules="[val => !val || validateUrl(val) || 'Invalid URL']"
+          :rules="[
+            val => !val || validateUrl(val) || $t('createPost.invalidUrl'),
+          ]"
           lazy-rules
         />
         <!-- Ticket feedback (real, direct): the side-by-side Message/Preview split used Quasar's
@@ -84,11 +90,17 @@
         card's own width -- so it went side-by-side even when the card itself was narrow, squeezing
         both halves uncomfortably. Stacked vertically instead, always, regardless of viewport. -->
         <q-card-section class="col-12 q-pa-none">
-          <q-input label="Message" v-model="message" type="textarea" />
+          <q-input
+            :label="$t('createPost.message')"
+            v-model="message"
+            type="textarea"
+          />
         </q-card-section>
 
         <q-card-section class="col-12 q-pa-none q-pt-md" v-show="this.message">
-          <div class="text-weight-bold text-caption">Message Preview</div>
+          <div class="text-weight-bold text-caption">
+            {{ $t('createPost.messagePreview') }}
+          </div>
           <q-card-section class="q-pa-none q-pt-xs">
             <span class="mdstyle" v-html="markedMessage" />
           </q-card-section>
@@ -114,14 +126,14 @@
         <q-btn
           ref="composeFocusTarget"
           @click="back"
-          label="back"
+          :label="$t('createPost.back')"
           color="negative"
           class="q-ma-sm"
           data-test="compose-focus-target"
         />
         <q-btn
           type="submit"
-          label="Post"
+          :label="$t('createPost.post')"
           color="primary"
           class="q-ma-sm"
           :disable="
@@ -134,7 +146,7 @@
   </q-card>
 
   <q-card class="q-ma-sm" v-if="parentMessage">
-    <q-card-section>Replying to:</q-card-section>
+    <q-card-section>{{ $t('createPost.replyingTo') }}</q-card-section>
     <a-message :message="parentMessage" :show-replies="false" :compact="true" />
   </q-card>
 </template>

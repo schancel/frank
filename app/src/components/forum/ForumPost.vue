@@ -85,7 +85,7 @@
             stretch
             dense
             class="q-pa-none q-ma-none"
-            :label="`${message.replies.length} comments`"
+            :label="commentsLabel"
             :to="`/forum/${message.payloadDigest}`"
           />
           <q-btn
@@ -94,7 +94,7 @@
             stretch
             dense
             class="q-pa-none q-ma-none"
-            label="reply"
+            :label="$t('forum.reply')"
             :to="`/new-post/${message.payloadDigest}`"
           />
         </q-card-actions>
@@ -225,6 +225,12 @@ export default defineComponent({
     },
   },
   computed: {
+    commentsLabel(): string {
+      const count = this.message?.replies.length ?? 0
+      return count === 1
+        ? this.$t('forum.commentsOne', { count })
+        : this.$t('forum.commentsOther', { count })
+    },
     timestamp() {
       if (!this.message) {
         return ''

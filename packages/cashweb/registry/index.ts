@@ -12,10 +12,10 @@ import {
   Address,
   Networks,
   PrivateKey,
-  Transaction,
   PublicKey,
 } from 'bitcore-lib-xpi'
-import { pondBurnOutputSatoshis, pondBurnScript } from './burn-script'
+import { pondBurnOutputSatoshis } from './burn-script'
+import { registryBurnOutput } from './burn-output'
 import { registryIdentityPublicKey } from './identity-pubkey'
 import {
   cryptoBackend,
@@ -312,17 +312,11 @@ export class RegistryHandler {
   }
 
   private constructBurnTransaction(wallet: Wallet, hash: Buffer, vote: number) {
-    const upvote = vote > 0
-    const satoshis = vote < 0 ? -vote : vote
-
-    // Create burn output. Bytes match bitcore Script.add (decision #519).
-    const script = Buffer.from(pondBurnScript(Uint8Array.from(hash), upvote))
-
-    const output = new Transaction.Output({
-      script,
-      satoshis,
+    // Script bytes stay pondBurnScript (decision #519). The record is
+    // paymentOutput (decision #596), not Transaction.Output.
+    return wallet.constructTransaction({
+      outputs: [registryBurnOutput(Uint8Array.from(hash), vote)],
     })
-    return wallet.constructTransaction({ outputs: [output] })
   }
 
   async createBroadcast(

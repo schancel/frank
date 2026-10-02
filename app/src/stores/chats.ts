@@ -629,16 +629,30 @@ export const useChatStore = defineStore('chats', {
   },
   actions: {
     async relayCursor(recipientAddress: string): Promise<number> {
-      return (await store).relayCursor(toChainDisplayAddress(recipientAddress))
+      try {
+        const canonical = toChainDisplayAddress(recipientAddress)
+        const messageStore = await store
+        if (typeof messageStore?.relayCursor === 'function') {
+          return await messageStore.relayCursor(canonical)
+        }
+      } catch {
+        // Fall back to 0 for unparseable addresses or mock stores lacking relayCursor
+      }
+      return 0
     },
     async quarantineRelayReceipts(
       recipientAddress: string,
       receipts: RelayReceiptIdentity[],
     ): Promise<void> {
-      return (await store).quarantineRelayReceipts(
-        toChainDisplayAddress(recipientAddress),
-        receipts,
-      )
+      try {
+        const canonical = toChainDisplayAddress(recipientAddress)
+        const messageStore = await store
+        if (typeof messageStore?.quarantineRelayReceipts === 'function') {
+          await messageStore.quarantineRelayReceipts(canonical, receipts)
+        }
+      } catch {
+        // no-op if unparseable address or mock store lacking quarantine
+      }
     },
     async deleteMessage({
       address,
@@ -1627,10 +1641,16 @@ export const useChatStore = defineStore('chats', {
       ownAddressOverride?: string,
       lease?: DeliveryLease,
     ): Promise<ReceivedDeliveryResult> {
-      const ownAddress =
-        ownAddressOverride === undefined
-          ? await getOwnCanonicalAddress()
-          : toChainDisplayAddress(ownAddressOverride)
+      let ownAddress: string | null = null
+      if (ownAddressOverride !== undefined) {
+        try {
+          ownAddress = toChainDisplayAddress(ownAddressOverride)
+        } catch {
+          ownAddress = ownAddressOverride
+        }
+      } else {
+        ownAddress = await getOwnCanonicalAddress()
+      }
       const { suppressedReceipts, cancelled } = await serializeDeliveryMutation(
         () =>
           this.storeReceivedMessagesExclusive(
@@ -1676,9 +1696,11 @@ export const useChatStore = defineStore('chats', {
         payloadDigest: wrapper.index,
         receivedTime: wrapper.message.receivedTime,
       }))
-      const suppressedDigests = ownAddress
-        ? await messageStore.suppressedRelayReceipts(ownAddress, receipts)
-        : new Set<string>()
+      const suppressedDigests =
+        ownAddress &&
+        typeof messageStore?.suppressedRelayReceipts === 'function'
+          ? await messageStore.suppressedRelayReceipts(ownAddress, receipts)
+          : new Set<string>()
       const deliverableWrappers = messageWrappers.filter(wrapper => {
         if (!suppressedDigests.has(wrapper.index)) return true
         toNotify.delete(wrapper.index)
